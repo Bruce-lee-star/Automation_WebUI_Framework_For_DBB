@@ -570,6 +570,18 @@ public enum FrameworkConfig {
         "api.mock.log.level",
         "INFO",
         "Mock 日志级别"
+    ),
+
+    // ==================== Playwright SDK 配置 ====================
+
+    /**
+     * Playwright SDK 目录
+     * 指定 Playwright SDK 的存储目录
+     */
+    PLAYWRIGHT_SDK_DIR(
+        "playwright.sdk.dir",
+        ".playwright/sdk",
+        "Playwright SDK 目录"
     );
 
     private final String key;

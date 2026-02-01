@@ -15,6 +15,12 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementNotClickableException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementNotFoundException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementNotVisibleException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.TimeoutException;
+
 /**
  * 基础页面类 - 所有PageObject的父类
  * 提供通用的页面操作方法和元素定位方法
@@ -170,7 +176,7 @@ public abstract class BasePage {
             locator(selector).click();
         } catch (Exception e) {
             logger.error("Failed to click element: {}", selector, e);
-            throw new RuntimeException("Failed to click element: " + selector, e);
+            throw new ElementNotClickableException(selector, e);
         }
     }
 
@@ -183,7 +189,7 @@ public abstract class BasePage {
             locator(selector).dblclick();
         } catch (Exception e) {
             logger.error("Failed to double click element: {}", selector, e);
-            throw new RuntimeException("Failed to double click element: " + selector, e);
+            throw new ElementNotClickableException(selector, e);
         }
     }
 
@@ -196,7 +202,7 @@ public abstract class BasePage {
             locator(selector).click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
         } catch (Exception e) {
             logger.error("Failed to right click element: {}", selector, e);
-            throw new RuntimeException("Failed to right click element: " + selector, e);
+            throw new ElementNotClickableException(selector, e);
         }
     }
 
@@ -209,7 +215,7 @@ public abstract class BasePage {
             locator(selector).hover();
         } catch (Exception e) {
             logger.error("Failed to hover over element: {}", selector, e);
-            throw new RuntimeException("Failed to hover over element: " + selector, e);
+            throw new ElementNotVisibleException(selector, e);
         }
     }
 
@@ -222,7 +228,7 @@ public abstract class BasePage {
             locator(selector).fill(text);
         } catch (Exception e) {
             logger.error("Failed to type text '{}' into element: {}", text, selector, e);
-            throw new RuntimeException("Failed to type text '" + text + "' into element: " + selector, e);
+            throw new ElementException("Failed to type text '" + text + "' into element: " + selector, e);
         }
     }
 
@@ -235,7 +241,7 @@ public abstract class BasePage {
             locator(selector).clear();
         } catch (Exception e) {
             logger.error("Failed to clear element: {}", selector, e);
-            throw new RuntimeException("Failed to clear element: " + selector, e);
+            throw new ElementException("Failed to clear element: " + selector, e);
         }
     }
 
@@ -248,7 +254,7 @@ public abstract class BasePage {
             locator(selector).fill(text);
         } catch (Exception e) {
             logger.error("Failed to append text '{}' to element: {}", text, selector, e);
-            throw new RuntimeException("Failed to append text '" + text + "' to element: " + selector, e);
+            throw new ElementException("Failed to append text '" + text + "' to element: " + selector, e);
         }
     }
 
@@ -262,7 +268,7 @@ public abstract class BasePage {
             return text;
         } catch (Exception e) {
             logger.error("Failed to get text from element: {}", selector, e);
-            throw new RuntimeException("Failed to get text from element: " + selector, e);
+            throw new ElementException("Failed to get text from element: " + selector, e);
         }
     }
 
@@ -276,7 +282,7 @@ public abstract class BasePage {
             return value;
         } catch (Exception e) {
             logger.error("Failed to get value from element: {}", selector, e);
-            throw new RuntimeException("Failed to get value from element: " + selector, e);
+            throw new ElementException("Failed to get value from element: " + selector, e);
         }
     }
 
@@ -290,7 +296,7 @@ public abstract class BasePage {
             return value;
         } catch (Exception e) {
             logger.error("Failed to get attribute '{}' from element: {}", attributeName, selector, e);
-            throw new RuntimeException("Failed to get attribute '" + attributeName + "' from element: " + selector, e);
+            throw new ElementException("Failed to get attribute '" + attributeName + "' from element: " + selector, e);
         }
     }
 
@@ -303,7 +309,7 @@ public abstract class BasePage {
             locator(selector).selectOption(value);
         } catch (Exception e) {
             logger.error("Failed to select option '{}' from element: {}", value, selector, e);
-            throw new RuntimeException("Failed to select option '" + value + "' from element: " + selector, e);
+            throw new ElementException("Failed to select option '" + value + "' from element: " + selector, e);
         }
     }
 
@@ -316,7 +322,7 @@ public abstract class BasePage {
             locator(selector).selectOption(new SelectOption().setIndex(index));
         } catch (Exception e) {
             logger.error("Failed to select option at index {} from element: {}", index, selector, e);
-            throw new RuntimeException("Failed to select option at index " + index + " from element: " + selector, e);
+            throw new ElementException("Failed to select option at index " + index + " from element: " + selector, e);
         }
     }
 
@@ -329,7 +335,7 @@ public abstract class BasePage {
             locator(selector).check();
         } catch (Exception e) {
             logger.error("Failed to check element: {}", selector, e);
-            throw new RuntimeException("Failed to check element: " + selector, e);
+            throw new ElementException("Failed to check element: " + selector, e);
         }
     }
 
@@ -342,7 +348,7 @@ public abstract class BasePage {
             locator(selector).uncheck();
         } catch (Exception e) {
             logger.error("Failed to uncheck element: {}", selector, e);
-            throw new RuntimeException("Failed to uncheck element: " + selector, e);
+            throw new ElementException("Failed to uncheck element: " + selector, e);
         }
     }
 
@@ -355,7 +361,7 @@ public abstract class BasePage {
             locator(selector).setInputFiles(Paths.get(filePath));
         } catch (Exception e) {
             logger.error("Failed to upload file '{}' to element: {}", filePath, selector, e);
-            throw new RuntimeException("Failed to upload file '" + filePath + "' to element: " + selector, e);
+            throw new ElementException("Failed to upload file '" + filePath + "' to element: " + selector, e);
         }
     }
 
@@ -370,7 +376,7 @@ public abstract class BasePage {
             locator(selector).waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE));
         } catch (Exception e) {
             logger.error("Failed to wait for element to be visible: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be visible: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be visible: " + selector, e);
         }
     }
 
@@ -383,7 +389,7 @@ public abstract class BasePage {
             locator(selector).waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN));
         } catch (Exception e) {
             logger.error("Failed to wait for element to be hidden: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be hidden: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be hidden: " + selector, e);
         }
     }
 
@@ -396,7 +402,7 @@ public abstract class BasePage {
             locator(selector).waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED));
         } catch (Exception e) {
             logger.error("Failed to wait for element to be attached: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be attached: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be attached: " + selector, e);
         }
     }
 
@@ -675,7 +681,7 @@ public abstract class BasePage {
             return false;
         } catch (Exception e) {
             logger.error("Failed to wait for element to be visible: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be visible: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be visible: " + selector, e);
         }
     }
 
@@ -708,7 +714,7 @@ public abstract class BasePage {
             return false;
         } catch (Exception e) {
             logger.error("Failed to wait for element to be hidden: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be hidden: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be hidden: " + selector, e);
         }
     }
 

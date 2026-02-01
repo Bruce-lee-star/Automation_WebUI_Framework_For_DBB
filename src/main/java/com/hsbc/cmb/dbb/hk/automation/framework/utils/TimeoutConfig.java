@@ -1,4 +1,4 @@
-package com.hsbc.cmb.dbb.hk.automation.framework.util;
+package com.hsbc.cmb.dbb.hk.automation.framework.utils;
 
 import com.hsbc.cmb.dbb.hk.automation.framework.config.FrameworkConfig;
 import com.hsbc.cmb.dbb.hk.automation.framework.config.FrameworkConfigManager;

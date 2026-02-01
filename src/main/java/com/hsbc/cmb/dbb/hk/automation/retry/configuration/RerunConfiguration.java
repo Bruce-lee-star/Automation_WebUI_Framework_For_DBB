@@ -1,6 +1,6 @@
 package com.hsbc.cmb.dbb.hk.automation.retry.configuration;
 
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import com.hsbc.cmb.dbb.hk.automation.retry.controller.RetryController;
 import com.hsbc.cmb.dbb.hk.automation.retry.strategy.RetryDelayStrategy;
 import com.hsbc.cmb.dbb.hk.automation.retry.strategy.RetryDelayStrategyFactory;

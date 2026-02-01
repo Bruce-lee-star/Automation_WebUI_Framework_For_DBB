@@ -6,7 +6,7 @@ import com.microsoft.playwright.options.LoadState;
 import com.hsbc.cmb.dbb.hk.automation.framework.config.FrameworkConfig;
 import com.hsbc.cmb.dbb.hk.automation.framework.config.FrameworkConfigManager;
 import com.hsbc.cmb.dbb.hk.automation.framework.core.FrameworkState;
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import com.hsbc.cmb.dbb.hk.automation.screenshot.strategy.ScreenshotStrategy;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
 import net.thucydides.model.util.EnvironmentVariables;
@@ -16,6 +16,9 @@ import net.thucydides.model.steps.ExecutedStepDescription;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.BrowserException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.InitializationException;
 
 import java.awt.*;
 import java.awt.geom.AffineTransform;
@@ -117,7 +120,7 @@ public class PlaywrightManager {
             }
 
         } catch (Exception e) {
-            throw new RuntimeException("init playwright cache directory failed! cachePath is : " + cachePath);
+            throw new InitializationException("init playwright cache directory failed! cachePath is : " + cachePath, e);
         }
     }
 
@@ -574,7 +577,7 @@ public class PlaywrightManager {
             if (playwrightInstances.containsKey(configId)) {
                 playwrightInstances.remove(configId);
             }
-            throw new RuntimeException("Failed to initialize Playwright for config: " + configId, e);
+            throw new InitializationException("Failed to initialize Playwright for config: " + configId, e);
         }
     }
 
@@ -604,7 +607,7 @@ public class PlaywrightManager {
 
         Playwright playwright = playwrightInstances.get(configId);
         if (playwright == null) {
-            throw new RuntimeException("Playwright instance is null after initialization for config: " + configId);
+            throw new InitializationException("Playwright instance is null after initialization for config: " + configId);
         }
 
         // 获取浏览器配置
@@ -639,7 +642,7 @@ public class PlaywrightManager {
                 browserInstances.remove(configId);
             }
 
-            throw new RuntimeException("Failed to initialize Browser for config: " + configId, e);
+            throw new BrowserException("Failed to initialize Browser for config: " + configId, e);
         }
     }
 
@@ -735,7 +738,7 @@ public class PlaywrightManager {
                 logger.error("Browser launch timed out. Consider increasing timeout or checking browser installation.");
             }
 
-            throw new RuntimeException("Failed to launch browser " + browserType, e);
+            throw new BrowserException("Failed to launch browser " + browserType, e);
         }
     }
 
@@ -1150,7 +1153,7 @@ public class PlaywrightManager {
                 }
             } catch (Exception e) {
                 logger.error("Failed to close page: {}", e.getMessage(), e);
-                throw new RuntimeException("Failed to close page", e);
+                throw new BrowserException("Failed to close page", e);
             } finally {
                 pageThreadLocal.remove();
             }
@@ -1176,7 +1179,7 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext closed");
             } catch (Exception e) {
                 logger.error("Failed to close BrowserContext: {}", e.getMessage(), e);
-                throw new RuntimeException("Failed to close BrowserContext", e);
+                throw new BrowserException("Failed to close BrowserContext", e);
             } finally {
                 contextThreadLocal.remove();
             }
@@ -1223,7 +1226,7 @@ public class PlaywrightManager {
             LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Browser restarted successfully for config: {}", configId);
         } catch (Exception e) {
             logger.error("Failed to restart browser for config: {}", configId, e);
-            throw new RuntimeException("Failed to restart browser for config: " + configId, e);
+            throw new BrowserException("Failed to restart browser for config: " + configId, e);
         }
     }
 

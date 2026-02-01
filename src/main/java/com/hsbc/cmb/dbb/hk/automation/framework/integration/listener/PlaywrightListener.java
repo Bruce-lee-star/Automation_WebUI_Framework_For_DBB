@@ -2,7 +2,7 @@ package com.hsbc.cmb.dbb.hk.automation.framework.integration.listener;
 
 import com.hsbc.cmb.dbb.hk.automation.framework.core.FrameworkCore;
 import com.hsbc.cmb.dbb.hk.automation.framework.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import com.hsbc.cmb.dbb.hk.automation.retry.configuration.RerunConfiguration;
 import com.hsbc.cmb.dbb.hk.automation.retry.executor.RerunProcessExecutor;
 import com.hsbc.cmb.dbb.hk.automation.retry.listener.PlaywrightRetryListener;

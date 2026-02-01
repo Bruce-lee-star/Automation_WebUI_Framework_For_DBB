@@ -1,5 +1,6 @@
 package com.hsbc.cmb.dbb.hk.automation.page.factory;
 
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ConfigurationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -281,7 +282,7 @@ public class PageObjectFactory {
             return (T) instance;
         } catch (Exception e) {
             logger.error("Failed to create PageObject instance for: {}", pageClass.getSimpleName(), e);
-            throw new RuntimeException("Failed to create PageObject: " + pageClass.getSimpleName(), e);
+            throw new ConfigurationException("Failed to create PageObject: " + pageClass.getSimpleName(), e);
         }
     }
     

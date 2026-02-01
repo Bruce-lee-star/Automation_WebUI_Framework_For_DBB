@@ -1,8 +1,10 @@
 package com.hsbc.cmb.dbb.hk.automation.framework.integration.listener;
 
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.InitializationException;
 
 import java.io.File;
 import java.io.IOException;
@@ -68,7 +70,7 @@ public class ListenerRegistry {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Listener registry initialization completed");
         } catch (Exception e) {
             logger.error("Failed to initialize ListenerRegistry", e);
-            throw new RuntimeException("Failed to initialize ListenerRegistry", e);
+            throw new InitializationException("Failed to initialize ListenerRegistry", e);
         }
     }
 
@@ -230,7 +232,7 @@ public class ListenerRegistry {
             } catch (NoSuchMethodException e) {
                 java.lang.reflect.Constructor<?>[] constructors = listenerClass.getDeclaredConstructors();
                 if (constructors.length == 0) {
-                    throw new RuntimeException("No constructors found for listener class: " + listenerClass.getName());
+                    throw new InitializationException("No constructors found for listener class: " + listenerClass.getName());
                 }
                 java.lang.reflect.Constructor<?> constructor = constructors[0];
                 constructor.setAccessible(true);
@@ -244,7 +246,7 @@ public class ListenerRegistry {
             try {
                 java.lang.reflect.Constructor<?>[] constructors = listenerClass.getDeclaredConstructors();
                 if (constructors.length == 0) {
-                    throw new RuntimeException("No constructors found for listener class: " + listenerClass.getName());
+                    throw new InitializationException("No constructors found for listener class: " + listenerClass.getName());
                 }
                 java.lang.reflect.Constructor<?> constructor = constructors[0];
                 constructor.setAccessible(true);

@@ -10,6 +10,8 @@ import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ScreenshotException;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -54,7 +56,7 @@ public class Photographer {
                 logger.debug("Created screenshot directory: {}", directory.getAbsolutePath());
             } catch (IOException e) {
                 logger.error("Failed to create screenshot directory: {}", directory.getAbsolutePath(), e);
-                throw new RuntimeException("Could not create screenshot directory: " + directory.getAbsolutePath(), e);
+                throw new ScreenshotException("Could not create screenshot directory: " + directory.getAbsolutePath(), e);
             }
         }
     }

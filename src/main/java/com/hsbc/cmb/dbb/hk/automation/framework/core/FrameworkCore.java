@@ -2,9 +2,11 @@ package com.hsbc.cmb.dbb.hk.automation.framework.core;
 
 import com.hsbc.cmb.dbb.hk.automation.framework.integration.listener.ListenerRegistry;
 import com.hsbc.cmb.dbb.hk.automation.framework.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.InitializationException;
 
 /**
  * 框架核心类
@@ -72,7 +74,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to initialize FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to initialize FrameworkCore", e);
+            throw new InitializationException("Failed to initialize FrameworkCore", e);
         }
     }
     
@@ -99,7 +101,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to initialize FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to initialize FrameworkCore", e);
+            throw new InitializationException("Failed to initialize FrameworkCore", e);
         }
     }
     
@@ -126,7 +128,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to start FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to start FrameworkCore", e);
+            throw new InitializationException("Failed to start FrameworkCore", e);
         }
     }
     
@@ -149,7 +151,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to stop FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to stop FrameworkCore", e);
+            throw new InitializationException("Failed to stop FrameworkCore", e);
         }
     }
     
@@ -182,7 +184,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to cleanup FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to cleanup FrameworkCore", e);
+            throw new InitializationException("Failed to cleanup FrameworkCore", e);
         }
     }
     
@@ -209,7 +211,7 @@ public class FrameworkCore {
         } catch (Exception e) {
             logger.error("❌ Failed to prepare for test", e);
             frameworkState.setLastException(e);
-            throw new RuntimeException("Failed to prepare for test", e);
+            throw new InitializationException("Failed to prepare for test", e);
         }
     }
     

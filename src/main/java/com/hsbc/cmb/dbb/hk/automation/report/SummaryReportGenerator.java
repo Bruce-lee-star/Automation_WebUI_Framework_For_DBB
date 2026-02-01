@@ -3,7 +3,7 @@ package com.hsbc.cmb.dbb.hk.automation.report;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.hsbc.cmb.dbb.hk.automation.framework.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
 import org.slf4j.Logger;

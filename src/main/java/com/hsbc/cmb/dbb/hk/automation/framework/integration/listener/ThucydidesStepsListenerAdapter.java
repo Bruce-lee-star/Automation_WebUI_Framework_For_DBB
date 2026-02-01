@@ -1,6 +1,6 @@
 package com.hsbc.cmb.dbb.hk.automation.framework.integration.listener;
 
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 import net.thucydides.model.steps.StepListener;
 import net.thucydides.model.steps.StepFailure;
 import net.thucydides.model.steps.ExecutedStepDescription;
@@ -12,6 +12,8 @@ import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.InitializationException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
@@ -128,7 +130,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
             LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Thucydides Steps Listener Adapter registered with StepEventBus");
         } catch (Exception e) {
             logger.error("❌ Failed to register with StepEventBus", e);
-            throw new RuntimeException("Failed to register listener adapter", e);
+            throw new InitializationException("Failed to register listener adapter", e);
         }
     }
 

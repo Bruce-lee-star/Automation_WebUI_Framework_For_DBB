@@ -1,8 +1,12 @@
 package com.hsbc.cmb.dbb.hk.automation.page.base.impl;
 
 import com.microsoft.playwright.Page;
-import com.hsbc.cmb.dbb.hk.automation.framework.util.LoggingConfigUtil;
+import com.hsbc.cmb.dbb.hk.automation.framework.utils.LoggingConfigUtil;
 
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ConfigurationException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementNotClickableException;
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.TimeoutException;
 import com.hsbc.cmb.dbb.hk.automation.page.base.BasePage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +41,7 @@ public abstract class SerenityBasePage extends BasePage {
             addSerenityTestData("pageClass", this.getClass().getSimpleName());
         } catch (Exception e) {
             logger.error("Failed to initialize Serenity Base Page", e);
-            throw new RuntimeException("Failed to initialize Serenity Base Page", e);
+            throw new ConfigurationException("Failed to initialize Serenity Base Page", e);
         }
     }
     
@@ -56,7 +60,7 @@ public abstract class SerenityBasePage extends BasePage {
             return page;
         } catch (Exception e) {
             logger.error("Failed to get page", e);
-            throw new RuntimeException("Failed to get page", e);
+            throw new ConfigurationException("Failed to get page", e);
         }
     }
     
@@ -71,7 +75,7 @@ public abstract class SerenityBasePage extends BasePage {
                 logger, "📝 Added Serenity test data: {} = {}", key, value);
         } catch (Exception e) {
             logger.error("Failed to add Serenity test data: {} = {}", key, value, e);
-            throw new RuntimeException("Failed to add Serenity test data: " + key + " = " + value, e);
+            throw new ConfigurationException("Failed to add Serenity test data: " + key + " = " + value, e);
         }
     }
     
@@ -103,7 +107,7 @@ public abstract class SerenityBasePage extends BasePage {
             return contains;
         } catch (Exception e) {
             logger.error("Failed to verify page title contains: {}", expectedText, e);
-            throw new RuntimeException("Failed to verify page title contains: " + expectedText, e);
+            throw new ElementException("Failed to verify page title contains: " + expectedText, e);
         }
     }
     
@@ -128,7 +132,7 @@ public abstract class SerenityBasePage extends BasePage {
             return equals;
         } catch (Exception e) {
             logger.error("Failed to verify page title equals: {}", expectedText, e);
-            throw new RuntimeException("Failed to verify page title equals: " + expectedText, e);
+            throw new ElementException("Failed to verify page title equals: " + expectedText, e);
         }
     }
     
@@ -153,7 +157,7 @@ public abstract class SerenityBasePage extends BasePage {
             return contains;
         } catch (Exception e) {
             logger.error("Failed to verify URL contains: {}", expectedText, e);
-            throw new RuntimeException("Failed to verify URL contains: " + expectedText, e);
+            throw new ElementException("Failed to verify URL contains: " + expectedText, e);
         }
     }
     
@@ -169,7 +173,7 @@ public abstract class SerenityBasePage extends BasePage {
             super.click(selector);
         } catch (Exception e) {
             logger.error("Failed to click element: {}", selector, e);
-            throw new RuntimeException("Failed to click element: " + selector, e);
+            throw new ElementNotClickableException(selector, e);
         }
     }
     
@@ -186,7 +190,7 @@ public abstract class SerenityBasePage extends BasePage {
             super.type(selector, text);
         } catch (Exception e) {
             logger.error("Failed to type text '{}' into element: {}", text, selector, e);
-            throw new RuntimeException("Failed to type text '" + text + "' into element: " + selector, e);
+            throw new ElementException("Failed to type text '" + text + "' into element: " + selector, e);
         }
     }
     
@@ -202,7 +206,7 @@ public abstract class SerenityBasePage extends BasePage {
             super.navigateTo(url);
         } catch (Exception e) {
             logger.error("Failed to navigate to URL: {}", url, e);
-            throw new RuntimeException("Failed to navigate to URL: " + url, e);
+            throw new ElementException("Failed to navigate to URL: " + url, e);
         }
     }
     
@@ -245,7 +249,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to wait for element to be visible within time: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be visible within time: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be visible within time: " + selector, e);
         }
     }
 
@@ -262,7 +266,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to wait for element to be hidden within time: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be hidden within time: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be hidden within time: " + selector, e);
         }
     }
 
@@ -279,7 +283,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to wait for element to be clickable within time: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be clickable within time: " + selector, e);
+            throw new TimeoutException("Failed to wait for element to be clickable within time: " + selector, e);
         }
     }
 
@@ -296,7 +300,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to wait for title to contain within time: {}", expectedTitle, e);
-            throw new RuntimeException("Failed to wait for title to contain within time: " + expectedTitle, e);
+            throw new TimeoutException("Failed to wait for title to contain within time: " + expectedTitle, e);
         }
     }
 
@@ -313,7 +317,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to wait for URL to contain within time: {}", expectedUrlFragment, e);
-            throw new RuntimeException("Failed to wait for URL to contain within time: " + expectedUrlFragment, e);
+            throw new TimeoutException("Failed to wait for URL to contain within time: " + expectedUrlFragment, e);
         }
     }
 
@@ -332,7 +336,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to perform action with timeout: {}", actionDescription, e);
-            throw new RuntimeException("Failed to perform action with timeout: " + actionDescription, e);
+            throw new TimeoutException("Failed to perform action with timeout: " + actionDescription, e);
         }
     }
 
@@ -347,7 +351,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("elementVisible_" + selector, true);
         } catch (Exception e) {
             logger.error("Failed to verify element should be visible: {}", selector, e);
-            throw new RuntimeException("Failed to verify element should be visible: " + selector, e);
+            throw new ElementException("Failed to verify element should be visible: " + selector, e);
         }
     }
 
@@ -362,7 +366,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("elementNotVisible_" + selector, true);
         } catch (Exception e) {
             logger.error("Failed to verify element should not be visible: {}", selector, e);
-            throw new RuntimeException("Failed to verify element should not be visible: " + selector, e);
+            throw new ElementException("Failed to verify element should not be visible: " + selector, e);
         }
     }
 
@@ -378,7 +382,7 @@ public abstract class SerenityBasePage extends BasePage {
             return result;
         } catch (Exception e) {
             logger.error("Failed to check if page source contains text: {}", text, e);
-            throw new RuntimeException("Failed to check if page source contains text: " + text, e);
+            throw new ElementException("Failed to check if page source contains text: " + text, e);
         }
     }
 
@@ -395,7 +399,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("attribute_" + selector + "_" + attributeName, true);
         } catch (Exception e) {
             logger.error("Failed to verify attribute value for element: {}", selector, e);
-            throw new RuntimeException("Failed to verify attribute value for element: " + selector, e);
+            throw new ElementException("Failed to verify attribute value for element: " + selector, e);
         }
     }
 }

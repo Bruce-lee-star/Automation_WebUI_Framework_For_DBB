@@ -204,7 +204,7 @@ public class PlaywrightRetryRule implements TestRule {
                     "com.microsoft.playwright.PlaywrightException," +
                     "java.net.ConnectException," +
                     "java.net.SocketTimeoutException," +
-                    "java.util.concurrent.TimeoutException," +
+                    "java.utils.concurrent.TimeoutException," +
                     "java.io.IOException," +
                     "io.netty.channel.AbstractChannel$AnnotatedConnectException"
             );

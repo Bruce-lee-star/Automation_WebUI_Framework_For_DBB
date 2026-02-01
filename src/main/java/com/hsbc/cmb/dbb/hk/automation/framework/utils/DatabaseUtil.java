@@ -1,9 +1,11 @@
-package com.hsbc.cmb.dbb.hk.automation.framework.util;
+package com.hsbc.cmb.dbb.hk.automation.framework.utils;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.InitializationException;
 
 import java.io.BufferedWriter;
 import java.io.FileWriter;
@@ -128,7 +130,7 @@ public class DatabaseUtil {
             
         } catch (Exception e) {
             logger.error("Failed to initialize connection pool", e);
-            throw new RuntimeException("Failed to initialize connection pool", e);
+            throw new InitializationException("Failed to initialize connection pool", e);
         }
     }
     

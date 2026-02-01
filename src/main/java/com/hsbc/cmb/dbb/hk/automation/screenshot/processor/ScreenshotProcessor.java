@@ -15,6 +15,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 
+import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ScreenshotException;
+
 /**
  * 处理截图到报告的转换
  * 将截图文件关联到测试步骤并生成HTML报告片段
@@ -41,7 +43,7 @@ public class ScreenshotProcessor {
                 logger.debug("Created report screenshot directory: {}", directory.getAbsolutePath());
             } catch (IOException e) {
                 logger.error("Failed to create report screenshot directory: {}", directory.getAbsolutePath(), e);
-                throw new RuntimeException("Could not create report screenshot directory: " + directory.getAbsolutePath(), e);
+                throw new ScreenshotException("Could not create report screenshot directory: " + directory.getAbsolutePath(), e);
             }
         }
     }

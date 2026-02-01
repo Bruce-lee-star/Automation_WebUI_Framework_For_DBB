@@ -89,7 +89,7 @@ public class PlaywrightManager {
                 // 检查并安装Playwright 浏览器（如果需要）
                 ensureBrowsersInstalled();
             } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Skipping browser path configuration because download is skipped");
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Skipping browser path configuration and installation because download is skipped");
             }
             
             // 设置浏览器类型，即使跳过下载也需要设置
@@ -429,7 +429,12 @@ public class PlaywrightManager {
                 } else {
                     LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] Skipping BROWSERS_PATH configuration because download is skipped");
                 }
-            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
+            // 只有不跳过浏览器下载时才设置PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
+            if (!isSkipBrowserDownload()) {
+                env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
+            } else {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] Skipping SKIP_BROWSER_DOWNLOAD configuration because download is skipped");
+            }
 
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
@@ -623,12 +628,20 @@ public class PlaywrightManager {
      */
     private static void initializePlaywright(String configId) {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Playwright for config: {}", configId);
-        Playwright.CreateOptions createOptions = getCreateOptions();
-
+        
         try {
-            Playwright playwright = Playwright.create(createOptions);
-            playwrightInstances.put(configId, playwright);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright initialized successfully for config: {}", configId);
+            // 如果跳过浏览器下载，使用更简单的方式初始化Playwright
+            if (isSkipBrowserDownload()) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Using simplified Playwright initialization for skipped download");
+                Playwright playwright = Playwright.create();
+                playwrightInstances.put(configId, playwright);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright initialized successfully for config: {}", configId);
+            } else {
+                Playwright.CreateOptions createOptions = getCreateOptions();
+                Playwright playwright = Playwright.create(createOptions);
+                playwrightInstances.put(configId, playwright);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright initialized successfully for config: {}", configId);
+            }
         } catch (Exception e) {
             LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Playwright for config: {}", configId, e);
             // 清理已创建的实例（如果有）

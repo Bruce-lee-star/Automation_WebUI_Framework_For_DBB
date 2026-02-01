@@ -70,34 +70,33 @@ public class PlaywrightManager {
 
     static {
         try {
-            // 【重要】尽早设置系统属性,确保 Playwright 使用正确的浏览器缓存路径
+            // 【重要】尽早设置系统属性,确保 Playwright 使用正确的配置
             // 注意: Playwright Java 的 Driver/CLI 路径是硬编码的,必须提取到系统临时目录
             // 无法通过配置修改到 .playwright/driver 目录
-            Path browsersPath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
-
-            System.setProperty("PLAYWRIGHT_BROWSERS_PATH", browsersPath.toString());
-            System.setProperty("PLAYWRIGHT_BROWSER_TYPE", FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_TYPE));
-
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] PLAYWRIGHT_BROWSERS_PATH: {}", browsersPath);
-
-            // 设置 Serenity 环境变量
-            SystemEnvironmentVariables.currentEnvironmentVariables().setProperty("PLAYWRIGHT_BROWSERS_PATH", browsersPath.toString());
-
-            // 创建浏览器缓存目录
-            if (!Files.exists(browsersPath)) {
-                Files.createDirectories(browsersPath);
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Created browsers path: {}", browsersPath);
+            
+            // 只有当不跳过浏览器下载时才创建浏览器缓存路径
+            // 当跳过浏览器下载时，Playwright会使用系统已安装的浏览器，不需要指定缓存路径
+            if (!isSkipBrowserDownload()) {
+                Path browsersPath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
+                System.setProperty("PLAYWRIGHT_BROWSERS_PATH", browsersPath.toString());
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] PLAYWRIGHT_BROWSERS_PATH: {}", browsersPath);
+                
+                // 创建浏览器缓存目录
+                if (!Files.exists(browsersPath)) {
+                    Files.createDirectories(browsersPath);
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Created browsers path: {}", browsersPath);
+                }
+                // 检查并安装Playwright 浏览器（如果需要）
+                ensureBrowsersInstalled();
+            } else {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Skipping browser path configuration because download is skipped");
             }
+            
+            // 设置浏览器类型，即使跳过下载也需要设置
+            System.setProperty("PLAYWRIGHT_BROWSER_TYPE", FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_TYPE));
 
             // 清理旧的 playwright-java 临时目录（防止 C 盘爆满）
             cleanupPlaywrightTempDirs();
-
-            // 检查并安装Playwright 浏览器（如果需要）
-            if (!isSkipBrowserDownload()) {
-                ensureBrowsersInstalled();
-            } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Skipping browser installation (playwright.skip.browser.download=true)");
-            }
         } catch (Exception e) {
             LoggingConfigUtil.logErrorIfVerbose(logger, "[Static Init] Failed to initialize Playwright environment", e);
             throw new RuntimeException("Failed to initialize Playwright environment during static initialization", e);
@@ -118,6 +117,11 @@ public class PlaywrightManager {
      */
     private static void ensureBrowsersInstalled() {
         try {
+            if (isSkipBrowserDownload()) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Browser download is skipped, skipping installation check");
+                return;
+            }
+            
             Path cachePath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
             String configuredBrowserType = getConfiguredBrowserType();
 
@@ -363,6 +367,11 @@ public class PlaywrightManager {
      */
     private static boolean checkBrowsersInstalled(Path cachePath) {
         try {
+            if (isSkipBrowserDownload()) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Browser download is skipped, assuming browser is available");
+                return true;
+            }
+            
             String browserType = getConfiguredBrowserType();
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Checking if {} browser is installed...", browserType);
 
@@ -413,7 +422,13 @@ public class PlaywrightManager {
             );
 
             Map<String, String> env = pb.environment();
-            env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
+            // 只有不跳过浏览器下载时才设置PLAYWRIGHT_BROWSERS_PATH
+                if (!isSkipBrowserDownload()) {
+                    env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] BROWSERS_PATH: {}", cachePath);
+                } else {
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] Skipping BROWSERS_PATH configuration because download is skipped");
+                }
             env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
 
             pb.redirectErrorStream(true);
@@ -636,9 +651,13 @@ public class PlaywrightManager {
         // 使用绝对路径确保 Playwright 正确识别
         Path browsersPath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
 
-        // 设置浏览器路径
-        env.put("PLAYWRIGHT_BROWSERS_PATH", browsersPath.toString());
-        LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Options] BROWSERS_PATH: {}", browsersPath);
+        // 设置浏览器路径，只有不跳过浏览器下载时才设置
+        if (!isSkipBrowserDownload()) {
+            env.put("PLAYWRIGHT_BROWSERS_PATH", browsersPath.toString());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Options] BROWSERS_PATH: {}", browsersPath);
+        } else {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Options] Skipping BROWSERS_PATH configuration because download is skipped");
+        }
         LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Options] SKIP_BROWSER_DOWNLOAD: {}", isSkipBrowserDownload());
 
         options.setEnv(env);

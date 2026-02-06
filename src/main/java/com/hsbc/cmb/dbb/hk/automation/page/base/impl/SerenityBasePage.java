@@ -14,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
+import java.util.function.Predicate;
+import com.microsoft.playwright.options.BoundingBox;
 
 /**
  * Serenity 基础页面类
@@ -240,85 +242,55 @@ public abstract class SerenityBasePage extends BasePage {
      * 在指定时间范围内等待元素可见（Serenity集成版）
      * @param selector 元素选择器
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果元素在指定时间内可见则返回true，否则返回false
      */
-    public boolean waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
-        try {
-            boolean result = super.waitForElementVisibleWithinTime(selector, timeoutSeconds);
-            recordPageVerification("elementVisible_" + selector, result);
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to wait for element to be visible within time: {}", selector, e);
-            throw new TimeoutException("Failed to wait for element to be visible within time: " + selector, e);
-        }
+    @Override
+    public void waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
+        super.waitForElementVisibleWithinTime(selector, timeoutSeconds);
+        recordPageVerification("elementVisible_" + selector, true);
     }
 
     /**
      * 在指定时间范围内等待元素隐藏（Serenity集成版）
      * @param selector 元素选择器
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果元素在指定时间内隐藏则返回true，否则返回false
      */
-    public boolean waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
-        try {
-            boolean result = super.waitForElementHiddenWithinTime(selector, timeoutSeconds);
-            recordPageVerification("elementHidden_" + selector, result);
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to wait for element to be hidden within time: {}", selector, e);
-            throw new TimeoutException("Failed to wait for element to be hidden within time: " + selector, e);
-        }
+    @Override
+    public void waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
+        super.waitForElementHiddenWithinTime(selector, timeoutSeconds);
+        recordPageVerification("elementHidden_" + selector, true);
     }
 
     /**
      * 在指定时间范围内等待元素可点击（Serenity集成版）
      * @param selector 元素选择器
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果元素在指定时间内可点击则返回true，否则返回false
      */
-    public boolean waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
-        try {
-            boolean result = super.waitForElementClickableWithinTime(selector, timeoutSeconds);
-            recordPageVerification("elementClickable_" + selector, result);
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to wait for element to be clickable within time: {}", selector, e);
-            throw new TimeoutException("Failed to wait for element to be clickable within time: " + selector, e);
-        }
+    @Override
+    public void waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
+        super.waitForElementClickableWithinTime(selector, timeoutSeconds);
+        recordPageVerification("elementClickable_" + selector, true);
     }
 
     /**
      * 在指定时间范围内等待页面标题包含文本（Serenity集成版）
      * @param expectedTitle 期望的标题文本
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果页面标题在指定时间内包含文本则返回true，否则返回false
      */
-    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
-        try {
-            boolean result = super.waitForTitleContainsWithinTime(expectedTitle, timeoutSeconds);
-            recordPageVerification("titleContains_" + expectedTitle, result);
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to wait for title to contain within time: {}", expectedTitle, e);
-            throw new TimeoutException("Failed to wait for title to contain within time: " + expectedTitle, e);
-        }
+    @Override
+    public void waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
+        super.waitForTitleContainsWithinTime(expectedTitle, timeoutSeconds);
+        recordPageVerification("titleContains_" + expectedTitle, true);
     }
 
     /**
      * 在指定时间范围内等待URL包含文本（Serenity集成版）
      * @param expectedUrlFragment 期望的URL片段
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果URL在指定时间内包含片段则返回true，否则返回false
      */
-    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
-        try {
-            boolean result = super.waitForUrlContainsWithinTime(expectedUrlFragment, timeoutSeconds);
-            recordPageVerification("urlContains_" + expectedUrlFragment, result);
-            return result;
-        } catch (Exception e) {
-            logger.error("Failed to wait for URL to contain within time: {}", expectedUrlFragment, e);
-            throw new TimeoutException("Failed to wait for URL to contain within time: " + expectedUrlFragment, e);
-        }
+    @Override
+    public void waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
+        super.waitForUrlContainsWithinTime(expectedUrlFragment, timeoutSeconds);
+        recordPageVerification("urlContains_" + expectedUrlFragment, true);
     }
 
     /**
@@ -401,5 +373,220 @@ public abstract class SerenityBasePage extends BasePage {
             logger.error("Failed to verify attribute value for element: {}", selector, e);
             throw new ElementException("Failed to verify attribute value for element: " + selector, e);
         }
+    }
+
+    // ==================== 重试机制（Serenity集成版）====================
+
+    @Override
+    public void retry(Runnable operation, int maxRetries, int retryIntervalMs, String operationDescription) {
+        super.retry(operation, maxRetries, retryIntervalMs, operationDescription);
+        addSerenityTestData("retry_" + operationDescription, "completed");
+    }
+
+    @Override
+    public void retry(Runnable operation, String operationDescription) {
+        super.retry(operation, operationDescription);
+        addSerenityTestData("retry_" + operationDescription, "completed");
+    }
+
+    @Override
+    public boolean retryWithValidation(Runnable operation, Predicate<Void> validation, 
+                                       int maxRetries, int retryIntervalMs, String operationDescription) {
+        boolean result = super.retryWithValidation(operation, validation, maxRetries, retryIntervalMs, operationDescription);
+        recordPageVerification("retryWithValidation_" + operationDescription, result);
+        return result;
+    }
+
+    // ==================== 扩展等待方法（Serenity集成版）====================
+
+    @Override
+    public void waitForElementExists(String selector, int timeoutSeconds) {
+        super.waitForElementExists(selector, timeoutSeconds);
+        recordPageVerification("elementExists_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementNotExists(String selector, int timeoutSeconds) {
+        super.waitForElementNotExists(selector, timeoutSeconds);
+        recordPageVerification("elementNotExists_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementEditable(String selector, int timeoutSeconds) {
+        super.waitForElementEditable(selector, timeoutSeconds);
+        recordPageVerification("elementEditable_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementDisabled(String selector, int timeoutSeconds) {
+        super.waitForElementDisabled(selector, timeoutSeconds);
+        recordPageVerification("elementDisabled_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementEnabled(String selector, int timeoutSeconds) {
+        super.waitForElementEnabled(selector, timeoutSeconds);
+        recordPageVerification("elementEnabled_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementAttributeEquals(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
+        super.waitForElementAttributeEquals(selector, attributeName, expectedAttributeValue, timeoutSeconds);
+        recordPageVerification("attributeEquals_" + selector + "_" + attributeName, true);
+    }
+
+    @Override
+    public void waitForElementAttributeContains(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
+        super.waitForElementAttributeContains(selector, attributeName, expectedAttributeValue, timeoutSeconds);
+        recordPageVerification("attributeContains_" + selector + "_" + attributeName, true);
+    }
+
+    @Override
+    public void waitForElementTextContains(String selector, String expectedText, int timeoutSeconds) {
+        super.waitForElementTextContains(selector, expectedText, timeoutSeconds);
+        recordPageVerification("textContains_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementTextEquals(String selector, String expectedText, int timeoutSeconds) {
+        super.waitForElementTextEquals(selector, expectedText, timeoutSeconds);
+        recordPageVerification("textEquals_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementCount(String selector, int expectedCount, int timeoutSeconds) {
+        super.waitForElementCount(selector, expectedCount, timeoutSeconds);
+        recordPageVerification("elementCount_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementCountAtLeast(String selector, int minimumCount, int timeoutSeconds) {
+        super.waitForElementCountAtLeast(selector, minimumCount, timeoutSeconds);
+        recordPageVerification("elementCountAtLeast_" + selector, true);
+    }
+
+    @Override
+    public void waitForNetworkIdle(int timeoutSeconds) {
+        super.waitForNetworkIdle(timeoutSeconds);
+        recordPageVerification("networkIdle", true);
+    }
+
+    @Override
+    public void waitForPageFullyLoaded(int timeoutSeconds) {
+        super.waitForPageFullyLoaded(timeoutSeconds);
+        recordPageVerification("pageFullyLoaded", true);
+    }
+
+    @Override
+    public void waitForDOMContentLoaded(int timeoutSeconds) {
+        super.waitForDOMContentLoaded(timeoutSeconds);
+        recordPageVerification("domContentLoaded", true);
+    }
+
+    @Override
+    public void waitForElementChecked(String selector, int timeoutSeconds) {
+        super.waitForElementChecked(selector, timeoutSeconds);
+        recordPageVerification("elementChecked_" + selector, true);
+    }
+
+    @Override
+    public void waitForElementNotChecked(String selector, int timeoutSeconds) {
+        super.waitForElementNotChecked(selector, timeoutSeconds);
+        recordPageVerification("elementNotChecked_" + selector, true);
+    }
+
+    @Override
+    public void waitForUrlEquals(String expectedUrl, int timeoutSeconds) {
+        super.waitForUrlEquals(expectedUrl, timeoutSeconds);
+        recordPageVerification("urlEquals", true);
+    }
+
+    @Override
+    public void waitForUrlStartsWith(String expectedPrefix, int timeoutSeconds) {
+        super.waitForUrlStartsWith(expectedPrefix, timeoutSeconds);
+        recordPageVerification("urlStartsWith", true);
+    }
+
+    @Override
+    public void waitForCustomCondition(Supplier<Boolean> condition, int timeoutSeconds, String conditionDescription) {
+        super.waitForCustomCondition(condition, timeoutSeconds, conditionDescription);
+        recordPageVerification("customCondition_" + conditionDescription, true);
+    }
+
+    // ==================== 带重试的便捷方法（Serenity集成版）====================
+
+    @Override
+    public void waitForVisibleWithRetry(String selector, int timeoutSeconds, int maxRetries) {
+        super.waitForVisibleWithRetry(selector, timeoutSeconds, maxRetries);
+        recordPageVerification("waitForVisibleWithRetry_" + selector, true);
+    }
+
+    @Override
+    public void waitForHiddenWithRetry(String selector, int timeoutSeconds, int maxRetries) {
+        super.waitForHiddenWithRetry(selector, timeoutSeconds, maxRetries);
+        recordPageVerification("waitForHiddenWithRetry_" + selector, true);
+    }
+
+    @Override
+    public void clickWithRetry(String selector, int maxRetries) {
+        super.clickWithRetry(selector, maxRetries);
+        addSerenityTestData("clickWithRetry_" + selector, "completed");
+    }
+
+    @Override
+    public void typeWithRetry(String selector, String text, int maxRetries) {
+        super.typeWithRetry(selector, text, maxRetries);
+        addSerenityTestData("typeWithRetry_" + selector, "completed");
+    }
+
+    @Override
+    public void navigateToWithRetry(String url, int maxRetries) {
+        super.navigateToWithRetry(url, maxRetries);
+        addSerenityTestData("navigateToWithRetry", "completed");
+    }
+
+    // ==================== Web UI 操作（Serenity集成版）====================
+
+    @Override
+    public void dragAndDrop(String sourceSelector, String targetSelector) {
+        super.dragAndDrop(sourceSelector, targetSelector);
+        addSerenityTestData("dragAndDrop", "from_" + sourceSelector + "_to_" + targetSelector);
+    }
+
+    @Override
+    public void scrollTo(String selector, int scrollX, int scrollY) {
+        super.scrollTo(selector, scrollX, scrollY);
+        addSerenityTestData("scrollTo", "element_" + selector + "_to_" + scrollX + "_" + scrollY);
+    }
+
+    @Override
+    public void scrollToBottomOf(String selector) {
+        super.scrollToBottomOf(selector);
+        addSerenityTestData("scrollToBottom", "element_" + selector);
+    }
+
+    @Override
+    public void scrollToTopOf(String selector) {
+        super.scrollToTopOf(selector);
+        addSerenityTestData("scrollToTop", "element_" + selector);
+    }
+
+    @Override
+    public void scrollBy(String selector, int offsetX, int offsetY) {
+        super.scrollBy(selector, offsetX, offsetY);
+        addSerenityTestData("scrollBy", "element_" + selector + "_by_" + offsetX + "_" + offsetY);
+    }
+
+    @Override
+    public BoundingBox getElementBoundingBox(String selector) {
+        BoundingBox box = super.getElementBoundingBox(selector);
+        addSerenityTestData("elementBoundingBox", "element_" + selector);
+        return box;
+    }
+
+    @Override
+    public void scrollToElementCenter(String targetSelector) {
+        super.scrollToElementCenter(targetSelector);
+        addSerenityTestData("scrollToElementCenter", targetSelector);
     }
 }

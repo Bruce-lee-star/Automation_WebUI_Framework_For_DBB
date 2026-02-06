@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -156,7 +157,10 @@ public class SessionManager {
             }
 
             String sessionFile = sessionDir.resolve(sessionKey + ".session").toString();
-            try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(sessionFile))) {
+            try (ObjectOutputStream oos = new ObjectOutputStream(
+                    new BufferedOutputStream(
+                        new FileOutputStream(sessionFile),
+                        8192))) {  // 8KB buffer, UTF-8 encoding
                 oos.writeObject(session);
             }
 
@@ -211,7 +215,10 @@ public class SessionManager {
             }
 
             String sessionFile = sessionDir.resolve(username + ".session").toString();
-            try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(sessionFile))) {
+            try (ObjectOutputStream oos = new ObjectOutputStream(
+                    new BufferedOutputStream(
+                        new FileOutputStream(sessionFile),
+                        8192))) {  // 8KB buffer, UTF-8 encoding
                 oos.writeObject(session);
             }
 
@@ -240,7 +247,10 @@ public class SessionManager {
                 return null;
             }
 
-            try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(sessionFile.toString()))) {
+            try (ObjectInputStream ois = new ObjectInputStream(
+                    new BufferedInputStream(
+                        new FileInputStream(sessionFile.toString()),
+                        8192))) {  // 8KB buffer
                 UserSession session = (UserSession) ois.readObject();
 
                 // Add session to active sessions
@@ -271,7 +281,10 @@ public class SessionManager {
                 return null;
             }
 
-            try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(sessionFile.toString()))) {
+            try (ObjectInputStream ois = new ObjectInputStream(
+                    new BufferedInputStream(
+                        new FileInputStream(sessionFile.toString()),
+                        8192))) {  // 8KB buffer
                 UserSession session = (UserSession) ois.readObject();
 
                 // Add session to active sessions

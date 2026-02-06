@@ -13,7 +13,10 @@ import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Supplier;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
+
+import com.microsoft.playwright.options.BoundingBox;
 
 import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementException;
 import com.hsbc.cmb.dbb.hk.automation.framework.exceptions.ElementNotClickableException;
@@ -422,7 +425,7 @@ public abstract class BasePage {
     /**
      * 等待指定时间（毫秒）
      */
-    public void wait(int milliseconds) {
+    public void waitForTimeout(int milliseconds) {
         try {
             logger.info("Waiting for {} milliseconds", milliseconds);
             ensurePageValid();
@@ -653,104 +656,66 @@ public abstract class BasePage {
     // ==================== 时间范围操作方法 ====================
 
     /**
-     * 在指定时间范围内等待元素可见
+     * 在指定时间范围内等待元素可见（失败时抛出异常）
      * @param selector 元素选择器
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果元素在指定时间内可见则返回true，否则返回false
+     * @throws TimeoutException 如果元素在超时时间内不可见
      */
-    public boolean waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
+    public void waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
         try {
             int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for element to be visible within {}s: {}", timeoutSeconds, selector);
-            long startTime = System.currentTimeMillis();
-            long endTime = startTime + timeoutMillis;
-            
-            while (System.currentTimeMillis() < endTime) {
-                if (locator(selector).isVisible()) {
-                    logger.info("Element is now visible: {}", selector);
-                    return true;
-                }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for element visibility", e);
-                }
-            }
-            
-            logger.warn("Timeout waiting for element to be visible: {}", selector);
-            return false;
+            ensurePageValid();
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.VISIBLE)
+                .setTimeout(timeoutMillis));
+            logger.info("Element is now visible: {}", selector);
         } catch (Exception e) {
             logger.error("Failed to wait for element to be visible: {}", selector, e);
-            throw new TimeoutException("Failed to wait for element to be visible: " + selector, e);
+            throw new TimeoutException("Element not visible within timeout: " + selector, e);
         }
     }
 
+
     /**
-     * 在指定时间范围内等待元素隐藏
+     * 在指定时间范围内等待元素隐藏（失败时抛出异常）
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
-     * @return 如果元素在指定时间内隐藏则返回true，否则返回false
+     * @param timeoutSeconds 最大超时时间（秒）
+     * @throws TimeoutException 如果元素在超时时间内未隐藏
      */
-    public boolean waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
+    public void waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
         try {
             int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for element to be hidden within {}s: {}", timeoutSeconds, selector);
-            long startTime = System.currentTimeMillis();
-            long endTime = startTime + timeoutMillis;
-            
-            while (System.currentTimeMillis() < endTime) {
-                if (!locator(selector).isVisible()) {
-                    logger.info("Element is now hidden: {}", selector);
-                    return true;
-                }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for element to be hidden", e);
-                }
-            }
-            
-            logger.warn("Timeout waiting for element to be hidden: {}", selector);
-            return false;
+            ensurePageValid();
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.HIDDEN)
+                .setTimeout(timeoutMillis));
+            logger.info("Element is now hidden: {}", selector);
         } catch (Exception e) {
             logger.error("Failed to wait for element to be hidden: {}", selector, e);
-            throw new TimeoutException("Failed to wait for element to be hidden: " + selector, e);
+            throw new TimeoutException("Element not hidden within timeout: " + selector, e);
         }
     }
 
     /**
-     * 在指定时间范围内等待元素可点击
+     * 在指定时间范围内等待元素可点击（失败时抛出异常）
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
-     * @return 如果元素在指定时间内可点击则返回true，否则返回false
+     * @param timeoutSeconds 最大超时时间（秒）
+     * @throws TimeoutException 如果元素在超时时间内不可点击
      */
-    public boolean waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
+    public void waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
         try {
             int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for element to be clickable within {}s: {}", timeoutSeconds, selector);
-            long startTime = System.currentTimeMillis();
-            long endTime = startTime + timeoutMillis;
-            
-            while (System.currentTimeMillis() < endTime) {
-                if (locator(selector).isVisible() && locator(selector).isEnabled()) {
-                    logger.info("Element is now clickable: {}", selector);
-                    return true;
-                }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for element to be clickable", e);
-                }
-            }
-            
-            logger.warn("Timeout waiting for element to be clickable: {}", selector);
-            return false;
+            ensurePageValid();
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.VISIBLE)
+                .setTimeout(timeoutMillis));
+            logger.info("Element is now clickable: {}", selector);
         } catch (Exception e) {
             logger.error("Failed to wait for element to be clickable: {}", selector, e);
-            throw new RuntimeException("Failed to wait for element to be clickable: " + selector, e);
+            throw new TimeoutException("Element not clickable within timeout: " + selector, e);
         }
     }
 
@@ -760,67 +725,61 @@ public abstract class BasePage {
      * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果页面标题在指定时间内包含文本则返回true，否则返回false
      */
-    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
+    public void waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
         try {
             int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for title to contain '{}' within {}s", expectedTitle, timeoutSeconds);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
-            
+
             while (System.currentTimeMillis() < endTime) {
                 String currentTitle = page.title();
                 if (currentTitle.contains(expectedTitle)) {
                     logger.info("Title contains expected text: '{}'", expectedTitle);
-                    return true;
+                    return;
                 }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for title", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             logger.warn("Timeout waiting for title to contain: {}", expectedTitle);
-            return false;
+            throw new TimeoutException("Title does not contain expected text within timeout: " + expectedTitle);
+        } catch (TimeoutException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Failed to wait for title to contain: {}", expectedTitle, e);
-            throw new RuntimeException("Failed to wait for title to contain: " + expectedTitle, e);
+            throw new TimeoutException("Failed to wait for title to contain: " + expectedTitle, e);
         }
     }
 
     /**
-     * 在指定时间范围内等待URL包含文本
+     * 在指定时间范围内等待URL包含文本（失败时抛出异常）
      * @param expectedUrlFragment 期望的URL片段
      * @param timeoutSeconds 最大超时时间（秒）
-     * @return 如果URL在指定时间内包含片段则返回true，否则返回false
+     * @throws TimeoutException 如果URL在超时时间内不包含指定片段
      */
-    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
+    public void waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
         try {
             int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for URL to contain '{}' within {}s", expectedUrlFragment, timeoutSeconds);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
-            
+
             while (System.currentTimeMillis() < endTime) {
                 String currentUrl = page.url();
                 if (currentUrl.contains(expectedUrlFragment)) {
                     logger.info("URL contains expected fragment: '{}'", expectedUrlFragment);
-                    return true;
+                    return;
                 }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for URL", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             logger.warn("Timeout waiting for URL to contain: {}", expectedUrlFragment);
-            return false;
+            throw new TimeoutException("URL does not contain expected fragment within timeout: " + expectedUrlFragment);
+        } catch (TimeoutException e) {
+            throw e;
         } catch (Exception e) {
             logger.error("Failed to wait for URL to contain: {}", expectedUrlFragment, e);
-            throw new RuntimeException("Failed to wait for URL to contain: " + expectedUrlFragment, e);
+            throw new TimeoutException("Failed to wait for URL to contain: " + expectedUrlFragment, e);
         }
     }
 
@@ -845,14 +804,9 @@ public abstract class BasePage {
                     logger.info("Action '{}' completed successfully", actionDescription);
                     return true;
                 }
-                try {
-                    Thread.sleep(500);  // 将等待时间从100ms减少到50ms
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while performing action", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             logger.warn("Timeout performing action: {}", actionDescription);
             return false;
         } catch (Exception e) {
@@ -1248,14 +1202,9 @@ public abstract class BasePage {
                     logger.info("New page opened: {}", newPage.url());
                     return newPage;
                 }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for new page", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             throw new RuntimeException("Timeout waiting for new page to open");
         } catch (Exception e) {
             logger.error("Failed to wait for new page", e);
@@ -1283,14 +1232,9 @@ public abstract class BasePage {
                     logger.info("Title contains expected text: '{}'", expectedTitle);
                     return;
                 }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for title", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             throw new RuntimeException("Timeout waiting for title to contain: " + expectedTitle);
         } catch (Exception e) {
             logger.error("Failed to wait for title to contain: {}", expectedTitle, e);
@@ -1318,14 +1262,9 @@ public abstract class BasePage {
                     logger.info("URL contains expected fragment: '{}'", expectedUrlFragment);
                     return;
                 }
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException("Interrupted while waiting for URL", e);
-                }
+                waitForTimeout(500);
             }
-            
+
             throw new RuntimeException("Timeout waiting for URL to contain: " + expectedUrlFragment);
         } catch (Exception e) {
             logger.error("Failed to wait for URL to contain: {}", expectedUrlFragment, e);
@@ -1456,6 +1395,751 @@ public abstract class BasePage {
         } catch (Exception e) {
             logger.error("Failed to get element count for: {}", selector, e);
             throw new RuntimeException("Failed to get element count for: " + selector, e);
+        }
+    }
+
+    // ==================== 重试机制 ====================
+
+    /**
+     * 重试执行操作直到成功或达到最大重试次数
+     * @param operation 要执行的操作
+     * @param maxRetries 最大重试次数
+     * @param retryIntervalMs 重试间隔（毫秒）
+     * @param operationDescription 操作描述
+     * @throws TimeoutException 如果所有重试都失败
+     */
+    public void retry(Runnable operation, int maxRetries, int retryIntervalMs, String operationDescription) {
+        int attempt = 0;
+        while (attempt <= maxRetries) {
+            try {
+                operation.run();
+                if (attempt > 0) {
+                    logger.info("Operation '{}' succeeded on attempt {}/{}", operationDescription, attempt + 1, maxRetries + 1);
+                }
+                return;
+            } catch (Exception e) {
+                attempt++;
+                if (attempt > maxRetries) {
+                    logger.error("Operation '{}' failed after {} attempts: {}", operationDescription, maxRetries + 1, e.getMessage());
+                    throw new TimeoutException("Operation '" + operationDescription + "' failed after " + (maxRetries + 1) + " attempts", e);
+                }
+                logger.warn("Operation '{}' failed on attempt {}/{}, retrying in {}ms. Error: {}", 
+                    operationDescription, attempt, maxRetries + 1, retryIntervalMs, e.getMessage());
+                try {
+                    Thread.sleep(retryIntervalMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException("Retry interrupted", ie);
+                }
+            }
+        }
+    }
+
+    /**
+     * 重试执行操作直到成功或达到最大重试次数（使用默认配置）
+     * @param operation 要执行的操作
+     * @param operationDescription 操作描述
+     * @throws TimeoutException 如果所有重试都失败
+     */
+    public void retry(Runnable operation, String operationDescription) {
+        retry(operation, 3, 1000, operationDescription);
+    }
+
+    /**
+     * 带条件的重试执行操作
+     * @param operation 要执行的操作
+     * @param validation 验证条件
+     * @param maxRetries 最大重试次数
+     * @param retryIntervalMs 重试间隔（毫秒）
+     * @param operationDescription 操作描述
+     * @return 如果验证通过返回true，否则抛出TimeoutException
+     * @throws TimeoutException 如果所有重试都失败或验证不通过
+     */
+    public boolean retryWithValidation(Runnable operation, Predicate<Void> validation, 
+                                       int maxRetries, int retryIntervalMs, String operationDescription) {
+        int attempt = 0;
+        while (attempt <= maxRetries) {
+            try {
+                operation.run();
+                if (validation.test(null)) {
+                    if (attempt > 0) {
+                        logger.info("Operation '{}' and validation succeeded on attempt {}/{}", operationDescription, attempt + 1, maxRetries + 1);
+                    }
+                    return true;
+                }
+            } catch (Exception e) {
+                logger.warn("Operation '{}' failed on attempt {}/{}. Error: {}", 
+                    operationDescription, attempt + 1, maxRetries + 1, e.getMessage());
+            }
+            
+            attempt++;
+            if (attempt > maxRetries) {
+                logger.error("Operation '{}' failed validation after {} attempts", operationDescription, maxRetries + 1);
+                throw new TimeoutException("Operation '" + operationDescription + "' failed validation after " + (maxRetries + 1) + " attempts");
+            }
+            
+            logger.info("Retrying operation '{}' in {}ms (attempt {}/{})", 
+                operationDescription, retryIntervalMs, attempt + 1, maxRetries + 1);
+            try {
+                Thread.sleep(retryIntervalMs);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Retry interrupted", ie);
+            }
+        }
+        return false;
+    }
+
+    // ==================== 扩展等待方法 ====================
+
+    /**
+     * 等待元素存在（已附加到DOM）
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementExists(String selector, int timeoutSeconds) {
+        try {
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for element to exist: {} (timeout: {}s)", selector, timeoutSeconds);
+            ensurePageValid();
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.ATTACHED)
+                .setTimeout(timeoutMillis));
+            logger.info("Element exists: {}", selector);
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to exist: {}", selector, e);
+            throw new TimeoutException("Element does not exist within timeout: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素不存在（从DOM中移除）
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementNotExists(String selector, int timeoutSeconds) {
+        try {
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for element to not exist: {} (timeout: {}s)", selector, timeoutSeconds);
+            ensurePageValid();
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.DETACHED)
+                .setTimeout(timeoutMillis));
+            logger.info("Element does not exist: {}", selector);
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to not exist: {}", selector, e);
+            throw new TimeoutException("Element still exists within timeout: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素可编辑（输入框）
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementEditable(String selector, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element to be editable: {} (timeout: {}s)", selector, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (isEnabled(selector) && !isDisabled(selector)) {
+                    logger.info("Element is now editable: {}", selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element not editable within timeout: " + selector);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to be editable: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element to be editable: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素禁用
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementDisabled(String selector, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element to be disabled: {} (timeout: {}s)", selector, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (isDisabled(selector)) {
+                    logger.info("Element is now disabled: {}", selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element not disabled within timeout: " + selector);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to be disabled: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element to be disabled: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素启用
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementEnabled(String selector, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element to be enabled: {} (timeout: {}s)", selector, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (isEnabled(selector)) {
+                    logger.info("Element is now enabled: {}", selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element not enabled within timeout: " + selector);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to be enabled: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element to be enabled: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素属性值等于指定值
+     * @param selector 元素选择器
+     * @param attributeName 属性名
+     * @param expectedAttributeValue 期望的属性值
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementAttributeEquals(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element attribute '{}' to equal '{}' within {}s: {}", 
+                attributeName, expectedAttributeValue, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String actualValue = getAttribute(selector, attributeName);
+                if (expectedAttributeValue.equals(actualValue)) {
+                    logger.info("Element attribute '{}' now equals '{}': {}", attributeName, expectedAttributeValue, selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element attribute '" + attributeName + "' did not equal '" + expectedAttributeValue + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element attribute: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element attribute: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素属性值包含指定文本
+     * @param selector 元素选择器
+     * @param attributeName 属性名
+     * @param expectedAttributeValue 期望的属性值片段
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementAttributeContains(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element attribute '{}' to contain '{}' within {}s: {}", 
+                attributeName, expectedAttributeValue, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String actualValue = getAttribute(selector, attributeName);
+                if (actualValue != null && actualValue.contains(expectedAttributeValue)) {
+                    logger.info("Element attribute '{}' now contains '{}': {}", attributeName, expectedAttributeValue, selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element attribute '" + attributeName + "' did not contain '" + expectedAttributeValue + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element attribute: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element attribute: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素文本包含指定文本
+     * @param selector 元素选择器
+     * @param expectedText 期望的文本
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementTextContains(String selector, String expectedText, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element text to contain '{}' within {}s: {}", expectedText, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String actualText = getText(selector);
+                if (actualText.contains(expectedText)) {
+                    logger.info("Element text now contains '{}': {}", expectedText, selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element text did not contain '" + expectedText + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element text: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element text: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素文本等于指定文本
+     * @param selector 元素选择器
+     * @param expectedText 期望的文本
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementTextEquals(String selector, String expectedText, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element text to equal '{}' within {}s: {}", expectedText, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String actualText = getText(selector);
+                if (expectedText.equals(actualText)) {
+                    logger.info("Element text now equals '{}': {}", expectedText, selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element text did not equal '" + expectedText + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element text: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element text: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素数量等于指定值
+     * @param selector 元素选择器
+     * @param expectedCount 期望的数量
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementCount(String selector, int expectedCount, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element count to equal {} within {}s: {}", expectedCount, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                int actualCount = getElementCount(selector);
+                if (actualCount == expectedCount) {
+                    logger.info("Element count now equals {}: {}", expectedCount, selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            int actualCount = getElementCount(selector);
+            throw new TimeoutException("Element count did not equal " + expectedCount + " within timeout. Actual: " + actualCount);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element count: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element count: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素数量至少等于指定值
+     * @param selector 元素选择器
+     * @param minimumCount 最小数量
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementCountAtLeast(String selector, int minimumCount, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element count to be at least {} within {}s: {}", minimumCount, timeoutSeconds, selector);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                int actualCount = getElementCount(selector);
+                if (actualCount >= minimumCount) {
+                    logger.info("Element count now at least {}: {} (actual: {})", minimumCount, selector, actualCount);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            int actualCount = getElementCount(selector);
+            throw new TimeoutException("Element count did not reach minimum " + minimumCount + " within timeout. Actual: " + actualCount);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element count: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element count: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待网络空闲（无正在进行的网络请求）
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForNetworkIdle(int timeoutSeconds) {
+        try {
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for network to be idle (timeout: {}s)", timeoutSeconds);
+            ensurePageValid();
+            page.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout(timeoutMillis));
+            logger.info("Network is now idle");
+        } catch (Exception e) {
+            logger.error("Failed to wait for network idle", e);
+            throw new TimeoutException("Network did not become idle within timeout", e);
+        }
+    }
+
+    /**
+     * 等待页面完全加载（包括所有资源）
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForPageFullyLoaded(int timeoutSeconds) {
+        try {
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for page to be fully loaded (timeout: {}s)", timeoutSeconds);
+            ensurePageValid();
+            page.waitForLoadState(LoadState.LOAD, new Page.WaitForLoadStateOptions().setTimeout(timeoutMillis));
+            logger.info("Page is now fully loaded");
+        } catch (Exception e) {
+            logger.error("Failed to wait for page fully loaded", e);
+            throw new TimeoutException("Page did not fully load within timeout", e);
+        }
+    }
+
+    /**
+     * 等待DOM内容加载完成
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForDOMContentLoaded(int timeoutSeconds) {
+        try {
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for DOM content to be loaded (timeout: {}s)", timeoutSeconds);
+            ensurePageValid();
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(timeoutMillis));
+            logger.info("DOM content is now loaded");
+        } catch (Exception e) {
+            logger.error("Failed to wait for DOM content loaded", e);
+            throw new TimeoutException("DOM content did not load within timeout", e);
+        }
+    }
+
+    /**
+     * 等待元素被选中
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementChecked(String selector, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element to be checked: {} (timeout: {}s)", selector, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (isChecked(selector)) {
+                    logger.info("Element is now checked: {}", selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element not checked within timeout: " + selector);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to be checked: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element to be checked: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待元素未被选中
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForElementNotChecked(String selector, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for element to be not checked: {} (timeout: {}s)", selector, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (!isChecked(selector)) {
+                    logger.info("Element is now not checked: {}", selector);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Element still checked within timeout: " + selector);
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for element to be not checked: {}", selector, e);
+            throw new TimeoutException("Failed to wait for element to be not checked: " + selector, e);
+        }
+    }
+
+    /**
+     * 等待URL完全匹配
+     * @param expectedUrl 期望的URL
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForUrlEquals(String expectedUrl, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for URL to equal '{}' within {}s", expectedUrl, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String currentUrl = page.url();
+                if (expectedUrl.equals(currentUrl)) {
+                    logger.info("URL now equals '{}': {}", expectedUrl, currentUrl);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("URL does not equal '" + expectedUrl + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for URL equals: {}", expectedUrl, e);
+            throw new TimeoutException("Failed to wait for URL equals: " + expectedUrl, e);
+        }
+    }
+
+    /**
+     * 等待URL以指定文本开头
+     * @param expectedPrefix 期望的URL前缀
+     * @param timeoutSeconds 超时时间（秒）
+     */
+    public void waitForUrlStartsWith(String expectedPrefix, int timeoutSeconds) {
+        try {
+            logger.info("Waiting for URL to start with '{}' within {}s", expectedPrefix, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                String currentUrl = page.url();
+                if (currentUrl.startsWith(expectedPrefix)) {
+                    logger.info("URL now starts with '{}': {}", expectedPrefix, currentUrl);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("URL does not start with '" + expectedPrefix + "' within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for URL starts with: {}", expectedPrefix, e);
+            throw new TimeoutException("Failed to wait for URL starts with: " + expectedPrefix, e);
+        }
+    }
+
+    /**
+     * 等待自定义条件为真
+     * @param condition 自定义条件
+     * @param timeoutSeconds 超时时间（秒）
+     * @param conditionDescription 条件描述
+     */
+    public void waitForCustomCondition(Supplier<Boolean> condition, int timeoutSeconds, String conditionDescription) {
+        try {
+            logger.info("Waiting for custom condition '{}' within {}s", conditionDescription, timeoutSeconds);
+            long endTime = System.currentTimeMillis() + timeoutSeconds * 1000;
+            
+            while (System.currentTimeMillis() < endTime) {
+                if (condition.get()) {
+                    logger.info("Custom condition '{}' is now true", conditionDescription);
+                    return;
+                }
+                waitForTimeout(500);
+            }
+            
+            throw new TimeoutException("Custom condition '" + conditionDescription + "' did not become true within timeout");
+        } catch (TimeoutException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Failed to wait for custom condition: {}", conditionDescription, e);
+            throw new TimeoutException("Failed to wait for custom condition: " + conditionDescription, e);
+        }
+    }
+
+    // ==================== 带重试的等待方法 ====================
+
+    /**
+     * 带重试的等待元素可见
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     * @param maxRetries 最大重试次数
+     */
+    public void waitForVisibleWithRetry(String selector, int timeoutSeconds, int maxRetries) {
+        retry(() -> waitForVisible(selector), maxRetries, 1000, "waitForVisible");
+    }
+
+    /**
+     * 带重试的等待元素隐藏
+     * @param selector 元素选择器
+     * @param timeoutSeconds 超时时间（秒）
+     * @param maxRetries 最大重试次数
+     */
+    public void waitForHiddenWithRetry(String selector, int timeoutSeconds, int maxRetries) {
+        retry(() -> waitForHidden(selector), maxRetries, 1000, "waitForHidden");
+    }
+
+    /**
+     * 带重试的点击元素
+     * @param selector 元素选择器
+     * @param maxRetries 最大重试次数
+     */
+    public void clickWithRetry(String selector, int maxRetries) {
+        retry(() -> click(selector), maxRetries, 1000, "click");
+    }
+
+    /**
+     * 带重试的输入文本
+     * @param selector 元素选择器
+     * @param text 输入的文本
+     * @param maxRetries 最大重试次数
+     */
+    public void typeWithRetry(String selector, String text, int maxRetries) {
+        retry(() -> type(selector, text), maxRetries, 1000, "type");
+    }
+
+    /**
+     * 带重试的导航到URL
+     * @param url 目标URL
+     * @param maxRetries 最大重试次数
+     */
+    public void navigateToWithRetry(String url, int maxRetries) {
+        retry(() -> navigateTo(url), maxRetries, 2000, "navigateTo");
+    }
+
+    // ==================== 移动元素操作方法 ====================
+
+    /**
+     * 拖拽元素到另一个元素
+     * @param sourceSelector 源元素选择器
+     * @param targetSelector 目标元素选择器
+     */
+    public void dragAndDrop(String sourceSelector, String targetSelector) {
+        try {
+            logger.info("Dragging element '{}' to '{}'", sourceSelector, targetSelector);
+            locator(sourceSelector).dragTo(locator(targetSelector));
+        } catch (Exception e) {
+            logger.error("Failed to drag element '{}' to '{}'", sourceSelector, targetSelector, e);
+            throw new ElementException("Failed to drag element '" + sourceSelector + "' to '" + targetSelector + "'", e);
+        }
+    }
+
+    /**
+     * 滚动元素到指定位置
+     * @param selector 元素选择器
+     * @param scrollX 水平滚动位置
+     * @param scrollY 垂直滚动位置
+     */
+    public void scrollTo(String selector, int scrollX, int scrollY) {
+        try {
+            logger.info("Scrolling element '{}' to ({}, {})", selector, scrollX, scrollY);
+            locator(selector).evaluate("element => { element.scrollTo(arguments[0], arguments[1]); }", new Object[]{scrollX, scrollY});
+        } catch (Exception e) {
+            logger.error("Failed to scroll element '{}' to ({}, {})", selector, scrollX, scrollY, e);
+            throw new ElementException("Failed to scroll element '" + selector + "' to (" + scrollX + ", " + scrollY + ")", e);
+        }
+    }
+
+    /**
+     * 滚动元素到底部
+     * @param selector 元素选择器
+     */
+    public void scrollToBottomOf(String selector) {
+        try {
+            logger.info("Scrolling element '{}' to bottom", selector);
+            locator(selector).evaluate("element => { element.scrollTo(0, element.scrollHeight); }");
+        } catch (Exception e) {
+            logger.error("Failed to scroll element '{}' to bottom", selector, e);
+            throw new ElementException("Failed to scroll element '" + selector + "' to bottom", e);
+        }
+    }
+
+    /**
+     * 滚动元素到顶部
+     * @param selector 元素选择器
+     */
+    public void scrollToTopOf(String selector) {
+        try {
+            logger.info("Scrolling element '{}' to top", selector);
+            locator(selector).evaluate("element => { element.scrollTo(0, 0); }");
+        } catch (Exception e) {
+            logger.error("Failed to scroll element '{}' to top", selector, e);
+            throw new ElementException("Failed to scroll element '" + selector + "' to top", e);
+        }
+    }
+
+    /**
+     * 滚动元素到指定偏移量
+     * @param selector 元素选择器
+     * @param offsetX X轴偏移量（像素）
+     * @param offsetY Y轴偏移量（像素）
+     */
+    public void scrollBy(String selector, int offsetX, int offsetY) {
+        try {
+            logger.info("Scrolling element '{}' by offset ({}, {})", selector, offsetX, offsetY);
+            locator(selector).evaluate("element => { element.scrollBy(arguments[0], arguments[1]); }", new Object[]{offsetX, offsetY});
+        } catch (Exception e) {
+            logger.error("Failed to scroll element '{}' by offset ({}, {})", selector, offsetX, offsetY, e);
+            throw new ElementException("Failed to scroll element '" + selector + "' by offset (" + offsetX + ", " + offsetY + ")", e);
+        }
+    }
+
+    /**
+     * 获取元素的位置和尺寸
+     * @param selector 元素选择器
+     * @return 元素的边界框信息
+     */
+    public BoundingBox getElementBoundingBox(String selector) {
+        try {
+            BoundingBox box = locator(selector).boundingBox();
+            if (box == null) {
+                throw new ElementException("Element not found: " + selector);
+            }
+            logger.info("Element '{}' bounding box: x={}, y={}, width={}, height={}", 
+                selector, box.x, box.y, box.width, box.height);
+            return box;
+        } catch (Exception e) {
+            logger.error("Failed to get bounding box of element '{}'", selector, e);
+            throw new ElementException("Failed to get bounding box of element: " + selector, e);
+        }
+    }
+
+    /**
+     * 滚动到指定元素并居中
+     * @param targetSelector 目标元素选择器
+     */
+    public void scrollToElementCenter(String targetSelector) {
+        try {
+            logger.info("Scrolling to element and centering: {}", targetSelector);
+            locator(targetSelector).scrollIntoViewIfNeeded();
+        } catch (Exception e) {
+            logger.error("Failed to scroll to element and center: {}", targetSelector, e);
+            throw new ElementException("Failed to scroll to element and center: " + targetSelector, e);
         }
     }
 }

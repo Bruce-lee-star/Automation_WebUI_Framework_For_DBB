@@ -2,6 +2,7 @@ package com.hsbc.cmb.dbb.hk.automation.tests.steps;
 
 import com.hsbc.cmb.dbb.hk.automation.framework.session.SessionManager;
 import com.hsbc.cmb.dbb.hk.automation.page.factory.PageObjectFactory;
+import com.hsbc.cmb.dbb.hk.automation.tests.pages.HomePage;
 import com.hsbc.cmb.dbb.hk.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.dbb.hk.automation.tests.utils.BDDUtils;
 import net.serenitybdd.annotations.Step;
@@ -17,6 +18,7 @@ import net.serenitybdd.annotations.Step;
 public class LoginSteps {
 
     private static final LoginPage loginPage = PageObjectFactory.getPage(LoginPage.class);
+    private static final HomePage homePage = PageObjectFactory.getPage(HomePage.class);
     private String currentUrl;
 
     /**
@@ -53,6 +55,7 @@ public class LoginSteps {
                 if (homeUrl != null && !homeUrl.isEmpty()) {
                     System.out.println("Navigating to saved home URL: " + homeUrl);
                     loginPage.navigateTo(homeUrl);
+                    homePage.waitForElementVisibleWithinTime(HomePage.quickLink, 10);
                     System.out.println("Skip login successful - user already logged in and navigated to home page");
                 } else {
                     // Fallback: navigate to login page and refresh
@@ -87,7 +90,7 @@ public class LoginSteps {
         loginPage.type(LoginPage.SECURITY_CODE_INPUT, BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
         loginPage.click(LoginPage.LOGIN_BUTTON);
         loginPage.waitForElementNotVisible(LoginPage.LOGIN_BUTTON, 30);
-        loginPage.waitForElementNotVisible(".MuiCircularProgress-svg", 30);
+        homePage.waitForElementVisibleWithinTime(HomePage.quickLink, 30);
         // Get home page URL after successful login
         String homeUrl = loginPage.getCurrentUrl();
         // Mark user as logged in and save session with home URL

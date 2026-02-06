@@ -517,42 +517,55 @@ public static void applyMocks(BrowserContext context) {
     }
     
     // ==================== 预定义的常用Mock方法 ====================
-    
+
     /**
      * Mock一个成功的响应
+     * @param name 规则名称
+     * @param urlPattern URL 匹配模式
+     * @param responseData 完整的响应数据（由调用者提供）
      */
-    public static void mockSuccess(String name, String urlPattern, String data) {
-        registerMock(name, urlPattern, String.format("{\"code\": 0, \"message\": \"success\", \"data\": %s}", data));
+    public static void mockSuccess(String name, String urlPattern, String responseData) {
+        registerMock(name, urlPattern, responseData);
     }
-    
+
     /**
      * Mock一个失败的响应
+     * @param name 规则名称
+     * @param urlPattern URL 匹配模式
+     * @param errorData 完整的错误响应数据（由调用者提供）
      */
-    public static void mockError(String name, String urlPattern, String errorMessage) {
+    public static void mockError(String name, String urlPattern, String errorData) {
         MockRule rule = new MockRule(name, urlPattern)
             .statusCode(500)
-            .mockDataJson(String.format("{\"code\": -1, \"message\": \"%s\"}", errorMessage));
+            .mockDataJson(errorData);
         registerMockRule(rule);
     }
-    
+
     /**
      * Mock超时（长延迟）
+     * @param name 规则名称
+     * @param urlPattern URL 匹配模式
+     * @param timeoutMs 超时时间（毫秒）
+     * @param responseData 完整的响应数据（由调用者提供）
      */
-    public static void mockTimeout(String name, String urlPattern, long timeoutMs) {
+    public static void mockTimeout(String name, String urlPattern, long timeoutMs, String responseData) {
         MockRule rule = new MockRule(name, urlPattern)
             .delay(timeoutMs)
             .statusCode(408)
-            .mockDataJson("{\"code\": -1, \"message\": \"Request Timeout\"}");
+            .mockDataJson(responseData);
         registerMockRule(rule);
     }
-    
+
     /**
      * Mock 404 Not Found
+     * @param name 规则名称
+     * @param urlPattern URL 匹配模式
+     * @param responseData 完整的 404 响应数据（由调用者提供）
      */
-    public static void mockNotFound(String name, String urlPattern) {
+    public static void mockNotFound(String name, String urlPattern, String responseData) {
         MockRule rule = new MockRule(name, urlPattern)
             .statusCode(404)
-            .mockDataJson("{\"code\": 404, \"message\": \"Not Found\"}");
+            .mockDataJson(responseData);
         registerMockRule(rule);
     }
     

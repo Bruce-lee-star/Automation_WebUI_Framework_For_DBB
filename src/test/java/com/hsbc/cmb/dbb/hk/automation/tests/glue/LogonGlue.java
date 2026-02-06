@@ -9,7 +9,7 @@ public class LogonGlue {
     private LoginSteps loginSteps;
 
     @Given("logon DBB {string} environment as user {string}")
-    public void logonDBBEnvironmentAsUser(String env, String username) {
+    public void logonDBBEnvironmentAsUserGlue(String env, String username) {
         loginSteps.logonDBBEnvironmentAsUser(env, username);
     }
 }

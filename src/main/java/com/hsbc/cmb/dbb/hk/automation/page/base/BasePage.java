@@ -655,12 +655,13 @@ public abstract class BasePage {
     /**
      * 在指定时间范围内等待元素可见
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果元素在指定时间内可见则返回true，否则返回false
      */
-    public boolean waitForElementVisibleWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
         try {
-            logger.info("Waiting for element to be visible within {}ms: {}", timeoutMillis, selector);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for element to be visible within {}s: {}", timeoutSeconds, selector);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -670,7 +671,7 @@ public abstract class BasePage {
                     return true;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for element visibility", e);
@@ -691,9 +692,10 @@ public abstract class BasePage {
      * @param timeoutMillis 最大超时时间（毫秒）
      * @return 如果元素在指定时间内隐藏则返回true，否则返回false
      */
-    public boolean waitForElementHiddenWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
         try {
-            logger.info("Waiting for element to be hidden within {}ms: {}", timeoutMillis, selector);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for element to be hidden within {}s: {}", timeoutSeconds, selector);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -703,7 +705,7 @@ public abstract class BasePage {
                     return true;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for element to be hidden", e);
@@ -724,9 +726,10 @@ public abstract class BasePage {
      * @param timeoutMillis 最大超时时间（毫秒）
      * @return 如果元素在指定时间内可点击则返回true，否则返回false
      */
-    public boolean waitForElementClickableWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
         try {
-            logger.info("Waiting for element to be clickable within {}ms: {}", timeoutMillis, selector);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for element to be clickable within {}s: {}", timeoutSeconds, selector);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -736,7 +739,7 @@ public abstract class BasePage {
                     return true;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for element to be clickable", e);
@@ -754,12 +757,13 @@ public abstract class BasePage {
     /**
      * 在指定时间范围内等待页面标题包含文本
      * @param expectedTitle 期望的标题文本
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果页面标题在指定时间内包含文本则返回true，否则返回false
      */
-    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutMillis) {
+    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
         try {
-            logger.info("Waiting for title to contain '{}' within {}ms", expectedTitle, timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for title to contain '{}' within {}s", expectedTitle, timeoutSeconds);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -770,7 +774,7 @@ public abstract class BasePage {
                     return true;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for title", e);
@@ -788,12 +792,13 @@ public abstract class BasePage {
     /**
      * 在指定时间范围内等待URL包含文本
      * @param expectedUrlFragment 期望的URL片段
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果URL在指定时间内包含片段则返回true，否则返回false
      */
-    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutMillis) {
+    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
         try {
-            logger.info("Waiting for URL to contain '{}' within {}ms", expectedUrlFragment, timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for URL to contain '{}' within {}s", expectedUrlFragment, timeoutSeconds);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -804,7 +809,7 @@ public abstract class BasePage {
                     return true;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for URL", e);
@@ -823,13 +828,14 @@ public abstract class BasePage {
      * 在指定时间范围内执行操作并验证结果
      * @param action 要执行的操作
      * @param validation 验证逻辑
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @param actionDescription 操作描述
      * @return 如果在指定时间内操作成功并验证通过则返回true，否则返回false
      */
-    public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutMillis, String actionDescription) {
+    public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutSeconds, String actionDescription) {
         try {
-            logger.info("Performing '{}' within {}ms", actionDescription, timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Performing '{}' within {}s", actionDescription, timeoutSeconds);
             long startTime = System.currentTimeMillis();
             long endTime = startTime + timeoutMillis;
             
@@ -1097,11 +1103,12 @@ public abstract class BasePage {
 
     /**
      * 等待页面加载完成
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      */
-    public void waitForPageLoad(int timeoutMillis) {
+    public void waitForPageLoad(int timeoutSeconds) {
         try {
-            logger.info("Waiting for page to load with timeout: {}ms", timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for page to load with timeout: {}s", timeoutSeconds);
             ensurePageValid();
             page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(timeoutMillis));
             logger.info("Page loaded successfully");
@@ -1114,10 +1121,11 @@ public abstract class BasePage {
     /**
      * 等待元素可点击
      * @param selector 元素选择器
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      */
-    public void waitForElementClickable(String selector, int timeoutMillis) {
+    public void waitForElementClickable(String selector, int timeoutSeconds) {
         try {
+            int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for element to be clickable: {}", selector);
             ensurePageValid();
             locator(selector).waitFor(new Locator.WaitForOptions()
@@ -1133,10 +1141,11 @@ public abstract class BasePage {
     /**
      * 等待元素不可见
      * @param selector 元素选择器
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      */
-    public void waitForElementNotVisible(String selector, int timeoutMillis) {
+    public void waitForElementNotVisible(String selector, int timeoutSeconds) {
         try {
+            int timeoutMillis = timeoutSeconds * 1000;
             logger.info("Waiting for element to be not visible: {}", selector);
             ensurePageValid();
             locator(selector).waitFor(new Locator.WaitForOptions()
@@ -1220,12 +1229,13 @@ public abstract class BasePage {
 
     /**
      * 等待新页面打开
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      * @return 新打开的页面
      */
-    public Page waitForNewPage(int timeoutMillis) {
+    public Page waitForNewPage(int timeoutSeconds) {
         try {
-            logger.info("Waiting for new page to open with timeout: {}ms", timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for new page to open with timeout: {}s", timeoutSeconds);
             ensureContextValid();
             
             int initialPageCount = context.pages().size();
@@ -1239,7 +1249,7 @@ public abstract class BasePage {
                     return newPage;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for new page", e);
@@ -1256,11 +1266,12 @@ public abstract class BasePage {
     /**
      * 等待页面标题包含指定文本
      * @param expectedTitle 期望的页面标题
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      */
-    public void waitForTitleContains(String expectedTitle, int timeoutMillis) {
+    public void waitForTitleContains(String expectedTitle, int timeoutSeconds) {
         try {
-            logger.info("Waiting for title to contain: '{}' with timeout: {}ms", expectedTitle, timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for title to contain: '{}' with timeout: {}s", expectedTitle, timeoutSeconds);
             ensurePageValid();
             
             long startTime = System.currentTimeMillis();
@@ -1273,7 +1284,7 @@ public abstract class BasePage {
                     return;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for title", e);
@@ -1290,11 +1301,12 @@ public abstract class BasePage {
     /**
      * 等待URL包含指定文本
      * @param expectedUrlFragment 期望的URL片段
-     * @param timeoutMillis 超时时间（毫秒）
+     * @param timeoutSeconds 超时时间（秒）
      */
-    public void waitForUrlContains(String expectedUrlFragment, int timeoutMillis) {
+    public void waitForUrlContains(String expectedUrlFragment, int timeoutSeconds) {
         try {
-            logger.info("Waiting for URL to contain: '{}' with timeout: {}ms", expectedUrlFragment, timeoutMillis);
+            int timeoutMillis = timeoutSeconds * 1000;
+            logger.info("Waiting for URL to contain: '{}' with timeout: {}s", expectedUrlFragment, timeoutSeconds);
             ensurePageValid();
             
             long startTime = System.currentTimeMillis();
@@ -1307,7 +1319,7 @@ public abstract class BasePage {
                     return;
                 }
                 try {
-                    Thread.sleep(100);
+                    Thread.sleep(500);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new RuntimeException("Interrupted while waiting for URL", e);

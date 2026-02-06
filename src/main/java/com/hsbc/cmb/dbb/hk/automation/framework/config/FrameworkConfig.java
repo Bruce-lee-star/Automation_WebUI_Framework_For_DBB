@@ -5,9 +5,9 @@ import net.thucydides.model.environment.SystemEnvironmentVariables;
 import java.util.function.Function;
 
 /**
- * 框架配置枚举 - 集中管理所有配置项
- * 
- * 使用方式：
+ * Framework Configuration Enum - Centralized management of all configuration items
+ *
+ * Usage:
  * FrameworkConfig.SCREENSHOT_STRATEGY.getValue()
  * FrameworkConfig.BROWSER_RESTART_STRATEGY.getValue()
  */
@@ -597,7 +597,16 @@ public enum FrameworkConfig {
     PLAYWRIGHT_BROWSERS_PATH(
             "playwright.browsers.path",
             ".playwright/browsers",
-            "Playwright browser 路径");
+            "Playwright browser path"),
+
+    /**
+     * No login session timeout in minutes
+     * After this period, saved sessions will be considered expired
+     */
+    PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT(
+        "playwright.no.login.session.timeout",
+        "5",
+        "No login session timeout (minutes)");
 
     private final String key;
     private final String defaultValue;

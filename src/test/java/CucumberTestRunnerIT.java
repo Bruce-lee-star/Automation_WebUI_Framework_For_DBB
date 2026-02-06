@@ -16,7 +16,7 @@ import org.junit.runner.RunWith;
         },
         monochrome = true,
         dryRun = false,
-        tags = "@test"
+        tags = "@test1"
 )
 public class CucumberTestRunnerIT {
 

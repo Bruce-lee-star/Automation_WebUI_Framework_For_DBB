@@ -239,12 +239,12 @@ public abstract class SerenityBasePage extends BasePage {
     /**
      * 在指定时间范围内等待元素可见（Serenity集成版）
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果元素在指定时间内可见则返回true，否则返回false
      */
-    public boolean waitForElementVisibleWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
         try {
-            boolean result = super.waitForElementVisibleWithinTime(selector, timeoutMillis);
+            boolean result = super.waitForElementVisibleWithinTime(selector, timeoutSeconds);
             recordPageVerification("elementVisible_" + selector, result);
             return result;
         } catch (Exception e) {
@@ -256,12 +256,12 @@ public abstract class SerenityBasePage extends BasePage {
     /**
      * 在指定时间范围内等待元素隐藏（Serenity集成版）
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果元素在指定时间内隐藏则返回true，否则返回false
      */
-    public boolean waitForElementHiddenWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
         try {
-            boolean result = super.waitForElementHiddenWithinTime(selector, timeoutMillis);
+            boolean result = super.waitForElementHiddenWithinTime(selector, timeoutSeconds);
             recordPageVerification("elementHidden_" + selector, result);
             return result;
         } catch (Exception e) {
@@ -273,12 +273,12 @@ public abstract class SerenityBasePage extends BasePage {
     /**
      * 在指定时间范围内等待元素可点击（Serenity集成版）
      * @param selector 元素选择器
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果元素在指定时间内可点击则返回true，否则返回false
      */
-    public boolean waitForElementClickableWithinTime(String selector, int timeoutMillis) {
+    public boolean waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
         try {
-            boolean result = super.waitForElementClickableWithinTime(selector, timeoutMillis);
+            boolean result = super.waitForElementClickableWithinTime(selector, timeoutSeconds);
             recordPageVerification("elementClickable_" + selector, result);
             return result;
         } catch (Exception e) {
@@ -290,12 +290,12 @@ public abstract class SerenityBasePage extends BasePage {
     /**
      * 在指定时间范围内等待页面标题包含文本（Serenity集成版）
      * @param expectedTitle 期望的标题文本
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果页面标题在指定时间内包含文本则返回true，否则返回false
      */
-    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutMillis) {
+    public boolean waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
         try {
-            boolean result = super.waitForTitleContainsWithinTime(expectedTitle, timeoutMillis);
+            boolean result = super.waitForTitleContainsWithinTime(expectedTitle, timeoutSeconds);
             recordPageVerification("titleContains_" + expectedTitle, result);
             return result;
         } catch (Exception e) {
@@ -307,12 +307,12 @@ public abstract class SerenityBasePage extends BasePage {
     /**
      * 在指定时间范围内等待URL包含文本（Serenity集成版）
      * @param expectedUrlFragment 期望的URL片段
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @return 如果URL在指定时间内包含片段则返回true，否则返回false
      */
-    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutMillis) {
+    public boolean waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
         try {
-            boolean result = super.waitForUrlContainsWithinTime(expectedUrlFragment, timeoutMillis);
+            boolean result = super.waitForUrlContainsWithinTime(expectedUrlFragment, timeoutSeconds);
             recordPageVerification("urlContains_" + expectedUrlFragment, result);
             return result;
         } catch (Exception e) {
@@ -325,13 +325,13 @@ public abstract class SerenityBasePage extends BasePage {
      * 在指定时间范围内执行操作并验证结果（Serenity集成版）
      * @param action 要执行的操作
      * @param validation 验证逻辑
-     * @param timeoutMillis 最大超时时间（毫秒）
+     * @param timeoutSeconds 最大超时时间（秒）
      * @param actionDescription 操作描述
      * @return 如果在指定时间内操作成功并验证通过则返回true，否则返回false
      */
-    public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutMillis, String actionDescription) {
+    public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutSeconds, String actionDescription) {
         try {
-            boolean result = super.performActionWithTimeout(action, validation, timeoutMillis, actionDescription);
+            boolean result = super.performActionWithTimeout(action, validation, timeoutSeconds, actionDescription);
             recordPageVerification("action_" + actionDescription, result);
             return result;
         } catch (Exception e) {

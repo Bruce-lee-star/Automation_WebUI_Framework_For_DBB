@@ -1,5 +1,6 @@
 package com.hsbc.cmb.dbb.hk.automation.framework.utils;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Map;
@@ -36,7 +37,11 @@ public class JsonUtils {
      * 将JSON字符串转换为Map
      */
     public static Map<String, Object> fromJson(String json) {
-        return fromJson(json, Map.class);
+        try {
+            return objectMapper.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse JSON", e);
+        }
     }
     
     /**

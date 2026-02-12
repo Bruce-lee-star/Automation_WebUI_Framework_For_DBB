@@ -1,5 +1,5 @@
 # Serenity Step Listeners
 # ThucydidesStepsListenerAdapter - 监听器适配器，协调多个监听器
 # 这个适配器是唯一的 SPI 入口，内部会委托给 PlaywrightListener
-com.hsbc.cmb.hk.dbb.automation.framework.integration.listener.ThucydidesStepsListenerAdapter
+com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter
 

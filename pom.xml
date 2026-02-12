@@ -26,6 +26,11 @@
         <typesafe.config.version>1.4.2</typesafe.config.version>
         <gson.version>2.10.1</gson.version>
 
+        <!-- 新增：API 测试相关依赖版本 -->
+        <json.path.version>2.7.0</json.path.version>
+        <json.version>20231013</json.version>
+        <commons.lang3.version>3.12.0</commons.lang3.version>
+
         <!-- 日志框架 -->
         <slf4j.version>1.7.36</slf4j.version>
         <logback.version>1.2.12</logback.version>
@@ -97,6 +102,35 @@
             <version>${serenity.version}</version>
         </dependency>
 
+        <!-- ==================== 新增：API 测试框架 ==================== -->
+        <!-- Serenity RestAssured for API Testing -->
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-rest-assured</artifactId>
+            <version>${serenity.version}</version>
+        </dependency>
+
+        <!-- JSON Path for JSON processing -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+            <version>${json.path.version}</version>
+        </dependency>
+
+        <!-- JSON library -->
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>${json.version}</version>
+        </dependency>
+
+        <!-- Apache Commons Lang -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>${commons.lang3.version}</version>
+        </dependency>
+
         <!-- Serenity 内部需要的 Selenium 支持类 (FieldDecorator等) -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
@@ -163,13 +197,6 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-core</artifactId>
             <version>${logback.version}</version>
-        </dependency>
-
-        <!-- ==================== HTTP Client & API Testing ==================== -->
-        <dependency>
-            <groupId>io.rest-assured</groupId>
-            <artifactId>rest-assured</artifactId>
-            <version>5.3.0</version>
         </dependency>
 
         <!-- ==================== JSON Processing ==================== -->

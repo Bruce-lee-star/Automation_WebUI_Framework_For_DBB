@@ -4,10 +4,9 @@ import org.junit.runner.RunWith;
 
 @RunWith(CucumberWithSerenity.class)
 @CucumberOptions(
-        features = "src/test/resources/features",
+        features = "src/test/resources/features/web",
         glue = {
-            "com.hsbc.cmb.hk.dbb.automation.tests.glue",
-            "com.hsbc.cmb.hk.dbb.automation.hooks"
+            "com.hsbc.cmb.hk.dbb.automation.tests.web.steps",
         },
         plugin = {
             "pretty",

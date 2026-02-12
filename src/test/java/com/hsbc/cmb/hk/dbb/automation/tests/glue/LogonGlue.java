@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.annotations.AutoBrowser;
-import com.hsbc.cmb.hk.dbb.automation.framework.config.BrowserOverrideManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.tests.steps.LoginSteps;
 import io.cucumber.java.en.Given;
 import net.serenitybdd.annotations.Steps;

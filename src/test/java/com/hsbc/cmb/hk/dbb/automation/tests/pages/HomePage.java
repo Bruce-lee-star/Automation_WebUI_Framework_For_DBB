@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
 
 public class HomePage extends SerenityBasePage {
 

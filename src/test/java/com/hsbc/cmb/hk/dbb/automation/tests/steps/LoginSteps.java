@@ -1,7 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.session.SessionManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.page.factory.PageObjectFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
@@ -43,7 +44,7 @@ public class LoginSteps {
 
         // Check if user is already logged in (based on env+username, browser auto-detected)
         if (SessionManager.isUserLoggedIn(env, username)) {
-            String browserType = com.hsbc.cmb.hk.dbb.automation.framework.config.BrowserOverrideManager.getEffectiveBrowserType();
+            String browserType = BrowserOverrideManager.getEffectiveBrowserType();
             String sessionKey = env + "_" + username + "_" + browserType;
             System.out.println("User already logged in: " + sessionKey + ", restoring session...");
             // Restore session and navigate to home page directly
@@ -80,7 +81,7 @@ public class LoginSteps {
      */
     private void performLogin(String env) {
         String username = BDDUtils.getCurrentUsername();
-        String browserType = com.hsbc.cmb.hk.dbb.automation.framework.config.BrowserOverrideManager.getEffectiveBrowserType();
+        String browserType = BrowserOverrideManager.getEffectiveBrowserType();
         String sessionKey = env + "_" + username + "_" + browserType;
         System.out.println("Performing login for: " + sessionKey);
 

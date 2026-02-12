@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.retry.strategy;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.config.FrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.config.FrameworkConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

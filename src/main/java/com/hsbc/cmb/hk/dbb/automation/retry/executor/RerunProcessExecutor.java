@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.retry.executor;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

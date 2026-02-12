@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.retry.configuration;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

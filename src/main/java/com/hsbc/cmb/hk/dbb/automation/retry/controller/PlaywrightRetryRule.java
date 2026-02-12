@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.retry.controller;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import net.thucydides.core.steps.StepEventBus;
 import org.junit.rules.TestRule;
 import org.junit.runner.Description;

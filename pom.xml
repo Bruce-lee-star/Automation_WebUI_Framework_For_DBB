@@ -40,10 +40,6 @@
         <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.0.0-M9</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.0.0-M9</maven-failsafe-plugin.version>
-
-        <!-- 测试配置 -->
-        <rerunFailingTestsCount>0</rerunFailingTestsCount>
-        <tags></tags>
     </properties>
 
     <dependencies>

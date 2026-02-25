@@ -1,7 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.options.BoundingBox;
 
 /**

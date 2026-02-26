@@ -17,7 +17,7 @@
         <!-- 版本管理 - 保持Java 11兼容，使用Serenity 4.1.3 -->
         <serenity.version>4.1.3</serenity.version>
         <serenity.cucumber.version>4.1.3</serenity.cucumber.version>
-        <playwright.version>1.38.0</playwright.version>
+        <playwright.version>1.58.0</playwright.version>
         <junit.version>4.13.2</junit.version>
         <cucumber.version>7.14.0</cucumber.version>
 

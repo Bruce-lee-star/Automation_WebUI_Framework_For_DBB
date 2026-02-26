@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
  *   ApiMonitorAndMockManager.mock(context)
  *       .forUrl(".*api/users.*")
  *       .withInterceptor((route, request) -> {
- *           return new Route.ContinueOptions()
+ *           return new Route.ResumeOptions()
  *               .setMethod("POST")
  *               .setPostData("{\"modified\":true}")
  *               .setHeaders(Map.of("X-Custom", "value"));
@@ -204,12 +204,12 @@ public class ApiMonitorAndMockManager {
             this.requestInterceptor = requestInterceptor;
             return this;
         }
-        
+
         public MockRule responseGenerator(ResponseGenerator responseGenerator) {
             this.responseGenerator = responseGenerator;
             return this;
         }
-        
+
         public String getName() { return name; }
         public String getUrlPattern() { return urlPattern; }
         public String getMethod() { return method; }
@@ -219,6 +219,7 @@ public class ApiMonitorAndMockManager {
         public Map<String, String> getHeaders() { return headers; }
         public long getDelayMs() { return delayMs; }
         public boolean isEnabled() { return enabled; }
+        @Deprecated
         public RequestModifier getRequestModifier() { return requestModifier; }
         public RequestInterceptor getRequestInterceptor() { return requestInterceptor; }
         public ResponseGenerator getResponseGenerator() { return responseGenerator; }
@@ -245,7 +246,7 @@ public class ApiMonitorAndMockManager {
          * @param request 原始请求对象
          * @return 修改后的继续选项，如果返回null则继续原始请求
          */
-        Route.ContinueOptions intercept(Route route, Request request);
+        Route.ResumeOptions intercept(Route route, Request request);
     }
 
     /**
@@ -540,8 +541,6 @@ public class ApiMonitorAndMockManager {
         return ".*" + normalized + ".*";
     }
 
-    // ==================== 传统API（向后兼容） ====================
-
     // ==================== 请求修改API（拦截并修改请求） ====================
 
     /**
@@ -563,7 +562,7 @@ public class ApiMonitorAndMockManager {
             .requestInterceptor((route, request) -> {
                 Map<String, String> headers = new HashMap<>(request.headers());
                 headers.put(headerName, headerValue);
-                return new Route.ContinueOptions().setHeaders(headers);
+                return new Route.ResumeOptions().setHeaders(headers);
             });
         registerMockRule(rule);
         applyMocks(page);
@@ -590,7 +589,7 @@ public class ApiMonitorAndMockManager {
             .requestInterceptor((route, request) -> {
                 Map<String, String> headers = new HashMap<>(request.headers());
                 headers.put(headerName, headerValue);
-                return new Route.ContinueOptions().setHeaders(headers);
+                return new Route.ResumeOptions().setHeaders(headers);
             });
         registerMockRule(rule);
         applyMocks(context);
@@ -614,7 +613,7 @@ public class ApiMonitorAndMockManager {
 
         MockRule rule = new MockRule("modify-body-" + pattern, pattern)
             .requestInterceptor((route, request) -> {
-                return new Route.ContinueOptions().setPostData(newBody);
+                return new Route.ResumeOptions().setPostData(newBody);
             });
         registerMockRule(rule);
         applyMocks(page);
@@ -638,7 +637,7 @@ public class ApiMonitorAndMockManager {
 
         MockRule rule = new MockRule("modify-body-" + pattern, pattern)
             .requestInterceptor((route, request) -> {
-                return new Route.ContinueOptions().setPostData(newBody);
+                return new Route.ResumeOptions().setPostData(newBody);
             });
         registerMockRule(rule);
         applyMocks(context);
@@ -666,7 +665,7 @@ public class ApiMonitorAndMockManager {
                 String url = request.url();
                 String separator = url.contains("?") ? "&" : "?";
                 String newUrl = url + separator + paramName + "=" + paramValue;
-                return new Route.ContinueOptions().setUrl(newUrl);
+                return new Route.ResumeOptions().setUrl(newUrl);
             });
         registerMockRule(rule);
         applyMocks(page);
@@ -694,7 +693,7 @@ public class ApiMonitorAndMockManager {
                 String url = request.url();
                 String separator = url.contains("?") ? "&" : "?";
                 String newUrl = url + separator + paramName + "=" + paramValue;
-                return new Route.ContinueOptions().setUrl(newUrl);
+                return new Route.ResumeOptions().setUrl(newUrl);
             });
         registerMockRule(rule);
         applyMocks(context);
@@ -718,7 +717,7 @@ public class ApiMonitorAndMockManager {
 
         MockRule rule = new MockRule("modify-method-" + pattern, pattern)
             .requestInterceptor((route, request) -> {
-                return new Route.ContinueOptions().setMethod(newMethod);
+                return new Route.ResumeOptions().setMethod(newMethod);
             });
         registerMockRule(rule);
         applyMocks(page);
@@ -742,7 +741,7 @@ public class ApiMonitorAndMockManager {
 
         MockRule rule = new MockRule("modify-method-" + pattern, pattern)
             .requestInterceptor((route, request) -> {
-                return new Route.ContinueOptions().setMethod(newMethod);
+                return new Route.ResumeOptions().setMethod(newMethod);
             });
         registerMockRule(rule);
         applyMocks(context);
@@ -759,7 +758,7 @@ public class ApiMonitorAndMockManager {
      *
      * 示例：
      * interceptRequest(page, "/api/users", (route, request) -> {
-     *     return new Route.ContinueOptions()
+     *     return new Route.ResumeOptions()
      *         .setMethod("POST")
      *         .setPostData("{\"modified\":true}")
      *         .setHeaders(Map.of("X-Custom", "value"));
@@ -786,7 +785,7 @@ public class ApiMonitorAndMockManager {
      *
      * 示例：
      * interceptRequest(context, "/api/users", (route, request) -> {
-     *     return new Route.ContinueOptions()
+     *     return new Route.ResumeOptions()
      *         .setMethod("POST")
      *         .setPostData("{\"modified\":true}")
      *         .setHeaders(Map.of("X-Custom", "value"));
@@ -950,10 +949,10 @@ public class ApiMonitorAndMockManager {
 
             // 处理请求拦截（新版，支持全面修改）
             if (rule.requestInterceptor != null) {
-                Route.ContinueOptions continueOptions = rule.requestInterceptor.intercept(route, request);
+                Route.ResumeOptions continueOptions = rule.requestInterceptor.intercept(route, request);
                 if (continueOptions != null) {
                     logger.info("Request modified with interceptor, continuing with modified request");
-                    route.continue(continueOptions);
+                    route.resume(continueOptions);
                     return;
                 }
             }
@@ -1166,26 +1165,13 @@ public class ApiMonitorAndMockManager {
             .mockDataJson(responseData);
         registerMockRule(rule);
     }
-    
+
     /**
      * 动态生成响应（基于请求内容）
      */
     public static void registerDynamicMock(String name, String urlPattern, ResponseGenerator generator) {
         MockRule rule = new MockRule(name, urlPattern)
             .responseGenerator(generator);
-        registerMockRule(rule);
-    }
-    
-    /**
-     * 修改请求（添加header）
-     */
-    public static void modifyRequestAddHeader(String name, String urlPattern, String headerKey, String headerValue) {
-        MockRule rule = new MockRule(name, urlPattern)
-            .requestModifier(request -> {
-                // Playwright的Request接口没有header方法用于修改，使用headers方法
-                Map<String, String> headers = request.headers();
-                headers.put(headerKey, headerValue);
-            });
         registerMockRule(rule);
     }
 

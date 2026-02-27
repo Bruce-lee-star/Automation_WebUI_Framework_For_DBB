@@ -272,8 +272,7 @@
                     </systemPropertyVariables>
                     <failIfNoTests>false</failIfNoTests>
                     <reportsDirectory>${project.build.directory}/failsafe-reports</reportsDirectory>
-                    <!-- 测试失败时继续执行后续阶段，确保summary.html能够生成 -->
-                    <testFailureIgnore>true</testFailureIgnore>
+                    <!-- 测试失败时构建失败，报告已在post-integration-test阶段生成 -->
                 </configuration>
                 <executions>
                     <execution>

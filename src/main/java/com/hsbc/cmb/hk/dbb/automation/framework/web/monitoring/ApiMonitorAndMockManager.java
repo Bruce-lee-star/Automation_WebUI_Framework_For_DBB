@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.*;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
+import net.serenitybdd.core.Serenity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -921,7 +922,9 @@ public class ApiMonitorAndMockManager {
      * 应用单个Mock规则到BrowserContext
      */
     private static void applyMockRule(BrowserContext context, MockRule rule) {
-        context.route(rule.getUrlPattern(), route -> {
+        Pattern urlPattern = Pattern.compile(rule.getUrlPattern());
+        
+        context.route(urlPattern.asPredicate(), route -> {
             handleMockRoute(route, rule);
         });
         
@@ -1111,6 +1114,112 @@ public class ApiMonitorAndMockManager {
      */
     public static Map<String, MockRule> getAllMockRules() {
         return new HashMap<>(mockRules);
+    }
+
+    // ==================== Serenity报告集成 ====================
+
+    /**
+     * 记录Mock配置和API调用历史到Serenity报告
+     */
+    public static void recordToSerenityReport() {
+        recordMockConfiguration();
+        recordApiCallHistory();
+    }
+
+    /**
+     * 记录Mock配置到Serenity报告
+     */
+    private static void recordMockConfiguration() {
+        try {
+            StringBuilder json = new StringBuilder();
+            json.append("{\n");
+            json.append("  \"title\": \"Mock Configuration\",\n");
+            json.append("  \"totalRules\": ").append(mockRules.size()).append(",\n");
+
+            if (mockRules.isEmpty()) {
+                json.append("  \"message\": \"No mock rules configured\"\n");
+            } else {
+                json.append("  \"rules\": [\n");
+                int index = 1;
+                for (MockRule rule : mockRules.values()) {
+                    json.append("    {\n");
+                    json.append("      \"#\": ").append(index++).append(",\n");
+                    json.append("      \"name\": \"").append(escapeJson(rule.getName())).append("\",\n");
+                    json.append("      \"urlPattern\": \"").append(escapeJson(rule.getUrlPattern())).append("\",\n");
+                    json.append("      \"method\": \"").append(rule.getMethod() != null ? escapeJson(rule.getMethod()) : "ANY").append("\",\n");
+                    json.append("      \"statusCode\": ").append(rule.getStatusCode()).append(",\n");
+                    json.append("      \"enabled\": ").append(rule.isEnabled()).append(",\n");
+                    json.append("      \"delayMs\": ").append(rule.getDelayMs()).append("\n");
+                    json.append("    }").append(index <= mockRules.size() ? "," : "").append("\n");
+                }
+                json.append("  ]\n");
+            }
+            json.append("}\n");
+
+            Serenity.recordReportData().withTitle("Mock Configuration").andContents(json.toString());
+            logger.info("✅ Recorded mock configuration to Serenity report");
+        } catch (Exception e) {
+            logger.warn("Failed to record mock configuration to Serenity report", e);
+        }
+    }
+
+    /**
+     * 记录API调用历史到Serenity报告
+     */
+    private static void recordApiCallHistory() {
+        try {
+            StringBuilder json = new StringBuilder();
+            json.append("{\n");
+            json.append("  \"title\": \"API Call History\",\n");
+            json.append("  \"totalApiCalls\": ").append(apiCallHistory.size()).append(",\n");
+
+            if (apiCallHistory.isEmpty()) {
+                json.append("  \"message\": \"No API calls recorded yet\"\n");
+            } else {
+                json.append("  \"apiCalls\": [\n");
+                for (int i = 0; i < apiCallHistory.size(); i++) {
+                    ApiCallRecord record = apiCallHistory.get(i);
+                    json.append("    {\n");
+                    json.append("      \"#\": ").append(i + 1).append(",\n");
+                    json.append("      \"type\": \"").append(record.isMocked() ? "Mock" : "Real").append("\",\n");
+                    json.append("      \"url\": \"").append(escapeJson(record.getUrl())).append("\",\n");
+                    json.append("      \"method\": \"").append(record.getMethod()).append("\",\n");
+                    json.append("      \"statusCode\": ").append(record.getStatusCode()).append(",\n");
+                    json.append("      \"responseTimeMs\": ").append(record.getResponseTimeMs()).append("\n");
+                    json.append("    }").append(i < apiCallHistory.size() - 1 ? "," : "").append("\n");
+                }
+                json.append("  ],\n");
+
+                // 统计信息
+                long mockCount = apiCallHistory.stream().filter(ApiCallRecord::isMocked).count();
+                long realCount = apiCallHistory.size() - mockCount;
+
+                json.append("  \"summary\": {\n");
+                json.append("    \"realApiCount\": ").append(realCount).append(",\n");
+                json.append("    \"mockApiCount\": ").append(mockCount).append(",\n");
+                json.append("    \"realApiPercentage\": \"").append(String.format("%.1f%%", realCount * 100.0 / apiCallHistory.size())).append("\",\n");
+                json.append("    \"mockApiPercentage\": \"").append(String.format("%.1f%%", mockCount * 100.0 / apiCallHistory.size())).append("\"\n");
+                json.append("  }\n");
+            }
+            json.append("}\n");
+
+            Serenity.recordReportData().withTitle("API Call History").andContents(json.toString());
+            logger.info("✅ Recorded API call history to Serenity report");
+        } catch (Exception e) {
+            logger.warn("Failed to record API call history to Serenity report", e);
+        }
+    }
+
+    /**
+     * 转义JSON特殊字符
+     */
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
     
     // ==================== 预定义的常用Mock方法 ====================
@@ -1375,6 +1484,9 @@ public class ApiMonitorAndMockManager {
             } else if (context != null) {
                 applyMocks(context);
             }
+
+            // 记录到Serenity报告
+            recordToSerenityReport();
 
             logger.info("✅ Mock configuration built successfully!");
         }

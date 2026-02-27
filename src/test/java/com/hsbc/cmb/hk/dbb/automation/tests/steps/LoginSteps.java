@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.ApiMonitorAndMockManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
@@ -39,10 +40,16 @@ public class LoginSteps {
         BDDUtils logonDBBInfo = BDDUtils.getLogonDBBInfo(env, username);
         BDDUtils.setCurrentLoginInfo(logonDBBInfo);
         currentUrl = BDDUtils.getCurrentUrl();
-
+        ApiMonitorAndMockManager.mockSuccess(loginPage.getPage().context(), "/rest/lastLoginTime", "{\n" +
+                "  \"lastLoginTime\" : 1672215146000,\n" +
+                "  \"shortName\" : \"SUAAAA\",\n" +
+                "  \"accountNumber\" : \"003205697001\",\n" +
+                "  \"time\" : \"2025-02-27 18:04:06\"\n" +
+                "}");
         // 【简化】尝试恢复Session并跳过登录（如果可用）
         boolean skippedLogin = tryRestoreSessionAndNavigate(env, username);
         if (skippedLogin) {
+            loginPage.getPage().pause();
             return; // Session已恢复，跳过登录
         }
 
@@ -74,7 +81,7 @@ public class LoginSteps {
         if (homeUrl != null && !homeUrl.isEmpty()) {
             System.out.println("Navigating to saved home URL: " + homeUrl);
             loginPage.navigateTo(homeUrl);
-            homePage.quickLink.waitForVisible(20);
+            homePage.quickLink.waitForVisible(30);
             System.out.println("Skip login successful - user already logged in and navigated to home page");
 
             // 【重要】跳过登录后，保存更新后的homeUrl和更新session时间戳
@@ -106,24 +113,19 @@ public class LoginSteps {
         String sessionKey = env + "_" + username + "_" + browserType;
         System.out.println("Performing login for: " + sessionKey);
 
-        // 【简化方式】一行代码监控并验证API
-        // 自动清空历史、启用验证、设置期望、开始监控、API响应时自动验证
-        // 支持普通URL（自动转换为正则）
-        RealApiMonitor.monitorAndVerify(loginPage.getPage().context(), "auth/login", 200);
         loginPage.navigateTo(currentUrl);
         loginPage.USERNAME_INPUT.type(username);
+        RealApiMonitor.with(loginPage.getPage().context())
+                .monitorApi("auth/login", 200)
+                .stopAfterSeconds(10)
+                .build();
         loginPage.NEXT_BUTTON.click();
         loginPage.PASSWORD_INPUT.type(BDDUtils.getCurrentPassword());
         loginPage.PHYSICAL_DEVICE_LABEL.click();
         loginPage.SECURITY_CODE_INPUT.type(BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
         loginPage.LOGIN_BUTTON.click();
-        loginPage.LOGIN_BUTTON.waitForNotVisible(30);
+        loginPage.LOGIN_BUTTON.waitForNotVisible(40);
         homePage.quickLink.waitForVisible(30);
-
-        // 打印所有捕获到的API（用于调试，确认实际调用了哪些API）
-        RealApiMonitor.printAllCapturedApis();
-
-        // 注意：API响应时会自动验证，不符合预期会立即抛出异常并报告给Serenity
 
         // Get home page URL after successful login
         String homeUrl = loginPage.getCurrentUrl();

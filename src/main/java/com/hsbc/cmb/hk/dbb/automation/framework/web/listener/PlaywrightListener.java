@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
 import com.hsbc.cmb.hk.dbb.automation.retry.executor.RerunProcessExecutor;
@@ -134,6 +135,14 @@ public class PlaywrightListener implements StepListener {
 
         // 清理线程本地变量
         cleanupThreadLocals();
+    }
+
+    /**
+     * 自动断言API监控结果（如果监控失败）
+     */
+    private void autoAssertApiMonitoringIfNeeded() {
+        // 检查是否有监控失败
+        RealApiMonitor.checkAndThrowMonitoringFailure();
     }
 
     @Override
@@ -588,6 +597,9 @@ public class PlaywrightListener implements StepListener {
         }
         testFinishedInternal();
 
+        // 自动断言API监控结果
+        autoAssertApiMonitoringIfNeeded();
+
         // 获取浏览器重启策略
         String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
                 .getProperty("serenity.restart.browser.for.each", "scenario");
@@ -659,6 +671,13 @@ public class PlaywrightListener implements StepListener {
         }
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
+
+        // 自动断言API监控结果
+        autoAssertApiMonitoringIfNeeded();
+
+        // 重置监控失败标志
+        RealApiMonitor.resetMonitoringFailure();
+
         cleanupThreadLocals();
     }
 

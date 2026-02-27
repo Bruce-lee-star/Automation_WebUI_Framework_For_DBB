@@ -317,6 +317,7 @@ public class ApiMonitorAndMockManager {
             .mockDataJson(responseData);
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API configured successfully!");
     }
@@ -342,6 +343,7 @@ public class ApiMonitorAndMockManager {
             .mockDataJson(responseData);
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API configured successfully!");
     }
@@ -426,6 +428,7 @@ public class ApiMonitorAndMockManager {
             .mockDataJson(responseData);
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API with timeout configured successfully!");
     }
@@ -451,6 +454,7 @@ public class ApiMonitorAndMockManager {
             .mockDataJson(responseData);
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API with timeout configured successfully!");
     }
@@ -476,6 +480,7 @@ public class ApiMonitorAndMockManager {
             .responseGenerator(generator);
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API with dynamic response configured successfully!");
     }
@@ -501,6 +506,7 @@ public class ApiMonitorAndMockManager {
             .responseGenerator(generator);
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Mock API with dynamic response configured successfully!");
     }
@@ -567,6 +573,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Request header modifier configured successfully!");
     }
@@ -594,6 +601,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Request header modifier configured successfully!");
     }
@@ -618,6 +626,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Request body modifier configured successfully!");
     }
@@ -642,6 +651,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Request body modifier configured successfully!");
     }
@@ -670,6 +680,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Request query param modifier configured successfully!");
     }
@@ -698,6 +709,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Request query param modifier configured successfully!");
     }
@@ -722,6 +734,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Request method modifier configured successfully!");
     }
@@ -746,6 +759,7 @@ public class ApiMonitorAndMockManager {
             });
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Request method modifier configured successfully!");
     }
@@ -773,6 +787,7 @@ public class ApiMonitorAndMockManager {
             .requestInterceptor(interceptor);
         registerMockRule(rule);
         applyMocks(page);
+        recordMockConfiguration();
 
         logger.info("✅ Request interceptor configured successfully!");
     }
@@ -800,6 +815,7 @@ public class ApiMonitorAndMockManager {
             .requestInterceptor(interceptor);
         registerMockRule(rule);
         applyMocks(context);
+        recordMockConfiguration();
 
         logger.info("✅ Request interceptor configured successfully!");
     }

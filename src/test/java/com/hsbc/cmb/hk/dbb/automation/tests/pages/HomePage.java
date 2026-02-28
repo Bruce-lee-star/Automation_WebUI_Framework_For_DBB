@@ -19,8 +19,6 @@ public class HomePage extends SerenityBasePage {
     @Element("a[id='02010000']")
     public PageElement quickLink;
 
-    // 使用更具体的选择器来避免匹配多个 loading 指示器
-    // 添加 :first-child 来选择第一个匹配的元素
-    @Element(".MuiCircularProgress-root:first-child .MuiCircularProgress-svg")
-    public PageElement loadingIndicator;
+    @Element("[id=topnav.profileswitcher.dropdown]")
+    public PageElement profileSwitcher;
 }

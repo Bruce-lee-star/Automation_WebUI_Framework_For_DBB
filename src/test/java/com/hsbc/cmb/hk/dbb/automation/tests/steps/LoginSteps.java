@@ -9,9 +9,10 @@ import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
 import net.serenitybdd.annotations.Step;
+
 /**
  * Login related test steps - supports skip login functionality
- *
+ * <p>
  * Description:
  * - The same user only needs to log in once during the entire test run
  * - Use SessionManager to manage user login status
@@ -24,15 +25,16 @@ public class LoginSteps {
 
     /**
      * Logon to DBB environment as specified user with session management
-     *
+     * <p>
      * This method implements skip login functionality:
      * 1. Check if user is already logged in (via SessionManager with env+username+browser as key)
      * 2. If logged in, restore session and navigate to URL
      * 3. If not logged in, perform full login flow and save session
-     *
+     * <p>
      * Session key format: env_username_browser (e.g., O88_SIT1_AABBCCDD_chromium)
      * This allows the same username to have different sessions in different environments and browsers
-     * @param env Environment identifier (e.g., O88_SIT1, O63_SIT1, O38_SIT1)
+     *
+     * @param env      Environment identifier (e.g., O88_SIT1, O63_SIT1, O38_SIT1)
      * @param username Username (e.g., AABBCCDD, ABCDEW)
      */
     @Step
@@ -60,7 +62,7 @@ public class LoginSteps {
     /**
      * 【简化】尝试恢复Session并导航到首页
      *
-     * @param env Environment identifier
+     * @param env      Environment identifier
      * @param username Username
      * @return true表示成功恢复session并跳过登录，false表示需要执行登录
      */
@@ -70,8 +72,7 @@ public class LoginSteps {
             return false; // Session不可用，需要登录
         }
 
-        String browserType = BrowserOverrideManager.getEffectiveBrowserType();
-        String sessionKey = env + "_" + username + "_" + browserType;
+        String sessionKey = env + "_" + username + "_";
         System.out.println("Session restored successfully for: " + sessionKey);
 
         // 获取保存的home URL并导航
@@ -105,6 +106,7 @@ public class LoginSteps {
 
     /**
      * Perform full login flow
+     *
      * @param env Environment identifier
      */
     private void performLogin(String env) {
@@ -125,11 +127,45 @@ public class LoginSteps {
         loginPage.SECURITY_CODE_INPUT.type(BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
         loginPage.LOGIN_BUTTON.click();
         loginPage.LOGIN_BUTTON.waitForNotVisible(40);
+
+        // Profile 切换逻辑（如果需要）
+        // 注意：Profile 切换会导致 session 销毁并创建新 session
+        // 因此 session 必须在 profile 切换完成后再保存
+        String targetProfile = BDDUtils.getCurrentProfile();
+        if (targetProfile != null && !targetProfile.isEmpty()) {
+            System.out.println("Switching to profile: " + targetProfile);
+            switchProfile(targetProfile);
+        } else {
+            // 没有需要切换的 profile，直接等待 home page 加载完成
+            homePage.quickLink.waitForVisible(30);
+        }
+
+        // 【重要】在 profile 切换完成后保存 session
+        // 此时 session 是新的、有效的
+        String homeUrl = loginPage.getCurrentUrl();
+        SessionManager.saveSessionAfterLogin(env, username, homeUrl);
+        System.out.println("Session saved after login (profile: " + (targetProfile != null ? targetProfile : "default") + ")");
+    }
+
+    /**
+     * 切换 Profile
+     * Profile 切换会导致旧 session 销毁，新 session 创建
+     * 必须等待切换完成后才能保存 session
+     *
+     * @param profile 目标 profile 名称
+     */
+    private void switchProfile(String profile) {
+        System.out.println("Starting profile switch to: " + profile);
+
+        // 1. 点击 profile 切换按钮
+        homePage.profileSwitcher.waitForVisible(30).click();
+
+        // 2. 选择目标 profile
+        homePage.locator(String.format("//span[text()='%s']", profile)).click();
+
+        // 3. 等待 profile 切换完成（等待 quickLink 可见表示新 session 已创建）
         homePage.quickLink.waitForVisible(30);
 
-        // Get home page URL after successful login
-        String homeUrl = loginPage.getCurrentUrl();
-        // 【简化】一行代码：标记用户已登录并保存session
-        SessionManager.saveSessionAfterLogin(env, username, homeUrl);
+        System.out.println("Profile switch completed: " + profile);
     }
 }

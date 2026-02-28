@@ -2,9 +2,6 @@ package com.hsbc.cmb.hk.dbb.automation.tests.utils;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
-import io.restassured.RestAssured;
-import io.restassured.response.Response;
-import net.serenitybdd.rest.SerenityRest;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
 import net.thucydides.model.util.EnvironmentVariables;
 import org.json.JSONObject;
@@ -24,6 +21,7 @@ public class BDDUtils {
     private static final ThreadLocal<BDDUtils> currentLoginInfo = new ThreadLocal<>();
 
     // Private fields to store login information
+    private String env;
     private String username;
     private String url;
     private String password;
@@ -65,6 +63,9 @@ public class BDDUtils {
             String userinfoKey = "userinfo_" + envPrefix;
             logger.debug("UserInfo Key: {}", userinfoKey);
             
+            // Set env (required field)
+            bddUtils.env = env;
+
             // Set username (required field)
             bddUtils.username = username;
             
@@ -138,6 +139,16 @@ public class BDDUtils {
                 "Please call setCurrentLoginInfo() in LoginSteps first.");
         }
         return loginInfo;
+    }
+
+    /**
+     * Get current thread's environment
+     * Convenience method to quickly get environment
+     *
+     * @return Current thread's environment
+     */
+    public static String getEnv() {
+        return getCurrentLoginInfo().env;
     }
 
     /**

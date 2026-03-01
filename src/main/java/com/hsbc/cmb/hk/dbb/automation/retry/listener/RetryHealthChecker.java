@@ -339,7 +339,7 @@ public class RetryHealthChecker {
         @Override
         public String toString() {
             return String.format("[%s] %s - %s",
-                healthy ? "✓" : "✗", name, details);
+                healthy ? "" : "", name, details);
         }
     }
 

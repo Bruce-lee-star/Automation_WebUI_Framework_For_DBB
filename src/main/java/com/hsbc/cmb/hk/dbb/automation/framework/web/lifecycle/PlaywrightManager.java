@@ -548,7 +548,7 @@ public class PlaywrightManager {
         initializeBrowser(configId);
         currentConfigId = configId;
 
-        LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Playwright environment initialized successfully");
+        LoggingConfigUtil.logInfoIfVerbose(logger, " Playwright environment initialized successfully");
     }
 
     /**
@@ -812,12 +812,12 @@ public class PlaywrightManager {
                     logger.info("🔧 [getBrowser] Initializing browser for configId: {}", configId);
                     initializeBrowser(configId);
                     browser = browserInstances.get(configId);
-                    logger.info("✅ [getBrowser] Browser initialized: {}",
+                    logger.info(" [getBrowser] Browser initialized: {}",
                         browser != null ? browser.getClass().getSimpleName() : "null");
                 }
             }
         } else {
-            logger.info("✅ [getBrowser] Reusing existing browser for configId: {}", configId);
+            logger.info(" [getBrowser] Reusing existing browser for configId: {}", configId);
         }
         return browser;
     }
@@ -1278,7 +1278,7 @@ public class PlaywrightManager {
             initializeBrowser(newConfigId);
             currentConfigId = newConfigId;
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Browser restarted successfully for config: {}", newConfigId);
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Browser restarted successfully for config: {}", newConfigId);
         } catch (Exception e) {
             logger.error("Failed to restart browser for config: {}", oldConfigId, e);
             throw new BrowserException("Failed to restart browser for config: " + oldConfigId, e);
@@ -1381,18 +1381,18 @@ public class PlaywrightManager {
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // Scenario 模式：每个 scenario 都创建新的 Context/Page
             createNewContextAndPage();
-            LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Scenario initialization completed (new Context/Page created)");
+            LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (new Context/Page created)");
         } else {
             // Feature 模式：复用现有的 Context/Page（如果存在）
             BrowserContext existingContext = contextThreadLocal.get();
             Page existingPage = pageThreadLocal.get();
 
             if (existingContext != null && existingPage != null && !existingPage.isClosed()) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Scenario initialization completed (reusing existing Context/Page)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context/Page)");
             } else {
                 // 如果不存在或已关闭，则创建新的
                 createNewContextAndPage();
-                LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Scenario initialization completed (new Context/Page created)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (new Context/Page created)");
             }
         }
     }
@@ -1467,7 +1467,7 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
-        LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Feature initialization completed");
+        LoggingConfigUtil.logInfoIfVerbose(logger, " Feature initialization completed");
     }
 
     /**
@@ -1674,12 +1674,12 @@ public class PlaywrightManager {
 
         // 如果类型不同，需要重启
         if (!currentBrowserType.equalsIgnoreCase(expectedBrowserType)) {
-            logger.info("✅ [needsBrowserRestart] Browsers differ, needs restart: '{}' vs '{}'",
+            logger.info(" [needsBrowserRestart] Browsers differ, needs restart: '{}' vs '{}'",
                 currentBrowserType, expectedBrowserType);
             return true;
         }
 
-        logger.info("✅ [needsBrowserRestart] Browsers match, no restart needed");
+        logger.info(" [needsBrowserRestart] Browsers match, no restart needed");
         return false;
     }
 

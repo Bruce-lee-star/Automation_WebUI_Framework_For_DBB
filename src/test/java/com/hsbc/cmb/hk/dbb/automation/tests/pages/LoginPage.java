@@ -22,21 +22,21 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBaseP
 public class LoginPage extends SerenityBasePage {
 
     @Element("#userName")
-    public PageElement USERNAME_INPUT;
+    public PageElement userNameIpt;
 
     @Element("[data-i18n='button_next']")
-    public PageElement NEXT_BUTTON;
+    public PageElement nextBtn;
 
     @Element("#newPassword")
-    public PageElement PASSWORD_INPUT;
+    public PageElement paswordIpt;
 
     @Element("[data-i18n='otp_radio_label']")
-    public PageElement PHYSICAL_DEVICE_LABEL;
+    public PageElement physicalDeviceLabel;
 
     @Element("#newSecurityCode")
-    public PageElement SECURITY_CODE_INPUT;
+    public PageElement securityCodeIpt;
 
     @Element("[data-i18n='button_logon']")
-    public PageElement LOGIN_BUTTON;
+    public PageElement loginBtn;
 
 }

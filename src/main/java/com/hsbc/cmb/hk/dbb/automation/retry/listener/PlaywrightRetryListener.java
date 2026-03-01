@@ -52,7 +52,7 @@ public class PlaywrightRetryListener {
 
         finalResults.put(testId, TestResult.SUCCESS);
         int retryCount = retryCounts.getOrDefault(testId, 0);
-        logger.info("✅ Test '{}' passed after {} retries on attempt {}", testId, retryCount, finalAttempt);
+        logger.info(" Test '{}' passed after {} retries on attempt {}", testId, retryCount, finalAttempt);
 
         RetryEvent event = new RetryEvent(testId, finalAttempt, null, true);
         eventListeners.forEach(listener -> {
@@ -71,7 +71,7 @@ public class PlaywrightRetryListener {
 
         finalResults.put(testId, TestResult.FAILURE);
         int retryCount = retryCounts.getOrDefault(testId, 0);
-        logger.warn("❌ Test '{}' failed after {} retries", testId, retryCount);
+        logger.warn(" Test '{}' failed after {} retries", testId, retryCount);
     }
 
     public int getRetryCount(String testId) {

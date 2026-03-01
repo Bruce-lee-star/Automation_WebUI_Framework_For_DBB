@@ -233,7 +233,7 @@ public abstract class SerenityBasePage extends BasePage {
     protected void recordPageVerification(String verificationName, boolean passed) {
         String status = passed ? "PASS" : "FAIL";
         addSerenityTestData("verification_" + verificationName, status);
-        logger.debug("✅ Verification '{}': {}", verificationName, status);
+        logger.debug(" Verification '{}': {}", verificationName, status);
     }
 
     // ==================== 时间范围操作方法 ====================

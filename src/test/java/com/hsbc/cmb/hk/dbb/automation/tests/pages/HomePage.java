@@ -19,6 +19,6 @@ public class HomePage extends SerenityBasePage {
     @Element("a[id='02010000']")
     public PageElement quickLink;
 
-    @Element("[id=topnav.profileswitcher.dropdown]")
+    @Element("[id='topnav.profileswitcher.dropdown']")
     public PageElement profileSwitcher;
 }

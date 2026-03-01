@@ -1,7 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.PathNotFoundException;
 import com.microsoft.playwright.*;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
@@ -48,9 +52,9 @@ import java.util.stream.Collectors;
  *       .build();
  *
  * 【简化】单API Mock - 一行代码：
- *   mockApi(context, "/api/users", 200, "{\"status\":\"success\"}");
- *   mockSuccess(context, "/api/users", "{\"status\":\"success\"}");
- *   mockError(context, "/api/users", 500, "{\"status\":\"error\"}");
+ *   mockDirectResponse(context, "/api/users", 200, "{\"status\":\"success\"}");
+ *   mockDirectSuccess(context, "/api/users", "{\"status\":\"success\"}");
+ *   mockDirectError(context, "/api/users", 500, "{\"status\":\"error\"}");
  *
  * 【简化】修改请求 - 一行代码：
  *   modifyRequestHeader(page, "/api/users", "Authorization", "Bearer token");
@@ -304,10 +308,10 @@ public class ApiMonitorAndMockManager {
      * @param responseData Mock响应数据
      *
      * 示例：
-     * mockApi(page, "/api/users", 200, "{\"status\":\"success\"}");
-     * mockApi(page, ".*api/products.*", 201, "{\"status\":\"created\"}");
+     * mockDirectResponse(page, "/api/users", 200, "{\"status\":\"success\"}");
+     * mockDirectResponse(page, ".*api/products.*", 201, "{\"status\":\"created\"}");
      */
-    public static void mockApi(Page page, String urlPattern, int statusCode, String responseData) {
+    public static void mockDirectResponse(Page page, String urlPattern, int statusCode, String responseData) {
         String pattern = toRegexPattern(urlPattern);
         logger.info("========== Mocking API: {} (Status: {}) ==========", pattern, statusCode);
         logger.info("Original URL pattern: '{}' -> Converted to: '{}'", urlPattern, pattern);
@@ -319,7 +323,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API configured successfully!");
+        logger.info(" Mock API configured successfully!");
     }
 
     /**
@@ -332,9 +336,9 @@ public class ApiMonitorAndMockManager {
      * @param responseData Mock响应数据
      *
      * 示例：
-     * mockApi(context, "/api/users", 200, "{\"status\":\"success\"}");
+     * mockDirectResponse(context, "/api/users", 200, "{\"status\":\"success\"}");
      */
-    public static void mockApi(BrowserContext context, String urlPattern, int statusCode, String responseData) {
+    public static void mockDirectResponse(BrowserContext context, String urlPattern, int statusCode, String responseData) {
         String pattern = toRegexPattern(urlPattern);
         logger.info("========== Mocking API: {} (Status: {}) ==========", pattern, statusCode);
 
@@ -345,7 +349,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API configured successfully!");
+        logger.info(" Mock API configured successfully!");
     }
 
     /**
@@ -356,10 +360,10 @@ public class ApiMonitorAndMockManager {
      * @param responseData Mock响应数据
      *
      * 示例：
-     * mockSuccess(page, "/api/users", "{\"status\":\"success\"}");
+     * mockDirectSuccess(page, "/api/users", "{\"status\":\"success\"}");
      */
-    public static void mockSuccess(Page page, String urlPattern, String responseData) {
-        mockApi(page, urlPattern, 200, responseData);
+    public static void mockDirectSuccess(Page page, String urlPattern, String responseData) {
+        mockDirectResponse(page, urlPattern, 200, responseData);
     }
 
     /**
@@ -370,10 +374,10 @@ public class ApiMonitorAndMockManager {
      * @param responseData Mock响应数据
      *
      * 示例：
-     * mockSuccess(context, "/api/users", "{\"status\":\"success\"}");
+     * mockDirectSuccess(context, "/api/users", "{\"status\":\"success\"}");
      */
-    public static void mockSuccess(BrowserContext context, String urlPattern, String responseData) {
-        mockApi(context, urlPattern, 200, responseData);
+    public static void mockDirectSuccess(BrowserContext context, String urlPattern, String responseData) {
+        mockDirectResponse(context, urlPattern, 200, responseData);
     }
 
     /**
@@ -385,11 +389,11 @@ public class ApiMonitorAndMockManager {
      * @param errorData 错误响应数据
      *
      * 示例：
-     * mockError(page, "/api/users", 500, "{\"status\":\"error\"}");
-     * mockError(page, "/api/users", 404, "{\"status\":\"not found\"}");
+     * mockDirectError(page, "/api/users", 500, "{\"status\":\"error\"}");
+     * mockDirectError(page, "/api/users", 404, "{\"status\":\"not found\"}");
      */
-    public static void mockError(Page page, String urlPattern, int statusCode, String errorData) {
-        mockApi(page, urlPattern, statusCode, errorData);
+    public static void mockDirectError(Page page, String urlPattern, int statusCode, String errorData) {
+        mockDirectResponse(page, urlPattern, statusCode, errorData);
     }
 
     /**
@@ -401,10 +405,10 @@ public class ApiMonitorAndMockManager {
      * @param errorData 错误响应数据
      *
      * 示例：
-     * mockError(context, "/api/users", 500, "{\"status\":\"error\"}");
+     * mockDirectError(context, "/api/users", 500, "{\"status\":\"error\"}");
      */
-    public static void mockError(BrowserContext context, String urlPattern, int statusCode, String errorData) {
-        mockApi(context, urlPattern, statusCode, errorData);
+    public static void mockDirectError(BrowserContext context, String urlPattern, int statusCode, String errorData) {
+        mockDirectResponse(context, urlPattern, statusCode, errorData);
     }
 
     /**
@@ -430,7 +434,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API with timeout configured successfully!");
+        logger.info(" Mock API with timeout configured successfully!");
     }
 
     /**
@@ -456,8 +460,581 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API with timeout configured successfully!");
+        logger.info(" Mock API with timeout configured successfully!");
     }
+
+    // ==================== 捕获后Mock - 基于真实响应修改字段 ====================
+    // 适用场景：【场景2】需要基于真实API响应修改特定字段
+    // 优势：保留真实API的其他字段，只修改需要的字段
+    // 流程：监控 → 捕获真实响应 → 修改字段 → Mock → 刷新页面
+    //
+    // 【对比】如果已有完整Mock数据，请使用 mockDirectResponse() 或 mockDirectSuccess()，更简单
+    // - mockDirectResponse(): 直接提供完整响应，不需要监控
+    // - captureAndMockField(): 监控真实API，修改特定字段
+
+    /**
+     * 【捕获后Mock】先监控获取真实响应，修改字段，然后Mock，最后刷新页面
+     * 这种方法避免了Playwright route handler的单线程限制
+     * 适用于【场景2】需要基于真实API响应修改特定字段
+     *
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param fieldName 要修改的字段名
+     * @param fieldValue 字段值
+     * @param mockStatusCode Mock的状态码（建议使用API实际返回的状态码）
+     * @param waitSeconds 等待API响应的超时时间（秒）
+     *
+     * 示例：
+     * // 监控lastLoginTime API，获取响应，修改lastLoginTime为2025年的时间戳，mock该API，刷新页面
+     * captureAndMockField(page, "/rest/lastLoginTime", "lastLoginTime", 1735689600000L, 200, 30);
+     *
+     * 【对比】如果已有完整Mock数据，建议使用：
+     * mockDirectSuccess(page, "/rest/lastLoginTime", "{\"lastLoginTime\":1735689600000}");
+     */
+    public static void captureAndMockField(Page page, String urlPattern, String fieldName, Object fieldValue, int mockStatusCode, int waitSeconds) {
+        captureAndMockFields(page, urlPattern, Map.of(fieldName, fieldValue), mockStatusCode, waitSeconds);
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本
+     * 监控获取真实响应，自动使用原始API的状态码，修改字段，然后Mock
+     *
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param fieldName 要修改的字段名
+     * @param fieldValue 字段值
+     * @param waitSeconds 等待API响应的超时时间（秒）
+     *
+     * 示例：
+     * // 自动使用原始API的状态码
+     * captureAndMockFieldWithOriginalStatus(page, "/rest/lastLoginTime", "lastLoginTime", 1735689600000L, 30);
+     */
+    public static void captureAndMockFieldWithOriginalStatus(Page page, String urlPattern, String fieldName, Object fieldValue, int waitSeconds) {
+        captureAndMockFieldsWithOriginalStatus(page, urlPattern, Map.of(fieldName, fieldValue), waitSeconds);
+    }
+
+    /**
+     * 【捕获后Mock】先监控获取真实响应，修改字段，然后Mock，最后刷新页面 - Context版本
+     *
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param fieldName 要修改的字段名
+     * @param fieldValue 字段值
+     * @param mockStatusCode Mock的状态码（建议使用API实际返回的状态码）
+     * @param waitSeconds 等待API响应的超时时间（秒）
+     */
+    public static void captureAndMockField(BrowserContext context, String urlPattern, String fieldName, Object fieldValue, int mockStatusCode, int waitSeconds) {
+        captureAndMockFields(context, urlPattern, Map.of(fieldName, fieldValue), mockStatusCode, waitSeconds);
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本 - Context版本
+     *
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param fieldName 要修改的字段名
+     * @param fieldValue 字段值
+     * @param waitSeconds 等待API响应的超时时间（秒）
+     */
+    public static void captureAndMockFieldWithOriginalStatus(BrowserContext context, String urlPattern, String fieldName, Object fieldValue, int waitSeconds) {
+        captureAndMockFieldsWithOriginalStatus(context, urlPattern, Map.of(fieldName, fieldValue), waitSeconds);
+    }
+
+    /**
+     * 【捕获后Mock】先监控获取真实响应，修改多个字段，然后Mock，最后刷新页面
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     *
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param fieldsToMock 要修改的字段路径和值的映射
+     * @param mockStatusCode Mock的状态码
+     * @param waitSeconds 等待API响应的超时时间（秒）- 已废弃参数，保留以保持兼容性
+     *
+     * 示例：
+     * Map<String, Object> fields = new HashMap<>();
+     * fields.put("lastLoginTime", 1735689600000L);
+     * fields.put("status", "active");
+     * captureAndMockFields(page, "/rest/config", fields, 200, 30);
+     */
+    public static void captureAndMockFields(Page page, String urlPattern, Map<String, Object> fieldsToMock, int mockStatusCode, int waitSeconds) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Capture And Mock: {} ==========", pattern);
+        logger.info("Fields to modify: {}", fieldsToMock);
+        logger.info("Mock status code: {}", mockStatusCode);
+        logger.info("Note: Setting up persistent route handler - will capture and mock on first API call");
+
+        final boolean[] capturedAndMocked = new boolean[1];
+
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+
+            // 设置持久化的 route 监听器，不等待，不超时
+            page.route(compiledPattern.asPredicate(), route -> {
+                try {
+                    Request request = route.request();
+
+                    if (!capturedAndMocked[0]) {
+                        // 第一次调用：捕获真实响应，修改字段，返回修改后的响应
+                        logger.info(" First API call detected - capturing real response for: {}", request.url());
+
+                        APIResponse originalResponse = route.fetch();
+                        String originalBody = originalResponse.text();
+
+                        logger.info(" Original response captured successfully");
+
+                        // 修改响应字段
+                        String modifiedBody = modifyJsonFields(originalBody, fieldsToMock);
+                        logger.info(" Modified response with new field values");
+
+                        // 标记已捕获并 mock
+                        capturedAndMocked[0] = true;
+
+                        // 返回修改后的响应（使用指定的状态码）
+                        route.fulfill(new Route.FulfillOptions()
+                            .setStatus(mockStatusCode)
+                            .setHeaders(originalResponse.headers())
+                            .setBody(modifiedBody));
+
+                    } else {
+                        // 后续调用：继续使用原始请求（让真正的 mock 规则处理）
+                        logger.info(" Subsequent API call - resuming original request");
+                        route.resume();
+                    }
+                } catch (Exception e) {
+                    logger.error("Error handling route in capture-and-mock", e);
+                    try {
+                        route.resume();
+                    } catch (Exception ex) {
+                        logger.error("Error resuming route", ex);
+                    }
+                }
+            });
+
+            logger.info(" Persistent route handler set up for pattern: {}", pattern);
+            logger.info(" Note: Route will remain active until explicitly removed or page closed");
+            logger.info(" Capture and mock setup completed for: {}", pattern);
+
+        } catch (Exception e) {
+            logger.error("Failed to set up capture and mock for: {}", pattern, e);
+        }
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本 - Page版本
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     * 4. 【新增】如果autoStopAfterFirstCall为true，第一次调用后自动停止mock
+     *
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式
+     * @param fieldsToMock 要修改的字段
+     * @param waitSeconds 等待超时时间（秒）- 已废弃参数，保留以保持兼容性
+     * @param autoStopAfterFirstCall 第一次调用后是否自动停止mock（默认false）
+     */
+    public static void captureAndMockFieldsWithOriginalStatus(Page page, String urlPattern, Map<String, Object> fieldsToMock, int waitSeconds, boolean autoStopAfterFirstCall) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Capture And Mock With Original Status: {} ==========", pattern);
+        logger.info("Fields to modify: {}", fieldsToMock);
+        logger.info("Auto-stop after first call: {}", autoStopAfterFirstCall);
+        logger.info("Note: Setting up persistent route handler - will capture and mock on first API call");
+
+        final boolean[] capturedAndMocked = new boolean[1];
+
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+
+            // 设置持久化的 route 监听器，不等待，不超时
+            page.route(compiledPattern.asPredicate(), route -> {
+                try {
+                    Request request = route.request();
+
+                    if (!capturedAndMocked[0]) {
+                        // 第一次调用：捕获真实响应，修改字段，返回修改后的响应
+                        logger.info(" First API call detected - capturing real response for: {}", request.url());
+
+                        APIResponse originalResponse = route.fetch();
+                        String originalBody = originalResponse.text();
+                        int statusCode = originalResponse.status();
+
+                        logger.info(" Original status code: {}", statusCode);
+                        logger.info(" Original response captured successfully");
+
+                        // 修改响应字段
+                        String modifiedBody = modifyJsonFields(originalBody, fieldsToMock);
+                        logger.info(" Modified response with new field values");
+
+                        // 标记已捕获并 mock
+                        capturedAndMocked[0] = true;
+
+                        // 返回修改后的响应
+                        route.fulfill(new Route.FulfillOptions()
+                            .setStatus(statusCode)
+                            .setHeaders(originalResponse.headers())
+                            .setBody(modifiedBody));
+
+                        // 【新增】如果配置了自动停止，在第一次调用后停止mock
+                        if (autoStopAfterFirstCall) {
+                            logger.info(" Auto-stopping mock after first successful call for: {}", pattern);
+                            try {
+                                page.unroute(compiledPattern.asPredicate());
+                                logger.info("✓ Route removed for pattern: {} (auto-stop)", pattern);
+                            } catch (Exception ex) {
+                                logger.warn("Failed to auto-remove route for pattern {}: {}", pattern, ex.getMessage());
+                            }
+                        }
+
+                    } else {
+                        // 后续调用：继续使用原始请求（让真正的 mock 规则处理）
+                        logger.info(" Subsequent API call - resuming original request");
+                        route.resume();
+                    }
+                } catch (Exception e) {
+                    logger.error("Error handling route in capture-and-mock", e);
+                    try {
+                        route.resume();
+                    } catch (Exception ex) {
+                        logger.error("Error resuming route", ex);
+                    }
+                }
+            });
+
+            logger.info(" Persistent route handler set up for pattern: {}", pattern);
+            logger.info(" Note: Route will remain active until explicitly removed or page closed");
+            if (autoStopAfterFirstCall) {
+                logger.info(" Note: Route will be auto-removed after first successful call");
+            }
+            logger.info(" Capture and mock with original status setup completed for: {}", pattern);
+
+        } catch (Exception e) {
+            logger.error("Failed to set up capture and mock for: {}", pattern, e);
+        }
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本 - Page版本（默认不自动停止）
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     *
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式
+     * @param fieldsToMock 要修改的字段
+     * @param waitSeconds 等待超时时间（秒）- 已废弃参数，保留以保持兼容性
+     */
+    public static void captureAndMockFieldsWithOriginalStatus(Page page, String urlPattern, Map<String, Object> fieldsToMock, int waitSeconds) {
+        captureAndMockFieldsWithOriginalStatus(page, urlPattern, fieldsToMock, waitSeconds, false);
+    }
+
+    /**
+     * 【捕获后Mock】先监控获取真实响应，修改多个字段，然后Mock - Context版本
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     *
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式
+     * @param fieldsToMock 要修改的字段
+     * @param mockStatusCode Mock的状态码
+     * @param waitSeconds 等待超时时间（秒）- 已废弃参数，保留以保持兼容性
+     */
+    public static void captureAndMockFields(BrowserContext context, String urlPattern, Map<String, Object> fieldsToMock, int mockStatusCode, int waitSeconds) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Capture And Mock (Context): {} ==========", pattern);
+        logger.info("Fields to modify: {}", fieldsToMock);
+        logger.info("Mock status code: {}", mockStatusCode);
+        logger.info("Note: Setting up persistent route handler - will capture and mock on first API call");
+
+        final boolean[] capturedAndMocked = new boolean[1];
+
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+
+            // 设置持久化的 route 监听器，不等待，不超时
+            context.route(compiledPattern.asPredicate(), route -> {
+                try {
+                    Request request = route.request();
+
+                    if (!capturedAndMocked[0]) {
+                        // 第一次调用：捕获真实响应，修改字段，返回修改后的响应
+                        logger.info(" First API call detected - capturing real response for: {}", request.url());
+
+                        APIResponse originalResponse = route.fetch();
+                        String originalBody = originalResponse.text();
+
+                        logger.info(" Original response captured successfully");
+
+                        // 修改响应字段
+                        String modifiedBody = modifyJsonFields(originalBody, fieldsToMock);
+                        logger.info(" Modified response with new field values");
+
+                        // 标记已捕获并 mock
+                        capturedAndMocked[0] = true;
+
+                        // 返回修改后的响应（使用指定的状态码）
+                        route.fulfill(new Route.FulfillOptions()
+                            .setStatus(mockStatusCode)
+                            .setHeaders(originalResponse.headers())
+                            .setBody(modifiedBody));
+
+                    } else {
+                        // 后续调用：继续使用原始请求（让真正的 mock 规则处理）
+                        logger.info(" Subsequent API call - resuming original request");
+                        route.resume();
+                    }
+                } catch (Exception e) {
+                    logger.error("Error handling route in capture-and-mock (Context)", e);
+                    try {
+                        route.resume();
+                    } catch (Exception ex) {
+                        logger.error("Error resuming route", ex);
+                    }
+                }
+            });
+
+            logger.info(" Persistent route handler set up for pattern: {}", pattern);
+            logger.info(" Note: Route will remain active until explicitly removed or context closed");
+            logger.info(" Capture and mock setup completed for: {}", pattern);
+
+        } catch (Exception e) {
+            logger.error("Failed to set up capture and mock (Context) for: {}", pattern, e);
+        }
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本 - Context版本
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     * 4. 【新增】如果autoStopAfterFirstCall为true，第一次调用后自动停止mock
+     *
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式
+     * @param fieldsToMock 要修改的字段
+     * @param waitSeconds 等待超时时间（秒）- 已废弃参数，保留以保持兼容性
+     * @param autoStopAfterFirstCall 第一次调用后是否自动停止mock（默认false）
+     */
+    public static void captureAndMockFieldsWithOriginalStatus(BrowserContext context, String urlPattern, Map<String, Object> fieldsToMock, int waitSeconds, boolean autoStopAfterFirstCall) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Capture And Mock With Original Status (Context): {} ==========", pattern);
+        logger.info("Fields to modify: {}", fieldsToMock);
+        logger.info("Auto-stop after first call: {}", autoStopAfterFirstCall);
+        logger.info("Note: Setting up persistent route handler - will capture and mock on first API call");
+
+        final boolean[] capturedAndMocked = new boolean[1];
+
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+
+            // 设置持久化的 route 监听器，不等待，不超时
+            context.route(compiledPattern.asPredicate(), route -> {
+                try {
+                    Request request = route.request();
+
+                    if (!capturedAndMocked[0]) {
+                        // 第一次调用：捕获真实响应，修改字段，返回修改后的响应
+                        logger.info(" First API call detected - capturing real response for: {}", request.url());
+
+                        APIResponse originalResponse = route.fetch();
+                        String originalBody = originalResponse.text();
+                        int statusCode = originalResponse.status();
+
+                        logger.info(" Original status code: {}", statusCode);
+                        logger.info(" Original response captured successfully");
+
+                        // 修改响应字段
+                        String modifiedBody = modifyJsonFields(originalBody, fieldsToMock);
+                        logger.info(" Modified response with new field values");
+
+                        // 标记已捕获并 mock
+                        capturedAndMocked[0] = true;
+
+                        // 返回修改后的响应
+                        route.fulfill(new Route.FulfillOptions()
+                            .setStatus(statusCode)
+                            .setHeaders(originalResponse.headers())
+                            .setBody(modifiedBody));
+
+                        // 【新增】如果配置了自动停止，在第一次调用后停止mock
+                        if (autoStopAfterFirstCall) {
+                            logger.info(" Auto-stopping mock after first successful call for: {}", pattern);
+                            try {
+                                context.unroute(compiledPattern.asPredicate());
+                                logger.info("✓ Route removed for pattern: {} (auto-stop)", pattern);
+                            } catch (Exception ex) {
+                                logger.warn("Failed to auto-remove route for pattern {}: {}", pattern, ex.getMessage());
+                            }
+                        }
+
+                    } else {
+                        // 后续调用：继续使用原始请求（让真正的 mock 规则处理）
+                        logger.info(" Subsequent API call - resuming original request");
+                        route.resume();
+                    }
+                } catch (Exception e) {
+                    logger.error("Error handling route in capture-and-mock (Context)", e);
+                    try {
+                        route.resume();
+                    } catch (Exception ex) {
+                        logger.error("Error resuming route", ex);
+                    }
+                }
+            });
+
+            logger.info(" Persistent route handler set up for pattern: {}", pattern);
+            logger.info(" Note: Route will remain active until explicitly removed or context closed");
+            if (autoStopAfterFirstCall) {
+                logger.info(" Note: Route will be auto-removed after first successful call");
+            }
+            logger.info(" Capture and mock with original status setup completed for: {}", pattern);
+
+        } catch (Exception e) {
+            logger.error("Failed to set up capture and mock (Context) for: {}", pattern, e);
+        }
+    }
+
+    /**
+     * 【捕获后Mock】自动使用原始API状态码的版本 - Context版本（默认不自动停止）
+     *
+     * 工作流程：
+     * 1. 设置持久化的 route 监听器，不等待，不超时
+     * 2. 当 API 第一次被调用时，捕获真实响应，修改字段，返回修改后的响应
+     * 3. 后续调用继续使用修改后的响应
+     *
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式
+     * @param fieldsToMock 要修改的字段
+     * @param waitSeconds 等待超时时间（秒）- 已废弃参数，保留以保持兼容性
+     */
+    public static void captureAndMockFieldsWithOriginalStatus(BrowserContext context, String urlPattern, Map<String, Object> fieldsToMock, int waitSeconds) {
+        captureAndMockFieldsWithOriginalStatus(context, urlPattern, fieldsToMock, waitSeconds, false);
+    }
+
+    // ==================== 辅助类和方法 ====================
+
+    /**
+     * 捕获的响应数据
+     */
+    public static class CapturedResponse {
+        public String body;
+        public int statusCode;
+
+        public CapturedResponse(String body, int statusCode) {
+            this.body = body;
+            this.statusCode = statusCode;
+        }
+    }
+
+    /**
+     * 修改JSON中的字段（使用JsonPath）
+     *
+     * @param jsonString 原始JSON字符串
+     * @param fieldsToModify 要修改的字段映射（key为JsonPath，value为新值）
+     * @return 修改后的JSON字符串
+     */
+    private static String modifyJsonFields(String jsonString, Map<String, Object> fieldsToModify) {
+        if (jsonString == null || jsonString.trim().isEmpty()) {
+            return jsonString;
+        }
+
+        try {
+            // 使用ObjectMapper解析JSON
+            JsonNode rootNode = objectMapper.readTree(jsonString);
+
+            // 遍历要修改的字段
+            for (Map.Entry<String, Object> entry : fieldsToModify.entrySet()) {
+                String jsonPath = entry.getKey();
+                Object newValue = entry.getValue();
+
+                try {
+                    // 使用JsonPath定位字段
+                    Object valueAtPath = JsonPath.parse(jsonString).read(jsonPath);
+
+                    // 简单的实现：只支持顶层字段或简单的点号分隔路径
+                    // 对于更复杂的路径，需要使用JsonPath的modify功能
+                    String[] pathSegments = jsonPath.split("\\.");
+                    JsonNode currentNode = rootNode;
+
+                    // 遍历到最后一个节点之前的所有节点
+                    for (int i = 0; i < pathSegments.length - 1; i++) {
+                        String segment = pathSegments[i];
+                        if (segment.contains("[")) {
+                            // 处理数组索引，如 items[0]
+                            String arrayName = segment.substring(0, segment.indexOf("["));
+                            int index = Integer.parseInt(segment.substring(segment.indexOf("[") + 1, segment.indexOf("]")));
+                            currentNode = currentNode.path(arrayName).get(index);
+                        } else {
+                            currentNode = currentNode.path(segment);
+                        }
+                        if (currentNode.isMissingNode()) {
+                            logger.warn("Path segment '{}' not found in JSON", segment);
+                            break;
+                        }
+                    }
+
+                    // 修改最后一个节点
+                    if (currentNode.isObject() && !currentNode.isMissingNode()) {
+                        String lastSegment = pathSegments[pathSegments.length - 1];
+                        if (lastSegment.contains("[")) {
+                            // 处理数组索引
+                            String arrayName = lastSegment.substring(0, lastSegment.indexOf("["));
+                            int index = Integer.parseInt(lastSegment.substring(lastSegment.indexOf("[") + 1, lastSegment.indexOf("]")));
+                            JsonNode arrayNode = currentNode.path(arrayName);
+                            if (!arrayNode.isMissingNode()) {
+                                ObjectNode mutableNode = (ObjectNode) currentNode;
+                                JsonNode newArrayNode = arrayNode;
+                                // 对于数组中的对象，需要特殊处理
+                                if (arrayNode.isArray() && index < arrayNode.size() && arrayNode.get(index).isObject()) {
+                                    // 这里简化处理，直接跳过数组元素的修改
+                                    logger.warn("Array element modification not fully supported: {}", jsonPath);
+                                }
+                            }
+                        } else {
+                            // 简单对象字段修改
+                            ObjectNode mutableNode = (ObjectNode) currentNode;
+                            if (newValue instanceof String) {
+                                mutableNode.put(lastSegment, (String) newValue);
+                            } else if (newValue instanceof Integer) {
+                                mutableNode.put(lastSegment, (Integer) newValue);
+                            } else if (newValue instanceof Long) {
+                                mutableNode.put(lastSegment, (Long) newValue);
+                            } else if (newValue instanceof Double) {
+                                mutableNode.put(lastSegment, (Double) newValue);
+                            } else if (newValue instanceof Boolean) {
+                                mutableNode.put(lastSegment, (Boolean) newValue);
+                            } else {
+                                mutableNode.set(lastSegment, objectMapper.valueToTree(newValue));
+                            }
+                            logger.info("Modified field: {} = {}", jsonPath, newValue);
+                        }
+                    } else {
+                        logger.warn("Cannot modify path: {} (not an object node or path not found)", jsonPath);
+                    }
+                } catch (PathNotFoundException e) {
+                    logger.warn("JSON path '{}' not found in response, skipping modification", jsonPath);
+                }
+            }
+
+            return objectMapper.writeValueAsString(rootNode);
+        } catch (Exception e) {
+            logger.error("Failed to modify JSON fields", e);
+            return jsonString;
+        }
+    }
+
+
 
     /**
      * 【高级】动态Mock - 基于请求内容生成响应
@@ -482,7 +1059,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API with dynamic response configured successfully!");
+        logger.info(" Mock API with dynamic response configured successfully!");
     }
 
     /**
@@ -508,7 +1085,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Mock API with dynamic response configured successfully!");
+        logger.info(" Mock API with dynamic response configured successfully!");
     }
 
     /**
@@ -575,7 +1152,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Request header modifier configured successfully!");
+        logger.info(" Request header modifier configured successfully!");
     }
 
     /**
@@ -603,7 +1180,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Request header modifier configured successfully!");
+        logger.info(" Request header modifier configured successfully!");
     }
 
     /**
@@ -628,7 +1205,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Request body modifier configured successfully!");
+        logger.info(" Request body modifier configured successfully!");
     }
 
     /**
@@ -653,7 +1230,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Request body modifier configured successfully!");
+        logger.info(" Request body modifier configured successfully!");
     }
 
     /**
@@ -682,7 +1259,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Request query param modifier configured successfully!");
+        logger.info(" Request query param modifier configured successfully!");
     }
 
     /**
@@ -711,7 +1288,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Request query param modifier configured successfully!");
+        logger.info(" Request query param modifier configured successfully!");
     }
 
     /**
@@ -736,7 +1313,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Request method modifier configured successfully!");
+        logger.info(" Request method modifier configured successfully!");
     }
 
     /**
@@ -761,7 +1338,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Request method modifier configured successfully!");
+        logger.info(" Request method modifier configured successfully!");
     }
 
     /**
@@ -789,7 +1366,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(page);
         recordMockConfiguration();
 
-        logger.info("✅ Request interceptor configured successfully!");
+        logger.info(" Request interceptor configured successfully!");
     }
 
     /**
@@ -817,7 +1394,7 @@ public class ApiMonitorAndMockManager {
         applyMocks(context);
         recordMockConfiguration();
 
-        logger.info("✅ Request interceptor configured successfully!");
+        logger.info(" Request interceptor configured successfully!");
     }
 
     // ==================== 传统API（向后兼容） ====================
@@ -1116,7 +1693,77 @@ public class ApiMonitorAndMockManager {
         mockRules.clear();
         logger.info("All mock rules cleared");
     }
-    
+
+    /**
+     * 停止所有Mock - 移除所有route并清除规则（Context版本）
+     * @param context Playwright BrowserContext对象
+     */
+    public static void stopAllMocks(BrowserContext context) {
+        logger.info("========== Stopping All Mocks (Context) ==========");
+        try {
+            context.unrouteAll();
+            logger.info("✓ All routes removed from context");
+        } catch (Exception e) {
+            logger.warn("Failed to remove routes from context: {}", e.getMessage());
+        }
+        mockRules.clear();
+        logger.info("✓ All mock rules cleared");
+        logger.info("========== All Mocks Stopped ==========");
+    }
+
+    /**
+     * 停止所有Mock - 移除所有route并清除规则（Page版本）
+     * @param page Playwright Page对象
+     */
+    public static void stopAllMocks(Page page) {
+        logger.info("========== Stopping All Mocks (Page) ==========");
+        try {
+            page.unrouteAll();
+            logger.info("✓ All routes removed from page");
+        } catch (Exception e) {
+            logger.warn("Failed to remove routes from page: {}", e.getMessage());
+        }
+        mockRules.clear();
+        logger.info("✓ All mock rules cleared");
+        logger.info("========== All Mocks Stopped ==========");
+    }
+
+    /**
+     * 停止指定URL的Mock - 只移除特定URL的route（Context版本）
+     * @param context Playwright BrowserContext对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     */
+    public static void stopMock(BrowserContext context, String urlPattern) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Stopping Mock for URL: {} ==========", pattern);
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+            context.unroute(compiledPattern.asPredicate());
+            logger.info("✓ Route removed for pattern: {}", pattern);
+        } catch (Exception e) {
+            logger.warn("Failed to remove route for pattern {}: {}", pattern, e.getMessage());
+        }
+        logger.info("========== Mock Stopped ==========");
+    }
+
+    /**
+     * 停止指定URL的Mock - 只移除特定URL的route（Page版本）
+     * @param page Playwright Page对象
+     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     */
+    public static void stopMock(Page page, String urlPattern) {
+        String pattern = toRegexPattern(urlPattern);
+        logger.info("========== Stopping Mock for URL: {} ==========", pattern);
+        try {
+            Pattern compiledPattern = Pattern.compile(pattern);
+            page.unroute(compiledPattern.asPredicate());
+            logger.info("✓ Route removed for pattern: {}", pattern);
+        } catch (Exception e) {
+            logger.warn("Failed to remove route for pattern {}: {}", pattern, e.getMessage());
+        }
+        logger.info("========== Mock Stopped ==========");
+    }
+
     /**
      * 移除指定的Mock规则
      */
@@ -1173,7 +1820,7 @@ public class ApiMonitorAndMockManager {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("Mock Configuration").andContents(json.toString());
-            logger.info("✅ Recorded mock configuration to Serenity report");
+            logger.info(" Recorded mock configuration to Serenity report");
         } catch (Exception e) {
             logger.warn("Failed to record mock configuration to Serenity report", e);
         }
@@ -1220,7 +1867,7 @@ public class ApiMonitorAndMockManager {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("API Call History").andContents(json.toString());
-            logger.info("✅ Recorded API call history to Serenity report");
+            logger.info(" Recorded API call history to Serenity report");
         } catch (Exception e) {
             logger.warn("Failed to record API call history to Serenity report", e);
         }
@@ -1246,7 +1893,7 @@ public class ApiMonitorAndMockManager {
      * @param urlPattern URL 匹配模式
      * @param responseData 完整的响应数据（由调用者提供）
      */
-    public static void mockSuccess(String name, String urlPattern, String responseData) {
+    public static void mockDirectSuccess(String name, String urlPattern, String responseData) {
         registerMock(name, urlPattern, responseData);
     }
 
@@ -1256,7 +1903,7 @@ public class ApiMonitorAndMockManager {
      * @param urlPattern URL 匹配模式
      * @param errorData 完整的错误响应数据（由调用者提供）
      */
-    public static void mockError(String name, String urlPattern, String errorData) {
+    public static void mockDirectError(String name, String urlPattern, String errorData) {
         MockRule rule = new MockRule(name, urlPattern)
             .statusCode(500)
             .mockDataJson(errorData);
@@ -1504,7 +2151,7 @@ public class ApiMonitorAndMockManager {
             // 记录到Serenity报告
             recordToSerenityReport();
 
-            logger.info("✅ Mock configuration built successfully!");
+            logger.info(" Mock configuration built successfully!");
         }
     }
 }

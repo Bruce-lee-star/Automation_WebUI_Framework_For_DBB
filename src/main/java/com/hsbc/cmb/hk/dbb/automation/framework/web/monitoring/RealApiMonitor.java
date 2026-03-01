@@ -1,6 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.PathNotFoundException;
 import com.microsoft.playwright.*;
 import net.serenitybdd.core.Serenity;
 import org.slf4j.Logger;
@@ -92,7 +94,6 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  *
  * 【停止监控】：
  *   stopMonitoring(context);  // 停止所有监控
- *   stopMonitoring(context, ".*api/.*");  // 停止指定URL模式的监控
  *   stopMonitoringAfterSeconds(context, 10);  // 10秒后停止监控
  *   stopMonitoringAfterSeconds(context, 10, ".*auth/login.*");  // 10秒内必须检测到auth/login
  *   stopMonitoringAfterApi(context, ".*auth/login.*", 1);  // 检测到1次登录API后停止
@@ -102,9 +103,6 @@ import static org.hamcrest.Matchers.lessThanOrEqualTo;
  * 【记录API监控结果】：
  *   logApiMonitoringResult();  // 记录API监控结果到Serenity报告（推荐，必须调用）
  *   assertThatApiMonitoring();  // 断言API监控结果，失败则抛出AssertionError（适用于exception场景）
- *
- * 【调试】：
- *   printAllCapturedApis();  // 仅用于调试，打印所有捕获的API
  */
 public class RealApiMonitor {
 
@@ -471,7 +469,7 @@ public class RealApiMonitor {
      */
     public static void monitorApi(BrowserContext context, String urlPattern, ResponseListener listener) {
         Pattern pattern = Pattern.compile(urlPattern);
-        logger.info("🎯 Setting up API monitor for pattern: {} on BrowserContext", urlPattern);
+        logger.info(" Setting up API monitor for pattern: {} on BrowserContext", urlPattern);
         // 用于统计响应数量
         final int[] responseCount = {0};
 
@@ -511,7 +509,14 @@ public class RealApiMonitor {
                     );
 
                     apiCallHistory.add(record);
-                    logger.info("✅ Recorded API call: {} {} - Status: {}",
+                    logger.info("========== REAL API RESPONSE (BrowserContext) ==========");
+                    logger.info("Method: {} URL: {}", request.method(), response.url());
+                    logger.info("Status: {}", response.status());
+                    logger.info("Response Time: {}ms", responseTimeMs);
+                    logger.info("Response Headers: {}", responseHeaders);
+                    logger.info("Response Body: {}", responseBody != null ? responseBody : "[Cannot read body]");
+                    logger.info("========================================================");
+                    logger.info(" Recorded API call: {} {} - Status: {}",
                             request.method(), response.url(), response.status());
 
                     // 实时验证：立即检查API响应
@@ -529,7 +534,7 @@ public class RealApiMonitor {
             listeners.add(listener);
         }
 
-        logger.info("📡 Registering onResponse listener on BrowserContext, listeners for this context: {}", listeners.size());
+        logger.info(" Registering onResponse listener on BrowserContext, listeners for this context: {}", listeners.size());
 
         // 使用局部变量避免闭包问题
         final Set<ResponseListener> currentListeners = listeners;
@@ -548,12 +553,12 @@ public class RealApiMonitor {
                 return;
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "📡 onResponse event fired! URL: {}, Status: {}", response.url(), response.status());
+            LoggingConfigUtil.logDebugIfVerbose(logger, " onResponse event fired! URL: {}, Status: {}", response.url(), response.status());
             // 使用Playwright API获取真实的响应时间
             long responseTimeMs = 0;
             try {
                 responseTimeMs = (long) response.request().timing().responseEnd;
-                LoggingConfigUtil.logDebugIfVerbose(logger, "📊 Response timing for {}: {}ms", response.url(), responseTimeMs);
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Response timing for {}: {}ms", response.url(), responseTimeMs);
             } catch (Exception e) {
                 logger.debug("Failed to get response timing for: {}", response.url());
             }
@@ -571,7 +576,7 @@ public class RealApiMonitor {
             }
         });
 
-        logger.info("✅ API monitoring started successfully for pattern: {} on BrowserContext", urlPattern);
+        logger.info(" API monitoring started successfully for pattern: {} on BrowserContext", urlPattern);
     }
     
     /**
@@ -602,7 +607,7 @@ public class RealApiMonitor {
      */
     public static void monitorApi(Page page, String urlPattern, ResponseListener listener) {
         Pattern pattern = Pattern.compile(urlPattern);
-        logger.info("🎯 Setting up API monitor for pattern: {} on Page", urlPattern);
+        logger.info(" Setting up API monitor for pattern: {} on Page", urlPattern);
         // 用于统计响应数量
         final int[] responseCount = {0};
 
@@ -639,7 +644,14 @@ public class RealApiMonitor {
                     );
 
                     apiCallHistory.add(record);
-                    logger.info("✅ Recorded API call: {} {} - Status: {}",
+                    logger.info("========== REAL API RESPONSE (Page) ==========");
+                    logger.info("Method: {} URL: {}", request.method(), response.url());
+                    logger.info("Status: {}", response.status());
+                    logger.info("Response Time: {}ms", responseTimeMs);
+                    logger.info("Response Headers: {}", responseHeaders);
+                    logger.info("Response Body: {}", responseBody != null ? responseBody : "[Cannot read body]");
+                    logger.info("================================================");
+                    logger.info(" Recorded API call: {} {} - Status: {}",
                             request.method(), response.url(), response.status());
 
                     // 实时验证：立即检查API响应
@@ -665,12 +677,12 @@ public class RealApiMonitor {
                 return;
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "📡 onResponse event fired! URL: {}, Status: {}", response.url(), response.status());
+            LoggingConfigUtil.logDebugIfVerbose(logger, " onResponse event fired! URL: {}, Status: {}", response.url(), response.status());
             // 使用Playwright API获取真实的响应时间
             long responseTimeMs = 0;
             try {
                 responseTimeMs = (long) response.request().timing().responseEnd;
-                LoggingConfigUtil.logDebugIfVerbose(logger, "📊 Response timing for {}: {}ms", response.url(), responseTimeMs);
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Response timing for {}: {}ms", response.url(), responseTimeMs);
             } catch (Exception e) {
                 logger.debug("Failed to get response timing for: {}", response.url());
             }
@@ -688,7 +700,7 @@ public class RealApiMonitor {
             }
         });
 
-        logger.info("✅ API monitoring started successfully for pattern: {} on Page", urlPattern);
+        logger.info(" API monitoring started successfully for pattern: {} on Page", urlPattern);
     }
 
     /**
@@ -804,29 +816,6 @@ public class RealApiMonitor {
     }
 
     /**
-     * 停止指定URL模式的监控
-     *
-     * 注意：由于 ResponseListener 接口不包含 URL 模式信息，此方法会停止该 Context 的所有监控。
-     * 如需特定功能，请使用 stopMonitoringAfterApi() 方法。
-     *
-     * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则表达式）
-     */
-    public static void stopMonitoring(BrowserContext context, String urlPattern) {
-        logger.info("Stopping all monitoring for context (requested pattern: {})", urlPattern);
-
-        Set<ResponseListener> listeners = contextListeners.get(context);
-        if (listeners == null || listeners.isEmpty()) {
-            logger.warn("No active monitoring for context");
-            return;
-        }
-
-        // 由于无法区分监听器对应的URL模式，停止该 Context 的所有监控
-        contextListeners.remove(context);
-        logger.info("Stopped all monitoring for context");
-    }
-
-    /**
      * 在指定秒数后停止监控（企业级功能）
      *
      * 注意：此方法只是按时间停止，不会验证是否捕获到API。
@@ -881,10 +870,10 @@ public class RealApiMonitor {
                             .anyMatch(record -> pattern.matcher(record.getUrl()).matches());
 
                     if (found) {
-                        logger.info("⏰ Time's up! Found target API matching: {}", urlPattern);
+                        logger.info(" Time's up! Found target API matching: {}", urlPattern);
                         // 记录到Serenity报告：成功捕获API
                         String successMsg = String.format(
-                            "✅ API Monitoring SUCCESS<br>" +
+                            " API Monitoring SUCCESS<br>" +
                             "Target API captured within %d seconds<br>" +
                             "Expected pattern: %s<br>" +
                             "Total APIs captured: %d",
@@ -895,13 +884,13 @@ public class RealApiMonitor {
                         // 注意：不在后台线程中记录到Serenity报告
                     } else {
                         String warningMsg = String.format(
-                            "❌ API Monitoring FAILED<br>" +
+                            " API Monitoring FAILED<br>" +
                             "Target API not detected within %d seconds!<br>" +
                             "Expected pattern: %s<br>" +
                             "Total APIs captured: %d",
                             seconds, urlPattern, apiCallHistory.size()
                         );
-                        logger.warn("⚠️ API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
+                        logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                         apiMonitorWarnings.add(warningMsg);
                         // 注意：不在后台线程中记录到Serenity报告
                     }
@@ -922,7 +911,7 @@ public class RealApiMonitor {
             new Thread(() -> {
                 try {
                     Thread.sleep(seconds * 1000L);
-                    logger.info("⏰ Time's up! Stopping monitoring after {} seconds...", seconds);
+                    logger.info(" Time's up! Stopping monitoring after {} seconds...", seconds);
 
                     // 停止监控
                     stopMonitoring(context);
@@ -936,7 +925,7 @@ public class RealApiMonitor {
                                 ApiCallRecord record = apiCallHistory.get(i);
                                 if (regex.matcher(record.getUrl()).matches()) {
                                     foundTargetApi = true;
-                                    logger.info("✅ Found expected API matching: {}", pattern);
+                                    logger.info(" Found expected API matching: {}", pattern);
                                     break;
                                 }
                             }
@@ -946,7 +935,7 @@ public class RealApiMonitor {
                         if (foundTargetApi) {
                             // 记录到Serenity报告：成功捕获API
                             String successMsg = String.format(
-                                "✅ API Monitoring SUCCESS<br>" +
+                                " API Monitoring SUCCESS<br>" +
                                 "Expected APIs captured within %d seconds<br>" +
                                 "Expected patterns: %s<br>" +
                                 "Initial API count: %d<br>" +
@@ -961,7 +950,7 @@ public class RealApiMonitor {
                         } else {
                             // 记录到Serenity报告：未捕获到API
                             String warningMsg = String.format(
-                                "❌ API Monitoring FAILED<br>" +
+                                " API Monitoring FAILED<br>" +
                                 "No expected API captured within %d seconds!<br>" +
                                 "Expected patterns: %s<br>" +
                                 "Initial API count: %d<br>" +
@@ -970,7 +959,7 @@ public class RealApiMonitor {
                                 seconds, expectationPatterns, initialApiCount, apiCallHistory.size(),
                                 apiCallHistory.size() - initialApiCount
                             );
-                            logger.warn("⚠️ API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
+                            logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                             apiMonitorWarnings.add(warningMsg);
                             // 注意：不在后台线程中记录到Serenity报告
                         }
@@ -1050,13 +1039,13 @@ public class RealApiMonitor {
                     synchronized (initialCount) {
                         detectedCount++;
                         initialCount[0]++;
-                        logger.info("🎯 Detected target API #{}: {} - Status: {}",
+                        logger.info(" Detected target API #{}: {} - Status: {}",
                                 detectedCount, response.url(), response.status());
 
                         if (detectedCount >= expectedCount) {
                             shouldStop[0] = true;
                             detectedWithinTimeout[0] = true;
-                            logger.info("✅ Target API detected {} times, stopping monitoring...", detectedCount);
+                            logger.info(" Target API detected {} times, stopping monitoring...", detectedCount);
                             stopMonitoring(context);
                         }
                     }
@@ -1084,14 +1073,14 @@ public class RealApiMonitor {
                         shouldStop[0] = true;
                         // 记录到Serenity报告：超时未检测到API
                         String warningMsg = String.format(
-                            "❌ API Monitoring FAILED<br>" +
+                            " API Monitoring FAILED<br>" +
                             "Target API not detected within %d seconds!<br>" +
                             "Expected pattern: %s<br>" +
                             "Expected count: %d<br>" +
                             "Total APIs captured: %d",
                             timeoutSeconds, urlPattern, expectedCount, apiCallHistory.size()
                         );
-                        logger.warn("⚠️ API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
+                        logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                         apiMonitorWarnings.add(warningMsg);
                         
                         // 设置失败异常，主线程下一个操作时会自动检查并抛出
@@ -1106,7 +1095,7 @@ public class RealApiMonitor {
                     } else {
                         // 记录到Serenity报告：成功检测到API
                         String successMsg = String.format(
-                            "✅ API Monitoring SUCCESS<br>" +
+                            " API Monitoring SUCCESS<br>" +
                             "Target API detected within %d seconds<br>" +
                             "Expected pattern: %s<br>" +
                             "Expected count: %d<br>" +
@@ -1138,13 +1127,13 @@ public class RealApiMonitor {
 
         // 清空所有监听器映射
         contextListeners.clear();
-        logger.info("✅ All monitoring stopped");
+        logger.info(" All monitoring stopped");
     }
     
     /**
      * 打印所有捕获到的API（仅用于调试）
      */
-    public static void printAllCapturedApis() {
+    private static void printAllCapturedApis() {
         logger.info("========== All Captured APIs ==========");
         logger.info("Total APIs captured: {}", apiCallHistory.size());
 
@@ -1218,7 +1207,7 @@ public class RealApiMonitor {
             Pattern regex = Pattern.compile(pattern);
             if (apiCallHistory.stream().anyMatch(record -> regex.matcher(record.getUrl()).matches())) {
                 foundExpected = true;
-                logger.info("✅ Found expected API matching pattern: {}", pattern);
+                logger.info(" Found expected API matching pattern: {}", pattern);
                 break;
             }
         }
@@ -1228,28 +1217,28 @@ public class RealApiMonitor {
         if (foundExpected) {
             // 成功捕获期望API
             resultMsg = String.format(
-                "✅ API Monitoring SUCCESS<br>" +
+                " API Monitoring SUCCESS<br>" +
                 "Expected APIs were captured<br>" +
                 "Expected patterns: %s<br>" +
                 "Total APIs captured: %d",
                 apiExpectations.keySet(), apiCallHistory.size()
             );
             apiMonitorWarnings.add(resultMsg);
-            logger.info("✅ API Monitoring SUCCESS - Expected APIs captured");
+            logger.info(" API Monitoring SUCCESS - Expected APIs captured");
         } else {
             // 未捕获期望API - 检查是否已有失败消息（避免重复记录）
             boolean alreadyHasFailure = apiMonitorWarnings.stream()
-                    .anyMatch(w -> w.contains("❌ API Monitoring FAILED"));
+                    .anyMatch(w -> w.contains(" API Monitoring FAILED"));
             
             if (!alreadyHasFailure) {
                 resultMsg = String.format(
-                    "❌ API Monitoring FAILED<br>" +
+                    " API Monitoring FAILED<br>" +
                     "No expected API captured<br>" +
                     "Expected patterns: %s<br>" +
                     "Total APIs captured: %d",
                     apiExpectations.keySet(), apiCallHistory.size()
                 );
-                logger.warn("⚠️ API Monitor Warning: {}", resultMsg.replace("<br>", "\n"));
+                logger.warn(" API Monitor Warning: {}", resultMsg.replace("<br>", "\n"));
                 apiMonitorWarnings.add(resultMsg);
             }
         }
@@ -1279,17 +1268,9 @@ public class RealApiMonitor {
     }
 
     /**
-     * 记录API监控警告到Serenity报告（公共方法）
-     * 用户可以在任何时候调用此方法来记录警告
-     */
-    public static void recordApiMonitorWarningsToReport() {
-        recordApiMonitorWarnings();
-    }
-
-    /**
      * 打印API调用历史摘要
      */
-    public static void printApiHistorySummary() {
+    private static void printApiHistorySummary() {
         logger.info("=== API Call History Summary ===");
         logger.info("Total API calls: {}", apiCallHistory.size());
         
@@ -1350,18 +1331,6 @@ public class RealApiMonitor {
     public static void expectApi(ApiExpectation expectation) {
         apiExpectations.put(expectation.getUrlPattern(), expectation);
         logger.info("Added API expectation: {} -> {}", expectation.getUrlPattern(), expectation.getDescription());
-    }
-
-    /**
-     * 批量设置API期望（高级版本）
-     *
-     * @param expectations API期望对象列表
-     */
-    public static void expectMultipleApi(List<ApiExpectation> expectations) {
-        for (ApiExpectation expectation : expectations) {
-            apiExpectations.put(expectation.getUrlPattern(), expectation);
-        }
-        logger.info("Added {} API expectations", expectations.size());
     }
 
     /**
@@ -1444,7 +1413,7 @@ public class RealApiMonitor {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("API Monitor Configuration").andContents(json.toString());
-            logger.info("✅ Recorded API monitoring configuration to Serenity report");
+            logger.info(" Recorded API monitoring configuration to Serenity report");
         } catch (Exception e) {
             logger.warn("Failed to record API targets to Serenity report", e);
         }
@@ -1477,8 +1446,8 @@ public class RealApiMonitor {
     private static void recordApiMonitorWarnings() {
         try {
             // 统计成功和失败数量
-            long successCount = apiMonitorWarnings.stream().filter(w -> w.contains("✅ API Monitoring SUCCESS")).count();
-            long failCount = apiMonitorWarnings.stream().filter(w -> w.contains("❌ API Monitoring FAILED")).count();
+            long successCount = apiMonitorWarnings.stream().filter(w -> w.contains(" API Monitoring SUCCESS")).count();
+            long failCount = apiMonitorWarnings.stream().filter(w -> w.contains(" API Monitoring FAILED")).count();
             int totalApiCalls = apiCallHistory.size();
             int expectedApiCount = apiExpectations.size();
 
@@ -1496,8 +1465,8 @@ public class RealApiMonitor {
             json.append("  \"monitoringResults\": [\n");
             for (int i = 0; i < apiMonitorWarnings.size(); i++) {
                 String msg = apiMonitorWarnings.get(i);
-                boolean isSuccess = msg.contains("✅ API Monitoring SUCCESS");
-                boolean isFailure = msg.contains("❌ API Monitoring FAILED");
+                boolean isSuccess = msg.contains(" API Monitoring SUCCESS");
+                boolean isFailure = msg.contains(" API Monitoring FAILED");
                 String status = isSuccess ? "SUCCESS" : (isFailure ? "FAILED" : "WARNING");
 
                 json.append("    {\n");
@@ -1541,7 +1510,7 @@ public class RealApiMonitor {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("API Monitor Results").andContents(json.toString());
-            logger.info("✅ Recorded API monitor results to Serenity report");
+            logger.info(" Recorded API monitor results to Serenity report");
 
             // 清空警告列表
             apiMonitorWarnings.clear();
@@ -1580,7 +1549,7 @@ public class RealApiMonitor {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("API Call Summary").andContents(json.toString());
-            logger.info("✅ Recorded API call summary to Serenity report");
+            logger.info(" Recorded API call summary to Serenity report");
         } catch (Exception e) {
             logger.warn("Failed to record API call summary to Serenity report", e);
         }
@@ -1641,7 +1610,7 @@ public class RealApiMonitor {
             json.append("}\n");
 
             Serenity.recordReportData().withTitle("API Validation Results").andContents(json.toString());
-            logger.info("✅ Recorded API validation results to Serenity report");
+            logger.info(" Recorded API validation results to Serenity report");
         } catch (Exception e) {
             logger.warn("Failed to record API validation results to Serenity report", e);
         }
@@ -1660,7 +1629,7 @@ public class RealApiMonitor {
             logger.info("Total API targets configured: {}", apiExpectations.size());
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
                 ApiExpectation expectation = entry.getValue();
-                logger.info("  📡 Target API: {} - {}", expectation.getUrlPattern(), expectation.getDescription());
+                logger.info("   Target API: {} - {}", expectation.getUrlPattern(), expectation.getDescription());
             }
         }
         
@@ -1740,7 +1709,7 @@ public class RealApiMonitor {
         logger.info("========== API Monitoring Validation Results ==========");
         
         // 显示目标API
-        logger.info("🎯 Target APIs configured:");
+        logger.info(" Target APIs configured:");
         if (apiExpectations.isEmpty()) {
             logger.info("  - No specific targets (monitoring all APIs)");
         } else {
@@ -1752,7 +1721,7 @@ public class RealApiMonitor {
         }
         
         // 显示实际捕获的API
-        logger.info("📊 Actual APIs captured:");
+        logger.info(" Actual APIs captured:");
         if (apiCallHistory.isEmpty()) {
             logger.info("  - No API calls captured yet");
         } else {
@@ -1783,7 +1752,7 @@ public class RealApiMonitor {
         
         // 验证目标API是否被捕获
         if (!apiExpectations.isEmpty() && !apiCallHistory.isEmpty()) {
-            logger.info("✓ Validation Results:");
+            logger.info(" Validation Results:");
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
                 String pattern = entry.getKey();
                 ApiExpectation expectation = entry.getValue();
@@ -1794,7 +1763,7 @@ public class RealApiMonitor {
                         Pattern p = Pattern.compile(pattern);
                         if (p.matcher(record.getUrl()).matches()) {
                             found = true;
-                            logger.info("  ✓ Target matched: {} -> Captured: {} {} - Status: {}",
+                            logger.info("   Target matched: {} -> Captured: {} {} - Status: {}",
                                     expectation.getUrlPattern(),
                                     record.getMethod(), record.getUrl(), record.getStatusCode());
                             break;
@@ -1996,7 +1965,7 @@ public class RealApiMonitor {
                 new Thread(() -> {
                     try {
                         Thread.sleep(stopAfterSeconds * 1000L);
-                        logger.info("⏰ Time's up! Auto-stopping monitoring after {} seconds...", stopAfterSeconds);
+                        logger.info(" Time's up! Auto-stopping monitoring after {} seconds...", stopAfterSeconds);
 
                         // 停止监控
                         if (context != null) {
@@ -2013,7 +1982,7 @@ public class RealApiMonitor {
                                 ApiCallRecord record = apiCallHistory.get(i);
                                 if (regex.matcher(record.getUrl()).matches()) {
                                     foundTargetApi = true;
-                                    logger.info("✅ Found expected API matching: {}", pattern);
+                                    logger.info(" Found expected API matching: {}", pattern);
                                     break;
                                 }
                             }
@@ -2025,7 +1994,7 @@ public class RealApiMonitor {
                             if (foundTargetApi) {
                                 // 成功捕获API
                                 String successMsg = String.format(
-                                    "✅ API Monitoring SUCCESS<br>" +
+                                    " API Monitoring SUCCESS<br>" +
                                     "Expected APIs captured within %d seconds<br>" +
                                     "Expected patterns: %s<br>" +
                                     "Initial API count: %d<br>" +
@@ -2039,7 +2008,7 @@ public class RealApiMonitor {
                             } else {
                                 // 未捕获到API - 设置失败标志，主线程操作时会立即检查并抛出异常
                                 String warningMsg = String.format(
-                                    "❌ API Monitoring FAILED<br>" +
+                                    " API Monitoring FAILED<br>" +
                                     "No expected API captured within %d seconds!<br>" +
                                     "Expected patterns: %s<br>" +
                                     "Initial API count: %d<br>" +
@@ -2048,7 +2017,7 @@ public class RealApiMonitor {
                                     stopAfterSeconds, targetPatterns, initialApiCount, apiCallHistory.size(),
                                     apiCallHistory.size() - initialApiCount
                                 );
-                                logger.warn("⚠️ API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
+                                logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                                 apiMonitorWarnings.add(warningMsg);
 
                                 // 设置失败异常，主线程下一个操作时会自动检查并抛出
@@ -2074,7 +2043,7 @@ public class RealApiMonitor {
             }
 
             if (!stopAfterApiMap.isEmpty()) {
-                logger.info("🎯 Will stop monitoring after detecting target APIs:");
+                logger.info(" Will stop monitoring after detecting target APIs:");
                 stopAfterApiMap.forEach((urlPattern, count) -> {
                     Integer timeout = stopAfterApiTimeoutMap.get(urlPattern);
                     if (timeout != null && timeout > 0) {
@@ -2126,7 +2095,7 @@ public class RealApiMonitor {
                 }
             }
 
-            logger.info("✅ API Monitor built successfully!");
+            logger.info(" API Monitor built successfully!");
 
             // 自动记录到Serenity报告
             RealApiMonitor.recordMonitoredApiTargets();
@@ -2149,6 +2118,14 @@ public class RealApiMonitor {
      * ApiExpectation.forUrl(".*auth/login.*")
      *     .responseBodyEquals("{\"status\":\"success\",\"token\":\"abc123\"}")  // 完全匹配
      *     .responseBodyMatches(".*\"token\":\"[^\"]+\".*")  // 正则匹配
+     *
+     * JSON Path验证：
+     * ApiExpectation.forUrl(".*auth/login.*")
+     *     .jsonPathEquals("$.status", "success")  // JSON path精确匹配
+     *     .jsonPathContains("$.data.users[0].name", "John")  // JSON path包含
+     *     .jsonPathMatches("$.email", ".*@example\\.com")  // JSON path正则匹配
+     *     .jsonPathIntEquals("$.count", 10)  // JSON path整数比较
+     *     .jsonPathBooleanEquals("$.success", true)  // JSON path布尔值比较
      */
     public static class ApiExpectation {
         private final String urlPattern;
@@ -2159,6 +2136,13 @@ public class RealApiMonitor {
         private String expectedResponseBodyRegex;     // 正则匹配
         private String expectedResponseHeaderName;
         private String expectedResponseHeaderValue;
+
+        // JSON Path验证
+        private Map<String, Object> jsonPathEqualsMap = new HashMap<>();  // JSON path精确匹配
+        private Map<String, String> jsonPathContainsMap = new HashMap<>();  // JSON path包含
+        private Map<String, String> jsonPathMatchesMap = new HashMap<>();  // JSON path正则匹配
+        private Map<String, Integer> jsonPathIntEqualsMap = new HashMap<>();  // JSON path整数比较
+        private Map<String, Boolean> jsonPathBooleanEqualsMap = new HashMap<>();  // JSON path布尔值比较
 
         private ApiExpectation(String urlPattern) {
             this.urlPattern = urlPattern;
@@ -2254,6 +2238,89 @@ public class RealApiMonitor {
         }
 
         /**
+         * 设置JSON Path精确匹配
+         *
+         * @param jsonPath JSON Path表达式（如 "$.status", "$.data.users[0].name"）
+         * @param expectedValue 期望的值
+         * @return this
+         *
+         * 示例：
+         * ApiExpectation.forUrl(".*auth/login.*")
+         *     .jsonPathEquals("$.status", "success")
+         *     .jsonPathEquals("$.data.user.id", "123");
+         */
+        public ApiExpectation jsonPathEquals(String jsonPath, Object expectedValue) {
+            this.jsonPathEqualsMap.put(jsonPath, expectedValue);
+            return this;
+        }
+
+        /**
+         * 设置JSON Path包含匹配
+         *
+         * @param jsonPath JSON Path表达式
+         * @param expectedContent 期望包含的内容
+         * @return this
+         *
+         * 示例：
+         * ApiExpectation.forUrl(".*api/products.*")
+         *     .jsonPathContains("$.data.products[0].description", "premium");
+         */
+        public ApiExpectation jsonPathContains(String jsonPath, String expectedContent) {
+            this.jsonPathContainsMap.put(jsonPath, expectedContent);
+            return this;
+        }
+
+        /**
+         * 设置JSON Path正则表达式匹配
+         *
+         * @param jsonPath JSON Path表达式
+         * @param regex 期望的正则表达式
+         * @return this
+         *
+         * 示例：
+         * ApiExpectation.forUrl(".*api/users.*")
+         *     .jsonPathMatches("$.data.email", ".*@example\\.com");
+         */
+        public ApiExpectation jsonPathMatches(String jsonPath, String regex) {
+            this.jsonPathMatchesMap.put(jsonPath, regex);
+            return this;
+        }
+
+        /**
+         * 设置JSON Path整数精确匹配
+         *
+         * @param jsonPath JSON Path表达式
+         * @param expectedValue 期望的整数值
+         * @return this
+         *
+         * 示例：
+         * ApiExpectation.forUrl(".*api/products.*")
+         *     .jsonPathIntEquals("$.data.count", 10)
+         *     .jsonPathIntEquals("$.data.total", 100);
+         */
+        public ApiExpectation jsonPathIntEquals(String jsonPath, int expectedValue) {
+            this.jsonPathIntEqualsMap.put(jsonPath, expectedValue);
+            return this;
+        }
+
+        /**
+         * 设置JSON Path布尔值精确匹配
+         *
+         * @param jsonPath JSON Path表达式
+         * @param expectedValue 期望的布尔值
+         * @return this
+         *
+         * 示例：
+         * ApiExpectation.forUrl(".*api/products.*")
+         *     .jsonPathBooleanEquals("$.data.success", true)
+         *     .jsonPathBooleanEquals("$.data.error", false);
+         */
+        public ApiExpectation jsonPathBooleanEquals(String jsonPath, boolean expectedValue) {
+            this.jsonPathBooleanEqualsMap.put(jsonPath, expectedValue);
+            return this;
+        }
+
+        /**
          * 获取URL模式
          */
         public String getUrlPattern() {
@@ -2287,6 +2354,26 @@ public class RealApiMonitor {
             if (expectedResponseHeaderName != null) {
                 if (desc.length() > 0) desc.append(", ");
                 desc.append("Header[").append(expectedResponseHeaderName).append("] contains '").append(expectedResponseHeaderValue).append("'");
+            }
+            if (!jsonPathEqualsMap.isEmpty()) {
+                if (desc.length() > 0) desc.append(", ");
+                desc.append("JSON Path=").append(jsonPathEqualsMap.size()).append(" checks");
+            }
+            if (!jsonPathContainsMap.isEmpty()) {
+                if (desc.length() > 0) desc.append(", ");
+                desc.append("JSON Path Contains=").append(jsonPathContainsMap.size()).append(" checks");
+            }
+            if (!jsonPathMatchesMap.isEmpty()) {
+                if (desc.length() > 0) desc.append(", ");
+                desc.append("JSON Path Matches=").append(jsonPathMatchesMap.size()).append(" checks");
+            }
+            if (!jsonPathIntEqualsMap.isEmpty()) {
+                if (desc.length() > 0) desc.append(", ");
+                desc.append("JSON Path Int=").append(jsonPathIntEqualsMap.size()).append(" checks");
+            }
+            if (!jsonPathBooleanEqualsMap.isEmpty()) {
+                if (desc.length() > 0) desc.append(", ");
+                desc.append("JSON Path Boolean=").append(jsonPathBooleanEqualsMap.size()).append(" checks");
             }
             return desc.length() > 0 ? desc.toString() : "No validation";
         }
@@ -2370,6 +2457,194 @@ public class RealApiMonitor {
                 }
             }
 
+            // 验证JSON Path精确匹配
+            if (!jsonPathEqualsMap.isEmpty()) {
+                String responseBody = String.valueOf(record.getResponseBody());
+                if (responseBody != null) {
+                    try {
+                        for (Map.Entry<String, Object> entry : jsonPathEqualsMap.entrySet()) {
+                            String jsonPath = entry.getKey();
+                            Object expectedValue = entry.getValue();
+
+                            try {
+                                Object actualValue = JsonPath.parse(responseBody).read(jsonPath);
+                                if (!expectedValue.equals(actualValue)) {
+                                    failures.add(String.format(
+                                        "JSON Path Mismatch: Path '%s' Expected '%s', Actual '%s'",
+                                        jsonPath, expectedValue, actualValue
+                                    ));
+                                }
+                            } catch (PathNotFoundException e) {
+                                failures.add(String.format(
+                                    "JSON Path Not Found: Path '%s' does not exist in response",
+                                    jsonPath
+                                ));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failures.add(String.format(
+                            "JSON Parse Error: Failed to parse response as JSON: %s",
+                            e.getMessage()
+                        ));
+                    }
+                }
+            }
+
+            // 验证JSON Path包含匹配
+            if (!jsonPathContainsMap.isEmpty()) {
+                String responseBody = String.valueOf(record.getResponseBody());
+                if (responseBody != null) {
+                    try {
+                        for (Map.Entry<String, String> entry : jsonPathContainsMap.entrySet()) {
+                            String jsonPath = entry.getKey();
+                            String expectedContent = entry.getValue();
+
+                            try {
+                                Object actualValue = JsonPath.parse(responseBody).read(jsonPath);
+                                String actualStr = String.valueOf(actualValue);
+                                if (actualStr == null || !actualStr.contains(expectedContent)) {
+                                    failures.add(String.format(
+                                        "JSON Path Does Not Contain: Path '%s' Expected to contain '%s', Actual '%s'",
+                                        jsonPath, expectedContent, actualStr
+                                    ));
+                                }
+                            } catch (PathNotFoundException e) {
+                                failures.add(String.format(
+                                    "JSON Path Not Found: Path '%s' does not exist in response",
+                                    jsonPath
+                                ));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failures.add(String.format(
+                            "JSON Parse Error: Failed to parse response as JSON: %s",
+                            e.getMessage()
+                        ));
+                    }
+                }
+            }
+
+            // 验证JSON Path正则匹配
+            if (!jsonPathMatchesMap.isEmpty()) {
+                String responseBody = String.valueOf(record.getResponseBody());
+                if (responseBody != null) {
+                    try {
+                        for (Map.Entry<String, String> entry : jsonPathMatchesMap.entrySet()) {
+                            String jsonPath = entry.getKey();
+                            String regex = entry.getValue();
+
+                            try {
+                                Object actualValue = JsonPath.parse(responseBody).read(jsonPath);
+                                String actualStr = String.valueOf(actualValue);
+                                if (actualStr == null || !Pattern.matches(regex, actualStr)) {
+                                    failures.add(String.format(
+                                        "JSON Path Does Not Match Pattern: Path '%s' Expected pattern '%s', Actual '%s'",
+                                        jsonPath, regex, actualStr
+                                    ));
+                                }
+                            } catch (PathNotFoundException e) {
+                                failures.add(String.format(
+                                    "JSON Path Not Found: Path '%s' does not exist in response",
+                                    jsonPath
+                                ));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failures.add(String.format(
+                            "JSON Parse Error: Failed to parse response as JSON: %s",
+                            e.getMessage()
+                        ));
+                    }
+                }
+            }
+
+            // 验证JSON Path整数匹配
+            if (!jsonPathIntEqualsMap.isEmpty()) {
+                String responseBody = String.valueOf(record.getResponseBody());
+                if (responseBody != null) {
+                    try {
+                        for (Map.Entry<String, Integer> entry : jsonPathIntEqualsMap.entrySet()) {
+                            String jsonPath = entry.getKey();
+                            Integer expectedValue = entry.getValue();
+
+                            try {
+                                Object actualValue = JsonPath.parse(responseBody).read(jsonPath);
+                                Integer actualInt = null;
+                                if (actualValue instanceof Integer) {
+                                    actualInt = (Integer) actualValue;
+                                } else if (actualValue instanceof Long) {
+                                    actualInt = ((Long) actualValue).intValue();
+                                } else if (actualValue instanceof String) {
+                                    try {
+                                        actualInt = Integer.parseInt((String) actualValue);
+                                    } catch (NumberFormatException ignored) {}
+                                }
+
+                                if (actualInt == null || !actualInt.equals(expectedValue)) {
+                                    failures.add(String.format(
+                                        "JSON Path Integer Mismatch: Path '%s' Expected %d, Actual %s",
+                                        jsonPath, expectedValue, actualValue
+                                    ));
+                                }
+                            } catch (PathNotFoundException e) {
+                                failures.add(String.format(
+                                    "JSON Path Not Found: Path '%s' does not exist in response",
+                                    jsonPath
+                                ));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failures.add(String.format(
+                            "JSON Parse Error: Failed to parse response as JSON: %s",
+                            e.getMessage()
+                        ));
+                    }
+                }
+            }
+
+            // 验证JSON Path布尔值匹配
+            if (!jsonPathBooleanEqualsMap.isEmpty()) {
+                String responseBody = String.valueOf(record.getResponseBody());
+                if (responseBody != null) {
+                    try {
+                        for (Map.Entry<String, Boolean> entry : jsonPathBooleanEqualsMap.entrySet()) {
+                            String jsonPath = entry.getKey();
+                            Boolean expectedValue = entry.getValue();
+
+                            try {
+                                Object actualValue = JsonPath.parse(responseBody).read(jsonPath);
+                                Boolean actualBoolean = null;
+                                if (actualValue instanceof Boolean) {
+                                    actualBoolean = (Boolean) actualValue;
+                                } else if (actualValue instanceof String) {
+                                    String str = ((String) actualValue).toLowerCase();
+                                    if ("true".equals(str) || "false".equals(str)) {
+                                        actualBoolean = Boolean.parseBoolean(str);
+                                    }
+                                }
+
+                                if (actualBoolean == null || !actualBoolean.equals(expectedValue)) {
+                                    failures.add(String.format(
+                                        "JSON Path Boolean Mismatch: Path '%s' Expected %s, Actual %s",
+                                        jsonPath, expectedValue, actualValue
+                                    ));
+                                }
+                            } catch (PathNotFoundException e) {
+                                failures.add(String.format(
+                                    "JSON Path Not Found: Path '%s' does not exist in response",
+                                    jsonPath
+                                ));
+                            }
+                        }
+                    } catch (Exception e) {
+                        failures.add(String.format(
+                            "JSON Parse Error: Failed to parse response as JSON: %s",
+                            e.getMessage()
+                        ));
+                    }
+                }
+            }
+
             // 如果有失败项，抛出异常
             if (!failures.isEmpty()) {
                 String errorMsg = String.format(
@@ -2388,7 +2663,7 @@ public class RealApiMonitor {
             }
 
             // 验证通过
-            logger.info("✅ API monitoring PASSED! URL: {}, Method: {}, Status: {}, Time: {}ms - ({})",
+            logger.info(" API monitoring PASSED! URL: {}, Method: {}, Status: {}, Time: {}ms - ({})",
                     record.getUrl(),
                     record.getMethod(),
                     record.getStatusCode(),

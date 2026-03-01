@@ -2,7 +2,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.microsoft.playwright.BrowserContext;
@@ -200,7 +199,7 @@ public class SessionManager {
                     for (Map.Entry<String, String> entry : localStorageData.entrySet()) {
                         session.setLocalStorageItem(entry.getKey(), entry.getValue());
                     }
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Saved {} localStorage items for session key: {}", localStorageData.size(), sessionKey);
+                    LoggingConfigUtil.logInfoIfVerbose(logger, " Saved {} localStorage items for session key: {}", localStorageData.size(), sessionKey);
                 }
             } catch (Exception e) {
                 logger.warn("Failed to save localStorage for session key: {} (continuing without localStorage)", sessionKey, e);
@@ -219,7 +218,7 @@ public class SessionManager {
                 GSON.toJson(session, writer);
             }
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session saved for session key: {} to {}", sessionKey, sessionFile);
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Session saved for session key: {} to {}", sessionKey, sessionFile);
         } catch (Exception e) {
             logger.error("Failed to save session for session key: {}", sessionKey, e);
             throw new RuntimeException("Failed to save session", e);
@@ -276,7 +275,7 @@ public class SessionManager {
                 // Add session to active sessions
                 activeSessions.put(sessionKey, session);
 
-                LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session loaded for session key: {}", sessionKey);
+                LoggingConfigUtil.logInfoIfVerbose(logger, " Session loaded for session key: {}", sessionKey);
                 return session;
             }
         } catch (Exception e) {
@@ -364,7 +363,7 @@ public class SessionManager {
                     // Execute the script in the context
                     context.addInitScript(scriptBuilder.toString());
 
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Restored {} localStorage items for session key: {}", localStorage.size(), sessionKey);
+                    LoggingConfigUtil.logInfoIfVerbose(logger, " Restored {} localStorage items for session key: {}", localStorage.size(), sessionKey);
                 } catch (Exception e) {
                     logger.warn("Failed to restore localStorage for session key: {} (continuing without localStorage)", sessionKey, e);
                 }
@@ -376,7 +375,7 @@ public class SessionManager {
             // Persist updated session to file to extend timeout
             persistSessionToFile(session, env, username, browser);
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session restored and updated for session key: {}", sessionKey);
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Session restored and updated for session key: {}", sessionKey);
             return true;
         } catch (Exception e) {
             logger.error("Failed to restore session for session key: {}", sessionKey, e);
@@ -461,7 +460,7 @@ public class SessionManager {
         String sessionKey = generateSessionKey(env, username, browser);
         UserSession session = getOrCreateSession(env, username, browser);
         session.setLoggedIn(true);
-        LoggingConfigUtil.logInfoIfVerbose(logger, "✅ User marked as logged in: {}", sessionKey);
+        LoggingConfigUtil.logInfoIfVerbose(logger, " User marked as logged in: {}", sessionKey);
     }
 
     /**
@@ -642,7 +641,7 @@ public class SessionManager {
                 GSON.toJson(session, writer);
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Session persisted and updated: {}", sessionKey);
+            LoggingConfigUtil.logDebugIfVerbose(logger, " Session persisted and updated: {}", sessionKey);
         } catch (Exception e) {
             logger.warn("Failed to persist session update (session will still be restored)", e);
         }
@@ -841,7 +840,7 @@ public class SessionManager {
      */
     public static boolean tryRestoreAndSkipLogin(String username, Runnable loginOperation) {
         if (restoreSession(username)) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session restored for {}, skipping login", username);
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Session restored for {}, skipping login", username);
             return true; // Session已恢复，跳过登录，时间戳已更新
         }
 
@@ -878,7 +877,7 @@ public class SessionManager {
      */
     public static boolean tryRestoreAndSkipLogin(String env, String username, Runnable loginOperation) {
         if (restoreSession(env, username)) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session restored for {}/{}, skipping login", env, username);
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Session restored for {}/{}, skipping login", env, username);
             return true; // Session已恢复，跳过登录，时间戳已更新
         }
 
@@ -909,7 +908,7 @@ public class SessionManager {
     public static void saveSessionAfterLogin(String username, String homeUrl) {
         markUserLoggedIn(username);
         saveSession(username, homeUrl);
-        LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session saved after login for user: {}", username);
+        LoggingConfigUtil.logInfoIfVerbose(logger, " Session saved after login for user: {}", username);
     }
 
     /**
@@ -926,7 +925,7 @@ public class SessionManager {
     public static void saveSessionAfterLogin(String env, String username, String homeUrl) {
         markUserLoggedIn(env, username);
         saveSession(env, username, homeUrl);
-        LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Session saved after login for user: {}/{}", env, username);
+        LoggingConfigUtil.logInfoIfVerbose(logger, " Session saved after login for user: {}/{}", env, username);
     }
 
     /**
@@ -979,7 +978,7 @@ public class SessionManager {
      * Generate session key from environment, username and browser type
      * Session key formats (supports multiple parameter combinations):
      * - env_username_browser (full format, e.g., O88_SIT1_AABBCCDD_chromium)
-     * - env_username (auto-detect browser, e.g., O88_SIT1_AABBCCDD)
+     * - env_username (recommended, e.g., O88_SIT1_AABBCCDD)
      * - username (legacy, auto env and browser, e.g., AABBCCDD)
      *
      * @param env Environment identifier (e.g., O88_SIT1, O63_SIT1), can be null
@@ -988,12 +987,24 @@ public class SessionManager {
      * @return Session key
      */
     private static String generateSessionKey(String env, String username, String browser) {
-        // Auto-detect browser type if not provided
-        if (browser == null) {
-            browser = BrowserOverrideManager.getEffectiveBrowserType();
+        // 检查是否包含浏览器类型
+        // 如果调用时明确传递了browser参数，则包含浏览器类型
+        // 否则使用默认的env_username格式（推荐格式）
+        boolean includeBrowser = (browser != null);
+
+        // 构建session key
+        if (env != null) {
+            if (includeBrowser) {
+                // 包含浏览器类型：env_username_browser
+                return env + "_" + username + "_" + browser;
+            } else {
+                // 不包含浏览器类型：env_username（推荐格式）
+                return env + "_" + username;
+            }
+        } else {
+            // 不包含环境：username（legacy格式）
+            return username;
         }
-        
-        return env + "_" + username + "_" + browser;
     }
 
     /**

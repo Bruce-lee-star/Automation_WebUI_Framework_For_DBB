@@ -355,7 +355,7 @@ public class AccessibilityHelper {
      */
     public static String generateReport(List<String> issues) {
         if (issues.isEmpty()) {
-            return "✓ Accessibility check passed, no issues found";
+            return " Accessibility check passed, no issues found";
         }
         
         StringBuilder report = new StringBuilder();
@@ -615,7 +615,7 @@ public class AccessibilityHelper {
         md.append("# Accessibility Check Report\n\n");
         md.append("**Check Type:** ").append(checkType).append("\n");
         md.append("**Timestamp:** ").append(LocalDateTime.now()).append("\n");
-        md.append("**Status:** ").append(issues.isEmpty() ? "✅ PASS" : "❌ FAIL").append("\n");
+        md.append("**Status:** ").append(issues.isEmpty() ? " PASS" : " FAIL").append("\n");
         md.append("**Issues Found:** ").append(issues.size()).append("\n\n");
         
         if (!issues.isEmpty()) {
@@ -624,7 +624,7 @@ public class AccessibilityHelper {
                 md.append((i + 1)).append(". ").append(issues.get(i)).append("\n");
             }
         } else {
-            md.append("✅ No accessibility issues found!\n");
+            md.append(" No accessibility issues found!\n");
         }
         
         return md.toString();

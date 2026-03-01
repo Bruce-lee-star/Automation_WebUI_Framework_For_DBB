@@ -69,10 +69,10 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
                 // 只在首次初始化时创建 PlaywrightListener
                 try {
                     singletonPlaywrightListener = new PlaywrightListener();
-                    LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Created singleton PlaywrightListener");
+                    LoggingConfigUtil.logDebugIfVerbose(logger, " Created singleton PlaywrightListener");
                     addDelegateListener(singletonPlaywrightListener);
                 } catch (Exception e) {
-                    logger.error("❌ Failed to add PlaywrightListener as delegate listener", e);
+                    logger.error(" Failed to add PlaywrightListener as delegate listener", e);
                 }
             } else {
                 // 后续实例只是"轻量级"包装器，不创建新的监听器
@@ -127,9 +127,9 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     public void registerWithStepEventBus() {
         try {
             StepEventBus.getEventBus().registerListener(this);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Thucydides Steps Listener Adapter registered with StepEventBus");
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Thucydides Steps Listener Adapter registered with StepEventBus");
         } catch (Exception e) {
-            logger.error("❌ Failed to register with StepEventBus", e);
+            logger.error(" Failed to register with StepEventBus", e);
             throw new InitializationException("Failed to register listener adapter", e);
         }
     }
@@ -140,9 +140,9 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     public void unregisterFromStepEventBus() {
         try {
             StepEventBus.getEventBus().dropListener(this);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Thucydides Steps Listener Adapter unregistered from StepEventBus");
+            LoggingConfigUtil.logInfoIfVerbose(logger, " Thucydides Steps Listener Adapter unregistered from StepEventBus");
         } catch (Exception e) {
-            logger.error("❌ Failed to unregister from StepEventBus", e);
+            logger.error(" Failed to unregister from StepEventBus", e);
         }
     }
 
@@ -208,7 +208,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void stepFinished() {
         // 使用LoggingConfigUtil控制日志输出
-        LoggingConfigUtil.logDebugIfVerbose(logger, "✅ Step finished (delegates: {})", delegateListeners.size());
+        LoggingConfigUtil.logDebugIfVerbose(logger, " Step finished (delegates: {})", delegateListeners.size());
 
         // 无参数版本不处理截图，Serenity 会调用带参数的版本
         for (StepListener listener : delegateListeners) {
@@ -282,7 +282,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
      */
     public String getAdapterStatus() {
         StringBuilder status = new StringBuilder();
-        status.append("📊 Thucydides Steps Listener Adapter Status:\n");
+        status.append(" Thucydides Steps Listener Adapter Status:\n");
         status.append(String.format("Delegate Listeners: %d\n", delegateListeners.size()));
         status.append("Registered Listeners:\n");
 
@@ -503,6 +503,10 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
             } catch (Exception e) {
                 logger.warn("Error in delegate listener testFailed: {}", listener.getClass().getSimpleName(), e);
             }
+        }
+        // 关键修复：重新抛出异常，确保IDEA和Maven能正确识别测试失败
+        if (throwable != null) {
+            throw new RuntimeException("Test failed: " + (result != null ? result.getTitle() : "unknown"), throwable);
         }
     }
 

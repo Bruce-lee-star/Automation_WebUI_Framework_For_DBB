@@ -116,13 +116,13 @@ public class PlaywrightRetryRule implements TestRule {
                     base.evaluate();
 
                     if (attempt > 1) {
-                        logger.info("✅ Test passed on attempt {}!", attempt);
+                        logger.info(" Test passed on attempt {}!", attempt);
                     }
                     return;
 
                 } catch (Throwable t) {
                     lastThrowable = t;
-                    logger.warn("❌ Attempt {} failed: {}", attempt, t.getMessage());
+                    logger.warn(" Attempt {} failed: {}", attempt, t.getMessage());
 
                     if (!shouldRetry(t, attempt)) {
                         logger.warn("🚫 Test will not be retried: {}", t.getClass().getSimpleName());
@@ -156,16 +156,16 @@ public class PlaywrightRetryRule implements TestRule {
 
             try {
                 StepEventBus.getEventBus().clear();
-                logger.info("✅ StepEventBus cleared");
+                logger.info(" StepEventBus cleared");
             } catch (Exception e) {
-                logger.warn("⚠️ Failed to clear StepEventBus: {}", e.getMessage());
+                logger.warn(" Failed to clear StepEventBus: {}", e.getMessage());
             }
 
             try {
                 clearPlaywrightContext();
-                logger.info("✅ Playwright context cleared");
+                logger.info(" Playwright context cleared");
             } catch (Exception e) {
-                logger.warn("⚠️ Failed to clear Playwright context: {}", e.getMessage());
+                logger.warn(" Failed to clear Playwright context: {}", e.getMessage());
             }
         }
 
@@ -173,9 +173,9 @@ public class PlaywrightRetryRule implements TestRule {
             logger.info("🔄 Restarting browser for retry...");
             try {
                 PlaywrightManager.restartBrowser();
-                logger.info("✅ Browser restarted successfully");
+                logger.info(" Browser restarted successfully");
             } catch (Exception e) {
-                logger.warn("⚠️ Failed to restart browser: {}", e.getMessage());
+                logger.warn(" Failed to restart browser: {}", e.getMessage());
             }
         }
 

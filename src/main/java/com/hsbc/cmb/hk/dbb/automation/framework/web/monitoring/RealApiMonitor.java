@@ -389,6 +389,76 @@ public class RealApiMonitor {
 
         return ".*" + normalized + ".*";
     }
+
+    /**
+     * 判断URL是否是静态资源
+     *
+     * 静态资源包括：
+     * - JS 文件：*.js
+     * - CSS 文件：*.css
+     * - 图片：*.png, *.jpg, *.jpeg, *.gif, *.svg, *.ico
+     * - 字体：*.woff, *.woff2, *.ttf, *.eot
+     * - 其他：*.html, *.map, *.json (部分), *.woff2
+     *
+     * 注意：
+     * - 包含 /api/ 或 /rest/ 的URL不会被识别为静态资源
+     * - 动态生成的资源（如带查询参数的）不会被排除
+     *
+     * @param url URL字符串
+     * @return true表示是静态资源，false表示不是静态资源
+     */
+    private static boolean isStaticResource(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+
+        // 转换为小写进行匹配
+        String lowerUrl = url.toLowerCase();
+
+        // 如果包含 /api/ 或 /rest/ 或 /services/，则认为不是静态资源
+        if (lowerUrl.contains("/api/") || lowerUrl.contains("/rest/") || lowerUrl.contains("/services/")) {
+            return false;
+        }
+
+        // 静态资源文件扩展名
+        String[] staticExtensions = {
+            // JavaScript 文件
+            ".js",
+
+            // CSS 文件
+            ".css",
+
+            // 图片文件
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".bmp", ".webp",
+
+            // 字体文件
+            ".woff", ".woff2", ".ttf", ".eot", ".otf",
+
+            // 其他静态资源
+            ".map", ".html", ".htm"
+        };
+
+        // 检查是否以静态资源扩展名结尾
+        for (String ext : staticExtensions) {
+            if (lowerUrl.endsWith(ext)) {
+                return true;
+            }
+        }
+
+        // 检查是否包含常见的静态资源路径
+        String[] staticPaths = {
+            "/static/", "/assets/", "/fonts/", "/images/", "/css/", "/js/", "/styles/",
+            "/node_modules/", "/vendor/", "/lib/"
+        };
+
+        for (String path : staticPaths) {
+            if (lowerUrl.contains(path)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
     
     /**
      * API调用记录
@@ -483,6 +553,13 @@ public class RealApiMonitor {
         ResponseListener responseListener = (response, request, responseTimeMs) -> {
             responseCount[0]++;
             boolean matches = pattern.matcher(response.url()).matches();
+
+            // 如果是静态资源且启用了排除，则跳过
+            if (matches && isStaticResource(response.url())) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "🚫 Skipping static resource: {}", response.url());
+                return;
+            }
+
             LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches pattern: {} = {} (Total responses: {})",
                     response.url(), urlPattern, matches, responseCount[0]);
 
@@ -618,6 +695,13 @@ public class RealApiMonitor {
         ResponseListener responseListener = (response, request, responseTimeMs) -> {
             responseCount[0]++;
             boolean matches = pattern.matcher(response.url()).matches();
+
+            // 如果是静态资源且启用了排除，则跳过
+            if (matches && isStaticResource(response.url())) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "🚫 Skipping static resource: {}", response.url());
+                return;
+            }
+
             LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches pattern: {} = {} (Total responses: {})",
                     response.url(), urlPattern, matches, responseCount[0]);
 
@@ -1815,6 +1899,7 @@ public class RealApiMonitor {
         private Integer stopAfterSeconds = null;  // 在指定秒数后停止
         private Map<String, Integer> stopAfterApiMap = new HashMap<>();  // 检测到指定API后停止 (URL -> expectedCount)
         private Map<String, Integer> stopAfterApiTimeoutMap = new HashMap<>();  // API超时设置 (URL -> timeoutSeconds)
+        private boolean excludeStaticResources = false;  // 是否排除静态资源
 
         private ApiMonitorBuilder(BrowserContext context) {
             this.context = context;
@@ -1872,6 +1957,31 @@ public class RealApiMonitor {
          */
         public ApiMonitorBuilder autoClearHistory(boolean autoClear) {
             this.autoClearHistory = autoClear;
+            return this;
+        }
+
+        /**
+         * 是否排除静态资源（JS、CSS、图片等）
+         * 启用后，只会监控 API 请求，不会监控静态资源请求
+         *
+         * 静态资源包括：
+         * - JS 文件：*.js
+         * - CSS 文件：*.css
+         * - 图片：*.png, *.jpg, *.jpeg, *.gif, *.svg, *.ico
+         * - 字体：*.woff, *.woff2, *.ttf, *.eot
+         * - 其他：*.html, *.woff2, *.map 等
+         *
+         * @param exclude true表示排除静态资源，false表示不排除（默认false）
+         * @return this构建器实例
+         *
+         * 示例：
+         * RealApiMonitor.with(context)
+         *     .monitorApi(".*rest/.*", 200)
+         *     .excludeStaticResources(true)  // 排除静态资源
+         *     .build();
+         */
+        public ApiMonitorBuilder excludeStaticResources(boolean exclude) {
+            this.excludeStaticResources = exclude;
             return this;
         }
 
@@ -1949,6 +2059,9 @@ public class RealApiMonitor {
         public void build() {
             logger.info("========== Building API Monitor ==========");
             logger.info("Total APIs to monitor: {}", apiExpectations.size());
+            if (excludeStaticResources) {
+                logger.info("Static resources (JS, CSS, images, etc.) will be excluded from monitoring");
+            }
             
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
                 logger.info("  - {} -> {}", entry.getKey(), entry.getValue().getDescription());
@@ -2413,36 +2526,60 @@ public class RealApiMonitor {
 
             // 验证响应体内容
             if (expectedResponseBodyContent != null) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody == null || !responseBody.contains(expectedResponseBodyContent)) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
                     failures.add(String.format(
-                        "Response Body Does Not Contain: Expected '%s' in response",
+                        "Response Body Does Not Contain: Response body is null, Expected to contain '%s'",
                         expectedResponseBodyContent
                     ));
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
+                    if (!responseBody.contains(expectedResponseBodyContent)) {
+                        failures.add(String.format(
+                            "Response Body Does Not Contain: Expected '%s' in response",
+                            expectedResponseBodyContent
+                        ));
+                    }
                 }
             }
 
             // 验证完整响应体（完全匹配）
             if (expectedResponseBodyExact != null) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody == null || !responseBody.equals(expectedResponseBodyExact)) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
                     failures.add(String.format(
-                        "Response Body Mismatch (Exact Match):%nExpected: %s%nActual: %s",
-                        expectedResponseBodyExact,
-                        responseBody
+                        "Response Body Mismatch (Exact Match):%nExpected: %s%nActual: [null]",
+                        expectedResponseBodyExact
                     ));
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
+                    if (!responseBody.equals(expectedResponseBodyExact)) {
+                        failures.add(String.format(
+                            "Response Body Mismatch (Exact Match):%nExpected: %s%nActual: %s",
+                            expectedResponseBodyExact,
+                            responseBody
+                        ));
+                    }
                 }
             }
 
             // 验证响应体正则匹配
             if (expectedResponseBodyRegex != null) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody == null || !Pattern.matches(expectedResponseBodyRegex, responseBody)) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
                     failures.add(String.format(
-                        "Response Body Does Not Match Pattern: Expected pattern '%s'%nActual: %s",
-                        expectedResponseBodyRegex,
-                        responseBody
+                        "Response Body Does Not Match Pattern: Expected pattern '%s'%nActual: [null]",
+                        expectedResponseBodyRegex
                     ));
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
+                    if (!Pattern.matches(expectedResponseBodyRegex, responseBody)) {
+                        failures.add(String.format(
+                            "Response Body Does Not Match Pattern: Expected pattern '%s'%nActual: %s",
+                            expectedResponseBodyRegex,
+                            responseBody
+                        ));
+                    }
                 }
             }
 
@@ -2459,8 +2596,11 @@ public class RealApiMonitor {
 
             // 验证JSON Path精确匹配
             if (!jsonPathEqualsMap.isEmpty()) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody != null) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
+                    failures.add("JSON Path Validation Failed: Response body is null, cannot validate JSON Path");
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
                     try {
                         for (Map.Entry<String, Object> entry : jsonPathEqualsMap.entrySet()) {
                             String jsonPath = entry.getKey();
@@ -2492,8 +2632,11 @@ public class RealApiMonitor {
 
             // 验证JSON Path包含匹配
             if (!jsonPathContainsMap.isEmpty()) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody != null) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
+                    failures.add("JSON Path Validation Failed: Response body is null, cannot validate JSON Path");
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
                     try {
                         for (Map.Entry<String, String> entry : jsonPathContainsMap.entrySet()) {
                             String jsonPath = entry.getKey();
@@ -2526,8 +2669,11 @@ public class RealApiMonitor {
 
             // 验证JSON Path正则匹配
             if (!jsonPathMatchesMap.isEmpty()) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody != null) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
+                    failures.add("JSON Path Validation Failed: Response body is null, cannot validate JSON Path");
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
                     try {
                         for (Map.Entry<String, String> entry : jsonPathMatchesMap.entrySet()) {
                             String jsonPath = entry.getKey();
@@ -2560,8 +2706,11 @@ public class RealApiMonitor {
 
             // 验证JSON Path整数匹配
             if (!jsonPathIntEqualsMap.isEmpty()) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody != null) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
+                    failures.add("JSON Path Validation Failed: Response body is null, cannot validate JSON Path");
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
                     try {
                         for (Map.Entry<String, Integer> entry : jsonPathIntEqualsMap.entrySet()) {
                             String jsonPath = entry.getKey();
@@ -2604,8 +2753,11 @@ public class RealApiMonitor {
 
             // 验证JSON Path布尔值匹配
             if (!jsonPathBooleanEqualsMap.isEmpty()) {
-                String responseBody = String.valueOf(record.getResponseBody());
-                if (responseBody != null) {
+                Object responseBodyObj = record.getResponseBody();
+                if (responseBodyObj == null) {
+                    failures.add("JSON Path Validation Failed: Response body is null, cannot validate JSON Path");
+                } else {
+                    String responseBody = String.valueOf(responseBodyObj);
                     try {
                         for (Map.Entry<String, Boolean> entry : jsonPathBooleanEqualsMap.entrySet()) {
                             String jsonPath = entry.getKey();

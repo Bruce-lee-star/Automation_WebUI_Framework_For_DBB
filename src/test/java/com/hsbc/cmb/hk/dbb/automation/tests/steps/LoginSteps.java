@@ -35,34 +35,8 @@ public class LoginSteps {
         logger.info("LoginSteps - User: {}, Environment: {}", username, env);
         logger.info("========================================");
 
-        // Mock场景选择：
-        // 【场景1】直接Mock - 直接提供完整响应数据（不需要监控）
-        //   ApiMonitorAndMockManager.mockDirectSuccess(context, "/rest/lastLoginTime", "{\"lastLoginTime\":1735689600000}");
-        //
-        // 【场景2】捕获后Mock - 基于真实响应修改字段（需要监控，推荐）
-        //   ApiMonitorAndMockManager.captureAndMockFieldWithOriginalStatus(context, "/rest/lastLoginTime", "lastLoginTime", 1735689600000L, 30);
-        //
-        // 【场景3】捕获后Mock + 自动停止 - 基于真实响应修改字段，第一次调用后自动停止mock
-        //   ApiMonitorAndMockManager.captureAndMockFieldsWithOriginalStatus(context, "/rest/lastLoginTime", 
-        //       Map.of("lastLoginTime", 1735689600000L), 30, true);
-        //
-        // 【手动停止所有Mock】
-        //   ApiMonitorAndMockManager.stopAllMocks(context);  // 停止Context上的所有mock
-        //   ApiMonitorAndMockManager.stopAllMocks(page);     // 停止Page上的所有mock
-        //
-        // 【手动停止指定Mock】
-        //   ApiMonitorAndMockManager.stopMock(context, "/rest/lastLoginTime");  // 停止指定URL的mock
-        //   ApiMonitorAndMockManager.stopMock(page, "/rest/lastLoginTime");     // 停止指定URL的mock
-        //
-        // 当前使用：【场景2】捕获后Mock - 自动使用原始API的状态码，修改lastLoginTime字段
-
-        ApiMonitorAndMockManager.captureAndMockFieldWithOriginalStatus(
-            loginPage.getPage().context(),
-            "/rest/lastLoginTime",
-            "lastLoginTime",
-            1735689600000L,  // 2025年时间戳
-            30   // 等待30秒获取真实响应
-        );
+        // 监控所有 API 响应，打印完整信息
+        setupApiMonitoring();
 
         // 【简化】尝试恢复Session并跳过登录（如果可用）
         boolean skippedLogin = tryRestoreSessionAndNavigate(env, username);
@@ -135,20 +109,12 @@ public class LoginSteps {
 
         loginPage.navigateTo(currentUrl);
         loginPage.userNameIpt.type(username);
-        RealApiMonitor.with(loginPage.getPage().context())
-                .monitorApi("/rest/lastLoginTime", 200)
-                .stopAfterSeconds(200)
-                .build();
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());
         loginPage.physicalDeviceLabel.click();
         loginPage.securityCodeIpt.type(BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
         loginPage.loginBtn.click();
         loginPage.loginBtn.waitForNotVisible(40);
-
-        // 【重要】停止所有mock，让后续API调用正常服务器
-        logger.info(" Stopping all mocks - all APIs will call real server");
-        ApiMonitorAndMockManager.stopAllMocks(loginPage.getPage().context());
 
         String targetProfile = BDDUtils.getCurrentProfile();
         if (targetProfile != null && !targetProfile.isEmpty()) {
@@ -158,6 +124,17 @@ public class LoginSteps {
 
         String homeUrl = loginPage.getCurrentUrl();
         SessionManager.saveSessionAfterLogin(env, username, homeUrl);
+    }
+
+    /**
+     * 设置全面的 API 监控，只监控真正的 API 调用，过滤掉 JS、CSS 等静态资源
+     */
+    private void setupApiMonitoring() {
+        // 只监控 /services/rest/ 路径下的 API 请求，不进行实时验证
+        RealApiMonitor.startMonitoring(loginPage.getPage().context(), ".*services/rest/.*");
+        // 设置监控在200秒后自动停止
+        RealApiMonitor.stopMonitoringAfterSeconds(loginPage.getPage().context(), 200);
+        logger.info(" API monitoring enabled - only REST API calls will be logged (no validation)");
     }
 
     /**

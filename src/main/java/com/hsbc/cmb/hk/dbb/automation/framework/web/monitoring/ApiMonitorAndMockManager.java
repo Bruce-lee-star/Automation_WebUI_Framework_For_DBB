@@ -43,14 +43,21 @@ import java.util.stream.Collectors;
  *
  * 【推荐】Builder模式 - 修改请求：
  *   ApiMonitorAndMockManager.mock(context)
- *       .forUrl(".*api/users.*")
+ *       .forUrl("https://api.example.com")  // Host URL（可选）
+ *       .forEndpoint("/api/users")            // Endpoint
  *       .withInterceptor((route, request) -> {
+ *           // 只修改匹配的请求，无需额外判断
  *           return new Route.ResumeOptions()
  *               .setMethod("POST")
  *               .setPostData("{\"modified\":true}")
  *               .setHeaders(Map.of("X-Custom", "value"));
  *       })
  *       .build();
+ *
+ * 说明：
+ * - 使用 forUrl() 可指定 Host URL（可选，用于精确匹配特定域名）
+ * - 使用 forEndpoint() 可指定 API endpoint（必需）
+ * - 拦截器会自动匹配，无需在代码中重复判断
  */
 public class ApiMonitorAndMockManager {
     
@@ -119,6 +126,8 @@ public class ApiMonitorAndMockManager {
     public static class MockRule {
         private String name;
         private String urlPattern;
+        private String hostUrl; // Host URL
+        private String endpoint; // API endpoint
         private String method; // GET, POST, etc.
         private String mockDataPath; // JSON文件路径
         private String mockDataJson; // 直接提供JSON字符串
@@ -185,10 +194,27 @@ public class ApiMonitorAndMockManager {
             return this;
         }
 
+        public MockRule hostUrl(String hostUrl) {
+            this.hostUrl = hostUrl;
+            return this;
+        }
+
+        public MockRule urlPattern(String urlPattern) {
+            this.urlPattern = urlPattern;
+            return this;
+        }
+
+        public MockRule endpoint(String endpoint) {
+            this.endpoint = endpoint;
+            return this;
+        }
+
         // ==================== 网络模拟方法 ====================
 
         public String getName() { return name; }
         public String getUrlPattern() { return urlPattern; }
+        public String getHostUrl() { return hostUrl; }
+        public String getEndpoint() { return endpoint; }
         public String getMethod() { return method; }
         public String getMockDataPath() { return mockDataPath; }
         public String getMockDataJson() { return mockDataJson; }
@@ -1096,18 +1122,19 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加或替换请求头
      *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param headerName 头名称
      * @param headerValue 头值
      *
      * 示例：
      * modifyRequestHeader(page, "/api/users", "Authorization", "Bearer token123");
+     * modifyRequestHeader(page, "https://api.example.com/users", "Authorization", "Bearer token123");
      */
-    public static void modifyRequestHeader(Page page, String urlPattern, String headerName, String headerValue) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request header for: {} ==========", pattern);
+    public static void modifyRequestHeader(Page page, String endpoint, String headerName, String headerValue) {
+        logger.info("========== Modifying request header for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-header-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-header-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 Map<String, String> headers = new HashMap<>(request.headers());
                 headers.put(headerName, headerValue);
@@ -1124,18 +1151,19 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加或替换请求头
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param headerName 头名称
      * @param headerValue 头值
      *
      * 示例：
      * modifyRequestHeader(context, "/api/users", "Authorization", "Bearer token123");
+     * modifyRequestHeader(context, "https://api.example.com/users", "Authorization", "Bearer token123");
      */
-    public static void modifyRequestHeader(BrowserContext context, String urlPattern, String headerName, String headerValue) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request header for: {} ==========", pattern);
+    public static void modifyRequestHeader(BrowserContext context, String endpoint, String headerName, String headerValue) {
+        logger.info("========== Modifying request header for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-header-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-header-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 Map<String, String> headers = new HashMap<>(request.headers());
                 headers.put(headerName, headerValue);
@@ -1152,17 +1180,18 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加或替换请求体
      *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param newBody 新的请求体
      *
      * 示例：
      * modifyRequestBody(page, "/api/users", "{\"name\":\"new_name\"}");
+     * modifyRequestBody(page, "https://api.example.com/users", "{\"name\":\"new_name\"}");
      */
-    public static void modifyRequestBody(Page page, String urlPattern, String newBody) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request body for: {} ==========", pattern);
+    public static void modifyRequestBody(Page page, String endpoint, String newBody) {
+        logger.info("========== Modifying request body for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-body-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-body-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 return new Route.ResumeOptions().setPostData(newBody);
             });
@@ -1177,17 +1206,18 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加或替换请求体
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param newBody 新的请求体
      *
      * 示例：
      * modifyRequestBody(context, "/api/users", "{\"name\":\"new_name\"}");
+     * modifyRequestBody(context, "https://api.example.com/users", "{\"name\":\"new_name\"}");
      */
-    public static void modifyRequestBody(BrowserContext context, String urlPattern, String newBody) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request body for: {} ==========", pattern);
+    public static void modifyRequestBody(BrowserContext context, String endpoint, String newBody) {
+        logger.info("========== Modifying request body for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-body-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-body-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 return new Route.ResumeOptions().setPostData(newBody);
             });
@@ -1202,18 +1232,19 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加查询参数
      *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param paramName 参数名
      * @param paramValue 参数值
      *
      * 示例：
      * modifyRequestQueryParam(page, "/api/users", "userId", "123");
+     * modifyRequestQueryParam(page, "https://api.example.com/users", "userId", "123");
      */
-    public static void modifyRequestQueryParam(Page page, String urlPattern, String paramName, String paramValue) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request query param for: {} ==========", pattern);
+    public static void modifyRequestQueryParam(Page page, String endpoint, String paramName, String paramValue) {
+        logger.info("========== Modifying request query param for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-query-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-query-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 String url = request.url();
                 String separator = url.contains("?") ? "&" : "?";
@@ -1231,18 +1262,19 @@ public class ApiMonitorAndMockManager {
      * 【简化】修改请求 - 添加查询参数
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param paramName 参数名
      * @param paramValue 参数值
      *
      * 示例：
      * modifyRequestQueryParam(context, "/api/users", "userId", "123");
+     * modifyRequestQueryParam(context, "https://api.example.com/users", "userId", "123");
      */
-    public static void modifyRequestQueryParam(BrowserContext context, String urlPattern, String paramName, String paramValue) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request query param for: {} ==========", pattern);
+    public static void modifyRequestQueryParam(BrowserContext context, String endpoint, String paramName, String paramValue) {
+        logger.info("========== Modifying request query param for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-query-" + pattern, pattern)
+        MockRule rule = new MockRule("modify-query-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor((route, request) -> {
                 String url = request.url();
                 String separator = url.contains("?") ? "&" : "?";
@@ -1281,36 +1313,12 @@ public class ApiMonitorAndMockManager {
         logger.info(" Request method modifier configured successfully!");
     }
 
-    /**
-     * 【简化】修改请求 - 修改请求方法
-     *
-     * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
-     * @param newMethod 新的HTTP方法（GET, POST, PUT, DELETE等）
-     *
-     * 示例：
-     * modifyRequestMethod(context, "/api/users", "GET");
-     */
-    public static void modifyRequestMethod(BrowserContext context, String urlPattern, String newMethod) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request method for: {} -> {} ==========", pattern, newMethod);
-
-        MockRule rule = new MockRule("modify-method-" + pattern, pattern)
-            .requestInterceptor((route, request) -> {
-                return new Route.ResumeOptions().setMethod(newMethod);
-            });
-        registerMockRule(rule);
-        applyMocks(context);
-        recordMockConfiguration();
-
-        logger.info(" Request method modifier configured successfully!");
-    }
 
     /**
      * 【高级】自定义请求拦截器 - 完全控制请求修改
      *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param interceptor 请求拦截器
      *
      * 示例：
@@ -1321,11 +1329,11 @@ public class ApiMonitorAndMockManager {
      *         .setHeaders(Map.of("X-Custom", "value"));
      * });
      */
-    public static void interceptRequest(Page page, String urlPattern, RequestInterceptor interceptor) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Intercepting requests for: {} ==========", pattern);
+    public static void interceptRequest(Page page, String endpoint, RequestInterceptor interceptor) {
+        logger.info("========== Intercepting requests for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("intercept-" + pattern, pattern)
+        MockRule rule = new MockRule("intercept-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor(interceptor);
         registerMockRule(rule);
         applyMocks(page);
@@ -1338,7 +1346,7 @@ public class ApiMonitorAndMockManager {
      * 【高级】自定义请求拦截器 - 完全控制请求修改
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param interceptor 请求拦截器
      *
      * 示例：
@@ -1349,17 +1357,61 @@ public class ApiMonitorAndMockManager {
      *         .setHeaders(Map.of("X-Custom", "value"));
      * });
      */
-    public static void interceptRequest(BrowserContext context, String urlPattern, RequestInterceptor interceptor) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Intercepting requests for: {} ==========", pattern);
+    public static void interceptRequest(BrowserContext context, String endpoint, RequestInterceptor interceptor) {
+        logger.info("========== Intercepting requests for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("intercept-" + pattern, pattern)
+        MockRule rule = new MockRule("intercept-" + endpoint, ".*")
+            .endpoint(endpoint)
             .requestInterceptor(interceptor);
         registerMockRule(rule);
         applyMocks(context);
         recordMockConfiguration();
 
         logger.info(" Request interceptor configured successfully!");
+    }
+
+    /**
+     * 【推荐】修改请求方法 - 只修改请求，不影响其他请求
+     * 使用独立的路由处理，避免干扰其他请求
+     *
+     * @param context Playwright BrowserContext对象
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
+     * @param newMethod 新的HTTP方法（GET, POST, PUT, DELETE等）
+     *
+     * 示例：
+     * modifyRequestMethod(context, "/api/users", "POST");
+     * modifyRequestMethod(context, "https://api.example.com/users", "POST");
+     */
+    public static void modifyRequestMethod(BrowserContext context, String endpoint, String newMethod) {
+        logger.info("========== Modifying request method for: {} -> {} ==========", endpoint, newMethod);
+
+        // 使用 ".*" 匹配所有请求，在拦截器中通过 request.url().contains() 判断
+        context.route(".*", route -> {
+            try {
+                Request request = route.request();
+                String url = request.url();
+
+                // 通过 contains 判断是否匹配
+                if (url.contains(endpoint)) {
+                    logger.info("Modifying method for: {} from {} to {}", url, request.method(), newMethod);
+
+                    // 修改请求方法并继续
+                    route.resume(new Route.ResumeOptions().setMethod(newMethod));
+                } else {
+                    // 不匹配的请求正常继续
+                    route.resume();
+                }
+            } catch (Exception e) {
+                logger.error("Error modifying request method", e);
+                try {
+                    route.resume();
+                } catch (Exception ex) {
+                    logger.error("Failed to resume route", ex);
+                }
+            }
+        });
+
+        logger.info(" Request method modifier configured successfully!");
     }
 
     // ==================== 传统API（向后兼容） ====================
@@ -1495,12 +1547,30 @@ public class ApiMonitorAndMockManager {
     private static void handleMockRoute(Route route, MockRule rule) {
         try {
             Request request = route.request();
+            String url = request.url();
+
+            // 检查 hostUrl 和 endpoint 是否匹配
+            if (rule.getHostUrl() != null && !rule.getHostUrl().isEmpty()) {
+                if (!url.contains(rule.getHostUrl())) {
+                    logger.debug("URL does not match hostUrl: {}, skipping", rule.getHostUrl());
+                    route.resume();
+                    return;
+                }
+            }
+
+            if (rule.getEndpoint() != null && !rule.getEndpoint().isEmpty()) {
+                if (!url.contains(rule.getEndpoint())) {
+                    logger.debug("URL does not match endpoint: {}, skipping", rule.getEndpoint());
+                    route.resume();
+                    return;
+                }
+            }
 
             // 记录请求信息
             recordApiCall(route, rule, null);
 
             logger.info("Intercepted request: {} {} - Applying rule: {}",
-                request.method(), request.url(), rule.getName());
+                request.method(), url, rule.getName());
 
             // 检查HTTP方法是否匹配
             if (!Pattern.matches(rule.getMethod(), request.method())) {
@@ -1951,19 +2021,24 @@ public class ApiMonitorAndMockManager {
     /**
      * Mock构建器 - 使用Builder模式配置Mock
      *
-     * 示例用法（单个Mock）：
+     * 使用方式：
+     * 1. forEndpoint() - 指定 API endpoint，自动匹配包含该 endpoint 的请求
+     * 2. forUrl() - 指定 Host URL（可选），用于精确匹配特定域名
+     *
+     * 示例用法（修改请求）：
      * ApiMonitorAndMockManager.mock(context)
-     *     .forUrl(".*api/users.*")
-     *     .withStatus(200)
-     *     .withResponse("{\"status\":\"success\"}")
+     *     .forEndpoint("/api/users")  // 指定 endpoint
+     *     .withInterceptor((route, request) -> {
+     *         // 只修改匹配的请求，无需额外判断
+     *         return new Route.ResumeOptions().setMethod("POST");
+     *     })
      *     .build();
      *
-     * 示例用法（多个Mock）：
+     * 示例用法（Mock 响应）：
      * ApiMonitorAndMockManager.mock(context)
-     *     .addMock(new MockRule("users", ".*api/users.*")
-     *         .mockDataJson("{\"status\":\"success\"}"))
-     *     .addMock(new MockRule("products", ".*api/products.*")
-     *         .statusCode(201))
+     *     .forEndpoint("/api/users")
+     *     .withStatus(200)
+     *     .withResponse("{\"status\":\"success\"}")
      *     .build();
      */
     public static class MockBuilder {
@@ -1985,15 +2060,51 @@ public class ApiMonitorAndMockManager {
         }
 
         /**
-         * 设置要Mock的URL模式（开始链式调用）
+         * 设置要Mock的Host URL（API的域名）
+         * 可选，如果只使用 forEndpoint()，则不需要指定 hostUrl
          *
-         * @param urlPattern URL匹配模式（支持普通URL或正则）
+         * @param hostUrl Host URL（如：https://api.example.com）
          * @return this构建器实例
          */
-        public MockBuilder forUrl(String urlPattern) {
-            String pattern = toRegexPattern(urlPattern);
-            MockRule rule = new MockRule("mock-" + pattern, pattern);
-            mockRules.add(rule);
+        public MockBuilder forUrl(String hostUrl) {
+            if (mockRules.isEmpty()) {
+                // 如果是第一个规则，创建新规则并设置 hostUrl
+                MockRule rule = new MockRule("mock-" + hostUrl, ".*");
+                rule.hostUrl(hostUrl);
+                mockRules.add(rule);
+            } else {
+                // 如果已有规则，设置最后一个规则的 hostUrl
+                mockRules.get(mockRules.size() - 1).hostUrl(hostUrl);
+            }
+            return this;
+        }
+
+        /**
+         * 设置要Mock的Endpoint（API的路径）
+         * 可以单独使用，也可以与 forUrl() 配合使用
+         *
+         * @param endpoint Endpoint（如：/api/users）
+         * @return this构建器实例
+         *
+         * 示例1：单独使用（匹配所有包含 /api/users 的请求）
+         *   .forEndpoint("/api/users")
+         *
+         * 示例2：配合 forUrl 使用（精确匹配特定域名 + endpoint）
+         *   .forUrl("https://api.example.com")
+         *   .forEndpoint("/api/users")
+         */
+        public MockBuilder forEndpoint(String endpoint) {
+            // 使用 ".*" 匹配所有请求，在 handleMockRoute 中通过 request.url().contains() 判断
+            if (mockRules.isEmpty()) {
+                // 如果是第一个规则，创建新规则并设置 endpoint
+                MockRule rule = new MockRule("mock-" + endpoint, ".*");
+                rule.endpoint(endpoint);
+                mockRules.add(rule);
+            } else {
+                // 如果已有规则，设置最后一个规则的 endpoint
+                MockRule lastRule = mockRules.get(mockRules.size() - 1);
+                lastRule.endpoint(endpoint);
+            }
             return this;
         }
 

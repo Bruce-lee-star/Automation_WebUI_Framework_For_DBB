@@ -210,25 +210,22 @@ public class RealApiMonitor {
      * 自动清空历史、启用验证、设置期望、开始监控
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL如 "/api/xxx" 或正则如 ".*api/users.*"）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @param expectedStatusCode 期望的状态码（如 200）
      *
      * 示例：
-     * monitorAndVerify(context, ".*auth/login.*", 200);
-     * monitorAndVerify(context, "/api/users", 200); // 自动转换为正则
+     * monitorAndVerify(context, "/api/users", 200);
      */
-    public static void monitorAndVerify(BrowserContext context, String urlPattern, int expectedStatusCode) {
-        String pattern = toRegexPattern(urlPattern);
+    public static void monitorAndVerify(BrowserContext context, String endpoint, int expectedStatusCode) {
         logger.info("========== Starting API monitoring with real-time verification ==========");
-        logger.info("Monitoring API: {} (Expected Status: {})", pattern, expectedStatusCode);
-        logger.info("Original URL pattern: '{}' -> Converted to: '{}'", urlPattern, pattern);
+        logger.info("Monitoring API: {} (Expected Status: {})", endpoint, expectedStatusCode);
         logger.info("Monitoring will stop automatically after detecting the first matching API");
         clearHistory();
         clearApiExpectations();
-        expectApiStatus(pattern, expectedStatusCode);
-        monitorApi(context, pattern);
+        expectApiStatus(endpoint, expectedStatusCode);
+        monitorApi(context, endpoint);
         // 自动停止监控：检测到第一个匹配的API后停止
-        stopMonitoringAfterApi(context, urlPattern, 1);
+        stopMonitoringAfterApi(context, endpoint, 1);
     }
 
     /**
@@ -268,19 +265,18 @@ public class RealApiMonitor {
      * 【灵活】只监控API，不自动验证 - 灵活手动验证
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint API endpoint（如 "/api/users"）
      *
      * 示例：
-     * startMonitoring(context, ".*api/.*");
+     * startMonitoring(context, "/api/users");
      * // ... 执行操作
-     * verifyStatus(".*api/users.*", 200); // 手动验证
+     * verifyStatus("/api/users", 200); // 手动验证
      */
-    public static void startMonitoring(BrowserContext context, String urlPattern) {
-        String pattern = toRegexPattern(urlPattern);
+    public static void startMonitoring(BrowserContext context, String endpoint) {
         logger.info("========== Starting API monitoring (without automatic verification) ==========");
-        logger.info("Monitoring API: {} (Original: '{}')", pattern, urlPattern);
+        logger.info("Monitoring API: {}", endpoint);
         clearHistory();
-        monitorApi(context, pattern);
+        monitorApi(context, endpoint);
     }
 
     /**
@@ -314,11 +310,11 @@ public class RealApiMonitor {
      */
     public static void monitorWithExpectation(BrowserContext context, ApiExpectation expectation) {
         logger.info("========== Starting API monitoring with multi-dimension verification ==========");
-        logger.info("Monitoring API: {} with expectation: {}", expectation.getUrlPattern(), expectation.getDescription());
+        logger.info("Monitoring API: {} with expectation: {}", expectation.getEndpoint(), expectation.getDescription());
         clearHistory();
         clearApiExpectations();
-        RealApiMonitor.apiExpectations.put(expectation.getUrlPattern(), expectation);
-        monitorApi(context, expectation.getUrlPattern());
+        RealApiMonitor.apiExpectations.put(expectation.getEndpoint(), expectation);
+        monitorApi(context, expectation.getEndpoint());
         // 自动记录到Serenity报告
         recordMonitoredApiTargets();
     }
@@ -341,11 +337,11 @@ public class RealApiMonitor {
         clearHistory();
         clearApiExpectations();
         for (ApiExpectation expectation : expectations) {
-            logger.info("  - {} : {}", expectation.getUrlPattern(), expectation.getDescription());
-            RealApiMonitor.apiExpectations.put(expectation.getUrlPattern(), expectation);
+            logger.info("  - {} : {}", expectation.getEndpoint(), expectation.getDescription());
+            RealApiMonitor.apiExpectations.put(expectation.getEndpoint(), expectation);
         }
         if (expectations.size() == 1) {
-            monitorApi(context, expectations.get(0).getUrlPattern());
+            monitorApi(context, expectations.get(0).getEndpoint());
         } else {
             monitorAllApi(context);
         }
@@ -524,22 +520,24 @@ public class RealApiMonitor {
      * 监控特定URL的真实API响应（针对BrowserContext）
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      */
-    public static void monitorApi(BrowserContext context, String urlPattern) {
-        monitorApi(context, urlPattern, null);
+    public static void monitorApi(BrowserContext context, String endpoint) {
+        monitorApi(context, endpoint, null);
     }
-    
+
     /**
      * 监控特定URL的真实API响应，并提供自定义监听器（针对BrowserContext）
-     * 
+     *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @param listener 响应监听器（可为null）
      */
-    public static void monitorApi(BrowserContext context, String urlPattern, ResponseListener listener) {
-        Pattern pattern = Pattern.compile(urlPattern);
-        logger.info(" Setting up API monitor for pattern: {} on BrowserContext", urlPattern);
+    public static void monitorApi(BrowserContext context, String endpoint, ResponseListener listener) {
+        // 使用 endpoint 匹配
+        final String patternOrEndpoint = endpoint;
+
+        logger.info(" Setting up API monitor for: {} (endpoint) on BrowserContext", endpoint);
         // 用于统计响应数量
         final int[] responseCount = {0};
 
@@ -552,7 +550,7 @@ public class RealApiMonitor {
         // 添加响应监听器
         ResponseListener responseListener = (response, request, responseTimeMs) -> {
             responseCount[0]++;
-            boolean matches = pattern.matcher(response.url()).matches();
+            boolean matches = endpoint.isEmpty() || response.url().contains(endpoint);
 
             // 如果是静态资源且启用了排除，则跳过
             if (matches && isStaticResource(response.url())) {
@@ -560,8 +558,8 @@ public class RealApiMonitor {
                 return;
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches pattern: {} = {} (Total responses: {})",
-                    response.url(), urlPattern, matches, responseCount[0]);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches endpoint: {} = {} (Total responses: {})",
+                    response.url(), endpoint, matches, responseCount[0]);
 
             if (matches) {
                 try {
@@ -653,38 +651,37 @@ public class RealApiMonitor {
             }
         });
 
-        logger.info(" API monitoring started successfully for pattern: {} on BrowserContext", urlPattern);
+        logger.info(" API monitoring started successfully for endpoint: {} on BrowserContext", endpoint);
     }
-    
+
     /**
      * 监控所有API响应
      *
      * @param context Playwright BrowserContext对象
      */
     public static void monitorAllApi(BrowserContext context) {
-        monitorApi(context, ".*");
+        monitorApi(context, "");
     }
 
     /**
      * 监控特定URL的真实API响应（针对Page）
      *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      */
-    public static void monitorApi(Page page, String urlPattern) {
-        monitorApi(page, urlPattern, null);
+    public static void monitorApi(Page page, String endpoint) {
+        monitorApi(page, endpoint, null);
     }
 
     /**
      * 监控特定URL的真实API响应（针对Page），并提供自定义监听器
-     * 
+     *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @param listener 响应监听器（可为null）
      */
-    public static void monitorApi(Page page, String urlPattern, ResponseListener listener) {
-        Pattern pattern = Pattern.compile(urlPattern);
-        logger.info(" Setting up API monitor for pattern: {} on Page", urlPattern);
+    public static void monitorApi(Page page, String endpoint, ResponseListener listener) {
+        logger.info(" Setting up API monitor for endpoint: {} on Page", endpoint);
         // 用于统计响应数量
         final int[] responseCount = {0};
 
@@ -694,7 +691,7 @@ public class RealApiMonitor {
         // 添加响应监听器
         ResponseListener responseListener = (response, request, responseTimeMs) -> {
             responseCount[0]++;
-            boolean matches = pattern.matcher(response.url()).matches();
+            boolean matches = endpoint.isEmpty() || response.url().contains(endpoint);
 
             // 如果是静态资源且启用了排除，则跳过
             if (matches && isStaticResource(response.url())) {
@@ -702,8 +699,8 @@ public class RealApiMonitor {
                 return;
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches pattern: {} = {} (Total responses: {})",
-                    response.url(), urlPattern, matches, responseCount[0]);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "🔍 Checking URL: {} matches endpoint: {} = {} (Total responses: {})",
+                    response.url(), endpoint, matches, responseCount[0]);
 
             if (matches) {
                 try {
@@ -784,7 +781,7 @@ public class RealApiMonitor {
             }
         });
 
-        logger.info(" API monitoring started successfully for pattern: {} on Page", urlPattern);
+        logger.info(" API monitoring started successfully for endpoint: {} on Page", endpoint);
     }
 
     /**
@@ -793,7 +790,7 @@ public class RealApiMonitor {
      * @param page Playwright Page对象
      */
     public static void monitorAllApi(Page page) {
-        monitorApi(page, ".*");
+        monitorApi(page, "");
     }
     
     /**
@@ -808,13 +805,12 @@ public class RealApiMonitor {
     /**
      * 获取特定URL的API调用记录
      * 
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @return 匹配的API调用记录列表
      */
-    public static List<ApiCallRecord> getApiHistoryByUrl(String urlPattern) {
-        Pattern pattern = Pattern.compile(urlPattern);
+    public static List<ApiCallRecord> getApiHistoryByUrl(String endpoint) {
         return apiCallHistory.stream()
-                .filter(record -> pattern.matcher(record.getUrl()).matches())
+                .filter(record -> record.getUrl().contains(endpoint))
                 .collect(Collectors.toList());
     }
     
@@ -857,11 +853,11 @@ public class RealApiMonitor {
     /**
      * 获取特定URL的最后一次API调用记录
      *
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @return 最后一次匹配的API调用记录，如果没有则返回null
      */
-    public static ApiCallRecord getLastApiCallByUrl(String urlPattern) {
-        List<ApiCallRecord> calls = getApiHistoryByUrl(urlPattern);
+    public static ApiCallRecord getLastApiCallByUrl(String endpoint) {
+        List<ApiCallRecord> calls = getApiHistoryByUrl(endpoint);
         if (calls.isEmpty()) {
             return null;
         }
@@ -932,15 +928,14 @@ public class RealApiMonitor {
      * @param urlPattern 目标API的URL模式（支持正则），如果为null则只按时间停止
      *
      * 示例：
-     * startMonitoring(context, ".*api/.*");
+     * startMonitoring(context, "/api/users");
      * // ... 执行操作
-     * stopMonitoringAfterSeconds(context, 10, ".*auth/login.*");  // 10秒内必须捕获到auth/login
+     * stopMonitoringAfterSeconds(context, 10, "/api/auth/login");  // 10秒内必须捕获到auth/login
      * RealApiMonitor.logApiMonitoringResult();  // 记录结果到Serenity报告
      */
-    public static void stopMonitoringAfterSeconds(BrowserContext context, int seconds, String urlPattern) {
-        if (urlPattern != null) {
-            Pattern pattern = Pattern.compile(toRegexPattern(urlPattern));
-            logger.info("Scheduled to stop monitoring after {} seconds (must capture API matching: {})", seconds, urlPattern);
+    public static void stopMonitoringAfterSeconds(BrowserContext context, int seconds, String endpoint) {
+        if (endpoint != null) {
+            logger.info("Scheduled to stop monitoring after {} seconds (must capture API matching: {})", seconds, endpoint);
 
             new Thread(() -> {
                 try {
@@ -951,17 +946,17 @@ public class RealApiMonitor {
 
                     // 检查是否捕获到目标API
                     boolean found = apiCallHistory.stream()
-                            .anyMatch(record -> pattern.matcher(record.getUrl()).matches());
+                            .anyMatch(record -> record.getUrl().contains(endpoint));
 
                     if (found) {
-                        logger.info(" Time's up! Found target API matching: {}", urlPattern);
+                        logger.info(" Time's up! Found target API matching: {}", endpoint);
                         // 记录到Serenity报告：成功捕获API
                         String successMsg = String.format(
                             " API Monitoring SUCCESS<br>" +
                             "Target API captured within %d seconds<br>" +
-                            "Expected pattern: %s<br>" +
+                            "Expected endpoint: %s<br>" +
                             "Total APIs captured: %d",
-                            seconds, urlPattern, apiCallHistory.size()
+                            seconds, endpoint, apiCallHistory.size()
                         );
                         apiMonitorWarnings.add(successMsg);
                         logger.info(successMsg.replace("<br>", "\n"));
@@ -970,9 +965,9 @@ public class RealApiMonitor {
                         String warningMsg = String.format(
                             " API Monitoring FAILED<br>" +
                             "Target API not detected within %d seconds!<br>" +
-                            "Expected pattern: %s<br>" +
+                            "Expected endpoint: %s<br>" +
                             "Total APIs captured: %d",
-                            seconds, urlPattern, apiCallHistory.size()
+                            seconds, endpoint, apiCallHistory.size()
                         );
                         logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                         apiMonitorWarnings.add(warningMsg);
@@ -1004,10 +999,9 @@ public class RealApiMonitor {
                     if (!expectationPatterns.isEmpty()) {
                         boolean foundTargetApi = false;
                         for (String pattern : expectationPatterns) {
-                            Pattern regex = Pattern.compile(pattern);
                             for (int i = initialApiCount; i < apiCallHistory.size(); i++) {
                                 ApiCallRecord record = apiCallHistory.get(i);
-                                if (regex.matcher(record.getUrl()).matches()) {
+                                if (record.getUrl().contains(pattern)) {
                                     foundTargetApi = true;
                                     logger.info(" Found expected API matching: {}", pattern);
                                     break;
@@ -1021,7 +1015,7 @@ public class RealApiMonitor {
                             String successMsg = String.format(
                                 " API Monitoring SUCCESS<br>" +
                                 "Expected APIs captured within %d seconds<br>" +
-                                "Expected patterns: %s<br>" +
+                                "Expected endpoints: %s<br>" +
                                 "Initial API count: %d<br>" +
                                 "Final API count: %d<br>" +
                                 "New APIs captured: %d",
@@ -1062,16 +1056,16 @@ public class RealApiMonitor {
      * 检测到指定API后停止监控（企业级功能）
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式
+     * @param endpoint API endpoint
      * @param expectedCount 期望检测到的API调用次数
      *
      * 示例：
-     * startMonitoring(context, ".*api/.*");
+     * startMonitoring(context, "/api/users");
      * // ... 执行操作
-     * stopMonitoringAfterApi(context, ".*auth/login.*", 1);  // 检测到1次登录API后停止
+     * stopMonitoringAfterApi(context, "/api/auth/login", 1);  // 检测到1次登录API后停止
      */
-    public static void stopMonitoringAfterApi(BrowserContext context, String urlPattern, int expectedCount) {
-        stopMonitoringAfterApi(context, urlPattern, expectedCount, 0);
+    public static void stopMonitoringAfterApi(BrowserContext context, String endpoint, int expectedCount) {
+        stopMonitoringAfterApi(context, endpoint, expectedCount, 0);
     }
 
     /**
@@ -1085,20 +1079,19 @@ public class RealApiMonitor {
      * 注意：需要在主线程中调用 logApiMonitoringResult() 来记录结果到Serenity报告
      *
      * @param context Playwright BrowserContext对象
-     * @param urlPattern URL匹配模式
+     * @param endpoint API endpoint
      * @param expectedCount 期望检测到的API调用次数
      * @param timeoutSeconds 超时秒数（0表示不设置超时）
      *
      * 示例：
-     * startMonitoring(context, ".*api/.*");
+     * startMonitoring(context, "/api/users");
      * // ... 执行操作
      * // 10秒内必须检测到1次登录API
-     * stopMonitoringAfterApi(context, ".*auth/login.*", 1, 10);
+     * stopMonitoringAfterApi(context, "/api/auth/login", 1, 10);
      * RealApiMonitor.logApiMonitoringResult();  // 记录结果到Serenity报告
      */
-    public static void stopMonitoringAfterApi(BrowserContext context, String urlPattern, int expectedCount, int timeoutSeconds) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("Will stop monitoring after detecting {} API(s) matching pattern: {}", expectedCount, pattern);
+    public static void stopMonitoringAfterApi(BrowserContext context, String endpoint, int expectedCount, int timeoutSeconds) {
+        logger.info("Will stop monitoring after detecting {} API(s) matching endpoint: {}", expectedCount, endpoint);
         if (timeoutSeconds > 0) {
             logger.info("Timeout set: {} seconds. Will throw error if API not detected within timeout.", timeoutSeconds);
         }
@@ -1118,7 +1111,7 @@ public class RealApiMonitor {
                     return;
                 }
 
-                boolean matches = Pattern.compile(pattern).matcher(response.url()).matches();
+                boolean matches = response.url().contains(endpoint);
                 if (matches) {
                     synchronized (initialCount) {
                         detectedCount++;
@@ -1159,10 +1152,10 @@ public class RealApiMonitor {
                         String warningMsg = String.format(
                             " API Monitoring FAILED<br>" +
                             "Target API not detected within %d seconds!<br>" +
-                            "Expected pattern: %s<br>" +
+                            "Expected endpoint: %s<br>" +
                             "Expected count: %d<br>" +
                             "Total APIs captured: %d",
-                            timeoutSeconds, urlPattern, expectedCount, apiCallHistory.size()
+                            timeoutSeconds, endpoint, expectedCount, apiCallHistory.size()
                         );
                         logger.warn(" API Monitor Warning: {}", warningMsg.replace("<br>", "\n"));
                         apiMonitorWarnings.add(warningMsg);
@@ -1173,7 +1166,7 @@ public class RealApiMonitor {
                             "Target API not detected within %d seconds.\n" +
                             "Expected pattern: %s\n" +
                             "Expected count: %d",
-                            timeoutSeconds, urlPattern, expectedCount
+                            timeoutSeconds, endpoint, expectedCount
                         );
                         monitoringFailure = new AssertionError(errorMsg);
                     } else {
@@ -1184,7 +1177,7 @@ public class RealApiMonitor {
                             "Expected pattern: %s<br>" +
                             "Expected count: %d<br>" +
                             "Total APIs captured: %d",
-                            timeoutSeconds, urlPattern, expectedCount, apiCallHistory.size()
+                            timeoutSeconds, endpoint, expectedCount, apiCallHistory.size()
                         );
                         apiMonitorWarnings.add(successMsg);
                         logger.info(successMsg.replace("<br>", "\n"));
@@ -1387,22 +1380,22 @@ public class RealApiMonitor {
      * 设置API期望状态码（简单版本）
      * API响应时会自动验证状态码
      *
-     * @param urlPattern URL匹配模式（支持正则表达式）
+     * @param endpoint API endpoint（如 "/api/users"）
      * @param expectedStatusCode 期望的状态码
      */
-    public static void expectApiStatus(String urlPattern, int expectedStatusCode) {
-        apiExpectations.put(urlPattern, ApiExpectation.forUrl(urlPattern).statusCode(expectedStatusCode));
-        logger.info("Added API expectation: {} -> {}", urlPattern, expectedStatusCode);
+    public static void expectApiStatus(String endpoint, int expectedStatusCode) {
+        apiExpectations.put(endpoint, ApiExpectation.forEndpoint(endpoint).statusCode(expectedStatusCode));
+        logger.info("Added API expectation: {} -> {}", endpoint, expectedStatusCode);
     }
 
     /**
      * 批量设置API期望状态码（简单版本）
      *
-     * @param expectations URL模式 -> 期望状态码的映射
+     * @param expectations endpoint -> 期望状态码的映射
      */
     public static void expectMultipleApiStatus(Map<String, Integer> expectations) {
         for (Map.Entry<String, Integer> entry : expectations.entrySet()) {
-            apiExpectations.put(entry.getKey(), ApiExpectation.forUrl(entry.getKey()).statusCode(entry.getValue()));
+            apiExpectations.put(entry.getKey(), ApiExpectation.forEndpoint(entry.getKey()).statusCode(entry.getValue()));
         }
         logger.info("Added {} API expectations", expectations.size());
     }
@@ -1413,8 +1406,8 @@ public class RealApiMonitor {
      * @param expectation API期望对象
      */
     public static void expectApi(ApiExpectation expectation) {
-        apiExpectations.put(expectation.getUrlPattern(), expectation);
-        logger.info("Added API expectation: {} -> {}", expectation.getUrlPattern(), expectation.getDescription());
+        apiExpectations.put(expectation.getEndpoint(), expectation);
+        logger.info("Added API expectation: {} -> {}", expectation.getEndpoint(), expectation.getDescription());
     }
 
     /**
@@ -1438,20 +1431,15 @@ public class RealApiMonitor {
 
         // 检查是否有匹配的期望
         for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
-            String urlPattern = entry.getKey();
+            String endpoint = entry.getKey();
             ApiExpectation expectation = entry.getValue();
 
-            // 检查URL是否匹配模式
-            try {
-                Pattern pattern = Pattern.compile(urlPattern);
-                if (pattern.matcher(record.getUrl()).matches()) {
-                    // 找到匹配的期望，进行多维度验证
-                    expectation.validate(record);
-                    // 找到匹配后立即返回
-                    return;
-                }
-            } catch (Exception e) {
-                logger.warn("Failed to match URL pattern: {}", urlPattern, e);
+            // 检查URL是否匹配 endpoint
+            if (record.getUrl().contains(endpoint)) {
+                // 找到匹配的期望，进行多维度验证
+                expectation.validate(record);
+                // 找到匹配后立即返回
+                return;
             }
         }
     }
@@ -1487,7 +1475,7 @@ public class RealApiMonitor {
                     ApiExpectation expectation = entry.getValue();
                     json.append("    {\n");
                     json.append("      \"#\": ").append(index++).append(",\n");
-                    json.append("      \"urlPattern\": \"").append(escapeJson(expectation.getUrlPattern())).append("\",\n");
+                    json.append("      \"endpoint\": \"").append(escapeJson(expectation.getEndpoint())).append("\",\n");
                     json.append("      \"expectedStatusCode\": ").append(expectation.expectedStatusCode != null ? expectation.expectedStatusCode : "\"Any\"").append(",\n");
                     json.append("      \"responseValidation\": \"").append(escapeJson(expectation.getDescription())).append("\"\n");
                     json.append("    }").append(index <= apiExpectations.size() ? "," : "").append("\n");
@@ -1673,7 +1661,7 @@ public class RealApiMonitor {
 
                     json.append("    {\n");
                     json.append("      \"#\": ").append(++index).append(",\n");
-                    json.append("      \"pattern\": \"").append(escapeJson(expectation.getUrlPattern())).append("\",\n");
+                    json.append("      \"endpoint\": \"").append(escapeJson(expectation.getEndpoint())).append("\",\n");
                     json.append("      \"expectation\": \"").append(escapeJson(expectation.getDescription())).append("\",\n");
                     json.append("      \"status\": \"").append(found ? "MATCHED" : "NOT_MATCHED").append("\",\n");
 
@@ -1713,10 +1701,10 @@ public class RealApiMonitor {
             logger.info("Total API targets configured: {}", apiExpectations.size());
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
                 ApiExpectation expectation = entry.getValue();
-                logger.info("   Target API: {} - {}", expectation.getUrlPattern(), expectation.getDescription());
+                logger.info("   Target API: {} - {}", expectation.getEndpoint(), expectation.getDescription());
             }
         }
-        
+
         logger.info("===========================================");
         
         // 自动记录到Serenity报告
@@ -1799,8 +1787,8 @@ public class RealApiMonitor {
         } else {
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
                 ApiExpectation expectation = entry.getValue();
-                logger.info("  - Pattern: {} | Expectation: {}", 
-                        expectation.getUrlPattern(), expectation.getDescription());
+                logger.info("  - Endpoint: {} | Expectation: {}",
+                        expectation.getEndpoint(), expectation.getDescription());
             }
         }
         
@@ -1848,7 +1836,7 @@ public class RealApiMonitor {
                         if (p.matcher(record.getUrl()).matches()) {
                             found = true;
                             logger.info("   Target matched: {} -> Captured: {} {} - Status: {}",
-                                    expectation.getUrlPattern(),
+                                    expectation.getEndpoint(),
                                     record.getMethod(), record.getUrl(), record.getStatusCode());
                             break;
                         }
@@ -1856,10 +1844,10 @@ public class RealApiMonitor {
                         // ignore
                     }
                 }
-                
+
                 if (!found) {
                     logger.warn("  ⚠ Target NOT matched: {} - No matching API calls found",
-                            expectation.getUrlPattern());
+                            expectation.getEndpoint());
                 }
             }
         }
@@ -1897,8 +1885,8 @@ public class RealApiMonitor {
         private final Map<String, ApiExpectation> apiExpectations = new HashMap<>();
         private boolean autoClearHistory = true;
         private Integer stopAfterSeconds = null;  // 在指定秒数后停止
-        private Map<String, Integer> stopAfterApiMap = new HashMap<>();  // 检测到指定API后停止 (URL -> expectedCount)
-        private Map<String, Integer> stopAfterApiTimeoutMap = new HashMap<>();  // API超时设置 (URL -> timeoutSeconds)
+        private Map<String, Integer> stopAfterApiMap = new HashMap<>();  // 检测到指定API后停止 (endpoint -> expectedCount)
+        private Map<String, Integer> stopAfterApiTimeoutMap = new HashMap<>();  // API超时设置 (endpoint -> timeoutSeconds)
         private boolean excludeStaticResources = false;  // 是否排除静态资源
 
         private ApiMonitorBuilder(BrowserContext context) {
@@ -1914,13 +1902,12 @@ public class RealApiMonitor {
         /**
          * 添加要监控的API及其期望状态码（简单版本）
          *
-         * @param urlPattern URL匹配模式（支持普通URL或正则）
+         * @param endpoint API endpoint（通过 request.url().contains() 判断）
          * @param expectedStatusCode 期望的状态码
          * @return this构建器实例
          */
-        public ApiMonitorBuilder monitorApi(String urlPattern, int expectedStatusCode) {
-            String pattern = toRegexPattern(urlPattern);
-            apiExpectations.put(pattern, ApiExpectation.forUrl(pattern).statusCode(expectedStatusCode));
+        public ApiMonitorBuilder monitorApi(String endpoint, int expectedStatusCode) {
+            apiExpectations.put(endpoint, ApiExpectation.forEndpoint(endpoint).statusCode(expectedStatusCode));
             return this;
         }
 
@@ -1931,7 +1918,7 @@ public class RealApiMonitor {
          * @return this构建器实例
          */
         public ApiMonitorBuilder expectApi(ApiExpectation expectation) {
-            apiExpectations.put(expectation.getUrlPattern(), expectation);
+            apiExpectations.put(expectation.getEndpoint(), expectation);
             return this;
         }
 
@@ -1943,8 +1930,7 @@ public class RealApiMonitor {
          */
         public ApiMonitorBuilder monitorApis(Map<String, Integer> expectations) {
             for (Map.Entry<String, Integer> entry : expectations.entrySet()) {
-                String pattern = toRegexPattern(entry.getKey());
-                apiExpectations.put(pattern, ApiExpectation.forUrl(pattern).statusCode(entry.getValue()));
+                apiExpectations.put(entry.getKey(), ApiExpectation.forEndpoint(entry.getKey()).statusCode(entry.getValue()));
             }
             return this;
         }
@@ -2018,9 +2004,8 @@ public class RealApiMonitor {
          *     .stopAfterApi(".*auth/login.*", 1)  // 检测到1次登录API后停止
          *     .build();
          */
-        public ApiMonitorBuilder stopAfterApi(String urlPattern, int expectedCount) {
-            String pattern = toRegexPattern(urlPattern);
-            stopAfterApiMap.put(pattern, expectedCount);
+        public ApiMonitorBuilder stopAfterApi(String endpoint, int expectedCount) {
+            stopAfterApiMap.put(endpoint, expectedCount);
             return this;
         }
 
@@ -2046,10 +2031,9 @@ public class RealApiMonitor {
          *     .build();
          * RealApiMonitor.logApiMonitoringResult();  // 记录结果到Serenity报告
          */
-        public ApiMonitorBuilder stopAfterApi(String urlPattern, int expectedCount, int timeoutSeconds) {
-            String pattern = toRegexPattern(urlPattern);
-            stopAfterApiMap.put(pattern, expectedCount);
-            stopAfterApiTimeoutMap.put(pattern, timeoutSeconds);
+        public ApiMonitorBuilder stopAfterApi(String endpoint, int expectedCount, int timeoutSeconds) {
+            stopAfterApiMap.put(endpoint, expectedCount);
+            stopAfterApiTimeoutMap.put(endpoint, timeoutSeconds);
             return this;
         }
 
@@ -2241,7 +2225,7 @@ public class RealApiMonitor {
      *     .jsonPathBooleanEquals("$.success", true)  // JSON path布尔值比较
      */
     public static class ApiExpectation {
-        private final String urlPattern;
+        private final String endpoint;
         private Integer expectedStatusCode;
         private Long maxResponseTime;
         private String expectedResponseBodyContent;  // 部分匹配
@@ -2257,8 +2241,8 @@ public class RealApiMonitor {
         private Map<String, Integer> jsonPathIntEqualsMap = new HashMap<>();  // JSON path整数比较
         private Map<String, Boolean> jsonPathBooleanEqualsMap = new HashMap<>();  // JSON path布尔值比较
 
-        private ApiExpectation(String urlPattern) {
-            this.urlPattern = urlPattern;
+        private ApiExpectation(String endpoint) {
+            this.endpoint = endpoint;
         }
 
         /**
@@ -2272,6 +2256,16 @@ public class RealApiMonitor {
             // 自动将普通URL转换为正则表达式
             String pattern = RealApiMonitor.toRegexPattern(urlPattern);
             return new ApiExpectation(pattern);
+        }
+
+        /**
+         * 创建API期望对象（使用 endpoint，通过 request.url().contains() 匹配）
+         *
+         * @param endpoint API endpoint（如 "/api/users"）
+         * @return ApiExpectation对象
+         */
+        public static ApiExpectation forEndpoint(String endpoint) {
+            return new ApiExpectation(endpoint);
         }
 
         /**
@@ -2434,10 +2428,10 @@ public class RealApiMonitor {
         }
 
         /**
-         * 获取URL模式
+         * 获取URL模式/endpoint
          */
-        public String getUrlPattern() {
-            return urlPattern;
+        public String getEndpoint() {
+            return endpoint;
         }
 
         /**

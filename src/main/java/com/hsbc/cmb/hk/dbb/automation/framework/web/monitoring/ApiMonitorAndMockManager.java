@@ -73,6 +73,25 @@ public class ApiMonitorAndMockManager {
     // 存储context或page引用，确保mock规则应用到同一个实例
     private static Page currentPage;
     private static BrowserContext currentContext;
+
+    // 统一的请求修改规则列表（避免多个 ".*" 路由冲突）
+    private static final List<RequestModificationRule> requestModificationRules = new CopyOnWriteArrayList<>();
+    private static final List<RequestModificationRule> pageRequestModificationRules = new CopyOnWriteArrayList<>();
+    private static boolean unifiedRouteHandlerRegistered = false;
+    private static boolean unifiedPageRouteHandlerRegistered = false;
+
+    /**
+     * 请求修改规则
+     */
+    private static class RequestModificationRule {
+        final String endpoint;
+        final RequestInterceptor interceptor;
+
+        RequestModificationRule(String endpoint, RequestInterceptor interceptor) {
+            this.endpoint = endpoint;
+            this.interceptor = interceptor;
+        }
+    }
     
     /**
      * API调用记录
@@ -1132,17 +1151,23 @@ public class ApiMonitorAndMockManager {
      */
     public static void modifyRequestHeader(Page page, String endpoint, String headerName, String headerValue) {
         logger.info("========== Modifying request header for: {} ==========", endpoint);
+        logger.info("   Header: {} = {}", headerName, headerValue);
 
-        MockRule rule = new MockRule("modify-header-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                Map<String, String> headers = new HashMap<>(request.headers());
-                headers.put(headerName, headerValue);
-                return new Route.ResumeOptions().setHeaders(headers);
-            });
-        registerMockRule(rule);
-        applyMocks(page);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加修改规则
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            Map<String, String> headers = new HashMap<>(request.headers());
+            headers.put(headerName, headerValue);
+            Route.ResumeOptions options = new Route.ResumeOptions().setHeaders(headers);
+
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改请求头 (" + headerName + " = " + headerValue + ")",
+                    null, headers, null);
+
+            return options;
+        });
 
         logger.info(" Request header modifier configured successfully!");
     }
@@ -1161,17 +1186,23 @@ public class ApiMonitorAndMockManager {
      */
     public static void modifyRequestHeader(BrowserContext context, String endpoint, String headerName, String headerValue) {
         logger.info("========== Modifying request header for: {} ==========", endpoint);
+        logger.info("   Header: {} = {}", headerName, headerValue);
 
-        MockRule rule = new MockRule("modify-header-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                Map<String, String> headers = new HashMap<>(request.headers());
-                headers.put(headerName, headerValue);
-                return new Route.ResumeOptions().setHeaders(headers);
-            });
-        registerMockRule(rule);
-        applyMocks(context);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
+
+        // 添加修改规则
+        addRequestModificationRule(endpoint, (route, request) -> {
+            Map<String, String> headers = new HashMap<>(request.headers());
+            headers.put(headerName, headerValue);
+            Route.ResumeOptions options = new Route.ResumeOptions().setHeaders(headers);
+
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改请求头 (" + headerName + " = " + headerValue + ")",
+                    null, headers, null);
+
+            return options;
+        });
 
         logger.info(" Request header modifier configured successfully!");
     }
@@ -1190,14 +1221,18 @@ public class ApiMonitorAndMockManager {
     public static void modifyRequestBody(Page page, String endpoint, String newBody) {
         logger.info("========== Modifying request body for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-body-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                return new Route.ResumeOptions().setPostData(newBody);
-            });
-        registerMockRule(rule);
-        applyMocks(page);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加修改规则
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            Route.ResumeOptions options = new Route.ResumeOptions().setPostData(newBody);
+
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改请求体", null, null, newBody);
+
+            return options;
+        });
 
         logger.info(" Request body modifier configured successfully!");
     }
@@ -1216,14 +1251,18 @@ public class ApiMonitorAndMockManager {
     public static void modifyRequestBody(BrowserContext context, String endpoint, String newBody) {
         logger.info("========== Modifying request body for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("modify-body-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                return new Route.ResumeOptions().setPostData(newBody);
-            });
-        registerMockRule(rule);
-        applyMocks(context);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
+
+        // 添加修改规则
+        addRequestModificationRule(endpoint, (route, request) -> {
+            Route.ResumeOptions options = new Route.ResumeOptions().setPostData(newBody);
+
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改请求体", null, null, newBody);
+
+            return options;
+        });
 
         logger.info(" Request body modifier configured successfully!");
     }
@@ -1242,18 +1281,40 @@ public class ApiMonitorAndMockManager {
      */
     public static void modifyRequestQueryParam(Page page, String endpoint, String paramName, String paramValue) {
         logger.info("========== Modifying request query param for: {} ==========", endpoint);
+        logger.info("   Param: {} = {}", paramName, paramValue);
 
-        MockRule rule = new MockRule("modify-query-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                String url = request.url();
-                String separator = url.contains("?") ? "&" : "?";
-                String newUrl = url + separator + paramName + "=" + paramValue;
-                return new Route.ResumeOptions().setUrl(newUrl);
-            });
-        registerMockRule(rule);
-        applyMocks(page);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加修改规则
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            String url = request.url();
+            String separator = url.contains("?") ? "&" : "?";
+            String newUrl = url + separator + paramName + "=" + paramValue;
+            Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
+
+            // 打印详细的修改信息（只打印 URL 变化）
+            logger.info("========================================");
+            logger.info("📝 修改查询参数 ({} = {})", paramName, paramValue);
+            logger.info("========================================");
+            logger.info("【原始请求信息】");
+            logger.info("   URL: {}", url);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+
+            logger.info("----------------------------------------");
+            logger.info("【修改后请求信息】");
+            logger.info("   URL: {}", newUrl);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+            logger.info("========================================");
+            logger.info("✓ Request modified successfully!");
+            logger.info("========================================");
+
+            return options;
+        });
 
         logger.info(" Request query param modifier configured successfully!");
     }
@@ -1272,18 +1333,40 @@ public class ApiMonitorAndMockManager {
      */
     public static void modifyRequestQueryParam(BrowserContext context, String endpoint, String paramName, String paramValue) {
         logger.info("========== Modifying request query param for: {} ==========", endpoint);
+        logger.info("   Param: {} = {}", paramName, paramValue);
 
-        MockRule rule = new MockRule("modify-query-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor((route, request) -> {
-                String url = request.url();
-                String separator = url.contains("?") ? "&" : "?";
-                String newUrl = url + separator + paramName + "=" + paramValue;
-                return new Route.ResumeOptions().setUrl(newUrl);
-            });
-        registerMockRule(rule);
-        applyMocks(context);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
+
+        // 添加修改规则
+        addRequestModificationRule(endpoint, (route, request) -> {
+            String url = request.url();
+            String separator = url.contains("?") ? "&" : "?";
+            String newUrl = url + separator + paramName + "=" + paramValue;
+            Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
+
+            // 打印详细的修改信息（只打印 URL 变化）
+            logger.info("========================================");
+            logger.info("📝 修改查询参数 ({} = {})", paramName, paramValue);
+            logger.info("========================================");
+            logger.info("【原始请求信息】");
+            logger.info("   URL: {}", url);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+
+            logger.info("----------------------------------------");
+            logger.info("【修改后请求信息】");
+            logger.info("   URL: {}", newUrl);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+            logger.info("========================================");
+            logger.info("✓ Request modified successfully!");
+            logger.info("========================================");
+
+            return options;
+        });
 
         logger.info(" Request query param modifier configured successfully!");
     }
@@ -1291,24 +1374,31 @@ public class ApiMonitorAndMockManager {
     /**
      * 【简化】修改请求 - 修改请求方法
      *
+     * 注意：只修改 HTTP 方法，不自动添加请求体或修改 headers
+     * 如需添加请求体，请配合 modifyRequestBody 使用
+     *
      * @param page Playwright Page对象
-     * @param urlPattern URL匹配模式（支持普通URL或正则）
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param newMethod 新的HTTP方法（GET, POST, PUT, DELETE等）
      *
      * 示例：
-     * modifyRequestMethod(page, "/api/users", "GET");
+     * modifyRequestMethod(page, "/api/users", "POST");
      */
-    public static void modifyRequestMethod(Page page, String urlPattern, String newMethod) {
-        String pattern = toRegexPattern(urlPattern);
-        logger.info("========== Modifying request method for: {} -> {} ==========", pattern, newMethod);
+    public static void modifyRequestMethod(Page page, String endpoint, String newMethod) {
+        logger.info("========== Modifying request method for: {} -> {} ==========", endpoint, newMethod);
 
-        MockRule rule = new MockRule("modify-method-" + pattern, pattern)
-            .requestInterceptor((route, request) -> {
-                return new Route.ResumeOptions().setMethod(newMethod);
-            });
-        registerMockRule(rule);
-        applyMocks(page);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加修改规则
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            Route.ResumeOptions options = new Route.ResumeOptions().setMethod(newMethod);
+
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改 HTTP Method", newMethod, null, null);
+
+            return options;
+        });
 
         logger.info(" Request method modifier configured successfully!");
     }
@@ -1332,12 +1422,20 @@ public class ApiMonitorAndMockManager {
     public static void interceptRequest(Page page, String endpoint, RequestInterceptor interceptor) {
         logger.info("========== Intercepting requests for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("intercept-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor(interceptor);
-        registerMockRule(rule);
-        applyMocks(page);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加拦截规则（包装 interceptor 以添加日志）
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            Route.ResumeOptions options = interceptor.intercept(route, request);
+
+            // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
+            if (options != null) {
+                printRequestModificationInfo(request, options, "拦截器修改请求");
+            }
+
+            return options;
+        });
 
         logger.info(" Request interceptor configured successfully!");
     }
@@ -1360,19 +1458,30 @@ public class ApiMonitorAndMockManager {
     public static void interceptRequest(BrowserContext context, String endpoint, RequestInterceptor interceptor) {
         logger.info("========== Intercepting requests for: {} ==========", endpoint);
 
-        MockRule rule = new MockRule("intercept-" + endpoint, ".*")
-            .endpoint(endpoint)
-            .requestInterceptor(interceptor);
-        registerMockRule(rule);
-        applyMocks(context);
-        recordMockConfiguration();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
+
+        // 添加拦截规则（包装 interceptor 以添加日志）
+        addRequestModificationRule(endpoint, (route, request) -> {
+            Route.ResumeOptions options = interceptor.intercept(route, request);
+
+            // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
+            if (options != null) {
+                printRequestModificationInfo(request, options, "拦截器修改请求");
+            }
+
+            return options;
+        });
 
         logger.info(" Request interceptor configured successfully!");
     }
 
     /**
-     * 【推荐】修改请求方法 - 只修改请求，不影响其他请求
-     * 使用独立的路由处理，避免干扰其他请求
+     * 【推荐】修改请求方法 - 只修改 HTTP 方法，不影响其他请求
+     * 使用统一的路由处理，避免多个 ".*" 路由冲突
+     *
+     * 注意：只修改 HTTP 方法，不自动添加请求体或修改 headers
+     * 如需添加请求体，请配合 modifyRequestBody 使用
      *
      * @param context Playwright BrowserContext对象
      * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
@@ -1385,30 +1494,17 @@ public class ApiMonitorAndMockManager {
     public static void modifyRequestMethod(BrowserContext context, String endpoint, String newMethod) {
         logger.info("========== Modifying request method for: {} -> {} ==========", endpoint, newMethod);
 
-        // 使用 ".*" 匹配所有请求，在拦截器中通过 request.url().contains() 判断
-        context.route(".*", route -> {
-            try {
-                Request request = route.request();
-                String url = request.url();
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
 
-                // 通过 contains 判断是否匹配
-                if (url.contains(endpoint)) {
-                    logger.info("Modifying method for: {} from {} to {}", url, request.method(), newMethod);
+        // 添加修改规则
+        addRequestModificationRule(endpoint, (route, request) -> {
+            Route.ResumeOptions options = new Route.ResumeOptions().setMethod(newMethod);
 
-                    // 修改请求方法并继续
-                    route.resume(new Route.ResumeOptions().setMethod(newMethod));
-                } else {
-                    // 不匹配的请求正常继续
-                    route.resume();
-                }
-            } catch (Exception e) {
-                logger.error("Error modifying request method", e);
-                try {
-                    route.resume();
-                } catch (Exception ex) {
-                    logger.error("Failed to resume route", ex);
-                }
-            }
+            // 打印详细的修改信息
+            printRequestModificationInfo(request, options, "修改 HTTP Method", newMethod, null, null);
+
+            return options;
         });
 
         logger.info(" Request method modifier configured successfully!");
@@ -1582,7 +1678,8 @@ public class ApiMonitorAndMockManager {
             if (rule.requestInterceptor != null) {
                 Route.ResumeOptions continueOptions = rule.requestInterceptor.intercept(route, request);
                 if (continueOptions != null) {
-                    logger.info("Request modified with interceptor, continuing with modified request");
+                    // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
+                    printRequestModificationInfo(request, continueOptions, "拦截器修改请求 (Mock: " + rule.getName() + ")");
                     route.resume(continueOptions);
                     return;
                 }
@@ -1775,6 +1872,8 @@ public class ApiMonitorAndMockManager {
             logger.warn("Failed to remove routes from context: {}", e.getMessage());
         }
         mockRules.clear();
+        requestModificationRules.clear();
+        unifiedRouteHandlerRegistered = false;
         logger.info("✓ All mock rules cleared");
         logger.info("========== All Mocks Stopped ==========");
     }
@@ -1792,6 +1891,8 @@ public class ApiMonitorAndMockManager {
             logger.warn("Failed to remove routes from page: {}", e.getMessage());
         }
         mockRules.clear();
+        pageRequestModificationRules.clear();
+        unifiedPageRouteHandlerRegistered = false;
         logger.info("✓ All mock rules cleared");
         logger.info("========== All Mocks Stopped ==========");
     }
@@ -2264,5 +2365,201 @@ public class ApiMonitorAndMockManager {
 
             logger.info(" Mock configuration built successfully!");
         }
+    }
+
+    /**
+     * 注册统一的请求修改路由处理器（Context版本）
+     * 避免多个 ".*" 路由相互覆盖
+     */
+    private static void registerUnifiedRouteHandler(BrowserContext context) {
+        if (unifiedRouteHandlerRegistered) {
+            logger.info("Unified route handler already registered");
+            return;
+        }
+
+        logger.info("========== Registering Unified Route Handler (Context) ==========");
+
+        context.route(".*", route -> {
+            try {
+                Request request = route.request();
+                String url = request.url();
+
+                // 检查是否有匹配的修改规则
+                for (RequestModificationRule rule : requestModificationRules) {
+                    if (url.contains(rule.endpoint)) {
+                        logger.debug("Applying modification for: {}", url);
+                        Route.ResumeOptions options = rule.interceptor.intercept(route, request);
+                        if (options != null) {
+                            route.resume(options);
+                        } else {
+                            route.resume();
+                        }
+                        return;
+                    }
+                }
+
+                // 没有匹配的规则，正常继续
+                route.resume();
+            } catch (Exception e) {
+                logger.error("Error in unified route handler", e);
+                try {
+                    route.resume();
+                } catch (Exception ex) {
+                    logger.error("Failed to resume route", ex);
+                }
+            }
+        });
+
+        unifiedRouteHandlerRegistered = true;
+        logger.info("Unified route handler registered successfully");
+    }
+
+    /**
+     * 注册统一的请求修改路由处理器（Page版本）
+     * 避免多个 ".*" 路由相互覆盖
+     */
+    private static void registerUnifiedRouteHandler(Page page) {
+        if (unifiedPageRouteHandlerRegistered) {
+            logger.info("Unified route handler already registered for page");
+            return;
+        }
+
+        logger.info("========== Registering Unified Route Handler (Page) ==========");
+
+        page.route(".*", route -> {
+            try {
+                Request request = route.request();
+                String url = request.url();
+
+                // 检查是否有匹配的修改规则
+                for (RequestModificationRule rule : pageRequestModificationRules) {
+                    if (url.contains(rule.endpoint)) {
+                        logger.debug("Applying modification for: {}", url);
+                        Route.ResumeOptions options = rule.interceptor.intercept(route, request);
+                        if (options != null) {
+                            route.resume(options);
+                        } else {
+                            route.resume();
+                        }
+                        return;
+                    }
+                }
+
+                // 没有匹配的规则，正常继续
+                route.resume();
+            } catch (Exception e) {
+                logger.error("Error in unified route handler (page)", e);
+                try {
+                    route.resume();
+                } catch (Exception ex) {
+                    logger.error("Failed to resume route", ex);
+                }
+            }
+        });
+
+        unifiedPageRouteHandlerRegistered = true;
+        logger.info("Unified route handler registered successfully for page");
+    }
+
+    /**
+     * 添加请求修改规则（Context版本）
+     */
+    private static void addRequestModificationRule(String endpoint, RequestInterceptor interceptor) {
+        requestModificationRules.add(new RequestModificationRule(endpoint, interceptor));
+        logger.info("Added request modification rule for endpoint: {}", endpoint);
+    }
+
+    /**
+     * 添加请求修改规则（Page版本）
+     */
+    private static void addRequestModificationRuleForPage(String endpoint, RequestInterceptor interceptor) {
+        pageRequestModificationRules.add(new RequestModificationRule(endpoint, interceptor));
+        logger.info("Added request modification rule for page endpoint: {}", endpoint);
+    }
+
+    /**
+     * 打印请求修改的详细信息
+     *
+     * @param request 原始请求
+     * @param options 修改后的 ResumeOptions
+     * @param modificationType 修改类型（如 "修改 HTTP Method", "修改请求头" 等）
+     * @param modifiedMethod 修改后的方法（可为 null）
+     * @param modifiedHeaders 修改后的 headers（可为 null）
+     * @param modifiedBody 修改后的 body（可为 null）
+     */
+    private static void printRequestModificationInfo(Request request, Route.ResumeOptions options, String modificationType,
+                                                       String modifiedMethod, Map<String, String> modifiedHeaders, String modifiedBody) {
+        logger.info("========================================");
+        logger.info("📝 {}", modificationType);
+        logger.info("========================================");
+        logger.info("【原始请求信息】");
+        logger.info("   URL: {}", request.url());
+        logger.info("   Method: {}", request.method());
+        logger.info("   Headers: {}", formatHeaders(request.headers()));
+        logger.info("   Body: {}", formatBody(request.postData()));
+
+        logger.info("----------------------------------------");
+        logger.info("【修改后请求信息】");
+        logger.info("   Method: {}", modifiedMethod != null ? modifiedMethod : request.method());
+        logger.info("   Headers: {}", formatHeaders(modifiedHeaders != null ? modifiedHeaders : request.headers()));
+        logger.info("   Body: {}", formatBody(modifiedBody != null ? modifiedBody : request.postData()));
+        logger.info("========================================");
+        logger.info("✓ Request modified successfully!");
+        logger.info("========================================");
+    }
+
+    /**
+     * 打印请求修改的详细信息（简化版本，只传递 request 和 options）
+     *
+     * @param request 原始请求
+     * @param options 修改后的 ResumeOptions
+     * @param modificationType 修改类型（如 "修改 HTTP Method", "修改请求头" 等）
+     */
+    private static void printRequestModificationInfo(Request request, Route.ResumeOptions options, String modificationType) {
+        // 尝试从 options 中推断修改的值（ResumeOptions 没有 getter 方法）
+        // 这里只能打印原始请求信息，因为无法从 options 中获取修改后的值
+        logger.info("========================================");
+        logger.info("📝 {}", modificationType);
+        logger.info("========================================");
+        logger.info("【原始请求信息】");
+        logger.info("   URL: {}", request.url());
+        logger.info("   Method: {}", request.method());
+        logger.info("   Headers: {}", formatHeaders(request.headers()));
+        logger.info("   Body: {}", formatBody(request.postData()));
+
+        logger.info("----------------------------------------");
+        logger.info("【请求已被修改】");
+        logger.info("   (具体修改值请参考拦截器代码或查看网络请求)");
+        logger.info("========================================");
+        logger.info("✓ Request modified successfully!");
+        logger.info("========================================");
+    }
+
+    /**
+     * 格式化 headers 输出
+     */
+    private static String formatHeaders(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return "{}";
+        }
+        StringBuilder sb = new StringBuilder("{\n");
+        headers.forEach((key, value) -> sb.append(String.format("      %s: %s\n", key, value)));
+        sb.append("   }");
+        return sb.toString();
+    }
+
+    /**
+     * 格式化 body 输出
+     */
+    private static String formatBody(String body) {
+        if (body == null || body.isEmpty()) {
+            return "(empty)";
+        }
+        // 如果 body 过长，截断显示
+        int maxLength = 500;
+        if (body.length() > maxLength) {
+            return body.substring(0, maxLength) + "... (truncated, total " + body.length() + " chars)";
+        }
+        return body;
     }
 }

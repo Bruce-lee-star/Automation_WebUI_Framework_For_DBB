@@ -1163,7 +1163,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setHeaders(headers);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改请求头 (" + headerName + " = " + headerValue + ")",
+            printRequestModificationInfo(request, options, "Request Header (" + headerName + " = " + headerValue + ")",
                     null, headers, null);
 
             return options;
@@ -1198,7 +1198,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setHeaders(headers);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改请求头 (" + headerName + " = " + headerValue + ")",
+            printRequestModificationInfo(request, options, "Request Header (" + headerName + " = " + headerValue + ")",
                     null, headers, null);
 
             return options;
@@ -1229,7 +1229,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setPostData(newBody);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改请求体", null, null, newBody);
+            printRequestModificationInfo(request, options, "Request Body", null, null, newBody);
 
             return options;
         });
@@ -1259,7 +1259,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setPostData(newBody);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改请求体", null, null, newBody);
+            printRequestModificationInfo(request, options, "Request Body", null, null, newBody);
 
             return options;
         });
@@ -1268,20 +1268,29 @@ public class ApiMonitorAndMockManager {
     }
 
     /**
-     * 【简化】修改请求 - 添加查询参数
+     * 【简化】修改请求 - 修改查询参数
+     *
+     * 功能：
+     * - 如果参数已存在，替换其值
+     * - 如果参数不存在，添加新参数
+     * - 如果 paramValue 为 null，删除该参数
      *
      * @param page Playwright Page对象
      * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param paramName 参数名
-     * @param paramValue 参数值
+     * @param paramValue 参数值（null 表示删除该参数）
      *
      * 示例：
      * modifyRequestQueryParam(page, "/api/users", "userId", "123");
-     * modifyRequestQueryParam(page, "https://api.example.com/users", "userId", "123");
+     * modifyRequestQueryParam(page, "/api/users", "userId", null);  // 删除参数
      */
     public static void modifyRequestQueryParam(Page page, String endpoint, String paramName, String paramValue) {
         logger.info("========== Modifying request query param for: {} ==========", endpoint);
-        logger.info("   Param: {} = {}", paramName, paramValue);
+        if (paramValue == null) {
+            logger.info("   Removing param: {}", paramName);
+        } else {
+            logger.info("   Param: {} = {}", paramName, paramValue);
+        }
 
         // 注册统一路由处理器（仅注册一次）
         registerUnifiedRouteHandler(page);
@@ -1289,28 +1298,27 @@ public class ApiMonitorAndMockManager {
         // 添加修改规则
         addRequestModificationRuleForPage(endpoint, (route, request) -> {
             String url = request.url();
-            String separator = url.contains("?") ? "&" : "?";
-            String newUrl = url + separator + paramName + "=" + paramValue;
+            String newUrl = modifyUrlQueryParam(url, paramName, paramValue);
             Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
 
             // 打印详细的修改信息（只打印 URL 变化）
             logger.info("========================================");
-            logger.info("📝 修改查询参数 ({} = {})", paramName, paramValue);
+            logger.info("Modifying Query Parameter ({} = {})", paramName, paramValue);
             logger.info("========================================");
-            logger.info("【原始请求信息】");
+            logger.info("[Original Request]");
             logger.info("   URL: {}", url);
             logger.info("   Method: {}", request.method());
             logger.info("   Headers: {}", formatHeaders(request.headers()));
             logger.info("   Body: {}", formatBody(request.postData()));
 
             logger.info("----------------------------------------");
-            logger.info("【修改后请求信息】");
+            logger.info("[Modified Request]");
             logger.info("   URL: {}", newUrl);
             logger.info("   Method: {}", request.method());
             logger.info("   Headers: {}", formatHeaders(request.headers()));
             logger.info("   Body: {}", formatBody(request.postData()));
             logger.info("========================================");
-            logger.info("✓ Request modified successfully!");
+            logger.info("Request modified successfully!");
             logger.info("========================================");
 
             return options;
@@ -1320,20 +1328,29 @@ public class ApiMonitorAndMockManager {
     }
 
     /**
-     * 【简化】修改请求 - 添加查询参数
+     * 【简化】修改请求 - 修改查询参数
+     *
+     * 功能：
+     * - 如果参数已存在，替换其值
+     * - 如果参数不存在，添加新参数
+     * - 如果 paramValue 为 null，删除该参数
      *
      * @param context Playwright BrowserContext对象
      * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
      * @param paramName 参数名
-     * @param paramValue 参数值
+     * @param paramValue 参数值（null 表示删除该参数）
      *
      * 示例：
      * modifyRequestQueryParam(context, "/api/users", "userId", "123");
-     * modifyRequestQueryParam(context, "https://api.example.com/users", "userId", "123");
+     * modifyRequestQueryParam(context, "/api/users", "userId", null);  // 删除参数
      */
     public static void modifyRequestQueryParam(BrowserContext context, String endpoint, String paramName, String paramValue) {
         logger.info("========== Modifying request query param for: {} ==========", endpoint);
-        logger.info("   Param: {} = {}", paramName, paramValue);
+        if (paramValue == null) {
+            logger.info("   Removing param: {}", paramName);
+        } else {
+            logger.info("   Param: {} = {}", paramName, paramValue);
+        }
 
         // 注册统一路由处理器（仅注册一次）
         registerUnifiedRouteHandler(context);
@@ -1341,34 +1358,169 @@ public class ApiMonitorAndMockManager {
         // 添加修改规则
         addRequestModificationRule(endpoint, (route, request) -> {
             String url = request.url();
-            String separator = url.contains("?") ? "&" : "?";
-            String newUrl = url + separator + paramName + "=" + paramValue;
+            String newUrl = modifyUrlQueryParam(url, paramName, paramValue);
             Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
 
             // 打印详细的修改信息（只打印 URL 变化）
             logger.info("========================================");
-            logger.info("📝 修改查询参数 ({} = {})", paramName, paramValue);
+            logger.info("Modifying Query Parameter ({} = {})", paramName, paramValue);
             logger.info("========================================");
-            logger.info("【原始请求信息】");
+            logger.info("[Original Request]");
             logger.info("   URL: {}", url);
             logger.info("   Method: {}", request.method());
             logger.info("   Headers: {}", formatHeaders(request.headers()));
             logger.info("   Body: {}", formatBody(request.postData()));
 
             logger.info("----------------------------------------");
-            logger.info("【修改后请求信息】");
+            logger.info("[Modified Request]");
             logger.info("   URL: {}", newUrl);
             logger.info("   Method: {}", request.method());
             logger.info("   Headers: {}", formatHeaders(request.headers()));
             logger.info("   Body: {}", formatBody(request.postData()));
             logger.info("========================================");
-            logger.info("✓ Request modified successfully!");
+            logger.info("Request modified successfully!");
             logger.info("========================================");
 
             return options;
         });
 
         logger.info(" Request query param modifier configured successfully!");
+    }
+
+    /**
+     * 【简化】修改请求 - 批量修改查询参数
+     *
+     * 功能：
+     * - 一次修改多个查询参数
+     * - 如果参数已存在，替换其值
+     * - 如果参数不存在，添加新参数
+     * - 如果值为 null，删除该参数
+     *
+     * @param page Playwright Page对象
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
+     * @param params 参数映射（key=参数名, value=参数值，null 表示删除）
+     *
+     * 示例：
+     * modifyRequestQueryParams(page, "/api/users", Map.of("userId", "123", "token", "abc"));
+     * modifyRequestQueryParams(page, "/api/users", Map.of("userId", null));  // 删除参数
+     */
+    public static void modifyRequestQueryParams(Page page, String endpoint, Map<String, String> params) {
+        logger.info("========== Modifying request query params for: {} ==========", endpoint);
+        params.forEach((key, value) -> {
+            if (value == null) {
+                logger.info("   Removing param: {}", key);
+            } else {
+                logger.info("   Param: {} = {}", key, value);
+            }
+        });
+
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(page);
+
+        // 添加修改规则
+        addRequestModificationRuleForPage(endpoint, (route, request) -> {
+            String url = request.url();
+            String newUrl = url;
+
+            // 逐个修改参数
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                newUrl = modifyUrlQueryParam(newUrl, entry.getKey(), entry.getValue());
+            }
+
+            Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
+
+            // 打印详细的修改信息
+            logger.info("========================================");
+            logger.info("Modifying Query Parameters: {}", params);
+            logger.info("========================================");
+            logger.info("[Original Request]");
+            logger.info("   URL: {}", url);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+
+            logger.info("----------------------------------------");
+            logger.info("[Modified Request]");
+            logger.info("   URL: {}", newUrl);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+            logger.info("========================================");
+            logger.info("Request modified successfully!");
+            logger.info("========================================");
+
+            return options;
+        });
+
+        logger.info(" Request query params modifier configured successfully!");
+    }
+
+    /**
+     * 【简化】修改请求 - 批量修改查询参数
+     *
+     * 功能：
+     * - 一次修改多个查询参数
+     * - 如果参数已存在，替换其值
+     * - 如果参数不存在，添加新参数
+     * - 如果值为 null，删除该参数
+     *
+     * @param context Playwright BrowserContext对象
+     * @param endpoint URL或endpoint（通过 request.url().contains() 判断）
+     * @param params 参数映射（key=参数名, value=参数值，null 表示删除）
+     *
+     * 示例：
+     * modifyRequestQueryParams(context, "/api/users", Map.of("userId", "123", "token", "abc"));
+     * modifyRequestQueryParams(context, "/api/users", Map.of("userId", null));  // 删除参数
+     */
+    public static void modifyRequestQueryParams(BrowserContext context, String endpoint, Map<String, String> params) {
+        logger.info("========== Modifying request query params for: {} ==========", endpoint);
+        params.forEach((key, value) -> {
+            if (value == null) {
+                logger.info("   Removing param: {}", key);
+            } else {
+                logger.info("   Param: {} = {}", key, value);
+            }
+        });
+
+        // 注册统一路由处理器（仅注册一次）
+        registerUnifiedRouteHandler(context);
+
+        // 添加修改规则
+        addRequestModificationRule(endpoint, (route, request) -> {
+            String url = request.url();
+            String newUrl = url;
+
+            // 逐个修改参数
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                newUrl = modifyUrlQueryParam(newUrl, entry.getKey(), entry.getValue());
+            }
+
+            Route.ResumeOptions options = new Route.ResumeOptions().setUrl(newUrl);
+
+            // 打印详细的修改信息
+            logger.info("========================================");
+            logger.info("Modifying Query Parameters: {}", params);
+            logger.info("========================================");
+            logger.info("[Original Request]");
+            logger.info("   URL: {}", url);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+
+            logger.info("----------------------------------------");
+            logger.info("[Modified Request]");
+            logger.info("   URL: {}", newUrl);
+            logger.info("   Method: {}", request.method());
+            logger.info("   Headers: {}", formatHeaders(request.headers()));
+            logger.info("   Body: {}", formatBody(request.postData()));
+            logger.info("========================================");
+            logger.info("Request modified successfully!");
+            logger.info("========================================");
+
+            return options;
+        });
+
+        logger.info(" Request query params modifier configured successfully!");
     }
 
     /**
@@ -1395,7 +1547,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setMethod(newMethod);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改 HTTP Method", newMethod, null, null);
+            printRequestModificationInfo(request, options, "HTTP Method", newMethod, null, null);
 
             return options;
         });
@@ -1431,7 +1583,7 @@ public class ApiMonitorAndMockManager {
 
             // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
             if (options != null) {
-                printRequestModificationInfo(request, options, "拦截器修改请求");
+                printRequestModificationInfo(request, options, "Interceptor");
             }
 
             return options;
@@ -1467,7 +1619,7 @@ public class ApiMonitorAndMockManager {
 
             // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
             if (options != null) {
-                printRequestModificationInfo(request, options, "拦截器修改请求");
+                printRequestModificationInfo(request, options, "Interceptor");
             }
 
             return options;
@@ -1502,7 +1654,7 @@ public class ApiMonitorAndMockManager {
             Route.ResumeOptions options = new Route.ResumeOptions().setMethod(newMethod);
 
             // 打印详细的修改信息
-            printRequestModificationInfo(request, options, "修改 HTTP Method", newMethod, null, null);
+            printRequestModificationInfo(request, options, "HTTP Method", newMethod, null, null);
 
             return options;
         });
@@ -1679,7 +1831,7 @@ public class ApiMonitorAndMockManager {
                 Route.ResumeOptions continueOptions = rule.requestInterceptor.intercept(route, request);
                 if (continueOptions != null) {
                     // 打印详细的修改信息（使用简化版本，因为无法从 options 中获取修改后的值）
-                    printRequestModificationInfo(request, continueOptions, "拦截器修改请求 (Mock: " + rule.getName() + ")");
+                    printRequestModificationInfo(request, continueOptions, "Mock Interceptor (" + rule.getName() + ")");
                     route.resume(continueOptions);
                     return;
                 }
@@ -2490,21 +2642,21 @@ public class ApiMonitorAndMockManager {
     private static void printRequestModificationInfo(Request request, Route.ResumeOptions options, String modificationType,
                                                        String modifiedMethod, Map<String, String> modifiedHeaders, String modifiedBody) {
         logger.info("========================================");
-        logger.info("📝 {}", modificationType);
+        logger.info("Modifying: {}", modificationType);
         logger.info("========================================");
-        logger.info("【原始请求信息】");
+        logger.info("[Original Request]");
         logger.info("   URL: {}", request.url());
         logger.info("   Method: {}", request.method());
         logger.info("   Headers: {}", formatHeaders(request.headers()));
         logger.info("   Body: {}", formatBody(request.postData()));
 
         logger.info("----------------------------------------");
-        logger.info("【修改后请求信息】");
+        logger.info("[Modified Request]");
         logger.info("   Method: {}", modifiedMethod != null ? modifiedMethod : request.method());
         logger.info("   Headers: {}", formatHeaders(modifiedHeaders != null ? modifiedHeaders : request.headers()));
         logger.info("   Body: {}", formatBody(modifiedBody != null ? modifiedBody : request.postData()));
         logger.info("========================================");
-        logger.info("✓ Request modified successfully!");
+        logger.info("Request modified successfully!");
         logger.info("========================================");
     }
 
@@ -2519,19 +2671,19 @@ public class ApiMonitorAndMockManager {
         // 尝试从 options 中推断修改的值（ResumeOptions 没有 getter 方法）
         // 这里只能打印原始请求信息，因为无法从 options 中获取修改后的值
         logger.info("========================================");
-        logger.info("📝 {}", modificationType);
+        logger.info("Modifying: {}", modificationType);
         logger.info("========================================");
-        logger.info("【原始请求信息】");
+        logger.info("[Original Request]");
         logger.info("   URL: {}", request.url());
         logger.info("   Method: {}", request.method());
         logger.info("   Headers: {}", formatHeaders(request.headers()));
         logger.info("   Body: {}", formatBody(request.postData()));
 
         logger.info("----------------------------------------");
-        logger.info("【请求已被修改】");
-        logger.info("   (具体修改值请参考拦截器代码或查看网络请求)");
+        logger.info("[Request Modified]");
+        logger.info("   (Check interceptor code or network requests for details)");
         logger.info("========================================");
-        logger.info("✓ Request modified successfully!");
+        logger.info("Request modified successfully!");
         logger.info("========================================");
     }
 
@@ -2561,5 +2713,74 @@ public class ApiMonitorAndMockManager {
             return body.substring(0, maxLength) + "... (truncated, total " + body.length() + " chars)";
         }
         return body;
+    }
+
+    /**
+     * 修改 URL 查询参数
+     * @param url 原始 URL
+     * @param paramName 参数名
+     * @param paramValue 参数值（如果为 null，则删除该参数）
+     * @return 修改后的 URL
+     */
+    private static String modifyUrlQueryParam(String url, String paramName, String paramValue) {
+        if (url == null) {
+            return url;
+        }
+
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+
+            // 解析查询参数
+            String query = uri.getQuery();
+            Map<String, String> params = new java.util.LinkedHashMap<>();
+
+            if (query != null && !query.isEmpty()) {
+                for (String param : query.split("&")) {
+                    String[] keyValue = param.split("=", 2);
+                    if (keyValue.length == 2) {
+                        String key = java.net.URLDecoder.decode(keyValue[0], "UTF-8");
+                        String value = java.net.URLDecoder.decode(keyValue[1], "UTF-8");
+                        params.put(key, value);
+                    }
+                }
+            }
+
+            // 修改或删除参数
+            if (paramValue == null) {
+                params.remove(paramName);
+            } else {
+                params.put(paramName, paramValue);
+            }
+
+            // 重建查询字符串
+            StringBuilder newQuery = new StringBuilder();
+            for (Map.Entry<String, String> entry : params.entrySet()) {
+                if (newQuery.length() > 0) {
+                    newQuery.append("&");
+                }
+                newQuery.append(java.net.URLEncoder.encode(entry.getKey(), "UTF-8"));
+                newQuery.append("=");
+                newQuery.append(java.net.URLEncoder.encode(entry.getValue(), "UTF-8"));
+            }
+
+            // 构建新 URL
+            java.net.URI newUri = new java.net.URI(
+                uri.getScheme(),
+                uri.getAuthority(),
+                uri.getPath(),
+                newQuery.length() > 0 ? newQuery.toString() : null,
+                uri.getFragment()
+            );
+
+            return newUri.toString();
+        } catch (Exception e) {
+            logger.warn("Failed to modify URL query param: {} = {}, error: {}", paramName, paramValue, e.getMessage());
+            // 降级处理：简单追加
+            String separator = url.contains("?") ? "&" : "?";
+            if (paramValue == null) {
+                return url; // 无法删除，返回原 URL
+            }
+            return url + separator + paramName + "=" + paramValue;
+        }
     }
 }

@@ -74,6 +74,15 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
                 } catch (Exception e) {
                     logger.error(" Failed to add PlaywrightListener as delegate listener", e);
                 }
+
+                // Add AccessibilityCollectorListener for automatic report generation
+                try {
+                    AccessibilityCollectorListener accessibilityListener = new AccessibilityCollectorListener();
+                    addDelegateListener(accessibilityListener);
+                    LoggingConfigUtil.logDebugIfVerbose(logger, " Added AccessibilityCollectorListener for automatic report generation");
+                } catch (Exception e) {
+                    logger.error(" Failed to add AccessibilityCollectorListener as delegate listener", e);
+                }
             } else {
                 // 后续实例只是"轻量级"包装器，不创建新的监听器
                 // 只记录DEBUG级别日志，减少日志噪音

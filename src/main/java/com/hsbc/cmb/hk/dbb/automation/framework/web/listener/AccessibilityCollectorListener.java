@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import net.thucydides.model.steps.StepListener;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.Story;
@@ -11,51 +12,66 @@ import org.slf4j.LoggerFactory;
  * Listener to automatically manage AccessibilityScanner lifecycle
  * Initializes collector at test suite start and generates final report at test suite end
  * Users no longer need to manually call initialize() and cleanup()
+ *
+ * This listener is automatically registered via ThucydidesStepsListenerAdapter.
+ * No need to use AccessibilityHooks for report generation.
  */
 public class AccessibilityCollectorListener implements StepListener {
-    
+
     private static final Logger logger = LoggerFactory.getLogger(AccessibilityCollectorListener.class);
-    
-    private static volatile boolean initialized = false;
-    
+
     @Override
     public void testSuiteStarted(Class<?> testClass) {
-        if (!initialized) {
+        if (!AccessibilityScanner.isInitialized()) {
             try {
-                AccessibilityScanner.initialize();
-                initialized = true;
+                // Get config from PlaywrightManager (reads from serenity.properties)
+                AccessibilityScanner.ScanConfig config = PlaywrightManager.getAccessibilityScanConfig();
+                AccessibilityScanner.initialize(config);
                 logger.info("AccessibilityScanner automatically initialized for test suite: {}", testClass.getName());
+                logger.info("  - Project: {}", config.getProjectName());
+                logger.info("  - Color Contrast Check: {}", config.isCheckColorContrast());
+                logger.info("  - Keyboard Navigation Check: {}", config.isCheckKeyboardNavigation());
+                logger.info("  - Menu Navigation Check: {}", config.isCheckMenuNavigation());
             } catch (Exception e) {
                 logger.error("Failed to initialize AccessibilityScanner", e);
             }
         }
     }
-    
+
     @Override
     public void testSuiteStarted(Story story) {
-        if (!initialized) {
+        if (!AccessibilityScanner.isInitialized()) {
             try {
-                AccessibilityScanner.initialize();
-                initialized = true;
+                // Get config from PlaywrightManager (reads from serenity.properties)
+                AccessibilityScanner.ScanConfig config = PlaywrightManager.getAccessibilityScanConfig();
+                AccessibilityScanner.initialize(config);
                 logger.info("AccessibilityScanner automatically initialized for story: {}", story.getStoryName());
+                logger.info("  - Project: {}", config.getProjectName());
+                logger.info("  - Color Contrast Check: {}", config.isCheckColorContrast());
+                logger.info("  - Keyboard Navigation Check: {}", config.isCheckKeyboardNavigation());
+                logger.info("  - Menu Navigation Check: {}", config.isCheckMenuNavigation());
             } catch (Exception e) {
                 logger.error("Failed to initialize AccessibilityScanner", e);
             }
         }
     }
-    
+
     @Override
     public void testSuiteFinished() {
-        if (initialized) {
+        if (AccessibilityScanner.isInitialized()) {
             try {
-                logger.info("Generating final accessibility report...");
+                logger.info("========================================");
+                logger.info("Generating Final Accessibility Report");
+                logger.info("========================================");
+
                 AccessibilityScanner.generateFinalReport();
+
                 logger.info("Final accessibility report generated successfully");
-                
+                logger.info("Check {} directory for reports", PlaywrightManager.getAccessibilityReportDirectory());
+
                 AccessibilityScanner.cleanup();
                 logger.info("AccessibilityScanner cleaned up");
-                
-                initialized = false;
+
             } catch (Exception e) {
                 logger.error("Failed to generate final accessibility report or cleanup", e);
             }

@@ -2401,6 +2401,56 @@ public class PlaywrightManager {
         return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PROJECT_NAME);
     }
 
+    // ==================== Accessibility 配置获取方法 ====================
+
+    /**
+     * 是否启用颜色对比度测试
+     */
+    public static boolean isAccessibilityCheckColorContrast() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.ACCESSIBILITY_CHECK_COLOR_CONTRAST);
+    }
+
+    /**
+     * 是否启用键盘导航测试
+     */
+    public static boolean isAccessibilityCheckKeyboardNavigation() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.ACCESSIBILITY_CHECK_KEYBOARD_NAVIGATION);
+    }
+
+    /**
+     * 是否启用菜单导航测试
+     */
+    public static boolean isAccessibilityCheckMenuNavigation() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.ACCESSIBILITY_CHECK_MENU_NAVIGATION);
+    }
+
+    /**
+     * Accessibility 测试是否包含截图
+     */
+    public static boolean isAccessibilityIncludeScreenshots() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.ACCESSIBILITY_INCLUDE_SCREENSHOTS);
+    }
+
+    /**
+     * 获取 Accessibility 报告输出目录
+     */
+    public static String getAccessibilityReportDirectory() {
+        return FrameworkConfigManager.getString(FrameworkConfig.ACCESSIBILITY_REPORT_DIRECTORY);
+    }
+
+    /**
+     * 获取 Accessibility 扫描配置（从 serenity.properties 读取）
+     */
+    public static com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner.ScanConfig getAccessibilityScanConfig() {
+        com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner.ScanConfig config = new com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner.ScanConfig();
+        config.setProjectName(getProjectName());
+        config.setCheckColorContrast(isAccessibilityCheckColorContrast());
+        config.setCheckKeyboardNavigation(isAccessibilityCheckKeyboardNavigation());
+        config.setCheckMenuNavigation(isAccessibilityCheckMenuNavigation());
+        config.setIncludeScreenshots(isAccessibilityIncludeScreenshots());
+        return config;
+    }
+
     // ==================== 公共访问方法（用于其他类访问自定义配置） ====================
 
     /**

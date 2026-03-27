@@ -624,7 +624,50 @@ public enum FrameworkConfig {
     PLAYWRIGHT_POLLING_INTERVAL(
         "playwright.polling.interval",
         "500",
-        "轮询间隔（毫秒）");
+        "轮询间隔（毫秒）"),
+
+    // ==================== Accessibility 测试配置 ====================
+
+    /**
+     * 是否启用颜色对比度测试
+     * 建议关闭，因为会影响页面展示测试
+     */
+    ACCESSIBILITY_CHECK_COLOR_CONTRAST(
+        "accessibility.check.colorContrast",
+        "false",
+        "是否启用颜色对比度测试"),
+
+    /**
+     * 是否启用键盘导航测试
+     */
+    ACCESSIBILITY_CHECK_KEYBOARD_NAVIGATION(
+        "accessibility.check.keyboardNavigation",
+        "true",
+        "是否启用键盘导航测试"),
+
+    /**
+     * 是否启用菜单导航测试
+     */
+    ACCESSIBILITY_CHECK_MENU_NAVIGATION(
+        "accessibility.check.menuNavigation",
+        "true",
+        "是否启用菜单导航测试"),
+
+    /**
+     * 是否包含截图
+     */
+    ACCESSIBILITY_INCLUDE_SCREENSHOTS(
+        "accessibility.includeScreenshots",
+        "true",
+        "是否包含截图"),
+
+    /**
+     * Accessibility 报告输出目录
+     */
+    ACCESSIBILITY_REPORT_DIRECTORY(
+        "accessibility.report.directory",
+        "target/accessibility",
+        "Accessibility 报告输出目录");
 
     private final String key;
     private final String defaultValue;

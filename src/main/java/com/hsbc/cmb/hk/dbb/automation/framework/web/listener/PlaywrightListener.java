@@ -4,7 +4,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner;
 import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
 import com.hsbc.cmb.hk.dbb.automation.retry.executor.RerunProcessExecutor;
 import com.hsbc.cmb.hk.dbb.automation.retry.listener.PlaywrightRetryListener;
@@ -65,9 +64,6 @@ public class PlaywrightListener implements StepListener {
 
     // 用于防止testSuiteFinished被多次调用时重复输出日志
     private static volatile boolean testSuiteFinishedLogged = false;
-
-    // 用于防止多次初始化AccessibilityScanner
-    private static volatile boolean accessibilityCollectorInitialized = false;
 
     public PlaywrightListener() {
         // 从环境变量中读取截图策略配置
@@ -523,19 +519,6 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void testSuiteStarted(Class<?> testClass) {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Test suite started for class: {}", testClass);
-
-        // Initialize AccessibilityScanner on first test suite start
-        synchronized (PlaywrightListener.class) {
-            if (!accessibilityCollectorInitialized) {
-                try {
-                    AccessibilityScanner.initialize();
-                    accessibilityCollectorInitialized = true;
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "AccessibilityScanner initialized");
-                } catch (Exception e) {
-                    logger.error("Failed to initialize AccessibilityScanner", e);
-                }
-            }
-        }
     }
 
     @Override
@@ -816,26 +799,6 @@ public class PlaywrightListener implements StepListener {
 
         // 检查是否需要重试失败的测试
         checkAndTriggerRerun();
-
-        // Generate final accessibility report and cleanup
-        synchronized (PlaywrightListener.class) {
-            if (accessibilityCollectorInitialized) {
-                try {
-                    AccessibilityScanner.generateFinalReport();
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "Final accessibility report generated");
-                } catch (Exception e) {
-                    logger.error("Failed to generate final accessibility report", e);
-                }
-
-                try {
-                    AccessibilityScanner.cleanup();
-                    accessibilityCollectorInitialized = false;
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "AccessibilityScanner cleaned up");
-                } catch (Exception e) {
-                    logger.error("Failed to cleanup AccessibilityScanner", e);
-                }
-            }
-        }
     }
 
 

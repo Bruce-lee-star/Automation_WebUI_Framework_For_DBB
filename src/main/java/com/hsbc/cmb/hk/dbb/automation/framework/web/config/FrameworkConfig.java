@@ -6,7 +6,6 @@ import java.util.function.Function;
 
 /**
  * Framework Configuration Enum - Centralized management of all configuration items
- *
  * Usage:
  * FrameworkConfig.SCREENSHOT_STRATEGY.getValue()
  * FrameworkConfig.BROWSER_RESTART_STRATEGY.getValue()

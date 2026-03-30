@@ -34,7 +34,7 @@ public class HomeSteps {
 
         // 【使用新 API】保存切换 profile 后的 session 和 homeUrl
         String homeUrl = homePage.getPage().url();
-        SessionManager.saveCurrentSession(sessionKey, homeUrl);
+        SessionManager.saveSession(sessionKey, homeUrl);
     }
 
     /**

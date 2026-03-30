@@ -32,16 +32,86 @@ public class SessionManager {
 
     // Session timeout in minutes (read from FrameworkConfig)
     private static final long SESSION_TIMEOUT_MINUTES = 60; // 默认60分钟过期
+    
+    // ThreadLocal: 标记当前 session 是否已准备好
+    private static final ThreadLocal<Boolean> sessionPrepared = ThreadLocal.withInitial(() -> false);
 
     /**
-     * 【新】检查 Session 是否存在且有效
+     * 【超级简单 API】尝试恢复 Session
      * <p>
-     * 框架层自动调用此方法检查 session 状态
+     * 此方法自动处理所有逻辑：
+     * - 检查 session 文件是否存在
+     * - 检查 session 是否过期
+     * - 如果有效，自动设置 storageStatePath
+     * - 如果无效或不存在，返回 false
+     * <p>
+     * 用户只需要：
+     * <pre>
+     * if (!SessionManager.restoreSession("O63_SIT1_WP7UAT2_2")) {
+     *     // 执行登录
+     *     SessionManager.saveSession("O63_SIT1_WP7UAT2_2", homeUrl);
+     * }
+     * </pre>
+     *
+     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
+     * @return true 表示 session 恢复成功，false 表示需要登录
+     */
+    public static boolean restoreSession(String sessionKey) {
+        logger.info("Attempting to restore session: {}", sessionKey);
+        
+        if (hasSession(sessionKey)) {
+            // Session 有效，读取 homeUrl
+            String homeUrl = loadHomeUrl(sessionKey);
+
+            if (homeUrl != null && !homeUrl.isEmpty()) {
+                // 设置 storageStatePath（自动使用默认路径）
+                PlaywrightManager.setStorageStatePath(sessionKey);
+                
+                sessionPrepared.set(true);
+                
+                logger.info("Session restored successfully: {}", sessionKey);
+                return true;
+            } else {
+                logger.warn("Session file exists but no homeUrl found: {}", sessionKey);
+                return false;
+            }
+        } else {
+            logger.info("No valid session found for: {}, need to login", sessionKey);
+            return false;
+        }
+    }
+    
+    /**
+     * 【超级简单 API】保存 Session
+     * <p>
+     * 此方法自动：
+     * - 保存 Playwright storageState
+     * - 保存元数据（homeUrl + timestamp）
+     * <p>
+     * 使用示例：
+     * <pre>
+     * // 登录成功后调用
+     * SessionManager.saveSession("O63_SIT1_WP7UAT2_2", homeUrl);
+     * </pre>
+     *
+     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
+     * @param homeUrl 登录成功后的首页 URL
+     */
+    public static void saveSession(String sessionKey, String homeUrl) {
+        logger.info("Saving session: {} (homeUrl: {})", sessionKey, homeUrl);
+        saveCurrentSession(sessionKey, homeUrl);
+        sessionPrepared.set(true);
+    }
+
+    /**
+     * 检查 Session 是否存在且有效
+     * <p>
+     * 内部方法，由 restoreSession 调用
      *
      * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
      * @return true 表示 session 文件存在且未过期，false 表示需要登录
      */
-    public static boolean hasSession(String sessionKey) {
+    private static boolean hasSession(String sessionKey) {
         Path sessionPath = getSessionPath(sessionKey);
         Path metaPath = getMetaPath(sessionKey);
         
@@ -68,28 +138,14 @@ public class SessionManager {
     }
 
     /**
-     * 【新】准备 Session（框架层自动处理）
+     * 准备 Session
      * <p>
-     * 此方法是框架层入口，负责：
-     * 1. 检查 session 文件是否存在且未过期
-     * 2. 如果存在，读取 homeUrl 并通过 PlaywrightManager 设置 storageStatePath
-     * 3. 框架会自动延迟Context/Page创建（避免不必要的创建和销毁）
-     * 4. 如果不存在或过期，等待业务层登录后调用 saveCurrentSession()
-     * <p>
-     * 自定义配置机制：
-     * - storageStatePath 是用户自定义配置，优先级高于框架默认配置
-     * - 通过 customContextOptionsFlag 标志控制是否应用自定义配置
-     * - 业务层需要调用 PlaywrightManager.setCustomContextOptionsFlag(true)
-     * - 框架在 createContext() 时检查标志并应用自定义配置
-     * <p>
-     * 职责划分：
-     * - 业务层：只传递 session key，执行登录逻辑
-     * - 框架层：检查 session、设置 storageStatePath（自定义配置）、保存 session
+     * 内部方法，由 restoreSession 调用
      *
      * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
      * @return true 表示 session 已准备好，false 表示需要登录
      */
-    public static boolean prepareSession(String sessionKey) {
+    private static boolean prepareSession(String sessionKey) {
         if (hasSession(sessionKey)) {
             // Session 有效，读取 homeUrl
             String homeUrl = loadHomeUrl(sessionKey);
@@ -115,22 +171,14 @@ public class SessionManager {
     }
 
     /**
-     * 【新】保存当前 Context 的 Session
+     * 保存当前 Context 的 Session
      * <p>
-     * 此方法由业务层在登录成功后调用，框架会自动：
-     * 1. 保存 Playwright storageState 到文件
-     * 2. 保存元数据（homeUrl + timestamp）
-     * <p>
-     * 使用示例：
-     * <pre>
-     * // 登录成功后，业务层调用
-     * SessionManager.saveCurrentSession("O63_SIT1_WP7UAT2_2", homeUrl);
-     * </pre>
+     * 内部方法，由 saveSession 调用
      *
      * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
      * @param homeUrl 登录成功后的首页 URL
      */
-    public static void saveCurrentSession(String sessionKey, String homeUrl) {
+    private static void saveCurrentSession(String sessionKey, String homeUrl) {
         try {
             Path sessionPath = getSessionPath(sessionKey);
             
@@ -164,7 +212,7 @@ public class SessionManager {
     }
 
     /**
-     * 【新】加载 HomeUrl
+     * 加载 HomeUrl
      * <p>
      * 从 meta 文件加载 homeUrl
      *

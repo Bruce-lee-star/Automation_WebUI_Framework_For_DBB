@@ -496,12 +496,7 @@ public class AxeCoreScanner {
         html.append("                    <p><a href=\"").append(rule.getHelpUrl()).append("\" target=\"_blank\">Learn more</a></p>\n");
         html.append("                    <p><b>Affected Elements:</b> ").append(rule.getNodes().size()).append("</p>\n");
 
-        int count = 0;
         for (CheckedNode node : rule.getNodes()) {
-            if (count++ >= 5) {
-                html.append("                    <p style=\"color:#666;\">... and ").append(rule.getNodes().size() - 5).append(" more</p>\n");
-                break;
-            }
             html.append("                    <div class=\"node-detail\">\n");
             html.append("                        <code>").append(escapeHtml(String.valueOf(node.getTarget()))).append("</code>\n");
             if (node.getFailureSummary() != null) {

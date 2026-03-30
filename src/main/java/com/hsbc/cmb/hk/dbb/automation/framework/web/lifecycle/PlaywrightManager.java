@@ -90,6 +90,10 @@ public class PlaywrightManager {
     private static final ThreadLocal<Integer> customDeviceScaleFactor = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportWidth = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportHeight = new ThreadLocal<>();
+    
+    // Session 管理标记 - 避免重复加载同一个 session
+    private static final ThreadLocal<String> loadedSessionKey = new ThreadLocal<>();
+    
     // 配置标识
     private static String currentConfigId;
 
@@ -915,25 +919,83 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置自定义 StorageState 路径（用于 session 恢复）
-     * 自定义配置优先于框架默认配置
+     * 设置 StorageState 路径用于 session 恢复（智能缓存登录）
      * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 如果 Context 已存在，会关闭它以便应用新配置（确保 session 恢复生效）
+     * 此方法支持缓存登录场景：
+     * - 如果 sessionKey 相同，且 context 已存在，不会重建 context
+     * - 如果 sessionKey 不同，或 context 不存在，才应用新的 storageState
+     * - 遵守 serenity.playwright.restart.browser.for.each 配置
+     * - 自动使用默认路径：target/.sessions/{sessionKey}.json
      * <p>
-     * 注意：此方法是特殊处理，因为 session 恢复需要在 Context 创建时应用 storageState
+     * 使用场景：
+     * - 第一次运行：登录并保存 session，后续运行恢复 session
+     * - 同一个 feature/scenario 中多次调用，只加载一次
+     *
+     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"），用于避免重复加载
+     */
+    public static void setStorageStatePath(String sessionKey) {
+        // 自动构建默认路径：target/.sessions/{sessionKey}.json
+        Path storageStatePath = Paths.get("target", ".sessions", sessionKey + ".json");
+        setStorageStatePath(sessionKey, storageStatePath);
+    }
+    
+    /**
+     * 设置 StorageState 路径用于 session 恢复（智能缓存登录）
+     * <p>
+     * 此方法支持缓存登录场景：
+     * - 如果 sessionKey 相同，且 context 已存在，不会重建 context
+     * - 如果 sessionKey 不同，或 context 不存在，才应用新的 storageState
+     * - 遵守 serenity.playwright.restart.browser.for.each 配置
+     * <p>
+     * 使用场景：
+     * - 第一次运行：登录并保存 session，后续运行恢复 session
+     * - 同一个 feature/scenario 中多次调用，只加载一次
+     *
+     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"），用于避免重复加载
+     * @param storageStatePath StorageState 文件路径
+     */
+    public static void setStorageStatePath(String sessionKey, Path storageStatePath) {
+        // 检查是否已经加载过这个 session
+        String currentSessionKey = loadedSessionKey.get();
+        BrowserContext currentContext = contextThreadLocal.get();
+        
+        if (sessionKey != null && sessionKey.equals(currentSessionKey) && currentContext != null) {
+            // 已加载过同一个 session，且 context 存在，不需要重建
+            LoggingConfigUtil.logInfoIfVerbose(logger, 
+                "Session '{}' already loaded, skipping context rebuild (reuse existing context)", sessionKey);
+            return;
+        }
+        
+        // 需要加载新的 session
+        customStorageStatePath.set(storageStatePath);
+        customContextOptionsFlag.set(true);
+        
+        // 记录已加载的 session key
+        loadedSessionKey.set(sessionKey);
+        
+        LoggingConfigUtil.logInfoIfVerbose(logger, 
+            "Setting storageState for session '{}' (path: {})", sessionKey, storageStatePath);
+        
+        // 如果 context 已存在，标记需要重建（会在下次访问时重建）
+        if (currentContext != null) {
+            LoggingConfigUtil.logInfoIfVerbose(logger, 
+                "Context exists, will apply new session '{}' on next context creation", sessionKey);
+            // 不立即关闭，只在下次访问时重建
+            pageThreadLocal.remove();
+            contextThreadLocal.remove();
+        }
+    }
+    
+    /**
+     * 设置 StorageState 路径用于 session 恢复（无 sessionKey）
+     * <p>
+     * 注意：此方法不进行智能检测，每次都会应用新的 storageState
+     * 推荐使用 setStorageStatePath(sessionKey, storageStatePath)
      *
      * @param storageStatePath StorageState 文件路径
      */
     public static void setStorageStatePath(Path storageStatePath) {
-        customStorageStatePath.set(storageStatePath);
-        customContextOptionsFlag.set(true); // 自动启用自定义配置
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom storageStatePath set: {} (custom context options auto-enabled)", storageStatePath);
-
-        // 【关键】如果 Context 已存在，需要重建它以应用 storageState
-        // 使用延迟重建机制：设置标记，在下次 getContext() 或 getPage() 时重建
-        // 这样可以支持多次设置自定义配置只触发一次Context重建
-        scheduleContextRebuild();
+        setStorageStatePath(null, storageStatePath);
     }
 
     /**
@@ -1422,6 +1484,9 @@ public class PlaywrightManager {
         customDeviceScaleFactor.remove();
         customViewportWidth.remove();
         customViewportHeight.remove();
+        
+        // 重置 session 管理标记
+        loadedSessionKey.remove();
         
         LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed");
     }

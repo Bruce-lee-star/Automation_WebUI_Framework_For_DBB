@@ -38,7 +38,7 @@ public class EnvironmentUtils {
      * @param defaultValue the default value if property not found
      * @return the property value, or default value if not found
      */
-    public String getProperty(String key, String defaultValue) {
+    public static String getProperty(String key, String defaultValue) {
         return System.getProperty(key, defaultValue);
     }
 

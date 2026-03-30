@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AccessibilityScanner;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
@@ -124,11 +124,23 @@ public class LoginSteps {
         logger.info("No valid session, performing login for: {}", sessionKey);
 
         loginPage.navigateTo(currentUrl);
+        
+        // Axe-core accessibility scan on login page
+        AxeCoreScanner.scanPage("Login Page - Initial", loginPage.getPage());
+        
         loginPage.userNameIpt.type(username);
-        AccessibilityScanner.checkAndCollect("prelogon - LoginPage username input");
+//        AccessibilityScanner.checkAndCollect("prelogon - LoginPage username input");
+        
+        // Axe-core scan after username input
+        AxeCoreScanner.scanPage("Login Page - After Username", loginPage.getPage());
+        
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());
-        AccessibilityScanner.checkAndCollect("prelogon - LoginPage password input");
+//        AccessibilityScanner.checkAndCollect("prelogon - LoginPage password input");
+        
+        // Axe-core scan after password input
+        AxeCoreScanner.scanPage("Login Page - After Password", loginPage.getPage());
+        
         loginPage.physicalDeviceLabel.click();
         loginPage.securityCodeIpt.type(BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
         loginPage.loginBtn.click();
@@ -139,7 +151,11 @@ public class LoginSteps {
             switchProfile(targetProfile);
         }
         homePage.quickLink.waitForVisible(30);
-        AccessibilityScanner.checkAndCollect("logon - home Page");
+//        AccessibilityScanner.checkAndCollect("logon - home Page");
+        
+        // Axe-core accessibility scan on home page
+        AxeCoreScanner.scanPage("Home Page - After Login", loginPage.getPage());
+        logger.info("Axe-core scans completed for login flow");
 
         // 【核心】让框架自动保存 session
         // 业务层只传递 session key 和 homeUrl

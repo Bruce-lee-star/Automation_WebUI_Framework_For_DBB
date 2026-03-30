@@ -626,48 +626,33 @@ public enum FrameworkConfig {
         "500",
         "轮询间隔（毫秒）"),
 
-    // ==================== Accessibility 测试配置 ====================
+    // ==================== Axe-core 配置 ====================
 
     /**
-     * 是否启用颜色对比度测试
-     * 建议关闭，因为会影响页面展示测试
+     * 是否启用 axe-core 扫描
      */
-    ACCESSIBILITY_CHECK_COLOR_CONTRAST(
-        "accessibility.check.colorContrast",
+    AXE_SCAN_ENABLED(
+        "axe.scan.enabled",
         "false",
-        "是否启用颜色对比度测试"),
+        "是否启用 axe-core 扫描"),
 
     /**
-     * 是否启用键盘导航测试
+     * Axe-core WCAG 标签（逗号分隔）
+     * 留空则运行所有规则
+     * 例如: wcag2aa,wcag21aa
      */
-    ACCESSIBILITY_CHECK_KEYBOARD_NAVIGATION(
-        "accessibility.check.keyboardNavigation",
-        "true",
-        "是否启用键盘导航测试"),
+    AXE_SCAN_TAGS(
+        "axe.scan.tags",
+        "",
+        "Axe-core WCAG 标签"),
 
     /**
-     * 是否启用菜单导航测试
+     * Axe-core 报告输出目录
      */
-    ACCESSIBILITY_CHECK_MENU_NAVIGATION(
-        "accessibility.check.menuNavigation",
-        "true",
-        "是否启用菜单导航测试"),
-
-    /**
-     * 是否包含截图
-     */
-    ACCESSIBILITY_INCLUDE_SCREENSHOTS(
-        "accessibility.includeScreenshots",
-        "true",
-        "是否包含截图"),
-
-    /**
-     * Accessibility 报告输出目录
-     */
-    ACCESSIBILITY_REPORT_DIRECTORY(
-        "accessibility.report.directory",
-        "target/accessibility",
-        "Accessibility 报告输出目录");
+    AXE_SCAN_OUTPUT_DIR(
+        "axe.scan.outputDir",
+        "target/accessibility-axe",
+        "Axe-core 报告输出目录");
 
     private final String key;
     private final String defaultValue;

@@ -181,6 +181,14 @@
             <version>${gson.version}</version>
         </dependency>
 
+        <!-- ==================== Axe-core Accessibility Testing ==================== -->
+        <dependency>
+            <groupId>com.deque.html.axe-core</groupId>
+            <artifactId>playwright</artifactId>
+            <version>4.9.1</version>
+        </dependency>
+
+
         <!-- ==================== Reflection API ==================== -->
         <dependency>
             <groupId>org.reflections</groupId>
@@ -215,6 +223,7 @@
         </dependency>
         
     </dependencies>
+
 
     <build>
         <plugins>

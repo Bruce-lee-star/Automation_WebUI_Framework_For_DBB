@@ -68,18 +68,8 @@ public class LoginSteps {
         logger.info("LoginSteps - SessionKey: {}", sessionKey);
         logger.info("========================================");
 
-        // 【准备session】在业务层直接调用
-        String sessionKey = env + "_" + username;
-        SessionManager.restoreSession(sessionKey);
 
-        // 【核心】让框架自动处理 session
-        // 框架已经：
-        // 1. 检查 session 文件是否存在且未过期
-        // 2. 如果存在，读取 homeUrl 并设置 storageStatePath
-        // 3. 延迟Context创建，直到业务层真正需要时才创建
-        //
-        // 这里只需要检查session是否有效，然后决定是否跳过登录
-        if (SessionManager.hasSession(sessionKey)) {
+        if (SessionManager.restoreSession(sessionKey)) {
                        // Session 已准备好，框架已设置 storageStatePath
             
             // 【关键】从 meta 文件读取 homeUrl
@@ -93,7 +83,7 @@ public class LoginSteps {
             
             logger.info("Session restored, navigating to homeUrl: {}", homeUrl);
             loginPage.navigateTo(homeUrl);
-            
+            loginPage.waitForTimeout(5000);
             // 验证 session 是否有效
             String currentUrl = loginPage.getCurrentUrl();
             logger.info("Current URL after navigation: {}", currentUrl);

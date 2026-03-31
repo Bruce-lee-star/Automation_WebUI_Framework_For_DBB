@@ -1170,11 +1170,6 @@ public class PlaywrightManager {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Creating new Page...");
         Page page = context.newPage();
 
-        // 【调试】追踪页面导航事件
-        page.onPageError(error -> {
-            logger.error("🔍 [PAGE ERROR] Page error: {}", error);
-        });
-        
         // 页面稳定化：防止页面加载过程中出现缩放行为
         stabilizePage(page);
 

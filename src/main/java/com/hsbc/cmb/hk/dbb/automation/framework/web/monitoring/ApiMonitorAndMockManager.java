@@ -1132,30 +1132,21 @@ public class ApiMonitorAndMockManager {
 
         /**
          * 设置要Mock的Endpoint（API的路径）
-         * 可以单独使用，也可以与 forUrl() 配合使用
+         * 
+         * 每次调用 forEndpoint() 都会创建一个新的 Mock 规则，支持链式创建多个规则
          *
          * @param endpoint Endpoint（如：/api/users）
          * @return this构建器实例
          *
-         * 示例1：单独使用（匹配所有包含 /api/users 的请求）
-         *   .forEndpoint("/api/users")
-         *
-         * 示例2：配合 forUrl 使用（精确匹配特定域名 + endpoint）
-         *   .forUrl("https://api.example.com")
+         * 示例：单独使用（匹配所有包含 /api/users 的请求）
          *   .forEndpoint("/api/users")
          */
         public MockBuilder forEndpoint(String endpoint) {
             // 使用 ".*" 匹配所有请求，在 handleMockRoute 中通过 request.url().contains() 判断
-            if (mockRules.isEmpty()) {
-                // 如果是第一个规则，创建新规则并设置 endpoint
-                MockRule rule = new MockRule("mock-" + endpoint, ".*");
-                rule.endpoint(endpoint);
-                mockRules.add(rule);
-            } else {
-                // 如果已有规则，设置最后一个规则的 endpoint
-                MockRule lastRule = mockRules.get(mockRules.size() - 1);
-                lastRule.endpoint(endpoint);
-            }
+            MockRule rule = new MockRule("mock-" + endpoint, ".*");
+            rule.endpoint(endpoint);
+            mockRules.add(rule);
+            
             return this;
         }
 

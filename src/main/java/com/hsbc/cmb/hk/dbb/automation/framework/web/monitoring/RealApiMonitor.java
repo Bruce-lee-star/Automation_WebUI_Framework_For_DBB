@@ -67,6 +67,9 @@ public class RealApiMonitor {
     // 监控失败的AssertionError（后台线程设置，testFinished中检查）
     private static volatile AssertionError monitoringFailure = null;
 
+    // 目标Host过滤（只监控指定host的API）
+    private static volatile String targetHost = null;
+
     // 是否启用实时验证
 
 
@@ -89,6 +92,62 @@ public class RealApiMonitor {
      */
     public static void resetMonitoringFailure() {
         monitoringFailure = null;
+    }
+
+    // ==================== 目标Host过滤 ====================
+
+    /**
+     * 设置目标Host（只监控指定host的API请求）
+     * @param host 目标host（如 "www.example.com" 或 "api.example.com"）
+     */
+    public static void setTargetHost(String host) {
+        targetHost = host;
+        logger.info("Target host filter set to: {}", host);
+    }
+
+    /**
+     * 从URL中提取host
+     * @param url 完整URL
+     * @return host部分
+     */
+    public static String extractHost(String url) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        try {
+            java.net.URL urlObj = new java.net.URL(url);
+            return urlObj.getHost();
+        } catch (Exception e) {
+            // 如果解析失败，尝试简单提取
+            int start = url.indexOf("://");
+            if (start > 0) {
+                String afterProtocol = url.substring(start + 3);
+                int end = afterProtocol.indexOf("/");
+                return end > 0 ? afterProtocol.substring(0, end) : afterProtocol;
+            }
+            return null;
+        }
+    }
+
+    /**
+     * 检查URL是否匹配目标host
+     * @param url 待检查的URL
+     * @return true表示匹配（应该监控），false表示不匹配（应该跳过）
+     */
+    private static boolean matchesTargetHost(String url) {
+        if (targetHost == null || targetHost.isEmpty()) {
+            return true; // 未设置目标host，监控所有请求
+        }
+        String urlHost = extractHost(url);
+        return targetHost.equals(urlHost);
+    }
+
+    /**
+     * 清除目标Host过滤
+     */
+    public static void clearTargetHost() {
+        targetHost = null;
+        logger.info("Target host filter cleared");
     }
 
     // ==================== 简化API（最常用） ====================
@@ -488,6 +547,14 @@ public class RealApiMonitor {
         // 添加响应监听器
         ResponseListener responseListener = (response, request) -> {
             responseCount[0]++;
+
+            // 检查是否匹配目标host
+            if (!matchesTargetHost(response.url())) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "🚫 Skipping non-target host: {} (expected: {})",
+                    response.url(), targetHost);
+                return;
+            }
+
             boolean matches = endpoint.isEmpty() || response.url().contains(endpoint);
 
             // 如果是静态资源且启用了排除，则跳过
@@ -596,12 +663,70 @@ public class RealApiMonitor {
     }
 
     /**
-     * 监控所有API响应
+     * 监控所有API响应（1分钟无新API调用自动停止）
+     * 注意：此方法立即返回，需要手动调用stopMonitoring或在tearDown中停止
      *
      * @param context Playwright BrowserContext对象
      */
     public static void monitorAllApi(BrowserContext context) {
         monitorApi(context, "");
+        startAutoStopTimer(context, 60);
+    }
+
+    /**
+     * 监控所有API响应，指定超时时间
+     * 注意：此方法立即返回，需要手动调用stopMonitoring或在tearDown中停止
+     *
+     * @param context Playwright BrowserContext对象
+     * @param timeoutSeconds 无新API调用后自动停止的秒数
+     */
+    public static void monitorAllApi(BrowserContext context, int timeoutSeconds) {
+        monitorApi(context, "");
+        startAutoStopTimer(context, timeoutSeconds);
+    }
+
+    /**
+     * 启动自动停止定时器（无新API调用后自动停止监控）
+     *
+     * @param context Playwright BrowserContext对象
+     * @param timeoutSeconds 超时秒数
+     */
+    private static void startAutoStopTimer(BrowserContext context, int timeoutSeconds) {
+        Thread autoStopThread = new Thread(() -> {
+            int lastHistorySize = apiCallHistory.size();
+            long lastUpdateTime = System.currentTimeMillis();
+
+            while (!contextMonitoringStopped.getOrDefault(context, false)) {
+                try {
+                    Thread.sleep(1000); // 每秒检查一次
+
+                    int currentSize = apiCallHistory.size();
+                    if (currentSize != lastHistorySize) {
+                        // 有新的API调用，更新时间和计数
+                        lastHistorySize = currentSize;
+                        lastUpdateTime = System.currentTimeMillis();
+                        logger.debug("API activity detected, resetting auto-stop timer. Total APIs: {}", currentSize);
+                    } else {
+                        // 没有新的API调用，检查是否超时
+                        long elapsed = (System.currentTimeMillis() - lastUpdateTime) / 1000;
+                        if (elapsed >= timeoutSeconds) {
+                            logger.info("No API activity for {} seconds, auto-stopping monitoring. Total APIs captured: {}", 
+                                timeoutSeconds, currentSize);
+                            stopMonitoring(context);
+                            break;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    logger.debug("Auto-stop timer interrupted");
+                    break;
+                }
+            }
+            logger.debug("Auto-stop timer thread ended");
+        }, "ApiMonitor-AutoStop-" + context.hashCode());
+        
+        autoStopThread.setDaemon(true);
+        autoStopThread.start();
+        logger.info("Auto-stop timer started: will stop monitoring after {} seconds of inactivity", timeoutSeconds);
     }
 
     /**
@@ -632,6 +757,14 @@ public class RealApiMonitor {
         // 添加响应监听器
         ResponseListener responseListener = (response, request) -> {
             responseCount[0]++;
+
+            // 检查是否匹配目标host
+            if (!matchesTargetHost(response.url())) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "🚫 Skipping non-target host: {} (expected: {})",
+                    response.url(), targetHost);
+                return;
+            }
+
             boolean matches = endpoint.isEmpty() || response.url().contains(endpoint);
 
             // 如果是静态资源且启用了排除，则跳过
@@ -731,12 +864,70 @@ public class RealApiMonitor {
     }
 
     /**
-     * 监控所有API响应（针对Page）
+     * 监控所有API响应（针对Page，1分钟无新API调用自动停止）
+     * 注意：此方法立即返回，需要手动调用stopMonitoring或在tearDown中停止
      *
      * @param page Playwright Page对象
      */
     public static void monitorAllApi(Page page) {
         monitorApi(page, "");
+        startAutoStopTimerForPage(page, 60);
+    }
+
+    /**
+     * 监控所有API响应（针对Page，指定超时时间）
+     * 注意：此方法立即返回，需要手动调用stopMonitoring或在tearDown中停止
+     *
+     * @param page Playwright Page对象
+     * @param timeoutSeconds 无新API调用后自动停止的秒数
+     */
+    public static void monitorAllApi(Page page, int timeoutSeconds) {
+        monitorApi(page, "");
+        startAutoStopTimerForPage(page, timeoutSeconds);
+    }
+
+    /**
+     * 启动自动停止定时器（针对Page，无新API调用后自动停止监控）
+     *
+     * @param page Playwright Page对象
+     * @param timeoutSeconds 超时秒数
+     */
+    private static void startAutoStopTimerForPage(Page page, int timeoutSeconds) {
+        Thread autoStopThread = new Thread(() -> {
+            int lastHistorySize = apiCallHistory.size();
+            long lastUpdateTime = System.currentTimeMillis();
+
+            while (!pageMonitoringStopped.getOrDefault(page, false)) {
+                try {
+                    Thread.sleep(1000); // 每秒检查一次
+
+                    int currentSize = apiCallHistory.size();
+                    if (currentSize != lastHistorySize) {
+                        // 有新的API调用，更新时间和计数
+                        lastHistorySize = currentSize;
+                        lastUpdateTime = System.currentTimeMillis();
+                        logger.debug("API activity detected, resetting auto-stop timer. Total APIs: {}", currentSize);
+                    } else {
+                        // 没有新的API调用，检查是否超时
+                        long elapsed = (System.currentTimeMillis() - lastUpdateTime) / 1000;
+                        if (elapsed >= timeoutSeconds) {
+                            logger.info("No API activity for {} seconds, auto-stopping monitoring. Total APIs captured: {}", 
+                                timeoutSeconds, currentSize);
+                            stopMonitoring(page);
+                            break;
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    logger.debug("Auto-stop timer interrupted");
+                    break;
+                }
+            }
+            logger.debug("Auto-stop timer thread ended");
+        }, "ApiMonitor-AutoStop-Page-" + page.hashCode());
+        
+        autoStopThread.setDaemon(true);
+        autoStopThread.start();
+        logger.info("Auto-stop timer started: will stop monitoring after {} seconds of inactivity", timeoutSeconds);
     }
     
     /**
@@ -1162,7 +1353,7 @@ public class RealApiMonitor {
         boolean foundExpected = false;
         for (String pattern : apiExpectations.keySet()) {
             Pattern regex = Pattern.compile(pattern);
-            if (apiCallHistory.stream().anyMatch(record -> regex.matcher(record.getUrl()).matches())) {
+            if (apiCallHistory.stream().anyMatch(record -> regex.matcher(record.getUrl()).find())) {
                 foundExpected = true;
                 logger.info(" Found expected API matching pattern: {}", pattern);
                 break;
@@ -2069,6 +2260,7 @@ public class RealApiMonitor {
         private String expectedResponseBodyRegex;     // 正则匹配
         private String expectedResponseHeaderName;
         private String expectedResponseHeaderValue;
+        private String customDescription;  // 自定义描述
 
         // JSON Path验证
         private Map<String, Object> jsonPathEqualsMap = new HashMap<>();  // JSON path精确匹配
@@ -2112,6 +2304,17 @@ public class RealApiMonitor {
          */
         public ApiExpectation statusCode(int statusCode) {
             this.expectedStatusCode = statusCode;
+            return this;
+        }
+        
+        /**
+         * 设置期望的自定义描述
+         *
+         * @param description 自定义描述
+         * @return this
+         */
+        public ApiExpectation description(String description) {
+            this.customDescription = description;
             return this;
         }
 
@@ -2231,7 +2434,14 @@ public class RealApiMonitor {
          */
         public String getDescription() {
             StringBuilder desc = new StringBuilder();
+            
+            // 如果有自定义描述，添加到开头
+            if (customDescription != null && !customDescription.isEmpty()) {
+                desc.append(customDescription);
+            }
+            
             if (expectedStatusCode != null) {
+                if (desc.length() > 0) desc.append(", ");
                 desc.append("Status=").append(expectedStatusCode);
             }
             if (expectedResponseBodyContent != null) {

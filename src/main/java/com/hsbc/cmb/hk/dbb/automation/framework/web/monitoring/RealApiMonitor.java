@@ -23,27 +23,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
  * 这是一个辅助工具，用于在 web 测试过程中监控 API 调用。
  * 所有方法都是非阻塞的，不会影响测试流程。
  * 
- * 核心方法：
- * 
- * 1. monitor().start() - 异步监控 API（推荐）
- *    RealApiMonitor.monitor(context)
- *        .api("/api/login", 200)
- *        .api("/api/user", 200)
- *        .timeout(15)
- *        .start();  // 异步启动，立即返回
- * 
- * 2. getLast() - 获取最后一条 API 记录
- *    ApiCallRecord record = RealApiMonitor.getLast("/api/login");
- * 
- * 3. getLastBody() - 获取最后一条 API 的响应体
- *    String body = RealApiMonitor.getLastBody("/api/login");
- * 
- * 4. getHistory() - 获取所有 API 记录
- *    List<ApiCallRecord> history = RealApiMonitor.getHistory();
- * 
- * 使用场景：
- * - 在点击按钮前启动监控，然后执行操作，API 会自动被捕获
- * - 通过 getLast() 或 getHistory() 查询捕获的 API 记录
+ * 详细使用说明请参考 API_MONITOR_README.md
  */
 public class RealApiMonitor {
 

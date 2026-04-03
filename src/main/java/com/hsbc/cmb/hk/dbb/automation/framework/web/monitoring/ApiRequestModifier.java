@@ -27,31 +27,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
- * 请求修改器 - 统一修改 HTTP 请求的 Body、Headers、QueryParams、Method
+ * 请求修改器 - 统一修改 HTTP 请求的 Body、Headers、QueryParams、Method、URL、Host
  *
- * 使用示例：
- * ApiRequestModifier modification = new ApiRequestModifier()
- *     .body("{}")                                  // 完全替换 body
- *     .modifyBodyField("userId", "123")            // 设置/修改单个字段
- *     .modifyBodyField("user.name", "John")        // 设置嵌套字段
- *     .removeBodyField("password")                 // 删除字段
- *     .modifyHeader("x-hsbc-111", "1111111")       // 设置 header
- *     .removeHeader("Cookie")                      // 删除 header
- *     .modifyQueryParam("page", "1")               // 设置参数
- *     .removeQueryParam("debug")                   // 删除参数
- *     .method("GET");
- *
- * // 基本用法
- * RequestResponseStore store = ApiRequestModifier.modifyRequest(context, "/user/profile/list", modification);
- *
- * // 获取指定endpoint的最后一次请求/响应
- * RequestResponseInfo lastInfo = store.getLast("/user/profile/list");
- *
- * // 使用回调实时处理
- * RequestResponseStore store = ApiRequestModifier.modifyRequest(context, "/api/login", modification, info -> {
- *     System.out.println("Request: " + info.request.url);
- *     System.out.println("Response Status: " + info.response.status);
- * });
+ * 详细使用说明请参考 API_MONITOR_README.md
  */
 public class ApiRequestModifier {
 
@@ -215,12 +193,28 @@ public class ApiRequestModifier {
     private Map<String, FieldOp> headerOps = new LinkedHashMap<>();
     private Map<String, FieldOp> queryParamOps = new LinkedHashMap<>();
     private String method;
+    private String url;
+    private String host;
+
+    // ==================== Factory 方法 ====================
+
+    /** 创建 ApiRequestModifier 实例 */
+    public static ApiRequestModifier create() {
+        return new ApiRequestModifier();
+    }
 
     // ==================== Body 操作 ====================
 
     /** 完全替换请求体 */
     public ApiRequestModifier body(String body) {
         this.body = body;
+        return this;
+    }
+
+    /** 删除整个请求体 */
+    public ApiRequestModifier removeBody() {
+        this.body = "";
+        this.bodyOps.clear();
         return this;
     }
 
@@ -314,11 +308,39 @@ public class ApiRequestModifier {
         return this;
     }
 
+    // ==================== URL 操作 ====================
+
+    /** 完全替换 URL */
+    public ApiRequestModifier url(String url) {
+        this.url = url;
+        return this;
+    }
+
+    /** 替换 host（保留路径和查询参数） */
+    public ApiRequestModifier host(String newHost) {
+        this.host = newHost;
+        return this;
+    }
+
+    // ==================== 清理方法 ====================
+
+    /** 清空所有修改配置 */
+    public ApiRequestModifier clear() {
+        this.body = null;
+        this.bodyOps.clear();
+        this.headerOps.clear();
+        this.queryParamOps.clear();
+        this.method = null;
+        this.url = null;
+        this.host = null;
+        return this;
+    }
+
     // ==================== 辅助方法 ====================
 
     boolean hasModifications() {
         return body != null || !bodyOps.isEmpty() || !headerOps.isEmpty()
-                || !queryParamOps.isEmpty() || method != null;
+                || !queryParamOps.isEmpty() || method != null || url != null || host != null;
     }
 
     boolean hasBodyModifications() {
@@ -629,6 +651,20 @@ public class ApiRequestModifier {
                     logger.info("[Modified Method] {} -> {}", request.method(), modification.method);
                 }
 
+                // 5. 修改 URL 或 Host
+                String finalUrl = url;
+                if (modification.url != null) {
+                    finalUrl = modification.url;
+                    logger.info("[Modified URL] {} -> {}", url, finalUrl);
+                } else if (modification.host != null) {
+                    finalUrl = replaceHost(url, modification.host);
+                    logger.info("[Modified Host] {} -> {}", url, finalUrl);
+                }
+                
+                if (!finalUrl.equals(url)) {
+                    options.setUrl(finalUrl);
+                }
+
                 logger.info("========================================");
 
                 route.resume(options);
@@ -798,6 +834,20 @@ public class ApiRequestModifier {
                     logger.info("[Modified Method] {} -> {}", request.method(), modification.method);
                 }
 
+                // 5. 修改 URL 或 Host
+                String finalUrl = url;
+                if (modification.url != null) {
+                    finalUrl = modification.url;
+                    logger.info("[Modified URL] {} -> {}", url, finalUrl);
+                } else if (modification.host != null) {
+                    finalUrl = replaceHost(url, modification.host);
+                    logger.info("[Modified Host] {} -> {}", url, finalUrl);
+                }
+                
+                if (!finalUrl.equals(url)) {
+                    options.setUrl(finalUrl);
+                }
+
                 logger.info("========================================");
 
                 route.resume(options);
@@ -821,6 +871,8 @@ public class ApiRequestModifier {
         sb.append("\n   HeaderOps: ").append(mod.headerOps.isEmpty() ? "(none)" : mod.headerOps);
         sb.append("\n   QueryParamOps: ").append(mod.queryParamOps.isEmpty() ? "(none)" : mod.queryParamOps);
         sb.append("\n   Method: ").append(mod.method != null ? mod.method : "(no change)");
+        sb.append("\n   URL: ").append(mod.url != null ? mod.url : "(no change)");
+        sb.append("\n   Host: ").append(mod.host != null ? mod.host : "(no change)");
         return sb.toString();
     }
 
@@ -893,6 +945,38 @@ public class ApiRequestModifier {
                 return url;
             }
             return url + separator + paramName + "=" + paramValue;
+        }
+    }
+
+    /** 替换 URL 中的 host */
+    private static String replaceHost(String url, String newHost) {
+        if (url == null || newHost == null) {
+            return url;
+        }
+
+        try {
+            URI uri = URI.create(url);
+            URI newUri = new URI(
+                    uri.getScheme(),
+                    newHost,
+                    uri.getPath(),
+                    uri.getQuery(),
+                    uri.getFragment()
+            );
+            return newUri.toString();
+        } catch (Exception e) {
+            logger.warn("Failed to replace host in URL: {} -> {}, error: {}", url, newHost, e.getMessage());
+            // 简单替换
+            int hostStart = url.indexOf("://");
+            if (hostStart > 0) {
+                int pathStart = url.indexOf("/", hostStart + 3);
+                if (pathStart > 0) {
+                    return url.substring(0, hostStart + 3) + newHost + url.substring(pathStart);
+                } else {
+                    return url.substring(0, hostStart + 3) + newHost;
+                }
+            }
+            return url;
         }
     }
 }

@@ -12,13 +12,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.AriaRole;
-import com.microsoft.playwright.options.BoundingBox;
-import com.microsoft.playwright.options.Cookie;
-import com.microsoft.playwright.options.LoadState;
-import com.microsoft.playwright.options.MouseButton;
-import com.microsoft.playwright.options.SelectOption;
-import com.microsoft.playwright.options.WaitForSelectorState;
+import com.microsoft.playwright.options.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -131,9 +125,15 @@ public abstract class BasePage {
     }
 
     /**
-     * 检查字段类型是否为 List<PageElement>
+     * 检查字段类型是否为 List<PageElement> 或 PageElementList
      */
     private boolean isListPageElement(Field field) {
+        // 检查是否为 PageElementList 类型
+        if (PageElementList.class.isAssignableFrom(field.getType())) {
+            return true;
+        }
+        
+        // 检查是否为 List 类型
         if (!java.util.List.class.isAssignableFrom(field.getType())) {
             return false;
         }

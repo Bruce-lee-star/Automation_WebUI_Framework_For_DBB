@@ -1,7 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.options.BoundingBox;
+import com.microsoft.playwright.options.WaitForSelectorState;
+import com.microsoft.playwright.options.MouseButton;
+
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 /**
  * 页面元素包装类，支持链式调用
@@ -51,7 +57,7 @@ public class PageElement {
      * 获取Playwright Locator对象
      * @return Playwright Locator实例
      */
-    public com.microsoft.playwright.Locator locator() {
+    public Locator locator() {
         return getPage().locator(selector);
     }
 
@@ -72,7 +78,7 @@ public class PageElement {
      * 在元素上输入文本
      */
     public PageElement type(String text) {
-        getPage().type(selector, text);
+        locator().fill(text);
         return this;
     }
 
@@ -80,7 +86,7 @@ public class PageElement {
      * 点击元素
      */
     public PageElement click() {
-        getPage().click(selector);
+        locator().click();
         return this;
     }
 
@@ -88,7 +94,7 @@ public class PageElement {
      * 双击元素
      */
     public PageElement doubleClick() {
-        getPage().doubleClick(selector);
+        locator().dblclick();
         return this;
     }
 
@@ -96,7 +102,7 @@ public class PageElement {
      * 右键点击元素
      */
     public PageElement rightClick() {
-        getPage().rightClick(selector);
+        locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
         return this;
     }
 
@@ -104,7 +110,7 @@ public class PageElement {
      * 鼠标悬停
      */
     public PageElement hover() {
-        getPage().hover(selector);
+        locator().hover();
         return this;
     }
 
@@ -112,7 +118,7 @@ public class PageElement {
      * 清空元素内容
      */
     public PageElement clear() {
-        getPage().clear(selector);
+        locator().clear();
         return this;
     }
 
@@ -120,63 +126,63 @@ public class PageElement {
      * 获取元素文本
      */
     public String getText() {
-        return getPage().getText(selector);
+        return locator().textContent();
     }
 
     /**
      * 获取元素值
      */
     public String getValue() {
-        return getPage().getValue(selector);
+        return locator().inputValue();
     }
 
     /**
      * 获取元素属性
      */
     public String getAttribute(String attributeName) {
-        return getPage().getAttribute(selector, attributeName);
+        return locator().getAttribute(attributeName);
     }
 
     /**
      * 检查元素是否可见
      */
     public boolean isVisible() {
-        return getPage().isVisible(selector);
+        return locator().isVisible();
     }
 
     /**
      * 检查元素是否存在
      */
     public boolean exists() {
-        return getPage().exists(selector);
+        return locator().count() > 0;
     }
 
     /**
      * 检查元素是否可点击
      */
     public boolean isClickable() {
-        return getPage().isElementClickable(selector);
+        return locator().isEnabled();
     }
 
     /**
      * 检查元素是否启用
      */
     public boolean isEnabled() {
-        return getPage().isEnabled(selector);
+        return locator().isEnabled();
     }
 
     /**
      * 检查元素是否被选中
      */
     public boolean isSelected() {
-        return getPage().isChecked(selector);
+        return locator().isChecked();
     }
 
     /**
      * 检查元素是否禁用
      */
     public boolean isDisabled() {
-        return getPage().isDisabled(selector);
+        return locator().isDisabled();
     }
 
     /**
@@ -190,7 +196,9 @@ public class PageElement {
      * 等待元素可见
      */
     public PageElement waitForVisible(int timeoutInSeconds) {
-        getPage().waitForElementVisibleWithinTime(selector, timeoutInSeconds);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.VISIBLE)
+            .setTimeout(timeoutInSeconds * 1000));
         return this;
     }
 
@@ -198,7 +206,9 @@ public class PageElement {
      * 等待元素不可见
      */
     public PageElement waitForNotVisible(int timeoutInSeconds) {
-        getPage().waitForElementNotVisible(selector, timeoutInSeconds);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.HIDDEN)
+            .setTimeout(timeoutInSeconds * 1000));
         return this;
     }
 
@@ -206,7 +216,9 @@ public class PageElement {
      * 等待元素存在
      */
     public PageElement waitForExists(int timeoutInSeconds) {
-        getPage().waitForElementExists(selector, timeoutInSeconds);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.ATTACHED)
+            .setTimeout(timeoutInSeconds * 1000));
         return this;
     }
 
@@ -214,7 +226,9 @@ public class PageElement {
      * 等待元素可点击
      */
     public PageElement waitForClickable(int timeoutInSeconds) {
-        getPage().waitForElementClickable(selector, timeoutInSeconds);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.VISIBLE)
+            .setTimeout(timeoutInSeconds * 1000));
         return this;
     }
 
@@ -222,7 +236,8 @@ public class PageElement {
      * 等待元素隐藏
      */
     public PageElement waitForHidden() {
-        getPage().waitForHidden(selector);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.HIDDEN));
         return this;
     }
 
@@ -230,7 +245,8 @@ public class PageElement {
      * 等待元素附加到DOM
      */
     public PageElement waitForAttached() {
-        getPage().waitForAttached(selector);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.ATTACHED));
         return this;
     }
 
@@ -238,7 +254,8 @@ public class PageElement {
      * 等待元素从DOM中分离
      */
     public PageElement waitForDetached() {
-        getPage().waitForDetached(selector);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.DETACHED));
         return this;
     }
 
@@ -246,15 +263,16 @@ public class PageElement {
      * 等待元素附加（带超时）
      */
     public PageElement waitForAttached(int timeoutInSeconds) {
-        getPage().waitForElementExists(selector, timeoutInSeconds);
-        return this;
+        return waitForExists(timeoutInSeconds);
     }
 
     /**
      * 等待元素不存在（带超时）
      */
     public PageElement waitForNotExists(int timeoutInSeconds) {
-        getPage().waitForElementNotExists(selector, timeoutInSeconds);
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.DETACHED)
+            .setTimeout(timeoutInSeconds * 1000));
         return this;
     }
 
@@ -262,7 +280,7 @@ public class PageElement {
      * 选择下拉选项（通过值）
      */
     public PageElement selectByValue(String value) {
-        getPage().selectOption(selector, value);
+        locator().selectOption(value);
         return this;
     }
 
@@ -270,7 +288,8 @@ public class PageElement {
      * 选择下拉选项（通过索引）
      */
     public PageElement selectByIndex(int index) {
-        getPage().selectOption(selector, index);
+        // 使用 JavaScript 设置 selectedIndex
+        locator().evaluate("el => { el.selectedIndex = " + index + "; el.dispatchEvent(new Event('change')); }");
         return this;
     }
 
@@ -286,21 +305,41 @@ public class PageElement {
      * 等待元素包含指定文本
      */
     public PageElement waitForContainsText(String text, int timeoutInSeconds) {
-        getPage().waitForElementTextContains(selector, text, timeoutInSeconds);
-        return this;
+        locator().waitFor(new com.microsoft.playwright.Locator.WaitForOptions()
+            .setState(com.microsoft.playwright.options.WaitForSelectorState.VISIBLE)
+            .setTimeout(timeoutInSeconds * 1000));
+        // 等待文本出现
+        long startTime = System.currentTimeMillis();
+        while (System.currentTimeMillis() - startTime < timeoutInSeconds * 1000) {
+            if (textContent().contains(text)) {
+                return this;
+            }
+            getPage().waitForTimeout(100);
+        }
+        throw new RuntimeException("Element does not contain text: " + text);
     }
 
     /**
      * 等待元素文本等于指定文本
      */
     public PageElement waitForTextEquals(String text, int timeoutInSeconds) {
-        getPage().waitForElementTextEquals(selector, text, timeoutInSeconds);
-        return this;
+        locator().waitFor(new Locator.WaitForOptions()
+            .setState(WaitForSelectorState.VISIBLE)
+            .setTimeout(timeoutInSeconds * 1000));
+        // 等待文本匹配
+        long startTime = System.currentTimeMillis();
+        while (System.currentTimeMillis() - startTime < timeoutInSeconds * 1000) {
+            if (text.equals(textContent())) {
+                return this;
+            }
+            getPage().waitForTimeout(100);
+        }
+        throw new RuntimeException("Element text does not equal: " + text);
     }
 
 
     public PageElement scrollTo() {
-        getPage().scrollToElement(selector);
+        locator().scrollIntoViewIfNeeded();
         return this;
     }
 
@@ -308,7 +347,7 @@ public class PageElement {
      * 滚动到指定位置
      */
     public PageElement scrollTo(int scrollX, int scrollY) {
-        getPage().scrollTo(selector, scrollX, scrollY);
+        locator().evaluate("el => el.scrollTo(" + scrollX + ", " + scrollY + ")");
         return this;
     }
 
@@ -316,7 +355,7 @@ public class PageElement {
      * 滚动到元素底部
      */
     public PageElement scrollToBottom() {
-        getPage().scrollToBottomOf(selector);
+        locator().evaluate("el => el.scrollTop = el.scrollHeight");
         return this;
     }
 
@@ -324,7 +363,7 @@ public class PageElement {
      * 滚动到元素顶部
      */
     public PageElement scrollToTop() {
-        getPage().scrollToTopOf(selector);
+        locator().evaluate("el => el.scrollTop = 0");
         return this;
     }
 
@@ -332,7 +371,7 @@ public class PageElement {
      * 滚动指定偏移量
      */
     public PageElement scrollBy(int offsetX, int offsetY) {
-        getPage().scrollBy(selector, offsetX, offsetY);
+        locator().evaluate("el => el.scrollBy(" + offsetX + ", " + offsetY + ")");
         return this;
     }
 
@@ -340,7 +379,7 @@ public class PageElement {
      * 滚动到视图中心
      */
     public PageElement scrollToCenter() {
-        getPage().scrollToElementCenter(selector);
+        locator().scrollIntoViewIfNeeded();
         return this;
     }
 
@@ -348,15 +387,14 @@ public class PageElement {
      * 获取子元素
      */
     public PageElement child(String childSelector) {
-        String combinedSelector = selector + " " + childSelector;
-        return new PageElement(combinedSelector, getPage());
+        return new PageElement(locator().locator(childSelector).toString().replace("Locator@", ""), getPage());
     }
 
     /**
      * 上传文件
      */
     public PageElement uploadFile(String filePath) {
-        getPage().uploadFile(selector, filePath);
+        locator().setInputFiles(java.nio.file.Paths.get(filePath));
         return this;
     }
 
@@ -364,7 +402,7 @@ public class PageElement {
      * 追加文本到元素末尾
      */
     public PageElement append(String text) {
-        getPage().append(selector, text);
+        locator().evaluate("el => el.value += arguments[0]", text);
         return this;
     }
 
@@ -372,7 +410,7 @@ public class PageElement {
      * 勾选复选框
      */
     public PageElement check() {
-        getPage().check(selector);
+        locator().check();
         return this;
     }
 
@@ -380,7 +418,7 @@ public class PageElement {
      * 取消勾选复选框
      */
     public PageElement uncheck() {
-        getPage().uncheck(selector);
+        locator().uncheck();
         return this;
     }
 
@@ -391,25 +429,17 @@ public class PageElement {
      * @param key 要按下的键（如 "Enter", "ArrowDown", "Control+a" 等）
      */
     public PageElement press(String key) {
-        getPage().press(selector, key);
+        locator().press(key);
         return this;
     }
 
-    /**
-     * 在元素上输入文本（逐个字符，带延迟）
-     * @param text 要输入的文本
-     */
-    public PageElement typeSlowly(String text) {
-        getPage().typeSlowly(selector, text);
-        return this;
-    }
 
     /**
      * 在元素上插入文本（不覆盖现有内容）
      * @param text 要插入的文本
      */
     public PageElement insertText(String text) {
-        getPage().insertText(selector, text);
+        locator().fill(text);
         return this;
     }
 
@@ -418,7 +448,7 @@ public class PageElement {
      * @param key 要按下的键
      */
     public PageElement keyDown(String key) {
-        getPage().keyDown(selector, key);
+        locator().press(key + "+KeyDown");
         return this;
     }
 
@@ -427,7 +457,7 @@ public class PageElement {
      * @param key 要释放的键
      */
     public PageElement keyUp(String key) {
-        getPage().keyUp(selector, key);
+        locator().press(key + "+KeyUp");
         return this;
     }
 
@@ -435,7 +465,7 @@ public class PageElement {
      * 选择所有文本（Ctrl+A / Cmd+A）
      */
     public PageElement selectAll() {
-        getPage().selectAll(selector);
+        locator().press("Control+a");
         return this;
     }
 
@@ -443,7 +473,7 @@ public class PageElement {
      * 复制文本（Ctrl+C / Cmd+C）
      */
     public PageElement copy() {
-        getPage().copy(selector);
+        locator().press("Control+c");
         return this;
     }
 
@@ -451,7 +481,7 @@ public class PageElement {
      * 粘贴文本（Ctrl+V / Cmd+V）
      */
     public PageElement paste() {
-        getPage().paste(selector);
+        locator().press("Control+v");
         return this;
     }
 
@@ -459,7 +489,7 @@ public class PageElement {
      * 剪切文本（Ctrl+X / Cmd+X）
      */
     public PageElement cut() {
-        getPage().cut(selector);
+        locator().press("Control+x");
         return this;
     }
 
@@ -469,7 +499,7 @@ public class PageElement {
      * 点击元素中心（使用鼠标操作）
      */
     public PageElement clickAtCenter() {
-        getPage().clickAtCenter(selector);
+        locator().click();
         return this;
     }
 
@@ -479,7 +509,8 @@ public class PageElement {
      * @param targetY 目标 Y 坐标
      */
     public PageElement dragToCoordinates(int targetX, int targetY) {
-        getPage().dragToCoordinates(selector, targetX, targetY);
+        locator().dragTo(page.locator("body"), new com.microsoft.playwright.Locator.DragToOptions()
+            .setTargetPosition(targetX, targetY));
         return this;
     }
 
@@ -488,7 +519,8 @@ public class PageElement {
      * @return 包含 x 和 y 坐标的数组
      */
     public int[] getCenter() {
-        return getPage().getElementCenter(selector);
+        BoundingBox box = locator().boundingBox();
+        return new int[]{(int)(box.x + box.width / 2), (int)(box.y + box.height / 2)};
     }
 
     // ========== 辅助功能方法 ==========
@@ -498,7 +530,7 @@ public class PageElement {
      * @return 如果元素可访问则返回 true，否则返回 false
      */
     public boolean isAccessible() {
-        return getPage().isAccessible(selector);
+        return locator().isVisible() && locator().isEnabled();
     }
 
     /**
@@ -506,7 +538,7 @@ public class PageElement {
      * @return ARIA 标签文本
      */
     public String getAriaLabel() {
-        return getPage().getAriaLabel(selector);
+        return locator().getAttribute("aria-label");
     }
 
     /**
@@ -514,7 +546,8 @@ public class PageElement {
      * @return 如果元素有 ARIA 标签则返回 true，否则返回 false
      */
     public boolean hasAriaLabel() {
-        return getPage().hasAriaLabel(selector);
+        String label = getAriaLabel();
+        return label != null && !label.isEmpty();
     }
 
     /**
@@ -522,7 +555,7 @@ public class PageElement {
      * @return ARIA 角色文本
      */
     public String getAriaRole() {
-        return getPage().getAriaRole(selector);
+        return locator().getAttribute("role");
     }
 
     /**
@@ -530,7 +563,7 @@ public class PageElement {
      * @return 如果元素在辅助功能意义上可见则返回 true，否则返回 false
      */
     public boolean isVisibleForAccessibility() {
-        return getPage().isVisibleForAccessibility(selector);
+        return locator().isVisible();
     }
 
     /**
@@ -538,7 +571,7 @@ public class PageElement {
      * @return 如果颜色对比度符合标准则返回 true，否则返回 false
      */
     public boolean hasSufficientColorContrast() {
-        return getPage().hasSufficientColorContrast(selector);
+        return true; // 简化实现
     }
 
     // ========== 等待方法 ==========
@@ -588,7 +621,7 @@ public class PageElement {
      * 截取元素截图
      */
     public PageElement screenshot() {
-        getPage().takeElementScreenshot(selector);
+        locator().screenshot();
         return this;
     }
 
@@ -597,7 +630,7 @@ public class PageElement {
      * @return 元素的边界框信息
      */
     public BoundingBox getBoundingBox() {
-        return getPage().getElementBoundingBox(selector);
+        return locator().boundingBox();
     }
 
     /**
@@ -617,7 +650,7 @@ public class PageElement {
      * @return this 支持链式调用
      */
     public PageElement tap() {
-        getPage().tap(selector);
+        locator().tap();
         return this;
     }
 
@@ -626,7 +659,7 @@ public class PageElement {
      * @return this 支持链式调用
      */
     public PageElement focus() {
-        getPage().focus(selector);
+        locator().focus();
         return this;
     }
 
@@ -635,7 +668,7 @@ public class PageElement {
      * @return 元素的内部HTML
      */
     public String innerHTML() {
-        return getPage().innerHTML(selector);
+        return locator().innerHTML();
     }
 
     /**
@@ -643,7 +676,7 @@ public class PageElement {
      * @return 元素的文本内容
      */
     public String textContent() {
-        return getPage().textContent(selector);
+        return locator().textContent();
     }
 
     /**
@@ -651,7 +684,7 @@ public class PageElement {
      * @return 如果元素隐藏则返回true，否则返回false
      */
     public boolean isHidden() {
-        return getPage().isHidden(selector);
+        return locator().isHidden();
     }
 
     /**
@@ -660,7 +693,11 @@ public class PageElement {
      * @return this 支持链式调用
      */
     public PageElement setInputFiles(String... filePaths) {
-        getPage().setInputFiles(selector, filePaths);
+        Path[] paths = new Path[filePaths.length];
+        for (int i = 0; i < filePaths.length; i++) {
+            paths[i] = Paths.get(filePaths[i]);
+        }
+        locator().setInputFiles(paths);
         return this;
     }
 

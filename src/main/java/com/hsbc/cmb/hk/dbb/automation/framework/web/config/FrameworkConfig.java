@@ -226,6 +226,107 @@ public enum FrameworkConfig {
         "下载文件保存路径"
     ),
 
+    // ==================== BrowserStack 云测试配置 ====================
+
+    /**
+     * 是否启用 BrowserStack
+     */
+    BROWSERSTACK_ENABLED(
+        "browserstack.enabled",
+        "false",
+        "是否启用 BrowserStack"
+    ),
+
+    /**
+     * BrowserStack 用户名
+     */
+    BROWSERSTACK_USERNAME(
+        "browserstack.username",
+        "",
+        "BrowserStack 用户名"
+    ),
+
+    /**
+     * BrowserStack 访问密钥
+     */
+    BROWSERSTACK_ACCESS_KEY(
+        "browserstack.accessKey",
+        "",
+        "BrowserStack 访问密钥"
+    ),
+
+    /**
+     * BrowserStack 会话名称
+     */
+    BROWSERSTACK_SESSION_NAME(
+        "browserstack.sessionName",
+        "",
+        "BrowserStack 会话名称"
+    ),
+
+    /**
+     * BrowserStack 操作系统
+     */
+    BROWSERSTACK_OS(
+        "browserstack.os",
+        "Windows",
+        "BrowserStack 操作系统"
+    ),
+
+    /**
+     * BrowserStack 操作系统版本
+     */
+    BROWSERSTACK_OS_VERSION(
+        "browserstack.osVersion",
+        "11",
+        "BrowserStack 操作系统版本"
+    ),
+
+    /**
+     * BrowserStack 浏览器版本
+     */
+    BROWSERSTACK_BROWSER_VERSION(
+        "browserstack.browserVersion",
+        "latest",
+        "BrowserStack 浏览器版本"
+    ),
+
+    /**
+     * BrowserStack 超时设置（秒）
+     */
+    BROWSERSTACK_TIMEOUT(
+        "browserstack.timeout",
+        "300",
+        "BrowserStack 超时设置"
+    ),
+
+    /**
+     * BrowserStack 调试模式
+     */
+    BROWSERSTACK_DEBUG(
+        "browserstack.debug",
+        "true",
+        "BrowserStack 调试模式"
+    ),
+
+    /**
+     * BrowserStack 网络日志
+     */
+    BROWSERSTACK_NETWORK_LOGS(
+        "browserstack.networkLogs",
+        "true",
+        "BrowserStack 网络日志"
+    ),
+
+    /**
+     * BrowserStack 视频录制
+     */
+    BROWSERSTACK_VIDEO(
+        "browserstack.video",
+        "true",
+        "BrowserStack 视频录制"
+    ),
+
     // ==================== Playwright 窗口配置 ====================
 
     /**

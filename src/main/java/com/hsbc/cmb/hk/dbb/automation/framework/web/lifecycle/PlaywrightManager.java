@@ -42,6 +42,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.stream.Stream;
 
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager.*;
+
 /**
  * 企业级 Playwright Manager - 管理 Playwright 实例、Browser、Context 和 Page
  * 特性：
@@ -834,8 +836,8 @@ public class PlaywrightManager {
      * 配置浏览器启动选项
      */
     private static void configureBrowserLaunchOptions(BrowserType.LaunchOptions launchOptions) {
-        boolean maximizeWindow = isWindowMaximize();
-        String maximizeArgs = getWindowMaximizeArgs();
+        boolean maximizeWindow = PlaywrightConfigManager.isWindowMaximize();
+        String maximizeArgs = PlaywrightConfigManager.getWindowMaximizeArgs();
         boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
 
         // 获取逻辑屏幕尺寸
@@ -845,7 +847,7 @@ public class PlaywrightManager {
 
         // 获取浏览器类型
         String browserType = getBrowserType();
-        boolean isChromium = isChromiumBased(browserType);
+        boolean isChromium = PlaywrightConfigManager.isChromiumBased(browserType);
 
         // 构建启动参数
         List<String> args = new ArrayList<>();
@@ -909,6 +911,13 @@ public class PlaywrightManager {
         }
 
         try {
+            // 检查是否启用 BrowserStack
+            if (com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.isBrowserStackEnabled()) {
+                logger.info("Using BrowserStack for browser: {}", browserType);
+                return setupBrowserStackBrowser(playwright, browserType);
+            }
+
+            // 本地浏览器
             switch (browserType.toLowerCase()) {
                 case "chromium":
                     return playwright.chromium().launch(launchOptions);
@@ -930,6 +939,42 @@ public class PlaywrightManager {
             throw new BrowserException("Failed to launch browser " + browserType, e);
         }
     }
+
+    /**
+     * 设置 BrowserStack 浏览器连接
+     */
+    private static Browser setupBrowserStackBrowser(Playwright playwright, String browserType) {
+        try {
+            // 获取 BrowserStack 连接 URL
+            String browserStackUrl = com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackUrl();
+            
+            // 获取 BrowserStack 能力配置
+            java.util.Map<String, String> capabilities = 
+                com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackCapabilities(browserType);
+            
+            logger.info("Connecting to BrowserStack: {}", browserStackUrl.replaceAll(":([^@]+)@", ":****@"));
+            logger.info("BrowserStack capabilities: {}", capabilities);
+            
+            // 连接到 BrowserStack
+            BrowserType.ConnectOptions connectOptions = 
+                com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getConnectOptions(browserType);
+            
+            switch (browserType.toLowerCase()) {
+                case "chromium":
+                    return playwright.chromium().connect(browserStackUrl, connectOptions);
+                case "firefox":
+                    return playwright.firefox().connect(browserStackUrl, connectOptions);
+                case "webkit":
+                    return playwright.webkit().connect(browserStackUrl, connectOptions);
+                default:
+                    throw new IllegalArgumentException("Unsupported browser type for BrowserStack: " + browserType);
+            }
+        } catch (Exception e) {
+            logger.error("Failed to connect to BrowserStack for browser: {}", browserType, e);
+            throw new BrowserException("Failed to connect to BrowserStack", e);
+        }
+    }
+
 
     // ==================== 实例访问方法 ====================
 
@@ -1425,23 +1470,23 @@ public class PlaywrightManager {
      */
     private static void configureDefaultContextOptions(Browser.NewContextOptions contextOptions) {
         // 设置 locale
-        String locale = getContextLocale();
+        String locale = PlaywrightConfigManager.getContextLocale();
         contextOptions.setLocale(locale);
 
         // 设置 timezone
-        String timezoneId = getContextTimezone();
+        String timezoneId = PlaywrightConfigManager.getContextTimezone();
         if (timezoneId != null && !timezoneId.isEmpty()) {
             contextOptions.setTimezoneId(timezoneId);
         }
 
         // 设置 User Agent
-        String userAgent = getContextUserAgent();
+        String userAgent = PlaywrightConfigManager.getContextUserAgent();
         if (userAgent != null && !userAgent.isEmpty()) {
             contextOptions.setUserAgent(userAgent);
         }
 
         // 设置权限
-        String permissionsConfig = getContextPermissions();
+        String permissionsConfig = PlaywrightConfigManager.getContextPermissions();
         if (permissionsConfig != null && !permissionsConfig.isEmpty()) {
             List<String> permissions = List.of(permissionsConfig.split(","));
             if (!permissions.isEmpty()) {
@@ -1450,8 +1495,8 @@ public class PlaywrightManager {
         }
 
         // 设置地理位置
-        String latitudeStr = getGeolocationLatitude();
-        String longitudeStr = getGeolocationLongitude();
+        String latitudeStr = PlaywrightConfigManager.getGeolocationLatitude();
+        String longitudeStr = PlaywrightConfigManager.getGeolocationLongitude();
         if (latitudeStr != null && longitudeStr != null && !latitudeStr.isEmpty() && !longitudeStr.isEmpty()) {
             try {
                 double latitude = Double.parseDouble(latitudeStr);
@@ -1466,18 +1511,18 @@ public class PlaywrightManager {
         configureDeviceScaleFactor(contextOptions);
 
         // 设置触摸和移动设备标识
-        contextOptions.setHasTouch(hasTouch());
-        contextOptions.setIsMobile(isMobile());
+        contextOptions.setHasTouch(PlaywrightConfigManager.hasTouch());
+        contextOptions.setIsMobile(PlaywrightConfigManager.isMobile());
 
         // 设置颜色方案
-        String colorScheme = getColorScheme();
+        String colorScheme = PlaywrightConfigManager.getColorScheme();
         contextOptions.setColorScheme(ColorScheme.valueOf(colorScheme.toUpperCase().replace("-", "_")));
 
         // 设置 Viewport（如果未启用窗口最大化，则使用配置的 viewport）
-        boolean maximizeWindow = isWindowMaximize();
+        boolean maximizeWindow = PlaywrightConfigManager.isWindowMaximize();
         if (!maximizeWindow) {
-            int viewportWidth = getViewportWidth();
-            int viewportHeight = getViewportHeight();
+            int viewportWidth = PlaywrightConfigManager.getViewportWidth();
+            int viewportHeight = PlaywrightConfigManager.getViewportHeight();
             contextOptions.setViewportSize(viewportWidth, viewportHeight);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Setting viewport size from config: {}x{}", viewportWidth, viewportHeight);
         } else {
@@ -1620,7 +1665,7 @@ public class PlaywrightManager {
      * 配置设备缩放因子
      */
     private static void configureDeviceScaleFactor(Browser.NewContextOptions contextOptions) {
-        String deviceScaleFactor = getDeviceScaleFactor();
+        String deviceScaleFactor = PlaywrightConfigManager.getDeviceScaleFactor();
 
         if (deviceScaleFactor == null || deviceScaleFactor.trim().isEmpty()) {
             // 自动检测系统 DPI 缩放因子
@@ -1756,9 +1801,11 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "页面加载等待超时（LoadState: {}），继续稳定化: {}", loadState, e.getMessage());
             }
 
+
             // 检查是否使用 --start-maximized
-            String maximizeArgs = getWindowMaximizeArgs();
+            String maximizeArgs = PlaywrightConfigManager.getWindowMaximizeArgs();
             boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
+
 
             // 获取逻辑屏幕尺寸
             Dimension screenSize = getAvailableScreenSize();
@@ -2033,8 +2080,9 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
+
         // 根据配置决定是否复用 Context/Page
-        String restartBrowserForEach = getRestartStrategy();
+        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // 清理缓存的PageObject, 避免使用已经关闭的context/page
@@ -2081,7 +2129,7 @@ public class PlaywrightManager {
         resetCustomContextOptions();
 
         // 根据配置决定是否关闭 Context/Page 和浏览器
-        String restartBrowserForEach = getRestartStrategy();
+        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // Scenario 模式：只关闭 Context 和 Page，保持 Browser 实例
@@ -2151,7 +2199,7 @@ public class PlaywrightManager {
         closeContext();
 
         // 根据配置决定是否关闭浏览器
-        String restartBrowserForEach = getRestartStrategy();
+        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
 
         if ("feature".equalsIgnoreCase(restartBrowserForEach)) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - closing browser at feature end");
@@ -2512,198 +2560,6 @@ public class PlaywrightManager {
     }
 
     /**
-     * 判断浏览器类型是否是 Chromium 系列
-     * Chromium 系列浏览器包括：chromium, chrome, edge
-     */
-    private static boolean isChromiumBased(String browserType) {
-        if (browserType == null) {
-            return false;
-        }
-        return browserType.equalsIgnoreCase("chromium") ||
-               browserType.equalsIgnoreCase("chrome") ||
-               browserType.equalsIgnoreCase("edge");
-    }
-
-    /**
-     * 是否最大化窗口
-     */
-    public static boolean isWindowMaximize() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_WINDOW_MAXIMIZE);
-    }
-
-    /**
-     * 获取窗口最大化参数
-     */
-    public static String getWindowMaximizeArgs() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_WINDOW_MAXIMIZE_ARGS);
-    }
-
-    /**
-     * 获取 Viewport 宽度
-     */
-    public static int getViewportWidth() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_WIDTH);
-    }
-
-    /**
-     * 获取 Viewport 高度
-     */
-    public static int getViewportHeight() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_HEIGHT);
-    }
-
-    /**
-     * 是否启用触摸
-     */
-    public static boolean hasTouch() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_HAS_TOUCH);
-    }
-
-    /**
-     * 是否移动设备模式
-     */
-    public static boolean isMobile() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_IS_MOBILE);
-    }
-
-    /**
-     * 获取 Context locale
-     */
-    public static String getContextLocale() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_LOCALE);
-    }
-
-    /**
-     * 获取 Context timezone
-     */
-    public static String getContextTimezone() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_TIMEZONE_ID);
-    }
-
-    /**
-     * 获取 Context User-Agent
-     */
-    public static String getContextUserAgent() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_USER_AGENT);
-    }
-
-    /**
-     * 获取 Context 权限
-     */
-    public static String getContextPermissions() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PERMISSIONS);
-    }
-
-    /**
-     * 获取 ColorScheme
-     */
-    public static String getColorScheme() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_COLOR_SCHEME);
-    }
-
-    /**
-     * 获取地理纬度
-     */
-    public static String getGeolocationLatitude() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_GEOLOCATION_LATITUDE);
-    }
-
-    /**
-     * 获取地理经度
-     */
-    public static String getGeolocationLongitude() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_GEOLOCATION_LONGITUDE);
-    }
-
-    /**
-     * 获取设备缩放因子
-     */
-    public static String getDeviceScaleFactor() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_DEVICE_SCALE_FACTOR);
-    }
-
-    /**
-     * 是否启用录屏
-     */
-    public static boolean isRecordVideoEnabled() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_RECORD_VIDEO_ENABLED);
-    }
-
-    /**
-     * 获取录屏目录
-     */
-    public static String getRecordVideoDir() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_RECORD_VIDEO_DIR);
-    }
-
-    /**
-     * 是否启用 Trace
-     */
-    public static boolean isTraceEnabled() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED);
-    }
-
-    /**
-     * Trace 时是否截图
-     */
-    public static boolean isTraceScreenshots() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SCREENSHOTS);
-    }
-
-    /**
-     * Trace 时是否快照
-     */
-    public static boolean isTraceSnapshots() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SNAPSHOTS);
-    }
-
-    /**
-     * Trace 时是否记录源码
-     */
-    public static boolean isTraceSources() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SOURCES);
-    }
-
-    /**
-     * 获取页面超时（毫秒）
-     */
-    public static int getPageTimeout() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_PAGE_TIMEOUT);
-    }
-
-    /**
-     * 获取页面导航超时（毫秒）
-     */
-    public static int getNavigationTimeout() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_PAGE_NAVIGATION_TIMEOUT);
-    }
-
-    /**
-     * 获取页面稳定化等待超时（毫秒）
-     * @deprecated 使用 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig#getStabilizeTimeout()}
-     */
-    @Deprecated
-    public static int getStabilizeWaitTimeout() {
-        return TimeoutConfig.getStabilizeTimeout();
-    }
-
-    /**
-     * 获取截图等待超时（毫秒）
-     * @deprecated 使用 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig#getScreenshotTimeout()}
-     */
-    @Deprecated
-    public static int getScreenshotWaitTimeout() {
-        return TimeoutConfig.getScreenshotTimeout();
-    }
-
-    /**
-     * 获取浏览器重启策略
-     */
-    public static String getRestartStrategy() {
-        return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH);
-    }
-
-    /**
      * 是否全页截图
      */
     public static boolean isFullPageScreenshot() {
@@ -2785,7 +2641,7 @@ public class PlaywrightManager {
             return customPermissions.get();
         }
 
-        public com.microsoft.playwright.options.Geolocation getGeolocation() {
+        public Geolocation getGeolocation() {
             return customGeolocation.get();
         }
 

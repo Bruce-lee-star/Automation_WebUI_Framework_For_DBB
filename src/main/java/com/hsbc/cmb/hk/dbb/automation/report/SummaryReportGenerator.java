@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.report;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import net.thucydides.model.domain.Story;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
@@ -103,7 +104,7 @@ public class SummaryReportGenerator {
             String html = buildFullNativeHtml();
             Path output = Paths.get(reportDir, SUMMARY_FILE);
             Files.write(output, html.getBytes(StandardCharsets.UTF_8));
-            logger.info("Summary report: file:///{}", output.toAbsolutePath());
+            System.out.println("       - Summary report: " + output.toUri());
             
             // 生成 CSV 文件
             generateCsvReport();
@@ -897,7 +898,6 @@ public class SummaryReportGenerator {
         // 加载 Serenity 生成的 JSON 报告文件
         File[] files = new File(reportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (files == null || files.length == 0) {
-            logger.info("No JSON test data files found");
             return;
         }
         
@@ -936,14 +936,10 @@ public class SummaryReportGenerator {
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
                 outcome.scenarioId = scenarioId;
                 simpleTestOutcomes.add(outcome);
-                
-                logger.info("Loaded test data: {} - {} - {}", feature, name, r);
             } catch (Exception e) { 
                 logger.warn("Failed to parse JSON file: {} - {}", f.getName(), e.getMessage()); 
             }
         }
-        
-        logger.info("Loaded {} test results", simpleTestOutcomes.size());
     }
 
     private void calculateResultCounts() {
@@ -982,7 +978,6 @@ public class SummaryReportGenerator {
                 String link = m.group(2);
                 featureToHtmlMap.put(title, link);
             }
-            logger.info("Loaded {} feature mappings", featureToHtmlMap.size());
         } catch (Exception e) {
             logger.warn("Failed to parse index.html: {}", e.getMessage());
         }
@@ -1005,14 +1000,11 @@ public class SummaryReportGenerator {
                 
                 if (name != null) {
                     scenarioToHtmlMap.put(name, htmlLink);
-                    logger.info("Mapped scenario: {} -> {}", name, htmlLink);
                 }
             } catch (Exception e) {
                 logger.warn("Failed to load scenario mapping: {}", f.getName());
             }
         }
-        
-        logger.info("Loaded {} scenario mappings", scenarioToHtmlMap.size());
     }
 
     private static class SimpleTestOutcome {

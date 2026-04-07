@@ -6,6 +6,7 @@ import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
 import com.microsoft.playwright.options.LoadState;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
@@ -103,11 +104,7 @@ public class PlaywrightManager {
         initializePlaywrightPaths();
         // 清理旧的 playwright-java 临时目录（防止 C 盘爆满）
         cleanupPlaywrightTempDirs();
-
-        // 检查并安装Playwright 浏览器（如果需要）
-        if (!SKIP_DOWNLOAD_BROWSER) {
-            ensureBrowsersInstalled();
-        }
+        // 浏览器下载延迟到实际需要时，不在静态初始化阶段下载
     }
 
     /**
@@ -151,27 +148,88 @@ public class PlaywrightManager {
 
 
     /**
-     * 确保浏览器已安装
+     * 确保浏览器已安装（延迟到实际需要时）
+     * 
+     * 注意：此方法不再在静态初始化阶段调用
+     * 而是在首次启动浏览器时调用，这样可以确保使用正确的浏览器类型
      */
-    private static void ensureBrowsersInstalled() {
+    private static void ensureBrowserInstalledForType(String browserType) {
         try {
-            if (SKIP_DOWNLOAD_BROWSER) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Browser download is skipped, skipping installation check");
-                return;
-            }
-
+            // 检查特定浏览器类型是否已安装
             Path cachePath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
-            String configuredBrowserType = getConfiguredBrowserType();
-
-            boolean browsersInstalled = checkBrowsersInstalled(cachePath);
-            if (!browsersInstalled) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] {} browser not found in cache, downloading...", configuredBrowserType);
-                installBrowsers(cachePath);
+            
+            boolean browserInstalled = checkSpecificBrowserInstalled(cachePath, browserType);
+            
+            if (!browserInstalled) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] {} browser not found in cache, downloading to: {}", browserType, cachePath);
+                installSpecificBrowser(cachePath, browserType);
             } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Playwright {} browser already installed in: {}", configuredBrowserType, cachePath);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] {} browser already installed in: {}", browserType, cachePath);
             }
         } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to check browsers installation", e);
+            LoggingConfigUtil.logWarnIfVerbose(logger, "[Browser Init] Failed to check/install browser", e);
+        }
+    }
+
+    /**
+     * 检查特定浏览器类型是否已安装
+     */
+    private static boolean checkSpecificBrowserInstalled(Path cachePath, String browserType) {
+        try {
+            if (!Files.exists(cachePath)) {
+                return false;
+            }
+
+            try (Stream<Path> stream = Files.list(cachePath)) {
+                return stream
+                        .filter(Files::isDirectory)
+                        .anyMatch(p -> {
+                            String dirName = p.getFileName().toString().toLowerCase();
+                            return dirName.startsWith(browserType.toLowerCase());
+                        });
+            }
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to check browser installation", e);
+            return false;
+        }
+    }
+
+    /**
+     * 下载特定浏览器类型
+     */
+    private static void installSpecificBrowser(Path cachePath, String browserType) {
+        try {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Install] Downloading {} browser to: {}", browserType, cachePath);
+
+            ProcessBuilder pb = new ProcessBuilder(
+                    "java",
+                    "-cp", System.getProperty("java.class.path"),
+                    "com.microsoft.playwright.CLI",
+                    "install",
+                    browserType  // 只下载指定的浏览器类型
+            );
+
+            Map<String, String> env = pb.environment();
+            env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
+            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
+
+            pb.redirectErrorStream(true);
+            pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
+
+            Process process = pb.start();
+
+            synchronized (downloadProcesses) {
+                downloadProcesses.add(process);
+            }
+
+            int exitCode = process.waitFor();
+            if (exitCode == 0) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Install] {} browser downloaded successfully!", browserType);
+            } else {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "[Browser Install] {} browser download failed with exit code: {}", browserType, exitCode);
+            }
+        } catch (Exception e) {
+            LoggingConfigUtil.logErrorIfVerbose(logger, "[Browser Install] Failed to download {} browser", browserType, e);
         }
     }
 
@@ -184,6 +242,7 @@ public class PlaywrightManager {
     private static void cleanupPlaywrightTempDirs() {
         // 清理项目目录中的临时目录
         cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_BROWSER_PATH);
+        cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_DRIVER_PATH);
 
         // 清理系统临时目录中的 playwright 临时目录
         cleanupPlaywrightTempDirs(System.getProperty("java.io.tmpdir"));
@@ -384,19 +443,12 @@ public class PlaywrightManager {
             );
 
             Map<String, String> env = pb.environment();
-            // 只有不跳过浏览器下载时才设置PLAYWRIGHT_BROWSERS_PATH
-            if (!SKIP_DOWNLOAD_BROWSER) {
-                env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] BROWSERS_PATH: {}", cachePath);
-            } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] Skipping BROWSERS_PATH configuration because download is skipped");
-            }
-            // 只有不跳过浏览器下载时才设置PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD
-            if (!SKIP_DOWNLOAD_BROWSER) {
-                env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
-            } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] Skipping SKIP_BROWSER_DOWNLOAD configuration because download is skipped");
-            }
+            // 设置浏览器下载路径为 .playwright/browser
+            env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Playwright Install] BROWSERS_PATH: {}", cachePath);
+            
+            // 允许下载
+            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
 
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
@@ -559,6 +611,10 @@ public class PlaywrightManager {
     /**
      * 初始化整个 Playwright 环境
      * 由 FrameworkCore 调用，用于测试套件开始时
+     * 
+     * 注意：此方法只初始化 Playwright 实例，不启动浏览器
+     * 浏览器会在首次调用 getBrowser() 或 getPage() 时启动
+     * 这样可以支持 @AutoBrowser 动态浏览器切换，避免启动多余的浏览器实例
      */
     public static synchronized void initialize() {
         if (frameworkState.isInitialized() && currentConfigId != null) {
@@ -569,20 +625,37 @@ public class PlaywrightManager {
         String configId = generateConfigId();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Playwright environment with config: {}", configId);
         initializePlaywright(configId);
-        initializeBrowser(configId);
+        // 不在此处初始化浏览器，延迟到首次访问时启动
+        // 这样可以支持 @AutoBrowser 动态浏览器切换
+        // initializeBrowser(configId);
         currentConfigId = configId;
 
-        LoggingConfigUtil.logInfoIfVerbose(logger, " Playwright environment initialized successfully");
+        LoggingConfigUtil.logInfoIfVerbose(logger, " Playwright environment initialized successfully (browser will be launched on first access)");
     }
 
     /**
      * 生成配置ID
+     * 格式：{browserType}_{headless/headed}_{channel}
+     * 
+     * 注意：Firefox 和 WebKit 不支持 channel，会显示为空
      */
     private static String generateConfigId() {
-        return String.format("%s_%s_%s",
-                getBrowserType(),
-                isHeadless() ? "headless" : "headed",
-                getBrowserChannel());
+        String browserType = getBrowserType();
+        String headlessMode = isHeadless() ? "headless" : "headed";
+        String channel = getBrowserChannel();
+        
+        // Firefox 和 WebKit 不支持 channel，忽略配置
+        if ("firefox".equalsIgnoreCase(browserType) || "webkit".equalsIgnoreCase(browserType)) {
+            return String.format("%s_%s", browserType, headlessMode);
+        }
+        
+        // Chromium 系列浏览器包含 channel 信息
+        if (channel != null && !channel.trim().isEmpty()) {
+            return String.format("%s_%s_%s", browserType, headlessMode, channel);
+        }
+        
+        // 无 channel 的 Chromium
+        return String.format("%s_%s", browserType, headlessMode);
     }
 
     /**
@@ -608,14 +681,72 @@ public class PlaywrightManager {
 
     private static Playwright.CreateOptions getCreateOptions() {
         Playwright.CreateOptions options = new Playwright.CreateOptions();
+        Map<String, String> env = new HashMap<>();
 
-        // 跳过浏览器下载
-        if (SKIP_DOWNLOAD_BROWSER) {
-            Map<String, String> env = new HashMap<>();
-            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+        // 设置浏览器缓存路径
+        String browserPath = System.getProperty("PLAYWRIGHT_BROWSERS_PATH");
+        if (browserPath != null && !browserPath.trim().isEmpty()) {
+            env.put("PLAYWRIGHT_BROWSERS_PATH", browserPath);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright browsers path: {}", browserPath);
+        }
+
+        // 关键：总是跳过自动下载，因为我们使用 ensureBrowserInstalledForType() 来控制下载
+        // 这样可以避免 Playwright 自动下载所有浏览器
+        env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright instance created with browser download disabled (managed separately)");
+        
+        if (!env.isEmpty()) {
             options.setEnv(env);
         }
+        
         return options;
+    }
+
+    /**
+     * 智能判断是否应该跳过浏览器下载
+     * 
+     * 规则：
+     * - Firefox: false（必须下载 Playwright 版本）
+     * - WebKit: false（必须下载 Playwright 版本）
+     * - Chrome: 如果设置了 executablePath 或 channel="chrome" 则 true，否则 false
+     * - Edge: 如果设置了 executablePath 或 channel="msedge" 则 true，否则 false
+     * - Chromium 无 channel: false（需要下载）
+     */
+    private static boolean shouldSkipBrowserDownload() {
+        // 首先检查用户是否手动配置了跳过下载
+        boolean userConfig = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
+        
+        String browserType = getBrowserType();
+        String channel = getBrowserChannel();
+        
+        switch (browserType.toLowerCase()) {
+            case "firefox":
+            case "webkit":
+                // Firefox 和 WebKit 必须使用 Playwright 版本，不能跳过下载
+                if (userConfig) {
+                    logger.warn("Cannot skip download for {} - Playwright version is required. Ignoring playwright.skip.browser.download=true", browserType);
+                }
+                return false;
+                
+            case "chromium":
+                if ("chrome".equalsIgnoreCase(channel)) {
+                    // Chrome: 如果设置了 executablePath 或用户配置跳过，则跳过
+                    String chromePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
+                    boolean hasLocalChrome = chromePath != null && !chromePath.trim().isEmpty();
+                    return hasLocalChrome || userConfig;
+                } else if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
+                    // Edge: 如果设置了 executablePath 或用户配置跳过，则跳过
+                    String edgePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
+                    boolean hasLocalEdge = edgePath != null && !edgePath.trim().isEmpty();
+                    return hasLocalEdge || userConfig;
+                } else {
+                    // Chromium 无 channel: 需要下载 Playwright 版本
+                    return false;
+                }
+                
+            default:
+                return userConfig;
+        }
     }
 
     /**
@@ -642,6 +773,17 @@ public class PlaywrightManager {
             }
         }
 
+        // 获取浏览器类型（这一步很关键，必须在初始化 Playwright 之前）
+        String browserType = getBrowserType();
+        
+        // 确保所需的浏览器已安装（延迟下载）
+        // 这一步必须在 initializePlaywright() 之前，否则 Playwright 会自动下载所有浏览器
+        if (!shouldSkipBrowserDownload()) {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
+            ensureBrowserInstalledForType(browserType);
+        }
+
+        // 初始化 Playwright 实例（浏览器已确保安装）
         if (playwrightInstances.containsKey(configId)) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright instance already exists for config: {}, skipping initialization", configId);
         } else {
@@ -654,7 +796,6 @@ public class PlaywrightManager {
         }
 
         // 获取浏览器配置
-        String browserType = getBrowserType();
         boolean headless = isHeadless();
         int slowMo = getBrowserSlowMo();
         int timeout = getBrowserTimeout();
@@ -702,14 +843,14 @@ public class PlaywrightManager {
         int screenWidth = (int) screenSize.getWidth();
         int screenHeight = (int) screenSize.getHeight();
 
+        // 获取浏览器类型
+        String browserType = getBrowserType();
+        boolean isChromium = isChromiumBased(browserType);
+
         // 构建启动参数
         List<String> args = new ArrayList<>();
 
-        // 添加基础参数（移除会在地址栏显示的参数）
-        // args.add("--disable-pinch");  // 已移除，避免在地址栏显示
-        // args.add("--disable-blink-features=AutomationControlled");  // 已移除，避免在地址栏显示为 http://automationcontrolled/
-
-        // 添加用户配置的浏览器启动参数
+        // 添加用户配置的浏览器启动参数（已根据浏览器类型自动选择）
         String browserArgs = getBrowserArgs();
         if (browserArgs != null && !browserArgs.trim().isEmpty()) {
             String[] argsArray = browserArgs.split(",");
@@ -722,39 +863,39 @@ public class PlaywrightManager {
 
         // 检查是否启用窗口最大化但不包含 --start-maximized
         if (maximizeWindow && !hasStartMaximized) {
-            args.add("--window-position=0,0");
-            args.add("--window-size=" + screenWidth + "," + screenHeight);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Window maximization enabled, setting window size to: {}x{}", screenWidth, screenHeight);
-        }
-
-        // 添加用户配置的窗口参数（除了 --start-maximized）
-        String[] maxArgsArray = maximizeArgs.split(",");
-        for (String arg : maxArgsArray) {
-            if (!arg.trim().isEmpty() && !args.contains(arg.trim()) && !arg.contains("--start-maximized")) {
-                args.add(arg.trim());
+            if (isChromium) {
+                // Chromium 系列浏览器：添加窗口位置和大小参数
+                args.add("--window-position=0,0");
+                args.add("--window-size=" + screenWidth + "," + screenHeight);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Window maximization enabled for Chromium, setting window size to: {}x{}", screenWidth, screenHeight);
+            } else {
+                // Firefox/WebKit：通过 BrowserContext viewport 实现最大化
+                LoggingConfigUtil.logInfoIfVerbose(logger, 
+                    "Window maximization for {} will be handled via viewport in BrowserContext", browserType);
             }
-        }
-
-        // 如果有 --start-maximized，则添加它
-        if (hasStartMaximized) {
-            args.add("--start-maximized");
         }
 
         if (!args.isEmpty()) {
             launchOptions.setArgs(args);
-            logger.info("Browser args: {}", args);  // 保留浏览器启动参数日志，这很重要
+            logger.info("Browser args: {}", args);
         }
 
         // 设置浏览器 channel（仅适用于 Chromium 系列浏览器）
-        String browserType = getBrowserType();
         String channel = getBrowserChannel();
-        if (channel != null && !channel.isEmpty() && isChromiumBased(browserType)) {
+        if (channel != null && !channel.isEmpty() && isChromium) {
             launchOptions.setChannel(channel);
-            logger.info("Browser channel: {}", channel);  // 保留浏览器channel日志，这很重要
-        } else if (channel != null && !channel.isEmpty() && !isChromiumBased(browserType)) {
+            logger.info("Browser channel: {}", channel);
+        } else if (channel != null && !channel.isEmpty() && !isChromium) {
             LoggingConfigUtil.logDebugIfVerbose(logger, 
                 "Ignoring browser channel '{}' for browser type '{}' (channel only applies to Chromium-based browsers)", 
                 channel, browserType);
+        }
+
+        // 设置浏览器可执行文件路径（用于启动本地安装的浏览器）
+        String executablePath = getBrowserExecutablePath();
+        if (executablePath != null && !executablePath.trim().isEmpty()) {
+            launchOptions.setExecutablePath(Paths.get(executablePath.trim()));
+            logger.info("Browser executable path: {}", executablePath);  // 保留浏览器路径日志，这很重要
         }
     }
 
@@ -815,35 +956,86 @@ public class PlaywrightManager {
 
     /**
      * 获取 Browser 实例（支持动态浏览器切换）
-     * 
+     *
      * 新特性：自动检测浏览器类型，不依赖Cucumber hooks
      * 在首次访问时自动从scenario标签中提取浏览器类型并切换
      */
     public static Browser getBrowser() {
-        String configId = getCurrentConfigId();
-        if (configId == null) {
+        // 获取当前的配置ID
+        String currentConfig = getCurrentConfigId();
+        if (currentConfig == null) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
-        logger.info("[getBrowser] Called with configId: {}", configId);
-
-        Browser browser = browserInstances.get(configId);
-        if (browser == null || !browser.isConnected()) {
-            synchronized (PlaywrightManager.class) {
-                // 双重检查
-                browser = browserInstances.get(configId);
-                if (browser == null || !browser.isConnected()) {
-                    logger.info("🔧 [getBrowser] Initializing browser for configId: {}", configId);
-                    initializeBrowser(configId);
-                    browser = browserInstances.get(configId);
-                    logger.info(" [getBrowser] Browser initialized: {}",
-                        browser != null ? browser.getClass().getSimpleName() : "null");
-                }
+        // 获取期望的浏览器类型（可能来自 @AutoBrowser 标签）
+        String desiredBrowserType = getBrowserType();
+        
+        // 检查当前浏览器实例是否存在
+        Browser currentBrowser = browserInstances.get(currentConfig);
+        
+        // 如果浏览器还不存在（首次启动），直接使用期望的浏览器类型初始化
+        if (currentBrowser == null || !currentBrowser.isConnected()) {
+            logger.info("[getBrowser] Browser not initialized yet, initializing with desired type: {}", desiredBrowserType);
+            
+            // 如果 currentConfig 中的浏览器类型与期望类型不同，更新 configId
+            String[] configParts = currentConfig.split("_");
+            String configBrowserType = configParts.length > 0 ? configParts[0] : "chromium";
+            
+            if (!configBrowserType.equalsIgnoreCase(desiredBrowserType)) {
+                // 生成新的 configId（使用期望的浏览器类型）
+                String newConfigId = generateConfigId();
+                logger.info("[getBrowser] Updating configId from {} to {} for browser type: {}", 
+                    currentConfig, newConfigId, desiredBrowserType);
+                currentConfigId = newConfigId;
+                currentConfig = newConfigId;
             }
-        } else {
-            logger.info(" [getBrowser] Reusing existing browser for configId: {}", configId);
+            
+            // 初始化浏览器
+            synchronized (PlaywrightManager.class) {
+                initializeBrowser(currentConfig);
+            }
+            
+            return browserInstances.get(currentConfig);
         }
-        return browser;
+        
+        // 浏览器已存在，检查是否需要切换
+        String[] configParts = currentConfig.split("_");
+        String currentBrowserType = configParts.length > 0 ? configParts[0] : "chromium";
+        
+        if (!currentBrowserType.equalsIgnoreCase(desiredBrowserType)) {
+            logger.info("[getBrowser] Browser type changed: {} -> {}", currentBrowserType, desiredBrowserType);
+            logger.info("[getBrowser] Switching browser...");
+
+            // 关闭旧浏览器的 Context 和 Page
+            closePage();
+            closeContext();
+
+            // 关闭旧浏览器
+            Browser oldBrowser = browserInstances.get(currentConfig);
+            if (oldBrowser != null && oldBrowser.isConnected()) {
+                logger.info("[getBrowser] Closing old browser: {}", currentBrowserType);
+                oldBrowser.close();
+                browserInstances.remove(currentConfig);
+            }
+
+            // 生成新的 configId
+            String newConfigId = generateConfigId();
+            logger.info("[getBrowser] New configId: {}", newConfigId);
+
+            // 更新 currentConfigId
+            currentConfigId = newConfigId;
+
+            // 初始化新浏览器
+            synchronized (PlaywrightManager.class) {
+                initializeBrowser(newConfigId);
+            }
+
+            return browserInstances.get(newConfigId);
+        }
+
+        // 浏览器类型没有变化，返回现有浏览器
+        logger.info("[getBrowser] Using existing browser with configId: {}", currentConfig);
+        return currentBrowser;
     }
 
     /**
@@ -1139,6 +1331,9 @@ public class PlaywrightManager {
      * 先调用 getContext() 确保重建检查被执行
      */
     public static Page getPage() {
+        // 框架层自动处理 @AutoBrowser 注解（在真正需要操作页面时触发）
+        AutoBrowserProcessor.processAutoBrowserAnnotation();
+        
         if (!frameworkState.isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
@@ -1844,11 +2039,12 @@ public class PlaywrightManager {
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // 清理缓存的PageObject, 避免使用已经关闭的context/page
             PageObjectFactory.clearAll();
-            // Scenario 模式：每个 scenario 都创建新的 Context/Page
+            // Scenario 模式：关闭旧的 Context/Page，延迟创建新的（等测试步骤真正需要时）
             closePage();
             closeContext();
-            createNewContextAndPage();
-            LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (new Context/Page created)");
+            // 【优化】不立即创建 BrowserContext，延迟到 getContext()/getPage() 时创建
+            // 这样如果测试步骤设置了自定义配置（如 session 恢复），可以直接应用，避免重复创建
+            LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context/Page will be created on demand)");
         } else {
             // Feature 模式：复用现有的 Context/Page（如果存在）
             BrowserContext existingContext = contextThreadLocal.get();
@@ -1858,9 +2054,11 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context/Page)");
             } else {
                 PageObjectFactory.clearAll();
-                // 如果不存在或已关闭，则创建新的
-                createNewContextAndPage();
-                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (new Context/Page created)");
+                // 关闭旧的 Context/Page，延迟创建新的
+                closePage();
+                closeContext();
+                // 【优化】不立即创建 BrowserContext，延迟创建以支持自定义配置
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context/Page will be created on demand)");
             }
         }
     }
@@ -1875,6 +2073,9 @@ public class PlaywrightManager {
      */
     public static void cleanupForScenario() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Cleaning up for scenario...");
+
+        // 清除 AutoBrowser 处理状态和浏览器覆盖配置
+        AutoBrowserProcessor.clearProcessingState();
 
         // 【关键】重置所有自定义配置,确保scenario之间配置隔离
         resetCustomContextOptions();
@@ -1896,8 +2097,7 @@ public class PlaywrightManager {
             cleanupPageState();
         }
 
-        // 注意：不再在这里清除浏览器覆盖配置
-        // BrowserOverrideManager的清除由AutoBrowserManagerGlue的@After hook负责
+        // 注意：浏览器覆盖配置的清除已移至 AutoBrowserProcessor.clearProcessingState()
         // 这样可以确保浏览器状态在scenario之间正确传递
     }
 
@@ -2184,16 +2384,131 @@ public class PlaywrightManager {
 
     /**
      * 获取浏览器启动参数
+     * 根据浏览器类型返回对应的启动参数
      */
     public static String getBrowserArgs() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_ARGS);
+        String browserType = getBrowserType();
+        String channel = getBrowserChannel();
+        
+        // 根据浏览器类型和 channel 确定使用哪个 args
+        String args = null;
+        
+        switch (browserType.toLowerCase()) {
+            case "firefox":
+                // Firefox 浏览器（必须使用 Playwright 版本）
+                args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_FIREFOX_ARGS);
+                if (args != null && !args.trim().isEmpty()) {
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Using Firefox args: {}", args);
+                    return args;
+                }
+                break;
+                
+            case "webkit":
+                // WebKit 浏览器（必须使用 Playwright 版本）
+                args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_WEBKIT_ARGS);
+                if (args != null && !args.trim().isEmpty()) {
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Using WebKit args: {}", args);
+                    return args;
+                }
+                break;
+                
+            case "chromium":
+                // Chromium 系列浏览器
+                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
+                    // Edge 浏览器
+                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
+                    if (args != null && !args.trim().isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Edge args: {}", args);
+                        return args;
+                    }
+                } else if ("chrome".equalsIgnoreCase(channel)) {
+                    // Chrome 浏览器
+                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
+                    if (args != null && !args.trim().isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chrome args: {}", args);
+                        return args;
+                    }
+                } else {
+                    // Chromium 无 channel
+                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
+                    if (args != null && !args.trim().isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chromium args: {}", args);
+                        return args;
+                    }
+                }
+                break;
+        }
+        
+        return "";
     }
 
     /**
      * 获取浏览器 channel
+     * channel 仅适用于 Chromium 系列浏览器（Chrome、Edge）
+     * 
+     * 常用的 channel 值：
+     * - "chrome" - 使用本地安装的 Chrome 浏览器
+     * - "chrome-beta" - 使用 Chrome Beta 版本
+     * - "chrome-dev" - 使用 Chrome Dev 版本
+     * - "chrome-canary" - 使用 Chrome Canary 版本
+     * - "msedge" - 使用本地安装的 Edge 浏览器
+     * - "msedge-beta" - 使用 Edge Beta 版本
+     * - "msedge-dev" - 使用 Edge Dev 版本
+     * - "msedge-canary" - 使用 Edge Canary 版本
      */
     public static String getBrowserChannel() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHANNEL);
+    }
+
+    /**
+     * 获取浏览器可执行文件路径
+     * 根据浏览器类型返回对应的可执行文件路径
+     * 
+     * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
+     */
+    public static String getBrowserExecutablePath() {
+        String browserType = getBrowserType();
+        String channel = getBrowserChannel();
+        
+        // 根据浏览器类型和 channel 确定使用哪个 executablePath
+        String executablePath = null;
+        
+        switch (browserType.toLowerCase()) {
+            case "firefox":
+                // Firefox 必须使用 Playwright 编译的版本，不支持 executablePath
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Firefox uses Playwright's compiled version (no executablePath support)");
+                return null;
+                
+            case "webkit":
+                // WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
+                LoggingConfigUtil.logDebugIfVerbose(logger, "WebKit uses Playwright's compiled version (no executablePath support)");
+                return null;
+                
+            case "chromium":
+                // Chromium 系列浏览器（Chrome, Edge）支持本地 executablePath
+                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
+                    // Edge 浏览器
+                    executablePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
+                    if (executablePath != null && !executablePath.trim().isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Edge executablePath: {}", executablePath);
+                        return executablePath;
+                    }
+                } else if ("chrome".equalsIgnoreCase(channel)) {
+                    // Chrome 浏览器
+                    executablePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
+                    if (executablePath != null && !executablePath.trim().isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chrome executablePath: {}", executablePath);
+                        return executablePath;
+                    }
+                } else {
+                    // Chromium 无 channel，使用 Playwright 版本
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Chromium without channel uses Playwright's version");
+                    return null;
+                }
+                break;
+        }
+        
+        return null;
     }
 
     /**

@@ -109,13 +109,6 @@ class PlaywrightConfigManager {
     }
 
     /**
-     * 获取浏览器启动参数
-     */
-    static String getBrowserArgs() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_ARGS);
-    }
-
-    /**
      * 获取浏览器 channel
      */
     static String getBrowserChannel() {

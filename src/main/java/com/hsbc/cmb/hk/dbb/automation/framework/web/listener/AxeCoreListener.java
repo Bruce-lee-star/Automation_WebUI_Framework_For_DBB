@@ -119,7 +119,6 @@ public class AxeCoreListener implements StepListener {
         if (AxeCoreScanner.isInitialized()) {
             try {
                 AxeCoreScanner.generateReport();
-                logger.info("Axe-core accessibility report generated");
                 reportGenerated.set(true);
             } catch (Exception e) {
                 logger.error("Failed to generate axe-core report: {}", e.getMessage(), e);

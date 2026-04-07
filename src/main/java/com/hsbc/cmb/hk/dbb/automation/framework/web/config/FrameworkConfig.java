@@ -72,6 +72,9 @@ public enum FrameworkConfig {
      * chrome - 使用本地 Chrome 浏览器
      * msedge - 使用本地 Edge 浏览器
      * 不设置或设置为空 - 使用 Playwright 下载的浏览器
+     * 
+     * 注意：channel 仅适用于 Chromium 系列浏览器（Chrome、Edge）
+     * 对于 Firefox，请使用 executablePath 指定本地浏览器路径
      */
     PLAYWRIGHT_BROWSER_CHANNEL(
         "playwright.browser.channel",
@@ -80,24 +83,120 @@ public enum FrameworkConfig {
     ),
 
     /**
+     * Chrome 浏览器可执行文件路径
+     * 如果设置，当浏览器类型为 chromium 时会使用此路径
+     * 优先级高于 channel 配置
+     * 
+     * Windows 示例: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+     * macOS 示例: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+     * Linux 示例: "/usr/bin/google-chrome"
+     * 
+     * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
+     */
+    PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH(
+        "playwright.browser.chrome.executablePath",
+        "",
+        "Chrome 浏览器可执行文件路径"
+    ),
+
+    /**
+     * Edge 浏览器可执行文件路径
+     * 如果设置，当浏览器类型为 chromium 且 channel 为 msedge 时会使用此路径
+     * 优先级高于 channel 配置
+     * 
+     * Windows 示例: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+     * macOS 示例: "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+     * Linux 示例: "/usr/bin/microsoft-edge"
+     */
+    PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH(
+        "playwright.browser.edge.executablePath",
+        "",
+        "Edge 浏览器可执行文件路径"
+    ),
+
+    /**
      * 跳过 Playwright 浏览器下载
-     * true - 跳过浏览器下载（使用 channel=chrome/msedge 时推荐）
-     * false - 允许 Playwright 下载浏览器（默认）
+     * 
+     * 自动判断逻辑：
+     * - Firefox: false（必须下载 Playwright 版本）
+     * - WebKit: false（必须下载 Playwright 版本）
+     * - Chrome: 如果设置了 chrome.executablePath 或 channel="chrome" 则 true，否则 false
+     * - Edge: 如果设置了 edge.executablePath 或 channel="msedge" 则 true，否则 false
+     * - Chromium: 如果设置了 channel 则根据具体情况，否则 false
+     * 
+     * 注意：建议保持默认值 false，让 Playwright 按需下载
+     * 只有在完全确定使用本地 Chrome/Edge 且已安装时才设置为 true
      */
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD(
         "playwright.skip.browser.download",
-        "true",
+        "false",
         "跳过 Playwright 浏览器下载"
     ),
 
 
     /**
-     * 浏览器启动参数（逗号分隔）
+     * Firefox 浏览器启动参数（逗号分隔）
+     * 如果设置，当浏览器类型为 firefox 时会使用此参数
+     * 
+     * 注意：Firefox 必须使用 Playwright 编译的版本
+     * Firefox 不支持 Chromium 特定参数（如 --disable-blink-features）
+     * 
+     * 示例: "--disable-web-security"
      */
-    PLAYWRIGHT_BROWSER_ARGS(
-        "playwright.browser.args",
-        "--disable-blink-features=AutomationControlled,--disable-pinch",
-        "浏览器启动参数"
+    PLAYWRIGHT_BROWSER_FIREFOX_ARGS(
+        "playwright.browser.firefox.args",
+        "",
+        "Firefox 浏览器启动参数"
+    ),
+
+    /**
+     * Chrome 浏览器启动参数（逗号分隔）
+     * 如果设置，当浏览器类型为 chromium 且 channel 为 chrome 时会使用此参数
+     * 
+     * 示例: "--disable-blink-features=AutomationControlled,--disable-pinch,--start-maximized"
+     */
+    PLAYWRIGHT_BROWSER_CHROME_ARGS(
+        "playwright.browser.chrome.args",
+        "",
+        "Chrome 浏览器启动参数"
+    ),
+
+    /**
+     * Edge 浏览器启动参数（逗号分隔）
+     * 如果设置，当浏览器类型为 chromium 且 channel 为 msedge 时会使用此参数
+     * 
+     * 示例: "--disable-blink-features=AutomationControlled,--disable-pinch,--start-maximized"
+     */
+    PLAYWRIGHT_BROWSER_EDGE_ARGS(
+        "playwright.browser.edge.args",
+        "",
+        "Edge 浏览器启动参数"
+    ),
+
+    /**
+     * Chromium 浏览器启动参数（逗号分隔）
+     * 如果设置，当浏览器类型为 chromium 且未指定 channel 时会使用此参数
+     * 
+     * 示例: "--disable-blink-features=AutomationControlled,--disable-pinch"
+     */
+    PLAYWRIGHT_BROWSER_CHROMIUM_ARGS(
+        "playwright.browser.chromium.args",
+        "",
+        "Chromium 浏览器启动参数"
+    ),
+
+    /**
+     * WebKit 浏览器启动参数（逗号分隔）
+     * 如果设置，当浏览器类型为 webkit 时会使用此参数
+     * 
+     * 注意：WebKit 必须使用 Playwright 编译的版本
+     * 
+     * 示例: "--disable-web-security"
+     */
+    PLAYWRIGHT_BROWSER_WEBKIT_ARGS(
+        "playwright.browser.webkit.args",
+        "",
+        "WebKit 浏览器启动参数"
     ),
 
     /**

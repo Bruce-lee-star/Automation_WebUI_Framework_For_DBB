@@ -187,6 +187,10 @@ public class BrowserOverrideManager {
     /**
      * 从标签数组中提取浏览器类型
      * 
+     * 支持两种格式的标签：
+     * - 带 @ 前缀：@firefox, @chrome
+     * - 不带 @ 前缀：firefox, chrome（Serenity 返回的格式）
+     * 
      * @param tags Cucumber tags 数组
      * @return 浏览器类型，如果没有浏览器标签则返回 null
      */
@@ -196,7 +200,15 @@ public class BrowserOverrideManager {
         }
         
         for (String tag : tags) {
+            // 规范化标签：去除空格，转小写，确保有 @ 前缀
             String normalizedTag = tag.toLowerCase().trim();
+            
+            // 如果标签没有 @ 前缀，添加一个
+            if (!normalizedTag.startsWith("@")) {
+                normalizedTag = "@" + normalizedTag;
+            }
+            
+            // 检查映射表
             if (TAG_TO_BROWSER_TYPE.containsKey(normalizedTag)) {
                 return TAG_TO_BROWSER_TYPE.get(normalizedTag);
             }

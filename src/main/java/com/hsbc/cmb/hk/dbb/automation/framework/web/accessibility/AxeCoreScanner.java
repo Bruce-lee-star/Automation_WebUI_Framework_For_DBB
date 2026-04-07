@@ -570,7 +570,7 @@ public class AxeCoreScanner {
             try (FileWriter writer = new FileWriter(filePath.toFile())) {
                 writer.write(html);
             }
-
+            System.out.println(" - Accessibility Report: " + filePath.toUri());
             return filePath.toString();
         } catch (IOException e) {
             logger.error("Failed to save report: {}", e.getMessage());

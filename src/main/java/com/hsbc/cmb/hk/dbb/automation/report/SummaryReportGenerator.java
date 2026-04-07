@@ -23,8 +23,11 @@ import java.util.zip.ZipOutputStream;
 public class SummaryReportGenerator {
     private static final Logger logger = LoggerFactory.getLogger(SummaryReportGenerator.class);
     private static final String DEFAULT_REPORT_DIR = "target/site/serenity";
-    private static final String SUMMARY_FILE = "summary.html";
+    private static final String SUMMARY_FILE = "serenity-summary.html";
+    private static final String CSV_FILE_PREFIX = "test-results";
+    private static final String ZIP_FILE_PREFIX = "test-report";
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("EEEE MMMM dd yyyy 'at' HH:mm");
+    private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
     private final String reportDir;
     private final String projectName;
@@ -40,6 +43,8 @@ public class SummaryReportGenerator {
     private double avgDuration;
     private long clockTime;
     private LocalDateTime reportTime;
+    private String csvFileName;
+    private String zipFileName;
 
     public SummaryReportGenerator() {
         this(DEFAULT_REPORT_DIR);
@@ -66,7 +71,7 @@ public class SummaryReportGenerator {
                 }
             }
         } catch (Exception e) {
-            logger.warn("无法读取 serenity.properties: {}", e.getMessage());
+            logger.warn("Failed to read serenity.properties: {}", e.getMessage());
         }
         
         return "Serenity Automation Test Report";
@@ -89,10 +94,16 @@ public class SummaryReportGenerator {
 
     public void generateSummaryReport() {
         try {
+            // 生成带时间戳的文件名
+            String timestamp = reportTime.format(TIMESTAMP_FORMATTER);
+            csvFileName = CSV_FILE_PREFIX + "-" + timestamp + ".csv";
+            zipFileName = ZIP_FILE_PREFIX + "-" + timestamp + ".zip";
+            
+            // 生成 HTML 报告
             String html = buildFullNativeHtml();
             Path output = Paths.get(reportDir, SUMMARY_FILE);
             Files.write(output, html.getBytes(StandardCharsets.UTF_8));
-            logger.info("✅ summary.html 已生成: {}", output);
+            logger.info("Summary report: file:///{}", output.toAbsolutePath());
             
             // 生成 CSV 文件
             generateCsvReport();
@@ -100,13 +111,13 @@ public class SummaryReportGenerator {
             // 生成 ZIP 包
             generateZipPackage();
         } catch (Exception e) {
-            logger.error("❌ 生成失败", e);
+            logger.error("Failed to generate summary report", e);
         }
     }
     
     private void generateCsvReport() {
         try {
-            Path csvPath = Paths.get(reportDir, "test-results.csv");
+            Path csvPath = Paths.get(reportDir, csvFileName);
             StringBuilder csv = new StringBuilder();
             
             // CSV 头部
@@ -132,9 +143,8 @@ public class SummaryReportGenerator {
             }
             
             Files.write(csvPath, csv.toString().getBytes(StandardCharsets.UTF_8));
-            logger.info("✅ test-results.csv 已生成: {}", csvPath);
         } catch (Exception e) {
-            logger.error("❌ 生成 CSV 失败", e);
+            logger.error("Failed to generate CSV report", e);
         }
     }
     
@@ -149,17 +159,15 @@ public class SummaryReportGenerator {
     
     private void generateZipPackage() {
         try {
-            Path zipPath = Paths.get(reportDir, "test-report.zip");
+            Path zipPath = Paths.get(reportDir, zipFileName);
             File reportDirectory = new File(reportDir);
             
             try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipPath.toFile()))) {
                 // 递归打包整个目录（不包含顶层目录名）
                 zipDirectory(reportDirectory, "", zos);
             }
-            
-            logger.info("✅ test-report.zip 已生成: {}", zipPath);
         } catch (Exception e) {
-            logger.error("❌ 生成 ZIP 失败", e);
+            logger.error("Failed to generate ZIP package", e);
         }
     }
     
@@ -168,8 +176,9 @@ public class SummaryReportGenerator {
         if (files == null) return;
         
         for (File file : files) {
-            // 跳过 ZIP 文件本身
-            if (file.getName().equals("test-report.zip")) continue;
+            // 跳过所有 ZIP 文件和 CSV 文件
+            if ((file.getName().startsWith(ZIP_FILE_PREFIX) && file.getName().endsWith(".zip")) ||
+                (file.getName().startsWith(CSV_FILE_PREFIX) && file.getName().endsWith(".csv"))) continue;
             
             if (file.isDirectory()) {
                 // 递归处理子目录
@@ -508,7 +517,7 @@ public class SummaryReportGenerator {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
         sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"./\" target=\"_blank\">View full report</a>\n");
-        sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;\" href=\"test-report.zip\" download>Download ZIP</a>\n");
+        sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
     }
@@ -741,7 +750,7 @@ public class SummaryReportGenerator {
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
         sb.append("                            <div style=\"text-align:center;\">\n");
         sb.append("                                <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;display:inline;\">Full Test Results</h3>\n");
-        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;\" href=\"test-results.csv\" download>Download CSV</a>\n");
+        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;\" href=\"").append(csvFileName).append("\" download>Download CSV</a>\n");
         sb.append("                            </div>\n");
         sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#acb1b9;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                <tr>\n");
@@ -880,7 +889,7 @@ public class SummaryReportGenerator {
                 Object o = ois.readObject();
                 if (o instanceof TestOutcome) testOutcomes.add((TestOutcome) o);
                 if (o instanceof List<?>) for (Object x : (List<?>) o) if (x instanceof TestOutcome) testOutcomes.add((TestOutcome) x);
-            } catch (Exception e) { logger.warn("读取ser失败: {}", f.getName()); }
+            } catch (Exception e) { logger.warn("Failed to read ser file: {}", f.getName()); }
         }
     }
 
@@ -888,7 +897,7 @@ public class SummaryReportGenerator {
         // 加载 Serenity 生成的 JSON 报告文件
         File[] files = new File(reportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (files == null || files.length == 0) {
-            logger.info("未找到 JSON 测试数据文件");
+            logger.info("No JSON test data files found");
             return;
         }
         
@@ -928,13 +937,13 @@ public class SummaryReportGenerator {
                 outcome.scenarioId = scenarioId;
                 simpleTestOutcomes.add(outcome);
                 
-                logger.info("加载测试数据: {} - {} - {}", feature, name, r);
+                logger.info("Loaded test data: {} - {} - {}", feature, name, r);
             } catch (Exception e) { 
-                logger.warn("解析json失败: {} - {}", f.getName(), e.getMessage()); 
+                logger.warn("Failed to parse JSON file: {} - {}", f.getName(), e.getMessage()); 
             }
         }
         
-        logger.info("共加载 {} 个测试结果", simpleTestOutcomes.size());
+        logger.info("Loaded {} test results", simpleTestOutcomes.size());
     }
 
     private void calculateResultCounts() {
@@ -973,9 +982,9 @@ public class SummaryReportGenerator {
                 String link = m.group(2);
                 featureToHtmlMap.put(title, link);
             }
-            logger.info("加载了 {} 个 feature 映射", featureToHtmlMap.size());
+            logger.info("Loaded {} feature mappings", featureToHtmlMap.size());
         } catch (Exception e) {
-            logger.warn("解析 index.html 失败: {}", e.getMessage());
+            logger.warn("Failed to parse index.html: {}", e.getMessage());
         }
     }
     
@@ -996,14 +1005,14 @@ public class SummaryReportGenerator {
                 
                 if (name != null) {
                     scenarioToHtmlMap.put(name, htmlLink);
-                    logger.info("映射场景: {} -> {}", name, htmlLink);
+                    logger.info("Mapped scenario: {} -> {}", name, htmlLink);
                 }
             } catch (Exception e) {
-                logger.warn("加载场景映射失败: {}", f.getName());
+                logger.warn("Failed to load scenario mapping: {}", f.getName());
             }
         }
         
-        logger.info("共加载 {} 个场景映射", scenarioToHtmlMap.size());
+        logger.info("Loaded {} scenario mappings", scenarioToHtmlMap.size());
     }
 
     private static class SimpleTestOutcome {

@@ -32,6 +32,8 @@ public class SummaryReportGenerator {
 
     private final String reportDir;
     private final String projectName;
+    private final String reportTitle;
+    private final String reportUrl;
     private final List<TestOutcome> testOutcomes = new ArrayList<>();
     private final List<SimpleTestOutcome> simpleTestOutcomes = new ArrayList<>();
     private final Map<TestResult, Long> resultCounts = new EnumMap<>(TestResult.class);
@@ -54,19 +56,23 @@ public class SummaryReportGenerator {
     public SummaryReportGenerator(String reportDir) {
         this.reportDir = Objects.requireNonNull(reportDir);
         this.projectName = loadProjectName();
+        this.reportTitle = loadReportTitle();
+        this.reportUrl = loadReportUrl();
         init();
     }
 
     private String loadProjectName() {
         String name = System.getProperty("serenity.project.name");
         if (name != null && !name.isEmpty()) return name;
-        
+
         try {
             Path propFile = Paths.get("serenity.properties");
             if (Files.exists(propFile)) {
+                // 使用 UTF-8 编码读取 properties 文件
                 Properties props = new Properties();
-                try (InputStream is = Files.newInputStream(propFile)) {
-                    props.load(is);
+                try (InputStream is = Files.newInputStream(propFile);
+                     InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                    props.load(isr);
                     name = props.getProperty("serenity.project.name");
                     if (name != null && !name.isEmpty()) return name;
                 }
@@ -74,8 +80,55 @@ public class SummaryReportGenerator {
         } catch (Exception e) {
             logger.warn("Failed to read serenity.properties: {}", e.getMessage());
         }
-        
+
         return "Serenity Automation Test Report";
+    }
+
+    private String loadReportTitle() {
+        String title = System.getProperty("serenity.summary.report.title");
+        if (title != null && !title.isEmpty()) return title;
+
+        try {
+            Path propFile = Paths.get("serenity.properties");
+            if (Files.exists(propFile)) {
+                // 使用 UTF-8 编码读取 properties 文件
+                Properties props = new Properties();
+                try (InputStream is = Files.newInputStream(propFile);
+                     InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                    props.load(isr);
+                    title = props.getProperty("serenity.summary.report.title");
+                    if (title != null && !title.isEmpty()) return title;
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to read report title: {}", e.getMessage());
+        }
+
+        // 默认标题，不与 project.name 重复
+        return "Test Execution Report";
+    }
+
+    private String loadReportUrl() {
+        String url = System.getProperty("serenity.report.url");
+        if (url != null && !url.isEmpty()) return url;
+
+        try {
+            Path propFile = Paths.get("serenity.properties");
+            if (Files.exists(propFile)) {
+                // 使用 UTF-8 编码读取 properties 文件
+                Properties props = new Properties();
+                try (InputStream is = Files.newInputStream(propFile);
+                     InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
+                    props.load(isr);
+                    url = props.getProperty("serenity.report.url");
+                    if (url != null && !url.isEmpty()) return url;
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to read report URL: {}", e.getMessage());
+        }
+
+        return ""; // 默认为空
     }
 
     private void init() {
@@ -373,7 +426,7 @@ public class SummaryReportGenerator {
         sb.append("                            <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" class=\"alert alert-success\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;min-width:100%;\">\n");
         sb.append("                                <tr>\n");
         sb.append("                                    <td align=\"center\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;border-radius:4px 4px 0 0;color:#ffffff;background-color:#5FB0E0;font-size:1.3em;font-weight:400;padding:24px;text-align:center;\">\n");
-        sb.append("                                        <span class=\"test-suite-title\" style=\"font-size:1.3em;color:white;font-weight:bold;\"><span>").append(escape(projectName)).append("</span></span>\n");
+        sb.append("                                        <span class=\"test-suite-title\" style=\"font-size:1.3em;color:white;font-weight:bold;\"><span>").append(escape(reportTitle)).append("</span></span>\n");
         sb.append("                                    </td>\n");
         sb.append("                                </tr>\n");
         sb.append("                            </table>\n");
@@ -517,7 +570,15 @@ public class SummaryReportGenerator {
     private void appendViewFullReportButton(StringBuilder sb) {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"./\" target=\"_blank\">View full report</a>\n");
+
+        // 如果配置了报告 URL，显示 View full report 按钮
+        if (reportUrl != null && !reportUrl.isEmpty()) {
+            sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"").append(reportUrl).append("\" target=\"_blank\">View full report</a>\n");
+        } else {
+            // 默认链接到 index.html
+            sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"index.html\" target=\"_blank\">View full report</a>\n");
+        }
+
         sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
@@ -702,7 +763,8 @@ public class SummaryReportGenerator {
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
                 String html = featureToHtmlMap.getOrDefault(t.featureName, "index.html");
-                failures.add(new FailureInfo(t.featureName, t.title, "Test failed", html, t.result));
+                String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
+                failures.add(new FailureInfo(t.featureName, t.title, error, html, t.result));
             }
         }
 
@@ -932,9 +994,23 @@ public class SummaryReportGenerator {
                 
                 // 提取场景 ID
                 String scenarioId = jo.has("scenarioId") ? jo.get("scenarioId").getAsString() : name;
-                
+
+                // 提取错误信息
+                String errorMessage = "";
+                if (jo.has("testFailureCause") && jo.get("testFailureCause").isJsonObject()) {
+                    JsonObject failureCause = jo.getAsJsonObject("testFailureCause");
+                    if (failureCause.has("message")) {
+                        errorMessage = failureCause.get("message").getAsString();
+                    } else if (failureCause.has("errorType")) {
+                        errorMessage = failureCause.get("errorType").getAsString();
+                    }
+                } else if (jo.has("errorMessage")) {
+                    errorMessage = jo.get("errorMessage").getAsString();
+                }
+
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
                 outcome.scenarioId = scenarioId;
+                outcome.errorMessage = errorMessage;
                 simpleTestOutcomes.add(outcome);
             } catch (Exception e) { 
                 logger.warn("Failed to parse JSON file: {} - {}", f.getName(), e.getMessage()); 
@@ -1013,12 +1089,14 @@ public class SummaryReportGenerator {
         long duration;
         String featureName;
         String scenarioId;
+        String errorMessage;
 
         public SimpleTestOutcome(String title, String rStr, long duration, String featureName) {
             this.title = title;
             this.duration = duration;
             this.featureName = featureName;
             this.scenarioId = title;
+            this.errorMessage = "";
             try { this.result = TestResult.valueOf(rStr.toUpperCase()); }
             catch (Exception e) { this.result = TestResult.PENDING; }
         }

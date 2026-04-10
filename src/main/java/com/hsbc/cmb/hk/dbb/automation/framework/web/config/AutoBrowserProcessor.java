@@ -2,12 +2,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestTag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.util.Set;
 
 /**
@@ -37,7 +39,7 @@ public class AutoBrowserProcessor {
     
     /**
      * 处理 @AutoBrowser 注解
-     * 
+     *
      * 在 PlaywrightManager.getBrowserType() 中调用此方法
      * 自动检测并设置浏览器覆盖配置
      */
@@ -47,13 +49,19 @@ public class AutoBrowserProcessor {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Already processed for current scenario, skipping");
             return;
         }
-        
+
         LoggingConfigUtil.logInfoIfVerbose(logger, "Processing @AutoBrowser annotation...");
-        
+
         try {
+            // 0. 检查 StepEventBus 是否已准备好
+            if (!isStepEventBusReady()) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "StepEventBus not ready yet, skipping @AutoBrowser processing");
+                return;
+            }
+
             // 1. 从堆栈跟踪找到 Glue 类
             Class<?> glueClass = findGlueClass();
-            
+
             if (glueClass == null) {
                 logger.warn("No class with @AutoBrowser found in call stack");
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Call stack trace for debugging:");
@@ -63,43 +71,105 @@ public class AutoBrowserProcessor {
                 }
                 return;
             }
-            
+
             LoggingConfigUtil.logDebugIfVerbose(logger, "Found class '{}' with @AutoBrowser", glueClass.getName());
-            
+
             // 2. 检查 @AutoBrowser 注解
             AutoBrowser autoBrowser = glueClass.getAnnotation(AutoBrowser.class);
-            
+
             if (autoBrowser == null || !autoBrowser.enabled()) {
-                logger.warn("@AutoBrowser annotation not enabled on class '{}'", 
+                logger.warn("@AutoBrowser annotation not enabled on class '{}'",
                     glueClass.getSimpleName());
                 return;
             }
-            
-            LoggingConfigUtil.logDebugIfVerbose(logger, "@AutoBrowser annotation is enabled (verbose={})", 
+
+            LoggingConfigUtil.logDebugIfVerbose(logger, "@AutoBrowser annotation is enabled (verbose={})",
                 autoBrowser.verbose());
-            
+
             // 3. 从 Serenity 上下文获取 Scenario 标签
             String[] tags = getTagsFromSerenityContext();
-            
+
             if (tags == null || tags.length == 0) {
-                logger.warn("No tags found in Serenity context");
-                LoggingConfigUtil.logDebugIfVerbose(logger, "This might mean StepEventBus is not initialized or no scenario is running");
+                LoggingConfigUtil.logDebugIfVerbose(logger, "No tags found in Serenity context - this is normal during early test initialization");
                 return;
             }
-            
+
             LoggingConfigUtil.logDebugIfVerbose(logger, "Found {} tags: {}", tags.length, java.util.Arrays.toString(tags));
-            
+
             // 4. 设置 Scenario 标签
             BrowserOverrideManager.setScenarioTags(tags);
-            
+
             String effectiveBrowser = BrowserOverrideManager.getEffectiveBrowserType();
             LoggingConfigUtil.logInfoIfVerbose(logger, "Effective browser type set to: {}", effectiveBrowser);
-            
+
             // 标记为已处理
             processedForCurrentScenario.set(true);
-            
+
         } catch (Exception e) {
             logger.error("ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 检查 StepEventBus 是否已准备好，如果未准备好则自动注册监听器
+     *
+     * @return true 如果 StepEventBus 已初始化且 BaseStepListener 已注册
+     */
+    private static boolean isStepEventBusReady() {
+        try {
+            StepEventBus eventBus = StepEventBus.getEventBus();
+            if (eventBus == null) {
+                return false;
+            }
+
+            // 使用反射访问 currentBaseStepListener() 方法，避免触发 ERROR 日志
+            try {
+                java.lang.reflect.Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+                method.setAccessible(true);
+                Object listener = method.invoke(eventBus);
+
+                if (listener == null) {
+                    // 监听器未注册，自动注册
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "BaseStepListener not registered, auto-registering...");
+                    return registerBaseStepListener(eventBus);
+                }
+
+                return true;
+            } catch (Exception e) {
+                LoggingConfigUtil.logTraceIfVerbose(logger, "Could not check BaseStepListener status: {}", e.getMessage());
+                return false;
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 注册 BaseStepListener
+     *
+     * @param eventBus StepEventBus 实例
+     * @return true 如果注册成功
+     */
+    private static boolean registerBaseStepListener(StepEventBus eventBus) {
+        try {
+            // 创建输出目录（用于存储测试结果）
+            File outputDirectory = new File("target/site/serenity");
+            if (!outputDirectory.exists()) {
+                outputDirectory.mkdirs();
+            }
+
+            // 创建 BaseStepListener（需要一个输出目录）
+            BaseStepListener listener = new BaseStepListener(outputDirectory);
+
+            // 注册到 StepEventBus
+            eventBus.registerListener(listener);
+
+            LoggingConfigUtil.logInfoIfVerbose(logger, "BaseStepListener registered successfully");
+            return true;
+
+        } catch (Exception e) {
+            logger.warn("Failed to register BaseStepListener: {}", e.getMessage());
+            return false;
         }
     }
     
@@ -176,55 +246,64 @@ public class AutoBrowserProcessor {
     
     /**
      * 从 Serenity 上下文获取当前 Scenario 的标签
-     * 
+     *
      * @return 标签数组
      */
     private static String[] getTagsFromSerenityContext() {
         try {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Attempting to get tags from StepEventBus...");
-            
+
             // 从 StepEventBus 获取当前 TestOutcome
             StepEventBus eventBus = StepEventBus.getEventBus();
             if (eventBus == null) {
-                logger.warn("StepEventBus.getEventBus() returned null");
+                logger.debug("StepEventBus.getEventBus() returned null - tests may not be running with Serenity runners");
                 return new String[0];
             }
             LoggingConfigUtil.logTraceIfVerbose(logger, "StepEventBus instance: {}", eventBus.getClass().getName());
-            
-            if (eventBus.getBaseStepListener() == null) {
-                logger.warn("StepEventBus.getBaseStepListener() returned null");
+
+            // 使用反射安全地获取 BaseStepListener
+            java.lang.reflect.Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+            method.setAccessible(true);
+            Object listener = method.invoke(eventBus);
+
+            if (listener == null) {
+                logger.debug("BaseStepListener not registered yet");
                 return new String[0];
             }
-            LoggingConfigUtil.logTraceIfVerbose(logger, "BaseStepListener instance: {}", eventBus.getBaseStepListener().getClass().getName());
-            
-            TestOutcome testOutcome = eventBus.getBaseStepListener().getCurrentTestOutcome();
+
+            LoggingConfigUtil.logTraceIfVerbose(logger, "BaseStepListener instance: {}", listener.getClass().getName());
+
+            // 获取 TestOutcome
+            java.lang.reflect.Method getTestOutcomeMethod = listener.getClass().getMethod("getCurrentTestOutcome");
+            TestOutcome testOutcome = (TestOutcome) getTestOutcomeMethod.invoke(listener);
+
             if (testOutcome == null) {
-                logger.warn("getCurrentTestOutcome() returned null");
+                logger.debug("getCurrentTestOutcome() returned null");
                 return new String[0];
             }
             LoggingConfigUtil.logDebugIfVerbose(logger, "TestOutcome found: {}", testOutcome.getName());
-            
+
             Set<TestTag> testTags = testOutcome.getTags();
             if (testTags == null) {
-                logger.warn("testOutcome.getTags() returned null");
+                logger.debug("testOutcome.getTags() returned null");
                 return new String[0];
             }
-            
+
             LoggingConfigUtil.logDebugIfVerbose(logger, "Found {} tags in TestOutcome", testTags.size());
-            
+
             if (!testTags.isEmpty()) {
                 String[] tags = testTags.stream()
                     .map(TestTag::getName)
                     .toArray(String[]::new);
-                
+
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Converted tags: {}", java.util.Arrays.toString(tags));
                 return tags;
             }
-            
+
         } catch (Exception e) {
-            logger.error("Exception getting tags from Serenity context: {}", e.getMessage(), e);
+            logger.debug("Exception getting tags from Serenity context: {} - this is normal during early test initialization", e.getMessage());
         }
-        
+
         return new String[0];
     }
     

@@ -9,7 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 /**
  * Context 和 Page 管理器 - 负责 Context 和 Page 的创建、配置和关闭
@@ -136,7 +139,7 @@ class PlaywrightContextManager {
 
         String permissionsConfig = PlaywrightConfigManager.getContextPermissions();
         if (permissionsConfig != null && !permissionsConfig.isEmpty()) {
-            contextOptions.setPermissions(java.util.List.of(permissionsConfig.split(",")));
+            contextOptions.setPermissions(List.of(permissionsConfig.split(",")));
         }
 
         // 配置设备缩放因子
@@ -169,8 +172,8 @@ class PlaywrightContextManager {
         PlaywrightManager.CustomOptions options = PlaywrightManager.getCustomOptions();
         
         // StorageState（session 恢复）
-        java.nio.file.Path storagePath = options.getStorageStatePath();
-        if (storagePath != null && java.nio.file.Files.exists(storagePath)) {
+        Path storagePath = options.getStorageStatePath();
+        if (storagePath != null && Files.exists(storagePath)) {
             contextOptions.setStorageStatePath(storagePath);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
         }
@@ -197,7 +200,7 @@ class PlaywrightContextManager {
         }
 
         // Permissions
-        java.util.List<String> permissions = options.getPermissions();
+        List<String> permissions = options.getPermissions();
         if (permissions != null && !permissions.isEmpty()) {
             contextOptions.setPermissions(permissions);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom permissions: {}", permissions);

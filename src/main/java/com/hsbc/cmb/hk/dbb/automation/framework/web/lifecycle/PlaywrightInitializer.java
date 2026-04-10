@@ -8,12 +8,17 @@ import com.microsoft.playwright.Playwright;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
@@ -143,7 +148,7 @@ class PlaywrightInitializer {
     /**
      * 递归删除目录（增强版：处理文件锁定问题）
      */
-    private static void deleteDirectoryRecursively(Path path) throws java.io.IOException {
+    private static void deleteDirectoryRecursively(Path path) throws IOException {
         if (!Files.exists(path)) {
             return;
         }
@@ -153,7 +158,7 @@ class PlaywrightInitializer {
                 stream.forEach(child -> {
                     try {
                         deleteDirectoryRecursively(child);
-                    } catch (java.io.IOException e) {
+                    } catch (IOException e) {
                         // 只记录简短信息，避免堆栈追踪造成日志噪音
                         String errorMsg = e.getMessage();
                         if (errorMsg != null && errorMsg.contains("AccessDeniedException")) {
@@ -170,10 +175,10 @@ class PlaywrightInitializer {
         // 尝试删除文件或空目录，忽略失败
         try {
             Files.deleteIfExists(path);
-        } catch (java.nio.file.AccessDeniedException e) {
+        } catch (AccessDeniedException e) {
             // 文件被锁定，这是预期行为（例如node.exe仍在运行）
             LoggingConfigUtil.logDebugIfVerbose(logger, "File locked, cannot delete: {}", path.getFileName());
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Failed to delete path: {} - {}", path.getFileName(), e.getMessage());
         }
     }
@@ -181,7 +186,7 @@ class PlaywrightInitializer {
     /**
      * 计算目录大小
      */
-    private static long calculateDirectorySize(Path path) throws java.io.IOException {
+    private static long calculateDirectorySize(Path path) throws IOException {
         if (!Files.exists(path)) {
             return 0;
         }
@@ -197,7 +202,7 @@ class PlaywrightInitializer {
                     .mapToLong(p -> {
                         try {
                             return Files.size(p);
-                        } catch (java.io.IOException e) {
+                        } catch (IOException e) {
                             return 0;
                         }
                     })
@@ -290,7 +295,7 @@ class PlaywrightInitializer {
                     "ffmpeg"
             );
 
-            java.util.Map<String, String> env = pb.environment();
+            Map<String, String> env = pb.environment();
             if (!SKIP_DOWNLOAD_BROWSER) {
                 env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
                 env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
@@ -348,7 +353,7 @@ class PlaywrightInitializer {
 
         // 跳过浏览器下载
         if (SKIP_DOWNLOAD_BROWSER) {
-            java.util.Map<String, String> env = new java.util.HashMap<>();
+            Map<String, String> env = new HashMap<>();
             env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
             options.setEnv(env);
         }
@@ -370,7 +375,7 @@ class PlaywrightInitializer {
                 try {
                     if (process.isAlive()) {
                         process.destroy();
-                        boolean exited = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                        boolean exited = process.waitFor(5, TimeUnit.SECONDS);
                         if (!exited) {
                             LoggingConfigUtil.logWarnIfVerbose(logger, "Download process did not exit gracefully, forcing termination");
                             process.destroyForcibly();

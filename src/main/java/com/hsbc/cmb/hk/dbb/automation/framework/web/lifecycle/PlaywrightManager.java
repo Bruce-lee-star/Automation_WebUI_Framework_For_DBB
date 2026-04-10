@@ -30,11 +30,13 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 企业级 Playwright Manager - 管理 Playwright 实例、Browser、Context 和 Page
@@ -582,7 +584,7 @@ public class PlaywrightManager {
             String browserStackUrl = com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackUrl();
             
             // 获取 BrowserStack 能力配置
-            java.util.Map<String, String> capabilities = 
+            Map<String, String> capabilities =
                 com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackCapabilities(browserType);
             
             logger.info("Connecting to BrowserStack: {}", browserStackUrl.replaceAll(":([^@]+)@", ":****@"));
@@ -1333,7 +1335,7 @@ public class PlaywrightManager {
                     if (process.isAlive()) {
                         process.destroy();
                         // 等待最多 5 秒让进程正常退出
-                        boolean exited = process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+                        boolean exited = process.waitFor(5, TimeUnit.SECONDS);
                         if (!exited) {
                             LoggingConfigUtil.logWarnIfVerbose(logger, "Download process did not exit gracefully, forcing termination");
                             process.destroyForcibly();
@@ -1666,7 +1668,7 @@ public class PlaywrightManager {
         // 从configId中提取当前浏览器类型（格式：browserType_headless_channel）
         String[] configIdParts = configId.split("_");
         logger.info("   configId parts: {} (length: {})",
-            java.util.Arrays.toString(configIdParts), configIdParts.length);
+            Arrays.toString(configIdParts), configIdParts.length);
 
         if (configIdParts.length < 1) {
             logger.warn("   Invalid configId format, skipping restart check");
@@ -1911,7 +1913,7 @@ public class PlaywrightManager {
 
         // 所有自定义配置的 getter 方法
 
-        public java.nio.file.Path getStorageStatePath() {
+        public Path getStorageStatePath() {
             return customStorageStatePath.get();
         }
 
@@ -1927,7 +1929,7 @@ public class PlaywrightManager {
             return customUserAgent.get();
         }
 
-        public java.util.List<String> getPermissions() {
+        public List<String> getPermissions() {
             return customPermissions.get();
         }
 

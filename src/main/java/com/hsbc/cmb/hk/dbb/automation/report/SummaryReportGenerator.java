@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -125,6 +126,7 @@ public class SummaryReportGenerator {
     private String loadReportUrl() {
         String url = System.getProperty("serenity.report.url");
         if (url != null && !url.isEmpty()) {
+            url = resolveEnvironmentVariables(url);
             LoggingConfigUtil.logDebugIfVerbose(logger, "Using report URL from system property: {}", url);
             return url;
         }
@@ -141,6 +143,8 @@ public class SummaryReportGenerator {
                     props.load(isr);
                     url = props.getProperty("serenity.report.url");
                     if (url != null && !url.isEmpty()) {
+                        // 解析环境变量占位符
+                        url = resolveEnvironmentVariables(url);
                         LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded report URL from serenity.properties: {}", url);
                         return url;
                     }
@@ -160,6 +164,46 @@ public class SummaryReportGenerator {
         }
 
         return ""; // 默认为空
+    }
+
+    /**
+     * 解析字符串中的环境变量占位符
+     * 支持格式：${ENV_VAR} 或 ${ENV_VAR:default_value}
+     * 
+     * @param value 包含环境变量占位符的字符串
+     * @return 解析后的字符串
+     */
+    private String resolveEnvironmentVariables(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+
+        // 匹配 ${ENV_VAR} 或 ${ENV_VAR:default} 格式
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?\\}");
+        java.util.regex.Matcher matcher = pattern.matcher(value);
+        
+        StringBuffer sb = new StringBuffer();
+        while (matcher.find()) {
+            String envVarName = matcher.group(1);
+            String defaultValue = matcher.group(2);
+            
+            String envValue = System.getenv(envVarName);
+            if (envValue != null && !envValue.isEmpty()) {
+                matcher.appendReplacement(sb, envValue.replace("\\", "\\\\").replace("$", "\\$"));
+            } else if (defaultValue != null) {
+                // 使用默认值，并递归解析（默认值中可能包含其他环境变量）
+                String resolvedDefault = resolveEnvironmentVariables(defaultValue);
+                matcher.appendReplacement(sb, resolvedDefault.replace("\\", "\\\\").replace("$", "\\$"));
+            } else {
+                // 环境变量不存在且无默认值，保留原始文本
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
+            }
+        }
+        matcher.appendTail(sb);
+
+        String result = sb.toString();
+        logger.debug("Resolved environment variables: '{}' -> '{}'", value, result);
+        return result;
     }
 
     /**
@@ -208,6 +252,11 @@ public class SummaryReportGenerator {
      * @return 相对链接或绝对 URL
      */
     private String buildHtmlLink(String htmlFile) {
+        // 如果已经是绝对 URL 或包含完整路径，直接返回
+        if (htmlFile.startsWith("http://") || htmlFile.startsWith("https://")) {
+            return htmlFile;
+        }
+        
         if (reportBaseUrl != null && !reportBaseUrl.isEmpty()) {
             // Jenkins 环境，使用绝对 URL
             return reportBaseUrl + htmlFile;
@@ -251,12 +300,21 @@ public class SummaryReportGenerator {
             return reportDir;
         }
 
-        // 检测是否在 Jenkins 环境
+        // 优先使用 user.dir (Java 当前工作目录)
+        String userDir = System.getProperty("user.dir");
+        if (userDir != null && !userDir.trim().isEmpty()) {
+            File absoluteDir = new File(userDir, reportDir);
+            if (absoluteDir.exists()) {
+                logger.info("Using current working directory (user.dir): {}", absoluteDir.getAbsolutePath());
+                return absoluteDir.getAbsolutePath();
+            }
+        }
+
+        // 其次检测 WORKSPACE 环境变量
         String workspace = System.getenv("WORKSPACE");
         if (workspace != null && !workspace.trim().isEmpty()) {
-            // 在 Jenkins 环境，将相对路径转换为绝对路径
             File absoluteDir = new File(workspace, reportDir);
-            logger.info("Detected Jenkins environment, using absolute path: {}", absoluteDir.getAbsolutePath());
+            logger.info("Using WORKSPACE environment variable: {}", absoluteDir.getAbsolutePath());
             return absoluteDir.getAbsolutePath();
         }
 
@@ -388,8 +446,8 @@ public class SummaryReportGenerator {
         sb.append("    <title>Serenity BDD Test Results - L1 Controls Navigator</title>\n");
         sb.append(getFullCss());
         sb.append("</head>\n");
-        sb.append("<body style=\"font-family:Helvetica, sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.4;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;background-color:#f6f6f6;margin:0;padding:0;width:100%;\">\n");
-        
+        sb.append("<body style=\"font-family:Helvetica, sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.4;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;background-color:#f6f6f6;margin:0;padding:0;width:100%;overflow-x:hidden;\">\n");
+
         // 外层结构
         sb.append("<table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" class=\"body\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("    <tr>\n");
@@ -571,11 +629,11 @@ public class SummaryReportGenerator {
         sb.append("                            <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                <tr>\n");
         sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-        
+
         // Summary bar
         sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"summary-bar\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                            <tr>\n");
-        
+
         int[] widths = calculateBarWidths(total, pass, pending, ignored, fail, error, compromised);
         appendBarCell(sb, "success-background", widths[0], pass, total, "passing tests");
         appendBarCell(sb, "pending-background", widths[1], pending, total, "pending tests");
@@ -583,10 +641,10 @@ public class SummaryReportGenerator {
         appendBarCell(sb, "failure-background", widths[3], fail, total, "failing tests");
         appendBarCell(sb, "error-background", widths[4], error, total, "broken tests");
         appendBarCell(sb, "compromised-background", widths[5], compromised, total, "compromised tests");
-        
+
         sb.append("                                            </tr>\n");
         sb.append("                                        </table>\n");
-        
+
         // Legend overview
         sb.append("                                        <table cellspacing=\"0\" cellpadding=\"2\" class=\"legend\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border:1px solid #acb1b9;margin-top:20px;\">\n");
         sb.append("                                            <tr>\n");
@@ -595,7 +653,7 @@ public class SummaryReportGenerator {
         sb.append("                                                </td>\n");
         sb.append("                                            </tr>\n");
         sb.append("                                        </table>\n");
-        
+
         // Result counts
         sb.append("                                        <table cellspacing=\"0\" cellpadding=\"2\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                            <tr>\n");
@@ -609,7 +667,7 @@ public class SummaryReportGenerator {
         appendLegendRow(sb, "Compromised", compromised, "for-compromised", "compromised-badge");
         sb.append("                                            </tr>\n");
         sb.append("                                        </table>\n");
-        
+
         // Timings
         sb.append("                                        <table class=\"timings\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;padding:0 5px;\">\n");
         sb.append("                                            <tr>\n");
@@ -627,24 +685,24 @@ public class SummaryReportGenerator {
         sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format(minDuration)).append("</td>\n");
         sb.append("                                            </tr>\n");
         sb.append("                                        </table>\n");
-        
+
         sb.append("                                    </td>\n");
         sb.append("                                </tr>\n");
         sb.append("                            </table>\n");
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
     }
-    
+
     private int[] calculateBarWidths(long total, long... counts) {
         int[] widths = new int[counts.length];
         if (total == 0) return widths;
-        
+
         int used = 0;
         for (int i = 0; i < counts.length; i++) {
             widths[i] = (int) ((counts[i] * 100) / total);
             used += widths[i];
         }
-        
+
         // Distribute remaining
         int remaining = 100 - used;
         for (int i = 0; i < widths.length && remaining > 0; i++) {
@@ -653,10 +711,10 @@ public class SummaryReportGenerator {
                 remaining--;
             }
         }
-        
+
         return widths;
     }
-    
+
     private void appendBarCell(StringBuilder sb, String cssClass, int width, long count, long total, String title) {
         if (width > 0) {
             sb.append("                                                <td class=\"").append(cssClass).append(" summary summary-bar-cell\" width=\"").append(width).append("%\" valign=\"middle\" align=\"center\" style=\"padding:").append(count > 0 ? "8px" : "0px").append(";\">\n");
@@ -669,14 +727,14 @@ public class SummaryReportGenerator {
             sb.append("                                                <td class=\"").append(cssClass).append(" summary summary-bar-cell\" width=\"0%\" valign=\"middle\" align=\"center\" style=\"padding:0px;\"></td>\n");
         }
     }
-    
+
     private void appendLegendRow(StringBuilder sb, String label, long count, String colorClass, String badgeClass) {
         sb.append("                                                <td class=\"").append(colorClass).append(" legend-key legend-label\" width=\"30%\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;").append(getColorStyle(colorClass)).append("\">").append(label).append("</td>\n");
         sb.append("                                                <td class=\"").append(colorClass).append(" legend-result\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;").append(getColorStyle(colorClass)).append("\">\n");
         sb.append("                                                    <span class=\"").append(badgeClass).append("\" style=\"border-radius:4px;padding:2px 4px;white-space:nowrap;\">").append(count).append("</span>\n");
         sb.append("                                                </td>\n");
     }
-    
+
     private String getColorStyle(String colorClass) {
         return switch (colorClass) {
             case "for-passing", "for-success" -> "color:#52B255;";
@@ -688,15 +746,16 @@ public class SummaryReportGenerator {
             default -> "";
         };
     }
-    
+
     private void appendViewFullReportButton(StringBuilder sb) {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
 
         // 使用 buildHtmlLink() 构建 View full report 链接
-        sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"").append(buildHtmlLink("index.html")).append("\" target=\"_blank\">View full report</a>\n");
+        String fullReportLink = buildHtmlLink("index.html");
+        sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;display:inline-block;\" href=\"").append(fullReportLink).append("\" target=\"_blank\">View full report</a>\n");
 
-        sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
+        sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;display:inline-block;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
     }
@@ -729,11 +788,11 @@ public class SummaryReportGenerator {
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.total).append("</td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.passPercent()).append("%</td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">\n");
-            
+
             // Result bar
             sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"result-bar\" width=\"100%\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
             sb.append("                                            <tr>\n");
-            
+
             if (stats.error > 0) {
                 sb.append("                                                <td class=\"error-background\" title=\"Broken tests\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;border:0.5px solid #dddddd;padding:4px;\"><span title=\"100% broken tests\">").append(stats.error).append("</span></td>\n");
             } else if (stats.failed > 0) {
@@ -741,7 +800,7 @@ public class SummaryReportGenerator {
             } else {
                 sb.append("                                                <td class=\"success-background\" title=\"Passing tests\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;border:0.5px solid #dddddd;padding:4px;\"><span title=\"100% passing tests\">").append(stats.passed).append("</span></td>\n");
             }
-            
+
             sb.append("                                            </tr>\n");
             sb.append("                                        </table>\n");
             sb.append("                                    </td>\n");
@@ -785,7 +844,7 @@ public class SummaryReportGenerator {
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
                 String errorType = extractErrorType(error);
                 failureCounts.merge(errorType, 1, Integer::sum);
-                
+
                 String feature = getFeature(t);
                 featureFailures.computeIfAbsent(feature, k -> new FeatureFailureStats()).increment();
             }
@@ -810,24 +869,24 @@ public class SummaryReportGenerator {
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
         sb.append("                            <table style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                <tr>\n");
-        
+
         // Most Frequent Failures
         sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
         sb.append("                                        <table class=\"failure-scoreboard\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;\">\n");
         sb.append("                                            <tr>\n");
         sb.append("                                                <th colspan=\"2\" style=\"text-align:left;\">Most Frequent Failures</th>\n");
         sb.append("                                            </tr>\n");
-        
+
         for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
             sb.append("                                            <tr class=\"for-failure\" style=\"color:#f44336;\">\n");
             sb.append("                                                <td width=\"100%\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\" class=\"frequent-failure for-error\">").append(escape(entry.getKey())).append("</td>\n");
             sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\"><span class='count-badge for-failure' style=\"color:#f44336;\">").append(entry.getValue()).append("</span></td>\n");
             sb.append("                                            </tr>\n");
         }
-        
+
         sb.append("                                        </table>\n");
         sb.append("                                    </td>\n");
-        
+
         // Most Unstable Features
         sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
         sb.append("                                        <table class=\"failure-scoreboard\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;\">\n");
@@ -835,14 +894,14 @@ public class SummaryReportGenerator {
         sb.append("                                                <th style=\"text-align:left;\">Most Unstable Features</th>\n");
         sb.append("                                                <th style=\"text-align:left;\">Fails</th>\n");
         sb.append("                                            </tr>\n");
-        
+
         for (Map.Entry<String, FeatureFailureStats> entry : featureFailures.entrySet()) {
             sb.append("                                            <tr class=\"for-failure\" style=\"color:#f44336;\">\n");
             sb.append("                                                <td class=\"unstable-feature\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">").append(escape(entry.getKey())).append("</td>\n");
             sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\"><span class='count-badge for-failure' style=\"color:#f44336;\">").append(entry.getValue().count).append("</span></td>\n");
             sb.append("                                            </tr>\n");
         }
-        
+
         sb.append("                                        </table>\n");
         sb.append("                                    </td>\n");
         sb.append("                                </tr>\n");
@@ -850,7 +909,7 @@ public class SummaryReportGenerator {
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
     }
-    
+
     private static class FeatureFailureStats {
         int count = 0;
         void increment() { count++; }
@@ -904,7 +963,7 @@ public class SummaryReportGenerator {
                     sb.append("                                </tr>\n");
                     lastFeature = f.feature;
                 }
-                
+
                 sb.append("                                <tr>\n");
                 sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
                 sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\">").append(escape(f.scenario)).append("</a>\n");
@@ -943,20 +1002,20 @@ public class SummaryReportGenerator {
             String feature = getFeature(t);
             String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html")));
             boolean isSuccess = t.getResult() == TestResult.SUCCESS;
-            
+
             if (!feature.equals(lastFeature)) {
                 sb.append("                                <tr>\n");
                 sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;\">").append(escape(feature)).append("</td>\n");
                 sb.append("                                </tr>\n");
                 lastFeature = feature;
             }
-            
+
             sb.append("                                <tr>\n");
             sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
             sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.getName())).append("</a>\n");
             sb.append("                                    </td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-            
+
             if (!isSuccess) {
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
                 sb.append("                                        <div>\n");
@@ -968,30 +1027,30 @@ public class SummaryReportGenerator {
             } else {
                 sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
             }
-            
+
             sb.append("                                    </td>\n");
             sb.append("                                </tr>\n");
         }
-        
+
         // 处理 simpleTestOutcomes
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String feature = t.featureName;
             String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.title, featureToHtmlMap.getOrDefault(feature, "index.html")));
             boolean isSuccess = t.result == TestResult.SUCCESS;
-            
+
             if (!feature.equals(lastFeature)) {
                 sb.append("                                <tr>\n");
                 sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;\">").append(escape(feature)).append("</td>\n");
                 sb.append("                                </tr>\n");
                 lastFeature = feature;
             }
-            
+
             sb.append("                                <tr>\n");
             sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
             sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.title)).append("</a>\n");
             sb.append("                                    </td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-            
+
             if (!isSuccess) {
                 sb.append("                                        <div>\n");
                 sb.append("                                            <div>\n");
@@ -1002,7 +1061,7 @@ public class SummaryReportGenerator {
             } else {
                 sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
             }
-            
+
             sb.append("                                    </td>\n");
             sb.append("                                </tr>\n");
         }

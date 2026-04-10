@@ -1,20 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.ColorScheme;
-import com.microsoft.playwright.options.LoadState;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
-import net.thucydides.model.util.EnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.*;
-import java.awt.geom.AffineTransform;
 import java.nio.file.Paths;
 
 /**
@@ -174,30 +167,76 @@ class PlaywrightContextManager {
     private static void configureCustomContextOptions(Browser.NewContextOptions contextOptions) {
         PlaywrightManager.CustomOptions options = PlaywrightManager.getCustomOptions();
         
+        // StorageState（session 恢复）
         java.nio.file.Path storagePath = options.getStorageStatePath();
         if (storagePath != null && java.nio.file.Files.exists(storagePath)) {
             contextOptions.setStorageStatePath(storagePath);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
         }
 
+        // Locale
         String locale = options.getLocale();
         if (locale != null && !locale.isEmpty()) {
             contextOptions.setLocale(locale);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom locale: {}", locale);
         }
 
+        // Timezone
+        String timezoneId = options.getTimezoneId();
+        if (timezoneId != null && !timezoneId.isEmpty()) {
+            contextOptions.setTimezoneId(timezoneId);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom timezoneId: {}", timezoneId);
+        }
+
+        // User Agent
         String userAgent = options.getUserAgent();
         if (userAgent != null && !userAgent.isEmpty()) {
             contextOptions.setUserAgent(userAgent);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom userAgent: {}", userAgent);
         }
 
+        // Permissions
+        java.util.List<String> permissions = options.getPermissions();
+        if (permissions != null && !permissions.isEmpty()) {
+            contextOptions.setPermissions(permissions);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom permissions: {}", permissions);
+        }
+
+        // Geolocation
+        com.microsoft.playwright.options.Geolocation geolocation = options.getGeolocation();
+        if (geolocation != null) {
+            contextOptions.setGeolocation(geolocation.latitude, geolocation.longitude);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom geolocation: ({}, {})", geolocation.latitude, geolocation.longitude);
+        }
+
+        // Device Scale Factor
+        Integer scaleFactor = options.getDeviceScaleFactor();
+        if (scaleFactor != null) {
+            contextOptions.setDeviceScaleFactor(scaleFactor / 100.0);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom deviceScaleFactor: {}", scaleFactor / 100.0);
+        }
+
+        // Mobile 和 Touch
+        Boolean isMobile = options.getIsMobile();
+        if (isMobile != null) {
+            contextOptions.setIsMobile(isMobile);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom isMobile: {}", isMobile);
+        }
+
+        Boolean hasTouch = options.getHasTouch();
+        if (hasTouch != null) {
+            contextOptions.setHasTouch(hasTouch);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom hasTouch: {}", hasTouch);
+        }
+
+        // Color Scheme
         ColorScheme colorScheme = options.getColorScheme();
         if (colorScheme != null) {
             contextOptions.setColorScheme(colorScheme);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom colorScheme: {}", colorScheme);
         }
 
+        // Viewport
         Integer customViewportWidth = options.getViewportWidth();
         Integer customViewportHeight = options.getViewportHeight();
         if (customViewportWidth != null && customViewportHeight != null) {
@@ -228,32 +267,9 @@ class PlaywrightContextManager {
 
     /**
      * 页面稳定化
+     * 委托给 PlaywrightManager 处理（因为稳定化逻辑在那里有更完整的实现）
      */
     private static void stabilizePage(Page page) {
-        try {
-            LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化：确保窗口大小正确...");
-
-            // 等待页面加载
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-
-            // 检查自定义 viewport
-            Integer customViewportWidth = PlaywrightManager.getCustomOptions().getViewportWidth();
-            Integer customViewportHeight = PlaywrightManager.getCustomOptions().getViewportHeight();
-
-            if (customViewportWidth != null && customViewportHeight != null) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Custom viewport detected ({}x{}), skipping viewport size override", 
-                    customViewportWidth, customViewportHeight);
-            } else {
-                // 使用逻辑分辨率
-                Dimension screenSize = PlaywrightConfigManager.getAvailableScreenSize();
-                page.setViewportSize((int) screenSize.getWidth(), (int) screenSize.getHeight());
-                LoggingConfigUtil.logDebugIfVerbose(logger, "No custom viewport, setting to logical screen size: {}x{}", 
-                    screenSize.getWidth(), screenSize.getHeight());
-            }
-
-            LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化完成");
-        } catch (Exception e) {
-            logger.warn("页面稳定化失败: {}", e.getMessage(), e);
-        }
+        PlaywrightManager.stabilizePage(page);
     }
 }

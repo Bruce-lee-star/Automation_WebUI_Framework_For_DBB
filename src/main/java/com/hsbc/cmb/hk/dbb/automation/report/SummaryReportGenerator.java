@@ -484,18 +484,44 @@ public class SummaryReportGenerator {
     private String getFullCss() {
         return """
                 <style media="all" type="text/css">
+                    * { box-sizing: border-box; }
+                    
                     body {
-                        font-family: Helvetica, sans-serif;
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                         -webkit-font-smoothing: antialiased;
                         font-size: 14px;
-                        line-height: 1.4;
+                        line-height: 1.5;
                         -ms-text-size-adjust: 100%;
                         -webkit-text-size-adjust: 100%;
                         background-color: #f6f6f6;
                         margin: 0;
-                        padding: 0;
+                        padding: 20px;
                         width: 100%;
+                        min-height: 100vh;
                     }
+                    
+                    /* ====== 响应式容器：适配 Jenkins iframe 和直接访问 ====== */
+                    .body-table {
+                        width: 100%;
+                        min-height: 100vh;
+                    }
+                    
+                    .container {
+                        margin: 0 auto !important;
+                        width: 95% !important;
+                        max-width: 1200px !important;  /* 宽屏：适合Jenkins浏览器查看 */
+                        padding: 20px !important;
+                    }
+                    
+                    /* 小屏幕回退（移动端）*/
+                    @media (max-width: 768px) {
+                        .container {
+                            width: 100% !important;
+                            padding: 10px !important;
+                        }
+                        body { padding: 10px; }
+                    }
+                    
                     table {
                         border-collapse: separate;
                         mso-table-lspace: 0pt;
@@ -503,16 +529,9 @@ public class SummaryReportGenerator {
                         width: 100%;
                     }
                     table td {
-                        font-family: Helvetica, sans-serif;
+                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                         font-size: 14px;
                         vertical-align: top;
-                    }
-                    .container {
-                        margin: 0 auto !important;
-                        max-width: 600px;
-                        padding: 0;
-                        padding-top: 24px;
-                        width: 90%;
                     }
                     .content {
                         box-sizing: border-box;
@@ -523,8 +542,10 @@ public class SummaryReportGenerator {
                     }
                     .main {
                         background: #fff;
-                        border-radius: 4px;
+                        border-radius: 8px;  /* 更圆润的边角 */
+                        box-shadow: 0 2px 12px rgba(0,0,0,0.08);  /* 轻微阴影增强层次感 */
                         width: 100%;
+                        overflow: hidden;  /* 防止内容溢出 */
                     }
                     .wrapper {
                         box-sizing: border-box;
@@ -534,24 +555,70 @@ public class SummaryReportGenerator {
                         box-sizing: border-box;
                         padding-left: 24px;
                         padding-right: 24px;
-                        padding-top: 4px;
-                        padding-bottom: 4px;
+                        padding-top: 12px;
+                        padding-bottom: 12px;
                     }
-                    .content-block { padding-top: 0; padding-bottom: 24px; }
+                    .content-block { 
+                        padding-top: 0; 
+                        padding-bottom: 20px; 
+                    }
                     .flush-top { margin-top: 0; padding-top: 0; }
                     .flush-bottom { margin-bottom: 0; padding-bottom: 0; }
-                    .header { margin-bottom: 24px; margin-top: 0; width: 100%; }
-                    .footer { clear: both; padding-top: 24px; text-align: center; width: 100%; }
-                    .footer td,.footer p,.footer span,.footer a { color:#999999; font-size:12px; text-align:center; }
+                    .header { margin-bottom: 16px; margin-top: 0; width: 100%; }
+                    .footer { 
+                        clear: both; 
+                        padding: 20px; 
+                        text-align: center; 
+                        width: 100%; 
+                        background-color: #f8f9fa;  /* 浅灰背景区分footer */
+                        border-top: 1px solid #e9ecef;
+                    }
+                    .footer td,.footer p,.footer span,.footer a { 
+                        color:#6c757d; 
+                        font-size:13px; 
+                        text-align:center; 
+                    }
                     .section-callout { background-color:#1abc9c; color:#ffffff; }
                     .section-callout-subtle { background-color:#f7f7f7; border-bottom:1px solid #e9e9e9; border-top:1px solid #e9e9e9; }
                     .alert { min-width:100%; }
-                    .alert td { border-radius:4px 4px 0 0; color:#ffffff; font-size:14px; font-weight:400; padding:24px; text-align:center; }
-                    .alert.alert-success td { background-color: #5FB0E0; }
+                    .alert td { 
+                        border-radius:8px 8px 0 0; 
+                        color:#ffffff; 
+                        font-size:16px;  /* 稍大的标题 */
+                        font-weight:600;
+                        padding:28px; 
+                        text-align:center;
+                    }
+                    .alert.alert-success td { 
+                        background: linear-gradient(135deg, #5FB0E0 0%, #4A9BD1 100%);  /* 渐变背景 */
+                    }
                     .align-center { text-align:center; }
                     .align-right { text-align:right; }
                     .align-left { text-align:left; }
-                    .text-link { color:#3498db !important; text-decoration:underline !important; }
+                    .text-link { 
+                        color:#007bff !important; 
+                        text-decoration:none !important;
+                        transition: color 0.2s ease;
+                    }
+                    .text-link:hover {
+                        text-decoration: underline !important;
+                        color: #0056b3 !important;
+                    }
+                    
+                    /* ====== 按钮样式增强 ====== */
+                    a[style*="background"] {
+                        display: inline-block !important;
+                        padding: 10px 20px !important;
+                        border-radius: 6px !important;
+                        font-weight: 600 !important;
+                        text-decoration: none !important;
+                        transition: all 0.2s ease !important;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+                    }
+                    a[style*="background"]:hover {
+                        transform: translateY(-1px);
+                        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+                    }
                     .legend { border:1px solid #acb1b9; margin-top:20px; }
                     .legend .overview { font-weight:bold; font-size:1.1em; color:#515151; background-color:#EBEBEB; padding:4px 0 4px 5px; }
                     .legend td { vertical-align:middle; }
@@ -582,9 +649,32 @@ public class SummaryReportGenerator {
                     .timings { border:0 solid #acb1b9; padding:0 5px; }
                     .timings th { color:grey; text-align:right; font-size:0.9em; }
                     .timings td { color:grey; text-align:right; font-size:0.9em; }
-                    .test-results-table { border:1px solid grey; margin-bottom:26px; border-collapse:collapse; }
-                    .test-results-table th { border:1px solid grey; padding:8px; background-color:#f5f5f5; text-align:left; }
-                    .test-results-table td { border:1px solid grey; padding:8px; }
+                    .test-results-table { 
+                        border:1px solid #dee2e6; 
+                        margin-bottom:20px; 
+                        border-collapse:collapse;
+                        border-radius: 8px;  /* 圆角 */
+                        overflow: hidden;   /* 防止圆角被裁剪 */
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.05);  /* 轻微阴影 */
+                    }
+                    .test-results-table th { 
+                        border:1px solid #dee2e6; 
+                        padding:12px 16px; 
+                        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+                        text-align:left;
+                        font-weight: 600;
+                        font-size: 13px;
+                        color: #495057;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                    }
+                    .test-results-table td { 
+                        border:1px solid #dee2e6; 
+                        padding:12px 16px;
+                    }
+                    .test-results-table tr:hover {
+                        background-color: #f8f9fa;  /* 悬停高亮 */
+                    }
                     .categories tr td { border:0.5px solid #dddddd; }
                     tr.categories, th.categories, td.categories { border:0.5px solid grey; }
                     .failure-list { border:1px solid grey; }

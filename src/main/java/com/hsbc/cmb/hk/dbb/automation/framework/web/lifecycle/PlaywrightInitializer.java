@@ -88,6 +88,7 @@ class PlaywrightInitializer {
     static void cleanupPlaywrightTempDirs() {
         // 清理项目目录中的临时目录
         cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_BROWSER_PATH);
+        cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_DRIVER_PATH);
 
         // 清理系统临时目录中的 playwright 临时目录
         cleanupPlaywrightTempDirs(System.getProperty("java.io.tmpdir"));
@@ -103,7 +104,7 @@ class PlaywrightInitializer {
             try (Stream<Path> stream = Files.list(tempPath)) {
                 stream.filter(path -> {
                             String fileName = path.getFileName().toString();
-                            return fileName.startsWith("playwright-java-") && Files.isDirectory(path);
+                            return fileName.startsWith("playwright") && Files.isDirectory(path);
                         })
                         .forEach(playwrightTempDirs::add);
             }

@@ -87,8 +87,8 @@ public class PlaywrightManager {
     private static final ThreadLocal<Integer> customDeviceScaleFactor = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportWidth = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportHeight = new ThreadLocal<>();
-    // 配置标识
-    private static String currentConfigId;
+    // 配置标识（线程安全）
+    private static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
 
     // 框架状态引用
     private static final FrameworkState frameworkState = FrameworkState.getInstance();
@@ -254,8 +254,8 @@ public class PlaywrightManager {
      * 这样可以支持 @AutoBrowser 动态浏览器切换，避免启动多余的浏览器实例
      */
     public static synchronized void initialize() {
-        if (frameworkState.isInitialized() && currentConfigId != null) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright environment already initialized with config: {}", currentConfigId);
+        if (frameworkState.isInitialized() && currentConfigId.get() != null) {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright environment already initialized with config: {}", currentConfigId.get());
             return;
         }
 
@@ -265,7 +265,7 @@ public class PlaywrightManager {
         // 不在此处初始化浏览器，延迟到首次访问时启动
         // 这样可以支持 @AutoBrowser 动态浏览器切换
         // initializeBrowser(configId);
-        currentConfigId = configId;
+        currentConfigId.set(configId);
 
         LoggingConfigUtil.logInfoIfVerbose(logger, " Playwright environment initialized successfully (browser will be launched on first access)");
     }
@@ -617,10 +617,10 @@ public class PlaywrightManager {
      * 获取当前配置ID
      */
     private static String getCurrentConfigId() {
-        if (currentConfigId == null) {
-            currentConfigId = generateConfigId();
+        if (currentConfigId.get() == null) {
+            currentConfigId.set(generateConfigId());
         }
-        return currentConfigId;
+        return currentConfigId.get();
     }
 
     /**
@@ -664,9 +664,9 @@ public class PlaywrightManager {
             if (!configBrowserType.equalsIgnoreCase(desiredBrowserType)) {
                 // 生成新的 configId（使用期望的浏览器类型）
                 String newConfigId = generateConfigId();
-                logger.info("[getBrowser] Updating configId from {} to {} for browser type: {}", 
+                logger.info("[getBrowser] Updating configId from {} to {} for browser type: {}",
                     currentConfig, newConfigId, desiredBrowserType);
-                currentConfigId = newConfigId;
+                currentConfigId.set(newConfigId);
                 currentConfig = newConfigId;
             }
             
@@ -703,7 +703,7 @@ public class PlaywrightManager {
             logger.info("[getBrowser] New configId: {}", newConfigId);
 
             // 更新 currentConfigId
-            currentConfigId = newConfigId;
+            currentConfigId.set(newConfigId);
 
             // 初始化新浏览器
             synchronized (PlaywrightManager.class) {
@@ -1273,7 +1273,7 @@ public class PlaywrightManager {
 
             initializePlaywright(newConfigId);
             initializeBrowser(newConfigId);
-            currentConfigId = newConfigId;
+            currentConfigId.set(newConfigId);
 
             LoggingConfigUtil.logInfoIfVerbose(logger, " Browser restarted successfully for config: {}", newConfigId);
         } catch (Exception e) {
@@ -1315,7 +1315,7 @@ public class PlaywrightManager {
         });
         playwrightInstances.clear();
 
-        currentConfigId = null;
+        currentConfigId.remove();
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
     }
 
@@ -1368,7 +1368,7 @@ public class PlaywrightManager {
     public static void initializeForScenario() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Initializing for scenario...");
 
-        if (!frameworkState.isInitialized() || currentConfigId == null) {
+        if (!frameworkState.isInitialized() || currentConfigId.get() == null) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
@@ -1474,7 +1474,7 @@ public class PlaywrightManager {
     public static void initializeForFeature() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing for feature...");
 
-        if (!frameworkState.isInitialized() || currentConfigId == null) {
+        if (!frameworkState.isInitialized() || currentConfigId.get() == null) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
@@ -1658,7 +1658,7 @@ public class PlaywrightManager {
         String configId = getCurrentConfigId();
         logger.info("🔍 [needsBrowserRestart] Checking if browser restart needed...");
         logger.info("   configId: {}", configId);
-        logger.info("   currentConfigId field: {}", currentConfigId);
+        logger.info("   currentConfigId field: {}", currentConfigId.get());
 
         if (configId == null) {
             logger.warn("   configId is null, skipping restart check");

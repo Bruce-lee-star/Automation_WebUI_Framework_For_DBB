@@ -34,6 +34,7 @@ public class SummaryReportGenerator {
     private final String projectName;
     private final String reportTitle;
     private final String reportUrl;
+    private final String reportBaseUrl; // 用于构建绝对 URL
     private final List<TestOutcome> testOutcomes = new ArrayList<>();
     private final List<SimpleTestOutcome> simpleTestOutcomes = new ArrayList<>();
     private final Map<TestResult, Long> resultCounts = new EnumMap<>(TestResult.class);
@@ -58,6 +59,7 @@ public class SummaryReportGenerator {
         this.projectName = loadProjectName();
         this.reportTitle = loadReportTitle();
         this.reportUrl = loadReportUrl();
+        this.reportBaseUrl = extractReportBaseUrl();
         init();
     }
 
@@ -67,6 +69,8 @@ public class SummaryReportGenerator {
 
         try {
             Path propFile = Paths.get("serenity.properties");
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Looking for serenity.properties at: {}", propFile.toAbsolutePath());
+
             if (Files.exists(propFile)) {
                 // 使用 UTF-8 编码读取 properties 文件
                 Properties props = new Properties();
@@ -74,8 +78,13 @@ public class SummaryReportGenerator {
                      InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
                     props.load(isr);
                     name = props.getProperty("serenity.project.name");
-                    if (name != null && !name.isEmpty()) return name;
+                    if (name != null && !name.isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded project name from serenity.properties: {}", name);
+                        return name;
+                    }
                 }
+            } else {
+                logger.warn("serenity.properties not found at: {}", propFile.toAbsolutePath());
             }
         } catch (Exception e) {
             logger.warn("Failed to read serenity.properties: {}", e.getMessage());
@@ -86,10 +95,15 @@ public class SummaryReportGenerator {
 
     private String loadReportTitle() {
         String title = System.getProperty("serenity.summary.report.title");
-        if (title != null && !title.isEmpty()) return title;
+        if (title != null && !title.isEmpty()) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Using report title from system property: {}", title);
+            return title;
+        }
 
         try {
             Path propFile = Paths.get("serenity.properties");
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Looking for serenity.properties at: {}", propFile.toAbsolutePath());
+
             if (Files.exists(propFile)) {
                 // 使用 UTF-8 编码读取 properties 文件
                 Properties props = new Properties();
@@ -101,7 +115,7 @@ public class SummaryReportGenerator {
                 }
             }
         } catch (Exception e) {
-            logger.debug("Failed to read report title: {}", e.getMessage());
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Failed to read report title: {}", e.getMessage());
         }
 
         // 默认标题，不与 project.name 重复
@@ -110,10 +124,15 @@ public class SummaryReportGenerator {
 
     private String loadReportUrl() {
         String url = System.getProperty("serenity.report.url");
-        if (url != null && !url.isEmpty()) return url;
+        if (url != null && !url.isEmpty()) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Using report URL from system property: {}", url);
+            return url;
+        }
 
         try {
             Path propFile = Paths.get("serenity.properties");
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Looking for serenity.properties at: {}", propFile.toAbsolutePath());
+
             if (Files.exists(propFile)) {
                 // 使用 UTF-8 编码读取 properties 文件
                 Properties props = new Properties();
@@ -121,29 +140,129 @@ public class SummaryReportGenerator {
                      InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
                     props.load(isr);
                     url = props.getProperty("serenity.report.url");
-                    if (url != null && !url.isEmpty()) return url;
+                    if (url != null && !url.isEmpty()) {
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded report URL from serenity.properties: {}", url);
+                        return url;
+                    }
                 }
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "serenity.properties not found at: {}", propFile.toAbsolutePath());
             }
         } catch (Exception e) {
-            logger.debug("Failed to read report URL: {}", e.getMessage());
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Failed to read report URL: {}", e.getMessage());
+        }
+
+        // 如果没有配置 URL，尝试自动构建 Jenkins 报告 URL
+        url = autoDetectReportUrl();
+        if (url != null && !url.isEmpty()) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Auto-detected report URL: {}", url);
+            return url;
         }
 
         return ""; // 默认为空
     }
 
+    /**
+     * 自动检测并构建报告 URL
+     */
+    private String autoDetectReportUrl() {
+        // 检查是否在 Jenkins 环境
+        String buildUrl = System.getenv("BUILD_URL");
+        if (buildUrl != null && !buildUrl.trim().isEmpty()) {
+            // 在 Jenkins 环境，构建完整的报告 URL
+            logger.info("Detected Jenkins environment, building report URL from BUILD_URL");
+
+            // 确保以 / 结尾
+            if (!buildUrl.endsWith("/")) {
+                buildUrl += "/";
+            }
+
+            return buildUrl + "Serenity_20Report/";
+        }
+
+        // 本地环境，返回空（使用相对链接）
+        LoggingConfigUtil.logDebugIfVerbose(logger, "Local environment detected, using relative links");
+        return "";
+    }
+
+    /**
+     * 从 reportUrl 提取基础 URL
+     * 用于构建相对链接的绝对 URL
+     *
+     * @return 如果在 Jenkins 环境，返回基础 URL；否则返回空字符串
+     */
+    private String extractReportBaseUrl() {
+        if (reportUrl != null && !reportUrl.isEmpty()) {
+            // 确保以 / 结尾
+            return reportUrl.endsWith("/") ? reportUrl : reportUrl + "/";
+        }
+        return "";
+    }
+
+    /**
+     * 将 HTML 文件名转换为 URL
+     * 本地环境：返回相对链接（如 "abc123.html"）
+     * Jenkins 环境：返回绝对 URL（如 "http://jenkins/job/123/Serenity_20Report/abc123.html"）
+     *
+     * @param htmlFile HTML 文件名或相对路径
+     * @return 相对链接或绝对 URL
+     */
+    private String buildHtmlLink(String htmlFile) {
+        if (reportBaseUrl != null && !reportBaseUrl.isEmpty()) {
+            // Jenkins 环境，使用绝对 URL
+            return reportBaseUrl + htmlFile;
+        }
+        // 本地环境，使用相对链接
+        return htmlFile;
+    }
+
     private void init() {
-        File dir = new File(reportDir);
-        if (!dir.exists()) dir.mkdirs();
+        // 检测是否在 Jenkins 环境并自动调整路径
+        String actualReportDir = resolveReportDirectory(reportDir);
+        logger.info("Report directory: {}", actualReportDir);
+
+        File dir = new File(actualReportDir);
+
+        if (!dir.exists()) {
+            logger.warn("Report directory does not exist, creating: {}", actualReportDir);
+            dir.mkdirs();
+        }
 
         long startInit = System.currentTimeMillis();
-        loadTestOutcomes();
-        loadSimpleTestOutcomes();
-        loadFeatureHtmlMapping();
-        loadScenarioHtmlMapping();
+        loadTestOutcomes(actualReportDir);
+        loadSimpleTestOutcomes(actualReportDir);
+        loadFeatureHtmlMapping(actualReportDir);
+        loadScenarioHtmlMapping(actualReportDir);
         calculateResultCounts();
         calculateDurations();
         this.clockTime = System.currentTimeMillis() - startInit;
         this.reportTime = LocalDateTime.now();
+
+        logger.info("Test outcomes loaded: {}, Simple outcomes loaded: {}", testOutcomes.size(), simpleTestOutcomes.size());
+    }
+
+    /**
+     * 解析报告目录，自动检测 Jenkins 环境并转换路径
+     */
+    private String resolveReportDirectory(String reportDir) {
+        // 如果已经是绝对路径，直接使用
+        File dir = new File(reportDir);
+        if (dir.isAbsolute()) {
+            return reportDir;
+        }
+
+        // 检测是否在 Jenkins 环境
+        String workspace = System.getenv("WORKSPACE");
+        if (workspace != null && !workspace.trim().isEmpty()) {
+            // 在 Jenkins 环境，将相对路径转换为绝对路径
+            File absoluteDir = new File(workspace, reportDir);
+            logger.info("Detected Jenkins environment, using absolute path: {}", absoluteDir.getAbsolutePath());
+            return absoluteDir.getAbsolutePath();
+        }
+
+        // 本地环境，直接使用相对路径
+        logger.info("Using local relative path: {}", reportDir);
+        return reportDir;
     }
 
     public void generateSummaryReport() {
@@ -152,42 +271,45 @@ public class SummaryReportGenerator {
             String timestamp = reportTime.format(TIMESTAMP_FORMATTER);
             csvFileName = CSV_FILE_PREFIX + "-" + timestamp + ".csv";
             zipFileName = ZIP_FILE_PREFIX + "-" + timestamp + ".zip";
-            
+
+            // 解析实际的报告目录（自动处理 Jenkins 环境）
+            String actualReportDir = resolveReportDirectory(reportDir);
+
             // 生成 HTML 报告
             String html = buildFullNativeHtml();
-            Path output = Paths.get(reportDir, SUMMARY_FILE);
+            Path output = Paths.get(actualReportDir, SUMMARY_FILE);
             Files.write(output, html.getBytes(StandardCharsets.UTF_8));
             System.out.println("       - Summary report: " + output.toUri());
-            
+
             // 生成 CSV 文件
-            generateCsvReport();
-            
+            generateCsvReport(actualReportDir);
+
             // 生成 ZIP 包
-            generateZipPackage();
+            generateZipPackage(actualReportDir);
         } catch (Exception e) {
             logger.error("Failed to generate summary report", e);
         }
     }
-    
-    private void generateCsvReport() {
+
+    private void generateCsvReport(String actualReportDir) {
         try {
-            Path csvPath = Paths.get(reportDir, csvFileName);
+            Path csvPath = Paths.get(actualReportDir, csvFileName);
             StringBuilder csv = new StringBuilder();
-            
+
             // CSV 头部
             csv.append("Feature,Scenario,Result,Duration (ms),Error Message\n");
-            
+
             // 测试数据
             for (TestOutcome t : testOutcomes) {
                 String feature = getFeature(t);
                 String result = t.getResult().name();
                 long duration = t.getDuration();
-                String error = t.getTestFailureMessage() != null ? 
+                String error = t.getTestFailureMessage() != null ?
                     escapeCsv(t.getTestFailureMessage()) : "";
                 csv.append(String.format("%s,%s,%s,%d,%s\n",
                     escapeCsv(feature), escapeCsv(t.getName()), result, duration, error));
             }
-            
+
             for (SimpleTestOutcome t : simpleTestOutcomes) {
                 String result = t.result.name();
                 long duration = t.duration;
@@ -195,13 +317,13 @@ public class SummaryReportGenerator {
                 csv.append(String.format("%s,%s,%s,%d,%s\n",
                     escapeCsv(t.featureName), escapeCsv(t.title), result, duration, error));
             }
-            
+
             Files.write(csvPath, csv.toString().getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             logger.error("Failed to generate CSV report", e);
         }
     }
-    
+
     private String escapeCsv(String value) {
         if (value == null) return "";
         // 如果包含逗号、引号或换行，需要用引号包裹并转义引号
@@ -210,12 +332,12 @@ public class SummaryReportGenerator {
         }
         return value;
     }
-    
-    private void generateZipPackage() {
+
+    private void generateZipPackage(String actualReportDir) {
         try {
-            Path zipPath = Paths.get(reportDir, zipFileName);
-            File reportDirectory = new File(reportDir);
-            
+            Path zipPath = Paths.get(actualReportDir, zipFileName);
+            File reportDirectory = new File(actualReportDir);
+
             try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipPath.toFile()))) {
                 // 递归打包整个目录（不包含顶层目录名）
                 zipDirectory(reportDirectory, "", zos);
@@ -571,13 +693,8 @@ public class SummaryReportGenerator {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
 
-        // 如果配置了报告 URL，显示 View full report 按钮
-        if (reportUrl != null && !reportUrl.isEmpty()) {
-            sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"").append(reportUrl).append("\" target=\"_blank\">View full report</a>\n");
-        } else {
-            // 默认链接到 index.html
-            sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"index.html\" target=\"_blank\">View full report</a>\n");
-        }
+        // 使用 buildHtmlLink() 构建 View full report 链接
+        sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;\" href=\"").append(buildHtmlLink("index.html")).append("\" target=\"_blank\">View full report</a>\n");
 
         sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
         sb.append("                        </td>\n");
@@ -605,8 +722,8 @@ public class SummaryReportGenerator {
         for (Map.Entry<String, FeatureStats> entry : statsMap.entrySet()) {
             String feature = entry.getKey();
             FeatureStats stats = entry.getValue();
-            String htmlLink = featureToHtmlMap.getOrDefault(feature, "index.html");
-            
+            String htmlLink = buildHtmlLink(featureToHtmlMap.getOrDefault(feature, "index.html"));
+
             sb.append("                                <tr>\n");
             sb.append("                                    <td class=\"tag-subtitle categories\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;width:50%;border:0.5px solid #dddddd;\"><a href=\"").append(htmlLink).append("\" target=\"_blank\">").append(escape(feature)).append("</a></td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.total).append("</td>\n");
@@ -755,14 +872,14 @@ public class SummaryReportGenerator {
         for (TestOutcome t : testOutcomes) {
             if (t.getResult() == TestResult.FAILURE || t.getResult() == TestResult.ERROR) {
                 String feature = getFeature(t);
-                String html = scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html"));
+                String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html")));
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
                 failures.add(new FailureInfo(feature, t.getName(), error, html, t.getResult()));
             }
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
-                String html = featureToHtmlMap.getOrDefault(t.featureName, "index.html");
+                String html = buildHtmlLink(featureToHtmlMap.getOrDefault(t.featureName, "index.html"));
                 String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
                 failures.add(new FailureInfo(t.featureName, t.title, error, html, t.result));
             }
@@ -824,7 +941,7 @@ public class SummaryReportGenerator {
         String lastFeature = null;
         for (TestOutcome t : testOutcomes) {
             String feature = getFeature(t);
-            String html = scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html"));
+            String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html")));
             boolean isSuccess = t.getResult() == TestResult.SUCCESS;
             
             if (!feature.equals(lastFeature)) {
@@ -859,7 +976,7 @@ public class SummaryReportGenerator {
         // 处理 simpleTestOutcomes
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String feature = t.featureName;
-            String html = scenarioToHtmlMap.getOrDefault(t.title, featureToHtmlMap.getOrDefault(feature, "index.html"));
+            String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.title, featureToHtmlMap.getOrDefault(feature, "index.html")));
             boolean isSuccess = t.result == TestResult.SUCCESS;
             
             if (!feature.equals(lastFeature)) {
@@ -944,43 +1061,58 @@ public class SummaryReportGenerator {
     // =============================================================
     // 数据加载
     // =============================================================
-    private void loadTestOutcomes() {
-        File[] files = new File(reportDir).listFiles((d, n) -> n.endsWith(".ser"));
+    private void loadTestOutcomes(String actualReportDir) {
+        File dir = new File(actualReportDir);
+        logger.info("Looking for .ser files in directory: {}", dir.getAbsolutePath());
+
+        File[] files = dir.listFiles((d, n) -> n.endsWith(".ser"));
+        if (files == null) {
+            logger.warn("Directory does not exist or is not a directory: {}", dir.getAbsolutePath());
+            return;
+        }
+
+        logger.info("Found {} .ser files in {}", files.length, dir.getAbsolutePath());
         if (files == null) return;
         for (File f : files) {
             try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(f))) {
                 Object o = ois.readObject();
                 if (o instanceof TestOutcome) testOutcomes.add((TestOutcome) o);
                 if (o instanceof List<?>) for (Object x : (List<?>) o) if (x instanceof TestOutcome) testOutcomes.add((TestOutcome) x);
-            } catch (Exception e) { logger.warn("Failed to read ser file: {}", f.getName()); }
+            } catch (Exception e) { LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to read ser file: {}", f.getName()); }
         }
     }
 
-    private void loadSimpleTestOutcomes() {
+    private void loadSimpleTestOutcomes(String actualReportDir) {
         // 加载 Serenity 生成的 JSON 报告文件
-        File[] files = new File(reportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
+        File dir = new File(actualReportDir);
+        logger.info("Looking for .json files in directory: {}", dir.getAbsolutePath());
+
+        File[] files = dir.listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (files == null || files.length == 0) {
+            logger.warn("No .json files found in directory: {}", dir.getAbsolutePath());
             return;
         }
-        
+
+        logger.info("Found {} .json files in {}", files.length, dir.getAbsolutePath());
+
         Gson gson = new Gson();
         for (File f : files) {
             try {
                 String content = Files.readString(f.toPath(), StandardCharsets.UTF_8);
                 JsonObject jo = gson.fromJson(content, JsonObject.class);
-                
+
                 // 提取测试名称
                 String name = jo.has("name") ? jo.get("name").getAsString() : "Unknown";
-                
+
                 // 提取测试结果
                 String r = jo.has("result") ? jo.get("result").getAsString() : "SUCCESS";
-                
+
                 // 提取持续时间（毫秒）
                 long dur = 0;
                 if (jo.has("duration")) {
                     dur = jo.get("duration").getAsLong();
                 }
-                
+
                 // 提取 feature 名称
                 String feature = "No Feature";
                 if (jo.has("userStory") && jo.get("userStory").isJsonObject()) {
@@ -991,7 +1123,7 @@ public class SummaryReportGenerator {
                         feature = userStory.get("displayName").getAsString();
                     }
                 }
-                
+
                 // 提取场景 ID
                 String scenarioId = jo.has("scenarioId") ? jo.get("scenarioId").getAsString() : name;
 
@@ -1012,8 +1144,8 @@ public class SummaryReportGenerator {
                 outcome.scenarioId = scenarioId;
                 outcome.errorMessage = errorMessage;
                 simpleTestOutcomes.add(outcome);
-            } catch (Exception e) { 
-                logger.warn("Failed to parse JSON file: {} - {}", f.getName(), e.getMessage()); 
+            } catch (Exception e) {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse JSON file: {} - {}", f.getName(), e.getMessage());
             }
         }
     }
@@ -1039,8 +1171,8 @@ public class SummaryReportGenerator {
         avgDuration = list.stream().mapToLong(l -> l).average().orElse(0);
     }
 
-    private void loadFeatureHtmlMapping() {
-        Path indexFile = Paths.get(reportDir, "index.html");
+    private void loadFeatureHtmlMapping(String actualReportDir) {
+        Path indexFile = Paths.get(actualReportDir, "index.html");
         if (!Files.exists(indexFile)) return;
 
         try {
@@ -1055,30 +1187,30 @@ public class SummaryReportGenerator {
                 featureToHtmlMap.put(title, link);
             }
         } catch (Exception e) {
-            logger.warn("Failed to parse index.html: {}", e.getMessage());
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse index.html: {}", e.getMessage());
         }
     }
-    
-    private void loadScenarioHtmlMapping() {
+
+    private void loadScenarioHtmlMapping(String actualReportDir) {
         // JSON 文件和 HTML 文件同名，直接映射
-        File[] jsonFiles = new File(reportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
+        File[] jsonFiles = new File(actualReportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (jsonFiles == null) return;
 
         for (File f : jsonFiles) {
             try {
                 String baseName = f.getName().replace(".json", "");
                 String htmlLink = baseName + ".html";
-                
+
                 // 读取 JSON 文件获取场景名称
                 String content = Files.readString(f.toPath(), StandardCharsets.UTF_8);
                 JsonObject jo = new Gson().fromJson(content, JsonObject.class);
                 String name = jo.has("name") ? jo.get("name").getAsString() : null;
-                
+
                 if (name != null) {
                     scenarioToHtmlMap.put(name, htmlLink);
                 }
             } catch (Exception e) {
-                logger.warn("Failed to load scenario mapping: {}", f.getName());
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to load scenario mapping: {}", f.getName());
             }
         }
     }
@@ -1103,6 +1235,24 @@ public class SummaryReportGenerator {
     }
 
     public static void main(String[] args) {
-        new SummaryReportGenerator().generateSummaryReport();
+        // 支持通过环境变量或命令行参数指定报告目录
+        String reportDir = System.getProperty("serenity.report.directory");
+        if (reportDir == null || reportDir.trim().isEmpty()) {
+            reportDir = System.getenv("SERENITY_REPORT_DIR");
+        }
+        if (reportDir == null || reportDir.trim().isEmpty()) {
+            reportDir = DEFAULT_REPORT_DIR;
+        }
+
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Using report directory: {}", reportDir);
+
+        // 支持通过环境变量指定 serenity.properties 路径
+        String propertiesPath = System.getProperty("serenity.properties.path");
+        if (propertiesPath != null && !propertiesPath.trim().isEmpty()) {
+            System.setProperty("user.dir", new File(propertiesPath).getParent());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Setting working directory to: {}", System.getProperty("user.dir"));
+        }
+
+        new SummaryReportGenerator(reportDir).generateSummaryReport();
     }
 }

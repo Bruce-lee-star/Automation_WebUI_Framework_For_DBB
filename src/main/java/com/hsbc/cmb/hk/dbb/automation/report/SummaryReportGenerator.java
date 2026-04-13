@@ -36,6 +36,7 @@ public class SummaryReportGenerator {
     private final String reportTitle;
     private final String reportUrl;
     private final String reportBaseUrl; // 用于构建绝对 URL
+    private final String fullReportUrl; // 完整Serenity报告URL（用于View full report按钮）
     private final List<TestOutcome> testOutcomes = new ArrayList<>();
     private final List<SimpleTestOutcome> simpleTestOutcomes = new ArrayList<>();
     private final Map<TestResult, Long> resultCounts = new EnumMap<>(TestResult.class);
@@ -61,6 +62,7 @@ public class SummaryReportGenerator {
         this.reportTitle = loadReportTitle();
         this.reportUrl = loadReportUrl();
         this.reportBaseUrl = extractReportBaseUrl();
+        this.fullReportUrl = extractFullReportUrl(); // 基于reportUrl构建完整报告URL
         init();
     }
 
@@ -241,6 +243,32 @@ public class SummaryReportGenerator {
             return reportUrl.endsWith("/") ? reportUrl : reportUrl + "/";
         }
         return "";
+    }
+
+    /**
+     * 构建完整 Serenity 报告的 URL（用于 View full report 按钮）
+     * 基于 serenity.report.url 配置（如 .../Serenity_20Summary_20Report/）
+     * 自动定位到同级的 Serenity 原始报告目录
+     *
+     * @return 完整的 Serenity 报告 index.html 链接
+     */
+    private String extractFullReportUrl() {
+        if (reportUrl == null || reportUrl.isEmpty()) {
+            return "index.html"; // 本地环境使用相对路径
+        }
+
+        // reportUrl 格式示例：http://jenkins/job/Playwright/39/Serenity_20Summary_20Report/
+        // 需要转换为：http://jenkins/job/Playwright/39/Serenity_20Report/index.html
+        String base = reportUrl.endsWith("/") ? reportUrl : reportUrl + "/";
+
+        // 尝试从 Summary_Report 路径推导原始 Report 路径
+        // 常见模式：Serenity_20Summary_20Report -> Serenity_20Report
+        if (base.contains("Serenity_20Summary")) {
+            return base.replace("Serenity_20Summary", "Serenity") + "index.html";
+        }
+
+        // 其他情况：直接在当前目录找 index.html
+        return base + "index.html";
     }
 
     /**
@@ -841,8 +869,10 @@ public class SummaryReportGenerator {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
 
-        // 使用 buildHtmlLink() 构建 View full report 链接
-        String fullReportLink = buildHtmlLink("index.html");
+        // 使用 fullReportUrl（基于 serenity.report.url 配置自动推导）
+        // 例如：serenity.report.url=.../Serenity_20Summary_20Report/ 
+        //       → View full report 链接到 .../Serenity_20Report/index.html
+        String fullReportLink = this.fullReportUrl;
         sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;display:inline-block;\" href=\"").append(fullReportLink).append("\" target=\"_blank\">View full report</a>\n");
 
         sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;display:inline-block;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
@@ -879,16 +909,29 @@ public class SummaryReportGenerator {
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.passPercent()).append("%</td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">\n");
 
-            // Result bar
+            // Result bar - 显示通过/失败/错误的混合比例
+            int passWidth = stats.total > 0 ? (stats.passed * 100) / stats.total : 0;
+            int failWidth = stats.total > 0 ? (stats.failed * 100) / stats.total : 0;
+            int errorWidth = stats.total > 0 ? (stats.error * 100) / stats.total : 0;
+
             sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"result-bar\" width=\"100%\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
             sb.append("                                            <tr>\n");
 
-            if (stats.error > 0) {
-                sb.append("                                                <td class=\"error-background\" title=\"Broken tests\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;border:0.5px solid #dddddd;padding:4px;\"><span title=\"100% broken tests\">").append(stats.error).append("</span></td>\n");
-            } else if (stats.failed > 0) {
-                sb.append("                                                <td class=\"failure-background\" title=\"Failing tests\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;border:0.5px solid #dddddd;padding:4px;\"><span title=\"100% failing tests\">").append(stats.failed).append("</span></td>\n");
-            } else {
-                sb.append("                                                <td class=\"success-background\" title=\"Passing tests\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;border:0.5px solid #dddddd;padding:4px;\"><span title=\"100% passing tests\">").append(stats.passed).append("</span></td>\n");
+            // 通过部分（绿色）
+            if (passWidth > 0) {
+                sb.append("                                                <td class=\"success-background\" title=\"").append(stats.passed).append(" passing tests (").append(passWidth).append("%)\" width=\"").append(passWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.passed).append("</span></td>\n");
+            }
+            // 失败部分（红色）
+            if (failWidth > 0) {
+                sb.append("                                                <td class=\"failure-background\" title=\"").append(stats.failed).append(" failing tests (").append(failWidth).append("%)\" width=\"").append(failWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.failed).append("</span></td>\n");
+            }
+            // 错误部分（橙色）
+            if (errorWidth > 0) {
+                sb.append("                                                <td class=\"error-background\" title=\"").append(stats.error).append(" broken tests (").append(errorWidth).append("%)\" width=\"").append(errorWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.error).append("</span></td>\n");
+            }
+            // 全部通过时显示绿色背景
+            if (passWidth == 100 && stats.total > 0) {
+                sb.append("                                                <td class=\"success-background\" title=\"100% passing\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span title=\"All ").append(stats.passed).append(" tests passed\">").append(stats.passPercent()).append("%</span></td>\n");
             }
 
             sb.append("                                            </tr>\n");
@@ -1041,29 +1084,29 @@ public class SummaryReportGenerator {
             sb.append("                            <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;\">Full Failure List</h3>\n");
             sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#acb1b9;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
             sb.append("                                <tr>\n");
-            sb.append("                                    <th style=\"text-align:left;\">Requirement</th>\n");
-            sb.append("                                    <th style=\"text-align:left;\">Failure</th>\n");
+            sb.append("                                    <th style=\"text-align:left;width:55%;\">Requirement</th>\n");
+            sb.append("                                    <th style=\"text-align:left;width:45%;\">Failure</th>\n");
             sb.append("                                </tr>\n");
 
             String lastFeature = null;
             for (FailureInfo f : failures) {
                 if (!f.feature.equals(lastFeature)) {
                     sb.append("                                <tr>\n");
-                    sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;\">").append(escape(f.feature)).append("</td>\n");
+                    sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;word-wrap:break-word;overflow-wrap:break-word;\">").append(escape(f.feature)).append("</td>\n");
                     sb.append("                                </tr>\n");
                     lastFeature = f.feature;
                 }
 
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
+                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
                 sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\">").append(escape(f.scenario)).append("</a>\n");
                 sb.append("                                    </td>\n");
-                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\" class=\"frequent-failure for-error\">\n");
+                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:45%;word-wrap:break-word;overflow-wrap:break-word;max-width:350px;\" class=\"frequent-failure for-error\">\n");
                 sb.append("                                        <div>\n");
                 sb.append("                                            <div>\n");
                 sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(f.result == TestResult.ERROR ? "error" : "failure").append("</span>\n");
                 sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;\">").append(escape(f.error)).append("</div>\n");
+                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;\">").append(truncateError(escape(f.error))).append("</div>\n");
                 sb.append("                                        </div>\n");
                 sb.append("                                    </td>\n");
                 sb.append("                                </tr>\n");
@@ -1083,8 +1126,8 @@ public class SummaryReportGenerator {
         sb.append("                            </div>\n");
         sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#acb1b9;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                <tr>\n");
-        sb.append("                                    <th style=\"text-align:left;\">Requirement</th>\n");
-        sb.append("                                    <th style=\"text-align:left;\">Result</th>\n");
+        sb.append("                                    <th style=\"text-align:left;width:35%;\">Requirement</th>\n");
+        sb.append("                                    <th style=\"text-align:left;width:65%;\">Result</th>\n");
         sb.append("                                </tr>\n");
 
         String lastFeature = null;
@@ -1095,16 +1138,16 @@ public class SummaryReportGenerator {
 
             if (!feature.equals(lastFeature)) {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;\">").append(escape(feature)).append("</td>\n");
+                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;word-wrap:break-word;overflow-wrap:break-word;\">").append(escape(feature)).append("</td>\n");
                 sb.append("                                </tr>\n");
                 lastFeature = feature;
             }
 
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
+            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:35%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
             sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.getName())).append("</a>\n");
             sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:65%;word-wrap:break-word;overflow-wrap:break-word;max-width:500px;\">\n");
 
             if (!isSuccess) {
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
@@ -1112,7 +1155,7 @@ public class SummaryReportGenerator {
                 sb.append("                                            <div>\n");
                 sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(t.getResult() == TestResult.ERROR ? "error" : "failure").append("</span>\n");
                 sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;\">").append(escape(extractErrorType(error))).append("</div>\n");
+                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;word-break:break-all;max-width:450px;\" title=\"").append(escape(error)).append("\">").append(truncateError(escape(error))).append("</div>\n");
                 sb.append("                                        </div>\n");
             } else {
                 sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
@@ -1136,17 +1179,17 @@ public class SummaryReportGenerator {
             }
 
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;\">\n");
+            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:35%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
             sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.title)).append("</a>\n");
             sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:65%;word-wrap:break-word;overflow-wrap:break-word;max-width:500px;\">\n");
 
             if (!isSuccess) {
                 sb.append("                                        <div>\n");
                 sb.append("                                            <div>\n");
                 sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(t.result == TestResult.ERROR ? "error" : "failure").append("</span>\n");
                 sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;\">Test failed</div>\n");
+                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;word-break:break-all;max-width:450px;\">").append(truncateError(escape(t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed"))).append("</div>\n");
                 sb.append("                                        </div>\n");
             } else {
                 sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
@@ -1205,6 +1248,17 @@ public class SummaryReportGenerator {
     private String escape(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * 截断错误信息，超过150字符用省略号代替
+     */
+    private String truncateError(String error) {
+        if (error == null || error.isEmpty()) return "";
+        if (error.length() > 150) {
+            return error.substring(0, 147) + "...";
+        }
+        return error;
     }
 
     // =============================================================

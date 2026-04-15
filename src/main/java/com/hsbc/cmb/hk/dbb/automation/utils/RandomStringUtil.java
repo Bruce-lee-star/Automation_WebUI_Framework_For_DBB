@@ -4,6 +4,7 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 随机字符串/数字生成工具类
@@ -223,7 +224,7 @@ public class RandomStringUtil {
      * @return 32位的随机UUID字符串
      */
     public static String randomUUID() {
-        return java.util.UUID.randomUUID().toString().replace("-", "");
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     /**

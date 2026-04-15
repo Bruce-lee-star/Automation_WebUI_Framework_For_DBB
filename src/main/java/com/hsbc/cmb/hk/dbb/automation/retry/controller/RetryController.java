@@ -1,10 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.retry.controller;
 
+import com.microsoft.playwright.PlaywrightException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.net.SocketException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class RetryController {
@@ -37,10 +41,10 @@ public class RetryController {
     }
 
     private void initializeDefaultConfigurations() {
-        retriableExceptions.add(com.microsoft.playwright.PlaywrightException.class);
-        retriableExceptions.add(java.util.concurrent.TimeoutException.class);
-        retriableExceptions.add(java.net.SocketException.class);
-        retriableExceptions.add(java.io.IOException.class);
+        retriableExceptions.add(PlaywrightException.class);
+        retriableExceptions.add(TimeoutException.class);
+        retriableExceptions.add(SocketException.class);
+        retriableExceptions.add(IOException.class);
 
         retriablePatterns.add("timeout");
         retriablePatterns.add("Timeout");

@@ -10,6 +10,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
+import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Set;
 
 /**
@@ -94,7 +96,7 @@ public class AutoBrowserProcessor {
                 return;
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Found {} tags: {}", tags.length, java.util.Arrays.toString(tags));
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Found {} tags: {}", tags.length, Arrays.toString(tags));
 
             // 4. 设置 Scenario 标签
             BrowserOverrideManager.setScenarioTags(tags);
@@ -124,7 +126,7 @@ public class AutoBrowserProcessor {
 
             // 使用反射访问 currentBaseStepListener() 方法，避免触发 ERROR 日志
             try {
-                java.lang.reflect.Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+                Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
                 method.setAccessible(true);
                 Object listener = method.invoke(eventBus);
 
@@ -262,7 +264,7 @@ public class AutoBrowserProcessor {
             LoggingConfigUtil.logTraceIfVerbose(logger, "StepEventBus instance: {}", eventBus.getClass().getName());
 
             // 使用反射安全地获取 BaseStepListener
-            java.lang.reflect.Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+            Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
             method.setAccessible(true);
             Object listener = method.invoke(eventBus);
 
@@ -274,7 +276,7 @@ public class AutoBrowserProcessor {
             LoggingConfigUtil.logTraceIfVerbose(logger, "BaseStepListener instance: {}", listener.getClass().getName());
 
             // 获取 TestOutcome
-            java.lang.reflect.Method getTestOutcomeMethod = listener.getClass().getMethod("getCurrentTestOutcome");
+            Method getTestOutcomeMethod = listener.getClass().getMethod("getCurrentTestOutcome");
             TestOutcome testOutcome = (TestOutcome) getTestOutcomeMethod.invoke(listener);
 
             if (testOutcome == null) {
@@ -296,7 +298,7 @@ public class AutoBrowserProcessor {
                     .map(TestTag::getName)
                     .toArray(String[]::new);
 
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Converted tags: {}", java.util.Arrays.toString(tags));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Converted tags: {}", Arrays.toString(tags));
                 return tags;
             }
 

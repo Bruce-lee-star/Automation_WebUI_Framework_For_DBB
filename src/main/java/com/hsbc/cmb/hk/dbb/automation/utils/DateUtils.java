@@ -541,7 +541,7 @@ public class DateUtils {
      * @return 本周一
      */
     public static LocalDate firstDayOfWeek() {
-        return LocalDate.now().with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY));
+        return LocalDate.now().with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
     }
 
     /**
@@ -550,7 +550,7 @@ public class DateUtils {
      * @return 本周日
      */
     public static LocalDate lastDayOfWeek() {
-        return LocalDate.now().with(TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SUNDAY));
+        return LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
     }
 
     /**
@@ -707,9 +707,9 @@ public class DateUtils {
         if (date == null) {
             return false;
         }
-        java.time.DayOfWeek dayOfWeek = date.getDayOfWeek();
-        return dayOfWeek == java.time.DayOfWeek.SATURDAY || 
-               dayOfWeek == java.time.DayOfWeek.SUNDAY;
+        DayOfWeek dayOfWeek = date.getDayOfWeek();
+        return dayOfWeek == DayOfWeek.SATURDAY || 
+               dayOfWeek == DayOfWeek.SUNDAY;
     }
 
     /**

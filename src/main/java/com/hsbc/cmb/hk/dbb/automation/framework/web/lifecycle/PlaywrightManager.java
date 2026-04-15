@@ -145,7 +145,7 @@ public class PlaywrightManager {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to generate hash, using fallback method", e);
             return Long.toHexString(System.currentTimeMillis()) +
                     Long.toHexString(System.nanoTime()) +
-                    Long.toHexString(Thread.currentThread().getId());
+                    Long.toHexString(Thread.currentThread().threadId());
         }
     }
 
@@ -1184,7 +1184,7 @@ public class PlaywrightManager {
         Page page = context.newPage();
         pageThreadLocal.set(page);
 
-        LoggingConfigUtil.logDebugIfVerbose(logger, "New Context and Page created for thread: {}", Thread.currentThread().getId());
+        LoggingConfigUtil.logDebugIfVerbose(logger, "New Context and Page created for thread: {}", Thread.currentThread().threadId());
     }
 
     // ==================== 关闭和清理方法 ====================
@@ -1543,7 +1543,7 @@ public class PlaywrightManager {
                 Files.createDirectories(screenshotDir);
 
                 // 生成文件名
-                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().getId();
+                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
                 String screenshotHash = generateHash(hashInput);
                 String screenshotName = screenshotHash + ".png";
                 Path screenshotPath = screenshotDir.resolve(screenshotName);
@@ -1589,7 +1589,7 @@ public class PlaywrightManager {
                 Files.createDirectories(screenshotDir);
 
                 // 生成文件名
-                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().getId();
+                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
                 String screenshotHash = generateHash(hashInput);
                 String screenshotName = screenshotHash + ".png";
                 Path screenshotPath = screenshotDir.resolve(screenshotName);

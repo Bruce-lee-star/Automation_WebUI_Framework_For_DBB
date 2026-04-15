@@ -66,8 +66,8 @@ public class BrowserOverrideManager {
      * @param browserType 浏览器类型 (chromium, firefox, webkit)
      */
     public static void setOverrideBrowser(String browserType) {
-        long threadId = Thread.currentThread().getId();
-        
+        long threadId = Thread.currentThread().threadId();
+
         // 验证浏览器类型
         if (!isValidBrowserType(browserType)) {
             logger.warn("Invalid browser type: '{}'. Valid types are: chromium, firefox, webkit. Ignoring override.", 
@@ -125,7 +125,7 @@ public class BrowserOverrideManager {
         }
         
         // 2. 检查全局覆盖配置
-        long threadId = Thread.currentThread().getId();
+        long threadId = Thread.currentThread().threadId();
         override = globalOverrideMap.get(threadId);
         if (override != null && !override.isEmpty()) {
             return override;
@@ -148,7 +148,7 @@ public class BrowserOverrideManager {
      * 清除当前线程的浏览器覆盖配置
      */
     public static void clearOverrideBrowser() {
-        long threadId = Thread.currentThread().getId();
+        long threadId = Thread.currentThread().threadId();
         String oldType = overrideBrowserType.get();
         
         overrideBrowserType.remove();

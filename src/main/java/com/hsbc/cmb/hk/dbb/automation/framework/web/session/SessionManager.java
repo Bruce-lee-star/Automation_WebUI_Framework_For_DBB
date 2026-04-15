@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -278,17 +279,14 @@ public class SessionManager {
      * @return homeUrl，如果不存在返回 null
      */
     public static String loadHomeUrl(String sessionKey) {
-        try {
-            Path metaPath = getMetaPath(sessionKey);
-            if (!Files.exists(metaPath)) {
-                return null;
-            }
+        Path metaPath = getMetaPath(sessionKey);
+        if (!Files.exists(metaPath)) {
+            return null;
+        }
 
-            Properties props = new Properties();
-            try (var reader = Files.newBufferedReader(metaPath, java.nio.charset.StandardCharsets.UTF_8)) {
-                props.load(reader);
-            }
-
+        Properties props = new Properties();
+        try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
+            props.load(reader);
             return props.getProperty("homeUrl");
         } catch (Exception e) {
             logger.warn("Failed to load homeUrl for: {}", sessionKey, e);
@@ -298,49 +296,36 @@ public class SessionManager {
 
     /**
      * 【新】检查 Session 是否过期
-     * <p>
-     * 检查 session 的 lastAccessTime 是否超时
-     *
-     * @param sessionKey Session 标识
-     * @return true 表示已过期，false 表示未过期
      */
     private static boolean isSessionExpired(String sessionKey) {
-        try {
-            Path metaPath = getMetaPath(sessionKey);
-            if (!Files.exists(metaPath)) {
-                // 没有 meta 文件，认为过期
-                return true;
-            }
+        Path metaPath = getMetaPath(sessionKey);
+        if (!Files.exists(metaPath)) {
+            return true;
+        }
 
-            Properties props = new Properties();
-            try (var reader = Files.newBufferedReader(metaPath, java.nio.charset.StandardCharsets.UTF_8)) {
+        Properties props = new Properties();
+        try {
+            try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
                 props.load(reader);
             }
-
             String lastAccessTimeStr = props.getProperty("lastAccessTime");
             if (lastAccessTimeStr == null || lastAccessTimeStr.isEmpty()) {
-                // 没有时间戳，认为过期
                 return true;
             }
 
             long lastAccessTime = Long.parseLong(lastAccessTimeStr);
             long currentTime = System.currentTimeMillis();
             long elapsedMinutes = (currentTime - lastAccessTime) / (60 * 1000);
-            
+
             return elapsedMinutes > SESSION_TIMEOUT_MINUTES;
         } catch (Exception e) {
             logger.warn("Failed to check session expiration for: {}", sessionKey, e);
-            return true; // 出错时认为过期
+            return true;
         }
     }
 
     /**
      * 【新】获取 Session 文件路径
-     * <p>
-     * 使用 target/.sessions 目录
-     *
-     * @param sessionKey Session 标识
-     * @return Session 文件路径
      */
     private static Path getSessionPath(String sessionKey) {
         return Paths.get(SESSION_DIR, sessionKey + ".json");
@@ -373,7 +358,7 @@ public class SessionManager {
 
             // 如果文件已存在，先读取现有数据
             if (Files.exists(metaPath)) {
-                try (var reader = Files.newBufferedReader(metaPath, java.nio.charset.StandardCharsets.UTF_8)) {
+                try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
                     props.load(reader);
                 }
             }
@@ -387,7 +372,7 @@ public class SessionManager {
             props.setProperty("lastAccessTime", String.valueOf(System.currentTimeMillis()));
 
             // 写入文件
-            try (var writer = Files.newBufferedWriter(metaPath, java.nio.charset.StandardCharsets.UTF_8)) {
+            try (var writer = Files.newBufferedWriter(metaPath, StandardCharsets.UTF_8)) {
                 props.store(writer, "Session Meta Data");
             }
 

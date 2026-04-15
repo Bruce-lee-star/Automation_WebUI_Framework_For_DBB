@@ -64,7 +64,7 @@ public class RetryProgressReporter {
         try {
             return Long.parseLong(pid);
         } catch (Exception e) {
-            return Thread.currentThread().getId();
+            return Thread.currentThread().threadId();
         }
     }
 

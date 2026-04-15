@@ -17,6 +17,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -134,15 +137,15 @@ public abstract class BasePage {
         }
         
         // 检查是否为 List 类型
-        if (!java.util.List.class.isAssignableFrom(field.getType())) {
+        if (!List.class.isAssignableFrom(field.getType())) {
             return false;
         }
         
         // 检查泛型类型
-        java.lang.reflect.Type genericType = field.getGenericType();
-        if (genericType instanceof java.lang.reflect.ParameterizedType) {
-            java.lang.reflect.ParameterizedType pType = (java.lang.reflect.ParameterizedType) genericType;
-            java.lang.reflect.Type[] typeArgs = pType.getActualTypeArguments();
+        Type genericType = field.getGenericType();
+        if (genericType instanceof ParameterizedType) {
+            ParameterizedType pType = (ParameterizedType) genericType;
+            Type[] typeArgs = pType.getActualTypeArguments();
             if (typeArgs.length == 1 && typeArgs[0].equals(PageElement.class)) {
                 return true;
             }
@@ -1662,9 +1665,9 @@ public abstract class BasePage {
     public void setInputFiles(String selector, String... filePaths) {
         try {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Setting input files for element: {}", selector);
-            java.nio.file.Path[] paths = new java.nio.file.Path[filePaths.length];
+            Path[] paths = new Path[filePaths.length];
             for (int i = 0; i < filePaths.length; i++) {
-                paths[i] = java.nio.file.Paths.get(filePaths[i]);
+                paths[i] = Paths.get(filePaths[i]);
             }
             locator(selector).setInputFiles(paths);
         } catch (Exception e) {
@@ -3126,290 +3129,11 @@ public abstract class BasePage {
         }
     }
 
-    // ==================== 辅助功能（Accessibility）方法 ====================
-
     /**
-     * 获取页面的辅助功能树（简化版）
-     * @return 辅助功能信息的 JSON 字符串
-     */
-    public String getAccessibilityTree() {
-        try {
-            ensurePageValid();
-            String script = "() => {" +
-                "const nodes = [];" +
-                "const walker = document.createTreeWalker(" +
-                "  document.body," +
-                "  NodeFilter.SHOW_ELEMENT," +
-                "  {" +
-                "    acceptNode: (node) => {" +
-                "      const computedStyle = window.getComputedStyle(node);" +
-                "      if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden' || node.getAttribute('aria-hidden') === 'true') {" +
-                "        return NodeFilter.FILTER_SKIP;" +
-                "      }" +
-                "      return NodeFilter.FILTER_ACCEPT;" +
-                "    }" +
-                "  }" +
-                ");" +
-                "while (walker.nextNode()) {" +
-                "  const node = walker.currentNode;" +
-                "  nodes.push({" +
-                "    tagName: node.tagName," +
-                "    role: node.getAttribute('role') || node.tagName.toLowerCase()," +
-                "    label: node.getAttribute('aria-label') || node.textContent?.substring(0, 50)," +
-                "    id: node.id," +
-                "    classes: node.className" +
-                "  });" +
-                "}" +
-                "return JSON.stringify(nodes, null, 2);}";
-            String accessibilityTree = (String) page.evaluate(script);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Got accessibility tree");
-            return accessibilityTree;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to get accessibility tree", e);
-            throw new RuntimeException("Failed to get accessibility tree", e);
-        }
-    }
-
-    /**
-     * 检查元素是否可访问
-     * @param selector 元素选择器
-     * @return 如果元素可访问则返回 true，否则返回 false
-     */
-    public boolean isAccessible(String selector) {
-        try {
-            String accessibilityTree = getAccessibilityTree();
-            boolean accessible = accessibilityTree != null && !accessibilityTree.isEmpty();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' is accessible: {}", selector, accessible);
-            return accessible;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check accessibility for element: {}", selector, e);
-            return false;
-        }
-    }
-
-    /**
-     * 获取元素的 ARIA 标签
-     * @param selector 元素选择器
-     * @return ARIA 标签文本
-     */
-    public String getAriaLabel(String selector) {
-        try {
-            String ariaLabel = getAttribute(selector, "aria-label");
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' aria-label: {}", selector, ariaLabel);
-            return ariaLabel;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to get aria-label for element: {}", selector, e);
-            throw new ElementException("Failed to get aria-label for element: " + selector, e);
-        }
-    }
-
-    /**
-     * 检查元素是否有 ARIA 标签
-     * @param selector 元素选择器
-     * @return 如果元素有 ARIA 标签则返回 true，否则返回 false
-     */
-    public boolean hasAriaLabel(String selector) {
-        try {
-            String ariaLabel = getAriaLabel(selector);
-            boolean hasLabel = ariaLabel != null && !ariaLabel.isEmpty();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' has aria-label: {}", selector, hasLabel);
-            return hasLabel;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check aria-label for element: {}", selector, e);
-            return false;
-        }
-    }
-
-    /**
-     * 获取元素的 ARIA 角色
-     * @param selector 元素选择器
-     * @return ARIA 角色文本
-     */
-    public String getAriaRole(String selector) {
-        try {
-            String ariaRole = getAttribute(selector, "role");
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' aria-role: {}", selector, ariaRole);
-            return ariaRole;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to get aria-role for element: {}", selector, e);
-            throw new ElementException("Failed to get aria-role for element: " + selector, e);
-        }
-    }
-
-    /**
-     * 检查元素的可见性状态（考虑辅助功能）
-     * @param selector 元素选择器
-     * @return 如果元素在辅助功能意义上可见则返回 true，否则返回 false
-     */
-    public boolean isVisibleForAccessibility(String selector) {
-        try {
-            // 检查元素是否可见
-            boolean visible = isVisible(selector);
-            
-            // 检查元素是否被隐藏（通过 aria-hidden）
-            String ariaHidden = getAttribute(selector, "aria-hidden");
-            boolean hiddenByAria = "true".equals(ariaHidden);
-            
-            boolean accessibleVisible = visible && !hiddenByAria;
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' is visible for accessibility: {}", selector, accessibleVisible);
-            return accessibleVisible;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check accessibility visibility for element: {}", selector, e);
-            return false;
-        }
-    }
-
-    /**
-     * 获取所有可访问元素的列表
-     * @return 可访问元素的选择器列表
-     */
-    public List<String> getAccessibleElements() {
-        try {
-            ensurePageValid();
-            getAccessibilityTree();
-            
-            // 这里需要解析 accessibilityTree 来提取所有可访问元素
-            // 简化实现：返回所有可见的焦点元素
-            List<String> accessibleElements = new ArrayList<>();
-            
-            // 查找所有可焦点元素
-            List<Locator> focusableElements = page.locator("button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])").all();
-            for (Locator element : focusableElements) {
-                if (element.isVisible()) {
-                    accessibleElements.add(element.toString());
-                }
-            }
-            
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Found {} accessible elements", accessibleElements.size());
-            return accessibleElements;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to get accessible elements", e);
-            throw new RuntimeException("Failed to get accessible elements", e);
-        }
-    }
-
-    /**
-     * 验证页面是否符合基本的辅助功能标准
-     * @return 如果页面符合基本标准则返回 true，否则返回 false
-     */
-    public boolean verifyAccessibilityStandards() {
-        try {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Verifying accessibility standards");
-            List<String> issues = new ArrayList<>();
-            
-            // 检查是否有 alt 文本的图片
-            List<Locator> images = page.locator("img:not([alt])").all();
-            if (!images.isEmpty()) {
-                issues.add("Found " + images.size() + " images without alt text");
-            }
-            
-            // 检查空的链接
-            List<Locator> emptyLinks = page.locator("a:empty:not([aria-label])").all();
-            if (!emptyLinks.isEmpty()) {
-                issues.add("Found " + emptyLinks.size() + " empty links without aria-label");
-            }
-            
-            // 检查没有标签的表单元素
-            List<Locator> unlabeledInputs = page.locator("input:not([aria-label]):not([placeholder]):not([id])").all();
-            if (!unlabeledInputs.isEmpty()) {
-                issues.add("Found " + unlabeledInputs.size() + " inputs without labels");
-            }
-            
-            if (issues.isEmpty()) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Accessibility standards verification passed");
-                return true;
-            } else {
-                LoggingConfigUtil.logWarnIfVerbose(logger, "Accessibility issues found:");
-                for (String issue : issues) {
-                    LoggingConfigUtil.logWarnIfVerbose(logger, "  - {}", issue);
-                }
-                return false;
-            }
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to verify accessibility standards", e);
-            throw new RuntimeException("Failed to verify accessibility standards", e);
-        }
-    }
-
-    /**
-     * 获取页面标题的可访问性信息
-     * @return 页面标题文本
-     */
-    public String getAccessibleTitle() {
-        try {
-            String title = getTitle();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Page accessible title: {}", title);
-            return title;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to get accessible title", e);
-            throw new RuntimeException("Failed to get accessible title", e);
-        }
-    }
-
-    /**
-     * 检查页面是否有有效的标题
-     * @return 如果页面有有效标题则返回 true，否则返回 false
-     */
-    public boolean hasValidTitle() {
-        try {
-            String title = getAccessibleTitle();
-            boolean valid = title != null && !title.trim().isEmpty() && title.length() >= 10;
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Page has valid title: {}", valid);
-            return valid;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check valid title", e);
-            return false;
-        }
-    }
-
-    /**
-     * 检查页面是否有有效的语言声明
-     * @return 如果页面有有效的语言声明则返回 true，否则返回 false
-     */
-    public boolean hasValidLangAttribute() {
-        try {
-            String lang = (String) evaluate("() => document.documentElement.lang");
-            boolean valid = lang != null && !lang.trim().isEmpty();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Page has valid lang attribute: {}", valid);
-            return valid;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check lang attribute", e);
-            return false;
-        }
-    }
-
-    /**
-     * 检查页面颜色对比度（简化版）
-     * @param selector 元素选择器
-     * @return 如果颜色对比度符合标准则返回 true，否则返回 false
-     */
-    public boolean hasSufficientColorContrast(String selector) {
-        try {
-            // 这里简化实现，实际需要计算颜色对比度
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Checking color contrast for element: {}", selector);
-            
-            // 获取元素的背景色和前景色
-            String bgColor = (String) locator(selector).evaluate("el => window.getComputedStyle(el).backgroundColor");
-            String fgColor = (String) locator(selector).evaluate("el => window.getComputedStyle(el).color");
-            
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' background color: {}, foreground color: {}", selector, bgColor, fgColor);
-            
-            // 简化判断：如果颜色不是透明或白色，认为符合标准
-            boolean hasContrast = !("rgba(0, 0, 0, 0)".equals(bgColor) || "transparent".equals(bgColor));
-            
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Element '{}' has sufficient color contrast: {}", selector, hasContrast);
-            return hasContrast;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to check color contrast for element: {}", selector, e);
-            return false;
-        }
-    }
-
-    /**
-     * 执行 JavaScript 代码（辅助方法）
-     * @param script JavaScript 代码
-     * @param args 参数
-     * @return 执行结果
+     * Execute JavaScript code (helper method)
+     * @param script JavaScript code
+     * @param args arguments
+     * @return execution result
      */
     private Object evaluate(String script, Object... args) {
         try {

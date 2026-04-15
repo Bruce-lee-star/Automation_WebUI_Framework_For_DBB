@@ -75,8 +75,7 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void testStarted(String testName) {
         // 生成唯一名称：原名称 + 线程ID（保证同名 scenario 不合并）
-        String uniqueTestName = testName + "_" + Thread.currentThread().getId() + "_" + System.currentTimeMillis();
-        currentTestName.set(uniqueTestName);
+        String uniqueTestName = testName + "_" + Thread.currentThread().threadId() + "_" + System.currentTimeMillis();
         testStartTime.set(System.currentTimeMillis());
         currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
         totalTests.incrementAndGet();
@@ -554,8 +553,7 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testStarted(String testName, String testMethod) {
-        // 生成唯一名称：原名称 + 线程ID（保证同名 scenario 不合并）
-        String uniqueTestName = testName + "_" + Thread.currentThread().getId();
+        String uniqueTestName = testName + "_" + Thread.currentThread().threadId();
         currentTestName.set(uniqueTestName);
         testStartTime.set(System.currentTimeMillis());
         totalTests.incrementAndGet();
@@ -573,7 +571,7 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void testStarted(String testName, String testMethod, ZonedDateTime startTime) {
         // 生成唯一名称：原名称 + 线程ID（保证同名 scenario 不合并）
-        String uniqueTestName = testName + "_" + Thread.currentThread().getId();
+        String uniqueTestName = testName + "_" + Thread.currentThread().threadId();
         currentTestName.set(uniqueTestName);
         testStartTime.set(startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis());
         totalTests.incrementAndGet();

@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -34,9 +35,8 @@ public class SummaryReportGenerator {
     private final String reportDir;
     private final String projectName;
     private final String reportTitle;
-    private final String reportUrl;
-    private final String reportBaseUrl; // 用于构建绝对 URL
-    private final String fullReportUrl; // 完整Serenity报告URL（用于View full report按钮）
+    private final String reportUrl;        // Base URL where reports are published (e.g., .../Serenity_20Summary_20Report/)
+    private final String fullReportUrl;     // Optional: separate URL for full Serenity report
     private final List<TestOutcome> testOutcomes = new ArrayList<>();
     private final List<SimpleTestOutcome> simpleTestOutcomes = new ArrayList<>();
     private final Map<TestResult, Long> resultCounts = new EnumMap<>(TestResult.class);
@@ -59,10 +59,16 @@ public class SummaryReportGenerator {
     public SummaryReportGenerator(String reportDir) {
         this.reportDir = Objects.requireNonNull(reportDir);
         this.projectName = loadProjectName();
-        this.reportTitle = loadReportTitle();
+        this.reportTitle = projectName; // Use project name as report title
         this.reportUrl = loadReportUrl();
-        this.reportBaseUrl = extractReportBaseUrl();
-        this.fullReportUrl = extractFullReportUrl(); // 基于reportUrl构建完整报告URL
+        // fullReportUrl: 直接链接到报告目录（不指定具体文件）
+        // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/
+        // 本地环境: 相对链接 → ./ 或当前目录
+        if (reportUrl != null && !reportUrl.isEmpty()) {
+            this.fullReportUrl = ensureTrailingSlash(reportUrl);
+        } else {
+            this.fullReportUrl = "./"; // Local: current directory
+        }
         init();
     }
 
@@ -94,35 +100,6 @@ public class SummaryReportGenerator {
         }
 
         return "Serenity Automation Test Report";
-    }
-
-    private String loadReportTitle() {
-        String title = System.getProperty("serenity.summary.report.title");
-        if (title != null && !title.isEmpty()) {
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Using report title from system property: {}", title);
-            return title;
-        }
-
-        try {
-            Path propFile = Paths.get("serenity.properties");
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Looking for serenity.properties at: {}", propFile.toAbsolutePath());
-
-            if (Files.exists(propFile)) {
-                // 使用 UTF-8 编码读取 properties 文件
-                Properties props = new Properties();
-                try (InputStream is = Files.newInputStream(propFile);
-                     InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8)) {
-                    props.load(isr);
-                    title = props.getProperty("serenity.summary.report.title");
-                    if (title != null && !title.isEmpty()) return title;
-                }
-            }
-        } catch (Exception e) {
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Failed to read report title: {}", e.getMessage());
-        }
-
-        // 默认标题，不与 project.name 重复
-        return "Test Execution Report";
     }
 
     private String loadReportUrl() {
@@ -181,8 +158,8 @@ public class SummaryReportGenerator {
         }
 
         // 匹配 ${ENV_VAR} 或 ${ENV_VAR:default} 格式
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?\\}");
-        java.util.regex.Matcher matcher = pattern.matcher(value);
+        Pattern pattern = Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?\\}");
+        Matcher matcher = pattern.matcher(value);
         
         StringBuffer sb = new StringBuffer();
         while (matcher.find()) {
@@ -210,112 +187,58 @@ public class SummaryReportGenerator {
 
     /**
      * 自动检测并构建报告 URL
+     * 注意：路径依赖 Jenkins publishHTML 配置，无法可靠猜测，故返回空使用相对链接
      */
     private String autoDetectReportUrl() {
-        // 检查是否在 Jenkins 环境
-        String buildUrl = System.getenv("BUILD_URL");
-        if (buildUrl != null && !buildUrl.trim().isEmpty()) {
-            // 在 Jenkins 环境，构建完整的报告 URL
-            logger.info("Detected Jenkins environment, building report URL from BUILD_URL");
-
-            // 确保以 / 结尾
-            if (!buildUrl.endsWith("/")) {
-                buildUrl += "/";
-            }
-
-            return buildUrl + "Serenity_20Report/";
-        }
-
-        // 本地环境，返回空（使用相对链接）
-        LoggingConfigUtil.logDebugIfVerbose(logger, "Local environment detected, using relative links");
+        // 不再硬编码路径，因为 publishHTML reportName 可变
+        // 让所有链接使用相对路径，兼容任何 Jenkins 发布配置
+        LoggingConfigUtil.logDebugIfVerbose(logger, "No serenity.report.url configured, using relative links for all URLs");
         return "";
     }
 
-    /**
-     * 从 reportUrl 提取基础 URL
-     * 用于构建相对链接的绝对 URL
-     *
-     * @return 如果在 Jenkins 环境，返回基础 URL；否则返回空字符串
-     */
-    private String extractReportBaseUrl() {
-        if (reportUrl != null && !reportUrl.isEmpty()) {
-            // 确保以 / 结尾
-            return reportUrl.endsWith("/") ? reportUrl : reportUrl + "/";
-        }
-        return "";
+    private String ensureTrailingSlash(String url) {
+        return url.endsWith("/") ? url : url + "/";
     }
 
     /**
-     * 构建完整 Serenity 报告的 URL（用于 View full report 按钮）
-     * 基于 serenity.report.url 配置（如 .../Serenity_20Summary_20Report/）
-     * 自动定位到同级的 Serenity 原始报告目录
-     *
-     * @return 完整的 Serenity 报告 index.html 链接
-     */
-    private String extractFullReportUrl() {
-        if (reportUrl == null || reportUrl.isEmpty()) {
-            return "index.html"; // 本地环境使用相对路径
-        }
-
-        // reportUrl 格式示例：http://jenkins/job/Playwright/39/Serenity_20Summary_20Report/
-        // 需要转换为：http://jenkins/job/Playwright/39/Serenity_20Report/index.html
-        String base = reportUrl.endsWith("/") ? reportUrl : reportUrl + "/";
-
-        // 尝试从 Summary_Report 路径推导原始 Report 路径
-        // 常见模式：Serenity_20Summary_20Report -> Serenity_20Report
-        if (base.contains("Serenity_20Summary")) {
-            return base.replace("Serenity_20Summary", "Serenity") + "index.html";
-        }
-
-        // 其他情况：直接在当前目录找 index.html
-        return base + "index.html";
-    }
-
-    /**
-     * 将 HTML 文件名转换为 URL
-     * 本地环境：返回相对链接（如 "abc123.html"）
-     * Jenkins 环境：返回绝对 URL（如 "http://jenkins/job/123/Serenity_20Report/abc123.html"）
-     *
-     * @param htmlFile HTML 文件名或相对路径
-     * @return 相对链接或绝对 URL
+     * Convert HTML filename to full URL.
+     * Local env: returns relative link (e.g., "abc123.html")
+     * Jenkins env: returns absolute URL based on reportUrl (e.g., "http://jenkins/.../Serenity_20Summary_20Report/abc123.html")
      */
     private String buildHtmlLink(String htmlFile) {
-        // 如果已经是绝对 URL 或包含完整路径，直接返回
         if (htmlFile.startsWith("http://") || htmlFile.startsWith("https://")) {
             return htmlFile;
         }
-        
-        if (reportBaseUrl != null && !reportBaseUrl.isEmpty()) {
-            // Jenkins 环境，使用绝对 URL
-            return reportBaseUrl + htmlFile;
+
+        if (reportUrl != null && !reportUrl.isEmpty()) {
+            return ensureTrailingSlash(reportUrl) + htmlFile;
         }
-        // 本地环境，使用相对链接
         return htmlFile;
     }
 
+    /** Build download URL for ZIP/CSV files. Uses reportUrl as base in Jenkins environment. */
+    private String buildDownloadUrl(String fileName) {
+        if (reportUrl != null && !reportUrl.isEmpty()) {
+            return ensureTrailingSlash(reportUrl) + fileName;
+        }
+        return fileName;
+    }
+
     private void init() {
-        // 检测是否在 Jenkins 环境并自动调整路径
         String actualReportDir = resolveReportDirectory(reportDir);
-        logger.info("Report directory: {}", actualReportDir);
+        LoggingConfigUtil.logDebugIfVerbose(logger, "Report directory: {}", actualReportDir);
 
         File dir = new File(actualReportDir);
+        if (!dir.exists()) dir.mkdirs();
 
-        if (!dir.exists()) {
-            logger.warn("Report directory does not exist, creating: {}", actualReportDir);
-            dir.mkdirs();
-        }
-
-        long startInit = System.currentTimeMillis();
+        this.reportTime = LocalDateTime.now();
         loadTestOutcomes(actualReportDir);
-        loadSimpleTestOutcomes(actualReportDir);
         loadFeatureHtmlMapping(actualReportDir);
         loadScenarioHtmlMapping(actualReportDir);
         calculateResultCounts();
         calculateDurations();
-        this.clockTime = System.currentTimeMillis() - startInit;
-        this.reportTime = LocalDateTime.now();
 
-        logger.info("Test outcomes loaded: {}, Simple outcomes loaded: {}", testOutcomes.size(), simpleTestOutcomes.size());
+        LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded {} test outcomes, {} simple outcomes", testOutcomes.size(), simpleTestOutcomes.size());
     }
 
     /**
@@ -332,22 +255,15 @@ public class SummaryReportGenerator {
         String userDir = System.getProperty("user.dir");
         if (userDir != null && !userDir.trim().isEmpty()) {
             File absoluteDir = new File(userDir, reportDir);
-            if (absoluteDir.exists()) {
-                logger.info("Using current working directory (user.dir): {}", absoluteDir.getAbsolutePath());
-                return absoluteDir.getAbsolutePath();
-            }
+            if (absoluteDir.exists()) return absoluteDir.getAbsolutePath();
         }
 
         // 其次检测 WORKSPACE 环境变量
         String workspace = System.getenv("WORKSPACE");
         if (workspace != null && !workspace.trim().isEmpty()) {
-            File absoluteDir = new File(workspace, reportDir);
-            logger.info("Using WORKSPACE environment variable: {}", absoluteDir.getAbsolutePath());
-            return absoluteDir.getAbsolutePath();
+            return new File(workspace, reportDir).getAbsolutePath();
         }
 
-        // 本地环境，直接使用相对路径
-        logger.info("Using local relative path: {}", reportDir);
         return reportDir;
     }
 
@@ -471,7 +387,7 @@ public class SummaryReportGenerator {
         sb.append("<head>\n");
         sb.append("    <meta name=\"viewport\" content=\"width=device-width\">\n");
         sb.append("    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\">\n");
-        sb.append("    <title>Serenity BDD Test Results - L1 Controls Navigator</title>\n");
+        sb.append("    <title>").append(escape(reportTitle)).append(" - Test Report</title>\n");
         sb.append(getFullCss());
         sb.append("</head>\n");
         sb.append("<body style=\"font-family:Helvetica, sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.4;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;background-color:#f6f6f6;margin:0;padding:0;width:100%;overflow-x:hidden;\">\n");
@@ -868,14 +784,15 @@ public class SummaryReportGenerator {
     private void appendViewFullReportButton(StringBuilder sb) {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
+        sb.append("                            <div style=\"display:flex;flex-wrap:wrap;gap:10px;align-items:center;\">\n");
 
-        // 使用 fullReportUrl（基于 serenity.report.url 配置自动推导）
-        // 例如：serenity.report.url=.../Serenity_20Summary_20Report/ 
-        //       → View full report 链接到 .../Serenity_20Report/index.html
         String fullReportLink = this.fullReportUrl;
-        sb.append("                            <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#316d91;margin-right:10px;display:inline-block;\" href=\"").append(fullReportLink).append("\" target=\"_blank\">View full report</a>\n");
+        sb.append("                                <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:10px 24px;background:#316d91;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;\" href=\"").append(fullReportLink).append("\" target=\"_blank\">View full report</a>\n");
 
-        sb.append("                            <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.5em 1em;background:#52B255;border-radius:4px;display:inline-block;\" href=\"").append(zipFileName).append("\" download>Download ZIP</a>\n");
+        String zipLink = buildDownloadUrl(zipFileName);
+        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:10px 24px;background:#52B255;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;\" href=\"").append(zipLink).append("\" target=\"_blank\">Download ZIP</a>\n");
+
+        sb.append("                            </div>\n");
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
     }
@@ -1064,14 +981,17 @@ public class SummaryReportGenerator {
         for (TestOutcome t : testOutcomes) {
             if (t.getResult() == TestResult.FAILURE || t.getResult() == TestResult.ERROR) {
                 String feature = getFeature(t);
-                String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html")));
+                // Priority: scenario-specific link > index.html (never use feature link for scenarios)
+                String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
+                String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
                 failures.add(new FailureInfo(feature, t.getName(), error, html, t.getResult()));
             }
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
-                String html = buildHtmlLink(featureToHtmlMap.getOrDefault(t.featureName, "index.html"));
+                String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
+                String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
                 String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
                 failures.add(new FailureInfo(t.featureName, t.title, error, html, t.result));
             }
@@ -1082,32 +1002,30 @@ public class SummaryReportGenerator {
             sb.append("                    <tr>\n");
             sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
             sb.append("                            <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;\">Full Failure List</h3>\n");
-            sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#acb1b9;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
+            sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
             sb.append("                                <tr>\n");
-            sb.append("                                    <th style=\"text-align:left;width:55%;\">Requirement</th>\n");
-            sb.append("                                    <th style=\"text-align:left;width:45%;\">Failure</th>\n");
+            sb.append("                                    <th style=\"text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Requirement</th>\n");
+            sb.append("                                    <th style=\"text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Failure</th>\n");
             sb.append("                                </tr>\n");
 
             String lastFeature = null;
             for (FailureInfo f : failures) {
                 if (!f.feature.equals(lastFeature)) {
                     sb.append("                                <tr>\n");
-                    sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;word-wrap:break-word;overflow-wrap:break-word;\">").append(escape(f.feature)).append("</td>\n");
+                    sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(f.feature)).append("</td>\n");
                     sb.append("                                </tr>\n");
                     lastFeature = f.feature;
                 }
 
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:55%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
-                sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\">").append(escape(f.scenario)).append("</a>\n");
+                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(f.scenario)).append("</a>\n");
                 sb.append("                                    </td>\n");
-                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:45%;word-wrap:break-word;overflow-wrap:break-word;max-width:350px;\" class=\"frequent-failure for-error\">\n");
-                sb.append("                                        <div>\n");
-                sb.append("                                            <div>\n");
-                sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(f.result == TestResult.ERROR ? "error" : "failure").append("</span>\n");
-                sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;\">").append(truncateError(escape(f.error))).append("</div>\n");
-                sb.append("                                        </div>\n");
+                sb.append("                                    <td class=\"scenarioResult\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                appendResultLabel(sb, f.result);
+                if (f.error != null && !f.error.isEmpty()) {
+                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(f.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(f.error))).append("</div>\n");
+                }
                 sb.append("                                    </td>\n");
                 sb.append("                                </tr>\n");
             }
@@ -1122,43 +1040,37 @@ public class SummaryReportGenerator {
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
         sb.append("                            <div style=\"text-align:center;\">\n");
         sb.append("                                <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;display:inline;\">Full Test Results</h3>\n");
-        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;\" href=\"").append(csvFileName).append("\" download>Download CSV</a>\n");
+        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;\" href=\"").append(buildDownloadUrl(csvFileName)).append("\" target=\"_blank\">Download CSV</a>\n");
         sb.append("                            </div>\n");
-        sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#acb1b9;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
+        sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
         sb.append("                                <tr>\n");
-        sb.append("                                    <th style=\"text-align:left;width:35%;\">Requirement</th>\n");
-        sb.append("                                    <th style=\"text-align:left;width:65%;\">Result</th>\n");
+        sb.append("                                    <th style=\"text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Requirement</th>\n");
+        sb.append("                                    <th style=\"text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Result</th>\n");
         sb.append("                                </tr>\n");
 
         String lastFeature = null;
         for (TestOutcome t : testOutcomes) {
             String feature = getFeature(t);
-            String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.getName(), featureToHtmlMap.getOrDefault(feature, "index.html")));
-            boolean isSuccess = t.getResult() == TestResult.SUCCESS;
+            String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
+            String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
 
             if (!feature.equals(lastFeature)) {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;word-wrap:break-word;overflow-wrap:break-word;\">").append(escape(feature)).append("</td>\n");
+                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(feature)).append("</td>\n");
                 sb.append("                                </tr>\n");
                 lastFeature = feature;
             }
 
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:35%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
-            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.getName())).append("</a>\n");
+            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(t.getName())).append("</a>\n");
             sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:65%;word-wrap:break-word;overflow-wrap:break-word;max-width:500px;\">\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
 
-            if (!isSuccess) {
+            appendResultLabel(sb, t.getResult());
+            if (t.getResult() != TestResult.SUCCESS && t.getResult() != TestResult.IGNORED && t.getResult() != TestResult.SKIPPED) {
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
-                sb.append("                                        <div>\n");
-                sb.append("                                            <div>\n");
-                sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(t.getResult() == TestResult.ERROR ? "error" : "failure").append("</span>\n");
-                sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;word-break:break-all;max-width:450px;\" title=\"").append(escape(error)).append("\">").append(truncateError(escape(error))).append("</div>\n");
-                sb.append("                                        </div>\n");
-            } else {
-                sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
+                sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(t.getResult())).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(error))).append("</div>\n");
             }
 
             sb.append("                                    </td>\n");
@@ -1168,31 +1080,25 @@ public class SummaryReportGenerator {
         // 处理 simpleTestOutcomes
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String feature = t.featureName;
-            String html = buildHtmlLink(scenarioToHtmlMap.getOrDefault(t.title, featureToHtmlMap.getOrDefault(feature, "index.html")));
-            boolean isSuccess = t.result == TestResult.SUCCESS;
+            String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
+            String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
 
             if (!feature.equals(lastFeature)) {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;font-style:italic;padding-left:16px;\">").append(escape(feature)).append("</td>\n");
+                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(feature)).append("</td>\n");
                 sb.append("                                </tr>\n");
                 lastFeature = feature;
             }
 
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;padding-left:32px;min-width:4em;width:35%;word-wrap:break-word;overflow-wrap:break-word;\">\n");
-            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\">").append(escape(t.title)).append("</a>\n");
+            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(t.title)).append("</a>\n");
             sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:65%;word-wrap:break-word;overflow-wrap:break-word;max-width:500px;\">\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
 
-            if (!isSuccess) {
-                sb.append("                                        <div>\n");
-                sb.append("                                            <div>\n");
-                sb.append("                                                <span class=\"frequent-failure for-error\" style=\"font-weight:bold;text-transform:uppercase;\">").append(t.result == TestResult.ERROR ? "error" : "failure").append("</span>\n");
-                sb.append("                                            </div>\n");
-                sb.append("                                            <div class=\"frequent-failure for-error\" style=\"padding-left:1em;padding-bottom:0.5em;word-break:break-all;max-width:450px;\">").append(truncateError(escape(t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed"))).append("</div>\n");
-                sb.append("                                        </div>\n");
-            } else {
-                sb.append("                                        <span class=\"for-passing\" style=\"font-weight:bold;text-transform:uppercase;\">success</span>\n");
+            appendResultLabel(sb, t.result);
+            if (t.result != TestResult.SUCCESS && t.result != TestResult.IGNORED && t.result != TestResult.SKIPPED) {
+                sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(t.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed"))).append("</div>\n");
             }
 
             sb.append("                                    </td>\n");
@@ -1223,6 +1129,25 @@ public class SummaryReportGenerator {
     // =============================================================
     // 工具方法
     // =============================================================
+
+    /** Get font color for a test result type (no background, text-only). */
+    private String resultColor(TestResult r) {
+        if (r == TestResult.SUCCESS) return "#52B255";
+        if (r == TestResult.FAILURE) return "#f44336";
+        if (r == TestResult.ERROR) return "#ECA43A";
+        if (r == TestResult.PENDING) return "#5FB0E0";
+        if (r == TestResult.IGNORED || r == TestResult.SKIPPED) return "#9e9e9e";
+        if (r == TestResult.COMPROMISED) return "#9C77AD";
+        return "#666666";
+    }
+
+    /** Build result label span - colored bold text. */
+    private void appendResultLabel(StringBuilder sb, TestResult r) {
+        sb.append("<span style=\"color:").append(resultColor(r))
+          .append(";font-size:12px;font-weight:bold;text-transform:uppercase;\">")
+          .append(r.name().toLowerCase()).append("</span>");
+    }
+
     private long count(TestResult r) {
         return resultCounts.getOrDefault(r, 0L);
     }
@@ -1255,48 +1180,21 @@ public class SummaryReportGenerator {
      */
     private String truncateError(String error) {
         if (error == null || error.isEmpty()) return "";
-        if (error.length() > 150) {
-            return error.substring(0, 147) + "...";
+        if (error.length() > 300) {
+            return error.substring(0, 300) + "...";
         }
         return error;
     }
 
     // =============================================================
-    // 数据加载
+    // 数据加载（Serenity BDD JSON 格式）
     // =============================================================
     private void loadTestOutcomes(String actualReportDir) {
         File dir = new File(actualReportDir);
-        logger.info("Looking for .ser files in directory: {}", dir.getAbsolutePath());
-
-        File[] files = dir.listFiles((d, n) -> n.endsWith(".ser"));
-        if (files == null) {
-            logger.warn("Directory does not exist or is not a directory: {}", dir.getAbsolutePath());
-            return;
-        }
-
-        logger.info("Found {} .ser files in {}", files.length, dir.getAbsolutePath());
-        if (files == null) return;
-        for (File f : files) {
-            try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(f))) {
-                Object o = ois.readObject();
-                if (o instanceof TestOutcome) testOutcomes.add((TestOutcome) o);
-                if (o instanceof List<?>) for (Object x : (List<?>) o) if (x instanceof TestOutcome) testOutcomes.add((TestOutcome) x);
-            } catch (Exception e) { LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to read ser file: {}", f.getName()); }
-        }
-    }
-
-    private void loadSimpleTestOutcomes(String actualReportDir) {
-        // 加载 Serenity 生成的 JSON 报告文件
-        File dir = new File(actualReportDir);
-        logger.info("Looking for .json files in directory: {}", dir.getAbsolutePath());
-
         File[] files = dir.listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
-        if (files == null || files.length == 0) {
-            logger.warn("No .json files found in directory: {}", dir.getAbsolutePath());
-            return;
-        }
+        if (files == null || files.length == 0) return;
 
-        logger.info("Found {} .json files in {}", files.length, dir.getAbsolutePath());
+        LoggingConfigUtil.logDebugIfVerbose(logger, "Found {} json report files in {}", files.length, dir.getAbsolutePath());
 
         Gson gson = new Gson();
         for (File f : files) {
@@ -1380,10 +1278,10 @@ public class SummaryReportGenerator {
 
         try {
             String content = Files.readString(indexFile, StandardCharsets.UTF_8);
-            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+            Pattern p = Pattern.compile(
                 "title:\\s*'([^']+)'.*?link:\\s*\"([^\"]+)\"",
-                java.util.regex.Pattern.DOTALL);
-            java.util.regex.Matcher m = p.matcher(content);
+                Pattern.DOTALL);
+            Matcher m = p.matcher(content);
             while (m.find()) {
                 String title = m.group(1);
                 String link = m.group(2);
@@ -1438,8 +1336,14 @@ public class SummaryReportGenerator {
     }
 
     public static void main(String[] args) {
-        // 支持通过环境变量或命令行参数指定报告目录
-        String reportDir = System.getProperty("serenity.report.directory");
+        // Priority: command line arg > system property > env > default
+        String reportDir = null;
+        if (args != null && args.length > 0 && !args[0].trim().isEmpty()) {
+            reportDir = args[0].trim();
+        }
+        if (reportDir == null || reportDir.isEmpty()) {
+            reportDir = System.getProperty("serenity.report.directory");
+        }
         if (reportDir == null || reportDir.trim().isEmpty()) {
             reportDir = System.getenv("SERENITY_REPORT_DIR");
         }

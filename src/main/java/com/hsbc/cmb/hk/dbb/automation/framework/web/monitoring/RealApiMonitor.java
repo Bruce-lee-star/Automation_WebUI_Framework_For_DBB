@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.net.URL;
+import java.net.URI;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
@@ -304,8 +306,8 @@ public class RealApiMonitor {
      * 设置目标 Host（只监控指定 host 的 API）
      */
     public static void setTargetHost(String host) {
-        targetHost = host;
-        logger.info("Target host set to: {}", host);
+        targetHost = extractHost(host);
+        logger.info("Target host set to: {}", targetHost);
     }
     
     /**
@@ -318,10 +320,10 @@ public class RealApiMonitor {
     /**
      * 从 URL 中提取 Host
      */
-    public static String extractHost(String url) {
+    private static String extractHost(String url) {
         if (url == null || url.isEmpty()) return null;
         try {
-            java.net.URL urlObj = new java.net.URL(url);
+            URL urlObj = URI.create(url).toURL();
             return urlObj.getHost();
         } catch (Exception e) {
             int start = url.indexOf("://");
@@ -338,27 +340,24 @@ public class RealApiMonitor {
     private static final Object stopMonitorLock = new Object();
     
     /**
-     * 停止所有监控
-     * 注意：API 监控结果会在测试结束时自动记录到 Serenity 报告
+     * 停止所有监控，并立即将结果记录到当前 step
      */
     public static void stopMonitoring() {
         String caller = Thread.currentThread().getName();
         logger.debug("stopMonitoring() called by thread: {}", caller);
         
         synchronized (stopMonitorLock) {
-            // 正确更新所有监控状态
             for (BrowserContext ctx : new ArrayList<>(contextMonitoringStopped.keySet())) {
-                boolean was = contextMonitoringStopped.getOrDefault(ctx, false);
                 contextMonitoringStopped.put(ctx, true);
-                logger.debug("Context monitoring: {} -> {}", was, true);
             }
             for (Page p : new ArrayList<>(pageMonitoringStopped.keySet())) {
-                boolean was = pageMonitoringStopped.getOrDefault(p, false);
                 pageMonitoringStopped.put(p, true);
-                logger.debug("Page monitoring: {} -> {}", was, true);
             }
         }
-        logger.info("All monitoring stopped (by {})", caller);
+        
+        // 立即记录到 Serenity 报告（出现在当前 step，而非测试结束时）
+        logResults();
+        logger.info("All monitoring stopped & results logged (by {})", caller);
     }
     
     /**
@@ -414,7 +413,7 @@ public class RealApiMonitor {
     
     /**
      * 记录结果到 Serenity 报告
-     * 框架会在测试结束时自动调用此方法
+     * 在 stopMonitoring() 时立即调用（而非测试结束），确保结果出现在正确的 step
      */
     public static void logResults() {
         if (apiCallHistory.isEmpty() || hasLoggedToSerenity) {
@@ -423,28 +422,31 @@ public class RealApiMonitor {
         logSummaryToSerenityReport();
     }
     
+    /**
+     * 清除状态，允许同一测试中多次 start/stop 循环
+     */
+    public static void resetForNextScenario() {
+        hasLoggedToSerenity = false;
+    }
+    
     // ==================== 内部方法 ====================
     
     private static void recordApiCall(Response response, Request request) {
         try {
             String requestId = UUID.randomUUID().toString();
-            
-            // 只记录基本信息，延迟读取响应体（避免阻塞主线程）
+
             ApiCallRecord record = new ApiCallRecord(
                 requestId, response.url(), request.method(), System.currentTimeMillis(),
                 null, null, response.status(), null, null, false
             );
-            
-            // 存储 response 和 request 对象，延迟读取
+
+            // 保存原始 Response/Request 对象，支持延迟读取 headers 和 body
             record.setResponse(response);
             record.setRequest(request);
-            
+
             apiCallHistory.add(record);
-            
+
             logger.info("[API] {} {} - {}", request.method(), response.url(), response.status());
-            
-            // 注意：不在回调线程中记录到 Serenity，因为 StepEventBus 是线程本地的
-            // 汇总报告会在 stopMonitoring() 时在主线程记录
         } catch (Exception e) {
             logger.error("Failed to record API call", e);
         }
@@ -479,7 +481,7 @@ public class RealApiMonitor {
         if (targetHost == null || targetHost.isEmpty()) return true;
         
         try {
-            java.net.URL urlObj = new java.net.URL(url);
+            URL urlObj = URI.create(url).toURL();
             return targetHost.equals(urlObj.getHost());
         } catch (Exception e) {
             return url.contains(targetHost);

@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.io.File;
 import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
 
 public class RetryHealthChecker {
@@ -143,7 +144,7 @@ public class RetryHealthChecker {
         HealthIndicator indicator = indicators.get("disk");
 
         try {
-            java.io.File file = new java.io.File(path);
+            File file = new File(path);
             long freeSpace = file.getFreeSpace();
 
             boolean hasEnoughSpace = freeSpace > minFreeSpaceBytes;

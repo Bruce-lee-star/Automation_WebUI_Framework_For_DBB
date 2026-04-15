@@ -43,6 +43,9 @@ public class SummaryReportGenerator {
     private final Map<String, String> featureToHtmlMap = new LinkedHashMap<>();
     private final Map<String, String> scenarioToHtmlMap = new LinkedHashMap<>();
 
+    // 自定义错误分类规则：label → pattern（正则），按配置顺序排列
+    private final List<ErrorTypeRule> errorTypeRules = new ArrayList<>();
+
     private long totalDuration;
     private long minDuration;
     private long maxDuration;
@@ -64,10 +67,10 @@ public class SummaryReportGenerator {
         // fullReportUrl: 直接链接到报告目录（不指定具体文件）
         // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/
         // 本地环境: 相对链接 → ./ 或当前目录
-        if (reportUrl != null && !reportUrl.isEmpty()) {
+        if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
             this.fullReportUrl = ensureTrailingSlash(reportUrl);
         } else {
-            this.fullReportUrl = "./"; // Local: current directory
+            this.fullReportUrl = "./";
         }
         init();
     }
@@ -182,6 +185,14 @@ public class SummaryReportGenerator {
 
         String result = sb.toString();
         logger.debug("Resolved environment variables: '{}' -> '{}'", value, result);
+
+        // 如果解析后仍包含未替换的 ${...} 占位符 → 说明不在 Jenkins 环境
+        // 本地开发应使用相对路径，避免 file:///${...} 这种无效链接
+        if (result.contains("${")) {
+            logger.debug("Unresolved env vars detected in '{}', treating as non-Jenkins environment", result);
+            return "";
+        }
+
         return result;
     }
 
@@ -210,7 +221,7 @@ public class SummaryReportGenerator {
             return htmlFile;
         }
 
-        if (reportUrl != null && !reportUrl.isEmpty()) {
+        if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
             return ensureTrailingSlash(reportUrl) + htmlFile;
         }
         return htmlFile;
@@ -218,9 +229,10 @@ public class SummaryReportGenerator {
 
     /** Build download URL for ZIP/CSV files. Uses reportUrl as base in Jenkins environment. */
     private String buildDownloadUrl(String fileName) {
-        if (reportUrl != null && !reportUrl.isEmpty()) {
+        if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
             return ensureTrailingSlash(reportUrl) + fileName;
         }
+        // 本地环境或 reportUrl 无效时使用相对路径
         return fileName;
     }
 
@@ -237,6 +249,7 @@ public class SummaryReportGenerator {
         loadScenarioHtmlMapping(actualReportDir);
         calculateResultCounts();
         calculateDurations();
+        loadErrorTypeRules();
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded {} test outcomes, {} simple outcomes", testOutcomes.size(), simpleTestOutcomes.size());
     }
@@ -901,7 +914,9 @@ public class SummaryReportGenerator {
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
-                failureCounts.merge("Test failed", 1, Integer::sum);
+                String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
+                String errorType = extractErrorType(error);
+                failureCounts.merge(errorType, 1, Integer::sum);
                 featureFailures.computeIfAbsent(t.featureName, k -> new FeatureFailureStats()).increment();
             }
         }
@@ -956,8 +971,138 @@ public class SummaryReportGenerator {
         sb.append("                                    </td>\n");
         sb.append("                                </tr>\n");
         sb.append("                            </table>\n");
+
+        // 错误类型饼图
+        if (!failureCounts.isEmpty()) {
+            appendErrorTypePieChart(sb, failureCounts);
+        }
+
         sb.append("                        </td>\n");
         sb.append("                    </tr>\n");
+    }
+
+    /**
+     * 生成错误类型分布饼图（纯 CSS conic-gradient）
+     * 兼容 Outlook / Gmail / Apple Mail 等主流邮件客户端
+     */
+    private void appendErrorTypePieChart(StringBuilder sb, Map<String, Integer> failureCounts) {
+        int total = failureCounts.values().stream().mapToInt(Integer::intValue).sum();
+        String[] colors = {"#e53935", "#f44336", "#ef5350", "#e57373", "#ef9a9a",
+                          "#ff8a65", "#ff7043", "#f06292", "#ba68c8", "#9575cd"};
+
+        sb.append("                            <div style=\"margin-top:20px;text-align:center;\">\n");
+        sb.append("                                <h4 style=\"margin:0 0 12px 0;font-size:16px;color:#333;\">Error Type Distribution</h4>\n");
+
+        int pieSize = 200;
+        int halfPie = pieSize / 2;
+        int colorIdx = 0;
+
+        if (failureCounts.size() == 1) {
+            // 单分类 → 实心圆，中心显示标签+百分比
+            Map.Entry<String, Integer> onlyEntry = failureCounts.entrySet().iterator().next();
+            String label = escape(onlyEntry.getKey());
+            double pct = (double) onlyEntry.getValue() / total * 100;
+
+            sb.append("                                <div style=\"display:inline-block;width:")
+              .append(pieSize).append("px;height:").append(pieSize)
+              .append("px;border-radius:50%;background:").append(colors[0])
+              .append(";box-shadow:0 2px 8px rgba(0,0,0,0.15);position:relative;\">\n");
+            sb.append("                                    <div style=\"position:absolute;top:50%;left:50%")
+              .append(";transform:translate(-50%,-50%);text-align:center;\">\n");
+            sb.append("                                        <div style=\"font-size:13px;font-weight:bold;color:#fff;\">")
+              .append(label).append("</div>\n");
+            sb.append("                                        <div style=\"font-size:22px;font-weight:bold;color:#fff;margin-top:2px;\">")
+              .append(String.format("%.0f", pct)).append("%</div>\n");
+            sb.append("                                    </div>\n");
+            sb.append("                                </div>\n");
+
+        } else {
+            // 多分类 → 饼图 + 环绕标签
+            List<double[]> labelPositions = new ArrayList<>();
+            StringBuilder gradient = new StringBuilder();
+            double startAngle = -90;
+
+            for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
+                double pct = (double) entry.getValue() / total * 100;
+                double sweepAngle = pct * 360;
+                double midAngle = startAngle + sweepAngle / 2;
+
+                if (gradient.length() > 0) gradient.append(", ");
+                gradient.append(colors[colorIdx % colors.length])
+                  .append(" ").append(String.format("%.6f", startAngle)).append("%")
+                  .append(" ").append(String.format("%.6f", startAngle + pct)).append("%");
+
+                double labelRadius = halfPie + 28;
+                double lx = halfPie + labelRadius * Math.cos(Math.toRadians(midAngle));
+                double ly = halfPie + labelRadius * Math.sin(Math.toRadians(midAngle));
+                labelPositions.add(new double[]{midAngle, lx, ly});
+
+                startAngle += sweepAngle;
+                colorIdx++;
+            }
+
+            // 饼图容器（加宽以容纳左右标签）
+            sb.append("                                <div style=\"display:inline-block;")
+              .append("position:relative;width:").append(pieSize + 120).append("px;height:")
+              .append(pieSize).append("px;vertical-align:middle;\">\n");
+
+            // 饼图本体（偏左）
+            sb.append("                                    <div style=\"display:inline-block;")
+              .append("position:absolute;left:").append((pieSize + 120 - pieSize) / 2)
+              .append("px;top:0;width:").append(pieSize).append("px;height:").append(pieSize)
+              .append("px;border-radius:50%;background:conic-gradient(")
+              .append(gradient).append(");box-shadow:0 2px 8px rgba(0,0,0,0.15);")
+              .append("\"></div>\n");
+
+            // 标签
+            int posIdx = 0;
+            for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
+                double pct = (double) entry.getValue() / total * 100;
+                double[] pos = labelPositions.get(posIdx++);
+                double midAngle = pos[0];
+                double lx = pos[1];
+                double ly = pos[2];
+
+                String textAlign = (midAngle > -90 && midAngle < 90) ? "text-align:left;margin-left:6px;" : "text-align:right;margin-right:6px;";
+
+                sb.append("                                    <div style=\"position:absolute;")
+                  .append("left:").append(round(lx)).append("px;top:").append(round(ly))
+                  .append("px;transform:translate(-50%,-50%);white-space:nowrap;")
+                  .append(textAlign).append("font-size:11px;color:#333;line-height:1.3;\">\n");
+                sb.append("                                        <strong>")
+                  .append(escape(entry.getKey()))
+                  .append("</strong> ")
+                  .append(String.format("%.0f", pct)).append("% (")
+                  .append(entry.getValue()).append(")\n");
+                sb.append("                                    </div>\n");
+            }
+            sb.append("                                </div>\n");
+        }
+
+        // 图例
+        sb.append("                                <table style=\"margin:10px auto 4px auto;border-collapse:collapse;font-size:12px;\">\n");
+        colorIdx = 0;
+        for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
+            double pct = (double) entry.getValue() / total * 100;
+            sb.append("                                    <tr>\n");
+            sb.append("                                        <td style=\"padding:2px 10px 2px 0;white-space:nowrap;text-align:right;\">")
+              .append("<span style=\"display:inline-block;width:10px;height:10px;background:")
+              .append(colors[colorIdx % colors.length])
+              .append(";border-radius:2px;vertical-align:middle;margin-right:6px;\"></span>")
+              .append(escape(entry.getKey())).append("</td>\n");
+            sb.append("                                        <td style=\"padding:2px 8px;color:#666;text-align:center;\">")
+              .append(entry.getValue()).append("</td>\n");
+            sb.append("                                        <td style=\"padding:2px 0;color:#999;\">")
+              .append(String.format("%.0f", pct)).append("%</td>\n");
+            sb.append("                                    </tr>\n");
+            colorIdx++;
+        }
+        sb.append("                                </table>\n");
+        sb.append("                            </div>\n");
+    }
+
+    private static double round(double v) {
+        return Math.round(v * 100) / 100.0;
     }
 
     private static class FeatureFailureStats {
@@ -967,12 +1112,263 @@ public class SummaryReportGenerator {
 
     private String extractErrorType(String errorMessage) {
         if (errorMessage == null) return "Unknown error";
-        if (errorMessage.contains("NullPointerException")) return "Null pointer exception";
-        if (errorMessage.contains("AssertionError")) return "Assertion failure";
-        if (errorMessage.contains("TimeoutException") || errorMessage.contains("Timeout")) return "Timeout";
-        if (errorMessage.contains("ElementNotFound") || errorMessage.contains("Element not found")) return "Element not found";
-        if (errorMessage.length() > 50) return errorMessage.substring(0, 50) + "...";
-        return errorMessage;
+
+        for (ErrorTypeRule rule : errorTypeRules) {
+            if (rule.matches(errorMessage)) {
+                return rule.label;
+            }
+        }
+        // 都没匹配上 → Other
+        return "Other";
+    }
+
+    /**
+     * 加载错误分类规则：优先用户配置 → 无则使用内置默认规则
+     */
+    private void loadErrorTypeRules() {
+        errorTypeRules.clear();
+        try {
+            // 1. 尝试从 serenity.properties 或系统属性读取自定义配置
+            String raw = System.getProperty("report.error.types");
+            if (raw == null || raw.isEmpty()) {
+                Properties props = new Properties();
+                Path propPath = Paths.get("serenity.properties");
+                if (Files.exists(propPath)) {
+                    try (InputStream is = Files.newInputStream(propPath)) {
+                        props.load(is);
+                        raw = props.getProperty("report.error.types");
+                    }
+                }
+            }
+
+            // 2. 有自定义配置 → 解析 JSON 格式
+            if (raw != null && !raw.trim().isEmpty()) {
+                parseJsonErrorTypes(raw);
+            }
+
+            // 3. 始终加载内置默认分类（追加在用户配置之后，作为兜底）
+            loadBuiltinErrorTypes();
+        } catch (Exception e) {
+            logger.debug("Failed to load error type rules: {}", e.getMessage());
+            if (errorTypeRules.isEmpty()) {
+                loadBuiltinErrorTypes();
+            }
+        }
+
+        LoggingConfigUtil.logDebugIfVerbose(logger,
+            "Loaded {} error types: {}", errorTypeRules.size(),
+            errorTypeRules.stream().map(ErrorTypeRule::toString).collect(java.util.stream.Collectors.joining(", ")));
+    }
+
+    /**
+     * 解析 JSON 格式的错误类型配置
+     * JSON 格式: [{"label":"Api Issue","keywords":["HTTP 500","502","api failed"]}, ...]
+     * 兼容旧格式：如果 JSON 解析失败，回退到逗号分隔格式
+     */
+    private void parseJsonErrorTypes(String raw) {
+        String trimmed = raw.trim();
+        // 检测是否是 JSON 格式
+        if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+            // 旧逗号分隔格式兼容
+            for (String entry : trimmed.split(",")) {
+                String e = entry.trim();
+                if (!e.isEmpty()) {
+                    errorTypeRules.add(new ErrorTypeRule(e));
+                }
+            }
+            return;
+        }
+
+        try {
+            // 用 Gson 解析（项目已有 Gson 依赖）
+            com.google.gson.JsonArray arr = new com.google.gson.Gson().fromJson(trimmed, com.google.gson.JsonArray.class);
+            if (arr != null) {
+                for (int i = 0; i < arr.size(); i++) {
+                    com.google.gson.JsonObject obj = arr.get(i).getAsJsonObject();
+                    String label = obj.has("label") ? obj.get("label").getAsString() : null;
+                    java.util.List<String> keywords = null;
+                    if (obj.has("keywords") && obj.get("keywords").isJsonArray()) {
+                        com.google.gson.JsonArray kwArr = obj.getAsJsonArray("keywords");
+                        keywords = new ArrayList<>();
+                        for (int j = 0; j < kwArr.size(); j++) {
+                            keywords.add(kwArr.get(j).getAsString());
+                        }
+                    }
+                    if (label != null && !label.isEmpty()) {
+                        errorTypeRules.add(new ErrorTypeRule(label, keywords));
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            logger.debug("JSON parse failed for report.error.types, trying legacy format: {}", ex.getMessage());
+            // 回退到逗号分隔
+            for (String entry : trimmed.split(",")) {
+                String item = entry.trim().replace("[", "").replace("]", "").replace("{", "")
+                    .replace("}", "").replace("\"", "");
+                if (!item.isEmpty()) {
+                    errorTypeRules.add(new ErrorTypeRule(item));
+                }
+            }
+        }
+    }
+
+    /** 内置默认错误类型（基于 Playwright 自动化常见异常分类） */
+    private void loadBuiltinErrorTypes() {
+        // ── 1. 超时问题（最高频，约80%用例会遇到）──
+        addBuiltin("Timeout Error",
+            "TimeoutException", "timed out after", "timeout", "超时",
+            "waiting timed out", "exceeded timeout", "slow operation",
+            "waiting for", "time out");
+
+        // ── 2. 元素操作失败（定位/可见/遮挡）──
+        addBuiltin("Element Not Found",
+            "ElementNotFound", "element not found", "locator not found",
+            "No element found", "selector not found", "LocatorError",
+            "unable to locate element", "元素找不到", "元素不存在",
+            "waiting for element failed");
+        addBuiltin("Element Handle Error",
+            "ElementHandleError", "element is not visible",
+            "element click intercepted", "element is hidden",
+            "element is disabled", "not visible", "not interactable",
+            "is not visible", "is disabled", "is detached from DOM",
+            "obscures", "outside viewport");
+
+        // ── 3. 页面导航失败 ──
+        addBuiltin("Navigation Failed",
+            "NavigationTimeout", "navigation failed", "page not loaded",
+            "page load failed", "url invalid", "页面加载失败",
+            "about:blank", "net::ERR_", "failed to navigate",
+            "loading failed", "target page crashed",
+            "page crashed", "page closed");
+
+        // ── 4. 断言失败（测试期望不符）──
+        addBuiltin("Assertion Failed",
+            "AssertionError", "expected but was", "assert",
+            "Expected.*but was", "实际.*期望", "condition did not match",
+            "expected.*actual", "assertion failure", "mismatch",
+            "assertThat", "expected.*found");
+
+        // ── 5. 空指针 / 对象未初始化（编码不规范）──
+        addBuiltin("Null Pointer Exception",
+            "NullPointerException", "null pointer", "NPE",
+            "null value", "cannot be null", "null cannot be cast",
+            "Cannot invoke method", "null cannot be assigned to");
+
+        // ── 6. Code Issue（代码问题：非法状态、类型转换、IO等）──
+        addBuiltin("Code Issue",
+            "IllegalStateException", "illegal state",
+            "NoSuchElementException", "no such element",
+            "ClassCastException", "class cast",
+            "IOException", "io exception",
+            "IndexOutOfBoundsException", "index out of bounds",
+            "IllegalArgumentException", "illegal argument",
+            "UnsupportedOperationException", "unsupported operation",
+            "NumberFormatException", "number format",
+            "ConcurrentModificationException", "concurrent modification",
+            "文件不存在", "file not found",
+            "cannot access", "access denied");
+
+        // ── 7. 浏览器 / 页面已关闭 ──
+        addBuiltin("Browser/Page Closed",
+            "PageClosedException", "TargetClosedException",
+            "page has been closed", "target has been closed",
+            "browser has been closed", "context has been closed",
+            "Protocol error: Target closed", "has been closed",
+            "browser not connected", "connection disposed");
+
+        // ── 8. 环境问题（网络、数据库、配置）──
+        addBuiltin("Environment Issue",
+            "Connection refused", "connection reset", "connect failed",
+            "database unavailable", "DB connection failed",
+            "config missing", "environment not ready",
+            "service unavailable", "host unreachable",
+            "socket timeout", "connect timed out",
+            "network is unreachable", "ECONNREFUSED",
+            "ENOTFOUND", "proxy error", "ProxyException",
+            "WebSocketException", "websocket disconnected");
+
+        // ── 9. API 接口问题 ──
+        addBuiltin("API Issue",
+            "ApiException", "API failed", "API error",
+            "HTTP 500", "502 Bad Gateway", "503 Service Unavailable",
+            "504 Gateway Timeout", "internal server error", "bad gateway",
+            "接口异常", "接口失败", "api call failed", "rest client error",
+            "status code", "http request failed");
+
+        // ── 10. 权限 / 认证问题 ──
+        addBuiltin("Auth Failed",
+            "Unauthorized", "401 Forbidden", "403 Forbidden",
+            "authentication failed", "access denied",
+            "login failed", "session expired", "token expired",
+            "permission denied", "not authorized", "登录失败",
+            "forbidden", "unauthenticated");
+
+        // ── 11. 浏览器启动 / 版本问题 ──
+        addBuiltin("Browser Launch Error",
+            "BrowserTypeLaunchException", "browser launch failed",
+            "Failed to launch chromium", "Failed to launch firefox",
+            "VersionException", "version mismatch",
+            "executable doesn't exist", "no browser installed",
+            "chromium not found", "sandbox", "no-sandbox");
+
+        // ── 12. 数据验证问题 ──
+        addBuiltin("Data Validation Error",
+            "DataIntegrityViolation", "data too long",
+            "constraint violation", "unique constraint",
+            "foreign key", "invalid data", "validation failed",
+            "数据校验", "duplicate entry", "field required");
+    }
+
+    private void addBuiltin(String label, String... keywords) {
+        for (String kw : keywords) {
+            errorTypeRules.add(new ErrorTypeRule(label, kw));
+        }
+    }
+
+    /**
+     * 错误分类规则
+     * - JSON 配置: new ErrorTypeRule("Api Issue", ["HTTP 500", "502"]) → label 显示, 多关键字匹配
+     * - 旧逗号配置: new ErrorTypeRule("Api Issue") → label 本身作为关键字
+     * - 内置默认:  new ErrorTypeRule("Env Error", "connection refused") → 单关键字
+     */
+    static class ErrorTypeRule {
+        final String label;
+        final java.util.List<String> keywords;
+
+        /** 旧格式：label 既是显示名也是匹配关键字 */
+        ErrorTypeRule(String label) {
+            this.label = label;
+            this.keywords = java.util.Collections.singletonList(label);
+        }
+
+        /** 单关键字（内置默认） */
+        ErrorTypeRule(String label, String keyword) {
+            this.label = label;
+            this.keywords = java.util.Collections.singletonList(keyword);
+        }
+
+        /** 多关键字（JSON 配置） */
+        ErrorTypeRule(String label, java.util.List<String> keywords) {
+            this.label = label;
+            this.keywords = keywords != null && !keywords.isEmpty()
+                ? keywords : java.util.Collections.singletonList(label);
+        }
+
+        boolean matches(String errorMessage) {
+            if (errorMessage == null || keywords == null) return false;
+            String lower = errorMessage.toLowerCase();
+            for (String kw : keywords) {
+                if (kw != null && lower.contains(kw.toLowerCase())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
     }
 
     private void appendFailureAndResultList(StringBuilder sb) {

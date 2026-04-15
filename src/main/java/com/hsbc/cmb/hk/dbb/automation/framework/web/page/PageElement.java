@@ -8,6 +8,9 @@ import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.options.WaitForSelectorState;
 import com.microsoft.playwright.options.MouseButton;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
@@ -23,6 +26,7 @@ import java.nio.file.Paths;
  * LoginPage.NEXT_BUTTON.click();
  */
 public class PageElement {
+    private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
     private final String selector;
     private BasePage page;
 
@@ -64,36 +68,128 @@ public class PageElement {
         return page;
     }
 
-    // ==================== 基础操作 ====================
+    // ==================== 基础操作（带自动重试，解决页面 loading 时操作无响应） ====================
     
-    public PageElement type(String text) {
-        locator().fill(text);
-        return this;
-    }
-
+    /**
+     * 点击元素（带自动重试）
+     * 当页面仍在 loading 或元素不稳定时，自动重试最多 3 次，
+     * 每次重试前短暂等待让页面稳定下来。
+     */
     public PageElement click() {
-        locator().click();
+        executeWithRetry(() -> locator().click(), "click");
         return this;
     }
 
+    /**
+     * 输入文本（带自动重试）
+     */
+    public PageElement type(String text) {
+        executeWithRetry(() -> locator().fill(text), "fill");
+        return this;
+    }
+
+    /**
+     * 双击（带自动重试）
+     */
     public PageElement doubleClick() {
-        locator().dblclick();
+        executeWithRetry(() -> locator().dblclick(), "dblclick");
         return this;
     }
 
+    /**
+     * 右键点击（带自动重试）
+     */
     public PageElement rightClick() {
-        locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
+        executeWithRetry(() -> locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT)), "rightClick");
         return this;
     }
 
-    public PageElement hover() {
-        locator().hover();
-        return this;
-    }
-
+    /**
+     * 清空输入框（带自动重试）
+     */
     public PageElement clear() {
-        locator().clear();
+        executeWithRetry(() -> locator().clear(), "clear");
         return this;
+    }
+
+    /**
+     * 悬停（带自动重试）
+     */
+    public PageElement hover() {
+        executeWithRetry(() -> locator().hover(), "hover");
+        return this;
+    }
+
+    // ==================== 自动重试机制 ====================
+
+    /** 最大重试次数 */
+    private static final int MAX_RETRY = 3;
+
+    /** 重试间隔（毫秒）— 让页面有时间完成 loading/渲染 */
+    private static final int RETRY_DELAY_MS = 800;
+
+    /**
+     * 带自动重试的操作执行器
+     *
+     * 解决的核心问题：
+     * 1. 元素已在 DOM 中，但页面仍在 loading → 操作无响应
+     * 2. 元素被 loading 遮罩临时遮挡
+     * 3. 元素正在做 CSS 动画/transitions，不稳定
+     *
+     * 重试策略：
+     * - 最多重试 MAX_RETRY 次（默认3次）
+     * - 每次失败后等待 RETRY_DELAY_MS（默认800ms）再重试
+     * - 所有重试都失败后抛出原始异常（附带详细诊断信息）
+     */
+    private void executeWithRetry(Runnable action, String operationName) {
+        Exception lastException = null;
+
+        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            try {
+                action.run();
+                return; // 成功，直接返回
+            } catch (PlaywrightException e) {
+                lastException = e;
+                if (isRetriableError(e) && attempt < MAX_RETRY) {
+                    logger.debug("[Retry] {} on '{}' failed (attempt {}/{}), retrying in {}ms: {}",
+                        operationName, selector, attempt, MAX_RETRY, RETRY_DELAY_MS, e.getMessage());
+                    getPage().waitForTimeout(RETRY_DELAY_MS);
+                }
+            }
+        }
+
+        throw new RuntimeException(
+            String.format("'%s' %s failed after %d retries: %s",
+                selector, operationName, MAX_RETRY,
+                lastException != null ? lastException.getMessage() : "unknown"),
+            lastException);
+    }
+
+    /**
+     * 判断异常是否属于可重试的类型
+     * 仅对"元素存在但暂时无法操作"的场景进行重试
+     */
+    private static boolean isRetriableError(PlaywrightException e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        // 超时相关
+        if (lower.contains("timeout")) return true;
+        // 遮挡/不可交互
+        if (lower.contains("is not visible") || lower.contains("not visible")) return true;
+        if (lower.contains("element click intercepted") || lower.contains("obscures")) return true;
+        if (lower.contains("is disabled")) return true;
+        if (lower.contains("not interactable") || lower.contains("cannot focus")) return true;
+        // 不稳定/动画中
+        if (lower.contains("stable") || lower.contains("still working")) return true;
+        // 已分离/DOM 变化
+        if (lower.contains("detached from dom") || lower.contains("detached")) return true;
+        if (lower.contains("element is not attached") || lower.contains("not found in dom")) return true;
+        // 页面/目标关闭
+        if (lower.contains("target closed") || lower.contains("page closed") || lower.contains("context closed")) return true;
+        // 网络问题
+        if (lower.contains("net::err_") || lower.contains("network error")) return true;
+        return false;
     }
 
     public String getText() {

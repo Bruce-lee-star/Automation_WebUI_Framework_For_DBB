@@ -493,15 +493,27 @@ public class RealApiMonitor {
     
     private static void recordApiCall(Response response, Request request) {
         try {
-            // 检查是否已捕获所有目标 API（如果配置了目标 API）
+            // 先记录到历史（确保数据在停止监控前就已保存）
+            String requestId = UUID.randomUUID().toString();
+            ApiCallRecord record = new ApiCallRecord(
+                requestId, response.url(), request.method(), System.currentTimeMillis(),
+                null, null, response.status(), null, null, false
+            );
+            record.setResponse(response);
+            record.setRequest(request);
+            apiCallHistory.add(record);
+
+            logger.debug("[API] {} {} - {}", request.method(), response.url(), response.status());
+
+            // 再检查是否已捕获所有目标 API（如果配置了目标 API）
             if (!targetApiPatterns.isEmpty() && !allTargetApisCaptured) {
                 String url = response.url();
                 for (String pattern : targetApiPatterns) {
                     if (url.contains(pattern) || url.matches(toRegex(pattern))) {
                         int matched = matchedTargetApiCount.incrementAndGet();
                         logger.info("[Target API #{}] {} {} - {}", matched, request.method(), url, response.status());
-                        
-                        // 检查是否已匹配所有目标 API
+
+                        // 检查是否已匹配所有目标 API（此时记录已安全保存到历史中）
                         if (matched >= targetApiPatterns.size()) {
                             allTargetApisCaptured = true;
                             logger.info("All {} target API(s) captured. Stopping monitoring.", targetApiPatterns.size());
@@ -511,21 +523,6 @@ public class RealApiMonitor {
                     }
                 }
             }
-            
-            String requestId = UUID.randomUUID().toString();
-
-            ApiCallRecord record = new ApiCallRecord(
-                requestId, response.url(), request.method(), System.currentTimeMillis(),
-                null, null, response.status(), null, null, false
-            );
-
-            // 保存原始 Response/Request 对象，支持延迟读取 headers 和 body
-            record.setResponse(response);
-            record.setRequest(request);
-
-            apiCallHistory.add(record);
-
-            logger.debug("[API] {} {} - {}", request.method(), response.url(), response.status());
         } catch (Exception e) {
             logger.error("Failed to record API call", e);
         }

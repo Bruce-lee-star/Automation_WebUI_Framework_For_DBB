@@ -576,34 +576,15 @@ public class PlaywrightManager {
     }
 
     /**
-     * 设置 BrowserStack 浏览器连接
+     * 设置 BrowserStack 浏览器连接（使用新API）
      */
     private static Browser setupBrowserStackBrowser(Playwright playwright, String browserType) {
         try {
-            // 获取 BrowserStack 连接 URL
-            String browserStackUrl = com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackUrl();
-            
-            // 获取 BrowserStack 能力配置
-            Map<String, String> capabilities =
-                com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getBrowserStackCapabilities(browserType);
-            
-            logger.info("Connecting to BrowserStack: {}", browserStackUrl.replaceAll(":([^@]+)@", ":****@"));
-            logger.info("BrowserStack capabilities: {}", capabilities);
-            
-            // 连接到 BrowserStack
-            BrowserType.ConnectOptions connectOptions = 
-                com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.getConnectOptions(browserType);
-            
-            switch (browserType.toLowerCase()) {
-                case "chromium":
-                    return playwright.chromium().connect(browserStackUrl, connectOptions);
-                case "firefox":
-                    return playwright.firefox().connect(browserStackUrl, connectOptions);
-                case "webkit":
-                    return playwright.webkit().connect(browserStackUrl, connectOptions);
-                default:
-                    throw new IllegalArgumentException("Unsupported browser type for BrowserStack: " + browserType);
-            }
+            // 使用新的企业级 BrowserStackManager.connect() API
+            com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.setCurrentSessionId("auto-" + System.currentTimeMillis());
+            Browser browser = com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.connect(playwright);
+            logger.info("[BrowserStack] Connected successfully via CDP");
+            return browser;
         } catch (Exception e) {
             logger.error("Failed to connect to BrowserStack for browser: {}", browserType, e);
             throw new BrowserException("Failed to connect to BrowserStack", e);

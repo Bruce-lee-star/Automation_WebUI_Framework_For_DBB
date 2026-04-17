@@ -19,9 +19,7 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Axe-core Accessibility Scanner
@@ -34,7 +32,6 @@ public class AxeCoreScanner {
     private static final ThreadLocal<List<AxeScanResult>> results = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> initialized = new ThreadLocal<>();
     private static final ThreadLocal<AxeScanConfig> config = new ThreadLocal<>();
-    private static final ThreadLocal<LocalDateTime> testStartTime = new ThreadLocal<>();
 
     /**
      * Configuration for Axe-core scanning
@@ -73,47 +70,37 @@ public class AxeCoreScanner {
     public static class AxeScanResult {
         private String pageName;
         private String pageUrl;
-        private LocalDateTime scanTime;
         private int violationCount;
         private int incompleteCount;
         private int passCount;
         private List<Rule> violations = new ArrayList<>();
         private List<Rule> incomplete = new ArrayList<>();
         private List<Rule> passes = new ArrayList<>();
-        private List<Map<String, Object>> simplifiedViolations = new ArrayList<>();
 
         public AxeScanResult(String pageName, String pageUrl) {
             this.pageName = pageName;
             this.pageUrl = pageUrl;
-            this.scanTime = LocalDateTime.now();
         }
 
         public String getPageName() { return pageName; }
         public String getPageUrl() { return pageUrl; }
-        public LocalDateTime getScanTime() { return scanTime; }
         public int getViolationCount() { return violationCount; }
-        public void setViolationCount(int violationCount) { this.violationCount = violationCount; }
         public int getIncompleteCount() { return incompleteCount; }
-        public void setIncompleteCount(int incompleteCount) { this.incompleteCount = incompleteCount; }
         public int getPassCount() { return passCount; }
-        public void setPassCount(int passCount) { this.passCount = passCount; }
         public List<Rule> getViolations() { return violations; }
-        public void setViolations(List<Rule> violations) { 
+        public void setViolations(List<Rule> violations) {
             this.violations = violations != null ? violations : new ArrayList<>();
             this.violationCount = this.violations.size();
         }
         public List<Rule> getIncomplete() { return incomplete; }
-        public void setIncomplete(List<Rule> incomplete) { 
+        public void setIncomplete(List<Rule> incomplete) {
             this.incomplete = incomplete != null ? incomplete : new ArrayList<>();
             this.incompleteCount = this.incomplete.size();
         }
-        public List<Rule> getPasses() { return passes; }
-        public void setPasses(List<Rule> passes) { 
+        public void setPasses(List<Rule> passes) {
             this.passes = passes != null ? passes : new ArrayList<>();
             this.passCount = this.passes.size();
         }
-        public List<Map<String, Object>> getSimplifiedViolations() { return simplifiedViolations; }
-        public void setSimplifiedViolations(List<Map<String, Object>> simplifiedViolations) { this.simplifiedViolations = simplifiedViolations; }
 
         public boolean isPassed() {
             return violationCount == 0;
@@ -137,7 +124,6 @@ public class AxeCoreScanner {
         }
         results.set(new ArrayList<>());
         config.set(scanConfig);
-        testStartTime.set(LocalDateTime.now());
         initialized.set(true);
         logger.info("AxeCoreScanner initialized with project: {}", scanConfig.getProjectName());
     }
@@ -238,10 +224,6 @@ public class AxeCoreScanner {
             result.setIncomplete(axeResults.getIncomplete());
             result.setPasses(axeResults.getPasses());
 
-            // Create simplified violations for reporting
-            List<Map<String, Object>> simplifiedViolations = simplifyViolations(axeResults.getViolations());
-            result.setSimplifiedViolations(simplifiedViolations);
-
             // Store result
             results.get().add(result);
 
@@ -307,9 +289,6 @@ public class AxeCoreScanner {
             result.setIncomplete(axeResults.getIncomplete());
             result.setPasses(axeResults.getPasses());
 
-            List<Map<String, Object>> simplifiedViolations = simplifyViolations(axeResults.getViolations());
-            result.setSimplifiedViolations(simplifiedViolations);
-
             results.get().add(result);
 
             logger.info("Axe-core scan completed for {}: {} violations, {} incomplete, {} passes",
@@ -320,40 +299,6 @@ public class AxeCoreScanner {
         }
 
         return result;
-    }
-
-    /**
-     * Simplify violations for reporting
-     */
-    private static List<Map<String, Object>> simplifyViolations(List<Rule> violations) {
-        List<Map<String, Object>> simplified = new ArrayList<>();
-
-        if (violations == null) return simplified;
-
-        for (Rule violation : violations) {
-            Map<String, Object> v = new HashMap<>();
-            v.put("id", violation.getId());
-            v.put("impact", violation.getImpact());
-            v.put("description", violation.getDescription());
-            v.put("help", violation.getHelp());
-            v.put("helpUrl", violation.getHelpUrl());
-            v.put("tags", violation.getTags());
-
-            List<Map<String, Object>> nodes = new ArrayList<>();
-            if (violation.getNodes() != null) {
-                for (CheckedNode node : violation.getNodes()) {
-                    Map<String, Object> n = new HashMap<>();
-                    n.put("html", node.getHtml());
-                    n.put("target", node.getTarget());
-                    n.put("failureSummary", node.getFailureSummary());
-                    nodes.add(n);
-                }
-            }
-            v.put("nodes", nodes);
-            simplified.add(v);
-        }
-
-        return simplified;
     }
 
     /**
@@ -584,7 +529,6 @@ public class AxeCoreScanner {
     public static void cleanup() {
         results.remove();
         config.remove();
-        testStartTime.remove();
         initialized.set(false);
         logger.info("AxeCoreScanner cleanup completed");
     }

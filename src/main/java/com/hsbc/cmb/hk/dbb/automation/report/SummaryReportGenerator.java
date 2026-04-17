@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.report;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import net.thucydides.model.domain.Story;
 import net.thucydides.model.domain.TestOutcome;
@@ -238,10 +239,17 @@ public class SummaryReportGenerator {
 
     private void init() {
         String actualReportDir = resolveReportDirectory(reportDir);
-        LoggingConfigUtil.logDebugIfVerbose(logger, "Report directory: {}", actualReportDir);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Report directory: {}", actualReportDir);
 
         File dir = new File(actualReportDir);
-        if (!dir.exists()) dir.mkdirs();
+        if (!dir.exists()) {
+            boolean created = dir.mkdirs();
+            if (created) {
+                logger.info("Created report directory: {}", actualReportDir);
+            } else {
+                logger.error("Failed to create report directory: {}", actualReportDir);
+            }
+        }
 
         this.reportTime = LocalDateTime.now();
         loadTestOutcomes(actualReportDir);
@@ -251,7 +259,15 @@ public class SummaryReportGenerator {
         calculateDurations();
         loadErrorTypeRules();
 
-        LoggingConfigUtil.logDebugIfVerbose(logger, "Loaded {} test outcomes, {} simple outcomes", testOutcomes.size(), simpleTestOutcomes.size());
+        long total = getTotalTests();
+        LoggingConfigUtil.logInfoIfVerbose(logger,
+            "Loaded {} test outcomes, {} simple outcomes, {} total tests",
+            testOutcomes.size(), simpleTestOutcomes.size(), total);
+
+        if (total == 0) {
+            logger.warn("No test outcomes found in '{}'. " +
+                "Ensure serenity:aggregate has completed before summary report generation.", actualReportDir);
+        }
     }
 
     /**
@@ -267,8 +283,7 @@ public class SummaryReportGenerator {
         // 优先使用 user.dir (Java 当前工作目录)
         String userDir = System.getProperty("user.dir");
         if (userDir != null && !userDir.trim().isEmpty()) {
-            File absoluteDir = new File(userDir, reportDir);
-            if (absoluteDir.exists()) return absoluteDir.getAbsolutePath();
+            return new File(userDir, reportDir).getAbsolutePath();
         }
 
         // 其次检测 WORKSPACE 环境变量
@@ -277,6 +292,7 @@ public class SummaryReportGenerator {
             return new File(workspace, reportDir).getAbsolutePath();
         }
 
+        // 返回相对路径，让 JVM 解析
         return reportDir;
     }
 
@@ -290,6 +306,10 @@ public class SummaryReportGenerator {
             // 解析实际的报告目录（自动处理 Jenkins 环境）
             String actualReportDir = resolveReportDirectory(reportDir);
 
+            long total = getTotalTests();
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "Generating summary report: {} total tests, dir: {}", total, actualReportDir);
+
             // 生成 HTML 报告
             String html = buildFullNativeHtml();
             Path output = Paths.get(actualReportDir, SUMMARY_FILE);
@@ -301,6 +321,15 @@ public class SummaryReportGenerator {
 
             // 生成 ZIP 包
             generateZipPackage(actualReportDir);
+
+            long pass = count(TestResult.SUCCESS);
+            if (total > 0 && pass == total) {
+                logger.info("All {} tests passed! Summary report generated at: {}", total, output.toAbsolutePath());
+            } else if (total > 0) {
+                long fail = count(TestResult.FAILURE) + count(TestResult.ERROR);
+                logger.info("Summary report generated: {} passed, {} failed out of {}", 
+                    pass, fail, total);
+            }
         } catch (Exception e) {
             logger.error("Failed to generate summary report", e);
         }
@@ -1181,14 +1210,15 @@ public class SummaryReportGenerator {
 
         try {
             // 用 Gson 解析（项目已有 Gson 依赖）
-            com.google.gson.JsonArray arr = new com.google.gson.Gson().fromJson(trimmed, com.google.gson.JsonArray.class);
+            Gson gson = new Gson();
+            JsonArray arr = gson.fromJson(trimmed, JsonArray.class);
             if (arr != null) {
                 for (int i = 0; i < arr.size(); i++) {
-                    com.google.gson.JsonObject obj = arr.get(i).getAsJsonObject();
+                    JsonObject obj = arr.get(i).getAsJsonObject();
                     String label = obj.has("label") ? obj.get("label").getAsString() : null;
-                    java.util.List<String> keywords = null;
+                    List<String> keywords = null;
                     if (obj.has("keywords") && obj.get("keywords").isJsonArray()) {
-                        com.google.gson.JsonArray kwArr = obj.getAsJsonArray("keywords");
+                        JsonArray kwArr = obj.getAsJsonArray("keywords");
                         keywords = new ArrayList<>();
                         for (int j = 0; j < kwArr.size(); j++) {
                             keywords.add(kwArr.get(j).getAsString());

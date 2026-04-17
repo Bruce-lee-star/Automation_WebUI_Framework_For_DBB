@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.api.steps;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
 import io.cucumber.datatable.DataTable;
 import io.cucumber.java.en.Then;
@@ -51,8 +53,9 @@ public class ResponseBodySteps extends UIInteractionSteps {
         }
 
         try {
-            com.fasterxml.jackson.databind.JsonNode node = new com.fasterxml.jackson.databind.ObjectMapper().readTree(responseBody);
-            com.fasterxml.jackson.databind.JsonNode fieldNode = node.at(fieldPath.startsWith("$") ? fieldPath.substring(1) : fieldPath);
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode node = mapper.readTree(responseBody);
+            JsonNode fieldNode = node.at(fieldPath.startsWith("$") ? fieldPath.substring(1) : fieldPath);
             if (!fieldNode.isMissingNode() && !fieldNode.isNull()) {
                 throw new AssertionError("Field " + fieldPath + " should be null, but has value: " + fieldNode);
             }

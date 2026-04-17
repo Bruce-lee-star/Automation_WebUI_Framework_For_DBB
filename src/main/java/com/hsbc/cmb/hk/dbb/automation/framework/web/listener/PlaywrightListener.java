@@ -214,12 +214,15 @@ public class PlaywrightListener implements StepListener {
         recordTestData("stepFailure", failure.getException().getMessage());
         recordTestData("stepFailureCause", failure.getException().getClass().getSimpleName());
 
-        // 注意：不在 stepFailed 中 increment failedTests，避免与 testFinished 重复计数
-        // 测试失败统计由 testFinished 统一处理
-
-        // FOR_FAILURES 策略：步骤失败时截图
-        if (screenshotStrategy == ScreenshotStrategy.FOR_FAILURES) {
-            takeFailureScreenshot(null);
+        // ⭐ 关键修复：无论什么策略，都在步骤失败瞬间截图
+        // 这确保捕获的是失败时的真实页面状态（错误信息、弹窗等）
+        // BEFORE_AND_AFTER_EACH_STEP / AFTER_EACH_STEP：补充一张 FAILURE 截图
+        // FOR_FAILURES：正常走失败截图逻辑
+        if (screenshotStrategy != ScreenshotStrategy.DISABLED) {
+            String stepName = currentStepName.get();
+            String sanitized = sanitizeFilename(stepName);
+            takeScreenshotAndRegister("FAILURE_" + (sanitized != null ? sanitized : "step"));
+            logger.info("✅ Failure screenshot captured at step failure moment for: {}", stepName);
         }
 
         // 步骤失败时，将截图传递给 Serenity

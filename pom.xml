@@ -99,14 +99,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JUnit 4 -->
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>4.13.2</version>
-            <scope>test</scope>
-        </dependency>
-
         <!-- ==================== Serenity Screenplay ==================== -->
         <dependency>
             <groupId>net.serenity-bdd</groupId>

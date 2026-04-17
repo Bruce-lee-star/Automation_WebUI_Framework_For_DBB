@@ -49,6 +49,15 @@ public class RealApiMonitor {
     
     // 监控失败异常
     private static volatile AssertionError monitoringFailure = null;
+    
+    // 目标 API 匹配计数（用于自动停止）
+    private static final java.util.concurrent.atomic.AtomicInteger matchedTargetApiCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    
+    // 是否已捕获到所有目标 API
+    private static volatile boolean allTargetApisCaptured = false;
+    
+    // 目标 API 的 URL 模式列表（用于判断是否是目标 API）
+    private static final List<String> targetApiPatterns = new CopyOnWriteArrayList<>();
 
     // ==================== 核心方法: monitor() - 异步监控 ====================
     
@@ -127,19 +136,26 @@ public class RealApiMonitor {
          * 异步启动监控（非阻塞）
          */
         public void start() {
-            logger.info("========== Starting async API monitoring ({} APIs, timeout: {}s) ==========", 
+            logger.info("========== Starting async API monitoring ({} target APIs, timeout: {}s) ==========", 
                 apis.size(), timeoutSeconds);
             
             clearHistory();
             clearExpectations();
             
+            // 保存目标 API 模式（用于后续过滤）
+            targetApiPatterns.clear();
+            matchedTargetApiCount.set(0);
+            allTargetApisCaptured = false;
+            
             // 设置期望
             for (Map.Entry<String, Integer> entry : apis.entrySet()) {
-                String regex = toRegex(entry.getKey());
+                String urlPattern = entry.getKey();
+                String regex = toRegex(urlPattern);
+                targetApiPatterns.add(urlPattern); // 保存原始模式
                 if (entry.getValue() > 0) {
                     apiExpectations.put(regex, ApiExpectation.forEndpoint(regex).statusCode(entry.getValue()));
                 }
-                logger.info("  - Monitoring: {} -> Status: {}", entry.getKey(), entry.getValue() > 0 ? entry.getValue() : "any");
+                logger.info("  - Target API: {} -> Expected Status: {}", urlPattern, entry.getValue() > 0 ? entry.getValue() : "any");
             }
             
             // 启动监听
@@ -182,6 +198,8 @@ public class RealApiMonitor {
                 int lastSize = apiCallHistory.size();
                 long lastUpdate = System.currentTimeMillis();
                 
+                logger.info("Auto-stop timer started: timeout={}s, initial APIs={}", timeoutSeconds, lastSize);
+                
                 while (true) {
                     try {
                         Thread.sleep(1000);
@@ -202,10 +220,19 @@ public class RealApiMonitor {
                         if (currentSize != lastSize) {
                             lastSize = currentSize;
                             lastUpdate = System.currentTimeMillis();
+                            if ((lastSize % 5 == 0) || lastSize <= 5) {
+                                logger.debug("API count changed: {} (elapsed: {}s since last activity)", 
+                                    lastSize, (System.currentTimeMillis() - lastUpdate) / 1000);
+                            }
                         } else {
                             long elapsed = (System.currentTimeMillis() - lastUpdate) / 1000;
+                            long remaining = timeoutSeconds - elapsed;
+                            if (remaining > 0 && remaining <= 5) {
+                                logger.info("Auto-stop in {}s... (no new API calls, total: {})", remaining, currentSize);
+                            }
                             if (elapsed >= timeoutSeconds) {
-                                logger.info("Auto-stopping after {}s of inactivity. Total APIs: {}", timeoutSeconds, currentSize);
+                                logger.warn("TIMEOUT: No API calls for {}s. Auto-stopping. Total APIs captured: {}", 
+                                    timeoutSeconds, currentSize);
                                 stopMonitoring();
                                 break;
                             }
@@ -293,6 +320,10 @@ public class RealApiMonitor {
         // 同时清除监控状态，确保新的监听器可以正常工作
         contextMonitoringStopped.clear();
         pageMonitoringStopped.clear();
+        // 重置目标 API 追踪状态
+        matchedTargetApiCount.set(0);
+        allTargetApisCaptured = false;
+        targetApiPatterns.clear();
     }
     
     /**
@@ -361,7 +392,7 @@ public class RealApiMonitor {
     }
     
     /**
-     * 记录汇总到 Serenity 报告
+     * 记录汇总到 Serenity 报告（只报告目标 API）
      */
     private static void logSummaryToSerenityReport() {
         if (apiCallHistory.isEmpty() || hasLoggedToSerenity) return;
@@ -369,13 +400,38 @@ public class RealApiMonitor {
         hasLoggedToSerenity = true;
         
         try {
+            // 过滤：只报告目标 API（如果有配置），否则报告全部
+            List<ApiCallRecord> recordsToReport;
+            if (!targetApiPatterns.isEmpty()) {
+                recordsToReport = new ArrayList<>();
+                for (ApiCallRecord record : apiCallHistory) {
+                    String url = record.getUrl();
+                    for (String pattern : targetApiPatterns) {
+                        if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                            recordsToReport.add(record);
+                            break;
+                        }
+                    }
+                }
+                logger.info("Reporting {} target API(s) out of {} total to Serenity (filtered from non-target APIs)",
+                    recordsToReport.size(), apiCallHistory.size());
+            } else {
+                recordsToReport = new ArrayList<>(apiCallHistory);
+            }
+            
+            if (recordsToReport.isEmpty()) {
+                logger.info("No target APIs captured to report to Serenity");
+                return;
+            }
+            
             StringBuilder json = new StringBuilder();
             json.append("{\n");
             json.append("  \"summary\": {\n");
-            json.append("    \"totalApiCalls\": ").append(apiCallHistory.size()).append(",\n");
+            json.append("    \"totalApiCalls\": ").append(recordsToReport.size()).append(",\n");
+            json.append("    \"targetApiPatterns\": ").append(targetApiPatterns).append(",\n");
             
             // 按状态码统计
-            Map<Integer, Long> statusCount = apiCallHistory.stream()
+            Map<Integer, Long> statusCount = recordsToReport.stream()
                 .collect(Collectors.groupingBy(ApiCallRecord::getStatusCode, Collectors.counting()));
             json.append("    \"statusCodes\": {\n");
             int i = 0;
@@ -388,24 +444,27 @@ public class RealApiMonitor {
             json.append("    }\n");
             json.append("  },\n");
             
-            // API 列表
-            json.append("  \"apiCalls\": [\n");
-            for (int j = 0; j < apiCallHistory.size(); j++) {
-                ApiCallRecord record = apiCallHistory.get(j);
+            // 目标 API 列表
+            json.append("  \"targetApiCalls\": [\n");
+            for (int j = 0; j < recordsToReport.size(); j++) {
+                ApiCallRecord record = recordsToReport.get(j);
                 json.append("    {\"method\": \"").append(record.getMethod())
-                    .append("\", \"url\": \"").append(escapeJson(simplifyUrl(record.getUrl())))
+                    .append("\", \"url\": \"").append(escapeJson(record.getUrl()))
                     .append("\", \"status\": ").append(record.getStatusCode()).append("}");
-                if (j < apiCallHistory.size() - 1) json.append(",");
+                if (j < recordsToReport.size() - 1) json.append(",");
                 json.append("\n");
             }
             json.append("  ]\n");
             json.append("}\n");
             
+            String title = targetApiPatterns.isEmpty() 
+                ? "API Monitor Summary (" + recordsToReport.size() + " calls)"
+                : "Target API Monitor (" + recordsToReport.size() + "/" + targetApiPatterns.size() + ")";
             Serenity.recordReportData()
-                .withTitle("API Monitor Summary (" + apiCallHistory.size() + " calls)")
+                .withTitle(title)
                 .andContents(json.toString());
             
-            logger.info("Recorded API monitor summary to Serenity report");
+            logger.info("Recorded {} target API(s) to Serenity report", recordsToReport.size());
         } catch (Exception e) {
             logger.debug("Failed to log summary: {}", e.getMessage());
         }
@@ -433,6 +492,25 @@ public class RealApiMonitor {
     
     private static void recordApiCall(Response response, Request request) {
         try {
+            // 检查是否已捕获所有目标 API（如果配置了目标 API）
+            if (!targetApiPatterns.isEmpty() && !allTargetApisCaptured) {
+                String url = response.url();
+                for (String pattern : targetApiPatterns) {
+                    if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                        int matched = matchedTargetApiCount.incrementAndGet();
+                        logger.info("[Target API #{}] {} {} - {}", matched, request.method(), url, response.status());
+                        
+                        // 检查是否已匹配所有目标 API
+                        if (matched >= targetApiPatterns.size()) {
+                            allTargetApisCaptured = true;
+                            logger.info("All {} target API(s) captured. Stopping monitoring.", targetApiPatterns.size());
+                            stopMonitoring();
+                        }
+                        break;
+                    }
+                }
+            }
+            
             String requestId = UUID.randomUUID().toString();
 
             ApiCallRecord record = new ApiCallRecord(
@@ -446,7 +524,7 @@ public class RealApiMonitor {
 
             apiCallHistory.add(record);
 
-            logger.info("[API] {} {} - {}", request.method(), response.url(), response.status());
+            logger.debug("[API] {} {} - {}", request.method(), response.url(), response.status());
         } catch (Exception e) {
             logger.error("Failed to record API call", e);
         }

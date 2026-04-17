@@ -66,13 +66,15 @@ public class SummaryReportGenerator {
         this.projectName = loadProjectName();
         this.reportTitle = projectName; // Use project name as report title
         this.reportUrl = loadReportUrl();
-        // fullReportUrl: 直接链接到报告目录（不指定具体文件）
-        // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/
-        // 本地环境: 相对链接 → ./ 或当前目录
+        // fullReportUrl: 链接到 Serenity 完整报告的 index.html
+        // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/index.html
+        // 本地环境: 相对链接 → ./index.html（指向同目录下的 Serenity 主页）
         if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
-            this.fullReportUrl = ensureTrailingSlash(reportUrl);
+            String url = ensureTrailingSlash(reportUrl);
+            this.fullReportUrl = url + "index.html";
         } else {
-            this.fullReportUrl = "./";
+            // 默认链接到同目录下的 Serenity index.html（标准 Sereny 报告入口）
+            this.fullReportUrl = "./index.html";
         }
         init();
     }
@@ -1701,19 +1703,48 @@ public class SummaryReportGenerator {
 
     private void loadFeatureHtmlMapping(String actualReportDir) {
         Path indexFile = Paths.get(actualReportDir, "index.html");
-        if (!Files.exists(indexFile)) return;
+        if (!Files.exists(indexFile)) {
+            logger.debug("index.html not found at {}, skipping feature mapping", indexFile);
+            return;
+        }
 
         try {
             String content = Files.readString(indexFile, StandardCharsets.UTF_8);
-            Pattern p = Pattern.compile(
-                "title:\\s*'([^']+)'.*?link:\\s*\"([^\"]+)\"",
-                Pattern.DOTALL);
-            Matcher m = p.matcher(content);
-            while (m.find()) {
-                String title = m.group(1);
-                String link = m.group(2);
-                featureToHtmlMap.put(title, link);
+
+            // Serenity BDD index.html 格式: data-title="..." data-link="..."
+            // 兼容多种格式：单引号/双引号、data-link/data-href
+            Pattern[] patterns = {
+                // 标准格式: title:'xxx', link:"yyy"
+                Pattern.compile("['\"]title['\"]?\\s*:\\s*['\"]([^'\"]+)['\"]?.+?['\"]link['\"]?\\s*:\\s*['\"]([^\"]+)['\"]", Pattern.DOTALL),
+                // data 属性格式: data-title="xxx" data-link="yyy"
+                Pattern.compile("data-title\\s*=\\s*[\"']([^\"']*)[\"']\\s+data-link\\s*=\\s*[\"']([^\"']*)[\"']", Pattern.DOTALL),
+                // 简化 href 格式
+                Pattern.compile("<a[^>]+href=['\"]([^'\"]+)['\"][^>]*>([^<]+)</a>.*?(?:feature|story)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+            };
+
+            for (Pattern p : patterns) {
+                Matcher m = p.matcher(content);
+                while (m.find()) {
+                    String title = null;
+                    String link = null;
+
+                    if (m.groupCount() >= 2) {
+                        title = m.group(1).trim();
+                        link = m.group(2).trim();
+                    } else if (m.groupCount() >= 1) {
+                        link = m.group(1).trim();
+                        // 从 link 路径提取标题
+                        Path lp = Paths.get(link).getFileName();
+                        title = lp.toString().replaceAll("-", " ");
+                    }
+
+                    if (title != null && link != null && !title.isEmpty() && !link.isEmpty()) {
+                        featureToHtmlMap.putIfAbsent(title, link);
+                    }
+                }
             }
+
+            logger.debug("Loaded {} feature mappings from index.html", featureToHtmlMap.size());
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse index.html: {}", e.getMessage());
         }

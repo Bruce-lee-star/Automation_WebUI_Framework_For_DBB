@@ -147,8 +147,11 @@ public class Photographer {
     
     private boolean saveScreenshotSafely(Path screenshotPath) {
         try {
+            // 从配置读取是否全页截图（而非硬编码 true），保持与 PlaywrightManager 一致
+            boolean fullPage = FrameworkConfigManager
+                .getBoolean(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_FULLPAGE);
             page.screenshot(new Page.ScreenshotOptions()
-                .setFullPage(true)
+                .setFullPage(fullPage)
                 .setPath(screenshotPath));
             
             // 验证文件是否正确保存

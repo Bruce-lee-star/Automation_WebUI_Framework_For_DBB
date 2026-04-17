@@ -14,7 +14,7 @@ public class TimeoutConfig {
     // 默认超时时间（毫秒）
     private static final int DEFAULT_PAGE_LOAD_TIMEOUT = 30000;    // 页面加载超时
     private static final int DEFAULT_NAVIGATION_TIMEOUT = 30000;   // 导航超时
-    private static final int DEFAULT_ELEMENT_WAIT_TIMEOUT = 15000; // 元素等待时间（isVisible, exists 等方法）
+    private static final int DEFAULT_ELEMENT_WAIT_TIMEOUT = 15000; // 元素等待/操作超时（isVisible, exists, click, fill 等）
     
     /**
      * 获取页面加载超时时间
@@ -89,5 +89,14 @@ public class TimeoutConfig {
             logger.debug("Failed to get screenshot timeout from config, using default", e);
             return 5000;
         }
+    }
+
+    /**
+     * 获取元素操作超时时间（含重试总时间上限）
+     * 复用 playwright.element.wait.timeout 配置，与 getElementCheckTimeout 共享同一配置
+     * 用于 PageElement 的 click/fill/doubleClick 等操作的时间预算
+     */
+    public static int getElementActionTimeout() {
+        return getElementCheckTimeout();
     }
 }

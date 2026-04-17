@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotClickableException;
@@ -21,7 +23,6 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -1378,16 +1379,18 @@ public abstract class BasePage {
     // ==================== 截图和记录方法 ====================
 
     /**
-     * 截取全屏截图
+     * 截取页面截图（全页或视口，由 playwright.screenshot.fullpage 配置控制）
      */
     public void takeScreenshot() {
         try {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Taking full page screenshot");
+            boolean fullPage = FrameworkConfigManager
+                .getBoolean(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_FULLPAGE);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Taking screenshot (fullPage: {})", fullPage);
             ensurePageValid();
-            page.screenshot(new Page.ScreenshotOptions().setFullPage(true));
+            page.screenshot(new Page.ScreenshotOptions().setFullPage(fullPage));
         } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to take full page screenshot", e);
-            throw new RuntimeException("Failed to take full page screenshot", e);
+            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to take screenshot", e);
+            throw new RuntimeException("Failed to take screenshot", e);
         }
     }
 

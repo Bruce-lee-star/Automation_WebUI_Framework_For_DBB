@@ -814,7 +814,7 @@ public enum FrameworkConfig {
     PLAYWRIGHT_ELEMENT_WAIT_TIMEOUT(
         "playwright.element.wait.timeout",
         "15000",
-        "元素等待时间（毫秒）"),
+        "元素等待/操作超时时间（毫秒，用于查询和操作的统一超时）"),
 
     /**
      * 轮询间隔时间（毫秒）

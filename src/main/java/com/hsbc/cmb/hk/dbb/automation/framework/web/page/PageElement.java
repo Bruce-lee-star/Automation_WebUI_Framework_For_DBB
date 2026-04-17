@@ -3,10 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.Locator;
-import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.options.BoundingBox;
-import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.MouseButton;
 import com.microsoft.playwright.options.WaitForSelectorState;
 
@@ -19,23 +17,20 @@ import java.nio.file.Paths;
 /**
  * 页面元素包装类，支持链式调用
  *
- * 核心优化点：
- * 1. 移除硬编码通用loading选择器，无业务耦合
- * 2. 操作前统一等待页面就绪(LOAD + NETWORKIDLE)，解决Loading/JS未绑定导致事件不触发
- * 3. 原生稳定等待 + 重试机制结合，杜绝操作假成功
- * 4. 保留原有所有轮询/判断/链式API，完全向下兼容
+ * 核心设计理念：
+ * 1. 页面稳定化由框架层负责（PlaywrightContextManager.createPage → stabilizePage → DOMContentLoaded）
+ * 2. Playwright action API (click/fill/dblclick) 内部已自动 wait until actionable
+ * 3. 本类仅提供操作级重试机制，处理临时性失败（超时/DOM抖动）
+ * 4. 移除硬编码通用loading选择器，无业务耦合
  */
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
 
-    // 页面稳定等待超时
-    private static final int PAGE_LOAD_TIMEOUT = 8000;
-    private static final int NETWORK_IDLE_TIMEOUT = 8000;
     // 操作后微小休眠，适配前端异步事件渲染
     private static final int ACTION_POST_DELAY = 200;
-    // 重试配置
-    private static final int MAX_RETRY = 3;
-    private static final int RETRY_DELAY_MS = 800;
+    // 重试配置（总时间上限由 getElementActionTimeout 控制）
+    private static final int MAX_RETRY = 5;
+    private static final int RETRY_DELAY_MS = 300;
 
     private final String selector;
     private BasePage page;
@@ -78,28 +73,21 @@ public class PageElement {
         return page;
     }
 
-    // ==================== 核心：页面稳定就绪等待（无硬编码、纯原生） ====================
-    private void waitForPageStable() {
-        try {
-            // 1. 等待页面基础加载完成
-            getPage().getPage().waitForLoadState(
-                    LoadState.LOAD,
-                    new Page.WaitForLoadStateOptions().setTimeout(PAGE_LOAD_TIMEOUT)
-            );
-            // 2. 关键：等待网络空闲，确保异步JS、接口、事件绑定执行完毕
-            getPage().getPage().waitForLoadState(
-                    LoadState.NETWORKIDLE,
-                    new Page.WaitForLoadStateOptions().setTimeout(NETWORK_IDLE_TIMEOUT)
-            );
-        } catch (PlaywrightException ignored) {
-            // 超时不阻断流程，避免弱网/静态页面报错
-        }
-    }
+    // ==================== 核心：操作级重试机制 ====================
+    /**
+     * 重试执行器：仅对 PlaywrightException（超时/DOM抖动/元素遮挡）进行重试
+     *
+     * 设计理念：
+     *   页面稳定化由框架层负责：
+     *     1. PlaywrightContextManager.createPage() → stabilizePage()
+     *     2. → PlaywrightManager.stabilizePage() → waitForLoadState(DOMCONTENTLOADED)
+     *   Playwright action API 内部已自动 wait until actionable
+     *   本类仅处理临时性失败的重试，不重复等待页面稳定
+     */
 
-    // ==================== 基础操作（内置页面就绪+重试，解决Loading无事件） ====================
+    // ==================== 基础操作（内置重试，解决临时性失败） ====================
     public PageElement click() {
         executeWithRetry(() -> {
-            waitForPageStable();
             locator().click();
             getPage().waitForTimeout(ACTION_POST_DELAY);
         }, "click");
@@ -107,16 +95,12 @@ public class PageElement {
     }
 
     public PageElement type(String text) {
-        executeWithRetry(() -> {
-            waitForPageStable();
-            locator().fill(text);
-        }, "fill");
+        executeWithRetry(() -> locator().fill(text), "fill");
         return this;
     }
 
     public PageElement doubleClick() {
         executeWithRetry(() -> {
-            waitForPageStable();
             locator().dblclick();
             getPage().waitForTimeout(ACTION_POST_DELAY);
         }, "dblclick");
@@ -125,7 +109,6 @@ public class PageElement {
 
     public PageElement rightClick() {
         executeWithRetry(() -> {
-            waitForPageStable();
             locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
             getPage().waitForTimeout(ACTION_POST_DELAY);
         }, "rightClick");
@@ -133,40 +116,56 @@ public class PageElement {
     }
 
     public PageElement clear() {
-        executeWithRetry(() -> {
-            waitForPageStable();
-            locator().clear();
-        }, "clear");
+        executeWithRetry(() -> locator().clear(), "clear");
         return this;
     }
 
     public PageElement hover() {
-        executeWithRetry(() -> {
-            waitForPageStable();
-            locator().hover();
-        }, "hover");
+        executeWithRetry(() -> locator().hover(), "hover");
         return this;
     }
 
     // ==================== 重试核心逻辑 ====================
+    /**
+     * 纯重试机制：基于时间预算的重试，总耗时不超过 getElementActionTimeout（默认30s）
+     *
+     * 设计原则：
+     *   1. 页面稳定化由框架层 PlaywrightContextManager.createPage() 统一处理
+     *   2. Playwright action API 内部已自动 wait until actionable
+     *   3. 本方法仅处理临时性失败的重试，受时间预算约束
+     */
     private void executeWithRetry(Runnable action, String operationName) {
         Exception lastException = null;
-        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+        int timeoutMs = TimeoutConfig.getElementActionTimeout();
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int attempt = 0;
+
+        while (true) {
+            attempt++;
             try {
                 action.run();
                 return;
             } catch (PlaywrightException e) {
                 lastException = e;
-                if (isRetriableError(e) && attempt < MAX_RETRY) {
-                    logger.debug("[Retry] {} on '{}' failed (attempt {}/{}), retrying in {}ms: {}",
-                            operationName, selector, attempt, MAX_RETRY, RETRY_DELAY_MS, e.getMessage());
-                    getPage().waitForTimeout(RETRY_DELAY_MS);
+                long remaining = deadline - System.currentTimeMillis();
+
+                // 超时或不可重试异常 → 立即抛出
+                if (remaining <= 0 || !isRetriableError(e)) {
+                    break;
                 }
+
+                logger.debug("[Retry] {} on '{}' failed (attempt {}, {}ms remaining): {}",
+                        operationName, selector, attempt, remaining, e.getMessage());
+
+                // 动态延迟：剩余时间越少，延迟越短
+                long delay = Math.min(RETRY_DELAY_MS, Math.max(100, remaining / (MAX_RETRY - attempt + 1)));
+                getPage().waitForTimeout((int) delay);
             }
         }
+
         throw new RuntimeException(
-                String.format("'%s' %s failed after %d retries: %s",
-                        selector, operationName, MAX_RETRY,
+                String.format("'%s' %s failed after %d attempts within %dms: %s",
+                        selector, operationName, attempt, timeoutMs,
                         lastException != null ? lastException.getMessage() : "unknown"),
                 lastException);
     }

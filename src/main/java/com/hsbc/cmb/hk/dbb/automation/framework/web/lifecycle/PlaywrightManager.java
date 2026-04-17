@@ -1542,6 +1542,12 @@ public class PlaywrightManager {
                     }
                 }
 
+                // 关键修复：截图中滚动到顶部，防止 fullPage 截图时因页面位置异常导致内容重叠/拼接
+                // 特别是当上一个步骤将页面滚动到了中间或底部位置时
+                try {
+                    page.evaluate("window.scrollTo(0, 0)");
+                } catch (Exception ignored) {}
+
                 // 截图模式：根据配置选择全页截图或viewport截图
                 boolean fullPage = isFullPageScreenshot();
                 page.screenshot(new Page.ScreenshotOptions()
@@ -1587,6 +1593,12 @@ public class PlaywrightManager {
                         logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
                     }
                 }
+
+                // 关键修复：截图中滚动到顶部，防止 fullPage 截图时因页面位置异常导致内容重叠/拼接
+                // 特别是当上一个步骤将页面滚动到了中间或底部位置时
+                try {
+                    page.evaluate("window.scrollTo(0, 0)");
+                } catch (Exception ignored) {}
 
                 // 截图模式：根据配置选择全页截图或viewport截图
                 // 全页截图对于长页面较慢但捕获完整内容，viewport截图速度快但只捕获可见区域

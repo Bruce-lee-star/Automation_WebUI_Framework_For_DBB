@@ -66,13 +66,15 @@ public class SummaryReportGenerator {
         this.projectName = loadProjectName();
         this.reportTitle = projectName; // Use project name as report title
         this.reportUrl = loadReportUrl();
-        // fullReportUrl: 直接链接到报告目录（不指定具体文件）
-        // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/
-        // 本地环境: 相对链接 → ./ 或当前目录
+        // fullReportUrl: 链接到 Serenity 完整报告的 index.html
+        // Jenkins环境: 绝对URL → http://jenkins.cli:8888/job/Playwright/49/Serenity_20Summary_20Report/index.html
+        // 本地环境: 相对链接 → ./index.html（指向同目录下的 Serenity 主页）
         if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
-            this.fullReportUrl = ensureTrailingSlash(reportUrl);
+            String url = ensureTrailingSlash(reportUrl);
+            this.fullReportUrl = url + "index.html";
         } else {
-            this.fullReportUrl = "./";
+            // 默认链接到同目录下的 Serenity index.html（标准 Sereny 报告入口）
+            this.fullReportUrl = "./index.html";
         }
         init();
     }
@@ -1017,20 +1019,22 @@ public class SummaryReportGenerator {
      */
     private void appendErrorTypePieChart(StringBuilder sb, Map<String, Integer> failureCounts) {
         int total = failureCounts.values().stream().mapToInt(Integer::intValue).sum();
-        String[] colors = {"#e53935", "#f44336", "#ef5350", "#e57373", "#ef9a9a",
-                          "#ff8a65", "#ff7043", "#f06292", "#ba68c8", "#9575cd"};
+        // 使用区分度高的颜色（红、橙、蓝、绿、紫、青等）
+        String[] colors = {"#e53935", "#ff9800", "#2196f3", "#4caf50", "#9c27b0",
+                          "#00bcd4", "#ff5722", "#673ab7", "#009688", "#795548"};
 
         sb.append("                            <div style=\"margin-top:20px;text-align:center;\">\n");
-        sb.append("                                <h4 style=\"margin:0 0 12px 0;font-size:16px;color:#333;\">Error Type Distribution</h4>\n");
+        sb.append("                                <h4 style=\"margin:0 0 12px 0;font-size:16px;color:#333;\">Failure Analysis</h4>\n");
 
-        int pieSize = 200;
+        int pieSize = 240;
         int halfPie = pieSize / 2;
+        int containerWidth = pieSize;
+        int containerHeight = pieSize + 80; // 底部图例高度
         int colorIdx = 0;
 
         if (failureCounts.size() == 1) {
-            // 单分类 → 实心圆，中心显示标签+百分比
+            // 单分类 → 实心圆，中心只显示百分比
             Map.Entry<String, Integer> onlyEntry = failureCounts.entrySet().iterator().next();
-            String label = escape(onlyEntry.getKey());
             double pct = (double) onlyEntry.getValue() / total * 100;
 
             sb.append("                                <div style=\"display:inline-block;width:")
@@ -1039,100 +1043,55 @@ public class SummaryReportGenerator {
               .append(";box-shadow:0 2px 8px rgba(0,0,0,0.15);position:relative;\">\n");
             sb.append("                                    <div style=\"position:absolute;top:50%;left:50%")
               .append(";transform:translate(-50%,-50%);text-align:center;\">\n");
-            sb.append("                                        <div style=\"font-size:13px;font-weight:bold;color:#fff;\">")
-              .append(label).append("</div>\n");
-            sb.append("                                        <div style=\"font-size:22px;font-weight:bold;color:#fff;margin-top:2px;\">")
+            sb.append("                                        <div style=\"font-size:28px;font-weight:bold;color:#fff;\">")
               .append(String.format("%.0f", pct)).append("%</div>\n");
             sb.append("                                    </div>\n");
             sb.append("                                </div>\n");
 
         } else {
-            // 多分类 → 饼图 + 环绕标签
-            List<double[]> labelPositions = new ArrayList<>();
+            // 多分类 → 饼图 + 底部图例
             StringBuilder gradient = new StringBuilder();
-            double startAngle = -90;
+            double currentPct = 0;
 
             for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
                 double pct = (double) entry.getValue() / total * 100;
-                double sweepAngle = pct * 360;
-                double midAngle = startAngle + sweepAngle / 2;
 
+                // conic-gradient: color start% end% (百分比直接是 0-100)
                 if (gradient.length() > 0) gradient.append(", ");
                 gradient.append(colors[colorIdx % colors.length])
-                  .append(" ").append(String.format("%.6f", startAngle)).append("%")
-                  .append(" ").append(String.format("%.6f", startAngle + pct)).append("%");
+                  .append(" ").append(String.format("%.2f", currentPct)).append("%")
+                  .append(" ").append(String.format("%.2f", currentPct + pct)).append("%");
 
-                double labelRadius = halfPie + 28;
-                double lx = halfPie + labelRadius * Math.cos(Math.toRadians(midAngle));
-                double ly = halfPie + labelRadius * Math.sin(Math.toRadians(midAngle));
-                labelPositions.add(new double[]{midAngle, lx, ly});
-
-                startAngle += sweepAngle;
+                currentPct += pct;
                 colorIdx++;
             }
 
-            // 饼图容器（加宽以容纳左右标签）
+            // 饼图本体（居中）
             sb.append("                                <div style=\"display:inline-block;")
-              .append("position:relative;width:").append(pieSize + 120).append("px;height:")
-              .append(pieSize).append("px;vertical-align:middle;\">\n");
+              .append("width:").append(pieSize).append("px;height:").append(pieSize)
+              .append("px;border-radius:50%;background:conic-gradient(from -90deg, ")
+              .append(gradient).append(");box-shadow:0 2px 8px rgba(0,0,0,0.15);margin:0 auto;\"></div>\n");
 
-            // 饼图本体（偏左）
-            sb.append("                                    <div style=\"display:inline-block;")
-              .append("position:absolute;left:").append((pieSize + 120 - pieSize) / 2)
-              .append("px;top:0;width:").append(pieSize).append("px;height:").append(pieSize)
-              .append("px;border-radius:50%;background:conic-gradient(")
-              .append(gradient).append(");box-shadow:0 2px 8px rgba(0,0,0,0.15);")
-              .append("\"></div>\n");
-
-            // 标签
-            int posIdx = 0;
+            // 底部图例（简化：仅显示颜色 + 名称 + 百分比）
+            sb.append("                                <div style=\"margin-top:16px;padding:12px;background:#f5f5f5;border-radius:8px;\">");
+            sb.append("                                    <div style=\"display:flex;flex-wrap:wrap;justify-content:center;gap:16px;\">");
+            colorIdx = 0;
             for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
                 double pct = (double) entry.getValue() / total * 100;
-                double[] pos = labelPositions.get(posIdx++);
-                double midAngle = pos[0];
-                double lx = pos[1];
-                double ly = pos[2];
-
-                String textAlign = (midAngle > -90 && midAngle < 90) ? "text-align:left;margin-left:6px;" : "text-align:right;margin-right:6px;";
-
-                sb.append("                                    <div style=\"position:absolute;")
-                  .append("left:").append(round(lx)).append("px;top:").append(round(ly))
-                  .append("px;transform:translate(-50%,-50%);white-space:nowrap;")
-                  .append(textAlign).append("font-size:11px;color:#333;line-height:1.3;\">\n");
-                sb.append("                                        <strong>")
-                  .append(escape(entry.getKey()))
-                  .append("</strong> ")
-                  .append(String.format("%.0f", pct)).append("% (")
-                  .append(entry.getValue()).append(")\n");
-                sb.append("                                    </div>\n");
+                sb.append("                                        <div style=\"display:flex;align-items:center;gap:6px;\">\n");
+                sb.append("                                            <span style=\"display:inline-block;width:12px;height:12px;background:")
+                  .append(colors[colorIdx % colors.length])
+                  .append(";border-radius:2px;\"></span>");
+                sb.append("                                            <span style=\"font-size:12px;color:#333;\">")
+                  .append(escape(entry.getKey())).append(": ")
+                  .append(String.format("%.0f%%", pct)).append("</span>");
+                sb.append("                                        </div>\n");
+                colorIdx++;
             }
-            sb.append("                                </div>\n");
+            sb.append("                                    </div>");
+            sb.append("                                </div>");
         }
-
-        // 图例
-        sb.append("                                <table style=\"margin:10px auto 4px auto;border-collapse:collapse;font-size:12px;\">\n");
-        colorIdx = 0;
-        for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
-            double pct = (double) entry.getValue() / total * 100;
-            sb.append("                                    <tr>\n");
-            sb.append("                                        <td style=\"padding:2px 10px 2px 0;white-space:nowrap;text-align:right;\">")
-              .append("<span style=\"display:inline-block;width:10px;height:10px;background:")
-              .append(colors[colorIdx % colors.length])
-              .append(";border-radius:2px;vertical-align:middle;margin-right:6px;\"></span>")
-              .append(escape(entry.getKey())).append("</td>\n");
-            sb.append("                                        <td style=\"padding:2px 8px;color:#666;text-align:center;\">")
-              .append(entry.getValue()).append("</td>\n");
-            sb.append("                                        <td style=\"padding:2px 0;color:#999;\">")
-              .append(String.format("%.0f", pct)).append("%</td>\n");
-            sb.append("                                    </tr>\n");
-            colorIdx++;
-        }
-        sb.append("                                </table>\n");
         sb.append("                            </div>\n");
-    }
-
-    private static double round(double v) {
-        return Math.round(v * 100) / 100.0;
     }
 
     private static class FeatureFailureStats {
@@ -1701,19 +1660,48 @@ public class SummaryReportGenerator {
 
     private void loadFeatureHtmlMapping(String actualReportDir) {
         Path indexFile = Paths.get(actualReportDir, "index.html");
-        if (!Files.exists(indexFile)) return;
+        if (!Files.exists(indexFile)) {
+            logger.debug("index.html not found at {}, skipping feature mapping", indexFile);
+            return;
+        }
 
         try {
             String content = Files.readString(indexFile, StandardCharsets.UTF_8);
-            Pattern p = Pattern.compile(
-                "title:\\s*'([^']+)'.*?link:\\s*\"([^\"]+)\"",
-                Pattern.DOTALL);
-            Matcher m = p.matcher(content);
-            while (m.find()) {
-                String title = m.group(1);
-                String link = m.group(2);
-                featureToHtmlMap.put(title, link);
+
+            // Serenity BDD index.html 格式: data-title="..." data-link="..."
+            // 兼容多种格式：单引号/双引号、data-link/data-href
+            Pattern[] patterns = {
+                // 标准格式: title:'xxx', link:"yyy"
+                Pattern.compile("['\"]title['\"]?\\s*:\\s*['\"]([^'\"]+)['\"]?.+?['\"]link['\"]?\\s*:\\s*['\"]([^\"]+)['\"]", Pattern.DOTALL),
+                // data 属性格式: data-title="xxx" data-link="yyy"
+                Pattern.compile("data-title\\s*=\\s*[\"']([^\"']*)[\"']\\s+data-link\\s*=\\s*[\"']([^\"']*)[\"']", Pattern.DOTALL),
+                // 简化 href 格式
+                Pattern.compile("<a[^>]+href=['\"]([^'\"]+)['\"][^>]*>([^<]+)</a>.*?(?:feature|story)", Pattern.CASE_INSENSITIVE | Pattern.DOTALL)
+            };
+
+            for (Pattern p : patterns) {
+                Matcher m = p.matcher(content);
+                while (m.find()) {
+                    String title = null;
+                    String link = null;
+
+                    if (m.groupCount() >= 2) {
+                        title = m.group(1).trim();
+                        link = m.group(2).trim();
+                    } else if (m.groupCount() >= 1) {
+                        link = m.group(1).trim();
+                        // 从 link 路径提取标题
+                        Path lp = Paths.get(link).getFileName();
+                        title = lp.toString().replaceAll("-", " ");
+                    }
+
+                    if (title != null && link != null && !title.isEmpty() && !link.isEmpty()) {
+                        featureToHtmlMap.putIfAbsent(title, link);
+                    }
+                }
             }
+
+            logger.debug("Loaded {} feature mappings from index.html", featureToHtmlMap.size());
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse index.html: {}", e.getMessage());
         }

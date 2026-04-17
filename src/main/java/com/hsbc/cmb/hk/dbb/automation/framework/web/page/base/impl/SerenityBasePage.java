@@ -1,7 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl;
 
-import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.options.AriaRole;
+import com.microsoft.playwright.options.BoundingBox;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
@@ -704,29 +707,29 @@ public abstract class SerenityBasePage extends BasePage {
     }
 
     @Override
-    public com.microsoft.playwright.Locator byAltText(String altText) {
-        com.microsoft.playwright.Locator locator = super.byAltText(altText);
+    public Locator byAltText(String altText) {
+        Locator locator = super.byAltText(altText);
         addSerenityTestData("byAltText", altText);
         return locator;
     }
 
     @Override
-    public com.microsoft.playwright.Locator byRole(com.microsoft.playwright.options.AriaRole role) {
-        com.microsoft.playwright.Locator locator = super.byRole(role);
+    public Locator byRole(AriaRole role) {
+        Locator locator = super.byRole(role);
         addSerenityTestData("byRole", role.toString());
         return locator;
     }
 
     @Override
-    public com.microsoft.playwright.Locator byTitle(String title) {
-        com.microsoft.playwright.Locator locator = super.byTitle(title);
+    public Locator byTitle(String title) {
+        Locator locator = super.byTitle(title);
         addSerenityTestData("byTitle", title);
         return locator;
     }
 
     @Override
-    public com.microsoft.playwright.Locator byTestId(String testId) {
-        com.microsoft.playwright.Locator locator = super.byTestId(testId);
+    public Locator byTestId(String testId) {
+        Locator locator = super.byTestId(testId);
         addSerenityTestData("byTestId", testId);
         return locator;
     }

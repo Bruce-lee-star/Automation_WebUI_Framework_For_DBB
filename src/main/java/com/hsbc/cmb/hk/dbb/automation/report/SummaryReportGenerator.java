@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -1186,7 +1187,7 @@ public class SummaryReportGenerator {
 
         LoggingConfigUtil.logDebugIfVerbose(logger,
             "Loaded {} error types: {}", errorTypeRules.size(),
-            errorTypeRules.stream().map(ErrorTypeRule::toString).collect(java.util.stream.Collectors.joining(", ")));
+            errorTypeRules.stream().map(ErrorTypeRule::toString).collect(Collectors.joining(", ")));
     }
 
     /**
@@ -1363,25 +1364,25 @@ public class SummaryReportGenerator {
      */
     static class ErrorTypeRule {
         final String label;
-        final java.util.List<String> keywords;
+        final List<String> keywords;
 
         /** 旧格式：label 既是显示名也是匹配关键字 */
         ErrorTypeRule(String label) {
             this.label = label;
-            this.keywords = java.util.Collections.singletonList(label);
+            this.keywords = Collections.singletonList(label);
         }
 
         /** 单关键字（内置默认） */
         ErrorTypeRule(String label, String keyword) {
             this.label = label;
-            this.keywords = java.util.Collections.singletonList(keyword);
+            this.keywords = Collections.singletonList(keyword);
         }
 
         /** 多关键字（JSON 配置） */
-        ErrorTypeRule(String label, java.util.List<String> keywords) {
+        ErrorTypeRule(String label, List<String> keywords) {
             this.label = label;
             this.keywords = keywords != null && !keywords.isEmpty()
-                ? keywords : java.util.Collections.singletonList(label);
+                ? keywords : Collections.singletonList(label);
         }
 
         boolean matches(String errorMessage) {

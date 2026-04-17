@@ -13,9 +13,11 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -276,7 +278,7 @@ public class BrowserStackManager {
     private static Map<String, String> buildAuthHeader() {
         Map<String, String> headers = new HashMap<>();
         String auth = getUsername() + ":" + getAccessKey();
-        String encoded = java.util.Base64.getEncoder()
+        String encoded = Base64.getEncoder()
             .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
         headers.put("Authorization", "Basic " + encoded);
         return headers;
@@ -286,7 +288,7 @@ public class BrowserStackManager {
     @SuppressWarnings("deprecation")
     private static int sendPutRequest(String urlStr, Map<String, Object> body,
                                        String username, String accessKey) throws IOException {
-        java.net.URI uri = java.net.URI.create(urlStr);
+        URI uri = URI.create(urlStr);
         URL url = uri.toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         
@@ -299,7 +301,7 @@ public class BrowserStackManager {
         
         // Basic Auth
         String auth = username + ":" + accessKey;
-        String encoded = java.util.Base64.getEncoder()
+        String encoded = Base64.getEncoder()
             .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
         conn.setRequestProperty("Authorization", "Basic " + encoded);
         

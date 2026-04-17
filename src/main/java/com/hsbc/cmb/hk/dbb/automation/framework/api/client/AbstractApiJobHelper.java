@@ -11,6 +11,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -639,8 +641,8 @@ public class AbstractApiJobHelper extends ApiJob {
             // Read using Java NIO (avoid unclosed streams) with configured encoding
             String encoding = FrameworkConfig.getPayloadEncoding();
             String content = new String(
-                    java.nio.file.Files.readAllBytes(payloadFile.toPath()),
-                    java.nio.charset.Charset.forName(encoding)
+                    Files.readAllBytes(payloadFile.toPath()),
+                    Charset.forName(encoding)
             );
             // 6. Fifth layer validation: File content not empty
             if (content == null || content.trim().isEmpty()) {

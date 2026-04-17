@@ -12,6 +12,8 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Configuration Provider Utility (With Configurable Paths)
@@ -374,7 +376,7 @@ public class ConfigProvider {
 
         if (classpathUrl != null) {
             try {
-                String decodedPath = java.net.URLDecoder.decode(classpathUrl.getPath(), java.nio.charset.StandardCharsets.UTF_8.name());
+                String decodedPath = URLDecoder.decode(classpathUrl.getPath(), StandardCharsets.UTF_8.name());
                 String canonicalClasspath = new File(decodedPath).getCanonicalPath();
                 LOGGER.info("Payload file found in classpath: [{}] (decoded from: {})", canonicalClasspath, classpathUrl.getPath());
                 return canonicalClasspath;

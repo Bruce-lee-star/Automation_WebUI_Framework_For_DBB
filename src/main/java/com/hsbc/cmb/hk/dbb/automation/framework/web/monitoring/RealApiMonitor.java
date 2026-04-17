@@ -13,6 +13,7 @@ import java.net.URL;
 import java.net.URI;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -51,7 +52,7 @@ public class RealApiMonitor {
     private static volatile AssertionError monitoringFailure = null;
     
     // 目标 API 匹配计数（用于自动停止）
-    private static final java.util.concurrent.atomic.AtomicInteger matchedTargetApiCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    private static final AtomicInteger matchedTargetApiCount = new AtomicInteger(0);
     
     // 是否已捕获到所有目标 API
     private static volatile boolean allTargetApisCaptured = false;

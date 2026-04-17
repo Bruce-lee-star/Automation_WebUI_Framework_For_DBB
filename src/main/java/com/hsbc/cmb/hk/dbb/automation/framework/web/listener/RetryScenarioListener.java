@@ -34,6 +34,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -533,9 +534,9 @@ public class RetryScenarioListener implements EventListener, RerunExecutionListe
     private void truncateFile(Path path) {
         try {
             Files.newBufferedWriter(path,
-                java.nio.file.StandardOpenOption.CREATE,
-                java.nio.file.StandardOpenOption.TRUNCATE_EXISTING,
-                java.nio.file.StandardOpenOption.WRITE).close();
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE).close();
             logger.debug("Truncated rerun file successfully");
         } catch (IOException e) {
             logger.warn("Failed to truncate rerun file: {}", e.getMessage());

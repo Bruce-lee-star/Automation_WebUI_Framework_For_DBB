@@ -261,7 +261,7 @@ public abstract class BasePage {
     /**
      * 通过Role查找元素
      */
-    public Locator byRole(com.microsoft.playwright.options.AriaRole role) {
+    public Locator byRole(AriaRole role) {
         ensurePageValid();
         return page.getByRole(role);
     }
@@ -1030,7 +1030,7 @@ public abstract class BasePage {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Refreshing page");
             ensurePageValid();
             // 使用 domcontentloaded 而不是 load，避免因持续的网络请求（如SSE、长轮询）导致阻塞
-            page.reload(new Page.ReloadOptions().setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED));
+            page.reload(new Page.ReloadOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED));
         } catch (Exception e) {
             LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to refresh page", e);
             throw new RuntimeException("Failed to refresh page", e);

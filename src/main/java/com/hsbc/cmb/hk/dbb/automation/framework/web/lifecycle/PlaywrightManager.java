@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
@@ -581,8 +582,8 @@ public class PlaywrightManager {
     private static Browser setupBrowserStackBrowser(Playwright playwright, String browserType) {
         try {
             // 使用新的企业级 BrowserStackManager.connect() API
-            com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.setCurrentSessionId("auto-" + System.currentTimeMillis());
-            Browser browser = com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.connect(playwright);
+            BrowserStackManager.setCurrentSessionId("auto-" + System.currentTimeMillis());
+            Browser browser = BrowserStackManager.connect(playwright);
             logger.info("[BrowserStack] Connected successfully via CDP");
             return browser;
         } catch (Exception e) {
@@ -1930,7 +1931,7 @@ public class PlaywrightManager {
             return customHasTouch.get();
         }
 
-        public com.microsoft.playwright.options.ColorScheme getColorScheme() {
+        public ColorScheme getColorScheme() {
             return customColorScheme.get();
         }
 

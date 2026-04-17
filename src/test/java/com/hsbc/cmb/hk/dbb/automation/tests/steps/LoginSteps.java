@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.snapshot.PlaywrightSnapshotSupport;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
@@ -118,10 +119,18 @@ public class LoginSteps {
 //        AxeCoreScanner.scanPage("Login Page - Initial");
         
         loginPage.userNameIpt.type(username);
-
+        PlaywrightSnapshotSupport.of(loginPage.getPage())
+                .visual()
+                .baselineName("login-page")
+                .updateBaseline(false)
+                .snapshot();
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());
-
+        PlaywrightSnapshotSupport.of(loginPage.getPage())
+                .visual()
+                .baselineName("password-page")
+                .updateBaseline(false)
+                .snapshot();
 //        // Axe-core scan after password input
 //        AxeCoreScanner.scanPage("Login Page - After Password");
         

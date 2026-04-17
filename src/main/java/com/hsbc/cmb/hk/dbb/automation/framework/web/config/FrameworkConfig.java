@@ -853,80 +853,66 @@ public enum FrameworkConfig {
         "target/accessibility-axe",
         "Axe-core 报告输出目录"),
 
-    // ==================== 快照测试（视觉回归）配置 ====================
+    // ==================== Playwright 原生快照测试配置 ====================
 
     /**
-     * 是否启用快照测试
-     * true=启用, false=跳过所有快照测试
+     * 是否启用 Playwright 原生快照测试
+     * true=启用, false=跳过
      */
-    SNAPSHOT_TESTING_ENABLED(
-        "snapshot.testing.enabled",
+    NATIVE_SNAPSHOT_ENABLED(
+        "native.snapshot.enabled",
         "true",
-        "是否启用快照测试"
+        "是否启用 Playwright 原生快照测试"
     ),
 
     /**
-     * 基线文件存储目录
-     * ⚠️ 不要使用 target/ 目录！target/ 是 Maven 构建输出，mvn clean 会删除基线。
-     * 推荐: src/test/resources/snapshots/baselines
-     * 也可通过系统属性 -Dsnapshot.baseline.dir 覆盖
+     * Playwright 原生视觉快照基线目录
+     * 存储 .png 格式的视觉基线
      */
-    SNAPSHOT_BASELINE_DIR(
-        "snapshot.baseline.dir",
-        "src/test/resources/snapshots/baselines",
-        "基线文件存储目录"
+    NATIVE_SNAPSHOT_VISUAL_DIR(
+        "native.snapshot.visual.dir",
+        "src/test/resources/snapshots/native/visual",
+        "原生视觉快照基线目录"
     ),
 
     /**
-     * 当前快照和失败截图存储目录
-     * 运行时临时输出，可放 target/ 下
+     * Playwright 原生 ARIA 快照基线目录
+     * 存储 .aria 格式的可访问性树基线
      */
-    SNAPSHOT_DIR(
-        "snapshot.dir",
-        "target/snapshots",
-        "当前快照存储目录"
+    NATIVE_SNAPSHOT_ARIA_DIR(
+        "native.snapshot.aria.dir",
+        "src/test/resources/snapshots/native/aria",
+        "原生 ARIA 快照基线目录"
     ),
 
     /**
-     * 最大差异像素阈值
-     * 超过此值视为测试失败
+     * 原生视觉快照最大差异像素数
+     * 超过此值判定为失败
      */
-    SNAPSHOT_DIFF_THRESHOLD(
-        "snapshot.diff.threshold",
-        "1000",
-        "最大差异像素阈值"
+    NATIVE_SNAPSHOT_MAX_DIFF_PIXELS(
+        "native.snapshot.visual.maxDiffPixels",
+        "100",
+        "原生视觉快照最大差异像素数"
     ),
 
     /**
-     * 是否忽略抗锯齿等微小差异
-     * 浏览器渲染的亚像素级噪声
+     * 原生视觉快照最大差异像素比例
+     * 0.01 = 1%，超过此比例判定为失败
      */
-    SNAPSHOT_IGNORE_ANTIALIAS(
-        "snapshot.ignore.antiAlias",
-        "true",
-        "是否忽略抗锯齿差异"
+    NATIVE_SNAPSHOT_MAX_DIFF_RATIO(
+        "native.snapshot.visual.maxDiffPixelRatio",
+        "0.01",
+        "原生视觉快照最大差异像素比例"
     ),
 
     /**
-     * 失败时是否自动保存当前截图
+     * 原生快照测试静默模式
+     * true=减少日志输出, false=正常日志
      */
-    SNAPSHOT_FAILURE_SCREENSHOT(
-        "snapshot.failure.screenshot",
-        "true",
-        "失败时自动截图"
-    ),
-
-    /**
-     * 全局默认的基线模式
-     * true = 默认创建/更新基线（开发阶段 / UI 改版后）
-     * false = 默认仅对比，不修改基线（CI/CD 回归测试）
-     *
-     * 注意：代码 Builder 的 .updateBaseline(true/false) 可覆盖此全局默认值
-     */
-    SNAPSHOT_UPDATE_BASELINE(
-        "snapshot.update.baseline",
+    NATIVE_SNAPSHOT_SILENT(
+        "native.snapshot.silent",
         "false",
-        "全局基线模式（true=更新, false=对比）"
+        "原生快照测试静默模式"
     );
 
     private final String key;

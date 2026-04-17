@@ -186,6 +186,26 @@ mvn clean verify -DBROWSERSTACK_ENABLED=false
 
 示例：如果同时设置了环境变量和配置文件，**环境变量生效**。
 
+### FrameworkConfig 枚举对照表
+
+`FrameworkConfig.java` 中定义了所有 BrowserStack 配置枚举：
+
+| 枚举名 | 配置键 | 环境变量 | 默认值 | 说明 |
+|--------|--------|---------|--------|------|
+| `BROWSERSTACK_ENABLED` | `browserstack.enabled` | `BROWSERSTACK_ENABLED` | `false` | 是否启用云测试 |
+| `BROWSERSTACK_USERNAME` | `browserstack.username` | `BROWSERSTACK_USERNAME` | `""` | BrowserStack 用户名 |
+| `BROWSERSTACK_ACCESS_KEY` | `browserstack.accessKey` | `BROWSERSTACK_ACCESS_KEY` | `""` | BrowserStack 访问密钥 |
+| `BROWSERSTACK_SESSION_NAME` | `browserstack.sessionName` | — | `""` | Dashboard 会话名称 |
+| `BROWSERSTACK_OS` | `browserstack.os` | — | `"Windows"` | 操作系统名称 |
+| `BROWSERSTACK_OS_VERSION` | `browserstack.osVersion` | — | `"11"` | 操作系统版本 |
+| `BROWSERSTACK_BROWSER_VERSION` | `browserstack.browserVersion` | — | `"latest"` | 浏览器版本 |
+| `BROWSERSTACK_TIMEOUT` | `browserstack.timeout` | — | `"300"` | 连接超时（秒） |
+| `BROWSERSTACK_DEBUG` | `browserstack.debug` | — | `"true"` | 调试模式（步骤级截图） |
+| `BROWSERSTACK_NETWORK_LOGS` | `browserstack.networkLogs` | — | `"true"` | 捕获网络请求日志 |
+| `BROWSERSTACK_VIDEO` | `browserstack.video` | — | `"true"` | 录制测试视频 |
+
+> **代码访问**：在 Java 中通过 `FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_ENABLED)` 读取配置。
+
 ---
 
 ## 常用操作系统和浏览器组合

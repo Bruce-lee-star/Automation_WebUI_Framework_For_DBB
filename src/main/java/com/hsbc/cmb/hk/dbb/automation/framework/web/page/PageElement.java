@@ -63,6 +63,22 @@ public class PageElement {
         return getPage().locator(selector);
     }
 
+    /**
+     * 根据相对选择器查找子元素（返回 Playwright Locator）
+     * 
+     * 使用 Playwright 原生的 locator 嵌套机制，支持：
+     * - CSS + CSS: parent.locator(".child")
+     * - XPath + XPath: parent.locator("//child")
+     * - CSS + XPath: parent.locator("//child")
+     * - XPath + CSS: parent.locator(".child")
+     * 
+     * @param relativeSelector 相对选择器（支持 CSS 选择器或 XPath）
+     * @return 子元素的 Locator
+     */
+    public Locator locator(String relativeSelector) {
+        return locator().locator(relativeSelector);
+    }
+
     private BasePage getPage() {
         if (page == null) {
             page = BasePage.getCurrentPage();

@@ -1513,57 +1513,6 @@ public class PlaywrightManager {
         return takeScreenshot(stepTitle);
     }
 
-    /**
-     * 截图并返回截图文件（用于页面变化检测）
-     */
-    public static File takeScreenshotWithReturn(String title) {
-        try {
-            Page page = pageThreadLocal.get();
-            if (page != null && !page.isClosed()) {
-                // 确保截图目录存在
-                Path screenshotDir = Paths.get("target/site/serenity");
-                Files.createDirectories(screenshotDir);
-
-                // 生成文件名
-                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
-                String screenshotHash = generateHash(hashInput);
-                String screenshotName = screenshotHash + ".png";
-                Path screenshotPath = screenshotDir.resolve(screenshotName);
-
-                // 性能优化：快速等待页面稳定（可配置）
-                int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
-                LoadState loadState = getConfiguredLoadState();
-                try {
-                    page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
-                } catch (Exception e) {
-                    // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
-                    if (logger.isTraceEnabled()) {
-                        logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
-                    }
-                }
-
-                // 关键修复：截图中滚动到顶部，防止 fullPage 截图时因页面位置异常导致内容重叠/拼接
-                // 特别是当上一个步骤将页面滚动到了中间或底部位置时
-                try {
-                    page.evaluate("window.scrollTo(0, 0)");
-                } catch (Exception ignored) {}
-
-                // 截图模式：根据配置选择全页截图或viewport截图
-                boolean fullPage = isFullPageScreenshot();
-                page.screenshot(new Page.ScreenshotOptions()
-                        .setFullPage(fullPage)
-                        .setPath(screenshotPath));
-
-                LoggingConfigUtil.logDebugIfVerbose(
-                        logger, "Screenshot saved: {} (fullPage: {})", screenshotPath, fullPage);
-
-                return screenshotPath.toFile();
-            }
-        } catch (Exception e) {
-            logger.error("Failed to take screenshot", e);
-        }
-        return null;
-    }
 
     /**
      * 截图并返回截图文件路径
@@ -1571,54 +1520,99 @@ public class PlaywrightManager {
     public static String takeScreenshot(String title) {
         try {
             Page page = pageThreadLocal.get();
-            if (page != null && !page.isClosed()) {
-                // 确保截图目录存在
-                Path screenshotDir = Paths.get("target/site/serenity");
-                Files.createDirectories(screenshotDir);
-
-                // 生成文件名
-                String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
-                String screenshotHash = generateHash(hashInput);
-                String screenshotName = screenshotHash + ".png";
-                Path screenshotPath = screenshotDir.resolve(screenshotName);
-
-                // 性能优化：快速等待页面稳定（可配置）
-                int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
-                LoadState loadState = getConfiguredLoadState();
-                try {
-                    page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
-                } catch (Exception e) {
-                    // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
-                    if (logger.isTraceEnabled()) {
-                        logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
-                    }
-                }
-
-                // 关键修复：截图中滚动到顶部，防止 fullPage 截图时因页面位置异常导致内容重叠/拼接
-                // 特别是当上一个步骤将页面滚动到了中间或底部位置时
-                try {
-                    page.evaluate("window.scrollTo(0, 0)");
-                } catch (Exception ignored) {}
-
-                // 截图模式：根据配置选择全页截图或viewport截图
-                // 全页截图对于长页面较慢但捕获完整内容，viewport截图速度快但只捕获可见区域
-                boolean fullPage = isFullPageScreenshot();
-                Page.ScreenshotOptions screenshotOptions = new Page.ScreenshotOptions()
-                        .setFullPage(fullPage)
-                        .setPath(screenshotPath);
-
-                page.screenshot(screenshotOptions);
-
-                LoggingConfigUtil.logDebugIfVerbose(
-                        logger, "Screenshot saved: {} (fullPage: {})", screenshotPath, fullPage);
-
-                // 返回截图文件路径
-                return screenshotPath.toString();
+            if (page == null || page.isClosed()) {
+                return null;
             }
+
+            // 1. 快速创建目录（不变）
+            Path screenshotDir = Paths.get("target/site/serenity");
+            Files.createDirectories(screenshotDir);
+
+            // 2. 高性能文件名（弃用SHA256，毫秒+线程唯一）
+            String screenshotName = System.currentTimeMillis() + "_" + Thread.currentThread().threadId() + ".png";
+            Path screenshotPath = screenshotDir.resolve(screenshotName);
+
+            // 关键稳定JS（无等待）
+            try {
+                page.evaluate("window.scrollTo(0,0);document.body.style.scrollBehavior='auto';");
+            } catch (Exception ignored) {}
+
+            int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
+            LoadState loadState = getConfiguredLoadState();
+            try {
+                page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
+            } catch (Exception e) {
+                // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
+                }
+            }
+
+            // 5. 截图：全页开关保留，但执行更快
+            boolean fullPage = isFullPageScreenshot();
+            page.screenshot(new Page.ScreenshotOptions()
+                    .setFullPage(fullPage)
+                    .setOmitBackground(false)
+                    .setClip(null)
+                    .setPath(screenshotPath));
+
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {} (fullPage: {})", screenshotPath, fullPage);
+            return screenshotPath.toString();
+
         } catch (Exception e) {
             logger.error("Failed to take screenshot", e);
+            return null;
         }
-        return null;
+    }
+
+    /**
+     * 截图并返回截图文件（用于页面变化检测）
+     */
+    public static File takeScreenshotWithReturn(String title) {
+        try {
+            Page page = pageThreadLocal.get();
+            if (page == null || page.isClosed()) {
+                return null;
+            }
+
+            Path screenshotDir = Paths.get("target/site/serenity");
+            Files.createDirectories(screenshotDir);
+
+            // 高性能文件名
+            String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
+            String screenshotHash = generateHash(hashInput);
+            String screenshotName = screenshotHash + ".png";
+            Path screenshotPath = screenshotDir.resolve(screenshotName);
+
+            // 关键稳定JS（无等待）
+            try {
+                page.evaluate("window.scrollTo(0,0);document.body.style.scrollBehavior='auto';");
+            } catch (Exception ignored) {}
+
+            int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
+            LoadState loadState = getConfiguredLoadState();
+            try {
+                page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
+            } catch (Exception e) {
+                // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
+                if (logger.isTraceEnabled()) {
+                    logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
+                }
+            }
+
+            // 截图
+            boolean fullPage = isFullPageScreenshot();
+            page.screenshot(new Page.ScreenshotOptions()
+                    .setFullPage(fullPage)
+                    .setOmitBackground(false)
+                    .setClip(null)
+                    .setPath(screenshotPath));
+
+            return screenshotPath.toFile();
+        } catch (Exception e) {
+            logger.error("Failed to take screenshot", e);
+            return null;
+        }
     }
 
     // ==================== 配置访问方法（封装层） ====================

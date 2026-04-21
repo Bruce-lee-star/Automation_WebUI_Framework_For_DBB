@@ -111,10 +111,6 @@ public class PlaywrightManager {
         PlaywrightInitializer.ensureBrowsersInstalled();
     }
 
-    // ==================== 浏览器安装方法 ====================
-
-
-
     // ==================== 工具方法 ====================
 
 

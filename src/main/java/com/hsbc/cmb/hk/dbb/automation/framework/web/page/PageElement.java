@@ -16,20 +16,13 @@ import java.nio.file.Paths;
 
 /**
  * 页面元素包装类，支持链式调用
- *
- * 核心设计理念：
- * 1. 页面稳定化由框架层负责（PlaywrightContextManager.createPage → stabilizePage → DOMContentLoaded）
- * 2. Playwright action API (click/fill/dblclick) 内部已自动 wait until actionable
- * 3. 本类仅提供操作级重试机制，处理临时性失败（超时/DOM抖动）
- * 4. 移除硬编码通用loading选择器，无业务耦合
+ * 稳定版：保留原生超时 + 轻量级重试 + 强化点击（解决按钮偶尔点不动）
  */
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
 
-    // 操作后微小休眠，适配前端异步事件渲染
     private static final int ACTION_POST_DELAY = 200;
-    // 重试配置（总时间上限由 getElementActionTimeout 控制）
-    private static final int MAX_RETRY = 5;
+    private static final int MAX_RETRY = 2;
     private static final int RETRY_DELAY_MS = 300;
 
     private final String selector;
@@ -63,18 +56,6 @@ public class PageElement {
         return getPage().locator(selector);
     }
 
-    /**
-     * 根据相对选择器查找子元素（返回 Playwright Locator）
-     * 
-     * 使用 Playwright 原生的 locator 嵌套机制，支持：
-     * - CSS + CSS: parent.locator(".child")
-     * - XPath + XPath: parent.locator("//child")
-     * - CSS + XPath: parent.locator("//child")
-     * - XPath + CSS: parent.locator(".child")
-     * 
-     * @param relativeSelector 相对选择器（支持 CSS 选择器或 XPath）
-     * @return 子元素的 Locator
-     */
     public Locator locator(String relativeSelector) {
         return locator().locator(relativeSelector);
     }
@@ -89,42 +70,95 @@ public class PageElement {
         return page;
     }
 
-    // ==================== 核心：操作级重试机制 ====================
-    /**
-     * 重试执行器：仅对 PlaywrightException（超时/DOM抖动/元素遮挡）进行重试
-     *
-     * 设计理念：
-     *   页面稳定化由框架层负责：
-     *     1. PlaywrightContextManager.createPage() → stabilizePage()
-     *     2. → PlaywrightManager.stabilizePage() → waitForLoadState(DOMCONTENTLOADED)
-     *   Playwright action API 内部已自动 wait until actionable
-     *   本类仅处理临时性失败的重试，不重复等待页面稳定
-     */
+    // ==================== 稳定重试核心：保留原生超时 ====================
+    private void executeWithRetry(Runnable action, String operationName) {
+        Exception lastException = null;
 
-    // ==================== 基础操作（内置重试，解决临时性失败） ====================
+        for (int retry = 0; retry <= MAX_RETRY; retry++) {
+            try {
+                action.run();
+                return;
+            } catch (PlaywrightException e) {
+                lastException = e;
+
+                if (retry == MAX_RETRY) {
+                    break;
+                }
+
+                if (!isRetriableError(e)) {
+                    break;
+                }
+
+                logger.debug("[Retry {}] {} on {} temporarily failed: {}",
+                        retry + 1, operationName, selector, e.getMessage());
+
+                getPage().waitForTimeout(RETRY_DELAY_MS);
+            }
+        }
+
+        throw new RuntimeException(
+                String.format("Failed to perform '%s' on element: %s", operationName, selector),
+                lastException
+        );
+    }
+
+    /**
+     * 只重试临时可恢复异常：遮挡、拦截、DOM瞬态 detached
+     */
+    private static boolean isRetriableError(PlaywrightException e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        return lower.contains("click intercepted")
+                || lower.contains("obscures")
+                || lower.contains("not interactable")
+                || lower.contains("detached")
+                || lower.contains("not attached");
+    }
+
+    // ==================== 强化版点击：解决 Search 按钮偶尔点不动 ====================
     public PageElement click() {
         executeWithRetry(() -> {
-            locator().click();
+            // 先滚动到视图，避免点在视口外
+            locator().scrollIntoViewIfNeeded();
+            getPage().waitForTimeout(100);
+
+            try {
+                // 常规点击：偏移点击，避开伪元素/边框
+                locator().click(new Locator.ClickOptions()
+                        .setPosition(5, 5)
+                        .setDelay(100));
+            } catch (Exception e) {
+                // 兜底 JS 点击（金融系统、按钮嵌套 SVG 必备）
+                logger.warn("Normal click failed, fallback to JS click: {}", selector);
+                locator().evaluate("el => el.click()");
+            }
+
             getPage().waitForTimeout(ACTION_POST_DELAY);
         }, "click");
         return this;
     }
 
     public PageElement type(String text) {
-        executeWithRetry(() -> locator().fill(text), "fill");
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().fill(text);
+        }, "fill");
         return this;
     }
 
     public PageElement doubleClick() {
         executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
             locator().dblclick();
             getPage().waitForTimeout(ACTION_POST_DELAY);
-        }, "dblclick");
+        }, "doubleClick");
         return this;
     }
 
     public PageElement rightClick() {
         executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
             locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
             getPage().waitForTimeout(ACTION_POST_DELAY);
         }, "rightClick");
@@ -141,77 +175,6 @@ public class PageElement {
         return this;
     }
 
-    // ==================== 重试核心逻辑 ====================
-    /**
-     * 纯重试机制：基于时间预算的重试，总耗时不超过 getElementActionTimeout（默认30s）
-     *
-     * 设计原则：
-     *   1. 页面稳定化由框架层 PlaywrightContextManager.createPage() 统一处理
-     *   2. Playwright action API 内部已自动 wait until actionable
-     *   3. 本方法仅处理临时性失败的重试，受时间预算约束
-     */
-    private void executeWithRetry(Runnable action, String operationName) {
-        Exception lastException = null;
-        int timeoutMs = TimeoutConfig.getElementActionTimeout();
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        int attempt = 0;
-
-        while (true) {
-            attempt++;
-            try {
-                action.run();
-                return;
-            } catch (PlaywrightException e) {
-                lastException = e;
-                long remaining = deadline - System.currentTimeMillis();
-
-                // 超时或不可重试异常 → 立即抛出
-                if (remaining <= 0 || !isRetriableError(e)) {
-                    break;
-                }
-
-                logger.debug("[Retry] {} on '{}' failed (attempt {}, {}ms remaining): {}",
-                        operationName, selector, attempt, remaining, e.getMessage());
-
-                // 动态延迟：剩余时间越少，延迟越短
-                long delay = Math.min(RETRY_DELAY_MS, Math.max(100, remaining / (MAX_RETRY - attempt + 1)));
-                getPage().waitForTimeout((int) delay);
-            }
-        }
-
-        throw new RuntimeException(
-                String.format("'%s' %s failed after %d attempts within %dms: %s",
-                        selector, operationName, attempt, timeoutMs,
-                        lastException != null ? lastException.getMessage() : "unknown"),
-                lastException);
-    }
-
-    /**
-     * 可重试异常判定：仅拦截元素临时不可操作、超时、DOM抖动、页面异步未就绪类错误
-     */
-    private static boolean isRetriableError(PlaywrightException e) {
-        String msg = e.getMessage();
-        if (msg == null) {
-            return false;
-        }
-        String lower = msg.toLowerCase();
-        if (lower.contains("timeout")) {
-            return true;
-        }
-        if (lower.contains("not visible") || lower.contains("element click intercepted")
-                || lower.contains("obscures") || lower.contains("disabled")
-                || lower.contains("not interactable") || lower.contains("cannot focus")) {
-            return true;
-        }
-        if (lower.contains("detached") || lower.contains("not attached") || lower.contains("not found in dom")) {
-            return true;
-        }
-        if (lower.contains("target closed") || lower.contains("page closed") || lower.contains("network error")) {
-            return true;
-        }
-        return false;
-    }
-
     // ==================== 文本/属性获取 ====================
     public String getText() {
         return locator().textContent();
@@ -225,7 +188,7 @@ public class PageElement {
         return locator().getAttribute(attributeName);
     }
 
-    // ==================== 智能等待：可见/存在/隐藏 ====================
+    // ==================== 可见/存在/可点判断 ====================
     public boolean isVisible() {
         try {
             locator().waitFor(new Locator.WaitForOptions()
@@ -307,16 +270,14 @@ public class PageElement {
         }
     }
 
-    // ==================== 轮询等待：enable/selected/editable ====================
+    // ==================== 轮询状态 ====================
     public boolean isEnabled() {
         int timeout = TimeoutConfig.getElementCheckTimeout();
         int interval = TimeoutConfig.getPollingInterval();
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isEnabled()) {
-                    return true;
-                }
+                if (locator().isEnabled()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -329,9 +290,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isEnabled()) {
-                    return true;
-                }
+                if (locator().isEnabled()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -344,9 +303,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isChecked()) {
-                    return true;
-                }
+                if (locator().isChecked()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -359,9 +316,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isChecked()) {
-                    return true;
-                }
+                if (locator().isChecked()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -374,9 +329,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isDisabled()) {
-                    return true;
-                }
+                if (locator().isDisabled()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -389,9 +342,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isDisabled()) {
-                    return true;
-                }
+                if (locator().isDisabled()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -404,9 +355,7 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isEditable()) {
-                    return true;
-                }
+                if (locator().isEditable()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -419,16 +368,14 @@ public class PageElement {
         long endTime = System.currentTimeMillis() + timeout;
         while (System.currentTimeMillis() < endTime) {
             try {
-                if (locator().isEditable()) {
-                    return true;
-                }
+                if (locator().isEditable()) return true;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
         return false;
     }
 
-    // ==================== 精准等待方法 ====================
+    // ==================== 精准等待 ====================
     public PageElement waitForVisible(int timeoutInSeconds) {
         try {
             locator().waitFor(new Locator.WaitForOptions()
@@ -500,7 +447,7 @@ public class PageElement {
         return waitForExists(timeoutInSeconds);
     }
 
-    // ==================== 下拉/滚动/文件/键盘/鼠标/子集元素 ====================
+    // ==================== 下拉/滚动/文件/键盘等 ====================
     public PageElement selectByValue(String value) {
         locator().selectOption(value);
         return this;
@@ -521,9 +468,7 @@ public class PageElement {
         int interval = TimeoutConfig.getPollingInterval();
         while (System.currentTimeMillis() - start < timeoutInSeconds * 1000L) {
             try {
-                if (locator().count() > 0 && containsText(text)) {
-                    return this;
-                }
+                if (locator().count() > 0 && containsText(text)) return this;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -535,9 +480,7 @@ public class PageElement {
         int interval = TimeoutConfig.getPollingInterval();
         while (System.currentTimeMillis() - start < timeoutInSeconds * 1000L) {
             try {
-                if (text.equals(getText())) {
-                    return this;
-                }
+                if (text.equals(getText())) return this;
             } catch (Exception ignored) {}
             getPage().waitForTimeout(interval);
         }
@@ -676,10 +619,6 @@ public class PageElement {
 
     public Locator nth(int index) {
         return locator().nth(index);
-    }
-
-    public Locator all() {
-        return locator();
     }
 
     public PageElement screenshot() {

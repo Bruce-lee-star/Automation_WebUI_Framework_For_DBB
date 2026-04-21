@@ -30,11 +30,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.MessageDigest;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
+import java.util.*;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -1524,39 +1521,46 @@ public class PlaywrightManager {
                 return null;
             }
 
-            // 1. 快速创建目录（不变）
+            // 1. 目录（Serenity 标准）
             Path screenshotDir = Paths.get("target/site/serenity");
             Files.createDirectories(screenshotDir);
 
-            // 2. 高性能文件名（弃用SHA256，毫秒+线程唯一）
-            String screenshotName = System.currentTimeMillis() + "_" + Thread.currentThread().threadId() + ".png";
+            // ===================== Serenity 原生命名：SHA256 + 时间戳 =====================
+            String uniqueSource = title + "-" + System.currentTimeMillis() + "-" + Thread.currentThread().threadId();
+            String sha256 = generateHash(uniqueSource);
+            String screenshotName = sha256 + ".png";
             Path screenshotPath = screenshotDir.resolve(screenshotName);
 
-            // 关键稳定JS（无等待）
+            // 极速清理：解决截图重叠 + 滚动顶部
             try {
-                page.evaluate("window.scrollTo(0,0);document.body.style.scrollBehavior='auto';");
+                page.evaluate("() => {" +
+                        "window.scrollTo(0,0);" +
+                        "document.body.style.scrollBehavior='auto';" +
+                        "document.querySelectorAll('img[src*=blob]').forEach(i=>i.remove());" +
+                        "}");
             } catch (Exception ignored) {}
 
+            // 页面等待（原有逻辑）
             int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
             LoadState loadState = getConfiguredLoadState();
             try {
                 page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
             } catch (Exception e) {
-                // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
                 if (logger.isTraceEnabled()) {
-                    logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
+                    logger.trace("Screenshot wait timeout - continuing: {}", e.getMessage());
                 }
             }
 
-            // 5. 截图：全页开关保留，但执行更快
+            // 高性能截图（3秒超时，不卡顿）
             boolean fullPage = isFullPageScreenshot();
             page.screenshot(new Page.ScreenshotOptions()
                     .setFullPage(fullPage)
                     .setOmitBackground(false)
                     .setClip(null)
+                    .setTimeout(3000)
                     .setPath(screenshotPath));
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {} (fullPage: {})", screenshotPath, fullPage);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {}", screenshotPath);
             return screenshotPath.toString();
 
         } catch (Exception e) {

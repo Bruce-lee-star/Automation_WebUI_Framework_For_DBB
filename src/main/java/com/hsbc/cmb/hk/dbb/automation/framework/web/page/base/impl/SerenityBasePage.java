@@ -397,10 +397,11 @@ public abstract class SerenityBasePage extends BasePage {
      * @param expectedValue 期望的属性值
      * @throws RuntimeException 如果属性值不匹配期望值
      */
-    public void getAttributeValue(String selector, String attributeName, String expectedValue) {
+    public String getAttributeValue(String selector, String attributeName, String expectedValue) {
         try {
-            super.getAttributeValue(selector, attributeName, expectedValue);
+            String attributeValue = super.getAttributeValue(selector, attributeName, expectedValue);
             recordPageVerification("attribute_" + selector + "_" + attributeName, true);
+            return attributeValue;
         } catch (Exception e) {
             logger.error("Failed to verify attribute value for element: {}", selector, e);
             throw new ElementException("Failed to verify attribute value for element: " + selector, e);

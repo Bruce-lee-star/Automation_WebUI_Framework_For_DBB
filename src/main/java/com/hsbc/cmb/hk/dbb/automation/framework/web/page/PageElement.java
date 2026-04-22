@@ -4,20 +4,19 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.options.MouseButton;
+import com.microsoft.playwright.options.SelectOption;
 import com.microsoft.playwright.options.WaitForSelectorState;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Objects;
 
-/**
- * 页面元素包装类，支持链式调用
- * 稳定版：保留原生超时 + 轻量级重试 + 强化点击（解决按钮偶尔点不动）
- */
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
 
@@ -26,25 +25,17 @@ public class PageElement {
     private static final int RETRY_DELAY_MS = 300;
 
     private final String selector;
-    private BasePage page;
+    private final BasePage page;
 
+    // ==================== 构造 ====================
     public PageElement(String selector, BasePage page) {
-        if (selector == null || selector.trim().isEmpty()) {
-            throw new IllegalArgumentException("Selector cannot be null or empty");
+        if (selector == null || selector.isBlank()) {
+            throw new IllegalArgumentException("Selector cannot be null or blank");
+        }
+        if (page == null) {
+            throw new IllegalArgumentException("BasePage cannot be null");
         }
         this.selector = selector;
-        this.page = page;
-    }
-
-    public PageElement(String selector) {
-        if (selector == null || selector.trim().isEmpty()) {
-            throw new IllegalArgumentException("Selector cannot be null or empty");
-        }
-        this.selector = selector;
-        this.page = BasePage.getCurrentPage();
-    }
-
-    public void setPage(BasePage page) {
         this.page = page;
     }
 
@@ -52,98 +43,63 @@ public class PageElement {
         return selector;
     }
 
+    public BasePage getPage() {
+        return page;
+    }
+
     public Locator locator() {
-        return getPage().locator(selector);
+        return page.locator(selector);
     }
 
     public Locator locator(String relativeSelector) {
         return locator().locator(relativeSelector);
     }
 
-    private BasePage getPage() {
-        if (page == null) {
-            page = BasePage.getCurrentPage();
-            if (page == null) {
-                throw new IllegalStateException("No BasePage instance found. Please ensure the page is initialized.");
-            }
-        }
-        return page;
-    }
-
-    // ==================== 稳定重试核心：保留原生超时 ====================
-    private void executeWithRetry(Runnable action, String operationName) {
-        Exception lastException = null;
-
-        for (int retry = 0; retry <= MAX_RETRY; retry++) {
+    // ==================== 重试 ====================
+    private void executeWithRetry(Runnable action, String operation) {
+        Exception lastEx = null;
+        for (int i = 0; i <= MAX_RETRY; i++) {
             try {
                 action.run();
+                logger.debug("[{}] success: {}", operation, selector);
                 return;
             } catch (PlaywrightException e) {
-                lastException = e;
-
-                if (retry == MAX_RETRY) {
+                lastEx = e;
+                if (i == MAX_RETRY || !isRetriable(e)) {
                     break;
                 }
-
-                if (!isRetriableError(e)) {
-                    break;
-                }
-
-                logger.debug("[Retry {}] {} on {} temporarily failed: {}",
-                        retry + 1, operationName, selector, e.getMessage());
-
-                getPage().waitForTimeout(RETRY_DELAY_MS);
+                logger.warn("[Retry {}/{}] {} failed: {}", i+1, MAX_RETRY, operation, e.getMessage());
+                page.waitForTimeout(RETRY_DELAY_MS);
             }
         }
-
-        throw new RuntimeException(
-                String.format("Failed to perform '%s' on element: %s", operationName, selector),
-                lastException
-        );
+        throw new PlaywrightException("Failed after retries: " + operation + " on " + selector, lastEx);
     }
 
-    /**
-     * 只重试临时可恢复异常：遮挡、拦截、DOM瞬态 detached
-     */
-    private static boolean isRetriableError(PlaywrightException e) {
-        String msg = e.getMessage();
-        if (msg == null) return false;
-        String lower = msg.toLowerCase();
-        return lower.contains("click intercepted")
-                || lower.contains("obscures")
-                || lower.contains("not interactable")
-                || lower.contains("detached")
-                || lower.contains("not attached");
+    private boolean isRetriable(PlaywrightException e) {
+        if (e instanceof TimeoutError) {
+            return true;
+        }
+        String m = e.getMessage().toLowerCase();
+        return m.contains("intercepted")
+                || m.contains("obscured")
+                || m.contains("detached")
+                || m.contains("not interactable")
+                || m.contains("not attached");
     }
 
-    // ==================== 强化版点击：解决 Search 按钮偶尔点不动 ====================
+    // ==================== 点击 ====================
     public PageElement click() {
         executeWithRetry(() -> {
-            // 先滚动到视图，避免点在视口外
             locator().scrollIntoViewIfNeeded();
-            getPage().waitForTimeout(100);
+            page.waitForTimeout(100);
 
-            try {
-                // 常规点击：偏移点击，避开伪元素/边框
-                locator().click(new Locator.ClickOptions()
-                        .setPosition(5, 5)
-                        .setDelay(100));
-            } catch (Exception e) {
-                // 兜底 JS 点击（金融系统、按钮嵌套 SVG 必备）
-                logger.warn("Normal click failed, fallback to JS click: {}", selector);
-                locator().evaluate("el => el.click()");
-            }
+            locator().click(new Locator.ClickOptions()
+                    .setPosition(5, 5)
+                    .setDelay(100)
+                    .setForce(true));
 
-            getPage().waitForTimeout(ACTION_POST_DELAY);
+            page.waitForTimeout(ACTION_POST_DELAY);
         }, "click");
-        return this;
-    }
-
-    public PageElement type(String text) {
-        executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().fill(text);
-        }, "fill");
         return this;
     }
 
@@ -151,7 +107,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().dblclick();
-            getPage().waitForTimeout(ACTION_POST_DELAY);
+            page.waitForTimeout(ACTION_POST_DELAY);
         }, "doubleClick");
         return this;
     }
@@ -160,8 +116,25 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
-            getPage().waitForTimeout(ACTION_POST_DELAY);
+            page.waitForTimeout(ACTION_POST_DELAY);
         }, "rightClick");
+        return this;
+    }
+
+    // ==================== 输入 ====================
+    public PageElement fill(String text) {
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().fill(text);
+        }, "fill");
+        return this;
+    }
+
+    public PageElement type(String text) {
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().pressSequentially(text);
+        }, "type");
         return this;
     }
 
@@ -170,67 +143,39 @@ public class PageElement {
         return this;
     }
 
-    public PageElement hover() {
-        executeWithRetry(() -> locator().hover(), "hover");
-        return this;
+    public PageElement clearAndSetValue(String text) {
+        return clear().fill(text);
     }
 
-    // ==================== 文本/属性获取 ====================
-    public String getText() {
-        return normalizeText(locator().textContent());
+    public PageElement clearAndTypeSequentially(String text) {
+        return clear().type(text);
     }
 
-    /**
-     * 获取元素文本（保留原始格式，不做清理）
-     */
-    public String getTextRaw() {
-        return locator().textContent();
-    }
-
-    /**
-     * 标准化文本：处理各种空白字符和特殊字符
-     */
-    private String normalizeText(String text) {
-        if (text == null) {
-            return "";
-        }
-        // 处理 HTML 实体空格 &nbsp; (Unicode 0xA0)
-        text = text.replace('\u00A0', ' ');
-        // 处理其他常见的空白字符
-        text = text.replace('\u200B', ' '); // 零宽空格
-        text = text.replace('\u202F', ' '); // 窄不换行空格
-        text = text.replace('\uFEFF', ' '); // 零宽不换行空格
-        // 合并多个连续空格为单个空格
-        text = text.replaceAll("\\s+", " ");
-        // 移除首尾空格
-        return text.trim();
-    }
-
-    public String getValue() {
-        return locator().inputValue();
-    }
-
-    public String getAttribute(String attributeName) {
-        return locator().getAttribute(attributeName);
-    }
-
-    // ==================== 可见/存在/可点判断 ====================
+    // ==================== 状态判断（无参 + 有参，全部不抛异常） ====================
     public boolean isVisible() {
+        return isVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
+    }
+
+    public boolean isVisible(int timeoutSec) {
         try {
             locator().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
+                    .setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
         }
     }
 
-    public boolean isVisible(int timeoutInSeconds) {
+    public boolean isNotVisible() {
+        return isNotVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
+    }
+
+    public boolean isNotVisible(int timeoutSec) {
         try {
             locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(timeoutInSeconds * 1000));
+                    .setState(WaitForSelectorState.HIDDEN)
+                    .setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
@@ -238,440 +183,204 @@ public class PageElement {
     }
 
     public boolean exists() {
+        return exists(TimeoutConfig.getElementCheckTimeout() / 1000);
+    }
+
+    public boolean exists(int timeoutSec) {
         try {
             locator().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.ATTACHED)
-                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
+                    .setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
         }
     }
 
-    public boolean exists(int timeoutInSeconds) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
-                    .setTimeout(timeoutInSeconds * 1000));
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public boolean isClickable() {
-        return isClickable(TimeoutConfig.getElementCheckTimeout() / 1000);
-    }
-
-    public boolean isClickable(int timeoutInSeconds) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(timeoutInSeconds * 1000));
-            return locator().isEnabled();
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public boolean isHidden() {
-        try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public boolean isHidden(int timeoutInSeconds) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout(timeoutInSeconds * 1000));
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    // ==================== 轮询状态 ====================
     public boolean isEnabled() {
-        int timeout = TimeoutConfig.getElementCheckTimeout();
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isEnabled()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+        return isEnabled(TimeoutConfig.getElementCheckTimeout() / 1000);
     }
 
-    public boolean isEnabled(int timeoutInSeconds) {
-        int timeout = timeoutInSeconds * 1000;
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isEnabled()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
-    }
-
-    public boolean isSelected() {
-        int timeout = TimeoutConfig.getElementCheckTimeout();
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isChecked()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
-    }
-
-    public boolean isSelected(int timeoutInSeconds) {
-        int timeout = timeoutInSeconds * 1000;
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isChecked()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+    public boolean isEnabled(int timeoutSec) {
+        if (!exists(timeoutSec)) return false;
+        try { return locator().isEnabled(); } catch (Exception e) { return false; }
     }
 
     public boolean isDisabled() {
-        int timeout = TimeoutConfig.getElementCheckTimeout();
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isDisabled()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+        return !isEnabled();
     }
 
-    public boolean isDisabled(int timeoutInSeconds) {
-        int timeout = timeoutInSeconds * 1000;
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isDisabled()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+    public boolean isDisabled(int timeoutSec) {
+        return !isEnabled(timeoutSec);
     }
 
     public boolean isEditable() {
-        int timeout = TimeoutConfig.getElementCheckTimeout();
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isEditable()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+        return isEditable(TimeoutConfig.getElementCheckTimeout() / 1000);
     }
 
-    public boolean isEditable(int timeoutInSeconds) {
-        int timeout = timeoutInSeconds * 1000;
-        int interval = TimeoutConfig.getPollingInterval();
-        long endTime = System.currentTimeMillis() + timeout;
-        while (System.currentTimeMillis() < endTime) {
-            try {
-                if (locator().isEditable()) return true;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
-        }
-        return false;
+    public boolean isEditable(int timeoutSec) {
+        if (!exists(timeoutSec)) return false;
+        try { return locator().isEditable(); } catch (Exception e) { return false; }
     }
 
-    // ==================== 精准等待 ====================
-    public PageElement waitForVisible(int timeoutInSeconds) {
+    public boolean isChecked() {
+        return isChecked(TimeoutConfig.getElementCheckTimeout() / 1000);
+    }
+
+    public boolean isChecked(int timeoutSec) {
+        if (!exists(timeoutSec)) return false;
+        try { return locator().isChecked(); } catch (Exception e) { return false; }
+    }
+
+    // ==================== 文本 ====================
+    public String getText() {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(timeoutInSeconds * 1000L));
-            return this;
-        } catch (PlaywrightException e) {
-            throw new RuntimeException("Element not visible within " + timeoutInSeconds + "s: " + selector, e);
+            String raw = locator().textContent();
+            if (raw == null) {
+                logger.warn("getText() returned null for selector: {}", selector);
+                return "";
+            }
+            return raw.replace('\u00A0', ' ')
+                    .replaceAll("\\s+", " ")
+                    .trim();
+        } catch (Exception e) {
+            logger.warn("getText failed: {}", selector, e);
+            return "";
         }
     }
 
-    public PageElement waitForNotVisible(int timeoutInSeconds) {
+    public String getInnerText() {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout(timeoutInSeconds * 1000L));
-            return this;
-        } catch (PlaywrightException e) {
-            throw new RuntimeException("Element not hidden within " + timeoutInSeconds + "s: " + selector, e);
+            return locator().innerText();
+        } catch (Exception e) {
+            logger.warn("getInnerText failed: {}", selector, e);
+            return "";
         }
     }
 
-    public PageElement waitForExists(int timeoutInSeconds) {
+    public String getAttribute(String attr) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
-                    .setTimeout(timeoutInSeconds * 1000L));
-            return this;
-        } catch (PlaywrightException e) {
-            throw new RuntimeException("Element not attached within " + timeoutInSeconds + "s: " + selector, e);
+            return locator().getAttribute(attr);
+        } catch (Exception e) {
+            logger.warn("getAttribute failed: {}", selector, e);
+            return null;
         }
     }
 
-    public PageElement waitForNotExists(int timeoutInSeconds) {
+    public String getValue() {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.DETACHED)
-                    .setTimeout(timeoutInSeconds * 1000L));
-            return this;
-        } catch (PlaywrightException e) {
-            throw new RuntimeException("Element not detached within " + timeoutInSeconds + "s: " + selector, e);
+            return locator().inputValue();
+        } catch (Exception e) {
+            logger.warn("getValue failed: {}", selector, e);
+            return "";
         }
     }
 
-    public PageElement waitForClickable(int timeoutInSeconds) {
-        waitForVisible(timeoutInSeconds);
-        if (!locator().isEnabled()) {
-            throw new RuntimeException("Element visible but not clickable: " + selector);
-        }
-        return this;
-    }
-
-    public PageElement waitForHidden() {
-        locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN));
-        return this;
-    }
-
-    public PageElement waitForAttached() {
-        locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED));
-        return this;
-    }
-
-    public PageElement waitForDetached() {
-        locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.DETACHED));
-        return this;
-    }
-
-    public PageElement waitForAttached(int timeoutInSeconds) {
-        return waitForExists(timeoutInSeconds);
-    }
-
-    // ==================== 下拉/滚动/文件/键盘等 ====================
+    // ==================== 下拉选择 ====================
     public PageElement selectByValue(String value) {
-        locator().selectOption(value);
+        executeWithRetry(() -> locator().selectOption(value), "selectByValue");
         return this;
     }
 
     public PageElement selectByIndex(int index) {
-        locator().evaluate("el => { el.selectedIndex = " + index + "; el.dispatchEvent(new Event('change')); }");
+        executeWithRetry(() -> locator().selectOption(new SelectOption().setIndex(index)), "selectByIndex");
         return this;
     }
 
-    public boolean containsText(String text) {
-        String elementText = getText();
-        return elementText != null && elementText.contains(text);
-    }
-
-    public PageElement waitForContainsText(String text, int timeoutInSeconds) {
-        long start = System.currentTimeMillis();
-        int interval = TimeoutConfig.getPollingInterval();
-        while (System.currentTimeMillis() - start < timeoutInSeconds * 1000L) {
-            try {
-                if (locator().count() > 0 && containsText(text)) return this;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
+    // ==================== 等待方法（会抛异常 → 用于断言） ====================
+    public PageElement waitVisible(int timeoutSec) {
+        try {
+            locator().waitFor(new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.VISIBLE)
+                    .setTimeout((long) timeoutSec * 1000));
+            return this;
+        } catch (Exception e) {
+            throw new PlaywrightException("Element not visible within " + timeoutSec + "s: " + selector, e);
         }
-        throw new RuntimeException("Element does not contain text: " + text + ", selector: " + selector);
     }
 
-    public PageElement waitForTextEquals(String text, int timeoutInSeconds) {
-        long start = System.currentTimeMillis();
-        int interval = TimeoutConfig.getPollingInterval();
-        while (System.currentTimeMillis() - start < timeoutInSeconds * 1000L) {
-            try {
-                if (text.equals(getText())) return this;
-            } catch (Exception ignored) {}
-            getPage().waitForTimeout(interval);
+    public PageElement waitForVisible(int timeout) {
+        return waitVisible(timeout);
+    }
+
+    public PageElement waitForNotVisible(int timeoutSec) {
+        try {
+            locator().waitFor(new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.HIDDEN)
+                    .setTimeout((long) timeoutSec * 1000));
+            return this;
+        } catch (Exception e) {
+            throw new PlaywrightException("Element still visible after " + timeoutSec + "s: " + selector, e);
         }
-        throw new RuntimeException("Element text does not match: " + text + ", selector: " + selector);
     }
 
-    public PageElement scrollTo() {
-        locator().scrollIntoViewIfNeeded();
-        return this;
-    }
-
-    public PageElement scrollTo(int scrollX, int scrollY) {
-        locator().evaluate("el => el.scrollTo(" + scrollX + ", " + scrollY + ")");
-        return this;
-    }
-
-    public PageElement scrollToBottom() {
-        locator().evaluate("el => el.scrollTop = el.scrollHeight");
-        return this;
-    }
-
-    public PageElement scrollToTop() {
-        locator().evaluate("el => el.scrollTop = 0");
-        return this;
-    }
-
-    public PageElement scrollBy(int offsetX, int offsetY) {
-        locator().evaluate("el => el.scrollBy(" + offsetX + ", " + offsetY + ")");
-        return this;
-    }
-
-    public PageElement scrollToCenter() {
-        locator().scrollIntoViewIfNeeded();
-        return this;
-    }
-
-    public PageElement child(String childSelector) {
-        return new PageElement(this.selector + " " + childSelector, getPage());
-    }
-
-    public PageElement uploadFile(String filePath) {
-        locator().setInputFiles(Paths.get(filePath));
-        return this;
-    }
-
-    public PageElement setInputFiles(String... filePaths) {
-        Path[] paths = new Path[filePaths.length];
-        for (int i = 0; i < filePaths.length; i++) {
-            paths[i] = Paths.get(filePaths[i]);
+    public PageElement waitHidden() {
+        try {
+            locator().waitFor(new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.HIDDEN)
+                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
+            return this;
+        } catch (Exception e) {
+            throw new PlaywrightException("Element not hidden: " + selector, e);
         }
-        locator().setInputFiles(paths);
+    }
+
+    // ==================== 工具 ====================
+    public PageElement hover() {
+        executeWithRetry(() -> locator().hover(), "hover");
         return this;
     }
 
-    public PageElement append(String text) {
-        locator().evaluate("el => el.value += arguments[0]", text);
+    public PageElement focus() {
+        executeWithRetry(() -> locator().focus(), "focus");
         return this;
     }
 
     public PageElement check() {
-        locator().check();
+        executeWithRetry(() -> locator().check(), "check");
         return this;
     }
 
     public PageElement uncheck() {
-        locator().uncheck();
+        executeWithRetry(() -> locator().uncheck(), "uncheck");
         return this;
     }
 
-    public PageElement press(String key) {
-        locator().press(key);
+    public PageElement uploadFile(String... paths) {
+        Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
+        executeWithRetry(() -> locator().setInputFiles(pathArray), "uploadFile");
         return this;
     }
 
-    public PageElement insertText(String text) {
-        locator().fill(text);
-        return this;
-    }
-
-    public PageElement keyDown(String key) {
-        locator().press(key + "+KeyDown");
-        return this;
-    }
-
-    public PageElement keyUp(String key) {
-        locator().press(key + "+KeyUp");
-        return this;
-    }
-
-    public PageElement selectAll() {
-        locator().press("Control+a");
-        return this;
-    }
-
-    public PageElement copy() {
-        locator().press("Control+c");
-        return this;
-    }
-
-    public PageElement paste() {
-        locator().press("Control+v");
-        return this;
-    }
-
-    public PageElement cut() {
-        locator().press("Control+x");
-        return this;
-    }
-
-    public PageElement clickAtCenter() {
-        locator().click();
-        return this;
-    }
-
-    public PageElement dragToCoordinates(int targetX, int targetY) {
-        locator().dragTo(getPage().locator("body"), new Locator.DragToOptions().setTargetPosition(targetX, targetY));
-        return this;
-    }
-
-    public int[] getCenter() {
+    public BoundingBox getBoundingBoxSafe() {
+        waitVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
         BoundingBox box = locator().boundingBox();
-        return new int[]{(int) (box.x + box.width / 2), (int) (box.y + box.height / 2)};
+        return Objects.requireNonNull(box, "BoundingBox is null: " + selector);
     }
 
     public int count() {
         return locator().count();
     }
 
-    public Locator first() {
-        return locator().first();
+    // ==================== 子元素 ====================
+    public PageElement child(String childSelector) {
+        Objects.requireNonNull(childSelector, "childSelector must not be null");
+        String clean = childSelector.trim();
+        while (clean.startsWith(">>")) clean = clean.substring(2).trim();
+
+        String parent = selector.trim();
+        while (parent.endsWith(">>")) parent = parent.substring(0, parent.length() - 2).trim();
+
+        return new PageElement(parent + " >> " + clean, page);
     }
 
-    public Locator last() {
-        return locator().last();
-    }
-
-    public Locator nth(int index) {
-        return locator().nth(index);
-    }
-
-    public PageElement screenshot() {
-        locator().screenshot();
-        return this;
-    }
-
-    public BoundingBox getBoundingBox() {
-        return locator().boundingBox();
-    }
-
-    public PageElement tap() {
-        locator().tap();
-        return this;
-    }
-
-    public PageElement focus() {
-        locator().focus();
-        return this;
-    }
-
-    public String innerHTML() {
-        return locator().innerHTML();
+    public PageElement child(String childSelector, int index) {
+        PageElement child = child(childSelector);
+        return new PageElement(child.getSelector() + " >> nth=" + index, page);
     }
 
     @Override
     public String toString() {
-        return "PageElement{selector='" + selector + "'}";
+        return "PageElement[" + selector + "]";
     }
 }

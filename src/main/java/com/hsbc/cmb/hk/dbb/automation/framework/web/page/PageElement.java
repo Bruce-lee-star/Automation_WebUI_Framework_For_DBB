@@ -177,7 +177,33 @@ public class PageElement {
 
     // ==================== 文本/属性获取 ====================
     public String getText() {
+        return normalizeText(locator().textContent());
+    }
+
+    /**
+     * 获取元素文本（保留原始格式，不做清理）
+     */
+    public String getTextRaw() {
         return locator().textContent();
+    }
+
+    /**
+     * 标准化文本：处理各种空白字符和特殊字符
+     */
+    private String normalizeText(String text) {
+        if (text == null) {
+            return "";
+        }
+        // 处理 HTML 实体空格 &nbsp; (Unicode 0xA0)
+        text = text.replace('\u00A0', ' ');
+        // 处理其他常见的空白字符
+        text = text.replace('\u200B', ' '); // 零宽空格
+        text = text.replace('\u202F', ' '); // 窄不换行空格
+        text = text.replace('\uFEFF', ' '); // 零宽不换行空格
+        // 合并多个连续空格为单个空格
+        text = text.replaceAll("\\s+", " ");
+        // 移除首尾空格
+        return text.trim();
     }
 
     public String getValue() {

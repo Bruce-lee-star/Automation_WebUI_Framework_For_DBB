@@ -10,8 +10,14 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
-import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.*;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Frame;
+import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.options.AriaRole;
+import com.microsoft.playwright.options.BoundingBox;
+import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.SelectOption;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +38,19 @@ public abstract class BasePage {
     protected Page page;
     protected BrowserContext context;
     private static final ThreadLocal<BasePage> currentPage = new ThreadLocal<>();
+
+    // ===================== 全局文本统一格式化工具 =====================
+    protected String normalizeText(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        // 1. 替换&nbsp不间断空格  \u00A0
+        // 2. 合并所有空白(空格/换行/制表)为单个空格
+        // 3. 首尾去空
+        return raw.replace('\u00A0', ' ')
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
 
     public BasePage() {
         if (!FrameworkCore.getInstance().isInitialized()) {
@@ -94,10 +113,8 @@ public abstract class BasePage {
         return context;
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：日志占位符 + 异常捕获日志
-    // -------------------------------------------------------------------------
-    private boolean waitForCondition(BooleanSupplier condition, int timeoutSeconds, String desc) {
+    private boolean waitForCondition
+            (BooleanSupplier condition, int timeoutSeconds, String desc) {
         ensurePageValid();
         long end = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
         while (System.currentTimeMillis() < end) {
@@ -115,9 +132,6 @@ public abstract class BasePage {
         return false;
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：返回值修正为 boolean（完全兼容子类）
-    // -------------------------------------------------------------------------
     public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> condition, int timeoutSeconds, String desc) {
         ensurePageValid();
         long end = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
@@ -125,7 +139,8 @@ public abstract class BasePage {
             try {
                 action.run();
                 if (condition.get()) return true;
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
             page.waitForTimeout(TimeoutConfig.getPollingInterval());
         }
         throw new TimeoutException("Action timed out: " + desc);
@@ -189,14 +204,11 @@ public abstract class BasePage {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：Objects.equals 空指针安全
-    // -------------------------------------------------------------------------
     public void waitForElementAttributeEquals(String selector, String attr, String value, int timeout) {
         String desc = "attr " + attr + " equals " + value + " for " + selector;
         if (!waitForCondition(() -> {
             String actual = locator(selector).getAttribute(attr);
-            return Objects.equals(value, actual == null ? "" : actual);
+            return Objects.equals(normalizeText(value), normalizeText(actual));
         }, timeout, desc)) {
             throw new TimeoutException(desc);
         }
@@ -206,17 +218,20 @@ public abstract class BasePage {
         String desc = "attr " + attr + " contains " + value + " for " + selector;
         if (!waitForCondition(() -> {
             String actual = locator(selector).getAttribute(attr);
-            return actual != null && actual.contains(value);
+            return normalizeText(actual).contains(normalizeText(value));
         }, timeout, desc)) {
             throw new TimeoutException(desc);
         }
     }
 
+    // ===================== 已修复：全量文本归一化 =====================
     public void waitForElementTextEquals(String selector, String text, int timeout) {
         String desc = "text equals " + text + " for " + selector;
         if (!waitForCondition(() -> {
-            String actual = locator(selector).innerText();
-            return text.equals((actual == null) ? "" : actual.trim());
+            String actualRaw = locator(selector).innerText();
+            String actual = normalizeText(actualRaw);
+            String expect = normalizeText(text);
+            return expect.equals(actual);
         }, timeout, desc)) {
             throw new TimeoutException(desc);
         }
@@ -225,8 +240,10 @@ public abstract class BasePage {
     public void waitForElementTextContains(String selector, String text, int timeout) {
         String desc = "text contains " + text + " for " + selector;
         if (!waitForCondition(() -> {
-            String actual = locator(selector).innerText();
-            return (actual != null) && actual.trim().contains(text);
+            String actualRaw = locator(selector).innerText();
+            String actual = normalizeText(actualRaw);
+            String expect = normalizeText(text);
+            return actual.contains(expect);
         }, timeout, desc)) {
             throw new TimeoutException(desc);
         }
@@ -247,7 +264,7 @@ public abstract class BasePage {
     }
 
     public void waitForTitleContainsWithinTime(String keyword, int timeout) {
-        if (!waitForCondition(() -> getTitle().contains(keyword), timeout, "title contains: " + keyword)) {
+        if (!waitForCondition(() -> normalizeText(getTitle()).contains(normalizeText(keyword)), timeout, "title contains: " + keyword)) {
             throw new TimeoutException("Title does not contain: " + keyword);
         }
     }
@@ -297,9 +314,6 @@ public abstract class BasePage {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：方法签名完全统一（Predicate<Void>）
-    // -------------------------------------------------------------------------
     public boolean retryWithValidation(Runnable operation, Predicate<Void> validation, int maxRetries, String desc) {
         return retryWithValidation(operation, validation, maxRetries, 500, desc);
     }
@@ -328,7 +342,8 @@ public abstract class BasePage {
             try {
                 operation.run();
                 if (validation.test(null)) return true;
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
             page.waitForTimeout(retryIntervalMs);
         }
         return false;
@@ -350,9 +365,6 @@ public abstract class BasePage {
         retry(() -> type(selector, text), retries, 500, "type with retry: " + selector);
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：拼写正确
-    // -------------------------------------------------------------------------
     public void navigateToWithRetry(String url, int retries) {
         retry(() -> navigateTo(url), retries, 1000, "navigate to: " + url);
     }
@@ -370,6 +382,10 @@ public abstract class BasePage {
         }
     }
 
+    public void jsClick(String selector) {
+        locator(selector).evaluate("el => el.click()");
+    }
+
     public void type(String selector, String text) {
         locator(selector).fill(text);
     }
@@ -384,8 +400,15 @@ public abstract class BasePage {
         locator(selector).clear();
     }
 
+    // ===================== 读取文本 全部归一化 =====================
     public String getText(String selector) {
-        return locator(selector).innerText().trim();
+        String raw = locator(selector).innerText();
+        return normalizeText(raw);
+    }
+
+    public String getInputValue(String selector) {
+        String val = locator(selector).inputValue();
+        return normalizeText(val);
     }
 
     public String getAttribute(String selector, String attr) {
@@ -394,11 +417,15 @@ public abstract class BasePage {
 
     public String getAttributeValue(String selector, String attr, String defaultValue) {
         String val = getAttribute(selector, attr);
-        return val == null ? defaultValue : val;
+        return val == null ? defaultValue : normalizeText(val);
     }
 
     public void selectOption(String selector, int index) {
         locator(selector).selectOption(new SelectOption().setIndex(index));
+    }
+
+    public void selectByVisibleText(String selector, String text) {
+        locator(selector).selectOption(new SelectOption().setLabel(text));
     }
 
     public void check(String selector) {
@@ -478,9 +505,6 @@ public abstract class BasePage {
         setCurrentPage();
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：空列表保护 + getLast()
-    // -------------------------------------------------------------------------
     public Page waitForNewPage(int timeout) {
         ensureContextValid();
         int before = context.pages().size();
@@ -494,9 +518,6 @@ public abstract class BasePage {
         return pages.getLast();
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：空列表保护 + 安全索引
-    // -------------------------------------------------------------------------
     public void closeCurrentPageAndSwitchBack() {
         ensurePageValid();
         ensureContextValid();
@@ -547,9 +568,6 @@ public abstract class BasePage {
         locator(selector).evaluate("el => el.scrollTop = el.scrollHeight");
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：参数名正确
-    // -------------------------------------------------------------------------
     public Object executeJavaScript(String script, Object... args) {
         ensurePageValid();
         return page.evaluate(script, args);
@@ -557,16 +575,16 @@ public abstract class BasePage {
 
     public String innerHTML(String selector) {
         Object result = locator(selector).evaluate("el => el.innerHTML");
-        return result == null ? null : result.toString();
+        return normalizeText(result != null ? result.toString() : "");
     }
 
     public String textContent(String selector) {
         Object result = locator(selector).evaluate("el => el.textContent");
-        return result == null ? null : result.toString();
+        return normalizeText(result != null ? result.toString() : "");
     }
 
     public boolean getPageSourceContains(String text) {
-        return page.content().contains(text);
+        return normalizeText(page.content()).contains(normalizeText(text));
     }
 
     public void tap(String selector) {
@@ -593,9 +611,6 @@ public abstract class BasePage {
         page.setViewportSize(width, height);
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：参数名正确 + 空路径检查
-    // -------------------------------------------------------------------------
     public void setInputFiles(String selector, String... paths) {
         if (paths == null || paths.length == 0) {
             throw new IllegalArgumentException("Paths cannot be null or empty");
@@ -625,6 +640,10 @@ public abstract class BasePage {
 
     public void focus(String selector) {
         locator(selector).focus();
+    }
+
+    public void hover(String selector) {
+        locator(selector).hover();
     }
 
     public Locator byTitle(String title) {
@@ -658,11 +677,24 @@ public abstract class BasePage {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // ✅ 修复：参数名正确
-    // -------------------------------------------------------------------------
     public void waitForTimeout(int milliseconds) {
         ensurePageValid();
         page.waitForTimeout(milliseconds);
+    }
+
+    public void acceptAlert() {
+        page.onDialog(dialog -> dialog.accept());
+    }
+
+    public void dismissAlert() {
+        page.onDialog(dialog -> dialog.dismiss());
+    }
+
+    public byte[] takeScreenshot() {
+        return page.screenshot();
+    }
+
+    public byte[] takeElementScreenshot(String selector) {
+        return locator(selector).screenshot();
     }
 }

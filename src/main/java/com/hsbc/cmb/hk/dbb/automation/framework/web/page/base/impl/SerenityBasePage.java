@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl;
 
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.BoundingBox;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotClickableException;
@@ -19,7 +19,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 import java.util.function.Predicate;
-import com.microsoft.playwright.options.BoundingBox;
+import java.util.function.Consumer;
 
 /**
  * Serenity 基础页面类
@@ -74,6 +74,7 @@ public abstract class SerenityBasePage extends BasePage {
      * 获取BrowserContext对象
      * 覆盖父类方法，公开访问权限并添加Serenity集成
      */
+    @Override
     public BrowserContext getContext() {
         try {
             BrowserContext context = super.getContext();
@@ -201,6 +202,14 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
+    @Override
+    public void jsClick(String selector) {
+        logger.info("[Serenity] JS Clicking element: {}", selector);
+        addSerenityTestData("lastAction", "jsClick");
+        addSerenityTestData("lastActionElement", selector);
+        super.jsClick(selector);
+    }
+
     /**
      * 输入文本 - 覆盖父类方法，添加Serenity集成
      */
@@ -218,6 +227,30 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
+    @Override
+    public void clear(String selector) {
+        logger.info("[Serenity] Clearing element: {}", selector);
+        addSerenityTestData("lastAction", "clear");
+        addSerenityTestData("lastActionElement", selector);
+        super.clear(selector);
+    }
+
+    @Override
+    public void append(String selector, String text) {
+        logger.info("[Serenity] Appending text '{}' into element: {}", text, selector);
+        addSerenityTestData("lastAction", "append");
+        addSerenityTestData("lastActionElement", selector);
+        addSerenityTestData("lastActionValue", text);
+        super.append(selector, text);
+    }
+
+    @Override
+    public String getInputValue(String selector) {
+        String value = super.getInputValue(selector);
+        addSerenityTestData("getInputValue", selector);
+        return value;
+    }
+
     /**
      * 导航到指定URL - 覆盖父类方法，添加Serenity集成
      */
@@ -232,6 +265,156 @@ public abstract class SerenityBasePage extends BasePage {
             logger.error("Failed to navigate to URL: {}", url, e);
             throw new ElementException("Failed to navigate to URL: " + url, e);
         }
+    }
+
+    @Override
+    public void selectByVisibleText(String selector, String text) {
+        logger.info("[Serenity] Selecting text '{}' on element: {}", text, selector);
+        addSerenityTestData("selectByText", text);
+        addSerenityTestData("selectElement", selector);
+        super.selectByVisibleText(selector, text);
+    }
+
+    @Override
+    public void check(String selector) {
+        logger.info("[Serenity] Checking element: {}", selector);
+        addSerenityTestData("checkElement", selector);
+        super.check(selector);
+    }
+
+    @Override
+    public void uncheck(String selector) {
+        logger.info("[Serenity] Unchecking element: {}", selector);
+        addSerenityTestData("uncheckElement", selector);
+        super.uncheck(selector);
+    }
+
+    @Override
+    public boolean isChecked(String selector) {
+        boolean result = super.isChecked(selector);
+        addSerenityTestData("isChecked", selector + " = " + result);
+        return result;
+    }
+
+    @Override
+    public boolean isEnabled(String selector) {
+        boolean result = super.isEnabled(selector);
+        addSerenityTestData("isEnabled", selector + " = " + result);
+        return result;
+    }
+
+    @Override
+    public boolean isDisabled(String selector) {
+        boolean result = super.isDisabled(selector);
+        addSerenityTestData("isDisabled", selector + " = " + result);
+        return result;
+    }
+
+    @Override
+    public boolean isVisible(String selector) {
+        boolean result = super.isVisible(selector);
+        addSerenityTestData("isVisible", selector + " = " + result);
+        return result;
+    }
+
+    @Override
+    public int getElementCount(String selector) {
+        int count = super.getElementCount(selector);
+        addSerenityTestData("elementCount", selector + " = " + count);
+        return count;
+    }
+
+    @Override
+    public void refresh() {
+        logger.info("[Serenity] Refreshing page");
+        addSerenityTestData("lastAction", "refresh");
+        super.refresh();
+    }
+
+    @Override
+    public void back() {
+        logger.info("[Serenity] Going back");
+        addSerenityTestData("lastAction", "back");
+        super.back();
+    }
+
+    @Override
+    public void forward() {
+        logger.info("[Serenity] Going forward");
+        addSerenityTestData("lastAction", "forward");
+        super.forward();
+    }
+
+    @Override
+    public void hover(String selector) {
+        logger.info("[Serenity] Hovering element: {}", selector);
+        addSerenityTestData("hoverElement", selector);
+        super.hover(selector);
+    }
+
+    @Override
+    public void keyDown(String selector, String key) {
+        addSerenityTestData("keyDown", key);
+        super.keyDown(selector, key);
+    }
+
+    @Override
+    public void keyUp(String selector, String key) {
+        addSerenityTestData("keyUp", key);
+        super.keyUp(selector, key);
+    }
+
+    @Override
+    public void press(String selector, String key) {
+        addSerenityTestData("pressKey", key);
+        super.press(selector, key);
+    }
+
+    @Override
+    public void acceptAlert() {
+        logger.info("[Serenity] Accepting alert");
+        addSerenityTestData("alertAction", "accept");
+        super.acceptAlert();
+    }
+
+    @Override
+    public void dismissAlert() {
+        logger.info("[Serenity] Dismissing alert");
+        addSerenityTestData("alertAction", "dismiss");
+        super.dismissAlert();
+    }
+
+    @Override
+    public byte[] takeScreenshot() {
+        byte[] screenshot = super.takeScreenshot();
+        addSerenityTestData("screenshot", "fullPage");
+        return screenshot;
+    }
+
+    @Override
+    public byte[] takeElementScreenshot(String selector) {
+        byte[] screenshot = super.takeElementScreenshot(selector);
+        addSerenityTestData("elementScreenshot", selector);
+        return screenshot;
+    }
+
+    @Override
+    public Frame getFrame(String name) {
+        Frame frame = super.getFrame(name);
+        addSerenityTestData("getFrame", name);
+        return frame;
+    }
+
+    @Override
+    public void executeInFrame(String frameName, Consumer<Frame> action) {
+        addSerenityTestData("executeInFrame", frameName);
+        super.executeInFrame(frameName, action);
+    }
+
+    @Override
+    public void waitForTimeout(int milliseconds) {
+        addSerenityTestData("waitForTimeout", milliseconds);
+        super.waitForTimeout(milliseconds);
     }
 
     /**
@@ -735,7 +918,3 @@ public abstract class SerenityBasePage extends BasePage {
         return locator;
     }
 }
-
-    // ==================== 断言方法（Serenity集成版）====================
-    // 注意: 所有 assert 方法已从 BasePage 中移除,因此这里也移除了对应的覆盖方法
-    // 请使用 Serenity BDD 的断言功能或其他验证方法

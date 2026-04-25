@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
+import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
@@ -15,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 public class PageElement {
@@ -27,7 +29,7 @@ public class PageElement {
     private final String selector;
     private final BasePage page;
 
-    // ==================== 构造 ====================
+    // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
         if (selector == null || selector.isBlank()) {
             throw new IllegalArgumentException("Selector cannot be null or blank");
@@ -55,7 +57,7 @@ public class PageElement {
         return locator().locator(relativeSelector);
     }
 
-    // ==================== 重试 ====================
+    // ==================== Retry Core ====================
     private void executeWithRetry(Runnable action, String operation) {
         Exception lastEx = null;
         for (int i = 0; i <= MAX_RETRY; i++) {
@@ -68,7 +70,7 @@ public class PageElement {
                 if (i == MAX_RETRY || !isRetriable(e)) {
                     break;
                 }
-                logger.warn("[Retry {}/{}] {} failed: {}", i+1, MAX_RETRY, operation, e.getMessage());
+                logger.warn("[Retry {}/{}] {} failed: {}", i + 1, MAX_RETRY, operation, e.getMessage());
                 page.waitForTimeout(RETRY_DELAY_MS);
             }
         }
@@ -76,28 +78,17 @@ public class PageElement {
     }
 
     private boolean isRetriable(PlaywrightException e) {
-        if (e instanceof TimeoutError) {
-            return true;
-        }
+        if (e instanceof TimeoutError) return true;
         String m = e.getMessage().toLowerCase();
-        return m.contains("intercepted")
-                || m.contains("obscured")
-                || m.contains("detached")
-                || m.contains("not interactable")
-                || m.contains("not attached");
+        return m.contains("intercepted") || m.contains("obscured") || m.contains("detached") || m.contains("not interactable") || m.contains("not attached");
     }
 
-    // ==================== 点击 ====================
+    // ==================== Click ====================
     public PageElement click() {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             page.waitForTimeout(100);
-
-            locator().click(new Locator.ClickOptions()
-                    .setPosition(5, 5)
-                    .setDelay(100)
-                    .setForce(true));
-
+            locator().click(new Locator.ClickOptions().setDelay(100).setForce(true));
             page.waitForTimeout(ACTION_POST_DELAY);
         }, "click");
         return this;
@@ -121,7 +112,7 @@ public class PageElement {
         return this;
     }
 
-    // ==================== 输入 ====================
+    // ==================== Input ====================
     public PageElement fill(String text) {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
@@ -139,7 +130,9 @@ public class PageElement {
     }
 
     public PageElement clear() {
-        executeWithRetry(() -> locator().clear(), "clear");
+        executeWithRetry(() -> {
+            locator().clear();
+        }, "clear");
         return this;
     }
 
@@ -151,16 +144,25 @@ public class PageElement {
         return clear().type(text);
     }
 
-    // ==================== 状态判断（无参 + 有参，全部不抛异常） ====================
+    // ==================== Keyboard ====================
+    public PageElement press(String key) {
+        executeWithRetry(() -> locator().press(key), "press");
+        return this;
+    }
+
+    public PageElement selectText() {
+        executeWithRetry(() -> locator().selectText(), "selectText");
+        return this;
+    }
+
+    // ==================== State Check ====================
     public boolean isVisible() {
         return isVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
     }
 
     public boolean isVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout((long) timeoutSec * 1000));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
@@ -173,9 +175,7 @@ public class PageElement {
 
     public boolean isNotVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout((long) timeoutSec * 1000));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
@@ -188,9 +188,7 @@ public class PageElement {
 
     public boolean exists(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
-                    .setTimeout((long) timeoutSec * 1000));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (Exception e) {
             return false;
@@ -203,7 +201,11 @@ public class PageElement {
 
     public boolean isEnabled(int timeoutSec) {
         if (!exists(timeoutSec)) return false;
-        try { return locator().isEnabled(); } catch (Exception e) { return false; }
+        try {
+            return locator().isEnabled();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public boolean isDisabled() {
@@ -220,7 +222,11 @@ public class PageElement {
 
     public boolean isEditable(int timeoutSec) {
         if (!exists(timeoutSec)) return false;
-        try { return locator().isEditable(); } catch (Exception e) { return false; }
+        try {
+            return locator().isEditable();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public boolean isChecked() {
@@ -229,10 +235,14 @@ public class PageElement {
 
     public boolean isChecked(int timeoutSec) {
         if (!exists(timeoutSec)) return false;
-        try { return locator().isChecked(); } catch (Exception e) { return false; }
+        try {
+            return locator().isChecked();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
-    // ==================== 文本 ====================
+    // ==================== Text & Attribute ====================
     public String getText() {
         try {
             String raw = locator().textContent();
@@ -240,9 +250,7 @@ public class PageElement {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
             }
-            return raw.replace('\u00A0', ' ')
-                    .replaceAll("\\s+", " ")
-                    .trim();
+            return raw.replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
         } catch (Exception e) {
             logger.warn("getText failed: {}", selector, e);
             return "";
@@ -255,6 +263,24 @@ public class PageElement {
         } catch (Exception e) {
             logger.warn("getInnerText failed: {}", selector, e);
             return "";
+        }
+    }
+
+    public String getInnerHtml() {
+        try {
+            return locator().innerHTML();
+        } catch (Exception e) {
+            logger.warn("getInnerHtml failed: {}", selector, e);
+            return "";
+        }
+    }
+
+    public List<String> getAllTextContents() {
+        try {
+            return locator().allTextContents();
+        } catch (Exception e) {
+            logger.warn("allTextContents failed: {}", selector, e);
+            return List.of();
         }
     }
 
@@ -276,7 +302,7 @@ public class PageElement {
         }
     }
 
-    // ==================== 下拉选择 ====================
+    // ==================== Select ====================
     public PageElement selectByValue(String value) {
         executeWithRetry(() -> locator().selectOption(value), "selectByValue");
         return this;
@@ -287,45 +313,135 @@ public class PageElement {
         return this;
     }
 
-    // ==================== 等待方法（会抛异常 → 用于断言） ====================
-    public PageElement waitVisible(int timeoutSec) {
+    // ==================== WaitFor (Full Set) ====================
+    private int getDefaultTimeoutSec() {
+        return TimeoutConfig.getElementCheckTimeout() / 1000;
+    }
+
+    public PageElement waitForVisible() {
+        return waitForVisible(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout((long) timeoutSec * 1000));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
             return this;
         } catch (Exception e) {
-            throw new PlaywrightException("Element not visible within " + timeoutSec + "s: " + selector, e);
+            throw new PlaywrightException("Timeout waiting visible: " + selector, e);
         }
     }
 
-    public PageElement waitForVisible(int timeout) {
-        return waitVisible(timeout);
+    public PageElement waitForNotVisible() {
+        return waitForNotVisible(getDefaultTimeoutSec());
     }
 
     public PageElement waitForNotVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout((long) timeoutSec * 1000));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
             return this;
         } catch (Exception e) {
-            throw new PlaywrightException("Element still visible after " + timeoutSec + "s: " + selector, e);
+            throw new PlaywrightException("Timeout waiting hidden: " + selector, e);
         }
     }
 
-    public PageElement waitHidden() {
+    public PageElement waitForExists() {
+        return waitForExists(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForExists(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.HIDDEN)
-                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
             return this;
         } catch (Exception e) {
-            throw new PlaywrightException("Element not hidden: " + selector, e);
+            throw new PlaywrightException("Timeout waiting exists: " + selector, e);
         }
     }
 
-    // ==================== 工具 ====================
+    public PageElement waitForNotExists() {
+        return waitForNotExists(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForNotExists(int timeoutSec) {
+        try {
+            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.DETACHED).setTimeout((long) timeoutSec * 1000));
+            return this;
+        } catch (Exception e) {
+            throw new PlaywrightException("Timeout waiting detached: " + selector, e);
+        }
+    }
+
+    public PageElement waitForClickable() {
+        return waitForClickable(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForClickable(int timeoutSec) {
+        waitForVisible(timeoutSec);
+        if (!locator().isEnabled()) throw new PlaywrightException("Element not clickable: " + selector);
+        return this;
+    }
+
+    public PageElement waitForEditable() {
+        return waitForEditable(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForEditable(int timeoutSec) {
+        waitForVisible(timeoutSec);
+        if (!locator().isEditable()) throw new PlaywrightException("Element not editable: " + selector);
+        return this;
+    }
+
+    public PageElement waitForEnabled() {
+        return waitForEnabled(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForEnabled(int timeoutSec) {
+        waitForExists(timeoutSec);
+        if (!locator().isEnabled()) throw new PlaywrightException("Element not enabled: " + selector);
+        return this;
+    }
+
+    public PageElement waitForDisabled() {
+        return waitForDisabled(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForDisabled(int timeoutSec) {
+        waitForExists(timeoutSec);
+        if (locator().isEnabled()) throw new PlaywrightException("Element not disabled: " + selector);
+        return this;
+    }
+
+    public PageElement waitForChecked() {
+        return waitForChecked(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForChecked(int timeoutSec) {
+        waitForExists(timeoutSec);
+        if (!locator().isChecked()) throw new PlaywrightException("Element not checked: " + selector);
+        return this;
+    }
+
+    public PageElement waitForNotChecked() {
+        return waitForNotChecked(getDefaultTimeoutSec());
+    }
+
+    public PageElement waitForNotChecked(int timeoutSec) {
+        waitForExists(timeoutSec);
+        if (locator().isChecked()) throw new PlaywrightException("Element checked: " + selector);
+        return this;
+    }
+
+    // ==================== Event & JS ====================
+    public PageElement dispatchEvent(String event) {
+        executeWithRetry(() -> locator().dispatchEvent(event), "dispatchEvent");
+        return this;
+    }
+
+    public PageElement dispatchEvent(String event, Object arg) {
+        executeWithRetry(() -> locator().dispatchEvent(event, arg), "dispatchEvent");
+        return this;
+    }
+
+    // ==================== Hover / Focus / Check ====================
     public PageElement hover() {
         executeWithRetry(() -> locator().hover(), "hover");
         return this;
@@ -346,23 +462,43 @@ public class PageElement {
         return this;
     }
 
+    // ==================== Upload / Screenshot / Drag ====================
     public PageElement uploadFile(String... paths) {
         Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
         executeWithRetry(() -> locator().setInputFiles(pathArray), "uploadFile");
         return this;
     }
 
+    public byte[] screenshot() {
+        try {
+            return locator().screenshot();
+        } catch (Exception e) {
+            logger.error("screenshot failed: {}", selector, e);
+            return new byte[0];
+        }
+    }
+
+    public PageElement dragTo(PageElement target) {
+        executeWithRetry(() -> locator().dragTo(target.locator()), "dragTo");
+        return this;
+    }
+
+    // ==================== Utils ====================
     public BoundingBox getBoundingBoxSafe() {
-        waitVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
+        waitForVisible();
         BoundingBox box = locator().boundingBox();
-        return Objects.requireNonNull(box, "BoundingBox is null: " + selector);
+        return Objects.requireNonNull(box, "BoundingBox null: " + selector);
     }
 
     public int count() {
         return locator().count();
     }
 
-    // ==================== 子元素 ====================
+    public ElementHandle elementHandle() {
+        return locator().elementHandle();
+    }
+
+    // ==================== Child Element ====================
     public PageElement child(String childSelector) {
         Objects.requireNonNull(childSelector, "childSelector must not be null");
         String clean = childSelector.trim();
@@ -375,8 +511,7 @@ public class PageElement {
     }
 
     public PageElement child(String childSelector, int index) {
-        PageElement child = child(childSelector);
-        return new PageElement(child.getSelector() + " >> nth=" + index, page);
+        return new PageElement(child(childSelector).getSelector() + " >> nth=" + index, page);
     }
 
     @Override

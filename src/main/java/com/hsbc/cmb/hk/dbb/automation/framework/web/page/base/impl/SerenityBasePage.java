@@ -917,4 +917,11 @@ public abstract class SerenityBasePage extends BasePage {
         addSerenityTestData("byTestId", testId);
         return locator;
     }
+
+    @Override
+    public void pause() {
+        super.pause();
+        addSerenityTestData("pause", "completed");
+    }
+
 }

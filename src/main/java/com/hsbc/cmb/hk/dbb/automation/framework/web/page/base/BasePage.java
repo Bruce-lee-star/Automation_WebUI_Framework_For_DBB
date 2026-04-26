@@ -697,4 +697,38 @@ public abstract class BasePage {
     public byte[] takeElementScreenshot(String selector) {
         return locator(selector).screenshot();
     }
+
+    /**
+     * 判断当前是否为可调试本地环境
+     * @return true=本地允许pause  false=Jenkins/BrowserStack禁止暂停
+     */
+    protected boolean isDebugEnvironment() {
+        // 1. 识别 BrowserStack 云端环境
+        boolean isBsEnv = System.getenv().containsKey("BROWSERSTACK_USERNAME")
+                || System.getenv().containsKey("BROWSERSTACK_ACCESS_KEY");
+
+        // 2. 识别 Jenkins CI 环境
+        boolean isJenkinsEnv = System.getenv().containsKey("JENKINS_HOME")
+                || System.getProperty("ci", "false").equalsIgnoreCase("true");
+
+        // 云端/CI 直接判定为非调试环境
+        return !isBsEnv && !isJenkinsEnv;
+    }
+
+    /**
+     * 安全暂停方法
+     * 本地IDE：正常pause调试
+     * Jenkins / BrowserStack：自动跳过，杜绝流程阻塞
+     */
+    public void pause() {
+        if (isDebugEnvironment()) {
+            try {
+                getPage().pause();
+            } catch (Exception e) {
+                logger.warn("Page pause failed, skip debug pause", e);
+            }
+        } else {
+            logger.warn("[Security Control] Jenkins/BrowserStack environment, auto skip pause() to avoid block");
+        }
+    }
 }

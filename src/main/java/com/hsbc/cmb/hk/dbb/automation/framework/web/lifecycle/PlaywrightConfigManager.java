@@ -301,4 +301,82 @@ class PlaywrightConfigManager {
     static String getProjectName() {
         return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PROJECT_NAME);
     }
+
+    // ==================== 浏览器启动参数和路径 ====================
+
+    /**
+     * 获取浏览器启动参数
+     * 根据浏览器类型和 channel 返回对应的启动参数
+     */
+    static String getBrowserArgs() {
+        String browserType = getBrowserType();
+        String channel = getBrowserChannel();
+
+        switch (browserType.toLowerCase()) {
+            case "firefox":
+                return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_FIREFOX_ARGS);
+            case "webkit":
+                return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_WEBKIT_ARGS);
+            case "chromium":
+                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
+                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
+                } else if ("chrome".equalsIgnoreCase(channel)) {
+                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
+                } else {
+                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
+                }
+            default:
+                return "";
+        }
+    }
+
+    /**
+     * 获取浏览器可执行文件路径
+     * 根据浏览器类型和 channel 返回对应的可执行文件路径
+     * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
+     */
+    static String getBrowserExecutablePath() {
+        String browserType = getBrowserType();
+        String channel = getBrowserChannel();
+
+        switch (browserType.toLowerCase()) {
+            case "firefox":
+            case "webkit":
+                // Firefox 和 WebKit 必须使用 Playwright 版本
+                return null;
+            case "chromium":
+                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
+                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
+                } else if ("chrome".equalsIgnoreCase(channel)) {
+                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
+                } else {
+                    return null;
+                }
+            default:
+                return null;
+        }
+    }
+
+    // ==================== Axe-core 配置 ====================
+
+    /**
+     * 是否启用 axe-core 扫描
+     */
+    static boolean isAxeScanEnabled() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.AXE_SCAN_ENABLED);
+    }
+
+    /**
+     * 获取 axe-core WCAG 标签
+     */
+    static String getAxeScanTags() {
+        return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
+    }
+
+    /**
+     * 获取 axe-core 报告输出目录
+     */
+    static String getAxeScanOutputDir() {
+        return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
+    }
 }

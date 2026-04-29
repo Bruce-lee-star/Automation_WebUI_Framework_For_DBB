@@ -150,6 +150,12 @@ class PlaywrightContextManager {
         }
         contextOptions.setDeviceScaleFactor(Double.parseDouble(deviceScaleFactor));
 
+        Dimension screenSize = PlaywrightConfigManager.getAvailableScreenSize();
+        int viewportWidth = (int) screenSize.getWidth();
+        int viewportHeight = (int) screenSize.getHeight();
+        contextOptions.setViewportSize(viewportWidth, viewportHeight);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context viewport to screen size: {}x{}", viewportWidth, viewportHeight);
+
         contextOptions.setHasTouch(PlaywrightConfigManager.hasTouch());
         contextOptions.setIsMobile(PlaywrightConfigManager.isMobile());
 
@@ -159,7 +165,7 @@ class PlaywrightContextManager {
         // 配置录屏
         if (PlaywrightConfigManager.isRecordVideoEnabled()) {
             String videoDir = PlaywrightConfigManager.getRecordVideoDir();
-            Dimension screenSize = PlaywrightConfigManager.getAvailableScreenSize();
+            screenSize = PlaywrightConfigManager.getAvailableScreenSize();
             contextOptions.setRecordVideoDir(Paths.get(videoDir));
             contextOptions.setRecordVideoSize((int) screenSize.getWidth(), (int) screenSize.getHeight());
         }

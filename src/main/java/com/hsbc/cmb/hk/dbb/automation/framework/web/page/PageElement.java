@@ -78,7 +78,7 @@ public class PageElement {
     }
 
     private boolean isRetriable(PlaywrightException e) {
-        if (e instanceof TimeoutError) return true;
+        if (e instanceof TimeoutError) return false;
         String m = e.getMessage().toLowerCase();
         return m.contains("intercepted") || m.contains("obscured") || m.contains("detached") || m.contains("not interactable") || m.contains("not attached");
     }
@@ -87,7 +87,6 @@ public class PageElement {
     public PageElement click() {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
-            page.waitForTimeout(100);
             locator().click(new Locator.ClickOptions().setDelay(100).setForce(true));
             page.waitForTimeout(ACTION_POST_DELAY);
         }, "click");

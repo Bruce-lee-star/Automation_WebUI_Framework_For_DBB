@@ -1686,28 +1686,28 @@ public class PlaywrightManager {
      * 是否为 headless 模式
      */
     public static boolean isHeadless() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_BROWSER_HEADLESS);
+        return PlaywrightConfigManager.isHeadless();
     }
 
     /**
      * 获取浏览器慢动作延迟（毫秒）
      */
     public static int getBrowserSlowMo() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_BROWSER_SLOWMO);
+        return PlaywrightConfigManager.getBrowserSlowMo();
     }
 
     /**
      * 获取浏览器超时（毫秒）
      */
     public static int getBrowserTimeout() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_BROWSER_TIMEOUT);
+        return PlaywrightConfigManager.getBrowserTimeout();
     }
 
     /**
      * 获取浏览器下载路径
      */
     public static String getBrowserDownloadsPath() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOADS_PATH);
+        return PlaywrightConfigManager.getBrowserDownloadsPath();
     }
 
     /**
@@ -1715,59 +1715,7 @@ public class PlaywrightManager {
      * 根据浏览器类型返回对应的启动参数
      */
     public static String getBrowserArgs() {
-        String browserType = getBrowserType();
-        String channel = getBrowserChannel();
-        
-        // 根据浏览器类型和 channel 确定使用哪个 args
-        String args = null;
-        
-        switch (browserType.toLowerCase()) {
-            case "firefox":
-                // Firefox 浏览器（必须使用 Playwright 版本）
-                args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_FIREFOX_ARGS);
-                if (args != null && !args.trim().isEmpty()) {
-                    LoggingConfigUtil.logDebugIfVerbose(logger, "Using Firefox args: {}", args);
-                    return args;
-                }
-                break;
-                
-            case "webkit":
-                // WebKit 浏览器（必须使用 Playwright 版本）
-                args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_WEBKIT_ARGS);
-                if (args != null && !args.trim().isEmpty()) {
-                    LoggingConfigUtil.logDebugIfVerbose(logger, "Using WebKit args: {}", args);
-                    return args;
-                }
-                break;
-                
-            case "chromium":
-                // Chromium 系列浏览器
-                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
-                    // Edge 浏览器
-                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
-                    if (args != null && !args.trim().isEmpty()) {
-                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Edge args: {}", args);
-                        return args;
-                    }
-                } else if ("chrome".equalsIgnoreCase(channel)) {
-                    // Chrome 浏览器
-                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
-                    if (args != null && !args.trim().isEmpty()) {
-                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chrome args: {}", args);
-                        return args;
-                    }
-                } else {
-                    // Chromium 无 channel
-                    args = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
-                    if (args != null && !args.trim().isEmpty()) {
-                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chromium args: {}", args);
-                        return args;
-                    }
-                }
-                break;
-        }
-        
-        return "";
+        return PlaywrightConfigManager.getBrowserArgs();
     }
 
     /**
@@ -1785,7 +1733,7 @@ public class PlaywrightManager {
      * - "msedge-canary" - 使用 Edge Canary 版本
      */
     public static String getBrowserChannel() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHANNEL);
+        return PlaywrightConfigManager.getBrowserChannel();
     }
 
     /**
@@ -1795,60 +1743,18 @@ public class PlaywrightManager {
      * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
      */
     public static String getBrowserExecutablePath() {
-        String browserType = getBrowserType();
-        String channel = getBrowserChannel();
-        
-        // 根据浏览器类型和 channel 确定使用哪个 executablePath
-        String executablePath = null;
-        
-        switch (browserType.toLowerCase()) {
-            case "firefox":
-                // Firefox 必须使用 Playwright 编译的版本，不支持 executablePath
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Firefox uses Playwright's compiled version (no executablePath support)");
-                return null;
-                
-            case "webkit":
-                // WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
-                LoggingConfigUtil.logDebugIfVerbose(logger, "WebKit uses Playwright's compiled version (no executablePath support)");
-                return null;
-                
-            case "chromium":
-                // Chromium 系列浏览器（Chrome, Edge）支持本地 executablePath
-                if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
-                    // Edge 浏览器
-                    executablePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
-                    if (executablePath != null && !executablePath.trim().isEmpty()) {
-                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Edge executablePath: {}", executablePath);
-                        return executablePath;
-                    }
-                } else if ("chrome".equalsIgnoreCase(channel)) {
-                    // Chrome 浏览器
-                    executablePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
-                    if (executablePath != null && !executablePath.trim().isEmpty()) {
-                        LoggingConfigUtil.logDebugIfVerbose(logger, "Using Chrome executablePath: {}", executablePath);
-                        return executablePath;
-                    }
-                } else {
-                    // Chromium 无 channel，使用 Playwright 版本
-                    LoggingConfigUtil.logDebugIfVerbose(logger, "Chromium without channel uses Playwright's version");
-                    return null;
-                }
-                break;
-        }
-        
-        return null;
+        return PlaywrightConfigManager.getBrowserExecutablePath();
     }
 
     /**
      * 是否全页截图
      */
     public static boolean isFullPageScreenshot() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_FULLPAGE);
+        return PlaywrightConfigManager.isFullPageScreenshot();
     }
 
-
     public static String getProjectName() {
-        return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PROJECT_NAME);
+        return PlaywrightConfigManager.getProjectName();
     }
 
     // ==================== Axe-core 配置方法 ====================
@@ -1857,21 +1763,21 @@ public class PlaywrightManager {
      * 是否启用 axe-core 扫描
      */
     public static boolean isAxeScanEnabled() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.AXE_SCAN_ENABLED);
+        return PlaywrightConfigManager.isAxeScanEnabled();
     }
 
     /**
      * 获取 axe-core WCAG 标签
      */
     public static String getAxeScanTags() {
-        return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
+        return PlaywrightConfigManager.getAxeScanTags();
     }
 
     /**
      * 获取 axe-core 报告输出目录
      */
     public static String getAxeScanOutputDir() {
-        return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
+        return PlaywrightConfigManager.getAxeScanOutputDir();
     }
 
     // ==================== 公共访问方法（用于其他类访问自定义配置） ====================

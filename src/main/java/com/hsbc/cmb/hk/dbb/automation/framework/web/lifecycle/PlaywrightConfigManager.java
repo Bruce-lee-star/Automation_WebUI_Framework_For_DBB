@@ -18,14 +18,24 @@ import java.awt.geom.AffineTransform;
  * - 设备缩放因子配置
  * - 屏幕尺寸检测
  */
-class PlaywrightConfigManager {
-    
+public class PlaywrightConfigManager {
+
+    private static final PlaywrightConfigManager INSTANCE = new PlaywrightConfigManager();
+
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightConfigManager.class);
+
+    /**
+     * 获取配置管理器实例（提供单例模式）
+     * 使用方式：PlaywrightManager.config().getXXX() 或 PlaywrightConfigManager.config().getXXX()
+     */
+    public static PlaywrightConfigManager config() {
+        return INSTANCE;
+    }
     
     /**
      * 获取逻辑屏幕分辨率（用于 viewport 和窗口大小）
      */
-    static Dimension getAvailableScreenSize() {
+    Dimension getAvailableScreenSize() {
         try {
             GraphicsConfiguration gc = GraphicsEnvironment
                     .getLocalGraphicsEnvironment()
@@ -48,7 +58,7 @@ class PlaywrightConfigManager {
     /**
      * 获取系统 DPI 缩放因子
      */
-    static double getSystemDpiScaleFactor() {
+    double getSystemDpiScaleFactor() {
         try {
             GraphicsConfiguration gc = GraphicsEnvironment
                     .getLocalGraphicsEnvironment()
@@ -75,50 +85,56 @@ class PlaywrightConfigManager {
      * 获取浏览器类型
      * 优先使用测试用例级别的覆盖配置（如果存在）
      */
-    static String getBrowserType() {
-        // 这里需要访问 BrowserOverrideManager，暂时使用默认逻辑
+    public String getBrowserType() {
+        // 优先级1: 检查是否有测试用例级别的浏览器覆盖
+        if (com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager.hasOverride()) {
+            String overrideBrowser = com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager.getEffectiveBrowserType();
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Using override browser type: {}", overrideBrowser);
+            return overrideBrowser;
+        }
+        // 优先级2: 使用配置文件中的默认值
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_TYPE);
     }
 
     /**
      * 是否为 headless 模式
      */
-    static boolean isHeadless() {
+    public boolean isHeadless() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_BROWSER_HEADLESS);
     }
 
     /**
      * 获取浏览器慢动作延迟（毫秒）
      */
-    static int getBrowserSlowMo() {
+    public int getBrowserSlowMo() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_BROWSER_SLOWMO);
     }
 
     /**
      * 获取浏览器超时（毫秒）
      */
-    static int getBrowserTimeout() {
+    public int getBrowserTimeout() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_BROWSER_TIMEOUT);
     }
 
     /**
      * 获取浏览器下载路径
      */
-    static String getBrowserDownloadsPath() {
+    public String getBrowserDownloadsPath() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOADS_PATH);
     }
 
     /**
      * 获取浏览器 channel
      */
-    static String getBrowserChannel() {
+    public String getBrowserChannel() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHANNEL);
     }
 
     /**
      * 判断浏览器类型是否是 Chromium 系列
      */
-    static boolean isChromiumBased(String browserType) {
+    public boolean isChromiumBased(String browserType) {
         if (browserType == null) {
             return false;
         }
@@ -130,175 +146,175 @@ class PlaywrightConfigManager {
     /**
      * 是否最大化窗口
      */
-    static boolean isWindowMaximize() {
+    public boolean isWindowMaximize() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_WINDOW_MAXIMIZE);
     }
 
     /**
      * 获取窗口最大化参数
      */
-    static String getWindowMaximizeArgs() {
+    public String getWindowMaximizeArgs() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_WINDOW_MAXIMIZE_ARGS);
     }
 
     /**
      * 获取 Viewport 宽度
      */
-    static int getViewportWidth() {
+    public int getViewportWidth() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_WIDTH);
     }
 
     /**
      * 获取 Viewport 高度
      */
-    static int getViewportHeight() {
+    public int getViewportHeight() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_HEIGHT);
     }
 
     /**
      * 是否启用触摸
      */
-    static boolean hasTouch() {
+    public boolean hasTouch() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_HAS_TOUCH);
     }
 
     /**
      * 是否移动设备模式
      */
-    static boolean isMobile() {
+    public boolean isMobile() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_IS_MOBILE);
     }
 
     /**
      * 获取 Context locale
      */
-    static String getContextLocale() {
+    public String getContextLocale() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_LOCALE);
     }
 
     /**
      * 获取 Context timezone
      */
-    static String getContextTimezone() {
+    public String getContextTimezone() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_TIMEZONE_ID);
     }
 
     /**
      * 获取 Context User-Agent
      */
-    static String getContextUserAgent() {
+    public String getContextUserAgent() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_USER_AGENT);
     }
 
     /**
      * 获取 Context 权限
      */
-    static String getContextPermissions() {
+    public String getContextPermissions() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PERMISSIONS);
     }
 
     /**
      * 获取 ColorScheme
      */
-    static String getColorScheme() {
+    public String getColorScheme() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_COLOR_SCHEME);
     }
 
     /**
      * 获取地理纬度
      */
-    static String getGeolocationLatitude() {
+    public String getGeolocationLatitude() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_GEOLOCATION_LATITUDE);
     }
 
     /**
      * 获取地理经度
      */
-    static String getGeolocationLongitude() {
+    public String getGeolocationLongitude() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_GEOLOCATION_LONGITUDE);
     }
 
     /**
      * 获取设备缩放因子
      */
-    static String getDeviceScaleFactor() {
+    public String getDeviceScaleFactor() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_DEVICE_SCALE_FACTOR);
     }
 
     /**
      * 是否启用录屏
      */
-    static boolean isRecordVideoEnabled() {
+    public boolean isRecordVideoEnabled() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_RECORD_VIDEO_ENABLED);
     }
 
     /**
      * 获取录屏目录
      */
-    static String getRecordVideoDir() {
+    public String getRecordVideoDir() {
         return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_RECORD_VIDEO_DIR);
     }
 
     /**
      * 是否启用 Trace
      */
-    static boolean isTraceEnabled() {
+    public boolean isTraceEnabled() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED);
     }
 
     /**
      * Trace 时是否截图
      */
-    static boolean isTraceScreenshots() {
+    public boolean isTraceScreenshots() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SCREENSHOTS);
     }
 
     /**
      * Trace 时是否快照
      */
-    static boolean isTraceSnapshots() {
+    public boolean isTraceSnapshots() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SNAPSHOTS);
     }
 
     /**
      * Trace 时是否记录源码
      */
-    static boolean isTraceSources() {
+    public boolean isTraceSources() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_SOURCES);
     }
 
     /**
      * 获取页面超时（毫秒）
      */
-    static int getPageTimeout() {
+    public int getPageTimeout() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_PAGE_TIMEOUT);
     }
 
     /**
      * 获取页面导航超时（毫秒）
      */
-    static int getNavigationTimeout() {
+    public int getNavigationTimeout() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_PAGE_NAVIGATION_TIMEOUT);
     }
 
     /**
      * 获取浏览器重启策略
      */
-    static String getRestartStrategy() {
+    public String getRestartStrategy() {
         return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH);
     }
 
     /**
      * 是否全页截图
      */
-    static boolean isFullPageScreenshot() {
+    public boolean isFullPageScreenshot() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_FULLPAGE);
     }
 
     /**
      * 获取项目名称
      */
-    static String getProjectName() {
+    public String getProjectName() {
         return FrameworkConfigManager.getString(FrameworkConfig.SERENITY_PROJECT_NAME);
     }
 
@@ -308,7 +324,7 @@ class PlaywrightConfigManager {
      * 获取浏览器启动参数
      * 根据浏览器类型和 channel 返回对应的启动参数
      */
-    static String getBrowserArgs() {
+    public String getBrowserArgs() {
         String browserType = getBrowserType();
         String channel = getBrowserChannel();
 
@@ -335,14 +351,13 @@ class PlaywrightConfigManager {
      * 根据浏览器类型和 channel 返回对应的可执行文件路径
      * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
      */
-    static String getBrowserExecutablePath() {
+    public String getBrowserExecutablePath() {
         String browserType = getBrowserType();
         String channel = getBrowserChannel();
 
         switch (browserType.toLowerCase()) {
             case "firefox":
             case "webkit":
-                // Firefox 和 WebKit 必须使用 Playwright 版本
                 return null;
             case "chromium":
                 if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
@@ -357,26 +372,121 @@ class PlaywrightConfigManager {
         }
     }
 
+    /**
+     * 是否跳过浏览器下载
+     */
+    public boolean isSkipBrowserDownload() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
+    }
+
+    /**
+     * 获取页面加载状态
+     */
+    public String getPageLoadState() {
+        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PAGE_LOAD_STATE);
+    }
+
     // ==================== Axe-core 配置 ====================
 
     /**
      * 是否启用 axe-core 扫描
      */
-    static boolean isAxeScanEnabled() {
+    public boolean isAxeScanEnabled() {
         return FrameworkConfigManager.getBoolean(FrameworkConfig.AXE_SCAN_ENABLED);
     }
 
     /**
      * 获取 axe-core WCAG 标签
      */
-    static String getAxeScanTags() {
+    public String getAxeScanTags() {
         return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
     }
 
     /**
      * 获取 axe-core 报告输出目录
      */
-    static String getAxeScanOutputDir() {
+    public String getAxeScanOutputDir() {
         return FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
+    }
+
+    // ==================== 元素操作配置 ====================
+
+    /**
+     * 获取元素操作后延迟时间（毫秒）
+     */
+    public int getElementActionPostDelay() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_ACTION_POST_DELAY);
+    }
+
+    /**
+     * 获取元素操作最大重试次数
+     */
+    public int getElementMaxRetry() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_RETRY_MAX);
+    }
+
+    /**
+     * 获取元素操作重试间隔时间（毫秒）
+     */
+    public int getElementRetryDelayMs() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_RETRY_DELAY_MS);
+    }
+
+    /**
+     * 获取元素操作总超时时间（毫秒）
+     */
+    public int getElementOperationTimeout() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_OPERATION_TIMEOUT);
+    }
+
+    /**
+     * 是否在失败时自动截图
+     */
+    public boolean isElementScreenshotOnFailure() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_ELEMENT_SCREENSHOT_ON_FAILURE);
+    }
+
+    /**
+     * 是否收集详细诊断信息
+     */
+    public boolean isElementDetailedDiagnostics() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_ELEMENT_DIAGNOSTICS_DETAILED);
+    }
+
+    /**
+     * 获取失败截图保存路径
+     */
+    public String getElementScreenshotPath() {
+        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_ELEMENT_SCREENSHOT_PATH);
+    }
+
+    /**
+     * 获取元素等待/操作超时时间（毫秒）
+     */
+    public int getElementCheckTimeout() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_WAIT_TIMEOUT);
+    }
+
+    // ==================== Timeout/Polling Config ====================
+
+    /**
+     * 获取轮询间隔时间（毫秒）
+     */
+    public int getPollingInterval() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_POLLING_INTERVAL);
+    }
+
+    /**
+     * 获取页面稳定化等待超时（毫秒）
+     */
+    public int getStabilizeTimeout() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_STABILIZE_WAIT_TIMEOUT);
+    }
+
+    /**
+     * 获取截图等待超时（毫秒）
+     */
+    public int getScreenshotTimeout() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_WAIT_TIMEOUT);
     }
 }

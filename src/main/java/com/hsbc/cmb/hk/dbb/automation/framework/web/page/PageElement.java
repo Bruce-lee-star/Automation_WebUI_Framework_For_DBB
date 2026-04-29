@@ -1,7 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exception.ElementOperationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
@@ -18,13 +19,10 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
-
-    private static final int ACTION_POST_DELAY = 200;
-    private static final int MAX_RETRY = 2;
-    private static final int RETRY_DELAY_MS = 300;
 
     private final String selector;
     private final BasePage page;
@@ -57,47 +55,228 @@ public class PageElement {
         return locator().locator(relativeSelector);
     }
 
-    // ==================== Retry Core ====================
-    private void executeWithRetry(Runnable action, String operation) {
+    // ==================== Element State Check ====================
+    private boolean elementExists() {
+        try {
+            // 等待元素出现在 DOM 中，使用配置的检查超时
+            locator().first().waitFor(
+                new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.ATTACHED)
+                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout())
+            );
+            return true;
+        } catch (TimeoutError e) {
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean elementIsVisible() {
+        try {
+            // 等待元素变为可见，使用配置的检查超时
+            locator().first().waitFor(
+                new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.VISIBLE)
+                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout())
+            );
+            return true;
+        } catch (TimeoutError e) {
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String getCurrentPageUrl() {
+        try {
+            return page.getCurrentUrl();
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    // ==================== Retry Core (Enterprise-grade) ====================
+    /**
+     * 带成功检查的重试机制
+     *
+     * Enterprise-grade retry mechanism with:
+     * - Idempotency guarantee
+     * - Detailed diagnostics on failure
+     * - Configurable retry parameters
+     * - Custom exception with full context
+     */
+    private void executeWithRetry(Supplier<Boolean> action, String operation) {
+        executeWithRetry(action, operation, null);
+    }
+
+    private void executeWithRetry(Supplier<Boolean> action, String operation, String testName) {
+        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+
+        // Pre-flight check: element must exist in DOM
+        if (!elementExists()) {
+            ElementOperationException.DiagnosticInfo info = diagnostics.collect();
+            info.retryCount(0);
+
+            ElementOperationException ex = ElementOperationException.builder()
+                .selector(selector)
+                .operation(operation)
+                .pageUrl(diagnostics.getPageUrl())
+                .elementState("NOT_FOUND_IN_DOM")
+                .diagnosticInfo(info)
+                .customMessage(String.format(
+                    "Element not found in DOM: [%s] on page [%s]. " +
+                    "Possible reasons: 1) Selector is incorrect, 2) Element was removed from DOM, 3) Page navigation failed.",
+                    selector, diagnostics.getPageUrl()))
+                .build();
+
+            captureFailureAndLog(operation, testName, ex);
+            throw ex;
+        }
+
+        int maxRetry = PlaywrightManager.config().getElementMaxRetry();
         Exception lastEx = null;
-        for (int i = 0; i <= MAX_RETRY; i++) {
+
+        for (int i = 0; i <= maxRetry; i++) {
             try {
-                action.run();
-                logger.debug("[{}] success: {}", operation, selector);
-                return;
+                Boolean success = action.get();
+                if (success != null && success) {
+                    logger.debug("[{}] success on attempt {}/{}: {}",
+                        operation, i + 1, maxRetry + 1, selector);
+                    return;
+                }
+                if (i < maxRetry) {
+                    logger.debug("[Retry {}/{}] {} needs retry: {}",
+                        i + 1, maxRetry, operation, selector);
+                    page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
+                }
             } catch (PlaywrightException e) {
                 lastEx = e;
-                if (i == MAX_RETRY || !isRetriable(e)) {
+                if (i == maxRetry || !isRetriable(e)) {
                     break;
                 }
-                logger.warn("[Retry {}/{}] {} failed: {}", i + 1, MAX_RETRY, operation, e.getMessage());
-                page.waitForTimeout(RETRY_DELAY_MS);
+                logger.warn("[Retry {}/{}] {} failed: {}",
+                    i + 1, maxRetry, operation, e.getMessage());
+                page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
             }
         }
-        throw new PlaywrightException("Failed after retries: " + operation + " on " + selector, lastEx);
+
+        // Build detailed exception with full diagnostic info
+        ElementOperationException.DiagnosticInfo info = diagnostics.collect();
+        info.retryCount(maxRetry + 1);
+
+        String elementState = determineElementState(diagnostics);
+        String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics, maxRetry);
+
+        ElementOperationException ex = ElementOperationException.builder()
+            .selector(selector)
+            .operation(operation)
+            .pageUrl(diagnostics.getPageUrl())
+            .elementState(elementState)
+            .diagnosticInfo(info)
+            .cause(lastEx)
+            .customMessage(customMessage)
+            .build();
+
+        captureFailureAndLog(operation, testName, ex);
+        throw ex;
+    }
+
+    private String determineElementState(ElementDiagnosticsCollector dc) {
+        if (!dc.collect().existsInDom()) return "NOT_FOUND_IN_DOM";
+        if (!dc.collect().isVisible()) return "NOT_VISIBLE";
+        if (!dc.collect().isEnabled()) return "NOT_ENABLED";
+        if (!dc.collect().isEditable()) return "NOT_EDITABLE";
+        return "INTERACTABLE_BUT_FAILED";
+    }
+
+    private String buildDetailedErrorMessage(String operation, Exception lastEx,
+            ElementDiagnosticsCollector dc, int maxRetry) {
+        StringBuilder sb = new StringBuilder();
+
+        sb.append(String.format("Operation [%s] failed after %d attempts on element [%s]%n%n",
+            operation, maxRetry + 1, selector));
+        sb.append(String.format("Current Page: %s%n", dc.getPageUrl()));
+        sb.append(String.format("Page Title:  %s%n", dc.getPageTitle()));
+        sb.append(String.format("Element State: %s%n", determineElementState(dc)));
+
+        sb.append(String.format("%nDOM Context:%n  %s%n", dc.getDomContext()));
+        sb.append(String.format("Obstruction: %s%n", dc.getObstructingElements()));
+
+        if (lastEx instanceof TimeoutError) {
+            sb.append(String.format("%nRoot Cause: Timeout Error%n"));
+            sb.append(String.format("The element did not reach the expected state within the timeout period.%n"));
+            sb.append(String.format("Common solutions:%n"));
+            sb.append(String.format("  1. Wait for specific condition before action (e.g., waitForVisible())%n"));
+            sb.append(String.format("  2. Verify the element is not hidden or covered by other elements%n"));
+            sb.append(String.format("  3. Check if the page has fully loaded before interacting%n"));
+        } else if (lastEx != null) {
+            sb.append(String.format("%nRoot Cause: %s%n", lastEx.getMessage()));
+        }
+
+        sb.append(String.format("%nHTML Snippet:%n  %s%n",
+            dc.getElementHtml().replace("\n", "\n  ")));
+
+        return sb.toString();
+    }
+
+    private void captureFailureAndLog(String operation, String testName, ElementOperationException ex) {
+        String screenshotPath = null;
+        try {
+            screenshotPath = new ElementDiagnosticsCollector(locator(), selector, page.getPage())
+                .captureFailureScreenshot(testName != null ? testName : operation);
+        } catch (Exception e) {
+            logger.warn("Failed to capture failure screenshot: {}", e.getMessage());
+        }
+
+        if (screenshotPath != null) {
+            logger.error("Screenshot saved: {}", screenshotPath);
+        }
+        logger.error("Element operation failed: {}", ex.getMessage());
     }
 
     private boolean isRetriable(PlaywrightException e) {
         if (e instanceof TimeoutError) return false;
         String m = e.getMessage().toLowerCase();
-        return m.contains("intercepted") || m.contains("obscured") || m.contains("detached") || m.contains("not interactable") || m.contains("not attached");
+        return m.contains("intercepted") || m.contains("obscured") ||
+               m.contains("detached") || m.contains("not interactable") ||
+               m.contains("not attached");
+    }
+
+    // ==================== Execute with Test Name (for Screenshots) ====================
+    /**
+     * 执行操作并关联测试名称（用于失败截图命名）
+     */
+    public PageElement click(String testName) {
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().click(new Locator.ClickOptions().setDelay(100));
+            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            return true;
+        }, "click", testName);
+        return this;
+    }
+
+    public PageElement fill(String text, String testName) {
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().fill(text);
+            return true;
+        }, "fill", testName);
+        return this;
     }
 
     // ==================== Click ====================
     public PageElement click() {
-        executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().click(new Locator.ClickOptions().setDelay(100).setForce(true));
-            page.waitForTimeout(ACTION_POST_DELAY);
-        }, "click");
-        return this;
+        return click(null);
     }
 
     public PageElement doubleClick() {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().dblclick();
-            page.waitForTimeout(ACTION_POST_DELAY);
+            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            return true;
         }, "doubleClick");
         return this;
     }
@@ -106,24 +285,22 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
-            page.waitForTimeout(ACTION_POST_DELAY);
+            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            return true;
         }, "rightClick");
         return this;
     }
 
     // ==================== Input ====================
     public PageElement fill(String text) {
-        executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().fill(text);
-        }, "fill");
-        return this;
+        return fill(text, null);
     }
 
     public PageElement type(String text) {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().pressSequentially(text);
+            return true;
         }, "type");
         return this;
     }
@@ -131,6 +308,7 @@ public class PageElement {
     public PageElement clear() {
         executeWithRetry(() -> {
             locator().clear();
+            return true;
         }, "clear");
         return this;
     }
@@ -145,18 +323,24 @@ public class PageElement {
 
     // ==================== Keyboard ====================
     public PageElement press(String key) {
-        executeWithRetry(() -> locator().press(key), "press");
+        executeWithRetry(() -> {
+            locator().press(key);
+            return true;
+        }, "press");
         return this;
     }
 
     public PageElement selectText() {
-        executeWithRetry(() -> locator().selectText(), "selectText");
+        executeWithRetry(() -> {
+            locator().selectText();
+            return true;
+        }, "selectText");
         return this;
     }
 
     // ==================== State Check ====================
     public boolean isVisible() {
-        return isVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return isVisible(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean isVisible(int timeoutSec) {
@@ -169,7 +353,7 @@ public class PageElement {
     }
 
     public boolean isNotVisible() {
-        return isNotVisible(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return isNotVisible(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean isNotVisible(int timeoutSec) {
@@ -182,7 +366,7 @@ public class PageElement {
     }
 
     public boolean exists() {
-        return exists(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return exists(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean exists(int timeoutSec) {
@@ -195,7 +379,7 @@ public class PageElement {
     }
 
     public boolean isEnabled() {
-        return isEnabled(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return isEnabled(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean isEnabled(int timeoutSec) {
@@ -216,7 +400,7 @@ public class PageElement {
     }
 
     public boolean isEditable() {
-        return isEditable(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return isEditable(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean isEditable(int timeoutSec) {
@@ -229,7 +413,7 @@ public class PageElement {
     }
 
     public boolean isChecked() {
-        return isChecked(TimeoutConfig.getElementCheckTimeout() / 1000);
+        return isChecked(PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public boolean isChecked(int timeoutSec) {
@@ -303,18 +487,32 @@ public class PageElement {
 
     // ==================== Select ====================
     public PageElement selectByValue(String value) {
-        executeWithRetry(() -> locator().selectOption(value), "selectByValue");
+        executeWithRetry(() -> {
+            locator().selectOption(value);
+            return true;
+        }, "selectByValue");
         return this;
     }
 
     public PageElement selectByIndex(int index) {
-        executeWithRetry(() -> locator().selectOption(new SelectOption().setIndex(index)), "selectByIndex");
+        executeWithRetry(() -> {
+            locator().selectOption(new SelectOption().setIndex(index));
+            return true;
+        }, "selectByIndex");
+        return this;
+    }
+
+    public PageElement selectByVisibleText(String text) {
+        executeWithRetry(() -> {
+            locator().selectOption(new SelectOption().setLabel(text));
+            return true;
+        }, "selectByVisibleText");
         return this;
     }
 
     // ==================== WaitFor (Full Set) ====================
     private int getDefaultTimeoutSec() {
-        return TimeoutConfig.getElementCheckTimeout() / 1000;
+        return PlaywrightManager.config().getElementCheckTimeout() / 1000;
     }
 
     public PageElement waitForVisible() {
@@ -431,40 +629,61 @@ public class PageElement {
 
     // ==================== Event & JS ====================
     public PageElement dispatchEvent(String event) {
-        executeWithRetry(() -> locator().dispatchEvent(event), "dispatchEvent");
+        executeWithRetry(() -> {
+            locator().dispatchEvent(event);
+            return true;
+        }, "dispatchEvent");
         return this;
     }
 
     public PageElement dispatchEvent(String event, Object arg) {
-        executeWithRetry(() -> locator().dispatchEvent(event, arg), "dispatchEvent");
+        executeWithRetry(() -> {
+            locator().dispatchEvent(event, arg);
+            return true;
+        }, "dispatchEvent");
         return this;
     }
 
     // ==================== Hover / Focus / Check ====================
     public PageElement hover() {
-        executeWithRetry(() -> locator().hover(), "hover");
+        executeWithRetry(() -> {
+            locator().hover();
+            return true;
+        }, "hover");
         return this;
     }
 
     public PageElement focus() {
-        executeWithRetry(() -> locator().focus(), "focus");
+        executeWithRetry(() -> {
+            locator().focus();
+            return true;
+        }, "focus");
         return this;
     }
 
     public PageElement check() {
-        executeWithRetry(() -> locator().check(), "check");
+        executeWithRetry(() -> {
+            locator().check();
+            return true;
+        }, "check");
         return this;
     }
 
     public PageElement uncheck() {
-        executeWithRetry(() -> locator().uncheck(), "uncheck");
+        executeWithRetry(() -> {
+            locator().uncheck();
+            return true;
+        }, "uncheck");
         return this;
     }
 
     // ==================== Upload / Screenshot / Drag ====================
     public PageElement uploadFile(String... paths) {
         Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
-        executeWithRetry(() -> locator().setInputFiles(pathArray), "uploadFile");
+        executeWithRetry(() -> {
+            locator().setInputFiles(pathArray);
+            return true;
+        }, "uploadFile");
         return this;
     }
 
@@ -478,7 +697,10 @@ public class PageElement {
     }
 
     public PageElement dragTo(PageElement target) {
-        executeWithRetry(() -> locator().dragTo(target.locator()), "dragTo");
+        executeWithRetry(() -> {
+            locator().dragTo(target.locator());
+            return true;
+        }, "dragTo");
         return this;
     }
 

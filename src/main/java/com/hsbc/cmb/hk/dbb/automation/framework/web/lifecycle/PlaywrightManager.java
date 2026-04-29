@@ -3,19 +3,17 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.ScreenshotAnimations;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
@@ -35,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 企业级 Playwright Manager - 管理 Playwright 实例、Browser、Context 和 Page
@@ -56,7 +55,7 @@ public class PlaywrightManager {
     private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
 
     // ==================== 静态变量 ====================
-    private static final Boolean SKIP_DOWNLOAD_BROWSER = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
+    private static final Boolean SKIP_DOWNLOAD_BROWSER = config().isSkipBrowserDownload();
     // 线程安全的实例存储
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
@@ -227,7 +226,7 @@ public class PlaywrightManager {
      * 默认值: DOMCONTENTLOADED
      */
     private static LoadState getConfiguredLoadState() {
-        String loadStateConfig = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PAGE_LOAD_STATE);
+        String loadStateConfig = config().getPageLoadState();
         try {
             return LoadState.valueOf(loadStateConfig.toUpperCase());
         } catch (IllegalArgumentException e) {
@@ -271,9 +270,9 @@ public class PlaywrightManager {
      * 注意：Firefox 和 WebKit 不支持 channel，会显示为空
      */
     private static String generateConfigId() {
-        String browserType = getBrowserType();
-        String headlessMode = isHeadless() ? "headless" : "headed";
-        String channel = getBrowserChannel();
+        String browserType = config().getBrowserType();
+        String headlessMode = config().isHeadless() ? "headless" : "headed";
+        String channel = config().getBrowserChannel();
         
         // Firefox 和 WebKit 不支持 channel，忽略配置
         if ("firefox".equalsIgnoreCase(browserType) || "webkit".equalsIgnoreCase(browserType)) {
@@ -345,11 +344,11 @@ public class PlaywrightManager {
      */
     private static boolean shouldSkipBrowserDownload() {
         // 首先检查用户是否手动配置了跳过下载
-        boolean userConfig = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
-        
+        boolean userConfig = config().isSkipBrowserDownload();
+
         String browserType = getBrowserType();
-        String channel = getBrowserChannel();
-        
+        String channel = config().getBrowserChannel();
+
         switch (browserType.toLowerCase()) {
             case "firefox":
             case "webkit":
@@ -358,23 +357,23 @@ public class PlaywrightManager {
                     logger.warn("Cannot skip download for {} - Playwright version is required. Ignoring playwright.skip.browser.download=true", browserType);
                 }
                 return false;
-                
+
             case "chromium":
                 if ("chrome".equalsIgnoreCase(channel)) {
                     // Chrome: 如果设置了 executablePath 或用户配置跳过，则跳过
-                    String chromePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
+                    String chromePath = config().getBrowserExecutablePath();
                     boolean hasLocalChrome = chromePath != null && !chromePath.trim().isEmpty();
                     return hasLocalChrome || userConfig;
                 } else if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
                     // Edge: 如果设置了 executablePath 或用户配置跳过，则跳过
-                    String edgePath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
+                    String edgePath = config().getBrowserExecutablePath();
                     boolean hasLocalEdge = edgePath != null && !edgePath.trim().isEmpty();
                     return hasLocalEdge || userConfig;
                 } else {
                     // Chromium 无 channel: 需要下载 Playwright 版本
                     return false;
                 }
-                
+
             default:
                 return userConfig;
         }
@@ -427,9 +426,9 @@ public class PlaywrightManager {
         }
 
         // 获取浏览器配置
-        boolean headless = isHeadless();
-        int slowMo = getBrowserSlowMo();
-        int timeout = getBrowserTimeout();
+        boolean headless = config().isHeadless();
+        int slowMo = config().getBrowserSlowMo();
+        int timeout = config().getBrowserTimeout();
 
         BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
                 .setHeadless(headless)
@@ -440,7 +439,7 @@ public class PlaywrightManager {
         configureBrowserLaunchOptions(launchOptions);
 
         // 设置下载路径
-        String downloadsPath = getBrowserDownloadsPath();
+        String downloadsPath = config().getBrowserDownloadsPath();
         launchOptions.setDownloadsPath(Paths.get(downloadsPath));
 
         try {
@@ -465,8 +464,8 @@ public class PlaywrightManager {
      * 配置浏览器启动选项
      */
     private static void configureBrowserLaunchOptions(BrowserType.LaunchOptions launchOptions) {
-        boolean maximizeWindow = PlaywrightConfigManager.isWindowMaximize();
-        String maximizeArgs = PlaywrightConfigManager.getWindowMaximizeArgs();
+        boolean maximizeWindow = config().isWindowMaximize();
+        String maximizeArgs = config().getWindowMaximizeArgs();
         boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
 
         // 获取逻辑屏幕尺寸
@@ -476,13 +475,13 @@ public class PlaywrightManager {
 
         // 获取浏览器类型
         String browserType = getBrowserType();
-        boolean isChromium = PlaywrightConfigManager.isChromiumBased(browserType);
+        boolean isChromium = config().isChromiumBased(browserType);
 
         // 构建启动参数
         List<String> args = new ArrayList<>();
 
         // 添加用户配置的浏览器启动参数（已根据浏览器类型自动选择）
-        String browserArgs = getBrowserArgs();
+        String browserArgs = config().getBrowserArgs();
         if (browserArgs != null && !browserArgs.trim().isEmpty()) {
             String[] argsArray = browserArgs.split(",");
             for (String arg : argsArray) {
@@ -512,18 +511,18 @@ public class PlaywrightManager {
         }
 
         // 设置浏览器 channel（仅适用于 Chromium 系列浏览器）
-        String channel = getBrowserChannel();
+        String channel = config().getBrowserChannel();
         if (channel != null && !channel.isEmpty() && isChromium) {
             launchOptions.setChannel(channel);
             logger.info("Browser channel: {}", channel);
         } else if (channel != null && !channel.isEmpty() && !isChromium) {
-            LoggingConfigUtil.logDebugIfVerbose(logger, 
-                "Ignoring browser channel '{}' for browser type '{}' (channel only applies to Chromium-based browsers)", 
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                "Ignoring browser channel '{}' for browser type '{}' (channel only applies to Chromium-based browsers)",
                 channel, browserType);
         }
 
         // 设置浏览器可执行文件路径（用于启动本地安装的浏览器）
-        String executablePath = getBrowserExecutablePath();
+        String executablePath = config().getBrowserExecutablePath();
         if (executablePath != null && !executablePath.trim().isEmpty()) {
             launchOptions.setExecutablePath(Paths.get(executablePath.trim()));
             logger.info("Browser executable path: {}", executablePath);  // 保留浏览器路径日志，这很重要
@@ -1076,7 +1075,7 @@ public class PlaywrightManager {
             LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化：确保窗口大小正确...");
 
             // 性能优化：快速等待页面DOM加载完成（可配置）
-            int stabilizeWaitTimeout = TimeoutConfig.getStabilizeTimeout();
+            int stabilizeWaitTimeout = config().getStabilizeTimeout();
             LoadState loadState = getConfiguredLoadState();
             try {
                 page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(stabilizeWaitTimeout));
@@ -1086,7 +1085,7 @@ public class PlaywrightManager {
 
 
             // 检查是否使用 --start-maximized
-            String maximizeArgs = PlaywrightConfigManager.getWindowMaximizeArgs();
+            String maximizeArgs = config().getWindowMaximizeArgs();
             boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
 
 
@@ -1349,7 +1348,7 @@ public class PlaywrightManager {
 
 
         // 根据配置决定是否复用 Context/Page
-        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
+        String restartBrowserForEach = config().getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // 清理缓存的PageObject, 避免使用已经关闭的context/page
@@ -1396,7 +1395,7 @@ public class PlaywrightManager {
         resetCustomContextOptions();
 
         // 根据配置决定是否关闭 Context/Page 和浏览器
-        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
+        String restartBrowserForEach = config().getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             // Scenario 模式：只关闭 Context 和 Page，保持 Browser 实例
@@ -1466,7 +1465,7 @@ public class PlaywrightManager {
         closeContext();
 
         // 根据配置决定是否关闭浏览器
-        String restartBrowserForEach = PlaywrightConfigManager.getRestartStrategy();
+        String restartBrowserForEach = config().getRestartStrategy();
 
         if ("feature".equalsIgnoreCase(restartBrowserForEach)) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - closing browser at feature end");
@@ -1484,6 +1483,25 @@ public class PlaywrightManager {
 
     // ==================== 截图方法 ====================
 
+    /**
+     * 截图前页面稳定化（解决截图残留/底部重复问题）
+     * 处理固定定位元素、等待资源加载、禁用动画
+     * 逻辑内置，无需配置，兼顾性能与稳定性
+     */
+    private static void stabilizeBeforeScreenshot(Page page) {
+        try {
+            // 唯一必要的处理：滚动到顶部，作为全页截图起点
+            // 不做 fixed 元素转换（会导致布局错乱），Playwright 全页截图已内置处理 fixed 元素
+            page.evaluate("() => window.scrollTo(0, 0)");
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Screenshot stabilization failed: {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * 截图后恢复页面状态
+     * 仅在处理了固定元素时才执行恢复（性能优化）
+     */
     /**
      * 截图并返回文件路径
      */
@@ -1508,6 +1526,15 @@ public class PlaywrightManager {
 
 
     /**
+     * 生成系统级唯一标识，完全不依赖人为命名的scenario名称
+     * 使用AtomicLong保证跨线程唯一，每次调用返回不同值，确保截图文件名绝对唯一
+     */
+    private static final AtomicLong screenshotIdGenerator = new AtomicLong(0);
+    private static String getScenarioIdentifier() {
+        return Thread.currentThread().threadId() + "_" + screenshotIdGenerator.incrementAndGet();
+    }
+
+    /**
      * 截图并返回截图文件路径
      */
     public static String takeScreenshot(String title) {
@@ -1521,39 +1548,41 @@ public class PlaywrightManager {
             Path screenshotDir = Paths.get("target/site/serenity");
             Files.createDirectories(screenshotDir);
 
-            // ===================== Serenity 原生命名：SHA256 + 时间戳 =====================
-            String uniqueSource = title + "-" + System.currentTimeMillis() + "-" + Thread.currentThread().threadId();
+            // 唯一文件名：使用系统级唯一ID，不依赖人为命名
+            String uniqueId = getScenarioIdentifier();
+            String uniqueSource = title + "_" + uniqueId + "_" + System.currentTimeMillis();
             String sha256 = generateHash(uniqueSource);
             String screenshotName = sha256 + ".png";
             Path screenshotPath = screenshotDir.resolve(screenshotName);
 
-            // 极速清理：解决截图重叠 + 滚动顶部
+            // 清理残留截图文件（解决文件锁定或残留问题）
             try {
-                page.evaluate("() => {" +
-                        "window.scrollTo(0,0);" +
-                        "document.body.style.scrollBehavior='auto';" +
-                        "document.querySelectorAll('img[src*=blob]').forEach(i=>i.remove());" +
-                        "}");
-            } catch (Exception ignored) {}
-
-            // 页面等待（原有逻辑）
-            int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
-            LoadState loadState = getConfiguredLoadState();
-            try {
-                page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
-            } catch (Exception e) {
-                if (logger.isTraceEnabled()) {
-                    logger.trace("Screenshot wait timeout - continuing: {}", e.getMessage());
+                if (Files.exists(screenshotPath)) {
+                    Files.deleteIfExists(screenshotPath);
                 }
+            } catch (Exception e) {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to delete existing screenshot: {}", e.getMessage());
             }
 
-            // 高性能截图（3秒超时，不卡顿）
-            boolean fullPage = isFullPageScreenshot();
+            // 截图前稳定化（解决截图残留/底部重复问题）
+            stabilizeBeforeScreenshot(page);
+
+            // 页面等待：先等 load 事件，再等网络空闲（确保异步加载的左侧菜单栏已渲染）
+            int screenshotWaitTimeout = config().getScreenshotTimeout();
+            try {
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
+            } catch (Exception e) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
+            }
+
+            // 高性能截图（增加超时，禁用字体/动画等待）
+            boolean fullPage = config().isFullPageScreenshot();
             page.screenshot(new Page.ScreenshotOptions()
                     .setFullPage(fullPage)
                     .setOmitBackground(false)
                     .setClip(null)
-                    .setTimeout(3000)
+                    .setTimeout((long) config().getScreenshotTimeout())
+                    .setAnimations(ScreenshotAnimations.DISABLED)
                     .setPath(screenshotPath));
 
             LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {}", screenshotPath);
@@ -1578,30 +1607,25 @@ public class PlaywrightManager {
             Path screenshotDir = Paths.get("target/site/serenity");
             Files.createDirectories(screenshotDir);
 
-            // 高性能文件名
-            String hashInput = title + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().threadId();
+            // 唯一文件名：使用系统级唯一ID，不依赖人为命名
+            String uniqueId = getScenarioIdentifier();
+            String hashInput = title + "_" + uniqueId + "_" + System.currentTimeMillis();
             String screenshotHash = generateHash(hashInput);
             String screenshotName = screenshotHash + ".png";
             Path screenshotPath = screenshotDir.resolve(screenshotName);
 
-            // 关键稳定JS（无等待）
-            try {
-                page.evaluate("window.scrollTo(0,0);document.body.style.scrollBehavior='auto';");
-            } catch (Exception ignored) {}
+            // 截图前稳定化（解决截图残留/底部重复问题）
+            stabilizeBeforeScreenshot(page);
 
-            int screenshotWaitTimeout = TimeoutConfig.getScreenshotTimeout();
-            LoadState loadState = getConfiguredLoadState();
+            int screenshotWaitTimeout = config().getScreenshotTimeout();
             try {
-                page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
             } catch (Exception e) {
-                // 将DEBUG日志降级为TRACE，减少日志噪音（截图等待超时是常见且正常的情况）
-                if (logger.isTraceEnabled()) {
-                    logger.trace("Screenshot wait timeout ({}ms) - continuing with screenshot: {}", screenshotWaitTimeout, e.getMessage());
-                }
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
             }
 
             // 截图
-            boolean fullPage = isFullPageScreenshot();
+            boolean fullPage = config().isFullPageScreenshot();
             page.screenshot(new Page.ScreenshotOptions()
                     .setFullPage(fullPage)
                     .setOmitBackground(false)
@@ -1623,17 +1647,11 @@ public class PlaywrightManager {
      *
      * @return 浏览器类型
      */
+    /**
+     * 获取浏览器类型（委托给 PlaywrightConfigManager）
+     */
     public static String getBrowserType() {
-        // 优先级1: 检查是否有测试用例级别的浏览器覆盖
-        if (BrowserOverrideManager.hasOverride()) {
-            String overrideBrowser = BrowserOverrideManager.getEffectiveBrowserType();
-            LoggingConfigUtil.logDebugIfVerbose(logger,
-                "Using override browser type: {}", overrideBrowser);
-            return overrideBrowser;
-        }
-
-        // 优先级2: 使用配置文件中的默认值
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_TYPE);
+        return config().getBrowserType();
     }
 
     /**
@@ -1682,103 +1700,8 @@ public class PlaywrightManager {
         return false;
     }
 
-    /**
-     * 是否为 headless 模式
-     */
-    public static boolean isHeadless() {
-        return PlaywrightConfigManager.isHeadless();
-    }
-
-    /**
-     * 获取浏览器慢动作延迟（毫秒）
-     */
-    public static int getBrowserSlowMo() {
-        return PlaywrightConfigManager.getBrowserSlowMo();
-    }
-
-    /**
-     * 获取浏览器超时（毫秒）
-     */
-    public static int getBrowserTimeout() {
-        return PlaywrightConfigManager.getBrowserTimeout();
-    }
-
-    /**
-     * 获取浏览器下载路径
-     */
-    public static String getBrowserDownloadsPath() {
-        return PlaywrightConfigManager.getBrowserDownloadsPath();
-    }
-
-    /**
-     * 获取浏览器启动参数
-     * 根据浏览器类型返回对应的启动参数
-     */
-    public static String getBrowserArgs() {
-        return PlaywrightConfigManager.getBrowserArgs();
-    }
-
-    /**
-     * 获取浏览器 channel
-     * channel 仅适用于 Chromium 系列浏览器（Chrome、Edge）
-     * 
-     * 常用的 channel 值：
-     * - "chrome" - 使用本地安装的 Chrome 浏览器
-     * - "chrome-beta" - 使用 Chrome Beta 版本
-     * - "chrome-dev" - 使用 Chrome Dev 版本
-     * - "chrome-canary" - 使用 Chrome Canary 版本
-     * - "msedge" - 使用本地安装的 Edge 浏览器
-     * - "msedge-beta" - 使用 Edge Beta 版本
-     * - "msedge-dev" - 使用 Edge Dev 版本
-     * - "msedge-canary" - 使用 Edge Canary 版本
-     */
-    public static String getBrowserChannel() {
-        return PlaywrightConfigManager.getBrowserChannel();
-    }
-
-    /**
-     * 获取浏览器可执行文件路径
-     * 根据浏览器类型返回对应的可执行文件路径
-     * 
-     * 注意：Firefox 和 WebKit 必须使用 Playwright 编译的版本，不支持 executablePath
-     */
-    public static String getBrowserExecutablePath() {
-        return PlaywrightConfigManager.getBrowserExecutablePath();
-    }
-
-    /**
-     * 是否全页截图
-     */
-    public static boolean isFullPageScreenshot() {
-        return PlaywrightConfigManager.isFullPageScreenshot();
-    }
-
-    public static String getProjectName() {
-        return PlaywrightConfigManager.getProjectName();
-    }
-
-    // ==================== Axe-core 配置方法 ====================
-
-    /**
-     * 是否启用 axe-core 扫描
-     */
-    public static boolean isAxeScanEnabled() {
-        return PlaywrightConfigManager.isAxeScanEnabled();
-    }
-
-    /**
-     * 获取 axe-core WCAG 标签
-     */
-    public static String getAxeScanTags() {
-        return PlaywrightConfigManager.getAxeScanTags();
-    }
-
-    /**
-     * 获取 axe-core 报告输出目录
-     */
-    public static String getAxeScanOutputDir() {
-        return PlaywrightConfigManager.getAxeScanOutputDir();
-    }
+    // ==================== 配置访问（通过 config() 代理到 PlaywrightConfigManager） ====================
+    // 使用 PlaywrightManager.config().getXXX() 或 PlaywrightConfigManager.config().getXXX() 访问配置
 
     // ==================== 公共访问方法（用于其他类访问自定义配置） ====================
 
@@ -1790,69 +1713,74 @@ public class PlaywrightManager {
     }
 
     /**
-     * 获取自定义选项管理器实例
+     * 获取自定义 Context 选项标志的值
      */
-    static CustomOptions getCustomOptions() {
-        return CustomOptions.INSTANCE;
+    static Boolean getCustomContextOptionsFlagValue() {
+        return customContextOptionsFlag.get();
     }
 
-    // ==================== 自定义配置内部类 ====================
+    /**
+     * 获取自定义选项管理器（提供 PlaywrightManager.customOptions().getXXX() 风格的 API）
+     */
+    public static CustomOptionsManager customOptions() {
+        return CustomOptionsManager.getInstance();
+    }
 
     /**
-     * 自定义配置管理器（内部类）
-     * 负责管理所有自定义 Context 配置
+     * 获取配置管理器（提供 PlaywrightManager.config().getXXX() 风格的 API）
      */
-    public static class CustomOptions {
-        private static final CustomOptions INSTANCE = new CustomOptions();
+    public static PlaywrightConfigManager config() {
+        return PlaywrightConfigManager.config();
+    }
 
-        // 所有自定义配置的 getter 方法
+    // ==================== 包内方法（供 CustomOptionsManager 访问 ThreadLocal） ====================
 
-        public Path getStorageStatePath() {
-            return customStorageStatePath.get();
-        }
+    static Path getCustomStorageStatePath() {
 
-        public String getLocale() {
-            return customLocale.get();
-        }
+        return customStorageStatePath.get();
+    }
 
-        public String getTimezoneId() {
-            return customTimezoneId.get();
-        }
+    static String getCustomLocale() {
+        return customLocale.get();
+    }
 
-        public String getUserAgent() {
-            return customUserAgent.get();
-        }
+    static String getCustomTimezoneId() {
+        return customTimezoneId.get();
+    }
 
-        public List<String> getPermissions() {
-            return customPermissions.get();
-        }
+    static String getCustomUserAgent() {
+        return customUserAgent.get();
+    }
 
-        public Geolocation getGeolocation() {
-            return customGeolocation.get();
-        }
+    static List<String> getCustomPermissions() {
+        return customPermissions.get();
+    }
 
-        public Integer getDeviceScaleFactor() {
-            return customDeviceScaleFactor.get();
-        }
+    static Geolocation getCustomGeolocation() {
+        return customGeolocation.get();
+    }
 
-        public Boolean getIsMobile() {
-            return customIsMobile.get();
-        }
+    static Integer getCustomDeviceScaleFactor() {
+        return customDeviceScaleFactor.get();
+    }
 
-        public Boolean getHasTouch() {
-            return customHasTouch.get();
-        }
+    static Boolean getCustomIsMobile() {
+        return customIsMobile.get();
+    }
 
-        public ColorScheme getColorScheme() {
-            return customColorScheme.get();
-        }
+    static Boolean getCustomHasTouch() {
+        return customHasTouch.get();
+    }
 
-        public Integer getViewportWidth() {
-            return customViewportWidth.get();
-        }
+    static ColorScheme getCustomColorScheme() {
+        return customColorScheme.get();
+    }
 
-        public Integer getViewportHeight() {
-            return customViewportHeight.get();
-        }
+    static Integer getCustomViewportWidth() {
+        return customViewportWidth.get();
+    }
+
+    static Integer getCustomViewportHeight() {
+        return customViewportHeight.get();
     }
 }

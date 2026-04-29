@@ -2,8 +2,12 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.microsoft.playwright.*;
+import com.microsoft.playwright.Browser;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.options.ColorScheme;
+import com.microsoft.playwright.options.Geolocation;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,7 +49,7 @@ class PlaywrightContextManager {
         // 条件注入自定义配置
         Boolean customFlag = PlaywrightManager.getCustomContextOptionsFlag().get();
         if (customFlag != null && customFlag) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Applying custom context options...");
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Applying custom context customOptionsManager...");
             configureCustomContextOptions(contextOptions);
         }
 
@@ -125,47 +129,47 @@ class PlaywrightContextManager {
      * 配置框架默认 Context 选项
      */
     private static void configureDefaultContextOptions(Browser.NewContextOptions contextOptions) {
-        contextOptions.setLocale(PlaywrightConfigManager.getContextLocale());
+        contextOptions.setLocale(PlaywrightManager.config().getContextLocale());
         
-        String timezoneId = PlaywrightConfigManager.getContextTimezone();
+        String timezoneId = PlaywrightManager.config().getContextTimezone();
         if (timezoneId != null && !timezoneId.isEmpty()) {
             contextOptions.setTimezoneId(timezoneId);
         }
 
-        String userAgent = PlaywrightConfigManager.getContextUserAgent();
+        String userAgent = PlaywrightManager.config().getContextUserAgent();
         if (userAgent != null && !userAgent.isEmpty()) {
             contextOptions.setUserAgent(userAgent);
         }
 
-        String permissionsConfig = PlaywrightConfigManager.getContextPermissions();
+        String permissionsConfig = PlaywrightManager.config().getContextPermissions();
         if (permissionsConfig != null && !permissionsConfig.isEmpty()) {
             contextOptions.setPermissions(List.of(permissionsConfig.split(",")));
         }
 
         // 配置设备缩放因子
-        String deviceScaleFactor = PlaywrightConfigManager.getDeviceScaleFactor();
+        String deviceScaleFactor = PlaywrightManager.config().getDeviceScaleFactor();
         if (deviceScaleFactor == null || deviceScaleFactor.trim().isEmpty()) {
-            double systemDpiScaleFactor = PlaywrightConfigManager.getSystemDpiScaleFactor();
+            double systemDpiScaleFactor = PlaywrightManager.config().getSystemDpiScaleFactor();
             deviceScaleFactor = String.valueOf(systemDpiScaleFactor);
         }
         contextOptions.setDeviceScaleFactor(Double.parseDouble(deviceScaleFactor));
 
-        Dimension screenSize = PlaywrightConfigManager.getAvailableScreenSize();
+        Dimension screenSize = PlaywrightManager.config().getAvailableScreenSize();
         int viewportWidth = (int) screenSize.getWidth();
         int viewportHeight = (int) screenSize.getHeight();
         contextOptions.setViewportSize(viewportWidth, viewportHeight);
         LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context viewport to screen size: {}x{}", viewportWidth, viewportHeight);
 
-        contextOptions.setHasTouch(PlaywrightConfigManager.hasTouch());
-        contextOptions.setIsMobile(PlaywrightConfigManager.isMobile());
+        contextOptions.setHasTouch(PlaywrightManager.config().hasTouch());
+        contextOptions.setIsMobile(PlaywrightManager.config().isMobile());
 
-        String colorScheme = PlaywrightConfigManager.getColorScheme();
+        String colorScheme = PlaywrightManager.config().getColorScheme();
         contextOptions.setColorScheme(ColorScheme.valueOf(colorScheme.toUpperCase().replace("-", "_")));
 
         // 配置录屏
-        if (PlaywrightConfigManager.isRecordVideoEnabled()) {
-            String videoDir = PlaywrightConfigManager.getRecordVideoDir();
-            screenSize = PlaywrightConfigManager.getAvailableScreenSize();
+        if (PlaywrightManager.config().isRecordVideoEnabled()) {
+            String videoDir = PlaywrightManager.config().getRecordVideoDir();
+            screenSize = PlaywrightManager.config().getAvailableScreenSize();
             contextOptions.setRecordVideoDir(Paths.get(videoDir));
             contextOptions.setRecordVideoSize((int) screenSize.getWidth(), (int) screenSize.getHeight());
         }
@@ -175,80 +179,80 @@ class PlaywrightContextManager {
      * 配置自定义 Context 选项
      */
     private static void configureCustomContextOptions(Browser.NewContextOptions contextOptions) {
-        PlaywrightManager.CustomOptions options = PlaywrightManager.getCustomOptions();
-        
+        CustomOptionsManager customOptionsManager = PlaywrightManager.customOptions();
+
         // StorageState（session 恢复）
-        Path storagePath = options.getStorageStatePath();
+        Path storagePath = customOptionsManager.getStorageStatePath();
         if (storagePath != null && Files.exists(storagePath)) {
             contextOptions.setStorageStatePath(storagePath);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
         }
 
         // Locale
-        String locale = options.getLocale();
+        String locale = customOptionsManager.getLocale();
         if (locale != null && !locale.isEmpty()) {
             contextOptions.setLocale(locale);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom locale: {}", locale);
         }
 
         // Timezone
-        String timezoneId = options.getTimezoneId();
+        String timezoneId = customOptionsManager.getTimezoneId();
         if (timezoneId != null && !timezoneId.isEmpty()) {
             contextOptions.setTimezoneId(timezoneId);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom timezoneId: {}", timezoneId);
         }
 
         // User Agent
-        String userAgent = options.getUserAgent();
+        String userAgent = customOptionsManager.getUserAgent();
         if (userAgent != null && !userAgent.isEmpty()) {
             contextOptions.setUserAgent(userAgent);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom userAgent: {}", userAgent);
         }
 
         // Permissions
-        List<String> permissions = options.getPermissions();
+        List<String> permissions = customOptionsManager.getPermissions();
         if (permissions != null && !permissions.isEmpty()) {
             contextOptions.setPermissions(permissions);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom permissions: {}", permissions);
         }
 
         // Geolocation
-        com.microsoft.playwright.options.Geolocation geolocation = options.getGeolocation();
+        Geolocation geolocation = customOptionsManager.getGeolocation();
         if (geolocation != null) {
             contextOptions.setGeolocation(geolocation.latitude, geolocation.longitude);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom geolocation: ({}, {})", geolocation.latitude, geolocation.longitude);
         }
 
         // Device Scale Factor
-        Integer scaleFactor = options.getDeviceScaleFactor();
+        Integer scaleFactor = customOptionsManager.getDeviceScaleFactor();
         if (scaleFactor != null) {
             contextOptions.setDeviceScaleFactor(scaleFactor / 100.0);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom deviceScaleFactor: {}", scaleFactor / 100.0);
         }
 
         // Mobile 和 Touch
-        Boolean isMobile = options.getIsMobile();
+        Boolean isMobile = customOptionsManager.getIsMobile();
         if (isMobile != null) {
             contextOptions.setIsMobile(isMobile);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom isMobile: {}", isMobile);
         }
 
-        Boolean hasTouch = options.getHasTouch();
+        Boolean hasTouch = customOptionsManager.getHasTouch();
         if (hasTouch != null) {
             contextOptions.setHasTouch(hasTouch);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom hasTouch: {}", hasTouch);
         }
 
         // Color Scheme
-        ColorScheme colorScheme = options.getColorScheme();
+        ColorScheme colorScheme = customOptionsManager.getColorScheme();
         if (colorScheme != null) {
             contextOptions.setColorScheme(colorScheme);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom colorScheme: {}", colorScheme);
         }
 
         // Viewport
-        Integer customViewportWidth = options.getViewportWidth();
-        Integer customViewportHeight = options.getViewportHeight();
+        Integer customViewportWidth = customOptionsManager.getViewportWidth();
+        Integer customViewportHeight = customOptionsManager.getViewportHeight();
         if (customViewportWidth != null && customViewportHeight != null) {
             contextOptions.setViewportSize(customViewportWidth, customViewportHeight);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom viewportSize: {}x{}", customViewportWidth, customViewportHeight);
@@ -259,19 +263,19 @@ class PlaywrightContextManager {
      * 配置超时
      */
     private static void configureTimeouts(BrowserContext context) {
-        context.setDefaultNavigationTimeout(PlaywrightConfigManager.getNavigationTimeout());
-        context.setDefaultTimeout(PlaywrightConfigManager.getPageTimeout());
+        context.setDefaultNavigationTimeout(PlaywrightManager.config().getNavigationTimeout());
+        context.setDefaultTimeout(PlaywrightManager.config().getPageTimeout());
     }
 
     /**
      * 启用 Tracing
      */
     private static void enableTracing(BrowserContext context) {
-        if (PlaywrightConfigManager.isTraceEnabled()) {
+        if (PlaywrightManager.config().isTraceEnabled()) {
             context.tracing().start(new Tracing.StartOptions()
-                    .setScreenshots(PlaywrightConfigManager.isTraceScreenshots())
-                    .setSnapshots(PlaywrightConfigManager.isTraceSnapshots())
-                    .setSources(PlaywrightConfigManager.isTraceSources()));
+                    .setScreenshots(PlaywrightManager.config().isTraceScreenshots())
+                    .setSnapshots(PlaywrightManager.config().isTraceSnapshots())
+                    .setSources(PlaywrightManager.config().isTraceSources()));
         }
     }
 

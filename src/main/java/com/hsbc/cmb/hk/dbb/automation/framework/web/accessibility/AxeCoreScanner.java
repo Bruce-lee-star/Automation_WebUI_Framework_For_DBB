@@ -37,7 +37,7 @@ public class AxeCoreScanner {
      * Configuration for Axe-core scanning
      */
     public static class AxeScanConfig {
-        private String projectName = PlaywrightManager.getProjectName();
+        private String projectName = PlaywrightManager.config().getProjectName();
         private boolean includeViolations = true;
         private boolean includeIncomplete = true;
         private boolean includePasses = false;

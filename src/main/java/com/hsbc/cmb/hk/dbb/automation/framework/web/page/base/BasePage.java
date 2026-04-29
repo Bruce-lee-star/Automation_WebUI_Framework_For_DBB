@@ -9,15 +9,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
-import com.microsoft.playwright.BrowserContext;
-import com.microsoft.playwright.Frame;
-import com.microsoft.playwright.Locator;
-import com.microsoft.playwright.Page;
-import com.microsoft.playwright.options.AriaRole;
-import com.microsoft.playwright.options.BoundingBox;
-import com.microsoft.playwright.options.LoadState;
-import com.microsoft.playwright.options.SelectOption;
+import com.microsoft.playwright.*;
+import com.microsoft.playwright.options.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -126,7 +119,7 @@ public abstract class BasePage {
             } catch (Exception e) {
                 LoggingConfigUtil.logWarnIfVerbose(logger, "Condition check failed: {}", e.getMessage());
             }
-            page.waitForTimeout(TimeoutConfig.getPollingInterval());
+            page.waitForTimeout(PlaywrightManager.config().getPollingInterval());
         }
         LoggingConfigUtil.logWarnIfVerbose(logger, "⏳ Timeout waiting for: {}", desc);
         return false;
@@ -141,7 +134,7 @@ public abstract class BasePage {
                 if (condition.get()) return true;
             } catch (Exception ignored) {
             }
-            page.waitForTimeout(TimeoutConfig.getPollingInterval());
+            page.waitForTimeout(PlaywrightManager.config().getPollingInterval());
         }
         throw new TimeoutException("Action timed out: " + desc);
     }
@@ -376,7 +369,8 @@ public abstract class BasePage {
 
     public void click(String selector) {
         try {
-            locator(selector).click();
+            // 委托给 PageElement 以利用企业级重试机制
+            new PageElement(selector, this).click();
         } catch (Exception e) {
             throw new ElementNotClickableException(selector, e);
         }
@@ -387,32 +381,35 @@ public abstract class BasePage {
     }
 
     public void type(String selector, String text) {
-        locator(selector).fill(text);
+        // 委托给 PageElement 以利用企业级重试机制
+        new PageElement(selector, this).type(text);
     }
 
     public void append(String selector, String text) {
-        String current = locator(selector).inputValue();
+        // 委托给 PageElement 以利用企业级重试机制
+        PageElement pe = new PageElement(selector, this);
+        pe.focus();
+        String current = pe.getValue();
         if (current == null) current = "";
-        locator(selector).fill(current + text);
+        pe.fill(current + text);
     }
 
     public void clear(String selector) {
-        locator(selector).clear();
+        // 委托给 PageElement 以利用企业级重试机制
+        new PageElement(selector, this).clear();
     }
 
     // ===================== 读取文本 全部归一化 =====================
     public String getText(String selector) {
-        String raw = locator(selector).innerText();
-        return normalizeText(raw);
+        return new PageElement(selector, this).getText();
     }
 
     public String getInputValue(String selector) {
-        String val = locator(selector).inputValue();
-        return normalizeText(val);
+        return new PageElement(selector, this).getValue();
     }
 
     public String getAttribute(String selector, String attr) {
-        return locator(selector).getAttribute(attr);
+        return new PageElement(selector, this).getAttribute(attr);
     }
 
     public String getAttributeValue(String selector, String attr, String defaultValue) {
@@ -421,39 +418,39 @@ public abstract class BasePage {
     }
 
     public void selectOption(String selector, int index) {
-        locator(selector).selectOption(new SelectOption().setIndex(index));
+        new PageElement(selector, this).selectByIndex(index);
     }
 
     public void selectByVisibleText(String selector, String text) {
-        locator(selector).selectOption(new SelectOption().setLabel(text));
+        new PageElement(selector, this).selectByVisibleText(text);
     }
 
     public void check(String selector) {
-        locator(selector).check();
+        new PageElement(selector, this).check();
     }
 
     public void uncheck(String selector) {
-        locator(selector).uncheck();
+        new PageElement(selector, this).uncheck();
     }
 
     public boolean isChecked(String selector) {
-        return locator(selector).isChecked();
+        return new PageElement(selector, this).isChecked();
     }
 
     public boolean isEnabled(String selector) {
-        return locator(selector).isEnabled();
+        return new PageElement(selector, this).isEnabled();
     }
 
     public boolean isDisabled(String selector) {
-        return locator(selector).isDisabled();
+        return new PageElement(selector, this).isDisabled();
     }
 
     public boolean isVisible(String selector) {
-        return locator(selector).isVisible();
+        return new PageElement(selector, this).isVisible();
     }
 
     public boolean isHidden(String selector) {
-        return locator(selector).isHidden();
+        return new PageElement(selector, this).isNotVisible();
     }
 
     public int getElementCount(String selector) {
@@ -462,7 +459,31 @@ public abstract class BasePage {
 
     public void navigateTo(String url) {
         ensurePageValid();
-        page.navigate(url);
+        String pageLoadState = PlaywrightManager.config().getPageLoadState();
+        Page.NavigateOptions options = new Page.NavigateOptions();
+        options.setTimeout((long) PlaywrightManager.config().getNavigationTimeout());
+        // 根据配置设置等待策略
+        switch (pageLoadState.toLowerCase()) {
+            case "networkidle":
+                options.setWaitUntil(WaitUntilState.NETWORKIDLE);
+                break;
+            case "domcontentloaded":
+                options.setWaitUntil(WaitUntilState.DOMCONTENTLOADED);
+                break;
+            case "commit":
+                options.setWaitUntil(WaitUntilState.COMMIT);
+                break;
+            default:
+                options.setWaitUntil(WaitUntilState.LOAD);
+        }
+        page.navigate(url, options);
+        // 额外等待页面达到稳定状态
+        try {
+            page.waitForLoadState(LoadState.LOAD,
+                new Page.WaitForLoadStateOptions().setTimeout((long) PlaywrightManager.config().getNavigationTimeout()));
+        } catch (TimeoutError e) {
+            logger.warn("Page did not reach LOAD state within timeout, continuing anyway. URL: {}", url);
+        }
     }
 
     public String getCurrentUrl() {
@@ -585,6 +606,25 @@ public abstract class BasePage {
 
     public boolean getPageSourceContains(String text) {
         return normalizeText(page.content()).contains(normalizeText(text));
+    }
+
+    /**
+     * 获取当前页面的完整 HTML 源码
+     */
+    public String getPageSource() {
+        ensurePageValid();
+        return page.content();
+    }
+
+    /**
+     * 获取当前页面 viewport 尺寸（宽 x 高）
+     * @return 格式如 "1366x768" 的字符串
+     */
+    public String getPageSize() {
+        ensurePageValid();
+        ViewportSize size = page.viewportSize();
+        if (size == null) return "unknown";
+        return size.width + "x" + size.height;
     }
 
     public void tap(String selector) {

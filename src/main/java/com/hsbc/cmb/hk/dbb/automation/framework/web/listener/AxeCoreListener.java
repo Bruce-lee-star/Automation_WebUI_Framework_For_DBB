@@ -40,7 +40,7 @@ public class AxeCoreListener implements StepListener {
 
                 // Read configuration using FrameworkConfigManager
                 boolean enabled = FrameworkConfigManager.getBoolean(FrameworkConfig.AXE_SCAN_ENABLED);
-                String projectName = PlaywrightManager.getProjectName();
+                String projectName = PlaywrightManager.config().getProjectName();
                 String tags = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
                 String outputDir = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
 

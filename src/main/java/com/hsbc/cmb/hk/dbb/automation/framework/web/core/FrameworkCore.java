@@ -1,12 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.core;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ListenerRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ListenerRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
+import java.io.IOException;
+import java.nio.file.*;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 框架核心类
@@ -40,6 +44,48 @@ public class FrameworkCore {
     // 私有构造函数，防止外部实例化
     private FrameworkCore() {
     }
+
+    /**
+     * 清理截图目录（解决截图残留问题）
+     * 在框架初始化时调用，删除 target/site/serenity 目录中的旧截图文件
+     * 避免磁盘空间占用和报告引用混乱
+     */
+    private void cleanupScreenshotDirectory() {
+        try {
+            Path screenshotDir = Paths.get("target", "site", "serenity");
+            if (!Files.exists(screenshotDir)) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot directory does not exist, skipping cleanup");
+                return;
+            }
+
+            AtomicInteger deletedCount = new AtomicInteger(0);
+            
+            // 遍历目录，删除所有 .png 截图文件
+            Files.walkFileTree(screenshotDir, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    String fileName = file.getFileName().toString();
+                    // 删除 .png 截图文件和可能的临时文件
+                    if (fileName.endsWith(".png") || fileName.endsWith(".tmp")) {
+                        try {
+                            Files.deleteIfExists(file);
+                            deletedCount.incrementAndGet();
+                        } catch (IOException e) {
+                            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to delete screenshot file: {}", file);
+                        }
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
+
+            LoggingConfigUtil.logInfoIfVerbose(logger, 
+                "Screenshot directory cleaned up: {} files deleted from {}", 
+                deletedCount.get(), screenshotDir.toAbsolutePath());
+            
+        } catch (IOException e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to cleanup screenshot directory: {}", e.getMessage());
+        }
+    }
     
     // 获取单例实例
     public static FrameworkCore getInstance() {
@@ -56,6 +102,9 @@ public class FrameworkCore {
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing FrameworkCore...");
             LoggingConfigUtil.logDebugIfVerbose(logger, "Starting framework initialization process");
+
+            // 清理截图目录（解决截图残留问题）
+            cleanupScreenshotDirectory();
 
             // 初始化框架状态
             frameworkState.initialize();

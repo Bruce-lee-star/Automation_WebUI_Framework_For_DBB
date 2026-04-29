@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TimeoutConfig;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.WaitForSelectorState;
@@ -15,7 +15,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     private static final Logger logger = LoggerFactory.getLogger(PageElementList.class);
     private final String selector;
     private final BasePage page;
-    private final int defaultTimeoutSec = TimeoutConfig.getElementCheckTimeout() / 1000;
+    private final int defaultTimeoutSec = PlaywrightManager.config().getElementCheckTimeout() / 1000;
 
     // ========================== 构造（线程安全） ==========================
     public PageElementList(String selector, BasePage page) {
@@ -127,7 +127,7 @@ public final class PageElementList extends AbstractList<PageElement> {
             Locator target = locator().nth(index);
             target.waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(TimeoutConfig.getElementCheckTimeout()));
+                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout()));
 
             return new PageElementWithIndex(selector, page, index, target);
         } catch (Exception e) {

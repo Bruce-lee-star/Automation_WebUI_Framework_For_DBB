@@ -913,6 +913,77 @@ public enum FrameworkConfig {
         "native.snapshot.silent",
         "false",
         "原生快照测试静默模式"
+    ),
+
+    // ==================== Playwright 元素操作配置 ====================
+
+    /**
+     * 元素操作后等待时间（毫秒）
+     * 用于 click/fill 等操作后等待 DOM 稳定
+     */
+    PLAYWRIGHT_ELEMENT_ACTION_POST_DELAY(
+        "playwright.element.action.post.delay",
+        "200",
+        "元素操作后等待时间（毫秒）"
+    ),
+
+    /**
+     * 元素操作最大重试次数
+     * 元素操作失败时的最大重试次数
+     */
+    PLAYWRIGHT_ELEMENT_RETRY_MAX(
+        "playwright.element.retry.max",
+        "2",
+        "元素操作最大重试次数"
+    ),
+
+    /**
+     * 元素操作重试间隔时间（毫秒）
+     * 两次重试之间的等待时间
+     */
+    PLAYWRIGHT_ELEMENT_RETRY_DELAY_MS(
+        "playwright.element.retry.delay.ms",
+        "300",
+        "元素操作重试间隔时间（毫秒）"
+    ),
+
+    /**
+     * 元素操作总超时时间（毫秒）
+     * 元素操作的总时间预算（含重试）
+     */
+    PLAYWRIGHT_ELEMENT_OPERATION_TIMEOUT(
+        "playwright.element.operation.timeout",
+        "30000",
+        "元素操作总超时时间（毫秒）"
+    ),
+
+    /**
+     * 失败时是否自动截图
+     * true=自动截图, false=不截图
+     */
+    PLAYWRIGHT_ELEMENT_SCREENSHOT_ON_FAILURE(
+        "playwright.element.screenshot.on.failure",
+        "true",
+        "失败时是否自动截图"
+    ),
+
+    /**
+     * 是否收集详细诊断信息
+     * true=收集完整诊断信息, false=收集基本信息
+     */
+    PLAYWRIGHT_ELEMENT_DIAGNOSTICS_DETAILED(
+        "playwright.element.diagnostics.detailed",
+        "true",
+        "是否收集详细诊断信息"
+    ),
+
+    /**
+     * 失败截图保存路径
+     */
+    PLAYWRIGHT_ELEMENT_SCREENSHOT_PATH(
+        "playwright.element.screenshot.path",
+        "target/screenshots",
+        "失败截图保存路径"
     );
 
     private final String key;

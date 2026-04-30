@@ -33,6 +33,108 @@ public class SessionManager {
     // Session timeout in minutes (read from FrameworkConfig)
     private static final long SESSION_TIMEOUT_MINUTES = 60; // 默认60分钟过期
 
+    // ==================== Feature 级别 Session 缓存 ====================
+    // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
+    // 确保同一个 Feature 中只恢复一次 Session，避免重复重建 Context
+
+    // 记录当前 Feature 已恢复的 Session Key
+    private static final ThreadLocal<String> currentFeatureSessionKey = new ThreadLocal<>();
+
+    // 标记当前 Feature 是否已经恢复了 Session
+    private static final ThreadLocal<Boolean> featureSessionRestored = ThreadLocal.withInitial(() -> false);
+
+    // 记录当前 Feature 已恢复的 Session 的 homeUrl
+    private static final ThreadLocal<String> currentFeatureHomeUrl = new ThreadLocal<>();
+
+    /**
+     * 标记 Feature 级别 Session 已恢复
+     * <p>
+     * 当第一个 Scenario 成功恢复 Session 后，调用此方法标记
+     * 后续同一个 Feature 中的 Scenario 会直接复用，不再重建 Context
+     *
+     * @param sessionKey Session 标识
+     * @param homeUrl 首页 URL
+     */
+    public static void markFeatureSessionRestored(String sessionKey, String homeUrl) {
+        currentFeatureSessionKey.set(sessionKey);
+        featureSessionRestored.set(true);
+        currentFeatureHomeUrl.set(homeUrl);
+        LoggingConfigUtil.logInfoIfVerbose(logger,
+            "Feature-level session marked as restored: {} (homeUrl: {})", sessionKey, homeUrl);
+    }
+
+    /**
+     * 检查当前 Feature 是否已恢复指定的 Session
+     * <p>
+     * 用于避免在同一个 Feature 中重复恢复 Session 导致 Context 重建
+     *
+     * @param sessionKey Session 标识
+     * @return true 表示当前 Feature 已恢复该 Session，可以直接复用
+     */
+    public static boolean isFeatureSessionRestored(String sessionKey) {
+        Boolean restored = featureSessionRestored.get();
+        String currentKey = currentFeatureSessionKey.get();
+
+        if (restored != null && restored && sessionKey.equals(currentKey)) {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "Feature-level session already restored for: {}, skipping restore", sessionKey);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 获取当前 Feature 已恢复 Session 的 homeUrl
+     *
+     * @return homeUrl，如果未恢复则返回 null
+     */
+    public static String getFeatureHomeUrl() {
+        return currentFeatureHomeUrl.get();
+    }
+
+    /**
+     * 【简化API】获取 homeUrl（自动处理 Feature 缓存和 meta 文件读取）
+     * <p>
+     * 封装了 homeUrl 的获取逻辑：
+     * 1. 优先从 Feature 级别缓存读取（同一个 Feature 中已恢复的 Session）
+     * 2. 如果缓存未命中，从 meta 文件读取
+     * <p>
+     * 业务层只需调用此方法，无需关心 homeUrl 的来源
+     *
+     * @param sessionKey Session 标识
+     * @return homeUrl，如果不存在则返回 null
+     */
+    public static String getHomeUrl(String sessionKey) {
+        // 优先从 Feature 级别缓存读取
+        String homeUrl = getFeatureHomeUrl();
+        if (homeUrl != null && !homeUrl.isEmpty()) {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "HomeUrl loaded from Feature cache: {}", homeUrl);
+            return homeUrl;
+        }
+
+        // 缓存未命中，从 meta 文件读取
+        homeUrl = loadHomeUrl(sessionKey);
+        if (homeUrl != null && !homeUrl.isEmpty()) {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "HomeUrl loaded from meta file: {}", homeUrl);
+        }
+
+        return homeUrl;
+    }
+
+    /**
+     * 重置 Feature 级别 Session 状态
+     * <p>
+     * 在 Feature 结束时调用，清理 ThreadLocal 变量
+     */
+    public static void resetFeatureSession() {
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting feature-level session state");
+        currentFeatureSessionKey.remove();
+        featureSessionRestored.set(false);
+        currentFeatureHomeUrl.remove();
+    }
+
     /**
      * 【新】检查 Session 是否存在且有效
      * <p>
@@ -90,14 +192,33 @@ public class SessionManager {
      * @return true 表示 session 已准备好，false 表示需要登录
      */
     public static boolean restoreSession(String sessionKey) {
+        String restartStrategy = PlaywrightManager.config().getRestartStrategy();
+        
+        if ("feature".equalsIgnoreCase(restartStrategy)) {
+            // Feature 模式：检查 Feature 级别缓存
+            if (isFeatureSessionRestored(sessionKey)) {
+                String homeUrl = getFeatureHomeUrl();
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "Feature-level session cache hit: {} (homeUrl: {})", sessionKey, homeUrl);
+                return true;
+            }
+        } else {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                "Scenario mode: skipping feature-level cache for {}", sessionKey);
+        }
+
         if (hasSession(sessionKey)) {
-            // Session 有效，读取 homeUrl
             String homeUrl = loadHomeUrl(sessionKey);
 
             if (homeUrl != null && !homeUrl.isEmpty()) {
-                // 设置 storageStatePath（用户自定义配置，优先级高于框架默认配置）
+                // 设置 storageStatePath
                 Path sessionPath = getSessionPath(sessionKey);
                 PlaywrightManager.setStorageStatePath(sessionPath);
+
+                // 标记 Feature 级别 Session 已恢复
+                if ("feature".equalsIgnoreCase(restartStrategy)) {
+                    markFeatureSessionRestored(sessionKey, homeUrl);
+                }
 
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                     "Session prepared for: {} (custom storageStatePath: {})", sessionKey, sessionPath);
@@ -133,18 +254,18 @@ public class SessionManager {
     public static void saveSession(String sessionKey, String homeUrl) {
         try {
             Path sessionPath = getSessionPath(sessionKey);
-            
+
             // 确保目录存在
             if (!Files.exists(sessionPath.getParent())) {
                 Files.createDirectories(sessionPath.getParent());
             }
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, 
+            LoggingConfigUtil.logInfoIfVerbose(logger,
                 "Saving session for: {} (homeUrl: {})", sessionKey, homeUrl);
 
             // 获取当前 context
             BrowserContext context = PlaywrightManager.getContext();
-            
+
             if (context == null) {
                 throw new IllegalStateException("No context available for saving session");
             }
@@ -155,7 +276,10 @@ public class SessionManager {
             // 保存元数据（homeUrl + timestamp）
             saveMeta(sessionKey, homeUrl);
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, 
+            // 【关键】标记 Feature 级别 Session 已保存（后续 Scenario 直接复用）
+            markFeatureSessionRestored(sessionKey, homeUrl);
+
+            LoggingConfigUtil.logInfoIfVerbose(logger,
                 "Session saved successfully: {} -> {}", sessionKey, sessionPath);
         } catch (Exception e) {
             logger.error("Failed to save session for: {}", sessionKey, e);

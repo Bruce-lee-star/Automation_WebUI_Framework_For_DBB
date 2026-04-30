@@ -71,37 +71,38 @@ public class LoginSteps {
 
 
         if (SessionManager.restoreSession(sessionKey)) {
-                       // Session 已准备好，框架已设置 storageStatePath
-            
-            // 【关键】从 meta 文件读取 homeUrl
-            String homeUrl = SessionManager.loadHomeUrl(sessionKey);
+            // Session 已准备好（可能是从文件恢复，也可能是 Feature 级别缓存）
+
+            // 【简化API】自动处理 Feature 缓存和 meta 文件读取
+            String homeUrl = SessionManager.getHomeUrl(sessionKey);
+
             if (homeUrl == null || homeUrl.isEmpty()) {
                 logger.warn("Session file exists but no homeUrl found, cannot skip login");
                 // SessionManager.clearSession(sessionKey); // 旧方法已删除
                 performLogin();
                 return;
             }
-            
+
             logger.info("Session restored, navigating to homeUrl: {}", homeUrl);
             loginPage.navigateTo(homeUrl);
             loginPage.waitForTimeout(5000);
             // 验证 session 是否有效
             String currentUrl = loginPage.getCurrentUrl();
             logger.info("Current URL after navigation: {}", currentUrl);
-            
+
             if (currentUrl.contains("/logon")) {
                 logger.warn("Session invalid (redirected to login page)");
                 // SessionManager.clearSession(sessionKey); // 旧方法已删除
                 performLogin();
                 return;
             }
-            
+
             // Session 有效，等待首页元素
             homePage.quickLink.waitForVisible(30);
             logger.info("Session validated successfully, skipping login");
             return; // Session 有效，跳过登录
         }
-        
+
         // Session 无效或不存在，执行登录
         performLogin();
     }

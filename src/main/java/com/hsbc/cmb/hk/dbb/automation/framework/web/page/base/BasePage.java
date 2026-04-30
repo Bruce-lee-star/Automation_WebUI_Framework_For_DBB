@@ -106,14 +106,13 @@ public abstract class BasePage {
         return context;
     }
 
-    private boolean waitForCondition
-            (BooleanSupplier condition, int timeoutSeconds, String desc) {
+    private boolean waitForCondition(BooleanSupplier condition, int timeoutSeconds, String desc) {
         ensurePageValid();
         long end = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
         while (System.currentTimeMillis() < end) {
             try {
                 if (condition.getAsBoolean()) {
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "✅ Condition passed: {}", desc);
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "Condition passed: {}", desc);
                     return true;
                 }
             } catch (Exception e) {
@@ -522,7 +521,7 @@ public abstract class BasePage {
     public void switchToLatestPage() {
         ensureContextValid();
         List<Page> pages = context.pages();
-        page = pages.get(pages.size() - 1);
+        page = pages.getLast();
         setCurrentPage();
     }
 
@@ -553,8 +552,7 @@ public abstract class BasePage {
             throw new IllegalStateException("No pages available after closing");
         }
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
-        Page targetPage = updatedPages.get(targetIndex);
-        page = targetPage;
+        page = updatedPages.get(targetIndex);
         setCurrentPage();
     }
 
@@ -723,11 +721,11 @@ public abstract class BasePage {
     }
 
     public void acceptAlert() {
-        page.onDialog(dialog -> dialog.accept());
+        page.onDialog(Dialog::accept);
     }
 
     public void dismissAlert() {
-        page.onDialog(dialog -> dialog.dismiss());
+        page.onDialog(Dialog::dismiss);
     }
 
     public byte[] takeScreenshot() {

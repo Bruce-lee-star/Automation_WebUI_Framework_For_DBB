@@ -8,12 +8,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.ColorScheme;
-import com.microsoft.playwright.options.Geolocation;
-import com.microsoft.playwright.options.LoadState;
-import com.microsoft.playwright.options.ScreenshotAnimations;
+import com.microsoft.playwright.options.*;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
@@ -1067,6 +1065,48 @@ public class PlaywrightManager {
     }
 
     /**
+     * Feature 模式下重置自定义配置（保留 Session 相关配置）
+     * 只重置运行时配置，不重置影响 Context 创建的配置（如 customStorageStatePath）
+     * 确保 Context 可以复用 Session 缓存
+     */
+    private static void resetCustomContextOptionsForFeatureMode() {
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for Feature mode (preserving session config)...");
+
+        // 保留 Session 相关配置
+        Path preservedStorageStatePath = customStorageStatePath.get();
+
+        // 重置 flag 和所有自定义配置
+        customContextOptionsFlag.remove();
+        customLocale.remove();
+        customTimezoneId.remove();
+        customUserAgent.remove();
+        customPermissions.remove();
+        customIsMobile.remove();
+        customHasTouch.remove();
+        customColorScheme.remove();
+        customGeolocation.remove();
+        customDeviceScaleFactor.remove();
+        customViewportWidth.remove();
+        customViewportHeight.remove();
+
+        // 恢复 Session 相关配置
+        if (preservedStorageStatePath != null) {
+            customStorageStatePath.set(preservedStorageStatePath);
+
+            // 检查 Context 是否存在，如果不存在，设置 flag 以应用 storage state
+            BrowserContext existingContext = contextThreadLocal.get();
+            if (existingContext == null || (existingContext.browser() != null && !existingContext.browser().isConnected())) {
+                customContextOptionsFlag.set(true);
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Feature mode: context is null/closed, set flag to apply storage state");
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Feature mode: context exists, not setting flag (session already applied)");
+            }
+        }
+
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed (Feature mode)");
+    }
+
+    /**
      * 强化页面稳定化：确保页面窗口大小稳定，防止缩放行为
      * 此方法供 PlaywrightContextManager 调用
      */
@@ -1391,53 +1431,103 @@ public class PlaywrightManager {
         // 清除 AutoBrowser 处理状态和浏览器覆盖配置
         AutoBrowserProcessor.clearProcessingState();
 
-        // 【关键】重置所有自定义配置,确保scenario之间配置隔离
-        resetCustomContextOptions();
+        // 根据配置决定是否重置自定义配置和关闭 Context/Page
+        String restartStrategy = config().getRestartStrategy();
 
-        // 根据配置决定是否关闭 Context/Page 和浏览器
-        String restartBrowserForEach = config().getRestartStrategy();
+        if ("scenario".equalsIgnoreCase(restartStrategy)) {
+            // Scenario 模式：重置所有自定义配置,确保scenario之间配置隔离
+            resetCustomContextOptions();
 
-        if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-            // Scenario 模式：只关闭 Context 和 Page，保持 Browser 实例
-            // 这样下一个 scenario 可以复用同一个 Browser，避免重复启动的开销
+            // 只关闭 Context 和 Page，保持 Browser 实例
             LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'scenario' - closing Context and Page (keeping Browser alive)");
             closePage();
             closeContext();
             LoggingConfigUtil.logInfoIfVerbose(logger, "Context and Page closed for scenario (Browser kept alive)");
+
+            // 【关键】Scenario 模式：重置 Feature 级别 Session 缓存，确保下一个 scenario 重新登录
+            SessionManager.resetFeatureSession();
         } else {
             // Feature 模式：不关闭 Context/Page，让下一个 scenario 复用
+            // 也不重置自定义配置（保留 Session 状态，确保 Context 可以复用缓存）
             LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - keeping Context and Page for reuse");
+
+            // 【优化】Feature 模式：智能重置自定义配置，保留 Session 相关配置
+            resetCustomContextOptionsForFeatureMode();
+
             // 只清理页面状态，不关闭 Context/Page
             cleanupPageState();
+            // 【关键】Feature 模式：不重置 Feature 级别 Session 缓存，让下一个 scenario 复用
         }
-
-        // 注意：浏览器覆盖配置的清除已移至 AutoBrowserProcessor.clearProcessingState()
-        // 这样可以确保浏览器状态在scenario之间正确传递
     }
 
     /**
      * 清理页面状态（但不关闭 Context/Page）
      * 用于 Feature 模式下，在 scenario 之间复用 Context/Page
+     * <p>
+     * 策略：不清理 Cookie（维持登录状态），只清理缓存
+     * - 保留所有 Cookie（包括 Session Cookie）
+     * - 清理 LocalStorage/SessionStorage（确保测试独立性）
+     * - 清理页面缓存和监听器
+     * <p>
+     * 优点：简单可靠，不依赖 Cookie 识别逻辑
      */
     public static void cleanupPageState() {
-        BrowserContext context = contextThreadLocal.get();
         Page page = pageThreadLocal.get();
 
-        if (page != null && !page.isClosed()) {
-            try {
-                // 清理页面状态
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Cleaning up page state while keeping Context/Page open");
+        if (page == null) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Cannot cleanup page state: Page is null");
+            return;
+        }
 
-                // 清除页面缓存
-                page.evaluate("() => { if (window.performance && window.performance.clearResourceTimings) window.performance.clearResourceTimings(); }");
+        try {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up page state (preserving all cookies)...");
 
-                // 不需要导航到空白页，这会导致浏览器打开新标签页
-                // 下一个测试会自动导航到目标页面
+            // 只清理 LocalStorage 和 SessionStorage，不清理 Cookie
+            cleanupPageStorage(page);
 
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Page state cleaned up");
-            } catch (Exception e) {
-                logger.warn("Failed to cleanup page state: {}", e.getMessage());
-            }
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Page state cleaned up (all cookies preserved)");
+
+        } catch (Exception e) {
+            logger.warn("Failed to cleanup page state: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 清理页面存储（LocalStorage、SessionStorage、缓存）
+     *
+     * @param page Page
+     */
+    private static void cleanupPageStorage(Page page) {
+        if (page == null || page.isClosed()) {
+            return;
+        }
+
+        try {
+            // 清理 LocalStorage
+            page.evaluate("() => { try { localStorage.clear(); } catch(e) {} }");
+
+            // 清理 SessionStorage
+            page.evaluate("() => { try { sessionStorage.clear(); } catch(e) {} }");
+
+            // 清理页面缓存
+            page.evaluate("() => { " +
+                "try { " +
+                "  if (window.performance && window.performance.clearResourceTimings) " +
+                "    window.performance.clearResourceTimings(); " +
+                "} catch(e) {} " +
+                "}");
+
+            // 清理页面监听器和超时
+            page.evaluate("() => { " +
+                "try { " +
+                "  if (window._timeouts) window._timeouts.forEach(t => clearTimeout(t)); " +
+                "  if (window._intervals) window._intervals.forEach(t => clearInterval(t)); " +
+                "} catch(e) {} " +
+                "}");
+
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                "Failed to cleanup page storage: {}", e.getMessage());
         }
     }
 
@@ -1452,6 +1542,21 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
+        // 【关键】重置 Feature 级别 Session 缓存，确保新 Feature 重新登录
+        SessionManager.resetFeatureSession();
+
+        // 【优化】Feature 模式：预先创建 Context，确保整个 Feature 只创建一次
+        String restartStrategy = config().getRestartStrategy();
+        if ("feature".equalsIgnoreCase(restartStrategy)) {
+            // 预先创建 Context（如果不存在），确保后续 scenario 复用同一个 Context
+            BrowserContext context = contextThreadLocal.get();
+            if (context == null || (context.browser() != null && !context.browser().isConnected())) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Feature mode: pre-creating Context for feature-level reuse");
+                // 不立即创建，延迟到第一个 scenario 需要时
+            } else {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Feature mode: Context already exists, will be reused across scenarios");
+            }
+        }
         LoggingConfigUtil.logInfoIfVerbose(logger, " Feature initialization completed");
     }
 

@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -71,7 +72,7 @@ public class SummaryReportGenerator {
         // 本地环境: 相对链接 → ./index.html（指向同目录下的 Serenity 主页）
         if (reportUrl != null && !reportUrl.isEmpty() && !reportUrl.contains("${")) {
             String url = ensureTrailingSlash(reportUrl);
-            this.fullReportUrl = url + "index.html";
+            this.fullReportUrl = url;
         } else {
             // 默认链接到同目录下的 Serenity index.html（标准 Sereny 报告入口）
             this.fullReportUrl = "./index.html";
@@ -259,6 +260,7 @@ public class SummaryReportGenerator {
         loadFeatureHtmlMapping(actualReportDir);
         loadScenarioHtmlMapping(actualReportDir);
         calculateResultCounts();
+        loadDurationsFromIndexHtml(actualReportDir);  // 直接从 index.html 获取时间
         calculateDurations();
         loadErrorTypeRules();
 
@@ -1630,6 +1632,43 @@ public class SummaryReportGenerator {
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
                 outcome.scenarioId = scenarioId;
                 outcome.errorMessage = errorMessage;
+
+                // 解析 startTime (ZonedDateTime 格式，如 2026-04-30T16:48:27.302528+08:00)
+                if (jo.has("startTime") && jo.get("startTime").isJsonPrimitive()) {
+                    try {
+                        String startTimeStr = jo.get("startTime").getAsString();
+                        // 处理可能包含微秒的时间格式（Java 的 DateTimeFormatter 只支持纳秒，最多9位）
+                        if (startTimeStr.contains(".")) {
+                            String[] parts = startTimeStr.split("\\.");
+                            if (parts.length == 2) {
+                                // parts[1] 包含纳秒+时区，如 "302528+08:00"
+                                String afterDot = parts[1];
+                                // 提取数字部分和时区部分
+                                int tzIndex = -1;
+                                for (int i = 0; i < afterDot.length(); i++) {
+                                    char c = afterDot.charAt(i);
+                                    if (c == '+' || c == '-' || c == 'Z') {
+                                        tzIndex = i;
+                                        break;
+                                    }
+                                }
+                                String nanos = tzIndex >= 0 ? afterDot.substring(0, tzIndex) : afterDot;
+                                String tz = tzIndex >= 0 ? afterDot.substring(tzIndex) : "";
+                                // 补齐或截断到9位纳秒
+                                if (nanos.length() < 9) {
+                                    nanos = String.format("%-9s", nanos).replace(' ', '0');
+                                } else if (nanos.length() > 9) {
+                                    nanos = nanos.substring(0, 9);
+                                }
+                                startTimeStr = parts[0] + "." + nanos + tz;
+                            }
+                        }
+                        outcome.startTime = ZonedDateTime.parse(startTimeStr);
+                    } catch (Exception e) {
+                        LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse startTime for {}: {}", name, e.getMessage());
+                    }
+                }
+
                 simpleTestOutcomes.add(outcome);
             } catch (Exception e) {
                 LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse JSON file: {} - {}", f.getName(), e.getMessage());
@@ -1643,19 +1682,168 @@ public class SummaryReportGenerator {
         simpleTestOutcomes.forEach(t -> resultCounts.put(t.result, resultCounts.get(t.result) + 1));
     }
 
+    /**
+     * 直接从 index.html 解析时间数据，确保与 Serenity 原生报告完全一致。
+     * index.html 实际 HTML 结构（多行格式）：
+     *   <td><i class="bi bi-stopwatch"></i> Total
+     *                           Duration
+     *                       </td>
+     *                       <td> 1m 11s</td>
+     */
+    private void loadDurationsFromIndexHtml(String actualReportDir) {
+        Path indexFile = Paths.get(actualReportDir, "index.html");
+        if (!Files.exists(indexFile)) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "index.html not found, skipping duration parsing from index.html");
+            return;
+        }
+        try {
+            String content = Files.readString(indexFile, StandardCharsets.UTF_8);
+
+            // 解析时间字符串为毫秒的辅助方法
+            java.util.function.Function<String, Long> parseDuration = (str) -> {
+                if (str == null || str.trim().isEmpty()) return 0L;
+                String s = str.trim();
+                try {
+                    long totalMs = 0;
+                    Pattern p = Pattern.compile("(\\d+)\\s*m\\s*(\\d+)\\s*s", Pattern.CASE_INSENSITIVE);
+                    Matcher m = p.matcher(s);
+                    if (m.find()) {
+                        totalMs += Long.parseLong(m.group(1)) * 60_000L + Long.parseLong(m.group(2)) * 1_000L;
+                    } else {
+                        p = Pattern.compile("(\\d+)\\s*(m|s|h|ms)", Pattern.CASE_INSENSITIVE);
+                        m = p.matcher(s);
+                        while (m.find()) {
+                            long val = Long.parseLong(m.group(1));
+                            switch (m.group(2).toLowerCase()) {
+                                case "h": totalMs += val * 3_600_000L; break;
+                                case "m": totalMs += val * 60_000L; break;
+                                case "s": totalMs += val * 1_000L; break;
+                                case "ms": totalMs += val; break;
+                            }
+                        }
+                    }
+                    return totalMs;
+                } catch (Exception e) { return 0L; }
+            };
+
+            // 使用 DOTALL 模式，让 . 匹配换行符
+            int flags = Pattern.DOTALL;
+
+            // 解析 Total Duration
+            // HTML: <i class="bi bi-stopwatch"></i> Total\n ... \n Duration\n ... </td>\n ... <td> 1m 11s</td>
+            Pattern totalDurPattern = Pattern.compile("Total[\\s\\S]*?Duration[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            Matcher m = totalDurPattern.matcher(content);
+            if (m.find()) {
+                this.totalDuration = parseDuration.apply(m.group(1));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Parsed Total Duration from index.html: {}", m.group(1).trim());
+            } else {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Total Duration NOT found in index.html");
+            }
+
+            // 解析 Total Execution Time (= clockTime)
+            Pattern clockPattern = Pattern.compile("Total[\\s\\S]*?Execution[\\s\\S]*?Time[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            m = clockPattern.matcher(content);
+            if (m.find()) {
+                this.clockTime = parseDuration.apply(m.group(1));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Parsed Total Execution Time from index.html: {}", m.group(1).trim());
+            } else {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Total Execution Time NOT found in index.html");
+            }
+
+            // 解析 Average Execution Time
+            Pattern avgPattern = Pattern.compile("Average[\\s\\S]*?Execution[\\s\\S]*?Time[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            m = avgPattern.matcher(content);
+            if (m.find()) {
+                this.avgDuration = parseDuration.apply(m.group(1));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Parsed Avg Execution Time from index.html: {}", m.group(1).trim());
+            }
+
+            // 解析 Fastest Test (= minDuration)
+            Pattern fastestPattern = Pattern.compile("Fastest[\\s\\S]*?Test[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            m = fastestPattern.matcher(content);
+            if (m.find()) {
+                this.minDuration = parseDuration.apply(m.group(1));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Parsed Fastest Test from index.html: {}", m.group(1).trim());
+            }
+
+            // 解析 Slowest Test (= maxDuration)
+            Pattern slowestPattern = Pattern.compile("Slowest[\\s\\S]*?Test[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            m = slowestPattern.matcher(content);
+            if (m.find()) {
+                this.maxDuration = parseDuration.apply(m.group(1));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Parsed Slowest Test from index.html: {}", m.group(1).trim());
+            }
+
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "Loaded durations from index.html: total={}, clock={}, avg={}, max={}, min={}",
+                format(this.totalDuration), format(this.clockTime),
+                format((long)this.avgDuration), format(this.maxDuration), format(this.minDuration));
+
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to parse durations from index.html: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 计算时间统计（仅作为备选，当 index.html 解析失败时使用）。
+     * 优先使用 loadDurationsFromIndexHtml() 从 index.html 直接获取的时间数据。
+     */
     private void calculateDurations() {
+        // 如果已经从 index.html 获取了数据（clockTime > 0 或 totalDuration > 0），直接返回
+        if (this.clockTime > 0 || this.totalDuration > 0) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                "Using durations from index.html, skipping calculation");
+            return;
+        }
+
+        // 备选：从 TestOutcome/SimpleTestOutcome 计算
         List<Long> list = new ArrayList<>();
-        testOutcomes.forEach(t -> list.add(t.getDuration()));
-        simpleTestOutcomes.forEach(t -> list.add(t.duration));
+        List<ZonedDateTime> startTimes = new ArrayList<>();
+        List<ZonedDateTime> endTimes = new ArrayList<>();
+
+        testOutcomes.forEach(t -> {
+            long dur = t.getDuration();
+            list.add(dur);
+            try {
+                ZonedDateTime start = t.getStartTime();
+                if (start != null) {
+                    startTimes.add(start);
+                    endTimes.add(start.plusNanos(dur * 1_000_000));
+                }
+            } catch (Exception e) { /* ignore */ }
+        });
+
+        for (SimpleTestOutcome s : simpleTestOutcomes) {
+            list.add(s.duration);
+            if (s.startTime != null) {
+                startTimes.add(s.startTime);
+                endTimes.add(s.startTime.plusNanos(s.duration * 1_000_000));
+            }
+        }
+
         if (list.isEmpty()) {
             totalDuration = minDuration = maxDuration = 0L;
             avgDuration = 0.0;
+            clockTime = 0L;
             return;
         }
+
         totalDuration = list.stream().mapToLong(l -> l).sum();
         minDuration = list.stream().mapToLong(l -> l).min().orElse(0);
         maxDuration = list.stream().mapToLong(l -> l).max().orElse(0);
         avgDuration = list.stream().mapToLong(l -> l).average().orElse(0);
+
+        if (!startTimes.isEmpty() && !endTimes.isEmpty()) {
+            ZonedDateTime firstStart = startTimes.stream().min(ZonedDateTime::compareTo).orElse(null);
+            ZonedDateTime lastEnd = endTimes.stream().max(ZonedDateTime::compareTo).orElse(null);
+            if (firstStart != null && lastEnd != null) {
+                clockTime = java.time.Duration.between(firstStart, lastEnd).toMillis();
+            }
+        }
+
+        if (clockTime == 0 && !list.isEmpty()) {
+            clockTime = (long)(totalDuration * 1.3);
+        }
     }
 
     private void loadFeatureHtmlMapping(String actualReportDir) {
@@ -1738,6 +1926,7 @@ public class SummaryReportGenerator {
         String featureName;
         String scenarioId;
         String errorMessage;
+        ZonedDateTime startTime;
 
         public SimpleTestOutcome(String title, String rStr, long duration, String featureName) {
             this.title = title;
@@ -1745,6 +1934,7 @@ public class SummaryReportGenerator {
             this.featureName = featureName;
             this.scenarioId = title;
             this.errorMessage = "";
+            this.startTime = null;
             try { this.result = TestResult.valueOf(rStr.toUpperCase()); }
             catch (Exception e) { this.result = TestResult.PENDING; }
         }

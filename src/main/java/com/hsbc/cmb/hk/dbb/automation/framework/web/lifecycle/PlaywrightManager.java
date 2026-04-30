@@ -408,7 +408,10 @@ public class PlaywrightManager {
         // 这一步必须在 initializePlaywright() 之前，否则 Playwright 会自动下载所有浏览器
         if (!shouldSkipBrowserDownload()) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
+            long checkStart = System.currentTimeMillis();
             ensureBrowserInstalledForType(browserType);
+            long checkElapsed = System.currentTimeMillis() - checkStart;
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser check completed in {}ms", checkElapsed);
         }
 
         // 初始化 Playwright 实例（浏览器已确保安装）
@@ -440,12 +443,17 @@ public class PlaywrightManager {
         String downloadsPath = config().getBrowserDownloadsPath();
         launchOptions.setDownloadsPath(Paths.get(downloadsPath));
 
+        long initStart = System.currentTimeMillis();
         try {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Starting browser launch: type={}, channel={}, headless={}", 
+                browserType, config().getBrowserChannel(), config().isHeadless());
             // 启动浏览器
             Browser browser = setupBrowser(playwright, browserType, launchOptions);
             browserInstances.put(configId, browser);
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Browser initialized successfully: {} for config: {}", browserType, configId);
+            long elapsed = System.currentTimeMillis() - initStart;
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser initialized successfully in {}ms: {} for config: {}", 
+                elapsed, browserType, configId);
         } catch (Exception e) {
             LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Browser for config: {}", configId, e);
 
@@ -613,6 +621,8 @@ public class PlaywrightManager {
      * 在首次访问时自动从scenario标签中提取浏览器类型并切换
      */
     public static Browser getBrowser() {
+        long methodStart = System.currentTimeMillis();
+        
         // 获取当前的配置ID
         String currentConfig = getCurrentConfigId();
         if (currentConfig == null) {
@@ -686,7 +696,8 @@ public class PlaywrightManager {
         }
 
         // 浏览器类型没有变化，返回现有浏览器
-        logger.info("[getBrowser] Using existing browser with configId: {}", currentConfig);
+        long elapsed = System.currentTimeMillis() - methodStart;
+        logger.info("[getBrowser] Using existing browser with configId: {} (elapsed: {}ms)", currentConfig, elapsed);
         return currentBrowser;
     }
 

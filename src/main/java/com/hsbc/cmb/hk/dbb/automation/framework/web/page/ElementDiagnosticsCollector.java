@@ -1,16 +1,18 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exception.ElementOperationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -82,10 +84,11 @@ public class ElementDiagnosticsCollector {
 
     /**
      * 检查元素是否可见
+     * 注意：必须使用短超时（100ms），否则 isVisible() 会等待最多 300 秒
      */
     private boolean checkIsVisible() {
         try {
-            return locator.isVisible();
+            return locator.isVisible(new Locator.IsVisibleOptions().setTimeout(100));
         } catch (Exception e) {
             logger.debug("Element [{}] not visible: {}", selector, e.getMessage());
             return false;
@@ -94,10 +97,11 @@ public class ElementDiagnosticsCollector {
 
     /**
      * 检查元素是否可用
+     * 注意：必须使用短超时（100ms），否则 isEnabled() 会等待最多 300 秒
      */
     private boolean checkIsEnabled() {
         try {
-            return locator.isEnabled();
+            return locator.isEnabled(new Locator.IsEnabledOptions().setTimeout(100));
         } catch (Exception e) {
             logger.debug("Element [{}] not enabled: {}", selector, e.getMessage());
             return false;
@@ -106,10 +110,11 @@ public class ElementDiagnosticsCollector {
 
     /**
      * 检查元素是否可编辑
+     * 注意：必须使用短超时（100ms），否则 isEditable() 会等待最多 300 秒
      */
     private boolean checkIsEditable() {
         try {
-            return locator.isEditable();
+            return locator.isEditable(new Locator.IsEditableOptions().setTimeout(100));
         } catch (Exception e) {
             logger.debug("Element [{}] not editable: {}", selector, e.getMessage());
             return false;
@@ -129,10 +134,15 @@ public class ElementDiagnosticsCollector {
 
     /**
      * 获取元素标签名
+     * 使用 page.evaluate() 配合短超时，避免等待不存在的元素
      */
     private String getTagName() {
         try {
-            return locator.evaluate("el => el.tagName").toString();
+            Object result = page.evaluate(
+                "selector => document.querySelector(selector)?.tagName || 'unknown'",
+                selector
+            );
+            return result != null ? result.toString() : "unknown";
         } catch (Exception e) {
             return "unknown";
         }
@@ -140,20 +150,27 @@ public class ElementDiagnosticsCollector {
 
     /**
      * 获取元素关键属性
+     * 使用 page.evaluate() 配合短超时，避免等待不存在的元素
      */
     private Map<String, String> getElementAttributes() {
         Map<String, String> attrs = new HashMap<>();
         String[] keys = {"id", "class", "name", "type", "disabled", "readonly", "data-testid"};
 
-        for (String key : keys) {
-            try {
-                String value = locator.getAttribute(key);
-                if (value != null) {
-                    attrs.put(key, value);
-                }
-            } catch (Exception e) {
-                // 属性不存在，忽略
-            }
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, String> result = (Map<String, String>) page.evaluate(
+                "([selector, keys]) => {" +
+                "  const el = document.querySelector(selector);" +
+                "  if (!el) return {};" +
+                "  const attrs = {};" +
+                "  keys.forEach(k => { if (el.hasAttribute(k)) attrs[k] = el.getAttribute(k); });" +
+                "  return attrs;" +
+                "}",
+                Arrays.asList(selector, Arrays.asList(keys))
+            );
+            attrs.putAll(result);
+        } catch (Exception e) {
+            // 忽略异常，返回空 map
         }
 
         return attrs;
@@ -267,8 +284,9 @@ public class ElementDiagnosticsCollector {
             String fileName = String.format("FAILED_%s_%s_%s.png", testName, sanitizedSelector, timestamp);
 
             Path screenshotDir = Paths.get(PlaywrightManager.config().getElementScreenshotPath());
-            if (!screenshotDir.toFile().exists()) {
-                screenshotDir.toFile().mkdirs();
+            File dir = screenshotDir.toFile();
+            if (!dir.exists() && !dir.mkdirs()) {
+                logger.warn("Failed to create screenshot directory: {}", screenshotDir);
             }
 
             Path screenshotPath = screenshotDir.resolve(fileName);

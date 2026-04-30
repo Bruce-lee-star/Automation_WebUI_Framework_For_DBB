@@ -9,7 +9,8 @@ import com.microsoft.playwright.options.BoundingBox;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotClickableException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import org.slf4j.Logger;
@@ -196,9 +197,14 @@ public abstract class SerenityBasePage extends BasePage {
             addSerenityTestData("lastAction", "click");
             addSerenityTestData("lastActionElement", selector);
             super.click(selector);
+        } catch (ElementOperationException e) {
+            // 已经是 ElementOperationException，直接重新抛出
+            logger.error("Failed to click element: {}", selector, e);
+            throw e;
         } catch (Exception e) {
             logger.error("Failed to click element: {}", selector, e);
-            throw new ElementNotClickableException(selector, e);
+            throw new ElementOperationException("click", selector, 
+                "Failed to click element: " + selector, e);
         }
     }
 
@@ -261,9 +267,13 @@ public abstract class SerenityBasePage extends BasePage {
             addSerenityTestData("lastAction", "navigate");
             addSerenityTestData("navigateUrl", url);
             super.navigateTo(url);
+        } catch (NavigationException e) {
+            // 已经是 NavigationException，直接重新抛出
+            logger.error("Navigation failed to URL: {}", url, e);
+            throw e;
         } catch (Exception e) {
             logger.error("Failed to navigate to URL: {}", url, e);
-            throw new ElementException("Failed to navigate to URL: " + url, e);
+            throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
         }
     }
 

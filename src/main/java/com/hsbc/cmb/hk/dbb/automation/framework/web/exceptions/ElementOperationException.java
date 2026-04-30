@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.exception;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
 /**
  * Element操作异常类
@@ -106,6 +106,20 @@ public class ElementOperationException extends RuntimeException {
     }
 
     public static Builder builder() { return new Builder(); }
+
+    /**
+     * 快速创建异常（用于 waitFor* 等方法，无需 Builder）
+     */
+    public ElementOperationException(String operation, String selector, String message) {
+        this(message, null, selector, operation, "unknown", "unknown", null);
+    }
+
+    /**
+     * 快速创建异常（带原因）
+     */
+    public ElementOperationException(String operation, String selector, String message, Throwable cause) {
+        this(message, cause, selector, operation, "unknown", "unknown", null);
+    }
 
     // ==================== Diagnostic Info ====================
 

@@ -2,7 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotClickableException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
@@ -370,8 +371,12 @@ public abstract class BasePage {
         try {
             // 委托给 PageElement 以利用企业级重试机制
             new PageElement(selector, this).click();
+        } catch (ElementOperationException e) {
+            // 已经是 ElementOperationException，直接重新抛出
+            throw e;
         } catch (Exception e) {
-            throw new ElementNotClickableException(selector, e);
+            throw new ElementOperationException("click", selector, 
+                "Failed to click element: " + selector, e);
         }
     }
 
@@ -475,13 +480,16 @@ public abstract class BasePage {
             default:
                 options.setWaitUntil(WaitUntilState.LOAD);
         }
-        page.navigate(url, options);
-        // 额外等待页面达到稳定状态
         try {
-            page.waitForLoadState(LoadState.LOAD,
-                new Page.WaitForLoadStateOptions().setTimeout((long) PlaywrightManager.config().getNavigationTimeout()));
+            // navigate 已经根据 options 中的 waitUntil 等待页面加载
+            // 不需要再额外 waitForLoadState，避免重复等待
+            page.navigate(url, options);
+            logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
         } catch (TimeoutError e) {
-            logger.warn("Page did not reach LOAD state within timeout, continuing anyway. URL: {}", url);
+            // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
+            throw new NavigationException(url, PlaywrightManager.config().getNavigationTimeout(), e);
+        } catch (PlaywrightException e) {
+            throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
         }
     }
 

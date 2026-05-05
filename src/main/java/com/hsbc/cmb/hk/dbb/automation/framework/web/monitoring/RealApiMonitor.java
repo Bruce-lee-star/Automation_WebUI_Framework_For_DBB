@@ -41,6 +41,10 @@ public class RealApiMonitor {
     // 监控状态
     private static final Map<BrowserContext, Boolean> contextMonitoringStopped = new ConcurrentHashMap<>();
     private static final Map<Page, Boolean> pageMonitoringStopped = new ConcurrentHashMap<>();
+
+    // 已注册的监听器句柄（防止多次 start 导致监听器累积泄漏）
+    private static final Map<BrowserContext, java.util.function.Consumer<Response>> contextListeners = new ConcurrentHashMap<>();
+    private static final Map<Page, java.util.function.Consumer<Response>> pageListeners = new ConcurrentHashMap<>();
     
     // 记录标志 - 防止重复记录
     private static volatile boolean hasLoggedToSerenity = false;
@@ -168,8 +172,11 @@ public class RealApiMonitor {
         
         private void startListening() {
             if (context != null) {
+                // 先移除旧的监听器，防止多次 start 导致监听器累积泄漏
+                removeExistingListener(context);
+                
                 contextMonitoringStopped.put(context, false);
-                context.onResponse(response -> {
+                java.util.function.Consumer<Response> handler = response -> {
                     if (contextMonitoringStopped.getOrDefault(context, false)) return;
                     if (!matchesTargetHost(response.url())) return;
                     if (isStaticResource(response.url())) return;
@@ -178,10 +185,15 @@ public class RealApiMonitor {
                     
                     // 实时验证
                     validateRealTime(response);
-                });
+                };
+                contextListeners.put(context, handler);
+                context.onResponse(handler);
             } else if (page != null) {
+                // 先移除旧的监听器
+                removeExistingListener(page);
+                
                 pageMonitoringStopped.put(page, false);
-                page.onResponse(response -> {
+                java.util.function.Consumer<Response> handler = response -> {
                     if (pageMonitoringStopped.getOrDefault(page, false)) return;
                     if (!matchesTargetHost(response.url())) return;
                     if (isStaticResource(response.url())) return;
@@ -190,7 +202,30 @@ public class RealApiMonitor {
                     
                     // 实时验证
                     validateRealTime(response);
-                });
+                };
+                pageListeners.put(page, handler);
+                page.onResponse(handler);
+            }
+        }
+
+        /**
+         * 移除已存在的旧监听器（通过标记停止 + 清理引用）
+         * Playwright 的 onResponse 不支持直接移除单个 listener，
+         * 所以通过 stopped 标志让旧回调空转，并清理引用
+         */
+        private void removeExistingListener(BrowserContext ctx) {
+            if (ctx != null && contextListeners.containsKey(ctx)) {
+                contextMonitoringStopped.put(ctx, true);
+                contextListeners.remove(ctx);
+                logger.debug("Removed stale listener for context");
+            }
+        }
+
+        private void removeExistingListener(Page p) {
+            if (p != null && pageListeners.containsKey(p)) {
+                pageMonitoringStopped.put(p, true);
+                pageListeners.remove(p);
+                logger.debug("Removed stale listener for page");
             }
         }
         
@@ -321,6 +356,9 @@ public class RealApiMonitor {
         // 同时清除监控状态，确保新的监听器可以正常工作
         contextMonitoringStopped.clear();
         pageMonitoringStopped.clear();
+        // 清理旧监听器引用（防止泄漏）
+        contextListeners.clear();
+        pageListeners.clear();
         // 重置目标 API 追踪状态
         matchedTargetApiCount.set(0);
         allTargetApisCaptured = false;

@@ -106,6 +106,10 @@ public class RealApiMonitor {
         private final Map<String, Integer> apis = new LinkedHashMap<>();
         private int timeoutSeconds = 60;
         
+        // 回调支持：捕获到目标 API 时执行自定义操作
+        private java.util.function.Consumer<ApiCallRecord> onMatchCallback;
+        private boolean stopOnFirstMatch = false;
+        
         public MonitorBuilder(BrowserContext context, Page page) {
             this.context = context;
             this.page = page;
@@ -130,7 +134,7 @@ public class RealApiMonitor {
         }
         
         /**
-         * 设置超时时间（秒）
+         * 设置超时时间（秒），0 或负数表示无限等待（不自动停止）
          */
         public MonitorBuilder timeout(int seconds) {
             this.timeoutSeconds = seconds;
@@ -138,11 +142,46 @@ public class RealApiMonitor {
         }
         
         /**
+         * 捕获到目标 API 后执行自定义回调操作（非阻塞）
+         * 
+         * 示例：
+         * RealApiMonitor.monitor(context)
+         *     .api("/api/payment")
+         *     .then(record -> {
+         *         System.out.println("Payment API: " + record.getResponseBody());
+         *     })
+         *     .timeout(30)
+         *     .start();
+         */
+        public MonitorBuilder then(java.util.function.Consumer<ApiCallRecord> callback) {
+            this.onMatchCallback = callback;
+            return this;
+        }
+        
+        /**
+         * 首次匹配到任一目标 API 后自动停止监控
+         * 配合 .then() 使用，适合"等一个 API 就够了"的场景
+         */
+        public MonitorBuilder stopOnFirstMatch() {
+            this.stopOnFirstMatch = true;
+            return this;
+        }
+        
+        /**
          * 异步启动监控（非阻塞）
          */
         public void start() {
-            logger.info("========== Starting async API monitoring ({} target APIs, timeout: {}s) ==========", 
-                apis.size(), timeoutSeconds);
+            logger.info("========== Starting async API monitoring ({} target APIs, timeout: {}s, callback: {}) ==========", 
+                apis.size(), timeoutSeconds, onMatchCallback != null ? "YES" : "NO");
+            
+            // ⭐ 关键顺序：先停掉旧监听器（在 clearHistory 清掉引用之前）
+            // 必须在 clearHistory 之前调用，否则 contextListeners 引用会被清掉，
+            // 导致旧 onResponse 回调无法被标记为 stopped，继续空转/干扰
+            if (context != null) {
+                markExistingListenerStopped(context);
+            } else if (page != null) {
+                markExistingListenerStopped(page);
+            }
             
             clearHistory();
             clearExpectations();
@@ -166,8 +205,12 @@ public class RealApiMonitor {
             // 启动监听
             startListening();
             
-            // 启动自动停止定时器
-            startAutoStopTimer();
+            // 启动自动停止定时器（timeout > 0 时才启动）
+            if (timeoutSeconds > 0) {
+                startAutoStopTimer();
+            } else {
+                logger.info("No timeout set (timeout=0), monitoring until manually stopped");
+            }
         }
         
         private void startListening() {
@@ -183,8 +226,11 @@ public class RealApiMonitor {
                     
                     recordApiCall(response, response.request());
                     
-                    // 实时验证
+                    // 实时验证（状态码校验）
                     validateRealTime(response);
+                    
+                    // 执行自定义回调：目标 API 匹配后立即回调
+                    invokeCallbackIfMatched(response);
                 };
                 contextListeners.put(context, handler);
                 context.onResponse(handler);
@@ -200,11 +246,43 @@ public class RealApiMonitor {
                     
                     recordApiCall(response, response.request());
                     
-                    // 实时验证
+                    // 实时验证（状态码校验）
                     validateRealTime(response);
+                    
+                    // 执行自定义回调
+                    invokeCallbackIfMatched(response);
                 };
                 pageListeners.put(page, handler);
                 page.onResponse(handler);
+            }
+        }
+        
+        /**
+         * 检查当前响应是否匹配目标API模式，如果是则执行回调
+         */
+        private void invokeCallbackIfMatched(Response response) {
+            if (onMatchCallback == null || targetApiPatterns.isEmpty()) return;
+            
+            String url = response.url();
+            for (String pattern : targetApiPatterns) {
+                if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                    ApiCallRecord lastRecord = getLastApiCall();
+                    if (lastRecord != null) {
+                        try {
+                            logger.info("[CALLBACK] Invoking custom callback for matched API: {} {}", 
+                                lastRecord.getMethod(), url);
+                            onMatchCallback.accept(lastRecord);
+                            
+                            if (stopOnFirstMatch) {
+                                logger.info("[CALLBACK] stopOnFirstMatch=true, stopping monitoring");
+                                stopMonitoring();
+                            }
+                        } catch (Exception e) {
+                            logger.error("[CALLBACK] Custom callback failed for {}: {}", url, e.getMessage(), e);
+                        }
+                    }
+                    break; // 只匹配第一个命中的 pattern
+                }
             }
         }
 
@@ -226,6 +304,24 @@ public class RealApiMonitor {
                 pageMonitoringStopped.put(p, true);
                 pageListeners.remove(p);
                 logger.debug("Removed stale listener for page");
+            }
+        }
+
+        /**
+         * 仅标记旧监听器为停止状态（不清理引用）
+         * 用于 start() 在 clearHistory() 之前调用，确保旧回调不再处理数据
+         */
+        private static void markExistingListenerStopped(BrowserContext ctx) {
+            if (ctx != null && contextListeners.containsKey(ctx)) {
+                contextMonitoringStopped.put(ctx, true);
+                logger.debug("Marked existing context listener as stopped (pre-clearHistory)");
+            }
+        }
+
+        private static void markExistingListenerStopped(Page p) {
+            if (p != null && pageListeners.containsKey(p)) {
+                pageMonitoringStopped.put(p, true);
+                logger.debug("Marked existing page listener as stopped (pre-clearHistory)");
             }
         }
         
@@ -349,16 +445,20 @@ public class RealApiMonitor {
     
     /**
      * 清空历史记录
+     * 注意：不清除 contextListeners/pageListeners 引用，防止正在运行的监听器丢失 stopped 标志
+     * 监听器引用的完全清理由 stopMonitoring() / resetForNextScenario() 负责
      */
     public static void clearHistory() {
         apiCallHistory.clear();
         hasLoggedToSerenity = false;
-        // 同时清除监控状态，确保新的监听器可以正常工作
-        contextMonitoringStopped.clear();
-        pageMonitoringStopped.clear();
-        // 清理旧监听器引用（防止泄漏）
-        contextListeners.clear();
-        pageListeners.clear();
+        // 重置监控状态（但保留已标记为 stopped 的条目）
+        // 注意：不用 clear() 而是遍历重置，避免把 stopped=true 的状态丢失
+        for (BrowserContext ctx : new ArrayList<>(contextMonitoringStopped.keySet())) {
+            // 保留已停止的上下文状态
+        }
+        for (Page p : new ArrayList<>(pageMonitoringStopped.keySet())) {
+            // 保留已停止的页面状态
+        }
         // 重置目标 API 追踪状态
         matchedTargetApiCount.set(0);
         allTargetApisCaptured = false;
@@ -522,9 +622,21 @@ public class RealApiMonitor {
     
     /**
      * 清除状态，允许同一测试中多次 start/stop 循环
+     * 在 scenario 结束时调用，完全清理所有监听器引用
      */
     public static void resetForNextScenario() {
         hasLoggedToSerenity = false;
+        // 完全清理所有状态（包括监听器引用，此时所有回调已停止）
+        contextMonitoringStopped.clear();
+        pageMonitoringStopped.clear();
+        contextListeners.clear();
+        pageListeners.clear();
+        matchedTargetApiCount.set(0);
+        allTargetApisCaptured = false;
+        targetApiPatterns.clear();
+        apiCallHistory.clear();
+        apiExpectations.clear();
+        monitoringFailure = null;
     }
     
     // ==================== 内部方法 ====================

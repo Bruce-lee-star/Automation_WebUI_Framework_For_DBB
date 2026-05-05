@@ -480,23 +480,17 @@ public class PageElement {
     // ==================== Text & Attribute ====================
     public String getText() {
         try {
-            String raw = locator().textContent();
+            String raw = locator().innerText();
             if (raw == null) {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
             }
-            return raw.replace('\u00A0', ' ').replaceAll("\\s+", " ").trim();
+            return raw.replace('\u00A0', ' ')
+                    .replaceAll("\\s+", " ")
+                    .replaceAll("\\s+([.,!?;:。，！？；：])", "")
+                    .trim();
         } catch (Exception e) {
             logger.warn("getText failed: {}", selector, e);
-            return "";
-        }
-    }
-
-    public String getInnerText() {
-        try {
-            return locator().innerText();
-        } catch (Exception e) {
-            logger.warn("getInnerText failed: {}", selector, e);
             return "";
         }
     }

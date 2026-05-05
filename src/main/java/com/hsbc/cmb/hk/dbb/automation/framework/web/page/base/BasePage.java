@@ -40,9 +40,12 @@ public abstract class BasePage {
         }
         // 1. 替换&nbsp不间断空格  \u00A0
         // 2. 合并所有空白(空格/换行/制表)为单个空格
-        // 3. 首尾去空
+        // 3. 去掉标点前的空格（处理 SVG 角标等产生的多余空白）
+        //    覆盖中英文标点: . , ! ? ; : 。 ， ！ ？ ； ：
+        // 4. 首尾去空
         return raw.replace('\u00A0', ' ')
                 .replaceAll("\\s+", " ")
+                .replaceAll("\\s+([.,!?;:。，！？；：])", "$1")
                 .trim();
     }
 
@@ -547,21 +550,107 @@ public abstract class BasePage {
     }
 
     public void closeCurrentPageAndSwitchBack() {
-        ensurePageValid();
         ensureContextValid();
         List<Page> pages = context.pages();
-        if (pages.size() <= 1) {
-            throw new IllegalStateException("Cannot close the only page");
+
+        if (pages.isEmpty()) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "No pages available in context");
+            page = null;
+            return;
         }
+
+        if (pages.size() <= 1) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                "Only one page available (size={}), skipping close to avoid losing the last page", pages.size());
+            // 确保当前 page 引用指向唯一可用页面
+            Page onlyPage = pages.get(0);
+            if (page != onlyPage) {
+                page = onlyPage;
+                setCurrentPage();
+            }
+            return;
+        }
+
         int currentIndex = pages.indexOf(page);
-        page.close();
+        // 安全关闭：跳过已关闭的 page，避免对已关闭页面调用 close() 抛异常
+        try {
+            if (page != null && !page.isClosed()) {
+                page.close();
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "Current page reference is null or already closed, skip close()");
+            }
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                "Exception while closing current page: {}", e.getMessage());
+        }
+
         List<Page> updatedPages = context.pages();
         if (updatedPages.isEmpty()) {
-            throw new IllegalStateException("No pages available after closing");
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                "No pages available after closing current page, page reference will be null");
+            page = null;
+            return;
         }
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
         page = updatedPages.get(targetIndex);
         setCurrentPage();
+    }
+
+    /**
+     * 关闭所有多余页面，保留并切换回主页面（第一个页面）
+     * 用于 Feature 模式下 case 切换时清理上一个 case 遗留的弹窗/新tab
+     * 
+     * 策略:
+     * - 总是保留 pages.get(0) 作为主页面
+     * - 关闭其他所有页面（包括当前 page 指向的非主页）
+     * - 最终将 page 指针设回主页
+     * - 即使当前就在主页也安全（不会关闭自己）
+     */
+    public void resetToMainPage() {
+        ensureContextValid();
+        List<Page> pages = context.pages();
+        
+        if (pages.isEmpty()) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "No pages available in context, nothing to reset");
+            page = null;
+            return;
+        }
+        
+        Page mainPage = pages.get(0);
+        
+        if (pages.size() == 1) {
+            // 只有一个页面，直接切换过去即可（可能之前 page 指针漂移了）
+            if (page != mainPage) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Single page available, switching page reference to main page");
+                page = mainPage;
+                setCurrentPage();
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Already on the only page (main page)");
+            }
+            return;
+        }
+        
+        // 多个页面：关闭除主页面外的所有页面
+        LoggingConfigUtil.logInfoIfVerbose(logger, 
+            "Resetting to main page: closing {} extra page(s) (total pages: {})", pages.size() - 1, pages.size());
+        
+        for (int i = pages.size() - 1; i >= 1; i--) {
+            Page extraPage = pages.get(i);
+            try {
+                if (!extraPage.isClosed()) {
+                    extraPage.close();
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Closed extra page at index {}", i);
+                }
+            } catch (Exception e) {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to close page at index {}: {}", i, e.getMessage());
+            }
+        }
+        
+        // 确保最终指向主页
+        page = mainPage;
+        setCurrentPage();
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Successfully reset to main page");
     }
 
     public Frame getFrame(String name) {
@@ -623,14 +712,12 @@ public abstract class BasePage {
     }
 
     /**
-     * 获取当前页面 viewport 尺寸（宽 x 高）
-     * @return 格式如 "1366x768" 的字符串
+     * 获取当前打开的页面数量
+     * @return 当前浏览器上下文中打开的页面数
      */
-    public String getPageSize() {
+    public int getPageSize() {
         ensurePageValid();
-        ViewportSize size = page.viewportSize();
-        if (size == null) return "unknown";
-        return size.width + "x" + size.height;
+        return context.pages().size();
     }
 
     public void tap(String selector) {
@@ -729,11 +816,11 @@ public abstract class BasePage {
     }
 
     public void acceptAlert() {
-        page.onDialog(Dialog::accept);
+        page.onceDialog(Dialog::accept);
     }
 
     public void dismissAlert() {
-        page.onDialog(Dialog::dismiss);
+        page.onceDialog(Dialog::dismiss);
     }
 
     public byte[] takeScreenshot() {

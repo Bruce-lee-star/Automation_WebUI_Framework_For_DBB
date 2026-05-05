@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -137,6 +138,37 @@ public class PlaywrightManager {
             return Long.toHexString(System.currentTimeMillis()) +
                     Long.toHexString(System.nanoTime()) +
                     Long.toHexString(Thread.currentThread().threadId());
+        }
+    }
+
+    /**
+     * 清理临时截图目录（target/screenshots）
+     * 仅删除临时截图，不触碰 Serenity 报告目录 (target/site/serenity)
+     * 在每个 scenario 结束时调用，避免临时文件累积
+     */
+    private static void cleanupTempScreenshots() {
+        try {
+            Path screenshotDir = Paths.get("target", "screenshots");
+            if (!Files.exists(screenshotDir)) {
+                return;
+            }
+
+            AtomicInteger deletedCount = new AtomicInteger(0);
+            Files.walk(screenshotDir)
+                .sorted(Comparator.reverseOrder())
+                .forEach(path -> {
+                    if (!path.equals(screenshotDir)) {
+                        try {
+                            Files.deleteIfExists(path);
+                            deletedCount.incrementAndGet();
+                        } catch (Exception ignored) {}
+                    }
+                });
+
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                "Cleaned temp screenshots: {} files from {}", deletedCount.get(), screenshotDir);
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to clean temp screenshots: {}", e.getMessage());
         }
     }
 
@@ -466,6 +498,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * 配置浏览器启动选项
      */
@@ -535,6 +568,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * 根据配置选择浏览器类型
      */
@@ -573,6 +607,7 @@ public class PlaywrightManager {
             throw new BrowserException("Failed to launch browser " + browserType, e);
         }
     }
+
 
     /**
      * 设置 BrowserStack 浏览器连接（使用新API）
@@ -1231,6 +1266,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * 关闭当前线程的 Context
      * 委托给 PlaywrightContextManager 处理
@@ -1247,6 +1283,7 @@ public class PlaywrightManager {
             }
         }
     }
+
 
     /**
      * 重启浏览器（用于重跑测试时或浏览器类型切换）
@@ -1306,6 +1343,7 @@ public class PlaywrightManager {
             throw new BrowserException("Failed to restart browser for config: " + oldConfigId, e);
         }
     }
+
 
     /**
      * 清理所有资源
@@ -1377,6 +1415,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * 清理资源（向后兼容）
      */
@@ -1428,6 +1467,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * Scenario 级别的清理
      * 每个 scenario 结束时调用
@@ -1438,6 +1478,9 @@ public class PlaywrightManager {
      */
     public static void cleanupForScenario() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Cleaning up for scenario...");
+
+        // 清理临时截图目录（每个 scenario 结束后清理，避免残留累积）
+        cleanupTempScreenshots();
 
         // 清除 AutoBrowser 处理状态和浏览器覆盖配置
         AutoBrowserProcessor.clearProcessingState();
@@ -1471,6 +1514,7 @@ public class PlaywrightManager {
         }
     }
 
+
     /**
      * 清理页面状态（但不关闭 Context/Page）
      * 用于 Feature 模式下，在 scenario 之间复用 Context/Page
@@ -1502,6 +1546,7 @@ public class PlaywrightManager {
             logger.warn("Failed to cleanup page state: {}", e.getMessage());
         }
     }
+
 
     /**
      * 清理页面存储（LocalStorage、SessionStorage、缓存）
@@ -1541,6 +1586,7 @@ public class PlaywrightManager {
                 "Failed to cleanup page storage: {}", e.getMessage());
         }
     }
+
 
     /**
      * Feature 级别的初始化
@@ -1709,6 +1755,7 @@ public class PlaywrightManager {
             return null;
         }
     }
+
 
     /**
      * 截图并返回截图文件（用于页面变化检测）

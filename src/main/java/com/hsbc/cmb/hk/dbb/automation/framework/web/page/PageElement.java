@@ -49,7 +49,17 @@ public class PageElement {
         return page;
     }
 
+    /**
+     * 获取 Playwright Locator，使用前自动等待 DOM 加载完成
+     * 确保 SPA 页面 DOM 解析完毕后再进行元素定位，避免因 DOM 未就绪导致的空文本问题
+     */
     public Locator locator() {
+        // 基础保障：等待 DOM 加载完成（已加载则立即返回，无额外开销）
+        try {
+            page.waitForDOMContentLoaded(PlaywrightManager.config().getPageTimeout() / 1000);
+        } catch (Exception e) {
+            logger.debug("waitForDOMContentLoaded skipped (may already be navigated): {}", e.getMessage());
+        }
         return page.locator(selector);
     }
 
@@ -487,7 +497,7 @@ public class PageElement {
             }
             return raw.replace('\u00A0', ' ')
                     .replaceAll("\\s+", " ")
-                    .replaceAll("\\s+([.,!?;:。，！？；：])", "")
+                    .replaceAll("\\s+([.,!?;:。，！？；：])", "$1")
                     .trim();
         } catch (Exception e) {
             logger.warn("getText failed: {}", selector, e);

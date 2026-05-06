@@ -459,24 +459,26 @@ public class PlaywrightListener implements StepListener {
 
         // 将当前步骤的截图合并到 Serenity 传入的截图列表中
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
+        
+        // ⭐ 防残留：合并前强制清理上一步骤遗留的截图（如 SCREEN_CHANGE 等非当前步骤产生的）
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
-            LoggingConfigUtil.logDebugIfVerbose(
-                    logger, "Before merge: stepScreenshots.size={}, screenshots.size={}",
-                    stepScreenshots.size(), screenshots != null ? screenshots.size() : 0);
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "Before merge cleanup: stepScreenshots.size={} (will be merged into Serenity list)",
+                    stepScreenshots.size());
 
             if (screenshots != null) {
                 // 追加我们的截图
                 screenshots.addAll(stepScreenshots);
                 LoggingConfigUtil.logDebugIfVerbose(
-                        logger, "After merge: screenshots.size={}", screenshots.size());
+                        logger, "After merge: total screenshots.size={}", screenshots.size());
             }
-            // 清空当前步骤的截图列表，避免影响下一个步骤
+            // 清空当前步骤的截图列表，避免影响下一个步骤（防残留核心）
             stepScreenshots.clear();
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "Cleared stepScreenshots after merging");
         } else {
             LoggingConfigUtil.logDebugIfVerbose(
-                    logger, "No step screenshots to merge");
+                    logger, "No step screenshots to merge (list is empty or null)");
         }
 
         if (screenshots != null && !screenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
@@ -493,6 +495,8 @@ public class PlaywrightListener implements StepListener {
             }
         } else if (failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() in stepFinishedInternal - already sent by stepFailed");
+            // ⭐ 防残留：即使已发送过，也要确保列表被清空
+            if (screenshots != null) screenshots.clear();
         } else {
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "Serenity screenshot list is empty or null");
@@ -509,12 +513,13 @@ public class PlaywrightListener implements StepListener {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with {} screenshots",
                 screenshots != null ? screenshots.size() : 0);
 
-        // 将当前步骤的截图添加到传入的列表中
+        // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时，防止残留）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
-        if (stepScreenshots != null && !stepScreenshots.isEmpty() && screenshots != null) {
+        if (stepScreenshots != null && !stepScreenshots.isEmpty() && screenshots != null && stepStartTime.get() != null) {
             screenshots.addAll(stepScreenshots);
             LoggingConfigUtil.logDebugIfVerbose(logger, "Added {} screenshots from currentStepScreenshots to takeScreenshots list", stepScreenshots.size());
-            // 不清空列表，因为 stepFinished 也会处理
+            // 合并后立即清空，防止重复注入
+            stepScreenshots.clear();
         }
     }
 
@@ -523,12 +528,14 @@ public class PlaywrightListener implements StepListener {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with result {} and {} screenshots",
                 result, screenshots != null ? screenshots.size() : 0);
 
-        // 将当前步骤的截图添加到传入的列表中
+        // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
-        if (stepScreenshots != null && !stepScreenshots.isEmpty() && screenshots != null) {
+        if (stepScreenshots != null && !stepScreenshots.isEmpty() && screenshots != null && stepStartTime.get() != null) {
             screenshots.addAll(stepScreenshots);
             LoggingConfigUtil.logDebugIfVerbose(logger, "Added {} screenshots from currentStepScreenshots to takeScreenshots list (result: {})",
                     stepScreenshots.size(), result);
+            // 合并后立即清空
+            stepScreenshots.clear();
         }
     }
 
@@ -787,7 +794,12 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void notifyScreenChange() {
         logger.debug("Screen change notified");
-        takeScreenshotAndRegister("SCREEN_CHANGE");
+        // 仅在当前步骤活跃时截图，防止步骤间残留
+        if (stepStartTime.get() != null) {
+            takeScreenshotAndRegister("SCREEN_CHANGE");
+        } else {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping SCREEN_CHANGE screenshot - no active step");
+        }
     }
 
     @Override

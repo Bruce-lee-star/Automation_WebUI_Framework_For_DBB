@@ -168,6 +168,46 @@ public class RealApiMonitor {
         }
         
         /**
+         * 启动后阻塞等待直到任一目标 API 被捕获
+         * 
+         * @param timeoutSeconds 最大等待时间（秒）
+         * @return 捕获到的第一条匹配记录，超时返回 null
+         * 
+         * 示例：
+         * ApiCallRecord record = RealApiMonitor.monitor(context)
+         *     .api("/api/payment")
+         *     .timeout(60)
+         *     .start()
+         *     .waitForResponse(30);  // 最多等30秒
+         */
+        public ApiCallRecord waitForResponse(int timeoutSeconds) {
+            // 先确保 start 已被调用（启动监听）
+            logger.info("Waiting for any target API response (timeout={}s)...", timeoutSeconds);
+            
+            long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+            
+            while (System.currentTimeMillis() < deadline) {
+                for (String pattern : apis.keySet()) {
+                    ApiCallRecord found = getLast(pattern);
+                    if (found != null) {
+                        logger.info("Target API captured via waitForResponse: {} {}", found.getMethod(), found.getUrl());
+                        return found;
+                    }
+                }
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.warn("waitForResponse interrupted");
+                    return null;
+                }
+            }
+            
+            logger.warn("waitForResponse TIMEOUT after {}s. Total APIs captured: {}", timeoutSeconds, apiCallHistory.size());
+            return null;
+        }
+        
+        /**
          * 异步启动监控（非阻塞）
          */
         public void start() {
@@ -415,6 +455,55 @@ public class RealApiMonitor {
         return null;
     }
 
+    /**
+     * 等待目标 API 被捕获（阻塞式，解决 getLast/getLastBody 返回 null 的竞态问题）
+     * 
+     * @param urlPattern URL 匹配模式
+     * @param timeoutSeconds 最大等待时间（秒）
+     * @return 捕获到的 API 记录，超时返回 null
+     * 
+     * 示例：
+     * ApiCallRecord record = RealApiMonitor.waitForApi("/api/payment", 30);
+     * if (record != null) {
+     *     String body = String.valueOf(record.getResponseBody());
+     * }
+     */
+    public static ApiCallRecord waitForApi(String urlPattern, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        logger.info("Waiting for API match: pattern={}, timeout={}s", urlPattern, timeoutSeconds);
+        
+        while (System.currentTimeMillis() < deadline) {
+            ApiCallRecord record = getLast(urlPattern);
+            if (record != null) {
+                logger.info("Target API captured after {}ms: {} {}", 
+                    (deadline - System.currentTimeMillis() + timeoutSeconds * 1000), 
+                    record.getMethod(), record.getUrl());
+                return record;
+            }
+            try {
+                Thread.sleep(200); // 200ms 轮询间隔，避免 CPU 占用过高
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warn("waitForApi interrupted while waiting for: {}", urlPattern);
+                return null;
+            }
+        }
+        
+        logger.warn("waitForApi TIMEOUT after {}s for pattern: {}. Captured APIs: {}", 
+            timeoutSeconds, urlPattern, apiCallHistory.size());
+        return null;
+    }
+
+    /**
+     * 等待目标 API 并返回响应体（便捷方法）
+     */
+    public static String waitForApiBody(String urlPattern, int timeoutSeconds) {
+        ApiCallRecord record = waitForApi(urlPattern, timeoutSeconds);
+        if (record == null) return null;
+        Object body = record.getResponseBody();
+        return body != null ? String.valueOf(body) : null;
+    }
+
     // ==================== 核心方法 3: getLastBody() - 获取响应体 ====================
     
     /**
@@ -425,9 +514,33 @@ public class RealApiMonitor {
      */
     public static String getLastBody(String urlPattern) {
         ApiCallRecord record = getLast(urlPattern);
-        return record != null && record.getResponseBody() != null 
-            ? String.valueOf(record.getResponseBody()) 
-            : null;
+        if (record == null) {
+            logger.debug("getLastBody returns null - no matching record found for: {}", urlPattern);
+            return null;
+        }
+        Object body = record.getResponseBody();
+        if (body == null) {
+            logger.debug("getLastBody returns null - response body is empty/unreadable for: {}", urlPattern);
+            // 尝试从原始 Response 对象重新读取（如果仍有效）
+            body = attemptRereadBody(record);
+        }
+        return body != null ? String.valueOf(body) : null;
+    }
+
+    /**
+     * 尝试重新读取 Response Body（处理延迟读取失效的场景）
+     */
+    private static String attemptRereadBody(ApiCallRecord record) {
+        try {
+            if (record.response != null && !record.bodyRead) {
+                String text = record.response.text();
+                logger.info("Successfully re-read response body on retry for: {}", record.getUrl());
+                return text;
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to re-read response body: {}", e.getMessage());
+        }
+        return null;
     }
     
     // ==================== 核心方法 4: getHistory() - 获取所有记录 ====================

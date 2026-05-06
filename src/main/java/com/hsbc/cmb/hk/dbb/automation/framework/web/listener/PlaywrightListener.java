@@ -53,6 +53,9 @@ public class PlaywrightListener implements StepListener {
     // 防止 stepFailed 和 stepFinished 重复调用 StepEventBus.stepFinished()
     private static final ThreadLocal<Boolean> failureScreenshotsAlreadySent = ThreadLocal.withInitial(() -> false);
 
+    // ⭐ 防止 stepFinished() 无参版与 stepFinishedInternal() 参数化版双重处理
+    private static final ThreadLocal<Boolean> stepFinishProcessed = ThreadLocal.withInitial(() -> false);
+
     // 存储当前步骤的截图列表
     private static final ThreadLocal<List<ScreenshotAndHtmlSource>> currentStepScreenshots = ThreadLocal.withInitial(ArrayList::new);
 
@@ -79,6 +82,7 @@ public class PlaywrightListener implements StepListener {
     public void testStarted(String testName) {
         // 生成唯一名称：原名称 + 线程ID（保证同名 scenario 不合并）
         String uniqueTestName = testName + "_" + Thread.currentThread().threadId() + "_" + System.currentTimeMillis();
+        currentTestName.set(uniqueTestName);  // ⭐ 修复：确保 currentTestName 被设置（与双参数版本一致）
         testStartTime.set(System.currentTimeMillis());
         currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
         totalTests.incrementAndGet();
@@ -171,6 +175,12 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void stepFinished() {
+        // ⭐ 防双重处理：如果参数化版 stepFinishedInternal 已经处理过，跳过
+        if (stepFinishProcessed.get()) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "stepFinished() skipped - already processed by stepFinishedInternal");
+            return;
+        }
+
         Long startTime = stepStartTime.get();
         if (startTime == null) return;
 
@@ -201,18 +211,23 @@ public class PlaywrightListener implements StepListener {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 清空截图列表，避免重复添加
                 stepScreenshots.clear();
+                // 标记已处理，防止参数化版本重复处理
+                stepFinishProcessed.set(true);
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
         } else if (failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() - already sent by stepFailed");
             if (stepScreenshots != null) stepScreenshots.clear();
+            stepFinishProcessed.set(true);
         } else {
             LoggingConfigUtil.logDebugIfVerbose(logger, "No screenshots to pass to StepEventBus.stepFinished()");
         }
 
         // 重置标志供下一个步骤使用
         failureScreenshotsAlreadySent.remove();
+        stepFinishProcessed.remove();
+        stepFinishProcessed.remove();
     }
 
     @Override
@@ -261,6 +276,13 @@ public class PlaywrightListener implements StepListener {
 
         takeScreenshotAndRegister("FINAL_FAILURE");
 
+        // ⭐ 修复：检查是否已通过 stepFailed 发送过，避免重复报告
+        if (failureScreenshotsAlreadySent.get()) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping StepEventBus in lastStepFailed - already sent by stepFailed");
+            currentStepScreenshots.get().clear();
+            return;
+        }
+
         // 步骤失败时，将截图传递给 Serenity
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
@@ -268,6 +290,7 @@ public class PlaywrightListener implements StepListener {
             try {
                 StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with last step failure screenshots");
+                failureScreenshotsAlreadySent.set(true);  // ⭐ 标记已发送，防止后续重复
                 // 清空截图列表，避免重复处理
                 stepScreenshots.clear();
             } catch (Exception e) {
@@ -401,6 +424,7 @@ public class PlaywrightListener implements StepListener {
         currentCucumberStep.remove();
         takingScreenshot.remove();
         failureScreenshotsAlreadySent.remove();
+        stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
         currentStepScreenshots.remove();
     }
 
@@ -433,8 +457,15 @@ public class PlaywrightListener implements StepListener {
     }
 
     private void stepFinishedInternal(List<ScreenshotAndHtmlSource> screenshots, ZonedDateTime timestamp) {
+        // ⭐ 防双重处理：如果无参版 stepFinished() 已经处理过，跳过截图和发送
+        boolean alreadyProcessed = stepFinishProcessed.get();
+
         Long startTime = stepStartTime.get();
-        if (startTime == null) return;
+        if (startTime == null) {
+            // 即使没有 startTime 也要清理标志
+            stepFinishProcessed.remove();
+            return;
+        }
 
         long duration = System.currentTimeMillis() - startTime;
         recordTestData("stepDuration", duration);
@@ -442,12 +473,12 @@ public class PlaywrightListener implements StepListener {
             recordTestData("stepFinishTimestamp", timestamp.toInstant().toEpochMilli());
         }
 
-        // 根据截图策略在步骤结束时截图
+        // 根据截图策略在步骤结束时截图（⭐ 仅未处理时，防止与 stepFinished() 无参版重复）
         String stepName = currentStepName.get();
         String cucumberStep = currentCucumberStep.get();
 
         // 只为 Cucumber 级别步骤截图
-        if (stepName != null && !stepName.isEmpty() && stepName.equals(cucumberStep)) {
+        if (!alreadyProcessed && stepName != null && !stepName.isEmpty() && stepName.equals(cucumberStep)) {
             if (screenshotStrategy == ScreenshotStrategy.AFTER_EACH_STEP) {
                 takeScreenshotAndRegister("STEP_" + sanitizeName(stepName));
             } else if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
@@ -481,7 +512,8 @@ public class PlaywrightListener implements StepListener {
                     logger, "No step screenshots to merge (list is empty or null)");
         }
 
-        if (screenshots != null && !screenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
+        // ⭐ 防双重发送：仅当无参版 stepFinished() 未处理时才发送 StepEventBus
+        if (!alreadyProcessed && screenshots != null && !screenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
             recordTestData("stepScreenshotsCount", screenshots.size());
             // 手动调用 StepEventBus 的 stepFinished 方法来传递截图
             LoggingConfigUtil.logDebugIfVerbose(
@@ -490,6 +522,8 @@ public class PlaywrightListener implements StepListener {
                 StepEventBus.getEventBus().stepFinished(screenshots, ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(
                         logger, "Successfully called StepEventBus.stepFinished() with screenshots");
+                // 标记已处理，防止无参版 stepFinished() 重复处理
+                stepFinishProcessed.set(true);
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
@@ -504,6 +538,7 @@ public class PlaywrightListener implements StepListener {
 
         // 重置标志供下一个步骤使用
         failureScreenshotsAlreadySent.remove();
+        stepFinishProcessed.remove();
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step completed in {}ms", duration);
     }
@@ -547,12 +582,16 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void testSuiteStarted(Class<?> testClass) {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Test suite started for class: {}", testClass);
+        // ⭐ 重置：允许新 suite 再次触发清理
+        testSuiteFinishedLogged = false;
     }
 
     @Override
     public void testSuiteStarted(Story story) {
         LoggingConfigUtil.logDebugIfVerbose(
                 logger, "Test suite started for story: {}", story.getStoryName());
+        // ⭐ 重置：允许新 suite 再次触发清理
+        testSuiteFinishedLogged = false;
     }
 
     @Override

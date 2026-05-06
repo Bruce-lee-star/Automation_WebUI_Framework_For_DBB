@@ -306,12 +306,13 @@ public class RealApiMonitor {
             String url = response.url();
             for (String pattern : targetApiPatterns) {
                 if (url.contains(pattern) || url.matches(toRegex(pattern))) {
-                    ApiCallRecord lastRecord = getLastApiCall();
-                    if (lastRecord != null) {
+                    // ⭐ 按当前 response URL 反查对应记录（避免取到并发场景下的错误全局最后一条）
+                    ApiCallRecord matchedRecord = findRecordByUrl(url);
+                    if (matchedRecord != null) {
                         try {
                             logger.info("[CALLBACK] Invoking custom callback for matched API: {} {}", 
-                                lastRecord.getMethod(), url);
-                            onMatchCallback.accept(lastRecord);
+                                matchedRecord.getMethod(), url);
+                            onMatchCallback.accept(matchedRecord);
                             
                             if (stopOnFirstMatch) {
                                 logger.info("[CALLBACK] stopOnFirstMatch=true, stopping monitoring");
@@ -320,10 +321,28 @@ public class RealApiMonitor {
                         } catch (Exception e) {
                             logger.error("[CALLBACK] Custom callback failed for {}: {}", url, e.getMessage(), e);
                         }
+                    } else {
+                        logger.warn("[CALLBACK] Response matched pattern '{}' but no record found for url: {}", pattern, url);
                     }
                     break; // 只匹配第一个命中的 pattern
                 }
             }
+        }
+
+        /**
+         * 按 URL 精确查找对应的 API 记录
+         * 用于在回调/验证中获取当前 response 对应的正确记录，
+         * 避免使用 getLastApiCall() 在高并发下取错
+         */
+        private static ApiCallRecord findRecordByUrl(String url) {
+            // 从后往前找，优先返回最近的匹配记录（同 URL 可能有多次调用）
+            for (int i = apiCallHistory.size() - 1; i >= 0; i--) {
+                ApiCallRecord record = apiCallHistory.get(i);
+                if (record.getUrl().equals(url)) {
+                    return record;
+                }
+            }
+            return null;
         }
 
         /**
@@ -421,8 +440,13 @@ public class RealApiMonitor {
         private void validateRealTime(Response response) {
             String url = response.url();
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
-                if (url.matches(entry.getKey()) || url.contains(entry.getKey().replaceAll("\\.\\*", ""))) {
-                    ApiCallRecord record = getLastApiCall();
+                // ⭐ 只用正则匹配（toRegex 已正确转义特殊字符），不再依赖不可靠的 contains 兜底
+                if (url.matches(entry.getKey())) {
+                    // 按当前 response URL 反查对应记录，避免并发场景下取错全局最后一条
+                    ApiCallRecord record = findRecordByUrl(url);
+                    if (record == null) {
+                        record = getLastApiCall(); // 兜底：反查失败时退回取最后一条
+                    }
                     if (record != null) {
                         try {
                             entry.getValue().validate(record);
@@ -564,14 +588,8 @@ public class RealApiMonitor {
     public static void clearHistory() {
         apiCallHistory.clear();
         hasLoggedToSerenity = false;
-        // 重置监控状态（但保留已标记为 stopped 的条目）
-        // 注意：不用 clear() 而是遍历重置，避免把 stopped=true 的状态丢失
-        for (BrowserContext ctx : new ArrayList<>(contextMonitoringStopped.keySet())) {
-            // 保留已停止的上下文状态
-        }
-        for (Page p : new ArrayList<>(pageMonitoringStopped.keySet())) {
-            // 保留已停止的页面状态
-        }
+        // 注意：不清除 contextListeners/pageListeners 引用（由 stop/resetForNextScenario 负责）
+        // 不清除 contextMonitoringStopped/pageMonitoringStopped（保留 stopped 标志防止旧监听器空转）
         // 重置目标 API 追踪状态
         matchedTargetApiCount.set(0);
         allTargetApisCaptured = false;
@@ -780,7 +798,9 @@ public class RealApiMonitor {
                         if (matched >= targetApiPatterns.size()) {
                             allTargetApisCaptured = true;
                             logger.info("All {} target API(s) captured. Stopping monitoring.", targetApiPatterns.size());
-                            stopMonitoring();
+                            // ⭐ 异步停止监控，不阻塞 Playwright 响应线程
+                            // stopMonitoring 内部有 synchronized + 写 Serenity 报告，可能耗时
+                            scheduleAsyncStop();
                         }
                         break;
                     }
@@ -789,6 +809,21 @@ public class RealApiMonitor {
         } catch (Exception e) {
             logger.error("Failed to record API call", e);
         }
+    }
+
+    /**
+     * 异步调度 stopMonitoring，避免在 onResponse 回调线程中执行耗时操作（synchronized + Serenity 写入）
+     */
+    private static void scheduleAsyncStop() {
+        Thread asyncStop = new Thread(() -> {
+            try {
+                stopMonitoring();
+            } catch (Exception e) {
+                logger.error("Async stopMonitoring failed", e);
+            }
+        }, "ApiMonitor-AsyncStop");
+        asyncStop.setDaemon(true);
+        asyncStop.start();
     }
     
     /**
@@ -806,14 +841,15 @@ public class RealApiMonitor {
     private static String toRegex(String pattern) {
         if (pattern == null || pattern.isEmpty()) return ".*";
         
-        // 已经是正则
+        // 已经是正则（包含显式正则语法）
         if (pattern.contains(".*") || pattern.contains("\\d") || pattern.contains("?") || pattern.contains("+")) {
             return pattern;
         }
         
-        // 转换为正则
+        // 转换为正则：使用 Pattern.quote 确保特殊字符被正确转义
+        // 例如 "/api/user.info" → ".*/api/user.info.*" （点号被当作字面量匹配）
         String normalized = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-        return ".*" + Pattern.quote(normalized).replace("\\Q", "").replace("\\E", "") + ".*";
+        return ".*" + Pattern.quote(normalized) + ".*";
     }
     
     private static boolean matchesTargetHost(String url) {

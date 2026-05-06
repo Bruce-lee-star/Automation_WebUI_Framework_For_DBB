@@ -57,9 +57,22 @@ public abstract class BasePage {
     }
 
     private void ensurePageValid() {
-        if (page == null || page.isClosed()) {
+        if (page == null || isPageClosed(page)) {
             page = PlaywrightManager.getPage();
             setCurrentPage();
+        }
+    }
+
+    /**
+     * 安全检查 Page 是否已关闭（避免 isClosed() 抛异常导致流程中断）
+     */
+    private boolean isPageClosed(Page p) {
+        if (p == null) return true;
+        try {
+            return p.isClosed();
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "page.isClosed() threw exception, treating as closed: {}", e.getMessage());
+            return true;
         }
     }
 

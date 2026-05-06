@@ -25,8 +25,8 @@ public class FrameworkState {
     // 自定义全局变量
     private final Map<String, Object> contextVariables = new ConcurrentHashMap<>();
     
-    // 错误信息
-    private Exception lastException;
+    // 错误信息（volatile 保证多线程可见性）
+    private volatile Exception lastException;
     
     // 私有构造函数，防止外部实例化
     private FrameworkState() {

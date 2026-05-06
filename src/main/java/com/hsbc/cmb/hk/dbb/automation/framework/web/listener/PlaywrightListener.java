@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
@@ -101,16 +102,18 @@ public class PlaywrightListener implements StepListener {
             return;
         }
 
-        long duration = System.currentTimeMillis() - startTime;
-        String testName = currentTestName.get();
+        // 【关键】使用 try-finally 确保 ThreadLocal 始终被清理，即使中间抛出异常
+        try {
+            long duration = System.currentTimeMillis() - startTime;
+            String testName = currentTestName.get();
 
-        // 根据策略和测试结果决定是否截图
-        TestResult result = currentTestResult.get();
-        boolean shouldTakeScreenshot = screenshotStrategy.shouldTakeScreenshotFor(result);
+            // 根据策略和测试结果决定是否截图
+            TestResult result = currentTestResult.get();
+            boolean shouldTakeScreenshot = screenshotStrategy.shouldTakeScreenshotFor(result);
 
-        if (shouldTakeScreenshot && screenshotStrategy != ScreenshotStrategy.DISABLED) {
-            takeScreenshotAndRegister("TEST_END_" + testName);
-        }
+            if (shouldTakeScreenshot && screenshotStrategy != ScreenshotStrategy.DISABLED) {
+                takeScreenshotAndRegister("TEST_END_" + testName);
+            }
 
         recordTestData("testEnd", System.currentTimeMillis());
         recordTestData("testDuration", duration);
@@ -137,11 +140,12 @@ public class PlaywrightListener implements StepListener {
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (Result: {})", testName, duration, result);
 
-        // 检查是否需要重试失败的测试
-        checkAndTriggerRerun();
-
-        // 清理线程本地变量
-        cleanupThreadLocals();
+            // 检查是否需要重试失败的测试
+            checkAndTriggerRerun();
+        } finally {
+            // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
+            cleanupThreadLocals();
+        }
     }
 
     @Override
@@ -226,7 +230,6 @@ public class PlaywrightListener implements StepListener {
 
         // 重置标志供下一个步骤使用
         failureScreenshotsAlreadySent.remove();
-        stepFinishProcessed.remove();
         stepFinishProcessed.remove();
     }
 
@@ -679,6 +682,9 @@ public class PlaywrightListener implements StepListener {
                 PlaywrightManager.cleanupPageState();
             }
 
+            // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
+            BasePage.clearCurrentPage();
+
             // 检查是否需要重试失败的测试
             checkAndTriggerRerun();
         } catch (Exception e) {
@@ -696,53 +702,53 @@ public class PlaywrightListener implements StepListener {
             return;
         }
 
-        LoggingConfigUtil.logDebugIfVerbose(logger, "Test finished: {}, isDataDriven: {}, finishTime: {}", result, isInDataDrivenTest, finishTime);
-        Long startTime = testStartTime.get();
-        if (startTime == null) {
-            return;
-        }
-
-        long duration = System.currentTimeMillis() - startTime;
-        String testName = currentTestName.get();
-
-        recordTestData("testEnd", finishTime != null ? finishTime.toInstant().toEpochMilli() : System.currentTimeMillis());
-        recordTestData("testDuration", duration);
-        recordTestData("isDataDrivenTest", isInDataDrivenTest);
-
-        if (result != null && result.getResult() != null) {
-            recordTestData("testResult", result.toString());
-
-            switch (result.getResult()) {
-                case SUCCESS:
-                    passedTests.incrementAndGet();
-                    break;
-                case PENDING:
-                    // PENDING表示测试结果未知，可能是测试中途失败或超时
-                    // 将其计为失败，以确保准确统计
-                    LoggingConfigUtil.logWarnIfVerbose(logger, "Test result is PENDING, counting as failed: {}", testName);
-                    failedTests.incrementAndGet();
-                    break;
-                case FAILURE:
-                case ERROR:
-                case UNDEFINED:
-                    failedTests.incrementAndGet();
-                    break;
-                case SKIPPED:
-                    skippedTests.incrementAndGet();
-                    break;
-                default:
-                    LoggingConfigUtil.logWarnIfVerbose(logger, "Unknown test result: {}", result.getResult());
-                    break;
+        try {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Test finished: {}, isDataDriven: {}, finishTime: {}", result, isInDataDrivenTest, finishTime);
+            Long startTime = testStartTime.get();
+            if (startTime == null) {
+                return;
             }
-        } else {
-            // result为null或result.getResult()为null，计为失败
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Test result is null, counting as failed: {}", testName);
-            failedTests.incrementAndGet();
+
+            long duration = System.currentTimeMillis() - startTime;
+            String testName = currentTestName.get();
+
+            recordTestData("testEnd", finishTime != null ? finishTime.toInstant().toEpochMilli() : System.currentTimeMillis());
+            recordTestData("testDuration", duration);
+            recordTestData("isDataDrivenTest", isInDataDrivenTest);
+
+            if (result != null && result.getResult() != null) {
+                recordTestData("testResult", result.toString());
+
+                switch (result.getResult()) {
+                    case SUCCESS:
+                        passedTests.incrementAndGet();
+                        break;
+                    case PENDING:
+                        LoggingConfigUtil.logWarnIfVerbose(logger, "Test result is PENDING, counting as failed: {}", testName);
+                        failedTests.incrementAndGet();
+                        break;
+                    case FAILURE:
+                    case ERROR:
+                    case UNDEFINED:
+                        failedTests.incrementAndGet();
+                        break;
+                    case SKIPPED:
+                        skippedTests.incrementAndGet();
+                        break;
+                    default:
+                        LoggingConfigUtil.logWarnIfVerbose(logger, "Unknown test result: {}", result.getResult());
+                        break;
+                }
+            } else {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Test result is null, counting as failed: {}", testName);
+                failedTests.incrementAndGet();
+            }
+
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
+        } finally {
+            // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
+            cleanupThreadLocals();
         }
-
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
-
-        cleanupThreadLocals();
     }
 
     @Override

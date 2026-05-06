@@ -151,182 +151,113 @@ public class AxeCoreListener implements StepListener {
     }
 
     // ==================== StepListener Implementation ====================
+    // 注意：AxeCoreListener 仅在测试套件级别工作（初始化/报告生成），不需要逐步骤追踪。
+    // 以下空方法体均为 StepListener 接口强制要求的实现，故意留空。
 
     @Override
-    public void testSuiteStarted(Class<?> storyClass) {
-        initializeIfNeeded();
-    }
+    public void testSuiteStarted(Class<?> storyClass) { initializeIfNeeded(); }
 
     @Override
-    public void testSuiteStarted(Story story) {
-        initializeIfNeeded();
-    }
-
+    public void testSuiteStarted(Story story) { initializeIfNeeded(); }
 
     @Override
     public void testSuiteFinished() {
-        // Generate single aggregated report at test suite finish
-        if (axeEnabled.get()) {
-            generateFinalReport();
-            cleanupResources();
-        }
+        if (axeEnabled.get()) { generateFinalReport(); cleanupResources(); }
     }
 
     @Override
-    public void testStarted(String description) {
-    }
+    public void testStarted(String description) { /* axe-core 不需要逐测试跟踪 */ }
 
     @Override
-    public void testStarted(String description, String id) {
-    }
+    public void testStarted(String description, String id) { /* axe-core 不需要逐测试跟踪 */ }
 
     @Override
-    public void testStarted(String s, String s1, ZonedDateTime zonedDateTime) {
-    }
+    public void testStarted(String description, String id, ZonedDateTime startTime) { /* no-op */ }
 
     @Override
-    public void testFinished(TestOutcome result) {
-        // Do nothing - report will be generated at testSuiteFinished
-    }
+    public void testFinished(TestOutcome result) { /* 报告在 testSuiteFinished 统一生成 */ }
 
     @Override
-    public void testFinished(TestOutcome testOutcome, boolean b, ZonedDateTime zonedDateTime) {
-
-    }
+    public void testFinished(TestOutcome testOutcome, boolean b, ZonedDateTime time) { /* no-op */ }
 
     @Override
-    public void testRetried() {
-
-    }
+    public void testRetried() { /* no-op */ }
 
     @Override
-    public void stepStarted(ExecutedStepDescription executedStepDescription) {
-
-    }
+    public void stepStarted(ExecutedStepDescription executedStepDescription) { /* no-op */ }
 
     @Override
-    public void skippedStepStarted(ExecutedStepDescription executedStepDescription) {
-
-    }
+    public void skippedStepStarted(ExecutedStepDescription executedStepDescription) { /* no-op */ }
 
     @Override
-    public void stepFailed(StepFailure stepFailure) {
-
-    }
+    public void stepFailed(StepFailure stepFailure) { /* no-op */ }
 
     @Override
-    public void stepFailed(StepFailure stepFailure, List<ScreenshotAndHtmlSource> list, boolean b, ZonedDateTime zonedDateTime) {
-
-    }
+    public void stepFailed(StepFailure failure, List<ScreenshotAndHtmlSource> sources, boolean b, ZonedDateTime time) { /* no-op */ }
 
     @Override
-    public void lastStepFailed(StepFailure stepFailure) {
-
-    }
+    public void lastStepFailed(StepFailure stepFailure) { /* no-op */ }
 
     @Override
-    public void stepIgnored() {
-
-    }
+    public void stepIgnored() { /* no-op */ }
 
     @Override
-    public void stepPending() {
-
-    }
+    public void stepPending() { /* no-op */ }
 
     @Override
-    public void stepPending(String s) {
-
-    }
+    public void stepPending(String message) { /* no-op */ }
 
     @Override
-    public void stepFinished() {
-
-    }
+    public void stepFinished() { /* no-op */ }
 
     @Override
-    public void stepFinished(List<ScreenshotAndHtmlSource> list, ZonedDateTime zonedDateTime) {
-
-    }
+    public void stepFinished(List<ScreenshotAndHtmlSource> sources, ZonedDateTime time) { /* no-op */ }
 
     @Override
-    public void testFailed(TestOutcome testOutcome, Throwable throwable) {
-
-    }
+    public void testFailed(TestOutcome outcome, Throwable throwable) { /* no-op */ }
 
     @Override
-    public void testIgnored() {
-
-    }
+    public void testIgnored() { /* no-op */ }
 
     @Override
-    public void testSkipped() {
-
-    }
+    public void testSkipped() { /* no-op */ }
 
     @Override
-    public void testPending() {
-
-    }
+    public void testPending() { /* no-op */ }
 
     @Override
-    public void testIsManual() {
-
-    }
+    public void testIsManual() { /* no-op */ }
 
     @Override
-    public void notifyScreenChange() {
-
-    }
+    public void notifyScreenChange() { /* no-op */ }
 
     @Override
-    public void useExamplesFrom(DataTable dataTable) {
-
-    }
+    public void useExamplesFrom(DataTable table) { /* no-op */ }
 
     @Override
-    public void addNewExamplesFrom(DataTable dataTable) {
-
-    }
+    public void addNewExamplesFrom(DataTable table) { /* no-op */ }
 
     @Override
-    public void exampleStarted(Map<String, String> map) {
-
-    }
+    public void exampleStarted(Map<String, String> data) { /* no-op */ }
 
     @Override
-    public void exampleFinished() {
-
-    }
+    public void exampleFinished() { /* no-op */ }
 
     @Override
-    public void assumptionViolated(String s) {
-
-    }
+    public void assumptionViolated(String message) { /* no-op */ }
 
     @Override
     public void testRunFinished() {
-        // Fallback: ensure cleanup even if testSuiteFinished wasn't called
-        // This is a safety net for edge cases
-        if (axeEnabled.get()) {
-            logger.debug("testRunFinished called - performing final cleanup");
-            generateFinalReport();
-            cleanupResources();
-        }
+        // 兜底：确保即使 testSuiteFinished 未被调用也能清理资源
+        if (axeEnabled.get()) { logger.debug("testRunFinished fallback - performing final cleanup"); generateFinalReport(); cleanupResources(); }
     }
 
     @Override
-    public void takeScreenshots(List<ScreenshotAndHtmlSource> list) {
-
-    }
+    public void takeScreenshots(List<ScreenshotAndHtmlSource> sources) { /* no-op */ }
 
     @Override
-    public void takeScreenshots(TestResult testResult, List<ScreenshotAndHtmlSource> list) {
-
-    }
+    public void takeScreenshots(TestResult result, List<ScreenshotAndHtmlSource> sources) { /* no-op */ }
 
     @Override
-    public void recordScreenshot(String s, byte[] bytes) {
-
-    }
+    public void recordScreenshot(String name, byte[] bytes) { /* no-op */ }
 }

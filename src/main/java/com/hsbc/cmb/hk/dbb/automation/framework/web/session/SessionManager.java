@@ -131,7 +131,7 @@ public class SessionManager {
     public static void resetFeatureSession() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting feature-level session state");
         currentFeatureSessionKey.remove();
-        featureSessionRestored.set(false);
+        featureSessionRestored.remove();
         currentFeatureHomeUrl.remove();
     }
 

@@ -37,9 +37,9 @@ public class ApiMonitorAndMockManager {
     // 存储API调用历史
     private static final List<ApiCallRecord> apiCallHistory = new CopyOnWriteArrayList<>();
 
-    // 存储context或page引用，确保mock规则应用到同一个实例
-    private static Page currentPage;
-    private static BrowserContext currentContext;
+    // 存储context或page引用（ThreadLocal 保证多线程并行测试时线程安全）
+    private static final ThreadLocal<Page> currentPage = new ThreadLocal<>();
+    private static final ThreadLocal<BrowserContext> currentContext = new ThreadLocal<>();
 
     /**
      * API调用记录
@@ -549,9 +549,9 @@ public class ApiMonitorAndMockManager {
     private static void applyMocks(Page page) {
         logger.info("Applying {} mock rules to page", mockRules.size());
 
-        // 存储当前page引用
-        currentPage = page;
-        currentContext = null;
+        // 存储当前page引用（ThreadLocal 保证线程安全）
+        currentPage.set(page);
+        currentContext.remove();
 
         for (MockRule rule : mockRules.values()) {
             if (rule.isEnabled()) {
@@ -566,9 +566,9 @@ public class ApiMonitorAndMockManager {
     private static void applyMocks(BrowserContext context) {
         logger.info("Applying {} mock rules to context", mockRules.size());
 
-        // 存储当前context引用
-        currentContext = context;
-        currentPage = null;
+        // 存储当前context引用（ThreadLocal 保证线程安全）
+        currentContext.set(context);
+        currentPage.remove();
 
         for (MockRule rule : mockRules.values()) {
             if (rule.isEnabled()) {
@@ -674,9 +674,9 @@ public class ApiMonitorAndMockManager {
                 options.setHeaders(rule.getHeaders());
             }
 
-            // 异步处理延迟 - 不阻塞其他API请求
+            // 异步处理延迟 - 不阻塞其他API请求（使用守护线程，避免阻止JVM退出）
             if (rule.getDelayMs() > 0) {
-                new Thread(() -> {
+                Thread delayThread = new Thread(() -> {
                     try {
                         logger.info("Delaying response for {} by {}ms", request.url(), rule.getDelayMs());
                         Thread.sleep(rule.getDelayMs());
@@ -689,7 +689,10 @@ public class ApiMonitorAndMockManager {
                     } catch (Exception e) {
                         logger.error("Failed to send delayed response for: {}", request.url(), e);
                     }
-                }).start();
+                });
+                delayThread.setDaemon(true);
+                delayThread.setName("MockDelay-" + request.url());
+                delayThread.start();
             } else {
                 // 无延迟，立即返回响应
                 try {

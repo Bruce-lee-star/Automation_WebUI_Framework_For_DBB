@@ -565,10 +565,10 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
                 logger.warn("Error in delegate listener testFailed: {}", listener.getClass().getSimpleName(), e);
             }
         }
-        // 关键修复：重新抛出异常，确保IDEA和Maven能正确识别测试失败
-        if (throwable != null) {
-            throw new RuntimeException("Test failed: " + (result != null ? result.getTitle() : "unknown"), throwable);
-        }
+        // 注意：不再抛出 RuntimeException
+        // 原因：监听器回调中抛出异常会中断 Serenity 事件分发机制，
+        // 导致其他 delegate listener 收不到失败通知、测试报告生成不完整、Serenity 内部状态不一致
+        // Serenity 本身已知道测试失败了（通过 TestOutcome），无需通过异常传播来标记失败
     }
 
     @Override

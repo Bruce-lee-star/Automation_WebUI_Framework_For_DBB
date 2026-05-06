@@ -154,6 +154,12 @@ public class FrameworkCore {
             PlaywrightManager.initialize();
             LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright manager initialized");
 
+            // 初始化监听器注册表：使用传入的监听器包，若未指定则回退到默认包
+            String basePackage = (listenerPackages != null && listenerPackages.length > 0)
+                ? listenerPackages[0] : getBasePackage();
+            ListenerRegistry.initialize(basePackage);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Listener registry initialized for package: {}", basePackage);
+
             LoggingConfigUtil.logInfoIfVerbose(logger, " FrameworkCore initialized successfully");
         } catch (Exception e) {
             LoggingConfigUtil.logErrorIfVerbose(logger, " Failed to initialize FrameworkCore", e);

@@ -90,20 +90,33 @@ public class RetryScenarioListener implements EventListener, RerunExecutionListe
         synchronized (RetryScenarioListener.class) {
             if (instance == null) {
                 instance = this;
-                initialize();
             }
+        }
+        // 注意：initialize() 已从构造函数中移出，避免在 DCL 锁内执行重量级操作
+        // 初始化由 Cucumber SPI 的 setEventPublisher 或显式调用 initializeIfNeeded() 触发
+    }
+
+    /**
+     * 确保实例已初始化（线程安全的延迟初始化入口）
+     */
+    private void ensureInitialized() {
+        if (!configurationInitialized) {
+            initialize();
         }
     }
 
     public static RetryScenarioListener getInstance() {
-        if (instance == null) {
-            synchronized (RetryScenarioListener.class) {
-                if (instance == null) {
-                    instance = new RetryScenarioListener();
-                }
-            }
+        // 快速路径：已存在则直接返回（volatile 读，无锁）
+        if (instance != null) {
+            return instance;
         }
-        return instance;
+        // 慢速路径：DCL 创建实例（构造函数本身是轻量级的，不含重量级初始化）
+        synchronized (RetryScenarioListener.class) {
+            if (instance == null) {
+                instance = new RetryScenarioListener();
+            }
+            return instance;
+        }
     }
 
     private void initialize() {
@@ -231,6 +244,9 @@ public class RetryScenarioListener implements EventListener, RerunExecutionListe
 
     @Override
     public void setEventPublisher(EventPublisher publisher) {
+        // Cucumber SPI 入口点：确保配置已初始化
+        ensureInitialized();
+
         logger.info("[RetryScenarioListener] setEventPublisher called - maxRerunAttempts: {}, isRerunMode: {}",
             maxRerunAttempts, isRerunMode);
 
@@ -644,7 +660,9 @@ public class RetryScenarioListener implements EventListener, RerunExecutionListe
                 finalPassed++;
             } else {
                 finalFailed++;
+                // 记录经过多次尝试后仍然失败的场景
                 if (attempts > 1) {
+                    logger.warn("Scenario '{}' still failed after {} attempts", scenarioId, attempts);
                 }
             }
         }

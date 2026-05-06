@@ -28,8 +28,10 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -54,13 +56,13 @@ public class PlaywrightManager {
     private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
 
     // ==================== 静态变量 ====================
-    private static final Boolean SKIP_DOWNLOAD_BROWSER = config().isSkipBrowserDownload();
     // 线程安全的实例存储
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
     private static final ThreadLocal<BrowserContext> contextThreadLocal = new ThreadLocal<>();
     private static final ThreadLocal<Page> pageThreadLocal = new ThreadLocal<>();
-    private static final List<Process> downloadProcesses = new ArrayList<>();
+    // 线程安全的下载进程存储（使用 CopyOnWriteArrayList 保证多线程并发安全）
+    private static final List<Process> downloadProcesses = new CopyOnWriteArrayList<>();
     
     // 线程安全锁：保护共享资源（Browser 实例）
     private static final Object BROWSER_LOCK = new Object();
@@ -121,7 +123,7 @@ public class PlaywrightManager {
     private static String generateHash(String input) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(input.getBytes());
+            byte[] hash = digest.digest(input.getBytes(StandardCharsets.UTF_8));
             StringBuilder hexString = new StringBuilder();
 
             for (byte b : hash) {
@@ -196,21 +198,28 @@ public class PlaywrightManager {
     }
 
     /**
-     * 根据截图策略检查是否应该截图
+     * 获取当前截图策略（统一入口，消除重复的 EnvironmentVariables + ScreenshotStrategy 初始化）
+     */
+    private static ScreenshotStrategy getScreenshotStrategy() {
+        try {
+            EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
+            return ScreenshotStrategy.from(environmentVariables);
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to determine screenshot strategy", e);
+            return null;
+        }
+    }
+
+    /**
+     * 根据截图策略检查是否应该截图（针对步骤）
      */
     private static boolean shouldTakeScreenshotForStep(ExecutedStepDescription step, TestResult result) {
         if (step == null) {
             return false;
         }
-
-        try {
-            EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
-            ScreenshotStrategy strategy = ScreenshotStrategy.from(environmentVariables);
-            return strategy.shouldTakeScreenshotFor(step);
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to determine screenshot strategy, taking screenshot anyway", e);
-            return true;
-        }
+        ScreenshotStrategy strategy = getScreenshotStrategy();
+        if (strategy == null) return true; // 异常时默认截图
+        return strategy.shouldTakeScreenshotFor(step);
     }
 
     /**
@@ -220,15 +229,9 @@ public class PlaywrightManager {
         if (result == null) {
             return false;
         }
-
-        try {
-            EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
-            ScreenshotStrategy strategy = ScreenshotStrategy.from(environmentVariables);
-            return strategy.shouldTakeScreenshotFor(result);
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to determine screenshot strategy, taking screenshot anyway", e);
-            return true;
-        }
+        ScreenshotStrategy strategy = getScreenshotStrategy();
+        if (strategy == null) return true; // 异常时默认截图
+        return strategy.shouldTakeScreenshotFor(result);
     }
 
     /**
@@ -238,15 +241,9 @@ public class PlaywrightManager {
         if (testOutcome == null) {
             return false;
         }
-
-        try {
-            EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
-            ScreenshotStrategy strategy = ScreenshotStrategy.from(environmentVariables);
-            return strategy.shouldTakeScreenshotFor(testOutcome);
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to determine screenshot strategy, taking screenshot anyway", e);
-            return true;
-        }
+        ScreenshotStrategy strategy = getScreenshotStrategy();
+        if (strategy == null) return true; // 异常时默认截图
+        return strategy.shouldTakeScreenshotFor(testOutcome);
     }
 
     /**
@@ -667,11 +664,28 @@ public class PlaywrightManager {
         // 获取期望的浏览器类型（可能来自 @AutoBrowser 标签）
         String desiredBrowserType = getBrowserType();
         
-        // 检查当前浏览器实例是否存在
+        // 快速路径：检查当前浏览器实例是否有效（无锁）
         Browser currentBrowser = browserInstances.get(currentConfig);
+        if (currentBrowser != null && currentBrowser.isConnected()) {
+            // 浏览器已存在且连接正常，检查是否需要切换
+            String[] configParts = currentConfig.split("_");
+            String currentBrowserType = configParts.length > 0 ? configParts[0] : "chromium";
+            
+            if (!currentBrowserType.equalsIgnoreCase(desiredBrowserType)) {
+                return handleBrowserTypeSwitch(currentConfig, currentBrowser, currentBrowserType, desiredBrowserType);
+            }
+            
+            return currentBrowser;
+        }
         
-        // 如果浏览器还不存在（首次启动），直接使用期望的浏览器类型初始化
-        if (currentBrowser == null || !currentBrowser.isConnected()) {
+        // 慢速路径：浏览器不存在或断开，加锁创建
+        synchronized (BROWSER_LOCK) {
+            // 双重检查：另一个线程可能已在等待期间创建了浏览器
+            currentBrowser = browserInstances.get(currentConfig);
+            if (currentBrowser != null && currentBrowser.isConnected()) {
+                return currentBrowser;
+            }
+            
             logger.info("[getBrowser] Browser not initialized yet, initializing with desired type: {}", desiredBrowserType);
             
             // 如果 currentConfig 中的浏览器类型与期望类型不同，更新 configId
@@ -688,18 +702,18 @@ public class PlaywrightManager {
             }
             
             // 初始化浏览器
-            synchronized (PlaywrightManager.class) {
-                initializeBrowser(currentConfig);
-            }
+            initializeBrowser(currentConfig);
             
             return browserInstances.get(currentConfig);
         }
-        
-        // 浏览器已存在，检查是否需要切换
-        String[] configParts = currentConfig.split("_");
-        String currentBrowserType = configParts.length > 0 ? configParts[0] : "chromium";
-        
-        if (!currentBrowserType.equalsIgnoreCase(desiredBrowserType)) {
+    }
+
+    /**
+     * 处理浏览器类型切换逻辑
+     */
+    private static Browser handleBrowserTypeSwitch(String currentConfig, Browser currentBrowser,
+                                                    String currentBrowserType, String desiredBrowserType) {
+        synchronized (BROWSER_LOCK) {
             logger.info("[getBrowser] Browser type changed: {} -> {}", currentBrowserType, desiredBrowserType);
             logger.info("[getBrowser] Switching browser...");
 
@@ -711,7 +725,11 @@ public class PlaywrightManager {
             Browser oldBrowser = browserInstances.get(currentConfig);
             if (oldBrowser != null && oldBrowser.isConnected()) {
                 logger.info("[getBrowser] Closing old browser: {}", currentBrowserType);
-                oldBrowser.close();
+                try {
+                    oldBrowser.close();
+                } catch (Exception e) {
+                    logger.warn("[getBrowser] Error closing old browser: {}", e.getMessage());
+                }
                 browserInstances.remove(currentConfig);
             }
 
@@ -729,11 +747,6 @@ public class PlaywrightManager {
 
             return browserInstances.get(newConfigId);
         }
-
-        // 浏览器类型没有变化，返回现有浏览器
-        long elapsed = System.currentTimeMillis() - methodStart;
-        logger.info("[getBrowser] Using existing browser with configId: {} (elapsed: {}ms)", currentConfig, elapsed);
-        return currentBrowser;
     }
 
     /**
@@ -1036,15 +1049,13 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
+        // 先检查是否已有有效 Page（快速路径，避免不必要的锁竞争）
         Page page = pageThreadLocal.get();
-        if (page == null || page.isClosed()) {
-            // 创建 Page 前先检查 Context，确保自定义配置被应用
-            BrowserContext context = getContext();
-            page = createPage(context);
-            pageThreadLocal.set(page);
+        if (page != null && !page.isClosed()) {
+            return page;
         }
-        
-        // 【关键】线程安全：使用锁保护 Page 创建/设置
+
+        // 【关键】统一在锁内创建 Page，避免锁外创建 + 锁内再创建导致资源泄漏
         synchronized (PAGE_LOCK) {
             page = pageThreadLocal.get();
             if (page == null || page.isClosed()) {
@@ -1075,25 +1086,20 @@ public class PlaywrightManager {
     }
 
     /**
-     * 重置所有自定义配置（核心：保证下一个场景默认不继承）
-     * 在创建 Context 后调用，确保场景隔离
+     * 统一清理所有 ThreadLocal 变量（防止线程复用时引用过期对象导致内存泄漏）
+     * 集中管理所有 16 个 ThreadLocal，避免遗漏
+     *
+     * @param clearContextAndPage 是否同时清理 Context 和 Page（true=全量清理，false=仅自定义配置）
      */
-    private static void resetCustomContextOptions() {
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for next scenario...");
-        
-        // 【关键】线程安全检查：确没有正在使用的 Context 才清除配置
-        BrowserContext existingContext = contextThreadLocal.get();
-        if (existingContext != null && !existingContext.browser().isConnected()) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, 
-                "Cannot reset custom options: Context is still in use by thread: {}. Clearing configuration anyway.", 
-                Thread.currentThread().getName());
-            // 继续清除，但记录警告
+    private static void cleanupThreadLocals(boolean clearContextAndPage) {
+        if (clearContextAndPage) {
+            // 清理核心资源 ThreadLocal
+            pageThreadLocal.remove();
+            contextThreadLocal.remove();
+            currentConfigId.remove();
         }
-        
-        // 重置 flag
+        // 始终清理自定义配置 ThreadLocal（12 个）
         customContextOptionsFlag.remove();
-        
-        // 重置所有自定义配置 ThreadLocal
         customStorageStatePath.remove();
         customLocale.remove();
         customTimezoneId.remove();
@@ -1106,7 +1112,26 @@ public class PlaywrightManager {
         customDeviceScaleFactor.remove();
         customViewportWidth.remove();
         customViewportHeight.remove();
-        
+    }
+
+    /**
+     * 重置所有自定义配置（核心：保证下一个场景默认不继承）
+     * 在创建 Context 后调用，确保场景隔离
+     */
+    private static void resetCustomContextOptions() {
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for next scenario...");
+
+        // 【关键】线程安全检查：确没有正在使用的 Context 才清除配置
+        BrowserContext existingContext = contextThreadLocal.get();
+        if (existingContext != null && !existingContext.browser().isConnected()) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                "Cannot reset custom options: Context is still in use by thread: {}. Clearing configuration anyway.",
+                Thread.currentThread().getName());
+        }
+
+        // 统一清理所有 ThreadLocal（含 Context/Page，Scenario 模式需要完全隔离）
+        cleanupThreadLocals(true);
+
         LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed");
     }
 
@@ -1121,19 +1146,8 @@ public class PlaywrightManager {
         // 保留 Session 相关配置
         Path preservedStorageStatePath = customStorageStatePath.get();
 
-        // 重置 flag 和所有自定义配置
-        customContextOptionsFlag.remove();
-        customLocale.remove();
-        customTimezoneId.remove();
-        customUserAgent.remove();
-        customPermissions.remove();
-        customIsMobile.remove();
-        customHasTouch.remove();
-        customColorScheme.remove();
-        customGeolocation.remove();
-        customDeviceScaleFactor.remove();
-        customViewportWidth.remove();
-        customViewportHeight.remove();
+        // 统一清理所有自定义配置 ThreadLocal（不清理 Context/Page/ConfigId）
+        cleanupThreadLocals(false);
 
         // 恢复 Session 相关配置
         if (preservedStorageStatePath != null) {
@@ -1233,15 +1247,18 @@ public class PlaywrightManager {
 
     /**
      * 创建新的 Context 和 Page
+     * 使用 getContext()/createPage() 确保自定义配置和稳定化流程被执行
      */
     public static void createNewContextAndPage() {
         closePage();
         closeContext();
 
-        BrowserContext context = createContext();
+        // 通过 getContext() 而非直接 createContext()，确保自定义配置（如 storageState）被正确应用
+        BrowserContext context = getContext();
         contextThreadLocal.set(context);
 
-        Page page = context.newPage();
+        // 通过 createPage() 而非直接 context.newPage()，确保页面稳定化流程被执行
+        Page page = createPage(context);
         pageThreadLocal.set(page);
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "New Context and Page created for thread: {}", Thread.currentThread().threadId());
@@ -1358,13 +1375,17 @@ public class PlaywrightManager {
         closePage();
         closeContext();
 
-        // 关闭所有浏览器实例
-        browserInstances.values().forEach(browser -> {
-            if (browser.isConnected()) {
-                browser.close();
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Browser instance closed");
+        // 关闭所有浏览器实例（每个 try-catch 独立保护，防止单个失败阻断后续清理）
+        for (Browser browser : new ArrayList<>(browserInstances.values())) {
+            if (browser != null && browser.isConnected()) {
+                try {
+                    browser.close();
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "Browser instance closed");
+                } catch (Exception e) {
+                    logger.warn("Error closing browser instance during cleanupAll: {}", e.getMessage());
+                }
             }
-        });
+        }
         browserInstances.clear();
 
         // 关闭所有 Playwright 实例
@@ -1378,7 +1399,9 @@ public class PlaywrightManager {
         });
         playwrightInstances.clear();
 
-        currentConfigId.remove();
+        // 统一清理所有 ThreadLocal（防止线程复用/线程池场景下的内存泄漏）
+        cleanupThreadLocals(true);
+
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
     }
 
@@ -1647,8 +1670,8 @@ public class PlaywrightManager {
 
     /**
      * 截图前页面稳定化（解决截图残留/底部重复问题）
-     * 处理固定定位元素、等待资源加载、禁用动画
-     * 逻辑内置，无需配置，兼顾性能与稳定性
+     * 滚动到页面顶部作为全页截图起点，确保截图一致性
+     * 注意：不做 fixed 元素转换（避免布局错乱），Playwright 全页截图已内置处理 fixed 元素
      */
     private static void stabilizeBeforeScreenshot(Page page) {
         try {
@@ -1815,52 +1838,6 @@ public class PlaywrightManager {
      */
     public static String getBrowserType() {
         return config().getBrowserType();
-    }
-
-    /**
-     * 检查是否需要重启浏览器
-     * 通过比较当前configId中的浏览器类型和期望的浏览器类型
-     *
-     * @return true 如果需要重启浏览器
-     */
-    private static boolean needsBrowserRestart() {
-        String configId = getCurrentConfigId();
-        logger.info("🔍 [needsBrowserRestart] Checking if browser restart needed...");
-        logger.info("   configId: {}", configId);
-        logger.info("   currentConfigId field: {}", currentConfigId.get());
-
-        if (configId == null) {
-            logger.warn("   configId is null, skipping restart check");
-            return false;
-        }
-
-        // 从configId中提取当前浏览器类型（格式：browserType_headless_channel）
-        String[] configIdParts = configId.split("_");
-        logger.info("   configId parts: {} (length: {})",
-            Arrays.toString(configIdParts), configIdParts.length);
-
-        if (configIdParts.length < 1) {
-            logger.warn("   Invalid configId format, skipping restart check");
-            return false;
-        }
-        String currentBrowserType = configIdParts[0];
-        logger.info("   Current browser type from configId: {}", currentBrowserType);
-
-        // 获取期望的浏览器类型（考虑override）
-        boolean hasOverride = BrowserOverrideManager.hasOverride();
-        String expectedBrowserType = getBrowserType();
-        logger.info("   Expected browser type: {} (hasOverride: {})",
-            expectedBrowserType, hasOverride);
-
-        // 如果类型不同，需要重启
-        if (!currentBrowserType.equalsIgnoreCase(expectedBrowserType)) {
-            logger.info(" [needsBrowserRestart] Browsers differ, needs restart: '{}' vs '{}'",
-                currentBrowserType, expectedBrowserType);
-            return true;
-        }
-
-        logger.info(" [needsBrowserRestart] Browsers match, no restart needed");
-        return false;
     }
 
     // ==================== 配置访问（通过 config() 代理到 PlaywrightConfigManager） ====================

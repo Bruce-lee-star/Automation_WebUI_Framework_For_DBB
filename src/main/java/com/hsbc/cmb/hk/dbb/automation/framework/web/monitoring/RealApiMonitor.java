@@ -161,7 +161,7 @@ public class RealApiMonitor {
          * RealApiMonitor.monitor(context)
          *     .api("/api/payment")
          *     .then(record -> {
-         *         System.out.println("Payment API: " + record.getResponseBody());
+         *         System.out.println("Payment API: " + record.getResponseBody());  // String 类型，直接用
          *     })
          *     .timeout(30)
          *     .start();
@@ -498,10 +498,10 @@ public class RealApiMonitor {
         }
     }
 
-    // ==================== 核心方法 2: getLast() - 获取最后记录 ====================
+    // ==================== 核心方法 2: getLast() / getAll() - 获取记录 ====================
     
     /**
-     * 获取指定 API 的最后一条记录
+     * 获取指定 API 的最后一条记录（非阻塞）
      * 
      * @param urlPattern URL 匹配模式
      * @return API 调用记录，没有则返回 null
@@ -519,6 +519,76 @@ public class RealApiMonitor {
     }
 
     /**
+     * 获取指定 API 的所有匹配记录（非阻塞）
+     * 
+     * 适用场景：
+     * - 分页请求：同一接口被调用多次（page=1, page=2, ...）
+     * - 重复请求：同一操作触发多次相同 API
+     * - 历史回溯：需要查看某 API 的完整调用序列
+     * 
+     * @param urlPattern URL 匹配模式
+     * @return 所有匹配记录的列表（按时间顺序，空的则返回空列表而非 null）
+     * 
+     * 示例：
+     * // 分页场景：获取所有 /api/list?page=* 的调用
+     * List<ApiCallRecord> pages = RealApiMonitor.getAll("/api/list");
+     * for (ApiCallRecord page : pages) {
+     *     String body = page.getResponseBody();
+     *     // 处理每一页的数据...
+     * }
+     * 
+     * // 查看某 API 被调用了几次
+     * int callCount = RealApiMonitor.getAll("/api/refresh").size();
+     */
+    public static List<ApiCallRecord> getAll(String urlPattern) {
+        String regex = toRegex(urlPattern);
+        List<ApiCallRecord> history = apiCallHistory.get();
+        List<ApiCallRecord> result = new ArrayList<>();
+        for (ApiCallRecord record : history) {
+            if (record.getUrl().matches(regex) || record.getUrl().contains(urlPattern)) {
+                result.add(record);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 获取指定 API 的所有匹配记录数（便捷方法，非阻塞）
+     * 
+     * @param urlPattern URL 匹配模式
+     * @return 匹配记录的数量
+     * 
+     * 示例：
+     * // 刷新 token 接口是否被调用过
+     * if (RealApiMonitor.getMatchCount("/api/auth/refresh") > 0) {
+     *     // 说明发生了 token 刷新
+     * }
+     */
+    public static int getMatchCount(String urlPattern) {
+        return getAll(urlPattern).size();
+    }
+
+    /**
+     * 获取指定 API 的所有响应体（非阻塞便捷方法）
+     * 
+     * @param urlPattern URL 匹配模式
+     * @return 响应体字符串列表
+     * 
+     * 示例：
+     * // 分页：获取每页数据
+     * List<String> pageBodies = RealApiMonitor.getAllBodies("/api/data/list");
+     * pageBodies.forEach(body -> System.out.println(body));
+     */
+    public static List<String> getAllBodies(String urlPattern) {
+        List<ApiCallRecord> records = getAll(urlPattern);
+        List<String> bodies = new ArrayList<>(records.size());
+        for (ApiCallRecord record : records) {
+            bodies.add(record.getResponseBody());  // responseBody 已是 String
+        }
+        return bodies;
+    }
+
+    /**
      * 等待目标 API 被捕获（阻塞式，解决 getLast/getLastBody 返回 null 的竞态问题）
      * 
      * @param urlPattern URL 匹配模式
@@ -528,7 +598,7 @@ public class RealApiMonitor {
      * 示例：
      * ApiCallRecord record = RealApiMonitor.waitForApi("/api/payment", 30);
      * if (record != null) {
-     *     String body = String.valueOf(record.getResponseBody());
+     *     String body = record.getResponseBody();
      * }
      */
     public static ApiCallRecord waitForApi(String urlPattern, int timeoutSeconds) {
@@ -574,8 +644,7 @@ public class RealApiMonitor {
     public static String waitForApiBody(String urlPattern, int timeoutSeconds) {
         ApiCallRecord record = waitForApi(urlPattern, timeoutSeconds);
         if (record == null) return null;
-        Object body = record.getResponseBody();
-        return body != null ? String.valueOf(body) : null;
+        return record.getResponseBody();
     }
 
     // ==================== 核心方法 5: JSON 快速取值 + 等待字段（企业级便捷操作）====================
@@ -663,7 +732,7 @@ public class RealApiMonitor {
             return null;
         }
         try {
-            Object body = record.getResponseBody();
+            String body = record.getResponseBody();
             if (body == null) return null;
 
             String bodyStr = body.toString();
@@ -747,6 +816,143 @@ public class RealApiMonitor {
         logger.warn("getJsonObject: expected Map but got {} for pattern='{}', jsonPath='{}'",
             raw.getClass().getSimpleName(), urlPattern, jsonPath);
         return null;
+    }
+
+    // ==================== 非阻塞便捷方法（条件性 API 场景） ====================
+    
+    /**
+     * 检查指定 API 是否已被捕获（非阻塞，立即返回）
+     * 
+     * 适用场景：某些 API 只在特定条件下才会被请求，
+     * 用阻塞的 waitForApi 等待不合适（可能永远不来导致超时浪费）
+     * 
+     * @param urlPattern URL 匹配模式
+     * @return true 表示至少有一条匹配记录
+     * 
+     * 示例：
+     * // 条件性检查：操作后判断是否触发了某 API
+     * page.click("#maybe-trigger-api-btn");
+     * if (RealApiMonitor.hasApiCaptured("/api/conditional")) {
+     *     // 触发了，处理响应
+     *     String body = RealApiMonitor.getLastBody("/api/conditional");
+     * } else {
+     *     // 没触发，走其他逻辑
+     * }
+     */
+    public static boolean hasApiCaptured(String urlPattern) {
+        return getLast(urlPattern) != null;
+    }
+
+    /**
+     * 从所有匹配的 API 记录中提取同一 JSON 字段（非阻塞，支持分页/多次请求场景）
+     * 
+     * 适用场景：
+     * - 分页请求：每次返回的数据结构相同，需要从每页中提取某个字段
+     * - 重复请求：同一接口多次调用，收集所有响应中的某个值
+     * - 列表聚合：统计多次 API 返回值的集合
+     * 
+     * @param urlPattern URL 匹配模式
+     * @param jsonPath JsonPath 表达式
+     * @return 每条匹配记录中该字段值的列表（提取失败的记录对应位置为 null）
+     * 
+     * 示例：
+     * // 分页：获取每页的总数
+     * List<Object> totalCounts = RealApiMonitor.getAllJsonValues("/api/list", "$.totalCount");
+     * int sum = 0;
+     * for (Object val : totalCounts) {
+     *     if (val instanceof Number) sum += ((Number) val).intValue();
+     * }
+     * 
+     * // 获取每次刷新 token 后的新 token 值
+     * List<String> tokens = RealApiMonitor.getAllJsonStrings("/api/auth/refresh", "$.data.token");
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> List<T> getAllJsonValues(String urlPattern, String jsonPath) {
+        List<ApiCallRecord> records = getAll(urlPattern);
+        List<T> values = new ArrayList<>(records.size());
+        for (ApiCallRecord record : records) {
+            try {
+                String body = record.getResponseBody();  // responseBody 已是 String
+                if (body == null) {
+                    values.add(null);
+                    continue;
+                }
+                String bodyStr = body.toString();
+                if (bodyStr.startsWith("[BINARY_DATA")) {
+                    values.add(null);
+                    continue;
+                }
+                T result = JsonPath.read(bodyStr, jsonPath);
+                values.add(result);
+            } catch (Exception e) {
+                logger.debug("getAllJsonValues: failed to extract '{}' from record {}: {}",
+                    jsonPath, record.getUrl(), e.getMessage());
+                values.add(null);
+            }
+        }
+        return values;
+    }
+
+    /**
+     * 类型安全版：从所有匹配记录中提取 String 字段
+     * 
+     * 示例：
+     * // 收集所有分页请求中的订单号
+     * List<String> orderIds = RealApiMonitor.getAllJsonStrings("/api/orders", "$.data.orderId");
+     */
+    public static List<String> getAllJsonStrings(String urlPattern, String jsonPath) {
+        List<Object> rawList = getAllJsonValues(urlPattern, jsonPath);
+        List<String> result = new ArrayList<>(rawList.size());
+        for (Object raw : rawList) {
+            result.add(safeCast(raw, String.class, urlPattern, jsonPath));
+        }
+        return result;
+    }
+
+    /**
+     * 类型安全版：从所有匹配记录中提取 Integer 字段
+     * 
+     * 示例：
+     * // 统计每页数据量
+     * List<Integer> pageSizeList = RealApiMonitor.getAllJsonInts("/api/list", "$.data.pageSize");
+     */
+    public static List<Integer> getAllJsonInts(String urlPattern, String jsonPath) {
+        List<Object> rawList = getAllJsonValues(urlPattern, jsonPath);
+        List<Integer> result = new ArrayList<>(rawList.size());
+        for (Object raw : rawList) {
+            result.add(safeCast(raw, Integer.class, urlPattern, jsonPath));
+        }
+        return result;
+    }
+
+    /** 从所有匹配记录中提取 Long 字段 */
+    public static List<Long> getAllJsonLongs(String urlPattern, String jsonPath) {
+        List<Object> rawList = getAllJsonValues(urlPattern, jsonPath);
+        List<Long> result = new ArrayList<>(rawList.size());
+        for (Object raw : rawList) {
+            result.add(safeCast(raw, Long.class, urlPattern, jsonPath));
+        }
+        return result;
+    }
+
+    /** 从所有匹配记录中提取 Double 字段 */
+    public static List<Double> getAllJsonDoubles(String urlPattern, String jsonPath) {
+        List<Object> rawList = getAllJsonValues(urlPattern, jsonPath);
+        List<Double> result = new ArrayList<>(rawList.size());
+        for (Object raw : rawList) {
+            result.add(safeCast(raw, Double.class, urlPattern, jsonPath));
+        }
+        return result;
+    }
+
+    /** 从所有匹配记录中提取 Boolean 字段 */
+    public static List<Boolean> getAllJsonBooleans(String urlPattern, String jsonPath) {
+        List<Object> rawList = getAllJsonValues(urlPattern, jsonPath);
+        List<Boolean> result = new ArrayList<>(rawList.size());
+        for (Object raw : rawList) {
+            result.add(safeCast(raw, Boolean.class, urlPattern, jsonPath));
+        }
+        return result;
     }
     
     /**
@@ -894,13 +1100,13 @@ public class RealApiMonitor {
             logger.debug("getLastBody returns null - no matching record found for: {}", urlPattern);
             return null;
         }
-        Object body = record.getResponseBody();
+        String body = record.getResponseBody();
         if (body == null) {
             logger.debug("getLastBody returns null - response body is empty/unreadable for: {}", urlPattern);
             // 尝试从原始 Response 对象重新读取（如果仍有效）
             body = attemptRereadBody(record);
         }
-        return body != null ? String.valueOf(body) : null;
+        return body;
     }
 
     /**
@@ -1495,7 +1701,7 @@ public class RealApiMonitor {
         private Object requestBody;
         private final int statusCode;
         private Map<String, String> responseHeaders;
-        private Object responseBody;
+        private String responseBody;  // response.text() 返回 String，二进制标记为 "[BINARY_DATA...]"
         private final boolean isMocked;
         
         // 延迟读取支持
@@ -1510,7 +1716,7 @@ public class RealApiMonitor {
         public ApiCallRecord(String requestId, String url, String method, long timestamp,
                            Map<String, String> requestHeaders, Object requestBody,
                            int statusCode, Map<String, String> responseHeaders,
-                           Object responseBody, boolean isMocked) {
+                           String responseBody, boolean isMocked) {
             this.requestId = requestId;
             this.url = url;
             this.method = method;
@@ -1548,7 +1754,7 @@ public class RealApiMonitor {
         public int getStatusCode() { return statusCode; }
         
         /** ⭐ 修复5：加锁防止并行场景下多线程同时读取 Playwright 响应流 */
-        public Object getResponseBody() {
+        public String getResponseBody() {
             synchronized (bodyLock) {
                 // ⭐ 如果回调中已经读取过（无论成功与否），直接返回结果
                 if (bodyRead) {

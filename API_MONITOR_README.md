@@ -1,6 +1,6 @@
-# API 监控工具包使用指南（详细版 v3.0）
+# API 监控工具包使用指南（详细版 v3.1）
 
-> **最后更新：** 2026-05-07 | **基于代码版本：** ThreadLocal 线程安全重构 + JSON 便捷方法 + 企业级重试/诊断
+> **最后更新：** 2026-05-08 | **基于代码版本：** v3.0 基础上新增 非阻塞条件检查 + 多记录查询（分页/重复请求支持）
 
 ---
 
@@ -12,11 +12,12 @@
   - [2.2 线程安全机制](#22-线程安全机制)
   - [2.3 停止机制（两种自动 + 手动）](#23-停止机制)
   - [2.4 MonitorBuilder 链式配置](#24-monitorbuilder-链式配置)
-  - [2.5 核心查询方法](#25-核心查询方法)
+  - [2.5 核心查询方法（单条 + 多记录）](#25-核心查询单条--多记录)
   - [2.6 JSON 快速取值（企业级便捷操作）](#26-json-快速取值企业级便捷操作)
-  - [2.7 阻塞等待方法（解决竞态问题）](#27-阻塞等待方法解决竞态问题)
-  - [2.8 生命周期管理](#28-生命周期管理)
-  - [2.9 完整示例（8 个场景）](#29-完整示例)
+  - [2.7 阻塞等待 vs 非阻塞条件检查（何时用哪种）](#27-阻塞等待-vs-非阻塞条件检查何时用哪种)
+  - [2.8 多记录 JSON 提取（分页/重复请求场景）](#28-多记录-json-提取分页重复请求场景)
+  - [2.9 生命周期管理](#29-生命周期管理)
+  - [2.10 完整示例（10 个场景）](#210-完整示例10-个场景)
 - [三、ApiRequestModifier - 请求修改器](#三apirequestmodifier---请求修改器)
 - [四、ApiMonitorAndMockManager - Mock 管理](#四api monitorandmockmanager---mock-管理)
 - [五、最佳实践与注意事项](#五最佳实践与注意事项)
@@ -28,7 +29,7 @@
 
 | 类名 | 功能 | 使用场景 |
 |------|------|----------|
-| **RealApiMonitor** | API 监控（非阻塞、线程安全） | 监控页面触发的 API 调用，支持 JSON 字段提取、阻塞等待 |
+| **RealApiMonitor** | API 监控（非阻塞、线程安全） | 监控页面触发的 API 调用，支持 JSON 字段提取、阻塞等待、多记录查询 |
 | **ApiRequestModifier** | 请求修改 | 修改请求的 Body、Headers、URL 等 |
 | **ApiMonitorAndMockManager** | Mock 管理 | Mock API 响应 |
 
@@ -46,9 +47,24 @@ RealApiMonitor
     │       ├── .then(callback)                                   // 匹配回调
     │       ├── .stopOnFirstMatch()                               // 首次匹配即停
     │       └── .start()                                          // 异步启动
-    ├── getJsonValue / getJsonString / ...                        // JSON 字段提取
-    ├── waitForJsonValue / waitForJsonEquals / ...                // 阻塞等待字段
-    ├── getLast / getLastBody / getHistory                        // 查询历史
+    │
+    ├── 【非阻塞 - 单条查询】
+    │   ├── getLast(pattern) / getLastBody(pattern)               // 最后一条记录/响应体
+    │   ├── hasApiCaptured(pattern)                               // 是否已捕获（条件判断）
+    │   └── getJsonValue / getJsonString / ...                    // 最后一条记录的 JSON 字段
+    │
+    ├── 【非阻塞 - 多记录查询（分页/重复请求）】
+    │   ├── getAll(pattern)                                       // 所有匹配记录列表
+    │   ├── getMatchCount(pattern)                                // 匹配数量
+    │   ├── getAllBodies(pattern)                                 // 所有响应体列表
+    │   ├── getAllJsonValues(pattern, jsonPath)                   // 每条记录的某字段值
+    │   └── getAllJsonStrings / getAllJsonInts / ...              // 类型安全多记录提取
+    │
+    ├── 【阻塞等待 - 确定性场景】
+    │   ├── waitForApi / waitForApiBody                           // 等待 API 被捕获
+    │   ├── waitForJsonValue / waitForJsonString / ...            // 等待字段有值
+    │   └── waitForJsonEquals / waitForJsonValueEquals            // 等待字段等于期望值
+    │
     └── stopMonitoring / resetForNextScenario / forceCleanAll     // 生命周期管理
 
 ApiCallRecord (数据类)
@@ -71,6 +87,8 @@ ApiCallRecord (数据类)
 - **Serenity 集成**：自动将监控结果写入 Serenity BDD 报告（跨线程缓存机制）
 - **JSON 提取**：内置 JsonPath 支持，提供类型安全便捷方法（String/Integer/Long/Double/Boolean/List/Map）
 - **阻塞等待**：`waitForApi()` / `waitForJsonValue()` 解决 `getLast()` 返回 null 的竞态问题
+- **非阻塞条件检查**：`hasApiCaptured()` 适用于"可能触发、也可能不触发"的条件性 API 场景（v3.1 新增）
+- **多记录查询**：`getAll()` / `getAllJsonValues()` 支持分页、重复请求等多次调用场景（v3.1 新增）
 - **超时增强诊断**：超时时输出已捕获的 API 列表，快速定位"为什么没抓到"
 - **响应体同步读取**：在 `onResponse` 回调中立即读取 body，避免流关闭后丢失
 
@@ -175,9 +193,9 @@ ApiCallRecord result = builder.waitForResponse(30);  // 最多等30秒
 | `start()` | - | void | 异步启动监控（立即返回） |
 | `waitForResponse(timeoutSec)` | int | ApiCallRecord | 启动后阻塞等待首条匹配（超时返回 null） |
 
-### 2.5 核心查询方法
+### 2.5 核心查询方法（单条 + 多记录）
 
-#### `getLast(urlPattern)` — 获取最后一条匹配记录
+#### `getLast(urlPattern)` — 获取最后一条匹配记录（非阻塞）
 
 ```java
 ApiCallRecord record = RealApiMonitor.getLast("/api/login");
@@ -194,7 +212,59 @@ if (record != null) {
 - 支持正则表达式：如果 pattern 包含 `.*` `\d` `?` `+` 等正则语法，自动按正则匹配
 - 否则自动转换为正则：`".*pattern.*"`（特殊字符会被 `Pattern.quote` 正确转义）
 
-#### `getLastBody(urlPattern)` — 获取响应体字符串
+#### `getAll(urlPattern)` — 获取所有匹配记录（非阻塞，v3.1 新增）
+
+> **核心使用场景：分页请求、重复调用**
+
+```java
+// 分页场景：获取所有 /api/list?page=* 的调用
+List<ApiCallRecord> pages = RealApiMonitor.getAll("/api/data/list");
+for (ApiCallRecord pageRecord : pages) {
+    String body = String.valueOf(pageRecord.getResponseBody());
+    // 处理每一页的数据...
+}
+
+// 查看某 API 被调用了几次
+int callCount = RealApiMonitor.getAll("/api/auth/refresh").size();
+```
+
+#### `hasApiCaptured(urlPattern)` — 条件检查（非阻塞，v3.1 新增）
+
+> **核心使用场景：条件性 API —— 某些操作后可能触发、也可能不触发的 API**
+
+```java
+// 条件性检查：操作后判断是否触发了某 API
+page.click("#maybe-trigger-api-btn");
+
+if (RealApiMonitor.hasApiCaptured("/api/conditional")) {
+    // ✅ 触发了，处理响应
+    String body = RealApiMonitor.getLastBody("/api/conditional");
+    System.out.println("Conditional API was called: " + body);
+} else {
+    // ❌ 没触发，走其他逻辑（不会浪费时间阻塞等待！）
+    System.out.println("Conditional API was NOT called - skipping");
+}
+```
+
+**对比 `waitForApi()`：**
+| 方法 | 阻塞？ | 适用场景 | 没捕获到时 |
+|------|--------|----------|-----------|
+| `hasApiCaptured(pattern)` | **非阻塞** | 条件性API（可能不触发） | 立即返回 false |
+| `waitForApi(pattern, timeout)` | **阻塞** | 确定性API（一定会触发） | 等到超时返回 null |
+| `getLast(pattern)` | **非阻塞** | 已确认已触发，只需取值 | 返回 null |
+
+#### `getMatchCount(urlPattern)` / `getAllBodies(urlPattern)` — 便捷方法
+
+```java
+// 快速查看调用次数
+int refreshCount = RealApiMonitor.getMatchCount("/api/auth/refresh");
+
+// 获取所有响应体
+List<String> bodies = RealApiMonitor.getAllBodies("/api/data/list");
+bodies.forEach(System.out::println);
+```
+
+#### `getLastBody(urlPattern)` — 获取最后一条的响应体字符串
 
 ```java
 String body = RealApiMonitor.getLastBody("/api/login");
@@ -286,10 +356,53 @@ Map<String, Object> user = RealApiMonitor.getJsonObject("/api/user", "$.data.use
 - 空 `Collection`
 - 注意：`Integer(0)` / `Boolean(false)` / `Double(0.0)` **不是空值**！
 
-### 2.7 阻塞等待方法（解决竞态问题）
+### 2.7 阻塞等待 vs 非阻塞条件检查（v3.1 新增章节）
 
-> 场景：点击按钮 → 触发异步 API → `getLast()` 可能返回 null（API 还没回来）
-> 解决方案：用 `waitFor*` 方法轮询等待，直到有值或超时
+> **核心问题：什么时候该用阻塞等待？什么时候不该用？**
+
+#### 决策树
+
+```
+这个 API 是否一定会被触发？
+│
+├─ 是 → 确定性场景 → 用 waitFor* 阻塞等待
+│   例：点击支付按钮 → 支付API一定会来
+│
+└─ 否 → 条件性场景 → 用 hasApiCaptured / getAll 非阻塞检查
+    例：某些条件下才请求的 API、可能不触发的可选接口
+```
+
+#### 场景对照表
+
+| 场景类型 | 示例 | 推荐方法 | 原因 |
+|----------|------|----------|------|
+| **确定性**：操作后一定触发 | 点击支付→支付API | `waitForApi()` / `waitForJsonValue()` | 阻塞等到返回，避免竞态null |
+| **条件性**：特定条件才触发 | 勾选选项→才请求某接口 | `hasApiCaptured()` + `if/else` | 不阻塞，根据是否触发走不同逻辑 |
+| **多次请求**：分页/轮询 | 列表翻页→每页一次请求 | `getAll()` / `getAllJsonValues()` | 获取全部记录，逐条处理 |
+| **不确定次数**：可能0-N次 | 自动刷新token | `getMatchCount()` + `getAllBodies()` | 先查次数，再决定处理方式 |
+
+#### 非阻塞模式示例：条件性 API
+
+```java
+// ❌ 不好的做法：对条件性 API 用阻塞等待 —— 可能白等30秒！
+ApiCallRecord r = RealApiMonitor.waitForApi("/api/maybe-called", 30); // 浪费时间
+
+// ✅ 正确做法：非阻塞检查
+page.click("#conditional-action");
+
+if (RealApiMonitor.hasApiCaptured("/api/maybe-called")) {
+    // 触发了，正常处理
+    String body = RealApiMonitor.getLastBody("/api/maybe-called");
+    // ...
+} else {
+    // 没触发，走其他逻辑
+    // 没有浪费任何等待时间！
+}
+```
+
+#### 阻塞等待方法参考（仅适用于确定性场景）
+
+> 以下方法仅在 **确定 API 一定会触发** 时使用。如果 API 可能不触发，请用上方的非阻塞模式。
 
 #### `waitForApi(urlPattern, timeoutSeconds)` — 等待 API 被捕获
 
@@ -358,7 +471,56 @@ matched = RealApiMonitor.waitForJsonValueEquals(
     "/api/user", "$.name", "John", 10);
 ```
 
-### 2.8 生命周期管理
+### 2.8 多记录 JSON 提取（分页/重复请求场景，v3.1 新增）
+
+> 当同一 API 被调用多次（分页、轮询、重复请求），需要从**每次响应**中提取字段时使用。
+
+#### `getAllJsonValues(pattern, jsonPath)` — 从所有匹配记录中提取同一字段
+
+```java
+// 分页：获取每页返回的 totalCount
+List<Object> totalCounts = RealApiMonitor.getAllJsonValues("/api/data/list", "$.data.totalCount");
+int sum = 0;
+for (Object val : totalCounts) {
+    if (val instanceof Number) sum += ((Number) val).intValue();
+}
+System.out.println("Total records across all pages: " + sum);
+
+// 收集每次刷新 token 后的新 token 值
+List<String> tokens = RealApiMonitor.getAllJsonStrings("/api/auth/refresh", "$.data.token");
+tokens.forEach(t -> System.out.println("Refreshed token: " + t));
+```
+
+#### 类型安全多记录方法
+
+```java
+// 每页的数据量
+List<Integer> pageSizes = RealApiMonitor.getAllJsonInts("/api/data/list", "$.data.pageSize");
+
+// 每次请求的耗时
+List<Long> durations = RealApiMonitor.getAllJsonLongs("/api/report", "$.data.durationMs");
+
+// 每次操作的成功状态
+List<Boolean> successes = RealApiMonitor.getAllJsonBooleans("/api/batch", "$.success");
+
+// 每次请求的金额
+List<Double> amounts = RealApiMonitor.getAllJsonDoubles("/api/payment", "$.data.amount");
+```
+
+#### 多记录方法完整列表
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `getAllJsonValues(pattern, jsonPath)` | `List\<T\>` | 泛型：每条记录的某字段原始值（失败为 null） |
+| `getAllJsonStrings(pattern, jsonPath)` | `List\<String\>` | 类型安全 String 列表 |
+| `getAllJsonInts(pattern, jsonPath)` | `List\<Integer\>` | 类型安全 Integer 列表 |
+| `getAllJsonLongs(pattern, jsonPath)` | `List\<Long\>` | 类型安全 Long 列表 |
+| `getAllJsonDoubles(pattern, jsonPath)` | `List\<Double\>` | 类型安全 Double 列表 |
+| `getAllJsonBooleans(pattern, jsonPath)` | `List\<Boolean\>` | 类型安全 Boolean 列表 |
+
+> **注意：** 这些方法都是 **非阻塞** 的，立即返回当前已捕获的所有匹配记录。如需等待新记录到达，请配合 `waitForApi()` 使用。
+
+### 2.9 生命周期管理
 
 #### 自动生命周期（PlaywrightListener 集成）
 
@@ -401,7 +563,7 @@ testSuiteFinished()     → RealApiMonitor.forceCleanAll()
 2. `resetForNextScenario()` — 重置场景
 3. `clearTargetHost()` — 清除 Host 过滤
 
-### 2.9 完整示例
+### 2.10 完整示例（10 个场景）
 
 #### 示例 1：基础监控（自动停止）
 
@@ -590,6 +752,76 @@ List<String> items = RealApiMonitor.getJsonList("/api/data/fetch", "$.data.items
 assertFalse(items.isEmpty());
 ```
 
+#### 示例 9：条件性 API（非阻塞检查，v3.1 新增）
+
+```java
+@Test
+public void testConditionalApi() {
+    RealApiMonitor.monitor(context)
+        .api("/api/data/fetch")
+        .timeout(30)
+        .start();
+
+    // 执行一个可能触发、也可能不触发 API 的操作
+    page.click("#optional-feature-toggle");
+
+    // ✅ 非阻塞条件判断 —— 不用傻等！
+    if (RealApiMonitor.hasApiCaptured("/api/data/fetch")) {
+        // API 被触发了，处理数据
+        String body = RealApiMonitor.getLastBody("/api/data/fetch");
+        assertNotNull(body);
+        System.out.println("Feature was ON, API returned data");
+    } else {
+        // API 没触发，走其他分支
+        System.out.println("Feature was OFF, no API call expected");
+    }
+
+    // 对比：如果用 waitForApi，当 feature OFF 时会白等30秒才超时
+}
+```
+
+#### 示例 10：分页请求（多记录查询 + 多记录 JSON 提取，v3.1 新增）
+
+```java
+@Test
+public void testPaginationDataCollection() {
+    RealApiMonitor.monitor(context)
+        .timeout(60)       // 分页可能需要较长时间
+        .start();
+
+    // 触发分页加载（比如滚动到底部自动加载更多）
+    page.scrollToBottom();   // 触发 page=1
+    page.waitFor(1000);
+    page.scrollToBottom();   // 触发 page=2
+    page.waitFor(1000);
+
+    // 获取所有分页请求的记录
+    List<ApiCallRecord> pageRecords = RealApiMonitor.getAll("/api/data/list?page=");
+    assertEquals("Should have captured 2 page requests", 2, pageRecords.size());
+
+    // 方式1：遍历每条记录的响应体
+    for (int i = 0; i < pageRecords.size(); i++) {
+        String body = String.valueOf(pageRecords.get(i).getResponseBody());
+        System.out.println("Page " + (i+1) + " response: " + body);
+    }
+
+    // 方式2：用 getAllJsonValues 批量提取某字段（更简洁）
+    // 假设每页返回 {"data":{"items":[...],"totalCount":N}}
+    List<Integer> counts = RealApiMonitor.getAllJsonInts(
+        "/api/data/list?page=", "$.data.totalCount");
+
+    int totalItems = 0;
+    for (Integer count : counts) {
+        if (count != null) totalItems += count;
+    }
+    System.out.println("Total items across all pages: " + totalItems);
+
+    // 方式3：获取所有响应体列表
+    List<String> bodies = RealApiMonitor.getAllBodies("/api/data/list?page=");
+    assertEquals(2, bodies.size());
+}
+```
+
 ---
 
 ## 三、ApiRequestModifier - 请求修改器
@@ -693,15 +925,37 @@ doSomething();
 // 不需要调用 stopMonitoring()
 ```
 
-**3. 使用 waitFor* 解决竞态问题**
+**3. 使用 waitFor* 解决竞态问题（仅限确定性场景）**
 ```java
 // ❌ getLast 可能返回 null（API 还没返回）
 ApiCallRecord r = RealApiMonitor.getLast("/api/slow");
 assertNotNull(r);  // 可能失败！
 
-// ✅ 阻塞等待
+// ✅ 阻塞等待 —— 适用于确定会触发的 API
 ApiCallRecord r = RealApiMonitor.waitForApi("/api/slow", 30);
 assertNotNull(r);  // 要么有值，要么超时明确
+```
+
+**3b. 使用非阻塞检查处理条件性API（v3.1）**
+```java
+// ❌ 对可能不触发的 API 用 waitFor → 白等超时
+ApiCallRecord r = RealApiMonitor.waitForApi("/api/maybe-called", 30);
+
+// ✅ 非阻塞条件判断
+if (RealApiMonitor.hasApiCaptured("/api/maybe-called")) {
+    // 触发了，正常处理
+} else {
+    // 没触发，走其他逻辑
+}
+```
+
+**3c. 使用 getAll 处理分页/多次请求（v3.1）**
+```java
+// ✅ 获取所有分页记录
+List<ApiCallRecord> pages = RealApiMonitor.getAll("/api/list?page=");
+for (ApiCallRecord page : pages) {
+    // 逐条处理每页数据...
+}
 ```
 
 **4. 使用类型安全的 JSON 方法**
@@ -733,6 +987,8 @@ public void tearDown() {
 | Body 读取 | 响应体在 onResponse 回调中**同步一次性读取**，之后通过 `getResponseBody()` 直接返回（带 synchronized 锁防并发） |
 | 二进制响应 | 非 UTF-8 文本响应自动标记为 `[BINARY_DATA base64=...]`，JSON 方法对其返回 null |
 | 报告幂等 | `flushPendingReport()` 多次调用是幂等的（reportPending 标志保证只写一次） |
+| 阻塞 vs 非阻塞 | `waitFor*` 仅用于确定性API（一定会触发）；条件性 API 用 `hasApiCaptured()` + `getAll()` （v3.1） |
+| 多记录安全 | `getAll()` 返回新 ArrayList（非原列表视图），可安全修改；`getAllJsonValues()` 提取失败的位置返回 null |
 
 ---
 
@@ -744,8 +1000,12 @@ public void tearDown() {
 |------|------|--------|------|
 | `monitor(context)` | BrowserContext | MonitorBuilder | Context 版监控入口 |
 | `monitor(page)` | Page | MonitorBuilder | Page 版监控入口 |
-| `getLast(pattern)` | String | ApiCallRecord | 最后一条匹配记录（子串/正则） |
+| `getLast(pattern)` | String | ApiCallRecord | **最后**一条匹配记录（非阻塞，子串/正则） |
+| `getAll(pattern)` | String | List\<ApiCallRecord\> | **所有**匹配记录（非阻塞，v3.1 新增，分页场景） |
+| `getMatchCount(pattern)` | String | int | 匹配记录数量（非阻塞便捷方法，v3.1 新增） |
+| `hasApiCaptured(pattern)` | String | boolean | 是否已捕获（非阻塞条件检查，v3.1 新增） |
 | `getLastBody(pattern)` | String | String | 最后一条的响应体文本 |
+| `getAllBodies(pattern)` | String | List\<String\> | 所有匹配响应体（v3.1 新增） |
 | `getHistory()` | - | List\<ApiCallRecord\> | 所有记录（不可修改快照） |
 | `clearHistory()` | - | void | 清空历史 + 重置标志 |
 | `clearExpectations()` | - | void | 清除状态码期望 |
@@ -766,6 +1026,12 @@ public void tearDown() {
 | `getJsonBoolean(pattern, jsonPath)` | String, String | Boolean | → Boolean 类型 |
 | `getJsonList(pattern, jsonPath)` | String, String | List\<E\> | → List 类型 |
 | `getJsonObject(pattern, jsonPath)` | String, String | Map\<String,Object\> | → Map 类型 |
+| `getAllJsonValues(pattern, jsonPath)` | String, String | List\<T\> | 所有记录的某字段值（v3.1 新增） |
+| `getAllJsonStrings(pattern, jsonPath)` | String, String | List\<String\> | 所有记录的 String 字段（v3.1 新增） |
+| `getAllJsonInts(pattern, jsonPath)` | String, String | List\<Integer\> | 所有记录的 Integer 字段（v3.1 新增） |
+| `getAllJsonLongs(pattern, jsonPath)` | String, String | List\<Long\> | 所有记录的 Long 字段（v3.1 新增） |
+| `getAllJsonDoubles(pattern, jsonPath)` | String, String | List\<Double\> | 所有记录的 Double 字段（v3.1 新增） |
+| `getAllJsonBooleans(pattern, jsonPath)` | String, String | List\<Boolean\> | 所有记录的 Boolean 字段（v3.1 新增） |
 | `waitForJsonValue(pattern, path, timeout)` | String,String,int | T | 阻塞等待 JSON 字段有值 |
 | `waitForJsonString(pattern, path, timeout)` | String,String,int | String | → 等待 String |
 | `waitForJsonInt(pattern, path, timeout)` | String,String,int | Integer | → 等待 Integer |

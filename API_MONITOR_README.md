@@ -1,594 +1,823 @@
-# API 监控工具包使用指南
+# API 监控工具包使用指南（详细版 v3.0）
 
-提供了三个核心工具类，用于 WebUI 自动化测试中的 API 监控、请求修改和 Mock 管理。
-
-## 📦 核心类概览
-
-| 类名 | 功能 | 使用场景 |
-|------|------|----------|
-| **RealApiMonitor** | API 监控（非阻塞） | 监控页面触发的 API 调用 |
-| **ApiRequestModifier** | 请求修改 | 修改请求的 Body、Headers、URL 等 |
-| **ApiMonitorAndMockManager** | Mock 管理 | Mock API 响应 |
+> **最后更新：** 2026-05-07 | **基于代码版本：** ThreadLocal 线程安全重构 + JSON 便捷方法 + 企业级重试/诊断
 
 ---
 
-## 1️⃣ RealApiMonitor - API 监控工具
+## 目录
 
-### 核心特性
-- ✅ **非阻塞**：所有方法都是异步的，不影响测试流程
-- ✅ **辅助工具**：用于在 WebUI 测试过程中监控 API 调用
-- ✅ **自动捕获**：启动监控后，自动捕获后续 API
-- ✅ **自动停止**：捕获到所有目标 API 后自动停止监控，无需手动干预
-- ✅ **超时保护**：无新 API 调用时超时自动停止
-- ✅ **实时验证**：支持对期望状态码进行实时校验
-- ✅ **Serenity 集成**：自动将结果记录到 Serenity 报告
+- [一、核心类概览](#一核心类概览)
+- [二、RealApiMonitor - API 监控工具](#二realapimonitor---api-监控工具)
+  - [2.1 核心特性与架构设计](#21-核心特性与架构设计)
+  - [2.2 线程安全机制](#22-线程安全机制)
+  - [2.3 停止机制（两种自动 + 手动）](#23-停止机制)
+  - [2.4 MonitorBuilder 链式配置](#24-monitorbuilder-链式配置)
+  - [2.5 核心查询方法](#25-核心查询方法)
+  - [2.6 JSON 快速取值（企业级便捷操作）](#26-json-快速取值企业级便捷操作)
+  - [2.7 阻塞等待方法（解决竞态问题）](#27-阻塞等待方法解决竞态问题)
+  - [2.8 生命周期管理](#28-生命周期管理)
+  - [2.9 完整示例（8 个场景）](#29-完整示例)
+- [三、ApiRequestModifier - 请求修改器](#三apirequestmodifier---请求修改器)
+- [四、ApiMonitorAndMockManager - Mock 管理](#四api monitorandmockmanager---mock-管理)
+- [五、最佳实践与注意事项](#五最佳实践与注意事项)
+- [六、完整 API 参考](#六完整-api-参考)
 
-### 停止机制说明
+---
 
-RealApiMonitor 提供**两种自动停止机制**：
+## 一、核心类概览
 
-#### 🎯 机制一：目标 API 全部捕获后自动停止（推荐）
+| 类名 | 功能 | 使用场景 |
+|------|------|----------|
+| **RealApiMonitor** | API 监控（非阻塞、线程安全） | 监控页面触发的 API 调用，支持 JSON 字段提取、阻塞等待 |
+| **ApiRequestModifier** | 请求修改 | 修改请求的 Body、Headers、URL 等 |
+| **ApiMonitorAndMockManager** | Mock 管理 | Mock API 响应 |
 
-当通过 `.api()` 方法指定了目标 API 时，监控系统会追踪每个目标 API 是否已被捕获。一旦**所有目标 API 都被捕获**，监控会立即自动停止，无需等待超时。
+### 类关系
 
 ```
-启动监控 → 捕获目标API #1 → 捕获目标API #2 → ... → 所有目标已捕获 → 自动停止 ✓
+PlaywrightListener (测试生命周期钩子)
+    ├── testFinished() → RealApiMonitor.resetForNextScenario()   // 每个场景结束自动清理
+    └── testSuiteFinished() → RealApiMonitor.forceCleanAll()      // 整个 Suite 结束终极清理
+
+RealApiMonitor
+    ├── monitor(context/page) → MonitorBuilder                    // 入口：创建监控构建器
+    │       ├── .api(pattern, status)                             // 配置目标 API
+    │       ├── .timeout(seconds)                                 // 超时
+    │       ├── .then(callback)                                   // 匹配回调
+    │       ├── .stopOnFirstMatch()                               // 首次匹配即停
+    │       └── .start()                                          // 异步启动
+    ├── getJsonValue / getJsonString / ...                        // JSON 字段提取
+    ├── waitForJsonValue / waitForJsonEquals / ...                // 阻塞等待字段
+    ├── getLast / getLastBody / getHistory                        // 查询历史
+    └── stopMonitoring / resetForNextScenario / forceCleanAll     // 生命周期管理
+
+ApiCallRecord (数据类)
+    ├── getUrl / getMethod / getStatusCode                       // 基本信息
+    ├── getResponseBody (synchronized, 防竞态)                    // 响应体（延迟读取）
+    ├── getRequestHeaders / getResponseHeaders                   // 头信息
+    └── isMocked                                                 // Mock 标记
+```
+
+---
+
+## 二、RealApiMonitor - API 监控工具
+
+### 2.1 核心特性与架构设计
+
+- **非阻塞异步**：`start()` 立即返回，API 捕获在后台线程进行，不阻塞测试流程
+- **自动捕获**：通过 Playwright `onResponse()` 监听器自动捕获所有网络请求
+- **自动停止**：两种触发条件（目标全捕获 / 超时无新调用），无需手动干预
+- **实时验证**：捕获到目标 API 时立即校验状态码（Hamcrest assertThat）
+- **Serenity 集成**：自动将监控结果写入 Serenity BDD 报告（跨线程缓存机制）
+- **JSON 提取**：内置 JsonPath 支持，提供类型安全便捷方法（String/Integer/Long/Double/Boolean/List/Map）
+- **阻塞等待**：`waitForApi()` / `waitForJsonValue()` 解决 `getLast()` 返回 null 的竞态问题
+- **超时增强诊断**：超时时输出已捕获的 API 列表，快速定位"为什么没抓到"
+- **响应体同步读取**：在 `onResponse` 回调中立即读取 body，避免流关闭后丢失
+
+### 2.2 线程安全机制（并行测试支持）
+
+> 这是 v3.0 的核心重构。所有核心存储从 static 全局变量改为 **ThreadLocal**。
+
+| 数据 | 存储类型 | 说明 |
+|------|----------|------|
+| `apiCallHistory` | `ThreadLocal<CopyOnWriteArrayList>` | 每线程独立的 API 调用历史 |
+| `apiExpectations` | `ThreadLocal<ConcurrentHashMap>` | 每线程独立的状态码期望 |
+| `hasLoggedToSerenty` | `ThreadLocal<Boolean>` | 每线程独立的报告写入标志 |
+| `matchedTargetApiCount` | `ThreadLocal<AtomicInteger>` | 每线程独立的目标匹配计数 |
+| `allTargetApisCaptured` | `ThreadLocal<Boolean>` | 每线程独立的全量捕获标志 |
+| `targetApiPatterns` | `ThreadLocal<List>` | 每线程独立的目标 URL 模式列表 |
+| `monitoringFailure` | `ThreadLocal<AssertionError>` | 每线程独立的失败异常 |
+| `contextListeners` / `pageListeners` | `static ConcurrentHashMap` | 以 BrowserContext/Page 实例为 key，天然隔离不同线程 |
+| `reportPending` / `pendingReport*` | `static volatile` | 跨线程报告缓存桥（异步线程→主线程传递） |
+
+**关键设计决策：**
+- `contextListeners` / `pageListeners` 保持 static —— 因为 BrowserContext/Page 实例本身就是线程绑定的
+- `reportPending` 保持 volatile —— 用于跨线程通信（AsyncStop 线程写、主线程读）
+- 所有 `resetForNextScenario()` 调用使用 `ThreadLocal.remove()` 而非 `set(null)` —— 防止线程池复用时旧数据污染
+
+### 2.3 停止机制
+
+#### 机制一：目标 API 全部捕获后自动停止（推荐）
+
+当通过 `.api()` 指定了目标 API 后，系统追踪每个目标是否被捕获。**所有目标都命中后立即停止**。
+
+```
+启动监控 → 捕获目标API #1 ✅ → 捕获目标API #2 ✅ → ... → 全部捕获 → stopMonitoring() ✓
 ```
 
 ```java
-// 示例：监控3个目标API，全部捕获后自动停止
 RealApiMonitor.monitor(context)
-    .api("/api/login", 200)       // 目标1: 登录接口
-    .api("/api/userInfo", 200)     // 目标2: 用户信息
-    .api("/api/permissions", 200)  // 目标3: 权限接口
-    .timeout(60)                   // 最大等待时间（兜底）
-    .start();                      // 启动监控
+    .api("/api/login", 200)        // 目标1: 登录接口，期望状态码 200
+    .api("/api/userInfo", 200)      // 目标2: 用户信息
+    .api("/api/permissions", 200)   // 目标3: 权限接口
+    .timeout(60)                     // 兜底超时
+    .start();                        // 异步启动，立即返回
 
-// 执行操作触发API...
+// 执行操作触发 API...
 loginPage.login("user", "pass");
 
-// 无需手动停止！当3个API全部被捕获后，系统自动:
+// 无需手动停止！3 个 API 全部捕获后系统自动：
 // 1. 标记 allTargetApisCaptured = true
 // 2. 调用 stopMonitoring()
-// 3. 将结果记录到 Serenity 报告
+// 3. 将结果记录到 Serenity 报告（或缓存待主线程 flush）
 ```
 
-#### ⏱️ 机制二：超时自动停止（兜底）
+#### 机制二：超时自动停止（兜底）
 
-如果在 `timeout()` 指定的时间内没有新的 API 调用产生，监控也会自动停止。这确保了即使某些 API 未被捕获，监控也不会永久运行。
+后台定时器每秒检查是否有新 API 调用。超过 `timeout()` 时间无新调用则自动停止。
 
 ```
-启动监控 → 有API调用(重置计时器) → 无新API → 等待... → 超时到达 → 自动停止
+启动监控 → 有API(重置计时器) → 有API(重置计时器) → 无新API... → 超时到达 → 自动停止
 ```
 
-### 核心方法
+#### 机制三：首次匹配即停（`.stopOnFirstMatch()`）
 
-#### `monitor().start()` - 异步监控 API
+配合 `.then(callback)` 使用，适合"等一个 API 就够了"的场景：
+
 ```java
-// 在执行操作前启动监控
 RealApiMonitor.monitor(context)
-    .api("/api/login", 200)      // 监控特定 API，期望状态码 200
-    .api("/api/user", 200)        // 可同时监控多个 API
-    .timeout(30)                  // 超过 timeout 时间无新API则自动停止（兜底）
-    .start();                     // 异步启动，立即返回
-
-// 执行操作... 所有目标API捕获后自动停止！
-loginButton.click();
-
-// 查询捕获的 API
-ApiCallRecord record = RealApiMonitor.getLast("/api/login");
+    .api("/api/payment")
+    .then(record -> {
+        System.out.println("Payment: " + record.getResponseBody());
+    })
+    .stopOnFirstMatch()   // 捕获到第一个匹配就停止
+    .timeout(30)
+    .start();
 ```
 
-#### `getLast()` - 获取最后一条记录
+### 2.4 MonitorBuilder 链式配置
+
+```java
+// 创建监控构建器
+MonitorBuilder builder = RealApiMonitor.monitor(context);  // 或 monitor(page)
+
+builder
+    .api("/api/login", 200)           // 目标API + 期望状态码（0=不验证）
+    .api("/api/user")                  // 只监控不验证状态码
+    .timeout(30)                        // 兜底超时秒数（0=无限）
+    .then(record -> { ... })            // 匹配时的回调
+    .stopOnFirstMatch()                 // 首次匹配即停
+    .start();                           // 异步启动
+
+// start() 返回后可继续用 waitForResponse() 阻塞等待
+ApiCallRecord result = builder.waitForResponse(30);  // 最多等30秒
+```
+
+**MonitorBuilder API：**
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `api(pattern)` | String | Builder | 添加目标 API（不限状态码） |
+| `api(pattern, status)` | String, int | Builder | 添加目标 API + 期望状态码 |
+| `timeout(seconds)` | int | Builder | 兜底超时时间（秒），0=无限 |
+| `then(callback)` | Consumer\<ApiCallRecord\> | Builder | 匹配到目标 API 时执行回调 |
+| `stopOnFirstMatch()` | - | Builder | 首次匹配任一目标后自动停止 |
+| `start()` | - | void | 异步启动监控（立即返回） |
+| `waitForResponse(timeoutSec)` | int | ApiCallRecord | 启动后阻塞等待首条匹配（超时返回 null） |
+
+### 2.5 核心查询方法
+
+#### `getLast(urlPattern)` — 获取最后一条匹配记录
+
 ```java
 ApiCallRecord record = RealApiMonitor.getLast("/api/login");
 if (record != null) {
-    String url = record.getUrl();
-    int status = record.getStatusCode();
-    String body = String.valueOf(record.getResponseBody());
+    String url = record.getUrl();          // 完整 URL
+    String method = record.getMethod();     // GET / POST / PUT ...
+    int status = record.getStatusCode();    // 200, 404, 500 ...
+    Object body = record.getResponseBody(); // 响应体（Object 类型）
 }
 ```
 
-#### `getLastBody()` - 获取响应体
+**URL 匹配规则：**
+- 支持子串匹配：`"/api/login"` 会匹配 `https://host/api/login?token=xxx`
+- 支持正则表达式：如果 pattern 包含 `.*` `\d` `?` `+` 等正则语法，自动按正则匹配
+- 否则自动转换为正则：`".*pattern.*"`（特殊字符会被 `Pattern.quote` 正确转义）
+
+#### `getLastBody(urlPattern)` — 获取响应体字符串
+
 ```java
 String body = RealApiMonitor.getLastBody("/api/login");
+// 返回 null 如果没有匹配记录或响应体为空
 ```
 
-#### `getHistory()` - 获取所有记录
+#### `getHistory()` — 获取所有记录
+
 ```java
 List<ApiCallRecord> history = RealApiMonitor.getHistory();
+// 返回不可修改列表快照（UnmodifiableList）
+for (ApiCallRecord r : history) {
+    System.out.printf("%s %s -> %d%n", r.getMethod(), simplifyUrl(r.getUrl()), r.getStatusCode());
+}
 ```
 
-#### `clearHistory()` - 清空历史记录
+#### `clearHistory()` / `clearExpectations()` — 清理历史和期望
+
 ```java
-RealApiMonitor.clearHistory();
+RealApiMonitor.clearHistory();      // 清空调用历史 + 重置统计标志
+RealApiMonitor.clearExpectations(); // 清除状态码期望
+// 注意：不清理监听器引用（由 stopMonitoring / resetForNextScenario 负责）
 ```
 
-#### `setTargetHost()` - 设置目标 Host
+#### `setTargetHost(host)` / `clearTargetHost()` — Host 过滤
+
 ```java
-// 只监控指定 host 的 API
+// 只监控特定 host 的 API（其他 host 的请求直接跳过）
 RealApiMonitor.setTargetHost("api.example.com");
+// ...
+RealApiMonitor.clearTargetHost();  // 清除过滤
 ```
 
-### ApiCallRecord 字段说明
+### 2.6 JSON 快速取值（企业级便捷操作）
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `url` | String | 请求 URL |
-| `method` | String | HTTP 方法（GET/POST/PUT/DELETE等） |
-| `statusCode` | int | 响应状态码 |
-| `timestamp` | long | 时间戳 |
-| `requestHeaders` | Map | 请求头 |
-| `responseHeaders` | Map | 响应头 |
-| `responseBody` | Object | 响应体（延迟读取） |
-| `isMocked` | boolean | 是否为 Mock 数据 |
+> 基于 **json-path:2.9.0** 实现。从已捕获的 API 响应中提取 JSON 字段值。
 
-### 完整示例
+#### 泛型基础版 `getJsonValue()`
+
+```java
+// 返回 Object（实际类型取决于 JSON 内容）
+Object token = RealApiMonitor.getJsonValue("/api/login", "$.data.token");
+Object userId = RealApiMonitor.getJsonValue("/api/user", "$.data.id");
+
+// ⚠️ JsonPath 返回类型取决于 JSON 内容：
+//   "string"  → String
+//   123        → Integer
+//   3.14       → Double
+//   true/false → Boolean
+//   [...]      → List<...>
+//   {...}      → LinkedHashMap
+```
+
+**常用 JsonPath 表达式：**
+
+| 表达式 | 含义 | 示例 |
+|--------|------|------|
+| `$.data.token` | 取 data 对象的 token 字段 | `"eyJhbGciOi..."` |
+| `$.data.user.name` | 嵌套对象 | `"John Doe"` |
+| `$[0].id` | 数组第一个元素的 id | `"order-001"` |
+| `$.items[*].price` | 数组所有元素的价格 | `[99.9, 199.9]` |
+| `$.data.list.length()` | 数组长度（json-path 内置函数） | `5` |
+
+#### 类型安全便捷方法（推荐使用）
+
+```java
+String token  = RealApiMonitor.getJsonString("/api/login", "$.data.token");     // → String
+Integer id    = RealApiMonitor.getJsonInt("/api/user", "$.data.id");              // → Integer
+Long ts       = RealApiMonitor.getJsonLong("/api/order", "$.data.timestamp");     // → Long
+Double amount = RealApiMonitor.getJsonDouble("/api/pay", "$.data.amount");         // → Double
+Boolean ok    = RealApiMonitor.getJsonBoolean("/api/submit", "$.data.success");    // → Boolean
+
+List<Object> items  = RealApiMonitor.getJsonList("/api/items", "$.data.items");    // → List<E>
+Map<String, Object> user = RealApiMonitor.getJsonObject("/api/user", "$.data.user"); // → Map<String,Object>
+```
+
+**类型转换规则（`safeCast` 内部逻辑）：**
+- `Number` 子类自动转换：Integer → Long / Double 无损转换
+- 非 Number 类型尝试 `parseInt` / `parseLong` / `parseDouble`
+- Boolean 尝试 `parseBoolean`
+- List 兼容 Iterable 接口（处理 json-path 内部 JSONArray 等非标准实现）
+- 转换失败返回 null 并记录 warn 日志
+
+**空值判断（`isJsonValueEmpty`）：**
+以下情况判定为"空"，不会误判合法值：
+- Java `null`
+- JSON `null`（字符串 "null"）
+- 空 `""` 字符串
+- 空 `Collection`
+- 注意：`Integer(0)` / `Boolean(false)` / `Double(0.0)` **不是空值**！
+
+### 2.7 阻塞等待方法（解决竞态问题）
+
+> 场景：点击按钮 → 触发异步 API → `getLast()` 可能返回 null（API 还没回来）
+> 解决方案：用 `waitFor*` 方法轮询等待，直到有值或超时
+
+#### `waitForApi(urlPattern, timeoutSeconds)` — 等待 API 被捕获
+
+```java
+// 阻塞等待直到 /api/payment 被捕获（最多 30 秒）
+ApiCallRecord record = RealApiMonitor.waitForApi("/api/payment", 30);
+if (record != null) {
+    System.out.println("Payment API captured: " + record.getStatusCode());
+} else {
+    throw new AssertionError("Payment API not received within 30s!");
+}
+```
+
+**超时诊断输出（帮助排查）：**
+```
+WARN  waitForApi TIMEOUT after 30s for pattern='/api/payment'. Captured 12/12 APIs:
+  [1] POST https://api.example.com/api/auth/refresh (status=200)
+  [2] GET  https://cdn.example.com/static/app.js (status=200)
+  [3] POST https://api.example.com/api/user/info (status=200)
+  ...
+```
+
+#### `waitForApiBody(urlPattern, timeoutSeconds)` — 等待并返回响应体
+
+```java
+String body = RealApiMonitor.waitForApiBody("/api/payment", 30);
+// body = {"orderId":"ORD-001","amount":99.9,"status":"SUCCESS"}
+```
+
+#### `waitForJsonValue()` 系列 — 等待 JSON 字段有值
+
+```java
+// 等待支付接口返回 orderId（泛型版）
+Object orderId = RealApiMonitor.waitForJsonValue("/api/payment", "$.data.orderId", 30);
+
+// 类型安全版（推荐）
+String name = RealApiMonitor.waitForJsonString("/api/user", "$.data.name", 30);
+Integer count = RealApiMonitor.waitForJsonInt("/api/list", "$.totalCount", 15);
+Long ts = RealApiMonitor.waitForJsonLong("/api/order", "$.timestamp", 10);
+Double price = RealApiMonitor.waitForJsonDouble("/api/item", "$.data.price", 20);
+Boolean success = RealApiMonitor.waitForJsonBoolean("/api/submit", "$.success", 10);
+```
+
+#### `waitForJsonEquals()` — 等待字段等于期望值（字符串比较）
+
+```java
+// 等待状态变为 SUCCESS
+boolean matched = RealApiMonitor.waitForJsonEquals(
+    "/api/order", "$.data.status", "SUCCESS", 30);
+assertThat(matched, is(true));
+```
+
+#### `waitForJsonValueEquals()` — 等待字段等于期望值（泛型 equals 比较）
+
+```java
+// 数字精确匹配（不需要转字符串！）
+boolean matched = RealApiMonitor.waitForJsonValueEquals(
+    "/api/status", "$.code", 200, 10);
+
+// 布尔匹配
+matched = RealApiMonitor.waitForJsonValueEquals(
+    "/api/submit", "$.success", true, 10);
+
+// 字符串匹配
+matched = RealApiMonitor.waitForJsonValueEquals(
+    "/api/user", "$.name", "John", 10);
+```
+
+### 2.8 生命周期管理
+
+#### 自动生命周期（PlaywrightListener 集成）
+
+```
+testStarted()          → （无需手动操作）
+    ↓
+[用户代码] monitor().start() → 执行操作
+    ↓
+stepFailed/testFinished → PlaywrightListener.flushPendingApiMonitorReport()
+                          → 异步线程缓存的报告刷新到 Serenity
+    ↓
+testFinished(TestOutcome) → RealApiMonitor.resetForNextScenario()
+                            → offResponse 移除监听器
+                            → ThreadLocal.remove() 清理
+                            → 清理报告缓存
+    ↓
+testSuiteFinished()     → RealApiMonitor.forceCleanAll()
+                            → stopMonitoring() + resetForNextScenario() + clearTargetHost()
+```
+
+#### 手动生命周期方法
+
+| 方法 | 用途 | 何时调用 |
+|------|------|----------|
+| `stopMonitoring()` | 停止当前监控并写报告 | 需要提前停止时 |
+| `logResults()` | 将结果写入 Serenity 报告 | 通常不需要（stopMonitoring 已包含） |
+| `resetForNextScenario()` | 重置场景状态（offResponse + remove） | 场景切换时（PlaywrightListener 自动调用） |
+| `forceCleanAll()` | 终极清场（stop + reset + clearHost） | Suite 结束或异常恢复 |
+| `flushPendingReport()` | 刷新异步缓存报告到 Serenity | 主线程回调点（PlaywrightListener 自动调用） |
+
+**`resetForNextScenario()` 详细行为：**
+1. 遍历所有已注册的 `contextListeners` / `pageListeners`，逐个调用 `offResponse(handler)`
+2. 清空 `reportPending` 缓存
+3. 清空 `contextMonitoringStopped` / `pageMonitoringStopped`
+4. 清空 `contextListeners` / `pageListeners` 引用
+5. 对所有 ThreadLocal 调用 `remove()`（不是 `set(null)`！）
+
+**`forceCleanAll()` 详细行为：**
+1. `stopMonitoring()` — 停止监控
+2. `resetForNextScenario()` — 重置场景
+3. `clearTargetHost()` — 清除 Host 过滤
+
+### 2.9 完整示例
 
 #### 示例 1：基础监控（自动停止）
+
 ```java
-// 1. 导航到页面
-loginPage.navigateTo(currentUrl);
+@Test
+public void testLoginCapturesApi() {
+    loginPage.navigateTo(currentUrl);
 
-// 2. 启动 API 监控（在点击按钮前）- 捕获到目标API后自动停止！
-BrowserContext context = loginPage.getContext();
-RealApiMonitor.monitor(context)
-    .api("lastLoginTime", 200)   // 目标API: 期望状态码200
-    .timeout(30)                  // 兜底超时：30秒无新API则停止
-    .start();                     // 异步启动，立即返回
+    BrowserContext ctx = loginPage.getContext();
+    RealApiMonitor.monitor(ctx)
+        .api("lastLoginTime", 200)
+        .timeout(30)
+        .start();
 
-// 3. 执行操作触发 API（无需手动停止监控）
-loginPage.userNameIpt.type("user");
-loginPage.passwordIpt.type("password");
-loginPage.loginBtn.click();
+    loginPage.userNameIpt.type("user");
+    loginPage.passwordIpt.type("password");
+    loginPage.loginBtn.click();
 
-// 4. 验证结果 - 目标API已被自动捕获并记录
-ApiCallRecord record = RealApiMonitor.getLast("lastLoginTime");
-assertNotNull("Should capture API", record);
-assertEquals("Status should be 200", 200, record.getStatusCode());
+    ApiCallRecord record = RealApiMonitor.getLast("lastLoginTime");
+    assertNotNull("Should capture API", record);
+    assertEquals(200, record.getStatusCode());
+}
 ```
 
-#### 示例 2：多目标 API 监控（全部捕获后自动停止）
+#### 示例 2：多目标 API 监控
+
 ```java
-// 场景：登录后需要等待多个接口返回
-RealApiMonitor.monitor(context)
-    .api("/api/auth/login", 200)      // 目标1: 登录认证
-    .api("/api/user/profile", 200)    // 目标2: 用户资料
-    .api("/api/user/permissions", 200)// 目标3: 权限数据
-    .timeout(60)                      // 兜底超时60秒
-    .start();
+@Test
+public void testMultiApiCapture() {
+    RealApiMonitor.monitor(context)
+        .api("/api/auth/login", 200)
+        .api("/api/user/profile", 200)
+        .api("/api/user/permissions", 200)
+        .timeout(60)
+        .start();
 
-// 执行登录操作
-loginPage.login("username", "password");
+    loginPage.login("username", "password");
 
-// 系统会在3个API全部捕获后自动停止，或60秒超时后停止
-
-// 验证所有目标API都被捕获
-assertNotNull(RealApiMonitor.getLast("/api/auth/login"));
-assertNotNull(RealApiMonitor.getLast("/api/user/profile"));
-assertNotNull(RealApiMonitor.getLast("/api/user/permissions"));
+    assertNotNull(RealApiMonitor.getLast("/api/auth/login"));
+    assertNotNull(RealApiMonitor.getLast("/api/user/profile"));
+    assertNotNull(RealApiMonitor.getLast("/api/user/permissions"));
+}
 ```
 
 #### 示例 3：只监控不验证状态码
+
 ```java
-// 只关注是否调用了某个API，不关心状态码
-RealApiMonitor.monitor(context)
-    .api("/api/analytics/track")     // 不指定状态码 = 不验证
+RealApiMonitor.monitor(page)
+    .api("/api/analytics/track")    // 不指定状态码 = 不校验
     .timeout(15)
     .start();
 
 page.click(".track-button");
 
 ApiCallRecord record = RealApiMonitor.getLast("/api/analytics/track");
-assertNotNull("Analytics should be tracked", record);
+assertNotNull(record);
+```
+
+#### 示例 4：JSON 字段提取
+
+```java
+@Test
+public void testExtractTokenFromLoginResponse() {
+    RealApiMonitor.monitor(context)
+        .api("/api/auth/token", 200)
+        .timeout(15)
+        .start();
+
+    loginPage.login("admin", "password123");
+
+    // 方式1：类型安全获取 String
+    String token = RealApiMonitor.getJsonString("/api/auth/token", "$.data.accessToken");
+    assertNotNull(token);
+    assertTrue(token.startsWith("ey"));  // JWT 格式检查
+
+    // 方式2：嵌套对象
+    Map<String, Object> userData = RealApiMonitor.getJsonObject("/api/auth/token", "$.data.user");
+    assertEquals("admin", userData.get("username"));
+
+    // 方式3：数字字段
+    Integer expiresIn = RealApiMonitor.getJsonInt("/api/auth/token", "$.data.expiresIn");
+    assertTrue(expiresIn > 0);
+
+    // 方式4：布尔字段
+    Boolean mfaEnabled = RealApiMonitor.getJsonBoolean("/api/auth/token", "$.data.mfaEnabled");
+}
+```
+
+#### 示例 5：阻塞等待 API + JSON 字段
+
+```java
+@Test
+public void testWaitForPaymentOrder() {
+    RealApiMonitor.monitor(context)
+        .api("/api/payment/create")
+        .timeout(60)
+        .start();
+
+    paymentPage.enterAmount("100.00");
+    paymentPage.confirmBtn.click();
+
+    // 等待支付 API 返回，然后提取 orderId
+    String orderId = RealApiMonitor.waitForJsonString(
+        "/api/payment/create", "$.data.orderId", 30);
+    assertNotNull("Should get order ID within 30s", orderId);
+
+    // 等待金额字段等于期望值
+    boolean amountOk = RealApiMonitor.waitForJsonValueEquals(
+        "/api/payment/create", "$.data.amount", 100.00, 10);
+    assertThat(amountOk, is(true));
+}
+```
+
+#### 示例 6：回调 + 首次匹配即停
+
+```java
+@Test
+public void testCallbackOnFirstMatch() {
+    final AtomicReference<String> paymentRef = new AtomicReference<>();
+
+    RealApiMonitor.monitor(context)
+        .api("/api/payment/process")
+        .then(record -> {
+            // 匹配到支付 API 时立即执行
+            paymentRef.set(String.valueOf(record.getResponseBody()));
+            logger.info("Payment callback fired! Status={}", record.getStatusCode());
+        })
+        .stopOnFirstMatch()  // 收到一个就停
+        .timeout(30)
+        .start();
+
+    page.click("#pay-now-button");
+
+    // 也可以用 waitForResponse 阻塞等
+    ApiCallRecord result = RealApiMonitor.monitor(context)
+        .api("/api/payment/process").timeout(30).start()
+        .waitForResponse(30);
+}
+```
+
+#### 示例 7：组合使用（监控 + 修改 + 验证）
+
+```java
+@Test
+public void testMonitorModifyAndVerify() {
+    // 1. 启动监控
+    RealApiMonitor.monitor(context)
+        .api("/api/orders", 200)
+        .timeout(30)
+        .start();
+
+    // 2. 修改请求参数
+    ApiRequestModifier modification = ApiRequestModifier.create()
+        .modifyBodyField("userId", "TEST-USER-001")
+        .modifyHeader("x-test-mode", "true");
+
+    ApiRequestModifier.modifyRequest(context, "/api/orders", modification);
+
+    // 3. 执行操作
+    orderPage.submitOrder();
+
+    // 4. 验证结果
+    ApiCallRecord record = RealApiMonitor.waitForApi("/api/orders", 30);
+    assertNotNull(record);
+    assertEquals(200, record.getStatusCode());
+
+    // 5. 从响应中提取订单号
+    String orderNo = RealApiMonitor.getJsonString("/api/orders", "$.data.orderNo");
+    assertThat(orderNo, startsWith("ORD"));
+}
+```
+
+#### 示例 8：Page 级别监控（替代 Context）
+
+```java
+// Page 版本适用于单页面场景
+RealApiMonitor.monitor(page)
+    .api("/api/data/fetch")
+    .timeout(20)
+    .start();
+
+page.click("#fetch-data-btn");
+
+// 同样可以使用所有查询/JSON 方法
+List<String> items = RealApiMonitor.getJsonList("/api/data/fetch", "$.data.items");
+assertFalse(items.isEmpty());
 ```
 
 ---
 
-## 2️⃣ ApiRequestModifier - 请求修改器
+## 三、ApiRequestModifier - 请求修改器
 
 ### 核心特性
-- ✅ **链式调用**：所有方法返回 `this`，支持链式操作
-- ✅ **完全控制**：可修改 Body、Headers、QueryParams、Method、URL
-- ✅ **灵活修改**：支持字段级修改和整体替换
+- **链式调用**：所有方法返回 this
+- **完全控制**：Body / Headers / QueryParams / Method / URL / Host
+- **灵活修改**：字段级修改和整体替换
 
-### 核心方法
+### 创建实例
 
-#### 创建实例
 ```java
-ApiRequestModifier modification = ApiRequestModifier.create();
+ApiRequestModifier mod = ApiRequestModifier.create();
 ```
 
-#### Body 操作
+### Body 操作
+
 ```java
-// 完全替换 body
-modification.body("{\"userId\":\"123\"}");
-
-// 删除整个 body
-modification.removeBody();
-
-// 修改单个字段（支持嵌套路径）
-modification.modifyBodyField("userId", "123");
-modification.modifyBodyField("user.name", "John");
-modification.modifyBodyField("items[0].id", "item1");
-
-// 批量修改字段
-Map<String, Object> fields = new HashMap<>();
-fields.put("name", "John");
-fields.put("age", 25);
-modification.modifyBodyFields(fields);
-
-// 删除单个字段
-modification.removeBodyField("password");
-
-// 批量删除字段
-modification.removeBodyFields("password", "token", "secret");
+mod.body("{\"userId\":\"123\"}");              // 替换整个 body
+mod.removeBody();                              // 删除整个 body
+mod.modifyBodyField("userId", "123");           // 修改单个字段
+mod.modifyBodyField("user.name", "John");       // 嵌套路径
+mod.modifyBodyField("items[0].id", "item1");    // 数组元素路径
+mod.removeBodyField("password");               // 删除单个字段
 ```
 
-#### Header 操作
+### Header 操作
+
 ```java
-// 修改单个 header
-modification.modifyHeader("Authorization", "Bearer token123");
-
-// 批量修改 headers
-Map<String, String> headers = new HashMap<>();
-headers.put("Content-Type", "application/json");
-headers.put("x-custom-header", "value");
-modification.modifyHeaders(headers);
-
-// 删除单个 header
-modification.removeHeader("Cookie");
-
-// 批量删除 headers
-modification.removeHeaders("Cookie", "Set-Cookie");
+mod.modifyHeader("Authorization", "Bearer token");
+mod.removeHeader("Cookie");
 ```
 
-#### QueryParam 操作
+### 其他操作
+
 ```java
-// 修改单个参数
-modification.modifyQueryParam("page", "1");
-
-// 批量修改参数
-Map<String, String> params = new HashMap<>();
-params.put("page", "1");
-params.put("size", "10");
-modification.modifyQueryParams(params);
-
-// 删除单个参数
-modification.removeQueryParam("debug");
-
-// 批量删除参数
-modification.removeQueryParams("debug", "test");
-```
-
-#### Method 操作
-```java
-modification.method("POST");
-modification.method("GET");
-modification.method("PUT");
-modification.method("DELETE");
-```
-
-#### URL 操作
-```java
-// 完全替换 URL
-modification.url("https://new-api.example.com/path");
-
-// 只替换 host（保留路径和查询参数）
-modification.host("test-api.example.com");
-```
-
-#### 清理方法
-```java
-// 清空所有修改配置
-modification.clear();
+mod.method("POST");
+mod.url("https://new-api.example.com/path");   // 完全替换 URL
+mod.host("test-api.example.com");              // 只替换 Host（保留路径）
+mod.modifyQueryParam("page", "1");             // Query 参数
+mod.clear();                                    // 清空所有配置
 ```
 
 ### 应用修改
 
 ```java
-BrowserContext context = page.getContext();
-
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .modifyBodyField("userId", "123")
-    .modifyHeader("x-custom", "value")
-    .host("test-api.example.com");
-
-// 应用修改
 RequestResponseStore store = ApiRequestModifier.modifyRequest(
-    context, 
-    "/api/users", 
-    modification
-);
-
-// 执行操作
-page.click("button");
-
-// 获取最后一次请求/响应
-RequestResponseInfo lastInfo = store.getLast();
-System.out.println("Request: " + lastInfo.request.url);
-System.out.println("Response Status: " + lastInfo.response.status);
-```
-
-### 使用回调
-
-```java
-RequestResponseStore store = ApiRequestModifier.modifyRequest(
-    context, 
-    "/api/login", 
+    context,
+    "/api/users",
     modification,
-    info -> {
-        System.out.println("Request URL: " + info.request.url);
-        System.out.println("Response Status: " + info.response.status);
-        System.out.println("Response Body: " + info.response.body);
-    }
+    info -> System.out.println("Status: " + info.response.status)  // 可选回调
 );
-```
-
-### 完整示例
-
-#### 场景 1：切换环境（生产→测试）
-```java
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .host("test-api.example.com");
-
-ApiRequestModifier.modifyRequest(context, "/api/users", modification);
-```
-
-#### 场景 2：修改请求参数 + 切换服务器
-```java
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .host("test-server.com")
-    .modifyBodyField("environment", "test")
-    .modifyHeader("x-test-mode", "true");
-
-ApiRequestModifier.modifyRequest(context, "/api/login", modification);
-```
-
-#### 场景 3：完全重写请求
-```java
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .url("https://mock-server.com/api/v2/endpoint")
-    .method("POST")
-    .body("{\"mock\":true}")
-    .modifyHeader("Content-Type", "application/json");
-
-ApiRequestModifier.modifyRequest(context, "/api/old", modification);
 ```
 
 ---
 
-## 3️⃣ ApiMonitorAndMockManager - Mock 管理
+## 四、ApiMonitorAndMockManager - Mock 管理
 
-### 核心特性
-- ✅ **灵活 Mock**：支持静态响应和动态响应
-- ✅ **条件匹配**：支持 URL、Method、Body 条件匹配
-- ✅ **链式规则**：支持多个 Mock 规则链式配置
-
-### 核心方法
-
-#### 创建 Mock 规则
 ```java
 MockBuilder mock = MockBuilder.create()
-    .url("/api/login")
-    .method("POST")
-    .status(200)
-    .body("{\"token\":\"mock-token\",\"userId\":\"123\"}");
-```
-
-#### 应用 Mock
-```java
-BrowserContext context = page.getContext();
-ApiMonitorAndMockManager.mock(context, mock);
-```
-
-### 完整示例
-
-#### 场景 1：Mock 登录 API
-```java
-MockBuilder loginMock = MockBuilder.create()
     .url("/api/auth/login")
     .method("POST")
     .status(200)
-    .body("{\"success\":true,\"token\":\"mock-jwt-token\"}")
+    .body("{\"success\":true,\"token\":\"mock-jwt\"}")
     .header("Content-Type", "application/json");
 
-ApiMonitorAndMockManager.mock(context, loginMock);
+ApiMonitorAndMockManager.mock(context, mock);
 
-// 执行登录操作
-loginPage.login("user", "password");
-```
-
-#### 场景 2：动态 Mock 响应
-```java
-MockBuilder userMock = MockBuilder.create()
-    .url("/api/users/(.*)")  // 支持正则
+// 动态 Mock
+MockBuilder dynamicMock = MockBuilder.create()
+    .url("/api/users/(.*)")    // 正则匹配
     .method("GET")
     .dynamicResponse(request -> {
-        String userId = extractUserIdFromUrl(request.url);
-        return "{\"id\":\"" + userId + "\",\"name\":\"Test User\"}";
+        return "{\"id\":\"" + extractUserId(request.url) + "\"}";
     });
 
-ApiMonitorAndMockManager.mock(context, userMock);
+ApiMonitorAndMockManager.mock(context, dynamicMock);
 ```
 
 ---
 
-## 🎯 最佳实践
+## 五、最佳实践与注意事项
 
-### 1. RealApiMonitor 最佳实践
+### RealApiMonitor 最佳实践
 
-✅ **在操作前启动监控**
+**1. 在操作前启动监控**
 ```java
-// ✅ 正确：先启动监控
-RealApiMonitor.monitor(context).api("/api/login", 200).start();
-loginButton.click();
+// ✅ 先启动
+RealApiMonitor.monitor(ctx).api("/api/x", 200).start();
+button.click();
 
-// ❌ 错误：操作后才启动监控
-loginButton.click();
-RealApiMonitor.monitor(context).api("/api/login", 200).start();  // 太晚了！
+// ❌ 太晚
+button.click();
+RealApiMonitor.monitor(ctx).api("/api/x", 200).start();
 ```
 
-✅ **利用自动停止机制（无需手动 stopMonitoring）**
+**2. 利用自动停止机制（无需手动 stop）**
 ```java
-// ✅ 推荐：配置目标API + 超时，系统自动管理生命周期
-RealApiMonitor.monitor(context)
-    .api("/api/login", 200)
-    .api("/api/userInfo", 200)
-    .timeout(30)       // 兜底超时
-    .start();          // 所有目标捕获或超时后自动停止
-
-loginPage.login("user", "pass");
-// 无需调用 stopMonitoring()！
+RealApiMonitor.monitor(ctx).api(...).timeout(30).start();
+doSomething();
+// 不需要调用 stopMonitoring()
 ```
 
-✅ **设置合理的超时时间**
+**3. 使用 waitFor* 解决竞态问题**
 ```java
-RealApiMonitor.monitor(context)
-    .api("/api/login", 200)
-    .timeout(30)  // 根据实际 API 响应时间调整（兜底保护）
-    .start();
+// ❌ getLast 可能返回 null（API 还没返回）
+ApiCallRecord r = RealApiMonitor.getLast("/api/slow");
+assertNotNull(r);  // 可能失败！
+
+// ✅ 阻塞等待
+ApiCallRecord r = RealApiMonitor.waitForApi("/api/slow", 30);
+assertNotNull(r);  // 要么有值，要么超时明确
 ```
 
-✅ **测试后清理状态**（同一测试类中多个 Scenario 时）
+**4. 使用类型安全的 JSON 方法**
+```java
+// ✅ 推荐：直接拿到 Integer
+Integer count = RealApiMonitor.getJsonInt("/api/list", "$.totalCount");
+
+// ❌ 不推荐：需要手动强转
+Object raw = RealApiMonitor.getJsonValue("/api/list", "$.totalCount");
+Integer count = ((Number) raw).intValue();
+```
+
+**5. 测试间清理（多 Scenario 时）**
 ```java
 @After
 public void tearDown() {
-    RealApiMonitor.stopMonitoring();   // 停止监控
-    RealApiMonitor.clearHistory();     // 清空历史
-    RealApiMonitor.resetForNextScenario();  // 重置Serenity记录标志
+    RealApiMonitor.resetForNextScenario();  // PlaywrightListener 已自动调用，但手动加也无害
 }
 ```
 
-⚠️ **手动停止的场景**
-```java
-// 如果需要在特定时机提前停止（如验证中间状态）
-RealApiMonitor.stopMonitoring();
-List<ApiCallRecord> partial = RealApiMonitor.getHistory();
-```
+### 注意事项
 
-### 2. ApiRequestModifier 最佳实践
-
-✅ **使用 Factory 方法**
-```java
-// ✅ 推荐
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .modifyBodyField("userId", "123");
-
-// ❌ 不推荐
-ApiRequestModifier modification = new ApiRequestModifier()
-    .modifyBodyField("userId", "123");
-```
-
-✅ **复用 Modifier**
-```java
-ApiRequestModifier baseModification = ApiRequestModifier.create()
-    .modifyHeader("Authorization", "Bearer token");
-
-// 复用并添加新配置
-ApiRequestModifier.modifyRequest(context, "/api/1", baseModification);
-
-baseModification.modifyBodyField("field", "value");
-ApiRequestModifier.modifyRequest(context, "/api/2", baseModification);
-
-// 清空后复用
-baseModification.clear()
-    .modifyBodyField("newField", "newValue");
-ApiRequestModifier.modifyRequest(context, "/api/3", baseModification);
-```
-
-### 3. 组合使用
-
-✅ **监控 + 修改**
-```java
-// 启动监控
-RealApiMonitor.monitor(context)
-    .api("/api/login", 200)
-    .start();
-
-// 修改请求
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .modifyBodyField("username", "testuser");
-
-ApiRequestModifier.modifyRequest(context, "/api/login", modification);
-
-// 执行操作
-loginButton.click();
-
-// 验证结果
-ApiCallRecord record = RealApiMonitor.getLast("/api/login");
-assertNotNull("Should capture modified API", record);
-```
+| 项目 | 说明 |
+|------|------|
+| 线程安全 | 所有 public 方法都是线程安全的（ThreadLocal 隔离） |
+| 内存管理 | 大量 API 调用会占用内存，建议定期 `clearHistory()` 或依赖场景自动清理 |
+| 静态资源过滤 | `.js/.css/.png/.gif/.woff` 等静态资源和 `/api/` 以外的请求默认被过滤 |
+| Host 过滤 | 设置 targetHost 后只监控该 host |
+| Body 读取 | 响应体在 onResponse 回调中**同步一次性读取**，之后通过 `getResponseBody()` 直接返回（带 synchronized 锁防并发） |
+| 二进制响应 | 非 UTF-8 文本响应自动标记为 `[BINARY_DATA base64=...]`，JSON 方法对其返回 null |
+| 报告幂等 | `flushPendingReport()` 多次调用是幂等的（reportPending 标志保证只写一次） |
 
 ---
 
-## ⚠️ 注意事项
+## 六、完整 API 参考
 
-### 1. RealApiMonitor 注意事项
-- ❌ **不要在阻塞方法中使用**：所有方法都是异步的
-- ⚠️ **线程安全**：所有方法都是线程安全的
-- ⚠️ **内存管理**：大量 API 调用可能占用内存，建议定期 `clearHistory()`
-
-### 2. ApiRequestModifier 注意事项
-- ⚠️ **JSON 格式**：`modifyBodyField()` 只适用于 JSON body
-- ⚠️ **URL 编码**：QueryParams 会自动进行 URL 编码
-- ⚠️ **Host 替换**：`host()` 会保留原有路径和查询参数
-
-### 3. Mock 注意事项
-- ⚠️ **Mock 优先级**：后添加的 Mock 规则优先级更高
-- ⚠️ **清理 Mock**：测试后需要清理 Mock 规则，避免影响其他测试
-
----
-
-## 📚 API 参考
-
-### RealApiMonitor API
+### RealApiMonitor — 静态方法
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
-| `monitor(context)` | BrowserContext | MonitorBuilder | 创建监控构建器（Context版本） |
-| `monitor(page)` | Page | MonitorBuilder | 创建监控构建器（Page版本） |
-| `getLast(pattern)` | String | ApiCallRecord | 获取最后一条匹配的记录 |
-| `getLastBody(pattern)` | String | String | 获取最后一条记录的响应体 |
-| `getHistory()` | - | List\<ApiCallRecord\> | 获取所有记录 |
-| `clearHistory()` | - | void | 清空历史记录和重置状态 |
-| `setTargetHost(host)` | String | void | 设置目标 Host 过滤 |
-| `clearTargetHost()` | - | void | 清除目标 Host 过滤 |
-| `stopMonitoring()` | - | void | 手动停止监控并记录结果到 Serenity |
-| `logResults()` | - | void | 将结果记录到 Serenity 报告 |
-| `resetForNextScenario()` | - | void | 重置状态，支持同一测试多次 start/stop |
+| `monitor(context)` | BrowserContext | MonitorBuilder | Context 版监控入口 |
+| `monitor(page)` | Page | MonitorBuilder | Page 版监控入口 |
+| `getLast(pattern)` | String | ApiCallRecord | 最后一条匹配记录（子串/正则） |
+| `getLastBody(pattern)` | String | String | 最后一条的响应体文本 |
+| `getHistory()` | - | List\<ApiCallRecord\> | 所有记录（不可修改快照） |
+| `clearHistory()` | - | void | 清空历史 + 重置标志 |
+| `clearExpectations()` | - | void | 清除状态码期望 |
+| `setTargetHost(host)` | String | void | 设置 Host 过滤 |
+| `clearTargetHost()` | - | void | 清除 Host 过滤 |
+| `stopMonitoring()` | - | void | 停止监控 + 写报告（主线程）/ 缓存报告（异步线程） |
+| `logResults()` | - | void | 写入 Serenity 报告 |
+| `resetForNextScenario()` | - | void | 场景级重置（offResponse + remove） |
+| `forceCleanAll()` | - | void | 终极清场（stop + reset + clearHost） |
+| `flushPendingReport()` | - | void | 刷新缓存报告到 Serenity（幂等） |
+| `waitForApi(pattern, timeout)` | String, int | ApiCallRecord | 阻塞等待 API 被捕获 |
+| `waitForApiBody(pattern, timeout)` | String, int | String | 等待并返回响应体 |
+| `getJsonValue(pattern, jsonPath)` | String, String | T | 泛型 JSON 字段提取 |
+| `getJsonString(pattern, jsonPath)` | String, String | String | → String 类型 |
+| `getJsonInt(pattern, jsonPath)` | String, String | Integer | → Integer 类型 |
+| `getJsonLong(pattern, jsonPath)` | String, String | Long | → Long 类型 |
+| `getJsonDouble(pattern, jsonPath)` | String, String | Double | → Double 类型 |
+| `getJsonBoolean(pattern, jsonPath)` | String, String | Boolean | → Boolean 类型 |
+| `getJsonList(pattern, jsonPath)` | String, String | List\<E\> | → List 类型 |
+| `getJsonObject(pattern, jsonPath)` | String, String | Map\<String,Object\> | → Map 类型 |
+| `waitForJsonValue(pattern, path, timeout)` | String,String,int | T | 阻塞等待 JSON 字段有值 |
+| `waitForJsonString(pattern, path, timeout)` | String,String,int | String | → 等待 String |
+| `waitForJsonInt(pattern, path, timeout)` | String,String,int | Integer | → 等待 Integer |
+| `waitForJsonLong(pattern, path, timeout)` | String,String,int | Long | → 等待 Long |
+| `waitForJsonDouble(pattern, path, timeout)` | String,String,int | Double | → 等待 Double |
+| `waitForJsonBoolean(pattern, path, timeout)` | String,String,int | Boolean | → 等待 Boolean |
+| `waitForJsonEquals(pattern, path, expected, timeout)` | String,String,String,int | boolean | 等待字段 == expected（串比较） |
+| `waitForJsonValueEquals(pattern, path, value, timeout)` | String,String,T,int | boolean | 等待字段 equals value（泛型） |
 
-### MonitorBuilder API（链式配置）
+### MonitorBuilder API
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
-| `api(pattern, status)` | String, int | MonitorBuilder | 添加目标API + 期望状态码 |
-| `api(pattern)` | String | MonitorBuilder | 添加目标API（不验证状态码） |
-| `timeout(seconds)` | int | MonitorBuilder | 设置兜底超时时间（秒） |
-| `start()` | - | void | 异步启动监控，立即返回 |
+| `api(pattern)` | String | Builder | 添加目标（不限状态码） |
+| `api(pattern, status)` | String, int | Builder | 添加目标 + 期望状态码 |
+| `timeout(seconds)` | int | Builder | 兜底超时（0=无限） |
+| `then(callback)` | Consumer\<ApiCallRecord\> | Builder | 匹配回调 |
+| `stopOnFirstMatch()` | - | Builder | 首次匹配即停 |
+| `start()` | - | void | 异步启动 |
+| `waitForResponse(timeoutSec)` | int | ApiCallRecord | 阻塞等待首条匹配 |
 
-**自动停止行为：**
-- 当所有 `.api()` 指定的目标 API 全部被捕获时 → **立即自动停止**
-- 当超过 `timeout()` 时间无新 API 调用时 → **超时自动停止**
-- 调用 `stopMonitoring()` 时 → **手动停止**
+### ApiCallRecord 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `requestId` | String | UUID，唯一标识本次调用 |
+| `url` | String | 完整请求 URL |
+| `method` | String | HTTP Method |
+| `timestamp` | long | 捫获时间戳 |
+| `statusCode` | int | HTTP 状态码 |
+| `responseBody` | Object | 响应体（延迟读取 + synchronized） |
+| `requestHeaders` | Map\<String,String\> | 请求头 |
+| `responseHeaders` | Map\<String,String\> | 响应头 |
+| `isMocked` | boolean | 是否为 Mock 数据 |
 
 ### ApiRequestModifier API
 
 | 方法 | 参数 | 返回值 | 说明 |
 |------|------|--------|------|
-| `create()` | - | ApiRequestModifier | 创建实例 |
-| `body(body)` | String | ApiRequestModifier | 替换整个 body |
-| `removeBody()` | - | ApiRequestModifier | 删除整个 body |
-| `modifyBodyField(path, value)` | String, Object | ApiRequestModifier | 修改字段 |
+| `create()` | - | ApiRequestModifier | 工厂方法 |
+| `body(text)` | String | ApiRequestModifier | 替换整个 body |
+| `removeBody()` | - | ApiRequestModifier | 删除 body |
+| `modifyBodyField(path, val)` | String, Object | ApiRequestModifier | 修改字段 |
 | `removeBodyField(path)` | String | ApiRequestModifier | 删除字段 |
-| `modifyHeader(name, value)` | String, String | ApiRequestModifier | 修改 header |
+| `modifyHeader(name, val)` | String, String | ApiRequestModifier | 修改 header |
 | `removeHeader(name)` | String | ApiRequestModifier | 删除 header |
-| `modifyQueryParam(name, value)` | String, String | ApiRequestModifier | 修改参数 |
+| `modifyQueryParam(name, val)` | String, String | ApiRequestModifier | 修改参数 |
 | `removeQueryParam(name)` | String | ApiRequestModifier | 删除参数 |
-| `method(method)` | String | ApiRequestModifier | 修改 HTTP 方法 |
-| `url(url)` | String | ApiRequestModifier | 替换整个 URL |
-| `host(host)` | String | ApiRequestModifier | 替换 Host |
+| `method(m)` | String | ApiRequestModifier | 修改 Method |
+| `url(u)` | String | ApiRequestModifier | 替换 URL |
+| `host(h)` | String | ApiRequestModifier | 替换 Host |
 | `clear()` | - | ApiRequestModifier | 清空所有配置 |
+| `modifyRequest(ctx, pattern, mod)` | Context, String, Mod | RequestResponseStore | 应用修改（静态方法） |
 
 ---
-

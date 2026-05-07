@@ -4,7 +4,10 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
+import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.PathNotFoundException;
 import net.serenitybdd.core.Serenity;
+import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,37 +35,47 @@ public class RealApiMonitor {
 
     private static final Logger logger = LoggerFactory.getLogger(RealApiMonitor.class);
 
-    // 存储 API 调用记录
-    private static final List<ApiCallRecord> apiCallHistory = new CopyOnWriteArrayList<>();
-    
-    // 存储 API 期望
-    private static final Map<String, ApiExpectation> apiExpectations = new ConcurrentHashMap<>();
-    
-    // 监控状态
+    // ==================== 线程安全重构（支持并行测试）====================
+    // ⭐ 所有核心存储改为 ThreadLocal，彻底隔离并行场景/多 scenario 的数据
+    // 原因：static 全局变量会导致 A 场景的 API 被 B 场景捕获、历史记录互相污染、报告错乱
+
+    // 存储 API 调用记录（每线程独立）
+    private static final ThreadLocal<List<ApiCallRecord>> apiCallHistory = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
+
+    // 存储 API 期望（每线程独立）
+    private static final ThreadLocal<Map<String, ApiExpectation>> apiExpectations = ThreadLocal.withInitial(ConcurrentHashMap::new);
+
+    // 监控状态（以 BrowserContext/Page 实例为 key → 天然隔离不同线程的 context/page）
     private static final Map<BrowserContext, Boolean> contextMonitoringStopped = new ConcurrentHashMap<>();
     private static final Map<Page, Boolean> pageMonitoringStopped = new ConcurrentHashMap<>();
 
-    // 已注册的监听器句柄（防止多次 start 导致监听器累积泄漏）
+    // 已注册的监听器句柄（用于真正移除，防止泄漏）
     private static final Map<BrowserContext, java.util.function.Consumer<Response>> contextListeners = new ConcurrentHashMap<>();
     private static final Map<Page, java.util.function.Consumer<Response>> pageListeners = new ConcurrentHashMap<>();
-    
-    // 记录标志 - 防止重复记录
-    private static volatile boolean hasLoggedToSerenity = false;
-    
-    // 目标 Host 过滤
+
+    // 记录标志 - 防止重复记录（每线程独立）
+    private static final ThreadLocal<Boolean> hasLoggedToSerenity = ThreadLocal.withInitial(() -> false);
+
+    // 目标 Host 过滤（全局配置，通常不变；如需每线程不同可改为 ThreadLocal）
     private static volatile String targetHost = null;
-    
-    // 监控失败异常
-    private static volatile AssertionError monitoringFailure = null;
-    
-    // 目标 API 匹配计数（用于自动停止）
-    private static final AtomicInteger matchedTargetApiCount = new AtomicInteger(0);
-    
-    // 是否已捕获到所有目标 API
-    private static volatile boolean allTargetApisCaptured = false;
-    
-    // 目标 API 的 URL 模式列表（用于判断是否是目标 API）
-    private static final List<String> targetApiPatterns = new CopyOnWriteArrayList<>();
+
+    // 监控失败异常（每线程独立）
+    private static final ThreadLocal<AssertionError> monitoringFailure = ThreadLocal.withInitial(() -> null);
+
+    // 目标 API 匹配计数（用于自动停止）（每线程独立）
+    private static final ThreadLocal<AtomicInteger> matchedTargetApiCount = ThreadLocal.withInitial(AtomicInteger::new);
+
+    // 是否已捕获到所有目标 API（每线程独立）
+    private static final ThreadLocal<Boolean> allTargetApisCaptured = ThreadLocal.withInitial(() -> false);
+
+    // ⭐ 跨线程报告缓存（保持 static volatile：异步线程 → 主线程传递数据）
+    // 解决 ApiMonitor-AsyncStop 线程无 Serenity 上下文导致 CurrentListener is null 的问题
+    private static volatile boolean reportPending = false;
+    private static volatile String pendingReportTitle = null;
+    private static volatile String pendingReportContent = null;
+
+    // 目标 API 的 URL 模式列表（每线程独立）
+    private static final ThreadLocal<List<String>> targetApiPatterns = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
 
     // ==================== 核心方法: monitor() - 异步监控 ====================
     
@@ -203,7 +216,16 @@ public class RealApiMonitor {
                 }
             }
             
-            logger.warn("waitForResponse TIMEOUT after {}s. Total APIs captured: {}", timeoutSeconds, apiCallHistory.size());
+            // ⭐ 修复6：超时增强诊断
+            List<ApiCallRecord> captured = apiCallHistory.get();
+            logger.warn("waitForResponse TIMEOUT after {}s. Target patterns: {}. Captured {}/{} APIs:", 
+                timeoutSeconds, apis.keySet(), captured.size(), captured.size());
+            if (!captured.isEmpty()) {
+                for (int i = 0; i < Math.min(captured.size(), 10); i++) {
+                    ApiCallRecord r = captured.get(i);
+                    logger.warn("  [{}] {} {} (status={})", i+1, r.getMethod(), simplifyUrl(r.getUrl()), r.getStatusCode());
+                }
+            }
             return null;
         }
         
@@ -215,8 +237,6 @@ public class RealApiMonitor {
                 apis.size(), timeoutSeconds, onMatchCallback != null ? "YES" : "NO");
             
             // ⭐ 关键顺序：先停掉旧监听器（在 clearHistory 清掉引用之前）
-            // 必须在 clearHistory 之前调用，否则 contextListeners 引用会被清掉，
-            // 导致旧 onResponse 回调无法被标记为 stopped，继续空转/干扰
             if (context != null) {
                 markExistingListenerStopped(context);
             } else if (page != null) {
@@ -227,17 +247,17 @@ public class RealApiMonitor {
             clearExpectations();
             
             // 保存目标 API 模式（用于后续过滤）
-            targetApiPatterns.clear();
-            matchedTargetApiCount.set(0);
-            allTargetApisCaptured = false;
+            targetApiPatterns.get().clear();
+            matchedTargetApiCount.get().set(0);
+            allTargetApisCaptured.set(false);
             
             // 设置期望
             for (Map.Entry<String, Integer> entry : apis.entrySet()) {
                 String urlPattern = entry.getKey();
                 String regex = toRegex(urlPattern);
-                targetApiPatterns.add(urlPattern); // 保存原始模式
+                targetApiPatterns.get().add(urlPattern); // 保存原始模式
                 if (entry.getValue() > 0) {
-                    apiExpectations.put(regex, ApiExpectation.forEndpoint(regex).statusCode(entry.getValue()));
+                    apiExpectations.get().put(regex, ApiExpectation.forEndpoint(regex).statusCode(entry.getValue()));
                 }
                 logger.info("  - Target API: {} -> Expected Status: {}", urlPattern, entry.getValue() > 0 ? entry.getValue() : "any");
             }
@@ -301,10 +321,10 @@ public class RealApiMonitor {
          * 检查当前响应是否匹配目标API模式，如果是则执行回调
          */
         private void invokeCallbackIfMatched(Response response) {
-            if (onMatchCallback == null || targetApiPatterns.isEmpty()) return;
+            if (onMatchCallback == null || targetApiPatterns.get().isEmpty()) return;
             
             String url = response.url();
-            for (String pattern : targetApiPatterns) {
+            for (String pattern : targetApiPatterns.get()) {
                 if (url.contains(pattern) || url.matches(toRegex(pattern))) {
                     // ⭐ 按当前 response URL 反查对应记录（避免取到并发场景下的错误全局最后一条）
                     ApiCallRecord matchedRecord = findRecordByUrl(url);
@@ -335,9 +355,10 @@ public class RealApiMonitor {
          * 避免使用 getLastApiCall() 在高并发下取错
          */
         private static ApiCallRecord findRecordByUrl(String url) {
+            List<ApiCallRecord> history = apiCallHistory.get();
             // 从后往前找，优先返回最近的匹配记录（同 URL 可能有多次调用）
-            for (int i = apiCallHistory.size() - 1; i >= 0; i--) {
-                ApiCallRecord record = apiCallHistory.get(i);
+            for (int i = history.size() - 1; i >= 0; i--) {
+                ApiCallRecord record = history.get(i);
                 if (record.getUrl().equals(url)) {
                     return record;
                 }
@@ -346,23 +367,40 @@ public class RealApiMonitor {
         }
 
         /**
-         * 移除已存在的旧监听器（通过标记停止 + 清理引用）
-         * Playwright 的 onResponse 不支持直接移除单个 listener，
-         * 所以通过 stopped 标志让旧回调空转，并清理引用
+         * ⭐ 修复2：真正移除已存在的旧监听器（不再只是标记停止）
+         * Playwright 支持 context.offResponse(handler) / page.offResponse(handler)
+         * 彻底移除回调引用，防止内存泄漏和回调堆积
          */
         private void removeExistingListener(BrowserContext ctx) {
             if (ctx != null && contextListeners.containsKey(ctx)) {
-                contextMonitoringStopped.put(ctx, true);
-                contextListeners.remove(ctx);
-                logger.debug("Removed stale listener for context");
+                try {
+                    java.util.function.Consumer<Response> oldHandler = contextListeners.remove(ctx);
+                    if (oldHandler != null) {
+                        ctx.offResponse(oldHandler);  // ⭐ 真正从 Playwright 移除
+                        logger.debug("Truly removed stale listener for context via offResponse()");
+                    }
+                } catch (Exception e) {
+                    // offResponse 可能因 context 已关闭而失败，降级为标记停止
+                    logger.debug("offResponse failed for context (may be closed), fallback to mark-stopped: {}", e.getMessage());
+                    contextMonitoringStopped.put(ctx, true);
+                    contextListeners.remove(ctx);
+                }
             }
         }
 
         private void removeExistingListener(Page p) {
             if (p != null && pageListeners.containsKey(p)) {
-                pageMonitoringStopped.put(p, true);
-                pageListeners.remove(p);
-                logger.debug("Removed stale listener for page");
+                try {
+                    java.util.function.Consumer<Response> oldHandler = pageListeners.remove(p);
+                    if (oldHandler != null) {
+                        p.offResponse(oldHandler);  // ⭐ 真正从 Playwright 移除
+                        logger.debug("Truly removed stale listener for page via offResponse()");
+                    }
+                } catch (Exception e) {
+                    logger.debug("offResponse failed for page (may be closed), fallback to mark-stopped: {}", e.getMessage());
+                    pageMonitoringStopped.put(p, true);
+                    pageListeners.remove(p);
+                }
             }
         }
 
@@ -386,7 +424,7 @@ public class RealApiMonitor {
         
         private void startAutoStopTimer() {
             Thread timer = new Thread(() -> {
-                int lastSize = apiCallHistory.size();
+                int lastSize = apiCallHistory.get().size();
                 long lastUpdate = System.currentTimeMillis();
                 
                 logger.info("Auto-stop timer started: timeout={}s, initial APIs={}", timeoutSeconds, lastSize);
@@ -407,7 +445,7 @@ public class RealApiMonitor {
                             break;
                         }
                         
-                        int currentSize = apiCallHistory.size();
+                        int currentSize = apiCallHistory.get().size();
                         if (currentSize != lastSize) {
                             lastSize = currentSize;
                             lastUpdate = System.currentTimeMillis();
@@ -439,7 +477,7 @@ public class RealApiMonitor {
         
         private void validateRealTime(Response response) {
             String url = response.url();
-            for (Map.Entry<String, ApiExpectation> entry : apiExpectations.entrySet()) {
+            for (Map.Entry<String, ApiExpectation> entry : apiExpectations.get().entrySet()) {
                 // ⭐ 只用正则匹配（toRegex 已正确转义特殊字符），不再依赖不可靠的 contains 兜底
                 if (url.matches(entry.getKey())) {
                     // 按当前 response URL 反查对应记录，避免并发场景下取错全局最后一条
@@ -470,8 +508,9 @@ public class RealApiMonitor {
      */
     public static ApiCallRecord getLast(String urlPattern) {
         String regex = toRegex(urlPattern);
-        for (int i = apiCallHistory.size() - 1; i >= 0; i--) {
-            ApiCallRecord record = apiCallHistory.get(i);
+        List<ApiCallRecord> history = apiCallHistory.get();
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ApiCallRecord record = history.get(i);
             if (record.getUrl().matches(regex) || record.getUrl().contains(urlPattern)) {
                 return record;
             }
@@ -513,8 +552,19 @@ public class RealApiMonitor {
             }
         }
         
-        logger.warn("waitForApi TIMEOUT after {}s for pattern: {}. Captured APIs: {}", 
-            timeoutSeconds, urlPattern, apiCallHistory.size());
+        // ⭐ 修复6：超时增强诊断 — 输出已捕获的 API 列表，方便排查"为什么没抓到"
+        List<ApiCallRecord> captured = apiCallHistory.get();
+        logger.warn("waitForApi TIMEOUT after {}s for pattern='{}'. Captured {}/{} APIs:", 
+            timeoutSeconds, urlPattern, captured.size(), captured.size());
+        if (!captured.isEmpty()) {
+            for (int i = 0; i < Math.min(captured.size(), 10); i++) {
+                ApiCallRecord r = captured.get(i);
+                logger.warn("  [{}] {} {} (status={})", i+1, r.getMethod(), simplifyUrl(r.getUrl()), r.getStatusCode());
+            }
+            if (captured.size() > 10) {
+                logger.warn("  ... and {} more", captured.size() - 10);
+            }
+        }
         return null;
     }
 
@@ -526,6 +576,308 @@ public class RealApiMonitor {
         if (record == null) return null;
         Object body = record.getResponseBody();
         return body != null ? String.valueOf(body) : null;
+    }
+
+    // ==================== 核心方法 5: JSON 快速取值 + 等待字段（企业级便捷操作）====================
+
+    /**
+     * 内部辅助：判断 JsonPath 返回值是否为"空值"
+     * 覆盖场景：Java null、JSON null（字符串 "null"）、空字符串、空集合
+     * 注意：Integer(0)、Boolean(false)、Double(0.0) 等合法值不会被误判
+     */
+    private static boolean isJsonValueEmpty(Object value) {
+        if (value == null) return true;
+        if (value instanceof String) {
+            String s = ((String) value).trim();
+            return s.isEmpty() || "null".equalsIgnoreCase(s);
+        }
+        if (value instanceof Collection) return ((Collection<?>) value).isEmpty();
+        return false;
+    }
+
+    /**
+     * 内部安全类型转换：将 JsonPath 返回的 Object 转为目标类型
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> T safeCast(Object rawValue, Class<T> targetType, String urlPattern, String jsonPath) {
+        if (isJsonValueEmpty(rawValue)) return null;
+        try {
+            if (targetType == String.class) {
+                return targetType.cast(rawValue.toString());
+            } else if (targetType == Integer.class || targetType == int.class) {
+                if (rawValue instanceof Number) return targetType.cast(((Number) rawValue).intValue());
+                return targetType.cast(Integer.parseInt(rawValue.toString()));
+            } else if (targetType == Long.class || targetType == long.class) {
+                if (rawValue instanceof Number) return targetType.cast(((Number) rawValue).longValue());
+                return targetType.cast(Long.parseLong(rawValue.toString()));
+            } else if (targetType == Double.class || targetType == double.class) {
+                if (rawValue instanceof Number) return targetType.cast(((Number) rawValue).doubleValue());
+                return targetType.cast(Double.parseDouble(rawValue.toString()));
+            } else if (targetType == Boolean.class || targetType == boolean.class) {
+                if (rawValue instanceof Boolean) return targetType.cast(rawValue);
+                return targetType.cast(Boolean.parseBoolean(rawValue.toString()));
+            } else if (targetType == List.class) {
+                if (rawValue instanceof List) return targetType.cast(rawValue);
+                // 单个元素包装成 List
+                return targetType.cast(Collections.singletonList(rawValue));
+            } else if (targetType == Map.class) {
+                if (rawValue instanceof Map) return targetType.cast(rawValue);
+            }
+            return targetType.cast(rawValue);
+        } catch (ClassCastException e) {
+            logger.warn("safeCast: type mismatch for pattern='{}', jsonPath='{}': expected {}, got {} ({})",
+                urlPattern, jsonPath, targetType.getSimpleName(),
+                rawValue.getClass().getSimpleName(), rawValue);
+            return null;
+        }
+    }
+
+    /**
+     * 从指定 API 响应中快速提取 JSON 字段值（泛型基础版）
+     *
+     * @param urlPattern URL 匹配模式
+     * @param jsonPath JsonPath 表达式，例如：
+     *   - "$.data.token"        → 取 data 对象的 token 字段（String）
+     *   - "$.data.user.name"    → 嵌套对象字段（String）
+     *   - "$[0].id"             → 数组第一个元素的 id（Integer）
+     *   - "$.items[*].price"    → 数组所有元素的价格（List<Integer>）
+     * @return 字段值，未找到或路径不存在返回 null
+     *
+     * 示例：
+     * Object token = RealApiMonitor.getJsonValue("/api/login", "$.data.token");
+     * Object userId = RealApiMonitor.getJsonValue("/api/user", "$.data.id");
+     *
+     * ⚠️ 注意：JsonPath 返回类型取决于 JSON 内容：
+     *   - 字符串 → String
+     *   - 整数   → Integer（JSON 中无长整区分）
+     *   - 小数   → Double / BigDecimal
+     *   - 布尔   → Boolean
+     *   - 数组   → List<...>
+     *   - 对象   → LinkedHashMap
+     *   推荐使用下方的类型安全便捷方法（getJsonString / getJsonInt 等）
+     */
+    public static <T> T getJsonValue(String urlPattern, String jsonPath) {
+        ApiCallRecord record = getLast(urlPattern);
+        if (record == null || record.getResponseBody() == null) {
+            logger.debug("getJsonValue: no matching record or empty body for pattern='{}'", urlPattern);
+            return null;
+        }
+        try {
+            Object body = record.getResponseBody();
+            if (body == null) return null;
+
+            String bodyStr = body.toString();
+            // 跳过二进制标记前缀
+            if (bodyStr.startsWith("[BINARY_DATA")) {
+                logger.debug("getJsonValue: response is binary data, cannot extract JSON field for '{}'", urlPattern);
+                return null;
+            }
+
+            T result = JsonPath.read(bodyStr, jsonPath);
+            logger.debug("getJsonValue: pattern={}, jsonPath={}, result={} (type={})",
+                urlPattern, jsonPath, result, result != null ? result.getClass().getSimpleName() : "null");
+            return result;
+        } catch (PathNotFoundException e) {
+            logger.debug("getJsonValue: jsonPath '{}' not found in response for '{}' (path does not exist)", jsonPath, urlPattern);
+            return null;
+        } catch (Exception e) {
+            logger.warn("getJsonValue: failed to parse JSON for pattern='{}', jsonPath='{}': {}", urlPattern, jsonPath, e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 类型安全便捷方法 ====================
+
+    /** 提取 String 类型字段 */
+    public static String getJsonString(String urlPattern, String jsonPath) {
+        return safeCast(getJsonValue(urlPattern, jsonPath), String.class, urlPattern, jsonPath);
+    }
+
+    /** 提取 Integer 类型字段 */
+    public static Integer getJsonInt(String urlPattern, String jsonPath) {
+        return safeCast(getJsonValue(urlPattern, jsonPath), Integer.class, urlPattern, jsonPath);
+    }
+
+    /** 提取 Long 类型字段（自动从 Integer/Double 转换） */
+    public static Long getJsonLong(String urlPattern, String jsonPath) {
+        return safeCast(getJsonValue(urlPattern, jsonPath), Long.class, urlPattern, jsonPath);
+    }
+
+    /** 提取 Double 类型字段 */
+    public static Double getJsonDouble(String urlPattern, String jsonPath) {
+        return safeCast(getJsonValue(urlPattern, jsonPath), Double.class, urlPattern, jsonPath);
+    }
+
+    /** 提取 Boolean 类型字段 */
+    public static Boolean getJsonBoolean(String urlPattern, String jsonPath) {
+        return safeCast(getJsonValue(urlPattern, jsonPath), Boolean.class, urlPattern, jsonPath);
+    }
+
+    /** 提取 List 类型字段（数组） */
+    @SuppressWarnings("unchecked")
+    public static <E> List<E> getJsonList(String urlPattern, String jsonPath) {
+        Object raw = getJsonValue(urlPattern, jsonPath);
+        if (isJsonValueEmpty(raw)) return null;
+        if (raw instanceof List) return (List<E>) raw;
+        // JsonPath 的 [*] 操作可能返回非标准 List 实现，尝试反射兼容
+        try {
+            // json-path 2.x 内部使用 net.minidev.json.JSONArray，但该类可能不在 classpath
+            // 通过 Iterable 接口兜底转换，不依赖具体实现类
+            if (raw instanceof Iterable) {
+                List<E> result = new ArrayList<>();
+                for (Object item : (Iterable<?>) raw) {
+                    result.add((E) item);
+                }
+                return result;
+            }
+        } catch (Exception e) {
+            logger.debug("getJsonList: failed to convert Iterable to List: {}", e.getMessage());
+        }
+        logger.warn("getJsonList: expected List but got {} for pattern='{}', jsonPath='{}'",
+            raw.getClass().getSimpleName(), urlPattern, jsonPath);
+        return null;
+    }
+
+    /** 提取 Map 类型字段（嵌套对象） */
+    @SuppressWarnings("unchecked")
+    public static Map<String, Object> getJsonObject(String urlPattern, String jsonPath) {
+        Object raw = getJsonValue(urlPattern, jsonPath);
+        if (isJsonValueEmpty(raw)) return null;
+        if (raw instanceof Map) return (Map<String, Object>) raw;
+        logger.warn("getJsonObject: expected Map but got {} for pattern='{}', jsonPath='{}'",
+            raw.getClass().getSimpleName(), urlPattern, jsonPath);
+        return null;
+    }
+    
+    /**
+     * 等待目标 API 响应中的指定字段有值（阻塞式轮询）
+     *
+     * 解决场景：点击按钮 → 触发 API → 需要等 API 返回特定字段值后继续操作
+     *
+     * ⚠️ 空值判断已修正：Integer(0)、Boolean(false)、Double(0.0) 等合法值不再被误判为空
+     *     真正判定为"空"的只有：null、JSON null、空字符串、空集合
+     *
+     * @param urlPattern URL 匹配模式
+     * @param jsonPath JsonPath 表达式
+     * @param timeoutSeconds 最大等待时间（秒）
+     * @return 字段值，超时返回 null
+     *
+     * 示例：
+     * // 等待支付接口返回 orderId（String）
+     * String orderId = RealApiMonitor.waitForJsonValue("/api/payment", "$.data.orderId", 30);
+     * // 等待状态码（Integer），即使值为 0 也能正确返回
+     * Integer status = RealApiMonitor.waitForJsonValue("/api/status", "$.code", 10);
+     */
+    public static <T> T waitForJsonValue(String urlPattern, String jsonPath, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        logger.info("Waiting for JSON value: pattern='{}', jsonPath='{}', timeout={}s", urlPattern, jsonPath, timeoutSeconds);
+
+        while (System.currentTimeMillis() < deadline) {
+            T value = getJsonValue(urlPattern, jsonPath);
+            if (!isJsonValueEmpty(value)) {
+                logger.info("JSON value ready after {}ms: {}={} (type={})",
+                    (deadline - System.currentTimeMillis() + timeoutSeconds * 1000), jsonPath, value,
+                    value.getClass().getSimpleName());
+                return value;
+            }
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.warn("waitForJsonValue interrupted for pattern='{}'", urlPattern);
+                return null;
+            }
+        }
+
+        logger.warn("waitForJsonValue TIMEOUT after {}s for pattern='{}', jsonPath='{}'. Last known APIs:",
+            timeoutSeconds, urlPattern, jsonPath);
+        List<ApiCallRecord> captured = apiCallHistory.get();
+        for (int i = 0; i < Math.min(captured.size(), 5); i++) {
+            ApiCallRecord r = captured.get(i);
+            logger.warn("  [{}] {} {}", i+1, r.getMethod(), simplifyUrl(r.getUrl()));
+        }
+        return null;
+    }
+
+    /**
+     * 类型安全版：等待指定类型的 JSON 字段值
+     *
+     * 示例：
+     * String name = RealApiMonitor.waitForJsonString("/api/user", "$.data.name", 30);
+     * Integer count = RealApiMonitor.waitForJsonInt("/api/list", "$.totalCount", 15);
+     * Boolean success = RealApiMonitor.waitForJsonBoolean("/api/submit", "$.success", 10);
+     */
+    public static String waitForJsonString(String urlPattern, String jsonPath, int timeoutSeconds) {
+        return safeCast(waitForJsonValue(urlPattern, jsonPath, timeoutSeconds), String.class, urlPattern, jsonPath);
+    }
+
+    public static Integer waitForJsonInt(String urlPattern, String jsonPath, int timeoutSeconds) {
+        return safeCast(waitForJsonValue(urlPattern, jsonPath, timeoutSeconds), Integer.class, urlPattern, jsonPath);
+    }
+
+    public static Long waitForJsonLong(String urlPattern, String jsonPath, int timeoutSeconds) {
+        return safeCast(waitForJsonValue(urlPattern, jsonPath, timeoutSeconds), Long.class, urlPattern, jsonPath);
+    }
+
+    public static Double waitForJsonDouble(String urlPattern, String jsonPath, int timeoutSeconds) {
+        return safeCast(waitForJsonValue(urlPattern, jsonPath, timeoutSeconds), Double.class, urlPattern, jsonPath);
+    }
+
+    public static Boolean waitForJsonBoolean(String urlPattern, String jsonPath, int timeoutSeconds) {
+        return safeCast(waitForJsonValue(urlPattern, jsonPath, timeoutSeconds), Boolean.class, urlPattern, jsonPath);
+    }
+
+    /**
+     * 等待目标 API 响应中的指定字段匹配期望值（字符串比较）
+     */
+    public static boolean waitForJsonEquals(String urlPattern, String jsonPath, String expectedValue, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            Object value = getJsonValue(urlPattern, jsonPath);
+            if (!isJsonValueEmpty(value) && expectedValue.equals(value.toString())) {
+                logger.info("waitForJsonEquals matched: {}={} (type={})", jsonPath, value,
+                    value.getClass().getSimpleName());
+                return true;
+            }
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+        }
+        logger.warn("waitForJsonEquals TIMEOUT: expected '{}' but not matched within {}s", expectedValue, timeoutSeconds);
+        return false;
+    }
+
+    /**
+     * 等待目标 API 响应中的指定字段匹配期望值（泛型对象 equals 比较）
+     * 支持数字、布尔等类型的精确匹配，无需转字符串
+     *
+     * 示例：
+     * RealApiMonitor.waitForJsonValueEquals("/api/status", "$.code", 200, 10);
+     * RealApiMonitor.waitForJsonValueEquals("/api/submit", "$.success", true, 10);
+     * RealApiMonitor.waitForJsonValueEquals("/api/user", "$.name", "John", 10);
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> boolean waitForJsonValueEquals(String urlPattern, String jsonPath, T expectedValue, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + timeoutSeconds * 1000L;
+        Class<?> expectedType = expectedValue != null ? expectedValue.getClass() : Object.class;
+        while (System.currentTimeMillis() < deadline) {
+            T value = getJsonValue(urlPattern, jsonPath);
+            if (!isJsonValueEmpty(value)) {
+                T typedValue = safeCast(value, (Class<T>) expectedType, urlPattern, jsonPath);
+                if (typedValue != null && expectedValue.equals(typedValue)) {
+                    logger.info("waitForJsonValueEquals matched: {}={} (type={})",
+                        jsonPath, typedValue, expectedType.getSimpleName());
+                    return true;
+                }
+                if (value != null && expectedValue.equals(value)) {
+                    logger.info("waitForJsonValueEquals matched (raw): {}={} (type={})",
+                        jsonPath, value, value.getClass().getSimpleName());
+                    return true;
+                }
+            }
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+        }
+        logger.warn("waitForJsonValueEquals TIMEOUT: expected '{}' ({}) but not matched within {}s",
+            expectedValue, expectedType.getSimpleName(), timeoutSeconds);
+        return false;
     }
 
     // ==================== 核心方法 3: getLastBody() - 获取响应体 ====================
@@ -575,7 +927,7 @@ public class RealApiMonitor {
      * @return 不可修改的 API 记录列表
      */
     public static List<ApiCallRecord> getHistory() {
-        return Collections.unmodifiableList(apiCallHistory);
+        return Collections.unmodifiableList(apiCallHistory.get());
     }
     
     // ==================== 辅助方法 ====================
@@ -586,21 +938,21 @@ public class RealApiMonitor {
      * 监听器引用的完全清理由 stopMonitoring() / resetForNextScenario() 负责
      */
     public static void clearHistory() {
-        apiCallHistory.clear();
-        hasLoggedToSerenity = false;
+        apiCallHistory.get().clear();
+        hasLoggedToSerenity.set(false);
         // 注意：不清除 contextListeners/pageListeners 引用（由 stop/resetForNextScenario 负责）
         // 不清除 contextMonitoringStopped/pageMonitoringStopped（保留 stopped 标志防止旧监听器空转）
         // 重置目标 API 追踪状态
-        matchedTargetApiCount.set(0);
-        allTargetApisCaptured = false;
-        targetApiPatterns.clear();
+        matchedTargetApiCount.get().set(0);
+        allTargetApisCaptured.set(false);
+        targetApiPatterns.get().clear();
     }
     
     /**
      * 清空期望
      */
     public static void clearExpectations() {
-        apiExpectations.clear();
+        apiExpectations.get().clear();
     }
     
     /**
@@ -641,7 +993,11 @@ public class RealApiMonitor {
     private static final Object stopMonitorLock = new Object();
     
     /**
-     * 停止所有监控，并立即将结果记录到当前 step
+     * 停止所有监控
+     * 
+     * 此方法可能从两种上下文调用：
+     * 1. 主线程（测试线程）→ 正常写 Serenity 报告
+     * 2. 异步线程（ApiMonitor-AsyncStop）→ 仅标记停止 + 缓存报告，由主线程稍后 flush
      */
     public static void stopMonitoring() {
         String caller = Thread.currentThread().getName();
@@ -656,85 +1012,186 @@ public class RealApiMonitor {
             }
         }
         
-        // 立即记录到 Serenity 报告（出现在当前 step，而非测试结束时）
-        logResults();
-        logger.info("All monitoring stopped & results logged (by {})", caller);
+        // 判断当前是否在主线程（有 Serenity 上下文）
+        boolean isMainThread = isStepEventBusAvailable();
+        
+        if (isMainThread) {
+            // 主线程：直接写报告
+            logResults();
+            logger.info("All monitoring stopped & results logged to Serenity (by {})", caller);
+        } else {
+            // 异步线程：缓存报告数据，标记待写入，由 PlaywrightListener.flushPendingApiMonitorReport() 在主线程回调中刷新
+            cacheReportForLaterWrite();
+            logger.info("All monitoring stopped (by {}), report cached for main-thread flush", caller);
+        }
     }
     
     /**
-     * 记录汇总到 Serenity 报告（只报告目标 API）
+     * 检查 StepEventBus 是否可用（当前线程是否在 Serenity 测试上下文中）
      */
-    private static void logSummaryToSerenityReport() {
-        if (apiCallHistory.isEmpty() || hasLoggedToSerenity) return;
-        
-        hasLoggedToSerenity = true;
+    private static boolean isStepEventBusAvailable() {
+        try {
+            StepEventBus eventBus = StepEventBus.getEventBus();
+            return eventBus != null
+                && eventBus.getBaseStepListener() != null;
+        } catch (Exception e) {
+            // CurrentListener is null 或其他异常都视为不可用
+            logger.debug("StepEventBus not available in current thread: {}", e.getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * 缓存报告数据供主线程稍后写入（解决异步线程无 Serenity 上下文的问题）
+     * 在 stopMonitoring 的异步调用路径中使用
+     */
+    private static void cacheReportForLaterWrite() {
+        if (apiCallHistory.get().isEmpty() || reportPending) return;  // 已有待处理的则跳过
         
         try {
-            // 过滤：只报告目标 API（如果有配置），否则报告全部
-            List<ApiCallRecord> recordsToReport;
-            if (!targetApiPatterns.isEmpty()) {
-                recordsToReport = new ArrayList<>();
-                for (ApiCallRecord record : apiCallHistory) {
-                    String url = record.getUrl();
-                    for (String pattern : targetApiPatterns) {
-                        if (url.contains(pattern) || url.matches(toRegex(pattern))) {
-                            recordsToReport.add(record);
-                            break;
-                        }
-                    }
+            // 构建报告内容
+            String[] report = buildReportContent();
+            
+            if (report != null) {
+                synchronized (RealApiMonitor.class) {
+                    reportPending = true;
+                    pendingReportTitle = report[0];
+                    pendingReportContent = report[1];
                 }
-                logger.info("Reporting {} target API(s) out of {} total to Serenity (filtered from non-target APIs)",
-                    recordsToReport.size(), apiCallHistory.size());
-            } else {
-                recordsToReport = new ArrayList<>(apiCallHistory);
+                logger.info("API monitor report cached for later flush: title={}", report[0]);
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to build cached report: {}", e.getMessage());
+        }
+    }
+    
+    /**
+     * 由 PlaywrightListener 主线程回调调用：刷新待写入的报告到 Serenity
+     */
+    public static void flushPendingReport() {
+        if (!reportPending) return;
+        
+        String title, content;
+        synchronized (RealApiMonitor.class) {
+            if (!reportPending) return;
+            title = pendingReportTitle;
+            content = pendingReportContent;
+            reportPending = false;
+            pendingReportTitle = null;
+            pendingReportContent = null;
+        }
+        
+        if (title == null || content == null) return;
+        
+        try {
+            // 再次确认在主线程中
+            if (!isStepEventBusAvailable()) {
+                // 仍然不在主线程，重新缓存（极端情况）
+                logger.warn("flushPendingReport called outside test context, re-caching");
+                synchronized (RealApiMonitor.class) {
+                    reportPending = true;
+                    pendingReportTitle = title;
+                    pendingReportContent = content;
+                }
+                return;
             }
             
-            if (recordsToReport.isEmpty()) {
+            logger.info("Flushing cached API monitor report to Serenity: {}", title);
+            Serenity.recordReportData()
+                .withTitle(title)
+                .andContents(content);
+            hasLoggedToSerenity.set(true);
+            logger.info("Successfully flushed API monitor report to Serenity");
+        } catch (Exception e) {
+            logger.error("Failed to flush cached API monitor report", e);
+        }
+    }
+
+    /** 构建报告内容数组 [title, json] */
+    private static String[] buildReportContent() {
+        List<ApiCallRecord> history = apiCallHistory.get();
+        if (history.isEmpty()) return null;
+
+        List<ApiCallRecord> recordsToReport;
+        List<String> patterns = targetApiPatterns.get();
+        if (!patterns.isEmpty()) {
+            recordsToReport = new ArrayList<>();
+            for (ApiCallRecord record : history) {
+                String url = record.getUrl();
+                for (String pattern : patterns) {
+                    if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                        recordsToReport.add(record);
+                        break;
+                    }
+                }
+            }
+        } else {
+            recordsToReport = new ArrayList<>(apiCallHistory.get());  // ⭐ 修复1：ThreadLocal 必须用 .get() 取值，否则把 ThreadLocal 对象当 List 传 → ClassCastException
+        }
+        
+        if (recordsToReport.isEmpty()) return null;
+        
+        StringBuilder json = new StringBuilder();
+        json.append("{\n");
+        json.append("  \"summary\": {\n");
+        json.append("    \"totalApiCalls\": ").append(recordsToReport.size()).append(",\n");
+        json.append("    \"targetApiPatterns\": ").append(patterns).append(",\n");
+
+        Map<Integer, Long> statusCount = recordsToReport.stream()
+            .collect(Collectors.groupingBy(ApiCallRecord::getStatusCode, Collectors.counting()));
+        json.append("    \"statusCodes\": {\n");
+        int i = 0;
+        for (Map.Entry<Integer, Long> entry : statusCount.entrySet()) {
+            json.append("      \"").append(entry.getKey()).append("\": ").append(entry.getValue());
+            if (i < statusCount.size() - 1) json.append(",");
+            json.append("\n");
+            i++;
+        }
+        json.append("    }\n");
+        json.append("  },\n");
+
+        json.append("  \"targetApiCalls\": [\n");
+        for (int j = 0; j < recordsToReport.size(); j++) {
+            ApiCallRecord record = recordsToReport.get(j);
+            json.append("    {\"method\": \"").append(record.getMethod())
+                .append("\", \"url\": \"").append(escapeJson(record.getUrl()))
+                .append("\", \"status\": ").append(record.getStatusCode()).append("}");
+            if (j < recordsToReport.size() - 1) json.append(",");
+            json.append("\n");
+        }
+        json.append("  ]\n");
+        json.append("}\n");
+
+        String title = patterns.isEmpty()
+            ? "API Monitor Summary (" + recordsToReport.size() + " calls)"
+            : "Target API Monitor (" + recordsToReport.size() + "/" + patterns.size() + ")";
+        
+        return new String[]{title, json.toString()};
+    }
+
+    /**
+     * 记录汇总到 Serenity 报告（只报告目标 API）
+     * 复用 buildReportContent() 避免代码重复
+     */
+    private static void logSummaryToSerenityReport() {
+        if (apiCallHistory.get().isEmpty() || hasLoggedToSerenity.get()) return;
+        
+        hasLoggedToSerenity.set(true);
+        
+        try {
+            String[] report = buildReportContent();
+            if (report == null) {
                 logger.info("No target APIs captured to report to Serenity");
                 return;
             }
             
-            StringBuilder json = new StringBuilder();
-            json.append("{\n");
-            json.append("  \"summary\": {\n");
-            json.append("    \"totalApiCalls\": ").append(recordsToReport.size()).append(",\n");
-            json.append("    \"targetApiPatterns\": ").append(targetApiPatterns).append(",\n");
-            
-            // 按状态码统计
-            Map<Integer, Long> statusCount = recordsToReport.stream()
-                .collect(Collectors.groupingBy(ApiCallRecord::getStatusCode, Collectors.counting()));
-            json.append("    \"statusCodes\": {\n");
-            int i = 0;
-            for (Map.Entry<Integer, Long> entry : statusCount.entrySet()) {
-                json.append("      \"").append(entry.getKey()).append("\": ").append(entry.getValue());
-                if (i < statusCount.size() - 1) json.append(",");
-                json.append("\n");
-                i++;
-            }
-            json.append("    }\n");
-            json.append("  },\n");
-            
-            // 目标 API 列表
-            json.append("  \"targetApiCalls\": [\n");
-            for (int j = 0; j < recordsToReport.size(); j++) {
-                ApiCallRecord record = recordsToReport.get(j);
-                json.append("    {\"method\": \"").append(record.getMethod())
-                    .append("\", \"url\": \"").append(escapeJson(record.getUrl()))
-                    .append("\", \"status\": ").append(record.getStatusCode()).append("}");
-                if (j < recordsToReport.size() - 1) json.append(",");
-                json.append("\n");
-            }
-            json.append("  ]\n");
-            json.append("}\n");
-            
-            String title = targetApiPatterns.isEmpty() 
-                ? "API Monitor Summary (" + recordsToReport.size() + " calls)"
-                : "Target API Monitor (" + recordsToReport.size() + "/" + targetApiPatterns.size() + ")";
+            logger.info("Recording {} target API(s) to Serenity report", 
+                apiCallHistory.get().size());  // 用总数量（buildReportContent 内部已过滤）
             Serenity.recordReportData()
-                .withTitle(title)
-                .andContents(json.toString());
+                .withTitle(report[0])
+                .andContents(report[1]);
             
-            logger.info("Recorded {} target API(s) to Serenity report", recordsToReport.size());
+            logger.info("Successfully recorded to Serenity report: {}", report[0]);
         } catch (Exception e) {
             logger.debug("Failed to log summary: {}", e.getMessage());
         }
@@ -745,7 +1202,7 @@ public class RealApiMonitor {
      * 在 stopMonitoring() 时立即调用（而非测试结束），确保结果出现在正确的 step
      */
     public static void logResults() {
-        if (apiCallHistory.isEmpty() || hasLoggedToSerenity) {
+        if (apiCallHistory.get().isEmpty() || hasLoggedToSerenity.get()) {
             return;
         }
         logSummaryToSerenityReport();
@@ -753,54 +1210,166 @@ public class RealApiMonitor {
     
     /**
      * 清除状态，允许同一测试中多次 start/stop 循环
-     * 在 scenario 结束时调用，完全清理所有监听器引用
+     * 在 scenario 结束时调用（由 PlaywrightListener.testFinished 自动调用），完全清理所有监听器引用
      */
     public static void resetForNextScenario() {
-        hasLoggedToSerenity = false;
-        // 完全清理所有状态（包括监听器引用，此时所有回调已停止）
+        // ⭐ 修复2：真正从 Playwright 移除所有已注册的监听器（不只是清 map）
+        for (Map.Entry<BrowserContext, java.util.function.Consumer<Response>> entry : new ArrayList<>(contextListeners.entrySet())) {
+            try {
+                entry.getKey().offResponse(entry.getValue());
+                logger.debug("resetForNextScenario: offResponse for context");
+            } catch (Exception e) {
+                logger.debug("resetForNextScenario: offResponse failed (context may be closed): {}", e.getMessage());
+            }
+        }
+        for (Map.Entry<Page, java.util.function.Consumer<Response>> entry : new ArrayList<>(pageListeners.entrySet())) {
+            try {
+                entry.getKey().offResponse(entry.getValue());
+                logger.debug("resetForNextScenario: offResponse for page");
+            } catch (Exception e) {
+                logger.debug("resetForNextScenario: offResponse failed (page may be closed): {}", e.getMessage());
+            }
+        }
+        
+        hasLoggedToSerenity.set(false);
+        // 清理待写入报告缓存
+        reportPending = false;
+        pendingReportTitle = null;
+        pendingReportContent = null;
+        // 完全清理所有状态（包括监听器引用）
         contextMonitoringStopped.clear();
         pageMonitoringStopped.clear();
         contextListeners.clear();
         pageListeners.clear();
-        matchedTargetApiCount.set(0);
-        allTargetApisCaptured = false;
-        targetApiPatterns.clear();
-        apiCallHistory.clear();
-        apiExpectations.clear();
-        monitoringFailure = null;
+        
+        // ⭐ 修复3：ThreadLocal remove() — 防止线程池复用时旧数据污染新用例
+        // set(false)/set(0) 只改值不释放对象，线程复用时旧值仍在
+        apiCallHistory.remove();
+        apiExpectations.remove();
+        monitoringFailure.remove();
+        matchedTargetApiCount.remove();
+        allTargetApisCaptured.remove();
+        targetApiPatterns.remove();
+    }
+
+    /**
+     * ⭐ 修复6：终极清场方法 — 强制停止监控 + 完全清理所有状态
+     * 用于：用例崩溃、超时、手动停止等异常场景后的紧急恢复
+     * 在 PlaywrightListener.testSuiteFinished() 中调用
+     */
+    public static void forceCleanAll() {
+        logger.info("=== forceCleanAll: Emergency cleanup of ALL RealApiMonitor state ===");
+        try {
+            // 1. 停止所有监控
+            stopMonitoring();
+        } catch (Exception e) {
+            logger.debug("forceCleanAll: stopMonitoring failed (may already be stopped)", e);
+        }
+        try {
+            // 2. 完全重置 scenario 级别状态
+            resetForNextScenario();
+        } catch (Exception e) {
+            logger.debug("forceCleanAll: resetForNextScenario failed", e);
+        }
+        try {
+            // 3. 清除全局配置
+            clearTargetHost();
+        } catch (Exception e) {
+            logger.debug("forceCleanAll: clearTargetHost failed", e);
+        }
+        logger.info("=== forceCleanAll: Complete ===");
     }
     
     // ==================== 内部方法 ====================
     
     private static void recordApiCall(Response response, Request request) {
         try {
+            // ⭐ 修复5：空保护 — Playwright 在某些跳转/异常响应下 response/request/url 可能返回 null
+            if (response == null || request == null || response.url() == null) {
+                logger.debug("[API] Skipping null response/request/url (may be redirect or abnormal response)");
+                return;
+            }
             // 先记录到历史（确保数据在停止监控前就已保存）
             String requestId = UUID.randomUUID().toString();
+            
+            // ⭐ 关键修复：在 onResponse 回调中立即同步读取 response body
+            // Playwright 的 Response 流只在回调触发后短期有效，必须在此刻读取
+            // 使用多策略：text() 优先（文本），body() 兜底（二进制/base64）
+            String capturedBody = null;
+            boolean bodyCaptured = false;
+            try {
+                capturedBody = response.text();
+                bodyCaptured = true;
+                logger.debug("[API] Response body captured via text() for: {} (length={})", 
+                    response.url(), capturedBody != null ? capturedBody.length() : "null");
+            } catch (Exception e) {
+                logger.debug("[API] response.text() failed for {}: {}, trying body()...", 
+                    response.url(), e.getMessage());
+                // text() 失败的常见原因：二进制响应、编码问题、流已消耗
+                // 尝试用 body() 获取原始字节再转 base64
+                try {
+                    byte[] rawBytes = response.body();
+                    if (rawBytes != null && rawBytes.length > 0) {
+                        // 检查是否为可读文本（非纯二进制）
+                        String rawText = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
+                        // 如果 UTF-8 解码后没有大量乱码控制字符，视为文本返回
+                        if (isReadableText(rawText)) {
+                            capturedBody = rawText;
+                            bodyCaptured = true;
+                            logger.debug("[API] Response body captured via UTF-8 decode for: {} (length={})", 
+                                response.url(), capturedBody.length());
+                        } else {
+                            // 纯二进制内容，存储 base64 + 元信息
+                            capturedBody = "[BINARY_DATA base64=" + java.util.Base64.getEncoder().encodeToString(rawBytes) 
+                                + " size=" + rawBytes.length + " contentType=" + getContentType(response) + "]";
+                            bodyCaptured = true;
+                            logger.info("[API] Binary response body captured for: {} (size={}bytes, type={})", 
+                                response.url(), rawBytes.length, getContentType(response));
+                        }
+                    }
+                } catch (Exception e2) {
+                    logger.warn("[API] Both text() and body() failed for {}: text_err={}, body_err={}", 
+                        response.url(), e.getMessage(), e2.getMessage());
+                }
+            }
+            
+            final boolean captureSuccess = bodyCaptured;
+            
             ApiCallRecord record = new ApiCallRecord(
                 requestId, response.url(), request.method(), System.currentTimeMillis(),
-                null, null, response.status(), null, null, false
+                null, null, response.status(), null, capturedBody, false
             );
+            
+            // ⭐ 关键：立即标记 body 已读取，防止 getResponseBody() 懒加载重复尝试 response.text()
+            // （Playwright 响应流只能读一次，第二次调用会抛异常或返回空）
+            record.markBodyRead();
+            
+            if (!captureSuccess) {
+                logger.warn("[API] ⚠ Response body NOT captured for {} (status={}) — stream may be closed or empty", 
+                    response.url(), response.status());
+            }
             record.setResponse(response);
             record.setRequest(request);
-            apiCallHistory.add(record);
+            apiCallHistory.get().add(record);
 
             logger.debug("[API] {} {} - {}", request.method(), response.url(), response.status());
 
             // 再检查是否已捕获所有目标 API（如果配置了目标 API）
-            if (!targetApiPatterns.isEmpty() && !allTargetApisCaptured) {
+            List<String> patterns = targetApiPatterns.get();
+            if (!patterns.isEmpty() && !allTargetApisCaptured.get()) {
                 String url = response.url();
-                for (String pattern : targetApiPatterns) {
+                for (String pattern : patterns) {
                     if (url.contains(pattern) || url.matches(toRegex(pattern))) {
-                        int matched = matchedTargetApiCount.incrementAndGet();
+                        int matched = matchedTargetApiCount.get().incrementAndGet();
                         logger.info("[Target API #{}] {} {} - {}", matched, request.method(), url, response.status());
 
                         // 检查是否已匹配所有目标 API（此时记录已安全保存到历史中）
-                        if (matched >= targetApiPatterns.size()) {
-                            allTargetApisCaptured = true;
-                            logger.info("All {} target API(s) captured. Stopping monitoring.", targetApiPatterns.size());
-                            // ⭐ 异步停止监控，不阻塞 Playwright 响应线程
-                            // stopMonitoring 内部有 synchronized + 写 Serenity 报告，可能耗时
-                            scheduleAsyncStop();
+                        if (matched >= patterns.size()) {
+                            allTargetApisCaptured.set(true);
+                            logger.info("All {} target API(s) captured. Stopping monitoring.", patterns.size());
+                            // ⭐ onResponse 本身就是 Playwright 异步线程，无需再 new Thread
+                            // stopMonitoring() 内部会自动判断线程上下文：非主线程走缓存路径
+                            stopMonitoring();
                         }
                         break;
                     }
@@ -811,21 +1380,6 @@ public class RealApiMonitor {
         }
     }
 
-    /**
-     * 异步调度 stopMonitoring，避免在 onResponse 回调线程中执行耗时操作（synchronized + Serenity 写入）
-     */
-    private static void scheduleAsyncStop() {
-        Thread asyncStop = new Thread(() -> {
-            try {
-                stopMonitoring();
-            } catch (Exception e) {
-                logger.error("Async stopMonitoring failed", e);
-            }
-        }, "ApiMonitor-AsyncStop");
-        asyncStop.setDaemon(true);
-        asyncStop.start();
-    }
-    
     /**
      * 简化 URL 用于显示
      */
@@ -866,24 +1420,59 @@ public class RealApiMonitor {
     private static boolean isStaticResource(String url) {
         if (url == null) return false;
         String lower = url.toLowerCase();
-        
-        if (lower.contains("/api/") || lower.contains("/rest/")) return false;
-        
-        String[] extensions = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", 
-                               ".woff", ".woff2", ".ttf", ".eot", ".map", ".html"};
-        for (String ext : extensions) {
-            if (lower.endsWith(ext)) return true;
+
+        // ⭐ 修复4：只有路径片段包含 API 关键字才放行（避免 static/xxxapi.js 误判）
+        // 覆盖：/api/, /rest/, /service/ 以及路径开头的情况
+        if (lower.contains("/api/") || lower.contains("/rest/") || lower.contains("/service/")
+                || lower.startsWith("api/") || lower.startsWith("rest/") || lower.startsWith("service/")) {
+            return false;
+        }
+
+        // 后缀过滤
+        String[] exts = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+                         ".woff", ".woff2", ".ttf", ".eot", ".map", ".html"};
+        for (String e : exts) {
+            if (lower.endsWith(e)) return true;
         }
         return false;
     }
     
+    /**
+     * 判断字节数组解码后是否为可读文本（非乱码二进制）
+     */
+    private static boolean isReadableText(String text) {
+        if (text == null || text.isEmpty()) return true;  // 空视为文本
+        int controlCount = 0;
+        int total = Math.min(text.length(), 1024);  // 只检查前1024字符
+        for (int i = 0; i < total; i++) {
+            char c = text.charAt(i);
+            // 统计不可打印控制字符（排除常见空白字符）
+            if (c < 32 && c != '\t' && c != '\n' && c != '\r') {
+                controlCount++;
+            }
+        }
+        // 如果控制字符占比超过15%，认为是二进制数据
+        return (controlCount * 100.0 / total) < 15;
+    }
+
+    /** 从 Response 中提取 Content-Type */
+    private static String getContentType(Response response) {
+        try {
+            String ct = response.headers().get("content-type");
+            return ct != null ? ct.split(";")[0].trim() : "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
     private static String escapeJson(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
     }
     
     private static ApiCallRecord getLastApiCall() {
-        return apiCallHistory.isEmpty() ? null : apiCallHistory.get(apiCallHistory.size() - 1);
+        List<ApiCallRecord> history = apiCallHistory.get();
+        return history.isEmpty() ? null : history.get(history.size() - 1);
     }
 
     // ==================== 数据类 ====================
@@ -912,7 +1501,11 @@ public class RealApiMonitor {
         // 延迟读取支持
         private Response response;
         private Request request;
-        private boolean bodyRead = false;
+        private volatile boolean bodyRead = false;
+        
+        // ⭐ 修复5：bodyRead/getResponseBody 竞态锁
+        // 并行场景下多线程可能同时调用 getResponseBody()，导致 Playwright 响应流重复读取异常
+        private final Object bodyLock = new Object();
         
         public ApiCallRecord(String requestId, String url, String method, long timestamp,
                            Map<String, String> requestHeaders, Object requestBody,
@@ -938,22 +1531,40 @@ public class RealApiMonitor {
             this.request = request;
         }
         
+        /**
+         * 标记 response body 已读取（由 recordApiCall 在回调中立即调用）
+         * 防止 getResponseBody() 懒加载重复尝试 response.text() 导致异常
+         * ⭐ 修复5：加锁防止竞态条件
+         */
+        public void markBodyRead() {
+            synchronized (bodyLock) {
+                this.bodyRead = true;
+            }
+        }
+        
         public String getUrl() { return url; }
         public String getMethod() { return method; }
         public long getTimestamp() { return timestamp; }
         public int getStatusCode() { return statusCode; }
         
+        /** ⭐ 修复5：加锁防止并行场景下多线程同时读取 Playwright 响应流 */
         public Object getResponseBody() {
-            // 延迟读取响应体
-            if (responseBody == null && response != null && !bodyRead) {
-                try {
-                    responseBody = response.text();
-                } catch (Exception e) {
-                    logger.debug("Cannot read response body: {}", e.getMessage());
+            synchronized (bodyLock) {
+                // ⭐ 如果回调中已经读取过（无论成功与否），直接返回结果
+                if (bodyRead) {
+                    return responseBody;
+                }
+                // 首次调用（未在回调中捕获到的情况）
+                if (response != null) {
+                    try {
+                        responseBody = response.text();
+                    } catch (Exception e) {
+                        logger.debug("Cannot read response body (stream likely consumed): {}", e.getMessage());
+                    }
                 }
                 bodyRead = true;
+                return responseBody;
             }
-            return responseBody;
         }
         
         public Object getRequestBody() {

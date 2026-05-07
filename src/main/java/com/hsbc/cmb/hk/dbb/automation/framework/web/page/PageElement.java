@@ -733,7 +733,18 @@ public class PageElement {
         return this;
     }
 
-    // ==================== Hover / Focus / Check ====================
+    // ==================== Hover / Focus / Check / Scroll ====================
+    /**
+     * 将元素滚动到可视区域（使用 JS 实现）
+     */
+    public PageElement scrollToView() {
+        executeWithRetry(() -> {
+            locator().evaluate("el => el.scrollIntoView({ behavior: 'instant', block: 'center' })");
+            return true;
+        }, "scrollToView");
+        return this;
+    }
+
     public PageElement hover() {
         executeWithRetry(() -> {
             locator().hover();

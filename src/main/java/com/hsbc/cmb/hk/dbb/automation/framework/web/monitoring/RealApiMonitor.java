@@ -68,11 +68,28 @@ public class RealApiMonitor {
     // 是否已捕获到所有目标 API（每线程独立）
     private static final ThreadLocal<Boolean> allTargetApisCaptured = ThreadLocal.withInitial(() -> false);
 
+    // ⭐ 每个目标API模式的匹配次数（用于 minMatches 功能）
+    private static final ThreadLocal<Map<String, AtomicInteger>> patternMatchCounts = ThreadLocal.withInitial(ConcurrentHashMap::new);
+    
+    // ⭐ 当前配置的 minMatches 值（每线程独立）
+    private static final ThreadLocal<Integer> configuredMinMatches = ThreadLocal.withInitial(() -> 1);
+
+    // ⭐ 是否自动停止监控（每线程独立，默认 true — 没配置时默认自动停止）
+    private static final ThreadLocal<Boolean> configuredAutoStopOnMatch = ThreadLocal.withInitial(() -> true);
+
+    // ⭐ 当前配置的超时时间（每线程独立，单位秒，0=不自动超时）
+    private static final ThreadLocal<Integer> configuredTimeout = ThreadLocal.withInitial(() -> 60);
+
     // ⭐ 跨线程报告缓存（保持 static volatile：异步线程 → 主线程传递数据）
     // 解决 ApiMonitor-AsyncStop 线程无 Serenity 上下文导致 CurrentListener is null 的问题
     private static volatile boolean reportPending = false;
     private static volatile String pendingReportTitle = null;
     private static volatile String pendingReportContent = null;
+
+    // ⭐ 跨线程 API 活动时间戳（volatile 全局变量，解决 ApiMonitor-AutoStop daemon 线程无法访问
+    //   主线程 ThreadLocal<apiCallHistory> 的问题。每次 recordApiCall 成功后更新此时间戳，
+    //   AutoStop timer 通过此时间戳判断是否有新 API 活动）
+    private static volatile long lastApiActivityTime = 0;
 
     // 目标 API 的 URL 模式列表（每线程独立）
     private static final ThreadLocal<List<String>> targetApiPatterns = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
@@ -122,6 +139,30 @@ public class RealApiMonitor {
         // 回调支持：捕获到目标 API 时执行自定义操作
         private java.util.function.Consumer<ApiCallRecord> onMatchCallback;
         private boolean stopOnFirstMatch = false;
+        
+        // ⭐ 每个目标API的最小匹配次数（默认1，即每个pattern至少命中1次就停止）
+        // 解决场景：同一API连续请求多次（如轮询/刷新），需要等待N次后才停止
+        private int minMatches = 1;
+
+        /**
+         * ⭐ 是否在所有目标API都达到 minMatches 后自动停止监控（默认 true）
+         * 
+         * 当 true（默认）：匹配到目标 API 且满足 minCounts → 自动 stopMonitoring()
+         * 当 false：匹配到后仅记录，不自动停止，直到 timeout 时间到才停止
+         * 
+         * 适用场景：
+         * - true（默认）：等一个/几个 API 就够了（如登录配置加载完就停止）
+         * - false：分页、轮询、连续请求等场景，需要持续捕获同一种 API 的多次调用
+         *
+         * 示例：
+         * // 分页场景：持续捕获 /api/list?page=* 直到超时
+         * RealApiMonitor.monitor(context)
+         *     .api("/api/list")
+         *     .autoStopOnMatch(false)   // 不自动停止，按 timeout 控制
+         *     .timeout(60)
+         *     .start();
+         */
+        private boolean autoStopOnMatch = true;
         
         public MonitorBuilder(BrowserContext context, Page page) {
             this.context = context;
@@ -181,6 +222,55 @@ public class RealApiMonitor {
         }
         
         /**
+         * ⭐ 设置每个目标API的最小匹配次数（默认1）
+         * 
+         * 解决场景：同一API连续请求多次（如轮询、token刷新、分页）
+         * 默认行为：每个pattern命中1次后，所有pattern都满足时自动停止
+         * 设置minMatches(3)后：每个pattern需命中3次才触发自动停止
+         *
+         * @param n 每个目标API最少需要被捕获的次数
+         * @return this构建器实例
+         *
+         * 示例：
+         * // logon/config 会被请求3次，等待全部捕获后才停止
+         * RealApiMonitor.monitor(context)
+         *     .api("logon/config")
+         *     .minMatches(3)      // 等待该API被捕获3次
+         *     .timeout(60)
+         *     .start();
+         */
+        public MonitorBuilder minMatches(int n) {
+            this.minMatches = Math.max(1, n); // 至少为1
+            return this;
+        }
+
+        /**
+         * ⭐ 设置是否在所有目标 API 达到 minMatches 后自动停止监控（默认 true）
+         *
+         * 当 true（默认）：匹配到目标 API 且满足 minMatches → 自动调用 stopMonitoring()
+         * 当 false：匹配到后仅记录，不自动停止，持续监听直到 timeout 超时才停止
+         *
+         * 适用场景：
+         * - true（默认）：登录配置加载、单次 API 验证等"等到了就停"的场景
+         * - false：分页请求、轮询刷新、连续点击等需要持续捕获同一种 API 多次调用的场景
+         *
+         * @param autoStop true=自动停止（默认），false=不自动停止，按超时控制
+         * @return this构建器实例
+         *
+         * 示例：
+         * // 分页：持续捕获所有分页请求直到60s超时
+         * RealApiMonitor.monitor(context)
+         *     .api("/api/data/list")
+         *     .autoStopOnMatch(false)
+         *     .timeout(60)
+         *     .start();
+         */
+        public MonitorBuilder autoStopOnMatch(boolean autoStop) {
+            this.autoStopOnMatch = autoStop;
+            return this;
+        }
+        
+        /**
          * 启动后阻塞等待直到任一目标 API 被捕获
          * 
          * @param timeoutSeconds 最大等待时间（秒）
@@ -233,8 +323,8 @@ public class RealApiMonitor {
          * 异步启动监控（非阻塞）
          */
         public void start() {
-            logger.info("========== Starting async API monitoring ({} target APIs, timeout: {}s, callback: {}) ==========", 
-                apis.size(), timeoutSeconds, onMatchCallback != null ? "YES" : "NO");
+            logger.info("========== Starting async API monitoring ({} target APIs, timeout: {}s, callback: {}, minMatches: {}, autoStopOnMatch: {}) ==========", 
+                apis.size(), timeoutSeconds, onMatchCallback != null ? "YES" : "NO", minMatches, autoStopOnMatch);
             
             // ⭐ 关键顺序：先停掉旧监听器（在 clearHistory 清掉引用之前）
             if (context != null) {
@@ -250,6 +340,15 @@ public class RealApiMonitor {
             targetApiPatterns.get().clear();
             matchedTargetApiCount.get().set(0);
             allTargetApisCaptured.set(false);
+            
+            // ⭐ 保存 minMatches 配置 + 初始化每模式计数器 + autoStopOnMatch + timeout
+            configuredMinMatches.set(minMatches);
+            configuredAutoStopOnMatch.set(autoStopOnMatch);
+            configuredTimeout.set(timeoutSeconds);
+            patternMatchCounts.get().clear();
+            for (String pattern : apis.keySet()) {
+                patternMatchCounts.get().put(pattern, new AtomicInteger(0));
+            }
             
             // 设置期望
             for (Map.Entry<String, Integer> entry : apis.entrySet()) {
@@ -279,10 +378,20 @@ public class RealApiMonitor {
                 removeExistingListener(context);
                 
                 contextMonitoringStopped.put(context, false);
+                
+                // ⭐ 默认严格模式：配置了 .api(pattern) 时只记录匹配目标模式的响应
+                // 没配目标 API 时（apis 为空）才记录全部（兼容调试场景）
+                final boolean hasTargetPatterns = !apis.isEmpty();
+                
                 java.util.function.Consumer<Response> handler = response -> {
                     if (contextMonitoringStopped.getOrDefault(context, false)) return;
                     if (!matchesTargetHost(response.url())) return;
                     if (isStaticResource(response.url())) return;
+                    
+                    // 默认严格模式：有目标模式时，不匹配的 API 静默忽略
+                    if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
+                        return;
+                    }
                     
                     recordApiCall(response, response.request());
                     
@@ -299,10 +408,18 @@ public class RealApiMonitor {
                 removeExistingListener(page);
                 
                 pageMonitoringStopped.put(page, false);
+                
+                final boolean hasTargetPatterns = !apis.isEmpty();
+                
                 java.util.function.Consumer<Response> handler = response -> {
                     if (pageMonitoringStopped.getOrDefault(page, false)) return;
                     if (!matchesTargetHost(response.url())) return;
                     if (isStaticResource(response.url())) return;
+                    
+                    // 默认严格模式：有目标模式时，不匹配的 API 静默忽略
+                    if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
+                        return;
+                    }
                     
                     recordApiCall(response, response.request());
                     
@@ -315,6 +432,20 @@ public class RealApiMonitor {
                 pageListeners.put(page, handler);
                 page.onResponse(handler);
             }
+        }
+        
+        /**
+         * 检查 URL 是否匹配任一目标 API 模式
+         */
+        private boolean isTargetPatternMatch(String url) {
+            List<String> patterns = targetApiPatterns.get();
+            if (patterns.isEmpty()) return true; // 没有配置目标模式时放行所有
+            for (String pattern : patterns) {
+                if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                    return true;
+                }
+            }
+            return false;
         }
         
         /**
@@ -422,57 +553,23 @@ public class RealApiMonitor {
             }
         }
         
+        /**
+         * ⭐ Auto-stop 检查（无额外线程）
+         * 
+         * 不再使用 new Thread() 创建 daemon 线程轮询。
+         * 监控本身通过 Playwright onResponse 回调异步驱动，
+         * 超时判断直接嵌入 recordApiCall() 中：每次 API 进来时，
+         * 检查距上次活动的间隔是否超过 timeoutSeconds。
+         * 
+         * 优点：
+         * - 零额外线程开销，无 ThreadLocal 隔离问题
+         * - 与 onResponse 回调同线程，天然共享 apiCallHistory 等状态
+         * - 更精确：只在有 API 活动时才触发超时检查
+         */
         private void startAutoStopTimer() {
-            Thread timer = new Thread(() -> {
-                int lastSize = apiCallHistory.get().size();
-                long lastUpdate = System.currentTimeMillis();
-                
-                logger.info("Auto-stop timer started: timeout={}s, initial APIs={}", timeoutSeconds, lastSize);
-                
-                while (true) {
-                    try {
-                        Thread.sleep(1000);
-                        
-                        // 检查是否已被手动停止
-                        boolean alreadyStopped = false;
-                        if (context != null) {
-                            alreadyStopped = contextMonitoringStopped.getOrDefault(context, false);
-                        } else if (page != null) {
-                            alreadyStopped = pageMonitoringStopped.getOrDefault(page, false);
-                        }
-                        if (alreadyStopped) {
-                            logger.debug("Monitoring already stopped manually, exiting auto-stop timer");
-                            break;
-                        }
-                        
-                        int currentSize = apiCallHistory.get().size();
-                        if (currentSize != lastSize) {
-                            lastSize = currentSize;
-                            lastUpdate = System.currentTimeMillis();
-                            if ((lastSize % 5 == 0) || lastSize <= 5) {
-                                logger.debug("API count changed: {} (elapsed: {}s since last activity)", 
-                                    lastSize, (System.currentTimeMillis() - lastUpdate) / 1000);
-                            }
-                        } else {
-                            long elapsed = (System.currentTimeMillis() - lastUpdate) / 1000;
-                            long remaining = timeoutSeconds - elapsed;
-                            if (remaining > 0 && remaining <= 5) {
-                                logger.info("Auto-stop in {}s... (no new API calls, total: {})", remaining, currentSize);
-                            }
-                            if (elapsed >= timeoutSeconds) {
-                                logger.warn("TIMEOUT: No API calls for {}s. Auto-stopping. Total APIs captured: {}", 
-                                    timeoutSeconds, currentSize);
-                                stopMonitoring();
-                                break;
-                            }
-                        }
-                    } catch (InterruptedException e) {
-                        break;
-                    }
-                }
-            }, "ApiMonitor-AutoStop");
-            timer.setDaemon(true);
-            timer.start();
+            // ⭐ 无操作：auto-stop 逻辑已内联到 recordApiCall() 的 checkAutoStopTimeout() 中
+            // 仅在此记录配置，供 recordApiCall 读取
+            logger.info("Auto-stop: will check in-record timeout={}s (inline, no extra thread)", timeoutSeconds);
         }
         
         private void validateRealTime(Response response) {
@@ -1152,6 +1249,13 @@ public class RealApiMonitor {
         matchedTargetApiCount.get().set(0);
         allTargetApisCaptured.set(false);
         targetApiPatterns.get().clear();
+        // ⭐ 清理 minMatches + autoStopOnMatch + timeout 相关
+        patternMatchCounts.get().clear();
+        configuredMinMatches.set(1);           // 重置默认值
+        configuredAutoStopOnMatch.set(true);   // 重置默认值
+        configuredTimeout.set(60);             // 重置默认值
+        // ⭐ 重置跨线程 API 活动时间戳
+        lastApiActivityTime = 0;
     }
     
     /**
@@ -1246,7 +1350,15 @@ public class RealApiMonitor {
             return false;
         }
     }
-    
+
+    /**
+     * 获取当前配置的 auto-stop 超时时间（秒）
+     * 供 recordApiCall() 内联超时检查使用
+     */
+    private static int getEffectiveTimeout() {
+        return configuredTimeout.get();
+    }
+
     /**
      * 缓存报告数据供主线程稍后写入（解决异步线程无 Serenity 上下文的问题）
      * 在 stopMonitoring 的异步调用路径中使用
@@ -1456,6 +1568,11 @@ public class RealApiMonitor {
         matchedTargetApiCount.remove();
         allTargetApisCaptured.remove();
         targetApiPatterns.remove();
+        // ⭐ 清理 minMatches + timeout 相关 ThreadLocal
+        patternMatchCounts.remove();
+        configuredMinMatches.remove();
+        configuredAutoStopOnMatch.remove();
+        configuredTimeout.remove();
     }
 
     /**
@@ -1558,7 +1675,25 @@ public class RealApiMonitor {
             record.setRequest(request);
             apiCallHistory.get().add(record);
 
+            // ⭐ 更新跨线程 API 活动时间戳（供 auto-stop 超时检查使用）
+            long now = System.currentTimeMillis();
+            long prevActivity = lastApiActivityTime;
+            lastApiActivityTime = now;
+
             logger.debug("[API] {} {} - {}", request.method(), response.url(), response.status());
+
+            // ⭐ 内联 auto-stop 超时检查（无额外线程，复用 onResponse 回调线程）
+            // 检测：距上次 API 活动是否已超过配置的 timeoutSeconds（说明中间有空闲期）
+            if (prevActivity > 0 && configuredAutoStopOnMatch.get()) {
+                long idleSeconds = (now - prevActivity) / 1000;
+                int effectiveTimeout = getEffectiveTimeout();
+                if (effectiveTimeout > 0 && idleSeconds >= effectiveTimeout) {
+                    logger.warn("AUTO-STOP: No API calls for {}s (idle), auto-stopping. Total APIs: {}", 
+                        idleSeconds, apiCallHistory.get().size());
+                    stopMonitoring();
+                    return; // 已停止，后续逻辑跳过
+                }
+            }
 
             // 再检查是否已捕获所有目标 API（如果配置了目标 API）
             List<String> patterns = targetApiPatterns.get();
@@ -1566,16 +1701,37 @@ public class RealApiMonitor {
                 String url = response.url();
                 for (String pattern : patterns) {
                     if (url.contains(pattern) || url.matches(toRegex(pattern))) {
-                        int matched = matchedTargetApiCount.get().incrementAndGet();
-                        logger.info("[Target API #{}] {} {} - {}", matched, request.method(), url, response.status());
+                        int totalMatched = matchedTargetApiCount.get().incrementAndGet();
+                        
+                        // ⭐ minMatches 逻辑：按模式独立计数
+                        AtomicInteger patternCount = patternMatchCounts.get().get(pattern);
+                        int thisPatternCount = (patternCount != null) ? patternCount.incrementAndGet() : 1;
+                        
+                        int requiredMin = configuredMinMatches.get();
+                        logger.info("[Target API #{} | {}#{}] {} {} - {}", 
+                                totalMatched, pattern, thisPatternCount, request.method(), url, response.status());
 
-                        // 检查是否已匹配所有目标 API（此时记录已安全保存到历史中）
-                        if (matched >= patterns.size()) {
+                        // 检查是否每个目标模式都达到了 minMatches 次
+                        boolean allSatisfied = true;
+                        for (String p : patterns) {
+                            AtomicInteger cnt = patternMatchCounts.get().get(p);
+                            int current = (cnt != null) ? cnt.get() : 0;
+                            if (current < requiredMin) {
+                                allSatisfied = false;
+                                break;
+                            }
+                        }
+
+                        if (allSatisfied) {
                             allTargetApisCaptured.set(true);
-                            logger.info("All {} target API(s) captured. Stopping monitoring.", patterns.size());
-                            // ⭐ onResponse 本身就是 Playwright 异步线程，无需再 new Thread
-                            // stopMonitoring() 内部会自动判断线程上下文：非主线程走缓存路径
-                            stopMonitoring();
+                            logger.info("All {} target API(s) reached minMatches({}). Total captured: {}. {}",
+                                    patterns.size(), requiredMin, totalMatched,
+                                    configuredAutoStopOnMatch.get() ? "Stopping." : "(autoStopOnMatch=false, continuing to monitor)");
+                            
+                            // ⭐ 只有 autoStopOnMatch=true 时才自动停止
+                            if (configuredAutoStopOnMatch.get()) {
+                                stopMonitoring();
+                            }
                         }
                         break;
                     }
@@ -1625,7 +1781,19 @@ public class RealApiMonitor {
     
     private static boolean isStaticResource(String url) {
         if (url == null) return false;
-        String lower = url.toLowerCase();
+        
+        // ⭐ 去掉查询参数和片段后再判断扩展名（fix: clear.png?org_id=xxx 不会被漏过）
+        String pathOnly = url;
+        int queryIndex = url.indexOf('?');
+        if (queryIndex > 0) {
+            pathOnly = url.substring(0, queryIndex);
+        }
+        int fragmentIndex = pathOnly.indexOf('#');
+        if (fragmentIndex > 0) {
+            pathOnly = pathOnly.substring(0, fragmentIndex);
+        }
+        
+        String lower = pathOnly.toLowerCase();
 
         // ⭐ 修复4：只有路径片段包含 API 关键字才放行（避免 static/xxxapi.js 误判）
         // 覆盖：/api/, /rest/, /service/ 以及路径开头的情况
@@ -1634,7 +1802,7 @@ public class RealApiMonitor {
             return false;
         }
 
-        // 后缀过滤
+        // 后缀过滤（基于去掉查询参数后的 path）
         String[] exts = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
                          ".woff", ".woff2", ".ttf", ".eot", ".map", ".html"};
         for (String e : exts) {

@@ -1,6 +1,6 @@
-# API 监控工具包使用指南（详细版 v3.1）
+# API 监控工具包使用指南（详细版 v3.2）
 
-> **最后更新：** 2026-05-08 | **基于代码版本：** v3.0 基础上新增 非阻塞条件检查 + 多记录查询（分页/重复请求支持）
+> **最后更新：** 2026-05-08 | **基于代码版本：** v3.1 基础上移除所有 new Thread / ScheduledExecutorService，全面采用 Playwright 异步回调内联模式
 
 ---
 
@@ -80,15 +80,18 @@ ApiCallRecord (数据类)
 
 ### 2.1 核心特性与架构设计
 
-- **非阻塞异步**：`start()` 立即返回，API 捕获在后台线程进行，不阻塞测试流程
+- **非阻塞异步**：`start()` 立即返回，API 捕获通过 Playwright `onResponse()` 回调异步进行，不阻塞测试流程
+- **零额外线程**（v3.2）：不使用 `new Thread` / `ScheduledExecutorService`，超时自动停止检查内联在 `recordApiCall()` 中，与回调同线程执行
 - **自动捕获**：通过 Playwright `onResponse()` 监听器自动捕获所有网络请求
-- **自动停止**：两种触发条件（目标全捕获 / 超时无新调用），无需手动干预
+- **自动停止**：三种触发条件（目标全匹配 minMatches / 超时空闲 / 首次匹配即停），无需手动干预
 - **实时验证**：捕获到目标 API 时立即校验状态码（Hamcrest assertThat）
-- **Serenity 集成**：自动将监控结果写入 Serenity BDD 报告（跨线程缓存机制）
+- **Serenity 集成**：自动将监控结果写入 Serenity BDD 报告（跨线程 volatile 缓存机制）
 - **JSON 提取**：内置 JsonPath 支持，提供类型安全便捷方法（String/Integer/Long/Double/Boolean/List/Map）
 - **阻塞等待**：`waitForApi()` / `waitForJsonValue()` 解决 `getLast()` 返回 null 的竞态问题
 - **非阻塞条件检查**：`hasApiCaptured()` 适用于"可能触发、也可能不触发"的条件性 API 场景（v3.1 新增）
 - **多记录查询**：`getAll()` / `getAllJsonValues()` 支持分页、重复请求等多次调用场景（v3.1 新增）
+- **minMatches 控制**：支持配置每个目标 API 最小匹配次数，满足后才触发自动停止（v3.2 新增）
+- **autoStopOnMatch 开关**：控制目标匹配后是否自动停止（默认 true），设为 false 可持续捕获直到超时（v3.2 新增）
 - **超时增强诊断**：超时时输出已捕获的 API 列表，快速定位"为什么没抓到"
 - **响应体同步读取**：在 `onResponse` 回调中立即读取 body，避免流关闭后丢失
 
@@ -104,23 +107,67 @@ ApiCallRecord (数据类)
 | `matchedTargetApiCount` | `ThreadLocal<AtomicInteger>` | 每线程独立的目标匹配计数 |
 | `allTargetApisCaptured` | `ThreadLocal<Boolean>` | 每线程独立的全量捕获标志 |
 | `targetApiPatterns` | `ThreadLocal<List>` | 每线程独立的目标 URL 模式列表 |
+| `patternMatchCounts` | `ThreadLocal<Map<String, AtomicInteger>>` | 每目标模式的匹配计数（v3.2，minMatches 功能） |
+| `configuredMinMatches` | `ThreadLocal<Integer>` | 每目标最小匹配次数（默认 1）（v3.2） |
+| `configuredAutoStopOnMatch` | `ThreadLocal<Boolean>` | 匹配后是否自动停止（默认 true）（v3.2） |
+| `configuredTimeout` | `ThreadLocal<Integer>` | 超时时间秒数（默认 60）（v3.2） |
 | `monitoringFailure` | `ThreadLocal<AssertionError>` | 每线程独立的失败异常 |
 | `contextListeners` / `pageListeners` | `static ConcurrentHashMap` | 以 BrowserContext/Page 实例为 key，天然隔离不同线程 |
-| `reportPending` / `pendingReport*` | `static volatile` | 跨线程报告缓存桥（异步线程→主线程传递） |
+| `reportPending` / `pendingReport*` | `static volatile` | 跨线程报告缓存桥（recordApiCall 写、主线程读） |
+| `lastApiActivityTime` | `static volatile long` | 跨线程 API 活动时间戳（v3.2，供内联超时检查使用） |
 
 **关键设计决策：**
 - `contextListeners` / `pageListeners` 保持 static —— 因为 BrowserContext/Page 实例本身就是线程绑定的
-- `reportPending` 保持 volatile —— 用于跨线程通信（AsyncStop 线程写、主线程读）
+- `reportPending` 保持 volatile —— 用于跨线程通信（recordApiCall 写、主线程读）
 - 所有 `resetForNextScenario()` 调用使用 `ThreadLocal.remove()` 而非 `set(null)` —— 防止线程池复用时旧数据污染
+
+> **v3.2 架构原则：零额外线程**
+>
+> 本工具包**不创建任何 `new Thread` 或 `ScheduledExecutorService`**。所有逻辑均在 Playwright 的异步回调线程中执行：
+> - **RealApiMonitor**：超时自动停止检查内联在 `recordApiCall()` 中，每次记录 API 时顺带判断是否超时空闲
+> - **ApiMonitorAndMockManager**：延迟 fulfill 直接在 route handler 中同步调用，不再使用调度线程池
+>
+> 这样做的好处：
+> 1. 避免 ThreadLocal 在新线程中为空的经典陷阱（daemon 线程拿到空 copy）
+> 2. 减少线程上下文切换开销
+> 3. 代码更简单、更容易调试
 
 ### 2.3 停止机制
 
-#### 机制一：目标 API 全部捕获后自动停止（推荐）
+#### 机制一：目标 API 全部达到 minMatches 后自动停止（推荐）
 
-当通过 `.api()` 指定了目标 API 后，系统追踪每个目标是否被捕获。**所有目标都命中后立即停止**。
+当通过 `.api()` 指定了目标 API 后，系统追踪每个目标的匹配次数。**所有目标都达到 `minMatches` 次数后立即停止**（默认 minMatches=1）。
 
 ```
-启动监控 → 捕获目标API #1 ✅ → 捕获目标API #2 ✅ → ... → 全部捕获 → stopMonitoring() ✓
+启动监控 → 模式A匹配#1 → 模式B匹配#1 → ... → 所有模式都达minMatches → stopMonitoring() ✓
+```
+
+**v3.2 增强 —— `autoStopOnMatch` 开关：**
+- 默认 `true`（没配置时默认自动停止）：所有目标达标后调用 `stopMonitoring()`
+- 设为 `false` 时：仅记录匹配计数，**不停止**，持续监听直到超时（适用于分页/轮询场景）
+
+```java
+// 场景1: 默认行为 — 匹配到就停
+RealApiMonitor.monitor(context)
+    .api("logon/config", 200)
+    .timeout(30)
+    .start();
+    // logon/config 被捕获1次(minMatches默认=1)后自动停止
+
+// 场景2: 等待同一 API 被请求 N 次
+RealApiMonitor.monitor(context)
+    .api("logon/config", 200)
+    .minMatches(3)           // 等待该API被捕获3次
+    .timeout(60)
+    .start();
+
+// 场景3: 持续捕获不分页请求（分页场景）
+RealApiMonitor.monitor(context)
+    .api("/api/data/list")
+    .autoStopOnMatch(false)   // 不自动停止！持续捕获
+    .minMatches(5)            // 仅记录，即使到了5次也不停
+    .timeout(60)              // 靠超时控制何时结束
+    .start();
 ```
 
 ```java
@@ -142,7 +189,9 @@ loginPage.login("user", "pass");
 
 #### 机制二：超时自动停止（兜底）
 
-后台定时器每秒检查是否有新 API 调用。超过 `timeout()` 时间无新调用则自动停止。
+每次 `recordApiCall()` 记录 API 调用时，内联检查距上次调用的空闲时间。超过 `timeout()` 时间无新调用则自动停止。
+
+> **v3.2 变更**：不再使用后台定时器线程（`new Thread` / `ScheduledExecutorService`），改为在 Playwright 异步回调中内联检查，避免 ThreadLocal 跨线程问题。
 
 ```
 启动监控 → 有API(重置计时器) → 有API(重置计时器) → 无新API... → 超时到达 → 自动停止
@@ -173,6 +222,8 @@ builder
     .api("/api/login", 200)           // 目标API + 期望状态码（0=不验证）
     .api("/api/user")                  // 只监控不验证状态码
     .timeout(30)                        // 兜底超时秒数（0=无限）
+    .minMatches(1)                      // v3.2: 每个目标最小匹配次数（默认1）
+    .autoStopOnMatch(true)              // v3.2: 达标后自动停止（默认true）
     .then(record -> { ... })            // 匹配时的回调
     .stopOnFirstMatch()                 // 首次匹配即停
     .start();                           // 异步启动
@@ -180,6 +231,15 @@ builder
 // start() 返回后可继续用 waitForResponse() 阻塞等待
 ApiCallRecord result = builder.waitForResponse(30);  // 最多等30秒
 ```
+
+**典型配置模式：**
+
+| 场景 | 配置 | 说明 |
+|------|------|------|
+| 登录后验证 API | `.api("config", 200).timeout(30).start()` | 默认行为，捕获到就停 |
+| 等待同一 API N 次 | `.api("config").minMatches(3).timeout(60).start()` | 如 config 被请求 3 次才停止 |
+| 分页持续捕获 | `.api("list").autoStopOnMatch(false).timeout(60).start()` | 不自动停，靠超时结束 |
+| 组合：分页至少5页 | `.api("list").minMatches(5).autoStopOnMatch(false).timeout(120).start()` | 记录匹配数但不停止 |
 
 **MonitorBuilder API：**
 
@@ -190,6 +250,8 @@ ApiCallRecord result = builder.waitForResponse(30);  // 最多等30秒
 | `timeout(seconds)` | int | Builder | 兜底超时时间（秒），0=无限 |
 | `then(callback)` | Consumer\<ApiCallRecord\> | Builder | 匹配到目标 API 时执行回调 |
 | `stopOnFirstMatch()` | - | Builder | 首次匹配任一目标后自动停止 |
+| `minMatches(n)` | int | Builder | **v3.2**: 每个目标最小匹配次数（默认 1） |
+| `autoStopOnMatch(bool)` | boolean | Builder | **v3.2**: 达标后是否自动停止（默认 true，false 则持续监听到超时） |
 | `start()` | - | void | 异步启动监控（立即返回） |
 | `waitForResponse(timeoutSec)` | int | ApiCallRecord | 启动后阻塞等待首条匹配（超时返回 null） |
 
@@ -556,14 +618,14 @@ testSuiteFinished()     → RealApiMonitor.forceCleanAll()
 2. 清空 `reportPending` 缓存
 3. 清空 `contextMonitoringStopped` / `pageMonitoringStopped`
 4. 清空 `contextListeners` / `pageListeners` 引用
-5. 对所有 ThreadLocal 调用 `remove()`（不是 `set(null)`！）
+5. 对所有 ThreadLocal 调用 `remove()`（包括 v3.2 新增的 `patternMatchCounts`, `configuredMinMatches`, `configuredAutoStopOnMatch`, `configuredTimeout`）
 
 **`forceCleanAll()` 详细行为：**
 1. `stopMonitoring()` — 停止监控
 2. `resetForNextScenario()` — 重置场景
 3. `clearTargetHost()` — 清除 Host 过滤
 
-### 2.10 完整示例（10 个场景）
+### 2.10 完整示例（11 个场景）
 
 #### 示例 1：基础监控（自动停止）
 
@@ -822,6 +884,43 @@ public void testPaginationDataCollection() {
 }
 ```
 
+#### 示例 11：minMatches + autoStopOnMatch（v3.2 新增）
+
+```java
+@Test
+public void testMinMatchesAndAutoStop() {
+    // 场景：登录页面加载时，config API 被请求了 3 次，需要全部捕获
+    RealApiMonitor.monitor(context)
+        .api("logon/config", 200)
+        .minMatches(3)              // 等待该API被捕获3次
+        .timeout(60)
+        .start();
+
+    loginPage.navigateTo(currentUrl);
+    loginPage.login("user", "pass");
+
+    // 验证：确实捕获了 3 次
+    assertEquals(3, RealApiMonitor.getMatchCount("logon/config"));
+}
+
+@Test
+public void testContinuousCaptureWithAutoStopOff() {
+    // 场景：分页/轮询 — 不确定会来多少次，持续捕获直到超时
+    RealApiMonitor.monitor(context)
+        .api("/api/data/list")
+        .autoStopOnMatch(false)     // 关闭自动停止！
+        .timeout(30)                // 30秒后超时停止
+        .start();
+
+    page.scrollToBottom();   // 触发第1页
+    page.scrollToBottom();   // 触发第2页
+    page.scrollToBottom();   // 触发第3页
+
+    List<ApiCallRecord> pages = RealApiMonitor.getAll("/api/data/list");
+    assertTrue("Should capture at least 3 pages", pages.size() >= 3);
+}
+```
+
 ---
 
 ## 三、ApiRequestModifier - 请求修改器
@@ -878,28 +977,136 @@ RequestResponseStore store = ApiRequestModifier.modifyRequest(
 
 ---
 
-## 四、ApiMonitorAndMockManager - Mock 管理
+## 四、ApiMonitorAndMockManager - Mock / Intercept 管理
+
+### 核心特性
+
+- **Mock**：拦截请求并返回自定义响应（完全替换）
+- **Intercept**：拦截真实 API 响应，修改字段后返回前端（部分篡改）
+- **Monitor**：记录所有 API 调用历史（Mock/Intercept/Real 三种类型）
+- **ThreadLocal 实例管理**：多线程并行测试互不干扰
+- **Route 去重绑定**：防止同一 URL 被重复 route
+- **统一路由入口**：一个 handler 分发 Mock / Intercept / Pass-through
+- **零额外线程**：v3.2 移除所有 `new Thread` / `ScheduledExecutorService`，延迟 fulfill 直接在异步回调中执行
+
+### 基础用法：Mock 完全替换响应
 
 ```java
-MockBuilder mock = MockBuilder.create()
-    .url("/api/auth/login")
-    .method("POST")
-    .status(200)
-    .body("{\"success\":true,\"token\":\"mock-jwt\"}")
-    .header("Content-Type", "application/json");
+// 方式1：Builder 链式配置（推荐）
+ApiMonitorAndMockManager.mock(context)
+    .forUrl("/api/auth/login")
+    .withStatus(200)
+    .withResponse("{\"success\":true,\"token\":\"mock-jwt\"}")
+    .build();
 
-ApiMonitorAndMockManager.mock(context, mock);
+// 方式2：一行代码快捷 API
+ApiMonitorAndMockManager.mockDirectSuccess(page, "/api/users", "{\"id\":1,\"name\":\"test\"}");
 
-// 动态 Mock
-MockBuilder dynamicMock = MockBuilder.create()
-    .url("/api/users/(.*)")    // 正则匹配
-    .method("GET")
-    .dynamicResponse(request -> {
-        return "{\"id\":\"" + extractUserId(request.url) + "\"}";
-    });
-
-ApiMonitorAndMockManager.mock(context, dynamicMock);
+// 方式3：Mock 错误响应
+ApiMonitorAndMockManager.mockDirectError(context, "/api/payment", 500, "{\"error\":\"payment_failed\"}");
 ```
+
+### Intercept 拦截并修改真实响应
+
+```java
+// JsonPath 字段级修改
+ApiMonitorAndMockManager.intercept(context)
+    .forUrl("/api/user/profile")
+    .modify("$.data.role", "admin")
+    .build();
+
+// 自定义修改器
+ApiMonitorAndMockManager.intercept(context)
+    .forUrl("/api/last")
+    .thenModify(body -> {
+        // 自定义修改逻辑
+        return body.replace("\"securityCode\":\"\"", "\"securityCode\":\"123456\"");
+    })
+    .build();
+
+// 组合：先 JsonPath 再自定义修改器
+ApiMonitorAndMockManager.intercept(context)
+    .forUrl("/api/payment")
+    .modify("$.data.status", "PROCESSED")
+    .thenModify(body -> addAuditInfo(body))  // 在 JsonPath 修改基础上再处理
+    .build();
+```
+
+### 动态响应生成
+
+```java
+// 根据请求内容动态生成响应
+ApiMonitorAndMockManager.mockDynamic(context, "/api/users/(.*)",
+    (request, ctx) -> {
+        String url = (String) ctx.get("url");
+        String userId = extractUserId(url);
+        return "{\"id\":\"" + userId + "\",\"name\":\"User-" + userId + "\"}";
+    });
+```
+
+### Builder 高级选项
+
+```java
+ApiMonitorAndMockManager.mock(context)
+    .forUrl("/api/slow")           // 目标 URL 模式
+    .method("POST")                // HTTP 方法过滤（默认 ".*" 匹配所有）
+    .withStatus(201)               // 响应状态码（默认 200）
+    .withResponse("{\"ok\":true}") // 响应体 JSON
+    .withHeader("X-Custom", "val") // 自定义响应头
+    .withDelay(1000)               // 模拟延迟（ms）— v3.2: 直接在回调中执行，无额外线程
+    .withGenerator((req, ctx) -> { // 动态响应生成器
+        return "{\"timestamp\":" + System.currentTimeMillis() + "}";
+    })
+    .autoClearRules(false)         // 不清除已有规则（默认 true 会先清再建）
+    .build();
+```
+
+### 查询 API
+
+```java
+// 获取所有调用历史
+List<ApiCallRecord> all = ApiMonitorAndMockManager.getApiCallHistory();
+
+// 按 URL 正则过滤
+List<ApiCallRecord> loginCalls = ApiMonitorAndMockManager.getApiCallHistoryByUrl(".*login.*");
+
+// 规则数量统计
+int mockCount = ApiMonitorAndMockManager.getMockRuleCount();
+int interceptCount = ApiMonitorAndMockManager.getInterceptRuleCount();
+
+// 判断是否有某 URL 的 Mock
+boolean hasLoginMock = ApiMonitorAndMockManager.hasMockForUrl("/api/login");
+```
+
+### 生命周期管理（重要！）
+
+```java
+// ✅ 测试结束后务必清理（@After 中调用）
+ApiMonitorAndMockManager.cleanup(context);   // 清理 Context 级别
+ApiMonitorAndMockManager.cleanup(page);       // 清理 Page 级别
+
+// 手动停止特定 Mock
+ApiMonitorAndMockManager.stopMock(context, "/api/some-url");
+
+// 仅清除规则（不 unroute）
+ApiMonitorAndMockManager.clearAllMocks();
+ApiMonitorAndMockManager.clearAllIntercepts();
+```
+
+### ApiCallRecord 类型说明
+
+| Type | 含义 | responseBody |
+|------|------|-------------|
+| `MOCK` | 被 Mock 规则拦截，返回自定义响应 | Mock 数据 |
+| `INTERCEPT` | 被 Intercept 规则拦截，修改后返回 | 修改后的真实响应 |
+| `REAL` | 未匹配任何规则，原始放行 | 真实 API 响应 |
+
+### Serenity 报告集成
+
+```java
+// 自动在 build() 时调用（MockBuilder），或手动触发：
+ApiMonitorAndMockManager.recordToSerenityReport();
+// → 写入 "Mock Configuration" + "API Call History" 两份报告数据
 
 ---
 
@@ -976,11 +1183,28 @@ public void tearDown() {
 }
 ```
 
+**6. 使用 minMatches + autoStopOnMatch 控制停止行为（v3.2）**
+```java
+// ✅ 默认行为：捕获到就停（适用于登录、单次请求验证）
+RealApiMonitor.monitor(ctx).api("/api/login", 200).timeout(30).start();
+
+// ✅ 等待同一 API 多次（如轮询/配置加载多次）
+RealApiMonitor.monitor(ctx).api("config").minMatches(3).timeout(60).start();
+
+// ✅ 持续捕获不分页请求（分页场景，靠超时结束）
+RealApiMonitor.monitor(ctx)
+    .api("/api/list")
+    .autoStopOnMatch(false)   // 关键：关闭自动停止！
+    .timeout(120)
+    .start();
+```
+
 ### 注意事项
 
 | 项目 | 说明 |
 |------|------|
 | 线程安全 | 所有 public 方法都是线程安全的（ThreadLocal 隔离） |
+| 零额外线程 | **v3.2** 不使用 `new Thread` / `ScheduledExecutorService`，全部逻辑在 Playwright 异步回调中执行 |
 | 内存管理 | 大量 API 调用会占用内存，建议定期 `clearHistory()` 或依赖场景自动清理 |
 | 静态资源过滤 | `.js/.css/.png/.gif/.woff` 等静态资源和 `/api/` 以外的请求默认被过滤 |
 | Host 过滤 | 设置 targetHost 后只监控该 host |
@@ -989,6 +1213,12 @@ public void tearDown() {
 | 报告幂等 | `flushPendingReport()` 多次调用是幂等的（reportPending 标志保证只写一次） |
 | 阻塞 vs 非阻塞 | `waitFor*` 仅用于确定性API（一定会触发）；条件性 API 用 `hasApiCaptured()` + `getAll()` （v3.1） |
 | 多记录安全 | `getAll()` 返回新 ArrayList（非原列表视图），可安全修改；`getAllJsonValues()` 提取失败的位置返回 null |
+| Mock 规则覆盖 | **MockBuilder** 的 `autoClearRules(true)` (默认) 会在 build() 时先清空已有规则；设为 `false` 可累加。注意：相同 URL 会生成相同 rule name，Map put 会**覆盖**而非累加，累加时应使用不同 URL |
+| Intercept 两阶段修改 | `.modify(jsonPath, value)` + `.thenModify(modifier)` 组合时，先执行 JsonPath 批量修改，再执行自定义 modifier |
+| 延迟 fulfill | `withDelay()` 配置的延迟在 v3.2 中直接在 route 回调中执行（非真正网络延迟），如需真实网络级延迟模拟可考虑 Playwright CDP 协议层方案 |
+| autoStopOnMatch 默认值 | **默认 true** — 没有显式设置 `.autoStopOnMatch(false)` 时，所有目标达到 minMatches 后会**自动停止**。分页/轮询等需要持续捕获的场景必须显式设为 `false` |
+| minMatches 默认值 | **默认 1** — 每个目标 API 只需被捕获 1 次即视为"已达标"。同一 API 需要等待 N 次时必须显式设置 `.minMatches(N)` |
+| 内联超时检查 | v3.2 超时判断嵌入 `recordApiCall()` 中，每次 API 进来时检查距上次活动的空闲时间，不再使用后台定时器线程 |
 
 ---
 
@@ -1086,4 +1316,88 @@ public void tearDown() {
 | `clear()` | - | ApiRequestModifier | 清空所有配置 |
 | `modifyRequest(ctx, pattern, mod)` | Context, String, Mod | RequestResponseStore | 应用修改（静态方法） |
 
----
+### ApiMonitorAndMockManager — 静态工厂方法
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `mock(page)` | Page | MockBuilder | Mock 构建器入口（Page 级别） |
+| `mock(context)` | BrowserContext | MockBuilder | Mock 构建器入口（Context 级别） |
+| `intercept(page)` | Page | InterceptBuilder | Intercept 构建器入口（Page 级别） |
+| `intercept(context)` | BrowserContext | InterceptBuilder | Intercept 构建器入口（Context 级别） |
+
+### ApiMonitorAndMockManager — 快捷 API
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `mockDirectResponse(target, url, status, data)` | Object, String, int, String | void | 一行代码 Mock 响应 |
+| `mockDirectSuccess(target, url, data)` | Object, String, String | void | Mock 成功响应（默认 200） |
+| `mockDirectError(target, url, status, data)` | Object, int, String, String | void | Mock 错误响应 |
+| `mockTimeout(target, url, timeoutMs, data)` | Object, String, long, String | void | Mock 超时响应 |
+| `mockDynamic(target, url, generator)` | Object, String, ResponseGenerator | void | 动态响应生成 |
+
+### ApiMonitorAndMockManager — 查询 API
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `getApiCallHistory()` | - | List\<ApiCallRecord\> | 所有调用历史（不可修改） |
+| `getApiCallHistoryByUrl(regex)` | String | List\<ApiCallRecord\> | 按 URL 正则过滤 |
+| `getMockRuleCount()` | - | int | 已注册 Mock 规则数 |
+| `getInterceptRuleCount()` | - | int | 已注册 Intercept 规则数 |
+| `hasMockForUrl(urlPattern)` | String | boolean | 是否有某 URL 的 Mock |
+| `getAllMockRules()` | - | Map\<String, MockRule\> | 所有 Mock 规则副本 |
+
+### ApiMonitorAndMockManager — 管理 / 清理 API
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `stopAllMocks(target)` | Object (Page/Context) | void | 停止所有路由 + 清除规则 |
+| `stopMock(target, urlPattern)` | Object, String | void | 停止特定 URL 路由 |
+| `clearAllMocks()` | - | void | 仅清除规则（不 unroute） |
+| `clearAllIntercepts()` | - | void | 仅清除拦截规则 |
+| `stopAllIntercepts(target)` | Object | void | 停止所有拦截路由 + 清除规则 |
+| `cleanup()` | - | void | 清理当前线程实例（ThreadLocal.remove） |
+| `cleanup(page)` | Page | void | unrouteAll + cleanup |
+| `cleanup(context)` | BrowserContext | void | unrouteAll + cleanup |
+| `recordToSerenityReport()` | - | void | 写入 Serenity 报告 |
+
+### MockBuilder API
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `forUrl(urlPattern)` | String | Builder | 目标 URL 模式 |
+| `forEndpoint(endpoint)` | String | Builder | 按 endpoint 过滤（URL contains） |
+| `withStatus(code)` | int | Builder | 响应状态码 |
+| `withResponse(data)` | String | Builder | 响应体 JSON |
+| `withDelay(ms)` | long | Builder | 模拟延迟（v3.2: 回调内直接执行） |
+| `withHeader(key, value)` | String, String | Builder | 自定义响应头 |
+| `withGenerator(gen)` | ResponseGenerator | Builder | 动态响应生成器 |
+| `method(m)` | String | Builder | HTTP 方法过滤 |
+| `autoClearRules(b)` | boolean | Builder | 是否先清已有规则（默认 true） |
+| `build()` | - | void | 注册并应用规则 |
+
+### InterceptBuilder API
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `forUrl(urlPattern)` | String | Builder | 目标 URL 模式 |
+| `forUrlContains(keyword)` | String | Builder | URL 包含关键字过滤 |
+| `method(m)` | String | Builder | HTTP 方法过滤 |
+| `modify(jsonPath, value)` | String, Object | Builder | JsonPath 字段修改 |
+| `modifications(map)` | Map\<String,Object\> | Builder | 批量 JsonPath 修改 |
+| `thenModify(modifier)` | ResponseModifier | Builder | 自定义修改器（可跟在 modify 后组合） |
+| `autoClear(b)` | boolean | Builder | 是否先清已有规则（默认 true） |
+| `build()` | - | void | 注册并应用规则 |
+
+### ApiMonitorAndMockManager.ApiCallRecord 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `requestId` | String | UUID，唯一标识本次调用 |
+| `url` | String | 完整请求 URL |
+| `method` | String | HTTP Method |
+| `timestamp` | long | 捕获时间戳 |
+| `statusCode` | int | HTTP 状态码 |
+| `responseBody` | Object | 响应体（Mock/Intercept/Real） |
+| `type` | Type enum | `MOCK` / `INTERCEPT` / `REAL` |
+| `isMocked()` | boolean | 是否为 Mock 类型 |
+| `isIntercepted()` | boolean | 是否为 Intercept 类型 |

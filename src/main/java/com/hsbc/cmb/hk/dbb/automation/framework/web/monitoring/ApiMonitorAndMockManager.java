@@ -950,8 +950,16 @@ public class ApiMonitorAndMockManager {
             return this;
         }
 
+        /**
+         * 使用 endpoint 关键字匹配请求（作为 urlContains 二次过滤）
+         * 注意：urlPattern 设为唯一值以支持多次 forEndpoint 调用
+         * @param endpoint URL 中需包含的关键字（完整 URL 或部分路径）
+         */
         public MockBuilder forEndpoint(String endpoint) {
-            MockRule rule = new MockRule("mock-" + endpoint, ".*").endpoint(endpoint);
+            // 生成唯一的 glob pattern，避免 registeredPatterns 去重导致后续 forEndpoint 不生效
+            // 将 endpoint 转换为合法的 glob pattern（如 "/api/users" -> "**/api/users**"）
+            String uniquePattern = toGlobPattern(endpoint);
+            MockRule rule = new MockRule("mock-" + endpoint, uniquePattern).endpoint(endpoint);
             rules.add(rule);
             return this;
         }

@@ -1005,13 +1005,20 @@ public class ApiMonitorAndMockManager {
 
     /**
      * 将 glob pattern 转换为正则表达式
+     * 
+     * 语义规则：
+     * - ** 匹配零个或多个路径段
+     * - * 匹配单个路径段内的任意字符（不包含 /）
+     * - 末尾的 ** 转换为可选的路径后缀和查询参数 (/.*)?(\\?.*)?
+     * 
      */
     private static String globToRegex(String glob) {
-        // 预处理：转义特殊正则字符（除了 * 和 **）
         StringBuilder regex = new StringBuilder();
         regex.append("^");
         
         int i = 0;
+        boolean endsWithStarStar = glob.endsWith("**");
+        
         while (i < glob.length()) {
             char c = glob.charAt(i);
             if (c == '*') {
@@ -1035,13 +1042,14 @@ public class ApiMonitorAndMockManager {
             }
         }
         
-        // 【修复】移除末尾的 .*（由尾部 ** 生成），因为它会导致过度匹配
-        // 例如：**/api/users** 会生成 ^.*/api/users.*$，末尾的 .* 会匹配任意后缀
-        // 这导致 /api/usersxyz 也会匹配 /api/users 的 mock
-        // 正确的行为是：末尾的 ** 只应匹配可选的路径后缀（如 /123），而不是任意字符
         String result = regex.toString();
-        if (result.endsWith(".*$")) {
-            result = result.substring(0, result.length() - 4) + "$";
+        
+        // 【关键修复】末尾的 .* 由尾部 ** 生成，需要替换为更精确的匹配
+        // 支持可选的路径后缀（/xxx）和可选的查询参数（?xxx）
+        // 这允许匹配 /api/users, /api/users/123, /api/users?query=1
+        // 但不会过度匹配（如 /api/usersxyz 不会匹配 /api/users）
+        if (endsWithStarStar && result.endsWith(".*$")) {
+            result = result.substring(0, result.length() - 3) + "(/.*)?(\\?.*)?$";
         }
         
         return result;

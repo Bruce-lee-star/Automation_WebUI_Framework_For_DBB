@@ -647,22 +647,35 @@ public class ApiMonitorAndMockManager {
             
             // ✅ 主要：检查 glob pattern 匹配（支持 **/* 格式）
             String globPattern = rule.getUrlPattern();
+            boolean globMatched = true;
             if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
-                if (!matchesGlob(url, globPattern)) {
+                globMatched = matchesGlob(url, globPattern);
+                if (!globMatched) {
+                    logger.trace("[Mock] Glob mismatch: url={} pattern={}", url, globPattern);
                     continue;
                 }
             }
             
             // 辅助：检查 urlContains（如果设置了）
-            if (rule.getUrlContains() != null && !rule.getUrlContains().isEmpty()
-                    && !url.contains(rule.getUrlContains())) {
+            String urlContains = rule.getUrlContains();
+            if (urlContains != null && !urlContains.isEmpty()
+                    && !url.contains(urlContains)) {
+                logger.trace("[Mock] urlContains mismatch: url={} contains={}", url, urlContains);
                 continue;
             }
             
             // 方法匹配
-            if (!Pattern.matches(rule.getMethod(), req.method())) continue;
+            String method = rule.getMethod();
+            if (method != null && !method.equals(".*") && !Pattern.matches(method, req.method())) {
+                logger.trace("[Mock] Method mismatch: url={} method={} expected={}", url, req.method(), method);
+                continue;
+            }
+            
+            logger.info("[Mock] Matched: url={} method={} pattern={} contains={}", 
+                    url, req.method(), globPattern, urlContains);
             return rule;
         }
+        logger.trace("[Mock] No rule matched for: {}", url);
         return null;
     }
 
@@ -677,20 +690,35 @@ public class ApiMonitorAndMockManager {
             
             // ✅ 主要：检查 glob pattern 匹配
             String globPattern = rule.getUrlPattern();
+            boolean globMatched = true;
             if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
-                if (!matchesGlob(url, globPattern)) {
+                globMatched = matchesGlob(url, globPattern);
+                if (!globMatched) {
+                    logger.trace("[Intercept] Glob mismatch: url={} pattern={}", url, globPattern);
                     continue;
                 }
             }
             
             // 辅助：检查 urlContains（如果设置了）
-            if (rule.getUrlContains() != null && !rule.getUrlContains().isEmpty()
-                    && !url.contains(rule.getUrlContains())) {
+            String urlContains = rule.getUrlContains();
+            if (urlContains != null && !urlContains.isEmpty()
+                    && !url.contains(urlContains)) {
+                logger.trace("[Intercept] urlContains mismatch: url={} contains={}", url, urlContains);
                 continue;
             }
-            if (!Pattern.matches(rule.getMethod(), req.method())) continue;
+            
+            // 方法匹配
+            String method = rule.getMethod();
+            if (method != null && !method.equals(".*") && !Pattern.matches(method, req.method())) {
+                logger.trace("[Intercept] Method mismatch: url={} method={} expected={}", url, req.method(), method);
+                continue;
+            }
+            
+            logger.info("[Intercept] Matched: url={} method={} pattern={} contains={}", 
+                    url, req.method(), globPattern, urlContains);
             return rule;
         }
+        logger.trace("[Intercept] No rule matched for: {}", url);
         return null;
     }
 
@@ -964,7 +992,7 @@ public class ApiMonitorAndMockManager {
      * - * 匹配任意字符（不含斜杠）
      * 
      * @param url 完整 URL
-     * @param globPattern glob 模式（如 "**/api/users**"）
+     * @param globPattern glob 模式
      * @return true 如果匹配
      */
     static boolean matchesGlob(String url, String globPattern) {
@@ -1007,8 +1035,16 @@ public class ApiMonitorAndMockManager {
             }
         }
         
-        regex.append("$");
-        return regex.toString();
+        // 【修复】移除末尾的 .*（由尾部 ** 生成），因为它会导致过度匹配
+        // 例如：**/api/users** 会生成 ^.*/api/users.*$，末尾的 .* 会匹配任意后缀
+        // 这导致 /api/usersxyz 也会匹配 /api/users 的 mock
+        // 正确的行为是：末尾的 ** 只应匹配可选的路径后缀（如 /123），而不是任意字符
+        String result = regex.toString();
+        if (result.endsWith(".*$")) {
+            result = result.substring(0, result.length() - 4) + "$";
+        }
+        
+        return result;
     }
 
     // ==================== Mock Builder ====================

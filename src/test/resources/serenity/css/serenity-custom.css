@@ -1,0 +1,12 @@
+/* SERENITY 4.3.4 专用 - 修复截图高度留白问题 */
+.screenshot-container {
+    height: auto !important;
+}
+.screenshot-image {
+    height: auto !important;
+    max-height: none !important;
+    object-fit: unset !important;
+}
+.screenshot-wrapper {
+    height: auto !important;
+}

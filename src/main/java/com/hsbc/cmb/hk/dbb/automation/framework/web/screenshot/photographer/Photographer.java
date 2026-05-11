@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class Photographer {
@@ -187,9 +188,11 @@ public class Photographer {
         String sanitizedTitle = title.replaceAll("[^a-zA-Z0-9 _-]", "_")
                                     .replaceAll("\\s+", "_")
                                     .toLowerCase();
-        
+
         long counter = screenshotCounter.incrementAndGet();
-        return String.format("%s_%d.png", sanitizedTitle, counter);
+        // 【修复】添加 UUID 后缀，确保同名步骤也能生成唯一文件名，避免 Serenity 报告缓存叠加
+        String uuidSuffix =  UUID.randomUUID().toString().substring(0, 8);
+        return String.format("%s_%d_%s.png", sanitizedTitle, counter, uuidSuffix);
     }
     
     private String generateScreenshotName(String title) {

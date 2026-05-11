@@ -737,7 +737,7 @@ public class PageElement {
     /**
      * 将元素滚动到可视区域（使用 JS 实现）
      */
-    public PageElement scrollToView() {
+    public PageElement scrollIntoView() {
         executeWithRetry(() -> {
             locator().evaluate("el => el.scrollIntoView({ behavior: 'instant', block: 'center' })");
             return true;

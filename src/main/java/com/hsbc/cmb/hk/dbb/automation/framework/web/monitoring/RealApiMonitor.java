@@ -1618,41 +1618,59 @@ public class RealApiMonitor {
             // ⭐ 关键修复：在 onResponse 回调中立即同步读取 response body
             // Playwright 的 Response 流只在回调触发后短期有效，必须在此刻读取
             // 使用多策略：text() 优先（文本），body() 兜底（二进制/base64）
+            // ⭐ 修复：处理重定向响应无 body 的情况（Playwright 会抛出 "Response body is unavailable for redirect responses"）
             String capturedBody = null;
             boolean bodyCaptured = false;
+            boolean isRedirectResponse = response.status() == 301 || response.status() == 302 
+                || response.status() == 303 || response.status() == 307 || response.status() == 308;
+            
             try {
                 capturedBody = response.text();
                 bodyCaptured = true;
                 logger.debug("[API] Response body captured via text() for: {} (length={})", 
                     response.url(), capturedBody != null ? capturedBody.length() : "null");
             } catch (Exception e) {
-                logger.debug("[API] response.text() failed for {}: {}, trying body()...", 
-                    response.url(), e.getMessage());
-                // text() 失败的常见原因：二进制响应、编码问题、流已消耗
-                // 尝试用 body() 获取原始字节再转 base64
-                try {
-                    byte[] rawBytes = response.body();
-                    if (rawBytes != null && rawBytes.length > 0) {
-                        // 检查是否为可读文本（非纯二进制）
-                        String rawText = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
-                        // 如果 UTF-8 解码后没有大量乱码控制字符，视为文本返回
-                        if (isReadableText(rawText)) {
-                            capturedBody = rawText;
-                            bodyCaptured = true;
-                            logger.debug("[API] Response body captured via UTF-8 decode for: {} (length={})", 
-                                response.url(), capturedBody.length());
-                        } else {
-                            // 纯二进制内容，存储 base64 + 元信息
-                            capturedBody = "[BINARY_DATA base64=" + java.util.Base64.getEncoder().encodeToString(rawBytes) 
-                                + " size=" + rawBytes.length + " contentType=" + getContentType(response) + "]";
-                            bodyCaptured = true;
-                            logger.info("[API] Binary response body captured for: {} (size={}bytes, type={})", 
-                                response.url(), rawBytes.length, getContentType(response));
+                String errorMsg = e.getMessage();
+                boolean isRedirectError = errorMsg != null && (
+                    errorMsg.contains("redirect") || 
+                    errorMsg.contains("unavailable for redirect") ||
+                    errorMsg.contains("Body is unavailable")
+                );
+                
+                if (isRedirectError || isRedirectResponse) {
+                    // 重定向响应本来就没有 body，这是正常行为，不算错误
+                    logger.debug("[API] Redirect response (status={}) has no body for: {} - this is normal", 
+                        response.status(), response.url());
+                    bodyCaptured = false; // 明确标记为未捕获，但不算错误
+                } else {
+                    logger.debug("[API] response.text() failed for {}: {}, trying body()...", 
+                        response.url(), e.getMessage());
+                    // text() 失败的常见原因：二进制响应、编码问题、流已消耗
+                    // 尝试用 body() 获取原始字节再转 base64
+                    try {
+                        byte[] rawBytes = response.body();
+                        if (rawBytes != null && rawBytes.length > 0) {
+                            // 检查是否为可读文本（非纯二进制）
+                            String rawText = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
+                            // 如果 UTF-8 解码后没有大量乱码控制字符，视为文本返回
+                            if (isReadableText(rawText)) {
+                                capturedBody = rawText;
+                                bodyCaptured = true;
+                                logger.debug("[API] Response body captured via UTF-8 decode for: {} (length={})", 
+                                    response.url(), capturedBody.length());
+                            } else {
+                                // 纯二进制内容，存储 base64 + 元信息
+                                capturedBody = "[BINARY_DATA base64=" + java.util.Base64.getEncoder().encodeToString(rawBytes) 
+                                    + " size=" + rawBytes.length + " contentType=" + getContentType(response) + "]";
+                                bodyCaptured = true;
+                                logger.info("[API] Binary response body captured for: {} (size={}bytes, type={})", 
+                                    response.url(), rawBytes.length, getContentType(response));
+                            }
                         }
+                    } catch (Exception e2) {
+                        logger.debug("[API] Both text() and body() failed for {}: text_err={}, body_err={}", 
+                            response.url(), e.getMessage(), e2.getMessage());
                     }
-                } catch (Exception e2) {
-                    logger.warn("[API] Both text() and body() failed for {}: text_err={}, body_err={}", 
-                        response.url(), e.getMessage(), e2.getMessage());
                 }
             }
             

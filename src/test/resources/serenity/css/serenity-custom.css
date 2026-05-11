@@ -1,16 +1,21 @@
-/* ========== SERENITY 4.3.4 终极修复 ========== */
-div.screenshot-parent-box,
-div.screenshot-box,
-div.screenshot-area,
-div.screenshot-container {
-    height: auto !important;
-    min-height: unset !important;
-    max-height: unset !important;
-}
-
+/*  SERENITY 4.3.4 强制修复截图高度  */
+div[class*="screenshot"],
+div[class*="image"],
+div.screenshot,
+div.image,
+div.step-result-screenshot,
+div.step-screenshot,
+div.screenshotBox,
+div.screenshotContainer,
 img.screenshot-image {
     height: auto !important;
-    max-height: unset !important;
-    object-fit: contain !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
     display: block !important;
+}
+
+/* 强制覆盖内联样式：核心！！ */
+div[style*="height"] {
+    height: auto !important;
 }

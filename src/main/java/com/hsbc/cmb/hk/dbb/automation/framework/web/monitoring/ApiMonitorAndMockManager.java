@@ -365,28 +365,41 @@ public class ApiMonitorAndMockManager {
     /** 停止所有路由并清除规则 */
     public static void stopAllMocks(Object pageOrContext) {
         safeUnrouteAll(pageOrContext);
-        getInstance().mockRules.clear();
+        ApiMonitorAndMockManager inst = getInstance();
+        inst.mockRules.clear();
+        inst.registeredPatterns.clear();  // ✅ 同时清理 registeredPatterns
         logger.debug("[Cleanup] All mocks cleared");
     }
 
     /** 停止特定URL的路由 */
     public static void stopMock(Object pageOrContext, String urlPattern) {
-        safeUnroute(pageOrContext, toGlobPattern(urlPattern));
+        String glob = toGlobPattern(urlPattern);
+        safeUnroute(pageOrContext, glob);
+        // ✅ 同时清理 mockRules 和 registeredPatterns
+        ApiMonitorAndMockManager inst = getInstance();
+        inst.mockRules.entrySet().removeIf(e -> e.getValue().getUrlPattern().equals(glob));
+        inst.registeredPatterns.remove(glob);
         logger.debug("[Cleanup] Mock stopped: {}", urlPattern);
     }
 
     /** 仅清除规则（不unroute） */
     public static void clearAllMocks() {
-        getInstance().mockRules.clear();
+        ApiMonitorAndMockManager inst = getInstance();
+        inst.mockRules.clear();
+        inst.registeredPatterns.clear();  // ✅ 必须清理，否则相同 pattern 的后续 mock 不会生效
     }
 
     public static void clearAllIntercepts() {
-        getInstance().interceptRules.clear();
+        ApiMonitorAndMockManager inst = getInstance();
+        inst.interceptRules.clear();
+        inst.registeredPatterns.clear();  // ✅ 必须清理
     }
 
     public static void stopAllIntercepts(Object pageOrContext) {
         safeUnrouteAll(pageOrContext);
-        getInstance().interceptRules.clear();
+        ApiMonitorAndMockManager inst = getInstance();
+        inst.interceptRules.clear();
+        inst.registeredPatterns.clear();  // ✅ 同时清理 registeredPatterns
     }
 
     // ==================== Serenity 报告集成 ====================
@@ -625,16 +638,27 @@ public class ApiMonitorAndMockManager {
 
     /**
      * 查找匹配的 Mock 规则
+     * 匹配逻辑：先检查 glob pattern（主要），再检查 urlContains（辅助），最后检查 method
      */
     private MockRule findMatchingMock(Request req) {
         String url = req.url();
         for (MockRule rule : mockRules.values()) {
             if (!rule.isEnabled()) continue;
-            // URL contains 过滤
+            
+            // ✅ 主要：检查 glob pattern 匹配（支持 **/* 格式）
+            String globPattern = rule.getUrlPattern();
+            if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
+                if (!matchesGlob(url, globPattern)) {
+                    continue;
+                }
+            }
+            
+            // 辅助：检查 urlContains（如果设置了）
             if (rule.getUrlContains() != null && !rule.getUrlContains().isEmpty()
                     && !url.contains(rule.getUrlContains())) {
                 continue;
             }
+            
             // 方法匹配
             if (!Pattern.matches(rule.getMethod(), req.method())) continue;
             return rule;
@@ -644,11 +668,22 @@ public class ApiMonitorAndMockManager {
 
     /**
      * 查找匹配的 Intercept 规则
+     * 匹配逻辑：先检查 glob pattern（主要），再检查 urlContains（辅助），最后检查 method
      */
     private InterceptRule findMatchingIntercept(Request req) {
         String url = req.url();
         for (InterceptRule rule : interceptRules) {
             if (!rule.isEnabled()) continue;
+            
+            // ✅ 主要：检查 glob pattern 匹配
+            String globPattern = rule.getUrlPattern();
+            if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
+                if (!matchesGlob(url, globPattern)) {
+                    continue;
+                }
+            }
+            
+            // 辅助：检查 urlContains（如果设置了）
             if (rule.getUrlContains() != null && !rule.getUrlContains().isEmpty()
                     && !url.contains(rule.getUrlContains())) {
                 continue;
@@ -920,6 +955,60 @@ public class ApiMonitorAndMockManager {
         // 移除前导斜杠
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
         return "**/" + normalized + "**";
+    }
+
+    /**
+     * 检查 URL 是否匹配 glob pattern
+     * 支持 Playwright glob 格式：
+     * - ** 匹配任意字符（包括斜杠）
+     * - * 匹配任意字符（不含斜杠）
+     * 
+     * @param url 完整 URL
+     * @param globPattern glob 模式（如 "**/api/users**"）
+     * @return true 如果匹配
+     */
+    static boolean matchesGlob(String url, String globPattern) {
+        if (url == null || globPattern == null) return false;
+        
+        // 转换为正则表达式进行匹配
+        String regex = globToRegex(globPattern);
+        return Pattern.matches(regex, url);
+    }
+
+    /**
+     * 将 glob pattern 转换为正则表达式
+     */
+    private static String globToRegex(String glob) {
+        // 预处理：转义特殊正则字符（除了 * 和 **）
+        StringBuilder regex = new StringBuilder();
+        regex.append("^");
+        
+        int i = 0;
+        while (i < glob.length()) {
+            char c = glob.charAt(i);
+            if (c == '*') {
+                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                    // ** 匹配任意字符（包括斜杠）
+                    regex.append(".*");
+                    i += 2;
+                } else {
+                    // * 匹配除斜杠外的任意字符
+                    regex.append("[^/]*");
+                    i++;
+                }
+            } else {
+                // 转义正则特殊字符
+                if ("\\[]{}()+?.^$|".indexOf(c) >= 0) {
+                    regex.append("\\").append(c);
+                } else {
+                    regex.append(c);
+                }
+                i++;
+            }
+        }
+        
+        regex.append("$");
+        return regex.toString();
     }
 
     // ==================== Mock Builder ====================

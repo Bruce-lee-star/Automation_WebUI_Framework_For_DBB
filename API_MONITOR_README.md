@@ -1,6 +1,6 @@
-# API 监控工具包使用指南（详细版 v3.2）
+# API 监控工具包使用指南（详细版 v3.4）
 
-> **最后更新：** 2026-05-08 | **基于代码版本：** v3.1 基础上移除所有 new Thread / ScheduledExecutorService，全面采用 Playwright 异步回调内联模式
+> **最后更新：** 2026-05-14 | **基于代码版本：** v3.4 修复 ContextLifecycleProxy 捕获配置错误，支持 Context/Page 重建时监听器配置正确恢复
 
 ---
 
@@ -21,7 +21,8 @@
 - [三、ApiRequestModifier - 请求修改器](#三apirequestmodifier---请求修改器)
 - [四、ApiMonitorAndMockManager - Mock 管理](#四api monitorandmockmanager---mock-管理)
 - [五、最佳实践与注意事项](#五最佳实践与注意事项)
-- [六、完整 API 参考](#六完整-api-参考)
+- [六、Context 生命周期钩子（规则自动恢复）](#六context-生命周期钩子规则自动恢复)
+- [七、完整 API 参考](#七完整-api-参考)
 
 ---
 
@@ -1222,7 +1223,155 @@ RealApiMonitor.monitor(ctx)
 
 ---
 
-## 六、完整 API 参考
+## 六、Context 生命周期钩子（规则自动恢复）
+
+> **v3.4 新增** | 解决 Context/Page 重建时 API Mock/Intercept/Monitor 规则丢失的问题
+
+### 6.1 问题背景
+
+当调用 `PlaywrightManager.setStorageStatePath()` 或其他自定义配置方法时，框架会销毁并重建 BrowserContext。这会导致之前注册的 API 规则失效：
+
+```
+用户代码注册 Mock/Intercept → Context 被重建 → 规则丢失 ❌
+```
+
+### 6.2 解决方案架构
+
+`ContextLifecycleHookManager` 在 Context/Page 重建时自动保存和恢复规则：
+
+```
+setStorageStatePath() 调用
+        ↓
+scheduleContextRebuild() 标记需要重建
+        ↓
+getContext() 检测到需要重建
+        ↓
+recreateContextIfCustomConfigNeeded():
+  - onContextAboutToRebuild() → captureRules() 捕获所有规则
+  - 关闭旧 Context/Page
+        ↓
+createContext() 创建新 Context
+        ↓
+onContextRebuilt() → rebindRules() 重绑定 Context 级别规则
+        ↓
+getPage() 创建新 Page
+        ↓
+rebindRulesToPage() → 重绑定 Page 级别规则 ✅
+```
+
+### 6.3 核心接口
+
+#### RuleCapturer 接口
+
+需要自动恢复规则的组件实现此接口：
+
+```java
+public interface RuleCapturer {
+    List<RuleSnapshot> captureRules(BrowserContext context);
+}
+```
+
+**已实现组件：**
+- `RealApiMonitor` — 监听器规则
+- `ApiMonitorAndMockManager` — Mock 和 Intercept 规则
+- `ApiRequestModifier` — 请求修改规则
+
+#### RuleSnapshot 接口
+
+表示捕获的规则状态：
+
+```java
+public interface RuleSnapshot {
+    String getId();
+    String getUrlPattern();
+    boolean rebindTo(BrowserContext newContext);
+    boolean rebindTo(Page newPage);
+}
+```
+
+### 6.4 支持的规则类型
+
+| 规则类型 | Context 级别恢复 | Page 级别恢复 | 说明 |
+|---------|-----------------|--------------|------|
+| Mock 规则 | ✅ | ❌ | Context 重建后自动重新绑定到新 Context |
+| Intercept 规则 | ✅ | ❌ | Context 重建后自动重新绑定到新 Context |
+| Monitor 监听器 | ✅ | ✅ | Context 和 Page 级别都支持 |
+| Request Modifier | ⚠️ 有限支持 | ❌ | 因配置是方法参数，仅记录失败 |
+
+### 6.5 限制与注意事项
+
+#### ApiRequestModifier 限制
+
+`ApiRequestModifier` 的 modification 配置是方法参数，无法完整捕获。因此：
+
+- **不会自动恢复** modification 配置
+- 建议在 Context 重建后手动重新注册：
+
+```java
+// Context 重建后
+SessionManager.restoreSession(sessionKey);
+BrowserContext ctx = PlaywrightManager.getContext();
+
+// 手动重新注册 modification
+ApiRequestModifier.modifyRequest(ctx, "/api/xxx", modifier);
+```
+
+### 6.6 手动触发规则捕获（高级用法）
+
+在特殊场景下，可以手动触发规则捕获和恢复：
+
+```java
+// 捕获当前 Context 的所有规则
+BrowserContext oldContext = PlaywrightManager.getContext();
+ContextLifecycleHookManager.ContextRuleSnapshot snapshot =
+    ContextLifecycleHookManager.captureRules(oldContext);
+
+// ... 执行某些操作 ...
+
+// 重建 Context 后，恢复规则到新 Context
+BrowserContext newContext = PlaywrightManager.getContext();
+ContextLifecycleHookManager.rebindRules(newContext);
+
+// 恢复规则到新 Page
+Page newPage = PlaywrightManager.getPage();
+ContextLifecycleHookManager.rebindRulesToPage(newPage);
+```
+
+### 6.7 调试日志
+
+启用 DEBUG 级别日志查看钩子执行情况：
+
+```
+# logback.xml
+<logger name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ContextLifecycleHookManager" level="DEBUG"/>
+```
+
+**日志示例：**
+```
+[ContextLifecycle] Context about to rebuild: context-123456
+[ContextLifecycle] Capturing rules for context-123456 (3 capturers registered)
+[ContextLifecycle] Captured 5 rules (mock=2, intercept=1, monitor=2, modifier=0)
+[ContextLifecycle] Rebinding 5 rules from context-123456 to new context-789012
+[ContextLifecycle] Rebind complete: 4 success, 1 failed
+```
+
+### 6.8 ContextLifecycleHookManager API
+
+| 方法 | 说明 |
+|------|------|
+| `registerCapturer(capturer)` | 注册规则捕获器（组件初始化时自动调用） |
+| `unregisterCapturer(capturer)` | 取消注册规则捕获器 |
+| `captureRules(context)` | 捕获指定 Context 的所有规则 |
+| `rebindRules(newContext)` | 重绑定规则到新 Context |
+| `rebindRulesToPage(newPage)` | 重绑定规则到新 Page |
+| `getSnapshot(context)` | 获取指定 Context 的规则快照 |
+| `clearSnapshot(context)` | 清除指定 Context 的规则快照 |
+| `clearAllSnapshots()` | 清除所有规则快照 |
+| `isRebuilding(context)` | 检查 Context 是否正在重建中 |
+
+---
+
+## 七、完整 API 参考
 
 ### RealApiMonitor — 静态方法
 

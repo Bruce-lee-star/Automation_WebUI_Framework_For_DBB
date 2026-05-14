@@ -774,6 +774,9 @@ public class PlaywrightManager {
             if (context == null || (context.browser() != null && !context.browser().isConnected())) {
                 context = createContext();
                 contextThreadLocal.set(context);
+                
+                // 【Context 生命周期钩子】通知规则管理器 Context 已重建，需要重绑规则
+                ContextLifecycleHookManager.onContextRebuilt(context);
             }
         }
         return context;
@@ -851,6 +854,10 @@ public class PlaywrightManager {
         BrowserContext existingContext = contextThreadLocal.get();
         if (existingContext != null) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Context already exists, closing it to apply custom configurations...");
+            
+            // 【Context 生命周期钩子】通知规则管理器 Context 即将重建，需要捕获规则
+            ContextLifecycleHookManager.onContextAboutToRebuild(existingContext);
+            
             try {
                 // 关闭 Page
                 Page existingPage = pageThreadLocal.get();
@@ -1062,6 +1069,9 @@ public class PlaywrightManager {
                 BrowserContext context = getContext();
                 page = createPage(context);
                 pageThreadLocal.set(page);
+
+                // 【Page 生命周期钩子】通知规则管理器 Page 已创建，需要绑定 Page 级别规则
+                ContextLifecycleHookManager.rebindRulesToPage(page);
             }
         }
         return page;

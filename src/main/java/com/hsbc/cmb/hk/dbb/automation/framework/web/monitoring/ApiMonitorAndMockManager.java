@@ -1,18 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jayway.jsonpath.DocumentContext;
-import com.jayway.jsonpath.JsonPath;
-import com.jayway.jsonpath.PathNotFoundException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ContextLifecycleHookManager;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
-import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.Route;
 import net.serenitybdd.core.Serenity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -21,50 +19,80 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.Iterator;
 
 /**
- * API Monitor and Mock Manager - 企业级API监控、Mock和响应修改工具
+ * API Monitor and Mock Manager - 企业级API Mock工具
  *
  * <p>核心能力：
  * <ul>
  *   <li><b>Mock</b> - 拦截请求并返回自定义响应（完全替换）</li>
- *   <li><b>Intercept</b> - 拦截真实API响应，修改字段后返回给前端（部分篡改）</li>
- *   <li><b>Monitor</b> - 记录所有API调用历史，支持Serenity报告集成</li>
+ *   <li><b>Monitor</b> - 配合 RealApiMonitor 记录所有API调用历史，支持Serenity报告集成</li>
  * </ul>
  *
  * <p>设计要点：
  * <ul>
  *   <li>ThreadLocal 实例管理 → 多线程并行测试互不干扰</li>
  *   <li>Route 去重绑定 → 防止同一URL被重复拦截</li>
- *   <li>统一路由入口 → 一个 route handler 统一处理 Mock / Intercept / Pass-through</li>
+ *   <li>统一路由入口 → 一个 route handler 统一处理 Mock / Pass-through</li>
  *   <li>异常安全 → 所有 route 处理均有 fallback 到 resume()</li>
+ *   <li>Context 生命周期钩子 → Context 重建后自动重绑规则</li>
  * </ul>
  *
  * <p>推荐用法：
  * <pre>{@code
- * // 1. Mock 完全替换响应
+ * // 1. 使用 RealApiMonitor 监控目标 API，获取真实响应
+ * RealApiMonitor.monitor(context).forUrl("/api/user/info**").build();
+ * // 页面加载后，获取记录的响应信息...
+ * ApiCallRecord record = RealApiMonitor.getRecordedResponse("api/user/info");
+ *
+ * // 2. 修改响应内容后，使用 Mock 返回
+ * String modifiedResponse = modifyResponse(record.getResponseBody());
  * ApiMonitorAndMockManager.mock(context)
- *     .forUrl("/api/users")
- *     .withStatus(200)
- *     .withResponse("{\"status\":\"success\"}")
+ *     .forUrl("api/user/info")
+ *     .withResponse(modifiedResponse)
  *     .build();
  *
- * // 2. Intercept 拦截并修改真实响应
- * ApiMonitorAndMockManager.intercept(context)
- *     .forUrl("/api/last")
- *     .modify("$.securityCode", "123456")
- *     .build();
+ * // 3. 刷新页面，Mock 生效
+ * page.reload();
  *
- * // 3. 清理（测试结束后务必调用）
+ * // 4. 清理（测试结束后务必调用）
  * ApiMonitorAndMockManager.cleanup(context);
  * }</pre>
  */
-public class ApiMonitorAndMockManager {
+public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.RuleCapturer {
 
     // ==================== 常量 ====================
 
     private static final Logger logger = LoggerFactory.getLogger(ApiMonitorAndMockManager.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    /** API调用历史最大容量，防止内存泄漏 */
+    private static final int MAX_API_HISTORY_SIZE = 1000;
+    /** 默认 HTTP 成功状态码 */
+    private static final int DEFAULT_SUCCESS_STATUS = 200;
+    /** 默认超时状态码 */
+    private static final int DEFAULT_TIMEOUT_STATUS = 408;
+    /** 字符编码（使用 StandardCharsets 规范常量） */
+    private static final Charset DEFAULT_CHARSET = StandardCharsets.UTF_8;
+
+    // ==================== Context 生命周期钩子注册 ====================
+    // 使用特殊的代理实例，其 captureRules 会从当前线程获取数据
+    static {
+        ContextLifecycleHookManager.registerCapturer(new ContextLifecycleProxy());
+        logger.info("[ApiMonitorAndMockManager] Registered as Context lifecycle hook");
+    }
+
+    /**
+     * 生命周期钩子代理 — 解决单例注册与 ThreadLocal 多实例的冲突
+     * 每次 captureRules/rebind 时都从当前线程获取最新的实例数据
+     */
+    private static class ContextLifecycleProxy implements ContextLifecycleHookManager.RuleCapturer {
+        @Override
+        public List<ContextLifecycleHookManager.RuleSnapshot> captureRules(BrowserContext context) {
+            // 直接从当前线程获取真实业务实例，而非空对象
+            return ApiMonitorAndMockManager.getInstance().captureRules(context);
+        }
+    }
 
     // ==================== ThreadLocal 实例管理 ====================
     /**
@@ -88,31 +116,175 @@ public class ApiMonitorAndMockManager {
 
     /** 清理当前线程实例（测试结束时应调用） */
     public static void cleanup() {
-        ApiMonitorAndMockManager inst = INSTANCE.get();
-        inst.clearAll();
-        INSTANCE.remove();
+        try {
+            ApiMonitorAndMockManager inst = INSTANCE.get();
+            inst.clearAll();
+        } finally {
+            // 必须先获取实例清理数据，再 remove ThreadLocal
+            // 使用 try-finally 确保即使 clearAll 抛异常也能清理 ThreadLocal
+            INSTANCE.remove();
+        }
     }
 
     public static void cleanup(Page page) {
-        try { page.unrouteAll(); } catch (Exception ignored) {}
+        try { if (page != null) page.unrouteAll(); } catch (Exception ignored) {}
         cleanup();
     }
 
     public static void cleanup(BrowserContext context) {
-        try { context.unrouteAll(); } catch (Exception ignored) {}
+        try { if (context != null) context.unrouteAll(); } catch (Exception ignored) {}
         cleanup();
+    }
+
+    // ==================== Context 生命周期钩子实现 ====================
+
+    /**
+     * 实现 RuleCapturer 接口：捕获当前所有规则用于 Context 重建后重绑
+     */
+    @Override
+    public List<ContextLifecycleHookManager.RuleSnapshot> captureRules(BrowserContext context) {
+        // 获取当前线程实例
+        ApiMonitorAndMockManager inst = getInstance();
+        
+        List<ContextLifecycleHookManager.RuleSnapshot> snapshots = new ArrayList<>();
+        
+        // 捕获 Mock 规则
+        for (MockRule rule : inst.mockRules.values()) {
+            snapshots.add(new MockRuleSnapshot(rule));
+        }
+        
+        if (!snapshots.isEmpty()) {
+            logger.info("[ApiMonitorAndMockManager] Captured {} mock rules for context lifecycle hook",
+                snapshots.size());
+        }
+        
+        return snapshots;
+    }
+
+    /**
+     * Mock 规则快照 - 用于 Context 重建后重绑
+     */
+    private static class MockRuleSnapshot implements ContextLifecycleHookManager.RuleSnapshot {
+        private final String name;
+        private final String urlPattern;
+        private final String urlContains;
+        private final String method;
+        private final String mockDataPath;
+        private final String mockDataJson;
+        private final int statusCode;
+        private final Map<String, String> headers;
+        private final long delayMs;
+        private final boolean enabled;  // 保存原始 enabled 状态
+
+        public MockRuleSnapshot(MockRule rule) {
+            this.name = rule.getName();
+            this.urlPattern = rule.getUrlPattern();
+            this.urlContains = rule.getUrlContains();
+            this.method = rule.getMethod();
+            this.mockDataPath = rule.getMockDataPath();
+            this.mockDataJson = rule.getMockDataJson();
+            this.statusCode = rule.getStatusCode();
+            this.headers = rule.getHeaders();
+            this.delayMs = rule.getDelayMs();
+            this.enabled = rule.isEnabled();
+        }
+
+        @Override
+        public String getId() { return "mock-" + name; }
+
+        @Override
+        public String getUrlPattern() { return urlPattern; }
+
+        @Override
+        public boolean rebindTo(BrowserContext newContext) {
+            try {
+                logger.debug("[MockRuleSnapshot] Rebinding mock rule: {} -> {}", name, urlPattern);
+                
+                // 生成唯一的规则名（避免同名规则覆盖）
+                String uniqueName = name + "-" + Integer.toHexString(urlPattern.hashCode());
+                
+                // 重新创建 MockRule，恢复原始 enabled 状态
+                MockRule rule = new MockRule(uniqueName, urlPattern)
+                        .statusCode(statusCode)
+                        .mockDataJson(mockDataJson)
+                        .method(method)
+                        .delay(delayMs)
+                        .enabled(enabled);
+                
+                if (urlContains != null) {
+                    rule.endpoint(urlContains);
+                }
+                
+                for (Map.Entry<String, String> header : headers.entrySet()) {
+                    rule.header(header.getKey(), header.getValue());
+                }
+                
+                // 获取当前实例并注册到新的 Context
+                ApiMonitorAndMockManager inst = getInstance();
+                // 移除旧 pattern 的绑定
+                inst.unbindPattern(urlPattern);
+                // 恢复原始 target 设置（不覆盖其他规则的上下文）
+                inst.restoreTargetContext(newContext);
+                inst.mockRules.put(rule.getName(), rule);
+                inst.applyRoutes();
+                
+                logger.info("[MockRuleSnapshot] Successfully rebound mock rule: {}", uniqueName);
+                return true;
+            } catch (Exception e) {
+                logger.warn("[MockRuleSnapshot] Failed to rebind mock rule {}: {}", name, e.getMessage(), e);
+                return false;
+            }
+        }
+
+        @Override
+        public boolean rebindTo(Page newPage) {
+            try {
+                logger.debug("[MockRuleSnapshot] Rebinding mock rule to page: {} -> {}", name, urlPattern);
+                
+                // 生成唯一的规则名
+                String uniqueName = name + "-" + Integer.toHexString(urlPattern.hashCode());
+                
+                // 恢复原始 enabled 状态
+                MockRule rule = new MockRule(uniqueName, urlPattern)
+                        .statusCode(statusCode)
+                        .mockDataJson(mockDataJson)
+                        .method(method)
+                        .delay(delayMs)
+                        .enabled(enabled);
+                
+                if (urlContains != null) {
+                    rule.endpoint(urlContains);
+                }
+                
+                for (Map.Entry<String, String> header : headers.entrySet()) {
+                    rule.header(header.getKey(), header.getValue());
+                }
+                
+                ApiMonitorAndMockManager inst = getInstance();
+                // 移除旧 pattern 的绑定
+                inst.unbindPattern(urlPattern);
+                // 恢复原始 target 设置
+                inst.restoreTargetPage(newPage);
+                inst.mockRules.put(rule.getName(), rule);
+                inst.applyRoutes();
+                
+                logger.info("[MockRuleSnapshot] Successfully rebound mock rule to page: {}", uniqueName);
+                return true;
+            } catch (Exception e) {
+                logger.warn("[MockRuleSnapshot] Failed to rebind mock rule to page {}: {}", name, e.getMessage(), e);
+                return false;
+            }
+        }
     }
 
     // ==================== 实例字段（非静态） ====================
 
     /** 当前关联的 Page */
-    private Page targetPage;
+    private volatile Page targetPage;
     /** 当前关联的 BrowserContext */
-    private BrowserContext targetContext;
+    private volatile BrowserContext targetContext;
     /** 已注册的 Mock 规则 */
     private final Map<String, MockRule> mockRules = new ConcurrentHashMap<>();
-    /** 已注册的拦截修改规则 */
-    private final List<InterceptRule> interceptRules = new CopyOnWriteArrayList<>();
     /** API调用历史 */
     private final List<ApiCallRecord> apiCallHistory = new CopyOnWriteArrayList<>();
     /** 已绑定的 URL Pattern 集合（防止重复 route 绑定） */
@@ -132,10 +304,10 @@ public class ApiMonitorAndMockManager {
         private final Object requestBody;
         private final int statusCode;
         private final Map<String, String> responseHeaders;
-        private final Object responseBody;  // 修复：完整记录响应体
-        private final Type type;            // MOCK / INTERCEPT / REAL
+        private final Object responseBody;  // 完整记录响应体
+        private final Type type;            // MOCK / REAL
 
-        public enum Type { MOCK, INTERCEPT, REAL }
+        public enum Type { MOCK, REAL }
 
         public ApiCallRecord(String requestId, String url, String method, long timestamp,
                              Map<String, String> requestHeaders, Object requestBody,
@@ -164,22 +336,21 @@ public class ApiMonitorAndMockManager {
         public Object getResponseBody() { return responseBody; }
         public Type getType() { return type; }
         public boolean isMocked() { return Type.MOCK == type; }
-        public boolean isIntercepted() { return Type.INTERCEPT == type; }
     }
 
     /**
      * Mock 规则 — 定义如何拦截请求并返回自定义响应
      */
     public static class MockRule {
-        private String name;
-        private String urlPattern;       // glob URL模式（用于 Playwright route）
-        private String urlContains;      // 二次精确过滤关键字
-        private String method = ".*";    // HTTP方法匹配，默认全部
-        private String mockDataPath;     // JSON 文件路径
-        private String mockDataJson;     // 直接提供的JSON字符串
+        private final String name;            // 不可变，构造函数设置
+        private final String urlPattern;     // 不可变，构造函数设置
+        private String urlContains;           // 二次精确过滤关键字
+        private String method = ".*";        // HTTP方法匹配，默认全部
+        private String mockDataPath;         // JSON 文件路径
+        private String mockDataJson;          // 直接提供的JSON字符串
         private int statusCode = 200;
         private final Map<String, String> headers = new HashMap<>();
-        private long delayMs;            // 模拟延迟(ms)
+        private long delayMs;                // 模拟延迟(ms)
         private boolean enabled = true;
         private ResponseGenerator responseGenerator;
 
@@ -198,53 +369,22 @@ public class ApiMonitorAndMockManager {
         public MockRule delay(long ms)                    { this.delayMs = ms; return this; }
         public MockRule enabled(boolean enabled)          { this.enabled = enabled; return this; }
         public MockRule responseGenerator(ResponseGenerator g) { this.responseGenerator = g; return this; }
-        public MockRule hostUrl(String hostUrl)            { this.urlContains = hostUrl; return this; }
-        public MockRule urlPattern(String p)               { this.urlPattern = p; return this; }
+        /** 设置 URL 关键字过滤（urlContains），请求 URL 必须包含此关键字才能匹配 */
         public MockRule endpoint(String ep)                { this.urlContains = ep; return this; }
 
         // ---- Getters ----
-        public String getName()              { return name; }
-        public String getUrlPattern()        { return urlPattern; }
-        public String getUrlContains()       { return urlContains; }
-        public String getMethod()            { return method; }
-        public String getMockDataPath()      { return mockDataPath; }
-        public String getMockDataJson()      { return mockDataJson; }
-        public int getStatusCode()           { return statusCode; }
-        public Map<String, String> getHeaders() { return headers; }
-        public long getDelayMs()             { return delayMs; }
-        public boolean isEnabled()           { return enabled; }
-        public ResponseGenerator getResponseGenerator() { return responseGenerator; }
-    }
-
-    /**
-     * 拦截修改规则 — 拦截真实API请求，获取响应后修改字段再返回前端
-     */
-    public static class InterceptRule {
-        private String name;
-        private String urlPattern;       // glob URL模式
-        private String urlContains;      // 二次精确过滤
-        private String method = ".*";
-        private ResponseModifier modifier;              // 自定义修改器
-        private final Map<String, Object> jsonPathMods = new HashMap<>(); // JsonPath批量修改
-        private boolean enabled = true;
-
-        public InterceptRule(String name, String urlPattern) {
-            this.name = name;
-            this.urlPattern = urlPattern;
-        }
-
-        void setUrlContains(String s)      { this.urlContains = s; }
-        void setMethod(String m)           { this.method = m; }
-        void setModifier(ResponseModifier m) { this.modifier = m; }
-        void setEnabled(boolean e)         { this.enabled = e; }
-
-        public String getName()                    { return name; }
-        public String getUrlPattern()              { return urlPattern; }
-        public String getUrlContains()             { return urlContains; }
-        public String getMethod()                  { return method; }
-        public ResponseModifier getModifier()      { return modifier; }
-        public Map<String, Object> getJsonPathModifications() { return jsonPathMods; }
-        public boolean isEnabled()                 { return enabled; }
+        public final String getName()              { return name; }
+        public final String getUrlPattern()        { return urlPattern; }
+        public final String getUrlContains()       { return urlContains; }
+        public final String getMethod()            { return method; }
+        public final String getMockDataPath()      { return mockDataPath; }
+        public final String getMockDataJson()      { return mockDataJson; }
+        public final int getStatusCode()           { return statusCode; }
+        /** 返回可修改的副本，避免 Playwright fulfill 时抛 UnsupportedOperationException */
+        public final Map<String, String> getHeaders() { return new HashMap<>(headers); }
+        public final long getDelayMs()             { return delayMs; }
+        public final boolean isEnabled()           { return enabled; }
+        public final ResponseGenerator getResponseGenerator() { return responseGenerator; }
     }
 
     // ==================== 函数式接口 ====================
@@ -253,12 +393,6 @@ public class ApiMonitorAndMockManager {
     @FunctionalInterface
     public interface ResponseGenerator {
         String generate(Request request, Map<String, Object> context);
-    }
-
-    /** 响应修改器 — 接收原始body，返回修改后的body */
-    @FunctionalInterface
-    public interface ResponseModifier {
-        String modify(String originalBody);
     }
 
     // ==================== 公开工厂方法（Builder 入口） ====================
@@ -271,16 +405,6 @@ public class ApiMonitorAndMockManager {
     /** 创建 Mock 配置器（BrowserContext级别） */
     public static MockBuilder mock(BrowserContext context) {
         return new MockBuilder(getInstance(null, context));
-    }
-
-    /** 创建拦截修改配置器（Page级别） */
-    public static InterceptBuilder intercept(Page page) {
-        return new InterceptBuilder(getInstance(page, null));
-    }
-
-    /** 创建拦截修改配置器（BrowserContext级别） */
-    public static InterceptBuilder intercept(BrowserContext context) {
-        return new InterceptBuilder(getInstance(null, context));
     }
 
     // ==================== 简化快捷 API（合并 Page/Context 重载） ====================
@@ -305,7 +429,7 @@ public class ApiMonitorAndMockManager {
 
     /** Mock 成功响应（默认200） */
     public static void mockDirectSuccess(Object pageOrContext, String urlPattern, String responseData) {
-        mockDirectResponse(pageOrContext, urlPattern, 200, responseData);
+        mockDirectResponse(pageOrContext, urlPattern, DEFAULT_SUCCESS_STATUS, responseData);
     }
 
     /** Mock 错误响应 */
@@ -322,7 +446,7 @@ public class ApiMonitorAndMockManager {
         logger.info("[Mock] Timeout: {} delay={}ms", glob, timeoutMs);
 
         MockRule rule = new MockRule("mock-timeout-" + glob, glob)
-                .statusCode(408).delay(timeoutMs).mockDataJson(responseData);
+                .statusCode(DEFAULT_TIMEOUT_STATUS).delay(timeoutMs).mockDataJson(responseData);
         inst.registerMock(rule);
         inst.applyRoutes();
     }
@@ -340,7 +464,7 @@ public class ApiMonitorAndMockManager {
     // ==================== 查询 API ====================
 
     public static List<ApiCallRecord> getApiCallHistory() {
-        return Collections.unmodifiableList(getInstance().apiCallHistory);
+        return Collections.unmodifiableList(new ArrayList<>(getInstance().apiCallHistory));
     }
 
     public static List<ApiCallRecord> getApiCallHistoryByUrl(String urlRegex) {
@@ -351,7 +475,6 @@ public class ApiMonitorAndMockManager {
     }
 
     public static int getMockRuleCount() { return getInstance().mockRules.size(); }
-    public static int getInterceptRuleCount() { return getInstance().interceptRules.size(); }
     public static boolean hasMockForUrl(String urlPattern) {
         String glob = toGlobPattern(urlPattern);
         return getInstance().mockRules.values().stream().anyMatch(r -> r.getUrlPattern().equals(glob));
@@ -364,42 +487,35 @@ public class ApiMonitorAndMockManager {
 
     /** 停止所有路由并清除规则 */
     public static void stopAllMocks(Object pageOrContext) {
-        safeUnrouteAll(pageOrContext);
         ApiMonitorAndMockManager inst = getInstance();
+        // 解绑传入目标
+        safeUnrouteAll(pageOrContext);
+        // 解绑当前实例绑定的所有路由（防止残留）
+        safeUnrouteAll(inst.targetPage);
+        safeUnrouteAll(inst.targetContext);
         inst.mockRules.clear();
-        inst.registeredPatterns.clear();  // ✅ 同时清理 registeredPatterns
-        logger.debug("[Cleanup] All mocks cleared");
+        inst.registeredPatterns.clear();
+        logger.info("[Cleanup] All mocks stopped and cleared");
     }
 
     /** 停止特定URL的路由 */
     public static void stopMock(Object pageOrContext, String urlPattern) {
         String glob = toGlobPattern(urlPattern);
-        safeUnroute(pageOrContext, glob);
-        // ✅ 同时清理 mockRules 和 registeredPatterns
         ApiMonitorAndMockManager inst = getInstance();
+        // 统一解绑传入目标（内部会处理 Page/Context 类型）
+        safeUnroute(pageOrContext, glob);
+        // 清理 mockRules 和 registeredPatterns
         inst.mockRules.entrySet().removeIf(e -> e.getValue().getUrlPattern().equals(glob));
         inst.registeredPatterns.remove(glob);
-        logger.debug("[Cleanup] Mock stopped: {}", urlPattern);
+        logger.info("[Cleanup] Mock stopped: {} -> {}", urlPattern, glob);
     }
 
     /** 仅清除规则（不unroute） */
     public static void clearAllMocks() {
         ApiMonitorAndMockManager inst = getInstance();
         inst.mockRules.clear();
-        inst.registeredPatterns.clear();  // ✅ 必须清理，否则相同 pattern 的后续 mock 不会生效
-    }
-
-    public static void clearAllIntercepts() {
-        ApiMonitorAndMockManager inst = getInstance();
-        inst.interceptRules.clear();
-        inst.registeredPatterns.clear();  // ✅ 必须清理
-    }
-
-    public static void stopAllIntercepts(Object pageOrContext) {
-        safeUnrouteAll(pageOrContext);
-        ApiMonitorAndMockManager inst = getInstance();
-        inst.interceptRules.clear();
-        inst.registeredPatterns.clear();  // ✅ 同时清理 registeredPatterns
+        inst.registeredPatterns.clear();
+        logger.debug("[Cleanup] All mock rules cleared (routes still bound)");
     }
 
     // ==================== Serenity 报告集成 ====================
@@ -465,17 +581,14 @@ public class ApiMonitorAndMockManager {
                 report.put("apiCalls", calls);
 
                 long mockCnt = history.stream().filter(ApiCallRecord::isMocked).count();
-                long interCnt = history.stream().filter(ApiCallRecord::isIntercepted).count();
-                long realCnt = history.size() - mockCnt - interCnt;
+                long realCnt = history.size() - mockCnt;
                 double total = Math.max(history.size(), 1);
 
                 Map<String, Object> summary = new LinkedHashMap<>();
                 summary.put("realApiCount", realCnt);
                 summary.put("mockApiCount", mockCnt);
-                summary.put("interceptApiCount", interCnt);
                 summary.put("realPercentage", String.format("%.1f%%", realCnt * 100.0 / total));
                 summary.put("mockPercentage", String.format("%.1f%%", mockCnt * 100.0 / total));
-                summary.put("interceptPercentage", String.format("%.1f%%", interCnt * 100.0 / total));
                 report.put("summary", summary);
             } else {
                 report.put("message", "No API calls recorded yet");
@@ -493,6 +606,8 @@ public class ApiMonitorAndMockManager {
 
     /**
      * 解析 Page 或 Context 参数并设置到线程实例
+     * @param pageOrContext Page、BrowserContext 或 null
+     * @return 当前线程实例
      */
     private static ApiMonitorAndMockManager resolveTarget(Object pageOrContext) {
         if (pageOrContext instanceof Page) {
@@ -500,9 +615,7 @@ public class ApiMonitorAndMockManager {
         } else if (pageOrContext instanceof BrowserContext) {
             return getInstance(null, (BrowserContext) pageOrContext);
         }
-        throw new IllegalArgumentException(
-                "Expected Page or BrowserContext, got: " +
-                (pageOrContext != null ? pageOrContext.getClass().getName() : "null"));
+        return getInstance();
     }
 
     /**
@@ -537,28 +650,117 @@ public class ApiMonitorAndMockManager {
 
     /**
      * 注册 Mock 规则（内部）
+     * 使用规则名作为 key，使用 urlPattern hashCode 生成唯一 name 避免覆盖
      */
     private void registerMock(MockRule rule) {
-        mockRules.put(rule.getName(), rule);
-        logger.debug("[Mock] Registered: {}", rule.getName());
+        // 使用 urlPattern hashCode 生成唯一 name，避免同名规则覆盖
+        String uniqueName = rule.getName() + "-" + Integer.toHexString(rule.getUrlPattern().hashCode());
+        
+        // 检查是否已存在同名规则
+        MockRule existing = mockRules.get(uniqueName);
+        if (existing != null) {
+            // 移除旧规则的 pattern 绑定
+            unbindPattern(existing.getUrlPattern());
+            logger.warn("[Mock] Rule '{}' already exists (url={}), overwriting", 
+                    uniqueName, existing.getUrlPattern());
+        }
+        
+        // 更新 rule 的 name 为唯一名称
+        MockRule uniqueRule = new MockRule(uniqueName, rule.getUrlPattern())
+                .statusCode(rule.getStatusCode())
+                .mockDataJson(rule.getMockDataJson())
+                .mockDataPath(rule.getMockDataPath())
+                .method(rule.getMethod())
+                .delay(rule.getDelayMs())
+                .enabled(rule.isEnabled())
+                .responseGenerator(rule.getResponseGenerator());
+        if (rule.getUrlContains() != null) {
+            uniqueRule.endpoint(rule.getUrlContains());
+        }
+        for (Map.Entry<String, String> h : rule.getHeaders().entrySet()) {
+            uniqueRule.header(h.getKey(), h.getValue());
+        }
+        
+        mockRules.put(uniqueName, uniqueRule);
+        logger.debug("[Mock] Registered: {} (url={})", uniqueName, rule.getUrlPattern());
     }
 
     /**
-     * 注册拦截规则（内部）
+     * 解绑指定 pattern 的路由（不清理 mockRules）
      */
-    private void registerIntercept(InterceptRule rule) {
-        interceptRules.add(rule);
-        logger.debug("[Intercept] Registered: {}", rule.getName());
+    private void unbindPattern(String globPattern) {
+        registeredPatterns.remove(globPattern);
+        safeUnroute(targetPage, globPattern);
+        safeUnroute(targetContext, globPattern);
+    }
+
+    /**
+     * 恢复 targetContext（用于 rebind，不覆盖其他规则的上下文）
+     */
+    private void restoreTargetContext(BrowserContext newContext) {
+        if (this.targetContext != newContext) {
+            // Context 改变时才解绑旧的
+            if (this.targetContext != null) {
+                for (String pattern : registeredPatterns) {
+                    safeUnroute(this.targetContext, pattern);
+                }
+            }
+            this.targetContext = newContext;
+        }
+        // 不再置空 targetPage，保持 Page 级别的 Mock
+    }
+
+    /**
+     * 恢复 targetPage（用于 rebind，不覆盖其他规则的上下文）
+     */
+    private void restoreTargetPage(Page newPage) {
+        if (this.targetPage != newPage) {
+            if (this.targetPage != null) {
+                for (String pattern : registeredPatterns) {
+                    safeUnroute(this.targetPage, pattern);
+                }
+            }
+            this.targetPage = newPage;
+        }
+        // 不再置空 targetContext，保持 Context 级别的 Mock
     }
 
     /**
      * 清除实例内所有状态
      */
     private void clearAll() {
+        // 先解绑所有路由，防止内存泄漏
+        safeUnrouteAll(targetPage);
+        safeUnrouteAll(targetContext);
         mockRules.clear();
-        interceptRules.clear();
         apiCallHistory.clear();
         registeredPatterns.clear();
+        targetPage = null;    // 防止内存泄漏
+        targetContext = null; // 防止内存泄漏
+    }
+
+    /**
+     * 限制 API 调用历史大小，防止内存泄漏
+     */
+    private void trimApiHistoryIfNeeded() {
+        int currentSize = apiCallHistory.size();
+        if (currentSize > MAX_API_HISTORY_SIZE) {
+            synchronized (apiCallHistory) {
+                // 再次检查
+                if (apiCallHistory.size() <= MAX_API_HISTORY_SIZE) return;
+                int toRemoveCount = apiCallHistory.size() - MAX_API_HISTORY_SIZE;
+                // 使用迭代器安全删除，避免 CopyOnWriteArrayList subList().clear() 抛异常
+                Iterator<ApiCallRecord> iterator = apiCallHistory.iterator();
+                int count = 0;
+                while (iterator.hasNext() && count < toRemoveCount) {
+                    iterator.next();
+                    iterator.remove();
+                    count++;
+                }
+                logger.debug("[History] Trimmed {} old records, kept {} latest", 
+                        count, MAX_API_HISTORY_SIZE);
+            }
+        }
     }
 
     /**
@@ -566,7 +768,9 @@ public class ApiMonitorAndMockManager {
      *
      * 核心改进：
      * - 使用 {@code registeredPatterns} 做去重，避免同一URL被多次 route() 绑定
-     * - Mock 和 Intercept 共用同一个 route handler 分发逻辑
+     * - 统一路由入口处理 Mock 请求
+     * - 对规则列表创建快照，避免并发修改异常
+     * - 只解绑 registeredPatterns 中的 pattern，不影响其他框架的路由
      */
     private void applyRoutes() {
         if (targetPage == null && targetContext == null) {
@@ -574,23 +778,30 @@ public class ApiMonitorAndMockManager {
             return;
         }
 
-        // --- 注册 Mock 规则 ---
-        for (MockRule rule : mockRules.values()) {
-            if (!rule.isEnabled()) continue;
-            bindRouteIfNeeded(rule.getUrlPattern(), rule);
+        // 对规则列表创建快照
+        List<MockRule> rulesSnapshot;
+        synchronized (mockRules) {
+            rulesSnapshot = new ArrayList<>(mockRules.values());
         }
 
-        // --- 注册 Intercept 规则 ---
-        for (InterceptRule rule : interceptRules) {
+        // 只解绑我们自己的 registeredPatterns 中的 pattern，不做 unrouteAll
+        for (String pattern : registeredPatterns) {
+            safeUnroute(targetPage, pattern);
+            safeUnroute(targetContext, pattern);
+        }
+        registeredPatterns.clear();
+
+        // --- 注册 Mock 规则 ---
+        for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
-            bindRouteIfNeeded(rule.getUrlPattern(), rule);
+            bindRouteIfNeeded(rule.getUrlPattern());
         }
     }
 
     /**
      * 去重绑定：只在 URL pattern 未注册过时才调用 route()
      */
-    private void bindRouteIfNeeded(String globPattern, Object rule) {
+    private void bindRouteIfNeeded(String globPattern) {
         if (registeredPatterns.add(globPattern)) {
             // 首次绑定此 pattern
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
@@ -599,14 +810,14 @@ public class ApiMonitorAndMockManager {
             } else if (targetContext != null) {
                 targetContext.route(globPattern, handler);
             }
-            logger.debug("[Route] Bound: {}", globPattern);
+            logger.info("[Route] Bound: {}", globPattern);
         } else {
             logger.debug("[Route] Already bound, skipping: {}", globPattern);
         }
     }
 
     /**
-     * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Intercept / Pass-through
+     * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
      */
     private void handleUnifiedRoute(Route route) {
         Request req = route.request();
@@ -620,14 +831,8 @@ public class ApiMonitorAndMockManager {
                 return;
             }
 
-            // 2. 尝试匹配 Intercept 规则
-            InterceptRule matchedIntercept = findMatchingIntercept(req);
-            if (matchedIntercept != null) {
-                handleIntercept(route, matchedIntercept);
-                return;
-            }
-
-            // 3. 都不匹配 → 放行原始请求
+            // 2. 不匹配任何规则 → 记录真实流量并放行
+            recordRealRequest(route);
             route.resume();
 
         } catch (Exception e) {
@@ -637,29 +842,42 @@ public class ApiMonitorAndMockManager {
     }
 
     /**
+     * 记录真实请求（不匹配任何 Mock 规则的请求）
+     */
+    private void recordRealRequest(Route route) {
+        Request req = route.request();
+        logger.debug("[Real] Pass-through: {} {}", req.method(), req.url());
+        recordCall(route, 0, null, ApiCallRecord.Type.REAL);
+    }
+
+    /**
      * 查找匹配的 Mock 规则
      * 匹配逻辑：先检查 glob pattern（主要），再检查 urlContains（辅助），最后检查 method
      */
     private MockRule findMatchingMock(Request req) {
         String url = req.url();
-        for (MockRule rule : mockRules.values()) {
+        // 使用同步块保护 ConcurrentHashMap 遍历
+        List<MockRule> rulesSnapshot;
+        synchronized (mockRules) {
+            rulesSnapshot = new ArrayList<>(mockRules.values());
+        }
+        
+        for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
             
-            // ✅ 主要：检查 glob pattern 匹配（支持 **/* 格式）
+            // 主要：检查 glob pattern 匹配（空 pattern = 匹配所有）
             String globPattern = rule.getUrlPattern();
-            boolean globMatched = true;
-            if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
-                globMatched = matchesGlob(url, globPattern);
-                if (!globMatched) {
+            if (globPattern != null && !globPattern.isEmpty()) {
+                if (!matchesGlob(url, globPattern)) {
                     logger.trace("[Mock] Glob mismatch: url={} pattern={}", url, globPattern);
                     continue;
                 }
             }
             
-            // 辅助：检查 urlContains（如果设置了）
+            // 辅助：检查 urlContains（如果设置了）- 大小写不敏感匹配
             String urlContains = rule.getUrlContains();
             if (urlContains != null && !urlContains.isEmpty()
-                    && !url.contains(urlContains)) {
+                    && !url.toLowerCase().contains(urlContains.toLowerCase())) {
                 logger.trace("[Mock] urlContains mismatch: url={} contains={}", url, urlContains);
                 continue;
             }
@@ -671,54 +889,11 @@ public class ApiMonitorAndMockManager {
                 continue;
             }
             
-            logger.info("[Mock] Matched: url={} method={} pattern={} contains={}", 
-                    url, req.method(), globPattern, urlContains);
+            logger.info("[Mock] ✅ MOCKED: url={} method={} pattern={} rule={}", 
+                    url, req.method(), globPattern, rule.getName());
             return rule;
         }
         logger.trace("[Mock] No rule matched for: {}", url);
-        return null;
-    }
-
-    /**
-     * 查找匹配的 Intercept 规则
-     * 匹配逻辑：先检查 glob pattern（主要），再检查 urlContains（辅助），最后检查 method
-     */
-    private InterceptRule findMatchingIntercept(Request req) {
-        String url = req.url();
-        for (InterceptRule rule : interceptRules) {
-            if (!rule.isEnabled()) continue;
-            
-            // ✅ 主要：检查 glob pattern 匹配
-            String globPattern = rule.getUrlPattern();
-            boolean globMatched = true;
-            if (globPattern != null && !globPattern.isEmpty() && !globPattern.equals(".*")) {
-                globMatched = matchesGlob(url, globPattern);
-                if (!globMatched) {
-                    logger.trace("[Intercept] Glob mismatch: url={} pattern={}", url, globPattern);
-                    continue;
-                }
-            }
-            
-            // 辅助：检查 urlContains（如果设置了）
-            String urlContains = rule.getUrlContains();
-            if (urlContains != null && !urlContains.isEmpty()
-                    && !url.contains(urlContains)) {
-                logger.trace("[Intercept] urlContains mismatch: url={} contains={}", url, urlContains);
-                continue;
-            }
-            
-            // 方法匹配
-            String method = rule.getMethod();
-            if (method != null && !method.equals(".*") && !Pattern.matches(method, req.method())) {
-                logger.trace("[Intercept] Method mismatch: url={} method={} expected={}", url, req.method(), method);
-                continue;
-            }
-            
-            logger.info("[Intercept] Matched: url={} method={} pattern={} contains={}", 
-                    url, req.method(), globPattern, urlContains);
-            return rule;
-        }
-        logger.trace("[Intercept] No rule matched for: {}", url);
         return null;
     }
 
@@ -730,23 +905,24 @@ public class ApiMonitorAndMockManager {
     private void handleMock(Route route, MockRule rule) {
         Request req = route.request();
 
-        // 记录请求信息
-        recordCall(route, rule.getStatusCode(), null, ApiCallRecord.Type.MOCK);
-
         // 获取 Mock 数据
         String mockBody = null;
         try {
             mockBody = getMockBody(rule, route);
         } catch (Exception e) {
-            logger.warn("[Mock] Failed to get mock data for '{}', resuming: {}", rule.getName(), e.getMessage());
+            logger.warn("[Mock] Failed to get mock data for '{}', resuming: {}", rule.getName(), e.getMessage(), e);
             safeResume(route);
             return;
         }
 
         if (mockBody == null) {
+            logger.warn("[Mock] No mock body for rule '{}', resuming", rule.getName());
             safeResume(route);
             return;
         }
+
+        // 记录请求信息（包含 mock 响应体）
+        recordCall(route, rule.getStatusCode(), mockBody, ApiCallRecord.Type.MOCK);
 
         Route.FulfillOptions opts = new Route.FulfillOptions()
                 .setStatus(rule.getStatusCode())
@@ -766,185 +942,87 @@ public class ApiMonitorAndMockManager {
      * 获取 Mock 响应体数据
      */
     private String getMockBody(MockRule rule, Route route) throws Exception {
+        // 1. 动态生成器
         if (rule.getResponseGenerator() != null) {
-            return rule.getResponseGenerator().generate(route.request(), createRequestContext(route));
+            try {
+                Request req = route.request();
+                Map<String, Object> ctx = new HashMap<>();
+                ctx.put("url", req.url());
+                ctx.put("method", req.method());
+                ctx.put("headers", req.headers());
+                try { ctx.put("postData", req.postData() != null ? req.postData() : ""); }
+                catch (Exception e) { ctx.put("postData", ""); }
+                return rule.getResponseGenerator().generate(req, ctx);
+            } catch (Exception e) {
+                logger.error("[Mock] ResponseGenerator threw exception for {}: {}", rule.getName(), e.getMessage(), e);
+                throw e;
+            }
         }
+        // 2. 直接 JSON
         if (rule.getMockDataJson() != null && !rule.getMockDataJson().isEmpty()) {
             return rule.getMockDataJson();
         }
+        // 3. 文件路径（指定 UTF-8 编码，防止中文乱码）
         if (rule.getMockDataPath() != null && !rule.getMockDataPath().isEmpty()) {
-            return new String(Files.readAllBytes(Paths.get(rule.getMockDataPath())));
+            java.nio.file.Path path = Paths.get(rule.getMockDataPath());
+            try {
+                if (!Files.exists(path)) {
+                    throw new IllegalArgumentException("Mock data file not found: " + rule.getMockDataPath());
+                }
+                return new String(Files.readAllBytes(path), DEFAULT_CHARSET);
+            } catch (IllegalArgumentException e) {
+                throw e;  // 重新抛出业务异常
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to read mock data file: " + e.getMessage(), e);
+            }
         }
         return null;
     }
 
     /**
-     * 延迟 fulfill — 直接 fulfill（延迟功能已移除，不再使用额外线程）
+     * 延迟 fulfill — 使用 Playwright 原生 waitForTimeout 同步等待
      */
     private void fulfillWithDelay(Route route, Route.FulfillOptions opts, long delayMs, String url) {
-        logger.info("[Mock] Delayed fulfill ({}ms) → executing directly in async callback, no extra thread", delayMs);
-        safeFulfill(route, opts, url);
-    }
-
-    // ==================== Intercept 处理 ====================
-
-    /**
-     * 处理 Intercept 请求 — fetch 真实响应 → 修改 body → fulfill 返回
-     *
-     * 核心流程：
-     * 1. URL/方法匹配（已在 handleUnifiedRoute 中完成）
-     * 2. route.fetch() 发送真实请求获取响应
-     * 3. 读取响应 body
-     * 4. 应用修改（自定义 modifier 优先，否则 JsonPath 批量修改）
-     * 5. route.fulfill() 返回修改后的响应
-     * 6. 异常时 fallback 到 route.resume()
-     */
-    private void handleIntercept(Route route, InterceptRule rule) {
-        Request req = route.request();
-        String url = req.url();
-
+        logger.info("[Mock] Delay {}ms for {}", delayMs, url);
         try {
-            logger.debug("[Intercept] Fetching real: {} {}", req.method(), url);
-
-            // fetch 真实响应
-            APIResponse realResp = route.fetch();
-
-            // 读取原始 body（处理编码）
-            String originalBody = readResponseBody(realResp);
-
-            // 应用修改
-            String modifiedBody = applyModification(originalBody, rule);
-
-            // 记录调用（包含完整响应体）
-            recordCall(req, realResp.status(), realResp.headers(),
-                    modifiedBody, ApiCallRecord.Type.INTERCEPT);
-
-            // fulfill 返回修改后的响应
-            Route.FulfillOptions opts = new Route.FulfillOptions()
-                    .setStatus(realResp.status())
-                    .setHeaders(realResp.headers())
-                    .setBody(modifiedBody);
-
-            route.fulfill(opts);
-            logger.debug("[Intercept] Done: {} {} | orig={} mod={}", req.method(), url,
-                    originalBody.length(), modifiedBody.length());
-
-        } catch (Exception e) {
-            logger.error("[Intercept] Error for rule '{}', resuming: {}", rule.getName(), e.getMessage());
+            route.wait(delayMs);  // Playwright 官方支持：同步等待
+            safeFulfill(route, opts, url);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.warn("[Mock] Delay interrupted for {}, resuming", url);
             safeResume(route);
-        }
-    }
-
-    /**
-     * 从 Response 读取 body 字符串（处理 charset）
-     */
-    private static String readResponseBody(APIResponse resp) {
-        byte[] bodyBytes = resp.body();
-        if (bodyBytes == null || bodyBytes.length == 0) return "";
-
-        String ct = resp.headers().get("content-type");
-        if (ct != null && ct.toLowerCase().contains("charset=")) {
-            int idx = ct.toLowerCase().indexOf("charset=");
-            String cs = ct.substring(idx + 8).trim();
-            int semi = cs.indexOf(';');
-            if (semi > 0) cs = cs.substring(0, semi);
-            return new String(bodyBytes, StandardCharsets.UTF_8); // 大多数情况 UTF_8 兼容
-        }
-        return new String(bodyBytes, StandardCharsets.UTF_8);
-    }
-
-    /**
-     * 应用响应修改 — 自定义 modifier 优先，其次 JsonPath 批量修改
-     */
-    private static String applyModification(String body, InterceptRule rule) {
-        // 1. 自定义修改器
-        if (rule.getModifier() != null) {
-            try {
-                return rule.getModifier().modify(body);
-            } catch (Exception e) {
-                logger.warn("[Intercept] Custom modifier failed, returning original: {}", e.getMessage());
-                return body;
-            }
-        }
-
-        // 2. JsonPath 批量字段修改
-        Map<String, Object> mods = rule.getJsonPathModifications();
-        if (mods == null || mods.isEmpty()) return body;
-
-        try {
-            DocumentContext ctx = JsonPath.parse(body);
-            for (Map.Entry<String, Object> entry : mods.entrySet()) {
-                try {
-                    ctx.set(entry.getKey(), entry.getValue());
-                } catch (PathNotFoundException ignored) {
-                    logger.trace("[Intercept] JsonPath not found: {}", entry.getKey());
-                }
-            }
-            return OBJECT_MAPPER.writeValueAsString(ctx.json());
+            // 不再继续执行，因为已经被中断
         } catch (Exception e) {
-            logger.warn("[Intercept] JsonPath modification failed, returning original: {}", e.getMessage());
-            return body;
-        }
-    }
-
-    /**
-     * 内部辅助：用于 InterceptBuilder 两阶段修改（先JsonPath再自定义）
-     */
-    static String applyModificationInternal(String body, Map<String, Object> jsonPathMods) {
-        if (jsonPathMods == null || jsonPathMods.isEmpty()) return body;
-        try {
-            DocumentContext ctx = JsonPath.parse(body);
-            jsonPathMods.forEach((p, v) -> {
-                try { ctx.set(p, v); } catch (PathNotFoundException ignored) {}
-            });
-            return OBJECT_MAPPER.writeValueAsString(ctx.json());
-        } catch (Exception e) {
-            return body;
+            logger.error("[Mock] Delay fulfill failed for {}: {}", url, e.getMessage(), e);
+            safeResume(route);
         }
     }
 
     // ==================== 记录与工具方法 ====================
 
     /**
-     * 记录 Mock 类型调用（无真实响应头）
+     * 记录调用（包含完整响应体）
      */
     private void recordCall(Route route, int statusCode, Object responseBody, ApiCallRecord.Type type) {
         try {
             Request req = route.request();
-            apiCallHistory.add(new ApiCallRecord(
-                    UUID.randomUUID().toString(), req.url(), req.method(), System.currentTimeMillis(),
-                    new HashMap<>(req.headers()), req.postData(),
-                    statusCode, Collections.emptyMap(), responseBody, type));
+            Object safePostData = null;
+            try {
+                safePostData = req.postData();
+            } catch (Exception e) {
+                logger.trace("[Record] Failed to read postData for {}: {}", req.url(), e.getMessage());
+            }
+            // 使用同步块保护并发写入
+            synchronized (apiCallHistory) {
+                apiCallHistory.add(new ApiCallRecord(
+                        UUID.randomUUID().toString(), req.url(), req.method(), System.currentTimeMillis(),
+                        req.headers(), safePostData,
+                        statusCode, Collections.emptyMap(), responseBody, type));
+                trimApiHistoryIfNeeded();
+            }
         } catch (Exception e) {
-            logger.warn("[Record] Failed to record call: {}", e.getMessage());
+            logger.warn("[Record] Failed to record call: {}", e.getMessage(), e);
         }
-    }
-
-    /**
-     * 记录 Intercept 类型调用（有完整真实响应信息）
-     */
-    private void recordCall(Request req, int statusCode,
-                            Map<String, String> respHeaders, Object responseBody, ApiCallRecord.Type type) {
-        try {
-            apiCallHistory.add(new ApiCallRecord(
-                    UUID.randomUUID().toString(), req.url(), req.method(), System.currentTimeMillis(),
-                    new HashMap<>(req.headers()), req.postData(),
-                    statusCode, respHeaders != null ? respHeaders : Collections.emptyMap(),
-                    responseBody, type));
-        } catch (Exception e) {
-            logger.warn("[Record] Failed to record intercepted call: {}", e.getMessage());
-        }
-    }
-
-    private static Map<String, Object> createRequestContext(Route route) {
-        Map<String, Object> ctx = new HashMap<>();
-        Request req = route.request();
-        ctx.put("url", req.url());
-        ctx.put("method", req.method());
-        ctx.put("headers", req.headers());
-        try { ctx.put("postData", req.postData() != null ? req.postData() : ""); }
-        catch (Exception e) { ctx.put("postData", ""); }
-        return ctx;
     }
 
     /**
@@ -954,16 +1032,20 @@ public class ApiMonitorAndMockManager {
         try {
             route.fulfill(opts);
         } catch (Exception e) {
-            logger.warn("[Route] fulfill failed for {}, trying resume: {}", url, e.getMessage());
+            logger.error("[Route] fulfill failed for {}: {}", url, e.getMessage(), e);
             safeResume(route);
         }
     }
 
     /**
-     * 安全 resume（带异常吞没）
+     * 安全 resume（带异常记录完整堆栈）
      */
     private static void safeResume(Route route) {
-        try { route.resume(); } catch (Exception ignored) {}
+        try {
+            route.resume();
+        } catch (Exception e) {
+            logger.error("[Route] resume() failed, request may be blocked: {}", e.getMessage(), e);
+        }
     }
 
     // ==================== URL 工具方法 ====================
@@ -971,8 +1053,15 @@ public class ApiMonitorAndMockManager {
     /**
      * 将普通URL转换为 Playwright glob 模式
      *
+     * 智能匹配策略：
+     * - 查询参数片段（如 "orderId=123"、"orderId"）：匹配 URL 中的查询参数
+     * - 包含 '/' 的路径片段（如 "api/user/info"）：只加前缀 **，精确匹配路径
+     * - 简单关键字（如 "user"）：加前后 **，模糊匹配
+     * - 已经是 glob 格式（含 * 或 **）：原样返回
+     * - 以 http 开头：原样返回（完整URL）
+     *
      * @param urlPattern 如 "/api/users" 或 "api/users" 或 "*.example.com/api/**"
-     * @return 如果已经是glob格式则原样返回；否则包装为 "**{pattern}**"
+     * @return 适配的 glob pattern
      */
     static String toGlobPattern(String urlPattern) {
         if (urlPattern == null || urlPattern.isEmpty()) return "**";
@@ -980,9 +1069,60 @@ public class ApiMonitorAndMockManager {
         // 已经是 glob 模式（含 * 或 **），直接返回
         if (urlPattern.contains("*")) return urlPattern;
 
-        // 移除前导斜杠
+        // 完整 URL（以 http 开头）原样返回
+        if (urlPattern.startsWith("http://") || urlPattern.startsWith("https://")) {
+            return urlPattern;
+        }
+
+        // 【查询参数处理】检测是否是查询参数片段
+        // 支持：?orderId=123, orderId=123, orderId, ?orderId
+        boolean isQueryParam = false;
+        String paramContent = urlPattern;
+        
+        // 移除开头的 ?（如果存在）
+        if (paramContent.startsWith("?")) {
+            paramContent = paramContent.substring(1);
+            isQueryParam = true;
+        }
+        
+        // 检测是否包含查询参数的键值对格式（包含 =）
+        if (paramContent.contains("=")) {
+            isQueryParam = true;
+        }
+        
+        // 检测是否只是查询参数键（不含 / 和 . 的纯参数名）
+        if (!isQueryParam && !paramContent.contains("/") && !paramContent.contains(".")) {
+            // 可能是查询参数键，检查是否像参数名（通常是 camelCase 或 snake_case）
+            if (paramContent.matches("^[a-zA-Z][a-zA-Z0-9_]*$") || 
+                paramContent.matches("^[a-z_][a-z0-9_]*$")) {
+                isQueryParam = true;
+            }
+        }
+        
+        if (isQueryParam) {
+            // 查询参数模式：使用纯 glob 语法，让参数出现在 URL 任意位置
+            // 例如 "orderId=123" -> "**orderId=123**"
+            logger.debug("[Pattern] Detected query parameter pattern: {} -> **/{}{}", 
+                    urlPattern, paramContent, "**");
+            return "**" + paramContent + "**";
+        }
+
+        // 移除前导斜杠，同时处理末尾斜杠保持一致
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
-        return "**/" + normalized + "**";
+        // 统一移除末尾斜杠，避免 /api/user 和 /api/user/ 生成不同 glob
+        normalized = normalized.replaceAll("/+$", "");
+
+        // 【关键优化】根据内容判断匹配策略
+        if (normalized.contains("/")) {
+            // 包含路径分隔符 → 这是相对路径片段，只加前缀
+            // 例如 "api/user/info" → "**/api/user/info"
+            // 支持匹配带查询参数的 URL，如 /api/user?id=1
+            return "**/" + normalized;
+        } else {
+            // 简单关键字（无路径）→ 加前后 ** 模糊匹配
+            // 例如 "user" → "**/user**"
+            return "**/" + normalized + "**";
+        }
     }
 
     /**
@@ -990,6 +1130,7 @@ public class ApiMonitorAndMockManager {
      * 支持 Playwright glob 格式：
      * - ** 匹配任意字符（包括斜杠）
      * - * 匹配任意字符（不含斜杠）
+     * - 大小写不敏感匹配
      * 
      * @param url 完整 URL
      * @param globPattern glob 模式
@@ -998,26 +1139,27 @@ public class ApiMonitorAndMockManager {
     static boolean matchesGlob(String url, String globPattern) {
         if (url == null || globPattern == null) return false;
         
-        // 转换为正则表达式进行匹配
+        // 转换为正则表达式进行匹配（大小写不敏感）
         String regex = globToRegex(globPattern);
-        return Pattern.matches(regex, url);
+        return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
     }
 
     /**
      * 将 glob pattern 转换为正则表达式
      * 
-     * 语义规则：
-     * - ** 匹配零个或多个路径段
-     * - * 匹配单个路径段内的任意字符（不包含 /）
-     * - 末尾的 ** 转换为可选的路径后缀和查询参数 (/.*)?(\\?.*)?
+     * 语义规则（与 Playwright glob 行为一致）：
+     * - ** 匹配任意字符（包括斜杠）
+     * - * 匹配除斜杠外的任意字符
+     * - 末尾始终加 $ 确保精确匹配，防止 /api/user 匹配 /api/user123
      * 
      */
     private static String globToRegex(String glob) {
+        if (glob == null || glob.isEmpty()) return ".*";
+        
         StringBuilder regex = new StringBuilder();
         regex.append("^");
         
         int i = 0;
-        boolean endsWithStarStar = glob.endsWith("**");
         
         while (i < glob.length()) {
             char c = glob.charAt(i);
@@ -1032,8 +1174,8 @@ public class ApiMonitorAndMockManager {
                     i++;
                 }
             } else {
-                // 转义正则特殊字符
-                if ("\\[]{}()+?.^$|".indexOf(c) >= 0) {
+                // 转义正则特殊字符（包括 .）
+                if ("\\[]{}()+?.^$|.".indexOf(c) >= 0) {
                     regex.append("\\").append(c);
                 } else {
                     regex.append(c);
@@ -1042,17 +1184,8 @@ public class ApiMonitorAndMockManager {
             }
         }
         
-        String result = regex.toString();
-        
-        // 【关键修复】末尾的 .* 由尾部 ** 生成，需要替换为更精确的匹配
-        // 支持可选的路径后缀（/xxx）和可选的查询参数（?xxx）
-        // 这允许匹配 /api/users, /api/users/123, /api/users?query=1
-        // 但不会过度匹配（如 /api/usersxyz 不会匹配 /api/users）
-        if (endsWithStarStar && result.endsWith(".*$")) {
-            result = result.substring(0, result.length() - 3) + "(/.*)?(\\?.*)?$";
-        }
-        
-        return result;
+        // 末尾加 $ 确保精确匹配，防止 /api/user 匹配 /api/user123
+        return regex.toString() + "$";
     }
 
     // ==================== Mock Builder ====================
@@ -1108,10 +1241,14 @@ public class ApiMonitorAndMockManager {
 
         public void build() {
             if (autoClear) {
+                // 先解绑所有旧路由
+                safeUnrouteAll(instance.targetPage != null ? instance.targetPage : instance.targetContext);
                 instance.mockRules.clear();
                 instance.registeredPatterns.clear();
             }
-            for (MockRule r : rules) instance.registerMock(r);
+            for (MockRule r : rules) {
+                instance.registerMock(r);
+            }
             instance.applyRoutes();
             recordToSerenityReport();
             logger.info("[Mock] Built {} rule(s)", rules.size());
@@ -1120,110 +1257,6 @@ public class ApiMonitorAndMockManager {
         private MockRule last() {
             if (rules.isEmpty()) throw new IllegalStateException("No rule added yet");
             return rules.get(rules.size() - 1);
-        }
-    }
-
-    // ==================== Intercept Builder ====================
-
-    /**
-     * 拦截构建器 — 流式配置响应拦截+修改规则
-     *
-     * <p>三种使用方式：
-     * <ol>
-     *   <li>JsonPath 字段级修改（简单场景）</li>
-     *   <li>自定义修改器（复杂场景）</li>
-     *   <li>两者组合（先 JsonPath 再自定义）</li>
-     * </ol>
-     *
-     * <pre>{@code
-     * // 方式1: JsonPath
-     * ApiMonitorAndMockManager.intercept(context)
-     *     .forUrl("/api/user/profile")
-     *     .modify("$.data.role", "admin")
-     *     .build();
-     *
-     * // 方式2: 自定义修改器
-     * ApiMonitorAndMockManager.intercept(context)
-     *     .forUrl("/api/payment")
-     *     .thenModify(body -> { ...; return result; })
-     *     .build();
-     *
-     * // 方式3: 组合
-     * ApiMonitorAndMockManager.intercept(context)
-     *     .forUrl("/api/last")
-     *     .modify("$.securityCode", "123456")
-     *     .thenModify(body -> extraProcessing(body))
-     *     .build();
-     * }</pre>
-     */
-    public static class InterceptBuilder {
-        private final ApiMonitorAndMockManager instance;
-        private final List<InterceptRule> rules = new ArrayList<>();
-        private boolean autoClear = true;
-
-        private InterceptBuilder(ApiMonitorAndMockManager instance) {
-            this.instance = instance;
-        }
-
-        public InterceptBuilder forUrl(String urlPattern) {
-            rules.add(new InterceptRule("intercept-" + urlPattern, toGlobPattern(urlPattern)));
-            return this;
-        }
-
-        public InterceptBuilder forUrlContains(String keyword) {
-            lastRule().setUrlContains(keyword);
-            return this;
-        }
-
-        public InterceptBuilder method(String m) {
-            lastRule().setMethod(m);
-            return this;
-        }
-
-        public InterceptBuilder modify(String jsonPath, Object value) {
-            lastRule().getJsonPathModifications().put(jsonPath, value);
-            return this;
-        }
-
-        public InterceptBuilder modifications(Map<String, Object> map) {
-            if (map != null) lastRule().getJsonPathModifications().putAll(map);
-            return this;
-        }
-
-        public InterceptBuilder thenModify(ResponseModifier modifier) {
-            InterceptRule last = lastRule();
-            Map<String, Object> existingMods = last.getJsonPathModifications();
-
-            if (existingMods != null && !existingMods.isEmpty()) {
-                // 两阶段：先 JsonPath → 再自定义
-                final ResponseModifier userModifier = modifier;
-                final Map<String, Object> modsSnapshot = new HashMap<>(existingMods);
-                last.setModifier(body -> {
-                    String afterJsonPath = applyModificationInternal(body, modsSnapshot);
-                    return userModifier.modify(afterJsonPath);
-                });
-                existingMods.clear(); // 避免重复应用
-            } else {
-                last.setModifier(modifier);
-            }
-            return this;
-        }
-
-        public InterceptBuilder autoClear(boolean b) { this.autoClear = b; return this; }
-
-        public void build() {
-            if (autoClear) {
-                instance.interceptRules.clear();
-                instance.registeredPatterns.clear();
-            }
-            for (InterceptRule r : rules) instance.registerIntercept(r);
-            instance.applyRoutes();
-            logger.info("[Intercept] Built {} rule(s)", rules.size());
-        }
-
-        private InterceptRule lastRule() {
-            if (rules.isEmpty()) throw new IllegalStateException("No intercept rule added yet");
-            return rules.getLast();
         }
     }
 }

@@ -837,7 +837,18 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
         } catch (Exception e) {
             logger.error("[Route] Unhandled exception for {}, falling back to resume(): {}", url, e.getMessage(), e);
-            safeResume(route);
+            // 关键修复：无论任何异常，都必须确保调用 resume() 放行请求
+            try {
+                route.resume();
+            } catch (Exception resumeEx) {
+                logger.error("[Route] resume() also failed for {}, request may be blocked: {}", url, resumeEx.getMessage());
+                try {
+                // 最后的兜底：尝试 abort 请求避免永久挂起
+                route.abort(new java.util.concurrent.TimeoutException("Route handler failed"));
+                } catch (Exception abortEx) {
+                    logger.error("[Route] abort() failed for {}, request is definitely blocked: {}", url, abortEx.getMessage());
+                }
+            }
         }
     }
 
@@ -916,7 +927,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         }
 
         if (mockBody == null) {
-            logger.warn("[Mock] No mock body for rule '{}', resuming", rule.getName());
+            logger.warn("[Mock] No mock body for rule '{}', resuming original request", rule.getName());
             safeResume(route);
             return;
         }
@@ -991,7 +1002,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             Thread.currentThread().interrupt();
             logger.warn("[Mock] Delay interrupted for {}, resuming", url);
             safeResume(route);
-            // 不再继续执行，因为已经被中断
         } catch (Exception e) {
             logger.error("[Mock] Delay fulfill failed for {}: {}", url, e.getMessage(), e);
             safeResume(route);
@@ -1032,8 +1042,18 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         try {
             route.fulfill(opts);
         } catch (Exception e) {
-            logger.error("[Route] fulfill failed for {}: {}", url, e.getMessage(), e);
-            safeResume(route);
+            logger.error("[Route] fulfill failed for {}, falling back to resume: {}", url, e.getMessage(), e);
+            // fulfill 失败时，尝试 resume 放行请求
+            try {
+                route.resume();
+            } catch (Exception resumeEx) {
+                logger.error("[Route] resume fallback also failed for {}, request may be blocked: {}", url, resumeEx.getMessage());
+                try {
+                    route.abort(new java.util.concurrent.TimeoutException("fulfill and resume both failed"));
+                } catch (Exception abortEx) {
+                    logger.error("[Route] abort() failed for {}, request is definitely blocked: {}", url, abortEx.getMessage());
+                }
+            }
         }
     }
 
@@ -1045,6 +1065,12 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             route.resume();
         } catch (Exception e) {
             logger.error("[Route] resume() failed, request may be blocked: {}", e.getMessage(), e);
+            // 尝试 abort 避免请求永久挂起
+            try {
+                route.abort(new java.util.concurrent.TimeoutException("resume failed"));
+            } catch (Exception abortEx) {
+                logger.error("[Route] abort() also failed, request is definitely blocked: {}", abortEx.getMessage());
+            }
         }
     }
 
@@ -1184,8 +1210,12 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             }
         }
         
-        // 末尾加 $ 确保精确匹配，防止 /api/user 匹配 /api/user123
-        return regex.toString() + "$";
+        // 【修改】移除末尾 $，允许 URL 有额外后缀（查询参数、路径片段）
+        // 原逻辑：regex.toString() + "$"
+        // 新逻辑：只追加可选的查询参数和路径后缀
+        String baseRegex = regex.toString();
+        // 不再强制要求 URL 以 pattern 结尾，允许有查询参数
+        return baseRegex;
     }
 
     // ==================== Mock Builder ====================

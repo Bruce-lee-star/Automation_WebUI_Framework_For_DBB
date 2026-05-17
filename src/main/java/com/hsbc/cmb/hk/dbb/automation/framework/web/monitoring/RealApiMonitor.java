@@ -388,10 +388,25 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                 final boolean hasTargetPatterns = !apis.isEmpty();
                 
                 java.util.function.Consumer<Response> handler = response -> {
-                    if (contextMonitoringStopped.getOrDefault(context, false)) return;
-                    if (!matchesTargetHost(response.url())) return;
-                    if (isStaticResource(response.url())) return;
+                    // 【调试】检查是否被 stopped 标记阻止
+                    if (contextMonitoringStopped.getOrDefault(context, false)) {
+                        logger.debug("[RealApiMonitor] Response skipped - monitor is stopped: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查 targetHost 过滤
+                    if (!matchesTargetHost(response.url())) {
+                        logger.debug("[RealApiMonitor] Response skipped - targetHost mismatch: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查静态资源过滤
+                    if (isStaticResource(response.url())) {
+                        logger.trace("[RealApiMonitor] Response skipped - static resource: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查 targetPattern 匹配
                     if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
+                        logger.debug("[RealApiMonitor] Response skipped - pattern mismatch: {} (patterns={})", 
+                            response.url(), targetApiPatterns.get());
                         return;
                     }
                     recordApiCall(response, response.request());
@@ -406,10 +421,25 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                 final boolean hasTargetPatterns = !apis.isEmpty();
                 
                 java.util.function.Consumer<Response> handler = response -> {
-                    if (pageMonitoringStopped.getOrDefault(page, false)) return;
-                    if (!matchesTargetHost(response.url())) return;
-                    if (isStaticResource(response.url())) return;
+                    // 【调试】检查是否被 stopped 标记阻止
+                    if (pageMonitoringStopped.getOrDefault(page, false)) {
+                        logger.debug("[RealApiMonitor] Response skipped - monitor is stopped: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查 targetHost 过滤
+                    if (!matchesTargetHost(response.url())) {
+                        logger.debug("[RealApiMonitor] Response skipped - targetHost mismatch: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查静态资源过滤
+                    if (isStaticResource(response.url())) {
+                        logger.trace("[RealApiMonitor] Response skipped - static resource: {}", response.url());
+                        return;
+                    }
+                    // 【调试】检查 targetPattern 匹配
                     if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
+                        logger.debug("[RealApiMonitor] Response skipped - pattern mismatch: {} (patterns={})", 
+                            response.url(), targetApiPatterns.get());
                         return;
                     }
                     recordApiCall(response, response.request());

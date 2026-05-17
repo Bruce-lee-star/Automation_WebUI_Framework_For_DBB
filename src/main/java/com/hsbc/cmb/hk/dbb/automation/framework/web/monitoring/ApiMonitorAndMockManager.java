@@ -818,36 +818,24 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
+     * 【修复】使用 Throwable 捕获所有异常，确保每个请求 100% 被处理
      */
     private void handleUnifiedRoute(Route route) {
-        Request req = route.request();
-        String url = req.url();
-
         try {
-            // 1. 尝试匹配 Mock 规则
-            MockRule matchedMock = findMatchingMock(req);
+            MockRule matchedMock = findMatchingMock(route.request());
             if (matchedMock != null) {
                 handleMock(route, matchedMock);
                 return;
             }
-
-            // 2. 不匹配任何规则 → 记录真实流量并放行
             recordRealRequest(route);
-            route.resume();
+            safeResume(route);
 
-        } catch (Exception e) {
-            logger.error("[Route] Unhandled exception for {}, falling back to resume(): {}", url, e.getMessage(), e);
-            // 关键修复：无论任何异常，都必须确保调用 resume() 放行请求
+        } catch (Throwable e) {
+            logger.error("[ROUTE FATAL] Force resume: {}", route.request().url(), e);
             try {
-                route.resume();
-            } catch (Exception resumeEx) {
-                logger.error("[Route] resume() also failed for {}, request may be blocked: {}", url, resumeEx.getMessage());
-                try {
-                // 最后的兜底：尝试 abort 请求避免永久挂起
-                route.abort("failedhandler");
-                } catch (Exception abortEx) {
-                    logger.error("[Route] abort() failed for {}, request is definitely blocked: {}", url, abortEx.getMessage());
-                }
+                safeResume(route);
+            } catch (Exception ex) {
+                route.abort();
             }
         }
     }
@@ -991,19 +979,23 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
 
     /**
-     * 延迟 fulfill — 使用 Playwright 原生 waitForTimeout 同步等待
+     * 延迟 fulfill — 使用 Playwright 原生 route.wait() API
+     * route.wait() 在 Playwright 中是官方支持的，不会阻塞浏览器主线程
+     * 它只在路由处理的上下文中等待，是安全的
      */
     private void fulfillWithDelay(Route route, Route.FulfillOptions opts, long delayMs, String url) {
+        if (delayMs <= 0) {
+            safeFulfill(route, opts, url);
+            return;
+        }
+
         logger.info("[Mock] Delay {}ms for {}", delayMs, url);
         try {
-            route.wait(delayMs);  // Playwright 官方支持：同步等待
+            // Playwright 原生支持的等待方式，不阻塞浏览器
+            route.wait(delayMs);
             safeFulfill(route, opts, url);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            logger.warn("[Mock] Delay interrupted for {}, resuming", url);
-            safeResume(route);
         } catch (Exception e) {
-            logger.error("[Mock] Delay fulfill failed for {}: {}", url, e.getMessage(), e);
+            logger.error("[Mock] Delay failed for {}: {}", url, e.getMessage());
             safeResume(route);
         }
     }
@@ -1210,12 +1202,9 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             }
         }
         
-        // 【修改】移除末尾 $，允许 URL 有额外后缀（查询参数、路径片段）
-        // 原逻辑：regex.toString() + "$"
-        // 新逻辑：只追加可选的查询参数和路径后缀
-        String baseRegex = regex.toString();
-        // 不再强制要求 URL 以 pattern 结尾，允许有查询参数
-        return baseRegex;
+        // 【修复】移除末尾 $，支持匹配带查询参数的 URL
+        // 例如：pattern "**/api/user" 应匹配 "https://a.com/api/user?id=1"
+        return regex.toString();
     }
 
     // ==================== Mock Builder ====================

@@ -40,8 +40,9 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
     private static final Logger logger = LoggerFactory.getLogger(ApiRequestModifier.class);
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
-    /** 全局存储，按 endpoint 分类存储请求/响应信息 */
-    private static final Map<String, List<RequestResponseInfo>> GLOBAL_STORE = new ConcurrentHashMap<>();
+    /** 全局存储，按 endpoint 分类存储请求/响应信息（线程隔离） */
+    private static final ThreadLocal<Map<String, List<RequestResponseInfo>>> GLOBAL_STORE = 
+        ThreadLocal.withInitial(ConcurrentHashMap::new);
 
     // ==================== Context 生命周期钩子注册 ====================
     static {
@@ -64,7 +65,7 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         
         // 对于 ApiRequestModifier，路由是在 modifyRequest() 时动态绑定的
         // 框架层面，我们记录当前活跃的 endpoint 配置
-        for (Map.Entry<String, List<RequestResponseInfo>> entry : GLOBAL_STORE.entrySet()) {
+        for (Map.Entry<String, List<RequestResponseInfo>> entry : GLOBAL_STORE.get().entrySet()) {
             if (!entry.getValue().isEmpty()) {
                 // 有数据的 endpoint，说明可能绑定了路由
                 snapshots.add(new ModifierRuleSnapshot(entry.getKey()));
@@ -191,7 +192,7 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         void add(RequestResponseInfo info) {
             String key = extractEndpoint(info.request.url);
             localStore.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(info);
-            GLOBAL_STORE.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(info);
+            GLOBAL_STORE.get().computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(info);
         }
 
         /** 获取指定 endpoint 的所有请求/响应 */
@@ -222,12 +223,12 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
 
         /** 清空全局存储 */
         public static void clearGlobal() {
-            GLOBAL_STORE.clear();
+            GLOBAL_STORE.get().clear();
         }
 
         /** 获取全局存储 */
         public static Map<String, List<RequestResponseInfo>> getGlobalStore() {
-            return new HashMap<>(GLOBAL_STORE);
+            return new HashMap<>(GLOBAL_STORE.get());
         }
 
         private String extractEndpoint(String url) {

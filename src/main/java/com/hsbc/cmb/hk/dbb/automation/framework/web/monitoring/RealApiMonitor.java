@@ -66,7 +66,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     private static final Map<BrowserContext, java.util.function.Consumer<Response>> contextListeners = new ConcurrentHashMap<>();
     private static final Map<Page, java.util.function.Consumer<Response>> pageListeners = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> hasLoggedToSerenity = ThreadLocal.withInitial(() -> false);
-    private static volatile String targetHost = null;
+    private static final ThreadLocal<String> targetHost = ThreadLocal.withInitial(() -> null);
     private static final ThreadLocal<AssertionError> monitoringFailure = ThreadLocal.withInitial(() -> null);
     private static final ThreadLocal<AtomicInteger> matchedTargetApiCount = ThreadLocal.withInitial(AtomicInteger::new);
     private static final ThreadLocal<Boolean> allTargetApisCaptured = ThreadLocal.withInitial(() -> false);
@@ -1141,15 +1141,15 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
      * @param host 主机地址或完整 URL
      */
     public static void setTargetHost(String host) {
-        targetHost = extractHost(host);
-        logger.info("Target host set to: {}", targetHost);
+        targetHost.set(extractHost(host));
+        logger.info("Target host set to: {}", targetHost.get());
     }
 
     /**
      * 清除目标主机过滤器（捕获所有主机）
      */
     public static void clearTargetHost() {
-        targetHost = null;
+        targetHost.remove();
     }
 
     private static String extractHost(String url) {
@@ -1584,12 +1584,13 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     }
 
     private static boolean matchesTargetHost(String url) {
-        if (targetHost == null || targetHost.isEmpty()) return true;
+        String host = targetHost.get();
+        if (host == null || host.isEmpty()) return true;
         try {
             URL urlObj = URI.create(url).toURL();
-            return targetHost.equals(urlObj.getHost());
+            return host.equals(urlObj.getHost());
         } catch (Exception e) {
-            return url.contains(targetHost);
+            return url.contains(host);
         }
     }
 

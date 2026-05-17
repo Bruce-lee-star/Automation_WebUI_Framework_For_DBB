@@ -844,7 +844,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 logger.error("[Route] resume() also failed for {}, request may be blocked: {}", url, resumeEx.getMessage());
                 try {
                 // 最后的兜底：尝试 abort 请求避免永久挂起
-                route.abort(new java.util.concurrent.TimeoutException("Route handler failed"));
+                route.abort("failedhandler");
                 } catch (Exception abortEx) {
                     logger.error("[Route] abort() failed for {}, request is definitely blocked: {}", url, abortEx.getMessage());
                 }
@@ -1049,7 +1049,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             } catch (Exception resumeEx) {
                 logger.error("[Route] resume fallback also failed for {}, request may be blocked: {}", url, resumeEx.getMessage());
                 try {
-                    route.abort(new java.util.concurrent.TimeoutException("fulfill and resume both failed"));
+                    route.abort("failedhandler");
                 } catch (Exception abortEx) {
                     logger.error("[Route] abort() failed for {}, request is definitely blocked: {}", url, abortEx.getMessage());
                 }
@@ -1067,7 +1067,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             logger.error("[Route] resume() failed, request may be blocked: {}", e.getMessage(), e);
             // 尝试 abort 避免请求永久挂起
             try {
-                route.abort(new java.util.concurrent.TimeoutException("resume failed"));
+                route.abort("failedhandler");
             } catch (Exception abortEx) {
                 logger.error("[Route] abort() also failed, request is definitely blocked: {}", abortEx.getMessage());
             }

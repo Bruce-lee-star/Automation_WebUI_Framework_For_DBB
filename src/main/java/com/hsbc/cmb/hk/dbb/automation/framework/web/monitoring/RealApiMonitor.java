@@ -59,6 +59,11 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
 
     private static final Logger logger = LoggerFactory.getLogger(RealApiMonitor.class);
 
+    /** API调用历史最大容量，防止内存泄漏 */
+    private static final int MAX_API_HISTORY_SIZE = 1000;
+    /** 响应体最大读取大小（字节），超过则截断，防止同步阻塞 */
+    private static final int MAX_RESPONSE_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+
     private static final ThreadLocal<List<ApiCallRecord>> apiCallHistory = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
     private static final ThreadLocal<Map<String, ApiExpectation>> apiExpectations = ThreadLocal.withInitial(ConcurrentHashMap::new);
     private static final Map<BrowserContext, Boolean> contextMonitoringStopped = new ConcurrentHashMap<>();
@@ -398,12 +403,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                         logger.debug("[RealApiMonitor] Response skipped - targetHost mismatch: {}", response.url());
                         return;
                     }
-                    // 【调试】检查静态资源过滤
-                    if (isStaticResource(response.url())) {
-                        logger.trace("[RealApiMonitor] Response skipped - static resource: {}", response.url());
-                        return;
-                    }
-                    // 【调试】检查 targetPattern 匹配
+                    // 检查 targetPattern 匹配
                     if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
                         logger.debug("[RealApiMonitor] Response skipped - pattern mismatch: {} (patterns={})", 
                             response.url(), targetApiPatterns.get());
@@ -431,12 +431,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                         logger.debug("[RealApiMonitor] Response skipped - targetHost mismatch: {}", response.url());
                         return;
                     }
-                    // 【调试】检查静态资源过滤
-                    if (isStaticResource(response.url())) {
-                        logger.trace("[RealApiMonitor] Response skipped - static resource: {}", response.url());
-                        return;
-                    }
-                    // 【调试】检查 targetPattern 匹配
+                    // 检查 targetPattern 匹配
                     if (hasTargetPatterns && !isTargetPatternMatch(response.url())) {
                         logger.debug("[RealApiMonitor] Response skipped - pattern mismatch: {} (patterns={})", 
                             response.url(), targetApiPatterns.get());
@@ -1330,6 +1325,29 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         return new String[]{title, json.toString()};
     }
 
+    /**
+     * 【v3.5 新增】限制 API 调用历史大小，防止内存泄漏
+     * 使用同步块保护，避免并发修改异常
+     */
+    private static void trimHistoryIfNeeded() {
+        List<ApiCallRecord> history = apiCallHistory.get();
+        int currentSize = history.size();
+        
+        if (currentSize > MAX_API_HISTORY_SIZE) {
+            synchronized (history) {
+                // 再次检查（防止并发）
+                if (history.size() <= MAX_API_HISTORY_SIZE) return;
+                
+                int toRemoveCount = history.size() - MAX_API_HISTORY_SIZE;
+                // 使用 List 的 removeRange 高效删除旧记录
+                history.subList(0, toRemoveCount).clear();
+                
+                logger.debug("[History] Trimmed {} old records, kept {} latest (max={})", 
+                    toRemoveCount, history.size(), MAX_API_HISTORY_SIZE);
+            }
+        }
+    }
+
     private static void logSummaryToSerenityReport() {
         if (apiCallHistory.get().isEmpty() || hasLoggedToSerenity.get()) return;
         
@@ -1447,10 +1465,22 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                 || response.status() == 303 || response.status() == 307 || response.status() == 308;
             
             try {
-                capturedBody = response.text();
-                bodyCaptured = true;
-                logger.debug("[API] Response body captured via text() for: {} (length={})", 
-                    response.url(), capturedBody != null ? capturedBody.length() : "null");
+                // 【v3.5 修复】检查 Content-Length header，避免读取超大响应体导致同步阻塞
+                long contentLength = response.headers().containsKey("content-length") 
+                    ? Long.parseLong(response.headers().get("content-length")) 
+                    : -1;
+                
+                if (contentLength > MAX_RESPONSE_BODY_SIZE) {
+                    logger.debug("[API] Response body too large ({} bytes), skipping capture for: {}", 
+                        contentLength, response.url());
+                    capturedBody = "[BODY_TOO_LARGE size=" + contentLength + "]";
+                    bodyCaptured = true;
+                } else {
+                    capturedBody = response.text();
+                    bodyCaptured = true;
+                    logger.debug("[API] Response body captured via text() for: {} (length={})", 
+                        response.url(), capturedBody != null ? capturedBody.length() : "null");
+                }
             } catch (Exception e) {
                 String errorMsg = e.getMessage();
                 boolean isRedirectError = errorMsg != null && (
@@ -1504,6 +1534,9 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             record.setResponse(response);
             record.setRequest(request);
             apiCallHistory.get().add(record);
+            
+            // 【v3.5 修复】容量限制，防止内存泄漏
+            trimHistoryIfNeeded();
 
             long now = System.currentTimeMillis();
             long prevActivity = lastApiActivityTime;
@@ -1592,34 +1625,6 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         } catch (Exception e) {
             return url.contains(host);
         }
-    }
-
-    private static boolean isStaticResource(String url) {
-        if (url == null) return false;
-        
-        String pathOnly = url;
-        int queryIndex = url.indexOf('?');
-        if (queryIndex > 0) {
-            pathOnly = url.substring(0, queryIndex);
-        }
-        int fragmentIndex = pathOnly.indexOf('#');
-        if (fragmentIndex > 0) {
-            pathOnly = pathOnly.substring(0, fragmentIndex);
-        }
-        
-        String lower = pathOnly.toLowerCase();
-
-        if (lower.contains("/api/") || lower.contains("/rest/") || lower.contains("/service/")
-                || lower.startsWith("api/") || lower.startsWith("rest/") || lower.startsWith("service/")) {
-            return false;
-        }
-
-        String[] exts = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-                         ".woff", ".woff2", ".ttf", ".eot", ".map", ".html"};
-        for (String e : exts) {
-            if (lower.endsWith(e)) return true;
-        }
-        return false;
     }
 
     private static boolean isReadableText(String text) {

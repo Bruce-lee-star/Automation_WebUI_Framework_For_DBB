@@ -1,6 +1,6 @@
-# API 监控工具包使用指南（详细版 v3.4）
+# API 监控工具包使用指南（详细版 v3.5）
 
-> **最后更新：** 2026-05-14 | **基于代码版本：** v3.4 修复 ContextLifecycleProxy 捕获配置错误，支持 Context/Page 重建时监听器配置正确恢复
+> **最后更新：** 2026-05-19 | **基于代码版本：** v3.5 路由强制清理 + 双重异常兜底，解决白屏问题；移除静态资源过滤
 
 ---
 
@@ -10,16 +10,16 @@
 - [二、RealApiMonitor - API 监控工具](#二realapimonitor---api-监控工具)
   - [2.1 核心特性与架构设计](#21-核心特性与架构设计)
   - [2.2 线程安全机制](#22-线程安全机制)
-  - [2.3 停止机制（两种自动 + 手动）](#23-停止机制)
+  - [2.3 停止机制（三种自动 + 手动）](#23-停止机制)
   - [2.4 MonitorBuilder 链式配置](#24-monitorbuilder-链式配置)
   - [2.5 核心查询方法（单条 + 多记录）](#25-核心查询单条--多记录)
   - [2.6 JSON 快速取值（企业级便捷操作）](#26-json-快速取值企业级便捷操作)
   - [2.7 阻塞等待 vs 非阻塞条件检查（何时用哪种）](#27-阻塞等待-vs-非阻塞条件检查何时用哪种)
   - [2.8 多记录 JSON 提取（分页/重复请求场景）](#28-多记录-json-提取分页重复请求场景)
   - [2.9 生命周期管理](#29-生命周期管理)
-  - [2.10 完整示例（10 个场景）](#210-完整示例10-个场景)
+  - [2.10 完整示例（11 个场景）](#210-完整示例11-个场景)
 - [三、ApiRequestModifier - 请求修改器](#三apirequestmodifier---请求修改器)
-- [四、ApiMonitorAndMockManager - Mock 管理](#四api monitorandmockmanager---mock-管理)
+- [四、ApiMonitorAndMockManager - Mock 管理](#四apimonitorandmockmanager---mock-管理)
 - [五、最佳实践与注意事项](#五最佳实践与注意事项)
 - [六、Context 生命周期钩子（规则自动恢复）](#六context-生命周期钩子规则自动恢复)
 - [七、完整 API 参考](#七完整-api-参考)
@@ -32,7 +32,7 @@
 |------|------|----------|
 | **RealApiMonitor** | API 监控（非阻塞、线程安全） | 监控页面触发的 API 调用，支持 JSON 字段提取、阻塞等待、多记录查询 |
 | **ApiRequestModifier** | 请求修改 | 修改请求的 Body、Headers、URL 等 |
-| **ApiMonitorAndMockManager** | Mock 管理 | Mock API 响应 |
+| **ApiMonitorAndMockManager** | Mock 管理 | Mock API 响应（支持延迟 Mock、动态响应生成） |
 
 ### 类关系
 
@@ -1207,7 +1207,6 @@ RealApiMonitor.monitor(ctx)
 | 线程安全 | 所有 public 方法都是线程安全的（ThreadLocal 隔离） |
 | 零额外线程 | **v3.2** 不使用 `new Thread` / `ScheduledExecutorService`，全部逻辑在 Playwright 异步回调中执行 |
 | 内存管理 | 大量 API 调用会占用内存，建议定期 `clearHistory()` 或依赖场景自动清理 |
-| 静态资源过滤 | `.js/.css/.png/.gif/.woff` 等静态资源和 `/api/` 以外的请求默认被过滤 |
 | Host 过滤 | 设置 targetHost 后只监控该 host |
 | Body 读取 | 响应体在 onResponse 回调中**同步一次性读取**，之后通过 `getResponseBody()` 直接返回（带 synchronized 锁防并发） |
 | 二进制响应 | 非 UTF-8 文本响应自动标记为 `[BINARY_DATA base64=...]`，JSON 方法对其返回 null |
@@ -1217,6 +1216,11 @@ RealApiMonitor.monitor(ctx)
 | Mock 规则覆盖 | **MockBuilder** 的 `autoClearRules(true)` (默认) 会在 build() 时先清空已有规则；设为 `false` 可累加。注意：相同 URL 会生成相同 rule name，Map put 会**覆盖**而非累加，累加时应使用不同 URL |
 | Intercept 两阶段修改 | `.modify(jsonPath, value)` + `.thenModify(modifier)` 组合时，先执行 JsonPath 批量修改，再执行自定义 modifier |
 | 延迟 fulfill | `withDelay()` 配置的延迟在 v3.2 中直接在 route 回调中执行（非真正网络延迟），如需真实网络级延迟模拟可考虑 Playwright CDP 协议层方案 |
+| 禁止 CompletableFuture | **v3.5** Playwright 的 `Route` 对象**非线程安全**，必须在路由回调原生线程内操作。❌ 禁止使用 `CompletableFuture.supplyAsync()` 等任何异步方式，会导致请求卡死、白屏。✅ 唯一安全方案：使用 `route.wait(delayMs)` |
+| 路由异常兜底 | **v3.5** `handleUnifiedRoute()` 使用 `Throwable` 捕获所有异常，双重兜底：`resume` 失败则 `abort`，避免请求永久挂起 |
+| 路由重复注册 | **v3.5** `applyRoutes()` 强制清理所有已注册路由，防止链式阻塞导致白屏。相同 endpoint 多次 mock 时会自动解绑旧路由 |
+| 内存容量限制 | **v3.5** RealApiMonitor 和 ApiMonitorAndMockManager 均配置 `MAX_API_HISTORY_SIZE=1000`，超出自动清理旧记录，防止 OOM |
+| 响应体大小限制 | **v3.5** 读取响应体前检查 `Content-Length` header，超过 5MB 跳过捕获，避免 `response.text()` 同步阻塞 UI |
 | autoStopOnMatch 默认值 | **默认 true** — 没有显式设置 `.autoStopOnMatch(false)` 时，所有目标达到 minMatches 后会**自动停止**。分页/轮询等需要持续捕获的场景必须显式设为 `false` |
 | minMatches 默认值 | **默认 1** — 每个目标 API 只需被捕获 1 次即视为"已达标"。同一 API 需要等待 N 次时必须显式设置 `.minMatches(N)` |
 | 内联超时检查 | v3.2 超时判断嵌入 `recordApiCall()` 中，每次 API 进来时检查距上次活动的空闲时间，不再使用后台定时器线程 |
@@ -1225,7 +1229,7 @@ RealApiMonitor.monitor(ctx)
 
 ## 六、Context 生命周期钩子（规则自动恢复）
 
-> **v3.4 新增** | 解决 Context/Page 重建时 API Mock/Intercept/Monitor 规则丢失的问题
+> **v3.4 新增，v3.5 增强** | 解决 Context/Page 重建时 API Mock/Intercept/Monitor 规则丢失的问题
 
 ### 6.1 问题背景
 

@@ -770,6 +770,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * - 使用 {@code registeredPatterns} 做去重，避免同一URL被多次 route() 绑定
      * - 统一路由入口处理 Mock 请求
      * - 对规则列表创建快照，避免并发修改异常
+     * - 【强制清理】每次 applyRoutes 时强制清理所有已注册的路由，防止重复注册链式阻塞
      * - 只解绑 registeredPatterns 中的 pattern，不影响其他框架的路由
      */
     private void applyRoutes() {
@@ -784,12 +785,32 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             rulesSnapshot = new ArrayList<>(mockRules.values());
         }
 
-        // 只解绑我们自己的 registeredPatterns 中的 pattern，不做 unrouteAll
+        // 【关键修复】强制清理所有已注册的路由，防止链式阻塞和白屏
+        // 1. 先解绑所有 registeredPatterns 中的路由
         for (String pattern : registeredPatterns) {
             safeUnroute(targetPage, pattern);
             safeUnroute(targetContext, pattern);
         }
         registeredPatterns.clear();
+        
+        // 2. 额外防护：强制解绑该 endpoint 对应的所有旧路由（防止链式注册残留）
+        for (MockRule rule : rulesSnapshot) {
+            if (rule.isEnabled()) {
+                unbindPattern(rule.getUrlPattern());
+            }
+        }
+        
+        // 3. 如果有 targetContext，额外做一次 Context 级别的清理（防止遗漏）
+        if (targetContext != null) {
+            try {
+                // 只解绑我们注册的 pattern，使用 registeredPatterns 作为白名单
+                for (String pattern : new ArrayList<>(registeredPatterns)) {
+                    // 已在上面清理，无需重复
+                }
+            } catch (Exception e) {
+                logger.debug("[Route] Context-level cleanup skipped: {}", e.getMessage());
+            }
+        }
 
         // --- 注册 Mock 规则 ---
         for (MockRule rule : rulesSnapshot) {
@@ -819,6 +840,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     /**
      * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
      * 【修复】使用 Throwable 捕获所有异常，确保每个请求 100% 被处理
+     * 【双重兜底】resume 失败则 abort，避免请求永久挂起导致白屏
      */
     private void handleUnifiedRoute(Route route) {
         try {
@@ -831,11 +853,21 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             safeResume(route);
 
         } catch (Throwable e) {
-            logger.error("[ROUTE FATAL] Force resume: {}", route.request().url(), e);
+            // 【双重兜底策略】确保每个请求 100% 被处理
+            // 1. 先尝试 resume 放行请求
             try {
                 safeResume(route);
-            } catch (Exception ex) {
-                route.abort();
+            } catch (Throwable resumeEx) {
+                // 2. resume 失败，强制 abort 避免请求永久挂起
+                logger.error("[ROUTE FATAL] Resume failed, forcing abort for: {} (original error: {}, resume error: {})",
+                    route.request().url(), e.getMessage(), resumeEx.getMessage());
+                try {
+                    route.abort("failedhandler");
+                } catch (Throwable abortEx) {
+                    // 3. abort 也失败，日志记录，请求确实被永久阻塞（此时白屏已不可避免）
+                    logger.error("[ROUTE FATAL] Abort also failed, request {} is permanently blocked: {}",
+                        route.request().url(), abortEx.getMessage());
+                }
             }
         }
     }

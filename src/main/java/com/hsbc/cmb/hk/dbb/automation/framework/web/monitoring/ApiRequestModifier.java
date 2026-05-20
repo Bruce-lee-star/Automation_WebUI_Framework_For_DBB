@@ -959,101 +959,40 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
     static String toGlobPattern(String urlPattern) {
         if (urlPattern == null || urlPattern.isEmpty()) return "**";
 
-        // 已经是 glob 模式（包含 * 或 **），直接返回
-        if (urlPattern.contains("*")) {
-            return urlPattern;
-        }
-
-        // 移除前导斜杠
-        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
+        // 已带通配符直接返回
+        if (urlPattern.contains("*")) return urlPattern;
         
-        // 前后加 ** 实现跨目录包含匹配（Java glob 中 ** 匹配任意路径包括 /）
-        return "**/" + normalized + "/**";
+        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
+        // 后缀不加/**，用**收尾，兼容所有查询参数
+        return "**/" + normalized + "**";
     }
 
+    /**
+     * 将 glob pattern 转换为正则表达式
+     */
+    private static String globToRegex(String pattern) {
+        if (pattern == null || pattern.isEmpty()) return ".*";
+        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
+        // 通配符替换
+        String reg = raw.replace("**", ".*").replace("*", "[^/]*");
+        // 全局匹配，允许后面拼接任意查询参数
+        return ".*" + reg + ".*";
+    }
 
     /**
      * 检查 URL 是否匹配 pattern
-     * 简化逻辑：提取原始 endpoint，URL 包含 endpoint 即匹配
-     * 
-     * @param url 完整 URL
-     * @param pattern 原始 endpoint 或 glob pattern
-     * @return true 如果匹配
      */
     static boolean matchesGlob(String url, String pattern) {
         if (url == null || pattern == null) return false;
         
-        // 提取原始 endpoint（去除 **/ 和 /**）
-        String endpoint = extractEndpoint(pattern);
-        if (endpoint != null && !endpoint.isEmpty()) {
-            // URL 包含 endpoint 即匹配（大小写不敏感）
-            return url.toLowerCase().contains(endpoint.toLowerCase());
+        // 使用正则匹配
+        String regex = globToRegex(pattern);
+        try {
+            return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
+        } catch (Exception e) {
+            logger.debug("[Pattern] Invalid pattern '{}': {}", pattern, e.getMessage());
+            return false;
         }
-        
-        // 空 pattern 匹配所有
-        return true;
-    }
-    
-    /**
-     * 从 glob pattern 中提取原始 endpoint
-     */
-    private static String extractEndpoint(String globPattern) {
-        if (globPattern == null || globPattern.isEmpty()) return null;
-        
-        // 去除开头的 /
-        String normalized = globPattern.startsWith("/") ? globPattern.substring(1) : globPattern;
-        
-        // 去除前后缀的 **
-        if (normalized.startsWith("**/")) {
-            normalized = normalized.substring(3);
-        }
-        if (normalized.endsWith("/**")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        
-        return normalized;
-    }
-    
-    /**
-     * 将 glob pattern 转换为正则表达式
-     * - ** 转换为 .* （匹配任意路径，包括 /）
-     * - * 转换为 [^/]* （匹配路径段内字符，不包括 /）
-     * - 去除开头的 /
-     * - 其他特殊字符使用字面量转义（但 / 不需要转义）
-     */
-    private static String globToRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) return ".*";
-        
-        // 去除开头的 /
-        String normalized = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-        
-        // 处理 glob 通配符
-        StringBuilder regex = new StringBuilder();
-        int i = 0;
-        while (i < normalized.length()) {
-            char c = normalized.charAt(i);
-            if (c == '*') {
-                if (i + 1 < normalized.length() && normalized.charAt(i + 1) == '*') {
-                    // ** 匹配任意字符（包括路径分隔符 /）
-                    regex.append(".*");
-                    i += 2;
-                } else {
-                    // * 匹配路径段内字符（不包括 /）
-                    regex.append("[^/]*");
-                    i++;
-                }
-            } else {
-                // 其他字符使用字面量转义（但 / 不需要转义）
-                if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
-                    regex.append("\\").append(c);
-                } else {
-                    regex.append(c);
-                }
-                i++;
-            }
-        }
-        
-        return regex.toString();
     }
 
     // ==================== 辅助方法 ====================

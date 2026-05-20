@@ -848,50 +848,24 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
     
     /**
-     * 从 glob pattern 中提取原始 endpoint
+     * 提取纯路径关键字，剔除通配符
      */
     private static String extractEndpoint(String globPattern) {
         if (globPattern == null || globPattern.isEmpty()) return null;
-        
-        // 去除开头的 /
-        String normalized = globPattern.startsWith("/") ? globPattern.substring(1) : globPattern;
-        
-        // 去除前后缀的 **
-        if (normalized.startsWith("**/")) {
-            normalized = normalized.substring(3);
-        }
-        if (normalized.endsWith("/**")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        
-        return normalized;
+        return globPattern.replaceAll("\\*+", "").trim();
     }
     
     /**
      * 将 glob pattern 转换为正则表达式
-     * 与 RealApiMonitor.toRegex() 完全一致：
-     * - 去除开头的 /
-     * - 使用 Pattern.quote() 进行字面量转义
-     * - 前后添加 .* 包裹
-     * - 特殊处理 ** 前缀和后缀（由 toGlobPattern 添加）
+     * 完美兼容路径+query参数
      */
     private static String globToRegex(String pattern) {
         if (pattern == null || pattern.isEmpty()) return ".*";
-        
-        // 去除开头的 /
-        String normalized = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-        
-        // 去除前后缀的 **（由 toGlobPattern 添加）
-        // 例如 "**/rest/account-list/**" -> "rest/account-list"
-        if (normalized.startsWith("**/")) {
-            normalized = normalized.substring(3);
-        }
-        if (normalized.endsWith("/**")) {
-            normalized = normalized.substring(0, normalized.length() - 3);
-        }
-        
-        // 使用 Pattern.quote() 进行字面量转义，前后添加 .* 包裹
-        return ".*" + Pattern.quote(normalized) + ".*";
+        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
+        // 通配符替换
+        String reg = raw.replace("**", ".*").replace("*", "[^/]*");
+        // 全局匹配，允许后面拼接任意查询参数
+        return ".*" + reg + ".*";
     }
 
     /**
@@ -940,49 +914,45 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 查找匹配的 Mock 规则
-     * 匹配逻辑：URL 包含 endpoint 即匹配（简单可靠）
+     * 自动忽略查询参数，同路径不同参数全部命中
      */
     private MockRule findMatchingMock(Request req) {
-        String url = req.url().toLowerCase();
-        
+        String fullUrl = req.url();
+        String reqMethod = req.method();
+
         List<MockRule> rulesSnapshot;
         synchronized (mockRules) {
             rulesSnapshot = new ArrayList<>(mockRules.values());
         }
-        
+
         for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
-            
-            // 获取原始 endpoint（如 "rest/account-list"）
-            String endpoint = extractEndpoint(rule.getUrlPattern());
-            if (endpoint != null && !endpoint.isEmpty()) {
-                // URL 包含 endpoint 即匹配（大小写不敏感）
-                if (!url.contains(endpoint.toLowerCase())) {
-                    logger.trace("[Mock] Endpoint not found in URL: url={} endpoint={}", url, endpoint);
+
+            String rulePattern = rule.getUrlPattern();
+            String regex = globToRegex(rulePattern);
+
+            // 1. URL正则匹配（自带兼容所有?xxx参数）
+            if (!Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(fullUrl).matches()) {
+                continue;
+            }
+
+            // 2. HTTP方法匹配
+            String ruleMethod = rule.getMethod();
+            if (ruleMethod != null && !"*".equals(ruleMethod) && !".*".equals(ruleMethod)) {
+                if (!Pattern.matches(ruleMethod, reqMethod)) {
                     continue;
                 }
             }
-            
-            // 辅助：检查 urlContains（如果设置了）
+
+            // 3. 二次自定义关键字过滤（可选）
             String urlContains = rule.getUrlContains();
-            if (urlContains != null && !urlContains.isEmpty()
-                    && !url.contains(urlContains.toLowerCase())) {
-                logger.trace("[Mock] urlContains mismatch: url={} contains={}", url, urlContains);
+            if (urlContains != null && !fullUrl.toLowerCase().contains(urlContains.toLowerCase())) {
                 continue;
             }
-            
-            // 方法匹配
-            String method = rule.getMethod();
-            if (method != null && !method.equals(".*") && !Pattern.matches(method, req.method())) {
-                logger.trace("[Mock] Method mismatch: url={} method={} expected={}", url, req.method(), method);
-                continue;
-            }
-            
-            logger.info("[Mock] ✅ MOCKED: url={} method={} endpoint={} rule={}", 
-                    url, req.method(), endpoint, rule.getName());
+
+            logger.info("[Mock] ✅ 命中接口: {} {}", reqMethod, fullUrl);
             return rule;
         }
-        logger.trace("[Mock] No rule matched for: {}", url);
         return null;
     }
 
@@ -1172,16 +1142,12 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     static String toGlobPattern(String urlPattern) {
         if (urlPattern == null || urlPattern.isEmpty()) return "**";
 
-        // 已经是 glob 模式（包含 * 或 **），直接返回
-        if (urlPattern.contains("*")) {
-            return urlPattern;
-        }
-
-        // 移除前导斜杠
-        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
+        // 已带通配符直接返回
+        if (urlPattern.contains("*")) return urlPattern;
         
-        // 前后加 ** 实现跨目录包含匹配（Java glob 中 ** 匹配任意路径包括 /）
-        return "**/" + normalized + "/**";
+        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
+        // 后缀不加/**，用**收尾，兼容所有查询参数
+        return "**/" + normalized + "**";
     }
 
     /**

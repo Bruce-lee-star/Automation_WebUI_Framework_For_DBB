@@ -766,20 +766,18 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
 
     /**
-     * 去重绑定：只在 URL 未注册过时才调用 route()
-     * 直接使用原始 URL 部分字符串进行匹配
+     * 去重绑定：拦截所有请求，在 handler 中用 contains 检查匹配
      */
     private void bindRouteIfNeeded(String urlPart) {
         if (registeredPatterns.add(urlPart)) {
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
             try {
-                // 使用原始字符串直接匹配
                 if (targetPage != null) {
-                    targetPage.route(urlPart, handler);
+                    targetPage.route("**", handler);
                 } else if (targetContext != null) {
-                    targetContext.route(urlPart, handler);
+                    targetContext.route("**", handler);
                 }
-                logger.info("[Route] Bound: {}", urlPart);
+                logger.info("[Route] Bound wildcard, will check contains: {}", urlPart);
             } catch (Exception e) {
                 logger.error("[Route] Failed to bind '{}': {}", urlPart, e.getMessage());
             }
@@ -799,7 +797,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     
     /**
      * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
-     * 【修复】使用 Throwable 捕获所有异常，确保每个请求 100% 被处理
      * 【双重兜底】resume 失败则 abort，避免请求永久挂起导致白屏
      */
     private void handleUnifiedRoute(Route route) {
@@ -813,20 +810,14 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             safeResume(route);
 
         } catch (Throwable e) {
-            // 【双重兜底策略】确保每个请求 100% 被处理
-            // 1. 先尝试 resume 放行请求
             try {
                 safeResume(route);
             } catch (Throwable resumeEx) {
-                // 2. resume 失败，强制 abort 避免请求永久挂起
-                logger.error("[ROUTE FATAL] Resume failed, forcing abort for: {} (original error: {}, resume error: {})",
-                    route.request().url(), e.getMessage(), resumeEx.getMessage());
+                logger.error("[Route] Resume failed for {}, forcing abort", route.request().url());
                 try {
                     route.abort("failedhandler");
                 } catch (Throwable abortEx) {
-                    // 3. abort 也失败，日志记录，请求确实被永久阻塞（此时白屏已不可避免）
-                    logger.error("[ROUTE FATAL] Abort also failed, request {} is permanently blocked: {}",
-                        route.request().url(), abortEx.getMessage());
+                    logger.error("[Route] Abort also failed for {}", route.request().url());
                 }
             }
         }
@@ -859,7 +850,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
             String rulePattern = rule.getUrlPattern();
 
-            // URL匹配：直接使用 contains()
+            // URL匹配：contains
             if (!fullUrl.contains(rulePattern)) {
                 continue;
             }
@@ -878,7 +869,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 continue;
             }
 
-            logger.debug("[Mock] Matched: {} {}", reqMethod, fullUrl);
             return rule;
         }
         return null;

@@ -978,8 +978,8 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         // Remove leading slash
         String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
 
-        // Replace glob wildcards: ** -> .*, * -> .*
-        String reg = raw.replace("**", ".*").replace("*", ".*");
+        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
+        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
 
         // Add prefix and suffix for full URL matching
         return ".*" + reg + ".*";

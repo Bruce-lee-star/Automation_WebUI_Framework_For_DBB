@@ -557,7 +557,11 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                         try {
                             entry.getValue().validate(record);
                         } catch (AssertionError e) {
-                            logger.error("API validation failed: {}", e.getMessage());
+                            // 保存断言错误，后续 rethrow 会让测试失败
+                            monitoringFailure.set(e);
+                            logger.error("API validation failed for {}: expected status={}, actual={}",
+                                    url, entry.getValue().expectedStatusCode, record.getStatusCode());
+                            throw e;  // 重新抛出，让测试立即失败
                         }
                     }
                     break;

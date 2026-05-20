@@ -12,7 +12,7 @@
 | **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model + Screenplay Pattern |
 | **构建工具** | Maven |
 | **CI/CD 集成** | Jenkins（Pipeline / Freestyle） |
-| **云测试** | BrowserStack 支持 |
+| **云测试** | ⚠️ BrowserStack 支持（待完善） |
 
 ---
 
@@ -37,6 +37,7 @@
 │  │ API 监控  │ │ Mock 管理 │ │ 快照测试  │ │ 无障碍扫描   │  │
 │  │ Monitor   │ │ Mock     │ │ Snapshot  │ │ AxeCore      │  │
 │  └──────────┘ └──────────┘ └───────────┘ └──────────────┘  │
+│  ⚠️ 快照测试功能代码有待优化，文档待完善
 │  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐  │
 │  │ 请求修改  │ │ Session  │ │ 截图管理  │ │ 配置中心     │  │
 │  │ Modifier  │ │ Manager  │ │ Screenshot│ │ Config       │  │
@@ -44,8 +45,8 @@
 ├─────────────────────────────────────────────────────────────┤
 │                     基础设施层 (Infrastructure)                │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │ Playwright    │  │ BrowserStack  │  │ Jenkins Pipeline │   │
-│  │ Lifecycle     │  │ Cloud         │  │ Integration      │   │
+│  │ Playwright    │  │ BrowserStack │  │ Jenkins Pipeline │   │
+│  │ Lifecycle     │  │ Cloud ⚠️     │  │ Integration      │   │
 │  └──────────────┘  └──────────────┘  └──────────────────┘   │
 ├─────────────────────────────────────────────────────────────┤
 │                       报告层 (Reporting)                      │
@@ -164,36 +165,13 @@ MockBuilder dynamicMock = MockBuilder.create()
 
 ---
 
-### 5. 📸 PlaywrightSnapshotSupport - 原生快照测试
+### 5. 📸 PlaywrightSnapshotSupport - 原生快照测试（⚠️ 待优化）
 
-```java
-// 视觉快照（像素级对比）
-PlaywrightSnapshotSupport.of(page)
-    .visual()
-    .baselineName("login-page")
-    .updateBaseline(true)    // 创建/更新基线
-    .snapshot();
-
-// ARIA 快照（跨平台结构验证，推荐）
-PlaywrightSnapshotSupport.of(page.locator("main"))
-    .aria()
-    .baselineName("main-aria")
-    .snapshot();
-
-// 测试套件结束自动生成报告（NativeSnapshotTestListener）
-```
-
-**核心特性：**
-- **视觉快照**：Playwright 原生 `hasScreenshot()` API，像素级图像对比
-- **ARIA 快照**：Playwright 原生 `matchesAriaSnapshot()` API，可访问性树结构对比（一套基线跨 Windows/Mac/Linux）
-- 基线管理（创建 / 更新 / 对比），基线存储在 `src/test/resources/snapshots/native/`（纳入 Git 版本控制）
-- **自动报告**：`NativeSnapshotTestListener` 自动在测试套件结束时生成 HTML 报告
-
-👉 详细文档：[SNAPSHOT_TESTING_GUIDE.md](./SNAPSHOT_TESTING_GUIDE.md)
+> 功能待完善，文档暂不提供
 
 ---
 
-### 6. ♿ AxeCoreScanner - 无障碍测试
+### 5. ♿ AxeCoreScanner - 无障碍测试
 
 ```java
 // 自动 WCAG 合规性扫描
@@ -213,7 +191,7 @@ axe.scan.outputDir=target/accessibility-axe
 
 ---
 
-### 7. 📊 SummaryReportGenerator - 摘要报告
+### 6. 📊 SummaryReportGenerator - 摘要报告
 
 自动生成精美的 HTML 摘要报告，包含：
 
@@ -233,30 +211,9 @@ serenity.report.url=${JENKINS_URL}job/${JOB_NAME}/${BUILD_NUMBER}/Serenity_20Sum
 
 ---
 
-### 8. ☁️ BrowserStack 云浏览器
+### 7. ☁️ BrowserStack 云浏览器（⚠️ 待完善）
 
-```java
-// 无需修改测试代码！设置 browserstack.enabled=true 后自动连接
-// BrowserStackManager 通过 CDP (Chrome DevTools Protocol) 远程连接
-// 框架自动管理会话生命周期和测试状态标记
-
-// 可选：手动获取会话信息
-String sessionId = BrowserStackManager.getCurrentSessionId();
-String dashboardUrl = BrowserStackManager.getCurrentSessionUrl();
-
-// 可选：手动标记测试状态
-BrowserStackManager.setTestStatus("passed", "All steps completed");
-```
-
-支持：
-- **跨浏览器 / 跨平台**：Chrome、Firefox、Safari、Edge + Windows、macOS、iOS、Android
-- **CDP 远程连接**：通过 Chrome DevTools Protocol 连接 BrowserStack 云端
-- **自动录制**：视频 / 截图 / 网络日志 / 控制台日志
-- **Local Testing**：支持内网应用测试（加密隧道）
-- **并行测试**：多会话并发执行
-- **凭证脱敏**：日志自动隐藏 AccessKey
-
-👉 详细文档：[BROWSERSTACK_INTEGRATION.md](./BROWSERSTACK_INTEGRATION.md)
+> BrowserStack 云测试功能待完善
 
 ---
 
@@ -279,10 +236,8 @@ Automation_WebUI_Framework_BDD/
 │   │   │   ├── RealApiMonitor.java     # 非阻塞 API 监控
 │   │   │   ├── ApiRequestModifier.java # 请求修改器
 │   │   │   └── ApiMonitorAndMockManager.java
-│   │   ├── snapshot/                   # Playwright 原生快照测试
-│   │   │   ├── PlaywrightSnapshotSupport.java  # 视觉快照 + ARIA 快照
-│   │   │   ├── NativeSnapshotResult.java       # 快照结果
-│   │   │   └── NativeSnapshotReportGenerator.java  # HTML 报告生成器
+│   │   ├── snapshot/                   # ⚠️ 待优化的快照测试
+│   │   │   └── ...
 │   │   ├── accessibility/              # 无障碍测试
 │   │   │   └── AxeCoreScanner.java
 │   │   ├── cloud/                      # 云浏览器
@@ -317,14 +272,8 @@ Automation_WebUI_Framework_BDD/
 └── docs/                               # 文档
     ├── README.md                       # ★ 框架总览（本文件）
     ├── API_MONITOR_README.md           # API 监控文档
-    ├── SNAPSHOT_TESTING_GUIDE.md       # 快照测试指南
-    ├── BROWSERSTACK_INTEGRATION.md     # BrowserStack 集成
-    ├── JENKINS_PIPELINE_GUIDE.md       # Jenkins 指南
-    ├── EMAIL_CONFIGURATION.md          # 邮件通知配置
-    ├── JENKINS_ENV_CONFIG.md           # Jenkins 环境配置
-    ├── ENTERPRISE_NETWORK_CONFIG.md    # 企业网络配置
-    ├── Serenity升级方案.md             # Serenity 升级方案
-    └── JDK21_升级方案.md               # JDK 21 升级指南
+    ├── PLAYWRIGHT_VS_SELENIUM.md       # Playwright vs Selenium 对比
+    └── Element.MD                      # 元素定位指南
 ```
 
 ---
@@ -427,14 +376,8 @@ public class LoginSteps {
 |------|------|
 | **[README.md](./README.md)** | 框架总览与快速开始 |
 | [API_MONITOR_README.md](./API_MONITOR_README.md) | API 监控、请求修改、Mock 管理完整指南 |
-| [SNAPSHOT_TESTING_GUIDE.md](./SNAPSHOT_TESTING_GUIDE.md) | 快照测试（视觉回归）完整使用指南 |
-| [BROWSERSTACK_INTEGRATION.md](./BROWSERSTACK_INTEGRATION.md) | BrowserStack 云浏览器集成配置 |
-| [EMAIL_CONFIGURATION.md](./EMAIL_CONFIGURATION.md) | 测试报告邮件通知配置 |
-| [JENKINS_PIPELINE_GUIDE.md](./JENKINS_PIPELINE_GUIDE.md) | Jenkins Pipeline 配置指南 |
-| [JENKINS_ENV_CONFIG.md](./JENKINS_ENV_CONFIG.md) | Jenkins 环境变量配置说明 |
-| [ENTERPRISE_NETWORK_CONFIG.md](./ENTERPRISE_NETWORK_CONFIG.md) | 企业网络代理配置 |
-| [Serenity升级方案.md](./Serenity升级方案.md) | Serenity 版本升级方案 |
-| [JDK21_升级方案.md](./JDK21_升级方案.md) | JDK 21 升级迁移指南 |
+| [PLAYWRIGHT_VS_SELENIUM.md](./PLAYWRIGHT_VS_SELENIUM.md) | Playwright vs Selenium 技术选型对比 |
+| [Element.MD](./Element.MD) | 元素定位指南 |
 
 ---
 
@@ -447,9 +390,9 @@ public class LoginSteps {
 5. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
 6. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析、相对/绝对路径自适应
 7. **无障碍合规** — 内置 axe-core WCAG 2.0 AA 标准自动化扫描
-8. **视觉回归** — Playwright 原生快照测试，支持视觉快照（像素级）+ ARIA 快照（跨平台结构验证）
+8. **视觉回归** — ⚠️ Playwright 原生快照测试（待优化）
 9. **Session 复用** — 登录态跨 Scenario 复用，减少冗余登录操作
-10. **云测试就绪** — BrowserStack 多浏览器/多设备并行测试
+10. **云测试就绪** — ⚠️ BrowserStack 多浏览器/多设备并行测试（待完善）
 
 ---
 

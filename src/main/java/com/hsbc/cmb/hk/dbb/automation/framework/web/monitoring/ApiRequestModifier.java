@@ -974,42 +974,45 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
 
     /**
      * 检查 URL 是否匹配 pattern
-     * 支持三种模式：
-     * - Glob 模式：包含 * 或 ** 的模式（** 匹配任意路径包括 /）
-     * - 包含匹配：直接使用 contains() 检查 URL 是否包含 pattern
-     * - 正则匹配：使用正则表达式匹配
+     * 简化逻辑：提取原始 endpoint，URL 包含 endpoint 即匹配
      * 
      * @param url 完整 URL
-     * @param pattern 匹配模式（glob 或 regex）
+     * @param pattern 原始 endpoint 或 glob pattern
      * @return true 如果匹配
      */
     static boolean matchesGlob(String url, String pattern) {
         if (url == null || pattern == null) return false;
         
-        // Glob 模式处理（** 匹配任意路径包括 /）
-        if (pattern.contains("*")) {
-            // 将 glob * 转换为正则 .* （但 / 不需要特殊处理，因为 glob 中 * 也匹配 /）
-            String regex = globToRegex(pattern);
-            try {
-                return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-            } catch (Exception e) {
-                logger.debug("[Pattern] Invalid glob pattern '{}': {}", pattern, e.getMessage());
-                return false;
-            }
+        // 提取原始 endpoint（去除 **/ 和 /**）
+        String endpoint = extractEndpoint(pattern);
+        if (endpoint != null && !endpoint.isEmpty()) {
+            // URL 包含 endpoint 即匹配（大小写不敏感）
+            return url.toLowerCase().contains(endpoint.toLowerCase());
         }
         
-        // 纯文本模式：直接 contains 匹配
-        if (url.contains(pattern)) {
-            return true;
+        // 空 pattern 匹配所有
+        return true;
+    }
+    
+    /**
+     * 从 glob pattern 中提取原始 endpoint
+     * 例如："**/rest/account-list/**" -> "rest/account-list"
+     */
+    private static String extractEndpoint(String globPattern) {
+        if (globPattern == null || globPattern.isEmpty()) return null;
+        
+        // 去除开头的 /
+        String normalized = globPattern.startsWith("/") ? globPattern.substring(1) : globPattern;
+        
+        // 去除前后缀的 **
+        if (normalized.startsWith("**/")) {
+            normalized = normalized.substring(3);
+        }
+        if (normalized.endsWith("/**")) {
+            normalized = normalized.substring(0, normalized.length() - 3);
         }
         
-        // 尝试正则匹配（大小写不敏感）
-        try {
-            return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-        } catch (Exception e) {
-            logger.debug("[Pattern] Invalid regex pattern '{}': {}", pattern, e.getMessage());
-            return false;
-        }
+        return normalized;
     }
     
     /**

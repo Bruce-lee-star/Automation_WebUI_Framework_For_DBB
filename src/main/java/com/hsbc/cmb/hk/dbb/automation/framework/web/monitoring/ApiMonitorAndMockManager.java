@@ -848,6 +848,28 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
     
     /**
+     * 从 glob pattern 中提取原始 endpoint
+     * 例如："**/rest/account-list/**" -> "rest/account-list"
+     *      "rest/account-list" -> "rest/account-list"
+     */
+    private static String extractEndpoint(String globPattern) {
+        if (globPattern == null || globPattern.isEmpty()) return null;
+        
+        // 去除开头的 /
+        String normalized = globPattern.startsWith("/") ? globPattern.substring(1) : globPattern;
+        
+        // 去除前后缀的 **
+        if (normalized.startsWith("**/")) {
+            normalized = normalized.substring(3);
+        }
+        if (normalized.endsWith("/**")) {
+            normalized = normalized.substring(0, normalized.length() - 3);
+        }
+        
+        return normalized;
+    }
+    
+    /**
      * 将 glob pattern 转换为正则表达式
      * 与 RealApiMonitor.toRegex() 完全一致：
      * - 去除开头的 /
@@ -920,11 +942,11 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 查找匹配的 Mock 规则
-     * 匹配逻辑：先检查 glob pattern（主要），再检查 urlContains（辅助），最后检查 method
+     * 匹配逻辑：URL 包含 endpoint 即匹配（简单可靠）
      */
     private MockRule findMatchingMock(Request req) {
-        String url = req.url();
-        // 使用同步块保护 ConcurrentHashMap 遍历
+        String url = req.url().toLowerCase();
+        
         List<MockRule> rulesSnapshot;
         synchronized (mockRules) {
             rulesSnapshot = new ArrayList<>(mockRules.values());
@@ -933,19 +955,20 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
             
-            // 主要：检查 glob pattern 匹配（空 pattern = 匹配所有）
-            String globPattern = rule.getUrlPattern();
-            if (globPattern != null && !globPattern.isEmpty()) {
-                if (!matchesGlob(url, globPattern)) {
-                    logger.trace("[Mock] Glob mismatch: url={} pattern={}", url, globPattern);
+            // 获取原始 endpoint（如 "rest/account-list"）
+            String endpoint = extractEndpoint(rule.getUrlPattern());
+            if (endpoint != null && !endpoint.isEmpty()) {
+                // URL 包含 endpoint 即匹配（大小写不敏感）
+                if (!url.contains(endpoint.toLowerCase())) {
+                    logger.trace("[Mock] Endpoint not found in URL: url={} endpoint={}", url, endpoint);
                     continue;
                 }
             }
             
-            // 辅助：检查 urlContains（如果设置了）- 大小写不敏感匹配
+            // 辅助：检查 urlContains（如果设置了）
             String urlContains = rule.getUrlContains();
             if (urlContains != null && !urlContains.isEmpty()
-                    && !url.toLowerCase().contains(urlContains.toLowerCase())) {
+                    && !url.contains(urlContains.toLowerCase())) {
                 logger.trace("[Mock] urlContains mismatch: url={} contains={}", url, urlContains);
                 continue;
             }

@@ -955,7 +955,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 continue;
             }
 
-            logger.info("[Mock] ✅ 命中接口: {} {}", reqMethod, fullUrl);
+            logger.info("[Mock] Matched: {} {}", reqMethod, fullUrl);
             return rule;
         }
         return null;

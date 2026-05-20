@@ -950,14 +950,22 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
      * 
      * <p>统一匹配策略（用于 Playwright route() 方法）：
      * - 移除开头斜杠
-     * - 前后加 * 实现包含匹配（支持查询参数）
-     * - Glob 中 * 匹配任意字符（包括 /）
+     * - 前后加 ** 实现跨目录匹配（支持查询参数）
+     * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
+     * 
+     * <p>示例：
+     * <ul>
+     *   <li>"rest/account-list" → "**/rest/account-list/**"</li>
+     *   <li>"account-list" → "**/account-list/**"</li>
+     *   <li>"/api/users" → "**/api/users/**"</li>
+     *   <li>"**/api/**" → "**/api/**" (已经是glob，直接返回)</li>
+     * </ul>
      * 
      * @param urlPattern 如 "/api/users" 或 "rest/account-list"
      * @return Playwright glob pattern
      */
     static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return "*";
+        if (urlPattern == null || urlPattern.isEmpty()) return "**";
 
         // 已经是 glob 模式（包含 * 或 **），直接返回
         if (urlPattern.contains("*")) {
@@ -967,15 +975,15 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         // 移除前导斜杠
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
         
-        // 前后加 * 实现包含匹配（glob pattern）
-        return "*" + normalized + "*";
+        // 前后加 ** 实现跨目录包含匹配（Java glob 中 ** 匹配任意路径包括 /）
+        return "**/" + normalized + "/**";
     }
 
 
     /**
      * 检查 URL 是否匹配 pattern
      * 支持三种模式：
-     * - Glob 模式：包含 * 或 ** 的模式（* 匹配任意字符包括 /）
+     * - Glob 模式：包含 * 或 ** 的模式（** 匹配任意路径包括 /）
      * - 包含匹配：直接使用 contains() 检查 URL 是否包含 pattern
      * - 正则匹配：使用正则表达式匹配
      * 
@@ -986,7 +994,7 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
     static boolean matchesGlob(String url, String pattern) {
         if (url == null || pattern == null) return false;
         
-        // Glob 模式处理（* 匹配任意字符包括 /）
+        // Glob 模式处理（** 匹配任意路径包括 /）
         if (pattern.contains("*")) {
             // 将 glob * 转换为正则 .* （但 / 不需要特殊处理，因为 glob 中 * 也匹配 /）
             String regex = globToRegex(pattern);

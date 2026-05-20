@@ -1105,14 +1105,22 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * 
      * <p>统一匹配策略（用于 Playwright route() 方法）：
      * - 移除开头斜杠
-     * - 前后加 * 实现包含匹配（支持查询参数）
-     * - Glob 中 * 匹配任意字符（包括 /）
+     * - 前后加 ** 实现跨目录匹配（支持查询参数）
+     * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
+     * 
+     * <p>示例：
+     * <ul>
+     *   <li>"rest/account-list" → "**/rest/account-list**"</li>
+     *   <li>"account-list" → "**/account-list**"</li>
+     *   <li>"/api/users" → "**/api/users**"</li>
+     *   <li>"**/api/**" → "**/api/**" (已经是glob，直接返回)</li>
+     * </ul>
      * 
      * @param urlPattern 如 "/api/users" 或 "rest/account-list"
      * @return Playwright glob pattern
      */
     static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return "*";
+        if (urlPattern == null || urlPattern.isEmpty()) return "**";
 
         // 已经是 glob 模式（包含 * 或 **），直接返回
         if (urlPattern.contains("*")) {
@@ -1122,8 +1130,8 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         // 移除前导斜杠
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
         
-        // 前后加 * 实现包含匹配（glob pattern）
-        return "*" + normalized + "*";
+        // 前后加 ** 实现跨目录包含匹配（Java glob 中 ** 匹配任意路径包括 /）
+        return "**/" + normalized + "/**";
     }
 
     /**

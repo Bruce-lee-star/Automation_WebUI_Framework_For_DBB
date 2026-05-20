@@ -991,8 +991,20 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         Route.FulfillOptions opts = new Route.FulfillOptions()
                 .setStatus(rule.getStatusCode())
                 .setBody(mockBody);
+
+        // Auto-detect Content-Type based on response body, then merge custom headers
+        Map<String, String> responseHeaders = new HashMap<>();
+        String detectedContentType = detectContentType(mockBody);
         if (!rule.getHeaders().isEmpty()) {
-            opts.setHeaders(rule.getHeaders());
+            responseHeaders.putAll(rule.getHeaders());
+            // Custom headers should not override Content-Type we detected
+        }
+        // Set detected Content-Type (or let Playwright auto-detect if body is empty)
+        if (detectedContentType != null) {
+            responseHeaders.put("Content-Type", detectedContentType);
+            opts.setHeaders(responseHeaders);
+        } else if (!rule.getHeaders().isEmpty()) {
+            opts.setHeaders(responseHeaders);
         }
 
         if (rule.getDelayMs() > 0) {
@@ -1149,10 +1161,38 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
         // 已带通配符直接返回
         if (urlPattern.contains("*")) return urlPattern;
-        
+
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
         // 后缀不加/**，用**收尾，兼容所有查询参数
         return "**/" + normalized + "**";
+    }
+
+    /**
+     * Auto-detect Content-Type based on response body content
+     */
+    private static String detectContentType(String body) {
+        if (body == null || body.isEmpty()) return null;
+
+        String trimmed = body.trim();
+
+        // JSON
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return "application/json; charset=utf-8";
+        }
+        // HTML
+        if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") || trimmed.startsWith("<HTML")) {
+            return "text/html; charset=utf-8";
+        }
+        // XML
+        if (trimmed.startsWith("<?xml") || trimmed.startsWith("<")) {
+            return "application/xml; charset=utf-8";
+        }
+        // Plain text
+        if (trimmed.startsWith("-----BEGIN") || trimmed.startsWith("eyJ")) {
+            return "text/plain; charset=utf-8";
+        }
+
+        return null; // Let Playwright auto-detect
     }
 
     /**

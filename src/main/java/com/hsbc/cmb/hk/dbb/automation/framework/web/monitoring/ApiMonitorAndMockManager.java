@@ -859,12 +859,18 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * Glob pattern to regex conversion for URL matching
      */
     private static String globToRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) return ".*";
-        if (pattern.contains(".*") || pattern.contains("\\d") || pattern.contains("?") || pattern.contains("+")) {
-            return pattern;
+        if (pattern == null || pattern.isEmpty()) {
+            return ".*";
         }
-        String normalized = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-        return ".*" + Pattern.quote(normalized) + ".*";
+
+        // Remove leading slash
+        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
+
+        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
+        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
+
+        // Add prefix and suffix for full URL matching
+        return ".*" + reg + ".*";
     }
 
     /**

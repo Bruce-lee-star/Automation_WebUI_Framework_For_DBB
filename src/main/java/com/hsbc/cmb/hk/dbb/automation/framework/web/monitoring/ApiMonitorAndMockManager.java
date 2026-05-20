@@ -787,19 +787,51 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         String globPattern = buildGlobPattern(urlPart);
         
         if (registeredPatterns.add(globPattern)) {
-            java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
-            try {
-                if (targetPage != null) {
-                    targetPage.route(globPattern, handler);
-                } else if (targetContext != null) {
-                    targetContext.route(globPattern, handler);
-                }
-                logger.info("[Route] Bound precise glob: {}", globPattern);
-            } catch (Exception e) {
-                logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
-            }
+            // 新 pattern，直接绑定
+            doBindRoute(globPattern);
         } else {
-            logger.debug("[Route] Already bound, skipping: {}", globPattern);
+            // pattern 已存在，检查是否需要重新绑定
+            // 【关键】当 targetPage/Context 改变时（如页面刷新），需要重新绑定
+            if (needsRebind(globPattern)) {
+                logger.debug("[Route] Rebinding cleared route: {}", globPattern);
+                doBindRoute(globPattern);
+            } else {
+                logger.debug("[Route] Already bound, skipping: {}", globPattern);
+            }
+        }
+    }
+    
+    /**
+     * 检查是否需要重新绑定 route
+     * 【核心问题】页面刷新后 route 被清除，但 registeredPatterns 仍保留
+     */
+    private boolean needsRebind(String globPattern) {
+        // 如果同时有 Page 和 Context 绑定，以 Page 为准
+        if (targetPage != null) {
+            // Page 模式下，检查 Page 是否变化
+            return true;  // 简化处理：每次 applyRoutes 都重新绑定到 Page
+        } else if (targetContext != null) {
+            // Context 模式下，检查 Context 是否变化
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * 执行路由绑定
+     */
+    private void doBindRoute(String globPattern) {
+        java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
+        try {
+            if (targetPage != null) {
+                targetPage.route(globPattern, handler);
+                logger.info("[Route] Bound to Page: {}", globPattern);
+            } else if (targetContext != null) {
+                targetContext.route(globPattern, handler);
+                logger.info("[Route] Bound to Context: {}", globPattern);
+            }
+        } catch (Exception e) {
+            logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
         }
     }
 

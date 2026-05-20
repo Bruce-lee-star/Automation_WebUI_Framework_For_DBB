@@ -15,10 +15,9 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.net.URL;
 import java.net.URI;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.CoreMatchers.equalTo;
@@ -30,7 +29,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
  * <p>功能特性：
  * <ul>
  *   <li>实时拦截 BrowserContext/Page 级别所有 HTTP 请求与响应</li>
- *   <li>支持指定 URL 模式精确匹配，支持 glob/regex 混合模式</li>
+ *   <li>支持指定 URL 部分字符串精确匹配</li>
  *   <li>自动提取 JSON 响应体，支持 JsonPath 深度提取</li>
  *   <li>支持超时自动停止、minMatches 次数控制</li>
  *   <li>支持自定义回调函数 onMatch</li>
@@ -61,11 +60,10 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
 
     /** API调用历史最大容量，防止内存泄漏 */
     private static final int MAX_API_HISTORY_SIZE = 1000;
-    /** 响应体最大读取大小（字节），超过则截断，防止同步阻塞 */
-    private static final int MAX_RESPONSE_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+    /** 响应体最大读取大小（字节），超过则不读取，防止同步阻塞 */
+    private static final int MAX_RESPONSE_BODY_SIZE = 512 * 1024; // 512KB
 
     private static final ThreadLocal<List<ApiCallRecord>> apiCallHistory = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
-    private static final ThreadLocal<Map<String, ApiExpectation>> apiExpectations = ThreadLocal.withInitial(ConcurrentHashMap::new);
     private static final Map<BrowserContext, Boolean> contextMonitoringStopped = new ConcurrentHashMap<>();
     private static final Map<Page, Boolean> pageMonitoringStopped = new ConcurrentHashMap<>();
     private static final Map<BrowserContext, java.util.function.Consumer<Response>> contextListeners = new ConcurrentHashMap<>();
@@ -85,6 +83,9 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     private static volatile long lastApiActivityTime = 0;
     private static final ThreadLocal<List<String>> targetApiPatterns = ThreadLocal.withInitial(CopyOnWriteArrayList::new);
     private static final ThreadLocal<MonitorListenerSnapshot> cachedSnapshot = new ThreadLocal<>();
+
+    /** API期望映射（使用原始URL部分字符串作为key） */
+    private static final ThreadLocal<Map<String, ApiExpectation>> apiExpectations = ThreadLocal.withInitial(ConcurrentHashMap::new);
 
     static {
         ContextLifecycleHookManager.registerCapturer(new RealApiMonitor());
@@ -133,7 +134,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
 
         @Override
         public String getUrlPattern() { 
-            return patterns.isEmpty() ? "**" : patterns.get(0); 
+            return patterns.isEmpty() ? "" : patterns.get(0); 
         }
 
         @Override
@@ -217,25 +218,25 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         }
 
         /**
-         * 添加目标 API URL 模式（带期望状态码）
+         * 添加目标 API URL 部分字符串（带期望状态码）
          *
-         * @param urlPattern URL 模式，支持精确匹配或 glob 模式
+         * @param urlPart URL 部分字符串，URL 包含此字符串即匹配
          * @param expectedStatus 期望的 HTTP 状态码，0 表示任意状态
          * @return this
          */
-        public MonitorBuilder api(String urlPattern, int expectedStatus) {
-            apis.put(urlPattern, expectedStatus);
+        public MonitorBuilder api(String urlPart, int expectedStatus) {
+            apis.put(urlPart, expectedStatus);
             return this;
         }
 
         /**
-         * 添加目标 API URL 模式（不校验状态码）
+         * 添加目标 API URL 部分字符串（不校验状态码）
          *
-         * @param urlPattern URL 模式，支持精确匹配或 glob 模式
+         * @param urlPart URL 部分字符串，URL 包含此字符串即匹配
          * @return this
          */
-        public MonitorBuilder api(String urlPattern) {
-            apis.put(urlPattern, 0);
+        public MonitorBuilder api(String urlPart) {
+            apis.put(urlPart, 0);
             return this;
         }
 
@@ -362,10 +363,9 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             
             for (Map.Entry<String, Integer> entry : apis.entrySet()) {
                 String urlPattern = entry.getKey();
-                String regex = toRegex(urlPattern);
                 targetApiPatterns.get().add(urlPattern);
                 if (entry.getValue() > 0) {
-                    apiExpectations.get().put(regex, ApiExpectation.forEndpoint(regex).statusCode(entry.getValue()));
+                    apiExpectations.get().put(urlPattern, ApiExpectation.forEndpoint(urlPattern).statusCode(entry.getValue()));
                 }
                 logger.info("  - Target API: {} -> Expected Status: {}", urlPattern, entry.getValue() > 0 ? entry.getValue() : "any");
             }
@@ -450,7 +450,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             List<String> patterns = targetApiPatterns.get();
             if (patterns.isEmpty()) return true;
             for (String pattern : patterns) {
-                if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                if (url.contains(pattern)) {
                     return true;
                 }
             }
@@ -462,7 +462,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             
             String url = response.url();
             for (String pattern : targetApiPatterns.get()) {
-                if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                if (url.contains(pattern)) {
                     ApiCallRecord matchedRecord = findRecordByUrl(url);
                     if (matchedRecord != null) {
                         try {
@@ -548,7 +548,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         private void validateRealTime(Response response) {
             String url = response.url();
             for (Map.Entry<String, ApiExpectation> entry : apiExpectations.get().entrySet()) {
-                if (url.matches(entry.getKey())) {
+                if (url.contains(entry.getKey())) {
                     ApiCallRecord record = findRecordByUrl(url);
                     if (record == null) {
                         record = getLastApiCall();
@@ -569,15 +569,14 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     /**
      * 获取最近匹配的 API 记录
      *
-     * @param urlPattern URL 模式
+     * @param urlPattern URL 部分字符串
      * @return 匹配的记录，若无则返回 null
      */
     public static ApiCallRecord getLast(String urlPattern) {
-        String regex = toRegex(urlPattern);
         List<ApiCallRecord> history = apiCallHistory.get();
         for (int i = history.size() - 1; i >= 0; i--) {
             ApiCallRecord record = history.get(i);
-            if (record.getUrl().matches(regex) || record.getUrl().contains(urlPattern)) {
+            if (record.getUrl().contains(urlPattern)) {
                 return record;
             }
         }
@@ -587,15 +586,14 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     /**
      * 获取所有匹配的 API 记录
      *
-     * @param urlPattern URL 模式
+     * @param urlPattern URL 部分字符串
      * @return 匹配的记录列表
      */
     public static List<ApiCallRecord> getAll(String urlPattern) {
-        String regex = toRegex(urlPattern);
         List<ApiCallRecord> history = apiCallHistory.get();
         List<ApiCallRecord> result = new ArrayList<>();
         for (ApiCallRecord record : history) {
-            if (record.getUrl().matches(regex) || record.getUrl().contains(urlPattern)) {
+            if (record.getUrl().contains(urlPattern)) {
                 result.add(record);
             }
         }
@@ -1275,7 +1273,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             for (ApiCallRecord record : history) {
                 String url = record.getUrl();
                 for (String pattern : patterns) {
-                    if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                    if (url.contains(pattern)) {
                         recordsToReport.add(record);
                         break;
                     }
@@ -1383,6 +1381,27 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     }
 
     /**
+     * 清理所有 ThreadLocal，防止内存泄漏
+     * <p>应在测试用例结束、异常退出、Thread 复用时调用
+     */
+    public static void removeThreadLocals() {
+        apiCallHistory.remove();
+        apiExpectations.remove();
+        monitoringFailure.remove();
+        matchedTargetApiCount.remove();
+        allTargetApisCaptured.remove();
+        targetApiPatterns.remove();
+        patternMatchCounts.remove();
+        configuredMinMatches.remove();
+        configuredAutoStopOnMatch.remove();
+        configuredTimeout.remove();
+        hasLoggedToSerenity.remove();
+        targetHost.remove();
+        cachedSnapshot.remove();
+        logger.trace("All ThreadLocals removed");
+    }
+
+    /**
      * 重置状态，准备下一个 Scenario
      *
      * <p>移除所有监听器，清理 ThreadLocal 状态
@@ -1414,16 +1433,8 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         contextListeners.clear();
         pageListeners.clear();
         
-        apiCallHistory.remove();
-        apiExpectations.remove();
-        monitoringFailure.remove();
-        matchedTargetApiCount.remove();
-        allTargetApisCaptured.remove();
-        targetApiPatterns.remove();
-        patternMatchCounts.remove();
-        configuredMinMatches.remove();
-        configuredAutoStopOnMatch.remove();
-        configuredTimeout.remove();
+        // 统一清理所有 ThreadLocal
+        removeThreadLocals();
     }
 
     /**
@@ -1459,66 +1470,28 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             }
             String requestId = UUID.randomUUID().toString();
             
+            // 【v3.6 修复】不再在响应监听器中同步读取 body，改为异步读取
+            // 同步读取 response.text() 会阻塞 Playwright 主线程，导致 UI 卡顿
             String capturedBody = null;
-            boolean bodyCaptured = false;
             boolean isRedirectResponse = response.status() == 301 || response.status() == 302 
                 || response.status() == 303 || response.status() == 307 || response.status() == 308;
             
+            // 检查 Content-Length，超过阈值则不读取
+            long contentLength = -1;
             try {
-                // 【v3.5 修复】检查 Content-Length header，避免读取超大响应体导致同步阻塞
-                long contentLength = response.headers().containsKey("content-length") 
+                contentLength = response.headers().containsKey("content-length") 
                     ? Long.parseLong(response.headers().get("content-length")) 
                     : -1;
-                
-                if (contentLength > MAX_RESPONSE_BODY_SIZE) {
-                    logger.debug("[API] Response body too large ({} bytes), skipping capture for: {}", 
-                        contentLength, response.url());
-                    capturedBody = "[BODY_TOO_LARGE size=" + contentLength + "]";
-                    bodyCaptured = true;
-                } else {
-                    capturedBody = response.text();
-                    bodyCaptured = true;
-                    logger.debug("[API] Response body captured via text() for: {} (length={})", 
-                        response.url(), capturedBody != null ? capturedBody.length() : "null");
-                }
-            } catch (Exception e) {
-                String errorMsg = e.getMessage();
-                boolean isRedirectError = errorMsg != null && (
-                    errorMsg.contains("redirect") || 
-                    errorMsg.contains("unavailable for redirect") ||
-                    errorMsg.contains("Body is unavailable")
-                );
-                
-                if (isRedirectError || isRedirectResponse) {
-                    logger.debug("[API] Redirect response (status={}) has no body for: {} - this is normal", 
-                        response.status(), response.url());
-                    bodyCaptured = false;
-                } else {
-                    logger.debug("[API] response.text() failed for {}: {}, trying body()...", 
-                        response.url(), e.getMessage());
-                    try {
-                        byte[] rawBytes = response.body();
-                        if (rawBytes != null && rawBytes.length > 0) {
-                            String rawText = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
-                            if (isReadableText(rawText)) {
-                                capturedBody = rawText;
-                                bodyCaptured = true;
-                                logger.debug("[API] Response body captured via UTF-8 decode for: {} (length={})", 
-                                    response.url(), capturedBody.length());
-                            } else {
-                                capturedBody = "[BINARY_DATA base64=" + java.util.Base64.getEncoder().encodeToString(rawBytes) 
-                                    + " size=" + rawBytes.length + " contentType=" + getContentType(response) + "]";
-                                bodyCaptured = true;
-                                logger.info("[API] Binary response body captured for: {} (size={}bytes, type={})", 
-                                    response.url(), rawBytes.length, getContentType(response));
-                            }
-                        }
-                    } catch (Exception e2) {
-                        logger.debug("[API] Both text() and body() failed for {}: text_err={}, body_err={}", 
-                            response.url(), e.getMessage(), e2.getMessage());
-                    }
-                }
+            } catch (Exception ignored) {}
+            
+            if (isRedirectResponse) {
+                capturedBody = "[REDIRECT status=" + response.status() + "]";
+            } else if (contentLength > MAX_RESPONSE_BODY_SIZE) {
+                capturedBody = "[BODY_SKIPPED size=" + contentLength + " bytes, use getResponseBodyAsync() to read]";
+                logger.debug("[API] Response body skipped (size={} > {}), use async API to read later", 
+                    contentLength, MAX_RESPONSE_BODY_SIZE);
             }
+            // body 将在 getResponseBody() 或 getResponseBodyAsync() 时读取
             
             ApiCallRecord record = new ApiCallRecord(
                 requestId, response.url(), request.method(), System.currentTimeMillis(),
@@ -1526,11 +1499,6 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             );
             
             record.markBodyRead();
-            
-            if (!bodyCaptured) {
-                logger.warn("[API] Response body NOT captured for {} (status={}) — stream may be closed or empty", 
-                    response.url(), response.status());
-            }
             record.setResponse(response);
             record.setRequest(request);
             apiCallHistory.get().add(record);
@@ -1559,7 +1527,7 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             if (!patterns.isEmpty() && !allTargetApisCaptured.get()) {
                 String url = response.url();
                 for (String pattern : patterns) {
-                    if (url.contains(pattern) || url.matches(toRegex(pattern))) {
+                    if (url.contains(pattern)) {
                         int totalMatched = matchedTargetApiCount.get().incrementAndGet();
                         
                         AtomicInteger patternCount = patternMatchCounts.get().get(pattern);
@@ -1605,21 +1573,6 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
             return url.substring(0, Math.min(queryIndex, 60));
         }
         return url.length() > 60 ? url.substring(0, 60) + "..." : url;
-    }
-
-    private static String toRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) {
-            return ".*";
-        }
-
-        // Remove leading slash
-        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-
-        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
-        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
-
-        // Add prefix and suffix for full URL matching
-        return ".*" + reg + ".*";
     }
 
     private static boolean matchesTargetHost(String url) {
@@ -1714,20 +1667,61 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         public long getTimestamp() { return timestamp; }
         public int getStatusCode() { return statusCode; }
 
+        /**
+         * 获取响应体（惰性读取，使用缓存）
+         * 注意：此方法不会触发同步 IO，如需异步读取请使用 getResponseBodyAsync()
+         * @return 已缓存的响应体，如果未缓存且无缓存值则返回 null
+         */
         public String getResponseBody() {
             synchronized (bodyLock) {
                 if (bodyRead) {
                     return responseBody;
                 }
-                if (response != null) {
-                    try {
-                        responseBody = response.text();
-                    } catch (Exception e) {
-                        logger.debug("Cannot read response body (stream likely consumed): {}", e.getMessage());
-                    }
+                // 不再同步读取，防止阻塞 UI
+                // 如果 responseBody 已有值（如 "[BODY_SKIPPED...]"），直接返回
+                if (responseBody != null) {
+                    bodyRead = true;
+                    return responseBody;
                 }
-                bodyRead = true;
-                return responseBody;
+                // 需要异步读取时返回 null，调用者应使用 getResponseBodyAsync()
+                return null;
+            }
+        }
+
+        /**
+         * 异步获取响应体（不阻塞 UI）
+         * Playwright response.text() 内部已是异步实现，此处保持兼容性封装
+         * @param callback 读取完成后的回调，参数为响应体内容
+         */
+        public void getResponseBodyAsync(java.util.function.Consumer<String> callback) {
+            synchronized (bodyLock) {
+                if (bodyRead && responseBody != null) {
+                    callback.accept(responseBody);
+                    return;
+                }
+                if (bodyRead) {
+                    callback.accept(null);
+                    return;
+                }
+            }
+
+            if (response != null) {
+                try {
+                    String body = response.text();
+                    synchronized (bodyLock) {
+                        responseBody = body;
+                        bodyRead = true;
+                    }
+                    callback.accept(body);
+                } catch (Exception e) {
+                    logger.debug("Failed to read response body: {}", e.getMessage());
+                    synchronized (bodyLock) {
+                        bodyRead = true;
+                    }
+                    callback.accept(null);
+                }
+            } else {
+                callback.accept(null);
             }
         }
 

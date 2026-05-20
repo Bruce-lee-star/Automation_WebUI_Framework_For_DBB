@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
-import java.util.regex.Pattern;
 
 /**
  * 请求修改器 - 统一修改 HTTP 请求的 Body、Headers、QueryParams、Method、URL、Host
@@ -50,6 +49,10 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         ContextLifecycleHookManager.registerCapturer(new ApiRequestModifier());
         logger.info("[ApiRequestModifier] Registered as Context lifecycle hook");
     }
+
+    /** 最近使用的 modification 配置（用于 rebind） */
+    private static final ThreadLocal<Map<String, ApiRequestModifier>> LAST_MODIFICATION = 
+            ThreadLocal.withInitial(HashMap::new);
 
     // ==================== Context 生命周期钩子实现 ====================
 
@@ -85,12 +88,13 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
      */
     private static class ModifierRuleSnapshot implements ContextLifecycleHookManager.RuleSnapshot {
         private final String endpoint;
-        // 保存最近一次使用的 modification 配置（简化版）
-        private final Map<String, Object> lastModificationConfig;
+        private final String modificationConfig; // 保存序列化的 modification 配置
 
         public ModifierRuleSnapshot(String endpoint) {
             this.endpoint = endpoint;
-            this.lastModificationConfig = new HashMap<>();
+            // 从 LAST_MODIFICATION 获取并序列化配置
+            ApiRequestModifier mod = LAST_MODIFICATION.get().get(endpoint);
+            this.modificationConfig = (mod != null) ? mod.toConfigJson() : null;
         }
 
         @Override
@@ -101,21 +105,110 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
 
         @Override
         public boolean rebindTo(BrowserContext newContext) {
-            // ApiRequestModifier 的路由绑定需要原始 modification 配置
-            // 由于 modification 配置是方法参数，这里无法完整重建
-            // 实际使用中，建议在测试代码层面确保 Context 稳定后再调用 modifyRequest
-            logger.warn("[ModifierRuleSnapshot] Cannot auto-rebind ApiRequestModifier rules - "
-                + "modification config not preserved. Please call modifyRequest() again after Context is stable.");
-            return false;
+            if (modificationConfig == null) {
+                logger.warn("[ModifierRuleSnapshot] No modification config for '{}' - cannot auto-rebind. "
+                    + "Please call modifyRequest() again after Context is stable.", endpoint);
+                return false;
+            }
+            try {
+                // 从 JSON 反序列化配置并重建 modification
+                ApiRequestModifier mod = ApiRequestModifier.fromConfigJson(modificationConfig);
+                // 重新绑定路由（不包含 callback，需要用户自行添加）
+                modifyRequest(newContext, endpoint, mod);
+                logger.info("[ModifierRuleSnapshot] Successfully rebind modifier for endpoint: {}", endpoint);
+                return true;
+            } catch (Exception e) {
+                logger.error("[ModifierRuleSnapshot] Failed to rebind modifier for '{}': {}", 
+                    endpoint, e.getMessage());
+                return false;
+            }
         }
 
         @Override
         public boolean rebindTo(Page newPage) {
-            logger.warn("[ModifierRuleSnapshot] Cannot auto-rebind ApiRequestModifier rules to page - "
-                + "modification config not preserved.");
-            return false;
+            if (modificationConfig == null) {
+                logger.warn("[ModifierRuleSnapshot] No modification config for '{}' - cannot auto-rebind to page.", 
+                    endpoint);
+                return false;
+            }
+            try {
+                ApiRequestModifier mod = ApiRequestModifier.fromConfigJson(modificationConfig);
+                modifyRequest(newPage, endpoint, mod);
+                logger.info("[ModifierRuleSnapshot] Successfully rebind modifier for endpoint: {} (page)", endpoint);
+                return true;
+            } catch (Exception e) {
+                logger.error("[ModifierRuleSnapshot] Failed to rebind modifier for '{}' to page: {}", 
+                    endpoint, e.getMessage());
+                return false;
+            }
         }
     }
+
+    /**
+     * 将当前配置序列化为 JSON（用于 rebind）
+     */
+    public String toConfigJson() {
+        Map<String, Object> config = new HashMap<>();
+        config.put("body", body);
+        config.put("method", method);
+        config.put("url", url);
+        config.put("host", host);
+        config.put("bodyOps", bodyOps);
+        config.put("headerOps", headerOps);
+        config.put("queryParamOps", queryParamOps);
+        return GSON.toJson(config);
+    }
+
+    /**
+     * 从 JSON 配置反序列化为 ApiRequestModifier
+     */
+    @SuppressWarnings("unchecked")
+    public static ApiRequestModifier fromConfigJson(String json) {
+        Map<String, Object> config = GSON.fromJson(json, Map.class);
+        ApiRequestModifier mod = new ApiRequestModifier();
+        
+        if (config.containsKey("body")) mod.body((String) config.get("body"));
+        if (config.containsKey("method")) mod.method((String) config.get("method"));
+        if (config.containsKey("url")) mod.setUrl((String) config.get("url"));
+        if (config.containsKey("host")) mod.host((String) config.get("host"));
+        
+        // 重建 FieldOp 配置
+        if (config.containsKey("bodyOps")) {
+            Map<String, Map<String, Object>> bodyOpsMap = (Map<String, Map<String, Object>>) config.get("bodyOps");
+            for (Map.Entry<String, Map<String, Object>> e : bodyOpsMap.entrySet()) {
+                FieldOp op = new FieldOp(
+                    Operation.valueOf((String) e.getValue().get("op")),
+                    e.getValue().get("value")
+                );
+                mod.bodyOps.put(e.getKey(), op);
+            }
+        }
+        if (config.containsKey("headerOps")) {
+            Map<String, Map<String, Object>> headerOpsMap = (Map<String, Map<String, Object>>) config.get("headerOps");
+            for (Map.Entry<String, Map<String, Object>> e : headerOpsMap.entrySet()) {
+                FieldOp op = new FieldOp(
+                    Operation.valueOf((String) e.getValue().get("op")),
+                    e.getValue().get("value")
+                );
+                mod.headerOps.put(e.getKey(), op);
+            }
+        }
+        if (config.containsKey("queryParamOps")) {
+            Map<String, Map<String, Object>> queryOpsMap = (Map<String, Map<String, Object>>) config.get("queryParamOps");
+            for (Map.Entry<String, Map<String, Object>> e : queryOpsMap.entrySet()) {
+                FieldOp op = new FieldOp(
+                    Operation.valueOf((String) e.getValue().get("op")),
+                    e.getValue().get("value")
+                );
+                mod.queryParamOps.put(e.getKey(), op);
+            }
+        }
+        
+        return mod;
+    }
+
+    // package-private setter for fromConfigJson
+    void setUrl(String url) { this.url = url; }
 
     // ==================== 数据类 ====================
 
@@ -592,17 +685,19 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         logger.info("========== Configuring Request Modifier for: {} ==========", endpoint);
         logger.info("Modification Config: {}", formatModificationConfig(modification));
 
-        // 使用统一的 toGlobPattern 方法（与 ApiMonitorAndMockManager 保持一致）
-        String globPattern = toGlobPattern(endpoint);
-        logger.info("Registering route with glob pattern: {}", globPattern);
+        String urlPart = normalizeUrl(endpoint);
+        logger.info("Registering route with url: {}", urlPart);
+
+        // 保存 modification 配置用于 rebind
+        LAST_MODIFICATION.get().put(endpoint, modification);
 
         RequestResponseStore store = new RequestResponseStore(endpoint);
 
         // 先注册响应监听器（在route之前）
         context.onResponse(response -> {
             String responseUrl = response.url();
-            // 使用统一的 matchesGlob 方法进行匹配
-            if (matchesGlob(responseUrl, endpoint)) {
+            // 使用 contains() 进行匹配
+            if (matchesUrl(responseUrl, urlPart)) {
                 try {
                     Request respRequest = response.request();
 
@@ -665,7 +760,7 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         });
 
         // 然后注册路由拦截
-        context.route(globPattern, route -> {
+        context.route(urlPart, route -> {
             try {
                 Request request = route.request();
                 String url = request.url();
@@ -777,17 +872,19 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         logger.info("========== Configuring Request Modifier for: {} ==========", endpoint);
         logger.info("Modification Config: {}", formatModificationConfig(modification));
 
-        // 使用统一的 toGlobPattern 方法（与 ApiMonitorAndMockManager 保持一致）
-        String globPattern = toGlobPattern(endpoint);
-        logger.info("Registering route with glob pattern: {}", globPattern);
+        String urlPart = normalizeUrl(endpoint);
+        logger.info("Registering route with url: {}", urlPart);
+
+        // 保存 modification 配置用于 rebind
+        LAST_MODIFICATION.get().put(endpoint, modification);
 
         RequestResponseStore store = new RequestResponseStore(endpoint);
 
         // 先注册响应监听器（在route之前）
         page.onResponse(response -> {
             String responseUrl = response.url();
-            // 使用统一的 matchesGlob 方法进行匹配
-            if (matchesGlob(responseUrl, endpoint)) {
+            // 使用 contains() 进行匹配
+            if (matchesUrl(responseUrl, urlPart)) {
                 try {
                     Request respRequest = response.request();
 
@@ -850,7 +947,7 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         });
 
         // 然后注册路由拦截
-        page.route(globPattern, route -> {
+        page.route(urlPart, route -> {
             try {
                 Request request = route.request();
                 String url = request.url();
@@ -943,66 +1040,25 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         return store;
     }
 
-    // ==================== URL Pattern 工具方法 ====================
+    // ==================== URL 匹配工具方法 ====================
 
     /**
-     * 将普通URL转换为 Playwright glob 匹配模式
-     * 
-     * <p>统一匹配策略（用于 Playwright route() 方法）：
-     * - 移除开头斜杠
-     * - 前后加 ** 实现跨目录匹配（支持查询参数）
-     * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
-     * 
-     * @param pattern 如 "/api/users" 或 "rest/account-list"
-     * @return Playwright glob pattern
+     * 获取 URL 部分字符串（直接使用，不做任何转换）
      */
-    static String toGlobPattern(String pattern) {
-        if (pattern == null || pattern.isEmpty()) {
-            return ".*";
+    static String normalizeUrl(String urlPart) {
+        if (urlPart == null || urlPart.isEmpty()) {
+            return "";
         }
-
-        // Remove leading slash
-        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-
-        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
-        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
-
-        // Add prefix and suffix for full URL matching
-        return ".*" + reg + ".*";
+        // 移除开头斜杠以保持一致性
+        return urlPart.startsWith("/") ? urlPart.substring(1) : urlPart;
     }
 
     /**
-     * Glob pattern to regex conversion for URL matching
+     * 检查 URL 是否包含指定部分
      */
-    private static String globToRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) {
-            return ".*";
-        }
-
-        // Remove leading slash
-        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-
-        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
-        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
-
-        // Add prefix and suffix for full URL matching
-        return ".*" + reg + ".*";
-    }
-
-    /**
-     * 检查 URL 是否匹配 pattern
-     */
-    static boolean matchesGlob(String url, String pattern) {
-        if (url == null || pattern == null) return false;
-        
-        // 使用正则匹配
-        String regex = globToRegex(pattern);
-        try {
-            return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-        } catch (Exception e) {
-            logger.debug("[Pattern] Invalid pattern '{}': {}", pattern, e.getMessage());
-            return false;
-        }
+    static boolean matchesUrl(String url, String urlPart) {
+        if (url == null || urlPart == null) return false;
+        return url.contains(urlPart);
     }
 
     // ==================== 辅助方法 ====================

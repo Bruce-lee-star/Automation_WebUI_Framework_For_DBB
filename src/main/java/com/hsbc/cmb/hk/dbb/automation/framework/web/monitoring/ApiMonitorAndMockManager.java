@@ -17,7 +17,6 @@ import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.Iterator;
 
@@ -42,9 +41,9 @@ import java.util.Iterator;
  * <p>推荐用法：
  * <pre>{@code
  * // 1. 使用 RealApiMonitor 监控目标 API，获取真实响应
- * RealApiMonitor.monitor(context).forUrl("/api/user/info**").build();
+ * RealApiMonitor.monitor(context).api("/api/user/info").start();
  * // 页面加载后，获取记录的响应信息...
- * ApiCallRecord record = RealApiMonitor.getRecordedResponse("api/user/info");
+ * ApiCallRecord record = RealApiMonitor.getLast("api/user/info");
  *
  * // 2. 修改响应内容后，使用 Mock 返回
  * String modifiedResponse = modifyResponse(record.getResponseBody());
@@ -173,7 +172,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         private final String mockDataJson;
         private final int statusCode;
         private final Map<String, String> headers;
-        private final long delayMs;
         private final boolean enabled;  // 保存原始 enabled 状态
 
         public MockRuleSnapshot(MockRule rule) {
@@ -185,7 +183,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             this.mockDataJson = rule.getMockDataJson();
             this.statusCode = rule.getStatusCode();
             this.headers = rule.getHeaders();
-            this.delayMs = rule.getDelayMs();
             this.enabled = rule.isEnabled();
         }
 
@@ -208,7 +205,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                         .statusCode(statusCode)
                         .mockDataJson(mockDataJson)
                         .method(method)
-                        .delay(delayMs)
                         .enabled(enabled);
                 
                 if (urlContains != null) {
@@ -249,7 +245,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                         .statusCode(statusCode)
                         .mockDataJson(mockDataJson)
                         .method(method)
-                        .delay(delayMs)
                         .enabled(enabled);
                 
                 if (urlContains != null) {
@@ -350,7 +345,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         private String mockDataJson;          // 直接提供的JSON字符串
         private int statusCode = 200;
         private final Map<String, String> headers = new HashMap<>();
-        private long delayMs;                // 模拟延迟(ms)
         private boolean enabled = true;
         private ResponseGenerator responseGenerator;
 
@@ -366,7 +360,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         public MockRule mockDataJson(String json)         { this.mockDataJson = json; return this; }
         public MockRule statusCode(int code)             { this.statusCode = code; return this; }
         public MockRule header(String key, String value)  { this.headers.put(key, value); return this; }
-        public MockRule delay(long ms)                    { this.delayMs = ms; return this; }
         public MockRule enabled(boolean enabled)          { this.enabled = enabled; return this; }
         public MockRule responseGenerator(ResponseGenerator g) { this.responseGenerator = g; return this; }
         /** 设置 URL 关键字过滤（urlContains），请求 URL 必须包含此关键字才能匹配 */
@@ -382,7 +375,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         public final int getStatusCode()           { return statusCode; }
         /** 返回可修改的副本，避免 Playwright fulfill 时抛 UnsupportedOperationException */
         public final Map<String, String> getHeaders() { return new HashMap<>(headers); }
-        public final long getDelayMs()             { return delayMs; }
         public final boolean isEnabled()           { return enabled; }
         public final ResponseGenerator getResponseGenerator() { return responseGenerator; }
     }
@@ -415,48 +407,33 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * ApiMonitorAndMockManager.mockDirectResponse(pageOrContext, "/api/users", 200, "{\"ok\":true}");
      * }</pre>
      */
-    public static void mockDirectResponse(Object pageOrContext, String urlPattern,
+    public static void mockDirectResponse(Object pageOrContext, String urlPart,
                                           int statusCode, String responseData) {
         ApiMonitorAndMockManager inst = resolveTarget(pageOrContext);
-        String glob = toGlobPattern(urlPattern);
-        logger.info("[Mock] Direct: {} status={}", glob, statusCode);
+        logger.info("[Mock] Direct: {} status={}", urlPart, statusCode);
 
-        MockRule rule = new MockRule("mock-" + glob, glob)
+        MockRule rule = new MockRule("mock-" + urlPart, urlPart)
                 .statusCode(statusCode).mockDataJson(responseData);
         inst.registerMock(rule);
         inst.applyRoutes();
     }
 
     /** Mock 成功响应（默认200） */
-    public static void mockDirectSuccess(Object pageOrContext, String urlPattern, String responseData) {
-        mockDirectResponse(pageOrContext, urlPattern, DEFAULT_SUCCESS_STATUS, responseData);
+    public static void mockDirectSuccess(Object pageOrContext, String urlPart, String responseData) {
+        mockDirectResponse(pageOrContext, urlPart, DEFAULT_SUCCESS_STATUS, responseData);
     }
 
     /** Mock 错误响应 */
-    public static void mockDirectError(Object pageOrContext, String urlPattern,
+    public static void mockDirectError(Object pageOrContext, String urlPart,
                                        int statusCode, String errorData) {
-        mockDirectResponse(pageOrContext, urlPattern, statusCode, errorData);
-    }
-
-    /** Mock 超时响应 */
-    public static void mockTimeout(Object pageOrContext, String urlPattern,
-                                   long timeoutMs, String responseData) {
-        ApiMonitorAndMockManager inst = resolveTarget(pageOrContext);
-        String glob = toGlobPattern(urlPattern);
-        logger.info("[Mock] Timeout: {} delay={}ms", glob, timeoutMs);
-
-        MockRule rule = new MockRule("mock-timeout-" + glob, glob)
-                .statusCode(DEFAULT_TIMEOUT_STATUS).delay(timeoutMs).mockDataJson(responseData);
-        inst.registerMock(rule);
-        inst.applyRoutes();
+        mockDirectResponse(pageOrContext, urlPart, statusCode, errorData);
     }
 
     /** 动态响应生成 */
-    public static void mockDynamic(Object pageOrContext, String urlPattern,
+    public static void mockDynamic(Object pageOrContext, String urlPart,
                                    ResponseGenerator generator) {
         ApiMonitorAndMockManager inst = resolveTarget(pageOrContext);
-        String glob = toGlobPattern(urlPattern);
-        MockRule rule = new MockRule("mock-dynamic-" + glob, glob).responseGenerator(generator);
+        MockRule rule = new MockRule("mock-dynamic-" + urlPart, urlPart).responseGenerator(generator);
         inst.registerMock(rule);
         inst.applyRoutes();
     }
@@ -467,17 +444,15 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         return Collections.unmodifiableList(new ArrayList<>(getInstance().apiCallHistory));
     }
 
-    public static List<ApiCallRecord> getApiCallHistoryByUrl(String urlRegex) {
-        Pattern pat = Pattern.compile(urlRegex);
+    public static List<ApiCallRecord> getApiCallHistoryByUrl(String urlPart) {
         return getInstance().apiCallHistory.stream()
-                .filter(r -> pat.matcher(r.getUrl()).matches())
+                .filter(r -> r.getUrl().contains(urlPart))
                 .collect(Collectors.toList());
     }
 
     public static int getMockRuleCount() { return getInstance().mockRules.size(); }
-    public static boolean hasMockForUrl(String urlPattern) {
-        String glob = toGlobPattern(urlPattern);
-        return getInstance().mockRules.values().stream().anyMatch(r -> r.getUrlPattern().equals(glob));
+    public static boolean hasMockForUrl(String urlPart) {
+        return getInstance().mockRules.values().stream().anyMatch(r -> r.getUrlPattern().contains(urlPart));
     }
     public static Map<String, MockRule> getAllMockRules() {
         return new HashMap<>(getInstance().mockRules);
@@ -499,15 +474,17 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
 
     /** 停止特定URL的路由 */
-    public static void stopMock(Object pageOrContext, String urlPattern) {
-        String glob = toGlobPattern(urlPattern);
+    public static void stopMock(Object pageOrContext, String urlPart) {
         ApiMonitorAndMockManager inst = getInstance();
-        // 统一解绑传入目标（内部会处理 Page/Context 类型）
-        safeUnroute(pageOrContext, glob);
-        // 清理 mockRules 和 registeredPatterns
-        inst.mockRules.entrySet().removeIf(e -> e.getValue().getUrlPattern().equals(glob));
-        inst.registeredPatterns.remove(glob);
-        logger.info("[Cleanup] Mock stopped: {} -> {}", urlPattern, glob);
+        // 清理所有匹配 urlPart 的规则
+        inst.mockRules.entrySet().removeIf(e -> e.getValue().getUrlPattern().contains(urlPart));
+        // 解绑传入目标
+        safeUnrouteAll(pageOrContext);
+        // 解绑当前实例绑定的所有路由
+        safeUnrouteAll(inst.targetPage);
+        safeUnrouteAll(inst.targetContext);
+        inst.registeredPatterns.clear();
+        logger.info("[Cleanup] Mock stopped for: {}", urlPart);
     }
 
     /** 仅清除规则（不unroute） */
@@ -543,7 +520,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                     rm.put("method", r.getMethod());
                     rm.put("statusCode", r.getStatusCode());
                     rm.put("enabled", r.isEnabled());
-                    rm.put("delayMs", r.getDelayMs());
                     rulesList.add(rm);
                 }
                 report.put("rules", rulesList);
@@ -671,7 +647,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 .mockDataJson(rule.getMockDataJson())
                 .mockDataPath(rule.getMockDataPath())
                 .method(rule.getMethod())
-                .delay(rule.getDelayMs())
                 .enabled(rule.isEnabled())
                 .responseGenerator(rule.getResponseGenerator());
         if (rule.getUrlContains() != null) {
@@ -707,7 +682,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             }
             this.targetContext = newContext;
         }
-        // 不再置空 targetPage，保持 Page 级别的 Mock
     }
 
     /**
@@ -722,7 +696,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             }
             this.targetPage = newPage;
         }
-        // 不再置空 targetContext，保持 Context 级别的 Mock
     }
 
     /**
@@ -770,8 +743,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * - 使用 {@code registeredPatterns} 做去重，避免同一URL被多次 route() 绑定
      * - 统一路由入口处理 Mock 请求
      * - 对规则列表创建快照，避免并发修改异常
-     * - 【强制清理】每次 applyRoutes 时强制清理所有已注册的路由，防止重复注册链式阻塞
-     * - 只解绑 registeredPatterns 中的 pattern，不影响其他框架的路由
+     * - 【增量绑定】不再解绑所有路由，只注册新的、未绑定的路由
      */
     private void applyRoutes() {
         if (targetPage == null && targetContext == null) {
@@ -785,94 +757,46 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             rulesSnapshot = new ArrayList<>(mockRules.values());
         }
 
-        // 【关键修复】强制清理所有已注册的路由，防止链式阻塞和白屏
-        // 1. 先解绑所有 registeredPatterns 中的路由
-        for (String pattern : registeredPatterns) {
-            safeUnroute(targetPage, pattern);
-            safeUnroute(targetContext, pattern);
-        }
-        registeredPatterns.clear();
-        
-        // 2. 额外防护：强制解绑该 endpoint 对应的所有旧路由（防止链式注册残留）
+        // 【增量绑定】只注册新的、未绑定的路由，不解绑已有路由
         for (MockRule rule : rulesSnapshot) {
             if (rule.isEnabled()) {
-                unbindPattern(rule.getUrlPattern());
+                bindRouteIfNeeded(rule.getUrlPattern());
             }
-        }
-        
-        // 3. 如果有 targetContext，额外做一次 Context 级别的清理（防止遗漏）
-        if (targetContext != null) {
-            try {
-                // 只解绑我们注册的 pattern，使用 registeredPatterns 作为白名单
-                for (String pattern : new ArrayList<>(registeredPatterns)) {
-                    // 已在上面清理，无需重复
-                }
-            } catch (Exception e) {
-                logger.debug("[Route] Context-level cleanup skipped: {}", e.getMessage());
-            }
-        }
-
-        // --- 注册 Mock 规则 ---
-        for (MockRule rule : rulesSnapshot) {
-            if (!rule.isEnabled()) continue;
-            bindRouteIfNeeded(rule.getUrlPattern());
         }
     }
 
     /**
-     * 去重绑定：只在 URL pattern 未注册过时才调用 route()
-     * 【修复】改用正则表达式替代 glob pattern，避免 Java PathMatcher 的 ** 匹配 bug
+     * 去重绑定：只在 URL 未注册过时才调用 route()
+     * 直接使用原始 URL 部分字符串进行匹配
      */
-    private void bindRouteIfNeeded(String globPattern) {
-        if (registeredPatterns.add(globPattern)) {
-            // 首次绑定此 pattern
-            // 将 glob pattern 转换为正则表达式，使用 Pattern.compile() 绑定
+    private void bindRouteIfNeeded(String urlPart) {
+        if (registeredPatterns.add(urlPart)) {
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
             try {
-                // 将 glob **/* 转换为正则 .*/.*
-                String regex = globToRegex(globPattern);
-                Pattern compiledPattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
-                
+                // 使用原始字符串直接匹配
                 if (targetPage != null) {
-                    targetPage.route(compiledPattern, handler);
+                    targetPage.route(urlPart, handler);
                 } else if (targetContext != null) {
-                    targetContext.route(compiledPattern, handler);
+                    targetContext.route(urlPart, handler);
                 }
-                logger.info("[Route] Bound regex: {}", regex);
+                logger.info("[Route] Bound: {}", urlPart);
             } catch (Exception e) {
-                logger.error("[Route] Failed to bind pattern '{}': {}", globPattern, e.getMessage());
+                logger.error("[Route] Failed to bind '{}': {}", urlPart, e.getMessage());
             }
         } else {
-            logger.debug("[Route] Already bound, skipping: {}", globPattern);
+            logger.debug("[Route] Already bound, skipping: {}", urlPart);
         }
     }
-    
+
     /**
-     * 提取纯路径关键字，剔除通配符
+     * 获取 URL 部分字符串（直接使用，不做任何转换）
      */
-    private static String extractEndpoint(String globPattern) {
-        if (globPattern == null || globPattern.isEmpty()) return null;
-        return globPattern.replaceAll("\\*+", "").trim();
+    private static String normalizeUrl(String urlPart) {
+        if (urlPart == null || urlPart.isEmpty()) return "";
+        // 移除开头斜杠以保持一致性
+        return urlPart.startsWith("/") ? urlPart.substring(1) : urlPart;
     }
     
-    /**
-     * Glob pattern to regex conversion for URL matching
-     */
-    private static String globToRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) {
-            return ".*";
-        }
-
-        // Remove leading slash
-        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-
-        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
-        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
-
-        // Add prefix and suffix for full URL matching
-        return ".*" + reg + ".*";
-    }
-
     /**
      * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
      * 【修复】使用 Throwable 捕获所有异常，确保每个请求 100% 被处理
@@ -919,7 +843,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 查找匹配的 Mock 规则
-     * 自动忽略查询参数，同路径不同参数全部命中
+     * 使用 contains() 快速匹配
      */
     private MockRule findMatchingMock(Request req) {
         String fullUrl = req.url();
@@ -934,28 +858,27 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             if (!rule.isEnabled()) continue;
 
             String rulePattern = rule.getUrlPattern();
-            String regex = globToRegex(rulePattern);
 
-            // 1. URL正则匹配（自带兼容所有?xxx参数）
-            if (!Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(fullUrl).matches()) {
+            // URL匹配：直接使用 contains()
+            if (!fullUrl.contains(rulePattern)) {
                 continue;
             }
 
-            // 2. HTTP方法匹配
+            // HTTP方法匹配（可选）
             String ruleMethod = rule.getMethod();
             if (ruleMethod != null && !"*".equals(ruleMethod) && !".*".equals(ruleMethod)) {
-                if (!Pattern.matches(ruleMethod, reqMethod)) {
+                if (!reqMethod.equalsIgnoreCase(ruleMethod)) {
                     continue;
                 }
             }
 
-            // 3. 二次自定义关键字过滤（可选）
+            // 二次关键字过滤（可选）
             String urlContains = rule.getUrlContains();
             if (urlContains != null && !fullUrl.toLowerCase().contains(urlContains.toLowerCase())) {
                 continue;
             }
 
-            logger.info("[Mock] Matched: {} {}", reqMethod, fullUrl);
+            logger.debug("[Mock] Matched: {} {}", reqMethod, fullUrl);
             return rule;
         }
         return null;
@@ -997,11 +920,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             opts.setHeaders(rule.getHeaders());
         }
 
-        if (rule.getDelayMs() > 0) {
-            fulfillWithDelay(route, opts, rule.getDelayMs(), req.url());
-        } else {
-            safeFulfill(route, opts, req.url());
-        }
+        safeFulfill(route, opts, req.url());
     }
 
     /**
@@ -1043,28 +962,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             }
         }
         return null;
-    }
-
-    /**
-     * 延迟 fulfill — 使用 Playwright 原生 route.wait() API
-     * route.wait() 在 Playwright 中是官方支持的，不会阻塞浏览器主线程
-     * 它只在路由处理的上下文中等待，是安全的
-     */
-    private void fulfillWithDelay(Route route, Route.FulfillOptions opts, long delayMs, String url) {
-        if (delayMs <= 0) {
-            safeFulfill(route, opts, url);
-            return;
-        }
-
-        logger.info("[Mock] Delay {}ms for {}", delayMs, url);
-        try {
-            // Playwright 原生支持的等待方式，不阻塞浏览器
-            route.wait(delayMs);
-            safeFulfill(route, opts, url);
-        } catch (Exception e) {
-            logger.error("[Mock] Delay failed for {}: {}", url, e.getMessage());
-            safeResume(route);
-        }
     }
 
     // ==================== 记录与工具方法 ====================
@@ -1133,69 +1030,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         }
     }
 
-    // ==================== URL 工具方法 ====================
-
-    /**
-     * 将普通URL转换为 Playwright glob 匹配模式
-     * 
-     * <p>统一匹配策略（用于 Playwright route() 方法）：
-     * - 移除开头斜杠
-     * - 前后加 ** 实现跨目录匹配（支持查询参数）
-     * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
-     * 
-     * @param urlPattern 如 "/api/users" 或 "rest/account-list"
-     * @return Playwright glob pattern
-     */
-    static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return "**";
-
-        // 已带通配符直接返回
-        if (urlPattern.contains("*")) return urlPattern;
-
-        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
-        // 后缀不加/**，用**收尾，兼容所有查询参数
-        return "**/" + normalized + "**";
-    }
-
-    /**
-     * 检查 URL 是否匹配 pattern（与 RealApiMonitor 保持一致）
-     * 支持两种模式：
-     * - 包含匹配：直接使用 contains() 检查 URL 是否包含 pattern
-     * - 正则匹配：使用正则表达式匹配
-     * 
-     * @param url 完整 URL
-     * @param pattern 匹配模式（glob 或 regex）
-     * @return true 如果匹配
-     */
-    static boolean matchesGlob(String url, String pattern) {
-        if (url == null || pattern == null) return false;
-        
-        // Glob 模式处理（* 匹配任意字符包括 /）
-        if (pattern.contains("*")) {
-            // 将 glob * 转换为正则 .* （但 / 不需要特殊处理，因为 glob 中 * 也匹配 /）
-            String regex = globToRegex(pattern);
-            try {
-                return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-            } catch (Exception e) {
-                logger.debug("[Pattern] Invalid glob pattern '{}': {}", pattern, e.getMessage());
-                return false;
-            }
-        }
-        
-        // 纯文本模式：直接 contains 匹配
-        if (url.contains(pattern)) {
-            return true;
-        }
-        
-        // 尝试正则匹配（大小写不敏感）
-        try {
-            return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-        } catch (Exception e) {
-            logger.debug("[Pattern] Invalid regex pattern '{}': {}", pattern, e.getMessage());
-            return false;
-        }
-    }
-    
     // ==================== Mock Builder ====================
 
     /**
@@ -1219,28 +1053,23 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             this.instance = instance;
         }
 
-        public MockBuilder forUrl(String urlPattern) {
-            rules.add(new MockRule("mock-" + urlPattern, toGlobPattern(urlPattern)));
+        public MockBuilder forUrl(String urlPart) {
+            rules.add(new MockRule("mock-" + urlPart, urlPart));
             return this;
         }
 
         /**
          * 使用 endpoint 关键字匹配请求（作为 urlContains 二次过滤）
-         * 注意：urlPattern 设为唯一值以支持多次 forEndpoint 调用
-         * @param endpoint URL 中需包含的关键字（完整 URL 或部分路径）
+         * @param endpoint URL 中需包含的关键字
          */
         public MockBuilder forEndpoint(String endpoint) {
-            // 生成唯一的 glob pattern，避免 registeredPatterns 去重导致后续 forEndpoint 不生效
-            // 将 endpoint 转换为合法的 glob pattern（如 "/api/users" -> "**/api/users**"）
-            String uniquePattern = toGlobPattern(endpoint);
-            MockRule rule = new MockRule("mock-" + endpoint, uniquePattern).endpoint(endpoint);
+            MockRule rule = new MockRule("mock-" + endpoint, endpoint).endpoint(endpoint);
             rules.add(rule);
             return this;
         }
 
         public MockBuilder withStatus(int code)       { last().statusCode(code); return this; }
         public MockBuilder withResponse(String data)   { last().mockDataJson(data); return this; }
-        public MockBuilder withDelay(long ms)          { last().delay(ms); return this; }
         public MockBuilder withHeader(String k, String v) { last().header(k, v); return this; }
         public MockBuilder withGenerator(ResponseGenerator g) { last().responseGenerator(g); return this; }
         public MockBuilder method(String m)             { last().method(m); return this; }

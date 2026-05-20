@@ -508,6 +508,38 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         logger.debug("[Cleanup] All mock rules cleared (routes still bound)");
     }
 
+    /**
+     * 刷新路由绑定 - 页面刷新后调用此方法重新绑定所有 Mock 路由
+     * 
+     * <p>场景：调用 page.reload() 或 page.goBack() 后，Playwright 会清除该 Page 上的所有 route。
+     * 此时需要调用此方法重新绑定已注册的 Mock 规则。
+     * 
+     * <pre>{@code
+     * // 1. 设置 Mock 规则
+     * ApiMonitorAndMockManager.mock(page).forUrl("/api/users").withResponse("{}").build();
+     * 
+     * // 2. 加载页面
+     * page.goto("/");
+     * 
+     * // 3. 刷新页面后，需要重新绑定路由
+     * page.reload();
+     * ApiMonitorAndMockManager.refreshRoutes(page);  // <-- 关键！
+     * }</pre>
+     */
+    public static void refreshRoutes(Object pageOrContext) {
+        ApiMonitorAndMockManager inst = resolveTarget(pageOrContext);
+        
+        // 清除 registeredPatterns，以便重新绑定
+        int patternCount = inst.registeredPatterns.size();
+        inst.registeredPatterns.clear();
+        
+        logger.info("[Route] Refreshing {} routes for {}", patternCount, 
+            pageOrContext instanceof Page ? "Page" : "Context");
+        
+        // 重新应用所有规则
+        inst.applyRoutes();
+    }
+
     // ==================== Serenity 报告集成 ====================
 
     public static void recordToSerenityReport() {
@@ -778,6 +810,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         }
     }
 
+
     /**
      * 绑定单个路由 - 使用精确的 glob 模式，只拦截目标 API
      * 避免 route("**") 拦截所有请求导致页面加载缓慢
@@ -787,53 +820,22 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         String globPattern = buildGlobPattern(urlPart);
         
         if (registeredPatterns.add(globPattern)) {
-            // 新 pattern，直接绑定
-            doBindRoute(globPattern);
+            java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
+            try {
+                if (targetPage != null) {
+                    targetPage.route(globPattern, handler);
+                } else if (targetContext != null) {
+                    targetContext.route(globPattern, handler);
+                }
+                logger.info("[Route] Bound precise glob: {}", globPattern);
+            } catch (Exception e) {
+                logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
+            }
         } else {
-            // pattern 已存在，检查是否需要重新绑定
-            // 【关键】当 targetPage/Context 改变时（如页面刷新），需要重新绑定
-            if (needsRebind(globPattern)) {
-                logger.debug("[Route] Rebinding cleared route: {}", globPattern);
-                doBindRoute(globPattern);
-            } else {
-                logger.debug("[Route] Already bound, skipping: {}", globPattern);
-            }
+            logger.debug("[Route] Already bound, skipping: {}", globPattern);
         }
     }
-    
-    /**
-     * 检查是否需要重新绑定 route
-     * 【核心问题】页面刷新后 route 被清除，但 registeredPatterns 仍保留
-     */
-    private boolean needsRebind(String globPattern) {
-        // 如果同时有 Page 和 Context 绑定，以 Page 为准
-        if (targetPage != null) {
-            // Page 模式下，检查 Page 是否变化
-            return true;  // 简化处理：每次 applyRoutes 都重新绑定到 Page
-        } else if (targetContext != null) {
-            // Context 模式下，检查 Context 是否变化
-            return true;
-        }
-        return false;
-    }
-    
-    /**
-     * 执行路由绑定
-     */
-    private void doBindRoute(String globPattern) {
-        java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
-        try {
-            if (targetPage != null) {
-                targetPage.route(globPattern, handler);
-                logger.info("[Route] Bound to Page: {}", globPattern);
-            } else if (targetContext != null) {
-                targetContext.route(globPattern, handler);
-                logger.info("[Route] Bound to Context: {}", globPattern);
-            }
-        } catch (Exception e) {
-            logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
-        }
-    }
+
 
     /**
      * 构建精确的 glob pattern
@@ -877,24 +879,30 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * 【双重兜底】resume 失败则 abort，避免请求永久挂起导致白屏
      */
     private void handleUnifiedRoute(Route route) {
+        String requestUrl = route.request().url();
+        logger.info("[Route] Intercepted: {} {}", route.request().method(), requestUrl);
+        
         try {
             MockRule matchedMock = findMatchingMock(route.request());
             if (matchedMock != null) {
+                logger.info("[Route] Mock matched for: {}", matchedMock.getName());
                 handleMock(route, matchedMock);
                 return;
             }
+            logger.info("[Route] No mock matched, passing through: {}", requestUrl);
             recordRealRequest(route);
             safeResume(route);
 
         } catch (Throwable e) {
+            logger.error("[Route] Handler exception for {}: {}", requestUrl, e.getMessage(), e);
             try {
                 safeResume(route);
             } catch (Throwable resumeEx) {
-                logger.error("[Route] Resume failed for {}, forcing abort", route.request().url());
+                logger.error("[Route] Resume failed for {}, forcing abort", requestUrl);
                 try {
                     route.abort("failedhandler");
                 } catch (Throwable abortEx) {
-                    logger.error("[Route] Abort also failed for {}", route.request().url());
+                    logger.error("[Route] Abort also failed for {}", requestUrl);
                 }
             }
         }

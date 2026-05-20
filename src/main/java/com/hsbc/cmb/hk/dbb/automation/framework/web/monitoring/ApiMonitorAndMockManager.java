@@ -856,15 +856,20 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
     
     /**
-     * 将 glob pattern 转换为正则表达式
-     * 完美兼容路径+query参数
+     * Glob pattern to regex conversion for URL matching
      */
     private static String globToRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) return ".*";
+        if (pattern == null || pattern.isEmpty()) {
+            return ".*";
+        }
+
+        // Remove leading slash
         String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
-        // 通配符替换
-        String reg = raw.replace("**", ".*").replace("*", "[^/]*");
-        // 全局匹配，允许后面拼接任意查询参数
+
+        // Replace glob wildcards: ** -> .*, * -> .*
+        String reg = raw.replace("**", ".*").replace("*", ".*");
+
+        // Add prefix and suffix for full URL matching
         return ".*" + reg + ".*";
     }
 

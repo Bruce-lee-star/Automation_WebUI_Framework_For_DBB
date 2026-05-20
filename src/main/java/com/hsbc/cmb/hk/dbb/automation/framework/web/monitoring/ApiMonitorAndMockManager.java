@@ -555,10 +555,15 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             report.put("title", "API Call History");
             report.put("totalApiCalls", history.size());
 
-            if (!history.isEmpty()) {
+            // 只过滤 MOCK 类型的记录（mock matched 成功的请求）
+            List<ApiCallRecord> mockRecords = history.stream()
+                    .filter(ApiCallRecord::isMocked)
+                    .toList();
+
+            if (!mockRecords.isEmpty()) {
                 List<Map<String, Object>> calls = new ArrayList<>();
-                for (int i = 0; i < history.size(); i++) {
-                    ApiCallRecord r = history.get(i);
+                for (int i = 0; i < mockRecords.size(); i++) {
+                    ApiCallRecord r = mockRecords.get(i);
                     Map<String, Object> cm = new LinkedHashMap<>();
                     cm.put("#", i + 1);
                     cm.put("type", r.getType().name());
@@ -568,19 +573,9 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                     calls.add(cm);
                 }
                 report.put("apiCalls", calls);
-
-                long mockCnt = history.stream().filter(ApiCallRecord::isMocked).count();
-                long realCnt = history.size() - mockCnt;
-                double total = Math.max(history.size(), 1);
-
-                Map<String, Object> summary = new LinkedHashMap<>();
-                summary.put("realApiCount", realCnt);
-                summary.put("mockApiCount", mockCnt);
-                summary.put("realPercentage", String.format("%.1f%%", realCnt * 100.0 / total));
-                summary.put("mockPercentage", String.format("%.1f%%", mockCnt * 100.0 / total));
-                report.put("summary", summary);
+                report.put("mockApiCount", mockRecords.size());
             } else {
-                report.put("message", "No API calls recorded yet");
+                report.put("message", "No mock API calls recorded");
             }
 
             Serenity.recordReportData()
@@ -846,7 +841,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 handleMock(route, matchedMock);
                 return;
             }
-            logger.info("[Route] No mock matched, passing through: {}", requestUrl);
             recordRealRequest(route);
             safeResume(route);
 

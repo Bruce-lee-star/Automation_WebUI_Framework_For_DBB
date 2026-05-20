@@ -1086,7 +1086,11 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         try {
             if (record.response != null && !record.bodyRead) {
                 String text = record.response.text();
-                logger.info("Successfully re-read response body on retry for: {}", record.getUrl());
+                synchronized (record.bodyLock) {
+                    record.responseBody = text;
+                    record.bodyRead = true;
+                }
+                logger.info("Successfully re-read response body for: {}", record.getUrl());
                 return text;
             }
         } catch (Exception e) {
@@ -1498,7 +1502,6 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                 null, null, response.status(), null, capturedBody, false
             );
             
-            record.markBodyRead();
             record.setResponse(response);
             record.setRequest(request);
             apiCallHistory.get().add(record);

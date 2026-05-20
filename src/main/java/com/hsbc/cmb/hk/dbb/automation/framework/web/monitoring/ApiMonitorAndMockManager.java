@@ -338,11 +338,13 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      */
     public static class MockRule {
         private final String name;            // 不可变，构造函数设置
-        private final String urlPattern;     // 不可变，构造函数设置
-        private String urlContains;           // 二次精确过滤关键字
-        private String method = ".*";        // HTTP方法匹配，默认全部
-        private String mockDataPath;         // JSON 文件路径
-        private String mockDataJson;          // 直接提供的JSON字符串
+        private final String urlPattern;       // 不可变，构造函数设置（可能含查询参数）
+        private final String urlPath;          // 纯路径部分（不含查询参数）
+        private String urlContains;            // 二次精确过滤关键字
+        private String queryParams;            // 查询参数字符串，如 "a=123&e=fgh"
+        private String method = ".*";          // HTTP方法匹配，默认全部
+        private String mockDataPath;           // JSON 文件路径
+        private String mockDataJson;           // 直接提供的JSON字符串
         private int statusCode = 200;
         private final Map<String, String> headers = new HashMap<>();
         private boolean enabled = true;
@@ -351,6 +353,15 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         public MockRule(String name, String urlPattern) {
             this.name = name;
             this.urlPattern = urlPattern;
+            // 分离路径和查询参数
+            int queryIdx = urlPattern.indexOf('?');
+            if (queryIdx > 0) {
+                this.urlPath = urlPattern.substring(0, queryIdx);
+                this.queryParams = urlPattern.substring(queryIdx + 1);
+            } else {
+                this.urlPath = urlPattern;
+                this.queryParams = null;
+            }
             this.headers.put("Content-Type", "application/json");
         }
 
@@ -368,6 +379,8 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         // ---- Getters ----
         public final String getName()              { return name; }
         public final String getUrlPattern()        { return urlPattern; }
+        public final String getUrlPath()           { return urlPath; }
+        public final String getQueryParams()       { return queryParams; }
         public final String getUrlContains()       { return urlContains; }
         public final String getMethod()            { return method; }
         public final String getMockDataPath()      { return mockDataPath; }
@@ -766,24 +779,56 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     }
 
     /**
-     * 去重绑定：拦截所有请求，在 handler 中用 contains 检查匹配
+     * 绑定单个路由 - 使用精确的 glob 模式，只拦截目标 API
+     * 避免 route("**") 拦截所有请求导致页面加载缓慢
      */
     private void bindRouteIfNeeded(String urlPart) {
-        if (registeredPatterns.add(urlPart)) {
+        // 清理 URL，生成精确的 glob pattern
+        String globPattern = buildGlobPattern(urlPart);
+        
+        if (registeredPatterns.add(globPattern)) {
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
             try {
                 if (targetPage != null) {
-                    targetPage.route("**", handler);
+                    targetPage.route(globPattern, handler);
                 } else if (targetContext != null) {
-                    targetContext.route("**", handler);
+                    targetContext.route(globPattern, handler);
                 }
-                logger.info("[Route] Bound wildcard, will check contains: {}", urlPart);
+                logger.info("[Route] Bound precise glob: {}", globPattern);
             } catch (Exception e) {
-                logger.error("[Route] Failed to bind '{}': {}", urlPart, e.getMessage());
+                logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
             }
         } else {
-            logger.debug("[Route] Already bound, skipping: {}", urlPart);
+            logger.debug("[Route] Already bound, skipping: {}", globPattern);
         }
+    }
+
+    /**
+     * 构建精确的 glob pattern
+     * 支持查询参数，自动提取路径部分作为 glob
+     */
+    private String buildGlobPattern(String urlPart) {
+        if (urlPart == null || urlPart.isEmpty()) {
+            return "**";
+        }
+        
+        // 提取纯路径部分（不含查询参数）
+        int queryIdx = urlPart.indexOf('?');
+        String pathPart = queryIdx > 0 ? urlPart.substring(0, queryIdx) : urlPart;
+        
+        // 如果已经是完整 URL 或包含协议，使用路径部分
+        if (pathPart.contains("://") || pathPart.startsWith("http")) {
+            return pathPart;
+        }
+        
+        // 如果是 /api/xxx 格式，转换为相对路径 glob
+        if (pathPart.startsWith("/")) {
+            // 处理 /api/users/{id} 格式
+            return "**" + pathPart.replace("{", "*").replace("}", "");
+        }
+        
+        // 普通字符串（如 "api/users"），转换为前缀匹配
+        return "**/" + pathPart;
     }
 
     /**
@@ -834,7 +879,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 查找匹配的 Mock 规则
-     * 使用 contains() 快速匹配
+     * 支持路径 + 查询参数匹配
      */
     private MockRule findMatchingMock(Request req) {
         String fullUrl = req.url();
@@ -848,14 +893,23 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
 
-            String rulePattern = rule.getUrlPattern();
-
-            // URL匹配：contains
-            if (!fullUrl.contains(rulePattern)) {
+            // 1. 路径匹配：URL 必须包含路径部分
+            String urlPath = rule.getUrlPath();
+            if (!fullUrl.contains(urlPath)) {
                 continue;
             }
 
-            // HTTP方法匹配（可选）
+            // 2. 查询参数匹配（如果有）
+            String queryParams = rule.getQueryParams();
+            if (queryParams != null && !queryParams.isEmpty()) {
+                // 检查请求 URL 是否包含所有指定的查询参数
+                // 支持：a=123&e=fgh -> fullUrl 包含 "a=123" 且包含 "e=fgh"
+                if (!containsAllQueryParams(fullUrl, queryParams)) {
+                    continue;
+                }
+            }
+
+            // 3. HTTP方法匹配（可选）
             String ruleMethod = rule.getMethod();
             if (ruleMethod != null && !"*".equals(ruleMethod) && !".*".equals(ruleMethod)) {
                 if (!reqMethod.equalsIgnoreCase(ruleMethod)) {
@@ -863,7 +917,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 }
             }
 
-            // 二次关键字过滤（可选）
+            // 4. 二次关键字过滤（可选）
             String urlContains = rule.getUrlContains();
             if (urlContains != null && !fullUrl.toLowerCase().contains(urlContains.toLowerCase())) {
                 continue;
@@ -872,6 +926,26 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             return rule;
         }
         return null;
+    }
+
+    /**
+     * 检查请求 URL 是否包含所有指定的查询参数
+     * @param fullUrl 请求的完整 URL
+     * @param requiredParams 需要的参数字符串，如 "a=123&e=fgh"
+     * @return true 如果 URL 包含所有参数
+     */
+    private boolean containsAllQueryParams(String fullUrl, String requiredParams) {
+        if (requiredParams == null || requiredParams.isEmpty()) {
+            return true;
+        }
+        // 按 & 分割每个参数
+        String[] params = requiredParams.split("&");
+        for (String param : params) {
+            if (!param.isEmpty() && !fullUrl.contains(param)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ==================== Mock 处理 ====================

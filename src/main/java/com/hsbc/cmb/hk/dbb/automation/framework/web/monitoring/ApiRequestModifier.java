@@ -953,18 +953,22 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
      * - 前后加 ** 实现跨目录匹配（支持查询参数）
      * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
      * 
-     * @param urlPattern 如 "/api/users" 或 "rest/account-list"
+     * @param pattern 如 "/api/users" 或 "rest/account-list"
      * @return Playwright glob pattern
      */
-    static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return "**";
+    static String toGlobPattern(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            return ".*";
+        }
 
-        // 已带通配符直接返回
-        if (urlPattern.contains("*")) return urlPattern;
-        
-        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
-        // 后缀不加/**，用**收尾，兼容所有查询参数
-        return "**/" + normalized + "**";
+        // Remove leading slash
+        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
+
+        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
+        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
+
+        // Add prefix and suffix for full URL matching
+        return ".*" + reg + ".*";
     }
 
     /**

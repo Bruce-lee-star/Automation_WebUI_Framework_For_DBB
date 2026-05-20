@@ -849,8 +849,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     
     /**
      * 从 glob pattern 中提取原始 endpoint
-     * 例如："**/rest/account-list/**" -> "rest/account-list"
-     *      "rest/account-list" -> "rest/account-list"
      */
     private static String extractEndpoint(String globPattern) {
         if (globPattern == null || globPattern.isEmpty()) return null;
@@ -980,8 +978,8 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 continue;
             }
             
-            logger.info("[Mock] ✅ MOCKED: url={} method={} pattern={} rule={}", 
-                    url, req.method(), globPattern, rule.getName());
+            logger.info("[Mock] ✅ MOCKED: url={} method={} endpoint={} rule={}", 
+                    url, req.method(), endpoint, rule.getName());
             return rule;
         }
         logger.trace("[Mock] No rule matched for: {}", url);

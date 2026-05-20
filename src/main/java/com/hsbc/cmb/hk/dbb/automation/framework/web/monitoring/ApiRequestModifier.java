@@ -996,7 +996,6 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
     
     /**
      * 从 glob pattern 中提取原始 endpoint
-     * 例如："**/rest/account-list/**" -> "rest/account-list"
      */
     private static String extractEndpoint(String globPattern) {
         if (globPattern == null || globPattern.isEmpty()) return null;

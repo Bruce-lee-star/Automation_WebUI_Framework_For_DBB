@@ -508,7 +508,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         logger.debug("[Cleanup] All mock rules cleared (routes still bound)");
     }
 
-    // ==================== Serenity 报告集成 ====================
+     // ==================== Serenity 报告集成 ====================
 
     public static void recordToSerenityReport() {
         recordMockConfiguration();
@@ -780,58 +780,47 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
 
     /**
-     * 绑定单个路由 - 使用精确的 glob 模式，只拦截目标 API
-     * 避免 route("**") 拦截所有请求导致页面加载缓慢
+     * 绑定单个路由 - 使用正则表达式匹配 URL
      */
     private void bindRouteIfNeeded(String urlPart) {
-        // 清理 URL，生成精确的 glob pattern
-        String globPattern = buildGlobPattern(urlPart);
+        String regexPattern = globToRegex(urlPart);
         
-        if (registeredPatterns.add(globPattern)) {
+        if (registeredPatterns.add(regexPattern)) {
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
             try {
                 if (targetPage != null) {
-                    targetPage.route(globPattern, handler);
+                    targetPage.route("**", handler);
+                    logger.info("[Route] Bound route with regex: {} -> **", regexPattern);
                 } else if (targetContext != null) {
-                    targetContext.route(globPattern, handler);
+                    targetContext.route("**", handler);
+                    logger.info("[Route] Bound route with regex: {} -> **", regexPattern);
                 }
-                logger.info("[Route] Bound precise glob: {}", globPattern);
             } catch (Exception e) {
-                logger.error("[Route] Failed to bind '{}': {}", globPattern, e.getMessage());
+                logger.error("[Route] Failed to bind '{}': {}", regexPattern, e.getMessage());
             }
         } else {
-            logger.debug("[Route] Already bound, skipping: {}", globPattern);
+            logger.debug("[Route] Already bound, skipping: {}", regexPattern);
         }
     }
-
 
     /**
-     * 构建精确的 glob pattern
-     * 支持查询参数，自动提取路径部分作为 glob
+     * 将 glob pattern 转换为正则表达式
      */
-    private String buildGlobPattern(String urlPart) {
-        if (urlPart == null || urlPart.isEmpty()) {
-            return "**";
+    private static String globToRegex(String pattern) {
+        if (pattern == null || pattern.isEmpty()) {
+            return ".*";
         }
-        
-        // 提取纯路径部分（不含查询参数）
-        int queryIdx = urlPart.indexOf('?');
-        String pathPart = queryIdx > 0 ? urlPart.substring(0, queryIdx) : urlPart;
-        
-        // 如果已经是完整 URL 或包含协议，使用路径部分
-        if (pathPart.contains("://") || pathPart.startsWith("http")) {
-            return pathPart;
-        }
-        
-        // 如果是 /api/xxx 格式，转换为相对路径 glob
-        if (pathPart.startsWith("/")) {
-            // 处理 /api/users/{id} 格式
-            return "**" + pathPart.replace("{", "*").replace("}", "");
-        }
-        
-        // 普通字符串（如 "api/users"），转换为前缀匹配
-        return "**/" + pathPart;
+
+        // Remove leading slash
+        String raw = pattern.startsWith("/") ? pattern.substring(1) : pattern;
+
+        // Replace glob wildcards: * -> PLACEHOLDER_STAR first, then ** -> .*, then restore *
+        String reg = raw.replace("*", "\u0001").replace("**", ".*").replace("\u0001", ".*");
+
+        // Add prefix and suffix for full URL matching
+        return ".*" + reg + ".*";
     }
+
 
     /**
      * 获取 URL 部分字符串（直接使用，不做任何转换）
@@ -848,7 +837,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      */
     private void handleUnifiedRoute(Route route) {
         String requestUrl = route.request().url();
-        logger.info("[Route] Intercepted: {} {}", route.request().method(), requestUrl);
+        logger.debug("[Route] Intercepted: {} {}", route.request().method(), requestUrl);
         
         try {
             MockRule matchedMock = findMatchingMock(route.request());
@@ -887,7 +876,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 查找匹配的 Mock 规则
-     * 支持路径 + 查询参数匹配，支持 URL 编码
+     * 使用正则表达式匹配 URL
      */
     private MockRule findMatchingMock(Request req) {
         String fullUrl = req.url();
@@ -898,23 +887,26 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             rulesSnapshot = new ArrayList<>(mockRules.values());
         }
 
-        // 解码 URL 用于匹配（处理编码的 / 等字符）
-        String decodedUrl = decodeUrl(fullUrl);
-
         for (MockRule rule : rulesSnapshot) {
             if (!rule.isEnabled()) continue;
 
-            // 1. 路径匹配：URL 必须包含路径部分（支持编码后的 URL）
-            String urlPath = rule.getUrlPath();
-            if (!fullUrl.contains(urlPath) && !decodedUrl.contains(urlPath)) {
-                logger.debug("[Mock] URL '{}' does not contain path '{}'", fullUrl, urlPath);
+            // 1. 正则表达式路径匹配
+            String urlPattern = rule.getUrlPattern();
+            String regexPattern = globToRegex(urlPattern);
+            try {
+                if (!fullUrl.matches(regexPattern)) {
+                    logger.debug("[Mock] URL '{}' does not match regex '{}'", fullUrl, regexPattern);
+                    continue;
+                }
+            } catch (Exception e) {
+                logger.warn("[Mock] Regex error for '{}': {}", regexPattern, e.getMessage());
                 continue;
             }
 
             // 2. 查询参数匹配（如果有）
             String queryParams = rule.getQueryParams();
             if (queryParams != null && !queryParams.isEmpty()) {
-                if (!containsAllQueryParams(decodedUrl, queryParams)) {
+                if (!containsAllQueryParams(fullUrl, queryParams)) {
                     logger.debug("[Mock] URL '{}' does not match query params '{}'", fullUrl, queryParams);
                     continue;
                 }
@@ -929,36 +921,13 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 }
             }
 
-            // 4. 二次关键字过滤（可选）
-            String urlContains = rule.getUrlContains();
-            if (urlContains != null) {
-                // 同时检查原始 URL 和解码后的 URL
-                boolean containsOriginal = fullUrl.toLowerCase().contains(urlContains.toLowerCase());
-                boolean containsDecoded = decodedUrl.toLowerCase().contains(urlContains.toLowerCase());
-                if (!containsOriginal && !containsDecoded) {
-                    logger.debug("[Mock] URL '{}' does not contain '{}'", fullUrl, urlContains);
-                    continue;
-                }
-            }
-
-            logger.info("[Mock] MATCHED: url={}, pattern={}, queryParams={}", fullUrl, urlPath, queryParams);
+            logger.info("[Mock] MATCHED: url={}, pattern={}, queryParams={}", fullUrl, urlPattern, queryParams);
             return rule;
         }
         logger.debug("[Mock] No rule matched for URL: {}", fullUrl);
         return null;
     }
     
-    /**
-     * 解码完整 URL（路径和查询参数）
-     */
-    private String decodeUrl(String url) {
-        try {
-            return java.net.URLDecoder.decode(url, "UTF-8");
-        } catch (Exception e) {
-            return url;
-        }
-    }
-
     /**
      * 检查请求 URL 是否包含所有指定的查询参数
      * 支持 URL 编码的参数值

@@ -821,20 +821,80 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 去重绑定：只在 URL pattern 未注册过时才调用 route()
+     * 【修复】改用正则表达式替代 glob pattern，避免 Java PathMatcher 的 ** 匹配 bug
      */
     private void bindRouteIfNeeded(String globPattern) {
         if (registeredPatterns.add(globPattern)) {
             // 首次绑定此 pattern
+            // 将 glob pattern 转换为正则表达式，使用 Pattern.compile() 绑定
             java.util.function.Consumer<Route> handler = route -> handleUnifiedRoute(route);
-            if (targetPage != null) {
-                targetPage.route(globPattern, handler);
-            } else if (targetContext != null) {
-                targetContext.route(globPattern, handler);
+            try {
+                // 将 glob **/* 转换为正则 .*/.*
+                String regex = globToRegex(globPattern);
+                Pattern compiledPattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
+                
+                if (targetPage != null) {
+                    targetPage.route(compiledPattern, handler);
+                } else if (targetContext != null) {
+                    targetContext.route(compiledPattern, handler);
+                }
+                logger.info("[Route] Bound regex: {}", regex);
+            } catch (Exception e) {
+                logger.error("[Route] Failed to bind pattern '{}': {}", globPattern, e.getMessage());
             }
-            logger.info("[Route] Bound: {}", globPattern);
         } else {
             logger.debug("[Route] Already bound, skipping: {}", globPattern);
         }
+    }
+    
+    /**
+     * 将 glob pattern 转换为正则表达式（与 RealApiMonitor.toRegex 保持一致）
+     * - ** 转换为 .* （匹配任意路径，包括 /）
+     * - * 转换为 [^/]* （匹配路径段内字符，不包括 /）
+     * - ? 转换为 . （匹配单个字符）
+     * - . $ ^ + * ? ( ) [ ] { } | \ 需要转义
+     */
+    private static String globToRegex(String glob) {
+        if (glob == null || glob.isEmpty()) return ".*";
+        
+        // 如果已经是正则表达式，直接返回
+        if (glob.contains(".*") || glob.contains("\\d") || glob.contains("?") || glob.contains("+")) {
+            return glob;
+        }
+        
+        StringBuilder regex = new StringBuilder();
+        regex.append(".*");
+        
+        int i = 0;
+        while (i < glob.length()) {
+            char c = glob.charAt(i);
+            if (c == '*') {
+                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                    // ** 匹配任意字符（包括路径分隔符 /）
+                    regex.append(".*");
+                    i += 2;
+                } else {
+                    // * 匹配路径段内字符（不包括 /）
+                    regex.append("[^/]*");
+                    i++;
+                }
+            } else if (c == '?') {
+                // ? 匹配单个任意字符
+                regex.append(".");
+                i++;
+            } else if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
+                // 正则元字符需要转义（不包括 /）
+                regex.append("\\").append(c);
+                i++;
+            } else {
+                // 普通字符（包括 /）直接添加
+                regex.append(c);
+                i++;
+            }
+        }
+        
+        regex.append(".*");
+        return regex.toString();
     }
 
     /**
@@ -1108,14 +1168,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * - 前后加 ** 实现跨目录匹配（支持查询参数）
      * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
      * 
-     * <p>示例：
-     * <ul>
-     *   <li>"rest/account-list" → "**/rest/account-list**"</li>
-     *   <li>"account-list" → "**/account-list**"</li>
-     *   <li>"/api/users" → "**/api/users**"</li>
-     *   <li>"**/api/**" → "**/api/**" (已经是glob，直接返回)</li>
-     * </ul>
-     * 
      * @param urlPattern 如 "/api/users" 或 "rest/account-list"
      * @return Playwright glob pattern
      */
@@ -1173,31 +1225,6 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         }
     }
     
-    /**
-     * 将 glob pattern 转换为正则表达式
-     * - * 转换为 .* （匹配任意字符，包括 /）
-     * - ? 转换为 . （匹配单个字符）
-     * - 其他特殊字符转义
-     */
-    private static String globToRegex(String glob) {
-        StringBuilder regex = new StringBuilder();
-        regex.append("^");
-        for (int i = 0; i < glob.length(); i++) {
-            char c = glob.charAt(i);
-            if (c == '*') {
-                regex.append(".*");
-            } else if (c == '?') {
-                regex.append(".");
-            } else if ("\\[]{}().+^$|".indexOf(c) >= 0) {
-                regex.append("\\").append(c);
-            } else {
-                regex.append(c);
-            }
-        }
-        regex.append("$");
-        return regex.toString();
-    }
-
     // ==================== Mock Builder ====================
 
     /**

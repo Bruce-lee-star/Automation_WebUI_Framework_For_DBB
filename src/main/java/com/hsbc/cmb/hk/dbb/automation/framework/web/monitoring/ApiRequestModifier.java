@@ -953,14 +953,6 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
      * - 前后加 ** 实现跨目录匹配（支持查询参数）
      * - Java/Playwright glob 中 ** 匹配任意路径（包括 /），* 不匹配 /
      * 
-     * <p>示例：
-     * <ul>
-     *   <li>"rest/account-list" → "**/rest/account-list/**"</li>
-     *   <li>"account-list" → "**/account-list/**"</li>
-     *   <li>"/api/users" → "**/api/users/**"</li>
-     *   <li>"**/api/**" → "**/api/**" (已经是glob，直接返回)</li>
-     * </ul>
-     * 
      * @param urlPattern 如 "/api/users" 或 "rest/account-list"
      * @return Playwright glob pattern
      */
@@ -1021,27 +1013,52 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
     }
     
     /**
-     * 将 glob pattern 转换为正则表达式
-     * - * 转换为 .* （匹配任意字符，包括 /）
+     * 将 glob pattern 转换为正则表达式（与 ApiMonitorAndMockManager 保持一致）
+     * - ** 转换为 .* （匹配任意路径，包括 /）
+     * - * 转换为 [^/]* （匹配路径段内字符，不包括 /）
      * - ? 转换为 . （匹配单个字符）
-     * - 其他特殊字符转义
+     * - . $ ^ + * ? ( ) [ ] { } | \ 需要转义
      */
     private static String globToRegex(String glob) {
+        if (glob == null || glob.isEmpty()) return ".*";
+        
+        // 如果已经是正则表达式，直接返回
+        if (glob.contains(".*") || glob.contains("\\d") || glob.contains("?") || glob.contains("+")) {
+            return glob;
+        }
+        
         StringBuilder regex = new StringBuilder();
-        regex.append("^");
-        for (int i = 0; i < glob.length(); i++) {
+        regex.append(".*");
+        
+        int i = 0;
+        while (i < glob.length()) {
             char c = glob.charAt(i);
             if (c == '*') {
-                regex.append(".*");
+                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                    // ** 匹配任意字符（包括路径分隔符 /）
+                    regex.append(".*");
+                    i += 2;
+                } else {
+                    // * 匹配路径段内字符（不包括 /）
+                    regex.append("[^/]*");
+                    i++;
+                }
             } else if (c == '?') {
+                // ? 匹配单个任意字符
                 regex.append(".");
-            } else if ("\\[]{}().+^$|".indexOf(c) >= 0) {
+                i++;
+            } else if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
+                // 正则元字符需要转义（不包括 /）
                 regex.append("\\").append(c);
+                i++;
             } else {
+                // 普通字符（包括 /）直接添加
                 regex.append(c);
+                i++;
             }
         }
-        regex.append("$");
+        
+        regex.append(".*");
         return regex.toString();
     }
 

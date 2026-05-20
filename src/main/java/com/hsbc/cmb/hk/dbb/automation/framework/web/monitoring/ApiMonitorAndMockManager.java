@@ -956,13 +956,16 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         try {
             mockBody = getMockBody(rule, route);
         } catch (Exception e) {
-            logger.warn("[Mock] Failed to get mock data for '{}', resuming: {}", rule.getName(), e.getMessage(), e);
+            logger.warn("[Mock] Failed to get mock data for '{}', falling back to real request: {}",
+                    rule.getName(), e.getMessage());
+            recordCall(route, 0, null, ApiCallRecord.Type.REAL);
             safeResume(route);
             return;
         }
 
         if (mockBody == null) {
-            logger.warn("[Mock] No mock body for rule '{}', resuming original request", rule.getName());
+            logger.warn("[Mock] No mock body for rule '{}', falling back to real request", rule.getName());
+            recordCall(route, 0, null, ApiCallRecord.Type.REAL);
             safeResume(route);
             return;
         }
@@ -1029,24 +1032,46 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * 记录调用（包含完整响应体）
      */
     private void recordCall(Route route, int statusCode, Object responseBody, ApiCallRecord.Type type) {
+        String requestUrl = null;
         try {
             Request req = route.request();
+            if (req == null) {
+                logger.warn("[Record] route.request() returned null for {} call, skipping", type);
+                return;
+            }
+            requestUrl = req.url();
+
+            Map<String, String> safeHeaders = null;
             Object safePostData = null;
+            try {
+                safeHeaders = req.headers();
+                if (safeHeaders == null) safeHeaders = Collections.emptyMap();
+            } catch (Exception e) {
+                logger.trace("[Record] Failed to read headers for {}: {}", requestUrl, e.getMessage());
+                safeHeaders = Collections.emptyMap();
+            }
             try {
                 safePostData = req.postData();
             } catch (Exception e) {
-                logger.trace("[Record] Failed to read postData for {}: {}", req.url(), e.getMessage());
+                logger.trace("[Record] Failed to read postData for {}: {}", requestUrl, e.getMessage());
             }
+
             // 使用同步块保护并发写入
             synchronized (apiCallHistory) {
                 apiCallHistory.add(new ApiCallRecord(
-                        UUID.randomUUID().toString(), req.url(), req.method(), System.currentTimeMillis(),
-                        req.headers(), safePostData,
+                        UUID.randomUUID().toString(), requestUrl, req.method(), System.currentTimeMillis(),
+                        safeHeaders, safePostData,
                         statusCode, Collections.emptyMap(), responseBody, type));
                 trimApiHistoryIfNeeded();
             }
         } catch (Exception e) {
-            logger.warn("[Record] Failed to record call: {}", e.getMessage(), e);
+            String errMsg = e.getMessage();
+            if (errMsg == null || errMsg.isEmpty()) {
+                errMsg = e.getClass().getSimpleName() + " (no message)";
+            }
+            String url = requestUrl != null ? requestUrl : "(unknown URL)";
+            logger.warn("[Record] Failed to record {} {} to history: {} - {}",
+                    type, url, errMsg, e);
         }
     }
 

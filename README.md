@@ -117,7 +117,7 @@ String responseBody = RealApiMonitor.getLastBody("/api/userInfo");
 - ✅ **超时保护**：无新 API 时超时自动停止（兜底）
 - ✅ **实时验证**：支持对期望状态码进行实时校验
 - ✅ **Host 过滤**：可限制只监控指定 Host 的 API
-- ✅ **Serenity 集成**：自动记录到测试报告
+- ✅ **Serenity 集成**：自动将监控配置和捕获结果记录到测试报告
 
 👉 详细文档：[API_MONITOR_README.md](./API_MONITOR_README.md)
 

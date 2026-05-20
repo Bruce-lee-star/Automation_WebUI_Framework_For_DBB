@@ -86,7 +86,7 @@ ApiCallRecord (数据类)
 - **自动捕获**：通过 Playwright `onResponse()` 监听器自动捕获所有网络请求
 - **自动停止**：三种触发条件（目标全匹配 minMatches / 超时空闲 / 首次匹配即停），无需手动干预
 - **实时验证**：捕获到目标 API 时立即校验状态码（Hamcrest assertThat）
-- **Serenity 集成**：自动将监控结果写入 Serenity BDD 报告（跨线程 volatile 缓存机制）
+- **Serenity 集成**：自动将监控配置和捕获结果写入 Serenity BDD 报告（跨线程 volatile 缓存机制）
 - **JSON 提取**：内置 JsonPath 支持，提供类型安全便捷方法（String/Integer/Long/Double/Boolean/List/Map）
 - **阻塞等待**：`waitForApi()` / `waitForJsonValue()` 解决 `getLast()` 返回 null 的竞态问题
 - **非阻塞条件检查**：`hasApiCaptured()` 适用于"可能触发、也可能不触发"的条件性 API 场景（v3.1 新增）
@@ -609,7 +609,7 @@ testSuiteFinished()     → RealApiMonitor.forceCleanAll()
 | 方法 | 用途 | 何时调用 |
 |------|------|----------|
 | `stopMonitoring()` | 停止当前监控并写报告 | 需要提前停止时 |
-| `logResults()` | 将结果写入 Serenity 报告 | 通常不需要（stopMonitoring 已包含） |
+| `logResults()` | 将配置和结果写入 Serenity 报告 | 通常不需要（stopMonitoring 已包含） |
 | `resetForNextScenario()` | 重置场景状态（offResponse + remove） | 场景切换时（PlaywrightListener 自动调用） |
 | `forceCleanAll()` | 终极清场（stop + reset + clearHost） | Suite 结束或异常恢复 |
 | `flushPendingReport()` | 刷新异步缓存报告到 Serenity | 主线程回调点（PlaywrightListener 自动调用） |
@@ -1107,7 +1107,10 @@ ApiMonitorAndMockManager.clearAllIntercepts();
 ```java
 // 自动在 build() 时调用（MockBuilder），或手动触发：
 ApiMonitorAndMockManager.recordToSerenityReport();
-// → 写入 "Mock Configuration" + "API Call History" 两份报告数据
+// → 写入两份报告数据：
+//    1. "Mock Configuration" - Mock 规则配置
+//    2. "Mocked API Calls" - Mock 匹配成功的 API 调用
+```
 
 ---
 

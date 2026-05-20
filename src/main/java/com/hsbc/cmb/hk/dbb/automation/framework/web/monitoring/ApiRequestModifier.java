@@ -1016,35 +1016,22 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
      * 将 glob pattern 转换为正则表达式
      * - ** 转换为 .* （匹配任意路径，包括 /）
      * - * 转换为 [^/]* （匹配路径段内字符，不包括 /）
-     * - ? 转换为 . （匹配单个字符）
-     * - 正则元字符（. $ ^ + * ? ( ) [ ] { } | \）需要转义
-     * 
-     * 【关键修复】不再在开头和结尾添加 .*，因为 glob pattern 已包含 ** 前缀和后缀
+     * - 去除开头的 /
+     * - 其他特殊字符使用字面量转义（但 / 不需要转义）
      */
-    private static String globToRegex(String glob) {
-        if (glob == null || glob.isEmpty()) return ".*";
+    private static String globToRegex(String pattern) {
+        if (pattern == null || pattern.isEmpty()) return ".*";
         
-        // 检查是否看起来像已经转换过的正则（以 .* 开头，且不包含连续的 **）
-        if (isLikelyConvertedRegex(glob)) {
-            return glob;
-        }
+        // 去除开头的 /
+        String normalized = pattern.startsWith("/") ? pattern.substring(1) : pattern;
         
-        // 检查是否包含 glob 通配符
-        boolean hasGlob = glob.contains("*");
-        
-        if (!hasGlob) {
-            // 没有 glob 通配符，只转义正则元字符，前后加 .* 包裹
-            return escapeRegex(glob);
-        }
-        
-        // 已经是 glob pattern，转换为正则
+        // 处理 glob 通配符
         StringBuilder regex = new StringBuilder();
-        
         int i = 0;
-        while (i < glob.length()) {
-            char c = glob.charAt(i);
+        while (i < normalized.length()) {
+            char c = normalized.charAt(i);
             if (c == '*') {
-                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
+                if (i + 1 < normalized.length() && normalized.charAt(i + 1) == '*') {
                     // ** 匹配任意字符（包括路径分隔符 /）
                     regex.append(".*");
                     i += 2;
@@ -1053,52 +1040,18 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
                     regex.append("[^/]*");
                     i++;
                 }
-            } else if (c == '?') {
-                // ? 匹配单个任意字符
-                regex.append(".");
-                i++;
-            } else if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
-                // 正则元字符需要转义（不包括 /）
-                regex.append("\\").append(c);
-                i++;
             } else {
-                // 普通字符（包括 /）直接添加
-                regex.append(c);
+                // 其他字符使用字面量转义（但 / 不需要转义）
+                if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
+                    regex.append("\\").append(c);
+                } else {
+                    regex.append(c);
+                }
                 i++;
             }
         }
         
         return regex.toString();
-    }
-    
-    /**
-     * 检查字符串是否看起来像已经转换过的正则表达式
-     */
-    private static boolean isLikelyConvertedRegex(String pattern) {
-        if (pattern == null || pattern.isEmpty()) return false;
-        // 如果以 .* 开头，很可能是已经转换过的正则（glob ** 转换后产生）
-        // 但需要排除真正 glob pattern 的情况
-        if (pattern.startsWith(".*") && pattern.length() > 2) {
-            // 检查是否是 glob pattern 转换而来（包含 / 的路径模式）
-            return !pattern.contains("**");
-        }
-        return false;
-    }
-    
-    /**
-     * 转义正则元字符并在前后添加 .* 包裹
-     */
-    private static String escapeRegex(String text) {
-        StringBuilder result = new StringBuilder(".*");
-        for (char c : text.toCharArray()) {
-            if ("\\.$^+*?()[]{}|".indexOf(c) >= 0) {
-                result.append("\\").append(c);
-            } else {
-                result.append(c);
-            }
-        }
-        result.append(".*");
-        return result.toString();
     }
 
     // ==================== 辅助方法 ====================

@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * 请求修改器 - 统一修改 HTTP 请求的 Body、Headers、QueryParams、Method、URL、Host
@@ -591,7 +592,8 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         logger.info("========== Configuring Request Modifier for: {} ==========", endpoint);
         logger.info("Modification Config: {}", formatModificationConfig(modification));
 
-        String globPattern = "**" + endpoint + "**";
+        // 使用统一的 toGlobPattern 方法（与 ApiMonitorAndMockManager 保持一致）
+        String globPattern = toGlobPattern(endpoint);
         logger.info("Registering route with glob pattern: {}", globPattern);
 
         RequestResponseStore store = new RequestResponseStore(endpoint);
@@ -599,7 +601,8 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         // 先注册响应监听器（在route之前）
         context.onResponse(response -> {
             String responseUrl = response.url();
-            if (responseUrl.contains(endpoint)) {
+            // 使用统一的 matchesGlob 方法进行匹配
+            if (matchesGlob(responseUrl, endpoint)) {
                 try {
                     Request respRequest = response.request();
 
@@ -774,7 +777,8 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         logger.info("========== Configuring Request Modifier for: {} ==========", endpoint);
         logger.info("Modification Config: {}", formatModificationConfig(modification));
 
-        String globPattern = "**" + endpoint + "**";
+        // 使用统一的 toGlobPattern 方法（与 ApiMonitorAndMockManager 保持一致）
+        String globPattern = toGlobPattern(endpoint);
         logger.info("Registering route with glob pattern: {}", globPattern);
 
         RequestResponseStore store = new RequestResponseStore(endpoint);
@@ -782,7 +786,8 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
         // 先注册响应监听器（在route之前）
         page.onResponse(response -> {
             String responseUrl = response.url();
-            if (responseUrl.contains(endpoint)) {
+            // 使用统一的 matchesGlob 方法进行匹配
+            if (matchesGlob(responseUrl, endpoint)) {
                 try {
                     Request respRequest = response.request();
 
@@ -936,6 +941,63 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
 
         logger.info("Request modifier configured successfully!");
         return store;
+    }
+
+    // ==================== URL Pattern 工具方法 ====================
+
+    /**
+     * 将普通URL转换为匹配模式（与 ApiMonitorAndMockManager 保持一致）
+     * 
+     * <p>统一匹配策略：
+     * - 移除开头斜杠
+     * - 使用 Pattern.quote() 转义特殊字符
+     * - 前后加 .* 实现包含匹配（支持查询参数）
+     * 
+     * @param urlPattern 如 "/api/users" 或 "api/users"
+     * @return 正则表达式模式
+     */
+    static String toGlobPattern(String urlPattern) {
+        if (urlPattern == null || urlPattern.isEmpty()) return ".*";
+
+        // 已经是正则模式，直接返回
+        if (urlPattern.contains(".*") || urlPattern.contains("\\d") 
+                || urlPattern.contains("?") || urlPattern.contains("+")) {
+            return urlPattern;
+        }
+
+        // 移除前导斜杠
+        String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
+        
+        // 前后加 .* 实现包含匹配（与 ApiMonitorAndMockManager.toGlobPattern 保持一致）
+        return ".*" + Pattern.quote(normalized) + ".*";
+    }
+
+    /**
+     * 检查 URL 是否匹配 pattern（与 ApiMonitorAndMockManager 保持一致）
+     * 支持两种模式：
+     * - 包含匹配：直接使用 contains() 检查 URL 是否包含 pattern
+     * - 正则匹配：使用正则表达式匹配
+     * 
+     * @param url 完整 URL
+     * @param pattern 匹配模式
+     * @return true 如果匹配
+     */
+    static boolean matchesGlob(String url, String pattern) {
+        if (url == null || pattern == null) return false;
+        
+        // 与 ApiMonitorAndMockManager.matchesGlob 逻辑保持一致
+        // 先尝试包含匹配（宽松）
+        if (url.contains(pattern)) {
+            return true;
+        }
+        
+        // 再尝试正则匹配（大小写不敏感）
+        try {
+            return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(url).matches();
+        } catch (Exception e) {
+            logger.debug("[Pattern] Invalid regex pattern '{}': {}", pattern, e.getMessage());
+            return false;
+        }
     }
 
     // ==================== 辅助方法 ====================

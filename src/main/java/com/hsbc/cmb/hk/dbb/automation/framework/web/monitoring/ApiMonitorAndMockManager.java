@@ -1101,142 +1101,58 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     // ==================== URL 工具方法 ====================
 
     /**
-     * 将普通URL转换为 Playwright glob 模式
-     *
-     * 智能匹配策略：
-     * - 查询参数片段（如 "orderId=123"、"orderId"）：匹配 URL 中的查询参数
-     * - 包含 '/' 的路径片段（如 "api/user/info"）：只加前缀 **，精确匹配路径
-     * - 简单关键字（如 "user"）：加前后 **，模糊匹配
-     * - 已经是 glob 格式（含 * 或 **）：原样返回
-     * - 以 http 开头：原样返回（完整URL）
-     *
+     * 将普通URL转换为匹配模式（与 RealApiMonitor 保持一致）
+     * 
+     * <p>统一匹配策略：
+     * - 移除开头斜杠
+     * - 使用 Pattern.quote() 转义特殊字符
+     * - 前后加 .* 实现包含匹配（支持查询参数）
+     * 
      * @param urlPattern 如 "/api/users" 或 "api/users" 或 "*.example.com/api/**"
-     * @return 适配的 glob pattern
+     * @return 正则表达式模式
      */
     static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return "**";
+        if (urlPattern == null || urlPattern.isEmpty()) return ".*";
 
-        // 已经是 glob 模式（含 * 或 **），直接返回
-        if (urlPattern.contains("*")) return urlPattern;
-
-        // 完整 URL（以 http 开头）原样返回
-        if (urlPattern.startsWith("http://") || urlPattern.startsWith("https://")) {
+        // 已经是正则模式，直接返回
+        if (urlPattern.contains(".*") || urlPattern.contains("\\d") 
+                || urlPattern.contains("?") || urlPattern.contains("+")) {
             return urlPattern;
         }
 
-        // 【查询参数处理】检测是否是查询参数片段
-        // 支持：?orderId=123, orderId=123, orderId, ?orderId
-        boolean isQueryParam = false;
-        String paramContent = urlPattern;
-        
-        // 移除开头的 ?（如果存在）
-        if (paramContent.startsWith("?")) {
-            paramContent = paramContent.substring(1);
-            isQueryParam = true;
-        }
-        
-        // 检测是否包含查询参数的键值对格式（包含 =）
-        if (paramContent.contains("=")) {
-            isQueryParam = true;
-        }
-        
-        // 检测是否只是查询参数键（不含 / 和 . 的纯参数名）
-        if (!isQueryParam && !paramContent.contains("/") && !paramContent.contains(".")) {
-            // 可能是查询参数键，检查是否像参数名（通常是 camelCase 或 snake_case）
-            if (paramContent.matches("^[a-zA-Z][a-zA-Z0-9_]*$") || 
-                paramContent.matches("^[a-z_][a-z0-9_]*$")) {
-                isQueryParam = true;
-            }
-        }
-        
-        if (isQueryParam) {
-            // 查询参数模式：使用纯 glob 语法，让参数出现在 URL 任意位置
-            // 例如 "orderId=123" -> "**orderId=123**"
-            logger.debug("[Pattern] Detected query parameter pattern: {} -> **/{}{}", 
-                    urlPattern, paramContent, "**");
-            return "**" + paramContent + "**";
-        }
-
-        // 移除前导斜杠，同时处理末尾斜杠保持一致
+        // 移除前导斜杠
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
-        // 统一移除末尾斜杠，避免 /api/user 和 /api/user/ 生成不同 glob
-        normalized = normalized.replaceAll("/+$", "");
-
-        // 【关键优化】根据内容判断匹配策略
-        if (normalized.contains("/")) {
-            // 包含路径分隔符 → 这是相对路径片段，只加前缀
-            // 例如 "api/user/info" → "**/api/user/info"
-            // 支持匹配带查询参数的 URL，如 /api/user?id=1
-            return "**/" + normalized;
-        } else {
-            // 简单关键字（无路径）→ 加前后 ** 模糊匹配
-            // 例如 "user" → "**/user**"
-            return "**/" + normalized + "**";
-        }
+        
+        // 前后加 .* 实现包含匹配（与 RealApiMonitor.toRegex 保持一致）
+        return ".*" + Pattern.quote(normalized) + ".*";
     }
 
     /**
-     * 检查 URL 是否匹配 glob pattern
-     * 支持 Playwright glob 格式：
-     * - ** 匹配任意字符（包括斜杠）
-     * - * 匹配任意字符（不含斜杠）
-     * - 大小写不敏感匹配
+     * 检查 URL 是否匹配 pattern（与 RealApiMonitor 保持一致）
+     * 支持两种模式：
+     * - 包含匹配：直接使用 contains() 检查 URL 是否包含 pattern
+     * - 正则匹配：使用正则表达式匹配
      * 
      * @param url 完整 URL
-     * @param globPattern glob 模式
+     * @param pattern 匹配模式
      * @return true 如果匹配
      */
-    static boolean matchesGlob(String url, String globPattern) {
-        if (url == null || globPattern == null) return false;
+    static boolean matchesGlob(String url, String pattern) {
+        if (url == null || pattern == null) return false;
         
-        // 转换为正则表达式进行匹配（大小写不敏感）
-        String regex = globToRegex(globPattern);
-        return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
-    }
-
-    /**
-     * 将 glob pattern 转换为正则表达式
-     * 
-     * 语义规则（与 Playwright glob 行为一致）：
-     * - ** 匹配任意字符（包括斜杠）
-     * - * 匹配除斜杠外的任意字符
-     * - 末尾始终加 $ 确保精确匹配，防止 /api/user 匹配 /api/user123
-     * 
-     */
-    private static String globToRegex(String glob) {
-        if (glob == null || glob.isEmpty()) return ".*";
-        
-        StringBuilder regex = new StringBuilder();
-        regex.append("^");
-        
-        int i = 0;
-        
-        while (i < glob.length()) {
-            char c = glob.charAt(i);
-            if (c == '*') {
-                if (i + 1 < glob.length() && glob.charAt(i + 1) == '*') {
-                    // ** 匹配任意字符（包括斜杠）
-                    regex.append(".*");
-                    i += 2;
-                } else {
-                    // * 匹配除斜杠外的任意字符
-                    regex.append("[^/]*");
-                    i++;
-                }
-            } else {
-                // 转义正则特殊字符（包括 .）
-                if ("\\[]{}()+?.^$|.".indexOf(c) >= 0) {
-                    regex.append("\\").append(c);
-                } else {
-                    regex.append(c);
-                }
-                i++;
-            }
+        // 与 RealApiMonitor.toRegex 逻辑保持一致
+        // 先尝试包含匹配（宽松）
+        if (url.contains(pattern)) {
+            return true;
         }
         
-        // 【修复】移除末尾 $，支持匹配带查询参数的 URL
-        // 例如：pattern "**/api/user" 应匹配 "https://a.com/api/user?id=1"
-        return regex.toString();
+        // 再尝试正则匹配（大小写不敏感）
+        try {
+            return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(url).matches();
+        } catch (Exception e) {
+            logger.debug("[Pattern] Invalid regex pattern '{}': {}", pattern, e.getMessage());
+            return false;
+        }
     }
 
     // ==================== Mock Builder ====================

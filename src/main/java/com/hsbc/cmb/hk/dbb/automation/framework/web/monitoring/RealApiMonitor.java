@@ -1063,40 +1063,19 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     }
 
     /**
-     * 获取最近匹配的响应体
+     * 获取最近匹配的响应体（同步读取）
+     * 直接从 Response 同步获取 body，不会返回 null
      *
      * @param urlPattern URL 模式
-     * @return 响应体字符串
+     * @return 响应体字符串，如果记录不存在或读取失败返回 null
      */
     public static String getLastBody(String urlPattern) {
         ApiCallRecord record = getLast(urlPattern);
         if (record == null) {
-            logger.debug("getLastBody returns null - no matching record found for: {}", urlPattern);
+            logger.debug("getLastBody: no record found for pattern: {}", urlPattern);
             return null;
         }
-        String body = record.getResponseBody();
-        if (body == null) {
-            logger.debug("getLastBody returns null - response body is empty/unreadable for: {}", urlPattern);
-            body = attemptRereadBody(record);
-        }
-        return body;
-    }
-
-    private static String attemptRereadBody(ApiCallRecord record) {
-        try {
-            if (record.response != null && !record.bodyRead) {
-                String text = record.response.text();
-                synchronized (record.bodyLock) {
-                    record.responseBody = text;
-                    record.bodyRead = true;
-                }
-                logger.info("Successfully re-read response body for: {}", record.getUrl());
-                return text;
-            }
-        } catch (Exception e) {
-            logger.debug("Failed to re-read response body: {}", e.getMessage());
-        }
-        return null;
+        return record.getResponseBodySync();
     }
 
     /**
@@ -1671,30 +1650,50 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         public int getStatusCode() { return statusCode; }
 
         /**
-         * 获取响应体（惰性读取，使用缓存）
-         * 注意：此方法不会触发同步 IO，如需异步读取请使用 getResponseBodyAsync()
-         * @return 已缓存的响应体，如果未缓存且无缓存值则返回 null
+         * 获取响应体（惰性读取，优先返回缓存）
+         * @return 已缓存的响应体，或 null（需调用 getResponseBodySync 获取）
          */
         public String getResponseBody() {
             synchronized (bodyLock) {
                 if (bodyRead) {
                     return responseBody;
                 }
-                // 不再同步读取，防止阻塞 UI
-                // 如果 responseBody 已有值（如 "[BODY_SKIPPED...]"），直接返回
+                // 有缓存值（如 "[BODY_SKIPPED...]"），标记并返回
                 if (responseBody != null) {
                     bodyRead = true;
                     return responseBody;
                 }
-                // 需要异步读取时返回 null，调用者应使用 getResponseBodyAsync()
+                // 无缓存且未读取，返回 null
                 return null;
             }
         }
 
         /**
-         * 异步获取响应体（不阻塞 UI）
-         * Playwright response.text() 内部已是异步实现，此处保持兼容性封装
-         * @param callback 读取完成后的回调，参数为响应体内容
+         * 同步获取响应体（直接读取，不依赖缓存）
+         * 适用于 getLastBody() 等需要确保返回 body 的场景
+         * @return 响应体字符串，读取失败返回 null
+         */
+        public String getResponseBodySync() {
+            // 优先返回缓存
+            String cached = getResponseBody();
+            if (cached != null) {
+                return cached;
+            }
+
+            // 缓存为空，同步读取
+            if (response != null) {
+                try {
+                    return response.text();
+                } catch (Exception e) {
+                    logger.debug("Failed to read response body: {}", e.getMessage());
+                }
+            }
+            return null;
+        }
+
+        /**
+         * 异步获取响应体（通过回调返回）
+         * @param callback 读取完成后的回调
          */
         public void getResponseBodyAsync(java.util.function.Consumer<String> callback) {
             synchronized (bodyLock) {

@@ -498,6 +498,7 @@ public class PageElement {
             return raw.replace('\u00A0', ' ')
                     .replaceAll("\\s+", " ")
                     .replaceAll("\\s+([.,!?;:。，！？；：])", "$1")
+                    .replaceAll("\\p{Cf}", "")
                     .trim();
         } catch (Exception e) {
             logger.warn("getText failed: {}", selector, e);

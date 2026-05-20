@@ -1188,8 +1188,13 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
     }
 
     private static void cacheReportForLaterWrite() {
-        if (apiCallHistory.get().isEmpty() || reportPending) return;
-        
+        if (reportPending) return;
+
+        // 先记录配置报告
+        recordMonitorConfiguration();
+
+        if (apiCallHistory.get().isEmpty()) return;
+
         try {
             String[] report = buildReportContent();
             if (report != null) {
@@ -1300,8 +1305,8 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
         json.append("}\n");
 
         String title = patterns.isEmpty()
-            ? "API Monitor Summary (" + recordsToReport.size() + " calls)"
-            : "Target API Monitor (" + recordsToReport.size() + "/" + patterns.size() + ")";
+            ? "Monitored API Calls (" + recordsToReport.size() + ")"
+            : "Monitored API Calls (" + recordsToReport.size() + "/" + patterns.size() + " target)";
         
         return new String[]{title, json.toString()};
     }
@@ -1357,10 +1362,38 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
      * 输出监控结果到 Serenity 报告
      */
     public static void logResults() {
-        if (apiCallHistory.get().isEmpty() || hasLoggedToSerenity.get()) {
+        if (hasLoggedToSerenity.get()) {
             return;
         }
-        logSummaryToSerenityReport();
+        recordMonitorConfiguration();
+        if (!apiCallHistory.get().isEmpty()) {
+            logSummaryToSerenityReport();
+        }
+    }
+
+    /**
+     * 记录监控配置到 Serenity 报告
+     */
+    private static void recordMonitorConfiguration() {
+        try {
+            List<String> patterns = targetApiPatterns.get();
+            StringBuilder json = new StringBuilder();
+            json.append("{\n");
+            json.append("  \"monitoredApis\": ");
+            json.append(patterns.toString());
+            json.append(",\n");
+            json.append("  \"timeout\": ").append(configuredTimeout.get()).append(",\n");
+            json.append("  \"minMatches\": ").append(configuredMinMatches.get()).append(",\n");
+            json.append("  \"autoStopOnMatch\": ").append(configuredAutoStopOnMatch.get()).append("\n");
+            json.append("}\n");
+
+            Serenity.recordReportData()
+                .withTitle("Monitor Configuration")
+                .andContents(json.toString());
+            logger.debug("Recorded monitor configuration to Serenity report");
+        } catch (Exception e) {
+            logger.debug("Failed to record monitor configuration: {}", e.getMessage());
+        }
     }
 
     /**

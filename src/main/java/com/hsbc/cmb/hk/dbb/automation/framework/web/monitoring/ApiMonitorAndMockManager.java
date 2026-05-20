@@ -552,8 +552,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         try {
             List<ApiCallRecord> history = getInstance().apiCallHistory;
             Map<String, Object> report = new LinkedHashMap<>();
-            report.put("title", "API Call History");
-            report.put("totalApiCalls", history.size());
+            report.put("title", "Mocked API Calls");
 
             // 只过滤 MOCK 类型的记录（mock matched 成功的请求）
             List<ApiCallRecord> mockRecords = history.stream()

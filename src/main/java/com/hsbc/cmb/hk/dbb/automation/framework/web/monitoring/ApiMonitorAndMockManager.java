@@ -1101,30 +1101,29 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     // ==================== URL 工具方法 ====================
 
     /**
-     * 将普通URL转换为匹配模式（与 RealApiMonitor 保持一致）
+     * 将普通URL转换为 Playwright glob 匹配模式
      * 
-     * <p>统一匹配策略：
+     * <p>统一匹配策略（用于 Playwright route() 方法）：
      * - 移除开头斜杠
-     * - 使用 Pattern.quote() 转义特殊字符
-     * - 前后加 .* 实现包含匹配（支持查询参数）
+     * - 前后加 * 实现包含匹配（支持查询参数）
+     * - Glob 中 * 匹配任意字符（包括 /）
      * 
-     * @param urlPattern 如 "/api/users" 或 "api/users" 或 "*.example.com/api/**"
-     * @return 正则表达式模式
+     * @param urlPattern 如 "/api/users" 或 "rest/account-list"
+     * @return Playwright glob pattern
      */
     static String toGlobPattern(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return ".*";
+        if (urlPattern == null || urlPattern.isEmpty()) return "*";
 
-        // 已经是正则模式，直接返回
-        if (urlPattern.contains(".*") || urlPattern.contains("\\d") 
-                || urlPattern.contains("?") || urlPattern.contains("+")) {
+        // 已经是 glob 模式（包含 * 或 **），直接返回
+        if (urlPattern.contains("*")) {
             return urlPattern;
         }
 
         // 移除前导斜杠
         String normalized = urlPattern.startsWith("/") ? urlPattern.substring(1) : urlPattern;
         
-        // 前后加 .* 实现包含匹配（与 RealApiMonitor.toRegex 保持一致）
-        return ".*" + Pattern.quote(normalized) + ".*";
+        // 前后加 * 实现包含匹配（glob pattern）
+        return "*" + normalized + "*";
     }
 
     /**
@@ -1134,25 +1133,61 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
      * - 正则匹配：使用正则表达式匹配
      * 
      * @param url 完整 URL
-     * @param pattern 匹配模式
+     * @param pattern 匹配模式（glob 或 regex）
      * @return true 如果匹配
      */
     static boolean matchesGlob(String url, String pattern) {
         if (url == null || pattern == null) return false;
         
-        // 与 RealApiMonitor.toRegex 逻辑保持一致
-        // 先尝试包含匹配（宽松）
+        // Glob 模式处理（* 匹配任意字符包括 /）
+        if (pattern.contains("*")) {
+            // 将 glob * 转换为正则 .* （但 / 不需要特殊处理，因为 glob 中 * 也匹配 /）
+            String regex = globToRegex(pattern);
+            try {
+                return Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(url).matches();
+            } catch (Exception e) {
+                logger.debug("[Pattern] Invalid glob pattern '{}': {}", pattern, e.getMessage());
+                return false;
+            }
+        }
+        
+        // 纯文本模式：直接 contains 匹配
         if (url.contains(pattern)) {
             return true;
         }
         
-        // 再尝试正则匹配（大小写不敏感）
+        // 尝试正则匹配（大小写不敏感）
         try {
             return Pattern.compile(pattern, Pattern.CASE_INSENSITIVE).matcher(url).matches();
         } catch (Exception e) {
             logger.debug("[Pattern] Invalid regex pattern '{}': {}", pattern, e.getMessage());
             return false;
         }
+    }
+    
+    /**
+     * 将 glob pattern 转换为正则表达式
+     * - * 转换为 .* （匹配任意字符，包括 /）
+     * - ? 转换为 . （匹配单个字符）
+     * - 其他特殊字符转义
+     */
+    private static String globToRegex(String glob) {
+        StringBuilder regex = new StringBuilder();
+        regex.append("^");
+        for (int i = 0; i < glob.length(); i++) {
+            char c = glob.charAt(i);
+            if (c == '*') {
+                regex.append(".*");
+            } else if (c == '?') {
+                regex.append(".");
+            } else if ("\\[]{}().+^$|".indexOf(c) >= 0) {
+                regex.append("\\").append(c);
+            } else {
+                regex.append(c);
+            }
+        }
+        regex.append("$");
+        return regex.toString();
     }
 
     // ==================== Mock Builder ====================

@@ -896,15 +896,15 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             // 1. 路径匹配：URL 必须包含路径部分
             String urlPath = rule.getUrlPath();
             if (!fullUrl.contains(urlPath)) {
+                logger.debug("[Mock] URL '{}' does not contain path '{}'", fullUrl, urlPath);
                 continue;
             }
 
             // 2. 查询参数匹配（如果有）
             String queryParams = rule.getQueryParams();
             if (queryParams != null && !queryParams.isEmpty()) {
-                // 检查请求 URL 是否包含所有指定的查询参数
-                // 支持：a=123&e=fgh -> fullUrl 包含 "a=123" 且包含 "e=fgh"
                 if (!containsAllQueryParams(fullUrl, queryParams)) {
+                    logger.debug("[Mock] URL '{}' does not match query params '{}'", fullUrl, queryParams);
                     continue;
                 }
             }
@@ -913,6 +913,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             String ruleMethod = rule.getMethod();
             if (ruleMethod != null && !"*".equals(ruleMethod) && !".*".equals(ruleMethod)) {
                 if (!reqMethod.equalsIgnoreCase(ruleMethod)) {
+                    logger.debug("[Mock] Method '{}' does not match '{}'", reqMethod, ruleMethod);
                     continue;
                 }
             }
@@ -920,16 +921,20 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             // 4. 二次关键字过滤（可选）
             String urlContains = rule.getUrlContains();
             if (urlContains != null && !fullUrl.toLowerCase().contains(urlContains.toLowerCase())) {
+                logger.debug("[Mock] URL '{}' does not contain '{}'", fullUrl, urlContains);
                 continue;
             }
 
+            logger.info("[Mock] MATCHED: url={}, pattern={}, queryParams={}", fullUrl, urlPath, queryParams);
             return rule;
         }
+        logger.debug("[Mock] No rule matched for URL: {}", fullUrl);
         return null;
     }
 
     /**
      * 检查请求 URL 是否包含所有指定的查询参数
+     * 支持 URL 编码的参数值
      * @param fullUrl 请求的完整 URL
      * @param requiredParams 需要的参数字符串，如 "a=123&e=fgh"
      * @return true 如果 URL 包含所有参数
@@ -938,14 +943,41 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         if (requiredParams == null || requiredParams.isEmpty()) {
             return true;
         }
+        
+        // 解码 URL 中的查询参数部分，用于比较
+        String decodedUrl = decodeUrlParams(fullUrl);
+        
         // 按 & 分割每个参数
         String[] params = requiredParams.split("&");
         for (String param : params) {
-            if (!param.isEmpty() && !fullUrl.contains(param)) {
-                return false;
+            if (!param.isEmpty()) {
+                // 检查原始参数或 URL 编码后的版本
+                if (!decodedUrl.contains(param)) {
+                    // 也尝试直接匹配（某些参数可能未被编码）
+                    if (!fullUrl.contains(param)) {
+                        return false;
+                    }
+                }
             }
         }
         return true;
+    }
+    
+    /**
+     * 解码 URL 中的查询参数部分
+     */
+    private String decodeUrlParams(String url) {
+        try {
+            // 提取查询参数部分并解码
+            int queryIdx = url.indexOf('?');
+            if (queryIdx < 0) return url;
+            String queryPart = url.substring(queryIdx);
+            // 使用 Java 的 URL 解码
+            String decoded = java.net.URLDecoder.decode(queryPart, "UTF-8");
+            return url.substring(0, queryIdx) + decoded;
+        } catch (Exception e) {
+            return url;
+        }
     }
 
     // ==================== Mock 处理 ====================

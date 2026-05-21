@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
@@ -27,6 +28,7 @@ import java.util.Iterator;
  * <ul>
  *   <li><b>Mock</b> - 拦截请求并返回自定义响应（完全替换）</li>
  *   <li><b>Monitor</b> - 配合 RealApiMonitor 记录所有API调用历史，支持Serenity报告集成</li>
+ *   <li><b>【新架构】</b> - 集成 RouteAsyncPool，支持异步日志和预加载机制</li>
  * </ul>
  *
  * <p>设计要点：
@@ -36,6 +38,8 @@ import java.util.Iterator;
  *   <li>统一路由入口 → 一个 route handler 统一处理 Mock / Pass-through</li>
  *   <li>异常安全 → 所有 route 处理均有 fallback 到 resume()</li>
  *   <li>Context 生命周期钩子 → Context 重建后自动重绑规则</li>
+ *   <li>【新架构】异步执行器 → 所有 IO/JSON/日志异步处理，确保 UI 不卡顿</li>
+ *   <li>【新架构】Mock 数据预加载 → 注册时加载文件到内存，避免 route 线程 IO</li>
  * </ul>
  *
  * <p>推荐用法：
@@ -73,6 +77,22 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     private static final int DEFAULT_TIMEOUT_STATUS = 408;
     /** 字符编码（使用 StandardCharsets 规范常量） */
     private static final Charset DEFAULT_CHARSET = StandardCharsets.UTF_8;
+
+    /**
+     * 【新架构】异步执行器 - 用于非阻塞的日志记录和断言验证
+     * 避免在 Playwright route 线程中执行 IO 操作，确保 UI 不卡顿
+     */
+    private static final ExecutorService ROUTE_EXECUTOR = 
+        new ThreadPoolExecutor(
+            2, 2, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1000),
+            r -> {
+                Thread t = new Thread(r, "mock-route-async");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
     // ==================== Context 生命周期钩子注册 ====================
     // 使用特殊的代理实例，其 captureRules 会从当前线程获取数据
@@ -350,6 +370,10 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         private boolean enabled = true;
         private ResponseGenerator responseGenerator;
 
+        // 【新架构】预加载相关字段
+        private String preloadedBody;          // 【优化】预加载的 mock body，避免 route 线程 IO
+        private boolean bodyPreloaded = false; // 是否已预加载
+
         public MockRule(String name, String urlPattern) {
             this.name = name;
             this.urlPattern = urlPattern;
@@ -390,6 +414,10 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         public final Map<String, String> getHeaders() { return new HashMap<>(headers); }
         public final boolean isEnabled()           { return enabled; }
         public final ResponseGenerator getResponseGenerator() { return responseGenerator; }
+        
+        // 【新架构】预加载相关 getter
+        public final String getPreloadedBody()     { return preloadedBody; }
+        public final boolean isBodyPreloaded()     { return bodyPreloaded; }
     }
 
     // ==================== 函数式接口 ====================
@@ -665,6 +693,45 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
         
         mockRules.put(uniqueName, uniqueRule);
         logger.debug("[Mock] Registered: {} (url={})", uniqueName, rule.getUrlPattern());
+        
+        // 【新架构】预加载 Mock 数据到内存，避免 route 线程 IO
+        preloadMockBody(uniqueRule);
+    }
+
+    /**
+     * 【新架构】预加载 Mock body 到内存
+     * 避免在 route 回调线程中执行文件 IO 操作
+     */
+    private void preloadMockBody(MockRule rule) {
+        if (rule == null) return;
+        
+        // 已预加载则跳过
+        if (rule.bodyPreloaded && rule.preloadedBody != null) {
+            logger.debug("[Mock] Body already preloaded for: {}", rule.getName());
+            return;
+        }
+        
+        // 从文件预加载
+        if (rule.getMockDataPath() != null && !rule.getMockDataPath().isEmpty()) {
+            try {
+                java.nio.file.Path path = Paths.get(rule.getMockDataPath());
+                if (Files.exists(path)) {
+                    rule.preloadedBody = new String(Files.readAllBytes(path), DEFAULT_CHARSET);
+                    rule.bodyPreloaded = true;
+                    logger.debug("[Mock] Preloaded body from file: {} ({} bytes)", 
+                        rule.getMockDataPath(), rule.preloadedBody.length());
+                }
+            } catch (Exception e) {
+                logger.debug("[Mock] Failed to preload file {}: {}", rule.getMockDataPath(), e.getMessage());
+            }
+        } 
+        // 从 JSON 字符串预加载
+        else if (rule.getMockDataJson() != null && !rule.getMockDataJson().isEmpty()) {
+            rule.preloadedBody = rule.getMockDataJson();
+            rule.bodyPreloaded = true;
+            logger.debug("[Mock] Preloaded body from JSON: {} ({} bytes)", 
+                rule.getName(), rule.preloadedBody.length());
+        }
     }
 
     /**
@@ -825,6 +892,7 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
     /**
      * 统一路由处理器 — 所有请求经过这里分发到对应的 Mock / Pass-through
      * 【双重兜底】resume 失败则 abort，避免请求永久挂起导致白屏
+     * 【新架构】Pass-through 请求先放行，后异步记录，确保 UI 不卡顿
      */
     private void handleUnifiedRoute(Route route) {
         String requestUrl = route.request().url();
@@ -837,8 +905,10 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 handleMock(route, matchedMock);
                 return;
             }
-            recordRealRequest(route);
+            
+            // 【新架构】Pass-through 请求：先放行，后异步记录
             safeResume(route);
+            asyncRecordRealRequest(route);
 
         } catch (Throwable e) {
             logger.error("[Route] Handler exception for {}: {}", requestUrl, e.getMessage(), e);
@@ -853,6 +923,51 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
                 }
             }
         }
+    }
+
+    /**
+     * 【新架构】异步记录真实请求
+     * 在 route 线程中只做极快的数据拷贝，然后异步执行记录操作
+     */
+    private void asyncRecordRealRequest(Route route) {
+        Request req = route.request();
+        
+        // 在 route 线程中快速拷贝数据，避免 Playwright 对象跨线程问题
+        final String requestUrl = req.url();
+        final String method = req.method();
+        Map<String, String> safeHeaders = null;
+        Object safePostData = null;
+        
+        try {
+            safeHeaders = req.headers();
+            if (safeHeaders == null) safeHeaders = Collections.emptyMap();
+        } catch (Exception ignored) {
+            safeHeaders = Collections.emptyMap();
+        }
+        
+        try {
+            safePostData = req.postData();
+        } catch (Exception ignored) {}
+        
+        // 拷贝到 effectively final 变量，供 lambda 使用
+        final Map<String, String> finalHeaders = safeHeaders;
+        final Object finalPostData = safePostData;
+        
+        // 【新架构】异步执行记录操作，不阻塞 UI
+        ROUTE_EXECUTOR.execute(() -> {
+            try {
+                synchronized (apiCallHistory) {
+                    apiCallHistory.add(new ApiCallRecord(
+                        UUID.randomUUID().toString(), requestUrl, method, System.currentTimeMillis(),
+                        finalHeaders, finalPostData,
+                        0, Collections.emptyMap(), null, ApiCallRecord.Type.REAL));
+                    trimApiHistoryIfNeeded();
+                }
+                logger.debug("[Real] Pass-through (async): {} {}", method, requestUrl);
+            } catch (Exception e) {
+                logger.debug("[Real] Failed to record request: {}", e.getMessage());
+            }
+        });
     }
 
     /**
@@ -984,8 +1099,14 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
 
     /**
      * 获取 Mock 响应体数据
+     * 【新架构】优先使用预加载的数据，避免 route 线程 IO 操作
      */
     private String getMockBody(MockRule rule, Route route) throws Exception {
+        // 0. 【新架构】优先使用预加载的数据（避免 route 线程 IO）
+        if (rule.bodyPreloaded && rule.preloadedBody != null) {
+            return rule.preloadedBody;
+        }
+        
         // 1. 动态生成器
         if (rule.getResponseGenerator() != null) {
             try {

@@ -35,6 +35,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
  *   <li>支持自定义回调函数 onMatch</li>
  *   <li>线程安全：每个线程独立状态，支持 Serenity 多线程并行场景</li>
  *   <li>Context/Page 生命周期自动管理：重建后监听器自动重绑</li>
+ *   <li>【新架构】集成 RouteAsyncPool，支持异步日志和断言</li>
  * </ul>
  *
  * <p>使用示例：
@@ -57,6 +58,22 @@ import static org.hamcrest.MatcherAssert.assertThat;
 public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer {
 
     private static final Logger logger = LoggerFactory.getLogger(RealApiMonitor.class);
+
+    /**
+     * 【新架构】异步执行器 - 用于非阻塞的日志记录和断言验证
+     * 避免在 Playwright route 线程中执行 IO 操作，确保 UI 不卡顿
+     */
+    private static final ExecutorService ASYNC_EXECUTOR = 
+        new ThreadPoolExecutor(
+            2, 2, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(500),
+            r -> {
+                Thread t = new Thread(r, "real-api-monitor-async");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
     /** API调用历史最大容量，防止内存泄漏 */
     private static final int MAX_API_HISTORY_SIZE = 1000;
@@ -1113,6 +1130,34 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
      */
     public static void clearExpectations() {
         apiExpectations.get().clear();
+    }
+
+    /**
+     * 【新架构】异步执行任务
+     * 用于非阻塞的日志记录、断言验证等操作
+     *
+     * @param task 要执行的任务
+     */
+    public static void runAsync(Runnable task) {
+        if (task == null) return;
+        try {
+            ASYNC_EXECUTOR.execute(task);
+        } catch (Exception e) {
+            logger.debug("[Async] Failed to execute task: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 【新架构】关闭异步执行器
+     * 项目结束时应调用
+     */
+    public static void shutdownAsyncExecutor() {
+        try {
+            ASYNC_EXECUTOR.shutdownNow();
+            logger.debug("[Async] Executor shutdown");
+        } catch (Exception e) {
+            logger.debug("[Async] Error during shutdown: {}", e.getMessage());
+        }
     }
 
     /**

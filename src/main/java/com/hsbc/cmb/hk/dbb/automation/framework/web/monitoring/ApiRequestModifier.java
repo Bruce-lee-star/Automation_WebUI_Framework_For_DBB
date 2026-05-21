@@ -23,6 +23,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
@@ -33,12 +34,35 @@ import java.util.function.Consumer;
  * <p>Context 生命周期支持：
  * 当 BrowserContext 重建时（如 restoreSession 导致），已注册的路由会自动重绑到新 Context。
  *
+ * <p>【新架构】集成 RouteAsyncPool：
+ * <ul>
+ *   <li>所有日志记录异步处理</li>
+ *   <li>所有 IO 操作异步执行</li>
+ *   <li>确保 UI 不卡顿</li>
+ * </ul>
+ *
  * 详细使用说明请参考 API_MONITOR_README.md
  */
 public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCapturer {
 
     private static final Logger logger = LoggerFactory.getLogger(ApiRequestModifier.class);
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+
+    /**
+     * 【新架构】异步执行器 - 用于非阻塞的日志记录
+     * 避免在 Playwright route 线程中执行 IO 操作
+     */
+    private static final ExecutorService ASYNC_EXECUTOR = 
+        new ThreadPoolExecutor(
+            2, 2, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(500),
+            r -> {
+                Thread t = new Thread(r, "request-modifier-async");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
 
     /** 全局存储，按 endpoint 分类存储请求/响应信息（线程隔离） */
     private static final ThreadLocal<Map<String, List<RequestResponseInfo>>> GLOBAL_STORE = 
@@ -698,64 +722,67 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
             String responseUrl = response.url();
             // 使用 contains() 进行匹配
             if (matchesUrl(responseUrl, urlPart)) {
-                try {
-                    Request respRequest = response.request();
-
-                    logger.info("========================================");
-                    logger.info("[RESPONSE] {}", responseUrl);
-                    logger.info("========================================");
-
-                    // 请求信息（修改后的）
-                    logger.info("[Request Info]");
-                    logger.info("   URL: {}", respRequest.url());
-                    logger.info("   Method: {}", respRequest.method());
-                    logger.info("   Headers: {}", formatHeaders(respRequest.headers()));
-                    if (respRequest.postData() != null) {
-                        logger.info("   Body: {}", respRequest.postData());
-                    }
-
-                    // 响应信息
-                    logger.info("[Response Info]");
-                    logger.info("   Status: {} {}", response.status(), response.statusText());
-                    logger.info("   Headers: {}", formatHeaders(response.headers()));
-
-                    String respBody = null;
+                // 【新架构】异步处理日志和响应记录，避免阻塞 UI
+                runAsync(() -> {
                     try {
-                        respBody = response.text();
-                        logger.info("   Body: {}", respBody);
-                    } catch (Exception e) {
-                        logger.info("   Body: (Unable to read response body)");
-                    }
+                        Request respRequest = response.request();
 
-                    logger.info("========================================");
+                        logger.info("========================================");
+                        logger.info("[RESPONSE] {}", responseUrl);
+                        logger.info("========================================");
 
-                    // 存储请求/响应信息
-                    RequestInfo requestInfo = new RequestInfo(
-                            respRequest.url(),
-                            respRequest.method(),
-                            respRequest.headers(),
-                            respRequest.postData()
-                    );
-                    ResponseInfo responseInfo = new ResponseInfo(
-                            response.status(),
-                            response.statusText(),
-                            response.headers(),
-                            respBody
-                    );
-                    RequestResponseInfo info = new RequestResponseInfo(requestInfo, responseInfo);
-                    store.add(info);
-
-                    // 执行回调
-                    if (callback != null) {
-                        try {
-                            callback.accept(info);
-                        } catch (Exception e) {
-                            logger.error("Error in callback", e);
+                        // 请求信息（修改后的）
+                        logger.info("[Request Info]");
+                        logger.info("   URL: {}", respRequest.url());
+                        logger.info("   Method: {}", respRequest.method());
+                        logger.info("   Headers: {}", formatHeaders(respRequest.headers()));
+                        if (respRequest.postData() != null) {
+                            logger.info("   Body: {}", respRequest.postData());
                         }
+
+                        // 响应信息
+                        logger.info("[Response Info]");
+                        logger.info("   Status: {} {}", response.status(), response.statusText());
+                        logger.info("   Headers: {}", formatHeaders(response.headers()));
+
+                        String respBody = null;
+                        try {
+                            respBody = response.text();
+                            logger.info("   Body: {}", respBody);
+                        } catch (Exception e) {
+                            logger.info("   Body: (Unable to read response body)");
+                        }
+
+                        logger.info("========================================");
+
+                        // 存储请求/响应信息
+                        RequestInfo requestInfo = new RequestInfo(
+                                respRequest.url(),
+                                respRequest.method(),
+                                respRequest.headers(),
+                                respRequest.postData()
+                        );
+                        ResponseInfo responseInfo = new ResponseInfo(
+                                response.status(),
+                                response.statusText(),
+                                response.headers(),
+                                respBody
+                        );
+                        RequestResponseInfo info = new RequestResponseInfo(requestInfo, responseInfo);
+                        store.add(info);
+
+                        // 执行回调
+                        if (callback != null) {
+                            try {
+                                callback.accept(info);
+                            } catch (Exception e) {
+                                logger.error("Error in callback", e);
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.error("Error logging response", e);
                     }
-                } catch (Exception e) {
-                    logger.error("Error logging response", e);
-                }
+                });
             }
         });
 
@@ -885,64 +912,67 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
             String responseUrl = response.url();
             // 使用 contains() 进行匹配
             if (matchesUrl(responseUrl, urlPart)) {
-                try {
-                    Request respRequest = response.request();
-
-                    logger.info("========================================");
-                    logger.info("[RESPONSE] {}", responseUrl);
-                    logger.info("========================================");
-
-                    // 请求信息（修改后的）
-                    logger.info("[Request Info]");
-                    logger.info("   URL: {}", respRequest.url());
-                    logger.info("   Method: {}", respRequest.method());
-                    logger.info("   Headers: {}", formatHeaders(respRequest.headers()));
-                    if (respRequest.postData() != null) {
-                        logger.info("   Body: {}", respRequest.postData());
-                    }
-
-                    // 响应信息
-                    logger.info("[Response Info]");
-                    logger.info("   Status: {} {}", response.status(), response.statusText());
-                    logger.info("   Headers: {}", formatHeaders(response.headers()));
-
-                    String respBody = null;
+                // 【新架构】异步处理日志和响应记录，避免阻塞 UI
+                runAsync(() -> {
                     try {
-                        respBody = response.text();
-                        logger.info("   Body: {}", respBody);
-                    } catch (Exception e) {
-                        logger.info("   Body: (Unable to read response body)");
-                    }
+                        Request respRequest = response.request();
 
-                    logger.info("========================================");
+                        logger.info("========================================");
+                        logger.info("[RESPONSE] {}", responseUrl);
+                        logger.info("========================================");
 
-                    // 存储请求/响应信息
-                    RequestInfo requestInfo = new RequestInfo(
-                            respRequest.url(),
-                            respRequest.method(),
-                            respRequest.headers(),
-                            respRequest.postData()
-                    );
-                    ResponseInfo responseInfo = new ResponseInfo(
-                            response.status(),
-                            response.statusText(),
-                            response.headers(),
-                            respBody
-                    );
-                    RequestResponseInfo info = new RequestResponseInfo(requestInfo, responseInfo);
-                    store.add(info);
-
-                    // 执行回调
-                    if (callback != null) {
-                        try {
-                            callback.accept(info);
-                        } catch (Exception e) {
-                            logger.error("Error in callback", e);
+                        // 请求信息（修改后的）
+                        logger.info("[Request Info]");
+                        logger.info("   URL: {}", respRequest.url());
+                        logger.info("   Method: {}", respRequest.method());
+                        logger.info("   Headers: {}", formatHeaders(respRequest.headers()));
+                        if (respRequest.postData() != null) {
+                            logger.info("   Body: {}", respRequest.postData());
                         }
+
+                        // 响应信息
+                        logger.info("[Response Info]");
+                        logger.info("   Status: {} {}", response.status(), response.statusText());
+                        logger.info("   Headers: {}", formatHeaders(response.headers()));
+
+                        String respBody = null;
+                        try {
+                            respBody = response.text();
+                            logger.info("   Body: {}", respBody);
+                        } catch (Exception e) {
+                            logger.info("   Body: (Unable to read response body)");
+                        }
+
+                        logger.info("========================================");
+
+                        // 存储请求/响应信息
+                        RequestInfo requestInfo = new RequestInfo(
+                                respRequest.url(),
+                                respRequest.method(),
+                                respRequest.headers(),
+                                respRequest.postData()
+                        );
+                        ResponseInfo responseInfo = new ResponseInfo(
+                                response.status(),
+                                response.statusText(),
+                                response.headers(),
+                                respBody
+                        );
+                        RequestResponseInfo info = new RequestResponseInfo(requestInfo, responseInfo);
+                        store.add(info);
+
+                        // 执行回调
+                        if (callback != null) {
+                            try {
+                                callback.accept(info);
+                            } catch (Exception e) {
+                                logger.error("Error in callback", e);
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.error("Error logging response", e);
                     }
-                } catch (Exception e) {
-                    logger.error("Error logging response", e);
-                }
+                });
             }
         });
 
@@ -1177,6 +1207,36 @@ public class ApiRequestModifier implements ContextLifecycleHookManager.RuleCaptu
                 }
             }
             return url;
+        }
+    }
+
+    // ==================== 【新架构】异步执行方法 ====================
+
+    /**
+     * 【新架构】异步执行任务
+     * 用于非阻塞的日志记录等操作
+     *
+     * @param task 要执行的任务
+     */
+    private static void runAsync(Runnable task) {
+        if (task == null) return;
+        try {
+            ASYNC_EXECUTOR.execute(task);
+        } catch (Exception e) {
+            logger.debug("[Async] Failed to execute task: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 【新架构】关闭异步执行器
+     * 项目结束时应调用
+     */
+    public static void shutdownAsyncExecutor() {
+        try {
+            ASYNC_EXECUTOR.shutdownNow();
+            logger.debug("[Async] Executor shutdown");
+        } catch (Exception e) {
+            logger.debug("[Async] Error during shutdown: {}", e.getMessage());
         }
     }
 }

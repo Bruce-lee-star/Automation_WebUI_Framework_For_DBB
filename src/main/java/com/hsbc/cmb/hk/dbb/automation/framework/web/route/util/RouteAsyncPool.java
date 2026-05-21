@@ -15,8 +15,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>拒绝策略使用 {@link ThreadPoolExecutor.CallerRunsPolicy}，避免任务丢失</li>
  *   <li>JVM 关闭钩子优雅关闭，等待进行中任务完成</li>
  *   <li><b>任务超时机制</b>：{@link #runWithTimeout(Runnable, long)} 限制单个任务最大耗时</li>
- *   <li><b>阈值告警</b>：队列使用率/活跃线程超过阈值时 ERROR 日志告警</li>
- *   <li>暴露线程池状态指标（活跃线程、队列长度、已完成任务数），支持监控采集</li>
+ *   <li><b>超时调度器监控</b>：跟踪待处理的超时检查任务数，超过阈值告警</li>
+ *   <li><b>阈值告警</b>：队列使用率/活跃线程/超时挂起数超过阈值时 ERROR 日志告警</li>
+ *   <li>暴露线程池状态指标（活跃线程、队列长度、已完成任务数、超时挂起数），支持监控采集</li>
  * </ul>
  *
  * <p>环境变量配置（可选）：
@@ -25,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   ROUTE_MAX_THREADS=6        // 最大线程数（默认 6）
  *   ROUTE_QUEUE_CAPACITY=200   // 队列容量（默认 200）
  *   ROUTE_TASK_TIMEOUT_MS=30000 // 单个任务最大超时毫秒（默认 30000ms）
+ *   ROUTE_MAX_PENDING_TIMEOUTS=500 // 待处理超时检查任务上限（默认 500）
  * </pre>
  */
 public final class RouteAsyncPool {
@@ -39,6 +41,9 @@ public final class RouteAsyncPool {
 
     /** 超时的任务计数 */
     private static final AtomicLong timeoutCount = new AtomicLong(0);
+
+    /** 当前待处理的超时检查任务数（挂在 TIMEOUT_SCHEDULER 上的 delayed 任务） */
+    private static final AtomicLong pendingTimeoutCount = new AtomicLong(0);
 
     private static final ThreadPoolExecutor POOL;
 
@@ -64,6 +69,9 @@ public final class RouteAsyncPool {
     /** 线程使用率告警阈值（0.0 ~ 1.0，默认 0.9 即 90%） */
     private static final double THREAD_USAGE_ALERT_THRESHOLD;
 
+    /** 待处理超时检查任务上限（防止调度器队列无限堆积） */
+    private static final int MAX_PENDING_TIMEOUTS;
+
     static {
         CORE_THREADS = getEnvInt("ROUTE_CORE_THREADS", 2);
         MAX_THREADS = getEnvInt("ROUTE_MAX_THREADS", 6);
@@ -71,6 +79,7 @@ public final class RouteAsyncPool {
         DEFAULT_TASK_TIMEOUT_MS = getEnvLong("ROUTE_TASK_TIMEOUT_MS", 30_000L);
         QUEUE_USAGE_ALERT_THRESHOLD = getEnvDouble("ROUTE_QUEUE_USAGE_ALERT_THRESHOLD", 0.8);
         THREAD_USAGE_ALERT_THRESHOLD = getEnvDouble("ROUTE_THREAD_USAGE_ALERT_THRESHOLD", 0.9);
+        MAX_PENDING_TIMEOUTS = getEnvInt("ROUTE_MAX_PENDING_TIMEOUTS", 500);
 
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 CORE_THREADS,
@@ -85,9 +94,9 @@ public final class RouteAsyncPool {
                     return t;
                 },
                 (r, threadPoolExecutor) -> {
-                    // CallerRunsPolicy: 让提交任务的线程自行执行，避免任务丢失
+                    // DiscardOldestPolicy：队列满时丢弃最旧任务，保证 Playwright 事件线程永不阻塞
                     long count = rejectedCount.incrementAndGet();
-                    LOGGER.error("[RouteAsyncPool] TASK REJECTED — falling back to CallerRunsPolicy. "
+                    LOGGER.error("[RouteAsyncPool] TASK REJECTED — discarding oldest task in queue. "
                                     + "Rejected count: {}, Active: {}, Pool size: {}/{}, Queue: {}/{}",
                             count,
                             threadPoolExecutor.getActiveCount(),
@@ -95,7 +104,7 @@ public final class RouteAsyncPool {
                             threadPoolExecutor.getMaximumPoolSize(),
                             threadPoolExecutor.getQueue().size(),
                             QUEUE_CAPACITY);
-                    new ThreadPoolExecutor.CallerRunsPolicy().rejectedExecution(r, threadPoolExecutor);
+                    new ThreadPoolExecutor.DiscardOldestPolicy().rejectedExecution(r, threadPoolExecutor);
                 }
         );
 
@@ -110,8 +119,8 @@ public final class RouteAsyncPool {
             shutdownGracefully();
         }, "pw-route-shutdown"));
 
-        LOGGER.info("[RouteAsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms",
-                CORE_THREADS, MAX_THREADS, QUEUE_CAPACITY, DEFAULT_TASK_TIMEOUT_MS);
+        LOGGER.info("[RouteAsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms, maxPendingTimeouts={}",
+                CORE_THREADS, MAX_THREADS, QUEUE_CAPACITY, DEFAULT_TASK_TIMEOUT_MS, MAX_PENDING_TIMEOUTS);
     }
 
     private RouteAsyncPool() {}
@@ -161,6 +170,7 @@ public final class RouteAsyncPool {
             // 如果指定了超时，启动守护线程等待超时后取消
             if (timeoutMs > 0) {
                 final Future<?> f = future;
+                long pending = pendingTimeoutCount.incrementAndGet();
                 TIMEOUT_SCHEDULER.schedule(() -> {
                     try {
                         f.get(timeoutMs, TimeUnit.MILLISECONDS);
@@ -177,6 +187,8 @@ public final class RouteAsyncPool {
                         LOGGER.error("[RouteAsyncPool] Task execution failed: {}", e.getMessage(), e.getCause());
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
+                    } finally {
+                        pendingTimeoutCount.decrementAndGet();
                     }
                 }, timeoutMs, TimeUnit.MILLISECONDS);
             }
@@ -221,6 +233,21 @@ public final class RouteAsyncPool {
                     threadUsage, THREAD_USAGE_ALERT_THRESHOLD,
                     activeCount, poolSize, MAX_THREADS);
         }
+
+        // 超时调度器挂起任务数告警
+        long pendingTimeouts = pendingTimeoutCount.get();
+        if (pendingTimeouts >= MAX_PENDING_TIMEOUTS) {
+            LOGGER.error("[RouteAsyncPool] ALERT: Pending timeout tasks ({}) exceeded max ({}). "
+                            + "Too many concurrent timeouts may indicate tasks blocking for too long. "
+                            + "Completed: {}, Timeouts: {}",
+                    pendingTimeouts, MAX_PENDING_TIMEOUTS,
+                    completedTaskCount.get(), timeoutCount.get());
+        } else if (pendingTimeouts >= MAX_PENDING_TIMEOUTS * 0.7) {
+            LOGGER.warn("[RouteAsyncPool] WARNING: Pending timeout tasks ({}) approaching max ({}). "
+                            + "Completed: {}, Timeouts: {}",
+                    pendingTimeouts, MAX_PENDING_TIMEOUTS,
+                    completedTaskCount.get(), timeoutCount.get());
+        }
     }
 
     /**
@@ -241,8 +268,8 @@ public final class RouteAsyncPool {
         if (POOL.isShutdown()) {
             return;
         }
-        LOGGER.info("[RouteAsyncPool] Shutting down (active: {}, queue: {}, completed: {}, timeouts: {})...",
-                POOL.getActiveCount(), POOL.getQueue().size(), completedTaskCount.get(), timeoutCount.get());
+        LOGGER.info("[RouteAsyncPool] Shutting down (active: {}, queue: {}, completed: {}, timeouts: {}, pendingTimeouts: {})...",
+                POOL.getActiveCount(), POOL.getQueue().size(), completedTaskCount.get(), timeoutCount.get(), pendingTimeoutCount.get());
 
         POOL.shutdown();
         TIMEOUT_SCHEDULER.shutdown();
@@ -298,6 +325,11 @@ public final class RouteAsyncPool {
         return timeoutCount.get();
     }
 
+    /** 当前待处理的超时检查任务数 */
+    public static long getPendingTimeoutCount() {
+        return pendingTimeoutCount.get();
+    }
+
     /** 队列使用率（0.0 ~ 1.0） */
     public static double getQueueUsage() {
         return (double) POOL.getQueue().size() / QUEUE_CAPACITY;
@@ -315,7 +347,7 @@ public final class RouteAsyncPool {
     public static String getStatusSnapshot() {
         return String.format(
                 "[RouteAsyncPool] active=%d, pool=%d/%d, queue=%d/%d (%.0f%%), threads=%.0f%%, "
-                        + "completed=%d, rejected=%d, timeouts=%d",
+                        + "completed=%d, rejected=%d, timeouts=%d, pendingTimeouts=%d/%d",
                 POOL.getActiveCount(),
                 POOL.getPoolSize(),
                 POOL.getMaximumPoolSize(),
@@ -325,7 +357,9 @@ public final class RouteAsyncPool {
                 getThreadUsage() * 100,
                 POOL.getCompletedTaskCount() + completedTaskCount.get(),
                 rejectedCount.get(),
-                timeoutCount.get());
+                timeoutCount.get(),
+                pendingTimeoutCount.get(),
+                MAX_PENDING_TIMEOUTS);
     }
 
     /**

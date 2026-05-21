@@ -1,10 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.ref.WeakReference;
+import java.util.Iterator;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -17,6 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>支持细粒度的单个 pattern 注销和整上下文清理</li>
  *   <li>使用 {@link ConcurrentHashMap#newKeySet()} 保证线程安全</li>
  *   <li>测试结束时调用 {@link #clearContext(Object)} 防止内存泄漏</li>
+ *   <li>{@link ContextKey} 内部使用 {@link WeakReference}，Page 被 GC 后不阻止回收</li>
  * </ul>
  *
  * <p>返回值语义：
@@ -29,8 +33,21 @@ public class RouteRegistry {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteRegistry.class);
 
-    /** Key: Page/BrowserContext, Value: 该上下文已注册的 pattern 集合 */
-    private static final ConcurrentHashMap<Object, Set<String>> CONTEXT_PATTERNS = new ConcurrentHashMap<>();
+    /**
+     * Key: ContextKey（WeakReference 包装的 Page/BrowserContext），
+     * Value: 该上下文已注册的 pattern 集合。
+     *
+     * <p>ContextKey 使用身份哈希 + WeakReference，确保：
+     * <ol>
+     *   <li>两个不同的 ContextKey 包裹同一个 Page 实例时 equals() 返回 true</li>
+     *   <li>Page 对象被外部释放后，StrongKey 不会阻止 GC</li>
+     *   <li>死条目由 {@link #purgeDeadEntries()} 定期清理</li>
+     * </ol>
+     */
+    private static final ConcurrentHashMap<ContextKey, Set<String>> CONTEXT_PATTERNS = new ConcurrentHashMap<>();
+
+    /** 触发死条目清理的阈值（CONTEXT_PATTERNS size 超过此值后触发 purgeDeadEntries） */
+    private static final int PURGE_THRESHOLD = 50;
 
     /**
      * 按 Page 上下文注册 pattern。
@@ -55,11 +72,19 @@ public class RouteRegistry {
     }
 
     /**
-     * 内部统一注册逻辑
+     * 内部统一注册逻辑。
+     *
+     * <p>每次注册前检查是否需要清理死条目（基于阈值触发）。
      */
     private static boolean registerInternal(Object context, String pattern) {
+        // 防御性清理死条目（GC 回收的 Page/Context）
+        if (CONTEXT_PATTERNS.size() > PURGE_THRESHOLD) {
+            purgeDeadEntries();
+        }
+
+        ContextKey key = new ContextKey(context);
         Set<String> patterns = CONTEXT_PATTERNS.computeIfAbsent(
-                context, k -> ConcurrentHashMap.newKeySet());
+                key, k -> ConcurrentHashMap.newKeySet());
         boolean isNew = patterns.add(pattern);
         if (!isNew) {
             LOGGER.debug("[RouteRegistry] Pattern already registered in this context: {} -> {}",
@@ -75,7 +100,7 @@ public class RouteRegistry {
      * @param pattern 要注销的 URL pattern
      */
     public static void unregister(Object context, String pattern) {
-        Set<String> patterns = CONTEXT_PATTERNS.get(context);
+        Set<String> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
         if (patterns != null) {
             patterns.remove(pattern);
             LOGGER.debug("[RouteRegistry] Unregistered pattern from context: {} -> {}",
@@ -84,31 +109,51 @@ public class RouteRegistry {
     }
 
     /**
-     * 清理指定上下文的全部 pattern（测试结束时调用，防止内存泄漏）。
+     * 清理指定上下文的全部 pattern（测试结束时调用，防止内存泄漏 + 跨用例污染）。
+     *
+     * <p>三步清理：
+     * <ol>
+     *   <li>从注册表移除该上下文的所有 pattern</li>
+     *   <li>遍历所有已注册 pattern，通过 RouteEngine 执行 Playwright {@code unroute()}</li>
+     *   <li>清理对应的 MonitorSession</li>
+     * </ol>
+     *
+     * <p>任意一步失败不影响后续步骤（异常隔离）。
      *
      * @param context Page 或 BrowserContext 实例
      */
     public static void clearContext(Object context) {
-        CONTEXT_PATTERNS.remove(context);
+        // 1. 先获取并移除注册表条目（确保不重复清理）
+        Set<String> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
+
+        // 2. 注销 Playwright 路由层（所有 pattern，无论是否有 MonitorSession）
+        if (patterns != null && !patterns.isEmpty()) {
+            RouteEngine.unrouteAllForContext(context, patterns);
+        }
+
+        // 3. 清理 MonitorSession（内部也会 unroute + unregister，但无副作用）
         RouteEngine.clearMonitorSessions(context);
-        LOGGER.debug("[RouteRegistry] Cleared all patterns for context: {}",
+
+        LOGGER.debug("[RouteRegistry] Cleared {} patterns for context: {}",
+                patterns != null ? patterns.size() : 0,
                 context.getClass().getSimpleName());
     }
 
     /**
-     * 全局清理所有上下文的所有 pattern（测试套件结束时调用）。
+     * 全局清理所有上下文的所有 pattern + JSONPath 缓存（测试套件结束时调用）。
      */
     public static void clearAll() {
         CONTEXT_PATTERNS.clear();
         RouteEngine.clearAllMonitorSessions();
-        LOGGER.debug("[RouteRegistry] Cleared all patterns for all contexts");
+        ModifyHandler.clearJsonPathCache();
+        LOGGER.debug("[RouteRegistry] Cleared all patterns and caches for all contexts");
     }
 
     /**
      * 获取指定上下文的已注册 pattern 数量（用于测试/监控）。
      */
     public static int getPatternCount(Object context) {
-        Set<String> patterns = CONTEXT_PATTERNS.get(context);
+        Set<String> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
         return patterns != null ? patterns.size() : 0;
     }
 
@@ -116,6 +161,86 @@ public class RouteRegistry {
      * 获取全局上下文数量（用于测试/监控）。
      */
     public static int getContextCount() {
+        purgeDeadEntries();
         return CONTEXT_PATTERNS.size();
+    }
+
+    /**
+     * 清理死条目 — 移除 {@link ContextKey} 中已被 GC 回收的上下文条目。
+     *
+     * <p>由以下场景触发：
+     * <ul>
+     *   <li>{@link #registerInternal(Object, String)} 发现 Map size > {@link #PURGE_THRESHOLD}</li>
+     *   <li>{@link #getContextCount()} 被调用时</li>
+     *   <li>外部按需调用（如测试套件结束时）</li>
+     * </ul>
+     *
+     * <p>使用 {@link Iterator#remove()} 安全遍历，避免 {@code ConcurrentModificationException}。
+     */
+    static void purgeDeadEntries() {
+        int removed = 0;
+        Iterator<ContextKey> it = CONTEXT_PATTERNS.keySet().iterator();
+        while (it.hasNext()) {
+            ContextKey key = it.next();
+            if (key.isDead()) {
+                it.remove();
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            LOGGER.debug("[RouteRegistry] Purged {} dead context entries (GC-reclaimed)", removed);
+        }
+    }
+
+    // ─── ContextKey（WeakReference 包装器）─────────────────────────
+
+    /**
+     * 上下文的弱引用包装键 — 防止静态 Map 阻止 Page/BrowserContext 被 GC。
+     *
+     * <p>关键设计：
+     * <ul>
+     *   <li>{@link #equals(Object)} 基于包裹对象的身份（==），保证同一实例的两个 ContextKey 匹配</li>
+     *   <li>{@link #hashCode()} 使用 {@link System#identityHashCode(Object)}，不因 WeakReference 释放而改变</li>
+     *   <li>{@link #isDead()} 返回 true 表示包裹对象已被 GC 回收</li>
+     * </ul>
+     */
+    private static final class ContextKey {
+        private final int identityHash;
+        private final WeakReference<Object> ref;
+
+        ContextKey(Object context) {
+            this.identityHash = System.identityHashCode(context);
+            this.ref = new WeakReference<>(context);
+        }
+
+        /**
+         * 获取包裹的原始对象（可能为 null，如果已被 GC）。
+         */
+        Object get() {
+            return ref.get();
+        }
+
+        /**
+         * 该键对应的上下文是否已被 GC 回收。
+         */
+        boolean isDead() {
+            return ref.get() == null;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == this) return true;
+            if (!(o instanceof ContextKey)) return false;
+            ContextKey that = (ContextKey) o;
+            Object a = this.ref.get();
+            Object b = that.ref.get();
+            // 任一侧已被 GC → 不相等（死条目不参与匹配）
+            return a != null && b != null && a == b;
+        }
+
+        @Override
+        public int hashCode() {
+            return identityHash;
+        }
     }
 }

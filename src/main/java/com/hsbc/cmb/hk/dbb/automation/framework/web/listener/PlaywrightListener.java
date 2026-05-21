@@ -3,6 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -474,6 +476,35 @@ public class PlaywrightListener implements StepListener {
         }
     }
 
+    /**
+     * ⭐ 自动清理当前线程的 RouteRegistry 条目（防内存泄漏 + 跨用例路由污染）。
+     *
+     * <p>在 testFinished 中调用，从 PlaywrightManager 获取当前线程的 Page / Context，
+     * 清理 RouteRegistry 中对应的 pattern 记录，释放 RouteEngine 防重门控集合。
+     *
+     * <p>异常安全：PlaywrightManager.getPage()/getContext() 在某些异常路径下可能抛异常，
+     * 逐个 try-catch 保证一个失败不影响另一个。
+     */
+    private void cleanupRouteRegistryForCurrentThread() {
+        try {
+            Object page = PlaywrightManager.getPage();
+            if (page != null) {
+                RouteRegistry.clearContext(page);
+            }
+        } catch (Exception e) {
+            logger.debug("RouteRegistry cleanup for Page skipped: {}", e.getMessage());
+        }
+        try {
+            Object context = PlaywrightManager.getContext();
+            if (context != null) {
+                RouteRegistry.clearContext(context);
+            }
+        } catch (Exception e) {
+            logger.debug("RouteRegistry cleanup for BrowserContext skipped: {}", e.getMessage());
+        }
+        RouteEngine.clearDispatchedRoutes();
+    }
+
     private void cleanupThreadLocals() {
         // ⭐⭐⭐ 最关键：先强制清空截图内容（防止残留），再移除所有 ThreadLocal
         clearStepScreenshotsImmediately();
@@ -740,6 +771,9 @@ public class PlaywrightListener implements StepListener {
             }
             testFinishedInternal();
 
+            // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
+            cleanupRouteRegistryForCurrentThread();
+
             // 获取浏览器重启策略
             String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
                     .getProperty("serenity.restart.browser.for.each", "scenario");
@@ -764,6 +798,7 @@ public class PlaywrightListener implements StepListener {
             logger.error("Error in testFinished, forcing cleanup", e);
             // 确保异常时也清理
             cleanupThreadLocals();
+            RouteEngine.clearDispatchedRoutes();
             throw e;
         } finally {
             // ⭐⭐⭐ 新增：清理 API 监控上下文
@@ -825,9 +860,15 @@ public class PlaywrightListener implements StepListener {
             }
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
+        } catch (Exception e) {
+            logger.error("Error in testFinished with time, forcing cleanup", e);
+            RouteEngine.clearDispatchedRoutes();
+            throw e;
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
+            // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
+            cleanupRouteRegistryForCurrentThread();
             // ⭐⭐⭐ 新增：清理 API 监控上下文
             apiMonitorContext.remove();
         }

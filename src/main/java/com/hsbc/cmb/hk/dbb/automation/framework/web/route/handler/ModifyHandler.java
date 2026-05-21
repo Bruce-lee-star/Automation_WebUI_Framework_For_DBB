@@ -48,8 +48,12 @@ public class ModifyHandler {
             .options(Option.SUPPRESS_EXCEPTIONS)
             .build();
 
-    /** JsonPath 编译缓存：避免重复解析相同路径表达式 */
+    /** JsonPath 编译缓存：避免重复解析相同路径表达式。
+     *  使用简单容量限制防止长期运行缓慢增长。 */
     private static final Map<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
+
+    /** JSONPath 缓存容量上限，超过后清空重建 */
+    private static final int JSONPATH_CACHE_MAX_SIZE = 200;
 
     /** 是否在 JSON 解析失败时退化为字符串替换（False=仅处理 JSON） */
     private static volatile boolean allowFallbackStringReplace = false;
@@ -60,6 +64,27 @@ public class ModifyHandler {
      */
     public static void setAllowFallbackStringReplace(boolean allow) {
         allowFallbackStringReplace = allow;
+    }
+
+    /**
+     * 清空 JSONPath 编译缓存。
+     *
+     * <p>建议在测试套件结束时调用，防止长期运行（如 CI 节点多天不重启）
+     * 场景下缓存缓慢增长。单次测试中缓存 < 200 条目会自动清空重建。
+     */
+    public static void clearJsonPathCache() {
+        int size = JSONPATH_CACHE.size();
+        JSONPATH_CACHE.clear();
+        if (size > 0) {
+            LOGGER.debug("[ModifyHandler] JSONPath cache cleared ({} entries freed)", size);
+        }
+    }
+
+    /**
+     * 获取 JSONPath 缓存条目数（用于监控）。
+     */
+    public static int getJsonPathCacheSize() {
+        return JSONPATH_CACHE.size();
     }
 
     public static void handle(Route route, RouteRule rule) {
@@ -153,6 +178,12 @@ public class ModifyHandler {
             // 2. 获取原字段值（用于判断原类型）
             Object existingValue;
             try {
+                // 缓存容量保护：超过上限时清空重建
+                if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX_SIZE) {
+                    LOGGER.debug("[ModifyHandler] JSONPath cache reached {} entries, clearing to prevent unbounded growth",
+                            JSONPATH_CACHE.size());
+                    JSONPATH_CACHE.clear();
+                }
                 JsonPath compiled = JSONPATH_CACHE.computeIfAbsent(path,
                         p -> JsonPath.compile(p));
                 existingValue = compiled.read(jsonBody, JSONPATH_CONFIG);

@@ -33,6 +33,12 @@ public class ApiMonitorContext {
     /** Response 存储上限（防止内存泄漏），超过后记录 WARN 日志但继续存储 */
     private static final int MAX_RESPONSE_STORAGE = 1000;
 
+    /** Response 总字节数上限（10MB），防止大响应（如文件下载）导致 OOM */
+    private static final long MAX_RESPONSE_TOTAL_SIZE = 10 * 1024 * 1024; // 10 MB
+
+    /** 当前已存储响应总字节数（近似值，非精确） */
+    private volatile long totalResponseSize = 0L;
+
     /** 断言失败详情列表（线程安全） */
     private final List<AssertionFailureDetail> failureDetails =
             java.util.Collections.synchronizedList(new ArrayList<>());
@@ -174,6 +180,7 @@ public class ApiMonitorContext {
         hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStorage.clear();
+        totalResponseSize = 0L;
         synchronized (completionLock) {
             completionLock.notifyAll();
         }
@@ -182,21 +189,53 @@ public class ApiMonitorContext {
     /**
      * 存储 API 响应体（追加到该 URL 的列表中，不覆盖历史调用）。
      *
+     * <p>双重上限保护：
+     * <ul>
+     *   <li>数量上限：{@link #MAX_RESPONSE_STORAGE} 条响应</li>
+     *   <li>体积上限：{@link #MAX_RESPONSE_TOTAL_SIZE} 字节（10MB）</li>
+     * </ul>
+     *
      * @param url          请求 URL
      * @param responseBody 响应体字符串
      */
     public void storeResponse(String url, String responseBody) {
-        if (url != null && responseBody != null) {
-            int total = getTotalResponseCount();
-            if (total >= MAX_RESPONSE_STORAGE) {
-                System.err.println("[ApiMonitorContext] WARNING: Response storage limit reached ("
-                        + total + " >= " + MAX_RESPONSE_STORAGE + "). "
-                        + "Old responses persist; consider calling reset() between tests.");
-            }
-            responseStorage.computeIfAbsent(url, k ->
-                    java.util.Collections.synchronizedList(new ArrayList<>())
-            ).add(responseBody);
+        if (url == null || responseBody == null) {
+            return;
         }
+
+        // 数量上限检查
+        int total = getTotalResponseCount();
+        if (total >= MAX_RESPONSE_STORAGE) {
+            System.err.println("[ApiMonitorContext] WARNING: Response count limit reached ("
+                    + total + " >= " + MAX_RESPONSE_STORAGE + "). "
+                    + "Subsequent responses will NOT be stored. Consider calling reset() between tests.");
+            return;  // 直接拒绝存储
+        }
+
+        // 体积上限检查
+        long currentSize = totalResponseSize;
+        if (currentSize >= MAX_RESPONSE_TOTAL_SIZE) {
+            System.err.println("[ApiMonitorContext] WARNING: Response total size limit reached ("
+                    + formatBytes(currentSize) + " >= " + formatBytes(MAX_RESPONSE_TOTAL_SIZE) + "). "
+                    + "Subsequent responses will NOT be stored to prevent OOM.");
+            return;
+        }
+
+        // 写入存储
+        int bodySize = responseBody.length();
+        responseStorage.computeIfAbsent(url, k ->
+                java.util.Collections.synchronizedList(new ArrayList<>())
+        ).add(responseBody);
+        totalResponseSize += bodySize;
+    }
+
+    /**
+     * 格式化字节数为人类可读字符串（KB/MB）。
+     */
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
     }
 
     /**

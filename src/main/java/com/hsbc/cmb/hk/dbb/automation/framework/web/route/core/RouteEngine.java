@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -38,6 +39,23 @@ public class RouteEngine {
 
     /** Monitor 会话注册表：RouteRule → MonitorSession */
     private static final Map<RouteRule, MonitorSession> SESSIONS = new ConcurrentHashMap<>();
+
+    /**
+     * Route 防重门控 — 当同一请求匹配多个重叠 pattern 时，
+     * 只有第一个 handler 处理，后续 handler 静默跳过。
+     *
+     * <p>场景：page.route("/api/**", h1) + page.route("/api/user", h2)
+     * 请求 /api/user 同时命中两个 pattern，h1 先调用 route.resume()，
+     * h2 再尝试操作会导致 PlaywrightException: Route is already handled。
+     * 此集合用 putIfAbsent 保证只有首个 handler 执行。
+     *
+     * <p>每次测试结束通过 {@link #clearDispatchedRoutes()} 清空。
+     * 同时设置容量上限，防止异常情况下（未调用 clear 的场景）无限增长。
+     */
+    private static final Map<Route, Boolean> DISPATCHED_ROUTES = new ConcurrentHashMap<>();
+
+    /** DISPATCHED_ROUTES 容量上限，超过后自动清空（防御性保护） */
+    private static final int MAX_DISPATCHED_ROUTES = 500;
 
     /** 超时调度器（守护线程，避免阻塞 JVM 退出） */
     private static final ScheduledExecutorService SCHEDULER =
@@ -117,8 +135,25 @@ public class RouteEngine {
 
     /**
      * 路由分发 — 根据规则类型调用对应 Handler。
+     *
+     * <p>防重门控：同一 Route 对象被多个重叠 pattern 匹配时，
+     * 仅第一个到达的 handler 执行，后续 handler 静默跳过（避免 "Route is already handled" 异常）。
      */
     private static void dispatchRoute(Route route, RouteRule rule) {
+        // ═══ 防御性清理：Map 超过上限时清空（防止异常情况下无限增长）═══
+        if (DISPATCHED_ROUTES.size() >= MAX_DISPATCHED_ROUTES) {
+            LOGGER.warn("[RouteEngine] DISPATCHED_ROUTES reached {} entries, clearing to prevent memory leak",
+                    DISPATCHED_ROUTES.size());
+            DISPATCHED_ROUTES.clear();
+        }
+
+        // ═══ 防重门控：同一请求只处理一次 ═══
+        if (DISPATCHED_ROUTES.putIfAbsent(route, Boolean.TRUE) != null) {
+            LOGGER.warn("[RouteEngine] Route already handled by another pattern, skipping '{}' for URL '{}'",
+                    rule.getUrlPattern(), route.request().url());
+            return;
+        }
+
         RouteHandler handler = HANDLERS.get(rule.getType());
         if (handler == null) {
             LOGGER.warn("[RouteEngine] Unknown RouteHandleType: {}, fallback to resume for pattern '{}'",
@@ -134,6 +169,12 @@ public class RouteEngine {
 
         try {
             handler.handle(route, rule);
+
+            // MOCK/MODIFY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
+            // MONITOR 的匹配计数在 MonitorHandler 异步完成时回调，不在此处触发
+            if (rule.getType() != RouteHandleType.MONITOR) {
+                onMonitorMatch(rule);
+            }
         } catch (Exception e) {
             LOGGER.error("[RouteEngine] Handler '{}' threw exception for pattern '{}': {}",
                     handler.getClass().getSimpleName(), rule.getUrlPattern(), e.getMessage(), e);
@@ -156,16 +197,14 @@ public class RouteEngine {
     // ─── Monitor 自动停止 ────────────────────────────────────────
 
     /**
-     * 为 MONITOR 规则创建自动停止会话（如果需要的话）。
+     * 为路由规则创建自动停止会话（如果需要的话）。
      *
-     * <p>条件：rule.type == MONITOR 且 (timeoutMs > 0 或 autoStopOnMatch == true)
+     * <p>适用范围：MONITOR / MOCK / MODIFY 三种类型。
+     * <p>条件：(timeoutMs > 0 或 autoStopOnMatch == true)
      */
     private static void startMonitorSession(Object context, String pattern, RouteRule rule) {
-        if (rule.getType() != RouteHandleType.MONITOR) {
-            return;
-        }
         if (rule.getTimeoutMs() <= 0 && !rule.isAutoStopOnMatch()) {
-            return;  // 无限监控，无需会话
+            return;  // 无限监控/拦截，无需会话
         }
 
         MonitorSession session = new MonitorSession(context, pattern, rule);
@@ -216,6 +255,34 @@ public class RouteEngine {
     }
 
     /**
+     * 对指定上下文注销所有已注册 pattern 的 Playwright 路由。
+     *
+     * <p>用于 {@link RouteRegistry#clearContext(Object)} 中解决 MOCK/MODIFY
+     * 无 MonitorSession 时路由无法解绑的问题。
+     *
+     * <p>单个 pattern 的 unroute 失败不影响后续 pattern（异常隔离）。
+     *
+     * @param context  Page 或 BrowserContext 实例
+     * @param patterns 要注销的 URL pattern 集合
+     */
+    static void unrouteAllForContext(Object context, Set<String> patterns) {
+        for (String pattern : patterns) {
+            try {
+                if (context instanceof Page) {
+                    ((Page) context).unroute(pattern);
+                } else if (context instanceof BrowserContext) {
+                    ((BrowserContext) context).unroute(pattern);
+                }
+                LOGGER.debug("[RouteEngine] Unrouted pattern '{}' from context: {}",
+                        pattern, context.getClass().getSimpleName());
+            } catch (Exception e) {
+                LOGGER.warn("[RouteEngine] Failed to unroute pattern '{}' from context '{}': {}",
+                        pattern, context.getClass().getSimpleName(), e.getMessage());
+            }
+        }
+    }
+
+    /**
      * 全局清理所有 MonitorSession。
      */
     public static void clearAllMonitorSessions() {
@@ -223,6 +290,14 @@ public class RouteEngine {
             session.stop();
         }
         SESSIONS.clear();
+        DISPATCHED_ROUTES.clear();
+    }
+
+    /**
+     * 清空 Route 防重门控集合（测试结束时调用，释放已处理的 Route 引用）。
+     */
+    public static void clearDispatchedRoutes() {
+        DISPATCHED_ROUTES.clear();
     }
 
     // ─── MonitorSession（内部类）───────────────────────────────────

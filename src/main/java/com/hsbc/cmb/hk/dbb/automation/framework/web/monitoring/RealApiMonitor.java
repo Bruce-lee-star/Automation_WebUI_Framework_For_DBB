@@ -1329,11 +1329,18 @@ public class RealApiMonitor implements ContextLifecycleHookManager.RuleCapturer 
                 if (history.size() <= MAX_API_HISTORY_SIZE) return;
                 
                 int toRemoveCount = history.size() - MAX_API_HISTORY_SIZE;
-                // 使用 List 的 removeRange 高效删除旧记录
-                history.subList(0, toRemoveCount).clear();
+                // 【修复】CopyOnWriteArrayList subList().clear() 抛 UnsupportedOperationException
+                // 改用迭代器安全删除头部元素
+                Iterator<ApiCallRecord> iterator = history.iterator();
+                int count = 0;
+                while (iterator.hasNext() && count < toRemoveCount) {
+                    iterator.next();
+                    iterator.remove();
+                    count++;
+                }
                 
                 logger.debug("[History] Trimmed {} old records, kept {} latest (max={})", 
-                    toRemoveCount, history.size(), MAX_API_HISTORY_SIZE);
+                    count, history.size(), MAX_API_HISTORY_SIZE);
             }
         }
     }

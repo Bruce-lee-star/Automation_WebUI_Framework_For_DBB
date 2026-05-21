@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -30,7 +30,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+
+import java.util.Map;
 
 public class PlaywrightListener implements StepListener {
 
@@ -72,6 +76,9 @@ public class PlaywrightListener implements StepListener {
     // 用于防止testSuiteFinished被多次调用时重复输出日志
     private static volatile boolean testSuiteFinishedLogged = false;
 
+    // ⭐⭐⭐ API 断言失败跟踪 — 每个测试线程独立的上下文
+    private static final ThreadLocal<ApiMonitorContext> apiMonitorContext = ThreadLocal.withInitial(ApiMonitorContext::new);
+
     public PlaywrightListener() {
         // 从环境变量中读取截图策略配置
         EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
@@ -88,6 +95,9 @@ public class PlaywrightListener implements StepListener {
         testStartTime.set(System.currentTimeMillis());
         currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
         totalTests.incrementAndGet();
+
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        resetApiMonitorContext();
 
         // 测试开始时截图（根据策略决定）
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
@@ -478,6 +488,9 @@ public class PlaywrightListener implements StepListener {
         failureScreenshotsAlreadySent.remove();
         stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
+
+        // ⭐⭐⭐ 新增：清理 API 监控上下文
+        apiMonitorContext.remove();
     }
 
     private String sanitizeName(String name) {
@@ -509,10 +522,6 @@ public class PlaywrightListener implements StepListener {
     }
 
     private void stepFinishedInternal(List<ScreenshotAndHtmlSource> screenshots, ZonedDateTime timestamp) {
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
-
-
         // ⭐ 防双重处理：如果无参版 stepFinished() 已经处理过，跳过截图和发送
         boolean alreadyProcessed = stepFinishProcessed.get();
 
@@ -606,9 +615,6 @@ public class PlaywrightListener implements StepListener {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with {} screenshots",
                 screenshots != null ? screenshots.size() : 0);
 
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
-
         // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时，防止残留）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
         if (stepScreenshots != null && !stepScreenshots.isEmpty() && screenshots != null && stepStartTime.get() != null) {
@@ -623,9 +629,6 @@ public class PlaywrightListener implements StepListener {
     public void takeScreenshots(TestResult result, List<ScreenshotAndHtmlSource> screenshots) {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with result {} and {} screenshots",
                 result, screenshots != null ? screenshots.size() : 0);
-
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
 
         // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
@@ -674,13 +677,6 @@ public class PlaywrightListener implements StepListener {
         // 清理逻辑
         LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up all Playwright resources at test suite finish");
         
-        // ⭐ 修复6：整个 Feature/Suite 结束时终极清场 RealApiMonitor（防止残留）
-        try {
-            com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.forceCleanAll();
-        } catch (Exception e) {
-            logger.debug("Failed to force clean RealApiMonitor at suite finish", e);
-        }
-        
         try {
             PlaywrightManager.cleanupForFeature();
             LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaned up all resources at test suite finish");
@@ -695,6 +691,9 @@ public class PlaywrightListener implements StepListener {
         currentTestName.set(uniqueTestName);
         testStartTime.set(System.currentTimeMillis());
         totalTests.incrementAndGet();
+
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        resetApiMonitorContext();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -714,6 +713,9 @@ public class PlaywrightListener implements StepListener {
         testStartTime.set(startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis());
         totalTests.incrementAndGet();
 
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        resetApiMonitorContext();
+
         try {
             FrameworkCore.getInstance().beforeTest();
             long start = startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis();
@@ -730,21 +732,13 @@ public class PlaywrightListener implements StepListener {
     public void testFinished(TestOutcome result) {
         try {
             logger.info("Test finished: {}", result);
-            // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点 - 测试结束前最后机会）
-            flushPendingApiMonitorReport();
+            // ⭐⭐⭐ 新增：检查 API 断言失败并标记测试结果
+            checkAndMarkApiAssertionFailures(result);
             // 更新当前测试结果
             if (result != null && result.getResult() != null) {
                 currentTestResult.set(result.getResult());
             }
             testFinishedInternal();
-
-            // ⭐ 修复3：每个 scenario/test 结束时自动清空 RealApiMonitor 状态
-            // 防止上一个 scenario 的监听/历史/期望泄漏到下一个 scenario
-            try {
-                com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.resetForNextScenario();
-            } catch (Exception e) {
-                logger.debug("Failed to reset RealApiMonitor for next scenario", e);
-            }
 
             // 获取浏览器重启策略
             String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
@@ -771,6 +765,9 @@ public class PlaywrightListener implements StepListener {
             // 确保异常时也清理
             cleanupThreadLocals();
             throw e;
+        } finally {
+            // ⭐⭐⭐ 新增：清理 API 监控上下文
+            apiMonitorContext.remove();
         }
     }
 
@@ -784,8 +781,8 @@ public class PlaywrightListener implements StepListener {
         try {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Test finished: {}, isDataDriven: {}, finishTime: {}", result, isInDataDrivenTest, finishTime);
 
-            // ⭐ 数据驱动版本也需要 flush API 监控报告（防止数据驱动场景报告丢失）
-            flushPendingApiMonitorReport();
+            // ⭐⭐⭐ 新增：检查 API 断言失败并标记测试结果
+            checkAndMarkApiAssertionFailures(result);
 
             Long startTime = testStartTime.get();
             if (startTime == null) {
@@ -828,17 +825,11 @@ public class PlaywrightListener implements StepListener {
             }
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
-
-            // ⭐ 修复：数据驱动版本也需要 resetForNextScenario（防止跨 Example API 监控污染）
-            // 注意：此方法在 finally 之前执行，确保即使 reset 抛异常也能进入 cleanupThreadLocals
-            try {
-                com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.resetForNextScenario();
-            } catch (Exception e) {
-                logger.debug("Failed to reset RealApiMonitor for next scenario (data-driven)", e);
-            }
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
+            // ⭐⭐⭐ 新增：清理 API 监控上下文
+            apiMonitorContext.remove();
         }
     }
 
@@ -886,6 +877,9 @@ public class PlaywrightListener implements StepListener {
     public void testFailed(TestOutcome result, Throwable throwable) {
         logger.error("Test failed: {}", result, throwable);
 
+        // ⭐⭐⭐ 新增：检查 API 断言失败
+        checkAndMarkApiAssertionFailures(result);
+
         // 注意：不在 testFailed 中 increment failedTests，避免与 testFinished 重复计数
         // 测试失败统计由 testFinished 统一处理
 
@@ -920,19 +914,6 @@ public class PlaywrightListener implements StepListener {
         //     takeScreenshotAndRegister("SCREEN_CHANGE");
         // }
         LoggingConfigUtil.logDebugIfVerbose(logger, "SCREEN_CHANGE screenshot disabled (report length optimization)");
-    }
-
-    /**
-     * 刷新 ApiMonitor 待写入的报告（从异步线程缓存 → 主线程 Serenity 报告）
-     * 在主线程的各个回调点（stepFinished/takeScreenshots/testFinished）中调用，
-     * 解决异步线程（ApiMonitor-AsyncStop）无 Serenity 上下文导致 CurrentListener is null 的问题
-     */
-    private static void flushPendingApiMonitorReport() {
-        try {
-            RealApiMonitor.flushPendingReport();
-        } catch (Exception e) {
-            logger.debug("Failed to flush pending API monitor report", e);
-        }
     }
 
     @Override
@@ -1071,5 +1052,87 @@ public class PlaywrightListener implements StepListener {
         screenshotCounter.set(0);
         testData.clear();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ⭐⭐⭐ API 监控断言集成
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * 获取当前线程的 API 监控上下文（供 MonitorHandler 等外部组件调用）
+     */
+    public static ApiMonitorContext getCurrentApiMonitorContext() {
+        return apiMonitorContext.get();
+    }
+
+    /**
+     * 重置当前测试的 API 监控上下文
+     */
+    private void resetApiMonitorContext() {
+        ApiMonitorContext context = apiMonitorContext.get();
+        if (context != null) {
+            context.reset();
+        }
+    }
+
+    /**
+     * ⭐⭐⭐ 核心方法：检查 API 断言失败并标记测试结果为失败
+     *
+     * <p>在测试结束时调用，等待所有异步 API 请求完成（最多 5 秒），
+     * 如果 MonitorHandler 标记了断言失败，则强制设置 TestResult.FAILURE。
+     */
+    private void checkAndMarkApiAssertionFailures(TestOutcome result) {
+        ApiMonitorContext context = apiMonitorContext.get();
+        if (context == null) {
+            return;
+        }
+
+        // 等待所有异步 API 请求完成（最多 5 秒，使用 wait/notify 避免忙等待）
+        try {
+            boolean completed = context.awaitCompletion(5_000);
+            if (!completed) {
+                logger.warn("Timed out waiting for API requests to complete ({} active)", context.getActiveRequests());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.debug("Interrupted while waiting for API requests to complete");
+        }
+
+        // 检查是否有 API 断言失败
+        if (context.hasAssertionFailures()) {
+            logger.error("API assertions failed for test: {}", currentTestName.get());
+
+            // 生成详细失败报告
+            String failureReport = context.buildFailureReport();
+            logger.error("API assertion failure details:\n{}", failureReport);
+
+            // 将测试结果标记为失败
+            if (result != null) {
+                result.setResult(TestResult.FAILURE);
+            }
+
+            // 记录失败信息
+            recordTestData("apiAssertionFailure", "API assertions failed during test execution");
+            recordTestData("apiAssertionFailureDetails", failureReport);
+
+            // 记录到 Serenity 报告
+            try {
+                net.serenitybdd.core.Serenity.recordReportData()
+                    .withTitle("API ASSERTION FAILURES DETECTED")
+                    .andContents(failureReport);
+            } catch (Exception e) {
+                logger.debug("Failed to record API assertion failure to Serenity report", e);
+            }
+        }
+
+        // 等待结束后清理上下文（确保下一个测试使用全新上下文）
+        context.reset();
+    }
+
+    /**
+     * ⭐⭐⭐ API 监控上下文 — 已独立为顶层类。
+     *
+     * @see ApiMonitorContext
+     */
+    // 原内部类已迁移至 com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext
 
 }

@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import net.thucydides.model.steps.StepListener;
 import net.thucydides.model.steps.StepFailure;

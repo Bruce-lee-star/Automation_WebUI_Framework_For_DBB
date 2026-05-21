@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 /**
  * 路由处理类型枚举
@@ -15,11 +15,11 @@ public enum RouteHandleType {
      * 修改请求头/请求体
      * 拦截请求，修改后继续发送
      */
-    MODIFY_REQUEST,
+    MODIFY,
 
     /**
      * 直接 Mock 返回响应
      * 拦截请求，直接返回自定义响应
      */
-    MOCK_RESPONSE
+    MOCK
 }

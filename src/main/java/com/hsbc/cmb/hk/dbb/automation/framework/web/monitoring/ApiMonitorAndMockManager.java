@@ -728,17 +728,14 @@ public class ApiMonitorAndMockManager implements ContextLifecycleHookManager.Rul
             synchronized (apiCallHistory) {
                 // 再次检查
                 if (apiCallHistory.size() <= MAX_API_HISTORY_SIZE) return;
-                int toRemoveCount = apiCallHistory.size() - MAX_API_HISTORY_SIZE;
-                // 使用迭代器安全删除，避免 CopyOnWriteArrayList subList().clear() 抛异常
-                Iterator<ApiCallRecord> iterator = apiCallHistory.iterator();
-                int count = 0;
-                while (iterator.hasNext() && count < toRemoveCount) {
-                    iterator.next();
-                    iterator.remove();
-                    count++;
-                }
+                int toKeepCount = MAX_API_HISTORY_SIZE;
+                // 【修复】CopyOnWriteArrayList 迭代器不支持 remove()，subList().clear() 也不支持
+                // 改用 ArrayList 中转 + removeAll() 方案
+                List<ApiCallRecord> allRecords = new ArrayList<>(apiCallHistory);
+                List<ApiCallRecord> toRemove = new ArrayList<>(allRecords.subList(0, allRecords.size() - toKeepCount));
+                apiCallHistory.removeAll(toRemove);
                 logger.debug("[History] Trimmed {} old records, kept {} latest", 
-                        count, MAX_API_HISTORY_SIZE);
+                        toRemove.size(), MAX_API_HISTORY_SIZE);
             }
         }
     }

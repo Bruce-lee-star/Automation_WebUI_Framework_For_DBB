@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,6 +152,14 @@ public class RouteEngine {
         if (DISPATCHED_ROUTES.putIfAbsent(route, Boolean.TRUE) != null) {
             LOGGER.warn("[RouteEngine] Route already handled by another pattern, skipping '{}' for URL '{}'",
                     rule.getUrlPattern(), route.request().url());
+            return;
+        }
+
+        // ═══ 请求条件匹配：根据 Rule 中配置的 ResourceType/Header/Query/Body 等过滤 ═══
+        if (!RouteUtil.requestMatches(route, rule)) {
+            // 不匹配此规则 → 移除防重标记，让 Playwright 继续尝试下一个 pattern
+            DISPATCHED_ROUTES.remove(route);
+            route.resume();
             return;
         }
 

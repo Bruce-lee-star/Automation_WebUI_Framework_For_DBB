@@ -1,6 +1,6 @@
 # Route 路由框架说明文档
 
-> **最后更新：** 2026-05-21 | **版本：** v4.0（内存安全加固 + 超时监控 + 缓存管理）
+> **最后更新：** 2026-05-22 | **版本：** v4.3（ScheduledThreadPoolExecutor 防积压 + DispatchedRoutes 自动清理 + ApiMonitorContext 日志标准化）
 
 `com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包是对 Playwright `page.route()` / `context.route()` 的封装，提供**请求拦截、Mock 响应、请求体修改、API 监控断言**一体化能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
 
@@ -23,6 +23,7 @@
   - [4.9 RouteAsyncPool — 异步任务池](#49-routeasyncpool--异步任务池)
   - [4.10 RouteException — 异常体系](#410-routeexception--异常体系)
   - [4.11 SerenityReporter — 报告工具](#411-serenityreporter--报告工具)
+  - [🆕 4.12 RouteUtil — 请求条件匹配工具](#412-routeutil--请求条件匹配工具)
 - [五、DSL 使用示例](#五dsl-使用示例)
 - [六、完整 API 参考](#六完整-api-参考)
 - [七、架构优势与设计亮点](#七架构优势与设计亮点)
@@ -49,10 +50,11 @@ route/
 │   └── MockHandler.java               # Mock 处理器（拦截 → 直接返回自定义响应）
 └── util/
     ├── RouteAsyncPool.java            # 异步任务线程池（守护线程 + 超时监控 + 告警）
-    └── SerenityReporter.java          # Serenity 报告工具（主线程安全）
+    ├── SerenityReporter.java          # Serenity 报告工具（主线程安全）
+    └── RouteUtil.java                 # 请求条件匹配工具（ResourceType/Header/Query/Body 等）
 ```
 
-**共 4 个子包，13 个类文件。**
+**共 4 个子包，14 个类文件。**
 
 ---
 
@@ -73,6 +75,16 @@ RouteEngine.register(context, rules)
     └── dispatchRoute(route, rule)   → 请求到达时
             │
             ├── DISPATCHED_ROUTES 防重门控（同一请求只处理一次）
+            │
+            ├── 🆕 RouteUtil.requestMatches()  → 请求条件匹配
+            │       ├── Resource Type（xhr/fetch/script/image/...）
+            │       ├── HTTP Method（GET/POST/...）
+            │       ├── Request Headers（精确匹配）
+            │       ├── Query Parameters（精确匹配）
+            │       ├── Content-Type（包含匹配）
+            │       ├── Request Body Regex（正则匹配）
+            │       ├── Referrer / Origin（包含匹配）
+            │       └── Frame / Navigation（主 Frame + API 限定）
             │
             └── Handler.handle(route, rule)
                     │
@@ -221,6 +233,17 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | **自动停止** | `timeoutMs` | long | 0（永不超时） | 超时毫秒数 |
 | | `minMatches` | int | 1 | 最小匹配次数 |
 | | `autoStopOnMatch` | boolean | true | 达标后是否自动停止 |
+| **🆕 请求匹配** | `resourceTypes` | String | null | 允许的资源类型（逗号分隔：xhr,fetch,script...） |
+| | `matchMethod` | String | null | HTTP 方法匹配（GET/POST/...） |
+| | `matchHeaders` | Map | null | 请求头精确匹配 |
+| | `matchQuery` | Map | null | Query 参数精确匹配 |
+| | `matchBodyRegex` | String | null | 请求体正则匹配 |
+| | `matchContentType` | String | null | Content-Type 包含匹配（如 "json"） |
+| | `matchReferrer` | String | null | Referrer 包含匹配 |
+| | `matchOrigin` | String | null | Origin 包含匹配 |
+| | `matchFrameUrl` | String | null | Frame URL 包含匹配 |
+| | `onlyMainFrame` | boolean | true | 是否只匹配主 Frame |
+| | `onlyApiCall` | boolean | true | 是否仅匹配 API（跳过 navigation + 默认只匹配 xhr/fetch） |
 
 **输入校验**：
 - `urlPattern` 拒绝 blank 值
@@ -268,6 +291,25 @@ RouteDsl.on(browserContext)  // Context 级别
 
 // ── Mock 配置 ──
 .mock(body)                 // 设置响应体
+.mockStatus(status)         // 设置 HTTP 状态码
+.mockHeader(key, value)     // 设置响应头
+
+// 🆕 ── 请求条件匹配 ──
+.matchMethod(method)        // HTTP 方法过滤（GET/POST/...）
+.resourceType(types)        // 资源类型过滤（逗号分隔）
+.onlyXhr()                  // 仅匹配 XHR 请求
+.onlyFetch()                // 仅匹配 Fetch 请求
+.matchHeader(key, value)    // 请求头精确匹配
+.matchQuery(key, value)     // Query 参数精确匹配
+.matchBodyRegex(regex)      // 请求体正则匹配
+.matchContentType(type)     // Content-Type 包含匹配
+.matchReferrer(referrer)    // Referrer 包含匹配
+.matchOrigin(origin)        // Origin 包含匹配
+.matchFrameUrl(url)         // Frame URL 包含匹配
+.onlyMainFrame(bool)        // 是否只匹配主 Frame
+.allowAllFrames()           // 匹配所有 Frame（含 iframe）
+.onlyApiCall(bool)          // 是否仅匹配 API 调用
+.allowAllRequests()         // 匹配所有类型请求（含 navigation/静态资源）
 .mockStatus(int)            // 设置状态码（默认 200）
 .mockHeader(key, value)     // 设置响应头
 
@@ -438,6 +480,11 @@ storeResponse(url, body)
 | **优雅关闭** | JVM 关闭钩子 → `shutdown()` 等待 30 秒 → `shutdownNow()` 强制关闭 |
 | **阈值告警** | 队列使用率 ≥80% ERROR、线程使用率 ≥90% ERROR、超时挂起数超限 ERROR |
 
+**🆕 v4.3 改进 — ScheduledThreadPoolExecutor 防积压**：
+- 将 `Executors.newSingleThreadScheduledExecutor()` 替换为 `new ScheduledThreadPoolExecutor(1)`
+- 启用 `setRemoveOnCancelPolicy(true)`：已取消的 Future 立即从队列移除，防止超时检查任务积压
+- 超时回调中 `f.get(timeoutMs, ...)` → `f.get(0, ...)`：调度器已等待 timeoutMs 才触发，无需二次等待
+
 **监控指标暴露**：
 
 ```java
@@ -490,6 +537,65 @@ RouteException (extends RuntimeException)
 - URL 超过 80 字符自动截断加 `...`
 - 异常静默捕获（不影响主流程）
 - 单一静态方法：`recordApiOperation(operation, url, detail)`
+
+### 🆕 4.12 RouteUtil — 请求条件匹配工具
+
+**职责**：根据 Playwright `Request` 对象判断是否匹配 `RouteRule` 中定义的请求条件。
+
+**核心方法**：
+
+```java
+// 入口方法 — 检查 10 个维度的匹配条件
+public static boolean requestMatches(Route route, RouteRule rule)
+
+// Query 参数解析工具
+public static Map<String, String> parseQueryParams(String url)
+```
+
+**🆕 v4.2 新增 — Resource Type 常量枚举**：
+
+```java
+// 替代魔法字符串，与 Playwright request.resourceType() 返回值对应
+RouteUtil.RT_XHR        // "xhr"
+RouteUtil.RT_FETCH      // "fetch"
+RouteUtil.RT_SCRIPT     // "script"
+RouteUtil.RT_STYLESHEET // "stylesheet"
+RouteUtil.RT_IMAGE      // "image"
+RouteUtil.RT_FONT       // "font"
+RouteUtil.RT_MEDIA      // "media"
+RouteUtil.RT_DOCUMENT   // "document"
+RouteUtil.RT_WEBSOCKET  // "websocket"
+RouteUtil.RT_MANIFEST   // "manifest"
+RouteUtil.RT_OTHER      // "other"
+```
+
+**🆕 v4.2 新增 — Regex Pattern 缓存**：
+- 使用 `ConcurrentHashMap<String, Pattern>` 缓存编译后的正则
+- 容量上限 200 → 超出后清空重建（防 OOM）
+- `String.matches()` → `Pattern.matcher().matches()`（避免重复编译）
+
+**🆕 v4.2 新增 — 资源类型合法性校验**：
+- 配置 `resourceType()` 时自动检查是否属于 12 种合法 Playwright 资源类型
+- 非法类型仅日志警告，不阻断流程
+
+**匹配维度及优先级**：
+
+| # | 维度 | 匹配方式 | 未配置时 |
+|---|------|----------|----------|
+| 1 | Resource Type | 集合包含（`req.resourceType()` in rule） | 默认 `onlyApiCall=true` → 仅 `xhr/fetch` |
+| 2 | HTTP Method | 忽略大小写精确匹配 | 不限制 |
+| 3 | Request Headers | 所有配置的 header 必须精确匹配 | 不检查 |
+| 4 | Query Parameters | 所有配置的 query 必须精确匹配 | 不检查 |
+| 5 | Content-Type | 包含匹配（`"json"` 匹配 `"application/json;charset=UTF-8"`） | 不检查 |
+| 6 | Body Regex | Java Pattern 正则匹配 | 不检查 |
+| 7 | Referrer | 包含匹配 | 不检查 |
+| 8 | Origin | 包含匹配 | 不检查 |
+| 9 | Frame | 主 Frame 限定 + Frame URL 包含匹配 | 默认仅主 Frame |
+| 10 | Navigation | `isNavigationRequest()` 过滤 | 默认跳过 navigation |
+
+**匹配失败处理**：从 `DISPATCHED_ROUTES` 移除标记 → `route.resume()` → Playwright 自动调用下一个匹配 pattern 的 handler。
+
+**匹配异常处理**：任何匹配过程中的异常都会被捕获并返回 `false`（保守跳过，避免误匹配）。
 
 ---
 
@@ -599,7 +705,105 @@ dsl.start();
 dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
 ```
 
-### 5.9 获取断言失败详情
+### 🆕 5.9 全条件 Mock — 多维度精准匹配
+
+```java
+RouteDsl.on(page)
+    .api("/api/transfer")
+    .matchMethod("POST")                          // 仅拦截 POST
+    .matchHeader("X-Request-Source", "ios")       // 请求头必须匹配
+    .matchQuery("amount", "100000")               // Query 参数精确匹配
+    .matchContentType("json")                     // 仅 JSON 请求
+    .matchBodyRegex(".*\"currency\":\"USD\".*")   // body 必须包含 USD
+    .matchOrigin("myapp.com")                     // 来源匹配
+    .mock("{\"code\":0,\"msg\":\"Mocked\"}")
+    .mockStatus(200)
+    .done()
+    .start();
+```
+
+### 🆕 5.10 资源类型过滤 — 只拦截 API，放过静态资源
+
+```java
+// 默认行为：onlyApiCall=true → 只拦截 xhr/fetch，自动跳过 image/font/media/document
+RouteDsl.on(page)
+    .api("/api/**")
+    .monitor()
+    .expectStatus(200)
+    .done()
+    .start();
+
+// 显式只拦截 XHR
+RouteDsl.on(page)
+    .api("/api/**")
+    .onlyXhr()          // 只匹配 XHR，不过滤 Fetch
+    .mock("{}")
+    .done()
+    .start();
+
+// 显式指定多种资源类型
+RouteDsl.on(page)
+    .api("/**/*.js")
+    .resourceType("script")      // 只拦截 script 请求
+    .mock("console.log('mocked')")
+    .done()
+    .start();
+
+// 拦截所有类型（包括 image/font/navigation）
+RouteDsl.on(page)
+    .api("/**")
+    .allowAllRequests()
+    .monitor()
+    .done()
+    .start();
+```
+
+### 🆕 5.11 Frame 级别过滤
+
+```java
+// 只监控主 Frame，忽略 iframe 中的请求（默认行为）
+RouteDsl.on(page)
+    .api("/api/track")
+    .onlyMainFrame(true)               // 默认值，可省略
+    .monitor()
+    .done()
+    .start();
+
+// 允许 iframe 请求也匹配
+RouteDsl.on(page)
+    .api("/ads/**")
+    .allowAllFrames()                  // 不会跳过 iframe 发起的请求
+    .mock("{\"blocked\":true}")
+    .done()
+    .start();
+
+// 只匹配特定 Frame URL 发起的请求
+RouteDsl.on(page)
+    .api("/api/checkout")
+    .matchFrameUrl("payment-iframe")    // 只在支付 iframe 中生效
+    .mock("{\"status\":\"paid\"}")
+    .done()
+    .start();
+```
+
+### 🆕 5.12 Referrer/Origin 来源区分 — 同一 API 不同入口
+
+```java
+// 从支付页面发起的请求 Mock 为成功
+RouteDsl.on(page)
+    .api("/api/payment")
+    .matchReferrer("checkout-page")
+    .mock("{\"code\":0,\"msg\":\"success\"}")
+    .done()
+    // 从其他页面发起的请求 Mock 为失败
+    .api("/api/payment")
+    .mock("{\"code\":-1,\"msg\":\"unauthorized\"}")
+    .mockStatus(403)
+    .done()
+    .start();
+```
+
+### 5.13 获取断言失败详情
 
 ```java
 // 通过 PlaywrightListener 在异步线程自动收集
@@ -654,6 +858,22 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `addHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
 | `replaceBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换 |
 | `method(m)` | String | ApiDsl | 修改 HTTP 方法 |
+| **— 🆕 请求匹配 —** | | | |
+| `matchMethod(m)` | String | ApiDsl | HTTP 方法过滤 |
+| `resourceType(types)` | String | ApiDsl | 资源类型过滤（逗号分隔） |
+| `onlyXhr()` | — | ApiDsl | 仅匹配 XHR |
+| `onlyFetch()` | — | ApiDsl | 仅匹配 Fetch |
+| `matchHeader(k,v)` | String,String | ApiDsl | 请求头精确匹配 |
+| `matchQuery(k,v)` | String,String | ApiDsl | Query 参数精确匹配 |
+| `matchBodyRegex(re)` | String | ApiDsl | 请求体正则匹配 |
+| `matchContentType(ct)` | String | ApiDsl | Content-Type 包含匹配 |
+| `matchReferrer(r)` | String | ApiDsl | Referrer 包含匹配 |
+| `matchOrigin(o)` | String | ApiDsl | Origin 包含匹配 |
+| `matchFrameUrl(u)` | String | ApiDsl | Frame URL 包含匹配 |
+| `onlyMainFrame(b)` | boolean | ApiDsl | 是否只匹配主 Frame |
+| `allowAllFrames()` | — | ApiDsl | 匹配所有 Frame（含 iframe） |
+| `onlyApiCall(b)` | boolean | ApiDsl | 是否仅匹配 API 调用 |
+| `allowAllRequests()` | — | ApiDsl | 匹配所有类型请求 |
 | **— 生命周期 —** | | | |
 | `done()` | — | RouteDsl | 完成规则 → 返回父级（可继续链式） |
 
@@ -664,6 +884,17 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `urlPattern` | String | —（必填） | URL 匹配模式 |
 | `type` | RouteHandleType | `MONITOR` | 处理类型 |
 | `mockBody` | String | null | Mock 响应体 |
+| `resourceTypes` | String | null | 🆕 资源类型过滤 |
+| `matchMethod` | String | null | 🆕 HTTP 方法过滤 |
+| `matchHeaders` | Map | null | 🆕 请求头匹配 |
+| `matchQuery` | Map | null | 🆕 Query 参数匹配 |
+| `matchBodyRegex` | String | null | 🆕 请求体正则 |
+| `matchContentType` | String | null | 🆕 Content-Type 匹配 |
+| `matchReferrer` | String | null | 🆕 Referrer 匹配 |
+| `matchOrigin` | String | null | 🆕 Origin 匹配 |
+| `matchFrameUrl` | String | null | 🆕 Frame URL 匹配 |
+| `onlyMainFrame` | boolean | true | 🆕 仅主 Frame |
+| `onlyApiCall` | boolean | true | 🆕 仅 API 调用 |
 | `mockStatus` | int | 200 | Mock 状态码 |
 | `mockHeaders` | Map\<String,String\> | null | Mock 响应头 |
 | `addHeaders` | Map\<String,String\> | null | Modify 添加的请求头 |
@@ -724,6 +955,20 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `getTotalResponseCount()` | 已存储响应总条数 |
 | `getTotalResponseSize()` | 已存储响应总字节数 |
 | `reset()` | 清空所有状态 |
+
+### 🆕 RouteUtil — 静态工具方法
+
+| 方法 | 参数 | 返回 | 说明 |
+|------|------|------|------|
+| `requestMatches(Route, RouteRule)` | route + rule | boolean | 检查请求是否满足规则中的所有匹配条件 |
+| `parseQueryParams(String)` | URL | Map<String,String> | 从 URL 解析 query 参数 |
+
+**🆕 v4.2 Resource Type 常量**：`RT_XHR`, `RT_FETCH`, `RT_SCRIPT`, `RT_STYLESHEET`, `RT_IMAGE`, `RT_FONT`, `RT_MEDIA`, `RT_DOCUMENT`, `RT_WEBSOCKET`, `RT_MANIFEST`, `RT_OTHER`
+
+**🆕 v4.2 Regex 缓存**：`ConcurrentHashMap<String, Pattern>`，容量上限 200，高并发免重复编译
+
+**匹配维度**（`requestMatches` 内部）：
+ResourceType → Method → Headers → Query → ContentType → BodyRegex → Referrer → Origin → Frame → Navigation
 
 ### ModifyHandler — 静态方法
 

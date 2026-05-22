@@ -47,13 +47,21 @@ public final class RouteAsyncPool {
 
     private static final ThreadPoolExecutor POOL;
 
-    // ─── 超时调度器（复用线程，避免 new Thread 每任务创建） ──────────
-    private static final ScheduledExecutorService TIMEOUT_SCHEDULER =
-            Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "pw-route-timeout");
-                t.setDaemon(true);
-                return t;
-            });
+    // ─── 超时调度器（ScheduledThreadPoolExecutor + removeOnCancel 防积压）──────
+    private static final ScheduledThreadPoolExecutor TIMEOUT_SCHEDULER;
+
+    static {
+        TIMEOUT_SCHEDULER = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread t = new Thread(r, "pw-route-timeout");
+            t.setDaemon(true);
+            return t;
+        });
+        // 关键优化：当已取消的 Future 不再需要时立即移除，防止调度器队列积压
+        TIMEOUT_SCHEDULER.setRemoveOnCancelPolicy(true);
+        // 关机时继续执行已调度的任务（而非直接丢弃）
+        TIMEOUT_SCHEDULER.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        TIMEOUT_SCHEDULER.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+    }
 
     // ─── 可配置参数 ──────────────────────────────────────────────
     private static final int CORE_THREADS;
@@ -173,7 +181,8 @@ public final class RouteAsyncPool {
                 long pending = pendingTimeoutCount.incrementAndGet();
                 TIMEOUT_SCHEDULER.schedule(() -> {
                     try {
-                        f.get(timeoutMs, TimeUnit.MILLISECONDS);
+                        // 调度器已等待 timeoutMs 才触发，此处用 0 立即检查
+                        f.get(0, TimeUnit.MILLISECONDS);
                     } catch (TimeoutException e) {
                         boolean cancelled = f.cancel(true);
                         long count = timeoutCount.incrementAndGet();

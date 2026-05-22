@@ -1,5 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +27,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * @see RouteEngine#getCurrentApiMonitorContext()
  */
 public class ApiMonitorContext {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ApiMonitorContext.class);
+
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
 
@@ -206,18 +211,18 @@ public class ApiMonitorContext {
         // 数量上限检查
         int total = getTotalResponseCount();
         if (total >= MAX_RESPONSE_STORAGE) {
-            System.err.println("[ApiMonitorContext] WARNING: Response count limit reached ("
-                    + total + " >= " + MAX_RESPONSE_STORAGE + "). "
-                    + "Subsequent responses will NOT be stored. Consider calling reset() between tests.");
+            LOGGER.warn("[ApiMonitorContext] Response count limit reached ({} >= {}). "
+                            + "Subsequent responses will NOT be stored. Consider calling reset() between tests.",
+                    total, MAX_RESPONSE_STORAGE);
             return;  // 直接拒绝存储
         }
 
         // 体积上限检查
         long currentSize = totalResponseSize;
         if (currentSize >= MAX_RESPONSE_TOTAL_SIZE) {
-            System.err.println("[ApiMonitorContext] WARNING: Response total size limit reached ("
-                    + formatBytes(currentSize) + " >= " + formatBytes(MAX_RESPONSE_TOTAL_SIZE) + "). "
-                    + "Subsequent responses will NOT be stored to prevent OOM.");
+            LOGGER.warn("[ApiMonitorContext] Response total size limit reached ({} >= {}). "
+                            + "Subsequent responses will NOT be stored to prevent OOM.",
+                    formatBytes(currentSize), formatBytes(MAX_RESPONSE_TOTAL_SIZE));
             return;
         }
 

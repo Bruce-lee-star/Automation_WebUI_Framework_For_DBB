@@ -134,6 +134,9 @@ public class RouteRegistry {
         // 3. 清理 MonitorSession（内部也会 unroute + unregister，但无副作用）
         RouteEngine.clearMonitorSessions(context);
 
+        // 4. 清理 Route 防重门控（本测试上下文所有请求均已处理完毕，安全清空）
+        RouteEngine.clearDispatchedRoutes();
+
         LOGGER.debug("[RouteRegistry] Cleared {} patterns for context: {}",
                 patterns != null ? patterns.size() : 0,
                 context.getClass().getSimpleName());

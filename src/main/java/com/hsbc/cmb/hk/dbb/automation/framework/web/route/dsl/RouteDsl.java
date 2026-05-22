@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
@@ -210,6 +211,152 @@ public class RouteDsl {
 
         public ApiDsl method(String method) {
             rule.setMethod(method);
+            return this;
+        }
+
+        // ================================================================
+        // 请求条件匹配 DSL（新增）
+        // ================================================================
+
+        /**
+         * 设置匹配的 HTTP Method（如 "GET","POST"）。
+         * <p>不调用则匹配所有 Method。
+         */
+        public ApiDsl matchMethod(String method) {
+            rule.setMatchMethod(method);
+            return this;
+        }
+
+        /**
+         * 设置允许匹配的资源类型（逗号分隔）。
+         * <p>例如 {@code "xhr,fetch"} 只匹配 XHR 和 Fetch。
+         * <p>不调用则继承 {@link #onlyApiCall(boolean)} 的默认行为。
+         */
+        public ApiDsl resourceType(String types) {
+            rule.setResourceTypes(types);
+            return this;
+        }
+
+        /**
+         * 只匹配 XHR 请求。
+         */
+        public ApiDsl onlyXhr() {
+            rule.setResourceTypes(RouteUtil.RT_XHR);
+            return this;
+        }
+
+        /**
+         * 只匹配 Fetch 请求。
+         */
+        public ApiDsl onlyFetch() {
+            rule.setResourceTypes(RouteUtil.RT_FETCH);
+            return this;
+        }
+
+        /**
+         * 添加一个请求头匹配条件（精确匹配）。
+         * <p>所有添加的 header 必须同时满足。
+         */
+        public ApiDsl matchHeader(String key, String value) {
+            rule.addMatchHeader(key, value);
+            return this;
+        }
+
+        /**
+         * 添加一个 Query 参数匹配条件（精确匹配）。
+         * <p>所有添加的 query 参数必须同时满足。
+         */
+        public ApiDsl matchQuery(String key, String value) {
+            rule.addMatchQuery(key, value);
+            return this;
+        }
+
+        /**
+         * 设置请求体正则表达式匹配。
+         * <p>只有当 POST/PUT 请求的 body 匹配此正则时才拦截。
+         *
+         * @param regex Java 正则表达式
+         */
+        public ApiDsl matchBodyRegex(String regex) {
+            rule.setMatchBodyRegex(regex);
+            return this;
+        }
+
+        /**
+         * 设置 Content-Type 包含匹配。
+         * <p>例如 {@code "json"} 可匹配 {@code "application/json"} 和
+         * {@code "application/json;charset=UTF-8"}。
+         */
+        public ApiDsl matchContentType(String contentType) {
+            rule.setMatchContentType(contentType);
+            return this;
+        }
+
+        /**
+         * 设置 Referrer 包含匹配。
+         * <p>请求的 Referrer 头必须包含指定字符串。
+         */
+        public ApiDsl matchReferrer(String referrer) {
+            rule.setMatchReferrer(referrer);
+            return this;
+        }
+
+        /**
+         * 设置 Origin 包含匹配。
+         * <p>请求的 Origin 头必须包含指定字符串。
+         */
+        public ApiDsl matchOrigin(String origin) {
+            rule.setMatchOrigin(origin);
+            return this;
+        }
+
+        /**
+         * 设置 Frame URL 包含匹配。
+         * <p>发起请求的 Frame URL 必须包含指定字符串。
+         */
+        public ApiDsl matchFrameUrl(String frameUrl) {
+            rule.setMatchFrameUrl(frameUrl);
+            return this;
+        }
+
+        /**
+         * 是否仅匹配主 Frame 请求（跳过 iframe/worker）。
+         * 默认 true。
+         */
+        public ApiDsl onlyMainFrame(boolean onlyMainFrame) {
+            rule.setOnlyMainFrame(onlyMainFrame);
+            return this;
+        }
+
+        /**
+         * 允许匹配所有 Frame（包括 iframe/worker）。
+         */
+        public ApiDsl allowAllFrames() {
+            rule.setOnlyMainFrame(false);
+            return this;
+        }
+
+        /**
+         * 是否仅匹配 API 调用（自动跳过 navigation 和静态资源）。
+         * <p>设为 true 时：
+         * <ul>
+         *   <li>跳过 isNavigationRequest=true 的请求</li>
+         *   <li>如果没有显式设置 resourceType，则只匹配 xhr/fetch</li>
+         * </ul>
+         * 默认 true。
+         */
+        public ApiDsl onlyApiCall(boolean apiOnly) {
+            rule.setOnlyApiCall(apiOnly);
+            return this;
+        }
+
+        /**
+         * 允许匹配所有类型请求（包括 navigation、静态资源、image、font 等）。
+         * <p>等同于 {@code onlyApiCall(false).allowAllFrames()}。
+         */
+        public ApiDsl allowAllRequests() {
+            rule.setOnlyApiCall(false);
+            rule.setOnlyMainFrame(false);
             return this;
         }
 

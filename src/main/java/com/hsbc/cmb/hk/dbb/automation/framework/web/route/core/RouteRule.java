@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
-import java.util.Map;
+import java.util.*;
 
 /**
  * 路由规则数据模型 — 统一承载 MONITOR / MODIFY / MOCK 三种类型的配置。
@@ -10,6 +10,17 @@ import java.util.Map;
  *   <li>{@code urlPattern} 不允许为 blank（空/纯空格字符串）</li>
  *   <li>{@code mockStatus} 必须是合法 HTTP 状态码（100 ≤ status < 600）</li>
  *   <li>{@code expectedStatus} 必须是合法 HTTP 状态码（100 ≤ status < 600）</li>
+ * </ul>
+ *
+ * <p>请求条件匹配（新增）：
+ * <ul>
+ *   <li>{@code resourceTypes} — 资源类型过滤（xhr/fetch/script/...）默认仅拦截 API</li>
+ *   <li>{@code matchHeaders} — 请求头精确匹配</li>
+ *   <li>{@code matchQuery} — Query 参数精确匹配</li>
+ *   <li>{@code matchBodyRegex} — 请求体正则匹配</li>
+ *   <li>{@code matchContentType} — Content-Type 包含匹配</li>
+ *   <li>{@code matchReferrer / matchOrigin} — 来源匹配</li>
+ *   <li>{@code matchFrameUrl / onlyMainFrame} — Frame 匹配</li>
  * </ul>
  */
 public class RouteRule {
@@ -37,6 +48,43 @@ public class RouteRule {
     private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
     private boolean autoStopOnMatch = true;  // 目标匹配后是否自动停止监控
+
+    // ═══════════════════════════════════════════════════════════
+    // 请求条件匹配（新增）
+    // ═══════════════════════════════════════════════════════════
+
+    /** 允许的资源类型，逗号分隔（如 "xhr,fetch"）。null/空 = 不限制。 */
+    private String resourceTypes;
+
+    /** HTTP Method 匹配（如 "GET","POST"）。null = 不限制。 */
+    private String matchMethod;
+
+    /** 请求头精确匹配。所有 key-value 必须完全匹配。 */
+    private Map<String, String> matchHeaders;
+
+    /** Query 参数精确匹配。所有 key-value 必须完全匹配。 */
+    private Map<String, String> matchQuery;
+
+    /** 请求体正则匹配。null = 不检查。 */
+    private String matchBodyRegex;
+
+    /** Content-Type 包含匹配（如 "json" 匹配 "application/json"）。null = 不检查。 */
+    private String matchContentType;
+
+    /** Referrer 包含匹配。null = 不检查。 */
+    private String matchReferrer;
+
+    /** Origin 包含匹配。null = 不检查。 */
+    private String matchOrigin;
+
+    /** Frame URL 包含匹配。null = 不检查。 */
+    private String matchFrameUrl;
+
+    /** 是否只拦截主 Frame 请求（跳过 iframe/worker）。默认 true。 */
+    private boolean onlyMainFrame = true;
+
+    /** 是否仅拦截 API 调用（xhr/fetch + 跳过 navigation）。默认 true。 */
+    private boolean onlyApiCall = true;
 
     // ─── Getters ────────────────────────────────────────────────
 
@@ -99,6 +147,32 @@ public class RouteRule {
     public boolean isAutoStopOnMatch() {
         return autoStopOnMatch;
     }
+
+    // ─── 请求条件匹配 Getters ────────────────────────────────────
+
+    public String getResourceTypes() { return resourceTypes; }
+
+    /** 获取解析后的资源类型集合（不可变）。 */
+    public Set<String> getResourceTypeSet() {
+        if (resourceTypes == null || resourceTypes.trim().isEmpty()) return null;
+        String[] parts = resourceTypes.trim().toLowerCase().split("[,;\\s]+");
+        Set<String> set = new LinkedHashSet<>();
+        for (String p : parts) {
+            if (!p.isEmpty()) set.add(p);
+        }
+        return set.isEmpty() ? null : Collections.unmodifiableSet(set);
+    }
+
+    public String getMatchMethod() { return matchMethod; }
+    public Map<String, String> getMatchHeaders() { return matchHeaders; }
+    public Map<String, String> getMatchQuery() { return matchQuery; }
+    public String getMatchBodyRegex() { return matchBodyRegex; }
+    public String getMatchContentType() { return matchContentType; }
+    public String getMatchReferrer() { return matchReferrer; }
+    public String getMatchOrigin() { return matchOrigin; }
+    public String getMatchFrameUrl() { return matchFrameUrl; }
+    public boolean isOnlyMainFrame() { return onlyMainFrame; }
+    public boolean isOnlyApiCall() { return onlyApiCall; }
 
     // ─── Setters（带参数校验）────────────────────────────────────
 
@@ -205,5 +279,108 @@ public class RouteRule {
 
     public void setAutoStopOnMatch(boolean autoStopOnMatch) {
         this.autoStopOnMatch = autoStopOnMatch;
+    }
+
+    // ─── 请求条件匹配 Setters ──────────────────────────────────
+
+    /**
+     * 设置允许匹配的资源类型（逗号分隔）。
+     * <p>例如：{@code "xhr,fetch"} 只匹配 XHR 和 Fetch 请求。
+     * <p>设为 null 或空字符串 = 不限制（配合 onlyApiCall 使用）。
+     */
+    public void setResourceTypes(String resourceTypes) {
+        this.resourceTypes = resourceTypes;
+    }
+
+    /**
+     * 设置 HTTP Method 匹配条件。
+     * @param method 如 "GET","POST","PUT","DELETE"。null = 不限制。
+     */
+    public void setMatchMethod(String method) {
+        this.matchMethod = method;
+    }
+
+    /**
+     * 添加一个请求头匹配条件。
+     * @param key   请求头名称
+     * @param value 期望的值（精确匹配）
+     */
+    public void addMatchHeader(String key, String value) {
+        if (matchHeaders == null) matchHeaders = new HashMap<>();
+        matchHeaders.put(key, value);
+    }
+
+    /**
+     * 添加一个 Query 参数匹配条件。
+     * @param key   参数名
+     * @param value 期望的值（精确匹配）
+     */
+    public void addMatchQuery(String key, String value) {
+        if (matchQuery == null) matchQuery = new HashMap<>();
+        matchQuery.put(key, value);
+    }
+
+    public void setMatchHeaders(Map<String, String> matchHeaders) {
+        this.matchHeaders = matchHeaders;
+    }
+
+    public void setMatchQuery(Map<String, String> matchQuery) {
+        this.matchQuery = matchQuery;
+    }
+
+    /**
+     * 设置请求体正则表达式匹配。
+     * @param regex 正则表达式（Java Pattern 语法）
+     */
+    public void setMatchBodyRegex(String regex) {
+        this.matchBodyRegex = regex;
+    }
+
+    /**
+     * 设置 Content-Type 包含匹配。
+     * @param contentType 如 "json" 可匹配 "application/json;charset=UTF-8"
+     */
+    public void setMatchContentType(String contentType) {
+        this.matchContentType = contentType;
+    }
+
+    /**
+     * 设置 Referrer 包含匹配。
+     * @param referrer Referrer URL 中必须包含的字符串
+     */
+    public void setMatchReferrer(String referrer) {
+        this.matchReferrer = referrer;
+    }
+
+    /**
+     * 设置 Origin 包含匹配。
+     * @param origin Origin 中必须包含的字符串
+     */
+    public void setMatchOrigin(String origin) {
+        this.matchOrigin = origin;
+    }
+
+    /**
+     * 设置 Frame URL 包含匹配。
+     * @param frameUrl Frame URL 中必须包含的字符串
+     */
+    public void setMatchFrameUrl(String frameUrl) {
+        this.matchFrameUrl = frameUrl;
+    }
+
+    /**
+     * 是否只匹配主 Frame 请求（跳过 iframe/worker）。
+     * 默认 true。
+     */
+    public void setOnlyMainFrame(boolean onlyMainFrame) {
+        this.onlyMainFrame = onlyMainFrame;
+    }
+
+    /**
+     * 是否仅匹配 API 调用（遇到 navigation 请求自动跳过）。
+     * 默认 true。
+     */
+    public void setOnlyApiCall(boolean onlyApiCall) {
+        this.onlyApiCall = onlyApiCall;
     }
 }

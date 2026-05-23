@@ -140,9 +140,12 @@ public class RouteDsl {
         }
 
         /**
-         * 目标匹配后是否自动停止监控。
-         * 默认 {@code true}：达到 minMatches 后自动 unroute。
-         * 设为 {@code false} 可持续捕获直到超时或测试结束。
+         * 目标匹配后是否自动停止。
+         * <ul>
+         *   <li>MONITOR — 默认 {@code true}：达到 minMatches 后自动 unroute</li>
+         *   <li>MOCK   — 默认 {@code false}：持续拦截直到超时或测试结束</li>
+         *   <li>MODIFY — 默认 {@code false}：持续拦截直到超时或测试结束</li>
+         * </ul>
          */
         public ApiDsl autoStopOnMatch(boolean autoStopOnMatch) {
             rule.setAutoStopOnMatch(autoStopOnMatch);
@@ -169,6 +172,7 @@ public class RouteDsl {
         public ApiDsl mock(String body) {
             rule.setType(RouteHandleType.MOCK);
             rule.setMockBody(body);
+            rule.setAutoStopOnMatch(false);   // Mock 默认持续拦截，不自动停止
             return this;
         }
 
@@ -190,6 +194,7 @@ public class RouteDsl {
         // ===== Modify =====
         public ApiDsl modify() {
             rule.setType(RouteHandleType.MODIFY);
+            rule.setAutoStopOnMatch(false);   // Modify 默认持续拦截，不自动停止
             return this;
         }
 
@@ -204,8 +209,7 @@ public class RouteDsl {
         }
 
         public ApiDsl replaceBody(String key, String value) {
-            rule.setReplaceBodyKey(key);
-            rule.setReplaceBodyValue(value);
+            rule.addReplaceBodyPair(key, value);
             return this;
         }
 
@@ -343,7 +347,7 @@ public class RouteDsl {
          *   <li>跳过 isNavigationRequest=true 的请求</li>
          *   <li>如果没有显式设置 resourceType，则只匹配 xhr/fetch</li>
          * </ul>
-         * 默认 true。
+         * 默认 false（匹配所有请求类型）。
          */
         public ApiDsl onlyApiCall(boolean apiOnly) {
             rule.setOnlyApiCall(apiOnly);

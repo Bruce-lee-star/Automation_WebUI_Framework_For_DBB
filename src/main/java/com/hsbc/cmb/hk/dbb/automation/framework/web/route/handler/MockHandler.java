@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -50,8 +51,13 @@ public class MockHandler {
         // ── 5. 返回 Mock 响应（异常安全）───────────────────────────
         try {
             route.fulfill(opts);
-            LOGGER.debug("[MockHandler] Fulfilled: pattern='{}', status={}, bodyLength={}",
-                    rule.getUrlPattern(), status, body.length());
+            String url = route.request().url();
+            LOGGER.info("[MockHandler] Fulfilled: url={}, pattern='{}', status={}, bodyLength={}",
+                    url, rule.getUrlPattern(), status, body.length());
+            SerenityReporter.recordApiOperation("MOCK", url,
+                    String.format("Pattern: %s\nStatus: %d\nBody: %s",
+                            rule.getUrlPattern(), status,
+                            body.length() > 500 ? body.substring(0, 500) + "..." : body));
         } catch (PlaywrightException e) {
             LOGGER.error("[MockHandler] Failed to fulfill route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);

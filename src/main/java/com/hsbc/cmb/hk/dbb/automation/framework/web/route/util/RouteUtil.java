@@ -130,7 +130,7 @@ public final class RouteUtil {
     /**
      * Resource Type 匹配。
      * <p>使用 {@link #RT_XHR} 等常量代替魔法字符串。
-     * <p>规则：如果 rule 未设置 resourceTypes 且 onlyApiCall=true（默认），
+     * <p>规则：如果 rule 未设置 resourceTypes 且 onlyApiCall=true，
      * 则只匹配 xhr/fetch 类型。如果 rule 显式设置了 resourceTypes，按设置匹配。
      */
     private static boolean matchResourceType(Request req, RouteRule rule) {
@@ -366,7 +366,7 @@ public final class RouteUtil {
 
     /**
      * Navigation 匹配。
-     * <p>如果 onlyApiCall=true（默认），跳过 isNavigationRequest 为 true 的请求（页面跳转）。
+     * <p>如果 onlyApiCall=true，跳过 isNavigationRequest 为 true 的请求（页面跳转）。
      */
     private static boolean matchNavigation(Request req, RouteRule rule) {
         if (rule.isOnlyApiCall() && req.isNavigationRequest()) {

@@ -126,7 +126,13 @@ public class RouteEngine {
                     LOGGER.warn("[RouteEngine] Skipping rule with empty urlPattern");
                     continue;
                 }
-                registrar.register(pattern, rule);
+                // 归一化：补齐前后 **，与 Playwright 全 URL（含查询参数）匹配兼容
+                // 例：/api/users/1 → **/api/users/1** 可匹配 http://host:port/api/users/1?page=2
+                String normalized = pattern.startsWith("/") ? "**" + pattern : pattern;
+                if (!normalized.endsWith("**")) {
+                    normalized = normalized.replaceAll("\\*+$", "") + "**";
+                }
+                registrar.register(normalized, rule);
             } catch (Exception e) {
                 LOGGER.error("[RouteEngine] Failed to register rule for pattern '{}': {}",
                         rule.getUrlPattern(), e.getMessage(), e);

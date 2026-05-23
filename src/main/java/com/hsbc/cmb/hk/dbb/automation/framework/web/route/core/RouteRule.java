@@ -14,7 +14,7 @@ import java.util.*;
  *
  * <p>请求条件匹配（新增）：
  * <ul>
- *   <li>{@code resourceTypes} — 资源类型过滤（xhr/fetch/script/...）默认仅拦截 API</li>
+ *   <li>{@code resourceTypes} — 资源类型过滤（xhr/fetch/script/...）默认不限制</li>
  *   <li>{@code matchHeaders} — 请求头精确匹配</li>
  *   <li>{@code matchQuery} — Query 参数精确匹配</li>
  *   <li>{@code matchBodyRegex} — 请求体正则匹配</li>
@@ -35,8 +35,7 @@ public class RouteRule {
 
     // Modify
     private Map<String, String> addHeaders;
-    private String replaceBodyKey;
-    private String replaceBodyValue;
+    private Map<String, String> replaceBodyPairs;
     private String method;
 
     // Monitor + 断言
@@ -47,7 +46,7 @@ public class RouteRule {
     // Monitor 自动停止控制
     private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
-    private boolean autoStopOnMatch = true;  // 目标匹配后是否自动停止监控
+    private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 默认停止；MOCK/MODIFY 由 DSL 覆盖为 false）
 
     // ═══════════════════════════════════════════════════════════
     // 请求条件匹配（新增）
@@ -83,8 +82,8 @@ public class RouteRule {
     /** 是否只拦截主 Frame 请求（跳过 iframe/worker）。默认 true。 */
     private boolean onlyMainFrame = true;
 
-    /** 是否仅拦截 API 调用（xhr/fetch + 跳过 navigation）。默认 true。 */
-    private boolean onlyApiCall = true;
+    /** 是否仅拦截 API 调用（xhr/fetch + 跳过 navigation）。默认 false（匹配所有请求类型）。 */
+    private boolean onlyApiCall = false;
 
     // ─── Getters ────────────────────────────────────────────────
 
@@ -112,12 +111,8 @@ public class RouteRule {
         return addHeaders;
     }
 
-    public String getReplaceBodyKey() {
-        return replaceBodyKey;
-    }
-
-    public String getReplaceBodyValue() {
-        return replaceBodyValue;
+    public Map<String, String> getReplaceBodyPairs() {
+        return replaceBodyPairs;
     }
 
     public String getMethod() {
@@ -218,12 +213,19 @@ public class RouteRule {
         this.addHeaders = addHeaders;
     }
 
-    public void setReplaceBodyKey(String replaceBodyKey) {
-        this.replaceBodyKey = replaceBodyKey;
+    /**
+     * 添加一个请求体字段替换（JSONPath → 值）。
+     * <p>支持多次调用，添加到 Map 中。
+     */
+    public void addReplaceBodyPair(String key, String value) {
+        if (replaceBodyPairs == null) {
+            replaceBodyPairs = new LinkedHashMap<>();
+        }
+        replaceBodyPairs.put(key, value);
     }
 
-    public void setReplaceBodyValue(String replaceBodyValue) {
-        this.replaceBodyValue = replaceBodyValue;
+    public void setReplaceBodyPairs(Map<String, String> replaceBodyPairs) {
+        this.replaceBodyPairs = replaceBodyPairs;
     }
 
     public void setMethod(String method) {
@@ -378,7 +380,7 @@ public class RouteRule {
 
     /**
      * 是否仅匹配 API 调用（遇到 navigation 请求自动跳过）。
-     * 默认 true。
+     * 默认 false（不限制请求类型）。
      */
     public void setOnlyApiCall(boolean onlyApiCall) {
         this.onlyApiCall = onlyApiCall;

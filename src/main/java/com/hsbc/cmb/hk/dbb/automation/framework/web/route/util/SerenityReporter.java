@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
 import net.serenitybdd.core.Serenity;
+import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,6 +25,13 @@ public final class SerenityReporter {
      */
     public static void recordApiOperation(String operation, String url, String detail) {
         try {
+            // 保护：路由回调可能在 Serenity 测试线程之外触发（如 Playwright 事件线程），
+            //       此时 StepEventBus 没有当前监听器，跳过报告写入避免 Serenity 内部报错
+            if (StepEventBus.getEventBus().getBaseStepListener() == null) {
+                logger.debug("[SerenityReporter] No active step listener, skipping report for {}: {}",
+                        operation, url);
+                return;
+            }
             String title = String.format("[API %s] %s", operation, url.length() > 80 ? url.substring(0, 80) + "..." : url);
             Serenity.recordReportData()
                     .withTitle(title)

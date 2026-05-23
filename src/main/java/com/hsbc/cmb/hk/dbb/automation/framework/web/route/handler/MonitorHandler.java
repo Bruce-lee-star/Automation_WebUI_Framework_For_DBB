@@ -87,6 +87,9 @@ public class MonitorHandler {
                 String url = req.url();
                 int status = res.status();
 
+                LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
+                        url, status, body.length(), rule.getUrlPattern());
+
                 // 存储 response 到上下文（供后续修改 + Mock 阶段复用）
                 if (fContext != null) {
                     fContext.storeResponse(url, body);

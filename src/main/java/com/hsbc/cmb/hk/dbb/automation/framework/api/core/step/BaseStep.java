@@ -183,6 +183,10 @@ public class BaseStep extends RestJobProvider {
         JsonNode currentNode = rootNode;
 
         for (String segment : pathSegments) {
+            // 跳过 JSONPath 根前缀 "$" 和空段
+            if ("$".equals(segment) || segment.isEmpty()) {
+                continue;
+            }
             // Handle array indices (e.g., "items[0]" → "items" + index 0)
             if (segment.contains("[")) {
                 String arrayName = segment.substring(0, segment.indexOf("["));

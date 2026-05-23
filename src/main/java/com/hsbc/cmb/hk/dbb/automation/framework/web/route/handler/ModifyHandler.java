@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
@@ -101,7 +102,7 @@ public class ModifyHandler {
         }
 
         // ── 2. 修改请求体 ────────────────────────────────────────
-        if (rule.getReplaceBodyKey() != null) {
+        if (rule.getReplaceBodyPairs() != null && !rule.getReplaceBodyPairs().isEmpty()) {
             byte[] postDataBuffer = req.postDataBuffer();
 
             if (postDataBuffer != null && postDataBuffer.length > 0) {
@@ -109,32 +110,36 @@ public class ModifyHandler {
                 boolean isJson = postData.trim().startsWith("{") || postData.trim().startsWith("[");
 
                 if (isJson) {
-                    try {
-                        // ── JSONPath 精准替换 ──
-                        String newBody = replaceByJsonPath(postData, rule.getReplaceBodyKey(),
-                                rule.getReplaceBodyValue());
-                        opts.setPostData(newBody);
-                        LOGGER.debug("[ModifyHandler] JSONPath replaced: path='{}', value='{}'",
-                                rule.getReplaceBodyKey(), rule.getReplaceBodyValue());
-                    } catch (Exception e) {
-                        if (allowFallbackStringReplace) {
-                            LOGGER.warn("[ModifyHandler] JSONPath replace failed ({}), falling back to string replace for path='{}'",
-                                    e.getMessage(), rule.getReplaceBodyKey());
-                            String newBody = postData.replace(
-                                    rule.getReplaceBodyKey(), rule.getReplaceBodyValue());
-                            opts.setPostData(newBody);
-                        } else {
-                            LOGGER.error("[ModifyHandler] JSONPath replace failed and fallback disabled, body unchanged: path='{}', error={}",
-                                    rule.getReplaceBodyKey(), e.getMessage(), e);
+                    // ── JSONPath 精准替换（支持多个 key-value）──
+                    String newBody = postData;
+                    for (Map.Entry<String, String> entry : rule.getReplaceBodyPairs().entrySet()) {
+                        String key = entry.getKey();
+                        String value = entry.getValue();
+                        try {
+                            newBody = replaceByJsonPath(newBody, key, value);
+                            LOGGER.debug("[ModifyHandler] JSONPath replaced: path='{}', value='{}'",
+                                    key, value);
+                        } catch (Exception e) {
+                            if (allowFallbackStringReplace) {
+                                LOGGER.warn("[ModifyHandler] JSONPath replace failed ({}), falling back to string replace for path='{}'",
+                                        e.getMessage(), key);
+                                newBody = newBody.replace(key, value);
+                            } else {
+                                LOGGER.error("[ModifyHandler] JSONPath replace failed and fallback disabled, skipping path='{}', error={}",
+                                        key, e.getMessage(), e);
+                            }
                         }
                     }
+                    opts.setPostData(newBody);
                 } else {
                     // 非 JSON 纯文本，使用字符串替换
-                    String newBody = postData.replace(
-                            rule.getReplaceBodyKey(), rule.getReplaceBodyValue());
+                    String newBody = postData;
+                    for (Map.Entry<String, String> entry : rule.getReplaceBodyPairs().entrySet()) {
+                        newBody = newBody.replace(entry.getKey(), entry.getValue());
+                        LOGGER.debug("[ModifyHandler] Non-JSON text body replaced: key='{}'",
+                                entry.getKey());
+                    }
                     opts.setPostData(newBody);
-                    LOGGER.debug("[ModifyHandler] Non-JSON text body replaced: key='{}'",
-                            rule.getReplaceBodyKey());
                 }
             } else {
                 LOGGER.debug("[ModifyHandler] No post data or binary body, skipping body replacement");
@@ -149,6 +154,17 @@ public class ModifyHandler {
         // ── 4. 放行请求（异常安全）─────────────────────────────────
         try {
             route.resume(opts);
+            LOGGER.info("[ModifyHandler] Modified: url={}, pattern='{}', method={}, headers={}, replaceKeys={}",
+                    req.url(), rule.getUrlPattern(),
+                    rule.getMethod() != null ? rule.getMethod() : req.method(),
+                    rule.getAddHeaders() != null ? rule.getAddHeaders().keySet() : "none",
+                    rule.getReplaceBodyPairs() != null ? rule.getReplaceBodyPairs().keySet() : "none");
+            SerenityReporter.recordApiOperation("MODIFY", req.url(),
+                    String.format("Pattern: %s\nMethod: %s\nHeaders: %s\nReplaceBody: %s",
+                            rule.getUrlPattern(),
+                            rule.getMethod() != null ? rule.getMethod() : req.method(),
+                            rule.getAddHeaders() != null ? rule.getAddHeaders().toString() : "none",
+                            rule.getReplaceBodyPairs() != null ? rule.getReplaceBodyPairs().toString() : "none"));
         } catch (PlaywrightException e) {
             LOGGER.error("[ModifyHandler] Failed to resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
@@ -287,6 +303,12 @@ public class ModifyHandler {
 
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];
+
+            // 跳过 JSONPath 根前缀 "S" 和空段
+            if ("$".equals(segment) || segment.isEmpty()) {
+                continue;
+            }
+
             boolean isLast = (i == segments.length - 1);
 
             // 解析数组标记 [index]

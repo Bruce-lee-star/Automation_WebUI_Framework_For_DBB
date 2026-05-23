@@ -41,6 +41,28 @@ public abstract class AbstractRestJob {
         this.validatableResponse = validatableResponse;
     }
 
+    /**
+     * 剥离服务器返回的 HTML 包裹标签（如 &lt;html&gt;&lt;body&gt;...&lt;/body&gt;&lt;/html&gt;）
+     * 提取 body 中间的实际内容（纯 JSON / XML / 文本等）
+     */
+    protected static String stripHtmlWrapper(String rawBody) {
+        if (rawBody == null || rawBody.isEmpty()) {
+            return rawBody;
+        }
+        String trimmed = rawBody.trim();
+        // 纯 JSON，无需处理
+        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+            return trimmed;
+        }
+        // 提取 <body>...</body> 中间内容
+        int bodyStart = trimmed.indexOf("<body>");
+        int bodyEnd = trimmed.indexOf("</body>");
+        if (bodyStart != -1 && bodyEnd != -1) {
+            return trimmed.substring(bodyStart + 6, bodyEnd).trim();
+        }
+        return trimmed;
+    }
+
     private static void initializeRestAssuredConfig() {
         final Config config = ConfigProvider.getConfig();
         int httpConnectTimeout;

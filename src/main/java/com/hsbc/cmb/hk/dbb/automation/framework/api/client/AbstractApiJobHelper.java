@@ -14,14 +14,44 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public class AbstractApiJobHelper extends ApiJob {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractApiJobHelper.class);
     private static final String JSON_PATH_PREFIX = "$.";
+
+    // ── 内部辅助方法：消除 get→modify→set→log 重复 ──────────────
+
+    /** 安全获取 Entity，为 null 时记录错误并返回 false */
+    private boolean entityAvailable(String action) {
+        if (this.getEntity() == null) {
+            LOGGER.error("Entity is null, cannot {}", action);
+            return false;
+        }
+        return true;
+    }
+
+    /** 通用：清空 Map 字段 */
+    private void clearMapField(Consumer<Map<String, Object>> setter, String label) {
+        setter.accept(new HashMap<>());
+        LOGGER.info("Deleted all {}, Updated {} are empty", label, label);
+    }
+
+    /** 通用：读取-修改-回写 Map 字段 */
+    private void modifyMapField(
+            Supplier<Map<String, Object>> getter,
+            Consumer<Map<String, Object>> setter,
+            Consumer<Map<String, Object>> modifier,
+            String action, String detail) {
+        Map<String, Object> params = getter.get();
+        modifier.accept(params);
+        setter.accept(params);
+        LOGGER.info("{} {} parameters, Detail: {}", action, detail, params);
+    }
 
 
     // ========== 新增：读取类方法（对称补充） ==========
@@ -350,250 +380,178 @@ public class AbstractApiJobHelper extends ApiJob {
 
     // ========== 现有方法保持不变 ==========
     public void clearHeader() {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> emptyRequestHeaders = new HashMap<>();
-        entity.setRequestHeaders(emptyRequestHeaders);
-        final String msg = String.format("Deleted all request headers, Updated request headers are %s", entity.getRequestHeaders());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("clear headers")) return;
+        clearMapField(entity::setRequestHeaders, "request headers");
     }
 
     public void clearQueryParams() {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> emptyQueryParams = new HashMap<>();
-        entity.setQueryParams(emptyQueryParams);
-        final String msg = String.format("Deleted query parameters, Updated query parameters are %s", entity.getQueryParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("clear query params")) return;
+        clearMapField(entity::setQueryParams, "query parameters");
     }
 
     public void clearFormParams() {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> emptyFormParams = new HashMap<>();
-        entity.setFormParams(emptyFormParams);
-        final String msg = String.format("Deleted form parameters, Updated form parameters are %s", entity.getFormParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("clear form params")) return;
+        clearMapField(entity::setFormParams, "form parameters");
     }
 
     public void clearCookies() {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> emptyCookies = new HashMap<>();
-        entity.setCookies(emptyCookies);
-        final String msg = String.format("Deleted all cookies, Updated cookies are %s", entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("clear cookies")) return;
+        clearMapField(entity::setCookies, "cookies");
     }
 
     public void removeHeader(final String headerName) {
-        final Entity entity = this.getEntity();
-        Map<String, Object> requestHeaders = entity.getRequestHeaders();
-        requestHeaders.remove(headerName);
-        entity.setRequestHeaders(requestHeaders);
-        final String msg = String.format("Removed header: %s, Updated request headers are %s", headerName, entity.getRequestHeaders());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove header")) return;
+        modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
+                m -> m.remove(headerName), "Removed", "header: " + headerName);
     }
 
     public void removeHeaders(final List<String> headerNames) {
-        final Entity entity = this.getEntity();
-        Iterator<String> iterator = headerNames.iterator();
-        final Map<String, Object> requestHeaders = entity.getRequestHeaders();
-        while (iterator.hasNext()) {
-            final String headerName = iterator.next();
-            requestHeaders.remove(headerName);
-        }
-        entity.setRequestHeaders(requestHeaders);
-
-        final String msg = String.format("Removed header(s): %s, Updated request headers are %s", headerNames, entity.getRequestHeaders());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove headers")) return;
+        modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
+                m -> headerNames.forEach(m::remove), "Removed", "headers: " + headerNames);
     }
 
     public void updateHeader(final String headerName, final String headerValue) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> requestHeaders = entity.getRequestHeaders();
-        requestHeaders.put(headerName, headerValue);
-        entity.setRequestHeaders(requestHeaders);
-        final String msg = String.format("Updated value of the header: '%s': '%s',\n Updated request headers are %s",
-                headerName, entity.getRequestHeaders().get(headerName), entity.getRequestHeaders());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update header")) return;
+        modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
+                m -> m.put(headerName, headerValue), "Updated",
+                String.format("header '%s'='%s'", headerName, headerValue));
     }
 
     public void updateHeaders(final Map<String, String> headers) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> requestHeaders = entity.getRequestHeaders();
-
-        requestHeaders.putAll(headers);
-        entity.setRequestHeaders(requestHeaders);
-        final String msg = String.format("Updated request headers are %s", entity.getRequestHeaders());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update headers")) return;
+        modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
+                m -> m.putAll(headers), "Updated", "headers batch");
     }
 
     public void removePathParam(final String paramName) {
-        final Entity entity = this.getEntity();
-        Map<String, Object> pathParams = entity.getPathParams();
-        pathParams.remove(paramName);
-        entity.setPathParams(pathParams);
-        final String msg = String.format("Removed path parameter: '%s', Updated path parameter are '%s'", paramName, entity.getPathParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove path param")) return;
+        modifyMapField(entity::getPathParams, entity::setPathParams,
+                m -> m.remove(paramName), "Removed", "path param: " + paramName);
     }
 
     public void removePathParams(final List<String> paramNames) {
-        final Entity entity = this.getEntity();
-        Iterator<String> iterator = paramNames.iterator();
-        final Map<String, Object> pathParams = entity.getPathParams();
-        while (iterator.hasNext()) {
-            final String paramName = iterator.next();
-            pathParams.remove(paramName);
-        }
-        entity.setPathParams(pathParams);
-        final String msg = String.format("Removed path parameter(s): '%s', Updated path parameters are '%s'", paramNames, entity.getPathParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove path params")) return;
+        modifyMapField(entity::getPathParams, entity::setPathParams,
+                m -> paramNames.forEach(m::remove), "Removed", "path params: " + paramNames);
     }
 
     public void updatePathParam(final String paramName, final String paramValue) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> pathParams = entity.getPathParams();
-
-        pathParams.put(paramName, paramValue);
-        entity.setPathParams(pathParams);
-        final String msg = String.format("Updated path parameter: '%s' : '%s', Updated path parameters are '%s'", paramName, paramValue, entity.getPathParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update path param")) return;
+        modifyMapField(entity::getPathParams, entity::setPathParams,
+                m -> m.put(paramName, paramValue), "Updated",
+                String.format("path param '%s'='%s'", paramName, paramValue));
     }
 
     public void updatePathParams(final Map<String, String> params) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> pathParams = entity.getPathParams();
-        pathParams.putAll(params);
-        entity.setPathParams(pathParams);
-        final String msg = String.format("Updated path parameters are %s", entity.getPathParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update path params")) return;
+        modifyMapField(entity::getPathParams, entity::setPathParams,
+                m -> m.putAll(params), "Updated", "path params batch");
     }
 
     public void clearPathParams() {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> emptyPathParams = new HashMap<>();
-        entity.setPathParams(emptyPathParams);
-        final String msg = String.format("Deleted path parameters, Updated path parameters are %s", entity.getPathParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("clear path params")) return;
+        clearMapField(entity::setPathParams, "path parameters");
     }
 
     public void removeQueryParam(final String paramName) {
-        final Entity entity = this.getEntity();
-        Map<String, Object> queryParams = entity.getQueryParams();
-        queryParams.remove(paramName);
-        entity.setQueryParams(queryParams);
-        final String msg = String.format("Removed query parameter(s): '%s', Updated query parameters are '%s'", paramName, entity.getQueryParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove query param")) return;
+        modifyMapField(entity::getQueryParams, entity::setQueryParams,
+                m -> m.remove(paramName), "Removed", "query param: " + paramName);
     }
 
     public void removeQueryParams(final List<String> paramNames) {
-        final Entity entity = this.getEntity();
-        Iterator<String> iterator = paramNames.iterator();
-        final Map<String, Object> queryParams = entity.getQueryParams();
-        while (iterator.hasNext()) {
-            final String paramName = iterator.next();
-            queryParams.remove(paramName);
-        }
-        entity.setQueryParams(queryParams);
-        final String msg = String.format("Removed query parameter(s): '%s', Updated query parameters are '%s'", paramNames, entity.getQueryParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove query params")) return;
+        modifyMapField(entity::getQueryParams, entity::setQueryParams,
+                m -> paramNames.forEach(m::remove), "Removed", "query params: " + paramNames);
     }
 
     public void updateQueryParam(final String paramName, final String paramValue) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> queryParams = entity.getQueryParams();
-        queryParams.put(paramName, paramValue);
-        entity.setQueryParams(queryParams);
-        final String msg = String.format("Updated query parameter: '%s' : '%s', Updated query parameters are '%s'", paramName, paramValue, entity.getQueryParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update query param")) return;
+        modifyMapField(entity::getQueryParams, entity::setQueryParams,
+                m -> m.put(paramName, paramValue), "Updated",
+                String.format("query param '%s'='%s'", paramName, paramValue));
     }
 
     public void updateQueryParams(final Map<String, String> params) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> queryParams = entity.getQueryParams();
-        queryParams.putAll(params);
-        entity.setQueryParams(queryParams);
-        final String msg = String.format("Updated query parameters are %s", entity.getQueryParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update query params")) return;
+        modifyMapField(entity::getQueryParams, entity::setQueryParams,
+                m -> m.putAll(params), "Updated", "query params batch");
     }
 
     public void removeFormParam(final String paramName) {
-        final Entity entity = this.getEntity();
-        Map<String, Object> formParams = entity.getFormParams();
-        formParams.remove(paramName);
-        entity.setFormParams(formParams);
-        final String msg = String.format("Removed form parameter(s): '%s', Updated for parameters are '%s'", paramName, entity.getFormParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove form param")) return;
+        modifyMapField(entity::getFormParams, entity::setFormParams,
+                m -> m.remove(paramName), "Removed", "form param: " + paramName);
     }
 
     public void removeFormParams(final List<String> paramNames) {
-        final Entity entity = this.getEntity();
-        Iterator<String> iterator = paramNames.iterator();
-        final Map<String, Object> formParams = entity.getFormParams();
-        while (iterator.hasNext()) {
-            final String paramName = iterator.next();
-            formParams.remove(paramName);
-        }
-        entity.setFormParams(formParams);
-        final String msg = String.format("Removed form parameter(s): '%s', Updated form parameters are '%s'", paramNames, entity.getFormParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove form params")) return;
+        modifyMapField(entity::getFormParams, entity::setFormParams,
+                m -> paramNames.forEach(m::remove), "Removed", "form params: " + paramNames);
     }
 
     public void updateFormParam(final String paramName, final String paramValue) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> formParams = entity.getFormParams();
-        formParams.put(paramName, paramValue);
-        entity.setFormParams(formParams);
-        final String msg = String.format("Updated form parameter: '%s' : '%s', Updated form parameters are '%s'", paramName, paramValue, entity.getFormParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update form param")) return;
+        modifyMapField(entity::getFormParams, entity::setFormParams,
+                m -> m.put(paramName, paramValue), "Updated",
+                String.format("form param '%s'='%s'", paramName, paramValue));
     }
 
     public void updateFormParams(final Map<String, String> params) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> formParams = entity.getFormParams();
-        formParams.putAll(params);
-        entity.setFormParams(formParams);
-        final String msg = String.format("Updated query parameters are %s", entity.getFormParams());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update form params")) return;
+        modifyMapField(entity::getFormParams, entity::setFormParams,
+                m -> m.putAll(params), "Updated", "form params batch");
     }
 
     public void removeCookieParam(final String paramName) {
-        final Entity entity = this.getEntity();
-        Map<String, Object> cookies = entity.getCookies();
-        cookies.remove(paramName);
-        entity.setCookies(cookies);
-        final String msg = String.format("Removed cookie parameter: '%s', Updated cookies are '%s'",
-                paramName, entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove cookie param")) return;
+        modifyMapField(entity::getCookies, entity::setCookies,
+                m -> m.remove(paramName), "Removed", "cookie: " + paramName);
     }
 
     public void removeCookieParams(final List<String> paramNames) {
-        final Entity entity = this.getEntity();
-        Iterator<String> iterator = paramNames.iterator();
-        final Map<String, Object> cookies = entity.getCookies();
-        while (iterator.hasNext()) {
-            final String paramName = iterator.next();
-            cookies.remove(paramName);
-        }
-        entity.setCookies(cookies);
-        final String msg = String.format("Removed cookie parameters: '%s', Updated cookies are '%s'",
-                paramNames, entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("remove cookie params")) return;
+        modifyMapField(entity::getCookies, entity::setCookies,
+                m -> paramNames.forEach(m::remove), "Removed", "cookies: " + paramNames);
     }
 
     public void updateCookieParam(final String paramName, final String paramValue) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> cookies = entity.getCookies();
-        cookies.put(paramName, paramValue);
-        entity.setCookies(cookies);
-        final String msg = String.format("Updated cookie parameters: '%s': '%s', Now cookies are '%s'",
-                paramName, paramValue, entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update cookie param")) return;
+        modifyMapField(entity::getCookies, entity::setCookies,
+                m -> m.put(paramName, paramValue), "Updated",
+                String.format("cookie '%s'='%s'", paramName, paramValue));
     }
 
     public void updateCookieParams(final Map<String, String> params) {
-        final Entity entity = this.getEntity();
-        final Map<String, Object> cookies = entity.getCookies();
-        cookies.putAll(params);
-        entity.setCookies(cookies);
-        final String msg = String.format("Now cookies are '%s'", entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info(msg);
+        Entity entity = this.getEntity();
+        if (!entityAvailable("update cookie params")) return;
+        modifyMapField(entity::getCookies, entity::setCookies,
+                m -> m.putAll(params), "Updated", "cookies batch");
     }
 
     public void loadPayload(final String fileName) {

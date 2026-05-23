@@ -35,12 +35,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-
-import java.util.Map;
+import java.util.regex.Pattern;
 
 public class PlaywrightListener implements StepListener {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightListener.class);
+
+    /**
+     * 预编译 Pattern — 避免每次截图时重复编译正则表达式
+     */
+    private static final Pattern SANITIZE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9_-]");
+    private static final Pattern SANITIZE_NAME_PATTERN = Pattern.compile("[^a-zA-Z0-9]");
 
     private final ScreenshotStrategy screenshotStrategy;
 
@@ -447,13 +452,21 @@ public class PlaywrightListener implements StepListener {
     }
 
     /**
-     * Sanitize filename by replacing invalid characters
+     * Sanitize filename by replacing invalid characters.
+     * 只替换非 a-zA-Z0-9_- 字符，保留下划线和连字符（用于文件名）
      */
-    private String sanitizeFilename(String name) {
+    private static String sanitizeFilename(String name) {
         if (name == null || name.trim().isEmpty()) {
             return "unnamed";
         }
-        return name.replaceAll("[^a-zA-Z0-9_-]", "_");
+        return SANITIZE_FILENAME_PATTERN.matcher(name).replaceAll("_");
+    }
+
+    /**
+     * Sanitize name for general use — 替换所有非 a-zA-Z0-9 字符（用于 display name）
+     */
+    private static String sanitizeName(String name) {
+        return name == null ? "unnamed" : SANITIZE_NAME_PATTERN.matcher(name).replaceAll("_");
     }
 
     private void recordTestData(String key, Object value) {
@@ -475,7 +488,6 @@ public class PlaywrightListener implements StepListener {
             }
         }
     }
-
     /**
      * ⭐ 自动清理当前线程的 RouteRegistry 条目（防内存泄漏 + 跨用例路由污染）。
      *
@@ -522,15 +534,6 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：清理 API 监控上下文
         apiMonitorContext.remove();
-    }
-
-    private String sanitizeName(String name) {
-        return sanitizeNameStatic(name);
-    }
-
-
-    private static String sanitizeNameStatic(String name) {
-        return name == null ? "unnamed" : name.replaceAll("[^a-zA-Z0-9]", "_");
     }
 
     private String getStackTrace(Throwable throwable) {
@@ -796,12 +799,11 @@ public class PlaywrightListener implements StepListener {
             checkAndTriggerRerun();
         } catch (Exception e) {
             logger.error("Error in testFinished, forcing cleanup", e);
-            // 确保异常时也清理
-            cleanupThreadLocals();
             RouteEngine.clearDispatchedRoutes();
             throw e;
         } finally {
-            // ⭐⭐⭐ 新增：清理 API 监控上下文
+            // 确保异常和正常路径均清理 ThreadLocal 和 API 监控上下文
+            cleanupThreadLocals();
             apiMonitorContext.remove();
         }
     }

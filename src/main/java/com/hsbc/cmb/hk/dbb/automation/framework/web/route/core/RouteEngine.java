@@ -19,6 +19,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 
 /**
  * 路由引擎 — 统一注册入口，按类型分发到对应 Handler。
@@ -35,6 +36,9 @@ public class RouteEngine {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteEngine.class);
 
+    /** 预编译 Pattern — 归一化 URL 路径末尾的通配符 */
+    private static final Pattern TRAILING_WILDCARDS = Pattern.compile("\\*+$");
+
     /** Handler 注册表：类型 → 处理器 */
     private static final Map<RouteHandleType, RouteHandler> HANDLERS = new EnumMap<>(RouteHandleType.class);
 
@@ -48,12 +52,12 @@ public class RouteEngine {
      * <p>场景：page.route("/api/**", h1) + page.route("/api/user", h2)
      * 请求 /api/user 同时命中两个 pattern，h1 先调用 route.resume()，
      * h2 再尝试操作会导致 PlaywrightException: Route is already handled。
-     * 此集合用 putIfAbsent 保证只有首个 handler 执行。
+     * 此集合用 add 保证只有首个 handler 执行。
      *
      * <p>每次测试结束通过 {@link #clearDispatchedRoutes()} 清空。
      * 同时设置容量上限，防止异常情况下（未调用 clear 的场景）无限增长。
      */
-    private static final Map<Route, Boolean> DISPATCHED_ROUTES = new ConcurrentHashMap<>();
+    private static final Set<Route> DISPATCHED_ROUTES = ConcurrentHashMap.newKeySet();
 
     /** DISPATCHED_ROUTES 容量上限，超过后自动清空（防御性保护） */
     private static final int MAX_DISPATCHED_ROUTES = 500;
@@ -79,7 +83,7 @@ public class RouteEngine {
         registerInternal(page, (pattern, rule) -> {
             if (RouteRegistry.register(page, pattern)) {
                 page.route(pattern, route -> dispatchRoute(route, rule));
-                startMonitorSession(page, pattern, rule);
+                startMonitorSession(page, rule);
             }
         }, rules);
     }
@@ -91,7 +95,7 @@ public class RouteEngine {
         registerInternal(context, (pattern, rule) -> {
             if (RouteRegistry.register(context, pattern)) {
                 context.route(pattern, route -> dispatchRoute(route, rule));
-                startMonitorSession(context, pattern, rule);
+                startMonitorSession(context, rule);
             }
         }, rules);
     }
@@ -130,7 +134,7 @@ public class RouteEngine {
                 // 例：/api/users/1 → **/api/users/1** 可匹配 http://host:port/api/users/1?page=2
                 String normalized = pattern.startsWith("/") ? "**" + pattern : pattern;
                 if (!normalized.endsWith("**")) {
-                    normalized = normalized.replaceAll("\\*+$", "") + "**";
+                    normalized = TRAILING_WILDCARDS.matcher(normalized).replaceFirst("") + "**";
                 }
                 registrar.register(normalized, rule);
             } catch (Exception e) {
@@ -155,7 +159,7 @@ public class RouteEngine {
         }
 
         // ═══ 防重门控：同一请求只处理一次 ═══
-        if (DISPATCHED_ROUTES.putIfAbsent(route, Boolean.TRUE) != null) {
+        if (!DISPATCHED_ROUTES.add(route)) {
             LOGGER.warn("[RouteEngine] Route already handled by another pattern, skipping '{}' for URL '{}'",
                     rule.getUrlPattern(), route.request().url());
             return;
@@ -217,11 +221,12 @@ public class RouteEngine {
      * <p>适用范围：MONITOR / MOCK / MODIFY 三种类型。
      * <p>条件：(timeoutMs > 0 或 autoStopOnMatch == true)
      */
-    private static void startMonitorSession(Object context, String pattern, RouteRule rule) {
+    private static void startMonitorSession(Object context, RouteRule rule) {
         if (rule.getTimeoutMs() <= 0 && !rule.isAutoStopOnMatch()) {
             return;  // 无限监控/拦截，无需会话
         }
 
+        String pattern = rule.getUrlPattern();
         MonitorSession session = new MonitorSession(context, pattern, rule);
         SESSIONS.put(rule, session);
 

@@ -224,65 +224,116 @@ public class ModifyHandler {
 
     /**
      * 将字符串值转换为与原字段类型匹配的值。
+     *
+     * <p>使用类型分类减少 instanceof 链长度：
+     * <ul>
+     *   <li>null → 智能推断</li>
+     *   <li>布尔 → BooleanNode</li>
+     *   <li>整数类型 → IntNode / LongNode</li>
+     *   <li>浮点类型 → DecimalNode</li>
+     *   <li>JSON 结构 → 字符串（避免破坏结构）</li>
+     *   <li>其他 → TextNode</li>
+     * </ul>
      */
     static Object convertToMatchingType(String newValue, Object existingValue) {
+        // ── 原值为 null ──
         if (existingValue == null || existingValue instanceof NullNode) {
-            // 原字段为 null，尝试智能类型推断
-            if ("null".equalsIgnoreCase(newValue) || "".equals(newValue)) {
-                return NullNode.getInstance();
-            }
-            if ("true".equalsIgnoreCase(newValue) || "false".equalsIgnoreCase(newValue)) {
-                return BooleanNode.valueOf(Boolean.parseBoolean(newValue));
-            }
-            try {
-                return new IntNode(Integer.parseInt(newValue));
-            } catch (NumberFormatException e1) {
-                try {
-                    return new DecimalNode(new BigDecimal(newValue));
-                } catch (NumberFormatException e2) {
-                    return new TextNode(newValue);
-                }
-            }
+            return inferTypeForNull(newValue);
         }
 
-        if (existingValue instanceof BooleanNode || existingValue instanceof Boolean) {
+        Class<?> type = existingValue.getClass();
+
+        // ── 布尔 ──
+        if (type == BooleanNode.class || existingValue instanceof Boolean) {
             return BooleanNode.valueOf(Boolean.parseBoolean(newValue));
         }
-        if (existingValue instanceof IntNode || existingValue instanceof ShortNode
-                || (existingValue instanceof Number && ((Number) existingValue).doubleValue() % 1 == 0
-                        && ((Number) existingValue).longValue() <= Integer.MAX_VALUE
-                        && ((Number) existingValue).longValue() >= Integer.MIN_VALUE)) {
-            try {
-                return new IntNode(Integer.parseInt(newValue));
-            } catch (NumberFormatException e) {
-                return new TextNode(newValue);
-            }
-        }
-        if (existingValue instanceof LongNode || existingValue instanceof BigIntegerNode
-                || (existingValue instanceof Number && ((Number) existingValue).longValue() > Integer.MAX_VALUE)) {
-            try {
-                return new LongNode(Long.parseLong(newValue));
-            } catch (NumberFormatException e) {
-                return new TextNode(newValue);
-            }
-        }
-        if (existingValue instanceof FloatNode || existingValue instanceof DoubleNode
-                || existingValue instanceof DecimalNode || existingValue instanceof Number) {
-            try {
-                return new DecimalNode(new BigDecimal(newValue));
-            } catch (NumberFormatException e) {
-                return new TextNode(newValue);
-            }
+
+        // ── JSON 结构（Object/Array）→ 返回字符串，避免破坏结构 ──
+        if (existingValue instanceof ObjectNode || existingValue instanceof ArrayNode) {
+            LOGGER.debug("[ModifyHandler] Target field is a JSON object/array, replacing as string");
+            return new TextNode(newValue);
         }
 
-        // JSON 对象或数组 — 不替换，避免结构破坏
-        if (existingValue instanceof ObjectNode || existingValue instanceof ArrayNode
-                || existingValue instanceof JsonNode) {
-            LOGGER.debug("[ModifyHandler] Target field is a JSON object/array, replacing as string: path={}", newValue);
+        // ── 数值类型 ──
+        if (existingValue instanceof JsonNode) {
+            if (existingValue instanceof IntNode || existingValue instanceof ShortNode) {
+                return tryParseInt(newValue);
+            }
+            if (existingValue instanceof LongNode || existingValue instanceof BigIntegerNode) {
+                return tryParseLong(newValue);
+            }
+            if (existingValue instanceof FloatNode || existingValue instanceof DoubleNode
+                    || existingValue instanceof DecimalNode) {
+                return tryParseDecimal(newValue);
+            }
+        }
+        // Number 类型兜底
+        if (existingValue instanceof Number) {
+            return parseNumberByRange((Number) existingValue, newValue);
         }
 
         // 默认为字符串
         return new TextNode(newValue);
+    }
+
+    /** 原值为 null 时的智能类型推断 */
+    private static JsonNode inferTypeForNull(String newValue) {
+        if ("null".equalsIgnoreCase(newValue) || "".equals(newValue)) {
+            return NullNode.getInstance();
+        }
+        if ("true".equalsIgnoreCase(newValue) || "false".equalsIgnoreCase(newValue)) {
+            return BooleanNode.valueOf(Boolean.parseBoolean(newValue));
+        }
+        try {
+            return new IntNode(Integer.parseInt(newValue));
+        } catch (NumberFormatException e1) {
+            try {
+                return new DecimalNode(new BigDecimal(newValue));
+            } catch (NumberFormatException e2) {
+                return new TextNode(newValue);
+            }
+        }
+    }
+
+    /** 尝试解析为整数，失败则返回 TextNode */
+    private static JsonNode tryParseInt(String newValue) {
+        try {
+            return new IntNode(Integer.parseInt(newValue));
+        } catch (NumberFormatException e) {
+            return new TextNode(newValue);
+        }
+    }
+
+    /** 尝试解析为长整数，失败则返回 TextNode */
+    private static JsonNode tryParseLong(String newValue) {
+        try {
+            return new LongNode(Long.parseLong(newValue));
+        } catch (NumberFormatException e) {
+            return new TextNode(newValue);
+        }
+    }
+
+    /** 尝试解析为 Decimal，失败则返回 TextNode */
+    private static JsonNode tryParseDecimal(String newValue) {
+        try {
+            return new DecimalNode(new BigDecimal(newValue));
+        } catch (NumberFormatException e) {
+            return new TextNode(newValue);
+        }
+    }
+
+    /** 根据 Number 范围决定整数还是 Decimal */
+    private static JsonNode parseNumberByRange(Number num, String newValue) {
+        long longVal = num.longValue();
+        if (num.doubleValue() % 1 == 0
+                && longVal <= Integer.MAX_VALUE
+                && longVal >= Integer.MIN_VALUE) {
+            return tryParseInt(newValue);
+        }
+        if (longVal > Integer.MAX_VALUE) {
+            return tryParseLong(newValue);
+        }
+        return tryParseDecimal(newValue);
     }
 
     /**

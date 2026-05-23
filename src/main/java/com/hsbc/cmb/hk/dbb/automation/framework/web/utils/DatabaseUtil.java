@@ -104,7 +104,10 @@ public class DatabaseUtil {
             HikariConfig config = new HikariConfig();
             config.setJdbcUrl(dbUrl);
             config.setUsername(dbUser);
-            config.setPassword(dbPassword != null ? new String(dbPassword) : null);
+            // JDBC 驱动要求 String 密码，临时转换后清除引用（减小内存窗口期）
+            String pwd = dbPassword != null ? new String(dbPassword) : null;
+            config.setPassword(pwd);
+            pwd = null;  // 尽快清除 String 引用
             config.setDriverClassName(databaseType.getDriverClass());
             config.setMaximumPoolSize(maxPoolSize);
             config.setMinimumIdle(minIdle);
@@ -184,7 +187,10 @@ public class DatabaseUtil {
             Class.forName(databaseType.getDriverClass());
             Properties props = new Properties();
             props.setProperty("user", dbUser);
-            props.setProperty("password", dbPassword != null ? new String(dbPassword) : null);
+            // JDBC 驱动要求 String 密码，临时转换后清除引用（减小内存窗口期）
+            String pwd = dbPassword != null ? new String(dbPassword) : null;
+            props.setProperty("password", pwd);
+            pwd = null;  // 尽快清除 String 引用
             
             // 数据库特定属性
             switch (databaseType) {

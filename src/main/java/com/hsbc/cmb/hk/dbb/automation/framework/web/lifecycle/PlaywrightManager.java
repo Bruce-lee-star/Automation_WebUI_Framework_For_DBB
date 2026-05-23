@@ -163,7 +163,9 @@ public class PlaywrightManager {
                         try {
                             Files.deleteIfExists(path);
                             deletedCount.incrementAndGet();
-                        } catch (Exception ignored) {}
+                        } catch (Exception ignored) {
+                            LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping file during screenshot cleanup: {}", path);
+                        }
                     }
                 });
 

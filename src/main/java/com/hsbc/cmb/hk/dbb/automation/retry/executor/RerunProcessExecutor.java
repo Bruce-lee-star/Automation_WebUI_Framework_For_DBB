@@ -29,6 +29,7 @@ public class RerunProcessExecutor {
 
     private Process currentProcess;
     private Thread outputThread;
+    private ExecutorService outputExecutor;
     private final Object processLock = new Object();
     private long sessionStartTime;
 
@@ -178,32 +179,38 @@ public class RerunProcessExecutor {
     private void startOutputStreaming(int round) {
         if (currentProcess == null) return;
 
-        outputThread = new Thread(() -> {
+        // 使用单线程 ExecutorService 替代裸 new Thread()，防止线程泄漏
+        outputExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "RerunOutputThread-" + round);
+            t.setDaemon(true);
+            return t;
+        });
+        outputExecutor.submit(() -> {
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(currentProcess.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    System.out.println(line);
+                    logger.info(line);
                     logToRerunLog(round, line);
                 }
             } catch (IOException e) {
                 logger.error("Error streaming process output", e);
             }
         });
-        outputThread.setDaemon(true);
-        outputThread.setName("RerunOutputThread-" + round);
-        outputThread.start();
     }
 
     private void stopOutputStreaming() {
-        if (outputThread != null && outputThread.isAlive()) {
-            outputThread.interrupt();
+        if (outputExecutor != null && !outputExecutor.isShutdown()) {
+            outputExecutor.shutdownNow();
             try {
-                outputThread.join(1000);
+                if (!outputExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+                    logger.warn("Output executor did not terminate within timeout");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
+        outputExecutor = null;
         outputThread = null;
     }
 

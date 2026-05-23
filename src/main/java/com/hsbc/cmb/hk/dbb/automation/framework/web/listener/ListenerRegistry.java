@@ -213,7 +213,9 @@ public class ListenerRegistry {
                         LoggingConfigUtil.logDebugIfVerbose(logger, "{} is a listener (has {} on method)", clazz.getName(), annotation.getName());
                         return true;
                     }
-                } catch (Exception ignored) { }
+                } catch (Exception ignored) {
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping annotation check on method: {}", method.getName());
+                }
             }
         }
 

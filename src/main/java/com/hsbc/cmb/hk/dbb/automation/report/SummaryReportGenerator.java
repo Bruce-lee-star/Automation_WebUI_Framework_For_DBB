@@ -35,6 +35,12 @@ public class SummaryReportGenerator {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("EEEE MMMM dd yyyy 'at' HH:mm");
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
+    // 预编译正则表达式，避免在 parseDuration lambda 中重复编译
+    private static final Pattern DURATION_PATTERN_MS = 
+            Pattern.compile("(\\d+)\\s*m\\s*(\\d+)\\s*s", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DURATION_PATTERN_UNIT = 
+            Pattern.compile("(\\d+)\\s*(m|s|h|ms)", Pattern.CASE_INSENSITIVE);
+
     private final String reportDir;
     private final String projectName;
     private final String reportTitle;
@@ -319,7 +325,7 @@ public class SummaryReportGenerator {
             String html = buildFullNativeHtml();
             Path output = Paths.get(actualReportDir, SUMMARY_FILE);
             Files.write(output, html.getBytes(StandardCharsets.UTF_8));
-            System.out.println("       - Summary report: " + output.toUri());
+            logger.info("       - Summary report: {}", output.toUri());
 
             // 生成 CSV 文件
             generateCsvReport(actualReportDir);
@@ -1705,12 +1711,12 @@ public class SummaryReportGenerator {
                 String s = str.trim();
                 try {
                     long totalMs = 0;
-                    Pattern p = Pattern.compile("(\\d+)\\s*m\\s*(\\d+)\\s*s", Pattern.CASE_INSENSITIVE);
+                    Pattern p = DURATION_PATTERN_MS;
                     Matcher m = p.matcher(s);
                     if (m.find()) {
                         totalMs += Long.parseLong(m.group(1)) * 60_000L + Long.parseLong(m.group(2)) * 1_000L;
                     } else {
-                        p = Pattern.compile("(\\d+)\\s*(m|s|h|ms)", Pattern.CASE_INSENSITIVE);
+                        p = DURATION_PATTERN_UNIT;
                         m = p.matcher(s);
                         while (m.find()) {
                             long val = Long.parseLong(m.group(1));
@@ -1723,7 +1729,10 @@ public class SummaryReportGenerator {
                         }
                     }
                     return totalMs;
-                } catch (Exception e) { return 0L; }
+                } catch (Exception e) {
+                    LoggingConfigUtil.logDebugIfVerbose(logger, "Failed to parse duration string: {}", s);
+                    return 0L;
+                }
             };
 
             // 使用 DOTALL 模式，让 . 匹配换行符
@@ -1936,7 +1945,10 @@ public class SummaryReportGenerator {
             this.errorMessage = "";
             this.startTime = null;
             try { this.result = TestResult.valueOf(rStr.toUpperCase()); }
-            catch (Exception e) { this.result = TestResult.PENDING; }
+            catch (Exception e) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Unknown test result string '{}', defaulting to PENDING", rStr);
+                this.result = TestResult.PENDING;
+            }
         }
     }
 

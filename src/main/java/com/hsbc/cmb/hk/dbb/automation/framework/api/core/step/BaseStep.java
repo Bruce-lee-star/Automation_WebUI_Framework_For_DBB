@@ -171,8 +171,11 @@ public class BaseStep extends RestJobProvider {
                     responseBody, containsString(expectedContent));
             LOGGER.info("Response body content verification passed: contains '{}'", expectedContent);
         } catch (AssertionError e) {
-            LOGGER.error("Response body content verification failed: does not contain '{}'. Full response: {}",
-                    expectedContent, responseBody);
+            // 安全：仅记录响应体前 200 字符，避免敏感数据泄露到日志
+            String truncated = responseBody.length() > 200 
+                    ? responseBody.substring(0, 200) + "...[truncated]" : responseBody;
+            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (truncated): {}",
+                    expectedContent, truncated);
             throw e;
         }
     }

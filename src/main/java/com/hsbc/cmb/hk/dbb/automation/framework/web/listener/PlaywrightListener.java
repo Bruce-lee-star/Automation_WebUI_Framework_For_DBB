@@ -259,7 +259,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本，避免之后 clear() 影响 Serenity 保留的引用
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 清空截图列表，避免重复添加
                 stepScreenshots.clear();
@@ -317,7 +318,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots after step failure", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with failure screenshots");
                 // 标记已发送，防止后续 stepFinished() / lastStepFailed 重复调用
                 failureScreenshotsAlreadySent.set(true);
@@ -354,7 +356,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots after last step failure", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with last step failure screenshots");
                 failureScreenshotsAlreadySent.set(true);  // ⭐ 标记已发送，防止后续重复
                 // 清空截图列表，避免重复处理
@@ -590,35 +593,45 @@ public class PlaywrightListener implements StepListener {
         // 将当前步骤的截图合并到 Serenity 传入的截图列表中
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
         
-        // ⭐ 防残留：合并前强制清理上一步骤遗留的截图（如 SCREEN_CHANGE 等非当前步骤产生的）
+        // ⭐ 防残留（修复）：不再直接 addAll 到 Serenity 的 list（避免跨步骤共享 list 导致累积）。
+        // 改为创建全新的 list，杜绝对 Serenity 内部数据结构的污染。
+        List<ScreenshotAndHtmlSource> mergedScreenshots = null;
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger,
-                    "Before merge cleanup: stepScreenshots.size={} (will be merged into Serenity list)",
-                    stepScreenshots.size());
+                    "Before merge: stepScreenshots.size={}, Serenity screenshots.size={}",
+                    stepScreenshots.size(), screenshots != null ? screenshots.size() : 0);
 
-            if (screenshots != null) {
-                // 追加我们的截图
-                screenshots.addAll(stepScreenshots);
-                LoggingConfigUtil.logDebugIfVerbose(
-                        logger, "After merge: total screenshots.size={}", screenshots.size());
+            // 创建全新 list，合并 Serenity 传入的 + 当前步骤产生的截图
+            int totalSize = stepScreenshots.size() + (screenshots != null ? screenshots.size() : 0);
+            mergedScreenshots = new ArrayList<>(totalSize);
+            if (screenshots != null && !screenshots.isEmpty()) {
+                mergedScreenshots.addAll(screenshots);  // 先加 Serenity 的
             }
+            mergedScreenshots.addAll(stepScreenshots);  // 再加当前步骤的
+            
+            LoggingConfigUtil.logDebugIfVerbose(
+                    logger, "After merge: new mergedScreenshots.size={}", mergedScreenshots.size());
+            
             // 清空当前步骤的截图列表，避免影响下一个步骤（防残留核心）
             stepScreenshots.clear();
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "Cleared stepScreenshots after merging");
+        } else if (screenshots != null && !screenshots.isEmpty()) {
+            // 当前步骤没有截图，但 Serenity 有 → 也用新 list 封装（避免直接传递 Serenity 的可变 list）
+            mergedScreenshots = new ArrayList<>(screenshots);
         } else {
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "No step screenshots to merge (list is empty or null)");
         }
 
         // ⭐ 防双重发送：仅当无参版 stepFinished() 未处理时才发送 StepEventBus
-        if (!alreadyProcessed && screenshots != null && !screenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
-            recordTestData("stepScreenshotsCount", screenshots.size());
+        if (!alreadyProcessed && mergedScreenshots != null && !mergedScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
+            recordTestData("stepScreenshotsCount", mergedScreenshots.size());
             // 手动调用 StepEventBus 的 stepFinished 方法来传递截图
             LoggingConfigUtil.logDebugIfVerbose(
-                    logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", screenshots.size());
+                    logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", mergedScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(screenshots, ZonedDateTime.now());
+                StepEventBus.getEventBus().stepFinished(mergedScreenshots, ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(
                         logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 标记已处理，防止无参版 stepFinished() 重复处理
@@ -628,7 +641,7 @@ public class PlaywrightListener implements StepListener {
             }
         } else if (failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() in stepFinishedInternal - already sent by stepFailed");
-            // ⭐ 防残留：即使已发送过，也要确保列表被清空
+            // ⭐ 防残留：清空 Serenity 传入的 list
             if (screenshots != null) screenshots.clear();
         } else {
             LoggingConfigUtil.logDebugIfVerbose(

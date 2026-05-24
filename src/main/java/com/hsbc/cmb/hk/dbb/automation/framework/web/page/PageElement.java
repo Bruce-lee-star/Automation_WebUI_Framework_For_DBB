@@ -233,32 +233,12 @@ public class PageElement {
 
     private String buildDetailedErrorMessage(String operation, Exception lastEx,
             ElementDiagnosticsCollector dc, int maxRetry, String elementState) {
-        StringBuilder sb = new StringBuilder();
-
-        sb.append(String.format("Operation [%s] failed after %d attempts on element [%s]%n%n",
-            operation, maxRetry + 1, selector));
-        sb.append(String.format("Current Page: %s%n", dc.getPageUrl()));
-        sb.append(String.format("Page Title:  %s%n", dc.getPageTitle()));
-        sb.append(String.format("Element State: %s%n", elementState));
-
-        sb.append(String.format("%nDOM Context:%n  %s%n", dc.getDomContext()));
-        sb.append(String.format("Obstruction: %s%n", dc.getObstructingElements()));
-
-        if (lastEx instanceof TimeoutError) {
-            sb.append(String.format("%nRoot Cause: Timeout Error%n"));
-            sb.append(String.format("The element did not reach the expected state within the timeout period.%n"));
-            sb.append(String.format("Common solutions:%n"));
-            sb.append(String.format("  1. Wait for specific condition before action (e.g., waitForVisible())%n"));
-            sb.append(String.format("  2. Verify the element is not hidden or covered by other elements%n"));
-            sb.append(String.format("  3. Check if the page has fully loaded before interacting%n"));
-        } else if (lastEx != null) {
-            sb.append(String.format("%nRoot Cause: %s%n", lastEx.getMessage()));
-        }
-
-        sb.append(String.format("%nHTML Snippet:%n  %s%n",
-            dc.getElementHtml().replace("\n", "\n  ")));
-
-        return sb.toString();
+        // 简洁一行格式 — 详细诊断信息（DOM context, HTML snippet 等）可到 Serenity 报告查看
+        String cause = lastEx instanceof TimeoutError ? "TimeoutError"
+            : (lastEx != null ? lastEx.getClass().getSimpleName() : "unknown");
+        return String.format("[%s] %s failed after %d attempts on '%s' | page=%s title=%s obstruction=%s | cause=%s",
+            elementState, operation, maxRetry + 1, selector,
+            dc.getPageUrl(), dc.getPageTitle(), dc.getObstructingElements(), cause);
     }
 
     private void captureFailureAndLog(String operation, String testName, ElementOperationException ex,

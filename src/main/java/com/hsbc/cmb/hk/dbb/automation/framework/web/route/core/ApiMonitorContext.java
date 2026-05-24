@@ -167,7 +167,7 @@ public class ApiMonitorContext {
     }
 
     /**
-     * 生成人类可读的断言失败报告
+     * 生成易读的断言失败报告
      */
     public String buildFailureReport() {
         List<AssertionFailureDetail> details = getFailureDetails();
@@ -235,7 +235,7 @@ public class ApiMonitorContext {
     }
 
     /**
-     * 格式化字节数为人类可读字符串（KB/MB）。
+     * 格式化字节数为易读字符串（KB/MB）。
      */
     private static String formatBytes(long bytes) {
         if (bytes < 1024) return bytes + " B";

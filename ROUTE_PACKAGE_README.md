@@ -1,6 +1,6 @@
 # Route 路由框架说明文档
 
-> **最后更新：** 2026-05-22 | **版本：** v4.3（ScheduledThreadPoolExecutor 防积压 + DispatchedRoutes 自动清理 + ApiMonitorContext 日志标准化）
+> **最后更新：** 2026-05-24 | **版本：** v4.5
 
 `com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包是对 Playwright `page.route()` / `context.route()` 的封装，提供**请求拦截、Mock 响应、请求体修改、API 监控断言**一体化能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
 
@@ -224,8 +224,7 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | | `mockStatus` | int | 200 | HTTP 状态码 |
 | | `mockHeaders` | Map | null | 响应头 |
 | **Modify** | `addHeaders` | Map | null | 添加/覆盖的请求头 |
-| | `replaceBodyKey` | String | null | JSONPath 路径 |
-| | `replaceBodyValue` | String | null | 替换值 |
+| | `replaceBodyPairs` | Map\<String,String\> | null | JSONPath → 替换值（多对，LinkedHashMap 有序） |
 | | `method` | String | null | 修改 HTTP 方法 |
 | **Monitor** | `record` | boolean | true | 是否记录到报告 |
 | | `expectedStatus` | Integer | null | 期望状态码断言 |
@@ -243,7 +242,7 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | | `matchOrigin` | String | null | Origin 包含匹配 |
 | | `matchFrameUrl` | String | null | Frame URL 包含匹配 |
 | | `onlyMainFrame` | boolean | true | 是否只匹配主 Frame |
-| | `onlyApiCall` | boolean | true | 是否仅匹配 API（跳过 navigation + 默认只匹配 xhr/fetch） |
+| | `onlyApiCall` | boolean | false | 是否仅匹配 API（false=匹配所有请求类型，true=跳过 navigation + 默认只匹配 xhr/fetch） |
 
 **输入校验**：
 - `urlPattern` 拒绝 blank 值
@@ -360,7 +359,7 @@ RouteDsl.on(browserContext)  // Context 级别
 | 操作 | API | 说明 |
 |------|-----|------|
 | 添加请求头 | `.addHeader(key, value)` | 合并到原请求头（不覆盖已有） |
-| 请求体替换 | `.replaceBody(key, value)` | JSONPath 精准替换 + 类型保持 |
+| 请求体替换 | `.replaceBody(key, value)` | JSONPath 精准替换 + 类型保持 + 多次调用累积到 replaceBodyPairs Map |
 | 修改 HTTP 方法 | `.method("POST")` | 覆盖原方法 |
 
 **JSONPath 精准替换特性**：
@@ -446,7 +445,7 @@ storeResponse(url, body)
 | 活动请求计数 | `AtomicInteger` — `incrementActiveRequests()` / `decrementActiveRequests()` |
 | 完成等待 | `awaitCompletion(timeoutMs)` — 使用 `synchronized + wait/notifyAll`，不轮询 CPU |
 | 断言失败详情 | `AssertionFailureDetail` DTO — URL + 断言类型 + 预期值 + 实际值 + 时间戳 |
-| 断言失败报告 | `buildFailureReport()` — 生成人类可读的多行文本报告 |
+| 断言失败报告 | `buildFailureReport()` — 生成可读的多行文本报告 |
 | 重置 | `reset()` — 清空所有状态（包括 `totalResponseSize = 0L`） |
 
 ---
@@ -535,6 +534,7 @@ RouteException (extends RuntimeException)
 
 **特性**：
 - URL 超过 80 字符自动截断加 `...`
+- `StepEventBus.getBaseStepListener()` 非空检查：Playwright 事件线程中无 Serenity 监听器时静默跳过（避免内部报错）
 - 异常静默捕获（不影响主流程）
 - 单一静态方法：`recordApiOperation(operation, url, detail)`
 
@@ -582,7 +582,7 @@ RouteUtil.RT_OTHER      // "other"
 
 | # | 维度 | 匹配方式 | 未配置时 |
 |---|------|----------|----------|
-| 1 | Resource Type | 集合包含（`req.resourceType()` in rule） | 默认 `onlyApiCall=true` → 仅 `xhr/fetch` |
+| 1 | Resource Type | 集合包含（`req.resourceType()` in rule） | 默认不限制，`onlyApiCall=true` 时仅 `xhr/fetch` |
 | 2 | HTTP Method | 忽略大小写精确匹配 | 不限制 |
 | 3 | Request Headers | 所有配置的 header 必须精确匹配 | 不检查 |
 | 4 | Query Parameters | 所有配置的 query 必须精确匹配 | 不检查 |
@@ -725,9 +725,11 @@ RouteDsl.on(page)
 ### 🆕 5.10 资源类型过滤 — 只拦截 API，放过静态资源
 
 ```java
-// 默认行为：onlyApiCall=true → 只拦截 xhr/fetch，自动跳过 image/font/media/document
+// 默认行为：onlyApiCall=false → 匹配所有类型（含 navigation、静态资源）
+// 如需只拦截 API 请求，需显式调用 .onlyApiCall(true)
 RouteDsl.on(page)
     .api("/api/**")
+    .onlyApiCall(true)   // 只匹配 xhr/fetch，跳过 image/font/media/document/navigation
     .monitor()
     .expectStatus(200)
     .done()
@@ -811,7 +813,7 @@ ApiMonitorContext ctx = PlaywrightListener.getCurrentApiMonitorContext();
 
 // 判断是否有断言失败
 if (ctx.hasAssertionFailures()) {
-    // 获取人类可读的失败报告
+    // 构建可读的失败报告
     String report = ctx.buildFailureReport();
     System.err.println(report);
 }
@@ -894,12 +896,11 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `matchOrigin` | String | null | 🆕 Origin 匹配 |
 | `matchFrameUrl` | String | null | 🆕 Frame URL 匹配 |
 | `onlyMainFrame` | boolean | true | 🆕 仅主 Frame |
-| `onlyApiCall` | boolean | true | 🆕 仅 API 调用 |
+| `onlyApiCall` | boolean | false | 🆕 仅 API 调用（false=匹配所有请求类型，true=默认只匹配 xhr/fetch） |
 | `mockStatus` | int | 200 | Mock 状态码 |
 | `mockHeaders` | Map\<String,String\> | null | Mock 响应头 |
 | `addHeaders` | Map\<String,String\> | null | Modify 添加的请求头 |
-| `replaceBodyKey` | String | null | Modify 替换字段的 JSONPath |
-| `replaceBodyValue` | String | null | Modify 替换值 |
+| `replaceBodyPairs` | Map\<String,String\> | null | Modify 替换键值对（LinkedHashMap 有序，支持多对） |
 | `method` | String | null | Modify 修改后的 HTTP 方法 |
 | `record` | boolean | true | Monitor 是否写入报告 |
 | `expectedStatus` | Integer | null | Monitor 期望状态码 |
@@ -947,7 +948,7 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `awaitCompletion(timeoutMs)` | 阻塞等待所有正在处理的请求完成 |
 | `recordAssertionFailure(url, type, expected, actual, msg)` | 记录断言失败详情 |
 | `hasAssertionFailures()` | 是否有断言失败 |
-| `buildFailureReport()` | 生成人类可读失败报告 |
+| `buildFailureReport()` | 生成可读失败报告 |
 | `storeResponse(url, body)` | 存储响应（双重上限保护） |
 | `getStoredResponse(url)` | 获取最后一条响应字符串 |
 | `getAllResponsesForUrl(url)` | 获取某 URL 的所有响应 |
@@ -1020,7 +1021,7 @@ ResourceType → Method → Headers → Query → ContentType → BodyRegex → 
 | **阈值告警** | 线程池队列/线程/超时挂起数超限 → ERROR 级别日志 |
 | **指标暴露** | `getStatusSnapshot()` / `getQueueUsage()` / `getPendingTimeoutCount()` 等 |
 | **Serenity 报告集成** | MonitorHandler 异步写入 + PlaywrightListener 主线程刷新 |
-| **断言失败详情** | `ApiMonitorContext.buildFailureReport()` 人类可读多行报告 |
+| **断言失败详情** | `ApiMonitorContext.buildFailureReport()` 可读多行报告 |
 
 ### 可扩展性
 

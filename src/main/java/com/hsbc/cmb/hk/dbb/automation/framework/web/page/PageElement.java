@@ -2,12 +2,11 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
-import com.microsoft.playwright.PlaywrightException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.options.MouseButton;
@@ -22,9 +21,15 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
+
+    // Pre-compiled regex patterns for getText() normalization
+    private static final Pattern MULTI_SPACE = Pattern.compile("\\s+");
+    private static final Pattern SPACE_BEFORE_PUNCT = Pattern.compile("\\s+([.,!?;:。，！？；：])");
+    private static final Pattern CONTROL_CHARS = Pattern.compile("\\p{Cf}");
 
     private final String selector;
     private final BasePage page;
@@ -57,8 +62,8 @@ public class PageElement {
         // 基础保障：等待 DOM 加载完成（已加载则立即返回，无额外开销）
         try {
             page.waitForDOMContentLoaded(PlaywrightManager.config().getPageTimeout() / 1000);
-        } catch (Exception e) {
-            logger.debug("waitForDOMContentLoaded skipped (may already be navigated): {}", e.getMessage());
+        } catch (PlaywrightException e) {
+            logger.debug("waitForDOMContentLoaded skipped (page may be mid-navigation): {}", e.getMessage());
         }
         return page.locator(selector);
     }
@@ -81,7 +86,7 @@ public class PageElement {
             logger.debug("elementExists() timeout: selector={}, timeout={}ms", 
                 selector, PlaywrightManager.config().getElementCheckTimeout());
             return false;
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             logger.debug("elementExists() error: selector={}, error={}", selector, e.getMessage());
             return false;
         }
@@ -100,7 +105,7 @@ public class PageElement {
             logger.debug("elementIsVisible() timeout: selector={}, timeout={}ms", 
                 selector, PlaywrightManager.config().getElementCheckTimeout());
             return false;
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             logger.debug("elementIsVisible() error: selector={}, error={}", selector, e.getMessage());
             return false;
         }
@@ -130,6 +135,7 @@ public class PageElement {
 
     private void executeWithRetry(Supplier<Boolean> action, String operation, String testName) {
         ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+        long startTime = System.currentTimeMillis();
 
         // Pre-flight check: element must exist in DOM
         // 使用配置的检查超时，如果超时则说明元素真的不存在，不重试
@@ -149,13 +155,12 @@ public class PageElement {
                     selector, diagnostics.getPageUrl()))
                 .build();
 
-            captureFailureAndLog(operation, testName, ex);
+            captureFailureAndLog(operation, testName, ex, diagnostics);
             throw ex; // 直接抛出，不重试
         }
 
         int maxRetry = PlaywrightManager.config().getElementMaxRetry();
         Exception lastEx = null;
-        long startTime = System.currentTimeMillis();
         long maxWaitTime = PlaywrightManager.config().getElementOperationTimeout();
 
         for (int i = 0; i <= maxRetry; i++) {
@@ -167,17 +172,11 @@ public class PageElement {
             }
 
             try {
-                Boolean success = action.get();
-                if (success != null && success) {
-                    logger.debug("[{}] success on attempt {}/{}: {}",
-                        operation, i + 1, maxRetry + 1, selector);
-                    return;
-                }
-                if (i < maxRetry) {
-                    logger.debug("[Retry {}/{}] {} needs retry: {}",
-                        i + 1, maxRetry, operation, selector);
-                    page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
-                }
+                // All action callbacks either return true or throw — never return false
+                action.get();
+                logger.debug("[{}] success on attempt {}/{}: {}",
+                    operation, i + 1, maxRetry + 1, selector);
+                return;
             } catch (TimeoutError e) {
                 lastEx = e;
                 // TimeoutError 不重试（超时意味着操作真的失败了）
@@ -201,11 +200,12 @@ public class PageElement {
         }
 
         // Build detailed exception with full diagnostic info
+        // Collect diagnostic info once — reuse throughout error reporting
         ElementOperationException.DiagnosticInfo info = diagnostics.collect();
         info.retryCount(maxRetry + 1);
 
-        String elementState = determineElementState(diagnostics);
-        String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics, maxRetry);
+        String elementState = determineElementState(info);
+        String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics, maxRetry, elementState);
 
         ElementOperationException ex = ElementOperationException.builder()
             .selector(selector)
@@ -217,27 +217,27 @@ public class PageElement {
             .customMessage(customMessage)
             .build();
 
-        captureFailureAndLog(operation, testName, ex);
+        captureFailureAndLog(operation, testName, ex, diagnostics);
         throw ex;
     }
 
-    private String determineElementState(ElementDiagnosticsCollector dc) {
-        if (!dc.collect().existsInDom()) return "NOT_FOUND_IN_DOM";
-        if (!dc.collect().isVisible()) return "NOT_VISIBLE";
-        if (!dc.collect().isEnabled()) return "NOT_ENABLED";
-        if (!dc.collect().isEditable()) return "NOT_EDITABLE";
+    private static String determineElementState(ElementOperationException.DiagnosticInfo diag) {
+        if (!diag.existsInDom()) return "NOT_FOUND_IN_DOM";
+        if (!diag.isVisible()) return "NOT_VISIBLE";
+        if (!diag.isEnabled()) return "NOT_ENABLED";
+        if (!diag.isEditable()) return "NOT_EDITABLE";
         return "INTERACTABLE_BUT_FAILED";
     }
 
     private String buildDetailedErrorMessage(String operation, Exception lastEx,
-            ElementDiagnosticsCollector dc, int maxRetry) {
+            ElementDiagnosticsCollector dc, int maxRetry, String elementState) {
         StringBuilder sb = new StringBuilder();
 
         sb.append(String.format("Operation [%s] failed after %d attempts on element [%s]%n%n",
             operation, maxRetry + 1, selector));
         sb.append(String.format("Current Page: %s%n", dc.getPageUrl()));
         sb.append(String.format("Page Title:  %s%n", dc.getPageTitle()));
-        sb.append(String.format("Element State: %s%n", determineElementState(dc)));
+        sb.append(String.format("Element State: %s%n", elementState));
 
         sb.append(String.format("%nDOM Context:%n  %s%n", dc.getDomContext()));
         sb.append(String.format("Obstruction: %s%n", dc.getObstructingElements()));
@@ -259,11 +259,12 @@ public class PageElement {
         return sb.toString();
     }
 
-    private void captureFailureAndLog(String operation, String testName, ElementOperationException ex) {
+    private void captureFailureAndLog(String operation, String testName, ElementOperationException ex,
+                                      ElementDiagnosticsCollector diagnostics) {
         String screenshotPath = null;
         try {
-            screenshotPath = new ElementDiagnosticsCollector(locator(), selector, page.getPage())
-                .captureFailureScreenshot(testName != null ? testName : operation);
+            screenshotPath = diagnostics.captureFailureScreenshot(
+                testName != null ? testName : operation);
         } catch (Exception e) {
             logger.warn("Failed to capture failure screenshot: {}", e.getMessage());
         }
@@ -282,12 +283,12 @@ public class PageElement {
         // 其他异常直接失败，避免浪费时间
         
         // 1. 元素被遮挡或拦截（等待后可能消失）
-        if (m.contains("intercepted") || m.contains("obscured") || m.contains("obscured")) {
+        if (m.contains("intercepted") || m.contains("obscured")) {
             return true;
         }
         
         // 2. 元素暂时不可交互（可能在动画中）
-        if (m.contains("not interactable") || m.contains("not clickable")) {
+        if (m.contains("not interactable") || m.contains("not clickable") || m.contains("not visible")) {
             return true;
         }
         
@@ -409,7 +410,7 @@ public class PageElement {
         try {
             locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
             return true;
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -422,7 +423,7 @@ public class PageElement {
         try {
             locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
             return true;
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -435,7 +436,7 @@ public class PageElement {
         try {
             locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
             return true;
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -448,7 +449,7 @@ public class PageElement {
         if (!exists(timeoutSec)) return false;
         try {
             return locator().isEnabled();
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -469,7 +470,7 @@ public class PageElement {
         if (!exists(timeoutSec)) return false;
         try {
             return locator().isEditable();
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -482,7 +483,7 @@ public class PageElement {
         if (!exists(timeoutSec)) return false;
         try {
             return locator().isChecked();
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             return false;
         }
     }
@@ -495,50 +496,55 @@ public class PageElement {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
             }
-            return raw.replace('\u00A0', ' ')
-                    .replaceAll("\\s+", " ")
-                    .replaceAll("\\s+([.,!?;:。，！？；：])", "$1")
-                    .replaceAll("\\p{Cf}", "")
-                    .trim();
-        } catch (Exception e) {
-            logger.warn("getText failed: {}", selector, e);
-            return "";
+            String normalized = raw.replace('\u00A0', ' ');
+            normalized = CONTROL_CHARS.matcher(normalized).replaceAll("");
+            normalized = MULTI_SPACE.matcher(normalized).replaceAll(" ");
+            normalized = SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");
+            return normalized.trim();
+        } catch (TimeoutError e) {
+            throw new ElementNotFoundException(selector, e);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("getText", selector, "Failed to get text", e);
         }
     }
 
     public String getInnerHtml() {
         try {
             return locator().innerHTML();
-        } catch (Exception e) {
-            logger.warn("getInnerHtml failed: {}", selector, e);
-            return "";
+        } catch (TimeoutError e) {
+            throw new ElementNotFoundException(selector, e);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("getInnerHtml", selector, "Failed to get inner HTML", e);
         }
     }
 
     public List<String> getAllTextContents() {
         try {
             return locator().allTextContents();
-        } catch (Exception e) {
-            logger.warn("allTextContents failed: {}", selector, e);
-            return List.of();
+        } catch (TimeoutError e) {
+            throw new ElementNotFoundException(selector, e);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("getAllTextContents", selector, "Failed to get all text contents", e);
         }
     }
 
     public String getAttribute(String attr) {
         try {
             return locator().getAttribute(attr);
-        } catch (Exception e) {
-            logger.warn("getAttribute failed: {}", selector, e);
-            return null;
+        } catch (TimeoutError e) {
+            throw new ElementNotFoundException(selector, e);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("getAttribute", selector, "Failed to get attribute '" + attr + "'", e);
         }
     }
 
     public String getValue() {
         try {
             return locator().inputValue();
-        } catch (Exception e) {
-            logger.warn("getValue failed: {}", selector, e);
-            return "";
+        } catch (TimeoutError e) {
+            throw new ElementNotFoundException(selector, e);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("getValue", selector, "Failed to get input value", e);
         }
     }
 
@@ -569,7 +575,7 @@ public class PageElement {
 
     // ==================== WaitFor (Full Set) ====================
     private int getDefaultTimeoutSec() {
-        return PlaywrightManager.config().getElementCheckTimeout() / 1000;
+        return Math.max(1, PlaywrightManager.config().getElementCheckTimeout() / 1000);
     }
 
     public PageElement waitForVisible() {
@@ -583,7 +589,7 @@ public class PageElement {
         } catch (TimeoutError e) {
             throw new ElementOperationException("waitForVisible", selector, 
                 "Element not visible within " + timeoutSec + " seconds: " + selector, e);
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForVisible", selector, 
                 "Failed to wait for element visible: " + selector, e);
         }
@@ -600,7 +606,7 @@ public class PageElement {
         } catch (TimeoutError e) {
             throw new ElementOperationException("waitForNotVisible", selector, 
                 "Element still visible after " + timeoutSec + " seconds: " + selector, e);
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForNotVisible", selector, 
                 "Failed to wait for element hidden: " + selector, e);
         }
@@ -616,7 +622,7 @@ public class PageElement {
             return this;
         } catch (TimeoutError e) {
             throw new ElementNotFoundException(selector, e);
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForExists", selector, 
                 "Failed to wait for element exists: " + selector, e);
         }
@@ -633,7 +639,7 @@ public class PageElement {
         } catch (TimeoutError e) {
             throw new ElementOperationException("waitForNotExists", selector, 
                 "Element still exists in DOM after " + timeoutSec + " seconds: " + selector, e);
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForNotExists", selector, 
                 "Failed to wait for element detached: " + selector, e);
         }
@@ -645,9 +651,14 @@ public class PageElement {
 
     public PageElement waitForClickable(int timeoutSec) {
         waitForVisible(timeoutSec);
-        if (!locator().isEnabled()) {
+        try {
+            if (!locator().isEnabled()) {
+                throw new ElementOperationException("waitForClickable", selector, 
+                    "Element is not clickable (not enabled): " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForClickable", selector, 
-                "Element is not clickable (not enabled): " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -658,9 +669,14 @@ public class PageElement {
 
     public PageElement waitForEditable(int timeoutSec) {
         waitForVisible(timeoutSec);
-        if (!locator().isEditable()) {
+        try {
+            if (!locator().isEditable()) {
+                throw new ElementOperationException("waitForEditable", selector, 
+                    "Element is not editable: " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForEditable", selector, 
-                "Element is not editable: " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -671,9 +687,14 @@ public class PageElement {
 
     public PageElement waitForEnabled(int timeoutSec) {
         waitForExists(timeoutSec);
-        if (!locator().isEnabled()) {
+        try {
+            if (!locator().isEnabled()) {
+                throw new ElementOperationException("waitForEnabled", selector, 
+                    "Element is not enabled: " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForEnabled", selector, 
-                "Element is not enabled: " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -684,9 +705,14 @@ public class PageElement {
 
     public PageElement waitForDisabled(int timeoutSec) {
         waitForExists(timeoutSec);
-        if (locator().isEnabled()) {
+        try {
+            if (locator().isEnabled()) {
+                throw new ElementOperationException("waitForDisabled", selector, 
+                    "Element is not disabled (still enabled): " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForDisabled", selector, 
-                "Element is not disabled (still enabled): " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -697,9 +723,14 @@ public class PageElement {
 
     public PageElement waitForChecked(int timeoutSec) {
         waitForExists(timeoutSec);
-        if (!locator().isChecked()) {
+        try {
+            if (!locator().isChecked()) {
+                throw new ElementOperationException("waitForChecked", selector, 
+                    "Element is not checked: " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForChecked", selector, 
-                "Element is not checked: " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -710,9 +741,14 @@ public class PageElement {
 
     public PageElement waitForNotChecked(int timeoutSec) {
         waitForExists(timeoutSec);
-        if (locator().isChecked()) {
+        try {
+            if (locator().isChecked()) {
+                throw new ElementOperationException("waitForNotChecked", selector, 
+                    "Element is checked (expected not checked): " + selector, null);
+            }
+        } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForNotChecked", selector, 
-                "Element is checked (expected not checked): " + selector, null);
+                "Failed to check element state: " + selector, e);
         }
         return this;
     }
@@ -791,9 +827,9 @@ public class PageElement {
     public byte[] screenshot() {
         try {
             return locator().screenshot();
-        } catch (Exception e) {
+        } catch (PlaywrightException e) {
             logger.error("screenshot failed: {}", selector, e);
-            return new byte[0];
+            return null;
         }
     }
 

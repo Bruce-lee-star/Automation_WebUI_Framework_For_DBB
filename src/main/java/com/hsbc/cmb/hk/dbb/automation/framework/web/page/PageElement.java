@@ -166,7 +166,7 @@ public class PageElement {
         for (int i = 0; i <= maxRetry; i++) {
             // 检查是否已经超过最大等待时间
             if (System.currentTimeMillis() - startTime > maxWaitTime) {
-                logger.error("[{}] Exceeded max wait time ({} ms), stop retrying: {}", 
+                logger.warn("[{}] Exceeded max wait time ({} ms), stop retrying: {}", 
                     operation, maxWaitTime, selector);
                 break;
             }
@@ -180,7 +180,8 @@ public class PageElement {
             } catch (TimeoutError e) {
                 lastEx = e;
                 // TimeoutError 不重试（超时意味着操作真的失败了）
-                logger.error("[{}] Timeout on attempt {}/{}: {}",
+                // 降级为 WARN — 异常最终会由 PlaywrightListener.stepFailed() 统一记录 error
+                logger.warn("[{}] Timeout on attempt {}/{}: {}",
                     operation, i + 1, maxRetry + 1, selector);
                 break;
             } catch (PlaywrightException e) {
@@ -194,7 +195,8 @@ public class PageElement {
             } catch (Exception e) {
                 lastEx = e;
                 // 其他异常（如框架异常）不重试，直接抛出
-                logger.error("[{}] Non-retriable exception: {}", operation, e.getMessage());
+                // 降级为 WARN — 异常最终会由 PlaywrightListener.stepFailed() 统一记录 error
+                logger.warn("[{}] Non-retriable exception: {}", operation, e.getMessage());
                 break;
             }
         }
@@ -270,9 +272,11 @@ public class PageElement {
         }
 
         if (screenshotPath != null) {
-            logger.error("Screenshot saved: {}", screenshotPath);
+            logger.debug("Failure screenshot saved: {}", screenshotPath);
         }
-        logger.error("Element operation failed: {}", ex.getMessage());
+        // 降级为 WARN，避免与上游重试日志 + 下游 Listener 层形成三重 error 重复输出
+        // 异常最终会被抛出并由 PlaywrightListener.stepFailed() 统一记录 error 日志
+        logger.warn("Element operation failed: {}", ex.getMessage());
     }
 
     private boolean isRetriable(PlaywrightException e) {

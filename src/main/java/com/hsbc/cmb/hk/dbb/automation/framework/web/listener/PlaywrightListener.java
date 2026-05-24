@@ -69,6 +69,9 @@ public class PlaywrightListener implements StepListener {
     // ⭐ 防止 stepFinished() 无参版与 stepFinishedInternal() 参数化版双重处理
     private static final ThreadLocal<Boolean> stepFinishProcessed = ThreadLocal.withInitial(() -> false);
 
+    // ⭐ 防止 stepFinishedInternal() 调用 StepEventBus.stepFinished() 导致递归重入
+    private static final ThreadLocal<Boolean> stepFinishReentrantGuard = ThreadLocal.withInitial(() -> false);
+
     // 存储当前步骤的截图列表
     private static final ThreadLocal<List<ScreenshotAndHtmlSource>> currentStepScreenshots = ThreadLocal.withInitial(ArrayList::new);
 
@@ -106,12 +109,19 @@ public class PlaywrightListener implements StepListener {
         // ⭐⭐⭐ 新增：重置 API 监控上下文
         resetApiMonitorContext();
 
+        // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
+        try {
+            FrameworkCore.getInstance().beforeTest();
+            recordTestData("testStart", System.currentTimeMillis());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Test initialized: {}", uniqueTestName);
+        } catch (Exception e) {
+            logger.error("Failed to initialize Playwright for test: {}", uniqueTestName, e);
+        }
+
         // 测试开始时截图（根据策略决定）
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
             takeScreenshotAndRegister("TEST_START_" + uniqueTestName);
         }
-        recordTestData("testStart", System.currentTimeMillis());
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Test initialized: {}", uniqueTestName);
     }
 
     private void testFinishedInternal() {
@@ -206,6 +216,7 @@ public class PlaywrightListener implements StepListener {
         // 重置所有防双重处理标志
         stepFinishProcessed.set(false);
         failureScreenshotsAlreadySent.set(false);
+        stepFinishReentrantGuard.set(false);
 
         // 用全新 ArrayList 替换旧列表（彻底断开任何外部引用）
         currentStepScreenshots.set(new ArrayList<>());
@@ -227,14 +238,24 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void stepFinished() {
+        // ⭐ 防递归重入：StepEventBus.stepFinished() 会重新触发事件分发
+        if (stepFinishReentrantGuard.get()) {
+            return;
+        }
+        stepFinishReentrantGuard.set(true);
+
         // ⭐ 防双重处理：如果参数化版 stepFinishedInternal 已经处理过，跳过
         if (stepFinishProcessed.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "stepFinished() skipped - already processed by stepFinishedInternal");
+            stepFinishReentrantGuard.set(false);
             return;
         }
 
         Long startTime = stepStartTime.get();
-        if (startTime == null) return;
+        if (startTime == null) {
+            stepFinishReentrantGuard.set(false);
+            return;
+        }
 
         long duration = System.currentTimeMillis() - startTime;
         recordTestData("stepDuration", duration);
@@ -282,6 +303,7 @@ public class PlaywrightListener implements StepListener {
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
+        stepFinishReentrantGuard.set(false);
     }
 
     @Override
@@ -298,8 +320,21 @@ public class PlaywrightListener implements StepListener {
         clearStepScreenshotsImmediately();
         currentStepScreenshots.set(new ArrayList<>());  // 重新初始化供本步骤使用
 
-        logger.error("Step failure detected: {}", failure.getException().getMessage());
-        recordTestData("stepFailure", failure.getException().getMessage());
+        // 截断为第一行，避免 buildDetailedErrorMessage 的多段落诊断输出污染日志
+        String fullMsg = failure.getException().getMessage();
+        String shortMsg = fullMsg;
+        if (fullMsg != null) {
+            int newlineIdx = fullMsg.indexOf('\n');
+            if (newlineIdx > 0) {
+                shortMsg = fullMsg.substring(0, newlineIdx).trim();
+            }
+            // 进一步限制长度，防止超长单行
+            if (shortMsg.length() > 200) {
+                shortMsg = shortMsg.substring(0, 197) + "...";
+            }
+        }
+        logger.error("Step failure detected: {}", shortMsg);
+        recordTestData("stepFailure", fullMsg);
         recordTestData("stepFailureCause", failure.getException().getClass().getSimpleName());
 
         // ⭐ 关键修复：无论什么策略，都在步骤失败瞬间截图
@@ -533,6 +568,7 @@ public class PlaywrightListener implements StepListener {
         takingScreenshot.remove();
         failureScreenshotsAlreadySent.remove();
         stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
+        stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
         // ⭐⭐⭐ 新增：清理 API 监控上下文
@@ -559,6 +595,13 @@ public class PlaywrightListener implements StepListener {
     }
 
     private void stepFinishedInternal(List<ScreenshotAndHtmlSource> screenshots, ZonedDateTime timestamp) {
+        // ⭐ 防递归重入：StepEventBus.stepFinished() 会触发事件重新分发到本监听器，
+        // 导致 stepFinishedInternal() → StepEventBus.stepFinished() → stepFinishedInternal() → ... 无限递归
+        if (stepFinishReentrantGuard.get()) {
+            return;
+        }
+        stepFinishReentrantGuard.set(true);
+
         // ⭐ 防双重处理：如果无参版 stepFinished() 已经处理过，跳过截图和发送
         boolean alreadyProcessed = stepFinishProcessed.get();
 
@@ -566,6 +609,7 @@ public class PlaywrightListener implements StepListener {
         if (startTime == null) {
             // 即使没有 startTime 也要清理标志
             stepFinishProcessed.remove();
+            stepFinishReentrantGuard.set(false);
             return;
         }
 
@@ -653,6 +697,7 @@ public class PlaywrightListener implements StepListener {
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
+        stepFinishReentrantGuard.set(false);
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step completed in {}ms", duration);
     }
@@ -807,9 +852,6 @@ public class PlaywrightListener implements StepListener {
 
             // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
             BasePage.clearCurrentPage();
-
-            // 检查是否需要重试失败的测试
-            checkAndTriggerRerun();
         } catch (Exception e) {
             logger.error("Error in testFinished, forcing cleanup", e);
             RouteEngine.clearDispatchedRoutes();
@@ -884,8 +926,22 @@ public class PlaywrightListener implements StepListener {
             cleanupThreadLocals();
             // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
             cleanupRouteRegistryForCurrentThread();
-            // ⭐⭐⭐ 新增：清理 API 监控上下文
-            apiMonitorContext.remove();
+
+            // ⭐ 修复：补齐 Playwright 资源清理（与 testFinished(TestOutcome) 保持一致）
+            try {
+                String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
+                        .getProperty("serenity.restart.browser.for.each", "scenario");
+                if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
+                    logger.info("Cleaning up Playwright resources (scenario-level restart)");
+                    PlaywrightManager.cleanupForScenario();
+                } else {
+                    logger.debug("Feature mode - cleaning page state while keeping Context/Page");
+                    PlaywrightManager.cleanupPageState();
+                }
+                BasePage.clearCurrentPage();
+            } catch (Exception e) {
+                logger.error("Failed to clean up Playwright resources after test: {}", e.getMessage());
+            }
         }
     }
 
@@ -931,7 +987,13 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testFailed(TestOutcome result, Throwable throwable) {
-        logger.error("Test failed: {}", result, throwable);
+        // 简洁输出：仅显示测试名 + 异常消息第一行，不打印完整堆栈（由 Serenity 报告保留）
+        String testTitle = result != null ? result.getTitle() : "unknown";
+        String errorMsg = throwable != null ? throwable.getMessage() : "Unknown error";
+        if (errorMsg != null && errorMsg.contains("\n")) {
+            errorMsg = errorMsg.substring(0, errorMsg.indexOf('\n')).trim();
+        }
+        logger.error("Test failed: {} - {}", testTitle, errorMsg);
 
         // ⭐⭐⭐ 新增：检查 API 断言失败
         checkAndMarkApiAssertionFailures(result);

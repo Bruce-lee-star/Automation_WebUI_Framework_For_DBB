@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * API 监控上下文 — 线程隔离的断言失败标记 + 详细失败信息 + 响应捕获存储。
@@ -79,8 +80,8 @@ public class ApiMonitorContext {
     /** Response 总字节数上限（10MB），防止大响应（如文件下载）导致 OOM */
     private static final long MAX_RESPONSE_TOTAL_SIZE = 10 * 1024 * 1024; // 10 MB
 
-    /** 当前已存储响应总字节数（近似值，非精确） */
-    private volatile long totalResponseSize = 0L;
+    /** 当前已存储响应总字节数（原子操作，线程安全） */
+    private final AtomicLong totalResponseSize = new AtomicLong(0L);
 
     /** 断言失败详情列表（线程安全） */
     private final List<AssertionFailureDetail> failureDetails =
@@ -234,7 +235,7 @@ public class ApiMonitorContext {
         failureDetails.clear();
         responseStorage.clear();
         apiCallsPerUrl.clear();
-        totalResponseSize = 0L;
+        totalResponseSize.set(0L);
         synchronized (completionLock) {
             completionLock.notifyAll();
         }
@@ -356,7 +357,7 @@ public class ApiMonitorContext {
         }
 
         // 体积上限检查
-        long currentSize = totalResponseSize;
+        long currentSize = totalResponseSize.get();
         if (currentSize >= MAX_RESPONSE_TOTAL_SIZE) {
             LOGGER.warn("[ApiMonitorContext] Response total size limit reached ({} >= {}). "
                             + "Subsequent responses will NOT be stored to prevent OOM.",
@@ -369,7 +370,7 @@ public class ApiMonitorContext {
         responseStorage.computeIfAbsent(endpoint, k ->
                 java.util.Collections.synchronizedList(new ArrayList<>())
         ).add(responseBody);
-        totalResponseSize += bodySize;
+        totalResponseSize.addAndGet(bodySize);
     }
 
     /**

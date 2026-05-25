@@ -111,30 +111,33 @@ public class RouteRegistry {
     /**
      * 清理指定上下文的全部 pattern（测试结束时调用，防止内存泄漏 + 跨用例污染）。
      *
-     * <p>三步清理：
+     * <p>三步清理（避免双重 unroute）：
      * <ol>
-     *   <li>从注册表移除该上下文的所有 pattern</li>
-     *   <li>遍历所有已注册 pattern，通过 RouteEngine 执行 Playwright {@code unroute()}</li>
-     *   <li>清理对应的 MonitorSession</li>
+     *   <li>从注册表移除该上下文的所有 pattern 并注销 Playwright 路由层</li>
+     *   <li>清理 MonitorSession（内部会停止定时器，但不重复 unroute）</li>
+     *   <li>清理 Route 防重门控</li>
      * </ol>
+     *
+     * <p>注意：{@link RouteEngine#clearMonitorSessions(Object)} 内部会调用
+     * {@link MonitorSession#stop()} → {@code unroute() + RouteRegistry.unregister()}，
+     * 但此时 CONTEXT_PATTERNS 条目已被移除，unregister 不会重复操作，
+     * Playwright 对已注销的 pattern 再次 unroute 也仅输出 debug 日志（幂等）。
      *
      * <p>任意一步失败不影响后续步骤（异常隔离）。
      *
      * @param context Page 或 BrowserContext 实例
      */
     public static void clearContext(Object context) {
-        // 1. 先获取并移除注册表条目（确保不重复清理）
+        // 1. 先从注册表移除，并注销 Playwright 路由层（无 MonitorSession 的 MOCK/MODIFY 路由需要）
         Set<String> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
-
-        // 2. 注销 Playwright 路由层（所有 pattern，无论是否有 MonitorSession）
         if (patterns != null && !patterns.isEmpty()) {
             RouteEngine.unrouteAllForContext(context, patterns);
         }
 
-        // 3. 清理 MonitorSession（内部也会 unroute + unregister，但无副作用）
+        // 2. 清理 MonitorSession（停止定时器 + unroute，Playwright 对已注销的 pattern 幂等）
         RouteEngine.clearMonitorSessions(context);
 
-        // 4. 清理 Route 防重门控（本测试上下文所有请求均已处理完毕，安全清空）
+        // 3. 清理 Route 防重门控（本测试上下文所有请求均已处理完毕，安全清空）
         RouteEngine.clearDispatchedRoutes();
 
         LOGGER.debug("[RouteRegistry] Cleared {} patterns for context: {}",

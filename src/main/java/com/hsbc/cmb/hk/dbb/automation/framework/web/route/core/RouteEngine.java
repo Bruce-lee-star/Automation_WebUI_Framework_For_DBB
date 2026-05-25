@@ -83,7 +83,7 @@ public class RouteEngine {
         registerInternal(page, (pattern, rule) -> {
             if (RouteRegistry.register(page, pattern)) {
                 page.route(pattern, route -> dispatchRoute(route, rule));
-                startMonitorSession(page, rule);
+                startMonitorSession(page, rule, pattern);
             }
         }, rules);
     }
@@ -95,7 +95,7 @@ public class RouteEngine {
         registerInternal(context, (pattern, rule) -> {
             if (RouteRegistry.register(context, pattern)) {
                 context.route(pattern, route -> dispatchRoute(route, rule));
-                startMonitorSession(context, rule);
+                startMonitorSession(context, rule, pattern);
             }
         }, rules);
     }
@@ -220,14 +220,17 @@ public class RouteEngine {
      *
      * <p>适用范围：MONITOR / MOCK / MODIFY 三种类型。
      * <p>条件：(timeoutMs > 0 或 autoStopOnMatch == true)
+     *
+     * @param context          Page 或 BrowserContext 实例
+     * @param rule             路由规则
+     * @param normalizedPattern 注册时使用的归一化 pattern（用于后续 unroute）
      */
-    private static void startMonitorSession(Object context, RouteRule rule) {
+    private static void startMonitorSession(Object context, RouteRule rule, String normalizedPattern) {
         if (rule.getTimeoutMs() <= 0 && !rule.isAutoStopOnMatch()) {
             return;  // 无限监控/拦截，无需会话
         }
 
-        String pattern = rule.getUrlPattern();
-        MonitorSession session = new MonitorSession(context, pattern, rule);
+        MonitorSession session = new MonitorSession(context, normalizedPattern, rule);
         SESSIONS.put(rule, session);
 
         if (rule.getTimeoutMs() > 0) {
@@ -235,7 +238,7 @@ public class RouteEngine {
         }
 
         LOGGER.debug("[RouteEngine] MonitorSession started: pattern='{}', timeout={}ms, minMatches={}, autoStop={}",
-                pattern, rule.getTimeoutMs(), rule.getMinMatches(), rule.isAutoStopOnMatch());
+                normalizedPattern, rule.getTimeoutMs(), rule.getMinMatches(), rule.isAutoStopOnMatch());
     }
 
     /**
@@ -362,6 +365,7 @@ public class RouteEngine {
 
         /**
          * 停止监控：取消超时任务、注销 Playwright 路由、移除会话。
+         * <p>pattern 存储的是注册时使用的归一化 pattern，能正确匹配 unroute。
          */
         void stop() {
             if (!stopped.compareAndSet(false, true)) {
@@ -373,7 +377,7 @@ public class RouteEngine {
                 timeoutFuture.cancel(false);
             }
 
-            // 注销 Playwright 路由
+            // 注销 Playwright 路由（pattern 是归一化的，能正确匹配注册时的 pattern）
             try {
                 if (context instanceof Page) {
                     ((Page) context).unroute(pattern);

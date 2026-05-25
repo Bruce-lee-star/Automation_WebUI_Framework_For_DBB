@@ -400,11 +400,11 @@ public class RouteDsl {
          * <p>校验必填字段：urlPattern 必须非空。
          *
          * @return 父级 RouteDsl 实例
-         * @throws IllegalStateException 如果 urlPattern 为空
+         * @throws IllegalArgumentException 如果 urlPattern 为空
          */
         public RouteDsl done() {
             if (rule.getUrlPattern() == null || rule.getUrlPattern().trim().isEmpty()) {
-                throw new IllegalStateException("[RouteDsl] urlPattern cannot be blank. "
+                throw new IllegalArgumentException("urlPattern cannot be blank. "
                         + "Please call api(\"pattern\") before done().");
             }
             parent.rules.add(rule);

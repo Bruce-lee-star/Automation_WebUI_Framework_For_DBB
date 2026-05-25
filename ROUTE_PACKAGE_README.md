@@ -775,10 +775,19 @@ dsl.start();
 dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
 ```
 
-> **最佳实践**：MOCK / MODIFY 类型路由不会自动停止（`autoStopOnMatch` 仅适用于 MONITOR），
-> 需在测试末尾显式调用 `dsl.clear()` 释放路由，避免跨用例污染全局状态（如 `apiCallsPerUrl`、`responseStorage`）。
-> Monitor 类型路在 `autoStopOnMatch=true`（默认）时匹配达标后会自动 unroute，
-> 但也建议在 `@After` 中统一调用 `dsl.clear()` 以保万无一失。
+> **自动清理 vs 手动清理**：
+>
+> | 场景 | 是否需要 `dsl.clear()` | 说明 |
+> |------|------------------------|------|
+> | **Serenity BDD Scenario** | ❌ 不需要 | `PlaywrightListener.testFinished()` 自动调用 `RouteRegistry.clearContext()` → `page.unroute(pattern)`，三种类型路由全部清理 |
+> | **独立 JUnit `@Test`** | ✅ 需要 | 不走 Serenity 生命周期，必须在 `@After` 或测试末尾显式调用 |
+> | **测试中途提前停止路由** | ✅ 需要 | `autoStopOnMatch` 仅适用于 MONITOR 类型，MOCK/MODIFY 需手动调用 |
+>
+> **注意区分两个概念**：
+> - **MonitorSession 自动停止**（`autoStopOnMatch=true`）：在**测试运行期间**，MONITOR 路由匹配达标后自动 unroute（中途卸载）
+> - **Scenario 结束清理**（`PlaywrightListener.testFinished()`）：在**测试结束后**统一注销所有路由，MOCK/MODIFY/MONITOR 全覆盖
+>
+> 即使在 Serenity 场景中，也建议在 `@After` 中调用 `dsl.clear()` 作为双重保险（幂等操作，无副作用）。
 
 ### 🆕 5.9 全条件 Mock — 多维度精准匹配
 

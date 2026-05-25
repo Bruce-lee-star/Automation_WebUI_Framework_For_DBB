@@ -32,6 +32,9 @@ public class RouteRule {
     private String mockBody;
     private int mockStatus = 200;
     private Map<String, String> mockHeaders;
+    /** Mock 响应批量字段替换：JSONPath → 替换值。
+     *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换） */
+    private Map<String, String> mockReplaceFields;
 
     // Modify
     private Map<String, String> addHeaders;
@@ -105,6 +108,14 @@ public class RouteRule {
 
     public Map<String, String> getMockHeaders() {
         return mockHeaders;
+    }
+
+    /**
+     * 获取 Mock 响应批量字段替换映射（JSONPath → 值）。
+     * 支持通配符 [*] 批量替换 List 中所有元素的字段。
+     */
+    public Map<String, String> getMockReplaceFields() {
+        return mockReplaceFields;
     }
 
     public Map<String, String> getAddHeaders() {
@@ -207,6 +218,22 @@ public class RouteRule {
 
     public void setMockHeaders(Map<String, String> mockHeaders) {
         this.mockHeaders = mockHeaders;
+    }
+
+    /**
+     * 添加一个 Mock 响应字段替换（JSONPath → 值）。
+     * 支持通配符 [*] 批量替换 List 中所有元素的字段，如 $.users[*].name。
+     * <p>支持多次调用，添加到 Map 中。
+     */
+    public void addMockReplaceField(String jsonPath, String value) {
+        if (mockReplaceFields == null) {
+            mockReplaceFields = new LinkedHashMap<>();
+        }
+        mockReplaceFields.put(jsonPath, value);
+    }
+
+    public void setMockReplaceFields(Map<String, String> mockReplaceFields) {
+        this.mockReplaceFields = mockReplaceFields;
     }
 
     public void setAddHeaders(Map<String, String> addHeaders) {

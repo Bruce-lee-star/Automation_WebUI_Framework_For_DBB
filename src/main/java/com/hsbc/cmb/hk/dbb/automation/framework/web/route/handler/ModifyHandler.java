@@ -19,10 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -450,5 +447,287 @@ public class ModifyHandler {
         } else {
             obj.put(fieldName, value.toString());
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 通配符 [*] 批量字段替换（用于 Mock 响应 List 数据批量处理）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 对 JSON body 批量执行通配符字段替换。
+     *
+     * <p>支持的通配符路径格式：
+     * <ul>
+     *   <li>{@code $.name} — 替换顶层字段</li>
+     *   <li>{@code $[*].name} — 替换顶层数组中所有元素的 name 字段</li>
+     *   <li>{@code $.users[*].name} — 替换 users 数组中所有元素的 name 字段</li>
+     *   <li>{@code $.users[*].orders[*].price} — 嵌套 List 批量替换：每个 user 的每个 order 的 price</li>
+     *   <li>{@code $.users[0].name} — 精确索引替换（非通配符）</li>
+     * </ul>
+     *
+     * @param jsonBody     原始 JSON body 字符串
+     * @param replacements 路径 → 值 的映射
+     * @return 替换后的 JSON 字符串；解析失败时返回原字符串
+     */
+    public static String replaceBatchByWildcard(String jsonBody, Map<String, String> replacements) {
+        if (replacements == null || replacements.isEmpty()) {
+            return jsonBody;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(jsonBody);
+            for (Map.Entry<String, String> entry : replacements.entrySet()) {
+                String path = entry.getKey();
+                String newValue = entry.getValue();
+                try {
+                    List<PathSegment> segments = parseWildcardPath(path);
+                    if (segments.isEmpty()) {
+                        LOGGER.warn("[ModifyHandler] Empty path after parsing: '{}'", path);
+                        continue;
+                    }
+                    // 类型推断：找到第一个匹配节点的原值
+                    Object sample = findFirstMatchingValue(root, segments, 0);
+                    Object typedValue = convertToMatchingType(newValue, sample);
+                    // 递归应用替换
+                    int count = applyWildcardRecursive(root, (ObjectNode) null, null, segments, 0, typedValue);
+                    LOGGER.debug("[ModifyHandler] Wildcard replaced {} node(s) for path='{}', value='{}'",
+                            count, path, newValue);
+                } catch (Exception e) {
+                    LOGGER.warn("[ModifyHandler] Wildcard replace failed for path='{}': {}",
+                            path, e.getMessage());
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (Exception e) {
+            LOGGER.warn("[ModifyHandler] Batch wildcard replace failed: {}", e.getMessage());
+            return jsonBody;
+        }
+    }
+
+    // ── 路径段数据结构 ────────────────────────────────────────────
+
+    /**
+     * 通配符路径解析后的一个路径段。
+     * <p>例如 {@code users[*]} 解析为 fieldName="users", wildcard=true。
+     */
+    public static class PathSegment {
+        final String fieldName;      // 字段名，root 通配符时为 null
+        final boolean wildcard;      // 是否为 [*] 通配符
+        final Integer arrayIndex;    // 精确数组索引，null 表示无索引或通配符
+
+        PathSegment(String fieldName, boolean wildcard, Integer arrayIndex) {
+            this.fieldName = fieldName;
+            this.wildcard = wildcard;
+            this.arrayIndex = arrayIndex;
+        }
+
+        boolean isWildcard() { return wildcard; }
+
+        boolean isRootWildcard() { return fieldName == null && wildcard; }
+
+        @Override
+        public String toString() {
+            if (fieldName == null && wildcard) return "[*]";
+            if (wildcard) return fieldName + "[*]";
+            if (arrayIndex != null) return fieldName + "[" + arrayIndex + "]";
+            return fieldName != null ? fieldName : "";
+        }
+    }
+
+    /**
+     * 解析通配符路径为 PathSegment 列表。
+     *
+     * <p>解析规则：
+     * <ul>
+     *   <li>{@code $} 前缀被跳过</li>
+     *   <li>{@code users[*]} → {fieldName="users", wildcard=true}</li>
+     *   <li>{@code users[0]} → {fieldName="users", arrayIndex=0}</li>
+     *   <li>{@code name} → {fieldName="name"}</li>
+     *   <li>{@code [*]} 出现在段开头 → root 通配符</li>
+     * </ul>
+     */
+    public static List<PathSegment> parseWildcardPath(String path) {
+        List<PathSegment> segments = new ArrayList<>();
+        // 去掉 JSONPath 根前缀
+        String trimmed = path;
+        if (trimmed.startsWith("$.")) {
+            trimmed = trimmed.substring(2);
+        } else if (trimmed.startsWith("$")) {
+            trimmed = trimmed.substring(1);
+        }
+
+        if (trimmed.isEmpty()) return segments;
+
+        String[] parts = trimmed.split("\\.");
+        for (String part : parts) {
+            if (part.isEmpty()) continue;
+
+            int bracketIdx = part.indexOf('[');
+            if (bracketIdx < 0) {
+                // 普通字段名，无数组修饰
+                segments.add(new PathSegment(part, false, null));
+            } else {
+                String field = part.substring(0, bracketIdx);
+                String bracketContent = part.substring(bracketIdx + 1, part.indexOf(']'));
+                if ("*".equals(bracketContent)) {
+                    // 通配符 [*]
+                    segments.add(new PathSegment(field.isEmpty() ? null : field, true, null));
+                } else {
+                    // 精确索引 [N]
+                    try {
+                        int idx = Integer.parseInt(bracketContent);
+                        segments.add(new PathSegment(field.isEmpty() ? null : field, false, idx));
+                    } catch (NumberFormatException e) {
+                        LOGGER.debug("[ModifyHandler] Invalid array index '{}' in path '{}', treating as field",
+                                bracketContent, path);
+                        segments.add(new PathSegment(part, false, null));
+                    }
+                }
+            }
+        }
+        return segments;
+    }
+
+    // ── 类型推断：找到第一个匹配节点的原值 ──────────────────────────
+
+    /**
+     * 递归查找第一个匹配通配符路径的节点的原始值，用于类型推断。
+     */
+    private static Object findFirstMatchingValue(JsonNode node, List<PathSegment> segments, int segIdx) {
+        if (segIdx >= segments.size() || node == null) return null;
+        PathSegment seg = segments.get(segIdx);
+        boolean isLast = (segIdx == segments.size() - 1);
+
+        if (seg.isWildcard()) {
+            JsonNode arrayNode;
+            if (seg.isRootWildcard()) {
+                arrayNode = node;
+            } else if (node instanceof ObjectNode) {
+                arrayNode = ((ObjectNode) node).get(seg.fieldName);
+            } else {
+                return null;
+            }
+
+            if (arrayNode instanceof ArrayNode && !isLast) {
+                for (JsonNode elem : (ArrayNode) arrayNode) {
+                    Object found = findFirstMatchingValue(elem, segments, segIdx + 1);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
+        // 非通配符：精确导航
+        JsonNode child;
+        if (node instanceof ArrayNode && seg.arrayIndex != null) {
+            ArrayNode arr = (ArrayNode) node;
+            child = (seg.arrayIndex >= 0 && seg.arrayIndex < arr.size()) ? arr.get(seg.arrayIndex) : null;
+        } else if (node instanceof ObjectNode && seg.fieldName != null) {
+            child = ((ObjectNode) node).get(seg.fieldName);
+            if (child instanceof ArrayNode && seg.arrayIndex != null) {
+                ArrayNode arr = (ArrayNode) child;
+                child = (seg.arrayIndex >= 0 && seg.arrayIndex < arr.size()) ? arr.get(seg.arrayIndex) : null;
+            }
+        } else {
+            return null;
+        }
+
+        if (child == null) return null;
+        if (isLast) return child;  // 返回原值用于类型匹配
+        return findFirstMatchingValue(child, segments, segIdx + 1);
+    }
+
+    // ── 递归批量替换核心 ──────────────────────────────────────────
+
+    /**
+     * 递归遍历 JSON 树，在通配符路径匹配的所有叶节点上设置值。
+     *
+     * @param node     当前 JSON 节点
+     * @param parent   当前节点的父 ObjectNode（用于最终设值）；root 层级可为 null
+     * @param parentKey 当前节点在其父 ObjectNode 中的 key
+     * @param segments 路径段列表
+     * @param segIdx   当前处理到的段索引
+     * @param value    要设置的值（已处理好类型）
+     * @return 成功替换的节点数
+     */
+    private static int applyWildcardRecursive(JsonNode node, ObjectNode parent, String parentKey,
+                                               List<PathSegment> segments, int segIdx, Object value) {
+        if (segIdx >= segments.size() || node == null) return 0;
+        PathSegment seg = segments.get(segIdx);
+        boolean isLast = (segIdx == segments.size() - 1);
+
+        if (seg.isWildcard()) {
+            // ── 通配符：定位到数组，迭代每个元素 ──
+            JsonNode arrayNode;
+            ObjectNode arrayParent;
+            String arrayKey;
+            if (seg.isRootWildcard()) {
+                arrayNode = node;
+                arrayParent = parent;
+                arrayKey = parentKey;
+            } else if (node instanceof ObjectNode) {
+                arrayNode = ((ObjectNode) node).get(seg.fieldName);
+                arrayParent = (ObjectNode) node;
+                arrayKey = seg.fieldName;
+            } else {
+                return 0;
+            }
+
+            if (arrayNode instanceof ArrayNode) {
+                int count = 0;
+                ArrayNode arr = (ArrayNode) arrayNode;
+                for (int i = 0; i < arr.size(); i++) {
+                    JsonNode elem = arr.get(i);
+                    if (isLast) {
+                        // 路径如 $.users[*] — 替换整个数组元素
+                        if (value instanceof JsonNode) {
+                            arr.set(i, (JsonNode) value);
+                            count++;
+                        }
+                    } else {
+                        // 继续递归到下一层
+                        count += applyWildcardRecursive(elem, arrayParent, arrayKey, segments, segIdx + 1, value);
+                    }
+                }
+                return count;
+            }
+            return 0;
+        }
+
+        // ── 非通配符：精确导航到子节点 ──
+        JsonNode child;
+        ObjectNode effectiveParent;
+        String effectiveKey;
+
+        if (node instanceof ArrayNode && seg.arrayIndex != null) {
+            ArrayNode arr = (ArrayNode) node;
+            if (seg.arrayIndex < 0 || seg.arrayIndex >= arr.size()) return 0;
+            child = arr.get(seg.arrayIndex);
+            effectiveParent = parent;
+            effectiveKey = parentKey;
+        } else if (node instanceof ObjectNode && seg.fieldName != null) {
+            child = ((ObjectNode) node).get(seg.fieldName);
+            if (child instanceof ArrayNode && seg.arrayIndex != null) {
+                ArrayNode arr = (ArrayNode) child;
+                if (seg.arrayIndex < 0 || seg.arrayIndex >= arr.size()) return 0;
+                child = arr.get(seg.arrayIndex);
+            }
+            effectiveParent = (ObjectNode) node;
+            effectiveKey = seg.fieldName;
+        } else {
+            return 0;
+        }
+
+        if (child == null) return 0;
+
+        if (isLast) {
+            // 到达最终字段：在 effectiveParent 上设置值
+            if (effectiveParent != null && effectiveKey != null) {
+                setJsonNode(effectiveParent, effectiveKey, value);
+                return 1;
+            }
+            return 0;
+        }
+
+        return applyWildcardRecursive(child, effectiveParent, effectiveKey, segments, segIdx + 1, value);
     }
 }

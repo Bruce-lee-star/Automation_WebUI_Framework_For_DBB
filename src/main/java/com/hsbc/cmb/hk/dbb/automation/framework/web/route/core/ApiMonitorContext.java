@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -11,23 +12,60 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * API 监控上下文 — 线程隔离的断言失败标记 + 详细失败信息 + Response 存储。
+ * API 监控上下文 — 线程隔离的断言失败标记 + 详细失败信息 + 响应捕获存储。
  *
  * <p>每个测试线程拥有独立的上下文，MonitorHandler 在异步线程中
  * 标记断言失败，PlaywrightListener 在测试结束时（主线程）检查并处理。
  *
- * <p>增强功能：
+ * <p>两种存储：
  * <ul>
- *   <li>记录每个断言失败的详细信息（URL、类型、预期值、实际值）</li>
- *   <li>支持线程安全的并发写入（通过 synchronized 列表）</li>
- *   <li>Response 多值存储，支持分页场景多次调用全部保留</li>
- *   <li>测试结束后可通过 {@link #getFailureDetails()} 生成报告</li>
+ *   <li><b>CapturedApiCall 存储</b>（推荐） — 完整的请求/响应快照，包含
+ *       URL、method、statusCode、requestHeaders、responseHeaders、body</li>
+ *   <li><b>Response body 存储</b>（向后兼容） — 仅存储 body 字符串</li>
  * </ul>
+ *
+ * <p>推荐用法：
+ * <pre>{@code
+ * CapturedApiCall call = ctx.getLastApiCall("/api/login");
+ * int status = call.statusCode();
+ * String token = call.responseHeader("Authorization");
+ * Object id = call.json("$.data.userId");
+ * }</pre>
  *
  * @see RouteEngine#getCurrentApiMonitorContext()
  */
 public class ApiMonitorContext {
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiMonitorContext.class);
+
+    /**
+     * 每个测试线程独立的上下文实例。
+     */
+    private static final ThreadLocal<ApiMonitorContext> INSTANCE =
+            ThreadLocal.withInitial(ApiMonitorContext::new);
+
+    /**
+     * 获取当前线程的 API 监控上下文。
+     */
+    public static ApiMonitorContext getCurrent() {
+        return INSTANCE.get();
+    }
+
+    /**
+     * 重置当前线程的 API 监控上下文（测试开始时调用）。
+     */
+    public static void resetCurrent() {
+        ApiMonitorContext ctx = INSTANCE.get();
+        if (ctx != null) {
+            ctx.reset();
+        }
+    }
+
+    /**
+     * 移除当前线程的 API 监控上下文（测试结束时调用）。
+     */
+    public static void removeCurrent() {
+        INSTANCE.remove();
+    }
 
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
@@ -49,11 +87,21 @@ public class ApiMonitorContext {
             java.util.Collections.synchronizedList(new ArrayList<>());
 
     /**
-     * Response 多值存储（线程安全）。
+     * CapturedApiCall 存储 — 完整的请求/响应快照（推荐）。
      *
-     * <p>Key = 完整 URL，Value = 该 URL 被调用的所有响应（按顺序）。
-     * 同一 endpoint 分页多次调用（如 /api/users?page=1, page=2）会全部保留。
+     * <p>Key = 请求端点（路径+查询，不含 host），Value = 该端点被调用的所有快照（按顺序）。
      */
+    private final Map<String, List<CapturedApiCall>> apiCallsPerUrl = new ConcurrentHashMap<>();
+
+    /**
+     * Response body 存储 — 向后兼容的旧存储。
+     *
+     * <p>Key = 请求端点（路径+查询，不含 host），Value = 该端点被调用的所有响应 body（按顺序）。
+     * 同一 endpoint 分页多次调用（如 /api/users?page=1, page=2）会全部保留。
+     *
+     * @deprecated 推荐使用 {@link #getApiCalls(String)} 获取完整信息
+     */
+    @Deprecated
     private final Map<String, List<String>> responseStorage = new ConcurrentHashMap<>();
 
     /**
@@ -185,14 +233,104 @@ public class ApiMonitorContext {
         hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStorage.clear();
+        apiCallsPerUrl.clear();
         totalResponseSize = 0L;
         synchronized (completionLock) {
             completionLock.notifyAll();
         }
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // CapturedApiCall 存储（推荐）
+    // ═══════════════════════════════════════════════════════════
+
     /**
-     * 存储 API 响应体（追加到该 URL 的列表中，不覆盖历史调用）。
+     * 存储一次完整的 API 调用快照。
+     */
+    public void storeApiCall(CapturedApiCall call) {
+        if (call == null || call.endpoint() == null) return;
+        apiCallsPerUrl.computeIfAbsent(call.endpoint(), k ->
+                java.util.Collections.synchronizedList(new ArrayList<>())
+        ).add(call);
+    }
+
+    /**
+     * 获取指定端点的所有 API 调用快照（按调用顺序）。
+     *
+     * <pre>{@code
+     * List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
+     * for (CapturedApiCall c : calls) {
+     *     System.out.println(c.statusCode() + " " + c.responseHeader("Content-Type"));
+     * }
+     * }</pre>
+     *
+     * @param endpoint 请求端点（路径+查询，不含 host，如 /api/users/1?page=2）
+     * @return 不可变副本列表，未找到返回空列表
+     */
+    public List<CapturedApiCall> getApiCalls(String endpoint) {
+        List<CapturedApiCall> list = apiCallsPerUrl.get(endpoint);
+        if (list == null || list.isEmpty()) return Collections.emptyList();
+        synchronized (list) {
+            return new ArrayList<>(list);
+        }
+    }
+
+    /**
+     * 获取指定端点的最近一次 API 调用快照。
+     *
+     * @param endpoint 请求端点（路径+查询，不含 host，如 /api/users/1）
+     * @return 捕获的快照，未找到返回 null
+     */
+    public CapturedApiCall getLastApiCall(String endpoint) {
+        List<CapturedApiCall> list = apiCallsPerUrl.get(endpoint);
+        if (list == null || list.isEmpty()) return null;
+        synchronized (list) {
+            return list.get(list.size() - 1);
+        }
+    }
+
+    /**
+     * 获取所有端点的 API 调用快照（每个端点仅返回最近一次）。
+     *
+     * @return 不可变 Map 副本，key=端点, value=最近一次快照
+     */
+    public Map<String, CapturedApiCall> getAllLastApiCalls() {
+        Map<String, CapturedApiCall> result = new java.util.HashMap<>();
+        for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
+            List<CapturedApiCall> list = e.getValue();
+            if (list != null && !list.isEmpty()) {
+                synchronized (list) {
+                    result.put(e.getKey(), list.get(list.size() - 1));
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 获取所有端点的全部 API 调用快照。
+     *
+     * @return 不可变 Map 副本，key=端点, value=全部快照列表
+     */
+    public Map<String, List<CapturedApiCall>> getAllApiCalls() {
+        Map<String, List<CapturedApiCall>> result = new java.util.HashMap<>();
+        for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
+            List<CapturedApiCall> list = e.getValue();
+            if (list != null) {
+                synchronized (list) {
+                    result.put(e.getKey(), new ArrayList<>(list));
+                }
+            }
+        }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Response body 存储（向后兼容）
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 存储 API 响应体（追加到该端点的列表中，不覆盖历史调用）。
      *
      * <p>双重上限保护：
      * <ul>
@@ -200,11 +338,11 @@ public class ApiMonitorContext {
      *   <li>体积上限：{@link #MAX_RESPONSE_TOTAL_SIZE} 字节（10MB）</li>
      * </ul>
      *
-     * @param url          请求 URL
+     * @param endpoint     请求端点（路径+查询，不含 host）
      * @param responseBody 响应体字符串
      */
-    public void storeResponse(String url, String responseBody) {
-        if (url == null || responseBody == null) {
+    public void storeResponse(String endpoint, String responseBody) {
+        if (endpoint == null || responseBody == null) {
             return;
         }
 
@@ -228,7 +366,7 @@ public class ApiMonitorContext {
 
         // 写入存储
         int bodySize = responseBody.length();
-        responseStorage.computeIfAbsent(url, k ->
+        responseStorage.computeIfAbsent(endpoint, k ->
                 java.util.Collections.synchronizedList(new ArrayList<>())
         ).add(responseBody);
         totalResponseSize += bodySize;
@@ -246,22 +384,22 @@ public class ApiMonitorContext {
     /**
      * 获取已存储的 API 响应体（返回最近一次调用）。
      *
-     * @param url 请求 URL
+     * @param endpoint 请求端点
      * @return 最新的响应体字符串，未找到返回 null
      */
-    public String getStoredResponse(String url) {
-        List<String> list = responseStorage.get(url);
+    public String getStoredResponse(String endpoint) {
+        List<String> list = responseStorage.get(endpoint);
         return (list != null && !list.isEmpty()) ? list.get(list.size() - 1) : null;
     }
 
     /**
-     * 获取指定 URL 所有响应（按调用顺序保留，分页场景适用）。
+     * 获取指定端点所有响应（按调用顺序保留，分页场景适用）。
      *
-     * @param url 请求 URL
+     * @param endpoint 请求端点
      * @return 不可变副本列表，未找到返回空列表
      */
-    public List<String> getAllResponsesForUrl(String url) {
-        List<String> list = responseStorage.get(url);
+    public List<String> getAllResponsesForUrl(String endpoint) {
+        List<String> list = responseStorage.get(endpoint);
         if (list == null || list.isEmpty()) {
             return java.util.Collections.emptyList();
         }
@@ -318,10 +456,10 @@ public class ApiMonitorContext {
     }
 
     /**
-     * 获取指定 URL 的调用次数。
+     * 获取指定端点的调用次数。
      */
-    public int getResponseCountForUrl(String url) {
-        List<String> list = responseStorage.get(url);
+    public int getResponseCountForUrl(String endpoint) {
+        List<String> list = responseStorage.get(endpoint);
         return list != null ? list.size() : 0;
     }
 

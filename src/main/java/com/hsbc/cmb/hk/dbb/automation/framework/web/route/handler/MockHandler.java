@@ -7,14 +7,18 @@ import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Map;
+
 /**
  * Mock 响应 Handler — 拦截请求，直接返回自定义响应。
  *
  * <p>核心改进：
  * <ul>
  *   <li>mockBody 为 null 时设置为默认空字符串 ""，避免 Playwright 空指针</li>
- *   <li>mockStatus 合法性校验（100 ≤ status < 600），非法时 fallback 到 200</li>
+ *   <li>mockStatus 合法性校验（100 ≤ status &lt; 600），非法时 fallback 到 200</li>
  *   <li>route.fulfill() 包裹 try-catch，避免单请求失败导致整个路由崩溃</li>
+ *   <li><b>批量字段替换</b>：支持通过 {@code mockReplaceField()} 对 Mock JSON body
+ *       进行通配符批量替换（如 {@code $[*].name}、{@code $.users[*].orders[*].price}）</li>
  * </ul>
  */
 public class MockHandler {
@@ -38,17 +42,30 @@ public class MockHandler {
             body = "";
         }
 
-        // ── 3. 构建响应选项 ───────────────────────────────────────
+        // ── 3. 批量字段替换（支持通配符 [*]）────────────────────────
+        Map<String, String> replaceFields = rule.getMockReplaceFields();
+        if (replaceFields != null && !replaceFields.isEmpty() && !body.isEmpty()) {
+            try {
+                body = ModifyHandler.replaceBatchByWildcard(body, replaceFields);
+                LOGGER.debug("[MockHandler] Applied {} mock replace fields for pattern '{}'",
+                        replaceFields.size(), rule.getUrlPattern());
+            } catch (Exception e) {
+                LOGGER.warn("[MockHandler] Failed to apply mock replace fields for pattern '{}': {}",
+                        rule.getUrlPattern(), e.getMessage());
+            }
+        }
+
+        // ── 4. 构建响应选项 ───────────────────────────────────────
         Route.FulfillOptions opts = new Route.FulfillOptions()
                 .setStatus(status)
                 .setBody(body);
 
-        // ── 4. 附带自定义响应头 ────────────────────────────────────
+        // ── 5. 附带自定义响应头 ────────────────────────────────────
         if (rule.getMockHeaders() != null) {
             opts.setHeaders(new java.util.HashMap<>(rule.getMockHeaders()));
         }
 
-        // ── 5. 返回 Mock 响应（异常安全）───────────────────────────
+        // ── 6. 返回 Mock 响应（异常安全）───────────────────────────
         try {
             route.fulfill(opts);
             String url = route.request().url();

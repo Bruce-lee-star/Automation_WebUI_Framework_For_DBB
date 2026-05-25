@@ -1,6 +1,6 @@
 # Route 路由框架说明文档
 
-> **最后更新：** 2026-05-24 | **版本：** v4.5
+> **最后更新：** 2026-05-25 | **版本：** v4.6
 
 `com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包是对 Playwright `page.route()` / `context.route()` 的封装，提供**请求拦截、Mock 响应、请求体修改、API 监控断言**一体化能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
 
@@ -20,10 +20,11 @@
   - [4.6 ModifyHandler — 修改处理器](#46-modifyhandler--修改处理器)
   - [4.7 MockHandler — Mock 处理器](#47-mockhandler--mock-处理器)
   - [4.8 ApiMonitorContext — 监控上下文](#48-apimonitorcontext--监控上下文)
-  - [4.9 RouteAsyncPool — 异步任务池](#49-routeasyncpool--异步任务池)
-  - [4.10 RouteException — 异常体系](#410-routeexception--异常体系)
-  - [4.11 SerenityReporter — 报告工具](#411-serenityreporter--报告工具)
-  - [🆕 4.12 RouteUtil — 请求条件匹配工具](#412-routeutil--请求条件匹配工具)
+  - [4.9 RouteMonitor — 监控入口门面](#49-routemonitor--监控入口门面)
+  - [4.10 RouteAsyncPool — 异步任务池](#410-routeasyncpool--异步任务池)
+  - [4.11 RouteException — 异常体系](#411-routeexception--异常体系)
+  - [4.12 SerenityReporter — 报告工具](#412-serenityreporter--报告工具)
+  - [🆕 4.13 RouteUtil — 请求条件匹配工具](#413-routeutil--请求条件匹配工具)
 - [五、DSL 使用示例](#五dsl-使用示例)
 - [六、完整 API 参考](#六完整-api-参考)
 - [七、架构优势与设计亮点](#七架构优势与设计亮点)
@@ -41,7 +42,8 @@ route/
 │   ├── RouteRule.java                 # 路由规则数据模型（含参数校验）
 │   ├── RouteRegistry.java             # 路由注册表（WeakReference 防泄漏，按上下文隔离）
 │   ├── RouteException.java            # 异常体系（配置异常 / 运行时异常 / 断言异常）
-│   └── ApiMonitorContext.java         # API 监控上下文（线程隔离断言 + 双重上限响应存储）
+│   ├── ApiMonitorContext.java         # API 监控上下文（线程隔离断言 + 双重上限响应存储）
+│   └── RouteMonitor.java              # 🆕 监控入口门面（测试代码唯一入口）
 ├── dsl/
 │   └── RouteDsl.java                  # 流式 DSL 构建器（外部调用唯一入口）
 ├── handler/                           ← 具体处理器
@@ -223,13 +225,14 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | **Mock** | `mockBody` | String | null | 响应体内容 |
 | | `mockStatus` | int | 200 | HTTP 状态码 |
 | | `mockHeaders` | Map | null | 响应头 |
+| | `mockReplaceFields` | Map\<String,String\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符） |
 | **Modify** | `addHeaders` | Map | null | 添加/覆盖的请求头 |
 | | `replaceBodyPairs` | Map\<String,String\> | null | JSONPath → 替换值（多对，LinkedHashMap 有序） |
 | | `method` | String | null | 修改 HTTP 方法 |
 | **Monitor** | `record` | boolean | true | 是否记录到报告 |
 | | `expectedStatus` | Integer | null | 期望状态码断言 |
 | | `jsonPathAssertions` | Map | null | JSONPath 断言 |
-| **自动停止** | `timeoutMs` | long | 0（永不超时） | 超时毫秒数 |
+| **自动停止** | `timeoutMs` | long | 0（永不超时） | 超时秒数（DSL 中以秒为单位，内部存储为毫秒） |
 | | `minMatches` | int | 1 | 最小匹配次数 |
 | | `autoStopOnMatch` | boolean | true | 达标后是否自动停止 |
 | **🆕 请求匹配** | `resourceTypes` | String | null | 允许的资源类型（逗号分隔：xhr,fetch,script...） |
@@ -277,7 +280,7 @@ RouteDsl.on(browserContext)  // Context 级别
 
 // ── Monitor 配置 ──
 .record(boolean)            // 是否写入 Serenity 报告（默认 true）
-.timeout(long ms)           // 超时毫秒（0=永不超时）
+.timeout(long seconds)       // 超时秒数（0=永不超时）
 .minMatches(int)            // 最小匹配次数（默认 1）
 .autoStopOnMatch(boolean)   // 达标后自动停止（默认 true）
 .expectStatus(int)          // 断言 HTTP 状态码
@@ -292,6 +295,7 @@ RouteDsl.on(browserContext)  // Context 级别
 .mock(body)                 // 设置响应体
 .mockStatus(status)         // 设置 HTTP 状态码
 .mockHeader(key, value)     // 设置响应头
+.mockReplaceField(path, val) // 🆕 批量替换 Mock JSON body 字段（支持 [*] 通配符）
 
 // 🆕 ── 请求条件匹配 ──
 .matchMethod(method)        // HTTP 方法过滤（GET/POST/...）
@@ -418,7 +422,12 @@ private static final int JSONPATH_CACHE_MAX_SIZE = 200;
 
 ```java
 // 线程隔离（每个测试线程独立上下文，并行测试互不干扰）
-// 通过 PlaywrightListener.getCurrentApiMonitorContext() 获取
+// 通过 ApiMonitorContext.getCurrent() 或 RouteMonitor.context() 获取
+
+// ThreadLocal 自管理生命周期
+private static final ThreadLocal<ApiMonitorContext> INSTANCE =
+        ThreadLocal.withInitial(ApiMonitorContext::new);
+// PlaywrightListener 在测试开始/结束时调用 resetCurrent()/removeCurrent()
 
 // Response 双重上限保护
 private static final int MAX_RESPONSE_STORAGE = 1000;        // 数量上限
@@ -447,10 +456,47 @@ storeResponse(url, body)
 | 断言失败详情 | `AssertionFailureDetail` DTO — URL + 断言类型 + 预期值 + 实际值 + 时间戳 |
 | 断言失败报告 | `buildFailureReport()` — 生成可读的多行文本报告 |
 | 重置 | `reset()` — 清空所有状态（包括 `totalResponseSize = 0L`） |
+| 静态方法 | `getCurrent()` / `resetCurrent()` / `removeCurrent()` — ThreadLocal 生命周期自管理 |
+
+**清理时机优化（v4.6）**：
+- `checkAndMarkApiAssertionFailures()` 不再调用 `reset()`，统一由 `cleanupThreadLocals()` → `removeCurrent()` 单一入口清理
+- 等待超时通过系统属性 `api.assertion.wait.timeout.ms` 配置（默认 15 秒，CI 友好）
 
 ---
 
-### 4.9 RouteAsyncPool — 异步任务池
+### 4.9 RouteMonitor — 监控入口门面
+
+**职责**：面向测试代码的唯一 API 监控入口，封装 `ApiMonitorContext` 的获取逻辑，避免测试代码直接依赖 `PlaywrightListener`。
+
+```java
+// 测试代码用法
+ApiMonitorContext ctx = RouteMonitor.context();
+List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
+String body = ctx.getStoredResponse("/api/track");
+Object id = ctx.getResponseJson("/api/track", "$.data.id");
+```
+
+**静态方法**：
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `context()` | `ApiMonitorContext` | 获取当前线程的 API 监控上下文 |
+
+**依赖关系（v4.6 优化）**：
+
+```
+ApiMonitorContext (route.core)  ← ThreadLocal 归位到数据层自身
+    ↑
+RouteMonitor (route.core)       ← 门面，零外部依赖，仅委托 ApiMonitorContext
+    ↑
+测试代码                         ← 用户只接触 RouteMonitor
+    ↑
+PlaywrightListener (listener)   ← 仅调用 resetCurrent/removeCurrent 管理生命周期
+```
+
+---
+
+### 4.10 RouteAsyncPool — 异步任务池
 
 **职责**：为 MonitorHandler 的异步断言/报告写入提供生产级线程池。
 
@@ -508,7 +554,7 @@ RouteAsyncPool.getStatusSnapshot()
 
 ---
 
-### 4.10 RouteException — 异常体系
+### 4.11 RouteException — 异常体系
 
 **三层异常结构**：
 
@@ -528,7 +574,7 @@ RouteException (extends RuntimeException)
 
 ---
 
-### 4.11 SerenityReporter — 报告工具
+### 4.12 SerenityReporter — 报告工具
 
 **职责**：封装 `Serenity.recordReportData()` 调用，统一在主线程写入 API 监控数据。
 
@@ -538,7 +584,7 @@ RouteException (extends RuntimeException)
 - 异常静默捕获（不影响主流程）
 - 单一静态方法：`recordApiOperation(operation, url, detail)`
 
-### 🆕 4.12 RouteUtil — 请求条件匹配工具
+### 🆕 4.13 RouteUtil — 请求条件匹配工具
 
 **职责**：根据 Playwright `Request` 对象判断是否匹配 `RouteRule` 中定义的请求条件。
 
@@ -625,6 +671,22 @@ RouteDsl.on(page)
     .start();
 ```
 
+### 5.2.1 Mock 批量字段替换（支持嵌套 List）
+
+```java
+RouteDsl.on(page)
+    .api("/api/users")
+    // 返回 List 数据，批量替换所有元素的敏感字段
+    .mock("[{\"name\":\"Alice\",\"email\":\"a@test.com\",\"orders\":[{\"price\":10}]},"
+        + "{\"name\":\"Bob\",\"email\":\"b@test.com\",\"orders\":[{\"price\":20}]}]")
+    .mockReplaceField("$[*].email", "redacted@hsbc.com")   // 顶层 List 所有 email → 脱敏
+    .mockReplaceField("$[*].orders[*].price", "0")         // 嵌套 List 所有 price → 0
+    .mockStatus(200)
+    .allowAllRequests()
+    .done()
+    .start();
+```
+
 ### 5.3 Modify 模式（请求体 JSONPath 精准替换）
 
 ```java
@@ -674,7 +736,7 @@ RouteDsl.on(page)
     .api("/api/config")
     .monitor()
     .minMatches(3)       // 等待该 API 被捕获 3 次才停止
-    .timeout(60_000)     // 60 秒兜底超时
+    .timeout(60)          // 60 秒兜底超时
     .done()
     .start();
 ```
@@ -686,7 +748,7 @@ RouteDsl.on(page)
     .api("/api/data/list")
     .monitor()
     .autoStopOnMatch(false)  // 不自动停止！持续捕获分页请求
-    .timeout(120_000)        // 靠超时结束监听
+    .timeout(120)        // 靠超时结束监听
     .done()
     .start();
 ```
@@ -808,8 +870,10 @@ RouteDsl.on(page)
 ### 5.13 获取断言失败详情
 
 ```java
-// 通过 PlaywrightListener 在异步线程自动收集
-ApiMonitorContext ctx = PlaywrightListener.getCurrentApiMonitorContext();
+// 通过 RouteMonitor 入口获取监控上下文（无需依赖 PlaywrightListener）
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteMonitor;
+
+ApiMonitorContext ctx = RouteMonitor.context();
 
 // 判断是否有断言失败
 if (ctx.hasAssertionFailures()) {
@@ -848,7 +912,7 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `mock(body)` | String | ApiDsl | 声明 Mock 模式 + 设置响应体 |
 | **— Monitor 配置 —** | | | |
 | `record(boolean)` | boolean | ApiDsl | 是否写入报告（默认 true） |
-| `timeout(ms)` | long | ApiDsl | 超时毫秒（0=永不超时） |
+| `timeout(seconds)` | long | ApiDsl | 超时秒数（0=永不超时） |
 | `minMatches(n)` | int | ApiDsl | 最小匹配次数（默认 1） |
 | `autoStopOnMatch(b)` | boolean | ApiDsl | 达标后自动停止（默认 true） |
 | `expectStatus(s)` | int | ApiDsl | 期望 HTTP 状态码 |
@@ -856,6 +920,7 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | **— Mock 配置 —** | | | |
 | `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
 | `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
+| `mockReplaceField(p, v)` | String, String | ApiDsl | 🆕 批量替换 JSON body 字段（支持 `[*]` 通配符嵌套 List） |
 | **— Modify 配置 —** | | | |
 | `addHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
 | `replaceBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换 |
@@ -899,13 +964,14 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 | `onlyApiCall` | boolean | false | 🆕 仅 API 调用（false=匹配所有请求类型，true=默认只匹配 xhr/fetch） |
 | `mockStatus` | int | 200 | Mock 状态码 |
 | `mockHeaders` | Map\<String,String\> | null | Mock 响应头 |
+| `mockReplaceFields` | Map\<String,String\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符） |
 | `addHeaders` | Map\<String,String\> | null | Modify 添加的请求头 |
 | `replaceBodyPairs` | Map\<String,String\> | null | Modify 替换键值对（LinkedHashMap 有序，支持多对） |
 | `method` | String | null | Modify 修改后的 HTTP 方法 |
 | `record` | boolean | true | Monitor 是否写入报告 |
 | `expectedStatus` | Integer | null | Monitor 期望状态码 |
 | `jsonPathAssertions` | Map\<String,Object\> | null | Monitor JSONPath 断言 |
-| `timeoutMs` | long | 0 | 自动停止超时（0=永不超时） |
+| `timeoutMs` | long | 0 | 自动停止超时（DSL 中传入秒，内部存储为毫秒，0=永不超时） |
 | `minMatches` | int | 1 | 最小匹配次数 |
 | `autoStopOnMatch` | boolean | true | 达标后是否自动停止 |
 
@@ -944,18 +1010,42 @@ Map<String, List<String>> all = ctx.getAllStoredResponses();
 
 | 方法 | 说明 |
 |------|------|
+| **静态方法** | |
+| `getCurrent()` | 获取当前线程的 API 监控上下文 |
+| `resetCurrent()` | 重置当前线程的上下文（测试开始前调用） |
+| `removeCurrent()` | 移除当前线程的上下文（测试结束后调用） |
+| **实例方法** | |
 | `incrementActiveRequests()` / `decrementActiveRequests()` | 活动请求计数 |
 | `awaitCompletion(timeoutMs)` | 阻塞等待所有正在处理的请求完成 |
 | `recordAssertionFailure(url, type, expected, actual, msg)` | 记录断言失败详情 |
 | `hasAssertionFailures()` | 是否有断言失败 |
 | `buildFailureReport()` | 生成可读失败报告 |
-| `storeResponse(url, body)` | 存储响应（双重上限保护） |
-| `getStoredResponse(url)` | 获取最后一条响应字符串 |
-| `getAllResponsesForUrl(url)` | 获取某 URL 的所有响应 |
+| `storeApiCall(call)` | 🆕 存储完整 API 调用快照（以 endpoint 为 key） |
+| `getApiCalls(endpoint)` | 🆕 获取指定端点的所有调用快照列表 |
+| `getLastApiCall(endpoint)` | 🆕 获取指定端点最近一次调用快照 |
+| `getAllApiCalls()` | 🆕 获取所有端点的全部调用快照 |
+| `getAllLastApiCalls()` | 🆕 获取所有端点各最近一次调用快照 |
+| `storeResponse(endpoint, body)` | 存储响应 body（向后兼容） |
+| `getStoredResponse(endpoint)` | 获取最后一条响应 body 字符串 |
+| `getAllResponsesForUrl(endpoint)` | 获取某端点的所有响应 body |
 | `getAllStoredResponses()` | 获取全部存储的响应 Map |
 | `getTotalResponseCount()` | 已存储响应总条数 |
 | `getTotalResponseSize()` | 已存储响应总字节数 |
 | `reset()` | 清空所有状态 |
+
+### RouteMonitor — 监控入口门面
+
+| 方法 | 返回 | 说明 |
+|------|------|------|
+| `context()` | `ApiMonitorContext` | 获取当前线程的 API 监控上下文 |
+
+**用法**：
+```java
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteMonitor;
+
+ApiMonitorContext ctx = RouteMonitor.context();
+List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
+```
 
 ### 🆕 RouteUtil — 静态工具方法
 

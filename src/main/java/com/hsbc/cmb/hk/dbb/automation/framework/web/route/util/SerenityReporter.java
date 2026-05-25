@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
  * Serenity 报告写入工具（主线程安全）
  *
  * <p>统一封装 Serenity.recordReportData() 调用，确保只在测试主线程写入报告。
+ * 非 Serenity 环境（如纯 JUnit 测试）自动静默降级。
  */
 public final class SerenityReporter {
 
@@ -25,19 +26,18 @@ public final class SerenityReporter {
      */
     public static void recordApiOperation(String operation, String url, String detail) {
         try {
-            // 保护：路由回调可能在 Serenity 测试线程之外触发（如 Playwright 事件线程），
-            //       此时 StepEventBus 没有当前监听器，跳过报告写入避免 Serenity 内部报错
-            if (StepEventBus.getEventBus().getBaseStepListener() == null) {
-                logger.debug("[SerenityReporter] No active step listener, skipping report for {}: {}",
-                        operation, url);
+            // isBaseStepListenerRegistered() 静默检查，不会像 getBaseStepListener() 那样
+            // 在 listener 为 null 时打印 ERROR + dump Stack
+            if (!StepEventBus.getEventBus().isBaseStepListenerRegistered()) {
                 return;
             }
-            String title = String.format("[API %s] %s", operation, url.length() > 80 ? url.substring(0, 80) + "..." : url);
+            String title = String.format("[API %s] %s", operation,
+                    url.length() > 80 ? url.substring(0, 80) + "..." : url);
             Serenity.recordReportData()
                     .withTitle(title)
                     .andContents(detail);
         } catch (Exception e) {
-            logger.debug("Failed to record API operation to Serenity report: {}", e.getMessage());
+            logger.debug("[SerenityReporter] Failed to record API operation: {}", e.getMessage());
         }
     }
 }

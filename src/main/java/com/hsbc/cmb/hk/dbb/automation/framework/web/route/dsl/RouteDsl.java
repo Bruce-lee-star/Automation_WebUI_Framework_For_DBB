@@ -122,11 +122,11 @@ public class RouteDsl {
         }
 
         /**
-         * 设置 Monitor 超时（毫秒）。0 表示永不超时。
+         * 设置 Monitor 超时（秒）。0 表示永不超时。
          * 超时后自动停止监控（调用 unroute 注销路由）。
          */
-        public ApiDsl timeout(long timeoutMs) {
-            rule.setTimeoutMs(timeoutMs);
+        public ApiDsl timeout(long timeoutSecs) {
+            rule.setTimeoutMs(timeoutSecs * 1000);
             return this;
         }
 
@@ -188,6 +188,36 @@ public class RouteDsl {
                 rule.setMockHeaders(headers);
             }
             headers.put(key, value);
+            return this;
+        }
+
+        /**
+         * 对 Mock 响应的 JSON body 进行批量字段替换。
+         *
+         * <p>支持通配符 {@code [*]} 批量替换 List 中所有元素的字段，<b>支持嵌套 List</b>。
+         * 可多次调用以设置多个字段。
+         *
+         * <p>路径示例：
+         * <pre>{@code
+         * // 替换顶层字段
+         * .mockReplaceField("$.status", "ok")
+         *
+         * // 批量替换 List 中所有元素的字段
+         * .mockReplaceField("$[*].name", "NewName")
+         * .mockReplaceField("$[*].active", "true")
+         *
+         * // 嵌套 List：替换 users 数组中每个元素的 orders 数组中的 price 字段
+         * .mockReplaceField("$.users[*].orders[*].price", "99.99")
+         *
+         * // 子路径嵌套：替换 data.users 数组中 email 字段
+         * .mockReplaceField("$.data.users[*].email", "modified@test.com")
+         * }</pre>
+         *
+         * @param jsonPath JSONPath 表达式（支持通配符 [*]）
+         * @param value    替换值（字符串形式，自动保持原字段类型）
+         */
+        public ApiDsl mockReplaceField(String jsonPath, String value) {
+            rule.addMockReplaceField(jsonPath, value);
             return this;
         }
 

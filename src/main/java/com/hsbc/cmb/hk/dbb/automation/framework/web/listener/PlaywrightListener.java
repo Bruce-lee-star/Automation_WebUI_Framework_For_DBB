@@ -86,9 +86,6 @@ public class PlaywrightListener implements StepListener {
     // 用于防止testSuiteFinished被多次调用时重复输出日志
     private static volatile boolean testSuiteFinishedLogged = false;
 
-    // ⭐⭐⭐ API 断言失败跟踪 — 每个测试线程独立的上下文
-    private static final ThreadLocal<ApiMonitorContext> apiMonitorContext = ThreadLocal.withInitial(ApiMonitorContext::new);
-
     public PlaywrightListener() {
         // 从环境变量中读取截图策略配置
         EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
@@ -107,7 +104,7 @@ public class PlaywrightListener implements StepListener {
         totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
-        resetApiMonitorContext();
+        ApiMonitorContext.resetCurrent();
 
         // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
         try {
@@ -552,7 +549,7 @@ public class PlaywrightListener implements StepListener {
         } catch (Exception e) {
             logger.debug("RouteRegistry cleanup for BrowserContext skipped: {}", e.getMessage());
         }
-        RouteEngine.clearDispatchedRoutes();
+        // RouteEngine.clearDispatchedRoutes() 已由 RouteRegistry.clearContext() 内部调用，无需重复
     }
 
     private void cleanupThreadLocals() {
@@ -572,7 +569,7 @@ public class PlaywrightListener implements StepListener {
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
         // ⭐⭐⭐ 新增：清理 API 监控上下文
-        apiMonitorContext.remove();
+        ApiMonitorContext.removeCurrent();
     }
 
     private String getStackTrace(Throwable throwable) {
@@ -785,7 +782,7 @@ public class PlaywrightListener implements StepListener {
         totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
-        resetApiMonitorContext();
+        ApiMonitorContext.resetCurrent();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -806,7 +803,7 @@ public class PlaywrightListener implements StepListener {
         totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
-        resetApiMonitorContext();
+        ApiMonitorContext.resetCurrent();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -859,7 +856,7 @@ public class PlaywrightListener implements StepListener {
         } finally {
             // 确保异常和正常路径均清理 ThreadLocal 和 API 监控上下文
             cleanupThreadLocals();
-            apiMonitorContext.remove();
+            ApiMonitorContext.removeCurrent();
         }
     }
 
@@ -1104,6 +1101,11 @@ public class PlaywrightListener implements StepListener {
             int maxRerunAttempts = Integer.parseInt(rerunCountStr);
             logger.info("Starting rerun with max attempts: {}", maxRerunAttempts);
 
+            // 重试前强制清理当前线程的路由规则和 API 监控上下文，避免重试复用旧数据
+            cleanupRouteRegistryForCurrentThread();
+            ApiMonitorContext.removeCurrent();
+            logger.debug("Route registry and API monitor context cleaned before rerun");
+
             // 保存当前重试数据到文件，供 rerun 进程使用
             PlaywrightRetryListener.getInstance().saveToFile();
 
@@ -1176,39 +1178,25 @@ public class PlaywrightListener implements StepListener {
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * 获取当前线程的 API 监控上下文（供 MonitorHandler 等外部组件调用）
-     */
-    public static ApiMonitorContext getCurrentApiMonitorContext() {
-        return apiMonitorContext.get();
-    }
-
-    /**
-     * 重置当前测试的 API 监控上下文
-     */
-    private void resetApiMonitorContext() {
-        ApiMonitorContext context = apiMonitorContext.get();
-        if (context != null) {
-            context.reset();
-        }
-    }
-
-    /**
      * ⭐⭐⭐ 核心方法：检查 API 断言失败并标记测试结果为失败
      *
      * <p>在测试结束时调用，等待所有异步 API 请求完成（最多 5 秒），
      * 如果 MonitorHandler 标记了断言失败，则强制设置 TestResult.FAILURE。
      */
     private void checkAndMarkApiAssertionFailures(TestOutcome result) {
-        ApiMonitorContext context = apiMonitorContext.get();
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
         if (context == null) {
             return;
         }
 
-        // 等待所有异步 API 请求完成（最多 5 秒，使用 wait/notify 避免忙等待）
+        // 等待所有异步 API 请求完成（通过系统属性配置超时，默认 15 秒，避免 CI 环境超时）
+        long timeoutMs = Long.parseLong(
+                System.getProperty("api.assertion.wait.timeout.ms", "15000"));
         try {
-            boolean completed = context.awaitCompletion(5_000);
+            boolean completed = context.awaitCompletion(timeoutMs);
             if (!completed) {
-                logger.warn("Timed out waiting for API requests to complete ({} active)", context.getActiveRequests());
+                logger.warn("Timed out waiting for API requests to complete ({} active, timeout={}ms)",
+                        context.getActiveRequests(), timeoutMs);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -1241,9 +1229,7 @@ public class PlaywrightListener implements StepListener {
                 logger.debug("Failed to record API assertion failure to Serenity report", e);
             }
         }
-
-        // 等待结束后清理上下文（确保下一个测试使用全新上下文）
-        context.reset();
+        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiMonitorContext.removeCurrent()
     }
 
     /**

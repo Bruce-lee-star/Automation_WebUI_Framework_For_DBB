@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
@@ -40,7 +40,7 @@ public class MonitorHandler {
      */
     public static void handle(Route route, RouteRule rule) {
         // 获取 API 监控上下文并增加活动请求计数
-        ApiMonitorContext context = PlaywrightListener.getCurrentApiMonitorContext();
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
         if (context != null) {
             context.incrementActiveRequests();
         }
@@ -85,14 +85,31 @@ public class MonitorHandler {
             try {
                 String body = new String(fBodyBytes, StandardCharsets.UTF_8);
                 String url = req.url();
+                // 使用用户配置的 urlPattern 作为存储 key，而非从实际 URL 中提取路径
+                // 因为 api(endpoint) 中的 endpoint 可能只是 URL 的一部分
+                String endpoint = rule.getUrlPattern();
                 int status = res.status();
 
                 LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
-                        url, status, body.length(), rule.getUrlPattern());
+                        url, status, body.length(), endpoint);
 
-                // 存储 response 到上下文（供后续修改 + Mock 阶段复用）
+                // 存储 response body（向后兼容）— 以 urlPattern 为 key
                 if (fContext != null) {
-                    fContext.storeResponse(url, body);
+                    fContext.storeResponse(endpoint, body);
+                }
+
+                // 存储完整的 CapturedApiCall（含 headers 等完整信息）
+                if (fContext != null) {
+                    CapturedApiCall call = new CapturedApiCall(
+                            endpoint,     // 存储 key = 用户配置的 urlPattern
+                            req.method(),
+                            snapshotHeadersSafely(req.headers()),
+                            status,
+                            snapshotHeadersSafely(res.headers()),
+                            body,
+                            System.currentTimeMillis()
+                    );
+                    fContext.storeApiCall(call);
                 }
 
                 // 记录到 Serenity 报告
@@ -206,4 +223,19 @@ public class MonitorHandler {
 
         return actual.toString().equals(expected.toString());
     }
+
+    /**
+     * 安全快照 Playwright headers 对象（避免跨线程访问）。
+     * 复制为普通 HashMap，与 Playwright 事件线程解耦。
+     */
+    private static Map<String, String> snapshotHeadersSafely(Map<String, String> headers) {
+        if (headers == null) return null;
+        try {
+            return new java.util.HashMap<>(headers);
+        } catch (Exception e) {
+            LOGGER.warn("[MonitorHandler] Failed to snapshot headers: {}", e.getMessage());
+            return null;
+        }
+    }
+
 }

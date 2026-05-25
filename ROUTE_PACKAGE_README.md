@@ -1,6 +1,6 @@
 # Route 路由框架说明文档
 
-> **最后更新：** 2026-05-25 | **版本：** v4.6
+> **最后更新：** 2026-05-25 | **版本：** v4.7
 
 `com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包是对 Playwright `page.route()` / `context.route()` 的封装，提供**请求拦截、Mock 响应、请求体修改、API 监控断言**一体化能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
 
@@ -133,8 +133,8 @@ private static final Map<Route, Boolean> DISPATCHED_ROUTES
         = new ConcurrentHashMap<>();
 private static final int MAX_DISPATCHED_ROUTES = 500;  // 容量上限
 
-// MonitorSession 管理（自动停止）
-private static final Map<String, MonitorSession> SESSIONS
+// MonitorSession 管理（RouteRule 为 key，依赖 equals/hashCode）
+private static final Map<RouteRule, MonitorSession> SESSIONS
         = new ConcurrentHashMap<>();
 ```
 
@@ -148,6 +148,7 @@ private static final Map<String, MonitorSession> SESSIONS
 - 超时调度（`ScheduledExecutorService` 单线程）
 - 匹配计数追踪（`AtomicInteger` + `onMonitorMatch()`）
 - 支持 `minMatches` 最小匹配次数 + `autoStopOnMatch` 开关
+- **使用归一化 pattern** 存储和注销路由（`startMonitorSession()` 接收 `normalizedPattern` 参数，确保 `unroute()` 与 `route()` 使用完全一致的 pattern）
 
 **关键方法**：
 
@@ -204,7 +205,7 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | `register(Page/String)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern |
 | `register(BrowserContext/String)` | 同上 | Context 级别注册 pattern |
 | `unregister(Object, String)` | void | 注销单个 pattern |
-| `clearContext(Object)` | void | 三步清理：移除注册表 → Playwright unroute → 清理 MonitorSession |
+| `clearContext(Object)` | void | 三阶段清理：① 移除注册表 + unroute 无 MonitorSession 的路由 → ② 清理 MonitorSession（停止定时器 + unroute，Playwright 对已注销 pattern 的二次 unroute 幂等） → ③ 清空防重门控 |
 | `clearAll()` | void | 全局清理所有上下文 + JSONPath 缓存（测试套件结束时调用） |
 | `purgeDeadEntries()` | void | 清理 GC 回收的死条目 |
 | `getPatternCount(Object)` | int | 指定上下文已注册 pattern 数 |
@@ -252,6 +253,12 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 - `mockStatus` / `expectedStatus` 必须在 `[100, 600)` 范围内
 - `timeoutMs` 必须 ≥ 0；`minMatches` 必须 ≥ 1
 
+**`equals()` / `hashCode()` （v4.7 新增）**：
+
+`RouteRule` 作为 `ConcurrentHashMap<RouteRule, MonitorSession>` 的 key，已重写基于业务标识的相等性判断：
+- 相等判定：`urlPattern` + `type` + `method` 三者均相等
+- 哈希计算：`Objects.hash(urlPattern, type, method)`
+
 ---
 
 ### 4.4 RouteDsl — 流式 DSL 构建器
@@ -262,6 +269,7 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 - `RouteDsl` 持有上下文引用 + 规则列表（`CopyOnWriteArrayList`）
 - `ApiDsl` 内部类提供链式配置方法
 - `done()` 完成当前 API 配置后返回父级 `RouteDsl`，支持链式多规则
+  - 若 `urlPattern` 为空/空白字符串，抛出 `IllegalArgumentException`（统一异常类型）
 
 **DSL 方法全览**：
 
@@ -435,7 +443,7 @@ private static final long MAX_RESPONSE_TOTAL_SIZE = 10MB;   // 体积上限（10
 
 // Response 多值存储（同一 endpoint 多次调用全部保留）
 private final ConcurrentHashMap<String, List<String>> responseStorage;
-private volatile long totalResponseSize = 0L;  // 当前累计字节数
+private final AtomicLong totalResponseSize = new AtomicLong(0L);  // 当前累计字节数（原子操作）
 ```
 
 **双重上限保护流程**：
@@ -766,6 +774,11 @@ dsl.start();
 
 dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
 ```
+
+> **最佳实践**：MOCK / MODIFY 类型路由不会自动停止（`autoStopOnMatch` 仅适用于 MONITOR），
+> 需在测试末尾显式调用 `dsl.clear()` 释放路由，避免跨用例污染全局状态（如 `apiCallsPerUrl`、`responseStorage`）。
+> Monitor 类型路在 `autoStopOnMatch=true`（默认）时匹配达标后会自动 unroute，
+> 但也建议在 `@After` 中统一调用 `dsl.clear()` 以保万无一失。
 
 ### 🆕 5.9 全条件 Mock — 多维度精准匹配
 
@@ -1100,8 +1113,9 @@ ResourceType → Method → Headers → Query → ContentType → BodyRegex → 
 | **防重门控** | `DISPATCHED_ROUTES.putIfAbsent()` — 同一请求匹配多个 pattern 时只处理一次 |
 | **byte[] 拷贝跨线程** | MonitorHandler 在事件线程同步读取 body 后拷贝，传递给异步线程 |
 | **CopyOnWriteArrayList** | RouteDsl.rules 支持并发修改 |
-| **ConcurrentHashMap** | RouteRegistry / ApiMonitorContext / ModifyHandler 共享结构 |
-| **AtomicLong/AtomicInteger** | RouteAsyncPool / ApiMonitorContext 计数器 |
+| **ConcurrentHashMap** | RouteRegistry / ApiMonitorContext / ModifyHandler / SESSIONS 共享结构 |
+| **AtomicLong/AtomicInteger** | RouteAsyncPool / ApiMonitorContext 计数器（v4.7: `totalResponseSize` 改为 `AtomicLong`，消除 volatile long 复合操作竞态） |
+| **RouteRule equals/hashCode** | `RouteRule` 作为 SESSIONS 的 key，重写基于 `urlPattern + type + method` 的相等性判断（v4.7 新增） |
 
 ### 可观测性
 

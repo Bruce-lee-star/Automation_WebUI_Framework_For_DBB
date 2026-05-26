@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.DelayHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
@@ -70,10 +71,19 @@ public class RouteEngine {
                 return t;
             });
 
+    /** 网络延迟调度器（多线程池，支持并发请求同时延迟） */
+    private static final ScheduledExecutorService DELAY_SCHEDULER =
+            Executors.newScheduledThreadPool(4, r -> {
+                Thread t = new Thread(r, "route-network-delay");
+                t.setDaemon(true);
+                return t;
+            });
+
     static {
         HANDLERS.put(RouteHandleType.MONITOR, MonitorHandler::handle);
         HANDLERS.put(RouteHandleType.MODIFY, ModifyHandler::handle);
         HANDLERS.put(RouteHandleType.MOCK, MockHandler::handle);
+        HANDLERS.put(RouteHandleType.DELAY, DelayHandler::handle);
     }
 
     /**
@@ -197,6 +207,60 @@ public class RouteEngine {
             return;
         }
 
+        // ═══ DELAY 类型：始终在调度线程池中执行（route.fetch + Thread.sleep 为阻塞操作）═══
+        if (rule.getType() == RouteHandleType.DELAY) {
+            DELAY_SCHEDULER.execute(() -> executeHandlerScheduled(route, rule, handler));
+            return;
+        }
+
+        // ═══ 其他类型通用延迟（monitor/mock/modify 的预处理器延迟）═══
+        long delayMs = rule.getDelayMs();
+        if (delayMs > 0) {
+            DELAY_SCHEDULER.schedule(
+                    () -> executeHandlerScheduled(route, rule, handler),
+                    delayMs, TimeUnit.MILLISECONDS);
+            LOGGER.debug("[RouteEngine] Handler delayed by {}ms for pattern '{}'", delayMs, rule.getUrlPattern());
+        } else {
+            executeHandler(route, rule, handler);
+        }
+    }
+
+    /**
+     * 注册器（内部函数式接口）。
+     */
+    @FunctionalInterface
+    private interface RouteRegistrar {
+        void register(String pattern, RouteRule rule);
+    }
+
+    /**
+     * 在调度线程池中执行 Handler（用于 DELAY 类型和延迟场景）。
+     *
+     * <p>与 {@link #executeHandler} 相比增加了会话状态检查，
+     * 在延迟等待期间会话可能已被 auto-stop / 超时导致停止。
+     */
+    private static void executeHandlerScheduled(Route route, RouteRule rule, RouteHandler handler) {
+        try {
+            // 检查会话是否已被停止（auto-stop / 超时）
+            MonitorSession session = SESSIONS.get(rule);
+            if (session != null && session.stopped.get()) {
+                LOGGER.debug("[RouteEngine] Session stopped during delay, skipping handler for '{}'",
+                        rule.getUrlPattern());
+                try { route.resume(); } catch (Exception ignored) {}
+                return;
+            }
+            executeHandler(route, rule, handler);
+        } catch (Exception e) {
+            LOGGER.error("[RouteEngine] Scheduled handler failed for pattern '{}': {}",
+                    rule.getUrlPattern(), e.getMessage(), e);
+            try { route.resume(); } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * 执行 Handler，统一异常处理和日志。
+     */
+    private static void executeHandler(Route route, RouteRule rule, RouteHandler handler) {
         try {
             handler.handle(route, rule);
 
@@ -204,7 +268,7 @@ public class RouteEngine {
                     rule.getType(), rule.getUrlPattern(),
                     route.request().method(), route.request().url());
 
-            // MOCK/MODIFY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
+            // MOCK/MODIFY/DELAY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
             // MONITOR 的匹配计数在 MonitorHandler 异步完成时回调，不在此处触发
             if (rule.getType() != RouteHandleType.MONITOR) {
                 onMonitorMatch(rule);
@@ -225,14 +289,6 @@ public class RouteEngine {
                 LOGGER.error("[RouteEngine] Failed to resume route after handler error: {}", resumeEx.getMessage());
             }
         }
-    }
-
-    /**
-     * 注册器（内部函数式接口）。
-     */
-    @FunctionalInterface
-    private interface RouteRegistrar {
-        void register(String pattern, RouteRule rule);
     }
 
     // ─── Monitor 自动停止 ────────────────────────────────────────

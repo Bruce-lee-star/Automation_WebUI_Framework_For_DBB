@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 /**
  * 路由处理类型枚举
- * 区分监控/修改请求/Mock三种场景
+ * 区分监控/修改请求/Mock/弱网延迟四种场景
  */
 public enum RouteHandleType {
     /**
@@ -21,5 +21,11 @@ public enum RouteHandleType {
      * 直接 Mock 返回响应
      * 拦截请求，直接返回自定义响应
      */
-    MOCK
+    MOCK,
+
+    /**
+     * 弱网延迟模拟
+     * 拦截请求，等待指定毫秒后放行（模拟高延迟网络）
+     */
+    DELAY
 }

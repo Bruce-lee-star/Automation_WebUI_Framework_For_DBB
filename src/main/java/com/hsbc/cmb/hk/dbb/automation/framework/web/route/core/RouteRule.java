@@ -60,6 +60,14 @@ public class RouteRule {
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
     private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 默认停止；MOCK/MODIFY 由 DSL 覆盖为 false）
 
+    // DELAY 类型的弱网延迟模拟（毫秒），0 = 无延迟
+    private long delayMs = 0;
+
+    /** DELAY 类型随机延迟范围：最小值（毫秒），0 = 不使用随机范围 */
+    private long delayMinMs = 0;
+    /** DELAY 类型随机延迟范围：最大值（毫秒），0 = 不使用随机范围 */
+    private long delayMaxMs = 0;
+
     // ═══════════════════════════════════════════════════════════
     // 请求条件匹配（新增）
     // ═══════════════════════════════════════════════════════════
@@ -175,6 +183,18 @@ public class RouteRule {
 
     public boolean isAutoStopOnMatch() {
         return autoStopOnMatch;
+    }
+
+    public long getDelayMs() {
+        return delayMs;
+    }
+
+    public long getDelayMinMs() {
+        return delayMinMs;
+    }
+
+    public long getDelayMaxMs() {
+        return delayMaxMs;
     }
 
     // ─── 请求条件匹配 Getters ────────────────────────────────────
@@ -400,6 +420,49 @@ public class RouteRule {
 
     public void setAutoStopOnMatch(boolean autoStopOnMatch) {
         this.autoStopOnMatch = autoStopOnMatch;
+    }
+
+    /**
+     * 设置弱网延迟模拟时长（毫秒），仅 DELAY 类型有效。
+     * <p>请求匹配后，先异步等待指定毫秒再放行请求。
+     *
+     * @param delayMs 延迟毫秒数，必须 ≥ 0。0 表示无延迟。
+     */
+    public void setDelayMs(long delayMs) {
+        if (delayMs < 0) {
+            throw new IllegalArgumentException("delayMs must be >= 0, got: " + delayMs);
+        }
+        this.delayMs = delayMs;
+    }
+
+    /**
+     * 设置随机延迟范围的最小值（毫秒），配合 {@link #setDelayMaxMs(long)} 使用。
+     * <p>当 delayMinMs > 0 且 delayMaxMs > delayMinMs 时，
+     * 每次请求的实际延迟在 [delayMinMs, delayMaxMs] 范围内随机取值。
+     * <p>仅 DELAY 类型有效。
+     *
+     * @param delayMinMs 最小延迟毫秒数，必须 ≥ 0
+     */
+    public void setDelayMinMs(long delayMinMs) {
+        if (delayMinMs < 0) {
+            throw new IllegalArgumentException("delayMinMs must be >= 0, got: " + delayMinMs);
+        }
+        this.delayMinMs = delayMinMs;
+    }
+
+    /**
+     * 设置随机延迟范围的最大值（毫秒），配合 {@link #setDelayMinMs(long)} 使用。
+     * <p>当 delayMaxMs > delayMinMs > 0 时，
+     * 每次请求的实际延迟在 [delayMinMs, delayMaxMs] 范围内随机取值。
+     * <p>仅 DELAY 类型有效。
+     *
+     * @param delayMaxMs 最大延迟毫秒数，必须 ≥ 0
+     */
+    public void setDelayMaxMs(long delayMaxMs) {
+        if (delayMaxMs < 0) {
+            throw new IllegalArgumentException("delayMaxMs must be >= 0, got: " + delayMaxMs);
+        }
+        this.delayMaxMs = delayMaxMs;
     }
 
     // ─── 请求条件匹配 Setters ──────────────────────────────────

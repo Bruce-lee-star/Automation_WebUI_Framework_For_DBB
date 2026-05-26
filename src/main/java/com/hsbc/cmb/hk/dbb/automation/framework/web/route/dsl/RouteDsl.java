@@ -47,6 +47,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *     .modifyMethod("PUT")
  *     .done()
  *     .start();
+ *
+ * // Delay (弱网模拟)
+ * RouteDsl.on(page)
+ *     .api("/api/**")
+ *     .delay(3)          // 拦截所有 API，延迟 3 秒后放行
+ *     .done()
+ *     .start();
  * }</pre>
  */
 public class RouteDsl {
@@ -116,7 +123,7 @@ public class RouteDsl {
     // ==================== 入口点 — 仅提供三个分支方法 ====================
 
     /**
-     * API DSL 入口 — 创建规则，提供 {@code monitor() / mock() / modifyRequest()} 三个分支。
+     * API DSL 入口 — 创建规则，提供 {@code monitor() / mock() / modifyRequest() / delay()} 四个分支。
      * <p>调用任一分支后，返回对应类型的子 DSL（不再可回退）。
      */
     public static class ApiDsl {
@@ -166,6 +173,28 @@ public class RouteDsl {
             rule.setType(RouteHandleType.MODIFY);
             rule.setAutoStopOnMatch(false);
             return new ModifyApiDsl(parent, rule);
+        }
+
+        /**
+         * 切换到 Delay 弱网延迟模式。
+         *
+         * <p>拦截匹配请求，通过 {@code route.fetch()} 获取真实服务端响应，
+         * 经过指定延迟后再返回给浏览器，真实模拟高延迟/弱网环境。
+         *
+         * <p>与 BaseApiDsl 中其他类型的 delay 属性不同：
+         * 此模式先获取真实服务端数据，再模拟网络延迟，
+         * 而 delay 属性是在 handler 执行前附加的前置延迟。
+         *
+         * <p>Delay 默认持续拦截所有匹配请求，不自动停止（autoStopOnMatch=false）。
+         *
+         * @param delaySecs 延迟秒数，必须 ≥ 0
+         * @return DelayApiDsl — 可调用 {@link DelayApiDsl#randomDelay(long, long)} 切换随机模式
+         */
+        public DelayApiDsl delay(long delaySecs) {
+            rule.setType(RouteHandleType.DELAY);
+            rule.setDelayMs(delaySecs * 1000);
+            rule.setAutoStopOnMatch(false);
+            return new DelayApiDsl(parent, rule);
         }
     }
 
@@ -605,6 +634,79 @@ public class RouteDsl {
          */
         public ModifyApiDsl modifyMethod(String method) {
             rule.setModifyMethod(method);
+            return this;
+        }
+    }
+
+    // ==================== Delay 专用 DSL ====================
+
+    /**
+     * Delay 弱网延迟专用 DSL — 在 BaseApiDsl 基础上提供延迟配置方法。
+     *
+     * <p>DELAY 类型通过 {@code route.fetch()} 获取真实服务端响应，
+     * 经配置的延迟后再通过 {@code route.fulfill()} 返回给浏览器，
+     * 真实模拟高延迟/弱网环境下的 API 响应行为。
+     *
+     * <p>支持两种延迟模式：
+     * <ul>
+     *   <li><b>固定延迟</b>：每个请求都延迟相同的秒数</li>
+     *   <li><b>随机延迟</b>：每次请求在 [min, max] 秒范围内随机取值，模拟不稳定弱网</li>
+     * </ul>
+     *
+     * <p>使用示例：
+     * <pre>{@code
+     * // 所有 API 固定延迟 3 秒
+     * .api("/api/**")
+     *     .delay(3)
+     *     .done()
+     *
+     * // 指定 API 随机延迟 1-5 秒
+     * .api("/api/slow-endpoint")
+     *     .delay(5)
+     *     .randomDelay(1, 5) // 覆盖为随机范围 1-5 秒
+     *     .matchMethod("POST")
+     *     .done()
+     * }</pre>
+     */
+    public static class DelayApiDsl extends BaseApiDsl<DelayApiDsl> {
+
+        DelayApiDsl(RouteDsl parent, RouteRule rule) {
+            super(parent, rule);
+        }
+
+        /**
+         * 更新延迟时长（秒）。
+         * <p>通常 delaySecs 已在入口 {@code api(...).delay(delaySecs)} 设置，此方法用于后续更新。
+         *
+         * @param delaySecs 延迟秒数，必须 ≥ 0
+         */
+        public DelayApiDsl delay(long delaySecs) {
+            rule.setDelayMs(delaySecs * 1000);
+            return this;
+        }
+
+        /**
+         * 启用随机延迟模式，每次请求在 [minSecs, maxSecs] 秒范围内随机取值。
+         *
+         * <p>随机延迟可以更真实地模拟不稳定弱网环境，
+         * 每次请求的实际延迟不同，有助于发现时间敏感型缺陷。
+         *
+         * <p>调用此方法后，{@link #delay(long)} 设置的固定值被忽略，
+         * 实际延迟从随机范围中生成。
+         *
+         * <pre>{@code
+         * .api("/api/orders")
+         *     .delay(3)
+         *     .randomDelay(1, 5)   // 每次请求延迟 1-5 秒不等
+         *     .done()
+         * }</pre>
+         *
+         * @param minSecs 最小延迟秒数，必须 ≥ 0
+         * @param maxSecs 最大延迟秒数，必须 > minSecs
+         */
+        public DelayApiDsl randomDelay(long minSecs, long maxSecs) {
+            rule.setDelayMinMs(minSecs * 1000);
+            rule.setDelayMaxMs(maxSecs * 1000);
             return this;
         }
     }

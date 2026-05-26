@@ -121,12 +121,13 @@ public class ScreenshotProcessor {
     
     /**
      * 生成HTML代码片段，用于在报告中显示截图
+     * 使用 max-width + height:auto 让长短截图按实际比例显示，不再被统一拉伸/压缩
      */
     private String generateHtmlFragment(File screenshot, TestStep step) {
         return String.format(
             "<div class='screenshot'>" +
             "<a href='%s' data-featherlight='%s'>" +
-            "<img src='%s' width='200'/>" +
+            "<img src='%s' style='max-width:800px; width:100%%; height:auto; display:block;'/>" +
             "</a></div>",
             screenshot.getName(),
             screenshot.getName(),
@@ -154,12 +155,13 @@ public class ScreenshotProcessor {
     
     /**
      * 生成HTML代码片段，用于在报告中显示截图
+     * 使用 max-width + height:auto 让长短截图按实际比例显示
      */
     private String generateHtmlFragment(File screenshot, String stepName) {
         return String.format(
             "<div class='screenshot'>" +
             "<a href='%s' data-featherlight='%s'>" +
-            "<img src='%s' width='200' title='%s'/>" +
+            "<img src='%s' style='max-width:800px; width:100%%; height:auto; display:block;' title='%s'/>" +
             "</a></div>",
             screenshot.getName(),
             screenshot.getName(),

@@ -21,12 +21,32 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *
  * <p>使用示例：
  * <pre>{@code
+ * // Monitor
  * RouteDsl.on(page)
  *     .api("/api/users")
  *     .monitor()
  *     .expectStatus(200)
+ *     .expectJsonPath("$.code", 200)
+ *     .timeout(30)
  *     .done()
- *     .start();  // 无需再传 page
+ *     .start();
+ *
+ * // Mock
+ * RouteDsl.on(page)
+ *     .api("/api/users/1")
+ *     .mock("{\"code\":200}")
+ *     .mockStatus(200)
+ *     .done()
+ *     .start();
+ *
+ * // Modify
+ * RouteDsl.on(page)
+ *     .api("/api/users")
+ *     .modifyRequest()
+ *     .modifyRequestBody("$.role", "ADMIN")
+ *     .modifyMethod("PUT")
+ *     .done()
+ *     .start();
  * }</pre>
  */
 public class RouteDsl {
@@ -93,10 +113,11 @@ public class RouteDsl {
         rules.clear();
     }
 
-    // ==================== 内部类 ====================
+    // ==================== 入口点 — 仅提供三个分支方法 ====================
 
     /**
-     * API DSL — 提供 Monitor / Mock / Modify 的链式配置方法。
+     * API DSL 入口 — 创建规则，提供 {@code monitor() / mock() / modifyRequest()} 三个分支。
+     * <p>调用任一分支后，返回对应类型的子 DSL（不再可回退）。
      */
     public static class ApiDsl {
 
@@ -110,33 +131,85 @@ public class RouteDsl {
             this.rule.setType(RouteHandleType.MONITOR);
         }
 
-        // ===== 监控 =====
-        public ApiDsl monitor() {
+        /**
+         * 切换到 Monitor 监控模式。
+         * <p>Monitor 默认在匹配后自动停止（autoStopOnMatch=true）。
+         *
+         * @return MonitorApiDsl — 仅可调用 Monitor 相关方法 + 公共方法
+         */
+        public MonitorApiDsl monitor() {
             rule.setType(RouteHandleType.MONITOR);
-            return this;
+            return new MonitorApiDsl(parent, rule);
         }
 
-        public ApiDsl record(boolean enable) {
-            rule.setRecord(enable);
-            return this;
+        /**
+         * 切换到 Mock 拦截并自定义响应模式。
+         * <p>Mock 默认持续拦截，不自动停止（autoStopOnMatch=false）。
+         *
+         * @param body Mock 响应体
+         * @return MockApiDsl — 仅可调用 Mock 相关方法 + 公共方法
+         */
+        public MockApiDsl mock(String body) {
+            rule.setType(RouteHandleType.MOCK);
+            rule.setMockBody(body);
+            rule.setAutoStopOnMatch(false);
+            return new MockApiDsl(parent, rule);
         }
+
+        /**
+         * 切换到 Modify 修改请求模式（增删改请求头/请求体/请求方法）。
+         * <p>Modify 默认持续拦截，不自动停止（autoStopOnMatch=false）。
+         *
+         * @return ModifyApiDsl — 仅可调用 Modify 相关方法 + 公共方法
+         */
+        public ModifyApiDsl modifyRequest() {
+            rule.setType(RouteHandleType.MODIFY);
+            rule.setAutoStopOnMatch(false);
+            return new ModifyApiDsl(parent, rule);
+        }
+    }
+
+    // ==================== 公共基类 ====================
+
+    /**
+     * 所有分支子 DSL 的公共基类。
+     * <p>包含超时、条件匹配、完成注册等通用方法。
+     *
+     * @param <T> 子类型（用于链式调用返回正确类型）
+     */
+    public abstract static class BaseApiDsl<T extends BaseApiDsl<T>> {
+
+        protected final RouteDsl parent;
+        protected final RouteRule rule;
+
+        BaseApiDsl(RouteDsl parent, RouteRule rule) {
+            this.parent = parent;
+            this.rule = rule;
+        }
+
+        @SuppressWarnings("unchecked")
+        protected T self() {
+            return (T) this;
+        }
+
+        // ===== 自动停止控制 =====
 
         /**
          * 设置 Monitor 超时（秒）。0 表示永不超时。
          * 超时后自动停止监控（调用 unroute 注销路由）。
          */
-        public ApiDsl timeout(long timeoutSecs) {
+        public T timeout(long timeoutSecs) {
             rule.setTimeoutMs(timeoutSecs * 1000);
-            return this;
+            return self();
         }
 
         /**
          * 设置最小匹配次数，满足后触发 auto-stop。
          * 默认值为 1。
          */
-        public ApiDsl minMatches(int minMatches) {
+        public T minMatches(int minMatches) {
             rule.setMinMatches(minMatches);
-            return this;
+            return self();
         }
 
         /**
@@ -147,18 +220,215 @@ public class RouteDsl {
          *   <li>MODIFY — 默认 {@code false}：持续拦截直到超时或测试结束</li>
          * </ul>
          */
-        public ApiDsl autoStopOnMatch(boolean autoStopOnMatch) {
+        public T autoStopOnMatch(boolean autoStopOnMatch) {
             rule.setAutoStopOnMatch(autoStopOnMatch);
+            return self();
+        }
+
+        // ===== 请求条件匹配 =====
+
+        /**
+         * 设置匹配的 HTTP Method（如 "GET","POST"）。
+         * <p>不调用则匹配所有 Method。
+         */
+        public T matchMethod(String method) {
+            rule.setMatchMethod(method);
+            return self();
+        }
+
+        /**
+         * 设置允许匹配的资源类型（逗号分隔）。
+         * <p>例如 {@code "xhr,fetch"} 只匹配 XHR 和 Fetch。
+         * <p>不调用则继承 {@link #onlyApiCall(boolean)} 的默认行为。
+         */
+        public T resourceType(String types) {
+            rule.setResourceTypes(types);
+            return self();
+        }
+
+        /**
+         * 只匹配 XHR 请求。
+         */
+        public T onlyXhr() {
+            rule.setResourceTypes(RouteUtil.RT_XHR);
+            return self();
+        }
+
+        /**
+         * 只匹配 Fetch 请求。
+         */
+        public T onlyFetch() {
+            rule.setResourceTypes(RouteUtil.RT_FETCH);
+            return self();
+        }
+
+        /**
+         * 添加一个请求头匹配条件（精确匹配）。
+         * <p>所有添加的 header 必须同时满足。
+         */
+        public T matchHeader(String key, String value) {
+            rule.addMatchHeader(key, value);
+            return self();
+        }
+
+        /**
+         * 添加一个 Query 参数匹配条件（精确匹配）。
+         * <p>所有添加的 query 参数必须同时满足。
+         */
+        public T matchQuery(String key, String value) {
+            rule.addMatchQuery(key, value);
+            return self();
+        }
+
+        /**
+         * 设置请求体正则表达式匹配。
+         * <p>只有当 POST/PUT 请求的 body 匹配此正则时才拦截。
+         *
+         * @param regex Java 正则表达式
+         */
+        public T matchBodyRegex(String regex) {
+            rule.setMatchBodyRegex(regex);
+            return self();
+        }
+
+        /**
+         * 设置 Content-Type 包含匹配。
+         * <p>例如 {@code "json"} 可匹配 {@code "application/json"} 和
+         * {@code "application/json;charset=UTF-8"}。
+         */
+        public T matchContentType(String contentType) {
+            rule.setMatchContentType(contentType);
+            return self();
+        }
+
+        /**
+         * 设置 Referrer 包含匹配。
+         * <p>请求的 Referrer 头必须包含指定字符串。
+         */
+        public T matchReferrer(String referrer) {
+            rule.setMatchReferrer(referrer);
+            return self();
+        }
+
+        /**
+         * 设置 Origin 包含匹配。
+         * <p>请求的 Origin 头必须包含指定字符串。
+         */
+        public T matchOrigin(String origin) {
+            rule.setMatchOrigin(origin);
+            return self();
+        }
+
+        /**
+         * 设置 Frame URL 包含匹配。
+         * <p>发起请求的 Frame URL 必须包含指定字符串。
+         */
+        public T matchFrameUrl(String frameUrl) {
+            rule.setMatchFrameUrl(frameUrl);
+            return self();
+        }
+
+        /**
+         * 是否仅匹配主 Frame 请求（跳过 iframe/worker）。
+         * 默认 true。
+         */
+        public T onlyMainFrame(boolean onlyMainFrame) {
+            rule.setOnlyMainFrame(onlyMainFrame);
+            return self();
+        }
+
+        /**
+         * 允许匹配所有 Frame（包括 iframe/worker）。
+         */
+        public T allowAllFrames() {
+            rule.setOnlyMainFrame(false);
+            return self();
+        }
+
+        /**
+         * 是否仅匹配 API 调用（自动跳过 navigation 和静态资源）。
+         * <p>设为 true 时：
+         * <ul>
+         *   <li>跳过 isNavigationRequest=true 的请求</li>
+         *   <li>如果没有显式设置 resourceType，则只匹配 xhr/fetch</li>
+         * </ul>
+         * 默认 false（匹配所有请求类型）。
+         */
+        public T onlyApiCall(boolean apiOnly) {
+            rule.setOnlyApiCall(apiOnly);
+            return self();
+        }
+
+        /**
+         * 允许匹配所有类型请求（包括 navigation、静态资源、image、font 等）。
+         * <p>等同于 {@code onlyApiCall(false).allowAllFrames()}。
+         */
+        public T allowAllRequests() {
+            rule.setOnlyApiCall(false);
+            rule.setOnlyMainFrame(false);
+            return self();
+        }
+
+        // ===== 完成 =====
+
+        /**
+         * 完成当前 API 配置，返回父级 RouteDsl。
+         *
+         * <p>校验必填字段：urlPattern 必须非空。
+         *
+         * @return 父级 RouteDsl 实例
+         * @throws IllegalArgumentException 如果 urlPattern 为空
+         */
+        public RouteDsl done() {
+            if (rule.getUrlPattern() == null || rule.getUrlPattern().trim().isEmpty()) {
+                throw new IllegalArgumentException("urlPattern cannot be blank. "
+                        + "Please call api(\"pattern\") before done().");
+            }
+            parent.rules.add(rule);
+            return parent;
+        }
+    }
+
+    // ==================== Monitor 专用 DSL ====================
+
+    /**
+     * Monitor 专用 DSL — 在 BaseApiDsl 基础上提供断言方法。
+     * <p>使用示例：
+     * <pre>{@code
+     * .api("/api/users")
+     *     .monitor()
+     *     .expectStatus(200)
+     *     .expectJsonPath("$.code", 200)
+     *     .timeout(30)
+     *     .done()
+     * }</pre>
+     */
+    public static class MonitorApiDsl extends BaseApiDsl<MonitorApiDsl> {
+
+        MonitorApiDsl(RouteDsl parent, RouteRule rule) {
+            super(parent, rule);
+        }
+
+        /**
+         * 设置是否记录请求/响应信息。默认 true。
+         */
+        public MonitorApiDsl record(boolean enable) {
+            rule.setRecord(enable);
             return this;
         }
 
-        // ===== 断言 =====
-        public ApiDsl expectStatus(int status) {
+        /**
+         * 设置期望的 HTTP 状态码（Monitor 断言）。
+         */
+        public MonitorApiDsl expectStatus(int status) {
             rule.setExpectedStatus(status);
             return this;
         }
 
-        public ApiDsl expectJsonPath(String jsonPath, Object expectedValue) {
+        /**
+         * 添加 JSONPath 断言（值类型自动推断：Int/Double/Boolean/String）。
+         */
+        public MonitorApiDsl expectJsonPath(String jsonPath, Object expectedValue) {
             Map<String, Object> assertions = rule.getJsonPathAssertions();
             if (assertions == null) {
                 assertions = new java.util.HashMap<>();
@@ -167,21 +437,50 @@ public class RouteDsl {
             assertions.put(jsonPath, expectedValue);
             return this;
         }
+    }
 
-        // ===== Mock =====
-        public ApiDsl mock(String body) {
-            rule.setType(RouteHandleType.MOCK);
+    // ==================== Mock 专用 DSL ====================
+
+    /**
+     * Mock 专用 DSL — 在 BaseApiDsl 基础上提供 Mock 响应配置方法。
+     * <p>使用示例：
+     * <pre>{@code
+     * .api("/api/users/1")
+     *     .mock("{\"code\":200}")
+     *     .mockStatus(200)
+     *     .mockHeader("Content-Type", "application/json")
+     *     .mockReplaceField("$.data.name", "Mocked")
+     *     .done()
+     * }</pre>
+     */
+    public static class MockApiDsl extends BaseApiDsl<MockApiDsl> {
+
+        MockApiDsl(RouteDsl parent, RouteRule rule) {
+            super(parent, rule);
+        }
+
+        /**
+         * 设置/更新 Mock 响应体。
+         * <p>通常 body 已在入口 {@code api(...).mock(body)} 设置，此方法用于后续更新。
+         */
+        public MockApiDsl mockBody(String body) {
             rule.setMockBody(body);
-            rule.setAutoStopOnMatch(false);   // Mock 默认持续拦截，不自动停止
             return this;
         }
 
-        public ApiDsl mockStatus(int status) {
+        /**
+         * 设置 Mock 返回的 HTTP 状态码（默认 200）。
+         */
+        public MockApiDsl mockStatus(int status) {
             rule.setMockStatus(status);
             return this;
         }
 
-        public ApiDsl mockHeader(String key, String value) {
+        /**
+         * 设置 Mock 响应头。
+         * <p>可多次调用以设置多个响应头。
+         */
+        public MockApiDsl mockHeader(String key, String value) {
             Map<String, String> headers = rule.getMockHeaders();
             if (headers == null) {
                 headers = new java.util.HashMap<>();
@@ -216,199 +515,97 @@ public class RouteDsl {
          * @param jsonPath JSONPath 表达式（支持通配符 [*]）
          * @param value    替换值（字符串形式，自动保持原字段类型）
          */
-        public ApiDsl mockReplaceField(String jsonPath, String value) {
+        public MockApiDsl mockReplaceField(String jsonPath, String value) {
             rule.addMockReplaceField(jsonPath, value);
             return this;
         }
+    }
 
-        // ===== Modify =====
-        public ApiDsl modify() {
-            rule.setType(RouteHandleType.MODIFY);
-            rule.setAutoStopOnMatch(false);   // Modify 默认持续拦截，不自动停止
-            return this;
+    // ==================== Modify 专用 DSL ====================
+
+    /**
+     * Modify 专用 DSL — 在 BaseApiDsl 基础上提供请求修改的增删改方法。
+     * <p>使用示例：
+     * <pre>{@code
+     * .api("/api/users")
+     *     .modifyRequest()
+     *     .setRequestHeader("X-Custom", "v1")
+     *     .removeRequestHeader("X-Obsolete")
+     *     .modifyRequestBody("$.role", "ADMIN")
+     *     .addRequestBodyField("$.newField", "hello")
+     *     .removeRequestBodyField("$.deprecated")
+     *     .modifyMethod("PUT")
+     *     .done()
+     * }</pre>
+     */
+    public static class ModifyApiDsl extends BaseApiDsl<ModifyApiDsl> {
+
+        ModifyApiDsl(RouteDsl parent, RouteRule rule) {
+            super(parent, rule);
         }
-
-        public ApiDsl addHeader(String key, String value) {
-            Map<String, String> headers = rule.getAddHeaders();
-            if (headers == null) {
-                headers = new java.util.HashMap<>();
-                rule.setAddHeaders(headers);
-            }
-            headers.put(key, value);
-            return this;
-        }
-
-        public ApiDsl replaceBody(String key, String value) {
-            rule.addReplaceBodyPair(key, value);
-            return this;
-        }
-
-        public ApiDsl method(String method) {
-            rule.setMethod(method);
-            return this;
-        }
-
-        // ================================================================
-        // 请求条件匹配 DSL（新增）
-        // ================================================================
 
         /**
-         * 设置匹配的 HTTP Method（如 "GET","POST"）。
-         * <p>不调用则匹配所有 Method。
+         * 设置/新增单个请求头（覆盖已有同名头）。
          */
-        public ApiDsl matchMethod(String method) {
-            rule.setMatchMethod(method);
+        public ModifyApiDsl setRequestHeader(String key, String value) {
+            rule.addRequestHeaderToSet(key, value);
             return this;
         }
 
         /**
-         * 设置允许匹配的资源类型（逗号分隔）。
-         * <p>例如 {@code "xhr,fetch"} 只匹配 XHR 和 Fetch。
-         * <p>不调用则继承 {@link #onlyApiCall(boolean)} 的默认行为。
+         * 批量设置请求头。
+         * <pre>{@code
+         * .setRequestHeaders(Map.of("X-Custom-1", "v1", "X-Custom-2", "v2"))
+         * }</pre>
          */
-        public ApiDsl resourceType(String types) {
-            rule.setResourceTypes(types);
+        public ModifyApiDsl setRequestHeaders(Map<String, String> headers) {
+            rule.addRequestHeadersToSet(headers);
             return this;
         }
 
         /**
-         * 只匹配 XHR 请求。
+         * 删除指定请求头。
+         * <p>多次调用可删除多个请求头。
          */
-        public ApiDsl onlyXhr() {
-            rule.setResourceTypes(RouteUtil.RT_XHR);
+        public ModifyApiDsl removeRequestHeader(String key) {
+            rule.addRequestHeaderToRemove(key);
             return this;
         }
 
         /**
-         * 只匹配 Fetch 请求。
+         * 修改请求体已有字段值（JSONPath 精准替换）。
+         * <p>仅修改已存在的字段，路径不存在则跳过。
          */
-        public ApiDsl onlyFetch() {
-            rule.setResourceTypes(RouteUtil.RT_FETCH);
+        public ModifyApiDsl modifyRequestBody(String jsonPath, String value) {
+            rule.addRequestBodyFieldToModify(jsonPath, value);
             return this;
         }
 
         /**
-         * 添加一个请求头匹配条件（精确匹配）。
-         * <p>所有添加的 header 必须同时满足。
+         * 新增请求体字段（JSONPath → 值）。
+         * <p>路径不存在时自动创建中间节点。
          */
-        public ApiDsl matchHeader(String key, String value) {
-            rule.addMatchHeader(key, value);
+        public ModifyApiDsl addRequestBodyField(String jsonPath, String value) {
+            rule.addRequestBodyFieldToAdd(jsonPath, value);
             return this;
         }
 
         /**
-         * 添加一个 Query 参数匹配条件（精确匹配）。
-         * <p>所有添加的 query 参数必须同时满足。
+         * 删除请求体指定字段。
+         * <p>多次调用可删除多个字段。
          */
-        public ApiDsl matchQuery(String key, String value) {
-            rule.addMatchQuery(key, value);
+        public ModifyApiDsl removeRequestBodyField(String jsonPath) {
+            rule.addRequestBodyFieldToRemove(jsonPath);
             return this;
         }
 
         /**
-         * 设置请求体正则表达式匹配。
-         * <p>只有当 POST/PUT 请求的 body 匹配此正则时才拦截。
-         *
-         * @param regex Java 正则表达式
+         * 修改请求 HTTP 方法。
+         * @param method 如 "POST","PUT","PATCH","DELETE"
          */
-        public ApiDsl matchBodyRegex(String regex) {
-            rule.setMatchBodyRegex(regex);
+        public ModifyApiDsl modifyMethod(String method) {
+            rule.setModifyMethod(method);
             return this;
-        }
-
-        /**
-         * 设置 Content-Type 包含匹配。
-         * <p>例如 {@code "json"} 可匹配 {@code "application/json"} 和
-         * {@code "application/json;charset=UTF-8"}。
-         */
-        public ApiDsl matchContentType(String contentType) {
-            rule.setMatchContentType(contentType);
-            return this;
-        }
-
-        /**
-         * 设置 Referrer 包含匹配。
-         * <p>请求的 Referrer 头必须包含指定字符串。
-         */
-        public ApiDsl matchReferrer(String referrer) {
-            rule.setMatchReferrer(referrer);
-            return this;
-        }
-
-        /**
-         * 设置 Origin 包含匹配。
-         * <p>请求的 Origin 头必须包含指定字符串。
-         */
-        public ApiDsl matchOrigin(String origin) {
-            rule.setMatchOrigin(origin);
-            return this;
-        }
-
-        /**
-         * 设置 Frame URL 包含匹配。
-         * <p>发起请求的 Frame URL 必须包含指定字符串。
-         */
-        public ApiDsl matchFrameUrl(String frameUrl) {
-            rule.setMatchFrameUrl(frameUrl);
-            return this;
-        }
-
-        /**
-         * 是否仅匹配主 Frame 请求（跳过 iframe/worker）。
-         * 默认 true。
-         */
-        public ApiDsl onlyMainFrame(boolean onlyMainFrame) {
-            rule.setOnlyMainFrame(onlyMainFrame);
-            return this;
-        }
-
-        /**
-         * 允许匹配所有 Frame（包括 iframe/worker）。
-         */
-        public ApiDsl allowAllFrames() {
-            rule.setOnlyMainFrame(false);
-            return this;
-        }
-
-        /**
-         * 是否仅匹配 API 调用（自动跳过 navigation 和静态资源）。
-         * <p>设为 true 时：
-         * <ul>
-         *   <li>跳过 isNavigationRequest=true 的请求</li>
-         *   <li>如果没有显式设置 resourceType，则只匹配 xhr/fetch</li>
-         * </ul>
-         * 默认 false（匹配所有请求类型）。
-         */
-        public ApiDsl onlyApiCall(boolean apiOnly) {
-            rule.setOnlyApiCall(apiOnly);
-            return this;
-        }
-
-        /**
-         * 允许匹配所有类型请求（包括 navigation、静态资源、image、font 等）。
-         * <p>等同于 {@code onlyApiCall(false).allowAllFrames()}。
-         */
-        public ApiDsl allowAllRequests() {
-            rule.setOnlyApiCall(false);
-            rule.setOnlyMainFrame(false);
-            return this;
-        }
-
-        /**
-         * 完成当前 API 配置，返回父级 RouteDsl。
-         *
-         * <p>校验必填字段：urlPattern 必须非空。
-         *
-         * @return 父级 RouteDsl 实例
-         * @throws IllegalArgumentException 如果 urlPattern 为空
-         */
-        public RouteDsl done() {
-            if (rule.getUrlPattern() == null || rule.getUrlPattern().trim().isEmpty()) {
-                throw new IllegalArgumentException("urlPattern cannot be blank. "
-                        + "Please call api(\"pattern\") before done().");
-            }
-            parent.rules.add(rule);
-            return parent;
         }
     }
 }

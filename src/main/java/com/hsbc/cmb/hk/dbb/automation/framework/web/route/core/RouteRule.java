@@ -36,10 +36,19 @@ public class RouteRule {
      *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换） */
     private Map<String, String> mockReplaceFields;
 
-    // Modify
-    private Map<String, String> addHeaders;
-    private Map<String, String> replaceBodyPairs;
-    private String method;
+    // ModifyRequest — 增删改三个维度
+    /** 请求头：设置/新增 key → value（覆盖已有同名头） */
+    private Map<String, String> requestHeadersToSet;
+    /** 请求头：删除指定 key */
+    private Set<String> requestHeadersToRemove;
+    /** 请求体：修改已有字段（JSONPath → 值） */
+    private Map<String, String> requestBodyFieldsToModify;
+    /** 请求体：新增字段（JSONPath → 值，路径不存在则创建中间节点） */
+    private Map<String, String> requestBodyFieldsToAdd;
+    /** 请求体：删除指定字段（JSONPath 集合） */
+    private Set<String> requestBodyFieldsToRemove;
+    /** 修改请求 HTTP 方法 */
+    private String modifyMethod;
 
     // Monitor + 断言
     private boolean record = true;
@@ -118,16 +127,30 @@ public class RouteRule {
         return mockReplaceFields;
     }
 
-    public Map<String, String> getAddHeaders() {
-        return addHeaders;
+    // ─── ModifyRequest Getters ────────────────────────────────────
+
+    public Map<String, String> getRequestHeadersToSet() {
+        return requestHeadersToSet;
     }
 
-    public Map<String, String> getReplaceBodyPairs() {
-        return replaceBodyPairs;
+    public Set<String> getRequestHeadersToRemove() {
+        return requestHeadersToRemove;
     }
 
-    public String getMethod() {
-        return method;
+    public Map<String, String> getRequestBodyFieldsToModify() {
+        return requestBodyFieldsToModify;
+    }
+
+    public Map<String, String> getRequestBodyFieldsToAdd() {
+        return requestBodyFieldsToAdd;
+    }
+
+    public Set<String> getRequestBodyFieldsToRemove() {
+        return requestBodyFieldsToRemove;
+    }
+
+    public String getModifyMethod() {
+        return modifyMethod;
     }
 
     public boolean isRecord() {
@@ -236,27 +259,96 @@ public class RouteRule {
         this.mockReplaceFields = mockReplaceFields;
     }
 
-    public void setAddHeaders(Map<String, String> addHeaders) {
-        this.addHeaders = addHeaders;
+    // ─── ModifyRequest Setters ─────────────────────────────────────
+
+    /**
+     * 设置请求头（覆盖已有同名头）。
+     * @param headers 请求头 Map
+     */
+    public void setRequestHeadersToSet(Map<String, String> headers) {
+        this.requestHeadersToSet = headers;
     }
 
     /**
-     * 添加一个请求体字段替换（JSONPath → 值）。
-     * <p>支持多次调用，添加到 Map 中。
+     * 添加单个请求头（覆盖已有同名头）。
+     * @param key   请求头名称
+     * @param value 请求头值
      */
-    public void addReplaceBodyPair(String key, String value) {
-        if (replaceBodyPairs == null) {
-            replaceBodyPairs = new LinkedHashMap<>();
+    public void addRequestHeaderToSet(String key, String value) {
+        if (requestHeadersToSet == null) {
+            requestHeadersToSet = new HashMap<>();
         }
-        replaceBodyPairs.put(key, value);
+        requestHeadersToSet.put(key, value);
     }
 
-    public void setReplaceBodyPairs(Map<String, String> replaceBodyPairs) {
-        this.replaceBodyPairs = replaceBodyPairs;
+    /**
+     * 批量添加请求头。
+     */
+    public void addRequestHeadersToSet(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) return;
+        if (requestHeadersToSet == null) {
+            requestHeadersToSet = new HashMap<>();
+        }
+        requestHeadersToSet.putAll(headers);
     }
 
-    public void setMethod(String method) {
-        this.method = method;
+    /**
+     * 添加需要删除的请求头 key。
+     * @param key 要删除的请求头名称
+     */
+    public void addRequestHeaderToRemove(String key) {
+        if (requestHeadersToRemove == null) {
+            requestHeadersToRemove = new LinkedHashSet<>();
+        }
+        requestHeadersToRemove.add(key);
+    }
+
+    /**
+     * 添加一个请求体字段修改（替换已有字段值）。
+     * <p>支持多次调用，添加到 Map 中。
+     * @param jsonPath JSONPath 路径
+     * @param value    替换值（字符串形式，自动保持原字段类型）
+     */
+    public void addRequestBodyFieldToModify(String jsonPath, String value) {
+        if (requestBodyFieldsToModify == null) {
+            requestBodyFieldsToModify = new LinkedHashMap<>();
+        }
+        requestBodyFieldsToModify.put(jsonPath, value);
+    }
+
+    public void setRequestBodyFieldsToModify(Map<String, String> fields) {
+        this.requestBodyFieldsToModify = fields;
+    }
+
+    /**
+     * 添加一个请求体新字段。
+     * @param jsonPath JSONPath 路径（路径不存在则创建中间节点）
+     * @param value    字段值（字符串形式，自动类型推断）
+     */
+    public void addRequestBodyFieldToAdd(String jsonPath, String value) {
+        if (requestBodyFieldsToAdd == null) {
+            requestBodyFieldsToAdd = new LinkedHashMap<>();
+        }
+        requestBodyFieldsToAdd.put(jsonPath, value);
+    }
+
+    /**
+     * 添加需要从请求体中删除的字段路径。
+     * @param jsonPath JSONPath 路径
+     */
+    public void addRequestBodyFieldToRemove(String jsonPath) {
+        if (requestBodyFieldsToRemove == null) {
+            requestBodyFieldsToRemove = new LinkedHashSet<>();
+        }
+        requestBodyFieldsToRemove.add(jsonPath);
+    }
+
+    /**
+     * 设置修改后的 HTTP 方法。
+     * @param method 如 "POST","PUT","PATCH","DELETE"
+     */
+    public void setModifyMethod(String method) {
+        this.modifyMethod = method;
     }
 
     public void setRecord(boolean record) {
@@ -424,11 +516,11 @@ public class RouteRule {
         RouteRule that = (RouteRule) o;
         return Objects.equals(urlPattern, that.urlPattern)
                 && type == that.type
-                && Objects.equals(method, that.method);
+                && Objects.equals(modifyMethod, that.modifyMethod);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(urlPattern, type, method);
+        return Objects.hash(urlPattern, type, modifyMethod);
     }
 }

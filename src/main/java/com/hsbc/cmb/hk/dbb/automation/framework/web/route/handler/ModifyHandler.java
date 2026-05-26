@@ -90,16 +90,41 @@ public class ModifyHandler {
         Route.ResumeOptions opts = new Route.ResumeOptions();
 
         // ── 1. 修改请求头 ────────────────────────────────────────
-        if (rule.getAddHeaders() != null) {
-            Map<String, String> headers = Optional.ofNullable(req.headers())
+        Map<String, String> requestHeadersToSet = rule.getRequestHeadersToSet();
+        Set<String> requestHeadersToRemove = rule.getRequestHeadersToRemove();
+        boolean hasHeaderModifications = (requestHeadersToSet != null && !requestHeadersToSet.isEmpty())
+                || (requestHeadersToRemove != null && !requestHeadersToRemove.isEmpty());
+
+        if (hasHeaderModifications) {
+            Map<String, String> existingHeaders = Optional.ofNullable(req.headers())
                     .orElse(Collections.emptyMap());
-            HashMap<String, String> newHeaders = new HashMap<>(headers);
-            newHeaders.putAll(rule.getAddHeaders());
+            HashMap<String, String> newHeaders = new HashMap<>(existingHeaders);
+
+            // 1a. 先删
+            if (requestHeadersToRemove != null) {
+                for (String key : requestHeadersToRemove) {
+                    newHeaders.remove(key);
+                    LOGGER.debug("[ModifyHandler] Header removed: '{}'", key);
+                }
+            }
+
+            // 1b. 再改/增
+            if (requestHeadersToSet != null) {
+                newHeaders.putAll(requestHeadersToSet);
+            }
+
             opts.setHeaders(newHeaders);
         }
 
-        // ── 2. 修改请求体 ────────────────────────────────────────
-        if (rule.getReplaceBodyPairs() != null && !rule.getReplaceBodyPairs().isEmpty()) {
+        // ── 2. 修改请求体（增删改） ─────────────────────────────────
+        Map<String, String> fieldsToModify = rule.getRequestBodyFieldsToModify();
+        Map<String, String> fieldsToAdd = rule.getRequestBodyFieldsToAdd();
+        Set<String> fieldsToRemove = rule.getRequestBodyFieldsToRemove();
+        boolean hasBodyModifications = (fieldsToModify != null && !fieldsToModify.isEmpty())
+                || (fieldsToAdd != null && !fieldsToAdd.isEmpty())
+                || (fieldsToRemove != null && !fieldsToRemove.isEmpty());
+
+        if (hasBodyModifications) {
             byte[] postDataBuffer = req.postDataBuffer();
 
             if (postDataBuffer != null && postDataBuffer.length > 0) {
@@ -107,61 +132,97 @@ public class ModifyHandler {
                 boolean isJson = postData.trim().startsWith("{") || postData.trim().startsWith("[");
 
                 if (isJson) {
-                    // ── JSONPath 精准替换（支持多个 key-value）──
                     String newBody = postData;
-                    for (Map.Entry<String, String> entry : rule.getReplaceBodyPairs().entrySet()) {
-                        String key = entry.getKey();
-                        String value = entry.getValue();
-                        try {
-                            newBody = replaceByJsonPath(newBody, key, value);
-                            LOGGER.debug("[ModifyHandler] JSONPath replaced: path='{}', value='{}'",
-                                    key, value);
-                        } catch (Exception e) {
-                            if (allowFallbackStringReplace) {
-                                LOGGER.warn("[ModifyHandler] JSONPath replace failed ({}), falling back to string replace for path='{}'",
-                                        e.getMessage(), key);
-                                newBody = newBody.replace(key, value);
-                            } else {
-                                LOGGER.error("[ModifyHandler] JSONPath replace failed and fallback disabled, skipping path='{}', error={}",
-                                        key, e.getMessage(), e);
+
+                    // 2a. 先修改已有字段
+                    if (fieldsToModify != null) {
+                        for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
+                            String path = entry.getKey();
+                            String value = entry.getValue();
+                            try {
+                                newBody = replaceByJsonPath(newBody, path, value);
+                                LOGGER.debug("[ModifyHandler] Body field modified: path='{}', value='{}'", path, value);
+                            } catch (Exception e) {
+                                if (allowFallbackStringReplace) {
+                                    LOGGER.warn("[ModifyHandler] Body modify failed ({}), falling back to string replace: path='{}'",
+                                            e.getMessage(), path);
+                                    newBody = newBody.replace(path, value);
+                                } else {
+                                    LOGGER.error("[ModifyHandler] Body modify failed and fallback disabled, skipping path='{}': {}",
+                                            path, e.getMessage(), e);
+                                }
                             }
                         }
                     }
+
+                    // 2b. 新增字段
+                    if (fieldsToAdd != null) {
+                        for (Map.Entry<String, String> entry : fieldsToAdd.entrySet()) {
+                            String path = entry.getKey();
+                            String value = entry.getValue();
+                            try {
+                                newBody = addFieldByJsonPath(newBody, path, value);
+                                LOGGER.debug("[ModifyHandler] Body field added: path='{}', value='{}'", path, value);
+                            } catch (Exception e) {
+                                LOGGER.error("[ModifyHandler] Body field add failed: path='{}': {}", path, e.getMessage(), e);
+                            }
+                        }
+                    }
+
+                    // 2c. 删除字段
+                    if (fieldsToRemove != null) {
+                        for (String path : fieldsToRemove) {
+                            try {
+                                newBody = removeFieldByJsonPath(newBody, path);
+                                LOGGER.debug("[ModifyHandler] Body field removed: path='{}'", path);
+                            } catch (Exception e) {
+                                LOGGER.error("[ModifyHandler] Body field remove failed: path='{}': {}", path, e.getMessage(), e);
+                            }
+                        }
+                    }
+
                     opts.setPostData(newBody);
                 } else {
-                    // 非 JSON 纯文本，使用字符串替换
+                    // 非 JSON：仅支持字符串替换
                     String newBody = postData;
-                    for (Map.Entry<String, String> entry : rule.getReplaceBodyPairs().entrySet()) {
-                        newBody = newBody.replace(entry.getKey(), entry.getValue());
-                        LOGGER.debug("[ModifyHandler] Non-JSON text body replaced: key='{}'",
-                                entry.getKey());
+                    if (fieldsToModify != null) {
+                        for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
+                            newBody = newBody.replace(entry.getKey(), entry.getValue());
+                            LOGGER.debug("[ModifyHandler] Non-JSON text body modified: key='{}'", entry.getKey());
+                        }
                     }
                     opts.setPostData(newBody);
                 }
             } else {
-                LOGGER.debug("[ModifyHandler] No post data or binary body, skipping body replacement");
+                LOGGER.debug("[ModifyHandler] No post data or binary body, skipping body modifications");
             }
         }
 
         // ── 3. 修改 HTTP 方法 ────────────────────────────────────
-        if (rule.getMethod() != null) {
-            opts.setMethod(rule.getMethod());
+        if (rule.getModifyMethod() != null) {
+            opts.setMethod(rule.getModifyMethod());
         }
 
         // ── 4. 放行请求（异常安全）─────────────────────────────────
         try {
             route.resume(opts);
-            LOGGER.info("[ModifyHandler] Modified: url={}, pattern='{}', method={}, headers={}, replaceKeys={}",
+            LOGGER.info("[ModifyHandler] Modified: url={}, pattern='{}', method={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
                     req.url(), rule.getUrlPattern(),
-                    rule.getMethod() != null ? rule.getMethod() : req.method(),
-                    rule.getAddHeaders() != null ? rule.getAddHeaders().keySet() : "none",
-                    rule.getReplaceBodyPairs() != null ? rule.getReplaceBodyPairs().keySet() : "none");
+                    rule.getModifyMethod() != null ? rule.getModifyMethod() : req.method(),
+                    requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
+                    requestHeadersToRemove != null ? requestHeadersToRemove : "none",
+                    fieldsToModify != null ? fieldsToModify.keySet() : "none",
+                    fieldsToAdd != null ? fieldsToAdd.keySet() : "none",
+                    fieldsToRemove != null ? fieldsToRemove : "none");
             SerenityReporter.recordApiOperation("MODIFY", req.url(),
-                    String.format("Pattern: %s\nMethod: %s\nHeaders: %s\nReplaceBody: %s",
+                    String.format("Pattern: %s\nMethod: %s\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
                             rule.getUrlPattern(),
-                            rule.getMethod() != null ? rule.getMethod() : req.method(),
-                            rule.getAddHeaders() != null ? rule.getAddHeaders().toString() : "none",
-                            rule.getReplaceBodyPairs() != null ? rule.getReplaceBodyPairs().toString() : "none"));
+                            rule.getModifyMethod() != null ? rule.getModifyMethod() : req.method(),
+                            requestHeadersToSet != null ? requestHeadersToSet.toString() : "none",
+                            requestHeadersToRemove != null ? requestHeadersToRemove.toString() : "none",
+                            fieldsToModify != null ? fieldsToModify.toString() : "none",
+                            fieldsToAdd != null ? fieldsToAdd.toString() : "none",
+                            fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
         } catch (PlaywrightException e) {
             LOGGER.error("[ModifyHandler] Failed to resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
@@ -216,6 +277,113 @@ public class ModifyHandler {
         } catch (JsonProcessingException e) {
             LOGGER.warn("JSON processing failed for path={}: {}", path, e.getMessage());
             return jsonBody; // 解析失败返回原始 body，由上层退化为字符串替换
+        }
+    }
+
+    /**
+     * 在 JSON body 中按路径新增字段。
+     * 如果中间节点不存在，自动创建 ObjectNode。
+     *
+     * @param jsonBody 原始 JSON body 字符串
+     * @param path     JsonPath 路径（如 {@code $.newField}、{@code $.nested.field}）
+     * @param value    字段值（字符串形式，自动类型推断）
+     * @return 修改后的 JSON 字符串
+     */
+    public static String addFieldByJsonPath(String jsonBody, String path, String value) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(jsonBody);
+            Object typedValue = convertToMatchingType(value, null);  // 无原值，自动推断类型
+
+            String[] segments = path.split("\\.");
+            JsonNode current = root;
+            ObjectNode parent = null;
+            String lastFieldName = null;
+
+            for (int i = 0; i < segments.length; i++) {
+                String segment = segments[i];
+                if ("$".equals(segment) || segment.isEmpty()) continue;
+
+                boolean isLast = (i == segments.length - 1);
+                // 解析数组标记 [index]
+                int bracketIdx = segment.indexOf('[');
+                String fieldName;
+                if (bracketIdx > 0) {
+                    fieldName = segment.substring(0, bracketIdx);
+                } else {
+                    fieldName = segment;
+                }
+                if (fieldName.isEmpty()) continue;
+
+                if (current instanceof ObjectNode) {
+                    ObjectNode obj = (ObjectNode) current;
+                    if (isLast) {
+                        setJsonNode(obj, fieldName, typedValue);
+                    } else {
+                        JsonNode child = obj.get(fieldName);
+                        if (child == null) {
+                            // 中间节点不存在：自动创建 ObjectNode
+                            child = OBJECT_MAPPER.createObjectNode();
+                            obj.set(fieldName, child);
+                        }
+                        current = child;
+                    }
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException e) {
+            LOGGER.warn("JSON processing failed for addField path={}: {}", path, e.getMessage());
+            return jsonBody;
+        }
+    }
+
+    /**
+     * 从 JSON body 中按路径删除字段。
+     *
+     * @param jsonBody 原始 JSON body 字符串
+     * @param path     JsonPath 路径（如 {@code $.fieldName}、{@code $.nested.field}）
+     * @return 修改后的 JSON 字符串
+     */
+    public static String removeFieldByJsonPath(String jsonBody, String path) {
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(jsonBody);
+
+            String[] segments = path.split("\\.");
+            JsonNode current = root;
+            ObjectNode parent = null;
+            String lastFieldName = null;
+
+            for (int i = 0; i < segments.length; i++) {
+                String segment = segments[i];
+                if ("$".equals(segment) || segment.isEmpty()) continue;
+
+                boolean isLast = (i == segments.length - 1);
+                int bracketIdx = segment.indexOf('[');
+                String fieldName;
+                if (bracketIdx > 0) {
+                    fieldName = segment.substring(0, bracketIdx);
+                } else {
+                    fieldName = segment;
+                }
+                if (fieldName.isEmpty()) continue;
+
+                if (current instanceof ObjectNode) {
+                    ObjectNode obj = (ObjectNode) current;
+                    if (isLast) {
+                        obj.remove(fieldName);
+                    } else {
+                        JsonNode child = obj.get(fieldName);
+                        if (child == null) {
+                            LOGGER.debug("[ModifyHandler] Path segment '{}' not found for removal: path='{}'", fieldName, path);
+                            return jsonBody;  // 路径不存在，无需删除
+                        }
+                        current = child;
+                    }
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException e) {
+            LOGGER.warn("JSON processing failed for removeField path={}: {}", path, e.getMessage());
+            return jsonBody;
         }
     }
 

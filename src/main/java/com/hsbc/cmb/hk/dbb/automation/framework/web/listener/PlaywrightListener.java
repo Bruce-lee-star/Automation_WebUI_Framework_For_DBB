@@ -225,6 +225,9 @@ public class PlaywrightListener implements StepListener {
         // 标记当前步骤为 Cucumber 步骤
         currentCucumberStep.set(step.getTitle());
 
+        // ⭐⭐⭐ 注册主测试线程引用 — 供 MonitorHandler 断言失败时中断
+        ApiMonitorContext.getCurrent().setTestThread(Thread.currentThread());
+
         // BEFORE_AND_AFTER_EACH_STEP 策略：在 Cucumber 步骤开始时截图
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
             takeScreenshotAndRegister("STEP_BEFORE_" + step.getTitle());
@@ -302,7 +305,10 @@ public class PlaywrightListener implements StepListener {
         stepFinishProcessed.set(false);
         stepFinishReentrantGuard.set(false);
 
-        // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时自动执行）
+        // ⭐⭐⭐ 清除 MonitoringHandler 使用的测试线程引用
+        ApiMonitorContext.getCurrent().clearTestThread();
+
+        // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时兜底执行）
         checkAndFailOnApiAssertions();
     }
 
@@ -1245,9 +1251,15 @@ public class PlaywrightListener implements StepListener {
     /**
      * ⭐⭐⭐ 框架级：在每个步骤结束时自动检查 API 断言是否失败。
      *
-     * <p>由 {@link #stepFinished()} 和 {@link #stepFinishedInternal} 调用。
-     * 如果 MonitorHandler 在异步线程中检测到断言失败（状态码 / JSONPath），
-     * 此方法直接抛出 {@link AssertionError}，让当前 Step 立即标记为失败。
+     * <p><b>两层检查</b>：
+     * <ol>
+     *   <li><b>Fail-Fast（主路径）</b>：检测当前线程是否被 {@code MonitorHandler.signalFailFast()}
+     *       通过 {@code Thread.interrupt()} 中断。若是，说明 Playwright 事件线程已同步检测到
+     *       断言失败并中断了主线程，直接抛出 {@code AssertionError}。</li>
+     *   <li><b>兜底（兼容路径）</b>：检查 {@link ApiMonitorContext#hasAssertionFailures()}。
+     *       如果 fail-fast 未触发（例如 MonitorHandler 在 interrupt 之前便已退出），
+     *       仍通过上下文标记来捕获断言失败。</li>
+     * </ol>
      *
      * <p>Step 代码无需手动检查 — 框架自动处理。
      *
@@ -1255,11 +1267,29 @@ public class PlaywrightListener implements StepListener {
      */
     private void checkAndFailOnApiAssertions() {
         ApiMonitorContext context = ApiMonitorContext.getCurrent();
-        if (context == null) {
-            return;
+
+        // ═══ 第一层：Fail-Fast 检查（主路径）══════
+        // MonitorHandler 在 Playwright 事件线程上同步断言失败后，
+        // 通过 context.signalFailFast() → testThread.interrupt() 中断本线程。
+        // 此处的 interrupted() 清除中断标记并返回 true，立即抛出断言错误。
+        if (Thread.interrupted()) {
+            logger.error("Test thread interrupted by API assertion failure (fail-fast)");
+            String report = context.buildFailureReport();
+            if (report != null && !report.contains("No assertion failures")) {
+                throw new AssertionError("API assertion failures detected (fail-fast):\n" + report);
+            } else {
+                throw new AssertionError("API assertion failure detected (fail-fast) — "
+                        + "check logs above for [MonitorHandler] assertion details");
+            }
         }
 
-        // 等待异步断言完成（MonitorHandler 在 RouteAsyncPool 中执行）
+        // ═══ 第二层：兜底检查（兼容路径）══════
+        // 如果 fail-fast 未触发（异常路径），仍通过上下文标记检测
+        if (!context.hasAssertionFailures()) {
+            return;  // 无断言失败 → 零开销返回
+        }
+
+        // 等待异步存储任务完成（避免报告不完整）
         if (context.getActiveRequests() > 0) {
             try {
                 boolean completed = context.awaitCompletion(5000);
@@ -1274,11 +1304,9 @@ public class PlaywrightListener implements StepListener {
         }
 
         // 断言失败 → 直接抛出 AssertionError，由 Serenity 捕获并标记 Step 为失败
-        if (context.hasAssertionFailures()) {
-            String report = context.buildFailureReport();
-            logger.error("API assertions failed during step:\n{}", report);
-            throw new AssertionError("API assertion failures detected:\n" + report);
-        }
+        String report = context.buildFailureReport();
+        logger.error("API assertions failed during step:\n{}", report);
+        throw new AssertionError("API assertion failures detected:\n" + report);
     }
 
     /**

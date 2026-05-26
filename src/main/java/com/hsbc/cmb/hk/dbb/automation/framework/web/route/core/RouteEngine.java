@@ -209,6 +209,13 @@ public class RouteEngine {
             if (rule.getType() != RouteHandleType.MONITOR) {
                 onMonitorMatch(rule);
             }
+        } catch (RouteException.ApiAssertionException e) {
+            // ⭐⭐⭐ MonitorHandler 同步断言失败 — 测试线程已被 signalFailFast() 中断
+            LOGGER.error("[RouteEngine] API assertion FAILED for pattern '{}': {}",
+                    rule.getUrlPattern(), e.getMessage());
+            // 路由已被 MonitorHandler.resume() 放行，无需额外处理
+            // ApiAssertionException 不在此处继续传播（Playwright 内部捕获），
+            // 但主测试线程已被 interrupt，当前阻塞的 Playwright 操作将立即失败
         } catch (Exception e) {
             LOGGER.error("[RouteEngine] Handler '{}' threw exception for pattern '{}': {}",
                     handler.getClass().getSimpleName(), rule.getUrlPattern(), e.getMessage(), e);

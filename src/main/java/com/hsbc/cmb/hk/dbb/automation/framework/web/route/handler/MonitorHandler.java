@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
@@ -37,13 +38,20 @@ public class MonitorHandler {
 
     /**
      * 处理单个 route 的监控逻辑（带断言）。
+     *
+     * <p><b>⭐⭐⭐ 重要架构变更 — 同步断言 + Fail-Fast</b>：
+     * <ul>
+     *   <li>断言（状态码 / JSONPath）在 Playwright 事件线程上<b>同步执行</b>，
+     *       不再提交到 RouteAsyncPool 异步线程</li>
+     *   <li>断言失败 → 调用 {@code context.signalFailFast()} 中断主测试线程，
+     *       主线程当前阻塞的 Playwright IO 操作立即感知中断，Step 即刻失败</li>
+     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录仍提交到
+     *       RouteAsyncPool 异步执行（繁重操作不阻塞事件线程）</li>
+     * </ul>
      */
     public static void handle(Route route, RouteRule rule) {
         // 获取 API 监控上下文并增加活动请求计数
         ApiMonitorContext context = ApiMonitorContext.getCurrent();
-        if (context != null) {
-            context.incrementActiveRequests();
-        }
 
         // 放行请求（异常安全，不阻塞页面）
         try {
@@ -51,9 +59,6 @@ public class MonitorHandler {
         } catch (PlaywrightException e) {
             LOGGER.error("[MonitorHandler] Failed to resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
-            if (context != null) {
-                context.decrementActiveRequests();
-            }
             return;
         }
 
@@ -61,9 +66,6 @@ public class MonitorHandler {
         Request req = route.request();
         Response res = req.response();
         if (res == null) {
-            if (context != null) {
-                context.decrementActiveRequests();
-            }
             return;
         }
 
@@ -72,73 +74,75 @@ public class MonitorHandler {
             bodyBytes = res.body();
         } catch (Exception e) {
             LOGGER.debug("[MonitorHandler] Failed to read response body for {}: {}", req.url(), e.getMessage());
-            if (context != null) {
-                context.decrementActiveRequests();
-            }
             return;
         }
 
+        // ═══════════════════════════════════════════════════════════════
+        // ⭐⭐⭐ 同步断言：在 Playwright 事件线程上立即执行
+        // ═══════════════════════════════════════════════════════════════
+        String body = new String(bodyBytes, StandardCharsets.UTF_8);
+        String url = req.url();
+        int status = res.status();
+        String urlPattern = rule.getUrlPattern();
+
+        LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
+                url, status, body.length(), urlPattern);
+
+        // 同步执行断言 — 失败立即中断测试线程（不等待异步任务）
+        boolean assertionsPassed = executeAssertions(rule, url, status, body, context);
+        if (!assertionsPassed) {
+            // ⭐ Fail-Fast：中断主测试线程
+            context.signalFailFast();
+            // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录并 resume
+            throw new RouteException.ApiAssertionException(
+                    urlPattern, "ASSERTION",
+                    rule.getExpectedStatus() != null ? String.valueOf(rule.getExpectedStatus()) : "N/A",
+                    String.valueOf(status));
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 异步存储：body 快照 + CapturedApiCall + Serenity 报告（不阻塞事件线程）
+        // ═══════════════════════════════════════════════════════════════
         final byte[] fBodyBytes = bodyBytes;
         final ApiMonitorContext fContext = context;
 
+        fContext.incrementActiveRequests();
+
         RouteAsyncPool.run(() -> {
             try {
-                String body = new String(fBodyBytes, StandardCharsets.UTF_8);
-                String url = req.url();
-                // 使用用户配置的 urlPattern 作为存储 key，而非从实际 URL 中提取路径
-                // 因为 api(endpoint) 中的 endpoint 可能只是 URL 的一部分
-                String endpoint = rule.getUrlPattern();
-                int status = res.status();
+                String asyncBody = new String(fBodyBytes, StandardCharsets.UTF_8);
+                String asyncUrl = req.url();
+                int asyncStatus = res.status();
 
-                LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
-                        url, status, body.length(), endpoint);
-
-                // 存储 response body（向后兼容）— 以 urlPattern 为 key
-                if (fContext != null) {
-                    fContext.storeResponse(endpoint, body);
-                }
+                // 存储 response body（向后兼容）
+                fContext.storeResponse(urlPattern, asyncBody);
 
                 // 存储完整的 CapturedApiCall（含 headers 等完整信息）
-                if (fContext != null) {
-                    CapturedApiCall call = new CapturedApiCall(
-                            endpoint,     // 存储 key = 用户配置的 urlPattern
-                            req.method(),
-                            snapshotHeadersSafely(req.headers()),
-                            status,
-                            snapshotHeadersSafely(res.headers()),
-                            body,
-                            System.currentTimeMillis()
-                    );
-                    fContext.storeApiCall(call);
-                }
+                CapturedApiCall call = new CapturedApiCall(
+                        urlPattern,     // 存储 key = 用户配置的 urlPattern
+                        req.method(),
+                        snapshotHeadersSafely(req.headers()),
+                        asyncStatus,
+                        snapshotHeadersSafely(res.headers()),
+                        asyncBody,
+                        System.currentTimeMillis()
+                );
+                fContext.storeApiCall(call);
 
                 // 记录到 Serenity 报告
                 if (rule.isRecord()) {
-                    SerenityReporter.recordApiOperation("MONITOR", url,
-                            String.format("Status: %d\nBody: %s", status,
-                                    body.length() > 2000 ? body.substring(0, 2000) + "..." : body));
-                }
-
-                // 执行断言并记录详细失败信息
-                boolean assertionsPassed = executeAssertions(rule, url, status, body, fContext);
-                if (!assertionsPassed && fContext != null) {
-                    fContext.setAssertionFailure();
+                    SerenityReporter.recordApiOperation("MONITOR", asyncUrl,
+                            String.format("Status: %d\nBody: %s", asyncStatus,
+                                    asyncBody.length() > 2000 ? asyncBody.substring(0, 2000) + "..." : asyncBody));
                 }
 
                 // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
                 RouteEngine.onMonitorMatch(rule);
 
             } catch (Exception e) {
-                LOGGER.error("[MonitorHandler] Error processing response: {}", e.getMessage(), e);
-                if (fContext != null) {
-                    fContext.recordAssertionFailure(req.url(), "PROCESSING",
-                            "success", e.getClass().getSimpleName(),
-                            e.getMessage());
-                }
+                LOGGER.error("[MonitorHandler] Error in async storage: {}", e.getMessage(), e);
             } finally {
-                if (fContext != null) {
-                    fContext.decrementActiveRequests();
-                }
+                fContext.decrementActiveRequests();
             }
         });
     }

@@ -13,10 +13,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * API 监控上下文 — 线程隔离的断言失败标记 + 详细失败信息 + 响应捕获存储。
+ * API 监控上下文 — 断言失败标记 + 详细失败信息 + 响应捕获存储。
  *
- * <p>每个测试线程拥有独立的上下文，MonitorHandler 在异步线程中
- * 标记断言失败，PlaywrightListener 在测试结束时（主线程）检查并处理。
+ * <p><b>⭐ 共享实例设计</b>：使用静态单例（而非 ThreadLocal），
+ * 确保 MonitorHandler（Playwright 事件线程）和 PlaywrightListener（主测试线程）
+ * 操作的是同一个上下文实例。所有字段均使用线程安全数据结构：
+ * {@link AtomicInteger}、{@link AtomicBoolean}、
+ * {@link ConcurrentHashMap}、{@code synchronized}。
  *
  * <p>两种存储：
  * <ul>
@@ -39,33 +42,37 @@ public class ApiMonitorContext {
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiMonitorContext.class);
 
     /**
-     * 每个测试线程独立的上下文实例。
+     * ⭐ 全局共享的 API 监控上下文实例（不再使用 ThreadLocal）。
+     *
+     * <p>MonitorHandler（Playwright 事件线程）和 PlaywrightListener（主线程）
+     * 通过此单一实例共享断言状态，保证跨线程可见性。
+     * 所有可变字段均使用线程安全结构，无需额外同步。
      */
-    private static final ThreadLocal<ApiMonitorContext> INSTANCE =
-            ThreadLocal.withInitial(ApiMonitorContext::new);
+    private static final ApiMonitorContext SHARED = new ApiMonitorContext();
 
     /**
-     * 获取当前线程的 API 监控上下文。
+     * 获取全局共享的 API 监控上下文实例。
+     *
+     * <p>⭐ 任意线程调用均返回同一实例，保证跨线程状态一致性。
      */
     public static ApiMonitorContext getCurrent() {
-        return INSTANCE.get();
+        return SHARED;
     }
 
     /**
-     * 重置当前线程的 API 监控上下文（测试开始时调用）。
+     * 重置 API 监控上下文（测试开始时调用）。
+     * <p>注意：此方法会重置全局共享实例的断言和响应存储状态。
      */
     public static void resetCurrent() {
-        ApiMonitorContext ctx = INSTANCE.get();
-        if (ctx != null) {
-            ctx.reset();
-        }
+        SHARED.reset();
     }
 
     /**
-     * 移除当前线程的 API 监控上下文（测试结束时调用）。
+     * 清理 API 监控上下文（测试结束时调用）。
+     * <p>⭐ 不再使用 ThreadLocal.remove，改为 reset 重置状态即可。
      */
     public static void removeCurrent() {
-        INSTANCE.remove();
+        SHARED.reset();
     }
 
     private final AtomicInteger activeRequests = new AtomicInteger(0);
@@ -73,6 +80,55 @@ public class ApiMonitorContext {
 
     /** 等待锁：decrement → 0 时通知 awaitCompletion 的调用方 */
     private final Object completionLock = new Object();
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐⭐⭐ Fail-Fast 机制：断言失败立即中断测试线程
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 当前测试的主线程引用（由 PlaywrightListener.stepStarted 设置）。
+     * volatile 保证跨线程可见性。
+     */
+    private volatile Thread testThread;
+
+    /**
+     * 设置当前测试的主线程引用。
+     * <p>由 PlaywrightListener.stepStarted() 调用，供 MonitorHandler 在断言失败时使用。
+     */
+    public void setTestThread(Thread thread) {
+        this.testThread = thread;
+    }
+
+    /**
+     * 清除测试线程引用。
+     * <p>由 PlaywrightListener.stepFinished() 调用，防止悬空引用。
+     */
+    public void clearTestThread() {
+        this.testThread = null;
+    }
+
+    /**
+     * ⭐⭐⭐ 断言失败立即中断测试线程（Fail-Fast）。
+     *
+     * <p>MonitorHandler 在 Playwright 事件线程上同步执行断言，
+     * 失败时调用此方法中断主测试线程。主线程当前阻塞的 Playwright
+     * IO 操作（WebSocket 通信）检测到 {@code Thread.interrupted()}，
+     * 对应操作立即抛出异常，Step 即刻失败。
+     *
+     * <p>若测试线程引用不存在（可能尚未设置），则仅记录 fail-fast 标记，
+     * 由 {@link #checkAndFailOnApiAssertions()} 在步骤结束时兜底处理。
+     */
+    public void signalFailFast() {
+        hasAssertionFailures.set(true);
+        Thread t = testThread;
+        if (t != null && t.isAlive()) {
+            LOGGER.warn("[ApiMonitorContext] Assertion failed — interrupting test thread '{}'", t.getName());
+            t.interrupt();
+        } else {
+            LOGGER.warn("[ApiMonitorContext] Assertion failed — test thread not set or dead, "
+                    + "will be caught at step end");
+        }
+    }
 
     /** Response 存储上限（防止内存泄漏），超过后记录 WARN 日志但继续存储 */
     private static final int MAX_RESPONSE_STORAGE = 1000;
@@ -236,6 +292,7 @@ public class ApiMonitorContext {
         responseStorage.clear();
         apiCallsPerUrl.clear();
         totalResponseSize.set(0L);
+        testThread = null;
         synchronized (completionLock) {
             completionLock.notifyAll();
         }

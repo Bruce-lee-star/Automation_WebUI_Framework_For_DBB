@@ -91,9 +91,24 @@ public class MonitorHandler {
         // 同步执行断言 — 失败立即中断测试线程（不等待异步任务）
         boolean assertionsPassed = executeAssertions(rule, url, status, body, context);
         if (!assertionsPassed) {
-            // ⭐ Fail-Fast：中断主测试线程
+            // ⭐⭐⭐ 双路径 Fail-Fast：
+            //   Path 1: thread.interrupt() — 最佳努力，依赖 Playwright 内部响应
+            //   Path 2: 异步关闭 Page — 100% 可靠，Playwright page.close()
+            //           会立即中断主线程上所有 pending 操作（包括 waitForSelector）
+            //           异步提交到 RouteAsyncPool 执行，避免 CDP 重入
             context.signalFailFast();
-            // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录并 resume
+
+            final com.microsoft.playwright.Page failPage = route.request().frame().page();
+            RouteAsyncPool.run(() -> {
+                try {
+                    LOGGER.warn("[MonitorHandler] Closing page to force abort main thread Playwright operations");
+                    failPage.close();
+                } catch (Exception e) {
+                    LOGGER.debug("[MonitorHandler] Page close after assertion failure: {}", e.getMessage());
+                }
+            });
+
+            // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录
             throw new RouteException.ApiAssertionException(
                     urlPattern, "ASSERTION",
                     rule.getExpectedStatus() != null ? String.valueOf(rule.getExpectedStatus()) : "N/A",

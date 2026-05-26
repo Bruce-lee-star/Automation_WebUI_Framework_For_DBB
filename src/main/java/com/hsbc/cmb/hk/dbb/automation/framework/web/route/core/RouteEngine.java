@@ -84,6 +84,8 @@ public class RouteEngine {
             if (RouteRegistry.register(page, pattern)) {
                 page.route(pattern, route -> dispatchRoute(route, rule));
                 startMonitorSession(page, rule, pattern);
+                LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=Page",
+                        rule.getType(), pattern);
             }
         }, rules);
     }
@@ -96,6 +98,8 @@ public class RouteEngine {
             if (RouteRegistry.register(context, pattern)) {
                 context.route(pattern, route -> dispatchRoute(route, rule));
                 startMonitorSession(context, rule, pattern);
+                LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
+                        rule.getType(), pattern);
             }
         }, rules);
     }
@@ -132,7 +136,14 @@ public class RouteEngine {
                 }
                 // 归一化：补齐前后 **，与 Playwright 全 URL（含查询参数）匹配兼容
                 // 例：/api/users/1 → **/api/users/1** 可匹配 http://host:port/api/users/1?page=2
-                String normalized = pattern.startsWith("/") ? "**" + pattern : pattern;
+                //     auth/assert  → **/auth/assert**  可匹配 http://host:port/portalserver/auth/assert
+                // Playwright page.route() glob 匹配完整 URL 字符串，必须用 **/ 前缀覆盖 scheme+host 部分
+                String normalized = pattern;
+                // ① 前缀：如果没有 ** 开头（已有通配前缀则不动），补齐 **/ 以匹配任何 URL 前缀
+                if (!normalized.startsWith("**")) {
+                    normalized = normalized.startsWith("/") ? "**" + normalized : "**/" + normalized;
+                }
+                // ② 后缀：补齐 ** 以匹配查询参数
                 if (!normalized.endsWith("**")) {
                     normalized = TRAILING_WILDCARDS.matcher(normalized).replaceFirst("") + "**";
                 }
@@ -188,6 +199,10 @@ public class RouteEngine {
 
         try {
             handler.handle(route, rule);
+
+            LOGGER.info("[RouteEngine] Route matched: type={}, pattern='{}', method={}, url='{}'",
+                    rule.getType(), rule.getUrlPattern(),
+                    route.request().method(), route.request().url());
 
             // MOCK/MODIFY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
             // MONITOR 的匹配计数在 MonitorHandler 异步完成时回调，不在此处触发

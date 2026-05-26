@@ -7,7 +7,7 @@ Feature: testing logon - 1
 
   @test
   Scenario: testing logon to dbb-2
-    Given logon DBB "O63_SIT1" environment as user "WP7UAT2_2"
+    Given logon DBB "O88_SIT3" environment as user "amhb2g0680_2"
 
   Scenario: testing logon to dbb-3
     Given logon DBB "O63_SIT1" environment as user "WP7UAT2_2"

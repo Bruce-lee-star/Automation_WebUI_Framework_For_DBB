@@ -301,6 +301,9 @@ public class PlaywrightListener implements StepListener {
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
         stepFinishReentrantGuard.set(false);
+
+        // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时自动执行）
+        checkAndFailOnApiAssertions();
     }
 
     @Override
@@ -695,6 +698,9 @@ public class PlaywrightListener implements StepListener {
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
         stepFinishReentrantGuard.set(false);
+
+        // ⭐⭐⭐ 框架级 API 断言检查（每个 Cucumber 步骤结束时自动执行）
+        checkAndFailOnApiAssertions();
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step completed in {}ms", duration);
     }
@@ -1230,6 +1236,49 @@ public class PlaywrightListener implements StepListener {
             }
         }
         // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiMonitorContext.removeCurrent()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ⭐⭐⭐ 框架级 API 断言自动检查
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * ⭐⭐⭐ 框架级：在每个步骤结束时自动检查 API 断言是否失败。
+     *
+     * <p>由 {@link #stepFinished()} 和 {@link #stepFinishedInternal} 调用。
+     * 如果 MonitorHandler 在异步线程中检测到断言失败（状态码 / JSONPath），
+     * 此方法直接抛出 {@link AssertionError}，让当前 Step 立即标记为失败。
+     *
+     * <p>Step 代码无需手动检查 — 框架自动处理。
+     *
+     * <p>性能：若无活跃请求且无断言失败，方法立即返回（零开销）。
+     */
+    private void checkAndFailOnApiAssertions() {
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        if (context == null) {
+            return;
+        }
+
+        // 等待异步断言完成（MonitorHandler 在 RouteAsyncPool 中执行）
+        if (context.getActiveRequests() > 0) {
+            try {
+                boolean completed = context.awaitCompletion(5000);
+                if (!completed) {
+                    logger.warn("Step finished but {} API request(s) still active after 5s timeout",
+                            context.getActiveRequests());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.debug("Interrupted while waiting for API request completion in step check");
+            }
+        }
+
+        // 断言失败 → 直接抛出 AssertionError，由 Serenity 捕获并标记 Step 为失败
+        if (context.hasAssertionFailures()) {
+            String report = context.buildFailureReport();
+            logger.error("API assertions failed during step:\n{}", report);
+            throw new AssertionError("API assertion failures detected:\n" + report);
+        }
     }
 
     /**

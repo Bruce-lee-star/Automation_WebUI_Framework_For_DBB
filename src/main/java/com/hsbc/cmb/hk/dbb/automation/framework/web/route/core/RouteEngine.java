@@ -83,7 +83,7 @@ public class RouteEngine {
         HANDLERS.put(RouteHandleType.MONITOR, MonitorHandler::handle);
         HANDLERS.put(RouteHandleType.MODIFY, ModifyHandler::handle);
         HANDLERS.put(RouteHandleType.MOCK, MockHandler::handle);
-        HANDLERS.put(RouteHandleType.DELAY, DelayHandler::handle);
+        // DELAY 类型不在此注册 — 由 dispatchRoute 直接调度，无需经过 Handler 接口
     }
 
     /**
@@ -194,6 +194,13 @@ public class RouteEngine {
             return;
         }
 
+        // ═══ DELAY 类型：使用 schedule() 延迟调度 route.resume()，不占线程 ═══
+        // 必须在 HANDLERS.get() 之前检查，因为 DELAY 已从 HANDLERS 中移除
+        if (rule.getType() == RouteHandleType.DELAY) {
+            scheduleDelay(route, rule);
+            return;
+        }
+
         RouteHandler handler = HANDLERS.get(rule.getType());
         if (handler == null) {
             LOGGER.warn("[RouteEngine] Unknown RouteHandleType: {}, fallback to resume for pattern '{}'",
@@ -207,12 +214,6 @@ public class RouteEngine {
             return;
         }
 
-        // ═══ DELAY 类型：始终在调度线程池中执行（route.fetch + Thread.sleep 为阻塞操作）═══
-        if (rule.getType() == RouteHandleType.DELAY) {
-            DELAY_SCHEDULER.execute(() -> executeHandlerScheduled(route, rule, handler));
-            return;
-        }
-
         // ═══ 其他类型通用延迟（monitor/mock/modify 的预处理器延迟）═══
         long delayMs = rule.getDelayMs();
         if (delayMs > 0) {
@@ -222,6 +223,54 @@ public class RouteEngine {
             LOGGER.debug("[RouteEngine] Handler delayed by {}ms for pattern '{}'", delayMs, rule.getUrlPattern());
         } else {
             executeHandler(route, rule, handler);
+        }
+    }
+
+    /**
+     * DELAY 延迟调度 — 使用 {@link ScheduledExecutorService#schedule} 在延迟后放行请求。
+     *
+     * <p>不使用 {@code Thread.sleep()}：sleep 会占用调度线程整个延迟期间，
+     * 而 {@code schedule()} 只在到期时执行回调，线程在延迟期间可复用处理其他请求。
+     *
+     * <p>不使用 {@code route.fetch()}：fetch 发起新的 HTTP 请求，可能因 DNS 解析失败。
+     * 改用 {@code route.resume()} 放行原始请求，完全复用浏览器网络栈。
+     *
+     * @param route Playwright 路由对象
+     * @param rule  路由规则（含延迟配置）
+     */
+    private static void scheduleDelay(Route route, RouteRule rule) {
+        long delayMs = DelayHandler.clampDelay(DelayHandler.resolveDelay(rule));
+
+        String url = route.request().url();
+        String pattern = rule.getUrlPattern();
+
+        Runnable action = () -> {
+            try {
+                // 检查会话是否已被停止（auto-stop / 超时）
+                MonitorSession session = SESSIONS.get(rule);
+                if (session != null && session.stopped.get()) {
+                    LOGGER.debug("[RouteEngine] Session stopped during delay, skipping for '{}'", pattern);
+                    try { route.resume(); } catch (Exception ignored) {}
+                    return;
+                }
+
+                route.resume();
+                LOGGER.info("[RouteEngine] Route delayed: pattern='{}', url='{}', delay={}ms",
+                        pattern, url, delayMs);
+                onMonitorMatch(rule);
+            } catch (Exception e) {
+                LOGGER.error("[RouteEngine] Failed to continue route after delay for '{}': {}",
+                        pattern, e.getMessage(), e);
+                try { route.resume(); } catch (Exception ignored) {}
+            }
+        };
+
+        if (delayMs > 0) {
+            DELAY_SCHEDULER.schedule(action, delayMs, TimeUnit.MILLISECONDS);
+            LOGGER.debug("[RouteEngine] Delay scheduled: pattern='{}', url='{}', delay={}ms",
+                    pattern, url, delayMs);
+        } else {
+            action.run();
         }
     }
 

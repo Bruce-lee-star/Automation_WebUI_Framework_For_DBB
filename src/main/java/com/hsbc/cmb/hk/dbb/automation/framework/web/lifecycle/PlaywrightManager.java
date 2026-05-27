@@ -1772,15 +1772,33 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
             }
 
-            // 高性能截图（增加超时，禁用字体/动画等待）
+            // 截图：全页模式使用动态 clip 按实际内容尺寸截图，viewport 模式保持原样
             boolean fullPage = config().isFullPageScreenshot();
-            page.screenshot(new Page.ScreenshotOptions()
-                    .setFullPage(fullPage)
+            Page.ScreenshotOptions options = new Page.ScreenshotOptions()
                     .setOmitBackground(false)
-                    .setClip(null)
                     .setTimeout((long) config().getScreenshotTimeout())
                     .setAnimations(ScreenshotAnimations.DISABLED)
-                    .setPath(screenshotPath));
+                    .setPath(screenshotPath);
+
+            if (fullPage) {
+                // 动态 clip：获取页面实际内容尺寸，精确裁剪，避免全页截图浪费空间
+                Object result = page.evaluate("() => {"
+                        + "  const w = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);"
+                        + "  const h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight,"
+                        + "      document.documentElement.clientHeight);"
+                        + "  return { width: w, height: h };"
+                        + "}");
+                @SuppressWarnings("unchecked")
+                Map<String, Object> dims = (Map<String, Object>) result;
+                double contentWidth = ((Number) dims.get("width")).doubleValue();
+                double contentHeight = ((Number) dims.get("height")).doubleValue();
+
+                options.setClip(0, 0, contentWidth, contentHeight);
+            } else {
+                options.setFullPage(false);
+            }
+
+            page.screenshot(options);
 
             LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {}", screenshotPath);
             return screenshotPath.toString();
@@ -1822,13 +1840,31 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
             }
 
-            // 截图
+            // 截图：全页模式使用动态 clip 按实际内容尺寸截图，viewport 模式保持原样
             boolean fullPage = config().isFullPageScreenshot();
-            page.screenshot(new Page.ScreenshotOptions()
-                    .setFullPage(fullPage)
+            Page.ScreenshotOptions options = new Page.ScreenshotOptions()
                     .setOmitBackground(false)
-                    .setClip(null)
-                    .setPath(screenshotPath));
+                    .setPath(screenshotPath);
+
+            if (fullPage) {
+                // 动态 clip：获取页面实际内容尺寸，精确裁剪
+                Object result = page.evaluate("() => {"
+                        + "  const w = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);"
+                        + "  const h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight,"
+                        + "      document.documentElement.clientHeight);"
+                        + "  return { width: w, height: h };"
+                        + "}");
+                @SuppressWarnings("unchecked")
+                Map<String, Object> dims = (Map<String, Object>) result;
+                double contentWidth = ((Number) dims.get("width")).doubleValue();
+                double contentHeight = ((Number) dims.get("height")).doubleValue();
+
+                options.setClip(0, 0, contentWidth, contentHeight);
+            } else {
+                options.setFullPage(false);
+            }
+
+            page.screenshot(options);
 
             return screenshotPath.toFile();
         } catch (Exception e) {

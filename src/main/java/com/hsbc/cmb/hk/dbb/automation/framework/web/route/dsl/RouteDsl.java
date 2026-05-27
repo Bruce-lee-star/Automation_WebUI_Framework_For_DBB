@@ -178,12 +178,11 @@ public class RouteDsl {
         /**
          * 切换到 Delay 弱网延迟模式。
          *
-         * <p>拦截匹配请求，通过 {@code route.fetch()} 获取真实服务端响应，
-         * 经过指定延迟后再返回给浏览器，真实模拟高延迟/弱网环境。
+         * <p>拦截匹配请求，延迟指定秒数后再放行原始请求（{@code route.resume()}），
+         * 由浏览器网络栈正常完成请求-响应。不使用 {@code route.fetch()}，无 DNS 解析风险。
          *
          * <p>与 BaseApiDsl 中其他类型的 delay 属性不同：
-         * 此模式先获取真实服务端数据，再模拟网络延迟，
-         * 而 delay 属性是在 handler 执行前附加的前置延迟。
+         * 此模式是独立的 DELAY 类型，专注于弱网模拟场景。
          *
          * <p>Delay 默认持续拦截所有匹配请求，不自动停止（autoStopOnMatch=false）。
          *
@@ -643,9 +642,8 @@ public class RouteDsl {
     /**
      * Delay 弱网延迟专用 DSL — 在 BaseApiDsl 基础上提供延迟配置方法。
      *
-     * <p>DELAY 类型通过 {@code route.fetch()} 获取真实服务端响应，
-     * 经配置的延迟后再通过 {@code route.fulfill()} 返回给浏览器，
-     * 真实模拟高延迟/弱网环境下的 API 响应行为。
+     * <p>DELAY 类型通过 {@code route.resume()} 放行原始请求，
+     * 在放行前按配置的延迟睡眠，模拟高延迟/弱网环境下的用户体验。
      *
      * <p>支持两种延迟模式：
      * <ul>

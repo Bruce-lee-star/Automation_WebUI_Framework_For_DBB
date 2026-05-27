@@ -34,6 +34,14 @@ public class PageElement {
     private final String selector;
     private final BasePage page;
 
+    /**
+     * 缓存的 Locator 实例（线程安全懒加载）。
+     * Playwright Locator 是"延迟求值"的——每次操作时重新查询 DOM，因此缓存是安全的。
+     * 仅当 Page 实例变更时才需重建（由 ensurePageValid 保证）。
+     */
+    private volatile Locator cachedLocator;
+    private volatile boolean domReadyChecked;
+
     // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
         if (selector == null || selector.isBlank()) {
@@ -55,17 +63,30 @@ public class PageElement {
     }
 
     /**
-     * 获取 Playwright Locator，使用前自动等待 DOM 加载完成
-     * 确保 SPA 页面 DOM 解析完毕后再进行元素定位，避免因 DOM 未就绪导致的空文本问题
+     * 获取 Playwright Locator（线程安全懒加载 + 缓存）。
+     * DOMContentLoaded 等待仅执行一次，后续调用直接返回缓存的 Locator（零 IPC 开销）。
      */
     public Locator locator() {
-        // 基础保障：等待 DOM 加载完成（已加载则立即返回，无额外开销）
-        try {
-            page.waitForDOMContentLoaded(PlaywrightManager.config().getPageTimeout() / 1000);
-        } catch (PlaywrightException e) {
-            logger.debug("waitForDOMContentLoaded skipped (page may be mid-navigation): {}", e.getMessage());
+        Locator loc = cachedLocator;
+        if (loc == null) {
+            synchronized (this) {
+                loc = cachedLocator;
+                if (loc == null) {
+                    // 首次使用时等待 DOM 就绪（之后不再等待）
+                    if (!domReadyChecked) {
+                        try {
+                            page.waitForDOMContentLoaded(PlaywrightManager.config().getPageTimeout() / 1000);
+                        } catch (PlaywrightException e) {
+                            logger.debug("waitForDOMContentLoaded skipped (page may be mid-navigation): {}", e.getMessage());
+                        }
+                        domReadyChecked = true;
+                    }
+                    cachedLocator = page.locator(selector);
+                    loc = cachedLocator;
+                }
+            }
         }
-        return page.locator(selector);
+        return loc;
     }
 
     public Locator locator(String relativeSelector) {
@@ -134,12 +155,13 @@ public class PageElement {
     }
 
     private void executeWithRetry(Supplier<Boolean> action, String operation, String testName) {
-        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+        // 诊断收集器延迟创建——成功路径零开销
         long startTime = System.currentTimeMillis();
 
         // Pre-flight check: element must exist in DOM
         // 使用配置的检查超时，如果超时则说明元素真的不存在，不重试
         if (!elementExists()) {
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
             ElementOperationException.DiagnosticInfo info = diagnostics.collect();
             info.retryCount(0);
 
@@ -202,7 +224,8 @@ public class PageElement {
         }
 
         // Build detailed exception with full diagnostic info
-        // Collect diagnostic info once — reuse throughout error reporting
+        // 诊断收集器延迟创建——仅在失败路径才收集
+        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
         ElementOperationException.DiagnosticInfo info = diagnostics.collect();
         info.retryCount(maxRetry + 1);
 

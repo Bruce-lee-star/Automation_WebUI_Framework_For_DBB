@@ -125,9 +125,10 @@ public final class PageElementList extends AbstractList<PageElement> {
 
         try {
             Locator target = locator().nth(index);
+            // size() 已确认 ATTACHED，这里仅用短超时验证可见性（通常元素已立即可见）
             target.waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout()));
+                    .setTimeout(2000));
 
             return new PageElementWithIndex(selector, page, index, target);
         } catch (Exception e) {

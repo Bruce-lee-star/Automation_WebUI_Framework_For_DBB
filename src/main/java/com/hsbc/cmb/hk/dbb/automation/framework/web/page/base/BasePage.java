@@ -162,19 +162,31 @@ public abstract class BasePage {
     }
 
     public void waitForElementVisibleWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isVisible(), timeout, "visible: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.VISIBLE)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not visible: " + selector);
         }
     }
 
     public void waitForElementHiddenWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isHidden(), timeout, "hidden: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.HIDDEN)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not hidden: " + selector);
         }
     }
 
     public void waitForElementExists(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).count() > 0, timeout, "exists: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.ATTACHED)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not exists: " + selector);
         }
     }
@@ -186,10 +198,14 @@ public abstract class BasePage {
     }
 
     public void waitForElementEditable(String selector, int timeout) {
-        waitForElementEnabled(selector, timeout);
+        waitForElementVisibleWithinTime(selector, timeout);
+        if (!waitForCondition(() -> locator(selector).isEditable(), timeout, "editable: " + selector)) {
+            throw new TimeoutException("Element not editable: " + selector);
+        }
     }
 
     public void waitForElementEnabled(String selector, int timeout) {
+        waitForElementExists(selector, timeout);
         if (!waitForCondition(() -> locator(selector).isEnabled(), timeout, "enabled: " + selector)) {
             throw new TimeoutException("Element not enabled: " + selector);
         }
@@ -817,7 +833,8 @@ public abstract class BasePage {
     }
 
     public void waitForElementClickableWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isVisible() && locator(selector).isEnabled(),
+        waitForElementVisibleWithinTime(selector, timeout);
+        if (!waitForCondition(() -> locator(selector).isEnabled(),
                 timeout, "clickable: " + selector)) {
             throw new TimeoutException("Element not clickable: " + selector);
         }

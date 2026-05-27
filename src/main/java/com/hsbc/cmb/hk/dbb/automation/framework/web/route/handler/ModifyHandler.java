@@ -89,6 +89,11 @@ public class ModifyHandler {
         Request req = route.request();
         Route.ResumeOptions opts = new Route.ResumeOptions();
 
+        // 保存修改后的最终状态，用于在 resume 前打印完整请求
+        Map<String, String> finalHeaders = null;
+        String finalBody = null;
+        boolean bodyModified = false;
+
         // ── 1. 修改请求头 ────────────────────────────────────────
         Map<String, String> requestHeadersToSet = rule.getRequestHeadersToSet();
         Set<String> requestHeadersToRemove = rule.getRequestHeadersToRemove();
@@ -114,6 +119,9 @@ public class ModifyHandler {
             }
 
             opts.setHeaders(newHeaders);
+            finalHeaders = Collections.unmodifiableMap(newHeaders);
+        } else {
+            finalHeaders = req.headers();  // 未修改则用原始请求头
         }
 
         // ── 2. 修改请求体（增删改） ─────────────────────────────────
@@ -182,6 +190,8 @@ public class ModifyHandler {
                     }
 
                     opts.setPostData(newBody);
+                    finalBody = newBody;
+                    bodyModified = true;
                 } else {
                     // 非 JSON：仅支持字符串替换
                     String newBody = postData;
@@ -192,6 +202,8 @@ public class ModifyHandler {
                         }
                     }
                     opts.setPostData(newBody);
+                    finalBody = newBody;
+                    bodyModified = true;
                 }
             } else {
                 LOGGER.debug("[ModifyHandler] No post data or binary body, skipping body modifications");
@@ -199,16 +211,30 @@ public class ModifyHandler {
         }
 
         // ── 3. 修改 HTTP 方法 ────────────────────────────────────
+        String finalMethod = rule.getModifyMethod() != null ? rule.getModifyMethod() : req.method();
         if (rule.getModifyMethod() != null) {
             opts.setMethod(rule.getModifyMethod());
         }
 
-        // ── 4. 放行请求（异常安全）─────────────────────────────────
+        // ── 4. 打印完整的修改后请求（便于调试和审计）─────────────────
+        LOGGER.info("[ModifyHandler] ===== Modified Request =====\n" +
+                "  URL     : {}\n" +
+                "  Method  : {} -> {}\n" +
+                "  Pattern : {}\n" +
+                "  Headers : {}\n" +
+                "  Body    : {}",
+                req.url(),
+                req.method(), finalMethod,
+                rule.getUrlPattern(),
+                finalHeaders,
+                finalBody != null ? finalBody : (bodyModified ? "(empty)" : "(unchanged)"));
+
+        // ── 5. 放行请求（异常安全）─────────────────────────────────
         try {
             route.resume(opts);
             LOGGER.info("[ModifyHandler] Modified: url={}, pattern='{}', method={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
                     req.url(), rule.getUrlPattern(),
-                    rule.getModifyMethod() != null ? rule.getModifyMethod() : req.method(),
+                    finalMethod,
                     requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
                     requestHeadersToRemove != null ? requestHeadersToRemove : "none",
                     fieldsToModify != null ? fieldsToModify.keySet() : "none",
@@ -217,7 +243,7 @@ public class ModifyHandler {
             SerenityReporter.recordApiOperation("MODIFY", req.url(),
                     String.format("Pattern: %s\nMethod: %s\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
                             rule.getUrlPattern(),
-                            rule.getModifyMethod() != null ? rule.getModifyMethod() : req.method(),
+                            finalMethod,
                             requestHeadersToSet != null ? requestHeadersToSet.toString() : "none",
                             requestHeadersToRemove != null ? requestHeadersToRemove.toString() : "none",
                             fieldsToModify != null ? fieldsToModify.toString() : "none",

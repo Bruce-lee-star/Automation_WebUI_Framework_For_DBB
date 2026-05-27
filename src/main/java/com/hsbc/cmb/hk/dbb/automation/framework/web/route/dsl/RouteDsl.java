@@ -291,6 +291,15 @@ public class RouteDsl {
         }
 
         /**
+         * 只匹配 API 调用（xhr + fetch）。等同 {@code resourceType("xhr,fetch")}。
+         * <p>适用于不确定页面使用 XMLHttpRequest 还是 fetch() 的场景，一次覆盖两种。
+         */
+        public T onlyApi() {
+            rule.setResourceTypes(RouteUtil.RT_XHR + "," + RouteUtil.RT_FETCH);
+            return self();
+        }
+
+        /**
          * 添加一个请求头匹配条件（精确匹配）。
          * <p>所有添加的 header 必须同时满足。
          */

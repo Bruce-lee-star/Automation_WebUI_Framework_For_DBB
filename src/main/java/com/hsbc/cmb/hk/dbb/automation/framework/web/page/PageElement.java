@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -26,7 +27,18 @@ import java.util.regex.Pattern;
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
 
-    // Pre-compiled regex patterns for getText() normalization
+    /**
+     * getText() 标准化管道（按顺序执行）：
+     * 1. UNICODE 规范化 (NFKC) — 一次搞定 en-dash→-、smart-quotes→"、全角→半角 等所有兼容字符
+     * 2. 删除不可见格式控制字符（\p{Cf}，如零宽空格、BOM 等）
+     * 3. 合并连续空白为单个空格
+     * 4. 去掉中英文标点前的多余空格
+     * 5. trim
+     *
+     * NFKC 一次覆盖的场景（不再需要逐字符打补丁）：
+     *   \u2013(en-dash –)→-   \u2014(em-dash —)→-   \u2018/\u2019→'   \u201c/\u201d→"
+     *   \u00A0(NBSP)→空格     全角字母/数字→半角      连字/分数→拆解
+     */
     private static final Pattern MULTI_SPACE = Pattern.compile("\\s+");
     private static final Pattern SPACE_BEFORE_PUNCT = Pattern.compile("\\s+([.,!?;:。，！？；：])");
     private static final Pattern CONTROL_CHARS = Pattern.compile("\\p{Cf}");
@@ -503,9 +515,14 @@ public class PageElement {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
             }
-            String normalized = raw.replace('\u00A0', ' ');
+            // 1. NFKC 规范化：一次转换所有 Unicode 兼容字符
+            //    en-dash/em-dash → - , smart-quotes → "/', NBSP → 空格, 全角→半角 等
+            String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
+            // 2. 删除零宽空格、BOM 等格式控制字符
             normalized = CONTROL_CHARS.matcher(normalized).replaceAll("");
+            // 3. 合并连续空白为单个空格
             normalized = MULTI_SPACE.matcher(normalized).replaceAll(" ");
+            // 4. 去掉中英文标点前的多余空格
             normalized = SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");
             return normalized.trim();
         } catch (TimeoutError e) {

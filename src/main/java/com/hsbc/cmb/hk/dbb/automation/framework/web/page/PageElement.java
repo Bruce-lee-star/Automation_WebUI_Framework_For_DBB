@@ -520,7 +520,7 @@ public class PageElement {
             String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
             // 2. 删除零宽空格、BOM 等格式控制字符
             normalized = CONTROL_CHARS.matcher(normalized).replaceAll("");
-            // 3. 合并连续空白为单个空格
+             // 3. 合并连续空白为单个空格
             normalized = MULTI_SPACE.matcher(normalized).replaceAll(" ");
             // 4. 去掉中英文标点前的多余空格
             normalized = SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");

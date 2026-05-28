@@ -11,6 +11,7 @@
 | **技术栈** | Java 21 + Playwright 1.58 + Serenity BDD 4.3.4 + Cucumber 7.14 |
 | **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model |
 | **构建工具** | Maven |
+| **测试范围** | Web UI 桌面端自动化测试 |
 | **CI/CD 集成** | Jenkins（Pipeline / Freestyle） |
 
 ---

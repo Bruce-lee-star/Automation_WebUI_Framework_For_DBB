@@ -20,41 +20,27 @@ public class HomeSteps {
     /**
      * 切换 Profile 并关闭提醒。
      *
-     * 【延迟机制—单一切换点】
-     * LoginSteps 登录后不再切 profile，只将配置中的 profile 存入
-     * BDDUtils.targetProfile。此方法负责一次性切换到最终目标 profile：
-     * 1. 用 Scenario 指定的 profile 覆盖 targetProfile
-     * 2. 检查当前是否已在目标 profile → 是则跳过
-     * 3. 否则执行一次切换
-     *
      * 注意：Profile 切换会导致旧 session 销毁，新 session 创建。
-     * 此方法会自动更新 session，确保后续测试可以跳过登录。
      *
-     * @param profile 目标 profile 名称（来自 Scenario When 步骤）
+     * @param profile 目标 profile 名称
      */
     public void switchProfileToAndCloseReminder(String profile) {
-        // 【延迟机制】用 Scenario 指定的 profile 覆盖 LoginSteps 设置的默认值
-        BDDUtils.setTargetProfile(profile);
-        String targetProfile = BDDUtils.getTargetProfile();
+        logger.info("Switch profile: current='{}', target='{}'",
+                homePage.profileSwitcher.getText(), profile);
 
-        logger.info("Single-switch profile: current='{}', target='{}'",
-                homePage.profileSwitcher.getText(), targetProfile);
-
-        // 如果已在目标 profile，跳过切换
-        if (homePage.profileSwitcher.getText().contains(targetProfile)) {
-            logger.info("Already on target profile '{}', skipping switch", targetProfile);
+        if (homePage.profileSwitcher.getText().contains(profile)) {
+            logger.info("Already on profile '{}', skipping switch", profile);
             return;
         }
 
-        // 唯一一次切换
         homePage.profileSwitcher.waitForVisible(30).click();
-        homePage.locator(String.format("//span[text()='%s']", targetProfile)).click();
+        homePage.locator(String.format("//span[text()='%s']", profile)).click();
         if (!homePage.quickLink.isVisible()) {
-            throw new RuntimeException("Profile switch failed with " + targetProfile);
+            throw new RuntimeException("Profile switch failed with " + profile);
         }
         homePage.quickLink.waitForVisible(30);
 
-        logger.info("Profile switched successfully: {}", targetProfile);
+        logger.info("Profile switched successfully: {}", profile);
 
         // 保存切换后的 session
         String sessionKey = generateSessionKey();

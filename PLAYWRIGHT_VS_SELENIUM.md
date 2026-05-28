@@ -15,7 +15,6 @@
 | **网络拦截** | ⚡ 强大（原生 `route`/`onResponse` API） | ❌ 弱（依赖第三方库如 BrowserMob-Proxy） |
 | **Mock 能力** | ⚡ 强大（`route.fulfill()`/`route.abort()`/`route.wait()`） | ❌ 需额外工具（Selenium 本身不支持） |
 | **并行测试** | ⚡ 原生支持 `browserType.launch()` 并行 | 需配置 Grid 或云服务 |
-| **移动端模拟** | ⚡ 原生支持（iOS/Android viewport） | 支持但配置复杂 |
 | **拦截器性能** | ⚡ 零开销（CDP 层面拦截） | ❌ 有代理中间人开销（Proxy-based） |
 
 ---

@@ -20,17 +20,6 @@ public class BDDUtils {
     // ThreadLocal to store current thread's login information
     private static final ThreadLocal<BDDUtils> currentLoginInfo = new ThreadLocal<>();
 
-    /**
-     * 最终的 target profile（延迟机制）。
-     * <p>
-     * LoginSteps 登录后不立即切 profile，而是将配置中的 profile
-     * 存入此字段。当 Scenario 的 When 步骤指定了不同 profile 时，
-     * 会覆盖此值。最终只执行一次切换（单一切换点）。
-     * <p>
-     * null 表示还未设置或不需要切换。
-     */
-    private static final ThreadLocal<String> targetProfile = new ThreadLocal<>();
-
     // Private fields to store login information
     private String env;
     private String username;
@@ -218,49 +207,7 @@ public class BDDUtils {
      */
     public static void clearCurrentLoginInfo() {
         currentLoginInfo.remove();
-        targetProfile.remove();
         logger.debug("Cleared login info for thread: {}", Thread.currentThread().getId());
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // 延迟 Profile 切换机制（Deferred Target Profile）
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * 设置最终目标 profile（延迟切换机制）。
-     * <p>
-     * LoginSteps 登录后调用此方法存储配置中的 profile（而非立即切换）。
-     * Scenario 的 When 步骤可覆盖此值为不同的 profile。
-     *
-     * @param profile 目标 profile 名称
-     */
-    public static void setTargetProfile(String profile) {
-        if (profile != null && !profile.isEmpty()) {
-            targetProfile.set(profile);
-            logger.debug("Target profile set: {}", profile);
-        }
-    }
-
-    /**
-     * 获取最终目标 profile。
-     *
-     * @return 目标 profile，未设置时返回 null
-     */
-    public static String getTargetProfile() {
-        return targetProfile.get();
-    }
-
-    /**
-     * 获取最终目标 profile，如果未设置则回退到配置中的 profile。
-     *
-     * @return 目标 profile，如果都没有则返回 null
-     */
-    public static String getTargetProfileOrDefault() {
-        String target = targetProfile.get();
-        if (target != null && !target.isEmpty()) {
-            return target;
-        }
-        return getCurrentProfile();
     }
 
     /**

@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
@@ -137,22 +138,25 @@ public class MonitorHandler {
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // 异步存储：body 快照 + CapturedApiCall + Serenity 报告（不阻塞事件线程）
+        // 异步任务前置工作：在 Playwright 事件线程上提前快照跨线程数据
         // ═══════════════════════════════════════════════════════════════
         final byte[] fBodyBytes = bodyBytes;
         final ApiMonitorContext fContext = context;
+        final String fAsyncUrl = req.url();
+        final int fAsyncStatus = res.status();
+        final String fReqMethod = req.method();
+        final Map<String, String> fReqHeaders = snapshotHeadersSafely(req.headers());
+        final Map<String, String> fResHeaders = snapshotHeadersSafely(res.headers());
 
         fContext.incrementActiveRequests();
 
         RouteAsyncPool.run(() -> {
             try {
                 String asyncBody = new String(fBodyBytes, StandardCharsets.UTF_8);
-                String asyncUrl = req.url();
-                int asyncStatus = res.status();
 
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[MonitorHandler] Async storage START: pattern='{}', url='{}', status={}, bodyLen={}",
-                        urlPattern, asyncUrl, asyncStatus, asyncBody.length());
+                        urlPattern, fAsyncUrl, fAsyncStatus, asyncBody.length());
 
                 // 存储 response body（向后兼容）
                 fContext.storeResponse(urlPattern, asyncBody);
@@ -160,10 +164,10 @@ public class MonitorHandler {
                 // 存储完整的 CapturedApiCall（含 headers 等完整信息）
                 CapturedApiCall call = new CapturedApiCall(
                         urlPattern,     // 存储 key = 用户配置的 urlPattern
-                        req.method(),
-                        snapshotHeadersSafely(req.headers()),
-                        asyncStatus,
-                        snapshotHeadersSafely(res.headers()),
+                        fReqMethod,
+                        fReqHeaders,
+                        fAsyncStatus,
+                        fResHeaders,
                         asyncBody,
                         System.currentTimeMillis()
                 );
@@ -171,16 +175,22 @@ public class MonitorHandler {
 
                 // 记录到 Serenity 报告
                 if (rule.isRecord()) {
-                    SerenityReporter.recordApiOperation("MONITOR", asyncUrl,
-                            String.format("Status: %d\nBody: %s", asyncStatus,
+                    SerenityReporter.recordApiOperation("MONITOR", fAsyncUrl,
+                            String.format("Status: %d\nBody: %s", fAsyncStatus,
                                     asyncBody.length() > 2000 ? asyncBody.substring(0, 2000) + "..." : asyncBody));
                 }
 
                 // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
                 RouteEngine.onMonitorMatch(rule);
 
+                // ═══════════════════════════════════════════════════════════════
+                // 执行用户注册的 Monitor 响应回调
+                // ═══════════════════════════════════════════════════════════════
+                invokeCallbacks(rule, fAsyncUrl, fAsyncStatus, asyncBody,
+                        fResHeaders, fReqMethod);
+
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, asyncUrl);
+                        "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, fAsyncUrl);
 
             } catch (Exception e) {
                 LOGGER.error("[MonitorHandler] Error in async storage: {}", e.getMessage(), e);
@@ -301,6 +311,37 @@ public class MonitorHandler {
         } catch (Exception e) {
             LOGGER.warn("[MonitorHandler] Failed to snapshot headers: {}", e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 调用 RouteRule 中注册的所有 Monitor 响应回调。
+     * <p>每个回调独立 try-catch，单个回调失败不影响其他回调执行。
+     *
+     * @param rule            路由规则
+     * @param url             请求 URL
+     * @param status          HTTP 状态码
+     * @param body            响应体字符串
+     * @param responseHeaders 响应头快照（线程安全的 Map 副本）
+     * @param method          请求方法
+     */
+    private static void invokeCallbacks(RouteRule rule, String url, int status,
+                                         String body, Map<String, String> responseHeaders,
+                                         String method) {
+        java.util.List<MonitorCallback> callbacks = rule.getMonitorCallbacks();
+        if (callbacks == null || callbacks.isEmpty()) return;
+
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[MonitorHandler] Invoking {} monitor callback(s) for pattern='{}', url='{}'",
+                callbacks.size(), rule.getUrlPattern(), url);
+
+        for (int i = 0; i < callbacks.size(); i++) {
+            try {
+                callbacks.get(i).onResponse(url, status, body, responseHeaders, method);
+            } catch (Exception e) {
+                LOGGER.error("[MonitorHandler] Monitor callback #{} failed for pattern='{}', url='{}': {}",
+                        i, rule.getUrlPattern(), url, e.getMessage(), e);
+            }
         }
     }
 

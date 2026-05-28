@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
@@ -497,6 +498,39 @@ public class RouteDsl {
                 rule.setJsonPathAssertions(assertions);
             }
             assertions.put(jsonPath, expectedValue);
+            return this;
+        }
+
+        /**
+         * 注册 Monitor 响应回调 — 每次捕获到匹配请求且断言通过时触发。
+         *
+         * <p>回调在 {@code RouteAsyncPool} 异步线程中执行，不阻塞 Playwright 事件线程。
+         * 可多次调用注册多个回调，按注册顺序执行。
+         *
+         * <p>典型用途：
+         * <ul>
+         *   <li>自定义数据校验逻辑（超越状态码/JSONPath 断言）</li>
+         *   <li>从响应中提取字段写入上下文（如 token、userId）</li>
+         *   <li>自定义日志/报告输出</li>
+         *   <li>触发外部系统操作（如通知、记录）</li>
+         * </ul>
+         *
+         * <pre>{@code
+         * .api("/api/login")
+         *     .monitor()
+         *     .expectStatus(200)
+         *     .onResponse((url, status, body, headers, method) -> {
+         *         // 提取 token 并存储到测试上下文
+         *         String token = JsonPath.read(body, "$.data.token");
+         *         TestContext.put("authToken", token);
+         *     })
+         *     .done()
+         * }</pre>
+         *
+         * @param callback 回调实例（支持 Lambda 表达式和方法引用）
+         */
+        public MonitorApiDsl onResponse(MonitorCallback callback) {
+            rule.addMonitorCallback(callback);
             return this;
         }
     }

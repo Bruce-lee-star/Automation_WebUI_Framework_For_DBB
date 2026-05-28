@@ -55,6 +55,9 @@ public class RouteRule {
     private Integer expectedStatus;  // 期望的 HTTP 状态码
     private Map<String, Object> jsonPathAssertions;  // JSONPath 断言
 
+    /** Monitor 响应回调列表（断言通过后异步执行） */
+    private List<MonitorCallback> monitorCallbacks;
+
     // Monitor 自动停止控制
     private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
@@ -390,6 +393,28 @@ public class RouteRule {
 
     public void setJsonPathAssertions(Map<String, Object> jsonPathAssertions) {
         this.jsonPathAssertions = jsonPathAssertions;
+    }
+
+    /**
+     * 注册一个 Monitor 响应回调。
+     * <p>可多次调用注册多个回调，按注册顺序执行。
+     *
+     * @param callback 回调实例
+     */
+    public void addMonitorCallback(MonitorCallback callback) {
+        if (monitorCallbacks == null) {
+            monitorCallbacks = new ArrayList<>();
+        }
+        monitorCallbacks.add(callback);
+    }
+
+    /**
+     * 获取 Monitor 响应回调列表。
+     *
+     * @return 回调列表，未注册时返回 null
+     */
+    public List<MonitorCallback> getMonitorCallbacks() {
+        return monitorCallbacks;
     }
 
     /**

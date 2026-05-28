@@ -807,7 +807,44 @@ RouteDsl.on(page)
 
 > **注意**：Delay 仅模拟高延迟（latency），不模拟丢包、带宽限制等弱网特征。延迟通过 `ScheduledExecutorService.schedule()` 实现，不占用 Playwright 事件线程。
 
-### 5.15 获取断言失败详情
+### 5.15 Monitor 响应回调（自定义处理）
+
+```java
+import com.jayway.jsonpath.JsonPath;
+
+// 注册回调 — 断言通过后异步执行，可提取字段、自定义校验
+RouteDsl.on(page)
+    .api("/api/login")
+    .monitor()
+    .expectStatus(200)
+    .onResponse((url, status, body, headers, method) -> {
+        // 提取 token 并写入测试上下文
+        String token = JsonPath.read(body, "$.data.token");
+        System.out.println("Login success, token=" + token);
+        // 例如：TestContext.put("authToken", token);
+    })
+    .done()
+    .start();
+
+// 多个回调 — 按注册顺序执行
+RouteDsl.on(page)
+    .api("/api/orders")
+    .monitor()
+    .expectStatus(200)
+    .onResponse((url, status, body, headers, method) -> {
+        System.out.println("[Audit] " + method + " " + url + " → " + status);
+    })
+    .onResponse((url, status, body, headers, method) -> {
+        // 自定义校验：响应体大小不超过 10KB
+        assert body.length() < 10240 : "Response too large: " + body.length() + " bytes";
+    })
+    .done()
+    .start();
+```
+
+> **注意**：回调在 RouteAsyncPool 异步线程中执行，不阻塞 UI。每个回调独立 try-catch，单个回调失败不会影响其他回调或测试流程。
+
+### 5.16 获取断言失败详情
 
 ```java
 ApiMonitorContext ctx = RouteMonitor.context();
@@ -852,6 +889,7 @@ String lastBody = ctx.getLastResponse("/api/login");
 | `autoStopOnMatch(b)` | boolean | ApiDsl | 达标后自动停止（默认 true） |
 | `expectStatus(s)` | int | ApiDsl | 期望 HTTP 状态码 |
 | `expectJsonPath(p, v)` | String, Object | ApiDsl | JSONPath 断言 |
+| `onResponse(callback)` | MonitorCallback | ApiDsl | 注册响应回调（断言通过后异步触发） |
 | **— Mock 配置 —** | | | |
 | `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
 | `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
@@ -887,6 +925,26 @@ String lastBody = ctx.getLastResponse("/api/login");
 | `randomDelay(minSecs, maxSecs)` | long, long | DelayApiDsl | 启用随机延迟模式，每次在 [min, max] 秒间随机取值 |
 
 > **注意**：`DelayApiDsl` 继承 `BaseApiDsl`，因此也拥有 `timeout()`、`minMatches()`、`matchMethod()` 等所有条件匹配和超时方法。
+
+### MonitorCallback — 函数式接口
+
+```java
+@FunctionalInterface
+public interface MonitorCallback {
+    void onResponse(String url, int status, String body,
+                    Map<String, String> responseHeaders, String method);
+}
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `url` | String | 请求 URL |
+| `status` | int | HTTP 状态码 |
+| `body` | String | 响应体字符串 |
+| `responseHeaders` | Map\<String, String\> | 响应头快照（线程安全的不可变副本） |
+| `method` | String | 请求方法（GET/POST/PUT/DELETE...） |
+
+支持 Lambda 表达式和方法引用两种形式。执行时机：断言全部通过后，在 RouteAsyncPool 异步线程中触发。
 
 ### RouteRegistry — 静态方法
 

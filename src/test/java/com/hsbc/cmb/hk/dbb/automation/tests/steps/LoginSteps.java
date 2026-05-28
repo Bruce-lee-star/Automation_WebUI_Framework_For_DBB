@@ -106,7 +106,19 @@ public class LoginSteps {
 
             // Session 有效，等待首页元素
             homePage.quickLink.waitForVisible(60);
-            logger.info("Session validated successfully, skipping login");
+
+            // 【延迟机制 + Hook 预扫描】
+            // - Hook 已预扫描 → targetProfile 非 null → 保留，由 HomeSteps 单一切换
+            // - 未预扫描 → targetProfile null → 回退配置，切一次
+            String preScanned = BDDUtils.getTargetProfile();
+            if (preScanned != null) {
+                logger.info("Session validated, target profile pre-scanned: {}", preScanned);
+            } else if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
+                switchProfile(BDDUtils.getCurrentProfile());
+                BDDUtils.setTargetProfile(BDDUtils.getCurrentProfile());
+                logger.info("Session validated, switched to config profile: {}",
+                        BDDUtils.getCurrentProfile());
+            }
             return; // Session 有效，跳过登录
         }
 
@@ -160,17 +172,26 @@ public class LoginSteps {
                 .done()
                 .start();
         RouteDsl.on(loginPage.getContext())
-                        .api("public-resource")
-                                .monitor()
-                                        .timeout(60)
-                                                .done().start();
+                .api("public-resource")
+                .monitor()
+                .timeout(60)
+                .done().start();
         loginPage.loginBtn.click();
         loginPage.loginBtn.waitForNotVisible(60);
 
-        String targetProfile = BDDUtils.getCurrentProfile();
-        if (targetProfile != null && !targetProfile.isEmpty()) {
-            switchProfile(targetProfile);
+        // 【延迟机制 + Hook 预扫描】
+        // - Hook 已预扫描 → targetProfile 非 null → 保留，由 HomeSteps 单一切换
+        // - 未预扫描 → targetProfile null → 回退到配置默认，切一次
+        String preScanned = BDDUtils.getTargetProfile();
+        if (preScanned != null) {
+            logger.info("Login completed, target profile pre-scanned: {}", preScanned);
+        } else if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
+            switchProfile(BDDUtils.getCurrentProfile());
+            BDDUtils.setTargetProfile(BDDUtils.getCurrentProfile());
+            logger.info("Login completed, switched to config profile: {}",
+                    BDDUtils.getCurrentProfile());
         }
+
         homePage.quickLink.waitForVisible(60);
 //        AccessibilityScanner.checkAndCollect("logon - home Page");
 
@@ -214,17 +235,19 @@ public class LoginSteps {
      * 切换 Profile
      */
     private void switchProfile(String profile) {
-        homePage.profileSwitcher.waitForVisible(30).click();
-        homePage.locator(String.format("//span[text()='%s']", profile)).click();
-        logger.info("Clicked profile: {}", profile);
-        if (!homePage.quickLink.isVisible()) {
-            throw new RuntimeException("Profile switch failed with " + profile);
-        }
-        homePage.quickLink.waitForVisible(30);
+        if (!homePage.profileSwitcher.getText().contains(profile)) {
+            homePage.profileSwitcher.waitForVisible(30).click();
+            homePage.locator(String.format("//span[text()='%s']", profile)).click();
+            logger.info("Clicked profile: {}", profile);
+            if (!homePage.quickLink.isVisible()) {
+                throw new RuntimeException("Profile switch failed with " + profile);
+            }
+            homePage.quickLink.waitForVisible(30);
 
-        // 切换 profile 后保存 session
-        String homeUrl = loginPage.getCurrentUrl();
-        SessionManager.saveSession(sessionKey, homeUrl);
+            // 切换 profile 后保存 session
+            String homeUrl = loginPage.getCurrentUrl();
+            SessionManager.saveSession(sessionKey, homeUrl);
+        }
     }
 
     /**

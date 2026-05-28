@@ -9,10 +9,53 @@
 | 属性 | 说明 |
 |------|------|
 | **技术栈** | Java 21 + Playwright 1.58 + Serenity BDD 4.3.4 + Cucumber 7.14 |
-| **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model + Screenplay Pattern |
+| **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model |
 | **构建工具** | Maven |
 | **CI/CD 集成** | Jenkins（Pipeline / Freestyle） |
-| **云测试** | ⚠️ BrowserStack 支持（待完善） |
+
+---
+
+## 🧠 Playwright 核心概念
+
+在深入框架之前，先理解 Playwright 的三层架构：
+
+### Playwright → Browser → BrowserContext → Page
+
+```
+┌──────────────────────────────────────────┐
+│              Playwright                  │  ← 顶层入口，管理浏览器下载、启动
+│  ┌────────────────────────────────────┐  │
+│  │           Browser                  │  │  ← 一个浏览器进程（Chromium/Firefox/WebKit）
+│  │  ┌──────────────────────────────┐  │  │
+│  │  │       BrowserContext         │  │  │  ← 独立的浏览器会话（隔离的 Cookie/LocalStorage）
+│  │  │  ┌────────────────────────┐  │  │  │
+│  │  │  │        Page            │  │  │  │  ← 一个标签页/窗口，执行页面操作的最小单元
+│  │  │  └────────────────────────┘  │  │  │
+│  │  │  ┌────────────────────────┐  │  │  │
+│  │  │  │        Page            │  │  │  │  ← 同一个 Context 可有多个 Page
+│  │  │  └────────────────────────┘  │  │  │
+│  │  └──────────────────────────────┘  │  │
+│  │  ┌──────────────────────────────┐  │  │
+│  │  │       BrowserContext         │  │  │  ← 另一个 Context 完全隔离（如多用户登录）
+│  │  │  ┌────────────────────────┐  │  │  │
+│  │  │  │        Page            │  │  │  │
+│  │  │  └────────────────────────┘  │  │  │
+│  │  └──────────────────────────────┘  │  │
+│  └────────────────────────────────────┘  │
+└──────────────────────────────────────────┘
+```
+
+| 层级 | 职责 | 类比 | 本框架中的管理方式 |
+|------|------|------|-------------------|
+| **Playwright** | 管理浏览器驱动，提供 `chromium()`/`firefox()`/`webkit()` 工厂方法 | 浏览器引擎管理器 | `PlaywrightManager` 静态 Map 管理，同一配置复用 |
+| **Browser** | 一个浏览器进程实例，可包含多个 Context | 浏览器应用程序 | `browserInstances` Map，按 configId 隔离，支持动态切换（Chromium/Firefox/WebKit） |
+| **BrowserContext** | 独立的浏览器会话，Cookie/LocalStorage/登录态完全隔离 | 隐身窗口/用户配置文件夹 | `contextThreadLocal` ThreadLocal，每个 Scenario 独立 Context，可自定义 viewport/locale/timezone 等 |
+| **Page** | 一个标签页，所有页面操作（导航/点击/输入/截图）的载体 | 浏览器标签页 | `pageThreadLocal` ThreadLocal，每个线程一个 Page |
+
+**关键设计：**
+- **Browser 与 Context 的关系**：Browser 是共享的进程，Context 是隔离的会话。频繁创建/销毁 Browser 开销大，所以采用 Browser 复用 + Context 隔离的策略。
+- **Context 隔离**：不同 Context 之间 Cookie、LocalStorage、SessionStorage 完全隔离，模拟多用户/多会话场景。
+- **重启策略**：`serenity.playwright.restart.browser.for.each` 控制 Context 重建粒度 — `scenario` 模式每场景重建 Context，`feature` 模式同 Feature 内复用 Context。**两种模式均支持登录态跨 Scenario 复用**：通过 `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/` 目录，下一个 Scenario 自动恢复。
 
 ---
 
@@ -33,21 +76,21 @@
 │  │                  Page Object Model                   │    │
 │  │  PageElement → BasePage → SerenityBasePage          │    │
 │  └─────────────────────────────────────────────────────┘    │
-│  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐  │
-│  │ API 监控  │ │ Mock 管理 │ │ 快照测试  │ │ 无障碍扫描   │  │
-│  │ Monitor   │ │ Mock     │ │ Snapshot  │ │ AxeCore      │  │
-│  └──────────┘ └──────────┘ └───────────┘ └──────────────┘  │
-│  ⚠️ 快照测试功能代码有待优化，文档待完善
-│  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐  │
-│  │ 请求修改  │ │ Session  │ │ 截图管理  │ │ 配置中心     │  │
-│  │ Modifier  │ │ Manager  │ │ Screenshot│ │ Config       │  │
-│  └──────────┘ └──────────┘ └───────────┘ └──────────────┘  │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
+│  │ Route Engine │ │ Session 管理  │ │ 无障碍扫描        │    │
+│  │ (Monitor/    │ │ SessionMgr   │ │ AxeCore          │    │
+│  │  Mock/Modify)│ │              │ │                  │    │
+│  └──────────────┘ └──────────────┘ └──────────────────┘    │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
+│  │ 截图管理      │ │ 配置中心     │ │ 监听器体系        │    │
+│  │ Screenshot   │ │ Config       │ │ Listener         │    │
+│  └──────────────┘ └──────────────┘ └──────────────────┘    │
 ├─────────────────────────────────────────────────────────────┤
 │                     基础设施层 (Infrastructure)                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
-│  │ Playwright    │  │ BrowserStack │  │ Jenkins Pipeline │   │
-│  │ Lifecycle     │  │ Cloud ⚠️     │  │ Integration      │   │
-│  └──────────────┘  └──────────────┘  └──────────────────┘   │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  PlaywrightManager → Playwright / Browser /           │   │
+│  │  BrowserContext / Page 生命周期管理                    │   │
+│  └──────────────────────────────────────────────────────┘   │
 ├─────────────────────────────────────────────────────────────┤
 │                       报告层 (Reporting)                      │
 │  ┌──────────────────────────┐  ┌──────────────────────────┐  │
@@ -85,7 +128,7 @@ LoginPage.STATUS_MSG.waitForContainsText("登录成功", 15);
 **核心类：**
 | 类 | 功能 |
 |----|------|
-| `PageElement` | 页面元素包装类（696 行），支持所有元素操作、智能等待和链式调用 |
+| `PageElement` | 页面元素包装类，支持所有元素操作、智能等待和链式调用 |
 | `PageElementList` | 元素列表操作，动态查询 + 多阶段智能等待 |
 | `Element` | `@Element` 注解，标记 Page 字段选择器，支持自动初始化 |
 | `BasePage` | 基础页面类，封装 10+ 种元素定位方法和所有 Playwright 核心操作 |
@@ -94,84 +137,68 @@ LoginPage.STATUS_MSG.waitForContainsText("登录成功", 15);
 
 ---
 
-### 2. 📡 RealApiMonitor - API 监控（非阻塞 + 自动停止）
+### 2. 📡 Route Engine — API 拦截引擎
+
+通过流式 DSL 统一管理网络层拦截：**Monitor（监控断言）**、**Mock（模拟响应）**、**Modify（修改请求）**、**Delay（高延迟模拟）**。
 
 ```java
-// 启动监控 → 执行操作 → 自动停止（无需手动干预！）
-RealApiMonitor.monitor(context)
-    .api("/api/login", 200)       // 目标API + 期望状态码
-    .api("/api/userInfo", 200)
-    .timeout(60)                   // 兜底超时
-    .start();                      // 异步启动
+// Monitor — 监控 API 并断言
+RouteDsl.on(page)
+    .api("/api/users/**")
+    .monitor()
+    .expectStatus(200)
+    .expectJsonPath("$.data.count", 10)
+    .done()
+    .start();
 
-loginButton.click();
-// ✅ 所有目标API捕获后自动停止，结果记录到 Serenity 报告
+// Mock — 拦截并返回自定义响应
+RouteDsl.on(page)
+    .api("/api/login")
+    .mock("{\"token\":\"mock-token-123\"}")
+    .mockStatus(200)
+    .done()
+    .start();
 
-// 获取捕获的数据
-ApiCallRecord record = RealApiMonitor.getLast("/api/login");
-String responseBody = RealApiMonitor.getLastBody("/api/userInfo");
+// Modify — 修改请求后继续发送
+RouteDsl.on(page)
+    .api("/api/submit")
+    .modifyRequest()
+    .setRequestHeader("X-Custom-Header", "test-value")
+    .modifyRequestBody("amount", "999")
+    .done()
+    .start();
+
+// Delay — 模拟高延迟网络
+RouteDsl.on(page)
+    .api("/api/**")
+    .delay(3)                          // 所有 API 固定延迟 3 秒后放行
+    .done()
+    .start();
+
+// Delay（随机延迟） — 模拟不稳定高延迟
+RouteDsl.on(page)
+    .api("/api/slow-endpoint")
+    .delay(5)
+    .randomDelay(1, 5)                 // 每次请求在 1-5 秒间随机延迟
+    .matchMethod("POST")
+    .done()
+    .start();
 ```
 
 **核心特性：**
-- ✅ **非阻塞异步**：不干扰测试流程
-- ✅ **自动停止**：目标 API 全部捕获后立即停止（推荐方式）
-- ✅ **超时保护**：无新 API 时超时自动停止（兜底）
-- ✅ **实时验证**：支持对期望状态码进行实时校验
-- ✅ **Host 过滤**：可限制只监控指定 Host 的 API
-- ✅ **Serenity 集成**：自动将监控配置和捕获结果记录到测试报告
+- ✅ **Monitor（监控）**：放行请求 → 异步读取响应 → 状态码/JSONPath 断言 → 自动停止
+- ✅ **Mock（模拟）**：拦截请求 → 直接返回自定义状态码+Body+Headers
+- ✅ **Modify（修改）**：拦截请求 → JSONPath 精准替换请求体字段/增删请求头 → 继续发送
+- ✅ **Delay（高延迟）**：拦截请求 → 延迟指定秒数后原样放行，支持固定和随机延迟，用于测试前端超时/loading/重试机制
+- ✅ **条件匹配**：支持 ResourceType、HTTP Method、Headers、Query、Body Regex、Referrer、Origin 等多维度过滤
+- ✅ **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程，零阻塞 UI
+- ✅ **内存安全**：WeakReference 防泄漏、双重上限防 OOM
 
-👉 详细文档：[API_MONITOR_README.md](./API_MONITOR_README.md)
-
----
-
-### 3. 🔧 ApiRequestModifier - 请求修改器
-
-```java
-// 修改请求参数、Headers、Body、URL...
-ApiRequestModifier modification = ApiRequestModifier.create()
-    .host("test-api.example.com")           // 切换环境
-    .modifyBodyField("userId", "123")        // 修改 Body 字段
-    .modifyHeader("Authorization", "Bearer xxx")
-    .modifyQueryParam("debug", "false");
-
-ApiRequestModifier.modifyRequest(context, "/api/users", modification);
-```
-
-**核心特性：**
-- 完全控制 HTTP 请求（Body / Headers / QueryParams / Method / URL / Host）
-- 支持字段级 JSON 修改（嵌套路径如 `items[0].id`）
-- 支持回调获取请求/响应信息
+👉 详细文档：[ROUTE_PACKAGE_README.md](./ROUTE_PACKAGE_README.md)
 
 ---
 
-### 4. 🎭 ApiMonitorAndMockManager - Mock 管理
-
-```java
-// Mock API 响应
-MockBuilder mock = MockBuilder.create()
-    .url("/api/auth/login")
-    .method("POST")
-    .status(200)
-    .body("{\"token\":\"mock-jwt\"}");
-
-ApiMonitorAndMockManager.mock(context, mock);
-
-// 动态 Mock（根据请求生成响应）
-MockBuilder dynamicMock = MockBuilder.create()
-    .url("/api/users/(.*)")
-    .method("GET")
-    .dynamicResponse(req -> "...");
-```
-
----
-
-### 5. 📸 PlaywrightSnapshotSupport - 原生快照测试（⚠️ 待优化）
-
-> 功能待完善，文档暂不提供
-
----
-
-### 5. ♿ AxeCoreScanner - 无障碍测试
+### 3. ♿ AxeCoreScanner — 无障碍测试
 
 ```java
 // 自动 WCAG 合规性扫描
@@ -191,7 +218,7 @@ axe.scan.outputDir=target/accessibility-axe
 
 ---
 
-### 6. 📊 SummaryReportGenerator - 摘要报告
+### 4. 📊 SummaryReportGenerator — 摘要报告
 
 自动生成精美的 HTML 摘要报告，包含：
 
@@ -204,76 +231,70 @@ axe.scan.outputDir=target/accessibility-axe
 **内置 12 类错误自动分类：**
 Timeout Error / Element Not Found / Navigation Failed / Assertion Failed / NPE / Code Issue / Browser Closed / Environment Issue / API Issue / Auth Failed / Browser Launch Error / Data Validation Error
 
-**Jenkins 自动集成：**
-```properties
-serenity.report.url=${JENKINS_URL}job/${JOB_NAME}/${BUILD_NUMBER}/Serenity_20Summary_20Report/
-```
-
----
-
-### 7. ☁️ BrowserStack 云浏览器（⚠️ 待完善）
-
-> BrowserStack 云测试功能待完善
-
 ---
 
 ## 📁 项目结构
 
 ```
 Automation_WebUI_Framework_BDD/
-├── pom.xml                              # Maven 构建配置
-├── serenity.properties                  # 框架配置（超时、截图、视口等）
-├── Jenkinsfile                          # Jenkins Pipeline 定义
+├── pom.xml                                  # Maven 构建配置
+├── serenity.properties                      # 框架配置（超时、截图、视口等）
 │
 ├── src/main/java/.../automation/
-│   ├── framework/web/                   # ★ 核心 Web 测试框架
-│   │   ├── page/                       # Page Object Model
-│   │   │   ├── PageElement.java        # 元素操作（智能等待/轮询等待）
-│   │   │   ├── PageElementList.java    # 元素列表
-│   │   │   ├── base/BasePage.java      # 基础页面类
+│   ├── framework/web/                       # ★ 核心 Web 测试框架
+│   │   ├── page/                           # Page Object Model
+│   │   │   ├── PageElement.java            # 元素操作（智能等待/轮询等待）
+│   │   │   ├── PageElementList.java        # 元素列表
+│   │   │   ├── base/BasePage.java          # 基础页面类
 │   │   │   └── factory/PageObjectFactory.java
-│   │   ├── monitoring/                 # API 监控 & Mock
-│   │   │   ├── RealApiMonitor.java     # 非阻塞 API 监控
-│   │   │   ├── ApiRequestModifier.java # 请求修改器
-│   │   │   └── ApiMonitorAndMockManager.java
-│   │   ├── snapshot/                   # ⚠️ 待优化的快照测试
-│   │   │   └── ...
-│   │   ├── accessibility/              # 无障碍测试
+│   │   ├── route/                          # ★ Route Engine（API 拦截）
+│   │   │   ├── core/                       # RouteEngine / RouteRegistry / RouteRule / ApiMonitorContext
+│   │   │   ├── dsl/RouteDsl.java           # 流式 DSL 构建器
+│   │   │   ├── handler/                    # MonitorHandler / MockHandler / ModifyHandler
+│   │   │   └── util/                       # RouteAsyncPool / SerenityReporter / RouteUtil
+│   │   ├── monitoring/                     # 旧版 API 监控（已由 Route Engine 替代）
+│   │   ├── accessibility/                  # 无障碍测试
 │   │   │   └── AxeCoreScanner.java
-│   │   ├── cloud/                      # 云浏览器
-│   │   │   └── BrowserStackManager.java
-│   │   ├── screenshot/                 # 截图系统
-│   │   ├── session/                    # Session 管理
-│   │   ├── lifecycle/                  # Playwright 生命周期
-│   │   ├── config/                     # 配置中心
-│   │   ├── listener/                   # 监听器
-│   │   └── utils/                      # 工具类
+│   │   ├── screenshot/                     # 截图系统
+│   │   ├── session/                        # Session 管理
+│   │   ├── lifecycle/                      # Playwright 生命周期
+│   │   │   ├── PlaywrightManager.java      # ★ Playwright/Browser/Context/Page 管理层
+│   │   │   ├── PlaywrightContextManager.java
+│   │   │   ├── PlaywrightConfigManager.java
+│   │   │   └── PlaywrightInitializer.java
+│   │   ├── config/                         # 配置中心
+│   │   ├── listener/                       # 监听器
+│   │   │   ├── PlaywrightListener.java     # Serenity 生命周期监听
+│   │   │   ├── AxeCoreListener.java
+│   │   │   └── ListenerRegistry.java
+│   │   └── utils/                          # 工具类
 │   │
-│   ├── framework/api/                   # API 测试框架
-│   │   ├── client/                     # REST 客户端
-│   │   ├── core/                       # Endpoint / Entity / Step
-│   │   └── assembler/                  # 请求组装
+│   ├── framework/api/                       # API 测试框架
+│   │   ├── client/                         # REST 客户端
+│   │   ├── core/                           # Endpoint / Entity / Step
+│   │   └── assembler/                      # 请求组装
 │   │
-│   ├── report/                         # 报告生成
-│   │   └── SummaryReportGenerator.java # HTML/CSV/ZIP 摘要报告
-│   └── retry/                          # 重试机制
+│   ├── report/                             # 报告生成
+│   │   └── SummaryReportGenerator.java     # HTML/CSV/ZIP 摘要报告
+│   └── retry/                              # 重试机制
 │
-├── src/test/java/.../tests/             # 测试代码
-│   ├── CucumberTestRunnerIT.java        # 测试运行入口
-│   ├── steps/                          # BDD 步骤定义
-│   ├── pages/                          # 业务页面对象
-│   ├── glue/                           # Cucumber Glue
-│   ├── hooks/                          # Before/After Hook
-│   └── api/steps/                      # API 测试步骤
+├── src/test/java/.../tests/                 # 测试代码
+│   ├── CucumberTestRunnerIT.java            # 测试运行入口
+│   ├── steps/                              # BDD 步骤定义
+│   ├── pages/                              # 业务页面对象
+│   ├── glue/                               # Cucumber Glue
+│   └── route/                              # Route API 测试步骤
 │
 ├── src/test/resources/
-│   └── features/                       # Cucumber Feature 文件
+│   └── features/                           # Cucumber Feature 文件
+│       ├── web/                            # Web UI 测试
+│       └── route/                          # Route Engine 测试
 │
-└── docs/                               # 文档
-    ├── README.md                       # ★ 框架总览（本文件）
-    ├── API_MONITOR_README.md           # API 监控文档
-    ├── PLAYWRIGHT_VS_SELENIUM.md       # Playwright vs Selenium 对比
-    └── Element.MD                      # 元素定位指南
+└── docs/
+    ├── README.md                           # ★ 框架总览（本文件）
+    ├── ROUTE_PACKAGE_README.md             # Route Engine 完整 API 文档
+    ├── PLAYWRIGHT_VS_SELENIUM.md           # Playwright vs Selenium 对比
+    └── Element.MD                          # 元素定位指南
 ```
 
 ---
@@ -286,7 +307,7 @@ Automation_WebUI_Framework_BDD/
 |------|------|
 | JDK | 21+ |
 | Maven | 3.8+ |
-| Node.js | 18+（Playwright 浏览器） |
+| Node.js | 18+（Playwright 浏览器驱动） |
 | 操作系统 | Windows / Linux / macOS |
 
 ### 运行测试
@@ -295,14 +316,11 @@ Automation_WebUI_Framework_BDD/
 # 运行全部 Cucumber 测试
 mvn clean verify
 
-# 运行特定 Feature
+# 运行特定 Tag
 mvn clean verify -Dtags="@login"
 
-# 运行并生成报告（自动触发）
-mvn clean verify -Dserenity.report.url=http://your-server/reports/
-
-# 只运行单元测试
-mvn test
+# 运行 Route Engine 测试
+mvn clean verify -Dtags="@route-api"
 
 # 跳过测试只打包
 mvn package -DskipTests
@@ -310,48 +328,129 @@ mvn package -DskipTests
 
 ### 编写一个新 Feature
 
-**1. 创建 Feature 文件** (`src/test/resources/features/Login.feature`)：
-```gherkin
-Feature: 用户登录功能
+本框架采用 **Feature → Glue → Steps → Page** 四层架构，每一层职责清晰：
 
-  Scenario: 使用有效凭证成功登录
-    Given 用户导航到登录页面
-    When 用户输入用户名 "testuser" 和密码 "Password123"
-    And 点击登录按钮
-    Then 页面应显示欢迎消息 "Welcome, Test User"
-    And 登录接口 "/api/auth/login" 应返回状态码 200
+```
+Feature File (.feature)      → Cucumber Gherkin 描述业务场景
+    ↓
+Glue Layer (*Glue.java)      → @AutoBrowser + @Steps 注入，参数传递，无业务逻辑
+    ↓
+Steps Layer (*Steps.java)    → @Step 标记报告步骤，编排业务流程，Session 管理
+    ↓
+Page Layer (*Page.java)      → @Element 声明元素，继承 SerenityBasePage 获得全部操作能力
+    ↓
+SerenityBasePage / BasePage  → click/type/wait/navigateTo 等 50+ 操作 + 智能等待
+    ↓
+Playwright API               → Page / BrowserContext / Locator
+```
+
+**1. 创建 Feature 文件** (`src/test/resources/features/Login.feature`)：
+
+```gherkin
+Feature: User Login
+
+  Scenario: Login with valid credentials
+    Given user navigates to login page
+    When user enters username "testuser" and password "Password123"
+    And clicks the login button
+    Then the welcome message "Welcome, Test User" should be displayed
 ```
 
 **2. 创建 Page Object** (`src/test/java/.../pages/LoginPage.java`)：
-```java
-public class LoginPage extends BasePage {
-    public static final PageElement USERNAME_INPUT = new PageElement("#username");
-    public static final PageElement PASSWORD_INPUT = new PageElement("#password");
-    public static final PageElement LOGIN_BUTTON = new PageElement("#login-btn");
-    public static final PageElement WELCOME_MSG = new PageElement(".welcome-message");
 
-    // 可选：自定义业务方法
-    public void login(String username, String password) {
-        USERNAME_INPUT.type(username);
-        PASSWORD_INPUT.type(password);
-        LOGIN_BUTTON.click();
+```java
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.annotations.Element;
+
+public class LoginPage extends SerenityBasePage {
+    @Element("#username")
+    public PageElement usernameInput;
+
+    @Element("#password")
+    public PageElement passwordInput;
+
+    @Element("#login-btn")
+    public PageElement loginButton;
+
+    @Element(".welcome-message")
+    public PageElement welcomeMessage;
+}
+```
+
+**3. 创建 Glue 层** (`src/test/java/.../glue/LoginGlue.java`)：
+
+```java
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.AutoBrowser;
+import net.serenitybdd.annotations.Steps;
+
+@AutoBrowser(verbose = true)
+public class LoginGlue {
+    @Steps
+    private LoginSteps loginSteps;
+
+    @Given("user navigates to login page")
+    public void navigateToLogin() {
+        loginSteps.navigateToLogin();
+    }
+
+    @When("user enters username {string} and password {string}")
+    public void enterCredentials(String username, String password) {
+        loginSteps.enterCredentials(username, password);
+    }
+
+    @When("clicks the login button")
+    public void clickLogin() {
+        loginSteps.clickLogin();
+    }
+
+    @Then("the welcome message {string} should be displayed")
+    public void verifyWelcomeMessage(String expectedMessage) {
+        loginSteps.verifyWelcomeMessage(expectedMessage);
     }
 }
 ```
 
-**3. 实现 Step Definitions**：
+**4. 实现 Steps 层** (`src/test/java/.../steps/LoginSteps.java`)：
+
 ```java
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
+import net.serenitybdd.annotations.Step;
+
 public class LoginSteps {
-    @Given("用户导航到登录页面")
-    public void navigateToLogin() { loginPage.navigateTo(loginUrl); }
+    private LoginPage loginPage = PageObjectFactory.getPage(LoginPage.class);
 
-    @When("用户输入用户名 {string} 和密码 {string}")
-    public void enterCredentials(String user, String pass) {
-        loginPage.USERNAME_INPUT.type(user);
-        loginPage.PASSWORD_INPUT.type(pass);
+    @Step
+    public void navigateToLogin() {
+        loginPage.navigateTo("https://example.com/login");
+    }
+
+    @Step
+    public void enterCredentials(String username, String password) {
+        loginPage.usernameInput.type(username);
+        loginPage.passwordInput.type(password);
+    }
+
+    @Step
+    public void clickLogin() {
+        loginPage.loginButton.click();
+    }
+
+    @Step
+    public void verifyWelcomeMessage(String expectedMessage) {
+        loginPage.welcomeMessage.shouldContainText(expectedMessage);
     }
 }
 ```
+
+**各层职责对比：**
+
+| 层 | 类 | 注解 | 职责 |
+|---|----|------|------|
+| **Feature** | `.feature` 文件 | Gherkin | 用自然语言描述业务场景 |
+| **Glue** | `*Glue.java` | `@AutoBrowser` `@Steps` | 桥接 Cucumber 与 Steps，参数传递 |
+| **Steps** | `*Steps.java` | `@Step` | 编排业务逻辑，管理 Session，调用 PageObjectFactory |
+| **Page** | `*Page.java` | `@Element` | 声明页面元素，继承 SerenityBasePage 获得操作能力 |
 
 ---
 
@@ -362,11 +461,13 @@ public class LoginSteps {
 | `playwright.element.wait.timeout` | 15000ms | 元素等待超时 |
 | `playwright.page.timeout` | 30000ms | 页面操作超时 |
 | `playwright.polling.interval` | 500ms | 轮询间隔 |
-| `playwright.context.viewport` | 1366x768 | 浏览器视口大小 |
+| `playwright.context.viewport.width/height` | 1366x768 | 浏览器视口大小 |
 | `serenity.screenshot.strategy` | AFTER_EACH_STEP | 截图策略 |
-| `serenity.playwright.restart.browser.for.each` | scenario | 浏览器重启粒度 |
+| `serenity.playwright.restart.browser.for.each` | scenario | 浏览器重启粒度（scenario/feature） |
 | `axe.scan.enabled` | true | 无障碍扫描开关 |
 | `serenity.logging` | VERBOSE | 日志级别 |
+| `framework.verbose.logging` | true | 框架详细日志开关 |
+| `playwright.page.load.state` | DOMCONTENTLOADED | 页面加载等待状态 |
 
 ---
 
@@ -375,7 +476,7 @@ public class LoginSteps {
 | 文档 | 内容 |
 |------|------|
 | **[README.md](./README.md)** | 框架总览与快速开始 |
-| [API_MONITOR_README.md](./API_MONITOR_README.md) | API 监控、请求修改、Mock 管理完整指南 |
+| [ROUTE_PACKAGE_README.md](./ROUTE_PACKAGE_README.md) | Route Engine 完整 API 文档（Monitor/Mock/Modify） |
 | [PLAYWRIGHT_VS_SELENIUM.md](./PLAYWRIGHT_VS_SELENIUM.md) | Playwright vs Selenium 技术选型对比 |
 | [Element.MD](./Element.MD) | 元素定位指南 |
 
@@ -383,17 +484,12 @@ public class LoginSteps {
 
 ## 🔧 技术亮点
 
-1. **Java 21 全新语法支持** — Record、Pattern Matching、Switch Expression、Sealed Classes、Virtual Threads
-2. **Playwright 替代 Selenium** — 更快的执行速度、更可靠的元素定位、自动等待机制
+1. **Playwright 替代 Selenium** — 更快的执行速度、更可靠的元素定位、自动等待机制
+2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理，职责明确
 3. **双等待策略** — 智能等待（原生 waitFor）+ 轮询等待（属性检查），覆盖所有场景
-4. **非阻塞 API 监控** — 异步监听 + 自动停止，零侵入测试流程
+4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI
 5. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
-6. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析、相对/绝对路径自适应
-7. **无障碍合规** — 内置 axe-core WCAG 2.0 AA 标准自动化扫描
-8. **视觉回归** — ⚠️ Playwright 原生快照测试（待优化）
-9. **Session 复用** — 登录态跨 Scenario 复用，减少冗余登录操作
-10. **云测试就绪** — ⚠️ BrowserStack 多浏览器/多设备并行测试（待完善）
-
----
-
-
+6. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
+7. **无障碍合规** — 内置 axe-core WCAG 自动扫描
+8. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
+9. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM

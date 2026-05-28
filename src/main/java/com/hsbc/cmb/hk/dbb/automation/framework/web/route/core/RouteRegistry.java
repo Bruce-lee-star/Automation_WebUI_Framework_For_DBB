@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
@@ -128,6 +129,10 @@ public class RouteRegistry {
      * @param context Page 或 BrowserContext 实例
      */
     public static void clearContext(Object context) {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteRegistry] clearContext() START for: {} (total contexts before: {})",
+                context.getClass().getSimpleName(), CONTEXT_PATTERNS.size());
+
         // 1. 先从注册表移除，并注销 Playwright 路由层（无 MonitorSession 的 MOCK/MODIFY 路由需要）
         Set<String> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
         if (patterns != null && !patterns.isEmpty()) {

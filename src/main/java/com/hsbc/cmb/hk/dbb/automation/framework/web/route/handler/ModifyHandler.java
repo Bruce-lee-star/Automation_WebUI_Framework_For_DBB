@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
@@ -75,6 +76,8 @@ public class ModifyHandler {
         JSONPATH_CACHE.clear();
         if (size > 0) {
             LOGGER.debug("[ModifyHandler] JSONPath cache cleared ({} entries freed)", size);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[ModifyHandler] JSONPath cache cleared: {} entries freed", size);
         }
     }
 
@@ -93,6 +96,17 @@ public class ModifyHandler {
         Map<String, String> finalHeaders = null;
         String finalBody = null;
         boolean bodyModified = false;
+
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[ModifyHandler] ── handle() START: pattern='{}', url='{}', method={}, "
+                + "headersToSet={}, headersToRemove={}, bodyToModify={}, bodyToAdd={}, bodyToRemove={}, modifyMethod={} ──",
+                rule.getUrlPattern(), req.url(), req.method(),
+                rule.getRequestHeadersToSet() != null ? rule.getRequestHeadersToSet().size() : 0,
+                rule.getRequestHeadersToRemove() != null ? rule.getRequestHeadersToRemove().size() : 0,
+                rule.getRequestBodyFieldsToModify() != null ? rule.getRequestBodyFieldsToModify().size() : 0,
+                rule.getRequestBodyFieldsToAdd() != null ? rule.getRequestBodyFieldsToAdd().size() : 0,
+                rule.getRequestBodyFieldsToRemove() != null ? rule.getRequestBodyFieldsToRemove().size() : 0,
+                rule.getModifyMethod());
 
         // ── 1. 修改请求头 ────────────────────────────────────────
         Map<String, String> requestHeadersToSet = rule.getRequestHeadersToSet();
@@ -217,7 +231,7 @@ public class ModifyHandler {
         }
 
         // ── 4. 打印完整的修改后请求（便于调试和审计）─────────────────
-        LOGGER.info("[ModifyHandler] ===== Modified Request =====\n" +
+        LoggingConfigUtil.logInfoIfVerbose(LOGGER, "[ModifyHandler] ===== Modified Request =====\n" +
                 "  URL     : {}\n" +
                 "  Method  : {} -> {}\n" +
                 "  Pattern : {}\n" +
@@ -429,7 +443,11 @@ public class ModifyHandler {
     static Object convertToMatchingType(String newValue, Object existingValue) {
         // ── 原值为 null ──
         if (existingValue == null || existingValue instanceof NullNode) {
-            return inferTypeForNull(newValue);
+            Object result = inferTypeForNull(newValue);
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[ModifyHandler] Type convert (null): newValue='{}' -> {}",
+                    newValue, result.getClass().getSimpleName());
+            return result;
         }
 
         Class<?> type = existingValue.getClass();
@@ -464,6 +482,9 @@ public class ModifyHandler {
         }
 
         // 默认为字符串
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ModifyHandler] Type convert (default text): existingType={}, newValue='{}'",
+                type.getSimpleName(), newValue);
         return new TextNode(newValue);
     }
 

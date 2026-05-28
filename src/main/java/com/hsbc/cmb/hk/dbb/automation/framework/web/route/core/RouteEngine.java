@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.DelayHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -90,12 +91,17 @@ public class RouteEngine {
      * 注册路由规则到 Page。
      */
     public static void register(Page page, List<RouteRule> rules) {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on Page ──", rules.size());
         registerInternal(page, (pattern, rule) -> {
             if (RouteRegistry.register(page, pattern)) {
                 page.route(pattern, route -> dispatchRoute(route, rule));
                 startMonitorSession(page, rule, pattern);
                 LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=Page",
                         rule.getType(), pattern);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
+                        rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
+                        rule.isRecord(), rule.isAutoStopOnMatch());
             }
         }, rules);
     }
@@ -104,12 +110,17 @@ public class RouteEngine {
      * 注册路由规则到 BrowserContext。
      */
     public static void register(BrowserContext context, List<RouteRule> rules) {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on BrowserContext ──", rules.size());
         registerInternal(context, (pattern, rule) -> {
             if (RouteRegistry.register(context, pattern)) {
                 context.route(pattern, route -> dispatchRoute(route, rule));
                 startMonitorSession(context, rule, pattern);
                 LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
                         rule.getType(), pattern);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
+                        rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
+                        rule.isRecord(), rule.isAutoStopOnMatch());
             }
         }, rules);
     }
@@ -157,6 +168,9 @@ public class RouteEngine {
                 if (!normalized.endsWith("**")) {
                     normalized = TRAILING_WILDCARDS.matcher(normalized).replaceFirst("") + "**";
                 }
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] registerInternal: original='{}' -> normalized='{}', type={}, context={}",
+                        pattern, normalized, rule.getType(), context.getClass().getSimpleName());
                 registrar.register(normalized, rule);
             } catch (Exception e) {
                 LOGGER.error("[RouteEngine] Failed to register rule for pattern '{}': {}",
@@ -172,6 +186,12 @@ public class RouteEngine {
      * 仅第一个到达的 handler 执行，后续 handler 静默跳过（避免 "Route is already handled" 异常）。
      */
     private static void dispatchRoute(Route route, RouteRule rule) {
+        String reqUrl = route.request().url();
+        String reqMethod = route.request().method();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] ═══ dispatchRoute START: method={}, url='{}', type={}, pattern='{}' ═══",
+                reqMethod, reqUrl, rule.getType(), rule.getUrlPattern());
+
         // ═══ 防御性清理：Map 超过上限时清空（防止异常情况下无限增长）═══
         if (DISPATCHED_ROUTES.size() >= MAX_DISPATCHED_ROUTES) {
             LOGGER.warn("[RouteEngine] DISPATCHED_ROUTES reached {} entries, clearing to prevent memory leak",
@@ -182,7 +202,10 @@ public class RouteEngine {
         // ═══ 防重门控：同一请求只处理一次 ═══
         if (!DISPATCHED_ROUTES.add(route)) {
             LOGGER.warn("[RouteEngine] Route already handled by another pattern, skipping '{}' for URL '{}'",
-                    rule.getUrlPattern(), route.request().url());
+                    rule.getUrlPattern(), reqUrl);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] ═══ dispatchRoute SKIPPED (duplicate): pattern='{}', url='{}' ═══",
+                    rule.getUrlPattern(), reqUrl);
             return;
         }
 
@@ -191,12 +214,18 @@ public class RouteEngine {
             // 不匹配此规则 → 移除防重标记，让 Playwright 继续尝试下一个 pattern
             DISPATCHED_ROUTES.remove(route);
             route.resume();
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] ═══ dispatchRoute MISMATCH (condition filter): pattern='{}', url='{}' ═══",
+                    rule.getUrlPattern(), reqUrl);
             return;
         }
 
         // ═══ DELAY 类型：使用 schedule() 延迟调度 route.resume()，不占线程 ═══
         // 必须在 HANDLERS.get() 之前检查，因为 DELAY 已从 HANDLERS 中移除
         if (rule.getType() == RouteHandleType.DELAY) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}' ═══",
+                    rule.getUrlPattern(), reqUrl);
             scheduleDelay(route, rule);
             return;
         }
@@ -213,6 +242,10 @@ public class RouteEngine {
             }
             return;
         }
+
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] ═══ dispatchRoute -> handler: type={}, handler={}, pattern='{}', url='{}' ═══",
+                rule.getType(), handler.getClass().getSimpleName(), rule.getUrlPattern(), reqUrl);
 
         // ═══ 其他类型通用延迟（monitor/mock/modify 的预处理器延迟）═══
         long delayMs = rule.getDelayMs();
@@ -243,6 +276,10 @@ public class RouteEngine {
 
         String url = route.request().url();
         String pattern = rule.getUrlPattern();
+
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms",
+                pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs());
 
         Runnable action = () -> {
             try {
@@ -311,11 +348,19 @@ public class RouteEngine {
      */
     private static void executeHandler(Route route, RouteRule rule, RouteHandler handler) {
         try {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[RouteEngine] executeHandler START: handler={}, type={}, pattern='{}', url='{}'",
+                    handler.getClass().getSimpleName(), rule.getType(),
+                    rule.getUrlPattern(), route.request().url());
             handler.handle(route, rule);
 
             LOGGER.info("[RouteEngine] Route matched: type={}, pattern='{}', method={}, url='{}'",
                     rule.getType(), rule.getUrlPattern(),
                     route.request().method(), route.request().url());
+
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] executeHandler DONE: handler={}, type={}, pattern='{}'",
+                    handler.getClass().getSimpleName(), rule.getType(), rule.getUrlPattern());
 
             // MOCK/MODIFY/DELAY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
             // MONITOR 的匹配计数在 MonitorHandler 异步完成时回调，不在此处触发
@@ -354,6 +399,9 @@ public class RouteEngine {
      */
     private static void startMonitorSession(Object context, RouteRule rule, String normalizedPattern) {
         if (rule.getTimeoutMs() <= 0 && !rule.isAutoStopOnMatch()) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] No MonitorSession needed for pattern='{}' (no timeout, no autoStop)",
+                    normalizedPattern);
             return;  // 无限监控/拦截，无需会话
         }
 
@@ -366,6 +414,9 @@ public class RouteEngine {
 
         LOGGER.debug("[RouteEngine] MonitorSession started: pattern='{}', timeout={}ms, minMatches={}, autoStop={}",
                 normalizedPattern, rule.getTimeoutMs(), rule.getMinMatches(), rule.isAutoStopOnMatch());
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] MonitorSession created: id={}, context={}, total sessions={}",
+                System.identityHashCode(session), context.getClass().getSimpleName(), SESSIONS.size());
     }
 
     /**
@@ -377,6 +428,9 @@ public class RouteEngine {
     public static void onMonitorMatch(RouteRule rule) {
         MonitorSession session = SESSIONS.get(rule);
         if (session == null || session.stopped.get()) {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[RouteEngine] onMonitorMatch SKIP: session={} for pattern='{}'",
+                    session == null ? "null" : "stopped", rule.getUrlPattern());
             return;
         }
 
@@ -384,24 +438,42 @@ public class RouteEngine {
         LOGGER.debug("[RouteEngine] Monitor match #{}/{} for pattern '{}'",
                 currentCount, rule.getMinMatches(), rule.getUrlPattern());
 
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] onMonitorMatch: count={}/{}, autoStop={}, pattern='{}'",
+                currentCount, rule.getMinMatches(), rule.isAutoStopOnMatch(), rule.getUrlPattern());
+
         if (rule.isAutoStopOnMatch() && currentCount >= rule.getMinMatches()) {
             LOGGER.info("[RouteEngine] Auto-stopping monitor (matches={}) for pattern '{}'",
                     currentCount, rule.getUrlPattern());
-            session.stop();
+            stopMonitorSession(session, currentCount);
         }
+    }
+
+    private static void stopMonitorSession(MonitorSession session, int totalMatches) {
+        session.stop();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] MonitorSession stopped: pattern='{}', totalMatches={}",
+                session.pattern, totalMatches);
     }
 
     /**
      * 清理指定上下文的全部 MonitorSession（RouteRegistry.clearContext 时同步调用）。
      */
     public static void clearMonitorSessions(Object context) {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] clearMonitorSessions for context: {} (total sessions before: {})",
+                context.getClass().getSimpleName(), SESSIONS.size());
         SESSIONS.entrySet().removeIf(entry -> {
             if (entry.getValue().context == context) {
                 entry.getValue().stop();
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteEngine] Session removed: pattern='{}'", entry.getValue().pattern);
                 return true;
             }
             return false;
         });
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] clearMonitorSessions done, remaining sessions: {}", SESSIONS.size());
     }
 
     /**
@@ -416,6 +488,9 @@ public class RouteEngine {
      * @param patterns 要注销的 URL pattern 集合
      */
     static void unrouteAllForContext(Object context, Set<String> patterns) {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] unrouteAllForContext: unrouting {} pattern(s) from {}",
+                patterns.size(), context.getClass().getSimpleName());
         for (String pattern : patterns) {
             try {
                 if (context instanceof Page) {
@@ -436,6 +511,9 @@ public class RouteEngine {
      * 全局清理所有 MonitorSession。
      */
     public static void clearAllMonitorSessions() {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] clearAllMonitorSessions: stopping {} session(s) and clearing {} dispatched routes",
+                SESSIONS.size(), DISPATCHED_ROUTES.size());
         for (MonitorSession session : SESSIONS.values()) {
             session.stop();
         }
@@ -447,7 +525,10 @@ public class RouteEngine {
      * 清空 Route 防重门控集合（测试结束时调用，释放已处理的 Route 引用）。
      */
     public static void clearDispatchedRoutes() {
+        int size = DISPATCHED_ROUTES.size();
         DISPATCHED_ROUTES.clear();
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[RouteEngine] clearDispatchedRoutes: cleared {} entries", size);
     }
 
     // ─── MonitorSession（内部类）───────────────────────────────────
@@ -486,6 +567,9 @@ public class RouteEngine {
             if (!stopped.get()) {
                 LOGGER.info("[RouteEngine] Monitor timeout ({}ms) for pattern '{}', stopping",
                         rule.getTimeoutMs(), pattern);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] MonitorSession timeout triggered: pattern='{}', elapsed={}ms, matches={}",
+                        pattern, rule.getTimeoutMs(), matchCount.get());
                 stop();
             }
         }
@@ -496,12 +580,20 @@ public class RouteEngine {
          */
         void stop() {
             if (!stopped.compareAndSet(false, true)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteEngine] MonitorSession.stop() already stopped for pattern='{}'", pattern);
                 return;  // 已停止（CAS 防重复）
             }
+
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] MonitorSession.stop() START: pattern='{}', totalMatches={}, timeoutFuture={}",
+                    pattern, matchCount.get(), timeoutFuture != null && !timeoutFuture.isDone());
 
             // 取消超时任务
             if (timeoutFuture != null && !timeoutFuture.isDone()) {
                 timeoutFuture.cancel(false);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] MonitorSession.stop() timeout future cancelled for pattern='{}'", pattern);
             }
 
             // 注销 Playwright 路由（pattern 是归一化的，能正确匹配注册时的 pattern）
@@ -512,6 +604,8 @@ public class RouteEngine {
                     ((BrowserContext) context).unroute(pattern);
                 }
                 RouteRegistry.unregister(context, pattern);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] MonitorSession.stop() unrouted pattern='{}'", pattern);
             } catch (Exception e) {
                 LOGGER.warn("[RouteEngine] Failed to unroute pattern '{}': {}", pattern, e.getMessage());
             }

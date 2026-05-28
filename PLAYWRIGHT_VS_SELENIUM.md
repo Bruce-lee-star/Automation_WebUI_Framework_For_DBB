@@ -4,31 +4,7 @@
 
 ---
 
-## 一、核心术语表
-
-| 术语 | 英文 | 说明 |
-|------|------|------|
-| **Browser** | Browser | 浏览器实例（Chromium/Firefox/WebKit），进程级别 |
-| **Context** | BrowserContext | 浏览器上下文，隔离的会话环境，拥有独立的 cookies、storage、indexedDB |
-| **Page** | Page | 浏览器 Tab 页面，一个 Context 可包含多个 Page |
-| **Route** | Route | 请求路由拦截器，用于捕获、修改或中断网络请求 |
-| **RouteHandler** | RouteHandler | 路由处理器函数，匹配请求时执行的回调 |
-| **Request** | Playwright Request | Playwright 封装的 HTTP 请求对象 |
-| **Response** | Playwright Response | Playwright 封装的 HTTP 响应对象 |
-| **Frame** | Frame | 页面内的 iframe 框架 |
-| **Locator** | Locator | 元素定位器，描述如何查找 DOM 元素 |
-| **Selector** | Selector | CSS/XPath 选择器字符串 |
-| **CDP** | Chrome DevTools Protocol | Chrome 开发者工具协议，Playwright 与 Chromium 通信的基础 |
-| **Mock** | Mock | 模拟数据/响应，用于测试中替换真实接口 |
-| **Intercept** | Intercept | 拦截，请求到达服务器前捕获并处理 |
-| **Fulfill** | fulfill() | 用预定义响应满足被拦截的请求 |
-| **Abort** | abort() | 中止/拒绝被拦截的请求 |
-| **Resume** | resume() | 放行被拦截的请求，继续原始请求 |
-| **Service Worker** | Service Worker | 运行在浏览器后台的脚本，可拦截/缓存网络请求 |
-
----
-
-## 二、技术架构对比
+## 一、技术架构对比
 
 | 维度 | Playwright | Selenium |
 |------|-----------|----------|
@@ -44,7 +20,7 @@
 
 ---
 
-## 三、Playwright 工作原理
+## 二、Playwright 工作原理
 
 ### 2.1 整体架构
 
@@ -205,7 +181,7 @@ page.click("#btn");  // Playwright 自动等待元素可见、可点击
 
 ---
 
-## 四、API Mock 能力对比
+## 三、API Mock 能力对比
 
 ### Playwright 路由机制（原生支持）
 
@@ -259,7 +235,7 @@ proxy.addRequestFilter((request, contents, messageInfo) -> {
 
 ---
 
-## 五、网络拦截对比
+## 四、网络拦截对比
 
 | 能力 | Playwright | Selenium |
 |------|-----------|----------|
@@ -274,7 +250,7 @@ proxy.addRequestFilter((request, contents, messageInfo) -> {
 
 ---
 
-## 六、核心优势总结
+## 五、核心优势总结
 
 **选择 Playwright 的关键理由：**
 
@@ -287,7 +263,7 @@ proxy.addRequestFilter((request, contents, messageInfo) -> {
 
 ---
 
-## 七、本框架的 Playwright 路由安全机制
+## 六、本框架的 Playwright 路由安全机制
 
 ### 5.1 路由重复注册防护
 
@@ -348,7 +324,7 @@ private void handleUnifiedRoute(Route route) {
 
 ---
 
-## 八、Selenium 的替代方案及局限性
+## 七、Selenium 的替代方案及局限性
 
 如果必须使用 Selenium，网络拦截需要依赖以下工具：
 

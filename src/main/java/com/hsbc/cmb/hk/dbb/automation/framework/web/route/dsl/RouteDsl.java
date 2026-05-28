@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
@@ -48,7 +49,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *     .done()
  *     .start();
  *
- * // Delay (弱网模拟)
+ * // Delay (高延迟模拟)
  * RouteDsl.on(page)
  *     .api("/api/**")
  *     .delay(3)          // 拦截所有 API，延迟 3 秒后放行
@@ -102,6 +103,14 @@ public class RouteDsl {
             LOGGER.debug("[RouteDsl] No rules to register, skipping start()");
             return;
         }
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteDsl] ── start() — registering {} rule(s) on {} ──",
+                rules.size(), context.getClass().getSimpleName());
+        for (int i = 0; i < rules.size(); i++) {
+            RouteRule r = rules.get(i);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteDsl]   rule[{}]: type={}, pattern='{}'", i, r.getType(), r.getUrlPattern());
+        }
         RouteEngine.register(context, rules);
     }
 
@@ -116,6 +125,9 @@ public class RouteDsl {
      * 注销所有已注册的 pattern 并清空规则（测试结束时调用）。
      */
     public void clear() {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteDsl] clear() — clearing {} rule(s) from {}",
+                rules.size(), context.getClass().getSimpleName());
         RouteRegistry.clearContext(context);
         rules.clear();
     }
@@ -146,6 +158,8 @@ public class RouteDsl {
          */
         public MonitorApiDsl monitor() {
             rule.setType(RouteHandleType.MONITOR);
+            LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
+                    "[RouteDsl] api('{}') -> monitor()", rule.getUrlPattern());
             return new MonitorApiDsl(parent, rule);
         }
 
@@ -160,6 +174,9 @@ public class RouteDsl {
             rule.setType(RouteHandleType.MOCK);
             rule.setMockBody(body);
             rule.setAutoStopOnMatch(false);
+            LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
+                    "[RouteDsl] api('{}') -> mock(bodyLen={})", rule.getUrlPattern(),
+                    body != null ? body.length() : 0);
             return new MockApiDsl(parent, rule);
         }
 
@@ -172,17 +189,19 @@ public class RouteDsl {
         public ModifyApiDsl modifyRequest() {
             rule.setType(RouteHandleType.MODIFY);
             rule.setAutoStopOnMatch(false);
+            LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
+                    "[RouteDsl] api('{}') -> modifyRequest()", rule.getUrlPattern());
             return new ModifyApiDsl(parent, rule);
         }
 
         /**
-         * 切换到 Delay 弱网延迟模式。
+         * 切换到 Delay 高延迟模式。
          *
          * <p>拦截匹配请求，延迟指定秒数后再放行原始请求（{@code route.resume()}），
          * 由浏览器网络栈正常完成请求-响应。不使用 {@code route.fetch()}，无 DNS 解析风险。
          *
          * <p>与 BaseApiDsl 中其他类型的 delay 属性不同：
-         * 此模式是独立的 DELAY 类型，专注于弱网模拟场景。
+         * 此模式是独立的 DELAY 类型，专注于高延迟模拟场景。
          *
          * <p>Delay 默认持续拦截所有匹配请求，不自动停止（autoStopOnMatch=false）。
          *
@@ -193,6 +212,8 @@ public class RouteDsl {
             rule.setType(RouteHandleType.DELAY);
             rule.setDelayMs(delaySecs * 1000);
             rule.setAutoStopOnMatch(false);
+            LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
+                    "[RouteDsl] api('{}') -> delay({}s)", rule.getUrlPattern(), delaySecs);
             return new DelayApiDsl(parent, rule);
         }
     }
@@ -422,6 +443,10 @@ public class RouteDsl {
                         + "Please call api(\"pattern\") before done().");
             }
             parent.rules.add(rule);
+            LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
+                    "[RouteDsl] done() — added rule: type={}, pattern='{}', status={}, timeout={}s, minMatches={}",
+                    rule.getType(), rule.getUrlPattern(), rule.getMockStatus(),
+                    rule.getTimeoutMs() / 1000, rule.getMinMatches());
             return parent;
         }
     }
@@ -649,15 +674,15 @@ public class RouteDsl {
     // ==================== Delay 专用 DSL ====================
 
     /**
-     * Delay 弱网延迟专用 DSL — 在 BaseApiDsl 基础上提供延迟配置方法。
+     * Delay 高延迟专用 DSL — 在 BaseApiDsl 基础上提供延迟配置方法。
      *
      * <p>DELAY 类型通过 {@code route.resume()} 放行原始请求，
-     * 在放行前按配置的延迟睡眠，模拟高延迟/弱网环境下的用户体验。
+     * 在放行前按配置的延迟睡眠，模拟高延迟网络环境下的用户体验。
      *
      * <p>支持两种延迟模式：
      * <ul>
      *   <li><b>固定延迟</b>：每个请求都延迟相同的秒数</li>
-     *   <li><b>随机延迟</b>：每次请求在 [min, max] 秒范围内随机取值，模拟不稳定弱网</li>
+     *   <li><b>随机延迟</b>：每次请求在 [min, max] 秒范围内随机取值，模拟不稳定高延迟</li>
      * </ul>
      *
      * <p>使用示例：
@@ -695,7 +720,7 @@ public class RouteDsl {
         /**
          * 启用随机延迟模式，每次请求在 [minSecs, maxSecs] 秒范围内随机取值。
          *
-         * <p>随机延迟可以更真实地模拟不稳定弱网环境，
+         * <p>随机延迟可以更真实地模拟不稳定高延迟环境，
          * 每次请求的实际延迟不同，有助于发现时间敏感型缺陷。
          *
          * <p>调用此方法后，{@link #delay(long)} 设置的固定值被忽略，

@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
@@ -53,6 +54,11 @@ public class MonitorHandler {
         // 获取 API 监控上下文并增加活动请求计数
         ApiMonitorContext context = ApiMonitorContext.getCurrent();
 
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[MonitorHandler] ── handle() START: pattern='{}', expectStatus={}, jsonPathAssertions={} ──",
+                rule.getUrlPattern(), rule.getExpectedStatus(),
+                rule.getJsonPathAssertions() != null ? rule.getJsonPathAssertions().size() : 0);
+
         // 放行请求（异常安全，不阻塞页面）
         try {
             route.resume();
@@ -66,6 +72,9 @@ public class MonitorHandler {
         Request req = route.request();
         Response res = req.response();
         if (res == null) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] No response available for pattern '{}', url='{}'",
+                    rule.getUrlPattern(), req.url());
             return;
         }
 
@@ -74,6 +83,9 @@ public class MonitorHandler {
             bodyBytes = res.body();
         } catch (Exception e) {
             LOGGER.debug("[MonitorHandler] Failed to read response body for {}: {}", req.url(), e.getMessage());
+            LoggingConfigUtil.logWarnIfVerbose(LOGGER,
+                    "[MonitorHandler] Cannot read response body: pattern='{}', url='{}', error='{}'",
+                    rule.getUrlPattern(), req.url(), e.getMessage());
             return;
         }
 
@@ -88,9 +100,18 @@ public class MonitorHandler {
         LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
                 url, status, body.length(), urlPattern);
 
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[MonitorHandler] Response headers: {}", snapshotHeadersSafely(res.headers()));
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[MonitorHandler] Response body (first 500 chars): {}",
+                body.length() > 500 ? body.substring(0, 500) + "..." : body);
+
         // 同步执行断言 — 失败立即中断测试线程（不等待异步任务）
         boolean assertionsPassed = executeAssertions(rule, url, status, body, context);
         if (!assertionsPassed) {
+            LoggingConfigUtil.logErrorIfVerbose(LOGGER,
+                    "[MonitorHandler] ═══ ASSERTIONS FAILED: pattern='{}', url='{}' ═══", urlPattern, url);
+            // ═══ (existing fail-fast code unchanged) ═══
             // ⭐⭐⭐ 双路径 Fail-Fast：
             //   Path 1: thread.interrupt() — 最佳努力，依赖 Playwright 内部响应
             //   Path 2: 异步关闭 Page — 100% 可靠，Playwright page.close()
@@ -129,6 +150,10 @@ public class MonitorHandler {
                 String asyncUrl = req.url();
                 int asyncStatus = res.status();
 
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[MonitorHandler] Async storage START: pattern='{}', url='{}', status={}, bodyLen={}",
+                        urlPattern, asyncUrl, asyncStatus, asyncBody.length());
+
                 // 存储 response body（向后兼容）
                 fContext.storeResponse(urlPattern, asyncBody);
 
@@ -153,6 +178,9 @@ public class MonitorHandler {
 
                 // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
                 RouteEngine.onMonitorMatch(rule);
+
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, asyncUrl);
 
             } catch (Exception e) {
                 LOGGER.error("[MonitorHandler] Error in async storage: {}", e.getMessage(), e);
@@ -190,6 +218,10 @@ public class MonitorHandler {
                             null);
                 }
                 allPassed = false;
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[MonitorHandler] Status assertion PASSED: {}, expected={}, actual={}",
+                        url, expectedStatus, status);
             }
         }
 
@@ -211,6 +243,10 @@ public class MonitorHandler {
                                     "path=" + entry.getKey());
                         }
                         allPassed = false;
+                    } else {
+                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                                "[MonitorHandler] JSONPath assertion PASSED: {}, path='{}', expected='{}', actual='{}'",
+                                url, entry.getKey(), entry.getValue(), actual);
                     }
                 } catch (Exception e) {
                     LOGGER.warn("[MonitorHandler] JSONPath evaluation error for {}: path={}, error={}",
@@ -226,6 +262,9 @@ public class MonitorHandler {
             }
         }
 
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[MonitorHandler] executeAssertions RESULT: allPassed={}, url={}, pattern='{}'",
+                allPassed, url, rule.getUrlPattern());
         return allPassed;
     }
 
@@ -237,10 +276,18 @@ public class MonitorHandler {
         if (actual == null || expected == null) return false;
 
         if (actual instanceof Number && expected instanceof Number) {
-            return ((Number) actual).doubleValue() == ((Number) expected).doubleValue();
+            boolean match = ((Number) actual).doubleValue() == ((Number) expected).doubleValue();
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[MonitorHandler] compareValues (Number): actual={}, expected={}, match={}",
+                    ((Number) actual).doubleValue(), ((Number) expected).doubleValue(), match);
+            return match;
         }
 
-        return actual.toString().equals(expected.toString());
+        boolean match = actual.toString().equals(expected.toString());
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[MonitorHandler] compareValues (String): actual='{}', expected='{}', match={}",
+                actual.toString(), expected.toString(), match);
+        return match;
     }
 
     /**

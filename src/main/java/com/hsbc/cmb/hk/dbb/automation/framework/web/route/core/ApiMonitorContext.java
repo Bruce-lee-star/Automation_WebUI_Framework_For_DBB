@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -191,7 +192,9 @@ public class ApiMonitorContext {
     }
 
     public void incrementActiveRequests() {
-        activeRequests.incrementAndGet();
+        int count = activeRequests.incrementAndGet();
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ApiMonitorContext] incrementActiveRequests -> {}", count);
     }
 
     /**
@@ -199,6 +202,8 @@ public class ApiMonitorContext {
      */
     public void decrementActiveRequests() {
         int remaining = activeRequests.decrementAndGet();
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ApiMonitorContext] decrementActiveRequests -> {}", remaining);
         if (remaining == 0) {
             synchronized (completionLock) {
                 completionLock.notifyAll();
@@ -256,6 +261,9 @@ public class ApiMonitorContext {
         hasAssertionFailures.set(true);
         failureDetails.add(new AssertionFailureDetail(
                 url, assertionType, expectedValue, actualValue, failMessage));
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[ApiMonitorContext] recordAssertionFailure: url={}, type={}, expected='{}', actual='{}', msg='{}'",
+                url, assertionType, expectedValue, actualValue, failMessage);
     }
 
     public boolean hasAssertionFailures() {
@@ -286,6 +294,9 @@ public class ApiMonitorContext {
     }
 
     public void reset() {
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[ApiMonitorContext] reset() — clearing activeRequests={}, failures={}, responses={}, apiCalls={}",
+                activeRequests.get(), failureDetails.size(), getTotalResponseCount(), apiCallsPerUrl.size());
         activeRequests.set(0);
         hasAssertionFailures.set(false);
         failureDetails.clear();
@@ -310,6 +321,10 @@ public class ApiMonitorContext {
         apiCallsPerUrl.computeIfAbsent(call.endpoint(), k ->
                 java.util.Collections.synchronizedList(new ArrayList<>())
         ).add(call);
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ApiMonitorContext] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",
+                call.endpoint(), call.method(), call.statusCode(),
+                call.responseBody() != null ? call.responseBody().length() : 0);
     }
 
     /**
@@ -403,6 +418,10 @@ public class ApiMonitorContext {
         if (endpoint == null || responseBody == null) {
             return;
         }
+
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ApiMonitorContext] storeResponse: endpoint='{}', bodyLen={}, totalSize={}",
+                endpoint, responseBody.length(), formatBytes(totalResponseSize.get()));
 
         // 数量上限检查
         int total = getTotalResponseCount();

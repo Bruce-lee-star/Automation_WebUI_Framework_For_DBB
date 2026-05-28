@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -165,6 +166,10 @@ public final class RouteAsyncPool {
 
         // 提交前检查阈值并告警
         checkThresholdsBeforeSubmit();
+
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[RouteAsyncPool] submitTask: timeout={}ms, curQueue={}/{}, active={}",
+                timeoutMs, POOL.getQueue().size(), QUEUE_CAPACITY, POOL.getActiveCount());
 
         try {
             Future<?> future = POOL.submit(() -> {

@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -84,37 +85,84 @@ public final class RouteUtil {
     public static boolean requestMatches(Route route, RouteRule rule) {
         Request req = route.request();
 
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[RouteUtil] requestMatches START: pattern='{}', url='{}', method={}, resourceType='{}'",
+                rule.getUrlPattern(), req.url(), req.method(), req.resourceType());
+
         try {
             // ── 1. Resource Type ────────────────────────────────────
-            if (!matchResourceType(req, rule)) return false;
+            if (!matchResourceType(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at ResourceType: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 2. HTTP Method ──────────────────────────────────────
-            if (!matchMethod(req, rule)) return false;
+            if (!matchMethod(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Method: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 3. Request Headers ──────────────────────────────────
-            if (!matchHeaders(req, rule)) return false;
+            if (!matchHeaders(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Headers: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 4. Query Parameters ────────────────────────────────
-            if (!matchQueryParams(req, rule)) return false;
+            if (!matchQueryParams(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at QueryParams: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 5. Content-Type ────────────────────────────────────
-            if (!matchContentType(req, rule)) return false;
+            if (!matchContentType(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at ContentType: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 6. Body Regex ──────────────────────────────────────
-            if (!matchBodyRegex(req, rule)) return false;
+            if (!matchBodyRegex(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at BodyRegex: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 7. Referrer ─────────────────────────────────────────
-            if (!matchReferrer(req, rule)) return false;
+            if (!matchReferrer(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Referrer: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 8. Origin ───────────────────────────────────────────
-            if (!matchOrigin(req, rule)) return false;
+            if (!matchOrigin(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Origin: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 9. Frame ────────────────────────────────────────────
-            if (!matchFrame(req, rule)) return false;
+            if (!matchFrame(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Frame: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
             // ── 10. Navigation ──────────────────────────────────────
-            if (!matchNavigation(req, rule)) return false;
+            if (!matchNavigation(req, rule)) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[RouteUtil] requestMatches FAIL at Navigation: pattern='{}'", rule.getUrlPattern());
+                return false;
+            }
 
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteUtil] requestMatches ALL PASSED: pattern='{}', url='{}'",
+                    rule.getUrlPattern(), req.url());
             return true;
         } catch (Exception e) {
             LOGGER.warn("[RouteUtil] Error during request matching for pattern '{}': {}",

@@ -764,8 +764,7 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testSuiteFinished() {
-        LoggingConfigUtil.logDebugIfVerbose(
-                logger, "Test suite finished");
+        logger.info("Test suite finished");
 
         // 使用原子操作确保只清理一次
         synchronized (PlaywrightListener.class) {

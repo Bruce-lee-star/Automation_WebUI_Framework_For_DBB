@@ -60,7 +60,7 @@ public class RouteRule {
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
     private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 默认停止；MOCK/MODIFY 由 DSL 覆盖为 false）
 
-    // DELAY 类型的弱网延迟模拟（毫秒），0 = 无延迟
+    // DELAY 类型的高延迟模拟（毫秒），0 = 无延迟
     private long delayMs = 0;
 
     /** DELAY 类型随机延迟范围：最小值（毫秒），0 = 不使用随机范围 */
@@ -423,7 +423,7 @@ public class RouteRule {
     }
 
     /**
-     * 设置弱网延迟模拟时长（毫秒），仅 DELAY 类型有效。
+     * 设置高延迟模拟时长（毫秒），仅 DELAY 类型有效。
      * <p>请求匹配后，先异步等待指定毫秒再放行请求。
      *
      * @param delayMs 延迟毫秒数，必须 ≥ 0。0 表示无延迟。

@@ -1,13 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 弱网延迟处理器 — 模拟高延迟网络环境下的 API 请求。
+ * 高延迟处理器 — 模拟高延迟网络环境下的 API 请求。
  *
  * <p>核心流程（不使用 {@code route.fetch()}，避免 DNS 解析问题；
  * 不使用 {@code Thread.sleep()}，避免占用线程资源）：
@@ -47,9 +48,16 @@ public class DelayHandler {
         long minMs = rule.getDelayMinMs();
         long maxMs = rule.getDelayMaxMs();
         if (minMs > 0 && maxMs > minMs) {
-            return ThreadLocalRandom.current().nextLong(minMs, maxMs + 1);
+            long randomDelay = ThreadLocalRandom.current().nextLong(minMs, maxMs + 1);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[DelayHandler] Random delay selected: {}ms (range=[{}ms, {}ms]) for pattern='{}'",
+                    randomDelay, minMs, maxMs, rule.getUrlPattern());
+            return randomDelay;
         }
-        return rule.getDelayMs();
+        long fixedDelay = rule.getDelayMs();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[DelayHandler] Fixed delay: {}ms for pattern='{}'", fixedDelay, rule.getUrlPattern());
+        return fixedDelay;
     }
 
     /**
@@ -68,6 +76,8 @@ public class DelayHandler {
                     delayMs, MAX_DELAY_MS / 1000);
             return MAX_DELAY_MS;
         }
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[DelayHandler] Delay clamped: {}ms -> {}ms", delayMs, delayMs);
         return delayMs;
     }
 }

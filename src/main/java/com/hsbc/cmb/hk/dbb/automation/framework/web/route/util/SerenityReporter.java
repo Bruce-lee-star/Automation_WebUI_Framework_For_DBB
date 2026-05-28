@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import net.serenitybdd.core.Serenity;
 import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
@@ -29,6 +30,8 @@ public final class SerenityReporter {
             // isBaseStepListenerRegistered() 静默检查，不会像 getBaseStepListener() 那样
             // 在 listener 为 null 时打印 ERROR + dump Stack
             if (!StepEventBus.getEventBus().isBaseStepListenerRegistered()) {
+                LoggingConfigUtil.logTraceIfVerbose(logger,
+                        "[SerenityReporter] recordApiOperation SKIP: no listener registered for {} {}", operation, url);
                 return;
             }
             String title = String.format("[API %s] %s", operation,
@@ -36,6 +39,8 @@ public final class SerenityReporter {
             Serenity.recordReportData()
                     .withTitle(title)
                     .andContents(detail);
+            LoggingConfigUtil.logTraceIfVerbose(logger,
+                    "[SerenityReporter] recordApiOperation OK: {} {}", operation, url);
         } catch (Exception e) {
             logger.debug("[SerenityReporter] Failed to record API operation: {}", e.getMessage());
         }

@@ -36,7 +36,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * // Mock
  * RouteDsl.on(page)
  *     .api("/api/users/1")
- *     .mock("{\"code\":200}")
+ *     .mock()
+ *     .mockBody("{\"code\":200}")
  *     .mockStatus(200)
  *     .done()
  *     .start();
@@ -167,17 +168,15 @@ public class RouteDsl {
         /**
          * 切换到 Mock 拦截并自定义响应模式。
          * <p>Mock 默认持续拦截，不自动停止（autoStopOnMatch=false）。
+         * <p>Mock 响应体通过后续的 {@link MockApiDsl#mockBody(String)} 设置。
          *
-         * @param body Mock 响应体
          * @return MockApiDsl — 仅可调用 Mock 相关方法 + 公共方法
          */
-        public MockApiDsl mock(String body) {
+        public MockApiDsl mock() {
             rule.setType(RouteHandleType.MOCK);
-            rule.setMockBody(body);
             rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
-                    "[RouteDsl] api('{}') -> mock(bodyLen={})", rule.getUrlPattern(),
-                    body != null ? body.length() : 0);
+                    "[RouteDsl] api('{}') -> mock()", rule.getUrlPattern());
             return new MockApiDsl(parent, rule);
         }
 
@@ -542,7 +541,8 @@ public class RouteDsl {
      * <p>使用示例：
      * <pre>{@code
      * .api("/api/users/1")
-     *     .mock("{\"code\":200}")
+     *     .mock()
+     *     .mockBody("{\"code\":200}")
      *     .mockStatus(200)
      *     .mockHeader("Content-Type", "application/json")
      *     .mockReplaceField("$.data.name", "Mocked")
@@ -556,8 +556,7 @@ public class RouteDsl {
         }
 
         /**
-         * 设置/更新 Mock 响应体。
-         * <p>通常 body 已在入口 {@code api(...).mock(body)} 设置，此方法用于后续更新。
+         * 设置 Mock 响应体。
          */
         public MockApiDsl mockBody(String body) {
             rule.setMockBody(body);

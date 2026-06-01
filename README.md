@@ -155,7 +155,8 @@ RouteDsl.on(page)
 // Mock — 拦截并返回自定义响应
 RouteDsl.on(page)
     .api("/api/login")
-    .mock("{\"token\":\"mock-token-123\"}")
+    .mock()
+    .mockBody("{\"token\":\"mock-token-123\"}")
     .mockStatus(200)
     .done()
     .start();

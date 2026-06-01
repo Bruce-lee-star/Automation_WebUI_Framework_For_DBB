@@ -229,9 +229,12 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | | `mockStatus` | int | 200 | HTTP 状态码 |
 | | `mockHeaders` | Map | null | 响应头 |
 | | `mockReplaceFields` | Map\<String,String\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符） |
-| **Modify** | `addHeaders` | Map | null | 添加/覆盖的请求头 |
-| | `replaceBodyPairs` | Map\<String,String\> | null | JSONPath → 替换值（多对，LinkedHashMap 有序） |
-| | `method` | String | null | 修改 HTTP 方法 |
+| **Modify** | `requestHeadersToSet` | Map | null | 设置/新增的请求头（覆盖已有同名头） |
+| | `requestHeadersToRemove` | Set | null | 需删除的请求头名称 |
+| | `requestBodyFieldsToModify` | Map\<String,String\> | null | 修改已有字段（JSONPath → 值，LinkedHashMap 有序） |
+| | `requestBodyFieldsToAdd` | Map\<String,String\> | null | 新增字段（JSONPath → 值） |
+| | `requestBodyFieldsToRemove` | Set | null | 需删除的字段路径 |
+| | `modifyMethod` | String | null | 修改 HTTP 方法 |
 | **Monitor** | `record` | boolean | true | 是否记录到报告 |
 | | `expectedStatus` | Integer | null | 期望状态码断言 |
 | | `jsonPathAssertions` | Map | null | JSONPath 断言 |
@@ -288,8 +291,8 @@ RouteDsl.on(browserContext)  // Context 级别
 
 // ── 类型选择 ──
 .monitor()                  // 声明为监控模式
-.modify()                   // 声明为修改模式
-.mock(body)                 // 声明为 Mock 模式 + 响应体
+.modifyRequest()            // 声明为修改模式
+.mock()                     // 声明为 Mock 模式
 .delay(3)                   // 声明为高延迟模式 + 延迟秒数
 
 // ── Monitor 配置 ──
@@ -301,12 +304,12 @@ RouteDsl.on(browserContext)  // Context 级别
 .expectJsonPath(path, val)  // 断言 JSONPath 字段值
 
 // ── Modify 配置 ──
-.addHeader(key, value)      // 添加/覆盖请求头
-.replaceBody(key, value)    // JSONPath 精准替换请求体字段
-.method(method)             // 修改 HTTP 方法
+.setRequestHeader(key, val) // 添加/覆盖请求头
+.modifyRequestBody(path, v) // JSONPath 精准替换请求体字段
+.modifyMethod(method)       // 修改 HTTP 方法
 
 // ── Mock 配置 ──
-.mock(body)                 // 设置响应体
+.mockBody(body)             // 设置响应体
 .mockStatus(status)         // 设置 HTTP 状态码
 .mockHeader(key, value)     // 设置响应头
 .mockReplaceField(path, val) // 批量替换 Mock JSON body 字段（支持 [*] 通配符）
@@ -374,9 +377,9 @@ RouteDsl.on(browserContext)  // Context 级别
 
 | 操作 | API | 说明 |
 |------|-----|------|
-| 添加请求头 | `.addHeader(key, value)` | 合并到原请求头 |
-| 请求体替换 | `.replaceBody(key, value)` | JSONPath 精准替换 + 类型保持 |
-| 修改 HTTP 方法 | `.method("POST")` | 覆盖原方法 |
+| 添加请求头 | `.setRequestHeader(key, value)` | 合并到原请求头 |
+| 请求体替换 | `.modifyRequestBody(key, value)` | JSONPath 精准替换 + 类型保持 |
+| 修改 HTTP 方法 | `.modifyMethod("POST")` | 覆盖原方法 |
 
 **JSONPath 精准替换特性**：
 
@@ -388,7 +391,7 @@ user.name                  → { "user": { "name": "newValue" } }
 users[0].name              → { "users": [{ "name": "newValue" }] }
 
 // 类型保持 — 原字段是 int，替换值自动转换为 IntNode
-"age": 25  → replaceBody("age", "30") → "age": 30  (int 保持)
+"age": 25  → modifyRequestBody("age", "30") → "age": 30  (int 保持)
 ```
 
 **JSONPath 编译缓存**：缓存容量上限 200，超过后自动清空重建。
@@ -613,7 +616,8 @@ RouteDsl.on(page)
 ```java
 RouteDsl.on(page)
     .api("/api/login")
-    .mock("{\"token\":\"mock-token-123\"}")
+    .mock()
+    .mockBody("{\"token\":\"mock-token-123\"}")
     .mockStatus(200)
     .mockHeader("Content-Type", "application/json")
     .done()
@@ -625,7 +629,8 @@ RouteDsl.on(page)
 ```java
 RouteDsl.on(page)
     .api("/api/users")
-    .mock("[{\"name\":\"Alice\",\"email\":\"a@test.com\",\"orders\":[{\"price\":10}]},"
+    .mock()
+    .mockBody("[{\"name\":\"Alice\",\"email\":\"a@test.com\",\"orders\":[{\"price\":10}]},"
         + "{\"name\":\"Bob\",\"email\":\"b@test.com\",\"orders\":[{\"price\":20}]}]")
     .mockReplaceField("$[*].email", "redacted@hsbc.com")
     .mockReplaceField("$[*].orders[*].price", "0")
@@ -640,11 +645,11 @@ RouteDsl.on(page)
 ```java
 RouteDsl.on(page)
     .api("/api/submit")
-    .modify()
-    .addHeader("X-Custom-Header", "test-value")
-    .replaceBody("amount", "999")
-    .replaceBody("user.name", "test")
-    .method("POST")
+    .modifyRequest()
+    .setRequestHeader("X-Custom-Header", "test-value")
+    .modifyRequestBody("amount", "999")
+    .modifyRequestBody("user.name", "test")
+    .modifyMethod("POST")
     .done()
     .start();
 ```
@@ -658,11 +663,12 @@ RouteDsl.on(page)
     .expectStatus(200)
     .done()
     .api("/api/login")
-    .mock("{\"success\":true}")
+    .mock()
+    .mockBody("{\"success\":true}")
     .done()
     .api("/api/config")
-    .modify()
-    .replaceBody("language", "en")
+    .modifyRequest()
+    .modifyRequestBody("language", "en")
     .done()
     .start();  // 一次调用注册所有规则
 ```
@@ -734,7 +740,8 @@ RouteDsl.on(page)
     .matchContentType("json")
     .matchBodyRegex(".*\"currency\":\"USD\".*")
     .matchOrigin("myapp.com")
-    .mock("{\"code\":0,\"msg\":\"Mocked\"}")
+    .mock()
+    .mockBody("{\"code\":0,\"msg\":\"Mocked\"}")
     .mockStatus(200)
     .done()
     .start();
@@ -759,7 +766,8 @@ RouteDsl.on(page)
 RouteDsl.on(page)
     .api("/api/checkout")
     .matchFrameUrl("payment-iframe")
-    .mock("{\"status\":\"paid\"}")
+    .mock()
+    .mockBody("{\"status\":\"paid\"}")
     .done()
     .start();
 ```
@@ -771,11 +779,13 @@ RouteDsl.on(page)
 RouteDsl.on(page)
     .api("/api/payment")
     .matchReferrer("checkout-page")
-    .mock("{\"code\":0,\"msg\":\"success\"}")
+    .mock()
+    .mockBody("{\"code\":0,\"msg\":\"success\"}")
     .done()
     // 从其他页面发起的请求 Mock 为失败
     .api("/api/payment")
-    .mock("{\"code\":-1,\"msg\":\"unauthorized\"}")
+    .mock()
+    .mockBody("{\"code\":-1,\"msg\":\"unauthorized\"}")
     .mockStatus(403)
     .done()
     .start();
@@ -879,8 +889,8 @@ String lastBody = ctx.getLastResponse("/api/login");
 | 方法 | 参数 | 返回 | 说明 |
 |------|------|------|------|
 | `monitor()` | — | MonitorApiDsl | 声明 Monitor 模式 |
-| `modify()` | — | ModifyApiDsl | 声明 Modify 模式 |
-| `mock(body)` | String | MockApiDsl | 声明 Mock 模式 + 设置响应体 |
+| `modifyRequest()` | — | ModifyApiDsl | 声明 Modify 模式 |
+| `mock()` | — | MockApiDsl | 声明 Mock 模式 |
 | `delay(secs)` | long | DelayApiDsl | 声明 Delay 模式（固定延迟秒数） |
 | **— Monitor 配置 —** | | | |
 | `record(boolean)` | boolean | ApiDsl | 是否写入报告（默认 true） |
@@ -891,13 +901,14 @@ String lastBody = ctx.getLastResponse("/api/login");
 | `expectJsonPath(p, v)` | String, Object | ApiDsl | JSONPath 断言 |
 | `onResponse(callback)` | MonitorCallback | ApiDsl | 注册响应回调（断言通过后异步触发） |
 | **— Mock 配置 —** | | | |
+| `mockBody(body)` | String | ApiDsl | 设置 Mock 响应体 |
 | `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
 | `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
 | `mockReplaceField(p, v)` | String, String | ApiDsl | 批量替换 JSON body 字段（支持 `[*]` 通配符） |
 | **— Modify 配置 —** | | | |
-| `addHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
-| `replaceBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换 |
-| `method(m)` | String | ApiDsl | 修改 HTTP 方法 |
+| `setRequestHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
+| `modifyRequestBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换 |
+| `modifyMethod(m)` | String | ApiDsl | 修改 HTTP 方法 |
 | **— 请求匹配 —** | | | |
 | `matchMethod(m)` | String | ApiDsl | HTTP 方法过滤 |
 | `resourceType(types)` | String | ApiDsl | 资源类型过滤（逗号分隔） |

@@ -77,7 +77,8 @@ public class LoginSteps {
             // Session 已准备好（可能是从文件恢复，也可能是 Feature 级别缓存）
             RouteDsl.on(loginPage.getPage())
                     .api("notifications/streams")
-                    .mock("{}")
+                    .mock()
+                    .mockBody("{}")
                     .done()
                     .start();
             // 【简化API】自动处理 Feature 缓存和 meta 文件读取

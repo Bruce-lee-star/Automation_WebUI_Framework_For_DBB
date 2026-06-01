@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import net.thucydides.model.steps.StepListener;
 import net.thucydides.model.steps.StepFailure;
@@ -557,7 +556,8 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
 
     @Override
     public void testFailed(TestOutcome result, Throwable throwable) {
-        logger.error("Test failed: {}", result, throwable);
+        // 仅委托到子监听器（PlaywrightListener），不在 Adapter 层记录重复 error 日志
+        // 原因：PlaywrightListener.testFailed() 已记录完整异常日志，此处再记会形成双重输出
         for (StepListener listener : delegateListeners) {
             try {
                 listener.testFailed(result, throwable);

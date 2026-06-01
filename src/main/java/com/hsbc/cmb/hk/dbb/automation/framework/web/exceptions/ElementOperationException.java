@@ -37,45 +37,18 @@ public class ElementOperationException extends RuntimeException {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("═══════════════════════════════════════════════════════════\n");
-        sb.append(" Element Operation Failed\n");
-        sb.append("═══════════════════════════════════════════════════════════\n");
-        sb.append(String.format("  Operation : %s%n", operation));
-        sb.append(String.format("  Selector  : %s%n", selector));
-        sb.append(String.format("  Page URL  : %s%n", pageUrl));
-        sb.append(String.format("  Element   : %s%n", elementState));
-
-        if (diagnosticInfo != null) {
-            sb.append("───────────────────────────────────────────────────────────\n");
-            sb.append(" Diagnostic Information\n");
-            sb.append("───────────────────────────────────────────────────────────\n");
-            sb.append(String.format("  Exists in DOM  : %s%n", diagnosticInfo.existsInDom));
-            sb.append(String.format("  Is Visible     : %s%n", diagnosticInfo.isVisible));
-            sb.append(String.format("  Is Enabled     : %s%n", diagnosticInfo.isEnabled));
-            sb.append(String.format("  Is Editable    : %s%n", diagnosticInfo.isEditable));
-            sb.append(String.format("  Element Count  : %d%n", diagnosticInfo.elementCount));
-            sb.append(String.format("  Retry Count    : %d%n", diagnosticInfo.retryCount));
-            if (diagnosticInfo.tagName != null) {
-                sb.append(String.format("  Tag Name       : %s%n", diagnosticInfo.tagName));
-            }
-            if (diagnosticInfo.attributes != null && !diagnosticInfo.attributes.isEmpty()) {
-                sb.append("  Attributes     :\n");
-                diagnosticInfo.attributes.forEach((k, v) ->
-                    sb.append(String.format("    %s = %s%n", k, v)));
-            }
-        }
-
-        if (getCause() != null) {
-            sb.append("───────────────────────────────────────────────────────────\n");
-            sb.append(" Root Cause\n");
-            sb.append("───────────────────────────────────────────────────────────\n");
-            sb.append(String.format("  %s%n", getCause().getClass().getSimpleName()));
-            sb.append(String.format("  %s%n", getCause().getMessage()));
-        }
-
-        sb.append("═══════════════════════════════════════════════════════════\n");
-        return sb.toString();
+        // 简洁一行格式 — 避免 ASCII 艺术被 Serenity/Cucumber 在控制台和报告中重复输出
+        // 详细诊断信息可通过 getDiagnosticInfo() 和 getCause() 获取
+        String diag = diagnosticInfo != null
+            ? String.format(" exists=%s vis=%s en=%s ed=%s count=%d retries=%d",
+                diagnosticInfo.existsInDom, diagnosticInfo.isVisible,
+                diagnosticInfo.isEnabled, diagnosticInfo.isEditable,
+                diagnosticInfo.elementCount, diagnosticInfo.retryCount)
+            : "";
+        String cause = getCause() != null
+            ? " | cause: " + getCause().getClass().getSimpleName()
+            : "";
+        return String.format("[%s] %s on '%s'%s%s", elementState, operation, selector, diag, cause);
     }
 
     // ==================== Builder Pattern ====================

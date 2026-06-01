@@ -373,7 +373,9 @@ public class BrowserStackManager {
         String envVal = System.getenv(envVar);
         if (envVal != null && !envVal.isEmpty()) return Boolean.parseBoolean(envVal);
         if (configKey != null) {
-            try { return FrameworkConfigManager.getBoolean(configKey); } catch (Exception ignored) {}
+            try { return FrameworkConfigManager.getBoolean(configKey); } catch (Exception e) {
+                logger.debug("[BrowserStack] Failed to read boolean config: {}", configKey.name());
+            }
         }
         return defaultVal;
     }

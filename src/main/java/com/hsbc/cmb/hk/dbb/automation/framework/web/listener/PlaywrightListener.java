@@ -2,7 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -30,11 +32,20 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Pattern;
 
 public class PlaywrightListener implements StepListener {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightListener.class);
+
+    /**
+     * 预编译 Pattern — 避免每次截图时重复编译正则表达式
+     */
+    private static final Pattern SANITIZE_FILENAME_PATTERN = Pattern.compile("[^a-zA-Z0-9_-]");
+    private static final Pattern SANITIZE_NAME_PATTERN = Pattern.compile("[^a-zA-Z0-9]");
 
     private final ScreenshotStrategy screenshotStrategy;
 
@@ -57,6 +68,9 @@ public class PlaywrightListener implements StepListener {
 
     // ⭐ 防止 stepFinished() 无参版与 stepFinishedInternal() 参数化版双重处理
     private static final ThreadLocal<Boolean> stepFinishProcessed = ThreadLocal.withInitial(() -> false);
+
+    // ⭐ 防止 stepFinishedInternal() 调用 StepEventBus.stepFinished() 导致递归重入
+    private static final ThreadLocal<Boolean> stepFinishReentrantGuard = ThreadLocal.withInitial(() -> false);
 
     // 存储当前步骤的截图列表
     private static final ThreadLocal<List<ScreenshotAndHtmlSource>> currentStepScreenshots = ThreadLocal.withInitial(ArrayList::new);
@@ -89,12 +103,22 @@ public class PlaywrightListener implements StepListener {
         currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
         totalTests.incrementAndGet();
 
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        ApiMonitorContext.resetCurrent();
+
+        // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
+        try {
+            FrameworkCore.getInstance().beforeTest();
+            recordTestData("testStart", System.currentTimeMillis());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Test initialized: {}", uniqueTestName);
+        } catch (Exception e) {
+            logger.error("Failed to initialize Playwright for test: {}", uniqueTestName, e);
+        }
+
         // 测试开始时截图（根据策略决定）
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
             takeScreenshotAndRegister("TEST_START_" + uniqueTestName);
         }
-        recordTestData("testStart", System.currentTimeMillis());
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Test initialized: {}", uniqueTestName);
     }
 
     private void testFinishedInternal() {
@@ -189,6 +213,7 @@ public class PlaywrightListener implements StepListener {
         // 重置所有防双重处理标志
         stepFinishProcessed.set(false);
         failureScreenshotsAlreadySent.set(false);
+        stepFinishReentrantGuard.set(false);
 
         // 用全新 ArrayList 替换旧列表（彻底断开任何外部引用）
         currentStepScreenshots.set(new ArrayList<>());
@@ -200,6 +225,9 @@ public class PlaywrightListener implements StepListener {
         // 标记当前步骤为 Cucumber 步骤
         currentCucumberStep.set(step.getTitle());
 
+        // ⭐⭐⭐ 注册主测试线程引用 — 供 MonitorHandler 断言失败时中断
+        ApiMonitorContext.getCurrent().setTestThread(Thread.currentThread());
+
         // BEFORE_AND_AFTER_EACH_STEP 策略：在 Cucumber 步骤开始时截图
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
             takeScreenshotAndRegister("STEP_BEFORE_" + step.getTitle());
@@ -210,14 +238,24 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void stepFinished() {
+        // ⭐ 防递归重入：StepEventBus.stepFinished() 会重新触发事件分发
+        if (stepFinishReentrantGuard.get()) {
+            return;
+        }
+        stepFinishReentrantGuard.set(true);
+
         // ⭐ 防双重处理：如果参数化版 stepFinishedInternal 已经处理过，跳过
         if (stepFinishProcessed.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "stepFinished() skipped - already processed by stepFinishedInternal");
+            stepFinishReentrantGuard.set(false);
             return;
         }
 
         Long startTime = stepStartTime.get();
-        if (startTime == null) return;
+        if (startTime == null) {
+            stepFinishReentrantGuard.set(false);
+            return;
+        }
 
         long duration = System.currentTimeMillis() - startTime;
         recordTestData("stepDuration", duration);
@@ -242,7 +280,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本，避免之后 clear() 影响 Serenity 保留的引用
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 清空截图列表，避免重复添加
                 stepScreenshots.clear();
@@ -264,6 +303,13 @@ public class PlaywrightListener implements StepListener {
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
+        stepFinishReentrantGuard.set(false);
+
+        // ⭐⭐⭐ 清除 MonitoringHandler 使用的测试线程引用
+        ApiMonitorContext.getCurrent().clearTestThread();
+
+        // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时兜底执行）
+        checkAndFailOnApiAssertions();
     }
 
     @Override
@@ -280,8 +326,21 @@ public class PlaywrightListener implements StepListener {
         clearStepScreenshotsImmediately();
         currentStepScreenshots.set(new ArrayList<>());  // 重新初始化供本步骤使用
 
-        logger.error("Step failure detected: {}", failure.getException().getMessage());
-        recordTestData("stepFailure", failure.getException().getMessage());
+        // 截断为第一行，避免 buildDetailedErrorMessage 的多段落诊断输出污染日志
+        String fullMsg = failure.getException().getMessage();
+        String shortMsg = fullMsg;
+        if (fullMsg != null) {
+            int newlineIdx = fullMsg.indexOf('\n');
+            if (newlineIdx > 0) {
+                shortMsg = fullMsg.substring(0, newlineIdx).trim();
+            }
+            // 进一步限制长度，防止超长单行
+            if (shortMsg.length() > 200) {
+                shortMsg = shortMsg.substring(0, 197) + "...";
+            }
+        }
+        logger.error("Step failure detected: {}", shortMsg);
+        recordTestData("stepFailure", fullMsg);
         recordTestData("stepFailureCause", failure.getException().getClass().getSimpleName());
 
         // ⭐ 关键修复：无论什么策略，都在步骤失败瞬间截图
@@ -300,7 +359,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots after step failure", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with failure screenshots");
                 // 标记已发送，防止后续 stepFinished() / lastStepFailed 重复调用
                 failureScreenshotsAlreadySent.set(true);
@@ -337,7 +397,8 @@ public class PlaywrightListener implements StepListener {
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots after last step failure", stepScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(stepScreenshots, ZonedDateTime.now());
+                // ⭐ 防残留：传递新 list 副本
+                StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with last step failure screenshots");
                 failureScreenshotsAlreadySent.set(true);  // ⭐ 标记已发送，防止后续重复
                 // 清空截图列表，避免重复处理
@@ -435,13 +496,21 @@ public class PlaywrightListener implements StepListener {
     }
 
     /**
-     * Sanitize filename by replacing invalid characters
+     * Sanitize filename by replacing invalid characters.
+     * 只替换非 a-zA-Z0-9_- 字符，保留下划线和连字符（用于文件名）
      */
-    private String sanitizeFilename(String name) {
+    private static String sanitizeFilename(String name) {
         if (name == null || name.trim().isEmpty()) {
             return "unnamed";
         }
-        return name.replaceAll("[^a-zA-Z0-9_-]", "_");
+        return SANITIZE_FILENAME_PATTERN.matcher(name).replaceAll("_");
+    }
+
+    /**
+     * Sanitize name for general use — 替换所有非 a-zA-Z0-9 字符（用于 display name）
+     */
+    private static String sanitizeName(String name) {
+        return name == null ? "unnamed" : SANITIZE_NAME_PATTERN.matcher(name).replaceAll("_");
     }
 
     private void recordTestData(String key, Object value) {
@@ -463,6 +532,34 @@ public class PlaywrightListener implements StepListener {
             }
         }
     }
+    /**
+     * ⭐ 自动清理当前线程的 RouteRegistry 条目（防内存泄漏 + 跨用例路由污染）。
+     *
+     * <p>在 testFinished 中调用，从 PlaywrightManager 获取当前线程的 Page / Context，
+     * 清理 RouteRegistry 中对应的 pattern 记录，释放 RouteEngine 防重门控集合。
+     *
+     * <p>异常安全：PlaywrightManager.getPage()/getContext() 在某些异常路径下可能抛异常，
+     * 逐个 try-catch 保证一个失败不影响另一个。
+     */
+    private void cleanupRouteRegistryForCurrentThread() {
+        try {
+            Object page = PlaywrightManager.getPage();
+            if (page != null) {
+                RouteRegistry.clearContext(page);
+            }
+        } catch (Exception e) {
+            logger.debug("RouteRegistry cleanup for Page skipped: {}", e.getMessage());
+        }
+        try {
+            Object context = PlaywrightManager.getContext();
+            if (context != null) {
+                RouteRegistry.clearContext(context);
+            }
+        } catch (Exception e) {
+            logger.debug("RouteRegistry cleanup for BrowserContext skipped: {}", e.getMessage());
+        }
+        // RouteEngine.clearDispatchedRoutes() 已由 RouteRegistry.clearContext() 内部调用，无需重复
+    }
 
     private void cleanupThreadLocals() {
         // ⭐⭐⭐ 最关键：先强制清空截图内容（防止残留），再移除所有 ThreadLocal
@@ -477,16 +574,11 @@ public class PlaywrightListener implements StepListener {
         takingScreenshot.remove();
         failureScreenshotsAlreadySent.remove();
         stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
+        stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
-    }
 
-    private String sanitizeName(String name) {
-        return sanitizeNameStatic(name);
-    }
-
-
-    private static String sanitizeNameStatic(String name) {
-        return name == null ? "unnamed" : name.replaceAll("[^a-zA-Z0-9]", "_");
+        // ⭐⭐⭐ 新增：清理 API 监控上下文
+        ApiMonitorContext.removeCurrent();
     }
 
     private String getStackTrace(Throwable throwable) {
@@ -509,9 +601,12 @@ public class PlaywrightListener implements StepListener {
     }
 
     private void stepFinishedInternal(List<ScreenshotAndHtmlSource> screenshots, ZonedDateTime timestamp) {
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
-
+        // ⭐ 防递归重入：StepEventBus.stepFinished() 会触发事件重新分发到本监听器，
+        // 导致 stepFinishedInternal() → StepEventBus.stepFinished() → stepFinishedInternal() → ... 无限递归
+        if (stepFinishReentrantGuard.get()) {
+            return;
+        }
+        stepFinishReentrantGuard.set(true);
 
         // ⭐ 防双重处理：如果无参版 stepFinished() 已经处理过，跳过截图和发送
         boolean alreadyProcessed = stepFinishProcessed.get();
@@ -520,6 +615,7 @@ public class PlaywrightListener implements StepListener {
         if (startTime == null) {
             // 即使没有 startTime 也要清理标志
             stepFinishProcessed.remove();
+            stepFinishReentrantGuard.set(false);
             return;
         }
 
@@ -547,35 +643,45 @@ public class PlaywrightListener implements StepListener {
         // 将当前步骤的截图合并到 Serenity 传入的截图列表中
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
         
-        // ⭐ 防残留：合并前强制清理上一步骤遗留的截图（如 SCREEN_CHANGE 等非当前步骤产生的）
+        // ⭐ 防残留（修复）：不再直接 addAll 到 Serenity 的 list（避免跨步骤共享 list 导致累积）。
+        // 改为创建全新的 list，杜绝对 Serenity 内部数据结构的污染。
+        List<ScreenshotAndHtmlSource> mergedScreenshots = null;
         if (stepScreenshots != null && !stepScreenshots.isEmpty()) {
             LoggingConfigUtil.logDebugIfVerbose(logger,
-                    "Before merge cleanup: stepScreenshots.size={} (will be merged into Serenity list)",
-                    stepScreenshots.size());
+                    "Before merge: stepScreenshots.size={}, Serenity screenshots.size={}",
+                    stepScreenshots.size(), screenshots != null ? screenshots.size() : 0);
 
-            if (screenshots != null) {
-                // 追加我们的截图
-                screenshots.addAll(stepScreenshots);
-                LoggingConfigUtil.logDebugIfVerbose(
-                        logger, "After merge: total screenshots.size={}", screenshots.size());
+            // 创建全新 list，合并 Serenity 传入的 + 当前步骤产生的截图
+            int totalSize = stepScreenshots.size() + (screenshots != null ? screenshots.size() : 0);
+            mergedScreenshots = new ArrayList<>(totalSize);
+            if (screenshots != null && !screenshots.isEmpty()) {
+                mergedScreenshots.addAll(screenshots);  // 先加 Serenity 的
             }
+            mergedScreenshots.addAll(stepScreenshots);  // 再加当前步骤的
+            
+            LoggingConfigUtil.logDebugIfVerbose(
+                    logger, "After merge: new mergedScreenshots.size={}", mergedScreenshots.size());
+            
             // 清空当前步骤的截图列表，避免影响下一个步骤（防残留核心）
             stepScreenshots.clear();
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "Cleared stepScreenshots after merging");
+        } else if (screenshots != null && !screenshots.isEmpty()) {
+            // 当前步骤没有截图，但 Serenity 有 → 也用新 list 封装（避免直接传递 Serenity 的可变 list）
+            mergedScreenshots = new ArrayList<>(screenshots);
         } else {
             LoggingConfigUtil.logDebugIfVerbose(
                     logger, "No step screenshots to merge (list is empty or null)");
         }
 
         // ⭐ 防双重发送：仅当无参版 stepFinished() 未处理时才发送 StepEventBus
-        if (!alreadyProcessed && screenshots != null && !screenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
-            recordTestData("stepScreenshotsCount", screenshots.size());
+        if (!alreadyProcessed && mergedScreenshots != null && !mergedScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
+            recordTestData("stepScreenshotsCount", mergedScreenshots.size());
             // 手动调用 StepEventBus 的 stepFinished 方法来传递截图
             LoggingConfigUtil.logDebugIfVerbose(
-                    logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", screenshots.size());
+                    logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", mergedScreenshots.size());
             try {
-                StepEventBus.getEventBus().stepFinished(screenshots, ZonedDateTime.now());
+                StepEventBus.getEventBus().stepFinished(mergedScreenshots, ZonedDateTime.now());
                 LoggingConfigUtil.logDebugIfVerbose(
                         logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 标记已处理，防止无参版 stepFinished() 重复处理
@@ -585,7 +691,7 @@ public class PlaywrightListener implements StepListener {
             }
         } else if (failureScreenshotsAlreadySent.get()) {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() in stepFinishedInternal - already sent by stepFailed");
-            // ⭐ 防残留：即使已发送过，也要确保列表被清空
+            // ⭐ 防残留：清空 Serenity 传入的 list
             if (screenshots != null) screenshots.clear();
         } else {
             LoggingConfigUtil.logDebugIfVerbose(
@@ -597,6 +703,10 @@ public class PlaywrightListener implements StepListener {
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
         failureScreenshotsAlreadySent.set(false);
         stepFinishProcessed.set(false);
+        stepFinishReentrantGuard.set(false);
+
+        // ⭐⭐⭐ 框架级 API 断言检查（每个 Cucumber 步骤结束时自动执行）
+        checkAndFailOnApiAssertions();
 
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step completed in {}ms", duration);
     }
@@ -605,9 +715,6 @@ public class PlaywrightListener implements StepListener {
     public void takeScreenshots(List<ScreenshotAndHtmlSource> screenshots) {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with {} screenshots",
                 screenshots != null ? screenshots.size() : 0);
-
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
 
         // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时，防止残留）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
@@ -623,9 +730,6 @@ public class PlaywrightListener implements StepListener {
     public void takeScreenshots(TestResult result, List<ScreenshotAndHtmlSource> screenshots) {
         LoggingConfigUtil.logDebugIfVerbose(logger, "takeScreenshots called with result {} and {} screenshots",
                 result, screenshots != null ? screenshots.size() : 0);
-
-        // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点）
-        flushPendingApiMonitorReport();
 
         // 将当前步骤的截图添加到传入的列表中（仅在当前步骤活跃时）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
@@ -660,8 +764,7 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testSuiteFinished() {
-        LoggingConfigUtil.logDebugIfVerbose(
-                logger, "Test suite finished");
+        logger.info("Test suite finished");
 
         // 使用原子操作确保只清理一次
         synchronized (PlaywrightListener.class) {
@@ -673,13 +776,6 @@ public class PlaywrightListener implements StepListener {
         
         // 清理逻辑
         LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up all Playwright resources at test suite finish");
-        
-        // ⭐ 修复6：整个 Feature/Suite 结束时终极清场 RealApiMonitor（防止残留）
-        try {
-            com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.forceCleanAll();
-        } catch (Exception e) {
-            logger.debug("Failed to force clean RealApiMonitor at suite finish", e);
-        }
         
         try {
             PlaywrightManager.cleanupForFeature();
@@ -695,6 +791,9 @@ public class PlaywrightListener implements StepListener {
         currentTestName.set(uniqueTestName);
         testStartTime.set(System.currentTimeMillis());
         totalTests.incrementAndGet();
+
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        ApiMonitorContext.resetCurrent();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -714,6 +813,9 @@ public class PlaywrightListener implements StepListener {
         testStartTime.set(startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis());
         totalTests.incrementAndGet();
 
+        // ⭐⭐⭐ 新增：重置 API 监控上下文
+        ApiMonitorContext.resetCurrent();
+
         try {
             FrameworkCore.getInstance().beforeTest();
             long start = startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis();
@@ -730,21 +832,16 @@ public class PlaywrightListener implements StepListener {
     public void testFinished(TestOutcome result) {
         try {
             logger.info("Test finished: {}", result);
-            // ⭐ 刷新 ApiMonitor 待写入的报告（主线程回调点 - 测试结束前最后机会）
-            flushPendingApiMonitorReport();
+            // ⭐⭐⭐ 新增：检查 API 断言失败并标记测试结果
+            checkAndMarkApiAssertionFailures(result);
             // 更新当前测试结果
             if (result != null && result.getResult() != null) {
                 currentTestResult.set(result.getResult());
             }
             testFinishedInternal();
 
-            // ⭐ 修复3：每个 scenario/test 结束时自动清空 RealApiMonitor 状态
-            // 防止上一个 scenario 的监听/历史/期望泄漏到下一个 scenario
-            try {
-                com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.resetForNextScenario();
-            } catch (Exception e) {
-                logger.debug("Failed to reset RealApiMonitor for next scenario", e);
-            }
+            // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
+            cleanupRouteRegistryForCurrentThread();
 
             // 获取浏览器重启策略
             String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
@@ -763,14 +860,14 @@ public class PlaywrightListener implements StepListener {
 
             // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
             BasePage.clearCurrentPage();
-
-            // 检查是否需要重试失败的测试
-            checkAndTriggerRerun();
         } catch (Exception e) {
             logger.error("Error in testFinished, forcing cleanup", e);
-            // 确保异常时也清理
-            cleanupThreadLocals();
+            RouteEngine.clearDispatchedRoutes();
             throw e;
+        } finally {
+            // 确保异常和正常路径均清理 ThreadLocal 和 API 监控上下文
+            cleanupThreadLocals();
+            ApiMonitorContext.removeCurrent();
         }
     }
 
@@ -784,8 +881,8 @@ public class PlaywrightListener implements StepListener {
         try {
             LoggingConfigUtil.logDebugIfVerbose(logger, "Test finished: {}, isDataDriven: {}, finishTime: {}", result, isInDataDrivenTest, finishTime);
 
-            // ⭐ 数据驱动版本也需要 flush API 监控报告（防止数据驱动场景报告丢失）
-            flushPendingApiMonitorReport();
+            // ⭐⭐⭐ 新增：检查 API 断言失败并标记测试结果
+            checkAndMarkApiAssertionFailures(result);
 
             Long startTime = testStartTime.get();
             if (startTime == null) {
@@ -828,17 +925,31 @@ public class PlaywrightListener implements StepListener {
             }
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
-
-            // ⭐ 修复：数据驱动版本也需要 resetForNextScenario（防止跨 Example API 监控污染）
-            // 注意：此方法在 finally 之前执行，确保即使 reset 抛异常也能进入 cleanupThreadLocals
-            try {
-                com.hsbc.cmb.hk.dbb.automation.framework.web.monitoring.RealApiMonitor.resetForNextScenario();
-            } catch (Exception e) {
-                logger.debug("Failed to reset RealApiMonitor for next scenario (data-driven)", e);
-            }
+        } catch (Exception e) {
+            logger.error("Error in testFinished with time, forcing cleanup", e);
+            RouteEngine.clearDispatchedRoutes();
+            throw e;
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
+            // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
+            cleanupRouteRegistryForCurrentThread();
+
+            // ⭐ 修复：补齐 Playwright 资源清理（与 testFinished(TestOutcome) 保持一致）
+            try {
+                String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
+                        .getProperty("serenity.restart.browser.for.each", "scenario");
+                if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
+                    logger.info("Cleaning up Playwright resources (scenario-level restart)");
+                    PlaywrightManager.cleanupForScenario();
+                } else {
+                    logger.debug("Feature mode - cleaning page state while keeping Context/Page");
+                    PlaywrightManager.cleanupPageState();
+                }
+                BasePage.clearCurrentPage();
+            } catch (Exception e) {
+                logger.error("Failed to clean up Playwright resources after test: {}", e.getMessage());
+            }
         }
     }
 
@@ -884,7 +995,16 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testFailed(TestOutcome result, Throwable throwable) {
-        logger.error("Test failed: {}", result, throwable);
+        // 简洁输出：仅显示测试名 + 异常消息第一行，不打印完整堆栈（由 Serenity 报告保留）
+        String testTitle = result != null ? result.getTitle() : "unknown";
+        String errorMsg = throwable != null ? throwable.getMessage() : "Unknown error";
+        if (errorMsg != null && errorMsg.contains("\n")) {
+            errorMsg = errorMsg.substring(0, errorMsg.indexOf('\n')).trim();
+        }
+        logger.error("Test failed: {} - {}", testTitle, errorMsg);
+
+        // ⭐⭐⭐ 新增：检查 API 断言失败
+        checkAndMarkApiAssertionFailures(result);
 
         // 注意：不在 testFailed 中 increment failedTests，避免与 testFinished 重复计数
         // 测试失败统计由 testFinished 统一处理
@@ -920,19 +1040,6 @@ public class PlaywrightListener implements StepListener {
         //     takeScreenshotAndRegister("SCREEN_CHANGE");
         // }
         LoggingConfigUtil.logDebugIfVerbose(logger, "SCREEN_CHANGE screenshot disabled (report length optimization)");
-    }
-
-    /**
-     * 刷新 ApiMonitor 待写入的报告（从异步线程缓存 → 主线程 Serenity 报告）
-     * 在主线程的各个回调点（stepFinished/takeScreenshots/testFinished）中调用，
-     * 解决异步线程（ApiMonitor-AsyncStop）无 Serenity 上下文导致 CurrentListener is null 的问题
-     */
-    private static void flushPendingApiMonitorReport() {
-        try {
-            RealApiMonitor.flushPendingReport();
-        } catch (Exception e) {
-            logger.debug("Failed to flush pending API monitor report", e);
-        }
     }
 
     @Override
@@ -1005,6 +1112,11 @@ public class PlaywrightListener implements StepListener {
             int maxRerunAttempts = Integer.parseInt(rerunCountStr);
             logger.info("Starting rerun with max attempts: {}", maxRerunAttempts);
 
+            // 重试前强制清理当前线程的路由规则和 API 监控上下文，避免重试复用旧数据
+            cleanupRouteRegistryForCurrentThread();
+            ApiMonitorContext.removeCurrent();
+            logger.debug("Route registry and API monitor context cleaned before rerun");
+
             // 保存当前重试数据到文件，供 rerun 进程使用
             PlaywrightRetryListener.getInstance().saveToFile();
 
@@ -1071,5 +1183,136 @@ public class PlaywrightListener implements StepListener {
         screenshotCounter.set(0);
         testData.clear();
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ⭐⭐⭐ API 监控断言集成
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * ⭐⭐⭐ 核心方法：检查 API 断言失败并标记测试结果为失败
+     *
+     * <p>在测试结束时调用，等待所有异步 API 请求完成（最多 5 秒），
+     * 如果 MonitorHandler 标记了断言失败，则强制设置 TestResult.FAILURE。
+     */
+    private void checkAndMarkApiAssertionFailures(TestOutcome result) {
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        if (context == null) {
+            return;
+        }
+
+        // 等待所有异步 API 请求完成（通过系统属性配置超时，默认 15 秒，避免 CI 环境超时）
+        long timeoutMs = Long.parseLong(
+                System.getProperty("api.assertion.wait.timeout.ms", "15000"));
+        try {
+            boolean completed = context.awaitCompletion(timeoutMs);
+            if (!completed) {
+                logger.warn("Timed out waiting for API requests to complete ({} active, timeout={}ms)",
+                        context.getActiveRequests(), timeoutMs);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            logger.debug("Interrupted while waiting for API requests to complete");
+        }
+
+        // 检查是否有 API 断言失败
+        if (context.hasAssertionFailures()) {
+            logger.error("API assertions failed for test: {}", currentTestName.get());
+
+            // 生成详细失败报告
+            String failureReport = context.buildFailureReport();
+            logger.error("API assertion failure details:\n{}", failureReport);
+
+            // 将测试结果标记为失败
+            if (result != null) {
+                result.setResult(TestResult.FAILURE);
+            }
+
+            // 记录失败信息
+            recordTestData("apiAssertionFailure", "API assertions failed during test execution");
+            recordTestData("apiAssertionFailureDetails", failureReport);
+
+            // 记录到 Serenity 报告
+            try {
+                net.serenitybdd.core.Serenity.recordReportData()
+                    .withTitle("API ASSERTION FAILURES DETECTED")
+                    .andContents(failureReport);
+            } catch (Exception e) {
+                logger.debug("Failed to record API assertion failure to Serenity report", e);
+            }
+        }
+        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiMonitorContext.removeCurrent()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ⭐⭐⭐ 框架级 API 断言自动检查
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * ⭐⭐⭐ 框架级：在每个步骤结束时自动检查 API 断言是否失败。
+     *
+     * <p><b>两层检查</b>：
+     * <ol>
+     *   <li><b>Fail-Fast（主路径）</b>：检测当前线程是否被 {@code MonitorHandler.signalFailFast()}
+     *       通过 {@code Thread.interrupt()} 中断。若是，说明 Playwright 事件线程已同步检测到
+     *       断言失败并中断了主线程，直接抛出 {@code AssertionError}。</li>
+     *   <li><b>兜底（兼容路径）</b>：检查 {@link ApiMonitorContext#hasAssertionFailures()}。
+     *       如果 fail-fast 未触发（例如 MonitorHandler 在 interrupt 之前便已退出），
+     *       仍通过上下文标记来捕获断言失败。</li>
+     * </ol>
+     *
+     * <p>Step 代码无需手动检查 — 框架自动处理。
+     *
+     * <p>性能：若无活跃请求且无断言失败，方法立即返回（零开销）。
+     */
+    private void checkAndFailOnApiAssertions() {
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+
+        // ═══ 第一层：Fail-Fast 检查（主路径）══════
+        // MonitorHandler 在 Playwright 事件线程上同步断言失败后，
+        // 通过 context.signalFailFast() → testThread.interrupt() 中断本线程。
+        // 此处的 interrupted() 清除中断标记并返回 true，立即抛出断言错误。
+        if (Thread.interrupted()) {
+            logger.error("Test thread interrupted by API assertion failure (fail-fast)");
+            String report = context.buildFailureReport();
+            if (report != null && !report.contains("No assertion failures")) {
+                throw new AssertionError("API assertion failures detected (fail-fast):\n" + report);
+            } else {
+                throw new AssertionError("API assertion failure detected (fail-fast) — "
+                        + "check logs above for [MonitorHandler] assertion details");
+            }
+        }
+
+        // ═══ 第二层：兜底检查（兼容路径）══════
+        // 如果 fail-fast 未触发（异常路径），仍通过上下文标记检测
+        if (!context.hasAssertionFailures()) {
+            return;  // 无断言失败 → 零开销返回
+        }
+
+        // 等待异步存储任务完成（避免报告不完整）
+        if (context.getActiveRequests() > 0) {
+            try {
+                boolean completed = context.awaitCompletion(5000);
+                if (!completed) {
+                    logger.warn("Step finished but {} API request(s) still active after 5s timeout",
+                            context.getActiveRequests());
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logger.debug("Interrupted while waiting for API request completion in step check");
+            }
+        }
+
+        // 断言失败 → 直接抛出 AssertionError，由 Serenity 捕获并标记 Step 为失败
+        String report = context.buildFailureReport();
+        logger.error("API assertions failed during step:\n{}", report);
+        throw new AssertionError("API assertion failures detected:\n" + report);
+    }
+
+    /**
+     * ⭐⭐⭐ API 监控上下文 — 已独立为顶层类。
+     *
+     * @see ApiMonitorContext
+     */
+    // 原内部类已迁移至 com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext
 
 }

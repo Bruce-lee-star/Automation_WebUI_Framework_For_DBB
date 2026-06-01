@@ -45,7 +45,7 @@ public class DatabaseUtil {
     private static DatabaseType databaseType;
     private static String dbUrl;
     private static String dbUser;
-    private static String dbPassword;
+    private static char[] dbPassword;     // 使用 char[] 防止内存 dump 泄露
     private static boolean useConnectionPool = false;
     
     // 事务管理
@@ -69,10 +69,13 @@ public class DatabaseUtil {
      * @param usePool 是否使用连接池
      */
     public static void initializeDatabaseConfig(DatabaseType type, String url, String user, String password, boolean usePool) {
+        // 安全处理：清除旧密码
+        clearPassword();
+        
         databaseType = type;
         dbUrl = url;
         dbUser = user;
-        dbPassword = password;
+        dbPassword = password != null ? password.toCharArray() : null;
         useConnectionPool = usePool;
         
         if (useConnectionPool) {
@@ -80,7 +83,17 @@ public class DatabaseUtil {
         }
         
         logger.info("Database configuration initialized: type={}, url={}, user={}, pool={}", 
-            databaseType, maskPasswordInUrl(dbUrl), maskPassword(dbUser), useConnectionPool);
+            databaseType, maskPasswordInUrl(dbUrl), dbUser, useConnectionPool);
+    }
+    
+    /**
+     * 安全清除密码（防止内存 dump 泄露）
+     */
+    private static void clearPassword() {
+        if (dbPassword != null) {
+            java.util.Arrays.fill(dbPassword, '\0');
+            dbPassword = null;
+        }
     }
     
     /**
@@ -91,7 +104,10 @@ public class DatabaseUtil {
             HikariConfig config = new HikariConfig();
             config.setJdbcUrl(dbUrl);
             config.setUsername(dbUser);
-            config.setPassword(dbPassword);
+            // JDBC 驱动要求 String 密码，临时转换后清除引用（减小内存窗口期）
+            String pwd = dbPassword != null ? new String(dbPassword) : null;
+            config.setPassword(pwd);
+            pwd = null;  // 尽快清除 String 引用
             config.setDriverClassName(databaseType.getDriverClass());
             config.setMaximumPoolSize(maxPoolSize);
             config.setMinimumIdle(minIdle);
@@ -108,10 +124,12 @@ public class DatabaseUtil {
                     config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
                     config.addDataSourceProperty("useSSL", "false");
                     config.addDataSourceProperty("serverTimezone", "UTC");
+                    logger.warn("MySQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
                     break;
                 case POSTGRESQL:
                     config.addDataSourceProperty("ssl", "false");
                     config.addDataSourceProperty("sslmode", "disable");
+                    logger.warn("PostgreSQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
                     break;
                 case ORACLE:
                     config.addDataSourceProperty("oracle.jdbc.timezoneAsRegion", "false");
@@ -169,7 +187,10 @@ public class DatabaseUtil {
             Class.forName(databaseType.getDriverClass());
             Properties props = new Properties();
             props.setProperty("user", dbUser);
-            props.setProperty("password", dbPassword);
+            // JDBC 驱动要求 String 密码，临时转换后清除引用（减小内存窗口期）
+            String pwd = dbPassword != null ? new String(dbPassword) : null;
+            props.setProperty("password", pwd);
+            pwd = null;  // 尽快清除 String 引用
             
             // 数据库特定属性
             switch (databaseType) {
@@ -401,8 +422,8 @@ public class DatabaseUtil {
             connection = getConnection();
             statement = connection.createStatement();
             
-            // 分割SQL脚本为单独的语句
-            String[] sqlStatements = script.split(";");
+            // 使用安全的 SQL 脚本分割方法，正确处理引号内的分号
+            String[] sqlStatements = splitSqlScript(script);
             for (String sql : sqlStatements) {
                 String trimmedSql = sql.trim();
                 if (!trimmedSql.isEmpty()) {
@@ -552,11 +573,68 @@ public class DatabaseUtil {
         }
     }
     
+    // SQL 注入防护：表名只允许字母、数字、下划线和点号
+    private static final java.util.regex.Pattern TABLE_NAME_PATTERN = 
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\.]+$");
+    
+    // SQL 注入防护：WHERE 子句只允许安全字符（字母、数字、空格、下划线、引号、括号、问号、运算符）
+    private static final java.util.regex.Pattern WHERE_CLAUSE_PATTERN = 
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\s'\"()?.,=<>!+\\-*/%|&@:]+$");
+    
     /**
-     * 获取数据库元数据
-     * @return 数据库元数据对象
-     * @throws SQLException 如果获取失败
+     * 验证表名是否安全，防止 SQL 注入
      */
+    private static String validateTableName(String tableName) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Table name must not be null or empty");
+        }
+        if (!TABLE_NAME_PATTERN.matcher(tableName).matches()) {
+            throw new IllegalArgumentException("Invalid table name (potential SQL injection): " + tableName);
+        }
+        return tableName;
+    }
+    
+    /**
+     * 验证 WHERE 子句是否安全，防止 SQL 注入
+     */
+    private static void validateWhereClause(String whereClause) {
+        if (whereClause != null && !whereClause.trim().isEmpty()) {
+            if (!WHERE_CLAUSE_PATTERN.matcher(whereClause).matches()) {
+                throw new IllegalArgumentException(
+                        "Unsafe WHERE clause detected, use parameterized placeholders (?) instead: " + whereClause);
+            }
+        }
+    }
+    
+    /**
+     * 分割 SQL 脚本，正确处理引号内的分号
+     */
+    private static String[] splitSqlScript(String script) {
+        java.util.List<String> statements = new java.util.ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+        
+        for (int i = 0; i < script.length(); i++) {
+            char c = script.charAt(i);
+            if (c == '\'' && !inDoubleQuote) {
+                inSingleQuote = !inSingleQuote;
+            } else if (c == '"' && !inSingleQuote) {
+                inDoubleQuote = !inDoubleQuote;
+            }
+            
+            if (c == ';' && !inSingleQuote && !inDoubleQuote) {
+                statements.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(c);
+            }
+        }
+        if (current.length() > 0) {
+            statements.add(current.toString());
+        }
+        return statements.toArray(new String[0]);
+    }
     public static DatabaseMetaData getDatabaseMetaData() throws SQLException {
         Connection connection = getConnection();
         return connection.getMetaData();
@@ -612,6 +690,9 @@ public class DatabaseUtil {
      * @throws SQLException 如果验证失败
      */
     public static boolean dataExists(String tableName, String whereClause, Object... params) throws SQLException {
+        validateTableName(tableName);
+        validateWhereClause(whereClause);
+        
         String sql = "SELECT COUNT(*) as count FROM " + tableName;
         if (whereClause != null && !whereClause.trim().isEmpty()) {
             sql += " WHERE " + whereClause;
@@ -635,6 +716,9 @@ public class DatabaseUtil {
      * @throws SQLException 如果验证失败
      */
     public static boolean validateData(String tableName, String whereClause, long expectedCount, Object... params) throws SQLException {
+        validateTableName(tableName);
+        validateWhereClause(whereClause);
+        
         String sql = "SELECT COUNT(*) as count FROM " + tableName;
         if (whereClause != null && !whereClause.trim().isEmpty()) {
             sql += " WHERE " + whereClause;
@@ -715,23 +799,18 @@ public class DatabaseUtil {
      */
     public static String getConnectionStatus() {
         try {
-            Connection connection = getConnection();
-            if (connection != null && !connection.isClosed()) {
-                return String.format("Connected to %s database: %s, User: %s, Pool: %s", 
-                    databaseType, maskPasswordInUrl(dbUrl), maskPassword(dbUser), useConnectionPool);
+            // 不创建/关闭新连接，仅使用已有状态信息
+            if (useConnectionPool && dataSource != null && !dataSource.isClosed()) {
+                return String.format("Connected (pooled) to %s database: %s, User: %s", 
+                    databaseType, maskPasswordInUrl(dbUrl), dbUser);
+            } else if (databaseType != null) {
+                return String.format("Configured %s database: %s, User: %s (no pool)", 
+                    databaseType, maskPasswordInUrl(dbUrl), dbUser);
             } else {
-                return "Database connection is not established";
+                return "Database connection is not configured";
             }
-        } catch (SQLException e) {
-            return String.format("Failed to get connection: %s", e.getMessage());
-        } finally {
-            try {
-                if (dataSource != null) {
-                    dataSource.getConnection().close();
-                }
-            } catch (SQLException e) {
-                // 忽略关闭异常
-            }
+        } catch (Exception e) {
+            return String.format("Failed to get status: %s", e.getMessage());
         }
     }
     
@@ -800,6 +879,7 @@ public class DatabaseUtil {
             dataSource.close();
             logger.info("Connection pool shutdown completed");
         }
+        clearPassword();
     }
     
     /**

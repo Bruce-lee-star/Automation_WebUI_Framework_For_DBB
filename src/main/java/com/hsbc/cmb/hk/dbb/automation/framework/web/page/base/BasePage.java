@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -25,6 +26,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
@@ -34,19 +36,27 @@ public abstract class BasePage {
     private static final ThreadLocal<BasePage> currentPage = new ThreadLocal<>();
 
     // ===================== 全局文本统一格式化工具 =====================
+    /**
+     * 文本标准化：与 PageElement.getText() 保持完全一致。
+     * 1. NFKC 规范化 — 一次搞定 en-dash/em-dash→-、smart-quotes→"/'、NBSP→空格、全角→半角
+     * 2. 删除零宽空格等格式控制字符
+     * 3. 合并所有空白(空格/换行/制表)为单个空格
+     * 4. 去掉中英文标点前的空格
+     * 5. 首尾去空
+     */
+    private static final Pattern NS_MULTI_SPACE = Pattern.compile("\\s+");
+    private static final Pattern NS_SPACE_BEFORE_PUNCT = Pattern.compile("\\s+([.,!?;:。，！？；：])");
+    private static final Pattern NS_CONTROL_CHARS = Pattern.compile("\\p{Cf}");
+
     protected String normalizeText(String raw) {
         if (raw == null) {
             return "";
         }
-        // 1. 替换&nbsp不间断空格  \u00A0
-        // 2. 合并所有空白(空格/换行/制表)为单个空格
-        // 3. 去掉标点前的空格（处理 SVG 角标等产生的多余空白）
-        //    覆盖中英文标点: . , ! ? ; : 。 ， ！ ？ ； ：
-        // 4. 首尾去空
-        return raw.replace('\u00A0', ' ')
-                .replaceAll("\\s+", " ")
-                .replaceAll("\\s+([.,!?;:。，！？；：])", "$1")
-                .trim();
+        String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
+        normalized = NS_CONTROL_CHARS.matcher(normalized).replaceAll("");
+        normalized = NS_MULTI_SPACE.matcher(normalized).replaceAll(" ");
+        normalized = NS_SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");
+        return normalized.trim();
     }
 
     public BasePage() {
@@ -162,19 +172,31 @@ public abstract class BasePage {
     }
 
     public void waitForElementVisibleWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isVisible(), timeout, "visible: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.VISIBLE)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not visible: " + selector);
         }
     }
 
     public void waitForElementHiddenWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isHidden(), timeout, "hidden: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.HIDDEN)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not hidden: " + selector);
         }
     }
 
     public void waitForElementExists(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).count() > 0, timeout, "exists: " + selector)) {
+        try {
+            locator(selector).waitFor(new Locator.WaitForOptions()
+                .setState(WaitForSelectorState.ATTACHED)
+                .setTimeout((long) timeout * 1000));
+        } catch (TimeoutError e) {
             throw new TimeoutException("Element not exists: " + selector);
         }
     }
@@ -186,10 +208,14 @@ public abstract class BasePage {
     }
 
     public void waitForElementEditable(String selector, int timeout) {
-        waitForElementEnabled(selector, timeout);
+        waitForElementVisibleWithinTime(selector, timeout);
+        if (!waitForCondition(() -> locator(selector).isEditable(), timeout, "editable: " + selector)) {
+            throw new TimeoutException("Element not editable: " + selector);
+        }
     }
 
     public void waitForElementEnabled(String selector, int timeout) {
+        waitForElementExists(selector, timeout);
         if (!waitForCondition(() -> locator(selector).isEnabled(), timeout, "enabled: " + selector)) {
             throw new TimeoutException("Element not enabled: " + selector);
         }
@@ -817,7 +843,8 @@ public abstract class BasePage {
     }
 
     public void waitForElementClickableWithinTime(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isVisible() && locator(selector).isEnabled(),
+        waitForElementVisibleWithinTime(selector, timeout);
+        if (!waitForCondition(() -> locator(selector).isEnabled(),
                 timeout, "clickable: " + selector)) {
             throw new TimeoutException("Element not clickable: " + selector);
         }

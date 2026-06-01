@@ -12,8 +12,6 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -39,27 +37,35 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 收集完整的诊断信息
+     * 收集完整的诊断信息（批量单次 JS 调用，4 次 IPC → 1 次 IPC）
      */
     public ElementOperationException.DiagnosticInfo collect() {
         ElementOperationException.DiagnosticInfo info = ElementOperationException.DiagnosticInfo.create();
 
         try {
-            info.existsInDom(checkExistsInDom())
-               .isVisible(checkIsVisible())
-               .isEnabled(checkIsEnabled())
-               .isEditable(checkIsEditable())
-               .elementCount(getElementCount());
+            // 批量收集：一次 page.evaluate() 完成存在性/可见性/可编辑性/可交互性/数量/标签/属性检查
+            boolean detailed = PlaywrightManager.config().isElementDetailedDiagnostics();
+            String script = buildBatchDiagnosticScript(detailed);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> result = (Map<String, Object>) page.evaluate(script, selector);
 
-            // 收集额外属性（可选，根据配置决定）
-            if (PlaywrightManager.config().isElementDetailedDiagnostics()) {
-                info.tagName(getTagName());
-                info.attributes(getElementAttributes());
+            info.existsInDom(getBoolean(result, "exists"))
+               .isVisible(getBoolean(result, "visible"))
+               .isEnabled(getBoolean(result, "enabled"))
+               .isEditable(getBoolean(result, "editable"))
+               .elementCount(getInt(result, "count"));
+
+            if (detailed) {
+                info.tagName(getString(result, "tagName"));
+                @SuppressWarnings("unchecked")
+                Map<String, String> attrs = (Map<String, String>) result.get("attributes");
+                if (attrs != null) {
+                    info.attributes(attrs);
+                }
             }
         } catch (Exception e) {
             logger.warn("Failed to collect full diagnostic info for [{}]: {}",
                 selector, e.getMessage());
-            // 尽可能多地收集信息，即使部分失败
             try {
                 info.elementCount(getElementCount());
             } catch (Exception ignored) {
@@ -71,54 +77,47 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 检查元素是否存在于 DOM 中
+     * 构建批量诊断 JS 脚本——一次 DOM 查询返回所有所需字段
      */
-    private boolean checkExistsInDom() {
-        try {
-            return locator.count() > 0;
-        } catch (Exception e) {
-            logger.debug("Element [{}] not found in DOM: {}", selector, e.getMessage());
-            return false;
-        }
+    private static String buildBatchDiagnosticScript(boolean detailed) {
+        String keysJson = "['id','class','name','type','disabled','readonly','data-testid']";
+        return "(selector) => {\n" +
+            "  const el = document.querySelector(selector);\n" +
+            "  if (!el) return { exists: false, visible: false, enabled: false, editable: false, count: 0, tagName: 'unknown'" + (detailed ? ", attributes: {}" : "") + " };\n" +
+            "  const all = document.querySelectorAll(selector);\n" +
+            "  const cs = getComputedStyle(el);\n" +
+            "  const result = {\n" +
+            "    exists: true,\n" +
+            "    visible: el.offsetParent !== null && cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0,\n" +
+            "    enabled: !el.disabled,\n" +
+            "    editable: !el.readOnly && !el.disabled && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable),\n" +
+            "    count: all.length\n" +
+            "  };\n" +
+            (detailed ?
+            "  result.tagName = el.tagName;\n" +
+            "  const attrs = {};\n" +
+            "  const keys = " + keysJson + ";\n" +
+            "  keys.forEach(function(k) { const v = el.getAttribute(k); if (v !== null) attrs[k] = v; });\n" +
+            "  result.attributes = attrs;\n"
+            : "") +
+            "  return result;\n" +
+            "}";
     }
 
-    /**
-     * 检查元素是否可见
-     * 注意：必须使用短超时（100ms），否则 isVisible() 会等待最多 300 秒
-     */
-    private boolean checkIsVisible() {
-        try {
-            return locator.isVisible(new Locator.IsVisibleOptions().setTimeout(100));
-        } catch (Exception e) {
-            logger.debug("Element [{}] not visible: {}", selector, e.getMessage());
-            return false;
-        }
+    private static boolean getBoolean(Map<String, Object> map, String key) {
+        Object v = map.get(key);
+        return v instanceof Boolean ? (Boolean) v : false;
     }
 
-    /**
-     * 检查元素是否可用
-     * 注意：必须使用短超时（100ms），否则 isEnabled() 会等待最多 300 秒
-     */
-    private boolean checkIsEnabled() {
-        try {
-            return locator.isEnabled(new Locator.IsEnabledOptions().setTimeout(100));
-        } catch (Exception e) {
-            logger.debug("Element [{}] not enabled: {}", selector, e.getMessage());
-            return false;
-        }
+    private static int getInt(Map<String, Object> map, String key) {
+        Object v = map.get(key);
+        if (v instanceof Number) return ((Number) v).intValue();
+        return 0;
     }
 
-    /**
-     * 检查元素是否可编辑
-     * 注意：必须使用短超时（100ms），否则 isEditable() 会等待最多 300 秒
-     */
-    private boolean checkIsEditable() {
-        try {
-            return locator.isEditable(new Locator.IsEditableOptions().setTimeout(100));
-        } catch (Exception e) {
-            logger.debug("Element [{}] not editable: {}", selector, e.getMessage());
-            return false;
-        }
+    private static String getString(Map<String, Object> map, String key) {
+        Object v = map.get(key);
+        return v != null ? v.toString() : "unknown";
     }
 
     /**
@@ -130,50 +129,6 @@ public class ElementDiagnosticsCollector {
         } catch (Exception e) {
             return 0;
         }
-    }
-
-    /**
-     * 获取元素标签名
-     * 使用 page.evaluate() 配合短超时，避免等待不存在的元素
-     */
-    private String getTagName() {
-        try {
-            Object result = page.evaluate(
-                "selector => document.querySelector(selector)?.tagName || 'unknown'",
-                selector
-            );
-            return result != null ? result.toString() : "unknown";
-        } catch (Exception e) {
-            return "unknown";
-        }
-    }
-
-    /**
-     * 获取元素关键属性
-     * 使用 page.evaluate() 配合短超时，避免等待不存在的元素
-     */
-    private Map<String, String> getElementAttributes() {
-        Map<String, String> attrs = new HashMap<>();
-        String[] keys = {"id", "class", "name", "type", "disabled", "readonly", "data-testid"};
-
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, String> result = (Map<String, String>) page.evaluate(
-                "([selector, keys]) => {" +
-                "  const el = document.querySelector(selector);" +
-                "  if (!el) return {};" +
-                "  const attrs = {};" +
-                "  keys.forEach(k => { if (el.hasAttribute(k)) attrs[k] = el.getAttribute(k); });" +
-                "  return attrs;" +
-                "}",
-                Arrays.asList(selector, Arrays.asList(keys))
-            );
-            attrs.putAll(result);
-        } catch (Exception e) {
-            // 忽略异常，返回空 map
-        }
-
-        return attrs;
     }
 
     /**

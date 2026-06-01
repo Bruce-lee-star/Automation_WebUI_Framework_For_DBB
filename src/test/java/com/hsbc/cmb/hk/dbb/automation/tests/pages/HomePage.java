@@ -16,7 +16,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBaseP
  */
 public class HomePage extends SerenityBasePage {
 
-    @Element("a[id='02010000']")
+    @Element("#quick_link_section")
     public PageElement quickLink;
 
     @Element("[id='topnav.profileswitcher.dropdown']")

@@ -5,8 +5,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFacto
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class HomeSteps {
+
+    private static final Logger logger = LoggerFactory.getLogger(HomeSteps.class);
 
     // PageObject 字段（非静态初始化）
     // BasePage 构造函数不会创建 Context，Context 只在实际使用时创建
@@ -14,14 +18,21 @@ public class HomeSteps {
     private LoginPage loginPage = PageObjectFactory.getPage(LoginPage.class);
 
     /**
-     * 切换 Profile 并关闭提醒
+     * 切换 Profile 并关闭提醒。
      *
-     * 注意：Profile 切换会导致旧 session 销毁，新 session 创建
-     * 此方法会自动更新 session，确保后续测试可以跳过登录
+     * 注意：Profile 切换会导致旧 session 销毁，新 session 创建。
      *
      * @param profile 目标 profile 名称
      */
     public void switchProfileToAndCloseReminder(String profile) {
+        logger.info("Switch profile: current='{}', target='{}'",
+                homePage.profileSwitcher.getText(), profile);
+
+        if (homePage.profileSwitcher.getText().contains(profile)) {
+            logger.info("Already on profile '{}', skipping switch", profile);
+            return;
+        }
+
         homePage.profileSwitcher.waitForVisible(30).click();
         homePage.locator(String.format("//span[text()='%s']", profile)).click();
         if (!homePage.quickLink.isVisible()) {
@@ -29,10 +40,10 @@ public class HomeSteps {
         }
         homePage.quickLink.waitForVisible(30);
 
-        // 生成 session key
-        String sessionKey = generateSessionKey();
+        logger.info("Profile switched successfully: {}", profile);
 
-        // 【使用新 API】保存切换 profile 后的 session 和 homeUrl
+        // 保存切换后的 session
+        String sessionKey = generateSessionKey();
         String homeUrl = homePage.getPage().url();
         SessionManager.saveSession(sessionKey, homeUrl);
     }

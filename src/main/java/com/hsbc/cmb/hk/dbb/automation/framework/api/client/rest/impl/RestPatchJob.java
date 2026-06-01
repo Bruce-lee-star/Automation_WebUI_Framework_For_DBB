@@ -51,7 +51,7 @@ public class RestPatchJob extends AbstractRestJob {
         this.setValidatableResponse(response);
         entity.setResponseCode(response.extract().statusCode());
         entity.setResponseCookies(response.extract().response().cookies());
-        entity.setResponsePayload(response.extract().response().body().asString());
+        entity.setResponsePayload(stripHtmlWrapper(response.extract().response().body().asString()));
         Headers headers = response.extract().response().headers();
         if(headers != null){
             Map<String, String> responseHeader = new HashMap<>();

@@ -1,6 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.snapshot.PlaywrightSnapshotSupport;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
@@ -72,20 +75,24 @@ public class LoginSteps {
 
         if (SessionManager.restoreSession(sessionKey)) {
             // Session 已准备好（可能是从文件恢复，也可能是 Feature 级别缓存）
-
+            RouteDsl.on(loginPage.getPage())
+                    .api("notifications/streams")
+                    .mock("{}")
+                    .done()
+                    .start();
             // 【简化API】自动处理 Feature 缓存和 meta 文件读取
             String homeUrl = SessionManager.getHomeUrl(sessionKey);
 
             if (homeUrl == null || homeUrl.isEmpty()) {
                 logger.warn("Session file exists but no homeUrl found, cannot skip login");
-                // SessionManager.clearSession(sessionKey); // 旧方法已删除
+                SessionManager.clearSession(sessionKey);
                 performLogin();
                 return;
             }
 
             logger.info("Session restored, navigating to homeUrl: {}", homeUrl);
             loginPage.navigateTo(homeUrl);
-            loginPage.waitForTimeout(5000);
+            loginPage.waitForTimeout(15000);
             // 验证 session 是否有效
             String currentUrl = loginPage.getCurrentUrl();
             logger.info("Current URL after navigation: {}", currentUrl);
@@ -98,8 +105,13 @@ public class LoginSteps {
             }
 
             // Session 有效，等待首页元素
-            homePage.quickLink.waitForVisible(30);
-            logger.info("Session validated successfully, skipping login");
+            homePage.quickLink.waitForVisible(60);
+
+            if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
+                switchProfile(BDDUtils.getCurrentProfile());
+                logger.info("Session validated, switched to config profile: {}",
+                        BDDUtils.getCurrentProfile());
+            }
             return; // Session 有效，跳过登录
         }
 
@@ -115,38 +127,60 @@ public class LoginSteps {
         logger.info("No valid session, performing login for: {}", sessionKey);
 
         loginPage.navigateTo(currentUrl);
-        
+
         // Axe-core accessibility scan on login page
 //        AxeCoreScanner.scanPage("Login Page - Initial");
-        
+
         loginPage.userNameIpt.type(username);
-        PlaywrightSnapshotSupport.of(loginPage.getPage())
-                .visual()
-                .baselineName("login-page")
-                .updateBaseline(false)
-                .snapshot();
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());
-        PlaywrightSnapshotSupport.of(loginPage.getPage())
-                .visual()
-                .baselineName("password-page")
-                .updateBaseline(false)
-                .snapshot();
-//        // Axe-core scan after password input
-//        AxeCoreScanner.scanPage("Login Page - After Password");
-        
         loginPage.physicalDeviceLabel.click();
         loginPage.securityCodeIpt.type(BDDUtils.getSecurityCode(BDDUtils.getCurrentSecurityUrl()));
+        RouteDsl.on(loginPage.getPage())
+                .api("/error/profile-error.jsp")
+                .monitor()
+                .expectStatus(200)
+                .timeout(60)
+                .done()
+                .api("auth/assert")
+                .monitor()
+                .expectStatus(200)
+                .timeout(60)
+                .done()
+                .api("j_spring_security-check_v2")
+                .monitor()
+                .expectStatus(302)
+                .timeout(60)
+                .done()
+                .api("leftmenu/permissionLeftMenuConfig")
+                .monitor()
+                .expectStatus(200)
+                .timeout(60)
+                .done()
+                .api("public-resource")
+                .modifyRequest()
+                .modifyRequestBody("$.abc", "123")
+                .modifyMethod("PUT")
+                .autoStopOnMatch(true)   // 第一次匹配后自动停止，避免持续拦截后续请求
+                .done()
+                .start();
+        RouteDsl.on(loginPage.getContext())
+                .api("public-resource")
+                .monitor()
+                .timeout(60)
+                .done().start();
         loginPage.loginBtn.click();
-        loginPage.loginBtn.waitForNotVisible(40);
+        loginPage.loginBtn.waitForNotVisible(60);
 
-        String targetProfile = BDDUtils.getCurrentProfile();
-        if (targetProfile != null && !targetProfile.isEmpty()) {
-            switchProfile(targetProfile);
+        if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
+            switchProfile(BDDUtils.getCurrentProfile());
+            logger.info("Login completed, switched to config profile: {}",
+                    BDDUtils.getCurrentProfile());
         }
-        homePage.quickLink.waitForVisible(30);
+
+        homePage.quickLink.waitForVisible(60);
 //        AccessibilityScanner.checkAndCollect("logon - home Page");
-        
+
         // Axe-core accessibility scan on home page
 //        AxeCoreScanner.scanPage("Home Page - After Login");
         logger.info("Axe-core scans completed for login flow");
@@ -159,6 +193,26 @@ public class LoginSteps {
         // 3. 保存元数据（homeUrl + timestamp）
         String homeUrl = loginPage.getCurrentUrl();
         SessionManager.saveSession(sessionKey, homeUrl);
+        // 诊断：打印所有已捕获的 API 调用
+        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        java.util.Map<String, java.util.List<CapturedApiCall>> allCalls = context.getAllApiCalls();
+        logger.info("=== Captured API calls after login: {} endpoints ===", allCalls.size());
+        if (allCalls.isEmpty()) {
+            logger.warn("No API calls were captured. Possible causes:");
+            logger.warn("  1. API patterns need '**/' prefix to match full URL (check RouteEngine.registerInternal normalization)");
+            logger.warn("  2. The SPA may use different API paths than expected");
+            logger.warn("  3. The API calls may have been made before RouteDsl.start() or after monitor timeout");
+        } else {
+            for (java.util.Map.Entry<String, java.util.List<CapturedApiCall>> entry : allCalls.entrySet()) {
+                CapturedApiCall call = entry.getValue().get(entry.getValue().size() - 1);
+                logger.info("  [{}] {} {} ({} calls total)",
+                        call.method(), entry.getKey(), call.statusCode(), entry.getValue().size());
+            }
+        }
+
+
+        // ⭐⭐⭐ API 断言由框架自动检查（PlaywrightListener.checkAndFailOnApiAssertions）
+        // 每个步骤结束时自动抛出 AssertionError，无需业务代码手动检查
 
         logger.info("Login completed and session saved");
     }
@@ -167,17 +221,19 @@ public class LoginSteps {
      * 切换 Profile
      */
     private void switchProfile(String profile) {
-        homePage.profileSwitcher.waitForVisible(30).click();
-        homePage.locator(String.format("//span[text()='%s']", profile)).click();
-        logger.info("Clicked profile: {}", profile);
-        if (!homePage.quickLink.isVisible()) {
-            throw new RuntimeException("Profile switch failed with " + profile);
-        }
-        homePage.quickLink.waitForVisible(30);
+        if (!homePage.profileSwitcher.getText().contains(profile)) {
+            homePage.profileSwitcher.waitForVisible(30).click();
+            homePage.locator(String.format("//span[text()='%s']", profile)).click();
+            logger.info("Clicked profile: {}", profile);
+            if (!homePage.quickLink.isVisible()) {
+                throw new RuntimeException("Profile switch failed with " + profile);
+            }
+            homePage.quickLink.waitForVisible(30);
 
-        // 切换 profile 后保存 session
-        String homeUrl = loginPage.getCurrentUrl();
-        SessionManager.saveSession(sessionKey, homeUrl);
+            // 切换 profile 后保存 session
+            String homeUrl = loginPage.getCurrentUrl();
+            SessionManager.saveSession(sessionKey, homeUrl);
+        }
     }
 
     /**

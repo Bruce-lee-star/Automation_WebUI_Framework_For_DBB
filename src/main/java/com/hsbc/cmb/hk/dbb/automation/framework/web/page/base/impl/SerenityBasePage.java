@@ -132,7 +132,7 @@ public abstract class SerenityBasePage extends BasePage {
 
             return contains;
         } catch (Exception e) {
-            logger.error("Failed to verify page title contains: {}", expectedText, e);
+            logger.debug("Failed to verify page title contains: {}", expectedText, e);
             throw new ElementException("Failed to verify page title contains: " + expectedText, e);
         }
     }
@@ -157,7 +157,7 @@ public abstract class SerenityBasePage extends BasePage {
 
             return equals;
         } catch (Exception e) {
-            logger.error("Failed to verify page title equals: {}", expectedText, e);
+            logger.debug("Failed to verify page title equals: {}", expectedText, e);
             throw new ElementException("Failed to verify page title equals: " + expectedText, e);
         }
     }
@@ -182,7 +182,7 @@ public abstract class SerenityBasePage extends BasePage {
 
             return contains;
         } catch (Exception e) {
-            logger.error("Failed to verify URL contains: {}", expectedText, e);
+            logger.debug("Failed to verify URL contains: {}", expectedText, e);
             throw new ElementException("Failed to verify URL contains: " + expectedText, e);
         }
     }
@@ -199,10 +199,11 @@ public abstract class SerenityBasePage extends BasePage {
             super.click(selector);
         } catch (ElementOperationException e) {
             // 已经是 ElementOperationException，直接重新抛出
-            logger.error("Failed to click element: {}", selector, e);
+            // 降级为 DEBUG：异常最终由 PlaywrightListener.stepFailed() 统一记录 error
+            logger.debug("Failed to click element: {}", selector, e);
             throw e;
         } catch (Exception e) {
-            logger.error("Failed to click element: {}", selector, e);
+            logger.debug("Failed to click element: {}", selector, e);
             throw new ElementOperationException("click", selector, 
                 "Failed to click element: " + selector, e);
         }
@@ -228,7 +229,7 @@ public abstract class SerenityBasePage extends BasePage {
             addSerenityTestData("lastActionValue", text);
             super.type(selector, text);
         } catch (Exception e) {
-            logger.error("Failed to type text '{}' into element: {}", text, selector, e);
+            logger.debug("Failed to type text '{}' into element: {}", text, selector, e);
             throw new ElementException("Failed to type text '" + text + "' into element: " + selector, e);
         }
     }
@@ -269,10 +270,10 @@ public abstract class SerenityBasePage extends BasePage {
             super.navigateTo(url);
         } catch (NavigationException e) {
             // 已经是 NavigationException，直接重新抛出
-            logger.error("Navigation failed to URL: {}", url, e);
+            logger.debug("Navigation failed to URL: {}", url, e);
             throw e;
         } catch (Exception e) {
-            logger.error("Failed to navigate to URL: {}", url, e);
+            logger.debug("Failed to navigate to URL: {}", url, e);
             throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
         }
     }
@@ -528,7 +529,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("action_" + actionDescription, result);
             return result;
         } catch (Exception e) {
-            logger.error("Failed to perform action with timeout: {}", actionDescription, e);
+            logger.debug("Failed to perform action with timeout: {}", actionDescription, e);
             throw new TimeoutException("Failed to perform action with timeout: " + actionDescription, e);
         }
     }
@@ -544,7 +545,7 @@ public abstract class SerenityBasePage extends BasePage {
             super.shouldBeVisible(selector);
             recordPageVerification("elementVisible_" + selector, true);
         } catch (Exception e) {
-            logger.error("Failed to verify element should be visible: {}", selector, e);
+            logger.debug("Failed to verify element should be visible: {}", selector, e);
             throw new ElementException("Failed to verify element should be visible: " + selector, e);
         }
     }
@@ -560,7 +561,7 @@ public abstract class SerenityBasePage extends BasePage {
             super.shouldBeNotVisible(selector);
             recordPageVerification("elementNotVisible_" + selector, true);
         } catch (Exception e) {
-            logger.error("Failed to verify element should not be visible: {}", selector, e);
+            logger.debug("Failed to verify element should not be visible: {}", selector, e);
             throw new ElementException("Failed to verify element should not be visible: " + selector, e);
         }
     }
@@ -577,7 +578,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("pageSourceContains_" + text, result);
             return result;
         } catch (Exception e) {
-            logger.error("Failed to check if page source contains text: {}", text, e);
+            logger.debug("Failed to check if page source contains text: {}", text, e);
             throw new ElementException("Failed to check if page source contains text: " + text, e);
         }
     }
@@ -596,7 +597,7 @@ public abstract class SerenityBasePage extends BasePage {
             recordPageVerification("attribute_" + selector + "_" + attributeName, true);
             return attributeValue;
         } catch (Exception e) {
-            logger.error("Failed to verify attribute value for element: {}", selector, e);
+            logger.debug("Failed to verify attribute value for element: {}", selector, e);
             throw new ElementException("Failed to verify attribute value for element: " + selector, e);
         }
     }

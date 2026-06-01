@@ -171,8 +171,11 @@ public class BaseStep extends RestJobProvider {
                     responseBody, containsString(expectedContent));
             LOGGER.info("Response body content verification passed: contains '{}'", expectedContent);
         } catch (AssertionError e) {
-            LOGGER.error("Response body content verification failed: does not contain '{}'. Full response: {}",
-                    expectedContent, responseBody);
+            // 安全：仅记录响应体前 200 字符，避免敏感数据泄露到日志
+            String truncated = responseBody.length() > 200 
+                    ? responseBody.substring(0, 200) + "...[truncated]" : responseBody;
+            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (truncated): {}",
+                    expectedContent, truncated);
             throw e;
         }
     }
@@ -183,6 +186,10 @@ public class BaseStep extends RestJobProvider {
         JsonNode currentNode = rootNode;
 
         for (String segment : pathSegments) {
+            // 跳过 JSONPath 根前缀 "$" 和空段
+            if ("$".equals(segment) || segment.isEmpty()) {
+                continue;
+            }
             // Handle array indices (e.g., "items[0]" → "items" + index 0)
             if (segment.contains("[")) {
                 String arrayName = segment.substring(0, segment.indexOf("["));

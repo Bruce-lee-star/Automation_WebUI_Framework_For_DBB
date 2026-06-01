@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Download;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.options.ColorScheme;
@@ -78,6 +79,25 @@ class PlaywrightContextManager {
     static Page createPage(BrowserContext context) {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Creating new Page...");
         Page page = context.newPage();
+
+        // 注册下载事件监听，自动保存下载文件到配置的下载目录
+        String downloadsPath = PlaywrightManager.config().getBrowserDownloadsPath();
+        page.onDownload(download -> {
+            try {
+                Path downloadDir = Paths.get(downloadsPath);
+                if (!Files.exists(downloadDir)) {
+                    Files.createDirectories(downloadDir);
+                }
+                String suggestedFilename = download.suggestedFilename();
+                Path savePath = downloadDir.resolve(suggestedFilename);
+                download.saveAs(savePath);
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "Download completed: {} -> {}", suggestedFilename, savePath.toAbsolutePath());
+            } catch (Exception e) {
+                logger.error("Failed to save download file: {}", e.getMessage(), e);
+            }
+        });
+
         stabilizePage(page);
         LoggingConfigUtil.logInfoIfVerbose(logger, "Page created successfully");
         return page;
@@ -129,6 +149,9 @@ class PlaywrightContextManager {
      * 配置框架默认 Context 选项
      */
     private static void configureDefaultContextOptions(Browser.NewContextOptions contextOptions) {
+        // 启用文件下载（Playwright 安全策略默认禁止下载，需显式开启）
+        contextOptions.setAcceptDownloads(true);
+
         contextOptions.setLocale(PlaywrightManager.config().getContextLocale());
         
         String timezoneId = PlaywrightManager.config().getContextTimezone();

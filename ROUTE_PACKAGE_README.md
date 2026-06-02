@@ -18,8 +18,8 @@
   - [4.6 ModifyHandler — 修改处理器](#46-modifyhandler--修改处理器)
   - [4.7 MockHandler — Mock 处理器](#47-mockhandler--mock-处理器)
   - [4.8 DelayHandler — 高延迟处理器](#48-delayhandler--高延迟处理器)
-  - [4.9 ApiMonitorContext — 监控上下文](#49-apimonitorcontext--监控上下文)
-  - [4.10 RouteMonitor — 监控入口门面](#410-routemonitor--监控入口门面)
+  - [4.9 ApiCaptureContext — API 捕获上下文](#49-apicapturecontext--api-捕获上下文)
+  - [4.10 RouteMonitor — 捕获入口门面](#410-routemonitor--捕获入口门面)
   - [4.11 RouteAsyncPool — 异步任务池](#411-routeasyncpool--异步任务池)
   - [4.12 RouteException — 异常体系](#412-routeexception--异常体系)
   - [4.13 SerenityReporter — 报告工具](#413-serenityreporter--报告工具)
@@ -41,8 +41,9 @@ route/
 │   ├── RouteRule.java                 # 路由规则数据模型（含参数校验）
 │   ├── RouteRegistry.java             # 路由注册表（WeakReference 防泄漏，按上下文隔离）
 │   ├── RouteException.java            # 异常体系（配置异常 / 运行时异常 / 断言异常）
-│   ├── ApiMonitorContext.java         # API 监控上下文（线程隔离断言 + 双重上限响应存储）
-│   └── RouteMonitor.java              # 监控入口门面（测试代码唯一入口）
+│   ├── ApiCaptureContext.java         # API 捕获上下文（线程隔离 + 双重上限存储 + 统一捕获 Monitor/Mock/Modify 调用）
+│   ├── CapturedApiCall.java           # 捕获的 API 调用快照（URL、方法、请求头、响应头、状态码、响应体、时间戳）
+│   └── RouteMonitor.java              # 捕获入口门面（测试代码唯一入口）
 ├── dsl/
 │   └── RouteDsl.java                  # 流式 DSL 构建器（外部调用唯一入口）
 ├── handler/                           ← 具体处理器
@@ -56,7 +57,7 @@ route/
     └── RouteUtil.java                 # 请求条件匹配工具（ResourceType/Header/Query/Body 等）
 ```
 
-**共 4 个子包，15 个类文件。**
+**共 4 个子包，16 个类文件。**
 
 ---
 
@@ -90,9 +91,9 @@ RouteEngine.register(context, rules)
             │
             └── Handler.handle(route, rule)
                     │
-                    ├── MonitorHandler: resume() → 异步获取 body → 断言 → 报告
-                    ├── ModifyHandler:  修改请求 → resume()
-                    ├── MockHandler:    fulfill(mockOptions)
+                    ├── MonitorHandler: resume() → 异步获取 body → 断言 → 报告 → storeApiCall
+                    ├── ModifyHandler:  修改请求 → resume() → storeApiCall
+                    ├── MockHandler:    fulfill(mockOptions) → storeApiCall
                     └── DelayHandler:  ScheduledExecutorService.schedule() → resume()
 ```
 
@@ -103,7 +104,7 @@ RouteEngine.register(context, rules)
 | **零阻塞 UI** | MonitorHandler 先 `resume()` 放行页面，后异步断言；线程池拒绝策略为 `DiscardOldestPolicy` |
 | **异常隔离** | 单规则/单请求失败不影响其他规则和其他请求，所有 Handler 包裹 try-catch |
 | **线程安全** | 所有全局状态用 `ConcurrentHashMap`/`AtomicLong` 保护；跨线程传递用 `byte[]` 拷贝 |
-| **内存安全** | `RouteRegistry` 使用 `WeakReference` 防泄漏；`ApiMonitorContext` 双重上限防 OOM；`RouteEngine` 防重集合有容量上限 |
+| **内存安全** | `RouteRegistry` 使用 `WeakReference` 防泄漏；`ApiCaptureContext` 双重上限防 OOM；`RouteEngine` 防重集合有容量上限 |
 
 ---
 
@@ -352,11 +353,11 @@ RouteDsl.on(browserContext)  // Context 级别
          ↓
 3. byte[] 拷贝后提交到 RouteAsyncPool.run() 异步执行
          ↓
-4. 异步线程：byte[] → UTF-8 String → 存储到 ApiMonitorContext
+4. 异步线程：byte[] → UTF-8 String → 存储到 ApiCaptureContext
          ↓
 5. 执行断言：状态码断言 + JSONPath 断言
          ↓
-6. 失败时通过 ApiMonitorContext.recordAssertionFailure() 记录详情
+6. 失败时通过 ApiCaptureContext.recordAssertionFailure() 记录详情
          ↓
 7. 成功/失败都写入 Serenity 报告（通过 SerenityReporter）
          ↓
@@ -373,6 +374,21 @@ RouteDsl.on(browserContext)  // Context 级别
 
 **职责**：拦截请求 → 修改请求 → 继续发送（`route.resume()`）。
 
+**处理流程**：
+```
+1. 修改请求头（set/remove）
+         ↓
+2. 修改请求体（JSONPath 精准替换 + 类型保持）
+         ↓
+3. 修改 HTTP 方法（可选）
+         ↓
+4. route.resume() 放行修改后的请求
+         ↓
+5. 构建修改详情的 JSON（原始 URL、修改后的方法、headers 增删、body 字段增删改）
+         ↓
+6. 存入 ApiCaptureContext.getCurrent().storeApiCall()
+```
+
 **支持的修改操作**：
 
 | 操作 | API | 说明 |
@@ -380,6 +396,8 @@ RouteDsl.on(browserContext)  // Context 级别
 | 添加请求头 | `.setRequestHeader(key, value)` | 合并到原请求头 |
 | 请求体替换 | `.modifyRequestBody(key, value)` | JSONPath 精准替换 + 类型保持 |
 | 修改 HTTP 方法 | `.modifyMethod("POST")` | 覆盖原方法 |
+
+> **注意**：Modify 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取修改详情的完整快照（含原始 URL、修改后的方法、headers 变更、body 变更）。
 
 **JSONPath 精准替换特性**：
 
@@ -409,9 +427,15 @@ users[0].name              → { "users": [{ "name": "newValue" }] }
 2. 构建 Route.FulfillOptions（状态码 + 响应体 + 自定义 Headers）
          ↓
 3. route.fulfill() 包裹 try-catch，单请求失败不影响路由
+         ↓
+4. 构建 CapturedApiCall（urlPattern、方法、mock 状态码、mock 响应头、mock body）
+         ↓
+5. 存入 ApiCaptureContext.getCurrent().storeApiCall()
 ```
 
 **配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）。
+
+> **注意**：Mock 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取完整的 Mock 请求快照。
 
 ---
 
@@ -457,16 +481,19 @@ DELAY_SCHEDULER.schedule(() -> {
 
 ---
 
-### 4.9 ApiMonitorContext — 监控上下文
+### 4.9 ApiCaptureContext — API 捕获上下文
 
-**职责**：提供线程隔离的断言失败标记、详细失败信息记录和带容量保护的 Response 存储。
+**职责**：提供线程隔离的统一 API 调用捕获，支持 Monitor、Mock、Modify 三种类型。提供断言失败标记、详细失败信息记录、CapturedApiCall 完整快照存储和带容量保护的 Response 存储。
 
 **核心设计**：
 
 ```java
 // 线程隔离（每个测试线程独立上下文，并行测试互不干扰）
-private static final ThreadLocal<ApiMonitorContext> INSTANCE =
-        ThreadLocal.withInitial(ApiMonitorContext::new);
+private static final ThreadLocal<ApiCaptureContext> INSTANCE =
+        ThreadLocal.withInitial(ApiCaptureContext::new);
+
+// CapturedApiCall 完整快照存储（Monitor/Mock/Modify 统一入口）
+private final ConcurrentHashMap<String, List<CapturedApiCall>> capturedApiCalls;
 
 // Response 双重上限保护
 private static final int MAX_RESPONSE_STORAGE = 1000;        // 数量上限
@@ -476,6 +503,14 @@ private static final long MAX_RESPONSE_TOTAL_SIZE = 10MB;   // 体积上限（10
 private final ConcurrentHashMap<String, List<String>> responseStorage;
 private final AtomicLong totalResponseSize = new AtomicLong(0L);
 ```
+
+**三种 Handler 统一捕获**：
+
+| Handler | 存储时机 | 存储内容 |
+|---------|---------|---------|
+| MonitorHandler | 异步断言线程 | 完整响应（URL、状态码、请求头、响应头、响应体、方法） |
+| MockHandler | `route.fulfill()` 成功后 | Mock 响应详情（URL pattern、方法、mock 状态码、mock 响应头、mock body） |
+| ModifyHandler | `route.resume()` 成功后 | 修改详情 JSON（原始 URL、修改后的方法、headers 增删、body 字段增删改） |
 
 **其他关键特性**：
 
@@ -489,16 +524,28 @@ private final AtomicLong totalResponseSize = new AtomicLong(0L);
 
 ---
 
-### 4.10 RouteMonitor — 监控入口门面
+### 4.10 RouteMonitor — 捕获入口门面
 
-**职责**：面向测试代码的唯一 API 监控入口，封装 `ApiMonitorContext` 的获取逻辑。
+**职责**：面向测试代码的唯一 API 捕获入口，封装 `ApiCaptureContext` 的获取逻辑。支持 Monitor、Mock、Modify 三种类型的统一查询。
 
 ```java
 // 测试代码用法
-ApiMonitorContext ctx = RouteMonitor.context();
+ApiCaptureContext ctx = RouteMonitor.context();
+
+// 获取 Monitor 捕获的 API 调用
 List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
+CapturedApiCall lastCall = ctx.getLastApiCall("/api/track");
+int status = lastCall.statusCode();
+Object id = lastCall.json("$.data.id");
+
+// 获取 Mock 捕获的 API 调用
+List<CapturedApiCall> mockCalls = ctx.getApiCalls("/api/login");
+
+// 获取 Modify 捕获的 API 调用
+List<CapturedApiCall> modifyCalls = ctx.getApiCalls("/api/submit");
+
+// 向后兼容：获取响应 body
 String body = ctx.getStoredResponse("/api/track");
-Object id = ctx.getResponseJson("/api/track", "$.data.id");
 ```
 
 ---
@@ -854,11 +901,12 @@ RouteDsl.on(page)
 
 > **注意**：回调在 RouteAsyncPool 异步线程中执行，不阻塞 UI。每个回调独立 try-catch，单个回调失败不会影响其他回调或测试流程。
 
-### 5.16 获取断言失败详情
+### 5.16 获取断言失败详情与 API 捕获快照
 
 ```java
-ApiMonitorContext ctx = RouteMonitor.context();
+ApiCaptureContext ctx = RouteMonitor.context();
 
+// 检查断言失败
 if (ctx.hasAssertionFailures()) {
     String report = ctx.buildFailureReport();
     System.err.println(report);
@@ -867,6 +915,13 @@ if (ctx.hasAssertionFailures()) {
 // 获取所有存储的响应
 List<String> allBodies = ctx.getAllResponsesForUrl("/api/login");
 String lastBody = ctx.getLastResponse("/api/login");
+
+// 获取 Monitor/Mock/Modify 的完整调用快照
+List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
+CapturedApiCall lastCall = ctx.getLastApiCall("/api/track");
+int status = lastCall.statusCode();
+String responseHeader = lastCall.responseHeader("Content-Type");
+Object jsonValue = lastCall.json("$.data.id");
 ```
 
 ---
@@ -970,12 +1025,12 @@ public interface MonitorCallback {
 | `getPatternCount(context)` | 指定上下文已注册 pattern 数 |
 | `getContextCount()` | 全局活跃上下文数量 |
 
-### ApiMonitorContext — ThreadLocal 安全
+### ApiCaptureContext — ThreadLocal 安全
 
 | 方法 | 说明 |
 |------|------|
 | **静态方法** | |
-| `getCurrent()` | 获取当前线程的 API 监控上下文 |
+| `getCurrent()` | 获取当前线程的 API 捕获上下文 |
 | `resetCurrent()` | 重置当前线程的上下文（测试开始前调用） |
 | `removeCurrent()` | 移除当前线程的上下文（测试结束后调用） |
 | **实例方法** | |
@@ -1004,7 +1059,7 @@ public interface MonitorCallback {
 |------|------|
 | **WeakReference 包装** | `RouteRegistry.ContextKey` 使用 `WeakReference` 包裹 Page/Context，静态 Map 不阻止 GC |
 | **死条目自动清理** | `purgeDeadEntries()` 阈值触发（>50 条目），基于 `isDead()` 安全遍历移除 |
-| **双重上限防 OOM** | `ApiMonitorContext` 同时限制响应存储数量（1000 条）和体积（10MB） |
+| **双重上限防 OOM** | `ApiCaptureContext` 同时限制响应存储数量（1000 条）和体积（10MB） |
 | **防重集合上限** | `RouteEngine.DISPATCHED_ROUTES` 超过 500 条目自动清空 |
 | **缓存淘汰** | `ModifyHandler.JSONPATH_CACHE` 超过 200 条目自动清空重建 |
 | **线程池队列限流** | `DiscardOldestPolicy` 拒绝策略 + 有界队列，拒绝后不阻塞 UI |
@@ -1016,8 +1071,8 @@ public interface MonitorCallback {
 | **防重门控** | `DISPATCHED_ROUTES.putIfAbsent()` — 同一请求匹配多个 pattern 时只处理一次 |
 | **byte[] 拷贝跨线程** | MonitorHandler 在事件线程同步读取 body 后拷贝，传递给异步线程 |
 | **CopyOnWriteArrayList** | RouteDsl.rules 支持并发修改 |
-| **ConcurrentHashMap** | RouteRegistry / ApiMonitorContext / ModifyHandler / SESSIONS 共享结构 |
-| **AtomicLong/AtomicInteger** | RouteAsyncPool / ApiMonitorContext 计数器 |
+| **ConcurrentHashMap** | RouteRegistry / ApiCaptureContext / ModifyHandler / SESSIONS 共享结构 |
+| **AtomicLong/AtomicInteger** | RouteAsyncPool / ApiCaptureContext 计数器 |
 | **RouteRule equals/hashCode** | 基于 `urlPattern + type + method` 的相等性判断 |
 
 ### 可观测性
@@ -1028,7 +1083,7 @@ public interface MonitorCallback {
 | **阈值告警** | 线程池队列/线程/超时挂起数超限 → ERROR 级别日志 |
 | **指标暴露** | `getStatusSnapshot()` / `getQueueUsage()` / `getPendingTimeoutCount()` 等 |
 | **Serenity 报告集成** | MonitorHandler 异步写入 + PlaywrightListener 主线程刷新 |
-| **断言失败详情** | `ApiMonitorContext.buildFailureReport()` 可读多行报告 |
+| **断言失败详情** | `ApiCaptureContext.buildFailureReport()` 可读多行报告 |
 
 ### 可扩展性
 

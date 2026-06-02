@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
@@ -28,7 +28,7 @@ import java.util.Map;
  * <ul>
  *   <li>response.body() 在 Playwright 事件线程同步调用（线程安全）</li>
  *   <li>byte[] 拷贝后传给异步线程，避免跨线程访问 Response 对象</li>
- *   <li>断言结果通过 {@link ApiMonitorContext} 通知测试生命周期</li>
+ *   <li>断言结果通过 {@link ApiCaptureContext} 通知测试生命周期</li>
  *   <li>失败详情（URL、类型、预期值、实际值）记录到上下文供测试结束报告</li>
  *   <li>Serenity 报告写入通过 {@link SerenityReporter} 统一处理</li>
  *   <li>route.resume() 包裹 try-catch，避免单请求失败导致整个路由崩溃</li>
@@ -53,7 +53,7 @@ public class MonitorHandler {
      */
     public static void handle(Route route, RouteRule rule) {
         // 获取 API 监控上下文并增加活动请求计数
-        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        ApiCaptureContext context = ApiCaptureContext.getCurrent();
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[MonitorHandler] ── handle() START: pattern='{}', expectStatus={}, jsonPathAssertions={} ──",
@@ -141,7 +141,7 @@ public class MonitorHandler {
         // 异步任务前置工作：在 Playwright 事件线程上提前快照跨线程数据
         // ═══════════════════════════════════════════════════════════════
         final byte[] fBodyBytes = bodyBytes;
-        final ApiMonitorContext fContext = context;
+        final ApiCaptureContext fContext = context;
         final String fAsyncUrl = req.url();
         final int fAsyncStatus = res.status();
         final String fReqMethod = req.method();
@@ -208,11 +208,11 @@ public class MonitorHandler {
      * @param url     请求 URL
      * @param status  HTTP 状态码
      * @param body    响应 body
-     * @param context ApiMonitorContext（可为 null）
+     * @param context ApiCaptureContext（可为 null）
      * @return true 所有断言通过，false 有断言失败
      */
     private static boolean executeAssertions(RouteRule rule, String url, int status,
-                                              String body, ApiMonitorContext context) {
+                                              String body, ApiCaptureContext context) {
         boolean allPassed = true;
 
         // 状态码断言

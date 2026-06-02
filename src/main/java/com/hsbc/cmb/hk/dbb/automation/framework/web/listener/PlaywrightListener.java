@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
@@ -104,7 +104,7 @@ public class PlaywrightListener implements StepListener {
         totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
-        ApiMonitorContext.resetCurrent();
+        ApiCaptureContext.resetCurrent();
 
         // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
         try {
@@ -226,7 +226,7 @@ public class PlaywrightListener implements StepListener {
         currentCucumberStep.set(step.getTitle());
 
         // ⭐⭐⭐ 注册主测试线程引用 — 供 MonitorHandler 断言失败时中断
-        ApiMonitorContext.getCurrent().setTestThread(Thread.currentThread());
+        ApiCaptureContext.getCurrent().setTestThread(Thread.currentThread());
 
         // BEFORE_AND_AFTER_EACH_STEP 策略：在 Cucumber 步骤开始时截图
         if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
@@ -306,7 +306,7 @@ public class PlaywrightListener implements StepListener {
         stepFinishReentrantGuard.set(false);
 
         // ⭐⭐⭐ 清除 MonitoringHandler 使用的测试线程引用
-        ApiMonitorContext.getCurrent().clearTestThread();
+        ApiCaptureContext.getCurrent().clearTestThread();
 
         // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时兜底执行）
         checkAndFailOnApiAssertions();
@@ -577,8 +577,8 @@ public class PlaywrightListener implements StepListener {
         stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
-        // ⭐⭐⭐ 新增：清理 API 监控上下文
-        ApiMonitorContext.removeCurrent();
+        // ⭐⭐⭐ 新增：清理 API 捕获上下文
+        ApiCaptureContext.removeCurrent();
     }
 
     private String getStackTrace(Throwable throwable) {
@@ -792,8 +792,8 @@ public class PlaywrightListener implements StepListener {
         testStartTime.set(System.currentTimeMillis());
         totalTests.incrementAndGet();
 
-        // ⭐⭐⭐ 新增：重置 API 监控上下文
-        ApiMonitorContext.resetCurrent();
+        // ⭐⭐⭐ 新增：重置 API 捕获上下文
+        ApiCaptureContext.resetCurrent();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -813,8 +813,8 @@ public class PlaywrightListener implements StepListener {
         testStartTime.set(startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis());
         totalTests.incrementAndGet();
 
-        // ⭐⭐⭐ 新增：重置 API 监控上下文
-        ApiMonitorContext.resetCurrent();
+        // ⭐⭐⭐ 新增：重置 API 捕获上下文
+        ApiCaptureContext.resetCurrent();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -865,9 +865,9 @@ public class PlaywrightListener implements StepListener {
             RouteEngine.clearDispatchedRoutes();
             throw e;
         } finally {
-            // 确保异常和正常路径均清理 ThreadLocal 和 API 监控上下文
+            // 确保异常和正常路径均清理 ThreadLocal 和 API 捕获上下文
             cleanupThreadLocals();
-            ApiMonitorContext.removeCurrent();
+            ApiCaptureContext.removeCurrent();
         }
     }
 
@@ -1112,10 +1112,10 @@ public class PlaywrightListener implements StepListener {
             int maxRerunAttempts = Integer.parseInt(rerunCountStr);
             logger.info("Starting rerun with max attempts: {}", maxRerunAttempts);
 
-            // 重试前强制清理当前线程的路由规则和 API 监控上下文，避免重试复用旧数据
+            // 重试前强制清理当前线程的路由规则和 API 捕获上下文，避免重试复用旧数据
             cleanupRouteRegistryForCurrentThread();
-            ApiMonitorContext.removeCurrent();
-            logger.debug("Route registry and API monitor context cleaned before rerun");
+            ApiCaptureContext.removeCurrent();
+            logger.debug("Route registry and API capture context cleaned before rerun");
 
             // 保存当前重试数据到文件，供 rerun 进程使用
             PlaywrightRetryListener.getInstance().saveToFile();
@@ -1195,7 +1195,7 @@ public class PlaywrightListener implements StepListener {
      * 如果 MonitorHandler 标记了断言失败，则强制设置 TestResult.FAILURE。
      */
     private void checkAndMarkApiAssertionFailures(TestOutcome result) {
-        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        ApiCaptureContext context = ApiCaptureContext.getCurrent();
         if (context == null) {
             return;
         }
@@ -1240,7 +1240,7 @@ public class PlaywrightListener implements StepListener {
                 logger.debug("Failed to record API assertion failure to Serenity report", e);
             }
         }
-        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiMonitorContext.removeCurrent()
+        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiCaptureContext.removeCurrent()
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1255,7 +1255,7 @@ public class PlaywrightListener implements StepListener {
      *   <li><b>Fail-Fast（主路径）</b>：检测当前线程是否被 {@code MonitorHandler.signalFailFast()}
      *       通过 {@code Thread.interrupt()} 中断。若是，说明 Playwright 事件线程已同步检测到
      *       断言失败并中断了主线程，直接抛出 {@code AssertionError}。</li>
-     *   <li><b>兜底（兼容路径）</b>：检查 {@link ApiMonitorContext#hasAssertionFailures()}。
+     *   <li><b>兜底（兼容路径）</b>：检查 {@link ApiCaptureContext#hasAssertionFailures()}。
      *       如果 fail-fast 未触发（例如 MonitorHandler 在 interrupt 之前便已退出），
      *       仍通过上下文标记来捕获断言失败。</li>
      * </ol>
@@ -1265,7 +1265,7 @@ public class PlaywrightListener implements StepListener {
      * <p>性能：若无活跃请求且无断言失败，方法立即返回（零开销）。
      */
     private void checkAndFailOnApiAssertions() {
-        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        ApiCaptureContext context = ApiCaptureContext.getCurrent();
 
         // ═══ 第一层：Fail-Fast 检查（主路径）══════
         // MonitorHandler 在 Playwright 事件线程上同步断言失败后，
@@ -1309,10 +1309,10 @@ public class PlaywrightListener implements StepListener {
     }
 
     /**
-     * ⭐⭐⭐ API 监控上下文 — 已独立为顶层类。
+     * ⭐⭐⭐ API 捕获上下文 — 已独立为顶层类。
      *
-     * @see ApiMonitorContext
+     * @see ApiCaptureContext
      */
-    // 原内部类已迁移至 com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext
+    // 原内部类已迁移至 com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
 
 }

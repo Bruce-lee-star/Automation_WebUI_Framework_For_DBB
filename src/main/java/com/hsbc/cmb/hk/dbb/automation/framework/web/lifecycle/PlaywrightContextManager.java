@@ -94,7 +94,7 @@ class PlaywrightContextManager {
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                         "Download completed: {} -> {}", suggestedFilename, savePath.toAbsolutePath());
             } catch (Exception e) {
-                logger.error("Failed to save download file: {}", e.getMessage(), e);
+                logger.error("[Download] Failed to save file: {}", e.getMessage(), e);
             }
         });
 

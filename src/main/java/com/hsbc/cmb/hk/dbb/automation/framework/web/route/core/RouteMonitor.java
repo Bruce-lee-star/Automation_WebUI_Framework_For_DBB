@@ -1,10 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 /**
- * 面向测试步骤的 Route API 监控入口。
+ * 面向测试步骤的 Route API 捕获入口。
  *
  * <pre>{@code
- * ApiMonitorContext ctx = RouteMonitor.context();
+ * ApiCaptureContext ctx = RouteMonitor.context();
  *
  * // 获取完整调用快照
  * CapturedApiCall call = ctx.getLastApiCall("/api/track");
@@ -23,9 +23,9 @@ public final class RouteMonitor {
     }
 
     /**
-     * 获取当前线程的 API 监控上下文。
+     * 获取当前线程的 API 捕获上下文。
      */
-    public static ApiMonitorContext context() {
-        return ApiMonitorContext.getCurrent();
+    public static ApiCaptureContext context() {
+        return ApiCaptureContext.getCurrent();
     }
 }

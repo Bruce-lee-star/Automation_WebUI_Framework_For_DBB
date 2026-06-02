@@ -177,6 +177,38 @@ public class PlaywrightManager {
     }
 
     /**
+     * 清理临时下载目录（target/downloads）
+     * 在每个 scenario 结束时调用，避免下载文件跨用例累积
+     */
+    private static void cleanupTempDownloads() {
+        try {
+            String downloadsPath = config().getBrowserDownloadsPath();
+            Path downloadDir = Paths.get(downloadsPath);
+            if (!Files.exists(downloadDir)) {
+                return;
+            }
+
+            AtomicInteger deletedCount = new AtomicInteger(0);
+            Files.walk(downloadDir)
+                .sorted(Comparator.reverseOrder())
+                .forEach(path -> {
+                    if (!path.equals(downloadDir)) {
+                        try {
+                            Files.deleteIfExists(path);
+                            deletedCount.incrementAndGet();
+                        } catch (Exception ignored) {
+                            LoggingConfigUtil.logDebugIfVerbose(logger, "Skipping file during download cleanup: {}", path);
+                        }
+                    }
+                });
+
+            logger.info("[Download] Cleaned {} file(s) from {}", deletedCount.get(), downloadDir.toAbsolutePath());
+        } catch (Exception e) {
+            logger.warn("[Download] Failed to clean temp downloads: {}", e.getMessage());
+        }
+    }
+
+    /**
      * 获取逻辑屏幕分辨率（用于 viewport 和窗口大小）
      */
     private static Dimension getAvailableScreenSize() {
@@ -470,9 +502,6 @@ public class PlaywrightManager {
         // 配置窗口大小和启动参数
         configureBrowserLaunchOptions(launchOptions);
 
-        // 设置下载路径
-        String downloadsPath = config().getBrowserDownloadsPath();
-        launchOptions.setDownloadsPath(Paths.get(downloadsPath));
 
         long initStart = System.currentTimeMillis();
         try {
@@ -1517,6 +1546,9 @@ public class PlaywrightManager {
         // 清理临时截图目录（每个 scenario 结束后清理，避免残留累积）
         cleanupTempScreenshots();
 
+        // 清理临时下载目录（每个 scenario 结束后清理，避免下载文件跨用例累积）
+        cleanupTempDownloads();
+
         // 清除 AutoBrowser 处理状态和浏览器覆盖配置
         AutoBrowserProcessor.clearProcessingState();
 
@@ -1681,15 +1713,16 @@ public class PlaywrightManager {
     // ==================== 截图方法 ====================
 
     /**
-     * 截图前页面稳定化（解决截图残留/底部重复问题）
-     * 滚动到页面顶部作为全页截图起点，确保截图一致性
-     * 注意：不做 fixed 元素转换（避免布局错乱），Playwright 全页截图已内置处理 fixed 元素
+     * 截图前页面稳定化（解决截图残留/底部重复问题，以及长页面懒加载高度不准问题）
+     * 先滚到底部触发懒加载，再滚回顶部，确保 scrollHeight 准确
      */
     private static void stabilizeBeforeScreenshot(Page page) {
         try {
-            // 唯一必要的处理：滚动到顶部，作为全页截图起点
-            // 不做 fixed 元素转换（会导致布局错乱），Playwright 全页截图已内置处理 fixed 元素
-            page.evaluate("() => window.scrollTo(0, 0)");
+            // 先滚到底部触发所有懒加载内容，再滚回顶部作为截图起点
+            page.evaluate("() => {"
+                    + "  window.scrollTo(0, document.body.scrollHeight);"
+                    + "  window.scrollTo(0, 0);"
+                    + "}");
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Screenshot stabilization failed: {}", e.getMessage());
         }
@@ -1781,11 +1814,19 @@ public class PlaywrightManager {
                     .setPath(screenshotPath);
 
             if (fullPage) {
-                // 动态 clip：获取页面实际内容尺寸，精确裁剪，避免全页截图浪费空间
+                // 动态 clip：先滚到底部触发懒加载，等待渲染完成后再获取实际内容尺寸
+                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
+                page.waitForTimeout(300); // 等待懒加载内容渲染
+                page.evaluate("() => window.scrollTo(0, 0)");
+
                 Object result = page.evaluate("() => {"
-                        + "  const w = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);"
-                        + "  const h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight,"
-                        + "      document.documentElement.clientHeight);"
+                        + "  const body = document.body;"
+                        + "  const html = document.documentElement;"
+                        + "  const w = Math.max(html.scrollWidth, body ? body.scrollWidth : 0,"
+                        + "      html.clientWidth, body ? body.clientWidth : 0);"
+                        + "  const h = Math.max(html.scrollHeight, body ? body.scrollHeight : 0,"
+                        + "      html.clientHeight, body ? body.clientHeight : 0,"
+                        + "      html.offsetHeight, body ? body.offsetHeight : 0);"
                         + "  return { width: w, height: h };"
                         + "}");
                 @SuppressWarnings("unchecked")
@@ -1793,6 +1834,7 @@ public class PlaywrightManager {
                 double contentWidth = ((Number) dims.get("width")).doubleValue();
                 double contentHeight = ((Number) dims.get("height")).doubleValue();
 
+                logger.debug("[Screenshot] Full page clip size: {}x{}", contentWidth, contentHeight);
                 options.setClip(0, 0, contentWidth, contentHeight);
             } else {
                 options.setFullPage(false);
@@ -1844,14 +1886,24 @@ public class PlaywrightManager {
             boolean fullPage = config().isFullPageScreenshot();
             Page.ScreenshotOptions options = new Page.ScreenshotOptions()
                     .setOmitBackground(false)
+                    .setTimeout((long) config().getScreenshotTimeout())
+                    .setAnimations(ScreenshotAnimations.DISABLED)
                     .setPath(screenshotPath);
 
             if (fullPage) {
-                // 动态 clip：获取页面实际内容尺寸，精确裁剪
+                // 动态 clip：先滚到底部触发懒加载，等待渲染完成后再获取实际内容尺寸
+                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
+                page.waitForTimeout(300); // 等待懒加载内容渲染
+                page.evaluate("() => window.scrollTo(0, 0)");
+
                 Object result = page.evaluate("() => {"
-                        + "  const w = Math.max(document.documentElement.scrollWidth, document.body.scrollWidth);"
-                        + "  const h = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight,"
-                        + "      document.documentElement.clientHeight);"
+                        + "  const body = document.body;"
+                        + "  const html = document.documentElement;"
+                        + "  const w = Math.max(html.scrollWidth, body ? body.scrollWidth : 0,"
+                        + "      html.clientWidth, body ? body.clientWidth : 0);"
+                        + "  const h = Math.max(html.scrollHeight, body ? body.scrollHeight : 0,"
+                        + "      html.clientHeight, body ? body.clientHeight : 0,"
+                        + "      html.offsetHeight, body ? body.offsetHeight : 0);"
                         + "  return { width: w, height: h };"
                         + "}");
                 @SuppressWarnings("unchecked")
@@ -1859,6 +1911,7 @@ public class PlaywrightManager {
                 double contentWidth = ((Number) dims.get("width")).doubleValue();
                 double contentHeight = ((Number) dims.get("height")).doubleValue();
 
+                logger.debug("[Screenshot] Full page clip size: {}x{}", contentWidth, contentHeight);
                 options.setClip(0, 0, contentWidth, contentHeight);
             } else {
                 options.setFullPage(false);

@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiMonitorContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
@@ -195,7 +195,7 @@ public class LoginSteps {
         String homeUrl = loginPage.getCurrentUrl();
         SessionManager.saveSession(sessionKey, homeUrl);
         // 诊断：打印所有已捕获的 API 调用
-        ApiMonitorContext context = ApiMonitorContext.getCurrent();
+        ApiCaptureContext context = ApiCaptureContext.getCurrent();
         java.util.Map<String, java.util.List<CapturedApiCall>> allCalls = context.getAllApiCalls();
         logger.info("=== Captured API calls after login: {} endpoints ===", allCalls.size());
         if (allCalls.isEmpty()) {

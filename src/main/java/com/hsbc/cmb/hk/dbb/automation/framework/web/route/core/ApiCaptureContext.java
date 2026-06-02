@@ -14,10 +14,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * API 监控上下文 — 断言失败标记 + 详细失败信息 + 响应捕获存储。
+ * API 捕获上下文 — 统一管理所有被路由拦截的 API 调用（Monitor / Mock / Modify）。
+ *
+ * <p>不同于仅限 Monitor 的旧设计，本类面向所有 Route 类型的 API 调用：
+ * <ul>
+ *   <li><b>Monitor</b> — 监控真实 API 调用，记录请求/响应快照，支持断言</li>
+ *   <li><b>Mock</b> — Mock 响应，记录被拦截的请求信息和返回的 Mock 数据</li>
+ *   <li><b>Modify</b> — 修改响应，后续可扩展记录修改后的数据</li>
+ * </ul>
  *
  * <p><b>⭐ 共享实例设计</b>：使用静态单例（而非 ThreadLocal），
- * 确保 MonitorHandler（Playwright 事件线程）和 PlaywrightListener（主测试线程）
+ * 确保 Handler（Playwright 事件线程）和 PlaywrightListener（主测试线程）
  * 操作的是同一个上下文实例。所有字段均使用线程安全数据结构：
  * {@link AtomicInteger}、{@link AtomicBoolean}、
  * {@link ConcurrentHashMap}、{@code synchronized}。
@@ -37,31 +44,31 @@ import java.util.concurrent.atomic.AtomicLong;
  * Object id = call.json("$.data.userId");
  * }</pre>
  *
- * @see RouteEngine#getCurrentApiMonitorContext()
+ * @see RouteEngine
  */
-public class ApiMonitorContext {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ApiMonitorContext.class);
+public class ApiCaptureContext {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ApiCaptureContext.class);
 
     /**
-     * ⭐ 全局共享的 API 监控上下文实例（不再使用 ThreadLocal）。
+     * ⭐ 全局共享的 API 捕获上下文实例（不再使用 ThreadLocal）。
      *
-     * <p>MonitorHandler（Playwright 事件线程）和 PlaywrightListener（主线程）
+     * <p>Handler（Playwright 事件线程）和 PlaywrightListener（主线程）
      * 通过此单一实例共享断言状态，保证跨线程可见性。
      * 所有可变字段均使用线程安全结构，无需额外同步。
      */
-    private static final ApiMonitorContext SHARED = new ApiMonitorContext();
+    private static final ApiCaptureContext SHARED = new ApiCaptureContext();
 
     /**
-     * 获取全局共享的 API 监控上下文实例。
+     * 获取全局共享的 API 捕获上下文实例。
      *
      * <p>⭐ 任意线程调用均返回同一实例，保证跨线程状态一致性。
      */
-    public static ApiMonitorContext getCurrent() {
+    public static ApiCaptureContext getCurrent() {
         return SHARED;
     }
 
     /**
-     * 重置 API 监控上下文（测试开始时调用）。
+     * 重置 API 捕获上下文（测试开始时调用）。
      * <p>注意：此方法会重置全局共享实例的断言和响应存储状态。
      */
     public static void resetCurrent() {
@@ -69,7 +76,7 @@ public class ApiMonitorContext {
     }
 
     /**
-     * 清理 API 监控上下文（测试结束时调用）。
+     * 清理 API 捕获上下文（测试结束时调用）。
      * <p>⭐ 不再使用 ThreadLocal.remove，改为 reset 重置状态即可。
      */
     public static void removeCurrent() {
@@ -123,10 +130,10 @@ public class ApiMonitorContext {
         hasAssertionFailures.set(true);
         Thread t = testThread;
         if (t != null && t.isAlive()) {
-            LOGGER.warn("[ApiMonitorContext] Assertion failed — interrupting test thread '{}'", t.getName());
+            LOGGER.warn("[ApiCaptureContext] Assertion failed — interrupting test thread '{}'", t.getName());
             t.interrupt();
         } else {
-            LOGGER.warn("[ApiMonitorContext] Assertion failed — test thread not set or dead, "
+            LOGGER.warn("[ApiCaptureContext] Assertion failed — test thread not set or dead, "
                     + "will be caught at step end");
         }
     }
@@ -194,7 +201,7 @@ public class ApiMonitorContext {
     public void incrementActiveRequests() {
         int count = activeRequests.incrementAndGet();
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiMonitorContext] incrementActiveRequests -> {}", count);
+                "[ApiCaptureContext] incrementActiveRequests -> {}", count);
     }
 
     /**
@@ -203,7 +210,7 @@ public class ApiMonitorContext {
     public void decrementActiveRequests() {
         int remaining = activeRequests.decrementAndGet();
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiMonitorContext] decrementActiveRequests -> {}", remaining);
+                "[ApiCaptureContext] decrementActiveRequests -> {}", remaining);
         if (remaining == 0) {
             synchronized (completionLock) {
                 completionLock.notifyAll();
@@ -262,7 +269,7 @@ public class ApiMonitorContext {
         failureDetails.add(new AssertionFailureDetail(
                 url, assertionType, expectedValue, actualValue, failMessage));
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[ApiMonitorContext] recordAssertionFailure: url={}, type={}, expected='{}', actual='{}', msg='{}'",
+                "[ApiCaptureContext] recordAssertionFailure: url={}, type={}, expected='{}', actual='{}', msg='{}'",
                 url, assertionType, expectedValue, actualValue, failMessage);
     }
 
@@ -295,7 +302,7 @@ public class ApiMonitorContext {
 
     public void reset() {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[ApiMonitorContext] reset() — clearing activeRequests={}, failures={}, responses={}, apiCalls={}",
+                "[ApiCaptureContext] reset() — clearing activeRequests={}, failures={}, responses={}, apiCalls={}",
                 activeRequests.get(), failureDetails.size(), getTotalResponseCount(), apiCallsPerUrl.size());
         activeRequests.set(0);
         hasAssertionFailures.set(false);
@@ -314,7 +321,7 @@ public class ApiMonitorContext {
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * 存储一次完整的 API 调用快照。
+     * 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。
      */
     public void storeApiCall(CapturedApiCall call) {
         if (call == null || call.endpoint() == null) return;
@@ -322,7 +329,7 @@ public class ApiMonitorContext {
                 java.util.Collections.synchronizedList(new ArrayList<>())
         ).add(call);
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiMonitorContext] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",
+                "[ApiCaptureContext] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",
                 call.endpoint(), call.method(), call.statusCode(),
                 call.responseBody() != null ? call.responseBody().length() : 0);
     }
@@ -420,13 +427,13 @@ public class ApiMonitorContext {
         }
 
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiMonitorContext] storeResponse: endpoint='{}', bodyLen={}, totalSize={}",
+                "[ApiCaptureContext] storeResponse: endpoint='{}', bodyLen={}, totalSize={}",
                 endpoint, responseBody.length(), formatBytes(totalResponseSize.get()));
 
         // 数量上限检查
         int total = getTotalResponseCount();
         if (total >= MAX_RESPONSE_STORAGE) {
-            LOGGER.warn("[ApiMonitorContext] Response count limit reached ({} >= {}). "
+            LOGGER.warn("[ApiCaptureContext] Response count limit reached ({} >= {}). "
                             + "Subsequent responses will NOT be stored. Consider calling reset() between tests.",
                     total, MAX_RESPONSE_STORAGE);
             return;  // 直接拒绝存储
@@ -435,7 +442,7 @@ public class ApiMonitorContext {
         // 体积上限检查
         long currentSize = totalResponseSize.get();
         if (currentSize >= MAX_RESPONSE_TOTAL_SIZE) {
-            LOGGER.warn("[ApiMonitorContext] Response total size limit reached ({} >= {}). "
+            LOGGER.warn("[ApiCaptureContext] Response total size limit reached ({} >= {}). "
                             + "Subsequent responses will NOT be stored to prevent OOM.",
                     formatBytes(currentSize), formatBytes(MAX_RESPONSE_TOTAL_SIZE));
             return;

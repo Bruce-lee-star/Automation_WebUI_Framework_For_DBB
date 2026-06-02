@@ -11,7 +11,7 @@ import java.util.Map;
 /**
  * 一次完整的 API 调用快照 — 封装请求/响应的核心信息。
  *
- * <p>由 {@link MonitorHandler} 在捕获响应时创建，存入 {@link ApiMonitorContext}。
+ * <p>由 {@link MonitorHandler} 在捕获响应时创建，存入 {@link ApiCaptureContext}。
  * 测试代码通过 {@code ctx.getApiCalls(endpoint)} 获取。
  *
  * <pre>{@code

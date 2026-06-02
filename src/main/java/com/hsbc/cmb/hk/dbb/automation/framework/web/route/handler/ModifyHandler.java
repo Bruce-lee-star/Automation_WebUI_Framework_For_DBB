@@ -4,6 +4,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -263,6 +265,44 @@ public class ModifyHandler {
                             fieldsToModify != null ? fieldsToModify.toString() : "none",
                             fieldsToAdd != null ? fieldsToAdd.toString() : "none",
                             fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
+
+            // ── 6. 存储 Modify 调用到 ApiCaptureContext ───────────────
+            try {
+                // 构建修改详情作为 body 存储
+                StringBuilder modifyDetail = new StringBuilder();
+                modifyDetail.append("{");
+                modifyDetail.append("\"originalUrl\":\"").append(req.url()).append("\",");
+                modifyDetail.append("\"modifiedMethod\":\"").append(finalMethod).append("\",");
+                modifyDetail.append("\"headersSet\":").append(requestHeadersToSet != null
+                        ? OBJECT_MAPPER.writeValueAsString(requestHeadersToSet) : "null").append(",");
+                modifyDetail.append("\"headersRemoved\":").append(requestHeadersToRemove != null
+                        ? OBJECT_MAPPER.writeValueAsString(requestHeadersToRemove) : "null").append(",");
+                modifyDetail.append("\"bodyFieldsModified\":").append(fieldsToModify != null
+                        ? OBJECT_MAPPER.writeValueAsString(fieldsToModify) : "null").append(",");
+                modifyDetail.append("\"bodyFieldsAdded\":").append(fieldsToAdd != null
+                        ? OBJECT_MAPPER.writeValueAsString(fieldsToAdd) : "null").append(",");
+                modifyDetail.append("\"bodyFieldsRemoved\":").append(fieldsToRemove != null
+                        ? OBJECT_MAPPER.writeValueAsString(fieldsToRemove) : "null").append(",");
+                modifyDetail.append("\"modifiedBody\":").append(finalBody != null
+                        ? OBJECT_MAPPER.writeValueAsString(finalBody) : "null");
+                modifyDetail.append("}");
+
+                CapturedApiCall call = new CapturedApiCall(
+                        rule.getUrlPattern(),
+                        req.method(),
+                        null,   // Modify 场景无请求头快照
+                        0,      // resume 后无直接响应状态码
+                        finalHeaders,
+                        modifyDetail.toString(),
+                        System.currentTimeMillis()
+                );
+                ApiCaptureContext.getCurrent().storeApiCall(call);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}",
+                        rule.getUrlPattern(), req.method());
+            } catch (Exception e) {
+                LOGGER.debug("[ModifyHandler] Failed to store modify call to ApiCaptureContext: {}", e.getMessage());
+            }
         } catch (PlaywrightException e) {
             LOGGER.error("[ModifyHandler] Failed to resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);

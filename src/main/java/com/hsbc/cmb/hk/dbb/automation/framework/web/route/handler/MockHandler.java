@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -95,6 +97,26 @@ public class MockHandler {
                     String.format("Pattern: %s\nStatus: %d\nBody: %s",
                             rule.getUrlPattern(), status,
                             body.length() > 500 ? body.substring(0, 500) + "..." : body));
+
+            // ── 7. 存储 Mock 调用到 ApiCaptureContext ───────────────
+            try {
+                String method = route.request().method();
+                CapturedApiCall call = new CapturedApiCall(
+                        rule.getUrlPattern(),
+                        method,
+                        null,  // Mock 场景无请求头
+                        status,
+                        rule.getMockHeaders(),  // Mock 自定义响应头
+                        body,
+                        System.currentTimeMillis()
+                );
+                ApiCaptureContext.getCurrent().storeApiCall(call);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                        rule.getUrlPattern(), method, status);
+            } catch (Exception e) {
+                LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
+            }
         } catch (PlaywrightException e) {
             LOGGER.error("[MockHandler] Failed to fulfill route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);

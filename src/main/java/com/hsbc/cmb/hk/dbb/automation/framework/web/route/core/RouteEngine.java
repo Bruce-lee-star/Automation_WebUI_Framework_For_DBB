@@ -184,6 +184,7 @@ public class RouteEngine {
      *
      * <p>防重门控：同一 Route 对象被多个重叠 pattern 匹配时，
      * 仅第一个到达的 handler 执行，后续 handler 静默跳过（避免 "Route is already handled" 异常）。
+     * <p>每次 handler 执行完成后立即 remove，避免阻塞同一 pattern 的后续请求。
      */
     private static void dispatchRoute(Route route, RouteRule rule) {
         String reqUrl = route.request().url();
@@ -239,6 +240,8 @@ public class RouteEngine {
             } catch (Exception e) {
                 LOGGER.error("[RouteEngine] Failed to resume route (fallback) for pattern '{}': {}",
                         rule.getUrlPattern(), e.getMessage(), e);
+            } finally {
+                DISPATCHED_ROUTES.remove(route);
             }
             return;
         }
@@ -287,7 +290,9 @@ public class RouteEngine {
                 MonitorSession session = SESSIONS.get(rule);
                 if (session != null && session.stopped.get()) {
                     LOGGER.debug("[RouteEngine] Session stopped during delay, skipping for '{}'", pattern);
-                    try { route.resume(); } catch (Exception ignored) {}
+                    try { route.resume(); } catch (Exception ignored) {} finally {
+                        DISPATCHED_ROUTES.remove(route);
+                    }
                     return;
                 }
 
@@ -299,6 +304,8 @@ public class RouteEngine {
                 LOGGER.error("[RouteEngine] Failed to continue route after delay for '{}': {}",
                         pattern, e.getMessage(), e);
                 try { route.resume(); } catch (Exception ignored) {}
+            } finally {
+                DISPATCHED_ROUTES.remove(route);
             }
         };
 
@@ -382,6 +389,9 @@ public class RouteEngine {
             } catch (Exception resumeEx) {
                 LOGGER.error("[RouteEngine] Failed to resume route after handler error: {}", resumeEx.getMessage());
             }
+        } finally {
+            // ═══ 防重门控释放：handler 完成后立即 remove，允许同一 pattern 后续请求正常处理 ═══
+            DISPATCHED_ROUTES.remove(route);
         }
     }
 

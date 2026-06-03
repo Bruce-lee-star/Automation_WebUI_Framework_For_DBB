@@ -1,6 +1,6 @@
 # WebUI 自动化框架 — 元素定位方法手册（详细版 v3.0）
 
-> **最后更新：** 2026-05-07
+> **最后更新：** 2026-06-04
 > **覆盖范围：** `@Element` 注解 / PageElement / PageElementList / BasePage / SerenityBasePage 全部定位相关 API
 
 ---
@@ -38,25 +38,30 @@
 ```
 BasePage (abstract)                          ← 所有页面的基类
   │
-  ├── SerenityBasePage (abstract)            ← Serenity BDD 测试专用（自动日志+数据记录）
+  ├── SerenityBasePage (abstract)            ← Serenity BDD 测试专用（双拦截器精简 87 个 Override）
   │     │
   │     └── 你的 Page 类 (extends SerenityBasePage)
   │
   └── 使用:
       ├── PageElement                        ← 单个元素封装
+      │     ├── ChildPageElement (内部)       ← Locator.locator() 链式嵌套定位
       │     └── PageElementWithIndex (内部)   ← 带 index 的缓存定位器
       │
       └── PageElementList extends AbstractList<PageElement>
             └── 内部使用 PageElementWithIndex
 
-@Element 注解 → 自动初始化字段为 PageElement 或 PageElementList
+TextNormalizer ← 统一文本标准化管道（NFKC → 去控制字符 → 合并空白 → trim）
+                    BasePage / PageElement 共享实现，避免重复 Pattern 定义
+
+ElementDiagnosticsCollector ← 失败诊断信息收集器（批量 JS 单次 IPC）
+@Element 注解 → 仅支持 CSS / XPath 选择器，自动初始化字段为 PageElement 或 PageElementList
 ```
 
 **设计原则：**
-- **@Element 声明 + 自动注入**：无需手动 new，构造函数中自动扫描并初始化
+- **@Element 声明 + 自动注入**：无需手动 new，构造函数中自动扫描并初始化；页面切换时仅刷新 Locator 缓存（不重建对象）
 - **链式调用**：所有 PageElement 操作返回 this，支持 `.click().type("x").press("Enter")`
-- **企业级重试**：内置 executeWithRetry，支持可重试异常识别、最大重试次数、失败诊断截图
-- **延迟读取**：requestHeaders/responseHeaders/requestBody 在首次访问时才从 Playwright 读取
+- **企业级重试**：`executeWithRetry` 自动诊断 DOM 状态 + 失败截图；`executeSafely` 模板统一读取操作异常转换
+- **文本标准化**：`TextNormalizer` 统一管道（NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim），BasePage/PageElement 共享
 
 ---
 
@@ -66,13 +71,15 @@ BasePage (abstract)                          ← 所有页面的基类
 
 在 Page 类中**声明式定义元素**，框架自动注入实例。
 
+> **选择器仅支持 CSS 和 XPath 两种类型。** CSS 直接书写，XPath 以 `//` 或 `xpath=` 开头。
+
 ### 语法
 
 ```java
-@Element("CSS选择器")
+@Element("CSS或XPath选择器")
 private PageElement 元素名;
 
-@Element(value = "CSS选择器", description = "描述文字")
+@Element(value = "CSS或XPath选择器", description = "描述文字")
 private PageElement 元素名;
 ```
 
@@ -82,6 +89,16 @@ private PageElement 元素名;
 |----------|------|------|
 | `PageElement` | 单个元素 | 按钮、输入框、链接等 |
 | `PageElementList` | 元素集合 | 表格行列表、选项列表等 |
+
+### XPath 选择器示例
+
+```java
+@Element("//button[contains(@class, 'primary')]")
+private PageElement primaryBtn;
+
+@Element("xpath=//div[@data-testid='container']")
+private PageElement container;
+```
 
 ### 示例
 
@@ -309,8 +326,11 @@ boolean checked = btn.isChecked();
 ### 4.7 文本与属性
 
 ```java
-// 获取元素文本（innerText，已归一化处理）
+// 获取元素文本（innerText，经 TextNormalizer 标准化管道处理）
 String text = element.getText();
+
+// 原始文本（跳过标准化管道，性能优化：列表遍历场景避免 4 次正则）
+String raw = element.getTextRaw();
 
 // HTML 内容
 String html = element.getInnerHtml();
@@ -326,11 +346,14 @@ String placeholder = input.getAttribute("placeholder");
 String val = input.getValue();
 ```
 
-**归一化处理（`normalizeText`）：**
-- 合并连续空白为单个空格
-- 处理 `&nbsp;` → 空格
-- trim 首尾空白
-- 统一换行符
+**文本标准化管道（`TextNormalizer.normalize()`）：**
+1. NFKC 规范化 — en-dash/em-dash→-、smart-quotes→"'、NBSP→空格、全角→半角
+2. 删除零宽空格等格式控制字符（`\p{Cf}`）
+3. 合并所有空白为单个空格
+4. 去掉中英文标点前的空格
+5. trim 首尾空白
+
+> `getText()` 自动走完整管道，`getTextRaw()` 跳过管道直接返回原始文本（列表遍历时推荐使用以提升性能）。`TextNormalizer` 为 BasePage 和 PageElement 共享实现，避免重复 Pattern 定义。
 
 ### 4.8 等待方法（元素级别）
 
@@ -377,7 +400,7 @@ byte[] screenshotBytes = element.screenshot();
 // 拖拽
 sourceElement.dragTo(targetElement);
 
-// 子元素定位（CSS 链拼接）
+// 子元素定位（使用 Locator.locator() 链式定位，非字符串拼接）
 PageElement cell = table.child("tr:nth-child(1)").child("td:nth-child(2)");
 PageElement cellWithIndex = row.child("td", 2);  // + nth=2
 
@@ -668,15 +691,17 @@ navigateToWithRetry("https://example.com", 3);
 
 继承 `BasePage`，是 **Serenity BDD 测试专用基类**。
 
+> **v3.0 重构**：通过 `record()` / `recordAndReturn()` 双拦截器消除 87 个冗余 `@Override super.xxx() + addSerenityTestData()` 模式；`VERBOSE_LOGGING` 标志按需记录，成功路径零开销。
+
 ### 与 BasePage 的区别
 
 | 特性 | BasePage | SerenityBasePage |
 |------|----------|------------------|
 | 适用场景 | 通用 / 非 BDD | Serenity BDD 测试 |
-| 日志输出 | DEBUG 级别 | INFO + `[Serenity]` 前缀 |
-| 数据记录 | 无 | 自动 `addSerenityTestData()` |
-| 验证记录 | 无 | `recordPageVerification(PASS/FAIL)` |
-| 方法签名 | 完全相同 | 完全覆盖（Decorator 模式） |
+| 日志输出 | DEBUG 级别 | INFO + `[Serenity]` 前缀（需开启 VERBOSE_LOGGING） |
+| 数据记录 | 无 | 按需 `addSerenityTestData()`（VERBOSE_LOGGING 控制） |
+| 验证记录 | 无 | `recordVerification(PASS/FAIL)` |
+| 实现方式 | — | `record()` / `recordAndReturn()` 双拦截器消除所有冗余 Override |
 
 ### 新增功能
 
@@ -751,7 +776,8 @@ public class LoginPage extends SerenityBasePage {
 | `selectByIndex(i)` | PageElement | 下拉选索引 |
 | `selectByText(t)` | PageElement | 下拉选文本 |
 | `press(key)` | PageElement | 键盘按键 |
-| `getText()` | String | 归一化文本 |
+| `getText()` | String | 标准化文本（TextNormalizer） |
+| `getTextRaw()` | String | 原始文本（跳过标准化管道，性能优化） |
 | `getAttribute(attr)` | String | 属性值 |
 | `getValue()` | String | inputValue |
 | `isVisible([t])` | boolean | 是否可见 |

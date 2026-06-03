@@ -125,15 +125,17 @@ LoginPage.STATUS_MSG.waitForContainsText("登录成功", 15);
 - **轮询等待**：对于 `isEnabled()`、`isSelected()` 等属性检查，自动轮询直到条件满足
 - **链式调用**：所有操作返回 `this`，支持流畅的链式编程
 - **双超时机制**：支持全局默认超时和单次调用指定超时
+- **企业级重试**：`executeWithRetry` 自动诊断 DOM 状态 + 失败截图，`executeSafely` 统一读取操作异常转换
+- **文本标准化**：`TextNormalizer` 统一管道（NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim），BasePage/PageElement 共享实现
 
 **核心类：**
 | 类 | 功能 |
 |----|------|
-| `PageElement` | 页面元素包装类，支持所有元素操作、智能等待和链式调用 |
-| `PageElementList` | 元素列表操作，动态查询 + 多阶段智能等待 |
-| `Element` | `@Element` 注解，标记 Page 字段选择器，支持自动初始化 |
-| `BasePage` | 基础页面类，封装 10+ 种元素定位方法和所有 Playwright 核心操作 |
-| `SerenityBasePage` | Serenity 集成的页面实现 |
+| `PageElement` | 页面元素包装类，支持所有元素操作、企业级重试 + 失败诊断；`executeSafely` 模板统一异常处理；`getTextRaw()` 快速路径跳过标准化管道 |
+| `PageElementList` | 元素列表操作，动态查询 + 多阶段智能等待；支持 Locator 缓存失效刷新 |
+| `Element` | `@Element` 注解，仅支持 CSS / XPath 选择器，自动注入 PageElement / PageElementList |
+| `BasePage` | 基础页面类，封装 50+ Playwright 核心操作；文本标准化委托 `TextNormalizer`；页面切换时仅刷新 Locator 缓存（避免重建对象）；统一 `waitForCondition` 模板消除冗余 waitForXxx 方法 |
+| `SerenityBasePage` | Serenity 集成页面，通过 `record()` / `recordAndReturn()` 双拦截器消除 87 个冗余 Override；每次操作前自动调用 `SerenityReporter.flushPendingApiOperations()` 将 Route Handler 产生的 API 数据刷入 Serenity 报告 |
 | `PageObjectFactory` | 页面对象工厂，支持单例/原型/线程隔离等生命周期策略 |
 
 ---
@@ -152,12 +154,21 @@ RouteDsl.on(page)
     .done()
     .start();
 
-// Mock — 拦截并返回自定义响应
+// Mock — 拦截并返回自定义响应（支持通配符 [*] 批量字段替换 + 类型保持）
 RouteDsl.on(page)
     .api("/api/login")
     .mock()
     .mockBody("{\"token\":\"mock-token-123\"}")
     .mockStatus(200)
+    .done()
+    .start();
+
+// Mock 批量替换 — 支持数组/对象字段（自动解析 JSON 保持类型，不会变成字符串）
+RouteDsl.on(page)
+    .api("/api/items")
+    .mock()
+    .mockBody("{\"code\":200,\"data\":{\"items\":[]}}")
+    .mockReplaceField("$.data.items", "[{\"id\":1,\"name\":\"test\"}]")  // 空数组 → 带数据的数组
     .done()
     .start();
 
@@ -189,12 +200,13 @@ RouteDsl.on(page)
 
 **核心特性：**
 - ✅ **Monitor（监控）**：放行请求 → 异步读取响应 → 状态码/JSONPath 断言 → 自动停止
-- ✅ **Mock（模拟）**：拦截请求 → 直接返回自定义状态码+Body+Headers
-- ✅ **Modify（修改）**：拦截请求 → JSONPath 精准替换请求体字段/增删请求头 → 继续发送
+- ✅ **Mock（模拟）**：拦截请求 → 直接返回自定义状态码+Body+Headers；支持 `mockReplaceField` 通配符 `[*]` 批量替换 JSON 字段，**自动类型保持**（Int/Long/Boolean/Array/Object 原样保留，数组和对象不会降级为字符串）
+- ✅ **Modify（修改）**：拦截请求 → JSONPath 精准替换请求体字段/增删请求头 → 继续发送；**支持数组/对象字段替换**（JSON 字符串自动解析为对应 JsonNode）
 - ✅ **Delay（高延迟）**：拦截请求 → 延迟指定秒数后原样放行，支持固定和随机延迟，用于测试前端超时/loading/重试机制
 - ✅ **条件匹配**：支持 ResourceType、HTTP Method、Headers、Query、Body Regex、Referrer、Origin 等多维度过滤
 - ✅ **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程，零阻塞 UI
 - ✅ **内存安全**：WeakReference 防泄漏、双重上限防 OOM
+- ✅ **Serenity 报告集成**：Handler 在非主线程产生的 API 拦截记录自动入队，由 `SerenityBasePage` 的 `record()`/`recordAndReturn()` 拦截器在主线程批量写入 Serenity 报告，确保 Monitor/Mock/Modify 数据不丢失
 
 👉 详细文档：[ROUTE_PACKAGE_README.md](./ROUTE_PACKAGE_README.md)
 
@@ -245,9 +257,12 @@ Automation_WebUI_Framework_BDD/
 ├── src/main/java/.../automation/
 │   ├── framework/web/                       # ★ 核心 Web 测试框架
 │   │   ├── page/                           # Page Object Model
-│   │   │   ├── PageElement.java            # 元素操作（智能等待/轮询等待）
+│   │   │   ├── PageElement.java            # 元素操作（企业级重试 + 失败诊断）
 │   │   │   ├── PageElementList.java        # 元素列表
-│   │   │   ├── base/BasePage.java          # 基础页面类
+│   │   │   ├── Element.java                # @Element 注解（仅 CSS / XPath）
+│   │   │   ├── ElementDiagnosticsCollector.java  # 失败诊断收集器（批量 JS 单次 IPC）
+│   │   │   ├── base/BasePage.java          # 基础页面类（50+ Playwright 操作）
+│   │   │   ├── base/impl/SerenityBasePage.java  # Serenity 集成（双拦截器精简 87 个 Override）
 │   │   │   └── factory/PageObjectFactory.java
 │   │   ├── route/                          # ★ Route Engine（API 拦截）
 │   │   │   ├── core/                       # RouteEngine / RouteRegistry / RouteRule / ApiCaptureContext / CapturedApiCall / RouteMonitor
@@ -270,6 +285,7 @@ Automation_WebUI_Framework_BDD/
 │   │   │   ├── AxeCoreListener.java
 │   │   │   └── ListenerRegistry.java
 │   │   └── utils/                          # 工具类
+│   │       ├── TextNormalizer.java          # 统一文本标准化管道（NFKC → 去控制字符 → 合并空白 → trim）
 │   │
 │   ├── framework/api/                       # API 测试框架
 │   │   ├── client/                         # REST 客户端
@@ -489,9 +505,10 @@ public class LoginSteps {
 1. **Playwright 替代 Selenium** — 更快的执行速度、更可靠的元素定位、自动等待机制
 2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理，职责明确
 3. **双等待策略** — 智能等待（原生 waitFor）+ 轮询等待（属性检查），覆盖所有场景
-4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI
+4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持（Int/Long/Boolean/Array/Object）；Handler 非主线程数据通过 `SerenityReporter` 队列机制自动刷入 Serenity 报告
 5. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
 6. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
 7. **无障碍合规** — 内置 axe-core WCAG 自动扫描
 8. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
-9. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM
+9. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + `ConcurrentLinkedQueue` 跨线程报告队列
+10. **Element 框架优化** — `TextNormalizer` 统一文本标准化；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition` 统一模板替代重复 waitFor 方法

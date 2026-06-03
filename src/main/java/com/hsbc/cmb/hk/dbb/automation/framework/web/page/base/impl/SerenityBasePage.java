@@ -1,9 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl;
 
-import com.microsoft.playwright.BrowserContext;
-import com.microsoft.playwright.Frame;
-import com.microsoft.playwright.Locator;
-import com.microsoft.playwright.Page;
+import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.BoundingBox;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -13,18 +10,26 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationE
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
-import java.util.function.Predicate;
 import java.util.function.Consumer;
 
 /**
- * Serenity 基础页面类
- * 继承自BasePage，添加了Serenity BDD集成功能
+ * Serenity 基础页面类。
+ * 继承自 BasePage，通过 Serenity 测试数据记录和验证标记做轻量增强。
+ *
+ * <h3>设计原则</h3>
+ * 本类不复制父类方法——通过 {@link #record(String, Object, Runnable)} 和
+ * {@link #recordAndReturn(String, Object, Supplier)} 两个 reusable interceptor
+ * 消除所有冗余 {@code @Override super.xxx() + addSerenityTestData(...)} 模式。
+ *
+ * @see BasePage
  */
 public abstract class SerenityBasePage extends BasePage {
 
@@ -34,16 +39,63 @@ public abstract class SerenityBasePage extends BasePage {
     private final Map<String, Object> serenityTestData = new HashMap<>();
 
     /**
-     * 构造函数
+     * 是否启用详细日志记录（每个操作都记 info 日志 + 存 Map）。
+     * 默认关闭以提升大量操作时的性能。通过系统属性 serenity.verbose.logging=true 开启。
      */
+    private static final boolean VERBOSE_LOGGING = Boolean.parseBoolean(
+        System.getProperty("serenity.verbose.logging", "false"));
+
+    // ==================== Reusable Interceptors（消除 87 个冗余 Override） ====================
+
+    /**
+     * 无返回值操作的 Serenity 记录拦截器。
+     * 替代所有 {@code @Override void xxx() { super.xxx(); addSerenityTestData(...); }} 模式。
+     *
+     * <p>操作前刷新 Route Handler 产生的待报告 API 数据到 Serenity 报告。
+     * Handler 在 Playwright 事件线程/异步池线程中无法直接写入 Serenity 报告
+     * （ThreadLocal 隔离），通过此拦截器在主线程上批量写入。
+     */
+    private void record(String action, Object detail, Runnable operation) {
+        SerenityReporter.flushPendingApiOperations();
+        if (VERBOSE_LOGGING) logger.info("[Serenity] {}", action);
+        addSerenityTestData(action, detail != null ? detail : "executed");
+        operation.run();
+    }
+
+    /**
+     * 有返回值操作的 Serenity 记录拦截器。
+     * 替代所有 {@code @Override T xxx() { T r = super.xxx(); addSerenityTestData(...); return r; }} 模式。
+     *
+     * <p>操作前刷新 Route Handler 产生的待报告 API 数据到 Serenity 报告。
+     */
+    private <T> T recordAndReturn(String action, Object detail, Supplier<T> operation) {
+        SerenityReporter.flushPendingApiOperations();
+        T result = operation.get();
+        addSerenityTestData(action, detail != null ? detail : result);
+        return result;
+    }
+
+    /**
+     * 验证操作的 Serenity 记录拦截器。
+     * 自动记录 PASS/FAIL 验证结果。
+     *
+     * <p>验证前刷新 Route Handler 产生的待报告 API 数据。
+     */
+    private void recordVerification(String verificationName, boolean passed) {
+        SerenityReporter.flushPendingApiOperations();
+        String status = passed ? "PASS" : "FAIL";
+        addSerenityTestData("verification_" + verificationName, status);
+        logger.debug(" Verification '{}': {}", verificationName, status);
+    }
+
+    // ==================== 构造 ====================
+
     public SerenityBasePage() {
-        // 调用父类构造函数
         super();
         try {
-            LoggingConfigUtil.logInfoIfVerbose(
-                    logger, "Initializing Serenity Base Page");
-
-            // 记录页面初始化到Serenity报告
+            if (VERBOSE_LOGGING) {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Serenity Base Page");
+            }
             addSerenityTestData("pageInitialized", true);
             addSerenityTestData("pageClass", this.getClass().getSimpleName());
         } catch (Exception e) {
@@ -52,10 +104,8 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 获取当前页面的Page对象
-     * 覆盖父类方法，添加Serenity集成
-     */
+    // ==================== 需要特殊异常处理的 Override（保留） ====================
+
     @Override
     public Page getPage() {
         try {
@@ -71,10 +121,6 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 获取BrowserContext对象
-     * 覆盖父类方法，公开访问权限并添加Serenity集成
-     */
     @Override
     public BrowserContext getContext() {
         try {
@@ -90,46 +136,46 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
+    // ==================== Serenity 数据管理 ====================
+
     /**
-     * 添加测试数据到本地存储
+     * 添加测试数据到本地存储。
+     * 仅在 VERBOSE_LOGGING 开启时才写入 HashMap，成功路径零开销。
      */
     protected void addSerenityTestData(String key, Object value) {
+        if (!VERBOSE_LOGGING) return;
         try {
             serenityTestData.put(key, value);
-
-            LoggingConfigUtil.logDebugIfVerbose(
-                    logger, "Added Serenity test data: {} = {}", key, value);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Added Serenity test data: {} = {}", key, value);
         } catch (Exception e) {
             logger.error("Failed to add Serenity test data: {} = {}", key, value, e);
             throw new ConfigurationException("Failed to add Serenity test data: " + key + " = " + value, e);
         }
     }
 
-    /**
-     * 获取Serenity测试数据
-     */
     protected Object getSerenityTestData(String key) {
         return serenityTestData.get(key);
     }
 
-    /**
-     * 验证页面标题是否包含指定文本
-     */
+    public Map<String, Object> getSerenityTestDataMap() {
+        return new HashMap<>(serenityTestData);
+    }
+
+    public void clearSerenityTestData() {
+        serenityTestData.clear();
+        logger.debug("Cleared all Serenity test data");
+    }
+
+    // ==================== Serenity 特有验证方法 ====================
+
     public boolean verifyPageTitleContains(String expectedText) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             String actualTitle = getTitle();
             boolean contains = actualTitle.contains(expectedText);
-
-            if (contains) {
-                addSerenityTestData("titleVerification", "PASS");
-                addSerenityTestData("expectedTitle", expectedText);
-                addSerenityTestData("actualTitle", actualTitle);
-            } else {
-                addSerenityTestData("titleVerification", "FAIL");
-                addSerenityTestData("expectedTitle", expectedText);
-                addSerenityTestData("actualTitle", actualTitle);
-            }
-
+            addSerenityTestData("titleVerification", contains ? "PASS" : "FAIL");
+            addSerenityTestData("expectedTitle", expectedText);
+            addSerenityTestData("actualTitle", actualTitle);
             return contains;
         } catch (Exception e) {
             logger.debug("Failed to verify page title contains: {}", expectedText, e);
@@ -137,24 +183,14 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 验证页面标题是否等于指定文本
-     */
     public boolean verifyPageTitleEquals(String expectedText) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             String actualTitle = getTitle();
             boolean equals = actualTitle.equals(expectedText);
-
-            if (equals) {
-                addSerenityTestData("titleVerification", "PASS");
-                addSerenityTestData("expectedTitle", expectedText);
-                addSerenityTestData("actualTitle", actualTitle);
-            } else {
-                addSerenityTestData("titleVerification", "FAIL");
-                addSerenityTestData("expectedTitle", expectedText);
-                addSerenityTestData("actualTitle", actualTitle);
-            }
-
+            addSerenityTestData("titleVerification", equals ? "PASS" : "FAIL");
+            addSerenityTestData("expectedTitle", expectedText);
+            addSerenityTestData("actualTitle", actualTitle);
             return equals;
         } catch (Exception e) {
             logger.debug("Failed to verify page title equals: {}", expectedText, e);
@@ -162,24 +198,14 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 验证当前URL是否包含指定文本
-     */
     public boolean verifyUrlContains(String expectedText) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             String actualUrl = getCurrentUrl();
             boolean contains = actualUrl.contains(expectedText);
-
-            if (contains) {
-                addSerenityTestData("urlVerification", "PASS");
-                addSerenityTestData("expectedUrlFragment", expectedText);
-                addSerenityTestData("actualUrl", actualUrl);
-            } else {
-                addSerenityTestData("urlVerification", "FAIL");
-                addSerenityTestData("expectedUrlFragment", expectedText);
-                addSerenityTestData("actualUrl", actualUrl);
-            }
-
+            addSerenityTestData("urlVerification", contains ? "PASS" : "FAIL");
+            addSerenityTestData("expectedUrlFragment", expectedText);
+            addSerenityTestData("actualUrl", actualUrl);
             return contains;
         } catch (Exception e) {
             logger.debug("Failed to verify URL contains: {}", expectedText, e);
@@ -187,43 +213,30 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 点击元素 - 覆盖父类方法，添加Serenity集成
-     */
+    // ==================== 有特殊异常处理逻辑的 Override（保留） ====================
+
     @Override
     public void click(String selector) {
         try {
-            logger.info("[Serenity] Clicking element: {}", selector);
+            SerenityReporter.flushPendingApiOperations();
+            if (VERBOSE_LOGGING) logger.info("[Serenity] Clicking element: {}", selector);
             addSerenityTestData("lastAction", "click");
             addSerenityTestData("lastActionElement", selector);
             super.click(selector);
         } catch (ElementOperationException e) {
-            // 已经是 ElementOperationException，直接重新抛出
-            // 降级为 DEBUG：异常最终由 PlaywrightListener.stepFailed() 统一记录 error
             logger.debug("Failed to click element: {}", selector, e);
             throw e;
         } catch (Exception e) {
             logger.debug("Failed to click element: {}", selector, e);
-            throw new ElementOperationException("click", selector, 
-                "Failed to click element: " + selector, e);
+            throw new ElementOperationException("click", selector, "Failed to click element: " + selector, e);
         }
     }
 
     @Override
-    public void jsClick(String selector) {
-        logger.info("[Serenity] JS Clicking element: {}", selector);
-        addSerenityTestData("lastAction", "jsClick");
-        addSerenityTestData("lastActionElement", selector);
-        super.jsClick(selector);
-    }
-
-    /**
-     * 输入文本 - 覆盖父类方法，添加Serenity集成
-     */
-    @Override
     public void type(String selector, String text) {
         try {
-            logger.info("[Serenity] Typing text '{}' into element: {}", text, selector);
+            SerenityReporter.flushPendingApiOperations();
+            if (VERBOSE_LOGGING) logger.info("[Serenity] Typing text '{}' into element: {}", text, selector);
             addSerenityTestData("lastAction", "type");
             addSerenityTestData("lastActionElement", selector);
             addSerenityTestData("lastActionValue", text);
@@ -235,41 +248,14 @@ public abstract class SerenityBasePage extends BasePage {
     }
 
     @Override
-    public void clear(String selector) {
-        logger.info("[Serenity] Clearing element: {}", selector);
-        addSerenityTestData("lastAction", "clear");
-        addSerenityTestData("lastActionElement", selector);
-        super.clear(selector);
-    }
-
-    @Override
-    public void append(String selector, String text) {
-        logger.info("[Serenity] Appending text '{}' into element: {}", text, selector);
-        addSerenityTestData("lastAction", "append");
-        addSerenityTestData("lastActionElement", selector);
-        addSerenityTestData("lastActionValue", text);
-        super.append(selector, text);
-    }
-
-    @Override
-    public String getInputValue(String selector) {
-        String value = super.getInputValue(selector);
-        addSerenityTestData("getInputValue", selector);
-        return value;
-    }
-
-    /**
-     * 导航到指定URL - 覆盖父类方法，添加Serenity集成
-     */
-    @Override
     public void navigateTo(String url) {
         try {
-            logger.info("[Serenity] Navigating to URL: {}", url);
+            SerenityReporter.flushPendingApiOperations();
+            if (VERBOSE_LOGGING) logger.info("[Serenity] Navigating to URL: {}", url);
             addSerenityTestData("lastAction", "navigate");
             addSerenityTestData("navigateUrl", url);
             super.navigateTo(url);
         } catch (NavigationException e) {
-            // 已经是 NavigationException，直接重新抛出
             logger.debug("Navigation failed to URL: {}", url, e);
             throw e;
         } catch (Exception e) {
@@ -278,255 +264,35 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    @Override
-    public void selectByVisibleText(String selector, String text) {
-        logger.info("[Serenity] Selecting text '{}' on element: {}", text, selector);
-        addSerenityTestData("selectByText", text);
-        addSerenityTestData("selectElement", selector);
-        super.selectByVisibleText(selector, text);
+    public void shouldBeVisible(String selector) {
+        try {
+            SerenityReporter.flushPendingApiOperations();
+            super.shouldBeVisible(selector);
+            recordVerification("elementVisible_" + selector, true);
+        } catch (Exception e) {
+            logger.debug("Failed to verify element should be visible: {}", selector, e);
+            throw new ElementException("Failed to verify element should be visible: " + selector, e);
+        }
     }
 
-    @Override
-    public void check(String selector) {
-        logger.info("[Serenity] Checking element: {}", selector);
-        addSerenityTestData("checkElement", selector);
-        super.check(selector);
+    public void shouldBeNotVisible(String selector) {
+        try {
+            SerenityReporter.flushPendingApiOperations();
+            super.shouldBeNotVisible(selector);
+            recordVerification("elementNotVisible_" + selector, true);
+        } catch (Exception e) {
+            logger.debug("Failed to verify element should not be visible: {}", selector, e);
+            throw new ElementException("Failed to verify element should not be visible: " + selector, e);
+        }
     }
 
-    @Override
-    public void uncheck(String selector) {
-        logger.info("[Serenity] Unchecking element: {}", selector);
-        addSerenityTestData("uncheckElement", selector);
-        super.uncheck(selector);
-    }
+    // ==================== 时间范围操作 + 验证（保留，有验证逻辑） ====================
 
-    @Override
-    public boolean isChecked(String selector) {
-        boolean result = super.isChecked(selector);
-        addSerenityTestData("isChecked", selector + " = " + result);
-        return result;
-    }
-
-    @Override
-    public boolean isEnabled(String selector) {
-        boolean result = super.isEnabled(selector);
-        addSerenityTestData("isEnabled", selector + " = " + result);
-        return result;
-    }
-
-    @Override
-    public boolean isDisabled(String selector) {
-        boolean result = super.isDisabled(selector);
-        addSerenityTestData("isDisabled", selector + " = " + result);
-        return result;
-    }
-
-    @Override
-    public boolean isVisible(String selector) {
-        boolean result = super.isVisible(selector);
-        addSerenityTestData("isVisible", selector + " = " + result);
-        return result;
-    }
-
-    @Override
-    public int getElementCount(String selector) {
-        int count = super.getElementCount(selector);
-        addSerenityTestData("elementCount", selector + " = " + count);
-        return count;
-    }
-
-    @Override
-    public void refresh() {
-        logger.info("[Serenity] Refreshing page");
-        addSerenityTestData("lastAction", "refresh");
-        super.refresh();
-    }
-
-    @Override
-    public void back() {
-        logger.info("[Serenity] Going back");
-        addSerenityTestData("lastAction", "back");
-        super.back();
-    }
-
-    @Override
-    public void forward() {
-        logger.info("[Serenity] Going forward");
-        addSerenityTestData("lastAction", "forward");
-        super.forward();
-    }
-
-    @Override
-    public void hover(String selector) {
-        logger.info("[Serenity] Hovering element: {}", selector);
-        addSerenityTestData("hoverElement", selector);
-        super.hover(selector);
-    }
-
-    @Override
-    public void keyDown(String selector, String key) {
-        addSerenityTestData("keyDown", key);
-        super.keyDown(selector, key);
-    }
-
-    @Override
-    public void keyUp(String selector, String key) {
-        addSerenityTestData("keyUp", key);
-        super.keyUp(selector, key);
-    }
-
-    @Override
-    public void press(String selector, String key) {
-        addSerenityTestData("pressKey", key);
-        super.press(selector, key);
-    }
-
-    @Override
-    public void acceptAlert() {
-        logger.info("[Serenity] Accepting alert");
-        addSerenityTestData("alertAction", "accept");
-        super.acceptAlert();
-    }
-
-    @Override
-    public void dismissAlert() {
-        logger.info("[Serenity] Dismissing alert");
-        addSerenityTestData("alertAction", "dismiss");
-        super.dismissAlert();
-    }
-
-    @Override
-    public byte[] takeScreenshot() {
-        byte[] screenshot = super.takeScreenshot();
-        addSerenityTestData("screenshot", "fullPage");
-        return screenshot;
-    }
-
-    @Override
-    public byte[] takeElementScreenshot(String selector) {
-        byte[] screenshot = super.takeElementScreenshot(selector);
-        addSerenityTestData("elementScreenshot", selector);
-        return screenshot;
-    }
-
-    @Override
-    public Frame getFrame(String name) {
-        Frame frame = super.getFrame(name);
-        addSerenityTestData("getFrame", name);
-        return frame;
-    }
-
-    @Override
-    public void executeInFrame(String frameName, Consumer<Frame> action) {
-        addSerenityTestData("executeInFrame", frameName);
-        super.executeInFrame(frameName, action);
-    }
-
-    @Override
-    public void waitForTimeout(int milliseconds) {
-        addSerenityTestData("waitForTimeout", milliseconds);
-        super.waitForTimeout(milliseconds);
-    }
-
-    /**
-     * 获取Serenity测试数据映射
-     */
-    public Map<String, Object> getSerenityTestDataMap() {
-        return new HashMap<>(serenityTestData);
-    }
-
-    /**
-     * 清除Serenity测试数据
-     */
-    public void clearSerenityTestData() {
-        serenityTestData.clear();
-        logger.debug("🧹 Cleared all Serenity test data");
-    }
-
-    /**
-     * 记录页面验证信息
-     */
-    protected void recordPageVerification(String verificationName, boolean passed) {
-        String status = passed ? "PASS" : "FAIL";
-        addSerenityTestData("verification_" + verificationName, status);
-        logger.debug(" Verification '{}': {}", verificationName, status);
-    }
-
-    // ==================== 时间范围操作方法 ====================
-
-    /**
-     * 在指定时间范围内等待元素可见（Serenity集成版）
-     *
-     * @param selector       元素选择器
-     * @param timeoutSeconds 最大超时时间（秒）
-     */
-    @Override
-    public void waitForElementVisibleWithinTime(String selector, int timeoutSeconds) {
-        super.waitForElementVisibleWithinTime(selector, timeoutSeconds);
-        recordPageVerification("elementVisible_" + selector, true);
-    }
-
-    /**
-     * 在指定时间范围内等待元素隐藏（Serenity集成版）
-     *
-     * @param selector       元素选择器
-     * @param timeoutSeconds 最大超时时间（秒）
-     */
-    @Override
-    public void waitForElementHiddenWithinTime(String selector, int timeoutSeconds) {
-        super.waitForElementHiddenWithinTime(selector, timeoutSeconds);
-        recordPageVerification("elementHidden_" + selector, true);
-    }
-
-    /**
-     * 在指定时间范围内等待元素可点击（Serenity集成版）
-     *
-     * @param selector       元素选择器
-     * @param timeoutSeconds 最大超时时间（秒）
-     */
-    @Override
-    public void waitForElementClickableWithinTime(String selector, int timeoutSeconds) {
-        super.waitForElementClickableWithinTime(selector, timeoutSeconds);
-        recordPageVerification("elementClickable_" + selector, true);
-    }
-
-    /**
-     * 在指定时间范围内等待页面标题包含文本（Serenity集成版）
-     *
-     * @param expectedTitle  期望的标题文本
-     * @param timeoutSeconds 最大超时时间（秒）
-     */
-    @Override
-    public void waitForTitleContainsWithinTime(String expectedTitle, int timeoutSeconds) {
-        super.waitForTitleContainsWithinTime(expectedTitle, timeoutSeconds);
-        recordPageVerification("titleContains_" + expectedTitle, true);
-    }
-
-    /**
-     * 在指定时间范围内等待URL包含文本（Serenity集成版）
-     *
-     * @param expectedUrlFragment 期望的URL片段
-     * @param timeoutSeconds      最大超时时间（秒）
-     */
-    @Override
-    public void waitForUrlContainsWithinTime(String expectedUrlFragment, int timeoutSeconds) {
-        super.waitForUrlContainsWithinTime(expectedUrlFragment, timeoutSeconds);
-        recordPageVerification("urlContains_" + expectedUrlFragment, true);
-    }
-
-    /**
-     * 在指定时间范围内执行操作并验证结果（Serenity集成版）
-     *
-     * @param action            要执行的操作
-     * @param validation        验证逻辑
-     * @param timeoutSeconds    最大超时时间（秒）
-     * @param actionDescription 操作描述
-     * @return 如果在指定时间内操作成功并验证通过则返回true，否则返回false
-     */
     public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutSeconds, String actionDescription) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             boolean result = super.performActionWithTimeout(action, validation, timeoutSeconds, actionDescription);
-            recordPageVerification("action_" + actionDescription, result);
+            recordVerification("action_" + actionDescription, result);
             return result;
         } catch (Exception e) {
             logger.debug("Failed to perform action with timeout: {}", actionDescription, e);
@@ -534,48 +300,11 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 断言元素应该可见（Serenity集成版）
-     *
-     * @param selector 元素选择器
-     * @throws RuntimeException 如果元素不可见
-     */
-    public void shouldBeVisible(String selector) {
-        try {
-            super.shouldBeVisible(selector);
-            recordPageVerification("elementVisible_" + selector, true);
-        } catch (Exception e) {
-            logger.debug("Failed to verify element should be visible: {}", selector, e);
-            throw new ElementException("Failed to verify element should be visible: " + selector, e);
-        }
-    }
-
-    /**
-     * 断言元素不应该可见（Serenity集成版）
-     *
-     * @param selector 元素选择器
-     * @throws RuntimeException 如果元素可见
-     */
-    public void shouldBeNotVisible(String selector) {
-        try {
-            super.shouldBeNotVisible(selector);
-            recordPageVerification("elementNotVisible_" + selector, true);
-        } catch (Exception e) {
-            logger.debug("Failed to verify element should not be visible: {}", selector, e);
-            throw new ElementException("Failed to verify element should not be visible: " + selector, e);
-        }
-    }
-
-    /**
-     * 检查页面源代码是否包含指定文本（Serenity集成版）
-     *
-     * @param text 要检查的文本
-     * @return 如果页面源代码包含指定文本则返回true，否则返回false
-     */
     public boolean getPageSourceContains(String text) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             boolean result = super.getPageSourceContains(text);
-            recordPageVerification("pageSourceContains_" + text, result);
+            recordVerification("pageSourceContains_" + text, result);
             return result;
         } catch (Exception e) {
             logger.debug("Failed to check if page source contains text: {}", text, e);
@@ -583,18 +312,11 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    /**
-     * 获取元素属性值并断言其值（Serenity集成版）
-     *
-     * @param selector      元素选择器
-     * @param attributeName 属性名
-     * @param expectedValue 期望的属性值
-     * @throws RuntimeException 如果属性值不匹配期望值
-     */
     public String getAttributeValue(String selector, String attributeName, String expectedValue) {
         try {
+            SerenityReporter.flushPendingApiOperations();
             String attributeValue = super.getAttributeValue(selector, attributeName, expectedValue);
-            recordPageVerification("attribute_" + selector + "_" + attributeName, true);
+            recordVerification("attribute_" + selector + "_" + attributeName, true);
             return attributeValue;
         } catch (Exception e) {
             logger.debug("Failed to verify attribute value for element: {}", selector, e);
@@ -602,337 +324,96 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    // ==================== 重试机制（Serenity集成版）====================
+    // ==================== 通过 Interceptor 消除的冗余 Override（替换原 87 个方法） ====================
 
-    @Override
-    public void retry(Runnable operation, int maxRetries, int retryIntervalMs, String operationDescription) {
-        super.retry(operation, maxRetries, retryIntervalMs, operationDescription);
-        addSerenityTestData("retry_" + operationDescription, "completed");
-    }
+    // --- 简单操作（无返回值） ---
+    @Override public void jsClick(String selector) { record("jsClick", selector, () -> super.jsClick(selector)); }
+    @Override public void clear(String selector) { record("clear", selector, () -> super.clear(selector)); }
+    @Override public void append(String selector, String text) { record("append", selector + "=" + text, () -> super.append(selector, text)); }
+    @Override public void selectByVisibleText(String selector, String text) { record("selectByText", selector + "=" + text, () -> super.selectByVisibleText(selector, text)); }
+    @Override public void check(String selector) { record("check", selector, () -> super.check(selector)); }
+    @Override public void uncheck(String selector) { record("uncheck", selector, () -> super.uncheck(selector)); }
+    @Override public void refresh() { record("refresh", null, super::refresh); }
+    @Override public void back() { record("back", null, super::back); }
+    @Override public void forward() { record("forward", null, super::forward); }
+    @Override public void hover(String selector) { record("hover", selector, () -> super.hover(selector)); }
+    @Override public void keyDown(String selector, String key) { record("keyDown", selector + ":" + key, () -> super.keyDown(selector, key)); }
+    @Override public void keyUp(String selector, String key) { record("keyUp", selector + ":" + key, () -> super.keyUp(selector, key)); }
+    @Override public void press(String selector, String key) { record("press", selector + ":" + key, () -> super.press(selector, key)); }
+    @Override public void acceptAlert() { record("acceptAlert", null, super::acceptAlert); }
+    @Override public void dismissAlert() { record("dismissAlert", null, super::dismissAlert); }
+    @Override public void tap(String selector) { record("tap", selector, () -> super.tap(selector)); }
+    @Override public void focus(String selector) { record("focus", selector, () -> super.focus(selector)); }
+    @Override public void scrollToElementCenter(String selector) { record("scrollToElementCenter", selector, () -> super.scrollToElementCenter(selector)); }
+    @Override public void scrollTo(String selector, int x, int y) { record("scrollTo", selector + "->" + x + "," + y, () -> super.scrollTo(selector, x, y)); }
+    @Override public void scrollBy(String selector, int x, int y) { record("scrollBy", selector + "->" + x + "," + y, () -> super.scrollBy(selector, x, y)); }
+    @Override public void scrollToBottomOf(String selector) { record("scrollToBottom", selector, () -> super.scrollToBottomOf(selector)); }
+    @Override public void scrollToTopOf(String selector) { record("scrollToTop", selector, () -> super.scrollToTopOf(selector)); }
+    @Override public void dragAndDrop(String src, String tgt) { record("dragAndDrop", src + "->" + tgt, () -> super.dragAndDrop(src, tgt)); }
+    @Override public void switchToPage(int index) { record("switchToPage", index, () -> super.switchToPage(index)); }
+    @Override public void switchToLatestPage() { record("switchToLatestPage", null, super::switchToLatestPage); }
+    @Override public void closeCurrentPageAndSwitchBack() { record("closeCurrentPageAndSwitchBack", null, super::closeCurrentPageAndSwitchBack); }
+    @Override public void bringToFront() { record("bringToFront", null, super::bringToFront); }
+    @Override public void setContent(String html) { record("setContent", null, () -> super.setContent(html)); }
+    @Override public void setViewportSize(int w, int h) { record("setViewportSize", w + "x" + h, () -> super.setViewportSize(w, h)); }
+    @Override public void setInputFiles(String selector, String... paths) { record("setInputFiles", selector, () -> super.setInputFiles(selector, paths)); }
+    @Override public void pause() { record("pause", null, super::pause); }
 
-    @Override
-    public void retry(Runnable operation, String operationDescription) {
-        super.retry(operation, operationDescription);
-        addSerenityTestData("retry_" + operationDescription, "completed");
-    }
+    // --- 状态检查（有返回值） ---
+    @Override public boolean isChecked(String s) { return recordAndReturn("isChecked", s, () -> super.isChecked(s)); }
+    @Override public boolean isEnabled(String s) { return recordAndReturn("isEnabled", s, () -> super.isEnabled(s)); }
+    @Override public boolean isDisabled(String s) { return recordAndReturn("isDisabled", s, () -> super.isDisabled(s)); }
+    @Override public boolean isVisible(String s) { return recordAndReturn("isVisible", s, () -> super.isVisible(s)); }
+    @Override public boolean isHidden(String s) { return recordAndReturn("isHidden", s, () -> super.isHidden(s)); }
+    @Override public boolean isClosed() { return recordAndReturn("isClosed", null, super::isClosed); }
+    @Override public int getElementCount(String s) { return recordAndReturn("elementCount", s, () -> super.getElementCount(s)); }
+    @Override public String getInputValue(String s) { return recordAndReturn("getInputValue", s, () -> super.getInputValue(s)); }
+    @Override public String innerHTML(String s) { return recordAndReturn("innerHTML", s, () -> super.innerHTML(s)); }
+    @Override public String textContent(String s) { return recordAndReturn("textContent", s, () -> super.textContent(s)); }
+    @Override public byte[] takeScreenshot() { return recordAndReturn("screenshot", "fullPage", super::takeScreenshot); }
+    @Override public byte[] takeElementScreenshot(String s) { return recordAndReturn("elementScreenshot", s, () -> super.takeElementScreenshot(s)); }
+    @Override public BoundingBox getElementBoundingBox(String s) { return recordAndReturn("elementBoundingBox", s, () -> super.getElementBoundingBox(s)); }
 
-    @Override
-    public boolean retryWithValidation(Runnable operation, Predicate<Void> validation,
-                                       int maxRetries, int retryIntervalMs, String operationDescription) {
-        boolean result = super.retryWithValidation(operation, validation, maxRetries, retryIntervalMs, operationDescription);
-        recordPageVerification("retryWithValidation_" + operationDescription, result);
+    // --- Locator 构建 ---
+    @Override public Locator byAltText(String text) { return recordAndReturn("byAltText", text, () -> super.byAltText(text)); }
+    @Override public Locator byRole(AriaRole role) { return recordAndReturn("byRole", role, () -> super.byRole(role)); }
+    @Override public Locator byTitle(String title) { return recordAndReturn("byTitle", title, () -> super.byTitle(title)); }
+    @Override public Locator byTestId(String testId) { return recordAndReturn("byTestId", testId, () -> super.byTestId(testId)); }
+
+    // --- Frame ---
+    @Override public Frame getFrame(String name) { return recordAndReturn("getFrame", name, () -> super.getFrame(name)); }
+    @Override public void executeInFrame(String fn, Consumer<Frame> action) { record("executeInFrame", fn, () -> super.executeInFrame(fn, action)); }
+
+    // --- 等待操作 ---
+    @Override public void waitForTimeout(int ms) { record("waitForTimeout", ms, () -> super.waitForTimeout(ms)); }
+    @Override public void waitForElementExists(String s, int t) { super.waitForElementExists(s, t); recordVerification("elementExists_" + s, true); }
+    @Override public void waitForElementNotExists(String s, int t) { super.waitForElementNotExists(s, t); recordVerification("elementNotExists_" + s, true); }
+    @Override public void waitForElementEditable(String s, int t) { super.waitForElementEditable(s, t); recordVerification("elementEditable_" + s, true); }
+    @Override public void waitForElementDisabled(String s, int t) { super.waitForElementDisabled(s, t); recordVerification("elementDisabled_" + s, true); }
+    @Override public void waitForElementEnabled(String s, int t) { super.waitForElementEnabled(s, t); recordVerification("elementEnabled_" + s, true); }
+    @Override public void waitForElementChecked(String s, int t) { super.waitForElementChecked(s, t); recordVerification("elementChecked_" + s, true); }
+    @Override public void waitForElementNotChecked(String s, int t) { super.waitForElementNotChecked(s, t); recordVerification("elementNotChecked_" + s, true); }
+    @Override public void waitForElementCount(String s, int c, int to) { super.waitForElementCount(s, c, to); recordVerification("elementCount_" + s, true); }
+    @Override public void waitForElementCountAtLeast(String s, int c, int to) { super.waitForElementCountAtLeast(s, c, to); recordVerification("elementCountAtLeast_" + s, true); }
+    @Override public void waitForNetworkIdle(int to) { super.waitForNetworkIdle(to); recordVerification("networkIdle", true); }
+    @Override public void waitForPageFullyLoaded(int to) { super.waitForPageFullyLoaded(to); recordVerification("pageFullyLoaded", true); }
+    @Override public void waitForDOMContentLoaded(int to) { super.waitForDOMContentLoaded(to); recordVerification("domContentLoaded", true); }
+    @Override public void waitForUrlEquals(String url, int to) { super.waitForUrlEquals(url, to); recordVerification("urlEquals", true); }
+    @Override public void waitForUrlStartsWith(String pfx, int to) { super.waitForUrlStartsWith(pfx, to); recordVerification("urlStartsWith", true); }
+    @Override public void waitForCustomCondition(Supplier<Boolean> c, int to, String desc) { super.waitForCustomCondition(c, to, desc); recordVerification("custom_" + desc, true); }
+
+    // --- 带重试的方法 ---
+    @Override public void waitForVisibleWithRetry(String s, int t, int r) { SerenityReporter.flushPendingApiOperations(); super.waitForVisibleWithRetry(s, t, r); recordVerification("waitVisibleWithRetry_" + s, true); }
+    @Override public void waitForHiddenWithRetry(String s, int t, int r) { SerenityReporter.flushPendingApiOperations(); super.waitForHiddenWithRetry(s, t, r); recordVerification("waitHiddenWithRetry_" + s, true); }
+    @Override public void clickWithRetry(String s, int r) { SerenityReporter.flushPendingApiOperations(); super.clickWithRetry(s, r); addSerenityTestData("clickWithRetry_" + s, "completed"); }
+    @Override public void typeWithRetry(String s, String t, int r) { SerenityReporter.flushPendingApiOperations(); super.typeWithRetry(s, t, r); addSerenityTestData("typeWithRetry_" + s, "completed"); }
+    @Override public void navigateToWithRetry(String url, int r) { SerenityReporter.flushPendingApiOperations(); super.navigateToWithRetry(url, r); addSerenityTestData("navigateToWithRetry", "completed"); }
+    @Override public void retry(Runnable op, int maxR, int interval, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, maxR, interval, desc); addSerenityTestData("retry_" + desc, "completed"); }
+    @Override public void retry(Runnable op, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, desc); addSerenityTestData("retry_" + desc, "completed"); }
+    @Override public boolean retryWithValidation(Runnable op, BooleanSupplier v, int maxR, int interval, String desc) {
+        SerenityReporter.flushPendingApiOperations();
+        boolean result = super.retryWithValidation(op, v, maxR, interval, desc);
+        recordVerification("retryWithValidation_" + desc, result);
         return result;
     }
-
-    // ==================== 扩展等待方法（Serenity集成版）====================
-
-    @Override
-    public void waitForElementExists(String selector, int timeoutSeconds) {
-        super.waitForElementExists(selector, timeoutSeconds);
-        recordPageVerification("elementExists_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementNotExists(String selector, int timeoutSeconds) {
-        super.waitForElementNotExists(selector, timeoutSeconds);
-        recordPageVerification("elementNotExists_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementEditable(String selector, int timeoutSeconds) {
-        super.waitForElementEditable(selector, timeoutSeconds);
-        recordPageVerification("elementEditable_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementDisabled(String selector, int timeoutSeconds) {
-        super.waitForElementDisabled(selector, timeoutSeconds);
-        recordPageVerification("elementDisabled_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementEnabled(String selector, int timeoutSeconds) {
-        super.waitForElementEnabled(selector, timeoutSeconds);
-        recordPageVerification("elementEnabled_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementAttributeEquals(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
-        super.waitForElementAttributeEquals(selector, attributeName, expectedAttributeValue, timeoutSeconds);
-        recordPageVerification("attributeEquals_" + selector + "_" + attributeName, true);
-    }
-
-    @Override
-    public void waitForElementAttributeContains(String selector, String attributeName, String expectedAttributeValue, int timeoutSeconds) {
-        super.waitForElementAttributeContains(selector, attributeName, expectedAttributeValue, timeoutSeconds);
-        recordPageVerification("attributeContains_" + selector + "_" + attributeName, true);
-    }
-
-    @Override
-    public void waitForElementTextContains(String selector, String expectedText, int timeoutSeconds) {
-        super.waitForElementTextContains(selector, expectedText, timeoutSeconds);
-        recordPageVerification("textContains_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementTextEquals(String selector, String expectedText, int timeoutSeconds) {
-        super.waitForElementTextEquals(selector, expectedText, timeoutSeconds);
-        recordPageVerification("textEquals_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementCount(String selector, int expectedCount, int timeoutSeconds) {
-        super.waitForElementCount(selector, expectedCount, timeoutSeconds);
-        recordPageVerification("elementCount_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementCountAtLeast(String selector, int minimumCount, int timeoutSeconds) {
-        super.waitForElementCountAtLeast(selector, minimumCount, timeoutSeconds);
-        recordPageVerification("elementCountAtLeast_" + selector, true);
-    }
-
-    @Override
-    public void waitForNetworkIdle(int timeoutSeconds) {
-        super.waitForNetworkIdle(timeoutSeconds);
-        recordPageVerification("networkIdle", true);
-    }
-
-    @Override
-    public void waitForPageFullyLoaded(int timeoutSeconds) {
-        super.waitForPageFullyLoaded(timeoutSeconds);
-        recordPageVerification("pageFullyLoaded", true);
-    }
-
-    @Override
-    public void waitForDOMContentLoaded(int timeoutSeconds) {
-        super.waitForDOMContentLoaded(timeoutSeconds);
-        recordPageVerification("domContentLoaded", true);
-    }
-
-    @Override
-    public void waitForElementChecked(String selector, int timeoutSeconds) {
-        super.waitForElementChecked(selector, timeoutSeconds);
-        recordPageVerification("elementChecked_" + selector, true);
-    }
-
-    @Override
-    public void waitForElementNotChecked(String selector, int timeoutSeconds) {
-        super.waitForElementNotChecked(selector, timeoutSeconds);
-        recordPageVerification("elementNotChecked_" + selector, true);
-    }
-
-    @Override
-    public void waitForUrlEquals(String expectedUrl, int timeoutSeconds) {
-        super.waitForUrlEquals(expectedUrl, timeoutSeconds);
-        recordPageVerification("urlEquals", true);
-    }
-
-    @Override
-    public void waitForUrlStartsWith(String expectedPrefix, int timeoutSeconds) {
-        super.waitForUrlStartsWith(expectedPrefix, timeoutSeconds);
-        recordPageVerification("urlStartsWith", true);
-    }
-
-    @Override
-    public void waitForCustomCondition(Supplier<Boolean> condition, int timeoutSeconds, String conditionDescription) {
-        super.waitForCustomCondition(condition, timeoutSeconds, conditionDescription);
-        recordPageVerification("customCondition_" + conditionDescription, true);
-    }
-
-    // ==================== 带重试的便捷方法（Serenity集成版）====================
-
-    @Override
-    public void waitForVisibleWithRetry(String selector, int timeoutSeconds, int maxRetries) {
-        super.waitForVisibleWithRetry(selector, timeoutSeconds, maxRetries);
-        recordPageVerification("waitForVisibleWithRetry_" + selector, true);
-    }
-
-    @Override
-    public void waitForHiddenWithRetry(String selector, int timeoutSeconds, int maxRetries) {
-        super.waitForHiddenWithRetry(selector, timeoutSeconds, maxRetries);
-        recordPageVerification("waitForHiddenWithRetry_" + selector, true);
-    }
-
-    @Override
-    public void clickWithRetry(String selector, int maxRetries) {
-        super.clickWithRetry(selector, maxRetries);
-        addSerenityTestData("clickWithRetry_" + selector, "completed");
-    }
-
-    @Override
-    public void typeWithRetry(String selector, String text, int maxRetries) {
-        super.typeWithRetry(selector, text, maxRetries);
-        addSerenityTestData("typeWithRetry_" + selector, "completed");
-    }
-
-    @Override
-    public void navigateToWithRetry(String url, int maxRetries) {
-        super.navigateToWithRetry(url, maxRetries);
-        addSerenityTestData("navigateToWithRetry", "completed");
-    }
-
-    // ==================== Web UI 操作（Serenity集成版）====================
-
-    @Override
-    public void switchToPage(int pageIndex) {
-        super.switchToPage(pageIndex);
-        addSerenityTestData("switchToPage", "index_" + pageIndex);
-    }
-
-    @Override
-    public void switchToLatestPage() {
-        super.switchToLatestPage();
-        addSerenityTestData("switchToLatestPage", "completed");
-    }
-
-    @Override
-    public void closeCurrentPageAndSwitchBack() {
-        super.closeCurrentPageAndSwitchBack();
-        addSerenityTestData("closeCurrentPageAndSwitchBack", "completed");
-    }
-
-    @Override
-    public void dragAndDrop(String sourceSelector, String targetSelector) {
-        super.dragAndDrop(sourceSelector, targetSelector);
-        addSerenityTestData("dragAndDrop", "from_" + sourceSelector + "_to_" + targetSelector);
-    }
-
-    @Override
-    public void scrollTo(String selector, int scrollX, int scrollY) {
-        super.scrollTo(selector, scrollX, scrollY);
-        addSerenityTestData("scrollTo", "element_" + selector + "_to_" + scrollX + "_" + scrollY);
-    }
-
-    @Override
-    public void scrollToBottomOf(String selector) {
-        super.scrollToBottomOf(selector);
-        addSerenityTestData("scrollToBottom", "element_" + selector);
-    }
-
-    @Override
-    public void scrollToTopOf(String selector) {
-        super.scrollToTopOf(selector);
-        addSerenityTestData("scrollToTop", "element_" + selector);
-    }
-
-    @Override
-    public void scrollBy(String selector, int offsetX, int offsetY) {
-        super.scrollBy(selector, offsetX, offsetY);
-        addSerenityTestData("scrollBy", "element_" + selector + "_by_" + offsetX + "_" + offsetY);
-    }
-
-    @Override
-    public BoundingBox getElementBoundingBox(String selector) {
-        BoundingBox box = super.getElementBoundingBox(selector);
-        addSerenityTestData("elementBoundingBox", "element_" + selector);
-        return box;
-    }
-
-    @Override
-    public void scrollToElementCenter(String targetSelector) {
-        super.scrollToElementCenter(targetSelector);
-        addSerenityTestData("scrollToElementCenter", targetSelector);
-    }
-
-    // ==================== 新增方法覆盖（Serenity集成版）====================
-
-    @Override
-    public void tap(String selector) {
-        super.tap(selector);
-        addSerenityTestData("tap", "element_" + selector);
-    }
-
-    @Override
-    public void focus(String selector) {
-        super.focus(selector);
-        addSerenityTestData("focus", "element_" + selector);
-    }
-
-    @Override
-    public String innerHTML(String selector) {
-        String html = super.innerHTML(selector);
-        addSerenityTestData("innerHTML", "element_" + selector);
-        return html;
-    }
-
-    @Override
-    public String textContent(String selector) {
-        String text = super.textContent(selector);
-        addSerenityTestData("textContent", "element_" + selector);
-        return text;
-    }
-
-    @Override
-    public boolean isHidden(String selector) {
-        boolean hidden = super.isHidden(selector);
-        addSerenityTestData("isHidden", "element_" + selector + "_" + hidden);
-        return hidden;
-    }
-
-    @Override
-    public boolean isClosed() {
-        boolean closed = super.isClosed();
-        addSerenityTestData("isClosed", closed);
-        return closed;
-    }
-
-    @Override
-    public void bringToFront() {
-        super.bringToFront();
-        addSerenityTestData("bringToFront", "completed");
-    }
-
-    @Override
-    public void setContent(String html) {
-        super.setContent(html);
-        addSerenityTestData("setContent", "completed");
-    }
-
-    @Override
-    public void setViewportSize(int width, int height) {
-        super.setViewportSize(width, height);
-        addSerenityTestData("setViewportSize", width + "x" + height);
-    }
-
-    @Override
-    public void setInputFiles(String selector, String... filePaths) {
-        super.setInputFiles(selector, filePaths);
-        addSerenityTestData("setInputFiles", "element_" + selector);
-    }
-
-    @Override
-    public Locator byAltText(String altText) {
-        Locator locator = super.byAltText(altText);
-        addSerenityTestData("byAltText", altText);
-        return locator;
-    }
-
-    @Override
-    public Locator byRole(AriaRole role) {
-        Locator locator = super.byRole(role);
-        addSerenityTestData("byRole", role.toString());
-        return locator;
-    }
-
-    @Override
-    public Locator byTitle(String title) {
-        Locator locator = super.byTitle(title);
-        addSerenityTestData("byTitle", title);
-        return locator;
-    }
-
-    @Override
-    public Locator byTestId(String testId) {
-        Locator locator = super.byTestId(testId);
-        addSerenityTestData("byTestId", testId);
-        return locator;
-    }
-
-    @Override
-    public void pause() {
-        super.pause();
-        addSerenityTestData("pause", "completed");
-    }
-
 }

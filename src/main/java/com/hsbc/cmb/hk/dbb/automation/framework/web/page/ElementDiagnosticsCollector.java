@@ -13,18 +13,39 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 元素诊断信息收集器
+ * 元素诊断信息收集器。
  *
- * Enterprise-grade diagnostic information collector for element failures.
- * Collects detailed information to aid in debugging flaky tests.
+ * <h3>Enterprise-grade diagnostic collector for element failures.</h3>
+ * 支持同步和异步两种收集模式：
+ * <ul>
+ *   <li>{@link #collect()} — 同步收集（阻塞当前测试线程）</li>
+ *   <li>{@link #collectAsync()} — 异步收集（使用共享线程池，不阻塞测试线程）</li>
+ * </ul>
+ * 截图 I/O 始终异步执行，避免高并发场景下失败路径雪崩。
  *
  * @since 1.0.0
  */
 public class ElementDiagnosticsCollector {
 
     private static final Logger logger = LoggerFactory.getLogger(ElementDiagnosticsCollector.class);
+
+    /** 共享诊断线程池——daemon 线程，JVM 退出时自动回收 */
+    private static final ExecutorService DIAGNOSTIC_EXECUTOR = Executors.newCachedThreadPool(new ThreadFactory() {
+        private final AtomicInteger counter = new AtomicInteger(0);
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "diagnostic-" + counter.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        }
+    });
 
     private final Locator locator;
     private final String selector;
@@ -34,6 +55,14 @@ public class ElementDiagnosticsCollector {
         this.locator = locator;
         this.selector = selector;
         this.page = page;
+    }
+
+    /**
+     * 异步收集完整的诊断信息（不阻塞当前测试线程）。
+     * 适用于只需要日志记录、不需要阻塞等待的诊断场景。
+     */
+    public CompletableFuture<ElementOperationException.DiagnosticInfo> collectAsync() {
+        return CompletableFuture.supplyAsync(this::collect, DIAGNOSTIC_EXECUTOR);
     }
 
     /**
@@ -77,31 +106,25 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 构建批量诊断 JS 脚本——一次 DOM 查询返回所有所需字段
+     * 构建批量诊断 JS 脚本——一次 DOM 查询返回所有所需字段。
+     * 精简为基础检查：exists / visible / enabled / count，复杂诊断移到单独工具类。
      */
     private static String buildBatchDiagnosticScript(boolean detailed) {
-        String keysJson = "['id','class','name','type','disabled','readonly','data-testid']";
-        return "(selector) => {\n" +
-            "  const el = document.querySelector(selector);\n" +
-            "  if (!el) return { exists: false, visible: false, enabled: false, editable: false, count: 0, tagName: 'unknown'" + (detailed ? ", attributes: {}" : "") + " };\n" +
-            "  const all = document.querySelectorAll(selector);\n" +
-            "  const cs = getComputedStyle(el);\n" +
-            "  const result = {\n" +
-            "    exists: true,\n" +
-            "    visible: el.offsetParent !== null && cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0,\n" +
-            "    enabled: !el.disabled,\n" +
-            "    editable: !el.readOnly && !el.disabled && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable),\n" +
-            "    count: all.length\n" +
-            "  };\n" +
-            (detailed ?
-            "  result.tagName = el.tagName;\n" +
-            "  const attrs = {};\n" +
-            "  const keys = " + keysJson + ";\n" +
-            "  keys.forEach(function(k) { const v = el.getAttribute(k); if (v !== null) attrs[k] = v; });\n" +
-            "  result.attributes = attrs;\n"
-            : "") +
-            "  return result;\n" +
-            "}";
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("(s) => {")
+          .append("const e=document.querySelector(s);")
+          .append("if(!e) return {exists:false,visible:false,enabled:false,count:0};")
+          .append("const cs=getComputedStyle(e);")
+          .append("const r={")
+          .append("exists:true,")
+          .append("visible:e.offsetParent!==null&&cs.display!=='none'&&cs.visibility!=='hidden'&&parseFloat(cs.opacity)>0,")
+          .append("enabled:!e.disabled,")
+          .append("count:document.querySelectorAll(s).length");
+        if (detailed) {
+            sb.append(",tagName:e.tagName");
+        }
+        sb.append("};return r;}");
+        return sb.toString();
     }
 
     private static boolean getBoolean(Map<String, Object> map, String key) {
@@ -154,28 +177,19 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 获取可见的遮挡元素信息
+     * 获取可见的遮挡元素信息（selector 作为参数传递，避免字符串注入风险）
      */
     public String getObstructingElements() {
         try {
-            // 使用 JS 检查是否有其他元素遮挡
-            String script = """
-                () => {
-                    const el = document.querySelector('%s');
-                    if (!el) return 'Element not found';
-
-                    const rect = el.getBoundingClientRect();
-                    const centerX = rect.left + rect.width / 2;
-                    const centerY = rect.top + rect.height / 2;
-
-                    const topEl = document.elementFromPoint(centerX, centerY);
-                    if (topEl === el) return 'None';
-
-                    return topEl ? `Element '${topEl.tagName}' is obstructing` : 'Unknown';
-                }
-                """.formatted(selector);
-
-            Object result = page.evaluate(script);
+            String script = "(s) => {"
+                + "const e=document.querySelector(s);"
+                + "if(!e) return 'Element not found';"
+                + "const r=e.getBoundingClientRect();"
+                + "const top=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                + "if(top===e) return 'None';"
+                + "return top?'Obstructed by '+top.tagName:'Unknown';"
+                + "}";
+            Object result = page.evaluate(script, selector);
             return result != null ? result.toString() : "Unable to check";
         } catch (Exception e) {
             return "Unable to check: " + e.getMessage();
@@ -183,44 +197,25 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 获取 DOM 结构上下文（父元素信息）
+     * 获取 DOM 结构上下文（简化为 tagName + id/class 的一行摘要）
      */
     public String getDomContext() {
         try {
-            String script = """
-                () => {
-                    const el = document.querySelector('%s');
-                    if (!el) return 'Element not found';
-
-                    const getPath = (elem) => {
-                        const path = [];
-                        while (elem && elem.parentElement) {
-                            let selector = elem.tagName.toLowerCase();
-                            if (elem.id) {
-                                selector += `#${elem.id}`;
-                                path.unshift(selector);
-                                break;
-                            }
-                            if (elem.className && typeof elem.className === 'string') {
-                                const classes = elem.className.trim().split(/\\s+/).slice(0, 2);
-                                if (classes.length > 0 && classes[0]) {
-                                    selector += '.' + classes.join('.');
-                                }
-                            }
-                            path.unshift(selector);
-                            elem = elem.parentElement;
-                        }
-                        return path.join(' > ');
-                    };
-
-                    return getPath(el);
-                }
-                """.formatted(selector);
-
-            Object result = page.evaluate(script);
-            return result != null ? result.toString() : "Unable to get context";
+            String script = "(s) => {"
+                + "const e=document.querySelector(s);"
+                + "if(!e) return 'N/A';"
+                + "let p=e.tagName.toLowerCase();"
+                + "if(e.id) p+='#'+e.id;"
+                + "else if(e.className&&typeof e.className==='string'){"
+                + "  const c=e.className.trim().split(/\\s+/).slice(0,2).join('.');"
+                + "  if(c) p+='.'+c;"
+                + "}"
+                + "return p;"
+                + "}";
+            Object result = page.evaluate(script, selector);
+            return result != null ? result.toString() : "N/A";
         } catch (Exception e) {
-            return "Unable to get context: " + e.getMessage();
+            return "N/A";
         }
     }
 
@@ -258,11 +253,23 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 获取元素内部 HTML
+     * 异步捕获失败截图（不阻塞测试线程）。
+     * I/O 操作使用共享诊断线程池执行，避免高并发场景下失败路径雪崩。
+     */
+    public CompletableFuture<String> captureFailureScreenshotAsync(String testName) {
+        return CompletableFuture.supplyAsync(() -> captureFailureScreenshot(testName), DIAGNOSTIC_EXECUTOR);
+    }
+
+    /**
+     * 获取元素内部 HTML（selector 作为参数传递，安全）
      */
     public String getElementHtml() {
         try {
-            return page.evaluate("() => document.querySelector('" + selector + "')?.outerHTML?.substring(0, 500) || 'N/A'").toString();
+            String script = "(s) => {"
+                + "const e=document.querySelector(s);"
+                + "return e&&e.outerHTML?e.outerHTML.substring(0,500):'N/A';"
+                + "}";
+            return page.evaluate(script, selector).toString();
         } catch (Exception e) {
             return "Unable to get HTML";
         }

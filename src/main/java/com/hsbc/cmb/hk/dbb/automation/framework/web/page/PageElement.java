@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundEx
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
@@ -17,31 +18,13 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
-
-    /**
-     * getText() 标准化管道（按顺序执行）：
-     * 1. UNICODE 规范化 (NFKC) — 一次搞定 en-dash→-、smart-quotes→"、全角→半角 等所有兼容字符
-     * 2. 删除不可见格式控制字符（\p{Cf}，如零宽空格、BOM 等）
-     * 3. 合并连续空白为单个空格
-     * 4. 去掉中英文标点前的多余空格
-     * 5. trim
-     *
-     * NFKC 一次覆盖的场景（不再需要逐字符打补丁）：
-     *   \u2013(en-dash –)→-   \u2014(em-dash —)→-   \u2018/\u2019→'   \u201c/\u201d→"
-     *   \u00A0(NBSP)→空格     全角字母/数字→半角      连字/分数→拆解
-     */
-    private static final Pattern MULTI_SPACE = Pattern.compile("\\s+");
-    private static final Pattern SPACE_BEFORE_PUNCT = Pattern.compile("\\s+([.,!?;:。，！？；：])");
-    private static final Pattern CONTROL_CHARS = Pattern.compile("\\p{Cf}");
 
     private final String selector;
     private final BasePage page;
@@ -49,10 +32,9 @@ public class PageElement {
     /**
      * 缓存的 Locator 实例（线程安全懒加载）。
      * Playwright Locator 是"延迟求值"的——每次操作时重新查询 DOM，因此缓存是安全的。
-     * 仅当 Page 实例变更时才需重建（由 ensurePageValid 保证）。
+     * 仅当 Page 实例变更时才需重建（由 BasePage.ensurePageValid() 触发 invalidateCache()）。
      */
     private volatile Locator cachedLocator;
-    private volatile boolean domReadyChecked;
 
     // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
@@ -75,8 +57,20 @@ public class PageElement {
     }
 
     /**
-     * 获取 Playwright Locator（线程安全懒加载 + 缓存）。
-     * DOMContentLoaded 等待仅执行一次，后续调用直接返回缓存的 Locator（零 IPC 开销）。
+     * 使 Locator 缓存失效。
+     * 当 BasePage 切换 Page 实例时调用（由 BasePage.ensurePageValid() → initializeAnnotatedFields() 触发），
+     * 确保下次 locator() 调用使用新的 Page 实例重新创建 Locator。
+     */
+    public void invalidateCache() {
+        cachedLocator = null;
+    }
+
+    /**
+     * 获取 Playwright Locator（线程安全懒加载 + 缓存 + 页面一致性检查）。
+     * Playwright Locator 自身是延迟求值的——每次操作时自动等待元素出现，无需手动等待 DOMContentLoaded。
+     * 缓存是安全的，因为 Locator 不持有 DOM 快照，每次交互时重新查询。
+     * 
+     * 页面一致性：如果 page.getPage() 返回的 Page 实例与缓存时不同（例如页面切换），自动失效并重建。
      */
     public Locator locator() {
         Locator loc = cachedLocator;
@@ -84,15 +78,6 @@ public class PageElement {
             synchronized (this) {
                 loc = cachedLocator;
                 if (loc == null) {
-                    // 首次使用时等待 DOM 就绪（之后不再等待）
-                    if (!domReadyChecked) {
-                        try {
-                            page.waitForDOMContentLoaded(PlaywrightManager.config().getPageTimeout() / 1000);
-                        } catch (PlaywrightException e) {
-                            logger.debug("waitForDOMContentLoaded skipped (page may be mid-navigation): {}", e.getMessage());
-                        }
-                        domReadyChecked = true;
-                    }
                     cachedLocator = page.locator(selector);
                     loc = cachedLocator;
                 }
@@ -152,6 +137,46 @@ public class PageElement {
         }
     }
 
+    // ==================== Safe Execution Template ====================
+    /**
+     * 安全的 Locator 操作执行模板——统一处理 Playwright 异常转换 + 自动诊断收集。
+     * 消除 getText/getAttribute/getValue 等方法中重复的 try-catch 模板。
+     * 失败时自动收集 DOM 诊断信息并捕获截图。
+     */
+    private <T> T executeSafely(Supplier<T> action, String operation) {
+        try {
+            return action.get();
+        } catch (TimeoutError e) {
+            ElementNotFoundException ex = new ElementNotFoundException(selector, e);
+            captureDiagnosticsAndLog(operation, ex, selector);
+            throw ex;
+        } catch (PlaywrightException e) {
+            ElementOperationException ex = new ElementOperationException(operation, selector,
+                "Failed: " + operation, e);
+            captureDiagnosticsAndLog(operation, ex, selector);
+            throw ex;
+        }
+    }
+
+    /**
+     * 失败时自动收集诊断信息 + 截图（executeSafely 的失败路径）。
+     * 与 executeWithRetry 中的 captureFailureAndLog 不同，
+     * 这里只收集基础诊断信息用于快速定位问题，不做完整的 DOM 上下文分析。
+     */
+    private void captureDiagnosticsAndLog(String operation, RuntimeException ex, String selector) {
+        try {
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+            ElementOperationException.DiagnosticInfo info = diagnostics.collect();
+            String screenshotPath = diagnostics.captureFailureScreenshot(operation);
+            logger.debug("[{}] failed on '{}' | exists={} visible={} enabled={} count={} | screenshot={}",
+                operation, selector,
+                info.existsInDom(), info.isVisible(), info.isEnabled(), info.elementCount(),
+                screenshotPath != null ? screenshotPath : "N/A");
+        } catch (Exception ignored) {
+            // 诊断收集本身不应影响主异常抛出
+        }
+    }
+
     // ==================== Retry Core (Enterprise-grade) ====================
     /**
      * 带成功检查的重试机制
@@ -195,13 +220,13 @@ public class PageElement {
 
         int maxRetry = PlaywrightManager.config().getElementMaxRetry();
         Exception lastEx = null;
-        long maxWaitTime = PlaywrightManager.config().getElementOperationTimeout();
+        long deadline = startTime + PlaywrightManager.config().getElementOperationTimeout();
 
         for (int i = 0; i <= maxRetry; i++) {
-            // 检查是否已经超过最大等待时间
-            if (System.currentTimeMillis() - startTime > maxWaitTime) {
-                logger.warn("[{}] Exceeded max wait time ({} ms), stop retrying: {}", 
-                    operation, maxWaitTime, selector);
+            // 检查是否已经超过截止时间
+            if (System.currentTimeMillis() > deadline) {
+                logger.warn("[{}] Exceeded max wait time ({} ms) after {} attempts: {}",
+                    operation, PlaywrightManager.config().getElementOperationTimeout(), i, selector);
                 break;
             }
 
@@ -422,7 +447,7 @@ public class PageElement {
 
     // ==================== State Check ====================
     public boolean isVisible() {
-        return isVisible(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return isVisible(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean isVisible(int timeoutSec) {
@@ -435,7 +460,7 @@ public class PageElement {
     }
 
     public boolean isNotVisible() {
-        return isNotVisible(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return isNotVisible(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean isNotVisible(int timeoutSec) {
@@ -448,7 +473,7 @@ public class PageElement {
     }
 
     public boolean exists() {
-        return exists(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return exists(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean exists(int timeoutSec) {
@@ -461,7 +486,7 @@ public class PageElement {
     }
 
     public boolean isEnabled() {
-        return isEnabled(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return isEnabled(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean isEnabled(int timeoutSec) {
@@ -482,7 +507,7 @@ public class PageElement {
     }
 
     public boolean isEditable() {
-        return isEditable(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return isEditable(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean isEditable(int timeoutSec) {
@@ -495,7 +520,7 @@ public class PageElement {
     }
 
     public boolean isChecked() {
-        return isChecked(PlaywrightManager.config().getElementCheckTimeout() / 1000);
+        return isChecked(getDefaultTimeoutMs() / 1000);
     }
 
     public boolean isChecked(int timeoutSec) {
@@ -509,67 +534,40 @@ public class PageElement {
 
     // ==================== Text & Attribute ====================
     public String getText() {
-        try {
+        return executeSafely(() -> {
             String raw = locator().innerText();
             if (raw == null) {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
             }
-            // 1. NFKC 规范化：一次转换所有 Unicode 兼容字符
-            //    en-dash/em-dash → - , smart-quotes → "/', NBSP → 空格, 全角→半角 等
-            String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
-            // 2. 删除零宽空格、BOM 等格式控制字符
-            normalized = CONTROL_CHARS.matcher(normalized).replaceAll("");
-             // 3. 合并连续空白为单个空格
-            normalized = MULTI_SPACE.matcher(normalized).replaceAll(" ");
-            // 4. 去掉中英文标点前的多余空格
-            normalized = SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");
-            return normalized.trim();
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("getText", selector, "Failed to get text", e);
-        }
+            return TextNormalizer.normalize(raw);
+        }, "getText");
+    }
+
+    /**
+     * 获取原始文本，跳过标准化管道（性能优化：列表遍历场景避免 4 次正则）。
+     */
+    public String getTextRaw() {
+        return executeSafely(() -> {
+            String raw = locator().innerText();
+            return raw != null ? raw : "";
+        }, "getTextRaw");
     }
 
     public String getInnerHtml() {
-        try {
-            return locator().innerHTML();
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("getInnerHtml", selector, "Failed to get inner HTML", e);
-        }
+        return executeSafely(() -> locator().innerHTML(), "getInnerHtml");
     }
 
     public List<String> getAllTextContents() {
-        try {
-            return locator().allTextContents();
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("getAllTextContents", selector, "Failed to get all text contents", e);
-        }
+        return executeSafely(() -> locator().allTextContents(), "getAllTextContents");
     }
 
     public String getAttribute(String attr) {
-        try {
-            return locator().getAttribute(attr);
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("getAttribute", selector, "Failed to get attribute '" + attr + "'", e);
-        }
+        return executeSafely(() -> locator().getAttribute(attr), "getAttribute");
     }
 
     public String getValue() {
-        try {
-            return locator().inputValue();
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("getValue", selector, "Failed to get input value", e);
-        }
+        return executeSafely(() -> locator().inputValue(), "getValue");
     }
 
     // ==================== Select ====================
@@ -598,12 +596,12 @@ public class PageElement {
     }
 
     // ==================== WaitFor (Full Set) ====================
-    private int getDefaultTimeoutSec() {
-        return Math.max(1, PlaywrightManager.config().getElementCheckTimeout() / 1000);
+    private int getDefaultTimeoutMs() {
+        return PlaywrightManager.config().getElementCheckTimeout();
     }
 
     public PageElement waitForVisible() {
-        return waitForVisible(getDefaultTimeoutSec());
+        return waitForVisible(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForVisible(int timeoutSec) {
@@ -620,7 +618,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotVisible() {
-        return waitForNotVisible(getDefaultTimeoutSec());
+        return waitForNotVisible(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForNotVisible(int timeoutSec) {
@@ -637,7 +635,7 @@ public class PageElement {
     }
 
     public PageElement waitForExists() {
-        return waitForExists(getDefaultTimeoutSec());
+        return waitForExists(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForExists(int timeoutSec) {
@@ -653,7 +651,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotExists() {
-        return waitForNotExists(getDefaultTimeoutSec());
+        return waitForNotExists(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForNotExists(int timeoutSec) {
@@ -670,7 +668,7 @@ public class PageElement {
     }
 
     public PageElement waitForClickable() {
-        return waitForClickable(getDefaultTimeoutSec());
+        return waitForClickable(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForClickable(int timeoutSec) {
@@ -688,7 +686,7 @@ public class PageElement {
     }
 
     public PageElement waitForEditable() {
-        return waitForEditable(getDefaultTimeoutSec());
+        return waitForEditable(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForEditable(int timeoutSec) {
@@ -706,7 +704,7 @@ public class PageElement {
     }
 
     public PageElement waitForEnabled() {
-        return waitForEnabled(getDefaultTimeoutSec());
+        return waitForEnabled(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForEnabled(int timeoutSec) {
@@ -724,7 +722,7 @@ public class PageElement {
     }
 
     public PageElement waitForDisabled() {
-        return waitForDisabled(getDefaultTimeoutSec());
+        return waitForDisabled(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForDisabled(int timeoutSec) {
@@ -742,7 +740,7 @@ public class PageElement {
     }
 
     public PageElement waitForChecked() {
-        return waitForChecked(getDefaultTimeoutSec());
+        return waitForChecked(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForChecked(int timeoutSec) {
@@ -760,7 +758,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotChecked() {
-        return waitForNotChecked(getDefaultTimeoutSec());
+        return waitForNotChecked(getDefaultTimeoutMs() / 1000);
     }
 
     public PageElement waitForNotChecked(int timeoutSec) {
@@ -866,8 +864,26 @@ public class PageElement {
     }
 
     // ==================== Utils ====================
+    /**
+     * 元素定位器健康度检查。
+     * 快速判断 Locator 是否仍然有效（定位符对应的 DOM 未发生结构性变化）。
+     * count() >= 0 表示定位符仍可正常解析（即使返回 0 个匹配也是"健康"的，只是元素不存在）。
+     *
+     * @return true 表示 Locator 健康可用，false 表示 Locator 已失效（如页面已关闭或选择器语法错误）
+     */
+    public boolean isHealthy() {
+        try {
+            return locator().count() >= 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 安全获取元素边界框。Playwright 的 boundingBox() 自带自动等待（元素可见+稳定），
+     * 不需要额外调用 waitForVisible()。
+     */
     public BoundingBox getBoundingBoxSafe() {
-        waitForVisible();
         BoundingBox box = locator().boundingBox();
         return Objects.requireNonNull(box, "BoundingBox null: " + selector);
     }
@@ -881,19 +897,42 @@ public class PageElement {
     }
 
     // ==================== Child Element ====================
+    /**
+     * 基于当前元素的 Locator 创建子元素定位器。
+     * 使用 Playwright Locator.locator() 链式定位，而非字符串拼接 ">>"，
+     * 避免无限嵌套导致的选择器过长/解析错误。
+     */
     public PageElement child(String childSelector) {
         Objects.requireNonNull(childSelector, "childSelector must not be null");
         String clean = childSelector.trim();
-        while (clean.startsWith(">>")) clean = clean.substring(2).trim();
-
-        String parent = selector.trim();
-        while (parent.endsWith(">>")) parent = parent.substring(0, parent.length() - 2).trim();
-
-        return new PageElement(parent + " >> " + clean, page);
+        if (clean.isEmpty()) {
+            throw new IllegalArgumentException("childSelector must not be blank");
+        }
+        // 使用 Locator.locator() 实现真正的嵌套定位，而非字符串拼接
+        return new ChildPageElement(selector, clean, page);
     }
 
     public PageElement child(String childSelector, int index) {
         return new PageElement(child(childSelector).getSelector() + " >> nth=" + index, page);
+    }
+
+    /**
+     * 内部类：通过 Locator.locator() 实现嵌套定位，避免选择器字符串无限拼接。
+     */
+    private static final class ChildPageElement extends PageElement {
+        private final String parentSelector;
+
+        ChildPageElement(String parentSelector, String childSelector, BasePage page) {
+            super(parentSelector + " >> " + childSelector, page);
+            this.parentSelector = parentSelector;
+        }
+
+        @Override
+        public Locator locator() {
+            // 不使用父类缓存，直接用 Locator.locator() 实现真正的 DOM 层级定位
+            String childPart = getSelector().substring(parentSelector.length() + 4); // skip " >> "
+            return getPage().locator(parentSelector).locator(childPart);
+        }
     }
 
     @Override

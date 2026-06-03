@@ -361,12 +361,27 @@ public class ModifyHandler {
     }
 
     /**
-     * 在 JSON body 中按路径新增字段。
-     * 如果中间节点不存在，自动创建 ObjectNode。
+     * 在 JSON body 中按路径新增字段，支持向已有数组追加元素。
+     *
+     * <p>行为规则：
+     * <ul>
+     *   <li>路径末段对应的字段不存在 → 创建普通字段</li>
+     *   <li>路径末段对应的字段已存在且为 {@code ArrayNode} → 追加到数组尾部</li>
+     *   <li>区间节点不存在 → 自动创建 {@code ObjectNode}</li>
+     * </ul>
+     *
+     * <p>示例：
+     * <pre>{@code
+     * // 向 $.data.items 数组追加一个元素
+     * addFieldByJsonPath(body, "$.data.items", "{\"id\":1}")
+     *
+     * // 创建新字段
+     * addFieldByJsonPath(body, "$.newField", "hello")
+     * }</pre>
      *
      * @param jsonBody 原始 JSON body 字符串
-     * @param path     JsonPath 路径（如 {@code $.newField}、{@code $.nested.field}）
-     * @param value    字段值（字符串形式，自动类型推断）
+     * @param path     JsonPath 路径（如 {@code $.newField}、{@code $.data.items}）
+     * @param value    字段值（字符串形式，自动类型推断；JSON 字符串被解析为对象/数组节点）
      * @return 修改后的 JSON 字符串
      */
     public static String addFieldByJsonPath(String jsonBody, String path, String value) {
@@ -376,8 +391,6 @@ public class ModifyHandler {
 
             String[] segments = path.split("\\.");
             JsonNode current = root;
-            ObjectNode parent = null;
-            String lastFieldName = null;
 
             for (int i = 0; i < segments.length; i++) {
                 String segment = segments[i];
@@ -397,7 +410,20 @@ public class ModifyHandler {
                 if (current instanceof ObjectNode) {
                     ObjectNode obj = (ObjectNode) current;
                     if (isLast) {
-                        setJsonNode(obj, fieldName, typedValue);
+                        JsonNode existing = obj.get(fieldName);
+                        if (existing instanceof ArrayNode) {
+                            // —— 已有数组：追加元素（先尝试解析 JSON，支持插入对象/数组） ——
+                            ArrayNode arr = (ArrayNode) existing;
+                            try {
+                                JsonNode parsed = OBJECT_MAPPER.readTree(value);
+                                arr.add(parsed);
+                            } catch (JsonProcessingException e) {
+                                // value 不是合法 JSON，作为普通值追加
+                                arr.add(OBJECT_MAPPER.valueToTree(typedValue));
+                            }
+                        } else {
+                            setJsonNode(obj, fieldName, typedValue);
+                        }
                     } else {
                         JsonNode child = obj.get(fieldName);
                         if (child == null) {
@@ -497,10 +523,18 @@ public class ModifyHandler {
             return BooleanNode.valueOf(Boolean.parseBoolean(newValue));
         }
 
-        // ── JSON 结构（Object/Array）→ 返回字符串，避免破坏结构 ──
+        // ── JSON 结构（Object/Array）→ 先尝试解析为 JSON，失败则降级为字符串 ──
         if (existingValue instanceof ObjectNode || existingValue instanceof ArrayNode) {
-            LOGGER.debug("[ModifyHandler] Target field is a JSON object/array, replacing as string");
-            return new TextNode(newValue);
+            try {
+                JsonNode parsed = OBJECT_MAPPER.readTree(newValue);
+                LOGGER.debug("[ModifyHandler] Target field is a JSON object/array, parsed as {}",
+                        parsed.getNodeType());
+                return parsed;
+            } catch (JsonProcessingException e) {
+                LOGGER.debug("[ModifyHandler] Target field is a JSON object/array, falling back to string: {}",
+                        e.getMessage());
+                return new TextNode(newValue);
+            }
         }
 
         // ── 数值类型 ──

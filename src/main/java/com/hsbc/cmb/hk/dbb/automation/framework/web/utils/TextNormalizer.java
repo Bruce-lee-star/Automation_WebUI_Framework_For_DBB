@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
  * 4. 去掉中英文标点前的空格
  * 5. 首尾去空
  *
- * 使用场景：BasePage.waitForElementTextEquals、PageElement.getText()、文本比对等。
+ * 使用场景：PageElement.getText()、文本比对等。
  * 避免在 BasePage 和 PageElement 中重复定义相同的 Pattern 常量和 normalize 逻辑。
  *
  * @since 1.0.0-FINANCIAL-GRADE

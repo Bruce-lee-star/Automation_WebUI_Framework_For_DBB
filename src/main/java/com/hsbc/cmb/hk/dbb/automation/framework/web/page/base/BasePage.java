@@ -10,6 +10,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.*;
 import org.slf4j.Logger;
@@ -18,15 +19,11 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
@@ -37,26 +34,11 @@ public abstract class BasePage {
 
     // ===================== 全局文本统一格式化工具 =====================
     /**
-     * 文本标准化：与 PageElement.getText() 保持完全一致。
-     * 1. NFKC 规范化 — 一次搞定 en-dash/em-dash→-、smart-quotes→"/'、NBSP→空格、全角→半角
-     * 2. 删除零宽空格等格式控制字符
-     * 3. 合并所有空白(空格/换行/制表)为单个空格
-     * 4. 去掉中英文标点前的空格
-     * 5. 首尾去空
+     * 文本标准化：委托给 {@link TextNormalizer#normalize(String)} 统一实现，
+     * 避免 BasePage 和 PageElement 重复定义相同的 Pattern 常量和 normalize 逻辑。
      */
-    private static final Pattern NS_MULTI_SPACE = Pattern.compile("\\s+");
-    private static final Pattern NS_SPACE_BEFORE_PUNCT = Pattern.compile("\\s+([.,!?;:。，！？；：])");
-    private static final Pattern NS_CONTROL_CHARS = Pattern.compile("\\p{Cf}");
-
     protected String normalizeText(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String normalized = Normalizer.normalize(raw, Normalizer.Form.NFKC);
-        normalized = NS_CONTROL_CHARS.matcher(normalized).replaceAll("");
-        normalized = NS_MULTI_SPACE.matcher(normalized).replaceAll(" ");
-        normalized = NS_SPACE_BEFORE_PUNCT.matcher(normalized).replaceAll("$1");
-        return normalized.trim();
+        return TextNormalizer.normalize(raw);
     }
 
     public BasePage() {
@@ -66,10 +48,23 @@ public abstract class BasePage {
         initializeAnnotatedFields();
     }
 
+    // 页面切换锁：防止并发页面切换导致元素绑定错乱
+    private static final Object PAGE_SWITCH_LOCK = new Object();
+
+    /** 首次注解字段初始化标志——页面切换时走 invalidateCache 而非重建对象 */
+    private volatile boolean annotatedFieldsInitialized = false;
+
     private void ensurePageValid() {
         if (page == null || isPageClosed(page)) {
-            page = PlaywrightManager.getPage();
-            setCurrentPage();
+            synchronized (PAGE_SWITCH_LOCK) {
+                // 双重检查：锁内再次确认 page 仍无效
+                if (page == null || isPageClosed(page)) {
+                    page = PlaywrightManager.getPage();
+                    setCurrentPage();
+                    // 页面切换后重新绑定所有 @Element 注解字段到新 Page
+                    initializeAnnotatedFields();
+                }
+            }
         }
     }
 
@@ -92,22 +87,55 @@ public abstract class BasePage {
         }
     }
 
+    /**
+     * 初始化/刷新注解字段。
+     * 首次调用：创建 PageElement/PageElementList 对象。
+     * 后续调用（页面切换）：仅调用 invalidateCache() 刷新 Locator 缓存，
+     * 避免重建对象和反射赋值的开销。
+     */
     private void initializeAnnotatedFields() {
         for (Field field : this.getClass().getDeclaredFields()) {
             if (field.isAnnotationPresent(Element.class)) {
                 Element elementAnnotation = field.getAnnotation(Element.class);
                 String selector = elementAnnotation.value();
-                try {
-                    field.setAccessible(true);
-                    if (List.class.isAssignableFrom(field.getType())) {
-                        field.set(this, new PageElementList(selector, this));
-                    } else {
-                        field.set(this, new PageElement(selector, this));
+                field.setAccessible(true);
+
+                if (annotatedFieldsInitialized) {
+                    // 页面切换后——只需刷新缓存，不重建对象
+                    try {
+                        Object existing = field.get(this);
+                        if (existing instanceof PageElement pe) {
+                            pe.invalidateCache();
+                        } else if (existing instanceof PageElementList pel) {
+                            pel.invalidateCache();
+                        }
+                        // 如果 existing 为 null 或类型不匹配，回退到重新创建
+                        if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
+                            createField(field, selector);
+                        }
+                    } catch (IllegalAccessException e) {
+                        // get 失败，回退到重新创建
+                        createField(field, selector);
                     }
-                } catch (Exception e) {
-                    throw new ElementException("Init field failed: " + field.getName());
+                    continue;
                 }
+
+                createField(field, selector);
             }
+        }
+        annotatedFieldsInitialized = true;
+    }
+
+    /** 创建 PageElement 或 PageElementList 实例并赋值给字段 */
+    private void createField(Field field, String selector) {
+        try {
+            if (List.class.isAssignableFrom(field.getType())) {
+                field.set(this, new PageElementList(selector, this));
+            } else {
+                field.set(this, new PageElement(selector, this));
+            }
+        } catch (Exception e) {
+            throw new ElementException("Init field failed: " + field.getName());
         }
     }
 
@@ -171,117 +199,32 @@ public abstract class BasePage {
         }
     }
 
-    public void waitForElementVisibleWithinTime(String selector, int timeout) {
-        try {
-            locator(selector).waitFor(new Locator.WaitForOptions()
-                .setState(WaitForSelectorState.VISIBLE)
-                .setTimeout((long) timeout * 1000));
-        } catch (TimeoutError e) {
-            throw new TimeoutException("Element not visible: " + selector);
-        }
-    }
-
-    public void waitForElementHiddenWithinTime(String selector, int timeout) {
-        try {
-            locator(selector).waitFor(new Locator.WaitForOptions()
-                .setState(WaitForSelectorState.HIDDEN)
-                .setTimeout((long) timeout * 1000));
-        } catch (TimeoutError e) {
-            throw new TimeoutException("Element not hidden: " + selector);
-        }
-    }
-
     public void waitForElementExists(String selector, int timeout) {
-        try {
-            locator(selector).waitFor(new Locator.WaitForOptions()
-                .setState(WaitForSelectorState.ATTACHED)
-                .setTimeout((long) timeout * 1000));
-        } catch (TimeoutError e) {
-            throw new TimeoutException("Element not exists: " + selector);
-        }
+        new PageElement(selector, this).waitForExists(timeout);
     }
 
     public void waitForElementNotExists(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).count() == 0, timeout, "not exists: " + selector)) {
-            throw new TimeoutException("Element still exists: " + selector);
-        }
+        new PageElement(selector, this).waitForNotExists(timeout);
     }
 
     public void waitForElementEditable(String selector, int timeout) {
-        waitForElementVisibleWithinTime(selector, timeout);
-        if (!waitForCondition(() -> locator(selector).isEditable(), timeout, "editable: " + selector)) {
-            throw new TimeoutException("Element not editable: " + selector);
-        }
+        new PageElement(selector, this).waitForEditable(timeout);
     }
 
     public void waitForElementEnabled(String selector, int timeout) {
-        waitForElementExists(selector, timeout);
-        if (!waitForCondition(() -> locator(selector).isEnabled(), timeout, "enabled: " + selector)) {
-            throw new TimeoutException("Element not enabled: " + selector);
-        }
+        new PageElement(selector, this).waitForEnabled(timeout);
     }
 
     public void waitForElementDisabled(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isDisabled(), timeout, "disabled: " + selector)) {
-            throw new TimeoutException("Element not disabled: " + selector);
-        }
+        new PageElement(selector, this).waitForDisabled(timeout);
     }
 
     public void waitForElementChecked(String selector, int timeout) {
-        if (!waitForCondition(() -> locator(selector).isChecked(), timeout, "checked: " + selector)) {
-            throw new TimeoutException("Element not checked: " + selector);
-        }
+        new PageElement(selector, this).waitForChecked(timeout);
     }
 
     public void waitForElementNotChecked(String selector, int timeout) {
-        if (!waitForCondition(() -> !locator(selector).isChecked(), timeout, "not checked: " + selector)) {
-            throw new TimeoutException("Element still checked: " + selector);
-        }
-    }
-
-    public void waitForElementAttributeEquals(String selector, String attr, String value, int timeout) {
-        String desc = "attr " + attr + " equals " + value + " for " + selector;
-        if (!waitForCondition(() -> {
-            String actual = locator(selector).getAttribute(attr);
-            return Objects.equals(normalizeText(value), normalizeText(actual));
-        }, timeout, desc)) {
-            throw new TimeoutException(desc);
-        }
-    }
-
-    public void waitForElementAttributeContains(String selector, String attr, String value, int timeout) {
-        String desc = "attr " + attr + " contains " + value + " for " + selector;
-        if (!waitForCondition(() -> {
-            String actual = locator(selector).getAttribute(attr);
-            return normalizeText(actual).contains(normalizeText(value));
-        }, timeout, desc)) {
-            throw new TimeoutException(desc);
-        }
-    }
-
-    // ===================== 已修复：全量文本归一化 =====================
-    public void waitForElementTextEquals(String selector, String text, int timeout) {
-        String desc = "text equals " + text + " for " + selector;
-        if (!waitForCondition(() -> {
-            String actualRaw = locator(selector).innerText();
-            String actual = normalizeText(actualRaw);
-            String expect = normalizeText(text);
-            return expect.equals(actual);
-        }, timeout, desc)) {
-            throw new TimeoutException(desc);
-        }
-    }
-
-    public void waitForElementTextContains(String selector, String text, int timeout) {
-        String desc = "text contains " + text + " for " + selector;
-        if (!waitForCondition(() -> {
-            String actualRaw = locator(selector).innerText();
-            String actual = normalizeText(actualRaw);
-            String expect = normalizeText(text);
-            return actual.contains(expect);
-        }, timeout, desc)) {
-            throw new TimeoutException(desc);
-        }
+        new PageElement(selector, this).waitForNotChecked(timeout);
     }
 
     public void waitForElementCount(String selector, int expected, int timeout) {
@@ -298,17 +241,6 @@ public abstract class BasePage {
         }
     }
 
-    public void waitForTitleContainsWithinTime(String keyword, int timeout) {
-        if (!waitForCondition(() -> normalizeText(getTitle()).contains(normalizeText(keyword)), timeout, "title contains: " + keyword)) {
-            throw new TimeoutException("Title does not contain: " + keyword);
-        }
-    }
-
-    public void waitForUrlContainsWithinTime(String keyword, int timeout) {
-        if (!waitForCondition(() -> getCurrentUrl().contains(keyword), timeout, "url contains: " + keyword)) {
-            throw new TimeoutException("URL does not contain: " + keyword);
-        }
-    }
 
     public void waitForUrlEquals(String url, int timeout) {
         if (!waitForCondition(() -> getCurrentUrl().equals(url), timeout, "url equals: " + url)) {
@@ -349,7 +281,16 @@ public abstract class BasePage {
         }
     }
 
-    public boolean retryWithValidation(Runnable operation, Predicate<Void> validation, int maxRetries, String desc) {
+    /**
+     * 带验证的重试机制（便捷方法，使用默认重试间隔 500ms）
+     *
+     * @param operation   要执行的操作
+     * @param validation  验证逻辑（BooleanSupplier，无参数）
+     * @param maxRetries  最大重试次数
+     * @param desc        操作描述
+     * @return 验证通过返回 true，否则 false
+     */
+    public boolean retryWithValidation(Runnable operation, BooleanSupplier validation, int maxRetries, String desc) {
         return retryWithValidation(operation, validation, maxRetries, 500, desc);
     }
 
@@ -370,13 +311,23 @@ public abstract class BasePage {
         }
     }
 
-    public boolean retryWithValidation(Runnable operation, Predicate<Void> validation,
+    /**
+     * 带验证的重试机制。
+     *
+     * @param operation       要执行的操作
+     * @param validation      验证逻辑（BooleanSupplier 替代 Predicate\<Void\>，语义更准确，避免传递 null）
+     * @param maxRetries      最大重试次数
+     * @param retryIntervalMs 重试间隔（毫秒）
+     * @param desc            操作描述
+     * @return 验证通过返回 true，否则 false
+     */
+    public boolean retryWithValidation(Runnable operation, BooleanSupplier validation,
                                        int maxRetries, int retryIntervalMs, String desc) {
         ensurePageValid();
         for (int i = 0; i <= maxRetries; i++) {
             try {
                 operation.run();
-                if (validation.test(null)) return true;
+                if (validation.getAsBoolean()) return true;
             } catch (Exception ignored) {
             }
             page.waitForTimeout(retryIntervalMs);
@@ -385,11 +336,11 @@ public abstract class BasePage {
     }
 
     public void waitForVisibleWithRetry(String selector, int timeout, int retries) {
-        retry(() -> waitForElementVisibleWithinTime(selector, timeout), retries, 500, "wait visible with retry: " + selector);
+        retry(() -> new PageElement(selector, this).waitForVisible(timeout), retries, 500, "wait visible with retry: " + selector);
     }
 
     public void waitForHiddenWithRetry(String selector, int timeout, int retries) {
-        retry(() -> waitForElementHiddenWithinTime(selector, timeout), retries, 500, "wait hidden with retry: " + selector);
+        retry(() -> new PageElement(selector, this).waitForNotVisible(timeout), retries, 500, "wait hidden with retry: " + selector);
     }
 
     public void clickWithRetry(String selector, int retries) {
@@ -566,6 +517,7 @@ public abstract class BasePage {
         if (index < 0 || index >= pages.size()) throw new IndexOutOfBoundsException("Invalid page index");
         page = pages.get(index);
         setCurrentPage();
+        initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
 
     public void switchToLatestPage() {
@@ -573,6 +525,7 @@ public abstract class BasePage {
         List<Page> pages = context.pages();
         page = pages.getLast();
         setCurrentPage();
+        initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
 
     public Page waitForNewPage(int timeout) {
@@ -606,6 +559,7 @@ public abstract class BasePage {
             if (page != onlyPage) {
                 page = onlyPage;
                 setCurrentPage();
+                initializeAnnotatedFields();
             }
             return;
         }
@@ -634,6 +588,7 @@ public abstract class BasePage {
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
         page = updatedPages.get(targetIndex);
         setCurrentPage();
+        initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
 
     /**
@@ -664,6 +619,7 @@ public abstract class BasePage {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Single page available, switching page reference to main page");
                 page = mainPage;
                 setCurrentPage();
+                initializeAnnotatedFields();
             } else {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Already on the only page (main page)");
             }
@@ -689,6 +645,7 @@ public abstract class BasePage {
         // 确保最终指向主页
         page = mainPage;
         setCurrentPage();
+        initializeAnnotatedFields();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Successfully reset to main page");
     }
 
@@ -840,14 +797,6 @@ public abstract class BasePage {
 
     public void press(String selector, String key) {
         locator(selector).press(key);
-    }
-
-    public void waitForElementClickableWithinTime(String selector, int timeout) {
-        waitForElementVisibleWithinTime(selector, timeout);
-        if (!waitForCondition(() -> locator(selector).isEnabled(),
-                timeout, "clickable: " + selector)) {
-            throw new TimeoutException("Element not clickable: " + selector);
-        }
     }
 
     public void waitForTimeout(int milliseconds) {

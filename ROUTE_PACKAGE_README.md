@@ -306,14 +306,17 @@ RouteDsl.on(browserContext)  // Context 级别
 
 // ── Modify 配置 ──
 .setRequestHeader(key, val) // 添加/覆盖请求头
+.removeRequestHeader(key)    // 删除请求头
 .modifyRequestBody(path, v) // JSONPath 精准替换请求体字段
+.addRequestBodyField(p, v)  // 新增请求体字段
+.removeRequestBodyField(p)   // 删除请求体字段
 .modifyMethod(method)       // 修改 HTTP 方法
 
 // ── Mock 配置 ──
 .mockBody(body)             // 设置响应体
 .mockStatus(status)         // 设置 HTTP 状态码
 .mockHeader(key, value)     // 设置响应头
-.mockReplaceField(path, val) // 批量替换 Mock JSON body 字段（支持 [*] 通配符）
+.mockReplaceField(path, val) // 批量替换 Mock JSON body 字段（支持 [*] 通配符 + 类型保持）
 
 // ── 请求条件匹配 ──
 .matchMethod(method)        // HTTP 方法过滤（GET/POST/...）
@@ -394,7 +397,10 @@ RouteDsl.on(browserContext)  // Context 级别
 | 操作 | API | 说明 |
 |------|-----|------|
 | 添加请求头 | `.setRequestHeader(key, value)` | 合并到原请求头 |
-| 请求体替换 | `.modifyRequestBody(key, value)` | JSONPath 精准替换 + 类型保持 |
+| 删除请求头 | `.removeRequestHeader(key)` | 移除指定请求头 |
+| 请求体替换 | `.modifyRequestBody(key, value)` | JSONPath 精准替换 + 类型保持（含数组/对象） |
+| 请求体新增 | `.addRequestBodyField(key, value)` | JSONPath → 值，路径不存在则自动创建中间节点 |
+| 请求体删除 | `.removeRequestBodyField(key)` | 删除指定 JSONPath 字段 |
 | 修改 HTTP 方法 | `.modifyMethod("POST")` | 覆盖原方法 |
 
 > **注意**：Modify 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取修改详情的完整快照（含原始 URL、修改后的方法、headers 变更、body 变更）。
@@ -410,7 +416,15 @@ users[0].name              → { "users": [{ "name": "newValue" }] }
 
 // 类型保持 — 原字段是 int，替换值自动转换为 IntNode
 "age": 25  → modifyRequestBody("age", "30") → "age": 30  (int 保持)
+
+// 类型保持 — 原字段是数组/对象，替换值自动解析为 JSON
+"items": []  → modifyRequestBody("items", "[{\"id\":1}]") → "items": [{"id":1}]  (数组保持)
+"meta": {}   → modifyRequestBody("meta", "{\"key\":\"val\"}") → "meta": {"key":"val"}  (对象保持)
 ```
+
+> **类型保持机制**：`modifyRequestBody` / `mockReplaceField` 均共享底层 `convertToMatchingType()` 方法，根据原字段类型自动转换——
+> 原值为 `IntNode`/`LongNode` → 整数解析；`BooleanNode` → 布尔解析；`FloatNode`/`DoubleNode` → 小数解析；
+> `ObjectNode`/`ArrayNode` → 先尝试 Jackson JSON 解析（失败则降级为文本）。
 
 **JSONPath 编译缓存**：缓存容量上限 200，超过后自动清空重建。
 
@@ -424,16 +438,22 @@ users[0].name              → { "users": [{ "name": "newValue" }] }
 ```
 1. 状态码校验 → 非法状态码 fallback 到 200
          ↓
-2. 构建 Route.FulfillOptions（状态码 + 响应体 + 自定义 Headers）
+2. 响应体准备：mockBody 为 null 时降级为空字符串 ""
          ↓
-3. route.fulfill() 包裹 try-catch，单请求失败不影响路由
+3. 批量字段替换：调用 ModifyHandler.replaceBatchByWildcard() 进行通配符 JSONPath 替换
+    — 自动类型保持（Int/Long/Boolean/Float/Object/Array）
+    — 数组/对象类型字段自动解析为 JSON，未解析成功时降级为字符串
          ↓
-4. 构建 CapturedApiCall（urlPattern、方法、mock 状态码、mock 响应头、mock body）
+4. 构建 Route.FulfillOptions（状态码 + 响应体 + 自定义 Headers）
          ↓
-5. 存入 ApiCaptureContext.getCurrent().storeApiCall()
+5. route.fulfill() 包裹 try-catch，单请求失败不影响路由
+         ↓
+6. 构建 CapturedApiCall（urlPattern、方法、mock 状态码、mock 响应头、mock body）
+         ↓
+7. 存入 ApiCaptureContext.getCurrent().storeApiCall()
 ```
 
-**配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）。
+**配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）。
 
 > **注意**：Mock 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取完整的 Mock 请求快照。
 
@@ -671,9 +691,10 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.2.1 Mock 批量字段替换（支持嵌套 List）
+### 5.2.1 Mock 批量字段替换（支持嵌套 List + 数组/对象 + 类型保持）
 
 ```java
+// 基础场景：通配符 [*] 批量替换 List 内字段
 RouteDsl.on(page)
     .api("/api/users")
     .mock()
@@ -683,6 +704,31 @@ RouteDsl.on(page)
     .mockReplaceField("$[*].orders[*].price", "0")
     .mockStatus(200)
     .allowAllRequests()
+    .done()
+    .start();
+
+// 数组/对象字段替换 — 自动类型保持（不会变成字符串）
+RouteDsl.on(page)
+    .api("/api/items")
+    .mock()
+    .mockBody("{\"code\":200,\"data\":{\"items\":[],\"config\":{}}}")
+    // 替换整个空数组为带数据的数组
+    .mockReplaceField("$.data.items", "[{\"id\":1,\"name\":\"test\"},{\"id\":2,\"name\":\"test2\"}]")
+    // 替换空对象为有数据的对象
+    .mockReplaceField("$.data.config", "{\"timeout\":30,\"enable\":true}")
+    .mockStatus(200)
+    .done()
+    .start();
+// 结果：{"code":200,"data":{"items":[{"id":1,"name":"test"},{"id":2,"name":"test2"}],"config":{"timeout":30,"enable":true}}}
+
+// 数字/布尔类型保持 — 替换值自动推断类型
+RouteDsl.on(page)
+    .api("/api/profile")
+    .mock()
+    .mockBody("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"score\":88.5}")
+    .mockReplaceField("$.age", "30")       // int 保持 → "age":30
+    .mockReplaceField("$.active", "false")  // boolean 保持 → "active":false
+    .mockReplaceField("$.score", "99.9")    // double 保持 → "score":99.9
     .done()
     .start();
 ```
@@ -959,10 +1005,13 @@ Object jsonValue = lastCall.json("$.data.id");
 | `mockBody(body)` | String | ApiDsl | 设置 Mock 响应体 |
 | `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
 | `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
-| `mockReplaceField(p, v)` | String, String | ApiDsl | 批量替换 JSON body 字段（支持 `[*]` 通配符） |
+| `mockReplaceField(p, v)` | String, String | ApiDsl | 批量替换 JSON body 字段（支持 `[*]` 通配符 + 类型保持：Int/Long/Boolean/Array/Object 自动推断） |
 | **— Modify 配置 —** | | | |
 | `setRequestHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
-| `modifyRequestBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换 |
+| `removeRequestHeader(k)` | String | ApiDsl | 删除请求头 |
+| `modifyRequestBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换（类型保持：Int/Long/Boolean/Array/Object 自动推断） |
+| `addRequestBodyField(k, v)` | String, String | ApiDsl | JSONPath 新增字段 |
+| `removeRequestBodyField(k)` | String | ApiDsl | 删除 JSONPath 字段 |
 | `modifyMethod(m)` | String | ApiDsl | 修改 HTTP 方法 |
 | **— 请求匹配 —** | | | |
 | `matchMethod(m)` | String | ApiDsl | HTTP 方法过滤 |

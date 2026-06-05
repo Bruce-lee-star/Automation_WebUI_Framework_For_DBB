@@ -136,6 +136,8 @@ public class RouteRegistry {
         // 1. 先从注册表移除，并注销 Playwright 路由层（无 MonitorSession 的 MOCK/MODIFY 路由需要）
         Set<String> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
         if (patterns != null && !patterns.isEmpty()) {
+            // ⭐ 同步清除 context 级规则注册表
+            RouteEngine.removeContextRules(patterns);
             RouteEngine.unrouteAllForContext(context, patterns);
         }
 

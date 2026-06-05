@@ -48,6 +48,23 @@ public class RouteEngine {
     private static final Map<RouteRule, MonitorSession> SESSIONS = new ConcurrentHashMap<>();
 
     /**
+     * ⭐ Context 级路由规则注册表：normalizedPattern → RouteRule。
+     *
+     * <p>解决 Playwright Page route 优先级高于 BrowserContext route 导致
+     * context 级规则被 page 级规则完全屏蔽的问题。
+     *
+     * <p>当 dispatchRoute 处理 page 级请求时，额外检查此注册表，
+     * 按固定优先级合并 context + page 规则：
+     * <ol>
+     *   <li><b>MOCK</b> — 终结请求，若任一 level 有 MOCK 则覆盖其他</li>
+     *   <li><b>MODIFY</b> — 修改请求，先于 MONITOR/DELAY 执行</li>
+     *   <li><b>MONITOR</b> — 监控响应，可与其他类型共存</li>
+     *   <li><b>DELAY</b> — 延迟请求，始终合并到其余类型</li>
+     * </ol>
+     */
+    private static final Map<String, RouteRule> CONTEXT_RULES = new ConcurrentHashMap<>();
+
+    /**
      * Route 防重门控 — 当同一请求匹配多个重叠 pattern 时，
      * 只有第一个 handler 处理，后续 handler 静默跳过。
      *
@@ -114,6 +131,10 @@ public class RouteEngine {
         registerInternal(context, (pattern, rule) -> {
             if (RouteRegistry.register(context, pattern)) {
                 context.route(pattern, route -> dispatchRoute(route, rule));
+                // ⭐ Context 级规则入注册表，供 page 级 handler 跨层级合并
+                CONTEXT_RULES.put(pattern, rule);
+                LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
+                        rule.getType(), pattern);
                 startMonitorSession(context, rule, pattern);
                 LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
                         rule.getType(), pattern);
@@ -236,8 +257,98 @@ public class RouteEngine {
             return;
         }
 
+        // ═══ 跨层级规则合并（Context + Page） ═══
+        // ⭐ 必须在 DELAY 分支之前检查：context MOCK 会覆盖 page handler
+        // Playwright Page.route() 优先级高于 BrowserContext.route()，
+        // context 级规则会被 page 级规则完全屏蔽。在此查找并合并。
+        // 优先级：MOCK > MODIFY > DELAY > MONITOR
+        long delayMs = rule.getDelayMs();
+        RouteRule ctxRule = findMatchingContextRule(reqUrl);
+
+        if (ctxRule != null && ctxRule.getType() != rule.getType()) {
+            RouteHandleType ctxType = ctxRule.getType();
+            RouteHandleType pageType = rule.getType();
+
+            // ── ∀ 跨层级组合：始终合并 DELAY ──
+            if (ctxType == RouteHandleType.DELAY) {
+                long ctxDelay = DelayHandler.clampDelay(DelayHandler.resolveDelay(ctxRule));
+                delayMs = Math.max(delayMs, ctxDelay);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Context DELAY merged: pageType={}, ctxDelay={}ms, effectiveDelay={}ms",
+                        pageType, ctxDelay, delayMs);
+            }
+
+            // ⭐ 快照合并后的延迟（此后 delayMs 不再修改，确保 lambda 中 effectively-final）
+            final long mergedDelay = delayMs;
+
+            // ── DELAY > MONITOR：context DELAY 覆盖 page MONITOR → 纯延迟放行，不监控 ──
+            if (ctxType == RouteHandleType.DELAY && pageType == RouteHandleType.MONITOR) {
+                LOGGER.info("[RouteEngine] Context DELAY overrides page MONITOR: pattern='{}', url='{}', delay={}ms",
+                        rule.getUrlPattern(), reqUrl, mergedDelay);
+                ApiCaptureContext.getCurrent().incrementActiveRequests();
+                Runnable action = () -> {
+                    try {
+                        route.resume();
+                        LOGGER.info("[RouteEngine] Route delayed (DELAY override MONITOR): pattern='{}', url='{}', delay={}ms",
+                                rule.getUrlPattern(), reqUrl, mergedDelay);
+                    } catch (Exception e) {
+                        LOGGER.error("[RouteEngine] Failed to resume after DELAY override for '{}': {}",
+                                rule.getUrlPattern(), e.getMessage(), e);
+                        try { route.resume(); } catch (Exception ignored) {}
+                    } finally {
+                        DISPATCHED_ROUTES.remove(route);
+                        ApiCaptureContext.getCurrent().decrementActiveRequests();
+                    }
+                };
+                if (mergedDelay > 0) {
+                    DELAY_SCHEDULER.schedule(action, mergedDelay, TimeUnit.MILLISECONDS);
+                } else {
+                    action.run();
+                }
+                return;
+            }
+
+            // ── MOCK 终结：context MOCK 覆盖所有 page handler ──
+            // ⭐ 当 page handler 为 DELAY 时，page DELAY 的延迟不应被 MOCK 继承，
+            //    MOCK 立即返回 mock 响应（仅合并 context 级别延迟）。
+            if (ctxType == RouteHandleType.MOCK) {
+                long mockDelay = (pageType == RouteHandleType.DELAY) ? 0 : mergedDelay;
+                LOGGER.info("[RouteEngine] Context MOCK overrides page {}: pattern='{}', url='{}'",
+                        pageType, ctxRule.getUrlPattern(), reqUrl);
+                if (mockDelay > 0) {
+                    DELAY_SCHEDULER.schedule(
+                            () -> executeHandlerScheduled(route, ctxRule, MockHandler::handle),
+                            mockDelay, TimeUnit.MILLISECONDS);
+                } else {
+                    executeHandler(route, ctxRule, MockHandler::handle);
+                }
+                return;
+            }
+
+            // ── MONITOR + MODIFY：page MODIFY 执行（已存 CapturedApiCall），
+            //     context MONITOR 额外记录基础捕获 ──
+            if (ctxType == RouteHandleType.MONITOR && pageType == RouteHandleType.MODIFY) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Context MONITOR + page MODIFY: page modify runs, context monitor records basic capture");
+            }
+
+            // ── MODIFY + MONITOR / MODIFY + DELAY：
+            //    context MODIFY 应修改请求后再执行 page handler
+            //    目前 page handler 执行，delay 合并（完整 MODIFY 链需后续提取修改逻辑）
+            if (ctxType == RouteHandleType.MODIFY) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Context MODIFY + page {}: page handler runs with merged delay, "
+                        + "context modify not applied (requires handler refactor for full chaining)",
+                        pageType);
+            }
+
+            // 更新 delayMs 快照（后续 DELAY/MONITOR/MOCK/MODIFY handler 执行前统一使用）
+            delayMs = mergedDelay;
+        }
+
         // ═══ DELAY 类型：使用 schedule() 延迟调度 route.resume()，不占线程 ═══
         // 必须在 HANDLERS.get() 之前检查，因为 DELAY 已从 HANDLERS 中移除
+        // 注意：上面的跨层级检查已将 context MONITOR→page DELAY 转为 MonitorHandler，此处仅处理纯 DELAY
         if (rule.getType() == RouteHandleType.DELAY) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}' ═══",
@@ -265,13 +376,13 @@ public class RouteEngine {
                 "[RouteEngine] ═══ dispatchRoute -> handler: type={}, handler={}, pattern='{}', url='{}' ═══",
                 rule.getType(), handler.getClass().getSimpleName(), rule.getUrlPattern(), reqUrl);
 
-        // ═══ 其他类型通用延迟（monitor/mock/modify 的预处理器延迟）═══
-        long delayMs = rule.getDelayMs();
-        if (delayMs > 0) {
+        // ═══ 执行 page handler（带合并后的延迟，delayMs 已由上面的跨层级合并计算好） ═══
+        final long effectiveDelay = delayMs;
+        if (effectiveDelay > 0) {
             DELAY_SCHEDULER.schedule(
                     () -> executeHandlerScheduled(route, rule, handler),
-                    delayMs, TimeUnit.MILLISECONDS);
-            LOGGER.debug("[RouteEngine] Handler delayed by {}ms for pattern '{}'", delayMs, rule.getUrlPattern());
+                    effectiveDelay, TimeUnit.MILLISECONDS);
+            LOGGER.debug("[RouteEngine] Handler delayed by {}ms for pattern '{}'", effectiveDelay, rule.getUrlPattern());
         } else {
             executeHandler(route, rule, handler);
         }
@@ -577,13 +688,14 @@ public class RouteEngine {
      */
     public static void clearAllMonitorSessions() {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] clearAllMonitorSessions: stopping {} session(s) and clearing {} dispatched routes",
-                SESSIONS.size(), DISPATCHED_ROUTES.size());
+                "[RouteEngine] clearAllMonitorSessions: stopping {} session(s), clearing {} dispatched routes, {} context rules",
+                SESSIONS.size(), DISPATCHED_ROUTES.size(), CONTEXT_RULES.size());
         for (MonitorSession session : SESSIONS.values()) {
             session.stop();
         }
         SESSIONS.clear();
         DISPATCHED_ROUTES.clear();
+        CONTEXT_RULES.clear();
     }
 
     /**
@@ -594,6 +706,64 @@ public class RouteEngine {
         DISPATCHED_ROUTES.clear();
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[RouteEngine] clearDispatchedRoutes: cleared {} entries", size);
+    }
+
+    // ─── Context 级规则跨层级合并 ────────────────────────────
+
+    /**
+     * ⭐ 在 CONTEXT_RULES 中查找与给定 URL 匹配的 context 级规则。
+     *
+     * <p>使用 glob 匹配（与 Playwright 注册时一样），normalized pattern 如
+     * {@code ** /api/users/**} 被转换为子串匹配：提取 {@code /api/users}，
+     * 检查 URL 是否包含该路径。
+     *
+     * @param url 请求 URL
+     * @return 匹配的 context 规则，未找到则返回 null
+     */
+    static RouteRule findMatchingContextRule(String url) {
+        if (url == null || CONTEXT_RULES.isEmpty()) return null;
+        for (Map.Entry<String, RouteRule> entry : CONTEXT_RULES.entrySet()) {
+            String normalized = entry.getKey();
+            // 提取路径子串：**/path/** → /path
+            String path = extractPathFromNormalizedPattern(normalized);
+            if (!path.isEmpty() && url.contains(path)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从 Playwright glob 归一化后的 pattern 中提取路径子串。
+     * <p>例：{@code ** /api/users/**} → {@code /api/users}
+     */
+    private static String extractPathFromNormalizedPattern(String normalized) {
+        String path = normalized;
+        if (path.startsWith("**")) {
+            path = path.substring(2);
+        }
+        if (path.endsWith("**")) {
+            path = path.substring(0, path.length() - 2);
+        }
+        // 清理尾部斜杠
+        while (path.endsWith("/") && !path.equals("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        return path;
+    }
+
+    /**
+     * ⭐ 移除指定 pattern 集合中的所有 context 级规则。
+     * <p>由 {@link RouteRegistry#clearContext(Object)} 在清理上下文时调用。
+     *
+     * @param patterns 要移除的 normalized pattern 集合
+     */
+    public static void removeContextRules(Set<String> patterns) {
+        if (patterns == null || patterns.isEmpty()) return;
+        CONTEXT_RULES.keySet().removeAll(patterns);
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] Removed {} context rules, remaining: {}",
+                patterns.size(), CONTEXT_RULES.size());
     }
 
     // ─── MonitorSession（内部类）───────────────────────────────────

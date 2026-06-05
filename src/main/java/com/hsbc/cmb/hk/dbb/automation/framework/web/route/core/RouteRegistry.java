@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.ref.WeakReference;
 import java.util.Iterator;
-import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -34,9 +34,21 @@ public class RouteRegistry {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteRegistry.class);
 
+    // ═══ 路由类型优先级：用于判断是否允许新规则覆盖旧规则 ═══
+    // 数值越大优先级越高。MOCK > MODIFY > DELAY > MONITOR
+    private static int priorityOf(RouteHandleType type) {
+        switch (type) {
+            case MOCK:   return 4;
+            case MODIFY: return 3;
+            case DELAY:  return 2;
+            case MONITOR:return 1;
+            default:     return 0;
+        }
+    }
+
     /**
      * Key: ContextKey（WeakReference 包装的 Page/BrowserContext），
-     * Value: 该上下文已注册的 pattern 集合。
+     * Value: 该上下文已注册的 pattern → RouteHandleType 映射。
      *
      * <p>ContextKey 使用身份哈希 + WeakReference，确保：
      * <ol>
@@ -45,7 +57,7 @@ public class RouteRegistry {
      *   <li>死条目由 {@link #purgeDeadEntries()} 定期清理</li>
      * </ol>
      */
-    private static final ConcurrentHashMap<ContextKey, Set<String>> CONTEXT_PATTERNS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS = new ConcurrentHashMap<>();
 
     /** 触发死条目清理的阈值（CONTEXT_PATTERNS size 超过此值后触发 purgeDeadEntries） */
     private static final int PURGE_THRESHOLD = 50;
@@ -55,10 +67,11 @@ public class RouteRegistry {
      *
      * @param page    Page 实例
      * @param pattern URL pattern（如 "/api/**"）
+     * @param type    路由处理类型
      * @return true=首次注册，false=已存在（去重跳过）
      */
-    public static boolean register(Page page, String pattern) {
-        return registerInternal(page, pattern);
+    public static boolean register(Page page, String pattern, RouteHandleType type) {
+        return registerInternal(page, pattern, type);
     }
 
     /**
@@ -66,10 +79,11 @@ public class RouteRegistry {
      *
      * @param context BrowserContext 实例
      * @param pattern URL pattern（如 "/api/**"）
+     * @param type    路由处理类型
      * @return true=首次注册，false=已存在（去重跳过）
      */
-    public static boolean register(BrowserContext context, String pattern) {
-        return registerInternal(context, pattern);
+    public static boolean register(BrowserContext context, String pattern, RouteHandleType type) {
+        return registerInternal(context, pattern, type);
     }
 
     /**
@@ -77,21 +91,48 @@ public class RouteRegistry {
      *
      * <p>每次注册前检查是否需要清理死条目（基于阈值触发）。
      */
-    private static boolean registerInternal(Object context, String pattern) {
+    private static boolean registerInternal(Object context, String pattern, RouteHandleType type) {
         // 防御性清理死条目（GC 回收的 Page/Context）
         if (CONTEXT_PATTERNS.size() > PURGE_THRESHOLD) {
             purgeDeadEntries();
         }
 
         ContextKey key = new ContextKey(context);
-        Set<String> patterns = CONTEXT_PATTERNS.computeIfAbsent(
-                key, k -> ConcurrentHashMap.newKeySet());
-        boolean isNew = patterns.add(pattern);
-        if (!isNew) {
-            LOGGER.debug("[RouteRegistry] Pattern already registered in this context: {} -> {}",
-                    context.getClass().getSimpleName(), pattern);
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.computeIfAbsent(
+                key, k -> new ConcurrentHashMap<>());
+        RouteHandleType existing = patterns.putIfAbsent(pattern, type);
+        if (existing != null) {
+            LOGGER.debug("[RouteRegistry] Pattern already registered in this context: {} -> {} (existing type={}, new type={})",
+                    context.getClass().getSimpleName(), pattern, existing, type);
+            return false;
         }
-        return isNew;
+        return true;
+    }
+
+    /**
+     * 查询当前上下文中已注册 pattern 的类型。
+     *
+     * @param context Page 或 BrowserContext 实例
+     * @param pattern URL pattern（已归一化）
+     * @return 已注册的类型，未注册则返回 null
+     */
+    public static RouteHandleType getRegisteredType(Object context, String pattern) {
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
+        return patterns != null ? patterns.get(pattern) : null;
+    }
+
+    /**
+     * 判断新规则是否应覆盖已注册的同 pattern 规则。
+     *
+     * @param context      Page 或 BrowserContext 实例
+     * @param pattern      URL pattern（已归一化）
+     * @param newType      新规则的类型
+     * @return true=允许覆盖（新类型优先级更高）
+     */
+    public static boolean shouldOverride(Object context, String pattern, RouteHandleType newType) {
+        RouteHandleType existingType = getRegisteredType(context, pattern);
+        if (existingType == null) return false;
+        return priorityOf(newType) > priorityOf(existingType);
     }
 
     /**
@@ -101,12 +142,35 @@ public class RouteRegistry {
      * @param pattern 要注销的 URL pattern
      */
     public static void unregister(Object context, String pattern) {
-        Set<String> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
         if (patterns != null) {
             patterns.remove(pattern);
             LOGGER.debug("[RouteRegistry] Unregistered pattern from context: {} -> {}",
                     context.getClass().getSimpleName(), pattern);
         }
+    }
+
+    /**
+     * 强制覆盖注册 — 先移除旧 pattern，再注册新 pattern（总是返回 true）。
+     *
+     * <p>用于高优先级规则（如 MOCK）覆盖低优先级规则（如 MONITOR）的场景。
+     * 解决同一上下文同一 pattern 被监控注册后，Mock 无法覆盖的问题。
+     *
+     * @param context Page 或 BrowserContext 实例
+     * @param pattern URL pattern（已归一化）
+     * @param type    新路由处理类型
+     * @return 始终返回 true
+     */
+    public static boolean forceRegister(Object context, String pattern, RouteHandleType type) {
+        ContextKey key = new ContextKey(context);
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.computeIfAbsent(
+                key, k -> new ConcurrentHashMap<>());
+        RouteHandleType oldType = patterns.put(pattern, type);
+        if (oldType != null) {
+            LOGGER.info("[RouteRegistry] Force-override registered pattern: {} -> {} ({} → {})",
+                    context.getClass().getSimpleName(), pattern, oldType, type);
+        }
+        return true;
     }
 
     /**
@@ -134,11 +198,11 @@ public class RouteRegistry {
                 context.getClass().getSimpleName(), CONTEXT_PATTERNS.size());
 
         // 1. 先从注册表移除，并注销 Playwright 路由层（无 MonitorSession 的 MOCK/MODIFY 路由需要）
-        Set<String> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
         if (patterns != null && !patterns.isEmpty()) {
             // ⭐ 同步清除 context 级规则注册表
-            RouteEngine.removeContextRules(patterns);
-            RouteEngine.unrouteAllForContext(context, patterns);
+            RouteEngine.removeContextRules(patterns.keySet());
+            RouteEngine.unrouteAllForContext(context, patterns.keySet());
         }
 
         // 2. 清理 MonitorSession（停止定时器 + unroute，Playwright 对已注销的 pattern 幂等）
@@ -166,7 +230,7 @@ public class RouteRegistry {
      * 获取指定上下文的已注册 pattern 数量（用于测试/监控）。
      */
     public static int getPatternCount(Object context) {
-        Set<String> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
         return patterns != null ? patterns.size() : 0;
     }
 
@@ -183,7 +247,7 @@ public class RouteRegistry {
      *
      * <p>由以下场景触发：
      * <ul>
-     *   <li>{@link #registerInternal(Object, String)} 发现 Map size > {@link #PURGE_THRESHOLD}</li>
+     *   <li>{@link #registerInternal(Object, String, RouteHandleType)} 发现 Map size > {@link #PURGE_THRESHOLD}</li>
      *   <li>{@link #getContextCount()} 被调用时</li>
      *   <li>外部按需调用（如测试套件结束时）</li>
      * </ul>

@@ -110,17 +110,35 @@ public class RouteEngine {
     public static void register(Page page, List<RouteRule> rules) {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on Page ──", rules.size());
         registerInternal(page, (pattern, rule) -> {
-            if (RouteRegistry.register(page, pattern)) {
-                page.route(pattern, route -> dispatchRoute(route, rule));
-                startMonitorSession(page, rule, pattern);
-                LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=Page",
-                        rule.getType(), pattern);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
-                        rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
-                        rule.isRecord(), rule.isAutoStopOnMatch());
+            RouteHandleType type = rule.getType();
+            if (RouteRegistry.register(page, pattern, type)) {
+                registerRouteToPage(page, pattern, rule);
+            } else if (RouteRegistry.shouldOverride(page, pattern, type)) {
+                // ⭐ 优先级覆盖：高优先级规则覆盖低优先级（如 MOCK 覆盖 MONITOR）
+                RouteHandleType oldType = RouteRegistry.getRegisteredType(page, pattern);
+                LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on Page", pattern, oldType, type);
+                page.unroute(pattern);
+                RouteRegistry.forceRegister(page, pattern, type);
+                registerRouteToPage(page, pattern, rule);
+            } else {
+                LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
+                        pattern, RouteRegistry.getRegisteredType(page, pattern), type);
             }
         }, rules);
+    }
+
+    /**
+     * 注册 Playwright 路由到 Page（实际 route + session 创建）。
+     */
+    private static void registerRouteToPage(Page page, String pattern, RouteRule rule) {
+        page.route(pattern, route -> dispatchRoute(route, rule));
+        startMonitorSession(page, rule, pattern);
+        LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=Page",
+                rule.getType(), pattern);
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
+                rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
+                rule.isRecord(), rule.isAutoStopOnMatch());
     }
 
     /**
@@ -129,21 +147,39 @@ public class RouteEngine {
     public static void register(BrowserContext context, List<RouteRule> rules) {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on BrowserContext ──", rules.size());
         registerInternal(context, (pattern, rule) -> {
-            if (RouteRegistry.register(context, pattern)) {
-                context.route(pattern, route -> dispatchRoute(route, rule));
-                // ⭐ Context 级规则入注册表，供 page 级 handler 跨层级合并
-                CONTEXT_RULES.put(pattern, rule);
-                LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
-                        rule.getType(), pattern);
-                startMonitorSession(context, rule, pattern);
-                LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
-                        rule.getType(), pattern);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
-                        rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
-                        rule.isRecord(), rule.isAutoStopOnMatch());
+            RouteHandleType type = rule.getType();
+            if (RouteRegistry.register(context, pattern, type)) {
+                registerRouteToContext(context, pattern, rule);
+            } else if (RouteRegistry.shouldOverride(context, pattern, type)) {
+                // ⭐ 优先级覆盖：高优先级规则覆盖低优先级（如 MOCK 覆盖 MONITOR）
+                RouteHandleType oldType = RouteRegistry.getRegisteredType(context, pattern);
+                LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on BrowserContext", pattern, oldType, type);
+                context.unroute(pattern);
+                RouteRegistry.forceRegister(context, pattern, type);
+                registerRouteToContext(context, pattern, rule);
+            } else {
+                LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
+                        pattern, RouteRegistry.getRegisteredType(context, pattern), type);
             }
         }, rules);
+    }
+
+    /**
+     * 注册 Playwright 路由到 BrowserContext（实际 route + session 创建 + 跨层级缓存）。
+     */
+    private static void registerRouteToContext(BrowserContext context, String pattern, RouteRule rule) {
+        context.route(pattern, route -> dispatchRoute(route, rule));
+        // ⭐ Context 级规则入注册表，供 page 级 handler 跨层级合并
+        CONTEXT_RULES.put(pattern, rule);
+        LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
+                rule.getType(), pattern);
+        startMonitorSession(context, rule, pattern);
+        LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
+                rule.getType(), pattern);
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
+                rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),
+                rule.isRecord(), rule.isAutoStopOnMatch());
     }
 
     /**

@@ -78,6 +78,10 @@ public class RouteRule {
     /** 允许的资源类型，逗号分隔（如 "xhr,fetch"）。null/空 = 不限制。 */
     private String resourceTypes;
 
+    /** ⭐ 性能优化：懒缓存解析后的资源类型集合（避免每次请求重新解析） */
+    private transient volatile Set<String> cachedResourceTypeSet;
+    private transient volatile String cachedResourceTypeRaw;
+
     /** HTTP Method 匹配（如 "GET","POST"）。null = 不限制。 */
     private String matchMethod;
 
@@ -204,15 +208,36 @@ public class RouteRule {
 
     public String getResourceTypes() { return resourceTypes; }
 
-    /** 获取解析后的资源类型集合（不可变）。 */
+    /**
+     * 获取解析后的资源类型集合（不可变，带缓存）。
+     *
+     * <p><b>性能优化</b>：首次调用时解析并缓存，后续调用直接返回缓存，
+     * 避免热路径上每次请求都重新 split + LinkedHashSet 创建。
+     */
     public Set<String> getResourceTypeSet() {
-        if (resourceTypes == null || resourceTypes.trim().isEmpty()) return null;
-        String[] parts = resourceTypes.trim().toLowerCase().split("[,;\\s]+");
-        Set<String> set = new LinkedHashSet<>();
-        for (String p : parts) {
-            if (!p.isEmpty()) set.add(p);
+        // ⭐ DCL 懒缓存：仅在 resourceTypes 字符串未变更时复用
+        String raw = this.resourceTypes;
+        if (raw == null || raw.trim().isEmpty()) return null;
+
+        Set<String> cached = cachedResourceTypeSet;
+        if (cached != null && raw.equals(cachedResourceTypeRaw)) {
+            return cached;
         }
-        return set.isEmpty() ? null : Collections.unmodifiableSet(set);
+
+        synchronized (this) {
+            if (cachedResourceTypeSet != null && raw.equals(cachedResourceTypeRaw)) {
+                return cachedResourceTypeSet;
+            }
+            String[] parts = raw.trim().toLowerCase().split("[,;\\s]+");
+            Set<String> set = new LinkedHashSet<>();
+            for (String p : parts) {
+                if (!p.isEmpty()) set.add(p);
+            }
+            Set<String> result = set.isEmpty() ? null : Collections.unmodifiableSet(set);
+            cachedResourceTypeSet = result;
+            cachedResourceTypeRaw = raw;
+            return result;
+        }
     }
 
     public String getMatchMethod() { return matchMethod; }
@@ -239,10 +264,12 @@ public class RouteRule {
             throw new IllegalArgumentException("urlPattern cannot be blank");
         }
         this.urlPattern = urlPattern;
+        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
     }
 
     public void setType(RouteHandleType type) {
         this.type = type;
+        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
     }
 
     public void setMockBody(String mockBody) {
@@ -372,6 +399,7 @@ public class RouteRule {
      */
     public void setModifyMethod(String method) {
         this.modifyMethod = method;
+        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
     }
 
     public void setRecord(boolean record) {
@@ -499,6 +527,9 @@ public class RouteRule {
      */
     public void setResourceTypes(String resourceTypes) {
         this.resourceTypes = resourceTypes;
+        // ⭐ 失效缓存，下次 getResourceTypeSet() 重新解析
+        this.cachedResourceTypeSet = null;
+        this.cachedResourceTypeRaw = null;
     }
 
     /**
@@ -597,6 +628,10 @@ public class RouteRule {
     // equals / hashCode（RouteRule 作为 ConcurrentHashMap key）
     // ═══════════════════════════════════════════════════════════
 
+    /** ⭐ #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组 */
+    private transient int cachedHashCode;
+    private transient boolean hashCodeCached;
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -609,6 +644,10 @@ public class RouteRule {
 
     @Override
     public int hashCode() {
-        return Objects.hash(urlPattern, type, modifyMethod);
+        if (!hashCodeCached) {
+            cachedHashCode = Objects.hash(urlPattern, type, modifyMethod);
+            hashCodeCached = true;
+        }
+        return cachedHashCode;
     }
 }

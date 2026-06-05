@@ -12,6 +12,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.Iterator;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -299,17 +300,35 @@ public final class RouteUtil {
         return match;
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ S1: ReDoS 防护 — 正则表达式长度上限（拒绝指数回溯恶意正则）
+    // ═══════════════════════════════════════════════════════════════
+    private static final int MAX_REGEX_LENGTH = 1000;
+    private static final int MAX_BODY_LENGTH_FOR_REGEX = 500_000; // 500KB
+
     /**
      * Request Body Regex 匹配。
      * <p>使用预编译 Pattern 缓存，避免高并发下重复编译开销。
+     * <p>⭐ S1: ReDoS 防护 — 正则超长拒绝编译，body 过大拒绝匹配。
      */
     private static boolean matchBodyRegex(Request req, RouteRule rule) {
         String regex = rule.getMatchBodyRegex();
         if (regex == null || regex.trim().isEmpty()) {
             return true;
         }
+        // ⭐ S1: ReDoS — 拒绝超长正则（指数回溯风险）
+        if (regex.length() > MAX_REGEX_LENGTH) {
+            LOGGER.warn("[RouteUtil] Body regex too long ({} chars), rejected for ReDoS protection: pattern='{}'",
+                    regex.length(), regex);
+            return false;
+        }
         byte[] postData = req.postDataBuffer();
         if (postData == null || postData.length == 0) {
+            return false;
+        }
+        // ⭐ S1: ReDoS — body 过大时跳过正则匹配（防止 CPU 长时间占用）
+        if (postData.length > MAX_BODY_LENGTH_FOR_REGEX) {
+            LOGGER.debug("[RouteUtil] Body too large for regex matching ({} bytes), skipping", postData.length);
             return false;
         }
         try {
@@ -328,19 +347,32 @@ public final class RouteUtil {
 
     /**
      * 从缓存获取或编译一个正则表达式 Pattern。
-     * <p>缓存超出上限时重建，防止 OOM。
+     * <p>超限时使用伪 LRU 淘汰 ~25% 条目（避免全量清空导致命中率归零）。
      *
      * @param regex 正则表达式字符串
      * @return 编译后的 Pattern
      * @throws PatternSyntaxException 正则语法错误
      */
     private static Pattern getOrCompilePattern(String regex) {
-        // 缓存溢出 → 清空重建（防御性保护）
+        // ⭐ P2: 伪 LRU 淘汰替代全量 clear()，避免缓存命中率瞬间归零
         if (PATTERN_CACHE.size() >= PATTERN_CACHE_MAX) {
-            LOGGER.debug("[RouteUtil] Pattern cache reached max ({}), clearing", PATTERN_CACHE_MAX);
-            PATTERN_CACHE.clear();
+            LOGGER.debug("[RouteUtil] Pattern cache reached max ({}), evicting oldest ~25%", PATTERN_CACHE_MAX);
+            evictOldestQuarter(PATTERN_CACHE);
         }
         return PATTERN_CACHE.computeIfAbsent(regex, Pattern::compile);
+    }
+
+    /**
+     * ⭐ P2: 伪 LRU 淘汰辅助 — 从 ConcurrentHashMap 中移除约 25% 的条目。
+     * <p>使用弱一致性迭代器，适合并发场景下的近似 LRU。
+     */
+    private static void evictOldestQuarter(ConcurrentHashMap<?, ?> map) {
+        int evictCount = Math.max(1, map.size() / 4);
+        Iterator<?> it = map.keySet().iterator();
+        for (int i = 0; i < evictCount && it.hasNext(); i++) {
+            it.next();
+            it.remove();
+        }
     }
 
     /**
@@ -385,22 +417,34 @@ public final class RouteUtil {
      * <p>如果设置了 matchFrameUrl，则 Frame URL 必须包含该值。
      */
     private static boolean matchFrame(Request req, RouteRule rule) {
+        // ⭐ P1: Cache req.frame() — Playwright frame() 是跨 JNI 桥调用，有显著开销
+        //   缓存后从最多 3 次 JNI 调用降为最多 1 次
+        com.microsoft.playwright.Frame frame = null;
+        boolean frameResolved = false;
+
         // 主 Frame 限定
-        if (rule.isOnlyMainFrame() && req.frame() != null) {
-            boolean isMainFrame = req.frame().parentFrame() == null;
-            if (!isMainFrame) {
-                LOGGER.debug("[RouteUtil] Frame mismatch: not main frame, url={}", req.url());
-                return false;
+        if (rule.isOnlyMainFrame()) {
+            frame = req.frame();
+            frameResolved = true;
+            if (frame != null) {
+                boolean isMainFrame = frame.parentFrame() == null;
+                if (!isMainFrame) {
+                    LOGGER.debug("[RouteUtil] Frame mismatch: not main frame, url={}", req.url());
+                    return false;
+                }
             }
         }
 
         // Frame URL 包含匹配
         String expectedFrameUrl = rule.getMatchFrameUrl();
         if (expectedFrameUrl != null && !expectedFrameUrl.trim().isEmpty()) {
-            if (req.frame() == null) {
+            if (!frameResolved) {
+                frame = req.frame();
+            }
+            if (frame == null) {
                 return false;
             }
-            String actualFrameUrl = req.frame().url();
+            String actualFrameUrl = frame.url();
             boolean match = actualFrameUrl.contains(expectedFrameUrl);
             if (!match) {
                 LOGGER.debug("[RouteUtil] Frame URL mismatch: expected contains='{}', actual='{}', req={}",
@@ -455,5 +499,55 @@ public final class RouteUtil {
             LOGGER.debug("[RouteUtil] Failed to parse query params from URL: {}", url);
         }
         return query;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ S2: URL 脱敏 — 日志中隐藏 query 参数中的敏感信息
+    // ═══════════════════════════════════════════════════════════════
+
+    /** 常见敏感 query 参数名（小写） */
+    private static final Set<String> SENSITIVE_QUERY_KEYS = Collections.unmodifiableSet(
+            new HashSet<>(Arrays.asList(
+                    "token", "accesstoken", "access_token", "apikey", "api_key",
+                    "secret", "password", "passwd", "credential", "auth",
+                    "authorization", "sign", "signature", "key", "privatekey"
+            )));
+
+    /**
+     * ⭐ S2: 对 URL 做脱敏处理，隐藏 query 参数名和值（仅保留 path）。
+     * <p>避免 access token / API key 等敏感信息泄漏到日志/Sereinity 报告中。
+     *
+     * @param url 原始 URL
+     * @return 脱敏后 URL，如 {@code https://host/api/users?(query stripped)}
+     */
+    public static String sanitizeUrl(String url) {
+        if (url == null) return null;
+        try {
+            URI uri = new URI(url);
+            String rawQuery = uri.getRawQuery();
+            if (rawQuery == null || rawQuery.isEmpty()) {
+                return url; // 无 query，直接返回
+            }
+            // 检测是否包含敏感参数
+            boolean hasSensitive = false;
+            for (String pair : rawQuery.split("&")) {
+                String key = pair.split("=", 2)[0].toLowerCase();
+                try {
+                    key = URLDecoder.decode(key, StandardCharsets.UTF_8.name()).toLowerCase();
+                } catch (Exception ignored) {}
+                if (SENSITIVE_QUERY_KEYS.contains(key)) {
+                    hasSensitive = true;
+                    break;
+                }
+            }
+            if (hasSensitive) {
+                // 重建不含 query 的 URL
+                return new URI(uri.getScheme(), uri.getAuthority(), uri.getPath(),
+                        null, uri.getFragment()).toString();
+            }
+            return url;
+        } catch (Exception e) {
+            return url; // 解析失败，保守返回原始 URL
+        }
     }
 }

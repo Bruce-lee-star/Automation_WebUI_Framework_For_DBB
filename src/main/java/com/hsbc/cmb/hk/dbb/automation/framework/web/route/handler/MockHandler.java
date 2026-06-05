@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.PlaywrightException;
@@ -89,7 +90,7 @@ public class MockHandler {
         try {
             route.fulfill(opts);
             LOGGER.info("[MockHandler] Fulfilled: url={}, pattern='{}', status={}, bodyLength={}",
-                    url, rule.getUrlPattern(), status, body.length());
+                    RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                     "[MockHandler] Mock body content (first 500 chars): {}",
                     body.length() > 500 ? body.substring(0, 500) + "..." : body);
@@ -108,7 +109,8 @@ public class MockHandler {
                         status,
                         rule.getMockHeaders(),  // Mock 自定义响应头
                         body,
-                        System.currentTimeMillis()
+                        System.currentTimeMillis(),
+                        url    // 实际请求 URL，用于毫秒级精确检索
                 );
                 ApiCaptureContext.getCurrent().storeApiCall(call);
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,

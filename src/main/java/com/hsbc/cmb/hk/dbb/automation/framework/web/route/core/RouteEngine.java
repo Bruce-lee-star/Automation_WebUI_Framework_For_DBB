@@ -187,8 +187,10 @@ public class RouteEngine {
      * <p>每次 handler 执行完成后立即 remove，避免阻塞同一 pattern 的后续请求。
      */
     private static void dispatchRoute(Route route, RouteRule rule) {
-        String reqUrl = route.request().url();
-        String reqMethod = route.request().method();
+        // ⭐ #1 性能优化：缓存 route.request() JNI 调用，避免多次跨语言桥接
+        Request req = route.request();
+        String reqUrl = req.url();
+        String reqMethod = req.method();
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] ═══ dispatchRoute START: method={}, url='{}', type={}, pattern='{}' ═══",
                 reqMethod, reqUrl, rule.getType(), rule.getUrlPattern());
@@ -218,6 +220,19 @@ public class RouteEngine {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] ═══ dispatchRoute MISMATCH (condition filter): pattern='{}', url='{}' ═══",
                     rule.getUrlPattern(), reqUrl);
+            return;
+        }
+
+        // ═══ 检查 MonitorSession 是否已停止（auto-stop / 超时），停止则跳过 handler ═══
+        // 不在此处调用 unroute()，避免 Playwright 线程竞态导致 "Object doesn't exist" 或 "Cannot find command to respond" 错误。
+        // route handler 保持注册，但已停止的 session 仅放行请求，不处理。
+        MonitorSession session = SESSIONS.get(rule);
+        if (session != null && session.stopped.get()) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] ═══ dispatchRoute SKIP (session stopped): pattern='{}', url='{}' ═══",
+                    rule.getUrlPattern(), reqUrl);
+            try { route.resume(); } catch (Exception ignored) {}
+            DISPATCHED_ROUTES.remove(route);
             return;
         }
 
@@ -277,12 +292,19 @@ public class RouteEngine {
     private static void scheduleDelay(Route route, RouteRule rule) {
         long delayMs = DelayHandler.clampDelay(DelayHandler.resolveDelay(rule));
 
-        String url = route.request().url();
+        // ⭐ #1 性能优化：缓存 route.request()
+        Request req = route.request();
+        String url = req.url();
         String pattern = rule.getUrlPattern();
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms",
                 pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs());
+
+        // ═══ 标记活动请求，使 awaitCompletion 等待 DELAY 动作完成 ═══
+        // increment 在 dispatch 线程执行，decrement 在调度器回调线程执行，
+        // ApiCaptureContext 使用 AtomicInteger 保证跨线程安全。
+        ApiCaptureContext.getCurrent().incrementActiveRequests();
 
         Runnable action = () -> {
             try {
@@ -290,15 +312,17 @@ public class RouteEngine {
                 MonitorSession session = SESSIONS.get(rule);
                 if (session != null && session.stopped.get()) {
                     LOGGER.debug("[RouteEngine] Session stopped during delay, skipping for '{}'", pattern);
-                    try { route.resume(); } catch (Exception ignored) {} finally {
-                        DISPATCHED_ROUTES.remove(route);
-                    }
+                    try { route.resume(); } catch (Exception ignored) {}
                     return;
                 }
 
                 route.resume();
                 LOGGER.info("[RouteEngine] Route delayed: pattern='{}', url='{}', delay={}ms",
                         pattern, url, delayMs);
+
+                // 将 DELAY 调用存入 ApiCaptureContext，与 MONITOR/MOCK 统一可查询
+                storeDelayCall(route, rule);
+
                 onMonitorMatch(rule);
             } catch (Exception e) {
                 LOGGER.error("[RouteEngine] Failed to continue route after delay for '{}': {}",
@@ -306,6 +330,7 @@ public class RouteEngine {
                 try { route.resume(); } catch (Exception ignored) {}
             } finally {
                 DISPATCHED_ROUTES.remove(route);
+                ApiCaptureContext.getCurrent().decrementActiveRequests();
             }
         };
 
@@ -315,6 +340,34 @@ public class RouteEngine {
                     pattern, url, delayMs);
         } else {
             action.run();
+        }
+    }
+
+    /**
+     * 将 DELAY 调用存入 ApiCaptureContext，使其像 MONITOR/MOCK 一样可被查询。
+     *
+     * <p>DELAY 仅延迟放行请求（不修改响应），因此存储的信息以请求元数据为主，
+     * 不包含响应体（resume 异步，响应尚未返回）。满足 assertNotNull 等基础断言。
+     */
+    private static void storeDelayCall(Route route, RouteRule rule) {
+        try {
+            com.microsoft.playwright.Request req = route.request();
+            CapturedApiCall call = new CapturedApiCall(
+                    rule.getUrlPattern(),
+                    req.method(),
+                    null,   // 请求头快照（简化处理）
+                    0,      // 状态码未知（resume 异步）
+                    null,   // 响应头未知
+                    null,   // 响应体未知（resume 异步，不阻塞等待）
+                    System.currentTimeMillis(),
+                    req.url()  // 实际请求 URL，用于毫秒级精确检索
+            );
+            ApiCaptureContext.getCurrent().storeApiCall(call);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] Stored DELAY call to ApiCaptureContext: pattern='{}', method={}",
+                    rule.getUrlPattern(), req.method());
+        } catch (Exception e) {
+            LOGGER.debug("[RouteEngine] Failed to store DELAY call to ApiCaptureContext: {}", e.getMessage());
         }
     }
 
@@ -354,16 +407,18 @@ public class RouteEngine {
      * 执行 Handler，统一异常处理和日志。
      */
     private static void executeHandler(Route route, RouteRule rule, RouteHandler handler) {
+        // ⭐ #1 性能优化：缓存 route.request()，避免 executeHandler 内重复 JNI 调用
+        Request req = route.request();
         try {
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                     "[RouteEngine] executeHandler START: handler={}, type={}, pattern='{}', url='{}'",
                     handler.getClass().getSimpleName(), rule.getType(),
-                    rule.getUrlPattern(), route.request().url());
+                    rule.getUrlPattern(), req.url());
             handler.handle(route, rule);
 
             LOGGER.info("[RouteEngine] Route matched: type={}, pattern='{}', method={}, url='{}'",
                     rule.getType(), rule.getUrlPattern(),
-                    route.request().method(), route.request().url());
+                    req.method(), req.url());
 
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] executeHandler DONE: handler={}, type={}, pattern='{}'",
@@ -585,8 +640,17 @@ public class RouteEngine {
         }
 
         /**
-         * 停止监控：取消超时任务、注销 Playwright 路由、移除会话。
-         * <p>pattern 存储的是注册时使用的归一化 pattern，能正确匹配 unroute。
+         * 停止监控：取消超时任务、标记会话为已停止。
+         *
+         * <p><b>关键设计</b>：不调用 {@code page.unroute()} 注销路由，
+         * 因为 auto-stop / 超时触发时调用 {@code unroute()} 会产生 Playwright 线程竞态，
+         * 导致 {@code "Object doesn't exist: request@..."} 或 {@code "Cannot find command to respond"} 错误。
+         *
+         * <p>Route handler 保持注册，后续匹配请求在 {@link #dispatchRoute} 中
+         * 检测到 {@code session.stopped == true} 后直接 {@code resume} 放行，不产生额外开销。
+         * 真正的 unroute 发生在 {@link #clearMonitorSessions} / {@link #unrouteAllForContext} 中。
+         *
+         * <p>pattern 存储的是注册时使用的归一化 pattern。
          */
         void stop() {
             if (!stopped.compareAndSet(false, true)) {
@@ -606,22 +670,9 @@ public class RouteEngine {
                         "[RouteEngine] MonitorSession.stop() timeout future cancelled for pattern='{}'", pattern);
             }
 
-            // 注销 Playwright 路由（pattern 是归一化的，能正确匹配注册时的 pattern）
-            try {
-                if (context instanceof Page) {
-                    ((Page) context).unroute(pattern);
-                } else if (context instanceof BrowserContext) {
-                    ((BrowserContext) context).unroute(pattern);
-                }
-                RouteRegistry.unregister(context, pattern);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine] MonitorSession.stop() unrouted pattern='{}'", pattern);
-            } catch (Exception e) {
-                LOGGER.warn("[RouteEngine] Failed to unroute pattern '{}': {}", pattern, e.getMessage());
-            }
-
-            // 移除会话
-            SESSIONS.remove(rule);
+            // 不调用 SESSIONS.remove(rule)，保留已停止的 session，
+            // 使得 dispatchRoute 可检测 stopped 状态并跳过后续请求。
+            // 也不调用 page.unroute()，避免 Playwright 线程竞态。
 
             LOGGER.debug("[RouteEngine] MonitorSession stopped: pattern='{}', totalMatches={}",
                     pattern, matchCount.get());

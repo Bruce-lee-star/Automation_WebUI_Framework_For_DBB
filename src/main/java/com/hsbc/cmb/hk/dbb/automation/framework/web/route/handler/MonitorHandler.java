@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.jayway.jsonpath.JsonPath;
@@ -18,7 +19,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * API 监控 Handler — 在 Playwright 事件线程中同步读取响应 body，
@@ -37,6 +40,12 @@ import java.util.Map;
 public class MonitorHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ 性能优化：JsonPath 编译缓存（避免每次断言都重新编译表达式）
+    // ═══════════════════════════════════════════════════════════════
+    private static final Map<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
+    private static final int JSONPATH_CACHE_MAX = 200;
 
     /**
      * 处理单个 route 的监控逻辑（带断言）。
@@ -99,7 +108,7 @@ public class MonitorHandler {
         String urlPattern = rule.getUrlPattern();
 
         LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
-                url, status, body.length(), urlPattern);
+                RouteUtil.sanitizeUrl(url), status, body.length(), urlPattern);
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[MonitorHandler] Response headers: {}", snapshotHeadersSafely(res.headers()));
@@ -140,11 +149,14 @@ public class MonitorHandler {
         // ═══════════════════════════════════════════════════════════════
         // 异步任务前置工作：在 Playwright 事件线程上提前快照跨线程数据
         // ═══════════════════════════════════════════════════════════════
-        final byte[] fBodyBytes = bodyBytes;
+        // ⭐ 性能优化：传递已解码的 body String（不可变，线程安全），
+        //    避免异步池中重复执行 new String(byte[], charset)
+        final String fBody = body;
         final ApiCaptureContext fContext = context;
         final String fAsyncUrl = req.url();
         final int fAsyncStatus = res.status();
         final String fReqMethod = req.method();
+        // ⭐ 性能优化：复用头部快照（不再为日志和异步任务分别拷贝）
         final Map<String, String> fReqHeaders = snapshotHeadersSafely(req.headers());
         final Map<String, String> fResHeaders = snapshotHeadersSafely(res.headers());
 
@@ -152,14 +164,13 @@ public class MonitorHandler {
 
         RouteAsyncPool.run(() -> {
             try {
-                String asyncBody = new String(fBodyBytes, StandardCharsets.UTF_8);
-
+                // ⭐ 直接使用已解码的 String，避免重复 new String(byte[], charset)
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[MonitorHandler] Async storage START: pattern='{}', url='{}', status={}, bodyLen={}",
-                        urlPattern, fAsyncUrl, fAsyncStatus, asyncBody.length());
+                        urlPattern, fAsyncUrl, fAsyncStatus, fBody.length());
 
                 // 存储 response body（向后兼容）
-                fContext.storeResponse(urlPattern, asyncBody);
+                fContext.storeResponse(urlPattern, fBody);
 
                 // 存储完整的 CapturedApiCall（含 headers 等完整信息）
                 CapturedApiCall call = new CapturedApiCall(
@@ -168,8 +179,9 @@ public class MonitorHandler {
                         fReqHeaders,
                         fAsyncStatus,
                         fResHeaders,
-                        asyncBody,
-                        System.currentTimeMillis()
+                        fBody,
+                        System.currentTimeMillis(),
+                        fAsyncUrl      // 实际请求 URL，用于毫秒级精确检索
                 );
                 fContext.storeApiCall(call);
 
@@ -177,7 +189,7 @@ public class MonitorHandler {
                 if (rule.isRecord()) {
                     SerenityReporter.recordApiOperation("MONITOR", fAsyncUrl,
                             String.format("Status: %d\nBody: %s", fAsyncStatus,
-                                    asyncBody.length() > 2000 ? asyncBody.substring(0, 2000) + "..." : asyncBody));
+                                    fBody.length() > 2000 ? fBody.substring(0, 2000) + "..." : fBody));
                 }
 
                 // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
@@ -186,7 +198,7 @@ public class MonitorHandler {
                 // ═══════════════════════════════════════════════════════════════
                 // 执行用户注册的 Monitor 响应回调
                 // ═══════════════════════════════════════════════════════════════
-                invokeCallbacks(rule, fAsyncUrl, fAsyncStatus, asyncBody,
+                invokeCallbacks(rule, fAsyncUrl, fAsyncStatus, fBody,
                         fResHeaders, fReqMethod);
 
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
@@ -235,37 +247,40 @@ public class MonitorHandler {
             }
         }
 
-        // JSONPath 断言
+        // JSONPath 断言（使用缓存编译）
         Map<String, Object> jsonPathAssertions = rule.getJsonPathAssertions();
         if (jsonPathAssertions != null && !jsonPathAssertions.isEmpty()) {
             for (Map.Entry<String, Object> entry : jsonPathAssertions.entrySet()) {
+                String jsonPathExpr = entry.getKey();
                 try {
-                    Object actual = JsonPath.read(body, entry.getKey());
+                    // ⭐ 从缓存获取或编译 JsonPath（避免每次重新编译）
+                    JsonPath compiled = getOrCompileJsonPath(jsonPathExpr);
+                    Object actual = compiled.read(body);
                     boolean match = compareValues(actual, entry.getValue());
                     if (!match) {
                         String actualStr = actual != null ? actual.toString() : "null";
                         LOGGER.warn("[MonitorHandler] JSONPath assertion failed for {}: path={}, expected={}, actual={}",
-                                url, entry.getKey(), entry.getValue(), actualStr);
+                                url, jsonPathExpr, entry.getValue(), actualStr);
                         if (context != null) {
                             context.recordAssertionFailure(url, "JSONPATH",
                                     entry.getValue() != null ? entry.getValue().toString() : "null",
                                     actualStr,
-                                    "path=" + entry.getKey());
+                                    "path=" + jsonPathExpr);
                         }
                         allPassed = false;
                     } else {
                         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                                 "[MonitorHandler] JSONPath assertion PASSED: {}, path='{}', expected='{}', actual='{}'",
-                                url, entry.getKey(), entry.getValue(), actual);
+                                url, jsonPathExpr, entry.getValue(), actual);
                     }
                 } catch (Exception e) {
                     LOGGER.warn("[MonitorHandler] JSONPath evaluation error for {}: path={}, error={}",
-                            url, entry.getKey(), e.getMessage(), e);
+                            url, jsonPathExpr, e.getMessage(), e);
                     if (context != null) {
                         context.recordAssertionFailure(url, "JSONPATH",
                                 entry.getValue() != null ? entry.getValue().toString() : "null",
                                 "ERROR",
-                                "path=" + entry.getKey() + ", error=" + e.getMessage());
+                                "path=" + jsonPathExpr + ", error=" + e.getMessage());
                     }
                     allPassed = false;
                 }
@@ -276,6 +291,32 @@ public class MonitorHandler {
                 "[MonitorHandler] executeAssertions RESULT: allPassed={}, url={}, pattern='{}'",
                 allPassed, url, rule.getUrlPattern());
         return allPassed;
+    }
+
+    /**
+     * 从缓存获取或编译 JsonPath 表达式（伪 LRU 容量保护）。
+     */
+    private static JsonPath getOrCompileJsonPath(String expression) {
+        JsonPath cached = JSONPATH_CACHE.get(expression);
+        if (cached != null) return cached;
+
+        // ⭐ #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空）
+        if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX) {
+            evictOldestQuarter(JSONPATH_CACHE);
+        }
+        return JSONPATH_CACHE.computeIfAbsent(expression, JsonPath::compile);
+    }
+
+    /**
+     * ⭐ #7 伪 LRU 淘汰：从 ConcurrentHashMap 中移除约 25% 的条目。
+     */
+    private static void evictOldestQuarter(Map<?, ?> map) {
+        int evictCount = Math.max(1, map.size() / 4);
+        Iterator<?> it = map.keySet().iterator();
+        for (int i = 0; i < evictCount && it.hasNext(); i++) {
+            it.next();
+            it.remove();
+        }
     }
 
     /**

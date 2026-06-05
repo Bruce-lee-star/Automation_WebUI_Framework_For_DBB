@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,7 @@ public class CapturedApiCall {
     private final String endpoint;   // urlPattern（即 api() 中配置的 endpoint），用作存储/查询 key
     private final String method;
     private final Map<String, String> requestHeaders;
+    private final String requestUrl;  // 实际请求的完整 URL（用于毫秒级精确检索）
 
     // ── 响应信息 ──
     private final int statusCode;
@@ -36,6 +38,11 @@ public class CapturedApiCall {
 
     // ── 时间信息 ──
     private final long timestamp;
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ 性能优化：懒缓存 JsonPath DocumentContext（避免重复解析 JSON）
+    // ═══════════════════════════════════════════════════════════════
+    private transient volatile DocumentContext cachedDocContext;
 
     /**
      * @param endpoint        urlPattern（即 {@code RouteDsl.api(endpoint)} 中配置的字符串），
@@ -46,11 +53,32 @@ public class CapturedApiCall {
      * @param responseHeaders 响应头
      * @param responseBody    响应体
      * @param timestamp       捕获时间戳
+     * @deprecated 推荐使用带 {@code requestUrl} 参数的构造器，以启用毫秒级 URL 精确检索
      */
+    @Deprecated
     public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp) {
+        this(endpoint, method, requestHeaders, statusCode, responseHeaders,
+                responseBody, timestamp, null);
+    }
+
+    /**
+     * @param endpoint        urlPattern（即 {@code RouteDsl.api(endpoint)} 中配置的字符串），
+     *                        用作存储/查询的 key
+     * @param method          HTTP 方法
+     * @param requestHeaders  请求头
+     * @param statusCode      HTTP 状态码
+     * @param responseHeaders 响应头
+     * @param responseBody    响应体
+     * @param timestamp       捕获时间戳
+     * @param requestUrl      实际请求的完整 URL（用于毫秒级精确检索，可为 null）
+     */
+    public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp, String requestUrl) {
         this.endpoint = endpoint;
+        this.requestUrl = requestUrl;
         this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
         this.requestHeaders = requestHeaders != null
                 ? Collections.unmodifiableMap(new HashMap<>(requestHeaders))
@@ -69,6 +97,9 @@ public class CapturedApiCall {
 
     /** 请求端点（即 {@code api(endpoint)} 传入的 urlPattern），即存储和查询所用的 key */
     public String endpoint() { return endpoint; }
+
+    /** 实际请求的完整 URL（如 {@code http://host:port/api/users/1}），可能为 null */
+    public String requestUrl() { return requestUrl; }
 
     /** HTTP 方法（大写） */
     public String method() { return method; }
@@ -113,6 +144,9 @@ public class CapturedApiCall {
     /**
      * 按 JsonPath 从响应体中提取 JSON 字段值。
      *
+     * <p><b>性能优化</b>：内部懒缓存 {@link DocumentContext}，
+     * 同一 {@code CapturedApiCall} 多次调用 {@code json()} 时只解析一次 JSON。
+     *
      * <pre>{@code
      * Object id = call.json("$.data.userId");
      * String name = call.json("$.data.name", String.class);
@@ -124,7 +158,8 @@ public class CapturedApiCall {
     public Object json(String jsonPath) {
         if (responseBody == null || jsonPath == null) return null;
         try {
-            return JsonPath.read(responseBody, jsonPath);
+            DocumentContext ctx = getOrParseDocument();
+            return ctx.read(jsonPath);
         } catch (Exception e) {
             LOGGER.warn("[CapturedApiCall] Failed to extract '{}' from {}: {}",
                     jsonPath, endpoint, e.getMessage());
@@ -135,6 +170,8 @@ public class CapturedApiCall {
     /**
      * 按 JsonPath 从响应体中提取 JSON 字段值（指定类型）。
      *
+     * <p><b>性能优化</b>：复用懒缓存的 {@link DocumentContext}，避免重复 JSON 解析。
+     *
      * @param jsonPath JsonPath 表达式
      * @param type     目标类型
      * @param <T>      泛型
@@ -144,12 +181,31 @@ public class CapturedApiCall {
     public <T> T json(String jsonPath, Class<T> type) {
         if (responseBody == null || jsonPath == null) return null;
         try {
-            return JsonPath.parse(responseBody).read(jsonPath, type);
+            DocumentContext ctx = getOrParseDocument();
+            return ctx.read(jsonPath, type);
         } catch (Exception e) {
             LOGGER.warn("[CapturedApiCall] Failed to extract '{}' as {} from {}: {}",
                     jsonPath, type.getSimpleName(), endpoint, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 懒缓存 — 首次调用时解析 JSON，后续复用 DocumentContext。
+     * <p>使用 DCL + volatile 保证线程安全且无锁竞争。
+     */
+    private DocumentContext getOrParseDocument() {
+        DocumentContext ctx = cachedDocContext;
+        if (ctx == null) {
+            synchronized (this) {
+                ctx = cachedDocContext;
+                if (ctx == null) {
+                    ctx = JsonPath.parse(responseBody);
+                    cachedDocContext = ctx;
+                }
+            }
+        }
+        return ctx;
     }
 
     // ═══════════════════════════════════════════════════════════

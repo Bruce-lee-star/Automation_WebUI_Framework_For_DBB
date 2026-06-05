@@ -6,12 +6,17 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 /**
  * API 捕获上下文 — 统一管理所有被路由拦截的 API 调用（Monitor / Mock / Modify）。
@@ -90,6 +95,27 @@ public class ApiCaptureContext {
     private final Object completionLock = new Object();
 
     // ═══════════════════════════════════════════════════════════════
+    // ⭐ 性能优化：Ant Glob Pattern 缓存（避免每次调用 Pattern.compile()）
+    // ═══════════════════════════════════════════════════════════════
+    private static final int MAX_PATTERN_CACHE_SIZE = 200;
+    private static final ConcurrentHashMap<String, Pattern> PATTERN_CACHE = new ConcurrentHashMap<>();
+
+    // ⭐ #4 通配符模式索引：仅包含通配符的 urlPattern key，避免 fallback 时遍历全量
+    private final Set<String> wildcardPatternKeys = ConcurrentHashMap.newKeySet();
+
+    // ⭐ #5 wait/notify 锁：waitForApi 使用条件等待替代忙轮询
+    private final Object apiCallLock = new Object();
+
+    // ⭐ P3: 最近调用平铺列表 — 延迟初始化，用于 scanForMatching 快速扫描（避免 O(n) 遍历两重 Map）
+    private final List<CapturedApiCall> recentCalls = new CopyOnWriteArrayList<>();
+    private static final int MAX_RECENT_CALLS = 500;
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ 性能优化：URL 精确索引（毫秒级 O(1) 检索）
+    // ═══════════════════════════════════════════════════════════════
+    private final Map<String, List<CapturedApiCall>> apiCallsByUrl = new ConcurrentHashMap<>();
+
+    // ═══════════════════════════════════════════════════════════════
     // ⭐⭐⭐ Fail-Fast 机制：断言失败立即中断测试线程
     // ═══════════════════════════════════════════════════════════════
 
@@ -132,6 +158,16 @@ public class ApiCaptureContext {
         if (t != null && t.isAlive()) {
             LOGGER.warn("[ApiCaptureContext] Assertion failed — interrupting test thread '{}'", t.getName());
             t.interrupt();
+            // ⭐ S3: 中断后立即复位 activeRequests 计数器，防止残留非零值
+            //   避免下一个测试的 awaitCompletion 被上一个测试的 orphan 计数误判为仍有请求未完成
+            if (activeRequests.get() > 0) {
+                LOGGER.debug("[ApiCaptureContext] Draining activeRequests ({}) after fail-fast interrupt",
+                        activeRequests.get());
+                activeRequests.set(0);
+                synchronized (completionLock) {
+                    completionLock.notifyAll();
+                }
+            }
         } else {
             LOGGER.warn("[ApiCaptureContext] Assertion failed — test thread not set or dead, "
                     + "will be caught at step end");
@@ -302,17 +338,25 @@ public class ApiCaptureContext {
 
     public void reset() {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[ApiCaptureContext] reset() — clearing activeRequests={}, failures={}, responses={}, apiCalls={}",
-                activeRequests.get(), failureDetails.size(), getTotalResponseCount(), apiCallsPerUrl.size());
+                "[ApiCaptureContext] reset() — clearing activeRequests={}, failures={}, responses={}, apiCalls={}, apiCallsByUrl={}, recentCalls={}, wildcardKeys={}",
+                activeRequests.get(), failureDetails.size(), getTotalResponseCount(),
+                apiCallsPerUrl.size(), apiCallsByUrl.size(), recentCalls.size(), wildcardPatternKeys.size());
         activeRequests.set(0);
         hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStorage.clear();
         apiCallsPerUrl.clear();
+        apiCallsByUrl.clear();
+        recentCalls.clear();
+        wildcardPatternKeys.clear();
         totalResponseSize.set(0L);
         testThread = null;
         synchronized (completionLock) {
             completionLock.notifyAll();
+        }
+        // ⭐ #5：唤醒 waitForApi 等待线程（避免残留等待）
+        synchronized (apiCallLock) {
+            apiCallLock.notifyAll();
         }
     }
 
@@ -322,20 +366,61 @@ public class ApiCaptureContext {
 
     /**
      * 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。
+     *
+     * <p><b>性能优化</b>：同时索引到 urlPattern 和 requestUrl 两个 Map，
+     * 支持 O(1) 精确 URL 检索 + Ant 通配符 fallback。
      */
     public void storeApiCall(CapturedApiCall call) {
         if (call == null || call.endpoint() == null) return;
-        apiCallsPerUrl.computeIfAbsent(call.endpoint(), k ->
+
+        // ── 主索引：urlPattern → 调用列表（兼容通配符检索）──
+        String endpoint = call.endpoint();
+        apiCallsPerUrl.computeIfAbsent(endpoint, k ->
                 java.util.Collections.synchronizedList(new ArrayList<>())
         ).add(call);
+
+        // ⭐ #4 通配符索引：包含 * 的 pattern 注册到专用集合，加速 fallback 检索
+        if (containsGlobWildcard(endpoint)) {
+            wildcardPatternKeys.add(endpoint);
+        }
+
+        // ── 辅助索引：requestUrl → 调用列表（毫秒级精确检索）──
+        String url = call.requestUrl();
+        if (url != null) {
+            apiCallsByUrl.computeIfAbsent(url, k ->
+                    java.util.Collections.synchronizedList(new ArrayList<>())
+            ).add(call);
+        }
+
+        // ⭐ P3: 追加到平铺最近调用列表（用于 scanForMatching 快速扫描）
+        //   超限时移除最老的一半条目
+        if (recentCalls.size() >= MAX_RECENT_CALLS) {
+            List<CapturedApiCall> toRemove = new ArrayList<>(recentCalls.subList(0, MAX_RECENT_CALLS / 2));
+            recentCalls.removeAll(toRemove);
+        }
+        recentCalls.add(call);
+
+        // ⭐ #5 wait/notify：通知 waitForApi 等待线程有新调用到达
+        synchronized (apiCallLock) {
+            apiCallLock.notifyAll();
+        }
+
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[ApiCaptureContext] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",
-                call.endpoint(), call.method(), call.statusCode(),
+                endpoint, call.method(), call.statusCode(),
                 call.responseBody() != null ? call.responseBody().length() : 0);
     }
 
     /**
      * 获取指定端点的所有 API 调用快照（按调用顺序）。
+     *
+     * <p>支持两种匹配策略：
+     * <ol>
+     *   <li><b>精确匹配</b> — 直接按存储 key 查找（O(1)）</li>
+     *   <li><b>Ant 通配符匹配</b> — 若精确匹配未命中，将存储的 urlPattern
+     *       key（如 {@code /api/users/*}）按 ant 风格 glob 匹配查询的 endpoint
+     *       （如 {@code /api/users/1}）</li>
+     * </ol>
      *
      * <pre>{@code
      * List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
@@ -348,25 +433,172 @@ public class ApiCaptureContext {
      * @return 不可变副本列表，未找到返回空列表
      */
     public List<CapturedApiCall> getApiCalls(String endpoint) {
+        // 1. 精确匹配（fast path）
         List<CapturedApiCall> list = apiCallsPerUrl.get(endpoint);
-        if (list == null || list.isEmpty()) return Collections.emptyList();
-        synchronized (list) {
-            return new ArrayList<>(list);
+        if (list != null && !list.isEmpty()) {
+            synchronized (list) {
+                return new ArrayList<>(list);
+            }
         }
+
+        // 2. ⭐ #4 Ant 通配符 fallback（仅遍历已知含通配符的 pattern key）
+        //    当多个 pattern 同时匹配时，选择调用时间最近的那组（而非依赖 Map 迭代顺序）。
+        List<CapturedApiCall> bestMatch = null;
+        long bestTimestamp = 0;
+        for (String storedPattern : wildcardPatternKeys) {
+            if (antGlobMatch(storedPattern, endpoint)) {
+                List<CapturedApiCall> matched = apiCallsPerUrl.get(storedPattern);
+                if (matched != null && !matched.isEmpty()) {
+                    synchronized (matched) {
+                        CapturedApiCall last = matched.get(matched.size() - 1);
+                        if (last.timestamp() > bestTimestamp) {
+                            bestMatch = matched;
+                            bestTimestamp = last.timestamp();
+                        }
+                    }
+                }
+            }
+        }
+        if (bestMatch != null) {
+            synchronized (bestMatch) {
+                return new ArrayList<>(bestMatch);
+            }
+        }
+        return Collections.emptyList();
     }
 
     /**
      * 获取指定端点的最近一次 API 调用快照。
      *
+     * <p>支持两种匹配策略：<b>精确匹配</b> → <b>Ant 通配符匹配</b>（见 {@link #getApiCalls}）。
+     *
      * @param endpoint 请求端点（路径+查询，不含 host，如 /api/users/1）
      * @return 捕获的快照，未找到返回 null
      */
     public CapturedApiCall getLastApiCall(String endpoint) {
+        // 1. 精确匹配（fast path）
         List<CapturedApiCall> list = apiCallsPerUrl.get(endpoint);
-        if (list == null || list.isEmpty()) return null;
-        synchronized (list) {
-            return list.get(list.size() - 1);
+        if (list != null && !list.isEmpty()) {
+            synchronized (list) {
+                return list.get(list.size() - 1);
+            }
         }
+
+        // 2. ⭐ #4 Ant 通配符 fallback（仅遍历已知含通配符的 pattern key）
+        //    当多个 pattern 同时匹配（如 /api/** 和 /api/users/* 都匹配 /api/users/1），
+        //    选择调用时间最近的那次（而非依赖 Map 迭代顺序）。
+        CapturedApiCall latest = null;
+        long latestTimestamp = 0;
+        for (String storedPattern : wildcardPatternKeys) {
+            if (antGlobMatch(storedPattern, endpoint)) {
+                List<CapturedApiCall> matched = apiCallsPerUrl.get(storedPattern);
+                if (matched != null && !matched.isEmpty()) {
+                    synchronized (matched) {
+                        CapturedApiCall last = matched.get(matched.size() - 1);
+                        if (last.timestamp() > latestTimestamp) {
+                            latest = last;
+                            latestTimestamp = last.timestamp();
+                        }
+                    }
+                }
+            }
+        }
+        return latest;
+    }
+
+    /**
+     * 检查字符串是否包含 ant 通配符（{@code *} 或 {@code **}）。
+     */
+    private static boolean containsGlobWildcard(String s) {
+        return s.indexOf('*') >= 0;
+    }
+
+    /**
+     * Ant 风格 Glob 匹配 — 将存储的 urlPattern 与查询的 endpoint 进行匹配。
+     *
+     * <p>通配符语义：
+     * <ul>
+     *   <li>{@code *} — 匹配单层路径段（不含 {@code /}）</li>
+     *   <li>{@code **} — 匹配任意层级的路径（含 {@code /}）</li>
+     * </ul>
+     *
+     * <p>示例：
+     * <pre>{@code
+     * antGlobMatch("/api/users/*", "/api/users/1")     → true
+     * antGlobMatch("/api/users/*", "/api/users/1/2")   → false
+     * antGlobMatch("/api/**",     "/api/users/1")     → true
+     * }</pre>
+     *
+     * @param storedPattern 存储的 urlPattern（可能含通配符）
+     * @param endpoint      查询的真实 endpoint（不含通配符）
+     * @return 是否匹配
+     */
+    private static boolean antGlobMatch(String storedPattern, String endpoint) {
+        return antGlobToRegex(storedPattern).matcher(endpoint).matches();
+    }
+
+    /**
+     * 将 ant 风格 glob 编译为 {@link Pattern}。
+     *
+     * <p><b>性能优化</b>：使用 {@link #PATTERN_CACHE} 缓存编译结果，
+     * 上限 {@link #MAX_PATTERN_CACHE_SIZE}，避免每次调用 {@code Pattern.compile()}。
+     */
+    private static Pattern antGlobToRegex(String glob) {
+        Pattern cached = PATTERN_CACHE.get(glob);
+        if (cached != null) return cached;
+
+        String regex = antGlobToRegexString(glob);
+        Pattern compiled = Pattern.compile(regex);
+
+        // ⭐ #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空导致命中率归零）
+        if (PATTERN_CACHE.size() >= MAX_PATTERN_CACHE_SIZE) {
+            evictOldestQuarter(PATTERN_CACHE);
+        }
+        PATTERN_CACHE.put(glob, compiled);
+        return compiled;
+    }
+
+    /**
+     * ⭐ #7 伪 LRU 淘汰辅助：从 ConcurrentHashMap 中移除约 25% 的条目。
+     * <p>使用弱一致性迭代器，适合并发场景下的近似 LRU。
+     */
+    private static void evictOldestQuarter(ConcurrentHashMap<?, ?> map) {
+        int evictCount = Math.max(1, map.size() / 4);
+        Iterator<?> it = map.keySet().iterator();
+        for (int i = 0; i < evictCount && it.hasNext(); i++) {
+            it.next();
+            it.remove();
+        }
+    }
+
+    /**
+     * Ant glob → 正则字符串（不含编译，供缓存层调用）。
+     */
+    private static String antGlobToRegexString(String glob) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('^');
+        int len = glob.length();
+        int i = 0;
+        while (i < len) {
+            char c = glob.charAt(i);
+            if (c == '*' && i + 1 < len && glob.charAt(i + 1) == '*') {
+                sb.append(".*");
+                i += 2;
+            } else if (c == '*') {
+                sb.append("[^/]*");
+                i++;
+            } else {
+                if (c == '.' || c == '+' || c == '?' || c == '(' || c == ')'
+                        || c == '[' || c == ']' || c == '{' || c == '}'
+                        || c == '\\' || c == '^' || c == '$' || c == '|') {
+                    sb.append('\\');
+                }
+                sb.append(c);
+                i++;
+            }
+        }
+        sb.append('$');
+        return sb.toString();
     }
 
     /**
@@ -403,6 +635,138 @@ public class ApiCaptureContext {
             }
         }
         return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ⭐ 性能优化：URL 精确索引 + Predicate 条件等待
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 按实际请求 URL 精确获取 API 调用 — O(1) 毫秒级检索。
+     *
+     * <pre>{@code
+     * // 页面操作触发大量 API 后，按完整 URL 直接定位目标调用
+     * CapturedApiCall call = ctx.getCallByUrl("http://host:port/api/users/1");
+     * }</pre>
+     *
+     * @param requestUrl 实际请求的完整 URL
+     * @return 最近一次该 URL 的调用快照，未找到返回 null
+     */
+    public CapturedApiCall getCallByUrl(String requestUrl) {
+        if (requestUrl == null) return null;
+        List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
+        if (list != null && !list.isEmpty()) {
+            synchronized (list) {
+                return list.get(list.size() - 1);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 按请求 URL 获取该 URL 的所有 API 调用历史。
+     *
+     * @param requestUrl 实际请求的完整 URL
+     * @return 不可变副本列表，未找到返回空列表
+     */
+    public List<CapturedApiCall> getCallsByUrl(String requestUrl) {
+        if (requestUrl == null) return Collections.emptyList();
+        List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
+        if (list != null && !list.isEmpty()) {
+            synchronized (list) {
+                return new ArrayList<>(list);
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    /**
+     * 条件等待 — 阻塞直到匹配 predicate 的 API 调用出现（毫秒级响应）。
+     *
+     * <p>不同于 {@link #awaitCompletion(long)} 等待<b>所有</b>异步请求完成，
+     * 本方法按指定条件精准等待单一目标 API，一经命中立即返回，无需等待无关请求。
+     *
+     * <p>适用场景：页面操作触发数百个 API，仅关注其中 1 个目标请求。
+     *
+     * <pre>{@code
+     * // 等待 POST /api/login 返回 200
+     * CapturedApiCall login = ctx.waitForApi(
+     *     c -> "POST".equals(c.method()) && c.endpoint().contains("login") && c.isOk(),
+     *     5_000);
+     * }</pre>
+     *
+     * @param predicate 匹配条件（在 Playwright 事件线程的存储回调中检查）
+     * @param timeoutMs 超时毫秒数
+     * @return 匹配的 API 调用快照，超时返回 null
+     */
+    public CapturedApiCall waitForApi(Predicate<CapturedApiCall> predicate, long timeoutMs) {
+        if (predicate == null) return null;
+
+        // ── Fast Path：先扫描已存储的调用 ──
+        CapturedApiCall found = scanForMatching(predicate);
+        if (found != null) return found;
+
+        // ── ⭐ #5 条件等待：使用 wait/notify 替代忙轮询（Thread.sleep）──
+        //    storeApiCall 在新调用存储后 notifyAll，waitForApi 被精确唤醒。
+        //    超时时间超过 50ms 时使用 wait 模式；短超时保留轮询以降低切换开销。
+        long deadline = System.currentTimeMillis() + timeoutMs;
+
+        if (timeoutMs > 50) {
+            // 长超时：条件等待（线程 parked，零 CPU）
+            synchronized (apiCallLock) {
+                while (System.currentTimeMillis() < deadline) {
+                    long remaining = deadline - System.currentTimeMillis();
+                    if (remaining <= 0) break;
+                    try {
+                        apiCallLock.wait(remaining);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                    found = scanForMatching(predicate);
+                    if (found != null) return found;
+                }
+            }
+        } else {
+            // 短超时：轻量轮询（避免 wait/notify 上下文切换开销）
+            int pollInterval = 10;
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(pollInterval);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+                found = scanForMatching(predicate);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 遍历所有已存储的 API 调用，返回第一个匹配 predicate 的 CapturedApiCall。
+     * <p>⭐ P3: 优先扫描 recentCalls 平铺列表（按时间排序，最新在前），单次 O(1) 尺寸扫描。
+     * <p>仅在 recentCalls 未命中时 fallback 到 Map 遍历（兼容极边缘调用）。
+     */
+    private CapturedApiCall scanForMatching(Predicate<CapturedApiCall> predicate) {
+        // ⭐ P3: Fast path — 从平铺列表由新到旧扫描（绝大多数命中即返回）
+        for (int i = recentCalls.size() - 1; i >= 0; i--) {
+            CapturedApiCall c = recentCalls.get(i);
+            if (predicate.test(c)) return c;
+        }
+        // Fallback 扫描 Map（兼容 recentCalls 已被淘汰的边缘调用，理论上极少触发）
+        for (List<CapturedApiCall> calls : apiCallsByUrl.values()) {
+            if (calls != null) {
+                synchronized (calls) {
+                    for (int i = calls.size() - 1; i >= 0; i--) {
+                        CapturedApiCall c = calls.get(i);
+                        if (predicate.test(c)) return c;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     // ═══════════════════════════════════════════════════════════

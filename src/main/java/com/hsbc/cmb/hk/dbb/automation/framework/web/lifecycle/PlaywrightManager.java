@@ -1814,28 +1814,12 @@ public class PlaywrightManager {
                     .setPath(screenshotPath);
 
             if (fullPage) {
-                // 动态 clip：先滚到底部触发懒加载，等待渲染完成后再获取实际内容尺寸
+                // 全页截图：Playwright 原生 fullPage，自动滚动拼接
+                // 先滚到底部触发懒加载，等渲染完成后滚回顶部
                 page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
                 page.waitForTimeout(300); // 等待懒加载内容渲染
                 page.evaluate("() => window.scrollTo(0, 0)");
-
-                Object result = page.evaluate("() => {"
-                        + "  const body = document.body;"
-                        + "  const html = document.documentElement;"
-                        + "  const w = Math.max(html.scrollWidth, body ? body.scrollWidth : 0,"
-                        + "      html.clientWidth, body ? body.clientWidth : 0);"
-                        + "  const h = Math.max(html.scrollHeight, body ? body.scrollHeight : 0,"
-                        + "      html.clientHeight, body ? body.clientHeight : 0,"
-                        + "      html.offsetHeight, body ? body.offsetHeight : 0);"
-                        + "  return { width: w, height: h };"
-                        + "}");
-                @SuppressWarnings("unchecked")
-                Map<String, Object> dims = (Map<String, Object>) result;
-                double contentWidth = ((Number) dims.get("width")).doubleValue();
-                double contentHeight = ((Number) dims.get("height")).doubleValue();
-
-                logger.debug("[Screenshot] Full page clip size: {}x{}", contentWidth, contentHeight);
-                options.setClip(0, 0, contentWidth, contentHeight);
+                options.setFullPage(true);
             } else {
                 options.setFullPage(false);
             }
@@ -1882,7 +1866,7 @@ public class PlaywrightManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
             }
 
-            // 截图：全页模式使用动态 clip 按实际内容尺寸截图，viewport 模式保持原样
+            // 截图：全页模式使用 Playwright 原生 fullPage，自动滚动拼接
             boolean fullPage = config().isFullPageScreenshot();
             Page.ScreenshotOptions options = new Page.ScreenshotOptions()
                     .setOmitBackground(false)
@@ -1891,28 +1875,11 @@ public class PlaywrightManager {
                     .setPath(screenshotPath);
 
             if (fullPage) {
-                // 动态 clip：先滚到底部触发懒加载，等待渲染完成后再获取实际内容尺寸
+                // 全页截图：先滚到底部触发懒加载，等渲染完成后滚回顶部
                 page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
                 page.waitForTimeout(300); // 等待懒加载内容渲染
                 page.evaluate("() => window.scrollTo(0, 0)");
-
-                Object result = page.evaluate("() => {"
-                        + "  const body = document.body;"
-                        + "  const html = document.documentElement;"
-                        + "  const w = Math.max(html.scrollWidth, body ? body.scrollWidth : 0,"
-                        + "      html.clientWidth, body ? body.clientWidth : 0);"
-                        + "  const h = Math.max(html.scrollHeight, body ? body.scrollHeight : 0,"
-                        + "      html.clientHeight, body ? body.clientHeight : 0,"
-                        + "      html.offsetHeight, body ? body.offsetHeight : 0);"
-                        + "  return { width: w, height: h };"
-                        + "}");
-                @SuppressWarnings("unchecked")
-                Map<String, Object> dims = (Map<String, Object>) result;
-                double contentWidth = ((Number) dims.get("width")).doubleValue();
-                double contentHeight = ((Number) dims.get("height")).doubleValue();
-
-                logger.debug("[Screenshot] Full page clip size: {}x{}", contentWidth, contentHeight);
-                options.setClip(0, 0, contentWidth, contentHeight);
+                options.setFullPage(true);
             } else {
                 options.setFullPage(false);
             }

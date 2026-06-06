@@ -142,7 +142,7 @@ LoginPage.STATUS_MSG.waitForContainsText("登录成功", 15);
 
 ### 2. 📡 Route Engine — API 拦截引擎
 
-通过流式 DSL 统一管理网络层拦截：**Monitor（监控断言）**、**Mock（模拟响应）**、**Modify（修改请求）**、**Delay（高延迟模拟）**。
+通过流式 DSL 统一管理网络层拦截：**Monitor（监控断言）**、**Mock（模拟响应）**、**Modify（修改请求）**、**Delay（高延迟模拟）**。支持**优先级覆盖机制**——高优先级规则（MOCK > MODIFY > DELAY > MONITOR）可自动覆盖同 pattern 的低优先级规则。
 
 ```java
 // Monitor — 监控 API 并断言
@@ -203,6 +203,7 @@ RouteDsl.on(page)
 - ✅ **Mock（模拟）**：拦截请求 → 直接返回自定义状态码+Body+Headers；支持 `mockReplaceField` 通配符 `[*]` 批量替换 JSON 字段，**自动类型保持**（Int/Long/Boolean/Array/Object 原样保留，数组和对象不会降级为字符串）
 - ✅ **Modify（修改）**：拦截请求 → JSONPath 精准替换请求体字段/增删请求头 → 继续发送；**支持数组/对象字段替换**（JSON 字符串自动解析为对应 JsonNode）
 - ✅ **Delay（高延迟）**：拦截请求 → 延迟指定秒数后原样放行，支持固定和随机延迟，用于测试前端超时/loading/重试机制
+- ✅ **优先级覆盖**：MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)，高优先级规则自动覆盖同 pattern 的低优先级规则（如 Monitor 监控到 API 后，可继续注册 Mock 覆盖为模拟响应）
 - ✅ **条件匹配**：支持 ResourceType、HTTP Method、Headers、Query、Body Regex、Referrer、Origin 等多维度过滤
 - ✅ **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程，零阻塞 UI
 - ✅ **内存安全**：WeakReference 防泄漏、双重上限防 OOM
@@ -481,6 +482,7 @@ public class LoginSteps {
 | `playwright.polling.interval` | 500ms | 轮询间隔 |
 | `playwright.context.viewport.width/height` | 1366x768 | 浏览器视口大小 |
 | `serenity.screenshot.strategy` | AFTER_EACH_STEP | 截图策略 |
+| `playwright.screenshot.fullpage` | true | 全页截图（Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面） |
 | `serenity.playwright.restart.browser.for.each` | scenario | 浏览器重启粒度（scenario/feature） |
 | `axe.scan.enabled` | true | 无障碍扫描开关 |
 | `serenity.logging` | VERBOSE | 日志级别 |
@@ -505,10 +507,12 @@ public class LoginSteps {
 1. **Playwright 替代 Selenium** — 更快的执行速度、更可靠的元素定位、自动等待机制
 2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理，职责明确
 3. **双等待策略** — 智能等待（原生 waitFor）+ 轮询等待（属性检查），覆盖所有场景
-4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持（Int/Long/Boolean/Array/Object）；Handler 非主线程数据通过 `SerenityReporter` 队列机制自动刷入 Serenity 报告
-5. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
-6. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
-7. **无障碍合规** — 内置 axe-core WCAG 自动扫描
-8. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
-9. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + `ConcurrentLinkedQueue` 跨线程报告队列
-10. **Element 框架优化** — `TextNormalizer` 统一文本标准化；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition` 统一模板替代重复 waitFor 方法
+4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持（Int/Long/Boolean/Array/Object）；Handler 非主线程数据通过 `SerenityReporter` 队列机制自动刷入 Serenity 报告；**优先级覆盖**（MOCK > MODIFY > DELAY > MONITOR）支持同 pattern 动态升级
+5. **全页截图** — Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面截图，支持懒加载内容自动触发（滚到底触发 → 等渲染 → 滚回顶部再截图）
+5. **全页截图** — Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面截图，支持懒加载内容自动触发（滚到底触发 → 等渲染 → 滚回顶部再截图）
+6. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
+7. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
+8. **无障碍合规** — 内置 axe-core WCAG 自动扫描
+9. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
+10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + `ConcurrentLinkedQueue` 跨线程报告队列
+11. **Element 框架优化** — `TextNormalizer` 统一文本标准化；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition` 统一模板替代重复 waitFor 方法

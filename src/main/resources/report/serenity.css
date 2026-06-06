@@ -1,0 +1,50 @@
+/* ═════════════════════════════════════════════════════════════
+   Serenity BDD 报告自定义样式 — 截图展示优化
+   解决的问题（全为报告渲染层，不涉及截图文件本身）：
+   1. 步骤卡片间间距不够，截图显示区域边界不清晰
+   2. 截图缩略图视觉区分
+
+   注：Swiper 轮播 fix（fade→slide+autoHeight）由 SummaryReportGenerator
+       在 aggregate 后通过 fixSwiperScreenshotsHtml() 替换 HTML 完成
+   ═════════════════════════════════════════════════════════════ */
+
+/* ── Swiper 轮播截图：安全兜底，防止其他 CSS 拉伸 ── */
+.swiper-slide img {
+    height: auto !important;
+    width: 100% !important;
+    object-fit: contain !important;
+}
+
+/* ── 步骤卡片间距：防止截图区域视觉覆盖 ── */
+tr.test-SUCCESS td,
+tr.test-FAILURE td,
+tr.test-PENDING td,
+tr.test-SKIPPED td,
+tr.test-ERROR td {
+    vertical-align: top !important;
+}
+
+td.step-description-column {
+    padding-bottom: 8px !important;
+}
+
+span.evidence {
+    margin-bottom: 4px !important;
+}
+
+/* ── 主报告页面截图缩略图：不干扰 imgPreview hover 预览 ── */
+img.screenshot {
+    border-bottom: solid #2b65ec 2px !important;
+    border-top: solid #6b90da 1px !important;
+    border-left: solid #6b90da 1px !important;
+    border-right: solid #2b65ec 2px !important;
+}
+
+/* ── 嵌套步骤表格：展开后不和其他行产生视觉覆盖 ── */
+table.step-table-nested {
+    margin-bottom: 12px !important;
+}
+
+table.step-table-nested tr td {
+    padding-bottom: 4px !important;
+}

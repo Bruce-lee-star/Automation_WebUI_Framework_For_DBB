@@ -71,9 +71,14 @@ RouteDsl.start()
     ▼
 RouteEngine.register(context, rules)
     │
-    ├── RouteRegistry.register()  → 去重检查（防重复注册同一 URL pattern）
-    │
-    ├── page.route(pattern, handler)  → 注册 Playwright 路由
+    ├── RouteRegistry.register(context, pattern, type)  → 去重检查（记录类型）
+    │       │
+    │       ├── 首次注册 → page.route(pattern, handler) ✓
+    │       │
+    │       ├── 已存在 + 优先级更高 → page.unroute(pattern) → forceRegister → page.route(pattern, handler) ✓
+    │       │       （如 MOCK 覆盖 MONITOR、MODIFY 覆盖 MONITOR）
+    │       │
+    │       └── 已存在 + 同优先级或更低 → 静默跳过
     │
     └── dispatchRoute(route, rule)   → 请求到达时
             │
@@ -103,6 +108,7 @@ RouteEngine.register(context, rules)
 |------|----------|
 | **零阻塞 UI** | MonitorHandler 先 `resume()` 放行页面，后异步断言；线程池拒绝策略为 `DiscardOldestPolicy` |
 | **异常隔离** | 单规则/单请求失败不影响其他规则和其他请求，所有 Handler 包裹 try-catch |
+| **优先级覆盖** | MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)；高优先级规则自动覆盖同 pattern 低优先级规则 |
 | **线程安全** | 所有全局状态用 `ConcurrentHashMap`/`AtomicLong` 保护；跨线程传递用 `byte[]` 拷贝 |
 | **内存安全** | `RouteRegistry` 使用 `WeakReference` 防泄漏；`ApiCaptureContext` 双重上限防 OOM；`RouteEngine` 防重集合有容量上限 |
 
@@ -168,17 +174,35 @@ private static final Map<RouteRule, MonitorSession> SESSIONS
 
 ### 4.2 RouteRegistry — 路由注册表
 
-**职责**：按上下文（Page/BrowserContext）隔离存储已注册的 URL pattern，防止跨上下文路由冲突和内存泄漏。
+**职责**：按上下文（Page/BrowserContext）隔离存储已注册的 URL pattern 及其处理类型，支持优先级覆盖，防止跨上下文路由冲突和内存泄漏。
 
 **核心数据结构**：
 
 ```java
 // Key: ContextKey（WeakReference 包装 Page/BrowserContext）
-// Value: 该上下文已注册的 pattern 集合
-private static final ConcurrentHashMap<ContextKey, Set<String>> CONTEXT_PATTERNS;
+// Value: pattern → RouteHandleType 映射（记录每个 pattern 当前注册的类型）
+private static final ConcurrentHashMap<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS;
 
 // 触发死条目清理的阈值
 private static final int PURGE_THRESHOLD = 50;
+```
+
+**路由类型优先级**：高优先级规则可覆盖同 pattern 的低优先级规则。
+
+```java
+MOCK(4)  >  MODIFY(3)  >  DELAY(2)  >  MONITOR(1)
+```
+
+**优先级覆盖场景**：
+```
+场景1: 先注册 MONITOR 监控 /api/users → 后注册 MOCK 模拟该 API
+       ✅ MOCK 自动覆盖 MONITOR（page.unroute → forceRegister → page.route）
+
+场景2: 先注册 MOCK → 后注册 MONITOR 监控同一 API
+       ❌ 跳过（MONITOR 优先级低于 MOCK，无法覆盖）
+
+场景3: 同优先级规则注册同一 pattern
+       ❌ 跳过（去重保护）
 ```
 
 **ContextKey 内部类** — 使用 `WeakReference` 防止静态 Map 阻止 Page/Context 被 GC：
@@ -205,8 +229,11 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 
 | 方法 | 返回值语义 | 说明 |
 |------|-----------|------|
-| `register(Page/String)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern |
-| `register(BrowserContext/String)` | 同上 | Context 级别注册 pattern |
+| `register(Page/String/RouteHandleType)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern（记录类型，支持优先级检查） |
+| `register(BrowserContext/String/RouteHandleType)` | 同上 | Context 级别注册 pattern（记录类型） |
+| `getRegisteredType(Object, String)` | RouteHandleType / null | 查询指定上下文中 pattern 当前注册的类型 |
+| `shouldOverride(Object, String, RouteHandleType)` | boolean | 判断新类型优先级是否高于已注册类型 |
+| `forceRegister(Object, String, RouteHandleType)` | 始终 true | 强制覆盖注册（用于高优先级规则替换低优先级规则） |
 | `unregister(Object, String)` | void | 注销单个 pattern |
 | `clearContext(Object)` | void | 三阶段清理：① 移除注册表 + unroute → ② 清理 MonitorSession → ③ 清空防重门控 |
 | `clearAll()` | void | 全局清理所有上下文 + JSONPath 缓存（测试套件结束时调用） |
@@ -733,6 +760,32 @@ RouteDsl.on(page)
     .start();
 ```
 
+### 5.2.2 优先级覆盖：Monitor 监控后 Mock 同一 API
+
+```java
+// 第一步：Monitor 监控 /api/users，验证正常响应
+RouteDsl.on(page)
+    .api("/api/users/**")
+    .monitor()
+    .expectStatus(200)
+    .expectJsonPath("$.code", 0)
+    .done()
+    .start();
+
+// ... 页面操作，触发 /api/users 请求 ...
+
+// 第二步：Mock 同一 API，切换到模拟响应
+// ✅ MOCK 优先级(4) > MONITOR(1)，自动覆盖
+RouteDsl.on(page)
+    .api("/api/users/**")
+    .mock()
+    .mockBody("{\"code\":0,\"data\":{\"items\":[]}}")
+    .mockStatus(200)
+    .done()
+    .start();
+// → 框架自动：page.unroute("/api/users/**") → RouteRegistry.forceRegister → page.route(...)
+```
+
 ### 5.3 Modify 模式（请求体 JSONPath 精准替换）
 
 ```java
@@ -1065,8 +1118,11 @@ public interface MonitorCallback {
 
 | 方法 | 说明 |
 |------|------|
-| `register(Page, pattern)` | Page 级别注册 pattern |
-| `register(BrowserContext, pattern)` | Context 级别注册 pattern |
+| `register(Page, pattern, type)` | Page 级别注册 pattern + 类型 |
+| `register(BrowserContext, pattern, type)` | Context 级别注册 pattern + 类型 |
+| `getRegisteredType(context, pattern)` | 查询 pattern 当前注册的类型（未注册返回 null） |
+| `shouldOverride(context, pattern, newType)` | 判断新类型是否应覆盖现有类型（基于优先级） |
+| `forceRegister(context, pattern, type)` | 强制覆盖注册（用于高优先级覆盖场景） |
 | `unregister(context, pattern)` | 注销单个 pattern |
 | `clearContext(context)` | 清理单个上下文（unroute + 移除注册表 + 清理 Session） |
 | `clearAll()` | 全局清理（含 JSONPath 缓存） |

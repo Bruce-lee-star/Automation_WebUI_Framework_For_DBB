@@ -327,6 +327,12 @@ public class SummaryReportGenerator {
             Files.write(output, html.getBytes(StandardCharsets.UTF_8));
             logger.info("       - Summary report: {}", output.toUri());
 
+            // 注入自定义 CSS（serenity.css → screen.css）
+            injectCustomCss(actualReportDir);
+
+            // 修复 Swiper 截图轮播（fade → slide + autoHeight）
+            fixSwiperScreenshotsHtml(actualReportDir);
+
             // 生成 CSV 文件
             generateCsvReport(actualReportDir);
 
@@ -1949,6 +1955,70 @@ public class SummaryReportGenerator {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Unknown test result string '{}', defaulting to PENDING", rStr);
                 this.result = TestResult.PENDING;
             }
+        }
+    }
+
+    /**
+     * 将 serenity.css 从 classpath 复制到报告 css 目录并追加到 screen.css 末尾。
+     */
+    private static void injectCustomCss(String reportDir) {
+        try {
+            Path cssDir = Paths.get(reportDir, "css");
+            Files.createDirectories(cssDir);
+
+            String customCss;
+            try (var in = SummaryReportGenerator.class.getResourceAsStream("/report/serenity.css")) {
+                if (in == null) {
+                    logger.warn("serenity.css not found on classpath, skipping CSS injection");
+                    return;
+                }
+                customCss = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+
+            Path cssFile = cssDir.resolve("serenity.css");
+            Files.writeString(cssFile, customCss, StandardCharsets.UTF_8);
+            logger.info("       - Copied serenity.css to report css/ directory");
+
+            Path screenCss = cssDir.resolve("screen.css");
+            if (Files.exists(screenCss)) {
+                String existing = Files.readString(screenCss, StandardCharsets.UTF_8);
+                if (!existing.contains(customCss.trim())) {
+                    Files.writeString(screenCss,
+                            existing + System.lineSeparator() + System.lineSeparator() + customCss,
+                            StandardCharsets.UTF_8);
+                    logger.info("       - Appended serenity.css to screen.css");
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("CSS injection skipped (non-fatal): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 将截图轮播 effect 从 'fade' 改为 'slide' + autoHeight，
+     * 解决混合高度截图的空白和重叠问题。
+     */
+    private static void fixSwiperScreenshotsHtml(String reportDir) {
+        try {
+            Path dir = Paths.get(reportDir);
+            if (!Files.isDirectory(dir)) return;
+
+            int fixedCount = 0;
+            try (var stream = Files.newDirectoryStream(dir, "*_screenshots.html")) {
+                for (Path file : stream) {
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    if (content.contains("effect: 'fade'")) {
+                        String fixed = content.replace("effect: 'fade'", "effect: 'slide', autoHeight: true");
+                        Files.writeString(file, fixed, StandardCharsets.UTF_8);
+                        fixedCount++;
+                    }
+                }
+            }
+            if (fixedCount > 0) {
+                logger.info("       - Swiper fix applied to {} screenshots page(s) (fade → slide + autoHeight)", fixedCount);
+            }
+        } catch (Exception e) {
+            logger.warn("Swiper screenshots fix skipped (non-fatal): {}", e.getMessage());
         }
     }
 

@@ -50,13 +50,13 @@
 |------|------|------|-------------------|
 | **Playwright** | 管理浏览器驱动，提供 `chromium()`/`firefox()`/`webkit()` 工厂方法 | 浏览器引擎管理器 | `PlaywrightManager` 静态 Map 管理，同一配置复用 |
 | **Browser** | 一个浏览器进程实例，可包含多个 Context | 浏览器应用程序 | `browserInstances` Map，按 configId 隔离，支持动态切换（Chromium/Firefox/WebKit） |
-| **BrowserContext** | 独立的浏览器会话，Cookie/LocalStorage/登录态完全隔离 | 隐身窗口/用户配置文件夹 | `contextThreadLocal` ThreadLocal，每个 Scenario 独立 Context，可自定义 viewport/locale/timezone 等 |
+| **BrowserContext** | 独立的浏览器会话，Cookie/LocalStorage/登录态完全隔离 | 隐身窗口/用户配置文件夹 | `contextThreadLocal` ThreadLocal，Scenario 模式复用同一 Context（深度清理状态），可自定义 viewport/locale/timezone 等 |
 | **Page** | 一个标签页，所有页面操作（导航/点击/输入/截图）的载体 | 浏览器标签页 | `pageThreadLocal` ThreadLocal，每个线程一个 Page |
 
 **关键设计：**
 - **Browser 与 Context 的关系**：Browser 是共享的进程，Context 是隔离的会话。频繁创建/销毁 Browser 开销大，所以采用 Browser 复用 + Context 隔离的策略。
 - **Context 隔离**：不同 Context 之间 Cookie、LocalStorage、SessionStorage 完全隔离，模拟多用户/多会话场景。
-- **重启策略**：`serenity.playwright.restart.browser.for.each` 控制 Context 重建粒度 — `scenario` 模式每场景重建 Context，`feature` 模式同 Feature 内复用 Context。**两种模式均支持登录态跨 Scenario 复用**：通过 `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/` 目录，下一个 Scenario 自动恢复。
+- **重启策略**：`serenity.playwright.restart.browser.for.each` 控制 Context 生命周期 — `scenario` 模式深度清理 Context（清除 Cookies/Permissions）后复用同一实例，`feature` 模式同 Feature 内直接复用 Context。**两种模式均复用 Context 实例**（避免 `browser.newContext()` 弹出多个 Chrome 窗口），隔离性通过状态清理保证。**两种模式均支持登录态跨 Scenario 复用**：通过 `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/` 目录，下一个 Scenario 自动恢复。
 
 ---
 
@@ -508,11 +508,11 @@ public class LoginSteps {
 2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理，职责明确
 3. **双等待策略** — 智能等待（原生 waitFor）+ 轮询等待（属性检查），覆盖所有场景
 4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持（Int/Long/Boolean/Array/Object）；Handler 非主线程数据通过 `SerenityReporter` 队列机制自动刷入 Serenity 报告；**优先级覆盖**（MOCK > MODIFY > DELAY > MONITOR）支持同 pattern 动态升级
-5. **全页截图** — Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面截图，支持懒加载内容自动触发（滚到底触发 → 等渲染 → 滚回顶部再截图）
-5. **全页截图** — Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面截图，支持懒加载内容自动触发（滚到底触发 → 等渲染 → 滚回顶部再截图）
-6. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
-7. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
-8. **无障碍合规** — 内置 axe-core WCAG 自动扫描
-9. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
-10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + `ConcurrentLinkedQueue` 跨线程报告队列
-11. **Element 框架优化** — `TextNormalizer` 统一文本标准化；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition` 统一模板替代重复 waitFor 方法
+5. **Context 复用机制** — Scenario 模式不复用 Context 重建（避免 `browser.newContext()` 弹出多个 Chrome 窗口），改为 `cleanupContextState()` 深度清理（清除 Cookies/Permissions）+ `resetCustomContextOptionsForScenarioMode()` 重置自定义配置后复用同一实例，整个测试生命周期只保持 1 个浏览器窗口
+6. **全页截图** — Playwright 原生 `setFullPage(true)` 自动滚动拼接完整页面截图，支持懒加载内容自动触发（滚到底触发 → 等渲染 → 滚回顶部再截图）
+7. **企业级报告体系** — Serenity 详细报告 + 自定义摘要报告（HTML/CSV/ZIP），12 类错误自动分析
+8. **CI/CD 原生集成** — Jenkins Pipeline、环境变量自动解析
+9. **无障碍合规** — 内置 axe-core WCAG 自动扫描
+10. **Session 复用** — 登录态跨 Scenario 自动复用（两种模式均支持），通过 storageState 持久化 + SessionManager 两层缓存，减少冗余登录
+11. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + `ConcurrentLinkedQueue` 跨线程报告队列
+12. **Element 框架优化** — `TextNormalizer` 统一文本标准化；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition` 统一模板替代重复 waitFor 方法

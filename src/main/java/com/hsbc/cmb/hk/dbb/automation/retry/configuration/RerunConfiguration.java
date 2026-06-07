@@ -18,6 +18,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
+@SuppressWarnings("deprecation")
 public class RerunConfiguration {
     private static final Logger logger = LoggerFactory.getLogger(RerunConfiguration.class);
     

@@ -92,28 +92,40 @@ public class LoginSteps {
             }
 
             logger.info("Session restored, navigating to homeUrl: {}", homeUrl);
-            loginPage.navigateTo(homeUrl);
-            loginPage.waitForTimeout(15000);
-            // 验证 session 是否有效
-            String currentUrl = loginPage.getCurrentUrl();
-            logger.info("Current URL after navigation: {}", currentUrl);
 
-            if (currentUrl.contains("/logon")) {
-                logger.warn("Session invalid (redirected to login page)");
-                // SessionManager.clearSession(sessionKey); // 旧方法已删除
+            // 验证 session 是否有效：通过 try-catch 包裹整个验证流程
+            // storageState 跨 Context 场景下，服务端可能因安全机制关闭 Page
+            // 若发生 TargetClosedError，降级为完整登录流程
+            try {
+                loginPage.navigateTo(homeUrl);
+
+                // 【优化】移除 waitForTimeout(15000)：navigation 的 waitUntil 已等待页面加载
+                // 15s 的静止等待可能让 DBB 服务端的 session 校验触发 Page 关闭
+                String currentUrl = loginPage.getCurrentUrl();
+                logger.info("Current URL after navigation: {}", currentUrl);
+
+                if (currentUrl.contains("/logon")) {
+                    logger.warn("Session invalid (redirected to login page)");
+                    performLogin();
+                    return;
+                }
+
+                // Session 有效，等待首页元素
+                homePage.quickLink.waitForVisible(60);
+
+                if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
+                    switchProfile(BDDUtils.getCurrentProfile());
+                    logger.info("Session validated, switched to config profile: {}",
+                            BDDUtils.getCurrentProfile());
+                }
+                return; // Session 有效，跳过登录
+            } catch (Exception e) {
+                // 捕获 TargetClosedError / PlaywrightException 等 Page 异常
+                logger.warn("Session restore failed (page/context closed during navigation or validation): {} — falling back to full login", e.getMessage());
+                SessionManager.clearSession(sessionKey);
                 performLogin();
                 return;
             }
-
-            // Session 有效，等待首页元素
-            homePage.quickLink.waitForVisible(60);
-
-            if (BDDUtils.getCurrentProfile() != null && !BDDUtils.getCurrentProfile().isEmpty()) {
-                switchProfile(BDDUtils.getCurrentProfile());
-                logger.info("Session validated, switched to config profile: {}",
-                        BDDUtils.getCurrentProfile());
-            }
-            return; // Session 有效，跳过登录
         }
 
         // Session 无效或不存在，执行登录

@@ -211,9 +211,27 @@ public class SessionManager {
             String homeUrl = loadHomeUrl(sessionKey);
 
             if (homeUrl != null && !homeUrl.isEmpty()) {
-                // 设置 storageStatePath
                 Path sessionPath = getSessionPath(sessionKey);
-                PlaywrightManager.setStorageStatePath(sessionPath);
+
+                if ("scenario".equalsIgnoreCase(restartStrategy)) {
+                    // ⭐ Scenario 模式：setStorageStatePath → customContextOptionsFlag=true
+                    // → 下一个 getContext() 创建全新 Context 并加载缓存的 storageState
+                    // 每个 Scenario 独立 Context = 每个 Scenario 一个窗口（预期行为）
+                    PlaywrightManager.setStorageStatePath(sessionPath);
+                } else {
+                    // Feature 模式
+                    if (PlaywrightManager.hasContext()) {
+                        // Context 已存在（前一个 Scenario 的登录态仍在）
+                        // 当前是不同的登录用户 → 清除当前 Context 的 cookies → 返回 false 触发登录流程
+                        LoggingConfigUtil.logDebugIfVerbose(logger,
+                                "Feature mode: Context already exists with different session, clearing cookies and returning false to trigger login for {}", sessionKey);
+                        BrowserContext context = PlaywrightManager.getContext();
+                        context.clearCookies();
+                        return false;
+                    }
+                    // 首个 Scenario 或 Context 还未创建 → setStorageStatePath，后续 createContext 时应用
+                    PlaywrightManager.setStorageStatePath(sessionPath);
+                }
 
                 // 标记 Feature 级别 Session 已恢复
                 if ("feature".equalsIgnoreCase(restartStrategy)) {

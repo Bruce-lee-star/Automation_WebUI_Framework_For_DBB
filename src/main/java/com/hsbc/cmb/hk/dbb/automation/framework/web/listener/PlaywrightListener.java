@@ -86,6 +86,25 @@ public class PlaywrightListener implements StepListener {
     // 用于防止testSuiteFinished被多次调用时重复输出日志
     private static volatile boolean testSuiteFinishedLogged = false;
 
+    /**
+     * ⭐ 阶段识别：Serenity CucumberWithSerenity 在 discovery 和 execution 两个阶段
+     * 各触发一次完整的 testSuiteStarted → testStarted → testSuiteFinished 事件链。
+     *
+     * <p>Discovery 阶段仅扫描 feature 文件构建 Pickle 列表，不应触发任何
+     * Playwright 资源初始化。本标记在首次 testSuiteStarted(Story) 检测到重复 story 时置为 true
+     * （同一 story 在 discovery 和 execution 各触发一次，重复出现即进入执行阶段）。
+     *
+     * <p>在 testRunFinished 时重置，以支持同 JVM 内 rerun 场景。
+     */
+    private static volatile boolean discoveryPhaseCompleted = false;
+
+    /**
+     * ⭐ 阶段检测辅助集合：记录所有已见过的 Story 名称。
+     * 当同一个 Story 在 testSuiteStarted(Story) 中被第二次看到时，
+     * 说明 Serenity 已从 discovery 阶段进入 execution 阶段。
+     */
+    private final java.util.Set<String> seenStoryNames = new java.util.HashSet<>();
+
     public PlaywrightListener() {
         // 从环境变量中读取截图策略配置
         EnvironmentVariables environmentVariables = SystemEnvironmentVariables.currentEnvironmentVariables();
@@ -101,10 +120,18 @@ public class PlaywrightListener implements StepListener {
         currentTestName.set(uniqueTestName);  // ⭐ 修复：确保 currentTestName 被设置（与双参数版本一致）
         testStartTime.set(System.currentTimeMillis());
         currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
-        totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
         ApiCaptureContext.resetCurrent();
+
+        // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
+        if (!discoveryPhaseCompleted) {
+            // Discovery 阶段：只记录轻量级状态，不初始化 Playwright 资源
+            // 避免重复创建 Playwright/Browser 实例导致浏览器多开、内存飙高
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "[Discovery Phase] Skipping Playwright init for test: {}", uniqueTestName);
+            return;
+        }
 
         // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
         try {
@@ -126,6 +153,11 @@ public class PlaywrightListener implements StepListener {
         if (startTime == null) {
             return;
         }
+
+        // ⭐ 测试计数：在 testFinished 而非 testStarted 中计数
+        // testStarted 受 discoveryPhaseCompleted 守卫影响，在 Serenity+Cucumber 场景下可能不计数
+        // testFinished 是测试真正完成的确切时刻，计数更可靠
+        totalTests.incrementAndGet();
 
         // 【关键】使用 try-finally 确保 ThreadLocal 始终被清理，即使中间抛出异常
         try {
@@ -758,12 +790,38 @@ public class PlaywrightListener implements StepListener {
     public void testSuiteStarted(Story story) {
         LoggingConfigUtil.logDebugIfVerbose(
                 logger, "Test suite started for story: {}", story.getStoryName());
+
+        // ⭐ 阶段检测：当同一个 Story 在 discovery 阶段被注册过，再次出现时说明进入 execution
+        String storyName = story.getStoryName();
+        if (!discoveryPhaseCompleted && !seenStoryNames.add(storyName)) {
+            // 重复的 story → 已进入 execution phase
+            discoveryPhaseCompleted = true;
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "Execution phase detected (duplicate story: {}), enabling Playwright init and cross-feature cleanup", storyName);
+        }
+
+        // ⭐ 跨 Feature Context 清理：新 Story 启动时关闭上一个 Story 的 Context
+        // 仅在 execution 阶段执行清理，避免 discovery 阶段误关 Context
+        if (discoveryPhaseCompleted) {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "New story starting: {} — closing previous story's Context (cross-feature cleanup)", story.getStoryName());
+            try {
+                PlaywrightManager.cleanupForFeature();
+            } catch (Exception e) {
+                logger.warn("Failed to cleanup context at feature boundary for new story: {} — {}",
+                        story.getStoryName(), e.getMessage());
+            }
+        }
+
         // ⭐ 重置：允许新 suite 再次触发清理
         testSuiteFinishedLogged = false;
     }
 
     @Override
     public void testSuiteFinished() {
+        // ⭐⭐⭐ 阶段识别：首次 testSuiteFinished 标志 discovery 阶段结束
+        discoveryPhaseCompleted = true;
+
         logger.info("Test suite finished");
 
         // 使用原子操作确保只清理一次
@@ -787,10 +845,16 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testStarted(String testName, String testMethod) {
+        // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
+        if (!discoveryPhaseCompleted) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "[Discovery Phase] Skipping Playwright init for test: {} (method: {})", testName, testMethod);
+            return;
+        }
+
         String uniqueTestName = testName + "_" + Thread.currentThread().threadId();
         currentTestName.set(uniqueTestName);
         testStartTime.set(System.currentTimeMillis());
-        totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
@@ -807,11 +871,18 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testStarted(String testName, String testMethod, ZonedDateTime startTime) {
+        // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
+        if (!discoveryPhaseCompleted) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "[Discovery Phase] Skipping Playwright init for test: {} (method: {}, time: {})",
+                    testName, testMethod, startTime);
+            return;
+        }
+
         // 生成唯一名称：原名称 + 线程ID（保证同名 scenario 不合并）
         String uniqueTestName = testName + "_" + Thread.currentThread().threadId();
         currentTestName.set(uniqueTestName);
         testStartTime.set(startTime != null ? startTime.toInstant().toEpochMilli() : System.currentTimeMillis());
-        totalTests.incrementAndGet();
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
@@ -848,15 +919,17 @@ public class PlaywrightListener implements StepListener {
                     .getProperty("serenity.restart.browser.for.each", "scenario");
 
             // 根据浏览器重启策略决定清理方式
+            // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理
+            //  - Scenario 模式：关闭 Context/Page + 重置所有配置
+            //  - Feature 模式：resetCustomContextOptionsForFeatureMode() + cleanupPageState()，保留 Context/Page
+            // Feature 模式不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
+            // 会导致下一个 scenario 的 getContext() 误触发 Context 重建，破坏 Feature 模式语义
             if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-                // Scenario 模式：测试结束后立即清理所有资源（Context/Page/Browser）
                 logger.info("Cleaning up Playwright resources (scenario-level restart)");
-                PlaywrightManager.cleanupForScenario();
             } else {
-                // Feature 模式：只清理页面状态，保留 Context/Page 供复用
-                logger.debug("Feature mode - cleaning page state while keeping Context/Page");
-                PlaywrightManager.cleanupPageState();
+                logger.debug("Feature mode - resetting custom options and cleaning page state while keeping Context/Page");
             }
+            PlaywrightManager.cleanupForScenario();
 
             // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
             BasePage.clearCurrentPage();
@@ -891,6 +964,10 @@ public class PlaywrightListener implements StepListener {
 
             long duration = System.currentTimeMillis() - startTime;
             String testName = currentTestName.get();
+
+            // ⭐ 测试计数：在 testFinished(TestOutcome,boolean,ZonedDateTime) 中计数
+            // Serenity+Cucumber 实际调用这个重载而非 testFinished(TestOutcome)
+            totalTests.incrementAndGet();
 
             recordTestData("testEnd", finishTime != null ? finishTime.toInstant().toEpochMilli() : System.currentTimeMillis());
             recordTestData("testDuration", duration);
@@ -1069,6 +1146,10 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void testRunFinished() {
+        // ⭐⭐⭐ 阶段识别：重置 discovery 标记和 story 集合，支持同 JVM rerun 时识别新 discovery 阶段
+        discoveryPhaseCompleted = false;
+        seenStoryNames.clear();
+
         logger.info(getPerformanceStats());
 
         // 检查是否需要重试失败的测试

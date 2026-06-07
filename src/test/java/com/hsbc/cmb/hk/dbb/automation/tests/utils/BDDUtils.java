@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
  * BDD Utility class for managing login information
  * Supports thread-safe access to login info across different Step classes
  */
+@SuppressWarnings("deprecation")
 public class BDDUtils {
 
     private static final Logger logger = LoggerFactory.getLogger(BDDUtils.class);

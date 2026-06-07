@@ -31,6 +31,8 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1129,15 +1131,17 @@ public class PlaywrightManager {
     /**
      * 统一清理所有 ThreadLocal 变量（防止线程复用时引用过期对象导致内存泄漏）
      * 集中管理所有 16 个 ThreadLocal，避免遗漏
+     * <p>
+     * ⭐ currentConfigId 不在此清除：Browser 整个测试生命周期只创建一次，
+     * currentConfigId 标识 Browser 配置，必须持续存活直到 cleanupAll() 彻底清理。
      *
-     * @param clearContextAndPage 是否同时清理 Context 和 Page（true=全量清理，false=仅自定义配置）
+     * @param clearContextAndPage 是否同时清理 Context 和 Page ThreadLocal（true=清理，false=仅自定义配置）
      */
     private static void cleanupThreadLocals(boolean clearContextAndPage) {
         if (clearContextAndPage) {
-            // 清理核心资源 ThreadLocal
+            // 清理 Context 和 Page ThreadLocal（currentConfigId 持续存活，保证 Browser 复用）
             pageThreadLocal.remove();
             contextThreadLocal.remove();
-            currentConfigId.remove();
         }
         // 始终清理自定义配置 ThreadLocal（12 个）
         customContextOptionsFlag.remove();
@@ -1174,6 +1178,25 @@ public class PlaywrightManager {
         cleanupThreadLocals(true);
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed");
+    }
+
+    /**
+     * Scenario 模式下重置自定义配置（保留 Context 实例不复用）
+     * 与 resetCustomContextOptions() 的区别：
+     * - 本方法保留 contextThreadLocal 中的 Context 引用
+     * - 清除所有自定义配置 ThreadLocal（确保下一个 scenario 不受污染）
+     * - Context 本身的状态（cookies/storage）由 cleanupContextState() 单独清理
+     */
+    private static void resetCustomContextOptionsForScenarioMode() {
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for Scenario mode (preserving Context)...");
+
+        // 使用 false：清除自定义配置但不移除 Context/Page ThreadLocal
+        // Page ThreadLocal 已由 closePage() 清理，这里确保不误删 Context
+        cleanupThreadLocals(false);
+        // closePage() 已经清除了 pageThreadLocal，再确保一次
+        pageThreadLocal.remove();
+
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed (Context preserved)");
     }
 
     /**
@@ -1342,6 +1365,19 @@ public class PlaywrightManager {
         }
     }
 
+    /**
+     * 检查当前线程是否有存活的 Context（不创建新 Context）
+     * <p>
+     * 与 getContext() 的区别：getContext() 在 Context 不存在时会创建新的，
+     * 本方法仅检查存在性，用于 SessionManager 判断是否已有活跃的 Context
+     *
+     * @return true 如果 ThreadLocal 中有存活的 Context
+     */
+    public static boolean hasContext() {
+        BrowserContext context = contextThreadLocal.get();
+        return context != null && context.browser() != null && context.browser().isConnected();
+    }
+
 
     /**
      * 重启浏览器（用于重跑测试时或浏览器类型切换）
@@ -1442,6 +1478,8 @@ public class PlaywrightManager {
 
         // 统一清理所有 ThreadLocal（防止线程复用/线程池场景下的内存泄漏）
         cleanupThreadLocals(true);
+        // ⭐ 最终清理：Browser 已关闭，currentConfigId 可以安全清除
+        currentConfigId.remove();
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
     }
@@ -1505,28 +1543,33 @@ public class PlaywrightManager {
         String restartBrowserForEach = config().getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-            // 清理缓存的PageObject, 避免使用已经关闭的context/page
+            // ⭐ Scenario 模式：复用 Context（深度清理状态），避免重复 newContext() 弹出新窗口
             PageObjectFactory.clearAll();
-            // Scenario 模式：关闭旧的 Context/Page，延迟创建新的（等测试步骤真正需要时）
-            closePage();
-            closeContext();
-            // 【优化】不立即创建 BrowserContext，延迟到 getContext()/getPage() 时创建
-            // 这样如果测试步骤设置了自定义配置（如 session 恢复），可以直接应用，避免重复创建
-            LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context/Page will be created on demand)");
+            BrowserContext existingContext = contextThreadLocal.get();
+            if (existingContext != null && existingContext.browser() != null && existingContext.browser().isConnected()) {
+                // Context 存活 → 复用，只关闭 Page
+                closePage();
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context, no new window)");
+            } else {
+                // Context 不可用 → 关闭残留后延迟重建
+                closePage();
+                closeContext();
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context unavailable, will rebuild on demand)");
+            }
         } else {
             // Feature 模式：复用现有的 Context/Page（如果存在）
+            // 同 feature 内 context 持续存活；不同 feature 已在 cleanupForFeature 中关闭
             BrowserContext existingContext = contextThreadLocal.get();
             Page existingPage = pageThreadLocal.get();
 
             if (existingContext != null && existingPage != null && !existingPage.isClosed()) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context/Page)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context/Page within same feature)");
             } else {
+                // Context/page 不可用（首次 scenario 或跨 feature）：关闭残留 → 延迟重建
                 PageObjectFactory.clearAll();
-                // 关闭旧的 Context/Page，延迟创建新的
                 closePage();
                 closeContext();
-                // 【优化】不立即创建 BrowserContext，延迟创建以支持自定义配置
-                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context/Page will be created on demand)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context closed, will rebuild on demand)");
             }
         }
     }
@@ -1556,14 +1599,13 @@ public class PlaywrightManager {
         String restartStrategy = config().getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartStrategy)) {
-            // Scenario 模式：重置所有自定义配置,确保scenario之间配置隔离
-            resetCustomContextOptions();
-
-            // 只关闭 Context 和 Page，保持 Browser 实例
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'scenario' - closing Context and Page (keeping Browser alive)");
+            // ⭐ Scenario 模式：关闭 Page + Context → 下一个 Scenario 重建全新 Context（加载缓存 storageState）
+            // Scenario 之间独立：每个 Scenario 都有自己的 Context（新窗口），通过 storageState 恢复登录态
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'scenario' - closing Context for fresh rebuild with cached storageState");
             closePage();
             closeContext();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Context and Page closed for scenario (Browser kept alive)");
+            // 重置自定义配置（Context 已关闭，无需保留）
+            resetCustomContextOptionsForScenarioMode();
 
             // 【关键】Scenario 模式：重置 Feature 级别 Session 缓存，确保下一个 scenario 重新登录
             SessionManager.resetFeatureSession();
@@ -1580,6 +1622,7 @@ public class PlaywrightManager {
             // 【关键】Feature 模式：不重置 Feature 级别 Session 缓存，让下一个 scenario 复用
         }
     }
+
 
 
     /**
@@ -1656,6 +1699,116 @@ public class PlaywrightManager {
 
 
     /**
+     * 深度清理 Context 状态（不关闭 Context 实例）
+     * 用于 Scenario 模式：复用 Context 但清除其内部状态，避免 browser.newContext() 弹出新窗口
+     * <p>
+     * 清理内容：
+     * - 清除所有 Cookies（等价于全新 Context 的无 cookie 状态）
+     * - 清除所有 Permissions（地理位置、通知等授权）
+     * <p>
+     * 注意：不清理 Context 级别的 StorageState 文件绑定，这由 SessionManager 控制
+     *
+     * @param context 要清理的 BrowserContext
+     */
+    private static void cleanupContextState(BrowserContext context) {
+        if (context == null) {
+            return;
+        }
+
+        try {
+            // 清除所有 cookies（下一个 scenario 将处于无 cookie 的初始状态）
+            context.clearCookies();
+
+            // 清除所有权限
+            context.clearPermissions();
+
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Context state deep-cleaned: cookies and permissions cleared (Context instance reused)");
+        } catch (Exception e) {
+            logger.warn("Failed to deep-clean context state: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 直接向现有 Context 注入 storageState JSON 中的 Cookies（避免 Context 重建）
+     * <p>
+     * 使用场景：Scenario 模式 + 缓存登录
+     * - cleanupContextState() 已清除 cookies
+     * - 本方法从 storageState JSON 文件解析 cookies 并注入到复用的 Context
+     * - 不触发 browser.newContext()，不弹出新窗口
+     * <p>
+     * 与 createContext(setStorageStatePath(...)) 的区别：
+     * - 本方法：直接 context.addCookies() → 不重建 Context → 始终 1 个窗口
+     * - createContext 重建方式：browser.newContext() → 新建 Context → 新窗口
+     * <p>
+     * 注意：localStorage 需要 Page 先导航到对应域名后才能注入，cookies 通常已足够恢复登录态
+     *
+     * @param context           现有的 BrowserContext（不会被关闭或替换）
+     * @param storageStatePath  Playwright storageState JSON 文件路径
+     */
+    public static void applyStorageStateToExistingContext(BrowserContext context, Path storageStatePath) {
+        if (context == null || storageStatePath == null || !Files.exists(storageStatePath)) {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "applyStorageStateToExistingContext skipped: context={}, storagePath={}, exists={}",
+                    context != null, storageStatePath, storageStatePath != null && Files.exists(storageStatePath));
+            return;
+        }
+
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            JsonNode root = mapper.readTree(storageStatePath.toFile());
+            JsonNode cookiesNode = root.get("cookies");
+
+            if (cookiesNode == null || !cookiesNode.isArray() || cookiesNode.size() == 0) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "No cookies found in storageState file: {}", storageStatePath);
+                return;
+            }
+
+            List<Cookie> cookies = new ArrayList<>();
+            for (JsonNode cookieNode : cookiesNode) {
+                if (!cookieNode.has("name") || !cookieNode.has("value")) {
+                    continue;
+                }
+
+                String name = cookieNode.get("name").asText();
+                String value = cookieNode.get("value").asText();
+                Cookie cookie = new Cookie(name, value);
+
+                if (cookieNode.has("domain") && !cookieNode.get("domain").isNull()) {
+                    cookie.setDomain(cookieNode.get("domain").asText());
+                }
+                if (cookieNode.has("path") && !cookieNode.get("path").isNull()) {
+                    cookie.setPath(cookieNode.get("path").asText());
+                }
+                if (cookieNode.has("expires") && !cookieNode.get("expires").isNull()) {
+                    cookie.setExpires(cookieNode.get("expires").asDouble());
+                }
+                if (cookieNode.has("httpOnly")) {
+                    cookie.setHttpOnly(cookieNode.get("httpOnly").asBoolean());
+                }
+                if (cookieNode.has("secure")) {
+                    cookie.setSecure(cookieNode.get("secure").asBoolean());
+                }
+                if (cookieNode.has("sameSite") && !cookieNode.get("sameSite").isNull()) {
+                    try {
+                        cookie.setSameSite(SameSiteAttribute.valueOf(cookieNode.get("sameSite").asText().toUpperCase()));
+                    } catch (IllegalArgumentException ignored) {
+                        // 忽略无法识别的 sameSite 值，使用默认值
+                    }
+                }
+
+                cookies.add(cookie);
+            }
+
+            context.addCookies(cookies);
+
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "Applied {} cookies from storageState to existing Context (no Context rebuild, no new window)",
+                    cookies.size());
+        } catch (Exception e) {
+            logger.warn("Failed to apply storageState to existing context: {} - {}", storageStatePath, e.getMessage());
+        }
+    }
+
+    /**
      * Feature 级别的初始化
      * 每个 feature 开始时由 FrameworkCore 调用
      */
@@ -1687,27 +1840,19 @@ public class PlaywrightManager {
     /**
      * Feature 级别的清理
      * 每个 feature 结束时调用
+     * <p>
+     * ⭐ 设计原则：整个测试生命周期中 Browser 和 Context 都只创建一次，
+     * 由 JVM Shutdown Hook 最终关闭。Feature/Scenario 边界只清理 Page 和 Context 内部状态（Cookie/Storage），
+     * Browser 和 Context 实例持续复用，保证只有 1 个 Chrome 窗口。
+     * <p>
+     * 不重置 frameworkState，确保下一个 Feature 的 beforeTest() → initializeForScenario()
+     * 能复用现有 Browser 和 Context。
      */
     public static void cleanupForFeature() {
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up for feature...");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up for feature - closing Context (different feature requires fresh Context)...");
         closePage();
         closeContext();
-
-        // 根据配置决定是否关闭浏览器
-        String restartBrowserForEach = config().getRestartStrategy();
-
-        if ("feature".equalsIgnoreCase(restartBrowserForEach)) {
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - closing browser at feature end");
-            String configId = getCurrentConfigId();
-            if (configId != null) {
-                Browser browser = browserInstances.get(configId);
-                if (browser != null && browser.isConnected()) {
-                    browser.close();
-                    browserInstances.remove(configId);
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "Browser closed for feature (strategy: {})", restartBrowserForEach);
-                }
-            }
-        }
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Feature cleanup completed — Browser persists, Context+Page closed for next feature rebuild");
     }
 
     // ==================== 截图方法 ====================
@@ -1727,7 +1872,7 @@ public class PlaywrightManager {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Screenshot stabilization failed: {}", e.getMessage());
         }
     }
-    
+
     /**
      * 截图后恢复页面状态
      * 仅在处理了固定元素时才执行恢复（性能优化）

@@ -133,8 +133,8 @@ public final class SerenityReporter {
         PendingApiRecord record;
         while ((record = pendingQueue.poll()) != null) {
             try {
-                String title = String.format("[API %s] %s", record.operation,
-                        record.url.length() > 80 ? record.url.substring(0, 80) + "..." : record.url);
+                String displayUrl = maskUrl(record.url);
+                String title = String.format("[API %s] %s", record.operation, displayUrl);
                 Serenity.recordReportData()
                         .withTitle(title)
                         .andContents(record.detail);
@@ -150,6 +150,93 @@ public final class SerenityReporter {
             LoggingConfigUtil.logDebugIfVerbose(logger,
                     "[SerenityReporter] flushPendingApiOperations DONE: flushed {} API record(s)", flushed);
         }
+    }
+
+    /**
+     * URL 脱敏：隐藏域名前缀，只保留有意义的路径后缀。
+     *
+     * <p>示例：
+     * <pre>
+     * 输入: https://qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk/portalserver/service/userinfo
+     * 输出: ...hsbc.com.hk/portalserver/service/userinfo
+     *
+     * 输入: http://localhost:8080/api/v1/users
+     * 输出: localhost:8080/api/v1/users   （短域名不脱敏）
+     *
+     * 输入: /api/v2/auth/login
+     * 输出: /api/v2/auth/login          （无域名保持原样）
+     * </pre>
+     *
+     * @param url 原始 URL
+     * @return 脱敏后的显示用 URL
+     */
+    private static String maskUrl(String url) {
+        if (url == null || url.isEmpty()) return url;
+
+        // 找到协议后的 authority 部分（scheme://authority/path?query）
+        int pathStart = url.indexOf("://");
+        if (pathStart < 0) {
+            // 无协议（可能是相对路径），直接返回
+            return url.length() > 120 ? url.substring(0, 120) + "..." : url;
+        }
+
+        // 跳过 "://" 找到路径起始位置（第一个 '/' 在 authority 之后）
+        int authorityEnd = url.indexOf('/', pathStart + 3);
+        if (authorityEnd < 0) {
+            // 无路径部分（如 "https://example.com"），直接截断
+            return url.length() > 120 ? url.substring(0, 120) + "..." : url;
+        }
+
+        String authority = url.substring(pathStart + 3, authorityEnd); // hostname[:port]
+        String rest = url.substring(authorityEnd);                     // /path?query#fragment
+
+        // 短域名（<= 30 字符）不需要脱敏
+        if (authority.length() <= 30) {
+            String full = authority + rest;
+            return full.length() > 120 ? full.substring(0, 120) + "..." : full;
+        }
+
+        // 长域名脱敏：只保留最后两级域名标签 + TLD
+        // 例如 qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk → ...hsbc.com.hk
+        String maskedAuthority = shortenAuthority(authority);
+        String result = "..." + maskedAuthority + rest;
+
+        return result.length() > 120 ? result.substring(0, 120) + "..." : result;
+    }
+
+    /**
+     * 缩短 authority（host:port），保留最后有意义的部分。
+     * <p>策略：从右向左扫描，保留最后 3 个标签 + TLD 后缀。
+     * 例如：a.b.c.d.e.f.g.hsbc.com.hk → ...hsbc.com.hk
+     */
+    private static String shortenAuthority(String authority) {
+        // 分离 port
+        String host = authority;
+        String port = "";
+        int portIdx = authority.lastIndexOf(':');
+        if (portIdx > 0) {
+            // 确认是 IPv6 以外的情况（简单处理，IPv6 不常见于测试环境）
+            String potentialPort = authority.substring(portIdx + 1);
+            if (potentialPort.matches("\\d{1,5}") && !potentialPort.isEmpty()) {
+                host = authority.substring(0, portIdx);
+                port = ":" + potentialPort;
+            }
+        }
+
+        // 从右向左取最后 3 段域名（含端口）
+        String[] parts = host.split("\\.");
+        if (parts.length <= 3) {
+            return authority; // 已经很短了
+        }
+
+        // 保留最后 3 个标签
+        StringBuilder sb = new StringBuilder();
+        for (int i = Math.max(0, parts.length - 3); i < parts.length; i++) {
+            if (sb.length() > 0) sb.append('.');
+            sb.append(parts[i]);
+        }
+        sb.append(port);
+        return sb.toString();
     }
 
     /**

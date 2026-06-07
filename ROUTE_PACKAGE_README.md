@@ -659,7 +659,10 @@ RouteException (extends RuntimeException)
 **职责**：封装 `Serenity.recordReportData()` 调用，统一在主线程写入 API 监控数据。
 
 **特性**：
-- URL 超过 80 字符自动截断加 `...`
+- **URL 智能脱敏**：长域名（>30 字符）自动精简，只保留最后 3 段域名标签 + 完整路径，前缀替换为 `...`
+  - 示例：`https://qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk/portalserver/service/userinfo` → `...hsbc.com.hk/portalserver/service/userinfo`
+  - 短域名（如 `localhost:8080`）保持原样不脱敏
+  - 总长度超过 120 字符时自动截断加 `...`
 - `StepEventBus.getBaseStepListener()` 非空检查，无 Serenity 监听器时静默跳过
 - 异常静默捕获（不影响主流程）
 

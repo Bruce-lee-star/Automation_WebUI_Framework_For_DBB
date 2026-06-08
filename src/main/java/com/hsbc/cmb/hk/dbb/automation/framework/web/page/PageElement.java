@@ -32,7 +32,7 @@ public class PageElement {
     /**
      * 缓存的 Locator 实例（线程安全懒加载）。
      * Playwright Locator 是"延迟求值"的——每次操作时重新查询 DOM，因此缓存是安全的。
-     * 仅当 Page 实例变更时才需重建（由 BasePage.ensurePageValid() 触发 invalidateCache()）。
+     * Page 切换重建由 BasePage.ensurePageValid() → initializeAnnotatedFields() → invalidateCache() 触发。
      */
     private volatile Locator cachedLocator;
 
@@ -66,11 +66,13 @@ public class PageElement {
     }
 
     /**
-     * 获取 Playwright Locator（线程安全懒加载 + 缓存 + 页面一致性检查）。
+     * 获取 Playwright Locator（DCL 线程安全懒加载）。
      * Playwright Locator 自身是延迟求值的——每次操作时自动等待元素出现，无需手动等待 DOMContentLoaded。
      * 缓存是安全的，因为 Locator 不持有 DOM 快照，每次交互时重新查询。
-     * 
-     * 页面一致性：如果 page.getPage() 返回的 Page 实例与缓存时不同（例如页面切换），自动失效并重建。
+     *
+     * 缓存的 Locator 仅创建一次；页面切换（Context 重建）时由
+     * BasePage.ensurePageValid() → initializeAnnotatedFields() → invalidateCache() 负责失效，
+     * 下次调用重新通过 page.locator(selector) 绑定新的 Page 实例。
      */
     public Locator locator() {
         Locator loc = cachedLocator;

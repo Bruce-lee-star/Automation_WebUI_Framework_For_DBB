@@ -18,13 +18,6 @@ public final class PageElementList extends AbstractList<PageElement> {
     private final int defaultTimeoutMs = PlaywrightManager.config().getElementCheckTimeout();
 
     /**
-     * 缓存首次 size() 调用结果。设置为 -1 表示未缓存。
-     * 调用 invalidateCache() 可强制重新计算。
-     * 注意：size 缓存是首次调用时计算的一次性快照，非实时。
-     */
-    private volatile int cachedSize = -1;
-
-    /**
      * 缓存的 Locator 实例（DCL 线程安全懒加载）。
      * Playwright Locator 是延迟求值的——每次操作时重新查询 DOM，缓存是安全的。
      */
@@ -119,40 +112,33 @@ public final class PageElementList extends AbstractList<PageElement> {
         }
     }
 
-    // ========================== 大小（缓存优化版） ==========================
+    // ========================== 大小（实时查询 DOM） ==========================
     @Override
     public int size() {
         return size(defaultTimeoutMs / 1000);
     }
 
     public int size(int timeoutSec) {
-        if (cachedSize >= 0) return cachedSize;
-        synchronized (this) {
-            if (cachedSize >= 0) return cachedSize;
-            try {
-                Locator loc = locator();
-                loc.first().waitFor(new Locator.WaitForOptions()
-                        .setState(WaitForSelectorState.ATTACHED)
-                        .setTimeout((long) timeoutSec * 1000));
-                cachedSize = loc.count();
-                return cachedSize;
-            } catch (TimeoutError e) {
-                cachedSize = 0;
-                return 0;
-            } catch (Exception e) {
-                logger.warn("Unexpected error getting size: {}", selector, e);
-                cachedSize = 0;
-                return 0;
-            }
+        try {
+            Locator loc = locator();
+            loc.first().waitFor(new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.ATTACHED)
+                    .setTimeout((long) timeoutSec * 1000));
+            return loc.count();
+        } catch (TimeoutError e) {
+            return 0;
+        } catch (Exception e) {
+            logger.warn("Unexpected error getting size: {}", selector, e);
+            return 0;
         }
     }
 
     /**
-     * 使所有缓存失效（size + Locator），下次调用将重新查询 DOM。
-     * 适用于页面内容动态变化后需要重新计数的场景。
+     * 使 Locator 缓存失效，下次调用将重新查询 DOM。
+     * 适用于页面切换后需要重新绑定元素的场景。
+     * 注：size() 始终实时查询 DOM，不再有独立缓存。
      */
     public void invalidateCache() {
-        cachedSize = -1;
         cachedLocator = null;
     }
 
@@ -164,7 +150,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
         // size() 已通过 waitFor(ATTACHED) 确认元素存在，无需再次等待 VISIBLE
         // 元素的可见性交给后续操作自行判断（Playwright Locator 操作时自动等待）
-        return new PageElementWithIndex(selector, page, index, locator().nth(index));
+        return new PageElementWithIndex(selector, page, index);
     }
 
     // ========================== 迭代器 ==========================
@@ -251,20 +237,23 @@ public final class PageElementList extends AbstractList<PageElement> {
         waitForVisible(defaultTimeoutMs / 1000);
     }
 
-    // ========================== 缓存定位器内部类 ==========================
+    // ========================== 索引定位器内部类 ==========================
     private static final class PageElementWithIndex extends PageElement {
         private final int index;
-        private final Locator cachedLocator;
 
-        public PageElementWithIndex(String selector, BasePage page, int index, Locator cachedLocator) {
+        public PageElementWithIndex(String selector, BasePage page, int index) {
             super(selector, page);
             this.index = index;
-            this.cachedLocator = Objects.requireNonNull(cachedLocator);
         }
 
+        /**
+         * 通过父类 locator().nth(index) 获取定位器。
+         * 父类的 locator() 受 invalidateCache() 管控——页面切换（Context重建）
+         * 时缓存失效，下次调用将使用新 Page 实例重新创建 Locator。
+         */
         @Override
         public Locator locator() {
-            return cachedLocator;
+            return super.locator().nth(index);
         }
 
         public int getIndex() {

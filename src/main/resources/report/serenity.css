@@ -30,24 +30,32 @@ td.step-description-column {
 
 span.evidence {
     margin-bottom: 4px !important;
+    overflow: visible !important;
 }
 
-/* ── 主报告页面截图缩略图：hover 放大预览 ── */
+/* ── 主报告页面截图缩略图：默认大尺寸 + hover 原地放大（不跳走，不闪烁）── */
 img.screenshot {
-    border-bottom: solid #2b65ec 2px !important;
-    border-top: solid #6b90da 1px !important;
-    border-left: solid #6b90da 1px !important;
-    border-right: solid #2b65ec 2px !important;
+    border: solid #6b90da 1px !important;
     cursor: pointer;
-    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
     position: relative;
     z-index: 1;
+    width: 350px !important;   /* 缩略图默认显示 350px 宽 */
+    height: auto !important;
 }
 
 img.screenshot:hover {
-    transform: scale(1.8);
+    transform: scale(2.5);
+    transform-origin: top left; /* 从左上角放大，避免右侧/下方被页面截断 */
     z-index: 9999;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* 父容器防裁切 */
+td.screenshot-column,
+td[class*="screenshot"] {
+    overflow: visible !important;
+    min-width: 360px !important;
 }
 
 /* ── 嵌套步骤表格：展开后不和其他行产生视觉覆盖 ── */

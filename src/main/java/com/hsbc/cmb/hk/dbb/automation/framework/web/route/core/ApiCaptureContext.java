@@ -236,6 +236,12 @@ public class ApiCaptureContext {
 
     public void incrementActiveRequests() {
         int count = activeRequests.incrementAndGet();
+        if (count == 1) {
+            // ⭐ 0→1 时通知 waitForActiveRequest() 的调用方（DELAY 延迟载荷场景）
+            synchronized (completionLock) {
+                completionLock.notifyAll();
+            }
+        }
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[ApiCaptureContext] incrementActiveRequests -> {}", count);
     }
@@ -256,6 +262,47 @@ public class ApiCaptureContext {
 
     public int getActiveRequests() {
         return activeRequests.get();
+    }
+
+    /**
+     * 阻塞等待至少一个请求被 Route 拦截过（activeRequests 从 0→1）。
+     *
+     * <p>典型用途：DELAY 延迟载荷的 loading UI 验证。操作触发 API 请求后，
+     * 调用此方法确认 Route 已拦截请求进入延迟阻塞，然后再断言 loading 元素可见。
+     *
+     * <pre>{@code
+     * // 确保请求已被 DELAY 拦截
+     * if (!ApiCaptureContext.getCurrent().waitForActiveRequest(5000)) {
+     *     throw new AssertionError("Request was not intercepted within 5s");
+     * }
+     * // 此时请求处于悬停状态，loading 应当已渲染
+     * loadingElement.waitForVisible(10);
+     * }</pre>
+     *
+     * @param timeoutMs 超时毫秒数（推荐 3000–5000）
+     * @return true=已有请求被拦截，false=超时
+     */
+    public boolean waitForActiveRequest(long timeoutMs) {
+        if (activeRequests.get() > 0) {
+            return true;
+        }
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (completionLock) {
+            while (activeRequests.get() == 0) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    LOGGER.warn("[ApiCaptureContext] waitForActiveRequest timed out after {}ms", timeoutMs);
+                    return false;
+                }
+                try {
+                    completionLock.wait(remaining);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     /**

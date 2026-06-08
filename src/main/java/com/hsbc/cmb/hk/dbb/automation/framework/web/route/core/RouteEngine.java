@@ -321,7 +321,6 @@ public class RouteEngine {
             if (ctxType == RouteHandleType.DELAY && pageType == RouteHandleType.MONITOR) {
                 LOGGER.info("[RouteEngine] Context DELAY overrides page MONITOR: pattern='{}', url='{}', delay={}ms",
                         rule.getUrlPattern(), reqUrl, mergedDelay);
-                ApiCaptureContext.getCurrent().incrementActiveRequests();
                 Runnable action = () -> {
                     try {
                         route.resume();
@@ -333,7 +332,6 @@ public class RouteEngine {
                         try { route.resume(); } catch (Exception ignored) {}
                     } finally {
                         DISPATCHED_ROUTES.remove(route);
-                        ApiCaptureContext.getCurrent().decrementActiveRequests();
                     }
                 };
                 if (mergedDelay > 0) {
@@ -448,10 +446,10 @@ public class RouteEngine {
                 "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms",
                 pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs());
 
-        // ═══ 标记活动请求，使 awaitCompletion 等待 DELAY 动作完成 ═══
-        // increment 在 dispatch 线程执行，decrement 在调度器回调线程执行，
-        // ApiCaptureContext 使用 AtomicInteger 保证跨线程安全。
-        ApiCaptureContext.getCurrent().incrementActiveRequests();
+        // ⭐ DELAY 不递增 activeRequests：delay 是确定性同步阻塞，不需要
+        // PlaywrightListener 的 awaitCompletion 等待。否则会导致请求被"阻止两次"
+        //（网络层 DELAY 一次 + 步骤结束 awaitCompletion 一次）。
+        // 如需 loading UI 验证，在触发操作后用 Thread.sleep(200) 等待延迟生效即可。
 
         Runnable action = () -> {
             try {
@@ -477,7 +475,6 @@ public class RouteEngine {
                 try { route.resume(); } catch (Exception ignored) {}
             } finally {
                 DISPATCHED_ROUTES.remove(route);
-                ApiCaptureContext.getCurrent().decrementActiveRequests();
             }
         };
 

@@ -33,20 +33,15 @@ span.evidence {
     overflow: visible !important;
 }
 
-/* ── 主报告页面截图缩略图：默认大尺寸 + hover 原地放大（不跳走，不闪烁）── */
-img.screenshot {
-    border: solid #6b90da 1px !important;
-    cursor: pointer;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-    position: relative;
-    z-index: 1;
-    width: 350px !important;   /* 缩略图默认显示 350px 宽 */
-    height: auto !important;
-}
 
 img.screenshot:hover {
-    transform: scale(2.5);
-    transform-origin: top left; /* 从左上角放大，避免右侧/下方被页面截断 */
+    width: auto !important;
+    height: auto !important;
+    max-width: 600px !important;
+    max-height: 500px !important;
+    object-fit: contain !important;
+    position: relative;
+    margin-left: -200px !important;
     z-index: 9999;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
 }
@@ -55,7 +50,7 @@ img.screenshot:hover {
 td.screenshot-column,
 td[class*="screenshot"] {
     overflow: visible !important;
-    min-width: 360px !important;
+    min-width: 170px !important;
 }
 
 /* ── 嵌套步骤表格：展开后不和其他行产生视觉覆盖 ── */

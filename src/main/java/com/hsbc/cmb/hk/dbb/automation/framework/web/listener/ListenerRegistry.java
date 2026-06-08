@@ -52,20 +52,8 @@ public class ListenerRegistry {
             int listenerCount = 0;
             for (Class<?> clazz : classes) {
                 if (isListenerClass(clazz)) {
-                    // RetryScenarioListener 只在有 rerunFailingTestsCount 系统属性时才注册
-                    if (RetryScenarioListener.class.isAssignableFrom(clazz)) {
-                        String rerunCountStr = System.getProperty("rerunFailingTestsCount");
-                        if (rerunCountStr != null && !rerunCountStr.trim().isEmpty()) {
-                            registerListener(clazz);
-                            listenerCount++;
-                            LoggingConfigUtil.logInfoIfVerbose(logger, "RetryScenarioListener registered (rerunFailingTestsCount={})", rerunCountStr);
-                        } else {
-                            LoggingConfigUtil.logInfoIfVerbose(logger, "Skipping RetryScenarioListener registration (rerunFailingTestsCount not specified)");
-                        }
-                    } else {
-                        registerListener(clazz);
-                        listenerCount++;
-                    }
+                    registerListener(clazz);
+                    listenerCount++;
                 }
             }
 

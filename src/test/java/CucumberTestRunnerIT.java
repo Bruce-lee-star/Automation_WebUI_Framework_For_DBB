@@ -15,7 +15,7 @@ import org.junit.runner.RunWith;
             "json:target/cucumber-report.json",
             "rerun:target/rerun.txt"
         },
-        tags = "@test",
+        tags = "@test1",
         dryRun = false
 )
 @SuppressWarnings("deprecation")

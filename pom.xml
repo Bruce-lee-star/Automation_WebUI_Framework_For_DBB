@@ -28,6 +28,9 @@
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.2.5</maven-failsafe-plugin.version>
+
+        <!-- 重试：默认 0（不重试），CI 可通过 -DrerunFailingTestsCount=N 覆盖 -->
+        <rerunFailingTestsCount>0</rerunFailingTestsCount>
     </properties>
 
     <dependencies>
@@ -238,11 +241,12 @@
                 <version>${maven-failsafe-plugin.version}</version>
                 <configuration>
                     <useFile>false</useFile>
+                    <rerunFailingTestsCount>${rerunFailingTestsCount}</rerunFailingTestsCount>
+                    <forkCount>1</forkCount>
                     <includes>
                         <include>**/*IT.java</include>
                         <include>**/integration/**/*Test.java</include>
                         <include>**/CucumberTestRunner*.java</include>
-                        <include>**/RerunRunner*.java</include>
                     </includes>
                     <testClassesDirectory>${project.build.testOutputDirectory}</testClassesDirectory>
                     <classesDirectory>${project.build.outputDirectory}</classesDirectory>
@@ -250,7 +254,6 @@
                     <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang.reflect=ALL-UNNAMED</argLine>
                     <systemPropertyVariables>
                         <serenity.outputDirectory>${project.build.directory}/site/serenity</serenity.outputDirectory>
-                        <rerunFailingTestsCount>${rerunFailingTestsCount}</rerunFailingTestsCount>
                         <cucumber.filter.tags>${tags}</cucumber.filter.tags>
                     </systemPropertyVariables>
                     <failIfNoTests>false</failIfNoTests>

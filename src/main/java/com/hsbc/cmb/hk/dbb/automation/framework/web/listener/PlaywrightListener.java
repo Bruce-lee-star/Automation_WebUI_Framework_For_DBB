@@ -8,9 +8,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.hsbc.cmb.hk.dbb.automation.retry.configuration.RerunConfiguration;
-import com.hsbc.cmb.hk.dbb.automation.retry.executor.RerunProcessExecutor;
-import com.hsbc.cmb.hk.dbb.automation.retry.listener.PlaywrightRetryListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.DataTable;
 import net.thucydides.model.domain.Story;
@@ -85,6 +82,10 @@ public class PlaywrightListener implements StepListener {
 
     // 用于防止testSuiteFinished被多次调用时重复输出日志
     private static volatile boolean testSuiteFinishedLogged = false;
+
+    // ⭐ Rerun 检测：跟踪当前是第几次 run（0 = 首次运行，>=1 = rerun 轮次）
+    private static volatile int currentRunNumber = 0;
+    private static volatile boolean rerunStartedLogged = false;
 
     /**
      * ⭐ 阶段识别：Serenity CucumberWithSerenity 在 discovery 和 execution 两个阶段
@@ -196,9 +197,6 @@ public class PlaywrightListener implements StepListener {
         }
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (Result: {})", testName, duration, result);
-
-            // 检查是否需要重试失败的测试
-            checkAndTriggerRerun();
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
@@ -815,6 +813,14 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐ 重置：允许新 suite 再次触发清理
         testSuiteFinishedLogged = false;
+
+        // ⭐ Rerun 日志：testRunFinished() 之后首次 testSuiteStarted 即为 rerun
+        if (currentRunNumber > 0 && !rerunStartedLogged) {
+            rerunStartedLogged = true;
+            logger.info("==========================================================================");
+            logger.info("  RERUN STARTING — Round {} (Maven Failsafe rerunFailingTestsCount)", currentRunNumber);
+            logger.info("==========================================================================");
+        }
     }
 
     @Override
@@ -1085,9 +1091,7 @@ public class PlaywrightListener implements StepListener {
 
         // 注意：不在 testFailed 中 increment failedTests，避免与 testFinished 重复计数
         // 测试失败统计由 testFinished 统一处理
-
-        // 立即检查是否需要重试
-        checkAndTriggerRerun();
+        // 重试能力由 Maven Failsafe Plugin 的 rerunFailingTestsCount 提供
     }
 
     @Override
@@ -1152,86 +1156,17 @@ public class PlaywrightListener implements StepListener {
 
         logger.info(getPerformanceStats());
 
-        // 检查是否需要重试失败的测试
-        checkAndTriggerRerun();
+        // ⭐ 标记当前 run 结束，为下一次 rerun 做准备
+        currentRunNumber++;
+        rerunStartedLogged = false;
     }
 
 
 
-    private void checkAndTriggerRerun() {
-        // 只在首轮运行时检查（非重试模式）
-        String rerunMode = System.getProperty("rerun.mode", "false");
-        if (Boolean.parseBoolean(rerunMode)) {
-            logger.debug("In rerun mode, skipping rerun check");
-            return;
-        }
-
-        // 检查是否设置了 rerunFailingTestsCount
-        String rerunCountStr = System.getProperty("rerunFailingTestsCount");
-        if (rerunCountStr == null || rerunCountStr.trim().isEmpty()) {
-            logger.debug("rerunFailingTestsCount not set, skipping rerun");
-            return;
-        }
-
-        // 检查是否有失败的测试
-        long failedCount = failedTests.get();
-        if (failedCount == 0) {
-            logger.debug("No failed tests, no rerun needed");
-            return;
-        }
-
-        // 有失败的测试，触发 rerun（单进程模式：不启动新进程）
-        logger.info("Found {} failed tests, triggering rerun in same JVM process...", failedCount);
-        triggerRerunInSameProcess(rerunCountStr);
-    }
-
-    /**
-     * 在同一个进程中执行 rerun（使用文件持久化共享数据）
-     */
-    private void triggerRerunInSameProcess(String rerunCountStr) {
-        try {
-            int maxRerunAttempts = Integer.parseInt(rerunCountStr);
-            logger.info("Starting rerun with max attempts: {}", maxRerunAttempts);
-
-            // 重试前强制清理当前线程的路由规则和 API 捕获上下文，避免重试复用旧数据
-            cleanupRouteRegistryForCurrentThread();
-            ApiCaptureContext.removeCurrent();
-            logger.debug("Route registry and API capture context cleaned before rerun");
-
-            // 保存当前重试数据到文件，供 rerun 进程使用
-            PlaywrightRetryListener.getInstance().saveToFile();
-
-            RerunConfiguration configuration = RerunConfiguration.getInstance();
-            configuration.lazyInitialize();
-
-            RerunProcessExecutor executor = new RerunProcessExecutor(configuration);
-
-            executor.startSession();
-
-            // 循环执行多轮重试，直到成功或达到最大次数
-            RerunProcessExecutor.RerunExecutionResult result = null;
-            boolean rerunSuccess = false;
-
-            for (int round = 1; round <= maxRerunAttempts; round++) {
-                result = executor.executeRerun(round, maxRerunAttempts);
-
-                if (result.isSuccess()) {
-                    rerunSuccess = true;
-                    logger.info("Rerun completed successfully at round {}/{}", round, maxRerunAttempts);
-                    break;
-                } else {
-                    logger.warn("Rerun round {}/{} failed - exit code: {}", round, maxRerunAttempts, result.getExitCode());
-                }
-            }
-
-            if (!rerunSuccess) {
-                logger.error("All rerun attempts failed after {} rounds", maxRerunAttempts);
-            }
-
-        } catch (Exception e) {
-            logger.error("Failed to execute rerun", e);
-        }
-    }
+    // ═══════════════════════════════════════════════════════════════════
+    // 原 checkAndTriggerRerun() / triggerRerunInSameProcess() 已删除。
+    // 重试能力由 Maven Failsafe Plugin 的 rerunFailingTestsCount 提供。
+    // ═══════════════════════════════════════════════════════════════════
 
     public static String getPerformanceStats() {
         return String.format(

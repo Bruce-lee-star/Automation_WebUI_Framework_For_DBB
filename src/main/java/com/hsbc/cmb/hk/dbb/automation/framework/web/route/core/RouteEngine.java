@@ -390,91 +390,126 @@ public class RouteEngine {
         // ⭐ 必须在 DELAY 分支之前检查：context MOCK 会覆盖 page handler
         // Playwright Page.route() 优先级高于 BrowserContext.route()，
         // context 级规则会被 page 级规则完全屏蔽。在此查找并合并。
-        // 优先级：MOCK > MODIFY > DELAY > MONITOR
+        //
+        // 主优先级（决定最终行为）：MOCK > MODIFY > MONITOR > DELAY
+        // 层级优先级（同类型时）：Page > Context（page 配置胜出）
+        // DELAY 始终合并取最大值；
+        // 同 API 统一在 page handler 内合并执行，context handler 被 CROSS_LAYER_HANDLED_URLS 去重；
+        // 不同 API 各自负责，互不干扰。
         long delayMs = rule.getDelayMs();
-        RouteRule ctxRule = findMatchingContextRule(reqUrl);
 
-        if (ctxRule != null && ctxRule.getType() != rule.getType()) {
-            RouteHandleType ctxType = ctxRule.getType();
-            RouteHandleType pageType = rule.getType();
+        // ⭐ 仅 page handler 做跨层合并，context handler 跳过（避免在 CONTEXT_RULES 中自引用）
+        boolean isContextRule = CONTEXT_RULES.containsValue(rule);
+        RouteRule ctxRule = isContextRule ? null : findMatchingContextRule(reqUrl);
 
-            // ⭐ 标记此 URL 已被 page handler cross-layer merge 处理，
-            //    避免 context handler 重复拦截（Page/Context 的 Route 对象不同，DISPATCHED_ROUTES 无法去重）
-            CROSS_LAYER_HANDLED_URLS.add(reqUrl);
+        if (ctxRule != null) {
+            // ⭐ 若 context 规则的 MonitorSession 已停止（超时/auto-stop），
+            //    则忽略跨层合并 — 已停止的规则不应影响 page handler 行为
+            MonitorSession ctxSession = SESSIONS.get(ctxRule);
+            if (ctxSession != null && ctxSession.stopped.get()) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Context rule session stopped, skip cross-layer merge: ctxPattern='{}', url='{}'",
+                        ctxRule.getUrlPattern(), reqUrl);
+                // fall through — ctxRule 视为不存在，直接走 page handler
+            } else {
+                // ⭐ 标记此 URL — context handler 到达时必须跳过（所有类型均适用，含相同类型）
+                CROSS_LAYER_HANDLED_URLS.add(reqUrl);
 
-            // ── ∀ 跨层级组合：始终合并 DELAY ──
-            if (ctxType == RouteHandleType.DELAY) {
+                RouteHandleType pageType = rule.getType();
+                RouteHandleType ctxType = ctxRule.getType();
+
+                // ── ∀ 跨层级组合：始终合并 DELAY（取最大值，含 page 和 context 各自的 delay）──
                 long ctxDelay = DelayHandler.clampDelay(DelayHandler.resolveDelay(ctxRule));
                 delayMs = Math.max(delayMs, ctxDelay);
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine] Context DELAY merged: pageType={}, ctxDelay={}ms, effectiveDelay={}ms",
-                        pageType, ctxDelay, delayMs);
-            }
+                        "[RouteEngine] Cross-layer DELAY merged: pageType={}, ctxType={}, pageDelay={}ms, ctxDelay={}ms, effectiveDelay={}ms",
+                        pageType, ctxType, rule.getDelayMs(), ctxDelay, delayMs);
 
-            // ⭐ 快照合并后的延迟（此后 delayMs 不再修改，确保 lambda 中 effectively-final）
-            final long mergedDelay = delayMs;
+                // ⭐ 快照合并后的延迟（此后 delayMs 不再修改，确保 lambda 中 effectively-final）
+                final long mergedDelay = delayMs;
 
-            // ── DELAY > MONITOR：context DELAY 覆盖 page MONITOR → 纯延迟放行，不监控 ──
-            if (ctxType == RouteHandleType.DELAY && pageType == RouteHandleType.MONITOR) {
-                LOGGER.info("[RouteEngine] Context DELAY overrides page MONITOR: pattern='{}', url='{}', delay={}ms",
-                        rule.getUrlPattern(), reqUrl, mergedDelay);
-                Runnable action = () -> {
-                    try {
-                        route.resume();
-                        LOGGER.info("[RouteEngine] Route delayed (DELAY override MONITOR): pattern='{}', url='{}', delay={}ms",
-                                rule.getUrlPattern(), reqUrl, mergedDelay);
-                    } catch (Exception e) {
-                        LOGGER.error("[RouteEngine] Failed to resume after DELAY override for '{}': {}",
-                                rule.getUrlPattern(), e.getMessage(), e);
-                        try { route.resume(); } catch (Exception ignored) {}
-                    } finally {
-                        DISPATCHED_ROUTES.remove(route);
+                // ═══ 按主优先级处理：MOCK > MODIFY > MONITOR > DELAY ═══
+                if (ctxType != pageType) {
+
+                    // ── context MOCK 终结（最高优先级），覆盖所有 page handler ──
+                    if (ctxType == RouteHandleType.MOCK) {
+                        // page DELAY 的延迟不继承给 MOCK（MOCK 应立即 mock 返回）
+                        long mockDelay = (pageType == RouteHandleType.DELAY) ? 0 : mergedDelay;
+                        LOGGER.info("[RouteEngine] Context MOCK overrides page {}: pattern='{}', url='{}'",
+                                pageType, ctxRule.getUrlPattern(), reqUrl);
+                        if (mockDelay > 0) {
+                            DELAY_SCHEDULER.schedule(
+                                    () -> executeHandlerScheduled(route, ctxRule, MockHandler::handle),
+                                    mockDelay, TimeUnit.MILLISECONDS);
+                        } else {
+                            executeHandler(route, ctxRule, MockHandler::handle);
+                        }
+                        return;
                     }
-                };
-                if (mergedDelay > 0) {
-                    DELAY_SCHEDULER.schedule(action, mergedDelay, TimeUnit.MILLISECONDS);
+
+                    // ── context MODIFY + page anything → page handler 执行，delay 合并 ──
+                    if (ctxType == RouteHandleType.MODIFY) {
+                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                                "[RouteEngine] Context MODIFY + page {}: page handler runs with merged delay, "
+                                + "context modify not applied (requires handler refactor for full chaining)",
+                                pageType);
+                        delayMs = mergedDelay;
+                    }
+
+                    // ── context MONITOR + page MODIFY：page MODIFY 执行，context MONITOR 记录 ──
+                    else if (ctxType == RouteHandleType.MONITOR && pageType == RouteHandleType.MODIFY) {
+                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                                "[RouteEngine] Context MONITOR + page MODIFY: page modify runs, context monitor records basic capture");
+                        delayMs = mergedDelay;
+                    }
+
+                    // ── context DELAY + page MONITOR → 仅延迟放行，跳过监测 ──
+                    else if (ctxType == RouteHandleType.DELAY && pageType == RouteHandleType.MONITOR) {
+                        LOGGER.info("[RouteEngine] Context DELAY overrides page MONITOR: pattern='{}', url='{}', delay={}ms",
+                                rule.getUrlPattern(), reqUrl, mergedDelay);
+                        Runnable action = () -> {
+                            try {
+                                route.resume();
+                                LOGGER.info("[RouteEngine] Route delayed (DELAY override MONITOR): pattern='{}', url='{}', delay={}ms",
+                                        rule.getUrlPattern(), reqUrl, mergedDelay);
+                            } catch (Exception e) {
+                                LOGGER.error("[RouteEngine] Failed to resume after DELAY override for '{}': {}",
+                                        rule.getUrlPattern(), e.getMessage(), e);
+                                try { route.resume(); } catch (Exception ignored) {}
+                            } finally {
+                                DISPATCHED_ROUTES.remove(route);
+                            }
+                        };
+                        if (mergedDelay > 0) {
+                            DELAY_SCHEDULER.schedule(action, mergedDelay, TimeUnit.MILLISECONDS);
+                        } else {
+                            action.run();
+                        }
+                        return;
+                    }
+
+                    // ── context MONITOR + page DELAY/MOCK/MODIFY（非 MODIFY 场景）：
+                    //    page handler 执行，context 额外记录基础捕获 ──
+                    else if (ctxType == RouteHandleType.MONITOR) {
+                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                                "[RouteEngine] Context MONITOR + page {}: page handler runs, context monitor records",
+                                pageType);
+                        delayMs = mergedDelay;
+                    }
+
+                    // ── context DELAY + page MOCK/MODIFY → page handler 执行，delay 合并 ──
+                    else {
+                        delayMs = mergedDelay;
+                    }
+
                 } else {
-                    action.run();
+                    // ── 相同类型：page 配置胜出（层级优先级 Page > Context），仅合并 DELAY ──
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[RouteEngine] Same-type cross-layer ({}): page config wins for pattern='{}', merged delay={}ms",
+                            pageType, rule.getUrlPattern(), mergedDelay);
+                    delayMs = mergedDelay;
                 }
-                return;
             }
-
-            // ── MOCK 终结：context MOCK 覆盖所有 page handler ──
-            // ⭐ 当 page handler 为 DELAY 时，page DELAY 的延迟不应被 MOCK 继承，
-            //    MOCK 立即返回 mock 响应（仅合并 context 级别延迟）。
-            if (ctxType == RouteHandleType.MOCK) {
-                long mockDelay = (pageType == RouteHandleType.DELAY) ? 0 : mergedDelay;
-                LOGGER.info("[RouteEngine] Context MOCK overrides page {}: pattern='{}', url='{}'",
-                        pageType, ctxRule.getUrlPattern(), reqUrl);
-                if (mockDelay > 0) {
-                    DELAY_SCHEDULER.schedule(
-                            () -> executeHandlerScheduled(route, ctxRule, MockHandler::handle),
-                            mockDelay, TimeUnit.MILLISECONDS);
-                } else {
-                    executeHandler(route, ctxRule, MockHandler::handle);
-                }
-                return;
-            }
-
-            // ── MONITOR + MODIFY：page MODIFY 执行（已存 CapturedApiCall），
-            //     context MONITOR 额外记录基础捕获 ──
-            if (ctxType == RouteHandleType.MONITOR && pageType == RouteHandleType.MODIFY) {
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine] Context MONITOR + page MODIFY: page modify runs, context monitor records basic capture");
-            }
-
-            // ── MODIFY + MONITOR / MODIFY + DELAY：
-            //    context MODIFY 应修改请求后再执行 page handler
-            //    目前 page handler 执行，delay 合并（完整 MODIFY 链需后续提取修改逻辑）
-            if (ctxType == RouteHandleType.MODIFY) {
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[RouteEngine] Context MODIFY + page {}: page handler runs with merged delay, "
-                        + "context modify not applied (requires handler refactor for full chaining)",
-                        pageType);
-            }
-
-            // 更新 delayMs 快照（后续 DELAY/MONITOR/MOCK/MODIFY handler 执行前统一使用）
-            delayMs = mergedDelay;
         }
 
         // ═══ DELAY 类型：使用 schedule() 延迟调度 route.resume()，不占线程 ═══

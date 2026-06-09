@@ -1,7 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
+
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
@@ -47,14 +49,28 @@ public class ElementDiagnosticsCollector {
         }
     });
 
+
     private final Locator locator;
     private final String selector;
     private final Page page;
+    /** 当前 iframe 上下文（null 表示在主页面 DOM 中操作） */
+    private final Frame currentFrame;
 
-    public ElementDiagnosticsCollector(Locator locator, String selector, Page page) {
+    public ElementDiagnosticsCollector(Locator locator, String selector, Page page, Frame currentFrame) {
         this.locator = locator;
         this.selector = selector;
         this.page = page;
+        this.currentFrame = currentFrame;
+    }
+
+    /**
+     * 在正确的 DOM 上下文中执行 JS 评估：优先使用 iframe Frame，否则使用主页面 Page。
+     */
+    private Object evaluateInContext(String script, Object arg) {
+        if (currentFrame != null) {
+            return currentFrame.evaluate(script, arg);
+        }
+        return page.evaluate(script, arg);
     }
 
     /**
@@ -76,7 +92,7 @@ public class ElementDiagnosticsCollector {
             boolean detailed = PlaywrightManager.config().isElementDetailedDiagnostics();
             String script = buildBatchDiagnosticScript(detailed);
             @SuppressWarnings("unchecked")
-            Map<String, Object> result = (Map<String, Object>) page.evaluate(script, selector);
+            Map<String, Object> result = (Map<String, Object>) evaluateInContext(script, selector);
 
             info.existsInDom(getBoolean(result, "exists"))
                .isVisible(getBoolean(result, "visible"))
@@ -189,7 +205,7 @@ public class ElementDiagnosticsCollector {
                 + "if(top===e) return 'None';"
                 + "return top?'Obstructed by '+top.tagName:'Unknown';"
                 + "}";
-            Object result = page.evaluate(script, selector);
+            Object result = evaluateInContext(script, selector);
             return result != null ? result.toString() : "Unable to check";
         } catch (Exception e) {
             return "Unable to check: " + e.getMessage();
@@ -212,7 +228,7 @@ public class ElementDiagnosticsCollector {
                 + "}"
                 + "return p;"
                 + "}";
-            Object result = page.evaluate(script, selector);
+            Object result = evaluateInContext(script, selector);
             return result != null ? result.toString() : "N/A";
         } catch (Exception e) {
             return "N/A";
@@ -269,7 +285,8 @@ public class ElementDiagnosticsCollector {
                 + "const e=document.querySelector(s);"
                 + "return e&&e.outerHTML?e.outerHTML.substring(0,500):'N/A';"
                 + "}";
-            return page.evaluate(script, selector).toString();
+            Object evaluateResult = evaluateInContext(script, selector);
+            return evaluateResult != null ? evaluateResult.toString() : "N/A";
         } catch (Exception e) {
             return "Unable to get HTML";
         }

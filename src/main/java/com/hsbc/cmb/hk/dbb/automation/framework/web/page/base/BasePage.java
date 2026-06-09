@@ -33,11 +33,12 @@ public abstract class BasePage {
     private static final ThreadLocal<BasePage> currentPage = new ThreadLocal<>();
 
     /**
-     * 当前 iframe 上下文（Playwright Frame）。null 表示当前在主页面 DOM 中操作。
+     * 当前 iframe 上下文（Playwright Frame），使用 ThreadLocal 使所有 Page 实例共享。
+     * <p>null 表示当前在主页面 DOM 中操作。
      * <p>设置后，所有通过 {@link #locator(String)} 创建的 Locator 将自动在 iframe 内查找元素，
      * 从而解决"切到 iframe 后元素 not found in DOM"的经典问题。
      */
-    private Frame currentFrame = null;
+    private static final ThreadLocal<Frame> currentFrame = new ThreadLocal<>();
 
     // ===================== 全局文本统一格式化工具 =====================
     /**
@@ -67,11 +68,20 @@ public abstract class BasePage {
                 // 双重检查：锁内再次确认 page 仍无效
                 if (page == null || isPageClosed(page)) {
                     page = PlaywrightManager.getPage();
-                    currentFrame = null; // 页面重建后重置 iframe 上下文
+                    currentFrame.remove(); // 页面重建后重置 iframe 上下文
                     setCurrentPage();
                     // 页面切换后重新绑定所有 @Element 注解字段到新 Page
                     initializeAnnotatedFields();
                 }
+            }
+        } else {
+            // 检测 PlaywrightManager 中的 page 是否已被其他实例切换（如 switchToPage/switchNewPage）
+            Page managerPage = PlaywrightManager.getPage();
+            if (managerPage != page) {
+                page = managerPage;
+                currentFrame.remove();
+                setCurrentPage();
+                initializeAnnotatedFields();
             }
         }
     }
@@ -370,8 +380,9 @@ public abstract class BasePage {
      */
     public Locator locator(String selector) {
         ensurePageValid();
-        if (currentFrame != null) {
-            return currentFrame.locator(selector);
+        Frame frame = currentFrame.get();
+        if (frame != null) {
+            return frame.locator(selector);
         }
         return page.locator(selector);
     }
@@ -510,8 +521,8 @@ public abstract class BasePage {
      * 否则后续元素操作会在已失效的 Frame 上执行导致报错。
      */
     private void resetFrameContextAfterNavigation() {
-        if (currentFrame != null) {
-            currentFrame = null;
+        if (currentFrame.get() != null) {
+            currentFrame.remove();
             initializeAnnotatedFields();
             logger.debug("Reset iframe context after page navigation");
         }
@@ -550,7 +561,8 @@ public abstract class BasePage {
         List<Page> pages = context.pages();
         if (index < 0 || index >= pages.size()) throw new IndexOutOfBoundsException("Invalid page index");
         page = pages.get(index);
-        currentFrame = null; // 切换页面后重置 iframe 上下文
+        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
+        currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -559,7 +571,8 @@ public abstract class BasePage {
         ensureContextValid();
         List<Page> pages = context.pages();
         page = pages.getLast();
-        currentFrame = null; // 切换页面后重置 iframe 上下文
+        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
+        currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -599,8 +612,9 @@ public abstract class BasePage {
         ensureContextValid();
         Page newPage = waitForNewPage(timeoutSecs);
         page = newPage;
+        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
         page.bringToFront();
-        currentFrame = null; // 切换页面后重置 iframe 上下文
+        currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields();
         logger.info("Switch to new page: url={}, title={}", page.url(), page.title());
@@ -624,7 +638,7 @@ public abstract class BasePage {
             Page onlyPage = pages.get(0);
             if (page != onlyPage) {
                 page = onlyPage;
-                currentFrame = null; // 切换页面后重置 iframe 上下文
+                currentFrame.remove(); // 切换页面后重置 iframe 上下文
                 setCurrentPage();
                 initializeAnnotatedFields();
             }
@@ -654,7 +668,7 @@ public abstract class BasePage {
         }
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
         page = updatedPages.get(targetIndex);
-        currentFrame = null; // 切换页面后重置 iframe 上下文
+        currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -686,7 +700,7 @@ public abstract class BasePage {
             if (page != mainPage) {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Single page available, switching page reference to main page");
                 page = mainPage;
-                currentFrame = null; // 切换页面后重置 iframe 上下文
+                currentFrame.remove(); // 切换页面后重置 iframe 上下文
                 setCurrentPage();
                 initializeAnnotatedFields();
             } else {
@@ -713,15 +727,24 @@ public abstract class BasePage {
         
         // 确保最终指向主页
         page = mainPage;
-        currentFrame = null; // 切换页面后重置 iframe 上下文
+        currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Successfully reset to main page");
     }
 
+
     public Frame getFrame(String name) {
         ensurePageValid();
         return page.frame(name);
+    }
+
+    /**
+     * 获取当前 iframe 上下文（ThreadLocal 共享，所有 Page 实例可见）。
+     * @return 当前 iframe Frame，未切入 iframe 时返回 null
+     */
+    public Frame getCurrentFrame() {
+        return currentFrame.get();
     }
 
     // ===================== iframe 切换 =====================
@@ -750,7 +773,7 @@ public abstract class BasePage {
             throw new RuntimeException("Frame not found by name/id: '" + frameName
                 + "'. Available frames: " + page.frames().size());
         }
-        currentFrame = frame;
+        currentFrame.set(frame);
         // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向 iframe 内的 DOM
         initializeAnnotatedFields();
         logger.info("Switched to iframe: name='{}'", frameName);
@@ -774,10 +797,11 @@ public abstract class BasePage {
         ensurePageValid();
         try {
             com.microsoft.playwright.ElementHandle iframeEl = page.locator(iframeSelector).elementHandle();
-            currentFrame = iframeEl.contentFrame();
-            if (currentFrame == null) {
+            Frame cf = iframeEl.contentFrame();
+            if (cf == null) {
                 throw new RuntimeException("Cannot get content frame from selector: " + iframeSelector);
             }
+            currentFrame.set(cf);
         } catch (Exception e) {
             logger.error("Failed to switch to iframe by selector '{}': {}", iframeSelector, e.getMessage());
             throw new RuntimeException("Failed to switch to iframe by selector: " + iframeSelector, e);
@@ -800,11 +824,12 @@ public abstract class BasePage {
         if (index < 0 || index >= frames.size()) {
             throw new IndexOutOfBoundsException("Invalid frame index: " + index + " (total: " + frames.size() + ")");
         }
-        currentFrame = frames.get(index);
+        Frame selectedFrame = frames.get(index);
+        currentFrame.set(selectedFrame);
         // 刷新所有 @Element 注解字段的 Locator 缓存
         initializeAnnotatedFields();
         logger.info("Switched to iframe by index: {} (total: {})", index, frames.size());
-        return currentFrame;
+        return selectedFrame;
     }
 
     /**
@@ -812,8 +837,8 @@ public abstract class BasePage {
      * <p>此后所有元素操作恢复在主页面 DOM 中查找。
      */
     public void switchToMainFrame() {
-        if (currentFrame != null) {
-            currentFrame = null;
+        if (currentFrame.get() != null) {
+            currentFrame.remove();
             // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向主页面 DOM
             initializeAnnotatedFields();
             logger.info("Switched back to main frame (top-level page)");
@@ -858,7 +883,8 @@ public abstract class BasePage {
 
     public Object executeJavaScript(String script, Object... args) {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.evaluate(script, args) : page.evaluate(script, args);
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.evaluate(script, args) : page.evaluate(script, args);
     }
 
     public String innerHTML(String selector) {
@@ -873,7 +899,8 @@ public abstract class BasePage {
 
     public boolean getPageSourceContains(String text) {
         ensurePageValid();
-        String content = (currentFrame != null) ? currentFrame.content() : page.content();
+        Frame frame = currentFrame.get();
+        String content = (frame != null) ? frame.content() : page.content();
         return normalizeText(content).contains(normalizeText(text));
     }
 
@@ -882,7 +909,8 @@ public abstract class BasePage {
      */
     public String getPageSource() {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.content() : page.content();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.content() : page.content();
     }
 
     /**
@@ -938,12 +966,14 @@ public abstract class BasePage {
 
     public Locator byAltText(String altText) {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.getByAltText(altText) : page.getByAltText(altText);
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByAltText(altText) : page.getByAltText(altText);
     }
 
     public Locator byRole(AriaRole role) {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.getByRole(role) : page.getByRole(role);
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByRole(role) : page.getByRole(role);
     }
 
     public void dragAndDrop(String sourceSelector, String targetSelector) {
@@ -960,12 +990,14 @@ public abstract class BasePage {
 
     public Locator byTitle(String title) {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.getByTitle(title) : page.getByTitle(title);
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByTitle(title) : page.getByTitle(title);
     }
 
     public Locator byTestId(String testId) {
         ensurePageValid();
-        return (currentFrame != null) ? currentFrame.getByTestId(testId) : page.getByTestId(testId);
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByTestId(testId) : page.getByTestId(testId);
     }
 
     public void keyDown(String selector, String key) {
@@ -999,8 +1031,9 @@ public abstract class BasePage {
 
     public byte[] takeScreenshot() {
         ensurePageValid();
-        return (currentFrame != null)
-                ? currentFrame.frameElement().screenshot()
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.frameElement().screenshot()
                 : page.screenshot();
     }
 

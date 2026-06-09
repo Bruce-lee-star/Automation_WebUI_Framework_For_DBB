@@ -1019,16 +1019,10 @@ public class PlaywrightListener implements StepListener {
             cleanupRouteRegistryForCurrentThread();
 
             // ⭐ 修复：补齐 Playwright 资源清理（与 testFinished(TestOutcome) 保持一致）
+            // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理
+            // Feature 模式不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
             try {
-                String restartBrowserForEach = SystemEnvironmentVariables.currentEnvironmentVariables()
-                        .getProperty("serenity.restart.browser.for.each", "scenario");
-                if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-                    logger.info("Cleaning up Playwright resources (scenario-level restart)");
-                    PlaywrightManager.cleanupForScenario();
-                } else {
-                    logger.debug("Feature mode - cleaning page state while keeping Context/Page");
-                    PlaywrightManager.cleanupPageState();
-                }
+                PlaywrightManager.cleanupForScenario();
                 BasePage.clearCurrentPage();
             } catch (Exception e) {
                 logger.error("Failed to clean up Playwright resources after test: {}", e.getMessage());

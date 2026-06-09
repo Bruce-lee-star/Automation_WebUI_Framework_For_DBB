@@ -167,7 +167,7 @@ public class PageElement {
      */
     private void captureDiagnosticsAndLog(String operation, RuntimeException ex, String selector) {
         try {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
             ElementOperationException.DiagnosticInfo info = diagnostics.collect();
             String screenshotPath = diagnostics.captureFailureScreenshot(operation);
             logger.debug("[{}] failed on '{}' | exists={} visible={} enabled={} count={} | screenshot={}",
@@ -200,7 +200,7 @@ public class PageElement {
         // Pre-flight check: element must exist in DOM
         // 使用配置的检查超时，如果超时则说明元素真的不存在，不重试
         if (!elementExists()) {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
             ElementOperationException.DiagnosticInfo info = diagnostics.collect();
             info.retryCount(0);
 
@@ -264,7 +264,7 @@ public class PageElement {
 
         // Build detailed exception with full diagnostic info
         // 诊断收集器延迟创建——仅在失败路径才收集
-        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage());
+        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
         ElementOperationException.DiagnosticInfo info = diagnostics.collect();
         info.retryCount(maxRetry + 1);
 

@@ -1079,6 +1079,18 @@ public class PlaywrightManager {
     }
 
     /**
+     * 设置当前线程的 Page（用于 BasePage 切换页面后同步，不触发创建）。
+     */
+    public static void setPage(Page page) {
+        if (page != null && !page.isClosed()) {
+            pageThreadLocal.set(page);
+        } else {
+            logger.warn("[PlaywrightManager] setPage() ignored: page is {}",
+                    page == null ? "null" : "closed");
+        }
+    }
+
+    /**
      * 获取 Page（线程安全）
      * <p>
      * 支持延迟重建机制：在获取 Page 时检查是否需要重建 Context

@@ -19,6 +19,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -45,9 +46,25 @@ public class ElementDiagnosticsCollector {
         public Thread newThread(Runnable r) {
             Thread t = new Thread(r, "diagnostic-" + counter.incrementAndGet());
             t.setDaemon(true);
+            t.setUncaughtExceptionHandler((th, ex) ->
+                logger.warn("[diagnostic] Uncaught in thread {}: {}", th.getName(), ex.getMessage()));
             return t;
         }
     });
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            DIAGNOSTIC_EXECUTOR.shutdown();
+            try {
+                if (!DIAGNOSTIC_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
+                    DIAGNOSTIC_EXECUTOR.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                DIAGNOSTIC_EXECUTOR.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }, "diagnostic-shutdown"));
+    }
 
 
     private final Locator locator;
@@ -76,9 +93,15 @@ public class ElementDiagnosticsCollector {
     /**
      * 异步收集完整的诊断信息（不阻塞当前测试线程）。
      * 适用于只需要日志记录、不需要阻塞等待的诊断场景。
+     * CompletableFuture 内部已设置 exceptionally() 处理异常，调用方无需等待。
      */
     public CompletableFuture<ElementOperationException.DiagnosticInfo> collectAsync() {
-        return CompletableFuture.supplyAsync(this::collect, DIAGNOSTIC_EXECUTOR);
+        return CompletableFuture.supplyAsync(this::collect, DIAGNOSTIC_EXECUTOR)
+                .whenComplete((info, ex) -> {
+                    if (ex != null) {
+                        logger.debug("[diagnostic] Async collect failed for [{}]: {}", selector, ex.getMessage());
+                    }
+                });
     }
 
     /**
@@ -271,9 +294,15 @@ public class ElementDiagnosticsCollector {
     /**
      * 异步捕获失败截图（不阻塞测试线程）。
      * I/O 操作使用共享诊断线程池执行，避免高并发场景下失败路径雪崩。
+     * CompletableFuture 内部已设置 exceptionally() 处理异常，调用方无需等待。
      */
     public CompletableFuture<String> captureFailureScreenshotAsync(String testName) {
-        return CompletableFuture.supplyAsync(() -> captureFailureScreenshot(testName), DIAGNOSTIC_EXECUTOR);
+        return CompletableFuture.supplyAsync(() -> captureFailureScreenshot(testName), DIAGNOSTIC_EXECUTOR)
+                .whenComplete((path, ex) -> {
+                    if (ex != null) {
+                        logger.debug("[diagnostic] Async screenshot failed for [{}]: {}", selector, ex.getMessage());
+                    }
+                });
     }
 
     /**

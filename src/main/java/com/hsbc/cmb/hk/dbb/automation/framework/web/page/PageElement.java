@@ -93,50 +93,37 @@ public class PageElement {
     }
 
     // ==================== Element State Check ====================
-    private boolean elementExists() {
+
+    /**
+     * 等待元素达到指定状态（ATTACHED / VISIBLE 等），用于 pre-flight 检查。
+     * 返回 true 表示元素在规定超时内达到目标状态，false 表示超时。
+     */
+    private boolean waitForElementState(WaitForSelectorState state) {
+        String stateName = state == WaitForSelectorState.ATTACHED ? "exists" : "visible";
         try {
-            // 等待元素出现在 DOM 中，使用配置的检查超时（默认15秒）
             locator().first().waitFor(
                 new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
+                    .setState(state)
                     .setTimeout(PlaywrightManager.config().getElementCheckTimeout())
             );
             return true;
         } catch (TimeoutError e) {
-            logger.debug("elementExists() timeout: selector={}, timeout={}ms", 
-                selector, PlaywrightManager.config().getElementCheckTimeout());
+            logger.debug("element{}({}) timeout: selector={}, timeout={}ms",
+                stateName, state, selector, PlaywrightManager.config().getElementCheckTimeout());
             return false;
         } catch (PlaywrightException e) {
-            logger.debug("elementExists() error: selector={}, error={}", selector, e.getMessage());
+            logger.debug("element{}({}) error: selector={}, error={}",
+                stateName, state, selector, e.getMessage());
             return false;
         }
+    }
+
+    private boolean elementExists() {
+        return waitForElementState(WaitForSelectorState.ATTACHED);
     }
 
     private boolean elementIsVisible() {
-        try {
-            // 等待元素变为可见，使用配置的检查超时（默认15秒）
-            locator().first().waitFor(
-                new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout())
-            );
-            return true;
-        } catch (TimeoutError e) {
-            logger.debug("elementIsVisible() timeout: selector={}, timeout={}ms", 
-                selector, PlaywrightManager.config().getElementCheckTimeout());
-            return false;
-        } catch (PlaywrightException e) {
-            logger.debug("elementIsVisible() error: selector={}, error={}", selector, e.getMessage());
-            return false;
-        }
-    }
-
-    private String getCurrentPageUrl() {
-        try {
-            return page.getCurrentUrl();
-        } catch (Exception e) {
-            return "unknown";
-        }
+        return waitForElementState(WaitForSelectorState.VISIBLE);
     }
 
     // ==================== Safe Execution Template ====================
@@ -167,7 +154,7 @@ public class PageElement {
      */
     private void captureDiagnosticsAndLog(String operation, RuntimeException ex, String selector) {
         try {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
             ElementOperationException.DiagnosticInfo info = diagnostics.collect();
             String screenshotPath = diagnostics.captureFailureScreenshot(operation);
             logger.debug("[{}] failed on '{}' | exists={} visible={} enabled={} count={} | screenshot={}",
@@ -200,7 +187,7 @@ public class PageElement {
         // Pre-flight check: element must exist in DOM
         // 使用配置的检查超时，如果超时则说明元素真的不存在，不重试
         if (!elementExists()) {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
+            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
             ElementOperationException.DiagnosticInfo info = diagnostics.collect();
             info.retryCount(0);
 
@@ -240,11 +227,16 @@ public class PageElement {
                 return;
             } catch (TimeoutError e) {
                 lastEx = e;
-                // TimeoutError 不重试（超时意味着操作真的失败了）
-                // 降级为 WARN — 异常最终会由 PlaywrightListener.stepFailed() 统一记录 error
-                logger.warn("[{}] Timeout on attempt {}/{}: {}",
-                    operation, i + 1, maxRetry + 1, selector);
-                break;
+                // 前置 elementExists() 已确认元素在 DOM 中，TimeoutError 可能是
+                // 元素暂时不可见/不可交互（动画中、被遮挡等），值得重试
+                if (i == maxRetry || !isRetriable(e)) {
+                    logger.warn("[{}] Timeout on attempt {}/{}: {}",
+                        operation, i + 1, maxRetry + 1, selector);
+                    break;
+                }
+                logger.warn("[Retry {}/{}] {} timed out: {}",
+                    i + 1, maxRetry, operation, e.getMessage());
+                page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
             } catch (PlaywrightException e) {
                 lastEx = e;
                 if (i == maxRetry || !isRetriable(e)) {
@@ -264,7 +256,7 @@ public class PageElement {
 
         // Build detailed exception with full diagnostic info
         // 诊断收集器延迟创建——仅在失败路径才收集
-        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPage(), page.getCurrentFrame());
+        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
         ElementOperationException.DiagnosticInfo info = diagnostics.collect();
         info.retryCount(maxRetry + 1);
 
@@ -923,17 +915,18 @@ public class PageElement {
      */
     private static final class ChildPageElement extends PageElement {
         private final String parentSelector;
+        private final String childSelector;
 
         ChildPageElement(String parentSelector, String childSelector, BasePage page) {
             super(parentSelector + " >> " + childSelector, page);
             this.parentSelector = parentSelector;
+            this.childSelector = childSelector;
         }
 
         @Override
         public Locator locator() {
             // 不使用父类缓存，直接用 Locator.locator() 实现真正的 DOM 层级定位
-            String childPart = getSelector().substring(parentSelector.length() + 4); // skip " >> "
-            return getPage().locator(parentSelector).locator(childPart);
+            return getPage().locator(parentSelector).locator(childSelector);
         }
     }
 

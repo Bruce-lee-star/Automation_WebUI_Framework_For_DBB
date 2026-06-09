@@ -174,6 +174,17 @@ public abstract class BasePage {
         return page;
     }
 
+    /**
+     * 直接返回 Playwright Page 引用，不触发 ensurePageValid() 副作用。
+     * 仅供诊断/日志等只读场景使用（如 ElementDiagnosticsCollector、截图等），
+     * 避免在失败路径中意外触发页面同步和字段重新绑定。
+     *
+     * @return 当前 Playwright Page（可能为 null 或已关闭）
+     */
+    public Page getPageRaw() {
+        return page;
+    }
+
     public BrowserContext getContext() {
         ensureContextValid();
         return context;

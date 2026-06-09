@@ -7,7 +7,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
  *
  * @since 1.0.0
  */
-public class ElementOperationException extends RuntimeException {
+public class ElementOperationException extends ElementException {
 
     private static final long serialVersionUID = 1L;
 

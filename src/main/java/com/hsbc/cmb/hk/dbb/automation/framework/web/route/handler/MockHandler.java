@@ -58,7 +58,7 @@ public class MockHandler {
                 rule.getMockReplaceFields() != null && !rule.getMockReplaceFields().isEmpty());
 
         // ── 3. 批量字段替换（支持通配符 [*]）────────────────────────
-        Map<String, String> replaceFields = rule.getMockReplaceFields();
+        Map<String, Object> replaceFields = rule.getMockReplaceFields();
         if (replaceFields != null && !replaceFields.isEmpty() && !body.isEmpty()) {
             try {
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
@@ -112,10 +112,16 @@ public class MockHandler {
                         System.currentTimeMillis(),
                         url    // 实际请求 URL，用于毫秒级精确检索
                 );
-                ApiCaptureContext.getCurrent().storeApiCall(call);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                        rule.getUrlPattern(), method, status);
+                ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+                if (ctx != null) {
+                    ctx.storeApiCall(call);
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                            rule.getUrlPattern(), method, status);
+                } else {
+                    LOGGER.debug("[MockHandler] ApiCaptureContext is null, skipped store for pattern '{}'",
+                            rule.getUrlPattern());
+                }
             } catch (Exception e) {
                 LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
             }

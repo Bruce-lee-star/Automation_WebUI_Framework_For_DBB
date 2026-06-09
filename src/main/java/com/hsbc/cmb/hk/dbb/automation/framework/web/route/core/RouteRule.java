@@ -33,8 +33,9 @@ public class RouteRule {
     private int mockStatus = 200;
     private Map<String, String> mockHeaders;
     /** Mock 响应批量字段替换：JSONPath → 替换值。
-     *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换） */
-    private Map<String, String> mockReplaceFields;
+     *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换）
+     *  ⭐ value 改为 Object 类型，支持字符串、数字、布尔、null 等原始类型 */
+    private Map<String, Object> mockReplaceFields;
 
     // ModifyRequest — 增删改三个维度
     /** 请求头：设置/新增 key → value（覆盖已有同名头） */
@@ -137,8 +138,9 @@ public class RouteRule {
     /**
      * 获取 Mock 响应批量字段替换映射（JSONPath → 值）。
      * 支持通配符 [*] 批量替换 List 中所有元素的字段。
+     * ⭐ value 为 Object 类型，支持字符串、数字、布尔等。
      */
-    public Map<String, String> getMockReplaceFields() {
+    public Map<String, Object> getMockReplaceFields() {
         return mockReplaceFields;
     }
 
@@ -297,15 +299,16 @@ public class RouteRule {
      * 添加一个 Mock 响应字段替换（JSONPath → 值）。
      * 支持通配符 [*] 批量替换 List 中所有元素的字段，如 $.users[*].name。
      * <p>支持多次调用，添加到 Map 中。
+     * ⭐ value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等。
      */
-    public void addMockReplaceField(String jsonPath, String value) {
+    public void addMockReplaceField(String jsonPath, Object value) {
         if (mockReplaceFields == null) {
             mockReplaceFields = new LinkedHashMap<>();
         }
         mockReplaceFields.put(jsonPath, value);
     }
 
-    public void setMockReplaceFields(Map<String, String> mockReplaceFields) {
+    public void setMockReplaceFields(Map<String, Object> mockReplaceFields) {
         this.mockReplaceFields = mockReplaceFields;
     }
 

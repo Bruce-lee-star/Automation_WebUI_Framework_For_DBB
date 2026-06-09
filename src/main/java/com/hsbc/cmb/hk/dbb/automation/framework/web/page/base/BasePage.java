@@ -32,6 +32,13 @@ public abstract class BasePage {
     protected BrowserContext context;
     private static final ThreadLocal<BasePage> currentPage = new ThreadLocal<>();
 
+    /**
+     * 当前 iframe 上下文（Playwright Frame）。null 表示当前在主页面 DOM 中操作。
+     * <p>设置后，所有通过 {@link #locator(String)} 创建的 Locator 将自动在 iframe 内查找元素，
+     * 从而解决"切到 iframe 后元素 not found in DOM"的经典问题。
+     */
+    private Frame currentFrame = null;
+
     // ===================== 全局文本统一格式化工具 =====================
     /**
      * 文本标准化：委托给 {@link TextNormalizer#normalize(String)} 统一实现，
@@ -60,6 +67,7 @@ public abstract class BasePage {
                 // 双重检查：锁内再次确认 page 仍无效
                 if (page == null || isPageClosed(page)) {
                     page = PlaywrightManager.getPage();
+                    currentFrame = null; // 页面重建后重置 iframe 上下文
                     setCurrentPage();
                     // 页面切换后重新绑定所有 @Element 注解字段到新 Page
                     initializeAnnotatedFields();
@@ -81,7 +89,7 @@ public abstract class BasePage {
         }
     }
 
-    private void ensureContextValid() {
+    public void ensureContextValid() {
         if (context == null) {
             context = PlaywrightManager.getContext();
         }
@@ -355,8 +363,16 @@ public abstract class BasePage {
         retry(() -> navigateTo(url), retries, 1000, "navigate to: " + url);
     }
 
+    /**
+     * 创建 Playwright Locator，自动适配 iframe 上下文。
+     * <p>若当前处于 iframe 内（{@link #currentFrame} != null），则在 iframe DOM 中定位元素；
+     * 否则在主页面 DOM 中定位。解决切到 iframe 后元素 "not found in DOM" 的问题。
+     */
     public Locator locator(String selector) {
         ensurePageValid();
+        if (currentFrame != null) {
+            return currentFrame.locator(selector);
+        }
         return page.locator(selector);
     }
 
@@ -478,11 +494,26 @@ public abstract class BasePage {
             // 不需要再额外 waitForLoadState，避免重复等待
             page.navigate(url, options);
             logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
+            resetFrameContextAfterNavigation();
         } catch (TimeoutError e) {
             // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
             throw new NavigationException(url, PlaywrightManager.config().getNavigationTimeout(), e);
         } catch (PlaywrightException e) {
             throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 页面导航（navigate / refresh / back / forward）后重置 iframe 上下文。
+     * <p>页面内容发生变化后，旧的 Frame 对象会变为 detached，
+     * 必须将 currentFrame 置为 null 并刷新 @Element 注解字段的 Locator 缓存，
+     * 否则后续元素操作会在已失效的 Frame 上执行导致报错。
+     */
+    private void resetFrameContextAfterNavigation() {
+        if (currentFrame != null) {
+            currentFrame = null;
+            initializeAnnotatedFields();
+            logger.debug("Reset iframe context after page navigation");
         }
     }
 
@@ -499,16 +530,19 @@ public abstract class BasePage {
     public void refresh() {
         ensurePageValid();
         page.reload();
+        resetFrameContextAfterNavigation();
     }
 
     public void back() {
         ensurePageValid();
         page.goBack();
+        resetFrameContextAfterNavigation();
     }
 
     public void forward() {
         ensurePageValid();
         page.goForward();
+        resetFrameContextAfterNavigation();
     }
 
     public void switchToPage(int index) {
@@ -516,6 +550,7 @@ public abstract class BasePage {
         List<Page> pages = context.pages();
         if (index < 0 || index >= pages.size()) throw new IndexOutOfBoundsException("Invalid page index");
         page = pages.get(index);
+        currentFrame = null; // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -524,6 +559,7 @@ public abstract class BasePage {
         ensureContextValid();
         List<Page> pages = context.pages();
         page = pages.getLast();
+        currentFrame = null; // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -539,6 +575,36 @@ public abstract class BasePage {
             throw new TimeoutException("No pages available");
         }
         return pages.getLast();
+    }
+
+    /**
+     * 等待新页面打开并自动切换 — 组合 waitForNewPage + switchToLatestPage。
+     *
+     * <p>典型场景：点击一个 target="_blank" 链接，期望新 tab 打开。
+     * 本方法等待新 Page 出现后自动切换当前页面指针到新 Page，
+     * 并重新绑定所有 @Element 注解字段，确保后续操作在新页面上执行。
+     *
+     * <p>内置 ensureContextValid()，确保 context 不会为 null。
+     *
+     * <pre>{@code
+     * myPage.switchNewPage(10);
+     * // 此后所有元素操作都指向新打开的 page
+     * }</pre>
+     *
+     * @param timeoutSecs 等待新页面打开的超时秒数
+     * @return 新打开的 Page 实例
+     * @throws TimeoutException 如果在超时时间内未检测到新页面
+     */
+    public Page switchNewPage(int timeoutSecs) {
+        ensureContextValid();
+        Page newPage = waitForNewPage(timeoutSecs);
+        page = newPage;
+        page.bringToFront();
+        currentFrame = null; // 切换页面后重置 iframe 上下文
+        setCurrentPage();
+        initializeAnnotatedFields();
+        logger.info("Switch to new page: url={}, title={}", page.url(), page.title());
+        return newPage;
     }
 
     public void closeCurrentPageAndSwitchBack() {
@@ -558,6 +624,7 @@ public abstract class BasePage {
             Page onlyPage = pages.get(0);
             if (page != onlyPage) {
                 page = onlyPage;
+                currentFrame = null; // 切换页面后重置 iframe 上下文
                 setCurrentPage();
                 initializeAnnotatedFields();
             }
@@ -587,6 +654,7 @@ public abstract class BasePage {
         }
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
         page = updatedPages.get(targetIndex);
+        currentFrame = null; // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields(); // 页面切换后重新绑定元素
     }
@@ -618,6 +686,7 @@ public abstract class BasePage {
             if (page != mainPage) {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Single page available, switching page reference to main page");
                 page = mainPage;
+                currentFrame = null; // 切换页面后重置 iframe 上下文
                 setCurrentPage();
                 initializeAnnotatedFields();
             } else {
@@ -644,6 +713,7 @@ public abstract class BasePage {
         
         // 确保最终指向主页
         page = mainPage;
+        currentFrame = null; // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Successfully reset to main page");
@@ -652,6 +722,112 @@ public abstract class BasePage {
     public Frame getFrame(String name) {
         ensurePageValid();
         return page.frame(name);
+    }
+
+    // ===================== iframe 切换 =====================
+
+    /**
+     * 按 name / id 属性切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
+     * <p>此后所有通过 {@code myPage.click(selector)}、{@code myPage.type(selector)}
+     * 以及 {@code @Element} 注解字段的操作都会自动在 iframe 内查找元素，
+     * 不再出现 "not found in DOM" 的问题。
+     *
+     * <pre>{@code
+     * FrameLocator frame = myPage.switchToFrame("myFrame");
+     * // 两种用法均可 —— 效果相同：
+     * frame.locator("#inputField").fill("hello");          // 直接用 FrameLocator
+     * myPage.type("#inputField", "hello");                 // 通过 BasePage 自动适配
+     * }</pre>
+     *
+     * @param frameName iframe 的 name 或 id
+     * @return Playwright FrameLocator（仍可链式调用）
+     */
+    public FrameLocator switchToFrame(String frameName) {
+        ensurePageValid();
+        // 优先用 Playwright 原生 frame(name) 获取 Frame
+        Frame frame = page.frame(frameName);
+        if (frame == null) {
+            throw new RuntimeException("Frame not found by name/id: '" + frameName
+                + "'. Available frames: " + page.frames().size());
+        }
+        currentFrame = frame;
+        // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向 iframe 内的 DOM
+        initializeAnnotatedFields();
+        logger.info("Switched to iframe: name='{}'", frameName);
+        // CSS 选择器需对单引号做转义，防止选择器注入
+        String escaped = frameName.replace("\\", "\\\\").replace("'", "\\'");
+        return page.frameLocator("iframe[name='" + escaped + "'], iframe[id='" + escaped + "']");
+    }
+
+    /**
+     * 按 CSS 选择器切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
+     *
+     * <pre>{@code
+     * FrameLocator frame = myPage.switchToFrameBySelector("iframe.embedded-view");
+     * myPage.click(".submit-btn");  // 自动在 iframe 内查找
+     * }</pre>
+     *
+     * @param iframeSelector iframe 元素的 CSS 选择器
+     * @return Playwright FrameLocator
+     */
+    public FrameLocator switchToFrameBySelector(String iframeSelector) {
+        ensurePageValid();
+        try {
+            com.microsoft.playwright.ElementHandle iframeEl = page.locator(iframeSelector).elementHandle();
+            currentFrame = iframeEl.contentFrame();
+            if (currentFrame == null) {
+                throw new RuntimeException("Cannot get content frame from selector: " + iframeSelector);
+            }
+        } catch (Exception e) {
+            logger.error("Failed to switch to iframe by selector '{}': {}", iframeSelector, e.getMessage());
+            throw new RuntimeException("Failed to switch to iframe by selector: " + iframeSelector, e);
+        }
+        // 刷新所有 @Element 注解字段的 Locator 缓存
+        initializeAnnotatedFields();
+        logger.info("Switched to iframe by selector: '{}'", iframeSelector);
+        return page.frameLocator(iframeSelector);
+    }
+
+    /**
+     * 按索引切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
+     *
+     * @param index iframe 索引（从 0 开始，0 通常是主页面）
+     * @return Playwright Frame
+     */
+    public Frame switchToFrameByIndex(int index) {
+        ensurePageValid();
+        List<Frame> frames = page.frames();
+        if (index < 0 || index >= frames.size()) {
+            throw new IndexOutOfBoundsException("Invalid frame index: " + index + " (total: " + frames.size() + ")");
+        }
+        currentFrame = frames.get(index);
+        // 刷新所有 @Element 注解字段的 Locator 缓存
+        initializeAnnotatedFields();
+        logger.info("Switched to iframe by index: {} (total: {})", index, frames.size());
+        return currentFrame;
+    }
+
+    /**
+     * 切换回主页面 DOM（退出 iframe 上下文）。
+     * <p>此后所有元素操作恢复在主页面 DOM 中查找。
+     */
+    public void switchToMainFrame() {
+        if (currentFrame != null) {
+            currentFrame = null;
+            // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向主页面 DOM
+            initializeAnnotatedFields();
+            logger.info("Switched back to main frame (top-level page)");
+        }
+    }
+
+    /**
+     * 获取当前 Page 中所有 Frame 列表。
+     *
+     * @return Frame 列表
+     */
+    public List<Frame> getAllFrames() {
+        ensurePageValid();
+        return page.frames();
     }
 
     public void executeInFrame(String frameName, Consumer<Frame> action) {
@@ -682,7 +858,7 @@ public abstract class BasePage {
 
     public Object executeJavaScript(String script, Object... args) {
         ensurePageValid();
-        return page.evaluate(script, args);
+        return (currentFrame != null) ? currentFrame.evaluate(script, args) : page.evaluate(script, args);
     }
 
     public String innerHTML(String selector) {
@@ -696,15 +872,17 @@ public abstract class BasePage {
     }
 
     public boolean getPageSourceContains(String text) {
-        return normalizeText(page.content()).contains(normalizeText(text));
+        ensurePageValid();
+        String content = (currentFrame != null) ? currentFrame.content() : page.content();
+        return normalizeText(content).contains(normalizeText(text));
     }
 
     /**
-     * 获取当前页面的完整 HTML 源码
+     * 获取当前页面的完整 HTML 源码（自动适配 iframe 上下文）
      */
     public String getPageSource() {
         ensurePageValid();
-        return page.content();
+        return (currentFrame != null) ? currentFrame.content() : page.content();
     }
 
     /**
@@ -712,7 +890,7 @@ public abstract class BasePage {
      * @return 当前浏览器上下文中打开的页面数
      */
     public int getPageSize() {
-        ensurePageValid();
+        ensureContextValid();
         return context.pages().size();
     }
 
@@ -725,18 +903,23 @@ public abstract class BasePage {
     }
 
     public boolean isClosed() {
-        return page.isClosed();
+        return page != null && page.isClosed();
     }
 
     public void bringToFront() {
+        ensurePageValid();
         page.bringToFront();
     }
 
     public void setContent(String html) {
+        ensurePageValid();
         page.setContent(html);
+        // 替换页面内容后，所有 iframe 均被销毁，必须重置 iframe 上下文
+        resetFrameContextAfterNavigation();
     }
 
     public void setViewportSize(int width, int height) {
+        ensurePageValid();
         page.setViewportSize(width, height);
     }
 
@@ -755,12 +938,12 @@ public abstract class BasePage {
 
     public Locator byAltText(String altText) {
         ensurePageValid();
-        return page.getByAltText(altText);
+        return (currentFrame != null) ? currentFrame.getByAltText(altText) : page.getByAltText(altText);
     }
 
     public Locator byRole(AriaRole role) {
         ensurePageValid();
-        return page.getByRole(role);
+        return (currentFrame != null) ? currentFrame.getByRole(role) : page.getByRole(role);
     }
 
     public void dragAndDrop(String sourceSelector, String targetSelector) {
@@ -777,12 +960,12 @@ public abstract class BasePage {
 
     public Locator byTitle(String title) {
         ensurePageValid();
-        return page.getByTitle(title);
+        return (currentFrame != null) ? currentFrame.getByTitle(title) : page.getByTitle(title);
     }
 
     public Locator byTestId(String testId) {
         ensurePageValid();
-        return page.getByTestId(testId);
+        return (currentFrame != null) ? currentFrame.getByTestId(testId) : page.getByTestId(testId);
     }
 
     public void keyDown(String selector, String key) {
@@ -805,15 +988,20 @@ public abstract class BasePage {
     }
 
     public void acceptAlert() {
+        ensurePageValid();
         page.onceDialog(Dialog::accept);
     }
 
     public void dismissAlert() {
+        ensurePageValid();
         page.onceDialog(Dialog::dismiss);
     }
 
     public byte[] takeScreenshot() {
-        return page.screenshot();
+        ensurePageValid();
+        return (currentFrame != null)
+                ? currentFrame.frameElement().screenshot()
+                : page.screenshot();
     }
 
     public byte[] takeElementScreenshot(String selector) {

@@ -743,17 +743,22 @@ public class PlaywrightManager {
 
     /**
      * 处理浏览器类型切换逻辑
+     *
+     * <p>⭐ 锁安全设计：closePage/closeContext 在 BROWSER_LOCK 之外执行，
+     * 避免 BROWSER_LOCK → PAGE_LOCK → CONTEXT_LOCK 与 getPage() 的
+     * PAGE_LOCK → CONTEXT_LOCK 形成死锁链。
      */
     private static Browser handleBrowserTypeSwitch(String currentConfig, Browser currentBrowser,
                                                     String currentBrowserType, String desiredBrowserType) {
+        logger.info("[getBrowser] Browser type changed: {} -> {}", currentBrowserType, desiredBrowserType);
+        logger.info("[getBrowser] Switching browser...");
+
+        // ⭐ 1. 在 BROWSER_LOCK 之外关闭旧 Context 和 Page（避免死锁）
+        closePage();
+        closeContext();
+
+        // ⭐ 2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
         synchronized (BROWSER_LOCK) {
-            logger.info("[getBrowser] Browser type changed: {} -> {}", currentBrowserType, desiredBrowserType);
-            logger.info("[getBrowser] Switching browser...");
-
-            // 关闭旧浏览器的 Context 和 Page
-            closePage();
-            closeContext();
-
             // 关闭旧浏览器
             Browser oldBrowser = browserInstances.get(currentConfig);
             if (oldBrowser != null && oldBrowser.isConnected()) {
@@ -774,9 +779,7 @@ public class PlaywrightManager {
             currentConfigId.set(newConfigId);
 
             // 初始化新浏览器
-            synchronized (PlaywrightManager.class) {
-                initializeBrowser(newConfigId);
-            }
+            initializeBrowser(newConfigId);
 
             return browserInstances.get(newConfigId);
         }

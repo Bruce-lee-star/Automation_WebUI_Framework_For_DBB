@@ -81,6 +81,19 @@ public class RouteEngine {
     /** DISPATCHED_ROUTES 容量上限，超过后自动清空（防御性保护） */
     private static final int MAX_DISPATCHED_ROUTES = 500;
 
+    /**
+     * 跨层级去重 — Page route 已通过 cross-layer merge 合并处理的请求 URL。
+     *
+     * <p>Page 和 Context 的 Playwright route 收到的是<b>不同的 Route 对象</b>，
+     * 因此 {@link #DISPATCHED_ROUTES}（基于 Route 引用）无法阻止 context handler
+     * 重复处理已被 page handler cross-layer merge 拦截的请求。
+     *
+     * <p>此集合记录 page handler cross-layer merge 过程中已处理的请求 URL，
+     * context handler 到达时先检查此集合，命中则跳过（直接 resume）。
+     * 使用 {@code remove()} 原子获取并清除，避免 URL 临时碰撞导致误删。
+     */
+    private static final Set<String> CROSS_LAYER_HANDLED_URLS = ConcurrentHashMap.newKeySet();
+
     /** 超时调度器（守护线程，避免阻塞 JVM 退出） */
     private static final ScheduledExecutorService SCHEDULER =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -97,11 +110,62 @@ public class RouteEngine {
                 return t;
             });
 
+    /** 标记调度器是否已关闭 */
+    private static volatile boolean scheduledShutdown = false;
+
     static {
         HANDLERS.put(RouteHandleType.MONITOR, MonitorHandler::handle);
         HANDLERS.put(RouteHandleType.MODIFY, ModifyHandler::handle);
         HANDLERS.put(RouteHandleType.MOCK, MockHandler::handle);
         // DELAY 类型不在此注册 — 由 dispatchRoute 直接调度，无需经过 Handler 接口
+    }
+
+    /**
+     * ⭐ 优雅关闭所有调度器线程池（JVM 退出前调用）。
+     *
+     * <p>关闭顺序：
+     * <ol>
+     *   <li>清除所有 MonitorSession（停止超时任务）</li>
+     *   <li>清理 RouteRegistry 全局注册表 + clearAllMonitorSessions</li>
+     *   <li>清空 DISPATCHED_ROUTES / CONTEXT_RULES</li>
+     *   <li>关闭 DELAY_SCHEDULER（先中断，再等待未完成任务 2 秒）</li>
+     *   <li>关闭 SCHEDULER（先中断，再等待未完成任务 2 秒）</li>
+     * </ol>
+     */
+    public static void shutdown() {
+        if (scheduledShutdown) return;
+        scheduledShutdown = true;
+
+        LOGGER.info("[RouteEngine] Shutting down schedulers...");
+
+        // ⭐ 清理所有上下文路由注册表（含 Playwright 层的 unroute）
+        RouteRegistry.clearAll();
+        clearAllMonitorSessions();
+        DISPATCHED_ROUTES.clear();
+        CONTEXT_RULES.clear();
+        CROSS_LAYER_HANDLED_URLS.clear();
+
+        // 关闭网络延迟调度器
+        DELAY_SCHEDULER.shutdownNow();
+        try {
+            if (!DELAY_SCHEDULER.awaitTermination(2, TimeUnit.SECONDS)) {
+                LOGGER.warn("[RouteEngine] DELAY_SCHEDULER did not terminate in time");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // 关闭超时调度器
+        SCHEDULER.shutdownNow();
+        try {
+            if (!SCHEDULER.awaitTermination(2, TimeUnit.SECONDS)) {
+                LOGGER.warn("[RouteEngine] SCHEDULER did not terminate in time");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        LOGGER.info("[RouteEngine] All schedulers shut down");
     }
 
     /**
@@ -119,6 +183,16 @@ public class RouteEngine {
                 LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on Page", pattern, oldType, type);
                 page.unroute(pattern);
                 RouteRegistry.forceRegister(page, pattern, type);
+                registerRouteToPage(page, pattern, rule);
+            } else if (RouteRegistry.getRegisteredType(page, pattern) == type) {
+                // ⭐ 同类型重注册：允许同类型 rule 覆盖旧 rule（如 MONITOR 更新 timeout/expectStatus）
+                //    先 unroute 旧 handler + 停止旧 session，再注册新 handler + 启动新 session
+                RouteHandleType oldType = RouteRegistry.getRegisteredType(page, pattern);
+                LOGGER.info("[RouteEngine] Re-registering same type pattern '{}' on Page: {} (new: timeout={}ms, expectStatus={})",
+                        pattern, oldType, rule.getTimeoutMs(), rule.getExpectedStatus());
+                page.unroute(pattern);
+                // ⭐ 停止旧 session：遍历查找匹配 pattern 的旧 session（避免 equals/hashCode 依赖 modifyMethod 差异导致遗漏）
+                stopOldSessionsForPattern(pattern);
                 registerRouteToPage(page, pattern, rule);
             } else {
                 LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
@@ -156,6 +230,15 @@ public class RouteEngine {
                 LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on BrowserContext", pattern, oldType, type);
                 context.unroute(pattern);
                 RouteRegistry.forceRegister(context, pattern, type);
+                registerRouteToContext(context, pattern, rule);
+            } else if (RouteRegistry.getRegisteredType(context, pattern) == type) {
+                // ⭐ 同类型重注册：允许同类型 rule 覆盖旧 rule（如 MONITOR 更新 timeout/expectStatus）
+                RouteHandleType oldType = RouteRegistry.getRegisteredType(context, pattern);
+                LOGGER.info("[RouteEngine] Re-registering same type pattern '{}' on BrowserContext: {} (new: timeout={}ms, expectStatus={})",
+                        pattern, oldType, rule.getTimeoutMs(), rule.getExpectedStatus());
+                context.unroute(pattern);
+                // ⭐ 停止旧 session：遍历查找匹配 pattern 的旧 session（避免 equals/hashCode 依赖 modifyMethod 差异导致遗漏）
+                stopOldSessionsForPattern(pattern);
                 registerRouteToContext(context, pattern, rule);
             } else {
                 LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
@@ -252,6 +335,16 @@ public class RouteEngine {
                 "[RouteEngine] ═══ dispatchRoute START: method={}, url='{}', type={}, pattern='{}' ═══",
                 reqMethod, reqUrl, rule.getType(), rule.getUrlPattern());
 
+        // ═══ 跨层级去重：若 page handler 已通过 cross-layer merge 处理了此 URL，
+        //     context handler 不应重复拦截（Page/Context Route 对象不同，DISPATCHED_ROUTES 无法去重）═══
+        if (CROSS_LAYER_HANDLED_URLS.remove(reqUrl)) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] ═══ dispatchRoute SKIP (cross-layer dedup): URL already handled by page-level merge, " +
+                    "pattern='{}', url='{}' ═══", rule.getUrlPattern(), reqUrl);
+            try { route.resume(); } catch (Exception ignored) {}
+            return;
+        }
+
         // ═══ 防御性清理：Map 超过上限时清空（防止异常情况下无限增长）═══
         if (DISPATCHED_ROUTES.size() >= MAX_DISPATCHED_ROUTES) {
             LOGGER.warn("[RouteEngine] DISPATCHED_ROUTES reached {} entries, clearing to prevent memory leak",
@@ -304,6 +397,10 @@ public class RouteEngine {
         if (ctxRule != null && ctxRule.getType() != rule.getType()) {
             RouteHandleType ctxType = ctxRule.getType();
             RouteHandleType pageType = rule.getType();
+
+            // ⭐ 标记此 URL 已被 page handler cross-layer merge 处理，
+            //    避免 context handler 重复拦截（Page/Context 的 Route 对象不同，DISPATCHED_ROUTES 无法去重）
+            CROSS_LAYER_HANDLED_URLS.add(reqUrl);
 
             // ── ∀ 跨层级组合：始终合并 DELAY ──
             if (ctxType == RouteHandleType.DELAY) {
@@ -385,9 +482,10 @@ public class RouteEngine {
         // 注意：上面的跨层级检查已将 context MONITOR→page DELAY 转为 MonitorHandler，此处仅处理纯 DELAY
         if (rule.getType() == RouteHandleType.DELAY) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}' ═══",
-                    rule.getUrlPattern(), reqUrl);
-            scheduleDelay(route, rule);
+                    "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}', effectiveDelay={}ms ═══",
+                    rule.getUrlPattern(), reqUrl, delayMs);
+            // ⭐ 传入跨层级合并后的 delayMs，避免 scheduleDelay 重新读 rule 导致合并结果丢失
+            scheduleDelay(route, rule, delayMs);
             return;
         }
 
@@ -431,11 +529,15 @@ public class RouteEngine {
      * <p>不使用 {@code route.fetch()}：fetch 发起新的 HTTP 请求，可能因 DNS 解析失败。
      * 改用 {@code route.resume()} 放行原始请求，完全复用浏览器网络栈。
      *
-     * @param route Playwright 路由对象
-     * @param rule  路由规则（含延迟配置）
+     * @param route              Playwright 路由对象
+     * @param rule               路由规则（含延迟配置）
+     * @param preComputedDelayMs 跨层级合并后的延迟值（>0 时优先使用，避免重新读取 rule 丢失合并结果）
      */
-    private static void scheduleDelay(Route route, RouteRule rule) {
-        long delayMs = DelayHandler.clampDelay(DelayHandler.resolveDelay(rule));
+    private static void scheduleDelay(Route route, RouteRule rule, long preComputedDelayMs) {
+        // ⭐ 优先使用跨层级合并后的延迟值，否则从 rule 重新计算
+        long delayMs = preComputedDelayMs > 0
+                ? DelayHandler.clampDelay(preComputedDelayMs)
+                : DelayHandler.clampDelay(DelayHandler.resolveDelay(rule));
 
         // ⭐ #1 性能优化：缓存 route.request()
         Request req = route.request();
@@ -443,8 +545,8 @@ public class RouteEngine {
         String pattern = rule.getUrlPattern();
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms",
-                pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs());
+                "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms, mergedInput={}ms",
+                pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs(), preComputedDelayMs);
 
         // ⭐ DELAY 不递增 activeRequests：delay 是确定性同步阻塞，不需要
         // PlaywrightListener 的 awaitCompletion 等待。否则会导致请求被"阻止两次"
@@ -506,7 +608,10 @@ public class RouteEngine {
                     System.currentTimeMillis(),
                     req.url()  // 实际请求 URL，用于毫秒级精确检索
             );
-            ApiCaptureContext.getCurrent().storeApiCall(call);
+            ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+            if (ctx != null) {
+                ctx.storeApiCall(call);
+            }
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] Stored DELAY call to ApiCaptureContext: pattern='{}', method={}",
                     rule.getUrlPattern(), req.method());
@@ -721,14 +826,15 @@ public class RouteEngine {
      */
     public static void clearAllMonitorSessions() {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] clearAllMonitorSessions: stopping {} session(s), clearing {} dispatched routes, {} context rules",
-                SESSIONS.size(), DISPATCHED_ROUTES.size(), CONTEXT_RULES.size());
+                "[RouteEngine] clearAllMonitorSessions: stopping {} session(s), clearing {} dispatched routes, {} context rules, {} cross-layer handled urls",
+                SESSIONS.size(), DISPATCHED_ROUTES.size(), CONTEXT_RULES.size(), CROSS_LAYER_HANDLED_URLS.size());
         for (MonitorSession session : SESSIONS.values()) {
             session.stop();
         }
         SESSIONS.clear();
         DISPATCHED_ROUTES.clear();
         CONTEXT_RULES.clear();
+        CROSS_LAYER_HANDLED_URLS.clear();
     }
 
     /**
@@ -797,6 +903,28 @@ public class RouteEngine {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] Removed {} context rules, remaining: {}",
                 patterns.size(), CONTEXT_RULES.size());
+    }
+
+    // ─── MonitorSession（内部类）───────────────────────────────────
+
+    /**
+     * ⭐ 停止匹配指定 pattern 的所有旧 MonitorSession。
+     *
+     * <p>遍历 SESSIONS 查找 MonitorSession.pattern 匹配的旧 session 并停止。
+     * 解决同类型重注册时 SESSIONS.get(newRule) 因 modifyMethod 差异导致
+     * RouteRule.equals() 不匹配而无法找到旧 session 的问题。
+     *
+     * @param normalizedPattern 注册时使用的归一化 pattern
+     */
+    private static void stopOldSessionsForPattern(String normalizedPattern) {
+        SESSIONS.entrySet().removeIf(entry -> {
+            if (normalizedPattern.equals(entry.getValue().pattern)) {
+                entry.getValue().stop();
+                LOGGER.debug("[RouteEngine] Stopped old session for pattern '{}'", normalizedPattern);
+                return true;
+            }
+            return false;
+        });
     }
 
     // ─── MonitorSession（内部类）───────────────────────────────────

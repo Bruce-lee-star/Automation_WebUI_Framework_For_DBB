@@ -8,6 +8,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
  * 因为超时可能发生在页面导航、页面标题、URL 匹配等非元素场景。
  */
 public class TimeoutException extends FrameworkException {
+
+    private static final long serialVersionUID = 1L;
+
     public TimeoutException(String message) {
         super(message);
     }

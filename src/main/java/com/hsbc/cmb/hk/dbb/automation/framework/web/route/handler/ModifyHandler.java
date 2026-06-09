@@ -357,10 +357,16 @@ public class ModifyHandler {
                         System.currentTimeMillis(),
                         req.url()  // 实际请求 URL，用于毫秒级精确检索
                 );
-                ApiCaptureContext.getCurrent().storeApiCall(call);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}",
-                        rule.getUrlPattern(), req.method());
+                ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+                if (ctx != null) {
+                    ctx.storeApiCall(call);
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}",
+                            rule.getUrlPattern(), req.method());
+                } else {
+                    LOGGER.debug("[ModifyHandler] ApiCaptureContext is null, skipped store for pattern '{}'",
+                            rule.getUrlPattern());
+                }
             } catch (Exception e) {
                 LOGGER.debug("[ModifyHandler] Failed to store modify call to ApiCaptureContext: {}", e.getMessage());
             }
@@ -817,31 +823,34 @@ public class ModifyHandler {
      *   <li>{@code $.users[0].name} — 精确索引替换（非通配符）</li>
      * </ul>
      *
+     * ⭐ value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等。
+     *
      * @param jsonBody     原始 JSON body 字符串
-     * @param replacements 路径 → 值 的映射
+     * @param replacements 路径 → 值 的映射（Object 类型）
      * @return 替换后的 JSON 字符串；解析失败时返回原字符串
      */
-    public static String replaceBatchByWildcard(String jsonBody, Map<String, String> replacements) {
+    public static String replaceBatchByWildcard(String jsonBody, Map<String, Object> replacements) {
         if (replacements == null || replacements.isEmpty()) {
             return jsonBody;
         }
         try {
             JsonNode root = OBJECT_MAPPER.readTree(jsonBody);
-            for (Map.Entry<String, String> entry : replacements.entrySet()) {
+            for (Map.Entry<String, Object> entry : replacements.entrySet()) {
                 String path = entry.getKey();
-                String newValue = entry.getValue();
+                Object rawValue = entry.getValue();
                 try {
                     List<PathSegment> segments = parseWildcardPath(path);
                     if (segments.isEmpty()) {
                         LOGGER.warn("[ModifyHandler] Empty path after parsing: '{}'", path);
                         continue;
                     }
-                    // ⭐ #6 合并双重递归：单次遍历同时完成类型推断 + 替换
-                    //    第一次匹配的叶子节点提供类型参考，后续节点复用同一类型
-                    Object[] typeHolder = new Object[1]; // [0] = typedValue，首次匹配时推断
-                    int count = applyWildcardWithType(root, null, null, segments, 0, newValue, typeHolder);
+                    // ⭐ 将 Object 转为 JsonNode 直接设置（不再做类型推断）
+                    JsonNode typedValue = rawValueToJsonNode(rawValue);
+                    Object[] typeHolder = new Object[1];
+                    typeHolder[0] = typedValue;
+                    int count = applyWildcardWithRawType(root, null, null, segments, 0, typedValue);
                     LOGGER.debug("[ModifyHandler] Wildcard replaced {} node(s) for path='{}', value='{}'",
-                            count, path, newValue);
+                            count, path, rawValue);
                 } catch (Exception e) {
                     LOGGER.warn("[ModifyHandler] Wildcard replace failed for path='{}': {}",
                             path, e.getMessage());
@@ -852,6 +861,97 @@ public class ModifyHandler {
             LOGGER.warn("[ModifyHandler] Batch wildcard replace failed: {}", e.getMessage());
             return jsonBody;
         }
+    }
+
+    /**
+     * 将原始 Object 值转换为 JsonNode。
+     * <p>支持 String、Number、Boolean、null。
+     */
+    private static JsonNode rawValueToJsonNode(Object value) {
+        if (value == null) return NullNode.getInstance();
+        if (value instanceof String) return new TextNode((String) value);
+        if (value instanceof Boolean) return BooleanNode.valueOf((Boolean) value);
+        if (value instanceof Integer) return new IntNode((Integer) value);
+        if (value instanceof Long) return new LongNode((Long) value);
+        if (value instanceof Float || value instanceof Double) {
+            return new DecimalNode(new BigDecimal(value.toString()));
+        }
+        if (value instanceof Number) {
+            return new DecimalNode(new BigDecimal(value.toString()));
+        }
+        // fallback: toString
+        return new TextNode(value.toString());
+    }
+
+    /**
+     * ⭐ 递归遍历 JSON 树，在通配符路径匹配的所有叶节点上直接设置 JsonNode 值（跳过类型推断）。
+     */
+    private static int applyWildcardWithRawType(JsonNode node, ObjectNode parent, String parentKey,
+                                                 List<PathSegment> segments, int segIdx,
+                                                 JsonNode typedValue) {
+        if (segIdx >= segments.size() || node == null) return 0;
+        PathSegment seg = segments.get(segIdx);
+        boolean isLast = (segIdx == segments.size() - 1);
+
+        if (seg.isWildcard()) {
+            JsonNode arrayNode;
+            if (seg.isRootWildcard()) {
+                arrayNode = node;
+            } else if (node instanceof ObjectNode) {
+                arrayNode = ((ObjectNode) node).get(seg.fieldName);
+            } else {
+                return 0;
+            }
+            if (arrayNode instanceof ArrayNode) {
+                int count = 0;
+                ArrayNode arr = (ArrayNode) arrayNode;
+                for (int i = 0; i < arr.size(); i++) {
+                    JsonNode elem = arr.get(i);
+                    if (isLast) {
+                        arr.set(i, typedValue);
+                        count++;
+                    } else {
+                        count += applyWildcardWithRawType(elem,
+                                node instanceof ObjectNode ? (ObjectNode) node : parent,
+                                seg.fieldName, segments, segIdx + 1, typedValue);
+                    }
+                }
+                return count;
+            }
+            return 0;
+        }
+
+        // 精确导航
+        JsonNode child;
+        ObjectNode effectiveParent;
+        String effectiveKey;
+        if (node instanceof ArrayNode && seg.arrayIndex != null) {
+            ArrayNode arr = (ArrayNode) node;
+            if (seg.arrayIndex < 0 || seg.arrayIndex >= arr.size()) return 0;
+            child = arr.get(seg.arrayIndex);
+            effectiveParent = parent;
+            effectiveKey = parentKey;
+        } else if (node instanceof ObjectNode && seg.fieldName != null) {
+            child = ((ObjectNode) node).get(seg.fieldName);
+            if (child instanceof ArrayNode && seg.arrayIndex != null) {
+                ArrayNode arr = (ArrayNode) child;
+                if (seg.arrayIndex < 0 || seg.arrayIndex >= arr.size()) return 0;
+                child = arr.get(seg.arrayIndex);
+            }
+            effectiveParent = (ObjectNode) node;
+            effectiveKey = seg.fieldName;
+        } else {
+            return 0;
+        }
+        if (child == null) return 0;
+        if (isLast) {
+            if (effectiveParent != null && effectiveKey != null) {
+                setJsonNode(effectiveParent, effectiveKey, typedValue);
+                return 1;
+            }
+            return 0;
+        }
+        return applyWildcardWithRawType(child, effectiveParent, effectiveKey, segments, segIdx + 1, typedValue);
     }
 
     // ── 路径段数据结构 ────────────────────────────────────────────

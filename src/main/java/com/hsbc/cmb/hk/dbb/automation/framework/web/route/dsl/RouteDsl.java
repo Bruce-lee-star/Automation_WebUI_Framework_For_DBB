@@ -134,6 +134,35 @@ public class RouteDsl {
         rules.clear();
     }
 
+    /**
+     * ⭐ 静态全局清理方法 — 清除所有上下文的所有 RouteRule、MonitorSession、Route 防重门控。
+     *
+     * <p>适用场景：
+     * <ul>
+     *   <li>Step 中需要先清除所有已注册 Rule，再重新注册新的 Rule（全局复位）</li>
+     *   <li>After Scenario hook 中确保跨 Scenario 无残留路由</li>
+     *   <li>测试套件结束时彻底清理所有路由</li>
+     * </ul>
+     *
+     * <pre>{@code
+     * // 在 Step 中：先清所有 Rule，再注册新的一组
+     * RouteDsl.clearAllRules();
+     * RouteDsl.on(page)
+     *     .api("/api/new-endpoint")
+     *     .monitor()
+     *     .expectStatus(200)
+     *     .done()
+     *     .start();
+     * }</pre>
+     */
+    public static void clearAllRules() {
+        LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
+        RouteRegistry.clearAll();
+        RouteEngine.clearAllMonitorSessions();
+        RouteEngine.clearDispatchedRoutes();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteDsl] clearAllRules() completed");
+    }
+
     // ==================== 入口点 — 仅提供三个分支方法 ====================
 
     /**
@@ -598,19 +627,21 @@ public class RouteDsl {
          *
          * // 批量替换 List 中所有元素的字段
          * .mockReplaceField("$[*].name", "NewName")
-         * .mockReplaceField("$[*].active", "true")
+         * .mockReplaceField("$[*].active", true)
          *
          * // 嵌套 List：替换 users 数组中每个元素的 orders 数组中的 price 字段
-         * .mockReplaceField("$.users[*].orders[*].price", "99.99")
+         * .mockReplaceField("$.users[*].orders[*].price", 99.99)
          *
          * // 子路径嵌套：替换 data.users 数组中 email 字段
          * .mockReplaceField("$.data.users[*].email", "modified@test.com")
          * }</pre>
          *
+         * ⭐ value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等原始类型。
+         *
          * @param jsonPath JSONPath 表达式（支持通配符 [*]）
-         * @param value    替换值（字符串形式，自动保持原字段类型）
+         * @param value    替换值（支持 String / Number / Boolean / null，自动保持原字段类型）
          */
-        public MockApiDsl mockReplaceField(String jsonPath, String value) {
+        public MockApiDsl mockReplaceField(String jsonPath, Object value) {
             rule.addMockReplaceField(jsonPath, value);
             return this;
         }

@@ -11,12 +11,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
  */
 public class NavigationException extends FrameworkException {
 
+    private static final long serialVersionUID = 1L;
+
     private final String url;
     private final Long timeoutMs;
 
     public NavigationException(String url, long timeoutMs, Throwable cause) {
-        super(String.format("Navigation to [%s] failed after %d ms: %s", 
-                url, timeoutMs, cause.getMessage()), cause);
+        super(String.format("Navigation to [%s] failed after %d ms: %s",
+                url, timeoutMs, cause != null && cause.getMessage() != null ? cause.getMessage() : "unknown error"), cause);
         this.url = url;
         this.timeoutMs = timeoutMs;
     }

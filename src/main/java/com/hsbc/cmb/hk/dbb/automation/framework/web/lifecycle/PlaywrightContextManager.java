@@ -54,8 +54,19 @@ class PlaywrightContextManager {
             configureCustomContextOptions(contextOptions);
         }
 
+
         // 初始化 Context
         BrowserContext context = currentBrowser.newContext(contextOptions);
+
+        // ⭐ 监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
+        context.onPage(newPage -> {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "New page detected via window.open(): url={}", newPage.url());
+            newPage.onLoad(pageLoad -> {
+                LoggingConfigUtil.logDebugIfVerbose(logger,
+                        "New page loaded: url={}, title={}", newPage.url(), newPage.title());
+            });
+        });
 
         // 设置超时
         configureTimeouts(context);

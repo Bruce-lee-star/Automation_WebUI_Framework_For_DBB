@@ -63,6 +63,11 @@ public class MonitorHandler {
     public static void handle(Route route, RouteRule rule) {
         // 获取 API 监控上下文并增加活动请求计数
         ApiCaptureContext context = ApiCaptureContext.getCurrent();
+        if (context == null) {
+            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, skipping assertion for pattern '{}'",
+                    rule.getUrlPattern());
+            return;
+        }
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[MonitorHandler] ── handle() START: pattern='{}', expectStatus={}, jsonPathAssertions={} ──",
@@ -121,23 +126,11 @@ public class MonitorHandler {
         if (!assertionsPassed) {
             LoggingConfigUtil.logErrorIfVerbose(LOGGER,
                     "[MonitorHandler] ═══ ASSERTIONS FAILED: pattern='{}', url='{}' ═══", urlPattern, url);
-            // ═══ (existing fail-fast code unchanged) ═══
-            // ⭐⭐⭐ 双路径 Fail-Fast：
-            //   Path 1: thread.interrupt() — 最佳努力，依赖 Playwright 内部响应
-            //   Path 2: 异步关闭 Page — 100% 可靠，Playwright page.close()
-            //           会立即中断主线程上所有 pending 操作（包括 waitForSelector）
-            //           异步提交到 RouteAsyncPool 执行，避免 CDP 重入
+            // ⭐⭐⭐ Fail-Fast（仅 interrupt，不关闭 Page）：
+            //   关闭 page 会导致浏览器 context 状态损坏，后续 Scenario 无法继续执行。
+            //   thread.interrupt() 已足够中断主线程当前阻塞的 Playwright IO 操作，
+            //   通过 checkAndFailOnApiAssertions() 在步骤结束时统一抛 AssertionError。
             context.signalFailFast();
-
-            final com.microsoft.playwright.Page failPage = route.request().frame().page();
-            RouteAsyncPool.run(() -> {
-                try {
-                    LOGGER.warn("[MonitorHandler] Closing page to force abort main thread Playwright operations");
-                    failPage.close();
-                } catch (Exception e) {
-                    LOGGER.debug("[MonitorHandler] Page close after assertion failure: {}", e.getMessage());
-                }
-            });
 
             // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录
             throw new RouteException.ApiAssertionException(
@@ -320,17 +313,21 @@ public class MonitorHandler {
     }
 
     /**
-     * 值比较（支持 Number 类型的松散比较）
+     * 值比较（支持 Number 类型的松散比较，使用 epsilon 避免浮点精度问题）。
      */
     private static boolean compareValues(Object actual, Object expected) {
         if (actual == null && expected == null) return true;
         if (actual == null || expected == null) return false;
 
         if (actual instanceof Number && expected instanceof Number) {
-            boolean match = ((Number) actual).doubleValue() == ((Number) expected).doubleValue();
+            double a = ((Number) actual).doubleValue();
+            double e = ((Number) expected).doubleValue();
+            // ⭐ 使用 epsilon 比较，避免 0.1+0.2 != 0.3 等浮点精度问题
+            double epsilon = 1e-9;
+            boolean match = Math.abs(a - e) < epsilon;
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                     "[MonitorHandler] compareValues (Number): actual={}, expected={}, match={}",
-                    ((Number) actual).doubleValue(), ((Number) expected).doubleValue(), match);
+                    a, e, match);
             return match;
         }
 

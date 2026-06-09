@@ -30,11 +30,11 @@ public class PageElement {
     private final BasePage page;
 
     /**
-     * 缓存的 Locator 实例（线程安全懒加载）。
+     * 缓存的 Locator 实例（DCL 线程安全懒加载，委托给 LocatorCache）。
      * Playwright Locator 是"延迟求值"的——每次操作时重新查询 DOM，因此缓存是安全的。
      * Page 切换重建由 BasePage.ensurePageValid() → initializeAnnotatedFields() → invalidateCache() 触发。
      */
-    private volatile Locator cachedLocator;
+    private final LocatorCache locatorCache = new LocatorCache();
 
     // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
@@ -62,11 +62,11 @@ public class PageElement {
      * 确保下次 locator() 调用使用新的 Page 实例重新创建 Locator。
      */
     public void invalidateCache() {
-        cachedLocator = null;
+        locatorCache.invalidate();
     }
 
     /**
-     * 获取 Playwright Locator（DCL 线程安全懒加载）。
+     * 获取 Playwright Locator（DCL 线程安全懒加载，委托给 LocatorCache）。
      * Playwright Locator 自身是延迟求值的——每次操作时自动等待元素出现，无需手动等待 DOMContentLoaded。
      * 缓存是安全的，因为 Locator 不持有 DOM 快照，每次交互时重新查询。
      *
@@ -75,17 +75,7 @@ public class PageElement {
      * 下次调用重新通过 page.locator(selector) 绑定新的 Page 实例。
      */
     public Locator locator() {
-        Locator loc = cachedLocator;
-        if (loc == null) {
-            synchronized (this) {
-                loc = cachedLocator;
-                if (loc == null) {
-                    cachedLocator = page.locator(selector);
-                    loc = cachedLocator;
-                }
-            }
-        }
-        return loc;
+        return locatorCache.get(() -> page.locator(selector));
     }
 
     public Locator locator(String relativeSelector) {

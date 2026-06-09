@@ -229,31 +229,31 @@ public abstract class BasePage {
     }
 
     public void waitForElementExists(String selector, int timeout) {
-        new PageElement(selector, this).waitForExists(timeout);
+        element(selector).waitForExists(timeout);
     }
 
     public void waitForElementNotExists(String selector, int timeout) {
-        new PageElement(selector, this).waitForNotExists(timeout);
+        element(selector).waitForNotExists(timeout);
     }
 
     public void waitForElementEditable(String selector, int timeout) {
-        new PageElement(selector, this).waitForEditable(timeout);
+        element(selector).waitForEditable(timeout);
     }
 
     public void waitForElementEnabled(String selector, int timeout) {
-        new PageElement(selector, this).waitForEnabled(timeout);
+        element(selector).waitForEnabled(timeout);
     }
 
     public void waitForElementDisabled(String selector, int timeout) {
-        new PageElement(selector, this).waitForDisabled(timeout);
+        element(selector).waitForDisabled(timeout);
     }
 
     public void waitForElementChecked(String selector, int timeout) {
-        new PageElement(selector, this).waitForChecked(timeout);
+        element(selector).waitForChecked(timeout);
     }
 
     public void waitForElementNotChecked(String selector, int timeout) {
-        new PageElement(selector, this).waitForNotChecked(timeout);
+        element(selector).waitForNotChecked(timeout);
     }
 
     public void waitForElementCount(String selector, int expected, int timeout) {
@@ -364,20 +364,40 @@ public abstract class BasePage {
         return false;
     }
 
+    /**
+     * 带重试的可见性等待。
+     * <p>直接委托 PageElement.waitForVisible()（内部已含等待+超时机制），
+     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     */
     public void waitForVisibleWithRetry(String selector, int timeout, int retries) {
-        retry(() -> new PageElement(selector, this).waitForVisible(timeout), retries, 500, "wait visible with retry: " + selector);
+        element(selector).waitForVisible(timeout);
     }
 
+    /**
+     * 带重试的隐藏等待。
+     * <p>直接委托 PageElement.waitForNotVisible()（内部已含等待+超时机制），
+     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     */
     public void waitForHiddenWithRetry(String selector, int timeout, int retries) {
-        retry(() -> new PageElement(selector, this).waitForNotVisible(timeout), retries, 500, "wait hidden with retry: " + selector);
+        element(selector).waitForNotVisible(timeout);
     }
 
+    /**
+     * 带重试的点击操作。
+     * <p>直接委托 PageElement.click()（内部已含 executeWithRetry 企业级重试机制），
+     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     */
     public void clickWithRetry(String selector, int retries) {
-        retry(() -> click(selector), retries, 500, "click with retry: " + selector);
+        element(selector).click();
     }
 
+    /**
+     * 带重试的输入操作。
+     * <p>直接委托 PageElement.type()（内部已含 executeWithRetry 企业级重试机制），
+     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     */
     public void typeWithRetry(String selector, String text, int retries) {
-        retry(() -> type(selector, text), retries, 500, "type with retry: " + selector);
+        element(selector).type(text);
     }
 
     public void navigateToWithRetry(String url, int retries) {
@@ -398,12 +418,31 @@ public abstract class BasePage {
         return page.locator(selector);
     }
 
+    /**
+     * 基于选择器创建 PageElement 实例，作为 BasePage 所有元素操作的统一入口。
+     * <p>替代分散在各方法中的 {@code new PageElement(selector, this)} 模式，
+     * 减少重复代码，并允许子类（如 SerenityBasePage）通过覆盖此方法统一注入报告逻辑。
+     *
+     * <pre>{@code
+     * // 推荐新风格（链式调用）
+     * myPage.element("#btn").click();
+     * String text = myPage.element("#span").getText();
+     *
+     * // 传统风格仍然可用（向后兼容）
+     * myPage.click("#btn");
+     * }</pre>
+     *
+     * @param selector 元素 CSS/XPath 选择器
+     * @return PageElement 实例
+     */
+    public PageElement element(String selector) {
+        return new PageElement(selector, this);
+    }
+
     public void click(String selector) {
         try {
-            // 委托给 PageElement 以利用企业级重试机制
-            new PageElement(selector, this).click();
+            element(selector).click();
         } catch (ElementOperationException e) {
-            // 已经是 ElementOperationException，直接重新抛出
             throw e;
         } catch (Exception e) {
             throw new ElementOperationException("click", selector, 
@@ -416,13 +455,11 @@ public abstract class BasePage {
     }
 
     public void type(String selector, String text) {
-        // 委托给 PageElement 以利用企业级重试机制
-        new PageElement(selector, this).type(text);
+        element(selector).type(text);
     }
 
     public void append(String selector, String text) {
-        // 委托给 PageElement 以利用企业级重试机制
-        PageElement pe = new PageElement(selector, this);
+        PageElement pe = element(selector);
         pe.focus();
         String current = pe.getValue();
         if (current == null) current = "";
@@ -430,21 +467,20 @@ public abstract class BasePage {
     }
 
     public void clear(String selector) {
-        // 委托给 PageElement 以利用企业级重试机制
-        new PageElement(selector, this).clear();
+        element(selector).clear();
     }
 
     // ===================== 读取文本 全部归一化 =====================
     public String getText(String selector) {
-        return new PageElement(selector, this).getText();
+        return element(selector).getText();
     }
 
     public String getInputValue(String selector) {
-        return new PageElement(selector, this).getValue();
+        return element(selector).getValue();
     }
 
     public String getAttribute(String selector, String attr) {
-        return new PageElement(selector, this).getAttribute(attr);
+        return element(selector).getAttribute(attr);
     }
 
     public String getAttributeValue(String selector, String attr, String defaultValue) {
@@ -453,39 +489,39 @@ public abstract class BasePage {
     }
 
     public void selectOption(String selector, int index) {
-        new PageElement(selector, this).selectByIndex(index);
+        element(selector).selectByIndex(index);
     }
 
     public void selectByVisibleText(String selector, String text) {
-        new PageElement(selector, this).selectByVisibleText(text);
+        element(selector).selectByVisibleText(text);
     }
 
     public void check(String selector) {
-        new PageElement(selector, this).check();
+        element(selector).check();
     }
 
     public void uncheck(String selector) {
-        new PageElement(selector, this).uncheck();
+        element(selector).uncheck();
     }
 
     public boolean isChecked(String selector) {
-        return new PageElement(selector, this).isChecked();
+        return element(selector).isChecked();
     }
 
     public boolean isEnabled(String selector) {
-        return new PageElement(selector, this).isEnabled();
+        return element(selector).isEnabled();
     }
 
     public boolean isDisabled(String selector) {
-        return new PageElement(selector, this).isDisabled();
+        return element(selector).isDisabled();
     }
 
     public boolean isVisible(String selector) {
-        return new PageElement(selector, this).isVisible();
+        return element(selector).isVisible();
     }
 
     public boolean isHidden(String selector) {
-        return new PageElement(selector, this).isNotVisible();
+        return element(selector).isNotVisible();
     }
 
     public int getElementCount(String selector) {

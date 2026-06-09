@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import org.slf4j.Logger;
@@ -44,6 +45,23 @@ public abstract class SerenityBasePage extends BasePage {
      */
     private static final boolean VERBOSE_LOGGING = Boolean.parseBoolean(
         System.getProperty("serenity.verbose.logging", "false"));
+
+    // ==================== Interceptor 层覆盖 element() ====================
+
+    /**
+     * 覆盖父类 {@link BasePage#element(String)}，为新风格的链式调用
+     * {@code myPage.element("#btn").click()} 提供 Serenity 报告记录能力。
+     *
+     * <p>与 {@link #record} / {@link #recordAndReturn} 不同，此方法仅记录上下文信息
+     * （选择的元素），实际操作由调用方在返回的 PageElement 上执行时记录。
+     */
+    @Override
+    public PageElement element(String selector) {
+        SerenityReporter.flushPendingApiOperations();
+        if (VERBOSE_LOGGING) logger.info("[Serenity] Creating element: {}", selector);
+        addSerenityTestData("lastActionElement", selector);
+        return super.element(selector);
+    }
 
     // ==================== Reusable Interceptors（消除 87 个冗余 Override） ====================
 

@@ -18,10 +18,10 @@ public final class PageElementList extends AbstractList<PageElement> {
     private final int defaultTimeoutMs = PlaywrightManager.config().getElementCheckTimeout();
 
     /**
-     * 缓存的 Locator 实例（DCL 线程安全懒加载）。
+     * 缓存的 Locator 实例（DCL 线程安全懒加载，委托给 LocatorCache）。
      * Playwright Locator 是延迟求值的——每次操作时重新查询 DOM，缓存是安全的。
      */
-    private volatile Locator cachedLocator;
+    private final LocatorCache locatorCache = new LocatorCache();
 
     // ========================== 构造（线程安全） ==========================
     public PageElementList(String selector, BasePage page) {
@@ -34,17 +34,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     }
 
     public Locator locator() {
-        Locator loc = cachedLocator;
-        if (loc == null) {
-            synchronized (this) {
-                loc = cachedLocator;
-                if (loc == null) {
-                    cachedLocator = page.locator(selector);
-                    loc = cachedLocator;
-                }
-            }
-        }
-        return loc;
+        return locatorCache.get(() -> page.locator(selector));
     }
 
     public String getSelector() {
@@ -139,7 +129,7 @@ public final class PageElementList extends AbstractList<PageElement> {
      * 注：size() 始终实时查询 DOM，不再有独立缓存。
      */
     public void invalidateCache() {
-        cachedLocator = null;
+        locatorCache.invalidate();
     }
 
     // ========================== 获取元素（一次等待） ==========================

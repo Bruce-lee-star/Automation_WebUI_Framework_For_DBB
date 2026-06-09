@@ -78,11 +78,22 @@ RouteEngine.register(context, rules)
     │       ├── 已存在 + 优先级更高 → page.unroute(pattern) → forceRegister → page.route(pattern, handler) ✓
     │       │       （如 MOCK 覆盖 MONITOR、MODIFY 覆盖 MONITOR）
     │       │
+    │       ├── 已存在 + 同类型（同级更新）→ page.unroute(pattern) + stopOldSessions → page.route(pattern, newHandler) ✓
+    │       │       （如监控超时后重新监控同一 API，旧配置被替换）
+    │       │
     │       └── 已存在 + 同优先级或更低 → 静默跳过
     │
     └── dispatchRoute(route, rule)   → 请求到达时
             │
             ├── DISPATCHED_ROUTES 防重门控（同一请求只处理一次）
+            │
+            ├── 跨层合并检查：findMatchingContextRule(reqUrl)
+            │       │
+            │       ├── ctxRule 存在 + session.stopped=true → 跳过合并（已停止的 Context 规则不参与）
+            │       │
+            │       └── ctxRule 存在 + session.stopped=false → 标记 CROSS_LAYER_HANDLED_URLS
+            │           → 合并 DELAY（取 max(pageDelay, ctxDelay)）
+            │           → 按 MOCK > MODIFY > DELAY > MONITOR 优先级处理跨层冲突
             │
             ├── RouteUtil.requestMatches()  → 请求条件匹配
             │       ├── Resource Type（xhr/fetch/script/image/...）
@@ -96,7 +107,7 @@ RouteEngine.register(context, rules)
             │
             └── Handler.handle(route, rule)
                     │
-                    ├── MonitorHandler: resume() → 异步获取 body → 断言 → 报告 → storeApiCall
+                    ├── MonitorHandler: resume() → 异步获取 body → 断言 → 报告 → storeApiCall → onMonitorMatch()
                     ├── ModifyHandler:  修改请求 → resume() → storeApiCall
                     ├── MockHandler:    fulfill(mockOptions) → storeApiCall
                     └── DelayHandler:  ScheduledExecutorService.schedule() → resume()
@@ -109,8 +120,12 @@ RouteEngine.register(context, rules)
 | **零阻塞 UI** | MonitorHandler 先 `resume()` 放行页面，后异步断言；线程池拒绝策略为 `DiscardOldestPolicy` |
 | **异常隔离** | 单规则/单请求失败不影响其他规则和其他请求，所有 Handler 包裹 try-catch |
 | **优先级覆盖** | MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)；高优先级规则自动覆盖同 pattern 低优先级规则 |
+| **同级规则更新** | 同一层级重复注册同类型规则时，自动 `unroute` 旧 handler + 停止旧 session + 注册新配置 |
+| **跨层合并** | Page + Context 同时注册同一 API 时，自动合并两层延迟（取最大值）；Context MOCK 终结所有 |
+| **Session 状态感知** | 跨层合并前检查 Context 层 `MonitorSession.stopped`，已停止的规则不参与合并 |
 | **线程安全** | 所有全局状态用 `ConcurrentHashMap`/`AtomicLong` 保护；跨线程传递用 `byte[]` 拷贝 |
 | **内存安全** | `RouteRegistry` 使用 `WeakReference` 防泄漏；`ApiCaptureContext` 双重上限防 OOM；`RouteEngine` 防重集合有容量上限 |
+| **自动清理** | Scenario 结束 → `clearContext()`；JVM 退出 → `shutdown()` 关闭线程池；手动 → `RouteDsl.clear()` |
 
 ---
 
@@ -129,7 +144,7 @@ RouteEngine.register(context, rules)
 
 ### 4.1 RouteEngine — 路由引擎
 
-**职责**：统一注册入口 + 类型分发 + 防重门控 + MonitorSession 生命周期管理。
+**职责**：统一注册入口 + 类型分发 + 防重门控 + 跨层合并 + MonitorSession 生命周期管理。
 
 **核心数据结构**：
 
@@ -145,6 +160,10 @@ private static final int MAX_DISPATCHED_ROUTES = 500;  // 容量上限
 // MonitorSession 管理（RouteRule 为 key，依赖 equals/hashCode）
 private static final Map<RouteRule, MonitorSession> SESSIONS
         = new ConcurrentHashMap<>();
+
+// 跨层标记 — 已被 Page handler 处理的 URL，Context handler 到达时跳过
+private static final Set<String> CROSS_LAYER_HANDLED_URLS
+        = new ConcurrentHashMap<>().newKeySet();
 ```
 
 **防重门控机制**：
@@ -153,28 +172,73 @@ private static final Map<RouteRule, MonitorSession> SESSIONS
 
 **容量上限保护**：`DISPATCHED_ROUTES` 超过 500 条目时自动 `clear()`，防止异常情况下无限增长。
 
-**MonitorSession**：用于管理 MONITOR 类型的自动停止：
-- 超时调度（`ScheduledExecutorService` 单线程）
-- 匹配计数追踪（`AtomicInteger` + `onMonitorMatch()`）
-- 支持 `minMatches` 最小匹配次数 + `autoStopOnMatch` 开关
-- 使用归一化 pattern 存储和注销路由
+**跨层合并机制**（Page + Context 同时注册同一 API）：
+
+当同一 API 在 Page 和 BrowserContext 两层同时注册规则时，`dispatchRoute` 自动合并两层配置：
+
+| 合并规则 | 说明 |
+|----------|------|
+| **DELAY 合并** | 取 Page 和 Context 两层延迟的**最大值** |
+| **Context MOCK 优先** | MOCK 全局终结，覆盖任何 Page handler，Page DELAY 不继承 |
+| **Context DELAY + Page MONITOR** | 仅延迟放行，跳过监测 |
+| **相同类型** | Page 配置胜出（层级优先级：Page > Context），仅合并延迟 |
+| **已停止 Session 忽略** | Context 层 MonitorSession 已停止（超时/auto-stop）时，跳过跨层合并——不标记 URL、不合并延迟，Page handler 独立执行 |
+
+**Session 状态感知**（v1.0 关键增强）：
+
+跨层合并前增加 `MonitorSession.stopped` 检查：
+```java
+MonitorSession ctxSession = SESSIONS.get(ctxRule);
+if (ctxSession != null && ctxSession.stopped.get()) {
+    // 跳过跨层合并 — Session 已停止的 Context 规则不应影响 Page handler
+} else {
+    // 正常跨层合并逻辑
+}
+```
+此修复解决了 **Context 规则超时/auto-stop 后，残留延迟仍被跨层合并** 的隐患。
+
+**MonitorSession 生命周期**：
+
+```
+register(context, MONITOR rule)
+  → SESSIONS.put(rule, session)   // session.stopped = false
+  → 请求到达 → onMonitorMatch() → 递增计数，检查 auto-stop
+  → 超时 / 匹配次数达标 / auto-stop → session.stopped = true
+  → 再次请求 → dispatchRoute 检查 session.stopped → resume 放行
+  → 跨层合并 → 检查 SESSIONS.get(ctxRule).stopped → 跳过合并
+  → Scenario 结束 → clearContext() → SESSIONS 清理 ✅
+```
+
+**同级规则更新**（同 Page 或同 Context 重复注册同类型）：
+```
+register(page, MONITOR rule)  → 首次，putIfAbsent → true → page.route(...) ✅
+// Monitor 超时 → session.stopped 变为 true
+register(page, MONITOR rule2) → putIfAbsent 返回 false → getRegisteredType == MONITOR
+  → page.unroute(pattern)              // 注销旧 Playwright handler
+  → stopOldSessionsForPattern()        // 停止并移除旧 session
+  → page.route(pattern, newHandler)    // 注册新 handler
+  → SESSIONS.put(rule2, newSession)    // 新 session 启动
+```
 
 **关键方法**：
 
 | 方法 | 说明 |
 |------|------|
 | `register(Object, List<RouteRule>)` | 统一注册入口，支持 Page/BrowserContext |
-| `dispatchRoute(Route, RouteRule)` | 防重门控分发 |
+| `dispatchRoute(Route, RouteRule)` | 防重门控分发 + 跨层合并 + Session 状态感知 |
+| `findMatchingContextRule(String)` | 从 CONTEXT_RULES 中查找匹配的 Context 规则 |
 | `onMonitorMatch(RouteRule)` | 递增匹配计数，检查 auto-stop 条件 |
+| `stopOldSessionsForPattern(String)` | 同级更新时停止旧 session |
 | `clearDispatchedRoutes()` | 清空防重门控集合（每次测试结束调用） |
 | `clearMonitorSessions(Object)` / `clearAllMonitorSessions()` | 清理 MonitorSession |
 | `unrouteAllForContext(Object, Set<String>)` | 批量注销 Playwright 路由 |
+| `shutdown()` | 关闭 DELAY_SCHEDULER 和 SCHEDULER 线程池（JVM 退出时调用） |
 
 ---
 
 ### 4.2 RouteRegistry — 路由注册表
 
-**职责**：按上下文（Page/BrowserContext）隔离存储已注册的 URL pattern 及其处理类型，支持优先级覆盖，防止跨上下文路由冲突和内存泄漏。
+**职责**：按上下文（Page/BrowserContext）隔离存储已注册的 URL pattern 及其处理类型，支持**优先级覆盖**和**同级规则更新**，防止跨上下文路由冲突和内存泄漏。
 
 **核心数据结构**：
 
@@ -205,6 +269,20 @@ MOCK(4)  >  MODIFY(3)  >  DELAY(2)  >  MONITOR(1)
        ❌ 跳过（去重保护）
 ```
 
+**同级规则更新场景**（同类型重新注册）：
+```
+场景4: 先注册 MONITOR 监控 /api/users（timeout=30） → 超时后 session 停止
+       → 再次 register MONITOR /api/users（timeout=60，新 expectStatus）
+       ✅ 检测到同类型已注册 → page.unroute(oldPattern)
+       → stopOldSessionsForPattern() → 移除旧 session
+       → page.route(pattern, newHandler) + 新 session
+       → 新配置（timeout=60、新断言）生效
+
+场景5: 先注册 MONITOR 监控 /api/users 未超时 → 再次 register MONITOR（更新配置）
+       ✅ 同上流程，旧 handler 立即 unroute，旧 session 立即 stop
+       → 新 handler + 新 session 生效
+```
+
 **ContextKey 内部类** — 使用 `WeakReference` 防止静态 Map 阻止 Page/Context 被 GC：
 
 ```java
@@ -229,13 +307,13 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 
 | 方法 | 返回值语义 | 说明 |
 |------|-----------|------|
-| `register(Page/String/RouteHandleType)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern（记录类型，支持优先级检查） |
-| `register(BrowserContext/String/RouteHandleType)` | 同上 | Context 级别注册 pattern（记录类型） |
+| `register(Page/String/RouteHandleType)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern（记录类型，支持优先级检查；同类型→触发 RouteEngine 的 unroute + stopOldSessions 更新） |
+| `register(BrowserContext/String/RouteHandleType)` | 同上 | Context 级别注册 pattern（记录类型，支持同级更新） |
 | `getRegisteredType(Object, String)` | RouteHandleType / null | 查询指定上下文中 pattern 当前注册的类型 |
 | `shouldOverride(Object, String, RouteHandleType)` | boolean | 判断新类型优先级是否高于已注册类型 |
 | `forceRegister(Object, String, RouteHandleType)` | 始终 true | 强制覆盖注册（用于高优先级规则替换低优先级规则） |
 | `unregister(Object, String)` | void | 注销单个 pattern |
-| `clearContext(Object)` | void | 三阶段清理：① 移除注册表 + unroute → ② 清理 MonitorSession → ③ 清空防重门控 |
+| `clearContext(Object)` | void | 三阶段清理：① 移除注册表 + unroute → ② 清理 MonitorSession → ③ 清空防重门控 + 跨层标记 |
 | `clearAll()` | void | 全局清理所有上下文 + JSONPath 缓存（测试套件结束时调用） |
 | `purgeDeadEntries()` | void | 清理 GC 回收的死条目 |
 | `getPatternCount(Object)` | int | 指定上下文已注册 pattern 数 |
@@ -856,7 +934,7 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.8 手动清理
+### 5.8 手动清理与清理生命周期
 
 ```java
 RouteDsl dsl = RouteDsl.on(page)
@@ -870,13 +948,38 @@ dsl.start();
 dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
 ```
 
-> **自动清理 vs 手动清理**：
+> **三层清理保障**：
+>
+> | 清理层级 | 触发时机 | 清理范围 | 说明 |
+> |----------|----------|----------|------|
+> | **1. Scenario 自动清理** | `PlaywrightListener.testFinished()` | Page + Context 路由注册、MonitorSession、防重门控 | Serenity BDD Scenario 结束自动触发，无需手动调用 |
+> | **2. RouteDsl.clear() 手动清理** | 用户显式调用 | 当前 Dsl 绑定的所有 pattern + 上下文 | 独立 JUnit `@Test`、测试中途提前停止路由时使用 |
+> | **3. shutdown() JVM 退出清理** | `FrameworkCore.cleanup()` → JVM Shutdown Hook | 全局：所有上下文 + 所有 Session + DELAY_SCHEDULER + RouteAsyncPool 线程池 | **唯一关闭调度器线程的地方**，防止 JVM 无法退出 |
+>
+> **清理时序细节**：
+> ```
+> Scenario 结束
+>   → PlaywrightListener.testFinished()
+>     → RouteRegistry.clearContext(page)    // 移除注册表 + unroute
+>     → RouteRegistry.clearContext(context) // 移除注册表 + unroute
+>     → clearMonitorSessions()             // 清理 SESSIONS Map
+>     → clearDispatchedRoutes()            // 清空防重门控
+>     → CROSS_LAYER_HANDLED_URLS.clear()   // 清空跨层标记
+>
+> JVM 退出
+>   → FrameworkCore.cleanup()
+>     → RouteEngine.shutdown()
+>       → clearAll() / clearAllMonitorSessions()
+>       → DELAY_SCHEDULER.shutdown()       // 关闭延迟调度器
+>       → SCHEDULER.shutdown()             // 关闭 MonitorSession 超时调度器
+> ```
 >
 > | 场景 | 是否需要 `dsl.clear()` | 说明 |
 > |------|------------------------|------|
 > | **Serenity BDD Scenario** | ❌ 不需要 | `PlaywrightListener.testFinished()` 自动调用 `RouteRegistry.clearContext()` |
 > | **独立 JUnit `@Test`** | ✅ 需要 | 不走 Serenity 生命周期，必须在 `@After` 或测试末尾显式调用 |
 > | **测试中途提前停止路由** | ✅ 需要 | `autoStopOnMatch` 仅适用于 MONITOR 类型 |
+> | **Context Session 超时后残留清理** | ❌ 自动处理 | `dispatchRoute` 跨层合并时检查 `session.stopped`，已停止规则不参与合并；Scenario 结束时 CONTEXT_RULES 统一清理 |
 
 ### 5.9 多维度精准匹配
 
@@ -1121,13 +1224,13 @@ public interface MonitorCallback {
 
 | 方法 | 说明 |
 |------|------|
-| `register(Page, pattern, type)` | Page 级别注册 pattern + 类型 |
-| `register(BrowserContext, pattern, type)` | Context 级别注册 pattern + 类型 |
+| `register(Page, pattern, type)` | Page 级别注册 pattern + 类型（同类型则触发 unroute + 旧 session 停止 + 重新注册） |
+| `register(BrowserContext, pattern, type)` | Context 级别注册 pattern + 类型（支持同级更新） |
 | `getRegisteredType(context, pattern)` | 查询 pattern 当前注册的类型（未注册返回 null） |
 | `shouldOverride(context, pattern, newType)` | 判断新类型是否应覆盖现有类型（基于优先级） |
 | `forceRegister(context, pattern, type)` | 强制覆盖注册（用于高优先级覆盖场景） |
 | `unregister(context, pattern)` | 注销单个 pattern |
-| `clearContext(context)` | 清理单个上下文（unroute + 移除注册表 + 清理 Session） |
+| `clearContext(context)` | 三阶段清理：unroute + 移除注册表 + 清理 Session + 清空防重门控 + 清空跨层标记 |
 | `clearAll()` | 全局清理（含 JSONPath 缓存） |
 | `close()` | 关闭 RouteAsyncPool 线程池 |
 | `getPatternCount(context)` | 指定上下文已注册 pattern 数 |
@@ -1201,3 +1304,12 @@ public interface MonitorCallback {
 | **EnumMap 分发** | `RouteEngine` 使用 `EnumMap<RouteHandleType, RouteHandler>`，新增类型无 switch |
 | **DSL 链式** | `RouteDsl.ApiDsl` 内部类，`done()` 返回父级支持多规则链式组合 |
 | **环境变量配置** | 线程池参数全部通过环境变量可调，无需改代码 |
+
+### 生命周期管理
+
+| 层级 | 触发方式 | 清理范围 |
+|------|----------|----------|
+| **Scenario 级** | `PlaywrightListener.testFinished()` → `RouteRegistry.clearContext()` | Page/Context 路由注册 + MonitorSession + 防重门控 + 跨层标记 |
+| **手动级** | `RouteDsl.clear()` | 当前 Dsl 绑定的所有 pattern + 上下文 |
+| **全局级** | `FrameworkCore.cleanup()` → `RouteEngine.shutdown()` | 全量清理 + 关闭 DELAY_SCHEDULER 和 RouteAsyncPool 线程池 |
+| **Session 状态感知** | `dispatchRoute` 跨层合并前自动检查 | 已停止的 Context Session 自动跳过跨层合并 |

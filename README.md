@@ -290,7 +290,7 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 
 ### 2. Route Engine — API 拦截引擎
 
-通过流式 DSL 统一管理网络层拦截：**Monitor（监控断言）**、**Mock（模拟响应）**、**Modify（修改请求）**、**Delay（高延迟模拟）**。支持**优先级覆盖机制**——高优先级规则（MOCK > MODIFY > DELAY > MONITOR）可自动覆盖同 pattern 的低优先级规则。
+通过流式 DSL 统一管理网络层拦截：**Monitor（监控断言）**、**Mock（模拟响应）**、**Modify（修改请求）**、**Delay（高延迟模拟）**。支持**优先级覆盖机制**——高优先级规则（MOCK > MODIFY > DELAY > MONITOR）可自动覆盖同 pattern 的低优先级规则。支持 **Page 与 BrowserContext 双层级注册**，跨层规则自动合并延迟配置。
 
 ```java
 // Monitor — 监控 API 并断言（放行请求 → 异步读取响应 → 验证）
@@ -350,16 +350,21 @@ RouteDsl.on(page)
 | **Mock** | 拦截请求 → 直接返回自定义响应 | 4 | 后端未就绪时前端独立测试 |
 
 - **优先级覆盖**：MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)，高优先级规则自动覆盖同 pattern 低优先级规则
+- **Page/Context 双层级注册**：同一 API 可在 Page 和 BrowserContext 两层同时注册规则，跨层自动合并延迟配置（取两层最大延迟值）
+- **跨层 Session 感知**：Context 层规则 Session 超时/auto-stop 后，跨层合并自动忽略已停止的 Context 规则，避免无效延迟被合并
+- **同级规则更新**：同一层级对同一 API 重复注册同类型规则时（如监控超时后重新监控），旧 handler 自动 `unroute`、旧 session 停止、新配置生效
 - **多维度匹配**：ResourceType、HTTP Method、Headers、Query、Body Regex、Referrer、Origin、Frame
+- **MonitorSession 自动停止**：支持超时（`timeout`）、最小匹配次数（`minMatches`）+ `autoStopOnMatch` 双重自动停止机制
 - **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程，零阻塞 UI
 - **内存安全**：WeakReference 防泄漏、双重上限防 OOM、防重集合、缓存淘汰、线程池限流
 - **Serenity 报告集成**：Handler 非主线程数据通过 `SerenityReporter` 队列机制自动刷入 Serenity 报告
+- **三层清理保障**：Scenario 结束自动 `clearContext()` → JVM 退出 `shutdown()` 关闭线程池 → 手动 `RouteDsl.clear()` 按需清理
 
 **包结构（18个类，4个子包）：**
 
 | 子包 | 类 | 职责 |
 |------|-----|------|
-| `core/` | `RouteEngine`、`RouteRegistry`、`RouteRule`、`RouteHandleType`、`RouteException`、`ApiCaptureContext`、`CapturedApiCall`、`RouteMonitor` | 路由引擎、注册表、数据模型、异常体系 |
+| `core/` | `RouteEngine`、`RouteRegistry`、`RouteRule`、`RouteHandleType`、`RouteException`、`ApiCaptureContext`、`CapturedApiCall`、`RouteMonitor` | 路由引擎、注册表、数据模型、异常体系、MonitorSession 生命周期 |
 | `dsl/` | `RouteDsl` | 流式 DSL 构建器（外部唯一入口） |
 | `handler/` | `RouteHandler`（函数式接口）、`MonitorHandler`、`MockHandler`、`ModifyHandler`、`DelayHandler` | 四种处理器实现 |
 | `util/` | `RouteAsyncPool`、`SerenityReporter`、`RouteUtil` | 异步线程池、报告刷入队列、匹配工具 |
@@ -826,7 +831,7 @@ public class LoginSteps {
 1. **Playwright 替代 Selenium** — CDP 协议比 WebDriver 快 30-50%，内置自动等待机制，无需显式等待
 2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理；Context 实例复用 + 状态深度清理，整个测试生命周期只保持 1 个浏览器窗口
 3. **双等待策略** — 智能等待（Playwright 原生 waitFor）+ 轮询等待（isEnabled/isSelected 等属性检查），覆盖全部场景
-4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持；非主线程数据通过 `SerenityReporter` 队列自动刷入 Serenity 报告；优先级覆盖（MOCK > MODIFY > DELAY > MONITOR）支持同 pattern 动态升级
+4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；Mock/Modify 字段替换自动类型保持；非主线程数据通过 `SerenityReporter` 队列自动刷入 Serenity 报告；优先级覆盖（MOCK > MODIFY > DELAY > MONITOR）支持同 pattern 动态升级；Page/Context 双层级注册 + 跨层延迟合并 + Session 状态感知；同级规则更新（unroute → 停旧 session → 注册新配置）；自动清理（Scenario 结束 / JVM 退出 / 手动 clear）
 5. **企业级报告体系** — Serenity 详细报告 + SummaryReportGenerator 摘要报告（HTML/CSV/ZIP），12 类错误自动分类 + 用户可自定义扩展
 6. **CI/CD 原生集成** — Jenkins Pipeline，环境变量自动解析（`${JENKINS_URL}`/`${JOB_NAME}`/`${BUILD_NUMBER}`），邮件链接自动构建
 7. **无障碍合规** — 内置 Deque axe-core WCAG 自动扫描，`AxeCoreListener` 在每个 Scenario 结束后自动执行

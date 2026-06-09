@@ -324,8 +324,8 @@ public class SummaryReportGenerator {
             // 生成 HTML 报告
             String html = buildFullNativeHtml();
             Path output = Paths.get(actualReportDir, SUMMARY_FILE);
-            Files.write(output, html.getBytes(StandardCharsets.UTF_8));
-            logger.info("       - Summary report: {}", output.toUri());
+            Files.writeString(output, html);
+            logger.info("\n       - Summary report: {}", output.toUri());
 
             // 注入自定义 CSS（serenity.css → screen.css）
             injectCustomCss(actualReportDir);
@@ -1977,7 +1977,7 @@ public class SummaryReportGenerator {
 
             Path cssFile = cssDir.resolve("serenity.css");
             Files.writeString(cssFile, customCss, StandardCharsets.UTF_8);
-            logger.info("       - Copied serenity.css to report css/ directory");
+            logger.debug("       - Copied serenity.css to report css/ directory");
 
             Path screenCss = cssDir.resolve("screen.css");
             if (Files.exists(screenCss)) {
@@ -1986,7 +1986,7 @@ public class SummaryReportGenerator {
                     Files.writeString(screenCss,
                             existing + System.lineSeparator() + System.lineSeparator() + customCss,
                             StandardCharsets.UTF_8);
-                    logger.info("       - Appended serenity.css to screen.css");
+                    logger.debug("       - Appended serenity.css to screen.css");
                 }
             }
         } catch (Exception e) {
@@ -2015,7 +2015,7 @@ public class SummaryReportGenerator {
                 }
             }
             if (fixedCount > 0) {
-                logger.info("       - Swiper fix applied to {} screenshots page(s) (fade → slide + autoHeight)", fixedCount);
+                logger.debug("       - Swiper fix applied to {} screenshots page(s) (fade → slide + autoHeight)", fixedCount);
             }
         } catch (Exception e) {
             logger.warn("Swiper screenshots fix skipped (non-fatal): {}", e.getMessage());

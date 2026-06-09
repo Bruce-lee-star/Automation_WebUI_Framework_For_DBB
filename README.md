@@ -90,8 +90,8 @@
 │  │  Delay)      │ │              │ │                  │    │
 │  └──────────────┘ └──────────────┘ └──────────────────┘    │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
-│  │ 原生快照测试  │ │ 截图管理      │ │ 监听器体系        │    │
-│  │ Snapshot     │ │ Screenshot   │ │ Listener         │    │
+│  │              │ │ 截图管理      │ │ 监听器体系        │    │
+│  │              │ │ Screenshot   │ │ Listener         │    │
 │  └──────────────┘ └──────────────┘ └──────────────────┘    │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
 │  │ 云测试支持    │ │ AutoBrowser  │ │ 配置中心          │    │
@@ -125,12 +125,13 @@ Automation_WebUI_Framework_BDD/
 ├── src/main/java/.../automation/
 │   ├── framework/web/
 │   │   ├── page/                        # ★ Page Object Model 核心
-│   │   │   ├── PageElement.java         # 元素操作（942行，企业级重试 + 失败诊断）
-│   │   │   ├── PageElementList.java     # 元素列表（274行，动态查询 + 多阶段等待）
+│   │   │   ├── PageElement.java         # 元素操作（企业级重试 + 失败诊断）
+│   │   │   ├── PageElementList.java     # 元素列表（动态查询 + 多阶段等待）
+│   │   │   ├── LocatorCache.java        # DCL 线程安全 Locator 缓存（消除 PageElement/PageElementList 重复）
 │   │   │   ├── Element.java             # @Element 注解（仅 CSS / XPath）
 │   │   │   ├── ElementDiagnosticsCollector.java  # 失败诊断收集器（批量 JS 单次 IPC）
-│   │   │   ├── base/BasePage.java       # 基础页面类（99+ Playwright 操作）
-│   │   │   ├── base/impl/SerenityBasePage.java  # Serenity 集成（双拦截器精简 87 个 Override）
+│   │   │   ├── base/BasePage.java       # 基础页面类（99+ Playwright 操作 + element() 统一门面）
+│   │   │   ├── base/impl/SerenityBasePage.java  # Serenity 集成（双拦截器 + element() 覆盖统一报告注入）
 │   │   │   └── factory/PageObjectFactory.java   # 页面对象工厂（单例/原型/线程隔离）
 │   │   ├── route/                       # ★ Route Engine（18 个文件）
 │   │   │   ├── core/RouteEngine.java    # 路由引擎
@@ -161,7 +162,6 @@ Automation_WebUI_Framework_BDD/
 │   │   ├── listener/                   # 监听器体系
 │   │   │   ├── PlaywrightListener.java # Serenity 生命周期监听
 │   │   │   ├── AxeCoreListener.java    # 无障碍扫描监听
-│   │   │   ├── NativeSnapshotTestListener.java  # 快照测试监听
 │   │   │   ├── ListenerRegistry.java   # 监听器注册
 │   │   │   └── ThucydidesStepsListenerAdapter.java  # SPI 自动注册适配器
 │   │   ├── accessibility/AxeCoreScanner.java  # WCAG 无障碍扫描
@@ -170,10 +170,6 @@ Automation_WebUI_Framework_BDD/
 │   │   │   ├── processor/              # 截图处理器
 │   │   │   ├── strategy/               # 截图策略
 │   │   │   └── permission/             # 权限处理
-│   │   ├── snapshot/                   # 原生快照测试
-│   │   │   ├── PlaywrightSnapshotSupport.java # 快照核心
-│   │   │   ├── NativeSnapshotResult.java      # 快照结果
-│   │   │   └── NativeSnapshotReportGenerator.java # 快照报告生成
 │   │   ├── cloud/BrowserStackManager.java  # BrowserStack CDP 云测试
 │   │   ├── session/SessionManager.java     # Cookie/LocalStorage 跨场景复用
 │   │   ├── core/                       # 框架核心
@@ -219,9 +215,6 @@ Automation_WebUI_Framework_BDD/
 │   ├── features/
 │   │   ├── web/                          # Web UI 测试 Feature 文件
 │   │   └── route/                        # Route Engine 测试 Feature 文件
-│   └── snapshots/native/                 # 原生快照基线
-│       ├── visual/                       # 视觉快照
-│       └── aria/                         # ARIA 快照
 │
 └── 文档/
     ├── README.md                         # ★ 框架总览（本文件）
@@ -249,6 +242,10 @@ public class LoginPage extends SerenityBasePage {
 // 链式调用 + 智能等待（自动处理元素状态）
 loginPage.usernameInput.type("user").waitForVisible(10).click();
 
+// element() 统一门面 — 内联选择器，无需声明字段
+loginPage.element("#login-btn").click();
+String text = loginPage.element(".welcome-msg").getText();
+
 // 轮询等待 — isEnabled()/isSelected() 自动轮询直到条件满足
 boolean enabled = loginPage.loginButton.isEnabled();
 
@@ -269,22 +266,24 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 |------|------|
 | **智能等待** | Playwright 原生 `waitFor()` 处理元素可见性、存在、隐藏、可点击等全部状态 |
 | **轮询等待** | `isEnabled()`、`isSelected()` 等属性检查，自动轮询直到条件满足 |
-| **链式调用** | 所有操作返回 `this`，支持流畅的链式编程 |
+| **链式调用** | 所有操作返回 `this`，支持流畅的链式编程；提供 `element(selector)` 统一门面 |
 | **双超时机制** | 全局默认超时（`playwright.element.wait.timeout=15000ms`）+ 单次指定超时 |
 | **企业级重试** | `executeWithRetry()` 自动诊断 DOM 状态 + 失败截图，`executeSafely()` 统一异常转换 |
-| **Locator 缓存** | Volatile + DCL 双重检查锁定，页面切换仅刷新缓存避免重建对象 |
+| **Locator 缓存** | `LocatorCache` DCL 线程安全懒加载（消除 PageElement/PageElementList 重复代码），页面切换仅刷新缓存 |
 | **文本标准化** | `TextNormalizer` 统一管道：NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim |
 | **失败诊断** | `ElementDiagnosticsCollector` 批量 JS 单次 IPC 收集 DOM 状态，不拖慢正常流程 |
+| **统一重试** | 仅 `PageElement.executeWithRetry()` 一层重试，`clickWithRetry`/`typeWithRetry` 等不再额外包裹外层 retry |
 
 **核心类：**
 
 | 类 | 职责 |
 |----|------|
 | `Element` | `@Element` 注解，仅 CSS / XPath 选择器，自动注入 `PageElement` / `PageElementList` |
-| `PageElement` | 942行，封装 Playwright Locator 完整操作；`executeSafely` + `executeWithRetry` 双模板；`ChildPageElement` 链式子定位；`getTextRaw()` 快速路径 |
-| `PageElementList` | 274行，`AbstractList<PageElement>`；`waitForCount()` / `forEachSafe()` / 懒加载缓存 |
-| `BasePage` | 基础页面类，99+ Playwright 核心操作；内部统一等待引擎 `waitForCondition`（private）驱动所有 `waitForXxx()` 公共方法；`retryWithValidation` 操作级重试 |
-| `SerenityBasePage` | Serenity 集成，`record()` / `recordAndReturn()` 双拦截器消除 87 个冗余 Override；Route Engine 异步数据自动刷入 Serenity 报告 |
+| `PageElement` | 封装 Playwright Locator 完整操作；`executeSafely` + `executeWithRetry` 双模板；`ChildPageElement` 链式子定位；`getTextRaw()` 快速路径 |
+| `PageElementList` | `AbstractList<PageElement>`；`waitForCount()` / `forEachSafe()` / 动态 size() 实时查询 DOM |
+| `LocatorCache` | DCL 线程安全 Locator 懒加载器（提取 PageElement/PageElementList 重复的 volatile+synchronized 模板） |
+| `BasePage` | 99+ Playwright 操作 + `element(selector)` 统一门面；内部 `waitForCondition`（private）驱动所有 `waitForXxx()` 公共方法；`retryWithValidation` 操作级重试 |
+| `SerenityBasePage` | Serenity 集成，覆盖 `element()` 统一注入报告记录；`record()` / `recordAndReturn()` 双拦截器简化代理方法 |
 | `PageObjectFactory` | 页面对象工厂，支持单例/原型/线程隔离等生命周期策略 |
 
 
@@ -422,26 +421,7 @@ axe.scan.outputDir=target/accessibility-axe
 **依赖：** com.deque.html.axe-core:playwright 4.9.1
 
 
-### 5. Native Snapshot — Playwright 原生快照测试
-
-利用 Playwright 原生 `expect(page).toHaveScreenshot()` 和 `expect(locator).toMatchAriaSnapshot()` 实现视觉和 ARIA 快照比对：
-
-| 快照类型 | 存储目录 | 说明 |
-|---------|---------|------|
-| **Visual** | `src/test/resources/snapshots/native/visual/` | 像素级视觉截图比对 |
-| **ARIA** | `src/test/resources/snapshots/native/aria/` | ARIA 可访问性结构快照（一套基线跨平台） |
-
-**配置：**
-```properties
-native.snapshot.enabled=true
-native.snapshot.visual.maxDiffPixels=100
-native.snapshot.visual.maxDiffPixelRatio=0.01
-```
-
-`NativeSnapshotTestListener` 在测试套件结束时自动调用 `NativeSnapshotReportGenerator` 生成快照比对报告。
-
-
-### 6. BrowserStack — 云浏览器测试
+### 5. BrowserStack — 云浏览器测试
 
 通过 CDP（Chrome DevTools Protocol）连接 BrowserStack 云端浏览器，无需修改测试代码：
 
@@ -463,7 +443,7 @@ browserstack.timeout=300
 配置示例文件：`browserstack.conf`
 
 
-### 7. SummaryReportGenerator — 摘要报告
+### 6. SummaryReportGenerator — 摘要报告
 
 自动生成精美的 HTML 摘要报告（在 `post-integration-test` 阶段通过 `exec-maven-plugin` 自动触发），包含：
 
@@ -765,17 +745,6 @@ public class LoginSteps {
 | `axe.scan.tags` | (空) | WCAG 标准标签（wcag2a/wcag2aa/wcag21aa/wcag22aa） |
 | `axe.scan.outputDir` | target/accessibility-axe | 报告输出目录 |
 
-### 原生快照
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `native.snapshot.enabled` | true | 快照测试开关 |
-| `native.snapshot.visual.dir` | src/test/resources/snapshots/native/visual | 视觉快照基线 |
-| `native.snapshot.aria.dir` | src/test/resources/snapshots/native/aria | ARIA 快照基线 |
-| `native.snapshot.visual.maxDiffPixels` | 100 | 最大差异像素数 |
-| `native.snapshot.visual.maxDiffPixelRatio` | 0.01 | 最大差异像素比例 |
-| `native.snapshot.silent` | false | 静默模式 |
-
 ### BrowserStack 云测试
 
 | 配置项 | 默认值 | 说明 |
@@ -837,12 +806,11 @@ public class LoginSteps {
 7. **无障碍合规** — 内置 Deque axe-core WCAG 自动扫描，`AxeCoreListener` 在每个 Scenario 结束后自动执行
 8. **Session 跨场景复用** — `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/`，减少冗余登录
 9. **BrowserStack 云测试** — CDP 协议连接远程浏览器，无需修改测试代码，`-Dbrowserstack.sessionName` 按场景设置会话名
-10. **原生快照测试** — Playwright 原生 Visual Screenshot + ARIA Snapshot 比对，基线纳入 Git 版本控制
-11. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + AtomicLong + CopyOnWriteArrayList + `ConcurrentLinkedQueue` 跨线程报告队列 + byte[] 拷贝跨线程
-12. **Element 框架优化** — `TextNormalizer` 统一文本标准化管道；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`SerenityBasePage` 从 87 个冗余 Override 精简为 2 个拦截器；`waitForCondition`（private）作为内部统一等待引擎，所有 `waitForXxx()` 公共方法底层均委托于它
-13. **IntelliJ 日志即时输出** — Logback ConsoleAppender 输出到 `System.err`（绕过 IntelliJ `idea.test.cyclic.buffer` 缓冲区），确保 Serenity discovery 阶段日志即时显示。正常日志颜色可通过 `Settings → Editor → Color Scheme → Console Colors → Console → Error output` 调整
-14. **JVM Shutdown Hook 资源清理** — `FrameworkCore` 注册 JVM 关闭钩子，确保 JVM 异常退出时 Playwright 资源被正确释放
-15. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现 Glue 类，Scenario 标签匹配浏览器类型，ThreadLocal 缓存避免重复扫描
+10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + AtomicLong + CopyOnWriteArrayList + `ConcurrentLinkedQueue` 跨线程报告队列 + byte[] 拷贝跨线程
+11. **Element 框架优化** — `TextNormalizer` 统一文本标准化管道；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`element(selector)` 统一门面替代分散的 `new PageElement(selector, this)`；`LocatorCache` 提取 DCL 缓存消除 PageElement/PageElementList 重复代码；统一重试策略，仅保留 `PageElement.executeWithRetry()` 一层
+12. **IntelliJ 日志即时输出** — Logback ConsoleAppender 输出到 `System.err`（绕过 IntelliJ `idea.test.cyclic.buffer` 缓冲区），确保 Serenity discovery 阶段日志即时显示。正常日志颜色可通过 `Settings → Editor → Color Scheme → Console Colors → Console → Error output` 调整
+13. **JVM Shutdown Hook 资源清理** — `FrameworkCore` 注册 JVM 关闭钩子，确保 JVM 异常退出时 Playwright 资源被正确释放
+14. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现 Glue 类，Scenario 标签匹配浏览器类型，ThreadLocal 缓存避免重复扫描
 
 
 ## 文档索引

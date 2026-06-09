@@ -208,7 +208,7 @@ public class RouteRegistry {
         // 2. 清理 MonitorSession（停止定时器 + unroute，Playwright 对已注销的 pattern 幂等）
         RouteEngine.clearMonitorSessions(context);
 
-        // 3. 清理 Route 防重门控（本测试上下文所有请求均已处理完毕，安全清空）
+        // 3. 清理 Route 防重门控 + 跨层去重集合（本测试上下文所有请求均已处理完毕，安全清空）
         RouteEngine.clearDispatchedRoutes();
 
         LOGGER.debug("[RouteRegistry] Cleared {} patterns for context: {}",

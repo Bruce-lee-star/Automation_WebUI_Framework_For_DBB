@@ -873,13 +873,16 @@ public class RouteEngine {
     }
 
     /**
-     * 清空 Route 防重门控集合（测试结束时调用，释放已处理的 Route 引用）。
+     * 清空 Route 防重门控集合 + 跨层去重集合（测试结束时调用，释放已处理的 Route 引用）。
      */
     public static void clearDispatchedRoutes() {
-        int size = DISPATCHED_ROUTES.size();
+        int dispatchedSize = DISPATCHED_ROUTES.size();
+        int crossLayerSize = CROSS_LAYER_HANDLED_URLS.size();
         DISPATCHED_ROUTES.clear();
+        CROSS_LAYER_HANDLED_URLS.clear();
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[RouteEngine] clearDispatchedRoutes: cleared {} entries", size);
+                "[RouteEngine] clearDispatchedRoutes: cleared {} dispatched + {} cross-layer entries",
+                dispatchedSize, crossLayerSize);
     }
 
     // ─── Context 级规则跨层级合并 ────────────────────────────

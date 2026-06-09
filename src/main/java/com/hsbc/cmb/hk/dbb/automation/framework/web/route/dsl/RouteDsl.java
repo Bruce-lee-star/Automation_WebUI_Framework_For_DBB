@@ -157,9 +157,7 @@ public class RouteDsl {
      */
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
-        RouteRegistry.clearAll();
-        RouteEngine.clearAllMonitorSessions();
-        RouteEngine.clearDispatchedRoutes();
+        RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES/CROSS_LAYER_HANDLED_URLS + JSONPath cache
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteDsl] clearAllRules() completed");
     }
 

@@ -17,12 +17,6 @@ public final class PageElementList extends AbstractList<PageElement> {
     private final BasePage page;
     private final int defaultTimeoutMs = PlaywrightManager.config().getElementCheckTimeout();
 
-    /**
-     * 缓存的 Locator 实例（DCL 线程安全懒加载，委托给 LocatorCache）。
-     * Playwright Locator 是延迟求值的——每次操作时重新查询 DOM，缓存是安全的。
-     */
-    private final LocatorCache locatorCache = new LocatorCache();
-
     // ========================== 构造（线程安全） ==========================
     public PageElementList(String selector, BasePage page) {
         if (selector == null || selector.isBlank())
@@ -33,8 +27,15 @@ public final class PageElementList extends AbstractList<PageElement> {
         this.page = page;
     }
 
+    /**
+     * 页面存活性保护 + Locator 重建。
+     * 不再缓存 Locator——每次调用通过 {@code page.getPage()} 触发 ensurePageValid()，
+     * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
+     */
     public Locator locator() {
-        return locatorCache.get(() -> page.locator(selector));
+        // 触发 ensurePageValid() → 如 page 已关闭则重建 page
+        page.getPage();
+        return page.locator(selector);
     }
 
     public String getSelector() {
@@ -124,12 +125,13 @@ public final class PageElementList extends AbstractList<PageElement> {
     }
 
     /**
-     * 使 Locator 缓存失效，下次调用将重新查询 DOM。
-     * 适用于页面切换后需要重新绑定元素的场景。
-     * 注：size() 始终实时查询 DOM，不再有独立缓存。
+     * 保留方法空实现，兼容 BasePage.initializeAnnotatedFields() 通过反射的调用。
+     * Locator 不再缓存，此方法无实际操作。
+     * @deprecated Locator 缓存已移除，此方法为兼容性存根，将在未来版本删除
      */
+    @Deprecated
     public void invalidateCache() {
-        locatorCache.invalidate();
+        // no-op: Locator caching removed
     }
 
     // ========================== 获取元素（一次等待） ==========================

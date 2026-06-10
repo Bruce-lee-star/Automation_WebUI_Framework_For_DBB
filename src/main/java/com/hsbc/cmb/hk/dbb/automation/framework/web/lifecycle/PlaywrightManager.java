@@ -1627,13 +1627,6 @@ public class PlaywrightManager {
         } else {
             // Feature 模式：不关闭 Context/Page，让下一个 scenario 复用
             // 也不重置自定义配置（保留 Session 状态，确保 Context 可以复用缓存）
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - keeping Context and Page for reuse");
-
-            // 【优化】Feature 模式：智能重置自定义配置，保留 Session 相关配置
-            resetCustomContextOptionsForFeatureMode();
-
-            // 只清理页面状态，不关闭 Context/Page
-            cleanupPageState();
 
             // ⭐ 如果业务层未使用 SessionManager（无 restore/save 调用）
             //   → Context 中的 Cookie 残留会导致下一 Scenario 登录流程异常
@@ -1644,6 +1637,13 @@ public class PlaywrightManager {
                                 + "— closing Context to avoid cookie contamination");
                 closePage();
                 closeContext();
+                // note: cleanupPageState/FeatureMode option reset skipped — context is destroyed anyway
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Restart strategy is 'feature' - keeping Context and Page for reuse");
+                // 【优化】Feature 模式：智能重置自定义配置，保留 Session 相关配置
+                resetCustomContextOptionsForFeatureMode();
+                // 只清理页面状态，不关闭 Context/Page
+                cleanupPageState();
             }
             // 【关键】Feature 模式：不重置 Feature 级别 Session 缓存，让下一个 scenario 复用
         }

@@ -127,7 +127,6 @@ Automation_WebUI_Framework_BDD/
 │   │   ├── page/                        # ★ Page Object Model 核心
 │   │   │   ├── PageElement.java         # 元素操作（企业级重试 + 失败诊断）
 │   │   │   ├── PageElementList.java     # 元素列表（动态查询 + 多阶段等待）
-│   │   │   ├── LocatorCache.java        # DCL 线程安全 Locator 缓存（消除 PageElement/PageElementList 重复）
 │   │   │   ├── Element.java             # @Element 注解（仅 CSS / XPath）
 │   │   │   ├── ElementDiagnosticsCollector.java  # 失败诊断收集器（批量 JS 单次 IPC）
 │   │   │   ├── base/BasePage.java       # 基础页面类（99+ Playwright 操作 + element() 统一门面）
@@ -270,7 +269,6 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 | **链式调用** | 所有操作返回 `this`，支持流畅的链式编程；提供 `element(selector)` 统一门面 |
 | **双超时机制** | 全局默认超时（`playwright.element.wait.timeout=15000ms`）+ 单次指定超时 |
 | **企业级重试** | `executeWithRetry()` 自动诊断 DOM 状态 + 失败截图，`executeSafely()` 统一异常转换 |
-| **Locator 缓存** | `LocatorCache` DCL 线程安全懒加载（消除 PageElement/PageElementList 重复代码），页面切换仅刷新缓存 |
 | **文本标准化** | `TextNormalizer` 统一管道：NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim |
 | **失败诊断** | `ElementDiagnosticsCollector` 批量 JS 单次 IPC 收集 DOM 状态，不拖慢正常流程 |
 | **统一重试** | 仅 `PageElement.executeWithRetry()` 一层重试，`clickWithRetry`/`typeWithRetry` 等不再额外包裹外层 retry |
@@ -282,7 +280,6 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 | `Element` | `@Element` 注解，仅 CSS / XPath 选择器，自动注入 `PageElement` / `PageElementList` |
 | `PageElement` | 封装 Playwright Locator 完整操作；`executeSafely` + `executeWithRetry` 双模板；`ChildPageElement` 链式子定位；`getTextRaw()` 快速路径 |
 | `PageElementList` | `AbstractList<PageElement>`；`waitForCount()` / `forEachSafe()` / 动态 size() 实时查询 DOM |
-| `LocatorCache` | DCL 线程安全 Locator 懒加载器（提取 PageElement/PageElementList 重复的 volatile+synchronized 模板） |
 | `BasePage` | 99+ Playwright 操作 + `element(selector)` 统一门面；内部 `waitForCondition`（private）驱动所有 `waitForXxx()` 公共方法；`retryWithValidation` 操作级重试 |
 | `SerenityBasePage` | Serenity 集成，覆盖 `element()` 统一注入报告记录；`record()` / `recordAndReturn()` 双拦截器简化代理方法 |
 | `PageObjectFactory` | 页面对象工厂，支持单例/原型/线程隔离等生命周期策略 |
@@ -1152,7 +1149,7 @@ basePage.element("#input").type("hello");  // 底层: pressSequentially("hello")
 8. **Session 跨场景复用** — `SessionManager` 缓存命中时跳过登录直达 homeUrl，未命中时自动保存登录态供后续使用
 9. **BrowserStack 云测试** — CDP 协议连接远程浏览器，无需修改测试代码，`-Dbrowserstack.sessionName` 按场景设置会话名
 10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + AtomicLong + CopyOnWriteArrayList + `ConcurrentLinkedQueue` 跨线程报告队列 + byte[] 拷贝跨线程
-11. **Element 框架优化** — `TextNormalizer` 统一文本标准化管道；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`element(selector)` 统一门面替代分散的 `new PageElement(selector, this)`；`LocatorCache` 提取 DCL 缓存消除 PageElement/PageElementList 重复代码；统一重试策略，仅保留 `PageElement.executeWithRetry()` 一层
+11. **Element 框架优化** — `TextNormalizer` 统一文本标准化管道；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`element(selector)` 统一门面替代分散的 `new PageElement(selector, this)`；统一重试策略，仅保留 `PageElement.executeWithRetry()` 一层
 12. **IntelliJ 日志即时输出** — Logback ConsoleAppender 输出到 `System.err`（绕过 IntelliJ `idea.test.cyclic.buffer` 缓冲区），确保 Serenity discovery 阶段日志即时显示。正常日志颜色可通过 `Settings → Editor → Color Scheme → Console Colors → Console → Error output` 调整
 13. **JVM Shutdown Hook 资源清理** — `FrameworkCore` 注册 JVM 关闭钩子，确保 JVM 异常退出时 Playwright 资源被正确释放
 14. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现 Glue 类，Scenario 标签匹配浏览器类型，ThreadLocal 缓存避免重复扫描

@@ -828,6 +828,36 @@ public abstract class BasePage {
         onPageSwitched();
     }
 
+    /**
+     * 关闭除当前页面之外的所有其他页面，保持当前页面为 context 内唯一页面。
+     * <p>对标 Selenium 中手动遍历关闭多余窗口的操作。
+     * <p>若仅剩 1 个页面或 context 为空则不执行任何关闭操作。
+     */
+    public void closeOtherPages() {
+        ensureContextValid();
+        List<Page> pages = context.pages();
+        if (pages.size() <= 1) {
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "closeOtherPages skipped: page count={}, nothing to close", pages.size());
+            return;
+        }
+
+        for (Page p : pages) {
+            if (p == page) continue;
+            try {
+                if (!p.isClosed()) {
+                    p.close();
+                }
+            } catch (Exception e) {
+                LoggingConfigUtil.logWarnIfVerbose(logger,
+                        "Exception while closing other page: {}", e.getMessage());
+            }
+        }
+        LoggingConfigUtil.logInfoIfVerbose(logger,
+                "closeOtherPages done: closed {} other pages, current page retained",
+                pages.size() - 1);
+    }
+
     // ===================== 内部辅助 =====================
 
     /** 从后往前找第一个未关闭的页面（兜底逻辑，供 switchToPage 负数索引使用） */

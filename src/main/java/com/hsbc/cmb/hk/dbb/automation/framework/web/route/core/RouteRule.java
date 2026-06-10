@@ -37,6 +37,14 @@ public class RouteRule {
      *  ⭐ value 改为 Object 类型，支持字符串、数字、布尔、null 等原始类型 */
     private Map<String, Object> mockReplaceFields;
 
+    /**
+     * 是否拦截真实 API 响应（通过 {@code route.fetch()} 获取真实服务器响应后再应用字段替换）。
+     * <p>默认 false：纯 Mock 模式，不访问真实服务器。
+     * <p>设为 true 后：先 fetch 真实响应 → 应用 {@code mockReplaceFields} → fulfill 修改后的响应。
+     * 此时 {@code mockBody} 不生效（以真实响应体为模板），状态码和响应头沿用真实响应。
+     */
+    private boolean interceptRealResponse = false;
+
     // ModifyRequest — 增删改三个维度
     /** 请求头：设置/新增 key → value（覆盖已有同名头） */
     private Map<String, String> requestHeadersToSet;
@@ -252,6 +260,9 @@ public class RouteRule {
     public String getMatchFrameUrl() { return matchFrameUrl; }
     public boolean isOnlyMainFrame() { return onlyMainFrame; }
     public boolean isOnlyApiCall() { return onlyApiCall; }
+
+    /** 是否拦截真实 API 响应（通过 route.fetch() 获取真实响应再修改返回）。 */
+    public boolean isInterceptRealResponse() { return interceptRealResponse; }
 
     // ─── Setters（带参数校验）────────────────────────────────────
 
@@ -625,6 +636,18 @@ public class RouteRule {
      */
     public void setOnlyApiCall(boolean onlyApiCall) {
         this.onlyApiCall = onlyApiCall;
+    }
+
+    /**
+     * 设置是否拦截真实 API 响应（通过 {@code route.fetch()} 获取真实响应后再修改返回）。
+     * <p>设为 true 时，MockHandler 不构造虚假响应，而是先请求真实服务器，
+     * 拿到真实响应后再应用 {@code mockReplaceFields} 替换，最后 fulfill 返回前端。
+     *
+     * @param interceptRealResponse 是否拦截真实响应
+     */
+    public void setInterceptRealResponse(boolean interceptRealResponse) {
+        this.interceptRealResponse = interceptRealResponse;
+        this.hashCodeCached = false;
     }
 
     // ═══════════════════════════════════════════════════════════

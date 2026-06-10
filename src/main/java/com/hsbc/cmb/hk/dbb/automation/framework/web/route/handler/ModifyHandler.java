@@ -1289,4 +1289,104 @@ public class ModifyHandler {
 
         return applyWildcardRecursive(child, effectiveParent, effectiveKey, segments, segIdx + 1, value);
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 从字段 Map 构建 JSON（用于 Mock 场景未设 mockBody 但有 replaceFields）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 从字段路径→值映射构建 JSON 字符串。
+     *
+     * <p>当 Mock 场景只设置了 {@code mockReplaceField()} 但未设置 {@code mockBody()} 时，
+     * 直接用字段构建响应体，无需预先提供模板 body。
+     *
+     * <p>支持：
+     * <ul>
+     *   <li>顶层字段：{@code "flag" → false} → {@code {"flag":false}}</li>
+     *   <li>嵌套字段：{@code "data.name" → "Alice"} → {@code {"data":{"name":"Alice"}}}</li>
+     *   <li>带数组索引：{@code "items[0].id" → 1} → {@code {"items":[{"id":1}]}}</li>
+     *   <li>多种值类型：String / Integer / Double / Boolean / null</li>
+     * </ul>
+     *
+     * @param fields 字段路径 → 值映射
+     * @return JSON 字符串
+     */
+    public static String buildJsonFromFieldMap(Map<String, Object> fields) {
+        if (fields == null || fields.isEmpty()) {
+            return "{}";
+        }
+        ObjectNode root = OBJECT_MAPPER.createObjectNode();
+        for (Map.Entry<String, Object> entry : fields.entrySet()) {
+            String path = entry.getKey();
+            JsonNode value = rawValueToJsonNode(entry.getValue());
+            setNodeOnNewTree(root, path, value);
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (JsonProcessingException e) {
+            LOGGER.warn("[ModifyHandler] Failed to serialize body from fields: {}", e.getMessage());
+            return "{}";
+        }
+    }
+
+    /**
+     * 在新建的 ObjectNode 树上按路径设置值（自动创建中间 ObjectNode）。
+     * 与 {@link #setNodeByPath} 不同：路径不存在时不会跳过，而是自动创建中间节点。
+     */
+    private static void setNodeOnNewTree(ObjectNode root, String path, JsonNode value) {
+        String[] segments = path.split("\\.");
+        JsonNode current = root;
+
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if ("$".equals(segment) || segment.isEmpty()) continue;
+
+            boolean isLast = (i == segments.length - 1);
+            int bracketIdx = segment.indexOf('[');
+            String fieldName;
+            Integer arrayIndex = null;
+            if (bracketIdx > 0) {
+                fieldName = segment.substring(0, bracketIdx);
+                String idxStr = segment.substring(bracketIdx + 1, segment.indexOf(']'));
+                try { arrayIndex = Integer.parseInt(idxStr); } catch (NumberFormatException e) { /* ignore */ }
+            } else {
+                fieldName = segment;
+            }
+            if (fieldName.isEmpty()) continue;
+
+            if (current instanceof ObjectNode) {
+                ObjectNode obj = (ObjectNode) current;
+                if (isLast) {
+                    if (arrayIndex != null) {
+                        // 数组索引：确保存在数组并在指定位置设值
+                        JsonNode existing = obj.get(fieldName);
+                        ArrayNode arr;
+                        if (existing instanceof ArrayNode) {
+                            arr = (ArrayNode) existing;
+                        } else {
+                            arr = OBJECT_MAPPER.createArrayNode();
+                            obj.set(fieldName, arr);
+                        }
+                        while (arr.size() <= arrayIndex) arr.add(NullNode.getInstance());
+                        arr.set(arrayIndex, value);
+                    } else {
+                        setJsonNode(obj, fieldName, value);
+                    }
+                } else {
+                    JsonNode child = obj.get(fieldName);
+                    if (child instanceof ArrayNode && arrayIndex != null) {
+                        ArrayNode arr = (ArrayNode) child;
+                        while (arr.size() <= arrayIndex) arr.add(OBJECT_MAPPER.createObjectNode());
+                        current = arr.get(arrayIndex);
+                    } else if (child instanceof ObjectNode) {
+                        current = child;
+                    } else {
+                        ObjectNode newChild = OBJECT_MAPPER.createObjectNode();
+                        obj.set(fieldName, newChild);
+                        current = newChild;
+                    }
+                }
+            }
+        }
+    }
 }

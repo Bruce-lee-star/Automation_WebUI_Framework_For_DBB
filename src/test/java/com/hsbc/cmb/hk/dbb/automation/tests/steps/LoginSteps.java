@@ -80,6 +80,12 @@ public class LoginSteps {
                     .mock()
                     .mockBody("{}")
                     .done()
+                    .api("profile/list")
+                    .mock()
+                    .interceptResponse()
+                    .mockReplaceField("updateContctOverlayFlag", false)
+                    .mockReplaceField("isOverBlockedDate", false)
+                    .done()
                     .start();
             // 【简化API】自动处理 Feature 缓存和 meta 文件读取
             String homeUrl = SessionManager.getHomeUrl(sessionKey);
@@ -170,18 +176,14 @@ public class LoginSteps {
                 .expectStatus(200)
                 .timeout(60)
                 .done()
-                .api("public-resource")
-                .modifyRequest()
-                .modifyRequestBody("$.abc", "123")
-                .modifyMethod("PUT")
-                .autoStopOnMatch(true)   // 第一次匹配后自动停止，避免持续拦截后续请求
+                .api("profile/list")
+                .mock()
+                .interceptResponse()
+                .mockReplaceField("updateContctOverlayFlag", false)
+                .mockReplaceField("isOverBlockedDate", false)
                 .done()
                 .start();
-        RouteDsl.on(loginPage.getContext())
-                .api("public-resource")
-                .monitor()
-                .timeout(60)
-                .done().start();
+
         loginPage.loginBtn.click();
         loginPage.loginBtn.waitForNotVisible(60);
 

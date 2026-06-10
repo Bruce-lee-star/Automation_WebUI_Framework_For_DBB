@@ -142,35 +142,25 @@ public class ApiCaptureContext {
     }
 
     /**
-     * ⭐⭐⭐ 断言失败立即中断测试线程（Fail-Fast）。
+     * ⭐⭐⭐ 断言失败标记（非中断模式）。
      *
      * <p>MonitorHandler 在 Playwright 事件线程上同步执行断言，
-     * 失败时调用此方法中断主测试线程。主线程当前阻塞的 Playwright
-     * IO 操作（WebSocket 通信）检测到 {@code Thread.interrupted()}，
-     * 对应操作立即抛出异常，Step 即刻失败。
+     * 失败时调用此方法标记失败状态并记录详情。不再中断主测试线程，
+     * 避免 {@code Thread.interrupt()} 导致后续 Playwright IO（page.waitForSelector 等）
+     * 抛出异常，从而保证后续 Scenario 仍可正常执行。
      *
-     * <p>若测试线程引用不存在（可能尚未设置），则仅记录 fail-fast 标记，
-     * 由 {@link #checkAndFailOnApiAssertions()} 在步骤结束时兜底处理。
+     * <p>断言失败由 {@link PlaywrightListener#checkAndFailOnApiAssertions()}
+     * 在每个步骤结束时兜底检查并抛出 {@code AssertionError}。
      */
     public void signalFailFast() {
         hasAssertionFailures.set(true);
-        Thread t = testThread;
-        if (t != null && t.isAlive()) {
-            LOGGER.warn("[ApiCaptureContext] Assertion failed — interrupting test thread '{}'", t.getName());
-            t.interrupt();
-            // ⭐ S3: 中断后立即复位 activeRequests 计数器，防止残留非零值
-            //   避免下一个测试的 awaitCompletion 被上一个测试的 orphan 计数误判为仍有请求未完成
-            if (activeRequests.get() > 0) {
-                LOGGER.debug("[ApiCaptureContext] Draining activeRequests ({}) after fail-fast interrupt",
-                        activeRequests.get());
-                activeRequests.set(0);
-                synchronized (completionLock) {
-                    completionLock.notifyAll();
-                }
+        if (activeRequests.get() > 0) {
+            LOGGER.debug("[ApiCaptureContext] Draining activeRequests ({}) after assertion failure",
+                    activeRequests.get());
+            activeRequests.set(0);
+            synchronized (completionLock) {
+                completionLock.notifyAll();
             }
-        } else {
-            LOGGER.warn("[ApiCaptureContext] Assertion failed — test thread not set or dead, "
-                    + "will be caught at step end");
         }
     }
 

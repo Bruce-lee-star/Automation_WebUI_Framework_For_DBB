@@ -1648,24 +1648,70 @@ public class PlaywrightManager {
      * - 保留所有 Cookie（包括 Session Cookie）
      * - 清理 LocalStorage/SessionStorage（确保测试独立性）
      * - 清理页面缓存和监听器
+     * - ⭐ 关闭多余页面标签，确保下一个 Scenario 只有一个 tab
      * <p>
      * 优点：简单可靠，不依赖 Cookie 识别逻辑
      */
     public static void cleanupPageState() {
         Page page = pageThreadLocal.get();
-
-        if (page == null) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Cannot cleanup page state: Page is null");
-            return;
-        }
+        BrowserContext context = contextThreadLocal.get();
 
         try {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up page state (preserving all cookies)...");
 
-            // 只清理 LocalStorage 和 SessionStorage，不清理 Cookie
-            cleanupPageStorage(page);
+            // ⭐ 关闭多余页面标签（Scenario 间复用 Context/Page 时确保只有 1 个 tab）
+            //    上一个 Scenario 可能通过 switchNewPage 打开了新 tab
+            if (context != null) {
+                try {
+                    java.util.List<Page> allPages = context.pages();
+                    int pageCount = allPages.size();
+                    if (pageCount > 1) {
+                        LoggingConfigUtil.logInfoIfVerbose(logger,
+                                "Closing {} extra page(s) — keeping only main page (index 0)", pageCount - 1);
+                        for (int i = pageCount - 1; i >= 1; i--) {
+                            Page extraPage = allPages.get(i);
+                            try {
+                                if (!extraPage.isClosed()) {
+                                    extraPage.close();
+                                    LoggingConfigUtil.logDebugIfVerbose(logger, "Closed extra page at index {}", i);
+                                }
+                            } catch (Exception e) {
+                                LoggingConfigUtil.logWarnIfVerbose(logger,
+                                        "Failed to close extra page at index {}: {}", i, e.getMessage());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                            "Error closing extra pages during cleanupPageState: {}", e.getMessage());
+                }
+            }
 
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Page state cleaned up (all cookies preserved)");
+            // 确保 page 引用指向第一个（唯一）页面
+            if (context != null) {
+                java.util.List<Page> allPages = context.pages();
+                if (!allPages.isEmpty()) {
+                    Page mainPage = allPages.get(0);
+                    if (page != mainPage && !mainPage.isClosed()) {
+                        LoggingConfigUtil.logInfoIfVerbose(logger,
+                                "Resetting page reference to main page (page was pointing to a now-closed tab)");
+                        page = mainPage;
+                        setPage(mainPage);
+                    }
+                } else {
+                    // 所有页面都被关闭了 → 重建新的 Page
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "No pages left in context, creating new Page");
+                    page = PlaywrightContextManager.createPage(context);
+                    setPage(page);
+                }
+            }
+
+            // 只清理 LocalStorage 和 SessionStorage，不清理 Cookie
+            if (page != null && !page.isClosed()) {
+                cleanupPageStorage(page);
+            }
+
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Page state cleaned up (all cookies preserved, extra tabs closed)");
 
         } catch (Exception e) {
             logger.warn("Failed to cleanup page state: {}", e.getMessage());

@@ -174,6 +174,7 @@ public class LoginSteps {
                 .api("leftmenu/permissionLeftMenuConfig")
                 .monitor()
                 .expectStatus(200)
+                .expectJsonPath("enableAdminTools", "YY")
                 .timeout(60)
                 .done()
                 .api("profile/list")

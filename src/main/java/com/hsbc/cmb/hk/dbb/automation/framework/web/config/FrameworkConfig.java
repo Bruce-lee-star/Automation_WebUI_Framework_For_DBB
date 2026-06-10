@@ -520,6 +520,39 @@ public enum FrameworkConfig {
         "设备缩放因子（留空则自动检测）"
     ),
 
+    /**
+     * Context 代理服务器
+     * 用于公司网络环境下浏览器通过代理访问内网域名
+     * 格式: http://proxy-host:port
+     * 示例: http://proxy.example.com:8080
+     * 留空则不使用代理
+     */
+    PLAYWRIGHT_CONTEXT_PROXY(
+        "playwright.context.proxy",
+        "",
+        "Context 代理服务器"
+    ),
+
+    /**
+     * Context 代理用户名（可选）
+     * 代理需要认证时填写，与 proxy.password 配合使用
+     */
+    PLAYWRIGHT_CONTEXT_PROXY_USERNAME(
+        "playwright.context.proxy.username",
+        "",
+        "Context 代理用户名"
+    ),
+
+    /**
+     * Context 代理密码（可选）
+     * 代理需要认证时填写，与 proxy.username 配合使用
+     */
+    PLAYWRIGHT_CONTEXT_PROXY_PASSWORD(
+        "playwright.context.proxy.password",
+        "",
+        "Context 代理密码"
+    ),
+
     // ==================== Playwright 页面配置 ====================
 
     /**

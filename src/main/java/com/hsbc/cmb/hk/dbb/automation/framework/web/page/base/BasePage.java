@@ -603,171 +603,186 @@ public abstract class BasePage {
         resetFrameContextAfterNavigation();
     }
 
-    public void switchToPage(int index) {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-        if (index < 0 || index >= pages.size()) throw new IndexOutOfBoundsException("Invalid page index");
-        page = pages.get(index);
-        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
-        currentFrame.remove(); // 切换页面后重置 iframe 上下文
+    // ===================== 页面切换内部工具方法 =====================
+
+    /**
+     * 页面切换后的统一后置处理：重置 iframe 上下文、登记 ThreadLocal、刷新 @Element 字段。
+     * <p>6 个 switch/reset 类方法统一走此入口，消除重复代码。
+     */
+    private void onPageSwitched() {
+        currentFrame.remove();
         setCurrentPage();
-        initializeAnnotatedFields(); // 页面切换后重新绑定元素
+        initializeAnnotatedFields();
     }
 
-    public void switchToLatestPage() {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-        Page latestPage = pages.getLast();
+    /**
+     * 设置当前 page 引用并同步到 PlaywrightManager，使同一 context 内的其他 PageObject 实例可感知。
+     */
+    private void setPageReference(Page target) {
+        page = target;
+        PlaywrightManager.setPage(page);
+    }
 
-        // ⭐ 闭环保护：最新 page 可能已被关闭
+    /**
+     * 安全 bringToFront：page 已关闭或异常时仅 warn 不抛异常。
+     */
+    private void safeBringToFront() {
         try {
-            if (latestPage.isClosed()) {
-                // 从后往前找第一个未关闭的 page
-                for (int i = pages.size() - 2; i >= 0; i--) {
-                    try {
-                        if (!pages.get(i).isClosed()) {
-                            latestPage = pages.get(i);
-                            LoggingConfigUtil.logWarnIfVerbose(logger,
-                                    "Latest page was closed, falling back to page at index {}", i);
-                            break;
-                        }
-                    } catch (Exception ignored) {}
-                }
-                // 如果所有页面都关了
-                try {
-                    if (latestPage.isClosed()) {
-                        throw new TimeoutException("All pages in context are closed");
-                    }
-                } catch (Exception e) {
-                    throw new TimeoutException("No available page in context");
-                }
-            }
+            page.bringToFront();
         } catch (Exception e) {
-            if (e instanceof TimeoutException) throw (TimeoutException) e;
-            LoggingConfigUtil.logWarnIfVerbose(logger, "isClosed() check failed in switchToLatestPage: {}", e.getMessage());
-            throw new TimeoutException("Cannot switch to latest page: page unavailable");
-        }
-
-        page = latestPage;
-        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
-        currentFrame.remove(); // 切换页面后重置 iframe 上下文
-        setCurrentPage();
-        initializeAnnotatedFields(); // 页面切换后重新绑定元素
-    }
-
-    public Page waitForNewPage(int timeout) {
-        ensureContextValid();
-        int before = context.pages().size();
-        if (!waitForCondition(() -> context.pages().size() > before, timeout, "new page opened")) {
-            throw new TimeoutException("No new page");
-        }
-        // ⭐ 兜底重试：检测到的新 page 可能已被关闭（弹窗闪烁 / 重定向关闭 tab）
-        //    短暂等待后重新获取，避免返回已关闭的 page 给 switchNewPage 使用
-        long deadline = System.currentTimeMillis() + 2000;
-        List<Page> pages = context.pages();
-        while (true) {
-            if (pages.isEmpty()) {
-                throw new TimeoutException("No pages available");
-            }
-            Page candidate = pages.getLast();
-            try {
-                if (!candidate.isClosed()) {
-                    return candidate;
-                }
-            } catch (Exception ignored) {
-                // isClosed() 异常时视作已关闭
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                // 超时后仍返回最后一个（closed），交给调用方 isClosed() 检查
-                return candidate;
-            }
-            try {
-                // ⭐ 使用 Playwright 原生 waitForTimeout，而非 Thread.sleep
-                pages.getFirst().waitForTimeout(100);
-            } catch (Exception e) {
-                // 如果所有 page 都关了，降级为 Thread.sleep
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    return candidate;
-                }
-            }
-            pages = context.pages();
+            LoggingConfigUtil.logWarnIfVerbose(logger, "bringToFront() failed: {}", e.getMessage());
         }
     }
 
     /**
-     * 等待新页面打开并自动切换 — 组合 waitForNewPage + switchToLatestPage。
-     *
-     * <p>典型场景：点击一个 target="_blank" 链接，期望新 tab 打开。
-     * 本方法等待新 Page 出现后自动切换当前页面指针到新 Page，
-     * 并重新绑定所有 @Element 注解字段，确保后续操作在新页面上执行。
-     *
-     * <p>内置 ensureContextValid()，确保 context 不会为 null。
-     *
+     * 安全记录页面切换日志（url/title 可能在 page 已关闭时抛异常）。
+     */
+    private void logPageSwitchInfo() {
+        try {
+            logger.info("Switch to page: url={}, title={}", page.url(), page.title());
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Unable to log new page info (url/title): {}", e.getMessage());
+        }
+    }
+
+    // ===================== 页面切换方法（对标 Selenium switchTo().window()） =====================
+
+    /**
+     * 按索引切换到指定页面（Page），负数表示从末尾倒数（-1 = 最后一个）。
+     * <p>对标 Selenium {@code switchTo().window()}：
      * <pre>{@code
-     * myPage.switchNewPage(10);
-     * // 此后所有元素操作都指向新打开的 page
+     * myPage.switchToPage(0);   // 切换到第一个页面
+     * myPage.switchToPage(-1);  // 切换到最后一个页面（替代 switchToLatestPage）
      * }</pre>
      *
-     * @param timeoutSecs 等待新页面打开的超时秒数
-     * @return 新打开的 Page 实例
-     * @throws TimeoutException 如果在超时时间内未检测到新页面
+     * <p>内置 isClosed 守卫：负数索引若目标已关闭，自动向前回退到第一个未关闭的页面。
+     *
+     * @param index 页面索引，支持负数（-1 = 最后一个，-2 = 倒数第二个…）
      */
-    public Page switchNewPage(int timeoutSecs) {
+    public void switchToPage(int index) {
         ensureContextValid();
-        Page newPage = waitForNewPage(timeoutSecs);
+        List<Page> pages = context.pages();
+        if (pages.isEmpty()) throw new TimeoutException("No pages available in context");
 
-        // ⭐ 闭环保护：新页面可能在 waitForNewPage 返回后立即关闭（弹窗闪烁 / 重定向关闭）
+        int resolved = index >= 0 ? index : pages.size() + index;
+        if (resolved < 0 || resolved >= pages.size())
+            throw new IndexOutOfBoundsException("Invalid page index: " + index);
+
+        Page target = pages.get(resolved);
+
+        // 负数索引场景：目标可能已关闭，从该位置向前回退
+        if (index < 0 && isPageClosed(target)) {
+            target = findLastAvailablePage(pages, resolved);
+        }
+        if (isPageClosed(target))
+            throw new TimeoutException("Target page at index " + index + " is closed");
+
+        setPageReference(target);
+        safeBringToFront();
+        onPageSwitched();
+        logPageSwitchInfo();
+    }
+
+    /**
+     * 切换到指定的 Page 实例（用于 waitForPopup 等 Playwright API 捕获到的外部 Page）。
+     * <p>与 {@link #switchToNewPage(Runnable, int)} 不同，本方法跳过事件监听，直接使用调用方已捕获的 Page 引用。
+     *
+     * @param page 目标页面（Page 实例，不能为 null 或已关闭）
+     */
+    public Page switchToPage(Page page) {
+        if (page == null) {
+            throw new IllegalArgumentException("page must not be null");
+        }
+        if (page.isClosed()) {
+            throw new TimeoutException("Target page is already closed");
+        }
+        ensureContextValid();
+        setPageReference(page);
+        safeBringToFront();
+        onPageSwitched();
+        logPageSwitchInfo();
+        return page;
+    }
+
+    /**
+     * 触发操作并等待新页面打开，对标 Selenium {@code switchTo().newWindow()}。
+     * <p>基于 Playwright 原生 {@code context.waitForPage(action)} 在浏览器事件级捕获新 Tab，
+     * 彻底消除轮询/计数方式的时序问题。
+     *
+     * <pre>{@code
+     * // 推荐：将触发操作传入方法，一步完成"点击 + 等待新页面 + 切换"
+     * myPage.switchToNewPage(() -> myPage.element("#link").click(), 15);
+     *
+     * // 也可以配合 waitForPopup（更适合精确捕获弹窗）
+     * Page popup = myPage.getPage().waitForPopup(() -> { ... });
+     * myPage.switchToPage(popup);
+     * }</pre>
+     *
+     * @param trigger     触发新页面打开的操作（如点击链接）
+     * @param timeoutSecs 等待超时秒数
+     * @return 新打开的 Page 实例
+     */
+    public Page switchToNewPage(Runnable trigger, int timeoutSecs) {
+        ensureContextValid();
+        try {
+            return acceptNewPage(context.waitForPage(() -> trigger.run()));
+        } catch (PlaywrightException e) {
+            throw new TimeoutException("Waiting for new page timed out after " + timeoutSecs + " seconds", e);
+        }
+    }
+
+    /**
+     * 仅等待新页面（不触发操作），适用场景：前序步骤已触发新 Tab，本方法负责等待+切换。
+     * <p>先检查是否已有新页面（快速路径），若无则通过 {@code context.waitForPage()} 注册事件监听。
+     *
+     * <pre>{@code
+     * myPage.switchToNewPage(15);  // 等待最多 15 秒
+     * }</pre>
+     *
+     * @param timeoutSecs 等待超时秒数
+     * @return 新打开的 Page 实例
+     */
+    public Page switchToNewPage(int timeoutSecs) {
+        ensureContextValid();
+        // 快速路径：前序步骤可能已触发新页面，直接检查是否已存在
+        for (int i = context.pages().size() - 1; i >= 0; i--) {
+            Page p = context.pages().get(i);
+            if (p != page && !isPageClosed(p)) {
+                return acceptNewPage(p);
+            }
+        }
+        // 慢路径：注册 Playwright 原生 page 事件监听
+        try {
+            return acceptNewPage(context.waitForPage(() -> {}));
+        } catch (PlaywrightException e) {
+            throw new TimeoutException("Waiting for new page timed out after " + timeoutSecs + " seconds", e);
+        }
+    }
+
+    /** 新页面校验 + 切换 + 日志，供两个重载共用 */
+    private Page acceptNewPage(Page newPage) {
         try {
             if (newPage.isClosed()) {
-                throw new TimeoutException(
-                        "New page detected but already closed before switch — page may have been auto-closed");
+                throw new TimeoutException("New page was created but already closed");
             }
         } catch (Exception e) {
             if (e instanceof TimeoutException) throw (TimeoutException) e;
-            LoggingConfigUtil.logWarnIfVerbose(logger, "isClosed() check failed, page may already be gone: {}",
-                    e.getMessage());
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                    "isClosed() check failed, page may already be gone: {}", e.getMessage());
             throw new TimeoutException("New page is no longer available (closed/destroyed)");
         }
-
-        page = newPage;
-        PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
-
-        // ⭐ bringToFront 可能因 page 已关闭而抛异常，用 try-catch 兜底
-        try {
-            page.bringToFront();
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger,
-                    "bringToFront() failed (page may have closed after switch): {}", e.getMessage());
-            // 如果 page 确实已关闭，抛明确的 TimeoutException
-            try {
-                if (page.isClosed()) {
-                    throw new TimeoutException(
-                            "New page closed during bringToFront — target page has been closed");
-                }
-            } catch (Exception ignored) {
-                throw new TimeoutException("New page closed during bringToFront");
-            }
-            // 未关闭则继续（例如 bringToFront 因其他原因失败）
-        }
-
-        currentFrame.remove(); // 切换页面后重置 iframe 上下文
-        setCurrentPage();
-        initializeAnnotatedFields();
-
-        // ⭐ 安全日志：url/title 在 page 已关闭时同样会抛异常
-        try {
-            logger.info("Switch to new page: url={}, title={}", page.url(), page.title());
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger,
-                    "Unable to log new page info (url/title): {}", e.getMessage());
-        }
+        setPageReference(newPage);
+        safeBringToFront();
+        onPageSwitched();
+        logPageSwitchInfo();
         return newPage;
     }
 
-    public void closeCurrentPageAndSwitchBack() {
+    /**
+     * 关闭当前页面并自动切换到前一个页面。
+     * <p>若当前已是最前页面则切换到 index 0；不会关闭唯一页面。
+     */
+    public void closeCurrentPage() {
         ensureContextValid();
         List<Page> pages = context.pages();
 
@@ -779,106 +794,55 @@ public abstract class BasePage {
 
         if (pages.size() <= 1) {
             LoggingConfigUtil.logWarnIfVerbose(logger,
-                "Only one page available (size={}), skipping close to avoid losing the last page", pages.size());
-            // 确保当前 page 引用指向唯一可用页面
+                    "Only one page available (size={}), skipping close to avoid losing the last page", pages.size());
             Page onlyPage = pages.get(0);
             if (page != onlyPage) {
-                page = onlyPage;
-                currentFrame.remove(); // 切换页面后重置 iframe 上下文
-                setCurrentPage();
-                initializeAnnotatedFields();
+                setPageReference(onlyPage);
+                onPageSwitched();
             }
             return;
         }
 
         int currentIndex = pages.indexOf(page);
-        // 安全关闭：跳过已关闭的 page，避免对已关闭页面调用 close() 抛异常
         try {
             if (page != null && !page.isClosed()) {
                 page.close();
             } else {
                 LoggingConfigUtil.logDebugIfVerbose(logger,
-                    "Current page reference is null or already closed, skip close()");
+                        "Current page reference is null or already closed, skip close()");
             }
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger,
-                "Exception while closing current page: {}", e.getMessage());
+                    "Exception while closing current page: {}", e.getMessage());
         }
 
         List<Page> updatedPages = context.pages();
         if (updatedPages.isEmpty()) {
             LoggingConfigUtil.logWarnIfVerbose(logger,
-                "No pages available after closing current page, page reference will be null");
+                    "No pages available after closing current page, page reference will be null");
             page = null;
             return;
         }
         int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
-        page = updatedPages.get(targetIndex);
-        currentFrame.remove(); // 切换页面后重置 iframe 上下文
-        setCurrentPage();
-        initializeAnnotatedFields(); // 页面切换后重新绑定元素
+        setPageReference(updatedPages.get(targetIndex));
+        onPageSwitched();
     }
 
-    /**
-     * 关闭所有多余页面，保留并切换回主页面（第一个页面）
-     * 用于 Feature 模式下 case 切换时清理上一个 case 遗留的弹窗/新tab
-     * 
-     * 策略:
-     * - 总是保留 pages.get(0) 作为主页面
-     * - 关闭其他所有页面（包括当前 page 指向的非主页）
-     * - 最终将 page 指针设回主页
-     * - 即使当前就在主页也安全（不会关闭自己）
-     */
-    public void resetToMainPage() {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-        
-        if (pages.isEmpty()) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "No pages available in context, nothing to reset");
-            page = null;
-            return;
-        }
-        
-        Page mainPage = pages.get(0);
-        
-        if (pages.size() == 1) {
-            // 只有一个页面，直接切换过去即可（可能之前 page 指针漂移了）
-            if (page != mainPage) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Single page available, switching page reference to main page");
-                page = mainPage;
-                currentFrame.remove(); // 切换页面后重置 iframe 上下文
-                setCurrentPage();
-                initializeAnnotatedFields();
-            } else {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Already on the only page (main page)");
-            }
-            return;
-        }
-        
-        // 多个页面：关闭除主页面外的所有页面
-        LoggingConfigUtil.logInfoIfVerbose(logger, 
-            "Resetting to main page: closing {} extra page(s) (total pages: {})", pages.size() - 1, pages.size());
-        
-        for (int i = pages.size() - 1; i >= 1; i--) {
-            Page extraPage = pages.get(i);
+    // ===================== 内部辅助 =====================
+
+    /** 从后往前找第一个未关闭的页面（兜底逻辑，供 switchToPage 负数索引使用） */
+    private Page findLastAvailablePage(List<Page> pages, int startFrom) {
+        for (int i = startFrom; i >= 0; i--) {
             try {
-                if (!extraPage.isClosed()) {
-                    extraPage.close();
-                    LoggingConfigUtil.logDebugIfVerbose(logger, "Closed extra page at index {}", i);
+                if (!pages.get(i).isClosed()) {
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                            "Latest window was closed, falling back to window at index {}", i);
+                    return pages.get(i);
                 }
-            } catch (Exception e) {
-                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to close page at index {}: {}", i, e.getMessage());
-            }
+            } catch (Exception ignored) {}
         }
-        
-        // 确保最终指向主页
-        page = mainPage;
-        currentFrame.remove(); // 切换页面后重置 iframe 上下文
-        setCurrentPage();
-        initializeAnnotatedFields();
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Successfully reset to main page");
+        return pages.get(startFrom); // 全部已关闭，返回原目标由调用方 isClosed 抛异常
     }
-
 
     public Frame getFrame(String name) {
         ensurePageValid();
@@ -893,78 +857,56 @@ public abstract class BasePage {
         return currentFrame.get();
     }
 
-    // ===================== iframe 切换 =====================
+    // ===================== iframe 切换（对标 Selenium switchTo().frame() / defaultContent()） =====================
 
     /**
-     * 按 name / id 属性切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
-     * <p>此后所有通过 {@code myPage.click(selector)}、{@code myPage.type(selector)}
-     * 以及 {@code @Element} 注解字段的操作都会自动在 iframe 内查找元素，
-     * 不再出现 "not found in DOM" 的问题。
+     * 按 name / id / CSS 选择器切换到 iframe，对标 Selenium {@code switchTo().frame(String)}。
+     * <p>查找策略（按顺序尝试）：
+     * <ol>
+     *   <li>作为 frame name/id 查找</li>
+     *   <li>作为 CSS 选择器查找</li>
+     * </ol>
+     * 一个方法替代了原 switchToFrame(name) + switchToFrameBySelector(selector)。
      *
      * <pre>{@code
-     * FrameLocator frame = myPage.switchToFrame("myFrame");
-     * // 两种用法均可 —— 效果相同：
-     * frame.locator("#inputField").fill("hello");          // 直接用 FrameLocator
-     * myPage.type("#inputField", "hello");                 // 通过 BasePage 自动适配
+     * myPage.switchToFrame("myFrame");           // name/id
+     * myPage.switchToFrame("iframe.embedded-view"); // CSS selector
      * }</pre>
      *
-     * @param frameName iframe 的 name 或 id
-     * @return Playwright FrameLocator（仍可链式调用）
-     */
-    public FrameLocator switchToFrame(String frameName) {
-        ensurePageValid();
-        // 优先用 Playwright 原生 frame(name) 获取 Frame
-        Frame frame = page.frame(frameName);
-        if (frame == null) {
-            throw new RuntimeException("Frame not found by name/id: '" + frameName
-                + "'. Available frames: " + page.frames().size());
-        }
-        currentFrame.set(frame);
-        // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向 iframe 内的 DOM
-        initializeAnnotatedFields();
-        logger.info("Switched to iframe: name='{}'", frameName);
-        // CSS 选择器需对单引号做转义，防止选择器注入
-        String escaped = frameName.replace("\\", "\\\\").replace("'", "\\'");
-        return page.frameLocator("iframe[name='" + escaped + "'], iframe[id='" + escaped + "']");
-    }
-
-    /**
-     * 按 CSS 选择器切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
-     *
-     * <pre>{@code
-     * FrameLocator frame = myPage.switchToFrameBySelector("iframe.embedded-view");
-     * myPage.click(".submit-btn");  // 自动在 iframe 内查找
-     * }</pre>
-     *
-     * @param iframeSelector iframe 元素的 CSS 选择器
+     * @param nameOrSelector iframe 的 name、id 或 CSS 选择器
      * @return Playwright FrameLocator
      */
-    public FrameLocator switchToFrameBySelector(String iframeSelector) {
+    public FrameLocator switchToFrame(String nameOrSelector) {
         ensurePageValid();
-        try {
-            com.microsoft.playwright.ElementHandle iframeEl = page.locator(iframeSelector).elementHandle();
-            Frame cf = iframeEl.contentFrame();
-            if (cf == null) {
-                throw new RuntimeException("Cannot get content frame from selector: " + iframeSelector);
+        // 策略 1：按 Playwright 原生 frame(name) 查找（匹配 name/id 属性）
+        Frame frame = page.frame(nameOrSelector);
+        if (frame == null) {
+            // 策略 2：回退为 CSS 选择器
+            try {
+                com.microsoft.playwright.ElementHandle iframeEl = page.locator(nameOrSelector).elementHandle();
+                frame = iframeEl.contentFrame();
+            } catch (Exception e) {
+                logger.error("Failed to switch to iframe by selector '{}': {}", nameOrSelector, e.getMessage());
             }
-            currentFrame.set(cf);
-        } catch (Exception e) {
-            logger.error("Failed to switch to iframe by selector '{}': {}", iframeSelector, e.getMessage());
-            throw new RuntimeException("Failed to switch to iframe by selector: " + iframeSelector, e);
         }
-        // 刷新所有 @Element 注解字段的 Locator 缓存
+        if (frame == null) {
+            throw new RuntimeException("Frame not found: '" + nameOrSelector
+                    + "'. Tried as name/id and CSS selector. Available frames: " + page.frames().size());
+        }
+        currentFrame.set(frame);
         initializeAnnotatedFields();
-        logger.info("Switched to iframe by selector: '{}'", iframeSelector);
-        return page.frameLocator(iframeSelector);
+        logger.info("Switched to iframe: '{}'", nameOrSelector);
+        String escaped = nameOrSelector.replace("\\", "\\\\").replace("'", "\\'");
+        return page.frameLocator("iframe[name='" + escaped + "'], iframe[id='" + escaped + "'], " + nameOrSelector);
     }
 
     /**
-     * 按索引切换到 iframe，并自动将当前页面上下文指向 iframe 内部。
+     * 按索引切换到 iframe，对标 Selenium {@code switchTo().frame(int)}。
      *
      * @param index iframe 索引（从 0 开始，0 通常是主页面）
      * @return Playwright Frame
      */
-    public Frame switchToFrameByIndex(int index) {
+    public Frame switchToFrame(int index) {
         ensurePageValid();
         List<Frame> frames = page.frames();
         if (index < 0 || index >= frames.size()) {
@@ -972,30 +914,23 @@ public abstract class BasePage {
         }
         Frame selectedFrame = frames.get(index);
         currentFrame.set(selectedFrame);
-        // 刷新所有 @Element 注解字段的 Locator 缓存
         initializeAnnotatedFields();
         logger.info("Switched to iframe by index: {} (total: {})", index, frames.size());
         return selectedFrame;
     }
 
     /**
-     * 切换回主页面 DOM（退出 iframe 上下文）。
-     * <p>此后所有元素操作恢复在主页面 DOM 中查找。
+     * 切换回主页面 DOM（退出 iframe），对标 Selenium {@code switchTo().defaultContent()}。
      */
-    public void switchToMainFrame() {
+    public void switchToDefaultContent() {
         if (currentFrame.get() != null) {
             currentFrame.remove();
-            // 刷新所有 @Element 注解字段的 Locator 缓存，使其指向主页面 DOM
             initializeAnnotatedFields();
-            logger.info("Switched back to main frame (top-level page)");
+            logger.info("Switched back to default content (top-level page)");
         }
     }
 
-    /**
-     * 获取当前 Page 中所有 Frame 列表。
-     *
-     * @return Frame 列表
-     */
+    /** 获取当前 Page 中所有 Frame 列表。 */
     public List<Frame> getAllFrames() {
         ensurePageValid();
         return page.frames();

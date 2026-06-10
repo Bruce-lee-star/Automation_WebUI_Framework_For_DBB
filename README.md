@@ -19,7 +19,7 @@
 | **报告** | Serenity HTML Report + SummaryReportGenerator（HTML / CSV / ZIP） |
 | **配置管理** | typesafe.config 1.4.2（HOCON 格式） |
 | **依赖注入** | Spring Context 6.1.6 |
-| **日志** | SLF4J + Logback Classic 1.5.6（System.err 绕过 IntelliJ 缓冲区） |
+| **日志** | SLF4J + Logback Classic 1.5.6 |
 
 
 ## Playwright 核心概念
@@ -62,7 +62,7 @@
 **关键设计：**
 - **Browser 复用 + Context 隔离**：频繁创建/销毁 Browser 开销大，框架采用 Browser 共享、Context 隔离的策略。`scenario` 模式通过 `cleanupContextState()` 深度清理（清除 Cookies/Permissions）后复用同一 Context 实例，**整个测试生命周期只保持 1 个浏览器窗口**。
 - **Context 复用机制**：两种重启策略（`scenario` / `feature`）均复用 Context 实例，避免 `browser.newContext()` 弹出多个 Chrome 窗口；隔离性通过状态清理保证。
-- **Session 跨 Scenario 复用**：通过 `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/` 目录，下一个 Scenario 自动恢复，减少冗余登录。
+- **Session 跨 Scenario 复用**：通过 `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/` 目录。**缓存命中**时 `setStorageStatePath()` 预加载 Cookie，下一个 Scenario 跳过登录直达 homeUrl；**缓存未命中**时走完整登录流程，登录后自动 `saveSession()` 持久化，后续 Scenario 即可命中缓存。
 
 
 ## 架构设计
@@ -221,6 +221,7 @@ Automation_WebUI_Framework_BDD/
     ├── ROUTE_PACKAGE_README.md           # Route Engine 完整 API 文档
     ├── API_README.md                     # API 测试框架文档（Rest Assured）
     ├── PLAYWRIGHT_VS_SELENIUM.md         # Playwright vs Selenium 技术选型
+    ├── PLAYWRIGHT_LISTENERS.md           # Playwright 监听器全景指南
     └── Element.MD                        # 元素定位方法手册
 ```
 
@@ -795,6 +796,350 @@ public class LoginSteps {
 | `TimeoutException` | FrameworkException | 等待操作超时 |
 
 
+## Playwright vs Selenium — 关键行为差异与迁移指南
+
+> **核心区别**：Selenium 是**同步指令式**模型（send command → wait for response），Playwright 是**事件驱动式**模型（register listener → event triggers handler）。这种范式差异导致许多操作的**时序要求完全不同**，从 Selenium 迁移时最容易踩坑。
+
+---
+
+### 1. Alert / Dialog 处理（⚠️ 时序敏感）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **触发方式** | `driver.switchTo().alert().accept()` — **事后处理**，alert 弹出后再操作 | `page.onceDialog(Dialog::accept)` — **必须事前注册** |
+| **时序要求** | 可以在 alert 弹出来后随时随地调用 | **必须在触发 alert 的代码之前注册监听器** |
+| **fail 模式** | 不注册也可以，到需要时再处理 | 没有事前注册 → Dialog 自动被 Playwright 默认 dismiss → 后续代码拿不到 dialog |
+
+**Playwright 正确写法：**
+
+```java
+// ✅ 正确：先注册监听器，再触发 alert
+page.onceDialog(Dialog::accept);          // 第1步：事前注册
+page.click("#delete-btn");                // 第2步：触发 alert → Playwright 自动调用 accept()
+
+// ✅ 获取 dialog 信息
+page.onceDialog(dialog -> {
+    logger.info("Dialog message: {}", dialog.message());
+    dialog.accept("input text");           // prompt 输入
+});
+
+// ❌ 迁移陷阱：Selenium 思维 — 先点击再处理
+page.click("#delete-btn");               // alert 弹出来了！
+page.onceDialog(Dialog::accept);         // 太晚了！已自动 dismiss
+```
+
+**框架封装（针对 Selenium 用户习惯做了适配）：**
+
+```java
+// BasePage 封装了 before-click 注册模式
+basePage.acceptAlert();       // 等价于 page.onceDialog(Dialog::accept);
+basePage.dismissAlert();      // 等价于 page.onceDialog(Dialog::dismiss);
+
+// 使用方式 — 先调用 acceptAlert()，再点击触发按钮
+basePage.acceptAlert();
+basePage.click("#delete-btn");
+```
+
+---
+
+### 2. 新页面/新 Tab 处理（⚠️ 时序敏感）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **获取窗口** | `driver.getWindowHandles()` — **事后查询**，随时获取句柄列表 | `context.waitForPage(action)` — **事前监听**，在浏览器事件级捕获 |
+| **切换方式** | `driver.switchTo().window(handle)` — 按句柄切换 | `switchToPage(index)` / `switchToPage(page)` / `switchToNewPage(trigger)` |
+| **时序问题** | 通过 `getWindowHandles().size()` 轮询，可能与页面打开时机产生竞态 | `context.waitForPage()` 在 CDP 层面拦截新页面事件，无误判 |
+
+**Playwright 正确写法：**
+
+```java
+// ✅ 方式1：原子操作 — 点击 + 等待新页面（推荐）
+Page newPage = basePage.switchToNewPage(
+    () -> basePage.click("#link-that-opens-new-tab"), 15);
+
+// ✅ 方式2：手动 waitForPopup + switchToPage
+Page popup = page.waitForPopup(() -> page.click("#link"));
+basePage.switchToPage(popup);
+
+// ✅ 方式3：已触发新 tab，只需等待 + 切换
+basePage.switchToNewPage(15);  // 快速路径检查 → 事件监听兜底
+
+// ❌ 迁移陷阱 — Selenium 思维：先点击，再 getWindowHandles 轮询
+page.click("#link");                          // 新 tab 已打开
+for (int i = 0; i < 10; i++) {               // 轮询等待
+    if (context.pages().size() > 1) break;
+    page.waitForTimeout(500);
+}
+// ⚠️ 问题：如果在 click() 返回之前新页面已经打开，
+//    context.pages().size() 在点击前保存的 snapshot 会永远是旧的
+```
+
+**关键原理：**
+
+```
+Selenium 模型（基于 WebDriver 协议，轮询查询）：
+  getWindowHandles() → WebDriver 命令 → Browser → 返回句柄集合
+  问题：页面在命令间隙打开时，下次查询才能发现
+
+Playwright 模型（基于 CDP 事件，推送通知）：
+  context.waitForPage() → 注册 CDP Target.targetCreated 监听 → 事件到达立即回调
+  优势：Browser 创建新 Target 的瞬间 Playwright 就收到了
+```
+
+---
+
+### 3. iframe 切换
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **切换方式** | `driver.switchTo().frame(index/name/WebElement)` | `page.frame(name)` / `switchToFrame(nameOrSelector)` / `switchToFrame(index)` |
+| **导航后** | 自动回到 defaultContent（取决于实现） | **Frame 对象会变为 detached**，必须重置 |
+| **回主页面** | `driver.switchTo().defaultContent()` | `switchToDefaultContent()` |
+
+**Playwright 注意事项：**
+
+```java
+// ✅ 进入 iframe
+basePage.switchToFrame("myFrame");         // name/id
+basePage.switchToFrame("iframe.embedded"); // CSS selector
+basePage.switchToFrame(1);                 // index
+
+// 在 iframe 内操作 — locator() 自动适配
+basePage.click("#button-inside-iframe");
+basePage.type("#input-inside-iframe", "text");
+
+// ✅ 退出 iframe
+basePage.switchToDefaultContent();
+
+// ⚠️ 页面导航后 Frame 自动 detached
+// navigateTo / refresh / back / forward 后框架自动重置 iframe 上下文
+// 不需要手动 switchToDefaultContent，但如果有跨导航的 iframe 操作需注意
+```
+
+**与 Selenium 的关键差异：**
+- Playwright 的 `Frame` 对象是**引用**，页面导航后变为 detached，需要重新获取
+- 框架通过 `ThreadLocal<Frame>` + 导航后自动重置，对业务代码透明
+
+---
+
+### 4. 元素自动等待（Playwright 独有）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **点击前检查** | 需手动 `WebDriverWait` + `ExpectedConditions` | **自动检查**：attached → visible → stable → enabled → receives events |
+| **输入前检查** | 需手动等待 | **自动等待**元素可编辑 |
+| **选择器解析** | 即时（By.id/cssSelector/xpath 等） | Locator 延迟求值，每次操作重新查询 DOM |
+
+**Selenium 需要这样写：**
+
+```java
+WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+wait.until(ExpectedConditions.elementToBeClickable(By.id("#btn")));
+wait.until(ExpectedConditions.visibilityOfElementLocated(By.id("#btn")));
+driver.findElement(By.id("#btn")).click();
+```
+
+**Playwright 只需要：**
+
+```java
+page.click("#btn");  // 自动等待所有条件满足
+```
+
+**Playwright 自动等待的 5 个阶段：**
+1. **Attached** — 元素是否在 DOM 中
+2. **Visible** — 元素是否可见（非 `display:none` / `visibility:hidden`）
+3. **Stable** — 元素是否稳定（非动画中）
+4. **Enabled** — 元素是否可交互（非 `disabled`）
+5. **Actionable** — 元素是否能接收事件（未被遮挡、在视口内）
+
+---
+
+### 5. 下载文件处理
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **下载方式** | 配置浏览器 Profile 禁止下载弹窗，设置默认下载目录 | `page.onDownload()` **事件监听** |
+| **时序** | 通过轮询文件系统检测下载完成 | Playwright 通过 CDP 事件通知下载完成 |
+
+**Playwright 自动下载（框架内置）：**
+
+```java
+// 框架在 createPage 时自动注册 onDownload 监听
+// 下载文件自动保存到 playwright.browser.downloadsPath 目录（默认 target/downloads）
+// 无需手动处理
+
+// 点击下载按钮
+basePage.click("#download-btn");
+// 文件自动保存，日志输出：Download completed: file.xlsx -> target/downloads/file.xlsx
+```
+
+---
+
+### 6. 浏览器上下文隔离（BrowserContext）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **隔离级别** | 每个 `WebDriver` 实例一个浏览器窗口，Cookie 共享 | `BrowserContext` 完全隔离 Cookie/LocalStorage/Session |
+| **多用户登录** | 需要启动多个浏览器实例 | 同一 Browser 创建多个 Context，**零开销** |
+| **会话管理** | 需手动管理 Cookie 文件 | `context.storageState()` 保存 / `setStorageStatePath()` 恢复 |
+
+**Playwright 的 Context 模型优势：**
+
+```java
+// Selenium 思维：两个登录用户需要两个 Driver → 两个浏览器窗口
+WebDriver driver1 = new ChromeDriver();  // 窗口 1
+WebDriver driver2 = new ChromeDriver();  // 窗口 2
+
+// Playwright 方式：两个 Context → 共享一个浏览器进程
+BrowserContext ctx1 = browser.newContext();  // 用户 A 的隔离会话
+BrowserContext ctx2 = browser.newContext();  // 用户 B 的隔离会话
+// ctx1 和 ctx2 的 Cookie/Storage 完全隔离，但属于同一浏览器进程
+```
+
+**本框架的 Session 复用机制（区分缓存命中/未命中）：**
+
+| 场景 | 行为 | 说明 |
+|------|------|------|
+| **缓存命中** | `setStorageStatePath(sessionPath)` → Context 创建时预载 Cookie/LocalStorage → **跳过登录**直达 homeUrl | session `.json` + `.meta` 文件存在且未过期 |
+| **缓存未命中** | `restoreSession()` 返回 false → 业务层执行**完整登录**流程 → 登录后 `saveSession()` 将 `context.storageState()` 序列化到 `target/.sessions/` | 文件缺失或超过 60 分钟过期 |
+
+- **Scenario 模式** — 缓存命中时：新 Context 直接加载持久化 Cookie，无需 UI 交互；未命中时：执行登录后自动保存
+- **Feature 模式** — 同一 Feature 内首个 Scenario 恢复 Session 后，后续 Scenario 通过 `markFeatureSessionRestored()` 标记跳过重复恢复
+
+---
+
+### 7. 文件上传
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **方式** | `element.sendKeys(filePath)` — 模拟键盘输入路径 | `locator.setInputFiles(paths)` — **直接调用 CDP 设置文件** |
+| **行为** | 依赖浏览器原生文件选择对话框 | 绕过对话框，直接注入文件 |
+
+```java
+// Selenium
+driver.findElement(By.id("upload")).sendKeys("/path/to/file.pdf");
+
+// Playwright
+basePage.setInputFiles("#upload", "/path/to/file.pdf");
+// 支持多文件
+basePage.setInputFiles("#upload", "/path/to/file1.pdf", "/path/to/file2.pdf");
+```
+
+---
+
+### 8. 全页截图（Full Page Screenshot）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **全页截图** | 需第三方库（aShot、Selenium 4 有 `getFullPageScreenshotAs()` 但不稳定） | **原生支持** `setFullPage(true)` |
+| **懒加载** | 需手动滚动触底触发懒加载 | 框架内置截图前稳定化：滚动触底 → 等待渲染 → 滚回顶部 |
+
+```java
+// Playwright 全页截图
+page.screenshot(new Page.ScreenshotOptions()
+    .setFullPage(true)              // 自动滚动拼接
+    .setAnimations(ScreenshotAnimations.DISABLED));
+```
+
+---
+
+### 9. 资源生命周期管理
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **资源层级** | WebDriver → Window/Tab | Playwright → Browser → BrowserContext → Page |
+| **关闭顺序** | `driver.quit()` 一步关闭 | **必须按层级关闭**：Page → Context → Browser → Playwright |
+| **残留风险** | `driver.quit()` 超时/异常时可能残留浏览器进程 | JVM Shutdown Hook 兜底，确保进程被杀死 |
+
+**Playwright 关闭顺序（不可颠倒）：**
+
+```java
+// ✅ 正确顺序
+page.close();                    // 1. 关闭页面
+context.close();                 // 2. 关闭上下文
+browser.close();                 // 3. 关闭浏览器
+playwright.close();              // 4. 关闭 Playwright
+
+// ❌ 错误：跨层关闭会导致异常
+browser.close();                 // Context/Page 还在引用 Browser → 异常
+```
+
+**框架自动管理：**
+- `FrameworkCore` 注册 JVM Shutdown Hook → `cleanupAll()` 按正确顺序关闭
+- `cleanupForScenario()` / `cleanupForFeature()` 正确管理 Scenario/Feature 边界
+
+---
+
+### 10. 网络拦截（Route / Mock）
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **拦截方式** | 需 BrowserMob-Proxy 或 Selenium Wire（代理层） | **原生 CDP 层面拦截**，零代理开销 |
+| **请求修改** | 代理 filter，配置复杂 | `route.fulfill()` / `route.abort()` / `route.resume()` |
+| **延迟模拟** | 需手动 Thread.sleep() | `route.wait(ms)` 原生支持 |
+| **时序问题** | Proxy 在请求链路中，可能引入额外延迟 | CDP 层面同步拦截，无时序差异 |
+
+```java
+// Selenium + BrowserMob（复杂）
+proxy.addRequestFilter((request, contents, messageInfo) -> {
+    if (request.getUrl().contains("/api/users")) {
+        return new Response(200, headers, "{\"data\":[]}");
+    }
+    return null;
+});
+
+// Playwright（原生，简单）
+context.route("**/api/users", route -> {
+    route.fulfill(new Route.FulfillOptions()
+        .setStatus(200)
+        .setBody("{\"data\":[]}"));
+});
+```
+
+**本框架 Route Engine** 在原生 API 上进一步封装，提供了 Monitor/Mock/Modify/Delay 四种模式 + 流式 DSL + 优先级覆盖 + 跨层自动合并。
+
+---
+
+### 11. 键盘操作
+
+| 维度 | Selenium | Playwright |
+|------|----------|------------|
+| **全局按键** | `Actions().keyDown()` 链式调用 | `page.keyboard().down(key)` + `page.keyboard().up(key)` |
+| **元素级按键** | `element.sendKeys(Keys.ENTER)` | `locator.press("Enter")` |
+| **逐字输入** | `sendKeys("text")` | `locator.pressSequentially("text")` — **逐个字符按下** |
+
+```java
+// Selenium
+element.sendKeys(Keys.chord(Keys.CONTROL, "a"));
+
+// Playwright
+basePage.click("#input");              // 聚焦
+basePage.getPage().keyboard().press("Control+a");  // Ctrl+A 全选
+
+// 逐字输入（模拟真实用户输入）
+basePage.element("#input").type("hello");  // 底层: pressSequentially("hello")
+```
+
+---
+
+### 总结速查表
+
+| 场景 | Selenium 方式 | Playwright 方式 | 时序风险 |
+|------|--------------|----------------|---------|
+| **Alert** | 事后 `switchTo().alert().accept()` | 事前 `onceDialog(Dialog::accept)` | ⚠️ 高 — 必须先注册再触发 |
+| **新 Tab** | 事后 `getWindowHandles()` 轮询 | 事前 `waitForPage(action)` | ⚠️ 高 — 必须事件级捕获 |
+| **iframe** | `switchTo().frame()` | `page.frame()` + ThreadLocal 管理 | ⚠️ 中 — 导航后 Frame detached |
+| **点击** | 手动 `WebDriverWait` | 自动等待 5 个阶段 | ✅ 低 — Playwright 更可靠 |
+| **下载** | 配置 Profile | `onDownload()` 事件 | ✅ 低 — 框架自动处理 |
+| **隔离** | 多 Driver 实例 | BrowserContext | ✅ 低 — Context 零开销 |
+| **全页截图** | aShot 第三方库 | 原生 `setFullPage(true)` | ✅ 低 |
+| **网络拦截** | BrowserMob-Proxy | 原生 `route()` API | ✅ 低 — CDP 层面 |
+| **文件上传** | `sendKeys(path)` | `setInputFiles(paths)` | ✅ 低 |
+| **资源关闭** | `driver.quit()` | Page → Context → Browser → Playwright | ⚠️ 中 — 顺序不可颠倒 |
+
+> **关键结论**：从 Selenium 迁移到 Playwright 时，最需要注意的是 Alert 和新 Tab 两个场景——它们从"事后处理"变成了"事前注册"，这是最容易出错的点。本框架的 `BasePage.acceptAlert()` / `dismissAlert()` 和 `switchToNewPage(action, timeout)` 已经对这两种场景做了面向 Selenium 用户习惯的封装。
+
+
 ## 技术亮点
 
 1. **Playwright 替代 Selenium** — CDP 协议比 WebDriver 快 30-50%，内置自动等待机制，无需显式等待
@@ -804,7 +1149,7 @@ public class LoginSteps {
 5. **企业级报告体系** — Serenity 详细报告 + SummaryReportGenerator 摘要报告（HTML/CSV/ZIP），12 类错误自动分类 + 用户可自定义扩展
 6. **CI/CD 原生集成** — Jenkins Pipeline，环境变量自动解析（`${JENKINS_URL}`/`${JOB_NAME}`/`${BUILD_NUMBER}`），邮件链接自动构建
 7. **无障碍合规** — 内置 Deque axe-core WCAG 自动扫描，`AxeCoreListener` 在每个 Scenario 结束后自动执行
-8. **Session 跨场景复用** — `SessionManager` 将 Cookie/LocalStorage 持久化到 `target/.sessions/`，减少冗余登录
+8. **Session 跨场景复用** — `SessionManager` 缓存命中时跳过登录直达 homeUrl，未命中时自动保存登录态供后续使用
 9. **BrowserStack 云测试** — CDP 协议连接远程浏览器，无需修改测试代码，`-Dbrowserstack.sessionName` 按场景设置会话名
 10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM + AtomicLong + CopyOnWriteArrayList + `ConcurrentLinkedQueue` 跨线程报告队列 + byte[] 拷贝跨线程
 11. **Element 框架优化** — `TextNormalizer` 统一文本标准化管道；`executeSafely` + `executeWithRetry` 双模板消除重复 try-catch；`ChildPageElement` 使用 `Locator.locator()` 链式定位；`element(selector)` 统一门面替代分散的 `new PageElement(selector, this)`；`LocatorCache` 提取 DCL 缓存消除 PageElement/PageElementList 重复代码；统一重试策略，仅保留 `PageElement.executeWithRetry()` 一层
@@ -817,10 +1162,11 @@ public class LoginSteps {
 
 | 文档 | 内容 |
 |------|------|
-| **[README.md](./README.md)** | 框架总览、架构设计、快速开始、全部配置项 |
+| **[README.md](./README.md)** | 框架总览、架构设计、Playwright vs Selenium 关键行为差异、快速开始、全部配置项 |
 | [ROUTE_PACKAGE_README.md](./ROUTE_PACKAGE_README.md) | Route Engine 完整 API 文档（Monitor/Mock/Modify/Delay） |
 | [API_README.md](./API_README.md) | API 测试框架文档（Rest Assured + Serenity + HOCON 配置） |
 | [PLAYWRIGHT_VS_SELENIUM.md](./PLAYWRIGHT_VS_SELENIUM.md) | Playwright vs Selenium 技术选型对比 |
+| [PLAYWRIGHT_LISTENERS.md](./PLAYWRIGHT_LISTENERS.md) | Playwright `on*`/`once*` 监听器全景指南（事件驱动模型、全部监听器用途与最佳实践） |
 | [Element.MD](./Element.MD) | 元素定位方法手册（CSS/XPath 优先级、PageElement/PageElementList/BasePage 完整速查表） |
 | `route-demo-service/` | Spring Boot 演示服务（端口 8888），用于 Route Engine 测试 |
 

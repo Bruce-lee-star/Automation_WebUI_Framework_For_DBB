@@ -180,6 +180,24 @@ class PlaywrightContextManager {
             contextOptions.setPermissions(List.of(permissionsConfig.split(",")));
         }
 
+        // 配置代理服务器
+        String proxyConfig = PlaywrightManager.config().getContextProxy();
+        if (proxyConfig != null && !proxyConfig.isEmpty()) {
+            String proxyUsername = PlaywrightManager.config().getContextProxyUsername();
+            String proxyPassword = PlaywrightManager.config().getContextProxyPassword();
+            // 如果提供了用户名/密码，构造带认证的代理 URL
+            if (proxyUsername != null && !proxyUsername.isEmpty()
+                    && proxyPassword != null && !proxyPassword.isEmpty()) {
+                // URL 格式: http://user:pass@host:port
+                String proxyWithAuth = proxyConfig.replaceFirst("^(https?://)", "$1" + proxyUsername + ":" + proxyPassword + "@");
+                contextOptions.setProxy(proxyWithAuth);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy with auth: {}@***", proxyUsername);
+            } else {
+                contextOptions.setProxy(proxyConfig);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy: {}", proxyConfig);
+            }
+        }
+
         // 配置设备缩放因子
         String deviceScaleFactor = PlaywrightManager.config().getDeviceScaleFactor();
         if (deviceScaleFactor == null || deviceScaleFactor.trim().isEmpty()) {

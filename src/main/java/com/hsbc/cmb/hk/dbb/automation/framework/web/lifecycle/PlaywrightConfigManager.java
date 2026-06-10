@@ -214,6 +214,27 @@ public class PlaywrightConfigManager {
     }
 
     /**
+     * 获取 Context 代理服务器
+     */
+    public String getContextProxy() {
+        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY);
+    }
+
+    /**
+     * 获取 Context 代理用户名
+     */
+    public String getContextProxyUsername() {
+        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_USERNAME);
+    }
+
+    /**
+     * 获取 Context 代理密码
+     */
+    public String getContextProxyPassword() {
+        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_PASSWORD);
+    }
+
+    /**
      * 获取 ColorScheme
      */
     public String getColorScheme() {

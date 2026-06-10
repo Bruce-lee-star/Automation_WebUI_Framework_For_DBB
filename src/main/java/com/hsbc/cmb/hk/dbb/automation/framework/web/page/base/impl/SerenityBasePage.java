@@ -369,8 +369,7 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public void scrollToTopOf(String selector) { record("scrollToTop", selector, () -> super.scrollToTopOf(selector)); }
     @Override public void dragAndDrop(String src, String tgt) { record("dragAndDrop", src + "->" + tgt, () -> super.dragAndDrop(src, tgt)); }
     @Override public void switchToPage(int index) { record("switchToPage", index, () -> super.switchToPage(index)); }
-    @Override public void switchToLatestPage() { record("switchToLatestPage", null, super::switchToLatestPage); }
-    @Override public void closeCurrentPageAndSwitchBack() { record("closeCurrentPageAndSwitchBack", null, super::closeCurrentPageAndSwitchBack); }
+    @Override public void closeCurrentPage() { record("closeCurrentPage", null, super::closeCurrentPage); }
     @Override public void bringToFront() { record("bringToFront", null, super::bringToFront); }
     @Override public void setContent(String html) { record("setContent", null, () -> super.setContent(html)); }
     @Override public void setViewportSize(int w, int h) { record("setViewportSize", w + "x" + h, () -> super.setViewportSize(w, h)); }

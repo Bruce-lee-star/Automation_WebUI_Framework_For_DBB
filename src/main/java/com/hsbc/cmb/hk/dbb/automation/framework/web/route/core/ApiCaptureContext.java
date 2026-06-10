@@ -216,11 +216,69 @@ public class ApiCaptureContext {
 
         @Override
         public String toString() {
-            return String.format("  [%s] %s: expected='%s', actual='%s'%s",
-                    assertionType, url,
+            return String.format("  [%s] %s%s: expected='%s', actual='%s'",
+                    assertionType, extractEndpoint(url),
+                    failMessage != null ? " (" + failMessage + ")" : "",
                     expectedValue != null ? expectedValue : "N/A",
-                    actualValue != null ? actualValue : "N/A",
-                    failMessage != null ? " (" + failMessage + ")" : "");
+                    actualValue != null ? actualValue : "N/A");
+        }
+
+        /**
+         * 智能缩短 URL：host 首尾保留用 {@code ...} 省略中部，路径保留首尾段。
+         * <p>示例：
+         * {@code https://www.qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk/portalserver/.../permissionLeftMenuConfig}
+         * → {@code www.qualityassu...hsbc.com.hk/portalserver/.../permissionLeftMenuConfig}
+         */
+        private static String extractEndpoint(String url) {
+            if (url == null || url.isEmpty()) return "N/A";
+            try {
+                java.net.URI uri = java.net.URI.create(url);
+                String host = uri.getHost();
+                String path = uri.getPath();
+
+                if (host == null) {
+                    // 无 host 时直接按长度截断
+                    return url.length() <= 60 ? url
+                            : url.substring(0, 25) + "..." + url.substring(url.length() - 20);
+                }
+
+                String shortHost = abbreviateMiddle(host, 18, 14);
+                String shortPath = abbreviatePath(path);
+                return shortHost + shortPath;
+            } catch (Exception e) {
+                // 解析失败兜底：超长截断
+                return url.length() <= 60 ? url
+                        : url.substring(0, 25) + "..." + url.substring(url.length() - 20);
+            }
+        }
+
+        /** 保留字符串首部 N 个字符 + ... + 尾部 M 个字符 */
+        private static String abbreviateMiddle(String s, int headLen, int tailLen) {
+            if (s == null || s.isEmpty()) return "";
+            if (s.length() <= headLen + tailLen + 3) return s;
+            return s.substring(0, headLen) + "..." + s.substring(s.length() - tailLen);
+        }
+
+        /** 路径保留首段/.../末段，且末段（endpoint 名）始终完整显示 */
+        private static String abbreviatePath(String path) {
+            if (path == null || path.isEmpty()) return "";
+            if (path.length() <= 50) return path;
+
+            int lastSlash = path.lastIndexOf('/');
+            if (lastSlash < 0) return abbreviateMiddle(path, 25, 18);
+
+            String endpoint = path.substring(lastSlash);       // /permissionLeftMenuConfig（完整保留）
+            String prefix = path.substring(0, lastSlash);      // /portalserver/.../leftmenu
+
+            // prefix 够短则不动
+            if (prefix.length() <= 30) return prefix + endpoint;
+
+            // 只缩写 prefix 中间部分，endpoint 原样输出
+            int firstSlash = prefix.indexOf('/', 1);
+            if (firstSlash < 0) {
+                return abbreviateMiddle(prefix, 15, 8) + endpoint;
+            }
+            return prefix.substring(0, firstSlash) + "/..." + endpoint;
         }
     }
 
@@ -360,15 +418,33 @@ public class ApiCaptureContext {
     }
 
     /**
-     * 生成易读的断言失败报告
+     * 生成易读的断言失败报告（含标题头，供日志使用）。
      */
     public String buildFailureReport() {
         List<AssertionFailureDetail> details = getFailureDetails();
         if (details.isEmpty()) return "No assertion failures recorded.";
         StringBuilder sb = new StringBuilder();
-        sb.append("=== API Assertion Failures (").append(details.size()).append(") ===\n");
+        sb.append("API Assertion Failures (").append(details.size()).append(")\n");
         for (AssertionFailureDetail d : details) {
             sb.append(d.toString()).append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 生成断言失败详情（不含标题头，供报告区块内展示）。
+     * <p>标题由 {@code Serenity.recordReportData().withTitle("API Assertion Failures")} 单独提供。
+     */
+    public String buildFailureDetails() {
+        List<AssertionFailureDetail> details = getFailureDetails();
+        if (details.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (AssertionFailureDetail d : details) {
+            sb.append(d.toString()).append("\n");
+        }
+        // 去除末尾多余的换行
+        if (sb.length() > 0 && sb.charAt(sb.length() - 1) == '\n') {
+            sb.setLength(sb.length() - 1);
         }
         return sb.toString();
     }

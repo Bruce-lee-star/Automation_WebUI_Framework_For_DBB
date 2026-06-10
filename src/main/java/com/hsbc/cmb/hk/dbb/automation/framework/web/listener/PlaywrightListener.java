@@ -69,6 +69,11 @@ public class PlaywrightListener implements StepListener {
     // ⭐ 防止 stepFinishedInternal() 调用 StepEventBus.stepFinished() 导致递归重入
     private static final ThreadLocal<Boolean> stepFinishReentrantGuard = ThreadLocal.withInitial(() -> false);
 
+    // ⭐ 防止 API 断言失败在同一 case 中通过 StepEventBus 重复标记（防递归死循环）
+    //    一旦 checkAndFailOnApiAssertions 通过 StepEventBus.markFailed() 标记后，
+    //    同一 case 内后续步骤不再重复触发 StepEventBus 操作
+    private static final ThreadLocal<Boolean> apiFailureAlreadyHandled = ThreadLocal.withInitial(() -> false);
+
     // 存储当前步骤的截图列表
     private static final ThreadLocal<List<ScreenshotAndHtmlSource>> currentStepScreenshots = ThreadLocal.withInitial(ArrayList::new);
 
@@ -124,6 +129,8 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
+        apiFailureAlreadyHandled.set(false);
 
         // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
         if (!discoveryPhaseCompleted) {
@@ -599,6 +606,7 @@ public class PlaywrightListener implements StepListener {
         failureScreenshotsAlreadySent.remove();
         stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
         stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
+        apiFailureAlreadyHandled.remove();  // ⭐ 清理 API 失败标记
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
         // ⭐⭐⭐ 新增：清理 API 捕获上下文
@@ -858,6 +866,8 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
+        apiFailureAlreadyHandled.set(false);
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -886,6 +896,8 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
+        apiFailureAlreadyHandled.set(false);
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -1220,28 +1232,36 @@ public class PlaywrightListener implements StepListener {
 
         // 检查是否有 API 断言失败
         if (context.hasAssertionFailures()) {
-            logger.error("API assertions failed for test: {}", currentTestName.get());
+            // ⭐ 防重复：如果 checkAndFailOnApiAssertions 已经通过 StepEventBus 触发过一次
+            // （testFailed 回调 → 本方法），则跳过详细日志和 Serenity 记录，
+            // 避免 testFailed 回调和 testFinished 各调一次导致重复打印
+            boolean alreadyHandledAtStep = apiFailureAlreadyHandled.get();
 
-            // 生成详细失败报告
-            String failureReport = context.buildFailureReport();
-            logger.error("API assertion failure details:\n{}", failureReport);
+            if (!alreadyHandledAtStep) {
+                // 首次检测到（testFinished 兜底路径）：打印完整报告
+                logger.error("API assertions failed for test: {}", currentTestName.get());
 
-            // 将测试结果标记为失败
-            if (result != null) {
-                result.setResult(TestResult.FAILURE);
+                // 生成详细失败报告
+                String failureReport = context.buildFailureReport();
+                logger.error("API assertion failure details:\n{}", failureReport);
+
+                // 记录失败信息
+                recordTestData("apiAssertionFailure", "API assertions failed during test execution");
+                recordTestData("apiAssertionFailureDetails", failureReport);
+
+                // 记录到 Serenity 报告
+                try {
+                    net.serenitybdd.core.Serenity.recordReportData()
+                        .withTitle("API ASSERTION FAILURES DETECTED")
+                        .andContents(failureReport);
+                } catch (Exception e) {
+                    logger.debug("Failed to record API assertion failure to Serenity report", e);
+                }
             }
 
-            // 记录失败信息
-            recordTestData("apiAssertionFailure", "API assertions failed during test execution");
-            recordTestData("apiAssertionFailureDetails", failureReport);
-
-            // 记录到 Serenity 报告
-            try {
-                net.serenitybdd.core.Serenity.recordReportData()
-                    .withTitle("API ASSERTION FAILURES DETECTED")
-                    .andContents(failureReport);
-            } catch (Exception e) {
-                logger.debug("Failed to record API assertion failure to Serenity report", e);
+            // ⭐ 无论如何都确保 result 被标记为 FAILURE（兜底安全网）
+            if (result != null) {
+                result.setResult(TestResult.FAILURE);
             }
         }
         // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiCaptureContext.removeCurrent()
@@ -1254,25 +1274,36 @@ public class PlaywrightListener implements StepListener {
     /**
      * ⭐⭐⭐ 框架级：在每个步骤结束时自动检查 API 断言是否失败。
      *
-     * <p><b>仅记录，不抛出</b>：
-     * 检测到 API 断言失败时只在日志中记录，<b>不抛出 {@code AssertionError}</b>。
-     * 原因：{@code stepFinished} 是 Serenity 事件监听器回调，在此处抛出异常
-     * 会绕过步骤正常异常处理路径，导致整个测试套件中断。
+     * <p><b>通过 StepEventBus 即时标记失败</b>：
+     * 使用 {@code apiFailureAlreadyHandled} ThreadLocal 标记防止同一 case 内
+     * StepEventBus 回调链的递归重入（死循环）。
      *
-     * <p>实际的测试 FAIL 标记由 {@link #checkAndMarkApiAssertionFailures(TestOutcome)}
-     * 在 {@code testFinished} 中统一完成——标记当前测试结果为 FAIL，但<b>不中断后续 Scenario 执行</b>。
+     * <p>防重入机制：
+     * <ol>
+     *   <li>步骤结束 → checkAndFailOnApiAssertions() → set flag → StepEventBus.testFailed()</li>
+     *   <li>→ PlaywrightListener.testFailed(TestOutcome,Throwable) → checkAndMarkApiAssertionFailures() ✅</li>
+     *   <li>后续步骤结束 → checkAndFailOnApiAssertions() → flag already set → return ✅</li>
+     * </ol>
      *
-     * <p>Step 代码无需手动检查 — 框架自动处理。
+     * <p>标记在下一个 test/scenario 的 testStarted / stepStarted 中重置，
+     * 确保不影响后续 Scenario 的执行。
+     *
+     * <p>同时 {@link #checkAndMarkApiAssertionFailures(TestOutcome)} 在 testFinished
+     * 中作为兜底，再次通过 {@code result.setResult(TestResult.FAILURE)} 确保标记生效。
      */
     private void checkAndFailOnApiAssertions() {
         ApiCaptureContext context = ApiCaptureContext.getCurrent();
 
-        // ═══ 兜底检查：通过上下文标记检测 ═══
         if (!context.hasAssertionFailures()) {
-            return;  // 无断言失败 → 零开销返回
+            return;
         }
 
-        // 等待异步存储任务完成（避免报告不完整）
+        // ⭐ 防重入：同一 case 里只通过 StepEventBus 标记一次，
+        // 防止 StepEventBus 回调链路再次进入此方法导致死循环
+        if (apiFailureAlreadyHandled.get()) {
+            return;
+        }
+
         if (context.getActiveRequests() > 0) {
             try {
                 boolean completed = context.awaitCompletion(5000);
@@ -1286,10 +1317,25 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
-        // ⭐ 仅记录日志，不抛出异常（避免中断整个测试套件）
-        // 失败详情由 checkAndMarkApiAssertionFailures() 在 testFinished 中统一处理
+        // ⭐ 标记已处理，必须在调用 StepEventBus 之前设置（防回调重入）
+        apiFailureAlreadyHandled.set(true);
+
         String report = context.buildFailureReport();
-        logger.error("API assertions failed during step — test will be marked as FAILED at scenario end:\n{}", report);
+        String details = context.buildFailureDetails();
+        logger.error("API assertions failed during step — marking test as failed via StepEventBus:\n{}", report);
+
+        // ⭐ 通过 StepEventBus 立即标记测试失败（testFailed 不会触发 stepFinished 回调链，安全）
+        // AssertionError 只放具体失败详情，标题由 recordReportData 单独提供
+        try {
+            StepEventBus.getEventBus().testFailed(new AssertionError(details));
+
+            // 同时记录到 Serenity reportData：标题 + 纯详情，避免标题重复
+            net.serenitybdd.core.Serenity.recordReportData()
+                    .withTitle("API Assertion Failures")
+                    .andContents(details);
+        } catch (Exception e) {
+            logger.error("Failed to call StepEventBus.testFailed() for API assertion failure", e);
+        }
     }
 
     /**

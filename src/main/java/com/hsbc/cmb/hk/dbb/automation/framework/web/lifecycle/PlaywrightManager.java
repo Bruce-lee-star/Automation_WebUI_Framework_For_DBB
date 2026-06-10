@@ -1913,7 +1913,10 @@ public class PlaywrightManager {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up for feature - closing Context (different feature requires fresh Context)...");
         closePage();
         closeContext();
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Feature cleanup completed — Browser persists, Context+Page closed for next feature rebuild");
+        // ⭐ 跨 Feature 必须重置 Session 缓存，防止 ThreadLocal 残留导致下一个 Feature
+        //    误判 isFeatureSessionRestored()=true（Context 已关闭但缓存标记未清）
+        SessionManager.resetFeatureSession();
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Feature cleanup completed — Browser persists, Context+Page+Session cache cleared for next feature rebuild");
     }
 
     // ==================== 截图方法 ====================

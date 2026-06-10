@@ -1254,19 +1254,15 @@ public class PlaywrightListener implements StepListener {
     /**
      * ⭐⭐⭐ 框架级：在每个步骤结束时自动检查 API 断言是否失败。
      *
-     * <p><b>单层检查（兜底路径）</b>：
-     * 检查 {@link ApiCaptureContext#hasAssertionFailures()}。
-     * 如果 MonitorHandler 标记了断言失败，则抛出 {@code AssertionError}，
-     * 由 Serenity 捕获并标记当前 Step 为失败。
+     * <p><b>仅记录，不抛出</b>：
+     * 检测到 API 断言失败时只在日志中记录，<b>不抛出 {@code AssertionError}</b>。
+     * 原因：{@code stepFinished} 是 Serenity 事件监听器回调，在此处抛出异常
+     * 会绕过步骤正常异常处理路径，导致整个测试套件中断。
      *
-     * <p>⭐ 不再使用 {@code Thread.interrupted()} fail-fast 机制：
-     * {@code signalFailFast()} 虽然仍会中断主线程，但此处不再消费中断标记，
-     * 避免中断导致后续 Playwright IO 操作（如 {@code page.waitForSelector}）
-     * 抛出异常，从而保证后续 Scenario 正常执行。
+     * <p>实际的测试 FAIL 标记由 {@link #checkAndMarkApiAssertionFailures(TestOutcome)}
+     * 在 {@code testFinished} 中统一完成——标记当前测试结果为 FAIL，但<b>不中断后续 Scenario 执行</b>。
      *
      * <p>Step 代码无需手动检查 — 框架自动处理。
-     *
-     * <p>性能：若无活跃请求且无断言失败，方法立即返回（零开销）。
      */
     private void checkAndFailOnApiAssertions() {
         ApiCaptureContext context = ApiCaptureContext.getCurrent();
@@ -1290,10 +1286,10 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
-        // 断言失败 → 直接抛出 AssertionError，由 Serenity 捕获并标记 Step 为失败
+        // ⭐ 仅记录日志，不抛出异常（避免中断整个测试套件）
+        // 失败详情由 checkAndMarkApiAssertionFailures() 在 testFinished 中统一处理
         String report = context.buildFailureReport();
-        logger.error("API assertions failed during step:\n{}", report);
-        throw new AssertionError("API assertion failures detected:\n" + report);
+        logger.error("API assertions failed during step — test will be marked as FAILED at scenario end:\n{}", report);
     }
 
     /**

@@ -617,7 +617,38 @@ public abstract class BasePage {
     public void switchToLatestPage() {
         ensureContextValid();
         List<Page> pages = context.pages();
-        page = pages.getLast();
+        Page latestPage = pages.getLast();
+
+        // ⭐ 闭环保护：最新 page 可能已被关闭
+        try {
+            if (latestPage.isClosed()) {
+                // 从后往前找第一个未关闭的 page
+                for (int i = pages.size() - 2; i >= 0; i--) {
+                    try {
+                        if (!pages.get(i).isClosed()) {
+                            latestPage = pages.get(i);
+                            LoggingConfigUtil.logWarnIfVerbose(logger,
+                                    "Latest page was closed, falling back to page at index {}", i);
+                            break;
+                        }
+                    } catch (Exception ignored) {}
+                }
+                // 如果所有页面都关了
+                try {
+                    if (latestPage.isClosed()) {
+                        throw new TimeoutException("All pages in context are closed");
+                    }
+                } catch (Exception e) {
+                    throw new TimeoutException("No available page in context");
+                }
+            }
+        } catch (Exception e) {
+            if (e instanceof TimeoutException) throw (TimeoutException) e;
+            LoggingConfigUtil.logWarnIfVerbose(logger, "isClosed() check failed in switchToLatestPage: {}", e.getMessage());
+            throw new TimeoutException("Cannot switch to latest page: page unavailable");
+        }
+
+        page = latestPage;
         PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
         currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
@@ -630,11 +661,40 @@ public abstract class BasePage {
         if (!waitForCondition(() -> context.pages().size() > before, timeout, "new page opened")) {
             throw new TimeoutException("No new page");
         }
+        // ⭐ 兜底重试：检测到的新 page 可能已被关闭（弹窗闪烁 / 重定向关闭 tab）
+        //    短暂等待后重新获取，避免返回已关闭的 page 给 switchNewPage 使用
+        long deadline = System.currentTimeMillis() + 2000;
         List<Page> pages = context.pages();
-        if (pages.isEmpty()) {
-            throw new TimeoutException("No pages available");
+        while (true) {
+            if (pages.isEmpty()) {
+                throw new TimeoutException("No pages available");
+            }
+            Page candidate = pages.getLast();
+            try {
+                if (!candidate.isClosed()) {
+                    return candidate;
+                }
+            } catch (Exception ignored) {
+                // isClosed() 异常时视作已关闭
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                // 超时后仍返回最后一个（closed），交给调用方 isClosed() 检查
+                return candidate;
+            }
+            try {
+                // ⭐ 使用 Playwright 原生 waitForTimeout，而非 Thread.sleep
+                pages.getFirst().waitForTimeout(100);
+            } catch (Exception e) {
+                // 如果所有 page 都关了，降级为 Thread.sleep
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return candidate;
+                }
+            }
+            pages = context.pages();
         }
-        return pages.getLast();
     }
 
     /**
@@ -658,13 +718,52 @@ public abstract class BasePage {
     public Page switchNewPage(int timeoutSecs) {
         ensureContextValid();
         Page newPage = waitForNewPage(timeoutSecs);
+
+        // ⭐ 闭环保护：新页面可能在 waitForNewPage 返回后立即关闭（弹窗闪烁 / 重定向关闭）
+        try {
+            if (newPage.isClosed()) {
+                throw new TimeoutException(
+                        "New page detected but already closed before switch — page may have been auto-closed");
+            }
+        } catch (Exception e) {
+            if (e instanceof TimeoutException) throw (TimeoutException) e;
+            LoggingConfigUtil.logWarnIfVerbose(logger, "isClosed() check failed, page may already be gone: {}",
+                    e.getMessage());
+            throw new TimeoutException("New page is no longer available (closed/destroyed)");
+        }
+
         page = newPage;
         PlaywrightManager.setPage(page); // 同步到 PlaywrightManager，使其他 Page 实例可感知
-        page.bringToFront();
+
+        // ⭐ bringToFront 可能因 page 已关闭而抛异常，用 try-catch 兜底
+        try {
+            page.bringToFront();
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                    "bringToFront() failed (page may have closed after switch): {}", e.getMessage());
+            // 如果 page 确实已关闭，抛明确的 TimeoutException
+            try {
+                if (page.isClosed()) {
+                    throw new TimeoutException(
+                            "New page closed during bringToFront — target page has been closed");
+                }
+            } catch (Exception ignored) {
+                throw new TimeoutException("New page closed during bringToFront");
+            }
+            // 未关闭则继续（例如 bringToFront 因其他原因失败）
+        }
+
         currentFrame.remove(); // 切换页面后重置 iframe 上下文
         setCurrentPage();
         initializeAnnotatedFields();
-        logger.info("Switch to new page: url={}, title={}", page.url(), page.title());
+
+        // ⭐ 安全日志：url/title 在 page 已关闭时同样会抛异常
+        try {
+            logger.info("Switch to new page: url={}, title={}", page.url(), page.title());
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                    "Unable to log new page info (url/title): {}", e.getMessage());
+        }
         return newPage;
     }
 

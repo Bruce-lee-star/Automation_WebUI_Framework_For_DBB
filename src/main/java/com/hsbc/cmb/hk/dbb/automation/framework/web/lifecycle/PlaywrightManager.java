@@ -1558,18 +1558,19 @@ public class PlaywrightManager {
         String restartBrowserForEach = config().getRestartStrategy();
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-            // ⭐ Scenario 模式：复用 Context（深度清理状态），避免重复 newContext() 弹出新窗口
+            // ⭐ Scenario 模式：默认关闭 Context → 每个 Scenario 独立全新 Context
+            //    仅当业务层使用 SessionManager 时才复用 Context（避免重复新窗口）
             PageObjectFactory.clearAll();
             BrowserContext existingContext = contextThreadLocal.get();
-            if (existingContext != null && existingContext.browser() != null && existingContext.browser().isConnected()) {
-                // Context 存活 → 复用，只关闭 Page
+            if (existingContext != null && existingContext.browser() != null && existingContext.browser().isConnected() && SessionManager.isAnyFeatureSessionRestored()) {
+                // Context 存活 + SessionManager 已使用 → 复用，只关闭 Page
                 closePage();
-                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context, no new window)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (reusing existing Context with SessionManager)");
             } else {
-                // Context 不可用 → 关闭残留后延迟重建
+                // Context 不可用 或 业务层未使用 SessionManager → 关闭残留后延迟重建
                 closePage();
                 closeContext();
-                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context unavailable, will rebuild on demand)");
+                LoggingConfigUtil.logDebugIfVerbose(logger, " Scenario initialization completed (Context will rebuild on demand)");
             }
         } else {
             // Feature 模式：复用现有的 Context/Page（如果存在）
@@ -1634,6 +1635,17 @@ public class PlaywrightManager {
 
             // 只清理页面状态，不关闭 Context/Page
             cleanupPageState();
+
+            // ⭐ 如果业务层未使用 SessionManager（无 restore/save 调用）
+            //   → Context 中的 Cookie 残留会导致下一 Scenario 登录流程异常
+            //   → 必须销毁 Context，下个 Scenario 重建全新 Context
+            if (!SessionManager.isAnyFeatureSessionRestored()) {
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "Feature mode: No session restored via SessionManager in this Feature "
+                                + "— closing Context to avoid cookie contamination");
+                closePage();
+                closeContext();
+            }
             // 【关键】Feature 模式：不重置 Feature 级别 Session 缓存，让下一个 scenario 复用
         }
     }

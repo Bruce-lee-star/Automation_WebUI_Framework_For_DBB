@@ -47,6 +47,15 @@ public class SessionManager {
     private static final ThreadLocal<String> currentFeatureHomeUrl = new ThreadLocal<>();
 
     /**
+     * 检查当前 Feature 是否有任何 Session 被恢复/保存过。
+     * <p>用于 Feature 模式下判断业务层是否使用了 SessionManager：
+     * 若未曾使用，cleanupForScenario 应销毁 Context 而非保留 Cookie。
+     */
+    public static boolean isAnyFeatureSessionRestored() {
+        return Boolean.TRUE.equals(featureSessionRestored.get());
+    }
+
+    /**
      * 标记 Feature 级别 Session 已恢复
      * <p>
      * 当第一个 Scenario 成功恢复 Session 后，调用此方法标记

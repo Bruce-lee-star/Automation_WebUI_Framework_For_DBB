@@ -648,9 +648,9 @@ public class PageElement {
     }
 
     public PageElement waitForClickable(int timeoutSec) {
-        waitForVisible(timeoutSec);
         try {
-            if (!locator().isEnabled()) {
+            if (!locator().isEnabled(new Locator.IsEnabledOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForClickable", selector, 
                     "Element is not clickable (not enabled): " + selector, null);
             }
@@ -666,9 +666,9 @@ public class PageElement {
     }
 
     public PageElement waitForEditable(int timeoutSec) {
-        waitForVisible(timeoutSec);
         try {
-            if (!locator().isEditable()) {
+            if (!locator().isEditable(new Locator.IsEditableOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForEditable", selector, 
                     "Element is not editable: " + selector, null);
             }
@@ -684,9 +684,9 @@ public class PageElement {
     }
 
     public PageElement waitForEnabled(int timeoutSec) {
-        waitForExists(timeoutSec);
         try {
-            if (!locator().isEnabled()) {
+            if (!locator().isEnabled(new Locator.IsEnabledOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForEnabled", selector, 
                     "Element is not enabled: " + selector, null);
             }
@@ -702,9 +702,9 @@ public class PageElement {
     }
 
     public PageElement waitForDisabled(int timeoutSec) {
-        waitForExists(timeoutSec);
         try {
-            if (locator().isEnabled()) {
+            if (locator().isEnabled(new Locator.IsEnabledOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForDisabled", selector, 
                     "Element is not disabled (still enabled): " + selector, null);
             }
@@ -720,9 +720,9 @@ public class PageElement {
     }
 
     public PageElement waitForChecked(int timeoutSec) {
-        waitForExists(timeoutSec);
         try {
-            if (!locator().isChecked()) {
+            if (!locator().isChecked(new Locator.IsCheckedOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForChecked", selector, 
                     "Element is not checked: " + selector, null);
             }
@@ -738,9 +738,9 @@ public class PageElement {
     }
 
     public PageElement waitForNotChecked(int timeoutSec) {
-        waitForExists(timeoutSec);
         try {
-            if (locator().isChecked()) {
+            if (locator().isChecked(new Locator.IsCheckedOptions()
+                    .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForNotChecked", selector, 
                     "Element is checked (expected not checked): " + selector, null);
             }

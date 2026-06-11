@@ -466,9 +466,9 @@ public class PageElement {
     }
 
     public boolean isEnabled(int timeoutSec) {
-        if (!exists(timeoutSec)) return false;
         try {
-            return locator().isEnabled();
+            return locator().isEnabled(new Locator.IsEnabledOptions()
+                    .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
         }
@@ -487,9 +487,9 @@ public class PageElement {
     }
 
     public boolean isEditable(int timeoutSec) {
-        if (!exists(timeoutSec)) return false;
         try {
-            return locator().isEditable();
+            return locator().isEditable(new Locator.IsEditableOptions()
+                    .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
         }
@@ -500,9 +500,9 @@ public class PageElement {
     }
 
     public boolean isChecked(int timeoutSec) {
-        if (!exists(timeoutSec)) return false;
         try {
-            return locator().isChecked();
+            return locator().isChecked(new Locator.IsCheckedOptions()
+                    .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
         }

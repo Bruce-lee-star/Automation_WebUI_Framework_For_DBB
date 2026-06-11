@@ -65,7 +65,7 @@ public class AutoBrowserProcessor {
             Class<?> glueClass = findGlueClass();
 
             if (glueClass == null) {
-                logger.warn("No class with @AutoBrowser found in call stack");
+                LoggingConfigUtil.logWarnIfVerbose(logger, "No class with @AutoBrowser found in call stack");
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Call stack trace for debugging:");
                 StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
                 for (int i = 0; i < Math.min(15, stackTrace.length); i++) {
@@ -80,7 +80,7 @@ public class AutoBrowserProcessor {
             AutoBrowser autoBrowser = glueClass.getAnnotation(AutoBrowser.class);
 
             if (autoBrowser == null || !autoBrowser.enabled()) {
-                logger.warn("@AutoBrowser annotation not enabled on class '{}'",
+                LoggingConfigUtil.logWarnIfVerbose(logger, "@AutoBrowser annotation not enabled on class '{}'",
                     glueClass.getSimpleName());
                 return;
             }
@@ -108,7 +108,7 @@ public class AutoBrowserProcessor {
             processedForCurrentScenario.set(true);
 
         } catch (Exception e) {
-            logger.error("ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
+            LoggingConfigUtil.logErrorIfVerbose(logger, "ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
         }
     }
 
@@ -170,7 +170,7 @@ public class AutoBrowserProcessor {
             return true;
 
         } catch (Exception e) {
-            logger.warn("Failed to register BaseStepListener: {}", e.getMessage());
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to register BaseStepListener: {}", e.getMessage());
             return false;
         }
     }
@@ -258,7 +258,7 @@ public class AutoBrowserProcessor {
             // 从 StepEventBus 获取当前 TestOutcome
             StepEventBus eventBus = StepEventBus.getEventBus();
             if (eventBus == null) {
-                logger.debug("StepEventBus.getEventBus() returned null - tests may not be running with Serenity runners");
+                LoggingConfigUtil.logDebugIfVerbose(logger, "StepEventBus.getEventBus() returned null - tests may not be running with Serenity runners");
                 return new String[0];
             }
             LoggingConfigUtil.logTraceIfVerbose(logger, "StepEventBus instance: {}", eventBus.getClass().getName());
@@ -269,7 +269,7 @@ public class AutoBrowserProcessor {
             Object listener = method.invoke(eventBus);
 
             if (listener == null) {
-                logger.debug("BaseStepListener not registered yet");
+                LoggingConfigUtil.logDebugIfVerbose(logger, "BaseStepListener not registered yet");
                 return new String[0];
             }
 
@@ -280,14 +280,14 @@ public class AutoBrowserProcessor {
             TestOutcome testOutcome = (TestOutcome) getTestOutcomeMethod.invoke(listener);
 
             if (testOutcome == null) {
-                logger.debug("getCurrentTestOutcome() returned null");
+                LoggingConfigUtil.logDebugIfVerbose(logger, "getCurrentTestOutcome() returned null");
                 return new String[0];
             }
             LoggingConfigUtil.logDebugIfVerbose(logger, "TestOutcome found: {}", testOutcome.getName());
 
             Set<TestTag> testTags = testOutcome.getTags();
             if (testTags == null) {
-                logger.debug("testOutcome.getTags() returned null");
+                LoggingConfigUtil.logDebugIfVerbose(logger, "testOutcome.getTags() returned null");
                 return new String[0];
             }
 
@@ -303,7 +303,7 @@ public class AutoBrowserProcessor {
             }
 
         } catch (Exception e) {
-            logger.debug("Exception getting tags from Serenity context: {} - this is normal during early test initialization", e.getMessage());
+            LoggingConfigUtil.logDebugIfVerbose(logger, "Exception getting tags from Serenity context: {} - this is normal during early test initialization", e.getMessage());
         }
 
         return new String[0];

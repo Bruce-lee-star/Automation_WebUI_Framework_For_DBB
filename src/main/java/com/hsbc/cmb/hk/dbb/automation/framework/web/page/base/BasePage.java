@@ -202,7 +202,7 @@ public abstract class BasePage {
             } catch (Exception e) {
                 LoggingConfigUtil.logWarnIfVerbose(logger, "Condition check failed: {}", e.getMessage());
             }
-            page.waitForTimeout(PlaywrightManager.config().getPollingInterval());
+            page.waitForTimeout((double) PlaywrightManager.config().getPollingInterval());
         }
         LoggingConfigUtil.logWarnIfVerbose(logger, "⏳ Timeout waiting for: {}", desc);
         return false;
@@ -217,7 +217,7 @@ public abstract class BasePage {
                 if (condition.get()) return true;
             } catch (Exception ignored) {
             }
-            page.waitForTimeout(PlaywrightManager.config().getPollingInterval());
+            page.waitForTimeout((double) PlaywrightManager.config().getPollingInterval());
         }
         throw new TimeoutException("Action timed out: " + desc);
     }
@@ -335,7 +335,7 @@ public abstract class BasePage {
                 return;
             } catch (Exception e) {
                 if (i == retries) throw new RuntimeException("Retry failed: " + desc, e);
-                page.waitForTimeout(intervalMs);
+                page.waitForTimeout((double) intervalMs);
             }
         }
     }
@@ -359,7 +359,7 @@ public abstract class BasePage {
                 if (validation.getAsBoolean()) return true;
             } catch (Exception ignored) {
             }
-            page.waitForTimeout(retryIntervalMs);
+            page.waitForTimeout((double) retryIntervalMs);
         }
         return false;
     }
@@ -823,7 +823,7 @@ public abstract class BasePage {
             page = null;
             return;
         }
-        int targetIndex = Math.max(0, Math.min(currentIndex - 1, updatedPages.size() - 1));
+        int targetIndex = Math.max(0, Math.min(currentIndex, updatedPages.size()) - 1);
         setPageReference(updatedPages.get(targetIndex));
         onPageSwitched();
     }
@@ -1127,7 +1127,7 @@ public abstract class BasePage {
 
     public void waitForTimeout(int milliseconds) {
         ensurePageValid();
-        page.waitForTimeout(milliseconds);
+        page.waitForTimeout((double) milliseconds);
     }
 
     public void acceptAlert() {

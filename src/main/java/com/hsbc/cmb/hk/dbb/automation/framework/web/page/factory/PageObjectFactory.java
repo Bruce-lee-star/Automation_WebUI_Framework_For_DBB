@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -207,7 +208,7 @@ public class PageObjectFactory {
     public static void setConfig(CreationConfig config) {
         if (config != null) {
             currentConfig = config;
-            logger.info("PageObjectFactory configuration updated: {}", config.getLifecycleStrategy());
+            LoggingConfigUtil.logInfoIfVerbose(logger, "PageObjectFactory configuration updated: {}", config.getLifecycleStrategy());
         }
     }
     
@@ -216,7 +217,7 @@ public class PageObjectFactory {
      */
     public static void resetConfig() {
         currentConfig = DEFAULT_CONFIG;
-        logger.info("PageObjectFactory configuration reset to default");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "PageObjectFactory configuration reset to default");
     }
     
     /**
@@ -397,7 +398,7 @@ public class PageObjectFactory {
             return;
         }
         
-        logger.info("Warming up {} PageObject instances", pageClasses.length);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Warming up {} PageObject instances", pageClasses.length);
         
         for (Class<?> pageClass : pageClasses) {
             try {
@@ -408,7 +409,7 @@ public class PageObjectFactory {
             }
         }
         
-        logger.info("PageObject warm-up completed. Total instances: {}", getInstanceCount());
+        LoggingConfigUtil.logInfoIfVerbose(logger, "PageObject warm-up completed. Total instances: {}", getInstanceCount());
     }
     
     /**
@@ -447,7 +448,7 @@ public class PageObjectFactory {
         threadInstances.get().clear();
         requestScopedInstances.clear();
         
-        logger.info("Cleared all PageObject instances: {} singletons, {} thread-isolated, {} request-scoped", 
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Cleared all PageObject instances: {} singletons, {} thread-isolated, {} request-scoped", 
                 singletonCount, threadCount, requestCount);
     }
     
@@ -552,7 +553,7 @@ public class PageObjectFactory {
         accessCount.clear();
         totalCreations.set(0);
         totalAccess.set(0);
-        logger.info("PageObjectFactory statistics reset");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "PageObjectFactory statistics reset");
     }
 }
 

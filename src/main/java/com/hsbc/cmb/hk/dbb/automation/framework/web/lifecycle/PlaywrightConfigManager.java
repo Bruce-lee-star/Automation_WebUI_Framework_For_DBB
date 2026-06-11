@@ -342,13 +342,23 @@ public class PlaywrightConfigManager {
     // ==================== 浏览器启动参数和路径 ====================
 
     /**
+     * 硬编码的反后台节流 flags，防止 IDEA 断点 Suspend All 时 Chrome 冻结页面
+     * 这些 flags 对所有 Chromium 系浏览器（Chrome/Edge/Chromium）强制生效，不受配置文件控制
+     */
+    private static final String HARD_CODED_THROTTLING_ARGS =
+        "--disable-background-timer-throttling,--disable-backgrounding-occluded-windows," +
+        "--disable-renderer-backgrounding,--disable-features=CalculateNativeWinOcclusion";
+
+    /**
      * 获取浏览器启动参数
      * 根据浏览器类型和 channel 返回对应的启动参数
+     * Chromium 系浏览器会自动追加硬编码的反节流 flags
      */
     public String getBrowserArgs() {
         String browserType = getBrowserType();
         String channel = getBrowserChannel();
 
+        String configArgs;
         switch (browserType.toLowerCase()) {
             case "firefox":
                 return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_FIREFOX_ARGS);
@@ -356,15 +366,35 @@ public class PlaywrightConfigManager {
                 return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_WEBKIT_ARGS);
             case "chromium":
                 if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
-                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
+                    configArgs = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
                 } else if ("chrome".equalsIgnoreCase(channel)) {
-                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
+                    configArgs = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
                 } else {
-                    return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
+                    configArgs = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
                 }
+                // 硬编码追加反节流 flags，确保配置文件无法遗漏
+                return mergeArgs(configArgs, HARD_CODED_THROTTLING_ARGS);
             default:
                 return "";
         }
+    }
+
+    /**
+     * 合并两组逗号分隔的 args，去重
+     */
+    private String mergeArgs(String base, String append) {
+        if (base == null || base.trim().isEmpty()) {
+            return append;
+        }
+        if (append == null || append.trim().isEmpty()) {
+            return base;
+        }
+        String trimmedBase = base.trim();
+        // 去除末尾逗号
+        if (trimmedBase.endsWith(",")) {
+            trimmedBase = trimmedBase.substring(0, trimmedBase.length() - 1);
+        }
+        return trimmedBase + "," + append;
     }
 
     /**

@@ -218,7 +218,7 @@ public class PageElement {
                 }
                 logger.warn("[Retry {}/{}] {} timed out: {}",
                     i + 1, maxRetry, operation, e.getMessage());
-                page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
+                page.waitForTimeout((int) PlaywrightManager.config().getElementRetryDelayMs());
             } catch (PlaywrightException e) {
                 lastEx = e;
                 if (i == maxRetry || !isRetriable(e)) {
@@ -226,7 +226,7 @@ public class PageElement {
                 }
                 logger.warn("[Retry {}/{}] {} failed: {}",
                     i + 1, maxRetry, operation, e.getMessage());
-                page.waitForTimeout(PlaywrightManager.config().getElementRetryDelayMs());
+                page.waitForTimeout((int) PlaywrightManager.config().getElementRetryDelayMs());
             } catch (Exception e) {
                 lastEx = e;
                 // 其他异常（如框架异常）不重试，直接抛出
@@ -334,7 +334,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().click(new Locator.ClickOptions().setDelay(100));
-            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "click", testName);
         return this;
@@ -358,7 +358,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().dblclick();
-            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "doubleClick");
         return this;
@@ -368,7 +368,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().scrollIntoViewIfNeeded();
             locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
-            page.waitForTimeout(PlaywrightManager.config().getElementActionPostDelay());
+            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "rightClick");
         return this;

@@ -154,6 +154,8 @@ public enum FrameworkConfig {
      * 如果设置，当浏览器类型为 chromium 且 channel 为 chrome 时会使用此参数
      * 
      * 示例: "--disable-blink-features=AutomationControlled,--disable-pinch,--start-maximized"
+     * 
+     * 注意：反后台节流 flags 已硬编码到 PlaywrightConfigManager，会自动追加，无需在此配置。
      */
     PLAYWRIGHT_BROWSER_CHROME_ARGS(
         "playwright.browser.chrome.args",
@@ -1017,6 +1019,20 @@ public enum FrameworkConfig {
         "playwright.element.screenshot.path",
         "target/screenshots",
         "失败截图保存路径"
+    ),
+
+    // ==================== Route Engine / API 捕获配置 ====================
+
+    /**
+     * API 捕获响应体总字节数上限（MB）
+     * 防止大响应（如文件下载）导致 OOM。
+     * 可通过 serenity.properties 或 JVM 参数覆盖：
+     * {@code -Dapi.capture.max.response.size.mb=100}
+     */
+    API_CAPTURE_MAX_RESPONSE_SIZE_MB(
+        "api.capture.max.response.size.mb",
+        "50",
+        "API 捕获响应体总字节数上限（MB）"
     );
 
     private final String key;

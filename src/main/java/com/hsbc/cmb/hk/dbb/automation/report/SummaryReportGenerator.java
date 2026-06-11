@@ -32,7 +32,7 @@ public class SummaryReportGenerator {
     private static final String SUMMARY_FILE = "serenity-summary.html";
     private static final String CSV_FILE_PREFIX = "test-results";
     private static final String ZIP_FILE_PREFIX = "test-report";
-    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("EEEE MMMM dd yyyy 'at' HH:mm");
+    private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("EEEE MMMM dd yyyy 'at' HH:mm:ss");
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
     // 预编译正则表达式，避免在 parseDuration lambda 中重复编译
@@ -61,6 +61,7 @@ public class SummaryReportGenerator {
     private double avgDuration;
     private long clockTime;
     private LocalDateTime reportTime;
+    private LocalDateTime testExecutionTime;  // 测试实际执行时间（取最早 startTime）
     private String csvFileName;
     private String zipFileName;
 
@@ -263,10 +264,12 @@ public class SummaryReportGenerator {
 
         this.reportTime = LocalDateTime.now();
         loadTestOutcomes(actualReportDir);
+        // 从 JSON 数据中取最早的 startTime 作为测试实际执行时间
+        this.testExecutionTime = resolveTestExecutionTime();
         loadFeatureHtmlMapping(actualReportDir);
         loadScenarioHtmlMapping(actualReportDir);
         calculateResultCounts();
-        loadDurationsFromIndexHtml(actualReportDir);  // 直接从 index.html 获取时间
+        loadDurationsFromIndexHtml(actualReportDir);  // 从 index.html 解析时间（与 Serenity 原生报告保持一致）
         calculateDurations();
         loadErrorTypeRules();
 
@@ -362,7 +365,7 @@ public class SummaryReportGenerator {
 
             // 测试数据
             for (TestOutcome t : testOutcomes) {
-                String feature = getFeature(t);
+                String feature = normalizeFeatureName(getFeature(t));
                 String result = t.getResult().name();
                 long duration = t.getDuration();
                 String error = t.getTestFailureMessage() != null ?
@@ -376,7 +379,7 @@ public class SummaryReportGenerator {
                 long duration = t.duration;
                 String error = t.result != TestResult.SUCCESS ? "Test failed" : "";
                 csv.append(String.format("%s,%s,%s,%d,%s\n",
-                    escapeCsv(t.featureName), escapeCsv(t.title), result, duration, error));
+                    escapeCsv(normalizeFeatureName(t.featureName)), escapeCsv(t.title), result, duration, error));
             }
 
             Files.write(csvPath, csv.toString().getBytes(StandardCharsets.UTF_8));
@@ -742,7 +745,7 @@ public class SummaryReportGenerator {
         sb.append("                                        <table cellspacing=\"0\" cellpadding=\"2\" class=\"legend\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border:1px solid #acb1b9;margin-top:20px;\">\n");
         sb.append("                                            <tr>\n");
         sb.append("                                                <td class=\"overview\" colspan=\"6\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;font-weight:bold;font-size:1.1em;color:#515151;background-color:#EBEBEB;padding:4px 0 4px 5px;\"><span>").append(total).append(" test").append(total != 1 ? "s" : "").append(" executed on</span>\n");
-        sb.append("                                                    <span>").append(reportTime.format(FORMATTER)).append("</span>\n");
+        sb.append("                                                    <span>").append(testExecutionTime != null ? testExecutionTime.format(FORMATTER) : reportTime.format(FORMATTER)).append("</span>\n");
         sb.append("                                                </td>\n");
         sb.append("                                            </tr>\n");
         sb.append("                                        </table>\n");
@@ -865,12 +868,12 @@ public class SummaryReportGenerator {
         sb.append("                    <tr>\n");
         sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
         sb.append("                            <h4 class=\"tag-title\" style=\"color:#222222;font-family:Helvetica, sans-serif;line-height:1.4;margin:0;font-weight:500;font-size:18px;margin-top:20px;text-transform:capitalize;\">Feature</h4>\n");
-        sb.append("                            <table class=\"test-results-table categories\" style=\"border-collapse:collapse;width:100%;border:1px solid grey;margin-bottom:26px;\">\n");
+        sb.append("                            <table class=\"test-results-table categories\" style=\"border-collapse:collapse;width:100%;border:1px solid grey;margin-bottom:26px;table-layout:fixed;\">\n");
         sb.append("                                <tr>\n");
-        sb.append("                                    <th width=\"60%\">Category</th>\n");
-        sb.append("                                    <th class=\"tag-coverage\" width=\"5%\" style=\"text-align:left;white-space:nowrap;\">Tests</th>\n");
-        sb.append("                                    <th class=\"tag-coverage\" width=\"5%\" style=\"text-align:left;white-space:nowrap;\">Pass</th>\n");
-        sb.append("                                    <th class=\"tag-coverage\" style=\"text-align:left;white-space:nowrap;\">Results</th>\n");
+        sb.append("                                    <th width=\"50%\" style=\"text-align:left;white-space:nowrap;\">Category</th>\n");
+        sb.append("                                    <th width=\"8%\" style=\"text-align:left;white-space:nowrap;\">Tests</th>\n");
+        sb.append("                                    <th width=\"8%\" style=\"text-align:left;white-space:nowrap;\">Pass</th>\n");
+        sb.append("                                    <th width=\"34%\" style=\"text-align:left;white-space:nowrap;\">Results</th>\n");
         sb.append("                                </tr>\n");
 
         Map<String, FeatureStats> statsMap = calculateFeatureStats();
@@ -880,34 +883,38 @@ public class SummaryReportGenerator {
             String htmlLink = buildHtmlLink(featureToHtmlMap.getOrDefault(feature, "index.html"));
 
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"tag-subtitle categories\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;width:50%;border:0.5px solid #dddddd;\"><a href=\"").append(htmlLink).append("\" target=\"_blank\">").append(escape(feature)).append("</a></td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.total).append("</td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">").append(stats.passPercent()).append("%</td>\n");
+            sb.append("                                    <td class=\"tag-subtitle categories\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;\"><a href=\"").append(htmlLink).append("\" target=\"_blank\">").append(escape(feature)).append("</a></td>\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;\">").append(stats.total).append("</td>\n");
+            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;\">").append(stats.passPercent()).append("%</td>\n");
             sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">\n");
 
             // Result bar - 显示通过/失败/错误的混合比例
             int passWidth = stats.total > 0 ? (stats.passed * 100) / stats.total : 0;
             int failWidth = stats.total > 0 ? (stats.failed * 100) / stats.total : 0;
             int errorWidth = stats.total > 0 ? (stats.error * 100) / stats.total : 0;
+            // 修正取整误差，确保三者和 = 100%（全部通过时 passWidth 已是 100）
+            int sum = passWidth + failWidth + errorWidth;
+            if (sum > 0 && sum < 100 && passWidth > 0) {
+                passWidth += (100 - sum);
+            }
 
-            sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"result-bar\" width=\"100%\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
+            sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"result-bar\" width=\"100%\" style=\"border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
             sb.append("                                            <tr>\n");
 
-            // 通过部分（绿色）
-            if (passWidth > 0) {
-                sb.append("                                                <td class=\"success-background\" title=\"").append(stats.passed).append(" passing tests (").append(passWidth).append("%)\" width=\"").append(passWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.passed).append("</span></td>\n");
-            }
-            // 失败部分（红色）
-            if (failWidth > 0) {
-                sb.append("                                                <td class=\"failure-background\" title=\"").append(stats.failed).append(" failing tests (").append(failWidth).append("%)\" width=\"").append(failWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.failed).append("</span></td>\n");
-            }
-            // 错误部分（橙色）
-            if (errorWidth > 0) {
-                sb.append("                                                <td class=\"error-background\" title=\"").append(stats.error).append(" broken tests (").append(errorWidth).append("%)\" width=\"").append(errorWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;padding:4px;min-width:20px;\"><span>").append(stats.error).append("</span></td>\n");
-            }
-            // 全部通过时显示绿色背景
             if (passWidth == 100 && stats.total > 0) {
-                sb.append("                                                <td class=\"success-background\" title=\"100% passing\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span title=\"All ").append(stats.passed).append(" tests passed\">").append(stats.passPercent()).append("%</span></td>\n");
+                // 全部通过：只显示一个 100% 绿色条
+                sb.append("                                                <td class=\"success-background\" title=\"All ").append(stats.passed).append(" tests passed (100%)\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>100%</span></td>\n");
+            } else {
+                // 混合结果：按比例显示各段
+                if (passWidth > 0) {
+                    sb.append("                                                <td class=\"success-background\" title=\"").append(stats.passed).append(" passing tests (").append(passWidth).append("%)\" width=\"").append(passWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.passed).append("</span></td>\n");
+                }
+                if (failWidth > 0) {
+                    sb.append("                                                <td class=\"failure-background\" title=\"").append(stats.failed).append(" failing tests (").append(failWidth).append("%)\" width=\"").append(failWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.failed).append("</span></td>\n");
+                }
+                if (errorWidth > 0) {
+                    sb.append("                                                <td class=\"error-background\" title=\"").append(stats.error).append(" broken tests (").append(errorWidth).append("%)\" width=\"").append(errorWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.error).append("</span></td>\n");
+                }
             }
 
             sb.append("                                            </tr>\n");
@@ -924,13 +931,51 @@ public class SummaryReportGenerator {
     private Map<String, FeatureStats> calculateFeatureStats() {
         Map<String, FeatureStats> map = new LinkedHashMap<>();
         for (TestOutcome t : testOutcomes) {
-            String f = getFeature(t);
+            String f = normalizeFeatureName(getFeature(t));
             map.computeIfAbsent(f, k -> new FeatureStats()).add(t.getResult());
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
-            map.computeIfAbsent(t.featureName, k -> new FeatureStats()).add(t.result);
+            map.computeIfAbsent(normalizeFeatureName(t.featureName), k -> new FeatureStats()).add(t.result);
         }
         return map;
+    }
+
+    /**
+     * 归一化 Feature 名称，确保 testOutcomes 和 simpleTestOutcomes 两个数据源
+     * 产生的 feature name 一致，避免同一个 Feature 在 Functional Coverage 中
+     * 被错误地分成多个条目显示。
+     *
+     * <p>归一化规则：
+     * <ol>
+     *   <li>去除 .feature 扩展名（Serenity Story.getName() 可能返回路径）</li>
+     *   <li>统一用最后一段作为 feature 名（如 web/baidu.feature → baidu）</li>
+     *   <li>替换下划线/连字符为空格，首字母大写（美化显示）</li>
+     * </ol>
+     */
+    private String normalizeFeatureName(String name) {
+        if (name == null || name.isEmpty()) return "No Feature";
+        String normalized = name.trim();
+
+        // 1. 去掉 .feature 扩展名
+        if (normalized.endsWith(".feature")) {
+            normalized = normalized.substring(0, normalized.length() - 8);
+        }
+
+        // 2. 取最后一段（路径分割符 / 或 \ 之后的部分）
+        int lastSlash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+        if (lastSlash >= 0) {
+            normalized = normalized.substring(lastSlash + 1);
+        }
+
+        // 3. 替换分隔符为空格，便于阅读
+        normalized = normalized.replace('_', ' ').replace('-', ' ').trim();
+
+        // 4. 如果只有单个词，首字母大写；多词保持原样
+        if (normalized.indexOf(' ') < 0 && normalized.length() > 0) {
+            normalized = Character.toUpperCase(normalized.charAt(0)) + normalized.substring(1);
+        }
+
+        return normalized.isEmpty() ? "No Feature" : normalized;
     }
 
     private static class FeatureStats {
@@ -954,7 +999,7 @@ public class SummaryReportGenerator {
                 String errorType = extractErrorType(error);
                 failureCounts.merge(errorType, 1, Integer::sum);
 
-                String feature = getFeature(t);
+                String feature = normalizeFeatureName(getFeature(t));
                 featureFailures.computeIfAbsent(feature, k -> new FeatureFailureStats()).increment();
             }
         }
@@ -963,7 +1008,7 @@ public class SummaryReportGenerator {
                 String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
                 String errorType = extractErrorType(error);
                 failureCounts.merge(errorType, 1, Integer::sum);
-                featureFailures.computeIfAbsent(t.featureName, k -> new FeatureFailureStats()).increment();
+                featureFailures.computeIfAbsent(normalizeFeatureName(t.featureName), k -> new FeatureFailureStats()).increment();
             }
         }
 
@@ -1380,7 +1425,7 @@ public class SummaryReportGenerator {
 
         for (TestOutcome t : testOutcomes) {
             if (t.getResult() == TestResult.FAILURE || t.getResult() == TestResult.ERROR) {
-                String feature = getFeature(t);
+                String feature = normalizeFeatureName(getFeature(t));
                 // Priority: scenario-specific link > index.html (never use feature link for scenarios)
                 String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
                 String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
@@ -1393,7 +1438,7 @@ public class SummaryReportGenerator {
                 String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
                 String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
                 String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
-                failures.add(new FailureInfo(t.featureName, t.title, error, html, t.result));
+                failures.add(new FailureInfo(normalizeFeatureName(t.featureName), t.title, error, html, t.result));
             }
         }
 
@@ -1450,7 +1495,7 @@ public class SummaryReportGenerator {
 
         String lastFeature = null;
         for (TestOutcome t : testOutcomes) {
-            String feature = getFeature(t);
+            String feature = normalizeFeatureName(getFeature(t));
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
 
@@ -1479,7 +1524,7 @@ public class SummaryReportGenerator {
 
         // 处理 simpleTestOutcomes
         for (SimpleTestOutcome t : simpleTestOutcomes) {
-            String feature = t.featureName;
+            String feature = normalizeFeatureName(t.featureName);
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
 
@@ -1688,6 +1733,23 @@ public class SummaryReportGenerator {
         }
     }
 
+    /**
+     * 从已加载的测试结果中取最早的 startTime，作为测试实际执行时间。
+     * 如果没有找到任何 startTime，回退到报告生成时间。
+     */
+    private LocalDateTime resolveTestExecutionTime() {
+        ZonedDateTime earliest = simpleTestOutcomes.stream()
+            .map(t -> t.startTime)
+            .filter(Objects::nonNull)
+            .min(ZonedDateTime::compareTo)
+            .orElse(null);
+
+        if (earliest != null) {
+            return earliest.toLocalDateTime();
+        }
+        return null;
+    }
+
     private void calculateResultCounts() {
         for (TestResult r : TestResult.values()) resultCounts.put(r, 0L);
         testOutcomes.forEach(t -> resultCounts.put(t.getResult(), resultCounts.get(t.getResult()) + 1));
@@ -1745,8 +1807,10 @@ public class SummaryReportGenerator {
             int flags = Pattern.DOTALL;
 
             // 解析 Total Duration
-            // HTML: <i class="bi bi-stopwatch"></i> Total\n ... \n Duration\n ... </td>\n ... <td> 1m 11s</td>
-            Pattern totalDurPattern = Pattern.compile("Total[\\s\\S]*?Duration[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            // HTML: <i class="bi bi-stopwatch"></i> Total\n Duration\n </td>\n <td>41s</td>
+            // 使用 bi-stopwatch（无 -fill）来区分 Total Duration 和 Total Execution Time
+            Pattern totalDurPattern = Pattern.compile(
+                "bi-stopwatch\"></i>\\s*Total\\s*Duration\\s*</td>\\s*<td>([\\s\\S]*?)</td>", flags);
             Matcher m = totalDurPattern.matcher(content);
             if (m.find()) {
                 this.totalDuration = parseDuration.apply(m.group(1));
@@ -1756,7 +1820,9 @@ public class SummaryReportGenerator {
             }
 
             // 解析 Total Execution Time (= clockTime)
-            Pattern clockPattern = Pattern.compile("Total[\\s\\S]*?Execution[\\s\\S]*?Time[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            // HTML: <i class="bi bi-stopwatch-fill"></i> Total\n Execution Time\n </td>\n <td>41s</td>
+            Pattern clockPattern = Pattern.compile(
+                "bi-stopwatch-fill\"></i>\\s*Total\\s*Execution\\s*Time\\s*</td>\\s*<td>([\\s\\S]*?)</td>", flags);
             m = clockPattern.matcher(content);
             if (m.find()) {
                 this.clockTime = parseDuration.apply(m.group(1));
@@ -1766,7 +1832,9 @@ public class SummaryReportGenerator {
             }
 
             // 解析 Average Execution Time
-            Pattern avgPattern = Pattern.compile("Average[\\s\\S]*?Execution[\\s\\S]*?Time[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            // HTML: <i class="bi bi-stopwatch"></i> Average\n Execution Time\n </td>\n <td>20s</td>
+            Pattern avgPattern = Pattern.compile(
+                "bi-stopwatch\"></i>\\s*Average\\s*Execution\\s*Time\\s*</td>\\s*<td>([\\s\\S]*?)</td>", flags);
             m = avgPattern.matcher(content);
             if (m.find()) {
                 this.avgDuration = parseDuration.apply(m.group(1));
@@ -1774,7 +1842,9 @@ public class SummaryReportGenerator {
             }
 
             // 解析 Fastest Test (= minDuration)
-            Pattern fastestPattern = Pattern.compile("Fastest[\\s\\S]*?Test[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            // HTML: <i class="bi bi-trophy"></i> Fastest Test\n </td>\n <td>16s</td>
+            Pattern fastestPattern = Pattern.compile(
+                "bi-trophy\"></i>\\s*Fastest\\s*Test\\s*</td>\\s*<td>([\\s\\S]*?)</td>", flags);
             m = fastestPattern.matcher(content);
             if (m.find()) {
                 this.minDuration = parseDuration.apply(m.group(1));
@@ -1782,7 +1852,9 @@ public class SummaryReportGenerator {
             }
 
             // 解析 Slowest Test (= maxDuration)
-            Pattern slowestPattern = Pattern.compile("Slowest[\\s\\S]*?Test[\\s]*?</td>[\\s]*?<td>([\\s\\S]*?)</td>", flags);
+            // HTML: <i class="bi bi-skip-start"></i> Slowest\n Test\n </td>\n <td>25s</td>
+            Pattern slowestPattern = Pattern.compile(
+                "bi-skip-start\"></i>\\s*Slowest\\s*Test\\s*</td>\\s*<td>([\\s\\S]*?)</td>", flags);
             m = slowestPattern.matcher(content);
             if (m.find()) {
                 this.maxDuration = parseDuration.apply(m.group(1));
@@ -1801,7 +1873,8 @@ public class SummaryReportGenerator {
 
     /**
      * 计算时间统计（仅作为备选，当 index.html 解析失败时使用）。
-     * 优先使用 loadDurationsFromIndexHtml() 从 index.html 直接获取的时间数据。
+     * 优先使用 loadDurationsFromIndexHtml() 从 index.html 直接获取的时间数据，
+     * 以确保与 Serenity 原生报告中的 Key Statistics 完全一致。
      */
     private void calculateDurations() {
         // 如果已经从 index.html 获取了数据（clockTime > 0 或 totalDuration > 0），直接返回
@@ -1899,7 +1972,7 @@ public class SummaryReportGenerator {
                     }
 
                     if (title != null && link != null && !title.isEmpty() && !link.isEmpty()) {
-                        featureToHtmlMap.putIfAbsent(title, link);
+                        featureToHtmlMap.putIfAbsent(normalizeFeatureName(title), link);
                     }
                 }
             }

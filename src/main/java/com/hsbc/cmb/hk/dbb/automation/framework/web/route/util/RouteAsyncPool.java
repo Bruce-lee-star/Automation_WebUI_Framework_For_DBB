@@ -128,7 +128,7 @@ public final class RouteAsyncPool {
             shutdownGracefully();
         }, "pw-route-shutdown"));
 
-        LOGGER.info("[RouteAsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms, maxPendingTimeouts={}",
+        LoggingConfigUtil.logInfoIfVerbose(LOGGER, "[RouteAsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms, maxPendingTimeouts={}",
                 CORE_THREADS, MAX_THREADS, QUEUE_CAPACITY, DEFAULT_TASK_TIMEOUT_MS, MAX_PENDING_TIMEOUTS);
     }
 
@@ -215,7 +215,7 @@ public final class RouteAsyncPool {
                 LOGGER.error("[RouteAsyncPool] Fallback task execution failed", ex);
             }
         } catch (Exception e) {
-            LOGGER.warn("[RouteAsyncPool] Failed to submit task: {}", e.getMessage());
+            LoggingConfigUtil.logWarnIfVerbose(LOGGER, "[RouteAsyncPool] Failed to submit task: {}", e.getMessage());
         }
     }
 

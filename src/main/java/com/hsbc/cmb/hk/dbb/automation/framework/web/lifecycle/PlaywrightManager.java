@@ -2037,7 +2037,7 @@ public class PlaywrightManager {
                 // 全页截图：Playwright 原生 fullPage，自动滚动拼接
                 // 先滚到底部触发懒加载，等渲染完成后滚回顶部
                 page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
-                page.waitForTimeout(300); // 等待懒加载内容渲染
+                page.waitForTimeout(300.0); // 等待懒加载内容渲染
                 page.evaluate("() => window.scrollTo(0, 0)");
                 options.setFullPage(true);
             } else {
@@ -2097,7 +2097,7 @@ public class PlaywrightManager {
             if (fullPage) {
                 // 全页截图：先滚到底部触发懒加载，等渲染完成后滚回顶部
                 page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
-                page.waitForTimeout(300); // 等待懒加载内容渲染
+                page.waitForTimeout(300.0); // 等待懒加载内容渲染
                 page.evaluate("() => window.scrollTo(0, 0)");
                 options.setFullPage(true);
             } else {

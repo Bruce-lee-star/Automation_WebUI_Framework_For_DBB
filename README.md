@@ -659,6 +659,9 @@ public class LoginSteps {
 | `playwright.browser.executablePath.webkit` | (空) | WebKit 可执行文件路径 |
 | `playwright.browser.args.maximized` | true | 最大化窗口 |
 | `playwright.browser.slowMo` | 0 | 操作延迟（毫秒，调试用） |
+| `playwright.browser.chrome.args` | 反节流 flags | Chrome 启动参数（逗号分隔，默认含反后台节流） |
+| `playwright.browser.edge.args` | 反节流 flags | Edge 启动参数（同上） |
+| `playwright.browser.chromium.args` | 反节流 flags | Chromium 启动参数（同上） |
 
 ### 超时配置
 
@@ -680,6 +683,69 @@ public class LoginSteps {
 | `playwright.action.screenshot.on.failure` | true | 操作失败时自动截图 |
 | `playwright.action.diagnostics.detailed` | true | 详细失败诊断信息 |
 | `rerunFailingTestsCount` | 0 | Maven Failsafe 测试级重试（CI: `-DrerunFailingTestsCount=N`） |
+
+### IDEA 断点调试指南
+
+> **根因**：IDEA 断点默认策略为 **Suspend All**，挂起 Java 主线程 → Playwright WebSocket 无法向浏览器下发指令 → 页面渲染、定时器、网络请求全部停滞。Chrome 后台节流策略会进一步冻结被遮挡/非活跃窗口的 JS 执行。
+
+#### 推荐调试方案（按优先级）
+
+| 方案 | 适用场景 | 操作 |
+|------|----------|------|
+| **1. 框架 `pause()` 方法** | 需要人机交互暂停检查页面 | 在代码中插入 `page.pause()`，自动打开 **Playwright Inspector** 窗口，可逐步调试、查看 DOM、执行脚本 |
+| **2. 非挂起日志断点** | 只需观察变量值、不必暂停 | 右键断点 → 取消 **Suspend** → 勾选 **Evaluate and log** → 输入表达式（如 `"selector=" + selector`），断点仅打印日志不挂起线程 |
+| **3. 反后台节流 flags（框架已默认启用）** | 降低断点挂起时 Chrome 冻结概率 | Chrome 启动时会自动注入 `--disable-background-timer-throttling` 等 4 个 flag，阻止浏览器冻结定时器和渲染进程 |
+
+#### 框架内置反节流 Flags（默认生效）
+
+自 v1.0.0-FINANCIAL-GRADE 起，所有 Chromium 系浏览器（Chrome / Edge / Chromium）启动时自动注入以下参数：
+
+| Flag | 作用 |
+|------|------|
+| `--disable-background-timer-throttling` | 禁止后台定时器节流（`setTimeout`/`setInterval` 不被冻结） |
+| `--disable-backgrounding-occluded-windows` | 禁止对被遮挡窗口降级后台化 |
+| `--disable-renderer-backgrounding` | 禁止渲染进程后台化挂起 |
+| `--disable-features=CalculateNativeWinOcclusion` | 禁用 Windows 原生窗口遮挡检测 |
+
+> 如需额外参数，通过配置追加（逗号分隔）：
+> ```properties
+> playwright.browser.chrome.args=--disable-blink-features=AutomationControlled,--your-flag
+> ```
+
+#### `pause()` vs IDEA Breakpoint 对比
+
+| 维度 | `pause()` | IDEA Breakpoint |
+|------|-----------|-----------------|
+| 挂起范围 | 仅 Playwright 指令流，浏览器正常渲染 | 整个 JVM 线程挂起 → 浏览器停滞 |
+| 调试能力 | Playwright Inspector：DOM 查看、选择器调试、JS 执行 | IDEA Debugger：变量、堆栈、条件断点 |
+| 环境影响 | Jenkins/BS 自动跳过，不阻塞 CI | Jenkins 上 crash 或 hang |
+| 推荐场景 | Playwright 流程调试、页面状态检查 | 纯 Java 逻辑调试（非 Playwright 通信链路上） |
+
+#### 快速上手示例
+
+```java
+// ❌ 不推荐：IDEA 断点在 Playwright 通信路径上（会导致页面冻结）
+public void login(String username, String password) {
+    // 在这行打断点 → Playwright 线程挂起 → 页面无响应
+    page.locator("#username").fill(username);  
+}
+
+// ✅ 推荐：用日志断点观察中间状态
+public void login(String username, String password) {
+    // 右键断点 → 不 Suspend → Evaluate and log:
+    // "Filling username: " + username
+    page.locator("#username").fill(username);
+    page.locator("#password").fill(password);
+}
+
+// ✅ 推荐：用 pause() 暂停在感兴趣的位置
+public void login(String username, String password) {
+    page.locator("#username").fill(username);
+    page.locator("#password").fill(password);
+    pause();  // ← 打开 Playwright Inspector，交互式调试
+    page.locator("#loginBtn").click();
+}
+```
 
 ### 页面加载与等待
 

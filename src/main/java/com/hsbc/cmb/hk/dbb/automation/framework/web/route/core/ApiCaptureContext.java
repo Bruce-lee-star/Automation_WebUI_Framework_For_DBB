@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -167,8 +168,13 @@ public class ApiCaptureContext {
     /** Response 存储上限（防止内存泄漏），超过后记录 WARN 日志但继续存储 */
     private static final int MAX_RESPONSE_STORAGE = 1000;
 
-    /** Response 总字节数上限（10MB），防止大响应（如文件下载）导致 OOM */
-    private static final long MAX_RESPONSE_TOTAL_SIZE = 10 * 1024 * 1024; // 10 MB
+    /**
+     * Response 总字节数上限，防止大响应（如文件下载）导致 OOM。
+     * <p>通过 {@link FrameworkConfig#API_CAPTURE_MAX_RESPONSE_SIZE_MB} 配置，默认 50MB。
+     * <p>示例：{@code -Dapi.capture.max.response.size.mb=100}
+     */
+    private static final long MAX_RESPONSE_TOTAL_SIZE =
+            FrameworkConfig.API_CAPTURE_MAX_RESPONSE_SIZE_MB.getLongValue() * 1024 * 1024;
 
     /** 当前已存储响应总字节数（原子操作，线程安全） */
     private final AtomicLong totalResponseSize = new AtomicLong(0L);

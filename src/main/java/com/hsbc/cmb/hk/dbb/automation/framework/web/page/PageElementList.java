@@ -124,16 +124,6 @@ public final class PageElementList extends AbstractList<PageElement> {
         }
     }
 
-    /**
-     * 保留方法空实现，兼容 BasePage.initializeAnnotatedFields() 通过反射的调用。
-     * Locator 不再缓存，此方法无实际操作。
-     * @deprecated Locator 缓存已移除，此方法为兼容性存根，将在未来版本删除
-     */
-    @Deprecated
-    public void invalidateCache() {
-        // no-op: Locator caching removed
-    }
-
     // ========================== 获取元素（一次等待） ==========================
     @Override
     public PageElement get(int index) {

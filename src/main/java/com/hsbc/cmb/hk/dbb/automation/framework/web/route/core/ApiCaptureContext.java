@@ -191,14 +191,11 @@ public class ApiCaptureContext {
     private final Map<String, List<CapturedApiCall>> apiCallsPerUrl = new ConcurrentHashMap<>();
 
     /**
-     * Response body 存储 — 向后兼容的旧存储。
+     * Response body 存储。
      *
      * <p>Key = 请求端点（路径+查询，不含 host），Value = 该端点被调用的所有响应 body（按顺序）。
      * 同一 endpoint 分页多次调用（如 /api/users?page=1, page=2）会全部保留。
-     *
-     * @deprecated 推荐使用 {@link #getApiCalls(String)} 获取完整信息
      */
-    @Deprecated
     private final Map<String, List<String>> responseStorage = new ConcurrentHashMap<>();
 
     /**

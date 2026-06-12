@@ -555,6 +555,18 @@ public enum FrameworkConfig {
         "Context 代理密码"
     ),
 
+    /**
+     * Context 代理启用开关
+     * true=启用代理（需同时配置 playwright.context.proxy）
+     * false=禁用代理（即使配置了 proxy URL 也不会生效）
+     * 方便在不同环境（公司网络/家庭网络）之间切换，无需反复修改 proxy URL
+     */
+    PLAYWRIGHT_CONTEXT_PROXY_ENABLED(
+        "playwright.context.proxy.enabled",
+        "false",
+        "Context 代理启用开关"
+    ),
+
     // ==================== Playwright 页面配置 ====================
 
     /**

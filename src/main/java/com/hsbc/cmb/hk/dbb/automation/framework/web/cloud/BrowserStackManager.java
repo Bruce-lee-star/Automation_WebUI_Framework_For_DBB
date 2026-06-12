@@ -59,7 +59,6 @@ public class BrowserStackManager {
 
     // ==================== 常量 ====================
 
-    private static final String BROWSERSTACK_CDP_URL = "https://hub.browserstack.com/wd/hub";
     private static final String BROWSERSTACK_API_URL = "https://api.browserstack.com/automate/sessions";
     private static final int CONNECT_TIMEOUT_SECONDS = 60;
     private static final int REQUEST_TIMEOUT_MS = 30000;
@@ -425,30 +424,6 @@ public class BrowserStackManager {
 
     private static void setTempCapabilities(Map<String, Object> caps) { tempCaps.set(caps); }
     private static void clearTempCapabilities() { tempCaps.remove(); }
-
-    // ==================== 兼容性保留（旧API）====================
-
-    /** @deprecated 使用 {@link #connect(Playwright)} 替代 */
-    @Deprecated
-    public static void configureLaunchOptions(BrowserType.LaunchOptions options, String browserType) {
-        // 旧接口兼容：LaunchOptions 不适用于 BrowserStack
-        logger.warn("[BrowserStack] configureLaunchOptions() is deprecated. Use connect(Playwright) instead.");
-    }
-
-    /** @deprecated 使用 {@link #connect(Playwright)} 替代 */
-    @Deprecated
-    public static BrowserType.ConnectOptions getConnectOptions(String browserType) {
-        logger.warn("[BrowserStack] getConnectOptions() is deprecated. Use connect(Playwright) instead.");
-        BrowserType.ConnectOptions options = new BrowserType.ConnectOptions();
-        options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
-        return options;
-    }
-
-    /** @deprecated 使用 {@link #setTestStatus(String, String)} 替代 */
-    @Deprecated
-    public static void setTestStatus(String sessionId, String status, String reason) {
-        setTestStatus(status, reason);
-    }
 
     /**
      * 获取 BrowserStack 会话 URL（向后兼容）

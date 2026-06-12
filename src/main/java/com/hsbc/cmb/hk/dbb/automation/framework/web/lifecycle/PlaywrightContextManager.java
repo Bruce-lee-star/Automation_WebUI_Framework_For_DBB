@@ -180,9 +180,18 @@ class PlaywrightContextManager {
             contextOptions.setPermissions(List.of(permissionsConfig.split(",")));
         }
 
-        // 配置代理服务器
+        // 配置代理服务器（ThreadLocal 自定义覆盖优先于配置文件）
+        // 优先级：customProxyEnabled ThreadLocal > playwright.context.proxy.enabled 配置
+        Boolean customProxyOverride = PlaywrightManager.customOptions().getProxyEnabled();
+        boolean proxyEnabled;
+        if (customProxyOverride != null) {
+            proxyEnabled = customProxyOverride;
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom proxyEnabled override: {} (from business code)", proxyEnabled);
+        } else {
+            proxyEnabled = PlaywrightManager.config().getContextProxyEnabled();
+        }
         String proxyConfig = PlaywrightManager.config().getContextProxy();
-        if (proxyConfig != null && !proxyConfig.isEmpty()) {
+        if (proxyEnabled && proxyConfig != null && !proxyConfig.isEmpty()) {
             String proxyUsername = PlaywrightManager.config().getContextProxyUsername();
             String proxyPassword = PlaywrightManager.config().getContextProxyPassword();
             // 如果提供了用户名/密码，构造带认证的代理 URL
@@ -196,6 +205,8 @@ class PlaywrightContextManager {
                 contextOptions.setProxy(proxyConfig);
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy: {}", proxyConfig);
             }
+        } else if (proxyEnabled) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Proxy enabled but no proxy URL configured (playwright.context.proxy is empty), skipping proxy setup");
         }
 
         // 配置设备缩放因子

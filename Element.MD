@@ -677,11 +677,11 @@ retryWithValidation(
     3, "提交后验证成功消息"
 );
 
-// 便捷重试方法
-waitForVisibleWithRetry("#slow-element", 10, 3);
-waitForHiddenWithRetry("#overlay", 10, 3);
-clickWithRetry("#unstable-btn", 3);
-typeWithRetry("#auto-fill", "text", 3);
+// 便捷等待/操作方法（无需外层 retry，方法内部已含完整等待+超时机制）
+waitForVisible("#slow-element", 10);
+waitForHidden("#overlay", 10);
+click("#unstable-btn");
+type("#auto-fill", "text");
 navigateToWithRetry("https://example.com", 3);
 ```
 

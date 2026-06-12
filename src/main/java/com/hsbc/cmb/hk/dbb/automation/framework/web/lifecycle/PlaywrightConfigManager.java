@@ -235,6 +235,14 @@ public class PlaywrightConfigManager {
     }
 
     /**
+     * 获取 Context 代理启用开关
+     * true=启用代理，false=禁用
+     */
+    public boolean getContextProxyEnabled() {
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_ENABLED);
+    }
+
+    /**
      * 获取 ColorScheme
      */
     public String getColorScheme() {

@@ -59,7 +59,7 @@ public abstract class BasePage {
     // 页面切换锁：防止并发页面切换导致元素绑定错乱
     private static final Object PAGE_SWITCH_LOCK = new Object();
 
-    /** 首次注解字段初始化标志——页面切换时走 invalidateCache 而非重建对象 */
+    /** 首次注解字段初始化标志——页面切换时复用已有对象而非重建 */
     private volatile boolean annotatedFieldsInitialized = false;
 
     private void ensurePageValid() {
@@ -108,38 +108,36 @@ public abstract class BasePage {
     /**
      * 初始化/刷新注解字段。
      * 首次调用：创建 PageElement/PageElementList 对象。
-     * 后续调用（页面切换）：仅调用 invalidateCache() 刷新 Locator 缓存，
-     * 避免重建对象和反射赋值的开销。
+     * 后续调用（页面切换）：复用已有对象（避免重建对象和反射赋值的开销），
+     * Locator 不再缓存，每次调用 locator() 自动绑定新 Page 实例。
      */
     private void initializeAnnotatedFields() {
-        for (Field field : this.getClass().getDeclaredFields()) {
-            if (field.isAnnotationPresent(Element.class)) {
-                Element elementAnnotation = field.getAnnotation(Element.class);
-                String selector = elementAnnotation.value();
-                field.setAccessible(true);
+        Class<?> clazz = this.getClass();
+        while (clazz != null && clazz != BasePage.class) {
+            for (Field field : clazz.getDeclaredFields()) {
+                if (field.isAnnotationPresent(Element.class)) {
+                    Element elementAnnotation = field.getAnnotation(Element.class);
+                    String selector = elementAnnotation.value();
+                    field.setAccessible(true);
 
-                if (annotatedFieldsInitialized) {
-                    // 页面切换后——只需刷新缓存，不重建对象
-                    try {
-                        Object existing = field.get(this);
-                        if (existing instanceof PageElement pe) {
-                            pe.invalidateCache();
-                        } else if (existing instanceof PageElementList pel) {
-                            pel.invalidateCache();
-                        }
-                        // 如果 existing 为 null 或类型不匹配，回退到重新创建
-                        if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
+                    if (annotatedFieldsInitialized) {
+                        // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
+                        try {
+                            Object existing = field.get(this);
+                            if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
+                                createField(field, selector);
+                            }
+                        } catch (IllegalAccessException e) {
+                            // get 失败，回退到重新创建
                             createField(field, selector);
                         }
-                    } catch (IllegalAccessException e) {
-                        // get 失败，回退到重新创建
-                        createField(field, selector);
+                        continue;
                     }
-                    continue;
-                }
 
-                createField(field, selector);
+                    createField(field, selector);
+                }
             }
+            clazz = clazz.getSuperclass();
         }
         annotatedFieldsInitialized = true;
     }
@@ -365,39 +363,23 @@ public abstract class BasePage {
     }
 
     /**
-     * 带重试的可见性等待。
-     * <p>直接委托 PageElement.waitForVisible()（内部已含等待+超时机制），
-     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     * 等待元素可见（已内置等待+超时机制，无需外层再包裹 retry）。
+     *
+     * @param selector 元素选择器
+     * @param timeout  超时秒数
      */
-    public void waitForVisibleWithRetry(String selector, int timeout, int retries) {
+    public void waitForVisible(String selector, int timeout) {
         element(selector).waitForVisible(timeout);
     }
 
     /**
-     * 带重试的隐藏等待。
-     * <p>直接委托 PageElement.waitForNotVisible()（内部已含等待+超时机制），
-     * 不再额外包裹 BasePage.retry() 避免双重重试。
+     * 等待元素隐藏（已内置等待+超时机制，无需外层再包裹 retry）。
+     *
+     * @param selector 元素选择器
+     * @param timeout  超时秒数
      */
-    public void waitForHiddenWithRetry(String selector, int timeout, int retries) {
+    public void waitForHidden(String selector, int timeout) {
         element(selector).waitForNotVisible(timeout);
-    }
-
-    /**
-     * 带重试的点击操作。
-     * <p>直接委托 PageElement.click()（内部已含 executeWithRetry 企业级重试机制），
-     * 不再额外包裹 BasePage.retry() 避免双重重试。
-     */
-    public void clickWithRetry(String selector, int retries) {
-        element(selector).click();
-    }
-
-    /**
-     * 带重试的输入操作。
-     * <p>直接委托 PageElement.type()（内部已含 executeWithRetry 企业级重试机制），
-     * 不再额外包裹 BasePage.retry() 避免双重重试。
-     */
-    public void typeWithRetry(String selector, String text, int retries) {
-        element(selector).type(text);
     }
 
     public void navigateToWithRetry(String url, int retries) {

@@ -271,7 +271,7 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 | **企业级重试** | `executeWithRetry()` 自动诊断 DOM 状态 + 失败截图，`executeSafely()` 统一异常转换 |
 | **文本标准化** | `TextNormalizer` 统一管道：NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim |
 | **失败诊断** | `ElementDiagnosticsCollector` 批量 JS 单次 IPC 收集 DOM 状态，不拖慢正常流程 |
-| **统一重试** | 仅 `PageElement.executeWithRetry()` 一层重试，`clickWithRetry`/`typeWithRetry` 等不再额外包裹外层 retry |
+| **统一重试** | 仅 `PageElement.executeWithRetry()` 一层重试，不再额外包裹外层 retry |
 | **智能 Pause** | `BasePage.pause()` 安全调试点：本地 IDE 自动打开 Playwright Inspector 暂停调试；Jenkins / BrowserStack 环境自动跳过，杜绝 CI/CD 流程阻塞 |
 
 **核心类：**

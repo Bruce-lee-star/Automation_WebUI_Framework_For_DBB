@@ -419,11 +419,10 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public void waitForUrlStartsWith(String pfx, int to) { super.waitForUrlStartsWith(pfx, to); recordVerification("urlStartsWith", true); }
     @Override public void waitForCustomCondition(Supplier<Boolean> c, int to, String desc) { super.waitForCustomCondition(c, to, desc); recordVerification("custom_" + desc, true); }
 
-    // --- 带重试的方法 ---
-    @Override public void waitForVisibleWithRetry(String s, int t, int r) { SerenityReporter.flushPendingApiOperations(); super.waitForVisibleWithRetry(s, t, r); recordVerification("waitVisibleWithRetry_" + s, true); }
-    @Override public void waitForHiddenWithRetry(String s, int t, int r) { SerenityReporter.flushPendingApiOperations(); super.waitForHiddenWithRetry(s, t, r); recordVerification("waitHiddenWithRetry_" + s, true); }
-    @Override public void clickWithRetry(String s, int r) { SerenityReporter.flushPendingApiOperations(); super.clickWithRetry(s, r); addSerenityTestData("clickWithRetry_" + s, "completed"); }
-    @Override public void typeWithRetry(String s, String t, int r) { SerenityReporter.flushPendingApiOperations(); super.typeWithRetry(s, t, r); addSerenityTestData("typeWithRetry_" + s, "completed"); }
+    // --- 可见/隐藏等待（不再含误导性的 retries 参数） ---
+    @Override public void waitForVisible(String s, int t) { SerenityReporter.flushPendingApiOperations(); super.waitForVisible(s, t); recordVerification("waitVisible_" + s, true); }
+    @Override public void waitForHidden(String s, int t) { SerenityReporter.flushPendingApiOperations(); super.waitForHidden(s, t); recordVerification("waitHidden_" + s, true); }
+
     @Override public void navigateToWithRetry(String url, int r) { SerenityReporter.flushPendingApiOperations(); super.navigateToWithRetry(url, r); addSerenityTestData("navigateToWithRetry", "completed"); }
     @Override public void retry(Runnable op, int maxR, int interval, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, maxR, interval, desc); addSerenityTestData("retry_" + desc, "completed"); }
     @Override public void retry(Runnable op, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, desc); addSerenityTestData("retry_" + desc, "completed"); }

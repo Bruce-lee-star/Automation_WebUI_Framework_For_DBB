@@ -72,20 +72,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *     .aria()
  *     .baselineName("main-aria")
  *     .snapshot();
- *
- * // 3. 使用正则匹配
- * NativeSnapshotResult result = PlaywrightSnapshotSupport.of(page.locator("form"))
- *     .aria()
- *     .baselineName("form-aria")
- *     .useRegex(true)
- *     .snapshot();
- *
- * // 4. 静默模式（不输出日志）
- * NativeSnapshotResult result = PlaywrightSnapshotSupport.of(page.locator("nav"))
- *     .aria()
- *     .baselineName("nav-aria")
- *     .silent(true)
- *     .snapshot();
  * }</pre>
  *
  * <h2>配置 (serenity.properties)</h2>
@@ -245,11 +231,7 @@ public class PlaywrightSnapshotSupport {
             double maxDiffPixelRatio = 0.01;
             boolean fullPage = false;
             boolean useMask = false;
-            boolean useRegex = false;
-            boolean silent = false;
             List<Locator> maskLocators = new ArrayList<>();
-            byte[] failureScreenshot;
-            long durationMs;
 
             Builder() {}
         }
@@ -351,14 +333,6 @@ public class PlaywrightSnapshotSupport {
         }
 
         /**
-         * 静默模式（减少日志输出）
-         */
-        public VisualBuilder silent(boolean silent) {
-            b.silent = silent;
-            return this;
-        }
-
-        /**
          * 执行视觉快照测试
          */
         public NativeSnapshotResult snapshot() {
@@ -421,7 +395,6 @@ public class PlaywrightSnapshotSupport {
                 DiffResult diffResult = calculateDiff(baselineBytes, currentScreenshot);
 
                 long duration = System.currentTimeMillis() - startTime;
-                b.durationMs = duration;
 
                 if (diffResult.passed) {
                     log("[NativeSnapshot] PASSED: " + b.baselineName + " (diff=" + diffResult.diffPixels + "px, " + diffResult.diffPercent + "%)");
@@ -435,7 +408,6 @@ public class PlaywrightSnapshotSupport {
                     return result;
                 } else {
                     log("[NativeSnapshot] FAILED: " + b.baselineName + " (diff=" + diffResult.diffPixels + "px, " + diffResult.diffPercent + "%)");
-                    b.failureScreenshot = currentScreenshot;
                     NativeSnapshotResult result = NativeSnapshotResult.visualFailed(
                             b.baselineName,
                             baselinePath,
@@ -523,22 +495,6 @@ public class PlaywrightSnapshotSupport {
          */
         public AriaBuilder updateBaseline(boolean update) {
             b.updateBaseline = update;
-            return this;
-        }
-
-        /**
-         * 使用正则表达式匹配
-         */
-        public AriaBuilder useRegex(boolean useRegex) {
-            b.useRegex = useRegex;
-            return this;
-        }
-
-        /**
-         * 静默模式
-         */
-        public AriaBuilder silent(boolean silent) {
-            b.silent = silent;
             return this;
         }
 

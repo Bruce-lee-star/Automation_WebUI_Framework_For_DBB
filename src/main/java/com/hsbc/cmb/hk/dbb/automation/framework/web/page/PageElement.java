@@ -50,16 +50,6 @@ public class PageElement {
     }
 
     /**
-     * 保留方法空实现，兼容 BasePage.initializeAnnotatedFields() 通过反射的调用。
-     * Locator 不再缓存，此方法无实际操作。
-     * @deprecated Locator 缓存已移除，此方法为兼容性存根，将在未来版本删除
-     */
-    @Deprecated
-    public void invalidateCache() {
-        // no-op: Locator caching removed
-    }
-
-    /**
      * 页面存活性保护 + Locator 重建。
      * 不再缓存 Locator——每次调用通过 {@code page.getPage()} 触发 ensurePageValid()，
      * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
@@ -295,34 +285,44 @@ public class PageElement {
         logger.warn("Element operation failed: {}", ex.getMessage());
     }
 
+    /**
+     * 判断异常是否值得重试。
+     * <p>仅 TimeoutError 类型的异常可能重试（原因：Playwright 的所有可交互性检查
+     * 超时后都以 TimeoutError 体现——元素被遮挡/动画中/DOM 分离等都是 TimeoutError）。
+     * <p>非 TimeoutError（如网络错误、协议错误等）绝不可能通过重试解决，直接失败。
+     */
     private boolean isRetriable(PlaywrightException e) {
-        // TimeoutError 已经在单独的 catch 块处理，这里不再判断
-        String m = e.getMessage().toLowerCase();
-        
-        // 只重试真正值得重试的异常（临时性问题，重试可能成功）
-        // 其他异常直接失败，避免浪费时间
-        
+        // 只有 TimeoutError 才可能是临时性问题（重试可能成功）
+        if (!(e instanceof TimeoutError)) {
+            return false;
+        }
+
+        String m = e.getMessage();
+        if (m == null) {
+            return true; // 消息为空时保守重试（TimeoutError 本身已限定范围）
+        }
+        m = m.toLowerCase();
+
         // 1. 元素被遮挡或拦截（等待后可能消失）
         if (m.contains("intercepted") || m.contains("obscured")) {
             return true;
         }
-        
+
         // 2. 元素暂时不可交互（可能在动画中）
         if (m.contains("not interactable") || m.contains("not clickable") || m.contains("not visible")) {
             return true;
         }
-        
+
         // 3. 元素从 DOM 分离（页面正在更新）
         if (m.contains("detached") || m.contains("not attached")) {
             return true;
         }
-        
-        // 以下情况不重试（重试也不会成功，浪费时间）：
-        // - element not found（元素不存在，重试没用）
-        // - navigation failed（导航失败，重试没用）
-        // - net::ERR_*（网络错误，重试没用）
-        // - TimeoutError（已在单独处理，默认不重试）
-        
+
+        // 以下 TimeoutError 不重试（重试也不会成功，浪费时间）：
+        // - "element not found" → 选择器错误，重试没用
+        // - "net::ERR_*" → 网络错误导致的 TimeoutError，重试没用
+        // - 其他无法识别的 TimeoutError → 保守不重试，避免无限等待
+
         return false;
     }
 
@@ -649,11 +649,21 @@ public class PageElement {
 
     public PageElement waitForClickable(int timeoutSec) {
         try {
+            // 1. 检查可见性——display:none 的元素即使 enabled 也无法点击
+            locator().waitFor(new Locator.WaitForOptions()
+                    .setState(WaitForSelectorState.VISIBLE)
+                    .setTimeout((long) timeoutSec * 1000));
+            // 2. 检查可交互性（enabled=true，不被 disabled 属性阻止）
             if (!locator().isEnabled(new Locator.IsEnabledOptions()
                     .setTimeout((double) timeoutSec * 1000))) {
                 throw new ElementOperationException("waitForClickable", selector, 
-                    "Element is not clickable (not enabled): " + selector, null);
+                    "Element is visible but not enabled: " + selector, null);
             }
+        } catch (TimeoutError e) {
+            throw new ElementOperationException("waitForClickable", selector, 
+                "Element is not clickable within " + timeoutSec + " seconds: " + selector, e);
+        } catch (ElementOperationException e) {
+            throw e;
         } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForClickable", selector, 
                 "Failed to check element state: " + selector, e);
@@ -900,9 +910,16 @@ public class PageElement {
         private final String childSelector;
 
         ChildPageElement(String parentSelector, String childSelector, BasePage page) {
-            super(parentSelector + " >> " + childSelector, page);
+            // 父类 selector 仅作为标识符使用，实际定位通过 locator() 的嵌套 Locator 实现
+            super("parent[" + parentSelector + "] >> child[" + childSelector + "]", page);
             this.parentSelector = parentSelector;
             this.childSelector = childSelector;
+        }
+
+        @Override
+        public String getSelector() {
+            // 返回描述性字符串，与 locator() 行为一致（Locator.locator() 嵌套定位）
+            return "parent[" + parentSelector + "] >> child[" + childSelector + "]";
         }
 
         @Override

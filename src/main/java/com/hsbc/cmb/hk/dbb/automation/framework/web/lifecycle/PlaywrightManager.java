@@ -21,7 +21,10 @@ import net.thucydides.model.util.EnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.*;
+import java.awt.Dimension;
+import java.awt.GraphicsConfiguration;
+import java.awt.GraphicsEnvironment;
+import java.awt.Rectangle;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -52,27 +55,33 @@ public class PlaywrightManager {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightManager.class);
 
-    // Playwright 浏览器缓存路径（项目根目录下的 .playwright 目录）
-    private static final String DEFAULT_PLAYWRIGHT_BROWSER_PATH = ".playwright/browser";
-    private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
-
-    // ==================== 静态变量 ====================
+    // ==================== 非 ThreadLocal 静态变量 ====================
     // 线程安全的实例存储
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
-    private static final ThreadLocal<BrowserContext> contextThreadLocal = new ThreadLocal<>();
-    private static final ThreadLocal<Page> pageThreadLocal = new ThreadLocal<>();
     // 线程安全的下载进程存储（使用 CopyOnWriteArrayList 保证多线程并发安全）
     private static final List<Process> downloadProcesses = new CopyOnWriteArrayList<>();
-    
+
     // 线程安全锁：保护共享资源（Browser 实例）
     private static final Object BROWSER_LOCK = new Object();
-    
+
     // Context/Page 细粒度锁：保护 Context 和 Page 创建/销毁
     private static final Object CONTEXT_LOCK = new Object();
     private static final Object PAGE_LOCK = new Object();
 
-    // ==================== 自定义 Context 选项（用户自定义优先于框架配置） ====================
+    // 框架状态引用
+    private static final FrameworkState frameworkState = FrameworkState.getInstance();
+
+    // ==================== ThreadLocal 变量（17个，集中管理） ====================
+
+    // ---- 核心 Page/Context ----
+    private static final ThreadLocal<BrowserContext> contextThreadLocal = new ThreadLocal<>();
+    private static final ThreadLocal<Page> pageThreadLocal = new ThreadLocal<>();
+
+    // ---- 配置标识 ----
+    private static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
+
+    // ---- 自定义 Context 选项（用户自定义优先于框架配置，13个） ----
     private static final ThreadLocal<Boolean> customContextOptionsFlag = new ThreadLocal<>();
     private static final ThreadLocal<Path> customStorageStatePath = new ThreadLocal<>();
     private static final ThreadLocal<String> customLocale = new ThreadLocal<>();
@@ -86,11 +95,7 @@ public class PlaywrightManager {
     private static final ThreadLocal<Integer> customDeviceScaleFactor = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportWidth = new ThreadLocal<>();
     private static final ThreadLocal<Integer> customViewportHeight = new ThreadLocal<>();
-    // 配置标识（线程安全）
-    private static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
-
-    // 框架状态引用
-    private static final FrameworkState frameworkState = FrameworkState.getInstance();
+    private static final ThreadLocal<Boolean> customProxyEnabled = new ThreadLocal<>();
 
     // ==================== 静态初始化块 ====================
 
@@ -818,27 +823,46 @@ public class PlaywrightManager {
     }
 
     /**
-     * 调度 Context 重建（延迟重建机制）
+     * 调度 Context 重建（立即生效机制）
      * <p>
-     * 当设置自定义配置时调用此方法，标记需要重建 Context
-     * 实际重建会在下次 getContext() 或 getPage() 时执行
-     * 这样可以支持多次设置自定义配置只触发一次Context重建
+     * 当设置自定义配置时调用此方法，立即关闭现有的 Page 和 Context
+     * 下次 getContext() 或 getPage() 时会使用新配置创建全新的 Context
+     * 多次连续 set 只会触发一次关闭（因为 Context 已不存在）
      */
-    private static void scheduleContextRebuild() {
-        // 清空现有的 Page，确保下次操作会触发重建
+    static void scheduleContextRebuild() {
+        // 先关闭 Page
         Page existingPage = pageThreadLocal.get();
         if (existingPage != null && !existingPage.isClosed()) {
             try {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Clearing existing page to force context rebuild");
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Closing existing page for context rebuild");
                 existingPage.close();
             } catch (Exception e) {
-                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to clear existing page: {}", e.getMessage());
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to close existing page: {}", e.getMessage());
             }
         }
         pageThreadLocal.remove();
-        
+
+        // 立即关闭 Context（如果有），确保新配置立即生效
+        BrowserContext existingContext = contextThreadLocal.get();
+        if (existingContext != null) {
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Closing existing context to apply new custom configurations...");
+
+            // 【Context 生命周期钩子】通知规则管理器 Context 即将重建
+            ContextLifecycleHookManager.onContextAboutToRebuild(existingContext);
+
+            try {
+                if (existingContext.browser() != null && existingContext.browser().isConnected()) {
+                    existingContext.close();
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to close existing context: {}", e.getMessage());
+            } finally {
+                contextThreadLocal.remove();
+            }
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
+        }
+
         // customContextOptionsFlag 已经在各个 setCustom*() 方法中被设置为 true
-        // 不需要在这里设置，因为调用此方法前已经设置过了
     }
 
 
@@ -1078,6 +1102,22 @@ public class PlaywrightManager {
     }
 
     /**
+     * 设置自定义代理启用开关（ThreadLocal 覆盖，优先于配置文件）
+     * 自定义配置优先于框架默认配置
+     * <p>
+     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
+     * 配置会在下一次创建 Context 时生效
+     *
+     * @param enabled 是否启用代理（true=启用，false=禁用）
+     */
+    public static void setCustomProxyEnabled(Boolean enabled) {
+        customProxyEnabled.set(enabled);
+        customContextOptionsFlag.set(true); // 自动启用自定义配置
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom proxyEnabled set: {} (custom context options auto-enabled)", enabled);
+        scheduleContextRebuild();
+    }
+
+    /**
      * 设置当前线程的 Page（用于 BasePage 切换页面后同步，不触发创建）。
      */
     public static void setPage(Page page) {
@@ -1144,7 +1184,7 @@ public class PlaywrightManager {
 
     /**
      * 统一清理所有 ThreadLocal 变量（防止线程复用时引用过期对象导致内存泄漏）
-     * 集中管理所有 16 个 ThreadLocal，避免遗漏
+     * 集中管理所有 ThreadLocal（见顶部 "ThreadLocal 变量" 统一声明区块），避免遗漏
      * <p>
      * ⭐ currentConfigId 不在此清除：Browser 整个测试生命周期只创建一次，
      * currentConfigId 标识 Browser 配置，必须持续存活直到 cleanupAll() 彻底清理。
@@ -1157,7 +1197,7 @@ public class PlaywrightManager {
             pageThreadLocal.remove();
             contextThreadLocal.remove();
         }
-        // 始终清理自定义配置 ThreadLocal（12 个）
+        // 始终清理自定义配置 ThreadLocal（13 个）
         customContextOptionsFlag.remove();
         customStorageStatePath.remove();
         customLocale.remove();
@@ -1171,6 +1211,7 @@ public class PlaywrightManager {
         customDeviceScaleFactor.remove();
         customViewportWidth.remove();
         customViewportHeight.remove();
+        customProxyEnabled.remove();
     }
 
     /**
@@ -2057,60 +2098,16 @@ public class PlaywrightManager {
 
 
     /**
-     * 截图并返回截图文件（用于页面变化检测）
+     * 截图并返回截图文件（用于页面变化检测等场景）。
+     * <p>委托 {@link #takeScreenshot(String)} 避免重复实现，
+     * 仅包装路径 → File 转换。
      */
     public static File takeScreenshotWithReturn(String title) {
-        try {
-            Page page = pageThreadLocal.get();
-            if (page == null || page.isClosed()) {
-                return null;
-            }
-
-            Path screenshotDir = Paths.get("target/site/serenity");
-            Files.createDirectories(screenshotDir);
-
-            // 唯一文件名：使用系统级唯一ID，不依赖人为命名
-            String uniqueId = getScenarioIdentifier();
-            String hashInput = title + "_" + uniqueId + "_" + System.currentTimeMillis();
-            String screenshotHash = generateHash(hashInput);
-            String screenshotName = screenshotHash + ".png";
-            Path screenshotPath = screenshotDir.resolve(screenshotName);
-
-            // 截图前稳定化（解决截图残留/底部重复问题）
-            stabilizeBeforeScreenshot(page);
-
-            int screenshotWaitTimeout = config().getScreenshotTimeout();
-            try {
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
-            } catch (Exception e) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
-            }
-
-            // 截图：全页模式使用 Playwright 原生 fullPage，自动滚动拼接
-            boolean fullPage = config().isFullPageScreenshot();
-            Page.ScreenshotOptions options = new Page.ScreenshotOptions()
-                    .setOmitBackground(false)
-                    .setTimeout((long) config().getScreenshotTimeout())
-                    .setAnimations(ScreenshotAnimations.DISABLED)
-                    .setPath(screenshotPath);
-
-            if (fullPage) {
-                // 全页截图：先滚到底部触发懒加载，等渲染完成后滚回顶部
-                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
-                page.waitForTimeout(300.0); // 等待懒加载内容渲染
-                page.evaluate("() => window.scrollTo(0, 0)");
-                options.setFullPage(true);
-            } else {
-                options.setFullPage(false);
-            }
-
-            page.screenshot(options);
-
-            return screenshotPath.toFile();
-        } catch (Exception e) {
-            logger.error("Failed to take screenshot", e);
+        String path = takeScreenshot(title);
+        if (path == null) {
             return null;
         }
+        return new File(path);
     }
 
     // ==================== 配置访问方法（封装层） ====================
@@ -2210,5 +2207,9 @@ public class PlaywrightManager {
 
     static Integer getCustomViewportHeight() {
         return customViewportHeight.get();
+    }
+
+    static Boolean getCustomProxyEnabled() {
+        return customProxyEnabled.get();
     }
 }

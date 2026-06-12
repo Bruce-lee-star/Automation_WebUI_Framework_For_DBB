@@ -53,9 +53,7 @@ public class CapturedApiCall {
      * @param responseHeaders 响应头
      * @param responseBody    响应体
      * @param timestamp       捕获时间戳
-     * @deprecated 推荐使用带 {@code requestUrl} 参数的构造器，以启用毫秒级 URL 精确检索
      */
-    @Deprecated
     public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp) {

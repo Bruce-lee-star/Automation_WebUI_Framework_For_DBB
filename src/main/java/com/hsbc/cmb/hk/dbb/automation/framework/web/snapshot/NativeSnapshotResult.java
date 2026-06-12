@@ -1,8 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.snapshot;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * Playwright 原生快照测试结果
  * <p>

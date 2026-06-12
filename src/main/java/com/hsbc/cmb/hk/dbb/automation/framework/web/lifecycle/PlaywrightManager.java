@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
@@ -391,11 +393,42 @@ public class PlaywrightManager {
         // 这样可以避免 Playwright 自动下载所有浏览器
         env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
         LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright instance created with browser download disabled (managed separately)");
-        
-        if (!env.isEmpty()) {
-            options.setEnv(env);
+
+        // ==================== BrowserStack 代理透传 ====================
+        // 公司网络环境下，域名解析和外网直连均被阻断
+        // 需要将 HTTPS_PROXY 注入 Playwright 底层 Node.js 子进程，
+        // 让 CDP WebSocket 连接通过公司 HTTP 代理建立 CONNECT 隧道
+        if (BrowserStackManager.isBrowserStackEnabled()) {
+            String proxyHost = FrameworkConfigManager.getString(
+                FrameworkConfig.BROWSERSTACK_PROXY_HOST);
+            String proxyPort = FrameworkConfigManager.getString(
+                FrameworkConfig.BROWSERSTACK_PROXY_PORT);
+            String proxyUser = FrameworkConfigManager.getString(
+                FrameworkConfig.BROWSERSTACK_PROXY_USERNAME);
+            String proxyPass = FrameworkConfigManager.getString(
+                FrameworkConfig.BROWSERSTACK_PROXY_PASSWORD);
+
+            if (proxyHost != null && !proxyHost.trim().isEmpty()
+                    && proxyPort != null && !proxyPort.trim().isEmpty()) {
+                String proxyUrl;
+                if (proxyUser != null && !proxyUser.trim().isEmpty()
+                        && proxyPass != null && !proxyPass.trim().isEmpty()) {
+                    proxyUrl = String.format("http://%s:%s@%s:%s",
+                            proxyUser, proxyPass, proxyHost, proxyPort);
+                } else {
+                    proxyUrl = String.format("http://%s:%s", proxyHost, proxyPort);
+                }
+                env.put("HTTPS_PROXY", proxyUrl);
+                env.put("HTTP_PROXY", proxyUrl);
+                env.put("NO_PROXY", "localhost,127.0.0.1,::1");
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "[BrowserStack Proxy] Injecting proxy for Playwright Node process: {}:{}",
+                        proxyHost, proxyPort);
+            }
         }
-        
+
+        options.setEnv(env);
+
         return options;
     }
 

@@ -329,6 +329,42 @@ public enum FrameworkConfig {
         "BrowserStack 视频录制"
     ),
 
+    /**
+     * BrowserStack 代理主机（公司网络环境必填）
+     */
+    BROWSERSTACK_PROXY_HOST(
+        "browserstack.proxy.host",
+        "",
+        "BrowserStack 代理主机地址"
+    ),
+
+    /**
+     * BrowserStack 代理端口（公司网络环境必填）
+     */
+    BROWSERSTACK_PROXY_PORT(
+        "browserstack.proxy.port",
+        "",
+        "BrowserStack 代理端口"
+    ),
+
+    /**
+     * BrowserStack 代理认证用户名（可选）
+     */
+    BROWSERSTACK_PROXY_USERNAME(
+        "browserstack.proxy.username",
+        "",
+        "BrowserStack 代理认证用户名"
+    ),
+
+    /**
+     * BrowserStack 代理认证密码（可选）
+     */
+    BROWSERSTACK_PROXY_PASSWORD(
+        "browserstack.proxy.password",
+        "",
+        "BrowserStack 代理认证密码"
+    ),
+
     // ==================== Playwright 窗口配置 ====================
 
     /**

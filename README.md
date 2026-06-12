@@ -19,6 +19,16 @@
 | **依赖注入** | Spring Context 6.1.6 |
 | **日志** | SLF4J + Logback Classic 1.5.6 |
 
+### 环境准备
+
+| 工具 | 版本 | 安装/配置说明 | 用途 |
+|------|------|--------------|------|
+| **JDK** | 21+ | 1. 下载 [OpenJDK 21](https://adoptium.net/download/) 或 [Oracle JDK 21](https://www.oracle.com/java/technologies/downloads/#java21)<br>2. 安装后设置环境变量 `JAVA_HOME=<安装路径>`<br>3. 将 `%JAVA_HOME%\bin` 加入 `PATH`<br>4. 验证：`java -version` | Java 21 编译运行环境，框架使用虚拟线程、Record 类等新特性 |
+| **Maven** | 3.9+ | 1. 下载 [Maven](https://maven.apache.org/download.cgi)<br>2. 解压后设置 `MAVEN_HOME=<解压路径>`<br>3. 将 `%MAVEN_HOME%\bin` 加入 `PATH`<br>4. 验证：`mvn -version` | 项目构建、依赖管理、测试执行（surefire/failsafe/serenity-maven-plugin） |
+| **Git** | 2.40+ | 1. 下载 [Git for Windows](https://git-scm.com/download/win) 或 `brew install git` (macOS)<br>2. 配置用户信息：`git config --global user.name "你的姓名"`<br>`git config --global user.email "你的邮箱"`<br>3. 验证：`git --version` | 版本控制、分支管理、协作开发 |
+| **GitHub** | — | 1. 在 [GitHub](https://github.com) 注册账号<br>2. 配置 SSH Key：`ssh-keygen -t rsa -b 4096 -C "你的邮箱"`<br>→ 将公钥 `~/.ssh/id_rsa.pub` 添加到 GitHub Settings → SSH and GPG keys<br>3. 验证：`ssh -T git@github.com` | 代码托管、Pull Request、CI/CD 集成（GitHub Actions / Jenkins） |
+| **Nexus** | — | 1. 联系团队管理员申请 Nexus 账号（获取用户名/密码）<br>2. 在 `~/.m2/settings.xml` 中配置 Nexus 仓库认证：<br>```xml<br><server><br>  <id>nexus-releases</id><br>  <username>your-username</username><br>  <password>your-password</password><br></server><br>```<br>3. 验证：`mvn compile`（看私有仓库依赖是否正常下载） | 私有 Maven 仓库，托管内部依赖和插件（如 HSBC 内部 jar） |
+
 ---
 
 ## Playwright 核心概念

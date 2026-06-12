@@ -23,7 +23,8 @@
   - [4.11 RouteAsyncPool — 异步任务池](#411-routeasyncpool--异步任务池)
   - [4.12 RouteException — 异常体系](#412-routeexception--异常体系)
   - [4.13 SerenityReporter — 报告工具](#413-serenityreporter--报告工具)
-  - [4.14 RouteUtil — 请求条件匹配工具](#414-routeutil--请求条件匹配工具)
+  - [4.14 MonitorCallback — 响应回调接口](#414-monitorcallback--响应回调接口)
+  - [4.15 RouteUtil — 请求条件匹配工具](#415-routeutil--请求条件匹配工具)
 - [五、DSL 使用示例](#五dsl-使用示例)
 - [六、完整 API 参考](#六完整-api-参考)
 - [七、架构优势与设计亮点](#七架构优势与设计亮点)
@@ -43,7 +44,8 @@ route/
 │   ├── RouteException.java            # 异常体系（配置异常 / 运行时异常 / 断言异常）
 │   ├── ApiCaptureContext.java         # API 捕获上下文（线程隔离 + 双重上限存储 + 统一捕获 Monitor/Mock/Modify 调用）
 │   ├── CapturedApiCall.java           # 捕获的 API 调用快照（URL、方法、请求头、响应头、状态码、响应体、时间戳）
-│   └── RouteMonitor.java              # 捕获入口门面（测试代码唯一入口）
+│   ├── RouteMonitor.java              # 捕获入口门面（测试代码唯一入口）
+│   └── MonitorCallback.java           # Monitor 响应回调接口（断言通过后异步触发）
 ├── dsl/
 │   └── RouteDsl.java                  # 流式 DSL 构建器（外部调用唯一入口）
 ├── handler/                           ← 具体处理器
@@ -57,7 +59,7 @@ route/
     └── RouteUtil.java                 # 请求条件匹配工具（ResourceType/Header/Query/Body 等）
 ```
 
-**共 4 个子包，16 个类文件。**
+**共 4 个子包，18 个类文件。**
 
 ---
 
@@ -323,7 +325,7 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 
 ### 4.3 RouteRule — 路由规则模型
 
-**职责**：统一承载 MONITOR / MODIFY / MOCK 三种类型的配置数据，内置参数校验。
+**职责**：统一承载 MONITOR / MODIFY / MOCK / DELAY 四种类型的配置数据，内置参数校验。
 
 **配置字段一览**：
 
@@ -334,7 +336,8 @@ Page 被外部释放 → ContextKey.ref.get() 返回 null
 | **Mock** | `mockBody` | String | null | 响应体内容 |
 | | `mockStatus` | int | 200 | HTTP 状态码 |
 | | `mockHeaders` | Map | null | 响应头 |
-| | `mockReplaceFields` | Map\<String,String\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符） |
+| | `mockReplaceFields` | Map\<String,Object\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符，value 支持 String/Number/Boolean/null） |
+| | `interceptRealResponse` | boolean | false | 是否拦截真实 API 响应（true=先用 route.fetch() 获取真实响应，再应用替换字段后 fulfill） |
 | **Modify** | `requestHeadersToSet` | Map | null | 设置/新增的请求头（覆盖已有同名头） |
 | | `requestHeadersToRemove` | Set | null | 需删除的请求头名称 |
 | | `requestBodyFieldsToModify` | Map\<String,String\> | null | 修改已有字段（JSONPath → 值，LinkedHashMap 有序） |
@@ -408,9 +411,11 @@ RouteDsl.on(browserContext)  // Context 级别
 .autoStopOnMatch(boolean)   // 达标后自动停止（默认 true）
 .expectStatus(int)          // 断言 HTTP 状态码
 .expectJsonPath(path, val)  // 断言 JSONPath 字段值
+.onResponse(callback)       // 注册响应回调（断言通过后异步触发）
 
 // ── Modify 配置 ──
 .setRequestHeader(key, val) // 添加/覆盖请求头
+.setRequestHeaders(map)     // 批量设置请求头
 .removeRequestHeader(key)    // 删除请求头
 .modifyRequestBody(path, v) // JSONPath 精准替换请求体字段
 .addRequestBodyField(p, v)  // 新增请求体字段
@@ -422,12 +427,19 @@ RouteDsl.on(browserContext)  // Context 级别
 .mockStatus(status)         // 设置 HTTP 状态码
 .mockHeader(key, value)     // 设置响应头
 .mockReplaceField(path, val) // 批量替换 Mock JSON body 字段（支持 [*] 通配符 + 类型保持）
+.interceptResponse()        // 切换为拦截真实响应模式 → 返回 InterceptMockDsl
+
+// ── 拦截真实响应 Mock 配置（interceptResponse() 后可用）──
+.mockReplaceField(path, val) // 替换真实响应 JSON body 字段（支持 String/Number/Boolean/null）
+.mockHeader(key, value)      // 追加响应头（合并到真实响应头之上）
+.mockStatus(status)          // 覆盖响应状态码
 
 // ── 请求条件匹配 ──
 .matchMethod(method)        // HTTP 方法过滤（GET/POST/...）
 .resourceType(types)        // 资源类型过滤（逗号分隔）
 .onlyXhr()                  // 仅匹配 XHR 请求
 .onlyFetch()                // 仅匹配 Fetch 请求
+.onlyApi()                  // 仅匹配 API 调用（xhr + fetch）
 .matchHeader(key, value)    // 请求头精确匹配
 .matchQuery(key, value)     // Query 参数精确匹配
 .matchBodyRegex(regex)      // 请求体正则匹配
@@ -444,6 +456,7 @@ RouteDsl.on(browserContext)  // Context 级别
 .done()                     // 完成当前规则 → 返回 RouteDsl（可继续链式）
 .start()                    // 启动路由注册
 .clear()                    // 注销所有 pattern + 清理上下文
+RouteDsl.clearAllRules()    // 静态方法：全局清理所有上下文的所有路由规则
 ```
 
 ---
@@ -559,6 +572,29 @@ users[0].name              → { "users": [{ "name": "newValue" }] }
 ```
 
 **配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）。
+
+**两种工作模式**：
+
+| 模式 | 触发方式 | 行为 | 适用场景 |
+|------|----------|------|----------|
+| **纯 Mock**（默认） | `.mock().mockBody(...)` | 直接返回 mockBody 设置的自定义响应，不访问真实服务器 | 完全隔离后端依赖的测试 |
+| **拦截真实响应** | `.mock().interceptResponse()` | 通过 `route.fetch()` 先获取真实服务器响应，再应用 `mockReplaceField()` 字段替换后 fulfill 返回 | 需要真实响应结构、仅替换部分字段的场景 |
+
+**处理流程（拦截真实响应 — `interceptRealResponse=true`）**：
+```
+1. route.fetch() — 真实发送请求到服务器，获取完整 APIResponse
+         ↓
+2. 合并响应头（真实响应头 + 用户自定义 mockHeaders）
+         ↓
+3. 应用 mockReplaceFields 字段替换（对真实响应体执行通配符批量替换）
+    — 替换失败不回退，使用原始真实响应体
+         ↓
+4. route.fulfill() 返回修改后的响应给前端
+         ↓
+5. 存入 ApiCaptureContext
+```
+
+**配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）、`interceptRealResponse`（是否拦截真实响应，默认 false）。
 
 > **注意**：Mock 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取完整的 Mock 请求快照。
 
@@ -744,7 +780,43 @@ RouteException (extends RuntimeException)
 - `StepEventBus.getBaseStepListener()` 非空检查，无 Serenity 监听器时静默跳过
 - 异常静默捕获（不影响主流程）
 
-### 4.14 RouteUtil — 请求条件匹配工具
+### 4.14 MonitorCallback — 响应回调接口
+
+**职责**：`@FunctionalInterface`，供 Monitor 在断言通过后异步触发自定义回调逻辑。不阻塞 Playwright 事件线程。
+
+**接口签名**：
+
+```java
+@FunctionalInterface
+public interface MonitorCallback {
+    void onResponse(String url, int status, String body,
+                    Map<String, String> responseHeaders, String method);
+}
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `url` | String | 请求 URL |
+| `status` | int | HTTP 状态码 |
+| `body` | String | 响应体字符串 |
+| `responseHeaders` | Map\<String, String\> | 响应头快照（不可变副本，key 为小写） |
+| `method` | String | 请求方法（GET/POST/PUT/DELETE...） |
+
+**特性**：
+- **异步执行**：回调在 `RouteAsyncPool` 异步线程中执行，不阻塞 Playwright 事件线程
+- **断言优先**：仅当所有断言（状态码/JSONPath）通过后才触发回调
+- **异常隔离**：每个回调独立 try-catch，单个回调失败不影响其他回调或测试流程
+- **大小写不敏感 Header 查找**：提供静态工具方法 `MonitorCallback.headerValue(headers, name)`，屏蔽 Playwright 将 header 名统一小写化的差异
+
+```java
+// 使用示例
+.onResponse((url, status, body, headers, method) -> {
+    String ct = MonitorCallback.headerValue(headers, "Content-Type");
+    System.out.println("Captured: " + url + " → " + status);
+})
+```
+
+### 4.15 RouteUtil — 请求条件匹配工具
 
 **职责**：根据 Playwright `Request` 对象判断是否匹配 `RouteRule` 中定义的请求条件。
 

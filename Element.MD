@@ -1,6 +1,6 @@
-# WebUI 自动化框架 — 元素定位方法手册（详细版 v3.0）
+# WebUI 自动化框架 — 元素定位方法手册（详细版 v3.2）
 
-> **最后更新：** 2026-06-04
+> **最后更新：** 2026-06-12
 > **覆盖范围：** `@Element` 注解 / PageElement / PageElementList / BasePage / SerenityBasePage 全部定位相关 API
 
 ---
@@ -25,8 +25,8 @@
   - [6.2 内置语义定位器](#62-内置语义定位器)
   - [6.3 条件等待引擎](#63-条件等待引擎)
   - [6.4 元素状态等待](#64-元素状态等待)
-  - [6.5 属性/文本/数量等待](#65属性文本数量等待)
-  - [6.6 URL/标题/页面加载等待](#66url标题页面加载等待)
+  - [6.5 数量等待](#65-数量等待)
+  - [6.6 URL / 页面加载等待](#66-url--页面加载等待)
   - [6.7 操作委托方法](#67-操作委托方法)
 - [七、SerenityBasePage 增强层](#七serenitybasepage-增强层)
 - [八、完整速查表](#八完整速查表)
@@ -43,9 +43,9 @@ BasePage (abstract)                          ← 所有页面的基类
   │     └── 你的 Page 类 (extends SerenityBasePage)
   │
   └── 使用:
-      ├── PageElement                        ← 单个元素封装
-      │     ├── ChildPageElement (内部)       ← Locator.locator() 链式嵌套定位
-      │     └── PageElementWithIndex (内部)   ← 带 index 的缓存定位器
+  ├── PageElement                        ← 单个元素封装
+  │     ├── ChildPageElement (内部)       ← Locator.locator() 链式嵌套定位
+  │     └── PageElementWithIndex (内部)   ← 带 index 的动态定位器
       │
       └── PageElementList extends AbstractList<PageElement>
             └── 内部使用 PageElementWithIndex
@@ -58,7 +58,7 @@ ElementDiagnosticsCollector ← 失败诊断信息收集器（批量 JS 单次 I
 ```
 
 **设计原则：**
-- **@Element 声明 + 自动注入**：无需手动 new，构造函数中自动扫描并初始化；页面切换时仅刷新 Locator 缓存（不重建对象）
+- **@Element 声明 + 自动注入**：无需手动 new，构造函数中自动扫描并初始化；页面切换时复用注解字段对象，Locator 不再缓存——每次 `locator()` 调用动态绑定新 Page 实例
 - **链式调用**：所有 PageElement 操作返回 this，支持 `.click().type("x").press("Enter")`
 - **企业级重试**：`executeWithRetry` 自动诊断 DOM 状态 + 失败截图；`executeSafely` 模板统一读取操作异常转换
 - **文本标准化**：`TextNormalizer` 统一管道（NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim），BasePage/PageElement 共享
@@ -142,6 +142,9 @@ public class LoginPage extends SerenityBasePage {
    b. 如果类型是 PageElement → new PageElement(selector, this)
    c. 如果类型是 PageElementList → new PageElementList(selector, this)
 4. 通过反射设置字段值
+
+首次调用：创建 PageElement/PageElementList 对象并注入字段。
+后续调用（页面切换/iframe 切换）：复用已有对象，Locator 由 locator() 动态绑定新 Page 实例。
 ```
 
 ---
@@ -220,7 +223,7 @@ public class LoginPage extends SerenityBasePage {
 ### 4.1 定位器
 
 ```java
-// 获取 Playwright Locator 对象（自动 waitForDOMContentLoaded）
+// 获取 Playwright Locator 对象（动态绑定——每次调用通过 page.getPage() 触发 ensurePageValid()）
 Locator loc = element.locator();
 
 // 相对定位（子元素）
@@ -229,6 +232,8 @@ Locator subLoc = element.locator(".child-class");
 // 获取原始 CSS 选择器字符串
 String sel = element.getSelector();
 ```
+
+> **Locator 不再缓存。** 每次调用 `locator()` 都会通过 `page.getPage()` 触发 `ensurePageValid()`，确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
 
 ### 4.2 点击操作
 
@@ -377,7 +382,7 @@ element.waitForNotChecked()           // 等待未选中
 
 ```java
 // 滚动到可视区
-element.scrollToView();
+element.scrollIntoView();
 
 // 悬停 / 聚焦
 element.hover();
@@ -438,7 +443,7 @@ int count = menuItems.size(10);          // 自定义超时
 boolean empty = menuItems.isEmpty();
 boolean hasElements = menuItems.hasElements();
 
-// 获取单个元素（带缓存定位器）
+// 获取单个元素（动态定位）
 PageElement first = menuItems.first();    // get(0)，空抛异常
 PageElement last = menuItems.last();
 PageElement item = menuItems.get(2);       // 第 3 个（索引从 0 开始）
@@ -463,7 +468,7 @@ List<Locator> allLocs = menuItems.allLocators();
 ```
 
 **性能说明：**
-- `get(index)` 内部使用 `PageElementWithIndex` 缓存定位器，避免重复解析
+- `get(index)` 内部使用 `PageElementWithIndex`，通过 `super.locator().nth(index)` 动态定位，无需缓存
 - `size()` 默认使用配置的超时时间
 - `iterator()` 返回快照迭代器（非实时视图）
 
@@ -528,12 +533,11 @@ performActionWithTimeout(
 ### 6.4 元素状态等待（基于 Selector 字符串）
 
 ```java
-// ★★★ 四大核心等待 ★★★
-waitForElementVisibleWithinTime("#loading", 10);      // 等待可见
-waitForElementHiddenWithinTime("#loading", 30);       // 等待隐藏
-waitForElementExists("#dialog", 10);                  // 等待 DOM 存在
-waitForElementNotExists("#spinner", 10);              // 等待 DOM 消失
-waitForElementClickableWithinTime("#btn-submit", 10); // 等待可点击
+// ★★★ 核心等待（委托 PageElement，内置完整等待+超时机制，无需外层 retry） ★★★
+waitForVisible("#loading", 10);         // 等待可见
+waitForHidden("#loading", 30);          // 等待隐藏
+waitForElementExists("#dialog", 10);    // 等待 DOM 存在
+waitForElementNotExists("#spinner", 10);// 等待 DOM 消失
 
 // 扩展等待
 waitForElementEditable("#input-field", 10);
@@ -543,37 +547,25 @@ waitForElementChecked("#checkbox", 10);
 waitForElementNotChecked("#checkbox", 10);
 ```
 
-### 6.5 属性 / 文本 / 数量等待
+### 6.5 数量等待
 
 ```java
-// 属性等待
-waitForElementAttributeEquals("#link", "href", "/home", 10);
-waitForElementAttributeContains("#link", "href", "api", 10);
-
-// 文本等待（已归一化比较）
-waitForElementTextEquals("#status", "成功", 10);
-waitForElementTextContains("#msg", "错误", 10);
-
 // 数量等待
 waitForElementCount(".list-item", 5, 10);           // 精确等于 5 个
 waitForElementCountAtLeast(".list-item", 3, 10);    // 至少 3 个
 ```
 
-### 6.6 URL / 标题 / 页面加载等待
+### 6.6 URL / 页面加载等待
 
 ```java
 // URL
-waitForUrlContainsWithinTime("dashboard", 10);
 waitForUrlEquals("https://host/page", 10);
 waitForUrlStartsWith("https://host/", 10);
 
-// 标题
-waitForTitleContainsWithinTime("首页", 10);
-
 // 页面加载状态
 waitForNetworkIdle(30);            // 等待网络空闲（无超过 500ms 的请求）
-waitForPageFullyLoaded(30);        // 等待页面完全加载
-waitForDOMContentLoaded(10);        // 等待 DOM 解析完成（最快）
+waitForPageFullyLoaded(30);        // 等待页面完全加载（LoadState.LOAD）
+waitForDOMContentLoaded(10);       // 等待 DOM 解析完成（最快）
 ```
 
 ### 6.7 操作委托方法
@@ -624,9 +616,10 @@ forward();
 
 // ====== 多页面 ======
 switchToPage(1);
-switchToLatestPage();
-closeCurrentPageAndSwitchBack();
-resetToMainPage();                      // 关闭多余页面，保留主页
+switchToPage(-1);                      // 切换到最后一个页面
+switchToNewPage(() -> click("#link"), 15); // 触发操作并等待新页面
+closeCurrentPage();                    // 关闭当前页面并自动切换
+closeOtherPages();                     // 关闭除当前外的其他页面
 
 // ====== 滚动 ======
 scrollToElementCenter("#target");
@@ -774,49 +767,78 @@ public class LoginPage extends SerenityBasePage {
 | `clear()` | PageElement | 清空 |
 | `selectByValue(val)` | PageElement | 下拉选 value |
 | `selectByIndex(i)` | PageElement | 下拉选索引 |
-| `selectByText(t)` | PageElement | 下拉选文本 |
+| `selectByVisibleText(t)` | PageElement | 下拉选文本 |
 | `press(key)` | PageElement | 键盘按键 |
 | `getText()` | String | 标准化文本（TextNormalizer） |
 | `getTextRaw()` | String | 原始文本（跳过标准化管道，性能优化） |
+| `getInnerHtml()` | String | HTML 内容 |
 | `getAttribute(attr)` | String | 属性值 |
 | `getValue()` | String | inputValue |
 | `isVisible([t])` | boolean | 是否可见 |
+| `isNotVisible([t])` | boolean | 是否不可见 |
 | `exists([t])` | boolean | 是否存在 |
 | `isEnabled([t])` | boolean | 是否启用 |
+| `isDisabled([t])` | boolean | 是否禁用 |
+| `isEditable([t])` | boolean | 是否可编辑 |
 | `isChecked([t])` | boolean | 是否选中 |
 | `waitForVisible([t])` | PageElement | 等可见 |
+| `waitForNotVisible([t])` | PageElement | 等不可见 |
 | `waitForClickable([t])` | PageElement | 等可点击 |
 | `waitForExists([t])` | PageElement | 等存在 |
 | `waitForNotExists([t])` | PageElement | 等消失 |
+| `waitForEditable([t])` | PageElement | 等可编辑 |
+| `waitForEnabled([t])` | PageElement | 等启用 |
+| `waitForDisabled([t])` | PageElement | 等禁用 |
+| `waitForChecked([t])` | PageElement | 等选中 |
+| `waitForNotChecked([t])` | PageElement | 等未选中 |
 | `hover()` | PageElement | 悬停 |
 | `focus()` | PageElement | 聚焦 |
 | `check/uncheck()` | PageElement | 勾选/取消 |
-| `scrollToView()` | PageElement | 滚动到视口 |
+| `scrollIntoView()` | PageElement | 滚动到视口 |
 | `screenshot()` | byte[] | 截图 |
+| `dragTo(target)` | PageElement | 拖拽 |
+| `uploadFile(paths...)` | PageElement | 文件上传 |
+| `dispatchEvent(event)` | PageElement | 触发事件 |
 | `count()` | int | 匹配数量 |
+| `child(sel)` | PageElement | 子元素定位 |
+| `clearAndSetValue(t)` | PageElement | 清空+填充 |
+| `clearAndTypeSequentially(t)` | PageElement | 清空+逐字输入 |
+| `selectText()` | PageElement | 选中文本 |
 
 ### BasePage 速查
 
 | 方法 | 说明 |
 |------|------|
-| `locator(sel)` | 核心：创建 Locator |
+| `locator(sel)` | 核心：创建 Locator（自动适配 iframe） |
+| `element(sel)` | 核心：创建 PageElement（推荐链式调用） |
 | `byAltText/byRole/byTitle/byTestId` | 语义定位器 |
-| `waitForElementVisibleWithinTime(sel, t)` | 等可见 |
-| `waitForElementHiddenWithinTime(sel, t)` | 等隐藏 |
+| `waitForVisible(sel, t)` | 等可见 |
+| `waitForHidden(sel, t)` | 等隐藏 |
 | `waitForElementExists(sel, t)` | 等 DOM 存在 |
 | `waitForElementNotExists(sel, t)` | 等 DOM 消失 |
-| `waitForElementClickableWithinTime(sel, t)` | 等可点击 |
-| `waitForElementCount(sel, expected, t)` | 等精确数量 |
-| `waitForUrlContainsWithinTime(kw, t)` | 等 URL 包含 |
-| `waitForTitleContainsWithinTime(kw, t)` | 等标题包含 |
+| `waitForElementCount(sel, n, t)` | 等精确数量 |
+| `waitForElementCountAtLeast(sel, n, t)` | 等至少 N 个 |
+| `waitForUrlEquals(url, t)` | 等 URL 等于 |
+| `waitForUrlStartsWith(prefix, t)` | 等 URL 开头 |
 | `waitForNetworkIdle(t)` | 等网络空闲 |
 | `waitForPageFullyLoaded(t)` | 等页面完全加载 |
-| `getElementCount(sel)` | 匹配元素数量 |
+| `waitForDOMContentLoaded(t)` | 等 DOM 解析完成 |
+| `shouldBeVisible(sel)` | 断言可见（不可见抛异常） |
+| `shouldBeNotVisible(sel)` | 断言隐藏 |
+| `click/type/clear/getText` | 操作委托（委托 PageElement 执行） |
 | `navigateTo(url)` | 导航 |
 | `getCurrentUrl/getTitle` | 获取 URL/标题 |
 | `executeJavaScript(script, args...)` | 执行 JS |
-| `switchToPage(i)` | 切换页面标签 |
+| `switchToPage(index)` | 按索引切换页面（支持负数） |
+| `switchToPage(page)` | 切换到指定 Page 实例 |
+| `switchToNewPage(trigger, t)` | 触发操作并等待新页面 |
+| `closeCurrentPage()` | 关闭当前页面 |
+| `closeOtherPages()` | 关闭除当前外的其他页面 |
+| `switchToFrame(nameOrSelector)` | 切换 iframe（name/id/CSS） |
+| `switchToFrame(index)` | 按索引切换 iframe |
+| `switchToDefaultContent()` | 退出 iframe |
 | `retry(action, desc)` | 重试 |
-| `pause()` | 安全暂停（CI跳过） |
+| `retryWithValidation(op, valid, n, desc)` | 重试 + 验证 |
+| `pause()` | 安全暂停（CI 跳过） |
 
 ---

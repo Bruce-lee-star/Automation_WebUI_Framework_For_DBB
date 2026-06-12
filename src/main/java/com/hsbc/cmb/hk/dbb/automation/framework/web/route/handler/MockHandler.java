@@ -16,15 +16,20 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Mock 响应 Handler — 拦截请求，直接返回自定义响应。
+ * Mock 响应 Handler。
  *
- * <p>核心改进：
+ * <p>两种工作模式：
  * <ul>
- *   <li>mockBody 为 null 时设置为默认空字符串 ""，避免 Playwright 空指针</li>
+ *   <li><b>纯 Mock</b>（默认）：直接返回 mockBody 设置的自定义响应，不访问真实服务器</li>
+ *   <li><b>拦截真实响应</b>（interceptRealResponse=true）：先 route.fetch() 获取真实响应，
+ *       再应用 mockReplaceField 字段替换后 fulfill 给前端</li>
+ * </ul>
+ *
+ * <p>安全设计：
+ * <ul>
+ *   <li>mockBody 为 null 时设为默认空字符串 ""，避免 Playwright 空指针</li>
  *   <li>mockStatus 合法性校验（100 ≤ status &lt; 600），非法时 fallback 到 200</li>
- *   <li>route.fulfill() 包裹 try-catch，避免单请求失败导致整个路由崩溃</li>
- *   <li><b>批量字段替换</b>：支持通过 {@code mockReplaceField()} 对 Mock JSON body
- *       进行通配符批量替换（如 {@code $[*].name}、{@code $.users[*].orders[*].price}）</li>
+ *   <li>route.fulfill() 包裹 try-catch，失败时 resume 兜底，避免请求永久挂起</li>
  * </ul>
  */
 public class MockHandler {
@@ -53,46 +58,17 @@ public class MockHandler {
             status = 200;
         }
 
-        // ── 2. 响应体处理 ──────────────────────────────────────────
-        //    优先级：mockBody 模板 + replaceFields 替换  >  纯 replaceFields 构建  >  空 body
+        // ── 2. 响应体处理 — 纯 Mock 模式直接用 mockBody ───────────
         String body = rule.getMockBody();
-        Map<String, Object> replaceFields = rule.getMockReplaceFields();
-        boolean hasReplaceFields = replaceFields != null && !replaceFields.isEmpty();
-        boolean bodyFromFields = false;  // 标记 body 是否由 replaceFields 构建（非模板）
-
-        if (body == null || body.isEmpty()) {
-            if (hasReplaceFields) {
-                // 场景：只设了 mockReplaceField，没有设 mockBody → 直接从字段构建响应体
-                body = ModifyHandler.buildJsonFromFieldMap(replaceFields);
-                bodyFromFields = true;
-                LOGGER.debug("[MockHandler] mockBody not set, body constructed from {} replace field(s): {}",
-                        replaceFields.size(), body);
-            } else {
-                body = "";
-                LOGGER.debug("[MockHandler] mockBody is null for pattern '{}', using empty string",
-                        rule.getUrlPattern());
-            }
+        if (body == null) {
+            body = "";
+            LOGGER.debug("[MockHandler] mockBody is null for pattern '{}', using empty string",
+                    rule.getUrlPattern());
         }
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[MockHandler] Body prepared: pattern='{}', bodyLen={}, hasReplaceFields={}, fromFields={}",
-                rule.getUrlPattern(), body.length(), hasReplaceFields, bodyFromFields);
-
-        // ── 3. 批量字段替换（仅当 body 来自 mockBody 模板时对模板做替换）──
-        //    bodyFromFields=true 时 body 已是最终结果，无需再做替换
-        if (hasReplaceFields && !body.isEmpty() && !bodyFromFields) {
-            try {
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[MockHandler] Applying {} replace field(s) to template: {}",
-                        replaceFields.size(), replaceFields.keySet());
-                body = ModifyHandler.replaceBatchByWildcard(body, replaceFields);
-                LOGGER.debug("[MockHandler] Applied {} mock replace fields for pattern '{}'",
-                        replaceFields.size(), rule.getUrlPattern());
-            } catch (Exception e) {
-                LOGGER.warn("[MockHandler] Failed to apply mock replace fields for pattern '{}': {}",
-                        rule.getUrlPattern(), e.getMessage());
-            }
-        }
+                "[MockHandler] Body prepared: pattern='{}', bodyLen={}",
+                rule.getUrlPattern(), body.length());
 
         // ── 4. 构建响应选项 ───────────────────────────────────────
         Route.FulfillOptions opts = new Route.FulfillOptions()
@@ -134,15 +110,10 @@ public class MockHandler {
                         url    // 实际请求 URL，用于毫秒级精确检索
                 );
                 ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
-                if (ctx != null) {
-                    ctx.storeApiCall(call);
-                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                            "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                            rule.getUrlPattern(), method, status);
-                } else {
-                    LOGGER.debug("[MockHandler] ApiCaptureContext is null, skipped store for pattern '{}'",
-                            rule.getUrlPattern());
-                }
+                ctx.storeApiCall(call);
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                        rule.getUrlPattern(), method, status);
             } catch (Exception e) {
                 LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
             }
@@ -260,12 +231,10 @@ public class MockHandler {
                     url
             );
             ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
-            if (ctx != null) {
-                ctx.storeApiCall(call);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[MockHandler] Stored intercepted call to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                        rule.getUrlPattern(), method, status);
-            }
+            ctx.storeApiCall(call);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MockHandler] Stored intercepted call to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                    rule.getUrlPattern(), method, status);
         } catch (Exception e) {
             LOGGER.debug("[MockHandler] Failed to store intercepted call to ApiCaptureContext: {}", e.getMessage());
         }

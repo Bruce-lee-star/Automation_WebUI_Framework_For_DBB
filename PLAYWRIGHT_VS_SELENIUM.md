@@ -33,184 +33,152 @@
 
 ### 2.1 整体架构
 
+Playwright 的架构可以理解成三层。最上层是你写的测试代码，中间是 Playwright 自带的驱动进程，最下层是真正的浏览器。
+
+它和 Selenium 最大的架构区别在两点：一是它自带浏览器内核——Chromium、Firefox、WebKit 都内置在安装包里，不需要单独装浏览器驱动；二是它多了一个 Context 的概念，Context 是浏览器的独立会话单元，每个 Context 有自己的 Cookie、LocalStorage 和 Session，互相隔离。同一个浏览器进程里可以开多个 Context，这意味着模拟多个用户同时登录时，不需要像 Selenium 那样启动多个浏览器实例。
+
+简单记：一个 Browser → 多个 Context → 每个 Context 下有多个 Page（标签页）。
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Playwright Client                        │
+│                   你的测试代码（Java/Python/JS...）               │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │                    Driver (浏览器可执行文件)               │    │
+│  │                 Driver（Playwright 自带的驱动进程）        │    │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │    │
 │  │  │ Chromium    │  │ Firefox     │  │ WebKit      │      │    │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘      │    │
 │  └─────────────────────────────────────────────────────────┘    │
-│                              ↕ CDP / Firefox Driver / WebKit    │
+│                              ↕ WebSocket 长连接                  │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │                   Browser Instance (进程)                 │    │
+│  │                  浏览器进程                               │    │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │    │
-│  │  │   Browser   │  │  Page(s)    │  │   Context   │      │    │
-│  │  │  (主进程)   │  │ (Tab 页面)  │  │ (隔离会话)  │      │    │
+│  │  │   浏览器    │  │   标签页    │  │  隔离会话   │      │    │
+│  │  │  (主进程)   │  │  (N个Page)  │  │  (N个Context)│      │    │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘      │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**核心组件：**
-
-| 组件 | 作用 |
+| 组件 | 职责 |
 |------|------|
-| **Client (API Layer)** | Java/Python/JS 等语言编写的客户端库，提供高层 API |
-| **Driver** | 原生可执行文件，负责启动浏览器进程、建立通信 |
-| **Browser** | Chromium/Firefox/WebKit 浏览器实例 |
-| **Context** | 浏览器上下文，隔离 cookies/storage，多 Context 共享进程 |
-| **Page** | 浏览器 Tab 页面，一个 Context 可有多个 Page |
+| **Client** | 测试代码，调用 `page.click()` 等 API |
+| **Driver** | 可执行程序，负责启动浏览器、建立通信。一套 Driver 兼容 Chromium / Firefox / WebKit |
+| **Browser** | Chromium / Firefox / WebKit 实例 |
+| **Context** | 独立会话单元，Cookie / LocalStorage / Session 完全隔离，同一进程可并存多个 |
+| **Page** | 浏览器标签页，一个 Context 下可开多个 |
 
-### 2.2 通信协议：Chrome DevTools Protocol (CDP)
+---
 
-Playwright 与 Chromium 系列浏览器的核心通信基于 **CDP (Chrome DevTools Protocol)**：
+### 2.2 通信方式：CDP 直连 vs WebDriver 中转
+
+Selenium 和 Playwright 跟浏览器说话的方式完全不同。
+
+Selenium 走的是 WebDriver 协议，简单说就是中间多了一层翻译——你的代码发指令给 WebDriver 服务，WebDriver 再转发给浏览器，浏览器执行完再原路返回。而且每次交互都是 HTTP 请求-响应，一问一答。
+
+Playwright 用的是 CDP——Chrome DevTools Protocol。这个协议就是 Chrome F12 开发者工具和浏览器之间聊天用的那套东西。Playwright 直接走这个协议跟浏览器通信，没有中间层，而且是 WebSocket 长连接，一直连着不断开。
+
+这样做有三个好处。第一，速度快——因为绕过了 WebDriver 那一层协议转换。第二，能力强——开发者工具能干的事它都能干，比如网络拦截、Service Worker 控制、性能追踪。第三，实时——长连接意味着浏览器那边发生的事能立刻推过来，不需要反复轮询。
+
+举一个具体例子：当你写 `page.click("#button")`，Playwright 内部实际发送的是 CDP 的 `Input.dispatchMouseEvent` 命令，直接告诉浏览器在哪个坐标按下鼠标。
 
 ```java
-// Playwright 内部通过 CDP 发送命令
-// 例如：page.click("#button") 实际发送的 CDP 命令：
 {
   "id": 12,
   "method": "Input.dispatchMouseEvent",
   "params": {
     "type": "mousePressed",
-    "x": 100,
-    "y": 200,
+    "x": 100, "y": 200,
     "button": "left",
     "clickCount": 1
   }
 }
 ```
 
-**CDP 优势：**
-- **直接通信**：绕过 WebDriver 协议，无中间层
-- **功能丰富**：支持网络拦截、Service Worker、性能追踪等
-- **实时性强**：WebSocket 持久连接，事件实时推送
+---
 
-### 2.3 Playwright 路由机制原理
+### 2.3 网络拦截原理（路由机制）
+
+Playwright 能拦截网络请求的核心在于：请求还没离开浏览器，就被它在 CDP 网络层拦住了。
+
+具体流程是这样的：你先用 `context.route()` 注册一个 URL 匹配规则和一个回调函数，告诉 Playwright"遇到匹配的请求先别发出去"。然后当浏览器要发出这个请求时，CDP 把它暂停，通知 Playwright，Playwright 调用你的回调，你把请求的处理方式告诉 Playwright，Playwright 再通知浏览器照办。
+
+你的回调有四种处理方式：`fulfill()` 直接返回假响应，请求根本不到服务器；`abort()` 直接中断；`resume()` 放行；`wait(ms)` 延迟指定毫秒后再放行，模拟慢网速。
+
+对比 Selenium，它本身做不了网络拦截，必须借助 BrowserMob-Proxy 这类代理工具，相当于在浏览器和网络之间再加一层中转。开发调试都比较麻烦，而且有性能开销。
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                       请求拦截流程                                │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Browser ──请求──▶ │  Playwright Route Handler │ ──处理──▶     │
-│                     │                            │               │
-│   拦截点:           │  ┌──────────────────────┐  │               │
-│   CDP Network Layer │  │ 1. route.fulfill()   │──│──▶ 返回 Mock  │
-│                     │  │    返回预定义响应     │  │               │
-│                     │  ├──────────────────────┤  │               │
-│                     │  │ 2. route.abort()     │──│──▶ 拒绝请求   │
-│                     │  │    中断请求           │  │               │
-│                     │  ├──────────────────────┤  │               │
-│                     │  │ 3. route.resume()    │──│──▶ 放行请求   │
-│                     │  │    继续原始请求       │  │               │
-│                     │  ├──────────────────────┤  │               │
-│                     │  │ 4. route.wait(ms)    │──│──▶ 延迟响应   │
-│                     │  │    暂停后继续         │  │               │
-│                     │  └──────────────────────┘  │               │
-│                     └────────────────────────────┘               │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+浏览器 ──请求──▶ │ Playwright 拦截点 │
+                   │    (CDP 网络层)   │
+                   │                  │
+                   │ ① fulfill() ───▶ 返回Mock（不发到服务器）
+                   │ ② abort()   ───▶ 拒绝请求
+                   │ ③ resume()  ───▶ 放行到服务器
+                   │ ④ wait(ms)  ───▶ 延迟后放行
 ```
-
-**路由注册与触发：**
 
 ```java
-// 1. 注册路由模式
 context.route("**/api/users", route -> {
-    // 2. 命中请求时，Playwright 调用此 Handler
-    // 3. Handler 决定如何处理请求
     route.fulfill(new Route.FulfillOptions()
         .setStatus(200)
         .setBody("{\"name\":\"test\"}"));
 });
-
-// 底层原理：
-// a) Playwright 通过 CDP 的 Network.setRequestInterception() 开启拦截
-// b) 当请求匹配模式时，CDP 暂停请求并通知 Playwright
-// c) Playwright 调用注册的 Java Handler
-// d) Handler 调用 route.fulfill()/abort()/resume() 决定请求命运
-// e) Playwright 通过 CDP 继续或终止请求
+// 底层：CDP Network.setRequestInterception() → 匹配请求暂停 → 调回调 → fulfill通知浏览器完成
 ```
 
-### 2.4 Context 生命周期管理
+---
+
+### 2.4 Context 与 Page 生命周期
+
+Context 是 Playwright 独有的一个概念，简单理解就是一个隔离的浏览器会话。每个 Context 有自己独立的 Cookie、LocalStorage 和 Session，互相完全不通。
+
+这带来一个直接的好处：如果你想模拟用户 A 和用户 B 同时登录，在 Selenium 里需要开两个浏览器实例，但在 Playwright 里，你只需要在同一个浏览器下建两个 Context 就行，共享一个浏览器进程，零额外开销。
+
+Context 还有一个重要的使用场景叫"重建"。比如登录后 Cookie 存在了 Context 里，当你需要切换用户或者清空缓存时，最干净的做法不是一条条删 Cookie，而是直接销毁旧 Context、建一个新的。本框架的 SessionManager 就是利用这个机制做登录态复用的——先检查有没有未过期的 session 文件，有就直接加载到新 Context，没有就走完整登录流程再保存。
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Browser Lifecycle                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Browser.launch()                                                │
-│       │                                                         │
-│       ▼                                                         │
-│  ┌─────────────────┐                                            │
-│  │  BrowserContext │ ◀── 创建隔离会话                            │
-│  │  (指纹/cookie   │                                            │
-│  │   完全隔离)      │                                            │
-│  └────────┬────────┘                                            │
-│           │                                                     │
-│           ├──────────────┬──────────────┐                        │
-│           ▼              ▼              ▼                        │
-│      ┌────────┐     ┌────────┐     ┌────────┐                   │
-│      │ Page 1 │     │ Page 2 │     │ Page 3 │  ...              │
-│      └────────┘     └────────┘     └────────┘                   │
-│                                                                  │
-│  Context.aboutToRebuild() ──▶ 快照保存 ──▶ 重建 Context          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+Browser.launch() → 创建Context A（独立Cookie/Session）
+                    ├── Page 1
+                    ├── Page 2
+                    └── Page 3
+
+需要重建时：保存当前状态 → 关闭旧Context → 创建新Context
 ```
 
-**为什么需要 Context 重建？**
-
-| 场景 | 原因 |
-|------|------|
-| **认证状态变化** | 登录/登出后需要新的隔离 Context |
-| **缓存清理** | 清除所有 cookies/storage |
-| **测试隔离** | 每个测试用例独立 Context |
+---
 
 ### 2.5 自动等待机制
 
-```java
-// Selenium 需要手动等待
-WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
-wait.until(ExpectedConditions.elementToBeClickable(By.id("btn")));
+用过 Selenium 的人应该都遇到过：页面还没加载完，代码就去查元素，然后报 NoSuchElementException。所以你必须自己加 Thread.sleep 或者 WebDriverWait。这是 Selenium 测试不稳定的一个主要来源。
 
-// Playwright 自动等待
-page.click("#btn");  // Playwright 自动等待元素可见、可点击
-```
+Playwright 解决这个问题的方式是：在每次操作之前，自动检查元素是否真的准备好了。比如你调用 `page.click("#btn")`，Playwright 不会立刻去点，而是先反复验证五个条件：
 
-**Playwright 自动等待检查项：**
-1. 元素是否 attached 到 DOM
-2. 元素是否 visible（非 hidden）
-3. 元素是否 stable（非动画中）
-4. 元素是否 enabled（可点击）
-5. 元素是否 actionable（可接收点击事件）
+1. Attached——元素在 DOM 里了吗？
+2. Visible——元素可见吗？不是 display:none 或 hidden 吧？
+3. Stable——元素在做动画吗？动画中定位会偏移
+4. Enabled——元素有没有被 disabled？有没有被其他元素挡住？
+5. Actionable——能接收点击事件吗？
 
-### 2.6 事件驱动 vs 指令驱动：范式差异
+这五个条件全部满足，它才真正去点击。而且不是只检查一次，是在超时时间内持续重试，直到全部满足。这样一来，绝大部分的等待逻辑你根本不用写，Playwright 替你做了。这直接减少了因等待不充分导致的 flaky test。
 
-Selenium 和 Playwright 的**编程范式差异**在最基础的交互场景中产生根本性的时序要求差异：
+---
 
-```
-Selenium 模型（基于 WebDriver 协议，同步轮询）：
-  send command → wait for response → process result → next command
-  
-  例：getWindowHandles() → WebDriver 命令 → Browser → 返回句柄集合
-  问题：新页面在命令间隙打开时，下次查询才能发现
+### 2.6 编程范式差异：事件驱动 vs 指令驱动
 
-Playwright 模型（基于 CDP 事件，异步推送）：
-  register listener → execute action → event fires → handler processes
-  
-  例：waitForPage(action) → 注册 CDP Target.targetCreated 监听 → 点击 → 事件到达时通知
-  优势：Browser 创建新 Target 的瞬间 Playwright 就收到通知
-```
+这是 Playwright 和 Selenium 之间最根本的差异，理解了它，其他所有行为差异都很好理解。
 
-**范式差异导致的 4 个关键陷阱：**
-1. **"事后处理"变"事前注册"** — Alert、新页面必须在触发事件之前注册监听器
-2. **"查询结果"变"事件通知"** — 状态变化通过事件推送，而非主动轮询
-3. **"引用稳定"变"引用失效"** — Frame/Page 对象在导航后可能 detached
-4. **"手动等待"变"自动等待"** — Playwright 自动等待 5 个阶段，不需要 WebDriverWait
+Selenium 是指令驱动模型——你每次想知道什么，必须主动发请求去问。比如 `getWindowHandles()`，发一个 HTTP 请求，浏览器回复当前有几个窗口。问题是：如果新窗口在你的两次查询之间打开了，你这次就漏掉了，只能下次再问。
+
+Playwright 是事件驱动模型——你先告诉浏览器你关心什么事件，事件发生时浏览器主动通知你。比如用 `waitForPage()`，先注册一个 CDP 事件监听器，然后执行点击操作，浏览器创建新标签页的瞬间就把事件推给 Playwright，不会漏。
+
+这个差异具体影响四个方面：
+
+**第一，Alert 和 Dialog 处理。** Selenium 是事后处理，弹窗已经出来了再调 `switchTo().alert().accept()`。Playwright 必须在触发弹窗之前注册监听器，如果你没注册，Playwright 默认会把弹窗自动 dismiss 掉，你就拿不到了。
+
+**第二，新标签页/新窗口的处理。** Selenium 用 `getWindowHandles()` 主动查列表，轮询等新窗口出现。Playwright 用 `waitForPage()` 等事件推送，新窗口创建瞬间就知道。
+
+**第三，引用失效问题。** Selenium 里你拿到一个 WebElement 或 Frame 引用，只要页面不关就能一直用。Playwright 里页面一导航（跳转、刷新），旧的 Frame 引用就变成 detached 状态，必须重新获取。我们在框架里用 ThreadLocal 管 Frame，导航后自动重置，对业务代码透明。
+
+**第四，等待逻辑。** Selenium 要自己写 WebDriverWait。Playwright 的 click、type 内置自动等待，不用额外写。
 
 ---
 

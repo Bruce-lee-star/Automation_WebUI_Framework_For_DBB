@@ -546,7 +546,7 @@ public abstract class BasePage {
     /**
      * 页面导航（navigate / refresh / back / forward）后重置 iframe 上下文。
      * <p>页面内容发生变化后，旧的 Frame 对象会变为 detached，
-     * 必须将 currentFrame 置为 null 并刷新 @Element 注解字段的 Locator 缓存，
+     * 必须将 currentFrame 置为 null 并刷新 @Element 注解字段（确保后续 locator() 绑定新 Page），
      * 否则后续元素操作会在已失效的 Frame 上执行导致报错。
      */
     private void resetFrameContextAfterNavigation() {

@@ -230,8 +230,8 @@ public final class PageElementList extends AbstractList<PageElement> {
 
         /**
          * 通过父类 locator().nth(index) 获取定位器。
-         * 父类的 locator() 受 invalidateCache() 管控——页面切换（Context重建）
-         * 时缓存失效，下次调用将使用新 Page 实例重新创建 Locator。
+         * Locator 不再缓存——父类的 locator() 每次动态绑定新 Page 实例，
+         * 页面切换后自动使用新的 Page 重新创建 Locator。
          */
         @Override
         public Locator locator() {

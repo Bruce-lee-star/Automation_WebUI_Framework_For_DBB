@@ -565,15 +565,30 @@ public class RouteDsl {
 
     /**
      * Mock 专用 DSL — 在 BaseApiDsl 基础上提供 Mock 响应配置方法。
+     *
+     * <p>纯 Mock 模式：使用 {@link #mockBody(String)} 设置完整响应体，不访问真实服务器。
+     *
+     * <p>拦截真实响应模式：通过 {@link #interceptResponse()} 切换到 {@link InterceptMockDsl}，
+     * 先 fetch 真实响应，再用 {@code mockReplaceField()} 修改指定字段后返回前端。
+     *
      * <p>使用示例：
      * <pre>{@code
+     * // 纯 Mock — 直接返回自定义响应
      * .api("/api/users/1")
      *     .mock()
-     *     .mockBody("{\"code\":200}")
+     *     .mockBody("{\"code\":200,\"data\":{\"name\":\"test\"}}")
      *     .mockStatus(200)
-     *     .mockHeader("Content-Type", "application/json")
-     *     .mockReplaceField("$.data.name", "Mocked")
      *     .done()
+     *     .start();
+     *
+     * // 拦截真实响应 + 字段替换
+     * .api("profile/list")
+     *     .mock()
+     *     .interceptResponse()
+     *     .mockReplaceField("updateContctOverlayFlag", false)
+     *     .mockReplaceField("isOverBlockedDate", false)
+     *     .done()
+     *     .start();
      * }</pre>
      */
     public static class MockApiDsl extends BaseApiDsl<MockApiDsl> {
@@ -583,7 +598,9 @@ public class RouteDsl {
         }
 
         /**
-         * 设置 Mock 响应体。
+         * 设置 Mock 响应体（纯 Mock 模式）。
+         * <p>一旦设置，直接作为完整响应体返回，不访问真实服务器。
+         * 如需基于真实响应做字段替换，请使用 {@link #interceptResponse()} 切换模式。
          */
         public MockApiDsl mockBody(String body) {
             rule.setMockBody(body);
@@ -613,7 +630,72 @@ public class RouteDsl {
         }
 
         /**
-         * 对 Mock 响应的 JSON body 进行批量字段替换。
+         * 启用真实响应拦截模式，切换到 {@link InterceptMockDsl}。
+         *
+         * <p>切换后，MockHandler 不再构造虚假响应，而是：
+         * <ol>
+         *   <li>通过 {@code route.fetch()} 将请求真实发送到服务器</li>
+         *   <li>获取真实的 API 响应（含状态码、响应头、响应体）</li>
+         *   <li>应用 {@link InterceptMockDsl#mockReplaceField(String, Object)} 设置的字段替换</li>
+         *   <li>将修改后的响应通过 {@code route.fulfill()} 返回给前端</li>
+         * </ol>
+         *
+         * <p><b>与纯 Mock 模式的区别：</b>
+         * <table>
+         *   <tr><th>特性</th><th>纯 Mock（默认）</th><th>interceptResponse 模式</th></tr>
+         *   <tr><td>是否访问真实服务器</td><td>否</td><td>是（route.fetch()）</td></tr>
+         *   <tr><td>响应体来源</td><td>mockBody 设置</td><td>真实服务器响应</td></tr>
+         *   <tr><td>状态码来源</td><td>mockStatus（默认 200）</td><td>真实服务器状态码</td></tr>
+         *   <tr><td>响应头来源</td><td>mockHeader() 设置</td><td>真实响应头（可 merge mockHeaders）</td></tr>
+         *   <tr><td>mockBody 是否生效</td><td>是</td><td>否（以真实响应体为准）</td></tr>
+         *   <tr><td>mockReplaceField</td><td>不可用</td><td>可用（修改真实响应字段）</td></tr>
+         * </table>
+         *
+         * @return InterceptMockDsl — 可调用 mockReplaceField / mockHeader / mockStatus 等
+         */
+        public InterceptMockDsl interceptResponse() {
+            rule.setInterceptRealResponse(true);
+            LOGGER.info("[RouteDsl] api('{}') -> mock() -> interceptResponse() (will fetch real response, then apply replaceFields)",
+                    rule.getUrlPattern());
+            return new InterceptMockDsl(parent, rule);
+        }
+    }
+
+    /**
+     * 拦截真实响应 Mock DSL — 在 BaseApiDsl 基础上提供 {@link #mockReplaceField(String, Object)} 方法。
+     *
+     * <p>仅当通过 {@link MockApiDsl#interceptResponse()} 进入此模式后才可用。
+     * 在此模式下，MockHandler 先通过 {@code route.fetch()} 获取真实响应，再对响应体做字段替换。
+     *
+     * <p>使用示例：
+     * <pre>{@code
+     * // 拦截真实响应，替换多个字段
+     * .api("profile/list")
+     *     .mock()
+     *     .interceptResponse()
+     *     .mockReplaceField("updateContctOverlayFlag", false)
+     *     .mockReplaceField("isOverBlockedDate", false)
+     *     .done()
+     *     .start();
+     *
+     * // 拦截真实响应 + 替换 + 自定义响应头
+     * .api("profile/list")
+     *     .mock()
+     *     .interceptResponse()
+     *     .mockReplaceField("$.code", 200)
+     *     .mockHeader("X-Modified", "true")
+     *     .done()
+     *     .start();
+     * }</pre>
+     */
+    public static class InterceptMockDsl extends BaseApiDsl<InterceptMockDsl> {
+
+        InterceptMockDsl(RouteDsl parent, RouteRule rule) {
+            super(parent, rule);
+        }
+
+        /**
+         * 对真实响应的 JSON body 进行批量字段替换。
          *
          * <p>支持通配符 {@code [*]} 批量替换 List 中所有元素的字段，<b>支持嵌套 List</b>。
          * 可多次调用以设置多个字段。
@@ -639,61 +721,30 @@ public class RouteDsl {
          * @param jsonPath JSONPath 表达式（支持通配符 [*]）
          * @param value    替换值（支持 String / Number / Boolean / null，自动保持原字段类型）
          */
-        public MockApiDsl mockReplaceField(String jsonPath, Object value) {
+        public InterceptMockDsl mockReplaceField(String jsonPath, Object value) {
             rule.addMockReplaceField(jsonPath, value);
             return this;
         }
 
         /**
-         * 启用真实响应拦截模式。
-         *
-         * <p>调用此方法后，MockHandler 不再构造虚假响应，而是：
-         * <ol>
-         *   <li>通过 {@code route.fetch()} 将请求真实发送到服务器</li>
-         *   <li>获取真实的 API 响应（含状态码、响应头、响应体）</li>
-         *   <li>应用 {@link #mockReplaceField(String, Object)} 设置的字段替换</li>
-         *   <li>将修改后的响应通过 {@code route.fulfill()} 返回给前端</li>
-         * </ol>
-         *
-         * <p><b>与纯 Mock 模式的区别：</b>
-         * <table>
-         *   <tr><th>特性</th><th>纯 Mock（默认）</th><th>interceptResponse 模式</th></tr>
-         *   <tr><td>是否访问真实服务器</td><td>否</td><td>是（route.fetch()）</td></tr>
-         *   <tr><td>响应体来源</td><td>mockBody 模板 / 字段构建</td><td>真实服务器响应</td></tr>
-         *   <tr><td>状态码来源</td><td>mockStatus（默认 200）</td><td>真实服务器状态码</td></tr>
-         *   <tr><td>响应头来源</td><td>mockHeader() 设置</td><td>真实响应头（可 merge mockHeaders）</td></tr>
-         *   <tr><td>mockBody 是否生效</td><td>是</td><td>否（以真实响应体为准）</td></tr>
-         * </table>
-         *
-         * <p>使用示例：
-         * <pre>{@code
-         * // 拦截 profile/list，把真实响应中的两个字段改为 false
-         * RouteDsl.on(page)
-         *     .api("profile/list")
-         *     .mock()
-         *     .interceptResponse()
-         *     .mockReplaceField("updateContctOverlayFlag", false)
-         *     .mockReplaceField("isOverBlockedDate", false)
-         *     .done()
-         *     .start();
-         *
-         * // 拦截 + 自定义响应头
-         * RouteDsl.on(page)
-         *     .api("profile/list")
-         *     .mock()
-         *     .interceptResponse()
-         *     .mockReplaceField("$.code", 200)
-         *     .mockHeader("X-Modified", "true")
-         *     .done()
-         *     .start();
-         * }</pre>
-         *
-         * @return MockApiDsl 自身，支持链式调用
+         * 追加自定义响应头（会合并到真实响应头之上，可覆盖同名头）。
+         * <p>与 {@link MockApiDsl#mockHeader(String, String)} 等效，在此模式下仍然可用。
          */
-        public MockApiDsl interceptResponse() {
-            rule.setInterceptRealResponse(true);
-            LOGGER.info("[RouteDsl] api('{}') -> mock() -> interceptResponse() (will fetch real response, then apply replaceFields)",
-                    rule.getUrlPattern());
+        public InterceptMockDsl mockHeader(String key, String value) {
+            Map<String, String> headers = rule.getMockHeaders();
+            if (headers == null) {
+                headers = new java.util.HashMap<>();
+                rule.setMockHeaders(headers);
+            }
+            headers.put(key, value);
+            return this;
+        }
+
+        /**
+         * 覆盖响应状态码（如非必要，通常沿用真实服务器状态码）。
+         */
+        public InterceptMockDsl mockStatus(int status) {
+            rule.setMockStatus(status);
             return this;
         }
     }

@@ -140,32 +140,10 @@ public class ContextLifecycleHookManager {
     // Context ID -> 规则快照
     private static final Map<String, ContextRuleSnapshot> contextSnapshots = new ConcurrentHashMap<>();
     
-    // 注册的规则捕获器
-    private static final List<RuleCapturer> registeredCapturers = new ArrayList<>();
-    
     // 当前正在处理的 Context 重建（防止重复触发）
     private static final Set<String> rebuildingContexts = ConcurrentHashMap.newKeySet();
 
     // ==================== 公开 API ====================
-
-    /**
-     * 注册规则捕获器
-     * 组件初始化时调用此方法注册
-     */
-    public static synchronized void registerCapturer(RuleCapturer capturer) {
-        if (!registeredCapturers.contains(capturer)) {
-            registeredCapturers.add(capturer);
-            logger.debug("[ContextLifecycle] Registered capturer: {}", capturer.getClass().getSimpleName());
-        }
-    }
-
-    /**
-     * 取消注册规则捕获器
-     */
-    public static synchronized void unregisterCapturer(RuleCapturer capturer) {
-        registeredCapturers.remove(capturer);
-        logger.debug("[ContextLifecycle] Unregistered capturer: {}", capturer.getClass().getSimpleName());
-    }
 
     /**
      * 捕获指定 Context 的所有规则
@@ -175,7 +153,7 @@ public class ContextLifecycleHookManager {
      * @param context 即将重建的 Context
      * @return 规则快照，可以用于后续恢复
      */
-    public static ContextRuleSnapshot captureRules(BrowserContext context) {
+    private static ContextRuleSnapshot captureRules(BrowserContext context) {
         if (context == null) {
             logger.debug("[ContextLifecycle] captureRules called with null context, skipping");
             return null;
@@ -189,70 +167,16 @@ public class ContextLifecycleHookManager {
             return contextSnapshots.get(contextId);
         }
 
-        logger.info("[ContextLifecycle] Capturing rules for context {} before rebuild ({} capturers registered)", 
-            contextId, registeredCapturers.size());
+        logger.debug("[ContextLifecycle] Capturing rules for context {} before rebuild", contextId);
 
         ContextRuleSnapshot snapshot = new ContextRuleSnapshot(context);
-
-        // 调用所有注册的捕获器
-        for (RuleCapturer capturer : registeredCapturers) {
-            try {
-                List<RuleSnapshot> rules = capturer.captureRules(context);
-                if (rules != null && !rules.isEmpty()) {
-                    logger.debug("[ContextLifecycle] Capturer {} captured {} rules", 
-                        capturer.getClass().getSimpleName(), rules.size());
-                    
-                    // 根据规则类型分类存储
-                    for (RuleSnapshot rule : rules) {
-                        categorizeAndAddRule(snapshot, rule, context);
-                    }
-                }
-            } catch (Exception e) {
-                logger.warn("[ContextLifecycle] Capturer {} failed to capture rules: {}", 
-                    capturer.getClass().getSimpleName(), e.getMessage());
-            }
-        }
 
         // 存储快照
         contextSnapshots.put(contextId, snapshot);
         
-        logger.info("[ContextLifecycle] Captured {} rules (mock={}, intercept={}, monitor={}, modifier={}) for context {}",
-            snapshot.getTotalRuleCount(),
-            snapshot.mockRules.size(),
-            snapshot.interceptRules.size(),
-            snapshot.monitorRules.size(),
-            snapshot.modifierRules.size(),
-            contextId);
+        logger.info("[ContextLifecycle] Captured snapshot for context {}", contextId);
 
         return snapshot;
-    }
-
-    /**
-     * 将规则分类并添加到快照
-     */
-    private static void categorizeAndAddRule(ContextRuleSnapshot snapshot, RuleSnapshot rule, BrowserContext context) {
-        String id = rule.getId().toLowerCase();
-        
-        if (id.contains("mock")) {
-            snapshot.addMockRule(rule);
-        } else if (id.contains("intercept")) {
-            snapshot.addInterceptRule(rule);
-        } else if (id.contains("monitor")) {
-            snapshot.addMonitorRule(rule);
-        } else if (id.contains("modifier")) {
-            snapshot.addModifierRule(rule);
-        } else {
-            // 默认添加到所有类型（保守策略）
-            snapshot.addMockRule(rule);
-        }
-    }
-
-    /**
-     * 获取指定 Context 的规则快照
-     */
-    public static ContextRuleSnapshot getSnapshot(BrowserContext context) {
-        if (context == null) return null;
-        return contextSnapshots.get(getContextId(context));
     }
 
     /**
@@ -263,7 +187,7 @@ public class ContextLifecycleHookManager {
      * @param newContext 新的 BrowserContext
      * @return 成功重绑定的规则数量
      */
-    public static int rebindRules(BrowserContext newContext) {
+    private static int rebindRules(BrowserContext newContext) {
         if (newContext == null) {
             logger.warn("[ContextLifecycle] rebindRules called with null context");
             return 0;
@@ -363,57 +287,14 @@ public class ContextLifecycleHookManager {
         return successCount;
     }
 
-    /**
-     * 清除指定 Context 的规则快照
-     */
-    public static void clearSnapshot(BrowserContext context) {
-        if (context == null) return;
-        String contextId = getContextId(context);
-        ContextRuleSnapshot removed = contextSnapshots.remove(contextId);
-        if (removed != null) {
-            logger.debug("[ContextLifecycle] Cleared snapshot for context {} (had {} rules)", 
-                contextId, removed.getTotalRuleCount());
-        }
-    }
-
-    /**
-     * 清除所有规则快照
-     */
-    public static void clearAllSnapshots() {
-        int count = contextSnapshots.size();
-        contextSnapshots.clear();
-        logger.info("[ContextLifecycle] Cleared all {} snapshots", count);
-    }
-
-    /**
-     * 获取当前存储的快照数量
-     */
-    public static int getSnapshotCount() {
-        return contextSnapshots.size();
-    }
-
-    /**
-     * 检查指定 Context 是否正在重建中
-     */
-    public static boolean isRebuilding(BrowserContext context) {
-        if (context == null) return false;
-        return rebuildingContexts.contains(getContextId(context));
-    }
-
-    /**
-     * 标记 Context 正在重建（防止重复触发）
-     */
-    public static void markRebuilding(BrowserContext context) {
+    private static void markRebuilding(BrowserContext context) {
         if (context != null) {
             rebuildingContexts.add(getContextId(context));
             logger.debug("[ContextLifecycle] Marked context {} as rebuilding", getContextId(context));
         }
     }
 
-    /**
-     * 标记 Context 重建完成
-     */
-    public static void markRebuildComplete(BrowserContext context) {
+    private static void markRebuildComplete(BrowserContext context) {
         if (context != null) {
             rebuildingContexts.remove(getContextId(context));
             logger.debug("[ContextLifecycle] Marked context {} as rebuild complete", getContextId(context));

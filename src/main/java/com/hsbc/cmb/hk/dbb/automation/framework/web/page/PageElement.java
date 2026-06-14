@@ -64,40 +64,6 @@ public class PageElement {
         return locator().locator(relativeSelector);
     }
 
-    // ==================== Element State Check ====================
-
-    /**
-     * 等待元素达到指定状态（ATTACHED / VISIBLE 等），用于 pre-flight 检查。
-     * 返回 true 表示元素在规定超时内达到目标状态，false 表示超时。
-     */
-    private boolean waitForElementState(WaitForSelectorState state) {
-        String stateName = state == WaitForSelectorState.ATTACHED ? "exists" : "visible";
-        try {
-            locator().first().waitFor(
-                new Locator.WaitForOptions()
-                    .setState(state)
-                    .setTimeout(PlaywrightManager.config().getElementCheckTimeout())
-            );
-            return true;
-        } catch (TimeoutError e) {
-            logger.debug("element{}({}) timeout: selector={}, timeout={}ms",
-                stateName, state, selector, PlaywrightManager.config().getElementCheckTimeout());
-            return false;
-        } catch (PlaywrightException e) {
-            logger.debug("element{}({}) error: selector={}, error={}",
-                stateName, state, selector, e.getMessage());
-            return false;
-        }
-    }
-
-    private boolean elementExists() {
-        return waitForElementState(WaitForSelectorState.ATTACHED);
-    }
-
-    private boolean elementIsVisible() {
-        return waitForElementState(WaitForSelectorState.VISIBLE);
-    }
-
     // ==================== Safe Execution Template ====================
     /**
      * 安全的 Locator 操作执行模板——统一处理 Playwright 异常转换 + 自动诊断收集。
@@ -153,31 +119,7 @@ public class PageElement {
     }
 
     private void executeWithRetry(Supplier<Boolean> action, String operation, String testName) {
-        // 诊断收集器延迟创建——成功路径零开销
         long startTime = System.currentTimeMillis();
-
-        // Pre-flight check: element must exist in DOM
-        // 使用配置的检查超时，如果超时则说明元素真的不存在，不重试
-        if (!elementExists()) {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
-            ElementOperationException.DiagnosticInfo info = diagnostics.collect();
-            info.retryCount(0);
-
-            ElementOperationException ex = ElementOperationException.builder()
-                .selector(selector)
-                .operation(operation)
-                .pageUrl(diagnostics.getPageUrl())
-                .elementState("NOT_FOUND_IN_DOM")
-                .diagnosticInfo(info)
-                .customMessage(String.format(
-                    "Element not found in DOM: [%s] on page [%s]. " +
-                    "Possible reasons: 1) Selector is incorrect, 2) Element was removed from DOM, 3) Page navigation failed.",
-                    selector, diagnostics.getPageUrl()))
-                .build();
-
-            captureFailureAndLog(operation, testName, ex, diagnostics);
-            throw ex; // 直接抛出，不重试
-        }
 
         int maxRetry = PlaywrightManager.config().getElementMaxRetry();
         Exception lastEx = null;
@@ -192,15 +134,14 @@ public class PageElement {
             }
 
             try {
-                // All action callbacks either return true or throw — never return false
+                // Playwright 内置 actionability check（attached→visible→stable→enabled→receives events）
+                // 无需额外 pre-flight 检查
                 action.get();
                 logger.debug("[{}] success on attempt {}/{}: {}",
                     operation, i + 1, maxRetry + 1, selector);
                 return;
             } catch (TimeoutError e) {
                 lastEx = e;
-                // 前置 elementExists() 已确认元素在 DOM 中，TimeoutError 可能是
-                // 元素暂时不可见/不可交互（动画中、被遮挡等），值得重试
                 if (i == maxRetry || !isRetriable(e)) {
                     logger.warn("[{}] Timeout on attempt {}/{}: {}",
                         operation, i + 1, maxRetry + 1, selector);
@@ -219,8 +160,6 @@ public class PageElement {
                 page.waitForTimeout((int) PlaywrightManager.config().getElementRetryDelayMs());
             } catch (Exception e) {
                 lastEx = e;
-                // 其他异常（如框架异常）不重试，直接抛出
-                // 降级为 WARN — 异常最终会由 PlaywrightListener.stepFailed() 统一记录 error
                 logger.warn("[{}] Non-retriable exception: {}", operation, e.getMessage());
                 break;
             }
@@ -390,6 +329,7 @@ public class PageElement {
 
     public PageElement clear() {
         executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
             locator().clear();
             return true;
         }, "clear");
@@ -397,11 +337,23 @@ public class PageElement {
     }
 
     public PageElement clearAndSetValue(String text) {
-        return clear().fill(text);
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().clear();
+            locator().fill(text);
+            return true;
+        }, "clearAndSetValue");
+        return this;
     }
 
     public PageElement clearAndTypeSequentially(String text) {
-        return clear().type(text);
+        executeWithRetry(() -> {
+            locator().scrollIntoViewIfNeeded();
+            locator().clear();
+            locator().pressSequentially(text);
+            return true;
+        }, "clearAndTypeSequentially");
+        return this;
     }
 
     // ==================== Keyboard ====================
@@ -649,21 +601,14 @@ public class PageElement {
 
     public PageElement waitForClickable(int timeoutSec) {
         try {
-            // 1. 检查可见性——display:none 的元素即使 enabled 也无法点击
+            // Playwright click() 内置完整 actionability 检查（visible+stable+enabled+receives events）
+            // waitForClickable 仅需确认元素已可见即可，实际可交互性由 click() 保证
             locator().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
-            // 2. 检查可交互性（enabled=true，不被 disabled 属性阻止）
-            if (!locator().isEnabled(new Locator.IsEnabledOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForClickable", selector, 
-                    "Element is visible but not enabled: " + selector, null);
-            }
         } catch (TimeoutError e) {
             throw new ElementOperationException("waitForClickable", selector, 
                 "Element is not clickable within " + timeoutSec + " seconds: " + selector, e);
-        } catch (ElementOperationException e) {
-            throw e;
         } catch (PlaywrightException e) {
             throw new ElementOperationException("waitForClickable", selector, 
                 "Failed to check element state: " + selector, e);
@@ -774,7 +719,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().dispatchEvent(event, arg);
             return true;
-        }, "dispatchEvent");
+        }, "dispatchEventWithArg");
         return this;
     }
 
@@ -786,7 +731,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locator().evaluate("el => el.scrollIntoView({ behavior: 'instant', block: 'center' })");
             return true;
-        }, "scrollToView");
+        }, "scrollIntoView");
         return this;
     }
 

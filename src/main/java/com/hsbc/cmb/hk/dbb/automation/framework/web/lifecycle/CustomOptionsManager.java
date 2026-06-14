@@ -26,58 +26,58 @@ public class CustomOptionsManager {
     private CustomOptionsManager() {
     }
 
-    // ========== 获取方法（委托给 PlaywrightManager 的包内方法）==========
+    // ========== 获取方法（直接访问 PlaywrightManager 的 ThreadLocal）==========
 
     public Path getStorageStatePath() {
-        return PlaywrightManager.getCustomStorageStatePath();
+        return PlaywrightManager.customStorageStatePath.get();
     }
 
     public String getLocale() {
-        return PlaywrightManager.getCustomLocale();
+        return PlaywrightManager.customLocale.get();
     }
 
     public String getTimezoneId() {
-        return PlaywrightManager.getCustomTimezoneId();
+        return PlaywrightManager.customTimezoneId.get();
     }
 
     public String getUserAgent() {
-        return PlaywrightManager.getCustomUserAgent();
+        return PlaywrightManager.customUserAgent.get();
     }
 
     public List<String> getPermissions() {
-        return PlaywrightManager.getCustomPermissions();
+        return PlaywrightManager.customPermissions.get();
     }
 
     public Geolocation getGeolocation() {
-        return PlaywrightManager.getCustomGeolocation();
+        return PlaywrightManager.customGeolocation.get();
     }
 
     public Integer getDeviceScaleFactor() {
-        return PlaywrightManager.getCustomDeviceScaleFactor();
+        return PlaywrightManager.customDeviceScaleFactor.get();
     }
 
     public Boolean getIsMobile() {
-        return PlaywrightManager.getCustomIsMobile();
+        return PlaywrightManager.customIsMobile.get();
     }
 
     public Boolean getHasTouch() {
-        return PlaywrightManager.getCustomHasTouch();
+        return PlaywrightManager.customHasTouch.get();
     }
 
     public ColorScheme getColorScheme() {
-        return PlaywrightManager.getCustomColorScheme();
+        return PlaywrightManager.customColorScheme.get();
     }
 
     public Integer getViewportWidth() {
-        return PlaywrightManager.getCustomViewportWidth();
+        return PlaywrightManager.customViewportWidth.get();
     }
 
     public Integer getViewportHeight() {
-        return PlaywrightManager.getCustomViewportHeight();
+        return PlaywrightManager.customViewportHeight.get();
     }
 
     public Boolean isCustomContextOptionsFlag() {
-        return PlaywrightManager.getCustomContextOptionsFlagValue();
+        return PlaywrightManager.customContextOptionsFlag.get();
     }
 
     // ========== 设置方法（委托给 PlaywrightManager，支持链式调用）==========
@@ -246,7 +246,7 @@ public class CustomOptionsManager {
      * @return null=未设置（使用配置文件默认值），true/false=已覆盖
      */
     public Boolean getProxyEnabled() {
-        return PlaywrightManager.getCustomProxyEnabled();
+        return PlaywrightManager.customProxyEnabled.get();
     }
 
     // ========== 批量设置方法 ==========

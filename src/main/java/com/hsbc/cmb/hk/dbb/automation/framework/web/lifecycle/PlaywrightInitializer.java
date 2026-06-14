@@ -224,7 +224,7 @@ class PlaywrightInitializer {
             }
 
             Path cachePath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
-            String configuredBrowserType = PlaywrightManager.getBrowserType();
+            String configuredBrowserType = PlaywrightManager.config().getBrowserType();
 
             boolean browsersInstalled = checkBrowsersInstalled(cachePath);
             if (!browsersInstalled) {
@@ -248,7 +248,7 @@ class PlaywrightInitializer {
                 return true;
             }
 
-            String browserType = PlaywrightManager.getBrowserType();
+            String browserType = PlaywrightManager.config().getBrowserType();
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Checking if {} browser is installed...", browserType);
 
             if (!Files.exists(cachePath)) {
@@ -284,7 +284,7 @@ class PlaywrightInitializer {
      */
     private static void installBrowsers(Path cachePath) {
         try {
-            String browserType = PlaywrightManager.getBrowserType();
+            String browserType = PlaywrightManager.config().getBrowserType();
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Downloading Playwright {} browser to: {}", browserType, cachePath);
 
             ProcessBuilder pb = new ProcessBuilder(

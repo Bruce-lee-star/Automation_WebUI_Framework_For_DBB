@@ -7,11 +7,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
-import java.nio.file.*;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.util.concurrent.atomic.AtomicInteger;
-
 /**
  * 框架核心类
  * 负责框架的初始化、运行、停止和清理
@@ -52,59 +47,6 @@ public class FrameworkCore {
     private FrameworkCore() {
     }
 
-    /**
-     * 清理临时截图目录（解决截图残留问题）
-     * 在框架初始化时调用，仅删除 target/screenshots 目录中的旧截图文件。
-     * 注意：不清理 target/site/serenity（Serenity报告目录），以保留历史报告的截图引用。
-     */
-    private void cleanupScreenshotDirectory() {
-        try {
-            // 只清理临时截图目录，不清理 Serenity 报告目录
-            Path screenshotDir = Paths.get("target", "screenshots");
-            if (!Files.exists(screenshotDir)) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Temporary screenshot directory does not exist, skipping cleanup");
-                return;
-            }
-
-            AtomicInteger deletedCount = new AtomicInteger(0);
-
-            // 遍历目录，删除所有 .png 截图文件和可能的临时文件
-            Files.walkFileTree(screenshotDir, new SimpleFileVisitor<Path>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    String fileName = file.getFileName().toString();
-                    if (fileName.endsWith(".png") || fileName.endsWith(".tmp")) {
-                        try {
-                            Files.deleteIfExists(file);
-                            deletedCount.incrementAndGet();
-                        } catch (IOException e) {
-                            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to delete screenshot file: {}", file);
-                        }
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                    // 删除空目录
-                    if (!dir.equals(screenshotDir)) {
-                        try {
-                            Files.deleteIfExists(dir);
-                        } catch (IOException ignored) { /* ignore */ }
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-
-            LoggingConfigUtil.logInfoIfVerbose(logger,
-                "Screenshot directory cleaned up: {} files deleted from {}",
-                deletedCount.get(), screenshotDir.toAbsolutePath());
-
-        } catch (IOException e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to cleanup screenshot directory: {}", e.getMessage());
-        }
-    }
-    
     // 获取单例实例
     public static FrameworkCore getInstance() {
         return INSTANCE;

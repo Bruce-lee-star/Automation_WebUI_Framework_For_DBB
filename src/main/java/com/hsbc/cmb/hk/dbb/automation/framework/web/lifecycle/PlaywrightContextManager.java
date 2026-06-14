@@ -9,6 +9,7 @@ import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
+import com.microsoft.playwright.options.LoadState;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -242,83 +243,56 @@ class PlaywrightContextManager {
      * 配置自定义 Context 选项
      */
     private static void configureCustomContextOptions(Browser.NewContextOptions contextOptions) {
-        CustomOptionsManager customOptionsManager = PlaywrightManager.customOptions();
+        CustomOptionsManager cm = PlaywrightManager.customOptions();
 
-        // StorageState（session 恢复）
-        Path storagePath = customOptionsManager.getStorageStatePath();
+        // StorageState（特殊：需要 Files.exists 检查）
+        Path storagePath = cm.getStorageStatePath();
         if (storagePath != null && Files.exists(storagePath)) {
             contextOptions.setStorageStatePath(storagePath);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
         }
 
-        // Locale
-        String locale = customOptionsManager.getLocale();
-        if (locale != null && !locale.isEmpty()) {
-            contextOptions.setLocale(locale);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom locale: {}", locale);
-        }
+        applyIfNotEmpty(cm.getLocale(), "locale", () -> contextOptions.setLocale(cm.getLocale()));
+        applyIfNotEmpty(cm.getTimezoneId(), "timezoneId", () -> contextOptions.setTimezoneId(cm.getTimezoneId()));
+        applyIfNotEmpty(cm.getUserAgent(), "userAgent", () -> contextOptions.setUserAgent(cm.getUserAgent()));
+        applyIfNotNull(cm.getPermissions(), "permissions", () -> contextOptions.setPermissions(cm.getPermissions()));
 
-        // Timezone
-        String timezoneId = customOptionsManager.getTimezoneId();
-        if (timezoneId != null && !timezoneId.isEmpty()) {
-            contextOptions.setTimezoneId(timezoneId);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom timezoneId: {}", timezoneId);
-        }
+        Geolocation geo = cm.getGeolocation();
+        applyIfNotNull(geo, "geolocation", () -> contextOptions.setGeolocation(geo.latitude, geo.longitude));
 
-        // User Agent
-        String userAgent = customOptionsManager.getUserAgent();
-        if (userAgent != null && !userAgent.isEmpty()) {
-            contextOptions.setUserAgent(userAgent);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom userAgent: {}", userAgent);
-        }
+        Integer sf = cm.getDeviceScaleFactor();
+        applyIfNotNull(sf, "deviceScaleFactor", () -> contextOptions.setDeviceScaleFactor(sf / 100.0));
 
-        // Permissions
-        List<String> permissions = customOptionsManager.getPermissions();
-        if (permissions != null && !permissions.isEmpty()) {
-            contextOptions.setPermissions(permissions);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom permissions: {}", permissions);
-        }
+        applyIfNotNull(cm.getIsMobile(), "isMobile", () -> contextOptions.setIsMobile(cm.getIsMobile()));
+        applyIfNotNull(cm.getHasTouch(), "hasTouch", () -> contextOptions.setHasTouch(cm.getHasTouch()));
+        applyIfNotNull(cm.getColorScheme(), "colorScheme", () -> contextOptions.setColorScheme(cm.getColorScheme()));
 
-        // Geolocation
-        Geolocation geolocation = customOptionsManager.getGeolocation();
-        if (geolocation != null) {
-            contextOptions.setGeolocation(geolocation.latitude, geolocation.longitude);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom geolocation: ({}, {})", geolocation.latitude, geolocation.longitude);
+        // Viewport（需要两个值均非空）
+        Integer vw = cm.getViewportWidth();
+        Integer vh = cm.getViewportHeight();
+        if (vw != null && vh != null) {
+            contextOptions.setViewportSize(vw, vh);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom viewportSize: {}x{}", vw, vh);
         }
+    }
 
-        // Device Scale Factor
-        Integer scaleFactor = customOptionsManager.getDeviceScaleFactor();
-        if (scaleFactor != null) {
-            contextOptions.setDeviceScaleFactor(scaleFactor / 100.0);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom deviceScaleFactor: {}", scaleFactor / 100.0);
+    /**
+     * 仅在值非空时应用自定义选项（适用于非 String 类型）
+     */
+    private static void applyIfNotNull(Object value, String name, Runnable applier) {
+        if (value != null) {
+            applier.run();
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom {}: {}", name, value);
         }
+    }
 
-        // Mobile 和 Touch
-        Boolean isMobile = customOptionsManager.getIsMobile();
-        if (isMobile != null) {
-            contextOptions.setIsMobile(isMobile);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom isMobile: {}", isMobile);
-        }
-
-        Boolean hasTouch = customOptionsManager.getHasTouch();
-        if (hasTouch != null) {
-            contextOptions.setHasTouch(hasTouch);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom hasTouch: {}", hasTouch);
-        }
-
-        // Color Scheme
-        ColorScheme colorScheme = customOptionsManager.getColorScheme();
-        if (colorScheme != null) {
-            contextOptions.setColorScheme(colorScheme);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom colorScheme: {}", colorScheme);
-        }
-
-        // Viewport
-        Integer customViewportWidth = customOptionsManager.getViewportWidth();
-        Integer customViewportHeight = customOptionsManager.getViewportHeight();
-        if (customViewportWidth != null && customViewportHeight != null) {
-            contextOptions.setViewportSize(customViewportWidth, customViewportHeight);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom viewportSize: {}x{}", customViewportWidth, customViewportHeight);
+    /**
+     * 仅在值非空且非空字符串时应用（适用于 String 类型）
+     */
+    private static void applyIfNotEmpty(String value, String name, Runnable applier) {
+        if (value != null && !value.isEmpty()) {
+            applier.run();
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom {}: {}", name, value);
         }
     }
 
@@ -343,10 +317,83 @@ class PlaywrightContextManager {
     }
 
     /**
-     * 页面稳定化
-     * 委托给 PlaywrightManager 处理（因为稳定化逻辑在那里有更完整的实现）
+     * 页面稳定化：确保页面加载完成并固定窗口/缩放状态
      */
     private static void stabilizePage(Page page) {
-        PlaywrightManager.stabilizePage(page);
+        try {
+            LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化：确保窗口大小正确...");
+
+            int stabilizeWaitTimeout = PlaywrightManager.config().getStabilizeTimeout();
+            LoadState loadState = getConfiguredLoadState();
+            try {
+                page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(stabilizeWaitTimeout));
+            } catch (Exception e) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "页面加载等待超时（LoadState: {}），继续稳定化: {}", loadState, e.getMessage());
+            }
+
+            String maximizeArgs = PlaywrightManager.config().getWindowMaximizeArgs();
+            boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
+
+            Dimension screenSize = PlaywrightManager.config().getAvailableScreenSize();
+            int logicalWidth = (int) screenSize.getWidth();
+            int logicalHeight = (int) screenSize.getHeight();
+
+            if (!hasStartMaximized) {
+                page.evaluate(String.format(
+                        "window.resizeTo(%d, %d); window.moveTo(0, 0);",
+                        logicalWidth, logicalHeight
+                ));
+                LoggingConfigUtil.logDebugIfVerbose(logger, "JavaScript窗口大小设置: {}x{}", logicalWidth, logicalHeight);
+            } else {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "使用 --start-maximized，跳过 JavaScript 窗口大小设置");
+            }
+
+            page.evaluate(
+                    "document.body.style.zoom = '100%'; "
+                            + "document.documentElement.style.zoom = '100%'; "
+                            + "document.documentElement.style.transform = 'none'; "
+                            + "document.documentElement.style.transformOrigin = '0 0';"
+            );
+
+            page.evaluate(
+                    "window.addEventListener('resize', function(e) { e.stopPropagation(); }, true);"
+                            + "document.addEventListener('DOMContentLoaded', function() {"
+                            + "    if (window.devicePixelRatio !== 1) { "
+                            + "    }"
+                            + "});"
+            );
+
+            Integer customViewportWidthVal = PlaywrightManager.customViewportWidth.get();
+            Integer customViewportHeightVal = PlaywrightManager.customViewportHeight.get();
+
+            if (customViewportWidthVal != null && customViewportHeightVal != null) {
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Custom viewport detected ({}x{}), skipping viewport size override",
+                        customViewportWidthVal, customViewportHeightVal);
+            } else {
+                page.setViewportSize(logicalWidth, logicalHeight);
+                LoggingConfigUtil.logDebugIfVerbose(logger, "No custom viewport, setting to logical screen size: {}x{}",
+                        logicalWidth, logicalHeight);
+            }
+
+            LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化完成");
+        } catch (Exception e) {
+            logger.warn("页面稳定化失败: {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 获取配置的页面加载状态
+     * 配置属性: playwright.page.load.state
+     * 可选值: LOAD, DOMCONTENTLOADED, NETWORKIDLE
+     * 默认值: DOMCONTENTLOADED
+     */
+    private static LoadState getConfiguredLoadState() {
+        String loadStateConfig = PlaywrightManager.config().getPageLoadState();
+        try {
+            return LoadState.valueOf(loadStateConfig.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "Invalid LoadState configuration: {}, using default: DOMCONTENTLOADED", loadStateConfig);
+            return LoadState.DOMCONTENTLOADED;
+        }
     }
 }

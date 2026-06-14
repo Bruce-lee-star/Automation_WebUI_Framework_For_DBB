@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.DatabaseStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
@@ -193,6 +194,13 @@ public class MonitorHandler {
                 // ═══════════════════════════════════════════════════════════════
                 invokeCallbacks(rule, fAsyncUrl, fAsyncStatus, fBody,
                         fResHeaders, fReqMethod);
+
+                // ═══════════════════════════════════════════════════════════════
+                // 框架内置：根据配置自动决定是否持久化到数据库
+                // 无需用户在业务层手动注册 DatabaseStoreMonitorCallback
+                // ═══════════════════════════════════════════════════════════════
+                DatabaseStoreMonitorCallback.INSTANCE.onResponse(
+                        fAsyncUrl, fAsyncStatus, fBody, fResHeaders, fReqMethod);
 
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, fAsyncUrl);

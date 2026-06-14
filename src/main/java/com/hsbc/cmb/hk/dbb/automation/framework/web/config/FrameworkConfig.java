@@ -1081,6 +1081,65 @@ public enum FrameworkConfig {
         "api.capture.max.response.size.mb",
         "50",
         "API 捕获响应体总字节数上限（MB）"
+    ),
+
+    // ==================== API Monitor 数据库存储配置 ====================
+
+    /**
+     * 是否启用 Monitor 数据库持久化存储
+     * true=每次捕获 API 响应后自动写入数据库
+     * false=不存储（默认）
+     */
+    MONITOR_DB_STORE_ENABLED(
+        "monitor.db.store.enabled",
+        "false",
+        "是否启用 Monitor 数据库持久化存储"
+    ),
+
+    /**
+     * 数据库类型
+     * 支持: MYSQL, POSTGRESQL
+     */
+    MONITOR_DB_TYPE(
+        "monitor.db.type",
+        "MYSQL",
+        "数据库类型 (MYSQL, POSTGRESQL)"
+    ),
+
+    /**
+     * 数据库连接 URL
+     */
+    MONITOR_DB_URL(
+        "monitor.db.url",
+        "",
+        "数据库连接 URL"
+    ),
+
+    /**
+     * 数据库用户名
+     */
+    MONITOR_DB_USER(
+        "monitor.db.user",
+        "",
+        "数据库用户名"
+    ),
+
+    /**
+     * 数据库密码
+     */
+    MONITOR_DB_PASSWORD(
+        "monitor.db.password",
+        "",
+        "数据库密码"
+    ),
+
+    /**
+     * 数据库连接池最大连接数
+     */
+    MONITOR_DB_POOL_MAX_SIZE(
+        "monitor.db.pool.max.size",
+        "5",
+        "数据库连接池最大连接数"
     );
 
     private final String key;

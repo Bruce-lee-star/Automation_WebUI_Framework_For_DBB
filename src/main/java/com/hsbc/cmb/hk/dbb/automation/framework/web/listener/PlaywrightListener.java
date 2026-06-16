@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
@@ -1211,9 +1213,8 @@ public class PlaywrightListener implements StepListener {
             return;
         }
 
-        // 等待所有异步 API 请求完成（通过系统属性配置超时，默认 15 秒，避免 CI 环境超时）
-        long timeoutMs = Long.parseLong(
-                System.getProperty("api.assertion.wait.timeout.ms", "15000"));
+        // 等待所有异步 API 请求完成（通过 FrameworkConfig 配置超时，默认 15 秒，避免 CI 环境超时）
+        long timeoutMs = FrameworkConfigManager.getLong(FrameworkConfig.API_ASSERTION_WAIT_TIMEOUT);
         try {
             boolean completed = context.awaitCompletion(timeoutMs);
             if (!completed) {

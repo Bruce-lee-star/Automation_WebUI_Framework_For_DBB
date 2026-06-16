@@ -84,7 +84,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
                     .responseHeaders(responseHeaders)
                     .responseBody(body)
                     .capturedAt(System.currentTimeMillis())
-                    .testRunId(System.getProperty("monitor.test.run.id"))
+                    .testRunId(FrameworkConfigManager.getString(FrameworkConfig.MONITOR_TEST_RUN_ID))
                     .build();
 
             ApiMonitoringRepository.save(record);

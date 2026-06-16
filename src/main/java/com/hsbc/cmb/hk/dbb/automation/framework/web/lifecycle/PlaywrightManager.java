@@ -156,7 +156,7 @@ public class PlaywrightManager {
         Map<String, String> env = new HashMap<>();
 
         // 设置浏览器缓存路径
-        String browserPath = System.getProperty("PLAYWRIGHT_BROWSERS_PATH");
+        String browserPath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSERS_PATH);
         if (browserPath != null && !browserPath.trim().isEmpty()) {
             env.put("PLAYWRIGHT_BROWSERS_PATH", browserPath);
             LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright browsers path: {}", browserPath);

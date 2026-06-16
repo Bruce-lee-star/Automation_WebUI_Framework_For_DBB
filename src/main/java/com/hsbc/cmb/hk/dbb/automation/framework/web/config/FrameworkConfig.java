@@ -720,6 +720,15 @@ public enum FrameworkConfig {
         "框架详细日志"
     ),
 
+    /**
+     * 框架超详细日志输出（Trace级）
+     */
+    FRAMEWORK_TRACE_LOGGING(
+        "framework.trace.logging",
+        "false",
+        "框架超详细日志"
+    ),
+
     // ==================== 报告配置 ====================
 
     /**
@@ -873,6 +882,16 @@ public enum FrameworkConfig {
         "playwright.sdk.path",
         ".playwright/sdk",
         "Playwright SDK 目录"
+    ),
+
+    /**
+     * Playwright Driver 临时目录
+     * 指定 Playwright Driver 的临时文件存储目录
+     */
+    PLAYWRIGHT_DRIVER_TMPDIR(
+        "playwright.driver.tmpdir",
+        ".playwright/driver",
+        "Playwright Driver 临时目录"
     ),
 
     PLAYWRIGHT_BROWSERS_PATH(
@@ -1083,6 +1102,16 @@ public enum FrameworkConfig {
         "API 捕获响应体总字节数上限（MB）"
     ),
 
+    /**
+     * API 断言等待超时时间（毫秒）
+     * 用于等待所有异步 API 请求完成
+     */
+    API_ASSERTION_WAIT_TIMEOUT(
+        "api.assertion.wait.timeout.ms",
+        "15000",
+        "API 断言等待超时（毫秒）"
+    ),
+
     // ==================== API Monitor 数据库存储配置 ====================
 
     /**
@@ -1140,6 +1169,16 @@ public enum FrameworkConfig {
         "monitor.db.pool.max.size",
         "5",
         "数据库连接池最大连接数"
+    ),
+
+    /**
+     * Monitor 测试运行 ID
+     * 用于标记一次测试运行中的监控数据
+     */
+    MONITOR_TEST_RUN_ID(
+        "monitor.test.run.id",
+        "",
+        "Monitor 测试运行 ID"
     );
 
     private final String key;

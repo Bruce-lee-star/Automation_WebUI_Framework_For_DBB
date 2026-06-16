@@ -27,7 +27,7 @@ public class LoggingConfigUtil {
      * @return true 表示启用了超详细日志，false 表示未启用
      */
     public static boolean isTraceLoggingEnabled() {
-        return Boolean.parseBoolean(System.getProperty("framework.trace.logging", "false"));
+        return FrameworkConfigManager.getBoolean(FrameworkConfig.FRAMEWORK_TRACE_LOGGING);
     }
 
     /**

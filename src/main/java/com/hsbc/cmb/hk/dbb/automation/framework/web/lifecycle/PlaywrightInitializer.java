@@ -43,23 +43,19 @@ class PlaywrightInitializer {
      * 初始化 Playwright 路径配置
      */
     static void initializePlaywrightPaths() {
-        String browserPath = System.getProperty("PLAYWRIGHT_BROWSERS_PATH");
+        String browserPath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSERS_PATH);
         if (browserPath == null || browserPath.trim().isEmpty()) {
             browserPath = DEFAULT_PLAYWRIGHT_BROWSER_PATH;
-            System.setProperty("PLAYWRIGHT_BROWSERS_PATH", browserPath);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], set PLAYWRIGHT_BROWSERS_PATH to : {}", browserPath);
-        } else {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], PLAYWRIGHT_BROWSERS_PATH already set to : {}", browserPath);
         }
+        System.setProperty("PLAYWRIGHT_BROWSERS_PATH", browserPath);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], PLAYWRIGHT_BROWSERS_PATH set to: {}", browserPath);
 
-        String driverTmp = System.getProperty("playwright.driver.tmpdir");
+        String driverTmp = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_DRIVER_TMPDIR);
         if (driverTmp == null || driverTmp.trim().isEmpty()) {
             driverTmp = DEFAULT_PLAYWRIGHT_DRIVER_PATH;
-            System.setProperty("playwright.driver.tmpdir", driverTmp);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], set playwright.driver.tmpdir to : {}", driverTmp);
-        } else {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], playwright.driver.tmpdir already set to : {}", driverTmp);
         }
+        System.setProperty("playwright.driver.tmpdir", driverTmp);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "[static init], playwright.driver.tmpdir set to: {}", driverTmp);
 
         Path cachePath = null;
         try {

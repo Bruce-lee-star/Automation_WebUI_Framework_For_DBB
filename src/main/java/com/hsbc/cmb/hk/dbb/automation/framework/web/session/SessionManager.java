@@ -404,29 +404,19 @@ public class SessionManager {
                 return 0;
             }
 
-            // 收集基础名（去掉 .json/.meta 后缀），避免 count/2 启发式计数不准
+            // 单次遍历：收集基础名并删除文件
             Set<String> sessionNames = new HashSet<>();
             try (var stream = Files.list(sessionDir)) {
-                stream.filter(path -> {
+                stream.forEach(path -> {
                     String name = path.getFileName().toString();
                     if (name.endsWith(".json") || name.endsWith(".meta")) {
-                        // 去掉后缀得到基础名，add 自带去重
                         int dotIdx = name.lastIndexOf('.');
                         sessionNames.add(dotIdx > 0 ? name.substring(0, dotIdx) : name);
-                    }
-                    return false; // 不在此处迭代；分开两轮遍历
-                }).close();
-            }
-            // 第二轮：实际删除所有文件
-            try (var stream = Files.list(sessionDir)) {
-                stream.filter(path -> {
-                    String name = path.getFileName().toString();
-                    return name.endsWith(".json") || name.endsWith(".meta");
-                }).forEach(path -> {
-                    try {
-                        Files.delete(path);
-                    } catch (Exception e) {
-                        LOGGER.warn("Failed to delete: {}", path, e);
+                        try {
+                            Files.delete(path);
+                        } catch (Exception e) {
+                            LOGGER.warn("Failed to delete: {}", path, e);
+                        }
                     }
                 });
             }

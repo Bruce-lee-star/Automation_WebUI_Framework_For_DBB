@@ -26,8 +26,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -109,7 +111,7 @@ public class PlaywrightListener implements StepListener {
      * 当同一个 Story 在 testSuiteStarted(Story) 中被第二次看到时，
      * 说明 Serenity 已从 discovery 阶段进入 execution 阶段。
      */
-    private final java.util.Set<String> seenStoryNames = new java.util.HashSet<>();
+    private final Set<String> seenStoryNames = new HashSet<>();
 
     public PlaywrightListener() {
         // 从环境变量中读取截图策略配置
@@ -1161,13 +1163,6 @@ public class PlaywrightListener implements StepListener {
         rerunStartedLogged = false;
     }
 
-
-
-    // ═══════════════════════════════════════════════════════════════════
-    // 原 checkAndTriggerRerun() / triggerRerunInSameProcess() 已删除。
-    // 重试能力由 Maven Failsafe Plugin 的 rerunFailingTestsCount 提供。
-    // ═══════════════════════════════════════════════════════════════════
-
     public static String getPerformanceStats() {
         return String.format(
                 "Performance Statistics:\n" +
@@ -1337,12 +1332,4 @@ public class PlaywrightListener implements StepListener {
             logger.error("Failed to call StepEventBus.testFailed() for API assertion failure", e);
         }
     }
-
-    /**
-     * ⭐⭐⭐ API 捕获上下文 — 已独立为顶层类。
-     *
-     * @see ApiCaptureContext
-     */
-    // 原内部类已迁移至 com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
-
 }

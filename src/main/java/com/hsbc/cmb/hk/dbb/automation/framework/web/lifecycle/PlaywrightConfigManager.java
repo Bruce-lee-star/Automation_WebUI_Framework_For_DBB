@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -87,8 +88,8 @@ public class PlaywrightConfigManager {
      */
     public String getBrowserType() {
         // 优先级1: 检查是否有测试用例级别的浏览器覆盖
-        if (com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager.hasOverride()) {
-            String overrideBrowser = com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager.getEffectiveBrowserType();
+        if (BrowserOverrideManager.hasOverride()) {
+            String overrideBrowser = BrowserOverrideManager.getEffectiveBrowserType();
             LoggingConfigUtil.logDebugIfVerbose(logger, "Using override browser type: {}", overrideBrowser);
             return overrideBrowser;
         }

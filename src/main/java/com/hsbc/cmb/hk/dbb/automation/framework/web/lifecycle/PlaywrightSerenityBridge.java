@@ -85,20 +85,20 @@ class PlaywrightSerenityBridge {
             PlaywrightManager.pageThreadLocal.remove();
             PlaywrightManager.contextThreadLocal.remove();
         }
-        PlaywrightManager.customContextOptionsFlag.remove();
-        PlaywrightManager.customStorageStatePath.remove();
-        PlaywrightManager.customLocale.remove();
-        PlaywrightManager.customTimezoneId.remove();
-        PlaywrightManager.customUserAgent.remove();
-        PlaywrightManager.customPermissions.remove();
-        PlaywrightManager.customIsMobile.remove();
-        PlaywrightManager.customHasTouch.remove();
-        PlaywrightManager.customColorScheme.remove();
-        PlaywrightManager.customGeolocation.remove();
-        PlaywrightManager.customDeviceScaleFactor.remove();
-        PlaywrightManager.customViewportWidth.remove();
-        PlaywrightManager.customViewportHeight.remove();
-        PlaywrightManager.customProxyEnabled.remove();
+        CustomOptionsManager.customContextOptionsFlag.remove();
+        CustomOptionsManager.customStorageStatePath.remove();
+        CustomOptionsManager.customLocale.remove();
+        CustomOptionsManager.customTimezoneId.remove();
+        CustomOptionsManager.customUserAgent.remove();
+        CustomOptionsManager.customPermissions.remove();
+        CustomOptionsManager.customIsMobile.remove();
+        CustomOptionsManager.customHasTouch.remove();
+        CustomOptionsManager.customColorScheme.remove();
+        CustomOptionsManager.customGeolocation.remove();
+        CustomOptionsManager.customDeviceScaleFactor.remove();
+        CustomOptionsManager.customViewportWidth.remove();
+        CustomOptionsManager.customViewportHeight.remove();
+        CustomOptionsManager.customProxyEnabled.remove();
     }
 
     // ==================== 自定义配置重置 ====================
@@ -132,13 +132,13 @@ class PlaywrightSerenityBridge {
      */
     static void resetCustomContextOptionsForFeatureMode() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for Feature mode (preserving session config)...");
-        Path preservedStorageStatePath = PlaywrightManager.customStorageStatePath.get();
+        Path preservedStorageStatePath = CustomOptionsManager.customStorageStatePath.get();
         cleanupThreadLocals(false);
         if (preservedStorageStatePath != null) {
-            PlaywrightManager.customStorageStatePath.set(preservedStorageStatePath);
+            CustomOptionsManager.customStorageStatePath.set(preservedStorageStatePath);
             BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
             if (existingContext == null || (existingContext.browser() != null && !existingContext.browser().isConnected())) {
-                PlaywrightManager.customContextOptionsFlag.set(true);
+                CustomOptionsManager.customContextOptionsFlag.set(true);
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Feature mode: context null/closed, set flag to apply storage state");
             } else {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Feature mode: context exists, not setting flag");
@@ -182,7 +182,7 @@ class PlaywrightSerenityBridge {
             // 关闭多余页面标签
             if (context != null) {
                 try {
-                    java.util.List<Page> allPages = context.pages();
+                    List<Page> allPages = context.pages();
                     int pageCount = allPages.size();
                     if (pageCount > 1) {
                         LoggingConfigUtil.logInfoIfVerbose(logger,
@@ -205,7 +205,7 @@ class PlaywrightSerenityBridge {
 
             // 确保 page 引用指向第一个页面
             if (context != null) {
-                java.util.List<Page> allPages = context.pages();
+                List<Page> allPages = context.pages();
                 if (!allPages.isEmpty()) {
                     Page mainPage = allPages.get(0);
                     if (page != mainPage && !mainPage.isClosed()) {
@@ -304,7 +304,6 @@ class PlaywrightSerenityBridge {
      */
     static void cleanupForScenario() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Cleaning up for scenario...");
-
 
         cleanupTempDownloads();
         AutoBrowserProcessor.clearProcessingState();

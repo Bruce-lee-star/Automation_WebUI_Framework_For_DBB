@@ -9,18 +9,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.*;
-import com.microsoft.playwright.options.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Dimension;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
+
 
 /**
  * 企业级 Playwright Manager - 管理 Playwright 实例、Browser、Context 和 Page
@@ -41,8 +38,6 @@ public class PlaywrightManager {
     // 线程安全的实例存储
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
-    // 线程安全的下载进程存储（使用 CopyOnWriteArrayList 保证多线程并发安全）
-    private static final List<Process> downloadProcesses = new CopyOnWriteArrayList<>();
 
     // 线程安全锁：保护共享资源（Browser 实例）
     private static final Object BROWSER_LOCK = new Object();
@@ -54,7 +49,7 @@ public class PlaywrightManager {
     // 框架状态引用
     static final FrameworkState frameworkState = FrameworkState.getInstance();
 
-    // ==================== ThreadLocal 变量（17个，集中管理） ====================
+    // ==================== ThreadLocal 变量（3个，集中管理） ====================
 
     // ---- 核心 Page/Context ----
     static final ThreadLocal<BrowserContext> contextThreadLocal = new ThreadLocal<>();
@@ -62,22 +57,6 @@ public class PlaywrightManager {
 
     // ---- 配置标识 ----
     static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
-
-    // ---- 自定义 Context 选项（用户自定义优先于框架配置，13个） ----
-    static final ThreadLocal<Boolean> customContextOptionsFlag = new ThreadLocal<>();
-    static final ThreadLocal<Path> customStorageStatePath = new ThreadLocal<>();
-    static final ThreadLocal<String> customLocale = new ThreadLocal<>();
-    static final ThreadLocal<String> customTimezoneId = new ThreadLocal<>();
-    static final ThreadLocal<String> customUserAgent = new ThreadLocal<>();
-    static final ThreadLocal<List<String>> customPermissions = new ThreadLocal<>();
-    static final ThreadLocal<Boolean> customIsMobile = new ThreadLocal<>();
-    static final ThreadLocal<Boolean> customHasTouch = new ThreadLocal<>();
-    static final ThreadLocal<ColorScheme> customColorScheme = new ThreadLocal<>();
-    static final ThreadLocal<Geolocation> customGeolocation = new ThreadLocal<>();
-    static final ThreadLocal<Integer> customDeviceScaleFactor = new ThreadLocal<>();
-    static final ThreadLocal<Integer> customViewportWidth = new ThreadLocal<>();
-    static final ThreadLocal<Integer> customViewportHeight = new ThreadLocal<>();
-    static final ThreadLocal<Boolean> customProxyEnabled = new ThreadLocal<>();
 
     // ==================== 静态初始化块 ====================
 
@@ -95,18 +74,9 @@ public class PlaywrightManager {
      * 确保浏览器已安装
      * 委托给 PlaywrightInitializer
      */
-    private static void ensureBrowserInstalledForType(String browserType) {
+    private static void ensureBrowserInstalledForType() {
         PlaywrightInitializer.ensureBrowsersInstalled();
     }
-
-    // ==================== 工具方法 ====================
-
-
-    // generateHash、cleanupTempDownloads 已迁移到子管理器
-    // generateHash → PlaywrightScreenshotManager（内部方法）
-    // cleanupTempDownloads → PlaywrightSerenityBridge
-    // getAvailableScreenSize → PlaywrightConfigManager（config().getXxx()）
-    // getConfiguredLoadState / stabilizePage → PlaywrightContextManager
 
     // ==================== 生命周期管理方法 ====================
 
@@ -314,7 +284,7 @@ public class PlaywrightManager {
         if (!shouldSkipBrowserDownload()) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
             long checkStart = System.currentTimeMillis();
-            ensureBrowserInstalledForType(browserType);
+            ensureBrowserInstalledForType();
             long checkElapsed = System.currentTimeMillis() - checkStart;
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser check completed in {}ms", checkElapsed);
         }
@@ -344,7 +314,6 @@ public class PlaywrightManager {
         // 配置窗口大小和启动参数
         configureBrowserLaunchOptions(launchOptions);
 
-
         long initStart = System.currentTimeMillis();
         try {
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Starting browser launch: type={}, channel={}, headless={}", 
@@ -367,7 +336,6 @@ public class PlaywrightManager {
             throw new BrowserException("Failed to initialize Browser for config: " + configId, e);
         }
     }
-
 
     /**
      * 配置浏览器启动选项
@@ -438,7 +406,6 @@ public class PlaywrightManager {
         }
     }
 
-
     /**
      * 根据配置选择浏览器类型
      */
@@ -450,22 +417,18 @@ public class PlaywrightManager {
 
         try {
             // 检查是否启用 BrowserStack
-            if (com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.isBrowserStackEnabled()) {
+            if (BrowserStackManager.isBrowserStackEnabled()) {
                 logger.info("Using BrowserStack for browser: {}", browserType);
                 return setupBrowserStackBrowser(playwright, browserType);
             }
 
             // 本地浏览器
-            switch (browserType.toLowerCase()) {
-                case "chromium":
-                    return playwright.chromium().launch(launchOptions);
-                case "firefox":
-                    return playwright.firefox().launch(launchOptions);
-                case "webkit":
-                    return playwright.webkit().launch(launchOptions);
-                default:
-                    throw new IllegalArgumentException("Unsupported browser type: " + browserType);
-            }
+            return switch (browserType.toLowerCase()) {
+                case "chromium" -> playwright.chromium().launch(launchOptions);
+                case "firefox" -> playwright.firefox().launch(launchOptions);
+                case "webkit" -> playwright.webkit().launch(launchOptions);
+                default -> throw new IllegalArgumentException("Unsupported browser type: " + browserType);
+            };
         } catch (Exception e) {
             logger.error("Failed to launch browser {} with options: {}", browserType, launchOptions, e);
 
@@ -525,9 +488,7 @@ public class PlaywrightManager {
      * 新特性：自动检测浏览器类型，不依赖Cucumber hooks
      * 在首次访问时自动从scenario标签中提取浏览器类型并切换
      */
-    public static Browser getBrowser() {
-        long methodStart = System.currentTimeMillis();
-        
+    public static Browser getBrowser() {      
         // 获取当前的配置ID
         String currentConfig = getCurrentConfigId();
         if (currentConfig == null) {
@@ -638,7 +599,7 @@ public class PlaywrightManager {
         BrowserContext context = contextThreadLocal.get();
         
         // 检测是否需要重建Context（因为设置了自定义配置）
-        Boolean customFlag = customContextOptionsFlag.get();
+        Boolean customFlag = CustomOptionsManager.customContextOptionsFlag.get();
         if (context != null && customFlag != null && customFlag) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options detected, recreating context to apply them...");
             recreateContextIfCustomConfigNeeded();
@@ -698,49 +659,7 @@ public class PlaywrightManager {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
         }
 
-        // customContextOptionsFlag 已经在各个 setCustom*() 方法中被设置为 true
-    }
-
-
-    /**
-     * 设置自定义 Context 选项标志
-     * <p>
-     * 注意：通常不需要手动调用此方法
-     * - 调用任何 setCustom*() 方法（如 setCustomLocale(), setStorageStatePath() 等）会自动设置此标志为 true
-     * - 此方法主要用于显式禁用自定义配置（设置为 false）或内部框架使用
-     *
-     * @param contextOptionsFlag 是否启用自定义配置（true: 启用，false: 禁用）
-     */
-    public static void setCustomContextOptionsFlag(Boolean contextOptionsFlag){
-        customContextOptionsFlag.set(contextOptionsFlag);
-    }
-
-    /**
-     * 统一的自定义选项设置模板：设 ThreadLocal → 标记 flag → 日志 → 触发 Context 延迟重建。
-     * <p>
-     * 延迟重建机制：标记 customContextOptionsFlag=true 并立即调用 scheduleContextRebuild()，
-     * 支持多次连续 set 只触发一次重建（因为 Context 已不存在）。
-     */
-    private static <T> void applyCustomOption(T value, String optionName, Runnable setter) {
-        setter.run();
-        customContextOptionsFlag.set(true);
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom {} set: {} (custom context options auto-enabled)", optionName, value);
-        scheduleContextRebuild();
-    }
-
-    /**
-     * 设置自定义 StorageState 路径（用于 session 恢复）
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 如果 Context 已存在，会关闭它以便应用新配置（确保 session 恢复生效）
-     * <p>
-     * 注意：此方法是特殊处理，因为 session 恢复需要在 Context 创建时应用 storageState
-     *
-     * @param storageStatePath StorageState 文件路径
-     */
-    public static void setStorageStatePath(Path storageStatePath) {
-        applyCustomOption(storageStatePath, "storageStatePath", () -> customStorageStatePath.set(storageStatePath));
+        // customContextOptionsFlag 已在 CustomOptionsManager.setXXX() 中设置
     }
 
     /**
@@ -778,156 +697,6 @@ public class PlaywrightManager {
             }
             LoggingConfigUtil.logInfoIfVerbose(logger, "Context closed, will create new one with custom configurations on next access");
         }
-    }
-
-    /**
-     * 设置自定义 Locale
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param locale Locale 字符串（如 "zh-CN", "en-US"）
-     */
-    public static void setCustomLocale(String locale) {
-        applyCustomOption(locale, "locale", () -> customLocale.set(locale));
-    }
-
-    /**
-     * 设置自定义 Timezone
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param timezoneId Timezone ID（如 "Asia/Shanghai", "America/New_York"）
-     */
-    public static void setCustomTimezone(String timezoneId) {
-        applyCustomOption(timezoneId, "timezoneId", () -> customTimezoneId.set(timezoneId));
-    }
-
-    /**
-     * 设置自定义 User Agent
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param userAgent User-Agent 字符串
-     */
-    public static void setCustomUserAgent(String userAgent) {
-        applyCustomOption(userAgent, "userAgent", () -> customUserAgent.set(userAgent));
-    }
-
-    /**
-     * 设置自定义 Permissions
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param permissions 权限列表（如 List.of("geolocation", "notifications")）
-     */
-    public static void setCustomPermissions(List<String> permissions) {
-        applyCustomOption(permissions, "permissions", () -> customPermissions.set(permissions));
-    }
-
-    /**
-     * 设置自定义 Mobile 标识
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param isMobile 是否为移动设备
-     */
-    public static void setCustomIsMobile(boolean isMobile) {
-        applyCustomOption(isMobile, "isMobile", () -> customIsMobile.set(isMobile));
-    }
-
-    /**
-     * 设置自定义 Touch 标识
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param hasTouch 是否支持触摸
-     */
-    public static void setCustomHasTouch(boolean hasTouch) {
-        applyCustomOption(hasTouch, "hasTouch", () -> customHasTouch.set(hasTouch));
-    }
-
-    /**
-     * 设置自定义 Color Scheme
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param colorScheme 颜色方案（如 ColorScheme.LIGHT, ColorScheme.DARK）
-     */
-    public static void setCustomColorScheme(ColorScheme colorScheme) {
-        applyCustomOption(colorScheme, "colorScheme", () -> customColorScheme.set(colorScheme));
-    }
-
-    /**
-     * 设置自定义 Geolocation
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param latitude 纬度
-     * @param longitude 经度
-     */
-    public static void setCustomGeolocation(double latitude, double longitude) {
-        applyCustomOption(String.format("(%.4f, %.4f)", latitude, longitude), "geolocation",
-                () -> customGeolocation.set(new Geolocation(latitude, longitude)));
-    }
-
-    /**
-     * 设置自定义 Device Scale Factor
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param deviceScaleFactor 设备缩放因子（如 1.0, 2.0, 3.0）
-     */
-    public static void setCustomDeviceScaleFactor(double deviceScaleFactor) {
-        applyCustomOption(deviceScaleFactor, "deviceScaleFactor",
-                () -> customDeviceScaleFactor.set((int) (deviceScaleFactor * 100)));
-    }
-
-    /**
-     * 设置自定义 Viewport 尺寸
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param width  宽度
-     * @param height 高度
-     */
-    public static void setCustomViewportSize(int width, int height) {
-        applyCustomOption(width + "x" + height, "viewportSize", () -> {
-            customViewportWidth.set(width);
-            customViewportHeight.set(height);
-        });
-    }
-
-    /**
-     * 设置自定义代理启用开关（ThreadLocal 覆盖，优先于配置文件）
-     * 自定义配置优先于框架默认配置
-     * <p>
-     * 调用此方法会自动启用自定义配置模式（setCustomContextOptionsFlag(true)）
-     * 配置会在下一次创建 Context 时生效
-     *
-     * @param enabled 是否启用代理（true=启用，false=禁用）
-     */
-    public static void setCustomProxyEnabled(Boolean enabled) {
-        applyCustomOption(enabled, "proxyEnabled", () -> customProxyEnabled.set(enabled));
     }
 
     /**
@@ -995,9 +764,6 @@ public class PlaywrightManager {
         return PlaywrightContextManager.createContext();
     }
 
-    // cleanupThreadLocals / resetCustomContextOptions / reset...Mode 已迁移到 PlaywrightSerenityBridge
-    // stabilizePage → PlaywrightContextManager
-
     /**
      * 创建新的 Context 和 Page（委托给 PlaywrightSerenityBridge）
      */
@@ -1023,7 +789,6 @@ public class PlaywrightManager {
             }
         }
     }
-
 
     /**
      * 关闭当前线程的 Context
@@ -1122,9 +887,6 @@ public class PlaywrightManager {
     public static void cleanupAll() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up all Playwright resources...");
 
-        // 终止所有浏览器下载进程
-        terminateDownloadProcesses();
-
         // 关闭当前线程的页面和上下文
         closePage();
         closeContext();
@@ -1162,40 +924,6 @@ public class PlaywrightManager {
     }
 
     /**
-     * 终止所有浏览器下载进程
-     */
-    private static void terminateDownloadProcesses() {
-        synchronized (downloadProcesses) {
-            if (downloadProcesses.isEmpty()) {
-                return;
-            }
-
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Terminating {} browser download processes...", downloadProcesses.size());
-
-            for (Process process : downloadProcesses) {
-                try {
-                    if (process.isAlive()) {
-                        process.destroy();
-                        // 等待最多 5 秒让进程正常退出
-                        boolean exited = process.waitFor(5, TimeUnit.SECONDS);
-                        if (!exited) {
-                            LoggingConfigUtil.logWarnIfVerbose(logger, "Download process did not exit gracefully, forcing termination");
-                            process.destroyForcibly();
-                        }
-                        LoggingConfigUtil.logInfoIfVerbose(logger, "Download process terminated");
-                    }
-                } catch (Exception e) {
-                    logger.warn("Failed to terminate download process: {}", e.getMessage());
-                }
-            }
-
-            downloadProcesses.clear();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "All download processes terminated");
-        }
-    }
-
-
-    /**
      * 清理资源（向后兼容，委托给 cleanupForScenario）
      */
     public static void cleanup() {
@@ -1211,10 +939,6 @@ public class PlaywrightManager {
     public static void cleanupForScenario() {
         PlaywrightSerenityBridge.cleanupForScenario();
     }
-
-
-
-
 
     /**
      * Feature 级别的清理（委托给 PlaywrightSerenityBridge）
@@ -1232,14 +956,7 @@ public class PlaywrightManager {
     // ==================== 配置访问（通过 config() 代理到 PlaywrightConfigManager） ====================
     // 使用 PlaywrightManager.config().getXXX() 或 PlaywrightConfigManager.config().getXXX() 访问配置
 
-    // ==================== 公共访问方法（用于其他类访问自定义配置） ====================
-
-    /**
-     * 获取自定义 Context 选项标志
-     */
-    static ThreadLocal<Boolean> getCustomContextOptionsFlag() {
-        return customContextOptionsFlag;
-    }
+    // ==================== 公共访问方法 ====================
 
     /**
      * 获取自定义选项管理器（提供 PlaywrightManager.customOptions().getXXX() 风格的 API）

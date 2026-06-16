@@ -398,6 +398,9 @@ public class RouteEngine {
         // 不同 API 各自负责，互不干扰。
         long delayMs = rule.getDelayMs();
 
+        // ⭐ 跨层合并是否真正发生（非 ctxRule != null，因为 session 可能已停止）
+        boolean crossLayerDelayMerged = false;
+
         // ⭐ 仅 page handler 做跨层合并，context handler 跳过（避免在 CONTEXT_RULES 中自引用）
         boolean isContextRule = CONTEXT_RULES.containsValue(rule);
         RouteRule ctxRule = isContextRule ? null : findMatchingContextRule(reqUrl);
@@ -421,6 +424,7 @@ public class RouteEngine {
                 // ── ∀ 跨层级组合：始终合并 DELAY（取最大值，含 page 和 context 各自的 delay）──
                 long ctxDelay = DelayHandler.clampDelay(DelayHandler.resolveDelay(ctxRule));
                 delayMs = Math.max(delayMs, ctxDelay);
+                crossLayerDelayMerged = true;
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                         "[RouteEngine] Cross-layer DELAY merged: pageType={}, ctxType={}, pageDelay={}ms, ctxDelay={}ms, effectiveDelay={}ms",
                         pageType, ctxType, rule.getDelayMs(), ctxDelay, delayMs);
@@ -516,11 +520,14 @@ public class RouteEngine {
         // 必须在 HANDLERS.get() 之前检查，因为 DELAY 已从 HANDLERS 中移除
         // 注意：上面的跨层级检查已将 context MONITOR→page DELAY 转为 MonitorHandler，此处仅处理纯 DELAY
         if (rule.getType() == RouteHandleType.DELAY) {
+            // ⭐ 跨层合并后 delayMs 已取 max，直接使用合并值；
+            //    非跨层场景传 0，让 scheduleDelay 自行调用 resolveDelay，
+            //    以支持 randomDelay(1,5) 随机范围（否则 preComputedDelayMs > 0 时 resolveDelay 被跳过）。
+            long scheduledMs = crossLayerDelayMerged ? delayMs : 0;
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}', effectiveDelay={}ms ═══",
-                    rule.getUrlPattern(), reqUrl, delayMs);
-            // ⭐ 传入跨层级合并后的 delayMs，避免 scheduleDelay 重新读 rule 导致合并结果丢失
-            scheduleDelay(route, rule, delayMs);
+                    "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}', crossLayerMerged={}, delay={}ms ═══",
+                    rule.getUrlPattern(), reqUrl, crossLayerDelayMerged, delayMs);
+            scheduleDelay(route, rule, scheduledMs);
             return;
         }
 
@@ -540,8 +547,8 @@ public class RouteEngine {
         }
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] ═══ dispatchRoute -> handler: type={}, handler={}, pattern='{}', url='{}' ═══",
-                rule.getType(), handler.getClass().getSimpleName(), rule.getUrlPattern(), reqUrl);
+                "[RouteEngine] ═══ dispatchRoute -> handler: type={}, pattern='{}', url='{}' ═══",
+                rule.getType(), rule.getUrlPattern(), reqUrl);
 
         // ═══ 执行 page handler（带合并后的延迟，delayMs 已由上面的跨层级合并计算好） ═══
         final long effectiveDelay = delayMs;
@@ -566,10 +573,13 @@ public class RouteEngine {
      *
      * @param route              Playwright 路由对象
      * @param rule               路由规则（含延迟配置）
-     * @param preComputedDelayMs 跨层级合并后的延迟值（>0 时优先使用，避免重新读取 rule 丢失合并结果）
+     * @param preComputedDelayMs 跨层级合并后的延迟值。>0 表示已由跨层合并计算出最终值（取 max），
+     *                           此时跳过 resolveDelay 的随机/固定计算，直接使用该值。
+     *                           非跨层场景传入 0，让 resolveDelay 自行处理随机延迟范围。
      */
     private static void scheduleDelay(Route route, RouteRule rule, long preComputedDelayMs) {
-        // ⭐ 优先使用跨层级合并后的延迟值，否则从 rule 重新计算
+        // ⭐ 跨层级合并后的延迟值（>0）= 已取 max，直接信任使用；
+        //    否则从 rule 重新计算（支持随机延迟范围 randomDelay）
         long delayMs = preComputedDelayMs > 0
                 ? DelayHandler.clampDelay(preComputedDelayMs)
                 : DelayHandler.clampDelay(DelayHandler.resolveDelay(rule));
@@ -695,9 +705,8 @@ public class RouteEngine {
         Request req = route.request();
         try {
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                    "[RouteEngine] executeHandler START: handler={}, type={}, pattern='{}', url='{}'",
-                    handler.getClass().getSimpleName(), rule.getType(),
-                    rule.getUrlPattern(), req.url());
+                    "[RouteEngine] executeHandler START: type={}, pattern='{}', url='{}'",
+                    rule.getType(), rule.getUrlPattern(), req.url());
             handler.handle(route, rule);
 
             LOGGER.info("[RouteEngine] Route matched: type={}, pattern='{}', method={}, url='{}'",
@@ -705,8 +714,8 @@ public class RouteEngine {
                     req.method(), req.url());
 
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteEngine] executeHandler DONE: handler={}, type={}, pattern='{}'",
-                    handler.getClass().getSimpleName(), rule.getType(), rule.getUrlPattern());
+                    "[RouteEngine] executeHandler DONE: type={}, pattern='{}'",
+                    rule.getType(), rule.getUrlPattern());
 
             // MOCK/MODIFY/DELAY 处理成功后触发匹配计数（支持一次性拦截 / auto-stop）
             // MONITOR 的匹配计数在 MonitorHandler 异步完成时回调，不在此处触发
@@ -721,8 +730,8 @@ public class RouteEngine {
             // ApiAssertionException 不在此处继续传播（Playwright 内部捕获），
             // 但主测试线程已被 interrupt，当前阻塞的 Playwright 操作将立即失败
         } catch (Exception e) {
-            LOGGER.error("[RouteEngine] Handler '{}' threw exception for pattern '{}': {}",
-                    handler.getClass().getSimpleName(), rule.getUrlPattern(), e.getMessage(), e);
+            LOGGER.error("[RouteEngine] Handler type={} threw exception for pattern '{}': {}",
+                    rule.getType(), rule.getUrlPattern(), e.getMessage(), e);
             try {
                 route.resume();
             } catch (Exception resumeEx) {

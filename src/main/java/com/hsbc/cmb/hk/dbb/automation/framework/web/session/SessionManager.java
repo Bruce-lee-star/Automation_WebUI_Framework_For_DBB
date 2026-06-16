@@ -1,6 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
 import com.microsoft.playwright.BrowserContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
@@ -10,7 +12,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
 import java.util.Properties;
+import java.util.Set;
 
 /**
  * Session Manager - Manage user login state, supports skip login functionality
@@ -25,13 +29,14 @@ import java.util.Properties;
  */
 public class SessionManager {
 
-    private static final Logger logger = LoggerFactory.getLogger(SessionManager.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SessionManager.class);
 
     // Session storage directory
     private static final String SESSION_DIR = "target/.sessions";
 
-    // Session timeout in minutes (read from FrameworkConfig)
-    private static final long SESSION_TIMEOUT_MINUTES = 60; // 默认60分钟过期
+    // Session timeout in minutes — read from FrameworkConfig (default: 5)
+    private static final long SESSION_TIMEOUT_MINUTES =
+            FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
 
     // ==================== Feature 级别 Session 缓存 ====================
     // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
@@ -68,7 +73,7 @@ public class SessionManager {
         currentFeatureSessionKey.set(sessionKey);
         featureSessionRestored.set(true);
         currentFeatureHomeUrl.set(homeUrl);
-        LoggingConfigUtil.logInfoIfVerbose(logger,
+        LoggingConfigUtil.logInfoIfVerbose(LOGGER,
             "Feature-level session marked as restored: {} (homeUrl: {})", sessionKey, homeUrl);
     }
 
@@ -85,7 +90,7 @@ public class SessionManager {
         String currentKey = currentFeatureSessionKey.get();
 
         if (restored != null && restored && sessionKey.equals(currentKey)) {
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "Feature-level session already restored for: {}, skipping restore", sessionKey);
             return true;
         }
@@ -117,7 +122,7 @@ public class SessionManager {
         // 优先从 Feature 级别缓存读取
         String homeUrl = getFeatureHomeUrl();
         if (homeUrl != null && !homeUrl.isEmpty()) {
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "HomeUrl loaded from Feature cache: {}", homeUrl);
             return homeUrl;
         }
@@ -125,7 +130,7 @@ public class SessionManager {
         // 缓存未命中，从 meta 文件读取
         homeUrl = loadHomeUrl(sessionKey);
         if (homeUrl != null && !homeUrl.isEmpty()) {
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "HomeUrl loaded from meta file: {}", homeUrl);
         }
 
@@ -138,7 +143,7 @@ public class SessionManager {
      * 在 Feature 结束时调用，清理 ThreadLocal 变量
      */
     public static void resetFeatureSession() {
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting feature-level session state");
+        LoggingConfigUtil.logInfoIfVerbose(LOGGER, "Resetting feature-level session state");
         currentFeatureSessionKey.remove();
         featureSessionRestored.remove();
         currentFeatureHomeUrl.remove();
@@ -157,24 +162,24 @@ public class SessionManager {
         Path metaPath = getMetaPath(sessionKey);
         
         if (!Files.exists(sessionPath) || !Files.exists(metaPath)) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Session file not found: {}", sessionKey);
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER, "Session file not found: {}", sessionKey);
             return false;
         }
 
         // 检查过期时间
         if (isSessionExpired(sessionKey)) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Session expired for: {}", sessionKey);
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER, "Session expired for: {}", sessionKey);
             // 清除过期的 session
             try {
                 Files.delete(sessionPath);
                 Files.delete(metaPath);
             } catch (Exception e) {
-                logger.warn("Failed to delete expired session: {}", sessionKey, e);
+                LOGGER.warn("Failed to delete expired session: {}", sessionKey, e);
             }
             return false;
         }
 
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Valid session found for: {}", sessionKey);
+        LoggingConfigUtil.logInfoIfVerbose(LOGGER, "Valid session found for: {}", sessionKey);
         return true;
     }
 
@@ -190,7 +195,7 @@ public class SessionManager {
      * 自定义配置机制：
      * - storageStatePath 是用户自定义配置，优先级高于框架默认配置
      * - 通过 customContextOptionsFlag 标志控制是否应用自定义配置
-     * - 业务层需要调用 PlaywrightManager.setCustomContextOptionsFlag(true)
+     * - 业务层通过 PlaywrightManager.customOptions().setXXX() 设置自定义配置
      * - 框架在 createContext() 时检查标志并应用自定义配置
      * <p>
      * 职责划分：
@@ -207,12 +212,12 @@ public class SessionManager {
             // Feature 模式：检查 Feature 级别缓存
             if (isFeatureSessionRestored(sessionKey)) {
                 String homeUrl = getFeatureHomeUrl();
-                LoggingConfigUtil.logInfoIfVerbose(logger,
+                LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                     "Feature-level session cache hit: {} (homeUrl: {})", sessionKey, homeUrl);
                 return true;
             }
         } else {
-            LoggingConfigUtil.logDebugIfVerbose(logger,
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "Scenario mode: skipping feature-level cache for {}", sessionKey);
         }
 
@@ -226,20 +231,20 @@ public class SessionManager {
                     // ⭐ Scenario 模式：setStorageStatePath → customContextOptionsFlag=true
                     // → 下一个 getContext() 创建全新 Context 并加载缓存的 storageState
                     // 每个 Scenario 独立 Context = 每个 Scenario 一个窗口（预期行为）
-                    PlaywrightManager.setStorageStatePath(sessionPath);
+                    PlaywrightManager.customOptions().setStorageStatePath(sessionPath);
                 } else {
                     // Feature 模式
                     if (PlaywrightManager.hasContext()) {
                         // Context 已存在（前一个 Scenario 的登录态仍在）
                         // 当前是不同的登录用户 → 清除当前 Context 的 cookies → 返回 false 触发登录流程
-                        LoggingConfigUtil.logDebugIfVerbose(logger,
+                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                                 "Feature mode: Context already exists with different session, clearing cookies and returning false to trigger login for {}", sessionKey);
                         BrowserContext context = PlaywrightManager.getContext();
                         context.clearCookies();
                         return false;
                     }
                     // 首个 Scenario 或 Context 还未创建 → setStorageStatePath，后续 createContext 时应用
-                    PlaywrightManager.setStorageStatePath(sessionPath);
+                    PlaywrightManager.customOptions().setStorageStatePath(sessionPath);
                 }
 
                 // 标记 Feature 级别 Session 已恢复
@@ -247,16 +252,16 @@ public class SessionManager {
                     markFeatureSessionRestored(sessionKey, homeUrl);
                 }
 
-                LoggingConfigUtil.logInfoIfVerbose(logger,
+                LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                     "Session prepared for: {} (custom storageStatePath: {})", sessionKey, sessionPath);
                 return true;
             } else {
-                LoggingConfigUtil.logWarnIfVerbose(logger,
+                LoggingConfigUtil.logWarnIfVerbose(LOGGER,
                     "Session file exists but no homeUrl found: {}", sessionKey);
                 return false;
             }
         } else {
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "No valid session for: {}, waiting for login", sessionKey);
             return false;
         }
@@ -287,7 +292,7 @@ public class SessionManager {
                 Files.createDirectories(sessionPath.getParent());
             }
 
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "Saving session for: {} (homeUrl: {})", sessionKey, homeUrl);
 
             // 获取当前 context
@@ -306,10 +311,10 @@ public class SessionManager {
             // 【关键】标记 Feature 级别 Session 已保存（后续 Scenario 直接复用）
             markFeatureSessionRestored(sessionKey, homeUrl);
 
-            LoggingConfigUtil.logInfoIfVerbose(logger,
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "Session saved successfully: {} -> {}", sessionKey, sessionPath);
         } catch (Exception e) {
-            logger.error("Failed to save session for: {}", sessionKey, e);
+            LOGGER.error("Failed to save session for: {}", sessionKey, e);
             throw new RuntimeException("Failed to save session", e);
         }
     }
@@ -347,7 +352,7 @@ public class SessionManager {
             if (Files.exists(sessionPath)) {
                 Files.delete(sessionPath);
                 sessionDeleted = true;
-                LoggingConfigUtil.logInfoIfVerbose(logger, 
+                LoggingConfigUtil.logInfoIfVerbose(LOGGER, 
                     "Session file deleted: {}", sessionPath);
             }
             
@@ -355,7 +360,7 @@ public class SessionManager {
             if (Files.exists(metaPath)) {
                 Files.delete(metaPath);
                 metaDeleted = true;
-                LoggingConfigUtil.logInfoIfVerbose(logger, 
+                LoggingConfigUtil.logInfoIfVerbose(LOGGER, 
                     "Meta file deleted: {}", metaPath);
             }
             
@@ -363,15 +368,15 @@ public class SessionManager {
             boolean cleared = sessionDeleted || metaDeleted;
             
             if (cleared) {
-                logger.info("Session cleared successfully: {}", sessionKey);
+                LOGGER.info("Session cleared successfully: {}", sessionKey);
             } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, 
+                LoggingConfigUtil.logInfoIfVerbose(LOGGER, 
                     "No session found to clear: {}", sessionKey);
             }
             
             return cleared;
         } catch (Exception e) {
-            logger.error("Failed to clear session for: {}", sessionKey, e);
+            LOGGER.error("Failed to clear session for: {}", sessionKey, e);
             return false;
         }
     }
@@ -398,25 +403,38 @@ public class SessionManager {
             if (!Files.exists(sessionDir)) {
                 return 0;
             }
-            
-            int count = 0;
+
+            // 收集基础名（去掉 .json/.meta 后缀），避免 count/2 启发式计数不准
+            Set<String> sessionNames = new HashSet<>();
             try (var stream = Files.list(sessionDir)) {
-                count = (int) stream
-                    .filter(path -> path.toString().endsWith(".json") || path.toString().endsWith(".meta"))
-                    .peek(path -> {
-                        try {
-                            Files.delete(path);
-                        } catch (Exception e) {
-                            logger.warn("Failed to delete: {}", path, e);
-                        }
-                    })
-                    .count();
+                stream.filter(path -> {
+                    String name = path.getFileName().toString();
+                    if (name.endsWith(".json") || name.endsWith(".meta")) {
+                        // 去掉后缀得到基础名，add 自带去重
+                        int dotIdx = name.lastIndexOf('.');
+                        sessionNames.add(dotIdx > 0 ? name.substring(0, dotIdx) : name);
+                    }
+                    return false; // 不在此处迭代；分开两轮遍历
+                }).close();
             }
-            
-            logger.info("Cleared {} session files", count);
-            return count / 2; // 每个 session 有 .json 和 .meta 两个文件
+            // 第二轮：实际删除所有文件
+            try (var stream = Files.list(sessionDir)) {
+                stream.filter(path -> {
+                    String name = path.getFileName().toString();
+                    return name.endsWith(".json") || name.endsWith(".meta");
+                }).forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (Exception e) {
+                        LOGGER.warn("Failed to delete: {}", path, e);
+                    }
+                });
+            }
+
+            LOGGER.info("Cleared {} session(s)", sessionNames.size());
+            return sessionNames.size();
         } catch (Exception e) {
-            logger.error("Failed to clear all sessions", e);
+            LOGGER.error("Failed to clear all sessions", e);
             return 0;
         }
     }
@@ -440,7 +458,7 @@ public class SessionManager {
             props.load(reader);
             return props.getProperty("homeUrl");
         } catch (Exception e) {
-            logger.warn("Failed to load homeUrl for: {}", sessionKey, e);
+            LOGGER.warn("Failed to load homeUrl for: {}", sessionKey, e);
             return null;
         }
     }
@@ -470,7 +488,7 @@ public class SessionManager {
 
             return elapsedMinutes > SESSION_TIMEOUT_MINUTES;
         } catch (Exception e) {
-            logger.warn("Failed to check session expiration for: {}", sessionKey, e);
+            LOGGER.warn("Failed to check session expiration for: {}", sessionKey, e);
             return true;
         }
     }
@@ -527,9 +545,10 @@ public class SessionManager {
                 props.store(writer, "Session Meta Data");
             }
 
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Meta saved: {} (homeUrl: {})", sessionKey, homeUrl);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER, "Meta saved: {} (homeUrl: {})", sessionKey, homeUrl);
         } catch (Exception e) {
-            logger.warn("Failed to save meta for: {}", sessionKey, e);
+            LOGGER.warn("Failed to save meta for: {}", sessionKey, e);
         }
     }
 }
+

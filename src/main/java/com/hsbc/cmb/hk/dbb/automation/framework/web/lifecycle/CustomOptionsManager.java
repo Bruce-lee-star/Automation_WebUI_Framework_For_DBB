@@ -1,24 +1,38 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.util.List;
 
 /**
- * 自定义选项管理器
- * 用于访问和设置测试级别的自定义配置（如自定义 locale、viewport 等）
- * <p>
- * 使用方式：PlaywrightManager.customOptions().getLocale()
+ * 自定义选项管理器 — <b>Context 自定义选项数据的唯一持有者和设置入口</b>。
+ *
+ * <p>所有自定义 Context 选项（locale、viewport、userAgent 等）的数据存储与设置
+ * 均由此类统一管理。外部调用者通过 {@code PlaywrightManager.customOptions()} 获取本实例。
+ *
+ * <p>使用方式：
+ * <pre>{@code
+ * // 获取/读取
+ * String locale = PlaywrightManager.customOptions().getLocale();
+ *
+ * // 设置（支持链式调用）
+ * PlaywrightManager.customOptions()
+ *     .setLocale("zh-CN")
+ *     .setTimezone("Asia/Shanghai")
+ *     .setViewportSize(1920, 1080)
+ *     .setIsMobile(false);
+ * }</pre>
  */
 public class CustomOptionsManager {
 
+    private static final Logger logger = LoggerFactory.getLogger(CustomOptionsManager.class);
     private static final CustomOptionsManager INSTANCE = new CustomOptionsManager();
 
-    /**
-     * 获取自定义选项管理器实例
-     */
     public static CustomOptionsManager getInstance() {
         return INSTANCE;
     }
@@ -26,227 +40,158 @@ public class CustomOptionsManager {
     private CustomOptionsManager() {
     }
 
-    // ========== 获取方法（直接访问 PlaywrightManager 的 ThreadLocal）==========
+    // ==================== ThreadLocal 数据存储（14个） ====================
+
+    static final ThreadLocal<Boolean> customContextOptionsFlag = new ThreadLocal<>();
+    static final ThreadLocal<Path> customStorageStatePath = new ThreadLocal<>();
+    static final ThreadLocal<String> customLocale = new ThreadLocal<>();
+    static final ThreadLocal<String> customTimezoneId = new ThreadLocal<>();
+    static final ThreadLocal<String> customUserAgent = new ThreadLocal<>();
+    static final ThreadLocal<List<String>> customPermissions = new ThreadLocal<>();
+    static final ThreadLocal<Boolean> customIsMobile = new ThreadLocal<>();
+    static final ThreadLocal<Boolean> customHasTouch = new ThreadLocal<>();
+    static final ThreadLocal<ColorScheme> customColorScheme = new ThreadLocal<>();
+    static final ThreadLocal<Geolocation> customGeolocation = new ThreadLocal<>();
+    static final ThreadLocal<Integer> customDeviceScaleFactor = new ThreadLocal<>();
+    static final ThreadLocal<Integer> customViewportWidth = new ThreadLocal<>();
+    static final ThreadLocal<Integer> customViewportHeight = new ThreadLocal<>();
+    static final ThreadLocal<Boolean> customProxyEnabled = new ThreadLocal<>();
+
+    // ==================== 内部工具方法 ====================
+
+    /**
+     * 统一的自定义选项设置模板：设 ThreadLocal → 标记 flag → 日志 → 触发 Context 延迟重建。
+     */
+    private static <T> void applyCustomOption(T value, String optionName, Runnable setter) {
+        setter.run();
+        customContextOptionsFlag.set(true);
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Custom {} set: {} (custom context options auto-enabled)", optionName, value);
+        PlaywrightManager.scheduleContextRebuild();
+    }
+
+    // ========== 获取方法 ==========
 
     public Path getStorageStatePath() {
-        return PlaywrightManager.customStorageStatePath.get();
+        return customStorageStatePath.get();
     }
 
     public String getLocale() {
-        return PlaywrightManager.customLocale.get();
+        return customLocale.get();
     }
 
     public String getTimezoneId() {
-        return PlaywrightManager.customTimezoneId.get();
+        return customTimezoneId.get();
     }
 
     public String getUserAgent() {
-        return PlaywrightManager.customUserAgent.get();
+        return customUserAgent.get();
     }
 
     public List<String> getPermissions() {
-        return PlaywrightManager.customPermissions.get();
+        return customPermissions.get();
     }
 
     public Geolocation getGeolocation() {
-        return PlaywrightManager.customGeolocation.get();
+        return customGeolocation.get();
     }
 
     public Integer getDeviceScaleFactor() {
-        return PlaywrightManager.customDeviceScaleFactor.get();
+        return customDeviceScaleFactor.get();
     }
 
     public Boolean getIsMobile() {
-        return PlaywrightManager.customIsMobile.get();
+        return customIsMobile.get();
     }
 
     public Boolean getHasTouch() {
-        return PlaywrightManager.customHasTouch.get();
+        return customHasTouch.get();
     }
 
     public ColorScheme getColorScheme() {
-        return PlaywrightManager.customColorScheme.get();
+        return customColorScheme.get();
     }
 
     public Integer getViewportWidth() {
-        return PlaywrightManager.customViewportWidth.get();
+        return customViewportWidth.get();
     }
 
     public Integer getViewportHeight() {
-        return PlaywrightManager.customViewportHeight.get();
+        return customViewportHeight.get();
     }
 
     public Boolean isCustomContextOptionsFlag() {
-        return PlaywrightManager.customContextOptionsFlag.get();
+        return customContextOptionsFlag.get();
     }
 
-    // ========== 设置方法（委托给 PlaywrightManager，支持链式调用）==========
-
-    /**
-     * 设置自定义 StorageState 路径（ThreadLocal 覆盖，用于 session 恢复）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param storageStatePath StorageState 文件路径
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setStorageStatePath(Path storageStatePath) {
-        PlaywrightManager.setStorageStatePath(storageStatePath);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Locale（ThreadLocal 覆盖，如 "en-US", "zh-CN"）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param locale 语言环境
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setLocale(String locale) {
-        PlaywrightManager.setCustomLocale(locale);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Timezone（ThreadLocal 覆盖，如 "Asia/Shanghai", "America/New_York"）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param timezoneId 时区ID
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setTimezone(String timezoneId) {
-        PlaywrightManager.setCustomTimezone(timezoneId);
-        return this;
-    }
-
-    /**
-     * 设置自定义 User Agent（ThreadLocal 覆盖）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param userAgent 用户代理字符串
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setUserAgent(String userAgent) {
-        PlaywrightManager.setCustomUserAgent(userAgent);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Permissions（ThreadLocal 覆盖，如 "geolocation", "notifications"）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param permissions 权限列表
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setPermissions(List<String> permissions) {
-        PlaywrightManager.setCustomPermissions(permissions);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Geolocation（ThreadLocal 覆盖）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param latitude  纬度
-     * @param longitude 经度
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setGeolocation(double latitude, double longitude) {
-        PlaywrightManager.setCustomGeolocation(latitude, longitude);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Device Scale Factor（ThreadLocal 覆盖，如 1.0, 2.0 对应普通/Retina）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param deviceScaleFactor 设备缩放因子
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setDeviceScaleFactor(double deviceScaleFactor) {
-        PlaywrightManager.setCustomDeviceScaleFactor(deviceScaleFactor);
-        return this;
-    }
-
-    /**
-     * 设置自定义是否为移动端（ThreadLocal 覆盖）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param isMobile 是否为移动端
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setIsMobile(boolean isMobile) {
-        PlaywrightManager.setCustomIsMobile(isMobile);
-        return this;
-    }
-
-    /**
-     * 设置自定义是否支持触摸（ThreadLocal 覆盖）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param hasTouch 是否支持触摸
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setHasTouch(boolean hasTouch) {
-        PlaywrightManager.setCustomHasTouch(hasTouch);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Color Scheme（ThreadLocal 覆盖，如 dark, light）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param colorScheme 颜色模式
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setColorScheme(ColorScheme colorScheme) {
-        PlaywrightManager.setCustomColorScheme(colorScheme);
-        return this;
-    }
-
-    /**
-     * 设置自定义 Viewport 尺寸（ThreadLocal 覆盖）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param width  视口宽度
-     * @param height 视口高度
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setViewportSize(int width, int height) {
-        PlaywrightManager.setCustomViewportSize(width, height);
-        return this;
-    }
-
-    /**
-     * 设置自定义代理启用开关（ThreadLocal 覆盖，优先于配置文件）
-     * <p>
-     * 调用后会触发 Context 延迟重建，在下次 getContext()/getPage() 时生效
-     *
-     * @param enabled 是否启用代理（true=启用，false=禁用）
-     * @return this，支持链式调用
-     */
-    public CustomOptionsManager setProxyEnabled(Boolean enabled) {
-        PlaywrightManager.setCustomProxyEnabled(enabled);
-        return this;
-    }
-
-    /**
-     * 获取自定义代理启用开关
-     *
-     * @return null=未设置（使用配置文件默认值），true/false=已覆盖
-     */
     public Boolean getProxyEnabled() {
-        return PlaywrightManager.customProxyEnabled.get();
+        return customProxyEnabled.get();
+    }
+
+    // ========== 设置方法（直接操作 ThreadLocal，支持链式调用）==========
+
+    public CustomOptionsManager setStorageStatePath(Path storageStatePath) {
+        applyCustomOption(storageStatePath, "storageStatePath", () -> customStorageStatePath.set(storageStatePath));
+        return this;
+    }
+
+    public CustomOptionsManager setLocale(String locale) {
+        applyCustomOption(locale, "locale", () -> customLocale.set(locale));
+        return this;
+    }
+
+    public CustomOptionsManager setTimezone(String timezoneId) {
+        applyCustomOption(timezoneId, "timezoneId", () -> customTimezoneId.set(timezoneId));
+        return this;
+    }
+
+    public CustomOptionsManager setUserAgent(String userAgent) {
+        applyCustomOption(userAgent, "userAgent", () -> customUserAgent.set(userAgent));
+        return this;
+    }
+
+    public CustomOptionsManager setPermissions(List<String> permissions) {
+        applyCustomOption(permissions, "permissions", () -> customPermissions.set(permissions));
+        return this;
+    }
+
+    public CustomOptionsManager setGeolocation(double latitude, double longitude) {
+        applyCustomOption(String.format("(%.4f, %.4f)", latitude, longitude), "geolocation",
+                () -> customGeolocation.set(new Geolocation(latitude, longitude)));
+        return this;
+    }
+
+    public CustomOptionsManager setDeviceScaleFactor(double deviceScaleFactor) {
+        applyCustomOption(deviceScaleFactor, "deviceScaleFactor",
+                () -> customDeviceScaleFactor.set((int) (deviceScaleFactor * 100)));
+        return this;
+    }
+
+    public CustomOptionsManager setIsMobile(boolean isMobile) {
+        applyCustomOption(isMobile, "isMobile", () -> customIsMobile.set(isMobile));
+        return this;
+    }
+
+    public CustomOptionsManager setHasTouch(boolean hasTouch) {
+        applyCustomOption(hasTouch, "hasTouch", () -> customHasTouch.set(hasTouch));
+        return this;
+    }
+
+    public CustomOptionsManager setColorScheme(ColorScheme colorScheme) {
+        applyCustomOption(colorScheme, "colorScheme", () -> customColorScheme.set(colorScheme));
+        return this;
+    }
+
+    public CustomOptionsManager setViewportSize(int width, int height) {
+        applyCustomOption(width + "x" + height, "viewportSize", () -> {
+            customViewportWidth.set(width);
+            customViewportHeight.set(height);
+        });
+        return this;
+    }
+
+    public CustomOptionsManager setProxyEnabled(Boolean enabled) {
+        applyCustomOption(enabled, "proxyEnabled", () -> customProxyEnabled.set(enabled));
+        return this;
     }
 
     // ========== 批量设置方法 ==========
@@ -259,7 +204,7 @@ public class CustomOptionsManager {
      * @return this，支持链式调用
      */
     public CustomOptionsManager clearAll() {
-        PlaywrightManager.setCustomContextOptionsFlag(false);
+        customContextOptionsFlag.set(false);
         return this;
     }
 }

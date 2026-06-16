@@ -8,7 +8,6 @@ import com.hsbc.cmb.hk.dbb.automation.tests.steps.LoginSteps;
 import com.hsbc.cmb.hk.dbb.automation.utils.RandomStringUtil;
 import com.microsoft.playwright.options.ColorScheme;
 import io.cucumber.java.en.Given;
-import io.cucumber.java.sl.In;
 import net.serenitybdd.annotations.Steps;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,8 +38,8 @@ import org.slf4j.LoggerFactory;
 @AutoBrowser(verbose = true)  // 启用详细日志
 public class LogonGlue {
 
-    private static final Logger logger = LoggerFactory.getLogger(LogonGlue.class);
-    private static Integer count = 0;
+    private static final Logger LOGGER = LoggerFactory.getLogger(LogonGlue.class);
+
     @Steps
     private LoginSteps loginSteps;
 
@@ -49,7 +48,7 @@ public class LogonGlue {
      *
      * 框架自动处理机制：
      * 1. 调用 SessionManager.prepareSession() 准备 session
-     * 2. SessionManager.prepareSession() 内部会调用 PlaywrightManager.setStorageStatePath()
+     * 2. SessionManager.prepareSession() 内部会通过 CustomOptionsManager 设置 storageStatePath
      * 3. 业务层可以在Glue方法中设置自定义配置
      * 4. Context创建时会应用所有自定义配置
      *
@@ -64,11 +63,11 @@ public class LogonGlue {
         // 打印当前浏览器类型用于调试
         String effectiveBrowser = BrowserOverrideManager.getEffectiveBrowserType();
         String defaultBrowser = BrowserOverrideManager.getDefaultBrowserType();
-        logger.info("========================================");
-        logger.info("LogonGlue - Scenario: {} as {}", env, username);
-        logger.info("  Effective browser: {}", effectiveBrowser);
-        logger.info("  Default browser: {}", defaultBrowser);
-        logger.info("========================================");
+        LOGGER.info("========================================");
+        LOGGER.info("LogonGlue - Scenario: {} as {}", env, username);
+        LOGGER.info("  Effective browser: {}", effectiveBrowser);
+        LOGGER.info("  Default browser: {}", defaultBrowser);
+        LOGGER.info("========================================");
 
         // 执行登录
         loginSteps.logonDBBEnvironmentAsUser(env, username);

@@ -25,7 +25,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Iterator;
 
 /**
  * 修改请求 Handler — 拦截请求，修改后继续发送。
@@ -184,72 +183,77 @@ public class ModifyHandler {
 
                     if (root != null) {
 
-                    boolean treeModified = false;
+                        boolean treeModified = false;
 
-                    // 2a. 先修改已有字段（树级操作）
-                    if (fieldsToModify != null) {
-                        for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
-                            String path = entry.getKey();
-                            String value = entry.getValue();
-                            try {
-                                modifyFieldOnTree(root, path, value);
-                                treeModified = true;
-                                LOGGER.debug("[ModifyHandler] Body field modified: path='{}', value='{}'", path, value);
-                            } catch (Exception e) {
-                                if (allowFallbackStringReplace) {
-                                    LOGGER.warn("[ModifyHandler] Body modify failed ({}), falling back to string replace: path='{}'",
-                                            e.getMessage(), path);
-                                } else {
-                                    LOGGER.error("[ModifyHandler] Body modify failed and fallback disabled, skipping path='{}': {}",
-                                            path, e.getMessage(), e);
+                        // 2a. 先修改已有字段（树级操作）
+                        if (fieldsToModify != null) {
+                            for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
+                                String path = entry.getKey();
+                                String value = entry.getValue();
+                                try {
+                                    modifyFieldOnTree(root, path, value);
+                                    treeModified = true;
+                                    LOGGER.debug("[ModifyHandler] Body field modified: path='{}', value='{}'", path, value);
+                                } catch (Exception e) {
+                                    if (allowFallbackStringReplace) {
+                                        LOGGER.warn("[ModifyHandler] Body modify failed ({}), falling back to string replace: path='{}'",
+                                                e.getMessage(), path);
+                                    } else {
+                                        LOGGER.error("[ModifyHandler] Body modify failed and fallback disabled, skipping path='{}': {}",
+                                                path, e.getMessage(), e);
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // 2b. 新增字段（树级操作）
-                    if (fieldsToAdd != null) {
-                        for (Map.Entry<String, String> entry : fieldsToAdd.entrySet()) {
-                            String path = entry.getKey();
-                            String value = entry.getValue();
-                            try {
-                                addFieldOnTree(root, path, value);
-                                treeModified = true;
-                                LOGGER.debug("[ModifyHandler] Body field added: path='{}', value='{}'", path, value);
-                            } catch (Exception e) {
-                                LOGGER.error("[ModifyHandler] Body field add failed: path='{}': {}", path, e.getMessage(), e);
+                        // 2b. 新增字段（树级操作）
+                        if (fieldsToAdd != null) {
+                            for (Map.Entry<String, String> entry : fieldsToAdd.entrySet()) {
+                                String path = entry.getKey();
+                                String value = entry.getValue();
+                                try {
+                                    addFieldOnTree(root, path, value);
+                                    treeModified = true;
+                                    LOGGER.debug("[ModifyHandler] Body field added: path='{}', value='{}'", path, value);
+                                } catch (Exception e) {
+                                    LOGGER.error("[ModifyHandler] Body field add failed: path='{}': {}", path, e.getMessage(), e);
+                                }
                             }
                         }
-                    }
 
-                    // 2c. 删除字段（树级操作）
-                    if (fieldsToRemove != null) {
-                        for (String path : fieldsToRemove) {
-                            try {
-                                removeFieldOnTree(root, path);
-                                treeModified = true;
-                                LOGGER.debug("[ModifyHandler] Body field removed: path='{}'", path);
-                            } catch (Exception e) {
-                                LOGGER.error("[ModifyHandler] Body field remove failed: path='{}': {}", path, e.getMessage(), e);
+                        // 2c. 删除字段（树级操作）
+                        if (fieldsToRemove != null) {
+                            for (String path : fieldsToRemove) {
+                                try {
+                                    removeFieldOnTree(root, path);
+                                    treeModified = true;
+                                    LOGGER.debug("[ModifyHandler] Body field removed: path='{}'", path);
+                                } catch (Exception e) {
+                                    LOGGER.error("[ModifyHandler] Body field remove failed: path='{}': {}", path, e.getMessage(), e);
+                                }
                             }
                         }
-                    }
 
-                    // ⭐ 序列化一次
-                    String newBody = postData;
-                    if (treeModified) {
-                        try {
-                            newBody = OBJECT_MAPPER.writeValueAsString(root);
-                        } catch (JsonProcessingException e) {
-                            LOGGER.warn("[ModifyHandler] Failed to serialize modified body: {}", e.getMessage());
+                        // ⭐ 序列化一次
+                        String newBody = postData;
+                        if (treeModified) {
+                            try {
+                                newBody = OBJECT_MAPPER.writeValueAsString(root);
+                            } catch (JsonProcessingException e) {
+                                LOGGER.warn("[ModifyHandler] Failed to serialize modified body: {}", e.getMessage());
+                            }
                         }
-                    }
-                    opts.setPostData(newBody);
-                    finalBody = newBody;
-                    bodyModified = true;
+                        opts.setPostData(newBody);
+                        finalBody = newBody;
+                        bodyModified = true;
                     }  // end if (root != null)
                 } else {
                     // 非 JSON：仅支持字符串替换
+                    if ((fieldsToAdd != null && !fieldsToAdd.isEmpty())
+                            || (fieldsToRemove != null && !fieldsToRemove.isEmpty())) {
+                        LOGGER.warn("[ModifyHandler] Body add/remove operations are ignored for non-JSON content. "
+                                + "Only field modifications (string replace) are supported.");
+                    }
                     String newBody = postData;
                     if (fieldsToModify != null) {
                         for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
@@ -865,10 +869,15 @@ public class ModifyHandler {
 
     /**
      * 将原始 Object 值转换为 JsonNode。
-     * <p>支持 String、Number、Boolean、null。
+     * <p>支持 String、Number、Boolean、null、Collection（→ArrayNode）、
+     * Map（→ObjectNode）、JsonNode（直接返回）。
+     *
+     * <p>支持空集合：{@code Collections.emptyList()} → {@code []}，
+     * {@code Collections.emptyMap()} → {@code {}}。
      */
     private static JsonNode rawValueToJsonNode(Object value) {
         if (value == null) return NullNode.getInstance();
+        if (value instanceof JsonNode) return (JsonNode) value;
         if (value instanceof String) return new TextNode((String) value);
         if (value instanceof Boolean) return BooleanNode.valueOf((Boolean) value);
         if (value instanceof Integer) return new IntNode((Integer) value);
@@ -878,6 +887,31 @@ public class ModifyHandler {
         }
         if (value instanceof Number) {
             return new DecimalNode(new BigDecimal(value.toString()));
+        }
+        // ⭐ Collection → ArrayNode（支持空列表 []
+        if (value instanceof Collection) {
+            ArrayNode arr = OBJECT_MAPPER.createArrayNode();
+            for (Object elem : (Collection<?>) value) {
+                arr.add(rawValueToJsonNode(elem));
+            }
+            return arr;
+        }
+        // ⭐ Map → ObjectNode（支持空对象 {}）
+        if (value instanceof Map) {
+            ObjectNode obj = OBJECT_MAPPER.createObjectNode();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                String key = entry.getKey() != null ? entry.getKey().toString() : "null";
+                obj.set(key, rawValueToJsonNode(entry.getValue()));
+            }
+            return obj;
+        }
+        // ⭐ 数组 → ArrayNode
+        if (value instanceof Object[]) {
+            ArrayNode arr = OBJECT_MAPPER.createArrayNode();
+            for (Object elem : (Object[]) value) {
+                arr.add(rawValueToJsonNode(elem));
+            }
+            return arr;
         }
         // fallback: toString
         return new TextNode(value.toString());

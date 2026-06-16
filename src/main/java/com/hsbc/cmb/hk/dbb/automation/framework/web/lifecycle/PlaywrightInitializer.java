@@ -4,7 +4,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.microsoft.playwright.Playwright;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,11 +13,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /**
@@ -332,64 +328,4 @@ class PlaywrightInitializer {
         }
     }
 
-    /**
-     * 初始化 Playwright 实例
-     */
-    static Playwright initializePlaywright(String configId) {
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Playwright for config: {}", configId);
-
-        try {
-            Playwright.CreateOptions createOptions = getCreateOptions();
-            Playwright playwright = Playwright.create(createOptions);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright initialized successfully for config: {}", configId);
-            return playwright;
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Playwright for config: {}", configId, e);
-            throw new InitializationException("Failed to initialize Playwright for config: " + configId, e);
-        }
-    }
-
-    private static Playwright.CreateOptions getCreateOptions() {
-        Playwright.CreateOptions options = new Playwright.CreateOptions();
-
-        // 跳过浏览器下载
-        if (SKIP_DOWNLOAD_BROWSER) {
-            Map<String, String> env = new HashMap<>();
-            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
-            options.setEnv(env);
-        }
-        return options;
-    }
-
-    /**
-     * 终止所有浏览器下载进程
-     */
-    static void terminateDownloadProcesses() {
-        synchronized (downloadProcesses) {
-            if (downloadProcesses.isEmpty()) {
-                return;
-            }
-
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Terminating {} browser download processes...", downloadProcesses.size());
-
-            for (Process process : downloadProcesses) {
-                try {
-                    if (process.isAlive()) {
-                        process.destroy();
-                        boolean exited = process.waitFor(5, TimeUnit.SECONDS);
-                        if (!exited) {
-                            LoggingConfigUtil.logWarnIfVerbose(logger, "Download process did not exit gracefully, forcing termination");
-                            process.destroyForcibly();
-                        }
-                        LoggingConfigUtil.logInfoIfVerbose(logger, "Download process terminated");
-                    }
-                } catch (Exception e) {
-                    logger.warn("Failed to terminate download process: {}", e.getMessage());
-                }
-            }
-
-            downloadProcesses.clear();
-            LoggingConfigUtil.logInfoIfVerbose(logger, "All download processes terminated");
-        }
-    }
 }

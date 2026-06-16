@@ -29,7 +29,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>使用方式：
  * <pre>{@code
  * // 框架自动处理，无需手动调用
- * // 当 PlaywrightManager.setStorageStatePath() 被调用时，自动触发规则保存和恢复
+ * // 当 CustomOptionsManager.setXXX() 设置自定义选项时，自动触发 scheduleContextRebuild() 并执行规则保存和恢复
  * }</pre>
  */
 public class ContextLifecycleHookManager {
@@ -244,10 +244,6 @@ public class ContextLifecycleHookManager {
             }
         }
 
-        // 清理旧快照（可选：保留以便后续查询）
-        // contextSnapshots.remove(oldContextId);
-        // contextSnapshots.put(newContextId, snapshot);
-
         logger.info("[ContextLifecycle] Rebind complete: {} success, {} failed", successCount, failCount);
         
         return successCount;
@@ -313,7 +309,7 @@ public class ContextLifecycleHookManager {
 
     /**
      * 在 Context 重建前执行捕获
-     * 由 PlaywrightManager.setStorageStatePath() 调用
+     * 由 {@link PlaywrightManager#scheduleContextRebuild()} 调用
      */
     public static void onContextAboutToRebuild(BrowserContext oldContext) {
         if (oldContext == null) return;

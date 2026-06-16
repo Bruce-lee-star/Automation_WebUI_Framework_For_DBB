@@ -31,11 +31,7 @@ import java.util.List;
 class PlaywrightContextManager {
     
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightContextManager.class);
-    
-    // 锁对象
-    static final Object CONTEXT_LOCK = new Object();
-    static final Object PAGE_LOCK = new Object();
-    
+
     /**
      * 创建新的 BrowserContext
      */
@@ -49,12 +45,11 @@ class PlaywrightContextManager {
         configureDefaultContextOptions(contextOptions);
 
         // 条件注入自定义配置
-        Boolean customFlag = PlaywrightManager.getCustomContextOptionsFlag().get();
+        Boolean customFlag = CustomOptionsManager.customContextOptionsFlag.get();
         if (customFlag != null && customFlag) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Applying custom context customOptionsManager...");
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Applying custom context options...");
             configureCustomContextOptions(contextOptions);
         }
-
 
         // 初始化 Context
         BrowserContext context = currentBrowser.newContext(contextOptions);
@@ -77,7 +72,7 @@ class PlaywrightContextManager {
 
         // 重置标志
         if (customFlag != null && customFlag) {
-            PlaywrightManager.getCustomContextOptionsFlag().set(false);
+            CustomOptionsManager.customContextOptionsFlag.set(false);
             LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options applied, flag reset to false");
         }
 
@@ -119,20 +114,18 @@ class PlaywrightContextManager {
      * 关闭 Context
      */
     static void closeContext(BrowserContext context) {
-        synchronized (CONTEXT_LOCK) {
-            if (context != null) {
-                try {
-                    // 停止 tracing
-                    if (SystemEnvironmentVariables.currentEnvironmentVariables().getPropertyAsBoolean("playwright.context.trace.enabled", false)) {
-                        String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
-                        context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath)));
-                    }
-                    context.close();
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext closed");
-                } catch (Exception e) {
-                    logger.error("Failed to close BrowserContext: {}", e.getMessage(), e);
-                    throw new BrowserException("Failed to close BrowserContext", e);
+        if (context != null) {
+            try {
+                // 停止 tracing
+                if (SystemEnvironmentVariables.currentEnvironmentVariables().getPropertyAsBoolean("playwright.context.trace.enabled", false)) {
+                    String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
+                    context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath)));
                 }
+                context.close();
+                LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext closed");
+            } catch (Exception e) {
+                logger.error("Failed to close BrowserContext: {}", e.getMessage(), e);
+                throw new BrowserException("Failed to close BrowserContext", e);
             }
         }
     }
@@ -141,18 +134,16 @@ class PlaywrightContextManager {
      * 关闭 Page
      */
     static void closePage(Page page) {
-        synchronized (PAGE_LOCK) {
-            if (page != null) {
-                try {
-                    if (!page.isClosed()) {
-                        LoggingConfigUtil.logInfoIfVerbose(logger, "Closing Page...");
-                        page.close();
-                        LoggingConfigUtil.logInfoIfVerbose(logger, "Page closed");
-                    }
-                } catch (Exception e) {
-                    logger.error("Failed to close page: {}", e.getMessage(), e);
-                    throw new BrowserException("Failed to close page", e);
+        if (page != null) {
+            try {
+                if (!page.isClosed()) {
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "Closing Page...");
+                    page.close();
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "Page closed");
                 }
+            } catch (Exception e) {
+                logger.error("Failed to close page: {}", e.getMessage(), e);
+                throw new BrowserException("Failed to close page", e);
             }
         }
     }
@@ -363,8 +354,8 @@ class PlaywrightContextManager {
                             + "});"
             );
 
-            Integer customViewportWidthVal = PlaywrightManager.customViewportWidth.get();
-            Integer customViewportHeightVal = PlaywrightManager.customViewportHeight.get();
+            Integer customViewportWidthVal = CustomOptionsManager.customViewportWidth.get();
+            Integer customViewportHeightVal = CustomOptionsManager.customViewportHeight.get();
 
             if (customViewportWidthVal != null && customViewportHeightVal != null) {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Custom viewport detected ({}x{}), skipping viewport size override",

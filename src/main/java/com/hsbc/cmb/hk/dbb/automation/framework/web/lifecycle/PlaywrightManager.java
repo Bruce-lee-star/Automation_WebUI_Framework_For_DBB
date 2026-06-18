@@ -168,6 +168,20 @@ public class PlaywrightManager {
         env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
         LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright instance created with browser download disabled (managed separately)");
 
+        // ── 将 Node.js 子进程的临时目录重定向到 .playwright/temp ──
+        // Playwright 使用 os.tmpdir() 决定 Firefox profile、WebKit 运行时等临时文件位置
+        // 默认指向系统临时目录 (C:\Users\...\AppData\Local\Temp)，不利于项目自包含
+        // 通过 TMP/TEMP/TMPDIR 环境变量重定向，确保所有临时文件都在工程目录下
+        String playwrightTemp = Paths.get(".playwright/temp").toAbsolutePath().toString();
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            env.put("TMP", playwrightTemp);
+            env.put("TEMP", playwrightTemp);
+        } else {
+            env.put("TMPDIR", playwrightTemp);
+        }
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright temp directory redirected to: {}", playwrightTemp);
+
         // ==================== BrowserStack 代理透传 ====================
         // 公司网络环境下，域名解析和外网直连均被阻断
         // 需要将 HTTPS_PROXY 注入 Playwright 底层 Node.js 子进程，
@@ -255,6 +269,16 @@ public class PlaywrightManager {
         boolean headless = config().isHeadless();
         int slowMo = config().getBrowserSlowMo();
         int timeout = config().getBrowserTimeout();
+
+        // Firefox 在 Windows 上启动偏慢（Juggler 协议初始化 + profile 创建 + 杀软扫描）
+        // 自动给 Firefox 1.5 倍超时兜底，避免用户未考虑启动速度差异导致超时
+        if ("firefox".equalsIgnoreCase(browserType) && timeout < 45000) {
+            int originalTimeout = timeout;
+            timeout = Math.max(timeout, 30000);  // 最小 30s
+            if (timeout < 45000) timeout = (int)(originalTimeout * 1.5);
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                "[Browser Init] Firefox detected: auto-adjusting launch timeout {}ms → {}ms", originalTimeout, timeout);
+        }
 
         BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions()
                 .setHeadless(headless)

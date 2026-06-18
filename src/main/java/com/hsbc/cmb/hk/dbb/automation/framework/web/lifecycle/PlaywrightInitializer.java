@@ -35,6 +35,7 @@ class PlaywrightInitializer {
     // Playwright 浏览器缓存路径（项目根目录下的 .playwright 目录）
     private static final String DEFAULT_PLAYWRIGHT_BROWSER_PATH = ".playwright/browsers";
     private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
+    static final String DEFAULT_PLAYWRIGHT_TEMP_PATH = ".playwright/temp";
     
     // 下载进程列表
     private static final List<Process> downloadProcesses = new ArrayList<>();
@@ -69,6 +70,12 @@ class PlaywrightInitializer {
                 Files.createDirectories(cachePath);
             }
 
+            // 创建浏览器临时目录（Firefox profile 等临时文件）
+            Path tempPath = Paths.get(DEFAULT_PLAYWRIGHT_TEMP_PATH).toAbsolutePath();
+            if (!Files.exists(tempPath)) {
+                Files.createDirectories(tempPath);
+            }
+
         } catch (Exception e) {
             throw new InitializationException("init playwright cache directory failed! cachePath is : " + cachePath, e);
         }
@@ -81,6 +88,7 @@ class PlaywrightInitializer {
         // 清理项目目录中的临时目录
         cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_BROWSER_PATH);
         cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_DRIVER_PATH);
+        cleanupPlaywrightTempDirs(DEFAULT_PLAYWRIGHT_TEMP_PATH);
 
         // 清理系统临时目录中的 playwright 临时目录
         cleanupPlaywrightTempDirs(System.getProperty("java.io.tmpdir"));

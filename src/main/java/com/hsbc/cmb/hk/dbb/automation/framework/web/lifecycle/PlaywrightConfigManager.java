@@ -435,13 +435,6 @@ public class PlaywrightConfigManager {
     }
 
     /**
-     * 是否跳过浏览器下载
-     */
-    public boolean isSkipBrowserDownload() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
-    }
-
-    /**
      * 获取页面加载状态
      */
     public String getPageLoadState() {

@@ -36,8 +36,6 @@ class PlaywrightInitializer {
     private static final String DEFAULT_PLAYWRIGHT_BROWSER_PATH = ".playwright/browsers";
     private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
     
-    private static final Boolean SKIP_DOWNLOAD_BROWSER = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
-    
     // 下载进程列表
     private static final List<Process> downloadProcesses = new ArrayList<>();
     
@@ -217,11 +215,6 @@ class PlaywrightInitializer {
      */
     static void ensureBrowsersInstalled() {
         try {
-            if (SKIP_DOWNLOAD_BROWSER) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Browser download is skipped, assuming browser is available");
-                return;
-            }
-
             String browserType = PlaywrightManager.config().getBrowserType();
             String channel = PlaywrightManager.config().getBrowserChannel();
 
@@ -264,11 +257,6 @@ class PlaywrightInitializer {
      */
     private static boolean checkBrowsersInstalled(Path cachePath) {
         try {
-            if (SKIP_DOWNLOAD_BROWSER) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Browser download is skipped, assuming browser is available");
-                return true;
-            }
-
             String browserType = PlaywrightManager.config().getBrowserType();
             String channel = PlaywrightManager.config().getBrowserChannel();
 
@@ -500,17 +488,35 @@ class PlaywrightInitializer {
 
     /**
      * 根据代理地址和可选的认证信息构建完整代理 URL。
+     * <p>自动去除用户可能误带的协议前缀（http:// 或 https://），
+     * 避免构造出 {@code http://http://...} 这样的非法 URL。
      *
-     * @param proxyAddr 代理地址（host:port）
+     * @param proxyAddr 代理地址（host:port，可含协议前缀）
      * @param user      用户名（可空）
      * @param pass      密码（可空）
      * @return 完整代理 URL，如 http://user:pass@host:port
      */
     private static String buildProxyWithAuth(String proxyAddr, String user, String pass) {
+        String addr = stripProtocolPrefix(proxyAddr);
         if (!isBlank(user) && !isBlank(pass)) {
-            return "http://" + urlEncode(user.trim()) + ":" + urlEncode(pass.trim()) + "@" + proxyAddr;
+            return "http://" + urlEncode(user.trim()) + ":" + urlEncode(pass.trim()) + "@" + addr;
         }
-        return "http://" + proxyAddr;
+        return "http://" + addr;
+    }
+
+    /**
+     * 去除协议前缀（http:// 或 https://），避免重复拼接。
+     */
+    private static String stripProtocolPrefix(String url) {
+        if (url == null) return null;
+        String lower = url.toLowerCase();
+        if (lower.startsWith("http://")) {
+            return url.substring(7);
+        }
+        if (lower.startsWith("https://")) {
+            return url.substring(8);
+        }
+        return url;
     }
 
     /**

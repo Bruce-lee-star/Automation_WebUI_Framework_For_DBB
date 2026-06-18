@@ -117,23 +117,6 @@ public enum FrameworkConfig {
     /**
      * 跳过 Playwright 浏览器下载
      * 
-     * 自动判断逻辑：
-     * - Firefox: false（必须下载 Playwright 版本）
-     * - WebKit: false（必须下载 Playwright 版本）
-     * - Chrome: 如果设置了 chrome.executablePath 或 channel="chrome" 则 true，否则 false
-     * - Edge: 如果设置了 edge.executablePath 或 channel="msedge" 则 true，否则 false
-     * - Chromium: 如果设置了 channel 则根据具体情况，否则 false
-     * 
-     * 注意：建议保持默认值 false，让 Playwright 按需下载
-     * 只有在完全确定使用本地 Chrome/Edge 且已安装时才设置为 true
-     */
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD(
-        "playwright.skip.browser.download",
-        "false",
-        "跳过 Playwright 浏览器下载"
-    ),
-
-
     /**
      * Firefox 浏览器启动参数（逗号分隔）
      * 如果设置，当浏览器类型为 firefox 时会使用此参数

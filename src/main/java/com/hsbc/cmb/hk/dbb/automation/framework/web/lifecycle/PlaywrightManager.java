@@ -155,17 +155,14 @@ public class PlaywrightManager {
         Playwright.CreateOptions options = new Playwright.CreateOptions();
         Map<String, String> env = new HashMap<>();
 
-        // 设置浏览器缓存路径
+        // 设置浏览器缓存路径（转为绝对路径，确保 Node.js 子进程能找到）
         String browserPath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSERS_PATH);
-        if (browserPath != null && !browserPath.trim().isEmpty()) {
-            env.put("PLAYWRIGHT_BROWSERS_PATH", browserPath);
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright browsers path: {}", browserPath);
+        if (browserPath == null || browserPath.trim().isEmpty()) {
+            browserPath = ".playwright/browsers";
         }
-
-        // 关键：总是跳过自动下载，因为我们使用 ensureBrowserInstalledForType() 来控制下载
-        // 这样可以避免 Playwright 自动下载所有浏览器
-        env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright instance created with browser download disabled (managed separately)");
+        String absoluteBrowsersPath = Paths.get(browserPath).toAbsolutePath().toString();
+        env.put("PLAYWRIGHT_BROWSERS_PATH", absoluteBrowsersPath);
+        LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright browsers path: {}", absoluteBrowsersPath);
 
         // ==================== BrowserStack 代理透传 ====================
         // 公司网络环境下，域名解析和外网直连均被阻断
@@ -206,60 +203,6 @@ public class PlaywrightManager {
     }
 
     /**
-     * 智能判断是否应该跳过浏览器下载
-     * 
-     * 规则：
-     * - Firefox: false（必须下载 Playwright 版本）
-     * - WebKit: false（必须下载 Playwright 版本）
-     * - Chromium + channel=chrome: true（使用系统 Chrome，Playwright 自动查找默认路径）
-     * - Chromium + channel=msedge/edge: true（使用系统 Edge，Playwright 自动查找默认路径）
-     * - Chromium 无 channel: false（需要下载 Playwright 版本）
-     */
-    private static boolean shouldSkipBrowserDownload() {
-        // 首先检查用户是否手动配置了跳过下载
-        boolean userConfig = config().isSkipBrowserDownload();
-
-        String browserType = config().getBrowserType();
-        String channel = config().getBrowserChannel();
-
-        switch (browserType.toLowerCase()) {
-            case "firefox":
-            case "webkit":
-                // Firefox 和 WebKit 必须使用 Playwright 版本，不能跳过下载
-                if (userConfig) {
-                    logger.warn("Cannot skip download for {} - Playwright version is required. Ignoring playwright.skip.browser.download=true", browserType);
-                }
-                return false;
-
-            case "chromium":
-                if ("chrome".equalsIgnoreCase(channel)) {
-                    // Chrome channel: 使用系统本地 Chrome，Playwright 自动查找默认安装路径
-                    // 即使未配置 executablePath，Playwright 也会按平台默认路径查找
-                    String chromePath = config().getBrowserExecutablePath();
-                    boolean hasExplicitPath = chromePath != null && !chromePath.trim().isEmpty();
-                    LoggingConfigUtil.logInfoIfVerbose(logger,
-                            "[Browser Init] Channel=chrome, skip download ({} local Chrome)",
-                            hasExplicitPath ? "explicit path: " + chromePath : "auto-detect from system");
-                    return true;
-                } else if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
-                    // Edge channel: 使用系统本地 Edge
-                    String edgePath = config().getBrowserExecutablePath();
-                    boolean hasExplicitPath = edgePath != null && !edgePath.trim().isEmpty();
-                    LoggingConfigUtil.logInfoIfVerbose(logger,
-                            "[Browser Init] Channel=msedge, skip download ({} local Edge)",
-                            hasExplicitPath ? "explicit path: " + edgePath : "auto-detect from system");
-                    return true;
-                } else {
-                    // Chromium 无 channel: 需要下载 Playwright 版本
-                    return false;
-                }
-
-            default:
-                return userConfig;
-        }
-    }
-
-    /**
      * 初始化 Browser 实例
      */
     private static synchronized void initializeBrowser(String configId) {
@@ -287,14 +230,12 @@ public class PlaywrightManager {
         String browserType = config().getBrowserType();
         
         // 确保所需的浏览器已安装（延迟下载）
-        // 这一步必须在 initializePlaywright() 之前，否则 Playwright 会自动下载所有浏览器
-        if (!shouldSkipBrowserDownload()) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
-            long checkStart = System.currentTimeMillis();
-            ensureBrowserInstalledForType();
-            long checkElapsed = System.currentTimeMillis() - checkStart;
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser check completed in {}ms", checkElapsed);
-        }
+        // ensureBrowsersInstalled 内部已处理 channel 场景（直接跳过）
+        LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
+        long checkStart = System.currentTimeMillis();
+        ensureBrowserInstalledForType();
+        long checkElapsed = System.currentTimeMillis() - checkStart;
+        LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser check completed in {}ms", checkElapsed);
 
         // 初始化 Playwright 实例（浏览器已确保安装）
         if (playwrightInstances.containsKey(configId)) {

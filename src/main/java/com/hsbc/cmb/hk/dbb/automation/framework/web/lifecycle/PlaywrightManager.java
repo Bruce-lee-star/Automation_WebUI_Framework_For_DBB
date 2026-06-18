@@ -164,6 +164,11 @@ public class PlaywrightManager {
         env.put("PLAYWRIGHT_BROWSERS_PATH", absoluteBrowsersPath);
         LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright browsers path: {}", absoluteBrowsersPath);
 
+        // 跳过 Playwright.create() 内部的自动下载，因为我们已经通过 ensureBrowserInstalledForType() 管理下载
+        // 如果不禁用，Node.js 进程启动时会尝试连接 cdn.playwright.dev 下载所有浏览器
+        env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright instance created with browser download disabled (managed separately)");
+
         // ==================== BrowserStack 代理透传 ====================
         // 公司网络环境下，域名解析和外网直连均被阻断
         // 需要将 HTTPS_PROXY 注入 Playwright 底层 Node.js 子进程，

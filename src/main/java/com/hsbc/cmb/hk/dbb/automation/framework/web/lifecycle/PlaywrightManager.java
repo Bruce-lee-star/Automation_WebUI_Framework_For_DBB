@@ -74,8 +74,8 @@ public class PlaywrightManager {
      * 确保浏览器已安装
      * 委托给 PlaywrightInitializer
      */
-    private static void ensureBrowserInstalledForType() {
-        PlaywrightInitializer.ensureBrowsersInstalled();
+    private static boolean ensureBrowserInstalledForType() {
+        return PlaywrightInitializer.ensureBrowsersInstalled();
     }
 
     // ==================== 生命周期管理方法 ====================
@@ -96,13 +96,12 @@ public class PlaywrightManager {
 
         String configId = generateConfigId();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Playwright environment with config: {}", configId);
-        initializePlaywright(configId);
-        // 不在此处初始化浏览器，延迟到首次访问时启动
-        // 这样可以支持 @AutoBrowser 动态浏览器切换
-        // initializeBrowser(configId);
+        // ⚠ 不在此时创建 Playwright 实例（Node.js 子进程）
+        // 原因：浏览器可能尚未安装，提前创建会导致初次 launch 时找不到二进制
+        // Playwright 实例延迟到 initializeBrowser() 中、浏览器就绪后再创建
         currentConfigId.set(configId);
 
-        LoggingConfigUtil.logInfoIfVerbose(logger, " Playwright environment initialized successfully (browser will be launched on first access)");
+        LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright environment initialized (Playwright/Browser deferred to first access)");
     }
 
     /**
@@ -208,9 +207,11 @@ public class PlaywrightManager {
     }
 
     /**
-     * 初始化 Browser 实例
+     * 初始化 Browser 实例。
+     * <p>调用方应持有 BROWSER_LOCK。
+     * <p>浏览器下载为幂等检查（已安装时毫秒级返回），切换浏览器类型时可能需要下载新类型。
      */
-    private static synchronized void initializeBrowser(String configId) {
+    private static void initializeBrowser(String configId) {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing Browser for config: {}", configId);
 
         // 双重检查：如果已经有连接的浏览器实例，直接返回
@@ -222,32 +223,28 @@ public class PlaywrightManager {
 
         // 关闭现有浏览器实例（如果存在但未连接）
         if (existingBrowser != null) {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Closing existing browser instance for config: {}", configId);
+            LoggingConfigUtil.logInfoIfVerbose(logger, "Closing stale browser instance for config: {}", configId);
             try {
                 existingBrowser.close();
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Existing browser closed successfully");
             } catch (Exception e) {
-                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to close existing browser, continuing with new initialization", e);
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to close stale browser, continuing", e);
             }
         }
 
-        // 获取浏览器类型（这一步很关键，必须在初始化 Playwright 之前）
         String browserType = config().getBrowserType();
-        
-        // 确保所需的浏览器已安装（延迟下载）
-        // ensureBrowsersInstalled 内部已处理 channel 场景（直接跳过）
-        LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Checking if {} browser is installed...", browserType);
-        long checkStart = System.currentTimeMillis();
-        ensureBrowserInstalledForType();
-        long checkElapsed = System.currentTimeMillis() - checkStart;
-        LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser check completed in {}ms", checkElapsed);
 
-        // 初始化 Playwright 实例（浏览器已确保安装）
+        // 确保浏览器二进制已安装（幂等：已安装时毫秒级返回）
+        // 场景1: getBrowser() 已在锁外调用过 → 毫秒级 no-op
+        // 场景2: handleBrowserTypeSwitch 切换类型 → 可能需要下载新浏览器
+        ensureBrowserInstalledForType();
+
+        // 确保 Playwright 实例最新（不在 initialize() 中提前创建）
+        // 时刻保持：Playwright 实例在浏览器二进制就绪后创建
         if (playwrightInstances.containsKey(configId)) {
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Playwright instance already exists for config: {}, skipping initialization", configId);
-        } else {
-            initializePlaywright(configId);
+            Playwright oldPw = playwrightInstances.remove(configId);
+            try { oldPw.close(); } catch (Exception e) { /* ignore */ }
         }
+        initializePlaywright(configId);
 
         Playwright playwright = playwrightInstances.get(configId);
         if (playwright == null) {
@@ -268,26 +265,36 @@ public class PlaywrightManager {
         configureBrowserLaunchOptions(launchOptions);
 
         long initStart = System.currentTimeMillis();
-        try {
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Starting browser launch: type={}, channel={}, headless={}", 
-                browserType, config().getBrowserChannel(), config().isHeadless());
-            // 启动浏览器
-            Browser browser = setupBrowser(playwright, browserType, launchOptions);
-            browserInstances.put(configId, browser);
+        int maxRetries = 2;
+        Exception lastException = null;
 
-            long elapsed = System.currentTimeMillis() - initStart;
-            LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser initialized successfully in {}ms: {} for config: {}", 
-                elapsed, browserType, configId);
-        } catch (Exception e) {
-            LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Browser for config: {}", configId, e);
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Launching browser (attempt {}/{}): type={}, channel={}, headless={}",
+                    attempt, maxRetries, browserType, config().getBrowserChannel(), headless);
+                
+                Browser browser = setupBrowser(playwright, browserType, launchOptions);
+                browserInstances.put(configId, browser);
 
-            // 清理已创建的实例（如果有）
-            if (browserInstances.containsKey(configId)) {
-                browserInstances.remove(configId);
+                long elapsed = System.currentTimeMillis() - initStart;
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Browser initialized in {}ms: {} for config: {}",
+                    elapsed, browserType, configId);
+                return;
+            } catch (Exception e) {
+                lastException = e;
+                if (attempt < maxRetries) {
+                    long backoffMs = 2000L * attempt;
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                        "[Browser Init] Launch attempt {} failed: {}. Retrying in {}ms...",
+                        attempt, e.getMessage(), backoffMs);
+                    try { Thread.sleep(backoffMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
             }
-
-            throw new BrowserException("Failed to initialize Browser for config: " + configId, e);
         }
+
+        LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Browser after {} attempts for config: {}", maxRetries, configId, lastException);
+        browserInstances.remove(configId);
+        throw new BrowserException("Failed to initialize Browser for config: " + configId, lastException);
     }
 
     /**
@@ -448,6 +455,10 @@ public class PlaywrightManager {
             
             return currentBrowser;
         }
+        
+        // ⚠ 在加锁前确保浏览器已安装（下载可能耗时数分钟，不应持有 BROWSER_LOCK）
+        // 对已安装的情况仅做快速检查（毫秒级），不会阻塞其他线程
+        ensureBrowserInstalledForType();
         
         // 慢速路径：浏览器不存在或断开，加锁创建
         synchronized (BROWSER_LOCK) {

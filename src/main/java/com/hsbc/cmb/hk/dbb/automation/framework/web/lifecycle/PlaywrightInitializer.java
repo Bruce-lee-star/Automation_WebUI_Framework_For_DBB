@@ -213,7 +213,7 @@ class PlaywrightInitializer {
      *   <li>纯浏览器类型（chromium/firefox/webkit）→ 检查缓存，必要时下载</li>
      * </ul>
      */
-    static void ensureBrowsersInstalled() {
+    static boolean ensureBrowsersInstalled() {
         try {
             String browserType = PlaywrightManager.config().getBrowserType();
             String channel = PlaywrightManager.config().getBrowserChannel();
@@ -223,7 +223,7 @@ class PlaywrightInitializer {
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                         "[Static Init] Channel={} configured for chromium, using system browser (no download needed)",
                         channel);
-                return;
+                return false;
             }
 
             String configuredPath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSERS_PATH);
@@ -236,11 +236,22 @@ class PlaywrightInitializer {
             if (!browsersInstalled) {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] {} browser not found in cache, downloading...", browserType);
                 installBrowsers(cachePath);
+                // 下载后验证二进制文件确实存在且可执行
+                if (!checkBrowsersInstalled(cachePath)) {
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                        "[Static Init] Browser download completed but verification failed for {} at {}", browserType, cachePath);
+                    return false;
+                }
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "[Static Init] Browser {} downloaded and verified successfully", browserType);
+                return true;
             } else {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Playwright {} browser already installed in: {}", browserType, cachePath);
+                return false;
             }
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to check browsers installation", e);
+            return false;
         }
     }
 

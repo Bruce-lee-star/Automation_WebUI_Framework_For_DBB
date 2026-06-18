@@ -348,7 +348,19 @@ public class PlaywrightManager {
             }
         }
 
-        // 窗口最大化统一在 stabilizePage 中通过 window.resizeTo 实现
+        // ── 窗口最大化：Chromium 用 launch args 设位置+尺寸，Firefox/WebKit 在 stabilizePage 中用 JS ──
+        // Chromium 的 --window-position 和 --window-size 是最可靠的窗口定位手段
+        // Firefox/WebKit 不支持这些 flag，只能走 JavaScript window.resizeTo/moveTo
+        boolean maximize = config().isWindowMaximize();
+        if (isChromium && maximize) {
+            if (!args.contains("--window-position=0,0")) {
+                args.add(0, "--window-position=0,0");
+            }
+            String windowSizeArg = String.format("--window-size=%d,%d", screenWidth, screenHeight);
+            if (!args.contains(windowSizeArg)) {
+                args.add(1, windowSizeArg);
+            }
+        }
 
         if (!args.isEmpty()) {
             launchOptions.setArgs(args);

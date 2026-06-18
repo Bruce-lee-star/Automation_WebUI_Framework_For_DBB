@@ -342,11 +342,16 @@ class PlaywrightContextManager {
             // 统一使用 window.resizeTo 最大化窗口（所有浏览器）
             // 窗口外尺寸 = viewport + chrome，这里将外尺寸设为逻辑屏幕尺寸
             // context 中已设置 viewport = logicalHeight - chromeEstimate，两者配合正好填满
+            //
+            // 关键：window.resizeTo 会触发 OS 窗口管理器异步重排位置（居中），
+            // moveTo(0,0) 必须通过 setTimeout 延迟执行，等 resize 彻底完成后才移到左上角
+            // WebKit 不支持 --window-position launch arg，完全依赖此 JS 定位，延迟尤为关键
             page.evaluate(String.format(
-                    "window.resizeTo(%d, %d); window.moveTo(0, 0);",
-                    logicalWidth, logicalHeight
+                    "window.resizeTo(%d, %d);"
+                    + "setTimeout(function() { window.moveTo(%d, %d); }, 300);",
+                    logicalWidth, logicalHeight, 0, 0
             ));
-            LoggingConfigUtil.logDebugIfVerbose(logger, "窗口最大化: window.resizeTo({}, {})", logicalWidth, logicalHeight);
+            LoggingConfigUtil.logDebugIfVerbose(logger, "窗口最大化: window.resizeTo({}, {}), moveTo(0,0) delayed 300ms", logicalWidth, logicalHeight);
 
             page.evaluate(
                     "document.body.style.zoom = '100%'; "

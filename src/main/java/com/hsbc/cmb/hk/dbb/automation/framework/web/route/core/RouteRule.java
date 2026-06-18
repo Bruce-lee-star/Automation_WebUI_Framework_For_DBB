@@ -30,6 +30,7 @@ public class RouteRule {
 
     // Mock
     private String mockBody;
+    private byte[] mockBodyBytes;
     private int mockStatus = 200;
     private Map<String, String> mockHeaders;
     /** Mock 响应批量字段替换：JSONPath → 替换值。
@@ -133,6 +134,17 @@ public class RouteRule {
 
     public String getMockBody() {
         return mockBody;
+    }
+
+    /**
+     * 获取 Mock 响应体（字节数组形式）。
+     * 用于二进制数据（如图片、protobuf）的 Mock。
+     * 如果设置了此值，MockHandler 会优先使用 setBodyBytes 返回。
+     *
+     * @return Mock 响应体字节数组，未设置时返回 null
+     */
+    public byte[] getMockBodyBytes() {
+        return mockBodyBytes;
     }
 
     public int getMockStatus() {
@@ -287,6 +299,16 @@ public class RouteRule {
 
     public void setMockBody(String mockBody) {
         this.mockBody = mockBody;
+    }
+
+    /**
+     * 设置 Mock 响应体（字节数组形式），用于二进制 Mock。
+     * 优先级高于 {@link #setMockBody(String)}：MockHandler 会先检查此字段。
+     *
+     * @param mockBodyBytes Mock 响应体字节数组
+     */
+    public void setMockBodyBytes(byte[] mockBodyBytes) {
+        this.mockBodyBytes = mockBodyBytes;
     }
 
     /**

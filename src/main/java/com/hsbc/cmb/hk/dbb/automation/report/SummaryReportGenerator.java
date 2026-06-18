@@ -70,7 +70,7 @@ public class SummaryReportGenerator {
     }
 
     public SummaryReportGenerator(String reportDir) {
-        this.reportDir = Objects.requireNonNull(reportDir);
+        this.reportDir = validateAndNormalizeDirectory(Objects.requireNonNull(reportDir));
         this.projectName = loadProjectName();
         this.reportTitle = projectName; // Use project name as report title
         this.reportUrl = loadReportUrl();
@@ -85,6 +85,46 @@ public class SummaryReportGenerator {
             this.fullReportUrl = "./index.html";
         }
         init();
+    }
+
+    /**
+     * Validate and normalize a directory path to prevent path traversal attacks.
+     * Converts the path to absolute and ensures no ".." sequences exist in the resolved path.
+     *
+     * @param dir raw directory path (may be relative or absolute)
+     * @return normalized absolute path string
+     * @throws IllegalArgumentException if path traversal is detected
+     */
+    private static String validateAndNormalizeDirectory(String dir) {
+        Path path = Paths.get(dir).normalize().toAbsolutePath();
+        for (Path component : path) {
+            if ("..".equals(component.getFileName().toString())) {
+                throw new IllegalArgumentException("Path traversal rejected: " + dir);
+            }
+        }
+        return path.toString();
+    }
+
+    /**
+     * Safely resolve child path segments against a validated base directory,
+     * preventing path traversal beyond the base.
+     *
+     * @param baseDir validated base directory
+     * @param segments path segments to append
+     * @return resolved Path guaranteed to be within baseDir
+     * @throws IllegalArgumentException if the resolved path escapes the base directory
+     */
+    private static Path safeResolve(String baseDir, String... segments) {
+        Path base = Paths.get(baseDir).toAbsolutePath().normalize();
+        Path target = base;
+        for (String segment : segments) {
+            target = target.resolve(segment);
+        }
+        target = target.normalize();
+        if (!target.startsWith(base)) {
+            throw new IllegalArgumentException("Path traversal rejected: " + String.join("/", segments));
+        }
+        return target;
     }
 
     private String loadProjectName() {
@@ -252,7 +292,7 @@ public class SummaryReportGenerator {
         String actualReportDir = resolveReportDirectory(reportDir);
         LoggingConfigUtil.logInfoIfVerbose(logger, "Report directory: {}", actualReportDir);
 
-        File dir = new File(actualReportDir);
+        File dir = safeResolve(actualReportDir).toFile();
         if (!dir.exists()) {
             boolean created = dir.mkdirs();
             if (created) {
@@ -326,7 +366,7 @@ public class SummaryReportGenerator {
 
             // 生成 HTML 报告
             String html = buildFullNativeHtml();
-            Path output = Paths.get(actualReportDir, SUMMARY_FILE);
+            Path output = safeResolve(actualReportDir, SUMMARY_FILE);
             Files.writeString(output, html);
             logger.info("\n       - Summary report: {}", output.toUri());
 
@@ -357,7 +397,7 @@ public class SummaryReportGenerator {
 
     private void generateCsvReport(String actualReportDir) {
         try {
-            Path csvPath = Paths.get(actualReportDir, csvFileName);
+            Path csvPath = safeResolve(actualReportDir, csvFileName);
             StringBuilder csv = new StringBuilder();
 
             // CSV 头部
@@ -390,8 +430,8 @@ public class SummaryReportGenerator {
 
     private String escapeCsv(String value) {
         if (value == null) return "";
-        // 如果包含逗号、引号或换行，需要用引号包裹并转义引号
-        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+        // 如果包含逗号、引号、换行或回车，需要用引号包裹并转义引号
+        if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
             return "\"" + value.replace("\"", "\"\"") + "\"";
         }
         return value;
@@ -399,8 +439,8 @@ public class SummaryReportGenerator {
 
     private void generateZipPackage(String actualReportDir) {
         try {
-            Path zipPath = Paths.get(actualReportDir, zipFileName);
-            File reportDirectory = new File(actualReportDir);
+            Path zipPath = safeResolve(actualReportDir, zipFileName);
+            File reportDirectory = safeResolve(actualReportDir).toFile();
 
             try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipPath.toFile()))) {
                 // 递归打包整个目录（不包含顶层目录名）
@@ -1635,7 +1675,7 @@ public class SummaryReportGenerator {
     // 数据加载（Serenity BDD JSON 格式）
     // =============================================================
     private void loadTestOutcomes(String actualReportDir) {
-        File dir = new File(actualReportDir);
+        File dir = safeResolve(actualReportDir).toFile();
         File[] files = dir.listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (files == null || files.length == 0) return;
 
@@ -1765,7 +1805,7 @@ public class SummaryReportGenerator {
      *                       <td> 1m 11s</td>
      */
     private void loadDurationsFromIndexHtml(String actualReportDir) {
-        Path indexFile = Paths.get(actualReportDir, "index.html");
+        Path indexFile = safeResolve(actualReportDir, "index.html");
         if (!Files.exists(indexFile)) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "index.html not found, skipping duration parsing from index.html");
             return;
@@ -1935,7 +1975,7 @@ public class SummaryReportGenerator {
     }
 
     private void loadFeatureHtmlMapping(String actualReportDir) {
-        Path indexFile = Paths.get(actualReportDir, "index.html");
+        Path indexFile = safeResolve(actualReportDir, "index.html");
         if (!Files.exists(indexFile)) {
             logger.debug("index.html not found at {}, skipping feature mapping", indexFile);
             return;
@@ -1985,7 +2025,7 @@ public class SummaryReportGenerator {
 
     private void loadScenarioHtmlMapping(String actualReportDir) {
         // JSON 文件和 HTML 文件同名，直接映射
-        File[] jsonFiles = new File(actualReportDir).listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
+        File[] jsonFiles = safeResolve(actualReportDir).toFile().listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
         if (jsonFiles == null) return;
 
         for (File f : jsonFiles) {
@@ -2036,7 +2076,7 @@ public class SummaryReportGenerator {
      */
     private static void injectCustomCss(String reportDir) {
         try {
-            Path cssDir = Paths.get(reportDir, "css");
+            Path cssDir = safeResolve(reportDir, "css");
             Files.createDirectories(cssDir);
 
             String customCss;
@@ -2073,7 +2113,7 @@ public class SummaryReportGenerator {
      */
     private static void fixSwiperScreenshotsHtml(String reportDir) {
         try {
-            Path dir = Paths.get(reportDir);
+            Path dir = safeResolve(reportDir);
             if (!Files.isDirectory(dir)) return;
 
             int fixedCount = 0;

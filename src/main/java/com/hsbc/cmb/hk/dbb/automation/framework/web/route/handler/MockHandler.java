@@ -58,22 +58,36 @@ public class MockHandler {
             status = 200;
         }
 
-        // ── 2. 响应体处理 — 纯 Mock 模式直接用 mockBody ───────────
-        String body = rule.getMockBody();
-        if (body == null) {
-            body = "";
-            LOGGER.debug("[MockHandler] mockBody is null for pattern '{}', using empty string",
-                    rule.getUrlPattern());
-        }
+        // ── 2. 响应体处理 — 优先使用二进制（byte[]），fallback 到 String ──
+        byte[] bodyBytes = rule.getMockBodyBytes();
+        String body;
+        boolean useBytes = (bodyBytes != null);
 
-        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[MockHandler] Body prepared: pattern='{}', bodyLen={}",
-                rule.getUrlPattern(), body.length());
+        if (useBytes) {
+            body = "[binary data]";  // 日志占位
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MockHandler] Using binary body: pattern='{}', byteLength={}",
+                    rule.getUrlPattern(), bodyBytes.length);
+        } else {
+            body = rule.getMockBody();
+            if (body == null) {
+                body = "";
+                LOGGER.debug("[MockHandler] mockBody is null for pattern '{}', using empty string",
+                        rule.getUrlPattern());
+            }
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MockHandler] Body prepared: pattern='{}', bodyLen={}",
+                    rule.getUrlPattern(), body.length());
+        }
 
         // ── 4. 构建响应选项 ───────────────────────────────────────
         Route.FulfillOptions opts = new Route.FulfillOptions()
-                .setStatus(status)
-                .setBody(body);
+                .setStatus(status);
+        if (useBytes) {
+            opts.setBodyBytes(bodyBytes);
+        } else {
+            opts.setBody(body);
+        }
 
         // ── 5. 附带自定义响应头 ────────────────────────────────────
         if (rule.getMockHeaders() != null) {

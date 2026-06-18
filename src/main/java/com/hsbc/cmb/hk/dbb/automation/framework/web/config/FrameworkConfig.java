@@ -900,6 +900,73 @@ public enum FrameworkConfig {
             "Playwright browser path"),
 
     /**
+     * 浏览器下载 HTTP 代理地址
+     * 用于公司网络环境下 Playwright CLI 下载浏览器时通过代理访问 CDN。
+     * 格式: host:port（不含 scheme 和认证信息）
+     * 
+     * 示例: proxy.company.com:8080
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY(
+        "playwright.browser.download.http.proxy",
+        "",
+        "浏览器下载 HTTP 代理地址"
+    ),
+
+    /**
+     * 浏览器下载 HTTPS 代理地址
+     * 格式: host:port（不含 scheme 和认证信息）
+     * 
+     * 示例: proxy.company.com:8443
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY(
+        "playwright.browser.download.https.proxy",
+        "",
+        "浏览器下载 HTTPS 代理地址"
+    ),
+
+    /**
+     * 浏览器下载 HTTP 代理用户名（可选）
+     * 注意：用户名中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
+     * 
+     * 示例: myuser@domain
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_USERNAME(
+        "playwright.browser.download.http.proxy.username",
+        "",
+        "浏览器下载 HTTP 代理用户名"
+    ),
+
+    /**
+     * 浏览器下载 HTTPS 代理用户名（可选）
+     * 注意：用户名中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_USERNAME(
+        "playwright.browser.download.https.proxy.username",
+        "",
+        "浏览器下载 HTTPS 代理用户名"
+    ),
+
+    /**
+     * 浏览器下载 HTTP 代理密码（可选）
+     * 注意：密码中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_PASSWORD(
+        "playwright.browser.download.http.proxy.password",
+        "",
+        "浏览器下载 HTTP 代理密码"
+    ),
+
+    /**
+     * 浏览器下载 HTTPS 代理密码（可选）
+     * 注意：密码中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_PASSWORD(
+        "playwright.browser.download.https.proxy.password",
+        "",
+        "浏览器下载 HTTPS 代理密码"
+    ),
+
+    /**
      * No login session timeout in minutes
      * After this period, saved sessions will be considered expired
      */

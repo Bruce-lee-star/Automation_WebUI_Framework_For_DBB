@@ -374,6 +374,8 @@ public class PlaywrightConfigManager {
             case "webkit":
                 return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_WEBKIT_ARGS);
             case "chromium":
+            case "chrome":
+            case "edge":
                 if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
                     configArgs = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
                 } else if ("chrome".equalsIgnoreCase(channel)) {

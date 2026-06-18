@@ -211,9 +211,9 @@ public class PlaywrightManager {
      * 规则：
      * - Firefox: false（必须下载 Playwright 版本）
      * - WebKit: false（必须下载 Playwright 版本）
-     * - Chrome: 如果设置了 executablePath 或 channel="chrome" 则 true，否则 false
-     * - Edge: 如果设置了 executablePath 或 channel="msedge" 则 true，否则 false
-     * - Chromium 无 channel: false（需要下载）
+     * - Chromium + channel=chrome: true（使用系统 Chrome，Playwright 自动查找默认路径）
+     * - Chromium + channel=msedge/edge: true（使用系统 Edge，Playwright 自动查找默认路径）
+     * - Chromium 无 channel: false（需要下载 Playwright 版本）
      */
     private static boolean shouldSkipBrowserDownload() {
         // 首先检查用户是否手动配置了跳过下载
@@ -233,15 +233,22 @@ public class PlaywrightManager {
 
             case "chromium":
                 if ("chrome".equalsIgnoreCase(channel)) {
-                    // Chrome: 如果设置了 executablePath 或用户配置跳过，则跳过
+                    // Chrome channel: 使用系统本地 Chrome，Playwright 自动查找默认安装路径
+                    // 即使未配置 executablePath，Playwright 也会按平台默认路径查找
                     String chromePath = config().getBrowserExecutablePath();
-                    boolean hasLocalChrome = chromePath != null && !chromePath.trim().isEmpty();
-                    return hasLocalChrome || userConfig;
+                    boolean hasExplicitPath = chromePath != null && !chromePath.trim().isEmpty();
+                    LoggingConfigUtil.logInfoIfVerbose(logger,
+                            "[Browser Init] Channel=chrome, skip download ({} local Chrome)",
+                            hasExplicitPath ? "explicit path: " + chromePath : "auto-detect from system");
+                    return true;
                 } else if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
-                    // Edge: 如果设置了 executablePath 或用户配置跳过，则跳过
+                    // Edge channel: 使用系统本地 Edge
                     String edgePath = config().getBrowserExecutablePath();
-                    boolean hasLocalEdge = edgePath != null && !edgePath.trim().isEmpty();
-                    return hasLocalEdge || userConfig;
+                    boolean hasExplicitPath = edgePath != null && !edgePath.trim().isEmpty();
+                    LoggingConfigUtil.logInfoIfVerbose(logger,
+                            "[Browser Init] Channel=msedge, skip download ({} local Edge)",
+                            hasExplicitPath ? "explicit path: " + edgePath : "auto-detect from system");
+                    return true;
                 } else {
                     // Chromium 无 channel: 需要下载 Playwright 版本
                     return false;

@@ -8,6 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,7 +33,7 @@ class PlaywrightInitializer {
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightInitializer.class);
     
     // Playwright 浏览器缓存路径（项目根目录下的 .playwright 目录）
-    private static final String DEFAULT_PLAYWRIGHT_BROWSER_PATH = ".playwright/browser";
+    private static final String DEFAULT_PLAYWRIGHT_BROWSER_PATH = ".playwright/browsers";
     private static final String DEFAULT_PLAYWRIGHT_DRIVER_PATH = ".playwright/driver";
     
     private static final Boolean SKIP_DOWNLOAD_BROWSER = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD);
@@ -206,7 +208,12 @@ class PlaywrightInitializer {
     }
 
     /**
-     * 确保浏览器已安装
+     * 确保浏览器已安装。
+     * <p>根据 browserType + channel 判断：
+     * <ul>
+     *   <li>channel 场景（chrome/msedge）→ 使用系统本地浏览器，跳过下载</li>
+     *   <li>纯浏览器类型（chromium/firefox/webkit）→ 检查缓存，必要时下载</li>
+     * </ul>
      */
     static void ensureBrowsersInstalled() {
         try {
@@ -215,8 +222,19 @@ class PlaywrightInitializer {
                 return;
             }
 
+            String browserType = PlaywrightManager.config().getBrowserType();
+            String channel = PlaywrightManager.config().getBrowserChannel();
+
+            // channel 场景仅对 chromium 有效：使用系统本地 Chrome/Edge
+            if (isChannelBased(channel) && "chromium".equalsIgnoreCase(browserType)) {
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "[Static Init] Channel={} configured for chromium, using system browser (no download needed)",
+                        channel);
+                return;
+            }
+
             Path cachePath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
-            String configuredBrowserType = PlaywrightManager.config().getBrowserType();
+            String configuredBrowserType = browserType;
 
             boolean browsersInstalled = checkBrowsersInstalled(cachePath);
             if (!browsersInstalled) {
@@ -231,7 +249,15 @@ class PlaywrightInitializer {
     }
 
     /**
-     * 检查浏览器是否已安装
+     * 检查浏览器是否已安装。
+     * <p>根据 browserType + channel 综合判断缓存目录中是否有对应的浏览器：
+     * <ul>
+     *   <li>纯 chromium → 匹配 chromium-* / ms-playwright-chromium-*</li>
+     *   <li>chromium + channel=chrome → 匹配 chrome-* / ms-playwright-chrome-*（本地 Chrome 不在此处管理，直接返回 true）</li>
+     *   <li>chromium + channel=msedge → 匹配 msedge-* / ms-playwright-msedge-*（本地 Edge 不在此处管理，直接返回 true）</li>
+     *   <li>firefox → 匹配 firefox-*</li>
+     *   <li>webkit → 匹配 webkit-*</li>
+     * </ul>
      */
     private static boolean checkBrowsersInstalled(Path cachePath) {
         try {
@@ -241,6 +267,15 @@ class PlaywrightInitializer {
             }
 
             String browserType = PlaywrightManager.config().getBrowserType();
+            String channel = PlaywrightManager.config().getBrowserChannel();
+
+            // channel 仅对 chromium 有效，使用系统本地浏览器
+            if (isChannelBased(channel) && "chromium".equalsIgnoreCase(browserType)) {
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "[Static Init] Channel={} configured for chromium, using system browser (not managed by Playwright cache)", channel);
+                return true;
+            }
+
             LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Checking if {} browser is installed...", browserType);
 
             if (!Files.exists(cachePath)) {
@@ -248,16 +283,17 @@ class PlaywrightInitializer {
                 return false;
             }
 
-            // 检查是否有对应的浏览器目录
+            // 根据 browserType 构建匹配关键词列表
+            List<String> matchKeywords = buildBrowserMatchKeywords(browserType);
+
             boolean browserInstalled = false;
             try (Stream<Path> stream = Files.list(cachePath)) {
                 browserInstalled = stream
                         .filter(Files::isDirectory)
                         .anyMatch(p -> {
                             String dirName = p.getFileName().toString();
-                            boolean isMatch = dirName.contains("ms-playwright-" + browserType) ||
-                                    dirName.contains(browserType + "-") ||
-                                    dirName.equalsIgnoreCase(browserType);
+                            boolean isMatch = matchKeywords.stream()
+                                    .anyMatch(keyword -> dirName.contains(keyword));
                             LoggingConfigUtil.logDebugIfVerbose(logger, "[Static Init] Checking directory: {} -> match: {}", dirName, isMatch);
                             return isMatch;
                         });
@@ -272,7 +308,41 @@ class PlaywrightInitializer {
     }
 
     /**
-     * 下载 Playwright 浏览器到指定路径
+     * channel 场景（chrome / msedge / chrome-beta 等）使用系统本地浏览器，
+     * 不依赖 Playwright 缓存目录，直接返回已安装。
+     */
+    private static boolean isChannelBased(String channel) {
+        return channel != null && !channel.trim().isEmpty();
+    }
+
+    /**
+     * 根据 browserType + channel 构建浏览器缓存目录匹配关键词。
+     * <p>Playwright 缓存目录典型命名：
+     * <ul>
+     *   <li>chromium → chromium-1150 / ms-playwright-chromium-1150</li>
+     *   <li>chrome → chrome-126 / ms-playwright-chrome-126（CLI install chrome）</li>
+     *   <li>msedge → msedge-126 / ms-playwright-msedge-126（CLI install msedge）</li>
+     *   <li>firefox → firefox-1450 / ms-playwright-firefox-1450</li>
+     *   <li>webkit → webkit-2100 / ms-playwright-webkit-2100</li>
+     * </ul>
+     */
+    private static List<String> buildBrowserMatchKeywords(String browserType) {
+        List<String> keywords = new ArrayList<>();
+        String bt = browserType.trim().toLowerCase();
+        keywords.add("ms-playwright-" + bt + "-");
+        keywords.add(bt + "-");
+        keywords.add(bt);
+        return keywords;
+    }
+
+    /**
+     * 下载 Playwright 浏览器到指定路径。
+     * <p>自动处理：
+     * <ol>
+     *   <li>设置 Node.js 临时目录到工程 .playwright/driver（跨平台兼容）</li>
+     *   <li>设置 PLAYWRIGHT_BROWSERS_PATH 到工程 .playwright/browsers</li>
+     *   <li>注入 HTTP_PROXY / HTTPS_PROXY（支持带用户名密码的代理认证，特殊字符自动 URL 编码）</li>
+     * </ol>
      */
     private static void installBrowsers(Path cachePath) {
         try {
@@ -289,10 +359,29 @@ class PlaywrightInitializer {
             );
 
             Map<String, String> env = pb.environment();
-            if (!SKIP_DOWNLOAD_BROWSER) {
-                env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
-                env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
+            env.put("PLAYWRIGHT_BROWSERS_PATH", cachePath.toString());
+            env.put("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "0");
+
+            // ── 1. 设置 Node.js 临时目录到工程 .playwright/driver（跨平台）──
+            Path driverTmpPath = Paths.get(DEFAULT_PLAYWRIGHT_DRIVER_PATH).toAbsolutePath();
+            try {
+                if (!Files.exists(driverTmpPath)) {
+                    Files.createDirectories(driverTmpPath);
+                }
+            } catch (IOException e) {
+                LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to create driver tmp dir: {}", driverTmpPath);
             }
+            String os = System.getProperty("os.name", "").toLowerCase();
+            if (os.contains("win")) {
+                env.put("TMP", driverTmpPath.toString());
+                env.put("TEMP", driverTmpPath.toString());
+            } else {
+                env.put("TMPDIR", driverTmpPath.toString());
+            }
+            LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Node.js temp directory set to: {}", driverTmpPath);
+
+            // ── 2. 注入代理 HTTP_PROXY / HTTPS_PROXY（含 URL 编码的认证信息）──
+            injectDownloadProxy(env);
 
             pb.redirectErrorStream(true);
             pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
@@ -322,6 +411,146 @@ class PlaywrightInitializer {
             LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to download Playwright browsers", e);
             LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Browsers will be downloaded on first use");
         }
+    }
+
+    /**
+     * 将浏览器下载代理注入到 CLI 进程的环境变量中。
+     * <p>HTTP_PROXY 和 HTTPS_PROXY 各自独立配置：
+     * <ul>
+     *   <li>{@code playwright.browser.download.http.proxy} + username + password → HTTP_PROXY</li>
+     *   <li>{@code playwright.browser.download.https.proxy} + username + password → HTTPS_PROXY</li>
+     * </ul>
+     *
+     * <p>代理配置优先级（高 → 低）：
+     * <ol>
+     *   <li>专用配置 {@code playwright.browser.download.http.proxy} / {@code .https.proxy}</li>
+     *   <li>BrowserStack 配置（{@code browserstack.proxy.host/port/username/password}）</li>
+     *   <li>JVM 系统属性 {@code http.proxyHost} / {@code https.proxyHost}</li>
+     * </ol>
+     *
+     * <p>用户名/密码中的特殊字符（@ % $ 等）会自动进行 URL 编码。
+     */
+    private static void injectDownloadProxy(Map<String, String> env) {
+        String httpProxy = buildProxyUrl(false);
+        String httpsProxy = buildProxyUrl(true);
+
+        if (!isBlank(httpProxy)) {
+            env.put("HTTP_PROXY", httpProxy);
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "[Static Init] HTTP_PROXY set: {}", sanitizeProxyForLog(httpProxy));
+        }
+
+        if (!isBlank(httpsProxy)) {
+            env.put("HTTPS_PROXY", httpsProxy);
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "[Static Init] HTTPS_PROXY set: {}", sanitizeProxyForLog(httpsProxy));
+        }
+
+        if (isBlank(httpProxy) && isBlank(httpsProxy)) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "[Static Init] No download proxy configured — direct connection will be used");
+        }
+    }
+
+    /**
+     * 按优先级构建指定协议类型的代理 URL。
+     *
+     * @param https true 构建 HTTPS 代理 URL，false 构建 HTTP 代理 URL
+     * @return 代理 URL（格式: http://[user:pass@]host:port），未配置返回 null
+     */
+    private static String buildProxyUrl(boolean https) {
+        // ── 1. 专用配置 ──
+        FrameworkConfig proxyKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY
+                                        : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY;
+        FrameworkConfig userKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_USERNAME
+                                       : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_USERNAME;
+        FrameworkConfig passKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_PASSWORD
+                                       : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_PASSWORD;
+
+        String proxy = FrameworkConfigManager.getString(proxyKey);
+        if (!isBlank(proxy)) {
+            String user = FrameworkConfigManager.getString(userKey);
+            String pass = FrameworkConfigManager.getString(passKey);
+            return buildProxyWithAuth(proxy.trim(), user, pass);
+        }
+
+        // ── 2. 从 BrowserStack 配置拼接 ──
+        String bsHost = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_HOST);
+        if (!isBlank(bsHost)) {
+            String bsPort = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_PORT);
+            String bsUser = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_USERNAME);
+            String bsPass = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_PASSWORD);
+            String port = isBlank(bsPort) ? "8080" : bsPort.trim();
+            return buildProxyWithAuth(bsHost.trim() + ":" + port, bsUser, bsPass);
+        }
+
+        // ── 3. JVM 系统属性 ──
+        String jvmHost = https ? System.getProperty("https.proxyHost") : System.getProperty("http.proxyHost");
+        String jvmPort = https ? System.getProperty("https.proxyPort") : System.getProperty("http.proxyPort");
+        if (!isBlank(jvmHost)) {
+            String port = isBlank(jvmPort) ? "8080" : jvmPort.trim();
+            return "http://" + jvmHost.trim() + ":" + port;
+        }
+
+        return null;
+    }
+
+    /**
+     * 根据代理地址和可选的认证信息构建完整代理 URL。
+     *
+     * @param proxyAddr 代理地址（host:port）
+     * @param user      用户名（可空）
+     * @param pass      密码（可空）
+     * @return 完整代理 URL，如 http://user:pass@host:port
+     */
+    private static String buildProxyWithAuth(String proxyAddr, String user, String pass) {
+        if (!isBlank(user) && !isBlank(pass)) {
+            return "http://" + urlEncode(user.trim()) + ":" + urlEncode(pass.trim()) + "@" + proxyAddr;
+        }
+        return "http://" + proxyAddr;
+    }
+
+    /**
+     * 脱敏代理 URL 用于日志输出（隐藏密码）。
+     */
+    private static String sanitizeProxyForLog(String proxyUrl) {
+        if (proxyUrl == null) return null;
+        // 匹配 user:password@ 部分，替换 password 为 ***
+        int atIndex = proxyUrl.lastIndexOf('@');
+        if (atIndex > 0) {
+            int slashIndex = proxyUrl.indexOf("://");
+            int userInfoStart = slashIndex >= 0 ? slashIndex + 3 : 0;
+            String userInfo = proxyUrl.substring(userInfoStart, atIndex);
+            int colon = userInfo.indexOf(':');
+            if (colon >= 0) {
+                return proxyUrl.substring(0, userInfoStart + colon + 1) + "***"
+                        + proxyUrl.substring(atIndex);
+            }
+        }
+        return proxyUrl;
+    }
+
+    /**
+     * 对字符串进行 URL 编码，用于代理 URL 中用户名/密码的特殊字符转义。
+     * <p>采用 UTF-8 编码后将空格转为 %20（而非 +），确保与 HTTP_PROXY 规范兼容。
+     *
+     * @param value 原始字符串（可能含 @ % $ # ! : / ? & = 等特殊字符）
+     * @return URL 编码后的字符串
+     */
+    private static String urlEncode(String value) {
+        if (value == null || value.isEmpty()) return value;
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+                    .replace("+", "%20");
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                    "[Static Init] Failed to URL-encode proxy credential, using raw value", e);
+            return value;
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.trim().isEmpty();
     }
 
 }

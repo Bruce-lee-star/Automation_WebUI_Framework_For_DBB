@@ -601,9 +601,43 @@ public class RouteDsl {
          * 设置 Mock 响应体（纯 Mock 模式）。
          * <p>一旦设置，直接作为完整响应体返回，不访问真实服务器。
          * 如需基于真实响应做字段替换，请使用 {@link #interceptResponse()} 切换模式。
+         *
+         * @param body 响应体字符串（通常为 JSON），空字符串表示空响应
          */
         public MockApiDsl mockBody(String body) {
             rule.setMockBody(body);
+            return this;
+        }
+
+        /**
+         * 设置 Mock 响应体（二进制数据）。
+         * 用于 Mock 二进制类型响应，如图片、PDF、protobuf 等。
+         * <p>优先级高于 {@link #mockBody(String)}。
+         *
+         * @param bodyBytes 响应体字节数组
+         */
+        public MockApiDsl mockBody(byte[] bodyBytes) {
+            rule.setMockBodyBytes(bodyBytes);
+            return this;
+        }
+
+        /**
+         * 设置 Mock 响应体（任意对象，自动序列化为 JSON）。
+         * <p>传入的 Java 对象会自动通过 Gson 序列化为 JSON 字符串作为响应体。
+         * <p>等价于 {@code mockBody(new Gson().toJson(obj))}。
+         *
+         * @param obj 任意 Java 对象（Map、POJO、List 等）
+         */
+        public MockApiDsl mockBody(Object obj) {
+            if (obj == null) {
+                rule.setMockBody("");
+            } else if (obj instanceof byte[]) {
+                rule.setMockBodyBytes((byte[]) obj);
+            } else if (obj instanceof String) {
+                rule.setMockBody((String) obj);
+            } else {
+                rule.setMockBody(new com.google.gson.Gson().toJson(obj));
+            }
             return this;
         }
 

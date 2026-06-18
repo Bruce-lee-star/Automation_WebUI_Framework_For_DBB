@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Dimension;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -182,6 +184,11 @@ public class PlaywrightManager {
         }
         LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright temp directory redirected to: {}", playwrightTemp);
 
+        // ── 抑制 Node.js 的 url.parse 弃用警告 (DEP0169) ──
+        // Playwright 驱动内部 Node.js 代码使用了 url.parse()，这在 Node 11+ 已弃用
+        // 控制台每次启动都会打印 (node:xxx) [DEP0169] DeprecationWarning 噪音
+        env.put("NODE_OPTIONS", "--no-deprecation");
+
         // ==================== BrowserStack 代理透传 ====================
         // 公司网络环境下，域名解析和外网直连均被阻断
         // 需要将 HTTPS_PROXY 注入 Playwright 底层 Node.js 子进程，
@@ -198,20 +205,23 @@ public class PlaywrightManager {
 
             if (proxyHost != null && !proxyHost.trim().isEmpty()
                     && proxyPort != null && !proxyPort.trim().isEmpty()) {
+                // 兼容用户传入的各种格式：http://host、https://host 或纯 host
+                String normalizedHost = normalizeProxyHost(proxyHost.trim());
                 String proxyUrl;
                 if (proxyUser != null && !proxyUser.trim().isEmpty()
                         && proxyPass != null && !proxyPass.trim().isEmpty()) {
                     proxyUrl = String.format("http://%s:%s@%s:%s",
-                            proxyUser, proxyPass, proxyHost, proxyPort);
+                            urlEncode(proxyUser.trim()), urlEncode(proxyPass.trim()),
+                            normalizedHost, proxyPort.trim());
                 } else {
-                    proxyUrl = String.format("http://%s:%s", proxyHost, proxyPort);
+                    proxyUrl = String.format("http://%s:%s", normalizedHost, proxyPort.trim());
                 }
                 env.put("HTTPS_PROXY", proxyUrl);
                 env.put("HTTP_PROXY", proxyUrl);
                 env.put("NO_PROXY", "localhost,127.0.0.1,::1");
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                         "[BrowserStack Proxy] Injecting proxy for Playwright Node process: {}:{}",
-                        proxyHost, proxyPort);
+                        normalizedHost, proxyPort.trim());
             }
         }
 
@@ -965,4 +975,33 @@ public class PlaywrightManager {
     static FrameworkState getFrameworkState() {
         return frameworkState;
     }
+
+    // ==================== Proxy 辅助方法 ====================
+
+    /**
+     * 规范化代理主机地址，去掉用户可能误带的 http:// 或 https:// 前缀。
+     * 兼容输入：proxy.example.com / http://proxy.example.com / https://proxy.example.com
+     */
+    private static String normalizeProxyHost(String host) {
+        if (host == null) return null;
+        String lower = host.toLowerCase();
+        if (lower.startsWith("https://")) return host.substring(8);
+        if (lower.startsWith("http://")) return host.substring(7);
+        return host;
+    }
+
+    /**
+     * URL 编码（用于代理凭据中的特殊字符转义）。
+     */
+    private static String urlEncode(String value) {
+        if (value == null || value.isEmpty()) return value;
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+                    .replace("+", "%20");
+        } catch (Exception e) {
+            logger.warn("Failed to URL-encode proxy credential, using raw value", e);
+            return value;
+        }
+    }
+
 }

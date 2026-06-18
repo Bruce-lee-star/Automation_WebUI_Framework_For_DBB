@@ -15,6 +15,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.*;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -184,18 +186,26 @@ class PlaywrightContextManager {
         }
         String proxyConfig = PlaywrightManager.config().getContextProxy();
         if (proxyEnabled && proxyConfig != null && !proxyConfig.isEmpty()) {
+            // 规范化代理配置：兼容用户传入的各种格式
+            // "http://proxy:8080" / "https://proxy:8080" / "proxy:8080" → 统一加上 scheme
+            String normalizedProxy = normalizeProxyUrl(proxyConfig.trim());
             String proxyUsername = PlaywrightManager.config().getContextProxyUsername();
             String proxyPassword = PlaywrightManager.config().getContextProxyPassword();
             // 如果提供了用户名/密码，构造带认证的代理 URL
             if (proxyUsername != null && !proxyUsername.isEmpty()
                     && proxyPassword != null && !proxyPassword.isEmpty()) {
-                // URL 格式: http://user:pass@host:port
-                String proxyWithAuth = proxyConfig.replaceFirst("^(https?://)", "$1" + proxyUsername + ":" + proxyPassword + "@");
+                // URL 格式: http://user:pass@host:port 或 https://user:pass@host:port
+                // 凭据需 URL 编码，防止含 @ : 等特殊字符时破坏 URL 结构
+                String encodedUser = urlEncode(proxyUsername.trim());
+                String encodedPass = urlEncode(proxyPassword.trim());
+                String proxyWithAuth = normalizedProxy.replaceFirst(
+                        "^(https?://)",
+                        "$1" + encodedUser + ":" + encodedPass + "@");
                 contextOptions.setProxy(proxyWithAuth);
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy with auth: {}@***", proxyUsername);
             } else {
-                contextOptions.setProxy(proxyConfig);
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy: {}", proxyConfig);
+                contextOptions.setProxy(normalizedProxy);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy: {}", normalizedProxy);
             }
         } else if (proxyEnabled) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Proxy enabled but no proxy URL configured (playwright.context.proxy is empty), skipping proxy setup");
@@ -401,6 +411,32 @@ class PlaywrightContextManager {
         } catch (IllegalArgumentException e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Invalid LoadState configuration: {}, using default: DOMCONTENTLOADED", loadStateConfig);
             return LoadState.DOMCONTENTLOADED;
+        }
+    }
+
+    /**
+     * 规范化代理 URL，兼容用户传入的各种格式。
+     * <p>"proxy:8080" → "http://proxy:8080"<br>
+     * "http://proxy:8080" → "http://proxy:8080" (不变)<br>
+     * "https://proxy:8080" → "https://proxy:8080" (不变)
+     */
+    private static String normalizeProxyUrl(String proxyUrl) {
+        if (proxyUrl == null) return null;
+        if (proxyUrl.matches("^https?://.*")) return proxyUrl;
+        return "http://" + proxyUrl;
+    }
+
+    /**
+     * URL 编码（用于代理凭据中的特殊字符转义）。
+     */
+    private static String urlEncode(String value) {
+        if (value == null || value.isEmpty()) return value;
+        try {
+            return URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+                    .replace("+", "%20");
+        } catch (Exception e) {
+            logger.warn("Failed to URL-encode proxy credential, using raw value", e);
+            return value;
         }
     }
 }

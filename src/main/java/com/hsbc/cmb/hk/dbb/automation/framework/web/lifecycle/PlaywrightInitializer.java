@@ -233,15 +233,18 @@ class PlaywrightInitializer {
                 return;
             }
 
-            Path cachePath = Paths.get(DEFAULT_PLAYWRIGHT_BROWSER_PATH).toAbsolutePath();
-            String configuredBrowserType = browserType;
+            String configuredPath = FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSERS_PATH);
+            if (configuredPath == null || configuredPath.trim().isEmpty()) {
+                configuredPath = DEFAULT_PLAYWRIGHT_BROWSER_PATH;
+            }
+            Path cachePath = Paths.get(configuredPath).toAbsolutePath();
 
             boolean browsersInstalled = checkBrowsersInstalled(cachePath);
             if (!browsersInstalled) {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] {} browser not found in cache, downloading...", configuredBrowserType);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] {} browser not found in cache, downloading...", browserType);
                 installBrowsers(cachePath);
             } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Playwright {} browser already installed in: {}", configuredBrowserType, cachePath);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Playwright {} browser already installed in: {}", browserType, cachePath);
             }
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to check browsers installation", e);

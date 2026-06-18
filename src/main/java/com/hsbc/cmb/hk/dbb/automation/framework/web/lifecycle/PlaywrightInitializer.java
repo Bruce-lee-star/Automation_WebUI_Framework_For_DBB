@@ -8,8 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -425,24 +423,12 @@ class PlaywrightInitializer {
 
     /**
      * 将浏览器下载代理注入到 CLI 进程的环境变量中。
-     * <p>HTTP_PROXY 和 HTTPS_PROXY 各自独立配置：
-     * <ul>
-     *   <li>{@code playwright.browser.download.http.proxy} + username + password → HTTP_PROXY</li>
-     *   <li>{@code playwright.browser.download.https.proxy} + username + password → HTTPS_PROXY</li>
-     * </ul>
-     *
-     * <p>代理配置优先级（高 → 低）：
-     * <ol>
-     *   <li>专用配置 {@code playwright.browser.download.http.proxy} / {@code .https.proxy}</li>
-     *   <li>BrowserStack 配置（{@code browserstack.proxy.host/port/username/password}）</li>
-     *   <li>JVM 系统属性 {@code http.proxyHost} / {@code https.proxyHost}</li>
-     * </ol>
-     *
+     * <p>直接从统一代理配置读取，无需为下载场景单独配置。
      * <p>用户名/密码中的特殊字符（@ % $ 等）会自动进行 URL 编码。
      */
     private static void injectDownloadProxy(Map<String, String> env) {
-        String httpProxy = buildProxyUrl(false);
-        String httpsProxy = buildProxyUrl(true);
+        String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
+        String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
 
         if (!isBlank(httpProxy)) {
             env.put("HTTP_PROXY", httpProxy);
@@ -463,82 +449,6 @@ class PlaywrightInitializer {
     }
 
     /**
-     * 按优先级构建指定协议类型的代理 URL。
-     *
-     * @param https true 构建 HTTPS 代理 URL，false 构建 HTTP 代理 URL
-     * @return 代理 URL（格式: http://[user:pass@]host:port），未配置返回 null
-     */
-    private static String buildProxyUrl(boolean https) {
-        // ── 1. 专用配置 ──
-        FrameworkConfig proxyKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY
-                                        : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY;
-        FrameworkConfig userKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_USERNAME
-                                       : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_USERNAME;
-        FrameworkConfig passKey = https ? FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_PASSWORD
-                                       : FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_PASSWORD;
-
-        String proxy = FrameworkConfigManager.getString(proxyKey);
-        if (!isBlank(proxy)) {
-            String user = FrameworkConfigManager.getString(userKey);
-            String pass = FrameworkConfigManager.getString(passKey);
-            return buildProxyWithAuth(proxy.trim(), user, pass);
-        }
-
-        // ── 2. 从 BrowserStack 配置拼接 ──
-        String bsHost = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_HOST);
-        if (!isBlank(bsHost)) {
-            String bsPort = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_PORT);
-            String bsUser = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_USERNAME);
-            String bsPass = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_PROXY_PASSWORD);
-            String port = isBlank(bsPort) ? "8080" : bsPort.trim();
-            return buildProxyWithAuth(bsHost.trim() + ":" + port, bsUser, bsPass);
-        }
-
-        // ── 3. JVM 系统属性 ──
-        String jvmHost = https ? System.getProperty("https.proxyHost") : System.getProperty("http.proxyHost");
-        String jvmPort = https ? System.getProperty("https.proxyPort") : System.getProperty("http.proxyPort");
-        if (!isBlank(jvmHost)) {
-            String port = isBlank(jvmPort) ? "8080" : jvmPort.trim();
-            return "http://" + jvmHost.trim() + ":" + port;
-        }
-
-        return null;
-    }
-
-    /**
-     * 根据代理地址和可选的认证信息构建完整代理 URL。
-     * <p>自动去除用户可能误带的协议前缀（http:// 或 https://），
-     * 避免构造出 {@code http://http://...} 这样的非法 URL。
-     *
-     * @param proxyAddr 代理地址（host:port，可含协议前缀）
-     * @param user      用户名（可空）
-     * @param pass      密码（可空）
-     * @return 完整代理 URL，如 http://user:pass@host:port
-     */
-    private static String buildProxyWithAuth(String proxyAddr, String user, String pass) {
-        String addr = stripProtocolPrefix(proxyAddr);
-        if (!isBlank(user) && !isBlank(pass)) {
-            return "http://" + urlEncode(user.trim()) + ":" + urlEncode(pass.trim()) + "@" + addr;
-        }
-        return "http://" + addr;
-    }
-
-    /**
-     * 去除协议前缀（http:// 或 https://），避免重复拼接。
-     */
-    private static String stripProtocolPrefix(String url) {
-        if (url == null) return null;
-        String lower = url.toLowerCase();
-        if (lower.startsWith("http://")) {
-            return url.substring(7);
-        }
-        if (lower.startsWith("https://")) {
-            return url.substring(8);
-        }
-        return url;
-    }
-
-    /**
      * 脱敏代理 URL 用于日志输出（隐藏密码）。
      */
     private static String sanitizeProxyForLog(String proxyUrl) {
@@ -556,25 +466,6 @@ class PlaywrightInitializer {
             }
         }
         return proxyUrl;
-    }
-
-    /**
-     * 对字符串进行 URL 编码，用于代理 URL 中用户名/密码的特殊字符转义。
-     * <p>采用 UTF-8 编码后将空格转为 %20（而非 +），确保与 HTTP_PROXY 规范兼容。
-     *
-     * @param value 原始字符串（可能含 @ % $ # ! : / ? & = 等特殊字符）
-     * @return URL 编码后的字符串
-     */
-    private static String urlEncode(String value) {
-        if (value == null || value.isEmpty()) return value;
-        try {
-            return URLEncoder.encode(value, StandardCharsets.UTF_8.name())
-                    .replace("+", "%20");
-        } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(logger,
-                    "[Static Init] Failed to URL-encode proxy credential, using raw value", e);
-            return value;
-        }
     }
 
     private static boolean isBlank(String s) {

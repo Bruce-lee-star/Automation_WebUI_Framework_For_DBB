@@ -1229,6 +1229,71 @@ public enum FrameworkConfig {
         "monitor.test.run.id",
         "",
         "Monitor 测试运行 ID"
+    ),
+
+    // ==================== 统一代理配置 ====================
+    //
+    // 所有代理场景（BrowserStack CDP / Context 浏览器流量 / Playwright 下载）
+    // 统一从此处读取，无需为各子系统重复配置。
+    //
+    // port 已包含在 URL 中，无需单独配置。
+    // HTTP 和 HTTPS 可设置不同的代理地址和凭据。
+
+    /**
+     * HTTP 代理地址（host:port，可含 http:// 或 https:// scheme）。
+     * <p>示例: {@code http://proxy.company.com:8888} 或 {@code proxy.company.com:8888}
+     */
+    PLAYWRIGHT_PROXY_HTTP(
+        "playwright.proxy.http",
+        "",
+        "HTTP 代理地址（host:port）"
+    ),
+
+    /**
+     * HTTPS 代理地址（host:port，可含 http:// 或 https:// scheme）。
+     * <p>HTTP 和 HTTPS 各自独立配置，互不回退。
+     * <p>示例: {@code https://proxy.company.com:8443} 或 {@code proxy.company.com:8443}
+     */
+    PLAYWRIGHT_PROXY_HTTPS(
+        "playwright.proxy.https",
+        "",
+        "HTTPS 代理地址（host:port）"
+    ),
+
+    /**
+     * HTTP 代理用户名（可选）。
+     */
+    PLAYWRIGHT_PROXY_HTTP_USERNAME(
+        "playwright.proxy.http.username",
+        "",
+        "HTTP 代理用户名"
+    ),
+
+    /**
+     * HTTP 代理密码（可选）。
+     */
+    PLAYWRIGHT_PROXY_HTTP_PASSWORD(
+        "playwright.proxy.http.password",
+        "",
+        "HTTP 代理密码"
+    ),
+
+    /**
+     * HTTPS 代理用户名（可选）。
+     */
+    PLAYWRIGHT_PROXY_HTTPS_USERNAME(
+        "playwright.proxy.https.username",
+        "",
+        "HTTPS 代理用户名"
+    ),
+
+    /**
+     * HTTPS 代理密码（可选）。
+     */
+    PLAYWRIGHT_PROXY_HTTPS_PASSWORD(
+        "playwright.proxy.https.password",
+        "",
+        "HTTPS 代理密码"
     );
 
     private final String key;

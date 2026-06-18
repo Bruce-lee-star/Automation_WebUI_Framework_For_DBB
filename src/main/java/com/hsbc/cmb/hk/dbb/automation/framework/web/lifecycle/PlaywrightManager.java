@@ -294,10 +294,6 @@ public class PlaywrightManager {
      * 配置浏览器启动选项
      */
     private static void configureBrowserLaunchOptions(BrowserType.LaunchOptions launchOptions) {
-        boolean maximizeWindow = config().isWindowMaximize();
-        String maximizeArgs = config().getWindowMaximizeArgs();
-        boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
-
         // 获取逻辑屏幕尺寸
         Dimension screenSize = config().getAvailableScreenSize();
         int screenWidth = (int) screenSize.getWidth();
@@ -321,19 +317,7 @@ public class PlaywrightManager {
             }
         }
 
-        // 检查是否启用窗口最大化但不包含 --start-maximized
-        if (maximizeWindow && !hasStartMaximized) {
-            if (isChromium) {
-                // Chromium 系列浏览器：添加窗口位置和大小参数
-                args.add("--window-position=0,0");
-                args.add("--window-size=" + screenWidth + "," + screenHeight);
-                LoggingConfigUtil.logInfoIfVerbose(logger, "Window maximization enabled for Chromium, setting window size to: {}x{}", screenWidth, screenHeight);
-            } else {
-                // Firefox/WebKit：通过 BrowserContext viewport 实现最大化
-                LoggingConfigUtil.logInfoIfVerbose(logger, 
-                    "Window maximization for {} will be handled via viewport in BrowserContext", browserType);
-            }
-        }
+        // 窗口最大化统一在 stabilizePage 中通过 window.resizeTo 实现
 
         if (!args.isEmpty()) {
             launchOptions.setArgs(args);

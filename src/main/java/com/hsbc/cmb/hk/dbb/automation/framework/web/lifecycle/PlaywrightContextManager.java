@@ -209,11 +209,24 @@ class PlaywrightContextManager {
         }
         contextOptions.setDeviceScaleFactor(Double.parseDouble(deviceScaleFactor));
 
+        // 设置 viewport（使用逻辑尺寸，Playwright viewport 以 CSS 像素为单位）
         Dimension screenSize = PlaywrightManager.config().getAvailableScreenSize();
         int viewportWidth = (int) screenSize.getWidth();
         int viewportHeight = (int) screenSize.getHeight();
+
+        String browserType = PlaywrightManager.config().getBrowserType();
+
+        // 统一 viewport 策略: viewport = 逻辑屏幕尺寸 - 浏览器 chrome 估算高度
+        // stabilizePage 中 window.resizeTo(logicalWidth, logicalHeight) 将窗口外尺寸最大化到屏幕逻辑尺寸
+        // 窗口外尺寸 = viewport + titleBar + tabBar + addressBar + ... ≈ viewport + 100px
+        // 因此 viewport 应设为逻辑屏幕高度 - chrome估算值，才能填满最大化窗口
+        int estimatedChromeHeight = 100;
+        viewportHeight = Math.max(viewportHeight - estimatedChromeHeight, 600);
         contextOptions.setViewportSize(viewportWidth, viewportHeight);
-        LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context viewport to screen size: {}x{}", viewportWidth, viewportHeight);
+        LoggingConfigUtil.logInfoIfVerbose(logger,
+            "Context viewport: {}x{} (logical screen {}x{}, adjusted for browser chrome ~{}px, browser={})",
+            viewportWidth, viewportHeight, (int) screenSize.getWidth(), (int) screenSize.getHeight(),
+            estimatedChromeHeight, browserType);
 
         contextOptions.setHasTouch(PlaywrightManager.config().hasTouch());
         contextOptions.setIsMobile(PlaywrightManager.config().isMobile());
@@ -322,22 +335,18 @@ class PlaywrightContextManager {
                 LoggingConfigUtil.logDebugIfVerbose(logger, "页面加载等待超时（LoadState: {}），继续稳定化: {}", loadState, e.getMessage());
             }
 
-            String maximizeArgs = PlaywrightManager.config().getWindowMaximizeArgs();
-            boolean hasStartMaximized = maximizeArgs.contains("--start-maximized");
-
             Dimension screenSize = PlaywrightManager.config().getAvailableScreenSize();
             int logicalWidth = (int) screenSize.getWidth();
             int logicalHeight = (int) screenSize.getHeight();
 
-            if (!hasStartMaximized) {
-                page.evaluate(String.format(
-                        "window.resizeTo(%d, %d); window.moveTo(0, 0);",
-                        logicalWidth, logicalHeight
-                ));
-                LoggingConfigUtil.logDebugIfVerbose(logger, "JavaScript窗口大小设置: {}x{}", logicalWidth, logicalHeight);
-            } else {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "使用 --start-maximized，跳过 JavaScript 窗口大小设置");
-            }
+            // 统一使用 window.resizeTo 最大化窗口（所有浏览器）
+            // 窗口外尺寸 = viewport + chrome，这里将外尺寸设为逻辑屏幕尺寸
+            // context 中已设置 viewport = logicalHeight - chromeEstimate，两者配合正好填满
+            page.evaluate(String.format(
+                    "window.resizeTo(%d, %d); window.moveTo(0, 0);",
+                    logicalWidth, logicalHeight
+            ));
+            LoggingConfigUtil.logDebugIfVerbose(logger, "窗口最大化: window.resizeTo({}, {})", logicalWidth, logicalHeight);
 
             page.evaluate(
                     "document.body.style.zoom = '100%'; "
@@ -358,12 +367,14 @@ class PlaywrightContextManager {
             Integer customViewportHeightVal = CustomOptionsManager.customViewportHeight.get();
 
             if (customViewportWidthVal != null && customViewportHeightVal != null) {
-                LoggingConfigUtil.logDebugIfVerbose(logger, "Custom viewport detected ({}x{}), skipping viewport size override",
+                // 用户自定义 viewport：直接应用
+                page.setViewportSize(customViewportWidthVal, customViewportHeightVal);
+                LoggingConfigUtil.logDebugIfVerbose(logger, "Custom viewport applied: {}x{}",
                         customViewportWidthVal, customViewportHeightVal);
             } else {
-                page.setViewportSize(logicalWidth, logicalHeight);
-                LoggingConfigUtil.logDebugIfVerbose(logger, "No custom viewport, setting to logical screen size: {}x{}",
-                        logicalWidth, logicalHeight);
+                // context 已统一设置 viewport = logical - chromeEstimate
+                // window.resizeTo + context viewport 配合 → 窗口填满屏幕
+                LoggingConfigUtil.logDebugIfVerbose(logger, "No custom viewport, keeping viewport from context (window-adapted)");
             }
 
             LoggingConfigUtil.logDebugIfVerbose(logger, "页面稳定化完成");

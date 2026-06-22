@@ -313,6 +313,18 @@ public enum FrameworkConfig {
     ),
 
     /**
+     * BrowserStack CDP 代理启用开关。
+     * <p>控制在创建 Playwright Node 子进程时是否注入 HTTP_PROXY/HTTPS_PROXY 环境变量，
+     * 用于 BrowserStack CDP WebSocket 连接走公司代理。
+     * <p>true=启用，false=禁用（即使配置了下方代理地址也不生效）
+     */
+    BROWSERSTACK_PROXY_ENABLED(
+        "browserstack.proxy.enabled",
+        "false",
+        "BrowserStack CDP 代理启用开关"
+    ),
+
+    /**
      * BrowserStack 代理主机（公司网络环境必填）
      */
     BROWSERSTACK_PROXY_HOST(
@@ -346,6 +358,49 @@ public enum FrameworkConfig {
         "browserstack.proxy.password",
         "",
         "BrowserStack 代理认证密码"
+    ),
+
+    /**
+     * BrowserStack Local Testing 开关。
+     * <p>启用后，BrowserStack 云端浏览器可通过安全隧道访问内网/本地应用。
+     * <p>需要 BrowserStack Local 二进制文件（见 {@link #BROWSERSTACK_LOCAL_PATH}）。
+     */
+    BROWSERSTACK_LOCAL(
+        "browserstack.local",
+        "false",
+        "BrowserStack Local Testing 开关"
+    ),
+
+    /**
+     * BrowserStack Local 隧道标识符（多构建并行时区分隧道）。
+     * <p>留空则自动生成 {@code automation_<timestamp>}。
+     */
+    BROWSERSTACK_LOCAL_IDENTIFIER(
+        "browserstack.local.identifier",
+        "",
+        "BrowserStack Local 隧道标识符"
+    ),
+
+    /**
+     * BrowserStack Local 二进制文件路径。
+     * <p>Windows: {@code BrowserStackLocal.exe}，Linux/Mac: {@code BrowserStackLocal}
+     * <p>可从 https://www.browserstack.com/local-testing/automate 下载，放到项目工具目录或系统 PATH。
+     * <p>留空则在 PATH 中查找。
+     */
+    BROWSERSTACK_LOCAL_PATH(
+        "browserstack.local.path",
+        "",
+        "BrowserStack Local 二进制文件路径"
+    ),
+
+    /**
+     * BrowserStack Local 启动超时（秒）。
+     * <p>隧道建立完成前最多等待此时间。
+     */
+    BROWSERSTACK_LOCAL_TIMEOUT(
+        "browserstack.local.timeout",
+        "30",
+        "BrowserStack Local 启动超时（秒）"
     ),
 
     // ==================== Playwright 窗口配置 ====================
@@ -575,10 +630,10 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * Context 代理启用开关
-     * true=启用代理（需同时配置 playwright.context.proxy）
-     * false=禁用代理（即使配置了 proxy URL 也不会生效）
-     * 方便在不同环境（公司网络/家庭网络）之间切换，无需反复修改 proxy URL
+     * Context 代理启用开关。
+     * <p>true=启用代理（需同时配置 playwright.context.proxy）
+     * <p>false=禁用代理（即使配置了 proxy URL 也不会生效）
+     * <p>方便在不同环境（公司网络/家庭网络）之间切换，无需反复修改 proxy URL
      */
     PLAYWRIGHT_CONTEXT_PROXY_ENABLED(
         "playwright.context.proxy.enabled",
@@ -881,6 +936,17 @@ public enum FrameworkConfig {
             "playwright.browsers.path",
             ".playwright/browsers",
             "Playwright browser path"),
+
+    /**
+     * 浏览器下载代理启用开关。
+     * <p>true=启用下载代理（需同时配置下方下载代理地址/凭据，或统一代理地址）
+     * <p>false=禁用下载代理（即使配置了代理地址也不会注入到 CLI 环境变量）
+     */
+    PLAYWRIGHT_DOWNLOAD_PROXY_ENABLED(
+        "playwright.download.proxy.enabled",
+        "false",
+        "浏览器下载代理启用开关"
+    ),
 
     /**
      * 浏览器下载 HTTP 代理地址
@@ -1234,7 +1300,8 @@ public enum FrameworkConfig {
     // ==================== 统一代理配置 ====================
     //
     // 所有代理场景（BrowserStack CDP / Context 浏览器流量 / Playwright 下载）
-    // 统一从此处读取，无需为各子系统重复配置。
+    // 统一从此处读取代理地址和凭据，无需为各子系统重复配置。
+    // 每个场景有独立的启用开关（见各场景对应配置项）。
     //
     // port 已包含在 URL 中，无需单独配置。
     // HTTP 和 HTTPS 可设置不同的代理地址和凭据。

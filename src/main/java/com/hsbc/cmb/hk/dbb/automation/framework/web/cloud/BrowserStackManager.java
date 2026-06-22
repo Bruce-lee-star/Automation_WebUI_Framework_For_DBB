@@ -79,19 +79,21 @@ public class BrowserStackManager {
     }
 
     /**
-     * 是否为本地开发模式（Local Testing）
+     * 是否为本地开发模式（Local Testing）。
+     * <p>读取 {@code browserstack.local} 配置或 {@code BROWSERSTACK_LOCAL} 环境变量。
      */
     public static boolean isLocalEnabled() {
-        return getBooleanEnv("BROWSERSTACK_LOCAL", null, false);
+        return getBooleanEnv("BROWSERSTACK_LOCAL", FrameworkConfig.BROWSERSTACK_LOCAL, false);
     }
 
     // ==================== 公共 API：创建浏览器连接 ====================
 
     /**
-     * 创建 BrowserStack 远程浏览器连接（核心方法）
-     * 
+     * 创建 BrowserStack 远程浏览器连接（核心方法）。
+     *
      * <p>这是框架驱动的入口。PlaywrightManager 在初始化时调用此方法。</p>
-     * 
+     * <p>启用 Local Testing 时，会自动拉起 BrowserStack Local 隧道。</p>
+     *
      * @param playwright Playwright 实例
      * @return 远程 Browser 对象
      * @throws IllegalStateException 未启用或配置缺失时抛出
@@ -102,6 +104,14 @@ public class BrowserStackManager {
         }
 
         validateCredentials();
+
+        // 启动 Local 隧道（如果启用）
+        if (isLocalEnabled()) {
+            boolean tunnelOk = BrowserStackLocalManager.startTunnel();
+            if (!tunnelOk) {
+                logger.warn("[BrowserStack] Local tunnel failed to start, proceeding without local testing");
+            }
+        }
 
         try {
             String cdpUrl = buildCdpUrl();
@@ -336,6 +346,23 @@ public class BrowserStackManager {
     
     private static String getAccessKey() { 
         return getConfigValue("BROWSERSTACK_ACCESS_KEY", FrameworkConfig.BROWSERSTACK_ACCESS_KEY); 
+    }
+
+    /**
+     * 获取原始 AccessKey（供 BrowserStackLocalManager 包内使用）。
+     */
+    static String getAccessKeyRaw() {
+        return getAccessKey();
+    }
+
+    /**
+     * 清理 BrowserStack 资源（停止 Local 隧道等）。
+     * <p>由 PlaywrightManager.cleanupAll() 调用。
+     */
+    public static void cleanup() {
+        if (isLocalEnabled()) {
+            BrowserStackLocalManager.stopTunnel();
+        }
     }
 
     private static String getConfigValue(String envVar, FrameworkConfig configKey) {

@@ -9,7 +9,7 @@ import java.nio.charset.StandardCharsets;
 /**
  * 统一代理解析器 —— 所有代理场景的唯一配置入口。
  *
- * <h3>6 个配置键</h3>
+ * <h3>配置键</h3>
  * <pre>{@code
  * playwright.proxy.http          = http://proxy.company.com:8888
  * playwright.proxy.https         = https://proxy.company.com:8443   （HTTP/HTTPS 各自独立，互不回退）
@@ -18,6 +18,13 @@ import java.nio.charset.StandardCharsets;
  * playwright.proxy.https.username = domain\\user
  * playwright.proxy.https.password = mypass
  * }</pre>
+ *
+ * <h3>各场景独立开关</h3>
+ * <ul>
+ *   <li>Context 代理  →  {@code playwright.context.proxy.enabled}</li>
+ *   <li>下载代理      →  {@code playwright.download.proxy.enabled}</li>
+ *   <li>BS CDP 代理   →  {@code browserstack.proxy.enabled}</li>
+ * </ul>
  *
  * <h3>使用方</h3>
  * <ul>

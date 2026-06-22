@@ -425,8 +425,16 @@ class PlaywrightInitializer {
      * 将浏览器下载代理注入到 CLI 进程的环境变量中。
      * <p>直接从统一代理配置读取，无需为下载场景单独配置。
      * <p>用户名/密码中的特殊字符（@ % $ 等）会自动进行 URL 编码。
+     * <p>受 {@code playwright.download.proxy.enabled} 独立开关控制。
      */
     private static void injectDownloadProxy(Map<String, String> env) {
+        boolean downloadProxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_DOWNLOAD_PROXY_ENABLED);
+        if (!downloadProxyEnabled) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "[Static Init] Download proxy disabled (playwright.download.proxy.enabled=false)");
+            return;
+        }
+
         String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
         String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
 

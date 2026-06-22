@@ -157,11 +157,12 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   ├── handler/ModifyHandler.java   # 修改处理器
 │   │   │   ├── handler/DelayHandler.java    # 延迟处理器
 │   │   │   └── util/                    # RouteAsyncPool / SerenityReporter / RouteUtil
-│   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（6 个类）
+│   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（7 个类）
 │   │   │   ├── PlaywrightManager.java   # Playwright/Browser/Context/Page 管理层
 │   │   │   ├── PlaywrightContextManager.java  # Context 创建与 Page 稳定化
 │   │   │   ├── PlaywrightConfigManager.java   # 浏览器类型判断与配置
 │   │   │   ├── PlaywrightInitializer.java     # Playwright 实例初始化
+│   │   │   ├── ProxyConfigResolver.java       # 统一代理解析器（所有代理场景的唯一入口）
 │   │   │   ├── CustomOptionsManager.java      # 自定义 Context 选项（链式 API）
 │   │   │   └── ContextLifecycleHookManager.java # Context 生命周期钩子
 │   │   ├── config/                     # 配置中心
@@ -177,7 +178,8 @@ Automation_WebUI_Framework_For_DBB/
 │   │   ├── screenshot/ScreenshotStrategy.java # 截图策略
 │   │   ├── snapshot/                   # 原生快照测试
 │   │   │   └── PlaywrightSnapshotSupport.java # 视觉/ARIA 快照
-│   │   ├── cloud/BrowserStackManager.java  # BrowserStack CDP 云测试
+│   │   ├── cloud/BrowserStackManager.java       # BrowserStack CDP 云测试
+│   │   ├── cloud/BrowserStackLocalManager.java  # BrowserStack Local 隧道管理（内网应用测试）
 │   │   ├── session/SessionManager.java     # Cookie/LocalStorage 跨场景复用
 │   │   ├── core/                       # 框架核心
 │   │   │   ├── FrameworkCore.java     # 初始化/运行/停止/清理 + JVM Shutdown Hook
@@ -475,6 +477,37 @@ browserstack.video=true
 browserstack.timeout=300
 ```
 
+#### BrowserStack Local Testing（内网/本地应用测试）
+
+当被测应用部署在内网（如 `http://localhost:8080` 或公司内部 IP）时，需要启用 BrowserStack Local 隧道。框架内置 `BrowserStackLocalManager` 自动管理隧道生命周期：
+
+```properties
+# 启用 Local Testing 隧道
+browserstack.local=true
+
+# BrowserStackLocal 二进制路径（留空则在 PATH 中查找）
+# Windows: D:/tools/BrowserStackLocal.exe
+# macOS/Linux: /usr/local/bin/BrowserStackLocal
+browserstack.local.path=
+
+# 隧道标识符（留空自动生成: automation_<timestamp>）
+browserstack.local.identifier=
+
+# 隧道启动超时（秒）
+browserstack.local.timeout=30
+```
+
+**工作原理：**
+```
+本地机器 ──安全隧道──▶ BrowserStack Cloud ──▶ 远程浏览器
+         (BrowserStackLocal 二进制)             (可访问内网应用)
+```
+
+**前提条件：**
+1. 下载 [BrowserStackLocal 二进制](https://www.browserstack.com/local-testing/automate)
+2. macOS/Linux 用户需执行 `chmod +x BrowserStackLocal`
+3. 框架自动启停隧道（BrowserStack 连接时启动，cleanup 时停止）
+
 ---
 
 ### 8. SummaryReportGenerator — 摘要报告
@@ -719,10 +752,27 @@ public class LoginSteps {
 
 ### 代理配置
 
+> **设计原则**：代理地址和凭据在所有场景间共享，但各场景有独立的启用开关，互不干扰。
+> 典型组合：公司内网下载走代理但浏览器直连（`download=true, context=false`），或 BrowserStack CDP 走代理而其他不走。
+
+**独立开关（按场景启用）：**
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `playwright.context.proxy` | (空) | 代理服务器地址 |
-| `playwright.context.proxy.enabled` | false | 代理启用开关 |
+| `playwright.context.proxy.enabled` | false | Context 浏览器流量代理开关 |
+| `playwright.download.proxy.enabled` | false | 浏览器下载代理开关（CLI install 注入 HTTP_PROXY） |
+| `browserstack.proxy.enabled` | false | BrowserStack CDP WebSocket 连接代理开关 |
+
+**共享地址与凭据（被上述开关控制）：**
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `playwright.proxy.http` | (空) | HTTP 代理地址（host:port） |
+| `playwright.proxy.https` | (空) | HTTPS 代理地址（host:port，与 HTTP 各自独立互不回退） |
+| `playwright.proxy.http.username` | (空) | HTTP 代理用户名（可选） |
+| `playwright.proxy.http.password` | (空) | HTTP 代理密码（可选） |
+| `playwright.proxy.https.username` | (空) | HTTPS 代理用户名（可选） |
+| `playwright.proxy.https.password` | (空) | HTTPS 代理密码（可选） |
 
 ### 视口与上下文
 
@@ -771,6 +821,10 @@ public class LoginSteps {
 | `browserstack.debug` | true | 调试模式 |
 | `browserstack.networkLogs` | true | 网络日志 |
 | `browserstack.video` | true | 视频录制 |
+| `browserstack.local` | false | Local Testing 隧道开关 |
+| `browserstack.local.path` | (空) | BrowserStackLocal 二进制路径 |
+| `browserstack.local.identifier` | (空) | 隧道标识符（留空自动生成） |
+| `browserstack.local.timeout` | 30s | 隧道启动超时 |
 
 ### 报告配置
 
@@ -861,12 +915,14 @@ public class LoginSteps {
 6. **CI/CD 原生集成** — Jenkins Pipeline，环境变量自动解析，邮件链接自动构建
 7. **无障碍合规** — 内置 Deque axe-core WCAG 自动扫描
 8. **Session 跨场景复用** — 缓存命中时跳过登录直达 homeUrl，未命中时自动保存登录态
-9. **BrowserStack 云测试** — CDP 协议连接远程浏览器，无需修改测试代码
-10. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM
-11. **CustomOptionsManager 链式 API** — 运行时动态覆盖 Context 配置，立即生效，支持 12 种选项
-12. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现，Scenario 标签匹配浏览器
-13. **JVM Shutdown Hook 资源清理** — 确保 JVM 异常退出时 Playwright 资源被正确释放
-14. **原生快照测试** — 视觉快照 + ARIA 结构快照，跨平台一致基线
+9. **BrowserStack 云测试** — CDP 协议连接远程浏览器 + Local Testing 隧道访问内网应用，无需修改测试代码
+10. **独立代理控制** — Context/下载/CDP 三场景共享地址凭据但各自独立开关，方便在公司/家庭网络间灵活切换
+11. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM
+12. **CustomOptionsManager 链式 API** — 运行时动态覆盖 Context 配置，立即生效，支持 12 种选项
+13. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现，Scenario 标签匹配浏览器
+14. **JVM Shutdown Hook 资源清理** — 确保 JVM 异常退出时 Playwright 资源被正确释放
+15. **原生快照测试** — 视觉快照 + ARIA 结构快照，跨平台一致基线
+16. **跨平台兼容** — 同一套代码同时支持 Windows / macOS / Linux，自动适配路径分隔符、临时目录和二进制名称
 
 ---
 

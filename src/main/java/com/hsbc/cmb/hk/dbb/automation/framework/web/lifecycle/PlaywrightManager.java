@@ -190,7 +190,9 @@ public class PlaywrightManager {
         // ==================== 代理透传（BrowserStack CDP / 下载） ====================
         // 公司网络下 CDP WebSocket 连接需要通过代理建立 CONNECT 隧道
         // 直接从统一代理配置读取，无需为 BrowserStack 单独配置
-        if (BrowserStackManager.isBrowserStackEnabled()) {
+        // 受 browserstack.proxy.enabled 独立开关控制
+        if (BrowserStackManager.isBrowserStackEnabled()
+                && FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED)) {
             String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
             String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
             if (httpProxy != null || httpsProxy != null) {
@@ -890,6 +892,9 @@ public class PlaywrightManager {
         PlaywrightSerenityBridge.cleanupThreadLocals(true);
         // ⭐ 最终清理：Browser 已关闭，currentConfigId 可以安全清除
         currentConfigId.remove();
+
+        // ⭐ 关闭 BrowserStack Local 隧道
+        BrowserStackManager.cleanup();
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
     }

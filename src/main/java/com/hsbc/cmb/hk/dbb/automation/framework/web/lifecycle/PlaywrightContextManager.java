@@ -173,16 +173,14 @@ class PlaywrightContextManager {
         }
 
         // 配置代理服务器（直接从统一代理配置读取）
-        // 优先级：customProxyEnabled ThreadLocal > 是否配置了统一代理
+        // 优先级：customProxyEnabled ThreadLocal > playwright.context.proxy.enabled
         Boolean customProxyOverride = PlaywrightManager.customOptions().getProxyEnabled();
         boolean proxyEnabled;
         if (customProxyOverride != null) {
             proxyEnabled = customProxyOverride;
             LoggingConfigUtil.logInfoIfVerbose(logger, "Using custom proxyEnabled override: {} (from business code)", proxyEnabled);
         } else {
-            // 只要配置了统一代理即启用
-            proxyEnabled = ProxyConfigResolver.getHttpProxyUrl() != null
-                        || ProxyConfigResolver.getHttpsProxyUrl() != null;
+            proxyEnabled = PlaywrightConfigManager.config().getContextProxyEnabled();
         }
 
         if (proxyEnabled) {
@@ -191,7 +189,7 @@ class PlaywrightContextManager {
                 contextOptions.setProxy(proxyUrl);
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy from unified config");
             } else {
-                LoggingConfigUtil.logWarnIfVerbose(logger, "Proxy enabled but no unified proxy configured, skipping proxy setup");
+                LoggingConfigUtil.logWarnIfVerbose(logger, "Proxy enabled but no HTTP proxy configured, skipping context proxy");
             }
         }
 

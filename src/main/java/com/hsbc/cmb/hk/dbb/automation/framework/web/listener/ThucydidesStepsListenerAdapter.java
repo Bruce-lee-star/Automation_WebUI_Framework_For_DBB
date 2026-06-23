@@ -84,20 +84,6 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
                     logger.error(" Failed to add AxeCoreListener as delegate listener", e);
                 }
 
-                // Add NativeSnapshotTestListener for automatic snapshot report generation
-                try {
-                    NativeSnapshotTestListener nativeSnapshotTestListener = new NativeSnapshotTestListener();
-                    addDelegateListener(nativeSnapshotTestListener);
-                    LoggingConfigUtil.logDebugIfVerbose(logger, " Added NativeSnapshotTestListener for automatic snapshot report generation");
-                } catch (Exception e) {
-                    logger.error(" Failed to add NativeSnapshotTestListener as delegate listener", e);
-                }
-
-
-
-
-
-
             } else {
                 // 后续实例只是"轻量级"包装器，不创建新的监听器
                 // 只记录DEBUG级别日志，减少日志噪音

@@ -403,6 +403,38 @@ public enum FrameworkConfig {
         "BrowserStack Local 启动超时（秒）"
     ),
 
+    /**
+     * BrowserStack Local 代理启用开关。
+     * <p>控制 BrowserStackLocal 二进制进程是否通过代理连接 BrowserStack 服务器。
+     * <p>true=启用（需同时配置共享代理地址 playwright.proxy.http）
+     * <p>false=直连（默认）
+     */
+    BROWSERSTACK_LOCAL_PROXY_ENABLED(
+        "browserstack.local.proxy.enabled",
+        "false",
+        "BrowserStack Local 代理启用开关"
+    ),
+
+    /**
+     * BrowserStack Local 代理认证用户名（场景专属，覆盖全局默认）。
+     * <p>显式设为空字符串表示该场景不需要认证。
+     */
+    BROWSERSTACK_LOCAL_PROXY_USERNAME(
+        "browserstack.local.proxy.username",
+        "",
+        "BrowserStack Local 代理认证用户名"
+    ),
+
+    /**
+     * BrowserStack Local 代理认证密码（场景专属，覆盖全局默认）。
+     * <p>显式设为空字符串表示该场景不需要认证。
+     */
+    BROWSERSTACK_LOCAL_PROXY_PASSWORD(
+        "browserstack.local.proxy.password",
+        "",
+        "BrowserStack Local 代理认证密码"
+    ),
+
     // ==================== Playwright 窗口配置 ====================
 
     /**
@@ -441,24 +473,6 @@ public enum FrameworkConfig {
         "playwright.context.isMobile",
         "false",
         "移动设备模拟"
-    ),
-
-    /**
-     * Viewport 宽度
-     */
-    PLAYWRIGHT_CONTEXT_VIEWPORT_WIDTH(
-        "playwright.context.viewport.width",
-        "1366",
-        "Viewport 宽度"
-    ),
-
-    /**
-     * Viewport 高度
-     */
-    PLAYWRIGHT_CONTEXT_VIEWPORT_HEIGHT(
-        "playwright.context.viewport.height",
-        "768",
-        "Viewport 高度"
     ),
 
     /**
@@ -1072,66 +1086,6 @@ public enum FrameworkConfig {
         "Axe-core 报告输出目录"),
 
     // ==================== Playwright 原生快照测试配置 ====================
-
-    /**
-     * 是否启用 Playwright 原生快照测试
-     * true=启用, false=跳过
-     */
-    NATIVE_SNAPSHOT_ENABLED(
-        "native.snapshot.enabled",
-        "true",
-        "是否启用 Playwright 原生快照测试"
-    ),
-
-    /**
-     * Playwright 原生视觉快照基线目录
-     * 存储 .png 格式的视觉基线
-     */
-    NATIVE_SNAPSHOT_VISUAL_DIR(
-        "native.snapshot.visual.dir",
-        "src/test/resources/snapshots/native/visual",
-        "原生视觉快照基线目录"
-    ),
-
-    /**
-     * Playwright 原生 ARIA 快照基线目录
-     * 存储 .aria 格式的可访问性树基线
-     */
-    NATIVE_SNAPSHOT_ARIA_DIR(
-        "native.snapshot.aria.dir",
-        "src/test/resources/snapshots/native/aria",
-        "原生 ARIA 快照基线目录"
-    ),
-
-    /**
-     * 原生视觉快照最大差异像素数
-     * 超过此值判定为失败
-     */
-    NATIVE_SNAPSHOT_MAX_DIFF_PIXELS(
-        "native.snapshot.visual.maxDiffPixels",
-        "100",
-        "原生视觉快照最大差异像素数"
-    ),
-
-    /**
-     * 原生视觉快照最大差异像素比例
-     * 0.01 = 1%，超过此比例判定为失败
-     */
-    NATIVE_SNAPSHOT_MAX_DIFF_RATIO(
-        "native.snapshot.visual.maxDiffPixelRatio",
-        "0.01",
-        "原生视觉快照最大差异像素比例"
-    ),
-
-    /**
-     * 原生快照测试静默模式
-     * true=减少日志输出, false=正常日志
-     */
-    NATIVE_SNAPSHOT_SILENT(
-        "native.snapshot.silent",
-        "false",
-        "原生快照测试静默模式"
-    ),
 
     // ==================== Playwright 元素操作配置 ====================
 

@@ -184,7 +184,7 @@ class PlaywrightContextManager {
         }
 
         if (proxyEnabled) {
-            String proxyUrl = ProxyConfigResolver.getHttpProxyUrl();
+            String proxyUrl = ProxyConfigResolver.getHttpProxyUrlForContext();
             if (proxyUrl != null) {
                 contextOptions.setProxy(proxyUrl);
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Setting context proxy from unified config");

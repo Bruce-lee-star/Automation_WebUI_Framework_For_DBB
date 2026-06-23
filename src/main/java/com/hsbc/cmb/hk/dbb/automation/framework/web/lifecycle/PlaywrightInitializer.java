@@ -435,8 +435,8 @@ class PlaywrightInitializer {
             return;
         }
 
-        String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
-        String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
+        String httpProxy = ProxyConfigResolver.getHttpProxyUrlForDownload();
+        String httpsProxy = ProxyConfigResolver.getHttpsProxyUrlForDownload();
 
         if (!isBlank(httpProxy)) {
             env.put("HTTP_PROXY", httpProxy);

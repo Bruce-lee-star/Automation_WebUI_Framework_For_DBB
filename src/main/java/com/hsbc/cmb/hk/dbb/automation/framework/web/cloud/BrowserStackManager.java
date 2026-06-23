@@ -131,9 +131,15 @@ public class BrowserStackManager {
             return browser;
 
         } catch (PlaywrightException e) {
+            // PlaywrightException 消息可能含完整 CDP URL（wss://user:key@...），
+            // 不能作为 cause 传递（SLF4J 会递归打印整个 cause 链暴露凭据）。
+            // 脱敏后仅保留报错原因文本。
+            String causeMsg = sanitizeMessage(e.getMessage());
+            logger.debug("[BrowserStack] CDP connection failed: {}", causeMsg);
             throw new RuntimeException(
                 "[BrowserStack] Failed to connect to BrowserStack. " +
-                "Check credentials and network connectivity.", e);
+                "Check credentials and network connectivity. " +
+                (causeMsg != null ? "Cause: " + causeMsg : ""));
         }
     }
 
@@ -414,6 +420,18 @@ public class BrowserStackManager {
 
     private static String maskCdpUrl(String url) {
         return url.replaceAll("(\\w+):([^@]+)@", "$1:****@");
+    }
+
+    /**
+     * 脱敏异常/日志消息中的凭据（wss:// / https?:// 中的密码、accessKey）。
+     * <p>用于防止 Playwright 内部异常消息（含完整 CDP URL）被日志打印出去。
+     * <p>正则匹配 {@code scheme://user:secret@host}，将 secret 替换为 {@code ****}。
+     */
+    public static String sanitizeMessage(String message) {
+        if (message == null || message.isEmpty()) return message;
+        // 匹配 wss://user:secret@ 、https://user:secret@ 、http://user:secret@
+        // user 可以包含 %-encoded 字符，secret 直到 @ 之前
+        return message.replaceAll("(wss|https?://)([^:]+):([^@]+)@", "$1$2:****@");
     }
 
     private static String urlEncode(String value) {

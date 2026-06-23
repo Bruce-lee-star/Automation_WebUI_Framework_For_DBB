@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ProxyConfigResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -82,24 +83,39 @@ public class BrowserStackLocalManager {
             command.add(key);
             command.add("--local-identifier");
             command.add(localIdentifier);
-            command.add("--force-local");   // 所有流量走本地
+            command.add("--force-local");       // 所有流量走本地
+            command.add("--only-automate");     // 仅允许 Automate 请求，禁止交互式浏览器登录
 
-            // 代理透传（如果统一代理已配）
-            String httpProxy = getBootstrapProxy();
-            if (httpProxy != null) {
-                String host = extractHost(httpProxy);
-                String port = extractPort(httpProxy);
-                if (host != null && port != null) {
-                    command.add("--proxy-host");
-                    command.add(host);
-                    command.add("--proxy-port");
-                    command.add(port);
-                    logger.info("[BS Local] Using proxy: {}:{}", host, port);
+            // 代理配置（受 browserstack.local.proxy.enabled 独立开关控制）
+            if (FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_LOCAL_PROXY_ENABLED)) {
+                String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+                if (httpProxy != null) {
+                    String host = ProxyConfigResolver.extractHost(httpProxy);
+                    String port = ProxyConfigResolver.extractPort(httpProxy);
+                    if (host != null && port != null) {
+                        command.add("--proxy-host");
+                        command.add(host);
+                        command.add("--proxy-port");
+                        command.add(port);
+                        command.add("--force-proxy");   // 所有流量（含控制通道）强制走代理
+                        logger.info("[BS Local] Using proxy: {}:{} (force-proxy)", host, port);
+
+                        // 代理认证（BrowserStackLocal 支持 --proxy-user / --proxy-pass）
+                        String proxyUser = ProxyConfigResolver.extractUser(httpProxy);
+                        String proxyPass = ProxyConfigResolver.extractPass(httpProxy);
+                        if (proxyUser != null && proxyPass != null) {
+                            command.add("--proxy-user");
+                            command.add(proxyUser);
+                            command.add("--proxy-pass");
+                            command.add(proxyPass);
+                            logger.info("[BS Local] Proxy authentication configured for user: {}", proxyUser);
+                        }
+                    } else {
+                        logger.warn("[BS Local] Proxy enabled but host/port extraction failed from URL: {}",
+                                BrowserStackManager.sanitizeMessage(httpProxy));
+                    }
                 }
             }
-
-            // verbose 日志
-            command.add("-v");
 
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
@@ -163,11 +179,13 @@ public class BrowserStackLocalManager {
     private static String resolveBinaryPath() {
         String configured = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_LOCAL_PATH);
         if (configured != null && !configured.trim().isEmpty()) {
-            Path p = Paths.get(configured.trim());
+            String trimmed = configured.trim();
+            // 相对路径基于 JVM user.dir 解析（和 java.io.File 行为一致）
+            Path p = Paths.get(trimmed).toAbsolutePath().normalize();
             if (Files.exists(p) && Files.isExecutable(p)) {
-                return p.toAbsolutePath().toString();
+                return p.toString();
             }
-            logger.warn("[BS Local] Configured path not found/executable: {}", configured);
+            logger.warn("[BS Local] Configured path not found/executable: {} (resolved to: {})", configured, p);
         }
 
         // fallback: 在 PATH 中查找
@@ -186,94 +204,93 @@ public class BrowserStackLocalManager {
             }
         }
 
-        // macOS Spotlight 索引泄漏：BrowserStack 下载包解压后可能在 ~/Downloads/BrowserStackLocal-*
-        // 额外搜索几个常见位置
-        if (!isWindows) {
-            String home = System.getProperty("user.home");
-            try (var stream = Files.walk(Paths.get(home, "Downloads"), 1)) {
-                Path found = stream
-                        .filter(Files::isRegularFile)
-                        .filter(p -> p.getFileName().toString().startsWith("BrowserStackLocal")
-                                && Files.isExecutable(p))
-                        .findFirst().orElse(null);
-                if (found != null) {
-                    logger.info("[BS Local] Found binary in downloads: {}", found);
-                    return found.toAbsolutePath().toString();
-                }
-            } catch (Exception ignored) {
-                // 目录不存在或无权限
-            }
-        }
-
         return null;
     }
 
     /**
      * 读取 stdout 直到看到成功标志或超时。
+     * <p>使用独立守护线程阻塞读取，避免了 {@code reader.ready()} 在 Windows 上不可靠的问题。
+     * <p>兼容 BrowserStackLocal 纯文本和 JSON 格式输出。
      */
     private static boolean waitForReady(Process process, int timeoutSeconds) {
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(timeoutSeconds);
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            StringBuilder startupLog = new StringBuilder();
-            String line;
-            while (System.currentTimeMillis() < deadline) {
-                if (reader.ready()) {
-                    line = reader.readLine();
-                    if (line != null) {
-                        startupLog.append(line).append("\n");
-                        if (line.contains("Press Ctrl-C to quit")
-                                || line.contains("You can now access")) {
-                            logger.debug("[BS Local] Startup output:\n{}", startupLog);
-                            return true;
+        StringBuilder startupLog = new StringBuilder();
+
+        // 成功标志：纯文本或 JSON 状态
+        final String[] SUCCESS_MARKERS = {
+                "Press Ctrl-C to quit",
+                "You can now access",
+                "\"state\":\"connected\"",
+                "\"status\":\"connected\"",
+                "\"message\":\"Connected\""
+        };
+
+        // 用数组承载闭包副作用
+        final boolean[] ready = {false};
+        final boolean[] error = {false};
+        final String[] errorMsg = {null};
+
+        Thread readerThread = new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while (!ready[0] && (line = reader.readLine()) != null) {
+                    startupLog.append(line).append("\n");
+
+                    // 检查错误
+                    if (line.contains("[ERROR]") || line.contains("ERROR]")
+                            || line.contains("\"level\":\"error\"")) {
+                        error[0] = true;
+                        errorMsg[0] = BrowserStackManager.sanitizeMessage(line);
+                    }
+
+                    // 检查成功标志
+                    for (String marker : SUCCESS_MARKERS) {
+                        if (line.contains(marker)) {
+                            ready[0] = true;
+                            break;
                         }
                     }
-                } else {
-                    // 检查进程是否已死
-                    if (!process.isAlive()) {
-                        logger.error("[BS Local] Process died unexpectedly (exit={}). Output:\n{}",
-                                process.exitValue(), startupLog);
-                        return false;
-                    }
-                    Thread.sleep(200);
                 }
+            } catch (IOException e) {
+                logger.debug("[BS Local] Reader thread ended: {}", e.getMessage());
             }
-            logger.warn("[BS Local] Startup timeout. Partial output:\n{}", startupLog);
-        } catch (IOException | InterruptedException e) {
-            logger.error("[BS Local] Error reading tunnel output: {}", e.getMessage());
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-        }
-        return false;
-    }
+        }, "bs-local-reader");
+        readerThread.setDaemon(true);
+        readerThread.start();
 
-    /**
-     * 从统一代理配置获取代理 URL 用于 Local 二进制启动。
-     */
-    private static String getBootstrapProxy() {
         try {
-            Class<?> resolverClass = Class.forName(
-                    "com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ProxyConfigResolver");
-            Object httpProxy = resolverClass.getMethod("getHttpProxyUrl").invoke(null);
-            return httpProxy != null ? httpProxy.toString() : null;
-        } catch (Exception e) {
-            return null;
+            while (System.currentTimeMillis() < deadline) {
+                if (ready[0]) {
+                    logger.debug("[BS Local] Startup output:\n{}",
+                            BrowserStackManager.sanitizeMessage(startupLog.toString()));
+                    return true;
+                }
+                if (!process.isAlive()) {
+                    int exitCode = process.exitValue();
+                    logger.error("[BS Local] Process died unexpectedly (exit={}). Output:\n{}",
+                            exitCode, BrowserStackManager.sanitizeMessage(startupLog.toString()));
+                    return false;
+                }
+                if (error[0]) {
+                    logger.error("[BS Local] Error detected: {}", errorMsg[0]);
+                    // 不立即返回 false，可能是非致命错误，继续等待
+                    error[0] = false;
+                }
+                readerThread.join(500);
+            }
+
+            logger.warn("[BS Local] Startup timeout after {}s. Partial output:\n{}",
+                    timeoutSeconds, BrowserStackManager.sanitizeMessage(startupLog.toString()));
+            readerThread.interrupt();
+            return false;
+
+        } catch (InterruptedException e) {
+            readerThread.interrupt();
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
-    private static String extractHost(String proxyUrl) {
-        if (proxyUrl == null) return null;
-        String url = proxyUrl.replaceFirst("https?://", "");
-        int atIdx = url.lastIndexOf('@');
-        if (atIdx >= 0) url = url.substring(atIdx + 1);
-        int colonIdx = url.lastIndexOf(':');
-        return colonIdx >= 0 ? url.substring(0, colonIdx) : url;
-    }
-
-    private static String extractPort(String proxyUrl) {
-        if (proxyUrl == null) return null;
-        String url = proxyUrl.replaceFirst("https?://", "");
-        int atIdx = url.lastIndexOf('@');
-        if (atIdx >= 0) url = url.substring(atIdx + 1);
-        int colonIdx = url.lastIndexOf(':');
-        return colonIdx >= 0 ? url.substring(colonIdx + 1).replaceAll("/.*", "") : null;
-    }
 }
+

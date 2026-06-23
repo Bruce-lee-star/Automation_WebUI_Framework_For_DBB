@@ -159,20 +159,6 @@ public class PlaywrightConfigManager {
     }
 
     /**
-     * 获取 Viewport 宽度
-     */
-    public int getViewportWidth() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_WIDTH);
-    }
-
-    /**
-     * 获取 Viewport 高度
-     */
-    public int getViewportHeight() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_CONTEXT_VIEWPORT_HEIGHT);
-    }
-
-    /**
      * 是否启用触摸
      */
     public boolean hasTouch() {

@@ -5,7 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.snapshot.PlaywrightSnapshotSupport;
+
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;

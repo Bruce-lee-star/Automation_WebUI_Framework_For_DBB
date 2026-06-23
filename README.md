@@ -98,8 +98,8 @@
 │  │  Delay)      │ │              │ │                  │    │
 │  └──────────────┘ └──────────────┘ └──────────────────┘    │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
-│  │ 原生快照测试  │ │ 截图管理      │ │ 监听器体系        │    │
-│  │ Snapshot     │ │ Screenshot   │ │ Listener         │    │
+│  │ 截图管理      │ │ 监听器体系    │ │ 持久化存储        │    │
+│  │ Screenshot   │ │ Listener     │ │ Persistence      │    │
 │  └──────────────┘ └──────────────┘ └──────────────────┘    │
 │  ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐    │
 │  │ 云测试支持    │ │ AutoBrowser  │ │ 配置中心          │    │
@@ -141,7 +141,7 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   ├── base/BasePage.java       # 基础页面类（99+ Playwright 操作 + element() 统一门面）
 │   │   │   ├── base/impl/SerenityBasePage.java  # Serenity 集成（双拦截器 + element() 覆盖统一报告注入）
 │   │   │   └── factory/PageObjectFactory.java   # 页面对象工厂（单例/原型/线程隔离）
-│   │   ├── route/                       # ★ Route Engine（17 个类）
+│   │   ├── route/                       # ★ Route Engine（21 个类）
 │   │   │   ├── core/RouteEngine.java    # 路由引擎
 │   │   │   ├── core/RouteRegistry.java  # WeakReference 隔离注册表
 │   │   │   ├── core/RouteRule.java      # 路由规则模型 + 校验
@@ -150,12 +150,17 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   ├── core/ApiCaptureContext.java  # ThreadLocal 捕获上下文
 │   │   │   ├── core/CapturedApiCall.java    # API 调用快照
 │   │   │   ├── core/RouteMonitor.java       # 监控门面
+│   │   │   ├── core/MonitorCallback.java    # Monitor 响应回调 @FunctionalInterface
 │   │   │   ├── core/RouteException.java     # 三层异常体系
 │   │   │   ├── dsl/RouteDsl.java        # 流式 DSL（外部唯一入口）
 │   │   │   ├── handler/MonitorHandler.java  # 监控处理器
 │   │   │   ├── handler/MockHandler.java     # 模拟处理器（含 mockReplaceField 批量替换）
 │   │   │   ├── handler/ModifyHandler.java   # 修改处理器
 │   │   │   ├── handler/DelayHandler.java    # 延迟处理器
+│   │   │   ├── persistence/             # ★ API 监控持久化（3 个类）
+│   │   │   │   ├── ApiMonitoringRecord.java  # 监控记录实体
+│   │   │   │   ├── ApiMonitoringRepository.java # HikariCP DB 仓库（MySQL/PostgreSQL）
+│   │   │   │   └── DatabaseStoreMonitorCallback.java # 内置 DB 存储回调
 │   │   │   └── util/                    # RouteAsyncPool / SerenityReporter / RouteUtil
 │   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（7 个类）
 │   │   │   ├── PlaywrightManager.java   # Playwright/Browser/Context/Page 管理层
@@ -176,8 +181,6 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   └── ThucydidesStepsListenerAdapter.java  # SPI 自动注册适配器
 │   │   ├── accessibility/AxeCoreScanner.java  # WCAG 无障碍扫描
 │   │   ├── screenshot/ScreenshotStrategy.java # 截图策略
-│   │   ├── snapshot/                   # 原生快照测试
-│   │   │   └── PlaywrightSnapshotSupport.java # 视觉/ARIA 快照
 │   │   ├── cloud/BrowserStackManager.java       # BrowserStack CDP 云测试
 │   │   ├── cloud/BrowserStackLocalManager.java  # BrowserStack Local 隧道管理（内网应用测试）
 │   │   ├── session/SessionManager.java     # Cookie/LocalStorage 跨场景复用
@@ -305,6 +308,18 @@ RouteDsl.on(page)
     .done()
     .start();
 
+// Monitor + 响应回调 — 断言通过后异步触发自定义逻辑
+RouteDsl.on(page)
+    .api("/api/login")
+    .monitor()
+    .expectStatus(200)
+    .onResponse((url, status, body, headers, method) -> {
+        String token = JsonPath.read(body, "$.data.token");
+        System.out.println("Token: " + token);
+    })
+    .done()
+    .start();
+
 // Mock — 纯 Mock 模式：拦截并返回自定义响应（不访问真实服务器）
 RouteDsl.on(page)
     .api("/api/login")
@@ -354,7 +369,9 @@ RouteDsl.on(page)
 
 - **优先级覆盖**：MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)
 - **Page/Context 双层级注册**：跨层自动合并延迟配置
+- **Monitor 响应回调**：`onResponse()` Lambda 异步触发，断言通过后自动执行自定义逻辑
 - **MonitorSession 自动停止**：支持超时、最小匹配次数 + `autoStopOnMatch` 双重机制
+- **Monitor DB 持久化**：`DatabaseStoreMonitorCallback` 内置回调，Monitor 数据自动写入 MySQL/PostgreSQL（HikariCP 连接池，支持静默降级）
 - **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程
 - **内存安全**：WeakReference 防泄漏、双重上限防 OOM
 - **Serenity 报告集成**：Handler 数据通过 `SerenityReporter` 自动刷入 Serenity 报告
@@ -440,27 +457,7 @@ axe.scan.outputDir=target/accessibility-axe
 
 ---
 
-### 6. 原生快照测试（PlaywrightSnapshotSupport）
-
-支持视觉快照和 ARIA 结构快照，跨平台一致：
-
-```java
-// 视觉快照对比
-PlaywrightSnapshotSupport.of(page.locator("main"))
-    .visual()
-    .baselineName("main-page")
-    .snapshot();
-
-// ARIA 结构快照
-PlaywrightSnapshotSupport.of(page.locator("nav"))
-    .aria()
-    .baselineName("nav-aria")
-    .snapshot();
-```
-
----
-
-### 7. BrowserStack — 云浏览器测试
+### 6. BrowserStack — 云浏览器测试
 
 通过 CDP 连接 BrowserStack 云端浏览器，无需修改测试代码：
 
@@ -495,22 +492,31 @@ browserstack.local.identifier=
 
 # 隧道启动超时（秒）
 browserstack.local.timeout=30
+
+# 公司代理环境下隧道需要走代理时（可选）
+browserstack.local.proxy.enabled=true
+# 代理地址使用共享配置 playwright.proxy.http
+# 代理凭据覆盖全局默认（如 Local 需要与 CDP 不同的凭据）
+browserstack.local.proxy.username=bs_local_user
+browserstack.local.proxy.password=bs_local_pass
 ```
 
 **工作原理：**
 ```
 本地机器 ──安全隧道──▶ BrowserStack Cloud ──▶ 远程浏览器
          (BrowserStackLocal 二进制)             (可访问内网应用)
+         [--proxy-host/--proxy-user/--proxy-pass 认证代理穿透]
 ```
 
 **前提条件：**
 1. 下载 [BrowserStackLocal 二进制](https://www.browserstack.com/local-testing/automate)
 2. macOS/Linux 用户需执行 `chmod +x BrowserStackLocal`
 3. 框架自动启停隧道（BrowserStack 连接时启动，cleanup 时停止）
+4. 公司代理环境需配置 `browserstack.local.proxy.enabled=true` + 共享代理地址
 
 ---
 
-### 8. SummaryReportGenerator — 摘要报告
+### 7. SummaryReportGenerator — 摘要报告
 
 在 `post-integration-test` 阶段自动生成精美的 HTML 摘要报告：
 
@@ -752,8 +758,11 @@ public class LoginSteps {
 
 ### 代理配置
 
-> **设计原则**：代理地址和凭据在所有场景间共享，但各场景有独立的启用开关，互不干扰。
-> 典型组合：公司内网下载走代理但浏览器直连（`download=true, context=false`），或 BrowserStack CDP 走代理而其他不走。
+> **设计原则**：代理 **地址** 全局共享，**凭据** 可被各场景独立覆盖。
+> - 共享地址：`playwright.proxy.http` / `playwright.proxy.https` 作为所有场景的代理服务器唯一来源。
+> - 默认凭据：`playwright.proxy.http.username/password` 提供全局默认认证。
+> - 场景覆盖：当某个场景需要不同凭据（或不需认证），可设置场景专属 key 覆盖默认值。
+> - 显式设为空字符串 `=` 表示该场景不需要认证（即使全局有默认凭据）。
 
 **独立开关（按场景启用）：**
 
@@ -761,18 +770,62 @@ public class LoginSteps {
 |--------|--------|------|
 | `playwright.context.proxy.enabled` | false | Context 浏览器流量代理开关 |
 | `playwright.download.proxy.enabled` | false | 浏览器下载代理开关（CLI install 注入 HTTP_PROXY） |
-| `browserstack.proxy.enabled` | false | BrowserStack CDP WebSocket 连接代理开关 |
+| `browserstack.proxy.enabled` | false | BrowserStack CDP 代理开关（同时注入 HTTP_PROXY 和 HTTPS_PROXY 到 Playwright Node.js 子进程） |
+| `browserstack.local.proxy.enabled` | false | BrowserStack Local 隧道代理开关 |
 
-**共享地址与凭据（被上述开关控制）：**
+**共享地址：**
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `playwright.proxy.http` | (空) | HTTP 代理地址（host:port） |
-| `playwright.proxy.https` | (空) | HTTPS 代理地址（host:port，与 HTTP 各自独立互不回退） |
-| `playwright.proxy.http.username` | (空) | HTTP 代理用户名（可选） |
-| `playwright.proxy.http.password` | (空) | HTTP 代理密码（可选） |
-| `playwright.proxy.https.username` | (空) | HTTPS 代理用户名（可选） |
-| `playwright.proxy.https.password` | (空) | HTTPS 代理密码（可选） |
+| `playwright.proxy.https` | (空) | HTTPS 代理地址（host:port）。如未配置，各场景的 HTTPS_PROXY 会**自动回退**使用 `playwright.proxy.http` 作为 CONNECT 隧道入口 |
+
+> **HTTPS_PROXY 回退机制**：大多数企业代理同一个服务器同时处理 HTTP 请求和 HTTPS CONNECT 隧道。
+> 如果只配了 `playwright.proxy.http` 而未配 `playwright.proxy.https`，框架会自动将 HTTP 代理地址用于 HTTPS_PROXY。
+> 这对 BrowserStack CDP 的 `wss://` WebSocket 连接至关重要——Node.js 中 wss:// 走 `HTTPS_PROXY`，不是 `HTTP_PROXY`。
+
+**全局默认凭据（各场景未配置专属凭据时生效）：**
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `playwright.proxy.http.username` | (空) | HTTP 代理全局默认用户名 |
+| `playwright.proxy.http.password` | (空) | HTTP 代理全局默认密码 |
+| `playwright.proxy.https.username` | (空) | HTTPS 代理全局默认用户名 |
+| `playwright.proxy.https.password` | (空) | HTTPS 代理全局默认密码 |
+
+**场景专属凭据覆盖（优先级高于全局默认）：**
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `playwright.context.proxy.username` | (空) | Context 场景专属用户名 |
+| `playwright.context.proxy.password` | (空) | Context 场景专属密码 |
+| `playwright.browser.download.http.proxy.username` | (空) | 下载场景专属用户名 |
+| `playwright.browser.download.http.proxy.password` | (空) | 下载场景专属密码 |
+| `browserstack.proxy.username` | (空) | BS CDP 场景专属用户名 |
+| `browserstack.proxy.password` | (空) | BS CDP 场景专属密码 |
+| `browserstack.local.proxy.username` | (空) | BS Local 场景专属用户名 |
+| `browserstack.local.proxy.password` | (空) | BS Local 场景专属密码 |
+
+### Route Engine API 捕获
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `api.capture.max.response.size.mb` | 50 | API 捕获响应体总字节数上限（MB） |
+| `api.assertion.wait.timeout.ms` | 15000 | API 断言等待超时（毫秒） |
+
+### Monitor 数据库持久化
+
+> 通过 `DatabaseStoreMonitorCallback` 将 Monitor 捕获的 API 调用自动写入数据库（MySQL / PostgreSQL）。使用 HikariCP 独立连接池，连接失败时静默降级（不抛异常）。
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `monitor.db.store.enabled` | false | 是否启用 Monitor DB 持久化 |
+| `monitor.db.type` | MYSQL | 数据库类型（MYSQL / POSTGRESQL） |
+| `monitor.db.url` | (空) | 数据库 JDBC URL |
+| `monitor.db.user` | (空) | 数据库用户名 |
+| `monitor.db.password` | (空) | 数据库密码 |
+| `monitor.db.pool.max.size` | 5 | HikariCP 连接池最大连接数 |
+| `monitor.test.run.id` | (空) | 测试运行 ID（关联本次运行的所有记录） |
 
 ### 视口与上下文
 
@@ -825,6 +878,9 @@ public class LoginSteps {
 | `browserstack.local.path` | (空) | BrowserStackLocal 二进制路径 |
 | `browserstack.local.identifier` | (空) | 隧道标识符（留空自动生成） |
 | `browserstack.local.timeout` | 30s | 隧道启动超时 |
+| `browserstack.local.proxy.enabled` | false | Local 隧道代理开关 |
+| `browserstack.local.proxy.username` | (空) | Local 隧道代理专属用户名（覆盖全局默认） |
+| `browserstack.local.proxy.password` | (空) | Local 隧道代理专属密码（覆盖全局默认） |
 
 ### 报告配置
 
@@ -910,19 +966,18 @@ public class LoginSteps {
 1. **Playwright 替代 Selenium** — CDP 协议比 WebDriver 快 30-50%，内置自动等待机制
 2. **三层架构清晰** — Playwright → Browser → BrowserContext → Page，分层管理；Context 实例复用 + 状态深度清理
 3. **双等待策略** — 智能等待（Playwright 原生 waitFor）+ 轮询等待（isEnabled/isSelected 等属性检查）
-4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；类型保持的字段替换；Page/Context 双层级注册 + 跨层延迟合并
+4. **Route Engine 统一网络拦截** — Monitor/Mock/Modify/Delay 四种模式，流式 DSL，零阻塞 UI；类型保持的字段替换；Page/Context 双层级注册 + 跨层延迟合并；Monitor 响应回调 + DB 持久化
 5. **企业级报告体系** — Serenity 详细报告 + SummaryReportGenerator 摘要报告（HTML/CSV/ZIP），12 类错误自动分类
 6. **CI/CD 原生集成** — Jenkins Pipeline，环境变量自动解析，邮件链接自动构建
 7. **无障碍合规** — 内置 Deque axe-core WCAG 自动扫描
 8. **Session 跨场景复用** — 缓存命中时跳过登录直达 homeUrl，未命中时自动保存登录态
 9. **BrowserStack 云测试** — CDP 协议连接远程浏览器 + Local Testing 隧道访问内网应用，无需修改测试代码
-10. **独立代理控制** — Context/下载/CDP 三场景共享地址凭据但各自独立开关，方便在公司/家庭网络间灵活切换
+10. **独立代理控制** — 共享代理地址 + 全局默认凭据 + 场景凭据覆盖，四场景独立开关，不同场景可配不同认证或无认证
 11. **线程安全 + 内存安全** — ConcurrentHashMap + WeakReference 防泄漏 + 双重上限防 OOM
 12. **CustomOptionsManager 链式 API** — 运行时动态覆盖 Context 配置，立即生效，支持 12 种选项
 13. **@AutoBrowser 零配置浏览器切换** — 注解驱动，堆栈跟踪自动发现，Scenario 标签匹配浏览器
 14. **JVM Shutdown Hook 资源清理** — 确保 JVM 异常退出时 Playwright 资源被正确释放
-15. **原生快照测试** — 视觉快照 + ARIA 结构快照，跨平台一致基线
-16. **跨平台兼容** — 同一套代码同时支持 Windows / macOS / Linux，自动适配路径分隔符、临时目录和二进制名称
+15. **跨平台兼容** — 同一套代码同时支持 Windows / macOS / Linux，自动适配路径分隔符、临时目录和二进制名称
 
 ---
 

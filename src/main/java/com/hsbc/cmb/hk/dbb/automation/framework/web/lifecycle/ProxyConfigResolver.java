@@ -35,7 +35,6 @@ import java.nio.charset.StandardCharsets;
  * <ul>
  *   <li>Context 代理  →  {@code playwright.context.proxy.enabled}</li>
  *   <li>下载代理      →  {@code playwright.download.proxy.enabled}</li>
- *   <li>BS CDP 代理   →  {@code browserstack.proxy.enabled}</li>
  *   <li>BS Local 代理 →  {@code browserstack.local.proxy.enabled}</li>
  * </ul>
  *

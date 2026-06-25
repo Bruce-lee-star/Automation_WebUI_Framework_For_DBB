@@ -137,7 +137,10 @@ public class BrowserStackManager {
 
             String connectEndpoint = wssEndpoint;
             if (localEnabled) {
-                logger.info("[BrowserStack] Local tunnel mode: CDP traffic routes through Local tunnel (official native solution)");
+                logger.info("[BrowserStack] Connecting via tunnel + proxy: Playwright wss:// traffic routes through proxy to {}",
+                        FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
+                                ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
+                                : "cdp.browserstack.com");
             }
             logger.info("[BrowserStack] Connecting to remote browser (browser={})...", browserName);
             logger.debug("[BrowserStack] Connect endpoint: {}", maskCdpUrl(connectEndpoint));
@@ -179,27 +182,17 @@ public class BrowserStackManager {
             logger.debug("[BrowserStack] Connection failed: {}", causeMsg);
 
             String proxyHint = "";
-            boolean localOn = localEnabled;
             if (isLikelyDnsFailure(causeMsg)) {
                 String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
                 if (endpoint == null || endpoint.trim().isEmpty()) {
                     endpoint = "cdp.browserstack.com";
                 }
-                if (localOn) {
-                    proxyHint = " DNS resolution failed for '" + endpoint + "' even though browserstack.local=true. "
-                            + "The tunnel binary can connect, but Playwright's WebSocket connect() "
-                            + "bypasses HTTPS_PROXY (known Playwright limitation, GitHub #26985). "
-                            + "Solutions: (1) Add a static hosts entry for '" + endpoint + "', "
-                            + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
-                            + "(3) Set browserstack.cdp.endpoint to a domain resolvable in your network.";
-                } else {
-                    proxyHint = " DNS resolution failed for '" + endpoint + "'. "
-                            + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
-                            + "(known limitation, GitHub issue #26985). "
-                            + "Solutions: (1) Enable browserstack.local=true + hosts file, "
-                            + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
-                            + "(3) Set browserstack.cdp.endpoint to a resolvable domain.";
-                }
+                proxyHint = " DNS resolution failed for '" + endpoint + "'. "
+                        + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
+                        + "(known limitation, GitHub issue #26985). "
+                        + "Solutions: (1) Ensure browserstack.local=true is enabled + add hosts entry for '" + endpoint + "', "
+                        + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
+                        + "(3) Set browserstack.cdp.endpoint to a domain resolvable in your network.";
             }
 
             throw new RuntimeException(
@@ -417,40 +410,24 @@ public class BrowserStackManager {
      * CDP 流量走 Local 隧道，自动设置 force.local，零额外组件。
      */
     private static void logProxyStatus() {
-        boolean localEnabled = isLocalEnabled();
-        boolean proxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED);
-
-        if (localEnabled) {
-            logger.info("[BrowserStack] Local tunnel mode: CDP traffic routes through Local tunnel (official native, no extra components)");
-            String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
-            if (localProxy != null) {
-                logger.info("[BrowserStack] Local tunnel proxy: {}",
-                        ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy));
-            }
-            return;
+        String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+        if (localProxy != null) {
+            logger.info("[BrowserStack] Local tunnel mode + proxy auto-injection: "
+                    + "tunnel and Playwright WebSocket share the same proxy ({}). "
+                    + "wss:// traffic will route through proxy to {}.",
+                    ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy),
+                    FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
+                            ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
+                            : "cdp.browserstack.com");
+        } else {
+            logger.info("[BrowserStack] Local tunnel mode enabled. "
+                    + "No proxy configured — tunnel may connect directly, "
+                    + "but Playwright WebSocket to {} may fail in corporate networks. "
+                    + "Configure playwright.proxy.http to route wss:// traffic through proxy.",
+                    FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
+                            ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
+                            : "cdp.browserstack.com");
         }
-
-        if (proxyEnabled) {
-            String httpsProxyUrl = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
-            String httpProxyUrl = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
-            if (httpsProxyUrl != null || httpProxyUrl != null) {
-                logger.info("[BrowserStack] Proxy enabled: HTTP_PROXY={}, HTTPS_PROXY={}",
-                        httpProxyUrl != null ? "configured" : "not configured",
-                        httpsProxyUrl != null ? "configured" : "not configured");
-                logger.warn("[BrowserStack] WARNING: Playwright WebSocket connections do NOT use HTTPS_PROXY (GitHub #26985). "
-                        + "Recommended: browserstack.local=true (official native).");
-            } else {
-                logger.warn("[BrowserStack] browserstack.proxy.enabled=true but no proxy address configured.");
-            }
-            return;
-        }
-
-        logger.info("[BrowserStack] No proxy configured. "
-                + "If {} cannot be resolved (corporate network), "
-                + "use the official native solution: browserstack.local=true",
-                FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
-                        ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
-                        : "cdp.browserstack.com");
     }
 
     /** 构建 Basic Auth Header */

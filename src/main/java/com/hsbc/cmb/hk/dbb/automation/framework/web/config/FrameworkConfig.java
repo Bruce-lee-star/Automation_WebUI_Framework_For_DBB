@@ -323,18 +323,6 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * BrowserStack CDP 代理启用开关。
-     * <p>控制在创建 Playwright Node 子进程时是否注入 HTTP_PROXY/HTTPS_PROXY 环境变量，
-     * 用于 BrowserStack CDP WebSocket 连接走公司代理。
-     * <p>true=启用，false=禁用（即使配置了下方代理地址也不生效）
-     */
-    BROWSERSTACK_PROXY_ENABLED(
-        "browserstack.proxy.enabled",
-        "false",
-        "BrowserStack CDP 代理启用开关"
-    ),
-
-    /**
      * BrowserStack 代理主机（公司网络环境必填）
      */
     BROWSERSTACK_PROXY_HOST(

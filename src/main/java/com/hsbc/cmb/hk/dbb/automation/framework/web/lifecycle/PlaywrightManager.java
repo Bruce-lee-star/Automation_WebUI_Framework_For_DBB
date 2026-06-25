@@ -187,12 +187,14 @@ public class PlaywrightManager {
         // 控制台每次启动都会打印 (node:xxx) [DEP0169] DeprecationWarning 噪音
         env.put("NODE_OPTIONS", "--no-deprecation");
 
-        // ==================== 代理透传（BrowserStack CDP） ====================
-        // 公司网络下 CDP wss:// 连接需要通过 HTTPS_PROXY 建立 CONNECT 隧道。
-        // HTTP_PROXY 仅处理纯 HTTP 代理流量；wss:// 在 Node.js 中走 HTTPS_PROXY 环境变量。
-        // 受 browserstack.proxy.enabled 独立开关控制。
-        if (BrowserStackManager.isBrowserStackEnabled()
-                && FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED)) {
+        // ==================== 代理透传（BrowserStack Local 模式） ====================
+        // 仅支持 browserstack.local=true 模式。
+        // 公司网络下 wss:// 连接需要通过 HTTPS_PROXY 建立 CONNECT 隧道。
+        // HTTP_PROXY 仅处理纯 HTTP 流量；wss:// 在 Node.js 中走 HTTPS_PROXY 环境变量。
+        boolean localOn = BrowserStackManager.isLocalEnabled();
+        boolean shouldInjectProxy = BrowserStackManager.isBrowserStackEnabled() && localOn;
+
+        if (shouldInjectProxy) {
             String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
             String httpsProxy = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
             if (httpProxy != null || httpsProxy != null) {
@@ -200,14 +202,16 @@ public class PlaywrightManager {
                 if (httpsProxy != null) {
                     env.put("HTTPS_PROXY", httpsProxy);
                 } else {
-                    // wss:// 连接至关重要：HTTPS_PROXY 未设置时 warn
                     LoggingConfigUtil.logWarnIfVerbose(logger,
-                            "[Proxy] HTTPS_PROXY not set — wss:// CDP connection may fail without proxy tunnel. "
+                            "[Proxy] HTTPS_PROXY not set — wss:// connection may fail without proxy tunnel. "
                             + "Configure playwright.proxy.https or ensure playwright.proxy.http is set for fallback.");
                 }
-                env.put("NO_PROXY", "localhost,127.0.0.1,::1,*.browserstack.com,*.browserstack.com:443");
+                // NO_PROXY：排除内网地址即可。
+                // 当 local=true 时 BrowserStack 流量也必须走代理（否则 DNS 解析不到 cdp.browserstack.com），
+                // 所以 NO_PROXY 中不能包含 *.browserstack.com。
+                env.put("NO_PROXY", "localhost,127.0.0.1,::1");
                 LoggingConfigUtil.logInfoIfVerbose(logger,
-                        "[Proxy] CDP proxy injected for Playwright Node process (HTTP_PROXY={}, HTTPS_PROXY={})",
+                        "[Proxy] CDP proxy injected for Playwright Node process (trigger=browserstack.local=true, HTTP_PROXY={}, HTTPS_PROXY={})",
                         httpProxy != null ? "set" : "not set",
                         httpsProxy != null ? "set" : "NOT SET — wss may fail");
             }

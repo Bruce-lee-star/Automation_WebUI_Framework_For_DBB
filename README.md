@@ -770,7 +770,6 @@ public class LoginSteps {
 |--------|--------|------|
 | `playwright.context.proxy.enabled` | false | Context 浏览器流量代理开关 |
 | `playwright.download.proxy.enabled` | false | 浏览器下载代理开关（CLI install 注入 HTTP_PROXY） |
-| `browserstack.proxy.enabled` | false | BrowserStack CDP 代理开关（同时注入 HTTP_PROXY 和 HTTPS_PROXY 到 Playwright Node.js 子进程） |
 | `browserstack.local.proxy.enabled` | false | BrowserStack Local 隧道代理开关 |
 
 **共享地址：**

@@ -441,39 +441,19 @@ class PlaywrightInitializer {
         if (!isBlank(httpProxy)) {
             env.put("HTTP_PROXY", httpProxy);
             LoggingConfigUtil.logInfoIfVerbose(logger,
-                    "[Static Init] HTTP_PROXY set: {}", sanitizeProxyForLog(httpProxy));
+                    "[Static Init] HTTP_PROXY set: {}", ProxyConfigResolver.sanitizeProxyUrlForLog(httpProxy));
         }
 
         if (!isBlank(httpsProxy)) {
             env.put("HTTPS_PROXY", httpsProxy);
             LoggingConfigUtil.logInfoIfVerbose(logger,
-                    "[Static Init] HTTPS_PROXY set: {}", sanitizeProxyForLog(httpsProxy));
+                    "[Static Init] HTTPS_PROXY set: {}", ProxyConfigResolver.sanitizeProxyUrlForLog(httpsProxy));
         }
 
         if (isBlank(httpProxy) && isBlank(httpsProxy)) {
             LoggingConfigUtil.logDebugIfVerbose(logger,
                     "[Static Init] No download proxy configured — direct connection will be used");
         }
-    }
-
-    /**
-     * 脱敏代理 URL 用于日志输出（隐藏密码）。
-     */
-    private static String sanitizeProxyForLog(String proxyUrl) {
-        if (proxyUrl == null) return null;
-        // 匹配 user:password@ 部分，替换 password 为 ***
-        int atIndex = proxyUrl.lastIndexOf('@');
-        if (atIndex > 0) {
-            int slashIndex = proxyUrl.indexOf("://");
-            int userInfoStart = slashIndex >= 0 ? slashIndex + 3 : 0;
-            String userInfo = proxyUrl.substring(userInfoStart, atIndex);
-            int colon = userInfo.indexOf(':');
-            if (colon >= 0) {
-                return proxyUrl.substring(0, userInfoStart + colon + 1) + "***"
-                        + proxyUrl.substring(atIndex);
-            }
-        }
-        return proxyUrl;
     }
 
     private static boolean isBlank(String s) {

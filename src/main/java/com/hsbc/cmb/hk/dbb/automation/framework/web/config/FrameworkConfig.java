@@ -252,6 +252,16 @@ public enum FrameworkConfig {
     /**
      * BrowserStack 操作系统
      */
+    /**
+     * BrowserStack 浏览器名称（chrome / firefox / webkit / edge）。
+     * <p>BrowserStack 云端支持 Chromium (CDP)、Firefox 和 WebKit (Playwright 自有协议) 三种引擎。
+     */
+    BROWSERSTACK_BROWSER_NAME(
+        "browserstack.browserName",
+        "chrome",
+        "BrowserStack 浏览器名称（chrome/firefox/webkit/edge）"
+    ),
+
     BROWSERSTACK_OS(
         "browserstack.os",
         "Windows",
@@ -343,24 +353,6 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * BrowserStack 代理认证用户名（可选）
-     */
-    BROWSERSTACK_PROXY_USERNAME(
-        "browserstack.proxy.username",
-        "",
-        "BrowserStack 代理认证用户名"
-    ),
-
-    /**
-     * BrowserStack 代理认证密码（可选）
-     */
-    BROWSERSTACK_PROXY_PASSWORD(
-        "browserstack.proxy.password",
-        "",
-        "BrowserStack 代理认证密码"
-    ),
-
-    /**
      * BrowserStack Local Testing 开关。
      * <p>启用后，BrowserStack 云端浏览器可通过安全隧道访问内网/本地应用。
      * <p>需要 BrowserStack Local 二进制文件（见 {@link #BROWSERSTACK_LOCAL_PATH}）。
@@ -413,26 +405,6 @@ public enum FrameworkConfig {
         "browserstack.local.proxy.enabled",
         "false",
         "BrowserStack Local 代理启用开关"
-    ),
-
-    /**
-     * BrowserStack Local 代理认证用户名（场景专属，覆盖全局默认）。
-     * <p>显式设为空字符串表示该场景不需要认证。
-     */
-    BROWSERSTACK_LOCAL_PROXY_USERNAME(
-        "browserstack.local.proxy.username",
-        "",
-        "BrowserStack Local 代理认证用户名"
-    ),
-
-    /**
-     * BrowserStack Local 代理认证密码（场景专属，覆盖全局默认）。
-     * <p>显式设为空字符串表示该场景不需要认证。
-     */
-    BROWSERSTACK_LOCAL_PROXY_PASSWORD(
-        "browserstack.local.proxy.password",
-        "",
-        "BrowserStack Local 代理认证密码"
     ),
 
     // ==================== Playwright 窗口配置 ====================
@@ -621,26 +593,6 @@ public enum FrameworkConfig {
         "playwright.context.proxy",
         "",
         "Context 代理服务器"
-    ),
-
-    /**
-     * Context 代理用户名（可选）
-     * 代理需要认证时填写，与 proxy.password 配合使用
-     */
-    PLAYWRIGHT_CONTEXT_PROXY_USERNAME(
-        "playwright.context.proxy.username",
-        "",
-        "Context 代理用户名"
-    ),
-
-    /**
-     * Context 代理密码（可选）
-     * 代理需要认证时填写，与 proxy.username 配合使用
-     */
-    PLAYWRIGHT_CONTEXT_PROXY_PASSWORD(
-        "playwright.context.proxy.password",
-        "",
-        "Context 代理密码"
     ),
 
     /**
@@ -988,48 +940,6 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * 浏览器下载 HTTP 代理用户名（可选）
-     * 注意：用户名中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
-     * 
-     * 示例: myuser@domain
-     */
-    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_USERNAME(
-        "playwright.browser.download.http.proxy.username",
-        "",
-        "浏览器下载 HTTP 代理用户名"
-    ),
-
-    /**
-     * 浏览器下载 HTTPS 代理用户名（可选）
-     * 注意：用户名中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
-     */
-    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_USERNAME(
-        "playwright.browser.download.https.proxy.username",
-        "",
-        "浏览器下载 HTTPS 代理用户名"
-    ),
-
-    /**
-     * 浏览器下载 HTTP 代理密码（可选）
-     * 注意：密码中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
-     */
-    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_PASSWORD(
-        "playwright.browser.download.http.proxy.password",
-        "",
-        "浏览器下载 HTTP 代理密码"
-    ),
-
-    /**
-     * 浏览器下载 HTTPS 代理密码（可选）
-     * 注意：密码中的特殊字符（如 @ % $ 等）会自动进行 URL 编码。
-     */
-    PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_PASSWORD(
-        "playwright.browser.download.https.proxy.password",
-        "",
-        "浏览器下载 HTTPS 代理密码"
-    ),
-
-    /**
      * No login session timeout in minutes
      * After this period, saved sessions will be considered expired
      */
@@ -1253,10 +1163,10 @@ public enum FrameworkConfig {
 
     // ==================== 统一代理配置 ====================
     //
-    // 所有代理场景（BrowserStack CDP / Context 浏览器流量 / Playwright 下载）
+    // 所有代理场景（BrowserStack CDP / Context 浏览器流量 / Playwright 下载 / BS Local 隧道）
     // 统一从此处读取代理地址和凭据，无需为各子系统重复配置。
-    // 每个场景有独立的启用开关（见各场景对应配置项）。
     //
+    // 每个场景有独立的启用开关（见各场景对应配置项）。
     // port 已包含在 URL 中，无需单独配置。
     // HTTP 和 HTTPS 可设置不同的代理地址和凭据。
 

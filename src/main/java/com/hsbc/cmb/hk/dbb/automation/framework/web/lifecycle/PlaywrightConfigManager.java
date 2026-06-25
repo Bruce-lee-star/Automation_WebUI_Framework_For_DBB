@@ -208,20 +208,6 @@ public class PlaywrightConfigManager {
     }
 
     /**
-     * 获取 Context 代理用户名
-     */
-    public String getContextProxyUsername() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_USERNAME);
-    }
-
-    /**
-     * 获取 Context 代理密码
-     */
-    public String getContextProxyPassword() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_PASSWORD);
-    }
-
-    /**
      * 获取 Context 代理启用开关
      * true=启用代理，false=禁用
      */

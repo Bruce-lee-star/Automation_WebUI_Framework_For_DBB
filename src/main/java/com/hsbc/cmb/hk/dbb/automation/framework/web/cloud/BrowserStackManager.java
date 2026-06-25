@@ -25,10 +25,12 @@ import java.util.Map;
  * BrowserStack 云测试管理器（企业级）
  * 
  * <h2>架构说明</h2>
- * <p>BrowserStack 通过 CDP (Chrome DevTools Protocol) 远程连接模式工作：</p>
+ * <p>BrowserStack 通过统一的 wss endpoint 支持所有浏览器引擎：</p>
  * <pre>
- *   本地 Playwright  ──CDP连接──▶  BrowserStack Cloud  ──▶  远程浏览器实例
+ *   本地 Playwright  ──wss连接──▶  BrowserStack Cloud  ──▶  远程浏览器实例
  *                              (cdp.browserstack.com)
+ *   - Chromium (Chrome/Edge)  → 使用 connectOverCDP()
+ *   - Firefox / WebKit         → 使用 browserType.connect() (Playwright 自有协议)
  * </pre>
  * 
  * <h2>使用方式</h2>
@@ -37,6 +39,7 @@ import java.util.Map;
  * browserstack.enabled=true
  * browserstack.username=xxx
  * browserstack.access_key=yyy
+ * browserstack.browserName=chrome    // chrome / firefox / webkit / edge
  * 
  * // 方式2：环境变量覆盖
  * export BROWSERSTACK_ENABLED=true
@@ -47,7 +50,7 @@ import java.util.Map;
  * <h2>驱动流程</h2>
  * <ol>
  *   <li>PlaywrightManager 启动时检查 isBrowserStackEnabled()</li>
- *   <li>启用时调用 createBrowser() 获取远程 Browser 实例</li>
+ *   <li>启用时调用 connect() 获取远程 Browser 实例</li>
  *   <li>所有页面操作通过远程 Browser 执行（视频/截图自动录制）</li>
  *   <li>测试结束后调用 setTestStatus() 标记结果到 BrowserStack Dashboard</li>
  * </ol>
@@ -94,6 +97,12 @@ public class BrowserStackManager {
      * <p>这是框架驱动的入口。PlaywrightManager 在初始化时调用此方法。</p>
      * <p>启用 Local Testing 时，会自动拉起 BrowserStack Local 隧道。</p>
      *
+     * <p>根据 {@code browserstack.browserName} 自动选择连接协议：
+     * <ul>
+     *   <li>chrome / edge → {@code connectOverCDP()}（CDP 协议）</li>
+     *   <li>firefox / webkit → {@code browserType.connect()}（Playwright 自有协议）</li>
+     * </ul>
+     *
      * @param playwright Playwright 实例
      * @return 远程 Browser 对象
      * @throws IllegalStateException 未启用或配置缺失时抛出
@@ -113,18 +122,45 @@ public class BrowserStackManager {
             }
         }
 
+        // 代理感知：公司网络下可能无法直连 cdp.browserstack.com
+        logProxyStatus();
+
         try {
-            String cdpUrl = buildCdpUrl();
-            
-            logger.info("[BrowserStack] Connecting to remote browser...");
-            logger.debug("[BrowserStack] CDP URL: {}", maskCdpUrl(cdpUrl));
+            String wsEndpoint = buildWsEndpoint();
+            String browserName = resolveBrowserName();
 
-            BrowserType.ConnectOverCDPOptions options = new BrowserType.ConnectOverCDPOptions();
-            options.setHeaders(buildAuthHeader());
-            options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
+            logger.info("[BrowserStack] Connecting to remote browser (browser={})...", browserName);
+            logger.debug("[BrowserStack] WSS endpoint: {}", maskCdpUrl(wsEndpoint));
 
-            Browser browser = playwright.chromium().connectOverCDP(cdpUrl, options);
-            
+            Browser browser;
+            if (isChromiumBrowser(browserName)) {
+                // Chromium 系浏览器使用 CDP（Chrome DevTools Protocol）
+                BrowserType.ConnectOverCDPOptions options = new BrowserType.ConnectOverCDPOptions();
+                options.setHeaders(buildAuthHeader());
+                options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
+
+                browser = playwright.chromium().connectOverCDP(wsEndpoint, options);
+            } else {
+                // Firefox / WebKit 使用 Playwright 自有协议
+                BrowserType.ConnectOptions options = new BrowserType.ConnectOptions();
+                options.setHeaders(buildAuthHeader());
+                options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
+
+                switch (browserName.toLowerCase()) {
+                    case "firefox":
+                        browser = playwright.firefox().connect(wsEndpoint, options);
+                        break;
+                    case "webkit":
+                    case "safari":
+                        browser = playwright.webkit().connect(wsEndpoint, options);
+                        break;
+                    default:
+                        throw new IllegalArgumentException(
+                            "[BrowserStack] Unsupported browser: " + browserName +
+                            ". Supported: chrome, edge, firefox, webkit");
+                }
+            }
+
             logger.info("[BrowserStack] Connected successfully!");
             logCapabilities();
 
@@ -135,11 +171,21 @@ public class BrowserStackManager {
             // 不能作为 cause 传递（SLF4J 会递归打印整个 cause 链暴露凭据）。
             // 脱敏后仅保留报错原因文本。
             String causeMsg = sanitizeMessage(e.getMessage());
-            logger.debug("[BrowserStack] CDP connection failed: {}", causeMsg);
+            logger.debug("[BrowserStack] Connection failed: {}", causeMsg);
+
+            String proxyHint = "";
+            boolean proxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED);
+            if (!proxyEnabled && isLikelyDnsFailure(causeMsg)) {
+                proxyHint = " This may be a DNS resolution failure — if your network requires a proxy "
+                        + "to reach cdp.browserstack.com, enable: browserstack.proxy.enabled=true "
+                        + "and configure playwright.proxy.http / playwright.proxy.https.";
+            }
+
             throw new RuntimeException(
                 "[BrowserStack] Failed to connect to BrowserStack. " +
-                "Check credentials and network connectivity. " +
-                (causeMsg != null ? "Cause: " + causeMsg : ""));
+                "Check credentials and network connectivity." +
+                proxyHint +
+                (causeMsg != null ? " Cause: " + causeMsg : ""));
         }
     }
 
@@ -228,27 +274,23 @@ public class BrowserStackManager {
 
     // ==================== 内部工具方法 ====================
 
-    /** 构建带认证信息的 CDP 连接 URL */
-    private static String buildCdpUrl() {
-        StringBuilder sb = new StringBuilder("wss://")
-            .append(urlEncode(getUsername()))
-            .append(":")
-            .append(urlEncode(getAccessKey()))
-            .append("@cdp.browserstack.com?");
-
-        // 追加能力参数
+    /**
+     * 构建 BrowserStack 通用 wss 连接端点。
+     * <p>BrowserStack 使用统一端点，根据 capabilities 中的 browserName
+     * 自动选择 CDP 或 Playwright 自有协议。
+     * <p>URL 格式：{@code wss://user:key@cdp.browserstack.com/playwright?caps=<json>}
+     */
+    private static String buildWsEndpoint() {
         Map<String, Object> caps = buildFullCapabilities();
-        boolean first = true;
-        
-        for (Map.Entry<String, Object> entry : caps.entrySet()) {
-            if (entry.getValue() == null || entry.getValue().toString().isEmpty()) continue;
-            
-            sb.append(first ? "" : "&").append(urlEncode(entry.getKey()))
-              .append("=").append(urlEncode(entry.getValue().toString()));
-            first = false;
-        }
 
-        return sb.toString();
+        try {
+            String capsJson = objectMapper.writeValueAsString(caps);
+            return "wss://" + urlEncode(getUsername()) + ":" + urlEncode(getAccessKey())
+                    + "@cdp.browserstack.com/playwright?caps=" + urlEncode(capsJson);
+        } catch (Exception e) {
+            logger.error("[BrowserStack] Failed to encode capabilities", e);
+            throw new RuntimeException("[BrowserStack] Failed to build connection URL", e);
+        }
     }
 
     /** 构建完整的能力配置 */
@@ -256,9 +298,9 @@ public class BrowserStackManager {
     private static Map<String, Object> buildFullCapabilities() {
         Map<String, Object> caps = new HashMap<>();
 
-        // 浏览器配置（使用已存在的枚举）
-        caps.put("browserName", getStringValue(FrameworkConfig.BROWSERSTACK_BROWSER_VERSION, "chrome"));
-        caps.put("browserVersion", "latest");
+        // 浏览器配置
+        caps.put("browserName", resolveBrowserName());
+        caps.put("browserVersion", getStringValue(FrameworkConfig.BROWSERSTACK_BROWSER_VERSION, "latest"));
 
         // 操作系统
         caps.put("os", getStringValue(FrameworkConfig.BROWSERSTACK_OS, "Windows"));
@@ -279,7 +321,10 @@ public class BrowserStackManager {
         // Local Testing（访问内网应用时需要）
         if (isLocalEnabled()) {
             caps.put("local", "true");
-            caps.put("localIdentifier", "automation_" + System.currentTimeMillis());
+            String localId = BrowserStackLocalManager.getLocalIdentifier();
+            if (localId != null) {
+                caps.put("localIdentifier", localId);
+            }
         }
 
         // 超时配置
@@ -287,6 +332,66 @@ public class BrowserStackManager {
         caps.put("timeout", String.valueOf(timeout));
 
         return caps;
+    }
+
+    /**
+     * 解析浏览器名称（从配置读取，规范化后返回）。
+     * <p>BrowserStack API 接受的 browserName: chrome / firefox / webkit / edge。
+     */
+    private static String resolveBrowserName() {
+        String raw = getStringValue(FrameworkConfig.BROWSERSTACK_BROWSER_NAME, "chrome");
+        if (raw == null || raw.trim().isEmpty()) return "chrome";
+
+        String normalized = raw.trim().toLowerCase();
+        // 别名映射
+        switch (normalized) {
+            case "safari":
+                return "webkit";
+            case "msedge":
+            case "microsoftedge":
+                return "edge";
+            default:
+                return normalized;
+        }
+    }
+
+    /**
+     * 判断是否为 Chromium 系浏览器（使用 CDP 协议连接）。
+     */
+    private static boolean isChromiumBrowser(String browserName) {
+        if (browserName == null) return true;
+        switch (browserName.toLowerCase()) {
+            case "chrome":
+            case "chromium":
+            case "edge":
+                return true;
+            case "firefox":
+            case "webkit":
+            case "safari":
+                return false;
+            default:
+                logger.warn("[BrowserStack] Unknown browser '{}', defaulting to Chromium CDP mode", browserName);
+                return true;
+        }
+    }
+
+    /**
+     * 记录当前代理状态，帮助排查公司网络下域名无法解析的问题。
+     * <p>wss:// 连接依赖 Node.js 子进程的 {@code HTTPS_PROXY} 环境变量建立 CONNECT 隧道。
+     * 如果未配置代理且网络无法直连 {@code cdp.browserstack.com}，连接将失败。
+     */
+    private static void logProxyStatus() {
+        boolean proxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED);
+        String httpsProxy = System.getenv("HTTPS_PROXY");
+
+        if (proxyEnabled || httpsProxy != null) {
+            logger.info("[BrowserStack] Proxy detected: browserstack.proxy.enabled={}, HTTPS_PROXY={}",
+                    proxyEnabled, httpsProxy != null ? "set" : "not set");
+        } else {
+            logger.warn("[BrowserStack] No proxy configured. "
+                    + "If cdp.browserstack.com cannot be resolved (e.g. corporate network), "
+                    + "enable browserstack.proxy.enabled=true and configure playwright.proxy.http/https.");
+        }
     }
 
     /** 构建 Basic Auth Header */
@@ -426,12 +531,30 @@ public class BrowserStackManager {
      * 脱敏异常/日志消息中的凭据（wss:// / https?:// 中的密码、accessKey）。
      * <p>用于防止 Playwright 内部异常消息（含完整 CDP URL）被日志打印出去。
      * <p>正则匹配 {@code scheme://user:secret@host}，将 secret 替换为 {@code ****}。
+     * <p>兼容 URL 编码后的密码（如 {@code pass%40word}），因为正则用 {@code [^@]+} 匹配。
      */
     public static String sanitizeMessage(String message) {
         if (message == null || message.isEmpty()) return message;
-        // 匹配 wss://user:secret@ 、https://user:secret@ 、http://user:secret@
-        // user 可以包含 %-encoded 字符，secret 直到 @ 之前
+        // 匹配 scheme://user:secret@ — secret 可含 %-encoded 字符、特殊字符
         return message.replaceAll("(wss|https?://)([^:]+):([^@]+)@", "$1$2:****@");
+    }
+
+    /**
+     * 根据异常消息判断是否为 DNS/域名解析失败。
+     * <p>匹配常见 DNS 相关错误关键词，用于给出代理配置建议。
+     */
+    private static boolean isLikelyDnsFailure(String message) {
+        if (message == null) return false;
+        String lower = message.toLowerCase();
+        return lower.contains("unknownhostexception")
+                || lower.contains("namenotfound")
+                || lower.contains("no such host")
+                || lower.contains("dns")
+                || lower.contains("resolve")
+                || lower.contains("unresolved")
+                || lower.contains("nodename")
+                || lower.contains("getaddrinfo")
+                || lower.contains("enotfound");
     }
 
     private static String urlEncode(String value) {

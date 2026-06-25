@@ -41,6 +41,7 @@ public class BrowserStackLocalManager {
 
     private static volatile Process tunnelProcess;
     private static volatile boolean tunnelRunning = false;
+    private static volatile String currentIdentifier;
 
     /**
      * 启动 BrowserStack Local 隧道。
@@ -71,9 +72,9 @@ public class BrowserStackLocalManager {
             return false;
         }
 
-        String localIdentifier = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_LOCAL_IDENTIFIER);
-        if (localIdentifier == null || localIdentifier.trim().isEmpty()) {
-            localIdentifier = "automation_" + System.currentTimeMillis();
+        currentIdentifier = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_LOCAL_IDENTIFIER);
+        if (currentIdentifier == null || currentIdentifier.trim().isEmpty()) {
+            currentIdentifier = "automation_" + System.currentTimeMillis();
         }
 
         try {
@@ -82,7 +83,7 @@ public class BrowserStackLocalManager {
             command.add("--key");
             command.add(key);
             command.add("--local-identifier");
-            command.add(localIdentifier);
+            command.add(currentIdentifier);
             command.add("--force-local");       // 所有流量走本地
             command.add("--only-automate");     // 仅允许 Automate 请求，禁止交互式浏览器登录
 
@@ -112,7 +113,7 @@ public class BrowserStackLocalManager {
                         }
                     } else {
                         logger.warn("[BS Local] Proxy enabled but host/port extraction failed from URL: {}",
-                                BrowserStackManager.sanitizeMessage(httpProxy));
+                                ProxyConfigResolver.sanitizeProxyUrlForLog(httpProxy));
                     }
                 }
             }
@@ -120,7 +121,7 @@ public class BrowserStackLocalManager {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
 
-            logger.info("[BS Local] Starting tunnel: {} (identifier={})", binaryPath, localIdentifier);
+            logger.info("[BS Local] Starting tunnel: {} (identifier={})", binaryPath, currentIdentifier);
             tunnelProcess = pb.start();
 
             // 等待隧道就绪（读取 stdout 直到 "Press Ctrl-C to quit"）
@@ -130,7 +131,7 @@ public class BrowserStackLocalManager {
 
             if (ready) {
                 tunnelRunning = true;
-                logger.info("[BS Local] Tunnel established successfully (identifier={})", localIdentifier);
+                logger.info("[BS Local] Tunnel established successfully (identifier={})", currentIdentifier);
                 return true;
             } else {
                 logger.error("[BS Local] Tunnel failed to start within {} seconds", timeout);
@@ -164,10 +165,20 @@ public class BrowserStackLocalManager {
         }
         tunnelProcess = null;
         tunnelRunning = false;
+        currentIdentifier = null;
     }
 
     public static boolean isTunnelRunning() {
         return tunnelRunning;
+    }
+
+    /**
+     * 获取当前隧道的标识符（与 BrowserStackLocal 二进制进程一致）。
+     * <p>CDP 连接时必须使用此值作为 {@code localIdentifier}，确保云端浏览器
+     * 能匹配到正确的隧道。若隧道未启动则返回 null。
+     */
+    public static String getLocalIdentifier() {
+        return currentIdentifier;
     }
 
     // ────────────────── private ──────────────────

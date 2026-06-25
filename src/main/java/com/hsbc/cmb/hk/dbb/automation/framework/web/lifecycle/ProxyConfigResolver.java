@@ -14,8 +14,8 @@ import java.nio.charset.StandardCharsets;
  * <h3>设计原则</h3>
  * <ul>
  *   <li><b>共享地址</b>：{@code playwright.proxy.http} / {@code playwright.proxy.https} 作为代理服务器地址的唯一来源。</li>
- *   <li><b>默认凭据</b>：{@code playwright.proxy.http.username} / {@code playwright.proxy.http.password} 提供全局默认认证。</li>
- *   <li><b>场景覆盖</b>：当某个场景需要不同凭据（或不需凭据）时，可配置场景专属用户名/密码覆盖默认值。</li>
+ *   <li><b>统一凭据</b>：{@code playwright.proxy.http.username} / {@code playwright.proxy.http.password} 提供全局认证，所有场景共享。</li>
+ *   <li><b>无需场景覆盖</b>：各场景直接使用全局凭据，如需特殊凭据可在代理地址 URL 中直接嵌入（如 {@code http://user:pass@proxy.com:8888}）。</li>
  * </ul>
  *
  * <h3>配置键</h3>
@@ -24,21 +24,11 @@ import java.nio.charset.StandardCharsets;
  * playwright.proxy.http          = http://proxy.company.com:8888
  * playwright.proxy.https         = https://proxy.company.com:8443
  *
- * # ── 全局默认凭据（各场景未配置专属凭据时生效） ──
- * playwright.proxy.http.username  = shared_user
- * playwright.proxy.http.password  = shared_pass
- * playwright.proxy.https.username = shared_user
- * playwright.proxy.https.password = shared_pass
- *
- * # ── 场景专属凭据覆盖（优先级高于全局默认） ──
- * playwright.context.proxy.username         = ctx_only_user
- * playwright.context.proxy.password         = ctx_only_pass
- * playwright.browser.download.http.proxy.username = dl_user
- * playwright.browser.download.http.proxy.password = dl_pass
- * browserstack.proxy.username               = bs_cdp_user
- * browserstack.proxy.password               = bs_cdp_pass
- * browserstack.local.proxy.username         = bs_local_user
- * browserstack.local.proxy.password         = bs_local_pass
+ * # ── 全局凭据（一次配置，所有场景共享） ──
+ * playwright.proxy.http.username  = myuser
+ * playwright.proxy.http.password  = mypass
+ * playwright.proxy.https.username = myuser
+ * playwright.proxy.https.password = mypass
  * }</pre>
  *
  * <h3>各场景独立开关</h3>
@@ -62,96 +52,90 @@ public final class ProxyConfigResolver {
     private ProxyConfigResolver() {
     }
 
-    // ──────────── 通用方法（使用全局默认凭据）────────────
+    // ──────────── 通用方法 ────────────
 
     /**
-     * 构建 HTTP 代理完整 URL（使用全局默认凭据）。
+     * 构建 HTTP 代理完整 URL（使用全局凭据）。
      */
     public static String getHttpProxyUrl() {
-        return getHttpProxyUrlInternal(null, null);
+        return getHttpProxyUrlInternal();
     }
 
     /**
-     * 构建 HTTPS 代理完整 URL（使用全局默认凭据）。
+     * 构建 HTTPS 代理完整 URL（使用全局凭据）。
      * <p>地址回退：若 {@code playwright.proxy.https} 未配置，使用 {@code playwright.proxy.http}。
      */
     public static String getHttpsProxyUrl() {
-        return getHttpsProxyUrlInternal(null, null);
+        return getHttpsProxyUrlInternal();
     }
 
-    // ──────────── 场景专属方法（凭据覆盖）────────────
+    // ──────────── 场景方法（均使用全局凭据）────────────
 
     /**
-     * Context 场景 HTTP 代理 URL。
-     * <p>凭据优先级：{@code playwright.context.proxy.username/password} &gt; 全局默认。
+     * Context 场景 HTTP 代理 URL（使用全局凭据）。
      */
     public static String getHttpProxyUrlForContext() {
-        return getHttpProxyUrlInternal(
-                FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_USERNAME,
-                FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_PASSWORD);
+        return getHttpProxyUrlInternal();
     }
 
     /**
-     * 下载场景 HTTP 代理 URL。
-     * <p>凭据优先级：{@code playwright.browser.download.http.proxy.username/password} &gt; 全局默认。
+     * 下载场景 HTTP 代理 URL（使用全局凭据）。
      */
     public static String getHttpProxyUrlForDownload() {
-        return getHttpProxyUrlInternal(
-                FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_USERNAME,
-                FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTP_PROXY_PASSWORD);
+        return getHttpProxyUrlInternal();
     }
 
     /**
-     * BrowserStack CDP 场景 HTTP 代理 URL。
-     * <p>凭据优先级：{@code browserstack.proxy.username/password} &gt; 全局默认。
+     * BrowserStack CDP 场景 HTTP 代理 URL（使用全局凭据）。
      */
     public static String getHttpProxyUrlForBrowserStackCdp() {
-        return getHttpProxyUrlInternal(
-                FrameworkConfig.BROWSERSTACK_PROXY_USERNAME,
-                FrameworkConfig.BROWSERSTACK_PROXY_PASSWORD);
+        return getHttpProxyUrlInternal();
     }
 
     /**
-     * BrowserStack CDP 场景 HTTPS 代理 URL（wss 连接走此代理）。
-     * <p>凭据优先级同 HTTP：{@code browserstack.proxy.username/password} &gt; 全局默认。
+     * BrowserStack CDP 场景 HTTPS 代理 URL（使用全局凭据，wss 连接走此代理）。
      * <p>地址回退：若 {@code playwright.proxy.https} 未配置，使用 {@code playwright.proxy.http} 作为代理地址
      * （大多数企业代理同一个服务器同时支持 HTTP 和 CONNECT 隧道）。
      */
     public static String getHttpsProxyUrlForBrowserStackCdp() {
-        return getHttpsProxyUrlInternal(
-                FrameworkConfig.BROWSERSTACK_PROXY_USERNAME,
-                FrameworkConfig.BROWSERSTACK_PROXY_PASSWORD);
+        return getHttpsProxyUrlInternal();
     }
 
     /**
-     * BrowserStack Local 场景 HTTP 代理 URL。
-     * <p>凭据优先级：{@code browserstack.local.proxy.username/password} &gt; 全局默认。
+     * BrowserStack Local 场景 HTTP 代理 URL（使用全局凭据）。
      */
     public static String getHttpProxyUrlForBrowserStackLocal() {
-        return getHttpProxyUrlInternal(
-                FrameworkConfig.BROWSERSTACK_LOCAL_PROXY_USERNAME,
-                FrameworkConfig.BROWSERSTACK_LOCAL_PROXY_PASSWORD);
+        return getHttpProxyUrlInternal();
     }
 
     /**
-     * 下载场景 HTTPS 代理 URL。
+     * 下载场景 HTTPS 代理 URL（使用全局凭据）。
      * <p>地址回退：若 {@code playwright.proxy.https} 未配置，使用 {@code playwright.proxy.http} 作为代理地址。
      */
     public static String getHttpsProxyUrlForDownload() {
-        return getHttpsProxyUrlInternal(
-                FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_USERNAME,
-                FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_HTTPS_PROXY_PASSWORD);
+        return getHttpsProxyUrlInternal();
     }
 
     /**
-     * Context 场景 HTTPS 代理 URL。
-     * <p>凭据优先级：{@code playwright.context.proxy.username/password} &gt; 全局默认。
+     * Context 场景 HTTPS 代理 URL（使用全局凭据）。
      * <p>地址回退：若 {@code playwright.proxy.https} 未配置，使用 {@code playwright.proxy.http} 作为代理地址。
      */
     public static String getHttpsProxyUrlForContext() {
-        return getHttpsProxyUrlInternal(
-                FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_USERNAME,
-                FrameworkConfig.PLAYWRIGHT_CONTEXT_PROXY_PASSWORD);
+        return getHttpsProxyUrlInternal();
+    }
+
+    // ──────────── 日志脱敏 ────────────
+
+    /**
+     * 对代理 URL 做日志脱敏，隐藏密码部分。
+     * <p>{@code http://user:secret@proxy.com:8080 → http://user:****@proxy.com:8080}
+     * <p>同时兼容 URL 编码后的密码（如 {@code pass%40word}）。
+     * <p>返回 null 时表示未配置代理。
+     */
+    public static String sanitizeProxyUrlForLog(String proxyUrl) {
+        if (proxyUrl == null) return null;
+        // 匹配 scheme://user:secret@host — secret 可含 %-encoded 字符
+        return proxyUrl.replaceAll("(https?://)([^:]+):([^@]+)@", "$1$2:****@");
     }
 
     // ──────────── URL 组件提取（供 BrowserStackLocal 命令行使用）────────────
@@ -208,17 +192,15 @@ public final class ProxyConfigResolver {
 
     // ────────────────── 内部实现 ──────────────────
 
-    private static String getHttpProxyUrlInternal(FrameworkConfig overrideUserKey,
-                                                   FrameworkConfig overridePassKey) {
+    private static String getHttpProxyUrlInternal() {
         String proxy = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP));
         if (proxy == null) return null;
-        String user = resolveUser(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_USERNAME, overrideUserKey);
-        String pass = resolvePass(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_PASSWORD, overridePassKey);
+        String user = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_USERNAME));
+        String pass = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_PASSWORD));
         return buildUrl(proxy, user, pass);
     }
 
-    private static String getHttpsProxyUrlInternal(FrameworkConfig overrideUserKey,
-                                                    FrameworkConfig overridePassKey) {
+    private static String getHttpsProxyUrlInternal() {
         String proxy = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTPS));
 
         // ── 地址回退：未指定 HTTPS 代理时，使用 HTTP 代理作为 CONNECT 隧道入口 ──
@@ -233,45 +215,16 @@ public final class ProxyConfigResolver {
 
         if (proxy == null) return null;
 
-        // 凭据解析：优先用 HTTPS 专属 key，回退到场景 override key
-        // 如果地址来自 HTTP fallback，则凭据也用 HTTP 的（更合理）
+        // 凭据：优先用 HTTPS 专属 key，如果地址来自 HTTP fallback 则用 HTTP 凭据
         String user, pass;
         if (usingHttpFallback) {
-            user = resolveUser(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_USERNAME, overrideUserKey);
-            pass = resolvePass(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_PASSWORD, overridePassKey);
+            user = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_USERNAME));
+            pass = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTP_PASSWORD));
         } else {
-            user = resolveUser(FrameworkConfig.PLAYWRIGHT_PROXY_HTTPS_USERNAME, overrideUserKey);
-            pass = resolvePass(FrameworkConfig.PLAYWRIGHT_PROXY_HTTPS_PASSWORD, overridePassKey);
+            user = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTPS_USERNAME));
+            pass = nonBlank(FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_PROXY_HTTPS_PASSWORD));
         }
         return buildUrl(proxy, user, pass);
-    }
-
-    /**
-     * 凭据解析：场景专属 &gt; 全局默认。显式配置空字符串表示"不使用认证"。
-     */
-    private static String resolveUser(FrameworkConfig defaultKey, FrameworkConfig overrideKey) {
-        if (overrideKey != null) {
-            String override = FrameworkConfigManager.getString(overrideKey);
-            if (override != null) {
-                String trimmed = override.trim();
-                // 显式空字符串 = 不需要认证
-                if (trimmed.isEmpty()) return null;
-                return trimmed;
-            }
-        }
-        return nonBlank(FrameworkConfigManager.getString(defaultKey));
-    }
-
-    private static String resolvePass(FrameworkConfig defaultKey, FrameworkConfig overrideKey) {
-        if (overrideKey != null) {
-            String override = FrameworkConfigManager.getString(overrideKey);
-            if (override != null) {
-                String trimmed = override.trim();
-                if (trimmed.isEmpty()) return null;
-                return trimmed;
-            }
-        }
-        return nonBlank(FrameworkConfigManager.getString(defaultKey));
     }
 
     /**

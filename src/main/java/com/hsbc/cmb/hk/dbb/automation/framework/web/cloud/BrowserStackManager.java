@@ -140,7 +140,7 @@ public class BrowserStackManager {
                 logger.info("[BrowserStack] Local tunnel mode: CDP traffic routes through Local tunnel (official native solution)");
             }
             logger.info("[BrowserStack] Connecting to remote browser (browser={})...", browserName);
-            logger.debug("[BrowserStack] WSS endpoint: {}", maskCdpUrl(connectEndpoint));
+            logger.debug("[BrowserStack] Connect endpoint: {}", maskCdpUrl(connectEndpoint));
 
             BrowserType.ConnectOptions options = new BrowserType.ConnectOptions();
             options.setHeaders(buildAuthHeader());
@@ -181,16 +181,24 @@ public class BrowserStackManager {
             String proxyHint = "";
             boolean localOn = localEnabled;
             if (isLikelyDnsFailure(causeMsg)) {
+                String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+                if (endpoint == null || endpoint.trim().isEmpty()) {
+                    endpoint = "cdp.browserstack.com";
+                }
                 if (localOn) {
-                    proxyHint = " DNS resolution failed even with browserstack.local=true. "
-                            + "Verify that BrowserStack Local tunnel is running and "
-                            + "browserstack.local.proxy.enabled=true is set if the tunnel binary also needs a proxy.";
+                    proxyHint = " DNS resolution failed for '" + endpoint + "' even though browserstack.local=true. "
+                            + "The tunnel binary can connect, but Playwright's WebSocket connect() "
+                            + "bypasses HTTPS_PROXY (known Playwright limitation, GitHub #26985). "
+                            + "Solutions: (1) Add a static hosts entry for '" + endpoint + "', "
+                            + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
+                            + "(3) Set browserstack.cdp.endpoint to a domain resolvable in your network.";
                 } else {
-                    proxyHint = " This is a DNS resolution failure. Playwright WebSocket connections do not "
-                            + "use HTTPS_PROXY (known limitation, GitHub issue #26985). "
-                            + "Recommended solution: "
-                            + "browserstack.local=true "
-                            + "(CDP traffic routes through BrowserStack Local tunnel, no extra components).";
+                    proxyHint = " DNS resolution failed for '" + endpoint + "'. "
+                            + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
+                            + "(known limitation, GitHub issue #26985). "
+                            + "Solutions: (1) Enable browserstack.local=true + hosts file, "
+                            + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
+                            + "(3) Set browserstack.cdp.endpoint to a resolvable domain.";
                 }
             }
 
@@ -291,15 +299,22 @@ public class BrowserStackManager {
      * 构建 BrowserStack 通用 wss 连接端点。
      * <p>BrowserStack 使用统一端点，根据 capabilities 中的 browserName
      * 自动选择 CDP 或 Playwright 自有协议。
-     * <p>URL 格式：{@code wss://user:key@cdp.browserstack.com/playwright?caps=<json>}
+     * <p>URL 格式：{@code wss://user:key@<endpoint>/playwright?caps=<json>}
+     * <p>端点域名通过 {@link FrameworkConfig#BROWSERSTACK_CDP_ENDPOINT} 配置，
+     * 默认 {@code cdp.browserstack.com}。
      */
     private static String buildWsEndpoint() {
         Map<String, Object> caps = buildFullCapabilities();
 
+        String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+        if (endpoint == null || endpoint.trim().isEmpty()) {
+            endpoint = "cdp.browserstack.com";
+        }
+
         try {
             String capsJson = objectMapper.writeValueAsString(caps);
             return "wss://" + urlEncode(getUsername()) + ":" + urlEncode(getAccessKey())
-                    + "@cdp.browserstack.com/playwright?caps=" + urlEncode(capsJson);
+                    + "@" + endpoint.trim() + "/playwright?caps=" + urlEncode(capsJson);
         } catch (Exception e) {
             logger.error("[BrowserStack] Failed to encode capabilities", e);
             throw new RuntimeException("[BrowserStack] Failed to build connection URL", e);
@@ -431,8 +446,11 @@ public class BrowserStackManager {
         }
 
         logger.info("[BrowserStack] No proxy configured. "
-                + "If cdp.browserstack.com cannot be resolved (corporate network), "
-                + "use the official native solution: browserstack.local=true");
+                + "If {} cannot be resolved (corporate network), "
+                + "use the official native solution: browserstack.local=true",
+                FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
+                        ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
+                        : "cdp.browserstack.com");
     }
 
     /** 构建 Basic Auth Header */

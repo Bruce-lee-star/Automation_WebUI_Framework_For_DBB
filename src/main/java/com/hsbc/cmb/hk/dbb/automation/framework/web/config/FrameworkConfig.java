@@ -397,6 +397,19 @@ public enum FrameworkConfig {
         "BrowserStack Local 启动超时（秒）"
     ),
 
+    /**
+     * BrowserStack CDP WebSocket 端点域名。
+     * <p>默认 {@code cdp.browserstack.com}。公司代理环境下如果该域名无法 DNS 解析，
+     * 可尝试改为 {@code hub.browserstack.com}（部分企业网络允许），
+     * 或在系统 hosts 文件中添加静态映射。
+     * <p>仅影响 Playwright {@code browserType.connect()} 的 wss:// 连接地址。
+     * 不影响 BrowserStack Local tunnel 的连接（tunnel 使用自己的控制通道）。
+     */
+    BROWSERSTACK_CDP_ENDPOINT(
+        "browserstack.cdp.endpoint",
+        "cdp.browserstack.com",
+        "BrowserStack CDP WebSocket 端点域名"
+    ),
 
 
     // ==================== Playwright 窗口配置 ====================

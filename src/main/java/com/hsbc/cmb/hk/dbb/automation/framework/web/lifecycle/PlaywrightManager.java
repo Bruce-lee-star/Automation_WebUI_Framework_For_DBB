@@ -205,7 +205,7 @@ public class PlaywrightManager {
                             "[Proxy] HTTPS_PROXY not set — wss:// CDP connection may fail without proxy tunnel. "
                             + "Configure playwright.proxy.https or ensure playwright.proxy.http is set for fallback.");
                 }
-                env.put("NO_PROXY", "localhost,127.0.0.1,::1");
+                env.put("NO_PROXY", "localhost,127.0.0.1,::1,*.browserstack.com,*.browserstack.com:443");
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                         "[Proxy] CDP proxy injected for Playwright Node process (HTTP_PROXY={}, HTTPS_PROXY={})",
                         httpProxy != null ? "set" : "not set",

@@ -291,10 +291,13 @@ public class PlaywrightManager {
         // 配置窗口大小和启动参数
         configureBrowserLaunchOptions(launchOptions);
 
-        long initStart = System.currentTimeMillis();
-        int maxRetries = 2;
+        // BrowserStack 模式不重试（云端连接失败重试无意义，反而产生大量失败日志）；
+        // 本地浏览器模式允许重试（进程启动偶尔抖动）。
+        boolean isBrowserStack = BrowserStackManager.isBrowserStackEnabled();
+        int maxRetries = isBrowserStack ? 1 : 2;
         Exception lastException = null;
 
+        long initStart = System.currentTimeMillis();
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "[Browser Init] Launching browser (attempt {}/{}): type={}, channel={}, headless={}",

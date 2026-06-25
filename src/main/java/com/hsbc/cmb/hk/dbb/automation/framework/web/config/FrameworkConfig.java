@@ -322,23 +322,7 @@ public enum FrameworkConfig {
         "BrowserStack 视频录制"
     ),
 
-    /**
-     * BrowserStack 代理主机（公司网络环境必填）
-     */
-    BROWSERSTACK_PROXY_HOST(
-        "browserstack.proxy.host",
-        "",
-        "BrowserStack 代理主机地址"
-    ),
-
-    /**
-     * BrowserStack 代理端口（公司网络环境必填）
-     */
-    BROWSERSTACK_PROXY_PORT(
-        "browserstack.proxy.port",
-        "",
-        "BrowserStack 代理端口"
-    ),
+    // ==================== BrowserStack Local Testing ====================
 
     /**
      * BrowserStack Local Testing 开关。

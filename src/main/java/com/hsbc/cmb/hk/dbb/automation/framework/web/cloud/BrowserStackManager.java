@@ -130,17 +130,14 @@ public class BrowserStackManager {
 
         // Local 隧道模式：CDP/WS 流量自动走 Local 隧道（官方原生方案）
         boolean localEnabled = isLocalEnabled();
-        String wssEndpoint = buildWsEndpoint();
+        String connectEndpoint = buildWsEndpoint();
 
         try {
             String browserName = resolveBrowserName();
 
-            String connectEndpoint = wssEndpoint;
             if (localEnabled) {
-                logger.info("[BrowserStack] Connecting via tunnel + proxy: Playwright wss:// traffic routes through proxy to {}",
-                        FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
-                                ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
-                                : "cdp.browserstack.com");
+                logger.info("[BrowserStack] Local tunnel mode: caps include force.local=true, "
+                        + "BrowserStack cloud will route CDP/WebSocket traffic through Local tunnel");
             }
             logger.info("[BrowserStack] Connecting to remote browser (browser={})...", browserName);
             logger.debug("[BrowserStack] Connect endpoint: {}", maskCdpUrl(connectEndpoint));
@@ -187,12 +184,19 @@ public class BrowserStackManager {
                 if (endpoint == null || endpoint.trim().isEmpty()) {
                     endpoint = "cdp.browserstack.com";
                 }
-                proxyHint = " DNS resolution failed for '" + endpoint + "'. "
-                        + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
-                        + "(known limitation, GitHub issue #26985). "
-                        + "Solutions: (1) Ensure browserstack.local=true is enabled + add hosts entry for '" + endpoint + "', "
-                        + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
-                        + "(3) Set browserstack.cdp.endpoint to a domain resolvable in your network.";
+                if (localEnabled) {
+                    proxyHint = " DNS resolution failed for '" + endpoint + "'. "
+                            + "Local tunnel is enabled (force.local=true) but Playwright still connects "
+                            + "to BrowserStack cloud endpoint first for session handshake. "
+                            + "Check that BrowserStackLocal tunnel is running and can reach BrowserStack cloud.";
+                } else {
+                    proxyHint = " DNS resolution failed for '" + endpoint + "'. "
+                            + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
+                            + "(known limitation, GitHub issue #26985). "
+                            + "Solutions: (1) Enable browserstack.local=true (recommended), "
+                            + "(2) Use a system-level proxy/tunnel (e.g. proxifier), or "
+                            + "(3) Set browserstack.cdp.endpoint to a domain resolvable in your network.";
+                }
             }
 
             throw new RuntimeException(
@@ -295,10 +299,15 @@ public class BrowserStackManager {
      * <p>URL 格式：{@code wss://user:key@<endpoint>/playwright?caps=<json>}
      * <p>端点域名通过 {@link FrameworkConfig#BROWSERSTACK_CDP_ENDPOINT} 配置，
      * 默认 {@code cdp.browserstack.com}。
+     * <p>当 {@code browserstack.local=true} 时，caps 中包含 {@code browserstack.local.force.local=true}，
+     * BrowserStack 云端会自动将 CDP/WebSocket 流量通过 Local 隧道转发到本地。
+     * Playwright 始终连接同一云端端点，不需要改为 localhost。
      */
     private static String buildWsEndpoint() {
         Map<String, Object> caps = buildFullCapabilities();
 
+        // 统一使用云端端点。Local 模式下 caps 中已包含 force.local=true，
+        // BrowserStack 云端自动将流量路由到本地隧道，无需修改 endpoint。
         String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
         if (endpoint == null || endpoint.trim().isEmpty()) {
             endpoint = "cdp.browserstack.com";
@@ -403,30 +412,45 @@ public class BrowserStackManager {
 
     /**
      * 记录当前代理状态，帮助排查公司网络下域名无法解析的问题。
-     * <p><b>重要限制：</b>Playwright Java 的 {@code browserType.connect()} /
-     * {@code connectOverCDP()} 不通过 {@code HTTPS_PROXY} 环境变量代理 WebSocket 连接
-     * （已知限制 GitHub #26985）。
-     * <p><b>推荐方案：</b>{@code browserstack.local=true} —
-     * CDP 流量走 Local 隧道，自动设置 force.local，零额外组件。
+     * <p>当 {@code browserstack.local=true} 时，caps 中包含 {@code force.local=true}，
+     * BrowserStack 云端通过 Local 隧道转发 CDP/WebSocket 流量，
+     * Playwright 仍然连接云端端点 {@code cdp.browserstack.com}。
+     * <p>如果隧道本身也需要通过代理出站，可配置 {@code playwright.proxy.http}。
      */
     private static void logProxyStatus() {
+        boolean localEnabled = isLocalEnabled();
         String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
-        if (localProxy != null) {
-            logger.info("[BrowserStack] Local tunnel mode + proxy auto-injection: "
-                    + "tunnel and Playwright WebSocket share the same proxy ({}). "
-                    + "wss:// traffic will route through proxy to {}.",
+
+        if (localEnabled && localProxy != null) {
+            logger.info("[BrowserStack] Local tunnel mode + proxy: "
+                    + "tunnel connects via proxy ({}), "
+                    + "Playwright wss:// connects to cloud endpoint (force.local=true routes traffic through tunnel).",
+                    ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy));
+        } else if (localEnabled) {
+            logger.info("[BrowserStack] Local tunnel mode: "
+                    + "tunnel connects directly (no proxy configured), "
+                    + "Playwright wss:// connects to cloud endpoint (force.local=true routes traffic through tunnel).");
+        } else if (localProxy != null) {
+            String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+            if (endpoint == null || endpoint.trim().isEmpty()) {
+                endpoint = "cdp.browserstack.com";
+            }
+            logger.info("[BrowserStack] Proxy configured ({}) but Local tunnel NOT enabled. "
+                    + "Playwright WebSocket connect() does NOT use HTTPS_PROXY "
+                    + "(known limitation, GitHub #26985). "
+                    + "wss:// to {} may fail in corporate networks. "
+                    + "Recommend enabling browserstack.local=true.",
                     ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy),
-                    FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
-                            ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
-                            : "cdp.browserstack.com");
+                    endpoint);
         } else {
-            logger.info("[BrowserStack] Local tunnel mode enabled. "
-                    + "No proxy configured — tunnel may connect directly, "
-                    + "but Playwright WebSocket to {} may fail in corporate networks. "
-                    + "Configure playwright.proxy.http to route wss:// traffic through proxy.",
-                    FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT) != null
-                            ? FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT)
-                            : "cdp.browserstack.com");
+            String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+            if (endpoint == null || endpoint.trim().isEmpty()) {
+                endpoint = "cdp.browserstack.com";
+            }
+            logger.info("[BrowserStack] No proxy configured, Local tunnel NOT enabled. "
+                    + "wss:// connection to {} may fail in corporate networks. "
+                    + "Recommend enabling browserstack.local=true.",
+                    endpoint);
         }
     }
 

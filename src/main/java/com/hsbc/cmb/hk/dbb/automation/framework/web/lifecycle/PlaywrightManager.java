@@ -189,7 +189,8 @@ public class PlaywrightManager {
 
         // ==================== 代理透传（BrowserStack Local 模式） ====================
         // 仅支持 browserstack.local=true 模式。
-        // 公司网络下 wss:// 连接需要通过 HTTPS_PROXY 建立 CONNECT 隧道。
+        // BrowserStackLocal 隧道进程自身通过代理出站，Playwright wss 连接云端端点，
+        // 流量通过 force.local=true capability 走隧道转发，不需要 Playwright 进程直连代理。
         // HTTP_PROXY 仅处理纯 HTTP 流量；wss:// 在 Node.js 中走 HTTPS_PROXY 环境变量。
         boolean localOn = BrowserStackManager.isLocalEnabled();
         boolean shouldInjectProxy = BrowserStackManager.isBrowserStackEnabled() && localOn;
@@ -207,8 +208,8 @@ public class PlaywrightManager {
                             + "Configure playwright.proxy.https or ensure playwright.proxy.http is set for fallback.");
                 }
                 // NO_PROXY：排除内网地址即可。
-                // 当 local=true 时 BrowserStack 流量也必须走代理（否则 DNS 解析不到 cdp.browserstack.com），
-                // 所以 NO_PROXY 中不能包含 *.browserstack.com。
+                // Playwright wss 连接云端端点，隧道进程自身通过代理出站，
+                // NO_PROXY 中不能包含 BrowserStack 域名（隧道出站连接需要代理）。
                 env.put("NO_PROXY", "localhost,127.0.0.1,::1");
                 LoggingConfigUtil.logInfoIfVerbose(logger,
                         "[Proxy] CDP proxy injected for Playwright Node process (trigger=browserstack.local=true, HTTP_PROXY={}, HTTPS_PROXY={})",

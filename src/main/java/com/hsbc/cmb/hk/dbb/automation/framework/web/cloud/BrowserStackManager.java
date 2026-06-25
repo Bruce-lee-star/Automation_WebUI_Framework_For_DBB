@@ -460,14 +460,52 @@ public class BrowserStackManager {
         }
     }
 
-    /** 构建 Basic Auth Header */
+    /** 构建 Basic Auth Header（BrowserStack 鉴权 + 代理鉴权） */
     private static Map<String, String> buildAuthHeader() {
         Map<String, String> headers = new HashMap<>();
+
+        // 1. BrowserStack 云端鉴权
         String auth = getUsername() + ":" + getAccessKey();
         String encoded = Base64.getEncoder()
             .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
         headers.put("Authorization", "Basic " + encoded);
+
+        // 2. 公司代理鉴权（如果配置了代理凭据，附加 Proxy-Authorization 头）
+        String proxyAuth = buildProxyAuthHeader();
+        if (proxyAuth != null) {
+            headers.put("Proxy-Authorization", proxyAuth);
+        }
+
         return headers;
+    }
+
+    /**
+     * 构建代理鉴权头 {@code Proxy-Authorization: Basic xxx}。
+     *
+     * <p>优先使用 {@code playwright.proxy.https.username/password}（wss 连接走 HTTPS_PROXY），
+     * 若未配置则回退到 {@code playwright.proxy.http.username/password}。
+     *
+     * @return {@code "Basic base64(user:pass)"} 或 null（未配置代理凭据时）
+     */
+    private static String buildProxyAuthHeader() {
+        // 优先 HTTPS 代理凭据（wss:// 连接走 HTTPS_PROXY）
+        String httpsProxyUrl = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
+        String user = ProxyConfigResolver.extractUser(httpsProxyUrl);
+        String pass = ProxyConfigResolver.extractPass(httpsProxyUrl);
+
+        // 回退 HTTP 代理凭据
+        if (user == null || pass == null) {
+            String httpProxyUrl = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
+            user = ProxyConfigResolver.extractUser(httpProxyUrl);
+            pass = ProxyConfigResolver.extractPass(httpProxyUrl);
+        }
+
+        if (user != null && pass != null) {
+            String auth = user + ":" + pass;
+            return "Basic " + Base64.getEncoder()
+                .encodeToString(auth.getBytes(StandardCharsets.UTF_8));
+        }
+        return null;
     }
 
     /** 发送 PUT 请求到 BrowserStack REST API */

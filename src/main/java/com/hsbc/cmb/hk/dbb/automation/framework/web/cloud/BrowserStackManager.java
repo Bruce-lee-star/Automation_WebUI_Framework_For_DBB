@@ -296,7 +296,9 @@ public class BrowserStackManager {
      * 构建 BrowserStack 通用 wss 连接端点。
      * <p>BrowserStack 使用统一端点，根据 capabilities 中的 browserName
      * 自动选择 CDP 或 Playwright 自有协议。
-     * <p>URL 格式：{@code wss://user:key@<endpoint>/playwright?caps=<json>}
+     * <p>URL 格式：{@code wss://<endpoint>/playwright?caps=<json>}
+     * <p>凭据不再嵌入 URL，统一通过 {@link #buildAuthHeader()} 的 Authorization Header 传递，
+     * 避免凭据出现在日志、异常堆栈、heap dump 中。
      * <p>端点域名通过 {@link FrameworkConfig#BROWSERSTACK_CDP_ENDPOINT} 配置，
      * 默认 {@code cdp.browserstack.com}。
      * <p>当 {@code browserstack.local=true} 时，caps 中包含 {@code browserstack.local.force.local=true}，
@@ -315,8 +317,8 @@ public class BrowserStackManager {
 
         try {
             String capsJson = objectMapper.writeValueAsString(caps);
-            return "wss://" + urlEncode(getUsername()) + ":" + urlEncode(getAccessKey())
-                    + "@" + endpoint.trim() + "/playwright?caps=" + urlEncode(capsJson);
+            // 凭据不嵌在 URL 中，统一通过 Authorization Header 传递
+            return "wss://" + endpoint.trim() + "/playwright?caps=" + urlEncode(capsJson);
         } catch (Exception e) {
             logger.error("[BrowserStack] Failed to encode capabilities", e);
             throw new RuntimeException("[BrowserStack] Failed to build connection URL", e);
@@ -327,6 +329,10 @@ public class BrowserStackManager {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> buildFullCapabilities() {
         Map<String, Object> caps = new HashMap<>();
+
+        // 认证信息（BrowserStack 官方要求在 caps 中传递）
+        caps.put("browserstack.username", getUsername());
+        caps.put("browserstack.accessKey", getAccessKey());
 
         // 浏览器配置
         caps.put("browserName", resolveBrowserName());

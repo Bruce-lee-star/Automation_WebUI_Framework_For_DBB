@@ -356,6 +356,8 @@ public enum FrameworkConfig {
      * BrowserStack Local Testing 开关。
      * <p>启用后，BrowserStack 云端浏览器可通过安全隧道访问内网/本地应用。
      * <p>需要 BrowserStack Local 二进制文件（见 {@link #BROWSERSTACK_LOCAL_PATH}）。
+     * <p>启用后自动设置 {@code browserstack.local.force.local=true}，
+     * CDP/Playwright WebSocket 流量强制走 Local 隧道（官方原生方案，零额外组件）。
      */
     BROWSERSTACK_LOCAL(
         "browserstack.local",

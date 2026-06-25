@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ProxyConfigResolver;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Playwright;
@@ -377,18 +378,26 @@ public class BrowserStackManager {
 
     /**
      * 记录当前代理状态，帮助排查公司网络下域名无法解析的问题。
-     * <p>wss:// 连接依赖 Node.js 子进程的 {@code HTTPS_PROXY} 环境变量建立 CONNECT 隧道。
-     * 如果未配置代理且网络无法直连 {@code cdp.browserstack.com}，连接将失败。
+     * <p>wss:// 连接通过 PlaywrightManager.getCreateOptions() 注入 Node.js 子进程的
+     * {@code HTTP_PROXY}/{@code HTTPS_PROXY} 环境变量建立 CONNECT 隧道。
+     * <p>注意：这里检查的是代理配置是否已解析为有效 URL，而非 Java 进程的环境变量
+     * （代理 URL 仅在创建 Node.js 子进程时注入，Java 进程环境变量不受影响）。
      */
     private static void logProxyStatus() {
         boolean proxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_PROXY_ENABLED);
-        String httpsProxy = System.getenv("HTTPS_PROXY");
+        String httpsProxyUrl = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
+        String httpProxyUrl = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
 
-        if (proxyEnabled || httpsProxy != null) {
-            logger.info("[BrowserStack] Proxy detected: browserstack.proxy.enabled={}, HTTPS_PROXY={}",
-                    proxyEnabled, httpsProxy != null ? "set" : "not set");
+        if (proxyEnabled && (httpsProxyUrl != null || httpProxyUrl != null)) {
+            logger.info("[BrowserStack] Proxy enabled: HTTP_PROXY={}, HTTPS_PROXY={}",
+                    httpProxyUrl != null ? "configured" : "not configured",
+                    httpsProxyUrl != null ? "configured" : "not configured");
+        } else if (proxyEnabled) {
+            logger.warn("[BrowserStack] browserstack.proxy.enabled=true but no proxy address configured. "
+                    + "Set playwright.proxy.http (and optionally playwright.proxy.https) "
+                    + "to route wss:// CDP traffic through proxy.");
         } else {
-            logger.warn("[BrowserStack] No proxy configured. "
+            logger.info("[BrowserStack] Proxy not enabled (browserstack.proxy.enabled=false). "
                     + "If cdp.browserstack.com cannot be resolved (e.g. corporate network), "
                     + "enable browserstack.proxy.enabled=true and configure playwright.proxy.http/https.");
         }

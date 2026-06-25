@@ -397,17 +397,7 @@ public enum FrameworkConfig {
         "BrowserStack Local 启动超时（秒）"
     ),
 
-    /**
-     * BrowserStack Local 代理启用开关。
-     * <p>控制 BrowserStackLocal 二进制进程是否通过代理连接 BrowserStack 服务器。
-     * <p>true=启用（需同时配置共享代理地址 playwright.proxy.http）
-     * <p>false=直连（默认）
-     */
-    BROWSERSTACK_LOCAL_PROXY_ENABLED(
-        "browserstack.local.proxy.enabled",
-        "false",
-        "BrowserStack Local 代理启用开关"
-    ),
+
 
     // ==================== Playwright 窗口配置 ====================
 

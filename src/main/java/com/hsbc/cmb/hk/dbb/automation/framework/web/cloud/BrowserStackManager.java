@@ -407,9 +407,8 @@ public class BrowserStackManager {
 
         if (localEnabled) {
             logger.info("[BrowserStack] Local tunnel mode: CDP traffic routes through Local tunnel (official native, no extra components)");
-            boolean localProxyEnabled = FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_LOCAL_PROXY_ENABLED);
-            if (localProxyEnabled) {
-                String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+            String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+            if (localProxy != null) {
                 logger.info("[BrowserStack] Local tunnel proxy: {}",
                         ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy));
             }

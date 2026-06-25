@@ -87,35 +87,35 @@ public class BrowserStackLocalManager {
             command.add("--force-local");       // 所有流量走本地
             command.add("--only-automate");     // 仅允许 Automate 请求，禁止交互式浏览器登录
 
-            // 代理配置（受 browserstack.local.proxy.enabled 独立开关控制）
-            if (FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_LOCAL_PROXY_ENABLED)) {
-                String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
-                if (httpProxy != null) {
-                    String host = ProxyConfigResolver.extractHost(httpProxy);
-                    String port = ProxyConfigResolver.extractPort(httpProxy);
-                    if (host != null && port != null) {
-                        command.add("--proxy-host");
-                        command.add(host);
-                        command.add("--proxy-port");
-                        command.add(port);
-                        command.add("--force-proxy");   // 所有流量（含控制通道）强制走代理
-                        logger.info("[BS Local] Using proxy: {}:{} (force-proxy)", host, port);
+            // 代理配置：只要配置了代理地址，自动传给 tunnel binary
+            String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+            if (httpProxy != null) {
+                String host = ProxyConfigResolver.extractHost(httpProxy);
+                String port = ProxyConfigResolver.extractPort(httpProxy);
+                if (host != null && port != null) {
+                    command.add("--proxy-host");
+                    command.add(host);
+                    command.add("--proxy-port");
+                    command.add(port);
+                    command.add("--force-proxy");   // 所有流量（含控制通道）强制走代理
+                    logger.info("[BS Local] Using proxy: {}:{} (force-proxy)", host, port);
 
-                        // 代理认证（BrowserStackLocal 支持 --proxy-user / --proxy-pass）
-                        String proxyUser = ProxyConfigResolver.extractUser(httpProxy);
-                        String proxyPass = ProxyConfigResolver.extractPass(httpProxy);
-                        if (proxyUser != null && proxyPass != null) {
-                            command.add("--proxy-user");
-                            command.add(proxyUser);
-                            command.add("--proxy-pass");
-                            command.add(proxyPass);
-                            logger.info("[BS Local] Proxy authentication configured for user: {}", proxyUser);
-                        }
-                    } else {
-                        logger.warn("[BS Local] Proxy enabled but host/port extraction failed from URL: {}",
-                                ProxyConfigResolver.sanitizeProxyUrlForLog(httpProxy));
+                    // 代理认证（BrowserStackLocal 支持 --proxy-user / --proxy-pass）
+                    String proxyUser = ProxyConfigResolver.extractUser(httpProxy);
+                    String proxyPass = ProxyConfigResolver.extractPass(httpProxy);
+                    if (proxyUser != null && proxyPass != null) {
+                        command.add("--proxy-user");
+                        command.add(proxyUser);
+                        command.add("--proxy-pass");
+                        command.add(proxyPass);
+                        logger.info("[BS Local] Proxy authentication configured for user: {}", proxyUser);
                     }
+                } else {
+                    logger.warn("[BS Local] Proxy URL configured but host/port extraction failed: {}",
+                            ProxyConfigResolver.sanitizeProxyUrlForLog(httpProxy));
                 }
+            } else {
+                logger.debug("[BS Local] No proxy configured, tunnel will connect directly");
             }
 
             ProcessBuilder pb = new ProcessBuilder(command);

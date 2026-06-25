@@ -211,10 +211,19 @@ public class PlaywrightManager {
                 // Playwright wss 连接云端端点，隧道进程自身通过代理出站，
                 // NO_PROXY 中不能包含 BrowserStack 域名（隧道出站连接需要代理）。
                 env.put("NO_PROXY", "localhost,127.0.0.1,::1");
+
+                // ── 禁用 Node.js happy-eyeballs ──
+                // Node.js v20+ 的 happy-eyeballs 实现在双栈环境下（同时有 IPv4/IPv6），
+                // 会在 250ms 内强制切换到另一地址族尝试连接。在代理环境下，
+                // 这会导致连接被过早中断，表现为 AggregateError ETIMEDOUT。
+                // --no-network-family-autoselection 禁用 happy-eyeballs，
+                // 回退到传统行为：只尝试 DNS 返回的第一个地址，使用正常超时。
+                String nodeOptions = env.get("NODE_OPTIONS");
+                env.put("NODE_OPTIONS", (nodeOptions != null ? nodeOptions + " " : "")
+                        + "--no-network-family-autoselection");
                 LoggingConfigUtil.logInfoIfVerbose(logger,
-                        "[Proxy] CDP proxy injected for Playwright Node process (trigger=browserstack.local=true, HTTP_PROXY={}, HTTPS_PROXY={})",
-                        httpProxy != null ? "set" : "not set",
-                        httpsProxy != null ? "set" : "NOT SET — wss may fail");
+                        "[Proxy] Happy Eyeballs disabled (--no-network-family-autoselection) "
+                        + "to prevent premature connection abortion under corporate proxy.");
             }
         }
 

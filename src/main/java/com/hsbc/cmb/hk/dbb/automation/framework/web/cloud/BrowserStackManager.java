@@ -98,11 +98,11 @@ public class BrowserStackManager {
      * <p>这是框架驱动的入口。PlaywrightManager 在初始化时调用此方法。</p>
      * <p>启用 Local Testing 时，会自动拉起 BrowserStack Local 隧道。</p>
      *
-     * <p>根据 {@code browserstack.browserName} 自动选择连接协议：
-     * <ul>
-     *   <li>chrome / edge → {@code connectOverCDP()}（CDP 协议）</li>
-     *   <li>firefox / webkit → {@code browserType.connect()}（Playwright 自有协议）</li>
-     * </ul>
+     * <p><b>连接协议：</b>统一使用 {@code browserType.connect()}（Playwright 自有协议），
+     * 不再使用 {@code connectOverCDP()}。原因：Playwright Java 的 connectOverCDP()
+     * 不通过 HTTPS_PROXY 代理 WebSocket 连接，公司网络下会导致 DNS 失败。
+     * BrowserStack 的 wss://cdp.browserstack.com/playwright endpoint 同时支持两种协议，
+     * connect() 底层使用 Node.js http 库，能正确读取 HTTPS_PROXY 环境变量。</p>
      *
      * @param playwright Playwright 实例
      * @return 远程 Browser 对象
@@ -133,33 +133,34 @@ public class BrowserStackManager {
             logger.info("[BrowserStack] Connecting to remote browser (browser={})...", browserName);
             logger.debug("[BrowserStack] WSS endpoint: {}", maskCdpUrl(wsEndpoint));
 
+            // 统一使用 browserType.connect() 连接 BrowserStack
+            // 注意：不再使用 connectOverCDP()，因为 Playwright Java 的 connectOverCDP()
+            // 不通过 HTTPS_PROXY 代理 WebSocket 连接，在公司网络下会导致 DNS 失败。
+            // BrowserStack 的 wss://cdp.browserstack.com/playwright endpoint 同时支持
+            // Playwright 自有协议（connect）和 CDP 协议（connectOverCDP），
+            // connect() 底层使用 Node.js http 库，能正确读取 HTTPS_PROXY 环境变量。
+            BrowserType.ConnectOptions options = new BrowserType.ConnectOptions();
+            options.setHeaders(buildAuthHeader());
+            options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
+
             Browser browser;
-            if (isChromiumBrowser(browserName)) {
-                // Chromium 系浏览器使用 CDP（Chrome DevTools Protocol）
-                BrowserType.ConnectOverCDPOptions options = new BrowserType.ConnectOverCDPOptions();
-                options.setHeaders(buildAuthHeader());
-                options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
-
-                browser = playwright.chromium().connectOverCDP(wsEndpoint, options);
-            } else {
-                // Firefox / WebKit 使用 Playwright 自有协议
-                BrowserType.ConnectOptions options = new BrowserType.ConnectOptions();
-                options.setHeaders(buildAuthHeader());
-                options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
-
-                switch (browserName.toLowerCase()) {
-                    case "firefox":
-                        browser = playwright.firefox().connect(wsEndpoint, options);
-                        break;
-                    case "webkit":
-                    case "safari":
-                        browser = playwright.webkit().connect(wsEndpoint, options);
-                        break;
-                    default:
-                        throw new IllegalArgumentException(
-                            "[BrowserStack] Unsupported browser: " + browserName +
-                            ". Supported: chrome, edge, firefox, webkit");
-                }
+            switch (browserName.toLowerCase()) {
+                case "chrome":
+                case "edge":
+                case "chromium":
+                    browser = playwright.chromium().connect(wsEndpoint, options);
+                    break;
+                case "firefox":
+                    browser = playwright.firefox().connect(wsEndpoint, options);
+                    break;
+                case "webkit":
+                case "safari":
+                    browser = playwright.webkit().connect(wsEndpoint, options);
+                    break;
+                default:
+                    throw new IllegalArgumentException(
+                        "[BrowserStack] Unsupported browser: " + browserName +
+                        ". Supported: chrome, edge, firefox, webkit");
             }
 
             logger.info("[BrowserStack] Connected successfully!");

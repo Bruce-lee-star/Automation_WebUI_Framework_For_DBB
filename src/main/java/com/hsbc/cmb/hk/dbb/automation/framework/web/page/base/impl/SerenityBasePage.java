@@ -12,10 +12,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
+import com.microsoft.playwright.options.Cookie;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -418,6 +420,15 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public void waitForUrlEquals(String url, int to) { super.waitForUrlEquals(url, to); recordVerification("urlEquals", true); }
     @Override public void waitForUrlStartsWith(String pfx, int to) { super.waitForUrlStartsWith(pfx, to); recordVerification("urlStartsWith", true); }
     @Override public void waitForCustomCondition(Supplier<Boolean> c, int to, String desc) { super.waitForCustomCondition(c, to, desc); recordVerification("custom_" + desc, true); }
+
+    // --- Cookie 操作 ---
+    @Override public List<Cookie> getCookies() { return recordAndReturn("getCookies", null, super::getCookies); }
+    @Override public Cookie getCookie(String name) { return recordAndReturn("getCookie", name, () -> super.getCookie(name)); }
+    @Override public boolean hasCookie(String name) { return recordAndReturn("hasCookie", name, () -> super.hasCookie(name)); }
+    @Override public void addCookie(Cookie cookie) { record("addCookie", cookie.name, () -> super.addCookie(cookie)); }
+    @Override public void addCookies(List<Cookie> cookies) { record("addCookies", "count=" + cookies.size(), () -> super.addCookies(cookies)); }
+    @Override public void deleteCookie(String name) { record("deleteCookie", name, () -> super.deleteCookie(name)); }
+    @Override public void clearCookies() { record("clearCookies", null, super::clearCookies); }
 
     // --- 可见/隐藏等待（不再含误导性的 retries 参数） ---
     @Override public void waitForVisible(String s, int t) { SerenityReporter.flushPendingApiOperations(); super.waitForVisible(s, t); recordVerification("waitVisible_" + s, true); }

@@ -1134,6 +1134,104 @@ public abstract class BasePage {
         return locator(selector).screenshot();
     }
 
+    // ===================== Cookie 操作 =====================
+
+    /**
+     * 获取当前 BrowserContext 中所有 Cookie
+     * @return Cookie 列表
+     */
+    public List<Cookie> getCookies() {
+        ensureContextValid();
+        return context.cookies();
+    }
+
+    /**
+     * 获取指定 URL 相关的 Cookie
+     * @param url 目标 URL
+     * @return Cookie 列表
+     */
+    public List<Cookie> getCookies(String url) {
+        ensureContextValid();
+        return context.cookies(url);
+    }
+
+    /**
+     * 获取多个 URL 相关的 Cookie
+     * @param urls 目标 URL 列表
+     * @return Cookie 列表
+     */
+    public List<Cookie> getCookies(List<String> urls) {
+        ensureContextValid();
+        return context.cookies(urls);
+    }
+
+    /**
+     * 根据名称获取指定 Cookie
+     * @param name Cookie 名称
+     * @return Cookie 对象，不存在时返回 null
+     */
+    public Cookie getCookie(String name) {
+        ensureContextValid();
+        return context.cookies().stream()
+                .filter(c -> c.name.equals(name))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * 检查指定名称的 Cookie 是否存在
+     * @param name Cookie 名称
+     * @return 存在返回 true
+     */
+    public boolean hasCookie(String name) {
+        return getCookie(name) != null;
+    }
+
+    /**
+     * 添加单个 Cookie
+     * @param cookie Playwright Cookie 对象
+     */
+    public void addCookie(Cookie cookie) {
+        ensureContextValid();
+        context.addCookies(List.of(cookie));
+    }
+
+    /**
+     * 批量添加 Cookie
+     * @param cookies Cookie 列表
+     */
+    public void addCookies(List<Cookie> cookies) {
+        ensureContextValid();
+        context.addCookies(cookies);
+    }
+
+    /**
+     * 根据名称删除指定 Cookie
+     * @param name Cookie 名称
+     */
+    public void deleteCookie(String name) {
+        ensureContextValid();
+        context.clearCookies(new BrowserContext.ClearCookiesOptions().setName(name));
+    }
+
+    /**
+     * 清除当前 BrowserContext 中的所有 Cookie
+     */
+    public void clearCookies() {
+        ensureContextValid();
+        context.clearCookies();
+    }
+
+    /**
+     * 获取当前页面 URL 关联的所有 Cookie
+     * @return Cookie 列表
+     */
+    public List<Cookie> getCookiesForCurrentPage() {
+        ensurePageValid();
+        ensureContextValid();
+        return context.cookies(page.url());
+    }
+
     /**
      * 判断当前是否为可调试本地环境
      * @return true=本地允许pause  false=Jenkins/BrowserStack禁止暂停

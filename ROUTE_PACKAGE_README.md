@@ -424,9 +424,13 @@ RouteDsl.on(browserContext)  // Context 级别
 
 // ── Mock 配置 ──
 .mockBody(body)             // 设置响应体
+.mockBodyFromFile(name)     // 从 JSON 文件读取响应体（src/test/resources/mocks/）
+.mockBodyFromFile(name, map) // 读文件 + 按 JSONPath 批量改字段（纯 Mock 可用）
 .mockStatus(status)         // 设置 HTTP 状态码
 .mockHeader(key, value)     // 设置响应头
-.mockReplaceField(path, val) // 批量替换 Mock JSON body 字段（支持 [*] 通配符 + 类型保持）
+.replaceField(path, val)    // 对当前 body 增量改单个字段（纯 Mock 可用）
+.replaceFields(map)         // 对当前 body 批量改字段（纯 Mock 可用）
+.mockReplaceField(path, val) // 批量替换 真实响应 JSON body 字段（仅 interceptResponse() 模式生效，支持 [*] 通配符 + 类型保持）
 .interceptResponse()        // 切换为拦截真实响应模式 → 返回 InterceptMockDsl
 
 // ── 拦截真实响应 Mock 配置（interceptResponse() 后可用）──
@@ -597,6 +601,19 @@ users[0].name              → { "users": [{ "name": "newValue" }] }
 **配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）、`interceptRealResponse`（是否拦截真实响应，默认 false）。
 
 > **注意**：Mock 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取完整的 Mock 请求快照。
+
+**纯 Mock 模式增强（读文件 + 链式改字段）**：
+
+纯 Mock 模式（`mock()` 默认）新增以下能力，构建期即可完成「读 JSON 文件 → 改字段 → 塞给响应体」的完整链路，不依赖真实服务器：
+
+| 方法 | 说明 |
+|------|------|
+| `mockBodyFromFile(name)` | 从 JSON 文件读取响应体（文件名不含路径时自动从 `src/test/resources/mocks/` 查找；含 `/` 时按路径读取）；文件不存在/为空抛 `IllegalArgumentException` |
+| `mockBodyFromFile(name, overrides)` | 读文件后按 JSONPath 批量改字段（一次性，比链式更高效） |
+| `replaceField(path, val)` | 对**已设置**的 body 增量改单个字段，可链式多次调用 |
+| `replaceFields(overrides)` | 对**已设置**的 body 批量改字段 |
+
+> **重要约束**：`mockReplaceField()` 仅在 `interceptResponse()` 模式下生效（作用于真实响应体）。纯 Mock 模式要修改响应体字段，请使用 `replaceField()` / `replaceFields()` / `mockBodyFromFile(name, overrides)`，切勿混用 `mockReplaceField()`（纯 Mock 下会被 `MockHandler` 忽略，造成静默无效果）。
 
 ---
 
@@ -939,6 +956,33 @@ RouteDsl.on(page)
 // → 框架自动：page.unroute("/api/users/**") → RouteRegistry.forceRegister → page.route(...)
 ```
 
+### 5.2.3 Mock 读 JSON 文件 + 链式改字段（纯 Mock，不依赖真实服务器）
+
+```java
+// 从 JSON 文件读取响应体，再链式增量改字段
+RouteDsl.on(page)
+    .api("/api/login")
+    .mock()
+    .mockBodyFromFile("login-response.json")   // 自动从 src/test/resources/mocks/ 查找
+    .replaceField("$.data.token", "fake-token") // 单字段精确改
+    .replaceField("$.users[*].active", true)    // 通配符批量改 List
+    .mockStatus(200)
+    .done()
+    .start();
+
+// 等价且更高效：一次性读文件 + 批量改（只解析一次 JSON）
+RouteDsl.on(page)
+    .api("/api/login")
+    .mock()
+    .mockBodyFromFile("login-response.json",
+        Map.of("$.data.token", "fake-token", "$.users[*].active", true))
+    .mockStatus(200)
+    .done()
+    .start();
+```
+
+> **注意**：`mockReplaceField()` 仅在 `interceptResponse()` 模式生效。纯 Mock 改字段请用 `replaceField()` / `replaceFields()` / `mockBodyFromFile(name, overrides)`。
+
 ### 5.3 Modify 模式（请求体 JSONPath 精准替换）
 
 ```java
@@ -1236,7 +1280,11 @@ Object jsonValue = lastCall.json("$.data.id");
 | `mockBody(body)` | String | ApiDsl | 设置 Mock 响应体 |
 | `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
 | `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
-| `mockReplaceField(p, v)` | String, String | ApiDsl | 批量替换 JSON body 字段（支持 `[*]` 通配符 + 类型保持：Int/Long/Boolean/Array/Object 自动推断） |
+| `mockBodyFromFile(name)` | String | ApiDsl | 从 JSON 文件读取 Mock 响应体（纯 Mock 模式；文件不存在/为空抛异常） |
+| `mockBodyFromFile(name, overrides)` | String, Map\<String,Object\> | ApiDsl | 读文件 + 按 JSONPath 批量改字段后返回（纯 Mock 模式） |
+| `replaceField(p, v)` | String, Object | ApiDsl | 对当前 body 增量改单个字段（纯 Mock 模式，需先 mockBody/mockBodyFromFile） |
+| `replaceFields(overrides)` | Map\<String,Object\> | ApiDsl | 对当前 body 批量改字段（纯 Mock 模式） |
+| `mockReplaceField(p, v)` | String, Object | InterceptMockDsl | 替换真实响应 JSON body 字段（**仅 `interceptResponse()` 模式生效**，支持 `[*]` 通配符 + 类型保持：Int/Long/Boolean/Array/Object 自动推断） |
 | **— Modify 配置 —** | | | |
 | `setRequestHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
 | `removeRequestHeader(k)` | String | ApiDsl | 删除请求头 |

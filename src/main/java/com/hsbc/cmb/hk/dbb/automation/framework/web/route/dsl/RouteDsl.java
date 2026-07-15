@@ -5,8 +5,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.hsbc.cmb.hk.dbb.automation.utils.JsonFileReader;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
@@ -581,6 +583,16 @@ public class RouteDsl {
      *     .done()
      *     .start();
      *
+     * // 纯 Mock — 读 JSON 文件 + 链式增量改字段（不依赖真实服务器）
+     * .api("/api/login")
+     *     .mock()
+     *     .mockBodyFromFile("login-response.json")
+     *     .replaceField("$.data.token", "fake-token")
+     *     .replaceField("$.users[*].active", true)
+     *     .mockStatus(200)
+     *     .done()
+     *     .start();
+     *
      * // 拦截真实响应 + 字段替换
      * .api("profile/list")
      *     .mock()
@@ -640,6 +652,126 @@ public class RouteDsl {
             }
             return this;
         }
+
+        /**
+         * 从 JSON 文件读取 Mock 响应体（纯 Mock 模式）。
+         * <p>等价于 {@code mockBody(JsonFileReader.readMockData(fileName))}。
+         * 文件名不含路径时自动从 {@code src/test/resources/mocks/} 目录查找（见 {@link JsonFileReader#readMockData}）。
+         *
+         * @param fileName JSON 文件名（如 "login-response.json"）；含路径分隔符时按路径直接读取
+         * @throws IllegalArgumentException 文件不存在或内容为空时抛出，避免静默返回空响应
+         */
+        public MockApiDsl mockBodyFromFile(String fileName) {
+            String content = JsonFileReader.readMockData(fileName);
+            if (content == null) {
+                throw new IllegalArgumentException("Mock body file not found or empty: " + fileName);
+            }
+            rule.setMockBody(content);
+            return this;
+        }
+
+        /**
+         * 从 JSON 文件读取 Mock 响应体，并按 JSONPath 批量修改指定字段后返回（纯 Mock 模式）。
+         *
+         * <p>借鉴 API 的"修改 request payload"能力（{@link ModifyHandler#replaceBatchByWildcard}），
+         * 在纯 Mock 模式下完成"文件读取 → 字段修改 → 塞给 mockBody"的完整链路，
+         * 规避 {@code mockReplaceField} 仅在 {@code interceptResponse()} 模式生效的限制。
+         *
+         * <p>支持通配符 {@code [*]} 批量替换 List 元素、嵌套 List，并自动保持原字段类型
+         * （数字→数字、布尔→布尔、null→null）。
+         *
+         * <p>示例：
+         * <pre>{@code
+         * .api("/api/login")
+         *     .mock()
+         *     .mockBodyFromFile("login-response.json",
+         *         Map.of("$.data.token", "fake-token",
+         *                "$.users[*].active", true))
+         *     .mockStatus(200)
+         *     .done()
+         *     .start();
+         * }</pre>
+         *
+         * @param fileName       JSON 文件名
+         * @param fieldOverrides 字段路径 → 值 的覆盖映射（支持通配符 [*]）
+         * @throws IllegalArgumentException 文件不存在或内容为空时抛出
+         */
+        public MockApiDsl mockBodyFromFile(String fileName, Map<String, Object> fieldOverrides) {
+            String content = JsonFileReader.readMockData(fileName);
+            if (content == null) {
+                throw new IllegalArgumentException("Mock body file not found or empty: " + fileName);
+            }
+            if (fieldOverrides != null && !fieldOverrides.isEmpty()) {
+                content = ModifyHandler.replaceBatchByWildcard(content, fieldOverrides);
+            }
+            rule.setMockBody(content);
+            return this;
+        }
+
+        /**
+         * 在已设置的 Mock 响应体（字符串）上，按 JSONPath 增量替换单个字段（纯 Mock 模式）。
+         *
+         * <p>与 {@link #mockBodyFromFile(String, Map)} 一次性批量替换不同，本方法可链式多次调用，
+         * 在 {@code mockBody() / mockBodyFromFile()} 之后逐步修改响应体，无需把所有字段塞进一个 Map：
+         * <pre>{@code
+         * .mock()
+         *     .mockBodyFromFile("login-response.json")
+         *     .replaceField("$.data.token", "fake-token")
+         *     .replaceField("$.users[*].active", true)
+         *     .mockStatus(200)
+         *     .done()
+         *     .start();
+         * }</pre>
+         *
+         * <p>底层复用 API 的 ModifyHandler 替换引擎，支持通配符 {@code [*]} 与嵌套 List，
+         * 并自动保持原字段类型。每次调用都会读取当前 body 重新写回。
+         *
+         * <p><b>与 interceptResponse 模式的区别：</b>此方法直接修改本地已设置的字符串 body，
+         * 不依赖真实响应，可在纯 Mock 模式下任意调用；而 {@code InterceptMockDsl.mockReplaceField}
+         * 仅在 {@code interceptResponse()} 模式下对真实响应体生效。
+         *
+         * @param jsonPath JSONPath 表达式（支持通配符 [*]）
+         * @param value    替换值（String / Number / Boolean / null）
+         * @throws IllegalStateException 若尚未设置字符串响应体（需先调用 mockBody/mockBodyFromFile，且未使用二进制 body）
+         */
+        public MockApiDsl replaceField(String jsonPath, Object value) {
+            ensureStringBodyForReplace();
+            String updated = ModifyHandler.replaceBatchByWildcard(rule.getMockBody(), Map.of(jsonPath, value));
+            rule.setMockBody(updated);
+            return this;
+        }
+
+        /**
+         * 在已设置的 Mock 响应体（字符串）上，按 JSONPath 批量替换多个字段（纯 Mock 模式）。
+         * <p>等价于多次调用 {@link #replaceField(String, Object)}，但只解析一次，更高效。
+         *
+         * @param fieldOverrides 字段路径 → 值 的覆盖映射（支持通配符 [*]）
+         * @throws IllegalStateException 若尚未设置字符串响应体
+         */
+        public MockApiDsl replaceFields(Map<String, Object> fieldOverrides) {
+            ensureStringBodyForReplace();
+            if (fieldOverrides == null || fieldOverrides.isEmpty()) {
+                return this;
+            }
+            String updated = ModifyHandler.replaceBatchByWildcard(rule.getMockBody(), fieldOverrides);
+            rule.setMockBody(updated);
+            return this;
+        }
+
+        /** 校验当前 mock body 为可替换的字符串响应体（非二进制、非空）。 */
+        private void ensureStringBodyForReplace() {
+            if (rule.getMockBodyBytes() != null) {
+                throw new IllegalStateException(
+                        "replaceField / replaceFields cannot be applied to a binary mock body. "
+                                + "Use a String body via mockBody() / mockBodyFromFile().");
+            }
+            if (rule.getMockBody() == null || rule.getMockBody().isEmpty()) {
+                throw new IllegalStateException(
+                        "Mock body is empty or not set. Call mockBody(...) / mockBodyFromFile(...) "
+                                + "before replaceField(...) / replaceFields(...).");
+            }
+        }
+
 
         /**
          * 设置 Mock 返回的 HTTP 状态码（默认 200）。

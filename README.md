@@ -276,6 +276,20 @@ PageElement cell = tableRow.child("td:nth-child(2)");
 // 元素列表 — 动态查询 + 多阶段智能等待
 itemRows.waitForCount(5).get(2).click();
 itemRows.forEachSafe(el -> logger.info(el.getText()));
+
+// Cookie 操作 — BrowserContext 级别的 Cookie 管理（SerenityBasePage 自动记录到报告）
+List<Cookie> all = loginPage.getCookies();                  // 获取所有 Cookie
+Cookie token = loginPage.getCookie("session_token");        // 按名称获取
+boolean has = loginPage.hasCookie("session_token");         // 是否存在
+
+// 注入自定义 Cookie（如跳过登录、构造测试态）
+loginPage.addCookie(Cookie.newBuilder("auth_token", "fake-token")
+        .setDomain("example.com").setPath("/").build());
+loginPage.addCookies(List.of(cookieA, cookieB));            // 批量添加
+
+loginPage.deleteCookie("session_token");                    // 按名称删除
+loginPage.clearCookies();                                   // 清空当前 Context 所有 Cookie
+List<Cookie> pageCookies = loginPage.getCookiesForCurrentPage(); // 当前页面 URL 关联 Cookie
 ```
 
 **核心特性：**
@@ -289,6 +303,7 @@ itemRows.forEachSafe(el -> logger.info(el.getText()));
 | **企业级重试** | `executeWithRetry()` 自动诊断 DOM 状态 + 失败截图，`executeSafely()` 统一异常转换 |
 | **文本标准化** | `TextNormalizer` 统一管道：NFKC 规范化 → 去控制字符 → 合并空白 → 去标点前空格 → trim |
 | **失败诊断** | `ElementDiagnosticsCollector` 批量 JS 单次 IPC 收集 DOM 状态，不拖慢正常流程 |
+| **Cookie 操作** | `getCookies` / `getCookie` / `hasCookie` / `addCookie` / `addCookies` / `deleteCookie` / `clearCookies` / `getCookiesForCurrentPage`，基于 Playwright `BrowserContext`，支持按名称精确增删查 |
 | **智能 Pause** | `BasePage.pause()` 安全调试点：本地 IDE 自动打开 Playwright Inspector；Jenkins/BrowserStack 环境自动跳过 |
 
 ---
@@ -354,6 +369,17 @@ RouteDsl.on(page)
     .delay(3)
     .randomDelay(1, 5)              // 每次请求 1-5 秒随机延迟
     .matchMethod("POST")
+    .done()
+    .start();
+
+// Mock 读 JSON 文件 + 链式改字段（纯 Mock，不依赖真实服务器）
+RouteDsl.on(page)
+    .api("/api/login")
+    .mock()
+    .mockBodyFromFile("login-response.json")   // 自动从 src/test/resources/mocks/ 查找
+    .replaceField("$.data.token", "fake-token")
+    .replaceField("$.users[*].active", true)
+    .mockStatus(200)
     .done()
     .start();
 ```

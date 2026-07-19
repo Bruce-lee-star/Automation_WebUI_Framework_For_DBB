@@ -11,6 +11,7 @@ import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.options.MouseButton;
+import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.SelectOption;
 import com.microsoft.playwright.options.WaitForSelectorState;
 import org.slf4j.Logger;
@@ -22,6 +23,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
@@ -871,6 +874,104 @@ public class PageElement {
         public Locator locator() {
             // 不使用父类缓存，直接用 Locator.locator() 实现真正的 DOM 层级定位
             return getPage().locator(parentSelector).locator(childSelector);
+        }
+    }
+
+    // ==================== Role-based Element (Accessibility tree / MCP support) ====================
+    /**
+     * 基于 ARIA role（及可选 name）的定位元素。
+     *
+     * <p>底层使用 {@code page.getByRole(role[, {name}])}，与 Playwright MCP 的
+     * {@code browser_snapshot}、{@code AccessibilityTreeExtractor} 的语义口径完全一致，
+     * 适合从可访问性树自动生成稳定定位（测试辅助场景）。
+     *
+     * <p>复用父类的全部重试 / 诊断 / 日志能力，仅 {@link #locator()} 改为按 role 计算，
+     * 因此 {@code click()/fill()/waitForVisible()/getText()} 等行为与字符串定位元素无异。
+     */
+    public static final class RolePageElement extends PageElement {
+        private final AriaRole role;
+        private final String[] names; // nullable / 空 = 仅按 role 定位
+
+        public RolePageElement(AriaRole role, BasePage page) {
+            super("role=" + role, page);
+            this.role = role;
+            this.names = null;
+        }
+
+        public RolePageElement(AriaRole role, String[] names, BasePage page) {
+            super(descriptive(role, names), page);
+            this.role = role;
+            this.names = names;
+        }
+
+        @Override
+        public Locator locator() {
+            getPage();
+            if (names == null || names.length == 0) {
+                return getPage().byRole(role);
+            }
+            if (names.length == 1) {
+                String n = names[0];
+                return getPage().byRole(role, n == null ? "" : n.trim());
+            }
+            // 多 name（如多语言候选）：任一匹配即命中；整串精确匹配避免子串误中
+            String regex = Arrays.stream(names)
+                    .filter(Objects::nonNull)
+                    .filter(s -> !s.isBlank())
+                    .map(Pattern::quote)
+                    .collect(Collectors.joining("|"));
+            return getPage().byRole(role, Pattern.compile(regex), true);
+        }
+
+        private static String descriptive(AriaRole role, String[] names) {
+            if (names == null || names.length == 0) {
+                return "role=" + role;
+            }
+            return "role=" + role + "[name~" + Arrays.toString(names) + "]";
+        }
+
+        @Override
+        public PageElement child(String childSelector) {
+            return childRoleLocator(childSelector, -1);
+        }
+
+        @Override
+        public PageElement child(String childSelector, int index) {
+            return childRoleLocator(childSelector, index);
+        }
+
+        private PageElement childRoleLocator(String childSelector, int index) {
+            Objects.requireNonNull(childSelector, "childSelector must not be null");
+            String clean = childSelector.trim();
+            if (clean.isEmpty()) {
+                throw new IllegalArgumentException("childSelector must not be blank");
+            }
+            final String desc = getSelector() + " > child(" + clean + ")"
+                    + (index >= 0 ? "[" + index + "]" : "");
+            return new LocatorPageElement(desc, getPage(),
+                    p -> {
+                        Locator child = this.locator().locator(clean);
+                        return index >= 0 ? child.nth(index) : child;
+                    });
+        }
+    }
+
+    /**
+     * 基于任意 {@link Locator} 提供者定位的元素，用于 role 元素的子元素链式定位。
+     */
+    private static final class LocatorPageElement extends PageElement {
+        private final java.util.function.Function<BasePage, Locator> locatorFn;
+
+        LocatorPageElement(String desc, BasePage page,
+                           java.util.function.Function<BasePage, Locator> locatorFn) {
+            super(desc, page);
+            this.locatorFn = locatorFn;
+        }
+
+        @Override
+        public Locator locator() {
+            getPage();
+            return locatorFn.apply(getPage());
         }
     }
 

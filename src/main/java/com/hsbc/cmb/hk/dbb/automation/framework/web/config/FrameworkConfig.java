@@ -1138,6 +1138,47 @@ public enum FrameworkConfig {
         "Monitor 测试运行 ID"
     ),
 
+    /**
+     * 是否启用 Monitor 文件持久化存储
+     * true=每次捕获 API 响应后按 endpoint 命名写入 JSON 文件
+     * false=不存储（默认）
+     */
+    MONITOR_FILE_STORE_ENABLED(
+        "monitor.file.store.enabled",
+        "false",
+        "是否启用 Monitor 文件持久化存储"
+    ),
+
+    /**
+     * 文件存储输出目录（相对路径基于工作目录，也可填绝对路径）
+     */
+    MONITOR_FILE_STORE_DIR(
+        "monitor.file.store.dir",
+        "target/monitor-output",
+        "Monitor 文件存储输出目录"
+    ),
+
+    /**
+     * 是否美化 JSON 输出
+     */
+    MONITOR_FILE_STORE_PRETTY(
+        "monitor.file.store.pretty",
+        "true",
+        "是否美化 Monitor JSON 文件输出"
+    ),
+
+    /**
+     * 是否按 Serenity scenario（用例）分组存储
+     * true=每个 scenario 写入独立子目录，且文件序号在 scenario 开始时自动重置
+     *       （同一 endpoint 在不同 case 互不干扰，不会出现跨 case 串号 / 覆盖）
+     * false=所有文件平铺在输出目录，序号在整个 JVM 运行内累计（旧行为）
+     */
+    MONITOR_FILE_STORE_GROUP_BY_SCENARIO(
+        "monitor.file.store.group.by.scenario",
+        "true",
+        "是否按 scenario 分组存储 Monitor 文件"
+    ),
+
     // ==================== 统一代理配置 ====================
     //
     // 所有代理场景（BrowserStack CDP / Context 浏览器流量 / Playwright 下载 / BS Local 隧道）

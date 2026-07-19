@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.DatabaseStoreMonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.FileStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
@@ -201,6 +202,13 @@ public class MonitorHandler {
                 // ═══════════════════════════════════════════════════════════════
                 DatabaseStoreMonitorCallback.INSTANCE.onResponse(
                         fAsyncUrl, fAsyncStatus, fBody, fResHeaders, fReqMethod);
+
+                // ═══════════════════════════════════════════════════════════════
+                // 框架内置：根据配置自动决定是否将监控数据写入文件
+                // 文件名以 endpoint（urlPattern）命名，多个时自动编号 _1、_2 …
+                // ═══════════════════════════════════════════════════════════════
+                FileStoreMonitorCallback.INSTANCE.onResponse(
+                        fAsyncUrl, urlPattern, fAsyncStatus, fBody, fResHeaders, fReqMethod);
 
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, fAsyncUrl);

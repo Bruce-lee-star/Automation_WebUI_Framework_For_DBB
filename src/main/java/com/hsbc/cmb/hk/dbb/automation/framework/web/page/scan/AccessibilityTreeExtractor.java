@@ -315,15 +315,30 @@ public final class AccessibilityTreeExtractor {
     }
 
     /**
-     * 解析节点应使用的 name 候选：i18nKey 优先（语言无关），降级 AX name（单语）。
+     * 解析节点应使用的 name 候选。
+     * <ol>
+     *   <li><b>i18nKey 优先</b>（data-i18n / DOM 富化回填，语言无关）→ 跨语言合并；</li>
+     *   <li><b>否则用 AX 当前语言可见名反查 NLS</b>：HTML 标签未必带 i18n 属性，但其文本本身就是某语言
+     *       NLS 值，用 {@link I18nNameProvider#namesForValue(String)} 反查出 key 再跨语言合并；</li>
+     *   <li><b>最后降级为单语 AX name</b>。</li>
+     * </ol>
      */
     private static String[] resolveNames(AxNode n, I18nNameProvider i18n) {
+        // 1) 优先 i18nKey（语言无关）
         if (i18n != null && n.i18nKey != null && !n.i18nKey.isBlank()) {
             String[] fromKey = i18n.namesForKey(n.i18nKey);
             if (fromKey != null && fromKey.length > 0) {
                 return fromKey;
             }
         }
+        // 2) 无 i18nKey 时，用当前语言可见名反查 NLS（标签未必带 i18n 属性）
+        if (i18n != null && n.name != null && !n.name.isBlank()) {
+            String[] fromValue = i18n.namesForValue(n.name);
+            if (fromValue != null && fromValue.length > 0) {
+                return fromValue;
+            }
+        }
+        // 3) 降级单语 AX name
         if (n.name != null && !n.name.isBlank()) {
             return new String[]{n.name};
         }

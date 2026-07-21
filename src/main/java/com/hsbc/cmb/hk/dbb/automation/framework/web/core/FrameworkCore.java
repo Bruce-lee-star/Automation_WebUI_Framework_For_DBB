@@ -29,6 +29,16 @@ public class FrameworkCore {
 
     // 添加 JVM 关闭钩子，确保资源清理
     static {
+        // 提前初始化 AWT 工具包（sun.awt.windows.WToolkit 在首次运行时会延迟注册一个
+        // JVM 关闭钩子）。若等到 JVM 退出阶段才被业务代码（如获取屏幕分辨率）首次触发，
+        // 会与我们的关闭钩子竞争，抛出 "IllegalStateException: Shutdown in progress"。
+        // 这里在框架启动期主动加载，让 AWT 的关闭钩子在正常运行时注册，消除退出期竞争噪音。
+        try {
+            java.awt.Toolkit.getDefaultToolkit();
+        } catch (Throwable t) {
+            LoggingConfigUtil.logWarnIfVerbose(logger, "AWT toolkit pre-init skipped: {}", t.getMessage());
+        }
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 LoggingConfigUtil.logInfoIfVerbose(logger, "JVM Shutdown Hook: Cleaning up resources...");

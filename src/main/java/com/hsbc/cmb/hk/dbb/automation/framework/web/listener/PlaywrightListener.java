@@ -79,26 +79,19 @@ public class PlaywrightListener implements StepListener {
     private static final ThreadLocal<Boolean> apiFailureAlreadyHandled = ThreadLocal.withInitial(() -> false);
 
     /**
-     * ⭐⭐⭐ 通用步骤失败标记（供框架层 StepFailureHook @After hook 读取并抛异常，确保 JUnit4/IDE 标红）。
+     * ⭐⭐⭐ 失败传播机制说明（重要）。
      *
      * <p>Serenity listener 回调（stepFinished / testFinished）中检测到的任何失败
-     * （API 断言、元素找不到、超时等）都应通过 {@code set(AssertionError)} 写入此 ThreadLocal。
+     * （API 断言、元素找不到、超时等）都必须通过 <b>抛出异常</b> 的方式传播，
+     * 因为 {@code StepEventBus.testFailed()} 只影响 Serenity 报告模型，无法改变 Cucumber/JUnit4 判定。
      *
-     * <p>框架层 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.hook.StepFailureHook}
-     * （通过 {@code cucumber.properties} 自动注入 glue，业务代码零感知）在每个 Scenario 结束时检查此字段：
-     * <ul>
-     *   <li>若为 null → Scenario 正常，不干预</li>
-     *   <li>若非 null → throw AssertionError → 传播到 Cucumber → JUnit4 → IDE 标红</li>
-     * </ul>
+     * <p>关键事实：本框架的 Serenity 集成 <b>不会</b>为 {@code cucumber.properties} 注入的 glue 包
+     * 注册 Cucumber {@code @After} hook（类会被加载但不注册 hook），因此不能在测试层用 @After 抛异常。
+     * 正确做法是在已 SPI 注册的 Serenity {@code StepListener} 的 {@code stepFinished()} 回调中
+     * 直接 {@code throw}，异常沿 {@code StepInterceptor → Cucumber → JUnit4} 传播，使 IDE 正确标红。
      *
-     * <p>生命周期：
-     * <ul>
-     *   <li>{@link #testStarted(TestOutcome)} → {@code remove()} 清理上一个 Scenario 残留</li>
-     *   <li>检测到失败 → {@code set(error)}</li>
-     *   <li>StepFailureHook {@code @After} → 读取并 throw，然后 {@code remove()}</li>
-     * </ul>
+     * <p>详见 {@link #checkAndFailOnApiAssertions()} 中的 {@code throw} 实现。
      */
-    public static final ThreadLocal<AssertionError> STEP_FAILURE = new ThreadLocal<>();
 
     // 存储当前步骤的截图列表
     private static final ThreadLocal<List<ScreenshotAndHtmlSource>> currentStepScreenshots = ThreadLocal.withInitial(ArrayList::new);
@@ -157,8 +150,8 @@ public class PlaywrightListener implements StepListener {
         ApiCaptureContext.resetCurrent();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
-        // ⭐⭐⭐ 清理上一个 Scenario 的失败标记（防跨 Scenario 污染）
-        STEP_FAILURE.remove();
+
+
 
         // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
         if (!discoveryPhaseCompleted) {
@@ -896,8 +889,8 @@ public class PlaywrightListener implements StepListener {
         ApiCaptureContext.resetCurrent();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
-        // ⭐⭐⭐ 清理上一个 Scenario 的失败标记（防跨 Scenario 污染）
-        STEP_FAILURE.remove();
+
+
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -928,8 +921,8 @@ public class PlaywrightListener implements StepListener {
         ApiCaptureContext.resetCurrent();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
-        // ⭐⭐⭐ 清理上一个 Scenario 的失败标记（防跨 Scenario 污染）
-        STEP_FAILURE.remove();
+
+
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -1287,13 +1280,6 @@ public class PlaywrightListener implements StepListener {
             if (result != null) {
                 result.setResult(TestResult.FAILURE);
             }
-
-            // ⭐⭐⭐ 兜底：如果 checkAndFailOnApiAssertions 未设置 STEP_FAILURE，此处补设
-            // （StepFailureHook @After hook 依赖 STEP_FAILURE 抛异常让 JUnit4 标红）
-            if (!alreadyHandledAtStep) {
-                String failureReport = context.buildFailureReport();
-                STEP_FAILURE.set(new AssertionError(failureReport));
-            }
         }
         // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiCaptureContext.removeCurrent()
     }
@@ -1367,9 +1353,6 @@ public class PlaywrightListener implements StepListener {
         } catch (Exception e) {
             logger.error("Failed to call StepEventBus.testFailed() for API assertion failure", e);
         }
-
-        // ⭐⭐⭐ 通用失败标记（供 Serenity 报告/兜底使用）
-        STEP_FAILURE.set(new AssertionError(details));
 
         // ⭐⭐⭐ 关键修复：直接在 Serenity stepFinished 回调中抛出 AssertionError。
         // stepFinished 在 step 执行线程内被 Serenity 同步调用，异常沿

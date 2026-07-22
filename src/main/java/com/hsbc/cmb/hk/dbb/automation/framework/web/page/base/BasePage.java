@@ -7,9 +7,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationExcepti
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.*;
@@ -24,6 +27,9 @@ import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
 
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
@@ -115,7 +121,25 @@ public abstract class BasePage {
         Class<?> clazz = this.getClass();
         while (clazz != null && clazz != BasePage.class) {
             for (Field field : clazz.getDeclaredFields()) {
-                if (field.isAnnotationPresent(Element.class)) {
+                if (field.isAnnotationPresent(RoleElement.class)) {
+                    RoleElement a = field.getAnnotation(RoleElement.class);
+                    field.setAccessible(true);
+
+                    if (annotatedFieldsInitialized) {
+                        // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
+                        try {
+                            Object existing = field.get(this);
+                            if (existing == null || !(existing instanceof PageElement)) {
+                                createNlsField(field, a);
+                            }
+                        } catch (IllegalAccessException e) {
+                            createNlsField(field, a);
+                        }
+                        continue;
+                    }
+
+                    createNlsField(field, a);
+                } else if (field.isAnnotationPresent(Element.class)) {
                     Element elementAnnotation = field.getAnnotation(Element.class);
                     String selector = elementAnnotation.value();
                     field.setAccessible(true);
@@ -154,6 +178,56 @@ public abstract class BasePage {
             throw new ElementException("Init field failed: " + field.getName());
         }
     }
+
+    /**
+     * 创建 @RoleElement 注解字段对应的 PageElement。
+     * 通过动态 Locator 供应商绑定「角色 + 当前语言下的 nls 名称」，
+     * 因此 {@code NLSUtils.setLanguage("xx")} 后下次操作会自动解析为对应语言的可访问名。
+     */
+    private void createNlsField(Field field, RoleElement a) {
+        try {
+            final BasePage self = this;
+            String literalName = a.name();
+            Supplier<Locator> supplier;
+            String desc;
+            if (literalName != null && !literalName.isEmpty()) {
+                // 字面名称覆盖：直接用名称定位，不再依赖 nls 文件（拾取未反查到 key 的场景）。
+                desc = a.description().isEmpty()
+                        ? "role=" + a.role() + "[name:" + literalName + "]"
+                        : a.description();
+                final String nameVal = literalName;
+                supplier = () -> self.byRole(a.role(), nameVal, a.exact());
+            } else {
+                String file = resolveRoleFile(a);
+                desc = a.description().isEmpty()
+                        ? "role=" + a.role() + "[nls:" + file + "#" + a.key() + "]"
+                        : a.description();
+                final NLSUtils.NlsBundle bundle = NLSUtils.bind(file);
+                supplier = () -> self.byRole(a.role(), bundle.get(a.key()), a.exact());
+            }
+            field.set(this, new PageElement(supplier, desc, this));
+        } catch (Exception e) {
+            throw new ElementException("Init NLS field failed: " + field.getName());
+        }
+    }
+
+    /**
+     * 解析 @RoleElement 字段对应的 nls 文件：优先取字段 file() 覆盖，
+     * 否则回退到类级 @RoleFile；两者皆无则抛明确异常。
+     */
+    private String resolveRoleFile(RoleElement a) {
+        if (a.file() != null && !a.file().isBlank()) {
+            return a.file();
+        }
+        RoleFile classFile = this.getClass().getAnnotation(RoleFile.class);
+        if (classFile == null) {
+            throw new ElementException("RoleElement field '" + a.key()
+                    + "' needs either file() or a class-level @RoleFile on "
+                    + this.getClass().getSimpleName());
+        }
+        return classFile.value();
+    }
+
 
     public static BasePage getCurrentPage() {
         return currentPage.get();
@@ -1067,6 +1141,62 @@ public abstract class BasePage {
         ensurePageValid();
         Frame frame = currentFrame.get();
         return (frame != null) ? frame.getByRole(role) : page.getByRole(role);
+    }
+
+    /**
+     * 按可访问性角色 + 名称定位元素（名称精确匹配，大小写敏感）。
+     * 经此定位可配合 {@code NLSUtils} 实现多语言 name 解析。
+     *
+     * @param role 可访问性角色，如 {@link AriaRole#TEXTBOX}、{@link AriaRole#BUTTON}
+     * @param name 可访问名称（由当前语言决定，通常来自 {@code NLSUtils.get(...)}）
+     * @return 对应的 Playwright Locator
+     */
+    public Locator byRole(AriaRole role, String name) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name))
+                : page.getByRole(role, new Page.GetByRoleOptions().setName(name));
+    }
+
+    /**
+     * 按可访问性角色 + 名称定位元素，可控制是否精确匹配。
+     *
+     * @param role   可访问性角色
+     * @param name   可访问名称
+     * @param exact  true=精确匹配（大小写敏感，默认行为）；false=子串/忽略大小写匹配
+     * @return 对应的 Playwright Locator
+     */
+    public Locator byRole(AriaRole role, String name, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name).setExact(exact))
+                : page.getByRole(role, new Page.GetByRoleOptions().setName(name).setExact(exact));
+    }
+
+    /**
+     * 打印当前页面中可交互元素的 {@code role = name}，
+     * 便于据此编写 {@code @RoleElement(role = ..., key = ...)} 注解。
+     * 用法：临时在测试里调用 {@code loginPage.dumpAccessibilityRoles();}，
+     * 查看控制台输出后，把每行 {@code role = name} 抄进注解即可。
+     * <p>注意：基于注入脚本遍历 DOM 的 computedRole/computedName（兼容无 Playwright
+     * accessibilitySnapshot API 的版本），仅覆盖主 frame；iframe 内元素请对对应 frame 调用。
+     */
+    public void dumpAccessibilityRoles() {
+        ensurePageValid();
+        List<RoleEntry> entries = RoleElementPageGenerator.collectFromPage(page);
+        if (entries.isEmpty()) {
+            logger.warn("[a11y] 未采集到可交互元素（页面可能尚未就绪或无匹配角色）");
+            return;
+        }
+        StringBuilder sb = new StringBuilder(
+                "\n========== Accessibility roles (role = name) ==========\n");
+        for (RoleEntry e : entries) {
+            sb.append(e.getRole()).append(" = ")
+              .append(e.getName() == null ? "" : e.getName()).append('\n');
+        }
+        logger.info(sb.toString());
     }
 
     public void dragAndDrop(String sourceSelector, String targetSelector) {

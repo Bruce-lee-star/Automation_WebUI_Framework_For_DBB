@@ -28,6 +28,7 @@ public class PageElement {
 
     private final String selector;
     private final BasePage page;
+    private Supplier<Locator> locatorSupplier;
 
     // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
@@ -38,6 +39,30 @@ public class PageElement {
             throw new IllegalArgumentException("BasePage cannot be null");
         }
         this.selector = selector;
+        this.page = page;
+    }
+
+    /**
+     * 基于动态 Locator 供应商构造（用于 NLS / 角色定位等运行时才能确定定位器的场景）。
+     * supplier 每次调用都会重新解析定位器，因此语言切换 / Page 重建后自动生效，
+     * 并复用本类的重试 / 诊断 / 截图全套能力。
+     *
+     * @param locatorSupplier 动态定位器供应商
+     * @param description     描述（用于日志、诊断与截图命名），不可为空
+     * @param page            所属页面
+     */
+    public PageElement(Supplier<Locator> locatorSupplier, String description, BasePage page) {
+        if (locatorSupplier == null) {
+            throw new IllegalArgumentException("Locator supplier cannot be null");
+        }
+        if (description == null || description.isBlank()) {
+            throw new IllegalArgumentException("Description cannot be null or blank");
+        }
+        if (page == null) {
+            throw new IllegalArgumentException("BasePage cannot be null");
+        }
+        this.locatorSupplier = locatorSupplier;
+        this.selector = description;
         this.page = page;
     }
 
@@ -53,10 +78,14 @@ public class PageElement {
      * 页面存活性保护 + Locator 重建。
      * 不再缓存 Locator——每次调用通过 {@code page.getPage()} 触发 ensurePageValid()，
      * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
+     * 若提供了动态定位器供应商（NLS / 角色定位），优先使用之，实现语言切换后自动重解析。
      */
     public Locator locator() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
+        if (locatorSupplier != null) {
+            return locatorSupplier.get();
+        }
         return page.locator(selector);
     }
 

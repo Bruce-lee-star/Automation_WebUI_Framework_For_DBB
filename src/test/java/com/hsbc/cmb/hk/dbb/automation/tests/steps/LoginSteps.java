@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
@@ -11,6 +12,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.LoginPage;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
+import com.microsoft.playwright.Page;
 import net.serenitybdd.annotations.Step;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -158,6 +160,11 @@ public class LoginSteps {
         // Axe-core accessibility scan on login page
 //        AxeCoreScanner.scanPage("Login Page - Initial");
 
+        Page page = loginPage.getPage();
+        RoleElementPicker.openPanel(page,
+                "com.hsbc.cmb.hk.dbb.automation.tests.pages",  // 包名
+                "LoginPage",                                    // 生成类名
+                "nls/login.nls.json");
         loginPage.userNameIpt.type(username);
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());

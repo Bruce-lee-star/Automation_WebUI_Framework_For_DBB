@@ -22,7 +22,6 @@ import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
-import java.util.regex.Pattern;
 
 /**
  * Serenity 基础页面类。
@@ -397,12 +396,6 @@ public abstract class SerenityBasePage extends BasePage {
     // --- Locator 构建 ---
     @Override public Locator byAltText(String text) { return recordAndReturn("byAltText", text, () -> super.byAltText(text)); }
     @Override public Locator byRole(AriaRole role) { return recordAndReturn("byRole", role, () -> super.byRole(role)); }
-    @Override public Locator byRole(AriaRole role, String name) {
-        return recordAndReturn("byRole", role + "/" + name, () -> super.byRole(role, name));
-    }
-    @Override public Locator byRole(AriaRole role, Pattern name, boolean exact) {
-        return recordAndReturn("byRole", role + "/" + name + "/exact=" + exact, () -> super.byRole(role, name, exact));
-    }
     @Override public Locator byTitle(String title) { return recordAndReturn("byTitle", title, () -> super.byTitle(title)); }
     @Override public Locator byTestId(String testId) { return recordAndReturn("byTestId", testId, () -> super.byTestId(testId)); }
 

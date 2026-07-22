@@ -20,7 +20,6 @@ import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
-import java.util.regex.Pattern;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -420,26 +419,6 @@ public abstract class BasePage {
      */
     public PageElement element(String selector) {
         return new PageElement(selector, this);
-    }
-
-    /**
-     * 基于 ARIA role 创建元素（来自可访问性树 / MCP snapshot 的定位方式，适合测试辅助）。
-     *
-     * @see PageElement.RolePageElement
-     */
-    public PageElement element(AriaRole role) {
-        return new PageElement.RolePageElement(role, this);
-    }
-
-    /**
-     * 基于 ARIA role + 一个或多个可访问名（候选）创建元素。
-     * <p>传入多个 name（如各语言文本）时，底层用正则 OR 匹配——任一 name 命中即定位成功，
-     * 适合国际化（i18n）场景：{@code element(BUTTON, "Sign in", "登录", "Se connecter")}。
-     *
-     * @see PageElement.RolePageElement
-     */
-    public PageElement element(AriaRole role, String... names) {
-        return new PageElement.RolePageElement(role, names, this);
     }
 
     public void click(String selector) {
@@ -1088,37 +1067,6 @@ public abstract class BasePage {
         ensurePageValid();
         Frame frame = currentFrame.get();
         return (frame != null) ? frame.getByRole(role) : page.getByRole(role);
-    }
-
-    /**
-     * 基于 ARIA role + 可访问名创建定位器，支持 iframe 上下文（精确匹配 name）。
-     *
-     * @param role ARIA role
-     * @param name 可访问名
-     */
-    public Locator byRole(AriaRole role, String name) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name))
-                : page.getByRole(role, new Page.GetByRoleOptions().setName(name));
-    }
-
-    /**
-     * 基于 ARIA role + 可访问名（正则）创建定位器，支持 iframe 上下文。
-     * <p>适合多语言候选：传入 {@code Pattern.compile("Sign in|登录")} 与 {@code exact=true}，
-     * 任一 name 命中即定位成功。
-     *
-     * @param role   ARIA role
-     * @param name   可访问名正则
-     * @param exact  是否整串精确匹配
-     */
-    public Locator byRole(AriaRole role, Pattern name, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name).setExact(exact))
-                : page.getByRole(role, new Page.GetByRoleOptions().setName(name).setExact(exact));
     }
 
     public void dragAndDrop(String sourceSelector, String targetSelector) {

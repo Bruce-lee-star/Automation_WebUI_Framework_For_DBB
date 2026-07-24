@@ -22,8 +22,10 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -181,33 +183,154 @@ public abstract class BasePage {
 
     /**
      * 创建 @RoleElement 注解字段对应的 PageElement。
-     * 通过动态 Locator 供应商绑定「角色 + 当前语言下的 nls 名称」，
-     * 因此 {@code NLSUtils.setLanguage("xx")} 后下次操作会自动解析为对应语言的可访问名。
+     * 支持两种策略（通过动态 Locator 供应商绑定，不缓存、页面切换后自动重绑新 Page）：
+     * <ul>
+     *   <li>语义定位（text / altText / title / placeholder / testId / i18n）：任一属性非空即启用，
+     *       对应 Playwright 的 getBy* 方法，忽略 role；</li>
+     *   <li>角色定位（role + nls key / 字面 name）：保留多语言能力，
+     *       因此 {@code NLSUtils.setLanguage("xx")} 后下次操作会自动解析为对应语言的可访问名。</li>
+     * </ul>
      */
     private void createNlsField(Field field, RoleElement a) {
         try {
             final BasePage self = this;
-            String literalName = a.name();
             Supplier<Locator> supplier;
             String desc;
-            if (literalName != null && !literalName.isEmpty()) {
-                // 字面名称覆盖：直接用名称定位，不再依赖 nls 文件（拾取未反查到 key 的场景）。
-                desc = a.description().isEmpty()
-                        ? "role=" + a.role() + "[name:" + literalName + "]"
-                        : a.description();
-                final String nameVal = literalName;
-                supplier = () -> self.byRole(a.role(), nameVal, a.exact());
+
+            if (a.altText() != null && !a.altText().isEmpty()) {
+                desc = a.description().isEmpty() ? "altText=" + a.altText() : a.description();
+                final String v = a.altText();
+                // 命中 NLS（key 优先）：解析为对应语言文本后 getByAltText，支持多语言。
+                if (a.key() != null && !a.key().isEmpty()) {
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty() ? "altText[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
+                    supplier = () -> self.byNlsValue("altText", bundle.get(theKey), a.exact());
+                } else {
+                    supplier = () -> self.byAltText(v, a.exact());
+                }
+            } else if (a.title() != null && !a.title().isEmpty()) {
+                desc = a.description().isEmpty() ? "title=" + a.title() : a.description();
+                final String v = a.title();
+                if (a.key() != null && !a.key().isEmpty()) {
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty() ? "title[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
+                    supplier = () -> self.byNlsValue("title", bundle.get(theKey), a.exact());
+                } else {
+                    supplier = () -> self.byTitle(v, a.exact());
+                }
+            } else if (a.placeholder() != null && !a.placeholder().isEmpty()) {
+                desc = a.description().isEmpty() ? "placeholder=" + a.placeholder() : a.description();
+                final String v = a.placeholder();
+                if (a.key() != null && !a.key().isEmpty()) {
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty() ? "placeholder[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
+                    supplier = () -> self.byNlsValue("placeholder", bundle.get(theKey), a.exact());
+                } else {
+                    supplier = () -> self.byPlaceholder(v, a.exact());
+                }
+            } else if (a.testId() != null && !a.testId().isEmpty()) {
+                desc = a.description().isEmpty() ? "testId=" + a.testId() : a.description();
+                final String v = a.testId();
+                supplier = () -> self.byTestId(v);
+            } else if (a.i18n() != null && !a.i18n().isEmpty()) {
+                // i18n 语义定位（对齐本项目 data-i18n 约定）：属性本体即多语言 key，语言无关、最稳定。
+                // 等价 CSS 属性选择器 [data-i18n="key"]，始终精确匹配；忽略 exact（属性选择器本就精确）。
+                desc = a.description().isEmpty() ? "i18n=" + a.i18n() : a.description();
+                final String v = a.i18n();
+                final String sel = "[data-i18n=\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]";
+                supplier = () -> self.locator(sel);
+            } else if (a.label() != null && !a.label().isEmpty()) {
+                // label 语义定位（对齐 page.pause() 的 getByLabel）：按关联 label 文本定位对应控件。
+                // 与 role+name 是两条独立策略，但最终都定位到该 input 控件；label 文本本身用 text 定位。
+                desc = a.description().isEmpty() ? "label=" + a.label() : a.description();
+                final String v = a.label();
+                if (a.key() != null && !a.key().isEmpty()) {
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty() ? "label[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
+                    supplier = () -> self.byNlsValue("label", bundle.get(theKey), a.exact());
+                } else {
+                    supplier = () -> self.byLabel(v, a.exact());
+                }
+            } else if (a.text() != null && !a.text().isEmpty()) {
+                desc = a.description().isEmpty() ? "text=" + a.text() : a.description();
+                final String v = a.text();
+                if (a.key() != null && !a.key().isEmpty()) {
+                    // 命中 NLS：key 优先，解析为对应语言可见文本后按 getByText 定位，支持多语言。
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty()
+                            ? "text[nls:" + files.get(0) + "#" + theKey + "]"
+                            : a.description();
+                    supplier = () -> self.byNlsValue("text", bundle.get(theKey), a.exact());
+                } else {
+                    supplier = () -> self.byText(v, a.exact());
+                }
             } else {
-                String file = resolveRoleFile(a);
-                desc = a.description().isEmpty()
-                        ? "role=" + a.role() + "[nls:" + file + "#" + a.key() + "]"
-                        : a.description();
-                final NLSUtils.NlsBundle bundle = NLSUtils.bind(file);
-                supplier = () -> self.byRole(a.role(), bundle.get(a.key()), a.exact());
+                // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
+                // 按 getByText 定位（与 text + key 等价，但注解更简洁）。其余语义策略不会走到这里。
+                if (a.key() != null && !a.key().isEmpty()) {
+                    List<String> files = resolveRoleFiles(a);
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
+                    final String theKey = a.key();
+                    String primaryFile = files.get(0);
+                    desc = a.description().isEmpty()
+                            ? "text[nls:" + primaryFile + "#" + theKey + "]"
+                            : a.description();
+                    supplier = () -> self.byNlsValue("text", bundle.get(theKey), a.exact());
+                    field.set(this, new PageElement(supplier, desc, this));
+                    return;
+                }
+                // 角色定位
+                AriaRole role = a.role();
+                if (role == AriaRole.NONE) {
+                    throw new ElementException("RoleElement requires a role or a semantic attribute "
+                            + "(altText/title/placeholder/testId/i18n/text): " + field.getName());
+                }
+                final String literalName = a.name();
+                if (literalName != null && !literalName.isEmpty()) {
+                    // name 字面量覆盖：该元素名称不在 nls 中（页面上少数找不到 key 的元素），
+                    // 直接用字面名称定位，跳过 nls，因此该字段本身无需 @RoleFile。
+                    desc = a.description().isEmpty()
+                            ? "role=" + role + "[name:" + literalName + "]"
+                            : a.description();
+                    final String nameVal = literalName;
+                    supplier = () -> self.byRole(role, nameVal, a.exact());
+                } else {
+                    // 仅 key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
+                    String file = resolveRoleFile(a);
+                    final String theKey = a.key();
+                    desc = a.description().isEmpty()
+                            ? "role=" + role + "[nls:" + file + "#" + theKey + "]"
+                            : a.description();
+                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(file);
+                    // 懒解析（与语义路径 byNlsValue 一致）：bundle.get 放入 lambda，运行中
+                    // NLSUtils.setLanguage 切语言后再次定位可解析到新语言的可访问名。
+                    supplier = () -> {
+                        String raw = bundle.get(theKey);
+                        // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
+                        // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
+                        if (NLSUtils.isTemplate(raw)) {
+                            return self.byRole(role, NLSUtils.templatePattern(raw));
+                        }
+                        // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
+                        // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
+                        return self.byRole(role, NLSUtils.visibleText(raw), a.exact());
+                    };
+                }
             }
+
             field.set(this, new PageElement(supplier, desc, this));
         } catch (Exception e) {
-            throw new ElementException("Init NLS field failed: " + field.getName());
+            throw new ElementException("Init RoleElement field failed: " + field.getName());
         }
     }
 
@@ -215,18 +338,40 @@ public abstract class BasePage {
      * 解析 @RoleElement 字段对应的 nls 文件：优先取字段 file() 覆盖，
      * 否则回退到类级 @RoleFile；两者皆无则抛明确异常。
      */
-    private String resolveRoleFile(RoleElement a) {
+    /**
+     * 解析 @RoleElement 字段对应的 nls 文件有序列表（从主到次）。
+     * 优先取字段 file() 覆盖（可指向任意文件，含不在类级列表中的，作为单文件列表）；
+     * 否则取类级 @RoleFile 的全部 value()，并按 primary() 把主文件提到首位。
+     * 运行时按此顺序跨文件查找 key（命中即止）。
+     */
+    private List<String> resolveRoleFiles(RoleElement a) {
         if (a.file() != null && !a.file().isBlank()) {
-            return a.file();
+            return List.of(a.file());
         }
         RoleFile classFile = this.getClass().getAnnotation(RoleFile.class);
-        if (classFile == null) {
+        if (classFile == null || classFile.value().length == 0) {
             throw new ElementException("RoleElement field '" + a.key()
                     + "' needs either file() or a class-level @RoleFile on "
                     + this.getClass().getSimpleName());
         }
-        return classFile.value();
+        List<String> ordered = new ArrayList<>(Arrays.asList(classFile.value()));
+        String primary = classFile.primary();
+        if (primary != null && !primary.isBlank()) {
+            int idx = ordered.indexOf(primary);
+            if (idx > 0) {
+                ordered.remove(idx);
+                ordered.add(0, primary);
+            }
+        }
+        return ordered;
     }
+
+    /** 兼容旧用法的单文件解析：返回 {@link #resolveRoleFiles(RoleElement)} 的主文件（首个）。 */
+    private String resolveRoleFile(RoleElement a) {
+        return resolveRoleFiles(a).get(0);
+    }
+
+
 
 
     public static BasePage getCurrentPage() {
@@ -1152,11 +1297,25 @@ public abstract class BasePage {
      * @return 对应的 Playwright Locator
      */
     public Locator byRole(AriaRole role, String name) {
+        // 显式 setExact(true) 与本方法 javadoc 对齐：Playwright 的 name 匹配默认
+        // exact=false（忽略大小写子串匹配，见官方 GetByRoleOptions javadoc），不显式设置会与文档描述相反。
+        return byRole(role, name, true);
+    }
+
+    /**
+     * 按可访问性角色 + 名称正则定位元素，等价于官方 {@code GetByRoleOptions.setName(Pattern)}。
+     * 用于 NLS 模板值（含 {@code {{var}}} 占位符）编译出的正则；正则模式下 exact 被 Playwright 忽略。
+     *
+     * @param role        可访问性角色
+     * @param namePattern 可访问名称正则（通常来自 {@code NLSUtils.templatePattern(...)}）
+     * @return 对应的 Playwright Locator
+     */
+    public Locator byRole(AriaRole role, Pattern namePattern) {
         ensurePageValid();
         Frame frame = currentFrame.get();
         return (frame != null)
-                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name))
-                : page.getByRole(role, new Page.GetByRoleOptions().setName(name));
+                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(namePattern))
+                : page.getByRole(role, new Page.GetByRoleOptions().setName(namePattern));
     }
 
     /**
@@ -1221,6 +1380,163 @@ public abstract class BasePage {
         ensurePageValid();
         Frame frame = currentFrame.get();
         return (frame != null) ? frame.getByTestId(testId) : page.getByTestId(testId);
+    }
+
+    /**
+     * 按可见文本定位元素（精确匹配，大小写敏感），等价于 {@code page.getByText(text, {exact:true})}。
+     */
+    public Locator byText(String text) {
+        return byText(text, true);
+    }
+
+    /**
+     * 按可见文本定位元素，可控制是否精确匹配。
+     *
+     * @param text  可见文本
+     * @param exact true=精确匹配（大小写敏感）；false=子串/忽略大小写匹配
+     * @return 对应的 Playwright Locator
+     */
+    public Locator byText(String text, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByText(text, new Frame.GetByTextOptions().setExact(exact))
+                : page.getByText(text, new Page.GetByTextOptions().setExact(exact));
+    }
+
+    /**
+     * 按 alt 文本定位元素（精确匹配），等价于 {@code page.getByAltText(text, {exact:true})}。
+     */
+    public Locator byAltText(String altText, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByAltText(altText, new Frame.GetByAltTextOptions().setExact(exact))
+                : page.getByAltText(altText, new Page.GetByAltTextOptions().setExact(exact));
+    }
+
+    /**
+     * 按 title 属性定位元素（精确匹配），等价于 {@code page.getByTitle(title, {exact:true})}。
+     */
+    public Locator byTitle(String title, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByTitle(title, new Frame.GetByTitleOptions().setExact(exact))
+                : page.getByTitle(title, new Page.GetByTitleOptions().setExact(exact));
+    }
+
+    /**
+     * 按 placeholder 定位表单控件（精确匹配，大小写敏感），等价于 {@code page.getByPlaceholder(text, {exact:true})}。
+     */
+    public Locator byPlaceholder(String placeholder) {
+        return byPlaceholder(placeholder, true);
+    }
+
+    /**
+     * 按 placeholder 定位表单控件，可控制是否精确匹配。
+     *
+     * @param placeholder 占位文本
+     * @param exact       true=精确匹配（大小写敏感）；false=子串/忽略大小写匹配
+     * @return 对应的 Playwright Locator
+     */
+    public Locator byPlaceholder(String placeholder, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByPlaceholder(placeholder, new Frame.GetByPlaceholderOptions().setExact(exact))
+                : page.getByPlaceholder(placeholder, new Page.GetByPlaceholderOptions().setExact(exact));
+    }
+
+    /**
+     * 按关联 label 文本定位对应的表单控件（input/select/textarea 等），
+     * 等价于 Playwright 的 {@code page.getByLabel(text)}，与 page.pause() 生成的定位器对齐。
+     * <p>通过 &lt;label&gt; 可见文本 / {@code aria-labelledby} / {@code aria-label} 反查到控件；
+     * 与 {@link #byRole(AriaRole, String)}（按可访问名）是两条独立策略，但都定位到同一 input 控件。
+     * 需要单独定位 &lt;label&gt; 文本本身时，用 {@link #byText(String)}。
+     *
+     * @param label 关联 label 的可见文本
+     * @return 对应的 Playwright Locator（定位控件）
+     */
+    public Locator byLabel(String label) {
+        return byLabel(label, true);
+    }
+
+    /**
+     * 按关联 label 文本定位表单控件，可控制是否精确匹配，等价于 {@code page.getByLabel(text, {exact})}。
+     *
+     * @param label 关联 label 的可见文本
+     * @param exact true=精确匹配（大小写敏感）；false=子串 / 忽略大小写匹配
+     * @return 对应的 Playwright Locator（定位控件）
+     */
+    public Locator byLabel(String label, boolean exact) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null)
+                ? frame.getByLabel(label, new Frame.GetByLabelOptions().setExact(exact))
+                : page.getByLabel(label, new Page.GetByLabelOptions().setExact(exact));
+    }
+
+    // ===== 模板变量（{{var}}）正则定位重载 =====
+    // 当 nls 值含模板变量时，用正则 Pattern 匹配“被页面注入真实值后的可见文本”。
+
+    public Locator byText(Pattern text) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByText(text) : page.getByText(text);
+    }
+
+    public Locator byAltText(Pattern altText) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByAltText(altText) : page.getByAltText(altText);
+    }
+
+    public Locator byTitle(Pattern title) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByTitle(title) : page.getByTitle(title);
+    }
+
+    public Locator byPlaceholder(Pattern placeholder) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByPlaceholder(placeholder) : page.getByPlaceholder(placeholder);
+    }
+
+    public Locator byLabel(Pattern label) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        return (frame != null) ? frame.getByLabel(label) : page.getByLabel(label);
+    }
+
+    /**
+     * 按 nls 解析后的文本值定位：若值含模板变量（{{var}}），用正则 {@link Pattern} 匹配注入真实值后的可见文本；
+     * 否则走普通字面定位。供 {@code @RoleElement(key=...)} 的语义 / key-only 分支统一调用。
+     */
+    private Locator byNlsValue(String attr, String resolvedValue, boolean exact) {
+        Pattern p = NLSUtils.isTemplate(resolvedValue) ? NLSUtils.templatePattern(resolvedValue) : null;
+        if (p != null) {
+            switch (attr) {
+                case "altText":     return byAltText(p);
+                case "title":       return byTitle(p);
+                case "placeholder": return byPlaceholder(p);
+                case "label":       return byLabel(p);
+                case "text":
+                default:            return byText(p);
+            }
+        }
+        // 非模板值若内嵌 HTML/实体（<a>/<strong>/<img>/&nbsp; 等），必须按可见文本定位，
+        // 与浏览器渲染后的实际文本对齐（否则如 tab_security_device 这类值会匹配失败）。
+        String visible = NLSUtils.visibleText(resolvedValue);
+        switch (attr) {
+            case "altText":     return byAltText(visible, exact);
+            case "title":       return byTitle(visible, exact);
+            case "placeholder": return byPlaceholder(visible, exact);
+            case "label":       return byLabel(visible, exact);
+            case "text":
+            default:            return byText(visible, exact);
+        }
     }
 
     public void keyDown(String selector, String key) {

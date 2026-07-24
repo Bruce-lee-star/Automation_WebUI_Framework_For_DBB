@@ -89,8 +89,8 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
-            return documentContext.read("$", typeRef);
+            // JsonPath 默认的 JsonSmartMappingProvider 不支持 TypeRef，直接用 Jackson 反序列化
+            return OBJECT_MAPPER.readValue(json, OBJECT_MAPPER.getTypeFactory().constructType(typeRef.getType()));
         } catch (Exception e) {
             LOGGER.error("JSON转对象失败: {}", e.getMessage(), e);
             return null;

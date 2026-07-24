@@ -398,6 +398,14 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public Locator byRole(AriaRole role) { return recordAndReturn("byRole", role, () -> super.byRole(role)); }
     @Override public Locator byTitle(String title) { return recordAndReturn("byTitle", title, () -> super.byTitle(title)); }
     @Override public Locator byTestId(String testId) { return recordAndReturn("byTestId", testId, () -> super.byTestId(testId)); }
+    @Override public Locator byText(String text) { return recordAndReturn("byText", text, () -> super.byText(text)); }
+    @Override public Locator byText(String text, boolean exact) { return recordAndReturn("byText", text, () -> super.byText(text, exact)); }
+    @Override public Locator byAltText(String text, boolean exact) { return recordAndReturn("byAltText", text, () -> super.byAltText(text, exact)); }
+    @Override public Locator byTitle(String title, boolean exact) { return recordAndReturn("byTitle", title, () -> super.byTitle(title, exact)); }
+    @Override public Locator byPlaceholder(String placeholder) { return recordAndReturn("byPlaceholder", placeholder, () -> super.byPlaceholder(placeholder)); }
+    @Override public Locator byPlaceholder(String placeholder, boolean exact) { return recordAndReturn("byPlaceholder", placeholder, () -> super.byPlaceholder(placeholder, exact)); }
+    @Override public Locator byLabel(String label) { return recordAndReturn("byLabel", label, () -> super.byLabel(label)); }
+    @Override public Locator byLabel(String label, boolean exact) { return recordAndReturn("byLabel", label, () -> super.byLabel(label, exact)); }
 
     // --- Frame ---
     @Override public Frame getFrame(String name) { return recordAndReturn("getFrame", name, () -> super.getFrame(name)); }

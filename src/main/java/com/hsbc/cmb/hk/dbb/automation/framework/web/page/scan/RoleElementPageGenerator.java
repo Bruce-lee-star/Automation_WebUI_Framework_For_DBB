@@ -40,11 +40,16 @@ public final class RoleElementPageGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(RoleElementPageGenerator.class);
 
-    /** 按 role 给字段名加语义后缀（与设计文档 §6 一致） */
-    private static final Map<String, String> ROLE_SUFFIX = Map.of(
-            "button", "Btn", "link", "Link", "checkbox", "Chk", "radio", "Radio",
-            "combobox", "Combo", "listbox", "List", "slider", "Slider",
-            "switch", "Switch", "tab", "Tab", "menuitem", "MenuItem"
+    /** 按 role 给字段名加语义后缀（与设计文档 §6 一致）；文本框类角色记 Input，与 label/placeholder 区分。
+     *  用 ofEntries 而非 of：of 最多 10 对（20 参数），此处已超，ofEntries 无此上限。 */
+    private static final Map<String, String> ROLE_SUFFIX = Map.ofEntries(
+            Map.entry("button", "Btn"), Map.entry("link", "Link"),
+            Map.entry("checkbox", "Chk"), Map.entry("radio", "Radio"),
+            Map.entry("combobox", "Combo"), Map.entry("listbox", "List"),
+            Map.entry("slider", "Slider"), Map.entry("switch", "Switch"),
+            Map.entry("tab", "Tab"), Map.entry("menuitem", "MenuItem"),
+            Map.entry("textbox", "Input"), Map.entry("searchbox", "Input"),
+            Map.entry("spinbutton", "Input")
     );
 
     private RoleElementPageGenerator() {}
@@ -129,25 +134,26 @@ public final class RoleElementPageGenerator {
      * @param nlsFile       类级 {@code @RoleFile} 路径
      * @return 完整 Java 类源码
      */
-    public static String generate(Page page, String packageName, String pageClassName, String nlsFile) {
+    public static String generate(Page page, String packageName, String pageClassName, String... nlsFiles) {
         List<RoleEntry> entries = collectFromPage(page);
         if (entries.isEmpty()) {
             return "// no interactive elements collected (page may not be ready)\n";
         }
-        return generate(entries, packageName, pageClassName, nlsFile);
+        return generate(entries, packageName, pageClassName, nlsFiles);
     }
 
     /** 把整页生成的 Page 类源码打印到日志，便于直接复制 */
-    public static void dump(Page page, String packageName, String pageClassName, String nlsFile) {
+    public static void dump(Page page, String packageName, String pageClassName, String... nlsFiles) {
         log.info("\n========== Generated Page class ==========\n{}",
-                generate(page, packageName, pageClassName, nlsFile));
+                generate(page, packageName, pageClassName, nlsFiles));
     }
 
     /** 把整页生成的 Page 类源码写入文件（outputDir 为源码根，如 src/test/java） */
     public static void write(Page page, String outputDir, String packageName,
-                             String pageClassName, String nlsFile) {
-        write(generate(page, packageName, pageClassName, nlsFile),
-                outputDir, packageName, pageClassName, nlsFile);
+                             String pageClassName, String... nlsFiles) {
+        write(generate(page, packageName, pageClassName, nlsFiles),
+                outputDir, packageName, pageClassName,
+                nlsFiles.length > 0 ? nlsFiles[0] : "");
     }
 
     // ------------------------------------------------------------------
@@ -165,19 +171,34 @@ public final class RoleElementPageGenerator {
      * @return 完整 Java 类源码
      */
     public static String generate(List<RoleEntry> entries, String packageName,
-                                  String pageClassName, String nlsFile) {
+                                  String pageClassName, String... nlsFiles) {
         StringBuilder fields = new StringBuilder();
         Set<String> usedNames = new HashSet<>();
-        boolean hasRole = false;
-        boolean hasSelector = false;
+        Set<String> seenLocators = new HashSet<>();
+        boolean hasRole = false;          // 任意 @RoleElement 字段（角色或语义）
+        boolean hasAriaRole = false;      // 角色策略字段（需 import AriaRole 常量）
+        boolean hasElement = false;
         int idx = 0;
         for (RoleEntry e : entries) {
+            if (!isValidEntry(e)) continue;                 // 跳过无效条目
+            String sig = locatorKey(e);
+            if (!seenLocators.add(sig)) continue;           // 同一定位器只生成一次字段（避免重复点选同一元素）
             if (e.isRoleStrategy()) {
-                if (e.getRole() == null) continue;
                 hasRole = true;
+                hasAriaRole = true;
             } else {
-                if (e.getSelector() == null || e.getSelector().isBlank()) continue;
-                hasSelector = true;
+                switch (e.getStrategy()) {
+                    case "text":
+                    case "altText":
+                    case "title":
+                    case "placeholder":
+                    case "testid":
+                    case "label":
+                    case "i18n":
+                        hasRole = true; break;   // 语义字段也归类于 @RoleElement
+                    default:
+                        hasElement = true; break;   // id / css 等纯 CSS/XPath
+                }
             }
             appendField(e, idx, usedNames, fields);
             idx++;
@@ -185,11 +206,11 @@ public final class RoleElementPageGenerator {
 
         // 按需构建 import：只有存在对应字段类型时才引入，避免未使用的 import。
         StringBuilder imports = new StringBuilder();
-        if (hasRole) {
-            imports.append("import com.microsoft.playwright.AriaRole;\n\n");
+        if (hasAriaRole) {
+            imports.append("import com.microsoft.playwright.options.AriaRole;\n\n");
         }
         imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;\n");
-        if (hasSelector) {
+        if (hasElement) {
             imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;\n");
         }
         if (hasRole) {
@@ -199,17 +220,24 @@ public final class RoleElementPageGenerator {
         imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;\n");
 
         // 只有存在 @RoleElement 字段时才需要类级 @RoleFile（NLS 文件）。
-        String classAnnotation = hasRole ? "@RoleFile(\"" + nlsFile + "\")\n" : "";
-        String nlsNote = hasRole
-                ? " * 其中 @RoleElement 字段的 key 需与 nls 文件 " + nlsFile + " 的语言表对齐。\n"
-                : "";
+        // 支持一页面对应多个 nls 文件：单文件生成 @RoleFile("x")，多文件生成 @RoleFile({"a","b"})。
+        String classAnnotation = "";
+        if (hasRole && nlsFiles != null && nlsFiles.length > 0) {
+            if (nlsFiles.length == 1) {
+                classAnnotation = "@RoleFile(\"" + escapeJava(nlsFiles[0]) + "\")\n";
+            } else {
+                StringBuilder sb = new StringBuilder("@RoleFile({");
+                for (int i = 0; i < nlsFiles.length; i++) {
+                    if (i > 0) sb.append(", ");
+                    sb.append('"').append(escapeJava(nlsFiles[i])).append('"');
+                }
+                sb.append("})\n");
+                classAnnotation = sb.toString();
+            }
+        }
 
         return "package " + packageName + ";\n\n"
                 + imports + "\n"
-                + "/**\n"
-                + " * @Generated 自动生成草稿（基于 page.pause() 风格的定位策略链）。请人工 review 后再合入主干。\n"
-                + nlsNote
-                + " */\n"
                 + classAnnotation
                 + "public class " + pageClassName + " extends BasePage {\n\n"
                 + fields
@@ -218,16 +246,17 @@ public final class RoleElementPageGenerator {
 
     /** 把条目列表生成的 Page 类源码打印到日志，便于直接复制 */
     public static void dump(List<RoleEntry> entries, String packageName,
-                            String pageClassName, String nlsFile) {
+                            String pageClassName, String... nlsFiles) {
         log.info("\n========== Generated Page class ==========\n{}",
-                generate(entries, packageName, pageClassName, nlsFile));
+                generate(entries, packageName, pageClassName, nlsFiles));
     }
 
     /** 把条目列表生成的 Page 类写入文件（outputDir 为源码根，如 src/test/java） */
     public static void write(List<RoleEntry> entries, String outputDir, String packageName,
-                             String pageClassName, String nlsFile) {
-        write(generate(entries, packageName, pageClassName, nlsFile),
-                outputDir, packageName, pageClassName, nlsFile);
+                             String pageClassName, String... nlsFiles) {
+        write(generate(entries, packageName, pageClassName, nlsFiles),
+                outputDir, packageName, pageClassName,
+                nlsFiles.length > 0 ? nlsFiles[0] : "");
     }
 
     // ------------------------------------------------------------------
@@ -278,9 +307,11 @@ public final class RoleElementPageGenerator {
         }
     }
 
-    /** 按 strategy 给非角色字段命名加语义后缀 */
+    /** 按 strategy 给非角色字段命名加语义后缀，使不同定位策略产出可区分的字段名：
+     *  label → Label、placeholder → Input、text → Text、altText → Img、title → Title、testid → TestId */
     private static final Map<String, String> STRATEGY_SUFFIX = Map.of(
-            "placeholder", "Input", "altText", "Img"
+            "placeholder", "Input", "label", "Label", "altText", "Img",
+            "text", "Text", "title", "Title", "testid", "TestId", "i18n", "I18n"
     );
 
     private static void appendField(RoleEntry e, int idx, Set<String> used, StringBuilder fields) {
@@ -303,46 +334,74 @@ public final class RoleElementPageGenerator {
         String fieldBase = matched ? resolvedKey : name;
         String field = toFieldName(fieldBase, role, idx, used);       // SignInBtn
 
-        StringBuilder comment = new StringBuilder("    // role=").append(role);
-        if (name != null) comment.append(" name=\"").append(name).append("\"");
-        if (matched) comment.append(" key=\"").append(resolvedKey).append("\" (nls 反查命中)");
-        if (e.getTag() != null) comment.append(" <").append(e.getTag()).append(">");
-        if (!roleConst.equals(role == null ? "" : role.toUpperCase(Locale.ROOT))) {
-            comment.append(" (→ AriaRole.").append(roleConst).append(")");
-        }
-        fields.append(comment).append('\n');
         if (matched) {
             fields.append("    @RoleElement(role = AriaRole.")
                   .append(roleConst)
-                  .append(", key = \"").append(escapeJava(resolvedKey)).append("\")").append('\n');
+                  .append(", key = \"").append(escapeJava(resolvedKey)).append("\"");
+            if (e.isCleaned()) fields.append(", exact = false");
+            fields.append(")").append('\n');
         } else {
             // 未反查到 nls key：以字面名称定位，新增 name 属性，无需 nls 文件。
             fields.append("    @RoleElement(role = AriaRole.")
                   .append(roleConst)
-                  .append(", name = \"").append(name == null ? "" : escapeJava(name)).append("\")").append('\n');
+                  .append(", name = \"").append(name == null ? "" : escapeJava(name)).append("\"");
+            if (e.isCleaned()) fields.append(", exact = false");
+            fields.append(")").append('\n');
         }
         fields.append("    public PageElement ").append(field).append(";\n\n");
     }
 
-    /** text / testid / placeholder / altText / title / id / css → {@code @Element}（Playwright 字符串选择器） */
+    /** 按 strategy 生成对应的定位注解（对齐 page.pause() 优先级链）。
+     *  text/altText/title/placeholder/testid 均落到统一的 {@code @RoleElement(attr="...")}；
+     *  仅 id/css 这类纯 CSS/XPath 才落到 {@code @Element}（@Element 仅支持 CSS/XPath）。 */
     private static void appendSelectorField(RoleEntry e, int idx, Set<String> used, StringBuilder fields) {
         String strategy = e.getStrategy();
-        String selector = e.getSelector();
-        // 字段命名基准：优先用 name（text/placeholder/alt/title 等），否则用选择器可读片段
-        String label = (e.getName() != null && !e.getName().isBlank())
-                ? e.getName()
-                : selectorLabel(strategy, selector);
+        // 命中 nls 反查则用真实 key 作字段命名基准（更有语义），否则回退到 name/选择器片段
+        String resolvedKey = e.getResolvedKey();
+        boolean matched = resolvedKey != null && !resolvedKey.isBlank();
+        String base = matched ? resolvedKey
+                : ((e.getName() != null && !e.getName().isBlank())
+                    ? e.getName()
+                    : selectorLabel(strategy, e.getSelector()));
         String suffix = STRATEGY_SUFFIX.getOrDefault(strategy, "");
-        String field = toFieldNameWithSuffix(label, suffix, idx, used);
+        String field = toFieldNameWithSuffix(base, suffix, idx, used);
 
-        StringBuilder comment = new StringBuilder("    // strategy=").append(strategy);
-        if (e.getName() != null && !e.getName().isBlank()) {
-            comment.append(" name=\"").append(e.getName()).append("\"");
+        String annotation;
+        switch (strategy) {
+            case "text":
+            case "altText":
+            case "title":
+            case "placeholder":
+            case "label":
+                // 命中 NLS：仅输出 key（运行时统一按 getByText(key 解析) 兜底）；未命中：仅输出字面量。
+                // 不混用 key 与语义属性，避免歧义；attr 名称仅用于命名/可读性参考。
+                if (matched) {
+                    // 非精确命中（前缀/子串/模板，或 name 含装饰性提示）须子串匹配：
+                    // 运行时 byText/byLabel/... 以 exact=false 兜底，否则会因文案比真实可访问名短而定位失败。
+                    String ann = "@RoleElement(key = \"" + escapeJava(resolvedKey) + "\"";
+                    if (e.isCleaned()) ann += ", exact = false";
+                    ann += ")";
+                    annotation = ann;
+                } else {
+                    String attr = strategy;
+                    String lit = e.getName();
+                    annotation = "@RoleElement(" + attr + " = " + toJavaStringLiteral(lit) + ")";
+                }
+                break;
+            case "testid":
+                annotation = "@RoleElement(testId = " + toJavaStringLiteral(e.getName()) + ")";
+                break;
+            case "i18n":
+                annotation = "@RoleElement(i18n = " + toJavaStringLiteral(e.getName()) + ")";
+                break;
+            case "id":
+            case "css":
+            default:
+                annotation = "@Element(" + toJavaStringLiteral(e.getSelector()) + ")";
+                break;
         }
-        if (e.getTag() != null) comment.append(" <").append(e.getTag()).append(">");
-        if ("css".equals(strategy)) comment.append(" (TODO：兜底 css 路径，请人工确认稳定性)");
-        fields.append(comment).append('\n');
-        fields.append("    @Element(").append(toJavaStringLiteral(selector)).append(")\n");
+
+        fields.append("    ").append(annotation).append('\n');
         fields.append("    public PageElement ").append(field).append(";\n\n");
     }
 
@@ -376,7 +435,7 @@ public final class RoleElementPageGenerator {
         if (base.isEmpty()) {
             base = "element" + idx;
         }
-        base = base.substring(0, 1).toUpperCase() + base.substring(1);
+        // camelCase 字段名（首字母小写）：base 已为 lowerCamel，直接拼后缀
         String candidate = base + suffix;
         String unique = candidate;
         int n = 2;
@@ -387,7 +446,9 @@ public final class RoleElementPageGenerator {
         return unique;
     }
 
-    /** name → 标识符：camel=true 输出 lowerCamelCase，否则输出下划线 slug（小写） */
+    /** name → 标识符：camel=true 输出 lowerCamelCase，否则输出下划线 slug（小写）。
+     *  特殊字符（标点、符号、空白等）一律丢弃并作为单词边界；仅保留字母/数字/_/$。
+     *  保证结果是合法 Java 标识符：非空，且首字符为合法起始（前导数字或残留特殊字符时前置 Field）。 */
     private static String toIdentifier(String name, int idx, boolean camel) {
         if (name == null || name.isBlank()) {
             return (camel ? "element" : "element_") + idx;
@@ -406,12 +467,21 @@ public final class RoleElementPageGenerator {
             }
         }
         String s = sb.toString().replaceAll("_+", camel ? "" : "_").replaceAll("^_|_$", "");
-        return s.isEmpty() ? ((camel ? "element" : "element_") + idx) : s;
+        // 防特殊字符残留：仅保留合法 Java 标识符字符（字母/数字/_/$）
+        s = s.replaceAll("[^\\p{L}\\p{N}_$]", "");
+        if (s.isEmpty()) {
+            return (camel ? "element" : "element_") + idx;
+        }
+        // 合法 Java 标识符不能以数字或特殊字符开头：前置 Field 修正（如 1MarSun → Field1MarSun）
+        if (!Character.isJavaIdentifierStart(s.charAt(0))) {
+            s = "Field" + s;
+        }
+        return s;
     }
 
     private static String toFieldName(String name, String role, int idx, Set<String> used) {
-        String base = toIdentifier(name, idx, true);          // signIn
-        base = base.substring(0, 1).toUpperCase() + base.substring(1); // SignIn
+        String base = toIdentifier(name, idx, true);          // userName（lowerCamel）
+        // camelCase 字段名（首字母小写）：base 已为 lowerCamel，直接拼后缀
         String suffix = ROLE_SUFFIX.getOrDefault(role.toLowerCase(Locale.ROOT), "");
         String candidate = base + suffix;
         String unique = candidate;
@@ -421,6 +491,33 @@ public final class RoleElementPageGenerator {
         }
         used.add(unique);
         return unique;
+    }
+
+    /** 条目是否可生成字段：role 策略需有 role；其余策略需有非空选择器 */
+    private static boolean isValidEntry(RoleEntry e) {
+        if (e == null) return false;
+        if (e.isRoleStrategy()) {
+            return e.getRole() != null && !e.getRole().isBlank();
+        }
+        return e.getSelector() != null && !e.getSelector().isBlank();
+    }
+
+    /** 定位器签名：相同签名视为同一定位器，生成时去重。
+     *  role 策略按 role+name/key；语义策略按 strategy+name；id/css 按 strategy+selector。 */
+    private static String locatorKey(RoleEntry e) {
+        if (e.isRoleStrategy()) {
+            String role = (e.getRole() == null ? "" : e.getRole()).toLowerCase(Locale.ROOT);
+            String name = e.getName() == null ? "" : e.getName();
+            String key = (e.getResolvedKey() != null && !e.getResolvedKey().isBlank())
+                    ? e.getResolvedKey() : name;
+            return "role:" + role + ":" + key;
+        }
+        String strategy = e.getStrategy() == null ? "" : e.getStrategy();
+        if ("id".equals(strategy) || "css".equals(strategy)) {
+            return strategy + ":" + (e.getSelector() == null ? "" : e.getSelector());
+        }
+        String name = e.getName() == null ? "" : e.getName();
+        return strategy + ":" + name;
     }
 
     private static String asString(Object o) {

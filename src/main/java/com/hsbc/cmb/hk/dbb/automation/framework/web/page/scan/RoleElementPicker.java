@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,14 +55,8 @@ public final class RoleElementPicker {
               window.__rolePicks = window.__rolePicks || [];
               window.__pickDone = false;
 
-              var banner = document.createElement('div');
-              banner.id = '__rolePickBanner';
-              banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;' +
-                'background:#1e88e5;color:#fff;font:14px/1.6 monospace;padding:8px 12px;' +
-                'box-shadow:0 2px 6px rgba(0,0,0,.3);text-align:center;cursor:default;pointer-events:none;';
-              banner.textContent = 'RoleElement Picker：点击元素拾取 role/name，按 ESC 结束';
-              (document.body || document.documentElement).appendChild(banner);
-              window.__rolePickBanner = banner;
+              // 拾取提示与计数不再用左下角独立控件，而是写入主面板标题状态条（#__roleStatus），
+              // 由 openPanel(...) 的常驻面板呈现（见 PANEL_SCRIPT 与 __rolePickClick）。
 
               // ============================================================================
               // Playwright 注入脚本 roleUtils.ts 算法的忠实移植（getAriaRole + getElementAccessibleName）
@@ -445,10 +440,16 @@ public final class RoleElementPicker {
                 if (allowsNameFromContent(role, options.embeddedInTargetElement === 'descendant') || options.embeddedInLabelledBy !== 'none' || options.embeddedInLabel !== 'none' || options.embeddedInTextAlternativeElement) {
                   options.visitedElements.add(element);
                   var tokens = [];
-                  tokens.push(getPseudoContent(getPseudo(element, '::before')));
+                  // 生成定位 name 时（includeAdvisory=false）忽略装饰性伪元素内容，
+                  // 否则“ (opens in a new window)”等提示会被算进 name，与可见文本不一致。
+                  tokens.push(options.includeAdvisory ? getPseudoContent(getPseudo(element, '::before')) : '');
+                  // aria-describedby 指向的是“描述”而非“名称”，其引用的后代不应计入可访问名，
+                  // 否则描述文本会污染定位用 name（与 Playwright getByRole 行为对齐）。
+                  var descRefs = options.includeAdvisory ? [] : getIdRefs(element, element.getAttribute('aria-describedby'));
                   var child = element.firstChild;
                   while (child) {
                     if (child.nodeType === 1) {
+                      if (descRefs.indexOf(child) !== -1) { child = child.nextSibling; continue; }
                       var cs = getComputedStyleSafe(child);
                       var d = cs ? (cs.display || 'inline') : 'inline';
                       var tk = getElementAccessibleNameInternal(child, childOptions);
@@ -459,7 +460,7 @@ public final class RoleElementPicker {
                     }
                     child = child.nextSibling;
                   }
-                  tokens.push(getPseudoContent(getPseudo(element, '::after')));
+                  tokens.push(options.includeAdvisory ? getPseudoContent(getPseudo(element, '::after')) : '');
                   var name = tokens.join('');
                   if (name.trim()) return name;
                 }
@@ -471,16 +472,23 @@ public final class RoleElementPicker {
                 options.visitedElements.add(element);
                 return '';
               }
-              function getElementAccessibleName(element) {
+              function getElementAccessibleName(element, includeAdvisory) {
                 var role = getAriaRole(element) || '';
                 if (kProhibitName.indexOf(role) !== -1) return '';
                 return normalizeAccessibleName(getElementAccessibleNameInternal(element, {
                   includeHidden: false, visitedElements: new Set(),
                   embeddedInLabelledBy: 'none', embeddedInLabel: 'none',
-                  embeddedInTextAlternativeElement: false, embeddedInTargetElement: 'self'
+                  embeddedInTextAlternativeElement: false, embeddedInTargetElement: 'self',
+                  includeAdvisory: (includeAdvisory !== false)
                 }));
               }
-              function getName(el) { return getElementAccessibleName(el); }
+              // 返回 {name, cleaned}：name 为剔除装饰性伪元素/描述文本后的干净可见文本；
+              // cleaned=true 表示原 name 含被剔除的提示性文本，生成 @RoleElement 时需用 exact=false 子串匹配。
+              function getNameInfo(el) {
+                var clean = getElementAccessibleName(el, false);
+                var raw = getElementAccessibleName(el, true);
+                return { name: clean, cleaned: (clean !== raw) };
+              }
 
               // 无语义角色：这类元素通常不是用户想捕获的“控件”，应向上回溯
               var NON_ROLE = { generic:1, none:1, presentation:1 };
@@ -522,15 +530,26 @@ public final class RoleElementPicker {
               }
 
               // ============================================================================
-              // 定位策略链（忠实对齐 page.pause() 代码生成的优先级）：
-              //   1. 交互角色祖先 → role + name（生成 @RoleElement，保留 NLS 多语言）
-              //   2. data-testid  → [data-testid="..."]
-              //   3. 表单控件 placeholder → [placeholder="..."]；无则稳定 id
-              //   4. 短文本 → getByText（text="..."）
-              //   5. img/area 的 alt → [alt="..."]
-              //   6. title → [title="..."]
-              //   7. 稳定 id → #id
-              //   8. 兜底 → css 路径（needsReview）
+              // 定位策略链（忠实对齐 page.pause() 的 selectorGenerator 打分序，分低者优先）：
+              //   testId(1) < placeholder(100) < label(120) < role+name(140)
+              //     < altText(160) < text(180) < title(200) < css #id(500) < css 兜底
+              // 算法分两步（与 recorder 一致）：
+              //   ① 重定位：label → 关联控件；再向上回溯（≤5 层）找交互角色祖先，
+              //      点按钮内文字/图标时抓按钮本身；
+              //   ② 在重定位后的目标元素上按打分序依次尝试候选：
+              //      1. data-testid 族        → getByTestId
+              //      2. INPUT/TEXTAREA 的 placeholder → getByPlaceholder（pause 仅对这两类标签）
+              //      3. 表单控件原生关联 label → getByLabel（先于 role+name，打分 120 < 140）
+              //         注：仅“直接点击控件”时生效；若点是 <label> 本身（被 resolveLabel 重定位成控件），
+              //         则跳过此步回退到 ④ role+name，避免 label 与 input 产出同一种 label 策略。
+              //      4. 交互角色 + 可访问名    → getByRole（生成 @RoleElement，保留 NLS 多语言）
+              //      4.5 非交互元素的 data-i18n 多语言 key → @RoleElement(i18n=...)（本项目扩展，仅在上方
+              //          role+name 未命中时生效：交互控件已走 role，这里专补 generic span/div 等稳定定位）
+              //      5. IMG/AREA 的 alt        → getByAltText（pause 中先于 text，160 < 180）
+              //      6. 可见文本（≤80 字符，pause 截断阈值）→ getByText
+              //      7. title                  → getByTitle
+              //      8. 稳定 id                → #id（500 分，必须排在语义候选之后）
+              //      9. 兜底                   → css 路径（needsReview）
               // 仅返回“原始片段”（strategy/role/name/attr/value/id/css），
               // 由 Java 侧负责拼接并转义选择器字符串，避免在 Java 文本块里处理引号转义。
               // ============================================================================
@@ -539,72 +558,215 @@ public final class RoleElementPicker {
               function normName(s) {
                 return (s || '').replace(/\\r\\n/g, '\\n').replace(/\\u00A0/g, ' ').replace(/\\s+/g, ' ').trim();
               }
+              // 用规范化后的可见文本在预加载的 window.__nlsReverse 里反查 nls key；
+              // 命中返回 {key, exact}：exact=true 表示 name 与 nls 值完全一致（精确匹配即可定位），
+              // exact=false 表示经前缀/子串/模板命中（运行时须子串匹配，否则会因 name 比真实可访问名
+              // 短/长而定位失败，如按钮文案 "Log out" 命中短标签 key "Log"）。
+              function nlsKeyInfo(s) {
+                if (!s) return { key: null, exact: false };
+                var sn = normName(s);
+                // 1) 精确反查（无模板变量的值）
+                if (window.__nlsReverse && sn) {
+                  var k = window.__nlsReverse[sn] || null;
+                  if (k && k.trim()) return { key: k.trim(), exact: true };
+                }
+                // 1.5) 前缀反查：a11y name 常是「短标签 + 空格 + 其余内容」复合串
+                //      （典型如页脚链接：可见短标签 "Hyperlink Policy" 在 NLS 中作为
+                //      "Hyperlink Policy footer" 的 value 存在）。取「最长且为 name 前缀」
+                //      的精确表值，用其 key —— 运行时按该短值做子串匹配即可定位，
+                //      避免回退成拼接字面 name（如 "Hyperlink Policy Hyperlink ..."）。
+                if (window.__nlsReverse && sn) {
+                  var preKey = null, preLen = -1;
+                  for (var vk in window.__nlsReverse) {
+                    if (!Object.prototype.hasOwnProperty.call(window.__nlsReverse, vk)) continue;
+                    var v = vk, kk = window.__nlsReverse[vk];
+                    if (!v || !kk || !v.length) continue;
+                    if (sn.indexOf(v) === 0 && v.length > preLen) { preLen = v.length; preKey = kk; }
+                  }
+                  if (preKey && preKey.trim()) return { key: preKey.trim(), exact: false };
+                }
+                // 1.6) 子串反查（兜底）：name 中部包含某精确表值（非前缀，避免与 1.5 重复），
+                //      取最长匹配者，用于「说明文本包住短标签」等其它复合形态。
+                if (window.__nlsReverse && sn) {
+                  var subKey = null, subLen = -1;
+                  for (var vk in window.__nlsReverse) {
+                    if (!Object.prototype.hasOwnProperty.call(window.__nlsReverse, vk)) continue;
+                    var v = vk, kk = window.__nlsReverse[vk];
+                    if (!v || !kk || !v.length) continue;
+                    var p = sn.indexOf(v);
+                    if (p > 0 && v.length > subLen) { subLen = v.length; subKey = kk; }
+                  }
+                  if (subKey && subKey.trim()) return { key: subKey.trim(), exact: false };
+                }
+                // 2) 模板反查：遍历 window.__nlsTemplates（[[正则源, key], ...]），
+                //    用归一化后的可见文本测试正则，命中取「字面前缀最长」者（更具体，避免误配短模板）。
+                //    模板值含通配 (.*?)，永远非精确。
+                if (window.__nlsTemplates && window.__nlsTemplates.length) {
+                  var txt = normName(s);
+                  var best = null, bestLen = -1;
+                  for (var i = 0; i < window.__nlsTemplates.length; i++) {
+                    var re = window.__nlsTemplates[i];
+                    if (!re || !re[0]) continue;
+                    try {
+                      if (new RegExp(re[0]).test(txt)) {
+                        var litLen = re[0].replace(/\\(\\.\\*\\?\\)/g, '').length;
+                        if (litLen > bestLen) { bestLen = litLen; best = re[1]; }
+                      }
+                    } catch (e) {}
+                  }
+                  if (best) return { key: best, exact: false };
+                }
+                return { key: null, exact: false };
+              }
+              // 关联 label 文本（对齐 pause buildNoTextCandidates：仅 INPUT/TEXTAREA/SELECT 的
+              // 原生关联 label（for/包裹），取第一个，归一化后截断 80）。aria-label 不在此列——
+              // 它已进入可访问名，由 role+name 候选表达。
+              function labelTextOf(el) {
+                var tg = (el.tagName || '').toLowerCase();
+                if (tg !== 'input' && tg !== 'textarea' && tg !== 'select') return '';
+                try {
+                  var labels = el.labels;
+                  if (labels && labels.length) {
+                    var s = normName(labels[0].textContent || '');
+                    if (s) return s.slice(0, 80);
+                  }
+                } catch (e) {}
+                return '';
+              }
               window.__computePick = function(t) {
+                // ① 重定位（对齐 recorder retarget）：label → 控件；向上找交互角色祖先
+                // originalIsLabel 标记“用户点的是 <label> 本身”而非直接点控件——
+                // 此时应解析到控件后走 role+name（见 resolveLabel 注释“role + name=标签文本”），
+                // 不能再用 getByLabel，否则 label 与 input 会产出同一种 label 策略。
+                var originalIsLabel = !!(t && t.tagName === 'LABEL');
+                var el = resolveLabel(t);
                 var cur = t, guard = 0;
                 while (cur && guard++ < 5) {
                   var node = resolveLabel(cur);
-                  var r = (getRole(node) || '').toLowerCase();
-                  if (INTERACTIVE_ROLES[r]) {
-                    var nm = getName(node);
-                    if (nm) {
-                      // 反查 nls key：用归一化后的 name 在预加载的 window.__nlsReverse 里查表。
-                      // 命中则直接用真实 key（@RoleElement 复用既有 nls 多语言表），未命中则留空回退 slug。
-                      var key = null;
-                      if (window.__nlsReverse) { key = window.__nlsReverse[normName(nm)] || null; }
-                      return { strategy:'role', role:r, name:nm, key:key, matched: !!key,
-                        tag:(node.tagName || '').toLowerCase(),
-                        text: ownVisibleText(node).slice(0, 120) };
-                    }
-                    break;   // 命中交互角色但无名称：不再向上找，转由下方策略处理
-                  }
+                  if (INTERACTIVE_ROLES[(getRole(node) || '').toLowerCase()]) { el = node; break; }
                   cur = cur.parentElement;
                 }
-                var el = t;
                 var tag = (el.tagName || '').toLowerCase();
                 function done(o) {
                   o.tag = tag;
                   o.text = ownVisibleText(el).slice(0, 120);
+                  // 可见文本类语义策略（text/altText/title/placeholder/label）做 NLS 反查：
+                  // 命中则仅带 key（生成 @RoleElement(key=...)），未命中则字面文本。
+                  // 注意：key-only 在运行时统一按 getByText(key 解析) 兜底（用户已接受该降级）。
+                  // role 策略在上方已自行反查，不走这里。
+                  var KEY_ONLY = { text:1, altText:1, title:1, placeholder:1, label:1 };
+                  if (KEY_ONLY[o.strategy]) {
+                    var ki = nlsKeyInfo(o.name);
+                    o.key = ki.key;
+                    o.matched = !!(o.key);
+                    // 非精确命中（前缀/子串/模板）：运行时须按子串匹配才能定位，
+                    // 否则按钮文案 "Log out" 命中短标签 key "Log" 时精确匹配会找不到。
+                    o.cleaned = !ki.exact;
+                  }
                   return o;
                 }
+                // ② 按 pause 打分序出候选
+                // 1. testId（打分 1，最优）
                 var testAttrs = ['data-testid','data-test-id','data-test','data-qa'];
                 for (var i = 0; i < testAttrs.length; i++) {
                   var tv = el.getAttribute(testAttrs[i]);
                   if (tv && tv.trim()) return done({ strategy:'testid', attr:testAttrs[i], value:tv.trim(), name:tv.trim() });
                 }
-                if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+                // 2. placeholder（100；pause 仅对 INPUT/TEXTAREA）
+                if (tag === 'input' || tag === 'textarea') {
                   var ph = el.getAttribute('placeholder');
                   if (ph && ph.trim()) return done({ strategy:'placeholder', attr:'placeholder', value:ph.trim(), name:ph.trim() });
-                  var idl = el.getAttribute('id');
-                  if (isStableId(idl)) return done({ strategy:'id', id:idl });
                 }
-                var ot = ownVisibleText(el);
-                if (ot && ot.length <= 80) return done({ strategy:'text', name:ot, exact:true });
+                // 3. 原生关联 label → getByLabel（120，先于 role+name）
+                //    仅当用户“直接点击表单控件”时生效；若点是 <label> 本身（originalIsLabel），
+                //    该控件是 resolveLabel 重定位来的，应回退到下方 role+name，避免 label/input 重复为 label 策略。
+                if (!originalIsLabel) {
+                  var lbl = labelTextOf(el);
+                  if (lbl) return done({ strategy:'label', name:lbl });
+                }
+                // 4. 交互角色 + 可访问名（140）
+                var r = (getRole(el) || '').toLowerCase();
+                if (INTERACTIVE_ROLES[r]) {
+                  var nameInfo = getNameInfo(el);
+                  var nm = nameInfo.name;
+                  if (nm) {
+                    // 反查 nls key：用归一化后的 name 在预加载的反查表里查表（精确 + 前缀/子串 + 模板）。
+                    // 命中则直接用真实 key（@RoleElement 复用既有 nls 多语言表），未命中则留空回退 slug。
+                    // cleaned 触发条件：
+                    //   a) nameInfo.cleaned —— 剔除了装饰性伪元素/描述文本（如 " (opens in a new window)"）；
+                    //   b) !nls.exact —— NLS 非精确命中（前缀/子串/模板），运行时须子串匹配才能定位。
+                    var nls = nlsKeyInfo(nm);
+                    return { strategy:'role', role:r, name:nm, key:nls.key, matched: !!nls.key,
+                      cleaned: nameInfo.cleaned || !nls.exact,
+                      tag:tag, text: ownVisibleText(el).slice(0, 120) };
+                  }
+                  // 有角色无名称（pause 打 510 分，比 #id 还差）：继续走下方候选
+                }
+                // 4.5 data-i18n 多语言 key（本项目扩展）：走到这里说明不是交互控件（交互控件已在上方 role+name 命中）。
+                //     对非交互元素（generic 的 span/div 等），data-i18n 的属性值即多语言 key——语言无关、
+                //     比可见文本（会随语言变化、且可能重复）稳定得多，故排在 alt/text 之前。
+                var i18n = el.getAttribute('data-i18n');
+                if (i18n && i18n.trim()) return done({ strategy:'i18n', value:i18n.trim(), name:i18n.trim() });
+                // 5. alt（160；pause 中先于 text）
                 if (tag === 'img' || tag === 'area') {
                   var alt = el.getAttribute('alt');
                   if (alt && alt.trim()) return done({ strategy:'altText', attr:'alt', value:alt.trim(), name:alt.trim() });
                 }
+                // 6. 可见文本（180；pause 截断阈值 80 字符）
+                var ot = ownVisibleText(el);
+                if (ot && ot.length <= 80) return done({ strategy:'text', name:ot, exact:true });
+                // 7. title（200）
                 var title = el.getAttribute('title');
                 if (title && title.trim()) return done({ strategy:'title', attr:'title', value:title.trim(), name:title.trim() });
+                // 8. 稳定 id（500）
                 var id = el.getAttribute('id');
                 if (isStableId(id)) return done({ strategy:'id', id:id });
+                // 9. css 兜底
                 return done({ strategy:'css', css: cssPathOf(el), needsReview:true });
               };
 
+              // 定位器签名（与 Java 端 RoleElementPageGenerator.locatorKey 规则一致）：
+              // role 按 role+name/key；id/css 按选择器；其余语义策略按 strategy+name。
+              // 同一签名重复点击不入列、计数不增，避免生成端才去重导致“点了但计数不变”的困惑。
+              window.__pickSig = function(pick) {
+                if (!pick) return '';
+                if (pick.strategy === 'role') {
+                  return 'role:' + (pick.role || '') + ':' + (pick.key || pick.name || '');
+                }
+                if (pick.strategy === 'i18n') return 'i18n:' + (pick.name || '');
+                if (pick.strategy === 'id') return 'id:' + (pick.id || '');
+                if (pick.strategy === 'css') return 'css:' + (pick.css || '');
+                return pick.strategy + ':' + (pick.name || '');
+              };
+              // 每次注入都从既有 picks 重建签名表，保证与 __rolePicks 严格同步
+              window.__rolePickSigs = {};
+              (window.__rolePicks || []).forEach(function(p) {
+                var s = window.__pickSig(p);
+                if (s) window.__rolePickSigs[s] = true;
+              });
               window.__rolePickClick = function(event) {
                 var t = event.target;
-                if (t && t.closest && t.closest('#__rolePanel, #__roleCodeOverlay, #__rolePickBanner')) {
+                if (t && t.closest && t.closest('#__rolePanel, #__roleCodeOverlay')) {
                   return;
                 }
                 event.preventDefault();
                 event.stopImmediatePropagation();
                 var pick = window.__computePick(t);
-                window.__rolePicks.push(pick);
+                var sig = window.__pickSig(pick);
+                var dup = sig && window.__rolePickSigs[sig];
+                if (!dup) {
+                  if (sig) window.__rolePickSigs[sig] = true;
+                  window.__rolePicks.push(pick);
+                }
                 var prev = t.style.outline;
-                t.style.outline = '3px solid #ffeb3b';
+                t.style.outline = dup ? '3px solid #ff9800' : '3px solid #ffeb3b';
                 setTimeout(function() { t.style.outline = prev; }, 400);
-                if (window.__rolePickBanner) {
-                  var extra = (pick && pick.matched) ? '（key=' + pick.key + '）' : '';
-                  window.__rolePickBanner.textContent =
+                // 拾取提示与计数写入主面板标题状态条（替代原左下角 banner）
+                var statusEl = document.getElementById('__roleStatus');
+                if (statusEl) {
+                  var extra = dup ? '（重复，已忽略）'
+                    : ((pick && pick.matched) ? '（key=' + pick.key + '）' : '');
+                  statusEl.textContent =
                     'RoleElement Picker：已拾取 ' + window.__rolePicks.length + ' 个' + extra + '，按 ESC 结束';
                 }
               };
@@ -622,7 +784,6 @@ public final class RoleElementPicker {
               if (!window.__rolePickActive) return;
               document.removeEventListener('click', window.__rolePickClick, true);
               document.removeEventListener('keydown', window.__rolePickKey, true);
-              if (window.__rolePickBanner) window.__rolePickBanner.remove();
               window.__rolePickActive = false;
             })();
             """;
@@ -731,7 +892,7 @@ public final class RoleElementPicker {
             })();
             """;
 
-    /** 常驻主面板：命令队列 + 开始/停止/复制/终止/关闭 按钮 */
+    /** 常驻主面板：图标化命令控件（开始/停止合并为切换、复制、终止，关闭用标题栏右侧 X） */
     private static final String PANEL_SCRIPT = """
     (() => {
       // 仅当 openPanel 运行期间（由 localStorage 开关标记）才注入面板；
@@ -740,10 +901,38 @@ public final class RoleElementPicker {
       function build() {
       var old = document.getElementById('__rolePanel');
       if (old) old.remove();
+      // 重建面板时清理上一次遗留的定时器，避免叠加
+      if (window.__roleToggleTimer) { clearInterval(window.__roleToggleTimer); window.__roleToggleTimer = null; }
       window.__panelCmds = window.__panelCmds || [];
       window.__pickDone = false;
 
       function pushCmd(c) { window.__panelCmds.push(c); }
+
+      // 内联 SVG 图标（24x24，currentColor 继承按钮文字色）
+      function svg(inner) {
+        return '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">' + inner + '</svg>';
+      }
+      var ICON = {
+        start: svg('<path d="M8 5v14l11-7z"/>'),                                                // ▶ 开始
+        stop:  svg('<path d="M6 6h12v12H6z"/>'),                                               // ⏹ 停止
+        copy:  svg('<path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/>'), // 📋 复制
+        abort: svg('<path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A7 7 0 1 1 7.58 6.59L6.17 5.17a9 9 0 1 0 11.66 0z"/>'), // ⏻ 终止
+        close: svg('<path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/>') // ✕ 关闭
+      };
+      // 统一的图标按钮：圆形/圆角方块、hover 提亮、带 title 作为无障碍提示
+      function mkIconBtn(svgHtml, bg, title, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.title = title;
+        b.innerHTML = svgHtml;
+        b.style.cssText = 'width:34px;height:34px;padding:0;border:0;border-radius:8px;cursor:pointer;' +
+          'display:inline-flex;align-items:center;justify-content:center;color:#fff;background:' + bg + ';' +
+          'transition:filter .15s;';
+        b.onmouseenter = function(){ b.style.filter = 'brightness(1.12)'; };
+        b.onmouseleave = function(){ b.style.filter = 'none'; };
+        b.onclick = onClick;
+        return b;
+      }
 
               var overlay = document.createElement('div');
               overlay.id = '__rolePanel';
@@ -754,44 +943,45 @@ public final class RoleElementPicker {
               var panel = document.createElement('div');
               panel.style.cssText = 'position:fixed;right:16px;bottom:16px;width:min(460px,92vw);max-height:88vh;' +
                 'display:flex;flex-direction:column;pointer-events:auto;background:#1e1e1e;color:#e0e0e0;' +
-                'border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.5);' +
+                'border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.5);' +
                 'font:13px/1.5 Consolas,Monaco,monospace;overflow:hidden;';
 
               var header = document.createElement('div');
-              header.style.cssText = 'padding:10px 14px;background:#1e88e5;color:#fff;font-weight:bold;' +
-                'display:flex;align-items:center;justify-content:space-between;cursor:move;';
+              header.style.cssText = 'padding:10px 12px;background:#1e88e5;color:#fff;font-weight:bold;' +
+                'display:flex;align-items:center;gap:10px;cursor:move;';
               var title = document.createElement('span');
+              title.style.cssText = 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+              var nf = window.__nlsFiles || [];
               title.textContent = 'RoleElement 拾取器'
-                + (window.__nlsFile ? '  (file=' + window.__nlsFile + ')' : '');
+                + (nf.length ? '  (files=' + (nf.length === 1 ? nf[0] : nf[0] + ' (+' + (nf.length - 1) + ')') + ')' : '');
               var status = document.createElement('span');
               status.id = '__roleStatus';
-              status.style.cssText = 'font-weight:normal;font-size:12px;opacity:.95;';
-              status.textContent = '就绪：点『开始拾取』并在页面点击元素';
+              status.style.cssText = 'font-weight:normal;font-size:12px;opacity:.95;' +
+                'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;flex-shrink:0;';
+              status.textContent = '就绪：点 ▶ 开始拾取并在页面点击元素';
+              // 关闭面板：标题栏右侧 X 图标（对齐 page.pause() 的 inspector 关闭按钮）
+              var closeBtn = mkIconBtn(ICON.close, 'transparent', '关闭面板', function() {
+                if (window.__roleToggleTimer) { clearInterval(window.__roleToggleTimer); window.__roleToggleTimer = null; }
+                pushCmd('done');
+              });
+              closeBtn.style.background = 'transparent';
+              closeBtn.onmouseenter = function(){ closeBtn.style.background = 'rgba(255,255,255,.2)'; closeBtn.style.filter = 'none'; };
+              closeBtn.onmouseleave = function(){ closeBtn.style.background = 'transparent'; closeBtn.style.filter = 'none'; };
+              closeBtn.onmousedown = function(e){ e.stopPropagation(); };
               header.appendChild(title);
               header.appendChild(status);
+              header.appendChild(closeBtn);
 
               var toolbar = document.createElement('div');
-              toolbar.style.cssText = 'padding:8px 14px;background:#252526;display:flex;gap:8px;flex-wrap:wrap;';
-              function mkBtn(t, bg) {
-                var b = document.createElement('button');
-                b.textContent = t;
-                b.style.cssText = 'padding:7px 16px;border:0;border-radius:5px;cursor:pointer;' +
-                  'font:13px/1 sans-serif;color:#fff;background:' + bg + ';';
-                return b;
-              }
-              var startBtn = mkBtn('开始拾取', '#43a047');
-              var stopBtn = mkBtn('停止拾取', '#fb8c00');
-              var copyBtn = mkBtn('复制代码', '#1976d2');
-              var abortBtn = mkBtn('终止运行', '#e53935');
-              var doneBtn = mkBtn('关闭面板', '#616161');
-              startBtn.onclick = function() { pushCmd('start'); };
-              stopBtn.onclick = function() { pushCmd('stop'); };
-              abortBtn.onclick = function() { pushCmd('abort'); };
-              doneBtn.onclick = function() { pushCmd('done'); };
-              copyBtn.onclick = function() {
+              toolbar.style.cssText = 'padding:10px 14px;background:#252526;display:flex;gap:8px;align-items:center;';
+              // 开始/停止合并为同一个切换控件：空闲显示 ▶ 开始，拾取中显示 ⏹ 停止
+              var toggleBtn = mkIconBtn(ICON.start, '#43a047', '开始拾取', function() {
+                pushCmd(window.__rolePickActive ? 'stop' : 'start');
+              });
+              var copyBtn = mkIconBtn(ICON.copy, '#1976d2', '复制代码', function() {
                 var ta = document.getElementById('__roleCodeArea');
                 var code = ta ? ta.value : '';
-                function ok() { status.textContent = '已复制 ✔'; }
+                function ok() { status.textContent = '已复制 ✔'; copyBtn.title = '已复制'; }
                 try {
                   if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(code).then(ok, function() { fb(); });
@@ -801,12 +991,21 @@ public final class RoleElementPicker {
                   if (ta) { ta.focus(); ta.select(); try { document.execCommand('copy'); ok(); }
                   catch (e2) { status.textContent = '复制失败，请手动复制'; } }
                 }
-              };
-              toolbar.appendChild(startBtn);
-              toolbar.appendChild(stopBtn);
+              });
+              var abortBtn = mkIconBtn(ICON.abort, '#e53935', '终止运行', function() { pushCmd('abort'); });
+              toolbar.appendChild(toggleBtn);
               toolbar.appendChild(copyBtn);
               toolbar.appendChild(abortBtn);
-              toolbar.appendChild(doneBtn);
+
+              // 根据 window.__rolePickActive 实时同步切换控件的状态（图标/文案/颜色）
+              function refreshToggle() {
+                var picking = !!window.__rolePickActive;
+                toggleBtn.innerHTML = picking ? ICON.stop : ICON.start;
+                toggleBtn.title = picking ? '停止拾取' : '开始拾取';
+                toggleBtn.style.background = picking ? '#fb8c00' : '#43a047';
+              }
+              refreshToggle();
+              window.__roleToggleTimer = setInterval(refreshToggle, 300);
 
               var ta = document.createElement('textarea');
               ta.id = '__roleCodeArea';
@@ -856,7 +1055,60 @@ public final class RoleElementPicker {
         build();
       })();
     })();
-            """;
+    """;
+
+    /** 拾取命令循环的统一返回：动作 + 生成的代码 + 状态文案 */
+    private enum PickerAction { CONTINUE, ABORT, DONE }
+    private static final class PickerResult {
+        final PickerAction action;
+        final String code;
+        final String statusMsg;
+        PickerResult(PickerAction action, String code, String statusMsg) {
+            this.action = action;
+            this.code = code;
+            this.statusMsg = statusMsg;
+        }
+    }
+
+    /**
+     * 统一处理面板命令（start/stop/abort/done）：开始拾取、收集并生成代码、终止、关闭。
+     * 结果由调用方用 {@code setStatus/fillCode} 呈现到面板 UI。
+     *
+     * @return 含后续动作与（stop 时的）生成代码
+     */
+    private static PickerResult runPickerCommand(Page page, String cmd,
+                                                  String packageName, String pageClassName, String... nlsFiles) {
+        switch (cmd) {
+            case "start":
+                start(page, buildNlsReverseJson(Arrays.asList(nlsFiles)));
+                return new PickerResult(PickerAction.CONTINUE, null,
+                        "RoleElement Picker：点击元素拾取 role/name，按 ESC 结束");
+            case "stop": {
+                stop(page);
+                List<RoleEntry> entries = getEntries(page);
+                if (entries.isEmpty()) {
+                    return new PickerResult(PickerAction.CONTINUE, "", "未拾取到元素");
+                }
+                String code = RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFiles);
+                int matched = 0;
+                for (RoleEntry e : entries) {
+                    if (e.getResolvedKey() != null) matched++;
+                }
+                String nlsInfo = (nlsFiles != null && nlsFiles.length > 0)
+                        ? "（nls=" + (nlsFiles.length == 1 ? nlsFiles[0] : nlsFiles.length + " 个文件")
+                            + "，已反查 " + matched + " 个 key）" : "";
+                return new PickerResult(PickerAction.CONTINUE, code,
+                        "已生成 " + entries.size() + " 个字段，可复制" + nlsInfo);
+            }
+            case "abort":
+                stop(page);
+                return new PickerResult(PickerAction.ABORT, null, null);
+            case "done":
+            default:
+                stop(page);
+                return new PickerResult(PickerAction.DONE, null, null);
+        }
+    }
 
     /**
      * 用户在面板点击『终止运行』时抛出，用于中断调用方后续代码执行。
@@ -883,7 +1135,11 @@ public final class RoleElementPicker {
      * @param nlsReverseJson    nls 反向查表 JSON；为 null/空/“{}” 时退化为不反查（回退 slug）
      */
     public static void start(Page page, String nlsReverseJson) {
-        page.evaluate("window.__nlsReverse = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";");
+        // 兼容两种格式：新格式 {exact, templates} 拆开注入；旧格式（纯精确表）整体作为 exact。
+        page.evaluate(
+                "var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
+                + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+                + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];");
         page.evaluate(START_SCRIPT);
         log.info("[picker] 拾取模式已开启：在浏览器点击元素即可拾取，按 ESC 结束。");
     }
@@ -894,37 +1150,60 @@ public final class RoleElementPicker {
      *
      * @param nlsFile nls 文件路径（classpath 相对或文件系统绝对），如 "nls/login.nls.json"
      */
-    private static String buildNlsReverseJson(String nlsFile) {
-        if (nlsFile == null || nlsFile.isBlank()) return "{}";
+    /**
+     * 合并多个 nls 文件构建反向查表（覆盖所有语言）：精确表与模板表均跨文件合并，
+     * 同一规范化文本/正则源以首个文件优先（putIfAbsent）。供拾取时把 a11y name 反查为对应 key，
+     * 从而支持「一个页面用到多个 nls json」的场景。
+     */
+    private static String buildNlsReverseJson(List<String> nlsFiles) {
+        if (nlsFiles == null || nlsFiles.isEmpty()) return "{}";
         try {
-            Map<String, Map<String, String>> tables = NLSUtils.rawTables(nlsFile);
-            Map<String, String> reverse = new LinkedHashMap<>();
-            for (Map<String, String> table : tables.values()) {
-                if (table == null) continue;
-                for (Map.Entry<String, String> en : table.entrySet()) {
-                    String norm = normalize(en.getValue());
-                    if (!norm.isEmpty()) reverse.putIfAbsent(norm, en.getKey());
+            Map<String, String> exact = new LinkedHashMap<>();
+            Map<String, String> templates = new LinkedHashMap<>();
+            for (String nlsFile : nlsFiles) {
+                if (nlsFile == null || nlsFile.isBlank()) continue;
+                Map<String, Map<String, String>> tables = NLSUtils.rawTables(nlsFile);
+                for (Map<String, String> table : tables.values()) {
+                    if (table == null) continue;
+                    for (Map.Entry<String, String> en : table.entrySet()) {
+                        // 反查 key 必须基于「页面可见文本」：nls 值里常内嵌 <a>/<strong>/<img> 与
+                        // &nbsp;/&copy; 等实体，浏览器渲染后可见文本已无标签，故精确表与模板正则
+                        // 一律用 NLSUtils.visibleText / templateRegexSource（二者都会剥 HTML + 解码实体）。
+                        // 否则如 tab_security_device("保安編碼器&nbsp; <img...>") 的 key 会带 <img>，
+                        // 与浏览器算出的可访问名 "保安編碼器" 对不上，反查失败退化为字面值。
+                        String visible = NLSUtils.visibleText(en.getValue());
+                        if (visible.isEmpty()) continue;
+                        if (en.getValue().contains("{{")) {
+                            // 含模板变量：无法精确反查，改用正则源（跨语言匹配替换后的可见文本）
+                            String src = NLSUtils.templateRegexSource(en.getValue());
+                            if (!src.isEmpty()) templates.putIfAbsent(src, en.getKey());
+                        } else {
+                            exact.putIfAbsent(visible, en.getKey());
+                        }
+                    }
                 }
             }
-            if (reverse.isEmpty()) {
-                log.warn("[picker] nls 文件无可用条目，无法反查 key：{}", nlsFile);
+            if (exact.isEmpty() && templates.isEmpty()) {
+                log.warn("[picker] nls 文件无可用条目，无法反查 key：{}", nlsFiles);
                 return "{}";
             }
-            log.info("[picker] 已加载 nls 反向查表（{} 条），拾取时将自动匹配 key：{}", reverse.size(), nlsFile);
-            return GSON.toJson(reverse);
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("exact", exact);
+            out.put("templates", templates.entrySet().stream()
+                    .map(e -> new String[]{e.getKey(), e.getValue()})
+                    .toArray(String[][]::new));
+            log.info("[picker] 已加载 nls 反向查表（精确 {} 条 / 模板 {} 条），拾取时将自动匹配 key：{}",
+                    exact.size(), templates.size(), nlsFiles);
+            return GSON.toJson(out);
         } catch (Exception e) {
-            log.warn("[picker] 加载 nls 文件失败，拾取时无法反查 key，将回退到 name 派生 slug：{}", nlsFile, e);
+            log.warn("[picker] 加载 nls 文件失败，拾取时无法反查 key，将回退到 name 派生 slug：{}", nlsFiles, e);
             return "{}";
         }
     }
 
-    /** 与注入脚本中的 normName 保持一致：归一化空白（\r\n→\n、nbsp→空格、折叠、trim）。 */
-    private static String normalize(String s) {
-        if (s == null) return "";
-        return s.replace("\r\n", "\n")
-                .replace('\u00A0', ' ')
-                .replaceAll("\\s+", " ")
-                .trim();
+    /** 单文件便捷重载（向后兼容） */
+    private static String buildNlsReverseJson(String nlsFile) {
+        return buildNlsReverseJson(List.of(nlsFile));
     }
 
     /** 关闭拾取模式，清理注入的监听与提示条 */
@@ -956,11 +1235,15 @@ public final class RoleElementPicker {
                         if (role == null) continue;   // 角色策略但无角色：跳过
                         String resolvedKey = asString(m.get("key"));
                         if (resolvedKey != null && resolvedKey.isBlank()) resolvedKey = null;
-                        result.add(new RoleEntry(role, name, tag, text, "role", null, resolvedKey));
+                        boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
+                        result.add(new RoleEntry(role, name, tag, text, "role", null, resolvedKey, cleaned));
                     } else {
                         String selector = buildSelector(strategy, m);
                         if (selector == null || selector.isBlank()) continue;
-                        result.add(new RoleEntry(role, name, tag, text, strategy, selector, null));
+                        String resolvedKey = asString(m.get("key"));
+                        if (resolvedKey != null && resolvedKey.isBlank()) resolvedKey = null;
+                        boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
+                        result.add(new RoleEntry(role, name, tag, text, strategy, selector, resolvedKey, cleaned));
                     }
                 }
             }
@@ -983,10 +1266,22 @@ public final class RoleElementPicker {
                 if (attr == null || value == null) return null;
                 return "[" + attr + "=\"" + escapeSelectorValue(value) + "\"]";
             }
+            case "i18n": {
+                String value = asString(m.get("value"));
+                if (value == null || value.isBlank()) return null;
+                return "[data-i18n=\"" + escapeSelectorValue(value) + "\"]";
+            }
             case "text": {
                 String name = asString(m.get("name"));
                 if (name == null || name.isBlank()) return null;
                 return "text=\"" + escapeSelectorValue(name) + "\"";
+            }
+            case "label": {
+                // 对齐 page.pause 的 getByLabel：selector 仅作占位/人工核对，
+                // 生成注解与运行期定位均走 @RoleElement(label=...) → byLabel。
+                String name = asString(m.get("name"));
+                if (name == null || name.isBlank()) return null;
+                return "label=\"" + escapeSelectorValue(name) + "\"";
             }
             case "id": {
                 String id = asString(m.get("id"));
@@ -1019,7 +1314,8 @@ public final class RoleElementPicker {
      * @return 已拾取的 {@link RoleEntry} 列表（可能为空的草稿）
      */
     public static List<RoleEntry> pick(Page page) {
-        return pick(page, null);
+        // 显式传空 String[]（非 varargs 调用，类型精确），避免 null 传给 String... 触发 imprecise varargs 警告
+        return pick(page, new String[0]);
     }
 
     /**
@@ -1031,8 +1327,8 @@ public final class RoleElementPicker {
      * @param nlsFile   nls 文件路径（classpath 相对或文件系统绝对）；null 表示不反查
      * @return 已拾取的 {@link RoleEntry} 列表（可能为空的草稿）
      */
-    public static List<RoleEntry> pick(Page page, String nlsFile) {
-        String reverse = buildNlsReverseJson(nlsFile);
+    public static List<RoleEntry> pick(Page page, String... nlsFiles) {
+        String reverse = buildNlsReverseJson(Arrays.asList(nlsFiles));
         start(page, reverse);
         try {
             page.waitForFunction("() => window.__pickDone === true", null,
@@ -1048,35 +1344,35 @@ public final class RoleElementPicker {
 
     /** 拾取并直接生成源码字符串（不落盘） */
     public static String pickAndGenerate(Page page, String packageName,
-                                         String pageClassName, String nlsFile) {
-        List<RoleEntry> entries = pick(page, nlsFile);
+                                         String pageClassName, String... nlsFiles) {
+        List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
             log.warn("[picker] 未拾取到任何元素，未生成代码。");
             return "";
         }
-        return RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFile);
+        return RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFiles);
     }
 
     /** 拾取并打印生成的源码到日志 */
     public static void pickAndDump(Page page, String packageName,
-                                   String pageClassName, String nlsFile) {
-        List<RoleEntry> entries = pick(page, nlsFile);
+                                   String pageClassName, String... nlsFiles) {
+        List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
             log.warn("[picker] 未拾取到任何元素，未生成代码。");
             return;
         }
-        RoleElementPageGenerator.dump(entries, packageName, pageClassName, nlsFile);
+        RoleElementPageGenerator.dump(entries, packageName, pageClassName, nlsFiles);
     }
 
     /** 拾取并直接写入文件（outputDir 为源码根，如 src/test/java） */
     public static void pickAndWrite(Page page, String outputDir, String packageName,
-                                    String pageClassName, String nlsFile) {
-        List<RoleEntry> entries = pick(page, nlsFile);
+                                    String pageClassName, String... nlsFiles) {
+        List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
             log.warn("[picker] 未拾取到任何元素，未生成代码。");
             return;
         }
-        RoleElementPageGenerator.write(entries, outputDir, packageName, pageClassName, nlsFile);
+        RoleElementPageGenerator.write(entries, outputDir, packageName, pageClassName, nlsFiles);
     }
 
     /**
@@ -1103,24 +1399,24 @@ public final class RoleElementPicker {
      * 最贴近 {@code page.pause()} 的体验：拾取完直接弹框，复制即用。
      */
     public static void pickAndShow(Page page, String packageName,
-                                   String pageClassName, String nlsFile) {
-        List<RoleEntry> entries = pick(page, nlsFile);
+                                   String pageClassName, String... nlsFiles) {
+        List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
             log.warn("[picker] 未拾取到任何元素，未生成代码。");
             return;
         }
-        String code = RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFile);
+        String code = RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFiles);
         showCode(page, code);
     }
 
     /**
-     * 打开一个常驻控制面板（类似 {@code page.pause()} 的 inspector），由面板按钮驱动整个拾取流程：
+     * 打开一个常驻控制面板（类似 {@code page.pause()} 的 inspector），由图标控件驱动整个拾取流程：
      * <ul>
-     *   <li>『开始拾取』：进入点选模式（顶部蓝条提示），在页面点击目标元素</li>
-     *   <li>『停止拾取』：退出点选，按已点元素生成 {@code @RoleElement} 代码并填入面板</li>
-     *   <li>『复制代码』：一键复制面板中的代码</li>
-     *   <li>『终止运行』：抛出 {@link PickerAbortedException}，中断调用方后续代码</li>
-     *   <li>『关闭面板』：退出面板（已生成代码可通过复制带走）</li>
+     *   <li>▶/⏹ 切换控件：空闲时显示“开始拾取”（▶，绿），点后进入点选模式并在页面点击目标元素；
+     *       拾取中自动变为“停止拾取”（⏹，橙），再点即退出点选并按已点元素生成 {@code @RoleElement} 代码填入面板</li>
+     *   <li>📋 复制代码：一键复制面板中的代码</li>
+     *   <li>⏻ 终止运行：抛出 {@link PickerAbortedException}，中断调用方后续代码</li>
+     *   <li>✕ 关闭面板：标题栏右上角的 X 图标（对齐 {@code page.pause()} 的 inspector 关闭），退出面板</li>
      * </ul>
      * 调用后本方法会阻塞，直到用户关闭面板或终止运行。
      *
@@ -1131,11 +1427,11 @@ public final class RoleElementPicker {
      * @throws PickerAbortedException 用户点击『终止运行』时
      */
     public static void openPanel(Page page, String packageName,
-                                 String pageClassName, String nlsFile) {
+                                 String pageClassName, String... nlsFiles) {
         // 开启面板开关：刷新/导航后 addInitScript 会自动重建面板，避免“刷新后面板消失”。
         page.evaluate("try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}");
-        // 把关联的 nls 文件路径暴露给面板（标题展示 file=...），并在导航重建后依然可用。
-        page.evaluate("window.__nlsFile = " + GSON.toJson(nlsFile) + ";");
+        // 把关联的 nls 文件路径暴露给面板（标题展示 files=...），并在导航重建后依然可用。
+        page.evaluate("window.__nlsFiles = " + GSON.toJson(nlsFiles) + ";");
         page.addInitScript(PANEL_SCRIPT);
         page.evaluate(PANEL_SCRIPT);
         log.info("[picker] 面板已打开：开始拾取 → 点击元素 → 停止拾取 → 复制代码；或终止运行。");
@@ -1150,38 +1446,17 @@ public final class RoleElementPicker {
                     return;
                 }
                 String cmd = asString(page.evaluate("window.__panelCmds.shift()"));
-                switch (cmd) {
-                    case "start":
-                        start(page, buildNlsReverseJson(nlsFile));
-                        setStatus(page, "拾取中：在页面点击目标元素，再点『停止拾取』结束");
-                        break;
-                    case "stop":
-                        stop(page);
-                        List<RoleEntry> entries = getEntries(page);
-                        if (entries.isEmpty()) {
-                            fillCode(page, "", "未拾取到元素");
-                        } else {
-                            String code = RoleElementPageGenerator.generate(
-                                    entries, packageName, pageClassName, nlsFile);
-                            int matched = 0;
-                            for (RoleEntry e : entries) {
-                                if (e.getResolvedKey() != null) matched++;
-                            }
-                            String nlsInfo = (nlsFile != null && !nlsFile.isBlank())
-                                    ? "（nls=" + nlsFile + "，已反查 " + matched + " 个 key）" : "";
-                            fillCode(page, code, "已生成 " + entries.size() + " 个字段，可复制" + nlsInfo);
-                        }
-                        break;
-                    case "abort":
-                        stop(page);
-                        closePanel(page);
-                        throw new PickerAbortedException("用户通过面板『终止运行』中止了后续代码执行");
-                    case "done":
-                    default:
-                        stop(page);
-                        closePanel(page);
-                        return;
+                PickerResult r = runPickerCommand(page, cmd, packageName, pageClassName, nlsFiles);
+                if (r.action == PickerAction.ABORT) {
+                    closePanel(page);
+                    throw new PickerAbortedException("用户通过面板『终止运行』中止了后续代码执行");
                 }
+                if (r.action == PickerAction.DONE) {
+                    closePanel(page);
+                    return;
+                }
+                if (r.code != null) fillCode(page, r.code, r.statusMsg);
+                else setStatus(page, r.statusMsg);
             }
         } finally {
             // 关闭开关并移除面板：之后导航不再自动注入面板。

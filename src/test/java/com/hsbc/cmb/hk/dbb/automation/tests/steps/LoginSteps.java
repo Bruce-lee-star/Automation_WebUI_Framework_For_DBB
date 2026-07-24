@@ -159,12 +159,12 @@ public class LoginSteps {
 
         // Axe-core accessibility scan on login page
 //        AxeCoreScanner.scanPage("Login Page - Initial");
-
+//loginPage.pause();
         Page page = loginPage.getPage();
         RoleElementPicker.openPanel(page,
                 "com.hsbc.cmb.hk.dbb.automation.tests.pages",  // 包名
                 "LoginPage",                                    // 生成类名
-                "nls/login.nls.json");
+                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");
         loginPage.userNameIpt.type(username);
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());

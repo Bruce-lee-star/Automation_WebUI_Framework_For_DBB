@@ -11,8 +11,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * NLS（多语言）工具。
@@ -72,7 +76,17 @@ public final class NLSUtils {
      * @return 绑定该文件的句柄
      */
     public static NlsBundle bind(String filePath) {
-        return new NlsBundle(filePath);
+        return new NlsBundle(List.of(filePath));
+    }
+
+    /** 绑定多个 nls 文件：运行时按声明顺序跨文件查找 key（命中即止），适合一个页面对应多个 nls json。 */
+    public static NlsBundle bind(String... filePaths) {
+        return new NlsBundle(Arrays.asList(filePaths));
+    }
+
+    /** 绑定多个 nls 文件（列表形式）。 */
+    public static NlsBundle bind(List<String> filePaths) {
+        return new NlsBundle(filePaths);
     }
 
     /**
@@ -80,20 +94,39 @@ public final class NLSUtils {
      * 语言由 {@link NLSUtils#setLanguage(String)} 全局控制，与具体 bundle 无关。
      */
     public static final class NlsBundle {
-        private final String filePath;
+        private final List<String> files;
 
-        private NlsBundle(String filePath) {
-            this.filePath = filePath;
+        private NlsBundle(List<String> files) {
+            this.files = List.copyOf(files);
         }
 
-        /** 取当前语言下该文件内某个 key 的可访问名 */
+        /** 取当前语言下某个 key 的可访问名：按文件声明顺序跨文件查找，命中即止。
+         *  单文件时与旧行为一致（缺失即抛）；多文件时任一文件命中即返回，全部缺失才抛（信息含所有文件）。 */
         public String get(String key) {
-            return NLSUtils.get(filePath, key);
+            if (files.size() == 1) {
+                return NLSUtils.get(files.get(0), key);
+            }
+            StringBuilder errors = new StringBuilder();
+            for (String f : files) {
+                try {
+                    return NLSUtils.get(f, key);
+                } catch (IllegalStateException e) {
+                    if (errors.length() > 0) errors.append("; ");
+                    errors.append('[').append(f).append("] ").append(e.getMessage());
+                }
+            }
+            throw new IllegalStateException("[NLS] missing key '" + key
+                    + "' in any of files " + files + " -> " + errors);
         }
 
-        /** 返回绑定的文件路径 */
+        /** 返回绑定的主要文件路径（多文件时为首个） */
         public String path() {
-            return filePath;
+            return files.get(0);
+        }
+
+        /** 返回绑定的全部文件路径（多文件时长度 > 1） */
+        public List<String> paths() {
+            return files;
         }
     }
 
@@ -139,6 +172,131 @@ public final class NLSUtils {
 
     private static Map<String, Map<String, String>> load(String filePath) {
         return CACHE.computeIfAbsent(filePath, NLSUtils::readAndParse);
+    }
+
+    /**
+     * 判断 nls 文本值是否含模板变量（形如 {@code {{deviceModel}}}、{@code {{current_username}}}）。
+     * 这类值在运行时由页面注入真实值，拾取到的可见文本与 nls 原始值不一致，无法精确匹配，需走正则。
+     */
+    public static boolean isTemplate(String value) {
+        return value != null && value.contains("{{");
+    }
+
+    /**
+     * 把含模板变量的 nls 文本值编译为「跨语言/跨引擎通用」的正则源字符串（不含 {@code ^$} 锚点，
+     * 由调用方决定匹配语义）。用途：
+     * <ul>
+     *   <li>拾取反查：注入浏览器后配合 {@code new RegExp(src).test(可见文本)} 反查 key；</li>
+     *   <li>运行时定位：{@link #templatePattern(String)} 包装为 {@link Pattern} 传给 Playwright 的
+     *       {@code getByText(Pattern)} / {@code getByAltText(Pattern)} 等做正则匹配。</li>
+     * </ul>
+     * 处理细节：
+     * <ol>
+     *   <li>归一化空白（\r\n→\n、&amp;nbsp;→空格、折叠）；</li>
+     *   <li>剥离 HTML 标签（{@code getByText} 比对的是可见文本不含标签；{@code <br>} 转空格）；</li>
+     *   <li>解码常见 HTML 实体（可见文本里是实体对应的字符，如 {@code &amp;copy;}→©）；</li>
+     *   <li>转义正则元字符，但把 {@code {{var}} 占位符替换为 {@code (.*?)}（非贪婪，匹配任意真实值）。</li>
+     * </ol>
+     * 占位符名在各国语言里保持一致（如 {{deviceModel}}），故任意语言编译出的正则源都能还原匹配。
+     */
+    /**
+     * 把任意 nls 文本值归一化为「页面可见文本」：
+     * 归一化空白（\r\n→\n、&amp;nbsp;→空格、折叠）、
+     * 剥离 HTML 标签（{@code <br>} 转空格、其余标签删除）、
+     * 解码常见 HTML 实体（可见文本里是实体对应的字符，如 {@code &amp;copy;}→©）。
+     *
+     * <p>用途：nls 值里常内嵌 {@code <a>/<strong>/<img>} 等标签与实体（如
+     * {@code tab_security_device = "保安編碼器&nbsp; <img ...>"}），
+     * 但浏览器渲染后的可见文本不含标签（只有 “保安編碼器”），
+     * 故拾取反查 / 运行时定位都应基于可见文本，而非原始字符串，否则必然匹配不上。
+     */
+    public static String visibleText(String value) {
+        if (value == null) return "";
+        return stripHtmlAndNormalize(value).trim();
+    }
+
+    /** 归一化 + 剥 HTML + 解码实体（不 trim，供 {@link #templateRegexSource} 复用，保持历史行为一致）。 */
+    private static String stripHtmlAndNormalize(String value) {
+        String t = value.replace("\r\n", "\n").replace('\u00A0', ' ');
+        t = t.replaceAll("<br\\s*/?>", " ").replaceAll("<[^>]+>", " ");
+        t = decodeEntities(t);
+        return t.replaceAll("\\s+", " ");
+    }
+
+    /**
+     * 把含模板变量的 nls 文本值编译为「跨语言/跨引擎通用」的正则源字符串（不含 {@code ^$} 锚点，
+     * 由调用方决定匹配语义）。用途：
+     * <ul>
+     *   <li>拾取反查：注入浏览器后配合 {@code new RegExp(src).test(可见文本)} 反查 key；</li>
+     *   <li>运行时定位：{@link #templatePattern(String)} 包装为 {@link Pattern} 传给 Playwright 的
+     *       {@code getByText(Pattern)} / {@code getByAltText(Pattern)} 等做正则匹配。</li>
+     * </ul>
+     * 处理细节：
+     * <ol>
+     *   <li>归一化空白（\r\n→\n、&amp;nbsp;→空格、折叠）；</li>
+     *   <li>剥离 HTML 标签（{@code getByText} 比对的是可见文本不含标签；{@code <br>} 转空格）；</li>
+     *   <li>解码常见 HTML 实体（可见文本里是实体对应的字符，如 {@code &amp;copy;}→©）；</li>
+     *   <li>转义正则元字符，但把 {@code {{var}} 占位符替换为 {@code (.*?)}（非贪婪，匹配任意真实值）。</li>
+     * </ol>
+     * 占位符名在各国语言里保持一致（如 {{deviceModel}}），故任意语言编译出的正则源都能还原匹配。
+     */
+    public static String templateRegexSource(String value) {
+        if (value == null) return "";
+        String t = stripHtmlAndNormalize(value);
+        return escapeRegexKeepingPlaceholders(t);
+    }
+
+    /** 把含模板变量的 nls 值编译为正则 {@link Pattern}（{@link Pattern#DOTALL}，使 {@code .} 可跨换行）。 */
+    public static Pattern templatePattern(String value) {
+        String src = templateRegexSource(value);
+        return src.isEmpty() ? Pattern.compile(Pattern.quote(value == null ? "" : value), Pattern.DOTALL)
+                             : Pattern.compile(src, Pattern.DOTALL);
+    }
+
+    private static String decodeEntities(String s) {
+        return s.replace("&nbsp;", " ")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replace("&amp;", "&")
+                .replace("&copy;", "©");
+    }
+
+    private static String escapeRegexKeepingPlaceholders(String t) {
+        StringBuilder sb = new StringBuilder();
+        int i = 0, n = t.length();
+        while (i < n) {
+            if (t.startsWith("{{", i)) {
+                int end = t.indexOf("}}", i);
+                if (end < 0) {
+                    sb.append(escapeRegexLiteral(t.substring(i)));
+                    break;
+                }
+                sb.append("(.*?)");
+                i = end + 2;
+            } else {
+                int next = t.indexOf("{{", i);
+                if (next < 0) next = n;
+                sb.append(escapeRegexLiteral(t.substring(i, next)));
+                i = next;
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String escapeRegexLiteral(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            // 这些字符在 JS/Java 正则里都是元字符，统一转义（两边通用）
+            if ("[](){}.*+?^$|\\".indexOf(c) >= 0) {
+                sb.append('\\').append(c);
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     private static Map<String, Map<String, String>> readAndParse(String filePath) {

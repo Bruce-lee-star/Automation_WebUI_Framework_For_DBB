@@ -1590,7 +1590,8 @@ public final class RoleElementPicker {
               window.__rolePickActive = false;
               // 收尾当前 step：停止拾取即把“当前选中（已勾选）的候选”封装成 step 并入 __steps。
               // 面板勾选/实时点选都写入 window.__currentStep（选择集），停止时一次性打包为 step；
-              // 多页面选择会按 pageClass 各自成 step（常见单页选择即一个 step）。
+              // 整个选择（无论跨多少个页面）合并为【一个 step】——step 的唯一边界是“开始→停止”
+              // （或一次「封装为步骤」），弹窗打开/关闭、页面跳转都只是同一 step 内的交互。
               // 优先用 __packageStep（与面板“封装为步骤”同一逻辑，保证顺序/去重一致）；兜底直接打包。
               if (window.__currentStep && window.__currentStep.length) {
                 if (typeof window.__packageStep === 'function') {
@@ -2188,25 +2189,29 @@ public final class RoleElementPicker {
                   if (!Object.keys(selSet).length) return 0;
                   window.__steps = window.__steps || [];
                   var startIndex = window.__steps.length;   // 本次新封装 step 的全局起始索引（供跳转到目标 step）
-                  var byPage = {}; var order = [];
+                  // 单步语义：一次「封装为步骤」或一次「开始→停止」拾取 = 一个 step，
+                  // 即使选择跨多个页面也合并为【一个 StepRec】（每个 pick 自带 _pageClass，
+                  // 生成器据此引用对应页变量），不再按 pageClass 拆成多个 step。
+                  // 顺序沿用全局拾取序（window.__rolePicks），跨页操作天然按发生先后排布；
+                  // 关闭当前页（_closeOp 标记）也作为 step 内的一笔操作内联，不另成 step。
+                  var picks = [];
+                  var owner = '';
                   for (var i = 0; i < all.length; i++) {
                     var p = all[i] || {};
                     var k = p._sigKey || p._sig;
                     if (!k || !selSet[k]) continue;
-                    var pc = (p._pageClass) || (window.__rolePageName || '');
-                    if (!byPage[pc]) { byPage[pc] = []; order.push(pc); }
-                    byPage[pc].push(p);
+                    if (!owner) owner = (p._pageClass) || (window.__rolePageName || '');
+                    picks.push(p);
                   }
-                  for (var j = 0; j < order.length; j++) {
-                    window.__steps.push({ pageClass: order[j], picks: byPage[order[j]] });
-                  }
+                  if (!owner) owner = (window.__rolePageName || '');
+                  window.__steps.push({ pageClass: owner, picks: picks });
                   window.__currentStep = [];   // 已封装，清空选择集
                   // 仅轻量刷新勾选态（复选框复位为未勾选），不重建整张候选列表——
                   // 扫描出海量子元素时全量重建会卡 UI，正是“封装 step 慢”的根因。
                   window.__applySelection();
                   // 返回结构化信息：本次封装涉及的 pageClass（按序）与全局起始索引，
                   // 供 pkgBtn 记录“目标 step”，Java 生成代码后由 window.__afterFillJump 精准定位。
-                  return { pages: order, start: startIndex, count: order.length };
+                  return { pages: [owner], start: startIndex, count: 1 };
                 } catch (e) { return 0; }
               };
               // 轻量刷新勾选态：仅更新已存在行的复选框与高亮，【不重建整个列表 DOM】。
@@ -3716,6 +3721,14 @@ public final class RoleElementPicker {
                                 + "   if (!last) { last = {pageClass:" + GSON.toJson(closedCls) + ", picks:[]}; window.__steps.push(last); }"
                                 + "   if (!last.picks) last.picks = [];"
                                 + "   mergeInto(last.picks); }"
+                                // 同步登记一条“页面级关闭操作”（op='close'，pageClass=被关弹窗页），
+                                // 使 window.__steps 中除 _closeOp 标记外还保有可被解析为 PageOp 的条目。
+                                // 这一步关键：代码生成器的 inferPopupTargetVar 据此推断“弹窗目标页对象”
+                                // （如 privacyAndSecurityPage），从而把新页面绑到目标页对象而非打开页（修复
+                                // “弹窗关闭落在 loginPage 而非 privacyAndSecurityPage”）。_closeOp 仅用于 step 内联渲染，
+                                // 不保证进 __rolePicks（会随封装被过滤），故这里单独补登记可供 opsByPage 消费的操作。
+                                + " window.__steps = window.__steps || [];"
+                                + " window.__steps.push({op:'close', pageClass:" + GSON.toJson(closedCls) + "});"
                                 + "})()");
                             // 立即刷新父页快照，确保随后父页导航重建时不会因覆盖而丢失该关闭操作。
                             try { snapshots.put(parent, readPickStateJson(parent)); } catch (Exception ignore) {}

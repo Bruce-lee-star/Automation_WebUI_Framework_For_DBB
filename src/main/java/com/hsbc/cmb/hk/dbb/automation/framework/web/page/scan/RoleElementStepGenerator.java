@@ -210,6 +210,11 @@ public final class RoleElementStepGenerator {
                 }
             }
         }
+        // 合并“仅含关闭操作”的 step 进上一个 step：关闭当前页（含整页跳转后关闭根页）不另成 @Step 方法，
+        // 使一次“开始→停止 / 封装为步骤”始终落在同一个 step 内。
+        for (Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
+            en.setValue(mergeCloseOnlySteps(en.getValue()));
+        }
 
         // 每个页面类 -> (定位键 -> 字段名)，并生成该页字段声明。
         // 字段命名来源取该页已拾取元素（entriesByPage 已由 __rolePicks 覆盖全部 pick），与 Tab1 页面生成保持一致。
@@ -374,6 +379,10 @@ public final class RoleElementStepGenerator {
             }
         }
         if (allPages.isEmpty()) return out;
+        // 合并“仅含关闭操作”的 step 进上一个 step，保持单次封装/拾取 = 一个 step（关闭当前页内联其中）。
+        for (Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
+            en.setValue(mergeCloseOnlySteps(en.getValue()));
+        }
 
         // 字段声明 + 变量名（全页共享，保证每份视图可独立编译——引用其它页字段时声明已存在）
         Map<String, Map<String, String>> pageFields = new LinkedHashMap<>();
@@ -546,7 +555,8 @@ public final class RoleElementStepGenerator {
             boolean pastPopup = false;
             for (RoleEntry e : step) {
                 if (e.isPopup()) { pastPopup = true; continue; }
-                if (pastPopup && !e.isCloseOp()) {
+                if (pastPopup) {
+                    // 弹窗之后的元素（含关闭标记 _closeOp）归属页若与打开页不同，即弹窗目标页对象。
                     String pc = e.getPageClass();
                     if (pc != null && !pc.isEmpty()) {
                         String v = pageVar.get(pc);
@@ -570,6 +580,35 @@ public final class RoleElementStepGenerator {
     private static String decapitalize(String s) {
         if (s == null || s.isEmpty()) return s;
         return Character.toLowerCase(s.charAt(0)) + s.substring(1);
+    }
+
+    /** 一个 step 是否“仅由关闭操作（_closeOp）构成”——这类 step 是“关闭当前页”的标记，不应单独成方法。 */
+    private static boolean isCloseOnlyStep(List<RoleEntry> step) {
+        if (step == null || step.isEmpty()) return false;
+        for (RoleEntry e : step) if (!e.isCloseOp()) return false;
+        return true;
+    }
+
+    /**
+     * 把“仅含关闭操作”的 step 合并进【上一个 step】，使“开始→停止 / 封装为步骤”过程中
+     * 关闭当前页（含同标签整页跳转后直接关闭根页）仍落在同一个 @Step 方法内，不拆成多个 step。
+     * 合并后关闭操作按原 _pageClass 内联渲染（调用对应页对象的 closeCurrentPage()）。
+     * 若没有前置 step 可并入（极少见，如会话仅有关闭操作），则保留为独立 step。
+     */
+    private static List<List<RoleEntry>> mergeCloseOnlySteps(List<List<RoleEntry>> steps) {
+        if (steps == null) return new ArrayList<>();
+        List<List<RoleEntry>> out = new ArrayList<>();
+        List<RoleEntry> last = null;
+        for (List<RoleEntry> st : steps) {
+            if (st == null) continue;
+            if (isCloseOnlyStep(st)) {
+                if (last != null) { last.addAll(st); continue; }
+                // 无前置 step 可并入：保留为独立 step
+            }
+            out.add(st);
+            last = st;
+        }
+        return out;
     }
 
     /**

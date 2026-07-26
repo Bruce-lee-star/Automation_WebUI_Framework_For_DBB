@@ -306,19 +306,7 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    // ==================== 时间范围操作 + 验证（保留，有验证逻辑） ====================
 
-    public boolean performActionWithTimeout(Runnable action, Supplier<Boolean> validation, int timeoutSeconds, String actionDescription) {
-        try {
-            SerenityReporter.flushPendingApiOperations();
-            boolean result = super.performActionWithTimeout(action, validation, timeoutSeconds, actionDescription);
-            recordVerification("action_" + actionDescription, result);
-            return result;
-        } catch (Exception e) {
-            logger.debug("Failed to perform action with timeout: {}", actionDescription, e);
-            throw new TimeoutException("Failed to perform action with timeout: " + actionDescription, e);
-        }
-    }
 
     public boolean getPageSourceContains(String text) {
         try {
@@ -420,14 +408,11 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public void waitForElementEnabled(String s, int t) { super.waitForElementEnabled(s, t); recordVerification("elementEnabled_" + s, true); }
     @Override public void waitForElementChecked(String s, int t) { super.waitForElementChecked(s, t); recordVerification("elementChecked_" + s, true); }
     @Override public void waitForElementNotChecked(String s, int t) { super.waitForElementNotChecked(s, t); recordVerification("elementNotChecked_" + s, true); }
-    @Override public void waitForElementCount(String s, int c, int to) { super.waitForElementCount(s, c, to); recordVerification("elementCount_" + s, true); }
-    @Override public void waitForElementCountAtLeast(String s, int c, int to) { super.waitForElementCountAtLeast(s, c, to); recordVerification("elementCountAtLeast_" + s, true); }
+
     @Override public void waitForNetworkIdle(int to) { super.waitForNetworkIdle(to); recordVerification("networkIdle", true); }
     @Override public void waitForPageFullyLoaded(int to) { super.waitForPageFullyLoaded(to); recordVerification("pageFullyLoaded", true); }
     @Override public void waitForDOMContentLoaded(int to) { super.waitForDOMContentLoaded(to); recordVerification("domContentLoaded", true); }
-    @Override public void waitForUrlEquals(String url, int to) { super.waitForUrlEquals(url, to); recordVerification("urlEquals", true); }
-    @Override public void waitForUrlStartsWith(String pfx, int to) { super.waitForUrlStartsWith(pfx, to); recordVerification("urlStartsWith", true); }
-    @Override public void waitForCustomCondition(Supplier<Boolean> c, int to, String desc) { super.waitForCustomCondition(c, to, desc); recordVerification("custom_" + desc, true); }
+
 
     // --- Cookie 操作 ---
     @Override public List<Cookie> getCookies() { return recordAndReturn("getCookies", null, super::getCookies); }

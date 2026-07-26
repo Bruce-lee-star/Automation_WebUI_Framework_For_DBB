@@ -118,11 +118,10 @@ public final class RoleElementPicker {
                 Map<Object, Object> m = GSON.fromJson(String.valueOf(v), Map.class);
                 RoleEntry e = parsePick(m);
                 if (e == null) return null;
-                // 去重键与浏览器端 __rolePickSigs 完全一致：优先用回传的 _sigKey（即 __sigKey(pick) 结果），
-                // 退化为 _sig。重复点击以最近一次交互为准整条替换（RoleEntry 不可变，更新须替换）；首次插入保序。
-                Object sigObj = (m != null) ? m.get("_sigKey") : null;
-                if (sigObj == null && m != null) sigObj = m.get("_sig");
-                String key = (sigObj == null) ? "" : String.valueOf(sigObj);
+                // 去重键与浏览器端保持一致但更精确：定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）
+                // 去重，避免同一元素在“主页↔弹窗”间被重复收录；角色/closeOp 仍按 [sig, pageClass|URL]（_sigKey）区分。
+                // 重复点击以最近一次交互为准整条替换（RoleEntry 不可变，更新须替换）；首次插入保序。
+                String key = pickDedupKey(m, e);
                 synchronized (map) { map.put(key, e); log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={}（当前内存态大小={}）", key, (e.getPageClass() == null ? "" : e.getPageClass()), map.size()); }
             } catch (Exception ex) {
                 log.warn("[picker] __roleOnPick 回传解析失败：{}", ex.getMessage());
@@ -142,9 +141,7 @@ public final class RoleElementPicker {
                     Map<Object, Object> m = GSON.fromJson(t.substring("__roleOnPick::".length()), Map.class);
                     RoleEntry e = parsePick(m);
                     if (e == null) return;
-                    Object sigObj = (m != null) ? m.get("_sigKey") : null;
-                    if (sigObj == null && m != null) sigObj = m.get("_sig");
-                    String key = (sigObj == null) ? "" : String.valueOf(sigObj);
+                    String key = pickDedupKey(m, e);
                     synchronized (map) {
                         map.put(key, e);
                         log.info("[picker] __roleOnPick(console) 回传写入内存态：key={} pageClass={}（当前内存态大小={}）", key, (e.getPageClass() == null ? "" : e.getPageClass()), map.size());
@@ -1163,7 +1160,7 @@ public final class RoleElementPicker {
                 if (pick.strategy === 'role') {
                   base = 'role:' + (pick.role || '') + ':' + (pick.key || pick.name || '');
                 } else if (pick.strategy === 'i18n') base = 'i18n:' + (pick.name || '');
-                else if (pick.strategy === 'id') base = 'id:' + (pick.id || '');
+                else if (pick.strategy === 'id') base = 'id:' + (pick.id || '').replace(/^#/, '');
                 else if (pick.strategy === 'css') base = 'css:' + (pick.css || '');
                 else base = pick.strategy + ':' + (pick.name || '');
                 // 一组同定位器元素（如多条同名链接）按序号区分签名，使 nth(0)/nth(1) 均可独立拾取，
@@ -1177,12 +1174,14 @@ public final class RoleElementPicker {
               // 同一页内仍按签名去重（同一元素重复点只保留一份），但跨页同名元素各自独立保留。
               window.__sigKey = function(pick) {
                 var pageKey = (pick && pick._pageClass) || '';
-                // 用页面 URL 兜底区分：跨页同名元素本应靠 _pageClass 区分，但 _pageClass 由 onFrameNavigated
-                // 异步设置，整页跳转瞬间可能仍是旧值，导致“跳到新页面点同名元素被旧页签名误判重复而丢弃”
-                // （表现：登录后跳转到新页面，点元素 Java 内存态涨、面板却空 = 二次拾取失败）。
-                // URL 实时可靠，补齐这一时间窗，使跨页同名元素各自独立进入面板；
-                // 同页不同元素仍靠 role+name+index 区分，不受 URL 兜底影响。
-                try { if (location && location.href) pageKey = pageKey + '|' + location.href; } catch (e) {}
+                // 页面类（_pageClass）就是页面身份，稳定可靠：有它时去重键只用 [pickSig, pageClass]，
+                // 不再附加 URL。此前无条件把 location.href 拼进键，导致“URL change 后再回到本页”时
+                // 因 query/hash 抖动使同一元素的键改变、去重失配 → role 元素整组重复收录（本次 bug 根因）。
+                // 仅当 _pageClass 尚未派生（整页跳转瞬间为空）才用规范化路径（origin+pathname，去掉 query/hash）
+                // 兜底区分跨页同名元素，避免旧页签名误判；query/hash 抖动被归一，不再重复。
+                if (!pageKey) {
+                  try { if (location) pageKey = (location.origin || '') + (location.pathname || ''); } catch (e) {}
+                }
                 return JSON.stringify([window.__pickSig(pick) || '', pageKey]);
               };
               // 落盘最新拾取态到 localStorage：用于“点击会触发整页跳转的元素”场景——
@@ -1893,19 +1892,44 @@ public final class RoleElementPicker {
               window.__roleActiveTab = window.__roleActiveTab || 'page';
 
               var copyBtn = mkIconBtn(ICON.copy, '#1976d2', '复制代码', function() {
-                var ta = null;
+                var ta = null, code = '';
                 try {
                   if (window.__roleActiveTab === 'class') {
                     var k = window.__roleClassSubTabBar_active;
                     ta = k ? document.getElementById('__roleCodeArea__' + k) : null;
                     if (!ta) ta = document.querySelector('#__roleClassAreas textarea');
+                    code = ta ? ta.value : '';
                   } else if (window.__roleActiveTab === 'step') {
                     var k2 = window.__roleStepSubTabBar_active;
                     ta = k2 ? document.getElementById('__roleCodeArea2__' + k2) : null;
                     if (!ta) ta = document.querySelector('#__roleStepAreas textarea');
+                    code = ta ? ta.value : '';
+                  } else {
+                    // “页面元素”Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，
+                    // 每行与列表展示一致（strategy/role/name/id/css/index/标记），便于外部粘贴核对。
+                    var act = window.__roleActivePageClass || '全部';
+                    var lines = [];
+                    (window.__rolePicks || []).forEach(function(p) {
+                      if (!p) return;
+                      var pc = p._pageClass || (window.__rolePageName || '未知页');
+                      if (act !== '全部' && pc !== act) return;
+                      var s = (p.strategy || 'role');
+                      if (p.role) s += ' role=' + p.role;
+                      if (p.name) s += ' name="' + p.name + '"';
+                      if (p.key) s += ' key=' + p.key;
+                      if (p.id) s += ' id=' + p.id;
+                      if (p.css) s += ' css=' + p.css;
+                      if (p.index != null && p.index >= 0) s += ' #' + p.index;
+                      if (p.popup) s += ' [popup]';
+                      if (p.download) s += ' [download]';
+                      if (p.hover) s += ' [hover]';
+                      if (p.dblClick) s += ' [dbl]';
+                      lines.push(pc + ' | ' + s);
+                    });
+                    code = lines.join('\\n');
+                    if (!code) { status.textContent = '当前无可复制的页面元素'; return; }
                   }
                 } catch (e) {}
-                var code = ta ? ta.value : '';
                 function ok() { status.textContent = '已复制 ✔'; copyBtn.title = '已复制'; }
                 try {
                   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1913,8 +1937,19 @@ public final class RoleElementPicker {
                   } else { fb(); }
                 } catch (e) { fb(); }
                 function fb() {
+                  // 兜底：有文本框则选中复制；“页面元素”Tab 无文本框时用临时 textarea 承载再 execCommand。
                   if (ta) { ta.focus(); ta.select(); try { document.execCommand('copy'); ok(); }
-                  catch (e2) { status.textContent = '复制失败，请手动复制'; } }
+                  catch (e2) { status.textContent = '复制失败，请手动复制'; } return; }
+                  try {
+                    var tmp = document.createElement('textarea');
+                    tmp.value = code;
+                    tmp.style.cssText = 'position:fixed;left:-9999px;top:0;';
+                    document.body.appendChild(tmp);
+                    tmp.focus(); tmp.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tmp);
+                    ok();
+                  } catch (e3) { status.textContent = '复制失败，请手动复制'; }
                 }
               });
               // 整页扫描：一次性收全当前页所有“带可访问名的语义角色元素”（heading/link/button/img/...），
@@ -2458,8 +2493,23 @@ public final class RoleElementPicker {
                 // （原实现对命令页额外发一次收尾 evaluate + 一次 readPickSnapshot，与 stop() 共 3 次串行往返，
                 //  现已合并进 stopAndRead，点击“停止”的端到端延迟显著下降。）
                 PickSnapshot snap = null;
+                // 折叠已关闭页（如“跳转到新页面后直接关闭”的根页）缓存的 step/op：停止生成时这些页被跳过，
+                // 若不折叠，其在 onClose else 分支补登记的 closeCurrentPage 步骤会丢失。
+                List<StepRec> closedSteps = new ArrayList<>();
+                List<PageOp> closedOps = new ArrayList<>();
                 for (Page p : pageNames.keySet()) {
-                    if (p.isClosed()) continue;
+                    if (p.isClosed()) {
+                        String cached = snapshots.get(p);
+                        if (cached != null && !cached.isEmpty()) {
+                            try {
+                                java.util.Map<String, Object> cm = GSON.fromJson(cached, java.util.Map.class);
+                                PickSnapshot cs = parsePickSnapshot(cm);
+                                closedSteps.addAll(cs.steps);
+                                closedOps.addAll(cs.ops);
+                            } catch (Exception ignore) {}
+                        }
+                        continue;
+                    }
                     if (p == page) snap = stopAndRead(p);
                     else stop(p);
                 }
@@ -2470,6 +2520,14 @@ public final class RoleElementPicker {
                 if (!javaPickBySig.isEmpty()) {
                     List<RoleEntry> memEntries = new ArrayList<>(javaPickBySig.values());
                     snap = new PickSnapshot(snap.pageClass, memEntries, snap.steps, snap.ops);
+                }
+                // 合入已关闭页的步骤/操作（含其补登记的 closeCurrentPage），避免关闭步骤在停止时被跳过而丢失。
+                if (!closedSteps.isEmpty() || !closedOps.isEmpty()) {
+                    List<StepRec> mergedSteps = new ArrayList<>(snap.steps);
+                    mergedSteps.addAll(closedSteps);
+                    List<PageOp> mergedOps = new ArrayList<>(snap.ops);
+                    mergedOps.addAll(closedOps);
+                    snap = new PickSnapshot(snap.pageClass, snap.entries, mergedSteps, mergedOps);
                 }
                 // 关键修复（修复“开始→停止→再开始→停止，第一次的步骤代码丢失”）：
                 // 整页跳转时 onFrameNavigated→applyPickState 会用 snapshots 里的 Java 恢复态【整体覆盖】
@@ -2772,7 +2830,11 @@ public final class RoleElementPicker {
                     + "   function toPick(p){ if(!p) return p; var o={};"
                     + "     o.strategy=p.strategy; o.role=p.role; o.name=p.name;"
                     + "     o.key=(p.resolvedKey!=null)?p.resolvedKey:undefined;"
-                    + "     o.id=(p.strategy==='id')?p.selector:undefined;"
+                    + "     // id 策略的 selector 在 Java 侧以 CSS 选择器形式存储（如 \"#logoHeader\"），\n"
+                    + "     // 需剥掉前导 '#' 还原成裸 id（\"logoHeader\"），否则与浏览器直播点击产生的\n"
+                    + "     // id=logoHeader 签名（id:logoHeader vs id:#logoHeader）不一致、无法去重，\n"
+                    + "     // 面板里会多出一整条 \"id=#logoHeader\" 冗余副本。\n"
+                    + "     o.id=(p.strategy==='id' && p.selector)? String(p.selector).replace(/^#/, '') : undefined;"
                     + "     o.css=(p.strategy==='css')?p.selector:undefined;"
                     + "     o.index=p.index; o._pageClass=p.pageClass; return o; }"
                     + "   // 改为【合并】而非【整体覆盖】 window.__rolePicks：window.__rolePicks 是浏览器侧按本标签页累积的"
@@ -2784,11 +2846,16 @@ public final class RoleElementPicker {
                     + "   window.__rolePickSigs = window.__rolePickSigs || {};"
                     + "   arr.forEach(function(p){"
                     + "     var o = toPick(p);"
+                    // 关键修复：push 的必须是转换后的浏览器格式 o（含 id/css/key/_pageClass），
+                    // 而非原始 Java 格式 p（字段是 selector/pageClass/resolvedKey，无 id/_pageClass）。
+                    // 之前 push(p) 导致：面板读不到 p.id → 出现无值的 “id” 行；p 缺 _sig/_pageClass →
+                    // 破坏后续所有基于签名/页面类的去重与归类（表现为元素重复 / 空 id）。
+                    + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
                     + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(o)"
-                    + "            : ((p&&(p._sigKey||p._sig))||null);"
+                    + "            : ((o&&(o._sigKey||o._sig))||null);"
                     + "     if (k && window.__rolePickSigs[k]) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
-                    + "     window.__rolePicks.push(p); });"
+                    + "     window.__rolePicks.push(o); });"
                     + "   if (window.__renderPicks) window.__renderPicks();"
                     + " } catch(e){} })();");
         } catch (Exception ignore) {}
@@ -2997,6 +3064,26 @@ public final class RoleElementPicker {
             }
         }
         return result;
+    }
+
+    /**
+     * 定位器唯一型策略：同一 locator 跨页面指向同一元素，回传去重时按 locator 签名（_sig）而非 [sig, pageClass|URL]，
+     * 避免“回到主页 / 关弹窗”时同一元素被重复收录（如 id=logoHeader 在主页与弹窗各存一份、主页元素多出一份）。
+     * 角色策略（role+name）与 closeOp 仍按页面作用域（_sigKey）区分，保留跨页同名元素各自独立。
+     */
+    private static final java.util.Set<String> LOCATOR_IDENTITY_STRATEGIES = new java.util.HashSet<>(java.util.Arrays.asList(
+            "id", "css", "i18n", "text", "title", "placeholder", "label", "testid", "altText"));
+
+    /** 计算拾取回传的权威去重键：定位器唯一型策略用语 locator 签名（_sig），其余（role/closeOp）用页面作用域键（_sigKey）。 */
+    private static String pickDedupKey(Map<Object, Object> m, RoleEntry e) {
+        if (m == null) return "";
+        Object sig = m.get("_sig");
+        Object sigKey = m.get("_sigKey");
+        String strategy = (e != null) ? e.getStrategy() : null;
+        boolean locatorIdentity = strategy != null && LOCATOR_IDENTITY_STRATEGIES.contains(strategy);
+        if (locatorIdentity && sig != null) return String.valueOf(sig);
+        if (sigKey != null) return String.valueOf(sigKey);
+        return sig != null ? String.valueOf(sig) : "";
     }
 
     /** 把一次拾取返回的 map 解析为 {@link RoleEntry}（getEntries 与 getSteps 共用，保证解析一致）。 */
@@ -3364,18 +3451,22 @@ public final class RoleElementPicker {
         // 主循环检测到 current[0] 已关闭后需等待该回退完成；用 wait/notify 精确等待（而非 Thread.sleep），
         // onClose 完成后立即 notify，主循环即时唤醒，不再空等固定时长，也避免忙睡引入的时序抖动。
         final Object closeSignal = new Object();
+        // 记录“发生过整页跳转（URL 变化使 pageClass 改变）”的页面（Identity 比较），用于：
+        // 同标签跳转到新页面后直接关闭时，补登记 closeCurrentPage 步骤（普通单页录制末尾不追加）。
+        final java.util.Set<Page> navigatedPages =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
         // 把根页类名暴露给面板标题展示（新页面在 followPage 里设置），并持久化以便整页重建后恢复。
         page.evaluate("window.__rolePageName = " + GSON.toJson(pageClassName) + ";"
                 + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(pageClassName) + ");}catch(e){}");
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
-        registerPopupFollow(page, null, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, closeSignal, javaPickBySig);
+        registerPopupFollow(page, null, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
         // 上下文级“任意新页面”监听：覆盖非 window.open 打开的新标签页（onPopup 仅捕获弹窗）。
         // 用 opener()==null 过滤掉弹窗（弹窗已由上面的 onPopup 跟随），避免重复跟随。
         ctx.onPage(p -> {
             if (p.opener() != null) return;
             log.info("[picker] 新页面打开（onPage）：{}", p.url());
-            followPage(current[0], p, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, closeSignal, javaPickBySig);
+            followPage(current[0], p, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
         });
 
         log.info("[picker] 面板已打开（同窗口 docked 右侧，不另开窗口）：▶ 开始拾取 → 点击元素 → ⏹ 停止生成代码 → 📋 复制；✕ 关闭结束。");
@@ -3527,12 +3618,12 @@ public final class RoleElementPicker {
                                         String stepClassName, boolean[] active,
                                         LinkedHashMap<Page, String> pageNames,
                                         LinkedHashMap<Page, String> snapshots,
-                                        LinkedHashMap<String, String> urlToClass,
-                                        List<Page> openedPages, BlockingQueue<CmdEvent> cmdQueue,
-                                        Object closeSignal,
-                                        LinkedHashMap<String, RoleEntry> javaPickBySig) {
+                                    LinkedHashMap<String, String> urlToClass,
+                                    List<Page> openedPages, BlockingQueue<CmdEvent> cmdQueue,
+                                    java.util.Set<Page> navigatedPages, Object closeSignal,
+                                    LinkedHashMap<String, RoleEntry> javaPickBySig) {
         // 弹窗（window.open / target=_blank 等）跟随：复用 followPage 把 inspector 跟随到新页面。
-        page.onPopup(popup -> followPage(page, popup, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, closeSignal, javaPickBySig));
+        page.onPopup(popup -> followPage(page, popup, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig));
         // 当前页面关闭监听：若关闭的是弹窗，把 inspector 回退到父页（默认页面）并重建面板，
         // 使单一 inspector 回到原页面继续拾取（对齐 page.pause()：关掉弹出的标签页后 inspector 不消失）。
         // 多页面模型下每个页面保留各自独立的拾取（不合并），故此处仅重建父页面板、不回写子页数据。
@@ -3546,6 +3637,7 @@ public final class RoleElementPicker {
                     String live = readPickStateJson(closed);
                     if (live != null && hasPicks(live)) snapshots.put(closed, live);
                 } catch (Exception ignore) {}
+                String closedCls = pageNames.get(closed);   // 提升至 if/else 之前，使根页（else）分支也能引用
                 if (parent != null && !parent.isClosed()) {
                     // 先切回父页并保留其面板：即使后续合并/渲染操作抛异常，也不影响“回退父页 + 面板存活”，
                     // 否则 onClose 中途异常会跳过 current[0]=parent，主循环将把“弹窗关闭”误判为会话结束，
@@ -3572,8 +3664,19 @@ public final class RoleElementPicker {
                                 + " window.__rolePicks = window.__rolePicks || [];"
                                 + " window.__rolePickSigs = window.__rolePickSigs || {};"
                                 + " var s = " + closedState + ";"
+                                // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重：
+                                // 弹窗打开时被 followPage 复制进来的“主页元素”与主页已有元素 locator 相同，
+                                // 关弹窗回灌时不应再追加一份（用户明确：回到主页追加一份不是期望的）。
+                                // 角色/closeOp 仍按 [sig, pageClass|URL] 区分，跨页同名元素各自独立。
+                                + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+                                + " var __loc = {};"
+                                + " (window.__rolePicks||[]).forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
                                 + " (s.picks||[]).forEach(function(p){"
-                                + "   var k = JSON.stringify([(p&&p._sig)||'', (p&&p._pageClass)||'']);"
+                                + "   var sig=(p&&p._sig)||'';"
+                                + "   var li=(p&&__LOCID[p.strategy]);"
+                                + "   if (li && sig && __loc[sig]) return;"
+                                + "   if (li && sig) __loc[sig]=true;"
+                                + "   var k = JSON.stringify([sig, (p&&p._pageClass)||'']);"
                                 + "   if (k && window.__rolePickSigs[k]) return;"
                                 + "   if (k) window.__rolePickSigs[k] = true;"
                                 + "   window.__rolePicks.push(p); });"
@@ -3585,7 +3688,6 @@ public final class RoleElementPicker {
                         // 同时把“关闭该页”登记为当前 step 内的一个操作标记（_closeOp），而非独立 step，
                         // 使代码生成器产出 closeCurrentPage() 内联在主流程中（用户明确要求“只有一个条件：开始-停止”）。
                         // 关闭标记按 _sig 去重（支持多次关闭同类弹窗），并随 __currentStep 在停止时被收尾进唯一一个 step。
-                        String closedCls = pageNames.get(closed);
                         if (closedCls != null && !closedCls.isEmpty()) {
                             parent.evaluate(
                                 "(function(){"
@@ -3659,6 +3761,14 @@ public final class RoleElementPicker {
                         rootClosed[0] = true;   // 连根页面都关了、且无其它存活页面：结束会话
                         log.info("[picker] 原页面已关闭，拾取会话结束。");
                     }
+                    // 同标签整页跳转到新页面后“直接关闭”该根页：原逻辑只在“有存活父页”的弹窗分支
+                    // 登记 _closeOp（→ closeCurrentPage），根页关闭走本 else 分支从不登记；且停止生成时
+                    // 已关闭页被跳过，导致关闭步骤丢失。故在此把“关闭当前页”补登记为该页缓存快照里的一条
+                    // step（含 _closeOp 标记），停止时由 runPickerCommand 的 stop 分支折叠回最终快照 → 生成
+                    // closeCurrentPage()。仅对“发生过整页跳转”的页生效，普通单页录制末尾不会无谓追加。
+                    if (closedCls != null && !closedCls.isEmpty() && navigatedPages.contains(closed)) {
+                        appendCloseOpStep(closed, closedCls, snapshots);
+                    }
                 }
             } catch (Exception ignore) { /* 父页亦不可用：忽略 */ }
             finally { synchronized (closeSignal) { closeSignal.notifyAll(); } }
@@ -3726,8 +3836,18 @@ public final class RoleElementPicker {
                             + "   var s = JSON.parse(raw);"
                             + "   window.__rolePicks = window.__rolePicks || [];"
                             + "   window.__rolePickSigs = window.__rolePickSigs || {};"
+                            // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重，
+                            // 避免“跳转再返回”合并时同一元素（如 id=logoHeader）被追加副本；
+                            // role/closeOp 仍按 [sig, pageClass|URL] 区分（与 close-merge、Java 权威态一致）。
+                            + "   var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+                            + "   var __loc = {};"
+                            + "   window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
                             + "   (s.picks||[]).forEach(function(p){"
-                            + "     var k = JSON.stringify([(p&&p._sig)||'', (p&&p._pageClass)||'']);"
+                            + "     var sig=(p&&p._sig)||'';"
+                            + "     var li=(p&&__LOCID[p.strategy]);"
+                            + "     if (li && sig && __loc[sig]) return;"
+                            + "     if (li && sig) __loc[sig]=true;"
+                            + "     var k = JSON.stringify([sig, (p&&p._pageClass)||'']);"
                             + "     if (k && window.__rolePickSigs[k]) return;"
                             + "     if (k) window.__rolePickSigs[k] = true;"
                             + "     window.__rolePicks.push(p); });"
@@ -3757,8 +3877,17 @@ public final class RoleElementPicker {
                             + " var picks = (s && s.picks) || [];"
                             + " window.__rolePicks = window.__rolePicks || [];"
                             + " window.__rolePickSigs = window.__rolePickSigs || {};"
+                            // 同上：定位器唯一型策略按 _sig 全局去重，防止 SPA 路由/同页跳转合并快照时
+                            // 把同一 locator 元素以不同 pageClass 追加成副本；role/closeOp 保持页面作用域键。
+                            + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+                            + " var __loc = {};"
+                            + " window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
                             + " picks.forEach(function(p){"
-                            + "   var k = JSON.stringify([(p&&p._sig)||'', (p&&p._pageClass)||'']);"
+                            + "   var sig=(p&&p._sig)||'';"
+                            + "   var li=(p&&__LOCID[p.strategy]);"
+                            + "   if (li && sig && __loc[sig]) return;"
+                            + "   if (li && sig) __loc[sig]=true;"
+                            + "   var k = JSON.stringify([sig, (p&&p._pageClass)||'']);"
                             + "   if (k && window.__rolePickSigs[k]) return;"
                             + "   if (k) window.__rolePickSigs[k] = true;"
                             + "   window.__rolePicks.push(p); });"
@@ -3796,7 +3925,7 @@ public final class RoleElementPicker {
                 String newCls = resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
                 page.evaluate("window.__rolePageName = " + GSON.toJson(newCls) + ";"
                         + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(newCls) + ");}catch(e){}");
-                if (!newCls.equals(curCls)) pageNames.put(page, newCls);
+                if (!newCls.equals(curCls)) { pageNames.put(page, newCls); navigatedPages.add(page); }
                 } catch (Exception restoreEx) {
                     // 数据恢复（applyPickState / 合并 / 渲染 / 类名解析）任一 evaluate 因导航瞬间页面不稳抛异常，
                     // 必须吞掉且【不能影响下方 start() 重激活】——否则会出现“刷新/导航后点了没反应、拾取不了”
@@ -3932,7 +4061,7 @@ public final class RoleElementPicker {
                                    LinkedHashMap<Page, String> snapshots,
                                    LinkedHashMap<String, String> urlToClass,
                                    List<Page> openedPages, BlockingQueue<CmdEvent> cmdQueue,
-                                   Object closeSignal,
+                                   java.util.Set<Page> navigatedPages, Object closeSignal,
                                    LinkedHashMap<String, RoleEntry> javaPickBySig) {
         try {
             final boolean sessionActive = active[0];
@@ -3972,7 +4101,7 @@ public final class RoleElementPicker {
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, readPickStateJson(newPage));
             // 新页面若再弹窗/再开页，继续跟随；把“是否处于拾取态”传下去，供其 onClose 回退父页时恢复。
-            registerPopupFollow(newPage, opener, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, closeSignal, javaPickBySig);
+            registerPopupFollow(newPage, opener, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
             log.info("[picker] 已在新页面（{}）注入独立面板，默认页面板保留不消失。", cls);
         } catch (Exception e) {
             log.warn("[picker] 页面跟随失败：{}", e.getMessage());
@@ -4267,5 +4396,65 @@ public final class RoleElementPicker {
 
     private static String asString(Object o) {
         return o == null ? null : o.toString();
+    }
+
+    /** 关闭步骤序号器：保证每次“关闭当前页”标记签名唯一、可去重。 */
+    private static final java.util.concurrent.atomic.AtomicInteger CLOSE_SEQ =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /**
+     * 把“关闭当前页”补登记为一条 step（含 _closeOp 标记的 pick），追加进该页缓存快照（snapshots），
+     * 供停止生成时（已关闭页被跳过）折叠回最终快照，从而生成 closeCurrentPage() 步骤。
+     * 仅用于“同标签整页跳转到新页面后直接关闭”的根页场景（普通弹窗关闭已由 onClose 的父页分支处理）。
+     */
+    private static void appendCloseOpStep(Page closed, String pageClass,
+                                          LinkedHashMap<Page, String> snapshots) {
+        try {
+            String json = snapshots.get(closed);
+            java.util.Map<String, Object> m = (json != null && !json.isEmpty())
+                    ? GSON.fromJson(json, java.util.Map.class) : null;
+            if (m == null) m = new java.util.LinkedHashMap<String, Object>();
+            java.util.List<java.util.Map<String, Object>> steps;
+            Object st = m.get("steps");
+            if (st instanceof java.util.List) {
+                @SuppressWarnings("unchecked")
+                java.util.List<java.util.Map<String, Object>> tmp = (java.util.List<java.util.Map<String, Object>>) st;
+                steps = tmp;
+            } else {
+                steps = new java.util.ArrayList<java.util.Map<String, Object>>();
+                m.put("steps", steps);
+            }
+            // 去重：同页已存在相同 pageClass 的关闭 step 则不重复追加。
+            boolean dup = false;
+            for (Object s : steps) {
+                if (s instanceof java.util.Map && pageClass.equals(((java.util.Map<?, ?>) s).get("pageClass"))
+                        && hasClosePick((java.util.Map<?, ?>) s)) { dup = true; break; }
+            }
+            if (dup) return;
+            java.util.Map<String, Object> step = new java.util.LinkedHashMap<String, Object>();
+            step.put("pageClass", pageClass);
+            java.util.List<java.util.Map<String, Object>> picks = new java.util.ArrayList<java.util.Map<String, Object>>();
+            java.util.Map<String, Object> closePick = new java.util.LinkedHashMap<String, Object>();
+            closePick.put("_closeOp", Boolean.TRUE);
+            closePick.put("_pageClass", pageClass);
+            closePick.put("_sig", "__close_" + CLOSE_SEQ.incrementAndGet());
+            closePick.put("tag", "close");
+            picks.add(closePick);
+            step.put("picks", picks);
+            steps.add(step);
+            snapshots.put(closed, GSON.toJson(m));
+        } catch (Exception ignore) { /* 缓存快照不可用：忽略，关闭步骤将缺失（极少见） */ }
+    }
+
+    private static boolean hasClosePick(java.util.Map<?, ?> step) {
+        Object ps = step.get("picks");
+        if (ps instanceof java.util.List) {
+            for (Object p : (java.util.List<?>) ps) {
+                if (p instanceof java.util.Map && Boolean.TRUE.equals(((java.util.Map<?, ?>) p).get("_closeOp"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

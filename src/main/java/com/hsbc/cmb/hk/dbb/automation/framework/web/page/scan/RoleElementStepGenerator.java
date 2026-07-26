@@ -254,6 +254,8 @@ public final class RoleElementStepGenerator {
                 StringBuilder m = new StringBuilder();
                 m.append("    @Step\n");
                 m.append("    public void step").append(stepIdx).append("() {\n");
+                boolean sawPopup = false;
+                String popupTargetVar = null;   // 弹窗目标页对象变量：交由它接管并在其上 closeCurrentPage
                 if (step == null || step.isEmpty()) {
                     m.append("        // 该 step 未拾取任何元素\n");
                 } else {
@@ -264,7 +266,10 @@ public final class RoleElementStepGenerator {
                         if (var == null) var = pageVar.get(stepPageClass);
                         if (var == null) continue;
                         if (e.isCloseOp()) {
-                            // 关闭当前页（弹窗）：closeCurrentPage 由 BasePage 的 page.onClose 自动切回默认页。
+                            // 关闭当前页（弹窗）：仅在“本 step 没有对应弹窗打开”（如同标签整页跳转后直接关闭根页）
+                            // 时由此渲染；若本 step 含弹窗打开（sawPopup），关闭已由下方基于“打开页”统一兜底，
+                            // 避免重复生成且避免在错误页变量上调用 closeCurrentPage（弹窗页实例引用并非被关的弹窗）。
+                            if (sawPopup) continue;
                             m.append("        ").append(var)
                                     .append(".closeCurrentPage(); // 关闭当前页（弹窗），onClose 自动切回默认页\n");
                             continue;
@@ -277,25 +282,44 @@ public final class RoleElementStepGenerator {
                         String op = target + "." + operationFor(e);
                         if (e.isDownload()) {
                             if (e.isPopup()) {
-                                m.append("        ").append(var).append(".waitForDownload(() -> {\n")
-                                        .append("            ").append(var).append(".switchToNewPage(() ->\n")
-                                        .append("                    ").append(op).append(", 15);\n")
-                                        .append("        });\n");
+                            sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;
+                            m.append("        ").append(var).append(".waitForDownload(() -> {\n")
+                                    .append("            ").append(var).append(".switchToNewPage(() ->\n")
+                                    .append("                    ").append(op).append(", 15);\n")
+                                    .append("        });\n");
                             } else {
                                 m.append("        ").append(var).append(".waitForDownload(() ->\n")
                                         .append("                ").append(op).append(");\n");
                             }
                         } else if (e.isPopup()) {
                             // 弹窗链接（target=_blank）：用框架封装的 switchToNewPage 切换页对象上下文，
-                            // 并把新页面赋给 Page 变量（保留引用），后续操作在新页面执行。
+                            // 并把新页面赋给 Page 变量（保留引用）；再把新页面绑到“目标页对象”
+                            // （如 privacyAndSecurityPage），使后续操作/关闭都落在目标页对象而非打开页。
+                            sawPopup = true;
                             String npVar = nextNewPageVar(npIdx);
                             m.append("        Page ").append(npVar).append(" = ").append(var)
                                     .append(".switchToNewPage(() ->\n")
                                     .append("                ").append(op).append(", 15);\n");
+                            String popupTarget = inferPopupTargetVar(step, var, pageVar, opsByPage);
+                            if (popupTarget != null) {
+                                m.append("        ").append(popupTarget).append(".switchToPage(").append(npVar)
+                                        .append("); // 新页面交由 ").append(popupTarget).append(" 接管\n");
+                                if (popupTargetVar == null) popupTargetVar = popupTarget;
+                            } else if (popupTargetVar == null) {
+                                popupTargetVar = var;
+                            }
                         } else {
                             m.append("        ").append(op).append(";\n");
                         }
                     }
+                }
+                // 弹窗打开（sawPopup）：无论其 onClose 是否成功把 _closeOp 推回父页快照，都基于“打开页”统一补
+                // closeCurrentPage，保证“打开弹窗→关闭弹窗”闭环生成（修复：onClose 未捕获关闭时关闭步骤丢失）。
+                // switchToNewPage 后打开页实例的当前页引用即弹窗，故在打开页上调用 closeCurrentPage 语义正确。
+                if (sawPopup && popupTargetVar != null) {
+                    m.append("        ").append(popupTargetVar)
+                            .append(".closeCurrentPage(); // 关闭弹窗页（").append(popupTargetVar)
+                            .append(" 接管），onClose 自动切回默认页\n");
                 }
                 m.append("    }\n\n");
                 methods.append(m);
@@ -382,6 +406,23 @@ public final class RoleElementStepGenerator {
             imports.append("import ").append(packageName).append(".").append(className).append(";\n");
         }
         imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;\n\n");
+        // 预计算：哪些页是弹窗的目标页（其关闭已内联到“打开弹窗的 step”里），
+        // 避免下方按页视图再生成独立的 close 方法（重复且独立方法拿不到新页面引用）。
+        Set<String> inlinedTargetVars = new LinkedHashSet<>();
+        for (List<List<RoleEntry>> steps : stepsByPage.values()) {
+            if (steps == null) continue;
+            for (List<RoleEntry> st : steps) {
+                if (st == null) continue;
+                for (RoleEntry e : st) {
+                    if (!e.isPopup()) continue;
+                    String pc0 = e.getPageClass();
+                    String openVar = (pc0 == null || pc0.isEmpty()) ? "" : pageVar.getOrDefault(pc0, "");
+                    String t = inferPopupTargetVar(st, openVar, pageVar, opsByPage);
+                    if (t != null) inlinedTargetVars.add(t);
+                }
+            }
+        }
+
         String clsHeader = "package " + packageName + ".steps;\n\n" + imports
                 + "public class " + stepClassName + " {\n\n" + fields;
 
@@ -397,6 +438,8 @@ public final class RoleElementStepGenerator {
                     any = true;
                     methods.append("    @Step\n");
                     methods.append("    public void step").append(stepIdx).append("() {\n");
+                    boolean sawPopup = false;
+                    String popupTargetVar = null;   // 弹窗目标页对象变量：交由它接管并在其上 closeCurrentPage
                     if (step == null || step.isEmpty()) {
                         methods.append("        // 该 step 未拾取任何元素\n");
                     } else {
@@ -406,6 +449,9 @@ public final class RoleElementStepGenerator {
                             if (var == null) var = pageVar.get(pc);
                             if (var == null) continue;
                             if (e.isCloseOp()) {
+                                // 关闭当前页：仅在“本 step 没有对应弹窗打开”时渲染；含弹窗打开时由下方基于
+                                // “打开页”统一兜底，避免重复/错页（弹窗页实例引用并非被关的弹窗）。
+                                if (sawPopup) continue;
                                 methods.append("        ").append(var)
                                         .append(".closeCurrentPage(); // 关闭当前页（弹窗），onClose 自动切回默认页\n");
                                 continue;
@@ -418,6 +464,7 @@ public final class RoleElementStepGenerator {
                             String op = target + "." + operationFor(e);
                             if (e.isDownload()) {
                                 if (e.isPopup()) {
+                                    sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;
                                     methods.append("        ").append(var).append(".waitForDownload(() -> {\n")
                                             .append("            ").append(var).append(".switchToNewPage(() ->\n")
                                             .append("                    ").append(op).append(", 15);\n")
@@ -427,14 +474,30 @@ public final class RoleElementStepGenerator {
                                             .append("                ").append(op).append(");\n");
                                 }
                             } else if (e.isPopup()) {
+                                sawPopup = true;
                                 String npVar = nextNewPageVar(npIdx);
                                 methods.append("        Page ").append(npVar).append(" = ").append(var)
                                         .append(".switchToNewPage(() ->\n")
                                         .append("                ").append(op).append(", 15);\n");
+                                String popupTarget = inferPopupTargetVar(step, var, pageVar, opsByPage);
+                                if (popupTarget != null) {
+                                    methods.append("        ").append(popupTarget).append(".switchToPage(").append(npVar)
+                                            .append("); // 新页面交由 ").append(popupTarget).append(" 接管\n");
+                                    if (popupTargetVar == null) popupTargetVar = popupTarget;
+                                } else if (popupTargetVar == null) {
+                                    popupTargetVar = var;
+                                }
                             } else {
                                 methods.append("        ").append(op).append(";\n");
                             }
                         }
+                    }
+                    // 弹窗打开（sawPopup）：无论 onClose 是否成功登记 _closeOp，都基于“打开页”统一补 closeCurrentPage，
+                    // 保证“打开弹窗→关闭弹窗”闭环生成（修复：onClose 未捕获关闭时关闭步骤丢失）。
+                    if (sawPopup && popupTargetVar != null) {
+                        methods.append("        ").append(popupTargetVar)
+                                .append(".closeCurrentPage(); // 关闭弹窗页（").append(popupTargetVar)
+                                .append(" 接管），onClose 自动切回默认页\n");
                     }
                     methods.append("    }\n\n");
                 }
@@ -444,6 +507,9 @@ public final class RoleElementStepGenerator {
                     if ("close".equals(op)) {
                         String var = pageVar.get(pc);
                         if (var == null) continue;
+                        // 该页是弹窗目标页：关闭已内联到“打开弹窗的 step”中（含 switchToPage 绑定），
+                        // 此处跳过独立方法，避免重复生成且独立方法拿不到弹窗引用。
+                        if (inlinedTargetVars.contains(var)) continue;
                         any = true;
                         methods.append("    @Step\n");
                         methods.append("    public void close").append(pc).append("() {\n");
@@ -464,6 +530,40 @@ public final class RoleElementStepGenerator {
                                         LinkedHashMap<String, List<RoleEntry>> entriesByPage,
                                         String packageName, String stepClassName) {
         return generateMulti(stepsByPage, entriesByPage, new LinkedHashMap<>(), packageName, stepClassName);
+    }
+
+    /**
+     * 推断弹窗打开后应由哪个 Page 对象接管（目标页变量）。
+     * <p>优先取 step 内弹窗 link 之后、归属页不同于打开页的首个元素所在页（跨页同 step 场景，
+     * 弹窗内继续拾取的元素即归属弹窗页）；否则取 {@code opsByPage} 中标记了 {@code close} 且与打开页不同的
+     * 首个页面（弹窗关闭 op 的 pageClass 即弹窗页，由 {@code onClose} 在弹窗关闭时按当前页写入）。
+     * <p>这样生成的代码会把新页面绑到目标页对象（如 {@code privacyAndSecurityPage}）并在其上关闭，
+     * 而非复用打开页（{@code loginPage}），对齐“弹窗落到独立页对象”的语义。
+     */
+    private static String inferPopupTargetVar(List<RoleEntry> step, String openVar,
+            Map<String, String> pageVar, LinkedHashMap<String, List<String>> opsByPage) {
+        if (step != null) {
+            boolean pastPopup = false;
+            for (RoleEntry e : step) {
+                if (e.isPopup()) { pastPopup = true; continue; }
+                if (pastPopup && !e.isCloseOp()) {
+                    String pc = e.getPageClass();
+                    if (pc != null && !pc.isEmpty()) {
+                        String v = pageVar.get(pc);
+                        if (v != null && !v.equals(openVar)) return v;
+                    }
+                }
+            }
+        }
+        if (opsByPage != null) {
+            for (Map.Entry<String, List<String>> en : opsByPage.entrySet()) {
+                if (en.getValue() != null && en.getValue().contains("close")) {
+                    String v = pageVar.get(en.getKey());
+                    if (v != null && !v.equals(openVar)) return v;
+                }
+            }
+        }
+        return null;
     }
 
     /** 首字母小写（userName ← UserName），用于页面字段实例名。 */

@@ -25,10 +25,12 @@ import java.lang.annotation.Target;
  * </pre>
  *
  * <h3>2. 语义定位（对齐 page.pause() 推荐定位器优先级链）</h3>
-     * 通过 {@code text} / {@code altText} / {@code title} / {@code placeholder} / {@code testId} / {@code i18n}
+     * 通过 {@code text} / {@code altText} / {@code title} / {@code placeholder} / {@code testId} / {@code label}
      * 指定，分别对应 Playwright 的 {@code getByText} / {@code getByAltText} / {@code getByTitle} /
-     * {@code getByPlaceholder} / {@code getByTestId} / {@code [data-i18n="key"]}，比纯 CSS/XPath 字符串选择器更健壮、可访问性更友好。
-     * 其中 {@code i18n} 为基于 {@code data-i18n} 属性的多语言 key 定位，语言无关、最稳定（如 {@code header_business}）。
+     * {@code getByPlaceholder} / {@code getByTestId} / {@code getByLabel}，比纯 CSS/XPath 字符串选择器更健壮、可访问性更友好。
+     * 多语言 {@code data-i18n} 属性（如 {@code header_business}）直接走 CSS 属性选择器
+     * {@code &#64;Element("[data-i18n=\"header_business\"]")} 即可，无需在注解里增设专门字段（i18n 本质上就是
+     * 一个普通 DOM 属性，用 CSS 属性选择器 {@code [data-i18n="key"]} 表达最简洁、运行期最稳定）。
  * 设置任一语义属性后，{@link #role()} 自动忽略（默认值 {@link AriaRole#NONE} 即表示「非角色」）。
  * <pre>
  *     &#64;RoleElement(text = "Business")
@@ -54,6 +56,18 @@ public @interface RoleElement {
      * 设置任一语义属性后本属性被忽略。
      */
     AriaRole role() default AriaRole.NONE;
+
+    /**
+     * 标题层级（仅对 {@link AriaRole#HEADING} 有意义），对齐 Playwright {@code getByRole(HEADING).setLevel(n)}。
+     * 取值 1–6（对应 {@code h1}–{@code h6} / {@code aria-level}），默认 0 表示不限定层级（匹配任意层级标题）。
+     * <p>用于进一步收窄标题定位又不依赖 DOM 结构与文案——比纯文本/CSS 更抗重构。拾取器会自动从
+     * {@code <h1>–<h6>} 标签或 {@code aria-level} 推导该值。
+     * <pre>
+     *     &#64;RoleElement(role = AriaRole.HEADING, level = 2, key = "header_business")   // h2，语言无关 + 抗结构
+     *     public PageElement businessHeading;
+     * </pre>
+     */
+    int level() default 0;
 
     /**
      * nls 文件内的 key，如 "username"。两种场景生效：
@@ -111,20 +125,6 @@ public @interface RoleElement {
 
     /** 测试标记 data-testid 语义定位，等价于 {@code page.getByTestId(value)}（忽略 exact）。 */
     String testId() default "";
-
-    /**
-     * 多语言 i18n key 语义定位（对齐本项目 {@code data-i18n} 约定）。
-     * 元素若带 {@code data-i18n="xxx"} 属性，其本体即多语言 key——语言无关、且比可见文本稳定得多。
-     * 主要用于<b>非交互元素</b>（如 {@code generic} 角色的 {@code <span>}/{@code <div>}）：拾取时
-     * 交互控件优先走 {@code role+name}，仅当其未命中才回退到 {@code i18n}（排在 alt/text 之前）。
-     * 运行期等价 CSS 属性选择器 {@code [data-i18n="xxx"]}（精确匹配）。
-     * 设置后 {@link #role()} 自动忽略（i18n 是语义定位策略，非角色策略）。
-     * <pre>
-     *     &#64;RoleElement(i18n = "header_business")                  // [data-i18n="header_business"]，语言无关
-     *     public PageElement businessText;
-     * </pre>
-     */
-    String i18n() default "";
 
     /**
      * 关联 label 文本，等价于 Playwright 的 {@code page.getByLabel(value)}（与 page.pause() 生成的定位器对齐）。

@@ -183,10 +183,11 @@ public abstract class BasePage {
 
     /**
      * 创建 @RoleElement 注解字段对应的 PageElement。
-     * 支持两种策略（通过动态 Locator 供应商绑定，不缓存、页面切换后自动重绑新 Page）：
-     * <ul>
-     *   <li>语义定位（text / altText / title / placeholder / testId / i18n）：任一属性非空即启用，
-     *       对应 Playwright 的 getBy* 方法，忽略 role；</li>
+ * 支持两种策略（通过动态 Locator 供应商绑定，不缓存、页面切换后自动重绑新 Page）：
+ * <ul>
+ *   <li>语义定位（text / altText / title / placeholder / testId / label）：任一属性非空即启用，
+ *       对应 Playwright 的 getBy* 方法，忽略 role；多语言 {@code data-i18n} 属性则直接用
+ *       {@code @Element("[data-i18n=\"key\"]")}（CSS 属性选择器）表达，无需专门字段；</li>
      *   <li>角色定位（role + nls key / 字面 name）：保留多语言能力，
      *       因此 {@code NLSUtils.setLanguage("xx")} 后下次操作会自动解析为对应语言的可访问名。</li>
      * </ul>
@@ -238,13 +239,6 @@ public abstract class BasePage {
                 desc = a.description().isEmpty() ? "testId=" + a.testId() : a.description();
                 final String v = a.testId();
                 supplier = () -> self.byTestId(v);
-            } else if (a.i18n() != null && !a.i18n().isEmpty()) {
-                // i18n 语义定位（对齐本项目 data-i18n 约定）：属性本体即多语言 key，语言无关、最稳定。
-                // 等价 CSS 属性选择器 [data-i18n="key"]，始终精确匹配；忽略 exact（属性选择器本就精确）。
-                desc = a.description().isEmpty() ? "i18n=" + a.i18n() : a.description();
-                final String v = a.i18n();
-                final String sel = "[data-i18n=\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\"]";
-                supplier = () -> self.locator(sel);
             } else if (a.label() != null && !a.label().isEmpty()) {
                 // label 语义定位（对齐 page.pause() 的 getByLabel）：按关联 label 文本定位对应控件。
                 // 与 role+name 是两条独立策略，但最终都定位到该 input 控件；label 文本本身用 text 定位。
@@ -292,8 +286,8 @@ public abstract class BasePage {
                 // 角色定位
                 AriaRole role = a.role();
                 if (role == AriaRole.NONE) {
-                    throw new ElementException("RoleElement requires a role or a semantic attribute "
-                            + "(altText/title/placeholder/testId/i18n/text): " + field.getName());
+                throw new ElementException("RoleElement requires a role or a semantic attribute "
+                        + "(altText/title/placeholder/testId/label/text): " + field.getName());
                 }
                 final String literalName = a.name();
                 if (literalName != null && !literalName.isEmpty()) {
@@ -303,7 +297,7 @@ public abstract class BasePage {
                             ? "role=" + role + "[name:" + literalName + "]"
                             : a.description();
                     final String nameVal = literalName;
-                    supplier = () -> self.byRole(role, nameVal, a.exact());
+                    supplier = () -> self.byRole(role, nameVal, a.exact(), a.level());
                 } else {
                     // 仅 key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
                     String file = resolveRoleFile(a);
@@ -319,11 +313,11 @@ public abstract class BasePage {
                         // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
                         // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
                         if (NLSUtils.isTemplate(raw)) {
-                            return self.byRole(role, NLSUtils.templatePattern(raw));
+                            return self.byRole(role, NLSUtils.templatePattern(raw), a.level());
                         }
                         // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
                         // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
-                        return self.byRole(role, NLSUtils.visibleText(raw), a.exact());
+                        return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level());
                     };
                 }
             }
@@ -960,6 +954,35 @@ public abstract class BasePage {
         }
     }
 
+    /**
+     * 等待下载：在 {@code trigger} 触发的一次下载完成前阻塞，对齐 {@code page.pause()} 录制出的
+     * {@code page.waitForDownload(() -> element.click())}。
+     * <p>典型用于点击“下载”链接 / 按钮：anchor 带 {@code download} 属性、href 指向文件 URL，
+     * 或 JS 触发的下载。框架已通过 {@code setAcceptDownloads(true)} 开启下载能力，
+     * 下载文件自动保存到配置的下载目录。
+     *
+     * <pre>{@code
+     * // 推荐：把触发操作传入，一步完成“点击 + 等待下载”
+     * myPage.waitForDownload(() -> myPage.element("#downloadLink").click(), 15);
+     *
+     * // 与弹窗配合（嵌套：先弹窗再下载）
+     * myPage.waitForDownload(() ->
+     *         myPage.switchToNewPage(() -> myPage.element("#link").click(), 15), 15);
+     * }</pre>
+     *
+     * @param trigger     触发下载的操作（如点击下载链接）
+     * @param timeoutSecs 等待超时秒数
+     */
+    public void waitForDownload(Runnable trigger, int timeoutSecs) {
+        ensurePageValid();
+        try {
+            page.waitForDownload(new Page.WaitForDownloadOptions().setTimeout((long) timeoutSecs * 1000),
+                    () -> trigger.run());
+        } catch (PlaywrightException e) {
+            throw new TimeoutException("Waiting for download timed out after " + timeoutSecs + " seconds", e);
+        }
+    }
+
     /** 新页面校验 + 切换 + 日志，供两个重载共用 */
     private Page acceptNewPage(Page newPage) {
         try {
@@ -1332,6 +1355,39 @@ public abstract class BasePage {
         return (frame != null)
                 ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name).setExact(exact))
                 : page.getByRole(role, new Page.GetByRoleOptions().setName(name).setExact(exact));
+    }
+
+    /**
+     * 按可访问性角色 + 名称定位元素，可控制是否精确匹配，并可指定标题层级（仅 heading 角色生效）。
+     * {@code level>0} 时等价于官方 {@code GetByRoleOptions.setLevel(level)}（对齐 {@code getByRole(HEADING).setLevel(n)}）；
+     * {@code level<=0} 表示不限定层级。
+     */
+    public Locator byRole(AriaRole role, String name, boolean exact, int level) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(name).setExact(exact);
+        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(name).setExact(exact);
+        if (level > 0) {
+            popts = popts.setLevel(level);
+            fopts = fopts.setLevel(level);
+        }
+        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
+    }
+
+    /**
+     * 按可访问性角色 + 名称正则定位元素，并可指定标题层级（仅 heading 角色生效）。
+     * 用于 NLS 模板值（含 {@code {{var}}} 占位符）编译出的正则；{@code level>0} 时附加层级过滤。
+     */
+    public Locator byRole(AriaRole role, Pattern namePattern, int level) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(namePattern);
+        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(namePattern);
+        if (level > 0) {
+            popts = popts.setLevel(level);
+            fopts = fopts.setLevel(level);
+        }
+        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
     }
 
     /**

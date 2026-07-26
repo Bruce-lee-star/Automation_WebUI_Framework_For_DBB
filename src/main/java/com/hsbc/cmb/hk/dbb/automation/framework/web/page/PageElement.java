@@ -93,6 +93,22 @@ public class PageElement {
         return locator().locator(relativeSelector);
     }
 
+    /**
+     * 定位到「同一定位器匹配的一组元素」中的第 index 个（0-based），对齐 Playwright 的
+     * {@code locator.nth(index)}。用于页面上存在多个同 role+name/文本的元素时（如多条
+     * “Click here to download” 链接）精确选中其中之一。
+     *
+     * <p>返回的新 {@link PageElement} 复用本类全套重试 / 诊断 / 截图能力，且底层
+     * 定位器动态解析——页面切换 / 语言切换后仍自动生效。
+     *
+     * @param index 0-based 序号
+     * @return 指向第 index 个匹配元素的 PageElement
+     */
+    public PageElement nth(int index) {
+        return new PageElement(() -> locator().nth(index),
+                selector + " >> nth=" + index, page);
+    }
+
     // ==================== Safe Execution Template ====================
     /**
      * 安全的 Locator 操作执行模板——统一处理 Playwright 异常转换 + 自动诊断收集。

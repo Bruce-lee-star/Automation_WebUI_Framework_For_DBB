@@ -269,9 +269,46 @@ public abstract class BasePage {
                     supplier = () -> self.byText(v, a.exact());
                 }
             } else {
-                // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
-                // 按 getByText 定位（与 text + key 等价，但注解更简洁）。其余语义策略不会走到这里。
-                if (a.key() != null && !a.key().isEmpty()) {
+                // 无语义属性（text/altText/... 均未设）。此时优先按「角色定位」解析，
+                // 否则退化为「仅 key 的 NLS 文本定位器」。注意：role + key 是 RoleElement 的
+                // 主用场景，必须先判 role，否则 key 会被误当成 getByText 而永远走不到角色策略。
+                AriaRole role = a.role();
+                if (role != AriaRole.NONE) {
+                    // 角色定位（role + 字面 name 或 nls key）
+                    final String literalName = a.name();
+                    if (literalName != null && !literalName.isEmpty()) {
+                        // name 字面量覆盖：该元素名称不在 nls 中（页面上少数找不到 key 的元素），
+                        // 直接用字面名称定位，跳过 nls，因此该字段本身无需 @RoleFile。
+                        desc = a.description().isEmpty()
+                                ? "role=" + role + "[name:" + literalName + "]"
+                                : a.description();
+                        final String nameVal = literalName;
+                        supplier = () -> self.byRole(role, nameVal, a.exact(), a.level());
+                    } else {
+                        // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
+                        String file = resolveRoleFile(a);
+                        final String theKey = a.key();
+                        desc = a.description().isEmpty()
+                                ? "role=" + role + "[nls:" + file + "#" + theKey + "]"
+                                : a.description();
+                        final NLSUtils.NlsBundle bundle = NLSUtils.bind(file);
+                        // 懒解析（与语义路径 byNlsValue 一致）：bundle.get 放入 lambda，运行中
+                        // NLSUtils.setLanguage 切语言后再次定位可解析到新语言的可访问名。
+                        supplier = () -> {
+                            String raw = bundle.get(theKey);
+                            // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
+                            // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
+                            if (NLSUtils.isTemplate(raw)) {
+                                return self.byRole(role, NLSUtils.templatePattern(raw), a.level());
+                            }
+                            // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
+                            // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
+                            return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level());
+                        };
+                    }
+                } else if (a.key() != null && !a.key().isEmpty()) {
+                    // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
+                    // 按 getByText 定位（与 text + key 等价，但注解更简洁）。
                     List<String> files = resolveRoleFiles(a);
                     final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
                     final String theKey = a.key();
@@ -280,45 +317,9 @@ public abstract class BasePage {
                             ? "text[nls:" + primaryFile + "#" + theKey + "]"
                             : a.description();
                     supplier = () -> self.byNlsValue("text", bundle.get(theKey), a.exact());
-                    field.set(this, new PageElement(supplier, desc, this));
-                    return;
-                }
-                // 角色定位
-                AriaRole role = a.role();
-                if (role == AriaRole.NONE) {
-                throw new ElementException("RoleElement requires a role or a semantic attribute "
-                        + "(altText/title/placeholder/testId/label/text): " + field.getName());
-                }
-                final String literalName = a.name();
-                if (literalName != null && !literalName.isEmpty()) {
-                    // name 字面量覆盖：该元素名称不在 nls 中（页面上少数找不到 key 的元素），
-                    // 直接用字面名称定位，跳过 nls，因此该字段本身无需 @RoleFile。
-                    desc = a.description().isEmpty()
-                            ? "role=" + role + "[name:" + literalName + "]"
-                            : a.description();
-                    final String nameVal = literalName;
-                    supplier = () -> self.byRole(role, nameVal, a.exact(), a.level());
                 } else {
-                    // 仅 key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
-                    String file = resolveRoleFile(a);
-                    final String theKey = a.key();
-                    desc = a.description().isEmpty()
-                            ? "role=" + role + "[nls:" + file + "#" + theKey + "]"
-                            : a.description();
-                    final NLSUtils.NlsBundle bundle = NLSUtils.bind(file);
-                    // 懒解析（与语义路径 byNlsValue 一致）：bundle.get 放入 lambda，运行中
-                    // NLSUtils.setLanguage 切语言后再次定位可解析到新语言的可访问名。
-                    supplier = () -> {
-                        String raw = bundle.get(theKey);
-                        // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
-                        // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
-                        if (NLSUtils.isTemplate(raw)) {
-                            return self.byRole(role, NLSUtils.templatePattern(raw), a.level());
-                        }
-                        // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
-                        // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
-                        return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level());
-                    };
+                    throw new ElementException("RoleElement requires a role or a semantic attribute "
+                            + "(altText/title/placeholder/testId/label/text): " + field.getName());
                 }
             }
 

@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
@@ -325,6 +326,10 @@ public final class RoleElementPicker {
 
     /** 用于把参数安全序列化为 JS 字面量（避免手动拼接转义错误） */
     private static final Gson GSON = new Gson();
+
+    /** 反序列化任意拾取态 JSON 的精确泛型类型，避免 {@code fromJson(x, Map.class)} 的未检查转换 */
+    private static final java.lang.reflect.Type MAP_STRING_OBJECT_TYPE =
+            new TypeToken<java.util.Map<String, Object>>() {}.getType();
 
     /** 开启拾取模式：注入监听 + 顶部提示条 */
     private static final String START_SCRIPT_A = """
@@ -2507,7 +2512,7 @@ public final class RoleElementPicker {
                         String cached = snapshots.get(p);
                         if (cached != null && !cached.isEmpty()) {
                             try {
-                                java.util.Map<String, Object> cm = GSON.fromJson(cached, java.util.Map.class);
+                                java.util.Map<String, Object> cm = GSON.fromJson(cached, MAP_STRING_OBJECT_TYPE);
                                 PickSnapshot cs = parsePickSnapshot(cm);
                                 closedSteps.addAll(cs.steps);
                                 closedOps.addAll(cs.ops);
@@ -3173,7 +3178,7 @@ public final class RoleElementPicker {
     private static Map<String, Object> parseState(String json) {
         if (json == null || json.isBlank()) return new LinkedHashMap<>();
         try {
-            Map<String, Object> m = GSON.fromJson(json, Map.class);
+            Map<String, Object> m = GSON.fromJson(json, MAP_STRING_OBJECT_TYPE);
             return m == null ? new LinkedHashMap<>() : m;
         } catch (Exception e) {
             return new LinkedHashMap<>();
@@ -4257,7 +4262,7 @@ public final class RoleElementPicker {
     /** 状态 JSON 是否包含至少一个已拾取元素（用于决定是否回写父页，避免误清空父页已有拾取） */
     private static boolean hasPicks(String stateJson) {
         try {
-            Map<?, ?> m = GSON.fromJson(stateJson, Map.class);
+            Map<?, ?> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
             Object p = m == null ? null : m.get("picks");
             return p instanceof List && !((List<?>) p).isEmpty();
         } catch (Exception ignore) { return false; }
@@ -4266,7 +4271,7 @@ public final class RoleElementPicker {
     /** 状态 JSON 是否为“全空”（picks / steps / currentStep 均为空），用于快照更新时识别导航空窗期。 */
     private static boolean isEmptyState(String stateJson) {
         try {
-            Map<?, ?> m = GSON.fromJson(stateJson, Map.class);
+            Map<?, ?> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
             if (m == null) return true;
             Object p = m.get("picks");
             Object s = m.get("steps");
@@ -4310,7 +4315,7 @@ public final class RoleElementPicker {
     @SuppressWarnings("unchecked")
     private static int pickCountOf(String stateJson) {
         try {
-            java.util.Map<String, Object> m = GSON.fromJson(stateJson, java.util.Map.class);
+            java.util.Map<String, Object> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
             Object p = (m == null) ? null : m.get("picks");
             return (p instanceof java.util.List) ? ((java.util.List<?>) p).size() : 0;
         } catch (Exception e) { return -1; }
@@ -4318,7 +4323,7 @@ public final class RoleElementPicker {
     @SuppressWarnings("unchecked")
     private static int stepCountOf(String stateJson) {
         try {
-            java.util.Map<String, Object> m = GSON.fromJson(stateJson, java.util.Map.class);
+            java.util.Map<String, Object> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
             Object p = (m == null) ? null : m.get("steps");
             return (p instanceof java.util.List) ? ((java.util.List<?>) p).size() : 0;
         } catch (Exception e) { return -1; }
@@ -4326,7 +4331,7 @@ public final class RoleElementPicker {
     @SuppressWarnings("unchecked")
     private static int currentStepCountOf(String stateJson) {
         try {
-            java.util.Map<String, Object> m = GSON.fromJson(stateJson, java.util.Map.class);
+            java.util.Map<String, Object> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
             Object p = (m == null) ? null : m.get("currentStep");
             return (p instanceof java.util.List) ? ((java.util.List<?>) p).size() : 0;
         } catch (Exception e) { return -1; }
@@ -4425,7 +4430,7 @@ public final class RoleElementPicker {
         try {
             String json = snapshots.get(closed);
             java.util.Map<String, Object> m = (json != null && !json.isEmpty())
-                    ? GSON.fromJson(json, java.util.Map.class) : null;
+                    ? GSON.fromJson(json, MAP_STRING_OBJECT_TYPE) : null;
             if (m == null) m = new java.util.LinkedHashMap<String, Object>();
             java.util.List<java.util.Map<String, Object>> steps;
             Object st = m.get("steps");

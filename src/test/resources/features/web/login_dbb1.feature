@@ -5,7 +5,7 @@ Feature: testing logon - 2
     Given logon DBB "O63_SIT1" environment as user "WP7UAT2_2"
     When switch profile to "HKHBAP001008101838PU0000" and close reminder
 
-    @test
+
   Scenario: testing logon to dbb-22
     Given logon DBB "O63_SIT1" environment as user "WP7UAT2_2"
  # @test

@@ -163,8 +163,9 @@ public class LoginSteps {
         Page page = loginPage.getPage();
         RoleElementPicker.openPanel(page,
                 "com.hsbc.cmb.hk.dbb.automation.tests.pages",  // 包名
-                "LoginPage",                                    // 生成类名
-                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");
+                "LoginPage",                                    // 生成页类名
+                "LoginSteps",                                   // 生成步骤类名（应为合法 Java 类名，而非 nls 路径）
+                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");  // nls 文件（可变参数）
         loginPage.userNameIpt.type(username);
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());

@@ -8,6 +8,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.playwright.client.SharedPlaywrightProvider;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.playwright.client.SharedPlaywrightProviders;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.playwright.core.ApiScenarioMode;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +61,10 @@ public class PlaywrightManager {
     // ---- 配置标识 ----
     static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
 
+    // ---- API 场景模式 ----
+    // 该标志已下沉到独立 API 库（ApiScenarioMode），由 PlaywrightManager / PlaywrightApiTestServices 统一读写，
+    // 使 web 模块不再反向依赖 API 库；混合场景据此跳过浏览器启动 / 截图。
+
     // ==================== 静态初始化块 ====================
 
     static {
@@ -65,6 +72,16 @@ public class PlaywrightManager {
         PlaywrightInitializer.initializePlaywrightPaths();
         PlaywrightInitializer.cleanupPlaywrightTempDirs();
         // 浏览器下载延迟到实际需要时，不在静态初始化阶段下载
+
+        // 向独立 API 库注册共享 Playwright 提供方：混合场景（Web 测试中调接口）复用本已初始化的实例，
+        // 不自建实例、不启动浏览器 GUI。纯接口 / 独立使用场景未加载 web 模块，提供方不注册，库回退自建。
+        SharedPlaywrightProviders.register(() -> {
+            try {
+                return Optional.ofNullable(PlaywrightManager.getPlaywright());
+            } catch (Throwable t) {
+                return Optional.empty();
+            }
+        });
     }
 
 
@@ -483,7 +500,14 @@ public class PlaywrightManager {
      * 新特性：自动检测浏览器类型，不依赖Cucumber hooks
      * 在首次访问时自动从scenario标签中提取浏览器类型并切换
      */
-    public static Browser getBrowser() {      
+    public static Browser getBrowser() {
+        // ⭐ API 场景模式：纯接口测试不启动 Web 浏览器。
+        // 任何路径（收尾路由清理、Session 恢复、截图等）试图获取浏览器时直接返回 null，
+        // 从根本上杜绝 API 场景误启动/复用浏览器 GUI。
+        if (isApiScenarioMode()) {
+            return null;
+        }
+
         // 获取当前的配置ID
         String currentConfig = getCurrentConfigId();
         if (currentConfig == null) {
@@ -593,6 +617,11 @@ public class PlaywrightManager {
     public static BrowserContext getContext() {
         if (!frameworkState.isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
+        }
+
+        // ⭐ API 场景模式：不创建/重建真实 Context（避免间接启动浏览器），仅返回现有值（通常为 null）
+        if (isApiScenarioMode()) {
+            return contextThreadLocal.get();
         }
 
         BrowserContext context = contextThreadLocal.get();
@@ -719,9 +748,14 @@ public class PlaywrightManager {
     public static Page getPage() {
         // 框架层自动处理 @AutoBrowser 注解（在真正需要操作页面时触发）
         AutoBrowserProcessor.processAutoBrowserAnnotation();
-        
+
         if (!frameworkState.isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
+        }
+
+        // ⭐ API 场景模式：不创建 Page（避免间接启动浏览器），仅返回现有值（通常为 null）
+        if (isApiScenarioMode()) {
+            return pageThreadLocal.get();
         }
 
         // 先检查是否已有有效 Page（快速路径，避免不必要的锁竞争）
@@ -978,6 +1012,16 @@ public class PlaywrightManager {
 
     static Page getPageThreadLocal() {
         return pageThreadLocal.get();
+    }
+
+    // ---- API 场景模式访问器 ----
+    public static void setApiScenarioMode(boolean apiMode) {
+        // 委托到 API 库（ApiScenarioMode），保证纯接口模式标志在 web / API 库间统一。
+        ApiScenarioMode.set(apiMode);
+    }
+
+    public static boolean isApiScenarioMode() {
+        return ApiScenarioMode.isApiMode();
     }
 
     static FrameworkState getFrameworkState() {

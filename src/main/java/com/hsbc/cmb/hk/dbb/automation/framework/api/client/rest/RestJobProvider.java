@@ -143,7 +143,7 @@ public class RestJobProvider extends AbstractApiJobHelper {
     }
 
     public ValidatableResponse getValidatableResponse() {
-        return this.getEntity().getValidatableResponse();
+        return (ValidatableResponse) this.getEntity().getValidatableResponse();
 
     }
 

@@ -1,7 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.utility;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
-import org.apache.commons.io.IOUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -16,19 +15,18 @@ public class FileReader {
 
     public static String readFileAsString(final String relativePathOfFile) {
         final ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        InputStream resourceAsStream = classLoader.getResourceAsStream(relativePathOfFile);
-        String content = null;
-        if (resourceAsStream != null) {
-            return null;
-        }
-        try{
+        try (InputStream resourceAsStream = classLoader.getResourceAsStream(relativePathOfFile)) {
+            if (resourceAsStream == null) {
+                LOGGER.warn("Resource not found on classpath: {}", relativePathOfFile);
+                return null;
+            }
             // Use FrameworkConfig for encoding
             String encoding = FrameworkConfig.getFileEncoding();
-            content = IOUtils.toString(resourceAsStream, Charset.forName(encoding));
-        }catch (IOException e){
-            LOGGER.error(e.getMessage());
+            return new String(resourceAsStream.readAllBytes(), Charset.forName(encoding));
+        } catch (IOException e) {
+            LOGGER.error("Failed to read file {}: {}", relativePathOfFile, e.getMessage());
+            return null;
         }
-        return content;
     }
 
     public static InputStream readFileAsInputStream (final String relativePathOfFile) {

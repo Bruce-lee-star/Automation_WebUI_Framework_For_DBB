@@ -1,14 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.api.client.ApiJob;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
 import com.typesafe.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public class EntityBuilder extends ApiJob {
+public class EntityBuilder {
     private static final Logger LOGGER = LoggerFactory.getLogger(EntityBuilder.class);
 
     /**

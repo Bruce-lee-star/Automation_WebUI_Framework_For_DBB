@@ -6,7 +6,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.APIResources;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
 import com.typesafe.config.Config;
-import io.restassured.response.ValidatableResponse;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,7 +34,7 @@ public class Entity {
     private int proxyPort;
     private String proxySchema;
     private boolean apiRequestResponseLogsEnabled;
-    private ValidatableResponse validatableResponse;
+    private Object validatableResponse;
 
     public Entity() {
         // Initialize baseUri from configuration
@@ -344,11 +343,11 @@ public class Entity {
         log.debug("Set API request/response logs enabled: {}", apiRequestResponseLogsEnabled);
     }
 
-    public ValidatableResponse getValidatableResponse() {
+    public Object getValidatableResponse() {
         return validatableResponse;
     }
 
-    public void setValidatableResponse(ValidatableResponse validatableResponse) {
+    public void setValidatableResponse(Object validatableResponse) {
         this.validatableResponse = validatableResponse;
         log.debug("Set validatable response");
     }

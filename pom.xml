@@ -166,15 +166,6 @@
             <version>${playwright.version}</version>
         </dependency>
 
-        <!-- ==================== 独立 API 库：Playwright API Client ==================== -->
-        <!-- 抽取自原 framework.api 的共享底座（config/utility/core/domain/assembler）+ playwright 实现。 -->
-        <!-- 主项目 RestAssured（client）复用其中的共享底座；亦可供其他项目 mvn install 后引用。 -->
-        <dependency>
-            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>dbb-playwright-api-client</artifactId>
-            <version>1.0.0</version>
-        </dependency>
-
         <!-- ==================== Testing Frameworks ==================== -->
         <dependency>
             <groupId>junit</groupId>

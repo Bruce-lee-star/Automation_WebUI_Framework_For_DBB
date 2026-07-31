@@ -163,8 +163,6 @@ public class PlaywrightListener implements StepListener {
         }
 
         // ⭐ 修复：补齐 FrameworkCore 初始化（与 testStarted(String,String) 保持一致）
-        // 防御性重置 API 场景模式：避免前序 API 场景异常未清理导致残留，污染本（web）场景
-        PlaywrightManager.setApiScenarioMode(false);
         try {
             FrameworkCore.getInstance().beforeTest();
             recordTestData("testStart", System.currentTimeMillis());
@@ -230,9 +228,6 @@ public class PlaywrightListener implements StepListener {
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
-            // 场景收尾完成：退出 API 模式，恢复框架的 Web 浏览器/截图能力，避免影响后续 web 场景。
-            // 必须在 testFinished 截图（TEST_END_）之后才重置，否则收尾截图会误启动浏览器。
-            PlaywrightManager.setApiScenarioMode(false);
         }
     }
 
@@ -493,12 +488,6 @@ public class PlaywrightListener implements StepListener {
      * @return 截图对象
      */
     private ScreenshotAndHtmlSource takeScreenshot(String screenshotName) {
-        // API 场景模式：纯接口测试不启动 Web 浏览器，跳过所有截图
-        // （含测试开始 / 每步 / 失败截图），从根本上避免截图触发 getPage() 而误启动浏览器
-        if (PlaywrightManager.isApiScenarioMode()) {
-            return null;
-        }
-
         // 防止递归调用
         if (takingScreenshot.get()) {
             LoggingConfigUtil.logDebugIfVerbose(
@@ -1059,9 +1048,6 @@ public class PlaywrightListener implements StepListener {
             cleanupThreadLocals();
             // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
             cleanupRouteRegistryForCurrentThread();
-            // 场景收尾完成：退出 API 模式（与 testFinishedInternal 收尾保持一致），
-            // 必须在收尾截图 / cleanupForScenario 之后重置，避免误启动 Web 浏览器。
-            PlaywrightManager.setApiScenarioMode(false);
 
             // ⭐ 修复：补齐 Playwright 资源清理（与 testFinished(TestOutcome) 保持一致）
             // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理

@@ -63,26 +63,7 @@
 //        if (playwright != null) playwright.close();
 //    }
 //
-//    @Before
-//    public void setUp() {
-//        // 重置 demo 服务数据，确保每个测试用例互不影响
-//        try {
-//            com.microsoft.playwright.APIRequestContext apiCtx = playwright.request().newContext();
-//            apiCtx.post(BASE_URL + "/api/reset");
-//            apiCtx.dispose();
-//        } catch (Exception e) {
-//            System.err.println("[setUp] Failed to reset demo service data: " + e.getMessage());
-//        }
-//
-//        context = browser.newContext(
-//                new Browser.NewContextOptions()
-//                        .setIgnoreHTTPSErrors(true)
-//                        .setViewportSize(1280, 720)
-//        );
-//        page = context.newPage();
-//        ApiCaptureContext.resetCurrent();
-//    }
-//
+
 //    @After
 //    public void tearDown() {
 //        // 异常安全：Fail-Fast 场景中 MonitorHandler 可能已异步关闭 Page

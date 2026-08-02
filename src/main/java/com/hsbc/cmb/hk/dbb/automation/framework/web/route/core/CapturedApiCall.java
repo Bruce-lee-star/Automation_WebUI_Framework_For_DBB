@@ -30,6 +30,7 @@ public class CapturedApiCall {
     private final String method;
     private final Map<String, String> requestHeaders;
     private final String requestUrl;  // 实际请求的完整 URL（用于毫秒级精确检索）
+    private final String requestBody; // 请求体（POST/PUT 等），可为 null
 
     // ── 响应信息 ──
     private final int statusCode;
@@ -58,7 +59,7 @@ public class CapturedApiCall {
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp) {
         this(endpoint, method, requestHeaders, statusCode, responseHeaders,
-                responseBody, timestamp, null);
+                responseBody, timestamp, null, null);
     }
 
     /**
@@ -75,8 +76,28 @@ public class CapturedApiCall {
     public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp, String requestUrl) {
+        this(endpoint, method, requestHeaders, statusCode, responseHeaders,
+                responseBody, timestamp, requestUrl, null);
+    }
+
+    /**
+     * @param endpoint        urlPattern（即 {@code RouteDsl.api(endpoint)} 中配置的字符串），
+     *                        用作存储/查询的 key
+     * @param method          HTTP 方法
+     * @param requestHeaders  请求头
+     * @param statusCode      HTTP 状态码
+     * @param responseHeaders 响应头
+     * @param responseBody    响应体
+     * @param timestamp       捕获时间戳
+     * @param requestUrl      实际请求的完整 URL（用于毫秒级精确检索，可为 null）
+     * @param requestBody     请求体（POST/PUT 等），可为 null
+     */
+    public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp, String requestUrl, String requestBody) {
         this.endpoint = endpoint;
         this.requestUrl = requestUrl;
+        this.requestBody = requestBody;
         this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
         this.requestHeaders = requestHeaders != null
                 ? Collections.unmodifiableMap(new HashMap<>(requestHeaders))
@@ -113,6 +134,9 @@ public class CapturedApiCall {
 
     /** 响应体字符串 */
     public String responseBody() { return responseBody; }
+
+    /** 请求体字符串（POST/PUT 等），可能为 null */
+    public String requestBody() { return requestBody; }
 
     /** 捕获时间戳（System.currentTimeMillis()） */
     public long timestamp() { return timestamp; }

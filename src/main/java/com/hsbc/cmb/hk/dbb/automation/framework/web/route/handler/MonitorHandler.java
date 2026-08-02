@@ -1,6 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
@@ -151,6 +153,7 @@ public class MonitorHandler {
         final String fAsyncUrl = req.url();
         final int fAsyncStatus = res.status();
         final String fReqMethod = req.method();
+        final String fReqBody = req.postData(); // 事件线程同步读取请求体（与 res.body() 一致）
         // ⭐ 性能优化：复用头部快照（不再为日志和异步任务分别拷贝）
         final Map<String, String> fReqHeaders = snapshotHeadersSafely(req.headers());
         final Map<String, String> fResHeaders = snapshotHeadersSafely(res.headers());
@@ -176,9 +179,22 @@ public class MonitorHandler {
                         fResHeaders,
                         fBody,
                         System.currentTimeMillis(),
-                        fAsyncUrl      // 实际请求 URL，用于毫秒级精确检索
+                        fAsyncUrl,      // 实际请求 URL，用于毫秒级精确检索
+                        fReqBody        // 请求体，完整 request 信息供失败通知
                 );
                 fContext.storeApiCall(call);
+
+                // 监控断言失败 → 归集到失败收集器（按 owner 去重，供 CI 邮件发送）
+                if (fContext.hasAssertionFailures()) {
+                    for (ApiCaptureContext.AssertionFailureDetail d : fContext.getFailureDetails()) {
+                        if (d.url.equals(fAsyncUrl) || d.url.equals(urlPattern)) {
+                            String owner = ApiMonitorOrchestrator.getInstance().getOwner(urlPattern);
+                            String reason = String.format("%s expected=%s actual=%s (%s)",
+                                    d.assertionType, d.expectedValue, d.actualValue, d.failMessage);
+                            MonitorFailureCollector.getInstance().record(call, urlPattern, owner, reason);
+                        }
+                    }
+                }
 
                 // 记录到 Serenity 报告
                 if (rule.isRecord()) {

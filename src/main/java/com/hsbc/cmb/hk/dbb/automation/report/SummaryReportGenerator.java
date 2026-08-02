@@ -382,6 +382,18 @@ public class SummaryReportGenerator {
             // 生成 ZIP 包
             generateZipPackage(actualReportDir);
 
+            // 生成 API 监控失败报告（按 owner 去重，供 Jenkins emailext 等循环发送）
+            try {
+                int ownerCount = com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor
+                        .MonitorFailureReportWriter.write();
+                if (ownerCount > 0) {
+                    logger.info("[ApiMonitor] 已写出 API 监控失败报告（{} 个 owner），"
+                            + "见 target/monitor-failures-by-owner.json", ownerCount);
+                }
+            } catch (Exception ex) {
+                logger.warn("[ApiMonitor] 写出监控失败报告异常（不影响主报告）：{}", ex.getMessage());
+            }
+
             long pass = count(TestResult.SUCCESS);
             if (total > 0 && pass == total) {
                 logger.info("All {} tests passed! Summary report generated at: {}", total, output.toAbsolutePath());

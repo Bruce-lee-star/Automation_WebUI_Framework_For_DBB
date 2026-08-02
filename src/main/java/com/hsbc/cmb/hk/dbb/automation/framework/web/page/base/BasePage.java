@@ -889,9 +889,9 @@ public abstract class BasePage {
      * }</pre>
      *
      * @param nameOrSelector iframe 的 name、id 或 CSS 选择器
-     * @return Playwright FrameLocator
+     * @return 切换后的 Playwright Frame（与 {@link #switchToFrame(int)} 返回类型一致）
      */
-    public FrameLocator switchToFrame(String nameOrSelector) {
+    public Frame switchToFrame(String nameOrSelector) {
         ensurePageValid();
         // 策略 1：按 Playwright 原生 frame(name) 查找（匹配 name/id 属性）
         Frame frame = page.frame(nameOrSelector);
@@ -911,8 +911,7 @@ public abstract class BasePage {
         currentFrame.set(frame);
         initializeAnnotatedFields();
         logger.info("Switched to iframe: '{}'", nameOrSelector);
-        String escaped = nameOrSelector.replace("\\", "\\\\").replace("'", "\\'");
-        return page.frameLocator("iframe[name='" + escaped + "'], iframe[id='" + escaped + "'], " + nameOrSelector);
+        return frame;
     }
 
     /**
@@ -1360,6 +1359,37 @@ public abstract class BasePage {
     public void dismissAlert() {
         ensurePageValid();
         page.onceDialog(Dialog::dismiss);
+    }
+
+    /**
+     * 注册“接受弹窗”处理器后，立即执行触发动作并等待其完成。
+     * 避免 {@link #acceptAlert()} 仅挂载监听、却忘记执行触发操作的常见漏用。
+     *
+     * <pre>{@code
+     * page.acceptAlert(() -> page.click("button#delete"));
+     * }</pre>
+     *
+     * @param trigger 会触发 dialog 的动作（如点击某个按钮）
+     */
+    public void acceptAlert(Runnable trigger) {
+        ensurePageValid();
+        page.onceDialog(Dialog::accept);
+        if (trigger != null) {
+            trigger.run();
+        }
+    }
+
+    /**
+     * 注册“拒绝弹窗”处理器后，立即执行触发动作并等待其完成。
+     *
+     * @param trigger 会触发 dialog 的动作（如点击某个按钮）
+     */
+    public void dismissAlert(Runnable trigger) {
+        ensurePageValid();
+        page.onceDialog(Dialog::dismiss);
+        if (trigger != null) {
+            trigger.run();
+        }
     }
 
     public byte[] takeScreenshot() {

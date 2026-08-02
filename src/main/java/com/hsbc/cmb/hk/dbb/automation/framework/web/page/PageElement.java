@@ -21,6 +21,8 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 public class PageElement {
@@ -276,7 +278,9 @@ public class PageElement {
      * <p>非 TimeoutError（如网络错误、协议错误等）绝不可能通过重试解决，直接失败。
      */
     private boolean isRetriable(PlaywrightException e) {
-        // 只有 TimeoutError 才可能是临时性问题（重试可能成功）
+        // 只有 TimeoutError 才可能是临时性问题（重试可能成功）。
+        // 注意：TargetClosedError 等其它 PlaywrightException 子类（页面/上下文已关闭）
+        // 不属于 TimeoutError，到这里直接返回 false，避免对“已崩溃”的场景做无意义重试。
         if (!(e instanceof TimeoutError)) {
             return false;
         }
@@ -306,6 +310,8 @@ public class PageElement {
         // - "element not found" → 选择器错误，重试没用
         // - "net::ERR_*" → 网络错误导致的 TimeoutError，重试没用
         // - 其他无法识别的 TimeoutError → 保守不重试，避免无限等待
+        // 说明：Playwright Java 绑定对“元素不可见/不稳定/不可交互”仅以 TimeoutError + 文案区分，
+        // 并无 ElementIsNotVisibleError 等具名子类，故此处仍以文案匹配作为判据。
 
         return false;
     }
@@ -578,16 +584,11 @@ public class PageElement {
     }
 
     public PageElement waitForVisible(int timeoutSec) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
-            return this;
-        } catch (TimeoutError e) {
-            throw new ElementOperationException("waitForVisible", selector, 
-                "Element not visible within " + timeoutSec + " seconds: " + selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForVisible", selector, 
-                "Failed to wait for element visible: " + selector, e);
-        }
+        return waitForState(WaitForSelectorState.VISIBLE, timeoutSec, false,
+                (e, t) -> new ElementOperationException("waitForVisible", selector,
+                        "Element not visible within " + t + " seconds: " + selector, e),
+                (e, t) -> new ElementOperationException("waitForVisible", selector,
+                        "Failed to wait for element visible: " + selector, e));
     }
 
     public PageElement waitForNotVisible() {
@@ -595,16 +596,11 @@ public class PageElement {
     }
 
     public PageElement waitForNotVisible(int timeoutSec) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
-            return this;
-        } catch (TimeoutError e) {
-            throw new ElementOperationException("waitForNotVisible", selector, 
-                "Element still visible after " + timeoutSec + " seconds: " + selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForNotVisible", selector, 
-                "Failed to wait for element hidden: " + selector, e);
-        }
+        return waitForState(WaitForSelectorState.HIDDEN, timeoutSec, false,
+                (e, t) -> new ElementOperationException("waitForNotVisible", selector,
+                        "Element still visible after " + t + " seconds: " + selector, e),
+                (e, t) -> new ElementOperationException("waitForNotVisible", selector,
+                        "Failed to wait for element hidden: " + selector, e));
     }
 
     public PageElement waitForExists() {
@@ -612,15 +608,11 @@ public class PageElement {
     }
 
     public PageElement waitForExists(int timeoutSec) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
-            return this;
-        } catch (TimeoutError e) {
-            throw new ElementNotFoundException(selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForExists", selector, 
-                "Failed to wait for element exists: " + selector, e);
-        }
+        // 元素不存在用 ElementNotFoundException（语义更明确，便于上层区分"找不到"与"其它异常"）
+        return waitForState(WaitForSelectorState.ATTACHED, timeoutSec, false,
+                (e, t) -> new ElementNotFoundException(selector, e),
+                (e, t) -> new ElementOperationException("waitForExists", selector,
+                        "Failed to wait for element exists: " + selector, e));
     }
 
     public PageElement waitForNotExists() {
@@ -628,16 +620,11 @@ public class PageElement {
     }
 
     public PageElement waitForNotExists(int timeoutSec) {
-        try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.DETACHED).setTimeout((long) timeoutSec * 1000));
-            return this;
-        } catch (TimeoutError e) {
-            throw new ElementOperationException("waitForNotExists", selector, 
-                "Element still exists in DOM after " + timeoutSec + " seconds: " + selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForNotExists", selector, 
-                "Failed to wait for element detached: " + selector, e);
-        }
+        return waitForState(WaitForSelectorState.DETACHED, timeoutSec, false,
+                (e, t) -> new ElementOperationException("waitForNotExists", selector,
+                        "Element still exists in DOM after " + t + " seconds: " + selector, e),
+                (e, t) -> new ElementOperationException("waitForNotExists", selector,
+                        "Failed to wait for element detached: " + selector, e));
     }
 
     public PageElement waitForClickable() {
@@ -645,20 +632,13 @@ public class PageElement {
     }
 
     public PageElement waitForClickable(int timeoutSec) {
-        try {
-            // Playwright click() 内置完整 actionability 检查（visible+stable+enabled+receives events）
-            // waitForClickable 仅需确认元素已可见即可，实际可交互性由 click() 保证
-            locator().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.VISIBLE)
-                    .setTimeout((long) timeoutSec * 1000));
-        } catch (TimeoutError e) {
-            throw new ElementOperationException("waitForClickable", selector, 
-                "Element is not clickable within " + timeoutSec + " seconds: " + selector, e);
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForClickable", selector, 
-                "Failed to check element state: " + selector, e);
-        }
-        return this;
+        // Playwright click() 内置完整 actionability 检查（visible+stable+enabled+receives events）
+        // waitForClickable 仅需确认元素已可见即可，实际可交互性由 click() 保证
+        return waitForState(WaitForSelectorState.VISIBLE, timeoutSec, false,
+                (e, t) -> new ElementOperationException("waitForClickable", selector,
+                        "Element is not clickable within " + t + " seconds: " + selector, e),
+                (e, t) -> new ElementOperationException("waitForClickable", selector,
+                        "Failed to check element state: " + selector, e));
     }
 
     public PageElement waitForEditable() {
@@ -666,17 +646,10 @@ public class PageElement {
     }
 
     public PageElement waitForEditable(int timeoutSec) {
-        try {
-            if (!locator().isEditable(new Locator.IsEditableOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForEditable", selector, 
-                    "Element is not editable: " + selector, null);
-            }
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForEditable", selector, 
-                "Failed to check element state: " + selector, e);
-        }
-        return this;
+        return waitForPredicate(
+                l -> l.isEditable(new Locator.IsEditableOptions().setTimeout((double) timeoutSec * 1000)),
+                true, timeoutSec, "waitForEditable",
+                "Element is not editable: " + selector);
     }
 
     public PageElement waitForEnabled() {
@@ -684,17 +657,10 @@ public class PageElement {
     }
 
     public PageElement waitForEnabled(int timeoutSec) {
-        try {
-            if (!locator().isEnabled(new Locator.IsEnabledOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForEnabled", selector, 
-                    "Element is not enabled: " + selector, null);
-            }
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForEnabled", selector, 
-                "Failed to check element state: " + selector, e);
-        }
-        return this;
+        return waitForPredicate(
+                l -> l.isEnabled(new Locator.IsEnabledOptions().setTimeout((double) timeoutSec * 1000)),
+                true, timeoutSec, "waitForEnabled",
+                "Element is not enabled: " + selector);
     }
 
     public PageElement waitForDisabled() {
@@ -702,17 +668,10 @@ public class PageElement {
     }
 
     public PageElement waitForDisabled(int timeoutSec) {
-        try {
-            if (locator().isEnabled(new Locator.IsEnabledOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForDisabled", selector, 
-                    "Element is not disabled (still enabled): " + selector, null);
-            }
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForDisabled", selector, 
-                "Failed to check element state: " + selector, e);
-        }
-        return this;
+        return waitForPredicate(
+                l -> l.isEnabled(new Locator.IsEnabledOptions().setTimeout((double) timeoutSec * 1000)),
+                false, timeoutSec, "waitForDisabled",
+                "Element is not disabled (still enabled): " + selector);
     }
 
     public PageElement waitForChecked() {
@@ -720,17 +679,10 @@ public class PageElement {
     }
 
     public PageElement waitForChecked(int timeoutSec) {
-        try {
-            if (!locator().isChecked(new Locator.IsCheckedOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForChecked", selector, 
-                    "Element is not checked: " + selector, null);
-            }
-        } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForChecked", selector, 
-                "Failed to check element state: " + selector, e);
-        }
-        return this;
+        return waitForPredicate(
+                l -> l.isChecked(new Locator.IsCheckedOptions().setTimeout((double) timeoutSec * 1000)),
+                true, timeoutSec, "waitForChecked",
+                "Element is not checked: " + selector);
     }
 
     public PageElement waitForNotChecked() {
@@ -738,17 +690,59 @@ public class PageElement {
     }
 
     public PageElement waitForNotChecked(int timeoutSec) {
+        return waitForPredicate(
+                l -> l.isChecked(new Locator.IsCheckedOptions().setTimeout((double) timeoutSec * 1000)),
+                false, timeoutSec, "waitForNotChecked",
+                "Element is checked (expected not checked): " + selector);
+    }
+
+    // ---- waitFor* 公共模板 ----
+
+    /**
+     * 基于 waitFor(state) 的等待模板（waitForVisible/NotVisible/Exists/NotExists/Clickable 共用）。
+     *
+     * @param expect     期望的状态
+     * @param timeoutSec 超时秒数
+     * @param negate     是否取反（当前未使用，预留）
+     * @param onTimeout  TimeoutError 时构造的异常（带 selector 与超时信息）
+     * @param onOther    其它 PlaywrightException 时构造的异常
+     */
+    private PageElement waitForState(WaitForSelectorState expect, int timeoutSec, boolean negate,
+            BiFunction<TimeoutError, Integer, RuntimeException> onTimeout,
+            BiFunction<PlaywrightException, Integer, RuntimeException> onOther) {
         try {
-            if (locator().isChecked(new Locator.IsCheckedOptions()
-                    .setTimeout((double) timeoutSec * 1000))) {
-                throw new ElementOperationException("waitForNotChecked", selector, 
-                    "Element is checked (expected not checked): " + selector, null);
-            }
+            locator().waitFor(new Locator.WaitForOptions()
+                    .setState(expect).setTimeout((long) timeoutSec * 1000));
+            return this;
+        } catch (TimeoutError e) {
+            throw onTimeout.apply(e, timeoutSec);
         } catch (PlaywrightException e) {
-            throw new ElementOperationException("waitForNotChecked", selector, 
-                "Failed to check element state: " + selector, e);
+            throw onOther.apply(e, timeoutSec);
         }
-        return this;
+    }
+
+    /**
+     * 基于布尔谓词（isEnabled/isEditable/isChecked）的等待模板。
+     * 先调谓词判断是否达成，未达成则显式抛出（而非依赖 TimeoutError）。
+     *
+     * @param check      带超时的判定函数（超时通过闭包传入，类型安全）
+     * @param expectTrue 期望谓词返回 true 还是 false
+     * @param timeoutSec 超时秒数
+     * @param op         操作名（用于异常与日志）
+     * @param failMsg    未达成时抛出的异常信息
+     */
+    private PageElement waitForPredicate(Function<Locator, Boolean> check,
+            boolean expectTrue, int timeoutSec, String op, String failMsg) {
+        try {
+            boolean actual = Boolean.TRUE.equals(check.apply(locator()));
+            if (actual != expectTrue) {
+                throw new ElementOperationException(op, selector, failMsg, null);
+            }
+            return this;
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException(op, selector,
+                    "Failed to check element state: " + selector, e);
+        }
     }
 
     // ==================== Event & JS ====================
@@ -847,9 +841,14 @@ public class PageElement {
      *
      * @return true 表示 Locator 健康可用，false 表示 Locator 已失效（如页面已关闭或选择器语法错误）
      */
-    public boolean isHealthy() {
+    /**
+     * 仅校验 Locator 语法/可解析性（不表示元素存在，count=0 也算 true）。
+     * 与 exists() 区分：exists() 关注“是否有匹配元素”，本方法关注“定位器是否合法可用”。
+     */
+    public boolean isParsable() {
         try {
-            return locator().count() >= 0;
+            locator().count();
+            return true;
         } catch (Exception e) {
             return false;
         }
@@ -858,10 +857,15 @@ public class PageElement {
     /**
      * 安全获取元素边界框。Playwright 的 boundingBox() 自带自动等待（元素可见+稳定），
      * 不需要额外调用 waitForVisible()。
+     * 元素不可见/未挂载时返回 null 而非抛异常（与 "Safe" 语义一致，便于调用方优雅降级）。
      */
     public BoundingBox getBoundingBoxSafe() {
-        BoundingBox box = locator().boundingBox();
-        return Objects.requireNonNull(box, "BoundingBox null: " + selector);
+        try {
+            return locator().boundingBox();
+        } catch (PlaywrightException e) {
+            logger.warn("getBoundingBoxSafe failed for {}: {}", selector, e.getMessage());
+            return null;
+        }
     }
 
     public int count() {
@@ -889,7 +893,8 @@ public class PageElement {
     }
 
     public PageElement child(String childSelector, int index) {
-        return new PageElement(child(childSelector).getSelector() + " >> nth=" + index, page);
+        // 委托 child(String) + nth(int)，单一事实来源，避免重复拼选择器字符串
+        return child(childSelector).nth(index);
     }
 
     /**

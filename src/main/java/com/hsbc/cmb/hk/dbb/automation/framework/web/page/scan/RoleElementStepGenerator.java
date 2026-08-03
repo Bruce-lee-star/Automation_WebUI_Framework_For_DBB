@@ -42,10 +42,20 @@ public final class RoleElementStepGenerator {
                     return "type(\"" + escapeJava(e.getValue()) + "\")";
                 case "checkbox":
                 case "radio":
+                    // 复选框/单选：按录制时实际勾选状态选择 check()/uncheck()（对齐 page.pause() 的 check/uncheck 信号）。
+                    // checked 为 null 时（非复选框未捕获）保守走默认 check()。
+                    if (e.getChecked() != null) {
+                        return e.getChecked() ? "check()" : "uncheck()";
+                    }
                     return "check()";
                 case "combobox":
                 case "listbox":
-                    // PageElement 未暴露 selectOption；草稿用 click 打开，用户按需改为具体选择逻辑
+                    // 下拉选择（含原生 <select> 与自定义列表）：录制时拿到了选中项，
+                    // 对齐 page.pause() 的 selectOption 信号，生成 selectByVisibleText("选项文本")。
+                    // 未捕获到选中项时（仅点击展开未选）降级为 click()，由人工补充具体选项。
+                    if (e.isSelect() && e.getOptionText() != null) {
+                        return "selectByVisibleText(\"" + escapeJava(e.getOptionText()) + "\")";
+                    }
                     return "click()";
                 default:
                     return "click()";   // button / link / tab / menuitem / switch ...
@@ -119,6 +129,15 @@ public final class RoleElementStepGenerator {
                         String target = pageVar + "." + field;
                         if (e.getIndex() >= 0) {
                             target += ".nth(" + e.getIndex() + ")";
+                        }
+                        // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
+                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
+                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
+                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
+                        if (e.isDialog()) {
+                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
+                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
+                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
                         }
                         String op = target + "." + operationFor(e);
                         if (e.isDownload()) {
@@ -284,6 +303,15 @@ public final class RoleElementStepGenerator {
                         if (field == null) continue;
                         String target = var + "." + field;
                         if (e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
+                        // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
+                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
+                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
+                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
+                        if (e.isDialog()) {
+                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
+                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
+                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
+                        }
                         String op = target + "." + operationFor(e);
                         if (e.isDownload()) {
                             if (e.isPopup()) {
@@ -470,7 +498,16 @@ public final class RoleElementStepGenerator {
                             if (field == null) continue;
                             String target = var + "." + field;
                             if (e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
-                            String op = target + "." + operationFor(e);
+                            // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
+                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
+                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
+                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
+                        if (e.isDialog()) {
+                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
+                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
+                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
+                        }
+                        String op = target + "." + operationFor(e);
                             if (e.isDownload()) {
                                 if (e.isPopup()) {
                                     sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;

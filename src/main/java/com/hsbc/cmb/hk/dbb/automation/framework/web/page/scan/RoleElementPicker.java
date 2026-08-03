@@ -1296,6 +1296,55 @@ public final class RoleElementPicker {
                   window.__activeInputEl = null;
                 }
                 pick.hover = !!isHover;
+                // —— 下拉选择 / 复选框 状态捕获（对齐 page.pause() 的 selectOption 与 check/uncheck 信号）——
+                // combobox/listbox（含原生 <select> 与自定义列表）：拾取时读取当前选中项，
+                // 生成 step 时输出 selectByVisibleText("选项文本")（优先）/ selectByValue(...)。
+                var pRole = (pick.role || '').toLowerCase();
+                if (pRole === 'combobox' || pRole === 'listbox') {
+                  var sel = window.__lastPickEl;
+                  if (sel) {
+                    try {
+                      var optText = null, optVal = null;
+                      if (sel.tagName === 'SELECT') {
+                        var o = sel.selectedOptions && sel.selectedOptions.length ? sel.selectedOptions[0] : null;
+                        if (o) { optText = (o.textContent || '').trim(); optVal = o.value; }
+                      } else {
+                        var selEl = sel.querySelector('[aria-selected="true"]');
+                        if (selEl) optText = (selEl.getAttribute('aria-label') || selEl.textContent || '').trim();
+                      }
+                      if (optText != null) {
+                        pick.select = true;
+                        pick.optionText = optText;
+                        pick.optionValue = optVal;
+                      }
+                    } catch (e) {}
+                    // change 事件触发时（用户在下拉中选了某一项）更新选中态并回传，对齐 codegen 的 selectOption 信号。
+                    try {
+                      if (!sel.__pwSelBound) {
+                        sel.__pwSelBound = true;
+                        sel.addEventListener('change', function() {
+                          try {
+                            var o = sel.selectedOptions && sel.selectedOptions.length ? sel.selectedOptions[0] : null;
+                            if (!o) return;
+                            pick.select = true;
+                            pick.optionText = (o.textContent || '').trim();
+                            pick.optionValue = o.value;
+                            if (typeof window.__sigKey === 'function') pick._sigKey = window.__sigKey(pick);
+                            if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(pick));
+                            try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch (_) {}
+                          } catch (e) {}
+                        }, true);
+                      }
+                    } catch (e) {}
+                  }
+                }
+                // checkbox：记录当前勾选状态，生成 step 时按已勾选走 check()、未勾选走 uncheck()（对齐 codegen）。
+                if (pRole === 'checkbox') {
+                  try {
+                    var cb = pick._el;
+                    if (cb) pick.checked = !!cb.checked;
+                  } catch (e) {}
+                }
                 var sig = window.__pickSig(pick);
                 var key = window.__sigKey(pick);
                 var dup = key && window.__rolePickSigs[key];
@@ -1481,6 +1530,27 @@ public final class RoleElementPicker {
                   }
                 }
               };
+              // ===== 原生对话框（alert/confirm/prompt）拦截 =====
+              // 对齐 page.pause() 的 dialog 信号：在点击触发业务（业务可能调用 alert/confirm）时捕获。
+              // 记录 {type, message, seq} 到 window.__pwDialogs；点击 handler 在宏任务里回查，
+              // 若本次点击后产生了 dialog，则给对应 pick 打 dialog 标记并重传（覆盖内存态），
+              // 生成 step 时前置插桩 page.onDialog(...)。
+              window.__pwDialogs = [];
+              window.__pwDlgSeq = 0;
+              (function() {
+                function hook(orig, type) {
+                  return function(msg) {
+                    try {
+                      window.__pwDialogs.push({ type: type, message: (msg == null ? '' : String(msg)), seq: ++window.__pwDlgSeq });
+                    } catch (e) {}
+                    // 调用原始实现以维持页面既有行为（避免吞掉业务弹窗）
+                    if (typeof orig === 'function') { return orig.apply(this, arguments); }
+                  };
+                }
+                try { window.alert   = hook(window.alert,   'alert'); }   catch (e) {}
+                try { window.confirm = hook(window.confirm, 'confirm'); } catch (e) {}
+                try { window.prompt  = hook(window.prompt,  'prompt'); }  catch (e) {}
+              })();
               document.addEventListener('mousemove', window.__rolePickMove, true);
               window.__rolePickClick = function(event) {
                 // 诊断：记录最近一次点击到达 handler 的时间与当时激活态（供 Java 侧回读，确认点击是否被监听捕获）。
@@ -1492,6 +1562,9 @@ public final class RoleElementPicker {
                 }
                 var pick = window.__recordPick(t, false);
                 if (!pick) return;
+                // 记录点击前的 dialog 计数，供宏任务回查"本次点击是否触发了原生对话框"
+                var dlgBefore = window.__pwDialogs ? window.__pwDialogs.length : 0;
+                var clickPick = pick;
                 // 对齐 page.pause()：拾取模式下【点击穿透】——元素的真实事件与默认行为照常触发
                 // （button 的 onclick、链接跳转、表单提交都会真实发生），仅在此同步记录/定位该元素，
                 // 不再用 preventDefault 吞掉元素的真实交互。曾经为“留在当前页连续拾取”而阻止 a[href]/form 的默认导航，
@@ -1517,7 +1590,31 @@ public final class RoleElementPicker {
                   }
                   // 同标签页普通链接：放行真实导航（不再 preventDefault）
                 }
-                // 按钮/表单提交：放行真实提交（点击按钮应触发其事件与业务），不再 preventDefault。
+                // 按钮/表单提交：放行真实提交（点击按钮会真实触发业务，业务可能调用 alert/confirm），
+                // 不再 preventDefault。原生对话框在业务里同步弹出，故用宏任务回查本次点击是否触发了 dialog。
+                // 对齐 page.pause()：dialog 作为该 action 的前置信号，生成 step 时前置插桩 page.onDialog(...)。
+                try {
+                  setTimeout(function() {
+                    try {
+                      if (!clickPick) return;
+                      var after = window.__pwDialogs ? window.__pwDialogs.length : 0;
+                      if (after > dlgBefore) {
+                        // 取本次点击后新增的最后一个 dialog（即本次点击触发者）
+                        var d = window.__pwDialogs[after - 1];
+                        var type = d && d.type ? d.type : 'alert';
+                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss
+                        var action = (type === 'alert') ? 'accept' : 'dismiss';
+                        clickPick.dialog = true;
+                        clickPick.dialogType = type;
+                        clickPick.dialogAction = action;
+                        // 按 _sigKey 覆盖内存态并重传，确保 stop 生成能拿到 dialog 标记
+                        if (typeof window.__sigKey === 'function') clickPick._sigKey = window.__sigKey(clickPick);
+                        if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(clickPick));
+                        try { console.log('__roleOnPick::' + JSON.stringify(clickPick)); } catch (_) {}
+                      }
+                    } catch (e) {}
+                  }, 0);
+                } catch (e) {}
                 // 同步把最新 currentStep 落盘：若本次点击触发整页导航，onFrameNavigated 合并恢复时
                 // localStorage 已含本次点击（元素因读 Java 内存 javaPickBySig 仍存在，故“元素有、step 也有”）。
                 try { window.__persistNow(); } catch (e) {}
@@ -3112,6 +3209,22 @@ public final class RoleElementPicker {
         boolean hover = Boolean.parseBoolean(asString(m.get("hover")));
         boolean dblClick = Boolean.parseBoolean(asString(m.get("dblclick")));
         boolean closeOp = Boolean.parseBoolean(asString(m.get("_closeOp")));
+        // 原生对话框（alert/confirm/prompt）：前端拦截后打标记，Java 侧解析并映射到 RoleEntry
+        boolean dialog = Boolean.parseBoolean(asString(m.get("dialog")));
+        String dialogType = asString(m.get("dialogType"));
+        String dialogAction = asString(m.get("dialogAction"));
+        if (dialogType != null && dialogType.isBlank()) dialogType = null;
+        if (dialogAction != null && dialogAction.isBlank()) dialogAction = null;
+        // 下拉选择（combobox/listbox）：选中项可见文本 + 选项值（对齐 codegen selectOption 信号）
+        boolean select = Boolean.parseBoolean(asString(m.get("select")));
+        String optionText = asString(m.get("optionText"));
+        if (optionText != null && optionText.isBlank()) optionText = null;
+        String optionValue = asString(m.get("optionValue"));
+        if (optionValue != null && optionValue.isBlank()) optionValue = null;
+        // 复选框勾选状态：true=已勾选（check()）/ false=未勾选（uncheck()）/ null=非复选框
+        Boolean checked = null;
+        String checkedRaw = asString(m.get("checked"));
+        if (checkedRaw != null && !checkedRaw.isBlank()) checked = Boolean.parseBoolean(checkedRaw);
         int index = parseIndex(m.get("index"));
         int level = parseLevel(m.get("level"));
         if ("role".equals(strategy)) {
@@ -3121,7 +3234,7 @@ public final class RoleElementPicker {
             boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
             String value = asString(m.get("value"));
             if (value != null && value.isBlank()) value = null;
-            return new RoleEntry(role, name, tag, text, "role", null, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick);
+            return new RoleEntry(role, name, tag, text, "role", null, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked);
         }
         String selector = buildSelector(strategy, m);
         if (selector == null || selector.isBlank()) return null;
@@ -3130,7 +3243,7 @@ public final class RoleElementPicker {
         boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
         String value = asString(m.get("value"));
         if (value != null && value.isBlank()) value = null;
-        return new RoleEntry(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick);
+        return new RoleEntry(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked);
     }
 
     /** 从 readPickStateJson 的快照 JSON 解析出某页的拾取列表（页面已关闭时回退用）。 */

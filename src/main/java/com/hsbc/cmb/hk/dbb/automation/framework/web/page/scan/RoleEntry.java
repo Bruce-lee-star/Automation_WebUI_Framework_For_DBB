@@ -91,6 +91,40 @@ public final class RoleEntry {
      */
     private final boolean dblClick;
 
+    /**
+     * 该次交互是否触发了浏览器原生对话框（alert / confirm / prompt）。
+     * 注意与 ARIA role="dialog"（模态 DOM 元素）区分——此处专指原生弹窗。
+     * 对齐 page.pause() 的 dialog 信号（前置插桩，不包裹动作）。
+     */
+    private final boolean dialog;
+    /** 原生对话框类型：{@code alert} / {@code confirm} / {@code prompt}（dialog=true 时有效）。 */
+    private final String dialogType;
+    /** 对话框处理动作：{@code accept}（默认 alert）/ {@code dismiss}（默认 confirm/prompt）。 */
+    private final String dialogAction;
+
+    /**
+     * 该拾取元素是否为「下拉选择」交互（role=combobox/listbox，含原生 {@code <select>} 与自定义列表）。
+     * 为 true 时生成 step 应输出 {@code selectByVisibleText("选项文本")} / {@code selectByValue(...)}，
+     * 对齐 page.pause() 对 selectOption 信号的录制（目前框架 draft 降级为 click，此处补齐具体选择动作）。
+     */
+    private final boolean select;
+    /**
+     * 下拉选择时选中的「可见文本」（{@code <option>} 文案或 {@code aria-selected} 选项的可访问名），
+     * 对应 {@code selectByVisibleText(...)}。仅 {@link #select} 为 true 时有意义。
+     */
+    private final String optionText;
+    /**
+     * 下拉选择时选中的「选项值」（{@code <option>.value}），对应 {@code selectByValue(...)}。
+     * 仅 {@link #select} 为 true 时有意义；优先用 {@link #optionText}（更语义、更健壮）。
+     */
+    private final String optionValue;
+    /**
+     * 复选框（role=checkbox）拾取时的实际勾选状态：
+     * {@code true}=当前已勾选（生成 {@code check()}）；{@code false}=当前未勾选（生成 {@code uncheck()}）；
+     * {@code null}=非复选框/未捕获（走默认 check()）。对齐 page.pause() 对 check/uncheck 信号的分别录制。
+     */
+    private final Boolean checked;
+
     public RoleEntry(String role, String name) {
         this(role, name, null, null);
     }
@@ -163,12 +197,43 @@ public final class RoleEntry {
     public RoleEntry(String role, String name, String tag, String text,
                      String strategy, String selector, String resolvedKey, boolean cleaned,
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level) {
-        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, false);
+        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, false, false, null, null, false, null, null, null);
     }
 
     public RoleEntry(String role, String name, String tag, String text,
                      String strategy, String selector, String resolvedKey, boolean cleaned,
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick) {
+        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, dblClick, false, null, null, false, null, null, null);
+    }
+
+    /**
+     * 完整构造（含 dialog 相关字段）。
+     *
+     * @param dialog       是否触发浏览器原生对话框
+     * @param dialogType   对话框类型 alert/confirm/prompt
+     * @param dialogAction 处理动作 accept/dismiss
+     */
+    public RoleEntry(String role, String name, String tag, String text,
+                     String strategy, String selector, String resolvedKey, boolean cleaned,
+                     String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick,
+                     boolean dialog, String dialogType, String dialogAction) {
+        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, dblClick,
+                dialog, dialogType, dialogAction, false, null, null, null);
+    }
+
+    /**
+     * 完整构造（含 dialog + select/check 字段）。
+     *
+     * @param select     是否为下拉选择交互（combobox/listbox）
+     * @param optionText 选中项可见文本（对应 selectByVisibleText）
+     * @param optionValue 选中项值（对应 selectByValue）
+     * @param checked    复选框勾选状态（true=check / false=uncheck / null=默认）
+     */
+    public RoleEntry(String role, String name, String tag, String text,
+                     String strategy, String selector, String resolvedKey, boolean cleaned,
+                     String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick,
+                     boolean dialog, String dialogType, String dialogAction,
+                     boolean select, String optionText, String optionValue, Boolean checked) {
         this.role = role;
         this.name = name;
         this.tag = tag;
@@ -186,6 +251,13 @@ public final class RoleEntry {
         this.closeOp = closeOp;
         this.level = level;
         this.dblClick = dblClick;
+        this.dialog = dialog;
+        this.dialogType = dialogType;
+        this.dialogAction = dialogAction;
+        this.select = select;
+        this.optionText = optionText;
+        this.optionValue = optionValue;
+        this.checked = checked;
     }
 
     public String getRole() {
@@ -254,6 +326,44 @@ public final class RoleEntry {
         return dblClick;
     }
 
+    /** 该次交互是否触发了浏览器原生对话框（alert/confirm/prompt）。 */
+    public boolean isDialog() {
+        return dialog;
+    }
+
+    /** 原生对话框类型：alert / confirm / prompt。 */
+    public String getDialogType() {
+        return dialogType;
+    }
+
+    /** 对话框处理动作：accept / dismiss。 */
+    public String getDialogAction() {
+        return dialogAction;
+    }
+
+    /** 该拾取是否为「下拉选择」交互（combobox/listbox）；是则生成 step 应输出 selectByVisibleText(...) 等。 */
+    public boolean isSelect() {
+        return select;
+    }
+
+    /** 下拉选择时选中的可见文本（对应 selectByVisibleText）；非下拉选择为 null。 */
+    public String getOptionText() {
+        return optionText;
+    }
+
+    /** 下拉选择时选中的选项值（对应 selectByValue）；非下拉选择为 null。 */
+    public String getOptionValue() {
+        return optionValue;
+    }
+
+    /**
+     * 复选框勾选状态：{@code true}=已勾选→{@code check()}；{@code false}=未勾选→{@code uncheck()}；
+     * {@code null}=非复选框/未捕获（走默认 {@code check()}）。
+     */
+    public Boolean getChecked() {
+        return checked;
+    }
+
     /** 该拾取元素所属页面的 Page 类名（多页面跟随时用于把元素归类到对应 Page 类）。 */
     public String getPageClass() {
         return pageClass;
@@ -286,7 +396,10 @@ public final class RoleEntry {
                 + (popup ? ", popup=true" : "")
                 + (download ? ", download=true" : "")
                 + (hover ? ", hover=true" : "")
-                + (dblClick ? ", dblClick=true" : "")
-                + (level > 0 ? ", level=" + level : "") + "}";
+            + (dblClick ? ", dblClick=true" : "")
+            + (level > 0 ? ", level=" + level : "")
+            + (select ? ", select=" + optionText + (optionValue != null ? "(" + optionValue + ")" : "") : "")
+            + (checked != null ? ", checked=" + checked : "")
+            + (dialog ? ", dialog=" + dialogType + "(" + dialogAction + ")" : "") + "}";
     }
 }

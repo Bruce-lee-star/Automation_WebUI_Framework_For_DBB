@@ -28,6 +28,11 @@ import java.util.regex.Pattern;
  *       未设置就调用 {@link #get(String, String)} 会抛异常，强制「切语言必须先通知框架」。</li>
  *   <li>nls 文件结构：{ 语言Key: { key: value, ... }, ... }，语言 Key 由 setLanguage 指定。</li>
  *   <li>文件路径支持 classpath 相对路径（如 "nls/login.nls.json"）或文件系统绝对路径。</li>
+ *   <li><b>多文件支持</b>：一个页面对应多个 nls json 时，用 {@link #bind(String...)} 传入多个文件，
+ *       运行时按声明顺序跨文件查找 key（命中即止）。例：
+ *       {@code NLSUtils.bind("nls/common.nls.json", "nls/login.nls.json")}，
+ *       之后 {@code bundle.get("username")} 会先在 common 找、找不到再在 login 找。
+ *       单文件 {@link #bind(String)} 行为不变（缺失即抛），多文件时仅全部文件都缺失才抛。</li>
  * </ol>
  */
 public final class NLSUtils {

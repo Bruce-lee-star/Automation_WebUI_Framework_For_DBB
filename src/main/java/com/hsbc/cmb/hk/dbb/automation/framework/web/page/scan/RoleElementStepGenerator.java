@@ -302,7 +302,7 @@ public final class RoleElementStepGenerator {
                         String field = (kf == null) ? null : kf.get(RoleElementPageGenerator.locatorKey(e));
                         if (field == null) continue;
                         String target = var + "." + field;
-                        if (e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
+                        if (e.getCount() > 1 && e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
                         // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
                         // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
                         // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
@@ -497,7 +497,7 @@ public final class RoleElementStepGenerator {
                             String field = (kf == null) ? null : kf.get(RoleElementPageGenerator.locatorKey(e));
                             if (field == null) continue;
                             String target = var + "." + field;
-                            if (e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
+                            if (e.getCount() > 1 && e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
                             // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
                         // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
                         // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。

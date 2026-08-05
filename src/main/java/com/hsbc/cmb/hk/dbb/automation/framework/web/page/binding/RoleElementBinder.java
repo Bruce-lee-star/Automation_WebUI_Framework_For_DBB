@@ -136,7 +136,7 @@ public class RoleElementBinder {
                                 ? "role=" + role + "[name:" + literalName + "]"
                                 : a.description();
                         final String nameVal = literalName;
-                        supplier = () -> self.byRole(role, nameVal, a.exact(), a.level());
+                        supplier = () -> self.byRole(role, nameVal, a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                     } else {
                         // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
                         // 注意：必须用 resolveRoleFiles（复数）跨文件查找，与 text/altText/title 等语义路径一致；
@@ -155,11 +155,11 @@ public class RoleElementBinder {
                             // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
                             // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
                             if (NLSUtils.isTemplate(raw)) {
-                                return self.byRole(role, NLSUtils.templatePattern(raw), a.level());
+                                return self.byRole(role, NLSUtils.templatePattern(raw), a.level(), a.disabled(), a.pressed(), a.expanded());
                             }
                             // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
                             // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
-                            return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level());
+                            return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                         };
                     }
                 } else if (a.key() != null && !a.key().isEmpty()) {

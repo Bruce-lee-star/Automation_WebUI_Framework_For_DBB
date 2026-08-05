@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
 import org.slf4j.Logger;
@@ -80,6 +81,14 @@ public final class RoleElementPageGenerator {
         Set<String> seenLocators = new HashSet<>();
         for (RoleEntry e : entries) {
             if (!isValidEntry(e)) continue;
+            // 跳过“整区域级匿名布局 css 定位”：选择器以 body 开头（cssPathOf 在 5 层内找不到 stable id，
+            // 只能拼出 body > div:nth-of-type(...) 这类整页级路径）、或纯裸 div 链（div > div > ...，
+            // 无任何 id/属性/class 锚点）。这类定位不稳定、无业务语义，不应生成页面类字段。
+            if ("css".equals(e.getStrategy())) {
+                String sel = e.getSelector();
+                if (sel != null && (sel.startsWith("body") || sel.startsWith("html")
+                        || isBareDivChain(sel))) continue;
+            }
             String sig = locatorKey(e);
             if (!seenLocators.add(sig)) continue;
             specs.add(makeField(e, specs.size(), usedNames));
@@ -105,6 +114,10 @@ public final class RoleElementPageGenerator {
             // 标题层级：仅 heading 角色有意义，1–6；0 表示不限层级（对齐 getByRole(HEADING).setLevel(n)）。
             if (e.getLevel() > 0) ann.append(", level = ").append(e.getLevel());
             if (e.isCleaned()) ann.append(", exact = false");
+            // 可访问状态过滤属性（对齐 page.pause() 的 getByRole setDisabled/setPressed/setExpanded）
+            if (e.getDisabled() != null) ann.append(", disabled = RoleElement.State.").append(e.getDisabled().name());
+            if (e.getPressed() != null) ann.append(", pressed = RoleElement.State.").append(e.getPressed().name());
+            if (e.getExpanded() != null) ann.append(", expanded = RoleElement.State.").append(e.getExpanded().name());
             ann.append(")");
             return new GeneratedField(field, ann.toString(), e);
         }
@@ -516,14 +529,38 @@ public final class RoleElementPageGenerator {
      * 等策略（其 selector 恒为 null）被整体丢弃——表现即“生成的 Page 类与 step 缺大量元素”。
      * 现放宽为 name 或 selector 任一非空即有效，与 {@link #makeField} 的实际生成逻辑一致。
      */
-    private static boolean isValidEntry(RoleEntry e) {
-        if (e == null) return false;
+    private static boolean isValidEntry(RoleEntry e) {        if (e == null) return false;
         if (e.isRoleStrategy()) {
             return e.getRole() != null && !e.getRole().isBlank();
         }
         boolean hasName = e.getName() != null && !e.getName().isBlank();
         boolean hasSelector = e.getSelector() != null && !e.getSelector().isBlank();
         return hasName || hasSelector;
+    }
+
+    /**
+     * 判断 css 选择器是否为“纯裸 div 链”：仅由 div / nth-of-type / 子代组合构成，
+     * 不含有任何 #id、[属性]、.class、其他标签名等稳定锚点。如 "div > div > div > div > div"、
+     * "body > div:nth-of-type(3) > div > div > div:nth-of-type(4)"（body 开头已在调用处先行拦截）。
+     * 这类定位随 DOM 结构微调即失效，无业务价值，生成页面类时跳过。
+     */
+    private static boolean isBareDivChain(String sel) {
+        if (sel == null || sel.isBlank()) return false;
+        // 含稳定锚点之一即视为有效定位，不跳过
+        if (sel.indexOf('#') >= 0) return false;       // #id
+        if (sel.indexOf('[') >= 0) return false;        // [属性]
+        if (sel.indexOf('.') >= 0) return false;        // .class
+        // 拆成各段，逐段检查：每段应为 div / html / body 或 div:nth-of-type(n)
+        // （允许空白/子代符）。html、body 是整页级骨架节点，无业务锚点，一并视为裸链跳过。
+        String[] parts = sel.split(">");
+        if (parts.length < 2) return false;             // 单个选择器（如 #id、.cls、tag）不过滤
+        for (String p : parts) {
+            String t = p.trim();
+            if (t.isEmpty()) continue;
+            if (t.equals("html") || t.equals("body")) continue;
+            if (!t.equals("div") && !t.matches("div:nth-of-type\\(\\d+\\)")) return false;
+        }
+        return true;
     }
 
     /** 定位器签名：相同签名视为同一定位器，生成时去重。

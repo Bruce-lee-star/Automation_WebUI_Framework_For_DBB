@@ -150,6 +150,45 @@ public @interface RoleElement {
     /** 名称 / 文本是否精确匹配（大小写敏感）。默认 true。对 testId / label 不生效。 */
     boolean exact() default true;
 
+    /**
+     * 可访问状态过滤的三态枚举，对齐 Playwright {@code getByRole(role).setDisabled/setPressed/setExpanded(value)}。
+     * Playwright 的这三个方法只有 true/false 两态（不调用 = 不限定），因此本框架用三态表达：
+     * <ul>
+     *   <li>{@link #ANY}：不限定（默认，不调用 setXxx，匹配任意状态的元素）；</li>
+     *   <li>{@link #YES}：只匹配「处于该状态」的元素（{@code setXxx(true)}）；</li>
+     *   <li>{@link #NO}：只匹配「不处于该状态」的元素（{@code setXxx(false)}）。</li>
+     * </ul>
+     */
+    enum State {
+        /** 不限定（默认，不调用 setXxx）。 */
+        ANY,
+        /** 只匹配处于该状态的元素（等价于 Playwright {@code setXxx(true)}）。 */
+        YES,
+        /** 只匹配不处于该状态的元素（等价于 Playwright {@code setXxx(false)}）。 */
+        NO
+    }
+
+    /**
+     * 可访问「禁用」状态过滤，对齐 Playwright {@code getByRole(role).setDisabled(value)}。
+     * <pre>
+     *     &#64;RoleElement(role = AriaRole.BUTTON, name = "Submit", disabled = RoleElement.State.NO)   // 只定位可用按钮
+     *     public PageElement SUBMIT;
+     * </pre>
+     */
+    State disabled() default State.ANY;
+
+    /**
+     * 切换按钮「按下」状态过滤，对齐 Playwright {@code getByRole(role).setPressed(value)}。
+     * 仅对带 {@code aria-pressed} 的元素有意义（如折叠面板触发、收藏开关）。
+     */
+    State pressed() default State.ANY;
+
+    /**
+     * 可展开元素「展开」状态过滤，对齐 Playwright {@code getByRole(role).setExpanded(value)}。
+     * 仅对带 {@code aria-expanded} 的元素有意义（如菜单、树节点、手风琴）。
+     */
+    State expanded() default State.ANY;
+
     /** 元素描述（可选），用于日志与错误信息 */
     String description() default "";
 }

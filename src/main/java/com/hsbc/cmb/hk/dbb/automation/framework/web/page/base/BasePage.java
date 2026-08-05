@@ -1151,6 +1151,62 @@ public abstract class BasePage {
     }
 
     /**
+     * 按可访问性角色 + 名称定位元素，并可指定标题层级与可访问状态过滤（对齐 page.pause() 的 getByRole）。
+     * 状态过滤为三态（{@code RoleElement.State}）：{@code ANY}=不调用 setXxx（匹配任意）；
+     * {@code YES}=setXxx(true)（只匹配处于该状态）；{@code NO}=setXxx(false)（只匹配不处于该状态）。
+     *
+     * @param role     可访问性角色
+     * @param name     可访问名称
+     * @param exact    名称是否精确匹配（大小写敏感）
+     * @param level    标题层级，<=0 表示不限
+     * @param disabled 禁用状态过滤（{@link RoleElement.State}）
+     * @param pressed  按下状态过滤（toggle button，{@link RoleElement.State}）
+     * @param expanded 展开状态过滤（{@link RoleElement.State}）
+     */
+    public Locator byRole(AriaRole role, String name, boolean exact, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(name).setExact(exact);
+        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(name).setExact(exact);
+        if (level > 0) {
+            popts = popts.setLevel(level);
+            fopts = fopts.setLevel(level);
+        }
+        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
+        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
+        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
+        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
+        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
+        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
+        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
+    }
+
+    /**
+     * 按可访问性角色 + 名称正则定位元素，并可指定标题层级与可访问状态过滤（对齐 page.pause() 的 getByRole）。
+     * 状态过滤语义同 {@link #byRole(AriaRole, String, boolean, int, RoleElement.State, RoleElement.State, RoleElement.State)}。
+     * 用于 NLS 模板值（含 {@code {{var}}}）编译出的正则；此模式下 exact 被 Playwright 忽略。
+     */
+    public Locator byRole(AriaRole role, Pattern namePattern, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        ensurePageValid();
+        Frame frame = currentFrame.get();
+        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(namePattern);
+        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(namePattern);
+        if (level > 0) {
+            popts = popts.setLevel(level);
+            fopts = fopts.setLevel(level);
+        }
+        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
+        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
+        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
+        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
+        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
+        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
+        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
+    }
+
+    /**
      * 打印当前页面中可交互元素的 {@code role = name}，
      * 便于据此编写 {@code @RoleElement(role = ..., key = ...)} 注解。
      * 用法：临时在测试里调用 {@code loginPage.dumpAccessibilityRoles();}，

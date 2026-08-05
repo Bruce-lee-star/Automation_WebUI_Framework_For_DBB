@@ -311,7 +311,6 @@ public final class RoleElementPicker {
                 + "   var on2=false; try{ on2 = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){}"
                 + "   try{ if(!on2) on2 = !!window.__rolePickSessionOn; }catch(e){}"
                 + "   if (on2 && typeof window.__roleGatedStart === 'function') { try{ window.__roleGatedStart(); }catch(e){} }"
-                + "   // 面板 DOM 被框架重渲染冲掉：用 PANEL_SCRIPT 暴露的 __roleEnsurePanel 幂等重建（存在则跳过）。"
                 + "   try { if (!document.getElementById('__rolePanel') && typeof window.__roleEnsurePanel === 'function') window.__roleEnsurePanel(); } catch(e){}"
                 + "   try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
                 + " } catch(e){} }"
@@ -3068,11 +3067,21 @@ public final class RoleElementPicker {
                     row.__cb.checked = sel;
                     row.style.background = sel ? 'rgba(30,136,229,.18)' : '';
                   }
-                  // 【修复】同步"全选"复选框：selAllCb 是列表外的独立复选框、不在上面 children 遍历范围内，
-                  // 其勾选状态必须由 refreshSelInfo 依据真实选择集（window.__currentStep）统一刷新，
-                  // 否则会出现"元素行全未选中、但全选框仍勾选"的不一致（封装为步骤后切回页面元素 tab 尤为明显）。
-                  // 直接复用 refreshSelInfo（内部按 sel===vis.length 设定 selAllCb.checked），避免手写逻辑与之一致性漂移。
-                  try { if (typeof refreshSelInfo === 'function') refreshSelInfo(); } catch (e2) {}
+                  // 【修复】同步"全选"复选框：selAllCb 是列表外的独立复选框、不在上面 children 遍历范围内。
+                  // 其勾选状态必须由【真实选择集 window.__currentStep】唯一决定，否则会出现
+                  // "元素行全未选中、但全选框仍勾选"的不一致（封装为步骤后切回页面元素 tab 尤为明显）。
+                  // 双保险：① refreshSelInfo 统一刷新计数与全选框（依赖闭包 selAllCb）；
+                  //        ② 直接用全局引用 window.__roleSelAllCb（指向真实 DOM checkbox）按真实选择集兜底复位，
+                  //           不依赖闭包捕获，杜绝因闭包错位导致的复位失效。
+                  try {
+                    if (typeof refreshSelInfo === 'function') { try { refreshSelInfo(); } catch (e3) {} }
+                    var _sa = window.__roleSelAllCb;
+                    if (_sa) {
+                      var _cset = window.__currentStep || [];
+                      var _visN = (typeof curVisiblePicks === 'function') ? curVisiblePicks().length : 0;
+                      _sa.checked = (_visN > 0 && _cset.length === _visN);
+                    }
+                  } catch (e2) {}
                 } catch (e) {}
               }
               function __renderPicksNow() {
@@ -4056,16 +4065,9 @@ public final class RoleElementPicker {
                     + "   var arr = " + json + ";"
                     + "   var __del2 = " + delJson + ";"   // Java 侧持久已删集（数组）
                     + "   if (window.__clearMatchCache) window.__clearMatchCache();"
-                    + "   // 把 Java RoleEntry 的字段名映射回浏览器 pick 的字段名（selector→css/id、resolvedKey→key、pageClass→_pageClass），"
-                    + "   // 使下面合并去重键与浏览器侧 window.__rolePickSigs 完全一致：同一元素点击后“浏览器 push”与“Java 回传再合并”"
-                    + "   // 用同一键去重，避免每条点击都在面板里重复出现。\n"
                     + "   function toPick(p){ if(!p) return p; var o={};"
                     + "     o.strategy=p.strategy; o.role=p.role; o.name=p.name;"
                     + "     o.key=(p.resolvedKey!=null)?p.resolvedKey:undefined;"
-                    + "     // id 策略的 selector 在 Java 侧以 CSS 选择器形式存储（如 \"#logoHeader\"），\n"
-                    + "     // 需剥掉前导 '#' 还原成裸 id（\"logoHeader\"），否则与浏览器直播点击产生的\n"
-                    + "     // id=logoHeader 签名（id:logoHeader vs id:#logoHeader）不一致、无法去重，\n"
-                    + "     // 面板里会多出一整条 \"id=#logoHeader\" 冗余副本。\n"
                     + "     o.id=(p.strategy==='id' && p.selector)? String(p.selector).replace(/^#/, '') : undefined;"
                     + "     o.css=(p.strategy==='css')?p.selector:undefined;"
                     + "     o.index=p.index; o._pageClass=p.pageClass;"
@@ -4078,11 +4080,6 @@ public final class RoleElementPicker {
                     // 元素身份在 浏览器→Java→浏览器 往返中恒定，重复从源头根除。
                     + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
                     + "     return o; }"
-                    + "   // 改为【合并】而非【整体覆盖】 window.__rolePicks：window.__rolePicks 是浏览器侧按本标签页累积的"
-                    + "   // 展示数组（点击/iframe 回传/导航恢复都会 push），整体覆盖会把它清空，再用 Java 按当前 pageClass"
-                    + "   // 过滤的子集填充——一旦同页 URL 变化触发 onFrameNavigated 重派生 pageClass（或 SPA 路由切换），"
-                    + "   // 旧 URL 拾取的元素（_pageClass=旧类）就被新类过滤甩掉，表现为“同页 url 变化后已拾元素消失”。"
-                    + "   // 合并后用签名去重，保证“已拾的元素始终可见”，不随 pageClass 变化被清零。\n"
                     + "   window.__rolePicks = window.__rolePicks || [];"
                     + "   window.__rolePickSigs = window.__rolePickSigs || {};"
                     + "   arr.forEach(function(p){"
@@ -5262,12 +5259,6 @@ public final class RoleElementPicker {
                             + "     if (k && window.__rolePickSigs[k]) return;"
                             + "     if (k) window.__rolePickSigs[k] = true;"
                             + "     window.__rolePicks.push(p); });"
-                            + "   // 关键修复（修复“URL 变化后元素定位到了、但 step 没记录”）：当前进行中 step（__currentStep）\n"
-                            + "   // 必须按【自身】去重合并 localStorage 中最新 currentStep，而非与 __rolePicks 的签名表去重——\n"
-                            + "   // 否则因每个 currentStep 元素同时也是 pick，会被上面 picks 循环写入的签名表整批去重掉，\n"
-                            + "   // 导致 currentStep 恢复完全失效、只能依赖可能已过期的 Java 快照（st.currentStep），\n"
-                            + "   // 从而丢失跳转前最后点击（如“返回登录”）所属的那一步。改为仅与【当前 __currentStep 已有项】去重，\n"
-                            + "   // 把快照遗漏的最新 currentStep 元素补回（与 picks 去重互不干扰，避免后续重复 finalize）。\n"
                             + "   window.__currentStep = window.__currentStep || [];"
                             + "   var __cs = {};"
                             + "   window.__currentStep.forEach(function(p){ var k=window.__mergeKey(p); if(k) __cs[k]=true; });"

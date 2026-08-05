@@ -193,6 +193,13 @@ public final class RoleElementPageGenerator {
             () => {
               // 覆盖所有"有意义的" ARIA 角色（对齐 click 拾取）：仅排除 generic/none/presentation。
               var NON_ROLE = { generic:1, none:1, presentation:1 };
+              // 交互/语义标签白名单：带这些标签的元素 computedRole 才可能返回非 generic 角色；
+              // 其余纯容器（div/span/section...）即便算 computedRole 也多半是 generic，可跳过，
+              // 大幅减少昂贵的 el.computedRole() 调用（O5：整页扫描卡顿主因）。
+              var SEMANTIC_TAGS = { a:1, button:1, input:1, select:1, textarea:1, label:1,
+                img:1, h1:1, h2:1, h3:1, h4:1, h5:1, h6:1, table:1, th:1, td:1, li:1,
+                nav:1, main:1, header:1, footer:1, form:1, article:1, dialog:1, option:1,
+                progress:1, meter:1, summary:1, details:1, figure:1, figcaption:1, dl:1, dt:1, dd:1 };
               function getHeadingLevel(el) {
                 var al = el.getAttribute && el.getAttribute('aria-level');
                 if (al) { var n = parseInt(al, 10); if (!isNaN(n) && n > 0) return n; }
@@ -205,6 +212,10 @@ public final class RoleElementPageGenerator {
               var els = document.querySelectorAll('*');
               for (var i = 0; i < els.length; i++) {
                 var el = els[i];
+                var tag = (el.tagName || '').toLowerCase();
+                // 快速跳过：既无 role 属性、又非语义标签的纯容器，直接忽略，不调 computedRole。
+                var hasRoleAttr = !!(el.getAttribute && el.getAttribute('role'));
+                if (!hasRoleAttr && !SEMANTIC_TAGS[tag]) continue;
                 var role;
                 try { role = (typeof el.computedRole === 'function') ? el.computedRole() : el.getAttribute('role'); }
                 catch (e) { role = el.getAttribute('role'); }
@@ -215,12 +226,12 @@ public final class RoleElementPageGenerator {
                 try { name = (typeof el.computedName === 'function') ? el.computedName() : ''; }
                 catch (e) { name = ''; }
                 if (!name) name = (el.getAttribute('aria-label') || '').trim();
+                // 仅在确实无 aria-label 时再用文本兜底；computedName 已优先，此处无需二次计算。
                 if (!name) {
                   var t = (el.textContent || '').trim();
                   name = t ? t.substring(0, 120) : '';
                 }
                 if (!name) continue;   // 无名称的语义角色跳过（与 click 拾取一致）
-                var tag = (el.tagName || '').toLowerCase();
                 var lvl = (role === 'heading') ? getHeadingLevel(el) : 0;
                 var dk = el.getAttribute('data-i18n');
                 var key = (dk && dk.trim()) ? dk.trim() : '';

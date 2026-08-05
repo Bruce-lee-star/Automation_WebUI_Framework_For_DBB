@@ -1251,7 +1251,13 @@ public abstract class BasePage {
     public Locator byTestId(String testId) {
         ensurePageValid();
         Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByTestId(testId) : page.getByTestId(testId);
+        // P1 兼容性：Playwright 的 getByTestId 仅认 data-testid，但拾取器会识别
+        // data-testid/data-test-id/data-test/data-qa 四种常见测试属性（对齐 page.pause 的 testId 族）。
+        // 为让生成的 @RoleElement(testId=...) 对任意一种属性都能定位，构造覆盖全部四种属性的
+        // CSS 选择器（同一值只会出现在其中一种属性上，不会误匹配多个）。
+        String sel = "[data-testid=\"" + testId + "\"],[data-test-id=\"" + testId
+                + "\"],[data-test=\"" + testId + "\"],[data-qa=\"" + testId + "\"]";
+        return (frame != null) ? frame.locator(sel) : page.locator(sel);
     }
 
     /**

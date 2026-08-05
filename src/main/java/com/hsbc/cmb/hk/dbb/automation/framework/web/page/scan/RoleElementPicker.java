@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
  * 交互式拾取器：像 {@code page.pause()} 一样，在浏览器里点击想要的元素，
  * 自动抓取被点元素的 a11y role / name，再交给 {@link RoleElementPageGenerator} 生成 {@code @RoleElement} 代码。
  *
- * <p>与整页 {@code dumpAccessibilityRoles} 不同，本类只采集“用户主动点击”的元素，
+ * <p>与整页 {@code dumpAccessibilityRoles} 不同，本类只采集"用户主动点击"的元素，
  * 适合页面导航/列表很冗杂、只需其中少数几个控件的场景。
  *
  * <h3>原理</h3>
@@ -46,27 +46,39 @@ public final class RoleElementPicker {
     private static final Logger log = LoggerFactory.getLogger(RoleElementPicker.class);
 
     /**
-     * 上下文级“当前会话”桥（对齐 {@code page.pause()} 的 DebugController/Recorder 解耦）：
+     * 上下文级"当前会话"桥（对齐 {@code page.pause()} 的 DebugController/Recorder 解耦）：
      * 命令桥/拾取桥不再逐页 {@code exposeFunction}，而是对 {@link BrowserContext} 一次性
      * {@code exposeBinding}——context 下所有当前与未来页面（弹窗/新标签页）、每次导航后的新文档
-     * 都自动持有绑定，由 {@code BindingCallback.Source#page()} 天然区分“哪个页面发起”。
+     * 都自动持有绑定，由 {@code BindingCallback.Source#page()} 天然区分"哪个页面发起"。
      * 同名绑定不可重复注册（重复会抛 {@code PlaywrightException}），故每个 context 仅注册一次；
-     * 二次打开（同一 context 再次 {@code openPanel}）只更新下方 Map 指向的“当前会话”队列/状态，
+     * 二次打开（同一 context 再次 {@code openPanel}）只更新下方 Map 指向的"当前会话"队列/状态，
      * 回调动态读取，避免命令/拾取被投递到已失效的旧会话队列。
      */
     private static final Map<BrowserContext, BlockingQueue<CmdEvent>> CTX_CMD_QUEUES = new ConcurrentHashMap<>();
     private static final Map<BrowserContext, LinkedHashMap<String, RoleEntry>> CTX_PICK_STATES = new ConcurrentHashMap<>();
     private static final Set<BrowserContext> CTX_BRIDGED = Collections.newSetFromMap(new ConcurrentHashMap<>());
     // 上下文级初始化脚本守卫：面板脚本每 context 仅注册一次；拾取脚本按 nls 内容变化才追加注册
-    // （addInitScript 无法撤销，重复注册会累积执行；同 nls 幂等跳过，不同 nls 追加后“后注册者后执行”覆盖生效）。
+    // （addInitScript 无法撤销，重复注册会累积执行；同 nls 幂等跳过，不同 nls 追加后"后注册者后执行"覆盖生效）。
     private static final Set<BrowserContext> CTX_PANEL_SCRIPTED = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final Map<BrowserContext, String> CTX_PICKER_NLS = new ConcurrentHashMap<>();
+
+    /**
+     * 会话级持久"已删集合"：用户主动删除的元素键（_sig / _sigKey / 去索引 locatorKey）。
+     * 与浏览器端 {@code window.__deletedSigs} 的区别在于后者在【区域扫描入口】会被清空
+     * （区域扫描 = 本次选中区域里的"全新候选"语义，不应继承过往删除屏蔽），而本集合跨扫描/跨页面
+     * 持久。作用：{@code syncPanelToBrowser} 把 Java 权威内存态 javaPickBySig 回灌浏览器时，
+     * 即便 Java 删除因键不匹配未命中实体、且浏览器端 __deletedSigs 已被区域扫描清空，
+     * 仍按本集合永久屏蔽已删元素，杜绝"区域扫描后已删元素被主循环复活"的回归。
+     * key 为 javaPickBySig 对象引用（每会话稳定，O(1) 反查），值为已删键集合。
+     */
+    private static final Map<LinkedHashMap<String, RoleEntry>, Set<String>> STATE_DELETED =
+            new ConcurrentHashMap<>();
 
 
 
     /**
      * 面板命令事件：由页面内 {@code window.__rolePickerCmd(c)}（经 {@link Page#exposeFunction} 暴露的
-     * Java 回调）投递，携带“哪个页面发的命令”。主循环从阻塞队列取出后据此驱动，避免忙轮询所有页面。
+     * Java 回调）投递，携带"哪个页面发的命令"。主循环从阻塞队列取出后据此驱动，避免忙轮询所有页面。
      */
     private static final class CmdEvent {
         final Page page;
@@ -75,7 +87,7 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 把“面板命令桥 + 点击拾取桥 + 控制台兜底桥”一次性注册到 {@link BrowserContext}
+     * 把"面板命令桥 + 点击拾取桥 + 控制台兜底桥"一次性注册到 {@link BrowserContext}
      * （对齐 {@code page.pause()}：Recorder 用 {@code context.exposeBinding} 注册跨页面/跨导航存活的回传桥）。
      * <ul>
      *   <li>命令桥：页面内 {@code window.__rolePickerCmd(c)} → (来源 page, cmd) 投递进阻塞队列，主循环事件驱动消费；</li>
@@ -121,7 +133,7 @@ public final class RoleElementPicker {
                 RoleEntry e = parsePick(m);
                 if (e == null) return null;
                 // 去重键与浏览器端保持一致但更精确：定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）
-                // 去重，避免同一元素在“主页↔弹窗”间被重复收录；角色/closeOp 仍按 [sig, pageClass|URL]（_sigKey）区分。
+                // 去重，避免同一元素在"主页↔弹窗"间被重复收录；角色/closeOp 仍按 [sig, pageClass|URL]（_sigKey）区分。
                 // 重复点击以最近一次交互为准整条替换（RoleEntry 不可变，更新须替换）；首次插入保序。
                 String key = pickDedupKey(m, e);
                 synchronized (map) { map.put(key, e); log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={}（当前内存态大小={}）", key, (e.getPageClass() == null ? "" : e.getPageClass()), map.size()); }
@@ -133,7 +145,7 @@ public final class RoleElementPicker {
         // 删除桥：面板「垃圾桶」删除选中元素时，浏览器端经 window.__roleOnDelete(JSON.stringify(keys)) 回传。
         // 【必需】此前删除只从浏览器 window.__rolePicks 里 filter 掉，未同步 Java 权威内存态 javaPickBySig；
         // 而主循环每轮空闲（~1s）都会 syncPanelToBrowser 把 javaPickBySig 整体 merge 回浏览器，
-        // 被删元素随即“复活”，表现为「删除没起作用」；且代码生成读的就是 javaPickBySig，
+        // 被删元素随即"复活"，表现为「删除没起作用」；且代码生成读的就是 javaPickBySig，
         // 界面删掉了生成的代码里仍然存在。故必须让删除同时落到 Java 侧。
         // 传入的每个键可能是 _sig 或 _sigKey——因 pickDedupKey 对「定位器唯一型策略」用 _sig 作 map key、
         // 对 role/closeOp 用 _sigKey，浏览器无法预知用了哪个，故两者都发、Java 侧按任一命中即移除。
@@ -159,6 +171,10 @@ public final class RoleElementPicker {
                         RoleEntry re = en.getValue();
                         return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
                     });
+                    // 持久记录已删集合（跨区域扫描/跨页面）：即便本页删除全部命中、实体已被移除，
+                    // 仍登记 dead 键——其它页面同源元素回灌时同样应被屏蔽，且区域扫描清空浏览器端
+                    // __deletedSigs 后仍能靠本集合兜底，杜绝"删除后重启区域扫描又复活"。
+                    STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                     log.info("[picker] __roleOnDelete 删除内存态：请求={} 实删={}（当前内存态大小={}）",
                             dead.size(), before - map.size(), map.size());
                 }
@@ -202,6 +218,8 @@ public final class RoleElementPicker {
                             RoleEntry re = en.getValue();
                             return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
                         });
+                        // 持久记录已删集合（与 exposeBinding 通道对称，保证控制台兜底删除同样写入，杜绝复活）。
+                        STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                         log.info("[picker] __roleOnDelete(console) 删除内存态：请求={} 实删={}（当前内存态大小={}）",
                                 dead.size(), before - map.size(), map.size());
                     }
@@ -228,11 +246,11 @@ public final class RoleElementPicker {
             + " try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){}"
             + " try{window.__rolePanelForce=true;}catch(e){}"
             + " try{var n=localStorage.getItem('__rolePageName'); if(n) window.__rolePageName=n;}catch(e){} })();"
-            // ===== 唯一权威的“合并去重键” =====
+            // ===== 唯一权威的"合并去重键" =====
             // 各处合并快照（load/pageshow 自愈、弹窗关闭回灌、导航后恢复、currentStep 补齐）过去各自手搓
             // JSON.stringify([p._sig, p._pageClass])，与元素入库时 __sigKey() 的口径【不一致】：
             // __sigKey 会优先复用已固化的 p._sigKey，而手搓版本无视它、按当前上下文重算。于是同一个元素
-            // 在合并时算出的键 ≠ 入库时登记在 __rolePickSigs 里的键 → 判为“新元素”被再次 push。
+            // 在合并时算出的键 ≠ 入库时登记在 __rolePickSigs 里的键 → 判为"新元素"被再次 push。
             // 由于每次导航/恢复都会触发多个合并点，重复份数随操作次数递增（实测 4→5→6 次）。
             // 这里定义在【引导脚本】而非 START_SCRIPT：合并点最早在文档解析初期的门控脚本里就会执行，
             // 那时 __sigKey 尚未定义，故 __mergeKey 必须自给自足（有 __sigKey 就委托，没有就用同口径兜底）。
@@ -251,7 +269,7 @@ public final class RoleElementPicker {
      *
      * <p>正常路径由 {@link #PANEL_BOOTSTRAP_SCRIPT} 在每个新文档最早期定义；但跨源导航 / 新文档尚未
      * 执行完引导脚本时 evaluate 可能先落地，此时若直接调用会抛 {@code TypeError} 使整个合并静默失败，
-     * 退化回“全部当新元素追加”的重复老路。故各合并点前统一内联该幂等 shim（已定义则原样保留）。
+     * 退化回"全部当新元素追加"的重复老路。故各合并点前统一内联该幂等 shim（已定义则原样保留）。
      */
     private static final String MERGE_KEY_SHIM =
             " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
@@ -266,27 +284,27 @@ public final class RoleElementPicker {
     /**
      * 门控式拾取初始化脚本（对齐 {@code page.pause()} 的 Recorder：拾取脚本经 context 注入脚本
      * 在【每个新文档】自动重跑，跨导航/弹窗/新标签页由浏览器原生保证监听重挂，无需 Java 端手动跟踪）。
-     * 门控：仅当“会话拾取开关”（localStorage __rolePickSessionOn，由 start/stop 置位/清除）打开时
+     * 门控：仅当"会话拾取开关"（localStorage __rolePickSessionOn，由 start/stop 置位/清除）打开时
      * 才注入 nls 反向表并挂载 START_SCRIPT；未拾取时新文档零侵入。
      */
     private static String gatedPickerInitScript(String nlsReverseJson) {
         return "(function(){"
                 // 诊断回写：浏览器 console 已被吞（无 onConsoleMessage 监听），故把门控执行结果写入
-                // window.__gateInit，供 Java 在 onFrameNavigated / start 后回读，定位“刷新后拾取不了”。
+                // window.__gateInit，供 Java 在 onFrameNavigated / start 后回读，定位"刷新后拾取不了"。
                 + " var __gi = { ts: Date.now(), url: location.href, origin: location.origin };"
                 + " var on=false;"
                 + " try{ on = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){ __gi.lsErr = String(e); }"
                 + " try{ if(!on) on = !!window.__rolePickSessionOn; }catch(e){}"
                 + " __gi.switchOn = on;"
-                // 无条件定义“开启监听”入口（即便本次文档早期会话开关尚未置位）：仅定义、不调用，
+                // 无条件定义"开启监听"入口（即便本次文档早期会话开关尚未置位）：仅定义、不调用，
                 // 所有调用处（__roleReenable / __roleSpaHeal / start）均带会话开关自检，不会误开启拾取。
-                // 提前定义可保证“文档早期会话未开、之后才点开始”的场景下，刷新/跳转/SPA 自愈仍能复用同一入口。
+                // 提前定义可保证"文档早期会话未开、之后才点开始"的场景下，刷新/跳转/SPA 自愈仍能复用同一入口。
                 + " window.__roleGatedStart = function(){ " + START_SCRIPT + " };"
-                // ===== 同页 URL 变更（SPA 路由切换）自愈：修复“同页 url 变化后已拾元素消失 / 拾取不了” =====
+                // ===== 同页 URL 变更（SPA 路由切换）自愈：修复"同页 url 变化后已拾元素消失 / 拾取不了" =====
                 // 无条件注册（即便本次文档早期会话未开启）：函数体自带会话开关自检，会话未开时整体 no-op，安全。
                 // pushState/replaceState/popstate/hashchange 不会触发 load/pageshow/onFrameNavigated，
                 // 框架重渲染 document 子树往往静默移除 document 级点击监听、甚至把 docked 面板 DOM（#__rolePanel）冲掉，
-                // 表现为“同页路由切换后，之前抓取的元素看不见、点了也没反应”。
+                // 表现为"同页路由切换后，之前抓取的元素看不见、点了也没反应"。
                 // 故在此类事件上二次自检：开关仍在则重挂监听；面板 DOM 若被冲掉则重建；并立即重渲染已拾元素。
                 // 已拾元素存于 window.__rolePicks（按本标签页累积的展示数组，不随 DOM 重建丢失），重渲染即可恢复显示。
                 + " function __roleSpaHeal(){ try {"
@@ -306,7 +324,7 @@ public final class RoleElementPicker {
                 + " window.addEventListener('hashchange', __roleSpaHeal);"
                 + " if(!on){ window.__gateInit = __gi; return; }"
                 // 关键加固：nls 反查表字面量若因任何原因非法，绝不能连累后面的 START_SCRIPT 注入
-                // （否则整个门控 IIFE 抛错、监听永不挂载，表现为“刷新/跳转后点了没反应”）。
+                // （否则整个门控 IIFE 抛错、监听永不挂载，表现为"刷新/跳转后点了没反应"）。
                 + " var __o; try { __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + "; } catch(e){ __o = {}; __gi.nlsErr = String(e); }"
                 + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
                 + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
@@ -314,23 +332,18 @@ public final class RoleElementPicker {
                 // 供 onFrameNavigated 的会话开关自检（读 window.__rolePickSessionOn）与 load/pageshow 自检使用。
                 + " try{ window.__rolePickSessionOn = true; }catch(e){}"
                 + " window.__roleGatedStart();"
-                // ===== 浏览器侧自愈（核心修复“刷新/跳转后拾取不了”）=====
+                // ===== 浏览器侧自愈（核心修复"刷新/跳转后拾取不了"）=====
                 // 仅靠文档早期 addInitScript 不可靠：现代 SPA/微前端框架可能在初始化阶段重建 document 子树、
                 // 或浏览器以 bfcache 前进/后退/刷新恢复旧文档（addInitScript 不重跑）、或导航瞬间执行上下文竞态，
-                // 都可能让文档早期的监听没“粘住”。故在 load 与 pageshow 两个全文档就绪时机二次自检：
+                // 都可能让文档早期的监听没"粘住"。故在 load 与 pageshow 两个全文档就绪时机二次自检：
                 //   开关仍在 且（点击监听缺失 或 未激活）→ 重新执行 START_SCRIPT（幂等：已激活则早退仅保活）。
-                // 该机制完全不依赖 Java 侧 onFrameNavigated / ensurePickingActive 的时序，从根上保证“页面怎么变都能拾取”。
+                // 该机制完全不依赖 Java 侧 onFrameNavigated / ensurePickingActive 的时序，从根上保证"页面怎么变都能拾取"。
                 + " function __roleReenable(){ try {"
                 + "   var on2=false; try{ on2 = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){}"
                 + "   try{ if(!on2) on2 = !!window.__rolePickSessionOn; }catch(e){}"
                 + "   if (!on2) return;"
                 + "   try{ window.__rolePickSessionOn = true; }catch(e){}"
-                + "   // 始终重挂：addEventListener 对同函数引用幂等（重复挂无害），但能覆盖“框架重建 document"
-                + "   // 子树导致原监听被静默移除、而 window.__rolePickClick 函数引用仍在”的卡死态——仅判函数是否存在会漏判。"
                 + "   if (typeof window.__roleGatedStart === 'function') window.__roleGatedStart();"
-                + "   // 重新合并 pagehide/beforeunload 落盘到 localStorage 的最新拾取态，并重渲染面板："
-                + "   // onFrameNavigated 的合并可能早于旧页 pagehide 落盘（竞态），导致“跳转到新页后面板空白 / 缺最后点击”。"
-                + "   // 此处 load/pageshow（旧页 pagehide 已稳定发生）再次合并，补齐默认页已拾元素，修复面板空白。"
                 + "   try {"
                 + "     var raw = localStorage.getItem('__rolePickState'); if (raw) {"
                 + "       var s = JSON.parse(raw);"
@@ -338,8 +351,8 @@ public final class RoleElementPicker {
                 + "       window.__rolePickSigs = window.__rolePickSigs || {};"
                 // 去重键必须走权威函数 __mergeKey（内部优先复用已固化的 p._sigKey）。
                 // 曾在此处手搓 JSON.stringify([p._sig, p._pageClass])，与入库时 __sigKey() 的口径不一致：
-                // 已固化 _sigKey 的元素在这里被重算出另一个键 → 每次导航/恢复合并都判为“新元素”而追加，
-                // 是“同组元素重复 4/5/6 次且越扫越多”的真正根因。
+                // 已固化 _sigKey 的元素在这里被重算出另一个键 → 每次导航/恢复合并都判为"新元素"而追加，
+                // 是"同组元素重复 4/5/6 次且越扫越多"的真正根因。
                 + "       (s.picks||[]).forEach(function(p){"
                 + "         var k = window.__mergeKey(p);"
                 + "         if (k && window.__rolePickSigs[k]) return;"
@@ -363,9 +376,9 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 把“面板重建 + 门控拾取”初始化脚本一次性注册到 {@link BrowserContext}：
+     * 把"面板重建 + 门控拾取"初始化脚本一次性注册到 {@link BrowserContext}：
      * context 下每个页面、每次导航、每个新文档都会自动执行（Playwright 原生保证），
-     * 从根上替代“onFrameNavigated 手动重挂 / 逐页 addInitScript / 自愈循环”三套兜底机器。
+     * 从根上替代"onFrameNavigated 手动重挂 / 逐页 addInitScript / 自愈循环"三套兜底机器。
      * 面板脚本每 context 仅注册一次；拾取脚本按 nls 内容幂等（同 nls 跳过，变化则追加，后注册者后执行覆盖生效）。
      */
     private static void registerContextInitScripts(BrowserContext ctx, String nlsReverseJson) {
@@ -383,8 +396,8 @@ public final class RoleElementPicker {
     /**
      * 抽干浏览器端兜底命令队列 window.__panelCmds 并入 Java 命令队列 cmdQueue。
      * 当 exposeFunction 绑定（window.__rolePickerCmd）尚未就绪时，面板按钮的 pushCmd 会把命令
-     * 暂存进 window.__panelCmds（见 PANEL_SCRIPT）。若不消费，这些命令会静默丢失，导致“点了开始却
-     * 拾取不了”。此处由 Java 主循环周期性抽干，保证命令零丢失。与 exposeFunction 投递幂等、不会重复。
+     * 暂存进 window.__panelCmds（见 PANEL_SCRIPT）。若不消费，这些命令会静默丢失，导致"点了开始却
+     * 拾取不了"。此处由 Java 主循环周期性抽干，保证命令零丢失。与 exposeFunction 投递幂等、不会重复。
      */
     private static void drainPanelCmds(Page page, BlockingQueue<CmdEvent> cmdQueue) {
         if (page == null || page.isClosed() || cmdQueue == null) return;
@@ -423,6 +436,10 @@ public final class RoleElementPicker {
     /** 用于把参数安全序列化为 JS 字面量（避免手动拼接转义错误） */
     private static final Gson GSON = new Gson();
 
+    // O2：syncPanelToBrowser 的 ETag 缓存——按 Page 记录上次同步的内容签名，未变则跳过整轮同步。
+    private static final java.util.Map<Page, String> LAST_SYNC_SIG =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     /** 反序列化任意拾取态 JSON 的精确泛型类型，避免 {@code fromJson(x, Map.class)} 的未检查转换 */
     private static final java.lang.reflect.Type MAP_STRING_OBJECT_TYPE =
             new TypeToken<java.util.Map<String, Object>>() {}.getType();
@@ -432,7 +449,7 @@ public final class RoleElementPicker {
             (function() {
               // 保活（幂等）：任何 start 都确保 document 级点击/键盘/悬浮监听已挂载。
               // 导航（尤其某些 SPA/微前端框架在路由切换时重建 document 子树）可能移除这些监听，
-              // 而 window.__rolePickActive 仍为 true；若直接早退会导致“导航到新页面后点了没反应、拾取不到”。
+              // 而 window.__rolePickActive 仍为 true；若直接早退会导致"导航到新页面后点了没反应、拾取不到"。
               // 故先重挂（addEventListener 对同一函数引用幂等），再判断是否已在拾取中。
               if (window.__rolePickClick) document.addEventListener('click', window.__rolePickClick, true);
               if (window.__rolePickDblClick) document.addEventListener('dblclick', window.__rolePickDblClick, true);
@@ -443,9 +460,9 @@ public final class RoleElementPicker {
               window.__scanMode = 'pick';   // 手动拾取模式（点击元素即定位）
               window.__rolePicks = window.__rolePicks || [];
               window.__steps = window.__steps || [];
-              // 保留“进行中的 step”：跨页面切换（弹窗打开/关闭）会先 applyPickState 把父页/弹窗的
+              // 保留"进行中的 step"：跨页面切换（弹窗打开/关闭）会先 applyPickState 把父页/弹窗的
               // __currentStep 搬过来，再执行本 START 重启监听。若这里硬置为 []，会把刚搬来的当前 step
-              // 整个抹掉——这正是“元素定位在但步骤没了”的根因。用 || [] 续接：
+              // 整个抹掉——这正是"元素定位在但步骤没了"的根因。用 || [] 续接：
               //  - 正常首次 ▶：__currentStep 为 undefined → 得 []（新 step）；
               //  - stop 后再 ▶：stop 已把 __currentStep 置 null → 得 []（新 step）；
               //  - 跨页切换重启：__currentStep 已被搬运为非空数组 → 原样续接，不丢步骤。
@@ -458,19 +475,19 @@ public final class RoleElementPicker {
               // ============================================================================
               // Playwright 注入脚本 roleUtils.ts 算法的忠实移植（getAriaRole + getElementAccessibleName）
               // 来源：microsoft/playwright packages/playwright-core/src/server/injected/roleUtils.ts
-              // page.pause()/Inspector 的“拾取元素”正是用这套 W3C ARIA + accname 算法计算 role 与 name，
+              // page.pause()/Inspector 的"拾取元素"正是用这套 W3C ARIA + accname 算法计算 role 与 name，
               // 因此直接移植，保证 picker 结果与 Inspector 完全一致（不再依赖浏览器 computedRole/computedName）。
               // ============================================================================
-              // 企业级优化：roleUtils 移植 + 各拾取/去重/落盘辅助函数定义是“静态库”，
+              // 企业级优化：roleUtils 移植 + 各拾取/去重/落盘辅助函数定义是"静态库"，
               // 同一 window 内只需解析/编译一次（首次 start）。后续 start（stop→再 start、
-              // 或多页跟随）用一次性守卫跳过这近千行的重解析/重编译，点击“开始”的端到端延迟显著下降；
+              // 或多页跟随）用一次性守卫跳过这近千行的重解析/重编译，点击"开始"的端到端延迟显著下降；
               // 所有对外入口（window.__recordPick / __computePick / __pickSig / __sigKey /
               // __persistPickState 等）都挂在 window 上会持续存活，跳过定义后仍可被点击 handler 正常调用。
               // 自动推断录制根容器（辅助函数，当前不再被默认使用）：
-              // 历史曾用于“开始拾取默认避开导航”，但用户需要时可整页拾取，故默认不再调用。
-              // 现保留为可选能力——区域扫描与显式根选择走各自逻辑；如需“默认避开导航”可单独调用。
-              // 定义在此处（库守卫之外）并挂到 window，避免被守卫跳过导致潜在“未定义”。
-              // 策略：① 优先 <main>；② 否则返回“面积最大、且自身不是 landmark”的内容容器；③ 都找不到返回 null。
+              // 历史曾用于"开始拾取默认避开导航"，但用户需要时可整页拾取，故默认不再调用。
+              // 现保留为可选能力——区域扫描与显式根选择走各自逻辑；如需"默认避开导航"可单独调用。
+              // 定义在此处（库守卫之外）并挂到 window，避免被守卫跳过导致潜在"未定义"。
+              // 策略：① 优先 <main>；② 否则返回"面积最大、且自身不是 landmark"的内容容器；③ 都找不到返回 null。
               function autoDetectRoot() {
                 try {
                   var mainEl = document.querySelector('main');
@@ -624,10 +641,10 @@ public final class RoleElementPicker {
               }
               function getRole(el) { return getAriaRole(el) || 'generic'; }
 
-              // 把 <label> 解析为其关联的表单控件：点击复选框/单选/文本框的“标签文字”时，
+              // 把 <label> 解析为其关联的表单控件：点击复选框/单选/文本框的"标签文字"时，
               // 对齐 page.pause()/Inspector——直接拾取它所指代的控件（role + name=标签文本），
               // 而非无语义的 label 文本节点。
-              //   - HTMLLabelElement.control 覆盖“包裹式”关联（含 display:none 的隐藏控件）；
+              //   - HTMLLabelElement.control 覆盖"包裹式"关联（含 display:none 的隐藏控件）；
               //   - 否则回退到 for 属性指向的控件；都没有则不解析，保留 label 自身走 text 兜底。
               function resolveLabel(el) {
                 if (!el || el.tagName !== 'LABEL') return el;
@@ -881,9 +898,9 @@ public final class RoleElementPicker {
                   options.visitedElements.add(element);
                   var tokens = [];
                   // 生成定位 name 时（includeAdvisory=false）忽略装饰性伪元素内容，
-                  // 否则“ (opens in a new window)”等提示会被算进 name，与可见文本不一致。
+                  // 否则" (opens in a new window)"等提示会被算进 name，与可见文本不一致。
                   tokens.push(options.includeAdvisory ? getPseudoContent(getPseudo(element, '::before')) : '');
-                  // aria-describedby 指向的是“描述”而非“名称”，其引用的后代不应计入可访问名，
+                  // aria-describedby 指向的是"描述"而非"名称"，其引用的后代不应计入可访问名，
                   // 否则描述文本会污染定位用 name（与 Playwright getByRole 行为对齐）。
                   var descRefs = options.includeAdvisory ? [] : getIdRefs(element, element.getAttribute('aria-describedby'));
                   var child = element.firstChild;
@@ -945,15 +962,15 @@ public final class RoleElementPicker {
                 return 0;
               }
 
-              // 无语义角色：这类元素通常不是用户想捕获的“控件”，应向上回溯
+              // 无语义角色：这类元素通常不是用户想捕获的"控件"，应向上回溯
               var NON_ROLE = { generic:1, none:1, presentation:1 };
-              // 可作为点击目标的“交互角色”：仅这些角色才用 role+name 定位（对齐 pause 优先级）；
+              // 可作为点击目标的"交互角色"：仅这些角色才用 role+name 定位（对齐 pause 优先级）；
               // region/navigation/list 等容器角色不算，避免点文本时误抓到外层容器。
               var INTERACTIVE_ROLES = { button:1, link:1, checkbox:1, radio:1, tab:1,
                 menuitem:1, menuitemcheckbox:1, menuitemradio:1, option:1, 'switch':1,
                 textbox:1, combobox:1, listbox:1, searchbox:1, slider:1, spinbutton:1, treeitem:1 };
 
-              // 判断 id 是否“稳定”（可作为持久选择器）：排除自动生成/含长数字/非法字符的 id
+              // 判断 id 是否"稳定"（可作为持久选择器）：排除自动生成/含长数字/非法字符的 id
               function isStableId(id) {
                 if (!id) return false;
                 if (id.length > 40) return false;
@@ -963,7 +980,7 @@ public final class RoleElementPicker {
               function ownVisibleText(el) {
                 return (el.textContent || '').replace(/\\s+/g, ' ').trim();
               }
-              // 是否“可输入”元素（对齐 page.pause() 的 fill 录制范围）：文本框/多行/数字/搜索/
+              // 是否"可输入"元素（对齐 page.pause() 的 fill 录制范围）：文本框/多行/数字/搜索/
               // contenteditable，以及 role 为 textbox/searchbox/spinbutton 的控件。
               function isEditable(el) {
                 if (!el) return false;
@@ -987,6 +1004,7 @@ public final class RoleElementPicker {
               // 生成最短可用 css 路径（tag + :nth-of-type 链，遇稳定 id 祖先即止）——兜底用，标记需人工确认
               function cssPathOf(el) {
                 var parts = [], node = el, depth = 0;
+                // 第一趟：与原算法一致，最多 5 层内若遇到稳定 #id 则用作锚点并停止。
                 while (node && node.nodeType === 1 && depth++ < 5) {
                   var idv = node.getAttribute && node.getAttribute('id');
                   if (isStableId(idv)) { parts.unshift('#' + idv); break; }
@@ -1002,9 +1020,49 @@ public final class RoleElementPicker {
                   parts.unshift(sel);
                   node = parent;
                 }
-                return parts.join(' > ');
+                var css = parts.join(' > ');
+                // 【稳定性增强】若 5 层内无任何锚点（#id/.class/[attr]），得到的是纯 tag 位置链
+                // （如 "div:nth-of-type(3) > div"），这类选择器随布局微变即失效（page.pause 也仅把 css 作最后兜底）。
+                // 继续向上回溯到第一个带锚点的祖先，把它作为前缀锚点，使最终 css 形如
+                // "#app > div:nth-of-type(2) > span"，既有稳定锚点又保留局部层级，鲁棒性显著提升。
+                // 上限放宽到 12 层（仅作锚点寻找，不计入选择器长度），避免极端深嵌套时仍退化为纯布局链。
+                //
+                // 【关键限定】该锚点增强**仅在"非区域扫描态"启用**：
+                //   区域扫描（window.__roleScanRoot 非空）无差别遍历区域内全部元素，大量无语义布局 div
+                //   会退化出纯 tag 位置链，本就该被 __recordPick 的 __isNthOnlyCss 拦截；若此处先给它加上
+                //   "#app " 锚点前缀，__isNthOnlyCss 因见到 '#' 而 return false，导致拦截失效、记录下
+                //   "#app > div:nth-of-type(2) > ..." 这种长 css（即"区域选择出现很长 css"的回归根因）。
+                //   因此区域态保持原始纯位置链，__isNthOnlyCss 才能正确判真并拦截噪音；
+                //   手动点选态保留锚点前缀，与 page.pause 一致地提升单点元素的 css 兜底稳定性。
+                // 附加防御：若原始 css 已是整页级骨架链（含 body / html 段落），绝不画蛇添足加锚点——
+                // 这类链无业务价值，加了锚点（如 ".Mozilla body > ..."）反而绕开 __recordPick 的
+                // body 开头拦截、记录下更长更废的选择器。
+                if (__isNthOnlyCss(css) && !window.__roleScanRoot
+                    && css.indexOf('body') === -1 && css.indexOf('html') === -1) {
+                  var anchor = node, aDepth = 0;
+                  while (anchor && anchor.nodeType === 1 && aDepth++ < 12) {
+                    var aid = anchor.getAttribute && anchor.getAttribute('id');
+                    if (isStableId(aid)) { return aid ? ('#' + aid + ' ' + css) : css; }
+                    // 带 .class 或 [attr] 的祖先也可作锚点（优先 #id，这里退一步取首个含 class/attr 的）
+                    if (anchor.className && ('' + anchor.className).trim()) {
+                      var cls = ('' + anchor.className).trim().split(/\\s+/)[0];
+                      if (cls) return '.' + cls + ' ' + css;
+                    }
+                    var attrs = anchor.attributes;
+                    if (attrs) {
+                      for (var ai = 0; ai < attrs.length; ai++) {
+                        var an = attrs[ai].name;
+                        if (an !== 'class' && an !== 'style' && an !== 'id' && an.indexOf('data-') === 0) {
+                          return '[' + an + '] ' + css;
+                        }
+                      }
+                    }
+                    anchor = anchor.parentElement;
+                  }
+                }
+                return css;
               }
-              // 判断 css 兜底路径是否为“纯布局型”（无锚点路径）。
+              // 判断 css 兜底路径是否为"纯布局型"（无锚点路径）。
               // 典型垃圾形态：
               //   div:nth-of-type(3) > div > div > div:nth-of-type(3) > div:nth-of-type(17)
               //   div > div > span
@@ -1046,7 +1104,7 @@ public final class RoleElementPicker {
               //      1. data-testid 族        → getByTestId
               //      2. INPUT/TEXTAREA 的 placeholder → getByPlaceholder（pause 仅对这两类标签）
               //      3. 表单控件原生关联 label → getByLabel（先于 role+name，打分 120 < 140）
-              //         注：仅“直接点击控件”时生效；若点是 <label> 本身（被 resolveLabel 重定位成控件），
+              //         注：仅"直接点击控件"时生效；若点是 <label> 本身（被 resolveLabel 重定位成控件），
               //         则跳过此步回退到 ④ role+name，避免 label 与 input 产出同一种 label 策略。
               //      4. 交互角色 + 可访问名    → getByRole（生成 @RoleElement，保留 NLS 多语言）
               //      4.5 非交互元素的 data-i18n 多语言 key → @Element("[data-i18n=...]")（CSS 属性选择器，本项目约定，仅在上方
@@ -1056,7 +1114,7 @@ public final class RoleElementPicker {
               //      7. title                  → getByTitle
               //      8. 稳定 id                → #id（500 分，必须排在语义候选之后）
               //      9. 兜底                   → css 路径（needsReview）
-              // 仅返回“原始片段”（strategy/role/name/attr/value/id/css），
+              // 仅返回"原始片段"（strategy/role/name/attr/value/id/css），
             """;
     private static final String START_SCRIPT_B1 = """
               // 由 Java 侧负责拼接并转义选择器字符串，避免在 Java 文本块里处理引号转义。
@@ -1141,13 +1199,18 @@ public final class RoleElementPicker {
                 } catch (e) {}
                 return '';
               }
-              // 计算 pick 定位器在整页上匹配的元素集合（文档顺序），用于判定“一组元素”并给出序号。
+              // 计算 pick 定位器在整页上匹配的元素集合（文档顺序），用于判定"一组元素"并给出序号。
               // 与生成端的定位策略对齐：role→role+name（exact=!cleaned）、text→最内层文本相等、
               // 属性类→属性值相等、label→关联控件。id/css 视为唯一（返回空）。
               function __normSafe(s) {
                 try { return normName(s || ''); } catch (e) { return (s || '').replace(/\\s+/g, ' ').trim(); }
               }
-              function __matchingElements(pick) {
+              // 同帧内（一次同步执行流）对同一 pick 的 __matchingElements 结果缓存，避免 syncPanelToBrowser
+              // 每 1s 对每个元素重复全页 querySelectorAll + getNameInfo（O(N²) 级卡顿主因，O1）。
+              // 每次 syncPanelToBrowser / 每次点选会话前调用 window.__clearMatchCache() 清空。
+              window.__matchingCache = window.__matchingCache || {};
+              function __clearMatchCache() { try { window.__matchingCache = {}; } catch (e) {} }
+              var __rawMatchingElements = function(pick) {
                 if (!pick) return [];
                 var all = document.querySelectorAll('*'), out = [], i, x;
                 if (pick.strategy === 'role') {
@@ -1201,18 +1264,31 @@ public final class RoleElementPicker {
                   return out;
                 }
                 return out;   // id / css 视为唯一
+              };
+              // 缓存包装：同一 __pickSig 在一帧内只算一次（全页 querySelectorAll + getNameInfo 较重）。
+              function __matchingElements(pick) {
+                if (!pick) return [];
+                var ck = (typeof window.__pickSig === 'function') ? window.__pickSig(pick) : null;
+                if (ck) {
+                  var cached = window.__matchingCache[ck];
+                  if (cached) return cached;
+                  var res = __rawMatchingElements(pick);
+                  window.__matchingCache[ck] = res;
+                  return res;
+                }
+                return __rawMatchingElements(pick);
               }
               // 给 pick 附上该定位器在页面上的序号（index/count），生成 step 时输出 .nth(index)，
               // 对齐 page.pause() 的 first()/nth() 消歧。
               //
-              // 【关键】序号必须“无条件”赋值（哪怕当前只匹配到 1 个），不能写成 if (ms.length > 1)。
+              // 【关键】序号必须"无条件"赋值（哪怕当前只匹配到 1 个），不能写成 if (ms.length > 1)。
               // 序号是元素身份的一部分（__pickSig 会把它拼进签名），而 __matchingElements 只反映
-              // “计算签名那一刻的 DOM”。若按匹配数有条件赋值，同一个元素会在两种签名间跳变：
+              // "计算签名那一刻的 DOM"。若按匹配数有条件赋值，同一个元素会在两种签名间跳变：
               //   · 区域扫描时区域内只有它一个同名元素 → ms.length===1 → 无 index → 'role:link:X'
               //   · 整页扫描时全页有多个同名元素     → ms.length>1  → index=0 → 'role:link:X#0'
               // 两个签名被 Java 侧当成不同 key，同一元素每扫一轮就多存一份（实测重复 4~5 次）。
-              // 统一赋值后签名恒定为 'role:link:X#0'，既不再重复，又保留“同 role 同 name 的第 2 个
-              // 元素（#1）能被独立拾取”的能力——这正是 page.pause() 的语义。
+              // 统一赋值后签名恒定为 'role:link:X#0'，既不再重复，又保留"同 role 同 name 的第 2 个
+              // 元素（#1）能被独立拾取"的能力——这正是 page.pause() 的语义。
               function __attachIndex(pick, el) {
                 try {
                   var ms = __matchingElements(pick);
@@ -1224,18 +1300,18 @@ public final class RoleElementPicker {
               }
               window.__computePick = function(t) {
                 // ① 重定位（对齐 recorder retarget）：label → 控件；向上找交互角色祖先
-                // originalIsLabel 标记“用户点的是 <label> 本身”而非直接点控件——
+                // originalIsLabel 标记"用户点的是 <label> 本身"而非直接点控件——
                 // 点击 label 时走 getByLabel 策略（定位到其关联控件），点击控件本身时跳过本分支，
-                // 改为 role+name/placeholder 等控件-centric 定位，避免“点输入框却生成 label 策略”的错位。
+                // 改为 role+name/placeholder 等控件-centric 定位，避免"点输入框却生成 label 策略"的错位。
                 var originalIsLabel = !!(t && t.tagName === 'LABEL');
                 var el = resolveLabel(t);
                 var cur = t, guard = 0;
                 while (cur && guard++ < 5) {
                   var node = resolveLabel(cur);
                   if (INTERACTIVE_ROLES[(getRole(node) || '').toLowerCase()]) {
-                    // 区域扫描时，重定位上界必须是“区域根内部”的交互角色：
+                    // 区域扫描时，重定位上界必须是"区域根内部"的交互角色：
                     // 若向上到达区域根本身（整个区域容器）或其之上的祖先，则停止重定位，
-                    // 保留当前 el（target 自身或其下层最近交互角色），避免把“整个区域”当成一个定位。
+                    // 保留当前 el（target 自身或其下层最近交互角色），避免把"整个区域"当成一个定位。
                     if (window.__roleScanRoot && (node === window.__roleScanRoot || !window.__roleScanRoot.contains(node))) break;
                     el = node; break;
                   }
@@ -1294,10 +1370,10 @@ public final class RoleElementPicker {
                   if (ph && ph.trim()) return done({ strategy:'placeholder', attr:'placeholder', value:ph.trim(), name:ph.trim() });
                 }
                 // 3. 原生关联 label → getByLabel（120，先于 role+name）
-                //    仅当用户“直接点击 <label> 本身”时生效（originalIsLabel）；
-                //    此时 getByLabel 会定位到该 label 关联的控件，符合“点标签=操作控件”的直觉。
+                //    仅当用户"直接点击 <label> 本身"时生效（originalIsLabel）；
+                //    此时 getByLabel 会定位到该 label 关联的控件，符合"点标签=操作控件"的直觉。
                 //    若点击的是表单控件本身，则跳过本分支，走下方 role+name（输入控件-centric 定位），
-                //    避免“点了输入框却生成 label 策略”的错位。
+                //    避免"点了输入框却生成 label 策略"的错位。
                 if (originalIsLabel) {
                   var lbl = labelTextOf(el);
                   if (lbl) return done({ strategy:'label', name:lbl });
@@ -1356,7 +1432,7 @@ public final class RoleElementPicker {
 
               // 定位器签名（与 Java 端 RoleElementPageGenerator.locatorKey 规则一致）：
               // role 按 role+name/key；id/css 按选择器；其余语义策略按 strategy+name。
-              // 同一签名重复点击不入列、计数不增，避免生成端才去重导致“点了但计数不变”的困惑。
+              // 同一签名重复点击不入列、计数不增，避免生成端才去重导致"点了但计数不变"的困惑。
               window.__pickSig = function(pick) {
                 if (!pick) return '';
                 var base;
@@ -1369,23 +1445,23 @@ public final class RoleElementPicker {
                 // 一组同定位器元素（如页面上两条 role/name 完全相同的 link）按序号区分签名，
                 // 使 nth(0)/nth(1) 均可独立拾取、互不去重——对齐 page.pause() 用 nth() 消歧的语义。
                 // __attachIndex 已保证 index 恒被赋值（唯一匹配时为 0），签名因此稳定不跳变；
-                // 若此处退回“有多个匹配才加序号”，同一元素会在 'X' 与 'X#0' 间摇摆而被重复收录。
+                // 若此处退回"有多个匹配才加序号"，同一元素会在 'X' 与 'X#0' 间摇摆而被重复收录。
                 // 页面字段仍按不含序号的 locatorKey 归一为同一个 PageElement。
                 if (pick.index != null && pick.index >= 0) base += '#' + pick.index;
                 return base;
               };
-              // 去重复合键：签名 + 所属 Page 类。关键修复：不同页面上 role/name 完全相同的“共用元素”
+              // 去重复合键：签名 + 所属 Page 类。关键修复：不同页面上 role/name 完全相同的"共用元素"
               // （如各页都有的 Close / Next 按钮、页眉页脚链接）原本只按签名去重，会被误判为重复而被丢弃
               // （表现：跳到新页面，有些元素没抓到 / 关弹窗后弹窗元素丢失）。把 _pageClass 纳入去重键后，
               // 同一页内仍按签名去重（同一元素重复点只保留一份），但跨页同名元素各自独立保留。
               window.__sigKey = function(pick) {
-                // 已固化过键则直接复用：键一旦生成就是该元素的永久身份，绝不因“当前在哪个页面”而改变。
+                // 已固化过键则直接复用：键一旦生成就是该元素的永久身份，绝不因"当前在哪个页面"而改变。
                 // 跨页同步下来的元素（syncPanelToBrowser 写入 _sigKey）在别的页面被重算时，会因
                 // _pageClass 缺失退化到 location 兜底而算出新键，造成同一元素重复收录——此处提前返回即可根除。
                 if (pick && pick._sigKey) return pick._sigKey;
                 var pageKey = (pick && pick._pageClass) || '';
                 // 页面类（_pageClass）就是页面身份，稳定可靠：有它时去重键只用 [pickSig, pageClass]，
-                // 不再附加 URL。此前无条件把 location.href 拼进键，导致“URL change 后再回到本页”时
+                // 不再附加 URL。此前无条件把 location.href 拼进键，导致"URL change 后再回到本页"时
                 // 因 query/hash 抖动使同一元素的键改变、去重失配 → role 元素整组重复收录（本次 bug 根因）。
                 // 仅当 _pageClass 尚未派生（整页跳转瞬间为空）才用规范化路径（origin+pathname，去掉 query/hash）
                 // 兜底区分跨页同名元素，避免旧页签名误判；query/hash 抖动被归一，不再重复。
@@ -1394,26 +1470,31 @@ public final class RoleElementPicker {
                 }
                 return JSON.stringify([window.__pickSig(pick) || '', pageKey]);
               };
-              // 落盘最新拾取态到 localStorage：用于“点击会触发整页跳转的元素”场景——
+              // 落盘最新拾取态到 localStorage：用于"点击会触发整页跳转的元素"场景——
               // 跳转瞬间 onFrameNavigated 恢复用的 Java 快照由主循环每 ~1s 刷新，可能来不及包含刚刚这次点击，
-              // 导致刚点的元素在 window 重建后被旧快照覆盖丢失（表现：点了“返回登录”按钮却没被拾取上）。
+              // 导致刚点的元素在 window 重建后被旧快照覆盖丢失（表现：点了"返回登录"按钮却没被拾取上）。
               // pagehide/beforeunload 时把最新态写入 localStorage（同域整页跳转间 localStorage 保留），
               // 新窗口 onFrameNavigated 再据此合并补回最新点击的元素。
               // 即时落盘（供 pagehide/beforeunload 调用，不被节流，确保整页跳转瞬间 localStorage 是最新态）。
               function __persistNow() {
                 try {
-                  localStorage.setItem('__rolePickState', JSON.stringify({
+                  var payload = JSON.stringify({
                     picks: window.__rolePicks || [],
                     steps: window.__steps || [],
                     currentStep: window.__currentStep || [],
                     sigs: window.__rolePickSigs || {}
-                  }));
+                  });
+                  // O3：内容未变则跳过落盘，避免拾取静止时仍每 ~120ms 做一次全量序列化/写 localStorage
+                  // （随元素增多 O(n²) 的卡顿来源之一）。pagehide/beforeunload 触发的即时落盘若内容相同也无副作用。
+                  if (window.__lastPersistJson === payload) return;
+                  window.__lastPersistJson = payload;
+                  localStorage.setItem('__rolePickState', payload);
                 } catch (e) {}
                 window.__lastPersist = Date.now();
               }
               // 企业级优化：每次点击都全量序列化 localStorage（随拾取增多 O(n²)）是拾取卡顿来源之一。
               // 改为节流——相邻高频拾取最多每 ~120ms 落盘一次；但 pagehide/beforeunload 走 __persistNow 即时落盘，
-              // 保证“点击触发整页跳转”前最后一击一定已写入 localStorage（onFrameNavigated 合并恢复依赖它，不丢元素）。
+              // 保证"点击触发整页跳转"前最后一击一定已写入 localStorage（onFrameNavigated 合并恢复依赖它，不丢元素）。
               window.__persistPickState = function() {
                 var now = Date.now();
                 if (now - (window.__lastPersist || 0) < 120) {
@@ -1432,7 +1513,7 @@ public final class RoleElementPicker {
                 window.addEventListener('beforeunload', __persistNow);
               }
               // 每次注入都从既有 picks 重建签名表，保证与 __rolePicks 严格同步；
-              // 去重键改为“签名+页面类”（__sigKey），跨页同名元素不再互相误删。
+              // 去重键改为"签名+页面类"（__sigKey），跨页同名元素不再互相误删。
               window.__rolePickerLib = true;
               }
               window.__rolePickSigs = {};
@@ -1446,7 +1527,7 @@ public final class RoleElementPicker {
                 var s = window.__pickSig(p);
                 if (s) window.__sigToPick[s] = p;
               });
-              // 兜底压缩：window.__rolePicks 一旦因某次“sigs 清空后、异步合并前”的竞态残留重复项，
+              // 兜底压缩：window.__rolePicks 一旦因某次"sigs 清空后、异步合并前"的竞态残留重复项，
               // 会永久累积（重建签名表只会补键、不会删数组里的副本）。这里读取前按权威键 __mergeKey
               // 再做一次整组去重，使数组不再随时间成倍膨胀，localStorage 落盘与 pageshow 恢复也就不会越滚越大。
               (function(){
@@ -1478,7 +1559,7 @@ public final class RoleElementPicker {
                   }
                 }, true);
               }
-              // 实时悬停高亮 + 悬停拾取（hover）模式：鼠标移到元素上即时描边，开启“悬停拾取”后
+              // 实时悬停高亮 + 悬停拾取（hover）模式：鼠标移到元素上即时描边，开启"悬停拾取"后
               // 停留在元素上约 0.45s 即记录为 hover 动作（生成 .hover()），与点击拾取（click）互补。
               var __hoverBox = null;
               function __ensureHoverBox() {
@@ -1533,8 +1614,8 @@ public final class RoleElementPicker {
                   } catch (e) { /* 选择器非法时忽略约束 */ }
                 }
                 var pick = window.__computePick(t);
-                // 剔除“整页级骨架 css 定位”：css 选择器以 body / html 开头（cssPathOf 在 5 层内遇不到
-                // stable id，只能生成 “body > div:nth-of-type(...)” / “html > body > ...” 这种整页级兜底
+                // 剔除"整页级骨架 css 定位"：css 选择器以 body / html 开头（cssPathOf 在 5 层内遇不到
+                // stable id，只能生成 "body > div:nth-of-type(...)" / "html > body > ..." 这种整页级兜底
                 // 路径，无业务价值、随 DOM 微调即失效）。无论手动拾取还是扫描态都拦截——这类选择器本就不该
                 // 进入拾取集（有语义角色/稳定 id 的元素不会落到这里），从源头保证面板列表与生成的页面类都不含它。
                 // 补充：无锚点纯位置链 css（div:nth-of-type(3) > div > ...）只在**区域扫描态**拦截。
@@ -1544,9 +1625,10 @@ public final class RoleElementPicker {
                 // 无条件覆写为 'page'（区域/整页共用该函数），此处读不到 'region'；而 __roleScanRoot
                 // 仅在区域扫描期间被赋为区域根元素，整页扫描与非扫描态均为 null，是可靠的区域态标志。
                 if (pick && pick.strategy === 'css' && pick.css
-                    && (pick.css.indexOf('body') === 0 || pick.css.indexOf('html') === 0
-                        || (window.__roleScanRoot
-                            && typeof __isNthOnlyCss === 'function' && __isNthOnlyCss(pick.css)))) {
+                    && (window.__roleScanRoot
+                        ? (pick.css.indexOf('body') !== -1 || pick.css.indexOf('html') !== -1
+                           || (typeof __isNthOnlyCss === 'function' && __isNthOnlyCss(pick.css)))
+                        : (pick.css.indexOf('body') === 0 || pick.css.indexOf('html') === 0))) {
                   try { console.log('[rolePick][skip body/html/nth-css] css=' + pick.css); } catch (e2) {}
                   return null;
                 }
@@ -1658,8 +1740,8 @@ public final class RoleElementPicker {
                 var __rapid = sig && sig === window.__lastPickSig && (__now - (window.__lastPickTs || 0)) < 500;
                 window.__lastPickSig = sig;
                 window.__lastPickTs = __now;
-                // 选择模型（替代原“所有拾取自动并入 currentStep = 一个 step”）：
-                //   · 整页扫描期间（window.__scanning 为 true）的元素只是“候选”，不直接入选当前 step，
+                // 选择模型（替代原"所有拾取自动并入 currentStep = 一个 step"）：
+                //   · 整页扫描期间（window.__scanning 为 true）的元素只是"候选"，不直接入选当前 step，
                 //     由用户在面板上勾选后再「封装为步骤」；
                 //   · 页面上的实时点选（非扫描、非重复）视为用户主动拾取，自动入选当前 step（选择集）；
                 //   · 重复拾取（dup）不重复入选，避免 step 内出现重复元素。
@@ -1667,7 +1749,7 @@ public final class RoleElementPicker {
                 """;
     private static final String START_SCRIPT_B2 = """
 
-                // 状态外置（对齐 page.pause）：去掉“每次点击全量序列化 localStorage”这一 O(n) 瓶颈，
+                // 状态外置（对齐 page.pause）：去掉"每次点击全量序列化 localStorage"这一 O(n) 瓶颈，
                 // 点击延迟不再随已拾元素增多而变慢。整页跳转前的最后点击由 pagehide/beforeunload 的
                 // __persistNow 同步即时落盘兜底（见 __persistPickState 定义），不丢失。
                 // —— UI 反馈 + Java 回传（仅在非扫描态执行）——
@@ -1679,8 +1761,8 @@ public final class RoleElementPicker {
                   var prev = t.style.outline;
                   t.style.outline = dup ? '3px solid #ff9800' : (isHover ? '3px solid #29b6f6' : '3px solid #ffeb3b');
                   // 400ms 后直接清除高亮（而非恢复 prev）：避免快速重复点选同一元素时，
-                  // 第二次捕获到的 prev 已是上一次设置的黄色框，setTimeout 又把黄框“恢复”回来，
-                  // 造成“选择/封装完成后页面元素上的黄色框始终不消失”的残留问题。
+                  // 第二次捕获到的 prev 已是上一次设置的黄色框，setTimeout 又把黄框"恢复"回来，
+                  // 造成"选择/封装完成后页面元素上的黄色框始终不消失"的残留问题。
                   setTimeout(function() { try { t.style.outline = ''; t.style.outlineOffset = ''; } catch (e) {} }, 400);
                   var statusEl = document.getElementById('__roleStatus');
                   if (statusEl) {
@@ -1702,10 +1784,10 @@ public final class RoleElementPicker {
                     } catch (e) { try { console.error('[rolePick][onPick-expose-fail] ' + (e && e.message)); } catch(_){} }
                   }
                   // 控制台兜底回传：即使 exposeFunction 因导航/上下文异常失效，Java 的 onConsoleMessage 仍能捕获并落盘
-                  // （按 sig 去重，与 exposeFunction 调用幂等）。同时便于排查“二次拾取没反应”。
+                  // （按 sig 去重，与 exposeFunction 调用幂等）。同时便于排查"二次拾取没反应"。
                   try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch(_){}
                   // 跨 frame 同步：点击若发生在 iframe 内，顶层主框架可见面板读的是主框架 window.__rolePicks，
-                  // 而本 frame 把 pick push 进了自己的 window.__rolePicks（主框架读不到），表现为“内存态增长、面板空白”。
+                  // 而本 frame 把 pick push 进了自己的 window.__rolePicks（主框架读不到），表现为"内存态增长、面板空白"。
                   // 故把 pick postMessage 给父窗口，由顶层面板监听聚合进其 window.__rolePicks 并渲染。
                   // 纯前端同步，不依赖 Java 主循环轮询（postMessage 不受同源限制，跨源 iframe 同样生效）。
                   if (window.self !== window.top) {
@@ -1715,12 +1797,12 @@ public final class RoleElementPicker {
                 return pick;
               };
               // 整页 role 树扫描（对齐 page.pause 的 role-centric 理念，但更完整）：
-              // 遍历整页所有元素，凡“有语义角色（非 generic/none/presentation）且有可访问名”的可见元素，
+              // 遍历整页所有元素，凡"有语义角色（非 generic/none/presentation）且有可访问名"的可见元素，
               // 一律经 __recordPick 记录为 pick——复用点击拾取的全套链路（去重 / 面板渲染 / __roleOnPick 回传 Java）。
-              // 与点击录制“录到什么才有什么”互补：扫描把整页所有语义角色元素一次性收全，用户随后停止即生成。
+              // 与点击录制"录到什么才有什么"互补：扫描把整页所有语义角色元素一次性收全，用户随后停止即生成。
               // 扫描并收录语义角色元素。
               // @param scanRoot {Element|null|Array<Element>} 区域扫描根：
-              //   - 单个 Element：仅遍历该根（含后代）子树，实现“只 scan 这块”；
+              //   - 单个 Element：仅遍历该根（含后代）子树，实现"只 scan 这块"；
               //   - 数组 Element[]：依次遍历每个根子树并合并（多选区域同时扫描）；
               //   - null：退化为整页扫描（原行为）。
               window.__roleScanPage = function(scanRoot) {
@@ -1753,13 +1835,13 @@ public final class RoleElementPicker {
                 // 区域扫描的范围由调用方传入的 roots 数组（已选容器）决定，不应再叠加
                 // document.querySelector(__rolePickRoot) 的字符串约束——否则 rootToSelector 生成的
                 // .class / tag[role] 选择器可能匹配到页面上「第一个」同名元素而非扫描目标容器，
-                // 导致目标容器内所有子元素被误判为“根外”而全部忽略（表现：只有区域容器自身被定位，
+                // 导致目标容器内所有子元素被误判为"根外"而全部忽略（表现：只有区域容器自身被定位，
                 // 区域内的子元素一个都没扫到）。扫描结束后还原，不影响后续点击/悬停拾取的根约束。
                 var prevRoot = window.__rolePickRoot;
                 window.__rolePickRoot = null;
-                // 区域扫描时记录“区域根”，供 __computePick 在重定位时约束上界——
-                // 子元素最多重定位到区域根“内部”的交互角色，绝不被重定位到区域根本身或根之上
-                // （否则会将“整个区域容器”作为定位结果，表现：选了区域却只定位到整个区域）。
+                // 区域扫描时记录"区域根"，供 __computePick 在重定位时约束上界——
+                // 子元素最多重定位到区域根"内部"的交互角色，绝不被重定位到区域根本身或根之上
+                // （否则会将"整个区域容器"作为定位结果，表现：选了区域却只定位到整个区域）。
                 var prevScanRoot = window.__roleScanRoot;
                 window.__roleScanRoot = (isRegion && roots.length) ? roots[0] : null;
                 window.__scanning = true;         // 抑制 __recordPick 的逐元素 UI 反馈/Java 回传，结束统一处理
@@ -1767,7 +1849,7 @@ public final class RoleElementPicker {
                 // 本次扫描真正新增的 pick 列表：扫描结束只回传这些，避免把历史 / 其它页面同步下来的
                 // 元素按当前页上下文重算键后重复写入 Java 内存态（见函数尾部批量回传处说明）。
                 var __scanAdded = [];
-                // 区域根面积（用于下方“剔除与整个区域等大的元素”的面积阈值）
+                // 区域根面积（用于下方"剔除与整个区域等大的元素"的面积阈值）
                 var rootArea = 0;
                 if (isRegion && roots.length) {
                   var r0 = roots[0].getBoundingClientRect ? roots[0].getBoundingClientRect() : null;
@@ -1790,18 +1872,18 @@ public final class RoleElementPicker {
                     var el = els[i];
                     if (isRegion && roots.indexOf(el) !== -1) continue;   // 区域根容器自身不作为定位记录
                     if (el.closest && el.closest('#__rolePanel, #__roleCodeOverlay, #__roleHoverBox')) continue;
-                    // 区域扫描：剔除“与整个区域几乎等大”的元素（面积 >= 区域根 90%）。
+                    // 区域扫描：剔除"与整个区域几乎等大"的元素（面积 >= 区域根 90%）。
                     // 这类元素本质上就是区域根本身或其等价大容器（哪怕它不是 DOM 树上的 root 节点，
-                    // 例如 root 内部一个覆盖整区域的 list/table 容器），记录它会表现为“只定位了整个区域”。
+                    // 例如 root 内部一个覆盖整区域的 list/table 容器），记录它会表现为"只定位了整个区域"。
                     if (isRegion && roots.length && rootArea > 0) {
                       var ea = (el.getBoundingClientRect ? el.getBoundingClientRect() : null);
                       if (ea && ea.width > 0 && ea.height > 0) {
                         var eaArea = ea.width * ea.height;
                         // 与整个区域几乎等大（>=90%）：区域根自身或其等价大容器，跳过
                         if (eaArea >= rootArea * 0.9) continue;
-                        // 占区域一半以上（>=50%）且只是“容器拼凑的文字”定位（text 策略）：
+                        // 占区域一半以上（>=50%）且只是"容器拼凑的文字"定位（text 策略）：
                         // 这类元素本质是整个区域容器的整块文本（如把卡片内所有按钮名拼成一条），
-                        // 记录它会表现为“整区域定位”，跳过。
+                        // 记录它会表现为"整区域定位"，跳过。
                         if (eaArea >= rootArea * 0.5) {
                           try {
                             var _probe = window.__computePick(el);
@@ -1810,20 +1892,25 @@ public final class RoleElementPicker {
                         }
                       }
                     }
-                    // 区域扫描：只保留“有稳定定位策略”的元素（getByRole / 带 id / 带 testid 等）。
+                    // 区域扫描：只保留"有稳定定位策略"的元素（getByRole / 带 id / 带 testid 等）。
                     // 跳过 css 路径从 body 开头的无名布局 div——这类元素 5 层内遇不到 stable id，
-                    // cssPathOf 会一路拼到 body，生成 “body > div:nth-of-type(...)” 这种“整区域级”定位，
+                    // cssPathOf 会一路拼到 body，生成 "body > div:nth-of-type(...)" 这种"整区域级"定位，
                     // 无业务价值（用户要区域内可稳定定位的子元素，而非整个区域）。
                     // 有 id 的容器 / 带 id 祖先的元素，其 css 路径以 #id 开头，不会被跳过。
                     // 仅区域扫描做无锚点 css 过滤。
                     // 原因：区域扫描是 querySelectorAll('*') 无差别遍历，区域内大量无语义的布局 div
-                    // 会退化出 “div:nth-of-type(3) > div > div > ...” 这种纯位置链兜底路径，是噪音主源。
+                    // 会退化出 "div:nth-of-type(3) > div > div > ..." 这种纯位置链兜底路径，是噪音主源。
                     // 手动点选是用户主动指定的单个元素、整页扫描已有角色+可访问名双重约束，
                     // 都应保持与 page.pause() 一致：该生成 css 兜底就正常生成，不额外丢弃元素。
                     if (isRegion) {
                       var _cssProbe = (typeof cssPathOf === 'function') ? cssPathOf(el) : '';
-                      if (_cssProbe && ((_cssProbe.indexOf('body') === 0 && !el.id)
-                          || (typeof __isNthOnlyCss === 'function' && __isNthOnlyCss(_cssProbe)))) {
+                      // 区域态：css 兜底路径只要"退化到 body/html 骨架级"（无论是否带锚点前缀如
+                      // ".Mozilla body > ..."，原判定仅拦 body 开头，会漏掉带前缀的形态）或"纯位置链
+                      // （__isNthOnlyCss）"，即视为无稳定定位价值的噪音，仅在 __computePick 也只剩
+                      // css 兜底时才跳过（保留具备 role/name/testid 等语义定位能力的元素）。
+                      var _isBodyLevel = _cssProbe && (_cssProbe.indexOf('body') !== -1 || _cssProbe.indexOf('html') !== -1);
+                      var _isNthOnly = _cssProbe && (typeof __isNthOnlyCss === 'function') && __isNthOnlyCss(_cssProbe);
+                      if (_cssProbe && (_isBodyLevel || _isNthOnly)) {
                         // 该元素自身没有可锚定的 css 路径，但它可能仍具备语义定位能力
                         // （role+name / testid / label / placeholder 等），那类元素不该被误杀。
                         // 因此只有当 __computePick 最终也只能退化到 css 策略时才跳过。
@@ -1836,7 +1923,7 @@ public final class RoleElementPicker {
                     //    避免后续对它们做昂贵的可见性（getComputedStyle）/可访问名计算。
                     var role = (getRole(el) || '').toLowerCase();
                     if (!role || NON_ROLE[role]) continue;
-                    // 2) 再按可访问名过滤：只需“有名字”，用 clean 名称一次计算即可（省去 getNameInfo 的二次计算）。
+                    // 2) 再按可访问名过滤：只需"有名字"，用 clean 名称一次计算即可（省去 getNameInfo 的二次计算）。
                     var name = (typeof getElementAccessibleName === 'function') ? getElementAccessibleName(el, false) : null;
                     if (!name) continue;
                     // 3) 最后才做昂贵的可见性判定（getComputedStyle + getBoundingClientRect）。
@@ -1859,7 +1946,7 @@ public final class RoleElementPicker {
                 // 一次性渲染 + 批量回传 Java：替代逐元素的 O(N²) 渲染与 N 次回传 / 控制台事件洪流。
                 try { if (window.__renderPicks) window.__renderPicks(); } catch (e) {}
                 // 只回传本次扫描新增的 pick（__scanAdded），不再遍历整个 window.__rolePicks。
-                // 原因（修复“区域扫描 A 页 → 跳转 B 页 → 整页扫描 B，A 页元素成倍重复”）：
+                // 原因（修复"区域扫描 A 页 → 跳转 B 页 → 整页扫描 B，A 页元素成倍重复"）：
                 // __rolePicks 除本次新增外，还含 ① 本页历史拾取 ② syncPanelToBrowser 从 Java 内存态
                 // 同步下来的**其它页面**元素。全量回传时第 __sigKey(p) 会在**当前页上下文**重算去重键，
                 // 而同步下来的元素只带 _sig 不带 _sigKey，一旦其 _pageClass 为空就退化到用当前 location
@@ -1896,17 +1983,17 @@ public final class RoleElementPicker {
               window.__roleStartRegionSelect = function() {
                 if (typeof window.__roleScanPage !== 'function') return;
                 // 显式模式标识：区域扫描态。三种模式（手动拾取 / 整页扫描 / 区域扫描）复用同一套
-                // __rolePickActive / __recordPick，但靠 __scanMode 显式区分，避免“区域被当成点击拾取的元素”。
+                // __rolePickActive / __recordPick，但靠 __scanMode 显式区分，避免"区域被当成点击拾取的元素"。
                 window.__scanMode = 'region';
                 // 进入区域扫描时清空历史拾取残留（手工点选 / 整页扫描遗留的脏数据，如整块文本的 text 定位、
                 // body 开头的无名 div css 兜底），保证区域扫描结果 = 本次选中区域里的纯元素，不含过往拾取串扰。
                 window.__rolePicks = [];
                 window.__rolePickSigs = {};
-                // 区域扫描会清空拾取集，故一并清“已删屏蔽集”：本次区域收集是全新的候选，不应继承过往删除屏蔽。
+                // 区域扫描会清空拾取集，故一并清"已删屏蔽集"：本次区域收集是全新的候选，不应继承过往删除屏蔽。
                 window.__deletedSigs = {};
                 // 进入区域扫描时一并清空选择集（面板勾选态的来源），保证本次区域结果 = 干净的候选列表，
-                // 不继承过往手动拾取/扫描残留的选择集（否则面板里会有元素默认被勾选，与“区域扫描只收集候选、
-                // 由用户勾选后封装”的模型矛盾）。区域扫描结束后用户仍可手动勾选追加，不受影响。
+                // 不继承过往手动拾取/扫描残留的选择集（否则面板里会有元素默认被勾选，与"区域扫描只收集候选、
+                // 由用户勾选后封装"的模型矛盾）。区域扫描结束后用户仍可手动勾选追加，不受影响。
                 window.__currentStep = [];
                 // 进入选区态时临时摘掉 START_SCRIPT 的文档级「点击拾取」「悬停高亮」监听，避免与区域聚焦冲突；
                 // 选区结束后再把原监听加回。
@@ -1918,27 +2005,27 @@ public final class RoleElementPicker {
                 var mask = document.createElement('div');
                 mask.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;cursor:crosshair;background:rgba(33,150,243,.04)';
                 document.body.appendChild(mask);
-                // 区域扫描收敛：点击位置（多为按钮/链接/单元格等叶子）向上找到“所在业务区域容器”，
+                // 区域扫描收敛：点击位置（多为按钮/链接/单元格等叶子）向上找到"所在业务区域容器"，
                 // 并把它作为该区域的扫描根——这样扫描的是「区域里所有可定位元素」，而不是仅那个叶子本身。
                 // 之前 acceptable 太宽松，会直接接受叶子元素，导致 querySelectorAll('*') 只扫到叶子内部、
-                // 几乎无有意义元素（表现：只有区域那个元素被定位，而非区域的元素）。现改为“向上收敛到区域块”。
+                // 几乎无有意义元素（表现：只有区域那个元素被定位，而非区域的元素）。现改为"向上收敛到区域块"。
                 function pickRoot(target) {
                   if (!target || target.nodeType !== 1) return null;
                   var LANDMARK = 'nav, header, aside, footer, [role=navigation], [role=banner], [role=complementary], [role=contentinfo]';
                   if (target.id === '__rolePanel' || target.id === '__roleCodeOverlay' || target.id === '__roleHoverBox') return null;
                   if (target.matches && target.matches(LANDMARK)) return null;
-                  // 明确“业务区域语义”：这些标签/role 即代表一块业务区，应作为收敛目标，而非更大的页面骨架。
+                  // 明确"业务区域语义"：这些标签/role 即代表一块业务区，应作为收敛目标，而非更大的页面骨架。
                   var REGION_STRICT = 'main, [role=main], section, article, form, fieldset,'
                     + ' [role=region], [role=dialog], [role=group], [role=list], [role=menu], [role=tablist], [role=toolbar]';
                   // 具体业务块 class：仅认真正业务块（card/panel/box/item/modal/dialog/list/group...），
-                  // 排除 app/content/container/wrapper/layout/main 等“页面骨架”class（它们面积大、不是用户想选的区域）。
+                  // 排除 app/content/container/wrapper/layout/main 等"页面骨架"class（它们面积大、不是用户想选的区域）。
                   var BUSINESS_CLS = /(card|panel|box|section|block|modal|dialog|form-|item|widget|tile|cell|row-group|list-|group|fieldset|accordion|tab-)/i;
-                  // 面积上限：超过视口 40% 的一律视为“页面骨架/整页”，不当作可收敛的业务区域（避免选区过大，
-                  // 退化成整页扫描）。该阈值也用于兜底向上收敛时对“有 id/class 祖先”的面积约束。
+                  // 面积上限：超过视口 40% 的一律视为"页面骨架/整页"，不当作可收敛的业务区域（避免选区过大，
+                  // 退化成整页扫描）。该阈值也用于兜底向上收敛时对"有 id/class 祖先"的面积约束。
                   var MAX_AREA = (window.innerWidth || 1280) * (window.innerHeight || 800) * 0.4;
                   function elArea(el) { var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null; return r ? (r.width || 0) * (r.height || 0) : 0; }
                   var INLINE = { A:1, SPAN:1, BUTTON:1, INPUT:1, SELECT:1, TEXTAREA:1, LABEL:1, TD:1, TH:1, TR:1, LI:1, IMG:1, I:1, B:1, STRONG:1, EM:1, CODE:1, SMALL:1, SUB:1, SUP:1 };
-                  // 是否为“合适的区域容器”：必须带明确业务语义标识，且面积未超骨架阈值。
+                  // 是否为"合适的区域容器"：必须带明确业务语义标识，且面积未超骨架阈值。
                   function isContainer(el) {
                     if (!el || el === document.body) return false;
                     if (el.id === '__rolePanel' || el.id === '__roleCodeOverlay' || el.id === '__roleHoverBox') return false;
@@ -1958,17 +2045,17 @@ public final class RoleElementPicker {
                   // 1) 自身若是业务容器，直接返回（如点了 section/article/form 本身）
                   if (isContainer(target)) return target;
                   // 2) 向上找「最近的、合格业务容器」：大骨架因面积超限被跳过，继续向上；更大祖先通常也超限，
-                  //    故实际会在“最近的、带语义标识/有 id 且不过大”的祖先处停下，避免选到整个页面。
+                  //    故实际会在"最近的、带语义标识/有 id 且不过大"的祖先处停下，避免选到整个页面。
                   var cur = target.parentElement;
-                  var lastIdBlock = null;   // 仅记录“带 id 且面积未超限”的块级祖先（拒绝无名布局 div 当区域）
+                  var lastIdBlock = null;   // 仅记录"带 id 且面积未超限"的块级祖先（拒绝无名布局 div 当区域）
                   while (cur && cur !== document.body) {
                     if (isContainer(cur)) return cur;
                     if (cur.id && elArea(cur) <= MAX_AREA) lastIdBlock = cur;
                     cur = cur.parentElement;
                   }
-                  // 3) 兜底：绝不退化到 main/body（否则区域扫描会退化成“整页扫描”，
+                  // 3) 兜底：绝不退化到 main/body（否则区域扫描会退化成"整页扫描"，
                   //    表现：选了一小块区域却定位了整个页面/大区域）。
-                  //    优先用带 id 且不过大的块级祖先；都没有则向上找“最近的非叶子、非骨架语义祖先”
+                  //    优先用带 id 且不过大的块级祖先；都没有则向上找"最近的非叶子、非骨架语义祖先"
                   //    （即使是无名 div，也比 main/body 小得多，更贴近用户点选位置）；
                   //    极端情况下退回点击元素自身（扫描其后代），确保区域小而精准。
                   if (lastIdBlock) return lastIdBlock;
@@ -1978,7 +2065,7 @@ public final class RoleElementPicker {
                     if (INLINE[tg]) { cur2 = cur2.parentElement; continue; }
                     if (cur2.matches && cur2.matches(LANDMARK)) { cur2 = cur2.parentElement; continue; }
                     if (elArea(cur2) > MAX_AREA) { cur2 = cur2.parentElement; continue; } // 过大骨架跳过
-                    // 命中“有业务语义标识”的祖先即停（role/class/id），否则继续向上，直到贴近的小容器
+                    // 命中"有业务语义标识"的祖先即停（role/class/id），否则继续向上，直到贴近的小容器
                     if (cur2.getAttribute && (cur2.getAttribute('role') || cur2.className || cur2.id)) return cur2;
                     cur2 = cur2.parentElement;
                   }
@@ -2032,7 +2119,7 @@ public final class RoleElementPicker {
                   // 各区域已在点击时即时扫描并展示，此处仅收尾；恢复整页拾取（不设字符串根约束，避免误约束）。
                   window.__rolePickRoot = null;
                   window.__regionSelecting = false;   // 退出区域选择态：恢复 scan/region 按钮可用
-                  window.__scanMode = null;           // 清除模式标识（回到“无模式”，等待手动拾取/扫描指令）
+                  window.__scanMode = null;           // 清除模式标识（回到"无模式"，等待手动拾取/扫描指令）
                   try { window.__roleRefreshToggle && window.__roleRefreshToggle(); } catch (e) {}
                   restorePick();
                 }
@@ -2046,7 +2133,7 @@ public final class RoleElementPicker {
                 function onClick(e) {
                   var t = e.target;
                   // 关键修复：点击落在录制面板/代码浮层内时，必须「原样放行」事件（不 preventDefault/不 stopPropagation），
-                  // 否则 document 级 capture 监听会吞掉面板内按钮（如“停止拾取”）的点击，导致状态切不动。
+                  // 否则 document 级 capture 监听会吞掉面板内按钮（如"停止拾取"）的点击，导致状态切不动。
                   if (t && t.closest && t.closest('#__rolePanel, #__roleCodeOverlay, #__roleHoverBox')) {
                     return;   // 直接放行，交给面板按钮正常处理
                   }
@@ -2058,7 +2145,7 @@ public final class RoleElementPicker {
                   if (!containsRoot(selected, root)) { selected.push(root); }
                   setOutline(root, '#43a047');   // 绿色=已扫描区域
                   try { window.__roleScanPage([root]); } catch (err) { try { console.error('[roleScan] ' + (err && err.message)); } catch (_) {} }
-                  // 通知 Java 侧：区域元素已入 window.__rolePicks，请重新读取快照并生成“页面类”（与整页扫描一致，
+                  // 通知 Java 侧：区域元素已入 window.__rolePicks，请重新读取快照并生成"页面类"（与整页扫描一致，
                   // 否则区域扫描只会收集元素却永远不生成页面类）。用命令桥事件驱动，无需 Java 轮询。
                   try { if (window.__rolePickerCmd) window.__rolePickerCmd('regionScanned'); } catch (e) {}
                   status('已扫描区域：' + labelOf(root) + '（已生成页面类；可继续点其他区域，按 Esc 结束）');
@@ -2149,8 +2236,8 @@ public final class RoleElementPicker {
                 var clickPick = pick;
                 // 对齐 page.pause()：拾取模式下【点击穿透】——元素的真实事件与默认行为照常触发
                 // （button 的 onclick、链接跳转、表单提交都会真实发生），仅在此同步记录/定位该元素，
-                // 不再用 preventDefault 吞掉元素的真实交互。曾经为“留在当前页连续拾取”而阻止 a[href]/form 的默认导航，
-                // 但那样会吞掉点击（如点按钮却没触发其事件/业务），与 page.pause() 的“点击即真实交互 + 定位”不一致。
+                // 不再用 preventDefault 吞掉元素的真实交互。曾经为"留在当前页连续拾取"而阻止 a[href]/form 的默认导航，
+                // 但那样会吞掉点击（如点按钮却没触发其事件/业务），与 page.pause() 的"点击即真实交互 + 定位"不一致。
                 // 跨页导航由 Java 侧 onFrameNavigated / onPopup（以及 SPA heal）接管，拾取状态不丢。
                 // 仅按 codegen 需求给链接打 popup/download 标记（不阻止默认行为）。
                 var aEl = t.closest ? t.closest('a[href]') : null;
@@ -2166,7 +2253,7 @@ public final class RoleElementPicker {
                   if (isDownloadLink) {
                     if (pick) { pick.download = true; if (opensNew) pick.popup = true; }   // 弹窗 + 下载：嵌套 waitForDownload(waitForPopup)
                   } else if (opensNew && pick) {
-                    // 标记“该点击会弹出新页面”：生成 step 时包装为
+                    // 标记"该点击会弹出新页面"：生成 step 时包装为
                     // page.waitForPopup(() -> element.click())（对齐 page.pause() 的 codegen 输出）。
                     pick.popup = true;
                   }
@@ -2198,13 +2285,13 @@ public final class RoleElementPicker {
                   }, 0);
                 } catch (e) {}
                 // 同步把最新 currentStep 落盘：若本次点击触发整页导航，onFrameNavigated 合并恢复时
-                // localStorage 已含本次点击（元素因读 Java 内存 javaPickBySig 仍存在，故“元素有、step 也有”）。
+                // localStorage 已含本次点击（元素因读 Java 内存 javaPickBySig 仍存在，故"元素有、step 也有"）。
                 try { window.__persistNow(); } catch (e) {}
               };
               // 双击拾取（dblclick）：对齐 page.pause() 对 doubleClick 动作的录制。
               // dblclick 在两次 click 之后触发，两次 click 已把该元素记录为 click 动作；此处按同一元素
               // 去重复位到同一 pick，追加 dblclick 标记（以最近一次交互为准），生成 step 时输出 doubleClick()。
-              // 因 __recordPick 内部已“首次即时回传”一份不含 dblclick 的 pick 到 Java 内存态，
+              // 因 __recordPick 内部已"首次即时回传"一份不含 dblclick 的 pick 到 Java 内存态，
               // 故设标记后须再次经 __roleOnPick 回传（按 _sigKey 覆盖），确保 stop 时以内存态生成能拿到该标记。
               window.__rolePickDblClick = function(event) {
                 var t = event.target;
@@ -2226,7 +2313,7 @@ public final class RoleElementPicker {
               document.addEventListener('dblclick', window.__rolePickDblClick, true);
               document.addEventListener('keydown', window.__rolePickKey, true);
               // ===== 诊断：额外鼠标事件监听（仅记录、不拦截、不影响拾取）=====
-              // 排查“刷新后点击无反应 / 点击卡顿”：记录 mousedown/up/dblclick/contextmenu 是否真到达 document。
+              // 排查"刷新后点击无反应 / 点击卡顿"：记录 mousedown/up/dblclick/contextmenu 是否真到达 document。
               // 双写：window.__roleMouseLog 环形缓冲（导航后可由 Java 经 page.evaluate 回读）
               // + console.log('[roleMouseDiag]...')（由 ctx.onConsoleMessage 实时转发到 Java 日志，前缀过滤不刷屏）。
               if (!window.__roleMouseDebugHooked) {
@@ -2274,12 +2361,12 @@ public final class RoleElementPicker {
                 try { document.removeEventListener('keydown', window.__roleRegionEsc, true); } catch (e) {}
                 try { document.removeEventListener('keydown', window.__roleRegionEscB, false); } catch (e) {}
                 window.__regionSelecting = false;
-                window.__scanMode = null;   // 清除模式标识，回到“无模式”
+                window.__scanMode = null;   // 清除模式标识，回到"无模式"
                 try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
               }
               // 关键修复：无条件移除监听并置位（不再因 __rolePickActive 已为 false 而早退）。
-              // 早退会在“Java 端 active[0] 与浏览器端 __rolePickActive 因竞态不一致”时，
-              // 导致应停止的页面监听残留、状态错乱，进而出现“停止后再开始拾取不了”。
+              // 早退会在"Java 端 active[0] 与浏览器端 __rolePickActive 因竞态不一致"时，
+              // 导致应停止的页面监听残留、状态错乱，进而出现"停止后再开始拾取不了"。
               // removeEventListener 对同一函数引用幂等，重复调用安全。
               document.removeEventListener('click', window.__rolePickClick, true);
               document.removeEventListener('mousemove', window.__rolePickMove, true);
@@ -2288,11 +2375,11 @@ public final class RoleElementPicker {
               // 停止时也清整页扫描态，避免异常路径下 scan/region 按钮卡死置灰。
               window.__pageScanning = false;
               try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
-              // 收尾当前 step：停止拾取即把“当前选中（已勾选）的候选”封装成 step 并入 __steps。
+              // 收尾当前 step：停止拾取即把"当前选中（已勾选）的候选"封装成 step 并入 __steps。
               // 面板勾选/实时点选都写入 window.__currentStep（选择集），停止时一次性打包为 step；
-              // 整个选择（无论跨多少个页面）合并为【一个 step】——step 的唯一边界是“开始→停止”
+              // 整个选择（无论跨多少个页面）合并为【一个 step】——step 的唯一边界是"开始→停止"
               // （或一次「封装为步骤」），弹窗打开/关闭、页面跳转都只是同一 step 内的交互。
-              // 优先用 __packageStep（与面板“封装为步骤”同一逻辑，保证顺序/去重一致）；兜底直接打包。
+              // 优先用 __packageStep（与面板"封装为步骤"同一逻辑，保证顺序/去重一致）；兜底直接打包。
               if (window.__currentStep && window.__currentStep.length) {
                 if (typeof window.__packageStep === 'function') {
                   window.__packageStep();
@@ -2430,7 +2517,7 @@ public final class RoleElementPicker {
       // （由 followPage 注入），确保新页面无论如何都能重建面板。
       try { if (localStorage.getItem('__rolePanelEnabled') !== '1' && !window.__rolePanelForce) return; } catch (e) { return; }
       // 顶层面板接收来自 iframe（含跨源）的拾取：iframe 内点击 push 进的是 iframe 自己的 window.__rolePicks，
-      // 主框架可见面板读不到 → 表现为“Java 内存态增长、面板空白”。iframe 经 postMessage 把 pick 发给父窗口，
+      // 主框架可见面板读不到 → 表现为"Java 内存态增长、面板空白"。iframe 经 postMessage 把 pick 发给父窗口，
       // 此处（顶层面板脚本）接收并聚合进主框架 window.__rolePicks + 渲染。纯前端同步，无需 Java 主循环轮询。
       window.addEventListener('message', function(ev) {
         try {
@@ -2562,12 +2649,12 @@ public final class RoleElementPicker {
               toolbar.style.cssText = 'padding:10px 14px;background:#252526;display:flex;gap:8px;align-items:center;';
               // 开始/停止合并为同一个切换控件：空闲显示 ▶ 开始，拾取中显示 ⏹ 停止
               var toggleBtn = mkIconBtn(ICON.start, '#43a047', '开始拾取', function togglePick() {
-                // 乐观即时反馈：点击后立刻让切换控件呈现“目标态”，无需等待 Java 往返 + START_SCRIPT 执行，
-                // 消除“点了开始却要等往返才变成停止”的迟滞感（refreshToggle 会读取 __rolePickWanted）。
-                // 关键修复：用“当前显示态”（真实激活态 ∪ 乐观意图）翻转来决定命令，而非直接读可能滞后的
+                // 乐观即时反馈：点击后立刻让切换控件呈现"目标态"，无需等待 Java 往返 + START_SCRIPT 执行，
+                // 消除"点了开始却要等往返才变成停止"的迟滞感（refreshToggle 会读取 __rolePickWanted）。
+                // 关键修复：用"当前显示态"（真实激活态 ∪ 乐观意图）翻转来决定命令，而非直接读可能滞后的
                 // window.__rolePickActive。否则快速连点 / Java 往返延迟期间 window.__rolePickActive 未及时更新，
                 // 两次点击会读到相同旧值、发出相同命令（都 start 或都 stop）而非翻转，
-                // 表现即“停止按钮有时点不动、停止后再点开始却拾取不了”。
+                // 表现即"停止按钮有时点不动、停止后再点开始却拾取不了"。
                 var willStart = !(window.__rolePickActive || window.__rolePickWanted);
                 window.__rolePickWanted = willStart;
                 pushCmd(willStart ? 'start' : 'stop');
@@ -2595,7 +2682,7 @@ public final class RoleElementPicker {
               tabBar.appendChild(tabStep);
               window.__roleActiveTab = window.__roleActiveTab || 'page';
 
-              // 焦点感知复制：优先按当前真实 DOM 焦点（activeElement）判断用户“聚焦在哪一块”，
+              // 焦点感知复制：优先按当前真实 DOM 焦点（activeElement）判断用户"聚焦在哪一块"，
               // 再复制对应区块内容；若焦点不在任何代码区，则回退到当前激活的 Tab（点击切换的 Tab）。
               function __activeScope() {
                 // 返回当前焦点所在区块：'class' / 'step' / 'page' / null（都不在，回退 tab）
@@ -2625,7 +2712,7 @@ public final class RoleElementPicker {
                     if (!ta) ta = document.querySelector('#__roleStepAreas textarea');
                     code = ta ? ta.value : '';
                   } else {
-                    // “页面元素”Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，
+                    // "页面元素"Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，
                     // 每行与列表展示一致（strategy/role/name/id/css/index/标记），便于外部粘贴核对。
                     var act = window.__roleActivePageClass || '全部';
                     var lines = [];
@@ -2657,7 +2744,7 @@ public final class RoleElementPicker {
                   } else { fb(); }
                 } catch (e) { fb(); }
                 function fb() {
-                  // 兜底：有文本框则选中复制；“页面元素”Tab 无文本框时用临时 textarea 承载再 execCommand。
+                  // 兜底：有文本框则选中复制；"页面元素"Tab 无文本框时用临时 textarea 承载再 execCommand。
                   if (ta) { ta.focus(); ta.select(); try { document.execCommand('copy'); ok(); }
                   catch (e2) { status.textContent = '复制失败，请手动复制'; } return; }
                   try {
@@ -2672,7 +2759,7 @@ public final class RoleElementPicker {
                   } catch (e3) { status.textContent = '复制失败，请手动复制'; }
                 }
               });
-              // 整页扫描：一次性收全当前页所有“带可访问名的语义角色元素”（heading/link/button/img/...），
+              // 整页扫描：一次性收全当前页所有"带可访问名的语义角色元素"（heading/link/button/img/...），
               // 对齐 page.pause 的 role-centric 理念但更完整（点击录制只录点过的，扫描把整页语义角色全收）。
               // 走 Java 命令确保拾取库已注入后执行 window.__roleScanPage()，拾取结果与点击同一链路，随后点 ⏹ 停止生成。
               var scanBtn = mkIconBtn(ICON.scan, '#7e57c2', '扫描整页：一次性收全当前页所有带名称的语义角色元素（随后点停止生成代码）', function() {
@@ -2724,13 +2811,13 @@ public final class RoleElementPicker {
               }
               window.__roleRefreshToggle = refreshToggle;   // 暴露给拾取库作用域（如区域扫描 finish/stop 时刷新按钮态）
               refreshToggle();
-              // 状态同步定时器：每 80ms 收敛到真实态，降低“开始”迟滞感。
+              // 状态同步定时器：每 80ms 收敛到真实态，降低"开始"迟滞感。
               window.__roleToggleTimer = setInterval(refreshToggle, 80);
 
               // 页面类 / 步骤代码文本框按 pageClass 分栏动态创建（见 __fillCodeTabs / __renderCodeTabs），
-              // 每个 pageClass 一个子 Tab 对应一个可复制的代码文本框，对齐“页面元素”Tab 的子 Tab 布局。
+              // 每个 pageClass 一个子 Tab 对应一个可复制的代码文本框，对齐"页面元素"Tab 的子 Tab 布局。
 
-              // “页面元素” Tab 内容：页面类子 Tab 栏 + 候选项清单（带勾选框）+ 封装为步骤 按钮。
+              // "页面元素" Tab 内容：页面类子 Tab 栏 + 候选项清单（带勾选框）+ 封装为步骤 按钮。
               var pageContent = document.createElement('div');
               pageContent.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden;';
               var subTabBar = document.createElement('div');
@@ -2743,6 +2830,7 @@ public final class RoleElementPicker {
               // 注：「封装为步骤」按钮(pkgBtn) 不再独占一行(pkgRow)，而是合并进下方 selBar，
               // 与「全选」复选框显示在同一行（见 PANEL_SCRIPT_B 中 selBar 构建处）。
               var pkgBtn = document.createElement('button');
+              pkgBtn.id = '__rolePkgBtn';   // 稳定 id：selBar 复用持久存在时，每次重渲染先移除旧按钮再追加，避免堆积
               pkgBtn.type = 'button';
               pkgBtn.textContent = '封装为步骤';
               pkgBtn.title = '把当前勾选的候选项（按点击/扫描顺序）封装为一个 step；未勾选的可持续勾选后再次封装';
@@ -2752,7 +2840,7 @@ public final class RoleElementPicker {
                 // 随后推送 'package' 命令给 Java 立即生成步骤代码并切到「步骤代码」Tab 展示（不再需要等到点 ⏹）。
                 var r = (typeof window.__packageStep === 'function') ? window.__packageStep() : {pages:[],start:-1,count:0};
                 if (r && r.count > 0) {
-                  window.__pendingJump = r;   // 记录“目标 step”，Java 生成代码后由 __afterFillJump 精准定位
+                  window.__pendingJump = r;   // 记录"目标 step"，Java 生成代码后由 __afterFillJump 精准定位
                   status.textContent = '已封装 ' + r.count + ' 个 step（累计 ' + (window.__steps ? window.__steps.length : 0) + ' 个），正在生成步骤代码…';
                   try { pushCmd('package'); } catch (e) {}
                 } else {
@@ -2798,10 +2886,10 @@ public final class RoleElementPicker {
                 tabStep.style.background = (t === 'step') ? '#1e1e1e' : '#2d2d2d';
                 tabStep.style.borderBottom = (t === 'step') ? '2px solid transparent' : '2px solid #1e88e5';
               }
-              // 暴露给 Java 侧调用（扫描完成后自动切到“页面类”Tab，让用户即时看到生成的页面类代码）。
+              // 暴露给 Java 侧调用（扫描完成后自动切到"页面类"Tab，让用户即时看到生成的页面类代码）。
               window.__roleShowTab = showTab;
 
-              // 按 pageClass 把页面类 / 步骤代码分栏渲染（对齐“页面元素”Tab 的子 Tab 布局）：
+              // 按 pageClass 把页面类 / 步骤代码分栏渲染（对齐"页面元素"Tab 的子 Tab 布局）：
               // 每个 pageClass 一个子 Tab，点击切换显示对应代码文本框；支持按页对照查看与复制。
               window.__fillCodeTabs = function(obj) {
                 if (!obj) return;
@@ -2861,7 +2949,7 @@ public final class RoleElementPicker {
 
               // 封装为步骤后精准跳转：由 Java 侧 fillCode 完成后调用。切到「步骤代码」Tab，
               // 激活目标 step 所属 pageClass 子 Tab，并选中高亮该 step 方法文本（滚动定位到目标 step），
-              // 而非泛泛切到步骤 Tab 让用户自己找——对齐“封装即定位到刚生成的 step”。
+              // 而非泛泛切到步骤 Tab 让用户自己找——对齐"封装即定位到刚生成的 step"。
               window.__afterFillJump = function() {
                 try {
                   var pj = window.__pendingJump;
@@ -2927,7 +3015,7 @@ public final class RoleElementPicker {
                   (window.__currentStep || []).forEach(function(p) {
                     // 【关键】用全局健壮键 __mergeKey（优先 _sigKey，否则实时 __sigKey 重算），
                     // 不再强依赖 p._sigKey||p._sig 已固化。部分链路（区域选择/导航恢复回灌）写入的
-                    // pick 签名字段可能缺失，导致此处 selSet 为空 → 封装 0 条 step（表现为“选中也生成不了步骤”）。
+                    // pick 签名字段可能缺失，导致此处 selSet 为空 → 封装 0 条 step（表现为"选中也生成不了步骤"）。
                     var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p && (p._sigKey || p._sig));
                     if (k) selSet[k] = true;
                   });
@@ -2954,15 +3042,15 @@ public final class RoleElementPicker {
                   // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），否则不按 Esc 直接封装时绿框会残留。
                   try { if (typeof window.__clearRegionOutlines === 'function') window.__clearRegionOutlines(); } catch (e) {}
                   // 仅轻量刷新勾选态（复选框复位为未勾选），不重建整张候选列表——
-                  // 扫描出海量子元素时全量重建会卡 UI，正是“封装 step 慢”的根因。
+                  // 扫描出海量子元素时全量重建会卡 UI，正是"封装 step 慢"的根因。
                   window.__applySelection();
                   // 返回结构化信息：本次封装涉及的 pageClass（按序）与全局起始索引，
-                  // 供 pkgBtn 记录“目标 step”，Java 生成代码后由 window.__afterFillJump 精准定位。
+                  // 供 pkgBtn 记录"目标 step"，Java 生成代码后由 window.__afterFillJump 精准定位。
                   return { pages: [owner], start: startIndex, count: 1 };
                 } catch (e) { return 0; }
               };
               // 轻量刷新勾选态：仅更新已存在行的复选框与高亮，【不重建整个列表 DOM】。
-              // 供「封装为步骤」等“仅选择集变化、候选集合不变”的场景调用，避免对扫描出的海量元素做 O(n) 全量重建（卡 UI 的根因）。
+              // 供「封装为步骤」等"仅选择集变化、候选集合不变"的场景调用，避免对扫描出的海量元素做 O(n) 全量重建（卡 UI 的根因）。
               window.__applySelection = function() {
                 try {
                   var listEl = document.getElementById('__rolePickList');
@@ -2980,6 +3068,11 @@ public final class RoleElementPicker {
                     row.__cb.checked = sel;
                     row.style.background = sel ? 'rgba(30,136,229,.18)' : '';
                   }
+                  // 【修复】同步"全选"复选框：selAllCb 是列表外的独立复选框、不在上面 children 遍历范围内，
+                  // 其勾选状态必须由 refreshSelInfo 依据真实选择集（window.__currentStep）统一刷新，
+                  // 否则会出现"元素行全未选中、但全选框仍勾选"的不一致（封装为步骤后切回页面元素 tab 尤为明显）。
+                  // 直接复用 refreshSelInfo（内部按 sel===vis.length 设定 selAllCb.checked），避免手写逻辑与之一致性漂移。
+                  try { if (typeof refreshSelInfo === 'function') refreshSelInfo(); } catch (e2) {}
                 } catch (e) {}
               }
               function __renderPicksNow() {
@@ -3016,21 +3109,36 @@ public final class RoleElementPicker {
                   // 渲染候选项（带勾选框）。勾选态 = 该 pick 的 sig 在选择集 window.__currentStep 中。
                   listEl.innerHTML = '';
                   if (!picks.length) { listEl.textContent = '（暂无拾取：点 🔍 扫描整页，或在页面点击元素）'; return; }
-                  // 全选 / 全不选 工具栏：作用于“当前可见范围”（act 过滤集），与下方候选渲染用同一过滤规则。
-                  var selBar = document.createElement('div');
-                  selBar.id = '__roleSelBar';
-                  selBar.style.cssText = 'position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;' +
-                    'padding:6px 4px;background:#1f1f1f;border-bottom:1px solid #333;color:#cfcfcf;font:12px/1.4 sans-serif;';
-                  var selAll = document.createElement('label');
-                  selAll.style.cssText = 'display:flex;gap:5px;align-items:center;cursor:pointer;user-select:none;';
-                  var selAllCb = document.createElement('input');
-                  selAllCb.type = 'checkbox';
-                  selAllCb.style.cssText = 'width:14px;height:14px;cursor:pointer;';
-                  var selAllTxt = document.createElement('span');
-                  selAllTxt.textContent = '全选';
-                  selAll.appendChild(selAllCb); selAll.appendChild(selAllTxt);
-                  var selInfo = document.createElement('span');
-                  selInfo.style.cssText = 'margin-left:auto;color:#9aa0a6;';
+                  // 全选 / 全不选 工具栏：作用于"当前可见范围"（act 过滤集），与下方候选渲染用同一过滤规则。
+                  // 注意：本栏在 __renderPicks 每次重渲染时都会被调用（手动拾取每个元素都会触发），
+                  // 因此【只创建一次并复用】——否则每次重渲染都会在 pageContent 里堆积出新的全选条。
+                  var selBar = window.__roleSelBar || null;
+                  if (!selBar) {
+                    selBar = document.createElement('div');
+                    selBar.id = '__roleSelBar';
+                    selBar.style.cssText = 'position:sticky;top:0;z-index:2;display:flex;gap:8px;align-items:center;' +
+                      'padding:6px 4px;background:#1f1f1f;border-bottom:1px solid #333;color:#cfcfcf;font:12px/1.4 sans-serif;';
+                    var selAll = document.createElement('label');
+                    selAll.style.cssText = 'display:flex;gap:5px;align-items:center;cursor:pointer;user-select:none;';
+                    var selAllCb = document.createElement('input');
+                    selAllCb.type = 'checkbox';
+                    selAllCb.style.cssText = 'width:14px;height:14px;cursor:pointer;';
+                    var selAllTxt = document.createElement('span');
+                    selAllTxt.textContent = '全选';
+                    selAll.appendChild(selAllCb); selAll.appendChild(selAllTxt);
+                    var selInfo = document.createElement('span');
+                    selInfo.style.cssText = 'margin-left:auto;color:#9aa0a6;';
+                    selBar.appendChild(selAll); selBar.appendChild(selInfo);
+                    // 暴露全局引用，供 __applySelection 在"封装为步骤"等仅清空选择集的场景下同步复位"全选"复选框。
+                    window.__roleSelAllCb = selAllCb;
+                    window.__roleSelBar = selBar;
+                    window.__roleSelInfo = selInfo;
+                  } else {
+                    // 复用已存在的工具栏：重新指向内部"全选"复选框与信息节点。
+                    var selAllCb = selBar.querySelector('input[type=checkbox]');
+                    var selInfo = window.__roleSelInfo;
+                    window.__roleSelAllCb = selAllCb;
+                  }
                   function curVisiblePicks() {
                     return picks.filter(function(p) {
                       if (!p) return false;
@@ -3038,12 +3146,15 @@ public final class RoleElementPicker {
                       return act === '全部' || pc === act;
                     });
                   }
-                  selBar.appendChild(selAll); selBar.appendChild(selInfo);
                   // 「封装为步骤」按钮与「全选」复选框合并到同一行（selInfo 的 margin-left:auto 已把计数+按钮推到右侧）
+                  // selBar 持久复用：先移除上次渲染留下的同名按钮，再追加新按钮，避免每次重渲染堆积多个封装按钮。
+                  var _oldPkg = document.getElementById('__rolePkgBtn');
+                  if (_oldPkg) _oldPkg.remove();
                   selBar.appendChild(pkgBtn);
                   // 删除按钮（小垃圾桶图标）：位于「全部」工具栏这一行；无任何选中项时灰暗禁用，有选中时高亮可点。
                   var delBtn = document.createElement('button');
                   delBtn.type = 'button';
+                  delBtn.id = '__roleDelBtn';   // 稳定 id：selBar 复用持久存在时，每次重渲染先移除旧按钮再追加，避免堆积
                   delBtn.title = '删除选中的全部元素';
                   // 图标放大到 18px 并改用「桶身描边 + 内部竖线」的高对比画法：
                   // 原先 15px 纯色实心块在深色工具栏上糊成一团、辨识度低，这里让桶盖/桶身/竖纹层次分明。
@@ -3065,7 +3176,7 @@ public final class RoleElementPicker {
                         'transition:filter .15s,box-shadow .15s;';
                     } else {
                       // 禁用态：不再用浅灰底（在深灰工具栏上几乎看不见），改为暗红描边的虚线轮廓 + 暗底，
-                      // 既保持尺寸不跳、又让“垃圾桶”形状在禁用时也清晰可辨（淡红图标 + 红虚线边框）。
+                      // 既保持尺寸不跳、又让"垃圾桶"形状在禁用时也清晰可辨（淡红图标 + 红虚线边框）。
                       delBtn.disabled = true;
                       delBtn.style.cssText = 'flex:0 0 auto;display:flex;align-items:center;justify-content:center;' +
                         'width:32px;height:28px;padding:0;color:#f4877f;border:1px dashed rgba(244,67,58,.55);border-radius:6px;' +
@@ -3080,17 +3191,17 @@ public final class RoleElementPicker {
                     var dead = {};
                     // 同时收集 _sigKey 与 _sig 两种键：浏览器端去重 / 清理用（过滤 __rolePicks、__rolePickSigs）。
                     var deadKeys = [];
-                    // 【关键修复“删除无效”】浏览器侧只上报 _sigKey/_sig 这两个字符串是不够的：
+                    // 【关键修复"删除无效"】浏览器侧只上报 _sigKey/_sig 这两个字符串是不够的：
                     // Java 内存态 javaPickBySig 的 map key 由 pickDedupKey 决定——role/closeOp 策略用 _sigKey，
                     // 但「定位器唯一型策略」(id/css/i18n/text) 用的是 _sig（即 __pickSig 结果），
                     // 而这两种键的 *取值* 并不相同（_sigKey 是含_pageClass的 JSON 串、_sig 是 "id:xxx#0" 形式），
                     // 过去只按字符串判断，对定位器策略常因「上报键」与「内存态 key」对不上而删不掉，
-                    // 主循环每 ~1s 又把 javaPickBySig 整体 merge 回浏览器，元素随即“复活”，表现为「删除没起作用」。
+                    // 主循环每 ~1s 又把 javaPickBySig 整体 merge 回浏览器，元素随即"复活"，表现为「删除没起作用」。
                     // 故此处额外上报**完整 pick 对象**（剥离 _el 等 DOM 引用，避免循环 JSON 失败），
                     // Java 侧 __roleOnDelete 用与入库时完全相同的 pickDedupKey 重新算 key 精确命中删除。
                     var delPicks = [];
-                    // 会话级“已删屏蔽集”：即使 Java 删除因某种原因未命中，主循环 syncPanelToBrowser
-                    // 把 javaPickBySig 合并回浏览器时也会跳过命中此集的元素，杜绝“删除后约 1s 复活”。
+                    // 会话级"已删屏蔽集"：即使 Java 删除因某种原因未命中，主循环 syncPanelToBrowser
+                    // 把 javaPickBySig 合并回浏览器时也会跳过命中此集的元素，杜绝"删除后约 1s 复活"。
                     var delSigs = window.__deletedSigs = (window.__deletedSigs || {});
                     cset.forEach(function(x) {
                       if (!x) return;
@@ -3104,7 +3215,9 @@ public final class RoleElementPicker {
                       if (rsig)   { dead[rsig]   = true; deadKeys.push(rsig);   delSigs[rsig] = true; }
                       if (x._sigKey) { dead[x._sigKey] = true; deadKeys.push(x._sigKey); delSigs[x._sigKey] = true; }
                       if (x._sig)    { dead[x._sig]    = true; deadKeys.push(x._sig);    delSigs[x._sig]    = true; }
-                      // 仅抽取 Java 侧 pickDedupKey 所需的纯数据字段（不含 _el/DOM，JSON 安全）。
+                      // 仅抽取 Java 侧 collectDeleteKeys 所需的纯数据字段（不含 _el/DOM，JSON 安全）。
+                      // 注意：collectDeleteKeys 只用 strategy/_sig/_sigKey/_pageClass/role/key/name/index，
+                      // 故不再冗余携带 id/css 等未参与去重键计算的字段。
                       delPicks.push({
                         strategy: x.strategy,
                         _sig: rsig || x._sig,
@@ -3113,8 +3226,6 @@ public final class RoleElementPicker {
                         role: x.role,
                         key: x.key,
                         name: x.name,
-                        id: x.id,
-                        css: x.css,
                         index: x.index
                       });
                     });
@@ -3123,7 +3234,7 @@ public final class RoleElementPicker {
                       if (!x) return false;
                       return !(dead[x._sigKey] || dead[x._sig]);
                     });
-                    // 同步清除去重登记表中对应的键，否则该元素被视为“已存在”，
+                    // 同步清除去重登记表中对应的键，否则该元素被视为"已存在"，
                     // 之后重新点选同一元素时会因命中 __rolePickSigs 而被当作重复丢弃，再也拾不回来。
                     try {
                       var sigs = window.__rolePickSigs || {};
@@ -3132,7 +3243,7 @@ public final class RoleElementPicker {
                     } catch (e2) {}
                     // 【关键】同步清理已封装的 step 中对该元素的引用。
                     // 页面类字段来自 picks，而 step 代码来自 window.__steps —— 两者是独立数据源。
-                    // 只删 picks 的话，step 里仍留着这个“幽灵 pick”：生成时页面类已无对应字段，
+                    // 只删 picks 的话，step 里仍留着这个"幽灵 pick"：生成时页面类已无对应字段，
                     // 代码生成侧靠 field==null 静默 continue 跳过，于是编译虽能通过，
                     // 但该动作会凭空消失（且弹窗元素还会连带丢掉 closeCurrentPage 闭环），排查极困难。
                     // 故在源头把它从每个 step 的 picks 里摘掉，并移除因此变空的 step，保持两侧一致。
@@ -3144,7 +3255,10 @@ public final class RoleElementPicker {
                         if (!s || typeof s !== 'object' || typeof s.op === 'string') { _kept.push(s); return; }
                         var ps = (s.picks || []).filter(function(p) {
                           if (!p) return false;
-                          return !(dead[p._sigKey] || dead[p._sig]);
+                          // 优先按 __mergeKey（去索引稳定键，与删除主逻辑 dead 集合一致）判定是否在删除集，
+                          // 同时兜底兼容老格式含索引的 _sig/_sigKey，避免 i18n 等定位器策略因 #index 变化清不掉。
+                          var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(p) : null;
+                          return !((mk && dead[mk]) || dead[p._sigKey] || dead[p._sig]);
                         });
                         // picks 被删空的 step 整条丢弃，避免生成出一个没有任何语句的空 @Step 方法。
                         if (!ps.length) return;
@@ -3154,7 +3268,7 @@ public final class RoleElementPicker {
                       window.__steps = _kept;
                     } catch (e6) {}
                     // 【关键】同步删除 Java 权威内存态：主循环每轮空闲都会把 javaPickBySig 整体 merge
-                    // 回 window.__rolePicks，不通知 Java 的话被删元素约 1s 后就会“复活”（删除看似无效），
+                    // 回 window.__rolePicks，不通知 Java 的话被删元素约 1s 后就会"复活"（删除看似无效），
                     // 且代码生成读的正是 javaPickBySig。exposeBinding 与 console 兜底双通道上报（幂等）。
                     try {
                       // 上报完整 pick 对象（delPicks）而非仅 key 数组，供 Java 侧用 pickDedupKey 精确命中删除；
@@ -3170,19 +3284,25 @@ public final class RoleElementPicker {
                     // 落盘最新态，避免整页跳转时被 localStorage 里的旧快照把已删元素恢复回来。
                     // 用 window.__persistPickState（面板脚本可见的公开 API）；__persistNow 是拾取脚本内的
                     // 局部函数，不在本脚本作用域内，直接调用取不到。
-                    // 必须放在 __currentStep 清空【之后】，否则会把已删元素当作“选择集”一并写进快照。
+                    // 必须放在 __currentStep 清空【之后】，否则会把已删元素当作"选择集"一并写进快照。
                     try { if (typeof window.__persistPickState === 'function') window.__persistPickState(); } catch (e5) {}
                     window.__renderPicks();
                     // 【关键】「页面类」「步骤代码」两个 Tab 里的内容是生成时一次性写入 textarea 的
                     // 静态文本快照，不会跟随数据变化。仅删数据的话，已生成代码里该元素的字段声明与
-                    // step 引用依然原样显示着（用户看到的就是“删了但代码没变”）。
+                    // step 引用依然原样显示着（用户看到的就是"删了但代码没变"）。
                     // 故通知 Java 按最新状态重算并回填两个 Tab，使变量与引用一并消失。
                     try { pushCmd('refreshCode'); } catch (e7) {}
                   };
                   delBtn.onmouseenter = function() { if (!delBtn.disabled) delBtn.style.filter = 'brightness(1.12)'; };
                   delBtn.onmouseleave = function() { delBtn.style.filter = 'none'; };
+                  // selBar 持久复用：先移除上次渲染留下的同名按钮，再追加新按钮，避免每次重渲染堆积多个删除按钮。
+                  var _oldDel = document.getElementById('__roleDelBtn');
+                  if (_oldDel) _oldDel.remove();
                   selBar.appendChild(delBtn);
-                  listEl.appendChild(selBar);
+                  // 【修复】把"全选"工具栏从候选列表内部移出，作为 subTabBar（"全部"行）正下方
+                  // 的兄弟元素，使"全选"这一行与"全部"这一行紧挨着。此前 selBar 被 append 进
+                  // listEl 顶部，夹在"全部"子 Tab 行与候选列表之间，视觉上不相邻。
+                  try { pageContent.insertBefore(selBar, listEl); } catch (e) { listEl.appendChild(selBar); }
                   function refreshSelInfo() {
                     var vis = curVisiblePicks();
                     var sel = 0;
@@ -3213,7 +3333,7 @@ public final class RoleElementPicker {
                     cb.style.cssText = 'margin-top:3px;flex:0 0 auto;';
                     // 关键修复：cb/row 均为 var 函数作用域的循环共享变量，若闭包直接引用外层 cb/row，
                     // 等 onchange 真正触发时它们已指向【最后一次】迭代创建的元素，导致读到的 checked 状态
-                    // 错乱、勾选不生效（表现为“勾选不了”）。故用 IIFE 参数按迭代捕获当前 cb/row/pk，
+                    // 错乱、勾选不生效（表现为"勾选不了"）。故用 IIFE 参数按迭代捕获当前 cb/row/pk，
                     // 并改为【直接更新该行高亮】，不再全量重建列表（消除闪烁与 O(n) 重建竞态）。
                     (function(pk, checkbox, rowEl) {
                       checkbox.onchange = function(e) {
@@ -3222,7 +3342,7 @@ public final class RoleElementPicker {
                         if (e && e.stopPropagation) e.stopPropagation();
                         window.__currentStep = window.__currentStep || [];
                         // 【关键】用全局健壮键，避免 pk 签名字段缺失时 s 为空、直接 return 导致勾选不生效
-                        //（即“选中了却没进选择集、封装 step 时 SelSet 为空 → 生成 0 条”）。
+                        //（即"选中了却没进选择集、封装 step 时 SelSet 为空 → 生成 0 条"）。
                         var s = (typeof window.__mergeKey==='function') ? window.__mergeKey(pk) : (pk && (pk._sigKey || pk._sig));
                         if (!s) return;
                         var idx = -1;
@@ -3261,7 +3381,7 @@ public final class RoleElementPicker {
                     row.__cb = cb; row.__sig = sk;
                     listEl.appendChild(row);
                   }
-                  // 绑定“全选”复选框：勾选即对当前可见范围全选，取消勾选即全不选；复选框状态与计数保持同步。
+                  // 绑定"全选"复选框：勾选即对当前可见范围全选，取消勾选即全不选；复选框状态与计数保持同步。
                   try {
                     function applySelectAll(on) {
                       var vis = curVisiblePicks();
@@ -3283,15 +3403,19 @@ public final class RoleElementPicker {
                       applySelectAll(selAllCb.checked);
                       window.__renderPicks();
                     };
-                    // 计数刷新时同步“全选”复选框状态：可见项全部选中 -> 勾选，否则不勾选。
+                    // 计数刷新时同步"全选"复选框状态：可见项全部选中 -> 勾选，否则不勾选。
                     var _refreshSelInfo = refreshSelInfo;
                     refreshSelInfo = function() {
                       var vis = curVisiblePicks();
                       var cset = window.__currentStep || [];
                       var sel = 0;
+                      // 统一用 __mergeKey 计算勾选键（与 onchange / applySelectAll / __packageStep 完全一致）：
+                      // 旧实现用 vis[vi]._sigKey || vis[vi]._sig，若面板 picks 对象未固化这些字段则 s 恒为空，
+                      // 导致"已选计数"永远显示 0、全选框永远不勾选（用户误以为 i18n/无 _sigKey 元素没被选中）。
+                      function __mkey2(q){ return (typeof window.__mergeKey==='function') ? window.__mergeKey(q) : (q && (q._sigKey || q._sig)); }
                       for (var vi = 0; vi < vis.length; vi++) {
-                        var s = vis[vi] && (vis[vi]._sigKey || vis[vi]._sig);
-                        if (s && cset.some(function(x){ return x && (x._sigKey || x._sig) === s; })) sel++;
+                        var s = __mkey2(vis[vi]);
+                        if (s && cset.some(function(x){ return __mkey2(x) === s; })) sel++;
                       }
                       selInfo.textContent = '已选 ' + sel + ' / ' + vis.length;
                       selAllCb.checked = (vis.length > 0 && sel === vis.length);
@@ -3304,9 +3428,9 @@ public final class RoleElementPicker {
               }
               window.__renderScheduled = false;
               window.__renderPicks();
-              // 暴露幂等“确保面板存在”入口：供门控脚本在 SPA 路由切换（pushState/hashchange 等）自愈时调用——
+              // 暴露幂等"确保面板存在"入口：供门控脚本在 SPA 路由切换（pushState/hashchange 等）自愈时调用——
               // 框架重渲染 document 子树可能把 docked 面板 DOM 冲掉，此时仅重建面板并立即重渲染已拾元素
-              // （已拾元素存于 window.__rolePicks，不随 DOM 重建丢失）。build() 内部已对“已存在面板”做 remove 再重建，故幂等。
+              // （已拾元素存于 window.__rolePicks，不随 DOM 重建丢失）。build() 内部已对"已存在面板"做 remove 再重建，故幂等。
               window.__roleEnsurePanel = function() {
                 try {
                   if (!document.getElementById('__rolePanel')) { build(); }
@@ -3384,22 +3508,22 @@ public final class RoleElementPicker {
                                                   LinkedHashMap<String, RoleEntry> javaPickBySig) {
         switch (cmd) {
             case "start":
-                // 多实例：会话级“开始”作用于所有已打开页面，使各页面板同步显示 ⏹ 停止
+                // 多实例：会话级"开始"作用于所有已打开页面，使各页面板同步显示 ⏹ 停止
                 // （active[0] 是会话权威开关，followPage / onFrameNavigated 据此决定是否重启监听）。
                 active[0] = true;
-                // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击“开始”的延迟。
+                // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击"开始"的延迟。
                 String startNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
                 for (Page p : pageNames.keySet()) {
                     if (!p.isClosed()) { log.info("[picker][start] 对页面 {} 调用 start", p.url()); start(p, startNls); }
                 }
                 // 注意：开始拾取不做自动避开导航——用户有时也需要拾取 leftmenu/topbar 等全局区域。
-                // start(page, nls) 的 root 为 null（整页），点击拾取即整页可点；仅当用户主动用“区域扫描”
+                // start(page, nls) 的 root 为 null（整页），点击拾取即整页可点；仅当用户主动用"区域扫描"
                 // 点选了某块业务区后，window.__rolePickRoot 才被限定到该容器（区域扫描专属语义）。
                 return new PickerResult(PickerAction.CONTINUE, null, null,
                         "RoleElement Picker：点击元素拾取 role/name，按 ESC 结束");
             case "scan": {
                 // 整页 role 树扫描：先复用 start 注入拾取库（定义 __roleScanPage/__recordPick），
-                // 再对命令来源页运行 window.__roleScanPage()——把整页所有“带可访问名的语义角色元素”
+                // 再对命令来源页运行 window.__roleScanPage()——把整页所有"带可访问名的语义角色元素"
                 // 经 __recordPick 记录，与点击拾取同一链路（去重 / 面板渲染 / __roleOnPick 回传 javaPickBySig）。
                 // 用户随后点 ⏹ 停止即从 javaPickBySig 生成代码（无需为扫描单独实现生成逻辑）。
                 active[0] = true;
@@ -3416,7 +3540,7 @@ public final class RoleElementPicker {
                 log.info("[picker][scan] 整页扫描完成：新增 {} 个语义角色元素", added);
                 // 扫描完成后【立即生成页面类代码】，无需等到点 ⏹ 停止：直接同步读取浏览器侧
                 // window.__rolePicks（readPickSnapshot 走 page.evaluate，比依赖异步的 __roleOnPick 回传更可靠），
-                // 按 pageClass 分组生成页面类并填入“页面类”Tab，同时自动切到该 Tab 让用户即时看到。
+                // 按 pageClass 分组生成页面类并填入"页面类"Tab，同时自动切到该 Tab 让用户即时看到。
                 // 此后用户仍可继续勾选元素「封装为步骤」、或点 ⏹ 停止重新生成（含步骤代码）。
                 try {
                     PickSnapshot snap = readPickSnapshot(page);
@@ -3455,8 +3579,8 @@ public final class RoleElementPicker {
             }
             case "regionScanned": {
                 // 区域扫描点击后由浏览器侧异步通知（window.__rolePickerCmd('regionScanned')）：此时用户点选的
-                // 业务区域元素已同步进入 window.__rolePicks，这里与“整页扫描”一样读取快照并生成页面类，
-                // 填充“页面类”Tab 并切到该 Tab，使用户即时看到——否则区域扫描只会收集元素、却从不会生成页面类。
+                // 业务区域元素已同步进入 window.__rolePicks，这里与"整页扫描"一样读取快照并生成页面类，
+                // 填充"页面类"Tab 并切到该 Tab，使用户即时看到——否则区域扫描只会收集元素、却从不会生成页面类。
                 // 每次点选区域都会重算，便于在多个区域间累加后逐步更新页面类。
                 try {
                     PickSnapshot snap = readPickSnapshot(page);
@@ -3525,13 +3649,13 @@ public final class RoleElementPicker {
                 active[0] = false;
                 log.info("[picker][stop] 收到停止命令，对 {} 个被跟踪页面执行停止", pageNames.size());
                 // 多实例：停止作用于所有已打开页面，使各页面板同步回 ▶ 开始
-                // （否则某页仍显示停止却已失活，造成“点了没反应”的错觉）。
-                // 企业级优化：命令来源页用 stopAndRead 把“去激活 + 收尾当前 step + 读回全部拾取态”
+                // （否则某页仍显示停止却已失活，造成"点了没反应"的错觉）。
+                // 企业级优化：命令来源页用 stopAndRead 把"去激活 + 收尾当前 step + 读回全部拾取态"
                 // 合并为 1 次 Java↔浏览器往返；其余被跟踪页仅去激活（stop），避免重复生成代码与多余读快照。
                 // （原实现对命令页额外发一次收尾 evaluate + 一次 readPickSnapshot，与 stop() 共 3 次串行往返，
-                //  现已合并进 stopAndRead，点击“停止”的端到端延迟显著下降。）
+                //  现已合并进 stopAndRead，点击"停止"的端到端延迟显著下降。）
                 PickSnapshot snap = null;
-                // 折叠已关闭页（如“跳转到新页面后直接关闭”的根页）缓存的 step/op：停止生成时这些页被跳过，
+                // 折叠已关闭页（如"跳转到新页面后直接关闭"的根页）缓存的 step/op：停止生成时这些页被跳过，
                 // 若不折叠，其在 onClose else 分支补登记的 closeCurrentPage 步骤会丢失。
                 List<StepRec> closedSteps = new ArrayList<>();
                 List<PageOp> closedOps = new ArrayList<>();
@@ -3567,10 +3691,10 @@ public final class RoleElementPicker {
                     mergedOps.addAll(closedOps);
                     snap = new PickSnapshot(snap.pageClass, snap.entries, mergedSteps, mergedOps);
                 }
-                // 关键修复（修复“开始→停止→再开始→停止，第一次的步骤代码丢失”）：
+                // 关键修复（修复"开始→停止→再开始→停止，第一次的步骤代码丢失"）：
                 // 整页跳转时 onFrameNavigated→applyPickState 会用 snapshots 里的 Java 恢复态【整体覆盖】
-                // window.__steps（见 applyPickState：window.__steps = s.steps || []）。而快照此前只在“空闲刷新”时更新，
-                // 且 run1 拾取期间 __steps 为空、空闲刷新把恢复态停在“空 steps”；若 run2 中发生整页跳转，
+                // window.__steps（见 applyPickState：window.__steps = s.steps || []）。而快照此前只在"空闲刷新"时更新，
+                // 且 run1 拾取期间 __steps 为空、空闲刷新把恢复态停在"空 steps"；若 run2 中发生整页跳转，
                 // 就用这份过期恢复态把第一次的 step 整体覆盖丢失。此处把本次停止后的最新态【立即回写】Java 恢复态，
                 // 使任何后续跳转恢复时都含已有 step（含第一次），彻底消除该时序窗口。
                 try { snapshots.put(page, readPickStateJson(page)); } catch (Exception ignore) {}
@@ -3602,7 +3726,7 @@ public final class RoleElementPicker {
                 if (entriesByPage.isEmpty()) {
                     return new PickerResult(PickerAction.CONTINUE, null, null, "未拾取到元素");
                 }
-                // 按 pageClass 分别生成页面类（含“仅 step/ops 无元素 pick”的页，也产出空字段类，保证步骤视图引用不悬空）
+                // 按 pageClass 分别生成页面类（含"仅 step/ops 无元素 pick"的页，也产出空字段类，保证步骤视图引用不悬空）
                 LinkedHashMap<String, String> codePage = new LinkedHashMap<>();
                 for (Map.Entry<String, List<RoleEntry>> e : entriesByPage.entrySet()) {
                     codePage.put(e.getKey(), RoleElementPageGenerator.generate(e.getValue(), packageName, e.getKey(), nlsFiles));
@@ -3656,7 +3780,7 @@ public final class RoleElementPicker {
      * 拾取交互角色元素时，会用 a11y name 反查该表，命中则直接用真实 nls key。
      *
      * @param page              Playwright Page
-     * @param nlsReverseJson    nls 反向查表 JSON；为 null/空/“{}” 时退化为不反查（回退 slug）
+     * @param nlsReverseJson    nls 反向查表 JSON；为 null/空/"{}" 时退化为不反查（回退 slug）
      */
     public static void start(Page page, String nlsReverseJson) {
         start(page, nlsReverseJson, null);
@@ -3667,7 +3791,7 @@ public final class RoleElementPicker {
      * 拾取交互角色元素时，会用 a11y name 反查该表，命中则直接用真实 nls key。
      *
      * @param page              Playwright Page
-     * @param nlsReverseJson    nls 反向查表 JSON；为 null/空/“{}” 时退化为不反查（回退 slug）
+     * @param nlsReverseJson    nls 反向查表 JSON；为 null/空/"{}" 时退化为不反查（回退 slug）
      * @param rootSelector      录制根容器选择器（如 "main"、"#content"）；
      *                          非 null 时只有落在该容器内（含其后代）的点击/悬停才会被录制，
      *                          leftmenu / topbar 等全局导航区域在范围外，自然不被捕获。
@@ -3680,23 +3804,23 @@ public final class RoleElementPicker {
             return;
         }
         // 兼容两种格式：新格式 {exact, templates} 拆开注入；旧格式（纯精确表）整体作为 exact。
-        // 企业级优化：把“会话开关置位 + nls 反向表注入 + START_SCRIPT 开启监听”合并进同一次 page.evaluate，
-        // 点击“开始拾取”只付出 1 次 Java↔浏览器往返（原来 2 次串行），按钮即时响应。
+        // 企业级优化：把"会话开关置位 + nls 反向表注入 + START_SCRIPT 开启监听"合并进同一次 page.evaluate，
+        // 点击"开始拾取"只付出 1 次 Java↔浏览器往返（原来 2 次串行），按钮即时响应。
         // 会话开关 __rolePickSessionOn（对齐 page.pause 的 mode 下推）：context 级门控注入脚本
         // （gatedPickerInitScript）据此在【每个新文档】自动重挂拾取监听——导航/弹窗/SPA 整文档替换后
         // 拾取存活由浏览器原生保证，无需 Java 端手动重挂。
         page.evaluate(
                 "try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
                 + " try{window.__rolePickSessionOn=true;}catch(e){}"
-                // 重置面板切换控件的“乐观意图”位：避免上一轮 stop/start 残留的 __rolePickWanted 让
-                // 按钮的 willStart 计算发出错误命令（关键修复“停止后再点开始却拾取不了”的边界之一）。
+                // 重置面板切换控件的"乐观意图"位：避免上一轮 stop/start 残留的 __rolePickWanted 让
+                // 按钮的 willStart 计算发出错误命令（关键修复"停止后再点开始却拾取不了"的边界之一）。
                 + " try{ window.__rolePickWanted = null; }catch(e){}"
-                // 关键修复（停止→再开始拾取不了）：同文档“二次开始”若沿用“已注入”状态（window.__rolePickerLib 已为 true），
+                // 关键修复（停止→再开始拾取不了）：同文档"二次开始"若沿用"已注入"状态（window.__rolePickerLib 已为 true），
                 // START_SCRIPT 会跳过整套库定义、仅依赖顶部 addEventListener 保活；一旦该保活因竞态未真正生效
                 // （典型如 stop 已 removeEventListener 移除旧函数引用、而重激活路径没把它加回），表现即
-                // “停止后再点开始却拾取不了 / 跳转到新页面拾取不到”。这里主动移除旧监听并把 __rolePickerLib 复位为 false，
-                // 强制 __roleGatedStart 重新走“完整库定义 + 重新 addEventListener”分支——与刷新/跳转全新文档的
-                // 已知可用路径完全一致，从根消除“二次开始”与“刷新”的行为差异。
+                // "停止后再点开始却拾取不了 / 跳转到新页面拾取不到"。这里主动移除旧监听并把 __rolePickerLib 复位为 false，
+                // 强制 __roleGatedStart 重新走"完整库定义 + 重新 addEventListener"分支——与刷新/跳转全新文档的
+                // 已知可用路径完全一致，从根消除"二次开始"与"刷新"的行为差异。
                 // window.__rolePicks 仍用 || [] 保留，__rolePickSigs/__sigToPick 随后从既有 picks 重建，已拾元素与去重都不丢。
                 + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
                 + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
@@ -3719,7 +3843,7 @@ public final class RoleElementPicker {
                 + " window.__rolePickRoot = " + (rootSelector == null ? "null" : ("'" + rootSelector.replace("'", "\\'") + "'")) + ";"
                 + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}");
         log.info("[picker] 拾取模式已开启：在浏览器点击元素即可拾取，按 ESC 结束。");
-        // 诊断：start() 注入后确认监听真正挂载（排查“点击没反应”究竟是注入失败还是被后续覆盖）。
+        // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
             String d = page.evaluate("(function(){ return JSON.stringify({"
                     + " origin: location.origin,"
@@ -3734,7 +3858,7 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 把 nls 文件构建成“规范化后的文本值 → key”的反向查表 JSON（覆盖所有语言），
+     * 把 nls 文件构建成"规范化后的文本值 → key"的反向查表 JSON（覆盖所有语言），
      * 供浏览器拾取时把 a11y name 反查为对应 nls key。文件缺失/解析失败时返回 "{}"（退化为不反查）。
      *
      * @param nlsFile nls 文件路径（classpath 相对或文件系统绝对），如 "nls/login.nls.json"
@@ -3849,7 +3973,7 @@ public final class RoleElementPicker {
         List<RoleEntry> result = new ArrayList<>();
         // 读取前先在浏览器侧按权威键 __mergeKey 压缩一次：window.__rolePicks 可能因 start() 重注入
         // 清空 sigs 与页面恢复/同步交错而残留整组重复（同组元素重复多份）。此处兜底去重，
-        // 保证 pick() 这条“拾取并生成”主路径拿到的元素不重复——与 readPickSnapshot / parsePickSnapshot 一致。
+        // 保证 pick() 这条"拾取并生成"主路径拿到的元素不重复——与 readPickSnapshot / parsePickSnapshot 一致。
         Object raw = page.evaluate("(function(){"
                 + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
                 + "   if (!p) return ''; if (p._sigKey) return p._sigKey;"
@@ -3880,14 +4004,14 @@ public final class RoleElementPicker {
 
     /**
      * 把 Java 权威拾取内存态（javaPickBySig）同步到浏览器面板展示数组 window.__rolePicks 并触发渲染。
-     * 修复“Java 内存态增长、浏览器实时面板空白”：浏览器侧 window.__rolePicks 因去重 / iframe / 导航时序
+     * 修复"Java 内存态增长、浏览器实时面板空白"：浏览器侧 window.__rolePicks 因去重 / iframe / 导航时序
      * 未被可靠填充，导致点击时面板列表看不到已拾元素。此处以 Java 侧为准，保证面板实时反映已拾内容。
      * 仅用于面板展示；代码生成仍走 javaPickBySig（见 runPickerCommand），不受影响。
      */
     /**
      * 把 Java 权威拾取内存态（javaPickBySig）按目标页 pageClass 过滤后同步到该页浏览器面板展示数组
      * window.__rolePicks 并触发渲染。
-     * 修复“当前跟随页(current[0])不是用户正在点击的页时，那个页面的面板空白、看不到已拾元素”：
+     * 修复"当前跟随页(current[0])不是用户正在点击的页时，那个页面的面板空白、看不到已拾元素"：
      * 改为对每个被跟踪页面分别同步（调用处遍历 pageNames），使任一页面的面板都能实时反映 Java 侧已拾内容。
      * 仅用于面板展示；代码生成仍走 javaPickBySig（见 runPickerCommand），不受影响。
      * 注意：不再清空 window.__rolePickSigs，避免干扰浏览器端真实点击的去重计数。
@@ -3895,8 +4019,25 @@ public final class RoleElementPicker {
     private static void syncPanelToBrowser(Page page, LinkedHashSet<String> pageClasses, LinkedHashMap<String, RoleEntry> state) {
         if (page == null || page.isClosed() || state == null) return;
         try {
+            // O2：ETag 短路——主循环每 ~1s 调一次，但拾取集未变时没必要重算并 evaluate 全量大对象。
+            // 用「元素身份+选择器+序号」拼成签名，与上次同页同步比较，相同则直接跳过（含浏览器渲染），
+            // 大幅减少拾取静止期以及大拾取集下的 evaluate / JSON 序列化开销。
+            StringBuilder sig = new StringBuilder();
+            sig.append(pageClasses == null ? "*" : pageClasses.toString());
+            for (RoleEntry e : state.values()) {
+                String pc = e.getPageClass();
+                if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) {
+                    sig.append('\u0001').append(e.getSigKey()).append('|')
+                       .append(e.getStrategy()).append('|').append(e.getSelector())
+                       .append('|').append(e.getIndex());
+                }
+            }
+            String newSig = sig.toString();
+            String prev = LAST_SYNC_SIG.get(page);
+            if (newSig.equals(prev)) return;   // 内容未变，跳过整轮同步
+            LAST_SYNC_SIG.put(page, newSig);
             // 仅取归属该页任一历史页类的拾取（pageClass 为空的元素兜底同步到所有页，避免漏显示）。
-            // 关键修复：用“该页经历过的全部页类集合”而非“当前页类”过滤，使整页跳转后旧页(_pageClass=旧类)
+            // 关键修复：用"该页经历过的全部页类集合"而非"当前页类"过滤，使整页跳转后旧页(_pageClass=旧类)
             // 元素仍保留在面板，实现跨页拾取累积可见（不再被新页类过滤冲掉）。
             List<RoleEntry> filtered = new ArrayList<>();
             for (RoleEntry e : state.values()) {
@@ -3906,9 +4047,15 @@ public final class RoleElementPicker {
                 if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) filtered.add(e);
             }
             String json = GSON.toJson(filtered);
+            // Java 侧持久"已删集合"：即便区域扫描清空了浏览器端 window.__deletedSigs，回灌时仍按此集永久屏蔽
+            // 已删元素，杜绝"区域扫描后已删元素被主循环复活"。空数组场景下 JSON 仍是合法数组，JS indexOf 安全。
+            java.util.Set<String> deleted = STATE_DELETED.get(state);
+            String delJson = (deleted == null || deleted.isEmpty()) ? "[]" : GSON.toJson(deleted);
             page.evaluate("(function(){"
                     + " try {"
                     + "   var arr = " + json + ";"
+                    + "   var __del2 = " + delJson + ";"   // Java 侧持久已删集（数组）
+                    + "   if (window.__clearMatchCache) window.__clearMatchCache();"
                     + "   // 把 Java RoleEntry 的字段名映射回浏览器 pick 的字段名（selector→css/id、resolvedKey→key、pageClass→_pageClass），"
                     + "   // 使下面合并去重键与浏览器侧 window.__rolePickSigs 完全一致：同一元素点击后“浏览器 push”与“Java 回传再合并”"
                     + "   // 用同一键去重，避免每条点击都在面板里重复出现。\n"
@@ -3942,7 +4089,7 @@ public final class RoleElementPicker {
                     + "     var o = toPick(p);"
                     // 关键修复：push 的必须是转换后的浏览器格式 o（含 id/css/key/_pageClass），
                     // 而非原始 Java 格式 p（字段是 selector/pageClass/resolvedKey，无 id/_pageClass）。
-                    // 之前 push(p) 导致：面板读不到 p.id → 出现无值的 “id” 行；p 缺 _sig/_pageClass →
+                    // 之前 push(p) 导致：面板读不到 p.id → 出现无值的 "id" 行；p 缺 _sig/_pageClass →
                     // 破坏后续所有基于签名/页面类的去重与归类（表现为元素重复 / 空 id）。
                     + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
                     // 关键：把去重键固化到 o._sigKey 并随元素一起留存。
@@ -3952,11 +4099,12 @@ public final class RoleElementPicker {
                     + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(o)"
                     + "            : ((o&&(o._sigKey||o._sig))||null);"
                     + "     if (k) o._sigKey = k;"
-                    // 关键兜底：命中“已删屏蔽集”的元素一律不回灌，杜绝“删除后约 1s 被主循环复活”
+                    // 关键兜底：命中"已删屏蔽集"的元素一律不回灌，杜绝"删除后约 1s 被主循环复活"
                     // （表现为删除看似无效）。屏蔽集由删除按钮写入 window.__deletedSigs，覆盖 Java 删除
                     // 因键不匹配未命中的极端路径；正常删除（Java 已移除）此元素本就不在此 arr 中，无副作用。
                     + "     var __del = window.__deletedSigs || {};"
                     + "     if ((o._sig && __del[o._sig]) || (k && __del[k])) return;"
+                    + "     if ((o._sig && __del2.indexOf(o._sig) >= 0) || (k && __del2.indexOf(k) >= 0)) return;"
                     + "     if (k && window.__rolePickSigs[k]) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
                     + "     window.__rolePicks.push(o); });"
@@ -3968,7 +4116,7 @@ public final class RoleElementPicker {
     /**
      * 自愈式保活：会话处于拾取中时，确保某页的点击捕获监听确实已挂载。
      * 任意页面变化（整文档替换、frame 内部跳转、onFrameNavigated 未覆盖到的边界情形）导致监听被静默丢弃后，
-     * 主循环空闲期据此重挂 START_SCRIPT，保证“页面如何变化都能继续拾取”（用户核心需求）。
+     * 主循环空闲期据此重挂 START_SCRIPT，保证"页面如何变化都能继续拾取"（用户核心需求）。
      * 重挂同时补注入 nls 反向查表，使导航后拾取仍能把 a11y name 反查为 key。
      * 幂等：监听已存活则零成本返回，不会重复挂载（START_SCRIPT 内部 __rolePickActive 早退 + 此处先探测）。
      */
@@ -3976,12 +4124,12 @@ public final class RoleElementPicker {
         if (page == null || page.isClosed()) return;
         try {
             // 会话处于拾取中（调用方已用 active[0] 守卫）：无条件重挂（幂等）监听，
-            // 确保“停止后再开始 / 跳转到新页面 / 框架静默移除 document 级监听”等任何情形下点击必能拾取。
-            // 关键修复：移除了原先的“if (active && hasClick) return”早退。
-            // 该早退在“window.__rolePickActive 仍为 true 但 click 监听已被框架/导航静默移除”的竞态下会跳过重挂，
-            // 表现即“停止后再点开始却拾取不了 / 跳转到新页面拾取不到”——因为激活态显示 true、函数引用还在（hasClick 为真），
-            // 于是误判“无需重挂”，而真实监听早已不工作。START_SCRIPT 对同函数引用 addEventListener 幂等、
-            // 不重复定义库，按 1s 节奏重挂安全无副作用，故此处改为“会话开则必重挂”。
+            // 确保"停止后再开始 / 跳转到新页面 / 框架静默移除 document 级监听"等任何情形下点击必能拾取。
+            // 关键修复：移除了原先的"if (active && hasClick) return"早退。
+            // 该早退在"window.__rolePickActive 仍为 true 但 click 监听已被框架/导航静默移除"的竞态下会跳过重挂，
+            // 表现即"停止后再点开始却拾取不了 / 跳转到新页面拾取不到"——因为激活态显示 true、函数引用还在（hasClick 为真），
+            // 于是误判"无需重挂"，而真实监听早已不工作。START_SCRIPT 对同函数引用 addEventListener 幂等、
+            // 不重复定义库，按 1s 节奏重挂安全无副作用，故此处改为"会话开则必重挂"。
             page.evaluate("try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
                     + " try{window.__rolePickSessionOn=true;}catch(e){}"
                     + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
@@ -4003,7 +4151,7 @@ public final class RoleElementPicker {
     }
 
     /** 只读式读取当前页面拾取态的 JS 表达式（返回含 pageClass/picks/steps/ops 的对象字面量）。
-     *  与 {@link #STOP_SCRIPT} 拼接即可在“停止”时一次性完成去激活 + 收尾 + 读回，避免多次往返。 */
+     *  与 {@link #STOP_SCRIPT} 拼接即可在"停止"时一次性完成去激活 + 收尾 + 读回，避免多次往返。 */
     private static final String PICK_STATE_READER_JS = "(function(){"
             + " function norm(s){ var t=(s&&typeof s==='object')?s:null;"
             + "   var pc=(t&&typeof t.pageClass==='string')?t.pageClass:'';"
@@ -4039,15 +4187,15 @@ public final class RoleElementPicker {
             + "})()";
 
     /** 单次 {@code page.evaluate} 即取回「已拾元素 + step 序列 + 页面级操作 + 当前页类名」，
-     *  把停止命令原本分散的多次浏览器往返合并为一次，降低点击“停止”的响应延迟。 */
+     *  把停止命令原本分散的多次浏览器往返合并为一次，降低点击"停止"的响应延迟。 */
     @SuppressWarnings("unchecked")
     private static PickSnapshot readPickSnapshot(Page page) {
         return parsePickSnapshot(page.evaluate(PICK_STATE_READER_JS));
     }
 
-    /** “停止”命令专用：单次 {@code page.evaluate} 同时完成「去激活 + 收尾当前 step + 读回全部拾取态」，
+    /** "停止"命令专用：单次 {@code page.evaluate} 同时完成「去激活 + 收尾当前 step + 读回全部拾取态」，
      *  把原本 stop()（1 次）+ 收尾 evaluate（1 次）+ readPickSnapshot（1 次）三次往返合并为 1 次，
-     *  点击“停止”即时得到快照并转交代码生成，不再串行等待多次 Java↔浏览器往返（企业级：减少关键路径往返）。 */
+     *  点击"停止"即时得到快照并转交代码生成，不再串行等待多次 Java↔浏览器往返（企业级：减少关键路径往返）。 */
     @SuppressWarnings("unchecked")
     private static PickSnapshot stopAndRead(Page page) {
         // 与 stop() 一致：先清除会话开关（阻断门控注入脚本在后续新文档自启拾取），
@@ -4171,8 +4319,8 @@ public final class RoleElementPicker {
     private static List<StepRec> getStepsWithPage(Page page) {
         List<StepRec> result = new ArrayList<>();
         // 在浏览器内把两种格式归一为 {pageClass, picks}；picks 仍是原始 pick 对象数组。
-        // 过滤掉“页面级操作”step（含 op 字段，如关闭页面），它们由 getPageOpsWithPage 单独处理，
-        // 否则会被当成“空 pick 的 step”生成无意义方法。
+        // 过滤掉"页面级操作"step（含 op 字段，如关闭页面），它们由 getPageOpsWithPage 单独处理，
+        // 否则会被当成"空 pick 的 step"生成无意义方法。
         Object raw = page.evaluate("Array.from(window.__steps || []).filter(function(s){"
                 + " return !(s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){"
                 + " var t = (s && typeof s === 'object') ? s : null;"
@@ -4208,20 +4356,32 @@ public final class RoleElementPicker {
 
     /**
      * 定位器唯一型策略：同一 locator 跨页面指向同一元素，回传去重时按 locator 签名（_sig）而非 [sig, pageClass|URL]，
-     * 避免“回到主页 / 关弹窗”时同一元素被重复收录（如 id=logoHeader 在主页与弹窗各存一份、主页元素多出一份）。
+     * 避免"回到主页 / 关弹窗"时同一元素被重复收录（如 id=logoHeader 在主页与弹窗各存一份、主页元素多出一份）。
      * 角色策略（role+name）与 closeOp 仍按页面作用域（_sigKey）区分，保留跨页同名元素各自独立。
      */
     private static final java.util.Set<String> LOCATOR_IDENTITY_STRATEGIES = new java.util.HashSet<>(java.util.Arrays.asList(
             "id", "css", "i18n", "text", "title", "placeholder", "label", "testid", "altText"));
 
-    /** 计算拾取回传的权威去重键：定位器唯一型策略用语 locator 签名（_sig），其余（role/closeOp）用页面作用域键（_sigKey）。 */
+    /**
+     * 计算拾取回传的权威去重键：
+     * - 定位器唯一型策略（i18n/id/css/text/title/...）按「去索引的稳定 locatorKey」去重，
+     *   与页面字段 RoleElementPageGenerator.locatorKey 语义一致（均不含 #index）。
+     *   ⚠️ 旧实现对这类策略直接用含 #index 的 _sig（如 i18n:forgot_username_title#0）作 key——
+     *   同一 data-i18n 值若页面上有多个匹配（count>1），或区域重扫/勾选顺序变化导致 __attachIndex
+     *   重新分配 #index 时，删除回传的 _sig 与入库时的 _sig 不一致，javaPickBySig.remove 命中失败，
+     *   表现为"data-i18n 元素删了又复活"。改用去索引 locatorKey 后，删除 key 稳定，必能命中。
+     * - 其余（role/closeOp）仍按页面作用域键（_sigKey，含 pageClass、不含 index）区分，保留原行为。
+     */
     private static String pickDedupKey(Map<Object, Object> m, RoleEntry e) {
         if (m == null) return "";
         Object sig = m.get("_sig");
         Object sigKey = m.get("_sigKey");
         String strategy = (e != null) ? e.getStrategy() : null;
         boolean locatorIdentity = strategy != null && LOCATOR_IDENTITY_STRATEGIES.contains(strategy);
-        if (locatorIdentity && sig != null) return String.valueOf(sig);
+        if (locatorIdentity) {
+            String lk = RoleElementPageGenerator.locatorKey(e);
+            if (lk != null && !lk.isEmpty()) return lk;
+        }
         if (sigKey != null) return String.valueOf(sigKey);
         return sig != null ? String.valueOf(sig) : "";
     }
@@ -4230,7 +4390,7 @@ public final class RoleElementPicker {
      * 把「删除回传」原始数组统一折算为要移除的内存态 map key 集合。
      * 兼容两种格式：
      * ① 完整 pick 对象数组（新格式）：对每个 pick 用与入库时完全一致的 {@link #pickDedupKey} 重算 key，
-     *    从而精确命中「定位器唯一型策略」（key=_sig）与「role 策略」（key=_sigKey）——这是修复“删除无效”的关键；
+     *    从而精确命中「定位器唯一型策略」（key=_sig）与「role 策略」（key=_sigKey）——这是修复"删除无效"的关键；
      * ② 纯 key 字符串数组（旧格式兼容）：直接作为待删键。
      */
     @SuppressWarnings("unchecked")
@@ -4245,12 +4405,18 @@ public final class RoleElementPicker {
                 if (e != null) {
                     // 多通道兜底：javaPickBySig 的真实 key 既可能是 pickDedupKey（role 用 _sigKey、定位器用 _sig），
                     // 又可能是浏览器侧实时重算的 __pickSig/__sigKey，或 RoleEntry 固化的 sigKey。
-                    // 任一命中都加入 dead，确保“删除所有元素”时每个元素都能从 Java 权威内存态移除，
+                    // 任一命中都加入 dead，确保"删除所有元素"时每个元素都能从 Java 权威内存态移除，
                     // 否则残留元素会在 refreshCode 生成页面类时继续出现（表现为删了却还在）。
                     String k1 = pickDedupKey(m, e);
                     if (k1 != null && !k1.isEmpty()) dead.add(k1);
                     String k2 = asString(m.get("_sig"));
                     if (k2 != null && !k2.isEmpty() && !k2.equals(k1)) dead.add(k2);
+                    // 去索引兜底：_sig 形如 "i18n:forgot_username_title#0"，javaPickBySig 现按去索引 locatorKey 存储，
+                    // 去掉尾随 #\d+ 后同样能命中，确保旧格式含索引 key 也能被清掉（避免删了又复活）。
+                    if (k2 != null && k2.length() > 2 && Character.isDigit(k2.charAt(k2.length() - 1))) {
+                        String k2base = k2.replaceAll("#\\d+$", "");
+                        if (!k2base.isEmpty() && !dead.contains(k2base)) dead.add(k2base);
+                    }
                     String k3 = asString(m.get("_sigKey"));
                     if (k3 != null && !k3.isEmpty() && !k3.equals(k1) && !k3.equals(k2)) dead.add(k3);
                     String k4 = e.getSigKey();
@@ -4601,8 +4767,8 @@ public final class RoleElementPicker {
     /**
      * 打开一个常驻控制面板（类似 {@code page.pause()} 的 inspector），由图标控件驱动整个拾取流程：
      * <ul>
-     *   <li>▶/⏹ 切换控件：空闲时显示“开始拾取”（▶，绿），点后进入点选模式并在页面点击目标元素；
-     *       拾取中自动变为“停止拾取”（⏹，橙），再点即退出点选并按已点元素生成 {@code @RoleElement} 代码填入面板</li>
+     *   <li>▶/⏹ 切换控件：空闲时显示"开始拾取"（▶，绿），点后进入点选模式并在页面点击目标元素；
+     *       拾取中自动变为"停止拾取"（⏹，橙），再点即退出点选并按已点元素生成 {@code @RoleElement} 代码填入面板</li>
      *   <li>📋 复制代码：一键复制面板中的代码</li>
      *   <li>⏻ 终止运行：抛出 {@link PickerAbortedException}，中断调用方后续代码</li>
      *   <li>✕ 关闭面板：标题栏右上角的 X 图标（对齐 {@code page.pause()} 的 inspector 关闭），退出面板</li>
@@ -4629,7 +4795,7 @@ public final class RoleElementPicker {
         final BrowserContext ctx = page.context();
         // 弹窗页/导航后点击时需要 nls 反向表反查 key；预先构建一次（含缓存），供门控注入脚本内嵌。
         final String nlsReverseJson = buildNlsReverseJson(Arrays.asList(nlsFiles));
-        // 开启面板开关：刷新/导航后 context 级 addInitScript 会自动重建面板，避免“刷新后面板消失”。
+        // 开启面板开关：刷新/导航后 context 级 addInitScript 会自动重建面板，避免"刷新后面板消失"。
         page.evaluate("try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}");
         // 清掉上一次会话可能残留的拾取落盘态与拾取开关（浏览器上下文虽每次重建，仍防御性清理），
         // 避免 onFrameNavigated 合并时把旧数据误并入本次会话、或门控注入脚本因残留开关误自启拾取。
@@ -4639,31 +4805,31 @@ public final class RoleElementPicker {
         page.evaluate("window.__nlsFiles = " + GSON.toJson(nlsFiles) + ";");
         // context 级初始化脚本：①面板引导 + 面板重建（任意页面/导航自动执行）；
         // ②门控拾取脚本（会话开关打开时每个新文档自动注入 nls + 重挂拾取监听——
-        //   “页面怎么变都能拾取”从此由浏览器原生保证，替代手动重挂/自愈兜底的主路径）。
+        //   "页面怎么变都能拾取"从此由浏览器原生保证，替代手动重挂/自愈兜底的主路径）。
         registerContextInitScripts(ctx, nlsReverseJson);
         // addInitScript 只对注册后的【新文档】生效：当前已加载文档立即补执行一次面板脚本。
         page.evaluate(PANEL_SCRIPT);
         final Page[] current = { page };
-        // 会话级“是否处于拾取中”状态：跨页面跟随 / 导航 / 关闭回退都以此为权威依据，
+        // 会话级"是否处于拾取中"状态：跨页面跟随 / 导航 / 关闭回退都以此为权威依据，
         // 驱动面板切换控件显示 ⏹ 停止（而不是每次都重置成 ▶ 开始）。
         final boolean[] active = { false };
-        // rootClosed：连“根页面（最初打开面板的页面）”都关闭时置位，循环据此结束会话。
+        // rootClosed：连"根页面（最初打开面板的页面）"都关闭时置位，循环据此结束会话。
         final boolean[] rootClosed = { false };
         // pageNames：每个被跟踪页面 → 其 Page 类名。根页用传入的 pageClassName；
-        // 新页面（弹窗/新标签页）由 URL 派生（见 pageClassNameFromUrl），保证“元素落到对应页代码”。
+        // 新页面（弹窗/新标签页）由 URL 派生（见 pageClassNameFromUrl），保证"元素落到对应页代码"。
         final LinkedHashMap<Page, String> pageNames = new LinkedHashMap<>();
         pageNames.put(page, pageClassName);
         // snapshots：每个被跟踪页面 → 其拾取状态 JSON 快照（readPickStateJson 格式）。
         // 用于导航重建恢复，以及页面关闭后仍能把它拾取的元素生成到对应 Page 类。
         final LinkedHashMap<Page, String> snapshots = new LinkedHashMap<>();
-        // urlToClass：会话级“URL → Page 类名”稳定映射。同一 URL 在会话内首次访问时派生类名并记住，
+        // urlToClass：会话级"URL → Page 类名"稳定映射。同一 URL 在会话内首次访问时派生类名并记住，
         // 之后再回到该 URL（即使离开又返回）直接复用原类名，而不是重新派生一个重复类
         // （例如默认页 LoginPage → 跳到第二密页 → 回到登录 URL，若每次都重派生会多出 LogonPage，
-        // 这正是“回到默认页面，根据 url 又创建了新的 page”的根因）。预置根页 URL → 传入的 pageClassName，
-        // 保证回到默认页 URL 时复用原类名。键为“去 query/hash”的归一化 URL。
+        // 这正是"回到默认页面，根据 url 又创建了新的 page"的根因）。预置根页 URL → 传入的 pageClassName，
+        // 保证回到默认页 URL 时复用原类名。键为"去 query/hash"的归一化 URL。
         // urlToClass 初始化为全局持久映射的当前内容（跨会话复用），再补登记根页 URL→传入类名。
-        // 关键修复（修复“同一 URL 来回跳转却生成 XxxPage / XxxPage2 两个类”）：旧实现 urlToClass 是每次
-        // pick 会话的局部变量，跨“停止→再开始”或多次运行会被重建，导致同 URL 在新会话重新派生类名；
+        // 关键修复（修复"同一 URL 来回跳转却生成 XxxPage / XxxPage2 两个类"）：旧实现 urlToClass 是每次
+        // pick 会话的局部变量，跨"停止→再开始"或多次运行会被重建，导致同 URL 在新会话重新派生类名；
         // 若既有类名因 pageNames 残留被计入去重，就派生出 XxxPage2。提升为全局持久映射后，同一 URL 首次
         // 派生即记住，之后任何会话/导航都复用，永不再派生重复类。
         final LinkedHashMap<String, String> urlToClass = new LinkedHashMap<>(GLOBAL_URL_TO_CLASS);
@@ -4675,7 +4841,7 @@ public final class RoleElementPicker {
         // 命令事件队列：面板按钮点击经 exposeFunction 异步投递到这里，主循环阻塞消费（事件驱动，无需忙轮询）。
         final BlockingQueue<CmdEvent> cmdQueue = new LinkedBlockingQueue<>();
         // 拾取状态权威副本（对齐 page.pause：状态外置到 Java 侧，浏览器只做轻量 UI）。
-        // 每次点击经 exposeFunction(__roleOnPick) 把“单个”元素零往返、O(1) 回传进此 Map（key=拾取签名⊕pageClass，
+        // 每次点击经 exposeFunction(__roleOnPick) 把"单个"元素零往返、O(1) 回传进此 Map（key=拾取签名⊕pageClass，
         // value=RoleEntry），重复点击以最近一次交互为准整条替换、首次插入保序。stop 时优先用此内存态生成代码，
         // 不依赖浏览器全量读取、且对导航/关闭导致的浏览器端状态清空免疫（比 localStorage 更可靠）。
         final LinkedHashMap<String, RoleEntry> javaPickBySig = new LinkedHashMap<>();
@@ -4683,7 +4849,7 @@ public final class RoleElementPicker {
         // 主循环检测到 current[0] 已关闭后需等待该回退完成；用 wait/notify 精确等待（而非 Thread.sleep），
         // onClose 完成后立即 notify，主循环即时唤醒，不再空等固定时长，也避免忙睡引入的时序抖动。
         final Object closeSignal = new Object();
-        // 记录“发生过整页跳转（URL 变化使 pageClass 改变）”的页面（Identity 比较），用于：
+        // 记录"发生过整页跳转（URL 变化使 pageClass 改变）"的页面（Identity 比较），用于：
         // 同标签跳转到新页面后直接关闭时，补登记 closeCurrentPage 步骤（普通单页录制末尾不追加）。
         final java.util.Set<Page> navigatedPages =
                 java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
@@ -4693,7 +4859,7 @@ public final class RoleElementPicker {
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
         registerPopupFollow(page, null, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
-        // 上下文级“任意新页面”监听：覆盖非 window.open 打开的新标签页（onPopup 仅捕获弹窗）。
+        // 上下文级"任意新页面"监听：覆盖非 window.open 打开的新标签页（onPopup 仅捕获弹窗）。
         // 用 opener()==null 过滤掉弹窗（弹窗已由上面的 onPopup 跟随），避免重复跟随。
         ctx.onPage(p -> {
             if (p.opener() != null) return;
@@ -4706,9 +4872,9 @@ public final class RoleElementPicker {
             while (true) {
                 // 当前跟随的页面（可能是弹窗）已关闭：先让 onClose 回调有机会把 current[0]
                 // 回退到父页（重建面板、继续拾取），再判定是否真的结束会话。
-                // 关键修复：绝不可因“current[0] 指向的弹窗关闭”就直接结束会话——
+                // 关键修复：绝不可因"current[0] 指向的弹窗关闭"就直接结束会话——
                 // 否则会进入 finally 移除所有面板、却残留点击捕获监听，表现为
-                // “面板消失却仍可静默拾取、不阻挡程序”（用户不期望的行为）。
+                // "面板消失却仍可静默拾取、不阻挡程序"（用户不期望的行为）。
                 try {
                     if (current[0].isClosed()) {
                         // 等待 onClose 回调把 current[0] 回退到存活父页（wait/notify 精确唤醒，
@@ -4719,7 +4885,7 @@ public final class RoleElementPicker {
                         if (!current[0].isClosed()) continue;   // onClose 已把 current[0] 回退到存活父页
                         if (rootClosed[0]) break;               // 根页关闭且已置位：结束
                         // onClose 未回退（异常/未触发）：在已跟踪页面里找一个存活页继续，
-                        // 仅当“确实没有任何存活页面”时才结束会话。
+                        // 仅当"确实没有任何存活页面"时才结束会话。
                         Page alive = null;
                         for (Page pg : pageNames.keySet()) {
                             if (pg != null && !pg.isClosed()) { alive = pg; break; }
@@ -4732,7 +4898,7 @@ public final class RoleElementPicker {
                 } catch (Exception ignore) {}
                 // 事件驱动取命令：面板按钮点击经 exposeFunction 异步投递到 cmdQueue，这里阻塞等待
                 // （最多 1s 超时以周期性检查页面关闭）。命令到达即被唤醒、立即处理，
-                // 故点击“开始/停止”等按钮近乎零延迟，无需为命令轮询额外消耗 Java↔浏览器 evaluate。
+                // 故点击"开始/停止"等按钮近乎零延迟，无需为命令轮询额外消耗 Java↔浏览器 evaluate。
                 CmdEvent ev;
                 try {
                     ev = cmdQueue.poll(1000, TimeUnit.MILLISECONDS);
@@ -4750,9 +4916,9 @@ public final class RoleElementPicker {
                             if (!pg.isClosed()) drainPanelCmds(pg, cmdQueue);
                         }
                     } catch (Exception ignore) {}
-                    // 空闲（1s 内无命令）：周期性缓存“所有被跟踪页面”的拾取快照，供导航重建/关闭后恢复。
-                    // 关键优化：快照刷新不再放在【每个命令迭代】里——否则每次点按钮都要先对“每个被跟踪页面”
-                    // 各做一次 page.evaluate 读快照（N 页 = N 次往返），造成“点按钮要好久才有反应”。
+                    // 空闲（1s 内无命令）：周期性缓存"所有被跟踪页面"的拾取快照，供导航重建/关闭后恢复。
+                    // 关键优化：快照刷新不再放在【每个命令迭代】里——否则每次点按钮都要先对"每个被跟踪页面"
+                    // 各做一次 page.evaluate 读快照（N 页 = N 次往返），造成"点按钮要好久才有反应"。
                     // 仅空闲时刷新一次即可：onClose 关闭瞬间会自读最新快照；整页跳转前的最后点击另有
                     // localStorage 落盘合并兜底（见 onFrameNavigated），正确性不受影响，点击延迟大幅下降。
                     try {
@@ -4766,7 +4932,7 @@ public final class RoleElementPicker {
                         }
                     } catch (Exception ignore) {}
                     // 以 Java 权威内存态兜底刷新实时面板：浏览器侧 window.__rolePicks 因跨 iframe/导航时序
-                    // 可能未可靠填充，导致“内存态增长、面板空白”。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
+                    // 可能未可靠填充，导致"内存态增长、面板空白"。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
                     // 的面板并渲染（按各页 pageClass 过滤只显示该页拾取），保证用户在任一页面点击时面板都实时反映
                     // 已拾元素（生成链路仍走 javaPickBySig，不受影响）。
                     try {
@@ -4775,8 +4941,8 @@ public final class RoleElementPicker {
                         }
                     } catch (Exception ignore) {}
                     // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
-                    // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖“页面变化（跳转/URL change/SPA 整文档替换/
-                    // frame 内部跳转）后监听被静默丢弃”的所有边界，保证任何时刻都能继续拾取。
+                    // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
+                    // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。
                     if (active[0]) {
                         for (Page pg : pageNames.keySet()) {
                             if (!pg.isClosed()) ensurePickingActive(pg, nlsReverseJson, nlsFiles);
@@ -4789,7 +4955,7 @@ public final class RoleElementPicker {
                 String cmd = ev.cmd;
                 // 每次开始拾取前，把浏览器真实打开的页面（context.pages()）与内存跟踪表对齐：
                 // 任何在 stop→再 start 之间、或 onPage/onPopup/followPage 因异常漏登记的打开页面都会被补登，
-                // 确保“停止后再点开始”不会遗漏某页（表现为点了开始却拾取不了）。
+                // 确保"停止后再点开始"不会遗漏某页（表现为点了开始却拾取不了）。
                 if ("start".equals(cmd)) {
                     reconcileTrackedPages(ev.page, pageNames, snapshots, urlToClass, openedPages, cmdQueue, javaPickBySig);
                 }
@@ -4802,8 +4968,8 @@ public final class RoleElementPicker {
                 }
                 if ((r.pageClassByPage != null && !r.pageClassByPage.isEmpty())
                         || (r.stepByPage != null && !r.stepByPage.isEmpty())) {
-                    // 多实例：把“合并后的全部页面代码”填充到每一个被跟踪页面的面板，
-                    // 避免只在当前页（如新页）显示、而默认页面板留空（之前“默认页没生成代码”的根因）。
+                    // 多实例：把"合并后的全部页面代码"填充到每一个被跟踪页面的面板，
+                    // 避免只在当前页（如新页）显示、而默认页面板留空（之前"默认页没生成代码"的根因）。
                     for (Page p : pageNames.keySet()) {
                         if (!p.isClosed()) {
                             fillCode(p, r.pageClassByPage, r.stepByPage, r.statusMsg);
@@ -4839,7 +5005,7 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 注册“弹窗跟随”：当页面弹出新标签页（target=_blank）时，把原页面的拾取状态
+     * 注册"弹窗跟随"：当页面弹出新标签页（target=_blank）时，把原页面的拾取状态
      * （__rolePicks / __steps / __currentStep / __rolePickSigs）转移到新页面，
      * 并让 {@code current[0]} 指向新页面继续拾取。面板是注入式 docked（同窗口），
      * 故需在弹窗页也重建面板；新页面自身若再弹窗会递归注册，支持多级弹窗。
@@ -4863,7 +5029,7 @@ public final class RoleElementPicker {
             try {
                 // 关闭瞬间尝试抓一份最终快照：页面可能已不可 evaluate，此时 readPickStateJson 返回空集
                 // （{picks:[],...}，见 2491-2496，不抛异常）。关键修复：绝不能拿空集覆盖主循环此前缓存的快照
-                // （那才含新页已拾取的元素）——否则合并时会用空 picks 把新页元素“合并没了”。
+                // （那才含新页已拾取的元素）——否则合并时会用空 picks 把新页元素"合并没了"。
                 // 仅当活读成功且确实含拾取时才覆盖缓存；活读为空则保留主循环缓存（更可靠）。
                 try {
                     String live = readPickStateJson(closed);
@@ -4871,18 +5037,18 @@ public final class RoleElementPicker {
                 } catch (Exception ignore) {}
                 String closedCls = pageNames.get(closed);   // 提升至 if/else 之前，使根页（else）分支也能引用
                 if (parent != null && !parent.isClosed()) {
-                    // 先切回父页并保留其面板：即使后续合并/渲染操作抛异常，也不影响“回退父页 + 面板存活”，
-                    // 否则 onClose 中途异常会跳过 current[0]=parent，主循环将把“弹窗关闭”误判为会话结束，
-                    // 进入 finally 删除所有面板却残留点击监听，表现为“面板消失却仍可静默拾取”（用户不期望）。
+                    // 先切回父页并保留其面板：即使后续合并/渲染操作抛异常，也不影响"回退父页 + 面板存活"，
+                    // 否则 onClose 中途异常会跳过 current[0]=parent，主循环将把"弹窗关闭"误判为会话结束，
+                    // 进入 finally 删除所有面板却残留点击监听，表现为"面板消失却仍可静默拾取"（用户不期望）。
                     current[0] = parent;
                     // 父页此前一直处于拾取态（active 未被触碰），监听器仍存活；幂等重启以兜底，
                     // 不会因重复 START 而重复挂监听（START_SCRIPT 内已做 __rolePickActive 早退）。
                     try { if (active[0]) parent.evaluate(START_SCRIPT); } catch (Exception ignore) {}
-                    // 合并关闭页已抓元素到父页 + 把“关闭该页”内联为当前 step 的一个操作标记：
-                    // 与“回退父页/面板存活”解耦，单独容错，避免一处瞬态异常中断整段。
+                    // 合并关闭页已抓元素到父页 + 把"关闭该页"内联为当前 step 的一个操作标记：
+                    // 与"回退父页/面板存活"解耦，单独容错，避免一处瞬态异常中断整段。
                     try {
-                        // 多页面：关闭弹窗时把该页已抓元素“按签名合并”回父页（而非整盘覆盖）。
-                        // 只把关闭页中“父页还没有”的 pick 并入父页，父页自身数据永不被抹掉；
+                        // 多页面：关闭弹窗时把该页已抓元素"按签名合并"回父页（而非整盘覆盖）。
+                        // 只把关闭页中"父页还没有"的 pick 并入父页，父页自身数据永不被抹掉；
                         // 旧页 pick 自带 _pageClass，合并后仍正确归类到各自 Page 类。
                         String closedState = snapshots.get(closed);
                         if (closedState != null && hasPicks(closedState)) {
@@ -4898,7 +5064,7 @@ public final class RoleElementPicker {
                                 + MERGE_KEY_SHIM
                                 + " var s = " + closedState + ";"
                                 // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重：
-                                // 弹窗打开时被 followPage 复制进来的“主页元素”与主页已有元素 locator 相同，
+                                // 弹窗打开时被 followPage 复制进来的"主页元素"与主页已有元素 locator 相同，
                                 // 关弹窗回灌时不应再追加一份（用户明确：回到主页追加一份不是期望的）。
                                 // 角色/closeOp 仍按 [sig, pageClass|URL] 区分，跨页同名元素各自独立。
                                 + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
@@ -4916,19 +5082,19 @@ public final class RoleElementPicker {
                             + "   window.__rolePicks.push(p); });"
                             + "})()");
                     }
-                        // 关键修复：把关闭页“进行中 step”（__currentStep）合并回父页当前 step，
-                        // 使弹窗内拾取的元素随同一 step 继续累积——step 的唯一边界是“开始→停止”，
+                        // 关键修复：把关闭页"进行中 step"（__currentStep）合并回父页当前 step，
+                        // 使弹窗内拾取的元素随同一 step 继续累积——step 的唯一边界是"开始→停止"，
                         // 弹窗打开/关闭都只是同一 step 内的交互，绝不该拆出额外 step。
-                        // 同时把“关闭该页”登记为当前 step 内的一个操作标记（_closeOp），而非独立 step，
-                        // 使代码生成器产出 closeCurrentPage() 内联在主流程中（用户明确要求“只有一个条件：开始-停止”）。
+                        // 同时把"关闭该页"登记为当前 step 内的一个操作标记（_closeOp），而非独立 step，
+                        // 使代码生成器产出 closeCurrentPage() 内联在主流程中（用户明确要求"只有一个条件：开始-停止"）。
                         // 关闭标记按 _sig 去重（支持多次关闭同类弹窗），并随 __currentStep 在停止时被收尾进唯一一个 step。
                         if (closedCls != null && !closedCls.isEmpty()) {
                             parent.evaluate(
                                 "(function(){"
                                 // 关键修复：合并弹窗 currentStep 时【绝不可】用父页全局 __rolePickSigs 去重——
-                                // 否则弹窗打开时被 followPage 搬运进弹窗 currentStep 的“默认页元素”（如 A）会因其 sig
+                                // 否则弹窗打开时被 followPage 搬运进弹窗 currentStep 的"默认页元素"（如 A）会因其 sig
                                 // 已存在于默认页 __rolePickSigs 而被误删，导致该元素从当前 step 消失
-                                //（表现为“关弹窗 / url 变化后元素找不到”）。此处仅对“弹窗 currentStep 自身”
+                                //（表现为"关弹窗 / url 变化后元素找不到"）。此处仅对"弹窗 currentStep 自身"
                                 // 去重（避免弹窗内重复拾取同一元素），被搬运来的默认页元素必须原样保留。
                                 + " var s = " + (closedState == null ? "{}" : closedState) + ";"
                                 + " var closeMarker = {_closeOp:true, _pageClass:" + GSON.toJson(closedCls)
@@ -4944,18 +5110,18 @@ public final class RoleElementPicker {
                                 + "   arr.push(closeMarker); }"
                                 // 仍在进行中（未停止）：并入当前 step（__currentStep 是数组）。
                                 + " if (Array.isArray(window.__currentStep)) { mergeInto(window.__currentStep); }"
-                                // 已停止：把弹窗的 currentStep 与关闭标记并入“最后一个已生成 step”的 picks，
-                                // 不新建 step（保持“开始-停止”才是唯一 step 边界）。
+                                // 已停止：把弹窗的 currentStep 与关闭标记并入"最后一个已生成 step"的 picks，
+                                // 不新建 step（保持"开始-停止"才是唯一 step 边界）。
                                 + " else { window.__steps = window.__steps || [];"
                                 + "   var last = window.__steps[window.__steps.length-1];"
                                 + "   if (!last) { last = {pageClass:" + GSON.toJson(closedCls) + ", picks:[]}; window.__steps.push(last); }"
                                 + "   if (!last.picks) last.picks = [];"
                                 + "   mergeInto(last.picks); }"
-                                // 同步登记一条“页面级关闭操作”（op='close'，pageClass=被关弹窗页），
+                                // 同步登记一条"页面级关闭操作"（op='close'，pageClass=被关弹窗页），
                                 // 使 window.__steps 中除 _closeOp 标记外还保有可被解析为 PageOp 的条目。
-                                // 这一步关键：代码生成器的 inferPopupTargetVar 据此推断“弹窗目标页对象”
+                                // 这一步关键：代码生成器的 inferPopupTargetVar 据此推断"弹窗目标页对象"
                                 // （如 privacyAndSecurityPage），从而把新页面绑到目标页对象而非打开页（修复
-                                // “弹窗关闭落在 loginPage 而非 privacyAndSecurityPage”）。_closeOp 仅用于 step 内联渲染，
+                                // "弹窗关闭落在 loginPage 而非 privacyAndSecurityPage"）。_closeOp 仅用于 step 内联渲染，
                                 // 不保证进 __rolePicks（会随封装被过滤），故这里单独补登记可供 opsByPage 消费的操作。
                                 + " window.__steps = window.__steps || [];"
                                 + " window.__steps.push({op:'close', pageClass:" + GSON.toJson(closedCls) + "});"
@@ -4972,7 +5138,7 @@ public final class RoleElementPicker {
                         if (parentHasPanel) parent.evaluate("if(window.__renderPicks) window.__renderPicks();");
                         else {
                             // 面板容器确已丢失：兜底挂载一次，挂载后立刻渲染合并回父页的拾取，
-                            // 确保面板“挂载即可见、可继续拾取”，杜绝“面板不见却后台静默拾取”的半吊子状态。
+                            // 确保面板"挂载即可见、可继续拾取"，杜绝"面板不见却后台静默拾取"的半吊子状态。
                             parent.evaluate(PANEL_SCRIPT);
                             parent.evaluate("if(window.__renderPicks) window.__renderPicks();");
                         }
@@ -4982,7 +5148,7 @@ public final class RoleElementPicker {
                             closed.url(), pageNames.get(closed));
                 } else {
                     // 根页面（默认页）被关闭：若仍有其它被跟踪页面（弹窗）存活，则不结束会话，
-                    // 切换到最后一个存活页面并保留其面板——避免“关掉默认页后面板全消失、程序却静默继续”的半吊子状态。
+                    // 切换到最后一个存活页面并保留其面板——避免"关掉默认页后面板全消失、程序却静默继续"的半吊子状态。
                     // 仅当确实没有任何存活页面时才结束会话。
                     Page survivor = null;
                     for (Page p : openedPages) {
@@ -5004,11 +5170,11 @@ public final class RoleElementPicker {
                         rootClosed[0] = true;   // 连根页面都关了、且无其它存活页面：结束会话
                         log.info("[picker] 原页面已关闭，拾取会话结束。");
                     }
-                    // 同标签整页跳转到新页面后“直接关闭”该根页：原逻辑只在“有存活父页”的弹窗分支
+                    // 同标签整页跳转到新页面后"直接关闭"该根页：原逻辑只在"有存活父页"的弹窗分支
                     // 登记 _closeOp（→ closeCurrentPage），根页关闭走本 else 分支从不登记；且停止生成时
-                    // 已关闭页被跳过，导致关闭步骤丢失。故在此把“关闭当前页”补登记为该页缓存快照里的一条
+                    // 已关闭页被跳过，导致关闭步骤丢失。故在此把"关闭当前页"补登记为该页缓存快照里的一条
                     // step（含 _closeOp 标记），停止时由 runPickerCommand 的 stop 分支折叠回最终快照 → 生成
-                    // closeCurrentPage()。仅对“发生过整页跳转”的页生效，普通单页录制末尾不会无谓追加。
+                    // closeCurrentPage()。仅对"发生过整页跳转"的页生效，普通单页录制末尾不会无谓追加。
                     if (closedCls != null && !closedCls.isEmpty() && navigatedPages.contains(closed)) {
                         appendCloseOpStep(closed, closedCls, snapshots);
                     }
@@ -5037,41 +5203,41 @@ public final class RoleElementPicker {
         // 页面崩溃监听：上报崩溃，便于排查录制中断原因。
         page.onCrash(crashed -> log.warn("[picker] 页面崩溃：{}", crashed.url()));
         // 框架导航监听：主框架（同页前进/刷新/跳转）导航后，恢复/保活本页拾取状态。
-        // 关键点（修复“同页 URL 变化后元素仍归到第一个 URL 页类 / 重建清空已有元素”）：
+        // 关键点（修复"同页 URL 变化后元素仍归到第一个 URL 页类 / 重建清空已有元素"）：
         //   1) SPA/框架内路由：window 未销毁，已抓元素仍驻留内存 → 绝不用快照整体覆盖，否则会清掉
-        //      快照之后新拾的元素（“重建清空已有元素”的根因）；仅当整页重建（window.__rolePicks 随文档
+        //      快照之后新拾的元素（"重建清空已有元素"的根因）；仅当整页重建（window.__rolePicks 随文档
         //      销毁变空）时，才从快照恢复并刷新面板列表。
-        //   2) URL 变化即视为“新页面边界”：依据新 URL 重派生本页类名（window.__rolePageName），
+        //   2) URL 变化即视为"新页面边界"：依据新 URL 重派生本页类名（window.__rolePageName），
         //      使导航后新拾取的元素落到新页类；导航前已拾元素自带 _pageClass（旧页类）保持不变。
-        //      派生时排除本页当前类名自身，避免 pageClassNameFromUrl 去重把同名类误加成 “Xxx2”。
+        //      派生时排除本页当前类名自身，避免 pageClassNameFromUrl 去重把同名类误加成 "Xxx2"。
         page.onFrameNavigated(frame -> {
             try {
                 if (frame != page.mainFrame()) return;   // 仅关注主框架，忽略 iframe
                 log.info("[picker][nav] 触发 onFrameNavigated：page={} active[0]={}", page.url(), active[0]);
                 // 仅当该页属于本次拾取会话（有快照）才处理；其它无关页面 snapshots 为 null 自然跳过。
-                // current[0] 只决定“正在操作的页面”，不影响各页自身面板状态的恢复。
+                // current[0] 只决定"正在操作的页面"，不影响各页自身面板状态的恢复。
                 String st = snapshots.get(page);
                 String prevCls = pageNames.get(page);
-                // URL 变化即视为“页面边界”：打印日志，便于排查录制定位与元素丢失。
+                // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
                 log.info("[picker] 页面 URL 变化（onFrameNavigated）：{} （页面类：{}）", page.url(), prevCls);
-                // 无论 window 是否随导航销毁，都确保“之前拾取的元素”不丢失：
+                // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
                 //  - 整页重建（livePicks=false）：用 applyPickState 从快照整体恢复（含 nls 反查表）；
-                //  - window 仍在（livePicks=true）：把快照中“当前窗口缺少”的 pick/step 合并回来，
-                //    避免某些导航把 window.__rolePicks 连带清空，导致“元素不见了”。
+                //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，
+                //    避免某些导航把 window.__rolePicks 连带清空，导致"元素不见了"。
                 try {
                 boolean livePicks = Boolean.TRUE.equals(page.evaluate(
                         "!!(window.__rolePicks && window.__rolePicks.length)"));
                 if (!livePicks) {
                     // 仅当 Java 快照非空才整体恢复（含 nls 反查表）；为空不再提前 return，
-                    // 改由下方 localStorage 兜底——修复“刷新前未来得及空闲刷新 / 首屏”导致 st 为空、
+                    // 改由下方 localStorage 兜底——修复"刷新前未来得及空闲刷新 / 首屏"导致 st 为空、
                     // 早期 return 把 localStorage 兜底也跳过、整页刷新后元素与步骤全丢的问题。
                     if (st != null && !st.isEmpty()) {
                         applyPickState(page, st, nlsReverseJson, nlsFiles);
                     }
                     // 关键修复：整页跳转（window 重建）后，上面 applyPickState 用的是主循环每 ~1s 刷新的
-                    // Java 快照 st，可能【来不及包含跳转前最后点击的元素】（例如刚点的“返回登录”按钮），
+                    // Java 快照 st，可能【来不及包含跳转前最后点击的元素】（例如刚点的"返回登录"按钮），
                     // 于是该元素被旧快照整体覆盖而丢失。此处把浏览器在 pagehide 时落盘到 localStorage 的
-                    // 最新拾取态（含跳转前那次点击）合并回来，以“页面级复合键”去重，补回 st 缺失的最新点击元素。
+                    // 最新拾取态（含跳转前那次点击）合并回来，以"页面级复合键"去重，补回 st 缺失的最新点击元素。
                     // 仅同域整页跳转 localStorage 才保留，跨域（如弹窗 PDF）自然为空、不影响。
                     page.evaluate("(function(){"
                             + " try {"
@@ -5081,7 +5247,7 @@ public final class RoleElementPicker {
                             + "   window.__rolePickSigs = window.__rolePickSigs || {};"
                             + MERGE_KEY_SHIM
                             // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重，
-                            // 避免“跳转再返回”合并时同一元素（如 id=logoHeader）被追加副本；
+                            // 避免"跳转再返回"合并时同一元素（如 id=logoHeader）被追加副本；
                             // role/closeOp 仍按 [sig, pageClass|URL] 区分（与 close-merge、Java 权威态一致）。
                             + "   var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
                             + "   var __loc = {};"
@@ -5142,8 +5308,8 @@ public final class RoleElementPicker {
                             + " (s.steps||[]).forEach(function(st2){"
                             + "   var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
                             + "   if(!dup) window.__steps.push(st2); });"
-                            // 关键修复：URL 变化若把“进行中 step”（__currentStep）一并清空、但 window 未销毁
-                            // （livePicks 为真），从快照补回，避免当前 step 元素在导航后“凭空消失”。
+                            // 关键修复：URL 变化若把"进行中 step"（__currentStep）一并清空、但 window 未销毁
+                            // （livePicks 为真），从快照补回，避免当前 step 元素在导航后"凭空消失"。
                             // 仅当仍处于拾取中、当前 __currentStep 已丢失、且快照确有内容时才补，
                             // 防止 stop 后再导航被误恢复出游离 step。
                             + " if (window.__rolePickActive && !Array.isArray(window.__currentStep)"
@@ -5152,9 +5318,9 @@ public final class RoleElementPicker {
                             + "})()");
                 }
                 // 关键修复（跨页累积不丢失）：SPA / 同 window 跳转时 livePicks=true，上面 if 分支【不会】执行，
-                // 因而从不把 Java 快照 st 中“当前窗口缺失”的元素合并回来。一旦此类导航把 window.__rolePicks
+                // 因而从不把 Java 快照 st 中"当前窗口缺失"的元素合并回来。一旦此类导航把 window.__rolePicks
                 // 部分清空（常见框架路由 / 同页整文档替换），之前页（如 Page1）已拾元素便凭空消失，
-                // 表现为“跳转到另一页后之前页面的元素不在了”。此处对 livePicks=true 也补一次合并：
+                // 表现为"跳转到另一页后之前页面的元素不在了"。此处对 livePicks=true 也补一次合并：
                 // 仅把 st 里有、而当前 window.__rolePicks 没有的元素按签名去重补回（不整体覆盖，不影响导航后新拾元素）。
                 if (livePicks && st != null && !st.isEmpty()) {
                     page.evaluate("(function(){"
@@ -5179,7 +5345,7 @@ public final class RoleElementPicker {
                             + " } catch(e){}"
                             + "})()");
                 }
-                // 导航后始终重渲染面板列表并滚动到底部，确保已恢复/合并的元素可见（修复“URL 变化后元素看不见”）；
+                // 导航后始终重渲染面板列表并滚动到底部，确保已恢复/合并的元素可见（修复"URL 变化后元素看不见"）；
                 // 用 setTimeout 兜底等待 PANEL_SCRIPT 的 build() 完成（body 就绪才挂载面板），避免提前渲染找不到节点，
                 // 同时恢复上次生成的代码（页面元素 / 步骤代码两个 Tab），刷新后不丢。
                 page.evaluate("(function(){ setTimeout(function(){"
@@ -5221,7 +5387,7 @@ public final class RoleElementPicker {
                         + "     } } catch(e){}"
                         + " }, 60); })()");
                 // 依据新 URL 解析本页类名：优先复用会话级 urlToClass 稳定映射（同一 URL 复用同一类名，
-                // 避免“回到默认页 URL 又派生出 LogonPage 之类重复页类”）——仅当该 URL 从未见过时才派生新类名。
+                // 避免"回到默认页 URL 又派生出 LogonPage 之类重复页类"）——仅当该 URL 从未见过时才派生新类名。
                 String curCls = pageNames.get(page);
                 String newCls = resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
                 page.evaluate("window.__rolePageName = " + GSON.toJson(newCls) + ";"
@@ -5229,7 +5395,7 @@ public final class RoleElementPicker {
                 if (!newCls.equals(curCls)) { pageNames.put(page, newCls); navigatedPages.add(page); }
                 } catch (Exception restoreEx) {
                     // 数据恢复（applyPickState / 合并 / 渲染 / 类名解析）任一 evaluate 因导航瞬间页面不稳抛异常，
-                    // 必须吞掉且【不能影响下方 start() 重激活】——否则会出现“刷新/导航后点了没反应、拾取不了”
+                    // 必须吞掉且【不能影响下方 start() 重激活】——否则会出现"刷新/导航后点了没反应、拾取不了"
                     // （applyPickState 把 __rolePickActive 置 false 后激活被跳过，监听永久失效）。
                     log.warn("[picker][nav] 数据恢复异常（不阻断拾取激活）：{}", restoreEx.getMessage());
                 }
@@ -5238,7 +5404,7 @@ public final class RoleElementPicker {
                 // 经 start() 幂等恢复激活位（监听已在则早退仅保活），并置位会话开关——
                 // 覆盖跨源导航后 localStorage 开关丢失的边界，使该页后续导航恢复浏览器原生保活。
                 // 触发条件不再单纯依赖 Java 侧 active[0]（可能与浏览器态不同步），而以浏览器侧会话开关为准，
-                // 只要门控脚本此前读到过开关（localStorage/__rolePickSessionOn）就重激活，保证“刷新/跳转后必能拾取”。
+                // 只要门控脚本此前读到过开关（localStorage/__rolePickSessionOn）就重激活，保证"刷新/跳转后必能拾取"。
                 boolean sessionOn = active[0];
                 if (!sessionOn) {
                     try {
@@ -5255,11 +5421,11 @@ public final class RoleElementPicker {
                         // 否则一次导航会触发 onFrameNavigated 多次（main frame / iframe / about:blank 过渡 / 重试），
                         // 每次都 start() 一次：清空并重建 __rolePickSigs、异步 page.evaluate 重注入，与 idle 主循环的
                         // syncPanelToBrowser 合并 javaPickBySig 之间存在竞态，合并键未就绪时元素被重复 push，
-                        // 形成“反复重注入 + 反复合并”的循环，导致已拾元素成倍累积。
+                        // 形成"反复重注入 + 反复合并"的循环，导致已拾元素成倍累积。
                         // 这里仅做轻量激活保活：置位激活态并触发面板渲染，监听由门控脚本保证存活。
                         page.evaluate("try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}");
                     } catch (Exception ex) {
-                        // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛“上下文已销毁”类异常；
+                        // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
                         // 此处等待 DOM 就绪后重试一次轻量激活保活（仍不重注入整套库）。
                         log.warn("[picker][nav] 激活保活首轮失败，等待页面就绪后重试 @ {} : {}", page.url(), ex.getMessage());
                         try { page.waitForLoadState(); } catch (Exception ignore2) {}
@@ -5269,13 +5435,13 @@ public final class RoleElementPicker {
                 } else {
                     log.info("[picker][nav] 未处于拾取会话（active=false 且浏览器侧未开启），跳过激活 @ {}", page.url());
                 }
-                // ===== 诊断：刷新/导航后真实运行时状态（定位“拾取不了”根因）=====
+                // ===== 诊断：刷新/导航后真实运行时状态（定位"拾取不了"根因）=====
                 // 浏览器 console 已被吞，所有关键信息只能经 page.evaluate 回读。一次性汇总：
                 //   lsSwitch   —— 新文档 localStorage 里的会话开关（跨源导航会读不到，暴露 origin 隔离问题）
                 //   winSwitch  —— window.__rolePickSessionOn 是否被置位
                 //   active     —— __rolePickActive（最终是否处于拾取态）
                 //   hasClick/hasMove/hasRecord —— 三大监听/入口函数是否真的被定义（判断 START_SCRIPT 是否注入成功）
-                //   gateInit   —— 门控注入脚本本次执行结果（是否读到开关、是否注入），直接显示是“门控没生效”还是“激活被覆盖”
+                //   gateInit   —— 门控注入脚本本次执行结果（是否读到开关、是否注入），直接显示是"门控没生效"还是"激活被覆盖"
                 try {
                     String navDiag = page.evaluate("(function(){"
                             + " try {"
@@ -5310,13 +5476,13 @@ public final class RoleElementPicker {
     /**
      * 把 inspector 跟随到 newPage 并重建面板（单实例，供 onPopup 与 context.onPage 共用）。
      * 多页面模型：新页面加载当前面板（携带已抓元素），并继续把新页面拾取的元素归属到对应 Page 类；
-     * 元素按各页 window.__rolePageName 打 _pageClass 标签，生成时据此分组，实现“打开新页显示之前抓的元素”。
+     * 元素按各页 window.__rolePageName 打 _pageClass 标签，生成时据此分组，实现"打开新页显示之前抓的元素"。
      */
     /**
      * 开始拾取前，将浏览器当前真实打开的所有页面（context.pages()）与内存跟踪表 pageNames 对齐。
      * 兜底：任何在 stop→再 start 之间、或 onPage/onPopup/followPage 因异常而未登记进 pageNames 的打开页面，
      * 都会被补做最小初始化并纳入跟踪，使该页面在随后的 start 遍历中可被激活拾取，
-     * 彻底消除“停止后再点开始，某个已打开页面点了开始却拾取不了”的问题。
+     * 彻底消除"停止后再点开始，某个已打开页面点了开始却拾取不了"的问题。
      * 已登记页面不重复初始化（幂等）：命令桥/拾取桥用 Map 守卫仅注册一次；面板 addInitScript 仅对漏登页调用一次。
      */
     private static void reconcileTrackedPages(Page trigger, LinkedHashMap<Page, String> pageNames,
@@ -5334,7 +5500,7 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 对漏登记页面补做“可被拾取”的最小初始化（不搬运 opener 的当前 step，start 自身会续接/重置）。
+     * 对漏登记页面补做"可被拾取"的最小初始化（不搬运 opener 的当前 step，start 自身会续接/重置）。
      * 与 followPage 的区别：不注册子页跟随（避免重复 onPopup/onClose 监听），仅靠每次 start 的 reconcile
      * 形成闭环——若漏登页再开子页，子页也会在下次 start 时被补登。
      */
@@ -5383,9 +5549,9 @@ public final class RoleElementPicker {
             String cls = resolvePageClassForUrl(newPage.url(), pageNames.values(), urlToClass);
             pageNames.put(newPage, cls);
             openedPages.add(newPage);
-            // 关键修复：打开新页面【不再】把默认页当前步收尾成一个 step。step 的唯一边界是“开始→停止”，
-            // 弹窗打开/关闭都只是同一 step 内的交互，绝不该切分出额外 step（用户明确要求“只有一个条件：开始-停止”）。
-            // 因此此处只把 opener 的“进行中 step”（__currentStep，已带各元素原 _pageClass）整体搬运到新页继续累积，
+            // 关键修复：打开新页面【不再】把默认页当前步收尾成一个 step。step 的唯一边界是"开始→停止"，
+            // 弹窗打开/关闭都只是同一 step 内的交互，绝不该切分出额外 step（用户明确要求"只有一个条件：开始-停止"）。
+            // 因此此处只把 opener 的"进行中 step"（__currentStep，已带各元素原 _pageClass）整体搬运到新页继续累积，
             // 并把 opener 的 __currentStep 清空（转移而非复制），避免关闭弹窗合并回来时出现重复元素。
             // 旧页 pick 已带原 _pageClass，新页面板会显示之前抓的元素；新页拾取的元素再打上 cls。
             // 当前页始终持有全部页面的 pick 并集，故代码生成可在单一窗口按各元素自身 _pageClass 归类。
@@ -5408,7 +5574,7 @@ public final class RoleElementPicker {
             current[0] = newPage;
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, readPickStateJson(newPage));
-            // 新页面若再弹窗/再开页，继续跟随；把“是否处于拾取态”传下去，供其 onClose 回退父页时恢复。
+            // 新页面若再弹窗/再开页，继续跟随；把"是否处于拾取态"传下去，供其 onClose 回退父页时恢复。
             registerPopupFollow(newPage, opener, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
             log.info("[picker] 已在新页面（{}）注入独立面板，默认页面板保留不消失。", cls);
         } catch (Exception e) {
@@ -5437,9 +5603,9 @@ public final class RoleElementPicker {
     }
 
     /**
-     * 跨多次 pick 运行持久化的“URL → Page 类名”稳定映射。
-     * 关键修复（修复“同一 URL 来回跳转却生成 XxxPage / XxxPage2 两个类”）：
-     * 旧实现 urlToClass 是每次 pick 会话的局部变量，跨“停止→再开始”或多次运行会被重建，导致同 URL
+     * 跨多次 pick 运行持久化的"URL → Page 类名"稳定映射。
+     * 关键修复（修复"同一 URL 来回跳转却生成 XxxPage / XxxPage2 两个类"）：
+     * 旧实现 urlToClass 是每次 pick 会话的局部变量，跨"停止→再开始"或多次运行会被重建，导致同 URL
      * 在新会话重新派生类名；若既有类名因 pageNames 残留被计入去重，就派生出 XxxPage2。提升为全局持久
      * 映射后，同一 URL 首次派生即记住，之后任何会话/导航都复用，永不再派生重复类。
      */
@@ -5451,9 +5617,9 @@ public final class RoleElementPicker {
             java.util.regex.Pattern.compile("(?i)^/[a-z]{2}([-_][a-z]{2,4})?(?=/|$)");
 
     /** 归一化 URL：去 query/hash，剥离首段语言/地区码，并去除末尾斜杠，作为 urlToClass 的稳定键。
-     *  去除末尾斜杠可让肉眼“相同”但末尾斜杠有差异的 URL（如 /help 与 /help/）映射到同一页类；
+     *  去除末尾斜杠可让肉眼"相同"但末尾斜杠有差异的 URL（如 /help 与 /help/）映射到同一页类；
      *  剥离语言码可让同一页面在切换语言后（如 /en/accounts 与 /zh/accounts）归并到同一页类，
-     *  避免它们被误判为两个不同页面而派生出 XxxPage / XxxPage2（修复“切换语言后同一页生成 Page2”）。 */
+     *  避免它们被误判为两个不同页面而派生出 XxxPage / XxxPage2（修复"切换语言后同一页生成 Page2"）。 */
     private static String normalizeUrl(String url) {
         String raw = url == null ? "" : url.trim();
         int q = raw.indexOf('?'); if (q >= 0) raw = raw.substring(0, q);
@@ -5470,7 +5636,7 @@ public final class RoleElementPicker {
 
     /**
      * 解析某 URL 对应的 Page 类名：优先复用会话级 urlToClass 稳定映射（同一 URL 全程复用同一类名，
-     * 避免“离开默认页又回到默认页 URL 时被派生成 LogonPage 等重复类”）。
+     * 避免"离开默认页又回到默认页 URL 时被派生成 LogonPage 等重复类"）。
      * 仅当该 URL 从未出现时才用 pageClassNameFromUrl 派生，并登记进映射；派生时把已有的映射类名
      * 一并计入 used，避免与已分配类重名。
      */
@@ -5487,7 +5653,7 @@ public final class RoleElementPicker {
         return cls;
     }
 
-    /** 把任意片段清洗为合法 Java 类名的“主体”（首字母大写；- _ . 空格 / 作单词边界；其余字符丢弃）。 */
+    /** 把任意片段清洗为合法 Java 类名的"主体"（首字母大写；- _ . 空格 / 作单词边界；其余字符丢弃）。 */
     private static String toClassNameSegment(String seg) {
         if (seg == null || seg.isEmpty()) return "";
         StringBuilder sb = new StringBuilder();
@@ -5510,11 +5676,11 @@ public final class RoleElementPicker {
 
     /** 移除常驻面板，并还原 docked 预留的右侧页面空间。
      *  页面可能已关闭（如关闭的是根页面导致会话结束、或会话收尾时页面已被回收），
-     *  故对 evaluate 整体容错，避免 TargetClosedError 冒泡污染测试 step（之前“关闭新页面后 STEP ERROR”的根因）。 */
+     *  故对 evaluate 整体容错，避免 TargetClosedError 冒泡污染测试 step（之前"关闭新页面后 STEP ERROR"的根因）。 */
     private static void closePanel(Page page) {
         try {
             // 移除常驻面板的同时，移除点击/悬停/按键捕获监听并复位 active 标记，
-            // 否则面板删了、监听器残留，会出现“面板消失却仍可静默拾取、不阻挡程序”（用户不期望）的半吊子状态。
+            // 否则面板删了、监听器残留，会出现"面板消失却仍可静默拾取、不阻挡程序"（用户不期望）的半吊子状态。
             page.evaluate("(function(){"
                     + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
                     + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
@@ -5538,8 +5704,8 @@ public final class RoleElementPicker {
      * 从页面读取当前拾取会话状态（picks / steps / currentStep / sigs / active）的 JSON 字符串，
      * 用于跨页面（弹窗打开/关闭）搬运。
      * 关键点：用浏览器内 JSON.stringify 直接产出字符串返回，而不是让 Playwright 把返回对象
-     * 反序列化成 Java 对象再 GSON 重序列化——后者在遇到某些返回形态时会抛“无法序列化”异常，
-     * 被 catch 成空串，进而把弹窗/父页的既有拾取整体清空（这是之前“回到原页全没了”的根因）。
+     * 反序列化成 Java 对象再 GSON 重序列化——后者在遇到某些返回形态时会抛"无法序列化"异常，
+     * 被 catch 成空串，进而把弹窗/父页的既有拾取整体清空（这是之前"回到原页全没了"的根因）。
      * 返回字符串永远可序列化，彻底规避该问题；页面已关闭或异常时返回空集 JSON。
      */
     private static String readPickStateJson(Page page) {
@@ -5570,7 +5736,7 @@ public final class RoleElementPicker {
         } catch (Exception ignore) { return false; }
     }
 
-    /** 状态 JSON 是否为“全空”（picks / steps / currentStep 均为空），用于快照更新时识别导航空窗期。 */
+    /** 状态 JSON 是否为"全空"（picks / steps / currentStep 均为空），用于快照更新时识别导航空窗期。 */
     private static boolean isEmptyState(String stateJson) {
         try {
             Map<?, ?> m = GSON.fromJson(stateJson, MAP_STRING_OBJECT_TYPE);
@@ -5649,8 +5815,8 @@ public final class RoleElementPicker {
 
     /** 把按页生成的页面类/步骤代码分别写入面板的多 Tab，并更新状态 */
     private static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage, LinkedHashMap<String, String> stepByPage, String msg) {
-        // 企业级优化：把“写入消息对象”与“更新 DOM”合并进同一次 page.evaluate，
-        // 点击“停止”后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
+        // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate，
+        // 点击"停止"后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
         page.evaluate("(function(){"
                 + " window.__fillCodeTabs({"
                 + " pageByPage:" + GSON.toJson(pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage)
@@ -5661,7 +5827,7 @@ public final class RoleElementPicker {
 
     /**
      * 由一组已拾取元素按所属页面类分组生成页面类源码（与 stop 命令的生成逻辑一致）。
-     * 返回 pageClass → 该页完整页面类源码 的 map，供面板“页面类”Tab 按页分栏展示（对齐“页面元素”Tab）。
+     * 返回 pageClass → 该页完整页面类源码 的 map，供面板"页面类"Tab 按页分栏展示（对齐"页面元素"Tab）。
      * 单页即一个 entry；多页（弹窗/新标签页）则各元素按其 `_pageClass` 各自成类。
      *
      * @param entries       全部拾取元素（来自浏览器侧 window.__rolePicks，扫描与点击拾取已合并）
@@ -5687,8 +5853,8 @@ public final class RoleElementPicker {
 
     /**
      * 由快照（已拾元素 + 已封装 steps/ops）按页生成步骤代码（与 stop 命令的生成逻辑一致）。
-     * 返回 pageClass → 该页“完整可编译的 Step 类视图”源码 的 map，供面板“步骤代码”Tab 按页分栏展示
-     * （对齐“页面元素”Tab）。多页时主页视图含跨页 step、弹窗页视图含其 close 操作。
+     * 返回 pageClass → 该页"完整可编译的 Step 类视图"源码 的 map，供面板"步骤代码"Tab 按页分栏展示
+     * （对齐"页面元素"Tab）。多页时主页视图含跨页 step、弹窗页视图含其 close 操作。
      *
      * @return pageClass → 步骤类视图源码（LinkedHashMap 保序，无 step/操作时返回空 map）
      */
@@ -5702,7 +5868,7 @@ public final class RoleElementPicker {
             entriesByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(e);
         }
         // 生成前对账：steps 与 picks 是两条独立数据源，且 steps 在导航恢复/已关闭页缓存等路径上
-        // 是「只增不减」地合并回来的，已删元素仍可能以“幽灵 pick”残留在某条 step 里。
+        // 是「只增不减」地合并回来的，已删元素仍可能以"幽灵 pick"残留在某条 step 里。
         // 页面类字段只由 picks 生成，故此处按 locatorKey（与字段表同一套匹配口径）把
         // 在 entries 中已不存在的 pick 从 step 中剔除，并丢弃因此变空的 step。
         // 不这样做的话，代码生成侧会靠 field==null 静默 continue 跳过：编译能过，但动作凭空消失。
@@ -5723,7 +5889,17 @@ public final class RoleElementPicker {
                     String lk = RoleElementPageGenerator.locatorKey(e);
                     // 键为空者无法对账，保守保留（生成侧仍有 field==null 兜底，不会产生悬空引用）。
                     if (lk == null || lk.isEmpty() || aliveKeys.contains(lk)) kept.add(e);
-                    else droppedPicks++;
+                    else {
+                        droppedPicks++;
+                        // 诊断：i18n/定位器型策略元素若因 locatorKey 不匹配被 drop（典型表现"步骤里完全没有这行"），
+                        // 打印其 strategy/name/lk 与 aliveKeys 中同类键，便于定位 index(#0) 错位或字段不一致根因。
+                        if ("i18n".equals(e.getStrategy()) || (e.getStrategy() != null
+                                && LOCATOR_IDENTITY_STRATEGIES.contains(e.getStrategy()))) {
+                            log.info("[picker][drop-diag] 步骤元素被对账剔除：strategy={}, name={}, lk={}, count={}, index={}, aliveKeys(i18n类)={}",
+                                    e.getStrategy(), e.getName(), lk, e.getCount(), e.getIndex(),
+                                    aliveKeys.stream().filter(k -> k != null && k.startsWith(e.getStrategy() + ":")).limit(10).collect(java.util.stream.Collectors.toList()));
+                        }
+                    }
                 }
                 picks = kept;
             }
@@ -5751,14 +5927,14 @@ public final class RoleElementPicker {
         return o == null ? null : o.toString();
     }
 
-    /** 关闭步骤序号器：保证每次“关闭当前页”标记签名唯一、可去重。 */
+    /** 关闭步骤序号器：保证每次"关闭当前页"标记签名唯一、可去重。 */
     private static final java.util.concurrent.atomic.AtomicInteger CLOSE_SEQ =
             new java.util.concurrent.atomic.AtomicInteger();
 
     /**
-     * 把“关闭当前页”补登记为一条 step（含 _closeOp 标记的 pick），追加进该页缓存快照（snapshots），
+     * 把"关闭当前页"补登记为一条 step（含 _closeOp 标记的 pick），追加进该页缓存快照（snapshots），
      * 供停止生成时（已关闭页被跳过）折叠回最终快照，从而生成 closeCurrentPage() 步骤。
-     * 仅用于“同标签整页跳转到新页面后直接关闭”的根页场景（普通弹窗关闭已由 onClose 的父页分支处理）。
+     * 仅用于"同标签整页跳转到新页面后直接关闭"的根页场景（普通弹窗关闭已由 onClose 的父页分支处理）。
      */
     private static void appendCloseOpStep(Page closed, String pageClass,
                                           LinkedHashMap<Page, String> snapshots) {

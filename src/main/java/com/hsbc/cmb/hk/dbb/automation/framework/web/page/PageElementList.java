@@ -16,26 +16,40 @@ public final class PageElementList extends AbstractList<PageElement> {
     private final String selector;
     private final BasePage page;
     private final int defaultTimeoutMs = PlaywrightManager.config().getElementCheckTimeout();
+    /** iframe 嵌套路径（自顶向下）；非空时在 locator() 中以 frameLocator 逐层下钻，对齐 page.pause 录制。 */
+    private final List<String> frameSegs;
 
     // ========================== 构造（线程安全） ==========================
     public PageElementList(String selector, BasePage page) {
+        this(selector, page, null);
+    }
+
+    public PageElementList(String selector, BasePage page, List<String> frameSegs) {
         if (selector == null || selector.isBlank())
             throw new IllegalArgumentException("Selector cannot be null or blank");
         if (page == null)
             throw new IllegalArgumentException("BasePage cannot be null");
         this.selector = selector;
         this.page = page;
+        this.frameSegs = (frameSegs == null || frameSegs.isEmpty()) ? null : new ArrayList<>(frameSegs);
     }
 
     /**
      * 页面存活性保护 + Locator 重建。
      * 不再缓存 Locator——每次调用通过 {@code page.getPage()} 触发 ensurePageValid()，
      * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
+     * 若元素位于 iframe 内，逐层 frameLocator 下钻。
      */
     public Locator locator() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
-        return page.locator(selector);
+        Locator base = page.locator(selector);
+        if (frameSegs != null) {
+            for (String seg : frameSegs) {
+                base = page.getPage().frameLocator(seg).locator(base);
+            }
+        }
+        return base;
     }
 
     public String getSelector() {
@@ -132,7 +146,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
         // size() 已通过 waitFor(ATTACHED) 确认元素存在，无需再次等待 VISIBLE
         // 元素的可见性交给后续操作自行判断（Playwright Locator 操作时自动等待）
-        return new PageElementWithIndex(selector, page, index);
+        return new PageElementWithIndex(selector, page, index, frameSegs);
     }
 
     // ========================== 迭代器 ==========================
@@ -224,7 +238,12 @@ public final class PageElementList extends AbstractList<PageElement> {
         private final int index;
 
         public PageElementWithIndex(String selector, BasePage page, int index) {
-            super(selector, page);
+            super(selector, page, null);
+            this.index = index;
+        }
+
+        public PageElementWithIndex(String selector, BasePage page, int index, List<String> frameSegs) {
+            super(selector, page, frameSegs);
             this.index = index;
         }
 

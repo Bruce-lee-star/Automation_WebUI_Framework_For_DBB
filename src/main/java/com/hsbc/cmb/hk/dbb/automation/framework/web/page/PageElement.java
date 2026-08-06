@@ -5,6 +5,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationE
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
+import java.util.ArrayList;
+import java.util.List;
 import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
@@ -31,9 +33,20 @@ public class PageElement {
     private final String selector;
     private final BasePage page;
     private Supplier<Locator> locatorSupplier;
+    /** iframe 嵌套路径（自顶向下）；非空时在 locator() 中以 frameLocator 逐层下钻，对齐 page.pause 录制。 */
+    private final List<String> frameSegs;
 
     // ==================== Constructor ====================
     public PageElement(String selector, BasePage page) {
+        this(selector, page, null);
+    }
+
+    /**
+     * 带 iframe 嵌套路径的构造（对齐 page.pause() 的 frameLocator 录制）。
+     * frameSegs 非空时，底层 Locator 会以 {@code page.frameLocator(seg).locator(...)} 逐层包裹，
+     * 使 css/xpath 选择器能命中 iframe 内的真实元素。
+     */
+    public PageElement(String selector, BasePage page, List<String> frameSegs) {
         if (selector == null || selector.isBlank()) {
             throw new IllegalArgumentException("Selector cannot be null or blank");
         }
@@ -42,6 +55,7 @@ public class PageElement {
         }
         this.selector = selector;
         this.page = page;
+        this.frameSegs = (frameSegs == null || frameSegs.isEmpty()) ? null : new ArrayList<>(frameSegs);
     }
 
     /**
@@ -66,6 +80,7 @@ public class PageElement {
         this.locatorSupplier = locatorSupplier;
         this.selector = description;
         this.page = page;
+        this.frameSegs = null;
     }
 
     public String getSelector() {
@@ -85,10 +100,19 @@ public class PageElement {
     public Locator locator() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
+        Locator base;
         if (locatorSupplier != null) {
-            return locatorSupplier.get();
+            base = locatorSupplier.get();
+        } else {
+            base = page.locator(selector);
         }
-        return page.locator(selector);
+        // 对齐 page.pause() 的 frameLocator 录制：元素位于 iframe 内时逐层下钻到 iframe 中的真实元素。
+        if (frameSegs != null) {
+            for (String seg : frameSegs) {
+                base = page.getPage().frameLocator(seg).locator(base);
+            }
+        }
+        return base;
     }
 
     public Locator locator(String relativeSelector) {
@@ -803,6 +827,23 @@ public class PageElement {
             locator().uncheck();
             return true;
         }, "uncheck");
+        return this;
+    }
+
+    /**
+     * 按目标状态设置勾选（对齐 page.pause 的 setChecked 语义）：
+     * 当前已满足目标状态时不做任何操作，避免对已勾选元素再次 check / 已未勾选再次 uncheck
+     * 可能造成的误 toggle。封装层读取 isChecked() 做幂等保护后再调用 check/uncheck。
+     *
+     * @param target true=勾选 / false=取消勾选
+     */
+    public PageElement setChecked(boolean target) {
+        Boolean current = isChecked();
+        if (current != null && current == target) return this; // 已满足，无需操作
+        executeWithRetry(() -> {
+            locator().setChecked(target);
+            return true;
+        }, "setChecked");
         return this;
     }
 

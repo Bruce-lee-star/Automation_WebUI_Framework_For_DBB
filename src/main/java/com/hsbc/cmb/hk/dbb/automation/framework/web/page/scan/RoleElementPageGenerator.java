@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NlsNameTranslator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
 import org.slf4j.Logger;
@@ -118,6 +119,7 @@ public final class RoleElementPageGenerator {
             if (e.getDisabled() != null) ann.append(", disabled = RoleElement.State.").append(e.getDisabled().name());
             if (e.getPressed() != null) ann.append(", pressed = RoleElement.State.").append(e.getPressed().name());
             if (e.getExpanded() != null) ann.append(", expanded = RoleElement.State.").append(e.getExpanded().name());
+            appendFrame(ann, e);
             ann.append(")");
             return new GeneratedField(field, ann.toString(), e);
         }
@@ -137,22 +139,34 @@ public final class RoleElementPageGenerator {
             case "placeholder":
             case "label":
                 if (matched) {
-                    String ann = "    @RoleElement(key = \"" + escapeJava(resolvedKey) + "\"";
-                    if (e.isCleaned()) ann += ", exact = false";
-                    ann += ")";
-                    annotation = ann;
+                    StringBuilder ann = new StringBuilder("    @RoleElement(key = \"").append(escapeJava(resolvedKey)).append("\"");
+                    if (e.isCleaned()) ann.append(", exact = false");
+                    appendFrame(ann, e);
+                    ann.append(")");
+                    annotation = ann.toString();
                 } else {
-                    annotation = "    @RoleElement(" + strategy + " = " + toJavaStringLiteral(e.getName()) + ")";
+                    StringBuilder ann = new StringBuilder("    @RoleElement(").append(strategy).append(" = ").append(toJavaStringLiteral(e.getName()));
+                    appendFrame(ann, e);
+                    ann.append(")");
+                    annotation = ann.toString();
                 }
                 break;
-            case "testid":
-                annotation = "    @RoleElement(testId = " + toJavaStringLiteral(e.getName()) + ")";
+            case "testid": {
+                StringBuilder ann = new StringBuilder("    @RoleElement(testId = ").append(toJavaStringLiteral(e.getName()));
+                appendFrame(ann, e);
+                ann.append(")");
+                annotation = ann.toString();
                 break;
+            }
             case "id":
             case "css":
-            default:
-                annotation = "    @Element(" + toJavaStringLiteral(e.getSelector()) + ")";
+            default: {
+                StringBuilder ann = new StringBuilder("    @Element(").append(toJavaStringLiteral(e.getSelector()));
+                appendFrame(ann, e);
+                ann.append(")");
+                annotation = ann.toString();
                 break;
+            }
         }
         return new GeneratedField(field, annotation, e);
     }
@@ -467,8 +481,25 @@ public final class RoleElementPageGenerator {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
+    /**
+     * 对齐 page.pause() 的 frameLocator 录制：若元素位于 iframe 内（framePath 非空），
+     * 向注解追加 {@code frame = {"seg1", "seg2"}}（自顶向下逐层），供运行期 {@link
+     * com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder} 用
+     * {@code page.frameLocator(seg).locator(...)} 逐层下钻。
+     */
+    private static void appendFrame(StringBuilder ann, RoleEntry e) {
+        List<String> fp = e.getFramePath();
+        if (fp == null || fp.isEmpty()) return;
+        ann.append(", frame = {");
+        for (int i = 0; i < fp.size(); i++) {
+            if (i > 0) ann.append(", ");
+            ann.append(toJavaStringLiteral(fp.get(i)));
+        }
+        ann.append("}");
+    }
+
     private static String toFieldNameWithSuffix(String name, String suffix, int idx, Set<String> used) {
-        String base = toIdentifier(name, idx, true);
+        String base = containsCjk(name) ? NlsNameTranslator.toIdentifier(name, false) : toIdentifier(name, idx, true);
         if (base.isEmpty()) {
             base = "element" + idx;
         }
@@ -516,8 +547,17 @@ public final class RoleElementPageGenerator {
         return s;
     }
 
+    /** 判断字符串是否含 CJK（中日韩统一表意文字），用于决定字段名是否走中文→英文翻译。 */
+    private static boolean containsCjk(String s) {
+        if (s == null) return false;
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) >= 0x4E00 && s.charAt(i) <= 0x9FFF) return true;
+        }
+        return false;
+    }
+
     private static String toFieldName(String name, String role, int idx, Set<String> used) {
-        String base = toIdentifier(name, idx, true);          // userName（lowerCamel）
+        String base = containsCjk(name) ? NlsNameTranslator.toIdentifier(name, false) : toIdentifier(name, idx, true); // userName（lowerCamel）
         // camelCase 字段名（首字母小写）：base 已为 lowerCamel，直接拼后缀
         String suffix = ROLE_SUFFIX.getOrDefault(role.toLowerCase(Locale.ROOT), "");
         String candidate = base + suffix;

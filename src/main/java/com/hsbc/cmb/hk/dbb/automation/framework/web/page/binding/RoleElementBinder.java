@@ -179,6 +179,28 @@ public class RoleElementBinder {
                 }
             }
 
+            // 对齐 page.pause() 的 frameLocator 录制：元素位于 iframe 内时，把底层 Locator 依次用
+            // page.frameLocator(seg).locator(...) 包裹（自顶向下逐层下钻），否则在主框架上执行会找不到元素。
+            String[] frames = a.frame();
+            if (frames != null && frames.length > 0) {
+                final Supplier<Locator> baseSupplier = supplier;
+                final List<String> frameSegs = Arrays.asList(frames);
+                StringBuilder fb = new StringBuilder();
+                for (int i = 0; i < frameSegs.size(); i++) {
+                    fb.append(i == 0 ? "" : ".");
+                    fb.append("frameLocator(\"").append(frameSegs.get(i)).append("\")");
+                }
+                desc = desc + " [" + fb + "]";
+                supplier = () -> {
+                    Locator l = baseSupplier.get();
+                    for (String seg : frameSegs) {
+                        // FrameLocator.locator 返回下层 Locator，逐层下钻到 iframe 内的真实元素。
+                        l = self.getPage().frameLocator(seg).locator(l);
+                    }
+                    return l;
+                };
+            }
+
             field.set(self, new PageElement(supplier, desc, self));
         } catch (Exception e) {
             throw new ElementException("Init RoleElement field failed: " + field.getName());

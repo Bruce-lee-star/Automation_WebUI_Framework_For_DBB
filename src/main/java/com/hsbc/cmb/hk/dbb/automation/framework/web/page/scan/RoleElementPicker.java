@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.microsoft.playwright.Frame;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -365,6 +366,11 @@ public final class RoleElementPicker {
                 + " } catch(e){} }"
                 + " window.addEventListener('load', __roleReenable);"
                 + " window.addEventListener('pageshow', __roleReenable);"
+                // 关键修复：已加载的子 frame（如 start() 前就完成导航的 iframe）不会再触发 load/pageshow，
+                // 若仅依赖上面两个监听，门控脚本永不执行 → 该 iframe 内无拾取监听、postMessage 上送不到顶层。
+                // 故若文档当前已处于 readyState!=='loading'（即已加载完成），立即执行一次 __roleReenable 完成挂载；
+                // 尚未加载的文档仍走 load/pageshow 自愈路径，二者不冲突。
+                + " try{ if (document.readyState !== 'loading') { window.__roleReenable(); } }catch(e){}"
                 + " __gi.injected = true;"
                 + " __gi.activeAfter = !!window.__rolePickActive;"
                 + " __gi.hasClick = typeof window.__rolePickClick === 'function';"
@@ -454,6 +460,8 @@ public final class RoleElementPicker {
               if (window.__rolePickDblClick) document.addEventListener('dblclick', window.__rolePickDblClick, true);
               if (window.__rolePickMove) document.addEventListener('mousemove', window.__rolePickMove, true);
               if (window.__rolePickKey) document.addEventListener('keydown', window.__rolePickKey, true);
+              if (window.__rolePickFocus) document.addEventListener('focusin', window.__rolePickFocus, true);
+              if (window.__rolePickScroll) document.addEventListener('scroll', window.__rolePickScroll, true);
               if (window.__rolePickActive) return;   // 已在拾取中：仅保活监听，不重置状态/不重复定义库
               window.__rolePickActive = true;
               window.__scanMode = 'pick';   // 手动拾取模式（点击元素即定位）
@@ -1002,20 +1010,39 @@ public final class RoleElementPicker {
               }
               // 生成最短可用 css 路径（tag + :nth-of-type 链，遇稳定 id 祖先即止）——兜底用，标记需人工确认
               function cssPathOf(el) {
+                // 对齐 page.pause()：shadow DOM 场景下，攀父链遇到 shadowRoot 边界时停在"影子宿主"上，
+                // 不再跨出 shadow（否则会产出跨越 shadow 边界、运行期无效的 css）。得到的路径仅在该 shadow
+                // 树内有效；若整条都无锚点则为纯位置链，由 __isNthOnlyCss 按原规则拦截/标记。
+                function __cssParent(n) {
+                  if (!n) return null;
+                  var p = n.parentElement;
+                  if (p) return p;
+                  // 若在 shadowRoot 内，parentElement 为空；取 shadow host 作为边界锚（不继续向上穿出）。
+                  var rn = null;
+                  try { rn = n.getRootNode ? n.getRootNode() : null; } catch (e) {}
+                  if (rn && rn.host) return rn.host;   // 影子宿主：作为该链在 shadow 边界的停止锚点
+                  return null;
+                }
                 var parts = [], node = el, depth = 0;
                 // 第一趟：与原算法一致，最多 5 层内若遇到稳定 #id 则用作锚点并停止。
+                // shadow DOM 边界处理：元素在 shadow 内时 parent 为影子宿主（host）；host 属于外层树，
+                // 下一轮其 __cssParent 取外层 parentElement 继续向上，故不在此"break"，而是把 host 标签
+                // 作为路径普通一段带入（与内部元素标签并列），既保留 shadow 内目标元素自身的 tag，
+                // 又通过 host 自然衔接外层祖先，产出的 css 形如 "host > #inner-id"（仍仅在该 shadow 树内有效）。
                 while (node && node.nodeType === 1 && depth++ < 5) {
                   var idv = node.getAttribute && node.getAttribute('id');
                   if (isStableId(idv)) { parts.unshift('#' + idv); break; }
                   var sel = node.tagName.toLowerCase();
-                  var parent = node.parentElement;
-                  if (parent) {
+                  var parent = __cssParent(node);
+                  if (parent && parent !== (node.getRootNode ? node.getRootNode().host : null)) {
+                    // 普通父节点：计算同级 nth-of-type（与 Playwright css 引擎一致）
                     var same = [];
                     for (var c = parent.firstElementChild; c; c = c.nextElementSibling) {
                       if (c.tagName === node.tagName) same.push(c);
                     }
                     if (same.length > 1) sel += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
                   }
+                  // 若 parent 是 shadow host：不额外处理，sel 已是 node 自身标签（已含 nth），下一步 node=host 进入外层树。
                   parts.unshift(sel);
                   node = parent;
                 }
@@ -1209,9 +1236,60 @@ public final class RoleElementPicker {
               // 每次 syncPanelToBrowser / 每次点选会话前调用 window.__clearMatchCache() 清空。
               window.__matchingCache = window.__matchingCache || {};
               function __clearMatchCache() { try { window.__matchingCache = {}; } catch (e) {} }
+              // 对齐 page.pause()：穿透 open shadow DOM 收集全页元素（Web Components 场景）。
+              // 深度优先遍历 document 与各级 shadowRoot，返回扁平元素数组。
+              function __allElementsInDoc(root) {
+                var out = [];
+                (function walk(node) {
+                  if (!node) return;
+                  var kids = (node.querySelectorAll ? node.querySelectorAll('*') : null);
+                  if (!kids) return;
+                  for (var i = 0; i < kids.length; i++) {
+                    out.push(kids[i]);
+                    var sr = null;
+                    try { sr = kids[i].shadowRoot; } catch (e) {}
+                    if (sr && (sr.mode === 'open' || sr.mode == null)) walk(sr);
+                  }
+                })(root);
+                return out;
+              }
+              function __allAttrNodesInDoc(root, attr) {
+                var out = [];
+                (function walk(node) {
+                  if (!node) return;
+                  var local = null;
+                  try { local = node.querySelectorAll('[' + attr + ']'); } catch (e) {}
+                  if (local) for (var i = 0; i < local.length; i++) out.push(local[i]);
+                  var kids = (node.querySelectorAll ? node.querySelectorAll('*') : null);
+                  if (!kids) return;
+                  for (var j = 0; j < kids.length; j++) {
+                    var sr = null;
+                    try { sr = kids[j].shadowRoot; } catch (e) {}
+                    if (sr && (sr.mode === 'open' || sr.mode == null)) walk(sr);
+                  }
+                })(root);
+                return out;
+              }
+              function __allFormNodesInDoc(root) {
+                var out = [];
+                (function walk(node) {
+                  if (!node) return;
+                  var local = null;
+                  try { local = node.querySelectorAll('input,textarea,select'); } catch (e) {}
+                  if (local) for (var i = 0; i < local.length; i++) out.push(local[i]);
+                  var kids = (node.querySelectorAll ? node.querySelectorAll('*') : null);
+                  if (!kids) return;
+                  for (var j = 0; j < kids.length; j++) {
+                    var sr = null;
+                    try { sr = kids[j].shadowRoot; } catch (e) {}
+                    if (sr && (sr.mode === 'open' || sr.mode == null)) walk(sr);
+                  }
+                })(root);
+                return out;
+              }
               var __rawMatchingElements = function(pick) {
                 if (!pick) return [];
-                var all = document.querySelectorAll('*'), out = [], i, x;
+                var all = __allElementsInDoc(document), out = [], i, x;
                 if (pick.strategy === 'role') {
                   var role = (pick.role || '').toLowerCase();
                   var tgt = __normSafe(pick.name);
@@ -1247,7 +1325,7 @@ public final class RoleElementPicker {
                 else if (pick.strategy === 'testid') attr = pick.attr || null;
                 if (attr) {
                   var want = (pick.value != null ? pick.value : pick.name);
-                  var nodes = document.querySelectorAll('[' + attr + ']');
+                  var nodes = __allAttrNodesInDoc(document, attr);
                   for (i = 0; i < nodes.length; i++) {
                     if ((nodes[i].getAttribute(attr) || '').trim() === want) out.push(nodes[i]);
                   }
@@ -1255,7 +1333,7 @@ public final class RoleElementPicker {
                 }
                 if (pick.strategy === 'label') {
                   var t3 = __normSafe(pick.name);
-                  var forms = document.querySelectorAll('input,textarea,select');
+                  var forms = __allFormNodesInDoc(document);
                   for (i = 0; i < forms.length; i++) {
                     var lbls = forms[i].labels;
                     if (lbls && lbls.length && __normSafe(lbls[0].textContent).indexOf(t3) !== -1) out.push(forms[i]);
@@ -1288,6 +1366,45 @@ public final class RoleElementPicker {
               // 两个签名被 Java 侧当成不同 key，同一元素每扫一轮就多存一份（实测重复 4~5 次）。
               // 统一赋值后签名恒定为 'role:link:X#0'，既不再重复，又保留"同 role 同 name 的第 2 个
               // 元素（#1）能被独立拾取"的能力——这正是 page.pause() 的语义。
+              // 对齐 page.pause() 的 getByRole 状态过滤：把元素当前可访问状态一并带出，
+              // 供 @RoleElement 生成 disabled=/pressed=/expanded=/checked= 精确过滤。
+              // 抽出为独立函数，所有定位策略（role/text/...）都经 __attachIndex 统一调用，
+              // 修复"role 策略走 __attachIndex 直出、跳过 done() 导致状态/iframe 路径全部丢失"的问题。
+              function __enrichState(pick, el) {
+                if (!pick || !el) return pick;
+                try {
+                  // disabled：原生 disabled 属性或 aria-disabled（button/input/... 通用）
+                  if (el.hasAttribute && el.hasAttribute('aria-disabled')) pick.disabled = (el.getAttribute('aria-disabled') === 'true') ? 'YES' : 'NO';
+                  else if (typeof el.disabled === 'boolean' && el.disabled) pick.disabled = 'YES';
+                } catch (e) {}
+                try {
+                  if (el.hasAttribute && el.hasAttribute('aria-pressed')) {
+                    var pv = el.getAttribute('aria-pressed');
+                    pick.pressed = (pv === 'true' || pv === 'mixed') ? 'YES' : 'NO';
+                  }
+                } catch (e) {}
+                try {
+                  if (el.hasAttribute && el.hasAttribute('aria-expanded')) pick.expanded = (el.getAttribute('aria-expanded') === 'true') ? 'YES' : 'NO';
+                } catch (e) {}
+                try {
+                  var pRole = (pick.role || '').toLowerCase();
+                  if (pRole === 'checkbox' || pRole === 'radio' || pRole === 'switch'
+                      || pRole === 'menuitemcheckbox' || pRole === 'menuitemradio' || pRole === 'treeitem') {
+                    var cb = el;
+                    if (cb.type === 'checkbox' || cb.type === 'radio') pick.checked = !!cb.checked;
+                    else if (cb.hasAttribute && cb.hasAttribute('aria-checked')) {
+                      var _av = cb.getAttribute('aria-checked');
+                      pick.checked = (_av === 'true' || _av === 'mixed');
+                    }
+                  }
+                } catch (e) {}
+                // iframe 嵌套路径：仅当元素确实位于 iframe 内时写入，供 Java 侧生成 frameLocator。
+                try {
+                  var fp = __framePathOf();
+                  if (fp && fp.length) pick.framePath = fp;
+                } catch (e) {}
+                return pick;
+              }
               function __attachIndex(pick, el) {
                 try {
                   var ms = __matchingElements(pick);
@@ -1295,6 +1412,8 @@ public final class RoleElementPicker {
                   if (idx >= 0) { pick.count = ms.length; pick.index = idx; }
                   else if (ms.length <= 1) { pick.count = 1; pick.index = 0; }
                 } catch (e) {}
+                // 统一在此做状态/iframe 路径富化（所有策略都会经过），保证 role 策略也不再漏掉。
+                try { __enrichState(pick, el); } catch (e) {}
                 return pick;
               }
               window.__computePick = function(t) {
@@ -1318,29 +1437,56 @@ public final class RoleElementPicker {
                 }
                 window.__lastPickEl = el;
                 var tag = (el.tagName || '').toLowerCase();
+                // 对齐 page.pause() 的 frameLocator 录制：计算元素所在 iframe 的嵌套路径（自顶向下）。
+                // 每帧优先取 name / id / 稳定 css 选择器；主框架（window.self === window.top）返回空数组。
+                function __framePathOf() {
+                  var path = [];
+                  try {
+                    var w = window;
+                    while (w && w !== w.top) {
+                      // 取当前层 iframe 的选择器：优先 frameElement 的 name / id，
+                      // 若访问 frameElement 受限（如 file:// 下跨源 SecurityError）则退化为当前 frame 的 window.name。
+                      var sel = null;
+                      try {
+                        var fe = w.frameElement;
+                        if (fe) {
+                          var nm = fe.getAttribute && fe.getAttribute('name');
+                          if (nm && nm.trim()) sel = 'iframe[name="' + nm.trim() + '"]';
+                          if (!sel) {
+                            var fid = fe.getAttribute && fe.getAttribute('id');
+                            if (isStableId(fid)) sel = '#' + fid;
+                          }
+                          if (!sel) {
+                            var p = fe.parentElement;
+                            var s = 'iframe';
+                            if (p) {
+                              var same = [];
+                              for (var c = p.firstElementChild; c; c = c.nextElementSibling) {
+                                if (c.tagName === fe.tagName) same.push(c);
+                              }
+                              if (same.length > 1) s += ':nth-of-type(' + (same.indexOf(fe) + 1) + ')';
+                            }
+                            sel = s;
+                          }
+                        }
+                      } catch (feErr) { /* frameElement 访问受限，下面用 window.name 兜底 */ }
+                      if (!sel) {
+                        // 退化：用 frame 自身的 window.name（file:// / 跨源下仍可访问，不受 frameElement SecurityError 限制）
+                        try { if (w.name && w.name.trim()) sel = 'iframe[name="' + w.name.trim() + '"]'; } catch (_) {}
+                      }
+                      if (!sel) sel = 'iframe';
+                      path.unshift(sel);
+                      w = w.parent;
+                    }
+                  } catch (e) { path = []; }
+                  return path;
+                }
                 function done(o) {
                   o.tag = tag;
                   o.text = ownVisibleText(el).slice(0, 120);
-                  // 对齐 page.pause() 的 getByRole 状态过滤属性：把元素当前的可访问状态一并带出，
-                  // 供 @RoleElement 生成 disabled=/pressed=/expanded= 精确过滤（与 Inspector 完全一致）。
-                  // 仅当元素确有该 ARIA 状态属性时才写入（三态字符串，映射 RoleElement.State：YES/NO），
-                  // 否则留空 → 生成端判定为"不限"，不加过滤，匹配任意状态元素。
-                  // disabled：原生 disabled 属性或 aria-disabled（button/input/... 通用）
-                  try {
-                    if (el.hasAttribute && el.hasAttribute('aria-disabled')) o.disabled = (el.getAttribute('aria-disabled') === 'true') ? 'YES' : 'NO';
-                    else if (typeof el.disabled === 'boolean' && el.disabled) o.disabled = 'YES';
-                  } catch (e) {}
-                  // pressed：toggle button（aria-pressed=true/mixed→YES，false→NO）
-                  try {
-                    if (el.hasAttribute && el.hasAttribute('aria-pressed')) {
-                      var pv = el.getAttribute('aria-pressed');
-                      o.pressed = (pv === 'true' || pv === 'mixed') ? 'YES' : 'NO';
-                    }
-                  } catch (e) {}
-                  // expanded：可展开元素（aria-expanded=true→YES，false→NO）
-                  try {
-                    if (el.hasAttribute && el.hasAttribute('aria-expanded')) o.expanded = (el.getAttribute('aria-expanded') === 'true') ? 'YES' : 'NO';
-                  } catch (e) {}
+                  // 状态/iframe 路径富化统一由 __enrichState 完成（__attachIndex 与此处共用），
+                  // 保证所有策略（含 role 直出路径）都能带上 ARIA 状态、checked、framePath 等。
+                  try { __enrichState(o, el); } catch (e) {}
                   // 可见文本类语义策略（text/altText/title/placeholder/label）做 NLS 反查：
                   // 命中则仅带 key（生成 @RoleElement(key=...)），未命中则字面文本。
                   // 注意：key-only 在运行时统一按 getByText(key 解析) 兜底（用户已接受该降级）。
@@ -1416,7 +1562,11 @@ public final class RoleElementPicker {
                   var alt = el.getAttribute('alt');
                   if (alt && alt.trim()) return done({ strategy:'altText', attr:'alt', value:alt.trim(), name:alt.trim() });
                 }
-                // 6. 可见文本（180；pause 截断阈值 80 字符）
+                // 6. 可见文本（180；对齐 page.pause 的 getByText 稳定性取舍）：
+                //    · 文案 ≤80 字符：精确匹配（exact:true），语义清晰且稳定。
+                //    · 长文案（>80）：跳过 text 策略，长文本作定位锚点极易随文案/排版变化而失效，
+                //      让位给更稳定的 title / id / css（对齐 page.pause 的"优先最短稳定选择器"原则），
+                //      从源头避免生成脆弱、易碎的整段文本定位器。
                 var ot = ownVisibleText(el);
                 if (ot && ot.length <= 80) return done({ strategy:'text', name:ot, exact:true });
                 // 7. title（200）
@@ -1642,6 +1792,12 @@ public final class RoleElementPicker {
                   window.__activeInputEl = null;
                 }
                 pick.hover = !!isHover;
+                // 对齐 page.pause() 的 source.dragTo(target)：拖拽手势（mousedown 源 → mouseup 目标）在 mouseup
+                // 时触发本函数记录「源」元素；此时 window.__dragSrcEl/__dragDstKey 已由拖拽监听置好，
+                // 把目标元素的定位签名挂到源 pick 上，生成端据 keyToField 反查目标字段并输出 dragTo。
+                if (window.__dragSrcEl && el === window.__dragSrcEl && window.__dragDstKey) {
+                  pick.dragDstKey = window.__dragDstKey;
+                }
                 // —— 下拉选择 / 复选框 状态捕获（对齐 page.pause() 的 selectOption 与 check/uncheck 信号）——
                 // combobox/listbox（含原生 <select> 与自定义列表）：拾取时读取当前选中项，
                 // 生成 step 时输出 selectByVisibleText("选项文本")（优先）/ selectByValue(...)。
@@ -1685,12 +1841,21 @@ public final class RoleElementPicker {
                   }
                 }
                 // checkbox：记录当前勾选状态，生成 step 时按已勾选走 check()、未勾选走 uncheck()（对齐 codegen）。
-                if (pRole === 'checkbox') {
-                  try {
-                    var cb = pick._el;
-                    if (cb) pick.checked = !!cb.checked;
-                  } catch (e) {}
-                }
+                // 修复：原 var cb = pick._el 中 pick._el 从未被赋值（真实点击元素挂在 el 上，
+                // 其副本即 window.__lastPickEl），导致原生 checkbox/radio 的 checked 始终为 undefined。
+                // 改用点击元素的真实引用 el；并补充 ARIA checkbox/switch 的 aria-checked 采集。
+                try {
+                  if (pRole === 'checkbox' || pRole === 'radio' || pRole === 'switch'
+                      || pRole === 'menuitemcheckbox' || pRole === 'menuitemradio' || pRole === 'treeitem') {
+                    var cb = el;
+                    if (cb.type === 'checkbox' || cb.type === 'radio') {
+                      pick.checked = !!cb.checked;
+                    } else if (cb.hasAttribute('aria-checked')) {
+                      var _av = cb.getAttribute('aria-checked');
+                      pick.checked = (_av === 'true' || _av === 'mixed');
+                    }
+                  }
+                } catch (e) {}
                 var sig = window.__pickSig(pick);
                 var key = window.__sigKey(pick);
                 var dup = key && window.__rolePickSigs[key];
@@ -1787,10 +1952,13 @@ public final class RoleElementPicker {
                   try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch(_){}
                   // 跨 frame 同步：点击若发生在 iframe 内，顶层主框架可见面板读的是主框架 window.__rolePicks，
                   // 而本 frame 把 pick push 进了自己的 window.__rolePicks（主框架读不到），表现为"内存态增长、面板空白"。
-                  // 故把 pick postMessage 给父窗口，由顶层面板监听聚合进其 window.__rolePicks 并渲染。
+                  // 故把 pick postMessage 给顶层窗口（window.top），由顶层面板监听聚合进其 window.__rolePicks 并渲染。
+                  // 注意必须用 window.top 而非 window.parent：中间层 iframe 自身没有 message 监听器（面板仅顶层构建），
+                  // 发给 window.parent（而非 window.top）：由每一层 frame 的消息监听逐层向父转发（见 message 监听的
+                  // 向上中继逻辑），即使跨多级嵌套 / Playwright 下 window.top 直达投递异常，pick 也能可靠上送顶层。
                   // 纯前端同步，不依赖 Java 主循环轮询（postMessage 不受同源限制，跨源 iframe 同样生效）。
                   if (window.self !== window.top) {
-                    try { window.parent.postMessage({ __rolePickMsg: true, pick: pick }, '*'); } catch (e) {}
+                    try { window.parent.postMessage({ __rolePickMsg: true, pick: pick, __fromFrame: true }, '*'); } catch (e) {}
                   }
                 }
                 return pick;
@@ -1857,14 +2025,16 @@ public final class RoleElementPicker {
                 try {
                   var els;
                   if (!isRegion) {
-                    els = document.querySelectorAll('*');
+                    // 穿透 shadow DOM 收集全文档元素（含各级 open shadowRoot）
+                    els = __allElementsInDoc(document);
                   } else {
                     // 多根：先把每棵子树的元素收集进一个数组（querySelectorAll 返回的是各根并列的实时集合，
                     // 用数组快照避免遍历中 DOM 变动影响；重复元素由 __recordPick 内部去重兜底）。
+                    // 同时穿透每棵子树内的 open shadowRoot。
                     els = [];
                     for (var ri = 0; ri < roots.length; ri++) {
-                      var nodeList = roots[ri].querySelectorAll('*');
-                      for (var ni = 0; ni < nodeList.length; ni++) els.push(nodeList[ni]);
+                      var sub = __allElementsInDoc(roots[ri]);
+                      for (var ni = 0; ni < sub.length; ni++) els.push(sub[ni]);
                     }
                   }
                   for (var i = 0; i < els.length; i++) {
@@ -2224,7 +2394,10 @@ public final class RoleElementPicker {
                 // 诊断：记录最近一次点击到达 handler 的时间与当时激活态（供 Java 侧回读，确认点击是否被监听捕获）。
                 window.__lastClickTs = Date.now();
                 window.__lastClickActive = !!window.__rolePickActive;
-                var t = event.target;
+                // 对齐 page.pause()：用 composedPath()[0] 取代 event.target，穿透 open shadow DOM，
+                // 点击 Web Component 内部按钮也能拿到真实目标元素（event.target 在 shadow 边界会停在宿主上）。
+                var t = (typeof event.composedPath === 'function' && event.composedPath().length)
+                  ? event.composedPath()[0] : event.target;
                 if (t && t.closest && t.closest('#__rolePanel, #__roleCodeOverlay')) {
                   return;
                 }
@@ -2306,11 +2479,81 @@ public final class RoleElementPicker {
                 try { window.__persistNow(); } catch (e) {}
               };
               window.__rolePickKey = function(event) {
-                if (event.key === 'Escape') { window.__pickDone = true; }
+                if (event.key === 'Escape') { window.__pickDone = true; return; }
+                // 对齐 page.pause() 的 press 录制：输入框聚焦态下按的"实质按键"（Enter/Tab/Escape 之外的
+                // 非字符键，以及方向键/功能键）记到最近录入的输入框 pick 上，生成 step 输出 locator.press("Enter")。
+                // 纯字符键（a/b/1 等）不记——已由 value 走 fill/type，无需 press。
+                if (!window.__rolePickActive) return;
+                var inp = window.__activeInputPick;
+                if (!inp || !window.__lastPickEl || !isEditable(window.__lastPickEl)) return;
+                var k = event.key;
+                if (!k) return;
+                // 字符键（单字符、可打印）→ 忽略；只收录命名按键与组合修饰键
+                var named = /^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|Space|F\\d+|Shift|Control|Alt|Meta)$/.test(k);
+                if (!named) return;
+                // 组合键（如 Ctrl+C）只录修饰部分会在 press 里以 "Control+C" 表达；此处仅记录主键，
+                // 生成端按需拼接。简单起见记录原始 key 串（已含 Shift+ 等，page.pause 即如此）。
+                inp.pressKey = k;
+                try { if (typeof window.__sigKey === 'function') inp._sigKey = window.__sigKey(inp); } catch (_) {}
+                try { if (window.__renderPicks) window.__renderPicks(); } catch (_) {}
               };
+              // 对齐 page.pause() 的键盘可达性：Tab 聚焦到元素后（focusin），在拾取/hover 模式下
+              // 记录一次"键盘拾取"，使纯键盘可达、hover 不出现的元素也能被捕获（如 hover 才显形/被遮挡的控件）。
+              window.__rolePickFocus = function(event) {
+                if (!window.__rolePickActive) return;
+                var el = event.target;
+                if (!el || el === window || el === document) return;
+                if (el.closest && el.closest('#__rolePanel, #__roleCodeOverlay')) return;
+                try { window.__recordPick(el, true); } catch (e) {}
+              };
+              // 滚动时重定位 hover 高亮框（__hoverBox 为 position:fixed，否则滚动后高亮框会漂移残留）。
+              window.__rolePickScroll = function() {
+                try { if (window.__lastHoverTarget) __showHoverBox(window.__lastHoverTarget); } catch (e) {}
+              };
+              // ===== 拖拽手势录制（对齐 page.pause() 的 source.dragTo(target)）=====
+              // mousedown 记录「源」元素与按下坐标；mousemove 累积位移；mouseup 时若源≠目标且位移超阈值，
+              // 则把目标元素的定位签名挂在源 pick 上并触发记录（源 pick 进入拾取集，目标元素也一并 recordPick），
+              // 生成端据 keyToField 反查目标字段名输出 srcField.dragTo(dstField)。
+              window.__dragSrcEl = null; window.__dragStartX = 0; window.__dragStartY = 0;
+              window.__dragMoved = 0; window.__dragDstKey = null;
+              window.__rolePickDragDown = function(e) {
+                if (!window.__rolePickActive) return;
+                var el = resolveElement(e.target);
+                if (!el || el === window || el === document) { window.__dragSrcEl = null; return; }
+                window.__dragSrcEl = resolveLabel(el);
+                window.__dragStartX = e.clientX; window.__dragStartY = e.clientY;
+                window.__dragMoved = 0; window.__dragDstKey = null;
+              };
+              window.__rolePickDragUp = function(e) {
+                if (!window.__rolePickActive || !window.__dragSrcEl) return;
+                var srcEl = window.__dragSrcEl;
+                var dstEl = resolveLabel(resolveElement(e.target));
+                window.__dragSrcEl = null;
+                if (!dstEl || dstEl === srcEl) return; // 未跨元素，非拖拽
+                if (window.__dragMoved < 12) return;  // 位移过小，视为普通点击
+                try {
+                  var dstPick = computePick(dstEl);
+                  if (!dstPick || !dstPick.key) return;
+                  window.__dragDstKey = dstPick.key;
+                  // 记录「源」（带 dragDstKey 注入），再记录「目标」本身（若尚未拾取）。
+                  try { window.__recordPick(srcEl, true); } catch (_) {}
+                  window.__dragDstKey = null;
+                  try { window.__recordPick(dstEl, true); } catch (_) {}
+                } catch (_) {}
+              };
+              window.__rolePickDragMove = function(e) {
+                if (!window.__dragSrcEl) return;
+                window.__dragMoved += Math.abs(e.clientX - window.__dragStartX) + Math.abs(e.clientY - window.__dragStartY);
+                window.__dragStartX = e.clientX; window.__dragStartY = e.clientY;
+              };
+              document.addEventListener('mousedown', window.__rolePickDragDown, true);
+              document.addEventListener('mousemove', window.__rolePickDragMove, true);
+              document.addEventListener('mouseup', window.__rolePickDragUp, true);
               document.addEventListener('click', window.__rolePickClick, true);
               document.addEventListener('dblclick', window.__rolePickDblClick, true);
               document.addEventListener('keydown', window.__rolePickKey, true);
+              document.addEventListener('focusin', window.__rolePickFocus, true);
+              document.addEventListener('scroll', window.__rolePickScroll, true);
               // ===== 诊断：额外鼠标事件监听（仅记录、不拦截、不影响拾取）=====
               // 排查"刷新后点击无反应 / 点击卡顿"：记录 mousedown/up/dblclick/contextmenu 是否真到达 document。
               // 双写：window.__roleMouseLog 环形缓冲（导航后可由 Java 经 page.evaluate 回读）
@@ -2370,6 +2613,8 @@ public final class RoleElementPicker {
               document.removeEventListener('click', window.__rolePickClick, true);
               document.removeEventListener('mousemove', window.__rolePickMove, true);
               document.removeEventListener('keydown', window.__rolePickKey, true);
+              document.removeEventListener('focusin', window.__rolePickFocus, true);
+              document.removeEventListener('scroll', window.__rolePickScroll, true);
               window.__rolePickActive = false;
               // 停止时也清整页扫描态，避免异常路径下 scan/region 按钮卡死置灰。
               window.__pageScanning = false;
@@ -2522,6 +2767,19 @@ public final class RoleElementPicker {
         try {
           var d = ev.data;
           if (!d || d.__rolePickMsg !== true || !d.pick) return;
+          // 安全加固（本地开发工具场景）：排除顶层自身的"自环"消息（理论上不会发生），
+          // 其余带 __rolePickMsg 标记的 pick 一律接纳——包括 srcdoc/跨源子 frame。
+          // 注：srcdoc iframe 在某些情况下 ev.source 为 null/非标准 Window，若强校验 ev.source.postMessage
+          // 反而会误杀合法 iframe 拾取（实测 postMessage 已发出但被守卫丢弃）。消息真伪以 __rolePickMsg 标记为准。
+          if (window.self === window.top && ev.source === window.self) {
+            return;   // 顶层自身发给自己：拒绝（避免自环）
+          }
+          // 向上中继：非顶层 frame 收到子 frame 的 pick 后，继续向自己的父窗口转发，
+          // 直到顶层（顶层才真正聚合进主框架 window.__rolePicks）。这样即使跨多级嵌套 iframe /
+          // Playwright 下 window.top 直达投递异常的场景，pick 也能逐层可靠上送。
+          if (window.self !== window.top) {
+            try { window.parent.postMessage(d, '*'); } catch (e) {}
+          }
           window.__rolePicks = window.__rolePicks || [];
           window.__rolePickSigs = window.__rolePickSigs || {};
           var p = d.pick;
@@ -2535,6 +2793,10 @@ public final class RoleElementPicker {
           if (window.__renderPicks) window.__renderPicks();
         } catch (e) {}
       });
+      // 面板 UI 仅顶层文档渲染：iframe / 嵌套 frame 内不应再构建面板（避免面板被嵌入子 frame）。
+      // 非顶层 frame 到此为止——上面注册的 message 监听器已能把子 frame 的 pick 逐层上送顶层聚合，
+      // 但不再调用 build() 建面板，保证整页只有一个可见面板（顶层）。
+      if (window.self !== window.top) return;
       function build() {
       var old = document.getElementById('__rolePanel');
       if (old) old.remove();
@@ -3812,6 +4074,12 @@ public final class RoleElementPicker {
             log.info("[picker] 检测到 CI 运行环境，跳过拾取模式（start）。");
             return;
         }
+        // 关键修复：将门控拾取脚本注册到 context 级 addInitScript（仅注册一次），使【之后创建的所有文档/
+        // iframe/弹窗】都自动注入 nls 反向表并（会话开关打开时）重挂拾取监听——包括本次 start() 之前已加载、
+        // 但导航后才出现的 iframe。若 start() 不注册，仅对顶层文档 page.evaluate 注入，iframe 因未拿到脚本
+        // 而无点击监听，表现为"iframe 内点击拾取不到 / postMessage 上送不到顶层"。
+        // 注意 openPanel/followPage 也会调用本注册，这里幂等（同 context 同 nls 跳过），重复调用安全。
+        try { registerContextInitScripts(page.context(), nlsReverseJson); } catch (Exception ignore) {}
         // 兼容两种格式：新格式 {exact, templates} 拆开注入；旧格式（纯精确表）整体作为 exact。
         // 企业级优化：把"会话开关置位 + nls 反向表注入 + START_SCRIPT 开启监听"合并进同一次 page.evaluate，
         // 点击"开始拾取"只付出 1 次 Java↔浏览器往返（原来 2 次串行），按钮即时响应。
@@ -3834,6 +4102,8 @@ public final class RoleElementPicker {
                 + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
                 + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
                 + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
+                + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
+                + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
                 + " try{ window.__rolePickerLib = false; }catch(e){}"
                 + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
                 + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
@@ -3852,6 +4122,26 @@ public final class RoleElementPicker {
                 + " window.__rolePickRoot = " + (rootSelector == null ? "null" : ("'" + rootSelector.replace("'", "\\'") + "'")) + ";"
                 + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}");
         log.info("[picker] 拾取模式已开启：在浏览器点击元素即可拾取，按 ESC 结束。");
+        // 关键修复：已加载的子 iframe（srcdoc/同域）在 start() 调用前就已触发过 load，
+        // 彼时会话开关尚未置位，其门控 START 未挂拾取监听 → iframe 内点击无法被拾取、postMessage 也收不到。
+        // 故 start() 置位开关后，主动把拾取监听重挂到当前所有已存在的子 frame（同源可 evaluate；
+        // 跨源 frame 因安全限制无法注入，按设计跳过——跨源 iframe 内的元素本就不经主框架拾取）。
+        try {
+            for (Frame f : page.frames()) {
+                if (f == page.mainFrame()) continue;
+                // 已加载的子 frame 在 start() 之前就触发过 load（彼时会话开关尚未置位，门控脚本未挂监听），
+                // 其 window 上既无 __roleReenable 也无完整库。直接在该 frame 内重跑门控初始化脚本：
+                // 脚本会定义 __roleGatedStart/__roleReenable 等入口，并因会话开关现已 ON 而立即重挂拾取监听与面板，
+                // 使 iframe 内点击可被拾取、postMessage 上送顶层（修复"iframe 在 start 前已加载导致拾取不到"）。
+                // 跨源 frame 受安全限制 evaluate 会抛异常，按设计跳过（其内元素不经主框架拾取）。
+                try {
+                    f.evaluate(gatedPickerInitScript(nlsReverseJson));
+                    log.info("[picker][start] 子 frame '{}' 注入门控脚本成功（iframe 拾取已可用）", f.name());
+                } catch (Exception ex) {
+                    log.warn("[picker][start] 子 frame '{}' 注入失败（跨源/受限）：{}", f.name(), ex.getMessage());
+                }
+            }
+        } catch (Exception ignore) {}
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
             String d = page.evaluate("(function(){ return JSON.stringify({"
@@ -3980,35 +4270,91 @@ public final class RoleElementPicker {
     @SuppressWarnings("unchecked")
     public static List<RoleEntry> getEntries(Page page) {
         List<RoleEntry> result = new ArrayList<>();
-        // 读取前先在浏览器侧按权威键 __mergeKey 压缩一次：window.__rolePicks 可能因 start() 重注入
-        // 清空 sigs 与页面恢复/同步交错而残留整组重复（同组元素重复多份）。此处兜底去重，
-        // 保证 pick() 这条"拾取并生成"主路径拿到的元素不重复——与 readPickSnapshot / parsePickSnapshot 一致。
-        Object raw = page.evaluate("(function(){"
-                + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
-                + "   if (!p) return ''; if (p._sigKey) return p._sigKey;"
-                + "   if (typeof window.__sigKey === 'function') return window.__sigKey(p);"
-                + "   var pk = p._pageClass || ''; if (!pk) { try { pk = (location.origin||'') + (location.pathname||''); } catch(e){} }"
-                + "   return JSON.stringify([p._sig || '', pk]);"
-                + " }catch(e){ return ''; } }; }"
-                + " var seen = {}; var out = [];"
-                + " (window.__rolePicks||[]).forEach(function(p){ try{ var k = window.__mergeKey(p);"
-                + "   if (!k) { out.push(p); return; } if (seen[k]) return; seen[k]=true; out.push(p);"
-                + " }catch(e){ out.push(p); } }); return out; })()");
-        if (raw instanceof List) {
-            java.util.Set<String> seenKeys = new java.util.HashSet<>();
-            for (Object o : (List<Object>) raw) {
-                if (o instanceof Map) {
-                    Map<Object, Object> m = (Map<Object, Object>) o;
-                    RoleEntry e = parsePick(m);
-                    if (e == null) continue;
-                    // Java 侧二次兜底：与 parsePickSnapshot 同口径。
-                    String dk = pickDedupKey(m, e);
-                    if (!dk.isEmpty() && !seenKeys.add(dk)) continue;
-                    result.add(e);
+        // 跨 frame 聚合：每个 frame（含主框架与各层 iframe）都持有自己的 window.__rolePicks，
+        // 直接在 Java 侧遍历 page.frames() 逐帧读取并合并（不再依赖 iframe→父窗口 postMessage 中继，
+        // 该机制在自动化点击场景下面父 message 事件不触发，不可靠）。
+        // framePath（iframe 嵌套路径）在 Java 侧用 Playwright 的 Frame.frameElement() 计算——
+        // 浏览器侧 window.frameElement 在跨源/ file:// 场景下访问受限（SecurityError），Java 侧从父上下文
+        // 取 frameElement 则始终可访问，稳定可靠。浏览器侧若已带 framePath 则优先沿用，否则以 Java 侧补算。
+        java.util.Set<String> seenKeys = new java.util.HashSet<>();
+        List<Frame> allFrames;
+        try { allFrames = page.frames(); } catch (Exception e) { allFrames = new ArrayList<>(); }
+        for (Frame fr : allFrames) {
+            List<String> fp = computeFramePath(page, fr);   // 自顶向下的 iframe 选择器链（主框架为空）
+            Object raw;
+            try {
+                raw = fr.evaluate("(function(){"
+                        + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
+                        + "   if (!p) return ''; if (p._sigKey) return p._sigKey;"
+                        + "   if (typeof window.__sigKey === 'function') return window.__sigKey(p);"
+                        + "   var pk = p._pageClass || ''; if (!pk) { try { pk = (location.origin||'') + (location.pathname||''); } catch(e){} }"
+                        + "   return JSON.stringify([p._sig || '', pk]);"
+                        + " }catch(e){ return ''; } }; }"
+                        + " var seen = {}; var out = [];"
+                        + " (window.__rolePicks||[]).forEach(function(p){ try{ var k = window.__mergeKey(p);"
+                        + "   if (!k) { out.push(p); return; } if (seen[k]) return; seen[k]=true; out.push(p);"
+                        + " }catch(e){ out.push(p); } }); return out; })()");
+            } catch (Exception ignore) { continue; }   // 跨源 frame 读取受限，跳过
+            if (raw instanceof List) {
+                for (Object o : (List<Object>) raw) {
+                    if (o instanceof Map) {
+                        Map<Object, Object> m = (Map<Object, Object>) o;
+                        RoleEntry e = parsePick(m);
+                        if (e == null) continue;
+                        // Java 侧二次兜底：与 parsePickSnapshot 同口径。
+                        String dk = pickDedupKey(m, e);
+                        if (!dk.isEmpty() && !seenKeys.add(dk)) continue;
+                        // iframe 嵌套路径：浏览器侧已带则沿用，否则以 Java 侧 frameElement 链补算。
+                        if (e.getFramePath() == null && fp != null && !fp.isEmpty()) {
+                            e.setFramePath(new ArrayList<>(computeFramePath(page, fr)));
+                        }
+                        result.add(e);
+                    }
                 }
             }
         }
         return result;
+    }
+
+    /** Java 侧判定 id 是否可作为稳定定位锚（对应浏览器侧 isStableId：非纯自动生成序号即可）。 */
+    private static boolean isStableIdJava(String id) {
+        if (id == null || id.trim().isEmpty()) return false;
+        String s = id.trim();
+        // 纯数字 / 以数字结尾的自动生成 id（如 "id-1"、"auto123"）视为不稳定，其余视为稳定。
+        if (s.matches(".*\\d+$") && !s.matches(".*[a-zA-Z].*")) return false;
+        return true;
+    }
+
+    /** 计算某 frame 的嵌套路径（自顶向下），主框架返回 null；优先 name / 稳定 id / 退化为 iframe:nth-of-type。
+     *  主框架判定改用 page.mainFrame()（file:// 等场景下 iframe 的 parentFrame() 可能误返回 null，
+     *  用 mainFrame 参照可稳定区分顶层与嵌套 frame）。 */
+    private static List<String> computeFramePath(Page page, Frame fr) {
+        try {
+            if (fr == null || fr == page.mainFrame()) return null;   // 主框架
+            List<String> path = new ArrayList<>();
+            Frame cur = fr;
+            while (cur != null && cur != page.mainFrame()) {
+                Frame parent = cur.parentFrame();
+                try {
+                    com.microsoft.playwright.ElementHandle fe = cur.frameElement();
+                    String sel = null;
+                    String nm = fe.getAttribute("name");
+                    if (nm != null && !nm.trim().isEmpty()) sel = "iframe[name=\"" + nm.trim() + "\"]";
+                    if (sel == null) {
+                        String id = fe.getAttribute("id");
+                        if (id != null && !id.trim().isEmpty() && isStableIdJava(id)) sel = "#" + id.trim();
+                    }
+                    if (sel == null) sel = "iframe";
+                    path.add(0, sel);
+                } catch (Exception ignore) {
+                    path.add(0, "iframe");
+                }
+                cur = parent;
+            }
+            return path.isEmpty() ? null : path;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -4459,6 +4805,15 @@ public final class RoleElementPicker {
         Boolean checked = null;
         String checkedRaw = asString(m.get("checked"));
         if (checkedRaw != null && !checkedRaw.isBlank()) checked = Boolean.parseBoolean(checkedRaw);
+        // 复选框「目标」勾选状态（对齐 page.pause 的 setChecked）：JS 侧在 checkbox 点击后写入的
+        // checked 即「操作后」状态，作为 setChecked 的目标值（setChecked 在已满足时幂等跳过，避免误 toggle）。
+        Boolean setCheckedTarget = checked;
+        // 键盘序列（对齐 page.pause 的 press("Enter")）：用户在输入框聚焦态按的实质按键（非字符输入）。
+        String pressKey = asString(m.get("pressKey"));
+        if (pressKey != null && pressKey.isBlank()) pressKey = null;
+        // 拖拽目标元素定位签名（对齐 page.pause 的 dragTo）：仅拖拽源 pick 非 null。
+        String dragDstKey = asString(m.get("dragDstKey"));
+        if (dragDstKey != null && dragDstKey.isBlank()) dragDstKey = null;
         // 可访问状态过滤属性（对齐 page.pause() 的 getByRole setDisabled/setPressed/setExpanded）。
         // JS 侧 done() 仅当元素确有该状态时写入 "YES"/"NO"（见 RoleElement.State 三态语义）。
         RoleElement.State disabled = toState(asString(m.get("disabled")));
@@ -4478,10 +4833,11 @@ public final class RoleElementPicker {
             boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
             String value = asString(m.get("value"));
             if (value != null && value.isBlank()) value = null;
-            RoleEntry roleEntry = new RoleEntry(role, name, tag, text, "role", null, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked, disabled, pressed, expanded);
+            RoleEntry roleEntry = new RoleEntry(role, name, tag, text, "role", null, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked, setCheckedTarget, pressKey, dragDstKey, disabled, pressed, expanded);
             roleEntry.setSigKey(pickSigKey);
             int roleCount = parseCount(m.get("count"));
             roleEntry.setCount(roleCount);
+            roleEntry.setFramePath(parseFramePath(m.get("framePath")));
             return roleEntry;
         }
         String selector = buildSelector(strategy, m);
@@ -4491,10 +4847,11 @@ public final class RoleElementPicker {
         boolean cleaned = Boolean.parseBoolean(asString(m.get("cleaned")));
         String value = asString(m.get("value"));
         if (value != null && value.isBlank()) value = null;
-        RoleEntry entry = new RoleEntry(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked, disabled, pressed, expanded);
+        RoleEntry entry = new RoleEntry(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, asString(m.get("_pageClass")), hover, closeOp, level, dblClick, dialog, dialogType, dialogAction, select, optionText, optionValue, checked, setCheckedTarget, pressKey, dragDstKey, disabled, pressed, expanded);
         entry.setSigKey(pickSigKey);
         int nonRoleCount = parseCount(m.get("count"));
         entry.setCount(nonRoleCount);
+        entry.setFramePath(parseFramePath(m.get("framePath")));
         return entry;
     }
 
@@ -4581,6 +4938,34 @@ public final class RoleElementPicker {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    /** 解析 iframe 嵌套路径：浏览器侧以数组回传（如 ["iframe[name=\"a\"]","#b"]），缺省/非数组返回 null。 */
+    @SuppressWarnings("unchecked")
+    private static List<String> parseFramePath(Object v) {
+        if (v == null) return null;
+        List<String> out = new ArrayList<>();
+        if (v instanceof List) {
+            for (Object o : (List<?>) v) {
+                if (o != null) out.add(o.toString());
+            }
+        } else if (v instanceof String) {
+            String s = v.toString().trim();
+            if (s.startsWith("[") && s.endsWith("]")) {
+                // JSON 数组字符串（console 兜底回传场景）：简单切分
+                String inner = s.substring(1, s.length() - 1).trim();
+                if (!inner.isEmpty()) {
+                    for (String part : inner.split(",")) {
+                        String p = part.trim();
+                        if (p.startsWith("\"") && p.endsWith("\"")) p = p.substring(1, p.length() - 1);
+                        if (!p.isEmpty()) out.add(p);
+                    }
+                }
+            } else if (!s.isEmpty()) {
+                out.add(s);
+            }
+        }
+        return out.isEmpty() ? null : out;
     }
 
     /** 把 JS 侧 done() 写入的可访问状态字符串（"YES"/"NO"）解析为 {@link RoleElement.State}；其余一律 null（不限）。 */
@@ -5676,6 +6061,8 @@ public final class RoleElementPicker {
                     + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
                     + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
                     + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
+                    + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
+                    + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
                     + " try{ window.__rolePickActive = false; }catch(e){}"
                     // 清除会话开关 + 写面板墓碑：阻断 context 门控/引导注入脚本（无法撤销）
                     // 在会话结束后的导航中误自启拾取或重建面板。

@@ -128,6 +128,28 @@ public final class RoleEntry {
     private final Boolean checked;
 
     /**
+     * 复选框目标勾选状态（对齐 page.pause() 的 setChecked 语义）：拾取时记录元素「应达到」的勾选状态，
+     * {@code true}=勾选（生成 {@code setChecked(true)}）；{@code false}=取消（生成 {@code setChecked(false)}）；
+     * 与 {@link #checked}（当前状态）不同：{@code setChecked} 在目标已满足时幂等跳过，避免误 toggle。
+     * 仅 role=checkbox 且录制到明确勾选动作时有意义；{@code null}=非复选框/未捕获。
+     */
+    private final Boolean setCheckedTarget;
+
+    /**
+     * 键盘序列（如 {@code "Enter"} / {@code "Tab"}），对齐 page.pause() 的 {@code press("Enter")} 录制。
+     * 用户在输入框聚焦态下按的实质按键（非字符输入），生成 step 应输出 {@code locator.press("Enter")}；
+     * 与 {@link #value}（字符输入）互补：value 走 fill/type，pressKey 走 press。{@code null}=无键盘序列。
+     */
+    private final String pressKey;
+
+    /**
+     * 拖拽目标元素的定位签名（{@code locatorKey}），对齐 page.pause() 的 {@code source.dragTo(target)} 录制。
+     * 仅在「拖拽源」pick 上非 null；生成端据其在同页 {@code keyToField} 反查目标字段名，生成
+     * {@code srcField.dragTo(dstField)}。{@code null}=非拖拽源。
+     */
+    private final String dragDstKey;
+
+    /**
      * 元素的可访问「禁用」状态（对齐 page.pause() 的 getByRole 过滤 {@code setDisabled}）：
      * {@code YES}=当前禁用；{@code NO}=当前可用；{@code null}=非禁用/未捕获。
      * 来源：原生 {@code disabled} 属性或 {@code aria-disabled="true"}。
@@ -179,6 +201,21 @@ public final class RoleEntry {
      * 纯透传信息，且 {@code RoleEntry} 已有 10+ 个重载构造器，加参数会波及全部调用点。
      */
     private int count = 1;
+
+    /**
+     * 该元素所在的 iframe 嵌套路径（自顶向下，0 层表示主框架本身）。
+     *
+     * <p>对齐 page.pause() 的 {@code frameLocator} 录制：元素落在 iframe 内时，
+     * 生成的定位器须以 {@code page.frameLocator(...).locator(...)} 包裹，否则在主框架上执行
+     * 会找不到该元素（运行时必失败）。路径由浏览器端按帧链推导：
+     * 每帧优先用其 {@code name} / {@code id} / 稳定的 css 选择器，顶层主框架记为空串。
+     *
+     * <p>透传字段（不参与代码生成语义、不参与去重签名），浏览器侧 {@code __computePick}
+     * 写入、这里原样持有。设计为可变字段而非构造器参数：与 {@link #sigKey} 同理，
+     * 纯透传信息，且 {@code RoleEntry} 已有 10+ 个重载构造器，加参数会波及全部调用点。
+     * 仅顶层主框架内的元素此项为空（null 或空数组），生成时跳过 frameLocator 包裹。
+     */
+    private java.util.List<String> framePath;
 
     public RoleEntry(String role, String name) {
         this(role, name, null, null);
@@ -252,13 +289,13 @@ public final class RoleEntry {
     public RoleEntry(String role, String name, String tag, String text,
                      String strategy, String selector, String resolvedKey, boolean cleaned,
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level) {
-        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, false, false, null, null, false, null, null, null, null, null, null);
+        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, false, false, null, null, false, null, null, null, null, null, null, null, null, null);
     }
 
     public RoleEntry(String role, String name, String tag, String text,
                      String strategy, String selector, String resolvedKey, boolean cleaned,
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick) {
-        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, dblClick, false, null, null, false, null, null, null, null, null, null);
+        this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, dblClick, false, null, null, false, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -273,7 +310,7 @@ public final class RoleEntry {
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick,
                      boolean dialog, String dialogType, String dialogAction) {
         this(role, name, tag, text, strategy, selector, resolvedKey, cleaned, value, popup, index, download, pageClass, hover, closeOp, level, dblClick,
-                dialog, dialogType, dialogAction, false, null, null, null, null, null, null);
+                dialog, dialogType, dialogAction, false, null, null, null, null, null, null, null, null, null);
     }
 
     /**
@@ -292,6 +329,7 @@ public final class RoleEntry {
                      String value, boolean popup, int index, boolean download, String pageClass, boolean hover, boolean closeOp, int level, boolean dblClick,
                      boolean dialog, String dialogType, String dialogAction,
                      boolean select, String optionText, String optionValue, Boolean checked,
+                     Boolean setCheckedTarget, String pressKey, String dragDstKey,
                      RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
         this.role = role;
         this.name = name;
@@ -317,6 +355,9 @@ public final class RoleEntry {
         this.optionText = optionText;
         this.optionValue = optionValue;
         this.checked = checked;
+        this.setCheckedTarget = setCheckedTarget;
+        this.pressKey = pressKey;
+        this.dragDstKey = dragDstKey;
         this.disabled = disabled;
         this.pressed = pressed;
         this.expanded = expanded;
@@ -427,6 +468,24 @@ public final class RoleEntry {
     }
 
     /**
+     * 复选框「目标」勾选状态（对齐 setChecked）：{@code true}=应勾选→{@code setChecked(true)}；
+     * {@code false}=应取消→{@code setChecked(false)}；{@code null}=非复选框/未捕获。
+     */
+    public Boolean getSetCheckedTarget() {
+        return setCheckedTarget;
+    }
+
+    /** 键盘序列（如 "Enter"），对齐 page.pause() 的 press 录制；null=无键盘序列。 */
+    public String getPressKey() {
+        return pressKey;
+    }
+
+    /** 拖拽目标元素定位签名（locatorKey），对齐 dragTo 录制；null=非拖拽源。 */
+    public String getDragDstKey() {
+        return dragDstKey;
+    }
+
+    /**
      * 可访问「禁用」状态：{@code YES}=当前禁用；{@code NO}=当前可用；
      * {@code null}=非禁用/未捕获（生成 {@code @RoleElement} 时不带 disabled 属性）。
      * 对齐 page.pause() 的 getByRole {@code setDisabled} 过滤。
@@ -482,6 +541,19 @@ public final class RoleEntry {
     /** 设置定位器匹配总数（回传写入内存态时调用）。 */
     public void setCount(int count) {
         this.count = count;
+    }
+
+    /**
+     * 该元素所在的 iframe 嵌套路径（顶层主框架为 null 或空）。
+     * 生成 frameLocator 时使用：路径非空时以 {@code page.frameLocator(...).locator(...)} 包裹。
+     */
+    public java.util.List<String> getFramePath() {
+        return framePath;
+    }
+
+    /** 设置 iframe 嵌套路径（回传写入内存态时调用）。 */
+    public void setFramePath(java.util.List<String> framePath) {
+        this.framePath = framePath;
     }
 
     /** 标题层级（heading 角色专用，1–6；0 表示不限层级）。 */

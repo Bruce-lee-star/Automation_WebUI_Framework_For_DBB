@@ -65,4 +65,11 @@ public @interface Element {
      * 用于日志和错误信息
      */
     String description() default "";
+
+    /**
+     * iframe 嵌套路径（自顶向下），对齐 page.pause() 的 {@code frameLocator} 录制。
+     * 元素位于 iframe 内时，底层 Locator 会以 {@code page.frameLocator(seg).locator(...)} 逐层包裹。
+     * 每个元素为稳定选择器（优先 {@code iframe[name="x"]} / 稳定 {@code #id}），主框架内元素不设置（空数组）。
+     */
+    String[] frame() default {};
 }

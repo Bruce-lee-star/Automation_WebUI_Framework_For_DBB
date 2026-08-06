@@ -191,4 +191,18 @@ public @interface RoleElement {
 
     /** 元素描述（可选），用于日志与错误信息 */
     String description() default "";
+
+    /**
+     * iframe 嵌套路径（自顶向下）。对齐 page.pause() 的 {@code frameLocator} 录制：元素落在 iframe 内时，
+     * 生成的定位器须以 {@code page.frameLocator(...).locator(...)} 包裹，否则在主框架上执行会找不到该元素。
+     * <p>每个元素是一段稳定选择器（优先 {@code iframe[name="x"]} / 稳定 {@code #id} / 退化的 {@code iframe:nth-of-type(n)}），
+     * 自顶向下按嵌套顺序声明。主框架内的元素不设置本属性（空数组）。
+     * <pre>
+     *     &#64;RoleElement(role = AriaRole.BUTTON, name = "Pay", frame = {"iframe[name=\"checkout\"]"})
+     *     public PageElement PAY_IN_IFRAME;
+     * </pre>
+     * 运行时由 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder}
+     * 把底层 Locator 依次用 {@code page.frameLocator(seg).locator(...)} 包裹。
+     */
+    String[] frame() default {};
 }

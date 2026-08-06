@@ -7,6 +7,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 
 /**
  * 根据「多次拾取 = 多个 step」的序列生成 Serenity {@code @Step} 业务步骤类源码（第二步）。
@@ -28,6 +29,11 @@ public final class RoleElementStepGenerator {
         if (e.isHover()) {
             return "hover()";
         }
+        // 拖拽源优先：录制为 locator.dragTo(target)，对齐 page.pause() 的 source.dragTo(target)。
+        // 拖拽语义由手势决定，覆盖角色推断（拖拽源本身可能是 button/link，但不应 click）。
+        if (e.getDragDstKey() != null) {
+            return "__DRAGTO__";
+        }
         // 双击（dblclick）：录制为 locator.doubleClick()，对齐 page.pause() 对 doubleClick 动作的录制。
         // 优先于角色推断——双击语义由用户交互决定，不因元素角色（link/button 等）退化为单击。
         if (e.isDblClick()) {
@@ -39,11 +45,20 @@ public final class RoleElementStepGenerator {
                 case "textbox":
                 case "searchbox":
                 case "spinbutton":
-                    return "type(\"" + escapeJava(e.getValue()) + "\")";
+                    // 对齐 page.pause() 的 fill() 录制：整值替换（清空原值再写入），比逐字符 type() 更快更稳，
+                    // 也不会与已有值叠加或被输入法干扰。value 为 null/空时退化为 click()（仅聚焦/清空）。
+                    if (e.getValue() != null && !e.getValue().isEmpty()) {
+                        return "fill(\"" + escapeJava(e.getValue()) + "\")";
+                    }
+                    return "click()";
                 case "checkbox":
                 case "radio":
-                    // 复选框/单选：按录制时实际勾选状态选择 check()/uncheck()（对齐 page.pause() 的 check/uncheck 信号）。
-                    // checked 为 null 时（非复选框未捕获）保守走默认 check()。
+                    // 对齐 page.pause() 的 setChecked 语义：按「目标」勾选状态选择 setChecked(bool)，
+                    // 在目标已满足时幂等跳过，避免对已勾选元素再次 check / 已未勾选再次 uncheck 造成误 toggle。
+                    // setCheckedTarget 为 null 时（未捕获目标状态）保守退化 check()/uncheck()（绝对目标状态）。
+                    if (e.getSetCheckedTarget() != null) {
+                        return "setChecked(" + e.getSetCheckedTarget() + ")";
+                    }
                     if (e.getChecked() != null) {
                         return e.getChecked() ? "check()" : "uncheck()";
                     }
@@ -63,7 +78,11 @@ public final class RoleElementStepGenerator {
         }
         // 非角色策略：placeholder 通常是输入框；其余（text/title/id/css 等，含 data-i18n 走 @Element 的 css 选择器）默认 click
         if ("placeholder".equals(e.getStrategy())) {
-            return "type(\"" + escapeJava(e.getValue()) + "\")";
+            // 同样对齐 page.pause 的 fill 语义：有值则整值填充，否则 click。
+            if (e.getValue() != null && !e.getValue().isEmpty()) {
+                return "fill(\"" + escapeJava(e.getValue()) + "\")";
+            }
+            return "click()";
         }
         return "click()";
     }
@@ -130,16 +149,27 @@ public final class RoleElementStepGenerator {
                         if (e.getIndex() >= 0) {
                             target += ".nth(" + e.getIndex() + ")";
                         }
-                        // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
-                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
-                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
-                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
-                        if (e.isDialog()) {
-                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
-                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
-                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
-                        }
+                        // 原生对话框（alert/confirm/prompt）：对齐 page.pause() 的 onDialog 录制——监听
+                        // 必须在"触发它的动作闭包内"同步注册，否则 confirm 在注册前已被浏览器默认 dismiss，
+                        // 且多元素连续点击时前置的 onceDialog 会误作用到后续元素。框架封装的
+                        // acceptAlert(trigger)/dismissAlert(trigger) 正是"在触发动作内注册一次性监听"的语义，
+                        // 因此直接把对话框处理包裹进触发动作，而非放在动作之前。alert 默认 accept，
+                        // confirm/prompt 默认 dismiss。
                         String op = target + "." + operationFor(e);
+                        // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
+                        // 目标元素定位签名经 keyToField 反查为字段名，拼成 pageVar.fieldName。
+                        if (op.endsWith(".__DRAGTO__")) {
+                            String dstField = keyToField.get(e.getDragDstKey());
+                            String dstRef = (dstField != null) ? pageVar + "." + dstField : "/* 拖拽目标未定位 */";
+                            op = target + ".dragTo(" + dstRef + ")";
+                        } else if (e.getPressKey() != null) {
+                            // 键盘序列（对齐 page.pause 的 press("Enter")）：先 fill/click 基础动作，再 press 实质按键。
+                            op += ";\n        " + target + ".press(\"" + escapeJava(e.getPressKey()) + "\")";
+                        }
+                        if (e.isDialog()) {
+                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert" : "dismissAlert";
+                            op = pageVar + "." + dlgMethod + "(() -> " + op + ")";
+                        }
                         if (e.isDownload()) {
                             // 下载（anchor download 属性 / 文件 URL / JS 触发）：用框架封装的
                             // waitForDownload(trigger, timeoutSecs) 等待下载完成，对齐 page.pause()
@@ -283,6 +313,7 @@ public final class RoleElementStepGenerator {
                 if (step == null || step.isEmpty()) {
                     m.append("        // 该 step 未拾取任何元素\n");
                 } else {
+                    List<String> lastFp = null; // 上一个元素的 iframe 路径（主框架为 null/空）
                     for (RoleEntry e : step) {
                         String pc = (e.getPageClass() == null || e.getPageClass().isEmpty())
                                 ? stepPageClass : e.getPageClass();
@@ -301,18 +332,53 @@ public final class RoleElementStepGenerator {
                         Map<String, String> kf = pageFields.get(pc);
                         String field = (kf == null) ? null : kf.get(RoleElementPageGenerator.locatorKey(e));
                         if (field == null) continue;
+                        // iframe 上下文切换：若当前元素所在 iframe 链与上一个不同，先回主框架再逐层切入，
+                        // 保证元素操作落在正确的 frame 上下文（避免“切换 iframe 没有切换 step”的问题）。
+                        List<String> fp = e.getFramePath();
+                        if (!sameFramePath(fp, lastFp)) {
+                            if (lastFp != null || (fp != null && !fp.isEmpty())) {
+                                m.append("        ").append(var)
+                                        .append(".switchToDefaultContent(); // 退出当前 iframe，回到主框架\n");
+                            }
+                            if (fp != null) {
+                                for (String fsel : fp) {
+                                    String name = frameNameOf(fsel);
+                                    if (name != null) {
+                                        // name 精确查找（对齐 page.pause 的 frameLocator("iframe[name=...]")，
+                                        // 框架 switchToFrame(name) 内部用 page.frame(name) 精确匹配，最稳健）。
+                                        m.append("        ").append(var).append(".switchToFrame(\"")
+                                                .append(escapeJavaString(name)).append("\");\n");
+                                    } else {
+                                        // 退化：id（#x）/ nth-of-type 等选择器，按 CSS 选择器切入。
+                                        m.append("        ").append(var).append(".switchToFrame(\"")
+                                                .append(escapeJavaString(fsel)).append("\");\n");
+                                    }
+                                }
+                            }
+                            lastFp = (fp == null) ? null : new ArrayList<>(fp);
+                        }
                         String target = var + "." + field;
                         if (e.getCount() > 1 && e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
-                        // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
-                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
-                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
-                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
-                        if (e.isDialog()) {
-                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
-                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
-                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
-                        }
+                        // 原生对话框（alert/confirm/prompt）：对齐 page.pause() 的 onDialog 录制——监听
+                        // 必须在"触发它的动作闭包内"同步注册，否则 confirm 在注册前已被浏览器默认 dismiss，
+                        // 且多元素连续点击时前置的 onceDialog 会误作用到后续元素。框架封装的
+                        // acceptAlert(trigger)/dismissAlert(trigger) 正是"在触发动作内注册一次性监听"的语义，
+                        // 因此直接把对话框处理包裹进触发动作，而非放在动作之前。alert 默认 accept，
+                        // confirm/prompt 默认 dismiss。
                         String op = target + "." + operationFor(e);
+                        // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
+                        // 目标元素定位签名在所有页字段中反查（支持跨页拖拽），拼成 <页变量>.<字段名>。
+                        if (op.endsWith(".__DRAGTO__")) {
+                            String dstRef = findFieldRefAcrossPages(e.getDragDstKey(), pageFields, pageVar);
+                            op = target + ".dragTo(" + dstRef + ")";
+                        } else if (e.getPressKey() != null) {
+                            // 键盘序列（对齐 page.pause 的 press("Enter")）：先 fill/click 基础动作，再 press 实质按键。
+                            op += ";\n        " + target + ".press(\"" + escapeJava(e.getPressKey()) + "\")";
+                        }
+                        if (e.isDialog()) {
+                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert" : "dismissAlert";
+                            op = var + "." + dlgMethod + "(() -> " + op + ")";
+                        }
                         if (e.isDownload()) {
                             if (e.isPopup()) {
                             sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;
@@ -329,6 +395,7 @@ public final class RoleElementStepGenerator {
                             // 并把新页面赋给 Page 变量（保留引用）；再把新页面绑到“目标页对象”
                             // （如 privacyAndSecurityPage），使后续操作/关闭都落在目标页对象而非打开页。
                             sawPopup = true;
+                            lastFp = null; // 弹窗打开新页，frame 栈与旧页不同，重置以避免误切回旧 frame
                             String npVar = nextNewPageVar(npIdx);
                             m.append("        Page ").append(npVar).append(" = ").append(var)
                                     .append(".switchToNewPage(() ->\n")
@@ -374,6 +441,50 @@ public final class RoleElementStepGenerator {
                 + fields
                 + methods
                 + "}\n";
+    }
+
+    /** 判断两个 iframe 路径是否相同（顺序敏感；null 与空列表视为等价，都表示主框架）。 */
+    private static boolean sameFramePath(List<String> a, List<String> b) {
+        if (a == null) a = java.util.Collections.emptyList();
+        if (b == null) b = java.util.Collections.emptyList();
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); i++) {
+            String x = a.get(i), y = b.get(i);
+            if (x == null ? y != null : !x.equals(y)) return false;
+        }
+        return true;
+    }
+
+    /** 转义 Java 双引号字符串字面量中的反斜杠与双引号，避免生成非法源码。 */
+    private static String escapeJavaString(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /** 从 iframe 选择器串中提取 name（如 `iframe[name="x"]` → `x`），无 name 时返回 null。
+     *  用于让 switchToFrame 走 page.frame(name) 精确匹配，对齐 page.pause 的 frameLocator 语义。 */
+    private static String frameNameOf(String fsel) {
+        if (fsel == null) return null;
+        Matcher m = FRAME_NAME.matcher(fsel);
+        return m.find() ? m.group(1) : null;
+    }
+    private static final java.util.regex.Pattern FRAME_NAME =
+            java.util.regex.Pattern.compile("iframe\\[\\s*name\\s*=\\s*[\"']([^\"']+)[\"']\\s*\\]");
+
+    /** 在所有页字段映射中反查拖拽目标的字段引用（支持跨页拖拽，对齐 page.pause 的 source.dragTo(target)）。
+     *  找到则拼成 {@code <页变量>.<字段名>}，否则返回注释提示。 */
+    private static String findFieldRefAcrossPages(String dragDstKey,
+                                                  Map<String, Map<String, String>> pageFields,
+                                                  Map<String, String> pageVar) {
+        if (dragDstKey == null) return "/* 拖拽目标未定位 */";
+        for (Map.Entry<String, Map<String, String>> en : pageFields.entrySet()) {
+            String field = en.getValue().get(dragDstKey);
+            if (field != null) {
+                String pv = pageVar.get(en.getKey());
+                return (pv != null ? pv : "page") + "." + field;
+            }
+        }
+        return "/* 拖拽目标未定位 */";
     }
 
     /**
@@ -498,16 +609,26 @@ public final class RoleElementStepGenerator {
                             if (field == null) continue;
                             String target = var + "." + field;
                             if (e.getCount() > 1 && e.getIndex() >= 0) target += ".nth(" + e.getIndex() + ")";
-                            // 原生对话框（alert/confirm/prompt）：前置插桩，对齐 page.pause() 的
-                        // onceDialog 前置信号——必须在触发它的动作之前挂载监听，否则默认 dismiss 会让
-                        // confirm 流程异常。走框架封装 acceptAlert()/dismissAlert()（内部 page.onceDialog）。
-                        // 方案1：alert 默认 accept；confirm/prompt 默认 dismiss。
-                        if (e.isDialog()) {
-                            String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert()" : "dismissAlert()";
-                            methods.append("        ").append(pageVar).append(".").append(dlgMethod)
-                                    .append("; // 处理原生对话框(").append(e.getDialogType()).append(")\n");
-                        }
-                        String op = target + "." + operationFor(e);
+                            // 原生对话框（alert/confirm/prompt）：对齐 page.pause() 的 onDialog 录制——监听
+                            // 必须在"触发它的动作闭包内"同步注册，否则 confirm 在注册前已被浏览器默认 dismiss，
+                            // 且多元素连续点击时前置的 onceDialog 会误作用到后续元素。框架封装的
+                            // acceptAlert(trigger)/dismissAlert(trigger) 正是"在触发动作内注册一次性监听"的语义，
+                            // 因此直接把对话框处理包裹进触发动作，而非放在动作之前。alert 默认 accept，
+                            // confirm/prompt 默认 dismiss。
+                            String op = target + "." + operationFor(e);
+                            // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
+                            // 目标元素定位签名在所有页字段中反查（支持跨页拖拽），拼成 <页变量>.<字段名>。
+                            if (op.endsWith(".__DRAGTO__")) {
+                                String dstRef = findFieldRefAcrossPages(e.getDragDstKey(), pageFields, pageVar);
+                                op = target + ".dragTo(" + dstRef + ")";
+                            } else if (e.getPressKey() != null) {
+                                // 键盘序列（对齐 page.pause 的 press("Enter")）：先 fill/click 基础动作，再 press 实质按键。
+                                op += ";\n        " + target + ".press(\"" + escapeJava(e.getPressKey()) + "\")";
+                            }
+                            if (e.isDialog()) {
+                                String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert" : "dismissAlert";
+                                op = var + "." + dlgMethod + "(() -> " + op + ")";
+                            }
                             if (e.isDownload()) {
                                 if (e.isPopup()) {
                                     sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;

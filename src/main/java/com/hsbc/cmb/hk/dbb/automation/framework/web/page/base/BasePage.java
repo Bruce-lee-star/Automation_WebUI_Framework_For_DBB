@@ -143,6 +143,8 @@ public abstract class BasePage {
                 } else if (field.isAnnotationPresent(Element.class)) {
                     Element elementAnnotation = field.getAnnotation(Element.class);
                     String selector = elementAnnotation.value();
+                    // 对齐 page.pause() 的 frameLocator 录制：iframe 内元素用 frame() 逐层下钻。
+                    List<String> frameSegs = Arrays.asList(elementAnnotation.frame());
                     field.setAccessible(true);
 
                     if (annotatedFieldsInitialized) {
@@ -150,16 +152,16 @@ public abstract class BasePage {
                         try {
                             Object existing = field.get(this);
                             if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
-                                createField(field, selector);
+                                createField(field, selector, frameSegs);
                             }
                         } catch (IllegalAccessException e) {
                             // get 失败，回退到重新创建
-                            createField(field, selector);
+                            createField(field, selector, frameSegs);
                         }
                         continue;
                     }
 
-                    createField(field, selector);
+                    createField(field, selector, frameSegs);
                 }
             }
             clazz = clazz.getSuperclass();
@@ -169,11 +171,16 @@ public abstract class BasePage {
 
     /** 创建 PageElement 或 PageElementList 实例并赋值给字段 */
     private void createField(Field field, String selector) {
+        createField(field, selector, null);
+    }
+
+    /** 创建 PageElement / PageElementList（含 iframe 嵌套路径 frameSegs，对齐 page.pause 的 frameLocator 录制） */
+    private void createField(Field field, String selector, List<String> frameSegs) {
         try {
             if (List.class.isAssignableFrom(field.getType())) {
-                field.set(this, new PageElementList(selector, this));
+                field.set(this, new PageElementList(selector, this, frameSegs));
             } else {
-                field.set(this, new PageElement(selector, this));
+                field.set(this, new PageElement(selector, this, frameSegs));
             }
         } catch (Exception e) {
             throw new ElementException("Init field failed: " + field.getName());

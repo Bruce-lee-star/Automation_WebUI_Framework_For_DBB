@@ -40,6 +40,20 @@
     </properties>
 
     <dependencies>
+        <!-- ==================== 离线中文→英文命名（代码生成器用，纯 Java、离线、无模型权重） ==================== -->
+        <!-- jieba 中文分词：把中文元素名切成语义词，命中 UI 词库则映射英文，否则回退拼音 -->
+        <dependency>
+            <groupId>com.huaban</groupId>
+            <artifactId>jieba-analysis</artifactId>
+            <version>1.0.2</version>
+        </dependency>
+        <!-- pinyin4j：未命中语义词库时的拼音兜底，保证稳定生成合法英文标识符 -->
+        <dependency>
+            <groupId>com.belerweb</groupId>
+            <artifactId>pinyin4j</artifactId>
+            <version>2.5.1</version>
+        </dependency>
+
         <!-- ==================== Serenity BDD ==================== -->
         <dependency>
             <groupId>net.serenity-bdd</groupId>

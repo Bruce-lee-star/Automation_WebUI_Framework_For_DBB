@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 根据 a11y 信息生成带 {@code @RoleFile} + {@code @RoleElement} 的 Page 类源码。
@@ -99,13 +100,16 @@ public final class RoleElementPageGenerator {
 
     /** 计算单个元素的字段名 + 注解（与 appendField/appendRoleField/appendSelectorField 旧逻辑一致，仅改为返回结构化结果）。 */
     private static GeneratedField makeField(RoleEntry e, int idx, Set<String> usedNames) {
+        // iframe 层级前缀：让嵌套 iframe 内的元素字段名带归属层级（如 frameOneIframe1），
+        // 消除「iframe1」这类仅靠标题文字、看不出位于哪个 iframe 的语义模糊命名。
+        String framePrefix = framePrefix(e.getFramePath());
         if (e.isRoleStrategy()) {
             String roleConst = toAriaRoleConst(e.getRole());
             String name = e.getName();
             String resolvedKey = e.getResolvedKey();
             boolean matched = resolvedKey != null && !resolvedKey.isBlank();
             String fieldBase = matched ? resolvedKey : name;
-            String field = toFieldName(fieldBase, e.getRole(), idx, usedNames);
+            String field = toFieldName(framePrefix, fieldBase, e.getRole(), idx, usedNames);
             StringBuilder ann = new StringBuilder("    @RoleElement(role = AriaRole.").append(roleConst);
             if (matched) {
                 ann.append(", key = \"").append(escapeJava(resolvedKey)).append("\"");
@@ -128,9 +132,9 @@ public final class RoleElementPageGenerator {
         boolean matched = resolvedKey != null && !resolvedKey.isBlank();
         String base = matched ? resolvedKey
                 : ((e.getName() != null && !e.getName().isBlank())
-                    ? e.getName() : selectorLabel(strategy, e.getSelector()));
+                    ? e.getName() : selectorLabel(strategy, locatingSelector(e)));
         String suffix = STRATEGY_SUFFIX.getOrDefault(strategy, "");
-        String field = toFieldNameWithSuffix(base, suffix, idx, usedNames);
+        String field = toFieldNameWithSuffix(framePrefix, base, suffix, idx, usedNames);
         String annotation;
         switch (strategy) {
             case "text":
@@ -161,7 +165,7 @@ public final class RoleElementPageGenerator {
             case "id":
             case "css":
             default: {
-                StringBuilder ann = new StringBuilder("    @Element(").append(toJavaStringLiteral(e.getSelector()));
+                StringBuilder ann = new StringBuilder("    @Element(").append(toJavaStringLiteral(locatingSelector(e)));
                 appendFrame(ann, e);
                 ann.append(")");
                 annotation = ann.toString();
@@ -334,6 +338,22 @@ public final class RoleElementPageGenerator {
                         hasElement = true; break;   // id / css 等纯 CSS/XPath
                 }
             }
+            // 标注元素归属空间（space）：iframe / shadow 嵌套位置。非默认 "main" 时写注释，
+            // 便于阅读生成类时直观看出该元素位于哪个空间（与 step 内 frame 切换逻辑同源）。
+            String space = s.entry.getSpace();
+            List<String> framePath = s.entry.getFramePath();
+            if (space != null && !"main".equals(space)) {
+                fields.append("    // space: ").append(space).append("\n");
+            }
+            // 【明确"iframe 元素属于哪个控件"】当元素来自某个 iframe（framePath 非空）时，
+            // 额外标注其归属的 iframe 控件层级，让使用者一眼知道该字段是「frameOne 里的 …」还是
+            // 「frameTwo→frameOne 嵌套里的 …」，避免与主页元素混淆。
+            if (framePath != null && !framePath.isEmpty()) {
+                String frameReadable = framePath.stream()
+                        .map(seg -> seg.replaceAll("^\\[|\\]$", ""))
+                        .collect(Collectors.joining(" → "));
+                fields.append("    // 控件: iframe [").append(frameReadable).append("]\n");
+            }
             fields.append(s.annotation).append("\n    public PageElement ").append(s.fieldName).append(";\n\n");
         }
 
@@ -469,6 +489,33 @@ public final class RoleElementPageGenerator {
         return selector;
     }
 
+    /**
+     * 取得元素的「定位用 selector」：
+     * <ul>
+     *   <li>普通元素：直接返回 {@code entry.getSelector()}（可能含 iframe 衔接，由 {@code switchToFrame} 处理）。</li>
+     *   <li>位于 open shadow 内的元素：剥离最外层宿主前缀，仅返回 shadow 内部的相对路径。
+     *       因为运行时已通过 {@code switchToShadow(host)} 进入该 shadow，继续用 {@code >>>} 前缀穿透，
+     *       若 selector 仍带宿主会重复导致 shadow 内定位失败。</li>
+     * </ul>
+     */
+    private static String locatingSelector(RoleEntry e) {
+        String sel = e.getSelector();
+        if (sel == null) return null;
+        java.util.List<String> sp = e.getShadowPath();
+        if (sp != null && !sp.isEmpty()) {
+            String host = sp.get(0); // 最外层宿主选择器（与 __cssSelectorOf 生成的衔接前缀一致）
+            String prefix = host + " > ";
+            if (sel.startsWith(prefix)) {
+                return sel.substring(prefix.length());
+            }
+            // 退化情况：selector 恰好等于 host 本身
+            if (sel.equals(host)) {
+                return "*";
+            }
+        }
+        return sel;
+    }
+
     /** 把选择器包成合法的 Java 字符串字面量（转义反斜杠与双引号） */
     private static String toJavaStringLiteral(String s) {
         if (s == null) return "\"\"";
@@ -498,13 +545,13 @@ public final class RoleElementPageGenerator {
         ann.append("}");
     }
 
-    private static String toFieldNameWithSuffix(String name, String suffix, int idx, Set<String> used) {
+    private static String toFieldNameWithSuffix(String prefix, String name, String suffix, int idx, Set<String> used) {
         String base = containsCjk(name) ? NlsNameTranslator.toIdentifier(name, false) : toIdentifier(name, idx, true);
         if (base.isEmpty()) {
             base = "element" + idx;
         }
-        // camelCase 字段名（首字母小写）：base 已为 lowerCamel，直接拼后缀
-        String candidate = base + suffix;
+        // camelCase 字段名（首字母小写）：prefix(iframe 层级) + base + suffix 依次拼接
+        String candidate = prefix + base + suffix;
         String unique = candidate;
         int n = 2;
         while (used.contains(unique)) {
@@ -547,6 +594,44 @@ public final class RoleElementPageGenerator {
         return s;
     }
 
+    /**
+     * 保留原大小写的标识符转换：专用于 iframe 层级前缀（name/id 来自 HTML 属性，
+     * 用户期望 frameOne 就是 frameOne，而非被 toIdentifier 压成全小写 frameone）。
+     * 仅做合法性清洗：非法字符丢弃（并作为单词边界使后续首字母大写），首字符若非合法
+     * 标识符起始则前置 Field；除首字符强制小写外，其余字符保留原名大小写。
+     */
+    private static String toPreserveCaseIdentifier(String name, int idx) {
+        if (name == null || name.isBlank()) {
+            return "frame" + idx;
+        }
+        StringBuilder sb = new StringBuilder();
+        boolean upperNext = false;
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (Character.isLetterOrDigit(c) || c == '_' || c == '$') {
+                if (sb.length() == 0) {
+                    // 首字符：强制小写，且若原为首字母/数字则顺延清洗逻辑
+                    sb.append(Character.toLowerCase(c));
+                } else {
+                    sb.append(upperNext ? Character.toUpperCase(c) : c);
+                }
+                upperNext = false;
+            } else {
+                upperNext = true; // 分隔符后是下一个词的首字母，保留原大小写
+            }
+        }
+        String s = sb.toString();
+        // 合法 Java 标识符字符清洗（理论上已处理，双保险）
+        s = s.replaceAll("[^\\p{L}\\p{N}_$]", "");
+        if (s.isEmpty()) {
+            return "frame" + idx;
+        }
+        if (!Character.isJavaIdentifierStart(s.charAt(0))) {
+            s = "Frame" + s;
+        }
+        return s;
+    }
+
     /** 判断字符串是否含 CJK（中日韩统一表意文字），用于决定字段名是否走中文→英文翻译。 */
     private static boolean containsCjk(String s) {
         if (s == null) return false;
@@ -556,11 +641,11 @@ public final class RoleElementPageGenerator {
         return false;
     }
 
-    private static String toFieldName(String name, String role, int idx, Set<String> used) {
+    private static String toFieldName(String prefix, String name, String role, int idx, Set<String> used) {
         String base = containsCjk(name) ? NlsNameTranslator.toIdentifier(name, false) : toIdentifier(name, idx, true); // userName（lowerCamel）
-        // camelCase 字段名（首字母小写）：base 已为 lowerCamel，直接拼后缀
+        // camelCase 字段名（首字母小写）：prefix(iframe 层级) + base + role 后缀 依次拼接
         String suffix = ROLE_SUFFIX.getOrDefault(role.toLowerCase(Locale.ROOT), "");
-        String candidate = base + suffix;
+        String candidate = prefix + base + suffix;
         String unique = candidate;
         int n = 2;
         while (used.contains(unique)) {
@@ -568,6 +653,49 @@ public final class RoleElementPageGenerator {
         }
         used.add(unique);
         return unique;
+    }
+
+    /**
+     * 由 framePath（自顶向下的 iframe 段，如 [iframe[name="frameOne"], iframe[name="frameTwo"]]）
+     * 拼出字段名前缀（camelCase，如 "frameOneFrameTwo"），空 path 返回 ""。
+     * 用于给 iframe 内元素命名时带层级归属，避免「iframe1」这类语义模糊的命名。
+     */
+    private static String framePrefix(List<String> framePath) {
+        if (framePath == null || framePath.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String seg : framePath) {
+            String id = frameSegId(seg);
+            if (id != null && !id.isBlank()) {
+                // 保留 iframe name 原大小写（frameOne → frameOne，而非被 toIdentifier 压成 frameone）
+                sb.append(toPreserveCaseIdentifier(id, sb.length()));
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 从单条 iframe 段中抽取可识别的锚点（name="x" / name=x / #id），用于层级前缀。 */
+    private static String frameSegId(String seg) {
+        if (seg == null) return "";
+        int n = seg.indexOf("name=\"");
+        if (n >= 0) {
+            int end = seg.indexOf('"', n + 6);
+            if (end > n + 6) return seg.substring(n + 6, end);
+        }
+        int h = seg.indexOf('#');
+        if (h >= 0) {
+            int end = h + 1;
+            while (end < seg.length() && (Character.isLetterOrDigit(seg.charAt(end)) || seg.charAt(end) == '-' || seg.charAt(end) == '_')) {
+                end++;
+            }
+            if (end > h + 1) return seg.substring(h + 1, end);
+        }
+        n = seg.indexOf("name=");
+        if (n >= 0) {
+            String rest = seg.substring(n + 5).trim();
+            int sp = rest.indexOf(' ');
+            return sp > 0 ? rest.substring(0, sp) : rest;
+        }
+        return "";
     }
 
     /**

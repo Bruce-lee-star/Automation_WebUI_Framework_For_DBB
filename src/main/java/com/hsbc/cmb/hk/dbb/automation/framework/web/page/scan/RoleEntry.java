@@ -50,7 +50,7 @@ public final class RoleEntry {
      * 该次点击是否弹出了新页面（target=_blank 链接等）。为 true 时生成 step 应包装为
      * {@code page.waitForPopup(() -> element.click())}，对齐 {@code page.pause()} 的 codegen 输出。
      */
-    private final boolean popup;
+    private boolean popup;
     /**
      * 该定位器在页面上匹配「一组元素」时的序号（0-based），对齐 Playwright 的
      * {@code locator.nth(index)}。为 {@code -1} 表示唯一匹配、无需索引。
@@ -68,7 +68,7 @@ public final class RoleEntry {
      * 为 true 时生成 step 应输出 {@code locator.hover()} 而非 {@code .click()}，
      * 对齐 {@code page.pause()} 对 hover 动作的录制；与 click 共用同一去重签名（同元素 hover 后 click 以最近一次交互为准）。
      */
-    private final boolean hover;
+    private boolean hover;
     /**
      * 该拾取元素所属页面的 Page 类名（由对应页面的 {@code window.__rolePageName} 决定）。
      * 多页面跟随场景下，弹窗/新标签页拾取的元素需落到各自对应的 Page 类，
@@ -81,6 +81,13 @@ public final class RoleEntry {
      * 与元素 pick 一同落在同一步（start→stop 唯一边界），故关闭页面不会额外拆出 step。
      */
     private final boolean closeOp;
+    /**
+     * 该拾取元素所属页面的「实例序号」：同一 {@code pageClass} 被打开多次时用于区分不同实例
+     * （例如同一 URL 在标签 A、标签 B 各打开一次，分别为实例 1、实例 2）。
+     * 默认 1 表示首个实例；生成 step 时变量名按 {@code pageClass#instanceId} 维度分配
+     * （如 loginPage、loginPage2），使同页多实例在代码层面可区分、可独立切换/关闭。
+     */
+    private int pageInstanceId = 1;
     /**
      * 标题层级（仅对 heading 角色有意义，取值 1–6），对齐 Playwright {@code getByRole(HEADING).setLevel(n)}。
      * 0 表示不限定层级。拾取器从 {@code <h1>–<h6>} 标签或 {@code aria-level} 推导。
@@ -98,11 +105,11 @@ public final class RoleEntry {
      * 注意与 ARIA role="dialog"（模态 DOM 元素）区分——此处专指原生弹窗。
      * 对齐 page.pause() 的 dialog 信号（前置插桩，不包裹动作）。
      */
-    private final boolean dialog;
+    private boolean dialog;
     /** 原生对话框类型：{@code alert} / {@code confirm} / {@code prompt}（dialog=true 时有效）。 */
-    private final String dialogType;
+    private String dialogType;
     /** 对话框处理动作：{@code accept}（默认 alert）/ {@code dismiss}（默认 confirm/prompt）。 */
-    private final String dialogAction;
+    private String dialogAction;
 
     /**
      * 该拾取元素是否为「下拉选择」交互（role=combobox/listbox，含原生 {@code <select>} 与自定义列表）。
@@ -216,6 +223,16 @@ public final class RoleEntry {
      * 仅顶层主框架内的元素此项为空（null 或空数组），生成时跳过 frameLocator 包裹。
      */
     private java.util.List<String> framePath;
+
+    /**
+     * 全局单调时间戳（源自浏览器侧 {@code pick.__ts = Date.now()}），用于跨 frame 按真实点击时序排序，
+     * 还原用户 frame1→frame2→frame1→frame2 的穿插点击顺序。
+     * 默认 0（未设置时排在最前以保证兼容旧数据）。不参与去重签名、不参与代码生成。
+     */
+    private long order;
+
+    public long getOrder() { return order; }
+    public void setOrder(long order) { this.order = order; }
 
     public RoleEntry(String role, String name) {
         this(role, name, null, null);
@@ -408,6 +425,10 @@ public final class RoleEntry {
     public boolean isPopup() {
         return popup;
     }
+    /** 动态标记是否弹出新页面（供拾取器 Java 侧 page.onPopup 监听器在捕获真实弹窗时回填标记）。 */
+    public void setPopup(boolean popup) {
+        this.popup = popup;
+    }
 
     /** 一组同定位器元素中的序号（0-based）；-1 表示唯一匹配、无需 {@code nth(index)}。 */
     public int getIndex() {
@@ -422,6 +443,11 @@ public final class RoleEntry {
     /** 该拾取是否为「悬停（hover）」交互；是则生成 step 应输出 {@code locator.hover()}。 */
     public boolean isHover() {
         return hover;
+    }
+
+    /** 强制清除 hover 标记（点击拾取场景下，确保生成的 step 不使用 {@code .hover()}）。 */
+    public void setHover(boolean hover) {
+        this.hover = hover;
     }
 
     /** 该拾取是否为「双击（double click）」交互；是则生成 step 应输出 {@code locator.doubleClick()}。 */
@@ -442,6 +468,19 @@ public final class RoleEntry {
     /** 对话框处理动作：accept / dismiss。 */
     public String getDialogAction() {
         return dialogAction;
+    }
+
+    /** 同步对话框标记（用于生成链路把权威内存态的 dialog 标记补回 step 元素）。 */
+    public void setDialog(boolean dialog) {
+        this.dialog = dialog;
+    }
+
+    public void setDialogType(String dialogType) {
+        this.dialogType = dialogType;
+    }
+
+    public void setDialogAction(String dialogAction) {
+        this.dialogAction = dialogAction;
     }
 
     /** 该拾取是否为「下拉选择」交互（combobox/listbox）；是则生成 step 应输出 selectByVisibleText(...) 等。 */
@@ -515,6 +554,21 @@ public final class RoleEntry {
         return pageClass;
     }
 
+    /** 该拾取所属页面实例序号（同 pageClass 多次打开时 1,2,3… 区分不同实例）。 */
+    public int getPageInstanceId() {
+        return pageInstanceId;
+    }
+
+    /** 设置页面实例序号（浏览器回传解析时写入；默认 1）。 */
+    public void setPageInstanceId(int pageInstanceId) {
+        this.pageInstanceId = pageInstanceId;
+    }
+
+    /** pageClass + 实例序号组成的稳定实例键（用于代码生成阶段区分同页多实例）。 */
+    public String getInstanceKey() {
+        return (pageClass == null ? "" : pageClass) + "#" + pageInstanceId;
+    }
+
     /** 该拾取是否为「关闭页面」操作标记；是则生成 step 应输出 {@code page.closeCurrentPage()}。 */
     public boolean isCloseOp() {
         return closeOp;
@@ -555,6 +609,66 @@ public final class RoleEntry {
     public void setFramePath(java.util.List<String> framePath) {
         this.framePath = framePath;
     }
+
+    /**
+     * 元素所属「空间」的可读标识，融合 iframe 与 shadowRoot 两个维度，供用户在拾取面板中
+     * 一眼看出该元素落在哪个空间（主文档 / 某 frame / 某 shadowRoot / frame 内的 shadowRoot）。
+     *
+     * <p>取值示例：
+     * <ul>
+     *   <li>{@code "main"} —— 主文档（既不在 iframe 也不在 shadow 内）；</li>
+     *   <li>{@code "frame:login"} —— 落在 name/id 为 login 的 iframe 内；</li>
+     *   <li>{@code "shadow:hostComp"} —— 落在宿主标签为 hostComp 的 open shadowRoot 内；</li>
+     *   <li>{@code "frame:login>shadow:comp"} —— 落在 frame:login 内的 shadowRoot 里；</li>
+     *   <li>{@code "frame:a>frame:b"} —— 嵌套 iframe。</li>
+     * </ul>
+     *
+     * <p>透传字段（不参与代码生成语义、不参与去重签名），浏览器侧 {@code __computePick}
+     * 在算完 {@code framePath} 之后补充 shadow 维度、合并写入。仅主文档元素为 {@code "main"}（默认）。
+     */
+    private String space = "main";
+
+    public String getSpace() { return space; }
+    public void setSpace(String space) { this.space = (space == null || space.isEmpty()) ? "main" : space; }
+
+    /**
+     * 元素所在 open shadowRoot 的【结构化宿主链】（自顶向下），用于生成「显式切换 shadow」step。
+     *
+     * <p>浏览器侧 {@code __computePick} 沿 {@code el.getRootNode().host} 向上收集每一层 open shadow 的
+     * 宿主 CSS 选择器（如 {@code ["#app-host", "comp-menu#menu"]}）。step 生成时据此在 frame 切换之后
+     * 对称生成 {@code switchToShadow(host)} 进入 / {@code switchToDefaultShadow()} 退出，
+     * 对齐 page.pause() 的 shadow 穿透录制，便于在 shadow 上下文内正确定位并提升步骤可读性。
+     *
+     * <p>主文档 / 仅 iframe 内的元素此项为空（null 或空列表），生成时跳过 shadow 切换。
+     */
+    private java.util.List<String> shadowPath;
+
+    public java.util.List<String> getShadowPath() { return shadowPath; }
+    public void setShadowPath(java.util.List<String> shadowPath) {
+        this.shadowPath = shadowPath;
+        // 同步维护 space 归属空间标识：元素位于 open shadow 内时，space 应为 shadow:<宿主>，
+        // 与浏览器侧 __computePick 的 space 语义一致。仅当 space 仍是默认 "main"（未由浏览器显式设置）
+        // 且 shadowPath 非空时推导，避免覆盖浏览器已精确计算的多层 shadow/iframe 组合 space。
+        if ((this.space == null || "main".equals(this.space))
+                && shadowPath != null && !shadowPath.isEmpty()) {
+            this.space = "shadow:" + String.join(">shadow:", shadowPath);
+        }
+    }
+
+    /**
+     * 用户在拾取面板中「勾选元素」时分配的【动态连续序号】（按勾选先后顺序）。
+     *
+     * <p>序号驱动步骤生成顺序：{@code generate} 遍历 step 元素前按本字段升序排布，
+     * 取消勾选某元素时，剩余元素的序号会【自动重排】为连续值（1,2,3…），
+     * 故本字段是「选择集内的相对顺序」而非固定 id。未勾选（不在选择集）的元素序号为 0。
+     *
+     * <p>透传字段（不参与代码生成语义、不参与去重签名），由浏览器侧
+     * {@code window.__currentStep} 选择集维护。默认 0 表示尚未编入步骤序列。
+     */
+    private int seq = 0;
+
+    public int getSeq() { return seq; }
+    public void setSeq(int seq) { this.seq = seq; }
 
     /** 标题层级（heading 角色专用，1–6；0 表示不限层级）。 */
     public int getLevel() {

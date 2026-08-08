@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
+import java.util.function.Predicate;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -46,6 +47,17 @@ public abstract class BasePage {
      * 从而解决"切到 iframe 后元素 not found in DOM"的经典问题。
      */
     private static final ThreadLocal<Frame> currentFrame = new ThreadLocal<>();
+
+    /**
+     * 当前 open shadowRoot 上下文栈（自外向内，保存各层宿主的 CSS 选择器），使用 ThreadLocal 使所有 Page 实例共享。
+     * <p>空栈表示当前在普通 DOM（主页面或已切到的 iframe）内操作。shadow 可嵌套，故用栈保存每一层宿主。
+     * <p>定位时把栈内宿主用 Playwright 官方的 {@code >>>} shadow 穿透组合器拼接成前缀，例如
+     * {@code #app-host >>> comp-menu#menu >>> #inner}，从而显式穿透 open shadowRoot（对标 page.pause() 的
+     * shadow piercing 录制）。{@code >>>} 是选择器引擎内置语法，可一次性穿透任意层 open shadow，无需
+     * 逐层调用 shadowRoot()（Playwright Java 的 ElementHandle 未暴露该便捷方法）。
+     */
+    private static final ThreadLocal<java.util.Deque<String>> currentShadow =
+            ThreadLocal.withInitial(java.util.ArrayDeque::new);
 
     // ===================== 全局文本统一格式化工具 =====================
     /**
@@ -374,6 +386,15 @@ public abstract class BasePage {
      */
     public Locator locator(String selector) {
         ensurePageValid();
+        // shadow 上下文高于 iframe/DOM 层：用 >>> 穿透组合器把宿主前缀拼到选择器前。
+        java.util.Deque<String> shadowStack = currentShadow.get();
+        if (shadowStack != null && !shadowStack.isEmpty()) {
+            StringBuilder prefix = new StringBuilder();
+            for (String host : shadowStack) {
+                prefix.append(host).append(" >>> ");
+            }
+            selector = prefix.append(selector).toString();
+        }
         Frame frame = currentFrame.get();
         if (frame != null) {
             return frame.locator(selector);
@@ -919,6 +940,163 @@ public abstract class BasePage {
         initializeAnnotatedFields();
         logger.info("Switched to iframe: '{}'", nameOrSelector);
         return frame;
+    }
+
+    // ===================== shadowRoot 切换（对齐 page.pause() 的 >>> shadow 穿透录制） =====================
+
+    /**
+     * 显式切换到指定 shadowRoot：把宿主选择器压入 shadow 上下文栈。
+     * 对标 page.pause() 录制的 {@code host >>> #inner} shadow 穿透。
+     * <p>之后通过 {@link #locator(String)} 创建的所有 Locator 都会以 {@code host >>>} 为前缀，
+     * 由 Playwright 选择器引擎一次性穿透该层 open shadowRoot。shadow 可嵌套调用
+     * （在 shadow 内再 switchToShadow 会叠加为 {@code host1 >>> host2 >>>}）。
+     *
+     * <pre>{@code
+     * myPage.switchToShadow("#app-host");         // 进入 app 的 shadow
+     * myPage.switchToShadow("comp-menu#menu");    // 再进入嵌套的 shadow
+     * myPage.element("#innerBtn").click();         // 在 shadow 内操作（自动 >>> 穿透）
+     * myPage.switchToDefaultShadow();             // 退出一层 shadow，回到外层
+     * }</pre>
+     *
+     * <p>注意：Playwright Java 的 {@code ElementHandle} 未暴露 {@code shadowRoot()}，故此处不调用该 API，
+     * 而是采用官方 {@code >>>} 穿透组合器实现，兼容任意层 open shadow。
+     *
+     * @param hostSelector 宿主元素的 CSS 选择器（在当前查找域内定位）
+     */
+    public void switchToShadow(String hostSelector) {
+        if (hostSelector == null || hostSelector.isBlank()) {
+            throw new RuntimeException("switchToShadow: hostSelector 不能为空");
+        }
+        currentShadow.get().push(hostSelector.trim());
+        logger.info("Switched into shadowRoot of '{}' (depth={})", hostSelector, currentShadow.get().size());
+    }
+
+    /**
+     * 退出当前最内层 shadow，回到上一层 shadow（或无 shadow 的 DOM）。
+     * 对标 page.pause() 录制中离开 shadow 穿透后的查找域。
+     * <p>若当前不在任何 shadow 内，则无操作（不报错）。
+     *
+     * @return 弹出的宿主选择器，或 null（当前本就不在 shadow 内）
+     */
+    public String switchToDefaultShadow() {
+        java.util.Deque<String> stack = currentShadow.get();
+        if (stack.isEmpty()) {
+            return null;
+        }
+        String popped = stack.pop();
+        logger.info("Exited one shadowRoot (depth now {})", stack.size());
+        return popped;
+    }
+
+    /**
+     * 退出【所有】嵌套 shadow，回到最外层 DOM（主页面或当前 iframe）。
+     * 对应 iframe 的 {@link #switchToDefaultContent()}：switchToDefaultContent 回主文档，
+     * switchToDefaultShadowAll 回 DOM 顶层（仍可处于某 iframe 内）。
+     */
+    public void switchToDefaultShadowAll() {
+        currentShadow.get().clear();
+        logger.info("Exited all shadowRoots");
+    }
+
+    /**
+     * 【监听器范式】切换到指定的 iframe：在 {@code trigger} 触发动作执行期间，用
+     * {@link Page#onFrameAttached(Consumer)} 事件监听收集 frame 挂载，一旦命中目标 iframe
+     * 立即捕获并返回，不轮询、不 sleep。对标 {@code page.waitForPopup(() -> click())} 的范式——
+     * 触发动作包裹进回调，frame 由事件驱动捕获。
+     *
+     * <p>适用：iframe 是【动态出现 / 异步加载】的场景（点击按钮后注入、SPA 动态插入、延迟 {@code src}）。
+     * 对已存在（静态）的 iframe 直接用 {@link #switchToFrame(String)} 即可。
+     *
+     * <p>匹配优先级（与 {@link #switchToFrame(String)} 的语义保持兼容）：
+     * <ol>
+     *   <li>按 frame 的 {@code name} / {@code id} 精确匹配（step 生成默认用 {@code iframe[name="x"]}）；</li>
+     *   <li>按 frame 的 {@code url} 包含给定片段兜底（便于用 url 片段定位）。</li>
+     * </ol>
+     *
+     * @param trigger        触发 iframe 出现的动作（如点击打开 iframe 的按钮）；可为 null，此时等价于
+     *                       仅做一次静态查找 + 等待一次 attach 事件
+     * @param nameOrSelector iframe 的 name / id / url 片段
+     * @param timeoutSecs    等待超时秒数（<=0 时使用框架默认导航超时）
+     * @return 切换后的 Playwright Frame（已就绪）
+     */
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector, int timeoutSecs) {
+        ensurePageValid();
+        int timeoutMs = (timeoutSecs > 0) ? timeoutSecs * 1000
+                : (int) PlaywrightManager.config().getNavigationTimeout();
+        // 若 iframe 已挂载（静态场景），直接切，无需走事件监听
+        Frame existing = matchFrame(nameOrSelector);
+        if (existing != null) {
+            currentFrame.set(existing);
+            initializeAnnotatedFields();
+            logger.info("Switched to iframe (already attached): '{}'", nameOrSelector);
+            return existing;
+        }
+        // 纯事件驱动：注册 onFrameAttached 监听，命中即放行（用 latch 等待，无轮询）
+        final Frame[] matched = {null};
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        java.util.function.Consumer<Frame> listener = f -> {
+            if (matched[0] == null && frameMatches(f, nameOrSelector)) {
+                matched[0] = f;
+                latch.countDown();
+            }
+        };
+        page.onFrameAttached(listener);
+        try {
+            if (trigger != null) trigger.run();   // 执行触发动作，期间监听捕获目标 frame
+            boolean got = false;
+            try { got = latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS); }
+            catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            if (!got || matched[0] == null) {
+                throw new RuntimeException("Timed out (" + (timeoutMs / 1000) + "s) waiting for iframe to attach: '"
+                        + nameOrSelector + "'. Available frames: " + page.frames().size());
+            }
+        } finally {
+            try { page.offFrameAttached(listener); } catch (Exception ignore) {}
+        }
+        currentFrame.set(matched[0]);
+        initializeAnnotatedFields();
+        logger.info("Switched to iframe (waited & ready via onFrameAttached): '{}'", nameOrSelector);
+        return matched[0];
+    }
+
+    /**
+     * {@link #switchToFrameAndWait(Runnable, String, int)} 的默认超时重载。
+     */
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector) {
+        return switchToFrameAndWait(trigger, nameOrSelector, 0);
+    }
+
+    /**
+     * 无触发动作的兼容重载：仅做一次静态查找，未找到则等待一次 attach 事件（事件驱动，无轮询）。
+     * 适用于"iframe 可能在监听注册前后才 attach"的非交互场景。
+     */
+    public Frame switchToFrameAndWait(String nameOrSelector, int timeoutSecs) {
+        return switchToFrameAndWait((Runnable) null, nameOrSelector, timeoutSecs);
+    }
+
+    /**
+     * {@link #switchToFrameAndWait(String, int)} 的默认超时重载。
+     */
+    public Frame switchToFrameAndWait(String nameOrSelector) {
+        return switchToFrameAndWait((Runnable) null, nameOrSelector, 0);
+    }
+
+    /** 按 name/id 精确匹配或 url 片段兜底查找已存在的 frame。 */
+    private Frame matchFrame(String nameOrSelector) {
+        Frame f = page.frame(nameOrSelector);
+        if (f != null) return f;
+        for (Frame fr : page.frames()) {
+            if (frameMatches(fr, nameOrSelector)) return fr;
+        }
+        return null;
+    }
+
+    /** frame 是否匹配给定的 name/id 或 url 片段。 */
+    private boolean frameMatches(Frame f, String nameOrSelector) {
+        if (f == null) return false;
+        if (nameOrSelector.equals(f.name())) return true;          // name/id 精确匹配
+        String url = f.url();
+        return url != null && url.contains(nameOrSelector);          // url 片段兜底
     }
 
     /**

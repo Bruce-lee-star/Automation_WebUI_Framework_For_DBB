@@ -133,11 +133,26 @@ public final class RoleElementPicker {
                 Map<Object, Object> m = GSON.fromJson(String.valueOf(v), Map.class);
                 RoleEntry e = parsePick(m);
                 if (e == null) return null;
+                // 【关键修复"iframe 元素丢失所属框架上下文 / 监听器好像没起作用"】
+                // 旧逻辑仅用浏览器回传的 framePath（parsePick 内部 parseFramePath(m.get("framePath"))）。
+                // 在 file:// / 跨源场景下，子 frame 内 window.frameElement 会抛 SecurityError，
+                // 浏览器侧 __framePathOf 的兜底（window.name）常取不到值 → 回传的 framePath 为空，
+                // 于是生成的代码里 iframe 内元素被当成主页元素：既无 frameOne 前缀、也无 switchToFrame，
+                // 直接 .click() 点到的是 <iframe> 节点本身而非进入框架——表现为"框架监听/归属失效"。
+                // getEntries 走的是另一条带 Java 侧 computeFramePath backfill 的路径（故 verify 测试通过），
+                // 但代码生成读的是本 path 的 javaPickBySig，二者必须一致。故在此用 source.frame().frameElement()
+                // 做一次与 getEntries 同源的 backfill：浏览器给了就用浏览器的，否则用 Java 计算的真实框架路径。
+                if (e.getFramePath() == null || e.getFramePath().isEmpty()) {
+                    try {
+                        List<String> fp = computeFramePath(source.page(), source.frame());
+                        if (fp != null && !fp.isEmpty()) e.setFramePath(fp);
+                    } catch (Exception ignore) {}
+                }
                 // 去重键与浏览器端保持一致但更精确：定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）
                 // 去重，避免同一元素在"主页↔弹窗"间被重复收录；角色/closeOp 仍按 [sig, pageClass|URL]（_sigKey）区分。
                 // 重复点击以最近一次交互为准整条替换（RoleEntry 不可变，更新须替换）；首次插入保序。
                 String key = pickDedupKey(m, e);
-                synchronized (map) { map.put(key, e); log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={}（当前内存态大小={}）", key, (e.getPageClass() == null ? "" : e.getPageClass()), map.size()); }
+                synchronized (map) { RoleEntry merged = mergePickIntoMap(map, key, e); List<String> fpLog = merged.getFramePath(); log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={} framePath={}（当前内存态大小={}）", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fpLog == null || fpLog.isEmpty() ? "" : fpLog.toString()), map.size()); }
             } catch (Exception ex) {
                 log.warn("[picker] __roleOnPick 回传解析失败：{}", ex.getMessage());
             }
@@ -197,10 +212,53 @@ public final class RoleElementPicker {
                     Map<Object, Object> m = GSON.fromJson(t.substring("__roleOnPick::".length()), Map.class);
                     RoleEntry e = parsePick(m);
                     if (e == null) return;
+                    // 【关键修复"iframe 元素丢失所属框架上下文"——console 通道对称回补】
+                    // 绑定通道（exposeBinding）有 source.frame() 可 computeFramePath 回补 framePath；
+                    // 但在内嵌 iframe 内绑定桥常失效（file:// 跨 origin / 上下文隔离），只经 console.log
+                    // 兜底到达。浏览器侧 __framePathOf 在跨源 file:// 下 window.frameElement 受限、
+                    // 整个 while 循环抛异常被吞为空数组 → pick 无 framePath → 生成 step 缺 switchToFrame。
+                    // 此处利用 msg.page() + iframe 页的 URL（e.getPageClass() 即 location.href）遍历
+                    // page.frames() 定位到目标 frame，调用 computeFramePath 回补，与绑定通道对称。
+                    if (e.getFramePath() == null || e.getFramePath().isEmpty()) {
+                        // 定位 iframe 所在 frame 的 URL：优先浏览器侧记录的 _frameUrl（仅 iframe 内写入，
+                        // origin+pathname，不污染 _pageClass）；退化用 _pageClass。file:// 无 query/hash 时
+                        // origin+pathname 与 f.url() 通常相等。
+                        String pc = null;
+                        try { Object fu0 = m.get("_frameUrl"); if (fu0 != null) pc = String.valueOf(fu0); } catch (Exception fuIgn) {}
+                        if ((pc == null || pc.isEmpty()) && e.getPageClass() != null && !e.getPageClass().isEmpty()) pc = e.getPageClass();
+                        if (pc != null && !pc.isEmpty()) {
+                            try {
+                                Page p = msg.page();
+                                if (p != null && !p.isClosed()) {
+                                    for (Frame f : p.frames()) {
+                                        // pc 是 origin+pathname（无 query/hash）；f.url() 可能是完整 URL，
+                                        // 归一化（去 query/hash、去末尾斜杠）后比较，避免 query/hash 抖动导致漏匹配。
+                                        String fu = f.url();
+                                        if (fu == null) continue;
+                                        int q = fu.indexOf('?');
+                                        if (q >= 0) fu = fu.substring(0, q);
+                                        int h = fu.indexOf('#');
+                                        if (h >= 0) fu = fu.substring(0, h);
+                                        while (fu.endsWith("/")) fu = fu.substring(0, fu.length() - 1);
+                                        if (pc.equals(fu) || pc.equals(f.url())) {
+                                            try {
+                                                List<String> fp = computeFramePath(p, f);
+                                                if (fp != null && !fp.isEmpty()) {
+                                                    e.setFramePath(fp);
+                                                }
+                                            } catch (Exception frameErr) {}
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch (Exception backfillErr) {}
+                        }
+                    }
                     String key = pickDedupKey(m, e);
                     synchronized (map) {
-                        map.put(key, e);
-                        log.info("[picker] __roleOnPick(console) 回传写入内存态：key={} pageClass={}（当前内存态大小={}）", key, (e.getPageClass() == null ? "" : e.getPageClass()), map.size());
+                        RoleEntry merged = mergePickIntoMap(map, key, e);
+                        List<String> fplog = merged.getFramePath();
+                        log.info("[picker] __roleOnPick(console) 回传写入内存态：key={} pageClass={} framePath={}（当前内存态大小={}）", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fplog == null || fplog.isEmpty() ? "" : fplog.toString()), map.size());
                     }
                 } catch (Exception ignore) {}
             } else if (t.startsWith("__roleOnDelete::")) {
@@ -233,6 +291,72 @@ public final class RoleElementPicker {
                 log.info("[browser]{}", t);
             }
         });
+        // 动态 iframe 监听器：context 级对每个（含弹窗/新开）页面挂 onFrameAttached，
+        // 覆盖 start() 遍历当时已存在 frame 之外的"运行时新附加/动态创建的 iframe"。
+        // 此前动态 iframe 因 start 之后才出现而未注入拾取脚本，导致 iframe 内元素点不到、
+        // 生成不出 switchToFrame 包裹的 step。现由 frame 监听器在 frame 一附加即自动注入，
+        // 与 start() 的补挂逻辑共用 registerFrameInjection，保证同源 frame 一律可拾取。
+        ctx.onPage(p -> registerFrameInjection(p, CTX_PICKER_NLS.get(ctx)));
+    }
+
+    /**
+     * 为指定页面注入拾取脚本到其所有 frame（含主框架与同源 iframe），并注册 frame 监听器，
+     * 使「start 之后动态附加的 iframe」一出现即自动注入。门控脚本仅在拾取会话开启时挂载 START_SCRIPT，
+     * 对未参与拾取的页面零侵入。nls 反向表可为 null（仅影响 NLS key 反查，不影响拾取本身）。
+     *
+     * 复合嵌套 frame 场景（frame 内嵌 frame，多层）：Playwright 的 Frame 接口【没有】onFrameAttached /
+     * onFrameNavigated（仅 Page 有），而 Page 级监听的参数 frame 虽只"直接挂名"于主框架，但【任意深度的
+     * 子 frame 发生导航时，Page.onFrameNavigated 都会以该子 frame 本身为参数触发】。因此本实现以
+     * onFrameNavigated 为核心覆盖信号：每次导航（含嵌套 frame 首次加载）到来即对该 frame 注入，并额外对
+     * page.frames()（递归返回全部层）做一次全量补注入兜底，确保 A 内嵌 B、B 内嵌 C 任意深度的 frame 均被注入；
+     * onFrameAttached 则负责"动态附加的 iframe"在 about:blank 阶段先注入一层，并遍历其 childFrames() 立即
+     * 补入已存在的更深层 frame。
+     */
+    private static void registerFrameInjection(Page page, String nlsReverseJson) {
+        try {
+            // ① 对当前已存在的全部 frame（含主框架与任意层嵌套 iframe，page.frames() 递归返回）立即补挂。
+            for (Frame f : page.frames()) {
+                try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
+            }
+            // ② 动态附加的 iframe（含运行时创建）：立即注入，并遍历其当前已存在的子 frame 递归补注入。
+            page.onFrameAttached(frame -> {
+                try {
+                    frameInjectOnce(frame, nlsReverseJson);
+                    for (Frame child : frame.childFrames()) {
+                        try { frameInjectOnce(child, nlsReverseJson); } catch (Exception ignore) {}
+                    }
+                } catch (Exception ignore) {}
+            });
+            // ③ 任意 frame（含嵌套深层）导航到真实文档 → 立即注入该 frame，并对全树 page.frames() 兜底补注入。
+            //    onFrameAttached 多在 about:blank 阶段触发，其 window 随真正子文档加载而销毁，故需在此以
+            //    force=true 再注入一次，确保子文档内 __renumberStep 等依赖完整，可被拾取并聚合。
+            //    主框架导航由 registerPopupFollow 单独处理（涉及快照/页类派生），此处仅处理子 frame。
+            page.onFrameNavigated(frame -> {
+                try {
+                    if (frame == page.mainFrame()) return;
+                    frameInjectOnce(frame, nlsReverseJson);
+                    for (Frame f : page.frames()) {        // 全量兜底：覆盖本次导航链上更深层的兄弟/子 frame
+                        try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
+                    }
+                } catch (Exception ignore) {}
+            });
+        } catch (Exception ignore) {}
+    }
+
+    /** 对单个 frame 注入拾取脚本：Playwright 的 Frame 无 addInitScript（仅 Page 有），
+     *  故对当前已就绪文档直接 evaluate 注入；后续导航由 onFrameNavigated 监听兜底重新注入。
+     *  以 force=true 注入门控脚本：动态/子 frame 是独立 window，其会话开关标记与父页不互通
+     *  （file:// 下 origin 不同、execution context 随文档切换重置），若仍走 on 判定会误判 false 而 return，
+     *  导致 __renumberStep 等依赖未定义。force=true 跳过判定、直接执行 START_SCRIPT，确保子 frame 内拾取依赖完整。
+     *  仅影响已开启拾取会话期间注入的 frame，对无关页面无副作用。 */
+    private static void frameInjectOnce(Frame frame, String nlsReverseJson) {
+        try {
+            frame.evaluate(gatedPickerInitScript(nlsReverseJson, true));
+        } catch (Exception ex) {
+            // 动态/子 frame 注入失败（多为跨源 frame 受安全限制 evaluate 抛错），按设计跳过，
+            // 其内元素不经主框架拾取，不影响其它 frame。
+            System.err.println("[frameInjectOnce][skip] frame=" + frame.url() + " : " + ex);
+        }
     }
 
     /**
@@ -289,13 +413,26 @@ public final class RoleElementPicker {
      * 才注入 nls 反向表并挂载 START_SCRIPT；未拾取时新文档零侵入。
      */
     private static String gatedPickerInitScript(String nlsReverseJson) {
+        return gatedPickerInitScript(nlsReverseJson, false);
+    }
+
+    /**
+     * 门控初始化脚本。force=true 时跳过"会话开关"判定、直接执行 START_SCRIPT（定义 __renumberStep 等全套函数），
+     * 用于"运行时新附加/导航的 iframe"：这类子 frame 是独立 window，其 localStorage/window 会话标记与父页不互通
+     * （file:// 下不同路径 origin 不同、execution context 随文档切换重置），若仍走 on 判定会误判为 false 而直接 return，
+     * 导致 __recordPick 调用 __renumberStep 报 "is not a function"。动态 iframe 的注入由 frameInjectOnce 以 force=true 调用，
+     * 确保子 frame 内的拾取依赖完整；仅影响已开始拾取会话期间注入的 frame，对无关页面无副作用。
+     */
+    private static String gatedPickerInitScript(String nlsReverseJson, boolean force) {
         return "(function(){"
                 // 诊断回写：浏览器 console 已被吞（无 onConsoleMessage 监听），故把门控执行结果写入
                 // window.__gateInit，供 Java 在 onFrameNavigated / start 后回读，定位"刷新后拾取不了"。
                 + " var __gi = { ts: Date.now(), url: location.href, origin: location.origin };"
+                + " var __force = " + (force ? "true" : "false") + ";"
                 + " var on=false;"
                 + " try{ on = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){ __gi.lsErr = String(e); }"
                 + " try{ if(!on) on = !!window.__rolePickSessionOn; }catch(e){}"
+                + " if(__force) on = true;"
                 + " __gi.switchOn = on;"
                 // 无条件定义"开启监听"入口（即便本次文档早期会话开关尚未置位）：仅定义、不调用，
                 // 所有调用处（__roleReenable / __roleSpaHeal / start）均带会话开关自检，不会误开启拾取。
@@ -661,6 +798,33 @@ public final class RoleElementPicker {
                   try { var byId = el.ownerDocument.getElementById(forAttr); if (byId) return byId; } catch (e) {}
                 }
                 return el;
+              }
+              // 【关键修复"Uncaught ReferenceError: resolveElement is not defined"】
+              // __rolePickDragDown / __rolePickDragUp 使用 resolveElement 解析拖拽源/目标元素，但该函数
+              // 一直缺失（拖拽触发 mousedown 时在浏览器 console 抛 ReferenceError）。这里补上：
+              // 用 composedPath 穿透 open shadow DOM，并把 SVG/文本等无语义 target 上溯到最近的可拾取祖先
+              // （SVG path/circle 在拾取里 role=graphic/generic 且无稳定 sig，拖拽目标应解析到其宿主控件）。
+              function resolveElement(t) {
+                if (!t) return t;
+                try {
+                  if (typeof t.composedPath === 'function' && t.composedPath().length) {
+                    t = t.composedPath()[0];
+                  }
+                } catch (e) {}
+                var n = 0;
+                while (t && t.nodeType === 1 && n < 12) {
+                  var tag = (t.tagName || '').toUpperCase();
+                  if (t.closest && (t.closest('#__rolePanel, #__roleCodeOverlay'))) return null;
+                  // SVG 内部节点（path/circle/rect/g/line/polyline 等）或无 role 的图形节点 → 上溯宿主
+                  var isSvgNode = tag === 'SVG' || tag === 'PATH' || tag === 'CIRCLE' || tag === 'RECT'
+                    || tag === 'G' || tag === 'LINE' || tag === 'POLYLINE' || tag === 'POLYGON'
+                    || tag === 'TEXT' || tag === 'ELLIPSE' || tag === 'USE' || tag === 'DEFS';
+                  var hasOwnRole = t.getAttribute && (t.getAttribute('role') || t.getAttribute('aria-label') || t.getAttribute('aria-labelledby'));
+                  if (!isSvgNode || hasOwnRole) break;
+                  t = t.parentElement;
+                  n++;
+                }
+                return t;
               }
 
               // ===== 可访问名称（W3C accname 算法，移植自 roleUtils.getElementAccessibleName）=====
@@ -1403,6 +1567,82 @@ public final class RoleElementPicker {
                   var fp = __framePathOf();
                   if (fp && fp.length) pick.framePath = fp;
                 } catch (e) {}
+                // 归属空间（space）：融合「iframe 链」+「open shadow 链」，标注该元素位于哪个空间。
+                // 约定格式（与 RoleEntry.space 注释一致）：main / frame:login / shadow:hostComp /
+                // frame:login>shadow:comp / frame:a>frame:b。仅主文档元素为 "main"。
+                // 该字段为可读标注（不参与代码生成语义），驱动生成的是下方独立的 shadowPath（结构化）。
+                try {
+                  // 收集 open shadow 宿主链（自顶向下）：每跳一层 shadow 取其宿主的 CSS 选择器。
+                  var shadowHosts = []; // 自底向上收集，后反转
+                  try {
+                    var n = el;
+                    while (n) {
+                      var rn = (n.getRootNode ? n.getRootNode() : null);
+                      if (rn && rn.host) {
+                        var h = rn.host;
+                        var ht = (h.tagName || '').toLowerCase();
+                        var hid = (h.getAttribute && h.getAttribute('id')) || '';
+                        var hcls = (h.getAttribute && h.getAttribute('class')) || '';
+                        var hsel = ht + (hid ? '#' + hid : (hcls ? '.' + hcls.trim().split(/\s+/).join('.') : ''));
+                        shadowHosts.unshift(hsel); // 自底向上，最终反转得到自顶向下
+                        n = h;
+                      } else break;
+                    }
+                  } catch (se) {}
+                  // 结构化 shadow 路径（自顶向下），供 Java 侧生成「显式切换 shadow」step。
+                  // 注意：shadowHosts 经上方循环逐层 unshift 后已是【自顶向下】顺序（最外层宿主在前），
+                  // 与下方 space 字符串的口径一致（space 用 shadowHosts[length-1] 即最顶层起拼），故此处不可再 reverse。
+                  if (shadowHosts.length) pick.shadowPath = shadowHosts.slice();
+                  // 组装 readable space（约定格式）
+                  var fp2 = (pick.framePath && pick.framePath.length) ? pick.framePath : null;
+                  var spaceParts = [];
+                  if (fp2) { for (var fi = 0; fi < fp2.length; fi++) {
+                    var seg = fp2[fi];
+                    var mName = seg.match(/^iframe\\[name=["']([^"']+)["']\\]$/);
+                    var mId = seg.match(/^#([\\w-]+)$/);
+                    spaceParts.push(mName ? ('frame:' + mName[1]) : (mId ? ('frame:' + mId[1]) : seg));
+                  } }
+                  if (shadowHosts.length) {
+                    for (var si = shadowHosts.length - 1; si >= 0; si--) {
+                      spaceParts.push('shadow:' + shadowHosts[si]);
+                    }
+                  }
+                  pick.space = (spaceParts.length ? spaceParts.join('>') : 'main');
+                } catch (e) {}
+                // 【关键修复"面板勾选 alert/弹窗元素只生成 click"】
+                // 真实点击触发 dialog/popup 时由 Java onDialog/onPopup 回写标记；但"面板勾选扫描候选"不经
+                // 真实点击，无法获得标记 → 生成 step 只是裸 click。此处启发式识别会触发 dialog / 弹窗的元素，
+                // 使扫描/勾选也能带上 dialog/popup 标记，封装时生成 acceptAlert/switchToNewPage 而非裸 click。
+                //   · dialog：元素任一 on* 事件属性源码含 alert( / confirm( / prompt( → 标记 dialog，
+                //     alert 默认 accept、confirm/prompt 默认 dismiss（与 Java onDialog 语义一致）；
+                //   · popup：a[target=_blank]（新标签）或任一 on* 事件属性含 window.open( → 标记 popup。
+                try {
+                  if (!pick.dialog && !pick.popup) {
+                    var __evtSrc = '';
+                    var __elAttrs = el.attributes;
+                    if (__elAttrs) {
+                      for (var __ai = 0; __ai < __elAttrs.length; __ai++) {
+                        var __an = __elAttrs[__ai].name || '';
+                        if (__an.indexOf('on') === 0) __evtSrc += ' ' + (__elAttrs[__ai].value || '');
+                      }
+                    }
+                    if (__evtSrc) {
+                      var __elc = __evtSrc.toLowerCase();
+                      if (__elc.indexOf('alert(') !== -1 || __elc.indexOf('confirm(') !== -1 || __elc.indexOf('prompt(') !== -1) {
+                        pick.dialog = true;
+                        pick.dialogType = (__elc.indexOf('confirm(') !== -1) ? 'confirm'
+                                : (__elc.indexOf('prompt(') !== -1) ? 'prompt' : 'alert';
+                        pick.dialogAction = (pick.dialogType === 'confirm' || pick.dialogType === 'prompt') ? 'dismiss' : 'accept';
+                      }
+                      if (__elc.indexOf('window.open(') !== -1) pick.popup = true;
+                    }
+                  }
+                  var __pickTag = (el.tagName || '').toLowerCase();
+                  if (!pick.popup && __pickTag === 'a') {
+                    var __aTgt = (el.getAttribute && el.getAttribute('target')) || '';
+                    if (__aTgt && __aTgt.charAt(0) === '_' && __aTgt.toLowerCase() !== '_self') pick.popup = true;
+                  }
+                } catch (e) {}
                 return pick;
               }
               function __attachIndex(pick, el) {
@@ -1455,6 +1695,17 @@ public final class RoleElementPicker {
                           if (!sel) {
                             var fid = fe.getAttribute && fe.getAttribute('id');
                             if (isStableId(fid)) sel = '#' + fid;
+                          }
+                          if (!sel) {
+                            // 无 name / 无稳定 id：用 src 片段作为稳定标签（供 page.frame 兜底 + CSS frameLocator 双通道定位）
+                            var fsrc = fe.getAttribute && fe.getAttribute('src');
+                            if (fsrc && fsrc.trim()) {
+                              var u = fsrc.trim();
+                              // 取 url 中可辨识的片段（去掉协议/域名前缀，保留路径+query），提升跨上下文可读性
+                              var cut = u.indexOf('//');
+                              var frag = cut >= 0 ? u.slice(u.indexOf('/', cut + 2)) : u;
+                              sel = 'iframe[src*="' + frag + '"]';
+                            }
                           }
                           if (!sel) {
                             var p = fe.parentElement;
@@ -1520,6 +1771,14 @@ public final class RoleElementPicker {
                 //    若点击的是表单控件本身，则跳过本分支，走下方 role+name（输入控件-centric 定位），
                 //    避免"点了输入框却生成 label 策略"的错位。
                 if (originalIsLabel) {
+                  // 若 label 关联的控件本身是 checkbox / radio，则改用控件自身的 role 策略，
+                  // 使其与"直接点击该 checkbox/radio"生成完全相同的 _sigKey（role:checkbox:name#0），
+                  // 在拾取去重处天然合并为同一条，避免 step 里同时出现 label.click() 与 chk.setChecked() 的重复。
+                  var __ctrlRole = (getRole(el) || '').toLowerCase();
+                  if (__ctrlRole === 'checkbox' || __ctrlRole === 'radio') {
+                    var __cb = getNameInfo(el);
+                    if (__cb && __cb.name) return done({ strategy:'role', role:__ctrlRole, name:__cb.name, nlsKey:__cb.nlsKey, resolvedKey:__cb.resolvedKey });
+                  }
                   var lbl = labelTextOf(el);
                   if (lbl) return done({ strategy:'label', name:lbl });
                 }
@@ -1705,6 +1964,20 @@ public final class RoleElementPicker {
                       var base = s.textContent.replace(/（已输入：.*）/g, '');
                       s.textContent = base + (p.value ? '（已输入：' + p.value + '）' : '');
                     }
+                    // 【关键修复"fill 未跟随输入"（尤其 iframe 内输入框）】
+                    // iframe 内点击输入框时，__activeInputPick 是 iframe 上下文内的 pick 对象；用户随后输入，
+                    // 此处只更新了 iframe 内 p.value，但顶层 __steps / Java 内存态里的拷贝仍是点击时的空值，
+                    // 生成 fill("") 而非真实文本。
+                    // 修复：输入变化的瞬间，把携带新 value 的 pick 立即重传 Java（__roleOnPick 幂等覆盖）
+                    // 并 postMessage 上送顶层（顶层按 _sigKey 去重、覆盖 value），确保 stop 生成拿到真实输入。
+                    try {
+                      if (typeof window.__sigKey === 'function') p._sigKey = window.__sigKey(p);
+                      if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(p));
+                      try { console.log('__roleOnPick::' + JSON.stringify(p)); } catch (_) {}
+                      if (window.self !== window.top) {
+                        try { if (window.top && window.top !== window.self) window.top.postMessage({ __rolePickMsg: true, pick: p, __fromFrame: true }, '*'); } catch (e) {}
+                      }
+                    } catch (_e) {}
                   }
                 }, true);
               }
@@ -1736,6 +2009,13 @@ public final class RoleElementPicker {
                 // 性能/正确性：仅拾取激活态才记录（点击/悬停），避免 stop 后残留监听或导航瞬间
                 // 跑完整 role/name 计算并把元素误回传 Java；非激活态直接返回。
                 if (!window.__rolePickActive) return null;
+                // 【关键修复"区域选择模式下点击不触发拾取"】
+                // 区域扫描态（__scanMode==='region'，用户正在点选业务区域）下，点击的语义是"选中区域并
+                // 扫描其子元素"，而非"拾取被点击的元素"。若点击拾取监听未被完全摘除，点击 #sec-role 等
+                // 容器会被 __recordPick 记录成整块 text 定位（"1. 角色与状态 提交 禁用按钮..."），混入
+                // 页面元素/页面类。此处：区域选择态且【非扫描中】时点击直接不记录——仅当 __roleScanPage
+                // 扫描时（__scanMode 被覆写为 'page' 且 __scanning=true）才记录区域内子元素。
+                if (window.__scanMode === 'region' && !window.__scanning) return null;
                 var t = target;
                 if (!t) return null;
                 // 录制根容器约束：若指定了 window.__rolePickRoot，只有落在该选择器内（含其自身）
@@ -1782,6 +2062,24 @@ public final class RoleElementPicker {
                   return null;
                 }
                 pick._pageClass = window.__rolePageName || '';
+                // 记录拾取发生时所在 frame 的 URL（主框架 _pageClass 已用类名，无需；iframe 内 _pageClass
+                // 为空，用 _frameUrl 供 Java console 通道回补 framePath 时按 URL 匹配 page.frames() 定位 frame）。
+                // origin+pathname 与 __sigKey 兜底口径一致，去 query/hash 保持跨导航稳定；不影响 _pageClass 语义，
+                // 故 iframe 元素仍归属主页面类（按 framePath 切换），不会误分到独立 iframe 页面类。
+                try { pick._frameUrl = (location.origin || '') + (location.pathname || ''); } catch (e) { pick._frameUrl = ''; }
+                // 页面实例序号：同一 pageClass 被打开多次（同页多标签）时区分不同实例。
+                // 维护 window.__pageInstanceSeq 映射（pageClass -> 已打开实例数）；每次进入/打开一个页面
+                // （__rolePageName 被赋值，见下方各种 onPopup/onLoad 钩子）时该映射 +1 并固化为该页实例号。
+                // 同一页面内的多次拾取共享同一实例号（不重复 +1）。
+                try {
+                  window.__pageInstanceSeq = window.__pageInstanceSeq || {};
+                  var __pc = pick._pageClass || '__main';
+                  if (window.__currentPageInstance == null || window.__currentPageInstance.page !== __pc) {
+                    window.__pageInstanceSeq[__pc] = (window.__pageInstanceSeq[__pc] || 0) + 1;
+                    window.__currentPageInstance = { page: __pc, seq: window.__pageInstanceSeq[__pc] };
+                  }
+                  pick._pageInstanceId = window.__currentPageInstance.seq;
+                } catch (e) { pick._pageInstanceId = 1; }
                 try { pick._sig = window.__pickSig ? window.__pickSig(pick) : null; } catch (e) { pick._sig = null; }
                 if (window.__lastPickEl && isEditable(window.__lastPickEl)) {
                   pick.value = editableValue(window.__lastPickEl);
@@ -1909,7 +2207,34 @@ public final class RoleElementPicker {
                 //     由用户在面板上勾选后再「封装为步骤」；
                 //   · 页面上的实时点选（非扫描、非重复）视为用户主动拾取，自动入选当前 step（选择集）；
                 //   · 重复拾取（dup）不重复入选，避免 step 内出现重复元素。
-                if (window.__currentStep && !window.__scanning && !dup && !__rapid) window.__currentStep.push(pick);
+                // 【关键修复"用户点击扫描候选不进 step"】
+                // 原条件含 !dup：整页扫描会把候选 push 进 __rolePickSigs（回传 javaPickBySig），扫描后
+                // 用户点击这些候选元素时 dup=true，被误判为"重复点击"而拒绝入选 step → 用户点的元素
+                // 不出现在步骤里。dup 本意是防"同一元素重复入选"；应改判"该元素是否已在当前 step 中"
+                // 而非"是否已收录过（扫描也算收录）"。故：非扫描态点击，只要元素不在当前 __currentStep
+                // 就入选 step（用户主动点击扫描候选 = 明确选择）；已在 step 中的重复点击仍被排除。
+                if (window.__currentStep && !window.__scanning && !__rapid) {
+                  var __inStep = false;
+                  if (dup) {
+                    // 仅当元素已在 __rolePickSigs 中才需查 __currentStep 去重；全新元素直接入选。
+                    try {
+                      for (var __si = 0; __si < window.__currentStep.length; __si++) {
+                        if (window.__currentStep[__si]
+                            && ((sig && window.__currentStep[__si]._sig === sig)
+                                || (key && window.__currentStep[__si]._sigKey === key))) {
+                          __inStep = true; break;
+                        }
+                      }
+                    } catch (e) { __inStep = false; }
+                  }
+                  if (!__inStep) window.__currentStep.push(pick);
+                }
+                // 修复：__renumberStep / __currentStep 等 UI 辅助函数仅定义在主框架（PANEL_SCRIPT）内。
+                // iframe 内拾取时本函数在子 frame 上下文执行，这些函数未定义，直接调用会抛 TypeError 中断后续
+                // 回传逻辑（__roleOnPick 绑定回传、__roleOnPick:: 控制台兜底、postMessage 上送），导致
+                // 「frame 元素拾取成功（已 push 进子 frame 数组）但 Java 内存态/面板均收不到」的假象。
+                // 故全部加 typeof 守卫 + try，确保子 frame 内即便 UI 辅助缺失也不影响元素回传。
+                try { if (typeof window.__renumberStep === 'function') window.__renumberStep(); } catch (_) {}
                 """;
     private static final String START_SCRIPT_B2 = """
 
@@ -1958,7 +2283,19 @@ public final class RoleElementPicker {
                   // 向上中继逻辑），即使跨多级嵌套 / Playwright 下 window.top 直达投递异常，pick 也能可靠上送顶层。
                   // 纯前端同步，不依赖 Java 主循环轮询（postMessage 不受同源限制，跨源 iframe 同样生效）。
                   if (window.self !== window.top) {
-                    try { window.parent.postMessage({ __rolePickMsg: true, pick: pick, __fromFrame: true }, '*'); } catch (e) {}
+                    // 【关键修复"嵌套 iframe 通信"】
+                    // 原实现只发 window.parent、依赖每层 frame 的 message 监听逐层向上转发到顶层。
+                    // 但中间层 iframe（frameOne）的 message 监听可能因 PANEL_SCRIPT 门禁/注入时机未注册，
+                    // 导致 frameTwo（grandchild）的 pick 停在中间层、顶层 __currentStep 收不到（面板 '-'）。
+                    // 改为"直达 + 逐层"双保险：
+                    //   · 直达：window.top.postMessage 直接投递顶层（postMessage 不受同源限制；顶层监听有
+                    //     __rolePickSigs 按 sigKey 去重，重复投递幂等）。
+                    //   · 回退：若 window.top 跨域/受限抛异常，再发 window.parent 让已注册监听的中间层转发。
+                    var __sent = false;
+                    try { if (window.top && window.top !== window.self) { window.top.postMessage({ __rolePickMsg: true, pick: pick, __fromFrame: true }, '*'); __sent = true; } } catch (e) {}
+                    if (!__sent && window.parent && window.parent !== window.self) {
+                      try { window.parent.postMessage({ __rolePickMsg: true, pick: pick, __fromFrame: true }, '*'); } catch (e2) {}
+                    }
                   }
                 }
                 return pick;
@@ -2039,6 +2376,47 @@ public final class RoleElementPicker {
                   }
                   for (var i = 0; i < els.length; i++) {
                     var el = els[i];
+                    // 【关键修复"整页/区域扫描对 iframe 支持不好"】
+                    // 原扫描只遍历当前 frame 的 document，遇到 iframe 元素因 getRole(iframe)=generic
+                    // 被 NON_ROLE 过滤，iframe 内元素一个都扫不到。这里遇到 iframe/frame 时，递归进入其
+                    // contentWindow，用该 frame 自己的 __roleScanPage（其上下文有自带的 __recordPick/
+                    // __framePathOf，能正确计算嵌套 framePath）执行扫描；结果记录进该 frame 的 __rolePicks
+                    // 并逐层上送，与手动点选同链路。
+                    if (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+                      // 【关键修复"整页/区域扫描未穿透 iframe"——跨源穿透】
+                      // 主 frame 的 JS 访问 iframe 的 contentWindow.document 在 file://（origin=null）
+                      // 或跨域下会抛 SecurityError，导致 iframe 内元素一个都扫不到。分两条路径穿透：
+                      //   · 同源可访问：直接递归调用 __iw.__roleScanPage(null)（该 frame 上下文自带
+                      //     __recordPick/__framePathOf，能正确算嵌套 framePath）；
+                      //   · 跨源受限：改用 contentWindow.postMessage 通知该 iframe 自扫（iframe 内
+                      //     注册的 message 监听收到 __roleScanRequest 后执行自己的 __roleScanPage(null)，
+                      //     结果经绑定桥/console 兜底回传 Java，并 push 进 iframe 的 __rolePicks）。
+                      var __inRootOk = true;
+                      if (isRegion && roots.length) {
+                        // 区域态：若该 iframe 不落在任何选中根内，不扫描其内部（保持"只扫所选区域"语义）
+                        __inRootOk = false;
+                        for (var __ri = 0; __ri < roots.length; __ri++) {
+                          try { if (roots[__ri].contains(el)) { __inRootOk = true; break; } } catch (_) {}
+                        }
+                      }
+                      if (__inRootOk) {
+                        try {
+                          var __iw = el.contentWindow;
+                          var __accessed = false;
+                          try {
+                            if (__iw && __iw.document && typeof __iw.__roleScanPage === 'function' && __iw !== window) {
+                              __iw.__roleScanPage(null);
+                              __accessed = true;
+                            }
+                          } catch (__acErr) { __accessed = false; }
+                          if (!__accessed && __iw && __iw.postMessage) {
+                            // 跨源：无法 JS 直调，postMessage 通知 iframe 自扫
+                            try { __iw.postMessage({ __roleScanRequest: true, __roleScanRoot: 'page' }, '*'); } catch (_pm) {}
+                          }
+                        } catch (__ie) {}
+                      }
+                      continue;   // iframe 容器自身不作为可拾取元素
+                    }
                     if (isRegion && roots.indexOf(el) !== -1) continue;   // 区域根容器自身不作为定位记录
                     if (el.closest && el.closest('#__rolePanel, #__roleCodeOverlay, #__roleHoverBox')) continue;
                     // 区域扫描：剔除"与整个区域几乎等大"的元素（面积 >= 区域根 90%）。
@@ -2101,6 +2479,18 @@ public final class RoleElementPicker {
                     var before = window.__rolePicks ? window.__rolePicks.length : 0;
                     var pk = window.__recordPick(el, false);   // 内部核心去重仍执行；UI/回传副作用因 __scanning 被跳过
                     var after = window.__rolePicks ? window.__rolePicks.length : 0;
+                    // 【关键修复"区域扫描额外生成整块文本定位"】
+                    // 区域/整页扫描会把"整区域文本拼接"的元素定位成 text 策略（如 #sec-role 自身被
+                    // __computePick 退化为 text，名称为其所有子元素文本拼接："1. 角色与状态 提交 禁用按钮..."），
+                    // 这类元素不是可交互子元素、无业务价值，却会出现在页面元素/页面类里。
+                    // 此处对扫描态新增的 text 策略元素做"整块文本"判定：名称超长（>=25 字符，明显是多子元素
+                    // 拼接）即从 __rolePicks 回退移除，不计入本次新增。短文本的 text 元素（如独立段落/标签）
+                    // 不受影响；点击拾取（__scanning=false）不受影响。
+                    if (pk && pk.strategy === 'text' && (pk.name || '').length >= 25) {
+                      if (after > before && window.__rolePicks) { window.__rolePicks.pop(); }
+                      try { if (window.__rolePickSigs && pk._sigKey && window.__rolePickSigs[pk._sigKey]) delete window.__rolePickSigs[pk._sigKey]; } catch (e) {}
+                      continue;
+                    }
                     // 只登记「本次扫描真正新增」的 pick，供扫描结束后精确批量回传。
                     // 不能在结束时遍历整个 __rolePicks：该数组还含历史拾取与 syncPanelToBrowser
                     // 从 Java 同步下来的**其它页面**元素，全量回传会把它们按当前页上下文重算键后再写一遍。
@@ -2128,6 +2518,39 @@ public final class RoleElementPicker {
                     try {
                       if (typeof window.__sigKey === 'function') p._sigKey = window.__sigKey(p);
                       if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(p));
+                      // 【关键修复"整页/区域扫描未穿透 iframe"】
+                      // iframe 内递归扫描走的是 iframe 自己的 __roleScanPage，批量回传仅经绑定桥 __roleOnPick。
+                      // 但 iframe 内绑定桥常失效（跨 frame/上下文隔离，前面分析过），扫描结果会整批丢失，
+                      // 表现为"扫描扫不到 iframe 内元素"。此处补 console 兜底回传（__roleOnPick::...），
+                      // 与手动点选的"绑定桥 + console 双保险"对齐，确保 iframe 内扫描结果必达 Java。
+                      try { console.log('__roleOnPick::' + JSON.stringify(p)); } catch (_) {}
+                      // 【关键修复"页面元素面板只有主框架元素"】
+                      // __recordPick 里的"iframe 内元素 postMessage 上送顶层 __rolePicks"逻辑（点击拾取路径）
+                      // 被包裹在 `if (!window.__scanning)` 内——扫描态 __scanning=true 时被整段跳过。
+                      // 因此扫描出的 iframe 元素只 push 进【本 frame】的 __rolePicks 并经上面回传 Java，
+                      // 从不会上送到顶层主框架 __rolePicks → 顶层面板"页面元素"Tab 只显示主框架元素、
+                      // 扫描后即时生成的页面类也漏掉 iframe 内元素（Java 内存态却有 40 个，面板只见 32 个）。
+                      // 修复：本 frame 若是 iframe，批量回传时把新增元素 postMessage 上送顶层聚合（与点击
+                      // 拾取同链路，顶层 __rolePickSigs 按 sigKey 去重幂等）。上层 message 监听收到
+                      // __rolePickMsg 后 push 进顶层 __rolePicks 并触发 __renderPicks，面板随即可见。
+                      if (window.self !== window.top) {
+                        // 【关键修复"checkbox 被默认勾选进选择集"】
+                        // 本批量回传在 __roleScanPage 尾部、__scanning 已置 false 后执行；若此时把 iframe
+                        // 元素 postMessage 上送顶层，顶层 message 监听读到 __scanning=false 会误判为"点击
+                        // 拾取"而把元素 push 进 __currentStep（选择集）→ 面板里 checkbox 等扫描候选被默认勾选。
+                        // 修复：上送时打上 __isScan 标记，顶层据此【不入选 step】，仅聚合进 __rolePicks 供面板
+                        // 展示，保持"扫描出的元素是候选、由用户勾选后封装"的语义。
+                        var __sent2 = false;
+                        try {
+                          if (window.top && window.top !== window.self) {
+                            window.top.postMessage({ __rolePickMsg: true, __isScan: true, pick: p, __fromFrame: true }, '*');
+                            __sent2 = true;
+                          }
+                        } catch (__e2) {}
+                        if (!__sent2 && window.parent && window.parent !== window.self) {
+                          try { window.parent.postMessage({ __rolePickMsg: true, __isScan: true, pick: p, __fromFrame: true }, '*'); } catch (__e3) {}
+                        }
+                      }
                     } catch (e) {}
                   }
                 }
@@ -2368,6 +2791,24 @@ public final class RoleElementPicker {
                   }
                 }
               };
+              // 【关键修复"鼠标 hover 到 frame 后失焦，hover 高亮框未去除"】
+              // 每个 frame 各自的 __rolePickMove 维护各自的 __roleHoverBox；鼠标从 iframe 移出到主框架时，
+              // iframe 的 mousemove 不再触发，iframe 的 __roleHoverBox 保持显示（残留青色边框）。
+              // 用 document 级 mouseleave（仅在鼠标真正离开该 frame 的 document 边界时触发，不冒泡、
+              // 同一 document 内移动不会误触发）在鼠标离开该 frame 时清除其 hover box 与 hover 状态。
+              window.__rolePickLeave = function() {
+                try {
+                  if (window.__hoverRaf) { cancelAnimationFrame(window.__hoverRaf); window.__hoverRaf = null; }
+                } catch (e) {}
+                try { if (window.__hoverTimer) { clearTimeout(window.__hoverTimer); window.__hoverTimer = null; } } catch (e) {}
+                try { window.__hoverTarget = null; } catch (e) {}
+                try { window.__lastHoverTarget = null; } catch (e) {}
+                try {
+                  var hb = document.getElementById('__roleHoverBox');
+                  if (hb) hb.style.display = 'none';
+                } catch (e) {}
+              };
+              document.addEventListener('mouseleave', window.__rolePickLeave, false);
               // ===== 原生对话框（alert/confirm/prompt）拦截 =====
               // 对齐 page.pause() 的 dialog 信号：在点击触发业务（业务可能调用 alert/confirm）时捕获。
               // 记录 {type, message, seq} 到 window.__pwDialogs；点击 handler 在宏任务里回查，
@@ -2376,11 +2817,34 @@ public final class RoleElementPicker {
               window.__pwDialogs = [];
               window.__pwDlgSeq = 0;
               (function() {
+                // 对话框真正产生的时刻，把"最近一次拾取的元素"打上 dialog 标记并重传 Java 内存态。
+                // 不依赖点击 handler 的 setTimeout(0) 回查（当业务里 alert 是 setTimeout 异步触发时，
+                // 0ms 回查会早于 dialog 产生而漏判）；此处 dialog 本体已存在，标记必然命中。
+                // 即便 Java 侧 page.onDialog 因跨 page/iframe 实例未触发，内存态（javaPickBySig）也能拿到标记，
+                // 生成 step 时前置插桩 acceptAlert/dismissAlert（与 page.onDialog 双保险、幂等）。
+                function markLastPickDialog(type) {
+                  try {
+                    var sig = window.__lastPickSig || '';
+                    if (!sig) return;
+                    var pick = window.__sigToPick ? window.__sigToPick[sig] : null;
+                    if (!pick) return;
+                    // alert 默认 accept；confirm/prompt 默认 dismiss（与 Java onDialog 约定一致）
+                    var action = (type === 'alert') ? 'accept' : 'dismiss';
+                    pick.dialog = true;
+                    pick.dialogType = type;
+                    pick.dialogAction = action;
+                    if (typeof window.__sigKey === 'function') pick._sigKey = window.__sigKey(pick);
+                    if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(pick));
+                    try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch (_) {}
+                  } catch (e) {}
+                }
                 function hook(orig, type) {
                   return function(msg) {
                     try {
                       window.__pwDialogs.push({ type: type, message: (msg == null ? '' : String(msg)), seq: ++window.__pwDlgSeq });
                     } catch (e) {}
+                    // 对话框产生的瞬间即给最近一次点击元素打 dialog 标记（双保险之一）
+                    markLastPickDialog(type);
                     // 调用原始实现以维持页面既有行为（避免吞掉业务弹窗）
                     if (typeof orig === 'function') { return orig.apply(this, arguments); }
                   };
@@ -2431,6 +2895,19 @@ public final class RoleElementPicker {
                   }
                   // 同标签页普通链接：放行真实导航（不再 preventDefault）
                 }
+                // 弹窗/下载标记：__recordPick 内部的回传（__roleOnPick / __roleOnPick::）发生在本 click handler
+                // 设置 pick.popup / pick.download 之前（2121 行已 JSON.stringify 序列化，彼时两标记仍为 false），
+                // 若不在此补发一次，Java 权威内存态 javaPickBySig 拿到的就是"无 popup/download 标记"的版本，
+                // 生成 step 时就不会包 switchToNewPage / waitForDownload——表现为"waitForPopup 没起作用"。
+                // 与 dialog 双保险对称：设置完标记后立刻按 _sigKey 覆盖重传，确保 stop 生成能拿到，
+                // 即使 Java 侧 page.onPopup 因跨 page/iframe 实例未触发也不漏判（二者幂等）。
+                if (pick && (pick.popup || pick.download)) {
+                  try {
+                    if (typeof window.__sigKey === 'function') pick._sigKey = window.__sigKey(pick);
+                    if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(pick));
+                    try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch (_) {}
+                  } catch (e) {}
+                }
                 // 按钮/表单提交：放行真实提交（点击按钮会真实触发业务，业务可能调用 alert/confirm），
                 // 不再 preventDefault。原生对话框在业务里同步弹出，故用宏任务回查本次点击是否触发了 dialog。
                 // 对齐 page.pause()：dialog 作为该 action 的前置信号，生成 step 时前置插桩 page.onDialog(...)。
@@ -2452,6 +2929,44 @@ public final class RoleElementPicker {
                         if (typeof window.__sigKey === 'function') clickPick._sigKey = window.__sigKey(clickPick);
                         if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(clickPick));
                         try { console.log('__roleOnPick::' + JSON.stringify(clickPick)); } catch (_) {}
+                      }
+                      // 复选/单选/开关：浏览器拾取模式下点击是"真实穿透"（同步阶段 __enrichState 读到的
+                      // pick.checked 是【点击前】状态，但真实点击已使元素 toggle）。若按点击前状态生成
+                      // setChecked(旧) 回放，会把元素设回原状态，表现为"checkbox 没选上"。
+                      // 故在此宏任务（点击 toggle 已完成后）重新读取【点击后】状态作为 setCheckedTarget，
+                      // 覆盖内存态并重传，使生成 setChecked(目标状态) 幂等正确勾选。
+                      var pr = (clickPick.role || '').toLowerCase();
+                      if (pr === 'checkbox' || pr === 'radio' || pr === 'switch'
+                          || pr === 'menuitemcheckbox' || pr === 'menuitemradio' || pr === 'treeitem') {
+                        try {
+                          // 优先用 __recordPick 内解析好的真实控件（window.__lastPickEl），它已从
+                          // composedPath[0] 穿透到 checkbox/radio 本身，状态读取最准；点击的原始 target（t）
+                          // 可能是 <label>（label for= 关联的兄弟 input），需再解析。
+                          var cb = (window.__lastPickEl) ? window.__lastPickEl : t;
+                          if (cb && cb.tagName === 'LABEL') {
+                            // 原生 <label for="x"> 关联的兄弟控件：用 label.control / htmlFor 定位；
+                            // 嵌套 <label><input> 用 querySelector 向下找。
+                            var lblCtrl = null;
+                            try { lblCtrl = cb.control; } catch (e) {}
+                            if (!lblCtrl && cb.htmlFor) { try { lblCtrl = document.getElementById(cb.htmlFor); } catch (e) {} }
+                            if (!lblCtrl) { try { lblCtrl = cb.querySelector('input[type=checkbox],input[type=radio],*[role=checkbox],*[role=radio],*[role=switch],*[role=menuitemcheckbox],*[role=menuitemradio],*[role=treeitem]'); } catch (e) {} }
+                            if (lblCtrl) cb = lblCtrl;
+                          } else if (cb && cb.closest) {
+                            var near = cb.closest('input[type=checkbox],input[type=radio],*[role=checkbox],*[role=radio],*[role=switch],*[role=menuitemcheckbox],*[role=menuitemradio],*[role=treeitem]');
+                            if (near) cb = near;
+                          }
+                          var postChecked;
+                          if (cb && (cb.type === 'checkbox' || cb.type === 'radio')) postChecked = !!cb.checked;
+                          else if (cb && cb.hasAttribute && cb.hasAttribute('aria-checked')) {
+                            var _av = cb.getAttribute('aria-checked'); postChecked = (_av === 'true' || _av === 'mixed');
+                          } else postChecked = null;
+                          if (postChecked !== null && postChecked !== clickPick.checked) {
+                            clickPick.checked = postChecked;            // 同时驱动 setCheckedTarget=checked（Java 侧 setCheckedTarget=checked）
+                            if (typeof window.__sigKey === 'function') clickPick._sigKey = window.__sigKey(clickPick);
+                            if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(clickPick));
+                            try { console.log('__roleOnPick::' + JSON.stringify(clickPick)); } catch (_) {}
+                          }
+                        } catch (cbErr) {}
                       }
                     } catch (e) {}
                   }, 0);
@@ -2504,7 +3019,18 @@ public final class RoleElementPicker {
                 var el = event.target;
                 if (!el || el === window || el === document) return;
                 if (el.closest && el.closest('#__rolePanel, #__roleCodeOverlay')) return;
-                try { window.__recordPick(el, true); } catch (e) {}
+                // 【关键修复"点击操作被 focusin 覆盖成 hover"】
+                // 鼠标点击元素会连带触发 focusin（聚焦）。原实现以 isHover=true 记录并覆盖，导致用户明明是
+                // "点击"，生成代码却变成 locator.hover()（尤其 checkbox/button 被误标 hover）。
+                // 修复：focusin 只用于捕获"纯键盘可达、hover/click 都难拾取"的新元素，且一律按「点击（false）」
+                // 记录——聚焦的语义是接下来会交互（点击/按键），记成 hover 不符合动作意图。真正的悬停由
+                // mouseenter 防抖路径（isHover=true）记录，与 focusin 互不冲突。
+                // 同时：若元素已被鼠标 click/mouseenter 记录过，直接放行，避免 focusin 覆盖其 hover/click 类型。
+                try {
+                  var _fsig = (typeof window.__pickSig === 'function') ? window.__pickSig(el) : '';
+                  if (_fsig && window.__sigToPick && window.__sigToPick[_fsig]) return; // 已记录过，勿覆盖
+                } catch (_fe) {}
+                try { window.__recordPick(el, false); } catch (e) {}
               };
               // 滚动时重定位 hover 高亮框（__hoverBox 为 position:fixed，否则滚动后高亮框会漂移残留）。
               window.__rolePickScroll = function() {
@@ -2518,16 +3044,27 @@ public final class RoleElementPicker {
               window.__dragMoved = 0; window.__dragDstKey = null;
               window.__rolePickDragDown = function(e) {
                 if (!window.__rolePickActive) return;
-                var el = resolveElement(e.target);
+                // resolveElement 若未定义（极少数注入片段不完整的 frame），退化为 composedPath()[0]，
+                // 杜绝 ReferenceError 中断拖拽拾取。
+                var el;
+                try {
+                  if (typeof resolveElement === 'function') { el = resolveElement(e.target); }
+                  else { el = (e.composedPath && e.composedPath()[0]) || e.target; }
+                } catch (_re) { el = e.target; }
                 if (!el || el === window || el === document) { window.__dragSrcEl = null; return; }
-                window.__dragSrcEl = resolveLabel(el);
+                window.__dragSrcEl = (typeof resolveLabel === 'function') ? resolveLabel(el) : el;
                 window.__dragStartX = e.clientX; window.__dragStartY = e.clientY;
                 window.__dragMoved = 0; window.__dragDstKey = null;
               };
               window.__rolePickDragUp = function(e) {
                 if (!window.__rolePickActive || !window.__dragSrcEl) return;
                 var srcEl = window.__dragSrcEl;
-                var dstEl = resolveLabel(resolveElement(e.target));
+                var dstEl = e.target;
+                try {
+                  if (typeof resolveElement === 'function') dstEl = resolveElement(e.target);
+                  else if (e.composedPath && e.composedPath()[0]) dstEl = e.composedPath()[0];
+                  if (typeof resolveLabel === 'function') dstEl = resolveLabel(dstEl);
+                } catch (_de) {}
                 window.__dragSrcEl = null;
                 if (!dstEl || dstEl === srcEl) return; // 未跨元素，非拖拽
                 if (window.__dragMoved < 12) return;  // 位移过小，视为普通点击
@@ -2637,6 +3174,47 @@ public final class RoleElementPicker {
               try { var __hb = document.getElementById('__roleHoverBox'); if (__hb) __hb.style.display = 'none'; } catch (e) {}
               // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），停止拾取时一并清掉，避免残留。
               try { if (typeof window.__clearRegionOutlines === 'function') window.__clearRegionOutlines(); } catch (e) {}
+              // 清除所有 frame（含主文档 + 各层 iframe）内元素的拾取描边（outline）与聚焦边框，
+              // 避免"取消拾取 / 停止拾取后，iframe 内元素的蓝色/黄色边框未消失"的残留。
+              try {
+                (function __stopAll(win) {
+                  if (!win || !win.document) return;
+                  var d = win.document;
+                  // 【关键修复"停止拾取后 iframe 内仍可点击拾取"】
+                  // 原 stop 只移除当前 frame（顶层）的 document 监听，iframe 内自己的 document 监听未移除，
+                  // 停止拾取后 iframe 内仍能点击拾取、边框也仍会高亮。这里在遍历每个 frame 时，
+                  // 一并移除该 frame 的拾取/扫描监听，并把 __rolePickActive 置 false，彻底关闭所有 frame 的拾取态。
+                  var rl = window.__rolePickClick, rm = window.__rolePickMove, rk = window.__rolePickKey,
+                      rf = window.__rolePickFocus, rs = window.__rolePickScroll,
+                      rp = window.__rolePickPointer, rpo = window.__rolePickOver, rr = window.__rolePickRegionClick;
+                  d.removeEventListener('click', rl, true);
+                  d.removeEventListener('mousemove', rm, true);
+                  d.removeEventListener('keydown', rk, true);
+                  d.removeEventListener('focusin', rf, true);
+                  d.removeEventListener('scroll', rs, true);
+                  if (rp) d.removeEventListener('pointerdown', rp, true);
+                  if (rpo) d.removeEventListener('mouseover', rpo, true);
+                  if (rr) d.removeEventListener('click', rr, true);
+                  try { if (window.__rolePickLeave) d.removeEventListener('mouseleave', window.__rolePickLeave, false); } catch (_) {}
+                  try { win.__rolePickActive = false; } catch (_) {}
+                  var nodes = d.querySelectorAll('[_rolepick_outline]');
+                  for (var i = 0; i < nodes.length; i++) {
+                    try { nodes[i].style.outline = ''; nodes[i].style.outlineOffset = ''; nodes[i].removeAttribute('_rolepick_outline'); } catch (_) {}
+                  }
+                  // 兜底：清掉仍带显式拾取色描边的元素（部分老路径未打标记属性）
+                  var all = d.querySelectorAll('*');
+                  for (var j = 0; j < all.length; j++) {
+                    var s = all[j].style;
+                    if (s && (s.outline.indexOf('ffeb3b') >= 0 || s.outline.indexOf('29b6f6') >= 0 || s.outline.indexOf('ff9800') >= 0)) {
+                      s.outline = ''; s.outlineOffset = '';
+                    }
+                  }
+                  // 隐藏当前 frame 的实时悬停高亮框（青色 #29b6f6 边框）
+                  try { var hb = d.getElementById('__roleHoverBox'); if (hb) hb.style.display = 'none'; } catch (_) {}
+                  var fr = win.frames || [];
+                  for (var k = 0; k < fr.length; k++) { try { __stopAll(fr[k]); } catch (_) {} }
+                })(window);
+              } catch (e) {}
             })();
             """;
 
@@ -2717,7 +3295,17 @@ public final class RoleElementPicker {
               var closeBtn = mkBtn('关闭', '#616161');
 
               copyBtn.onclick = function() {
-                function ok() { status.textContent = '已复制到剪贴板 ✔'; copyBtn.textContent = '已复制'; }
+                function ok() {
+                  status.textContent = '已复制到剪贴板 ✔';
+                  status.style.color = '#00e676';
+                  status.style.fontWeight = 'bold';
+                  status.style.fontSize = '14px';
+                  status.style.background = 'rgba(0,230,118,.18)';
+                  status.style.borderRadius = '3px';
+                  status.style.padding = '1px 6px';
+                  status.style.textShadow = '0 0 6px rgba(0,230,118,.6)';
+                  copyBtn.textContent = '已复制';
+                }
                 try {
                   if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(code).then(ok, function() { fallback(); });
@@ -2759,14 +3347,46 @@ public final class RoleElementPicker {
       // 门禁：正常访问不打面板。openPanel/followPage 会显式置位 __rolePanelEnabled='1'；
       // 跨源新页面 localStorage 可能为空或不可写，故同时允许 window.__rolePanelForce 兜底
       // （由 followPage 注入），确保新页面无论如何都能重建面板。
-      try { if (localStorage.getItem('__rolePanelEnabled') !== '1' && !window.__rolePanelForce) return; } catch (e) { return; }
+      // 【关键修复"嵌套 iframe 元素序号 - / 不进 step"】
+      // 门禁原来会让 iframe（frameOne）的 message 监听一并早退：frameTwo（grandchild）的 postMessage
+      // 先发到 frameOne，但 frameOne 的 message 监听没注册 → 不向上转发到顶层 → 顶层 __currentStep
+      // 无 frameTwo 元素 → 面板序号 '-'、停止时不入选 step（Java 内存态却因绑定桥直接回传而有值，
+      // 表现为"能回传但不在面板/step"）。而 frameOne 元素能进 step，是因 frameOne→top 是直达、
+      // 由顶层监听接收，不依赖 frameOne 自身的转发。
+      // 修复：把"拾取聚合/转发的 message 监听"从面板门禁中解耦——无论是否渲染面板，iframe 都应
+      // 无条件注册该监听，确保嵌套 iframe 的 pick 能逐层转发到顶层进入 __currentStep。面板 UI 门禁
+      // 保持不变（见下方 __rolePanelUI 分支）。
+      var __rolePanelUI = false;
+      try { __rolePanelUI = (localStorage.getItem('__rolePanelEnabled') === '1' || !!window.__rolePanelForce); } catch (e) { __rolePanelUI = false; }
       // 顶层面板接收来自 iframe（含跨源）的拾取：iframe 内点击 push 进的是 iframe 自己的 window.__rolePicks，
       // 主框架可见面板读不到 → 表现为"Java 内存态增长、面板空白"。iframe 经 postMessage 把 pick 发给父窗口，
-      // 此处（顶层面板脚本）接收并聚合进主框架 window.__rolePicks + 渲染。纯前端同步，无需 Java 主循环轮询。
+      // 此处接收并聚合进主框架 window.__rolePicks + 渲染。纯前端同步，无需 Java 主循环轮询。
       window.addEventListener('message', function(ev) {
         try {
           var d = ev.data;
+          if (d && d.__roleScanRequest) {
+            // 【关键修复"整页/区域扫描穿透 iframe"——跨源 iframe 自扫】
+            // 父 frame 无法 JS 直调跨源 iframe 的 __roleScanPage，改用 postMessage 下发扫描请求；
+            // 本 frame（可能为任意层 iframe）收到后在自己的上下文执行整页扫描（传 null=扫本 frame 整页），
+            // 结果 push 进本 frame 的 __rolePicks 并经绑定桥/console 兜底回传 Java。与 Java 侧
+            // 按 page.frames() 逐帧扫描殊途同归，但专为浏览器侧触发的区域扫描跨源穿透而设。
+            try {
+              if (typeof window.__roleScanPage === 'function' && window.self !== window.top) {
+                window.__roleScanPage(null);
+              }
+            } catch (_rsErr) {}
+            return;
+          }
           if (!d || d.__rolePickMsg !== true || !d.pick) return;
+          try {
+            var __dbg = (d.pick && (d.pick.role || d.pick._sig || d.pick.name)) || '';
+            var __dbgKey = d.pick && d.pick._sigKey;
+            if (typeof console !== 'undefined' && console.log)
+              console.log('[rolePick][msg-in] selfTop=' + (window.self === window.top)
+                + ' srcTop=' + (ev.source && ev.source === window.self)
+                + ' role=' + __dbg + ' sigKey=' + (__dbgKey || '') + ' pickActive=' + (window.__rolePickActive)
+                + ' scanning=' + (window.__scanning) + ' href=' + (location && location.href));
+          } catch (_dbgErr) {}
           // 安全加固（本地开发工具场景）：排除顶层自身的"自环"消息（理论上不会发生），
           // 其余带 __rolePickMsg 标记的 pick 一律接纳——包括 srcdoc/跨源子 frame。
           // 注：srcdoc iframe 在某些情况下 ev.source 为 null/非标准 Window，若强校验 ev.source.postMessage
@@ -2787,16 +3407,64 @@ public final class RoleElementPicker {
           if (key && window.__rolePickSigs[key]) return;
           if (key) window.__rolePickSigs[key] = true;
           window.__rolePicks.push(p);
+          // 关键修复：iframe（含嵌套 frame）内的拾取元素经 postMessage 上送顶层后，必须回传 Java 权威内存态
+          // （javaPickBySig），否则仅停留在浏览器侧 window.__rolePicks——顶层面板虽能渲染，但 stop 时按 Java
+          // 内存态生成代码会漏掉这些 iframe 元素（表现为"页面元素清单不含 frame 内元素"）。
+          // 与 __recordPick 内回传保持同一套（_sigKey 去重键 + __roleOnPick 回传 + console 兜底），且幂等。
+          if (window.self === window.top) {
+            try {
+              if (typeof window.__sigKey === 'function') p._sigKey = window.__sigKey(p);
+              if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(p));
+            } catch (e) {}
+            try { console.log('__roleOnPick::' + JSON.stringify(p)); } catch (_) {}
+          }
           // 与主框架实时点选一致：拾取激活态下，iframe 内的点选也自动入选当前 step（选择集），
           // 用户无需再到面板重复勾选；整页扫描期间的 iframe 候选仍由用户勾选决定。
-          if (window.__rolePickActive && window.__currentStep && !window.__scanning) window.__currentStep.push(p);
+          // 【关键修复"checkbox 被默认勾选进选择集"】扫描批量回传上送的候选带 __isScan 标记：
+          // 尽管此时 __scanning 已置 false，但 d.__isScan 为 true 表明这是扫描产生的候选，
+          // 只聚合进 __rolePicks 供面板展示，绝不入选 __currentStep（否则 checkbox 等被默认勾选）。
+          // 【关键修复"用户点击扫描候选不进 step"】与主框架 __recordPick 的 2169 行一致：
+          // 点击（非扫描、非 __isScan 的 postMessage）即使元素已在 __rolePickSigs（扫描候选），
+          // 只要不在当前 __currentStep 中就入选 step（用户主动点击 = 明确选择）；已入选的重复点击除外。
+          if (window.__rolePickActive && window.__currentStep && !window.__scanning && !d.__isScan) {
+            var __pkey = (typeof window.__sigKey === 'function') ? window.__sigKey(p) : (p._sigKey || p._sig || '');
+            var __pinStep = false;
+            if (__pkey) {
+              for (var __qi = 0; __qi < window.__currentStep.length; __qi++) {
+                try {
+                  var __q = window.__currentStep[__qi];
+                  if (__q && (__q._sigKey === __pkey
+                      || (__q._sig && __pkey.indexOf(__q._sig) !== -1)
+                      || (typeof window.__sigKey === 'function' && window.__sigKey(__q) === __pkey))) {
+                    __pinStep = true; break;
+                  }
+                } catch (e) {}
+              }
+            }
+            if (!__pinStep) window.__currentStep.push(p);
+          }
+          window.__renumberStep();
           if (window.__renderPicks) window.__renderPicks();
         } catch (e) {}
       });
       // 面板 UI 仅顶层文档渲染：iframe / 嵌套 frame 内不应再构建面板（避免面板被嵌入子 frame）。
       // 非顶层 frame 到此为止——上面注册的 message 监听器已能把子 frame 的 pick 逐层上送顶层聚合，
       // 但不再调用 build() 建面板，保证整页只有一个可见面板（顶层）。
+      // 注意：__renumberStep 是 __recordPick 的核心依赖（选择集连续编号），与面板 DOM 无关，
+      // 必须无条件定义（含 iframe 子文档），否则子 frame 内拾取调用 __renumberStep 报 "is not a function"。
+      // 故在此 return 之前定义，与 build() 内的面板 UI 构建解耦。
+      window.__renumberStep = function() {
+        try {
+          var cs = window.__currentStep || [];
+          for (var i = 0; i < cs.length; i++) {
+            if (cs[i]) cs[i].seq = i + 1;
+          }
+        } catch (e) {}
+      };
       if (window.self !== window.top) return;
+      // 顶层但面板门禁未开（正常访问，localStorage 开关未置位）→ 仅注册 message 监听用于嵌套 iframe
+      // 拾取聚合/转发，不构建面板 UI。
+      if (!__rolePanelUI) return;
       function build() {
       var old = document.getElementById('__rolePanel');
       if (old) old.remove();
@@ -2957,7 +3625,7 @@ public final class RoleElementPicker {
                 if (pageContent && pageContent.contains(a)) return 'page';
                 return null;
               }
-              var copyBtn = mkIconBtn(ICON.copy, '#1976d2', '复制代码（焦点在哪块就复制哪块）', function() {
+              var copyBtn = mkIconBtn(ICON.copy, '#2e7d32', '复制代码（焦点在哪块就复制哪块）', function() {
                 var ta = null, code = '';
                 try {
                   // 1) 焦点优先：焦点落在某块代码区/容器，跟随焦点；否则回退到当前激活 Tab
@@ -2998,7 +3666,17 @@ public final class RoleElementPicker {
                     if (!code) { status.textContent = '当前无可复制的页面元素'; return; }
                   }
                 } catch (e) {}
-                function ok() { status.textContent = '已复制 ✔'; copyBtn.title = '已复制'; }
+                function ok() {
+                  status.textContent = '已复制 ✔';
+                  status.style.color = '#00e676';
+                  status.style.fontWeight = 'bold';
+                  status.style.fontSize = '14px';
+                  status.style.background = 'rgba(0,230,118,.18)';
+                  status.style.borderRadius = '3px';
+                  status.style.padding = '1px 6px';
+                  status.style.textShadow = '0 0 6px rgba(0,230,118,.6)';
+                  copyBtn.title = '已复制';
+                }
                 try {
                   if (navigator.clipboard && navigator.clipboard.writeText) {
                     navigator.clipboard.writeText(code).then(ok, function() { fb(); });
@@ -3146,6 +3824,11 @@ public final class RoleElementPicker {
                 tabClass.style.borderBottom = (t === 'class') ? '2px solid #1e88e5' : '2px solid transparent';
                 tabStep.style.background = (t === 'step') ? '#1e1e1e' : '#2d2d2d';
                 tabStep.style.borderBottom = (t === 'step') ? '2px solid transparent' : '2px solid #1e88e5';
+                // 切换 Tab 时复位「复制」按钮状态（避免上一轮"已复制"残留提示误导用户）。
+                // 注意：ICON.copy 是内联 SVG 字符串，必须用 innerHTML 注入才能渲染成图标；
+                // 若误用 textContent，SVG 标签会被当成纯文本显示，复制按钮变成一个 XML 字符串（图标"不显示/显示异常"）。
+                if (copyBtn) { copyBtn.title = '复制'; copyBtn.innerHTML = ICON.copy; }
+                if (status) { status.textContent = '就绪'; status.style.color = '#43a047'; status.style.fontWeight = 'bold'; }
               }
               // 暴露给 Java 侧调用（扫描完成后自动切到"页面类"Tab，让用户即时看到生成的页面类代码）。
               window.__roleShowTab = showTab;
@@ -3257,6 +3940,8 @@ public final class RoleElementPicker {
               panel.appendChild(pageContent);
               panel.appendChild(classContent);
               panel.appendChild(stepContent);
+              // 注：window.__renumberStep 已在 START 顶层（iframe 早退 return 之前）无条件定义，
+              // 此处不再重复；保证顶层与 iframe 子文档的拾取依赖一致。
 
               // 候选清单渲染（节流到每帧一次）：按 pageClass 分组成子 Tab，每项带勾选框。
               // 后台标签/无头环境下 requestAnimationFrame 可能不触发，用 setTimeout 兜底保证一定会执行。
@@ -3290,14 +3975,42 @@ public final class RoleElementPicker {
                   // 关闭当前页（_closeOp 标记）也作为 step 内的一笔操作内联，不另成 step。
                   var picks = [];
                   var owner = '';
-                  for (var i = 0; i < all.length; i++) {
-                    var p = all[i] || {};
-                    var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig);
-                    if (!k || !selSet[k]) continue;
-                    if (!owner) owner = (p._pageClass) || (window.__rolePageName || '');
-                    picks.push(p);
+                  // 【关键修复"页面元素没有按顺序封装步骤"】
+                  // 旧实现遍历 all=window.__rolePicks（按「拾取发生先后」push 的全局候选序），再按 selSet 过滤。
+                  // 但 iframe 内元素经 postMessage 异步上送、syncPanelToBrowser 回灌，push 进 __rolePicks 的
+                  // 顺序可能与用户「点选/勾选」的先后不一致 → 封装出的 step 顺序错乱。
+                  // 用户意图应以「勾选顺序」为准：__currentStep 是按用户点击/勾选先后维护的选择集，
+                  // 故改为按 __currentStep 顺序遍历，每个勾选元素再从候选 all 中取完整 pick（含 framePath 等增强）。
+                  var _selOrder = window.__currentStep || [];
+                  var _byKey = {};
+                  for (var _bi = 0; _bi < all.length; _bi++) {
+                    var _bp = all[_bi] || {};
+                    var _bk = (typeof window.__mergeKey==='function') ? window.__mergeKey(_bp) : (_bp._sigKey || _bp._sig);
+                    if (_bk && !_byKey[_bk]) _byKey[_bk] = _bp;
+                  }
+                  var _pickedSeen = {};
+                  for (var _si2 = 0; _si2 < _selOrder.length; _si2++) {
+                    var _cp = _selOrder[_si2] || {};
+                    var _ck2 = (typeof window.__mergeKey==='function') ? window.__mergeKey(_cp) : (_cp._sigKey || _cp._sig);
+                    if (!_ck2 || _pickedSeen[_ck2]) continue;
+                    _pickedSeen[_ck2] = true;
+                    var _fp = _byKey[_ck2] || _cp;   // 优先候选里的完整 pick
+                    if (!owner) owner = (_fp._pageClass) || (_cp._pageClass) || (window.__rolePageName || '');
+                    picks.push(_fp);
                   }
                   if (!owner) owner = (window.__rolePageName || '');
+                  // 【关键修复"步骤序号不连续 / iframe 元素序号错乱"】
+                  // 旧逻辑直接把 picks 丢进 step，沿用各 pick 上残留的 seq：
+                  //   · iframe 内拾取的元素从不进顶层 __currentStep（self===top 守卫，见上方 message 监听），
+                  //     其 seq 恒为 undefined → 排序时被当作 0、挤到 step 最前，且生成器兜底 step.size()+1
+                  //     会造成「同一个 step 内序号重复 / 不连续」，表现为"中间取消一项后编号没重排对"。
+                  //   · 取消中间项再勾选其他项时，__currentStep 已重排，但 picks 是按 __rolePicks 全局序过滤，
+                  //     与选中序不一致，残留 seq 仍会错位。
+                  // 故在此按『过滤后的实际入选顺序』重新连续编号 seq=1..N，确保 step 内步骤序号恒连续、
+                  // iframe 元素也获得正确序号、且"取消中间重排"语义成立。
+                  for (var _pi = 0; _pi < picks.length; _pi++) {
+                    if (picks[_pi]) picks[_pi].seq = _pi + 1;
+                  }
                   window.__steps.push({ pageClass: owner, picks: picks });
                   window.__currentStep = [];   // 已封装，清空选择集
                   // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），否则不按 Esc 直接封装时绿框会残留。
@@ -3351,6 +4064,11 @@ public final class RoleElementPicker {
                   var subBar = document.getElementById('__roleSubTabBar');
                   var listEl = document.getElementById('__rolePickList');
                   if (!subBar || !listEl) return;  // 面板尚未挂载，等下次拾取/恢复时再渲染
+                  // iframe（含嵌套 frame）内的拾取元素会经 postMessage 逐层上送顶层，
+                  // 由顶层 message 监听（见 START_SCRIPT 末尾）push 进【顶层】window.__rolePicks 聚合。
+                  // 因此面板只需渲染顶层 window.__rolePicks 即可，无需（也不能）跨域遍历 window.frames
+                  // —— file:// 场景下 iframe origin 为 "null"，主框架访问子 frame 的 window.__rolePicks 会被
+                  // 浏览器同源策略直接拦截（"Blocked a frame with origin null"），导致面板反而为空。
                   var picks = window.__rolePicks || [];
                   // 统计各 pageClass 候选数，用于子 Tab 命名与计数（命名以 page class）。
                   var counts = {};
@@ -3629,11 +4347,42 @@ public final class RoleElementPicker {
                           if (idx >= 0) window.__currentStep.splice(idx, 1);
                           rowEl.style.background = '';
                         }
+                        // 勾选/取消后重排连续编号：取消中间项，后续项自动前移。
+                        window.__renumberStep();
                         // 选中变化后同步「已选计数」与垃圾桶按钮高亮（轻量，仅刷新工具栏）
                         if (typeof refreshSelInfo === 'function') refreshSelInfo();
+                        // 重排后刷新所有行的步骤序号显示（让"取消中间→后续前移"在面板里可见）。
+                        // 用 __renderPicks 轻量重渲染候选列表即可，避免手工逐行改文本。
+                        try { if (typeof window.__renderPicks === 'function') window.__renderPicks(); } catch (_) {}
                       };
                     })(p, cb, row);
                     var txt = document.createElement('span');
+                    // 显示步骤序号（seq）：勾选入选的元素才有连续编号，未入选为『-』，
+                    // 让用户在面板里直接看到"第几步"，取消中间项后编号实时前移。
+                    // 【关键修复"嵌套 iframe 内元素序号显示 -"】
+                    // 嵌套 iframe（grandchild）内的 pick 经 postMessage 逐层上送到顶层时，顶层
+                    // __currentStep 持有的元素对象是顶层 message 监听 push 的拷贝（结构化克隆），
+                    // 而 __rolePicks 里同时可能存在 syncPanelToBrowser 从 javaPickBySig 灌回的另一份
+                    // 拷贝。两份拷贝的 _sigKey 在各自上下文的 __sigKey 算出来一致（含 frameTwo URL），
+                    // 但若任一帧调用 __sigKey 时 _sigKey 已被固化（"已固化则直接返回"分支）而 iframe 内的
+                    // 固化值用的是当时 frame 的 location 兜底，则可能在跨 frame 传递中产生 key 漂移。
+                    // 这里主比较仍用 __mergeKey（_sigKey 优先）；若任一帧都没找到匹配，则退化到仅按
+                    // 元素定位器签名 _sig 比较（不含页面类/URL），因同 DOM 元素的 _sig 跨 frame 一致，
+                    // 必能命中对应入选记录，使嵌套 iframe 元素也能获得正确的步骤序号。
+                    var _selMk = (function(){ try { return (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig); } catch(_){ return null; } })();
+                    var _selSig = p._sig || '';
+                    var _seqNo = '-';
+                    if (_selMk || _selSig) {
+                      var _cset = window.__currentStep || [];
+                      for (var _si = 0; _si < _cset.length; _si++) {
+                        var _cur = _cset[_si];
+                        var _ck = (function(){ try { return (typeof window.__mergeKey==='function') ? window.__mergeKey(_cur) : (_cur && (_cur._sigKey || _cur._sig)); } catch(_){ return ''; } })();
+                        if (_ck && _ck === _selMk) { _seqNo = (_si + 1); break; }
+                        // 退化匹配：嵌套 iframe 元素跨 frame 时 _sigKey 可能因 URL 兜底而不同，
+                        // 但同 DOM 元素的 _sig（定位器签名）跨 frame 恒等，故以此作为兜底必命中。
+                        if (_selSig && _cur && _cur._sig === _selSig) { _seqNo = (_si + 1); break; }
+                      }
+                    }
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
                     if (p.name) s += ' name="' + p.name + '"';
@@ -3645,7 +4394,8 @@ public final class RoleElementPicker {
                     if (p.download) s += ' [download]';
                     if (p.hover) s += ' [hover]';
                     if (p.dblClick) s += ' [dbl]';
-                    txt.textContent = s;
+                    // 步骤序号前缀必须放在最后赋值，避免被上面的 txt.textContent = s 覆盖（序号丢失的根因）。
+                    txt.textContent = '[' + _seqNo + '] ' + s;
                     txt.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-all;';
                     row.appendChild(cb); row.appendChild(txt);
                     // 记录复选框与签名引用，供 __applySelection 增量刷新（不重建列表）。
@@ -3668,6 +4418,8 @@ public final class RoleElementPicker {
                         vis.forEach(function(pk) { if (pk) { var s = (typeof window.__mergeKey==='function')?window.__mergeKey(pk):(pk._sigKey||pk._sig); if (s) visSigs[s] = true; } });
                         window.__currentStep = (window.__currentStep || []).filter(function(x) { var sk=(typeof window.__mergeKey==='function')?window.__mergeKey(x):(x&&(x._sigKey||x._sig)); return !(sk && visSigs[sk]); });
                       }
+                      // 全选/全不选后重排连续编号。
+                      window.__renumberStep();
                     }
                     selAllCb.onclick = function(e) {
                       e && e.stopPropagation && e.stopPropagation();
@@ -3689,7 +4441,17 @@ public final class RoleElementPicker {
                         if (s && cset.some(function(x){ return __mkey2(x) === s; })) sel++;
                       }
                       selInfo.textContent = '已选 ' + sel + ' / ' + vis.length;
-                      selAllCb.checked = (vis.length > 0 && sel === vis.length);
+                      // 【关键修复"删除全部后全选 checkbox 未复位"】
+                      // 无可见元素时（如删除全部选中项后 __rolePicks 被清空），全选框应【禁用且未勾选】，
+                      // 而不是保持可勾选/勾选状态；否则用户看到的是"还能全选、已选未清空"的错觉。
+                      // 有元素时恢复可用，并仅在"可见项全部已选"时勾选。
+                      if (vis.length === 0) {
+                        selAllCb.disabled = true;
+                        selAllCb.checked = false;
+                      } else {
+                        selAllCb.disabled = false;
+                        selAllCb.checked = (sel === vis.length);
+                      }
                     };
                     refreshSelInfo();
                   } catch (e) {}
@@ -3802,13 +4564,51 @@ public final class RoleElementPicker {
                 if (!page.isClosed()) start(page, scanNls);
                 int added = -1;
                 try {
-                    Object r = page.evaluate(
-                            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage() : -1; } catch(e){ return -1; } })()");
-                    if (r instanceof Number) added = ((Number) r).intValue();
+                    // 【关键修复"整页扫描未穿透 iframe"】
+                    // 旧实现只对主页面 frame 执行 __roleScanPage()，其内部虽有"遍历 els 遇到 iframe 元素
+                    // 递归进入 contentWindow 扫描"的逻辑，但 file:// 下主 frame 的 JS 访问 iframe 的
+                    // contentWindow.document 会抛跨源 SecurityError（origin=null），递归被 catch 吞掉、
+                    // iframe 内元素一个都扫不到（实测 frameOne/frameTwo 的 __rolePicks 恒为 0）。
+                    // 修复：由 Java 侧对 page.frames() 的【每个 frame】分别执行其 own __roleScanPage(null)
+                    // （Playwright 的 frame.evaluate 走协议层，不受浏览器同源策略限制，能访问任意层 iframe
+                    // 的 __roleScanPage），并在该 frame 上下文扫描、回传，与手动点选同链路。
+                    added = 0;
+                    for (com.microsoft.playwright.Frame f : page.frames()) {
+                        if (f == null) continue;
+                        try {
+                            Object r = f.evaluate(
+                                    "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                            if (r instanceof Number) {
+                                int n = ((Number) r).intValue();
+                                if (n > 0) added += n;
+                            }
+                        } catch (Exception fe) {
+                            log.warn("[picker][scan] frame 扫描失败（url={}）：{}", f.url(), fe.getMessage());
+                        }
+                    }
+                    // 主框架扫描已在上面 frame 循环中覆盖（page.mainFrame() 也在 page.frames() 内）。
+                    // 跨 frame 扫描结果经各自 console 兜底回传 Java；此处再触发一次 Java 内存态同步/快照
+                    // 合并，确保 iframe 内回传的 pick 也能进入权威内存态。
                 } catch (Exception e) {
                     log.warn("[picker][scan] 整页扫描执行失败：{}", e.getMessage());
                 }
                 log.info("[picker][scan] 整页扫描完成：新增 {} 个语义角色元素", added);
+                // 【关键修复"页面元素只有主框架元素"】
+                // 扫描出的 iframe 元素 push 进各自 iframe 的 __rolePicks（面板渲染的是主框架 __rolePicks，
+                // 看不到 iframe 的；postMessage 上送顶层又受 __rolePanelUI 门禁/监听时机影响不可靠）。
+                // 修复：由 Java 侧遍历 page.frames() 读回各 iframe 的 __rolePicks（Playwright 协议访问
+                // 不受 file:// 跨源限制），显式合并进【主框架】window.__rolePicks 并触发渲染——
+                // 使扫描后主框架 __rolePicks 立即包含全部 iframe 元素，面板"页面元素"Tab 与即时生成的
+                // 页面类都显示完整数量（Java 内存态 40 个 → 面板也 40 个，而非仅主框架 32 个）。
+                try {
+                    mergeFramePicksToMain(page, javaPickBySig);
+                    // 再把权威内存态强制回灌主框架（pageClasses=null 同步全部），双保险。
+                    if (!page.isClosed() && !javaPickBySig.isEmpty()) {
+                        syncPanelToBrowser(page, null, javaPickBySig);
+                    }
+                } catch (Exception syncE) {
+                    log.warn("[picker][scan] 扫描后同步 iframe 元素到面板失败：{}", syncE.getMessage());
+                }
                 // 扫描完成后【立即生成页面类代码】，无需等到点 ⏹ 停止：直接同步读取浏览器侧
                 // window.__rolePicks（readPickSnapshot 走 page.evaluate，比依赖异步的 __roleOnPick 回传更可靠），
                 // 按 pageClass 分组生成页面类并填入"页面类"Tab，同时自动切到该 Tab 让用户即时看到。
@@ -3838,6 +4638,34 @@ public final class RoleElementPicker {
                 active[0] = true;
                 String regionNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
                 if (!page.isClosed()) start(page, regionNls);
+                // 【关键修复"区域选非 frame 区域却把 frame 扫出来"】
+                // ① 浏览器侧：__roleStartRegionSelect 只清【主框架】__rolePicks，若此前做过整页扫描，iframe 的
+                // __rolePicks 仍残留 frame 元素；区域扫描后的 mergeFramePicksToMain 会把这些残留合并进主框架。
+                // ② Java 权威态：即便清空浏览器侧，主循环 syncPanelToBrowser 每 ~1s 会把 javaPickBySig（整页
+                // 扫描残留：placeholder、iframe 内元素等）同步回主框架 __rolePicks → 面板/页面类仍出现不属于
+                // 本次区域的元素（用户日志：区域选 #sec-checkbox 却带出 iframe 1/iframe 内按钮/请输入姓名）。
+                // 修复：进入区域点选态前，既清空【所有 frame】的 __rolePicks/__rolePickSigs，也清空【Java
+                // 权威内存态 javaPickBySig + STATE_DELETED】，使本次区域扫描结果 = 纯本次选中区域元素，
+                // 不再串入/复活任何过往整页扫描残留。
+                try {
+                    for (com.microsoft.playwright.Frame f : page.frames()) {
+                        if (f == null) continue;
+                        try {
+                            f.evaluate("() => { window.__rolePicks = []; window.__rolePickSigs = {}; }");
+                        } catch (Exception fe) { /* 个别 frame 跨源受限可忽略 */ }
+                    }
+                } catch (Exception cE) {
+                    log.warn("[picker][scanRegion] 清空各 frame 拾取残留失败：{}", cE.getMessage());
+                }
+                if (!javaPickBySig.isEmpty()) {
+                    javaPickBySig.clear();
+                }
+                try {
+                    java.util.Set<String> delKeys = STATE_DELETED.get(page.hashCode());
+                    if (delKeys != null) delKeys.clear();
+                } catch (Exception dE) {
+                    log.warn("[picker][scanRegion] 清空已删集合失败：{}", dE.getMessage());
+                }
                 try {
                     page.evaluate("(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()");
                 } catch (Exception e) {
@@ -3853,6 +4681,16 @@ public final class RoleElementPicker {
                 // 业务区域元素已同步进入 window.__rolePicks，这里与"整页扫描"一样读取快照并生成页面类，
                 // 填充"页面类"Tab 并切到该 Tab，使用户即时看到——否则区域扫描只会收集元素、却从不会生成页面类。
                 // 每次点选区域都会重算，便于在多个区域间累加后逐步更新页面类。
+                // 【关键修复"区域扫描未穿透 iframe"】
+                // 区域扫描的 iframe 内元素（postMessage 穿透）进入【各自 iframe】的 __rolePicks，而
+                // readPickSnapshot 读的是【主框架】__rolePicks —— 不合并的话页面类/面板只有主框架区域元素，
+                // iframe 内元素一个都看不到（表象：区域扫描"穿透不了 iframe"）。
+                // 修复：与整页扫描一致，先由 Java 侧把各 iframe 的 __rolePicks 合并进主框架再读快照。
+                try {
+                    mergeFramePicksToMain(page, javaPickBySig);
+                } catch (Exception mE) {
+                    log.warn("[picker][regionScanned] 合并 iframe 元素到主框架失败：{}", mE.getMessage());
+                }
                 try {
                     PickSnapshot snap = readPickSnapshot(page);
                     if (snap != null && !snap.entries.isEmpty()) {
@@ -4127,20 +4965,10 @@ public final class RoleElementPicker {
         // 故 start() 置位开关后，主动把拾取监听重挂到当前所有已存在的子 frame（同源可 evaluate；
         // 跨源 frame 因安全限制无法注入，按设计跳过——跨源 iframe 内的元素本就不经主框架拾取）。
         try {
-            for (Frame f : page.frames()) {
-                if (f == page.mainFrame()) continue;
-                // 已加载的子 frame 在 start() 之前就触发过 load（彼时会话开关尚未置位，门控脚本未挂监听），
-                // 其 window 上既无 __roleReenable 也无完整库。直接在该 frame 内重跑门控初始化脚本：
-                // 脚本会定义 __roleGatedStart/__roleReenable 等入口，并因会话开关现已 ON 而立即重挂拾取监听与面板，
-                // 使 iframe 内点击可被拾取、postMessage 上送顶层（修复"iframe 在 start 前已加载导致拾取不到"）。
-                // 跨源 frame 受安全限制 evaluate 会抛异常，按设计跳过（其内元素不经主框架拾取）。
-                try {
-                    f.evaluate(gatedPickerInitScript(nlsReverseJson));
-                    log.info("[picker][start] 子 frame '{}' 注入门控脚本成功（iframe 拾取已可用）", f.name());
-                } catch (Exception ex) {
-                    log.warn("[picker][start] 子 frame '{}' 注入失败（跨源/受限）：{}", f.name(), ex.getMessage());
-                }
-            }
+            // 复用统一注入入口：① 对当前已存在的所有子 frame 立即补挂（修复"start 前已加载的 iframe 拾取不到"）；
+            // ② 注册 onFrameAttached 监听，使 start 之后动态创建的 iframe 一附加即自动注入拾取脚本
+            //    （修复"动态 iframe 内元素点不到、生成不出 switchToFrame 包裹 step"）。
+            registerFrameInjection(page, nlsReverseJson);
         } catch (Exception ignore) {}
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
@@ -4279,6 +5107,11 @@ public final class RoleElementPicker {
         java.util.Set<String> seenKeys = new java.util.HashSet<>();
         List<Frame> allFrames;
         try { allFrames = page.frames(); } catch (Exception e) { allFrames = new ArrayList<>(); }
+        // 复合嵌套 frame（frame 内嵌 frame 多层）：同一条拾取可能被多个 frame 的 window.__rolePicks 收录
+        // （如最深层 iframe 内元素，其 pick 会同时出现在最深层与若干祖先 frame）。跨 frame 去重时若浅层先入，
+        // 保留的就是浅层 framePath（少算层级）。故按【frame 深度降序】遍历，让最深层 frame 的 pick 先入 result，
+        // 浅层副本被 seenKeys 去重跳过，从而 framePath 始终是最深、最完整的嵌套路径。
+        allFrames.sort((a, b) -> Integer.compare(frameDepth(b), frameDepth(a)));
         for (Frame fr : allFrames) {
             List<String> fp = computeFramePath(page, fr);   // 自顶向下的 iframe 选择器链（主框架为空）
             Object raw;
@@ -4325,9 +5158,24 @@ public final class RoleElementPicker {
         return true;
     }
 
-    /** 计算某 frame 的嵌套路径（自顶向下），主框架返回 null；优先 name / 稳定 id / 退化为 iframe:nth-of-type。
+    /** frame 嵌套深度：主框架为 0，其直接子 frame 为 1，frame 内嵌 frame 逐层 +1。用于 getEntries 深度降序遍历，
+     *  保证最深层 frame 的拾取先入聚合结果，浅层副本被去重跳过，framePath 始终最完整。 */
+    private static int frameDepth(Frame fr) {
+        int d = 0;
+        try {
+            Frame cur = fr;
+            while (cur != null && cur.parentFrame() != null) {
+                d++;
+                cur = cur.parentFrame();
+            }
+        } catch (Exception ignore) {}
+        return d;
+    }
+
+    /** 计算某 frame 的嵌套路径（自顶向下），主框架返回 null；优先 name / 稳定 id / src 片段 / 退化为 iframe:nth-of-type。
      *  主框架判定改用 page.mainFrame()（file:// 等场景下 iframe 的 parentFrame() 可能误返回 null，
-     *  用 mainFrame 参照可稳定区分顶层与嵌套 frame）。 */
+     *  用 mainFrame 参照可稳定区分顶层与嵌套 frame）。
+     *  标签形态与浏览器侧 __framePathOf 保持一致，供 RoleElementStepGenerator.frameNameOf 通用解析。 */
     private static List<String> computeFramePath(Page page, Frame fr) {
         try {
             if (fr == null || fr == page.mainFrame()) return null;   // 主框架
@@ -4343,6 +5191,16 @@ public final class RoleElementPicker {
                     if (sel == null) {
                         String id = fe.getAttribute("id");
                         if (id != null && !id.trim().isEmpty() && isStableIdJava(id)) sel = "#" + id.trim();
+                    }
+                    if (sel == null) {
+                        // 无 name / 无稳定 id：用 src 路径片段作为稳定标签（双通道：page.frame 兜底 + CSS frameLocator）
+                        String src = fe.getAttribute("src");
+                        if (src != null && !src.trim().isEmpty()) {
+                            String u = src.trim();
+                            int cut = u.indexOf("//");
+                            String frag = cut >= 0 ? u.substring(u.indexOf('/', cut + 2)) : u;
+                            sel = "iframe[src*=\"" + frag + "\"]";
+                        }
                     }
                     if (sel == null) sel = "iframe";
                     path.add(0, sel);
@@ -4363,6 +5221,43 @@ public final class RoleElementPicker {
      * 未被可靠填充，导致点击时面板列表看不到已拾元素。此处以 Java 侧为准，保证面板实时反映已拾内容。
      * 仅用于面板展示；代码生成仍走 javaPickBySig（见 runPickerCommand），不受影响。
      */
+    /**
+     * 【关键修复"整页/区域扫描后 iframe 内元素不进面板"】
+     * 由 Java 侧遍历 page.frames()，读回各 iframe 自己的 window.__rolePicks（Playwright 协议访问不受
+     * file:// 跨源限制），按 sigKey 去重后显式合并进【主框架】window.__rolePicks 并触发渲染，使面板与
+     * readPickSnapshot（读主框架）都能看到 iframe 内元素。整页扫描与区域扫描共用。
+     */
+    private static void mergeFramePicksToMain(Page page, LinkedHashMap<String, RoleEntry> javaPickBySig) {
+        if (page == null || page.isClosed()) return;
+        for (com.microsoft.playwright.Frame f : page.frames()) {
+            if (f == null || f.equals(page.mainFrame())) continue;
+            try {
+                Object frameJson = f.evaluate("() => JSON.stringify(window.__rolePicks||[])");
+                if (frameJson instanceof String && !((String) frameJson).isEmpty()) {
+                    final String j = (String) frameJson;
+                    page.evaluate("(function(){"
+                            + " try {"
+                            + "   var arr = " + j + ";"
+                            + "   window.__rolePicks = window.__rolePicks || [];"
+                            + "   window.__rolePickSigs = window.__rolePickSigs || {};"
+                            + "   arr.forEach(function(p){"
+                            + "     if (!p) return;"
+                            + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(p) : (p._sigKey||p._sig||'');"
+                            + "     if (k) { if (window.__rolePickSigs[k]) return; window.__rolePickSigs[k] = true; p._sigKey = k; }"
+                            + "     window.__rolePicks.push(p);"
+                            + "   });"
+                            + "   if (window.__renderPicks) window.__renderPicks();"
+                            + " } catch(e){ console.log('[scan][merge-frame-err] ' + (e&&e.message)); }"
+                            + "})();");
+                }
+            } catch (Exception fe) {
+                // url() 可能触发跨 frame 异常，捕获即可
+                try { log.warn("[picker] 合并 iframe 拾取到主框架失败（url={}）：{}", f.url(), fe.getMessage()); }
+                catch (Exception ignore) {}
+            }
+        }
+    }
+
     /**
      * 把 Java 权威拾取内存态（javaPickBySig）按目标页 pageClass 过滤后同步到该页浏览器面板展示数组
      * window.__rolePicks 并触发渲染。
@@ -4478,7 +5373,12 @@ public final class RoleElementPicker {
                     + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
                     + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
                     + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
-                    + " if (typeof window.__roleGatedStart === 'function') { window.__roleGatedStart(); } else { " + START_SCRIPT + " }");
+                    + "             if (typeof window.__roleGatedStart === 'function') { window.__roleGatedStart(); } else { " + START_SCRIPT + " }");
+            // 自愈保活不仅要重挂主框架监听，还须对所有 frame（含弹窗/新页面内的任意嵌套 iframe）重新注入拾取脚本。
+            // 否则"打开新页面 / window.open 弹窗 / 链接点击新标签"等场景，其内嵌 iframe 在自愈时不会被重新注入，
+            // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，
+            // 与 onFrameNavigated 兜底同源，覆盖 frame 内嵌 frame 的复合情况。
+            registerFrameInjection(page, nlsReverseJson);
         } catch (Exception ignore) {}
     }
 
@@ -4706,6 +5606,34 @@ public final class RoleElementPicker {
             "id", "css", "i18n", "text", "title", "placeholder", "label", "testid", "altText"));
 
     /**
+     * 判断 javaPickBySig 权威内存态（mem）是否需要替换浏览器读取的步骤 pick（p）。
+     * 覆盖四类增强字段，任一存在差异即替换（幂等，只往"更完整/点击后"方向收敛）：
+     *   · checked/setCheckedTarget：final 不可变，无法 merge——若 mem 已反映"点击后状态"而 p 是"点击前状态"，
+     *     必须整体替换，否则生成 setCheckedTarget 为点击前值，回放时 checkbox 勾选结果与用户点击后的页面状态相反
+     *     （表现为"点击未勾选 checkbox 却生成 setChecked(false)，没选择上"）。
+     *   · framePath：mem 含 backfill（iframe 内 console 通道），p 可能为空 → 需替换以生成 switchToFrame。
+     *   · dialog / popup：mem 含 Java onDialog/onPopup 双保险标记，p 可能缺失。
+     */
+    private static boolean needsReplaceByMemory(RoleEntry p, RoleEntry mem) {
+        if (p == null || mem == null || p == mem) return false;
+        // checked 差异（final 不可 merge）
+        if (!java.util.Objects.equals(p.getChecked(), mem.getChecked())) return true;
+        if (!java.util.Objects.equals(p.getSetCheckedTarget(), mem.getSetCheckedTarget())) return true;
+        // framePath：p 缺、mem 有 → 替换；两者皆非空且相同则不必
+        List<String> inFp = p.getFramePath();
+        List<String> memFp = mem.getFramePath();
+        boolean inEmpty = (inFp == null || inFp.isEmpty());
+        boolean memEmpty = (memFp == null || memFp.isEmpty());
+        if (inEmpty && !memEmpty) return true;
+        if (!inEmpty && !memEmpty && !inFp.equals(memFp)) return true;
+        // dialog
+        if (!p.isDialog() && mem.isDialog()) return true;
+        // popup
+        if (!p.isPopup() && mem.isPopup()) return true;
+        return false;
+    }
+
+    /**
      * 计算拾取回传的权威去重键：
      * - 定位器唯一型策略（i18n/id/css/text/title/...）按「去索引的稳定 locatorKey」去重，
      *   与页面字段 RoleElementPageGenerator.locatorKey 语义一致（均不含 #index）。
@@ -4727,6 +5655,51 @@ public final class RoleElementPicker {
         }
         if (sigKey != null) return String.valueOf(sigKey);
         return sig != null ? String.valueOf(sig) : "";
+    }
+
+    /**
+     * 把一次拾取回传（incoming）写入权威内存态 map，并作「增强字段合并」而非直接覆盖。
+     *
+     * <p>一条 pick 可能经两条通道先后到达：① 绑定桥 __roleOnPick（exposeBinding，可拿到
+     * source.frame() 做 framePath 回补，且能拿到 pageClass）；② 控制台兜底 __roleOnPick::...
+     * （onConsoleMessage）。两条通道的 RoleEntry 是各自独立 parsePick 出来的对象，若直接 put 覆盖，
+     * 后到者会把先到者的已补全字段（framePath / dialog / popup …）抹掉，最终生成代码缺 switchToFrame、
+     * 缺 acceptAlert。
+     *
+     * <p>故此处保留「先到者为基线、后到者补齐空缺」：incoming 优先作为写入对象，但它缺失而已有条目
+     * 已具备的增强字段（框架路径、对话框标记、弹窗标记）会被继承回来，使两次回传互为补充而非互相抵消。
+     *
+     * @return 最终写入 map 的 RoleEntry（供调用方日志使用）
+     */
+    private static RoleEntry mergePickIntoMap(LinkedHashMap<String, RoleEntry> map, String key, RoleEntry incoming) {
+        if (map == null || key == null || incoming == null) return incoming;
+        RoleEntry existing = map.get(key);
+        if (existing != null && existing != incoming) {
+            // 框架路径：取「非空且更长（嵌套更深、更具体）」的那条，避免任一通道（绑定/控制台）
+            // 因各自 parsePick 出的 RoleEntry 独立、互相覆盖时把已补全的 framePath 抹掉。
+            // 例：控制台通道先到（__enrichState 已含 framePath）而绑定通道后到（computeFramePath 回补），
+            // 或反之——二者皆非空时以更深的链为准；任一为空则继承另一方，杜绝「iframe 元素生成缺 switchToFrame」。
+            List<String> inFp = incoming.getFramePath();
+            List<String> exFp = existing.getFramePath();
+            boolean inEmpty = (inFp == null || inFp.isEmpty());
+            boolean exEmpty = (exFp == null || exFp.isEmpty());
+            if (inEmpty && !exEmpty) {
+                incoming.setFramePath(exFp);
+            } else if (!inEmpty && !exEmpty && exFp.size() > inFp.size()) {
+                // 旧条目链更深（更具体）→ 用旧链；同深时保留新条目（已是 incoming）
+                incoming.setFramePath(exFp);
+            }
+            // 对话框标记：任一为 true 即视为触发（onDialog 回写 / 浏览器侧 hook 检测）
+            if (!incoming.isDialog() && existing.isDialog()) {
+                incoming.setDialog(true);
+                if (existing.getDialogType() != null) incoming.setDialogType(existing.getDialogType());
+                if (existing.getDialogAction() != null) incoming.setDialogAction(existing.getDialogAction());
+            }
+            // 弹窗标记：任一为 true 即视为触发（onPopup 回写）
+            if (!incoming.isPopup() && existing.isPopup()) incoming.setPopup(true);
+        }
+        map.put(key, incoming);
+        return incoming;
     }
 
     /**
@@ -4838,6 +5811,12 @@ public final class RoleElementPicker {
             int roleCount = parseCount(m.get("count"));
             roleEntry.setCount(roleCount);
             roleEntry.setFramePath(parseFramePath(m.get("framePath")));
+            // 透传「归属空间」与「连续编号」：space 标注元素位于哪个 iframe/shadow，seq 为用户勾选连续序号。
+            String rSpace = asString(m.get("space"));
+            if (rSpace != null && !rSpace.isBlank()) roleEntry.setSpace(rSpace);
+            roleEntry.setShadowPath(parseFramePath(m.get("shadowPath")));
+            roleEntry.setSeq(parseSeq(m.get("seq")));
+            roleEntry.setPageInstanceId(parseInstanceId(m.get("_pageInstanceId")));
             return roleEntry;
         }
         String selector = buildSelector(strategy, m);
@@ -4852,6 +5831,12 @@ public final class RoleElementPicker {
         int nonRoleCount = parseCount(m.get("count"));
         entry.setCount(nonRoleCount);
         entry.setFramePath(parseFramePath(m.get("framePath")));
+        // 透传「归属空间」与「连续编号」：space 标注元素位于哪个 iframe/shadow，seq 为用户勾选连续序号。
+        String nrSpace = asString(m.get("space"));
+        if (nrSpace != null && !nrSpace.isBlank()) entry.setSpace(nrSpace);
+        entry.setShadowPath(parseFramePath(m.get("shadowPath")));
+        entry.setSeq(parseSeq(m.get("seq")));
+        entry.setPageInstanceId(parseInstanceId(m.get("_pageInstanceId")));
         return entry;
     }
 
@@ -4924,6 +5909,28 @@ public final class RoleElementPicker {
         try {
             int i = (v instanceof Number) ? ((Number) v).intValue() : Integer.parseInt(v.toString().trim());
             return i > 0 ? i : 1;
+        } catch (NumberFormatException e) {
+            return 1;
+        }
+    }
+
+    /** 解析用户勾选连续序号（seq）：缺省 / 非数值 / 非正数均归一为 0（未编号）。 */
+    private static int parseSeq(Object v) {
+        if (v == null) return 0;
+        try {
+            int i = (v instanceof Number) ? ((Number) v).intValue() : Integer.parseInt(v.toString().trim());
+            return i > 0 ? i : 0;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** 解析页面实例序号；缺省 / 非法 / <1 均归一为 1（首个实例）。 */
+    private static int parseInstanceId(Object v) {
+        if (v == null) return 1;
+        try {
+            int i = (v instanceof Number) ? ((Number) v).intValue() : Integer.parseInt(v.toString().trim());
+            return i >= 1 ? i : 1;
         } catch (NumberFormatException e) {
             return 1;
         }
@@ -5236,7 +6243,7 @@ public final class RoleElementPicker {
         final java.util.Set<Page> navigatedPages =
                 java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
         // 把根页类名暴露给面板标题展示（新页面在 followPage 里设置），并持久化以便整页重建后恢复。
-        page.evaluate("window.__rolePageName = " + GSON.toJson(pageClassName) + ";"
+        page.evaluate("window.__rolePageName = " + GSON.toJson(pageClassName) + "; window.__currentPageInstance = null;"
                 + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(pageClassName) + ");}catch(e){}");
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
@@ -5403,7 +6410,49 @@ public final class RoleElementPicker {
                                     java.util.Set<Page> navigatedPages, Object closeSignal,
                                     LinkedHashMap<String, RoleEntry> javaPickBySig) {
         // 弹窗（window.open / target=_blank 等）跟随：复用 followPage 把 inspector 跟随到新页面。
-        page.onPopup(popup -> followPage(page, popup, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig));
+        page.onPopup(popup -> {
+            // 新页面弹出时，把"最近一次拾取的元素"标记为 popup（其触发动作会打开新页），
+            // 生成 step 时包装为 switchToNewPage(() -> element.click())（对齐 page.pause() 的 codegen 输出）。
+            try {
+                String sig = page.evaluate("window.__lastPickSig || ''").toString();
+                if (sig != null && !sig.isEmpty()) {
+                    RoleEntry e = javaPickBySig.get(sig);
+                    if (e != null) { e.setPopup(true); log.info("[picker] onPopup 捕获新页面，回写最近拾取元素 popup 标记：{}", sig); }
+                }
+            } catch (Exception ex) { log.warn("[picker] onPopup 标记失败（已忽略）：{}", ex.getMessage()); }
+            followPage(page, popup, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+        });
+        // 原生对话框（alert/confirm/prompt）捕获：Playwright 官方机制，不依赖浏览器侧 JS hook 的脆弱时序。
+        // dialog 出现时，把"最近一次拾取的元素"（浏览器侧 window.__lastPickSig）标记为 dialog 并回写 Java 权威内存态，
+        // 使其生成 step 时前置插桩 acceptAlert/dismissAlert（对齐 page.pause() 的 codegen 输出）。
+        page.onDialog(dialog -> {
+            try {
+                // 先关闭 dialog（alert 接受、confirm/prompt 拒绝），避免阻塞拾取流程。
+                // 必须在 page.evaluate 之前处理：Playwright 在 dialog 仍显示时调用 evaluate 会自动处理 dialog，
+                // 导致随后的显式 accept/dismiss 报 "No dialog is showing"（日志曾出现的告警）。
+                if (dialog != null) {
+                    String t = dialog.type() != null ? dialog.type().toLowerCase() : "alert";
+                    if ("confirm".equals(t) || "prompt".equals(t)) dialog.dismiss();
+                    else dialog.accept();
+                }
+                // 再读 sig 回写 Java 内存态（此时 dialog 已处理，evaluate 安全；浏览器侧 __rolePickClick
+                // 的 setTimeout(0) 也会经 __roleOnPick 回传带 dialog 标记的元素，二者幂等）。
+                String sig = page.evaluate("window.__lastPickSig || ''").toString();
+                if (sig != null && !sig.isEmpty()) {
+                    RoleEntry e = javaPickBySig.get(sig);
+                    if (e != null) {
+                        String type = (dialog != null && dialog.type() != null) ? dialog.type().toLowerCase() : "alert";
+                        e.setDialog(true);
+                        e.setDialogType(type);
+                        // alert 默认 accept；confirm/prompt 默认 dismiss（与浏览器侧 hook 约定一致）
+                        e.setDialogAction("confirm".equals(type) || "prompt".equals(type) ? "dismiss" : "accept");
+                        log.info("[picker] onDialog 捕获 {}，回写最近拾取元素 dialog 标记：{}", type, sig);
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn("[picker] onDialog 处理异常（已忽略）：{}", ex.getMessage());
+            }
+        });
         // 当前页面关闭监听：若关闭的是弹窗，把 inspector 回退到父页（默认页面）并重建面板，
         // 使单一 inspector 回到原页面继续拾取（对齐 page.pause()：关掉弹出的标签页后 inspector 不消失）。
         // 多页面模型下每个页面保留各自独立的拾取（不合并），故此处仅重建父页面板、不回写子页数据。
@@ -5594,7 +6643,11 @@ public final class RoleElementPicker {
         //      派生时排除本页当前类名自身，避免 pageClassNameFromUrl 去重把同名类误加成 "Xxx2"。
         page.onFrameNavigated(frame -> {
             try {
-                if (frame != page.mainFrame()) return;   // 仅关注主框架，忽略 iframe
+                if (frame != page.mainFrame()) {
+                    // 子框架（iframe）整页导航的重新注入已统一由 registerFrameInjection 的 onFrameNavigated
+                    // 处理（持有正确的 nls 反向表），此处不再重复，避免两处逻辑分散与 nls 不一致。
+                    return;
+                }
                 log.info("[picker][nav] 触发 onFrameNavigated：page={} active[0]={}", page.url(), active[0]);
                 // 仅当该页属于本次拾取会话（有快照）才处理；其它无关页面 snapshots 为 null 自然跳过。
                 // current[0] 只决定"正在操作的页面"，不影响各页自身面板状态的恢复。
@@ -5935,7 +6988,7 @@ public final class RoleElementPicker {
             if (opener != null && !opener.isClosed()) {
                 opener.evaluate("try{ window.__currentStep = []; }catch(e){}");
             }
-            newPage.evaluate("window.__rolePageName = " + GSON.toJson(cls) + ";"
+            newPage.evaluate("window.__rolePageName = " + GSON.toJson(cls) + "; window.__currentPageInstance = null;"
                     + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(cls) + ");}catch(e){}");
             // 跨源/新页面：localStorage 往往为空或不可写，若直接跑 PANEL_SCRIPT 会因
             // __rolePanelEnabled!=='1' 提前 return，导致新页面没有面板。故显式置位开关，
@@ -6239,6 +7292,45 @@ public final class RoleElementPicker {
     private static LinkedHashMap<String, String> buildStepCode(PickSnapshot snap, String packageName, String stepClassName) {
         LinkedHashMap<String, String> out = new LinkedHashMap<>();
         if (snap == null) return out;
+        // 【关键修复"iframe 内元素生成 step 缺 switchToFrame"】
+        // snap.steps 来自浏览器侧 window.__steps 读取，其 pick 的 framePath/dialog/popup 等增强字段
+        // 是浏览器侧 __enrichState / 点击 handler 在拾取瞬间写入的——但 iframe 内：
+        //   · __framePathOf 在 file:// 跨 frame 下整段抛异常被吞为空数组，pick.framePath 未被赋值；
+        //   · 绑定桥失效，console 通道的 framePath backfill 又因 e.getPageClass()（iframe URL）被映射到
+        //     iframe 子页视图，使浏览器侧 pick.framePath 始终为空。
+        // 而 snap.entries 在外层已被 javaPickBySig（带 framePath backfill + 对话框/弹窗双保险）覆盖——
+        // entries 含正确增强，steps 不含。生成时 step 循环用 st.picks、entry 循环用 snap.entries，
+        // 字段名按 entries 的 locatorKey 匹配，但 switchToFrame 按 st.picks.getFramePath()——于是缺。
+        // 此处按 locatorKey 把 entries 的 framePath/dialog/popup 回补到 steps 的 picks 上（idempotent，
+        // 取非空/true 优先），保证生成时 step 能拿到与 Page 类字段一致的增强字段。
+        if (snap.entries != null && !snap.entries.isEmpty() && snap.steps != null) {
+                java.util.Map<String, RoleEntry> byLocKey = new java.util.HashMap<>();
+                for (RoleEntry en : snap.entries) {
+                    String lk = RoleElementPageGenerator.locatorKey(en);
+                    if (lk != null && !lk.isEmpty()) byLocKey.put(lk, en);
+                }
+                if (!byLocKey.isEmpty()) {
+                    List<StepRec> enrichedSteps = new ArrayList<>(snap.steps.size());
+                    for (StepRec st : snap.steps) {
+                        if (st == null) { enrichedSteps.add(st); continue; }
+                        List<RoleEntry> enrichedPicks = new ArrayList<>(st.picks == null ? 0 : st.picks.size());
+                        if (st.picks != null) for (RoleEntry p : st.picks) {
+                            String lk = (p == null) ? "" : RoleElementPageGenerator.locatorKey(p);
+                            RoleEntry mem = (lk.isEmpty()) ? null : byLocKey.get(lk);
+                            if (mem != null && p != null) {
+                                // javaPickBySig 是权威内存态：含点击后 checked/setCheckedTarget、framePath backfill、
+                                // dialog/popup 双保险。RoleEntry 的 checked/setCheckedTarget 为 final 不可变，
+                                // 无法 merge，故有增强差异时直接用 mem 替换 pick（保证 setCheckedTarget 是点击后状态，
+                                // 否则点击"未勾选"checkbox 会因浏览器侧点击前状态生成 setChecked(false) 导致"没选择上"）。
+                                if (needsReplaceByMemory(p, mem)) { p = mem; }
+                            }
+                            enrichedPicks.add(p);
+                        }
+                        enrichedSteps.add(new StepRec(st.pageClass, enrichedPicks));
+                    }
+                    snap = new PickSnapshot(snap.pageClass, snap.entries, enrichedSteps, snap.ops);
+                }
+            }
         String curClass = (snap.pageClass == null) ? "" : snap.pageClass;
         LinkedHashMap<String, List<RoleEntry>> entriesByPage = new LinkedHashMap<>();
         for (RoleEntry e : snap.entries) {
@@ -6292,6 +7384,14 @@ public final class RoleElementPicker {
         if (droppedPicks > 0 || droppedSteps > 0) {
             log.info("[picker] 生成前对账：剔除已删元素引用 {} 处，丢弃空 step {} 条", droppedPicks, droppedSteps);
         }
+        // 【关键修复"只点了 2 个元素却生成很多步骤"】
+        // 旧逻辑曾在此"兜底"：把 javaPickBySig 中位于 iframe 内但未被任何 step 引用的元素补进最后一个 step，
+        // 目的是修复"嵌套 iframe 元素不进 step"。但该前提在"整页扫描"引入后不再成立——扫描出的全部 iframe
+        // 候选（40 个）也回传进入 javaPickBySig，与"用户真实点击"混在一起。用户只点了 2 个主框架元素时，
+        // referencedKeys(2) < aliveKeys(40) 恒成立，兜底便把 36 个未入 step 的 iframe 扫描候选全补进 step，
+        // 表现为"点 2 个元素、步骤却一大堆"。
+        // 现用户点击的 iframe 元素经 postMessage（不带 __isScan）正常上送顶层进入 __currentStep/__steps，
+        // 无需此兜底；故直接移除，让 step 只含用户真实点击/勾选的元素。主框架元素链路不受影响。
         LinkedHashMap<String, List<String>> opsByPage = new LinkedHashMap<>();
         if (snap.ops != null) for (PageOp op : snap.ops) {
             String pc = (op.pageClass == null || op.pageClass.isEmpty()) ? curClass : op.pageClass;

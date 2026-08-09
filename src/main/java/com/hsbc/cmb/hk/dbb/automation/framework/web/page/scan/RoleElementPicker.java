@@ -181,11 +181,41 @@ public final class RoleElementPicker {
                 if (dead.isEmpty()) return null;
                 synchronized (map) {
                     int before = map.size();
-                    // 按 map key 直接移除；再兜底扫一遍实体上固化的 sigKey，覆盖 key 与 sigKey 不一致的历史数据。
+                    // ① 按 map key 直接移除；再兜底扫一遍实体上固化的 sigKey，覆盖 key 与 sigKey 不一致的历史数据。
                     map.keySet().removeIf(dead::contains);
                     map.entrySet().removeIf(en -> {
                         RoleEntry re = en.getValue();
                         return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
+                    });
+                    // ② 【根治"删除所有元素后页面类没删除干净"——值级匹配兜底】
+                    // 只按 map key / 固化 sigKey 匹配时，id/css 型元素的 key 是 Java 侧 locatorKey（含 selector），
+                    // 而删除回传的精简 delPick 常缺 selector，collectDeleteKeys 算出的 locatorKey 对不上 →
+                    // 这类元素删除 miss，残留在权威内存态，refreshCode 生成页面类时仍出现。
+                    // 这里遍历 map 每个 entry，把该 RoleEntry 的所有可识别定位标识（重算 locatorKey /
+                    // role+name / strategy+selector / strategy+name / 去索引 sig）逐一与 dead 交叉比对，
+                    // 任一命中即删除，彻底摆脱"删除请求 key 与内存态 key 格式不一致"导致的残留。
+                    map.entrySet().removeIf(en -> {
+                        RoleEntry re = en.getValue();
+                        if (re == null) return false;
+                        if (dead.contains(en.getKey())) return true;
+                        String sigKey = re.getSigKey();
+                        if (sigKey != null && dead.contains(sigKey)) return true;
+                        // 重算 locatorKey（与入库时同源），覆盖 id/css 型 selector 缺失导致的 key 偏差
+                        String lk;
+                        try { lk = RoleElementPageGenerator.locatorKey(re); } catch (Exception ignore) { lk = null; }
+                        if (lk != null && !lk.isEmpty() && dead.contains(lk)) return true;
+                        // role+name / strategy+selector / strategy+name 兜底
+                        String strategy = re.getStrategy() == null ? "role" : re.getStrategy();
+                        if ("role".equals(strategy)) {
+                            String rk = "role:" + (re.getRole() == null ? "" : re.getRole()).toLowerCase(java.util.Locale.ROOT)
+                                    + ":" + (re.getName() == null ? "" : re.getName());
+                            if (dead.contains(rk)) return true;
+                        } else if ("id".equals(strategy) || "css".equals(strategy)) {
+                            if (re.getSelector() != null && dead.contains(strategy + ":" + re.getSelector())) return true;
+                        } else {
+                            if (re.getName() != null && dead.contains(strategy + ":" + re.getName())) return true;
+                        }
+                        return false;
                     });
                     // 持久记录已删集合（跨区域扫描/跨页面）：即便本页删除全部命中、实体已被移除，
                     // 仍登记 dead 键——其它页面同源元素回灌时同样应被屏蔽，且区域扫描清空浏览器端
@@ -349,6 +379,8 @@ public final class RoleElementPicker {
             // ② 动态附加的 iframe（含运行时创建）：立即注入，并遍历其当前已存在的子 frame 递归补注入。
             page.onFrameAttached(frame -> {
                 try {
+                    // 页面/连接已关闭时不再注入，避免 connection closed 刷屏
+                    if (page.isClosed()) return;
                     frameInjectOnce(frame, nlsReverseJson);
                     for (Frame child : frame.childFrames()) {
                         try { frameInjectOnce(child, nlsReverseJson); } catch (Exception ignore) {}
@@ -361,6 +393,8 @@ public final class RoleElementPicker {
             //    主框架导航由 registerPopupFollow 单独处理（涉及快照/页类派生），此处仅处理子 frame。
             page.onFrameNavigated(frame -> {
                 try {
+                    // 页面/连接已关闭时不再注入，避免 connection closed 刷屏
+                    if (page.isClosed()) return;
                     if (frame == page.mainFrame()) return;
                     frameInjectOnce(frame, nlsReverseJson);
                     for (Frame f : page.frames()) {        // 全量兜底：覆盖本次导航链上更深层的兄弟/子 frame
@@ -378,12 +412,26 @@ public final class RoleElementPicker {
      *  导致 __renumberStep 等依赖未定义。force=true 跳过判定、直接执行 START_SCRIPT，确保子 frame 内拾取依赖完整。
      *  仅影响已开启拾取会话期间注入的 frame，对无关页面无副作用。 */
     private static void frameInjectOnce(Frame frame, String nlsReverseJson) {
+        // 连接/页面已关闭或 frame 已分离时，evaluate 必然抛 PlaywrightException: connection closed，
+        // 且监听器在浏览器关闭/导航销毁期间会被反复触发，若在此刷屏会大量污染日志。
+        // 先在注入前做廉价的有效性检查，无效则静默返回。
+        if (frame == null) return;
+        try {
+            Page owner = frame.page();
+            if (owner == null || owner.isClosed()) return;
+        } catch (Exception ignore) { return; }
+        if (frame.isDetached()) return;
         try {
             frame.evaluate(gatedPickerInitScript(nlsReverseJson, true));
         } catch (Exception ex) {
             // 动态/子 frame 注入失败（多为跨源 frame 受安全限制 evaluate 抛错），按设计跳过，
             // 其内元素不经主框架拾取，不影响其它 frame。
-            System.err.println("[frameInjectOnce][skip] frame=" + frame.url() + " : " + ex);
+            // 用 log.debug 而非 System.err，避免连接关闭时的海量失败刷屏。
+            String url;
+            try { url = frame.url(); } catch (Exception urlEx) { url = "<closed>"; }
+            if (log.isDebugEnabled()) {
+                log.debug("[frameInjectOnce][skip] frame={} : {}", url, ex.toString());
+            }
         }
     }
 
@@ -2613,16 +2661,14 @@ public final class RoleElementPicker {
                 // 显式模式标识：区域扫描态。三种模式（手动拾取 / 整页扫描 / 区域扫描）复用同一套
                 // __rolePickActive / __recordPick，但靠 __scanMode 显式区分，避免"区域被当成点击拾取的元素"。
                 window.__scanMode = 'region';
-                // 进入区域扫描时清空历史拾取残留（手工点选 / 整页扫描遗留的脏数据，如整块文本的 text 定位、
-                // body 开头的无名 div css 兜底），保证区域扫描结果 = 本次选中区域里的纯元素，不含过往拾取串扰。
-                window.__rolePicks = [];
-                window.__rolePickSigs = {};
-                // 区域扫描会清空拾取集，故一并清"已删屏蔽集"：本次区域收集是全新的候选，不应继承过往删除屏蔽。
-                window.__deletedSigs = {};
-                // 进入区域扫描时一并清空选择集（面板勾选态的来源），保证本次区域结果 = 干净的候选列表，
-                // 不继承过往手动拾取/扫描残留的选择集（否则面板里会有元素默认被勾选，与"区域扫描只收集候选、
-                // 由用户勾选后封装"的模型矛盾）。区域扫描结束后用户仍可手动勾选追加，不受影响。
-                window.__currentStep = [];
+                // 进入区域扫描时【不再清空】__rolePicks / __rolePickSigs / __deletedSigs / __currentStep。
+                // 修复：整页扫描 → 停止拾取 → 再区域选择时，整页扫描的页面元素被清空。
+                // 原因：区域扫描 __roleScanPage 本身是「追加」语义（__scanAdded 记录本次新增并 push 进
+                // __rolePicks），只有此处入口清空了拾取集才导致整页扫描结果丢失。现在保留已有拾取集，
+                // 让区域扫描结果与整页扫描元素【叠加】，符合"整页扫描 + 区域选择互补补充"的期望。
+                // 同时保留 __rolePickSigs（去重表）防止同 sig 元素重复、保留 __deletedSigs（已删屏蔽）
+                // 防止已删元素在区域扫描时复活、保留 __currentStep（已勾选封装的选择集）防止已封装元素丢失。
+                // 区域扫描结束后用户仍可手动勾选追加，行为不变。
                 // 进入选区态时临时摘掉 START_SCRIPT 的文档级「点击拾取」「悬停高亮」监听，避免与区域聚焦冲突；
                 // 选区结束后再把原监听加回。
                 var hadPickClick = !!window.__rolePickClick;
@@ -4286,7 +4332,15 @@ public final class RoleElementPicker {
                         role: x.role,
                         key: x.key,
                         name: x.name,
-                        index: x.index
+                        index: x.index,
+                        // 【修复"删除所有元素后页面类残留"】collectDeleteKeys 对 id/css 型元素要用
+                        // locatorKey(=strategy+selector) 命中 Java 权威内存态 key；此前 delPick 精简对象
+                        // 缺 selector/resolvedKey，Java 侧算出的 locatorKey 为空 → 这类元素删除 miss。
+                        // 这里补上 selector / resolvedKey / tag / text，保证删除侧与入库侧 key 计算一致。
+                        selector: x.selector,
+                        resolvedKey: x.resolvedKey,
+                        tag: x.tag,
+                        text: x.text
                       });
                     });
                     // 从拾取数组移除所有选中项（按 sigKey/sig 精确匹配）
@@ -4709,34 +4763,15 @@ public final class RoleElementPicker {
                 active[0] = true;
                 String regionNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
                 if (!page.isClosed()) start(page, regionNls);
-                // 【关键修复"区域选非 frame 区域却把 frame 扫出来"】
-                // ① 浏览器侧：__roleStartRegionSelect 只清【主框架】__rolePicks，若此前做过整页扫描，iframe 的
-                // __rolePicks 仍残留 frame 元素；区域扫描后的 mergeFramePicksToMain 会把这些残留合并进主框架。
-                // ② Java 权威态：即便清空浏览器侧，主循环 syncPanelToBrowser 每 ~1s 会把 javaPickBySig（整页
-                // 扫描残留：placeholder、iframe 内元素等）同步回主框架 __rolePicks → 面板/页面类仍出现不属于
-                // 本次区域的元素（用户日志：区域选 #sec-checkbox 却带出 iframe 1/iframe 内按钮/请输入姓名）。
-                // 修复：进入区域点选态前，既清空【所有 frame】的 __rolePicks/__rolePickSigs，也清空【Java
-                // 权威内存态 javaPickBySig + STATE_DELETED】，使本次区域扫描结果 = 纯本次选中区域元素，
-                // 不再串入/复活任何过往整页扫描残留。
-                try {
-                    for (com.microsoft.playwright.Frame f : page.frames()) {
-                        if (f == null) continue;
-                        try {
-                            f.evaluate("() => { window.__rolePicks = []; window.__rolePickSigs = {}; }");
-                        } catch (Exception fe) { /* 个别 frame 跨源受限可忽略 */ }
-                    }
-                } catch (Exception cE) {
-                    log.warn("[picker][scanRegion] 清空各 frame 拾取残留失败：{}", cE.getMessage());
-                }
-                if (!javaPickBySig.isEmpty()) {
-                    javaPickBySig.clear();
-                }
-                try {
-                    java.util.Set<String> delKeys = STATE_DELETED.get(page.hashCode());
-                    if (delKeys != null) delKeys.clear();
-                } catch (Exception dE) {
-                    log.warn("[picker][scanRegion] 清空已删集合失败：{}", dE.getMessage());
-                }
+                // 【修复"整页扫描 → 停止拾取 → 区域选择，整页扫描元素被清空"】
+                // 原实现为让"区域扫描结果 = 纯本次选中区域元素"，进入区域点选态前清空了三处：
+                //   ① 所有 frame 的 __rolePicks/__rolePickSigs
+                //   ② Java 权威内存态 javaPickBySig
+                //   ③ STATE_DELETED 已删集合
+                // 这导致：先整页扫描、再区域选择时，整页扫描的元素被整体清空，无法与区域扫描结果叠加。
+                // 现按"整页扫描 + 区域扫描互补补充"的期望移除全部清空：区域扫描 __roleScanPage 本身是
+                // 【追加】语义（__scanAdded 记录本次新增并 push 进 __rolePicks），保留已有拾取集即可实现
+                // 叠加。同时保留 __rolePickSigs（去重）防重复、保留 STATE_DELETED（已删屏蔽）防已删元素复活。
                 try {
                     page.evaluate("(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()");
                 } catch (Exception e) {

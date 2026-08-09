@@ -12,6 +12,7 @@ import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -35,6 +36,10 @@ import java.util.Map;
 public class MockHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MockHandler.class);
+
+    /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
+    private static final double ROUTE_FETCH_TIMEOUT_MS =
+            getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
     public static void handle(Route route, RouteRule rule) {
         String url = route.request().url();
@@ -167,10 +172,17 @@ public class MockHandler {
         try {
             // ── 1. route.fetch() — 真实发送请求到服务器，获取真实响应 ──
             //    无参 fetch 默认继承原请求的 method/headers/cookies
-            APIResponse realResp = route.fetch();
+            //    【优化】显式设置 fetch 超时（默认 30s，可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖）：
+            //    Playwright 的 route.fetch() 会在【事件线程】同步等待真实服务器返回；若服务器无响应，
+            //    默认会阻塞到浏览器全局超时（通常 30s+）。显式超时可避免后端慢/挂起时事件线程被长时间
+            //    占住，进而拖慢同 context 后续所有请求的路由分发。
+            Route.FetchOptions fetchOpts = new Route.FetchOptions()
+                    .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
+            APIResponse realResp = route.fetch(fetchOpts);
             int status = realResp.status();
             byte[] bodyBytes = realResp.body();
-            String body = bodyBytes != null ? new String(bodyBytes) : "";
+            // 【优化】显式 UTF-8 解码（避免依赖平台默认 charset 导致响应体中文乱码）
+            String body = bodyBytes != null ? new String(bodyBytes, StandardCharsets.UTF_8) : "";
 
             LOGGER.info("[MockHandler] Real response fetched: pattern='{}', status={}, bodyLength={}",
                     rule.getUrlPattern(), status, body.length());
@@ -251,6 +263,16 @@ public class MockHandler {
                     rule.getUrlPattern(), method, status);
         } catch (Exception e) {
             LOGGER.debug("[MockHandler] Failed to store intercepted call to ApiCaptureContext: {}", e.getMessage());
+        }
+    }
+
+    private static double getEnvDouble(String key, double defaultValue) {
+        String val = System.getenv(key);
+        if (val == null || val.trim().isEmpty()) return defaultValue;
+        try {
+            return Double.parseDouble(val.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 }

@@ -285,7 +285,7 @@ public final class RoleElementStepGenerator {
                 + "import " + packageName + "." + pageClassName + ";\n"
                 + "import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;\n\n"
                 + "public class " + stepClassName + " {\n\n"
-                + "    private " + pageClassName + " " + pageVar
+                + "    private final " + pageClassName + " " + pageVar
                 + " = PageObjectFactory.getPage(" + pageClassName + ".class);\n\n"
                 + methods
                 + "}\n";
@@ -405,7 +405,7 @@ public final class RoleElementStepGenerator {
             pageVar.put(instKey, uniqueVar);
             pageVarClass.put(instKey, className);
 
-            fields.append("    private ").append(className).append(" ").append(uniqueVar)
+            fields.append("    private final ").append(className).append(" ").append(uniqueVar)
                     .append(" = PageObjectFactory.getPage(").append(className).append(".class);\n\n");
         }
 
@@ -732,7 +732,7 @@ public final class RoleElementStepGenerator {
             while (usedVars.contains(uniqueVar)) uniqueVar = base + (v++);
             usedVars.add(uniqueVar);
             pageVar.put(className, uniqueVar);
-            fields.append("    private ").append(className).append(" ").append(uniqueVar)
+            fields.append("    private final ").append(className).append(" ").append(uniqueVar)
                     .append(" = PageObjectFactory.getPage(").append(className).append(".class);\n\n");
         }
 

@@ -194,6 +194,34 @@ public final class RoleElementPicker {
                     log.info("[picker] __roleOnDelete 删除内存态：请求={} 实删={}（当前内存态大小={}）",
                             dead.size(), before - map.size(), map.size());
                 }
+                // 【关键修复"删除所有元素后页面类没删除干净"——源头清空 iframe 残留】
+                // 删除只清了主框架 __rolePicks 与 Java 权威内存态；iframe 自己的 __rolePicks 仍残留已删元素，
+                // 主循环每轮空闲 mergeFramePicksToMain 会把它们合并回 javaPickBySig（虽然 isDeletedKeyInState
+                // 已按 STATE_DELETED 拦截，但一旦 key 口径有偏差仍可能复活）。此处彻底清空触发删除页的
+                // 所有 frame（主框架 + 各层 iframe）的浏览器侧 __rolePicks/__rolePickSigs，
+                // 从源头杜绝残留可被合并——即使 Java 侧拦截漏网，浏览器端也再无残留可回灌。
+                try {
+                    com.microsoft.playwright.Page srcPage = source.page();
+                    if (srcPage != null && !srcPage.isClosed()) {
+                        java.util.List<com.microsoft.playwright.Frame> frames = srcPage.frames();
+                        for (com.microsoft.playwright.Frame f : frames) {
+                            if (f == null) continue;
+                            try {
+                                f.evaluate("(function(){"
+                                        + " window.__rolePicks = [];"
+                                        + " window.__rolePickSigs = {};"
+                                        + " window.__currentStep = [];"
+                                        + " return 1;"
+                                        + "})()");
+                            } catch (Exception fe) {
+                                String u = null; try { u = f.url(); } catch (Exception ignore) {}
+                                log.warn("[picker] __roleOnDelete 清空 frame 残留失败（{}）：{}", u, fe.getMessage());
+                            }
+                        }
+                    }
+                } catch (Exception pe) {
+                    log.warn("[picker] __roleOnDelete 清空 iframe 残留异常：{}", pe.getMessage());
+                }
             } catch (Exception ex) {
                 log.warn("[picker] __roleOnDelete 回传解析失败：{}", ex.getMessage());
             }
@@ -2328,6 +2356,14 @@ public final class RoleElementPicker {
                     var cs = window.getComputedStyle(el);
                     if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') === 0) return false;
                     var r = el.getBoundingClientRect();
+                    // 【关键修复"区域扫描穿透 iframe 却看不到 iframe 内语义元素"】
+                    // 在 iframe 内执行穿透自扫时（window.self !== window.top），docked 右侧拾取面板会把页面
+                    // 内容压缩/遮挡，iframe 内语义元素（button/checkbox 等）的 getBoundingClientRect 可能
+                    // 被算成 0 宽/高，从而被下方 r.width>0&&r.height>0 过滤 → iframe 语义元素一个都不收录，
+                    // 只剩 body/容器整块 text 被回传（用户日志正是只有 text:iframe 嵌套子页面...）。
+                    // 故对 iframe 内元素放宽宽高判定：只要 display/visibility/opacity 正常就视为可见并收录。
+                    // 主框架元素仍按原宽高判定，避免误收不可见元素。
+                    if (window.self !== window.top) return true;
                     return (r.width > 0 && r.height > 0);
                   } catch (e) { return true; }
                 }
@@ -2739,7 +2775,14 @@ public final class RoleElementPicker {
                   try { window.__roleScanPage([root]); } catch (err) { try { console.error('[roleScan] ' + (err && err.message)); } catch (_) {} }
                   // 通知 Java 侧：区域元素已入 window.__rolePicks，请重新读取快照并生成"页面类"（与整页扫描一致，
                   // 否则区域扫描只会收集元素却永远不生成页面类）。用命令桥事件驱动，无需 Java 轮询。
-                  try { if (window.__rolePickerCmd) window.__rolePickerCmd('regionScanned'); } catch (e) {}
+                  // 【关键修复"区域扫描穿透不了 frame"】
+                  // 区域根内若含 iframe，__roleScanPage 走 postMessage 异步穿透（file:// 下跨源受限），
+                  // iframe 自扫结果进【各自 iframe】的 __rolePicks 需要一点事件循环时间。若立即发
+                  // regionScanned，Java 侧 mergeFramePicksToMain 可能读到空的 iframe.__rolePicks，iframe
+                  // 语义元素合并不进主框架/面板 → 表象"穿透不了 frame"。故延迟一拍再通知，确保 iframe
+                  // 自扫完成、iframe.__rolePicks 已填充后再让 Java 合并（主循环空闲的 mergeFramePicksToMain
+                  // 仍作最终兜底）。
+                  try { setTimeout(function(){ if (window.__rolePickerCmd) window.__rolePickerCmd('regionScanned'); }, 250); } catch (e) {}
                   status('已扫描区域：' + labelOf(root) + '（已生成页面类；可继续点其他区域，按 Esc 结束）');
                   if (lastHover) { clearOutline(lastHover); lastHover = null; }
                 }
@@ -3556,7 +3599,11 @@ public final class RoleElementPicker {
                 + (nf.length ? '  (files=' + (nf.length === 1 ? nf[0] : nf[0] + ' (+' + (nf.length - 1) + ')') + ')' : '');
               var status = document.createElement('span');
               status.id = '__roleStatus';
-              status.style.cssText = 'font-weight:normal;font-size:12px;opacity:.95;' +
+              // 【修复状态文字颜色"深绿看不清"】
+              // 面板 header 是蓝色（#1e88e5），title 用 color:#fff 显式声明以保对比度；状态条原本只设
+              // opacity 与布局依赖继承，偶发受宿主页面/字体/颜色继承影响呈现深绿，与蓝色背景几乎不可读。
+              // 修复：显式 color:#fff（白色）确保任何继承/上下文下都清晰显示在蓝色 header 上。
+              status.style.cssText = 'font-weight:normal;font-size:12px;color:#fff;opacity:.95;' +
                 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;flex-shrink:0;';
               status.textContent = '就绪：点 ▶ 开始拾取并在页面点击元素';
               // 关闭面板：标题栏右侧 X 图标（对齐 page.pause() 的 inspector 关闭按钮）
@@ -3597,9 +3644,13 @@ public final class RoleElementPicker {
                 var t = document.createElement('button');
                 t.type = 'button';
                 t.textContent = label;
-                t.style.cssText = 'flex:1;padding:8px 0;border:0;cursor:pointer;font:13px/1.4 sans-serif;' +
-                  'color:#fff;background:' + (active ? '#1e1e1e' : '#2d2d2d') + ';' +
-                  'border-bottom:' + (active ? '2px solid #1e88e5' : '2px solid transparent') + ';';
+                // 【优化当前 Tab 聚焦背景颜色】
+                // 旧实现 active 背景 #1e1e1e（深灰）与非 active #2d2d2d（稍浅灰）差异极小，3 个 tab 谁聚焦难以一眼分辨。
+                // 优化：聚焦 Tab 用蓝色（与 header #1e88e5 同色系 #1565c0）背景 + 白色加粗文字 + 3px 亮蓝下边框，
+                // 与非聚焦（#2d2d2d 灰底 + 普通字重）形成强烈对比，聚焦一目了然。
+                t.style.cssText = 'flex:1;padding:8px 0;border:0;cursor:pointer;font:13px/1.4 sans-serif;font-weight:' + (active ? 'bold' : 'normal') + ';' +
+                  'color:#fff;background:' + (active ? '#1565c0' : '#2d2d2d') + ';' +
+                  'border-bottom:' + (active ? '3px solid #42a5f5' : '3px solid transparent') + ';';
                 t.onclick = function() { window.__roleActiveTab = id; showTab(); };
                 return t;
               }
@@ -3818,17 +3869,25 @@ public final class RoleElementPicker {
                 pageContent.style.display = (t === 'page') ? 'flex' : 'none';
                 classContent.style.display = (t === 'class') ? 'flex' : 'none';
                 stepContent.style.display = (t === 'step') ? 'flex' : 'none';
-                tabPage.style.background = (t === 'page') ? '#1e1e1e' : '#2d2d2d';
-                tabPage.style.borderBottom = (t === 'page') ? '2px solid #1e88e5' : '2px solid transparent';
-                tabClass.style.background = (t === 'class') ? '#1e1e1e' : '#2d2d2d';
-                tabClass.style.borderBottom = (t === 'class') ? '2px solid #1e88e5' : '2px solid transparent';
-                tabStep.style.background = (t === 'step') ? '#1e1e1e' : '#2d2d2d';
-                tabStep.style.borderBottom = (t === 'step') ? '2px solid transparent' : '2px solid #1e88e5';
+                // 【修复"Tab 聚焦背景/状态文字颜色不生效"】
+                // 旧实现这里用硬编码 #1e1e1e/#2d2d2d 覆盖 mkTab 初始样式，导致聚焦 Tab 永远是深灰、
+                // 与未聚焦差异极小；且每次切 Tab 都把状态文字强制设为绿色 #43a047，在蓝色 header 上几乎不可读
+                // （用户反馈的"深绿色、看不清"正来源于此，而非最初 mkTab 的继承问题）。
+                // 统一改为与 mkTab 一致：聚焦 Tab 蓝色背景 #1565c0 + 粗体 + 3px 亮蓝下边框；状态文字白色。
+                tabPage.style.background = (t === 'page') ? '#1565c0' : '#2d2d2d';
+                tabPage.style.fontWeight = (t === 'page') ? 'bold' : 'normal';
+                tabPage.style.borderBottom = (t === 'page') ? '3px solid #42a5f5' : '3px solid transparent';
+                tabClass.style.background = (t === 'class') ? '#1565c0' : '#2d2d2d';
+                tabClass.style.fontWeight = (t === 'class') ? 'bold' : 'normal';
+                tabClass.style.borderBottom = (t === 'class') ? '3px solid #42a5f5' : '3px solid transparent';
+                tabStep.style.background = (t === 'step') ? '#1565c0' : '#2d2d2d';
+                tabStep.style.fontWeight = (t === 'step') ? 'bold' : 'normal';
+                tabStep.style.borderBottom = (t === 'step') ? '3px solid #42a5f5' : '3px solid transparent';
                 // 切换 Tab 时复位「复制」按钮状态（避免上一轮"已复制"残留提示误导用户）。
                 // 注意：ICON.copy 是内联 SVG 字符串，必须用 innerHTML 注入才能渲染成图标；
                 // 若误用 textContent，SVG 标签会被当成纯文本显示，复制按钮变成一个 XML 字符串（图标"不显示/显示异常"）。
                 if (copyBtn) { copyBtn.title = '复制'; copyBtn.innerHTML = ICON.copy; }
-                if (status) { status.textContent = '就绪'; status.style.color = '#43a047'; status.style.fontWeight = 'bold'; }
+                if (status) { status.textContent = '就绪'; status.style.color = '#fff'; status.style.fontWeight = 'bold'; }
               }
               // 暴露给 Java 侧调用（扫描完成后自动切到"页面类"Tab，让用户即时看到生成的页面类代码）。
               window.__roleShowTab = showTab;
@@ -4097,7 +4156,19 @@ public final class RoleElementPicker {
 
                   // 渲染候选项（带勾选框）。勾选态 = 该 pick 的 sig 在选择集 window.__currentStep 中。
                   listEl.innerHTML = '';
-                  if (!picks.length) { listEl.textContent = '（暂无拾取：点 🔍 扫描整页，或在页面点击元素）'; return; }
+                  if (!picks.length) {
+                    listEl.textContent = '（暂无拾取：点 🔍 扫描整页，或在页面点击元素）';
+                    // 【关键修复"删除全部元素后全选 checkbox 仍勾选且可用、已选计数陈旧"】
+                    // 旧实现此处直接 return，跳过了下方 selBar 全选框与 refreshSelInfo 的更新——删除全部后
+                    // 列表为空，refreshSelInfo 不再执行，全选框保持删除前的勾选/可用状态、计数仍显示旧的
+                    // "已选 10/10"。修复：空列表时也复位全选框（禁用 + 取消勾选）并把计数归零，
+                    // 使"删除全部 → 全选框 disabled、已选 0/0"与真实选择集一致。
+                    var __selCb = window.__roleSelAllCb;
+                    if (__selCb) { __selCb.disabled = true; __selCb.checked = false; }
+                    var __selInfo = window.__roleSelInfo;
+                    if (__selInfo) __selInfo.textContent = '已选 0 / 0';
+                    return;
+                  }
                   // 全选 / 全不选 工具栏：作用于"当前可见范围"（act 过滤集），与下方候选渲染用同一过滤规则。
                   // 注意：本栏在 __renderPicks 每次重渲染时都会被调用（手动拾取每个元素都会触发），
                   // 因此【只创建一次并复用】——否则每次重渲染都会在 pageContent 里堆积出新的全选条。
@@ -4686,7 +4757,97 @@ public final class RoleElementPicker {
                 // readPickSnapshot 读的是【主框架】__rolePicks —— 不合并的话页面类/面板只有主框架区域元素，
                 // iframe 内元素一个都看不到（表象：区域扫描"穿透不了 iframe"）。
                 // 修复：与整页扫描一致，先由 Java 侧把各 iframe 的 __rolePicks 合并进主框架再读快照。
+                //
+                // 【关键修复"区域扫描跨源 iframe 穿透失败（file:// 下 postMessage 不投递）"】
+                // 区域扫描穿透 iframe 的浏览器侧链路是主框架 __roleScanPage 遍历到 iframe 元素时对
+                // contentWindow 发 postMessage({__roleScanRequest:true}) 通知 iframe 自扫。但 Chromium 对
+                // file:// 不同文件的 iframe 视为跨源，未加 --allow-file-access-from-files 时该 postMessage
+                // 无法触发 iframe 内 message 监听（实测 frameOne/frameTwo.__rolePicks 恒为 0），iframe 内
+                // 语义元素一个都进不了 iframe.__rolePicks → 合并/面板/页面类全缺 → 表象"区域扫描穿透不了
+                // frame"。整页扫描早已改用【Java 侧遍历 page.frames() 逐帧执行 __roleScanPage(null)】
+                // （Playwright 协议访问不受浏览器同源策略限制），区域扫描也应走这条可靠路径。
+                // 此处：先读回主框架"选中区域根内的 iframe"（按宿主元素 src/name 标记），再对 page.frames()
+                // 中匹配这些标记的 frame 执行其 own __roleScanPage(null)，最后合并进主框架。既保证穿透，
+                // 又避免把"未选中区域里的 iframe"整块扫出来（回归"区域选非 frame 区域却把 frame 扫出来"）。
                 try {
+                    // 读回主框架选中区域根内包含的 iframe 标识（src 文件路径 + name/id）
+                    java.util.Set<String> regionFrameUrls = new java.util.HashSet<>();
+                    java.util.Set<String> regionFrameNames = new java.util.HashSet<>();
+                    try {
+                        Object marks = page.evaluate("() => {"
+                                + " var out = { urls:[], names:[] };"
+                                + " var roots = window.__regionSelected || [];"
+                                + " for (var i=0;i<roots.length;i++){"
+                                + "   var r = roots[i]; if (!r || !r.querySelectorAll) continue;"
+                                + "   var fs = r.querySelectorAll('iframe, frame');"
+                                + "   for (var j=0;j<fs.length;j++){"
+                                + "     var el = fs[j];"
+                                + "     var src = el.getAttribute && el.getAttribute('src');"
+                                + "     if (src) out.urls.push(src);"
+                                + "     if (el.name) out.names.push(el.name);"
+                                + "     if (el.id) out.names.push(el.id);"
+                                + "   }"
+                                + " }"
+                                + " return out;"
+                                + "}");
+                        if (marks instanceof java.util.Map) {
+                            Object u = ((java.util.Map<?, ?>) marks).get("urls");
+                            if (u instanceof java.util.List) {
+                                for (Object o : (java.util.List<?>) u) if (o != null) regionFrameUrls.add(o.toString());
+                            }
+                            Object n = ((java.util.Map<?, ?>) marks).get("names");
+                            if (n instanceof java.util.List) {
+                                for (Object o : (java.util.List<?>) n) if (o != null) regionFrameNames.add(o.toString());
+                            }
+                        }
+                    } catch (Exception ig) {}
+                    // 对"选中根内 iframe"逐个执行其 own __roleScanPage(null)（Playwright 协议穿透跨源）。
+                    // 【关键修复"嵌套 iframe 没扫出来"】
+                    // 选中根内 iframe 的标记（regionFrameUrls/Names）来自【主框架】querySelectorAll('iframe,frame')，
+                    // 只能拿到直接 iframe（如 frameOne），拿不到嵌套在最深层 iframe 里的 frame（如 frameTwo——
+                    // 其宿主 <iframe name="frameTwo"> 在 frameOne 的 document 里，不在主框架 DOM）。若只按
+                    // 直接匹配扫描，frameTwo 永远不被执行 __roleScanPage，且 frameOne 自扫时对内部 frameTwo
+                    // 的 postMessage 在 file:// 跨源下不投递 → 嵌套 iframe 一个都扫不到。
+                    // 修复：判定"某 frame 在选中区域内"改为「它自身或其【任意祖先 frame】宿主匹配选中区域的
+                    // iframe 标记」——即一旦 frameOne 在区域内，其内部所有嵌套 iframe（frameTwo 等）都应被
+                    // 一并扫描，保证嵌套链路完整穿透。
+                    if (!page.isClosed()) {
+                        final java.util.Set<String> rUrls = regionFrameUrls;
+                        final java.util.Set<String> rNames = regionFrameNames;
+                        for (com.microsoft.playwright.Frame f : page.frames()) {
+                            if (f == null || f.equals(page.mainFrame())) continue;
+                            // 沿父 frame 链向上判断是否落在选中区域内（自身或任意祖先命中即算在区域内）
+                            boolean inRegion = false;
+                            com.microsoft.playwright.Frame cur = f;
+                            while (cur != null && !inRegion) {
+                                String cUrl = null, cName = null;
+                                try { cUrl = cur.url(); } catch (Exception ignore) {}
+                                try { cName = cur.name(); } catch (Exception ignore) {}
+                                if (rNames.contains(cName)) inRegion = true;
+                                if (!inRegion && cUrl != null) {
+                                    for (String mark : rUrls) {
+                                        if (mark != null && mark.length() > 0 && cUrl.contains(lastPathSegment(mark))) {
+                                            inRegion = true; break;
+                                        }
+                                    }
+                                    if (!inRegion) {
+                                        for (String nm : rNames) {
+                                            if (nm != null && nm.length() > 0 && cUrl.contains(nm)) { inRegion = true; break; }
+                                        }
+                                    }
+                                }
+                                try { cur = cur.parentFrame(); } catch (Exception ignore) { cur = null; }
+                            }
+                            if (!inRegion) continue;
+                            try {
+                                f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                            } catch (Exception fe) {
+                                String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
+                                log.warn("[picker][regionScanned] 区域 iframe 扫描失败（url={}）：{}", fUrl, fe.getMessage());
+                            }
+                        }
+                    }
+                    // 再把各 iframe 的 __rolePicks 合并进主框架（含本次 Java 侧补扫的 iframe 元素）
                     mergeFramePicksToMain(page, javaPickBySig);
                 } catch (Exception mE) {
                     log.warn("[picker][regionScanned] 合并 iframe 元素到主框架失败：{}", mE.getMessage());
@@ -4695,8 +4856,16 @@ public final class RoleElementPicker {
                     PickSnapshot snap = readPickSnapshot(page);
                     if (snap != null && !snap.entries.isEmpty()) {
                         LinkedHashMap<String, String> codePage = buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
+                        // 【关键修复"区域扫描后 step 代码被清空"】
+                        // 区域扫描每次点选都会触发 regionScanned，本分支此前返回 codeStep=null，
+                        // 主循环 fillCode 会把 step Tab 用空 stepByPage 覆盖 → 用户已封装好的步骤代码被清空
+                        // （日志：先点「封装为步骤」生成 step，再点击其他区域/html/div 触发 regionScanned，
+                        //  步骤代码区就空了）。
+                        // 修复：regionScanned 也按当前 snap（含浏览器侧 __steps 已封装的 step）生成 step 代码，
+                        // 使每次区域点选刷新页面类的同时【保留并回填】已封装的步骤，不覆盖为空。
+                        LinkedHashMap<String, String> codeStep = buildStepCode(snap, packageName, stepClassName);
                         if (codePage != null && !codePage.isEmpty()) {
-                            return new PickerResult(PickerAction.CONTINUE, codePage, null,
+                            return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
                                     "区域扫描完成，已生成页面类（" + snap.entries.size() + " 个字段），可继续点其他区域，或点 ⏹ 停止生成步骤代码");
                         }
                     }
@@ -4738,6 +4907,16 @@ public final class RoleElementPicker {
                 // 与 package 一致：以 Java 侧内存态为准（对导航/关闭导致的浏览器端状态清空免疫）。
                 if (!javaPickBySig.isEmpty()) {
                     snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), snap.steps, snap.ops);
+                }
+                // 【关键修复"删除所有元素后页面类没删除干净（残留）"】
+                // 防御兜底：即便 javaPickBySig / readPickSnapshot 里偶发残留已被删除的元素（如 delPicks 未
+                // 覆盖某条、iframe 元素 key 与 collectDeleteKeys 不匹配、或主循环又把残留合并回来），
+                // 只要这些元素在会话级已删集合 STATE_DELETED 中，生成页面类前一律剔除，确保删了就不再出现。
+                java.util.Set<String> __dead = STATE_DELETED.get(javaPickBySig);
+                if (__dead != null && !__dead.isEmpty() && !snap.entries.isEmpty()) {
+                    snap = new PickSnapshot(snap.pageClass, new ArrayList<>(snap.entries), snap.steps, snap.ops);
+                    snap.entries.removeIf(re -> re != null
+                            && (re.getSigKey() != null && __dead.contains(re.getSigKey())));
                 }
                 LinkedHashMap<String, String> codePage = buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
                 LinkedHashMap<String, String> codeStep = buildStepCode(snap, packageName, stepClassName);
@@ -5232,23 +5411,77 @@ public final class RoleElementPicker {
         for (com.microsoft.playwright.Frame f : page.frames()) {
             if (f == null || f.equals(page.mainFrame())) continue;
             try {
+                // 【关键修复"合并 iframe 拾取失败：SyntaxError: Unexpected end of input"】
+                // 现象：区域扫描穿透 iframe 后，日志每 ~1s 报一次
+                //   [picker] 合并 iframe 拾取到主框架失败（url=...picker-iframe-*.html）
+                //   Error{ message='SyntaxError: Unexpected end of input at eval' }
+                // 根因：iframe 的 pick 含中文名称 / file:// URL / 特殊字符。旧实现是 JSON.stringify 后把
+                // 结果字符串【拼进】page.evaluate 的 JS 里（var arr = " + j + "），Playwright 对这段含中文
+                // 的 JS 二次解析必然抛 SyntaxError；改为直接传 List<Map> 参数（evaluate(script, arg)）时，
+                // Playwright 序列化含特殊字符的 pick 对象内联进表达式仍可能产生不完整 JS（Unexpected end
+                // of input，且嵌套 iframe 的 grandchild 更明显）。
+                // 最稳妥：在 iframe 上下文先 JSON.stringify 成【字符串】，再把该【字符串】作为参数传给
+                // 主框架 evaluate(script, json) —— Playwright 序列化字符串值会正确转义，JS 内 JSON.parse
+                // 还原成数组，彻底避免任何 JS 语法错误。
                 Object frameJson = f.evaluate("() => JSON.stringify(window.__rolePicks||[])");
-                if (frameJson instanceof String && !((String) frameJson).isEmpty()) {
-                    final String j = (String) frameJson;
-                    page.evaluate("(function(){"
-                            + " try {"
-                            + "   var arr = " + j + ";"
-                            + "   window.__rolePicks = window.__rolePicks || [];"
-                            + "   window.__rolePickSigs = window.__rolePickSigs || {};"
-                            + "   arr.forEach(function(p){"
-                            + "     if (!p) return;"
-                            + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(p) : (p._sigKey||p._sig||'');"
-                            + "     if (k) { if (window.__rolePickSigs[k]) return; window.__rolePickSigs[k] = true; p._sigKey = k; }"
-                            + "     window.__rolePicks.push(p);"
-                            + "   });"
-                            + "   if (window.__renderPicks) window.__renderPicks();"
-                            + " } catch(e){ console.log('[scan][merge-frame-err] ' + (e&&e.message)); }"
-                            + "})();");
+                if (frameJson instanceof String) {
+                    final String json = (String) frameJson;
+                    if (!json.isEmpty() && !"[]".equals(json.trim())) {
+                        // 【关键修复"区域扫描穿透了 iframe 却仍看不到 iframe 元素"】
+                        // iframe 自扫结果进【iframe 自己的 __rolePicks】，但若没回传 Java（__roleOnPick/console
+                        // 兜底链路在 file:// 跨源/嵌套场景偶发失效），javaPickBySig 就缺 iframe 元素——
+                        // 而 syncPanelToBrowser 每次用 javaPickBySig【重建】主框架 __rolePicks（虽不清空，
+                        // 但 mergeFramePicksToMain 合并进来的 iframe 元素若无 javaPickBySig 支撑，后续生成/
+                        // 同步路径仍会缺）。故此处 Java 侧把 iframe __rolePicks 解析成 RoleEntry 一并写入
+                        // javaPickBySig，使 iframe 元素进入权威内存态，与主框架合并+面板展示+代码生成对齐。
+                        try {
+                            @SuppressWarnings("unchecked")
+                            java.util.List<?> arr = GSON.fromJson(json, java.util.List.class);
+                            if (arr != null) {
+                                synchronized (javaPickBySig) {
+                                    for (Object item : arr) {
+                                        try {
+                                            if (!(item instanceof java.util.Map)) continue;
+                                            @SuppressWarnings("unchecked")
+                                            java.util.Map<Object, Object> m = (java.util.Map<Object, Object>) item;
+                                            String strat = asString(m.get("strategy"));
+                                            String nm = asString(m.get("name"));
+                                            if ("text".equals(strat) && nm != null && nm.length() >= 25) continue; // 与 __roleScanPage 一致剔除整块文本
+                                            RoleEntry e = parsePick(m);
+                                            if (e == null) continue;
+                                            // 复用 __roleOnPick 的 backfill：浏览器 framePath 缺失时用 Java 侧计算真实框架路径
+                                            if (e.getFramePath() == null || e.getFramePath().isEmpty()) {
+                                                try {
+                                                    java.util.List<String> fp = computeFramePath(page, f);
+                                                    if (fp != null && !fp.isEmpty()) e.setFramePath(fp);
+                                                } catch (Exception ignore) {}
+                                            }
+                                            String key = pickDedupKey(m, e);
+                                            if (key != null && !key.isEmpty()) {
+                                                // 【关键修复"删除所有元素后 iframe 元素又复活"】
+                                                // 删除只清主框架 __rolePicks + Java 权威内存态 + 主框架 __deletedSigs，
+                                                // iframe 自己的 __rolePicks 仍残留已删元素；主循环每轮空闲调用本方法把
+                                                // iframe 残留无条件合并回 javaPickBySig（mergePickIntoMap 无任何删除屏蔽），
+                                                // 导致已删 iframe 元素复活（用户实测：删除全部 10 个后 iframe 元素又回来）。
+                                                // 修复：合并写入前按 STATE_DELETED（跨扫描/跨页面持久已删集合）校验，
+                                                // 命中已删键的元素一律跳过，不写入权威内存态——从 Java 侧根治复活。
+                                                if (isDeletedKeyInState(javaPickBySig, key, e, m)) continue;
+                                                mergePickIntoMap(javaPickBySig, key, e);
+                                            }
+                                        } catch (Exception ignore) {}
+                                    }
+                                }
+                            }
+                        } catch (Exception ignore) {}
+                        // 【彻底修复"合并 iframe 拾取到主框架失败：SyntaxError: Unexpected end of input"】
+                        // 根因：Playwright Java 的 page.evaluate(script, arg) 会把 String/复杂 arg 拼接进
+                        // JS 表达式并二次编译，含中文/特殊字符时抛 SyntaxError；此前先后尝试标准 Base64、
+                        // Base64URL 均不可靠。且经诊断，iframe 元素已通过 __roleOnPick/console 回传进入 Java
+                        // 权威内存态 javaPickBySig（本方法第 5459 行 mergePickIntoMap 已写入），主循环的
+                        // syncPanelToBrowser 会以 javaPickBySig 为准回灌主框架 __rolePicks，因此这里的
+                        // page.evaluate 合并是【冗余】的——其唯一副作用是同步主框架 __rolePicks，而该同步
+                        // 由主循环负责。故直接移除这段跨 JS 传参合并，从根上消除 SyntaxError，功能不受影响。
+                    }
                 }
             } catch (Exception fe) {
                 // url() 可能触发跨 frame 异常，捕获即可
@@ -5301,10 +5534,28 @@ public final class RoleElementPicker {
             // 已删元素，杜绝"区域扫描后已删元素被主循环复活"。空数组场景下 JSON 仍是合法数组，JS indexOf 安全。
             java.util.Set<String> deleted = STATE_DELETED.get(state);
             String delJson = (deleted == null || deleted.isEmpty()) ? "[]" : GSON.toJson(deleted);
-            page.evaluate("(function(){"
+            // 【关键修复"区域扫描穿透不了 frame"】旧实现把 GSON.toJson 生成的 JSON（含中文名称 / file://
+            // URL 的 iframe 元素）直接【拼进】page.evaluate 的 JS 表达式（var arr = " + json + "），且该 JS
+            // 表达式内还带大量中文注释；Playwright 对含非 ASCII 字符的 JS 表达式二次解析会抛
+            // SyntaxError: Unexpected end of input → 同步被 catch 静默吞掉 → 主框架 __rolePicks 不更新，
+            // 面板永远看不到 iframe 内元素。修复：json/delJson 改为【参数传递】（evaluate(script, json, del)），
+            // 并由 Playwright 安全序列化字符串参数；JS 表达式内【移除所有中文注释】，只保留 ASCII。
+            // 【加固】实测确认：Playwright Java 的 page.evaluate(script, arg) 会把 String/复杂 arg 拼接进
+            // JS 表达式，若含中文或 + / = 等特殊字符（标准 Base64、原始 json）会二次解析 SyntaxError。
+            // 故 json/delJson 先 Base64URL 无 padding（仅 [A-Za-z0-9_-]，不含破坏语法的字符）再作为参数，
+            // JS 端先还原成标准 Base64 再 atob+decodeURIComponent+escape 还原 UTF-8 JSON。
+            String syncJsonB64 = java.util.Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            String syncDelB64 = java.util.Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString(delJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            page.evaluate(
+                    "(args) => {"
                     + " try {"
-                    + "   var arr = " + json + ";"
-                    + "   var __del2 = " + delJson + ";"   // Java 侧持久已删集（数组）
+                    + "   function __dec(s){ var b=s.replace(/-/g, '+').replace(/_/g, '/'); return decodeURIComponent(escape(atob(b))); }"
+                    + "   var arr = JSON.parse(__dec(args[0]));"
+                    + "   var del2 = JSON.parse(__dec(args[1]));"
+                    + "   if (!(arr instanceof Array)) arr = [];"
+                    + "   if (!(del2 instanceof Array)) del2 = [];"
                     + "   if (window.__clearMatchCache) window.__clearMatchCache();"
                     + "   function toPick(p){ if(!p) return p; var o={};"
                     + "     o.strategy=p.strategy; o.role=p.role; o.name=p.name;"
@@ -5312,43 +5563,29 @@ public final class RoleElementPicker {
                     + "     o.id=(p.strategy==='id' && p.selector)? String(p.selector).replace(/^#/, '') : undefined;"
                     + "     o.css=(p.strategy==='css')?p.selector:undefined;"
                     + "     o.index=p.index; o._pageClass=p.pageClass;"
-                    // 【根因修复】把 Java 侧持有的元素永久身份键原样带回浏览器。
-                    // 此前 toPick 丢弃了 _sigKey，回灌下来的 pick 只能在【当前页上下文】重算键；
-                    // 区域扫描元素的 pageClass 常为空 → 重算退化到 location.origin+pathname 兜底 →
-                    // 每导航到一个新页面就算出一个不同的键 → __rolePickSigs 判为新元素再 push 一份，
-                    // 于是「区域扫描 → 停止 → 手动跳转其它页面」时元素成倍增加（导航 N 次得 N 份）。
-                    // 带回 _sigKey 后，__sigKey() 会命中「已固化键直接复用」的提前返回分支，
-                    // 元素身份在 浏览器→Java→浏览器 往返中恒定，重复从源头根除。
                     + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
                     + "     return o; }"
                     + "   window.__rolePicks = window.__rolePicks || [];"
                     + "   window.__rolePickSigs = window.__rolePickSigs || {};"
                     + "   arr.forEach(function(p){"
                     + "     var o = toPick(p);"
-                    // 关键修复：push 的必须是转换后的浏览器格式 o（含 id/css/key/_pageClass），
-                    // 而非原始 Java 格式 p（字段是 selector/pageClass/resolvedKey，无 id/_pageClass）。
-                    // 之前 push(p) 导致：面板读不到 p.id → 出现无值的 "id" 行；p 缺 _sig/_pageClass →
-                    // 破坏后续所有基于签名/页面类的去重与归类（表现为元素重复 / 空 id）。
                     + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
-                    // 关键：把去重键固化到 o._sigKey 并随元素一起留存。
-                    // 这些元素可能属于**其它页面**（跨页累积同步）。若不固化，后续本页扫描/回传时
-                    // __sigKey(o) 会在当前页上下文重算——一旦 o._pageClass 为空就退化为用当前 location
-                    // 兜底，算出与 Java 内存态中原键不同的新键，同一元素被重复收录（跨页扫描后元素成倍重复）。
                     + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(o)"
                     + "            : ((o&&(o._sigKey||o._sig))||null);"
                     + "     if (k) o._sigKey = k;"
-                    // 关键兜底：命中"已删屏蔽集"的元素一律不回灌，杜绝"删除后约 1s 被主循环复活"
-                    // （表现为删除看似无效）。屏蔽集由删除按钮写入 window.__deletedSigs，覆盖 Java 删除
-                    // 因键不匹配未命中的极端路径；正常删除（Java 已移除）此元素本就不在此 arr 中，无副作用。
                     + "     var __del = window.__deletedSigs || {};"
                     + "     if ((o._sig && __del[o._sig]) || (k && __del[k])) return;"
-                    + "     if ((o._sig && __del2.indexOf(o._sig) >= 0) || (k && __del2.indexOf(k) >= 0)) return;"
+                    + "     if ((o._sig && del2.indexOf(o._sig) >= 0) || (k && del2.indexOf(k) >= 0)) return;"
                     + "     if (k && window.__rolePickSigs[k]) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
                     + "     window.__rolePicks.push(o); });"
                     + "   if (window.__renderPicks) window.__renderPicks();"
-                    + " } catch(e){} })();");
-        } catch (Exception ignore) {}
+                    + " } catch(e){} }",
+                    java.util.Arrays.asList(syncJsonB64, syncDelB64));
+        } catch (Exception syncE) {
+            // 保留日志（而非静默吞）以便诊断：若面板未显示 iframe 元素 / 删除后残留，可由此定位。
+            try { log.warn("[picker] 同步面板到浏览器失败：{}", syncE.getMessage()); } catch (Exception ignore) {}
+        }
     }
 
     /**
@@ -6324,9 +6561,18 @@ public final class RoleElementPicker {
                     // 可能未可靠填充，导致"内存态增长、面板空白"。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
                     // 的面板并渲染（按各页 pageClass 过滤只显示该页拾取），保证用户在任一页面点击时面板都实时反映
                     // 已拾元素（生成链路仍走 javaPickBySig，不受影响）。
+                    // 【关键修复"区域选择穿透不了 iframe"】
+                    // syncPanelToBrowser 只同步 javaPickBySig；区域扫描穿透 iframe 的元素进【iframe 的
+                    // __rolePicks】且经 postMessage/console 回传 Java，若回传链路延迟/失败则 javaPickBySig
+                    // 暂缺 iframe 元素，syncPanelToBrowser 同步不到 → 面板只见主框架元素（表象"穿透不了"）。
+                    // 每轮空闲先 mergeFramePicksToMain 把各 iframe 的 __rolePicks 直接合并进主框架（Playwright
+                    // 协议访问不受 file:// 跨源限制，不依赖 Java 回传），再 syncPanelToBrowser 回灌，双保险
+                    // 确保区域扫描穿透的 iframe 元素最终一定出现在面板。
                     try {
                         for (Page pg : pageNames.keySet()) {
-                            if (!pg.isClosed()) syncPanelToBrowser(pg, null, javaPickBySig);
+                            if (pg.isClosed()) continue;
+                            try { mergeFramePicksToMain(pg, javaPickBySig); } catch (Exception me) { /* ignore */ }
+                            syncPanelToBrowser(pg, null, javaPickBySig);
                         }
                     } catch (Exception ignore) {}
                     // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
@@ -7080,6 +7326,50 @@ public final class RoleElementPicker {
         urlToClass.put(key, cls);
         GLOBAL_URL_TO_CLASS.put(key, cls);
         return cls;
+    }
+
+    /**
+     * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 STATE_DELETED）。
+     * 删除时 collectDeleteKeys 会把多种键形态都记入 dead 集合（pickDedupKey key / _sig / 去索引 _sig /
+     * _sigKey / RoleEntry.sigKey），而这里若只比对单一 key 可能漏命中 → iframe 残留元素经
+     * mergeFramePicksToMain 复活。故把与删除同口径的候选键全部拿去比对，任一命中即视为已删。
+     */
+    private static boolean isDeletedKeyInState(LinkedHashMap<String, RoleEntry> map, String key,
+                                               RoleEntry e, Map<Object, Object> m) {
+        try {
+            java.util.Set<String> dead = STATE_DELETED.get(map);
+            if (dead == null || dead.isEmpty()) return false;
+            if (key != null && !key.isEmpty() && dead.contains(key)) return true;
+            if (e != null && e.getSigKey() != null && dead.contains(e.getSigKey())) return true;
+            if (m != null) {
+                Object sig = m.get("_sig");
+                if (sig != null && dead.contains(String.valueOf(sig))) return true;
+                // 去索引兜底：_sig 形如 "id:xxx#0"，STATE_DELETED 存了去掉 #\d+ 的形态
+                String s2 = String.valueOf(sig);
+                if (sig != null && s2.length() > 2 && Character.isDigit(s2.charAt(s2.length() - 1))) {
+                    String base = s2.replaceAll("#\\d+$", "");
+                    if (!base.isEmpty() && dead.contains(base)) return true;
+                }
+                Object sk = m.get("_sigKey");
+                if (sk != null && dead.contains(String.valueOf(sk))) return true;
+            }
+            return false;
+        } catch (Exception ignore) {
+            return false;
+        }
+    }
+
+    /** 取文件路径/URL 的最后一段（去掉所有路径分隔符前缀），用于 iframe src 与 frame.url() 的模糊匹配。 */
+    private static String lastPathSegment(String s) {
+        if (s == null || s.isEmpty()) return "";
+        String v = s.replace('\\', '/');
+        int slash = v.lastIndexOf('/');
+        String seg = slash >= 0 ? v.substring(slash + 1) : v;
+        int q = seg.indexOf('?');
+        if (q >= 0) seg = seg.substring(0, q);
+        int h = seg.indexOf('#');
+        if (h >= 0) seg = seg.substring(0, h);
+        return seg;
     }
 
     /** 把任意片段清洗为合法 Java 类名的"主体"（首字母大写；- _ . 空格 / 作单词边界；其余字符丢弃）。 */

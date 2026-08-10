@@ -197,23 +197,29 @@ public final class RoleElementPicker {
                     map.entrySet().removeIf(en -> {
                         RoleEntry re = en.getValue();
                         if (re == null) return false;
+                        // 【方案 B：页面级隔离】值级兜底也必须绑定 pageClass，否则与 collectDeleteKeys 的
+                        // "pc|裸键" 口径脱钩，会退化成跨页裸键匹配（如 LoginPage / SetupSecondPwdPage 同名
+                        // 页脚、HSBC App tab、Language 的 _sig 都是裸 "role:link:Language:#0"，裸键比对会
+                        // 把另一页同名元素一并删掉）。故所有兜底键一律前缀所属 pageClass。
+                        String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
                         if (dead.contains(en.getKey())) return true;
                         String sigKey = re.getSigKey();
                         if (sigKey != null && dead.contains(sigKey)) return true;
                         // 重算 locatorKey（与入库时同源），覆盖 id/css 型 selector 缺失导致的 key 偏差
                         String lk;
                         try { lk = RoleElementPageGenerator.locatorKey(re); } catch (Exception ignore) { lk = null; }
-                        if (lk != null && !lk.isEmpty() && dead.contains(lk)) return true;
-                        // role+name / strategy+selector / strategy+name 兜底
+                        // 必须带 pageClass 前缀比对（同 collectDeleteKeys 的 k1 = pc|lk），杜绝跨页命中
+                        if (lk != null && !lk.isEmpty() && dead.contains(rpc + "|" + lk)) return true;
+                        // role+name / strategy+selector / strategy+name 兜底（同样前缀 pc）
                         String strategy = re.getStrategy() == null ? "role" : re.getStrategy();
                         if ("role".equals(strategy)) {
                             String rk = "role:" + (re.getRole() == null ? "" : re.getRole()).toLowerCase(java.util.Locale.ROOT)
                                     + ":" + (re.getName() == null ? "" : re.getName());
-                            if (dead.contains(rk)) return true;
+                            if (dead.contains(rpc + "|" + rk)) return true;
                         } else if ("id".equals(strategy) || "css".equals(strategy)) {
-                            if (re.getSelector() != null && dead.contains(strategy + ":" + re.getSelector())) return true;
+                            if (re.getSelector() != null && dead.contains(rpc + "|" + strategy + ":" + re.getSelector())) return true;
                         } else {
-                            if (re.getName() != null && dead.contains(strategy + ":" + re.getName())) return true;
+                            if (re.getName() != null && dead.contains(rpc + "|" + strategy + ":" + re.getName())) return true;
                         }
                         return false;
                     });
@@ -3740,12 +3746,12 @@ public final class RoleElementPicker {
                   } else {
                     // "页面元素"Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，
                     // 每行与列表展示一致（strategy/role/name/id/css/index/标记），便于外部粘贴核对。
-                    var act = window.__roleActivePageClass || '全部';
+                    var act = window.__roleActivePageClass;
                     var lines = [];
                     (window.__rolePicks || []).forEach(function(p) {
                       if (!p) return;
                       var pc = p._pageClass || (window.__rolePageName || '未知页');
-                      if (act !== '全部' && pc !== act) return;
+                      if (pc !== act) return;
                       var s = (p.strategy || 'role');
                       if (p.role) s += ' role=' + p.role;
                       if (p.name) s += ' name="' + p.name + '"';
@@ -4182,22 +4188,22 @@ public final class RoleElementPicker {
                     counts[pc] = (counts[pc] || 0) + 1;
                   }
                   var pageClasses = Object.keys(counts);
-                  var act = window.__roleActivePageClass || '全部';
-                  if (act !== '全部' && pageClasses.indexOf(act) < 0) act = '全部';
+                  // 默认激活第一个 pageClass（不再提供「全部」汇总 tab，页面元素按页分组各自独立展示）。
+                  var act = window.__roleActivePageClass;
+                  if (!act || pageClasses.indexOf(act) < 0) act = pageClasses[0] || (window.__rolePageName || '未知页');
                   window.__roleActivePageClass = act;
-                  // 渲染页面类子 Tab（命名以 page class）
+                  // 渲染页面类子 Tab（命名以 page class，按页分组，无「全部」）
                   subBar.innerHTML = '';
                   function mkSub(label, key) {
                     var b = document.createElement('button');
                     b.type = 'button';
-                    b.textContent = label + ((key !== '全部' && counts[key] != null) ? (' (' + counts[key] + ')') : '');
+                    b.textContent = label + ((counts[key] != null) ? (' (' + counts[key] + ')') : '');
                     b.style.cssText = 'flex:0 0 auto;padding:6px 12px;border:0;cursor:pointer;font:12px/1.4 sans-serif;' +
                       'color:#ccc;background:' + (act === key ? '#1e88e5' : '#2d2d2d') + ';' +
                       'border-bottom:2px solid ' + (act === key ? '#1e88e5' : 'transparent') + ';';
                     b.onclick = function() { window.__roleActivePageClass = key; window.__renderPicks(); };
                     return b;
                   }
-                  subBar.appendChild(mkSub('全部', '全部'));
                   for (var c = 0; c < pageClasses.length; c++) subBar.appendChild(mkSub(pageClasses[c], pageClasses[c]));
 
                   // 渲染候选项（带勾选框）。勾选态 = 该 pick 的 sig 在选择集 window.__currentStep 中。
@@ -4249,7 +4255,7 @@ public final class RoleElementPicker {
                     return picks.filter(function(p) {
                       if (!p) return false;
                       var pc = (p._pageClass) || (window.__rolePageName || '未知页');
-                      return act === '全部' || pc === act;
+                      return pc === act;
                     });
                   }
                   // 「封装为步骤」按钮与「全选」复选框合并到同一行（selInfo 的 margin-left:auto 已把计数+按钮推到右侧）
@@ -4315,12 +4321,15 @@ public final class RoleElementPicker {
                       // 部分链路（如区域选择、导航恢复回灌）写入 __currentStep 的 pick 可能没固化 _sig，
                       // 导致上报给 Java 的 _sig 为空、pickDedupKey 算不出 key → 定位器策略删不掉、随后复活。
                       // 用全量重算可保证 _sig/_sigKey 一定存在且与入库时完全一致。
+                      // 删除键一律走 __mergeKey 口径（含 pageClass，如 "[\"role:link:Language:#0\",\"LogonPage\"]"），
+                      // 绝不用裸 _sig（如 "role:link:Language:#0"）——否则 LoginPage 与 SetupSecondPwdPage 上
+                      // 同名共用元素（Language、HSBC App tab、各页脚链接，_sig 完全相同）会共享同一裸键，
+                      // 删一页即误删/屏蔽另一页。__mergeKey 已对全部策略（role/id/css/i18n/text）返回含 pc 的键，
+                      // 故删除命中率不受影响；冗余的裸 _sig 兜底既不安全也无必要。
                       var rsig = (typeof window.__pickSig === 'function') ? window.__pickSig(x) : (x._sig || '');
-                      var rkey = (typeof window.__sigKey === 'function') ? window.__sigKey(x) : (x._sigKey || '');
-                      if (rkey)   { dead[rkey]   = true; deadKeys.push(rkey);   delSigs[rkey] = true; }
-                      if (rsig)   { dead[rsig]   = true; deadKeys.push(rsig);   delSigs[rsig] = true; }
-                      if (x._sigKey) { dead[x._sigKey] = true; deadKeys.push(x._sigKey); delSigs[x._sigKey] = true; }
-                      if (x._sig)    { dead[x._sig]    = true; deadKeys.push(x._sig);    delSigs[x._sig]    = true; }
+                      var rkey = (typeof window.__mergeKey === 'function') ? window.__mergeKey(x)
+                                : ((typeof window.__sigKey === 'function') ? window.__sigKey(x) : (x._sigKey || ''));
+                      if (rkey) { dead[rkey] = true; deadKeys.push(rkey); delSigs[rkey] = true; }
                       // 仅抽取 Java 侧 collectDeleteKeys 所需的纯数据字段（不含 _el/DOM，JSON 安全）。
                       // 注意：collectDeleteKeys 只用 strategy/_sig/_sigKey/_pageClass/role/key/name/index，
                       // 故不再冗余携带 id/css 等未参与去重键计算的字段。
@@ -4371,8 +4380,9 @@ public final class RoleElementPicker {
                           if (!p) return false;
                           // 优先按 __mergeKey（去索引稳定键，与删除主逻辑 dead 集合一致）判定是否在删除集，
                           // 同时兜底兼容老格式含索引的 _sig/_sigKey，避免 i18n 等定位器策略因 #index 变化清不掉。
+                          // 只按 __mergeKey（含 pageClass）判定是否在删除集，杜绝跨页同名裸 _sig 误删。
                           var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(p) : null;
-                          return !((mk && dead[mk]) || dead[p._sigKey] || dead[p._sig]);
+                          return !((mk && dead[mk]) || (p._sigKey && dead[p._sigKey]));
                         });
                         // picks 被删空的 step 整条丢弃，避免生成出一个没有任何语句的空 @Step 方法。
                         if (!ps.length) return;
@@ -4413,9 +4423,8 @@ public final class RoleElementPicker {
                   var _oldDel = document.getElementById('__roleDelBtn');
                   if (_oldDel) _oldDel.remove();
                   selBar.appendChild(delBtn);
-                  // 【修复】把"全选"工具栏从候选列表内部移出，作为 subTabBar（"全部"行）正下方
-                  // 的兄弟元素，使"全选"这一行与"全部"这一行紧挨着。此前 selBar 被 append 进
-                  // listEl 顶部，夹在"全部"子 Tab 行与候选列表之间，视觉上不相邻。
+                  // 把"全选"工具栏从候选列表内部移出，作为 subTabBar（按页分组的子 Tab 行）正下方
+                  // 的兄弟元素，使"全选"这一行与子 Tab 行紧挨着。
                   try { pageContent.insertBefore(selBar, listEl); } catch (e) { listEl.appendChild(selBar); }
                   function refreshSelInfo() {
                     var vis = curVisiblePicks();
@@ -4436,7 +4445,7 @@ public final class RoleElementPicker {
                   for (var i2 = 0; i2 < picks.length; i2++) {
                     var p = picks[i2] || {};
                     var pc = (p._pageClass) || (window.__rolePageName || '未知页');
-                    if (act !== '全部' && pc !== act) continue;
+                    if (pc !== act) continue;
                     var sk = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig);
                     var sel = !!(sk && selSet[sk]);
                     var row = document.createElement('label');
@@ -5609,8 +5618,8 @@ public final class RoleElementPicker {
                     + "            : ((o&&(o._sigKey||o._sig))||null);"
                     + "     if (k) o._sigKey = k;"
                     + "     var __del = window.__deletedSigs || {};"
-                    + "     if ((o._sig && __del[o._sig]) || (k && __del[k])) return;"
-                    + "     if ((o._sig && del2.indexOf(o._sig) >= 0) || (k && del2.indexOf(k) >= 0)) return;"
+                    // 仅按含 pageClass 的 k（=__sigKey）命中已删屏蔽集，裸 o._sig 跨页同名会误屏蔽另一页面共用元素。
+                    + "     if (k && (__del[k] || del2.indexOf(k) >= 0)) return;"
                     + "     if (k && window.__rolePickSigs[k]) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
                     + "     window.__rolePicks.push(o); });"
@@ -5921,12 +5930,31 @@ public final class RoleElementPicker {
         Object sigKey = m.get("_sigKey");
         String strategy = (e != null) ? e.getStrategy() : null;
         boolean locatorIdentity = strategy != null && LOCATOR_IDENTITY_STRATEGIES.contains(strategy);
+        // 【方案 B：页面级隔离】内存态去重键一律绑定所属 pageClass，使不同页面上 role/name 完全相同
+        // 的「共用元素」（如各页页脚链接、Close/Next、HSBC App tab）彻底按页分桶，互不干扰：
+        // 删除某页元素时不再波及其它页同名元素（此前 i18n/定位器型策略的 locatorKey 不含 pageClass，
+        // 两个页面的同名页脚共享同一 key，删 SetupSecondPwdPage 的页脚会误删 LoginPage 的同名页脚）。
+        // pageClass 优先取 RoleEntry（已固化），避免浏览器侧重算键时因 _pageClass 缺失退化到 location 兜底。
+        // pageClass 优先取 RoleEntry（已固化），其次回退到原始回传里的 _pageClass，
+        // 避免浏览器侧重算键时因 pageClass 缺失退化到裸键（方案 B 隔离会失效）。
+        String pc = (e != null && e.getPageClass() != null) ? e.getPageClass()
+                : (m != null ? asString(m.get("_pageClass")) : null);
+        if (pc == null) pc = "";
         if (locatorIdentity) {
             String lk = RoleElementPageGenerator.locatorKey(e);
-            if (lk != null && !lk.isEmpty()) return lk;
+            if (lk != null && !lk.isEmpty()) return pc + "|" + lk;
         }
+        // role/closeOp 分支：_sigKey 已内嵌 pageClass（JSON.stringify([_sig, pageClass])），
+        // 与浏览器 __rolePicks 的 _sigKey 同构，删除/本地过滤均可精确命中，保持原行为。
         if (sigKey != null) return String.valueOf(sigKey);
-        return sig != null ? String.valueOf(sig) : "";
+        // 【方案 B 兜底】_sigKey 缺失时绝不能退化成裸 _sig——否则 LoginPage / SetupSecondPwdPage
+        // 上同名共用元素（Language、HSBC App tab、各页脚链接，_sig 完全相同）会共享同一裸键，
+        // 删一页即误删另一页。此处一律前缀 pageClass，确保即使缺 _sigKey 也维持按页隔离。
+        if (sig != null) {
+            String s = String.valueOf(sig);
+            return pc.isEmpty() ? s : pc + "|" + s;
+        }
+        return "";
     }
 
     /**
@@ -5991,19 +6019,28 @@ public final class RoleElementPicker {
                 Map<Object, Object> m = (Map<Object, Object>) o;
                 RoleEntry e = parsePick(m);
                 if (e != null) {
-                    // 多通道兜底：javaPickBySig 的真实 key 既可能是 pickDedupKey（role 用 _sigKey、定位器用 _sig），
-                    // 又可能是浏览器侧实时重算的 __pickSig/__sigKey，或 RoleEntry 固化的 sigKey。
-                    // 任一命中都加入 dead，确保"删除所有元素"时每个元素都能从 Java 权威内存态移除，
-                    // 否则残留元素会在 refreshCode 生成页面类时继续出现（表现为删了却还在）。
+                    // 多通道兜底：javaPickBySig 的真实 key 由 pickDedupKey 决定（方案 B 下已绑定 pageClass）。
+                    // 主删除键 k1 即 pickDedupKey，与入库 key 完全同构，确保精确命中；其余 _sig/_sigKey/
+                    // sigKey 形态仅作冗余兜底（互不重复加入）。
+                    // 【方案 B】删除原「去索引兜底」分支：它把 _sig 去 #index 后（如 "role:link:Privacy...footer"）
+                    // 作为跨页共享键加入 dead，会导致删某页页脚时其它页同名页脚被一并清除（误删）。
+                    // 方案 B 下 locator 入库键本身就是「pageClass|去索引locatorKey」，k1 已能稳定命中，
+                    // 不再需要也不允许去索引跨页兜底。
+                    String pc = (e.getPageClass() != null) ? e.getPageClass() : "";
                     String k1 = pickDedupKey(m, e);
                     if (k1 != null && !k1.isEmpty()) dead.add(k1);
                     String k2 = asString(m.get("_sig"));
-                    if (k2 != null && !k2.isEmpty() && !k2.equals(k1)) dead.add(k2);
-                    // 去索引兜底：_sig 形如 "i18n:forgot_username_title#0"，javaPickBySig 现按去索引 locatorKey 存储，
-                    // 去掉尾随 #\d+ 后同样能命中，确保旧格式含索引 key 也能被清掉（避免删了又复活）。
-                    if (k2 != null && k2.length() > 2 && Character.isDigit(k2.charAt(k2.length() - 1))) {
-                        String k2base = k2.replaceAll("#\\d+$", "");
-                        if (!k2base.isEmpty() && !dead.contains(k2base)) dead.add(k2base);
+                    // 定位器型策略的 _sig 可能带 #index，补一个「带 pageClass 前缀」形态以兼容旧数据，
+                    // 但务必绑定 pageClass，绝不退化为跨页共享键（否则 SetupSecondPwdPage 删页脚会把
+                    // LoginPage 同名页脚的裸 _sig 一并加入 dead，后续 isDeletedKeyInState 又按裸 _sig
+                    // 把另一页同名元素永久屏蔽）。故 k2 也一律带 pc 前缀。
+                    if (k2 != null && !k2.isEmpty()) {
+                        String k2pc = pc + "|" + k2;
+                        if (!k2pc.equals(k1)) dead.add(k2pc);
+                        if (k2.length() > 2 && Character.isDigit(k2.charAt(k2.length() - 1))) {
+                            String k2base = pc + "|" + k2.replaceAll("#\\d+$", "");
+                            if (!k2base.isEmpty() && !dead.contains(k2base)) dead.add(k2base);
+                        }
                     }
                     String k3 = asString(m.get("_sigKey"));
                     if (k3 != null && !k3.isEmpty() && !k3.equals(k1) && !k3.equals(k2)) dead.add(k3);
@@ -6443,6 +6480,34 @@ public final class RoleElementPicker {
      * @param nlsFiles       类级 {@code @RoleFile} 路径（可变参数）
      * @throws PickerAbortedException 用户点击『终止运行』时
      */
+    /**
+     * 一站式：打开拾取面板（简化重载）。
+     *
+     * <p>只接收 {@code page} 与 NLS 文件，<b>page / steps 类名由当前页面 URL 自动派生</b>，
+     * 与框架对弹窗/导航产生的新页面的命名规则一致（{@link #pageClassNameFromUrl} +
+     * {@code GLOBAL_URL_TO_CLASS}：取 URL path 末段清洗为 {@code XxxPage}，同一 URL 在多次运行间稳定复用）。
+     * 生成类的默认包名沿用 {@code com.hsbc.cmb.hk.dbb.automation.tests}（可在外部直接调用完整重载覆盖）。</p>
+     *
+     * <p>调用示例：
+     * <pre>{@code
+     *     RoleElementPicker.openPanel(page, "nls/NLS_footer.json", "nls/NLS_idv_logon.json");
+     * }</pre>
+     *
+     * @param page       Playwright Page（须已导航到目标页，且为 headed 浏览器）
+     * @param nlsFiles   类级 {@code @RoleFile} 路径（可变参数，至少 1 个）
+     * @throws PickerAbortedException 用户点击『终止运行』时
+     */
+    public static void openPanel(Page page, String... nlsFiles) {
+        if (nlsFiles == null || nlsFiles.length == 0) {
+            throw new IllegalArgumentException("[picker] openPanel 至少需要 1 个 NLS 文件路径参数");
+        }
+        // page / steps 类名由 URL 决定，与弹窗/导航新页面同源派生。
+        final String pageClassName = pageClassNameFromUrl(page.url(), GLOBAL_URL_TO_CLASS.values());
+        final String stepClassName = pageClassName + "Steps";
+        final String packageName = "com.hsbc.cmb.hk.dbb.automation.tests";
+        openPanel(page, packageName, pageClassName, stepClassName, nlsFiles);
+    }
+
     public static void openPanel(Page page, String packageName,
                                  String pageClassName, String stepClassName, String... nlsFiles) {
         // CI 环境：拾取面板是本地开发工具，自动化测试里不应打开并阻塞等待人工拾取，直接跳过。
@@ -7374,16 +7439,19 @@ public final class RoleElementPicker {
         try {
             java.util.Set<String> dead = STATE_DELETED.get(map);
             if (dead == null || dead.isEmpty()) return false;
+            // key 即 pickDedupKey（方案 B 下已绑定 pageClass），与 STATE_DELETED 记录同构，精确命中。
             if (key != null && !key.isEmpty() && dead.contains(key)) return true;
             if (e != null && e.getSigKey() != null && dead.contains(e.getSigKey())) return true;
             if (m != null) {
+                // 【方案 B】dead 集合里的键均绑定 pageClass（如 "LogonPage|role:link:Language:#0"），
+                // 故裸 _sig 比对一律加 pc 前缀匹配；不再使用跨页裸键比对，杜绝删 A 页误伤 B 页同名元素。
                 Object sig = m.get("_sig");
-                if (sig != null && dead.contains(String.valueOf(sig))) return true;
-                // 去索引兜底：_sig 形如 "id:xxx#0"，STATE_DELETED 存了去掉 #\d+ 的形态
-                String s2 = String.valueOf(sig);
-                if (sig != null && s2.length() > 2 && Character.isDigit(s2.charAt(s2.length() - 1))) {
-                    String base = s2.replaceAll("#\\d+$", "");
-                    if (!base.isEmpty() && dead.contains(base)) return true;
+                Object pcObj = m.get("_pageClass");
+                String pcStr = (pcObj != null && !String.valueOf(pcObj).isEmpty())
+                        ? String.valueOf(pcObj) : (e != null && e.getPageClass() != null ? e.getPageClass() : "");
+                if (sig != null) {
+                    String sigPc = pcStr + "|" + String.valueOf(sig);
+                    if (dead.contains(sigPc)) return true;
                 }
                 Object sk = m.get("_sigKey");
                 if (sk != null && dead.contains(String.valueOf(sk))) return true;

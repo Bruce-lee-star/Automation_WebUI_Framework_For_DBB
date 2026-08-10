@@ -179,6 +179,33 @@ public final class RoleElementPicker {
                 List<?> raw = GSON.fromJson(String.valueOf(v), List.class);
                 java.util.Set<String> dead = collectDeleteKeys(raw);
                 if (dead.isEmpty()) return null;
+                // 【修复"跨域/iframe 内元素只进 Java 内存态、不进浏览器 __rolePicks"导致删不掉的残留】
+                // 典型：StatusConfirmationLightIcon（testid 策略，位于 crossdomain iframe）。
+                // 跨域 iframe 因同源策略无法被 window.frames 访问，浏览器侧删除永远拿不到它，dead 里无它的键，
+                // 值级兜底也救不了（兜底仍是用 dead 的键比对）。用户点删除的语义是"删除该页全部拾取元素"，
+                // 故这里收集 dead 涉及的 pageClass，把内存态中【同一 pageClass 的其余元素】一并整桶删除。
+                // 严格绑定 pageClass，绝不会波及另一页的共用元素（LoginPage 的 footer/HSBC App tab/Language 等）。
+                java.util.Set<String> deadPages = new java.util.LinkedHashSet<>();
+                for (Object o : raw) {
+                    if (o instanceof java.util.Map) {
+                        java.util.Map<?, ?> m = (java.util.Map<?, ?>) o;
+                        Object pc = m.get("_pageClass");
+                        if (pc == null) pc = m.get("pageClass");
+                        if (pc != null && !String.valueOf(pc).isEmpty()) deadPages.add(String.valueOf(pc));
+                    }
+                }
+                // 也从 dead 键里反向解析 pageClass（键形如 pc|... 或 ["sig","pc"]）
+                for (String d : dead) {
+                    if (d == null) continue;
+                    int bar = d.indexOf('|');
+                    if (bar > 0) {
+                        deadPages.add(d.substring(0, bar));
+                    } else if (d.startsWith("[") && d.contains("\",\"")) {
+                        int c2 = d.lastIndexOf('"');
+                        int c1 = d.lastIndexOf('"', c2 - 1);
+                        if (c1 >= 0 && c2 > c1) deadPages.add(d.substring(c1 + 1, c2));
+                    }
+                }
                 synchronized (map) {
                     int before = map.size();
                     // ① 按 map key 直接移除；再兜底扫一遍实体上固化的 sigKey，覆盖 key 与 sigKey 不一致的历史数据。
@@ -223,12 +250,47 @@ public final class RoleElementPicker {
                         }
                         return false;
                     });
+                    // ③ 【整桶删除同页残留】dead 涉及的 pageClass，把内存态里同一 pageClass 的【剩余】元素一并删除。
+                    // 覆盖：跨域/iframe 元素只上送 Java 内存态、浏览器侧 __rolePicks 永远不包含它、dead 里无其键，
+                    // 导致 ①② 都删不掉的边缘残留（如 StatusConfirmationLightIcon）。严格绑定 pageClass，不跨页误删。
+                    if (!deadPages.isEmpty()) {
+                        map.entrySet().removeIf(en -> {
+                            RoleEntry re = en.getValue();
+                            if (re == null) return false;
+                            String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
+                            return !rpc.isEmpty() && deadPages.contains(rpc);
+                        });
+                    }
                     // 持久记录已删集合（跨区域扫描/跨页面）：即便本页删除全部命中、实体已被移除，
                     // 仍登记 dead 键——其它页面同源元素回灌时同样应被屏蔽，且区域扫描清空浏览器端
                     // __deletedSigs 后仍能靠本集合兜底，杜绝"删除后重启区域扫描又复活"。
                     STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                     log.info("[picker] __roleOnDelete 删除内存态：请求={} 实删={}（当前内存态大小={}）",
                             dead.size(), before - map.size(), map.size());
+                    // 【临时诊断】按 pageClass 统计剩余内存态，确认跨页共用元素（LoginPage 的 Language/页脚等）未被误删。
+                    try {
+                        java.util.Map<String, Integer> pcCount = new java.util.LinkedHashMap<>();
+                        for (RoleEntry e : map.values()) {
+                            String pc = (e != null && e.getPageClass() != null) ? e.getPageClass() : "未知";
+                            pcCount.merge(pc, 1, Integer::sum);
+                        }
+                        log.info("[picker] __roleOnDelete 删除后按页分布：{}", pcCount);
+                    } catch (Exception diagEx) { /* ignore */ }
+                    // 【临时诊断2】定位"少删一个 StatusConfirmationLightIcon"：对比 dead 集合与内存态中
+                    // 该 testid 元素的 key 形态，确认 pageClass 在入库/删除两端是否不一致（典型边缘态漏删）。
+                    try {
+                        java.util.List<String> deadHits = new java.util.ArrayList<>();
+                        for (String d : dead) if (d != null && d.contains("StatusConfirmation")) deadHits.add(d);
+                        java.util.List<String> remainHits = new java.util.ArrayList<>();
+                        for (java.util.Map.Entry<String, RoleEntry> en : map.entrySet()) {
+                            RoleEntry re = en.getValue();
+                            if (re != null && re.getName() != null && re.getName().contains("StatusConfirmation"))
+                                remainHits.add("mapKey=" + en.getKey() + " pc=" + re.getPageClass()
+                                        + " strategy=" + re.getStrategy() + " name=" + re.getName());
+                        }
+                        if (!deadHits.isEmpty() || !remainHits.isEmpty())
+                            log.info("[picker][diag-StatusConfirm] dead中相关key={} 删除后内存态残留={}", deadHits, remainHits);
+                    } catch (Exception diagEx2) { /* ignore */ }
                 }
                 // 【关键修复"删除所有元素后页面类没删除干净"——源头清空 iframe 残留】
                 // 删除只清了主框架 __rolePicks 与 Java 权威内存态；iframe 自己的 __rolePicks 仍残留已删元素，
@@ -4312,10 +4374,47 @@ public final class RoleElementPicker {
                     // 故此处额外上报**完整 pick 对象**（剥离 _el 等 DOM 引用，避免循环 JSON 失败），
                     // Java 侧 __roleOnDelete 用与入库时完全相同的 pickDedupKey 重新算 key 精确命中删除。
                     var delPicks = [];
+                    // 【修复"扫描新增元素漏删"】cset 只是用户在面板里【勾选】的选择集，
+                    // 而整页扫描新增的元素（如 StatusConfirmationLightIcon）会进入 __rolePicks、
+                    // 被 Java 内存态收录，却可能尚未进入 __currentStep（用户全选后、删除前才扫描出来）。
+                    // 这类"已存在但未被勾选"的同页元素，点删除时 cset.forEach 遍历不到 → 删不掉 → 残留。
+                    // 故此处：先收集 cset 涉及的 pageClass 集合，再把 __rolePicks 中【同一 pageClass】
+                    // 的全部元素并入删除集。仍严格按 pageClass 隔离，绝不会波及另一页的共用元素。
+                    var csetPages = {};
+                    cset.forEach(function(x) {
+                      if (x) {
+                        var p = (x._pageClass || window.__rolePageName || '');
+                        if (p) csetPages[p] = true;
+                      }
+                    });
+                    var allCandidates = cset.slice();
+                    // 收集顶层 + 所有 iframe（含嵌套）中的同页 pick。
+                    // 实测：testid 等元素若位于 iframe 内，浏览器侧"合并 iframe 拾取到主框架"失败时，
+                    // 它只留在 iframe 自己的 window.__rolePicks，不会进入顶层；而 Java 内存态(__roleOnPick)
+                    // 是独立上送的，所以 Java 有、顶层浏览器没有 → 删除遍历不到 → 残留下来的正是这类元素。
+                    // 故此处必须跨 frame 收集，否则同页 iframe 元素漏删。
+                    function __collectFromWin(w) {
+                      try {
+                        var picks = (w && w.__rolePicks) ? w.__rolePicks : [];
+                        var cur = (w && w.__currentStep) ? w.__currentStep : [];
+                        [].concat(picks, cur).forEach(function(x) {
+                          if (!x) return;
+                          var p = (x._pageClass || (w && w.__rolePageName) || window.__rolePageName || '');
+                          if (p && csetPages[p] && allCandidates.indexOf(x) < 0) allCandidates.push(x);
+                        });
+                      } catch (e2) { /* 跨 frame 访问可能因 detached 失败，忽略 */ }
+                    }
+                    __collectFromWin(window);
+                    try {
+                      var __fr = (window.frames && window.frames.length) ? window.frames : [];
+                      for (var __fi = 0; __fi < __fr.length; __fi++) {
+                        try { __collectFromWin(__fr[__fi]); } catch (e3) {}
+                      }
+                    } catch (e4) {}
                     // 会话级"已删屏蔽集"：即使 Java 删除因某种原因未命中，主循环 syncPanelToBrowser
                     // 把 javaPickBySig 合并回浏览器时也会跳过命中此集的元素，杜绝"删除后约 1s 复活"。
                     var delSigs = window.__deletedSigs = (window.__deletedSigs || {});
-                    cset.forEach(function(x) {
+                    allCandidates.forEach(function(x) {
                       if (!x) return;
                       // 【关键】实时重算签名/去重键，而非依赖 pick 对象上碰巧缺失的字段。
                       // 部分链路（如区域选择、导航恢复回灌）写入 __currentStep 的 pick 可能没固化 _sig，

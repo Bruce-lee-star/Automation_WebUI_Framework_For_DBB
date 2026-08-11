@@ -49,6 +49,18 @@ public class MockHandler {
                 rule.getMockReplaceFields() != null ? rule.getMockReplaceFields().size() : 0,
                 rule.isInterceptRealResponse());
 
+        // ═══ 页面/上下文已关闭的短路保护 ═══
+        // 场景：page 或 context 已关闭/重建，但 route handler 仍注册（未被 unroute），
+        // 此时若进入 route.fetch() 会因底层连接失效而长时间阻塞（甚至永久挂起），
+        // 导致后续测试被该请求 block 住。此处检测到页面已关闭时直接 resume 放行，
+        // 不执行任何 mock/拦截逻辑，避免请求悬挂。
+        if (isPageClosed(route)) {
+            LOGGER.warn("[MockHandler] Page/context already closed, skip handling (resume to avoid blocking): url='{}', pattern='{}'",
+                    RouteUtil.sanitizeUrl(url), rule.getUrlPattern());
+            try { route.resume(); } catch (Exception ignored) {}
+            return;
+        }
+
         // ═══ 拦截真实响应模式：route.fetch() → 修改 → fulfill ═══
         if (rule.isInterceptRealResponse()) {
             handleInterceptRealResponse(route, rule, url);
@@ -169,6 +181,14 @@ public class MockHandler {
         Map<String, Object> replaceFields = rule.getMockReplaceFields();
         boolean hasReplaceFields = replaceFields != null && !replaceFields.isEmpty();
 
+        // 进入 fetch 前再次确认页面未关闭（避免 handle() 检查后、fetch 阻塞期间页面被关闭）
+        if (isPageClosed(route)) {
+            LOGGER.warn("[MockHandler] Page/context closed before fetch, resume to avoid blocking: pattern='{}', url='{}'",
+                    rule.getUrlPattern(), url);
+            try { route.resume(); } catch (Exception ignored) {}
+            return;
+        }
+
         try {
             // ── 1. route.fetch() — 真实发送请求到服务器，获取真实响应 ──
             //    无参 fetch 默认继承原请求的 method/headers/cookies
@@ -274,5 +294,20 @@ public class MockHandler {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    /**
+     * 判断承载该请求的页面/上下文是否已被关闭。
+     *
+     * <p>route 本身不持有 page 引用，但可通过
+     * {@code route.request().frame().page().isClosed()} 间接获取。
+     * 任一环节抛异常（如页面已释放导致对象不存在）一律按"已关闭"处理，
+     * 以保守方式避免对已销毁页面执行 route.fetch() 造成长阻塞。
+     *
+     * @param route Playwright Route 对象
+     * @return true 表示页面已关闭，handler 应直接 resume 放行
+     */
+    private static boolean isPageClosed(Route route) {
+        return RouteUtil.isPageClosed(route);
     }
 }

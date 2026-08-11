@@ -118,6 +118,12 @@ public final class PageElementList extends AbstractList<PageElement> {
     }
 
     // ========================== 大小（实时查询 DOM） ==========================
+    /**
+     * 列表默认大小 = 当前【可见】元素数量。
+     * 被隐藏（display:none / visibility:hidden / opacity:0 / 被遮挡）的元素不计入，
+     * 避免后续 nth()/first() 拿到隐藏元素后，Playwright 在 click/getText 时的
+     * scrollIntoViewIfNeeded 报异常。
+     */
     @Override
     public int size() {
         return size(defaultTimeoutMs / 1000);
@@ -127,7 +133,7 @@ public final class PageElementList extends AbstractList<PageElement> {
         try {
             Locator loc = locator();
             loc.first().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
+                    .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
             return loc.count();
         } catch (TimeoutError e) {
@@ -143,9 +149,6 @@ public final class PageElementList extends AbstractList<PageElement> {
     public PageElement get(int index) {
         int currentSize = size();
         Objects.checkIndex(index, currentSize);
-
-        // size() 已通过 waitFor(ATTACHED) 确认元素存在，无需再次等待 VISIBLE
-        // 元素的可见性交给后续操作自行判断（Playwright Locator 操作时自动等待）
         return new PageElementWithIndex(selector, page, index, frameSegs);
     }
 
@@ -192,7 +195,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     public boolean isEmpty(int timeoutSec) {
         try {
             locator().first().waitFor(new Locator.WaitForOptions()
-                    .setState(WaitForSelectorState.ATTACHED)
+                    .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
             return false;
         } catch (Exception e) {
@@ -205,15 +208,17 @@ public final class PageElementList extends AbstractList<PageElement> {
     }
 
     // ========================== 快捷方法 ==========================
+    /** 返回第一个【可见】元素（默认语义）。无可见元素时抛异常。 */
     public PageElement first() {
-        if (isEmpty()) {
-            throw new IllegalStateException("Element list is empty, cannot get first: " + selector);
+        if (isEmpty(defaultTimeoutMs / 1000)) {
+            throw new IllegalStateException("Element list has no visible element, cannot get first: " + selector);
         }
         return get(0);
     }
 
+    /** 返回最后一个【可见】元素（默认语义）。无可见元素时抛异常。 */
     public PageElement last() {
-        int s = size();
+        int s = size(defaultTimeoutMs / 1000);
         if (s == 0) {
             throw new IllegalStateException("Element list is empty, cannot get last: " + selector);
         }
@@ -237,12 +242,12 @@ public final class PageElementList extends AbstractList<PageElement> {
     private static final class PageElementWithIndex extends PageElement {
         private final int index;
 
-        public PageElementWithIndex(String selector, BasePage page, int index) {
+        private PageElementWithIndex(String selector, BasePage page, int index) {
             super(selector, page, null);
             this.index = index;
         }
 
-        public PageElementWithIndex(String selector, BasePage page, int index, List<String> frameSegs) {
+        private PageElementWithIndex(String selector, BasePage page, int index, List<String> frameSegs) {
             super(selector, page, frameSegs);
             this.index = index;
         }
@@ -257,7 +262,7 @@ public final class PageElementList extends AbstractList<PageElement> {
             return super.locator().nth(index);
         }
 
-        public int getIndex() {
+        private int getIndex() {
             return index;
         }
     }

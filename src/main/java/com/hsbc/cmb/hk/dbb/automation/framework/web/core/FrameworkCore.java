@@ -216,9 +216,10 @@ public class FrameworkCore {
 
             logger.info("FrameworkCore cleaned up successfully");
         } catch (Exception e) {
+            // ⭐ 收尾清理：即使某步失败也只记录，不重新抛出——清理阶段的异常不应中断
+            //    已结束的测试流程（掩盖真实失败原因），仅保存供诊断。
             logger.error("Failed to cleanup FrameworkCore", e);
             frameworkState.setLastException(e);
-            throw new InitializationException("Failed to cleanup FrameworkCore", e);
         }
     }
     

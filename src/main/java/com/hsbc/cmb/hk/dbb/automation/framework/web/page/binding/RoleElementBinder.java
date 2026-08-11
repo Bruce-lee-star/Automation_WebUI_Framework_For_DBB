@@ -137,7 +137,7 @@ public class RoleElementBinder {
                                 : a.description();
                         final String nameVal = literalName;
                         supplier = () -> self.byRole(role, nameVal, a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
-                    } else {
+                    } else if (a.key() != null && !a.key().isEmpty()) {
                         // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
                         // 注意：必须用 resolveRoleFiles（复数）跨文件查找，与 text/altText/title 等语义路径一致；
                         // 若用 resolveRoleFile（单数，仅取首位文件），当 key 不在首位文件时就会报 missing key。
@@ -161,6 +161,14 @@ public class RoleElementBinder {
                             // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
                             return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                         };
+                    } else {
+                        // 纯 role 无 name（对齐 page.pause 的 roleWithoutName，score 510）：如
+                        // <div role="listitem"> 无文本、role="img" 无 alt 的纯结构/装饰元素。
+                        // 直接调用 getByRole(role) 不带 name（BasePage.byRole(AriaRole) 无 name 重载）。
+                        desc = a.description().isEmpty()
+                                ? "role=" + role + "[no-name]"
+                                : a.description();
+                        supplier = () -> self.byRole(role);
                     }
                 } else if (a.key() != null && !a.key().isEmpty()) {
                     // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后

@@ -516,4 +516,11 @@ public class PlaywrightConfigManager {
     public int getScreenshotTimeout() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_WAIT_TIMEOUT);
     }
+
+    /**
+     * 全页截图允许的最大滚动高度（像素）。<=0 表示不限制。
+     */
+    public int getFullPageMaxHeight() {
+        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_SCREENSHOT_FULLPAGE_MAX_HEIGHT);
+    }
 }

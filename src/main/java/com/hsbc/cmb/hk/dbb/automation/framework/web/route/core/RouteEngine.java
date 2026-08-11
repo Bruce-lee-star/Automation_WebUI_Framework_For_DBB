@@ -327,6 +327,18 @@ public class RouteEngine {
      * <p>每次 handler 执行完成后立即 remove，避免阻塞同一 pattern 的后续请求。
      */
     private static void dispatchRoute(Route route, RouteRule rule) {
+        // ═══ 统一页面/上下文关闭短路 ═══
+        // page/context 已关闭后，route handler 可能仍被触发（未 unroute）。
+        // 此时执行 fetch/resume/response 等操作会抛 PlaywrightException 或卡在失效连接上，
+        // 导致后续测试被该请求 block 住。统一在此放行并跳过，所有 handler 类型均受益。
+        if (RouteUtil.isPageClosed(route)) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] Page/Context already closed, resume & skip dispatch for pattern='{}'",
+                    rule.getUrlPattern());
+            RouteUtil.resumeIfOpen(route);
+            return;
+        }
+
         // ⭐ #1 性能优化：缓存 route.request() JNI 调用，避免多次跨语言桥接
         Request req = route.request();
         String reqUrl = req.url();
@@ -600,6 +612,14 @@ public class RouteEngine {
 
         Runnable action = () -> {
             try {
+                // 延迟期间页面/上下文可能已被关闭，抵达时直接放行，避免对已销毁页面操作报错
+                if (RouteUtil.isPageClosed(route)) {
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[RouteEngine] Page already closed during delay, skip resume for '{}'", pattern);
+                    RouteUtil.resumeIfOpen(route);
+                    DISPATCHED_ROUTES.remove(route);
+                    return;
+                }
                 // 检查会话是否已被停止（auto-stop / 超时）
                 MonitorSession session = SESSIONS.get(rule);
                 if (session != null && session.stopped.get()) {
@@ -681,6 +701,14 @@ public class RouteEngine {
      */
     private static void executeHandlerScheduled(Route route, RouteRule rule, RouteHandler handler) {
         try {
+            // 延迟期间页面/上下文可能已被关闭，抵达时直接放行，避免对已销毁页面执行 handler 导致挂起/报错
+            if (RouteUtil.isPageClosed(route)) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Page already closed during scheduled delay, skip handler for '{}'",
+                        rule.getUrlPattern());
+                RouteUtil.resumeIfOpen(route);
+                return;
+            }
             // 检查会话是否已被停止（auto-stop / 超时）
             MonitorSession session = SESSIONS.get(rule);
             if (session != null && session.stopped.get()) {

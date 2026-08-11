@@ -1,6 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -10,7 +13,6 @@ import com.microsoft.playwright.Tracing;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
 import com.microsoft.playwright.options.LoadState;
-import net.thucydides.model.environment.SystemEnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -116,13 +118,30 @@ class PlaywrightContextManager {
     static void closeContext(BrowserContext context) {
         if (context != null) {
             try {
-                // 停止 tracing
-                if (SystemEnvironmentVariables.currentEnvironmentVariables().getPropertyAsBoolean("playwright.context.trace.enabled", false)) {
-                    String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
-                    context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath)));
+                // ⭐ 先释放路由层资源：停止 MonitorSession 定时器、unroute、清理注册表与防重门控，
+                //    避免调度器线程池持有已销毁 context 引用导致内存泄漏 / 对已关闭 context 无效调度。
+                try {
+                    RouteRegistry.clearContext(context);
+                } catch (Exception re) {
+                    LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to clear Route resources on context close: {}", re.getMessage());
                 }
-                context.close();
-                LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext closed");
+                // 停止 tracing（以框架配置为准，避免与系统环境变量不一致导致误判）
+                if (FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED)) {
+                    try {
+                        String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
+                        context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath)));
+                    } catch (Exception te) {
+                        // tracing 未启动或已停止时 stop 会抛异常，忽略，不阻塞关闭流程
+                        LoggingConfigUtil.logDebugIfVerbose(logger, "Tracing stop skipped on context close: {}", te.getMessage());
+                    }
+                }
+                // ⭐ 独立的 close try：即使上面任何步骤抛异常，也要保证 context.close() 被执行，
+                //    否则已关闭失败会导致 context 资源泄漏。
+                //    注意：BrowserContext 无 isClosed() 方法，用 browser 连接状态判断其是否仍活跃。
+                if (context.browser() != null && context.browser().isConnected()) {
+                    context.close();
+                    LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext closed");
+                }
             } catch (Exception e) {
                 logger.error("Failed to close BrowserContext: {}", e.getMessage(), e);
                 throw new BrowserException("Failed to close BrowserContext", e);
@@ -137,6 +156,13 @@ class PlaywrightContextManager {
         if (page != null) {
             try {
                 if (!page.isClosed()) {
+                    // ⭐ 先释放该 Page 上的路由层资源（停止 MonitorSession 定时器、清理注册表），
+                    //    再关闭 Page，避免调度器线程池持有已销毁 page 引用导致内存泄漏。
+                    try {
+                        RouteRegistry.clearContext(page);
+                    } catch (Exception re) {
+                        LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to clear Route resources on page close: {}", re.getMessage());
+                    }
                     LoggingConfigUtil.logInfoIfVerbose(logger, "Closing Page...");
                     page.close();
                     LoggingConfigUtil.logInfoIfVerbose(logger, "Page closed");

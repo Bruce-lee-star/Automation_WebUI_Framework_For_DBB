@@ -449,10 +449,20 @@ public class PageElement {
     }
 
     // ==================== State Check ====================
+    /**
+     * 判断元素是否可见，带框架默认超时（页面加载友好）。
+     *
+     * <p>在 {@code getElementCheckTimeout()} 时间内等待元素变为可见；超时仍未可见返回 {@code false}。
+     * 这是"页面加载中元素稍后会出现"场景的正确语义——不会因加载中途查询而误判为不可见。
+     * 元素被永久隐藏（如 {@code display:none}）时，会等待至超时后返回 {@code false}。</p>
+     */
     public boolean isVisible() {
         return isVisible(getDefaultTimeoutMs() / 1000);
     }
 
+    /**
+     * 在指定超时内等待元素变为可见。超时仍未可见则返回 {@code false}。
+     */
     public boolean isVisible(int timeoutSec) {
         try {
             locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
@@ -462,6 +472,7 @@ public class PageElement {
         }
     }
 
+    /** 判断元素是否不可见，带框架默认超时（页面加载友好）。 */
     public boolean isNotVisible() {
         return isNotVisible(getDefaultTimeoutMs() / 1000);
     }
@@ -475,10 +486,19 @@ public class PageElement {
         }
     }
 
+    /**
+     * 判断元素是否存在于 DOM，带框架默认超时（页面加载友好）。
+     *
+     * <p>在 {@code getElementCheckTimeout()} 时间内等待元素挂载；超时仍未挂载返回 {@code false}。
+     * 页面加载中元素可能尚未解析到 DOM，等待语义可避免误判为不存在。</p>
+     */
     public boolean exists() {
         return exists(getDefaultTimeoutMs() / 1000);
     }
 
+    /**
+     * 在指定超时内等待元素挂载到 DOM。超时仍未挂载则返回 {@code false}。
+     */
     public boolean exists(int timeoutSec) {
         try {
             locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
@@ -488,10 +508,19 @@ public class PageElement {
         }
     }
 
+    /**
+     * 判断元素是否可用，带框架默认超时（页面加载友好）。
+     *
+     * <p>在 {@code getElementCheckTimeout()} 时间内等待元素变为可用；超时仍未可用返回 {@code false}。
+     * 页面加载中元素可能尚未 enable，等待语义可避免误判。</p>
+     */
     public boolean isEnabled() {
         return isEnabled(getDefaultTimeoutMs() / 1000);
     }
 
+    /**
+     * 在指定超时内等待元素变为可用；超时仍未可用则返回 {@code false}。
+     */
     public boolean isEnabled(int timeoutSec) {
         try {
             return locator().isEnabled(new Locator.IsEnabledOptions()
@@ -501,6 +530,7 @@ public class PageElement {
         }
     }
 
+    /** 判断元素是否禁用，带框架默认超时（页面加载友好）。 */
     public boolean isDisabled() {
         return !isEnabled();
     }
@@ -509,10 +539,18 @@ public class PageElement {
         return !isEnabled(timeoutSec);
     }
 
+    /**
+     * 判断元素是否可编辑，带框架默认超时（页面加载友好）。
+     *
+     * <p>在 {@code getElementCheckTimeout()} 时间内等待元素变为可编辑；超时仍未可编辑返回 {@code false}。</p>
+     */
     public boolean isEditable() {
         return isEditable(getDefaultTimeoutMs() / 1000);
     }
 
+    /**
+     * 在指定超时内等待元素变为可编辑；超时仍未可编辑则返回 {@code false}。
+     */
     public boolean isEditable(int timeoutSec) {
         try {
             return locator().isEditable(new Locator.IsEditableOptions()
@@ -522,10 +560,18 @@ public class PageElement {
         }
     }
 
+    /**
+     * 判断勾选框/单选是否被选中，带框架默认超时（页面加载友好）。
+     *
+     * <p>在 {@code getElementCheckTimeout()} 时间内等待元素被选中；超时仍未选中返回 {@code false}。</p>
+     */
     public boolean isChecked() {
         return isChecked(getDefaultTimeoutMs() / 1000);
     }
 
+    /**
+     * 在指定超时内等待元素被选中；超时仍未选中则返回 {@code false}。
+     */
     public boolean isChecked(int timeoutSec) {
         try {
             return locator().isChecked(new Locator.IsCheckedOptions()

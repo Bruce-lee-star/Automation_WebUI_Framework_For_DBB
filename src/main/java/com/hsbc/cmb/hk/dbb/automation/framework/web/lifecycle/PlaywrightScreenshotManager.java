@@ -19,8 +19,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * 从 PlaywrightManager 中独立出来，专注于截图职责：
  * - 截图文件生成（含全页/视口模式）
- * - 截图前页面稳定化
+ * - 截图前页面稳定化（含全页滚动高度上限/超时保护）
  * - 唯一文件名生成
+ * - 截图失败的优雅降级（全页失败自动退化为视口截图）
  */
 class PlaywrightScreenshotManager {
 
@@ -64,15 +65,61 @@ class PlaywrightScreenshotManager {
     // ==================== 截图前稳定化 ====================
 
     /**
-     * 截图前页面稳定化（解决截图残留/底部重复问题，以及长页面懒加载高度不准问题）
-     * 先滚到底部触发懒加载，再滚回顶部，确保 scrollHeight 准确
+     * 截图前页面稳定化（解决长页面懒加载高度不准问题）。
+     *
+     * <p>【关键】仅在 {@code fullPage == true} 时执行滚动。非全页截图时<b>完全不滚动</b>，
+     * 保留用户当前视口位置——否则会表现为"截图时一直滚动滚动条"，即使 fullpage 已关闭。
+     *
+     * <p>全页模式下额外做两件事：
+     * <ul>
+     *   <li>回到顶部，让 Playwright 全页截图自行负责滚动拼图；</li>
+     *   <li>若页面 {@code scrollHeight} 超过配置的"全页最大滚动高度"上限，则注入 CSS 把
+     *       {@code html, body} 裁切到上限高度并禁用溢出滚动。防御无限滚动/懒加载页面导致
+     *       Playwright 全页拼图持续滚动、卡死（表现为"滚动条不停"）。</li>
+     * </ul>
+     *
+     * <p>所有 evaluate 调用均带超时保护，避免页面半死时卡住。
+     *
+     * @param page     目标页面
+     * @param fullPage 是否全页截图（true 才滚动并处理高度上限）
      */
-    private static void stabilizeBeforeScreenshot(Page page) {
+    private static void stabilizeBeforeScreenshot(Page page, boolean fullPage) {
+        if (!fullPage) {
+            return;
+        }
         try {
-            page.evaluate("() => {"
-                    + "  window.scrollTo(0, document.body.scrollHeight);"
-                    + "  window.scrollTo(0, 0);"
-                    + "}");
+            // 仅回到顶部，让 Playwright 全页截图自行负责滚动拼图。
+            // 不要主动 scrollTo(scrollHeight)：对无限滚动/懒加载页面会触发持续加载，
+            // 使 scrollHeight 不断增长，反而放大全页截图的滚动范围（表现为"滚动条不停"）。
+            page.evaluate("() => window.scrollTo(0, 0)");
+
+            // 全页高度上限保护：超过上限则裁切页面，避免 Playwright 全页拼图无限滚动。
+            int maxHeight = PlaywrightManager.config().getFullPageMaxHeight();
+            if (maxHeight > 0) {
+                try {
+                    // 读取当前真实可滚动高度；不触发更多滚动，只是读取。
+                    Object rawHeight = page.evaluate("() => Math.max("
+                            + "document.documentElement.scrollHeight,"
+                            + "document.body.scrollHeight,"
+                            + "document.documentElement.offsetHeight) | 0");
+                    int pageHeight = (rawHeight instanceof Number) ? ((Number) rawHeight).intValue() : 0;
+                    if (pageHeight > maxHeight) {
+                        LoggingConfigUtil.logWarnIfVerbose(logger,
+                                "Full-page scroll height {} exceeds cap {}, clipping to cap to avoid infinite scroll",
+                                pageHeight, maxHeight);
+                        // 注入样式把页面高度锁死在上限内，并禁用溢出滚动。
+                        page.addStyleTag(new Page.AddStyleTagOptions()
+                                .setContent("html, body {"
+                                        + " max-height: " + maxHeight + "px !important;"
+                                        + " height: " + maxHeight + "px !important;"
+                                        + " overflow: hidden !important;"
+                                        + "}"));
+                    }
+                } catch (Exception e) {
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                            "Failed to apply full-page height cap: {}", e.getMessage());
+                }
+            }
         } catch (Exception e) {
             LoggingConfigUtil.logWarnIfVerbose(logger, "Screenshot stabilization failed: {}", e.getMessage());
         }
@@ -109,14 +156,56 @@ class PlaywrightScreenshotManager {
         }
     }
 
+    /** 构造标准截图选项（不含 fullPage 标记）。 */
+    private static Page.ScreenshotOptions buildOptions(Path screenshotPath, long timeoutMs) {
+        return new Page.ScreenshotOptions()
+                .setOmitBackground(false)
+                .setTimeout(timeoutMs)
+                .setAnimations(ScreenshotAnimations.DISABLED)
+                .setPath(screenshotPath);
+    }
+
+    /** 真正执行一次截图（不捕获异常，交由调用方决定降级策略）。 */
+    private static void doScreenshot(Page page, Path screenshotPath, boolean fullPage, long timeoutMs) {
+        Page.ScreenshotOptions options = buildOptions(screenshotPath, timeoutMs);
+        options.setFullPage(fullPage);
+        page.screenshot(options);
+    }
+
+    /** 还原全页截图时注入的高度裁切样式，避免影响后续操作与全页拼图。 */
+    private static void restorePageHeightStyle(Page page) {
+        try {
+            page.addStyleTag(new Page.AddStyleTagOptions()
+                    .setContent("html, body {"
+                            + " max-height: none !important;"
+                            + " height: auto !important;"
+                            + " overflow: visible !important;"
+                            + "}"));
+        } catch (Exception ignore) {
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "Failed to restore page height style after screenshot: {}", ignore.getMessage());
+        }
+    }
+
     // ==================== 截图入口 ====================
 
     /**
-     * 截图并返回截图文件路径（核心实现）
+     * 截图并返回截图文件路径（核心实现）。
+     *
+     * <p>全页/视口模式统一由全局配置 {@code config.isFullPageScreenshot()} 决定。
+     * 截图具备以下健壮性保障：
+     * <ul>
+     *   <li>稳定化时不做主动滚动到底部（防止懒加载放大滚动范围），并对全页模式施加
+     *       "最大滚动高度上限"保护，避免无限滚动页面卡死；</li>
+     *   <li>跳过 {@code document.fonts.ready} 等待，规避字体挂起导致截图超时；</li>
+     *   <li>若全页截图失败（超时/页面半加载），自动降级为视口截图重试一次，仍失败则
+     *       再用更短超时重试一次视口截图，尽量为失败场景保留一张图。</li>
+     * </ul>
      */
     static String takeScreenshot(String title) {
+        Page page = null;
         try {
-            Page page = PlaywrightManager.getPageThreadLocal();
+            page = PlaywrightManager.getPageThreadLocal();
             if (page == null || page.isClosed()) {
                 return null;
             }
@@ -141,47 +230,98 @@ class PlaywrightScreenshotManager {
                 LoggingConfigUtil.logWarnIfVerbose(logger, "Failed to delete existing screenshot: {}", e.getMessage());
             }
 
-            // 截图前稳定化
-            stabilizeBeforeScreenshot(page);
+            // 全页/视口模式统一由全局配置决定。
+            boolean fullPage = PlaywrightManager.config().isFullPageScreenshot();
+            int baseTimeout = PlaywrightManager.config().getScreenshotTimeout();
+            long screenshotTimeout = (long) baseTimeout;
+            LoggingConfigUtil.logDebugIfVerbose(logger,
+                    "Screenshot request: title={}, fullPage={}, timeout={}ms", title, fullPage, screenshotTimeout);
+
+            // 截图前稳定化（仅 fullPage 时滚动 + 高度上限保护；非全页不滚动）
+            stabilizeBeforeScreenshot(page, fullPage);
 
             // 跳过字体加载等待（规避 document.fonts.ready 挂起导致截图超时）
             bypassFontsReady(page);
 
-            // 页面等待
-            int screenshotWaitTimeout = PlaywrightManager.config().getScreenshotTimeout();
+            // 页面加载状态等待（忽略超时，不阻塞截图）
             try {
                 page.waitForLoadState(LoadState.DOMCONTENTLOADED,
-                        new Page.WaitForLoadStateOptions().setTimeout(screenshotWaitTimeout));
+                        new Page.WaitForLoadStateOptions().setTimeout(screenshotTimeout));
             } catch (Exception e) {
                 LoggingConfigUtil.logDebugIfVerbose(logger,
-                        "Screenshot wait timeout ({}ms) - continuing: {}", screenshotWaitTimeout, e.getMessage());
+                        "Screenshot wait timeout ({}ms) - continuing: {}", screenshotTimeout, e.getMessage());
             }
 
-            // 截图：全页模式 vs viewport 模式
-            boolean fullPage = PlaywrightManager.config().isFullPageScreenshot();
-            Page.ScreenshotOptions options = new Page.ScreenshotOptions()
-                    .setOmitBackground(false)
-                    .setTimeout((long) PlaywrightManager.config().getScreenshotTimeout())
-                    .setAnimations(ScreenshotAnimations.DISABLED)
-                    .setPath(screenshotPath);
+            // 主路径：按配置尝试全页或视口截图
+            try {
+                doScreenshot(page, screenshotPath, fullPage, screenshotTimeout);
+                LoggingConfigUtil.logDebugIfVerbose(logger,
+                        "Screenshot saved (fullPage={}): {}", fullPage, screenshotPath);
+                return screenshotPath.toString();
+            } catch (Exception primaryFail) {
+                if (!fullPage) {
+                    // 视口截图失败：用更短超时再尝试一次，避免页面抖动/动画卡住。
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                            "Viewport screenshot failed, retrying with short timeout: {}", primaryFail.getMessage());
+                    try {
+                        long shortTimeout = Math.max(1000L, screenshotTimeout / 2);
+                        doScreenshot(page, screenshotPath, false, shortTimeout);
+                        LoggingConfigUtil.logDebugIfVerbose(logger,
+                                "Short-timeout viewport screenshot saved: {}", screenshotPath);
+                        return screenshotPath.toString();
+                    } catch (Exception e) {
+                        logger.error("All screenshot attempts failed for title '{}'", title, e);
+                        return null;
+                    }
+                }
 
-            if (fullPage) {
-                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)");
-                page.waitForTimeout(300.0);
-                page.evaluate("() => window.scrollTo(0, 0)");
-                options.setFullPage(true);
-            } else {
-                options.setFullPage(false);
+                // fullPage=true 但主路径失败——不直接降级为视口（否则用户以为全页生效实则只截视口）。
+                // 常见原因：注入的高度裁切样式（max-height/overflow:hidden）干扰了 Playwright 全页拼图，
+                // 或页面半加载/懒加载导致超时。先还原裁切样式、再重试一次全页。
+                LoggingConfigUtil.logWarnIfVerbose(logger,
+                        "Full-page screenshot (attempt 1) failed: {}. Retrying full-page without height cap...",
+                        primaryFail.getMessage());
+                try {
+                    restorePageHeightStyle(page);
+                    doScreenshot(page, screenshotPath, true, screenshotTimeout);
+                    LoggingConfigUtil.logDebugIfVerbose(logger,
+                            "Full-page screenshot saved on retry (fullPage=true): {}", screenshotPath);
+                    return screenshotPath.toString();
+                } catch (Exception retryFail) {
+                    // 全页重试仍失败：降级为视口，但明确以 ERROR 记录，提醒 fullPage 未生效。
+                    logger.error("Full-page screenshot (fullPage=true) failed twice; downgrading to viewport. "
+                            + "Primary cause: {}, retry cause: {}", primaryFail.getMessage(), retryFail.getMessage());
+                    try {
+                        doScreenshot(page, screenshotPath, false, screenshotTimeout);
+                        LoggingConfigUtil.logDebugIfVerbose(logger,
+                                "Viewport fallback screenshot saved: {}", screenshotPath);
+                        return screenshotPath.toString();
+                    } catch (Exception viewportFail) {
+                        // 视口兜底：更短超时再试一次。
+                        LoggingConfigUtil.logWarnIfVerbose(logger,
+                                "Viewport fallback failed, retrying with short timeout: {}", viewportFail.getMessage());
+                        try {
+                            long shortTimeout = Math.max(1000L, screenshotTimeout / 2);
+                            doScreenshot(page, screenshotPath, false, shortTimeout);
+                            LoggingConfigUtil.logDebugIfVerbose(logger,
+                                    "Short-timeout viewport fallback screenshot saved: {}", screenshotPath);
+                            return screenshotPath.toString();
+                        } catch (Exception e) {
+                            logger.error("All screenshot attempts failed for title '{}'", title, e);
+                            return null;
+                        }
+                    }
+                }
             }
-
-            page.screenshot(options);
-
-            LoggingConfigUtil.logDebugIfVerbose(logger, "Screenshot saved: {}", screenshotPath);
-            return screenshotPath.toString();
 
         } catch (Exception e) {
             logger.error("Failed to take screenshot", e);
             return null;
+        } finally {
+            // 全页模式下注入了高度裁切样式，截图完成后还原，避免影响后续操作。
+            if (page != null && !page.isClosed() && PlaywrightManager.config().isFullPageScreenshot()) {
+                restorePageHeightStyle(page);
+            }
         }
     }
 

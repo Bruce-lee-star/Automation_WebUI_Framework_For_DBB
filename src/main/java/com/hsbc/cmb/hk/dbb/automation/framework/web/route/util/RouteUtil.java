@@ -550,4 +550,41 @@ public final class RouteUtil {
             return url; // 解析失败，保守返回原始 URL
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 页面/上下文关闭安全检查（防御已销毁页面上的路由处理导致挂起或报错）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 判断 Route 所属的 Page 是否已关闭。
+     *
+     * <p>用于路由处理入口/延迟回调前的短路：当 page 或 context 已关闭时，
+     * 继续对 route 执行 fetch/resume 等操作会抛 {@link com.microsoft.playwright.PlaywrightException}
+     * 或卡在失效连接上，污染日志并浪费（fetch 超时）时间。
+     *
+     * <p>读取 page 状态本身若抛异常（对象已失效），一律视为"已关闭"以安全放行。
+     */
+    public static boolean isPageClosed(Route route) {
+        if (route == null) {
+            return true;
+        }
+        try {
+            return route.request().frame().page().isClosed();
+        } catch (Exception e) {
+            // 任何读取异常都视为页面已不可用，安全放行。
+            return true;
+        }
+    }
+
+    /**
+     * 对已关闭页面的 route 做幂等放行，避免悬挂。
+     * 若 route 已处置，resume 可能抛异常，这里静默吞掉。
+     */
+    public static void resumeIfOpen(Route route) {
+        try {
+            route.resume();
+        } catch (Exception ignored) {
+            // route 可能已被处置或 page 已关闭，忽略。
+        }
+    }
 }

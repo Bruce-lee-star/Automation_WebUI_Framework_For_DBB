@@ -661,6 +661,18 @@ public enum FrameworkConfig {
     ),
 
     /**
+     * 全页截图时允许的最大滚动高度（像素）。
+     * 用于防御无限滚动/懒加载页面：超过该高度的页面会被裁切到上限后再全页截图，
+     * 避免 Playwright 全页拼图一直滚动导致卡死。
+     * <= 0 表示不限制（沿用 Playwright 默认行为）。
+     */
+    PLAYWRIGHT_SCREENSHOT_FULLPAGE_MAX_HEIGHT(
+        "playwright.screenshot.fullpage.max.height",
+        "12000",
+        "全页截图最大滚动高度（像素），<=0 表示不限制"
+    ),
+
+    /**
      * Serenity 报告截图目录
      */
     SERENITY_REPORTS_SCREENSHOTS_DIRECTORY(

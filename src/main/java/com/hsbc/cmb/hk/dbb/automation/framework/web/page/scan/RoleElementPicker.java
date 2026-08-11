@@ -265,32 +265,6 @@ public final class RoleElementPicker {
                     // 仍登记 dead 键——其它页面同源元素回灌时同样应被屏蔽，且区域扫描清空浏览器端
                     // __deletedSigs 后仍能靠本集合兜底，杜绝"删除后重启区域扫描又复活"。
                     STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
-                    log.info("[picker] __roleOnDelete 删除内存态：请求={} 实删={}（当前内存态大小={}）",
-                            dead.size(), before - map.size(), map.size());
-                    // 【临时诊断】按 pageClass 统计剩余内存态，确认跨页共用元素（LoginPage 的 Language/页脚等）未被误删。
-                    try {
-                        java.util.Map<String, Integer> pcCount = new java.util.LinkedHashMap<>();
-                        for (RoleEntry e : map.values()) {
-                            String pc = (e != null && e.getPageClass() != null) ? e.getPageClass() : "未知";
-                            pcCount.merge(pc, 1, Integer::sum);
-                        }
-                        log.info("[picker] __roleOnDelete 删除后按页分布：{}", pcCount);
-                    } catch (Exception diagEx) { /* ignore */ }
-                    // 【临时诊断2】定位"少删一个 StatusConfirmationLightIcon"：对比 dead 集合与内存态中
-                    // 该 testid 元素的 key 形态，确认 pageClass 在入库/删除两端是否不一致（典型边缘态漏删）。
-                    try {
-                        java.util.List<String> deadHits = new java.util.ArrayList<>();
-                        for (String d : dead) if (d != null && d.contains("StatusConfirmation")) deadHits.add(d);
-                        java.util.List<String> remainHits = new java.util.ArrayList<>();
-                        for (java.util.Map.Entry<String, RoleEntry> en : map.entrySet()) {
-                            RoleEntry re = en.getValue();
-                            if (re != null && re.getName() != null && re.getName().contains("StatusConfirmation"))
-                                remainHits.add("mapKey=" + en.getKey() + " pc=" + re.getPageClass()
-                                        + " strategy=" + re.getStrategy() + " name=" + re.getName());
-                        }
-                        if (!deadHits.isEmpty() || !remainHits.isEmpty())
-                            log.info("[picker][diag-StatusConfirm] dead中相关key={} 删除后内存态残留={}", deadHits, remainHits);
-                    } catch (Exception diagEx2) { /* ignore */ }
                 }
                 // 【关键修复"删除所有元素后页面类没删除干净"——源头清空 iframe 残留】
                 // 删除只清了主框架 __rolePicks 与 Java 权威内存态；iframe 自己的 __rolePicks 仍残留已删元素，
@@ -397,7 +371,6 @@ public final class RoleElementPicker {
                     java.util.Set<String> dead = collectDeleteKeys(raw);
                     if (dead.isEmpty()) return;
                     synchronized (map) {
-                        int before = map.size();
                         map.keySet().removeIf(dead::contains);
                         map.entrySet().removeIf(en -> {
                             RoleEntry re = en.getValue();
@@ -405,8 +378,6 @@ public final class RoleElementPicker {
                         });
                         // 持久记录已删集合（与 exposeBinding 通道对称，保证控制台兜底删除同样写入，杜绝复活）。
                         STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
-                        log.info("[picker] __roleOnDelete(console) 删除内存态：请求={} 实删={}（当前内存态大小={}）",
-                                dead.size(), before - map.size(), map.size());
                     }
                 } catch (Exception ignore) {}
             } else if ("error".equals(msg.type())
@@ -1429,25 +1400,36 @@ public final class RoleElementPicker {
 
               // ============================================================================
               // 定位策略链（忠实对齐 page.pause() 的 selectorGenerator 打分序，分低者优先）：
-              //   testId(1) < placeholder(100) < label(120) < role+name(140)
-              //     < altText(160) < text(180) < title(200) < css #id(500) < css 兜底
+              //   testId(1) < role+name(100) < placeholder(120) < label(140)
+              //     < altText(160) < text(180) < title(200) < css #id(500)
+              //     < roleWithoutName(510) < [name=](520) / [type=](521) < css 路径(needsReview)
+              //   （roleWithoutName(510) 已对齐：纯无 name 语义角色生成 @RoleElement(role=...) 无 name，
+              //     经 Binder 无 name 重载 getByRole(role) 定位，与 pause 的 roleWithoutName 一致。）
               // 算法分两步（与 recorder 一致）：
               //   ① 重定位：label → 关联控件；再向上回溯（≤5 层）找交互角色祖先，
               //      点按钮内文字/图标时抓按钮本身；
               //   ② 在重定位后的目标元素上按打分序依次尝试候选：
-              //      1. data-testid 族        → getByTestId
-              //      2. INPUT/TEXTAREA 的 placeholder → getByPlaceholder（pause 仅对这两类标签）
-              //      3. 表单控件原生关联 label → getByLabel（先于 role+name，打分 120 < 140）
-              //         注：仅"直接点击控件"时生效；若点是 <label> 本身（被 resolveLabel 重定位成控件），
-              //         则跳过此步回退到 ④ role+name，避免 label 与 input 产出同一种 label 策略。
-              //      4. 交互角色 + 可访问名    → getByRole（生成 @RoleElement，保留 NLS 多语言）
-              //      4.5 非交互元素的 data-i18n 多语言 key → @Element("[data-i18n=...]")（CSS 属性选择器，本项目约定，仅在上方
-              //          role+name 未命中时生效：交互控件已走 role，这里专补 generic span/div 等稳定定位）
-              //      5. IMG/AREA 的 alt        → getByAltText（pause 中先于 text，160 < 180）
+              //      1. data-testid 族        → getByTestId（本项目扩展：data-testid/-test-id/-test/-qa 同权）
+              //      2. 交互角色 + 可访问名    → getByRole（打分 100，先于 placeholder/label；生成 @RoleElement，保留 NLS 多语言）
+              //         注：仅 NON_ROLE（generic/none/presentation）外的"有意义"语义角色命中；
+              //         无语义角色元素继续走下方 data-i18n / alt / text 兜底。
+              //      2.5 非交互元素的 data-i18n 多语言 key → @Element("[data-i18n=...]")（CSS 属性选择器，本项目约定，
+              //          仅在上方 role+name 未命中时生效：交互控件已走 role，这里专补 generic span/div 等稳定定位）
+              //      3. INPUT/TEXTAREA 的 placeholder → getByPlaceholder（pause 仅对这两类标签，打分 120）
+              //      4. 表单控件原生关联 label → getByLabel（打分 140，置于 role+name 之后，与 pause 一致）
+              //         注：仅"直接点击 <label> 本身"时生效（originalIsLabel）；若点是表单控件本身，则跳过本分支，
+              //         避免"点了输入框却生成 label 策略"的错位。
+              //      5. IMG/AREA/INPUT 的 alt  → getByAltText（pause 限定 APPLET/AREA/IMG/INPUT，打分 160，先于 text）
               //      6. 可见文本（≤80 字符，pause 截断阈值）→ getByText
-              //      7. title                  → getByTitle
+              //         注：pause 中先试子串/前缀（非 exact，score 180）再试精确（exact，score 185）；
+              //         本项目先出非 exact 候选（稳定容忍文案微调），再出 exact。
+              //      7. title                  → getByTitle（200）
               //      8. 稳定 id                → #id（500 分，必须排在语义候选之后）
-              //      9. 兜底                   → css 路径（needsReview）
+              //      8.5 [name=]（520）/ input|textarea|select[type=]（521）→ css 属性选择器
+              //          （对齐 pause 属性级 css 兜底层级，排在长 css 路径之前）
+              //      9. css 路径兜底（needsReview=true）
+              // 顺序短路模型：本项目以"按打分序短路尝试、首个命中即返回"来等价 pause 的打分排序；
+              // 故无需单独实现 penalizeScoreForLength（长文本 >80 字符直接跳过 text 即为长度惩罚的特例）。
               // 仅返回"原始片段"（strategy/role/name/attr/value/id/css），
             """;
     private static final String START_SCRIPT_B1 = """
@@ -1525,10 +1507,17 @@ public final class RoleElementPicker {
                 var tg = (el.tagName || '').toLowerCase();
                 if (tg !== 'input' && tg !== 'textarea' && tg !== 'select') return '';
                 try {
+                  // 对齐 page.pause() 的 getElementLabels：遍历全部关联 label（含 aria-labelledby 指向的多个），
+                  // 逐个归一化后拼接（PW 用 normalizeWhiteSpace 后 join(' ')），而非只取第一个。
                   var labels = el.labels;
                   if (labels && labels.length) {
-                    var s = normName(labels[0].textContent || '');
-                    if (s) return s.slice(0, 80);
+                    var parts = [];
+                    for (var i = 0; i < labels.length; i++) {
+                      var s = normName(labels[i].textContent || '');
+                      if (s) parts.push(s);
+                    }
+                    var joined = parts.join(' ');
+                    if (joined) return joined.slice(0, 80);
                   }
                 } catch (e) {}
                 return '';
@@ -1897,38 +1886,32 @@ public final class RoleElementPicker {
                   }
                   return __attachIndex(o, el);
                 }
-                // ② 按 pause 打分序出候选
-                // 1. testId（打分 1，最优）
+                // JS 侧转义选择器值（与 Java 侧 escapeSelectorValue 语义一致：转义反斜杠与双引号），
+                // 供下方 [name=] / [type=] 等 css 属性选择器安全拼接。
+                function escapeSelectorValue(s) {
+                  return (s == null ? '' : String(s)).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                }
+                // 文本候选可见性判定（对齐 page.pause 的 suitableTextAlternatives：getByText 只匹配可见文本）。
+                // 隐藏元素（display:none / visibility:hidden / opacity:0）不产生 text 候选。
+                function __isVisibleForText(node) {
+                  try {
+                    var cs = getComputedStyleSafe(node);
+                    if (!cs || cs.display === 'none' || cs.visibility === 'hidden'
+                        || parseFloat(cs.opacity || '1') === 0) return false;
+                    return true;
+                  } catch (e) { return true; }
+                }
+                // ② 按 pause 打分序出候选（分低者优先）
+                // 1. testId（打分 1，最优；本项目扩展 data-testid/-test-id/-test/-qa 同权）
                 var testAttrs = ['data-testid','data-test-id','data-test','data-qa'];
                 for (var i = 0; i < testAttrs.length; i++) {
                   var tv = el.getAttribute(testAttrs[i]);
                   if (tv && tv.trim()) return done({ strategy:'testid', attr:testAttrs[i], value:tv.trim(), name:tv.trim() });
                 }
-                // 2. placeholder（100；pause 仅对 INPUT/TEXTAREA）
-                if (tag === 'input' || tag === 'textarea') {
-                  var ph = el.getAttribute('placeholder');
-                  if (ph && ph.trim()) return done({ strategy:'placeholder', attr:'placeholder', value:ph.trim(), name:ph.trim() });
-                }
-                // 3. 原生关联 label → getByLabel（120，先于 role+name）
-                //    仅当用户"直接点击 <label> 本身"时生效（originalIsLabel）；
-                //    此时 getByLabel 会定位到该 label 关联的控件，符合"点标签=操作控件"的直觉。
-                //    若点击的是表单控件本身，则跳过本分支，走下方 role+name（输入控件-centric 定位），
-                //    避免"点了输入框却生成 label 策略"的错位。
-                if (originalIsLabel) {
-                  // 若 label 关联的控件本身是 checkbox / radio，则改用控件自身的 role 策略，
-                  // 使其与"直接点击该 checkbox/radio"生成完全相同的 _sigKey（role:checkbox:name#0），
-                  // 在拾取去重处天然合并为同一条，避免 step 里同时出现 label.click() 与 chk.setChecked() 的重复。
-                  var __ctrlRole = (getRole(el) || '').toLowerCase();
-                  if (__ctrlRole === 'checkbox' || __ctrlRole === 'radio') {
-                    var __cb = getNameInfo(el);
-                    if (__cb && __cb.name) return done({ strategy:'role', role:__ctrlRole, name:__cb.name, nlsKey:__cb.nlsKey, resolvedKey:__cb.resolvedKey });
-                  }
-                  var lbl = labelTextOf(el);
-                  if (lbl) return done({ strategy:'label', name:lbl });
-                }
-                // 4. 语义角色 + 可访问名（140）—— 覆盖所有"有意义的" ARIA 角色（button/link/textbox/
-                //    heading/img/listitem/region 等），不再限于可点击控件，对齐 page.pause 的 getByRole
-                //    对全部角色生效；仅 generic/none/presentation 这类无语义角色走下方 text/data-i18n 兜底。
+                // 2. 语义角色 + 可访问名（role+name，打分 100，先于 placeholder/label）
+                //    覆盖所有"有意义的" ARIA 角色（button/link/textbox/heading/img/listitem/region 等），
+                //    对齐 page.pause 的 getByRole 对全部角色生效；仅 generic/none/presentation 这类
+                //    无语义角色走下方 data-i18n / alt / text 兜底。
                 var r = (getRole(el) || '').toLowerCase();
                 if (r && !NON_ROLE[r]) {
                   var nameInfo = getNameInfo(el);
@@ -1952,33 +1935,92 @@ public final class RoleElementPicker {
                       cleaned: nameInfo.cleaned || !nls.exact, level:lvl,
                       tag:tag, text: ownVisibleText(el).slice(0, 120) }, el);
                   }
-                  // 有角色无名称（pause 打 510 分，比 #id 还差）：继续走下方候选
+                  // 有角色无名称：不放行到下方 data-i18n/placeholder/label/alt/text/title/id 等带名候选
+                  // （它们都要求有可访问名，本分支已无 name 自然不命中），而是落到下方 step 8.5 的
+                  // roleWithoutName(510) 兜底（#id 优先于它，故先过 #id 再 roleWithoutName），与 pause 一致。
                 }
-                // 4.5 data-i18n 多语言 key（本项目约定）：走到这里说明元素无语义角色（generic 的 span/div 等，
-                //     有语义角色的元素已在上方 step 4 走 role+key）。对无角色的纯文本/容器元素，data-i18n 的
+                // 2.5 data-i18n 多语言 key（本项目约定）：走到这里说明元素无语义角色（generic 的 span/div 等，
+                //     有语义角色的元素已在上方 step 2 走 role+key）。对无角色的纯文本/容器元素，data-i18n 的
                 //     属性值即多语言 key——语言无关、比可见文本稳定，生成时转为 @Element("[data-i18n=\"key\"]")
                 //     （CSS 属性选择器），无需在 @RoleElement 设专门字段。
                 var i18n = el.getAttribute('data-i18n');
                 if (i18n && i18n.trim()) return done({ strategy:'i18n', value:i18n.trim(), name:i18n.trim() });
-                // 5. alt（160；pause 中先于 text）
-                if (tag === 'img' || tag === 'area') {
+                // 3. placeholder（120；pause 仅对 INPUT/TEXTAREA）
+                if (tag === 'input' || tag === 'textarea') {
+                  var ph = el.getAttribute('placeholder');
+                  if (ph && ph.trim()) return done({ strategy:'placeholder', attr:'placeholder', value:ph.trim(), name:ph.trim() });
+                }
+                // 4. 原生关联 label → getByLabel（140，置于 role+name 之后，与 pause 一致）
+                //    仅当用户"直接点击 <label> 本身"时生效（originalIsLabel）；
+                //    此时 getByLabel 会定位到该 label 关联的控件，符合"点标签=操作控件"的直觉。
+                //    若点击的是表单控件本身，则跳过本分支（输入控件已在上方 role+name 定位），
+                //    避免"点了输入框却生成 label 策略"的错位。
+                if (originalIsLabel) {
+                  // 若 label 关联的控件本身是 checkbox / radio，则改用控件自身的 role 策略，
+                  // 使其与"直接点击该 checkbox/radio"生成完全相同的 _sigKey（role:checkbox:name#0），
+                  // 在拾取去重处天然合并为同一条，避免 step 里同时出现 label.click() 与 chk.setChecked() 的重复。
+                  var __ctrlRole = (getRole(el) || '').toLowerCase();
+                  if (__ctrlRole === 'checkbox' || __ctrlRole === 'radio') {
+                    var __cb = getNameInfo(el);
+                    if (__cb && __cb.name) return done({ strategy:'role', role:__ctrlRole, name:__cb.name, nlsKey:__cb.nlsKey, resolvedKey:__cb.resolvedKey });
+                  }
+                  var lbl = labelTextOf(el);
+                  if (lbl) return done({ strategy:'label', name:lbl });
+                }
+                // 5. alt（160；pause 中限定 APPLET/AREA/IMG/INPUT，先于 text）
+                if (tag === 'img' || tag === 'area' || tag === 'input') {
                   var alt = el.getAttribute('alt');
                   if (alt && alt.trim()) return done({ strategy:'altText', attr:'alt', value:alt.trim(), name:alt.trim() });
                 }
                 // 6. 可见文本（180；对齐 page.pause 的 getByText 稳定性取舍）：
+                //    pause 中先试子串/前缀（非 exact，score 180）再试精确（exact，score 185）。
+                //    对齐 pause 的 suitableTextAlternatives：隐藏元素（display:none / visibility:hidden /
+                //    opacity:0）不产生 text 候选，让位给下方 title / id / css（getByText 本就只匹配可见文本）。
+                //    注：可见性判定复用 getComputedStyleSafe（与拾取主流程同一实现），避免对隐藏元素的文本误生成。
+                //    本项目先出非 exact 候选（稳定容忍文案微调：去掉两端空白/装饰、按归一化 name 反查，
+                //    命中则运行时子串匹配），再出精确候选。
                 //    · 文案 ≤80 字符：精确匹配（exact:true），语义清晰且稳定。
                 //    · 长文案（>80）：跳过 text 策略，长文本作定位锚点极易随文案/排版变化而失效，
                 //      让位给更稳定的 title / id / css（对齐 page.pause 的"优先最短稳定选择器"原则），
                 //      从源头避免生成脆弱、易碎的整段文本定位器。
-                var ot = ownVisibleText(el);
-                if (ot && ot.length <= 80) return done({ strategy:'text', name:ot, exact:true });
+                if (__isVisibleForText(el)) {
+                  var ot = ownVisibleText(el);
+                  if (ot && ot.length <= 80) {
+                    // 6a. 非 exact 优先：归一化可见文本反查 nls（前缀/子串/模板命中即非精确），
+                    //     让运行时按子串匹配，容忍文案微调。done() 内 KEY_ONLY 会据 nlsKeyInfo(name)
+                    //     重算 cleaned（= !exact），非精确命中即生成 @RoleElement(text=..., exact=false)。
+                    var otNls = nlsKeyInfo(ot);
+                    if (otNls.key && !otNls.exact) {
+                      return done({ strategy:'text', name:ot, key:otNls.key, matched:true });
+                    }
+                    // 6b. 精确匹配：直接用可见文本（done 内 KEY_ONLY 精确命中 → cleaned=false → exact 默认）。
+                    return done({ strategy:'text', name:ot });
+                  }
+                }
                 // 7. title（200）
                 var title = el.getAttribute('title');
                 if (title && title.trim()) return done({ strategy:'title', attr:'title', value:title.trim(), name:title.trim() });
                 // 8. 稳定 id（500）
                 var id = el.getAttribute('id');
                 if (isStableId(id)) return done({ strategy:'id', id:id });
-                // 9. css 兜底
+                // 8.5 无名称的语义角色（roleWithoutName，510，对齐 page.pause）：
+                //     仅当元素有 ARIA 角色（NON_ROLE 之外）但无可见名/aria-label 时命中（如
+                //     <div role="listitem"> 无文本、role="img" 无 alt 的纯结构/装饰元素）。
+                //     排在 #id(500) 之后、[name=](520) 之前，与 pause 一致。生成 @RoleElement(role=...) 无 name。
+                if (r && !NON_ROLE[r]) return done({ strategy:'role', role:r });
+                // 8.6 属性级 css 候选（对齐 page.pause 的 score 520/521 兜底层级，
+                //     排在 roleWithoutName 之后、完整 css 路径之前，使 [name=] / input[type=] 比自动长 css 路径更稳定）：
+                //   · [name=...]（520）：任意带 name 属性的元素。
+                //   · input/textarea/select 的 type（520/521）：如 input[type=search]。
+                // （注：PW 的 tag 级 css（530）在歧义时会被更高分的完整 css 路径覆盖；本项目直接保留
+                //   下方的 cssPathOf 精确长路径作为最终兜底，不退化成裸 tag 选择器，以保持定位唯一性。）
+                var nmAttr = el.getAttribute('name');
+                if (nmAttr && nmAttr.trim()) return done({ strategy:'css', css: tag + '[name="' + escapeSelectorValue(nmAttr.trim()) + '"]', needsReview:false });
+                if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+                  var ty = el.getAttribute('type');
+                  if (ty && ty.trim()) return done({ strategy:'css', css: tag + '[type="' + escapeSelectorValue(ty.trim()) + '"]', needsReview:false });
+                }
+                // 9. 完整 css 路径兜底（needsReview=true）。
                 return done({ strategy:'css', css: cssPathOf(el), needsReview:true });
               };
 
@@ -4446,6 +4488,10 @@ public final class RoleElementPicker {
                         // 缺 selector/resolvedKey，Java 侧算出的 locatorKey 为空 → 这类元素删除 miss。
                         // 这里补上 selector / resolvedKey / tag / text，保证删除侧与入库侧 key 计算一致。
                         selector: x.selector,
+                        // 同步透传 css 字段：[name=]/[type=]/历史 css 候选的拾取对象里定位值存于 css 字段，
+                        // collectDeleteKeys 的 locatorKey 主路径经 buildSelector 读 m.get("css") 计算权威内存态 key，
+                        // 透传后可直接命中，无需单一依赖 _sig/_sigKey 兜底（与拾取侧完全对称）。
+                        css: x.css,
                         resolvedKey: x.resolvedKey,
                         tag: x.tag,
                         text: x.text

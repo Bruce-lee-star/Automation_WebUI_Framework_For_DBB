@@ -544,6 +544,8 @@ public class PlaywrightListener implements StepListener {
         String stepName = (step != null && step.getTitle() != null) ? step.getTitle() : "unknown_step";
         String sanitizedStepName = sanitizeFilename(stepName);
         String screenshotName = "FAILURE_" + (sanitizedStepName != null ? sanitizedStepName : "step");
+        // 失败/异常场景也遵循全局 fullPage 配置；无限滚动卡死问题已由稳定化逻辑解决，
+        // 不再强制视口（强制视口会丢失全页截图信息）。
         takeScreenshotAndRegister(screenshotName);
     }
 
@@ -971,9 +973,14 @@ public class PlaywrightListener implements StepListener {
             // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
             BasePage.clearCurrentPage();
         } catch (Exception e) {
+            // ⭐ testFinished 属收尾回调：清理阶段异常不应上抛中断 Serenity 收尾流程。
+            // 仅记录日志 + 兜底清空防重门控，ThreadLocal 与 API 上下文清理交由 finally 保证。
             logger.error("Error in testFinished, forcing cleanup", e);
-            RouteEngine.clearDispatchedRoutes();
-            throw e;
+            try {
+                RouteEngine.clearDispatchedRoutes();
+            } catch (Exception re) {
+                logger.debug("clearDispatchedRoutes on error path failed: {}", re.getMessage());
+            }
         } finally {
             // 确保异常和正常路径均清理 ThreadLocal 和 API 捕获上下文
             cleanupThreadLocals();
@@ -1040,9 +1047,13 @@ public class PlaywrightListener implements StepListener {
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (DataDriven: {}, Result: {})", testName, duration, isInDataDrivenTest, result);
         } catch (Exception e) {
+            // ⭐ 收尾回调异常不向上抛出，避免中断 Serenity 收尾流程；防重门控清空交由 finally 兜底。
             logger.error("Error in testFinished with time, forcing cleanup", e);
-            RouteEngine.clearDispatchedRoutes();
-            throw e;
+            try {
+                RouteEngine.clearDispatchedRoutes();
+            } catch (Exception re) {
+                logger.debug("clearDispatchedRoutes on error path failed: {}", re.getMessage());
+            }
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();

@@ -102,6 +102,17 @@ public final class RoleElementPicker {
                                                BlockingQueue<CmdEvent> queue,
                                                LinkedHashMap<String, RoleEntry> javaPickBySig) {
         CTX_CMD_QUEUES.put(ctx, queue);
+        // 【关键修复"二次 openPanel 导致已拾元素清零"】二次 openPanel（设计上支持，见类注释"二次打开只换 Map 指向"）
+        // 会 new 一个空 javaPickBySig 并传入；若此处直接 put 覆盖，context 权威内存态会被空 map 替换，
+        // 后续 __roleOnPick 回调（CTX_PICK_STATES.get(ctx)）全部写进空 map → 此前 LogonPage+SetupSecondPwdPage
+        // 已拾的全部元素丢失（日志现象：内存态 49→1）。故二次打开时把旧会话历史迁移合并进本次 map（保留去重顺序），
+        // 让 openPanel 后续代码（STATE_DELETED 等）拿到"含历史"的同一引用，历史不丢。
+        LinkedHashMap<String, RoleEntry> prev = CTX_PICK_STATES.get(ctx);
+        if (prev != null && prev != javaPickBySig) {
+            for (java.util.Map.Entry<String, RoleEntry> e : prev.entrySet()) {
+                if (!javaPickBySig.containsKey(e.getKey())) javaPickBySig.put(e.getKey(), e.getValue());
+            }
+        }
         CTX_PICK_STATES.put(ctx, javaPickBySig);
         boolean first = CTX_BRIDGED.add(ctx);
         log.info("[picker] 上下文桥 registerContextBridges：firstReg={}（命令/拾取/控制台桥，context 级一次注册）", first);
@@ -575,14 +586,20 @@ public final class RoleElementPicker {
                 + " window.addEventListener('popstate', __roleSpaHeal);"
                 + " window.addEventListener('hashchange', __roleSpaHeal);"
                 + " if(!on){ window.__gateInit = __gi; return; }"
-                // 关键加固：nls 反查表字面量若因任何原因非法，绝不能连累后面的 START_SCRIPT 注入
-                // （否则整个门控 IIFE 抛错、监听永不挂载，表现为"刷新/跳转后点了没反应"）。
-                + " var __o; try { __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + "; } catch(e){ __o = {}; __gi.nlsErr = String(e); }"
+                // 关键加固：nls 反查表改为「JSON 字符串字面量内联 + JSON.parse」：
+                // 用 GSON.toJson 把 nls JSON 文本再包一层引号转义为合法的 JS 字符串字面量，
+                // 无论 nls 内容含何种特殊字符都不会破坏脚本语法；即便解析失败也被 catch 降级为 {}。
+                // （addInitScript 不支持传参，无法用 arguments[0]，故采用内联字符串方案。）
+                + " var __nlsArg = " + (nlsReverseJson == null ? "\"\"" : GSON.toJson(nlsReverseJson)) + ";"
+                + " var __o; try { __o = (__nlsArg && typeof __nlsArg === 'string') ? JSON.parse(__nlsArg) : (__nlsArg || {}); } catch(e){ __o = {}; __gi.nlsErr = String(e); }"
                 + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
                 + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
                 // 记忆体开关兜底：即便跨源/localStorage 不可用，浏览器侧也持有本会话开启态，
                 // 供 onFrameNavigated 的会话开关自检（读 window.__rolePickSessionOn）与 load/pageshow 自检使用。
                 + " try{ window.__rolePickSessionOn = true; }catch(e){}"
+                // start 时复位显式停止标志（被 stop 置 true 后，重新开始时恢复自愈能力，
+                // 否则 __roleReenable 会因 stopped=true 永久拒绝自启，导致"停止后再开始拾取不了"）。
+                + " try{ window.__rolePickStopped = false; }catch(e){}"
                 + " window.__roleGatedStart();"
                 // ===== 浏览器侧自愈（核心修复"刷新/跳转后拾取不了"）=====
                 // 仅靠文档早期 addInitScript 不可靠：现代 SPA/微前端框架可能在初始化阶段重建 document 子树、
@@ -591,6 +608,7 @@ public final class RoleElementPicker {
                 //   开关仍在 且（点击监听缺失 或 未激活）→ 重新执行 START_SCRIPT（幂等：已激活则早退仅保活）。
                 // 该机制完全不依赖 Java 侧 onFrameNavigated / ensurePickingActive 的时序，从根上保证"页面怎么变都能拾取"。
                 + " function __roleReenable(){ try {"
+                + "   if (window.__rolePickStopped === true) return;"   // 显式停止后绝不自愈复活（修复"停止不了"）
                 + "   var on2=false; try{ on2 = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){}"
                 + "   try{ if(!on2) on2 = !!window.__rolePickSessionOn; }catch(e){}"
                 + "   if (!on2) return;"
@@ -1889,7 +1907,7 @@ public final class RoleElementPicker {
                 // JS 侧转义选择器值（与 Java 侧 escapeSelectorValue 语义一致：转义反斜杠与双引号），
                 // 供下方 [name=] / [type=] 等 css 属性选择器安全拼接。
                 function escapeSelectorValue(s) {
-                  return (s == null ? '' : String(s)).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                  return (s == null ? '' : String(s)).replace(new RegExp('\\\\', 'g'), '\\\\\\\\').replace(new RegExp('"', 'g'), '\\\\"');
                 }
                 // 文本候选可见性判定（对齐 page.pause 的 suitableTextAlternatives：getByText 只匹配可见文本）。
                 // 隐藏元素（display:none / visibility:hidden / opacity:0）不产生 text 候选。
@@ -2760,6 +2778,20 @@ public final class RoleElementPicker {
                 window.__scanMode = prevMode;
                 window.__roleScanRoot = prevScanRoot;   // 还原区域根（整页/非扫描时为 null）
                 try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
+                // 【修复"整页扫描完成后应聚焦到当前页 Tab"】
+                // 整页扫描（非区域扫描）结束后，自动把面板切到「页面元素」Tab，并把激活的子 Tab
+                // 设为【当前扫描页】（window.__rolePageName，即刚整页扫描的那个 pageClass），
+                // 让用户即时看到本次整页扫描出来的元素清单；即便此前停留在其它页的子 Tab 也不受影响。
+                // 区域扫描为「叠加补充」语义，不强制切 Tab，避免打断用户连续选区。
+                if (!isRegion) {
+                  try {
+                    var __curPage = window.__rolePageName || '';
+                    window.__roleActiveTab = 'page';
+                    if (__curPage) window.__roleActivePageClass = __curPage;
+                    if (typeof window.__roleShowTab === 'function') window.__roleShowTab();
+                    if (typeof window.__renderPicks === 'function') window.__renderPicks();
+                  } catch (e2) {}
+                }
                 return added;
               };
               // 区域扫描（悬停聚焦 + 点击多选模式）：一个页面常有多个业务区域，支持「选取多个区域」。
@@ -4173,7 +4205,13 @@ public final class RoleElementPicker {
                 try {
                   var all = window.__rolePicks || [];
                   var selSet = {};
-                  (window.__currentStep || []).forEach(function(p) {
+                  var _src = (window.__currentStep && window.__currentStep.length)
+                      ? window.__currentStep
+                      : all;   // 【关键修复"导航恢复/扫描后点封装没反应"】勾选集为空时兜底用全部已拾元素：
+                               // ① 整页扫描出的候选默认不进 __currentStep（__isScan 守卫），用户未手动勾选即点"封装"应视为"封装全部"；
+                               // ② 跨页导航 applyPickState 恢复的 currentStep=0，但 javaPickBySig/__rolePicks 仍有元素，
+                               //    点封装按钮时若死守空勾选集会 return 0、不推送 package 命令、Java 侧永远不生成代码。
+                  _src.forEach(function(p) {
                     // 【关键】用全局健壮键 __mergeKey（优先 _sigKey，否则实时 __sigKey 重算），
                     // 不再强依赖 p._sigKey||p._sig 已固化。部分链路（区域选择/导航恢复回灌）写入的
                     // pick 签名字段可能缺失，导致此处 selSet 为空 → 封装 0 条 step（表现为"选中也生成不了步骤"）。
@@ -4196,7 +4234,7 @@ public final class RoleElementPicker {
                   // 顺序可能与用户「点选/勾选」的先后不一致 → 封装出的 step 顺序错乱。
                   // 用户意图应以「勾选顺序」为准：__currentStep 是按用户点击/勾选先后维护的选择集，
                   // 故改为按 __currentStep 顺序遍历，每个勾选元素再从候选 all 中取完整 pick（含 framePath 等增强）。
-                  var _selOrder = window.__currentStep || [];
+                  var _selOrder = _src;   // 与上面 _src 一致：勾选集优先，为空时兜底全部已拾元素
                   var _byKey = {};
                   for (var _bi = 0; _bi < all.length; _bi++) {
                     var _bp = all[_bi] || {};
@@ -4423,10 +4461,16 @@ public final class RoleElementPicker {
                     // 故此处：先收集 cset 涉及的 pageClass 集合，再把 __rolePicks 中【同一 pageClass】
                     // 的全部元素并入删除集。仍严格按 pageClass 隔离，绝不会波及另一页的共用元素。
                     var csetPages = {};
+                    // 【修复"点删除时只删当前页元素"】
+                    // 旧逻辑把 cset（用户勾选集）涉及的【所有 pageClass】都纳入删除目标；若用户在其他页面也勾选/全选，
+                    // csetPages 会包含多页 → 点一次删除把多页元素一并删掉。按需求：删除只作用于【当前激活页】
+                    // （window.__roleActivePageClass，即面板顶部高亮的页面子 Tab），即便其它页也处于全选状态也不波及。
+                    // 故此处只保留"勾选元素中、_pageClass === 当前激活页"的页，作为删除目标页集合。
+                    var __actPage = window.__roleActivePageClass || window.__rolePageName || '';
                     cset.forEach(function(x) {
                       if (x) {
                         var p = (x._pageClass || window.__rolePageName || '');
-                        if (p) csetPages[p] = true;
+                        if (p && p === __actPage) csetPages[p] = true;
                       }
                     });
                     var allCandidates = cset.slice();
@@ -4442,7 +4486,8 @@ public final class RoleElementPicker {
                         [].concat(picks, cur).forEach(function(x) {
                           if (!x) return;
                           var p = (x._pageClass || (w && w.__rolePageName) || window.__rolePageName || '');
-                          if (p && csetPages[p] && allCandidates.indexOf(x) < 0) allCandidates.push(x);
+                          // 仅收集当前激活页（__actPage）的同页元素；即便其它页已全选，也不并入删除集。
+                          if (p && p === __actPage && allCandidates.indexOf(x) < 0) allCandidates.push(x);
                         });
                       } catch (e2) { /* 跨 frame 访问可能因 detached 失败，忽略 */ }
                     }
@@ -5097,16 +5142,12 @@ public final class RoleElementPicker {
                 if (!javaPickBySig.isEmpty()) {
                     snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), snap.steps, snap.ops);
                 }
-                // 【关键修复"删除所有元素后页面类没删除干净（残留）"】
-                // 防御兜底：即便 javaPickBySig / readPickSnapshot 里偶发残留已被删除的元素（如 delPicks 未
-                // 覆盖某条、iframe 元素 key 与 collectDeleteKeys 不匹配、或主循环又把残留合并回来），
-                // 只要这些元素在会话级已删集合 STATE_DELETED 中，生成页面类前一律剔除，确保删了就不再出现。
-                java.util.Set<String> __dead = STATE_DELETED.get(javaPickBySig);
-                if (__dead != null && !__dead.isEmpty() && !snap.entries.isEmpty()) {
-                    snap = new PickSnapshot(snap.pageClass, new ArrayList<>(snap.entries), snap.steps, snap.ops);
-                    snap.entries.removeIf(re -> re != null
-                            && (re.getSigKey() != null && __dead.contains(re.getSigKey())));
-                }
+                // 【修复"删除后整页重新扫描一直为 0"】
+                // 旧实现在生成页面类前按会话级 STATE_DELETED 永久剔除已删元素，导致用户删除后重新整页扫描、
+                // 新识别出的元素即便已重新入库 javaPickBySig，生成时仍被剔除，表现为"再扫描一直都是 0"。
+                // 删除语义仅为"从当前内存态移除"（已被 collectDeleteKeys 的 ① ② ③ 兜底 + 源头清空 iframe
+                // 残留完整覆盖），不应永久封杀该元素。故此处【不再】按 STATE_DELETED 剔除，以 javaPickBySig
+                // 当前内容为准直接生成——重新扫描即可正常出现代码。
                 LinkedHashMap<String, String> codePage = buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
                 LinkedHashMap<String, String> codeStep = buildStepCode(snap, packageName, stepClassName);
                 String refreshMsg = "已删除选中元素，页面类 " + snap.entries.size() + " 个字段"
@@ -5292,8 +5333,17 @@ public final class RoleElementPicker {
         // 会话开关 __rolePickSessionOn（对齐 page.pause 的 mode 下推）：context 级门控注入脚本
         // （gatedPickerInitScript）据此在【每个新文档】自动重挂拾取监听——导航/弹窗/SPA 整文档替换后
         // 拾取存活由浏览器原生保证，无需 Java 端手动重挂。
-        page.evaluate(
-                "try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
+        // ⭐ 关键修复：nls 反向表与 rootSelector 原先是「直接字符串拼接进 JS 表达式」，
+        // 一旦内容含特殊字符就会破坏整段脚本语法，抛出 SyntaxError 并中断调用方（如 performLogin）。
+        // 改为「参数化注入」：Playwright 会自动正确序列化参数，nls 用 JSON.parse 解析，
+        // root 直接作为 JS 值传入（null 或字符串），彻底消除字符串拼接破坏语法的可能。
+        // 整个注入包 try-catch：拾取器是开发辅助工具，注入失败只告警并继续，绝不中断主测试流程。
+        String pickStartScript =
+                "(function(args){"
+                + " var __nlsArg = args ? args.nls : null;"
+                + " var __rootArg = args ? args.root : null;"
+                + " var __o = (__nlsArg && typeof __nlsArg === 'string') ? JSON.parse(__nlsArg) : (__nlsArg || {});"
+                + " try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
                 + " try{window.__rolePickSessionOn=true;}catch(e){}"
                 // 重置面板切换控件的"乐观意图"位：避免上一轮 stop/start 残留的 __rolePickWanted 让
                 // 按钮的 willStart 计算发出错误命令（关键修复"停止后再点开始却拾取不了"的边界之一）。
@@ -5311,7 +5361,6 @@ public final class RoleElementPicker {
                 + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
                 + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
                 + " try{ window.__rolePickerLib = false; }catch(e){}"
-                + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
                 + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
                 + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
                 // 优先复用门控脚本封装的 window.__roleGatedStart（含 load/pagesight 自愈入口），保证 Java 侧
@@ -5325,8 +5374,20 @@ public final class RoleElementPicker {
                 // 但用户有时需要拾取整页（含 leftmenu/topbar），故开始拾取不再自动避开导航。
                 // 根约束仅由「区域扫描」显式点选产生（用户在 __roleStartRegionSelect 内覆盖 window.__rolePickRoot）。
                 // 门控脚本会在每个新文档重挂监听，必须同步写入 window.__rolePickRoot，否则跳转/SPA 替换后根约束丢失。
-                + " window.__rolePickRoot = " + (rootSelector == null ? "null" : ("'" + rootSelector.replace("'", "\\'") + "'")) + ";"
-                + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}");
+                + " window.__rolePickRoot = __rootArg;"
+                + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}"
+                + " })";
+        try {
+            // evaluate 仅支持单个参数对象：将 nls 与 root 打包为一个 Map 传入，脚本内从 arguments[0] 解构。
+            // 注意：Guava ImmutableMap 不允许 null 值，rootSelector 可能为 null（整页扫描），故用 HashMap 并兜底。
+            java.util.Map<String, String> startArgs = new java.util.HashMap<>();
+            startArgs.put("nls", nlsReverseJson);
+            // rootSelector 允许为 null（整页扫描）；HashMap 与 Playwright 参数序列化均支持 null。
+            startArgs.put("root", rootSelector);
+            page.evaluate(pickStartScript, startArgs);
+        } catch (Exception e) {
+            log.warn("[picker] 拾取脚本注入失败（不影响主流程）：{}", e.getMessage());
+        }
         log.info("[picker] 拾取模式已开启：在浏览器点击元素即可拾取，按 ESC 结束。");
         // 关键修复：已加载的子 iframe（srcdoc/同域）在 start() 调用前就已触发过 load，
         // 彼时会话开关尚未置位，其门控 START 未挂拾取监听 → iframe 内点击无法被拾取、postMessage 也收不到。
@@ -5454,8 +5515,14 @@ public final class RoleElementPicker {
             return;
         }
         // 先清除会话开关（门控注入脚本据此在后续新文档不再自启拾取），再执行停止收尾。
+        // 【修复"停止不了"】置位 window.__rolePickStopped=true：让浏览器侧自愈钩子（__roleReenable，在 load/pageshow
+        // 时触发）即便因后续导航/路由变化再次被调用，也直接 return 不再复活拾取；同时清掉 __rolePickWanted，
+        // 让开始/停止切换控件的状态机复位（否则 willStart=!(active||wanted) 在 wanted 残留 true 时翻转失效，
+        // 表现为"点了停止却仍是开始态/再点开始却拾取不了"）。start() 会重置该标志恢复自愈能力。
         page.evaluate("try{localStorage.removeItem('__rolePickSessionOn');}catch(e){}"
                 + " try{window.__rolePickSessionOn=false;}catch(e){}"
+                + " try{window.__rolePickStopped=true;}catch(e){}"
+                + " try{window.__rolePickWanted=false;}catch(e){}"
                 + STOP_SCRIPT);
     }
 
@@ -5719,10 +5786,14 @@ public final class RoleElementPicker {
                 if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) filtered.add(e);
             }
             String json = GSON.toJson(filtered);
-            // Java 侧持久"已删集合"：即便区域扫描清空了浏览器端 window.__deletedSigs，回灌时仍按此集永久屏蔽
-            // 已删元素，杜绝"区域扫描后已删元素被主循环复活"。空数组场景下 JSON 仍是合法数组，JS indexOf 安全。
-            java.util.Set<String> deleted = STATE_DELETED.get(state);
-            String delJson = (deleted == null || deleted.isEmpty()) ? "[]" : GSON.toJson(deleted);
+            // 【修复"删除后整页重新扫描一直为 0"】
+            // 旧实现把会话级 STATE_DELETED 持久集合推给浏览器做 window.__deletedSigs，面板据此永久隐藏已删元素；
+            // 但用户删除后若重新整页扫描，新识别的元素即便已重新入库 javaPickBySig，仍会被 __deletedSigs 命中隐藏，
+            // 表现为"再扫描一直都是 0"。删除的语义应只是"从当前内存态移除"（已由 collectDeleteKeys 的 ① ② ③
+            // 兜底 + 源头清空 iframe 残留完整覆盖），不应永久封杀该元素再次出现。
+            // 故面板同步【不再】下发 STATE_DELETED 隐藏列表——面板始终以 javaPickBySig 为准（已删元素本就不在此
+            // 集合内），用户重新扫描即可正常显示。空数组场景 JS indexOf 仍安全。
+            String delJson = "[]";
             // 【关键修复"区域扫描穿透不了 frame"】旧实现把 GSON.toJson 生成的 JSON（含中文名称 / file://
             // URL 的 iframe 元素）直接【拼进】page.evaluate 的 JS 表达式（var arr = " + json + "），且该 JS
             // 表达式内还带大量中文注释；Playwright 对含非 ASCII 字符的 JS 表达式二次解析会抛
@@ -7144,6 +7215,23 @@ public final class RoleElementPicker {
                 // current[0] 只决定"正在操作的页面"，不影响各页自身面板状态的恢复。
                 String st = snapshots.get(page);
                 String prevCls = pageNames.get(page);
+                // 【修复"导航回来后页面类串味 / 扫描为 0"】
+                // 旧实现 onFrameNavigated 仅在末尾激活块才按新 URL 重解析类名（且受后续 evaluate 异常影响可能跳过），
+                // 导致：手动跳回 logon 后 pageNames/window.__rolePageName 仍停留在上一页 SetupSecondPwdPage，
+                // 新拾取元素被打错页类、面板按激活页过滤后显示为 0。此处【提前、无条件】按最新 URL 重解析并刷新
+                // 当前页类名（含浏览器侧 window.__rolePageName），且与后续数据恢复解耦——即便恢复逻辑抛异常也不影响
+                // 类名正确性。这同时实现"导航后聚焦当前真实页面"的诉求。
+                String resolvedCls = resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
+                if (resolvedCls != null && !resolvedCls.equals(prevCls)) {
+                    pageNames.put(page, resolvedCls);
+                    prevCls = resolvedCls;
+                }
+                try {
+                    page.evaluate("try{ if(window.__rolePageName!==" + GSON.toJson(resolvedCls) + "){"
+                            + "window.__rolePageName=" + GSON.toJson(resolvedCls) + ";"
+                            + "try{localStorage.setItem('__rolePageName'," + GSON.toJson(resolvedCls) + ");}catch(e){}"
+                            + "}}catch(e){}");
+                } catch (Exception ignoreCls) {}
                 // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
                 log.info("[picker] 页面 URL 变化（onFrameNavigated）：{} （页面类：{}）", page.url(), prevCls);
                 // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
@@ -7326,13 +7414,20 @@ public final class RoleElementPicker {
                 // 触发条件不再单纯依赖 Java 侧 active[0]（可能与浏览器态不同步），而以浏览器侧会话开关为准，
                 // 只要门控脚本此前读到过开关（localStorage/__rolePickSessionOn）就重激活，保证"刷新/跳转后必能拾取"。
                 boolean sessionOn = active[0];
-                if (!sessionOn) {
+                // 【修复"停止不了"】用户已显式停止（stop 置位 __rolePickStopped）后，即便后续发生导航，
+                // 也绝不再重激活拾取——否则 stop 后又被 onFrameNavigated 复活，表现为"点了停止还是停不掉"。
+                boolean explicitStop = false;
+                try {
+                    explicitStop = Boolean.TRUE.equals(page.evaluate(
+                            "try { return !!window.__rolePickStopped; } catch(e){ return false; }"));
+                } catch (Exception ignore) {}
+                if (!explicitStop && !sessionOn) {
                     try {
                         sessionOn = Boolean.TRUE.equals(page.evaluate(
                                 "try { return localStorage.getItem('__rolePickSessionOn')==='1' || !!window.__rolePickSessionOn; } catch(e){ return !!window.__rolePickSessionOn; }"));
                     } catch (Exception ignore) {}
                 }
-                if (sessionOn) {
+                if (sessionOn && !explicitStop) {
                     log.info("[picker][nav] 会话拾取中：同步激活状态 @ {}", page.url());
                     try {
                         // 关键修复（跳转到新页面后元素成倍增加）：监听重挂已由 context 级门控注入脚本
@@ -7415,6 +7510,29 @@ public final class RoleElementPicker {
             if (p == null || p.isClosed()) continue;
             if (!pageNames.containsKey(p)) {
                 ensurePageTracked(p, pageNames, snapshots, urlToClass, openedPages, cmdQueue, javaPickBySig);
+            } else {
+                // 【修复"手动跳转后删除跨页误伤 / 再扫描为 0"】
+                // 用户可能在面板之外手动导航（如直接改 URL、点原生链接跳转），这类跳转不经过
+                // followPage/onPopup 钩子，window.__rolePageName 仍停留在旧页类名，导致新页拾取的元素
+                // 被打上旧 pageClass；两个真实不同的页因此共享同一 pageClass，删除时整桶/值级兜底 +
+                // STATE_DELETED 会把两页当一页一并清除，且已删键永久屏蔽后续扫描。
+                // 此处对【每个已登记页】按当前 URL 重新解析 pageClass 并刷新其自身 window.__rolePageName，
+                // 确保手动跳转后的页面拿到正确类名（每页写的是"它自己"的类名，而非当前激活页的），
+                // 从源头杜绝跨页 pageClass 串味。幂等、仅当解析结果变化时写回。
+                try {
+                    String curCls = pageNames.get(p);
+                    String newCls = resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
+                    if (newCls != null && !newCls.equals(curCls)) {
+                        pageNames.put(p, newCls);
+                    }
+                    p.evaluate("try{"
+                            + "if(window.__rolePageName!==" + GSON.toJson(newCls) + "){"
+                            + "window.__rolePageName=" + GSON.toJson(newCls) + ";"
+                            + "try{localStorage.setItem('__rolePageName'," + GSON.toJson(newCls) + ");}catch(e){}"
+                            + "}}catch(e){}");
+                } catch (Exception refreshEx) {
+                    log.warn("[picker] reconcile 刷新页面类名失败：{}", refreshEx.getMessage());
+                }
             }
         }
     }
@@ -7742,6 +7860,12 @@ public final class RoleElementPicker {
                 + " if (window.__rolePickRoot === undefined) window.__rolePickRoot = null;"
                 + " var s = " + stateJson + ";"
                 + " window.__rolePicks = s.picks || [];"
+                // 【关键修复"导航恢复后点元素/封装不进 step"】applyPickState 仅在导航恢复（非实时扫描）时调用，
+                // 此时 __scanning 已 false。扫描产生的候选带 __isScan 标记（仅候选、不进 __currentStep），
+                // 经恢复后若保留该标记，用户回 LogonPage 再点这些元素会因 __isScan 守卫（3631 行）进不了选择集，
+                // 导致 __currentStep 始终为空、点封装按钮 return 0、Java 侧永远不生成代码。
+                // 恢复即视为"已拾取完成"，清除 __isScan 使这些候选等同手动拾取、可正常勾选封装。
+                + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"
                 + " window.__steps = s.steps || [];"
                 + " window.__currentStep = s.currentStep || [];"
                 + " window.__rolePickSigs = s.sigs || {};"

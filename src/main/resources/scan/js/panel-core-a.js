@@ -117,7 +117,17 @@
         try {
           var cs = window.__currentStep || [];
           for (var i = 0; i < cs.length; i++) {
-            if (cs[i]) cs[i].seq = i + 1;
+            if (!cs[i]) continue;
+            // seq：步骤内连续序号（供 __packageStep 排序/生成）。
+            cs[i].seq = i + 1;
+            // 【修复"手动在面板勾选候选时面板没有序号产生"】
+            // 旧实现只设 seq、不写 _pickNos，而面板行前缀（见 panel-core-b.js 渲染）读的是 _pickNos/_pickSeq，
+            // 导致勾选后前缀仍显示 [-]（扫描候选本就无 _pickNos）。现把勾选序同步进 _pickNos 并清 _seqStale，
+            // 使面板前缀按"勾选顺序"显示 [1][2][3]…；与 __packageStep 按 _pickNos 排序封装保持一致。
+            if (!Array.isArray(cs[i]._pickNos)) cs[i]._pickNos = [];
+            cs[i]._pickNos = [i + 1];
+            cs[i]._pickSeq = i + 1;
+            try { cs[i]._seqStale = false; } catch (e) {}
           }
         } catch (e) {}
       };
@@ -258,6 +268,21 @@
                 // 表现即"停止按钮有时点不动、停止后再点开始却拾取不了"。
                 var willStart = !(window.__rolePickActive || window.__rolePickWanted);
                 window.__rolePickWanted = willStart;
+                if (willStart) {
+                  // 新一轮「开始拾取」：上一轮已拾取的元素本轮尚未重新点，应显示 [-]（_seqStale 保持），
+                  // 并清空其 _pickNos / 重置序号计数器，使本轮编号从 1 重新连续；本次新拾取或重拾的元素
+                  // 会在 recordPick 中清除 _seqStale 并按本轮序号显示 [1]/[2]…。
+                  try { window.__rolePickSeq = 0; } catch (e) {}
+                  try {
+                    var _ps = window.__rolePicks || [];
+                    for (var _pi = 0; _pi < _ps.length; _pi++) {
+                      try { _ps[_pi]._seqStale = true; } catch (e) {}
+                      try { delete _ps[_pi]._pickNos; } catch (e) {}
+                      try { _ps[_pi]._pickSeq = 0; } catch (e) {}
+                    }
+                    if (typeof window.__renderPicks === 'function') window.__renderPicks();
+                  } catch (e) {}
+                }
                 pushCmd(willStart ? 'start' : 'stop');
               });
               // 注：悬停拾取模式已移除（按需求去除 hover 图标）。

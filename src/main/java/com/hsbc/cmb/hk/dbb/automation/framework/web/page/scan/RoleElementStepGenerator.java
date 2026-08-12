@@ -442,6 +442,7 @@ public final class RoleElementStepGenerator {
                 boolean sawPopup = false;
                 boolean renderedCloseOp = false;
                 String popupTargetVar = null;   // 弹窗目标页对象变量：交由它接管并在其上 closeCurrentPage
+                String activeVar = null;        // 当前激活页对象变量：用于跨页上下文自动切换检测
                 if (step == null || step.isEmpty()) {
                     m.append("        // 该 step 未拾取任何元素\n");
                 } else {
@@ -456,6 +457,19 @@ public final class RoleElementStepGenerator {
                         if (var == null) var = pageVar.get(stepPageClass + "#" + e.getPageInstanceId());
                         if (var == null) var = pageVar.get(stepPageClass + "#1");
                         if (var == null) continue;
+                        // 跨页上下文自动切换：维护"当前激活页变量"activeVar。
+                        // 弹窗打开后 activeVar 指向新页；当后续元素属于【打开页】（原页面）时，
+                        // 说明新页操作已结束、需切回原页才能操作其元素——此时先 closeCurrentPage 切回，
+                        // 再生成该元素的操作（而非把 closeCurrentPage 推到 step 末尾，否则原页元素会夹在新页上下文里）。
+                        if (activeVar == null) activeVar = var;
+                        if (popupTargetVar != null && activeVar.equals(popupTargetVar) && !var.equals(popupTargetVar)) {
+                            // 从弹窗新页切回打开页：先关闭新页（onClose 自动切回其父页/打开页），再操作原页元素。
+                            m.append("        ").append(popupTargetVar)
+                                    .append(".closeCurrentPage(); // 切回打开页（").append(var).append("）\n");
+                            renderedCloseOp = true;
+                            activeVar = null;     // 关闭后回到打开页，下一轮重新锚定
+                            popupTargetVar = null;
+                        }
                         if (e.isCloseOp()) {
                             // 关闭当前页（弹窗/新页）：在 step 序列中该关闭操作发生的位置内联渲染 closeCurrentPage，
                             // 使“打开新页 -> 在新页操作 -> 关闭 -> 自动切回 active 父页”的顺序与用户实际操作一致。
@@ -571,6 +585,7 @@ public final class RoleElementStepGenerator {
                                 m.append("        ").append(popupTarget).append(".switchToPage(")
                                         .append(npVar).append("); // 显式切换到新页面\n");
                                 if (popupTargetVar == null) popupTargetVar = popupTarget;
+                                activeVar = popupTarget; // 当前激活页切到新页，便于后续检测"回到打开页"时切回
                             } else {
                                 m.append("        Page ").append(npVar).append(" = ").append(var)
                                         .append(".waitForNewPage(() ->\n")
@@ -794,6 +809,7 @@ public final class RoleElementStepGenerator {
                     boolean renderedCloseOp = false;
                     List<String> lastFp = null; // 上一个元素的 iframe 路径（主框架为 null/空）
                     String popupTargetVar = null;   // 弹窗目标页对象变量：交由它接管并在其上 closeCurrentPage
+                    String activeVar = null;        // 当前激活页对象变量：用于跨页上下文自动切换检测（对齐 generateMulti）
                     if (step == null || step.isEmpty()) {
                         methods.append("        // 该 step 未拾取任何元素\n");
                     } else {
@@ -802,6 +818,25 @@ public final class RoleElementStepGenerator {
                             String var = pageVar.get(epc);
                             if (var == null) var = pageVar.get(pc);
                             if (var == null) continue;
+                            // 【修复"closeCurrentPage 顺序错位"】跨页上下文自动切换检测：
+                            // 维护当前激活页变量 activeVar。弹窗打开后 activeVar 指向新页(popupTargetVar)；
+                            // 当后续元素属于【打开页】(原页面)时，说明新页操作已结束、需切回原页才能操作其元素——
+                            // 此时先内联 closeCurrentPage 切回，再生成该元素操作（而非把 closeCurrentPage 推到 step
+                            // 末尾，否则原页元素会夹在新页上下文里导致顺序错乱/悬空）。
+                            // 此逻辑原先只在 generateMulti 中有，而 buildStepCode 实际调用的是 generatePerPage，
+                            // 导致该修复未生效——现补齐到生成主路径。
+                            if (activeVar == null) {
+                                activeVar = var;
+                            } else if (var != null && !activeVar.equals(var)) {
+                                if (popupTargetVar != null && activeVar.equals(popupTargetVar) && !var.equals(popupTargetVar)) {
+                                    methods.append("        ").append(popupTargetVar)
+                                            .append(".closeCurrentPage();\n");
+                                    renderedCloseOp = true;
+                                    activeVar = null;
+                                    popupTargetVar = null;
+                                }
+                                activeVar = var;
+                            }
                             if (e.isCloseOp()) {
                                 // 关闭当前页（弹窗/新页）：在 step 序列中该关闭操作发生的位置内联渲染
                                 // closeCurrentPage，使“打开新页 -> 在新页操作 -> 关闭 -> 自动切回 active 父页”

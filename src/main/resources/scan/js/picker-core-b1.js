@@ -2860,8 +2860,18 @@
                   }
                   if (__maxNo > window.__rolePickSeq) window.__rolePickSeq = __maxNo;
                 } catch (e) {}
-                window.__rolePickSeq += 1;
-                var __thisIndex = window.__rolePickSeq;
+                // 【修复"整页/区域扫描的候选带累加编号、扫一次增加一次"】
+                // 扫描态（window.__scanning）下收集的是「候选清单」，不是「按点击顺序的步骤动作」，
+                // 不应占用手动拾取的全局序号序列（window.__rolePickSeq），否则候选带 [n] 且每次重扫
+                // 会在已有号之上续接 → 表现为"扫一次编号增加一次"、污染手动拾取序号。
+                // 故扫描态跳过序号分配：候选保持 _pickNos 空（面板显示 [-]），待用户在面板勾选时再按
+                // 勾选顺序赋予步骤序号（见 panel-core-b.js __packageStep / 勾选逻辑）。
+                if (!window.__scanning) {
+                  window.__rolePickSeq += 1;
+                  var __thisIndex = window.__rolePickSeq;
+                } else {
+                  var __thisIndex = 0; // 扫描态不分配动作序号（仅占位，__appendPickNo 调用处已守卫）
+                }
                 function __appendPickNo(p) {
                   if (!p) return;
                   if (!Array.isArray(p._pickNos)) p._pickNos = [];
@@ -2869,6 +2879,8 @@
                   if (p._pickNos.indexOf(__thisIndex) === -1) p._pickNos.push(__thisIndex);
                   // 兼容旧的单值 seq 字段（首号）。
                   if (typeof p._pickSeq !== 'number' || __thisIndex < p._pickSeq) p._pickSeq = p._pickNos[0];
+                  // 本轮已为该元素分配序号（新拾取或重拾已存在元素）：清除 _seqStale，使其从 [-] 变为显示本轮编号。
+                  try { p._seqStale = false; } catch (e) {}
                 }
 
                 if (!dup) {
@@ -2897,7 +2909,8 @@
 
                   window.__rolePicks.push(pick);
                   // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
-                  __appendPickNo(pick);
+                  // 扫描态守卫：候选不分配序号（保持 [-]）。
+                  if (!window.__scanning) __appendPickNo(pick);
 
                   // [issue3] auto-focus the page sub-tab that the picked element belongs to
                   // ("locate which page -> focus that page"). Only triggers when pick carries
@@ -2954,7 +2967,8 @@
 
                     existing.hover = !!isHover;
                     // 【index 需求】重复拾取同一元素：把当前动作序号追加到 _pickNos（如 [1,5]）。
-                    __appendPickNo(existing);
+                    // 扫描态守卫：候选不分配序号。
+                    if (!window.__scanning) __appendPickNo(existing);
 
 
                     if (window.__lastPickEl && isEditable(window.__lastPickEl)) {
@@ -2982,8 +2996,8 @@
 
 
                         window.__rolePicks[i].hover = !!isHover;
-                        // 【index 需求】兜底分支同样追加当前动作序号。
-                        __appendPickNo(window.__rolePicks[i]);
+                        // 【index 需求】兜底分支同样追加当前动作序号（扫描态守卫）。
+                        if (!window.__scanning) __appendPickNo(window.__rolePicks[i]);
 
 
                         if (window.__lastPickEl && isEditable(window.__lastPickEl)) {

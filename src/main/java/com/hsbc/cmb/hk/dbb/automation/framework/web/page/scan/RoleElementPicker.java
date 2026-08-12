@@ -1263,8 +1263,17 @@ public final class RoleElementPicker {
                 try { snap = readPickSnapshot(page); } catch (Exception ignore) {}
                 if (snap == null) snap = new PickSnapshot("", new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
                 // 与 package 一致：以 Java 侧内存态为准（对导航/关闭导致的浏览器端状态清空免疫）。
+                // 【修复"删除元素后步骤代码括号数字不变"】删除后浏览器端 window.__steps 可能仍残留指向已删元素的旧 step，
+                // 而 snapWithAutoStep 在 snap.steps 非空时会短路返回旧 steps，导致 step 数/序号不随删除更新。
+                // 故此处【不沿用旧 snap.steps】，始终基于当前 javaPickBySig 重新生成 steps：
+                //   - 全删空时 javaPickBySig 为空 → snap.steps 置空 → snapWithAutoStep 返回空 step（步骤代码显示"还没有任何 step"）；
+                //   - 删部分时 javaPickBySig 含剩余元素 → snap.steps 置空 → snapWithAutoStep 按剩余元素序号重新拆 step，
+                //     step 数量与括号序号随删除实时变化。
+                // 注：手动模式主流程按点击序号拆 step，删除后重拆符合预期；若用户曾手动"封装为步骤"分组，删除后分组会被重置为按序号。
                 if (!javaPickBySig.isEmpty()) {
-                    snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), snap.steps, snap.ops);
+                    snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), new ArrayList<>(), snap.ops);
+                } else {
+                    snap = new PickSnapshot(snap.pageClass, new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
                 }
                 // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
                 snap = snapWithAutoStep(snap);
@@ -1363,6 +1372,16 @@ public final class RoleElementPicker {
                 }
                 // manual-mode (not packaged) fallback: start->stop whole session = one step.
                 snap = snapWithAutoStep(snap);
+                // 停止收尾后重置面板「页面元素 List」每行的展示序号为 [-]：
+                // 清空 Java 权威内存态每个 entry 的 pickNos（展示用全局序号数组），使随后主循环空闲的
+                // syncPanelToBrowser 把 _pickNos 透传为 undefined，面板每行前缀回退到 [-] 兜底显示。
+                // seq 字段保留（已用于本轮回生成 step，且停止后不再需要排序），不影响已生成的步骤顺序。
+                // 配合 picker-stop.js 里对浏览器侧 _pickNos/_pickSeq 的清空，双管齐下保证停止后序号归位为 [-]。
+                for (RoleEntry e : javaPickBySig.values()) e.setPickNos(null);
+                // 同时让浏览器侧 window.__rolePicks 立即失去序号（双保险，避免停止后到下次 sync 之间仍显示旧号）。
+                try {
+                    page.evaluate("try{ (window.__rolePicks||[]).forEach(function(p){ try{delete p._pickNos;}catch(e){} try{p._pickSeq=0;}catch(e){} }); if(window.__renderPicks)window.__renderPicks(); if(window.refreshSelInfo)window.refreshSelInfo(); }catch(e){}");
+                } catch (Exception ignore) {}
                 // 合入已关闭页的步骤/操作（含其补登记的 closeCurrentPage），避免关闭步骤在停止时被跳过而丢失。
                 if (!closedSteps.isEmpty() || !closedOps.isEmpty()) {
                     List<StepRec> mergedSteps = new ArrayList<>(snap.steps);
@@ -1589,7 +1608,16 @@ public final class RoleElementPicker {
                     + "}); })()").toString();
             log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
             // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
-            try { LAST_PICK_ORIGIN = safeOrigin(page.url()); } catch (Exception ignore) {}
+            // 【修复"跳转到新页面拾取不到"】popup 在 onPopup 回调触发时文档还是 about:blank（origin 为空串），
+            // 若在此处把 LAST_PICK_ORIGIN 更新为空串，会污染全局跨域判据：后续该 popup 导航到真实跨域页时，
+            // onFrameNavigated 用 curOrigin("https://b.com") != "" 误判为 originChanged=true 而强制重注入——
+            // 这本应是对的；但更隐蔽的是：若真实页与根页【同源】，空串会让 originChanged 错判、且把好不容易注入的
+            // 库因 about:blank 文档随即销毁而丢失，最终表现为"新页面无蓝框、点击无反应"。
+            // 故 about:blank/空 origin 绝不更新 LAST_PICK_ORIGIN，保持上一有效 origin 作为去抖基准。
+            try {
+                String __o = safeOrigin(page.url());
+                if (!__o.isEmpty()) LAST_PICK_ORIGIN = __o;
+            } catch (Exception ignore) {}
         } catch (Exception e) { log.warn("[picker][start] 诊断读取失败：{}", e.getMessage()); }
     }
 
@@ -3958,8 +3986,22 @@ public final class RoleElementPicker {
             newPage.evaluate("try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){} try{window.__rolePanelForce=true;}catch(e){}");
             // 若会话仍处于拾取中，则在新页面重启点击捕获监听（applyPickState 已把新页 active 置 false）：
             // 经 start() 同时置位会话开关 + 注入 nls，使该页后续导航由 context 门控注入脚本原生保活。
-            if (sessionActive) start(newPage, nlsReverseJson);
-            newPage.evaluate(PANEL_SCRIPT);
+            // 【算法：零等待窗口的双保险注入，杜绝"卡住"】
+            // onPopup 回调触发时新页文档可能还是 about:blank（尚未导航到真实 URL）。早期版本把 start() 延迟到
+            // onLoadState 触发——但这引入"卡住窗口"：SPA 重定向/不触发 DOMContentLoaded 的页面会让监听永不挂载，
+            // 表现为"新页无蓝框、换了个操作才突然好"（实则是别的导航触发 onFrameNavigated 补注入）。
+            // 现改为【同步立即 start()】注入当前文档作为兜底，且 start() 已修复：about:blank 不再污染全局
+            // LAST_PICK_ORIGIN。随后真实页导航由两条路径无缝接管，无任何等待间隙：
+            //   ① context 级门控 addInitScript 在每个新文档早期自动跑，同源导航读得到 localStorage 开关即注入；
+            //   ② onFrameNavigated 对跨域导航强制 start() 重注入（LAST_PICK_ORIGIN 未污染故能正确判跨域）。
+            // 故弹出瞬间即具备基础监听，导航完成后即被真实库接管，用户体感"立即能拾取、不卡"。
+            if (sessionActive) {
+                try { start(newPage, nlsReverseJson); } catch (Exception ex) {
+                    log.warn("[picker] 新页面同步注入失败（导航中可忽略，将由 onFrameNavigated 补注入）：{}", ex.getMessage());
+                }
+            }
+            // 面板脚本：初始文档也先注入一次；若后续导航重建，onFrameNavigated/PANEL addInitScript 会兜底。
+            try { newPage.evaluate(PANEL_SCRIPT); } catch (Exception ignore) {}
             current[0] = newPage;
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, readPickStateJson(newPage));
@@ -4345,9 +4387,14 @@ public final class RoleElementPicker {
             if (pc != null && !pc.isEmpty()) { rootPc = pc; break; }
         }
         if (rootPc.isEmpty()) rootPc = (snap.pageClass == null) ? "" : snap.pageClass;
-        StepRec one = new StepRec(rootPc, all);
+        // 手动模式（start→stop 未封装）：所有拾取元素封装为【一个步骤】(step1)，
+        // 步骤内元素按点击序号（getSeq）升序排列——即"按序号封装为一个步骤"。
+        // 序号相等的保持原拾取顺序（避免 ArrayList.sort 不稳定重排）。
+        List<RoleEntry> sorted = new ArrayList<>(all);
+        sorted.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? 0 : e.getSeq()))
+                .thenComparingInt(all::indexOf));
         List<StepRec> steps = new ArrayList<>();
-        steps.add(one);
+        steps.add(new StepRec(rootPc, sorted));
         return new PickSnapshot(snap.pageClass, snap.entries, steps, snap.ops);
     }
 

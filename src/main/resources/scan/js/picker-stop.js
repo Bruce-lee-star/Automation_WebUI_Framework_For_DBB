@@ -22,29 +22,36 @@
               document.removeEventListener('focusin', window.__rolePickFocus, true);
               document.removeEventListener('scroll', window.__rolePickScroll, true);
               window.__rolePickActive = false;
+              // 复位面板切换控件的"乐观意图"位：避免上一轮残留的 __rolePickWanted 让下一轮按钮的 willStart
+              // 计算误判、发出错误命令（关键修复"停止后再点开始却拾取不了 / 二轮停止不了"的边界）。
+              try { window.__rolePickWanted = false; } catch (e) {}
               // 停止时也清整页扫描态，避免异常路径下 scan/region 按钮卡死置灰。
               window.__pageScanning = false;
               try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
-              // 收尾当前 step：停止拾取即把"当前选中（已勾选）的候选"封装成 step 并入 __steps。
-              // 面板勾选/实时点选都写入 window.__currentStep（选择集），停止时一次性打包为 step；
-              // 整个选择（无论跨多少个页面）合并为【一个 step】——step 的唯一边界是"开始→停止"
-              // （或一次「封装为步骤」），弹窗打开/关闭、页面跳转都只是同一 step 内的交互。
-              // 优先用 __packageStep（与面板"封装为步骤"同一逻辑，保证顺序/去重一致）；兜底直接打包。
-              if (window.__currentStep && window.__currentStep.length) {
-                if (typeof window.__packageStep === 'function') {
-                  window.__packageStep();
-                } else {
-                  if (!window.__steps) window.__steps = [];
-                  window.__steps.push({pageClass:(window.__rolePageName||''), picks:window.__currentStep});
-                }
-              }
+              // 手动模式收尾（▶开始→点元素→⏹停止）：所有拾取元素封装为【一个步骤】(由 Java 端 snapWithAutoStep 兜底)，
+              // 此处只做面板状态收尾：清空当前选择集与序号计数器，并把「页面元素 List」每行序号前缀重置为 [-]。
               window.__currentStep = null;
-              // 【修复"步骤代码(2)"错位】停止即关闭本轮 step 边界：清空 __steps，使下一轮 ▶ 从干净状态开始，
+              // 停止即关闭本轮 step 边界：清空 __steps，使下一轮 ▶ 从干净状态开始，
               // step 编号重新从 1 起（否则 __steps 续接旧 step，下一轮 push 后 Java 渲染出 step2/显示"第 2 个 step"）。
               // 注意：跨页切换重启走 picker-core-a.js 的「续接」分支（不调用 stop），__currentStep 被搬运、__steps 保留，不丢步骤。
               // 同时重置全局动作序号计数器，下一轮拾取的 index 也重新从 1 连续编号。
               try { window.__steps = []; } catch (e) {}
               try { window.__rolePickSeq = 0; } catch (e) {}
+              // 停止收尾后重置「页面元素 List」每行序号前缀为 [-]：
+              // 给每个已拾元素置逐元素标志 _seqStale=true（panel-core-b.js 兜底据其跳过位次推导直接显示 [-]），
+              // 并清空其 _pickNos/_pickSeq，使 stopped 后所有元素显示 [-]、序号归零。单纯清 _pickNos 无效——
+              // 兜底会按 __rolePicks 数组下标推导 [1]/[2]…，必须用 _seqStale 显式关掉。
+              // 下一轮「开始拾取」时会对旧元素维持 _seqStale（仍显示 [-]），并在本轮拾取/重拾时清除它。
+              try {
+                var _ps = window.__rolePicks || [];
+                for (var _pi = 0; _pi < _ps.length; _pi++) {
+                  try { _ps[_pi]._seqStale = true; } catch (e) {}
+                  try { delete _ps[_pi]._pickNos; } catch (e) {}
+                  try { _ps[_pi]._pickSeq = 0; } catch (e) {}
+                }
+                if (typeof window.__renderPicks === 'function') window.__renderPicks();
+                if (typeof window.refreshSelInfo === 'function') window.refreshSelInfo();
+              } catch (e) {}
               // 收起实时悬停高亮框
               try { var __hb = document.getElementById('__roleHoverBox'); if (__hb) __hb.style.display = 'none'; } catch (e) {}
               // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），停止拾取时一并清掉，避免残留。

@@ -210,7 +210,12 @@
                     var _bk = (typeof window.__mergeKey==='function') ? window.__mergeKey(_bp) : (_bp._sigKey || _bp._sig);
                     if (_bk && !_byKey[_bk]) _byKey[_bk] = _bp;
                   }
+                  // 【每序号一个步骤】不再按"元素"归并去重，而是把每个被拾取元素的每个拾取序号
+                  // （_pickNos 数组）展开为独立的 pick 条目。这样同一元素被点多次（如 _pickNos=[1,2,3,4,5,13]）
+                  // 会生成多个步骤/操作行（每个序号一个），与面板序号前缀一一对应。
+                  // 跨页/iframe 元素同样按各自序号展开，全局按序号排序，保证步骤顺序 == 点击先后。
                   var _pickedSeen = {};
+                  var _expanded = [];   // { base: 原始pick, no: 序号 } 的列表
                   for (var _si2 = 0; _si2 < _selOrder.length; _si2++) {
                     var _cp = _selOrder[_si2] || {};
                     var _ck2 = (typeof window.__mergeKey==='function') ? window.__mergeKey(_cp) : (_cp._sigKey || _cp._sig);
@@ -218,35 +223,32 @@
                     _pickedSeen[_ck2] = true;
                     var _fp = _byKey[_ck2] || _cp;   // 优先候选里的完整 pick
                     if (!owner) owner = (_fp._pageClass) || (_cp._pageClass) || (window.__rolePageName || '');
-                    picks.push(_fp);
-                  }
-                  // 【关键修复"step 按 index 封装"】封装顺序以元素的【全局拾取顺序号】为准。
-                  // 排序键取 _pickNos[0]（该元素"首次被拾取"的全局动作序号）：同一元素被多次拾取归并成一行时，
-                  // 按其首次出现的位次稳定排序，使 step 内元素顺序 == 用户第一次拾取它们的先后顺序，
-                  // 与面板前缀 [1,4,7] 的"首号"语义一致、可见可控。_pickNos 缺失时按 __rolePicks 位次兜底。
-                  picks.sort(function(a, b) {
-                    function _firstNos(x) {
-                      if (x && Array.isArray(x._pickNos) && x._pickNos.length) return x._pickNos[0];
-                      if (x && typeof x._pickSeq === 'number') return x._pickSeq;
-                      var _a = window.__rolePicks || [];
-                      for (var i = 0; i < _a.length; i++) { if (_a[i] === x) return i + 1; }
-                      return 1e9;
+                    // 展开该元素的所有拾取序号为独立条目（保留顺序）
+                    var _nos = (Array.isArray(_fp._pickNos) && _fp._pickNos.length)
+                        ? _fp._pickNos.slice()
+                        : (typeof _fp._pickSeq === 'number' && _fp._pickSeq > 0 ? [_fp._pickSeq] : []);
+                    if (!_nos.length) _nos = [0];   // 兜底：无序号元素给一个占位号，排序垫底
+                    for (var _nx = 0; _nx < _nos.length; _nx++) {
+                      _expanded.push({ base: _fp, no: _nos[_nx] });
                     }
-                    return _firstNos(a) - _firstNos(b);
-                  });
-                  if (!owner) owner = (window.__rolePageName || '');
-                  // 【关键修复"步骤序号不连续 / iframe 元素序号错乱"】
-                  // 旧逻辑直接把 picks 丢进 step，沿用各 pick 上残留的 seq：
-                  //   · iframe 内拾取的元素从不进顶层 __currentStep（self===top 守卫，见上方 message 监听），
-                  //     其 seq 恒为 undefined → 排序时被当作 0、挤到 step 最前，且生成器兜底 step.size()+1
-                  //     会造成「同一个 step 内序号重复 / 不连续」，表现为"中间取消一项后编号没重排对"。
-                  //   · 取消中间项再勾选其他项时，__currentStep 已重排，但 picks 是按 __rolePicks 全局序过滤，
-                  //     与选中序不一致，残留 seq 仍会错位。
-                  // 故在此按『过滤后的实际入选顺序』重新连续编号 seq=1..N，确保 step 内步骤序号恒连续、
-                  // iframe 元素也获得正确序号、且"取消中间重排"语义成立。
-                  for (var _pi = 0; _pi < picks.length; _pi++) {
-                    if (picks[_pi]) picks[_pi].seq = _pi + 1;
                   }
+                  // 全局按拾取序号升序排列，保证步骤顺序 == 点击发生先后
+                  _expanded.sort(function(a, b) { return (a.no || 0) - (b.no || 0); });
+                  // 每个序号生成一个独立 pick 克隆（浅拷贝定位字段，剥离 _pickNos/_pickSeq 以承载单序号）
+                  picks = [];
+                  for (var _pi = 0; _pi < _expanded.length; _pi++) {
+                    var _eb = _expanded[_pi].base || {};
+                    var _clone = {};
+                    for (var _ek in _eb) {
+                      if (_ek === '_pickNos' || _ek === '_pickSeq') continue;
+                      _clone[_ek] = _eb[_ek];
+                    }
+                    _clone._pickNos = [_expanded[_pi].no];
+                    _clone._pickSeq = _expanded[_pi].no;
+                    _clone.seq = _pi + 1;   // 步骤内重新连续编号
+                    picks.push(_clone);
+                  }
+                  if (!owner) owner = (window.__rolePageName || '');
                   window.__steps.push({ pageClass: owner, picks: picks });
                   window.__currentStep = [];   // 已封装，清空选择集
                   // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），否则不按 Esc 直接封装时绿框会残留。
@@ -675,9 +677,16 @@
                       _seqNo = p._pickSeq;            // 单值兜底
                     } else {
                       // 兜底：个别回灌 pick 无序号时，按其在 __rolePicks 中的位次推导首号。
-                      var _all = window.__rolePicks || [];
-                      for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNo = (_ai + 1); break; } }
-                      if (_seqNo === undefined) _seqNo = '-';
+                      // 【新一轮/停止后重置为 [-]】逐元素标志 p._seqStale 为真时（该元素在本轮尚未被拾取），
+                      // 跳过位次推导，直接显示 [-]，使"已拾取但本轮未重新点"的元素显示为 [-]、序号归零；
+                      // 而本轮新拾取或重新点过的元素 _seqStale 为假，则显示其 _pickNos / 位次序号。
+                      if (p._seqStale) {
+                        _seqNo = '-';
+                      } else {
+                        var _all = window.__rolePicks || [];
+                        for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNo = (_ai + 1); break; } }
+                        if (_seqNo === undefined) _seqNo = '-';
+                      }
                     }
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
@@ -729,7 +738,7 @@
                     };
                     // 计数刷新时同步"全选"复选框状态：可见项全部选中 -> 勾选，否则不勾选。
                     var _refreshSelInfo = refreshSelInfo;
-                    refreshSelInfo = function() {
+                    window.refreshSelInfo = refreshSelInfo = function() {
                       var vis = curVisiblePicks();
                       var cset = window.__currentStep || [];
                       var sel = 0;

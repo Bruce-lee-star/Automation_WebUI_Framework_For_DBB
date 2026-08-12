@@ -160,9 +160,9 @@ public class LoginSteps {
         // Axe-core accessibility scan on login page
 //        AxeCoreScanner.scanPage("Login Page - Initial");
 //loginPage.pause();
-//        Page page = loginPage.getPage();
-//        RoleElementPicker.openPanel(page,
-//                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");  // nls 文件（可变参数；page/steps 类名由 URL 派生）
+        Page page = loginPage.getPage();
+        RoleElementPicker.openPanel(page,
+                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");  // nls 文件（可变参数；page/steps 类名由 URL 派生）
         loginPage.userNameIpt.type(username);
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());

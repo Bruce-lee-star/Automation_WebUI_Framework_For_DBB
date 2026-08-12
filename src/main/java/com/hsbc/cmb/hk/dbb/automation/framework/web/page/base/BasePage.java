@@ -7,10 +7,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationExcepti
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
@@ -19,19 +21,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
-import java.util.function.Predicate;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.regex.Pattern;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
-
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
+import java.util.regex.Pattern;
 
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
@@ -669,7 +665,7 @@ public abstract class BasePage {
 
     /**
      * 切换到指定的 Page 实例（用于 waitForPopup 等 Playwright API 捕获到的外部 Page）。
-     * <p>与 {@link #switchToNewPage(Runnable, int)} 不同，本方法跳过事件监听，直接使用调用方已捕获的 Page 引用。
+     * <p>与 {@link #waitForNewPage(Runnable, int)} 不同，本方法跳过事件监听，直接使用调用方已捕获的 Page 引用。
      *
      * @param page 目标页面（Page 实例，不能为 null 或已关闭）
      */
@@ -695,7 +691,7 @@ public abstract class BasePage {
      *
      * <pre>{@code
      * // 推荐：将触发操作传入方法，一步完成"点击 + 等待新页面 + 切换"
-     * myPage.switchToNewPage(() -> myPage.element("#link").click(), 15);
+     * myPage.waitForNewPage(() -> myPage.element("#link").click(), 15);
      *
      * // 也可以配合 waitForPopup（更适合精确捕获弹窗）
      * Page popup = myPage.getPage().waitForPopup(() -> { ... });
@@ -706,7 +702,7 @@ public abstract class BasePage {
      * @param timeoutSecs 等待超时秒数
      * @return 新打开的 Page 实例
      */
-    public Page switchToNewPage(Runnable trigger, int timeoutSecs) {
+    public Page waitForNewPage(Runnable trigger, int timeoutSecs) {
         ensureContextValid();
         try {
             return acceptNewPage(context.waitForPage(() -> trigger.run()));
@@ -720,13 +716,13 @@ public abstract class BasePage {
      * <p>先检查是否已有新页面（快速路径），若无则通过 {@code context.waitForPage()} 注册事件监听。
      *
      * <pre>{@code
-     * myPage.switchToNewPage(15);  // 等待最多 15 秒
+     * myPage.waitForNewPage(15);  // 等待最多 15 秒
      * }</pre>
      *
      * @param timeoutSecs 等待超时秒数
      * @return 新打开的 Page 实例
      */
-    public Page switchToNewPage(int timeoutSecs) {
+    public Page waitForNewPage(int timeoutSecs) {
         ensureContextValid();
         // 快速路径：前序步骤可能已触发新页面，直接检查是否已存在
         for (int i = context.pages().size() - 1; i >= 0; i--) {
@@ -756,7 +752,7 @@ public abstract class BasePage {
      *
      * // 与弹窗配合（嵌套：先弹窗再下载）
      * myPage.waitForDownload(() ->
-     *         myPage.switchToNewPage(() -> myPage.element("#link").click(), 15), 15);
+     *         myPage.waitForNewPage(() -> myPage.element("#link").click(), 15), 15);
      * }</pre>
      *
      * @param trigger     触发下载的操作（如点击下载链接）

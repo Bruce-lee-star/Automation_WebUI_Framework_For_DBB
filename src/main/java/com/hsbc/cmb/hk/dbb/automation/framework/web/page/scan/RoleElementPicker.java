@@ -69,6 +69,36 @@ public final class RoleElementPicker {
     public enum PickMode { IDLE, MANUAL, SCAN_PAGE, SCAN_REGION }
     private static final Map<BrowserContext, PickMode> CTX_PICK_MODES = new ConcurrentHashMap<>();
 
+    /**
+     * 标记"由框架主动关闭（BasePage.closeCurrentPage 调 page.close()）"的页面，按 context 隔离。
+     * 目的：onClose 监听无法区分"用户/外部手动关闭"与"代码主动 page.close()"——
+     * 两者都会触发 onClose。代码主动关闭时不该再登记一条 closeCurrentPage 步骤（否则重复且回放会重复关）。
+     * 只有未标记的关闭（即监控到真实外部/手动关闭）才在 onClose 中登记 _closeOp。
+     */
+    private static final Map<BrowserContext, java.util.Set<Page>> CTX_FRAMEWORK_CLOSED =
+            new ConcurrentHashMap<>();
+
+    /** 在 BasePage.closeCurrentPage 调 page.close() 前调用：标记本页为"框架主动关闭"。 */
+    public static void markFrameworkClose(Page page) {
+        if (page == null) return;
+        BrowserContext ctx = page.context();
+        CTX_FRAMEWORK_CLOSED.computeIfAbsent(ctx, c -> ConcurrentHashMap.newKeySet()).add(page);
+    }
+
+    /** 供 onClose 判断：本次关闭是否来自框架主动调用；读取后清除标记（页面关后即失效）。 */
+    private static boolean consumeFrameworkClose(Page closed) {
+        if (closed == null) return false;
+        try {
+            BrowserContext ctx = closed.context();
+            java.util.Set<Page> set = CTX_FRAMEWORK_CLOSED.get(ctx);
+            if (set != null && set.remove(closed)) {
+                if (set.isEmpty()) CTX_FRAMEWORK_CLOSED.remove(ctx);
+                return true;
+            }
+        } catch (Exception ignore) { /* 页面已关，context 可能失效，按未标记处理 */ }
+        return false;
+    }
+
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
     private static void setPickMode(Page anyPage, PickMode mode,
                                     LinkedHashMap<Page, String> pageNames) {
@@ -88,6 +118,15 @@ public final class RoleElementPicker {
     // （addInitScript 无法撤销，重复注册会累积执行；同 nls 幂等跳过，不同 nls 追加后"后注册者后执行"覆盖生效）。
     private static final Set<BrowserContext> CTX_PANEL_SCRIPTED = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private static final Map<BrowserContext, String> CTX_PICKER_NLS = new ConcurrentHashMap<>();
+    // 最近一次成功 start() 注入的页面 origin（手动开始拾取 / onFrameNavigated 跨域强制重注入后更新）。
+    // 用于 onFrameNavigated 重激活时区分"同源导航（门控脚本已注入，仅轻量保活）"与"跨域导航（门控因
+    // localStorage 隔离未注入，需强制重注入库）"——同源永远不强制 start，杜绝一次导航多次 onFrameNavigated
+    // 反复重注入导致"扫描了很多元素"的放大现象。
+    private static volatile String LAST_PICK_ORIGIN = "";
+    // 跨域强制重注入去抖：key=page，value=上次强制 start 时间戳。同一 page 在 FORCE_START_DEBOUNCE_MS
+    // 内不重复强制 start（一次导航会触发 onFrameNavigated 多次：about:blank 过渡/重定向/主框架/iframe）。
+    private static final long FORCE_START_DEBOUNCE_MS = 2000L;
+    private static final Map<Page, Long> FORCE_START_TS = new ConcurrentHashMap<>();
 
     /**
      * 会话级持久"已删集合"：用户主动删除的元素键（_sig / _sigKey / 去索引 locatorKey）。
@@ -524,13 +563,33 @@ public final class RoleElementPicker {
         try {
             frame.evaluate(gatedPickerInitScript(nlsReverseJson, true));
         } catch (Exception ex) {
-            // 动态/子 frame 注入失败（多为跨源 frame 受安全限制 evaluate 抛错），按设计跳过，
-            // 其内元素不经主框架拾取，不影响其它 frame。
-            // 用 log.debug 而非 System.err，避免连接关闭时的海量失败刷屏。
+            // 动态/子 frame 注入失败的两种性质需区分：
+            //  (a) 真不可注入：frame 已关闭/已分离 → 永久跳过，丢弃。
+            //  (b) 执行上下文竞态：子 frame 在 onFrameAttached 的 about:blank 阶段、或跨源 frame 文档切换瞬间，
+            //       execution context 尚未就绪，evaluate 抛 "Execution context was destroyed" / "frame was detached"。
+            //       这类是【暂时性】的——onFrameNavigated 兜底虽也会调本方法，但若导航事件与 context 就绪仍有微小错位，
+            //       跨源/动态 iframe 可能在本会话内再无机会注入，表现为"iframe 内元素点不到"。
+            // 优化：对 (b) 立即重试一次（同方法再 evaluate 一次）。onFrameNavigated 触发时 context 通常已就绪，
+            // 首轮失败多为 about:blank 残留，重试一次即可成功，无需引入后台轮询线程。
+            // 若重试仍失败，判为 (a) 真不可注入，静默跳过（用 log.debug 避免连接关闭时海量刷屏）。
             String url;
             try { url = frame.url(); } catch (Exception urlEx) { url = "<closed>"; }
-            if (log.isDebugEnabled()) {
-                log.debug("[frameInjectOnce][skip] frame={} : {}", url, ex.toString());
+            boolean detached = false;
+            try { detached = frame.isDetached(); } catch (Exception ignore) {}
+            if (!detached) {
+                try {
+                    frame.evaluate(gatedPickerInitScript(nlsReverseJson, true)); // 竞态重试一次
+                    if (log.isDebugEnabled()) {
+                        log.debug("[frameInjectOnce][retry-ok] 首轮竞态后重试成功 frame={}", url);
+                    }
+                    return;
+                } catch (Exception ex2) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("[frameInjectOnce][skip] frame={} : {}", url, ex2.toString());
+                    }
+                }
+            } else if (log.isDebugEnabled()) {
+                log.debug("[frameInjectOnce][skip-detached] frame={} : {}", url, ex.toString());
             }
         }
     }
@@ -931,6 +990,17 @@ public final class RoleElementPicker {
                         try {
                             Object r = f.evaluate(
                                     "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                            // 防御性兜底：跨源/动态 iframe 若因注入竞态漏注入（__roleScanPage 未定义，返回 -1），
+                            // 此处先强制补注入一次再扫描，确保任意层 iframe（含跨源）都能被整页扫描穿透。
+                            if (r instanceof Number && ((Number) r).intValue() < 0) {
+                                try {
+                                    frameInjectOnce(f, scanNls);
+                                    r = f.evaluate(
+                                            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                                } catch (Exception reInjEx) {
+                                    if (log.isDebugEnabled()) log.debug("[picker][scan] iframe 补注入失败（url={}）：{}", f.url(), reInjEx.getMessage());
+                                }
+                            }
                             if (r instanceof Number) {
                                 int n = ((Number) r).intValue();
                                 if (n > 0) added += n;
@@ -1109,7 +1179,18 @@ public final class RoleElementPicker {
                             }
                             if (!inRegion) continue;
                             try {
-                                f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                                Object rf = f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                                // 防御性兜底：跨源/动态 iframe 若因注入竞态漏注入（__roleScanPage 未定义），
+                                // 先强制补注入一次再扫描，确保区域内任意层 iframe（含跨源）都能被区域扫描穿透。
+                                if (rf instanceof Number && ((Number) rf).intValue() < 0) {
+                                    try {
+                                        frameInjectOnce(f, buildNlsReverseJson(Arrays.asList(nlsFiles)));
+                                        f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                                    } catch (Exception reInjEx) {
+                                        String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
+                                        log.warn("[picker][regionScanned] 区域 iframe 补注入失败（url={}）：{}", fUrl, reInjEx.getMessage());
+                                    }
+                                }
                             } catch (Exception fe) {
                                 String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
                                 log.warn("[picker][regionScanned] 区域 iframe 扫描失败（url={}）：{}", fUrl, fe.getMessage());
@@ -1249,6 +1330,30 @@ public final class RoleElementPicker {
                     }
                 }
                 if (snap == null) snap = readPickSnapshot(page);   // 兜底：命令页不在跟踪集合时
+                // 跨域页停止时，主框架 page.evaluate 可能因导航竞态返回空/抛异常（snap.entries 为空）；
+                // 此处再从各 frame 的 window.__rolePicks 逐帧兜底读取（与 stop() 的跨 frame 聚合同口径），
+                // 确保跨域主框架页自身已被拾取的元素不丢失（修复"跨域页拾取完停止未生成 step"）。
+                if (snap == null || snap.entries.isEmpty()) {
+                    try {
+                        List<RoleEntry> fEntries = new ArrayList<>();
+                        List<StepRec> fSteps = new ArrayList<>();
+                        List<PageOp> fOps = new ArrayList<>();
+                        for (Frame f : page.frames()) {
+                            try {
+                                // 与 stopAndRead/readPickSnapshot 同口径：直接读各 frame 的 window.__rolePicks/__steps/__ops
+                                PickSnapshot fs = parsePickSnapshot(f.evaluate(PICK_STATE_READER_JS));
+                                fEntries.addAll(fs.entries); fSteps.addAll(fs.steps); fOps.addAll(fs.ops);
+                            } catch (Exception fe) { /* 单 frame 失败忽略，继续其它 frame */ }
+                        }
+                        if (!fEntries.isEmpty()) {
+                            PickSnapshot fb = new PickSnapshot(snap == null ? "" : snap.pageClass, fEntries, fSteps, fOps);
+                            // 内存态(javaPickBySig)优先；仅当内存态也为空时才用跨 frame 浏览器兜底态。
+                            snap = (!javaPickBySig.isEmpty()) ? snap : fb;
+                        }
+                    } catch (Exception ff) {
+                        log.warn("[picker][stop] 跨 frame 兜底读快照失败 @ {} : {}", page.url(), ff.getMessage());
+                    }
+                }
                 // 状态外置（对齐 page.pause）：优先用 Java 侧内存态（javaPickBySig）作为已拾元素权威来源，
                 // O(1) 取回、且对导航/关闭导致的浏览器端状态清空免疫；内存为空（回传桥未触发等异常）时
                 // 退回浏览器读快照兜底。steps/ops 仍来自浏览器单次往返（stopAndRead 已合并），保证多页 step 序列正确。
@@ -1300,6 +1405,13 @@ public final class RoleElementPicker {
                     // 不是独立 step，故不再把 op 计入 totalSteps，否则"封装为 1 个 step + 1 个内联跳转操作"会误显为 2 个 step。
                 }
                 if (entriesByPage.isEmpty()) {
+                    // 诊断：跨域/导航竞态下出现"未拾取到元素"时，记录内存态与浏览器侧 picks 数量，便于定位是否漏拾。
+                    int jsMem = javaPickBySig.size();
+                    int browserPicks = 0;
+                    try { browserPicks = ((List<?>) page.evaluate("() => (window.__rolePicks||[]).length")).size(); } catch (Exception ignoreB) {}
+                    log.warn("[picker][stop] 未拾取到元素 @ {} : 内存态 javaPickBySig={}, 浏览器 __rolePicks={}, 当前页 origin={}",
+                            page.url(), jsMem, browserPicks, safeOrigin(page.url()));
+                    // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。
                     // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。
                     setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
                     return new PickerResult(PickerAction.CONTINUE, null, null, "未拾取到元素");
@@ -1423,6 +1535,10 @@ public final class RoleElementPicker {
                 + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
                 + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
                 + " try{ window.__rolePickerLib = false; }catch(e){}"
+                // 【index 需求】每次开始拾取，重置全局动作序号计数器：单会话内 index 从 1 连续递增，
+                // 重复点击同一元素时其 _pickNos 追加当前号（如 [1,5]）。stop→start 重开应重新从 1 计数。
+                // 注意：若是从快照恢复（restoreSnapshot 已显式续接此值），本行不应执行——restore 路径在 Java 侧单独控制。
+                + " try{ window.__rolePickSeq = 0; }catch(e){}"
                 + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
                 + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
                 // 优先复用门控脚本封装的 window.__roleGatedStart（含 load/pagesight 自愈入口），保证 Java 侧
@@ -1472,6 +1588,8 @@ public final class RoleElementPicker {
                     + " hasRecord: typeof window.__recordPick==='function'"
                     + "}); })()").toString();
             log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
+            // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
+            try { LAST_PICK_ORIGIN = safeOrigin(page.url()); } catch (Exception ignore) {}
         } catch (Exception e) { log.warn("[picker][start] 诊断读取失败：{}", e.getMessage()); }
     }
 
@@ -1886,6 +2004,9 @@ public final class RoleElementPicker {
                     + "     o.css=(p.strategy==='css')?p.selector:undefined;"
                     + "     o.index=p.index; o._pageClass=p.pageClass;"
                     + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
+                    // 透传全局拾取顺序号数组 _pickNos（如 [1,4,7]）：Java 权威内存态已持有（parsePick 解析），
+                    // 回灌浏览器时原样写出，避免 syncPanelToBrowser 重建 pick 时丢失 → 跨页导航 index 重置。
+                    + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
                     + "     return o; }"
                     + "   window.__rolePicks = window.__rolePicks || [];"
                     + "   window.__rolePickSigs = window.__rolePickSigs || {};"
@@ -2421,6 +2542,7 @@ public final class RoleElementPicker {
             roleEntry.setShadowPath(parseFramePath(m.get("shadowPath")));
             roleEntry.setSeq(parseSeq(m.get("seq")));
             roleEntry.setPageInstanceId(parseInstanceId(m.get("_pageInstanceId")));
+            roleEntry.setPickNos(parsePickNos(m.get("_pickNos")));
             return roleEntry;
         }
         String selector = buildSelector(strategy, m);
@@ -2441,6 +2563,7 @@ public final class RoleElementPicker {
         entry.setShadowPath(parseFramePath(m.get("shadowPath")));
         entry.setSeq(parseSeq(m.get("seq")));
         entry.setPageInstanceId(parseInstanceId(m.get("_pageInstanceId")));
+        entry.setPickNos(parsePickNos(m.get("_pickNos")));
         return entry;
     }
 
@@ -2538,6 +2661,23 @@ public final class RoleElementPicker {
         } catch (NumberFormatException e) {
             return 1;
         }
+    }
+
+    /** 解析全局拾取顺序号数组（_pickNos）：浏览器侧为 [1,4,7] 形式的数字数组。
+     *  缺省 / 非数组 / 元素非数值均归一为 null（面板将走 __rolePicks 位次兜底）。去重保序、剔除<=0。 */
+    @SuppressWarnings("unchecked")
+    private static java.util.List<Integer> parsePickNos(Object v) {
+        if (!(v instanceof java.util.List)) return null;
+        java.util.List<?> raw = (java.util.List<?>) v;
+        java.util.List<Integer> out = new java.util.ArrayList<>();
+        for (Object o : raw) {
+            if (o == null) continue;
+            int n;
+            try { n = (o instanceof Number) ? ((Number) o).intValue() : Integer.parseInt(o.toString().trim()); }
+            catch (NumberFormatException e) { continue; }
+            if (n > 0 && !out.contains(n)) out.add(n);
+        }
+        return out.isEmpty() ? null : out;
     }
 
     /** 解析标题层级；缺省 / 非数值 / 非 1–6 均归一为 0（不限层级）。 */
@@ -2798,7 +2938,11 @@ public final class RoleElementPicker {
         }
         // page / steps 类名由 URL 决定，与弹窗/导航新页面同源派生。
         final String pageClassName = pageClassNameFromUrl(page.url(), GLOBAL_URL_TO_CLASS.values());
-        final String stepClassName = pageClassName + "Steps";
+        // 【步骤类命名】Step 类不复用 Page 类的 "XxxPage"+Steps（会拼成 XxxPageSteps），
+        // 而是去掉 Page 类后缀的 "Page" 再拼 "Steps"，即页面类 LogonPage → 步骤类 LogonSteps。
+        final String stepBase = pageClassName.endsWith("Page")
+                ? pageClassName.substring(0, pageClassName.length() - 4) : pageClassName;
+        final String stepClassName = stepBase + "Steps";
         final String packageName = "com.hsbc.cmb.hk.dbb.automation.tests";
         openPanel(page, packageName, pageClassName, stepClassName, nlsFiles);
     }
@@ -3143,6 +3287,10 @@ public final class RoleElementPicker {
         // 多页面模型下每个页面保留各自独立的拾取（不合并），故此处仅重建父页面板、不回写子页数据。
         page.onClose(closed -> {
             try {
+                // 区分"框架主动关闭（closeCurrentPage 主动 page.close()）"与"外部/手动关闭"。
+                // 前者已在代码里显式调用 closeCurrentPage()，若在 onClose 再登记 _closeOp 会重复生成；
+                // 后者才需要补登记 closeCurrentPage 步骤。consumeFrameworkClose 读取即清除标记（页面关后失效）。
+                boolean frameworkClosed = consumeFrameworkClose(closed);
                 // 关闭瞬间尝试抓一份最终快照：页面可能已不可 evaluate，此时 readPickStateJson 返回空集
                 // （{picks:[],...}，见 2491-2496，不抛异常）。关键修复：绝不能拿空集覆盖主循环此前缓存的快照
                 // （那才含新页已拾取的元素）——否则合并时会用空 picks 把新页元素"合并没了"。
@@ -3250,9 +3398,16 @@ public final class RoleElementPicker {
                                 + " window.__steps = window.__steps || [];"
                                 + " window.__steps.push({op:'close', pageClass:" + GSON.toJson(closedCls) + "});"
                                 + "})()");
+                        // 框架主动关闭（closeCurrentPage）已在代码显式关闭，跳过重复登记 _closeOp；
+                        // 但不 return——仍需执行下方父页回退与面板保留逻辑，使 inspector 回到原页面。
+                        if (frameworkClosed) {
+                            log.info("[picker] 页面由框架主动关闭（closeCurrentPage），不补登记 closeCurrentPage 步骤：{} （页面类：{}）",
+                                    closed.url(), closedCls);
+                        } else {
                             // 立即刷新父页快照，确保随后父页导航重建时不会因覆盖而丢失该关闭操作。
                             try { snapshots.put(parent, readPickStateJson(parent)); } catch (Exception ignore) {}
                         }
+                    }
                     } catch (Exception ignore) { /* 合并失败不影响回退与面板存活 */ }
                     // 面板：有则重渲染（不重建、不闪烁），丢失则兜底挂载一次并立即渲染，确保面板可见、可继续拾取。
                     try {
@@ -3299,8 +3454,14 @@ public final class RoleElementPicker {
                     // 已关闭页被跳过，导致关闭步骤丢失。故在此把"关闭当前页"补登记为该页缓存快照里的一条
                     // step（含 _closeOp 标记），停止时由 runPickerCommand 的 stop 分支折叠回最终快照 → 生成
                     // closeCurrentPage()。仅对"发生过整页跳转"的页生效，普通单页录制末尾不会无谓追加。
+                    // 框架主动关闭（closeCurrentPage）已在代码显式调用，此处不再补登记，避免重复生成。
                     if (closedCls != null && !closedCls.isEmpty() && navigatedPages.contains(closed)) {
-                        appendCloseOpStep(closed, closedCls, snapshots);
+                        if (frameworkClosed) {
+                            log.info("[picker] 根页面由框架主动关闭（closeCurrentPage），不补登记 closeCurrentPage 步骤：{} （页面类：{}）",
+                                    closed.url(), closedCls);
+                        } else {
+                            appendCloseOpStep(closed, closedCls, snapshots);
+                        }
                     }
                 }
             } catch (Exception ignore) { /* 父页亦不可用：忽略 */ }
@@ -3365,6 +3526,15 @@ public final class RoleElementPicker {
                 } catch (Exception ignoreCls) {}
                 // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
                 log.info("[picker] 页面 URL 变化（onFrameNavigated）：{} （页面类：{}）", page.url(), prevCls);
+                // 跨域判定（与下方 3645 重激活分支同源口径）：跨域导航时门控脚本因 localStorage origin 隔离
+                // 未注入库，必须由下方跨域分支 start() 强制重注入整套库（含 nls 反查表 + active 激活 +
+                // 从既有 __rolePicks 重建 sigs）。此时若先在此处 applyPickState 把 __rolePickActive 置 false
+                // 并把 window.__rolePicks 整体覆盖成旧快照，会与后续的 start() 重注入交错（一次导航触发的
+                // 多次 onFrameNavigated 顺序不确定），导致 active 被反复置 false、点击回传绑定在"已被覆盖/
+                // 销毁的文档"上失效——表现即"跨域新页面点击有蓝框 active:true，但 __roleOnPick 回传不进 Java"。
+                // 故跨域场景【跳过此处 applyPickState 覆盖】，把数据恢复完全交给唯一的 start() 权威重建。
+                String __navOrigin = safeOrigin(page.url());
+                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(LAST_PICK_ORIGIN);
                 // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
                 //  - 整页重建（livePicks=false）：用 applyPickState 从快照整体恢复（含 nls 反查表）；
                 //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，
@@ -3376,7 +3546,9 @@ public final class RoleElementPicker {
                     // 仅当 Java 快照非空才整体恢复（含 nls 反查表）；为空不再提前 return，
                     // 改由下方 localStorage 兜底——修复"刷新前未来得及空闲刷新 / 首屏"导致 st 为空、
                     // 早期 return 把 localStorage 兜底也跳过、整页刷新后元素与步骤全丢的问题。
-                    if (st != null && !st.isEmpty()) {
+                    // 【修复"跨域新页点击不回传"】跨域导航交给下方 start() 权威重建，此处不再 applyPickState
+                    // 覆盖（否则 active 被置 false 且 picks 被旧快照覆盖，与 start() 交错导致回传失效）。
+                    if (st != null && !st.isEmpty() && !__navOriginChanged) {
                         applyPickState(page, st, nlsReverseJson, nlsFiles);
                     }
                     // 关键修复：整页跳转（window 重建）后，上面 applyPickState 用的是主循环每 ~1s 刷新的
@@ -3560,7 +3732,20 @@ public final class RoleElementPicker {
                 }
                 if (sessionOn && !explicitStop) {
                     log.info("[picker][nav] 会话拾取中：同步激活状态 @ {}", page.url());
-                    try {
+                    // 跨域（或任何门控脚本因 localStorage 隔离未注入）导航后，新文档的 gatedPickerInitScript
+                    // 因读不到 localStorage.__rolePickSessionOn 而提前 return，整套拾取库（__recordPick/点击监听）
+                    // 从未注入 → 表现为"无蓝框、点击无反应"。Java 主循环权威开关 active[0] 仍为 true，故进入本分支，
+                    // 但仅置 window.__rolePickActive 是"假激活"（库不存在）。必须直接 start() 真正重注入整套库。
+                    // 同源导航：门控脚本已在新文档早期注入库，仅做轻量保活即可（避免反复重注入竞态放大，见下）。
+                    // 同源 vs 跨域判断：门控脚本(gatedPickerInitScript)靠 localStorage.__rolePickSessionOn 在【每个新文档】
+                    // 早期注入库——同源导航 localStorage 同域可读到开关 → 库必已注入，只需轻量保活(__rolePickActive=true)；
+                    // 跨域导航 localStorage 因 origin 隔离读不到 → 门控 return 未注入 → 必须强制 start() 重注入整套库。
+                    // 故以 origin 是否变化作为"是否需要强制重注入"的唯一判据，避免对同源导航（含 SPA hash 变化、整页跳转）
+                    // 反复重注入造成"扫描了很多元素"的放大。SPA hash 变化(#/question1)不改变 origin → 视为同源，仅保活。
+                    String curOrigin = safeOrigin(page.url());
+                    boolean originChanged = !curOrigin.isEmpty() && !curOrigin.equals(LAST_PICK_ORIGIN);
+                    if (!originChanged) {
+                        // ===== 同源导航：门控脚本已注入库，仅做轻量激活保活 =====
                         // 关键修复（跳转到新页面后元素成倍增加）：监听重挂已由 context 级门控注入脚本
                         // (gatedPickerInitScript) 在新文档早期原生完成（见本方法上方注释），导航数据恢复也已在
                         // 上方 applyPickState/合并 evaluate 中完成。此处【不再调用 start() 重注入整套库】——
@@ -3569,14 +3754,49 @@ public final class RoleElementPicker {
                         // syncPanelToBrowser 合并 javaPickBySig 之间存在竞态，合并键未就绪时元素被重复 push，
                         // 形成"反复重注入 + 反复合并"的循环，导致已拾元素成倍累积。
                         // 这里仅做轻量激活保活：置位激活态并触发面板渲染，监听由门控脚本保证存活。
-                        page.evaluate("try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}");
-                    } catch (Exception ex) {
-                        // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
-                        // 此处等待 DOM 就绪后重试一次轻量激活保活（仍不重注入整套库）。
-                        log.warn("[picker][nav] 激活保活首轮失败，等待页面就绪后重试 @ {} : {}", page.url(), ex.getMessage());
-                        try { page.waitForLoadState(); } catch (Exception ignore2) {}
-                        try { page.evaluate("try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}"); }
-                        catch (Exception ex2) { log.warn("[picker][nav] 激活保活重试仍失败 @ {} : {}", page.url(), ex2.getMessage()); }
+                        try {
+                            page.evaluate("try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}");
+                        } catch (Exception ex) {
+                            // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
+                            // 此处等待 DOM 就绪后重试一次轻量激活保活（仍不重注入整套库）。
+                            log.warn("[picker][nav] 激活保活首轮失败，等待页面就绪后重试 @ {} : {}", page.url(), ex.getMessage());
+                            try { page.waitForLoadState(); } catch (Exception ignore2) {}
+                            try { page.evaluate("try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}"); }
+                            catch (Exception ex2) { log.warn("[picker][nav] 激活保活重试仍失败 @ {} : {}", page.url(), ex2.getMessage()); }
+                        }
+                    } else {
+                        // ===== 跨域导航：门控脚本因 localStorage 隔离未注入 → 强制 start() 重注入整套库 =====
+                        // 去抖：一次跨域导航会触发 onFrameNavigated 多次（about:blank 过渡/重定向/主框架/iframe），
+                        // 每次都强制 start 会清空并重建 __rolePickSigs、重复渲染所有元素，表现为"扫描了很多元素"。
+                        // 同一 page 在 FORCE_START_DEBOUNCE_MS 内只真正重注入一次。
+                        long now = System.currentTimeMillis();
+                        Long last = FORCE_START_TS.get(page);
+                        if (last != null && (now - last) < FORCE_START_DEBOUNCE_MS) {
+                            log.info("[picker][nav] 跨域重注入去抖（{}ms 内已注入，跳过）@ {}", (now - last), page.url());
+                        } else {
+                            FORCE_START_TS.put(page, now);
+                            log.warn("[picker][nav] 检测到跨域导航库未注入，强制 start() 重注入 @ {} : origin={} -> {}",
+                                    page.url(), LAST_PICK_ORIGIN, curOrigin);
+                            try {
+                                start(page, nlsReverseJson);
+                            } catch (Exception startEx) {
+                                // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
+                                // 等待 DOM/load 就绪后重试一次真正重注入，避免跨域页因首轮竞态失败而仍无蓝框。
+                                log.warn("[picker][nav] 跨域重注入首轮失败，等待页面就绪后重试 @ {} : {}", page.url(), startEx.getMessage());
+                                try { page.waitForLoadState(); } catch (Exception ignore2) {}
+                                try {
+                                    start(page, nlsReverseJson);
+                                } catch (Exception startEx2) {
+                                    log.warn("[picker][nav] 跨域重注入重试仍失败（导航中可忽略）：{}", startEx2.getMessage());
+                                }
+                            }
+                            // 跨域同页跳转：面板脚本(panel-core)经 context 级 addInitScript 已无条件注入，但其显示门禁
+                            // localStorage.__rolePanelEnabled 因 origin 隔离读不到、window.__rolePanelForce 随旧文档销毁丢失
+                            // → 面板不显示（有蓝框能拾取却看不到已拾列表）。此处显式置位兜底开关确保面板显示。
+                            try {
+                                page.evaluate("try{ window.__rolePanelForce = true; }catch(e){} try{ localStorage.setItem('__rolePanelEnabled','1'); }catch(e){}");
+                            } catch (Exception ignorePanel) {}
+                        }
                     }
                 } else {
                     log.info("[picker][nav] 未处于拾取会话（active=false 且浏览器侧未开启），跳过激活 @ {}", page.url());
@@ -3784,6 +4004,25 @@ public final class RoleElementPicker {
      *  仅当首段恰好是一个 IETF 风格的语言码时才剥离，尽量降低误伤真实内容路径的概率。 */
     private static final java.util.regex.Pattern LOCALE_SEGMENT =
             java.util.regex.Pattern.compile("(?i)^/[a-z]{2}([-_][a-z]{2,4})?(?=/|$)");
+
+    /** 安全提取 URL 的 origin（protocol//host[:port]），用于跨域判断。无法解析时返回空串。 */
+    private static String safeOrigin(String url) {
+        if (url == null) return "";
+        try {
+            java.net.URI u = java.net.URI.create(url);
+            String scheme = u.getScheme();
+            if (scheme == null) return "";
+            String host = u.getHost();
+            if (host == null) return "";
+            int port = u.getPort();
+            if (port == -1 || port == u.toURL().getDefaultPort()) {
+                return scheme + "://" + host;
+            }
+            return scheme + "://" + host + ":" + port;
+        } catch (Exception e) {
+            return "";
+        }
+    }
 
     /** 归一化 URL：去 query/hash，剥离首段语言/地区码，并去除末尾斜杠，作为 urlToClass 的稳定键。
      *  去除末尾斜杠可让肉眼"相同"但末尾斜杠有差异的 URL（如 /help 与 /help/）映射到同一页类；
@@ -4000,6 +4239,12 @@ public final class RoleElementPicker {
                 + " window.__steps = s.steps || [];"
                 + " window.__currentStep = s.currentStep || [];"
                 + " window.__rolePickSigs = s.sigs || {};"
+                // 【修复"跨页拾取 index 被重置"】恢复快照后，续接全局拾取序号计数器 __rolePickSeq，
+                // 取已有 pick._pickNos 的最大值（无则 0），使后续跨页新拾取的序号接着递增（如 8→9），
+                // 而非脚本重注入时归零从 1 重数，避免与已恢复的 [1..8] 序号冲突、面板 index 跳回 1。
+                + " (function(){ var mx=0; (window.__rolePicks||[]).forEach(function(p){"
+                + "   (p&&Array.isArray(p._pickNos)?p._pickNos:[]).forEach(function(n){ if(n>mx)mx=n; }); });"
+                + "   window.__rolePickSeq = mx; })();"
                 + " window.__rolePickActive = false;"
                 + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
                 + "})()");

@@ -61,7 +61,7 @@ public class BaiduSteps {
      */
     @Step
     public void switchToNewPage(Runnable trigger) {
-        baiduPage.switchToNewPage(trigger, 15);
+        baiduPage.waitForNewPage(trigger, 15);
         logger.info("Switched to new page: {}", baiduPage.getPage().url());
         baiduPage.waitForTimeout(2000);
     }
@@ -72,7 +72,7 @@ public class BaiduSteps {
      */
     @Step
     public void switchToNewPage() {
-        baiduPage.switchToNewPage(15);
+        baiduPage.waitForNewPage(15);
         logger.info("Switched to new page: {}", baiduPage.getPage().url());
         baiduPage.waitForTimeout(2000);
     }

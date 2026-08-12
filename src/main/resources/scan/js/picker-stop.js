@@ -39,6 +39,12 @@
                 }
               }
               window.__currentStep = null;
+              // 【修复"步骤代码(2)"错位】停止即关闭本轮 step 边界：清空 __steps，使下一轮 ▶ 从干净状态开始，
+              // step 编号重新从 1 起（否则 __steps 续接旧 step，下一轮 push 后 Java 渲染出 step2/显示"第 2 个 step"）。
+              // 注意：跨页切换重启走 picker-core-a.js 的「续接」分支（不调用 stop），__currentStep 被搬运、__steps 保留，不丢步骤。
+              // 同时重置全局动作序号计数器，下一轮拾取的 index 也重新从 1 连续编号。
+              try { window.__steps = []; } catch (e) {}
+              try { window.__rolePickSeq = 0; } catch (e) {}
               // 收起实时悬停高亮框
               try { var __hb = document.getElementById('__roleHoverBox'); if (__hb) __hb.style.display = 'none'; } catch (e) {}
               // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），停止拾取时一并清掉，避免残留。

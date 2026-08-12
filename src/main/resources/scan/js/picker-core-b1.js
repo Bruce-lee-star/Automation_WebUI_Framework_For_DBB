@@ -2362,6 +2362,24 @@
 
                 if (!window.__rolePickActive) return null;
 
+                // 【修复"跨域跳转后新页元素点击一次却产生两个连续 index"（如 [4,5]/[6,7]）】
+                // 根因：跨域导航触发 onFrameNavigated 多次 + start() 重注入，导致 document 上的
+                // click 监听被重复挂载（__rolePickClick 被重新赋值、两次引用不同，单次物理点击
+                // 被多个监听器各派发一次）→ __recordPick 对同一次点击被调用多次，每调用一次
+                // __rolePickSeq+1 并追加一个序号，从而产生 [4,5] 这类连续双号（旧实现仅续接计数器
+                // 保证不归零撞号，未消除重复触发本身）。
+                // 此处对"同一目标元素在极短时间窗口内的重复进入"做防重入去抖：人类两次点击同一
+                // 元素间隔远大于 DEBOUNCE_MS，不误伤；仅拦截同一次物理点击的多监听器重复派发。
+                try {
+                  var __now = Date.now();
+                  if (target && target === window.__lastPickDedupEl
+                      && (__now - (window.__lastPickDedupTs || 0)) < 120) {
+                    return null;
+                  }
+                  window.__lastPickDedupEl = target;
+                  window.__lastPickDedupTs = __now;
+                } catch (e) {}
+
 
                 // 【关键修复"区域选择模式下点击不触发拾取"】
 
@@ -2815,6 +2833,43 @@
 
                 var dup = key && window.__rolePickSigs[key];
 
+                // 【index 需求】每次拾取动作（点击/悬停，含重复点同一元素）都分配一个全局递增序号。
+                // 语义：从开始拾取到停止，index 连续 1,2,3,...；同一元素被点多次时，其 _pickNos 追加当前号
+                // （如 [1,5]），面板前缀据此显示、step 封装按首号（_pickNos[0]）排序 == 用户首次点它的顺序。
+                // 计数器在拾取会话内连续；重新 startPicker 时由 Java 重置（window.__rolePickSeq=0）。
+                // 【修复"跨域新页直接产生两个 index 又变正常"】跨域导航强制 start() 会把 __rolePickSeq 归 0，
+                // 而该导航往往触发多次 onFrameNavigated（main/iframe/about:blank 过渡），与"同步激活+renderPicks"
+                // 存在竞态，导致新页首个元素被 recordPick 多触发一次：若计数器硬归 0，则会从 1 连续 +1 两次 → [1,2]。
+                // 此处改为【续接式】：计数器只增不回退——取 max(当前 seq, 已恢复 picks 的最大 _pickNos) 作为基线，
+                // 再 +1。即使 recordPick 被竞态多调一次，新号也只会 > 已用最大号（全局连续递增语义不变），
+                // 且不会回退到 1 与旧页元素（如 LogonPage 的 1,2,3,4）撞号。单页内稳定后行为完全一致。
+                if (typeof window.__rolePickSeq !== 'number' || window.__rolePickSeq < 0) window.__rolePickSeq = 0;
+                // 续接已恢复 picks 的最大 _pickNos（跨页/快照恢复后，浏览器侧 __rolePickSeq 可能已被 Java 归 0，
+                // 但 picks 携带真实历史号；此处把计数器拉到历史最大号之上，避免新动作号从 1 重排撞号）。
+                try {
+                  var __maxNo = 0;
+                  var __allP = window.__rolePicks || [];
+                  for (var __mi = 0; __mi < __allP.length; __mi++) {
+                    var __pn = __allP[__mi] && __allP[__mi]._pickNos;
+                    if (Array.isArray(__pn)) {
+                      for (var __nj = 0; __nj < __pn.length; __nj++) {
+                        var __v = __pn[__nj];
+                        if (typeof __v === 'number' && __v > __maxNo) __maxNo = __v;
+                      }
+                    }
+                  }
+                  if (__maxNo > window.__rolePickSeq) window.__rolePickSeq = __maxNo;
+                } catch (e) {}
+                window.__rolePickSeq += 1;
+                var __thisIndex = window.__rolePickSeq;
+                function __appendPickNo(p) {
+                  if (!p) return;
+                  if (!Array.isArray(p._pickNos)) p._pickNos = [];
+                  // 去重保序：同一动作号不会重复追加（理论上每次动作号唯一，仍防御性去重）。
+                  if (p._pickNos.indexOf(__thisIndex) === -1) p._pickNos.push(__thisIndex);
+                  // 兼容旧的单值 seq 字段（首号）。
+                  if (typeof p._pickSeq !== 'number' || __thisIndex < p._pickSeq) p._pickSeq = p._pickNos[0];
+                }
 
                 if (!dup) {
 
@@ -2841,6 +2896,8 @@
 
 
                   window.__rolePicks.push(pick);
+                  // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
+                  __appendPickNo(pick);
 
                   // [issue3] auto-focus the page sub-tab that the picked element belongs to
                   // ("locate which page -> focus that page"). Only triggers when pick carries
@@ -2896,6 +2953,8 @@
 
 
                     existing.hover = !!isHover;
+                    // 【index 需求】重复拾取同一元素：把当前动作序号追加到 _pickNos（如 [1,5]）。
+                    __appendPickNo(existing);
 
 
                     if (window.__lastPickEl && isEditable(window.__lastPickEl)) {
@@ -2923,6 +2982,8 @@
 
 
                         window.__rolePicks[i].hover = !!isHover;
+                        // 【index 需求】兜底分支同样追加当前动作序号。
+                        __appendPickNo(window.__rolePicks[i]);
 
 
                         if (window.__lastPickEl && isEditable(window.__lastPickEl)) {

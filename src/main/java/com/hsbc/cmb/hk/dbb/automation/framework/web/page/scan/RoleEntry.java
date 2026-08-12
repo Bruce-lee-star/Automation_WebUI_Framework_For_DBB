@@ -234,6 +234,17 @@ public final class RoleEntry {
     public long getOrder() { return order; }
     public void setOrder(long order) { this.order = order; }
 
+    /**
+     * 全局拾取顺序号数组：手动模式下每次拾取动作分配一个递增序号并追加进本数组（去重保序）。
+     * 同一元素被重复点取时保留多个编号（如 [1,4,7]）——首号为首次拾取位次、其余为后续重拾位次。
+     * 对应浏览器侧 {@code pick._pickNos}。纯透传信息，不参与去重签名、不参与代码生成（仅面板前缀展示用）。
+     * Java 权威内存态需将其持久，否则 syncPanelToBrowser 重建浏览器 pick 时会丢，导致跨页导航 index 重置。
+     */
+    private java.util.List<Integer> pickNos;
+
+    public java.util.List<Integer> getPickNos() { return pickNos; }
+    public void setPickNos(java.util.List<Integer> pickNos) { this.pickNos = pickNos; }
+
     public RoleEntry(String role, String name) {
         this(role, name, null, null);
     }

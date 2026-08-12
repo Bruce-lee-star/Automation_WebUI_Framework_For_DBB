@@ -179,6 +179,18 @@ class PlaywrightSerenityBridge {
         try {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaning up page state (preserving all cookies)...");
 
+            // 【加固】context 可能已因异常/503/浏览器关闭而失效：
+            // 此时 context.pages()/newPage() 会抛 TargetClosedError，而这只是一种"清理期噪音"，
+            // 既不影响测试结果判定，也容易误导成"浏览器崩溃"。故先探测存活，失效则直接跳过清理
+            // （引用留空，后续 getContext()/getPage() 会自动重建），不打印冗长的 TargetClosedError。
+            if (context != null && !isContextAlive(context)) {
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "Cleanup skipped: BrowserContext already closed/expired (page/context will be rebuilt on next use)");
+                PlaywrightManager.pageThreadLocal.remove();
+                PlaywrightManager.contextThreadLocal.remove();
+                return;
+            }
+
             // 关闭多余页面标签
             if (context != null) {
                 try {
@@ -205,18 +217,27 @@ class PlaywrightSerenityBridge {
 
             // 确保 page 引用指向第一个页面
             if (context != null) {
-                List<Page> allPages = context.pages();
-                if (!allPages.isEmpty()) {
-                    Page mainPage = allPages.get(0);
-                    if (page != mainPage && !mainPage.isClosed()) {
-                        LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting page reference to main page");
-                        page = mainPage;
-                        PlaywrightManager.setPage(mainPage);
+                try {
+                    List<Page> allPages = context.pages();
+                    if (!allPages.isEmpty()) {
+                        Page mainPage = allPages.get(0);
+                        if (page != mainPage && !mainPage.isClosed()) {
+                            LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting page reference to main page");
+                            page = mainPage;
+                            PlaywrightManager.setPage(mainPage);
+                        }
+                    } else {
+                        LoggingConfigUtil.logInfoIfVerbose(logger, "No pages left, creating new Page");
+                        page = PlaywrightContextManager.createPage(context);
+                        PlaywrightManager.setPage(page);
                     }
-                } else {
-                    LoggingConfigUtil.logInfoIfVerbose(logger, "No pages left, creating new Page");
-                    page = PlaywrightContextManager.createPage(context);
-                    PlaywrightManager.setPage(page);
+                } catch (Exception e) {
+                    // context 在两次探测之间恰好失效：不打印 TargetClosedError 噪音，静默跳过并留空引用。
+                    LoggingConfigUtil.logWarnIfVerbose(logger,
+                            "Cleanup page reference failed (context likely closed), will rebuild on next use: {}", e.getClass().getSimpleName());
+                    PlaywrightManager.pageThreadLocal.remove();
+                    PlaywrightManager.contextThreadLocal.remove();
+                    return;
                 }
             }
 
@@ -227,7 +248,20 @@ class PlaywrightSerenityBridge {
 
             LoggingConfigUtil.logInfoIfVerbose(logger, "Page state cleaned up (cookies preserved, extra tabs closed)");
         } catch (Exception e) {
-            logger.warn("Failed to cleanup page state: {}", e.getMessage());
+            // 兜底：不打印 TargetClosedError 的冗长 JS 栈，仅输出异常类型，避免误导与噪音。
+            LoggingConfigUtil.logWarnIfVerbose(logger,
+                    "Failed to cleanup page state ({}), will be rebuilt on next use",
+                    e.getClass().getSimpleName());
+        }
+    }
+
+    /** 探测 BrowserContext 是否仍存活：已关闭/浏览器断开时返回 false（不抛异常）。 */
+    private static boolean isContextAlive(BrowserContext context) {
+        if (context == null) return false;
+        try {
+            return context.browser() != null && context.browser().isConnected();
+        } catch (Exception e) {
+            return false;
         }
     }
 

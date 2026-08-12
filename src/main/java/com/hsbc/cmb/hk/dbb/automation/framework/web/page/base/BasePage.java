@@ -12,6 +12,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
@@ -815,6 +816,9 @@ public abstract class BasePage {
         int currentIndex = pages.indexOf(page);
         try {
             if (page != null && !page.isClosed()) {
+                // 标记本页为"框架主动关闭"：onClose 据此不再补登记 closeCurrentPage 步骤
+                // （代码已显式调用 closeCurrentPage，重复登记会导致回放重复关闭）。
+                RoleElementPicker.markFrameworkClose(page);
                 page.close();
             } else {
                 LoggingConfigUtil.logDebugIfVerbose(logger,
@@ -855,6 +859,8 @@ public abstract class BasePage {
             if (p == page) continue;
             try {
                 if (!p.isClosed()) {
+                    // 标记为"框架主动关闭"，onClose 不再补登记 closeCurrentPage 步骤。
+                    RoleElementPicker.markFrameworkClose(p);
                     p.close();
                 }
             } catch (Exception e) {

@@ -318,13 +318,25 @@
                     code = ta ? ta.value : '';
                   } else {
                     // "页面元素"Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，
-                    // 每行与列表展示一致（strategy/role/name/id/css/index/标记），便于外部粘贴核对。
+                    // 每行与列表展示完全一致（[全局拾取顺序号] strategy/role/name/id/css/index/标记），
+                    // 含全局递增的拾取序号 _pickNos（如 [1,4,7]），便于外部粘贴核对步骤顺序。
                     var act = window.__roleActivePageClass;
                     var lines = [];
                     (window.__rolePicks || []).forEach(function(p) {
                       if (!p) return;
                       var pc = p._pageClass || (window.__rolePageName || '未知页');
                       if (pc !== act) return;
+                      // 全局拾取顺序号（与面板列表前缀一致）：优先 _pickNos 数组，其次单值 _pickSeq，再兜底全局位次。
+                      var _seqNo;
+                      if (Array.isArray(p._pickNos) && p._pickNos.length) {
+                        _seqNo = p._pickNos.join(',');
+                      } else if (typeof p._pickSeq === 'number' && p._pickSeq > 0) {
+                        _seqNo = p._pickSeq;
+                      } else {
+                        var _all = window.__rolePicks || [];
+                        for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNo = (_ai + 1); break; } }
+                        if (_seqNo === undefined) _seqNo = '-';
+                      }
                       var s = (p.strategy || 'role');
                       if (p.role) s += ' role=' + p.role;
                       if (p.name) s += ' name="' + p.name + '"';
@@ -336,7 +348,8 @@
                       if (p.download) s += ' [download]';
                       if (p.hover) s += ' [hover]';
                       if (p.dblClick) s += ' [dbl]';
-                      lines.push(pc + ' | ' + s);
+                      if (p.clickCount && p.clickCount > 1) s += ' [点' + p.clickCount + '次]';
+                      lines.push(pc + ' | [' + _seqNo + '] ' + s);
                     });
                     code = lines.join('\\n');
                     if (!code) { status.textContent = '当前无可复制的页面元素'; return; }

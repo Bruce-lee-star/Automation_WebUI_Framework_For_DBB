@@ -220,6 +220,20 @@
                     if (!owner) owner = (_fp._pageClass) || (_cp._pageClass) || (window.__rolePageName || '');
                     picks.push(_fp);
                   }
+                  // 【关键修复"step 按 index 封装"】封装顺序以元素的【全局拾取顺序号】为准。
+                  // 排序键取 _pickNos[0]（该元素"首次被拾取"的全局动作序号）：同一元素被多次拾取归并成一行时，
+                  // 按其首次出现的位次稳定排序，使 step 内元素顺序 == 用户第一次拾取它们的先后顺序，
+                  // 与面板前缀 [1,4,7] 的"首号"语义一致、可见可控。_pickNos 缺失时按 __rolePicks 位次兜底。
+                  picks.sort(function(a, b) {
+                    function _firstNos(x) {
+                      if (x && Array.isArray(x._pickNos) && x._pickNos.length) return x._pickNos[0];
+                      if (x && typeof x._pickSeq === 'number') return x._pickSeq;
+                      var _a = window.__rolePicks || [];
+                      for (var i = 0; i < _a.length; i++) { if (_a[i] === x) return i + 1; }
+                      return 1e9;
+                    }
+                    return _firstNos(a) - _firstNos(b);
+                  });
                   if (!owner) owner = (window.__rolePageName || '');
                   // 【关键修复"步骤序号不连续 / iframe 元素序号错乱"】
                   // 旧逻辑直接把 picks 丢进 step，沿用各 pick 上残留的 seq：
@@ -650,31 +664,20 @@
                       };
                     })(p, cb, row);
                     var txt = document.createElement('span');
-                    // 显示步骤序号（seq）：勾选入选的元素才有连续编号，未入选为『-』，
-                    // 让用户在面板里直接看到"第几步"，取消中间项后编号实时前移。
-                    // 【关键修复"嵌套 iframe 内元素序号显示 -"】
-                    // 嵌套 iframe（grandchild）内的 pick 经 postMessage 逐层上送到顶层时，顶层
-                    // __currentStep 持有的元素对象是顶层 message 监听 push 的拷贝（结构化克隆），
-                    // 而 __rolePicks 里同时可能存在 syncPanelToBrowser 从 javaPickBySig 灌回的另一份
-                    // 拷贝。两份拷贝的 _sigKey 在各自上下文的 __sigKey 算出来一致（含 frameTwo URL），
-                    // 但若任一帧调用 __sigKey 时 _sigKey 已被固化（"已固化则直接返回"分支）而 iframe 内的
-                    // 固化值用的是当时 frame 的 location 兜底，则可能在跨 frame 传递中产生 key 漂移。
-                    // 这里主比较仍用 __mergeKey（_sigKey 优先）；若任一帧都没找到匹配，则退化到仅按
-                    // 元素定位器签名 _sig 比较（不含页面类/URL），因同 DOM 元素的 _sig 跨 frame 一致，
-                    // 必能命中对应入选记录，使嵌套 iframe 元素也能获得正确的步骤序号。
-                    var _selMk = (function(){ try { return (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig); } catch(_){ return null; } })();
-                    var _selSig = p._sig || '';
-                    var _seqNo = '-';
-                    if (_selMk || _selSig) {
-                      var _cset = window.__currentStep || [];
-                      for (var _si = 0; _si < _cset.length; _si++) {
-                        var _cur = _cset[_si];
-                        var _ck = (function(){ try { return (typeof window.__mergeKey==='function') ? window.__mergeKey(_cur) : (_cur && (_cur._sigKey || _cur._sig)); } catch(_){ return ''; } })();
-                        if (_ck && _ck === _selMk) { _seqNo = (_si + 1); break; }
-                        // 退化匹配：嵌套 iframe 元素跨 frame 时 _sigKey 可能因 URL 兜底而不同，
-                        // 但同 DOM 元素的 _sig（定位器签名）跨 frame 恒等，故以此作为兜底必命中。
-                        if (_selSig && _cur && _cur._sig === _selSig) { _seqNo = (_si + 1); break; }
-                      }
+                    // 显示【全局拾取顺序号】_pickNos：按"拾取动作"递增的全局序号数组。
+                    // 语义：每次拾取动作（含重复点同一元素）全局序号 +1；新元素初拾得首号，回头再点同一元素
+                    // 时追加当前号，故同一元素面板前缀呈 [1,4,7]——首号 + 后续各次重拾的号。
+                    // 该数组在 b1 的 recordPick 中维护（_pickNos，去重保序），此处原样呈现。
+                    var _seqNo;
+                    if (Array.isArray(p._pickNos) && p._pickNos.length) {
+                      _seqNo = p._pickNos.join(',');
+                    } else if (typeof p._pickSeq === 'number' && p._pickSeq > 0) {
+                      _seqNo = p._pickSeq;            // 单值兜底
+                    } else {
+                      // 兜底：个别回灌 pick 无序号时，按其在 __rolePicks 中的位次推导首号。
+                      var _all = window.__rolePicks || [];
+                      for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNo = (_ai + 1); break; } }
+                      if (_seqNo === undefined) _seqNo = '-';
                     }
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
@@ -687,7 +690,12 @@
                     if (p.download) s += ' [download]';
                     if (p.hover) s += ' [hover]';
                     if (p.dblClick) s += ' [dbl]';
-                    // 步骤序号前缀必须放在最后赋值，避免被上面的 txt.textContent = s 覆盖（序号丢失的根因）。
+                    // 【面板"被点多次"计数显示】同一元素被点击多次时 clickCount>1，在面板显示"点N次"，
+                    // 让用户在拾取过程中直观看到该元素被点了几次（如 checkbox 反复点、同一按钮多次点击）。
+                    // 注意：拾取阶段的重复点击在 recordPick 内部按 sig 去重复用同一条 pick（clickCount 累加），
+                    // 不新增行，故此处仅以标记呈现次数，不重复罗列元素。
+                    if (p.clickCount && p.clickCount > 1) s += ' [点' + p.clickCount + '次]';
+                    // 序号前缀必须放在最后赋值，避免被上面的 txt.textContent = s 覆盖（序号丢失的根因）。
                     txt.textContent = '[' + _seqNo + '] ' + s;
                     txt.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-all;';
                     row.appendChild(cb); row.appendChild(txt);

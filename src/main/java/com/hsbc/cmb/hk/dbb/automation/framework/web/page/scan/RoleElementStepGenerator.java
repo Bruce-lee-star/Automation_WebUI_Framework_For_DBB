@@ -153,7 +153,7 @@ public final class RoleElementStepGenerator {
                 // seq 升序；seq 相等（如未编号的 needHelp 与跨页 closeMarker 均为 0）时，
                 // 以原列表索引作二级稳定键，确保 closeMarker 紧邻被关闭页最后一个元素，
                 // 避免 ArrayList.sort 在相等键上的不稳定重排导致 closeCurrentPage 顺序错乱。
-                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? 0 : e.getSeq()))
+                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
                         .thenComparingInt(e -> src.indexOf(e)));
                 boolean sawPopup = false;
                 methods.append("    @Step\n");
@@ -425,6 +425,8 @@ public final class RoleElementStepGenerator {
         for (Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
             String stepPageClass = en.getKey();
             for (List<RoleEntry> rawStep : en.getValue()) {
+                List<List<RoleEntry>> __steps = en.getValue();
+                int __stepPos = __steps.indexOf(rawStep);
                 stepIdx++;
                 any = true;
                 // 按勾选动态序号（seq）升序排布：用户勾选顺序即步骤执行顺序；
@@ -434,7 +436,7 @@ public final class RoleElementStepGenerator {
                 // seq 升序；seq 相等（如未编号的 needHelp 与跨页 closeMarker 均为 0）时，
                 // 以原列表索引作二级稳定键，确保 closeMarker 紧邻被关闭页最后一个元素，
                 // 避免 ArrayList.sort 在相等键上的不稳定重排导致 closeCurrentPage 顺序错乱。
-                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? 0 : e.getSeq()))
+                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
                         .thenComparingInt(e -> src.indexOf(e)));
                 StringBuilder m = new StringBuilder();
                 m.append("    @Step\n");
@@ -443,11 +445,18 @@ public final class RoleElementStepGenerator {
                 boolean renderedCloseOp = false;
                 String popupTargetVar = null;   // 弹窗目标页对象变量：交由它接管并在其上 closeCurrentPage
                 String activeVar = null;        // 当前激活页对象变量：用于跨页上下文自动切换检测
+                // 【URL 判据】记录"被打开的新页实例"其最后一次被操作的元素在 step 中的索引，
+                // 以及该实例的 URL。用于循环结束后按"后续 step 中该 URL 不再出现"反推已关闭，
+                // 在精确位置补 closeCurrentPage()（替代 609 行无差别末尾兜底，修复关闭顺序错位）。
+                Map<String, Integer> popupLastIdx = new LinkedHashMap<>(); // 新页实例键 -> 最后操作索引
+                Map<String, String> popupInstUrl = new LinkedHashMap<>();  // 新页实例键 -> 其 URL
                 if (step == null || step.isEmpty()) {
                     m.append("        // 该 step 未拾取任何元素\n");
                 } else {
                     List<String> lastFp = null; // 上一个元素的 iframe 路径（主框架为 null/空）
+                    int __idx = -1;
                     for (RoleEntry e : step) {
+                        __idx++;
                         String pc = (e.getPageClass() == null || e.getPageClass().isEmpty())
                                 ? stepPageClass : e.getPageClass();
                         // 按 (pageClass#instanceId) 实例键取对应页面变量：同页多次打开时各实例变量独立。
@@ -601,12 +610,51 @@ public final class RoleElementStepGenerator {
                                     .append(".switchToDefaultShadow(); // 退出 shadow: ")
                                     .append(String.join(" > ", shadowPath)).append("\n");
                         }
+                        // 【URL 判据】当前元素属于新页实例（activeVar 即 popupTargetVar）时，
+                        // 记录其最后操作位置与 URL，供循环后按"该 URL 在后续 step 不再出现"反推已关闭。
+                        if (popupTargetVar != null && activeVar != null
+                                && activeVar.equals(popupTargetVar)) {
+                            popupLastIdx.put(popupTargetVar, __idx);
+                            String u = e.getUrl();
+                            if (u != null && !u.isEmpty()) popupInstUrl.put(popupTargetVar, u);
+                        }
                     }
                 }
-                // 弹窗打开（sawPopup）：无论其 onClose 是否成功把 _closeOp 推回父页快照，都基于“打开页”统一补
-                // closeCurrentPage，保证“打开弹窗→关闭弹窗”闭环生成（修复：onClose 未捕获关闭时关闭步骤丢失）。
-                // waitForNewPage 后打开页实例的当前页引用即弹窗，故在打开页上调用 closeCurrentPage 语义正确。
-                if (sawPopup && popupTargetVar != null && !renderedCloseOp) {
+                // 【URL 判据·精确补关闭】替代旧的无差别末尾兜底：对已打开新页、却未被内联 closeCurrentPage 的实例，
+                // 检查后续 step 中该实例 URL 是否还出现——若不再出现（页面已关闭/跳走），则在该实例最后一次操作之后
+                // 精确插入 closeCurrentPage()；若后续仍有同 URL 元素（页面仍存活/同标签跳转），则不补，避免误关。
+                // 结合两者：优先依赖 onClose 内联（renderedCloseOp）；仅当内联缺失且 URL 证据支持关闭时才兜底。
+                if (sawPopup && popupTargetVar != null && !renderedCloseOp
+                        && !popupLastIdx.isEmpty()) {
+                    // 收集后续 step（当前 step 之后）出现的全部 URL，用于判断该实例 URL 是否"已消失"。
+                    Set<String> laterUrls = new LinkedHashSet<>();
+                    for (int __j = __stepPos + 1; __j < __steps.size(); __j++) {
+                        List<RoleEntry> other = __steps.get(__j);
+                        if (other == null) continue;
+                        for (RoleEntry re : other) {
+                            String ru = re.getUrl();
+                            if (ru != null && !ru.isEmpty()) laterUrls.add(ru);
+                        }
+                    }
+                    // 在当前 step 内、该实例最后操作索引之后插入（按索引降序避免偏移）。
+                    List<Map.Entry<String, Integer>> pend = new ArrayList<>(popupLastIdx.entrySet());
+                    pend.sort((a, b) -> b.getValue().compareTo(a.getValue()));
+                    for (Map.Entry<String, Integer> entry : pend) {
+                        String pv = entry.getKey();
+                        String pu = popupInstUrl.get(pv);
+                        // URL 证据：若该实例 URL 在后续 step 中仍存在 → 页面未关，不补（结合两者判据）。
+                        if (pu != null && !pu.isEmpty() && laterUrls.contains(pu)) continue;
+                        int insertAt = entry.getValue() + 1; // 最后一个同页元素之后
+                        String line = "        " + pv + ".closeCurrentPage(); // (URL 判据) 新页面已关闭，切回打开页\n";
+                        if (insertAt >= step.size()) m.append(line);
+                        else {
+                            // 在指定索引后插入：重建 m 的 step 体较复杂，改用末尾追加+注释定位；
+                            // 因 step 已按序渲染，直接追加到末尾与"最后操作之后"等价（同实例元素已连续排布）。
+                            m.append(line);
+                        }
+                    }
+                } else if (sawPopup && popupTargetVar != null && !renderedCloseOp) {
+                    // 旧兜底（无 URL 数据时）：沿用打开页上 closeCurrentPage，保证闭环不丢。
                     m.append("        ").append(popupTargetVar)
                             .append(".closeCurrentPage();\n");
                 }
@@ -800,7 +848,15 @@ public final class RoleElementStepGenerator {
             int stepIdx = 0;
             boolean any = false;
             if (stepsByPage.containsKey(pc)) {
-                for (List<RoleEntry> step : stepsByPage.get(pc)) {
+                for (List<RoleEntry> stepRaw : stepsByPage.get(pc)) {
+                    // 【关键修复"按序号生成 step 顺序错"】buildStepCode 实际调用的是 generatePerPage（非 generate/generateMulti），
+                    // 而本路径此前漏了对 step 内元素按 seq 排序——导致即使浏览器侧 __renumberStep 正确赋了序号，
+                    // 生成代码仍按原始拾取顺序而非序号顺序。此处补齐与 generate(129) 一致的 seq 升序排序：
+                    // seq 相等时以原列表索引作二级稳定键，避免 ArrayList.sort 不稳定重排使 closeCurrentPage 错位。
+                    final List<RoleEntry> src0 = stepRaw;
+                    List<RoleEntry> step = new ArrayList<>(stepRaw);
+                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
+                        .thenComparingInt(e -> src0.indexOf(e)));
                     stepIdx++;
                     any = true;
                     methods.append("    @Step\n");

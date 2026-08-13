@@ -191,7 +191,17 @@ public final class RoleElementPicker {
             try {
                 if (args != null && args.length > 0) {
                     Object v = args[0];
-                    c = v == null ? null : v.toString();
+                    if (v == null) {
+                        c = null;
+                    } else if (v instanceof String) {
+                        // 浏览器侧若以 JSON 字符串传入（如 window.__rolePickerCmd(JSON.stringify({...}))），原样使用
+                        c = (String) v;
+                    } else {
+                        // Playwright 会把 JS 对象反序列化为 Java Map/List/Number/Boolean，
+                        // 其 toString() 不是合法 JSON（单等号、无引号），直接 Gson 解析会抛 MalformedJsonException。
+                        // 故统一用 GSON 规范序列化为 JSON 字符串再入队（repickNos 等对象命令依赖此路径）。
+                        c = GSON.toJson(v);
+                    }
                 }
             } catch (Exception ignore) {}
             q.offer(new CmdEvent(source.page(), c));
@@ -240,6 +250,7 @@ public final class RoleElementPicker {
                             || (existing.isDialog() != e.isDialog())
                             || (existing.isPopup() != e.isPopup());
                     RoleEntry merged = mergePickIntoMap(map, key, e);
+                    log.info("[picker][diag-onpick] key={} pickNos={} changed={}", key, merged.getPickNos(), changed);
                     if (changed) {
                         List<String> fpLog = merged.getFramePath();
                         log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={} framePath={}（当前内存态大小={}）", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fpLog == null || fpLog.isEmpty() ? "" : fpLog.toString()), map.size());
@@ -947,6 +958,47 @@ public final class RoleElementPicker {
                                                   LinkedHashMap<Page, String> snapshots,
                                                   String[] nlsFiles, boolean[] active,
                                                   LinkedHashMap<String, RoleEntry> javaPickBySig) {
+        // 【删除单个拾取序号 + 全局重编号】浏览器侧面板点击某序号超链接时，经 __rolePickerCmd 投递
+        // JSON 命令 {type:'repickNos', mergeKey, nos:[...]}：把该元素在 Java 权威内存态中的 pickNos
+        // 更新为浏览器侧重排后的新序号数组（步骤生成依赖 pickNos 按号展开，故 Java 必须同步）。
+        // 纯字符串命令（start/scan/...）走下方 switch；JSON 命令在此先拦截处理。
+        if (cmd != null && cmd.trim().startsWith("{")) {
+            try {
+                Map<String, Object> jc = GSON.fromJson(cmd, Map.class);
+                Object t = jc == null ? null : jc.get("type");
+                String type = t == null ? null : t.toString();
+                if ("repickNos".equals(type)) {
+                    String mk = asString(jc.get("mergeKey"));
+                    Object nosObj = jc.get("nos");
+                    List<Integer> nos = new ArrayList<>();
+                    if (nosObj instanceof List) {
+                        for (Object o : (List<?>) nosObj) {
+                            if (o instanceof Number) nos.add(((Number) o).intValue());
+                        }
+                    }
+                    if (mk != null && !mk.isEmpty()) {
+                        synchronized (javaPickBySig) {
+                            for (RoleEntry e : javaPickBySig.values()) {
+                                if (mk.equals(e.getSigKey())) {
+                                    e.setPickNos(nos);
+                                    log.info("[picker] repickNos 同步内存态：sigKey={} → nos={}", mk, nos);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // 重编号后把最新内存态回灌浏览器面板，保证面板/快照/Java 三侧序号一致。
+                    // 强制刷新 ETag：repickNos 只改序号、元素身份未变，若不清除 LAST_SYNC_SIG，
+                    // syncPanelToBrowser 的签名短路会跳过回灌，导致面板序号不刷新（被旧值覆盖）。
+                    try { LAST_SYNC_SIG.remove(page); } catch (Exception ignore) {}
+                    try { if (!page.isClosed()) syncPanelToBrowser(page, null, javaPickBySig); } catch (Exception ignore) {}
+                    return new PickerResult(PickerAction.CONTINUE, null, null,
+                            "已删除拾取序号并重排（" + (nos == null ? 0 : nos.size()) + " 个序号）");
+                }
+            } catch (Exception ex) {
+                log.warn("[picker] repickNos 命令解析失败：{}", ex.getMessage());
+            }
+        }
         switch (cmd) {
             case "start":
                 // 多实例：会话级"开始"作用于所有已打开页面，使各页面板同步显示 ⏹ 停止
@@ -1459,9 +1511,15 @@ public final class RoleElementPicker {
                 stop(page);
                 return new PickerResult(PickerAction.ABORT, null, null, null);
             case "done":
-            default:
+                // 面板『✕ 关闭 / ⏹ 停止』按钮发出的明确关闭命令：停止拾取并结束 openPanel 阻塞循环
+                // （主循环对 DONE 抛 PickerAbortedException，中止调用方后续自动登录等代码）。
                 stop(page);
                 return new PickerResult(PickerAction.DONE, null, null, null);
+            default:
+                // 【关键修复】未知/未识别命令（含 JSON 命令解析异常后落空、repickNos 等对象命令
+                // 在极少数竞态下未命中 type）绝不能再 stop + 返回 DONE，否则会误关面板
+                // （表现为"点拾取序号/加号面板直接关闭"）。未知命令一律忽略、继续会话。
+                return new PickerResult(PickerAction.CONTINUE, null, null, null);
         }
     }
 
@@ -1949,8 +2007,18 @@ public final class RoleElementPicker {
                 }
             } catch (Exception fe) {
                 // url() 可能触发跨 frame 异常，捕获即可
-                try { log.warn("[picker] 合并 iframe 拾取到主框架失败（url={}）：{}", f.url(), fe.getMessage()); }
-                catch (Exception ignore) {}
+                try {
+                    String feMsg = fe.getMessage() == null ? "" : fe.getMessage();
+                    // 登录页动态 iframe（crossdomain.html / about:blank）在导航/关闭/context 销毁瞬间被
+                    // evaluate 属正常生命周期竞态（TargetClosedError / Frame was detached），并非合并逻辑
+                    // 故障，降级为 debug 避免刷屏；其余真实合并异常仍 WARN 暴露。
+                    if (feMsg.contains("closed") || feMsg.contains("detached")
+                            || feMsg.contains("TargetClosed") || feMsg.contains("Target page")) {
+                        log.debug("[picker] 跳过已关闭/分离的 iframe（url={}）：{}", f.url(), feMsg);
+                    } else {
+                        log.warn("[picker] 合并 iframe 拾取到主框架失败（url={}）：{}", f.url(), feMsg);
+                    }
+                } catch (Exception ignore) {}
             }
         }
     }
@@ -1976,7 +2044,11 @@ public final class RoleElementPicker {
                 if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) {
                     sig.append('\u0001').append(e.getSigKey()).append('|')
                        .append(e.getStrategy()).append('|').append(e.getSelector())
-                       .append('|').append(e.getIndex());
+                       .append('|').append(e.getIndex())
+                       // 序号数组纳入签名：仅改拾取序号（如点 +/删除）时元素身份不变，
+                       // 若不纳入，ETag 短路会让 syncPanelToBrowser 跳过回灌，导致浏览器侧
+                       // _pickNos 被此前某次用旧 pickNos 的回灌覆盖、面板序号不刷新。
+                       .append('|').append(e.getPickNos() == null ? "" : e.getPickNos());
                 }
             }
             String newSig = sig.toString();
@@ -2036,8 +2108,15 @@ public final class RoleElementPicker {
                     // 回灌浏览器时原样写出，避免 syncPanelToBrowser 重建 pick 时丢失 → 跨页导航 index 重置。
                     + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
                     + "     return o; }"
-                    + "   window.__rolePicks = window.__rolePicks || [];"
-                    + "   window.__rolePickSigs = window.__rolePickSigs || {};"
+                    // 关键修复"repickNos/加号/删除后面板序号不刷新"：此前为 push + __rolePickSigs[k] 去重模式，
+                    // 已存在的元素被跳过 push，浏览器侧旧 pick 对象（带着旧 _pickNos）永不更新；repickNos 虽把
+                    // 最新 nos 写回 Java 权威态并强制重算 ETag，但 evaluate 重跑时仍因 __rolePickSigs[k] 命中而
+                    // 跳过 → 面板序号被旧值钉死。改为【先清空再整体重建】：以 Java 权威内存态为准重建
+                    // window.__rolePicks（含最新 _pickNos），保证三侧（面板/Java/快照）序号始终一致。
+                    // 安全：主循环每轮已先 mergeFramePicksToMain 把 iframe 元素并入 javaPickBySig，重建不丢元素；
+                    // 浏览器侧加号/删除均经 repickNos 同步回 Java，重建时与 Java 态对齐、无回退。
+                    + "   window.__rolePicks = [];"
+                    + "   window.__rolePickSigs = {};"
                     + "   arr.forEach(function(p){"
                     + "     var o = toPick(p);"
                     + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
@@ -2047,7 +2126,6 @@ public final class RoleElementPicker {
                     + "     var __del = window.__deletedSigs || {};"
                     // 仅按含 pageClass 的 k（=__sigKey）命中已删屏蔽集，裸 o._sig 跨页同名会误屏蔽另一页面共用元素。
                     + "     if (k && (__del[k] || del2.indexOf(k) >= 0)) return;"
-                    + "     if (k && window.__rolePickSigs[k]) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
                     + "     window.__rolePicks.push(o); });"
                     + "   if (window.__renderPicks) window.__renderPicks();"
@@ -2441,6 +2519,19 @@ public final class RoleElementPicker {
             }
             // 弹窗标记：任一为 true 即视为触发（onPopup 回写）
             if (!incoming.isPopup() && existing.isPopup()) incoming.setPopup(true);
+            // 【修复"同一元素重复点击，序号数组被回传 null/旧值覆盖"】
+            // 现象：第二次点击 dup 回传 pickNos=[1,2] 正确到达后，几乎同时另一条回传（来自 syncPanelToBrowser
+            // 重建 __rolePicks 后自愈重挂/重放，此时 pickNos 为 null 或旧值）又把 [1,2] 整体覆盖成 null，
+            // 导致面板最终只显示 [1]。故对 pickNos 做并集保留：取 incoming 与 existing 二者合并去重后的
+            // 更大集合，任一通道传来的 null/残缺值都不会抹掉已累积的完整序号。
+            java.util.List<Integer> inNos = incoming.getPickNos();
+            java.util.List<Integer> exNos = existing.getPickNos();
+            java.util.Set<Integer> merged = new java.util.LinkedHashSet<>();
+            if (exNos != null) merged.addAll(exNos);
+            if (inNos != null) merged.addAll(inNos);
+            if (!merged.isEmpty()) {
+                incoming.setPickNos(new java.util.ArrayList<>(merged));
+            }
         }
         map.put(key, incoming);
         return incoming;
@@ -2570,6 +2661,7 @@ public final class RoleElementPicker {
             roleEntry.setShadowPath(parseFramePath(m.get("shadowPath")));
             roleEntry.setSeq(parseSeq(m.get("seq")));
             roleEntry.setPageInstanceId(parseInstanceId(m.get("_pageInstanceId")));
+            roleEntry.setUrl(asString(m.get("_url")));
             roleEntry.setPickNos(parsePickNos(m.get("_pickNos")));
             return roleEntry;
         }
@@ -3210,7 +3302,10 @@ public final class RoleElementPicker {
                     throw new PickerAbortedException("用户通过面板『终止运行』中止了后续代码执行");
                 }
                 if (r.action == PickerAction.DONE) {
-                    break;
+                    // 【人工拾取模式】关闭面板后不再返回到调用方后续代码（如自动登录流程），
+                    // 而是抛出中止异常，使 openPanel 调用点之后的逻辑（输入用户名/密码/点登录等）
+                    // 完全不执行——面板打开期间用户专注拾取元素，关闭后即交回人工，不自动登录。
+                    throw new PickerAbortedException("人工拾取完成，面板已关闭；按设计中止后续代码（如自动登录）执行");
                 }
                 if ((r.pageClassByPage != null && !r.pageClassByPage.isEmpty())
                         || (r.stepByPage != null && !r.stepByPage.isEmpty())) {

@@ -89,6 +89,12 @@ public final class RoleEntry {
      */
     private int pageInstanceId = 1;
     /**
+     * 该拾取发生时所在页面的 URL（元素级，由浏览器侧 __recordPick 写入 location.href）。
+     * 用于生成 step 时按"页面 URL 在后续 step 中不再出现"反推该实例页已关闭，从而在精确位置补 closeCurrentPage()，
+     * 而不依赖后续是否回到打开页的元素（修复"关闭新页面顺序错位"残留）。
+     */
+    private String url;
+    /**
      * 标题层级（仅对 heading 角色有意义，取值 1–6），对齐 Playwright {@code getByRole(HEADING).setLevel(n)}。
      * 0 表示不限定层级。拾取器从 {@code <h1>–<h6>} 标签或 {@code aria-level} 推导。
      */
@@ -575,6 +581,16 @@ public final class RoleEntry {
         this.pageInstanceId = pageInstanceId;
     }
 
+    /** 该拾取发生时所在页面的 URL（元素级；浏览器回传解析时写入）。 */
+    public String getUrl() {
+        return url;
+    }
+
+    /** 设置拾取发生时的页面 URL（浏览器侧 __recordPick 写入 location.href 后透传）。 */
+    public void setUrl(String url) {
+        this.url = url;
+    }
+
     /** pageClass + 实例序号组成的稳定实例键（用于代码生成阶段区分同页多实例）。 */
     public String getInstanceKey() {
         return (pageClass == null ? "" : pageClass) + "#" + pageInstanceId;
@@ -678,7 +694,19 @@ public final class RoleEntry {
      */
     private int seq = 0;
 
-    public int getSeq() { return seq; }
+    /**
+     * 步骤内生成顺序号。优先用面板侧 __renumberStep 回填的 seq（代表用户勾选/重排后的序列）；
+     * 若 seq 未赋值（=0，典型场景：主框架直接拾取的元素不经过 postMessage 通道、__renumberStep 未对其赋值），
+     * 则回退到 pickNos 的首号（即用户首次拾取该元素的动作序号），保证"按拾取序号产生 step"始终成立。
+     */
+    public int getSeq() {
+        if (seq > 0) return seq;
+        if (pickNos != null && !pickNos.isEmpty()) {
+            Integer first = pickNos.get(0);
+            if (first != null && first > 0) return first;
+        }
+        return seq;
+    }
     public void setSeq(int seq) { this.seq = seq; }
 
     /** 标题层级（heading 角色专用，1–6；0 表示不限层级）。 */

@@ -2108,10 +2108,17 @@
               }
 
 
-              window.__rolePickSigs = {};
+              // 【修复"重挂清空去重键导致重复点击丢序号"】
+              // 此前每轮 ensurePickingActive 重挂都会执行 window.__rolePickSigs = {} / __sigToPick = {}
+              // 把已建立的去重键与 sig→pick 映射整组清空，随后仅从当时 window.__rolePicks 重建。
+              // 若重建时刻 __rolePicks 尚未被 Java syncPanelToBrowser 补齐（或重建后 pick 缺 _pageClass/_sigKey
+              // 导致 __sigKey 算空），去重键就永久丢失 → 二次点击 dup 判定为 false 走 push，且 push 回传链路
+              // 因键不稳定而无法与 Java 权威态对齐，表现为"同一元素重复点击序号不累加/不回传"。
+              // 改为【保留式】初始化：仅在映射尚不存在时建空对象，已建立的键一律保留，避免重挂破坏去重状态。
+              window.__rolePickSigs = window.__rolePickSigs || {};
 
 
-              window.__sigToPick = {};
+              window.__sigToPick = window.__sigToPick || {};
 
 
               (window.__rolePicks || []).forEach(function(p) {
@@ -2135,7 +2142,9 @@
                 var s = window.__pickSig(p);
 
 
+                // 同时按 sig 与 key（__sigKey）写入映射，使 dup 分支用 key 查找时也能命中（与 __recordPick 口径一致）。
                 if (s) window.__sigToPick[s] = p;
+                if (k) window.__sigToPick[k] = p;
 
 
               });
@@ -2346,6 +2355,21 @@
 
 
               var __hoverTimer = null, __hoverTarget = null;
+
+
+              // 纯数据投影：回传 Java 前把 pick 对象投影成仅含可序列化字段的普通对象。
+              // 浏览器侧 pick 可能在某些路径被挂上 DOM 引用 / 循环引用（如 editable 分支、hover 残留），
+              // 直接 JSON.stringify(pick) 会抛 "Converting circular structure" 被 catch 吞掉 → 回传静默丢失，
+              // 表现为「重复点击序号不累加」。投影后序列化必定成功，杜绝该隐患。
+              function __pickToWire(p) {
+                if (!p) return p;
+                var w = {};
+                var f = ['_sig','_sigKey','_pageClass','_pickNos','_pickSeq','_frameUrl','dialog','popup',
+                         'role','name','key','text','css','id','xpath','tagName','type','value','href','src',
+                         'optionText','optionValue','select','label','cleaned','level','nlsKey'];
+                for (var i = 0; i < f.length; i++) { var k = f[i]; if (p[k] !== undefined) w[k] = p[k]; }
+                return w;
+              }
 
 
               // 共享拾取逻辑：isHover=true 记录为 hover 动作，否则 click 动作；多页面标签与历史 click 行为一致。
@@ -2753,10 +2777,10 @@
                             if (typeof window.__sigKey === 'function') pick._sigKey = window.__sigKey(pick);
 
 
-                            if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(pick));
+                            if (typeof window.__roleOnPick === 'function') window.__roleOnPick(JSON.stringify(__pickToWire(pick)));
 
 
-                            try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch (_) {}
+                            try { console.log('__roleOnPick::' + JSON.stringify(__pickToWire(pick))); } catch (_) {}
 
 
                           } catch (e) {}
@@ -2938,10 +2962,12 @@
                   }
 
 
-                  // sig→pick 直接映射，重复点击时 O(1) 定位原 pick（避免线性扫描 __rolePicks）。
+                  // sig→pick / key→pick 双映射，重复点击时 O(1) 定位原 pick（避免线性扫描 __rolePicks）。
+                  // 同时写入 __sigKey（与 dup 判定口径一致），确保 dup 分支用 key 查找时必能命中。
 
 
                   if (sig) window.__sigToPick[sig] = pick;
+                  if (key) window.__sigToPick[key] = pick;
 
 
                 } else {
@@ -2950,25 +2976,75 @@
                   if (!window.__scanning) {
 
 
-                    try { console.log('[rolePick][dup] key=' + key + ' href=' + (location && location.href)); } catch(_){}
+                    try { console.log('[roleMouseDiag][diag-dup] dup=' + dup + ' key=' + key + ' sig=' + sig + ' hasExisting=' + (!!(existing || (key && window.__sigToPick[key]) || (sig && window.__sigToPick[sig])))); } catch(_){}
 
 
                   }
 
 
-                  // O(1) 去重定位：用 sig→pick 映射直接取到已存在的 pick，不再遍历整个数组。
+                  // O(1) 去重定位：优先用与 dup 判定口径一致的 __sigKey（key）取已存在 pick，
+                  // 回退到 __pickSig（sig）；再不行遍历权威数组 window.__rolePicks（sync 重建后的最新对象）
+                  // 按 sig/key 匹配——三重兜底，确保无论 __sigToPick 映射因任何原因丢失，dup 回传都不丢。
 
 
-                  var existing = sig ? window.__sigToPick[sig] : null;
+                  // 优先从权威数组 window.__rolePicks（Java 每轮 syncPanelToBrowser 重建后的最新对象）按
+                  // _sigKey/_sig 匹配；再回退 __sigToPick 映射。原因：syncPanelToBrowser 重建 __rolePicks 时
+                  // 不会刷新 __sigToPick，导致 __sigToPick 指向已被抛弃的旧 pick 对象引用；若旧引用因任何原因
+                  // 失效（undef），优先扫权威数组可拿到 Java 重建的最新 pick，保证 dup 回传命中且不丢序号。
+                  var existing = null;
+                  if (window.__rolePicks) {
+                    for (var __di = 0; __di < window.__rolePicks.length; __di++) {
+                      var __dp = window.__rolePicks[__di];
+                      if (__dp && ((key && __dp._sigKey === key) || (sig && window.__pickSig(__dp) === sig))) {
+                        existing = __dp; break;
+                      }
+                    }
+                  }
+                  if (!existing) {
+                    existing = (key && window.__sigToPick[key]) ? window.__sigToPick[key]
+                              : (sig ? window.__sigToPick[sig] : null);
+                  }
+                  // 【诊断】dup 分支执行完查找后，若 existing 仍为空，说明 __sigToPick 与 __rolePicks 都查不到该 key/sig：
+                  // 通常是 syncPanelToBrowser 重建 __rolePicks 后未同步刷新 __sigToPick 映射，或 key/sig 口径漂移。
+                  if (!existing) {
+                    try {
+                      console.log('[roleMouseDiag][dup-miss] key=' + key + ' sig=' + sig
+                        + ' sigToPickHasKey=' + !!(key && window.__sigToPick[key])
+                        + ' sigToPickHasSig=' + !!(sig && window.__sigToPick[sig])
+                        + ' rolePicksLen=' + (window.__rolePicks ? window.__rolePicks.length : -1));
+                    } catch(_){}
+                  }
 
 
                   if (existing) {
-
-
                     existing.hover = !!isHover;
                     // 【index 需求】重复拾取同一元素：把当前动作序号追加到 _pickNos（如 [1,5]）。
                     // 扫描态守卫：候选不分配序号。
                     if (!window.__scanning) __appendPickNo(existing);
+                    // 【诊断】dup 命中分支：打印 existing 是否拿到、回传前 _pickNos、__roleOnPick 类型、序列化是否成功。
+                    try {
+                      var __wire = __pickToWire(existing);
+                      var __ser = '';
+                      try { __ser = JSON.stringify(__wire); } catch (se) { __ser = 'SER_FAIL:' + se.message; }
+                      console.log('[roleMouseDiag][dup-send] hasExisting=true key=' + key
+                        + ' pickNos=' + JSON.stringify(existing._pickNos)
+                        + ' bindingType=' + typeof window.__roleOnPick
+                        + ' serLen=' + __ser.length);
+                    } catch (de) { try { console.log('[roleMouseDiag][dup-send] ERR ' + de.message); } catch(_){} }
+                    // 【修复"同一元素多次点击，序号不显示在面板"】去重后外层 panel-core-a.js 不再回传
+                    // __roleOnPick（__rolePickSigs[key] 已置位），导致 Java 权威内存态只持有首次的 _pickNos，
+                    // 而浏览器侧 existing 已累积本次点击的全局动作号。主循环每轮 syncPanelToBrowser 用 Java 态
+                    // 重建 window.__rolePicks 时，会把浏览器侧累积的 _pickNos 覆盖成 Java 的残缺值 → 面板只显示 [1]。
+                    // 故对真实点击（非 hover/非扫描）主动回传最新 existing（含完整 _pickNos）给 Java，
+                    // 让权威态与浏览器侧一致，重建后面板正确显示 [1,5,9…] 等完整序号。
+                    if (!isHover && !window.__scanning) {
+                      if (typeof window.__roleOnPick === 'function') {
+                        try { window.__roleOnPick(JSON.stringify(__wire)); } catch (e) {}
+                      }
+                      // 【兜底桥】binding 偶发失效（context 重挂/导航竞态）时经 console 通道回传，
+                      // 与首次 push 分支对称，避免重复点击序号静默丢失。投影后序列化必成功。
+                      try { console.log('__roleOnPick::' + JSON.stringify(__wire)); } catch (_) {}
+                    }
 
 
                     if (window.__lastPickEl && isEditable(window.__lastPickEl)) {
@@ -2998,6 +3074,15 @@
                         window.__rolePicks[i].hover = !!isHover;
                         // 【index 需求】兜底分支同样追加当前动作序号（扫描态守卫）。
                         if (!window.__scanning) __appendPickNo(window.__rolePicks[i]);
+                        // 与上面 existing 分支一致：去重后主动回传最新 _pickNos 给 Java，避免面板重建时序号被覆盖残缺。
+                        if (!isHover && !window.__scanning) {
+                          var __wire2 = __pickToWire(window.__rolePicks[i]);
+                          if (typeof window.__roleOnPick === 'function') {
+                            try { window.__roleOnPick(JSON.stringify(__wire2)); } catch (e) {}
+                          }
+                          // 【兜底桥】同 existing 分支，经 console 通道防 binding 失效丢序号。
+                          try { console.log('__roleOnPick::' + JSON.stringify(__wire2)); } catch (_) {}
+                        }
 
 
                         if (window.__lastPickEl && isEditable(window.__lastPickEl)) {

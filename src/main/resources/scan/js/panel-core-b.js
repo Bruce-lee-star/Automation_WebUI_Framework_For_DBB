@@ -297,6 +297,130 @@
                   } catch (e2) {}
                 } catch (e) {}
               }
+              // 【删除单个拾取序号 + 全局重编号】用户点击面板里某序号超链接时调用：
+              // 从「全局序号空间」删除该号，并把所有比它大的号紧凑前移（-1），其余元素序号同步重排；
+              // 同步刷新浏览器侧 __rolePicks / __currentStep 的 _pickNos，并通知 Java 权威内存态按 mergeKey
+              // 更新对应 RoleEntry.pickNos（步骤生成依赖它按号展开），最后重渲染面板。
+              // 因 _pickNos 是跨所有元素共享的全局递增序号，删除 no 即等价于"该号之后的所有动作前移一位"。
+              // 【修复"同一元素点 + 序号没加 / 删除不刷新"】由于 syncPanelToBrowser 每轮会"先清空再重建"
+              // window.__rolePicks，渲染闭包里捕获的 pick 引用会成为弃用的孤儿对象。直接改它：
+              // ① 面板重渲染遍历的是当前新数组，孤儿对象的修改不可见；② repickNos 虽能把新号同步回 Java，
+              // 但本地视图要等到下一轮 Java 重建才刷新，中间出现"点了没加"的观感。
+              // 故改为：按 mergeKey 从【当前】window.__rolePicks 实时查找真实对象再改，再 __renderPicksNow，
+              // 点击即刻可见；同时仍发 repickNos 让 Java 权威态保持一致。
+              function __findPickByMergeKey(mk) {
+                if (!mk) return null;
+                var all = window.__rolePicks || [];
+                for (var i = 0; i < all.length; i++) {
+                  var p = all[i];
+                  if (p && typeof window.__mergeKey === 'function' && window.__mergeKey(p) === mk) return p;
+                }
+                return null;
+              }
+              window.__deletePickNo = function(pick, no) {
+                try {
+                  if (no == null || typeof no !== 'number') return;
+                  var mk0 = (typeof window.__mergeKey === 'function') ? window.__mergeKey(pick) : null;
+                  var target = __findPickByMergeKey(mk0) || pick;   // 优先用当前面板真实对象
+                  if (!target || !Array.isArray(target._pickNos)) {
+                    if (target) target._pickNos = []; else return;
+                  }
+                  var p = target;
+                  // 1) 移除被删的号；2) 所有更大的号紧凑前移（-1），实现全局重编号。
+                  var next = [];
+                  for (var j = 0; j < p._pickNos.length; j++) {
+                    var v = p._pickNos[j];
+                    if (v === no) continue;                 // 删除该序号
+                    if (v > no) v = v - 1;                  // 后续号重排
+                    next.push(v);
+                  }
+                  p._pickNos = next;
+                  // 【修复"序号减到 0 仍显示 1"】删除最后一个序号后 next 为空数组，但若 _pickSeq 仍 > 0
+                  // （下方只减 1 却未清零），渲染逻辑会兜底走 _pickSeq 分支、仍显示 [1]。故当该元素序号
+                  // 已全部删空时，把 _pickSeq 一并清零，使其落入 [1] 之外的 [-] 占位分支，正确反映"已无序号"。
+                  if (next.length === 0) {
+                    p._pickSeq = 0;
+                  } else if (typeof p._pickSeq === 'number' && p._pickSeq > no) {
+                    p._pickSeq = p._pickSeq - 1;
+                  }
+                  // 同步回 Java 权威内存态（按 mergeKey 精确命中 RoleEntry）。
+                  if (mk0) {
+                    try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: mk0, nos: next.slice() }); } catch (e) {}
+                  }
+                  // 同步 __currentStep 中引用这些 pick 的序号（若有缓存的快照）。
+                  if (window.__currentStep && Array.isArray(window.__currentStep.raws)) {
+                    for (var k = 0; k < window.__currentStep.raws.length; k++) {
+                      var rp = window.__currentStep.raws[k];
+                      if (rp && (rp === p || (mk0 && typeof window.__mergeKey === 'function' && window.__mergeKey(rp) === mk0))) {
+                        rp._pickNos = next.slice();
+                      }
+                    }
+                  }
+                  // 【修复"删除后加号从旧序号增加"】__rolePickSeq 是全局只增不减的计数器，删除 no 后若不同步回退，
+                  // __addPickNo 计算新号时仍取它作为基线 → 新号从"删除前的最大号+1"起跳（如 [1,2,3] 删 3 再 + 得 4 而非 3）。
+                  // 故删除后把 __rolePickSeq 回退到"当前所有 pick 的 _pickNos 最大值"，使后续 + 加号与页面点击都从
+                  // 剩余最大号 +1 紧凑续接，不出现跳号。
+                  var __maxNow = 0;
+                  var __allP = window.__rolePicks || [];
+                  for (var __mi2 = 0; __mi2 < __allP.length; __mi2++) {
+                    var __pn2 = __allP[__mi2] && __allP[__mi2]._pickNos;
+                    if (Array.isArray(__pn2)) {
+                      for (var __nj2 = 0; __nj2 < __pn2.length; __nj2++) {
+                        var __v2 = __pn2[__nj2];
+                        if (typeof __v2 === 'number' && __v2 > __maxNow) __maxNow = __v2;
+                      }
+                    }
+                  }
+                  window.__rolePickSeq = __maxNow;
+                  window.__renderPicksNow();   // 重渲染面板（序号超链接重新生成）
+                } catch (e) {
+                  try { window.__rolePickerCmd({ type: 'diag', msg: 'deletePickNo failed: ' + (e && e.message) }); } catch (e2) {}
+                }
+              };
+              // 【新增序号 +】点击面板里某元素序号后的加号，给该元素【追加一次拾取动作】：
+              // 取全局最大序号 +1 作为新号，追加进该元素 _pickNos 末尾，并同步 Java 权威内存态，最后重渲染面板。
+              // 效果等价于"在页面上再点一次该元素"——序号列表增长（如 [1,4,7] → [1,4,7,8]），步骤生成同步增加一步。
+              window.__addPickNo = function(pick) {
+                try {
+                  // 优先用当前面板里 mergeKey 命中的真实对象（避免闭包孤儿引用在重建后失效 → 点 + 序号没加）。
+                  var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(pick) : null;
+                  var target = __findPickByMergeKey(mk) || pick;
+                  if (!target) return;
+                  if (!Array.isArray(target._pickNos)) target._pickNos = [];
+                  // 计算全局新号：所有 pick 的 _pickNos 最大值与 __rolePickSeq 的较大值 +1。
+                  var maxNo = 0;
+                  var all = window.__rolePicks || [];
+                  for (var i = 0; i < all.length; i++) {
+                    var pn = all[i] && all[i]._pickNos;
+                    if (Array.isArray(pn)) {
+                      for (var j = 0; j < pn.length; j++) {
+                        if (typeof pn[j] === 'number' && pn[j] > maxNo) maxNo = pn[j];
+                      }
+                    }
+                  }
+                  if (typeof window.__rolePickSeq === 'number' && window.__rolePickSeq > maxNo) maxNo = window.__rolePickSeq;
+                  var newNo = maxNo + 1;
+                  target._pickNos.push(newNo);          // 追加新序号
+                  if (typeof target._pickSeq !== 'number' || target._pickSeq < newNo) target._pickSeq = newNo;
+                  window.__rolePickSeq = newNo;        // 同步全局计数器，保证后续新增/拾取不撞号
+                  // 同步回 Java 权威内存态（按 mergeKey 精确命中 RoleEntry）。
+                  if (mk) {
+                    try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: mk, nos: target._pickNos.slice() }); } catch (e) {}
+                  }
+                  // 同步 __currentStep 中该 pick 的快照（若有）。
+                  if (window.__currentStep && Array.isArray(window.__currentStep.raws)) {
+                    for (var k = 0; k < window.__currentStep.raws.length; k++) {
+                      var rp = window.__currentStep.raws[k];
+                      if (rp && (rp === target || (mk && typeof window.__mergeKey === 'function' && window.__mergeKey(rp) === mk))) {
+                        rp._pickNos = target._pickNos.slice();
+                      }
+                    }
+                  }
+                  window.__renderPicksNow();   // 重渲染面板（序号超链接 + 加号重新生成），立即显示新号
+                } catch (e) {
+                  try { window.__rolePickerCmd({ type: 'diag', msg: 'addPickNo failed: ' + (e && e.message) }); } catch (e2) {}
+                }
+              };
               function __renderPicksNow() {
                 try {
                   var subBar = document.getElementById('__roleSubTabBar');
@@ -666,27 +790,68 @@
                       };
                     })(p, cb, row);
                     var txt = document.createElement('span');
-                    // 显示【全局拾取顺序号】_pickNos：按"拾取动作"递增的全局序号数组。
-                    // 语义：每次拾取动作（含重复点同一元素）全局序号 +1；新元素初拾得首号，回头再点同一元素
-                    // 时追加当前号，故同一元素面板前缀呈 [1,4,7]——首号 + 后续各次重拾的号。
-                    // 该数组在 b1 的 recordPick 中维护（_pickNos，去重保序），此处原样呈现。
-                    var _seqNo;
+                    // 序号前缀：把【全局拾取顺序号】_pickNos 渲染为一组独立可点击超链接。
+                    // 语义：每次拾取动作（含重复点同一元素）全局序号 +1；同一元素多次点击会累加多个号，
+                    // 如 [1,4,7]。每个号渲染为 <a>，鼠标 hover 显示删除线，点击即【删除该序号】并全局重编号。
+                    // 需求：同一元素多次点击 → 序号列表 [1,2,3]，每个号可删；删后其余号紧凑重排，step 同步重排。
+                    var _seqNos = [];
                     if (Array.isArray(p._pickNos) && p._pickNos.length) {
-                      _seqNo = p._pickNos.join(',');
+                      _seqNos = p._pickNos.slice();
                     } else if (typeof p._pickSeq === 'number' && p._pickSeq > 0) {
-                      _seqNo = p._pickSeq;            // 单值兜底
-                    } else {
+                      _seqNos = [p._pickSeq];            // 单值兜底
+                    } else if (!p._seqStale) {
                       // 兜底：个别回灌 pick 无序号时，按其在 __rolePicks 中的位次推导首号。
-                      // 【新一轮/停止后重置为 [-]】逐元素标志 p._seqStale 为真时（该元素在本轮尚未被拾取），
-                      // 跳过位次推导，直接显示 [-]，使"已拾取但本轮未重新点"的元素显示为 [-]、序号归零；
-                      // 而本轮新拾取或重新点过的元素 _seqStale 为假，则显示其 _pickNos / 位次序号。
-                      if (p._seqStale) {
-                        _seqNo = '-';
-                      } else {
-                        var _all = window.__rolePicks || [];
-                        for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNo = (_ai + 1); break; } }
-                        if (_seqNo === undefined) _seqNo = '-';
-                      }
+                      var _all = window.__rolePicks || [];
+                      for (var _ai = 0; _ai < _all.length; _ai++) { if (_all[_ai] === p) { _seqNos = [_ai + 1]; break; } }
+                    }
+                    // 构建序号前缀：整体包在一个方括号内、序号用逗号分隔、末尾「+」加号也在括号内，
+                    // 形如 [1,2,7,+]。每个序号与加号均为独立超链接（hover 删除线、点击删除/新增）。
+                    var _prefixWrap = document.createElement('span');
+                    _prefixWrap.style.cssText = 'margin-right:2px;white-space:nowrap;font-family:monospace;';
+                    if (_seqNos.length) {
+                      _prefixWrap.appendChild(document.createTextNode('['));
+                      _seqNos.forEach(function(_n, _idx) {
+                        var _a = document.createElement('a');
+                        _a.textContent = '' + _n;          // 仅数字，逗号由下方文本节点提供
+                        _a.href = 'javascript:void(0)';
+                        _a.title = '点击删除该拾取序号（' + _n + '），其余序号自动重排';
+                        _a.style.cssText = 'color:#1565c0;text-decoration:none;cursor:pointer;';
+                        // 【删除线显式红色】hover 时文本+删除线统一设为红色警示，避免继承浏览器默认 link 色
+                        // （曾因未显式控制而呈现不一致/意外的红色）。红色 line-through 明确暗示"点击将删除该序号"。
+                        _a.addEventListener('mouseenter', function() { _a.style.color = '#ff4d4f'; _a.style.textDecoration = 'line-through'; });
+                        _a.addEventListener('mouseleave', function() { _a.style.color = '#1565c0'; _a.style.textDecoration = 'none'; });
+                        _a.addEventListener('click', function(ev) {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          window.__deletePickNo(p, _n);
+                          return false;
+                        });
+                        _prefixWrap.appendChild(_a);
+                        if (_idx < _seqNos.length - 1) _prefixWrap.appendChild(document.createTextNode(','));
+                      });
+                      // 末尾「+」加号：点击给该元素追加一个拾取序号（等价于在页面再点一次该元素）。
+                      var _plus = document.createElement('a');
+                      _plus.textContent = '+';
+                      _plus.href = 'javascript:void(0)';
+                      _plus.title = '点击给该元素新增一个拾取序号（追加到末尾，生成步骤 +1）';
+                      _plus.style.cssText = 'color:#2e7d32;font-weight:bold;text-decoration:none;cursor:pointer;';
+                      // 【加号不要删除线】加号是"新增序号"语义，与序号（删除语义）不同，hover 仅高亮加粗、不显示删除线。
+                      _plus.addEventListener('mouseenter', function() { _plus.style.color = '#1b5e20'; _plus.style.fontWeight = 'bold'; });
+                      _plus.addEventListener('mouseleave', function() { _plus.style.color = '#2e7d32'; _plus.style.fontWeight = 'bold'; });
+                      _plus.addEventListener('click', function(ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        window.__addPickNo(p);
+                        return false;
+                      });
+                      _prefixWrap.appendChild(document.createTextNode(','));
+                      _prefixWrap.appendChild(_plus);
+                      _prefixWrap.appendChild(document.createTextNode(']'));
+                    } else {
+                      var _dash = document.createElement('span');
+                      _dash.textContent = '[-]';
+                      _dash.style.cssText = 'margin:0 1px;color:#999;';
+                      _prefixWrap.appendChild(_dash);
                     }
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
@@ -704,10 +869,9 @@
                     // 注意：拾取阶段的重复点击在 recordPick 内部按 sig 去重复用同一条 pick（clickCount 累加），
                     // 不新增行，故此处仅以标记呈现次数，不重复罗列元素。
                     if (p.clickCount && p.clickCount > 1) s += ' [点' + p.clickCount + '次]';
-                    // 序号前缀必须放在最后赋值，避免被上面的 txt.textContent = s 覆盖（序号丢失的根因）。
-                    txt.textContent = '[' + _seqNo + '] ' + s;
+                    txt.textContent = s;
                     txt.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-all;';
-                    row.appendChild(cb); row.appendChild(txt);
+                    row.appendChild(cb); row.appendChild(_prefixWrap); row.appendChild(txt);
                     // 记录复选框与签名引用，供 __applySelection 增量刷新（不重建列表）。
                     row.__cb = cb; row.__sig = sk;
                     listEl.appendChild(row);

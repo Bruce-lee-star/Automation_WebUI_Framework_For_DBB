@@ -37,6 +37,9 @@
               // 同时重置全局动作序号计数器，下一轮拾取的 index 也重新从 1 连续编号。
               try { window.__steps = []; } catch (e) {}
               try { window.__rolePickSeq = 0; } catch (e) {}
+              // 【修复"新一轮首号不归 1"】停止收尾时一并清空"只增不回退"的最大动作号计数器，
+              // 使下一轮 ▶ 拾取的 index 重新从 1 连续（与下方"下一轮 index 重新从 1 连续编号"语义一致）。
+              try { window.__roleMaxNo = 0; } catch (e) {}
               // 停止收尾后重置「页面元素 List」每行序号前缀为 [-]：
               // 给每个已拾元素置逐元素标志 _seqStale=true（panel-core-b.js 兜底据其跳过位次推导直接显示 [-]），
               // 并清空其 _pickNos/_pickSeq，使 stopped 后所有元素显示 [-]、序号归零。单纯清 _pickNos 无效——

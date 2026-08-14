@@ -273,6 +273,10 @@
                   // 并清空其 _pickNos / 重置序号计数器，使本轮编号从 1 重新连续；本次新拾取或重拾的元素
                   // 会在 recordPick 中清除 _seqStale 并按本轮序号显示 [1]/[2]…。
                   try { window.__rolePickSeq = 0; } catch (e) {}
+                  // 【修复"新一轮首号不归 1"】__roleMaxNo 是 recordPick 内"只增不回退"的最大动作号计数器，
+                  // 若不在新一轮开始处归零，下一轮首元素会续接上一轮末号（与下方"从 1 重新连续"语义矛盾）。
+                  // 仅用户手动开启新一轮（willStart）时清零；跨域导航的 Java 注入 start 不走此分支，保留续接。
+                  try { window.__roleMaxNo = 0; } catch (e) {}
                   try {
                     var _ps = window.__rolePicks || [];
                     for (var _pi = 0; _pi < _ps.length; _pi++) {

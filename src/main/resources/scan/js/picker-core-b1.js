@@ -2368,6 +2368,7 @@
                          'role','name','key','text','css','id','xpath','tagName','type','value','href','src',
                          'optionText','optionValue','select','label','cleaned','level','nlsKey'];
                 for (var i = 0; i < f.length; i++) { var k = f[i]; if (p[k] !== undefined) w[k] = p[k]; }
+                try { console.log('[roleMouseDiag][toWire] sigKey=' + (p._sigKey||'') + ' strategy=' + (p.strategy||'') + ' pickNos=' + JSON.stringify((typeof w._pickNos!=='undefined'?w._pickNos:'UNDEFINED'))); } catch(_){}
                 return w;
               }
 
@@ -2868,10 +2869,17 @@
                 // 再 +1。即使 recordPick 被竞态多调一次，新号也只会 > 已用最大号（全局连续递增语义不变），
                 // 且不会回退到 1 与旧页元素（如 LogonPage 的 1,2,3,4）撞号。单页内稳定后行为完全一致。
                 if (typeof window.__rolePickSeq !== 'number' || window.__rolePickSeq < 0) window.__rolePickSeq = 0;
-                // 续接已恢复 picks 的最大 _pickNos（跨页/快照恢复后，浏览器侧 __rolePickSeq 可能已被 Java 归 0，
-                // 但 picks 携带真实历史号；此处把计数器拉到历史最大号之上，避免新动作号从 1 重排撞号）。
+                // 【修复"后拾取元素首号偏小（如第二个元素拿到 2 而非 4）"】
+                // 旧实现每次点击都遍历 window.__rolePicks 求最大 _pickNos 来续接计数器；但 __rolePicks
+                // 是【被 Java syncPanelToBrowser 周期性整体重建】的——重建时以 Java 权威态为准，而 Java 态
+                // 在并发回传竞态下可能只持有短值（如 user_name 仅 [2]），于是重建后 __rolePicks 里同元素的
+                // _pickNos 退化成短值，下一轮 max 计算被拉低 → 新元素首号从偏小值续接（label 拿到 2 而非 4）。
+                // 修复：引入一个【独立、只增不回退】的 window.__roleMaxNo 记录"已分配出去的最大动作号"，
+                // 计数器续接只依赖它（而非会被重建污染的 __rolePicks）。__rolePicks 的 max 仅作为额外兜底
+                // （当它 > __roleMaxNo 时才采用，兼容跨页恢复 picks 但 __roleMaxNo 未恢复的场景）。
+                if (typeof window.__roleMaxNo !== 'number' || window.__roleMaxNo < 0) window.__roleMaxNo = 0;
+                var __maxNo = window.__roleMaxNo; // 基线：已分配最大号（只增不回退）
                 try {
-                  var __maxNo = 0;
                   var __allP = window.__rolePicks || [];
                   for (var __mi = 0; __mi < __allP.length; __mi++) {
                     var __pn = __allP[__mi] && __allP[__mi]._pickNos;
@@ -2882,8 +2890,11 @@
                       }
                     }
                   }
-                  if (__maxNo > window.__rolePickSeq) window.__rolePickSeq = __maxNo;
                 } catch (e) {}
+                // 续接：取【已分配最大号基线】与【__rolePicks 当前最大号（兜底）】的较大者，只增不回退。
+                if (__maxNo > window.__rolePickSeq) window.__rolePickSeq = __maxNo;
+                // 【诊断】记录本次点击前计数器与续接基线，定位"新元素首号偏小"是否因 max 被拉低。
+                try { console.log('[roleMouseDiag][seq-base] seq=' + window.__rolePickSeq + ' maxNo=' + __maxNo + ' roleMaxNo=' + window.__roleMaxNo); } catch(_){}
                 // 【修复"整页/区域扫描的候选带累加编号、扫一次增加一次"】
                 // 扫描态（window.__scanning）下收集的是「候选清单」，不是「按点击顺序的步骤动作」，
                 // 不应占用手动拾取的全局序号序列（window.__rolePickSeq），否则候选带 [n] 且每次重扫
@@ -2893,16 +2904,36 @@
                 if (!window.__scanning) {
                   window.__rolePickSeq += 1;
                   var __thisIndex = window.__rolePickSeq;
+                  // 每次真正分配出新号，更新"只增不回退"的最大号基线（供后续续接，不被 __rolePicks 重建干扰）。
+                  if (window.__rolePickSeq > window.__roleMaxNo) window.__roleMaxNo = window.__rolePickSeq;
                 } else {
                   var __thisIndex = 0; // 扫描态不分配动作序号（仅占位，__appendPickNo 调用处已守卫）
                 }
+                // 【修复"后拾取元素首号偏小（如第二个元素拿到 2 而非 4）/ step 排序错乱"】
+                // 旧实现 p._pickSeq = p._pickNos[0]：_pickSeq 取的是"拾取号数组首元素"。但 _pickNos 是
+                // 被 Java 每轮 syncPanelToBrowser 整体重建的——并发回传竞态下 Java 权威态可能只持有短值
+                // （如 user_name 仅 [2]），重建后浏览器侧 _pickNos 退化成短值，于是 _pickSeq 跟着变成 2，
+                // 再也回不到真实的首次动作号 4。Java 端按 _pickSeq 排序，遂表现为"后点元素排到前面/序号错乱"。
+                // 修复：引入【独立、只增不回退】的 window.__pickOrder（sigKey→首次全局动作号），
+                // _pickSeq 直接取该 order，不再依赖会被重建污染的 _pickNos[0]。order 一旦记下永不改变，
+                // 即使 _pickNos 被 Java 重建拉短，step 排序基准仍稳定 = 用户首次点它的真实顺序。
+                if (typeof window.__pickOrder !== 'object' || window.__pickOrder === null) window.__pickOrder = {};
                 function __appendPickNo(p) {
                   if (!p) return;
                   if (!Array.isArray(p._pickNos)) p._pickNos = [];
                   // 去重保序：同一动作号不会重复追加（理论上每次动作号唯一，仍防御性去重）。
                   if (p._pickNos.indexOf(__thisIndex) === -1) p._pickNos.push(__thisIndex);
-                  // 兼容旧的单值 seq 字段（首号）。
-                  if (typeof p._pickSeq !== 'number' || __thisIndex < p._pickSeq) p._pickSeq = p._pickNos[0];
+                  // 首次动作号：用稳定 order 映射（按 sigKey 固化），只记不回退；dup 重拾不覆盖首号。
+                  var __ordKey = (p._sigKey || window.__pickSig(p) || '');
+                  if (__ordKey && typeof window.__pickOrder[__ordKey] !== 'number') {
+                    window.__pickOrder[__ordKey] = __thisIndex;
+                  }
+                  // 兼容旧的单值 seq 字段（首次动作号，取 order 而非 _pickNos[0]）。
+                  if (__ordKey && typeof window.__pickOrder[__ordKey] === 'number') {
+                    p._pickSeq = window.__pickOrder[__ordKey];
+                  } else if (typeof p._pickSeq !== 'number' || __thisIndex < p._pickSeq) {
+                    p._pickSeq = __thisIndex;
+                  }
                   // 本轮已为该元素分配序号（新拾取或重拾已存在元素）：清除 _seqStale，使其从 [-] 变为显示本轮编号。
                   try { p._seqStale = false; } catch (e) {}
                 }
@@ -2935,6 +2966,12 @@
                   // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
                   // 扫描态守卫：候选不分配序号（保持 [-]）。
                   if (!window.__scanning) __appendPickNo(pick);
+
+                  // 【diag-first】首次 push 分支：序列化确认首次拾取的 _pickNos 是否随对象带出，并打印 strategy。
+                  try {
+                    var __wire0 = __pickToWire(pick);
+                    console.log('[roleMouseDiag][first-send] key=' + (pick._sigKey||'') + ' strategy=' + (pick.strategy||'') + ' pickNos=' + JSON.stringify((typeof __wire0._pickNos!=='undefined'?__wire0._pickNos:'UNDEFINED')));
+                  } catch(_){}
 
                   // [issue3] auto-focus the page sub-tab that the picked element belongs to
                   // ("locate which page -> focus that page"). Only triggers when pick carries
@@ -3027,6 +3064,7 @@
                       var __ser = '';
                       try { __ser = JSON.stringify(__wire); } catch (se) { __ser = 'SER_FAIL:' + se.message; }
                       console.log('[roleMouseDiag][dup-send] hasExisting=true key=' + key
+                        + ' strategy=' + (existing.strategy||'')
                         + ' pickNos=' + JSON.stringify(existing._pickNos)
                         + ' bindingType=' + typeof window.__roleOnPick
                         + ' serLen=' + __ser.length);
@@ -3038,12 +3076,22 @@
                     // 故对真实点击（非 hover/非扫描）主动回传最新 existing（含完整 _pickNos）给 Java，
                     // 让权威态与浏览器侧一致，重建后面板正确显示 [1,5,9…] 等完整序号。
                     if (!isHover && !window.__scanning) {
-                      if (typeof window.__roleOnPick === 'function') {
-                        try { window.__roleOnPick(JSON.stringify(__wire)); } catch (e) {}
+                      var __bType = typeof window.__roleOnPick;
+                      var __bindOk = false;
+                      if (__bType === 'function') {
+                        try { window.__roleOnPick(JSON.stringify(__wire)); __bindOk = true; } catch (e) { console.log('[roleMouseDiag][dup-bind-fail] ' + (e && e.message)); }
                       }
-                      // 【兜底桥】binding 偶发失效（context 重挂/导航竞态）时经 console 通道回传，
-                      // 与首次 push 分支对称，避免重复点击序号静默丢失。投影后序列化必成功。
+                      // 【修复"dup 完整序号 [2,5,6,7,8] 无法回写 Java 权威态（最终只留 [2]）"】
+                      // 现象：dup 回传的 BIND 调用浏览器侧看似 bindOk=true，但 Java 侧「__roleOnPick」BIND 回调
+                      // 实际未处理（无 [BIND] 日志）——根因是 context 重挂后旧 binding 句柄静默失效，调用被丢弃。
+                      // 后果：Java 内存态只持有首次的 [2]，而浏览器侧 accumulator 自持有完整 [2,5,6,7,8]；
+                      // 主循环 syncPanelToBrowser 用 Java 短值重建浏览器 __rolePicks 时（overwrite=false 并集分支
+                      // 若 __old miss）会把完整值冲掉，且 stop 生成的 step 只有 1 次 click 而非 5 次。
+                      // 修复：dup 回传【始终经 console 兜底桥再发一次完整 __wire（含 _pickNos）】，
+                      // console 桥基于 console.log，不受 context 重挂影响、必达 Java；Java 侧 pickMoreComplete
+                      // 已保证「长集合胜出」，双发不会把完整值覆盖成短值（旧注释担心的"竞争污染"已由 pickMoreComplete 化解）。
                       try { console.log('__roleOnPick::' + JSON.stringify(__wire)); } catch (_) {}
+                      console.log('[roleMouseDiag][dup-after] key=' + key + ' strategy=' + (existing.strategy||'') + ' bindingType=' + __bType + ' bindOk=' + __bindOk + ' pickNos=' + JSON.stringify((typeof __wire._pickNos!=='undefined'?__wire._pickNos:'UNDEFINED')));
                     }
 
 
@@ -3077,11 +3125,15 @@
                         // 与上面 existing 分支一致：去重后主动回传最新 _pickNos 给 Java，避免面板重建时序号被覆盖残缺。
                         if (!isHover && !window.__scanning) {
                           var __wire2 = __pickToWire(window.__rolePicks[i]);
+                          var __bindOk2 = false;
                           if (typeof window.__roleOnPick === 'function') {
-                            try { window.__roleOnPick(JSON.stringify(__wire2)); } catch (e) {}
+                            try { window.__roleOnPick(JSON.stringify(__wire2)); __bindOk2 = true; } catch (e) {}
                           }
-                          // 【兜底桥】同 existing 分支，经 console 通道防 binding 失效丢序号。
-                          try { console.log('__roleOnPick::' + JSON.stringify(__wire2)); } catch (_) {}
+                          // 【关键修复】同 existing 分支：binding 正常时不再重复发 console 兜底桥，
+                          // 避免一次点击产生两条回传互相污染内存态（i18n 元素序号丢失的根因之一）。
+                          if (!__bindOk2) {
+                            try { console.log('__roleOnPick::' + JSON.stringify(__wire2)); } catch (_) {}
+                          }
                         }
 
 

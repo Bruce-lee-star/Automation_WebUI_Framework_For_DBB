@@ -225,6 +225,11 @@ public final class RoleElementStepGenerator {
                         // 因此以独立 step 形式包裹触发动作（先注册监听再触发），而非裸点击。alert 默认 accept，
                         // confirm/prompt 默认 dismiss。
                         String op = target + "." + operationFor(e);
+                        // 按拾取序号数量展开：同一元素被拾取 N 次（pickNos.size()==N），
+                        // 生成的 step 应在对应位置重复 N 次基础动作（对齐 page.pause 多次点击同一元素的录制）。
+                        int __repeat = 1;
+                        java.util.List<Integer> __pnos = e.getPickNos();
+                        if (__pnos != null && __pnos.size() > 1) __repeat = __pnos.size();
                         // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
                         // 目标元素定位签名经 keyToField 反查为字段名，拼成 pageVar.fieldName。
                         if (op.endsWith(".__DRAGTO__")) {
@@ -265,7 +270,9 @@ public final class RoleElementStepGenerator {
                                     .append(".waitForNewPage(() ->\n")
                                     .append("                ").append(op).append(", 15);\n");
                         } else {
-                            methods.append("        ").append(op).append(";\n");
+                            for (int __r = 0; __r < __repeat; __r++) {
+                                methods.append("        ").append(op).append(";\n");
+                            }
                         }
                         // 退出该元素所在的全部 open shadow，回到 DOM/iframe 上下文（与进入对称）。
                         if (shadowPath != null && !shadowPath.isEmpty()) {
@@ -553,6 +560,11 @@ public final class RoleElementStepGenerator {
                         // 因此直接把对话框处理包裹进触发动作，而非放在动作之前。alert 默认 accept，
                         // confirm/prompt 默认 dismiss。
                         String op = target + "." + operationFor(e);
+                        // 按拾取序号数量展开：同一元素被拾取 N 次（pickNos.size()==N），
+                        // 生成的 step 应在对应位置重复 N 次基础动作（对齐 page.pause 多次点击同一元素的录制）。
+                        int __repeat = 1;
+                        java.util.List<Integer> __pnos = e.getPickNos();
+                        if (__pnos != null && __pnos.size() > 1) __repeat = __pnos.size();
                         // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
                         // 目标元素定位签名在所有页字段中反查（支持跨页拖拽），拼成 <页变量>.<字段名>。
                         if (op.endsWith(".__DRAGTO__")) {
@@ -602,7 +614,9 @@ public final class RoleElementStepGenerator {
                                 if (popupTargetVar == null) popupTargetVar = var;
                             }
                         } else {
-                            m.append("        ").append(op).append(";\n");
+                            for (int __r = 0; __r < __repeat; __r++) {
+                                m.append("        ").append(op).append(";\n");
+                            }
                         }
                         // 退出该元素所在的全部 shadow，回到 DOM/iframe 上下文（与进入对称）。
                         if (shadowPath != null && !shadowPath.isEmpty()) {
@@ -945,6 +959,11 @@ public final class RoleElementStepGenerator {
                             // 因此以独立 step 形式包裹触发动作（先注册监听再触发），而非裸点击。alert 默认 accept，
                             // confirm/prompt 默认 dismiss。
                             String op = target + "." + operationFor(e);
+                        // 按拾取序号数量展开：同一元素被拾取 N 次（pickNos.size()==N），
+                        // 生成的 step 应在对应位置重复 N 次基础动作（对齐 page.pause 多次点击同一元素的录制）。
+                        int __repeat = 1;
+                        java.util.List<Integer> __pnos = e.getPickNos();
+                        if (__pnos != null && __pnos.size() > 1) __repeat = __pnos.size();
                             // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
                             // 目标元素定位签名在所有页字段中反查（支持跨页拖拽），拼成 <页变量>.<字段名>。
                             if (op.endsWith(".__DRAGTO__")) {
@@ -995,7 +1014,9 @@ public final class RoleElementStepGenerator {
                                     if (popupTargetVar == null) popupTargetVar = var;
                                 }
                             } else {
-                                methods.append("        ").append(op).append(";\n");
+                                for (int __r = 0; __r < __repeat; __r++) {
+                                    methods.append("        ").append(op).append(";\n");
+                                }
                             }
                         }
                     }

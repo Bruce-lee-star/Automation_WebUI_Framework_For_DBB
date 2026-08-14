@@ -382,11 +382,20 @@
               // 效果等价于"在页面上再点一次该元素"——序号列表增长（如 [1,4,7] → [1,4,7,8]），步骤生成同步增加一步。
               window.__addPickNo = function(pick) {
                 try {
-                  // 优先用当前面板里 mergeKey 命中的真实对象（避免闭包孤儿引用在重建后失效 → 点 + 序号没加）。
+                  // 【修复"点任意元素加号却都加到最后一个元素"】原实现先用 mergeKey 在 window.__rolePicks
+                  // 中查找 target，当渲染闭包里 pick 的引用/键在重建后与数组内元素错位（典型：多元素 _sigKey
+                  // 缺失或共享）时，__findPickByMergeKey 会命中最后一个元素，导致所有加号的新号都 push 到
+                  // 同一个（最后）元素上。
+                  // 修复策略：优先直接使用面板渲染时传入的真实对象 pick 自身——只要它是数组里按引用存在的
+                  // 真实元素（或至少持有独立的 _pickNos 数组），就不再做间接查找；仅当 pick 本身无 _pickNos
+                  // 数组时才退化为 mergeKey 查找（兜底去重/恢复场景）。这样点哪个元素的 + 就给哪个元素追加。
                   var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(pick) : null;
-                  var target = __findPickByMergeKey(mk) || pick;
-                  if (!target) return;
-                  if (!Array.isArray(target._pickNos)) target._pickNos = [];
+                  var target = pick;
+                  if (!target || !Array.isArray(target._pickNos)) {
+                    target = __findPickByMergeKey(mk) || pick;
+                    if (!target) return;
+                    if (!Array.isArray(target._pickNos)) target._pickNos = [];
+                  }
                   // 计算全局新号：所有 pick 的 _pickNos 最大值与 __rolePickSeq 的较大值 +1。
                   var maxNo = 0;
                   var all = window.__rolePicks || [];

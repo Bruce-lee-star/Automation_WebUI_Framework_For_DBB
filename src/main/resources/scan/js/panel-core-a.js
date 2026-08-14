@@ -124,9 +124,14 @@
             // 旧实现只设 seq、不写 _pickNos，而面板行前缀（见 panel-core-b.js 渲染）读的是 _pickNos/_pickSeq，
             // 导致勾选后前缀仍显示 [-]（扫描候选本就无 _pickNos）。现把勾选序同步进 _pickNos 并清 _seqStale，
             // 使面板前缀按"勾选顺序"显示 [1][2][3]…；与 __packageStep 按 _pickNos 排序封装保持一致。
-            if (!Array.isArray(cs[i]._pickNos)) cs[i]._pickNos = [];
-            cs[i]._pickNos = [i + 1];
-            cs[i]._pickSeq = i + 1;
+            // 【关键修复"全局拾取序号被覆盖（如 user_name 首号应为 4 却变为 2）"】
+            // 原实现无条件 cs[i]._pickNos = [i+1]，会覆盖手动点击产生的全局拾取序号（如 [1,2,3]）。
+            // 仅在元素还没有全局拾取序号（空数组 / 非数组）时设置步骤索引，否则保留浏览器侧已累积的
+            // 真实全局序号（如 [1,2,3] 或 [2,5,6,7]），避免被步骤索引覆盖导致序号错乱/丢失。
+            if (!Array.isArray(cs[i]._pickNos) || cs[i]._pickNos.length === 0) {
+                cs[i]._pickNos = [i + 1];
+                cs[i]._pickSeq = i + 1;
+            }
             try { cs[i]._seqStale = false; } catch (e) {}
           }
         } catch (e) {}

@@ -26,16 +26,35 @@
                   if (window.__renderPicks) window.__renderPicks();
                   // 状态外置（对齐 page.pause）：把单个 pick 经 exposeFunction 事件驱动、零往返、O(1) 回传 Java 内存，
                   // 由 Java 侧持有权威拾取态（javaPickBySig），点击不再依赖浏览器端大数组的全量序列化/持久化。
-                  if (typeof window.__roleOnPick === 'function') {
+                  //
+                  // 【关键修复"dup 分支完整 _pickNos 被外层兜底旧值/null 覆盖"】
+                  // 当 dup=true 且 existing 存在时，B1 里的 dup 分支（lines 3085-3102）已经：
+                  //   ① 调用 __appendPickNo(existing) 把新序号追加到 existing._pickNos
+                  //   ② 构造 __wire = __pickToWire(existing)（含最新完整 pickNos）
+                  //   ③ 通过 BIND + console 双保险把 __wire 发送给 Java
+                  // 若此处【不分 dup/非 dup】又再发送一次 pick（新构造的 pick 对象，_pickNos 为空/旧值），
+                  // 则 Java 侧 pickMoreComplete 可能收到短值，覆盖 dup 分支刚写入的完整值（即使有并集保护，
+                  // 并发到达顺序也可能让短值后写入、在 Java 侧 merge 时被误判）。
+                  // 因此：当 dup=true 且 existing 有效时，此处【跳过回传】—— dup 分支已回传过正确、完整的值。
+                  // 非 dup（全新元素）时，改用 __pickToWire 序列化，确保 _pickNos / _pickSeq 等私有字段必被携带。
+                  var __isDupWithExisting = (dup && existing);
+                  if (!__isDupWithExisting && typeof window.__roleOnPick === 'function') {
                     try {
                       // 附带浏览器端去重键 __sigKey，使 Java 内存去重粒度与浏览器 __rolePickSigs 完全一致。
                       if (typeof window.__sigKey === 'function') pick._sigKey = window.__sigKey(pick);
-                      window.__roleOnPick(JSON.stringify(pick));
+                      var __outerWire = (typeof __pickToWire === 'function') ? __pickToWire(pick) : pick;
+                      window.__roleOnPick(JSON.stringify(__outerWire));
                     } catch (e) { try { console.error('[rolePick][onPick-expose-fail] ' + (e && e.message)); } catch(_){} }
                   }
                   // 控制台兜底回传：即使 exposeFunction 因导航/上下文异常失效，Java 的 onConsoleMessage 仍能捕获并落盘
                   // （按 sig 去重，与 exposeFunction 调用幂等）。同时便于排查"二次拾取没反应"。
-                  try { console.log('__roleOnPick::' + JSON.stringify(pick)); } catch(_){}
+                  // 同 BIND 一样：dup 分支已发过 __wire（完整 pickNos）→ 此处跳过，避免覆盖。
+                  if (!__isDupWithExisting) {
+                    try {
+                      var __outerWire2 = (typeof __pickToWire === 'function') ? __pickToWire(pick) : pick;
+                      console.log('__roleOnPick::' + JSON.stringify(__outerWire2));
+                    } catch(_){}
+                  }
                   // 跨 frame 同步：点击若发生在 iframe 内，顶层主框架可见面板读的是主框架 window.__rolePicks，
                   // 而本 frame 把 pick push 进了自己的 window.__rolePicks（主框架读不到），表现为"内存态增长、面板空白"。
                   // 故把 pick postMessage 给顶层窗口（window.top），由顶层面板监听聚合进其 window.__rolePicks 并渲染。

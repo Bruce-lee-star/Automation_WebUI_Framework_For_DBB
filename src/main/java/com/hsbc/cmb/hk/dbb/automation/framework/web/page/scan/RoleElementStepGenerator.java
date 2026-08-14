@@ -146,15 +146,34 @@ public final class RoleElementStepGenerator {
             int stepIdx = 0;
             for (List<RoleEntry> rawStep : steps) {
                 stepIdx++;
-                // 按勾选动态序号（seq）升序排布：用户勾选顺序即步骤执行顺序；
-                // seq 为 0（未编号）的元素保持原拾取相对顺序，保证幂等可重复生成。
-                List<RoleEntry> step = new java.util.ArrayList<>(rawStep);
-                final List<RoleEntry> src = rawStep;
-                // seq 升序；seq 相等（如未编号的 needHelp 与跨页 closeMarker 均为 0）时，
-                // 以原列表索引作二级稳定键，确保 closeMarker 紧邻被关闭页最后一个元素，
-                // 避免 ArrayList.sort 在相等键上的不稳定重排导致 closeCurrentPage 顺序错乱。
-                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
-                        .thenComparingInt(e -> src.indexOf(e)));
+                // 【关键修复"按全局序号顺序生成步骤"】
+                // 用户多次点击同一元素会累积多个 pickNos（如 [1,3,5]），不同元素也有各自的 pickNos（如 [2,4]）。
+                // 需要按全局序号顺序生成操作：序号1→元素A，序号2→元素B，序号3→元素A，序号4→元素B，序号5→元素A。
+                // 实现：创建 (序号, 元素) 对列表，按序号排序，生成对应的操作序列。
+                List<java.util.Map.Entry<Integer, RoleEntry>> seqEntries = new java.util.ArrayList<>();
+                for (RoleEntry e : rawStep) {
+                    if (e == null) continue;
+                    java.util.List<Integer> nos = e.getPickNos();
+                    if (nos != null && !nos.isEmpty()) {
+                        // 按 pickNos 中的每个序号展开，每个序号对应一次操作
+                        for (int no : nos) {
+                            if (no > 0) {
+                                seqEntries.add(java.util.Map.entry(no, e));
+                            }
+                        }
+                    } else {
+                        // 无 pickNos 的元素（如 closeOp 标记）用 seq 兜底，排在最后
+                        int seq = e.getSeq();
+                        seqEntries.add(java.util.Map.entry(seq > 0 ? seq : Integer.MAX_VALUE, e));
+                    }
+                }
+                // 按序号排序
+                seqEntries.sort(java.util.Comparator.comparingInt(java.util.Map.Entry<Integer, RoleEntry>::getKey));
+                // 提取排序后的元素列表
+                List<RoleEntry> step = new java.util.ArrayList<>();
+                for (java.util.Map.Entry<Integer, RoleEntry> entry : seqEntries) {
+                    step.add(entry.getValue());
+                }
                 boolean sawPopup = false;
                 methods.append("    @Step\n");
                 methods.append("    public void step").append(stepIdx).append("() {\n");
@@ -440,11 +459,22 @@ public final class RoleElementStepGenerator {
                 // seq 为 0（未编号）的元素保持原拾取相对顺序，保证幂等可重复生成。
                 List<RoleEntry> step = new java.util.ArrayList<>(rawStep);
                 final List<RoleEntry> src = rawStep;
-                // seq 升序；seq 相等（如未编号的 needHelp 与跨页 closeMarker 均为 0）时，
+                // 按全局拾取序号（pickNos 首号）升序排列，确保同一 step 内元素按点击顺序排列。
+                // 注意：getSeq() 在 __renumberStep 中被设为步骤索引（i+1），非全局序号，
+                // 因此此处直接用 pickNos 首号排序，而非 getSeq()。
+                // 无 pickNos 的元素（如 closeOp 标记）用 seq 兜底，seq=0 时排最后。
+                // seq 相等（如未编号的 needHelp 与跨页 closeMarker 均为 0）时，
                 // 以原列表索引作二级稳定键，确保 closeMarker 紧邻被关闭页最后一个元素，
                 // 避免 ArrayList.sort 在相等键上的不稳定重排导致 closeCurrentPage 顺序错乱。
-                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
-                        .thenComparingInt(e -> src.indexOf(e)));
+                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> {
+                    if (e == null) return Integer.MAX_VALUE;
+                    java.util.List<Integer> nos = e.getPickNos();
+                    if (nos != null && !nos.isEmpty() && nos.get(0) != null && nos.get(0) > 0) {
+                        return nos.get(0);
+                    }
+                    int s = e.getSeq();
+                    return (s > 0) ? s : Integer.MAX_VALUE;
+                }).thenComparingInt(e -> src.indexOf(e)));
                 StringBuilder m = new StringBuilder();
                 m.append("    @Step\n");
                 m.append("    public void step").append(stepIdx).append("() {\n");

@@ -249,7 +249,17 @@ public final class RoleEntry {
     private java.util.List<Integer> pickNos;
 
     public java.util.List<Integer> getPickNos() { return pickNos; }
-    public void setPickNos(java.util.List<Integer> pickNos) { this.pickNos = pickNos; }
+    /** 设置 pickNos，并防御性做【去重 + 升序排序】。
+     *  本 setter 是 Java 权威内存态所有 pickNos 写入的统一入口（parsePick/mergePick/repickNos/clearStop 等），
+     *  即使上游传入时顺序混乱或含重复，进入权威态的 pickNos 始终是"去重、升序"的规范数组，
+     *  从根消除 [12,13,14,15,3] 这类乱序输出。 */
+    public void setPickNos(java.util.List<Integer> pickNos) {
+        if (pickNos == null || pickNos.isEmpty()) { this.pickNos = null; return; }
+        java.util.LinkedHashSet<Integer> uniq = new java.util.LinkedHashSet<>(pickNos);
+        java.util.List<Integer> sorted = new java.util.ArrayList<>(uniq);
+        java.util.Collections.sort(sorted);
+        this.pickNos = sorted;
+    }
 
     public RoleEntry(String role, String name) {
         this(role, name, null, null);

@@ -2364,8 +2364,12 @@
               function __pickToWire(p) {
                 if (!p) return p;
                 var w = {};
+                // 【关键修复"非 role 策略元素丢失（i18n/text 等）"】
+                // 原字段列表缺少 'strategy'，导致 i18n/text 等策略的元素回传 Java 时不带 strategy 字段，
+                // Java 侧 parsePick 默认当作 role 策略，但这类元素没有 role 字段 → parsePick 返回 null → 元素被丢弃。
+                // 修复：在字段列表中添加 'strategy'，确保所有策略类型的元素都能被正确识别。
                 var f = ['_sig','_sigKey','_pageClass','_pickNos','_pickSeq','_frameUrl','dialog','popup',
-                         'role','name','key','text','css','id','xpath','tagName','type','value','href','src',
+                         'strategy','role','name','key','text','css','id','xpath','tagName','type','value','href','src',
                          'optionText','optionValue','select','label','cleaned','level','nlsKey'];
                 for (var i = 0; i < f.length; i++) { var k = f[i]; if (p[k] !== undefined) w[k] = p[k]; }
                 try { console.log('[roleMouseDiag][toWire] sigKey=' + (p._sigKey||'') + ' strategy=' + (p.strategy||'') + ' pickNos=' + JSON.stringify((typeof w._pickNos!=='undefined'?w._pickNos:'UNDEFINED'))); } catch(_){}
@@ -2922,7 +2926,12 @@
                   if (!p) return;
                   if (!Array.isArray(p._pickNos)) p._pickNos = [];
                   // 去重保序：同一动作号不会重复追加（理论上每次动作号唯一，仍防御性去重）。
-                  if (p._pickNos.indexOf(__thisIndex) === -1) p._pickNos.push(__thisIndex);
+                  // 【修复"序号追加顺序混乱"】直接 push 会导致 pickNos 顺序混乱（如 [5,2,6]）。
+                  // 改为按升序插入，保持 pickNos 始终有序，便于后续重编号和步骤生成。
+                  if (p._pickNos.indexOf(__thisIndex) === -1) {
+                    p._pickNos.push(__thisIndex);
+                    p._pickNos.sort(function(a, b) { return a - b; });  // 升序排序
+                  }
                   // 首次动作号：用稳定 order 映射（按 sigKey 固化），只记不回退；dup 重拾不覆盖首号。
                   var __ordKey = (p._sigKey || window.__pickSig(p) || '');
                   if (__ordKey && typeof window.__pickOrder[__ordKey] !== 'number') {
@@ -2936,6 +2945,8 @@
                   }
                   // 本轮已为该元素分配序号（新拾取或重拾已存在元素）：清除 _seqStale，使其从 [-] 变为显示本轮编号。
                   try { p._seqStale = false; } catch (e) {}
+                  // 标记为手动拾取元素，取消勾选后 checkbox 仍保持禁用
+                  try { p._manualPick = true; } catch (e) {}
                 }
 
                 if (!dup) {
@@ -3129,11 +3140,15 @@
                           if (typeof window.__roleOnPick === 'function') {
                             try { window.__roleOnPick(JSON.stringify(__wire2)); __bindOk2 = true; } catch (e) {}
                           }
-                          // 【关键修复】同 existing 分支：binding 正常时不再重复发 console 兜底桥，
-                          // 避免一次点击产生两条回传互相污染内存态（i18n 元素序号丢失的根因之一）。
-                          if (!__bindOk2) {
-                            try { console.log('__roleOnPick::' + JSON.stringify(__wire2)); } catch (_) {}
-                          }
+                          // 【关键修复：兜底分支与 existing 分支保持一致】
+                          // existing 分支（lines 3085-3102）无论 bindOk 与否，都会再经 console 兜底桥
+                          // 发一次完整 __wire（含 _pickNos），原因：context 重挂后旧 binding 句柄会静默失效、
+                          // bindOk=true 但 Java 侧「__roleOnPick」BIND 回调实际未处理的情况已在生产被观测到。
+                          // 原代码仅在 !__bindOk2 时发 console 兜底，导致兜底分支出现与 existing 分支相同的失效场景
+                          // —— 浏览器侧有完整 [2,5,6,7,8] 但 Java 只持有首值 [2]。
+                          // 修复：与 existing 分支完全对齐；无论 bindOk 与否，始终经 console 桥再发一次完整 __wire2。
+                          // pickMoreComplete 已实现「长集合胜出 / 并集」语义，双发不会把完整值覆盖成短值。
+                          try { console.log('__roleOnPick::' + JSON.stringify(__wire2)); } catch (_) {}
                         }
 
 

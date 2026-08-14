@@ -379,50 +379,53 @@ public final class RoleElementPicker {
                         }
                         return false;
                     });
-                    // ③ 【整桶删除同页残留】dead 涉及的 pageClass，把内存态里同一 pageClass 的【剩余】元素一并删除。
-                    // 覆盖：跨域/iframe 元素只上送 Java 内存态、浏览器侧 __rolePicks 永远不包含它、dead 里无其键，
-                    // 导致 ①② 都删不掉的边缘残留（如 StatusConfirmationLightIcon）。严格绑定 pageClass，不跨页误删。
-                    if (!deadPages.isEmpty()) {
-                        map.entrySet().removeIf(en -> {
-                            RoleEntry re = en.getValue();
-                            if (re == null) return false;
-                            String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
-                            return !rpc.isEmpty() && deadPages.contains(rpc);
-                        });
-                    }
-                    // 持久记录已删集合（跨区域扫描/跨页面）：即便本页删除全部命中、实体已被移除，
-                    // 仍登记 dead 键——其它页面同源元素回灌时同样应被屏蔽，且区域扫描清空浏览器端
-                    // __deletedSigs 后仍能靠本集合兜底，杜绝"删除后重启区域扫描又复活"。
-                    STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
+                    // ③ 【已禁用"整桶删除同页残留"】
+                    // 原逻辑：收集被删元素的 pageClass，把同 pageClass 的所有元素全部删除。
+                    // 问题：用户点击垃圾箱只删除单个元素，但此逻辑会把同页所有元素一并删除，
+                    // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
+                    // Java 侧只需精确移除目标元素即可，不再做整桶删除。
+                    // if (!deadPages.isEmpty()) {
+                    //     map.entrySet().removeIf(en -> {
+                    //         RoleEntry re = en.getValue();
+                    //         if (re == null) return false;
+                    //         String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
+                    //         return !rpc.isEmpty() && deadPages.contains(rpc);
+                    //     });
+                    // }
+                    // 【修复"已删除元素无法重新拾取"】
+                    // 旧逻辑：STATE_DELETED 永久记录已删键，导致 isDeletedKeyInState 检查命中后跳过元素，
+                    // 用户永远无法重新拾取已删除的元素。
+                    // 新逻辑：不再写入 STATE_DELETED，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
+                    // 而非"永久封杀该元素"。若需防止跨区域扫描复活，应由浏览器侧 __deletedSigs 临时屏蔽。
+                    // STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                 }
-                // 【关键修复"删除所有元素后页面类没删除干净"——源头清空 iframe 残留】
-                // 删除只清了主框架 __rolePicks 与 Java 权威内存态；iframe 自己的 __rolePicks 仍残留已删元素，
-                // 主循环每轮空闲 mergeFramePicksToMain 会把它们合并回 javaPickBySig（虽然 isDeletedKeyInState
-                // 已按 STATE_DELETED 拦截，但一旦 key 口径有偏差仍可能复活）。此处彻底清空触发删除页的
-                // 所有 frame（主框架 + 各层 iframe）的浏览器侧 __rolePicks/__rolePickSigs，
-                // 从源头杜绝残留可被合并——即使 Java 侧拦截漏网，浏览器端也再无残留可回灌。
-                try {
-                    com.microsoft.playwright.Page srcPage = source.page();
-                    if (srcPage != null && !srcPage.isClosed()) {
-                        java.util.List<com.microsoft.playwright.Frame> frames = srcPage.frames();
-                        for (com.microsoft.playwright.Frame f : frames) {
-                            if (f == null) continue;
-                            try {
-                                f.evaluate("(function(){"
-                                        + " window.__rolePicks = [];"
-                                        + " window.__rolePickSigs = {};"
-                                        + " window.__currentStep = [];"
-                                        + " return 1;"
-                                        + "})()");
-                            } catch (Exception fe) {
-                                String u = null; try { u = f.url(); } catch (Exception ignore) {}
-                                log.warn("[picker] __roleOnDelete 清空 frame 残留失败（{}）：{}", u, fe.getMessage());
-                            }
-                        }
-                    }
-                } catch (Exception pe) {
-                    log.warn("[picker] __roleOnDelete 清空 iframe 残留异常：{}", pe.getMessage());
-                }
+                // 【已禁用"清空所有 frame 的 __rolePicks"】
+                // 原逻辑：删除元素时清空所有 frame 的 __rolePicks/__rolePickSigs/__currentStep。
+                // 问题：用户点击垃圾箱只删除单个元素，但此逻辑会清空所有 frame 的全部元素，
+                // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
+                // Java 侧只需精确移除目标元素即可，不再做全量清空。
+                // try {
+                //     com.microsoft.playwright.Page srcPage = source.page();
+                //     if (srcPage != null && !srcPage.isClosed()) {
+                //         java.util.List<com.microsoft.playwright.Frame> frames = srcPage.frames();
+                //         for (com.microsoft.playwright.Frame f : frames) {
+                //             if (f == null) continue;
+                //             try {
+                //                 f.evaluate("(function(){"
+                //                         + " window.__rolePicks = [];"
+                //                         + " window.__rolePickSigs = {};"
+                //                         + " window.__currentStep = [];"
+                //                         + " return 1;"
+                //                         + "})()");
+                //             } catch (Exception fe) {
+                //                 String u = null; try { u = f.url(); } catch (Exception ignore) {}
+                //                 log.warn("[picker] __roleOnDelete 清空 frame 残留失败（{}）：{}", u, fe.getMessage());
+                //             }
+                //         }
+                //     }
+                // } catch (Exception pe) {
+                //     log.warn("[picker] __roleOnDelete 清空 iframe 残留异常：{}", pe.getMessage());
+                // }
             } catch (Exception ex) {
                 log.warn("[picker] __roleOnDelete 回传解析失败：{}", ex.getMessage());
             }
@@ -514,8 +517,10 @@ public final class RoleElementPicker {
                             RoleEntry re = en.getValue();
                             return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
                         });
-                        // 持久记录已删集合（与 exposeBinding 通道对称，保证控制台兜底删除同样写入，杜绝复活）。
-                        STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
+                        // 【修复"已删除元素无法重新拾取"】
+                        // 与 exposeBinding 通道保持一致：不再写入 STATE_DELETED，允许用户重新拾取已删除的元素。
+                        // 删除的语义是"从当前拾取列表移除"，而非"永久封杀该元素"。
+                        // STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                     }
                 } catch (Exception ignore) {}
             } else if ("error".equals(msg.type())
@@ -1019,6 +1024,36 @@ public final class RoleElementPicker {
                             }
                         }
                     }
+                    // 【关键修复】同步删除浏览器侧已不存在的元素
+                    // 用户删除元素后，浏览器侧 __rolePicks 已移除该元素，但 Java 侧 javaPickBySig 仍保留旧记录。
+                    // 当用户重新拾取该元素时，Java 误认为是"已存在元素的新序号"，执行合并逻辑导致序号错误。
+                    // 解决方案：读取浏览器侧当前 __rolePicks 的 sigKey 集合，删除 Java 侧不存在的元素。
+                    try {
+                        @SuppressWarnings("unchecked")
+                        List<?> browserPicks = (List<?>) page.evaluate("() => (window.__rolePicks||[]).map(function(p){ return p._sigKey||p._sig||''; })");
+                        java.util.Set<String> browserSigs = new java.util.HashSet<>();
+                        if (browserPicks != null) {
+                            for (Object o : browserPicks) {
+                                if (o != null) browserSigs.add(String.valueOf(o));
+                            }
+                        }
+                        synchronized (javaPickBySig) {
+                            java.util.Iterator<java.util.Map.Entry<String, RoleEntry>> it = javaPickBySig.entrySet().iterator();
+                            while (it.hasNext()) {
+                                java.util.Map.Entry<String, RoleEntry> entry = it.next();
+                                RoleEntry e = entry.getValue();
+                                if (e == null) continue;
+                                String sigKey = e.getSigKey();
+                                // 如果 Java 侧元素的 sigKey 不在浏览器侧 __rolePicks 中，则删除该元素
+                                if (sigKey != null && !browserSigs.contains(sigKey)) {
+                                    log.info("[picker] repickNos 同步删除：sigKey={}（浏览器侧已不存在）", sigKey);
+                                    it.remove();
+                                }
+                            }
+                        }
+                    } catch (Exception syncEx) {
+                        log.warn("[picker] repickNos 同步删除失败：{}", syncEx.getMessage());
+                    }
                     // 重编号后把最新内存态回灌浏览器面板，保证面板/快照/Java 三侧序号一致。
                     // 强制刷新 ETag：repickNos 只改序号、元素身份未变，若不清除 LAST_SYNC_SIG，
                     // syncPanelToBrowser 的签名短路会跳过回灌，导致面板序号不刷新（被旧值覆盖）。
@@ -1042,6 +1077,14 @@ public final class RoleElementPicker {
                 // 多实例：会话级"开始"作用于所有已打开页面，使各页面板同步显示 ⏹ 停止
                 // （active[0] 是会话权威开关，followPage / onFrameNavigated 据此决定是否重启监听）。
                 active[0] = true;
+                // 【关键修复】清空 Java 侧内存态中元素的序号（保留元素本身），使第二轮拾取序号从 1 开始
+                // 用户需求：重新拾取时保留已在页面元素列表中的元素，但序号从 1 重新开始
+                // 浏览器侧 start 脚本也会同步清空 __rolePicks 中每个元素的 _pickNos，保持 Java/浏览器状态一致
+                for (RoleEntry e : javaPickBySig.values()) {
+                    if (e != null) {
+                        e.setPickNos(null);  // 清空序号，保留元素
+                    }
+                }
                 // 进入手动拾取模式（互斥：此时整页/区域扫描按钮禁用，点击页面只拾取被点元素）。
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.MANUAL, pageNames);
                 // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击"开始"的延迟。
@@ -1537,14 +1580,28 @@ public final class RoleElementPicker {
                     // start 时设计上"保留既有 picks、从既有重建去重表"，于是第二轮点同一元素会【复用旧 pick 对象】
                     // （其旧 _pickSeq/_pickNos 仍在），导致序号回退/重复。
                     // 修复：stop 时彻底清空浏览器侧全部拾取注册状态（与"下一轮从 1 重新连续"语义一致），
-                    // 仅保留已生成的代码结果（Java 侧 buildStepCode 已完成）。start 会重新从空状态累积，序号从 1 起。
+                    // 停止拾取：保留元素列表（__rolePicks），但清除所有序号（重置为 [-,+]）
+                    // 这样第二轮拾取时，元素仍在列表中，显示为 [-,+]，用户可重新勾选分配序号
                     page.evaluate("try{"
-                            + " window.__rolePicks = [];"
+                            // 保留 __rolePicks，但清除每个元素的 _pickNos（重置为 [-,+]）
+                            + " if(Array.isArray(window.__rolePicks)){"
+                            + "   window.__rolePicks.forEach(function(p){"
+                            + "     if(p){"
+                            + "       p._pickNos = [];"
+                            + "       p._pickSeq = 0;"
+                            + "       p._seqStale = true;"  // 标记序号过期，渲染时显示 [-,+]
+                            + "       p._manualPick = false;"  // 清除手动拾取标记，允许重新勾选
+                            + "     }"
+                            + "   });"
+                            + " }"
                             + " try{ if(window.__rolePickSigs) window.__rolePickSigs = {}; }catch(e){}"
                             + " try{ if(window.__sigToPick) window.__sigToPick = {}; }catch(e){}"
                             + " try{ window.__rolePickSeq = 0; }catch(e){}"
                             + " try{ window.__roleMaxNo = 0; }catch(e){}"
                             + " try{ window.__pickOrder = {}; }catch(e){}"
+                            + " try{ window.__currentStep = []; }catch(e){}"
+                            + " try{ if(window.__currentStep)window.__currentStep.raws=[]; }catch(e){}"
+                            + " try{ window.__steps = []; }catch(e){}"
                             + " if(window.__renderPicks)window.__renderPicks();"
                             + " if(window.refreshSelInfo)window.refreshSelInfo();"
                             + "}catch(e){}");
@@ -1674,9 +1731,37 @@ public final class RoleElementPicker {
                 // 上一轮的 user_name:[2]/__pickOrder 残留会命中 dup 分支，回传脏首号 2 污染本轮。
                 // Java 端 javaPickBySig 每次 openPanel 都是新 map（从空开始），浏览器端应从空起步与之对齐：
                 // 强制清空全部拾取全局态，序号从 1 重新连续，杜绝脏序号串台。
-                + " try{ window.__rolePicks = []; }catch(e){}"
-                + " try{ window.__rolePickSigs = {}; }catch(e){}"
-                + " try{ window.__sigToPick = {}; }catch(e){}"
+                // 【关键修复】保留 __rolePicks 元素列表，但清空每个元素的序号（重置为 [-,+]）
+                // 用户需求：重新拾取时保留已在页面元素列表中的元素，但序号从 1 重新开始
+                + " try{"
+                + "   if(Array.isArray(window.__rolePicks)){"
+                + "     window.__rolePicks.forEach(function(p){"
+                + "       if(p){"
+                + "         p._pickNos = [];"
+                + "         p._pickSeq = 0;"
+                + "         p._seqStale = true;"  // 标记序号过期，渲染时显示 [-,+]
+                + "         p._manualPick = false;"  // 清除手动拾取标记，允许重新勾选
+                + "       }"
+                + "     });"
+                + "   }"
+                + " }catch(e){}"
+                // 【关键修复】重建去重表，使重新拾取时已存在元素能被正确识别为 dup
+                // stop 方法清空了 __rolePickSigs 和 __sigToPick，start 时必须从 __rolePicks 重建
+                // 否则重新拾取时元素会被当作新元素重复添加
+                + " try{"
+                + "   window.__rolePickSigs = {};"
+                + "   window.__sigToPick = {};"
+                + "   if(Array.isArray(window.__rolePicks)){"
+                + "     window.__rolePicks.forEach(function(p){"
+                + "       if(p){"
+                + "         var k = p._sigKey || (typeof window.__sigKey==='function' ? window.__sigKey(p) : '');"
+                + "         var s = typeof window.__pickSig==='function' ? window.__pickSig(p) : '';"
+                + "         if(k) { window.__rolePickSigs[k] = true; window.__sigToPick[k] = p; }"
+                + "         if(s) { window.__sigToPick[s] = p; }"
+                + "       }"
+                + "     });"
+                + "   }"
+                + " }catch(e){}"
                 + " try{ window.__rolePickSeq = 0; }catch(e){}"
                 + " try{ window.__roleMaxNo = 0; }catch(e){}"
                 + " try{ window.__pickOrder = {}; }catch(e){}"
@@ -2190,6 +2275,7 @@ public final class RoleElementPicker {
                     // 透传全局拾取顺序号数组 _pickNos（如 [1,4,7]）：Java 权威内存态已持有（parsePick 解析），
                     // 回灌浏览器时原样写出，避免 syncPanelToBrowser 重建 pick 时丢失 → 跨页导航 index 重置。
                     + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
+                    + "     o._seqStale=(p.pickNos==null||p.pickNos.length===0)?true:false;"
                     + "     return o; }"
                     // 关键修复"repickNos/加号/删除后面板序号不刷新"：此前为 push + __rolePickSigs[k] 去重模式，
                     // 已存在的元素被跳过 push，浏览器侧旧 pick 对象（带着旧 _pickNos）永不更新；repickNos 虽把
@@ -2960,7 +3046,9 @@ public final class RoleElementPicker {
     }
 
     /** 解析全局拾取顺序号数组（_pickNos）：浏览器侧为 [1,4,7] 形式的数字数组。
-     *  缺省 / 非数组 / 元素非数值均归一为 null（面板将走 __rolePicks 位次兜底）。去重保序、剔除<=0。 */
+     *  缺省 / 非数组 / 元素非数值均归一为 null（面板将走 __rolePicks 位次兜底）。去重保序、剔除<=0。
+     *  【修复"回传数组乱序（如 [12,13,14,15,3] 未升序）"】：解析完成后强制升序排序，
+     *  无论浏览器侧传入时顺序如何，进入 Java 权威内存态的 pickNos 数组始终升序，杜绝面板显示乱序。 */
     @SuppressWarnings("unchecked")
     private static java.util.List<Integer> parsePickNos(Object v) {
         if (!(v instanceof java.util.List)) return null;
@@ -2973,17 +3061,16 @@ public final class RoleElementPicker {
             catch (NumberFormatException e) { continue; }
             if (n > 0 && !out.contains(n)) out.add(n);
         }
-        return out.isEmpty() ? null : out;
+        if (out.isEmpty()) return null;
+        java.util.Collections.sort(out);
+        return out;
     }
 
     /**
-     * 在「普通拾取回传合并」时，从 existing 与 incoming 两侧 _pickNos 中选出"更完整/更新"的那一侧。
-     * 规则：
-     * ① 任一侧为 null/空，则取另一侧（兼容首次无序号候选初始化）；
-     * ② 两侧均非空时，取【去重集合元素更多】的一侧；集合数相同则取【含最大号更大】的一侧
-     *    （如 [4,5] 胜出 [1,2]，[1,2,3] 胜出 [1,2]）；仍相同则取并集兜底。
-     * 目的：普通拾取回传不得用 dup 二次投递 / iframe 自扫携带的"部分短快照"覆盖或并回
-     * 面板经 repickNos 真实累积出的全局序号（如 [4,5]/[6,7]），避免序号被冲回 [1,2,3]。
+     * 在「普通拾取回传合并」时，合并 existing 与 incoming 两侧 _pickNos。
+     * 规则：返回两个集合的并集（去重、保序、升序排列）。
+     * 目的：同一元素多次点击时，序号应该累积（如 [1] + [2] = [1,2]），而非选择其中一个。
+     * 日志实证：第二轮拾取时，incoming=[2] existing=[1]，旧实现选择 [2] 导致序号被覆盖而非累积。
      */
     private static java.util.List<Integer> pickMoreComplete(java.util.List<Integer> exNos, java.util.List<Integer> inNos) {
         java.util.Set<Integer> exSet = (exNos == null) ? java.util.Collections.emptySet() : new java.util.LinkedHashSet<>(exNos);
@@ -2991,18 +3078,13 @@ public final class RoleElementPicker {
         if (exSet.isEmpty() && inSet.isEmpty()) return null;
         if (exSet.isEmpty()) return new java.util.ArrayList<>(inSet);
         if (inSet.isEmpty()) return new java.util.ArrayList<>(exSet);
-        if (inSet.size() > exSet.size()) return new java.util.ArrayList<>(inSet);
-        if (exSet.size() > inSet.size()) return new java.util.ArrayList<>(exSet);
-        // 集合大小相同：比较最大号，取更大的一侧
-        int exMax = 0, inMax = 0;
-        for (int n : exSet) if (n > exMax) exMax = n;
-        for (int n : inSet) if (n > inMax) inMax = n;
-        if (inMax > exMax) return new java.util.ArrayList<>(inSet);
-        if (exMax > inMax) return new java.util.ArrayList<>(exSet);
-        // 完全相等：去重并集兜底（保序）
+        // 【关键修复】始终返回并集，使序号累积（如 [1] + [2] = [1,2]）
         java.util.LinkedHashSet<Integer> uni = new java.util.LinkedHashSet<>(exSet);
         uni.addAll(inSet);
-        return new java.util.ArrayList<>(uni);
+        // 按升序排列，确保序号连续
+        java.util.List<Integer> result = new java.util.ArrayList<>(uni);
+        java.util.Collections.sort(result);
+        return result;
     }
 
     /** 解析标题层级；缺省 / 非数值 / 非 1–6 均归一为 0（不限层级）。 */
@@ -4688,11 +4770,21 @@ public final class RoleElementPicker {
         }
         if (rootPc.isEmpty()) rootPc = (snap.pageClass == null) ? "" : snap.pageClass;
         // 手动模式（start→stop 未封装）：所有拾取元素封装为【一个步骤】(step1)，
-        // 步骤内元素按点击序号（getSeq）升序排列——即"按序号封装为一个步骤"。
+        // 步骤内元素按全局拾取序号（pickNos 首号）升序排列——即"按拾取顺序封装为一个步骤"。
         // 序号相等的保持原拾取顺序（避免 ArrayList.sort 不稳定重排）。
+        // 注意：getSeq() 在 __renumberStep 中被设为步骤索引（i+1），会覆盖全局序号，
+        // 因此此处直接用 pickNos 首号排序，而非 getSeq()。
+        // 同元素多次点击（如 pickNos=[1,2,3]）由 RoleElementStepGenerator 内部的
+        // __repeat = pickNos.size() 展开为多个重复操作，无需在此拆分 step。
         List<RoleEntry> sorted = new ArrayList<>(all);
-        sorted.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? 0 : e.getSeq()))
-                .thenComparingInt(all::indexOf));
+        sorted.sort(java.util.Comparator.comparingInt((RoleEntry e) -> {
+            if (e == null) return Integer.MAX_VALUE;
+            java.util.List<Integer> nos = e.getPickNos();
+            if (nos != null && !nos.isEmpty() && nos.get(0) != null && nos.get(0) > 0) {
+                return nos.get(0);
+            }
+            return Integer.MAX_VALUE;
+        }).thenComparingInt(all::indexOf));
         List<StepRec> steps = new ArrayList<>();
         steps.add(new StepRec(rootPc, sorted));
         return new PickSnapshot(snap.pageClass, snap.entries, steps, snap.ops);

@@ -326,12 +326,11 @@
                     if (target) target._pickNos = []; else return;
                   }
                   var p = target;
-                  // 1) 移除被删的号；2) 所有更大的号紧凑前移（-1），实现全局重编号。
+                  // 1) 移除被删的号
                   var next = [];
                   for (var j = 0; j < p._pickNos.length; j++) {
                     var v = p._pickNos[j];
                     if (v === no) continue;                 // 删除该序号
-                    if (v > no) v = v - 1;                  // 后续号重排
                     next.push(v);
                   }
                   p._pickNos = next;
@@ -343,35 +342,79 @@
                   } else if (typeof p._pickSeq === 'number' && p._pickSeq > no) {
                     p._pickSeq = p._pickSeq - 1;
                   }
-                  // 同步回 Java 权威内存态（按 mergeKey 精确命中 RoleEntry）。
-                  if (mk0) {
-                    try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: mk0, nos: next.slice() }); } catch (e) {}
+                  // 2) 全局重编号：收集所有剩余序号，按原始序号排序后重新分配连续序号
+                  var __allPicks = window.__rolePicks || [];
+                  // 【关键】先保存所有元素的原始 _pickNos，避免重编号过程中引用已修改的数据
+                  var __origPickNosMap = [];
+                  var __allNos = [];
+                  for (var __i = 0; __i < __allPicks.length; __i++) {
+                    var __p = __allPicks[__i];
+                    if (__p && Array.isArray(__p._pickNos) && __p._pickNos.length > 0) {
+                      var __copy = __p._pickNos.slice();
+                      __origPickNosMap[__i] = __copy;  // 保存副本
+                      for (var __j = 0; __j < __copy.length; __j++) {
+                        if (typeof __copy[__j] === 'number') __allNos.push(__copy[__j]);
+                      }
+                    } else {
+                      __origPickNosMap[__i] = [];
+                    }
                   }
-                  // 同步 __currentStep 中引用这些 pick 的序号（若有缓存的快照）。
+                  // 按原始序号顺序排序，建立 旧号->新号 映射
+                  __allNos.sort(function(a, b) { return a - b; });
+                  var __noMap = {};
+                  for (var __k = 0; __k < __allNos.length; __k++) {
+                    __noMap[__allNos[__k]] = __k + 1;
+                  }
+                  // 基于原始副本重新写入新号
+                  for (var __i = 0; __i < __allPicks.length; __i++) {
+                    var __p = __allPicks[__i];
+                    var __orig = __origPickNosMap[__i] || [];
+                    if (__orig.length > 0) {
+                      var __newNos = [];
+                      for (var __j = 0; __j < __orig.length; __j++) {
+                        var __old = __orig[__j];
+                        if (typeof __old === 'number' && __noMap[__old] !== undefined) {
+                          __newNos.push(__noMap[__old]);
+                        }
+                      }
+                      __newNos.sort(function(a, b) { return a - b; });
+                      __p._pickNos = __newNos;
+                      if (__newNos.length > 0) {
+                        __p._pickSeq = __newNos[__newNos.length - 1];
+                      } else {
+                        __p._pickSeq = 0;
+                      }
+                    }
+                  }
+                  window.__rolePickSeq = __allNos.length;   // 同步全局计数器
+                  window.__roleMaxNo = __allNos.length;     // 【关键修复】同步 __roleMaxNo，保证新序号从重排后最大值+1 开始
+                  // 3) 同步回 Java 权威内存态（所有有 _pickNos 的元素）
+                  for (var __si = 0; __si < __allPicks.length; __si++) {
+                    var __sp = __allPicks[__si];
+                    if (__sp && Array.isArray(__sp._pickNos) && __sp._pickNos.length > 0) {
+                      var __smk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(__sp) : null;
+                      if (__smk) {
+                        try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: __smk, nos: __sp._pickNos.slice() }); } catch (e) {}
+                      }
+                    }
+                  }
+                  // 4) 同步 __currentStep 中引用这些 pick 的序号（若有缓存的快照）
                   if (window.__currentStep && Array.isArray(window.__currentStep.raws)) {
                     for (var k = 0; k < window.__currentStep.raws.length; k++) {
                       var rp = window.__currentStep.raws[k];
-                      if (rp && (rp === p || (mk0 && typeof window.__mergeKey === 'function' && window.__mergeKey(rp) === mk0))) {
-                        rp._pickNos = next.slice();
+                      if (rp && Array.isArray(rp._pickNos)) {
+                        var rpk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(rp) : null;
+                        for (var __ri = 0; __ri < __allPicks.length; __ri++) {
+                          var __rp = __allPicks[__ri];
+                          var __rmk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(__rp) : null;
+                          if (__rmk && __rmk === rpk) {
+                            rp._pickNos = __rp._pickNos.slice();
+                            break;
+                          }
+                        }
                       }
                     }
                   }
-                  // 【修复"删除后加号从旧序号增加"】__rolePickSeq 是全局只增不减的计数器，删除 no 后若不同步回退，
-                  // __addPickNo 计算新号时仍取它作为基线 → 新号从"删除前的最大号+1"起跳（如 [1,2,3] 删 3 再 + 得 4 而非 3）。
-                  // 故删除后把 __rolePickSeq 回退到"当前所有 pick 的 _pickNos 最大值"，使后续 + 加号与页面点击都从
-                  // 剩余最大号 +1 紧凑续接，不出现跳号。
-                  var __maxNow = 0;
-                  var __allP = window.__rolePicks || [];
-                  for (var __mi2 = 0; __mi2 < __allP.length; __mi2++) {
-                    var __pn2 = __allP[__mi2] && __allP[__mi2]._pickNos;
-                    if (Array.isArray(__pn2)) {
-                      for (var __nj2 = 0; __nj2 < __pn2.length; __nj2++) {
-                        var __v2 = __pn2[__nj2];
-                        if (typeof __v2 === 'number' && __v2 > __maxNow) __maxNow = __v2;
-                      }
-                    }
-                  }
-                  window.__rolePickSeq = __maxNow;
                   window.__renderPicksNow();   // 重渲染面板（序号超链接重新生成）
                 } catch (e) {
                   try { window.__rolePickerCmd({ type: 'diag', msg: 'deletePickNo failed: ' + (e && e.message) }); } catch (e2) {}
@@ -410,8 +453,10 @@
                   if (typeof window.__rolePickSeq === 'number' && window.__rolePickSeq > maxNo) maxNo = window.__rolePickSeq;
                   var newNo = maxNo + 1;
                   target._pickNos.push(newNo);          // 追加新序号
+                  target._pickNos.sort(function(a, b) { return a - b; });  // 【修复"序号顺序混乱"】追加后排序，确保 pickNos 始终有序
                   if (typeof target._pickSeq !== 'number' || target._pickSeq < newNo) target._pickSeq = newNo;
                   window.__rolePickSeq = newNo;        // 同步全局计数器，保证后续新增/拾取不撞号
+                  window.__roleMaxNo = newNo;          // 【关键修复】同步 __roleMaxNo，保证新序号从当前最大值+1 开始
                   // 同步回 Java 权威内存态（按 mergeKey 精确命中 RoleEntry）。
                   if (mk) {
                     try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: mk, nos: target._pickNos.slice() }); } catch (e) {}
@@ -428,6 +473,159 @@
                   window.__renderPicksNow();   // 重渲染面板（序号超链接 + 加号重新生成），立即显示新号
                 } catch (e) {
                   try { window.__rolePickerCmd({ type: 'diag', msg: 'addPickNo failed: ' + (e && e.message) }); } catch (e2) {}
+                }
+              };
+              // 【删除单个完整元素（垃圾箱）+ 全局重编号 + 步骤刷新】
+              // 用户点击面板里某元素行末尾的垃圾箱图标时调用：从 window.__rolePicks / __rolePickSigs /
+              // __currentStep / __steps 中彻底移除该元素，通知 Java 权威内存态同步删除，然后重排
+              // 剩余元素的全局序号、重渲染面板、并触发代码刷新（步骤里的引用同步清除）。
+              window.__deleteSinglePick = function(pick) {
+                try {
+                  if (!pick) return;
+                  // 1) 收集目标元素的所有去重键（与 bulk delete 同样的口径）
+                  var rsig = (typeof window.__pickSig === 'function') ? window.__pickSig(pick) : (pick._sig || '');
+                  var rkey = (typeof window.__mergeKey === 'function') ? window.__mergeKey(pick)
+                            : ((typeof window.__sigKey === 'function') ? window.__sigKey(pick) : (pick._sigKey || ''));
+                  if (!rkey && !rsig) return;
+                  var dead = {};
+                  var deadKeys = [];
+                  if (rkey) { dead[rkey] = true; deadKeys.push(rkey); }
+                  if (rsig) dead[rsig] = true;
+                  // 【修复"已删除元素无法重新拾取"】
+                  // 旧逻辑：写入 __deletedSigs 永久屏蔽，导致 syncPanelToBrowser 检查命中后跳过元素，
+                  // 用户永远无法重新拾取已删除的元素。
+                  // 新逻辑：不再写入 __deletedSigs，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
+                  // 而非"永久封杀该元素"。Java 侧已不再写入 STATE_DELETED，浏览器侧也应保持一致。
+                  // var delSigs = window.__deletedSigs = (window.__deletedSigs || {});
+                  // if (rkey) delSigs[rkey] = true;
+                  // 2) 从 __rolePicks 移除
+                  window.__rolePicks = (window.__rolePicks || []).filter(function(x) {
+                    if (!x) return false;
+                    return !(dead[x._sigKey] || dead[x._sig]);
+                  });
+                  // 3) 从 __rolePickSigs 清除去重登记
+                  try {
+                    var sigs = window.__rolePickSigs || {};
+                    deadKeys.forEach(function(k) { if (k) delete sigs[k]; });
+                    window.__rolePickSigs = sigs;
+                  } catch (e2) {}
+                  // 4) 从 __currentStep 移除
+                  window.__currentStep = (window.__currentStep || []).filter(function(x) {
+                    if (!x) return false;
+                    var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(x) : null;
+                    return !((mk && dead[mk]) || (x._sigKey && dead[x._sigKey]));
+                  });
+                  // 5) 从 __steps 中清除对该元素的引用
+                  try {
+                    var _steps = window.__steps || [];
+                    var _kept = [];
+                    _steps.forEach(function(s) {
+                      if (!s || typeof s !== 'object' || typeof s.op === 'string') { _kept.push(s); return; }
+                      var ps = (s.picks || []).filter(function(p) {
+                        if (!p) return false;
+                        var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(p) : null;
+                        return !((mk && dead[mk]) || (p._sigKey && dead[p._sigKey]));
+                      });
+                      if (!ps.length) return;
+                      s.picks = ps;
+                      _kept.push(s);
+                    });
+                    window.__steps = _kept;
+                  } catch (e6) {}
+                  // 6) 通知 Java 权威内存态同步删除（与 bulk delete 相同的上报格式）
+                  var delPicks = [{
+                    strategy: pick.strategy,
+                    _sig: rsig || pick._sig,
+                    _sigKey: rkey || pick._sigKey,
+                    _pageClass: pick._pageClass,
+                    role: pick.role,
+                    key: pick.key,
+                    name: pick.name,
+                    index: pick.index,
+                    selector: pick.selector,
+                    css: pick.css,
+                    resolvedKey: pick.resolvedKey,
+                    tag: pick.tag,
+                    text: pick.text
+                  }];
+                  try {
+                    var payload = JSON.stringify(delPicks);
+                    if (typeof window.__roleOnDelete === 'function') window.__roleOnDelete(payload);
+                    try { console.log('__roleOnDelete::' + payload); } catch (e4) {}
+                  } catch (e3) {}
+                  // 7) 全局重编号：收集所有剩余序号，按原始序号排序后重新分配连续序号
+                  var __allPicks = window.__rolePicks || [];
+                  // 【关键】先保存所有元素的原始 _pickNos，避免重编号过程中引用已修改的数据
+                  var __origPickNosMap = [];
+                  var __allNos = [];
+                  for (var __i = 0; __i < __allPicks.length; __i++) {
+                    var __p = __allPicks[__i];
+                    if (__p && Array.isArray(__p._pickNos) && __p._pickNos.length > 0) {
+                      var __copy = __p._pickNos.slice();
+                      __origPickNosMap[__i] = __copy;  // 保存副本
+                      for (var __j = 0; __j < __copy.length; __j++) {
+                        if (typeof __copy[__j] === 'number') __allNos.push(__copy[__j]);
+                      }
+                    } else {
+                      __origPickNosMap[__i] = [];
+                    }
+                  }
+                  // 按原始序号顺序排序，建立 旧号->新号 映射
+                  __allNos.sort(function(a, b) { return a - b; });
+                  var __noMap = {};
+                  for (var __k = 0; __k < __allNos.length; __k++) {
+                    __noMap[__allNos[__k]] = __k + 1;
+                  }
+                  // 基于原始副本重新写入新号
+                  for (var __i = 0; __i < __allPicks.length; __i++) {
+                    var __p = __allPicks[__i];
+                    var __orig = __origPickNosMap[__i] || [];
+                    if (__orig.length > 0) {
+                      var __newNos = [];
+                      for (var __j = 0; __j < __orig.length; __j++) {
+                        var __old = __orig[__j];
+                        if (typeof __old === 'number' && __noMap[__old] !== undefined) {
+                          __newNos.push(__noMap[__old]);
+                        }
+                      }
+                      __newNos.sort(function(a, b) { return a - b; });
+                      __p._pickNos = __newNos;
+                      if (__newNos.length > 0) {
+                        __p._pickSeq = __newNos[__newNos.length - 1];
+                      } else {
+                        __p._pickSeq = 0;
+                      }
+                    }
+                  }
+                  window.__rolePickSeq = __allNos.length;   // 同步全局计数器
+                  window.__roleMaxNo = __allNos.length;     // 【关键修复】同步 __roleMaxNo，保证新序号从重排后最大值+1 开始
+                  window.__renumberStep();
+                  // 7.5) 将重编号后的 _pickNos 同步回 Java 权威内存态（repickNos 先于 refreshCode 入队，
+                  // 主循环按序处理，保证 Java 侧 pickNos 已更新后再生成代码，否则 refreshCode 仍读旧号）。
+                  for (var __si = 0; __si < __allPicks.length; __si++) {
+                    var __sp = __allPicks[__si];
+                    if (__sp && Array.isArray(__sp._pickNos) && __sp._pickNos.length > 0) {
+                      var __smk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(__sp) : null;
+                      if (__smk) {
+                        try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: __smk, nos: __sp._pickNos.slice() }); } catch (e) {}
+                      }
+                    }
+                  }
+                  // 8) 触发代码刷新（页面类 + 步骤代码同步更新）
+                  try {
+                    if (typeof window.__rolePickerCmd === 'function') {
+                      window.__rolePickerCmd('refreshCode');
+                    } else {
+                      window.__panelCmds = window.__panelCmds || [];
+                      window.__panelCmds.push('refreshCode');
+                    }
+                  } catch (e7) {}
+                  // 9) 持久化当前态，避免整页跳转后被删元素恢复
+                  try { if (typeof window.__persistPickState === 'function') window.__persistPickState(); } catch (e5) {}
+                  // 10) 重渲染面板
+                  window.__renderPicks();
+                } catch (e) {
+                  try { window.__rolePickerCmd({ type: 'diag', msg: 'deleteSinglePick failed: ' + (e && e.message) }); } catch (e2) {}
                 }
               };
               function __renderPicksNow() {
@@ -616,9 +814,12 @@
                         try { __collectFromWin(__fr[__fi]); } catch (e3) {}
                       }
                     } catch (e4) {}
-                    // 会话级"已删屏蔽集"：即使 Java 删除因某种原因未命中，主循环 syncPanelToBrowser
-                    // 把 javaPickBySig 合并回浏览器时也会跳过命中此集的元素，杜绝"删除后约 1s 复活"。
-                    var delSigs = window.__deletedSigs = (window.__deletedSigs || {});
+                    // 【修复"已删除元素无法重新拾取"】
+                    // 旧逻辑：写入 __deletedSigs 永久屏蔽，导致 syncPanelToBrowser 检查命中后跳过元素，
+                    // 用户永远无法重新拾取已删除的元素。
+                    // 新逻辑：不再写入 __deletedSigs，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
+                    // 而非"永久封杀该元素"。Java 侧已不再写入 STATE_DELETED，浏览器侧也应保持一致。
+                    // var delSigs = window.__deletedSigs = (window.__deletedSigs || {});
                     allCandidates.forEach(function(x) {
                       if (!x) return;
                       // 【关键】实时重算签名/去重键，而非依赖 pick 对象上碰巧缺失的字段。
@@ -633,7 +834,7 @@
                       var rsig = (typeof window.__pickSig === 'function') ? window.__pickSig(x) : (x._sig || '');
                       var rkey = (typeof window.__mergeKey === 'function') ? window.__mergeKey(x)
                                 : ((typeof window.__sigKey === 'function') ? window.__sigKey(x) : (x._sigKey || ''));
-                      if (rkey) { dead[rkey] = true; deadKeys.push(rkey); delSigs[rkey] = true; }
+                      if (rkey) { dead[rkey] = true; deadKeys.push(rkey); /* delSigs[rkey] = true; */ }
                       // 仅抽取 Java 侧 collectDeleteKeys 所需的纯数据字段（不含 _el/DOM，JSON 安全）。
                       // 注意：collectDeleteKeys 只用 strategy/_sig/_sigKey/_pageClass/role/key/name/index，
                       // 故不再冗余携带 id/css 等未参与去重键计算的字段。
@@ -751,7 +952,7 @@
                     var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p && (p._sigKey || p._sig)); if (k) selSet[k] = true;
                   });
                   for (var i2 = 0; i2 < picks.length; i2++) {
-                    var p = picks[i2] || {};
+                    let p = picks[i2] || {};
                     var pc = (p._pageClass) || (window.__rolePageName || '未知页');
                     if (pc !== act) continue;
                     var sk = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig);
@@ -761,7 +962,11 @@
                       (sel ? 'background:rgba(30,136,229,.18);' : '') + 'border-bottom:1px solid #111;';
                     var cb = document.createElement('input');
                     cb.type = 'checkbox'; cb.checked = sel;
-                    cb.style.cssText = 'margin-top:3px;flex:0 0 auto;';
+                    // checkbox 禁用逻辑：手动拾取的元素（_manualPick=true）或已有序号的元素，checkbox 禁用
+                    // 扫描元素（无 _pickNos 且 _manualPick!=true）：checkbox 可用，勾选时分配序号
+                    var _cbDisabled = p._manualPick === true || (Array.isArray(p._pickNos) && p._pickNos.length > 0);
+                    cb.disabled = _cbDisabled;
+                    cb.style.cssText = 'margin-top:3px;flex:0 0 auto;' + (_cbDisabled ? 'opacity:0.5;cursor:not-allowed;' : '');
                     // 关键修复：cb/row 均为 var 函数作用域的循环共享变量，若闭包直接引用外层 cb/row，
                     // 等 onchange 真正触发时它们已指向【最后一次】迭代创建的元素，导致读到的 checked 状态
                     // 错乱、勾选不生效（表现为"勾选不了"）。故用 IIFE 参数按迭代捕获当前 cb/row/pk，
@@ -783,18 +988,39 @@
                           if (ek === s) { idx = j; break; }
                         }
                         if (checkbox.checked) {
+                          // 勾选：分配序号（全局拾取序号 +1）
                           if (idx < 0) window.__currentStep.push(pk);
+                          // 如果该元素还没有 _pickNos，分配全局序号
+                          if (!Array.isArray(pk._pickNos) || pk._pickNos.length === 0) {
+                            window.__rolePickSeq = (window.__rolePickSeq || 0) + 1;
+                            pk._pickNos = [window.__rolePickSeq];
+                            pk._pickSeq = window.__rolePickSeq;
+                          }
+                          // 标记为手动拾取，取消勾选后 checkbox 仍保持禁用
+                          pk._manualPick = true;
                           rowEl.style.background = 'rgba(30,136,229,.18)';
                         } else {
+                          // 取消勾选：重置该元素序号为 [-]，其他元素序号重新排序
                           if (idx >= 0) window.__currentStep.splice(idx, 1);
+                          // 重置该元素的 _pickNos 为空（但 _manualPick 保持 true，checkbox 继续禁用）
+                          pk._pickNos = [];
+                          pk._pickSeq = 0;
+                          pk._seqStale = true;
                           rowEl.style.background = '';
+                          // 其他已选元素重新分配连续序号
+                          for (var k = 0; k < window.__currentStep.length; k++) {
+                            var selPick = window.__currentStep[k];
+                            if (selPick && Array.isArray(selPick._pickNos) && selPick._pickNos.length > 0) {
+                              selPick._pickNos = [k + 1];
+                              selPick._pickSeq = k + 1;
+                            }
+                          }
+                          // 更新全局计数器
+                          window.__rolePickSeq = window.__currentStep.length;
                         }
-                        // 勾选/取消后重排连续编号：取消中间项，后续项自动前移。
-                        window.__renumberStep();
                         // 选中变化后同步「已选计数」与垃圾桶按钮高亮（轻量，仅刷新工具栏）
                         if (typeof refreshSelInfo === 'function') refreshSelInfo();
-                        // 重排后刷新所有行的步骤序号显示（让"取消中间→后续前移"在面板里可见）。
-                        // 用 __renderPicks 轻量重渲染候选列表即可，避免手工逐行改文本。
+                        // 刷新所有行的步骤序号显示
                         try { if (typeof window.__renderPicks === 'function') window.__renderPicks(); } catch (_) {}
                       };
                     })(p, cb, row);
@@ -857,10 +1083,28 @@
                       _prefixWrap.appendChild(_plus);
                       _prefixWrap.appendChild(document.createTextNode(']'));
                     } else {
-                      var _dash = document.createElement('span');
-                      _dash.textContent = '[-]';
-                      _dash.style.cssText = 'margin:0 1px;color:#999;';
-                      _prefixWrap.appendChild(_dash);
+                      // 未分配序号时显示 [-,+]，加号可点击新增序号
+                      _prefixWrap.appendChild(document.createTextNode('['));
+                      var _dash2 = document.createElement('span');
+                      _dash2.textContent = '-';
+                      _dash2.style.cssText = 'margin:0 1px;color:#999;';
+                      _prefixWrap.appendChild(_dash2);
+                      var _plus2 = document.createElement('a');
+                      _plus2.textContent = '+';
+                      _plus2.href = 'javascript:void(0)';
+                      _plus2.title = '点击给该元素新增一个拾取序号';
+                      _plus2.style.cssText = 'color:#2e7d32;font-weight:bold;text-decoration:none;cursor:pointer;';
+                      _plus2.addEventListener('mouseenter', function() { _plus2.style.color = '#1b5e20'; });
+                      _plus2.addEventListener('mouseleave', function() { _plus2.style.color = '#2e7d32'; });
+                      _plus2.addEventListener('click', function(ev) {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        window.__addPickNo(p);
+                        return false;
+                      });
+                      _prefixWrap.appendChild(document.createTextNode(','));
+                      _prefixWrap.appendChild(_plus2);
+                      _prefixWrap.appendChild(document.createTextNode(']'));
                     }
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
@@ -881,6 +1125,29 @@
                     txt.textContent = s;
                     txt.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-all;';
                     row.appendChild(cb); row.appendChild(_prefixWrap); row.appendChild(txt);
+                    // 每行末尾的垃圾箱图标：点击删除该元素（完整删除，非仅删序号），
+                    // 并从 window.__rolePicks / __currentStep / __steps 及 Java 权威内存态中彻底移除，
+                    // 剩余元素自动重编号，代码同步刷新。与"序号超链接删除"不同——后者只删一个点击号。
+                    // 【修复"hover垃圾桶变红错乱"】使用 let 声明 _trash，确保每次循环创建独立的块级作用域，
+                    // 避免所有事件监听器共享同一个 _trash 变量（var 是函数作用域，会导致闭包捕获最后一个元素）。
+                    let _trash = document.createElement('a');
+                    _trash.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" ' +
+                      'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                      '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>' +
+                      '<path d="M10 11v5M14 11v5"/></svg>';
+                    _trash.href = 'javascript:void(0)';
+                    _trash.title = '删除该元素（从所有拾取、步骤和代码中移除）';
+                    _trash.style.cssText = 'flex:0 0 auto;color:#888;text-decoration:none;cursor:pointer;' +
+                      'padding:2px 4px;margin-left:auto;border-radius:4px;transition:all .15s;';
+                    _trash.addEventListener('mouseenter', function() { _trash.style.color = '#ff4d4f'; _trash.style.background = 'rgba(244,67,58,.12)'; });
+                    _trash.addEventListener('mouseleave', function() { _trash.style.color = '#888'; _trash.style.background = 'transparent'; });
+                    _trash.addEventListener('click', function(ev) {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      window.__deleteSinglePick(p);
+                      return false;
+                    });
+                    row.appendChild(_trash);
                     // 记录复选框与签名引用，供 __applySelection 增量刷新（不重建列表）。
                     row.__cb = cb; row.__sig = sk;
                     listEl.appendChild(row);

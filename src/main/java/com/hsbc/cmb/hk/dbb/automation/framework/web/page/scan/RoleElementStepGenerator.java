@@ -882,25 +882,62 @@ public final class RoleElementStepGenerator {
             }
         }
 
-        String clsHeader = "package " + packageName + ".steps;\n\n" + imports
-                + "public class " + stepClassName + " {\n\n" + fields;
+        // 【关键修复"跳转新页面后 step 类名沿用旧页面类名"】
+        // 旧实现：所有页面使用同一个 stepClassName（如 LogonSteps），跳转到新页面（如 SetupSecondPwdPage）
+        // 后步骤类名仍为 LogonSteps，导致两个页面的步骤类名相同。
+        // 修复：按 pageClass 派生出各自的步骤类名，如 LogonPage → LogonSteps、SetupSecondPwdPage → SetupSecondPwdSteps。
+        // 派生规则：pageClass 以 "Page" 结尾则去掉 "Page" 再拼 "Steps"，否则直接拼 "Steps"。
+        // 包装成函数，供每页视图生成时调用。
+        java.util.function.Function<String, String> stepClassNameOf = (pc) -> {
+            return pc.endsWith("Page") ? pc.substring(0, pc.length() - 4) + "Steps" : pc + "Steps";
+        };
 
         // 每页一份视图：类外壳 + 字段/import 共享 + 仅该页的 step/ops 方法
         for (String pc : allPages) {
+            String perPageStepClassName = stepClassNameOf.apply(pc);
+            String clsHeader = "package " + packageName + ".steps;\n\n" + imports
+                    + "public class " + perPageStepClassName + " {\n\n" + fields;
             StringBuilder methods = new StringBuilder();
             int[] npIdx = {0};
             int stepIdx = 0;
             boolean any = false;
             if (stepsByPage.containsKey(pc)) {
                 for (List<RoleEntry> stepRaw : stepsByPage.get(pc)) {
-                    // 【关键修复"按序号生成 step 顺序错"】buildStepCode 实际调用的是 generatePerPage（非 generate/generateMulti），
-                    // 而本路径此前漏了对 step 内元素按 seq 排序——导致即使浏览器侧 __renumberStep 正确赋了序号，
-                    // 生成代码仍按原始拾取顺序而非序号顺序。此处补齐与 generate(129) 一致的 seq 升序排序：
-                    // seq 相等时以原列表索引作二级稳定键，避免 ArrayList.sort 不稳定重排使 closeCurrentPage 错位。
-                    final List<RoleEntry> src0 = stepRaw;
-                    List<RoleEntry> step = new ArrayList<>(stepRaw);
-                step.sort(java.util.Comparator.comparingInt((RoleEntry e) -> (e == null ? Integer.MAX_VALUE : (e.getSeq() <= 0 ? Integer.MAX_VALUE : e.getSeq())))
-                        .thenComparingInt(e -> src0.indexOf(e)));
+                    // 【关键修复"按全局序号顺序生成步骤（非按元素重复）"】
+                    // 旧实现按 e.getSeq() 排序，未展开 pickNos，导致同一元素有多个序号（如 [1,3,5]）时
+                    // 只生成一次操作，而非按序号逐次生成。
+                    // 正确行为：创建 (序号, 元素) 对列表，按序号全局排序，每个序号对应一次独立操作。
+                    // 例如：元素A=[1,3,5], 元素B=[2,4] → 生成顺序：A(1)→B(2)→A(3)→B(4)→A(5)
+                    List<java.util.Map.Entry<Integer, RoleEntry>> seqEntries = new java.util.ArrayList<>();
+                    for (RoleEntry e : stepRaw) {
+                        if (e == null) continue;
+                        if (e.isCloseOp()) {
+                            // closeOp 标记的元素用 seq 兜底（无 pickNos），排在最后
+                            int seq = e.getSeq();
+                            seqEntries.add(java.util.Map.entry(seq > 0 ? seq : Integer.MAX_VALUE, e));
+                            continue;
+                        }
+                        java.util.List<Integer> nos = e.getPickNos();
+                        if (nos != null && !nos.isEmpty()) {
+                            // 按 pickNos 中的每个序号展开，每个序号对应一次操作
+                            for (int no : nos) {
+                                if (no > 0) {
+                                    seqEntries.add(java.util.Map.entry(no, e));
+                                }
+                            }
+                        } else {
+                            // 无 pickNos 的元素用 seq 兜底，排在最后
+                            int seq = e.getSeq();
+                            seqEntries.add(java.util.Map.entry(seq > 0 ? seq : Integer.MAX_VALUE, e));
+                        }
+                    }
+                    // 按序号全局排序
+                    seqEntries.sort(java.util.Comparator.comparingInt(java.util.Map.Entry<Integer, RoleEntry>::getKey));
+                    // 提取排序后的元素列表（每个序号生成一次操作）
+                    List<RoleEntry> step = new java.util.ArrayList<>();
+                    for (java.util.Map.Entry<Integer, RoleEntry> entry : seqEntries) {
+                        step.add(entry.getValue());
+                    }
                     stepIdx++;
                     any = true;
                     methods.append("    @Step\n");

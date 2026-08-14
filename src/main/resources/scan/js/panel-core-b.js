@@ -339,6 +339,8 @@
                   // 已全部删空时，把 _pickSeq 一并清零，使其落入 [1] 之外的 [-] 占位分支，正确反映"已无序号"。
                   if (next.length === 0) {
                     p._pickSeq = 0;
+                    p._seqStale = true;  // 【修复"最后一个序号删除后无法显示[-,+]"】设置 _seqStale 阻止渲染兜底分支，
+                                         // 否则渲染逻辑会按 __rolePicks 数组下标推导假序号，导致 [-,+] 不显示。
                   } else if (typeof p._pickSeq === 'number' && p._pickSeq > no) {
                     p._pickSeq = p._pickSeq - 1;
                   }
@@ -396,6 +398,15 @@
                       if (__smk) {
                         try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: __smk, nos: __sp._pickNos.slice() }); } catch (e) {}
                       }
+                    }
+                  }
+                  // 【关键修复"最后一个序号删除后 Java 侧仍残留旧序号"】
+                  // 当目标元素的 _pickNos 被清空时，也需同步 Java 侧，否则 syncPanelToBrowser 会
+                  // 把 Java 侧残留的旧序号写回浏览器，导致面板显示异常。
+                  if (p && Array.isArray(p._pickNos) && p._pickNos.length === 0) {
+                    var __pmk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(p) : null;
+                    if (__pmk) {
+                      try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: __pmk, nos: [] }); } catch (e) {}
                     }
                   }
                   // 4) 同步 __currentStep 中引用这些 pick 的序号（若有缓存的快照）
@@ -533,8 +544,17 @@
                     window.__steps = _kept;
                   } catch (e6) {}
                   // 6) 通知 Java 权威内存态同步删除（与 bulk delete 相同的上报格式）
+                  // 【关键修复"i18n元素删除不干净"】确保 strategy 字段始终存在。
+                  // 如果 pick.strategy 为 undefined/null，则通过元素特征推断策略：
+                  // 有 key 字段 → "role"；有 name 但无 key → 可能是 i18n/text；兜底 "role"。
+                  var _delStrategy = pick.strategy;
+                  if (_delStrategy == null) {
+                    if (pick.key) { _delStrategy = 'role'; }
+                    else if (pick.name) { _delStrategy = pick._sig && pick._sig.indexOf('i18n:') === 0 ? 'i18n' : (pick._sig && pick._sig.indexOf('text:') === 0 ? 'text' : 'role'); }
+                    else { _delStrategy = 'role'; }
+                  }
                   var delPicks = [{
-                    strategy: pick.strategy,
+                    strategy: _delStrategy,
                     _sig: rsig || pick._sig,
                     _sigKey: rkey || pick._sigKey,
                     _pageClass: pick._pageClass,
@@ -546,7 +566,10 @@
                     css: pick.css,
                     resolvedKey: pick.resolvedKey,
                     tag: pick.tag,
-                    text: pick.text
+                    text: pick.text,
+                    // 【关键修复"i18n元素删除不干净"】i18n 策略的 buildSelector 需要 value 字段
+                    // 来生成定位器，缺失会导致 parsePick 返回 null，collectDeleteKeys 无法命中。
+                    value: pick.value
                   }];
                   try {
                     var payload = JSON.stringify(delPicks);
@@ -838,8 +861,15 @@
                       // 仅抽取 Java 侧 collectDeleteKeys 所需的纯数据字段（不含 _el/DOM，JSON 安全）。
                       // 注意：collectDeleteKeys 只用 strategy/_sig/_sigKey/_pageClass/role/key/name/index，
                       // 故不再冗余携带 id/css 等未参与去重键计算的字段。
+                      // 【关键修复"i18n元素删除不干净"】确保 strategy 字段始终存在。
+                      var _delStrat = x.strategy;
+                      if (_delStrat == null) {
+                        if (x.key) { _delStrat = 'role'; }
+                        else if (x.name) { _delStrat = rsig && rsig.indexOf('i18n:') === 0 ? 'i18n' : (rsig && rsig.indexOf('text:') === 0 ? 'text' : 'role'); }
+                        else { _delStrat = 'role'; }
+                      }
                       delPicks.push({
-                        strategy: x.strategy,
+                        strategy: _delStrat,
                         _sig: rsig || x._sig,
                         _sigKey: rkey || x._sigKey,
                         _pageClass: x._pageClass,
@@ -858,7 +888,10 @@
                         css: x.css,
                         resolvedKey: x.resolvedKey,
                         tag: x.tag,
-                        text: x.text
+                        text: x.text,
+                        // 【关键修复"i18n元素删除不干净"】i18n 策略的 buildSelector 需要 value 字段
+                        // 来生成定位器，缺失会导致 parsePick 返回 null，collectDeleteKeys 无法命中。
+                        value: x.value
                       });
                     });
                     // 从拾取数组移除所有选中项（按 sigKey/sig 精确匹配）
@@ -1153,6 +1186,9 @@
                     listEl.appendChild(row);
                   }
                   // 绑定"全选"复选框：勾选即对当前可见范围全选，取消勾选即全不选；复选框状态与计数保持同步。
+                  // 【关键修复"全选不应赋序号"】全选只做选择集的维护（供封装/删除使用），
+                  // 不调用 __renumberStep 赋序号，避免扫描元素被自动编号、checkbox 被禁用。
+                  // 序号仅由用户通过"+"按钮或单个勾选 checkbox 分配。
                   try {
                     function applySelectAll(on) {
                       var vis = curVisiblePicks();
@@ -1163,13 +1199,21 @@
                           var s = (typeof window.__mergeKey==='function') ? window.__mergeKey(pk) : (pk._sigKey || pk._sig); if (!s) continue;
                           if (!window.__currentStep.some(function(x){ return ((typeof window.__mergeKey==='function')?window.__mergeKey(x):(x&&(x._sigKey||x._sig))) === s; })) window.__currentStep.push(pk);
                         }
+                        // 全选仅维护选择集，不赋序号，不调用 __renumberStep
                       } else {
+                        // 全不选：从选择集移除 + 清除所有可见元素的序号（重置为 [-,+]）
+                        // 与单个取消勾选行为一致（清除 _pickNos、_pickSeq、_seqStale）
+                        for (var vi = 0; vi < vis.length; vi++) {
+                          var pk = vis[vi]; if (!pk) continue;
+                          pk._pickNos = [];
+                          pk._pickSeq = 0;
+                          pk._seqStale = true;
+                          // 不重置 _manualPick（保持手动拾取标记，确保 checkbox 禁用状态不变）
+                        }
                         var visSigs = {};
                         vis.forEach(function(pk) { if (pk) { var s = (typeof window.__mergeKey==='function')?window.__mergeKey(pk):(pk._sigKey||pk._sig); if (s) visSigs[s] = true; } });
                         window.__currentStep = (window.__currentStep || []).filter(function(x) { var sk=(typeof window.__mergeKey==='function')?window.__mergeKey(x):(x&&(x._sigKey||x._sig)); return !(sk && visSigs[sk]); });
                       }
-                      // 全选/全不选后重排连续编号。
-                      window.__renumberStep();
                     }
                     selAllCb.onclick = function(e) {
                       e && e.stopPropagation && e.stopPropagation();

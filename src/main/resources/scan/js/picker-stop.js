@@ -51,6 +51,7 @@
                   try { _ps[_pi]._seqStale = true; } catch (e) {}
                   try { delete _ps[_pi]._pickNos; } catch (e) {}
                   try { _ps[_pi]._pickSeq = 0; } catch (e) {}
+                  try { _ps[_pi]._manualPick = false; } catch (e) {}  // 【修复"停止后 checkbox 仍禁用"】清除手动拾取标记，使 checkbox 恢复可用
                 }
                 if (typeof window.__renderPicks === 'function') window.__renderPicks();
                 if (typeof window.refreshSelInfo === 'function') window.refreshSelInfo();

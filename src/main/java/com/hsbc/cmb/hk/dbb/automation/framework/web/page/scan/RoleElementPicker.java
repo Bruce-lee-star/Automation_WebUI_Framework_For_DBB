@@ -517,6 +517,32 @@ public final class RoleElementPicker {
                             RoleEntry re = en.getValue();
                             return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
                         });
+                        // 【修复"i18n元素删除不干净"——值级匹配兜底】
+                        // console桥的删除兜底必须与exposeBinding桥的删除逻辑完全一致（见第353-381行），
+                        // 否则i18n/text/css等定位器型策略的元素因key格式不一致导致删除miss。
+                        // 复制自exposeBinding __roleOnDelete处理器的值级匹配逻辑。
+                        map.entrySet().removeIf(en -> {
+                            RoleEntry re = en.getValue();
+                            if (re == null) return false;
+                            String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
+                            if (dead.contains(en.getKey())) return true;
+                            String sigKey = re.getSigKey();
+                            if (sigKey != null && dead.contains(sigKey)) return true;
+                            String lk;
+                            try { lk = RoleElementPageGenerator.locatorKey(re); } catch (Exception ignore) { lk = null; }
+                            if (lk != null && !lk.isEmpty() && dead.contains(rpc + "|" + lk)) return true;
+                            String strategy = re.getStrategy() == null ? "role" : re.getStrategy();
+                            if ("role".equals(strategy)) {
+                                String rk = "role:" + (re.getRole() == null ? "" : re.getRole()).toLowerCase(java.util.Locale.ROOT)
+                                        + ":" + (re.getName() == null ? "" : re.getName());
+                                if (dead.contains(rpc + "|" + rk)) return true;
+                            } else if ("id".equals(strategy) || "css".equals(strategy)) {
+                                if (re.getSelector() != null && dead.contains(rpc + "|" + strategy + ":" + re.getSelector())) return true;
+                            } else {
+                                if (re.getName() != null && dead.contains(rpc + "|" + strategy + ":" + re.getName())) return true;
+                            }
+                            return false;
+                        });
                         // 【修复"已删除元素无法重新拾取"】
                         // 与 exposeBinding 通道保持一致：不再写入 STATE_DELETED，允许用户重新拾取已删除的元素。
                         // 删除的语义是"从当前拾取列表移除"，而非"永久封杀该元素"。
@@ -1001,7 +1027,7 @@ public final class RoleElementPicker {
         // 纯字符串命令（start/scan/...）走下方 switch；JSON 命令在此先拦截处理。
         if (cmd != null && cmd.trim().startsWith("{")) {
             try {
-                Map<String, Object> jc = GSON.fromJson(cmd, Map.class);
+                Map<String, Object> jc = GSON.fromJson(cmd, new TypeToken<Map<String, Object>>(){}.getType());
                 Object t = jc == null ? null : jc.get("type");
                 String type = t == null ? null : t.toString();
                 if ("repickNos".equals(type)) {
@@ -1106,7 +1132,30 @@ public final class RoleElementPicker {
                 // 进入整页扫描模式（互斥：扫描期间禁用开始/区域扫描按钮）。
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.SCAN_PAGE, pageNames);
                 String scanNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
-                if (!page.isClosed()) start(page, scanNls);
+                // 【关键修复"全页扫描后旧元素仍持有旧序号（如 i18n:user_name 残留 [2,12]）"】
+                // start() 只清空浏览器侧 __rolePicks 的 _pickNos，但 Java 侧 javaPickBySig 仍保留旧序号。
+                // 扫描时 __recordPick 因 __scanning=true 不分配序号（_pickNos=null/空），
+                // 回传 Java 后 mergePickIntoMap 用 pickMoreComplete 合并：incoming=null, existing=[2,12] → 保留 [2,12]。
+                // 结果：全页扫描后旧元素仍持有旧序号，点加号时新序号从旧最大值+1 开始而非从 1 开始。
+                // 修复：在全页扫描前清空 Java 内存态中所有元素的序号，使扫描结果从空开始。
+                // 注意：只清空序号（保留元素本身），与 start 命令处理器的行为一致。
+                for (RoleEntry e : javaPickBySig.values()) {
+                    if (e != null) e.setPickNos(null);
+                }
+                // 【关键修复"重新扫描后点加号序号不重置"】
+                // 旧实现：start() 的 JS 注入只清空 _pickNos 但保留 __rolePicks 元素列表，
+                // 并重建 __rolePickSigs 去重表。当 __roleScanPage 运行时，__recordPick 在 dup 检查中
+                // 发现所有元素都已存在（__rolePickSigs 命中），只新增真正"新"的元素。
+                // 结果：第二次全页扫描只新增 1 个元素（而非全部 20+），重新扫描形同虚设。
+                // 修复：在 start() 之前先清空浏览器侧 __rolePicks 和 __rolePickSigs，使扫描
+                // 能重新发现所有页面元素。start() 的 JS 注入仍会重置计数器（__rolePickSeq=0 等），
+                // 确保扫描后点加号新序号从 1 开始。
+                if (!page.isClosed()) {
+                    try {
+                        page.evaluate("try{ window.__rolePicks = []; window.__rolePickSigs = {}; window.__sigToPick = {}; }catch(e){}");
+                    } catch (Exception ignored) {}
+                    start(page, scanNls);
+                }
                 int added = -1;
                 try {
                     // 【关键修复"整页扫描未穿透 iframe"】
@@ -1159,8 +1208,11 @@ public final class RoleElementPicker {
                 try {
                     mergeFramePicksToMain(page, javaPickBySig);
                     // 再把权威内存态强制回灌主框架（pageClasses=null 同步全部），双保险。
+                    // 【关键修复"重新扫描后旧序号残留"】overwriteNos=true 强制用 Java 侧 pickNos（已被上方
+                    // setPickNos(null) 清空）覆盖浏览器侧，绕过 __oldNos 保护逻辑（该逻辑会保留浏览器侧
+                    // 旧 pickNos，如果 start() 注入失败则旧序号不被清除，导致"重新扫描后点加号序号不重置"）。
                     if (!page.isClosed() && !javaPickBySig.isEmpty()) {
-                        syncPanelToBrowser(page, null, javaPickBySig, false);
+                        syncPanelToBrowser(page, null, javaPickBySig, true);
                     }
                 } catch (Exception syncE) {
                     log.warn("[picker][scan] 扫描后同步 iframe 元素到面板失败：{}", syncE.getMessage());
@@ -1348,16 +1400,21 @@ public final class RoleElementPicker {
                         // 使每次区域点选刷新页面类的同时【保留并回填】已封装的步骤，不覆盖为空。
                         LinkedHashMap<String, String> codeStep = buildStepCode(snap, packageName, stepClassName);
                         if (codePage != null && !codePage.isEmpty()) {
-                            // 区域扫描完成自动回 IDLE：面板按钮复位为"▶ 开始拾取"，页面点击不再拾取。
+                            // 区域扫描完成：先清理浏览器侧选区态（移除蓝色遮罩、事件监听等），
+                            // 再回 IDLE 使面板按钮复位为"▶ 开始拾取"。
+                            // 【关键修复"区域扫描关闭不了、蓝色框框常驻"】旧实现只回 IDLE 但浏览器侧
+                            // __roleEndRegionSelect 未调用，导致蓝色遮罩常驻、事件监听残留。
+                            try { if (!page.isClosed()) page.evaluate("try{ if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect(); }catch(e){}"); } catch (Exception ignored) {}
                             setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
                             return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
-                                    "区域扫描完成，已生成页面类（" + snap.entries.size() + " 个字段），可继续点其他区域，或点 ⏹ 停止生成步骤代码");
+                                    "区域扫描完成，已生成页面类（" + snap.entries.size() + " 个字段）");
                         }
                     }
                 } catch (Exception e) {
                     log.warn("[picker][regionScanned] 生成页面类失败：{}", e.getMessage());
                 }
-                // 区域扫描完成（无论是否拾取到元素）自动回 IDLE。
+                // 区域扫描完成（无论是否拾取到元素）自动清理选区态并回 IDLE。
+                try { if (!page.isClosed()) page.evaluate("try{ if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect(); }catch(e){}"); } catch (Exception ignored) {}
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
                 return new PickerResult(PickerAction.CONTINUE, null, null, "区域扫描未拾取到可定位元素，请点击具体的业务区域");
             }
@@ -1583,6 +1640,8 @@ public final class RoleElementPicker {
                     // 停止拾取：保留元素列表（__rolePicks），但清除所有序号（重置为 [-,+]）
                     // 这样第二轮拾取时，元素仍在列表中，显示为 [-,+]，用户可重新勾选分配序号
                     page.evaluate("try{"
+                            // 先清理区域扫描选区态（蓝色遮罩、事件监听等），防止残留
+                            + " if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect();"
                             // 保留 __rolePicks，但清除每个元素的 _pickNos（重置为 [-,+]）
                             + " if(Array.isArray(window.__rolePicks)){"
                             + "   window.__rolePicks.forEach(function(p){"
@@ -1744,6 +1803,9 @@ public final class RoleElementPicker {
                 + "       }"
                 + "     });"
                 + "   }"
+                + "   window.__rolePickSeq = 0;"  // 【关键修复"重新扫描后点加号序号不重置"】重置全局拾取计数器
+                + "   window.__roleMaxNo = 0;"    // 重置全局最大序号，保证新序号从 1 开始
+                + "   window.__pickOrder = {};"   // 清除已固化拾取顺序映射，使新拾取首号从 1 开始
                 + " }catch(e){}"
                 // 【关键修复】重建去重表，使重新拾取时已存在元素能被正确识别为 dup
                 // stop 方法清空了 __rolePickSigs 和 __sigToPick，start 时必须从 __rolePicks 重建
@@ -2272,10 +2334,16 @@ public final class RoleElementPicker {
                     + "     o.css=(p.strategy==='css')?p.selector:undefined;"
                     + "     o.index=p.index; o._pageClass=p.pageClass;"
                     + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
+                    + "     o.value=p.value;"  // 【关键修复"i18n元素删除不干净"】i18n 策略的 buildSelector 需要 value 字段
+                    + "     o.text=p.text;"    // 透传 text 字段，供 collectDeleteKeys 值级匹配兜底
+                    + "     o.tag=p.tag;"      // 透传 tag 字段，供 collectDeleteKeys 值级匹配兜底
+                    + "     o.selector=p.selector;"  // 透传 selector 字段，供 id/css 型元素删除匹配
+                    + "     o.resolvedKey=p.resolvedKey;"
                     // 透传全局拾取顺序号数组 _pickNos（如 [1,4,7]）：Java 权威内存态已持有（parsePick 解析），
                     // 回灌浏览器时原样写出，避免 syncPanelToBrowser 重建 pick 时丢失 → 跨页导航 index 重置。
                     + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
                     + "     o._seqStale=(p.pickNos==null||p.pickNos.length===0)?true:false;"
+                    + "     o._manualPick=false;"
                     + "     return o; }"
                     // 关键修复"repickNos/加号/删除后面板序号不刷新"：此前为 push + __rolePickSigs[k] 去重模式，
                     // 已存在的元素被跳过 push，浏览器侧旧 pick 对象（带着旧 _pickNos）永不更新；repickNos 虽把

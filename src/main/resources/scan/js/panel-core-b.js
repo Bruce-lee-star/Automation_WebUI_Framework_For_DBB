@@ -436,38 +436,44 @@
               // 效果等价于"在页面上再点一次该元素"——序号列表增长（如 [1,4,7] → [1,4,7,8]），步骤生成同步增加一步。
               window.__addPickNo = function(pick) {
                 try {
-                  // 【修复"点任意元素加号却都加到最后一个元素"】原实现先用 mergeKey 在 window.__rolePicks
-                  // 中查找 target，当渲染闭包里 pick 的引用/键在重建后与数组内元素错位（典型：多元素 _sigKey
-                  // 缺失或共享）时，__findPickByMergeKey 会命中最后一个元素，导致所有加号的新号都 push 到
-                  // 同一个（最后）元素上。
-                  // 修复策略：优先直接使用面板渲染时传入的真实对象 pick 自身——只要它是数组里按引用存在的
-                  // 真实元素（或至少持有独立的 _pickNos 数组），就不再做间接查找；仅当 pick 本身无 _pickNos
-                  // 数组时才退化为 mergeKey 查找（兜底去重/恢复场景）。这样点哪个元素的 + 就给哪个元素追加。
+                  // 【关键修复"整页扫描后点加号序号不从 1 开始"】
+                  // 旧实现：优先使用 pick 参数自身的 _pickNos（可能为 stale 引用，携带旧序号如 [4,6]），
+                  // 仅在无 _pickNos 时才退化为 mergeKey 查找。当 syncPanelToBrowser 重建 __rolePicks 后，
+                  // 渲染闭包捕获的 pick 引用是重建前的旧对象，仍持有旧 _pickNos，导致 + 号追加到旧序号上。
+                  // 修复：始终通过 mergeKey 从当前 __rolePicks 中查找真实元素，确保基于最新状态操作。
                   var mk = (typeof window.__mergeKey === 'function') ? window.__mergeKey(pick) : null;
-                  var target = pick;
-                  if (!target || !Array.isArray(target._pickNos)) {
-                    target = __findPickByMergeKey(mk) || pick;
-                    if (!target) return;
-                    if (!Array.isArray(target._pickNos)) target._pickNos = [];
-                  }
-                  // 计算全局新号：所有 pick 的 _pickNos 最大值与 __rolePickSeq 的较大值 +1。
-                  var maxNo = 0;
-                  var all = window.__rolePicks || [];
-                  for (var i = 0; i < all.length; i++) {
-                    var pn = all[i] && all[i]._pickNos;
-                    if (Array.isArray(pn)) {
-                      for (var j = 0; j < pn.length; j++) {
-                        if (typeof pn[j] === 'number' && pn[j] > maxNo) maxNo = pn[j];
+                  var target = __findPickByMergeKey(mk) || pick;
+                  if (!target) return;
+                  // 确保 _pickNos 是数组（从当前元素的实际状态开始，而非旧引用的 _pickNos）
+                  if (!Array.isArray(target._pickNos)) target._pickNos = [];
+                  // 【修复"整页扫描后点加号序号不从 1 开始"】
+                  // 与 __recordPick 一致的续接逻辑：__roleMaxNo 是只增不回退的"已分配最大号"基线，
+                  // 由 __recordPick 每次拾取时更新。__addPickNo 也应使用同一基线，确保 + 号与页面点击
+                  // 使用相同的序号空间，避免因 __rolePickSeq 被不同路径污染导致起始序号偏移。
+                  if (typeof window.__rolePickSeq !== 'number' || window.__rolePickSeq < 0) window.__rolePickSeq = 0;
+                  if (typeof window.__roleMaxNo !== 'number' || window.__roleMaxNo < 0) window.__roleMaxNo = 0;
+                  var maxNo = window.__roleMaxNo; // 主基线：已分配最大号（只增不回退）
+                  // 遍历 __rolePicks 取最大号（兜底，兼容跨页恢复/重建场景）
+                  try {
+                    var all = window.__rolePicks || [];
+                    for (var i = 0; i < all.length; i++) {
+                      var pn = all[i] && all[i]._pickNos;
+                      if (Array.isArray(pn)) {
+                        for (var j = 0; j < pn.length; j++) {
+                          if (typeof pn[j] === 'number' && pn[j] > maxNo) maxNo = pn[j];
+                        }
                       }
                     }
-                  }
-                  if (typeof window.__rolePickSeq === 'number' && window.__rolePickSeq > maxNo) maxNo = window.__rolePickSeq;
+                  } catch (e) {}
+                  if (window.__rolePickSeq > maxNo) maxNo = window.__rolePickSeq;
                   var newNo = maxNo + 1;
+                  // 【诊断日志】记录本次 __addPickNo 的计数器值，用于排查整页扫描后起始序号偏移问题
+                  try { console.log('[roleMouseDiag][addPickNo] seq=' + window.__rolePickSeq + ' maxNo=' + maxNo + ' roleMaxNo=' + window.__roleMaxNo + ' newNo=' + newNo + ' target=' + mk); } catch(e){}
                   target._pickNos.push(newNo);          // 追加新序号
                   target._pickNos.sort(function(a, b) { return a - b; });  // 【修复"序号顺序混乱"】追加后排序，确保 pickNos 始终有序
                   if (typeof target._pickSeq !== 'number' || target._pickSeq < newNo) target._pickSeq = newNo;
                   window.__rolePickSeq = newNo;        // 同步全局计数器，保证后续新增/拾取不撞号
-                  window.__roleMaxNo = newNo;          // 【关键修复】同步 __roleMaxNo，保证新序号从当前最大值+1 开始
+                  window.__roleMaxNo = newNo;          // 同步 __roleMaxNo，保证新序号从当前最大值+1 开始
                   // 同步回 Java 权威内存态（按 mergeKey 精确命中 RoleEntry）。
                   if (mk) {
                     try { window.__rolePickerCmd({ type: 'repickNos', mergeKey: mk, nos: target._pickNos.slice() }); } catch (e) {}

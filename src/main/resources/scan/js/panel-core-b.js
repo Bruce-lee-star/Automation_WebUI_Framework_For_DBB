@@ -271,6 +271,13 @@
                   (window.__currentStep || []).forEach(function(p) {
                     var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p && (p._sigKey || p._sig)); if (k) selSet[k] = true;
                   });
+                  // 【修复"有序号checkbox未勾选"】有序号的元素也应自动勾选
+                  (window.__rolePicks || []).forEach(function(p) {
+                    if (p && Array.isArray(p._pickNos) && p._pickNos.length > 0) {
+                      var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p._sigKey || p._sig);
+                      if (k) selSet[k] = true;
+                    }
+                  });
                   var rows = listEl.children;
                   for (var i = 0; i < rows.length; i++) {
                     var row = rows[i];
@@ -997,6 +1004,15 @@
                   (window.__currentStep || []).forEach(function(p) {
                     var k = (typeof window.__mergeKey==='function') ? window.__mergeKey(p) : (p && (p._sigKey || p._sig)); if (k) selSet[k] = true;
                   });
+                  // 【修复"有序号checkbox未勾选"】有序号的元素（_pickNos.length>0）也应自动勾选，
+                  // 即使 __currentStep 为空（如停止拾取后重建面板）。确保序号的勾选态与序号存在性一致。
+                  for (var _si = 0; _si < picks.length; _si++) {
+                    var _sp = picks[_si];
+                    if (_sp && Array.isArray(_sp._pickNos) && _sp._pickNos.length > 0) {
+                      var _sk = (typeof window.__mergeKey==='function') ? window.__mergeKey(_sp) : (_sp._sigKey || _sp._sig);
+                      if (_sk) selSet[_sk] = true;
+                    }
+                  }
                   for (var i2 = 0; i2 < picks.length; i2++) {
                     let p = picks[i2] || {};
                     var pc = (p._pageClass) || (window.__rolePageName || '未知页');

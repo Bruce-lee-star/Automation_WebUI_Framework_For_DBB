@@ -519,6 +519,10 @@ public final class RoleElementPageGenerator {
     /** 把选择器包成合法的 Java 字符串字面量（转义反斜杠与双引号） */
     private static String toJavaStringLiteral(String s) {
         if (s == null) return "\"\"";
+        // 对 CSS 属性选择器中的双引号替换为单引号，避免 Java 字符串字面量中需要转义。
+        // 如 [data-i18n="user_name"] → [data-i18n='user_name']
+        // 单引号在 CSS 属性选择器中与双引号等价，生成的代码更简洁（无需反斜杠转义）。
+        s = s.replace("\"", "'");
         return "\"" + escapeJava(s) + "\"";
     }
 

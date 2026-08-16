@@ -152,15 +152,24 @@
 
                 // 2) 模板反查：遍历 window.__nlsTemplates（[[正则源, key], ...]），
 
-
                 //    用归一化后的可见文本测试正则，命中取「字面前缀最长」者（更具体，避免误配短模板）。
-
 
                 //    模板值含通配 (.*?)，永远非精确。
 
-
-                if (window.__nlsTemplates && window.__nlsTemplates.length) {
-
+                // 【优化】预编译正则：将原始 [正则字符串, key] 缓存为 [RegExp, key]
+                // 避免每次匹配时重复 new RegExp，减少 GC 压力
+                var __tpl = window.__nlsTemplates;
+                if (__tpl && __tpl.length) {
+                  // 首次使用时惰性编译：将原始字符串模板转为预编译 RegExp 对象
+                  if (!__tpl.__compiled) {
+                    for (var __tpi = 0; __tpi < __tpl.length; __tpi++) {
+                      var __tp = __tpl[__tpi];
+                      if (__tp && typeof __tp[0] === 'string') {
+                        try { __tp[0] = new RegExp(__tp[0]); } catch (e) { __tp[0] = null; }
+                      }
+                    }
+                    __tpl.__compiled = true;
+                  }
 
                   var txt = normName(s);
 
@@ -168,10 +177,10 @@
                   var best = null, bestLen = -1;
 
 
-                  for (var i = 0; i < window.__nlsTemplates.length; i++) {
+                  for (var i = 0; i < __tpl.length; i++) {
 
 
-                    var re = window.__nlsTemplates[i];
+                    var re = __tpl[i];
 
 
                     if (!re || !re[0]) continue;
@@ -180,10 +189,10 @@
                     try {
 
 
-                      if (new RegExp(re[0]).test(txt)) {
+                      if (re[0].test(txt)) {
 
 
-                        var litLen = re[0].replace(/\\(\\.\\*\\?\\)/g, '').length;
+                        var litLen = re[0].source.replace(/\\(\\.\\*\\?\\)/g, '').length;
 
 
                         if (litLen > bestLen) { bestLen = litLen; best = re[1]; }

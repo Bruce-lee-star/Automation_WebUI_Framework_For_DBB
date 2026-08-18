@@ -252,13 +252,16 @@ public final class RoleEntry {
     /** 设置 pickNos，并防御性做【去重 + 升序排序】。
      *  本 setter 是 Java 权威内存态所有 pickNos 写入的统一入口（parsePick/mergePick/repickNos/clearStop 等），
      *  即使上游传入时顺序混乱或含重复，进入权威态的 pickNos 始终是"去重、升序"的规范数组，
-     *  从根消除 [12,13,14,15,3] 这类乱序输出。 */
+     *  从根消除 [12,13,14,15,3] 这类乱序输出。
+     *  【关键修复】空列表统一保留为"空数组 []"而非 null：消除 Java 端 null 与 [] 的语义双轨制
+     *  （START 重扫描原 setPickNos(null)、面板删除原 nos=[]，导致两端状态机不一致、排查噪声大）。
+     *  仅当参数本身为 null 时仍置 null（保留"未初始化"语义，普通清空请用 new ArrayList<>()）。 */
     public void setPickNos(java.util.List<Integer> pickNos) {
-        if (pickNos == null || pickNos.isEmpty()) { this.pickNos = null; return; }
+        if (pickNos == null) { this.pickNos = null; return; }
         java.util.LinkedHashSet<Integer> uniq = new java.util.LinkedHashSet<>(pickNos);
         java.util.List<Integer> sorted = new java.util.ArrayList<>(uniq);
         java.util.Collections.sort(sorted);
-        this.pickNos = sorted;
+        this.pickNos = sorted;  // 空列表 → 空 ArrayList（GSON 序列化为 []，而非 null）
     }
 
     public RoleEntry(String role, String name) {

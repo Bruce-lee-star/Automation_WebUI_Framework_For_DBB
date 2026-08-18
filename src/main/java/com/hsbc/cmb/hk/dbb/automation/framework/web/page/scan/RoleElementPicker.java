@@ -192,7 +192,7 @@ public final class RoleElementPicker {
                     // 修复：迁移历史仅为"保留已拾元素不丢"（见上方二次 openPanel 场景），但其 pickNos 必须清零，
                     // 让面板回退到 [-]，本轮重新点击时从干净状态按真实次序重新累计，杜绝脏序号串台。
                     RoleEntry migrated = e.getValue();
-                    if (migrated != null) { migrated.setPickNos(null); migrated.setSeq(0); }
+                    if (migrated != null) { migrated.setPickNos(new java.util.ArrayList<>()); migrated.setSeq(0); }
                     javaPickBySig.put(e.getKey(), migrated);
                 }
             }
@@ -1108,7 +1108,7 @@ public final class RoleElementPicker {
                 // 浏览器侧 start 脚本也会同步清空 __rolePicks 中每个元素的 _pickNos，保持 Java/浏览器状态一致
                 for (RoleEntry e : javaPickBySig.values()) {
                     if (e != null) {
-                        e.setPickNos(null);  // 清空序号，保留元素
+                        e.setPickNos(new java.util.ArrayList<>());  // 清空序号为 []（保留元素，语义与面板删除一致）
                     }
                 }
                 // 进入手动拾取模式（互斥：此时整页/区域扫描按钮禁用，点击页面只拾取被点元素）。
@@ -1140,7 +1140,7 @@ public final class RoleElementPicker {
                 // 修复：在全页扫描前清空 Java 内存态中所有元素的序号，使扫描结果从空开始。
                 // 注意：只清空序号（保留元素本身），与 start 命令处理器的行为一致。
                 for (RoleEntry e : javaPickBySig.values()) {
-                    if (e != null) e.setPickNos(null);
+                    if (e != null) e.setPickNos(new java.util.ArrayList<>());
                 }
                 // 【关键修复"重新扫描后点加号序号不重置"】
                 // 旧实现：start() 的 JS 注入只清空 _pickNos 但保留 __rolePicks 元素列表，
@@ -1629,7 +1629,7 @@ public final class RoleElementPicker {
                 // 停止拾取后重置（必须在 buildStepCode 之后，生成已基于累积 pickNos 完成）：
                 // 清空 Java 权威内存态每个 entry 的 pickNos，并让浏览器侧 window.__rolePicks 的
                 // _pickNos/_pickSeq 归零，使面板干净回退到 [-]，且下一次 start 时全局动作序号从 1 重新计数。
-                for (RoleEntry e : javaPickBySig.values()) e.setPickNos(null);
+                for (RoleEntry e : javaPickBySig.values()) e.setPickNos(new java.util.ArrayList<>());
                 try {
                     // 【修复"stop→start 第二轮序号错乱（如 user_name 拿到旧号而非从续接点递增）】
                     // 原逻辑只 delete p._pickNos + p._pickSeq=0，但 __rolePicks 数组、__rolePickSigs（key 去重表）、
@@ -2381,6 +2381,14 @@ public final class RoleElementPicker {
                     + "     if (k && (__del[k] || del2.indexOf(k) >= 0)) return;"
                     + "     if (k) window.__rolePickSigs[k]=true;"
                     + "     window.__rolePicks.push(o); });"
+                    // 回灌后全局紧凑重排：Java 权威态可能带空洞（如取消勾选/重扫描清空后），原样写回会导致
+                    // 浏览器侧号不连续、与面板 addPickNo 的紧凑语义不一致。统一压缩成 1..N 连续无空洞。
+                    + "   (function(){ var __a=window.__rolePicks||[]; var __ns=[];"
+                    + "     for(var __i=0;__i<__a.length;__i++){ var __p=__a[__i]; if(__p&&Array.isArray(__p._pickNos)){ for(var __j=0;__j<__p._pickNos.length;__j++){ if(typeof __p._pickNos[__j]==='number') __ns.push(__p._pickNos[__j]); } } }"
+                    + "     __ns.sort(function(a,b){return a-b;}); var __m={}; for(var __k=0;__k<__ns.length;__k++) __m[__ns[__k]]=__k+1;"
+                    + "     for(var __i2=0;__i2<__a.length;__i2++){ var __p2=__a[__i2]; if(__p2&&Array.isArray(__p2._pickNos)){ var __nn=[]; for(var __j2=0;__j2<__p2._pickNos.length;__j2++){ var __o=__p2._pickNos[__j2]; if(typeof __o==='number'&&__m[__o]!==undefined) __nn.push(__m[__o]); } __nn.sort(function(a,b){return a-b;}); __p2._pickNos=__nn; __p2._pickSeq=__nn.length>0?__nn[__nn.length-1]:0; } }"
+                    + "     window.__rolePickSeq=__ns.length; window.__roleMaxNo=__ns.length;"
+                    + "   })();"
                     + "   if (window.__renderPicks) window.__renderPicks();"
                     + " } catch(e){} }",
                     java.util.Arrays.asList(syncJsonB64, syncDelB64));

@@ -2379,7 +2379,8 @@
                 // 修复：在字段列表中添加 'strategy'，确保所有策略类型的元素都能被正确识别。
                 var f = ['_sig','_sigKey','_pageClass','_pickNos','_pickSeq','_frameUrl','dialog','popup',
                          'strategy','role','name','key','text','css','id','xpath','tagName','type','value','href','src',
-                         'optionText','optionValue','select','label','cleaned','level','nlsKey'];
+                         'optionText','optionValue','select','label','cleaned','level','nlsKey','attr',
+                         'checked','pressKey','dragDstKey','disabled','pressed','expanded'];
                 for (var i = 0; i < f.length; i++) { var k = f[i]; if (p[k] !== undefined) w[k] = p[k]; }
                 try { console.log('[roleMouseDiag][toWire] sigKey=' + (p._sigKey||'') + ' strategy=' + (p.strategy||'') + ' pickNos=' + JSON.stringify((typeof w._pickNos!=='undefined'?w._pickNos:'UNDEFINED'))); } catch(_){}
                 return w;

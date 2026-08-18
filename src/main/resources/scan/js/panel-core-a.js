@@ -273,6 +273,9 @@
                 // 表现即"停止按钮有时点不动、停止后再点开始却拾取不了"。
                 var willStart = !(window.__rolePickActive || window.__rolePickWanted);
                 window.__rolePickWanted = willStart;
+                // 【修复"手动拾取中封装按钮未禁用"】同步更新 __roleMode，
+                // 使 refreshToggle 能正确读取模式状态来禁用"封装为步骤"按钮。
+                window.__roleMode = willStart ? 'manual' : 'idle';
                 if (willStart) {
                   // 新一轮「开始拾取」：上一轮已拾取的元素本轮尚未重新点，应显示 [-]（_seqStale 保持），
                   // 并清空其 _pickNos / 重置序号计数器，使本轮编号从 1 重新连续；本次新拾取或重拾的元素
@@ -293,6 +296,14 @@
                   } catch (e) {}
                 }
                 pushCmd(willStart ? 'start' : 'stop');
+                // 【修复"手动拾取中可封装步骤"】立即禁用/启用"封装为步骤"按钮，
+                // 无需等待 setInterval 的 refreshToggle 异步刷新。开始拾取时禁用，停止时启用。
+                if (pkgBtn) {
+                  pkgBtn.disabled = willStart;
+                  pkgBtn.style.opacity = willStart ? '0.4' : '1';
+                  pkgBtn.style.pointerEvents = willStart ? 'none' : 'auto';
+                  pkgBtn.style.cursor = willStart ? 'not-allowed' : 'pointer';
+                }
               });
               // 注：悬停拾取模式已移除（按需求去除 hover 图标）。
 
@@ -489,6 +500,16 @@
                   });
                   window.__rolePickWanted = null;
                 }
+                // 【修复"手动拾取中可封装步骤"】每次 refreshToggle 都同步"封装为步骤"按钮状态，
+                // 手动拾取模式（mode=manual）禁用，防止用户在拾取过程中误操作封装。
+                var pkgBtnEl = document.getElementById('__rolePkgBtn');
+                if (pkgBtnEl) {
+                  var pkgDisabled = (mode === 'manual');
+                  pkgBtnEl.disabled = pkgDisabled;
+                  pkgBtnEl.style.opacity = pkgDisabled ? '0.4' : '1';
+                  pkgBtnEl.style.pointerEvents = pkgDisabled ? 'none' : 'auto';
+                  pkgBtnEl.style.cursor = pkgDisabled ? 'not-allowed' : 'pointer';
+                }
                 // 每次都刷新状态栏（实时提示 step 语义与计数，不依赖模式切换）
                 var hint;
                 if (mode === 'manual') {
@@ -501,6 +522,9 @@
                 if (status.textContent !== hint) status.textContent = hint;
                 // 步骤 Tab 标题实时计数
                 if (tabStep) tabStep.textContent = '步骤代码' + (stepTotal > 0 ? (' (' + stepTotal + ')') : '');
+                // 【修复"全选计数为0/7"】每次 refreshToggle 都刷新"已选"计数，
+                // 确保有序号元素（_pickNos.length>0）被正确计入已选计数，无需等待 checkbox 点击。
+                try { if (typeof window.refreshSelInfo === 'function') window.refreshSelInfo(); } catch (e) {}
               }
               window.__roleRefreshToggle = refreshToggle;   // 暴露给拾取库作用域（如扫描完成 / 模式切换时刷新按钮态）
               refreshToggle();

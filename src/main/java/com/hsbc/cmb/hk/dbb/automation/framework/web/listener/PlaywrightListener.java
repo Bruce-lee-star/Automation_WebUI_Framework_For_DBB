@@ -67,6 +67,33 @@ public class PlaywrightListener implements StepListener {
     // 防止 stepFailed 和 stepFinished 重复调用 StepEventBus.stepFinished()
     private static final ThreadLocal<Boolean> failureScreenshotsAlreadySent = ThreadLocal.withInitial(() -> false);
 
+    /**
+     * ⭐ 失败日志去重器：同一 Throwable 实例在一次 scenario 线程生命周期内只完整打印一次。
+     * 解决 step 失败被 stepFailed / lastStepFailed / testFailed 多个回调各打印一遍、外加
+     * 引擎自身输出，导致同一个异常在控制台出现 3~4 次的问题。
+     * 使用 ThreadLocal 保证并行 scenario 互不干扰，用 System.identityHashCode 避免不同但等价的异常被误判为重复。
+     */
+    private static final ThreadLocal<Set<String>> reportedFailures = ThreadLocal.withInitial(HashSet::new);
+
+    /**
+     * 同一异常首次出现返回 true 并打印 error 级别摘要；后续出现返回 false（调用方可降级为 debug 或不打印）。
+     * @param t 失败异常
+     * @param summary 人类可读的失败摘要（短消息）
+     * @return 是否应完整打印（首次为 true）
+     */
+    private static boolean shouldReportFailure(Throwable t, String summary) {
+        if (t == null) {
+            return reportedFailures.get().add("null:" + (summary == null ? "" : summary));
+        }
+        String key = t.getClass().getName() + "|" + (t.getMessage() == null ? "" : t.getMessage().split("\n", -1)[0]) + "|" + System.identityHashCode(t);
+        return reportedFailures.get().add(key);
+    }
+
+    /** scenario 线程结束时清空去重记录，避免跨 scenario 误杀 */
+    private static void clearReportedFailures() {
+        reportedFailures.get().clear();
+    }
+
     // ⭐ 防止 stepFinished() 无参版与 stepFinishedInternal() 参数化版双重处理
     private static final ThreadLocal<Boolean> stepFinishProcessed = ThreadLocal.withInitial(() -> false);
 
@@ -391,7 +418,10 @@ public class PlaywrightListener implements StepListener {
                 shortMsg = shortMsg.substring(0, 197) + "...";
             }
         }
-        logger.error("Step failure detected: {}", shortMsg);
+        // ⭐ 去重：同一异常实例只完整打印一次，后续任何级别均静默（不降级也不打 debug）
+        if (shouldReportFailure(failure.getException(), shortMsg)) {
+            logger.error("Step failure detected: {}", shortMsg);
+        }
         recordTestData("stepFailure", fullMsg);
         recordTestData("stepFailureCause", failure.getException().getClass().getSimpleName());
 
@@ -439,7 +469,10 @@ public class PlaywrightListener implements StepListener {
         currentStepScreenshots.set(new ArrayList<>());
 
         String errorMsg = failure != null ? failure.getException().getMessage() : "Unknown";
-        LoggingConfigUtil.logErrorIfVerbose(logger, "Last step failed: {}", errorMsg);
+        // ⭐ 去重：与主 stepFailed / testFailed 共享同一异常实例判定，避免同一失败多次打印
+        if (shouldReportFailure(failure != null ? failure.getException() : null, errorMsg)) {
+            LoggingConfigUtil.logErrorIfVerbose(logger, "Last step failed: {}", errorMsg);
+        }
         recordTestData("lastStepFailure", errorMsg);
 
         takeScreenshotAndRegister("FINAL_FAILURE");
@@ -630,6 +663,7 @@ public class PlaywrightListener implements StepListener {
         stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
         stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
         apiFailureAlreadyHandled.remove();  // ⭐ 清理 API 失败标记
+        clearReportedFailures();  // ⭐ 清空失败日志去重记录，避免跨 scenario 误杀
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
         // ⭐⭐⭐ 新增：清理 API 捕获上下文
@@ -1120,7 +1154,10 @@ public class PlaywrightListener implements StepListener {
         if (errorMsg != null && errorMsg.contains("\n")) {
             errorMsg = errorMsg.substring(0, errorMsg.indexOf('\n')).trim();
         }
-        logger.error("Test failed: {} - {}", testTitle, errorMsg);
+        // ⭐ 去重：同一异常若已在 stepFailed / lastStepFailed 打印过，此处完全静默（不论日志级别）
+        if (shouldReportFailure(throwable, errorMsg)) {
+            logger.error("Test failed: {} - {}", testTitle, errorMsg);
+        }
 
         // ⭐⭐⭐ 新增：检查 API 断言失败
         checkAndMarkApiAssertionFailures(result);

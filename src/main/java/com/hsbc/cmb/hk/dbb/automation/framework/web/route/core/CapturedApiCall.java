@@ -37,6 +37,10 @@ public class CapturedApiCall {
     private final Map<String, String> responseHeaders;
     private final String responseBody;
 
+    // ── 采集信息（采集管道新增字段） ──
+    private final boolean fromMock;       // 是否来自 Mock 拦截
+    private final String captureSource;   // 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY
+
     // ── 时间信息 ──
     private final long timestamp;
 
@@ -107,6 +111,33 @@ public class CapturedApiCall {
                 ? Collections.unmodifiableMap(new HashMap<>(responseHeaders))
                 : Collections.emptyMap();
         this.responseBody = responseBody;
+        this.fromMock = false;
+        this.captureSource = "MONITOR";
+        this.timestamp = timestamp;
+    }
+
+    /**
+     * 全字段构造（供 Builder 使用）。
+     */
+    CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    String requestUrl, String requestBody,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp,
+                    boolean fromMock, String captureSource) {
+        this.endpoint = endpoint;
+        this.requestUrl = requestUrl;
+        this.requestBody = requestBody;
+        this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
+        this.requestHeaders = requestHeaders != null
+                ? Collections.unmodifiableMap(new HashMap<>(requestHeaders))
+                : Collections.emptyMap();
+        this.statusCode = statusCode;
+        this.responseHeaders = responseHeaders != null
+                ? Collections.unmodifiableMap(new HashMap<>(responseHeaders))
+                : Collections.emptyMap();
+        this.responseBody = responseBody;
+        this.fromMock = fromMock;
+        this.captureSource = captureSource != null ? captureSource : "UNKNOWN";
         this.timestamp = timestamp;
     }
 
@@ -140,6 +171,12 @@ public class CapturedApiCall {
 
     /** 捕获时间戳（System.currentTimeMillis()） */
     public long timestamp() { return timestamp; }
+
+    /** 是否来自 Mock 拦截 */
+    public boolean fromMock() { return fromMock; }
+
+    /** 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY / MONITOR */
+    public String captureSource() { return captureSource; }
 
     // ═══════════════════════════════════════════════════════════
     // 便捷查询
@@ -276,5 +313,48 @@ public class CapturedApiCall {
             }
         }
         return null;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Builder
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Builder — 用于采集管道合成 CapturedApiCall。
+     *
+     * <p>支持 {@code fromMock} 和 {@code captureSource} 字段，
+     * 兼容现有构造器，避免破坏现有调用方。
+     */
+    public static class Builder {
+        private String endpoint;
+        private String method;
+        private Map<String, String> requestHeaders;
+        private String requestUrl;
+        private String requestBody;
+        private int statusCode;
+        private Map<String, String> responseHeaders;
+        private String responseBody;
+        private long timestamp;
+        private boolean fromMock;
+        private String captureSource;
+
+        public Builder endpoint(String endpoint) { this.endpoint = endpoint; return this; }
+        public Builder method(String method) { this.method = method; return this; }
+        public Builder requestHeaders(Map<String, String> requestHeaders) { this.requestHeaders = requestHeaders; return this; }
+        public Builder requestUrl(String requestUrl) { this.requestUrl = requestUrl; return this; }
+        public Builder requestBody(String requestBody) { this.requestBody = requestBody; return this; }
+        public Builder statusCode(int statusCode) { this.statusCode = statusCode; return this; }
+        public Builder responseHeaders(Map<String, String> responseHeaders) { this.responseHeaders = responseHeaders; return this; }
+        public Builder responseBody(String responseBody) { this.responseBody = responseBody; return this; }
+        public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
+        public Builder fromMock(boolean fromMock) { this.fromMock = fromMock; return this; }
+        public Builder captureSource(String captureSource) { this.captureSource = captureSource; return this; }
+
+        public CapturedApiCall build() {
+            return new CapturedApiCall(
+                    endpoint, method, requestHeaders, requestUrl, requestBody,
+                    statusCode, responseHeaders, responseBody, timestamp,
+                    fromMock, captureSource);
+        }
     }
 }

@@ -1505,26 +1505,30 @@ public class SummaryReportGenerator {
             sb.append("                                    <th style=\"text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Failure</th>\n");
             sb.append("                                </tr>\n");
 
-            String lastFeature = null;
+            // 先按 feature 分组，保证同一 feature 只显示一次标题并聚合其下全部 scenario
+            Map<String, List<FailureInfo>> failuresByFeature = new LinkedHashMap<>();
             for (FailureInfo f : failures) {
-                if (!f.feature.equals(lastFeature)) {
-                    sb.append("                                <tr>\n");
-                    sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(f.feature)).append("</td>\n");
-                    sb.append("                                </tr>\n");
-                    lastFeature = f.feature;
-                }
+                failuresByFeature.computeIfAbsent(f.feature, k -> new ArrayList<>()).add(f);
+            }
 
+            for (Map.Entry<String, List<FailureInfo>> entry : failuresByFeature.entrySet()) {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(f.scenario)).append("</a>\n");
-                sb.append("                                    </td>\n");
-                sb.append("                                    <td class=\"scenarioResult\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                appendResultLabel(sb, f.result);
-                if (f.error != null && !f.error.isEmpty()) {
-                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(f.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(f.error))).append("</div>\n");
-                }
-                sb.append("                                    </td>\n");
+                sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(entry.getKey())).append("</td>\n");
                 sb.append("                                </tr>\n");
+
+                for (FailureInfo f : entry.getValue()) {
+                    sb.append("                                <tr>\n");
+                    sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                    sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(f.scenario)).append("</a>\n");
+                    sb.append("                                    </td>\n");
+                    sb.append("                                    <td class=\"scenarioResult\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                    appendResultLabel(sb, f.result);
+                    if (f.error != null && !f.error.isEmpty()) {
+                        sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(f.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(f.error))).append("</div>\n");
+                    }
+                    sb.append("                                    </td>\n");
+                    sb.append("                                </tr>\n");
+                }
             }
 
             sb.append("                            </table>\n");
@@ -1545,61 +1549,61 @@ public class SummaryReportGenerator {
         sb.append("                                    <th style=\"text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Result</th>\n");
         sb.append("                                </tr>\n");
 
-        String lastFeature = null;
+        // 先按归一化后的 feature 分组，保证同一 feature 只显示一次标题，
+        // 并聚合该 feature 下的所有 scenario（testOutcomes + simpleTestOutcomes）。
+        // 这样即使 testOutcomes 内部顺序交错，也不会出现同一 feature 重复展示的问题。
+        Map<String, List<Runnable>> rowsByFeature = new LinkedHashMap<>();
         for (TestOutcome t : testOutcomes) {
             String feature = normalizeFeatureName(getFeature(t));
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
-
-            if (!feature.equals(lastFeature)) {
+            TestOutcome outcome = t;
+            rowsByFeature.computeIfAbsent(feature, k -> new ArrayList<>()).add(() -> {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(feature)).append("</td>\n");
+                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(outcome.getName())).append("</a>\n");
+                sb.append("                                    </td>\n");
+                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+
+                appendResultLabel(sb, outcome.getResult());
+                if (outcome.getResult() != TestResult.SUCCESS && outcome.getResult() != TestResult.IGNORED && outcome.getResult() != TestResult.SKIPPED) {
+                    String error = outcome.getTestFailureMessage() != null ? outcome.getTestFailureMessage() : "Test failed";
+                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(outcome.getResult())).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(error))).append("</div>\n");
+                }
+
+                sb.append("                                    </td>\n");
                 sb.append("                                </tr>\n");
-                lastFeature = feature;
-            }
-
-            sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(t.getName())).append("</a>\n");
-            sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-
-            appendResultLabel(sb, t.getResult());
-            if (t.getResult() != TestResult.SUCCESS && t.getResult() != TestResult.IGNORED && t.getResult() != TestResult.SKIPPED) {
-                String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
-                sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(t.getResult())).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(error))).append("</div>\n");
-            }
-
-            sb.append("                                    </td>\n");
-            sb.append("                                </tr>\n");
+            });
         }
-
-        // 处理 simpleTestOutcomes
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String feature = normalizeFeatureName(t.featureName);
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
-
-            if (!feature.equals(lastFeature)) {
+            SimpleTestOutcome outcome = t;
+            rowsByFeature.computeIfAbsent(feature, k -> new ArrayList<>()).add(() -> {
                 sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(feature)).append("</td>\n");
+                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+                sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(outcome.title)).append("</a>\n");
+                sb.append("                                    </td>\n");
+                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
+
+                appendResultLabel(sb, outcome.result);
+                if (outcome.result != TestResult.SUCCESS && outcome.result != TestResult.IGNORED && outcome.result != TestResult.SKIPPED) {
+                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(outcome.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(outcome.errorMessage != null && !outcome.errorMessage.isEmpty() ? outcome.errorMessage : "Test failed"))).append("</div>\n");
+                }
+
+                sb.append("                                    </td>\n");
                 sb.append("                                </tr>\n");
-                lastFeature = feature;
-            }
+            });
+        }
 
+        for (Map.Entry<String, List<Runnable>> entry : rowsByFeature.entrySet()) {
             sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-            sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(t.title)).append("</a>\n");
-            sb.append("                                    </td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-
-            appendResultLabel(sb, t.result);
-            if (t.result != TestResult.SUCCESS && t.result != TestResult.IGNORED && t.result != TestResult.SKIPPED) {
-                sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(t.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed"))).append("</div>\n");
-            }
-
-            sb.append("                                    </td>\n");
+            sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(entry.getKey())).append("</td>\n");
             sb.append("                                </tr>\n");
+            for (Runnable row : entry.getValue()) {
+                row.run();
+            }
         }
 
         sb.append("                            </table>\n");

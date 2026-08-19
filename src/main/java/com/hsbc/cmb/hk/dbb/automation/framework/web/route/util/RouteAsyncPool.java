@@ -231,20 +231,23 @@ public final class RouteAsyncPool {
         double threadUsage = (double) activeCount / Math.max(poolSize, 1);
 
         if (queueUsage >= QUEUE_USAGE_ALERT_THRESHOLD) {
-            LOGGER.error("[RouteAsyncPool] ALERT: Queue usage {:.1%} exceeds threshold {:.1%}! "
+            LOGGER.error("[RouteAsyncPool] ALERT: Queue usage {} exceeds threshold {}! "
                             + "Queue: {}/{}, Active: {}, Pool: {}/{}",
-                    queueUsage, QUEUE_USAGE_ALERT_THRESHOLD,
+                    String.format("%.1f%%", queueUsage * 100),
+                    String.format("%.1f%%", QUEUE_USAGE_ALERT_THRESHOLD * 100),
                     queueSize, QUEUE_CAPACITY, activeCount, poolSize, MAX_THREADS);
         } else if (queueUsage >= QUEUE_USAGE_ALERT_THRESHOLD * 0.7) {
-            LOGGER.warn("[RouteAsyncPool] WARNING: Queue usage {:.1%} approaching threshold. "
+            LOGGER.warn("[RouteAsyncPool] WARNING: Queue usage {} approaching threshold. "
                             + "Queue: {}/{}, Active: {}",
-                    queueUsage, queueSize, QUEUE_CAPACITY, activeCount);
+                    String.format("%.1f%%", queueUsage * 100),
+                    queueSize, QUEUE_CAPACITY, activeCount);
         }
 
         if (threadUsage >= THREAD_USAGE_ALERT_THRESHOLD) {
-            LOGGER.error("[RouteAsyncPool] ALERT: Thread usage {:.1%} exceeds threshold {:.1%}! "
+            LOGGER.error("[RouteAsyncPool] ALERT: Thread usage {} exceeds threshold {}! "
                             + "Active: {}, Pool: {}/{}",
-                    threadUsage, THREAD_USAGE_ALERT_THRESHOLD,
+                    String.format("%.1f%%", threadUsage * 100),
+                    String.format("%.1f%%", THREAD_USAGE_ALERT_THRESHOLD * 100),
                     activeCount, poolSize, MAX_THREADS);
         }
 

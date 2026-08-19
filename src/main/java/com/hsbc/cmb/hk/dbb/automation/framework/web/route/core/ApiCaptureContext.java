@@ -89,6 +89,42 @@ public class ApiCaptureContext {
         SHARED.reset();
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ R4: 步骤级时间窗口 — 隔离同一 Scenario 内跨 Step 的 API 调用串扰
+    // ═══════════════════════════════════════════════════════════════
+    // 在 stepStarted 时记录起始时间戳，后续的 waitForApi/getLastApiCall 等
+    // 可限定只匹配该时间戳之后的调用，避免命中上一步遗留的旧调用。
+
+    /** 当前步骤起始时间戳（毫秒），0 表示未限定（匹配全部） */
+    private volatile long stepStartTimestamp = 0L;
+
+    /**
+     * 标记一个新步骤的起始时间点（由 PlaywrightListener.stepStarted 调用）。
+     * <p>调用后，所有 {@code *SinceStepStart} 系列查询仅匹配时间戳
+     * {@code >= stepStartTimestamp} 的调用，消除跨 step 串扰。
+     */
+    public void markStepStart() {
+        this.stepStartTimestamp = System.currentTimeMillis();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[ApiCaptureContext] markStepStart → stepStartTimestamp={}", stepStartTimestamp);
+    }
+
+    /**
+     * 当前步骤起始时间戳。
+     */
+    public long getStepStartTimestamp() {
+        return stepStartTimestamp;
+    }
+
+    /**
+     * 判断调用是否在本步骤窗口内（{@code timestamp >= stepStartTimestamp}）。
+     * <p>{@code stepStartTimestamp == 0} 时视为不限定，返回 true。
+     */
+    private boolean isWithinStepWindow(CapturedApiCall call) {
+        long ts = stepStartTimestamp;
+        return ts == 0L || call.timestamp() >= ts;
+    }
+
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
 
@@ -107,8 +143,12 @@ public class ApiCaptureContext {
     // ⭐ #5 wait/notify 锁：waitForApi 使用条件等待替代忙轮询
     private final Object apiCallLock = new Object();
 
-    // ⭐ P3: 最近调用平铺列表 — 延迟初始化，用于 scanForMatching 快速扫描（避免 O(n) 遍历两重 Map）
-    private final List<CapturedApiCall> recentCalls = new CopyOnWriteArrayList<>();
+    // ⭐ P3: 最近调用平铺列表 — 用于 scanForMatching 快速扫描。
+    //   改用有界 ArrayDeque + 单锁，淘汰最老元素为 O(1)；
+    //   避免 CopyOnWriteArrayList 每次 add 都复制整个底层数组（500 容量时 O(500) 拷贝 + GC 压力）。
+    private final java.util.ArrayDeque<CapturedApiCall> recentCalls = new java.util.ArrayDeque<>();
+    private final java.util.concurrent.locks.ReentrantLock recentCallsLock =
+            new java.util.concurrent.locks.ReentrantLock();
     private static final int MAX_RECENT_CALLS = 500;
 
     // ═══════════════════════════════════════════════════════════════
@@ -150,7 +190,7 @@ public class ApiCaptureContext {
      * 避免 {@code Thread.interrupt()} 导致后续 Playwright IO（page.waitForSelector 等）
      * 抛出异常，从而保证后续 Scenario 仍可正常执行。
      *
-     * <p>断言失败由 {@link PlaywrightListener#checkAndFailOnApiAssertions()}
+     * <p>断言失败由 {@link PlaywrightListener# ()}
      * 在每个步骤结束时兜底检查并抛出 {@code AssertionError}。
      */
     public void signalFailFast() {
@@ -377,10 +417,26 @@ public class ApiCaptureContext {
                 if (remaining <= 0) {
                     return false;
                 }
-                completionLock.wait(remaining);
+                inWaitState = true;
+                try {
+                    completionLock.wait(remaining);
+                } finally {
+                    inWaitState = false;
+                }
             }
         }
         return true;
+    }
+
+    /**
+     * ⭐ 可观测性标志：waiter 线程已进入 completionLock.wait() 内部时为 true。
+     * 供测试/调试精确判断等待线程就绪，避免 signal 早于 wait 的竞态。
+     */
+    private volatile boolean inWaitState = false;
+
+    /** 仅供测试观测：waiter 是否已进入 wait 状态 */
+    boolean isInWaitState() {
+        return inWaitState;
     }
 
     /** 标记断言失败（兼容旧调用） */
@@ -463,9 +519,16 @@ public class ApiCaptureContext {
         responseStorage.clear();
         apiCallsPerUrl.clear();
         apiCallsByUrl.clear();
-        recentCalls.clear();
+        recentCallsLock.lock();
+        try {
+            recentCalls.clear();
+        } finally {
+            recentCallsLock.unlock();
+        }
         wildcardPatternKeys.clear();
         totalResponseSize.set(0L);
+        // ⭐ R4: 测试级重置时清除步骤窗口标记
+        stepStartTimestamp = 0L;
         testThread = null;
         synchronized (completionLock) {
             completionLock.notifyAll();
@@ -509,12 +572,16 @@ public class ApiCaptureContext {
         }
 
         // ⭐ P3: 追加到平铺最近调用列表（用于 scanForMatching 快速扫描）
-        //   超限时移除最老的一半条目
-        if (recentCalls.size() >= MAX_RECENT_CALLS) {
-            List<CapturedApiCall> toRemove = new ArrayList<>(recentCalls.subList(0, MAX_RECENT_CALLS / 2));
-            recentCalls.removeAll(toRemove);
+        //   有界队列，超限时淘汰最老元素（O(1)），避免 COW 数组复制
+        recentCallsLock.lock();
+        try {
+            recentCalls.addLast(call);
+            while (recentCalls.size() > MAX_RECENT_CALLS) {
+                recentCalls.pollFirst();
+            }
+        } finally {
+            recentCallsLock.unlock();
         }
-        recentCalls.add(call);
 
         // ⭐ #5 wait/notify：通知 waitForApi 等待线程有新调用到达
         synchronized (apiCallLock) {
@@ -525,6 +592,50 @@ public class ApiCaptureContext {
                 "[ApiCaptureContext] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",
                 endpoint, call.method(), call.statusCode(),
                 call.responseBody() != null ? call.responseBody().length() : 0);
+    }
+
+    /**
+     * 更新已存储的 API 调用快照的响应体（惰性 body 读取完成后调用）。
+     *
+     * <p>按 requestUrl 精确查找最近一次调用，若其 responseBody 为 null 则替换为新 body。
+     * 不创建新条目，避免 {@link #storeApiCall(CapturedApiCall)} 导致的重复存储。
+     *
+     * <p>线程安全：对列表的修改在 synchronized 块中执行。
+     *
+     * @param requestUrl 实际请求 URL（与 {@code CapturedApiCall.requestUrl()} 一致）
+     * @param body       响应体字符串
+     * @return true=更新成功，false=未找到匹配的调用或 body 已存在
+     */
+    public boolean updateResponseBody(String requestUrl, String body) {
+        if (requestUrl == null || body == null) return false;
+
+        List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
+        if (list == null || list.isEmpty()) return false;
+
+        synchronized (list) {
+            for (int i = list.size() - 1; i >= 0; i--) {
+                CapturedApiCall existing = list.get(i);
+                if (existing.responseBody() == null) {
+                    // 创建新对象替换旧对象
+                    CapturedApiCall updated = new CapturedApiCall.Builder()
+                            .endpoint(existing.endpoint())
+                            .method(existing.method())
+                            .requestUrl(existing.requestUrl())
+                            .requestHeaders(existing.requestHeaders())
+                            .requestBody(existing.requestBody())
+                            .statusCode(existing.statusCode())
+                            .responseHeaders(existing.responseHeaders())
+                            .responseBody(body)
+                            .timestamp(existing.timestamp())
+                            .fromMock(existing.fromMock())
+                            .captureSource(existing.captureSource())
+                            .build();
+                    list.set(i, updated);
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -620,6 +731,42 @@ public class ApiCaptureContext {
             }
         }
         return latest;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ R4: 步骤级窗口查询重载 — 只匹配 markStepStart() 之后的调用
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 获取当前步骤起始之后的、指定端点的所有 API 调用快照（按调用顺序）。
+     *
+     * <p>仅匹配 {@link #markStepStart()} 记录的时间戳之后的调用，
+     * 避免命中上一步遗留的旧调用（R4 跨 step 串扰隔离）。
+     *
+     * @param endpoint 请求端点（路径+查询，不含 host）
+     * @return 不可变副本列表，未找到返回空列表
+     */
+    public List<CapturedApiCall> getApiCallsSinceStepStart(String endpoint) {
+        List<CapturedApiCall> all = getApiCalls(endpoint);
+        if (all.isEmpty() || stepStartTimestamp == 0L) return all;
+        List<CapturedApiCall> filtered = new ArrayList<>();
+        for (CapturedApiCall c : all) {
+            if (c.timestamp() >= stepStartTimestamp) filtered.add(c);
+        }
+        return filtered;
+    }
+
+    /**
+     * 获取当前步骤起始之后的、指定端点的最近一次 API 调用快照。
+     *
+     * <p>仅匹配 {@link #markStepStart()} 记录的时间戳之后的调用（R4）。
+     *
+     * @param endpoint 请求端点（路径+查询，不含 host）
+     * @return 捕获的快照，未找到返回 null
+     */
+    public CapturedApiCall getLastApiCallSinceStepStart(String endpoint) {
+        List<CapturedApiCall> calls = getApiCallsSinceStepStart(endpoint);
+        return calls.isEmpty() ? null : calls.get(calls.size() - 1);
     }
 
     /**
@@ -866,10 +1013,17 @@ public class ApiCaptureContext {
      * <p>仅在 recentCalls 未命中时 fallback 到 Map 遍历（兼容极边缘调用）。
      */
     private CapturedApiCall scanForMatching(Predicate<CapturedApiCall> predicate) {
-        // ⭐ P3: Fast path — 从平铺列表由新到旧扫描（绝大多数命中即返回）
-        for (int i = recentCalls.size() - 1; i >= 0; i--) {
-            CapturedApiCall c = recentCalls.get(i);
-            if (predicate.test(c)) return c;
+        // ⭐ P3: Fast path — 从平铺列表由新到旧扫描（绝大多数命中即返回）。
+        //   ArrayDeque 无 get(int)，用 descendingIterator 从 newest→oldest 遍历，并加锁保证一致性。
+        recentCallsLock.lock();
+        try {
+            java.util.Iterator<CapturedApiCall> it = recentCalls.descendingIterator();
+            while (it.hasNext()) {
+                CapturedApiCall c = it.next();
+                if (predicate.test(c)) return c;
+            }
+        } finally {
+            recentCallsLock.unlock();
         }
         // Fallback 扫描 Map（兼容 recentCalls 已被淘汰的边缘调用，理论上极少触发）
         for (List<CapturedApiCall> calls : apiCallsByUrl.values()) {

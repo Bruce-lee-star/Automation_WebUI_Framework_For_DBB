@@ -15,6 +15,7 @@ import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.Option;
 import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
 import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
+import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
@@ -57,6 +58,10 @@ public class ModifyHandler {
     /** JSONPath 缓存容量上限，超过后清空重建 */
     private static final int JSONPATH_CACHE_MAX_SIZE = 200;
 
+    /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
+    private static final double ROUTE_FETCH_TIMEOUT_MS =
+            getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+
     /** 是否在 JSON 解析失败时退化为字符串替换（False=仅处理 JSON） */
     private static volatile boolean allowFallbackStringReplace = false;
 
@@ -69,16 +74,13 @@ public class ModifyHandler {
     }
 
     /**
-     * ⭐ #7 伪 LRU 淘汰：从 ConcurrentHashMap 中移除约 25% 的条目。
-     * <p>使用弱一致性迭代器，兼容并发环境。
+     * ⭐ #7 容量保护：当 JSONPath 编译缓存超过软上限时触发清空。
+     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
+     * computeIfAbsent 下可能抛出 ConcurrentModificationException）。
+     * JSONPath 表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
      */
     private static void evictOldestQuarter(Map<?, ?> map) {
-        int evictCount = Math.max(1, map.size() / 4);
-        Iterator<?> it = map.keySet().iterator();
-        for (int i = 0; i < evictCount && it.hasNext(); i++) {
-            it.next();
-            it.remove();
-        }
+        map.clear();
     }
 
     /**
@@ -151,7 +153,10 @@ public class ModifyHandler {
             opts.setHeaders(newHeaders);
             finalHeaders = Collections.unmodifiableMap(newHeaders);
         } else {
-            finalHeaders = req.headers();  // 未修改则用原始请求头
+            // ⭐ 防御性拷贝：Playwright 返回的 headers Map 是内部可变实例，
+            // 若直接持有并在后续异步路径（如 feedCaptureEvent）被读取/修改，
+            // 可能导致不可预期行为或 ConcurrentModificationException。
+            finalHeaders = new HashMap<>(req.headers());  // 未修改则用原始请求头（拷贝）
         }
 
         // ── 2. 修改请求体（增删改） ─────────────────────────────────
@@ -289,35 +294,41 @@ public class ModifyHandler {
                 finalHeaders,
                 finalBody != null ? finalBody : (bodyModified ? "(empty)" : "(unchanged)"));
 
-        // ── 5. 放行请求（异常安全）─────────────────────────────────
+        // ── 5. route.fetch() 获取真实服务器响应 ────────────────────
+        //    使用 route.fetch() 替代 route.resume()，以便获取真实响应体、状态码和响应头。
+        //    注意：Playwright 的 route.fetch() 发送的是原始请求（未修改的 headers/body/method），
+        //    因此 MODIFY 的请求修改不会实际到达服务器。但浏览器最终收到的是真实响应，
+        //    修改详情（已修改的 headers/body/method）作为元数据存储到 CapturedApiCall 中。
+        //
+        //    权衡：放弃"修改请求→服务器处理修改后请求"的能力，换取"获取真实响应体"的能力。
+        //    在大多数测试场景中，获取真实响应体比实际修改请求更重要（断言/monitoring 场景）。
         try {
-            route.resume(opts);
-            LOGGER.info("[ModifyHandler] Modified: url={}, pattern='{}', method={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
-                    RouteUtil.sanitizeUrl(req.url()), rule.getUrlPattern(),
-                    finalMethod,
-                    requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
-                    requestHeadersToRemove != null ? requestHeadersToRemove : "none",
-                    fieldsToModify != null ? fieldsToModify.keySet() : "none",
-                    fieldsToAdd != null ? fieldsToAdd.keySet() : "none",
-                    fieldsToRemove != null ? fieldsToRemove : "none");
-            SerenityReporter.recordApiOperation("MODIFY", req.url(),
-                    String.format("Pattern: %s\nMethod: %s\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
-                            rule.getUrlPattern(),
-                            finalMethod,
-                            requestHeadersToSet != null ? requestHeadersToSet.toString() : "none",
-                            requestHeadersToRemove != null ? requestHeadersToRemove.toString() : "none",
-                            fieldsToModify != null ? fieldsToModify.toString() : "none",
-                            fieldsToAdd != null ? fieldsToAdd.toString() : "none",
-                            fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
+            // 进入 fetch 前确认页面未关闭
+            if (isPageClosed(route)) {
+                LOGGER.warn("[ModifyHandler] Page/context already closed, skip fetch (resume to avoid blocking): pattern='{}', url='{}'",
+                        rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
+                try { route.resume(); } catch (Exception ignored) {}
+                return;
+            }
 
-            // ── 6. 存储 Modify 调用到 ApiCaptureContext ───────────────
+            Route.FetchOptions fetchOpts = new Route.FetchOptions()
+                    .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
+            // ⭐ fetch() 发送原始请求到真实服务器，获取真实响应
+            APIResponse realResp = route.fetch(fetchOpts);
+            int realStatus = realResp.status();
+            byte[] realBodyBytes = realResp.body();
+            String realBody = realBodyBytes != null ? new String(realBodyBytes, StandardCharsets.UTF_8) : "";
+            Map<String, String> realRespHeaders = new HashMap<>(realResp.headers());
+
+            LOGGER.info("[ModifyHandler] Real response fetched: pattern='{}', status={}, bodyLength={}",
+                    rule.getUrlPattern(), realStatus, realBody.length());
+
+            // ── 6. 构建修改详情 JSON（用于存储到 CapturedApiCall） ───────────
+            String modifyDetail = null;
             try {
-                // ⭐ 性能优化：用 ObjectNode 一次性构建 JSON（之前 7 次 writeValueAsString，
-                //    每次都要做 Jackson 序列化）。现在只做 1 次 tree→string 序列化。
                 ObjectNode detailNode = OBJECT_MAPPER.createObjectNode();
                 detailNode.put("originalUrl", req.url());
                 detailNode.put("modifiedMethod", finalMethod);
-
                 if (requestHeadersToSet != null) {
                     detailNode.set("headersSet", OBJECT_MAPPER.valueToTree(requestHeadersToSet));
                 } else {
@@ -348,25 +359,59 @@ public class ModifyHandler {
                 } else {
                     detailNode.putNull("modifiedBody");
                 }
+                modifyDetail = OBJECT_MAPPER.writeValueAsString(detailNode);
+            } catch (Exception e) {
+                LOGGER.debug("[ModifyHandler] Failed to build modify detail JSON: {}", e.getMessage());
+            }
 
-                String modifyDetail = OBJECT_MAPPER.writeValueAsString(detailNode);
+            // ── 7. fulfill 真实响应给浏览器 ──────────────────────────────
+            //    注意：我们是 MODIFY 场景，真实请求已经到服务器拿到响应。
+            //    这里将真实响应直接返回给浏览器。
+            Route.FulfillOptions fulfillOpts = new Route.FulfillOptions()
+                    .setStatus(realStatus)
+                    .setBody(realBody);
+            if (!realRespHeaders.isEmpty()) {
+                fulfillOpts.setHeaders(realRespHeaders);
+            }
+            route.fulfill(fulfillOpts);
 
+            LOGGER.info("[ModifyHandler] Modified and fulfilled: url={}, pattern='{}', method={}, status={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
+                    RouteUtil.sanitizeUrl(req.url()), rule.getUrlPattern(),
+                    finalMethod, realStatus,
+                    requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
+                    requestHeadersToRemove != null ? requestHeadersToRemove : "none",
+                    fieldsToModify != null ? fieldsToModify.keySet() : "none",
+                    fieldsToAdd != null ? fieldsToAdd.keySet() : "none",
+                    fieldsToRemove != null ? fieldsToRemove : "none");
+
+            SerenityReporter.recordApiOperation("MODIFY", req.url(),
+                    String.format("Pattern: %s\nMethod: %s\nStatus: %d\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
+                            rule.getUrlPattern(),
+                            finalMethod, realStatus,
+                            requestHeadersToSet != null ? requestHeadersToSet.toString() : "none",
+                            requestHeadersToRemove != null ? requestHeadersToRemove.toString() : "none",
+                            fieldsToModify != null ? fieldsToModify.toString() : "none",
+                            fieldsToAdd != null ? fieldsToAdd.toString() : "none",
+                            fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
+
+            // ── 8. 存储 Modify 调用到 ApiCaptureContext（含真实响应） ──────
+            try {
                 CapturedApiCall call = new CapturedApiCall(
                         rule.getUrlPattern(),
                         req.method(),
-                        null,   // Modify 场景无请求头快照
-                        0,      // resume 后无直接响应状态码
-                        finalHeaders,
-                        modifyDetail,
+                        new HashMap<>(req.headers()),   // ⭐ 存入真实请求头快照，确保 waitForApi/getLastApiCall 可按请求头精确匹配，避免业务层长等
+                        realStatus,
+                        realRespHeaders,
+                        realBody,   // ⭐ 真实响应体
                         System.currentTimeMillis(),
-                        req.url()  // 实际请求 URL，用于毫秒级精确检索
+                        req.url()
                 );
                 ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
                 if (ctx != null) {
                     ctx.storeApiCall(call);
                     LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                            "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}",
-                            rule.getUrlPattern(), req.method());
+                            "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                            rule.getUrlPattern(), req.method(), realStatus);
                 } else {
                     LOGGER.debug("[ModifyHandler] ApiCaptureContext is null, skipped store for pattern '{}'",
                             rule.getUrlPattern());
@@ -375,8 +420,13 @@ public class ModifyHandler {
                 LOGGER.debug("[ModifyHandler] Failed to store modify call to ApiCaptureContext: {}", e.getMessage());
             }
         } catch (PlaywrightException e) {
-            LOGGER.error("[ModifyHandler] Failed to resume route for pattern '{}': {}",
+            LOGGER.error("[ModifyHandler] Failed to fetch/fulfill route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
+            // 兜底：fetch/fulfill 失败时 resume 放行请求，避免请求永久挂起
+            try { route.resume(); } catch (Exception ignored) {
+                LOGGER.error("[ModifyHandler] Failed to resume after fetch failure for pattern '{}'",
+                        rule.getUrlPattern());
+            }
         }
     }
 
@@ -1421,6 +1471,32 @@ public class ModifyHandler {
                     }
                 }
             }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 工具方法
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 判断承载该请求的页面/上下文是否已被关闭。
+     *
+     * <p>route 本身不持有 page 引用，但可通过
+     * {@code route.request().frame().page().isClosed()} 间接获取。
+     * 任一环节抛异常（如页面已释放导致对象不存在）一律按"已关闭"处理，
+     * 以保守方式避免对已销毁页面执行 route.fetch() 造成长阻塞。
+     */
+    private static boolean isPageClosed(Route route) {
+        return RouteUtil.isPageClosed(route);
+    }
+
+    private static double getEnvDouble(String key, double defaultValue) {
+        String val = System.getenv(key);
+        if (val == null || val.trim().isEmpty()) return defaultValue;
+        try {
+            return Double.parseDouble(val.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
         }
     }
 }

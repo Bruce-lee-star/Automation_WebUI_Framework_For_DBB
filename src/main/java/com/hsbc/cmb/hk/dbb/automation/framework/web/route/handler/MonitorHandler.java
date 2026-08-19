@@ -23,7 +23,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -330,13 +329,15 @@ public class MonitorHandler {
     }
 
     /**
-     * 从缓存获取或编译 JsonPath 表达式（伪 LRU 容量保护）。
+     * 从缓存获取或编译 JsonPath 表达式（容量保护）。
      */
     private static JsonPath getOrCompileJsonPath(String expression) {
+        // ⭐ 单次原子查找+编译：computeIfAbsent 仅在 miss 时编译，避免先 get 再 put 的二次查找。
         JsonPath cached = JSONPATH_CACHE.get(expression);
-        if (cached != null) return cached;
-
-        // ⭐ #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空）
+        if (cached != null) {
+            return cached;
+        }
+        // 容量保护：超限时清空缓存后重新编译（JSONPath 表达式量有限，偶发全清代价低）
         if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX) {
             evictOldestQuarter(JSONPATH_CACHE);
         }
@@ -344,15 +345,13 @@ public class MonitorHandler {
     }
 
     /**
-     * ⭐ #7 伪 LRU 淘汰：从 ConcurrentHashMap 中移除约 25% 的条目。
+     * ⭐ #7 容量保护：当 JSONPath 编译缓存超过软上限时触发清空。
+     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
+     * computeIfAbsent 下可能抛出 ConcurrentModificationException）。
+     * JSONPath 表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
      */
     private static void evictOldestQuarter(Map<?, ?> map) {
-        int evictCount = Math.max(1, map.size() / 4);
-        Iterator<?> it = map.keySet().iterator();
-        for (int i = 0; i < evictCount && it.hasNext(); i++) {
-            it.next();
-            it.remove();
-        }
+        map.clear();
     }
 
     /**

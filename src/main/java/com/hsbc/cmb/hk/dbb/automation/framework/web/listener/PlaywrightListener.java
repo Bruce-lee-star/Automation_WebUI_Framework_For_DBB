@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManage
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
@@ -178,7 +179,8 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
-
+        // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
+        ApiCapture.stop();
 
         // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
         if (!discoveryPhaseCompleted) {
@@ -253,6 +255,10 @@ public class PlaywrightListener implements StepListener {
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Test completed: {} in {}ms (Result: {})", testName, duration, result);
         } finally {
+            // ⭐ 安全清理：scenario 结束时立即停止采集引擎，而非等到下一个 scenario 开始
+            //    避免 scenario 被中断（断言失败/超时）后引擎仍在运行
+            try { ApiCapture.stop(); } catch (Exception ignored) { }
+
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
         }
@@ -306,6 +312,14 @@ public class PlaywrightListener implements StepListener {
         stepStartTime.set(System.currentTimeMillis());
         currentStepName.set(step.getTitle());
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step started: {}", step.getTitle());
+
+        // ⭐ R4: 标记步骤起始时间戳，使 waitForApi/getLastApiCall 等查询
+        // 只匹配本步骤内的 API 调用，隔离同一 Scenario 内跨 Step 的串扰。
+        try {
+            ApiCaptureContext.getCurrent().markStepStart();
+        } catch (Exception e) {
+            logger.warn("[PlaywrightListener] markStepStart failed: {}", e.getMessage());
+        }
 
         // 标记当前步骤为 Cucumber 步骤
         currentCucumberStep.set(step.getTitle());
@@ -926,7 +940,8 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
-
+        // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
+        ApiCapture.stop();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -958,7 +973,8 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
-
+        // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
+        ApiCapture.stop();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -1006,6 +1022,9 @@ public class PlaywrightListener implements StepListener {
 
             // 清理 BasePage 的 ThreadLocal 引用（防止线程复用时引用过期 Page 对象）
             BasePage.clearCurrentPage();
+
+            // ⭐⭐⭐ 采集管道清理：确保 scenario 结束时采集引擎释放
+            ApiCapture.stop();
         } catch (Exception e) {
             // ⭐ testFinished 属收尾回调：清理阶段异常不应上抛中断 Serenity 收尾流程。
             // 仅记录日志 + 兜底清空防重门控，ThreadLocal 与 API 上下文清理交由 finally 保证。
@@ -1100,6 +1119,8 @@ public class PlaywrightListener implements StepListener {
             try {
                 PlaywrightManager.cleanupForScenario();
                 BasePage.clearCurrentPage();
+                // ⭐⭐⭐ 采集管道清理：确保 scenario 结束时采集引擎释放
+                ApiCapture.stop();
             } catch (Exception e) {
                 logger.error("Failed to clean up Playwright resources after test: {}", e.getMessage());
             }

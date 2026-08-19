@@ -15,6 +15,12 @@ import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Session Manager - Manage user login state, supports skip login functionality
@@ -37,6 +43,18 @@ public class SessionManager {
     // Session timeout in minutes — read from FrameworkConfig (default: 5)
     private static final long SESSION_TIMEOUT_MINUTES =
             FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
+
+    // ⭐ R2: Session 文件 IO 超时保护 — 避免 feature 模式首 scenario 因磁盘 IO 卡顿
+    // 导致"浏览器打开但无任何动作执行"的挂起表象。
+    // 同步文件 IO（Files.exists / newBufferedReader / Files.delete / loadHomeUrl）
+    // 包装到独立线程执行，超时才降级为"返回 false 触发登录"，绝不阻塞业务线程。
+    private static final long SESSION_IO_TIMEOUT_MS = 3_000L;
+    private static final ExecutorService SESSION_IO_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "session-io-timeout-guard");
+                t.setDaemon(true);
+                return t;
+            });
 
     // ==================== Feature 级别 Session 缓存 ====================
     // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
@@ -157,7 +175,35 @@ public class SessionManager {
      * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
      * @return true 表示 session 文件存在且未过期，false 表示需要登录
      */
+    /**
+     * 检查是否存在有效的 Session（带 IO 超时保护，R2）。
+     *
+     * <p>内部的同步文件 IO（exists / isSessionExpired / delete）在独立线程执行，
+     * 若超过 {@link #SESSION_IO_TIMEOUT_MS} 仍未完成，则降级返回 {@code false}
+     * （触发正常的登录流程），避免业务线程被磁盘 IO 卡死导致测试挂起。
+     */
     private static boolean hasSession(String sessionKey) {
+        try {
+            Future<Boolean> future = SESSION_IO_EXECUTOR.submit(
+                    (Callable<Boolean>) () -> hasSessionSync(sessionKey));
+            return future.get(SESSION_IO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            LOGGER.warn("[SessionManager] hasSession IO timed out ({}ms) for {} → treating as no session",
+                    SESSION_IO_TIMEOUT_MS, sessionKey);
+            return false;
+        } catch (Exception e) {
+            LOGGER.warn("[SessionManager] hasSession failed for {} → treating as no session: {}",
+                    sessionKey, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 同步检查 Session 是否存在且未过期（实际 IO 逻辑）。
+     *
+     * @see #hasSession(String) 包装了 IO 超时保护
+     */
+    private static boolean hasSessionSync(String sessionKey) {
         Path sessionPath = getSessionPath(sessionKey);
         Path metaPath = getMetaPath(sessionKey);
         
@@ -437,7 +483,34 @@ public class SessionManager {
      * @param sessionKey Session 标识
      * @return homeUrl，如果不存在返回 null
      */
+    /**
+     * 读取 Session 的 homeUrl（带 IO 超时保护，R2）。
+     *
+     * <p>同步文件 IO 在独立线程执行，超时（{@link #SESSION_IO_TIMEOUT_MS}）则降级返回
+     * {@code null}（触发正常登录流程），避免业务线程被磁盘 IO 卡死。
+     */
     public static String loadHomeUrl(String sessionKey) {
+        try {
+            Future<String> future = SESSION_IO_EXECUTOR.submit(
+                    (Callable<String>) () -> loadHomeUrlSync(sessionKey));
+            return future.get(SESSION_IO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            LOGGER.warn("[SessionManager] loadHomeUrl IO timed out ({}ms) for {} → returning null",
+                    SESSION_IO_TIMEOUT_MS, sessionKey);
+            return null;
+        } catch (Exception e) {
+            LOGGER.warn("[SessionManager] loadHomeUrl failed for {} → returning null: {}",
+                    sessionKey, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 同步读取 homeUrl（实际 IO 逻辑）。
+     *
+     * @see #loadHomeUrl(String) 包装了 IO 超时保护
+     */
+    private static String loadHomeUrlSync(String sessionKey) {
         Path metaPath = getMetaPath(sessionKey);
         if (!Files.exists(metaPath)) {
             return null;

@@ -130,10 +130,11 @@ public class MockHandler {
             // ── 7. 存储 Mock 调用到 ApiCaptureContext ───────────────
             try {
                 String method = route.request().method();
+                Map<String, String> requestHeaders = new HashMap<>(route.request().headers());
                 CapturedApiCall call = new CapturedApiCall(
                         rule.getUrlPattern(),
                         method,
-                        null,  // Mock 场景无请求头
+                        requestHeaders,
                         status,
                         rule.getMockHeaders(),  // Mock 自定义响应头
                         body,
@@ -266,10 +267,12 @@ public class MockHandler {
                                               int status, Map<String, String> respHeaders, String body) {
         try {
             String method = route.request().method();
+            // ⭐ 从 route.request() 获取原始请求头，包含 method/headers/content-type 等
+            Map<String, String> requestHeaders = new HashMap<>(route.request().headers());
             CapturedApiCall call = new CapturedApiCall(
                     rule.getUrlPattern(),
                     method,
-                    null,
+                    requestHeaders,
                     status,
                     respHeaders,
                     body,

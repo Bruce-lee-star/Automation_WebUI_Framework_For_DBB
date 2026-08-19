@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -12,7 +13,6 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Iterator;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -363,16 +363,14 @@ public final class RouteUtil {
     }
 
     /**
-     * ⭐ P2: 伪 LRU 淘汰辅助 — 从 ConcurrentHashMap 中移除约 25% 的条目。
-     * <p>使用弱一致性迭代器，适合并发场景下的近似 LRU。
+     * ⭐ P2: 容量保护 — 当 Pattern 缓存超过软上限时触发清空。
+     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
+     * computeIfAbsent 下可能抛出 ConcurrentModificationException，与
+     * ModifyHandler/MonitorHandler 的 evictOldestQuarter 同源问题）。
+     * 正则表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
      */
     private static void evictOldestQuarter(ConcurrentHashMap<?, ?> map) {
-        int evictCount = Math.max(1, map.size() / 4);
-        Iterator<?> it = map.keySet().iterator();
-        for (int i = 0; i < evictCount && it.hasNext(); i++) {
-            it.next();
-            it.remove();
-        }
+        map.clear();
     }
 
     /**
@@ -572,6 +570,21 @@ public final class RouteUtil {
             return route.request().frame().page().isClosed();
         } catch (Exception e) {
             // 任何读取异常都视为页面已不可用，安全放行。
+            return true;
+        }
+    }
+
+    /**
+     * 判断 Page 是否已关闭。
+     *
+     * <p>用于采集层（{@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.EventMerger}）
+     * 在异步 body 读取前检查页面状态，避免对已关闭页面执行耗时操作。
+     */
+    public static boolean isPageClosed(Page page) {
+        if (page == null) return true;
+        try {
+            return page.isClosed();
+        } catch (Exception e) {
             return true;
         }
     }

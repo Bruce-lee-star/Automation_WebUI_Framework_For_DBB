@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.CaptureEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.CaptureEvent;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
@@ -63,6 +65,13 @@ public class RouteEngine {
      * </ol>
      */
     private static final Map<String, RouteRule> CONTEXT_RULES = new ConcurrentHashMap<>();
+
+    /**
+     * ⭐ 性能优化：context 规则的预提取 path 子串缓存。
+     * key = 归一化 pattern，value = 预先提取的 path（见 extractPathFromNormalizedPattern）。
+     * 避免在 findMatchingContextRule 高频路径中每次请求都 substring 分配新 String。
+     */
+    private static final Map<String, String> CONTEXT_RULE_PATHS = new ConcurrentHashMap<>();
 
     /**
      * Route 防重门控 — 当同一请求匹配多个重叠 pattern 时，
@@ -152,6 +161,21 @@ public class RouteEngine {
                 return t;
             });
 
+    /** 采集引擎实例（由 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture} 设置） */
+    private static volatile CaptureEngine CAPTURE_ENGINE;
+
+    /**
+     * 设置采集引擎实例（供采集管道接收 MOCK/MODIFY 路由事件）。
+     *
+     * <p>由 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture#start(Page)}
+     * 在启动时调用。执行 handler 后若 CapturedApiCall 不为 null 则投喂到管道。
+     *
+     * @param engine 采集引擎实例，null 表示取消关联
+     */
+    public static void setCaptureEngine(CaptureEngine engine) {
+        CAPTURE_ENGINE = engine;
+    }
+
     /** 标记调度器是否已关闭 */
     private static volatile boolean scheduledShutdown = false;
 
@@ -180,11 +204,15 @@ public class RouteEngine {
 
         LOGGER.info("[RouteEngine] Shutting down schedulers...");
 
+        // ⭐ 停止采集引擎（释放 CDP session 和线程池）
+        com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture.stop();
+
         // ⭐ 清理所有上下文路由注册表（含 Playwright 层的 unroute）
         RouteRegistry.clearAll();
         clearAllMonitorSessions();
         DISPATCHED_ROUTES.clear();
         CONTEXT_RULES.clear();
+        CONTEXT_RULE_PATHS.clear();
         CROSS_LAYER_HANDLED_URLS.clear();
         PAGE_RULES.clear();
 
@@ -301,6 +329,8 @@ public class RouteEngine {
         context.route(pattern, route -> dispatchRoute(route, rule));
         // ⭐ Context 级规则入注册表，供 page 级 handler 跨层级合并
         CONTEXT_RULES.put(pattern, rule);
+        // ⭐ 性能优化：预提取 path 子串并缓存（避免高频匹配时重复 substring）
+        CONTEXT_RULE_PATHS.put(pattern, extractPathFromNormalizedPattern(pattern));
         LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
                 rule.getType(), pattern);
         startMonitorSession(context, rule, pattern);
@@ -797,6 +827,9 @@ public class RouteEngine {
             if (rule.getType() != RouteHandleType.MONITOR) {
                 onMonitorMatch(rule);
             }
+
+            // ═══ 采集管道钩子：MOCK/MODIFY 处理完成后投喂事件 ═══
+            feedCaptureEvent(route, rule, req);
         } catch (RouteException.ApiAssertionException e) {
             // ⭐⭐⭐ MonitorHandler 同步断言失败 — 测试线程已被 signalFailFast() 中断
             LOGGER.error("[RouteEngine] API assertion FAILED for pattern '{}': {}",
@@ -810,7 +843,14 @@ public class RouteEngine {
             try {
                 route.resume();
             } catch (Exception resumeEx) {
-                LOGGER.error("[RouteEngine] Failed to resume route after handler error: {}", resumeEx.getMessage());
+                // resume 失败（route 已失效/页面已关闭）：兜底 abort，
+                // 确保请求绝对不会永久悬停导致"浏览器打开但无动作"的挂起。
+                try {
+                    route.abort();
+                } catch (Exception abortEx) {
+                    LOGGER.error("[RouteEngine] Failed to resume AND abort route after handler error: {}",
+                            abortEx.getMessage());
+                }
             }
         } finally {
             // ═══ 防重门控释放：handler 完成后立即 remove，允许同一 pattern 后续请求正常处理 ═══
@@ -1069,10 +1109,9 @@ public class RouteEngine {
     static RouteRule findMatchingContextRule(String url) {
         if (url == null || CONTEXT_RULES.isEmpty()) return null;
         for (Map.Entry<String, RouteRule> entry : CONTEXT_RULES.entrySet()) {
-            String normalized = entry.getKey();
-            // 提取路径子串：**/path/** → /path
-            String path = extractPathFromNormalizedPattern(normalized);
-            if (!path.isEmpty() && url.contains(path)) {
+            // ⭐ 性能优化：直接读预缓存的 path 子串，避免每次请求 substring 分配
+            String path = CONTEXT_RULE_PATHS.get(entry.getKey());
+            if (path != null && !path.isEmpty() && url.contains(path)) {
                 return entry.getValue();
             }
         }
@@ -1107,6 +1146,7 @@ public class RouteEngine {
     public static void removeContextRules(Set<String> patterns) {
         if (patterns == null || patterns.isEmpty()) return;
         CONTEXT_RULES.keySet().removeAll(patterns);
+        CONTEXT_RULE_PATHS.keySet().removeAll(patterns);
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] Removed {} context rules, remaining: {}",
                 patterns.size(), CONTEXT_RULES.size());
@@ -1214,6 +1254,68 @@ public class RouteEngine {
 
             LOGGER.debug("[RouteEngine] MonitorSession stopped: pattern='{}', totalMatches={}",
                     pattern, matchCount.get());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 采集管道钩子
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 将 MOCK/MODIFY 路由事件投喂到采集管道。
+     *
+     * <p>在 {@link #executeHandler} 中 handler 完成后调用。
+     * 采集引擎的 CDP 旁路已覆盖普通 API 请求，
+     * 此方法仅补充 MOCK（CDP 看不到响应）和 MODIFY（route.fetch 独立请求）的事件。
+     */
+    private static void feedCaptureEvent(Route route, RouteRule rule, Request req) {
+        CaptureEngine engine = CAPTURE_ENGINE;
+        if (engine == null || !engine.isRunning()) return;
+
+        try {
+            // 使用 URL + method + 时间戳 合成 requestId，避免 req.toString() 非唯一问题
+            String requestId = "route-" + req.url() + "-" + req.method() + "-" + System.nanoTime();
+            CaptureEvent event;
+
+            switch (rule.getType()) {
+                case MOCK:
+                    // MOCK 的响应由 MockHandler 通过 route.fulfill() 返回，
+                    // CDP 旁路看不到响应 → 投喂 MOCK_FULL 事件
+                    event = CaptureEvent.mockFull(
+                            requestId,
+                            req.method(),
+                            req.url(),
+                            req.headers(),
+                            req.postData() != null ? req.postData().getBytes(java.nio.charset.StandardCharsets.UTF_8) : null,
+                            rule.getMockStatus(),
+                            null, // mock 响应头由 MockHandler 设置，此处无法获取
+                            rule.getMockBody() != null
+                                    ? rule.getMockBody().getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                                    : null
+                    );
+                    engine.feedRouteEvent(event);
+                    break;
+
+                case MODIFY:
+                    // MODIFY 的请求体由 ModifyHandler 修改后通过 route.fetch() 发送，
+                    // CDP 旁路会捕获该 fetch 子请求 → 投喂 FETCH_REQUEST 标记
+                    event = CaptureEvent.fetchRequest(
+                            requestId,
+                            req.method(),
+                            req.url(),
+                            req.headers(),
+                            req.postData() != null ? req.postData().getBytes(java.nio.charset.StandardCharsets.UTF_8) : null
+                    );
+                    engine.feedRouteEvent(event);
+                    break;
+
+                default:
+                    // MONITOR/DELAY 不在此处理
+                    break;
+            }
+        } catch (Exception e) {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[RouteEngine] feedCaptureEvent error: {}", e.getMessage());
         }
     }
 }

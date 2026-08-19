@@ -94,6 +94,48 @@ public class RouteEngine {
      */
     private static final Set<String> CROSS_LAYER_HANDLED_URLS = ConcurrentHashMap.newKeySet();
 
+    /**
+     * ⭐ 页面级规则注册表：Page → List&lt;RouteRule&gt;
+     *
+     * <p>存储所有在 Page 级别注册的路由规则，用于在页面切换（新页面创建/旧页面关闭）时
+     * 自动重新注册规则到新页面，确保 API 监控在跨页面场景下不丢失。
+     *
+     * <p>使用 WeakReference 包装的 Page 键，避免阻止 Page 被 GC。
+     */
+    private static final Map<PageRef, List<RouteRule>> PAGE_RULES = new ConcurrentHashMap<>();
+
+    /**
+     * ⭐ 页面级规则的弱引用键 — 允许 Page 在不使用时被 GC 回收。
+     */
+    private static final class PageRef {
+        private final int identityHash;
+        private final java.lang.ref.WeakReference<Page> ref;
+
+        PageRef(Page page) {
+            this.identityHash = System.identityHashCode(page);
+            this.ref = new java.lang.ref.WeakReference<>(page);
+        }
+
+        Page get() { return ref.get(); }
+
+        boolean isDead() { return ref.get() == null; }
+
+        @Override
+        public boolean equals(Object o) {
+            if (o == this) return true;
+            if (!(o instanceof PageRef)) return false;
+            PageRef that = (PageRef) o;
+            Page a = this.ref.get();
+            Page b = that.ref.get();
+            return a != null && b != null && a == b;
+        }
+
+        @Override
+        public int hashCode() {
+            return identityHash;
+        }
+    }
+
     /** 超时调度器（守护线程，避免阻塞 JVM 退出） */
     private static final ScheduledExecutorService SCHEDULER =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -144,6 +186,7 @@ public class RouteEngine {
         DISPATCHED_ROUTES.clear();
         CONTEXT_RULES.clear();
         CROSS_LAYER_HANDLED_URLS.clear();
+        PAGE_RULES.clear();
 
         // 关闭网络延迟调度器
         DELAY_SCHEDULER.shutdownNow();
@@ -173,6 +216,10 @@ public class RouteEngine {
      */
     public static void register(Page page, List<RouteRule> rules) {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on Page ──", rules.size());
+
+        // ⭐ 存储页面级规则，供切换新页面时重新注册
+        PAGE_RULES.put(new PageRef(page), new java.util.ArrayList<>(rules));
+
         registerInternal(page, (pattern, rule) -> {
             RouteHandleType type = rule.getType();
             if (RouteRegistry.register(page, pattern, type)) {
@@ -920,6 +967,91 @@ public class RouteEngine {
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[RouteEngine] clearDispatchedRoutes: cleared {} dispatched + {} cross-layer entries",
                 dispatchedSize, crossLayerSize);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ⭐ 页面级规则重新注册（支持切换新页面时路由不丢失）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 将规则列表注册到指定的 Page。
+     * <p>复用 {@link #register(Page, List)} 的完整注册逻辑（含优先级覆盖、同类型重注册等）。
+     */
+    private static void registerRulesToPage(Page page, List<RouteRule> rules) {
+        if (page == null || rules == null || rules.isEmpty()) return;
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] registerRulesToPage: registering {} rule(s) on new page",
+                rules.size());
+        register(page, rules);
+    }
+
+    /**
+     * ⭐ 跨页面重新注册路由规则 — 将旧页面注册的所有规则重新注册到新页面。
+     *
+     * <p>当测试切换新页面时（如 {@code BasePage.waitForNewPage()} 或弹出新 Tab），
+     * 旧页面上的路由规则不会自动迁移到新页面。此方法查找旧页面的规则并在新页面上重新注册，
+     * 确保 API 监控、Mock、Modify 等规则在新页面继续生效。
+     *
+     * <p>查找规则匹配规则：遍历 {@link #PAGE_RULES} 注册表，查找与 {@code oldPage} 关联的规则。
+     * 若找到且新页面非空，则在新页面上重新注册。
+     *
+     * @param oldPage 旧页面（可能已关闭），用于查找其关联的规则
+     * @param newPage 新页面，规则将注册到此页面上
+     */
+    public static void reRegisterRules(Page oldPage, Page newPage) {
+        if (oldPage == null || newPage == null) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] reRegisterRules: skipped (oldPage={}, newPage={})",
+                    oldPage, newPage);
+            return;
+        }
+        if (oldPage == newPage) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] reRegisterRules: oldPage == newPage, no need to re-register");
+            return;
+        }
+
+        PageRef key = new PageRef(oldPage);
+        List<RouteRule> rules = PAGE_RULES.get(key);
+        if (rules == null || rules.isEmpty()) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] reRegisterRules: no rules found for old page, skipped");
+            return;
+        }
+
+        LOGGER.info("[RouteEngine] reRegisterRules: re-registering {} rule(s) from old page to new page",
+                rules.size());
+        registerRulesToPage(newPage, rules);
+    }
+
+    /**
+     * ⭐ 移除指定页面的规则缓存（测试结束时调用，防止跨测试用例污染）。
+     *
+     * @param page 要移除规则缓存的页面
+     */
+    public static void removePageRules(Page page) {
+        if (page == null) return;
+        PAGE_RULES.remove(new PageRef(page));
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] removePageRules: removed rules for page, remaining entries: {}",
+                PAGE_RULES.size());
+    }
+
+    /**
+     * ⭐ 清理已失效的页面级规则引用（Page 被 GC 回收后清理）。
+     */
+    public static void purgeDeadPageRules() {
+        int removed = 0;
+        java.util.Iterator<Map.Entry<PageRef, List<RouteRule>>> it = PAGE_RULES.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getKey().isDead()) {
+                it.remove();
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            LOGGER.debug("[RouteEngine] Purged {} dead page rule entries", removed);
+        }
     }
 
     // ─── Context 级规则跨层级合并 ────────────────────────────

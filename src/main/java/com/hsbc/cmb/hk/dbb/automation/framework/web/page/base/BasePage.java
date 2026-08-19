@@ -14,6 +14,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBind
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
@@ -598,10 +599,16 @@ public abstract class BasePage {
 
     /**
      * 设置当前 page 引用并同步到 PlaywrightManager，使同一 context 内的其他 PageObject 实例可感知。
+     * <p>同时自动将旧页面的路由规则重新注册到新页面上，确保 API 监控、Mock 等规则在跨页面场景下不丢失。
      */
     private void setPageReference(Page target) {
+        Page oldPage = this.page;
         page = target;
         PlaywrightManager.setPage(page);
+        // ⭐ 跨页面路由规则重新注册：将旧页面的路由规则自动迁移到新页面
+        if (oldPage != null && oldPage != target) {
+            RouteEngine.reRegisterRules(oldPage, target);
+        }
     }
 
     /**

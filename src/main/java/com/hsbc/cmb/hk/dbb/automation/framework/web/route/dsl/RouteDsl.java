@@ -101,6 +101,9 @@ public class RouteDsl {
 
     /**
      * 启动路由注册 — 无需再传入上下文（使用构造时的绑定）。
+     *
+     * <p>如果注册在 Page 上，会自动监听页面关闭事件，将规则重新注册到同 context 的下一个可用页面，
+     * 确保 API 监控、Mock、Modify 等规则在跨页面场景下不丢失。
      */
     public void start() {
         if (rules.isEmpty()) {
@@ -116,6 +119,28 @@ public class RouteDsl {
                     "[RouteDsl]   rule[{}]: type={}, pattern='{}'", i, r.getType(), r.getUrlPattern());
         }
         RouteEngine.register(context, rules);
+
+        // ⭐ 页面级路由：监听页面关闭事件，自动重新注册到同 context 的下一个可用页面
+        if (context instanceof Page) {
+            final Page page = (Page) context;
+            final List<RouteRule> capturedRules = new java.util.ArrayList<>(rules);
+            page.onClose(p -> {
+                BrowserContext ctx = p.context();
+                if (ctx == null) {
+                    LOGGER.debug("[RouteDsl] Page closed but context is null, cannot re-register rules");
+                    return;
+                }
+                // 查找同 context 中的下一个可用页面
+                for (Page otherPage : ctx.pages()) {
+                    if (otherPage != p && !otherPage.isClosed()) {
+                        LOGGER.info("[RouteDsl] Page closed, re-registering {} rule(s) on another page in the same context",
+                                capturedRules.size());
+                        RouteEngine.reRegisterRules(p, otherPage);
+                        break;
+                    }
+                }
+            });
+        }
     }
 
     /**
@@ -127,12 +152,17 @@ public class RouteDsl {
 
     /**
      * 注销所有已注册的 pattern 并清空规则（测试结束时调用）。
+     * <p>同时清除 {@link RouteEngine} 中缓存的页面级规则，防止跨测试用例污染。
      */
     public void clear() {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteDsl] clear() — clearing {} rule(s) from {}",
                 rules.size(), context.getClass().getSimpleName());
         RouteRegistry.clearContext(context);
+        // 清除页面级规则缓存，防止跨测试用例污染
+        if (context instanceof Page) {
+            RouteEngine.removePageRules((Page) context);
+        }
         rules.clear();
     }
 

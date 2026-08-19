@@ -65,11 +65,22 @@ public class MonitorHandler {
      * </ul>
      */
     public static void handle(Route route, RouteRule rule) {
+        // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
+        if (RouteUtil.isPageClosed(route)) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] Page/Context already closed, resume & skip for pattern='{}'",
+                    rule.getUrlPattern());
+            RouteUtil.resumeIfOpen(route);
+            return;
+        }
+
         // 获取 API 监控上下文并增加活动请求计数
         ApiCaptureContext context = ApiCaptureContext.getCurrent();
         if (context == null) {
-            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, skipping assertion for pattern '{}'",
+            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
                     rule.getUrlPattern());
+            // ⭐ 必须调用 route.resume()，否则请求会永久挂起
+            RouteUtil.resumeIfOpen(route);
             return;
         }
 

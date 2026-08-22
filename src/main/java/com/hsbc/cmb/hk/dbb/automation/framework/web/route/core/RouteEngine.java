@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.EnumMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -43,6 +44,17 @@ public class RouteEngine {
     /** 预编译 Pattern — 归一化 URL 路径末尾的通配符 */
     private static final Pattern TRAILING_WILDCARDS = Pattern.compile("\\*+$");
 
+    /**
+     * ⭐ 引擎规则引用存储：context/page 对象 → (归一化 pattern → 被闭包捕获的 RouteRule 引用)。
+     *
+     * <p>用于同 pattern 多次注册时的<b>能力位合并</b>：取出已注册 rule 引用，就地
+     * {@link RouteRule#mergeFrom(RouteRule)}，闭包自动看到更新后的内容（无需 unroute 重注册）。
+     *
+     * <p>合并语义（详见 {@link RouteRule#mergeFrom}）：
+     * MONITOR 基线不可被关、MODIFY 字段 putAll、DELAY 取 max、MOCK 终结（仅可覆盖非 MOCK，不可被降级）。
+     */
+    private static final Map<Object, Map<String, RouteRule>> ENGINE_RULE_STORE = new ConcurrentHashMap<>();
+
     /** Handler 注册表：类型 → 处理器 */
     private static final Map<RouteHandleType, RouteHandler> HANDLERS = new EnumMap<>(RouteHandleType.class);
 
@@ -66,12 +78,38 @@ public class RouteEngine {
      */
     private static final Map<String, RouteRule> CONTEXT_RULES = new ConcurrentHashMap<>();
 
+    /** API capture 的可选全局 URL 范围；为空时不限制。 */
+    private static volatile String captureBaseUrl;
+    private static volatile String captureBasePath;
+
+    /** 配置 capture 只处理指定 BASE_URL 下的请求。传 null/blank 表示取消限制。 */
+    public static void setCaptureBaseUrl(String baseUrl) {
+        captureBaseUrl = normalizeCaptureBaseUrl(baseUrl);
+    }
+
+    /** 配置 capture 只处理指定 BASE_PATH 下的请求。传 null/blank 表示取消限制。 */
+    public static void setCaptureBasePath(String basePath) {
+        captureBasePath = normalizeCaptureBasePath(basePath);
+    }
+
+    /** 清除 capture 的 BASE_URL/BASE_PATH 限制。 */
+    public static void clearCaptureUrlScope() {
+        captureBaseUrl = null;
+        captureBasePath = null;
+    }
+
     /**
      * ⭐ 性能优化：context 规则的预提取 path 子串缓存。
      * key = 归一化 pattern，value = 预先提取的 path（见 extractPathFromNormalizedPattern）。
-     * 避免在 findMatchingContextRule 高频路径中每次请求都 substring 分配新 String。
+     * 避免在 dispatchRoute 跨层合并的高频路径中每次请求都 substring 分配新 String。
      */
     private static final Map<String, String> CONTEXT_RULE_PATHS = new ConcurrentHashMap<>();
+    /** 按 path literal 前缀索引 Context 规则；通配前缀规则进入 fallback。 */
+    private static final Map<String, Set<String>> CONTEXT_RULE_KEYS_BY_PREFIX = new ConcurrentHashMap<>();
+    private static final Set<String> CONTEXT_RULE_FALLBACK_KEYS = ConcurrentHashMap.newKeySet();
+    /** Context 隔离规则快照；旧全局表仅用于无 Context 的兼容路径。 */
+    private static final Map<BrowserContext, Map<String, RouteRule>> CONTEXT_RULES_BY_CONTEXT =
+            new ConcurrentHashMap<>();
 
     /**
      * Route 防重门控 — 当同一请求匹配多个重叠 pattern 时，
@@ -85,10 +123,16 @@ public class RouteEngine {
      * <p>每次测试结束通过 {@link #clearDispatchedRoutes()} 清空。
      * 同时设置容量上限，防止异常情况下（未调用 clear 的场景）无限增长。
      */
-    private static final Set<Route> DISPATCHED_ROUTES = ConcurrentHashMap.newKeySet();
+    private static final Map<Route, Long> DISPATCHED_ROUTES = new ConcurrentHashMap<>();
 
     /** DISPATCHED_ROUTES 容量上限，超过后自动清空（防御性保护） */
     private static final int MAX_DISPATCHED_ROUTES = 500;
+
+    /**
+     * DISPATCHED_ROUTES 条目 TTL：超过该时长的 Route 引用视为已结束并自动过期释放。
+     * 防止异常场景（未调用 clearDispatchedRoutes）下强引用常驻导致的内存泄漏。
+     */
+    private static final long DISPATCHED_ROUTES_TTL_MS = 60_000L;
 
     /**
      * 跨层级去重 — Page route 已通过 cross-layer merge 合并处理的请求 URL。
@@ -101,7 +145,9 @@ public class RouteEngine {
      * context handler 到达时先检查此集合，命中则跳过（直接 resume）。
      * 使用 {@code remove()} 原子获取并清除，避免 URL 临时碰撞导致误删。
      */
-    private static final Set<String> CROSS_LAYER_HANDLED_URLS = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Long> CROSS_LAYER_HANDLED_URLS = new ConcurrentHashMap<>();
+    private static final long CROSS_LAYER_DEDUP_TTL_MS = 5_000L;
+    private static final int MAX_CROSS_LAYER_DEDUP_ENTRIES = 2_048;
 
     /**
      * ⭐ 页面级规则注册表：Page → List&lt;RouteRule&gt;
@@ -154,15 +200,60 @@ public class RouteEngine {
             });
 
     /** 网络延迟调度器（多线程池，支持并发请求同时延迟） */
-    private static final ScheduledExecutorService DELAY_SCHEDULER =
-            Executors.newScheduledThreadPool(4, r -> {
-                Thread t = new Thread(r, "route-network-delay");
-                t.setDaemon(true);
-                return t;
-            });
+    private static volatile ScheduledExecutorService DELAY_SCHEDULER =
+            newDelayScheduler();
 
-    /** 采集引擎实例（由 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture} 设置） */
-    private static volatile CaptureEngine CAPTURE_ENGINE;
+    private static ScheduledExecutorService newDelayScheduler() {
+        return Executors.newScheduledThreadPool(4, r -> {
+            Thread t = new Thread(r, "route-network-delay");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    private static ScheduledExecutorService delayScheduler(Route route) {
+        try {
+            if (route != null && route.request() != null && route.request().frame() != null
+                    && route.request().frame().page() != null) {
+                BrowserContext context = route.request().frame().page().context();
+                ContextRouteEngine contextEngine = ContextRouteEngineManager.getOrStart(context);
+                if (contextEngine.isRunning()) return contextEngine.delayScheduler();
+            }
+        } catch (Exception ignored) {
+            // Page/Context 已销毁时回退兼容调度器。
+        }
+        return delayScheduler();
+    }
+
+    private static ScheduledExecutorService delayScheduler() {
+        ScheduledExecutorService current = DELAY_SCHEDULER;
+        if (current == null || current.isShutdown() || current.isTerminated()) {
+            synchronized (RouteEngine.class) {
+                current = DELAY_SCHEDULER;
+                if (current == null || current.isShutdown() || current.isTerminated()) {
+                    DELAY_SCHEDULER = current = newDelayScheduler();
+                    scheduledShutdown.set(false);
+                }
+            }
+        }
+        return current;
+    }
+
+    /** 采集引擎实例按 Page 隔离（由 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture} 设置） */
+    private static final java.util.concurrent.ConcurrentHashMap<Page, CaptureEngine> PAGE_CAPTURE_ENGINES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 绑定指定 Page 的采集引擎；用于多 Page 并行采集。 */
+    public static void bindCaptureEngine(Page page, CaptureEngine engine) {
+        if (page == null) return;
+        if (engine == null) PAGE_CAPTURE_ENGINES.remove(page);
+        else PAGE_CAPTURE_ENGINES.put(page, engine);
+    }
+
+    /** 解绑指定 Page 的采集引擎。 */
+    public static void unbindCaptureEngine(Page page) {
+        if (page != null) PAGE_CAPTURE_ENGINES.remove(page);
+    }
 
     /**
      * 设置采集引擎实例（供采集管道接收 MOCK/MODIFY 路由事件）。
@@ -172,12 +263,19 @@ public class RouteEngine {
      *
      * @param engine 采集引擎实例，null 表示取消关联
      */
+    /**
+     * 兼容性保留：采集管道已按 Page 隔离（{@link #PAGE_CAPTURE_ENGINES}），
+     * 全局引擎引用已移除以避免跨 Page 串线，此方法不再执行任何副作用。
+     *
+     * @deprecated 全局引擎已废弃，事件路由依赖 {@link #bindCaptureEngine(Page, CaptureEngine)}。
+     */
+    @Deprecated
     public static void setCaptureEngine(CaptureEngine engine) {
-        CAPTURE_ENGINE = engine;
+        // no-op：采集按 Page 隔离，不再维护全局回退引擎
     }
 
     /** 标记调度器是否已关闭 */
-    private static volatile boolean scheduledShutdown = false;
+    private static final AtomicBoolean scheduledShutdown = new AtomicBoolean(false);
 
     static {
         HANDLERS.put(RouteHandleType.MONITOR, MonitorHandler::handle);
@@ -199,8 +297,7 @@ public class RouteEngine {
      * </ol>
      */
     public static void shutdown() {
-        if (scheduledShutdown) return;
-        scheduledShutdown = true;
+        if (!scheduledShutdown.compareAndSet(false, true)) return;
 
         LOGGER.info("[RouteEngine] Shutting down schedulers...");
 
@@ -213,6 +310,8 @@ public class RouteEngine {
         DISPATCHED_ROUTES.clear();
         CONTEXT_RULES.clear();
         CONTEXT_RULE_PATHS.clear();
+        CONTEXT_RULE_KEYS_BY_PREFIX.clear();
+        CONTEXT_RULE_FALLBACK_KEYS.clear();
         CROSS_LAYER_HANDLED_URLS.clear();
         PAGE_RULES.clear();
 
@@ -249,29 +348,35 @@ public class RouteEngine {
         PAGE_RULES.put(new PageRef(page), new java.util.ArrayList<>(rules));
 
         registerInternal(page, (pattern, rule) -> {
-            RouteHandleType type = rule.getType();
-            if (RouteRegistry.register(page, pattern, type)) {
+            Map<String, RouteRule> store = ENGINE_RULE_STORE.computeIfAbsent(page, k -> new ConcurrentHashMap<>());
+            // ⭐ 仅在锁内完成 store 的纯内存状态决策，绝不持有锁调用原生 page.route()（JNI/网络 IO）。
+            //    原生注册放在锁外执行，避免高并发注册/异常时持锁做 IO 导致线程长时间阻塞甚至重入风险。
+            final boolean[] needRegister = {false};
+            synchronized (store) {
+                RouteRule existing = store.get(pattern);
+                if (existing == null) {
+                    // 首次注册：存入引用 + 绑定闭包
+                    store.put(pattern, rule);
+                    // ⭐ 仅作清理记录（RouteRegistry 不再用于优先级决策，此处保留供 clearContext 反查 pattern）
+                    RouteRegistry.forceRegister(page, pattern, rule.getType());
+                    needRegister[0] = true;
+                } else if (existing.getType() == RouteHandleType.MOCK && rule.getType() != RouteHandleType.MOCK) {
+                    // ⭐ 已有 MOCK 是终结型，不可被非 MOCK 降级 → 跳过
+                    LOGGER.debug("[RouteEngine] Skipping non-MOCK pattern '{}' on Page (existing MOCK is terminal)", pattern);
+                } else {
+                    // ⭐ 能力位合并：MONITOR 基线不可关、MODIFY 字段 putAll、DELAY 取 max、MOCK 可覆盖非 MOCK
+                    existing.mergeFrom(rule);
+                    // ⭐ MOCK 是唯一终结者：无论注册先后顺序，只要本次是 MOCK，就把 type 提升为 MOCK
+                    if (rule.getType() == RouteHandleType.MOCK && existing.getType() != RouteHandleType.MOCK) {
+                        existing.setType(RouteHandleType.MOCK);
+                        LOGGER.info("[RouteEngine] Type upgraded to MOCK (terminal) for pattern '{}' on Page", pattern);
+                    }
+                    refreshMonitorSession(page, pattern, existing);
+                }
+            }
+            // 锁外执行原生路由注册（JNI），不阻塞其它线程对 store 的访问
+            if (needRegister[0]) {
                 registerRouteToPage(page, pattern, rule);
-            } else if (RouteRegistry.shouldOverride(page, pattern, type)) {
-                // ⭐ 优先级覆盖：高优先级规则覆盖低优先级（如 MOCK 覆盖 MONITOR）
-                RouteHandleType oldType = RouteRegistry.getRegisteredType(page, pattern);
-                LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on Page", pattern, oldType, type);
-                page.unroute(pattern);
-                RouteRegistry.forceRegister(page, pattern, type);
-                registerRouteToPage(page, pattern, rule);
-            } else if (RouteRegistry.getRegisteredType(page, pattern) == type) {
-                // ⭐ 同类型重注册：允许同类型 rule 覆盖旧 rule（如 MONITOR 更新 timeout/expectStatus）
-                //    先 unroute 旧 handler + 停止旧 session，再注册新 handler + 启动新 session
-                RouteHandleType oldType = RouteRegistry.getRegisteredType(page, pattern);
-                LOGGER.info("[RouteEngine] Re-registering same type pattern '{}' on Page: {} (new: timeout={}ms, expectStatus={})",
-                        pattern, oldType, rule.getTimeoutMs(), rule.getExpectedStatus());
-                page.unroute(pattern);
-                // ⭐ 停止旧 session：遍历查找匹配 pattern 的旧 session（避免 equals/hashCode 依赖 modifyMethod 差异导致遗漏）
-                stopOldSessionsForPattern(pattern);
-                registerRouteToPage(page, pattern, rule);
-            } else {
-                LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
-                        pattern, RouteRegistry.getRegisteredType(page, pattern), type);
             }
         }, rules);
     }
@@ -296,28 +401,35 @@ public class RouteEngine {
     public static void register(BrowserContext context, List<RouteRule> rules) {
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteEngine] ── Registering {} rule(s) on BrowserContext ──", rules.size());
         registerInternal(context, (pattern, rule) -> {
-            RouteHandleType type = rule.getType();
-            if (RouteRegistry.register(context, pattern, type)) {
+            Map<String, RouteRule> store = ENGINE_RULE_STORE.computeIfAbsent(context, k -> new ConcurrentHashMap<>());
+            // ⭐ 仅在锁内完成 store 的纯内存状态决策，绝不持有锁调用原生 context.route()（JNI/网络 IO）。
+            //    原生注册放在锁外执行，避免高并发注册/异常时持锁做 IO 导致线程长时间阻塞甚至重入风险。
+            final boolean[] needRegister = {false};
+            synchronized (store) {
+                RouteRule existing = store.get(pattern);
+                if (existing == null) {
+                    // 首次注册：存入引用 + 绑定闭包
+                    store.put(pattern, rule);
+                    // ⭐ 仅作清理记录（RouteRegistry 不再用于优先级决策，此处保留供 clearContext 反查 pattern）
+                    RouteRegistry.forceRegister(context, pattern, rule.getType());
+                    needRegister[0] = true;
+                } else if (existing.getType() == RouteHandleType.MOCK && rule.getType() != RouteHandleType.MOCK) {
+                    // ⭐ 已有 MOCK 是终结型，不可被非 MOCK 降级 → 跳过
+                    LOGGER.debug("[RouteEngine] Skipping non-MOCK pattern '{}' on BrowserContext (existing MOCK is terminal)", pattern);
+                } else {
+                    // ⭐ 能力位合并：MONITOR 基线不可关、MODIFY 字段 putAll、DELAY 取 max、MOCK 可覆盖非 MOCK
+                    existing.mergeFrom(rule);
+                    // ⭐ MOCK 是唯一终结者：无论注册先后顺序，只要本次是 MOCK，就把 type 提升为 MOCK
+                    if (rule.getType() == RouteHandleType.MOCK && existing.getType() != RouteHandleType.MOCK) {
+                        existing.setType(RouteHandleType.MOCK);
+                        LOGGER.info("[RouteEngine] Type upgraded to MOCK (terminal) for pattern '{}' on BrowserContext", pattern);
+                    }
+                    refreshMonitorSession(context, pattern, existing);
+                }
+            }
+            // 锁外执行原生路由注册（JNI），不阻塞其它线程对 store 的访问
+            if (needRegister[0]) {
                 registerRouteToContext(context, pattern, rule);
-            } else if (RouteRegistry.shouldOverride(context, pattern, type)) {
-                // ⭐ 优先级覆盖：高优先级规则覆盖低优先级（如 MOCK 覆盖 MONITOR）
-                RouteHandleType oldType = RouteRegistry.getRegisteredType(context, pattern);
-                LOGGER.info("[RouteEngine] Overriding pattern '{}': {} → {} on BrowserContext", pattern, oldType, type);
-                context.unroute(pattern);
-                RouteRegistry.forceRegister(context, pattern, type);
-                registerRouteToContext(context, pattern, rule);
-            } else if (RouteRegistry.getRegisteredType(context, pattern) == type) {
-                // ⭐ 同类型重注册：允许同类型 rule 覆盖旧 rule（如 MONITOR 更新 timeout/expectStatus）
-                RouteHandleType oldType = RouteRegistry.getRegisteredType(context, pattern);
-                LOGGER.info("[RouteEngine] Re-registering same type pattern '{}' on BrowserContext: {} (new: timeout={}ms, expectStatus={})",
-                        pattern, oldType, rule.getTimeoutMs(), rule.getExpectedStatus());
-                context.unroute(pattern);
-                // ⭐ 停止旧 session：遍历查找匹配 pattern 的旧 session（避免 equals/hashCode 依赖 modifyMethod 差异导致遗漏）
-                stopOldSessionsForPattern(pattern);
-                registerRouteToContext(context, pattern, rule);
-            } else {
-                LOGGER.debug("[RouteEngine] Skipping pattern '{}' (already registered as {}, new is {} — same or lower priority)",
-                        pattern, RouteRegistry.getRegisteredType(context, pattern), type);
             }
         }, rules);
     }
@@ -329,8 +441,10 @@ public class RouteEngine {
         context.route(pattern, route -> dispatchRoute(route, rule));
         // ⭐ Context 级规则入注册表，供 page 级 handler 跨层级合并
         CONTEXT_RULES.put(pattern, rule);
+        CONTEXT_RULES_BY_CONTEXT.computeIfAbsent(context, ignored -> new ConcurrentHashMap<>()).put(pattern, rule);
         // ⭐ 性能优化：预提取 path 子串并缓存（避免高频匹配时重复 substring）
         CONTEXT_RULE_PATHS.put(pattern, extractPathFromNormalizedPattern(pattern));
+        indexContextRule(pattern, CONTEXT_RULE_PATHS.get(pattern));
         LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
                 rule.getType(), pattern);
         startMonitorSession(context, rule, pattern);
@@ -426,7 +540,10 @@ public class RouteEngine {
 
         // ═══ 跨层级去重：若 page handler 已通过 cross-layer merge 处理了此 URL，
         //     context handler 不应重复拦截（Page/Context Route 对象不同，DISPATCHED_ROUTES 无法去重）═══
-        if (CROSS_LAYER_HANDLED_URLS.remove(reqUrl)) {
+        purgeExpiredCrossLayerEntries();
+        String crossLayerKey = crossLayerKey(route, reqUrl);
+        Long handledAt = CROSS_LAYER_HANDLED_URLS.remove(crossLayerKey);
+        if (handledAt != null && System.currentTimeMillis() - handledAt <= CROSS_LAYER_DEDUP_TTL_MS) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] ═══ dispatchRoute SKIP (cross-layer dedup): URL already handled by page-level merge, " +
                     "pattern='{}', url='{}' ═══", rule.getUrlPattern(), reqUrl);
@@ -439,10 +556,15 @@ public class RouteEngine {
             LOGGER.warn("[RouteEngine] DISPATCHED_ROUTES reached {} entries, clearing to prevent memory leak",
                     DISPATCHED_ROUTES.size());
             DISPATCHED_ROUTES.clear();
+        } else if (!DISPATCHED_ROUTES.isEmpty()) {
+            // ⭐ 惰性 TTL 过期：避免异常场景（未调用 clearDispatchedRoutes）下
+            //    Route 强引用长期常驻造成内存泄漏。每次 dispatch 顺带清理过期条目。
+            long now = System.currentTimeMillis();
+            DISPATCHED_ROUTES.values().removeIf(ts -> now - ts > DISPATCHED_ROUTES_TTL_MS);
         }
 
-        // ═══ 防重门控：同一请求只处理一次 ═══
-        if (!DISPATCHED_ROUTES.add(route)) {
+        // ═══ 防重门控：同一请求只处理一次（带 TTL，自动过期释放引用）═══
+        if (DISPATCHED_ROUTES.putIfAbsent(route, System.currentTimeMillis()) != null) {
             LOGGER.warn("[RouteEngine] Route already handled by another pattern, skipping '{}' for URL '{}'",
                     rule.getUrlPattern(), reqUrl);
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
@@ -490,9 +612,33 @@ public class RouteEngine {
         // ⭐ 跨层合并是否真正发生（非 ctxRule != null，因为 session 可能已停止）
         boolean crossLayerDelayMerged = false;
 
-        // ⭐ 仅 page handler 做跨层合并，context handler 跳过（避免在 CONTEXT_RULES 中自引用）
-        boolean isContextRule = CONTEXT_RULES.containsValue(rule);
-        RouteRule ctxRule = isContextRule ? null : findMatchingContextRule(reqUrl);
+        // ⭐ 仅 page handler 做跨层合并，context handler 跳过（避免在 CONTEXT_RULES 中自引用）。
+        //    注意：用「实例同一性（==）」而非 equals 判断，因为新模型下同 pattern 的
+        //    page 规则与 context 规则 urlPattern 相同、equals 相等，若用 equals 会把
+        //    page 规则误判为 context 规则而跳过跨层合并（n50 回归）。
+        //    ⭐ 性能优化：把「判断 rule 是否即 context 规则」与「查找匹配 ctxRule」合并为<b>一次遍历</b>，
+        //    消除原先 isContextRule 全量扫描 + findMatchingContextRule 全量扫描的两段 O(n)。
+        RouteRule ctxRule = null;
+        boolean isContextRule = false;
+        // ⭐ 企业级「精确优先」：同时命中多个 context 规则时，取<b>最精确</b>（字面路径最长）的一条，
+        //    而非第一个。例：ctx 层有 /api/users 与 /api/users/1，URL=/api/users/1 → 取 /api/users/1。
+        int bestCtxPathLen = -1;
+        for (String pattern : contextCandidatePatterns(reqUrl, contextRulesFor(route))) {
+            RouteRule cr = contextRulesFor(route).get(pattern);
+            if (cr == null) continue;
+            // 若当前 handler 的 rule 就是 context 规则本身 → 它是 context handler，跳过跨层合并
+            if (cr == rule) {
+                isContextRule = true;
+                break;
+            }
+            // 记录匹配 reqUrl 且字面路径最长的 context 规则（复用 CONTEXT_RULE_PATHS 预缓存 path）
+            String path = CONTEXT_RULE_PATHS.get(pattern);
+            if (path != null && !path.isEmpty() && reqUrl.contains(path) && path.length() > bestCtxPathLen) {
+                bestCtxPathLen = path.length();
+                ctxRule = cr;
+            }
+        }
+        if (isContextRule) ctxRule = null;
 
         if (ctxRule != null) {
             // ⭐ 若 context 规则的 MonitorSession 已停止（超时/auto-stop），
@@ -505,149 +651,138 @@ public class RouteEngine {
                 // fall through — ctxRule 视为不存在，直接走 page handler
             } else {
                 // ⭐ 标记此 URL — context handler 到达时必须跳过（所有类型均适用，含相同类型）
-                CROSS_LAYER_HANDLED_URLS.add(reqUrl);
+                if (CROSS_LAYER_HANDLED_URLS.size() >= MAX_CROSS_LAYER_DEDUP_ENTRIES) {
+                    CROSS_LAYER_HANDLED_URLS.clear();
+                }
+                CROSS_LAYER_HANDLED_URLS.put(crossLayerKey(route, reqUrl), System.currentTimeMillis());
 
                 RouteHandleType pageType = rule.getType();
                 RouteHandleType ctxType = ctxRule.getType();
 
-                // ── ∀ 跨层级组合：始终合并 DELAY（取最大值，含 page 和 context 各自的 delay）──
+                // ── 延迟合并（n51 / n53）：ctx 层 delay 始终保留，page 层 delay 仅当
+                //    page 类型在跨层合并后「存活」（优先级不低于 ctx）时保留 ──
+                // • ctx 层的 delay 是「全局延迟配置」，无条件合并；
+                // • page 层的 delay 是局部延迟，仅当 ctx 类型优先级 ≤ page 类型优先级时保留
+                //   （即 ctx 未覆盖 page 的延迟语义）；
+                // • 二者取 max。MOCK 作为唯一终结者会覆盖 DELAY（page 被 MOCK 终结则 pageDelay 失效）。
+                // 例：n51 page=DELAY + ctx=MOCK → ctx 优先级更高，page 被终结 → pageDelay=0 → MOCK 立即返回；
+                //     n53 ctx=DELAY(500) + page=MOCK → page 优先级≥ctx，pageDelay=0，ctxDelay=500 → 延迟 500ms。
                 long ctxDelay = DelayHandler.clampDelay(DelayHandler.resolveDelay(ctxRule));
-                delayMs = Math.max(delayMs, ctxDelay);
+                boolean pageSurvives = priorityOf(ctxType) <= priorityOf(pageType);
+                long pageDelay = pageSurvives ? DelayHandler.clampDelay(DelayHandler.resolveDelay(rule)) : 0;
+                delayMs = Math.max(pageDelay, ctxDelay);
                 crossLayerDelayMerged = true;
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                         "[RouteEngine] Cross-layer DELAY merged: pageType={}, ctxType={}, pageDelay={}ms, ctxDelay={}ms, effectiveDelay={}ms",
-                        pageType, ctxType, rule.getDelayMs(), ctxDelay, delayMs);
+                        pageType, ctxType, pageDelay, ctxDelay, delayMs);
 
-                // ⭐ 快照合并后的延迟（此后 delayMs 不再修改，确保 lambda 中 effectively-final）
-                final long mergedDelay = delayMs;
-
-                // ═══ 按主优先级处理：MOCK > MODIFY > MONITOR > DELAY ═══
-                if (ctxType != pageType) {
-
-                    // ── context MOCK 终结（最高优先级），覆盖所有 page handler ──
-                    if (ctxType == RouteHandleType.MOCK) {
-                        // page DELAY 的延迟不继承给 MOCK（MOCK 应立即 mock 返回）
-                        long mockDelay = (pageType == RouteHandleType.DELAY) ? 0 : mergedDelay;
-                        LOGGER.info("[RouteEngine] Context MOCK overrides page {}: pattern='{}', url='{}'",
-                                pageType, ctxRule.getUrlPattern(), reqUrl);
-                        if (mockDelay > 0) {
-                            DELAY_SCHEDULER.schedule(
-                                    () -> executeHandlerScheduled(route, ctxRule, MockHandler::handle),
-                                    mockDelay, TimeUnit.MILLISECONDS);
-                        } else {
-                            executeHandler(route, ctxRule, MockHandler::handle);
-                        }
-                        return;
-                    }
-
-                    // ── context MODIFY + page anything → page handler 执行，delay 合并 ──
-                    if (ctxType == RouteHandleType.MODIFY) {
-                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                                "[RouteEngine] Context MODIFY + page {}: page handler runs with merged delay, "
-                                + "context modify not applied (requires handler refactor for full chaining)",
-                                pageType);
-                        delayMs = mergedDelay;
-                    }
-
-                    // ── context MONITOR + page MODIFY：page MODIFY 执行，context MONITOR 记录 ──
-                    else if (ctxType == RouteHandleType.MONITOR && pageType == RouteHandleType.MODIFY) {
-                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                                "[RouteEngine] Context MONITOR + page MODIFY: page modify runs, context monitor records basic capture");
-                        delayMs = mergedDelay;
-                    }
-
-                    // ── context DELAY + page MONITOR → 仅延迟放行，跳过监测 ──
-                    else if (ctxType == RouteHandleType.DELAY && pageType == RouteHandleType.MONITOR) {
-                        LOGGER.info("[RouteEngine] Context DELAY overrides page MONITOR: pattern='{}', url='{}', delay={}ms",
-                                rule.getUrlPattern(), reqUrl, mergedDelay);
-                        Runnable action = () -> {
-                            try {
-                                route.resume();
-                                LOGGER.info("[RouteEngine] Route delayed (DELAY override MONITOR): pattern='{}', url='{}', delay={}ms",
-                                        rule.getUrlPattern(), reqUrl, mergedDelay);
-                            } catch (Exception e) {
-                                LOGGER.error("[RouteEngine] Failed to resume after DELAY override for '{}': {}",
-                                        rule.getUrlPattern(), e.getMessage(), e);
-                                try { route.resume(); } catch (Exception ignored) {}
-                            } finally {
-                                DISPATCHED_ROUTES.remove(route);
-                            }
-                        };
-                        if (mergedDelay > 0) {
-                            DELAY_SCHEDULER.schedule(action, mergedDelay, TimeUnit.MILLISECONDS);
-                        } else {
-                            action.run();
-                        }
-                        return;
-                    }
-
-                    // ── context MONITOR + page DELAY/MOCK/MODIFY（非 MODIFY 场景）：
-                    //    page handler 执行，context 额外记录基础捕获 ──
-                    else if (ctxType == RouteHandleType.MONITOR) {
-                        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                                "[RouteEngine] Context MONITOR + page {}: page handler runs, context monitor records",
-                                pageType);
-                        delayMs = mergedDelay;
-                    }
-
-                    // ── context DELAY + page MOCK/MODIFY → page handler 执行，delay 合并 ──
-                    else {
-                        delayMs = mergedDelay;
-                    }
-
+                // ═══ 能力位合并（OR）：把 context 规则的能力位合并进<b>一份临时拷贝</b> ═══
+                //    ⭐ 关键：用 copyForMerge() 构造一次性有效规则，绝不就地修改
+                //    ENGINE_RULE_STORE/闭包持有的原 page rule —— 否则会跨请求行为漂移 +
+                //    集合字段（jsonPathAssertions / requestHeadersToSet）无限累积。
+                //    MONITOR 基线不可关、MODIFY 字段 putAll、DELAY 已在上文取 max、
+                //    MOCK 可终结（覆盖非 MOCK）。
+                //    能力与 type 解耦：除「MOCK 作为唯一终结者」外，type 不等于行为单选；
+                //    具体行为由下方能力位管线按字段判定。跨层 type 提升规则：
+                //      • 任一层为 MOCK → 有效规则 type=MOCK（MOCK 终结，短路）；
+                //      • 否则保持 page 层自身 type（MONITOR/MODIFY/DELAY 能力位叠加）。
+                RouteRule effectiveRule = rule.copyForMerge();
+                effectiveRule.mergeFrom(ctxRule);
+                if (pageType == RouteHandleType.MOCK || ctxType == RouteHandleType.MOCK) {
+                    effectiveRule.setType(RouteHandleType.MOCK);
                 } else {
-                    // ── 相同类型：page 配置胜出（层级优先级 Page > Context），仅合并 DELAY ──
-                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                            "[RouteEngine] Same-type cross-layer ({}): page config wins for pattern='{}', merged delay={}ms",
-                            pageType, rule.getUrlPattern(), mergedDelay);
-                    delayMs = mergedDelay;
+                    effectiveRule.setType(pageType); // 保持 page 主 type，能力位 OR
                 }
+                // 有效规则替换原 rule，后续主管线用 effectiveRule 执行（含跨层合并的全部能力位）
+                rule = effectiveRule;
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteEngine] Cross-layer capability merged: ctxPattern='{}', pagePattern='{}', effectiveDelay={}ms",
+                        ctxRule.getUrlPattern(), effectiveRule.getUrlPattern(), delayMs);
             }
         }
 
-        // ═══ DELAY 类型：使用 schedule() 延迟调度 route.resume()，不占线程 ═══
-        // 必须在 HANDLERS.get() 之前检查，因为 DELAY 已从 HANDLERS 中移除
-        // 注意：上面的跨层级检查已将 context MONITOR→page DELAY 转为 MonitorHandler，此处仅处理纯 DELAY
-        if (rule.getType() == RouteHandleType.DELAY) {
-            // ⭐ 跨层合并后 delayMs 已取 max，直接使用合并值；
-            //    非跨层场景传 0，让 scheduleDelay 自行调用 resolveDelay，
-            //    以支持 randomDelay(1,5) 随机范围（否则 preComputedDelayMs > 0 时 resolveDelay 被跳过）。
+        // ═══ 能力位管线（取代 type 单选）：MOCK 终结 → MODIFY → MONITOR → DELAY ═══
+        // 能力与 type 解耦：MOCK 为唯一终结者（短路）；其余能力位（MODIFY/MONITOR/DELAY）
+        // 按字段叠加，可同时存在。监控是<b>不可覆盖的基线</b>：无论是否叠加 modify/delay，
+        // 最终都对真实响应断言，失败即报错。
+        final long effectiveDelay = delayMs;
+        // ⭐ 取 final 副本供 lambda 引用（rule 在跨层合并可能被重新赋值，非 effectively final）
+        final RouteRule finalRule = rule;
+
+        // 1) MOCK 终结：直接 fulfill 假响应，不发真实请求（监控/修改/delay 均无意义）
+        if (finalRule.getType() == RouteHandleType.MOCK) {
+            if (effectiveDelay > 0) {
+                delayScheduler(route).schedule(
+                        () -> executeHandlerScheduled(route, finalRule, MockHandler::handle),
+                        effectiveDelay, TimeUnit.MILLISECONDS);
+            } else {
+                executeHandler(route, finalRule, MockHandler::handle);
+            }
+            return;
+        }
+
+        // 2) MODIFY：改请求后 route.resume(opts) 放行（不改响应），内部读真实响应并叠加监控断言
+        boolean hasModify = (finalRule.getRequestHeadersToSet() != null && !finalRule.getRequestHeadersToSet().isEmpty())
+                || (finalRule.getRequestHeadersToRemove() != null && !finalRule.getRequestHeadersToRemove().isEmpty())
+                || (finalRule.getRequestBodyFieldsToModify() != null && !finalRule.getRequestBodyFieldsToModify().isEmpty())
+                || (finalRule.getRequestBodyFieldsToAdd() != null && !finalRule.getRequestBodyFieldsToAdd().isEmpty())
+                || (finalRule.getRequestBodyFieldsToRemove() != null && !finalRule.getRequestBodyFieldsToRemove().isEmpty())
+                || finalRule.getModifyMethod() != null;
+        if (hasModify) {
+            if (effectiveDelay > 0) {
+                delayScheduler(route).schedule(
+                        () -> executeHandlerScheduled(route, finalRule, ModifyHandler::handle),
+                        effectiveDelay, TimeUnit.MILLISECONDS);
+            } else {
+                executeHandler(route, finalRule, ModifyHandler::handle);
+            }
+            return;
+        }
+
+        // 3) MONITOR（基线）：delay 后 resume + 对真实响应断言；监控失败即报错
+        if (finalRule.isMonitorEnabled()) {
+            if (effectiveDelay > 0) {
+                delayScheduler(route).schedule(
+                        () -> executeHandlerScheduled(route, finalRule, MonitorHandler::handle),
+                        effectiveDelay, TimeUnit.MILLISECONDS);
+            } else {
+                executeHandler(route, finalRule, MonitorHandler::handle);
+            }
+            return;
+        }
+
+        // 4) 纯 DELAY（无 modify 无 monitor）：延迟后放行
+        if (finalRule.getType() == RouteHandleType.DELAY || effectiveDelay > 0) {
             long scheduledMs = crossLayerDelayMerged ? delayMs : 0;
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}', crossLayerMerged={}, delay={}ms ═══",
-                    rule.getUrlPattern(), reqUrl, crossLayerDelayMerged, delayMs);
-            scheduleDelay(route, rule, scheduledMs);
+                    finalRule.getUrlPattern(), reqUrl, crossLayerDelayMerged, delayMs);
+            scheduleDelay(route, finalRule, scheduledMs);
             return;
         }
 
-        RouteHandler handler = HANDLERS.get(rule.getType());
-        if (handler == null) {
-            LOGGER.warn("[RouteEngine] Unknown RouteHandleType: {}, fallback to resume for pattern '{}'",
-                    rule.getType(), rule.getUrlPattern());
-            try {
-                route.resume();
-            } catch (Exception e) {
-                LOGGER.error("[RouteEngine] Failed to resume route (fallback) for pattern '{}': {}",
-                        rule.getUrlPattern(), e.getMessage(), e);
-            } finally {
-                DISPATCHED_ROUTES.remove(route);
-            }
-            return;
+        // 5) 兜底：无能力位 → 直接放行
+        LOGGER.debug("[RouteEngine] No capability on rule, resume: pattern='{}'", finalRule.getUrlPattern());
+        try {
+            route.resume();
+        } catch (Exception ignored) {
+        } finally {
+            DISPATCHED_ROUTES.remove(route);
         }
+    }
 
-        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] ═══ dispatchRoute -> handler: type={}, pattern='{}', url='{}' ═══",
-                rule.getType(), rule.getUrlPattern(), reqUrl);
-
-        // ═══ 执行 page handler（带合并后的延迟，delayMs 已由上面的跨层级合并计算好） ═══
-        final long effectiveDelay = delayMs;
-        if (effectiveDelay > 0) {
-            DELAY_SCHEDULER.schedule(
-                    () -> executeHandlerScheduled(route, rule, handler),
-                    effectiveDelay, TimeUnit.MILLISECONDS);
-            LOGGER.debug("[RouteEngine] Handler delayed by {}ms for pattern '{}'", effectiveDelay, rule.getUrlPattern());
-        } else {
-            executeHandler(route, rule, handler);
+    /**
+     * 跨层类型优先级（仅用于判断 page 层 delay 是否「存活」）：MOCK > MODIFY > MONITOR > DELAY。
+     * 注意：此优先级不再用于「类型单选」（能力位管线已解耦 type），仅决定 page 的局部
+     * delay 是否被更高优先级的 ctx 规则终结。
+     */
+    private static int priorityOf(RouteHandleType t) {
+        switch (t) {
+            case MOCK:   return 3;
+            case MODIFY: return 2;
+            case MONITOR:return 1;
+            case DELAY:  return 0;
+            default:     return 0;
         }
     }
 
@@ -682,10 +817,12 @@ public class RouteEngine {
                 "[RouteEngine] scheduleDelay: pattern='{}', url='{}', delay={}ms, minDelay={}ms, maxDelay={}ms, mergedInput={}ms",
                 pattern, url, delayMs, rule.getDelayMinMs(), rule.getDelayMaxMs(), preComputedDelayMs);
 
-        // ⭐ DELAY 不递增 activeRequests：delay 是确定性同步阻塞，不需要
-        // PlaywrightListener 的 awaitCompletion 等待。否则会导致请求被"阻止两次"
-        //（网络层 DELAY 一次 + 步骤结束 awaitCompletion 一次）。
-        // 如需 loading UI 验证，在触发操作后用 Thread.sleep(200) 等待延迟生效即可。
+        // ⭐ DELAY 拦截期间递增 activeRequests，使 awaitCompletion 能等待延迟请求放行 +
+        //    后续真实响应被捕获，避免并发场景（f31）在延迟窗口内误判「全部完成」。
+        //    resume 后真实请求由 CDP/Playwright 捕获管道接管（captureInFlight 覆盖），
+        //    此处 activeRequests 覆盖整个延迟窗口直至 storeDelayCall 落库。
+        ApiCaptureContext captureContext = RouteUtil.captureContext(route);
+        captureContext.incrementActiveRequests();
 
         Runnable action = () -> {
             try {
@@ -719,11 +856,13 @@ public class RouteEngine {
                 try { route.resume(); } catch (Exception ignored) {}
             } finally {
                 DISPATCHED_ROUTES.remove(route);
+                // ⭐ 延迟窗口结束（resume + storeDelayCall 落库后）递减在途计数
+                captureContext.decrementActiveRequests();
             }
         };
 
         if (delayMs > 0) {
-            DELAY_SCHEDULER.schedule(action, delayMs, TimeUnit.MILLISECONDS);
+            delayScheduler(route).schedule(action, delayMs, TimeUnit.MILLISECONDS);
             LOGGER.debug("[RouteEngine] Delay scheduled: pattern='{}', url='{}', delay={}ms",
                     pattern, url, delayMs);
         } else {
@@ -750,7 +889,7 @@ public class RouteEngine {
                     System.currentTimeMillis(),
                     req.url()  // 实际请求 URL，用于毫秒级精确检索
             );
-            ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+            ApiCaptureContext ctx = RouteUtil.captureContext(route);
             if (ctx != null) {
                 ctx.storeApiCall(call);
             }
@@ -893,6 +1032,24 @@ public class RouteEngine {
     }
 
     /**
+     * ⭐ 合并后刷新 MonitorSession：规则经 {@link RouteRule#mergeFrom} 叠加监控能力位后，
+     * 若当前无活跃 session（例如「先 modify 后追加 monitor」的逆向注册顺序），则启动一个。
+     * 若 session 已存在（常见「先 monitor 后追加 modify」顺序），则无需重建——闭包持有的 rule
+     * 对象已被就地合并，session 读取的是同一对象，配置自动生效。
+     *
+     * @param ctx      context / page 对象
+     * @param pattern  归一化 pattern
+     * @param rule     合并后的规则
+     */
+    private static void refreshMonitorSession(Object ctx, String pattern, RouteRule rule) {
+        if (!rule.isMonitorEnabled()) return;
+        MonitorSession session = SESSIONS.get(rule);
+        if (session == null || session.stopped.get()) {
+            startMonitorSession(ctx, rule, pattern);
+        }
+    }
+
+    /**
      * MonitorHandler 每次匹配完成时回调。
      * 递增计数并检查 auto-stop / minMatches 条件。
      *
@@ -993,6 +1150,9 @@ public class RouteEngine {
         SESSIONS.clear();
         DISPATCHED_ROUTES.clear();
         CONTEXT_RULES.clear();
+        CONTEXT_RULE_PATHS.clear();   // ⭐ 补清 context path 索引，防 case 间残留
+        PAGE_RULES.clear();           // ⭐ 补清 page 级规则，防 case 间残留
+        LITERAL_PATH_CACHE.clear();   // ⭐ 补清 literalPath 缓存，防 case 间残留（urlPattern 极少，重建代价可忽略）
         CROSS_LAYER_HANDLED_URLS.clear();
     }
 
@@ -1062,6 +1222,18 @@ public class RouteEngine {
         LOGGER.info("[RouteEngine] reRegisterRules: re-registering {} rule(s) from old page to new page",
                 rules.size());
         registerRulesToPage(newPage, rules);
+
+        // ⭐ 企业级生命周期：旧页面已销毁（或即将销毁），及时清理其静态路由状态，
+        //   避免 PAGE_RULES / ENGINE_RULE_STORE 残留导致跨页面污染。
+        //   规则已迁移到 newPage，此时移除 oldPage 的引用是安全的（不影响新页面）。
+        //   RouteRegistry.clearContext(oldPage) 内部会注销 Playwright 路由、stop MonitorSession、
+        //   清理 CONTEXT_RULES 与 DISPATCHED_ROUTES 等，做到及时清理。
+        PAGE_RULES.remove(new PageRef(oldPage));
+        ENGINE_RULE_STORE.remove(oldPage);
+        RouteRegistry.clearContext(oldPage);
+        purgeDeadPageRules();
+        LOGGER.info("[RouteEngine] reRegisterRules: cleaned up old page state (PAGE_RULES left={})",
+                PAGE_RULES.size());
     }
 
     /**
@@ -1072,6 +1244,7 @@ public class RouteEngine {
     public static void removePageRules(Page page) {
         if (page == null) return;
         PAGE_RULES.remove(new PageRef(page));
+        ENGINE_RULE_STORE.remove(page);
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] removePageRules: removed rules for page, remaining entries: {}",
                 PAGE_RULES.size());
@@ -1106,16 +1279,353 @@ public class RouteEngine {
      * @param url 请求 URL
      * @return 匹配的 context 规则，未找到则返回 null
      */
-    static RouteRule findMatchingContextRule(String url) {
-        if (url == null || CONTEXT_RULES.isEmpty()) return null;
-        for (Map.Entry<String, RouteRule> entry : CONTEXT_RULES.entrySet()) {
-            // ⭐ 性能优化：直接读预缓存的 path 子串，避免每次请求 substring 分配
-            String path = CONTEXT_RULE_PATHS.get(entry.getKey());
-            if (path != null && !path.isEmpty() && url.contains(path)) {
-                return entry.getValue();
+    // ─── 真实 URL → 已注册 urlPattern 映射（capture 目录存储端点解析） ────
+
+    /**
+     * ⭐ 将真实请求 URL 解析为「已注册规则中最具体的 urlPattern」，作为 capture 目录写入 CapturedApiCall 的 endpoint。
+     *
+     * <p>背景：capture 目录（CDP 旁路 + EventMerger）捕获的是真实网络流量，其 URL 含 host 前缀
+     * （如 {@code http://localhost:8888/demo/api/users}），而 DSL/测试以 urlPattern（如 {@code /api/users}）
+     * 作为查询 key。若直接用真实 path 存储，测试将无法通过 urlPattern 查询到数据。
+     *
+     * <p>因此：遍历所有已注册规则（CONTEXT + PAGE 两级），用「去除通配符后的字面路径」做 URL 子串匹配，
+     * 返回<b>最长（最具体）</b>的匹配 urlPattern。无匹配时返回真实 URL 的 path。
+     *
+     * @param url 真实请求 URL（含 host）
+     * @return 最具体的已注册 urlPattern，否则返回 URL 的 path
+     */
+    public static String resolveEndpointForUrl(String url) {
+        if (url == null || url.isEmpty()) return url;
+        String best = null;
+        int bestLen = -1;
+
+        // CONTEXT 级规则
+        for (Map.Entry<String, RouteRule> e : CONTEXT_RULES.entrySet()) {
+            String p = e.getValue().getUrlPattern();
+            String lit = literalPathOf(p);
+            if (lit != null && url.contains(lit) && lit.length() > bestLen) {
+                best = p;
+                bestLen = lit.length();
             }
         }
-        return null;
+        // PAGE 级规则
+        for (Map.Entry<PageRef, List<RouteRule>> e : PAGE_RULES.entrySet()) {
+            for (RouteRule r : e.getValue()) {
+                String p = r.getUrlPattern();
+                String lit = literalPathOf(p);
+                if (lit != null && url.contains(lit) && lit.length() > bestLen) {
+                    best = p;
+                    bestLen = lit.length();
+                }
+            }
+        }
+        return best != null ? best : extractPathFromUrl(url);
+    }
+
+    /**
+     * 提取 urlPattern 中「去除通配符后的字面前缀」。
+     * <p>例：{@code /api/users} → {@code /api/users}；{@code /api/users/*} → {@code /api/users/}；
+     *     {@code /api/**} → {@code /api/}。返回 null 表示无有效字面前缀。
+     */
+    // ⭐ 性能优化：urlPattern → literalPath 静态缓存。
+    //   resolveEndpointForUrl / isSyncStoredRuleForUrl / resolveEndpointIfCovered 等在
+    //   每个请求 / 每次 API 合并时高频调用 literalPathOf，重复做 startsWith/endsWith/indexOf/substring
+    //   字符串计算。规则数少且相对稳定，用有上限的 ConcurrentHashMap 缓存结果，消除重复分配。
+    private static final java.util.concurrent.ConcurrentHashMap<String, String> LITERAL_PATH_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int LITERAL_PATH_CACHE_MAX = 256;
+
+    private static String literalPathOf(String urlPattern) {
+        if (urlPattern == null || urlPattern.isEmpty()) return null;
+        // 命中缓存直接返回（缓存 value 为 null 表示无有效字面前缀，用空串占位）
+        String cached = LITERAL_PATH_CACHE.get(urlPattern);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+
+        String p = urlPattern;
+        // 去掉首尾 **（如果存在）
+        while (p.startsWith("**")) p = p.substring(2);
+        while (p.endsWith("**")) p = p.substring(0, p.length() - 2);
+        // 截断到第一个 * 之前（保留前面的字面路径）
+        int star = p.indexOf('*');
+        if (star >= 0) p = p.substring(0, star);
+
+        String result = p.isEmpty() ? "" : p;
+        if (LITERAL_PATH_CACHE.size() < LITERAL_PATH_CACHE_MAX) {
+            LITERAL_PATH_CACHE.putIfAbsent(urlPattern, result);
+        }
+        return p.isEmpty() ? null : p;
+    }
+
+    /**
+     * ⭐ 判断给定 URL 是否命中某个<b>会由 Handler 同步 storeApiCall 的规则</b>（MOCK / MONITOR）。
+     *
+     * <p>用途：MOCK 由 MockHandler、MONITOR 由 MonitorHandler 通过 {@code storeApiCall} <b>同步</b>写入
+     * ApiCaptureContext（唯一存储，覆盖所有 Page 且即时可查）。CDP 旁路若再捕获这些请求并异步写出，
+     * 会与同步存储<b>重复</b>（如 i26 期望 5 条实际 9 条）。因此 CDP 捕获前调用此方法，
+     * 命中则跳过捕获，避免重复存储。
+     *
+     * @param url 真实请求 URL（含 host）
+     * @return true = 命中 MOCK 或 MONITOR 规则（由 Handler 同步存储）
+     */
+    public static boolean isSyncStoredRuleForUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        boolean hasSyncStored = false;   // 命中「无 DELAY 的 MOCK/MONITOR」→ 由 Handler 同步存储
+        // CONTEXT 级
+        for (Map.Entry<String, RouteRule> e : CONTEXT_RULES.entrySet()) {
+            RouteRule r = e.getValue();
+            if (!urlCoveredByRule(url, r)) continue;
+            // ⭐ 命中任一 DELAY 规则 → CDP 需捕获（Handler 无法在 DELAY 异步线程同步 storeApiCall，
+            //    req.response() 异步失效，需 CDP 写入 ApiCaptureContext 供「DELAY 后 Monitor 从 ApiContext 断言」）。
+            if (ruleHasDelay(r)) return false;
+            if (r.getType() == RouteHandleType.MOCK || r.getType() == RouteHandleType.MONITOR) {
+                hasSyncStored = true;
+            }
+        }
+        // PAGE 级
+        for (Map.Entry<PageRef, List<RouteRule>> e : PAGE_RULES.entrySet()) {
+            for (RouteRule r : e.getValue()) {
+                if (!urlCoveredByRule(url, r)) continue;
+                if (ruleHasDelay(r)) return false;
+                if (r.getType() == RouteHandleType.MOCK || r.getType() == RouteHandleType.MONITOR) {
+                    hasSyncStored = true;
+                }
+            }
+        }
+        return hasSyncStored;
+    }
+
+    /** 判断 URL 是否命中任意带 DELAY 的规则。 */
+    public static boolean hasDelayRuleForUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        for (RouteRule rule : CONTEXT_RULES.values()) {
+            if (urlCoveredByRule(url, rule) && ruleHasDelay(rule)) return true;
+        }
+        for (List<RouteRule> rules : PAGE_RULES.values()) {
+            for (RouteRule rule : rules) {
+                if (urlCoveredByRule(url, rule) && ruleHasDelay(rule)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** 规则是否携带 DELAY（固定/随机延迟）。 */
+    private static boolean ruleHasDelay(RouteRule rule) {
+        return rule != null && (rule.getDelayMs() > 0
+                || rule.getDelayMinMs() > 0 || rule.getDelayMaxMs() > 0);
+    }
+
+    /**
+     * ⭐ 判断给定 URL 是否命中<b>任意</b>已注册规则（MOCK / MODIFY / DELAY / MONITOR，CONTEXT + PAGE 两级）。
+     *
+     * <p>用途：capture 目录（CDP 旁路 + EventMerger）采集的是真实网络流量，会把前端持续产生的
+     * <b>无规则匹配的 API</b>（如高频 health check、动态新接口）也捕获。若全量写入 ApiCaptureContext，
+     * 会导致内存无限增长、{@code getAllApiCalls} 膨胀。因此写入前调用此方法：
+     * <b>只有命中已注册规则的 API 才存储</b>，无规则的 health check / 新 API 不写。
+     *
+     * <p>判断基于「URL 子串命中任意规则的字面路径」（与 {@link #resolveEndpointForUrl} 的映射一致），
+     * 同时校验规则的请求条件（resourceType/method/headers 等），确保与 {@code requestMatches} 语义一致。
+     *
+     * @param url     真实请求 URL（含 host）
+     * @param method  请求方法（可空）
+     * @return true = 命中任意已注册规则（应存储）；false = 无规则匹配（不存储）
+     */
+    /**
+     * ⭐ 判断给定 URL 是否命中任意已注册规则，并返回命中的 urlPattern（endpoint）。
+     *
+     * <p>返回 {@code null} 表示<b>不命中任何规则</b>（capture 目录应跳过，不存储）。
+     * 返回非 null 表示命中，返回值即该 URL 应使用的 endpoint（最精确匹配的 urlPattern）。
+     *
+     * <p>⭐ 性能优化：此方法<b>一次遍历</b>同时完成「是否覆盖」判断与「endpoint 解析」，
+     *   capture 目录（EventMerger）无需再单独调用 {@link #resolveEndpointForUrl} 重复遍历，
+     *   消除了每请求对同一份规则集的双重 O(n) 遍历。
+     *
+     * @param url 真实请求 URL（含 host）
+     * @return 命中的 urlPattern；无规则命中时返回 {@code null}
+     */
+    /** 是否存在可用于 API 覆盖过滤的上下文或页面规则。 */
+    public static boolean hasCaptureRules() {
+        return !CONTEXT_RULES.isEmpty() || !PAGE_RULES.isEmpty();
+    }
+
+    public static String resolveEndpointIfCovered(String url) {
+        return resolveEndpointIfCovered(url, null);
+    }
+
+    /** 按请求所属 Page 解析 endpoint；传入 Page 可避免扫描其它 Page 规则。 */
+    public static String resolveEndpointIfCovered(String url, Page page) {
+        if (url == null || url.isEmpty()) return null;
+        if (!matchesCaptureUrlScope(url)) return null;
+        if (CONTEXT_RULES.isEmpty() && PAGE_RULES.isEmpty()) return null;
+        String best = null;
+        int bestLen = -1;
+        // CONTEXT 级（最精确优先）
+        for (Map.Entry<String, RouteRule> e : CONTEXT_RULES.entrySet()) {
+            RouteRule r = e.getValue();
+            String lit = literalPathOf(r.getUrlPattern());
+            if (lit != null && url.contains(lit) && lit.length() > bestLen) {
+                best = r.getUrlPattern();
+                bestLen = lit.length();
+            }
+        }
+        // PAGE 级
+        for (Map.Entry<PageRef, List<RouteRule>> entry : PAGE_RULES.entrySet()) {
+            if (page != null && entry.getKey().get() != page) continue;
+            if (page == null && entry.getKey().isDead()) continue;
+            for (RouteRule r : entry.getValue()) {
+                String lit = literalPathOf(r.getUrlPattern());
+                if (lit != null && url.contains(lit) && lit.length() > bestLen) {
+                    best = r.getUrlPattern();
+                    bestLen = lit.length();
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 单个规则是否覆盖给定 URL（字面路径子串命中）。 */
+    private static boolean urlCoveredByRule(String url, RouteRule rule) {
+        if (rule == null) return false;
+        String lit = literalPathOf(rule.getUrlPattern());
+        return lit != null && url.contains(lit);
+    }
+
+    private static boolean matchesCaptureUrlScope(String url) {
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String baseUrl = captureBaseUrl;
+            if (baseUrl != null) {
+                java.net.URI base = java.net.URI.create(baseUrl);
+                if (!java.util.Objects.equals(base.getScheme(), uri.getScheme())
+                        || !java.util.Objects.equals(base.getHost(), uri.getHost())
+                        || effectivePort(base) != effectivePort(uri)) {
+                    return false;
+                }
+            }
+            String basePath = captureBasePath;
+            if (basePath != null) {
+                String path = uri.getPath();
+                if (path == null || !(path.equals(basePath) || path.startsWith(basePath + "/"))) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            return captureBaseUrl == null && captureBasePath == null;
+        }
+    }
+
+    private static int effectivePort(java.net.URI uri) {
+        if (uri.getPort() >= 0) return uri.getPort();
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
+    private static String normalizeCaptureBaseUrl(String value) {
+        if (value == null || value.trim().isEmpty()) return null;
+        String normalized = value.trim();
+        while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        return normalized;
+    }
+
+    private static String normalizeCaptureBasePath(String value) {
+        if (value == null || value.trim().isEmpty() || "/".equals(value.trim())) return null;
+        String normalized = value.trim();
+        if (!normalized.startsWith("/")) normalized = "/" + normalized;
+        while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+        return normalized;
+    }
+
+    private static String crossLayerKey(Route route, String url) {
+        try {
+            if (route != null && route.request() != null
+                    && route.request().frame() != null
+                    && route.request().frame().page() != null) {
+                BrowserContext context = route.request().frame().page().context();
+                return System.identityHashCode(context) + "|" + url;
+            }
+        } catch (Exception ignored) {
+            // Page/Context 已关闭时回退 URL key，保证清理路径不阻塞。
+        }
+        return "legacy|" + url;
+    }
+
+    private static void purgeExpiredCrossLayerEntries() {
+        long cutoff = System.currentTimeMillis() - CROSS_LAYER_DEDUP_TTL_MS;
+        CROSS_LAYER_HANDLED_URLS.entrySet().removeIf(entry -> entry.getValue() < cutoff);
+    }
+
+    private static Map<String, RouteRule> contextRulesFor(Route route) {
+        try {
+            if (route != null && route.request() != null && route.request().frame() != null
+                    && route.request().frame().page() != null) {
+                Map<String, RouteRule> scoped = CONTEXT_RULES_BY_CONTEXT.get(
+                        route.request().frame().page().context());
+                if (scoped != null) return scoped;
+            }
+        } catch (Exception ignored) {
+            // Page/Context 已关闭，使用兼容全局规则。
+        }
+        return CONTEXT_RULES;
+    }
+
+    private static Set<String> contextCandidatePatterns(String url, Map<String, RouteRule> rules) {
+        Set<String> candidates = new HashSet<>(CONTEXT_RULE_FALLBACK_KEYS);
+        if (rules != CONTEXT_RULES) {
+            candidates.clear();
+            for (String pattern : rules.keySet()) {
+                String path = CONTEXT_RULE_PATHS.get(pattern);
+                if (path == null || path.isEmpty() || url.contains(path)) candidates.add(pattern);
+            }
+        }
+        String path = extractPathFromUrl(url);
+        if (path == null) return candidates;
+        // 只沿当前 URL 的路径边界查找索引，不再扫描全部 prefix key。
+        int boundary = path.length();
+        while (boundary > 0) {
+            Set<String> indexed = CONTEXT_RULE_KEYS_BY_PREFIX.get(path.substring(0, boundary));
+            if (indexed != null) candidates.addAll(indexed);
+            boundary = path.lastIndexOf('/', boundary - 1);
+        }
+        return candidates;
+    }
+
+    private static void indexContextRule(String pattern, String path) {
+        String prefix = literalPrefix(path);
+        if (prefix == null || prefix.isEmpty()) {
+            CONTEXT_RULE_FALLBACK_KEYS.add(pattern);
+            return;
+        }
+        CONTEXT_RULE_KEYS_BY_PREFIX.computeIfAbsent(prefix,
+                ignored -> ConcurrentHashMap.newKeySet()).add(pattern);
+    }
+
+    private static String literalPrefix(String path) {
+        if (path == null || path.isEmpty()) return null;
+        int wildcard = path.indexOf('*');
+        String prefix = wildcard >= 0 ? path.substring(0, wildcard) : path;
+        int slash = prefix.lastIndexOf('/');
+        return slash > 0 ? prefix.substring(0, slash + 1) : prefix;
+    }
+
+    /**
+     * 从完整 URL 提取 path（含 query），去掉 scheme + host。
+     * <p>例：{@code http://host:port/demo/api/users?x=1} → {@code /demo/api/users?x=1}
+     */
+    private static String extractPathFromUrl(String url) {
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            String path = uri.getPath();
+            if (uri.getRawQuery() != null) {
+                path = path + "?" + uri.getRawQuery();
+            }
+            return path != null ? path : url;
+        } catch (Exception e) {
+            int idx = url.indexOf("//");
+            if (idx >= 0) {
+                int slash = url.indexOf('/', idx + 2);
+                return slash >= 0 ? url.substring(slash) : "/";
+            }
+            return url;
+        }
     }
 
     /**
@@ -1143,13 +1653,55 @@ public class RouteEngine {
      *
      * @param patterns 要移除的 normalized pattern 集合
      */
+    public static void removeContextRules(Object context, Set<String> patterns) {
+        if (context == null || patterns == null || patterns.isEmpty()) return;
+        Map<String, RouteRule> scoped = CONTEXT_RULES_BY_CONTEXT.remove(context);
+        if (scoped == null) return;
+        for (String pattern : patterns) {
+            RouteRule ownerRule = scoped.remove(pattern);
+            if (ownerRule != null) {
+                // 仅当全局兼容索引仍指向本 Context 的规则时才删除，避免误删其它 Context。
+                CONTEXT_RULES.remove(pattern, ownerRule);
+                CONTEXT_RULE_PATHS.remove(pattern);
+                String path = extractPathFromNormalizedPattern(pattern);
+                String prefix = literalPrefix(path);
+                if (prefix != null) {
+                    Set<String> indexed = CONTEXT_RULE_KEYS_BY_PREFIX.get(prefix);
+                    if (indexed != null) {
+                        indexed.remove(pattern);
+                        if (indexed.isEmpty()) CONTEXT_RULE_KEYS_BY_PREFIX.remove(prefix, indexed);
+                    }
+                }
+                CONTEXT_RULE_FALLBACK_KEYS.remove(pattern);
+            }
+        }
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[RouteEngine] Removed {} context rules for context, remaining: {}",
+                patterns.size(), CONTEXT_RULES.size());
+    }
+
+    /** 兼容旧调用：仅用于无 Context 归属信息的全局清理场景。 */
     public static void removeContextRules(Set<String> patterns) {
         if (patterns == null || patterns.isEmpty()) return;
         CONTEXT_RULES.keySet().removeAll(patterns);
         CONTEXT_RULE_PATHS.keySet().removeAll(patterns);
-        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[RouteEngine] Removed {} context rules, remaining: {}",
-                patterns.size(), CONTEXT_RULES.size());
+        CONTEXT_RULE_KEYS_BY_PREFIX.values().forEach(keys -> keys.removeAll(patterns));
+        CONTEXT_RULE_FALLBACK_KEYS.removeAll(patterns);
+    }
+
+    /**
+     * ⭐ 清理指定上下文在 {@link #ENGINE_RULE_STORE} 中的合并引用（clearContext 时调用），
+     * 避免跨场景残留导致下次注册时错误地 mergeFrom 旧规则。
+     *
+     * @param context Page 或 BrowserContext 实例
+     */
+    public static void removeEngineRuleStore(Object context) {
+        ENGINE_RULE_STORE.remove(context);
+    }
+
+    /** ⭐ 全局清理 {@link #ENGINE_RULE_STORE}（测试套件结束时调用）。 */
+    public static void clearAllEngineRuleStores() {
+        ENGINE_RULE_STORE.clear();
     }
 
     // ─── MonitorSession（内部类）───────────────────────────────────
@@ -1269,7 +1821,14 @@ public class RouteEngine {
      * 此方法仅补充 MOCK（CDP 看不到响应）和 MODIFY（route.fetch 独立请求）的事件。
      */
     private static void feedCaptureEvent(Route route, RouteRule rule, Request req) {
-        CaptureEngine engine = CAPTURE_ENGINE;
+        CaptureEngine engine = null;
+        try {
+            if (req != null && req.frame() != null && req.frame().page() != null) {
+                engine = PAGE_CAPTURE_ENGINES.get(req.frame().page());
+            }
+        } catch (Exception ignored) {
+            // Page 已销毁或请求归属不可用时，不得回退到其它 Page 的全局引擎。
+        }
         if (engine == null || !engine.isRunning()) return;
 
         try {
@@ -1279,21 +1838,9 @@ public class RouteEngine {
 
             switch (rule.getType()) {
                 case MOCK:
-                    // MOCK 的响应由 MockHandler 通过 route.fulfill() 返回，
-                    // CDP 旁路看不到响应 → 投喂 MOCK_FULL 事件
-                    event = CaptureEvent.mockFull(
-                            requestId,
-                            req.method(),
-                            req.url(),
-                            req.headers(),
-                            req.postData() != null ? req.postData().getBytes(java.nio.charset.StandardCharsets.UTF_8) : null,
-                            rule.getMockStatus(),
-                            null, // mock 响应头由 MockHandler 设置，此处无法获取
-                            rule.getMockBody() != null
-                                    ? rule.getMockBody().getBytes(java.nio.charset.StandardCharsets.UTF_8)
-                                    : null
-                    );
-                    engine.feedRouteEvent(event);
+                    // ⭐ MOCK 存储由 MockHandler 同步 storeApiCall（route.fulfill 不发真实网络请求，
+                    //    且测试常无 awaitCompletion 直接查询，异步投喂存在写出竞态）。
+                    //    此处不再投喂 mockFull，避免与 Handler 同步存储重复。
                     break;
 
                 case MODIFY:

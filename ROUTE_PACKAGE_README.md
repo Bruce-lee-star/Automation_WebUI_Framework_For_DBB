@@ -1,869 +1,77 @@
-# Route 路由框架说明文档
+# Route 路由框架使用手册
 
-`com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包是对 Playwright `page.route()` / `context.route()` 的封装，提供**请求拦截、Mock 响应、请求体修改、API 监控断言、高延迟模拟**一体化能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
+`com.hsbc.cmb.hk.dbb.automation.framework.web.route` 包封装了 Playwright `page.route()` / `context.route()`，提供**请求拦截、Mock 响应、请求体修改、API 监控断言、高延迟模拟**能力，通过流式 DSL 构建规则，简化测试中的网络层控制。
 
 ---
 
 ## 目 录
 
-- [一、包结构](#一包结构)
-- [二、核心架构](#二核心架构)
-- [三、RouteHandleType — 四种处理类型](#三routehandletype--四种处理类型)
-- [四、核心类详解](#四核心类详解)
-  - [4.1 RouteEngine — 路由引擎](#41-routeengine--路由引擎)
-  - [4.2 RouteRegistry — 路由注册表](#42-routeregistry--路由注册表)
-  - [4.3 RouteRule — 路由规则模型](#43-routerule--路由规则模型)
-  - [4.4 RouteDsl — 流式 DSL 构建器](#44-routedsl--流式-dsl-构建器)
-  - [4.5 MonitorHandler — 监控处理器](#45-monitorhandler--监控处理器)
-  - [4.6 ModifyHandler — 修改处理器](#46-modifyhandler--修改处理器)
-  - [4.7 MockHandler — Mock 处理器](#47-mockhandler--mock-处理器)
-  - [4.8 DelayHandler — 高延迟处理器](#48-delayhandler--高延迟处理器)
-  - [4.9 ApiCaptureContext — API 捕获上下文](#49-apicapturecontext--api-捕获上下文)
-  - [4.10 RouteMonitor — 捕获入口门面](#410-routemonitor--捕获入口门面)
-  - [4.11 RouteAsyncPool — 异步任务池](#411-routeasyncpool--异步任务池)
-  - [4.12 RouteException — 异常体系](#412-routeexception--异常体系)
-  - [4.13 SerenityReporter — 报告工具](#413-serenityreporter--报告工具)
-  - [4.14 MonitorCallback — 响应回调接口](#414-monitorcallback--响应回调接口)
-  - [4.15 RouteUtil — 请求条件匹配工具](#415-routeutil--请求条件匹配工具)
-- [五、DSL 使用示例](#五dsl-使用示例)
-- [六、完整 API 参考](#六完整-api-参考)
-- [七、架构优势与设计亮点](#七架构优势与设计亮点)
+- [一、四种处理类型](#一四种处理类型)
+- [二、RouteDsl 方法速查](#二routedsl-方法速查)
+- [三、Monitor 监控](#三monitor-监控)
+- [四、Mock 模拟响应](#四mock-模拟响应)
+- [五、Modify 修改请求](#五modify-修改请求)
+- [六、Delay 高延迟模拟](#六delay-高延迟模拟)
+- [七、请求条件匹配](#七请求条件匹配)
+- [八、多规则组合](#八多规则组合)
+- [九、API 流量采集（ApiCapture）](#九api-流量采集apicapture)
+- [十、获取断言失败详情与捕获快照](#十获取断言失败详情与捕获快照)
+- [十一、用户方法完整说明](#十一用户方法完整说明)
+- [十二、清理与生命周期](#十二清理与生命周期)
 
 ---
 
-## 一、包结构
+## 一、四种处理类型
 
-```
-route/
-├── core/                              ← 核心引擎与数据模型
-│   ├── RouteEngine.java               # 路由引擎（注册入口，按类型分发到 Handler）
-│   ├── RouteHandler.java              # Handler 接口（@FunctionalInterface，解耦引擎与处理器）
-│   ├── RouteHandleType.java           # 处理类型枚举（MONITOR / MODIFY / MOCK / DELAY）
-│   ├── RouteRule.java                 # 路由规则数据模型（含参数校验）
-│   ├── RouteRegistry.java             # 路由注册表（WeakReference 防泄漏，按上下文隔离）
-│   ├── RouteException.java            # 异常体系（配置异常 / 运行时异常 / 断言异常）
-│   ├── ApiCaptureContext.java         # API 捕获上下文（线程隔离 + 双重上限存储 + 统一捕获 Monitor/Mock/Modify 调用）
-│   ├── CapturedApiCall.java           # 捕获的 API 调用快照（URL、方法、请求头、响应头、状态码、响应体、时间戳）
-│   ├── RouteMonitor.java              # 捕获入口门面（测试代码唯一入口）
-│   └── MonitorCallback.java           # Monitor 响应回调接口（断言通过后异步触发）
-├── dsl/
-│   └── RouteDsl.java                  # 流式 DSL 构建器（外部调用唯一入口）
-├── handler/                           ← 具体处理器
-│   ├── MonitorHandler.java            # 监控处理器（放行请求 → 异步断言 + 报告）
-│   ├── ModifyHandler.java             # 修改处理器（拦截 → JsonPath 精准替换 → 继续）
-│   ├── MockHandler.java               # Mock 处理器（拦截 → 直接返回自定义响应）
-│   └── DelayHandler.java              # 高延迟处理器（拦截 → 延迟放行模拟高延迟网络）
-└── util/
-    ├── RouteAsyncPool.java            # 异步任务线程池（守护线程 + 超时监控 + 告警）
-    ├── SerenityReporter.java          # Serenity 报告工具（主线程安全）
-    └── RouteUtil.java                 # 请求条件匹配工具（ResourceType/Header/Query/Body 等）
-```
-
-**共 4 个子包，18 个类文件。**
-
----
-
-## 二、核心架构
-
-### 请求处理链路
-
-```
-RouteDsl.start()
-    │
-    ▼
-RouteEngine.register(context, rules)
-    │
-    ├── RouteRegistry.register(context, pattern, type)  → 去重检查（记录类型）
-    │       │
-    │       ├── 首次注册 → page.route(pattern, handler) ✓
-    │       │
-    │       ├── 已存在 + 优先级更高 → page.unroute(pattern) → forceRegister → page.route(pattern, handler) ✓
-    │       │       （如 MOCK 覆盖 MONITOR、MODIFY 覆盖 MONITOR）
-    │       │
-    │       ├── 已存在 + 同类型（同级更新）→ page.unroute(pattern) + stopOldSessions → page.route(pattern, newHandler) ✓
-    │       │       （如监控超时后重新监控同一 API，旧配置被替换）
-    │       │
-    │       └── 已存在 + 同优先级或更低 → 静默跳过
-    │
-    └── dispatchRoute(route, rule)   → 请求到达时
-            │
-            ├── DISPATCHED_ROUTES 防重门控（同一请求只处理一次）
-            │
-            ├── 跨层合并检查：findMatchingContextRule(reqUrl)
-            │       │
-            │       ├── ctxRule 存在 + session.stopped=true → 跳过合并（已停止的 Context 规则不参与）
-            │       │
-            │       └── ctxRule 存在 + session.stopped=false → 标记 CROSS_LAYER_HANDLED_URLS
-            │           → 合并 DELAY（取 max(pageDelay, ctxDelay)）
-            │           → 按 MOCK > MODIFY > DELAY > MONITOR 优先级处理跨层冲突
-            │
-            ├── RouteUtil.requestMatches()  → 请求条件匹配
-            │       ├── Resource Type（xhr/fetch/script/image/...）
-            │       ├── HTTP Method（GET/POST/...）
-            │       ├── Request Headers（精确匹配）
-            │       ├── Query Parameters（精确匹配）
-            │       ├── Content-Type（包含匹配）
-            │       ├── Request Body Regex（正则匹配）
-            │       ├── Referrer / Origin（包含匹配）
-            │       └── Frame / Navigation（主 Frame + API 限定）
-            │
-            └── Handler.handle(route, rule)
-                    │
-                    ├── MonitorHandler: resume() → 异步获取 body → 断言 → 报告 → storeApiCall → onMonitorMatch()
-                    ├── ModifyHandler:  修改请求 → resume() → storeApiCall
-                    ├── MockHandler:    fulfill(mockOptions) → storeApiCall
-                    └── DelayHandler:  ScheduledExecutorService.schedule() → resume()
-```
-
-### 关键设计原则
-
-| 原则 | 实现方式 |
-|------|----------|
-| **零阻塞 UI** | MonitorHandler 先 `resume()` 放行页面，后异步断言；线程池拒绝策略为 `DiscardOldestPolicy` |
-| **异常隔离** | 单规则/单请求失败不影响其他规则和其他请求，所有 Handler 包裹 try-catch |
-| **优先级覆盖** | MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)；高优先级规则自动覆盖同 pattern 低优先级规则 |
-| **同级规则更新** | 同一层级重复注册同类型规则时，自动 `unroute` 旧 handler + 停止旧 session + 注册新配置 |
-| **跨层合并** | Page + Context 同时注册同一 API 时，自动合并两层延迟（取最大值）；Context MOCK 终结所有 |
-| **Session 状态感知** | 跨层合并前检查 Context 层 `MonitorSession.stopped`，已停止的规则不参与合并 |
-| **线程安全** | 所有全局状态用 `ConcurrentHashMap`/`AtomicLong` 保护；跨线程传递用 `byte[]` 拷贝 |
-| **内存安全** | `RouteRegistry` 使用 `WeakReference` 防泄漏；`ApiCaptureContext` 双重上限防 OOM；`RouteEngine` 防重集合有容量上限 |
-| **自动清理** | Scenario 结束 → `clearContext()`；JVM 退出 → `shutdown()` 关闭线程池；手动 → `RouteDsl.clear()` |
-
----
-
-## 三、RouteHandleType — 四种处理类型
-
-| 类型 | 枚举值 | 行为描述 |
-|------|--------|----------|
-| **MONITOR** | `MONITOR` | 放行请求 → 异步读取响应体 → 执行状态码/JSONPath 断言 → 写入 Serenity 报告（零阻塞 UI） |
-| **MODIFY** | `MODIFY` | 拦截请求 → 修改请求头/请求体/HTTP 方法 → 继续发送（`route.resume()`） |
-| **MOCK** | `MOCK` | 拦截请求 → 直接 `route.fulfill()` 返回自定义响应（状态码 + Body + Headers） |
-| **DELAY** | `DELAY` | 拦截请求 → `ScheduledExecutorService.schedule()` 等待 N 秒 → `route.resume()` 原样放行（不修改内容，仅模拟高延迟） |
-
----
-
-## 四、核心类详解
-
-### 4.1 RouteEngine — 路由引擎
-
-**职责**：统一注册入口 + 类型分发 + 防重门控 + 跨层合并 + MonitorSession 生命周期管理。
-
-**核心数据结构**：
-
-```java
-// Handler 映射表（EnumMap 分发，新增 Handler 无需改 switch）
-private static final Map<RouteHandleType, RouteHandler> HANDLERS;
-
-// 防重门控 — 同一请求匹配多个重叠 pattern 时只处理一次
-private static final Map<Route, Boolean> DISPATCHED_ROUTES
-        = new ConcurrentHashMap<>();
-private static final int MAX_DISPATCHED_ROUTES = 500;  // 容量上限
-
-// MonitorSession 管理（RouteRule 为 key，依赖 equals/hashCode）
-private static final Map<RouteRule, MonitorSession> SESSIONS
-        = new ConcurrentHashMap<>();
-
-// 跨层标记 — 已被 Page handler 处理的 URL，Context handler 到达时跳过
-private static final Set<String> CROSS_LAYER_HANDLED_URLS
-        = new ConcurrentHashMap<>().newKeySet();
-```
-
-**防重门控机制**：
-
-同一请求匹配多个重叠注册的 URL pattern（如 `/api/**` + `/api/user`），`DISPATCHED_ROUTES.putIfAbsent()` 保证仅首个 handler 执行，后续 handler 静默跳过，彻底解决 Playwright 的 `"Route is already handled"` 异常。
-
-**容量上限保护**：`DISPATCHED_ROUTES` 超过 500 条目时自动 `clear()`，防止异常情况下无限增长。
-
-**跨层合并机制**（Page + Context 同时注册同一 API）：
-
-当同一 API 在 Page 和 BrowserContext 两层同时注册规则时，`dispatchRoute` 自动合并两层配置：
-
-| 合并规则 | 说明 |
-|----------|------|
-| **DELAY 合并** | 取 Page 和 Context 两层延迟的**最大值** |
-| **Context MOCK 优先** | MOCK 全局终结，覆盖任何 Page handler，Page DELAY 不继承 |
-| **Context DELAY + Page MONITOR** | 仅延迟放行，跳过监测 |
-| **相同类型** | Page 配置胜出（层级优先级：Page > Context），仅合并延迟 |
-| **已停止 Session 忽略** | Context 层 MonitorSession 已停止（超时/auto-stop）时，跳过跨层合并——不标记 URL、不合并延迟，Page handler 独立执行 |
-
-**Session 状态感知**（v1.0 关键增强）：
-
-跨层合并前增加 `MonitorSession.stopped` 检查：
-```java
-MonitorSession ctxSession = SESSIONS.get(ctxRule);
-if (ctxSession != null && ctxSession.stopped.get()) {
-    // 跳过跨层合并 — Session 已停止的 Context 规则不应影响 Page handler
-} else {
-    // 正常跨层合并逻辑
-}
-```
-此修复解决了 **Context 规则超时/auto-stop 后，残留延迟仍被跨层合并** 的隐患。
-
-**MonitorSession 生命周期**：
-
-```
-register(context, MONITOR rule)
-  → SESSIONS.put(rule, session)   // session.stopped = false
-  → 请求到达 → onMonitorMatch() → 递增计数，检查 auto-stop
-  → 超时 / 匹配次数达标 / auto-stop → session.stopped = true
-  → 再次请求 → dispatchRoute 检查 session.stopped → resume 放行
-  → 跨层合并 → 检查 SESSIONS.get(ctxRule).stopped → 跳过合并
-  → Scenario 结束 → clearContext() → SESSIONS 清理 ✅
-```
-
-**同级规则更新**（同 Page 或同 Context 重复注册同类型）：
-```
-register(page, MONITOR rule)  → 首次，putIfAbsent → true → page.route(...) ✅
-// Monitor 超时 → session.stopped 变为 true
-register(page, MONITOR rule2) → putIfAbsent 返回 false → getRegisteredType == MONITOR
-  → page.unroute(pattern)              // 注销旧 Playwright handler
-  → stopOldSessionsForPattern()        // 停止并移除旧 session
-  → page.route(pattern, newHandler)    // 注册新 handler
-  → SESSIONS.put(rule2, newSession)    // 新 session 启动
-```
-
-**关键方法**：
-
-| 方法 | 说明 |
+| 类型 | 行为 |
 |------|------|
-| `register(Object, List<RouteRule>)` | 统一注册入口，支持 Page/BrowserContext |
-| `dispatchRoute(Route, RouteRule)` | 防重门控分发 + 跨层合并 + Session 状态感知 |
-| `findMatchingContextRule(String)` | 从 CONTEXT_RULES 中查找匹配的 Context 规则 |
-| `onMonitorMatch(RouteRule)` | 递增匹配计数，检查 auto-stop 条件 |
-| `stopOldSessionsForPattern(String)` | 同级更新时停止旧 session |
-| `clearDispatchedRoutes()` | 清空防重门控集合（每次测试结束调用） |
-| `clearMonitorSessions(Object)` / `clearAllMonitorSessions()` | 清理 MonitorSession |
-| `unrouteAllForContext(Object, Set<String>)` | 批量注销 Playwright 路由 |
-| `shutdown()` | 关闭 DELAY_SCHEDULER 和 SCHEDULER 线程池（JVM 退出时调用） |
+| **MONITOR** | 放行请求 → 异步读取响应体 → 执行状态码/JSONPath 断言 → 写入 Serenity 报告 |
+| **MODIFY** | 拦截请求 → 修改请求头/请求体/HTTP 方法 → 继续发送 |
+| **MOCK** | 拦截请求 → 直接返回自定义响应（状态码 + Body + Headers） |
+| **DELAY** | 拦截请求 → 延迟 N 秒后原样放行（不修改内容，仅模拟高延迟） |
+
+同一 `pattern` 的组合语义：`MOCK` 是终结动作；`MODIFY`、`DELAY` 可以叠加；`MONITOR` 是真实响应监控基线，除 `MOCK` 外不会被 `MODIFY` 或 `DELAY` 覆盖。跨 `Page` / `BrowserContext` 时，`MOCK` 仍会终止其它能力，`MONITOR` 对真实响应持续生效。
 
 ---
 
-### 4.2 RouteRegistry — 路由注册表
-
-**职责**：按上下文（Page/BrowserContext）隔离存储已注册的 URL pattern 及其处理类型，支持**优先级覆盖**和**同级规则更新**，防止跨上下文路由冲突和内存泄漏。
-
-**核心数据结构**：
-
-```java
-// Key: ContextKey（WeakReference 包装 Page/BrowserContext）
-// Value: pattern → RouteHandleType 映射（记录每个 pattern 当前注册的类型）
-private static final ConcurrentHashMap<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS;
-
-// 触发死条目清理的阈值
-private static final int PURGE_THRESHOLD = 50;
-```
-
-**路由类型优先级**：高优先级规则可覆盖同 pattern 的低优先级规则。
-
-```java
-MOCK(4)  >  MODIFY(3)  >  DELAY(2)  >  MONITOR(1)
-```
-
-**优先级覆盖场景**：
-```
-场景1: 先注册 MONITOR 监控 /api/users → 后注册 MOCK 模拟该 API
-       ✅ MOCK 自动覆盖 MONITOR（page.unroute → forceRegister → page.route）
-
-场景2: 先注册 MOCK → 后注册 MONITOR 监控同一 API
-       ❌ 跳过（MONITOR 优先级低于 MOCK，无法覆盖）
-
-场景3: 同优先级规则注册同一 pattern
-       ❌ 跳过（去重保护）
-```
-
-**同级规则更新场景**（同类型重新注册）：
-```
-场景4: 先注册 MONITOR 监控 /api/users（timeout=30） → 超时后 session 停止
-       → 再次 register MONITOR /api/users（timeout=60，新 expectStatus）
-       ✅ 检测到同类型已注册 → page.unroute(oldPattern)
-       → stopOldSessionsForPattern() → 移除旧 session
-       → page.route(pattern, newHandler) + 新 session
-       → 新配置（timeout=60、新断言）生效
-
-场景5: 先注册 MONITOR 监控 /api/users 未超时 → 再次 register MONITOR（更新配置）
-       ✅ 同上流程，旧 handler 立即 unroute，旧 session 立即 stop
-       → 新 handler + 新 session 生效
-```
-
-**ContextKey 内部类** — 使用 `WeakReference` 防止静态 Map 阻止 Page/Context 被 GC：
-
-```java
-private static final class ContextKey {
-    private final int identityHash;                  // System.identityHashCode()
-    private final WeakReference<Object> ref;          // WeakReference 包裹
-    // equals() 基于身份相等 (a == b)
-    // hashCode() 返回 identityHash（不因 ref 释放而改变）
-    // isDead()  → ref.get() == null 判定 GC 回收
-}
-```
-
-**内存泄漏防护链路**：
-```
-Page 被外部释放 → ContextKey.ref.get() 返回 null
-  → registerInternal() 触发 purgeDeadEntries()（Map size > 50 时）
-  → 死条目被 Iterator.remove() 移除
-  → Map 不阻止 Page GC ✓
-```
-
-**关键方法**：
-
-| 方法 | 返回值语义 | 说明 |
-|------|-----------|------|
-| `register(Page/String/RouteHandleType)` | `true`=首次 / `false`=已存在 | Page 级别注册 pattern（记录类型，支持优先级检查；同类型→触发 RouteEngine 的 unroute + stopOldSessions 更新） |
-| `register(BrowserContext/String/RouteHandleType)` | 同上 | Context 级别注册 pattern（记录类型，支持同级更新） |
-| `getRegisteredType(Object, String)` | RouteHandleType / null | 查询指定上下文中 pattern 当前注册的类型 |
-| `shouldOverride(Object, String, RouteHandleType)` | boolean | 判断新类型优先级是否高于已注册类型 |
-| `forceRegister(Object, String, RouteHandleType)` | 始终 true | 强制覆盖注册（用于高优先级规则替换低优先级规则） |
-| `unregister(Object, String)` | void | 注销单个 pattern |
-| `clearContext(Object)` | void | 三阶段清理：① 移除注册表 + unroute → ② 清理 MonitorSession → ③ 清空防重门控 + 跨层标记 |
-| `clearAll()` | void | 全局清理所有上下文 + JSONPath 缓存（测试套件结束时调用） |
-| `purgeDeadEntries()` | void | 清理 GC 回收的死条目 |
-| `getPatternCount(Object)` | int | 指定上下文已注册 pattern 数 |
-| `getContextCount()` | int | 全局上下文数量 |
-
----
-
-### 4.3 RouteRule — 路由规则模型
-
-**职责**：统一承载 MONITOR / MODIFY / MOCK / DELAY 四种类型的配置数据，内置参数校验。
-
-**配置字段一览**：
-
-| 分类 | 字段 | 类型 | 默认值 | 说明 |
-|------|------|------|--------|------|
-| **通用** | `urlPattern` | String | —（必填） | URL 匹配模式 |
-| | `type` | RouteHandleType | `MONITOR` | 处理类型 |
-| **Mock** | `mockBody` | String | null | 响应体内容 |
-| | `mockStatus` | int | 200 | HTTP 状态码 |
-| | `mockHeaders` | Map | null | 响应头 |
-| | `mockReplaceFields` | Map\<String,Object\> | null | Mock 批量字段替换（JSONPath → 值，支持 `[*]` 通配符，value 支持 String/Number/Boolean/null） |
-| | `interceptRealResponse` | boolean | false | 是否拦截真实 API 响应（true=先用 route.fetch() 获取真实响应，再应用替换字段后 fulfill） |
-| **Modify** | `requestHeadersToSet` | Map | null | 设置/新增的请求头（覆盖已有同名头） |
-| | `requestHeadersToRemove` | Set | null | 需删除的请求头名称 |
-| | `requestBodyFieldsToModify` | Map\<String,String\> | null | 修改已有字段（JSONPath → 值，LinkedHashMap 有序） |
-| | `requestBodyFieldsToAdd` | Map\<String,String\> | null | 新增字段（JSONPath → 值） |
-| | `requestBodyFieldsToRemove` | Set | null | 需删除的字段路径 |
-| | `modifyMethod` | String | null | 修改 HTTP 方法 |
-| **Monitor** | `record` | boolean | true | 是否记录到报告 |
-| | `expectedStatus` | Integer | null | 期望状态码断言 |
-| | `jsonPathAssertions` | Map | null | JSONPath 断言 |
-| **自动停止** | `timeoutMs` | long | 0（永不超时） | 超时秒数（DSL 中以秒为单位，内部存储为毫秒） |
-| | `minMatches` | int | 1 | 最小匹配次数 |
-| | `autoStopOnMatch` | boolean | true | 达标后是否自动停止 |
-| **Delay** | `delayMs` | long | 0 | 固定延迟毫秒数（0 = 无延迟） |
-| | `delayMinMs` | long | 0 | 随机延迟范围最小值（毫秒，0 = 不使用随机范围） |
-| | `delayMaxMs` | long | 0 | 随机延迟范围最大值（毫秒） |
-| **请求匹配** | `resourceTypes` | String | null | 允许的资源类型（逗号分隔：xhr,fetch,script...） |
-| | `matchMethod` | String | null | HTTP 方法匹配（GET/POST/...） |
-| | `matchHeaders` | Map | null | 请求头精确匹配 |
-| | `matchQuery` | Map | null | Query 参数精确匹配 |
-| | `matchBodyRegex` | String | null | 请求体正则匹配 |
-| | `matchContentType` | String | null | Content-Type 包含匹配（如 "json"） |
-| | `matchReferrer` | String | null | Referrer 包含匹配 |
-| | `matchOrigin` | String | null | Origin 包含匹配 |
-| | `matchFrameUrl` | String | null | Frame URL 包含匹配 |
-| | `onlyMainFrame` | boolean | true | 是否只匹配主 Frame |
-| | `onlyApiCall` | boolean | false | 是否仅匹配 API（false=匹配所有请求类型） |
-
-**输入校验**：
-- `urlPattern` 拒绝 blank 值
-- `mockStatus` / `expectedStatus` 必须在 `[100, 600)` 范围内
-- `timeoutMs` 必须 ≥ 0；`minMatches` 必须 ≥ 1
-- `delayMs` / `delayMinMs` / `delayMaxMs` 必须 ≥ 0；`delayMaxMs` > `delayMinMs` 时才启用随机模式
-
-**`equals()` / `hashCode()`**：
-
-`RouteRule` 作为 `ConcurrentHashMap<RouteRule, MonitorSession>` 的 key，已重写基于业务标识的相等性判断：
-- 相等判定：`urlPattern` + `type` + `method` 三者均相等
-- 哈希计算：`Objects.hash(urlPattern, type, method)`
-
----
-
-### 4.4 RouteDsl — 流式 DSL 构建器
-
-**职责**：面向测试用例的唯一外部入口。持有上下文引用（Page/BrowserContext），`start()` 无需重复传入。
-
-**核心设计**：
-- `RouteDsl` 持有上下文引用 + 规则列表（`CopyOnWriteArrayList`）
-- `ApiDsl` 内部类提供链式配置方法
-- `done()` 完成当前 API 配置后返回父级 `RouteDsl`，支持链式多规则
-
-**DSL 方法全览**：
+## 二、RouteDsl 方法速查
 
 ```java
 // ── 入口 ──
-RouteDsl.on(page)           // Page 级别
-RouteDsl.on(browserContext)  // Context 级别
+RouteDsl.on(page)             // Page 级别
+RouteDsl.on(browserContext)   // Context 级别
 
 // ── 规则配置 ──
-.api(urlPattern)            // 开始配置一个 API 规则
+.api(urlPattern)              // 开始配置一个 API 规则
 
 // ── 类型选择 ──
-.monitor()                  // 声明为监控模式
-.modifyRequest()            // 声明为修改模式
-.mock()                     // 声明为 Mock 模式
-.delay(3)                   // 声明为高延迟模式 + 延迟秒数
-
-// ── Monitor 配置 ──
-.record(boolean)            // 是否写入 Serenity 报告（默认 true）
-.timeout(long seconds)       // 超时秒数（0=永不超时）
-.minMatches(int)            // 最小匹配次数（默认 1）
-.autoStopOnMatch(boolean)   // 达标后自动停止（默认 true）
-.expectStatus(int)          // 断言 HTTP 状态码
-.expectJsonPath(path, val)  // 断言 JSONPath 字段值
-.onResponse(callback)       // 注册响应回调（断言通过后异步触发）
-
-// ── Modify 配置 ──
-.setRequestHeader(key, val) // 添加/覆盖请求头
-.setRequestHeaders(map)     // 批量设置请求头
-.removeRequestHeader(key)    // 删除请求头
-.modifyRequestBody(path, v) // JSONPath 精准替换请求体字段
-.addRequestBodyField(p, v)  // 新增请求体字段
-.removeRequestBodyField(p)   // 删除请求体字段
-.modifyMethod(method)       // 修改 HTTP 方法
-
-// ── Mock 配置 ──
-.mockBody(body)             // 设置响应体
-.mockBodyFromFile(name)     // 从 JSON 文件读取响应体（src/test/resources/mocks/）
-.mockBodyFromFile(name, map) // 读文件 + 按 JSONPath 批量改字段（纯 Mock 可用）
-.mockStatus(status)         // 设置 HTTP 状态码
-.mockHeader(key, value)     // 设置响应头
-.replaceField(path, val)    // 对当前 body 增量改单个字段（纯 Mock 可用）
-.replaceFields(map)         // 对当前 body 批量改字段（纯 Mock 可用）
-.mockReplaceField(path, val) // 批量替换 真实响应 JSON body 字段（仅 interceptResponse() 模式生效，支持 [*] 通配符 + 类型保持）
-.interceptResponse()        // 切换为拦截真实响应模式 → 返回 InterceptMockDsl
-
-// ── 拦截真实响应 Mock 配置（interceptResponse() 后可用）──
-.mockReplaceField(path, val) // 替换真实响应 JSON body 字段（支持 String/Number/Boolean/null）
-.mockHeader(key, value)      // 追加响应头（合并到真实响应头之上）
-.mockStatus(status)          // 覆盖响应状态码
-
-// ── 请求条件匹配 ──
-.matchMethod(method)        // HTTP 方法过滤（GET/POST/...）
-.resourceType(types)        // 资源类型过滤（逗号分隔）
-.onlyXhr()                  // 仅匹配 XHR 请求
-.onlyFetch()                // 仅匹配 Fetch 请求
-.onlyApi()                  // 仅匹配 API 调用（xhr + fetch）
-.matchHeader(key, value)    // 请求头精确匹配
-.matchQuery(key, value)     // Query 参数精确匹配
-.matchBodyRegex(regex)      // 请求体正则匹配
-.matchContentType(type)     // Content-Type 包含匹配
-.matchReferrer(referrer)    // Referrer 包含匹配
-.matchOrigin(origin)        // Origin 包含匹配
-.matchFrameUrl(url)         // Frame URL 包含匹配
-.onlyMainFrame(bool)        // 是否只匹配主 Frame
-.allowAllFrames()           // 匹配所有 Frame（含 iframe）
-.onlyApiCall(bool)          // 是否仅匹配 API 调用
-.allowAllRequests()         // 匹配所有类型请求（含 navigation/静态资源）
+.monitor()                    // 声明为监控模式
+.modifyRequest()              // 声明为修改模式
+.mock()                       // 声明为 Mock 模式
+.delay(3)                     // 声明为高延迟模式 + 延迟秒数
 
 // ── 生命周期 ──
-.done()                     // 完成当前规则 → 返回 RouteDsl（可继续链式）
-.start()                    // 启动路由注册
-.clear()                    // 注销所有 pattern + 清理上下文
-RouteDsl.clearAllRules()    // 静态方法：全局清理所有上下文的所有路由规则
+.done()                       // 完成当前规则 → 返回 RouteDsl（可继续链式）
+.start()                      // 启动路由注册
+.clear()                      // 注销所有 pattern + 清理上下文
+RouteDsl.clearAllRules()      // 静态方法：全局清理所有上下文的所有路由规则
 ```
+
+**Monitor 配置**：`.record(boolean)`、`.timeout(long seconds)`、`.minMatches(int)`、`.autoStopOnMatch(boolean)`、`.expectStatus(int)`、`.expectJsonPath(path, val)`、`.onResponse(callback)`
+
+**Modify 配置**：`.setRequestHeader(key, val)`、`.setRequestHeaders(map)`、`.removeRequestHeader(key)`、`.modifyRequestBody(path, v)`、`.addRequestBodyField(p, v)`、`.removeRequestBodyField(p)`、`.modifyMethod(method)`
+
+**Mock 配置**：`.mockBody(body)`、`.mockBodyFromFile(name)`、`.mockBodyFromFile(name, map)`、`.mockStatus(status)`、`.mockHeader(key, value)`、`.replaceField(path, val)`、`.replaceFields(map)`、`.mockReplaceField(path, val)`、`.interceptResponse()`
+
+**请求条件匹配**：`.matchMethod(method)`、`.resourceType(types)`、`.onlyXhr()`、`.onlyFetch()`、`.onlyApi()`、`.matchHeader(key, value)`、`.matchQuery(key, value)`、`.matchBodyRegex(regex)`、`.matchContentType(type)`、`.matchReferrer(referrer)`、`.matchOrigin(origin)`、`.matchFrameUrl(url)`、`.onlyMainFrame(bool)`、`.allowAllFrames()`、`.onlyApiCall(bool)`、`.allowAllRequests()`
+
+**Delay 专用**：`.delay(secs)`、`randomDelay(minSecs, maxSecs)`
 
 ---
 
-### 4.5 MonitorHandler — 监控处理器
+## 三、Monitor 监控
 
-**职责**：放行请求 → 异步断言 → Serenity 报告。零阻塞 UI 线程。
-
-**处理流程**：
-
-```
-1. route.resume() 放行请求（异常安全，失败不影响路由）
-         ↓
-2. response.body() 在 Playwright 事件线程同步读取 → byte[]
-         ↓
-3. byte[] 拷贝后提交到 RouteAsyncPool.run() 异步执行
-         ↓
-4. 异步线程：byte[] → UTF-8 String → 存储到 ApiCaptureContext
-         ↓
-5. 执行断言：状态码断言 + JSONPath 断言
-         ↓
-6. 失败时通过 ApiCaptureContext.recordAssertionFailure() 记录详情
-         ↓
-7. 成功/失败都写入 Serenity 报告（通过 SerenityReporter）
-         ↓
-8. RouteEngine.onMonitorMatch() 触发 auto-stop 检查
-```
-
-**断言类型**：
-- **状态码断言**：`expectedStatus != null` 时比较 `response.status() == expectedStatus`
-- **JSONPath 断言**：通过 `JsonPath.read()` 获取实际值，`compareValues()` 支持 Number 类型松散比较
-
----
-
-### 4.6 ModifyHandler — 修改处理器
-
-**职责**：拦截请求 → 修改请求 → 继续发送（`route.resume()`）。
-
-**处理流程**：
-```
-1. 修改请求头（set/remove）
-         ↓
-2. 修改请求体（JSONPath 精准替换 + 类型保持）
-         ↓
-3. 修改 HTTP 方法（可选）
-         ↓
-4. route.resume() 放行修改后的请求
-         ↓
-5. 构建修改详情的 JSON（原始 URL、修改后的方法、headers 增删、body 字段增删改）
-         ↓
-6. 存入 ApiCaptureContext.getCurrent().storeApiCall()
-```
-
-**支持的修改操作**：
-
-| 操作 | API | 说明 |
-|------|-----|------|
-| 添加请求头 | `.setRequestHeader(key, value)` | 合并到原请求头 |
-| 删除请求头 | `.removeRequestHeader(key)` | 移除指定请求头 |
-| 请求体替换 | `.modifyRequestBody(key, value)` | JSONPath 精准替换 + 类型保持（含数组/对象） |
-| 请求体新增 | `.addRequestBodyField(key, value)` | JSONPath → 值，路径不存在则自动创建中间节点 |
-| 请求体删除 | `.removeRequestBodyField(key)` | 删除指定 JSONPath 字段 |
-| 修改 HTTP 方法 | `.modifyMethod("POST")` | 覆盖原方法 |
-
-> **注意**：Modify 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取修改详情的完整快照（含原始 URL、修改后的方法、headers 变更、body 变更）。
-
-**JSONPath 精准替换特性**：
-
-```java
-// 支持嵌套路径
-user.name                  → { "user": { "name": "newValue" } }
-
-// 支持数组索引
-users[0].name              → { "users": [{ "name": "newValue" }] }
-
-// 类型保持 — 原字段是 int，替换值自动转换为 IntNode
-"age": 25  → modifyRequestBody("age", "30") → "age": 30  (int 保持)
-
-// 类型保持 — 原字段是数组/对象，替换值自动解析为 JSON
-"items": []  → modifyRequestBody("items", "[{\"id\":1}]") → "items": [{"id":1}]  (数组保持)
-"meta": {}   → modifyRequestBody("meta", "{\"key\":\"val\"}") → "meta": {"key":"val"}  (对象保持)
-```
-
-> **类型保持机制**：`modifyRequestBody` / `mockReplaceField` 均共享底层 `convertToMatchingType()` 方法，根据原字段类型自动转换——
-> 原值为 `IntNode`/`LongNode` → 整数解析；`BooleanNode` → 布尔解析；`FloatNode`/`DoubleNode` → 小数解析；
-> `ObjectNode`/`ArrayNode` → 先尝试 Jackson JSON 解析（失败则降级为文本）。
-
-**JSONPath 编译缓存**：缓存容量上限 200，超过后自动清空重建。
-
----
-
-### 4.7 MockHandler — Mock 处理器
-
-**职责**：拦截请求 → 直接 `route.fulfill()` 返回自定义响应。
-
-**处理流程**：
-```
-1. 状态码校验 → 非法状态码 fallback 到 200
-         ↓
-2. 响应体准备：mockBody 为 null 时降级为空字符串 ""
-         ↓
-3. 批量字段替换：调用 ModifyHandler.replaceBatchByWildcard() 进行通配符 JSONPath 替换
-    — 自动类型保持（Int/Long/Boolean/Float/Object/Array）
-    — 数组/对象类型字段自动解析为 JSON，未解析成功时降级为字符串
-         ↓
-4. 构建 Route.FulfillOptions（状态码 + 响应体 + 自定义 Headers）
-         ↓
-5. route.fulfill() 包裹 try-catch，单请求失败不影响路由
-         ↓
-6. 构建 CapturedApiCall（urlPattern、方法、mock 状态码、mock 响应头、mock body）
-         ↓
-7. 存入 ApiCaptureContext.getCurrent().storeApiCall()
-```
-
-**配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）。
-
-**两种工作模式**：
-
-| 模式 | 触发方式 | 行为 | 适用场景 |
-|------|----------|------|----------|
-| **纯 Mock**（默认） | `.mock().mockBody(...)` | 直接返回 mockBody 设置的自定义响应，不访问真实服务器 | 完全隔离后端依赖的测试 |
-| **拦截真实响应** | `.mock().interceptResponse()` | 通过 `route.fetch()` 先获取真实服务器响应，再应用 `mockReplaceField()` 字段替换后 fulfill 返回 | 需要真实响应结构、仅替换部分字段的场景 |
-
-**处理流程（拦截真实响应 — `interceptRealResponse=true`）**：
-```
-1. route.fetch() — 真实发送请求到服务器，获取完整 APIResponse
-         ↓
-2. 合并响应头（真实响应头 + 用户自定义 mockHeaders）
-         ↓
-3. 应用 mockReplaceFields 字段替换（对真实响应体执行通配符批量替换）
-    — 替换失败不回退，使用原始真实响应体
-         ↓
-4. route.fulfill() 返回修改后的响应给前端
-         ↓
-5. 存入 ApiCaptureContext
-```
-
-**配置字段**：`mockBody`（响应体）、`mockStatus`（HTTP 状态码，默认 200）、`mockHeaders`（自定义响应头）、`mockReplaceFields`（JSONPath → 值，支持 `[*]` 通配符 + 类型保持）、`interceptRealResponse`（是否拦截真实响应，默认 false）。
-
-> **注意**：Mock 调用存入 `ApiCaptureContext` 后，可通过 `ApiCaptureContext.getCurrent().getApiCalls("/api/xxx")` 获取完整的 Mock 请求快照。
-
-**纯 Mock 模式增强（读文件 + 链式改字段）**：
-
-纯 Mock 模式（`mock()` 默认）新增以下能力，构建期即可完成「读 JSON 文件 → 改字段 → 塞给响应体」的完整链路，不依赖真实服务器：
-
-| 方法 | 说明 |
-|------|------|
-| `mockBodyFromFile(name)` | 从 JSON 文件读取响应体（文件名不含路径时自动从 `src/test/resources/mocks/` 查找；含 `/` 时按路径读取）；文件不存在/为空抛 `IllegalArgumentException` |
-| `mockBodyFromFile(name, overrides)` | 读文件后按 JSONPath 批量改字段（一次性，比链式更高效） |
-| `replaceField(path, val)` | 对**已设置**的 body 增量改单个字段，可链式多次调用 |
-| `replaceFields(overrides)` | 对**已设置**的 body 批量改字段 |
-
-> **重要约束**：`mockReplaceField()` 仅在 `interceptResponse()` 模式下生效（作用于真实响应体）。纯 Mock 模式要修改响应体字段，请使用 `replaceField()` / `replaceFields()` / `mockBodyFromFile(name, overrides)`，切勿混用 `mockReplaceField()`（纯 Mock 下会被 `MockHandler` 忽略，造成静默无效果）。
-
----
-
-### 4.8 DelayHandler — 高延迟处理器
-
-**职责**：拦截请求 → 延迟 N 秒 → `route.resume()` 原样放行。模拟高延迟网络环境，不修改请求/响应内容。
-
-**核心实现**：
-
-```java
-// 不使用 Thread.sleep() 阻塞线程，改用 ScheduledExecutorService.schedule()
-DELAY_SCHEDULER.schedule(() -> {
-    route.resume();  // 延迟结束后原样放行
-}, delayMs, TimeUnit.MILLISECONDS);
-```
-
-**延迟模式**：
-
-| 模式 | 方法 | 说明 |
-|------|------|------|
-| **固定延迟** | `delay(n)` | 每次请求延迟相同的秒数 |
-| **随机延迟** | `delay(n).randomDelay(min, max)` | 每次请求在 [min, max] 秒范围内随机取值 |
-
-**安全防护**：
-- **最大延迟钳制**：`MAX_DELAY_MS = 120_000`（2 分钟），防止配置错误导致测试卡死
-- **负值钳制**：负值延迟自动钳制为 0
-- **线程隔离**：使用 `ScheduledExecutorService` 调度而非 `Thread.sleep()`，不占用请求处理线程
-
-**与其他类型的区别**：
-
-| 类型 | 是否修改内容 | 是否放行 | 放行方式 |
-|------|-------------|----------|----------|
-| **MOCK** | 是 | 否 | `fulfill()` 直接返回 |
-| **MODIFY** | 是 | 是 | `resume()` 修改后放行 |
-| **MONITOR** | 否 | 是 | `resume()` 立即放行 |
-| **DELAY** | 否 | 是 | `schedule()` 延迟后 `resume()` |
-
-**典型使用场景**：
-- 模拟 3G/4G 高延迟网络
-- 测试前端超时处理、loading 状态展示
-- 验证请求失败重试机制
-- 检测时间敏感型缺陷（如竞态条件）
-
----
-
-### 4.9 ApiCaptureContext — API 捕获上下文
-
-**职责**：提供线程隔离的统一 API 调用捕获，支持 Monitor、Mock、Modify 三种类型。提供断言失败标记、详细失败信息记录、CapturedApiCall 完整快照存储和带容量保护的 Response 存储。
-
-**核心设计**：
-
-```java
-// 线程隔离（每个测试线程独立上下文，并行测试互不干扰）
-private static final ThreadLocal<ApiCaptureContext> INSTANCE =
-        ThreadLocal.withInitial(ApiCaptureContext::new);
-
-// CapturedApiCall 完整快照存储（Monitor/Mock/Modify 统一入口）
-private final ConcurrentHashMap<String, List<CapturedApiCall>> capturedApiCalls;
-
-// Response 双重上限保护
-private static final int MAX_RESPONSE_STORAGE = 1000;        // 数量上限
-private static final long MAX_RESPONSE_TOTAL_SIZE = 10MB;   // 体积上限（10MB）
-
-// Response 多值存储（同一 endpoint 多次调用全部保留）
-private final ConcurrentHashMap<String, List<String>> responseStorage;
-private final AtomicLong totalResponseSize = new AtomicLong(0L);
-```
-
-**三种 Handler 统一捕获**：
-
-| Handler | 存储时机 | 存储内容 |
-|---------|---------|---------|
-| MonitorHandler | 异步断言线程 | 完整响应（URL、状态码、请求头、响应头、响应体、方法） |
-| MockHandler | `route.fulfill()` 成功后 | Mock 响应详情（URL pattern、方法、mock 状态码、mock 响应头、mock body） |
-| ModifyHandler | `route.resume()` 成功后 | 修改详情 JSON（原始 URL、修改后的方法、headers 增删、body 字段增删改） |
-
-**其他关键特性**：
-
-| 特性 | 实现 |
-|------|------|
-| 活动请求计数 | `AtomicInteger` — `incrementActiveRequests()` / `decrementActiveRequests()` |
-| 完成等待 | `awaitCompletion(timeoutMs)` — 使用 `synchronized + wait/notifyAll`，不轮询 CPU |
-| 断言失败详情 | `AssertionFailureDetail` DTO — URL + 断言类型 + 预期值 + 实际值 + 时间戳 |
-| 断言失败报告 | `buildFailureReport()` — 生成可读的多行文本报告 |
-| 重置 | `reset()` — 清空所有状态 |
-
----
-
-### 4.10 RouteMonitor — 捕获入口门面
-
-**职责**：面向测试代码的唯一 API 捕获入口，封装 `ApiCaptureContext` 的获取逻辑。支持 Monitor、Mock、Modify 三种类型的统一查询。
-
-```java
-// 测试代码用法
-ApiCaptureContext ctx = RouteMonitor.context();
-
-// 获取 Monitor 捕获的 API 调用
-List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
-CapturedApiCall lastCall = ctx.getLastApiCall("/api/track");
-int status = lastCall.statusCode();
-Object id = lastCall.json("$.data.id");
-
-// 获取 Mock 捕获的 API 调用
-List<CapturedApiCall> mockCalls = ctx.getApiCalls("/api/login");
-
-// 获取 Modify 捕获的 API 调用
-List<CapturedApiCall> modifyCalls = ctx.getApiCalls("/api/submit");
-
-// 向后兼容：获取响应 body
-String body = ctx.getStoredResponse("/api/track");
-```
-
----
-
-### 4.11 RouteAsyncPool — 异步任务池
-
-**职责**：为 MonitorHandler 的异步断言/报告写入提供生产级线程池。
-
-**核心配置**（环境变量）：
-
-| 环境变量 | 默认值 | 说明 |
-|----------|--------|------|
-| `ROUTE_CORE_THREADS` | 2 | 核心线程数 |
-| `ROUTE_MAX_THREADS` | 6 | 最大线程数（弹性扩容） |
-| `ROUTE_QUEUE_CAPACITY` | 200 | 有界队列容量 |
-| `ROUTE_TASK_TIMEOUT_MS` | 30000 | 单任务超时毫秒数 |
-| `ROUTE_MAX_PENDING_TIMEOUTS` | 500 | 待处理超时检查任务上限 |
-| `ROUTE_QUEUE_USAGE_ALERT_THRESHOLD` | 0.8 | 队列使用率告警阈值 |
-| `ROUTE_THREAD_USAGE_ALERT_THRESHOLD` | 0.9 | 线程使用率告警阈值 |
-
-**架构安全特性**：
-
-| 特性 | 实现 |
-|------|------|
-| **拒绝策略** | `DiscardOldestPolicy`（队列满时丢弃最旧任务，**绝不阻塞 UI 线程**） |
-| **线程命名** | `pw-route` — 守护线程，优先级 `NORM_PRIORITY - 1` |
-| **弹性扩容** | 核心线程满 → 入队 → 队列也满 → 扩容到最大线程数 |
-| **空闲回收** | 非核心线程 30s 空闲后回收 |
-| **优雅关闭** | JVM 关闭钩子 → `shutdown()` 等待 30 秒 → `shutdownNow()` 强制关闭 |
-| **阈值告警** | 队列使用率 ≥80% ERROR、线程使用率 ≥90% ERROR、超时挂起数超限 ERROR |
-
-**监控指标暴露**：
-
-```java
-RouteAsyncPool.getActiveCount()         // 活跃线程数
-RouteAsyncPool.getQueueSize()           // 队列中等待的任务数
-RouteAsyncPool.getCompletedTaskCount()  // 已完成任务数
-RouteAsyncPool.getRejectedCount()       // 被拒绝的任务数
-RouteAsyncPool.getTimeoutCount()        // 超时任务数
-RouteAsyncPool.getQueueUsage()          // 队列使用率 (0.0 ~ 1.0)
-RouteAsyncPool.getThreadUsage()         // 线程使用率 (0.0 ~ 1.0)
-RouteAsyncPool.getStatusSnapshot()      // 全状态快照字符串
-```
-
----
-
-### 4.12 RouteException — 异常体系
-
-**三层异常结构**：
-
-```
-RouteException (extends RuntimeException)
-├── RouteConfigException    — 配置错误（URL pattern 无效、状态码越界）
-├── RouteRuntimeException   — 运行时异常（路由注册/注销失败、Handler 执行异常）
-└── ApiAssertionException   — API 断言失败（状态码/JSONPath 不匹配）
-```
-
-所有异常均携带 `urlPattern` 和 `contextId` 上下文信息。
-
----
-
-### 4.13 SerenityReporter — 报告工具
-
-**职责**：封装 `Serenity.recordReportData()` 调用，统一在主线程写入 API 监控数据。
-
-**特性**：
-- **URL 智能脱敏**：长域名（>30 字符）自动精简，只保留最后 3 段域名标签 + 完整路径，前缀替换为 `...`
-  - 示例：`https://qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk/portalserver/service/userinfo` → `...hsbc.com.hk/portalserver/service/userinfo`
-  - 短域名（如 `localhost:8080`）保持原样不脱敏
-  - 总长度超过 120 字符时自动截断加 `...`
-- `StepEventBus.getBaseStepListener()` 非空检查，无 Serenity 监听器时静默跳过
-- 异常静默捕获（不影响主流程）
-
-### 4.14 MonitorCallback — 响应回调接口
-
-**职责**：`@FunctionalInterface`，供 Monitor 在断言通过后异步触发自定义回调逻辑。不阻塞 Playwright 事件线程。
-
-**接口签名**：
-
-```java
-@FunctionalInterface
-public interface MonitorCallback {
-    void onResponse(String url, int status, String body,
-                    Map<String, String> responseHeaders, String method);
-}
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `url` | String | 请求 URL |
-| `status` | int | HTTP 状态码 |
-| `body` | String | 响应体字符串 |
-| `responseHeaders` | Map\<String, String\> | 响应头快照（不可变副本，key 为小写） |
-| `method` | String | 请求方法（GET/POST/PUT/DELETE...） |
-
-**特性**：
-- **异步执行**：回调在 `RouteAsyncPool` 异步线程中执行，不阻塞 Playwright 事件线程
-- **断言优先**：仅当所有断言（状态码/JSONPath）通过后才触发回调
-- **异常隔离**：每个回调独立 try-catch，单个回调失败不影响其他回调或测试流程
-- **大小写不敏感 Header 查找**：提供静态工具方法 `MonitorCallback.headerValue(headers, name)`，屏蔽 Playwright 将 header 名统一小写化的差异
-
-```java
-// 使用示例
-.onResponse((url, status, body, headers, method) -> {
-    String ct = MonitorCallback.headerValue(headers, "Content-Type");
-    System.out.println("Captured: " + url + " → " + status);
-})
-```
-
-### 4.15 RouteUtil — 请求条件匹配工具
-
-**职责**：根据 Playwright `Request` 对象判断是否匹配 `RouteRule` 中定义的请求条件。
-
-**Resource Type 常量**（与 Playwright `request.resourceType()` 对应）：
-
-```
-RT_XHR, RT_FETCH, RT_SCRIPT, RT_STYLESHEET, RT_IMAGE,
-RT_FONT, RT_MEDIA, RT_DOCUMENT, RT_WEBSOCKET, RT_MANIFEST, RT_OTHER
-```
-
-**匹配维度及优先级**：
-
-| # | 维度 | 匹配方式 | 未配置时 |
-|---|------|----------|----------|
-| 1 | Resource Type | 集合包含 | 默认不限制 |
-| 2 | HTTP Method | 忽略大小写精确匹配 | 不限制 |
-| 3 | Request Headers | 所有配置的 header 必须精确匹配 | 不检查 |
-| 4 | Query Parameters | 所有配置的 query 必须精确匹配 | 不检查 |
-| 5 | Content-Type | 包含匹配 | 不检查 |
-| 6 | Body Regex | Java Pattern 正则匹配 | 不检查 |
-| 7 | Referrer | 包含匹配 | 不检查 |
-| 8 | Origin | 包含匹配 | 不检查 |
-| 9 | Frame | 主 Frame 限定 + Frame URL 包含匹配 | 默认仅主 Frame |
-| 10 | Navigation | `isNavigationRequest()` 过滤 | 默认跳过 navigation |
-
----
-
-## 五、DSL 使用示例
-
-### 5.1 基本 Monitor（默认行为 — 匹配 1 次后自动停止）
+基本用法（默认匹配 1 次后自动停止）：
 
 ```java
 RouteDsl.on(page)
@@ -875,7 +83,50 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.2 Mock 模式
+等待同一 API 捕获 N 次（不自动停止时可配 `timeout` 兜底）：
+
+```java
+RouteDsl.on(page)
+    .api("/api/config")
+    .monitor()
+    .minMatches(3)        // 等待该 API 被捕获 3 次才停止
+    .timeout(60)          // 60 秒兜底超时
+    .done()
+    .start();
+```
+
+持续捕获不自动停止：
+
+```java
+RouteDsl.on(page)
+    .api("/api/data/list")
+    .monitor()
+    .autoStopOnMatch(false)
+    .timeout(120)         // 靠超时结束监听
+    .done()
+    .start();
+```
+
+响应回调（断言通过后异步执行，可提取字段）：
+
+```java
+RouteDsl.on(page)
+    .api("/api/login")
+    .monitor()
+    .expectStatus(200)
+    .onResponse((url, status, body, headers, method) -> {
+        String token = JsonPath.read(body, "$.data.token");
+        System.out.println("Login success, token=" + token);
+    })
+    .done()
+    .start();
+```
+
+---
+
+## 四、Mock 模拟响应
+
+### 4.1 纯 Mock（默认，不访问真实服务器）
 
 ```java
 RouteDsl.on(page)
@@ -888,89 +139,19 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.2.1 Mock 批量字段替换（支持嵌套 List + 数组/对象 + 类型保持）
+从 JSON 文件读取响应体（文件放 `src/test/resources/mocks/`）：
 
 ```java
-// 基础场景：通配符 [*] 批量替换 List 内字段
-RouteDsl.on(page)
-    .api("/api/users")
-    .mock()
-    .mockBody("[{\"name\":\"Alice\",\"email\":\"a@test.com\",\"orders\":[{\"price\":10}]},"
-        + "{\"name\":\"Bob\",\"email\":\"b@test.com\",\"orders\":[{\"price\":20}]}]")
-    .mockReplaceField("$[*].email", "redacted@hsbc.com")
-    .mockReplaceField("$[*].orders[*].price", "0")
-    .mockStatus(200)
-    .allowAllRequests()
-    .done()
-    .start();
-
-// 数组/对象字段替换 — 自动类型保持（不会变成字符串）
-RouteDsl.on(page)
-    .api("/api/items")
-    .mock()
-    .mockBody("{\"code\":200,\"data\":{\"items\":[],\"config\":{}}}")
-    // 替换整个空数组为带数据的数组
-    .mockReplaceField("$.data.items", "[{\"id\":1,\"name\":\"test\"},{\"id\":2,\"name\":\"test2\"}]")
-    // 替换空对象为有数据的对象
-    .mockReplaceField("$.data.config", "{\"timeout\":30,\"enable\":true}")
-    .mockStatus(200)
-    .done()
-    .start();
-// 结果：{"code":200,"data":{"items":[{"id":1,"name":"test"},{"id":2,"name":"test2"}],"config":{"timeout":30,"enable":true}}}
-
-// 数字/布尔类型保持 — 替换值自动推断类型
-RouteDsl.on(page)
-    .api("/api/profile")
-    .mock()
-    .mockBody("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"score\":88.5}")
-    .mockReplaceField("$.age", "30")       // int 保持 → "age":30
-    .mockReplaceField("$.active", "false")  // boolean 保持 → "active":false
-    .mockReplaceField("$.score", "99.9")    // double 保持 → "score":99.9
-    .done()
-    .start();
-```
-
-### 5.2.2 优先级覆盖：Monitor 监控后 Mock 同一 API
-
-```java
-// 第一步：Monitor 监控 /api/users，验证正常响应
-RouteDsl.on(page)
-    .api("/api/users/**")
-    .monitor()
-    .expectStatus(200)
-    .expectJsonPath("$.code", 0)
-    .done()
-    .start();
-
-// ... 页面操作，触发 /api/users 请求 ...
-
-// 第二步：Mock 同一 API，切换到模拟响应
-// ✅ MOCK 优先级(4) > MONITOR(1)，自动覆盖
-RouteDsl.on(page)
-    .api("/api/users/**")
-    .mock()
-    .mockBody("{\"code\":0,\"data\":{\"items\":[]}}")
-    .mockStatus(200)
-    .done()
-    .start();
-// → 框架自动：page.unroute("/api/users/**") → RouteRegistry.forceRegister → page.route(...)
-```
-
-### 5.2.3 Mock 读 JSON 文件 + 链式改字段（纯 Mock，不依赖真实服务器）
-
-```java
-// 从 JSON 文件读取响应体，再链式增量改字段
 RouteDsl.on(page)
     .api("/api/login")
     .mock()
     .mockBodyFromFile("login-response.json")   // 自动从 src/test/resources/mocks/ 查找
-    .replaceField("$.data.token", "fake-token") // 单字段精确改
-    .replaceField("$.users[*].active", true)    // 通配符批量改 List
+    .replaceField("$.data.token", "fake-token")
     .mockStatus(200)
     .done()
     .start();
 
-// 等价且更高效：一次性读文件 + 批量改（只解析一次 JSON）
+// 等价且更高效：一次性读文件 + 批量改字段
 RouteDsl.on(page)
     .api("/api/login")
     .mock()
@@ -981,9 +162,78 @@ RouteDsl.on(page)
     .start();
 ```
 
-> **注意**：`mockReplaceField()` 仅在 `interceptResponse()` 模式生效。纯 Mock 改字段请用 `replaceField()` / `replaceFields()` / `mockBodyFromFile(name, overrides)`。
+### 4.2 Mock 批量字段替换
 
-### 5.3 Modify 模式（请求体 JSONPath 精准替换）
+```java
+// 通配符 [*] 批量替换 List 内字段
+RouteDsl.on(page)
+    .api("/api/users")
+    .mock()
+    .mockBody("[{\"name\":\"Alice\",\"email\":\"a@test.com\"},"
+        + "{\"name\":\"Bob\",\"email\":\"b@test.com\"}]")
+    .mockReplaceField("$[*].email", "redacted@hsbc.com")
+    .mockStatus(200)
+    .allowAllRequests()
+    .done()
+    .start();
+
+// 数组/对象字段自动类型保持（不会变成字符串）
+RouteDsl.on(page)
+    .api("/api/items")
+    .mock()
+    .mockBody("{\"code\":200,\"data\":{\"items\":[],\"config\":{}}}")
+    .mockReplaceField("$.data.items", "[{\"id\":1,\"name\":\"test\"}]")
+    .mockReplaceField("$.data.config", "{\"timeout\":30,\"enable\":true}")
+    .mockStatus(200)
+    .done()
+    .start();
+
+// 数字/布尔类型保持
+RouteDsl.on(page)
+    .api("/api/profile")
+    .mock()
+    .mockBody("{\"name\":\"Alice\",\"age\":25,\"active\":true,\"score\":88.5}")
+    .mockReplaceField("$.age", "30")        // → "age":30
+    .mockReplaceField("$.active", "false")  // → "active":false
+    .mockReplaceField("$.score", "99.9")    // → "score":99.9
+    .done()
+    .start();
+```
+
+### 4.3 拦截真实响应再替换（interceptResponse）
+
+```java
+RouteDsl.on(page)
+    .api("/api/users")
+    .mock()
+    .interceptResponse()      // 先 route.fetch() 取真实响应，再替换部分字段
+    .mockReplaceField("$.data.name", "Replaced")
+    .mockStatus(200)
+    .done()
+    .start();
+```
+
+> **注意**：`mockReplaceField()` 仅在 `interceptResponse()` 模式下生效（作用于真实响应体）。纯 Mock 改字段请用 `replaceField()` / `replaceFields()` / `mockBodyFromFile(name, overrides)`。
+
+### 4.4 优先级覆盖：Monitor 后 Mock 同一 API
+
+```java
+// 第一步：Monitor 监控
+RouteDsl.on(page).api("/api/users/**").monitor().expectStatus(200).done().start();
+
+// 第二步：Mock 同一 API —— MOCK 优先级高于 MONITOR，自动覆盖，无需手动 unroute
+RouteDsl.on(page)
+    .api("/api/users/**")
+    .mock()
+    .mockBody("{\"code\":0,\"data\":{\"items\":[]}}")
+    .mockStatus(200)
+    .done()
+    .start();
+```
+
+---
+
+## 五、Modify 修改请求
 
 ```java
 RouteDsl.on(page)
@@ -997,107 +247,35 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.4 多规则组合
+`.modifyRequestBody()` 支持嵌套路径（`user.name`）和数组索引（`users[0].name`），并自动保持原始字段类型（int/boolean/数组/对象等）。
+
+---
+
+## 六、Delay 高延迟模拟
 
 ```java
+// 固定延迟 3 秒
 RouteDsl.on(page)
-    .api("/api/users/**")
-    .monitor()
-    .expectStatus(200)
-    .done()
-    .api("/api/login")
-    .mock()
-    .mockBody("{\"success\":true}")
-    .done()
-    .api("/api/config")
-    .modifyRequest()
-    .modifyRequestBody("language", "en")
-    .done()
-    .start();  // 一次调用注册所有规则
-```
-
-### 5.5 BrowserContext 级别注册
-
-```java
-RouteDsl.on(browserContext)
     .api("/api/**")
-    .monitor()
+    .delay(3)
     .done()
     .start();
-```
 
-### 5.6 等待同一 API N 次（minMatches）
-
-```java
+// 随机延迟 1-5 秒（仅对 POST 请求生效）
 RouteDsl.on(page)
-    .api("/api/config")
-    .monitor()
-    .minMatches(3)       // 等待该 API 被捕获 3 次才停止
-    .timeout(60)          // 60 秒兜底超时
+    .api("/api/slow-endpoint")
+    .delay(5)
+    .randomDelay(1, 5)
+    .matchMethod("POST")
     .done()
     .start();
 ```
 
-### 5.7 持续捕获不自动停止（autoStopOnMatch=false）
+延迟通过调度器实现，不阻塞 UI 线程；最大延迟被钳制为 2 分钟，负值自动钳制为 0。
 
-```java
-RouteDsl.on(page)
-    .api("/api/data/list")
-    .monitor()
-    .autoStopOnMatch(false)  // 不自动停止！持续捕获分页请求
-    .timeout(120)        // 靠超时结束监听
-    .done()
-    .start();
-```
+---
 
-### 5.8 手动清理与清理生命周期
-
-```java
-RouteDsl dsl = RouteDsl.on(page)
-    .api("/api/**")
-    .monitor()
-    .done();
-
-dsl.start();
-// ... 测试执行 ...
-
-dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
-```
-
-> **三层清理保障**：
->
-> | 清理层级 | 触发时机 | 清理范围 | 说明 |
-> |----------|----------|----------|------|
-> | **1. Scenario 自动清理** | `PlaywrightListener.testFinished()` | Page + Context 路由注册、MonitorSession、防重门控 | Serenity BDD Scenario 结束自动触发，无需手动调用 |
-> | **2. RouteDsl.clear() 手动清理** | 用户显式调用 | 当前 Dsl 绑定的所有 pattern + 上下文 | 独立 JUnit `@Test`、测试中途提前停止路由时使用 |
-> | **3. shutdown() JVM 退出清理** | `FrameworkCore.cleanup()` → JVM Shutdown Hook | 全局：所有上下文 + 所有 Session + DELAY_SCHEDULER + RouteAsyncPool 线程池 | **唯一关闭调度器线程的地方**，防止 JVM 无法退出 |
->
-> **清理时序细节**：
-> ```
-> Scenario 结束
->   → PlaywrightListener.testFinished()
->     → RouteRegistry.clearContext(page)    // 移除注册表 + unroute
->     → RouteRegistry.clearContext(context) // 移除注册表 + unroute
->     → clearMonitorSessions()             // 清理 SESSIONS Map
->     → clearDispatchedRoutes()            // 清空防重门控
->     → CROSS_LAYER_HANDLED_URLS.clear()   // 清空跨层标记
->
-> JVM 退出
->   → FrameworkCore.cleanup()
->     → RouteEngine.shutdown()
->       → clearAll() / clearAllMonitorSessions()
->       → DELAY_SCHEDULER.shutdown()       // 关闭延迟调度器
->       → SCHEDULER.shutdown()             // 关闭 MonitorSession 超时调度器
-> ```
->
-> | 场景 | 是否需要 `dsl.clear()` | 说明 |
-> |------|------------------------|------|
-> | **Serenity BDD Scenario** | ❌ 不需要 | `PlaywrightListener.testFinished()` 自动调用 `RouteRegistry.clearContext()` |
-> | **独立 JUnit `@Test`** | ✅ 需要 | 不走 Serenity 生命周期，必须在 `@After` 或测试末尾显式调用 |
-> | **测试中途提前停止路由** | ✅ 需要 | `autoStopOnMatch` 仅适用于 MONITOR 类型 |
-> | **Context Session 超时后残留清理** | ❌ 自动处理 | `dispatchRoute` 跨层合并时检查 `session.stopped`，已停止规则不参与合并；Scenario 结束时 CONTEXT_RULES 统一清理 |
-
-### 5.9 多维度精准匹配
+## 七、请求条件匹配
 
 ```java
 RouteDsl.on(page)
@@ -1115,22 +293,38 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.10 资源类型过滤 — 只拦截 API，放过静态资源
+只匹配 API 请求（放过 image/font/media/document/navigation）：
 
 ```java
 RouteDsl.on(page)
     .api("/api/**")
-    .onlyApiCall(true)   // 只匹配 xhr/fetch，跳过 image/font/media/document/navigation
+    .onlyApiCall(true)
     .monitor()
     .expectStatus(200)
     .done()
     .start();
 ```
 
-### 5.11 Frame 级别过滤
+同一 API 不同来源入口区分：
 
 ```java
-// 只匹配特定 Frame URL 发起的请求
+RouteDsl.on(page)
+    .api("/api/payment")
+    .matchReferrer("checkout-page")
+    .mock()
+    .mockBody("{\"code\":0,\"msg\":\"success\"}")
+    .done()
+    .api("/api/payment")
+    .mock()
+    .mockBody("{\"code\":-1,\"msg\":\"unauthorized\"}")
+    .mockStatus(403)
+    .done()
+    .start();
+```
+
+Frame 级别过滤：
+
+```java
 RouteDsl.on(page)
     .api("/api/checkout")
     .matchFrameUrl("payment-iframe")
@@ -1140,102 +334,97 @@ RouteDsl.on(page)
     .start();
 ```
 
-### 5.12 Referrer/Origin 来源区分 — 同一 API 不同入口
+---
+
+## 八、多规则组合
 
 ```java
-// 从支付页面发起的请求 Mock 为成功
 RouteDsl.on(page)
-    .api("/api/payment")
-    .matchReferrer("checkout-page")
-    .mock()
-    .mockBody("{\"code\":0,\"msg\":\"success\"}")
-    .done()
-    // 从其他页面发起的请求 Mock 为失败
-    .api("/api/payment")
-    .mock()
-    .mockBody("{\"code\":-1,\"msg\":\"unauthorized\"}")
-    .mockStatus(403)
-    .done()
-    .start();
+    .api("/api/users/**").monitor().expectStatus(200).done()
+    .api("/api/login").mock().mockBody("{\"success\":true}").done()
+    .api("/api/config").modifyRequest().modifyRequestBody("language", "en").done()
+    .start();  // 一次调用注册所有规则
 ```
 
-### 5.13 高延迟模拟（固定延迟）
+BrowserContext 级别注册：
 
 ```java
-// 所有 API 固定延迟 3 秒后放行，用于测试前端 loading 状态
-RouteDsl.on(page)
+RouteDsl.on(browserContext)
     .api("/api/**")
-    .delay(3)                    // 拦截每个匹配请求，延迟 3 秒后 resume()
-    .done()
-    .start();
-```
-
-### 5.14 高延迟模拟（随机延迟）
-
-```java
-// 模拟不稳定高延迟，每次请求在 1-5 秒间随机延迟
-RouteDsl.on(page)
-    .api("/api/slow-endpoint")
-    .delay(5)
-    .randomDelay(1, 5)          // 覆盖为随机范围 1-5 秒
-    .matchMethod("POST")        // 仅针对 POST 请求生效
-    .done()
-    .start();
-```
-
-> **注意**：Delay 仅模拟高延迟（latency），不模拟丢包、带宽限制等弱网特征。延迟通过 `ScheduledExecutorService.schedule()` 实现，不占用 Playwright 事件线程。
-
-### 5.15 Monitor 响应回调（自定义处理）
-
-```java
-import com.jayway.jsonpath.JsonPath;
-
-// 注册回调 — 断言通过后异步执行，可提取字段、自定义校验
-RouteDsl.on(page)
-    .api("/api/login")
     .monitor()
-    .expectStatus(200)
-    .onResponse((url, status, body, headers, method) -> {
-        // 提取 token 并写入测试上下文
-        String token = JsonPath.read(body, "$.data.token");
-        System.out.println("Login success, token=" + token);
-        // 例如：TestContext.put("authToken", token);
-    })
-    .done()
-    .start();
-
-// 多个回调 — 按注册顺序执行
-RouteDsl.on(page)
-    .api("/api/orders")
-    .monitor()
-    .expectStatus(200)
-    .onResponse((url, status, body, headers, method) -> {
-        System.out.println("[Audit] " + method + " " + url + " → " + status);
-    })
-    .onResponse((url, status, body, headers, method) -> {
-        // 自定义校验：响应体大小不超过 10KB
-        assert body.length() < 10240 : "Response too large: " + body.length() + " bytes";
-    })
     .done()
     .start();
 ```
 
-> **注意**：回调在 RouteAsyncPool 异步线程中执行，不阻塞 UI。每个回调独立 try-catch，单个回调失败不会影响其他回调或测试流程。
+---
 
-### 5.16 获取断言失败详情与 API 捕获快照
+## 九、API 流量采集（ApiCapture）
+
+`ApiCapture` 是旁路抓包门面：在跑 Web UI 自动化时自动抓取页面发出的 HTTP/API 请求，供测试代码直接断言、等待、查询。实际写入 `ApiCaptureContext` 的请求必须同时满足：资源类型属于 API 类、URL 命中已注册的 `endpoint`，以及可选的 `BASE_URL` / `BASE_PATH` 范围。未命中的请求（包括高频 health check 和动态新接口）不会写入上下文，避免内存持续增长。
 
 ```java
-ApiCaptureContext ctx = RouteMonitor.context();
+// 1) 测试开始时配置采集范围（可选）
+// BASE_URL 会校验协议、host、端口；BASE_PATH 按完整路径段匹配
+RouteEngine.setCaptureBaseUrl("http://localhost:8888");
+RouteEngine.setCaptureBasePath("/demo/api");
+
+// 2) 测试开始时启动采集（每个新页面都要 start）
+ApiCapture.start(page);
+
+// 3) 断言 API 结果（支持 Ant 通配 /api/** 、/api/*）
+ApiCapture.assertThat("/api/user/list").statusIs(200);
+ApiCapture.assertThat("/api/user/detail").jsonPath("$.code", 0);
+ApiCapture.assertThat("/api/config").bodyContains("enabled");
+ApiCapture.assertThat("/api/balance").isMock();          // 配合 RouteEngine MOCK 时
+
+// 3) 等待 / 查询 / 关闭
+CapturedApiCall login = ApiCapture.waitForApi(
+        c -> "POST".equals(c.method()) && c.isOk(), 5000);
+var all = ApiCapture.getAll();
+CapturedApiCall last = ApiCapture.getLast("/api/user/list");
+
+ApiCapture.stop();   // 测试收尾务必调用，释放 merger 线程池
+RouteEngine.clearCaptureUrlScope(); // 清除 BASE_URL / BASE_PATH 范围
+```
+
+**按资源类型过滤断言**：
+
+```java
+// 类型安全：枚举过滤（推荐）
+ApiCapture.assertThat("/api/user/list").ofType(ResourceType.XHR).statusIs(200);
+ApiCapture.assertThat("/api/**").ofType(ResourceType.XHR, ResourceType.FETCH).statusIs(200);
+
+// 字符串便捷重载（大小写不敏感，逗号分隔）
+ApiCapture.assertThat("/api/**").ofType("xhr,fetch").statusIs(200);
+
+// 直接查询调用类型
+CapturedApiCall c = ApiCapture.getLast("/api/user/list");
+ResourceType t = c.resourceType();   // 枚举，如 ResourceType.XHR
+System.out.println(c.isXhr());       // true / false
+System.out.println(c.isApiType());   // XHR/FETCH/API 投喂 → true
+```
+
+**注意点**：
+- `start(page)` 必须传 Playwright `Page`；建议用 Chromium 跑测试以触发 CDP 策略（响应体最完整）。非 Chromium 自动降级。
+- 新创建的 `Page` 也必须单独调用 `ApiCapture.start(newPage)`，否则该页面的请求不会被当前 CDP 会话采集。
+- `BASE_URL`、`BASE_PATH` 是全局 capture 前置过滤条件；不配置表示不限制，但仍必须命中已注册 `endpoint` 才会入库。
+- `BASE_URL` 示例：`http://localhost:8888`；`BASE_PATH` 示例：`/demo/api`。路径按 segment 匹配，`/api/v1` 不会误匹配 `/api/v10`。
+- `ResourceType` 默认只允许 `XHR`、`FETCH`、`API`、`OTHER`；页面、脚本、图片、字体、WebSocket 等资源不会进入 API 上下文。
+- 断言匹配限定在"当前测试步骤窗口"内，避免命中上一步遗留调用。
+- `stop()` 在测试收尾调用，释放 merger 线程池；测试结束后调用 `RouteEngine.clearCaptureUrlScope()` 清除全局 URL 范围。
+
+---
+
+## 十、获取断言失败详情与捕获快照
+
+```java
+ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
 
 // 检查断言失败
 if (ctx.hasAssertionFailures()) {
     String report = ctx.buildFailureReport();
     System.err.println(report);
 }
-
-// 获取所有存储的响应
-List<String> allBodies = ctx.getAllResponsesForUrl("/api/login");
-String lastBody = ctx.getLastResponse("/api/login");
 
 // 获取 Monitor/Mock/Modify 的完整调用快照
 List<CapturedApiCall> calls = ctx.getApiCalls("/api/track");
@@ -1245,191 +434,193 @@ String responseHeader = lastCall.responseHeader("Content-Type");
 Object jsonValue = lastCall.json("$.data.id");
 ```
 
----
-
-## 六、完整 API 参考
-
-### RouteDsl — 入口 + 规则配置
-
-| 方法 | 参数 | 返回 | 说明 |
-|------|------|------|------|
-| `on(page)` | Page | RouteDsl | Page 级别 DSL 入口 |
-| `on(context)` | BrowserContext | RouteDsl | Context 级别 DSL 入口 |
-| `api(urlPattern)` | String | ApiDsl | 开始配置 API 规则 |
-| `start()` | — | void | 启动路由注册 |
-| `clear()` | — | void | 注销 pattern + 清理上下文 |
-| `getContext()` | — | Object | 获取绑定的上下文 |
-
-### RouteDsl.ApiDsl — 链式配置
-
-| 方法 | 参数 | 返回 | 说明 |
-|------|------|------|------|
-| `monitor()` | — | MonitorApiDsl | 声明 Monitor 模式 |
-| `modifyRequest()` | — | ModifyApiDsl | 声明 Modify 模式 |
-| `mock()` | — | MockApiDsl | 声明 Mock 模式 |
-| `delay(secs)` | long | DelayApiDsl | 声明 Delay 模式（固定延迟秒数） |
-| **— Monitor 配置 —** | | | |
-| `record(boolean)` | boolean | ApiDsl | 是否写入报告（默认 true） |
-| `timeout(seconds)` | long | ApiDsl | 超时秒数（0=永不超时） |
-| `minMatches(n)` | int | ApiDsl | 最小匹配次数（默认 1） |
-| `autoStopOnMatch(b)` | boolean | ApiDsl | 达标后自动停止（默认 true） |
-| `expectStatus(s)` | int | ApiDsl | 期望 HTTP 状态码 |
-| `expectJsonPath(p, v)` | String, Object | ApiDsl | JSONPath 断言 |
-| `onResponse(callback)` | MonitorCallback | ApiDsl | 注册响应回调（断言通过后异步触发） |
-| **— Mock 配置 —** | | | |
-| `mockBody(body)` | String | ApiDsl | 设置 Mock 响应体 |
-| `mockStatus(s)` | int | ApiDsl | 状态码（默认 200） |
-| `mockHeader(k, v)` | String, String | ApiDsl | 响应头 |
-| `mockBodyFromFile(name)` | String | ApiDsl | 从 JSON 文件读取 Mock 响应体（纯 Mock 模式；文件不存在/为空抛异常） |
-| `mockBodyFromFile(name, overrides)` | String, Map\<String,Object\> | ApiDsl | 读文件 + 按 JSONPath 批量改字段后返回（纯 Mock 模式） |
-| `replaceField(p, v)` | String, Object | ApiDsl | 对当前 body 增量改单个字段（纯 Mock 模式，需先 mockBody/mockBodyFromFile） |
-| `replaceFields(overrides)` | Map\<String,Object\> | ApiDsl | 对当前 body 批量改字段（纯 Mock 模式） |
-| `mockReplaceField(p, v)` | String, Object | InterceptMockDsl | 替换真实响应 JSON body 字段（**仅 `interceptResponse()` 模式生效**，支持 `[*]` 通配符 + 类型保持：Int/Long/Boolean/Array/Object 自动推断） |
-| **— Modify 配置 —** | | | |
-| `setRequestHeader(k, v)` | String, String | ApiDsl | 添加/覆盖请求头 |
-| `removeRequestHeader(k)` | String | ApiDsl | 删除请求头 |
-| `modifyRequestBody(k, v)` | String, String | ApiDsl | JSONPath 精准替换（类型保持：Int/Long/Boolean/Array/Object 自动推断） |
-| `addRequestBodyField(k, v)` | String, String | ApiDsl | JSONPath 新增字段 |
-| `removeRequestBodyField(k)` | String | ApiDsl | 删除 JSONPath 字段 |
-| `modifyMethod(m)` | String | ApiDsl | 修改 HTTP 方法 |
-| **— 请求匹配 —** | | | |
-| `matchMethod(m)` | String | ApiDsl | HTTP 方法过滤 |
-| `resourceType(types)` | String | ApiDsl | 资源类型过滤（逗号分隔） |
-| `onlyXhr()` | — | ApiDsl | 仅匹配 XHR |
-| `onlyFetch()` | — | ApiDsl | 仅匹配 Fetch |
-| `matchHeader(k,v)` | String,String | ApiDsl | 请求头精确匹配 |
-| `matchQuery(k,v)` | String,String | ApiDsl | Query 参数精确匹配 |
-| `matchBodyRegex(re)` | String | ApiDsl | 请求体正则匹配 |
-| `matchContentType(ct)` | String | ApiDsl | Content-Type 包含匹配 |
-| `matchReferrer(r)` | String | ApiDsl | Referrer 包含匹配 |
-| `matchOrigin(o)` | String | ApiDsl | Origin 包含匹配 |
-| `matchFrameUrl(u)` | String | ApiDsl | Frame URL 包含匹配 |
-| `onlyMainFrame(b)` | boolean | ApiDsl | 是否只匹配主 Frame |
-| `allowAllFrames()` | — | ApiDsl | 匹配所有 Frame（含 iframe） |
-| `onlyApiCall(b)` | boolean | ApiDsl | 是否仅匹配 API 调用 |
-| `allowAllRequests()` | — | ApiDsl | 匹配所有类型请求 |
-| **— 生命周期 —** | | | |
-| `done()` | — | RouteDsl | 完成规则 → 返回父级（可继续链式） |
-
-### RouteDsl.DelayApiDsl — Delay 专用方法
-
-| 方法 | 参数 | 返回 | 说明 |
-|------|------|------|------|
-| `delay(secs)` | long | DelayApiDsl | 更新延迟时长（秒） |
-| `randomDelay(minSecs, maxSecs)` | long, long | DelayApiDsl | 启用随机延迟模式，每次在 [min, max] 秒间随机取值 |
-
-> **注意**：`DelayApiDsl` 继承 `BaseApiDsl`，因此也拥有 `timeout()`、`minMatches()`、`matchMethod()` 等所有条件匹配和超时方法。
-
-### MonitorCallback — 函数式接口
+获取存储的响应 body：
 
 ```java
-@FunctionalInterface
-public interface MonitorCallback {
-    void onResponse(String url, int status, String body,
-                    Map<String, String> responseHeaders, String method);
+List<String> allBodies = ctx.getAllResponsesForUrl("/api/login");
+String lastBody = ctx.getLastResponse("/api/login");
+```
+
+---
+
+## 十一、用户方法完整说明
+
+本节按用户实际使用顺序说明公开方法。除特别说明外，规则配置方法都返回当前 DSL 对象，因此可以继续链式调用；必须先调用 `done()` 完成当前 endpoint，再调用 `start()` 注册规则。
+
+### 11.1 路由入口与生命周期
+
+| 方法 | 说明 |
+|---|---|
+| `RouteDsl.on(page)` | 创建 Page 级 DSL。规则只作用于该 Page，适合单页面、单场景的精确控制。 |
+| `RouteDsl.on(browserContext)` | 创建 Context 级 DSL。规则作用于 Context 下的页面，适合多个页面共享规则。 |
+| `api(endpoint)` | 开始配置一个 endpoint。支持 Playwright URL pattern，例如 `/api/users/**`；`endpoint` 也是后续 `ApiCapture` 查询和存储使用的 key。 |
+| `done()` | 完成当前 endpoint 配置并回到父 DSL；没有 `done()` 的规则不会被注册。 |
+| `start()` | 注册当前 DSL 中已完成的全部规则。应在页面发起 API 前调用。重复注册相同 endpoint 会按能力位合并。 |
+| `clear()` | 清理当前 DSL 的规则、Monitor 会话和相关上下文状态。独立 JUnit 测试应在 `@After` 调用。 |
+| `RouteDsl.clearAllRules()` | 清理所有 Page/Context 的路由规则，适合测试套件结束或全局复位；不要在仍运行的并行测试中调用。 |
+
+### 11.2 类型选择方法
+
+| 方法 | 说明 |
+|---|---|
+| `monitor()` | 开启真实响应监控。请求会继续访问真实后端，并根据状态码、JSONPath 执行断言。默认匹配一次后自动停止。 |
+| `mock()` | 开启 Mock。默认不访问真实后端，直接返回配置的状态码、响应头和响应体；同 endpoint 存在 Mock 时，Mock 终结其它能力。 |
+| `modifyRequest()` | 开启真实请求修改。修改请求方法、Header 或 Body 后继续发送到后端。 |
+| `delay(seconds)` | 开启延迟。等待指定秒数后原样放行；可与 Modify、Monitor 叠加，不能让真实响应监控失效。 |
+| `randomDelay(minSeconds, maxSeconds)` | 配置随机延迟范围；每次匹配随机选择区间内的延迟。通常与 `delay()` 同一规则链使用。 |
+
+### 11.3 通用匹配与控制方法
+
+| 方法 | 说明 |
+|---|---|
+| `timeout(seconds)` | 设置 Monitor 等待超时时间，单位为秒；`0` 表示不设置超时。建议持续监控时配置兜底值。 |
+| `minMatches(count)` | 设置至少匹配多少次才满足 Monitor 条件；默认是 `1`。 |
+| `autoStopOnMatch(enabled)` | 设置满足条件后是否自动停止；Monitor 默认开启，持续 health check 监控应传 `false` 并配合 `timeout()`。 |
+| `record(enabled)` | 是否记录 Monitor 捕获结果；关闭后仍可执行监控逻辑，但不建议依赖其查询存储结果。 |
+| `matchMethod(method)` | 精确匹配 HTTP 方法，如 `GET`、`POST`。不配置表示不限制。 |
+| `resourceType(types)` | 按资源类型过滤，传逗号分隔字符串，如 `xhr,fetch`。 |
+| `onlyXhr()` | 只匹配 XHR。 |
+| `onlyFetch()` | 只匹配 Fetch。 |
+| `onlyApi()` | 只匹配 XHR 和 Fetch。 |
+| `onlyApiCall(enabled)` | 设置是否只处理 API 请求；启用后跳过 document、script、image 等页面资源。 |
+| `allowAllRequests()` | 取消 `onlyApiCall` 限制；仅在确实需要处理非 API 请求时使用。 |
+| `matchHeader(key, value)` | 精确匹配请求 Header；多次调用时所有条件都必须满足。 |
+| `matchQuery(key, value)` | 精确匹配 URL Query 参数；多次调用时所有条件都必须满足。 |
+| `matchBodyRegex(regex)` | 用 Java 正则匹配请求 Body，适合按 JSON 字段区分相同 endpoint 的请求。 |
+| `matchContentType(type)` | 按包含关系匹配 Content-Type，例如 `json` 可匹配 `application/json`。 |
+| `matchReferrer(value)` | 按包含关系匹配 Referer。 |
+| `matchOrigin(value)` | 按包含关系匹配 Origin。 |
+| `matchFrameUrl(value)` | 按包含关系匹配发起请求的 Frame URL。 |
+| `onlyMainFrame(enabled)` | 是否只处理主 Frame；默认开启。 |
+| `allowAllFrames()` | 允许 iframe 等非主 Frame 请求。 |
+
+### 11.4 Monitor 方法
+
+| 方法 | 说明 |
+|---|---|
+| `expectStatus(status)` | 断言真实响应 HTTP 状态码。 |
+| `expectJsonPath(path, expected)` | 读取响应 JSON 的 JSONPath 并与期望值比较，例如 `$.data.id`。 |
+| `onResponse(callback)` | 断言通过后执行回调，可读取 URL、状态码、Body、Header 和 Method；回调异常不会改变请求放行结果。 |
+| `assertThat(endpoint)` | 创建基于已捕获调用的查询断言对象，不发起新请求。 |
+| `statusIs(status)` | 对查询到的最后一次匹配调用断言状态码。 |
+| `jsonPath(path, expected)` | 对查询到的响应执行 JSONPath 断言。 |
+| `bodyContains(text)` | 断言响应 Body 包含指定文本。 |
+| `isMock()` | 断言调用是否来自 Mock 响应。 |
+| `ofType(type...)` | 将查询断言限制到指定 `ResourceType`。 |
+
+### 11.5 Mock 方法
+
+| 方法 | 说明 |
+|---|---|
+| `mockBody(body)` | 设置纯 Mock 响应 Body；JSON 请传合法 JSON 字符串。 |
+| `mockBodyFromFile(name)` | 从 `src/test/resources/mocks/` 读取响应文件。 |
+| `mockBodyFromFile(name, replacements)` | 读取文件并批量替换 JSONPath 字段。 |
+| `mockStatus(status)` | 设置 Mock HTTP 状态码，必须是 `100` 到 `599`。 |
+| `mockHeader(key, value)` | 设置 Mock 响应 Header。 |
+| `replaceField(path, value)` / `replaceFields(map)` | 对纯 Mock Body 的 JSON 字段执行替换。 |
+| `mockReplaceField(path, value)` | 在 `interceptResponse()` 模式下替换真实响应字段。 |
+| `interceptResponse()` | 先访问真实后端，再修改真实响应并返回；与纯 Mock 不同，不会短路真实请求。 |
+
+### 11.6 Modify 方法
+
+| 方法 | 说明 |
+|---|---|
+| `setRequestHeader(key, value)` | 新增或覆盖请求 Header。 |
+| `setRequestHeaders(map)` | 批量新增或覆盖请求 Header。 |
+| `removeRequestHeader(key)` | 删除请求 Header。 |
+| `modifyRequestBody(path, value)` | 修改已有 JSON 字段，支持嵌套路径和数组索引。 |
+| `addRequestBodyField(path, value)` | 新增 JSON 字段，不存在的中间对象会创建。 |
+| `removeRequestBodyField(path)` | 删除 JSON 字段。 |
+| `modifyMethod(method)` | 修改实际发送的 HTTP 方法。 |
+
+### 11.7 ApiCapture 与范围过滤方法
+
+| 方法 | 说明 |
+|---|---|
+| `ApiCapture.start(page)` | 为指定 Page 启动 CDP 旁路采集；新建 Page 后必须单独启动。 |
+| `ApiCapture.stop()` | 停止采集并释放合并器资源；测试结束必须调用。 |
+| `RouteEngine.setCaptureBaseUrl(url)` | 设置全局 `BASE_URL`，按协议、host、端口过滤。传 `null` 或空字符串取消限制。 |
+| `RouteEngine.setCaptureBasePath(path)` | 设置全局 `BASE_PATH`，按完整 path segment 匹配。`/api/v1` 不会匹配 `/api/v10`。 |
+| `RouteEngine.clearCaptureUrlScope()` | 清除 `BASE_URL` 和 `BASE_PATH`，避免污染后续测试。 |
+| `ApiCapture.getAll()` | 获取当前上下文中所有已存储调用。只包含 API 类型、命中范围且命中 endpoint 的请求。 |
+| `ApiCapture.getLast(endpoint)` | 获取指定 endpoint 最近一次调用；没有捕获结果时返回 `null`。 |
+| `ApiCapture.waitForApi(predicate, timeoutMs)` | 等待满足条件的调用；超时后返回 `null`，应对结果做空值判断。 |
+| `ApiCapture.assertThat(endpoint)` | 按 endpoint 查询已捕获数据并创建断言链。 |
+| `ApiCaptureContext.getCurrent()` | 获取全局共享捕获上下文；Handler 和测试线程使用同一实例。 |
+| `ctx.getApiCalls(endpoint)` | 获取指定 endpoint 的全部调用快照。 |
+| `ctx.getLastApiCall(endpoint)` | 获取指定 endpoint 最近一次调用。 |
+| `ctx.getAllResponsesForUrl(url)` | 获取指定 URL 的全部响应 Body。 |
+| `ctx.getLastResponse(url)` | 获取指定 URL 最近一次响应 Body。 |
+| `ctx.hasAssertionFailures()` | 判断是否有 Monitor 断言失败。 |
+| `ctx.buildFailureReport()` | 生成可读的断言失败报告。 |
+
+### 11.8 CapturedApiCall 查询方法
+
+| 方法 | 说明 |
+|---|---|
+| `endpoint()` | 返回注册时使用的 endpoint。 |
+| `requestUrl()` | 返回实际请求 URL。 |
+| `method()` | 返回 HTTP 方法。 |
+| `statusCode()` | 返回响应状态码；无响应时应先判断对象和状态是否有效。 |
+| `requestHeaders()` / `responseHeaders()` | 获取请求/响应 Header 快照。 |
+| `responseHeader(name)` | 获取指定响应 Header。 |
+| `requestBody()` / `responseBody()` | 获取请求/响应 Body。 |
+| `json(path)` | 使用 JSONPath 读取响应 JSON 字段。 |
+| `resourceType()` | 获取资源类型枚举。 |
+| `isXhr()` / `isApiType()` | 判断是否为 XHR 或 API 类型。 |
+| `isMock()` | 判断是否为 Mock 调用。 |
+| `timestamp()` | 获取捕获时间戳，用于步骤窗口和时序判断。 |
+
+### 11.9 API 使用完整示例
+
+```java
+@Before
+public void setUp() {
+    RouteEngine.setCaptureBaseUrl("http://localhost:8888");
+    RouteEngine.setCaptureBasePath("/demo/api");
+    ApiCapture.start(page);
+
+    RouteDsl.on(page)
+        .api("/demo/api/users")
+        .monitor()
+        .expectStatus(200)
+        .expectJsonPath("$.code", 0)
+        .timeout(30)
+        .done()
+        .start();
+}
+
+@After
+public void tearDown() {
+    ApiCapture.stop();
+    RouteDsl.clearAllRules();
+    RouteEngine.clearCaptureUrlScope();
 }
 ```
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `url` | String | 请求 URL |
-| `status` | int | HTTP 状态码 |
-| `body` | String | 响应体字符串 |
-| `responseHeaders` | Map\<String, String\> | 响应头快照（线程安全的不可变副本） |
-| `method` | String | 请求方法（GET/POST/PUT/DELETE...） |
-
-支持 Lambda 表达式和方法引用两种形式。执行时机：断言全部通过后，在 RouteAsyncPool 异步线程中触发。
-
-### RouteRegistry — 静态方法
-
-| 方法 | 说明 |
-|------|------|
-| `register(Page, pattern, type)` | Page 级别注册 pattern + 类型（同类型则触发 unroute + 旧 session 停止 + 重新注册） |
-| `register(BrowserContext, pattern, type)` | Context 级别注册 pattern + 类型（支持同级更新） |
-| `getRegisteredType(context, pattern)` | 查询 pattern 当前注册的类型（未注册返回 null） |
-| `shouldOverride(context, pattern, newType)` | 判断新类型是否应覆盖现有类型（基于优先级） |
-| `forceRegister(context, pattern, type)` | 强制覆盖注册（用于高优先级覆盖场景） |
-| `unregister(context, pattern)` | 注销单个 pattern |
-| `clearContext(context)` | 三阶段清理：unroute + 移除注册表 + 清理 Session + 清空防重门控 + 清空跨层标记 |
-| `clearAll()` | 全局清理（含 JSONPath 缓存） |
-| `close()` | 关闭 RouteAsyncPool 线程池 |
-| `getPatternCount(context)` | 指定上下文已注册 pattern 数 |
-| `getContextCount()` | 全局活跃上下文数量 |
-
-### ApiCaptureContext — ThreadLocal 安全
-
-| 方法 | 说明 |
-|------|------|
-| **静态方法** | |
-| `getCurrent()` | 获取当前线程的 API 捕获上下文 |
-| `resetCurrent()` | 重置当前线程的上下文（测试开始前调用） |
-| `removeCurrent()` | 移除当前线程的上下文（测试结束后调用） |
-| **实例方法** | |
-| `incrementActiveRequests()` / `decrementActiveRequests()` | 活动请求计数 |
-| `awaitCompletion(timeoutMs)` | 阻塞等待所有正在处理的请求完成 |
-| `recordAssertionFailure(url, type, expected, actual, msg)` | 记录断言失败详情 |
-| `hasAssertionFailures()` | 是否有断言失败 |
-| `buildFailureReport()` | 生成可读失败报告 |
-| `storeApiCall(call)` | 存储完整 API 调用快照 |
-| `getApiCalls(endpoint)` | 获取指定端点的所有调用快照列表 |
-| `getLastApiCall(endpoint)` | 获取指定端点最近一次调用快照 |
-| `storeResponse(endpoint, body)` | 存储响应 body |
-| `getStoredResponse(endpoint)` | 获取最后一条响应 body |
-| `getAllResponsesForUrl(endpoint)` | 获取某端点的所有响应 body |
-| `getAllStoredResponses()` | 获取全部存储的响应 Map |
-| `getTotalResponseCount()` | 已存储响应总条数 |
-| `reset()` | 清空所有状态 |
-
 ---
 
-## 七、架构优势与设计亮点
+## 十二、清理与生命周期
 
-### 内存安全
+```java
+RouteDsl dsl = RouteDsl.on(page)
+    .api("/api/**")
+    .monitor()
+    .done();
 
-| 机制 | 说明 |
-|------|------|
-| **WeakReference 包装** | `RouteRegistry.ContextKey` 使用 `WeakReference` 包裹 Page/Context，静态 Map 不阻止 GC |
-| **死条目自动清理** | `purgeDeadEntries()` 阈值触发（>50 条目），基于 `isDead()` 安全遍历移除 |
-| **双重上限防 OOM** | `ApiCaptureContext` 同时限制响应存储数量（1000 条）和体积（10MB） |
-| **防重集合上限** | `RouteEngine.DISPATCHED_ROUTES` 超过 500 条目自动清空 |
-| **缓存淘汰** | `ModifyHandler.JSONPATH_CACHE` 超过 200 条目自动清空重建 |
-| **线程池队列限流** | `DiscardOldestPolicy` 拒绝策略 + 有界队列，拒绝后不阻塞 UI |
+dsl.start();
+// ... 测试执行 ...
 
-### 线程安全
+dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
+```
 
-| 机制 | 说明 |
-|------|------|
-| **防重门控** | `DISPATCHED_ROUTES.putIfAbsent()` — 同一请求匹配多个 pattern 时只处理一次 |
-| **byte[] 拷贝跨线程** | MonitorHandler 在事件线程同步读取 body 后拷贝，传递给异步线程 |
-| **CopyOnWriteArrayList** | RouteDsl.rules 支持并发修改 |
-| **ConcurrentHashMap** | RouteRegistry / ApiCaptureContext / ModifyHandler / SESSIONS 共享结构 |
-| **AtomicLong/AtomicInteger** | RouteAsyncPool / ApiCaptureContext 计数器 |
-| **RouteRule equals/hashCode** | 基于 `urlPattern + type + method` 的相等性判断 |
+**清理保障**：
 
-### 可观测性
+| 场景 | 是否需要 `dsl.clear()` | 说明 |
+|------|------------------------|------|
+| **Serenity BDD Scenario** | ❌ 不需要 | `PlaywrightListener.testFinished()` 自动清理 |
+| **独立 JUnit `@Test`** | ✅ 需要 | 不走 Serenity 生命周期，必须在 `@After` 或测试末尾显式调用 |
+| **测试中途提前停止路由** | ✅ 需要 | 例如提前解除 Mock |
+| **Context Session 超时后残留** | ❌ 自动处理 | Scenario 结束时统一清理 |
 
-| 机制 | 说明 |
-|------|------|
-| **全链路日志** | 注册/分发/处理/异常都有 DEBUG/INFO/ERROR 级别日志 |
-| **阈值告警** | 线程池队列/线程/超时挂起数超限 → ERROR 级别日志 |
-| **指标暴露** | `getStatusSnapshot()` / `getQueueUsage()` / `getPendingTimeoutCount()` 等 |
-| **Serenity 报告集成** | MonitorHandler 异步写入 + PlaywrightListener 主线程刷新 |
-| **断言失败详情** | `ApiCaptureContext.buildFailureReport()` 可读多行报告 |
-
-### 可扩展性
-
-| 机制 | 说明 |
-|------|------|
-| **函数式接口** | `RouteHandler` @FunctionalInterface，新增 Handler 只需实现接口 |
-| **EnumMap 分发** | `RouteEngine` 使用 `EnumMap<RouteHandleType, RouteHandler>`，新增类型无 switch |
-| **DSL 链式** | `RouteDsl.ApiDsl` 内部类，`done()` 返回父级支持多规则链式组合 |
-| **环境变量配置** | 线程池参数全部通过环境变量可调，无需改代码 |
-
-### 生命周期管理
-
-| 层级 | 触发方式 | 清理范围 |
-|------|----------|----------|
-| **Scenario 级** | `PlaywrightListener.testFinished()` → `RouteRegistry.clearContext()` | Page/Context 路由注册 + MonitorSession + 防重门控 + 跨层标记 |
-| **手动级** | `RouteDsl.clear()` | 当前 Dsl 绑定的所有 pattern + 上下文 |
-| **全局级** | `FrameworkCore.cleanup()` → `RouteEngine.shutdown()` | 全量清理 + 关闭 DELAY_SCHEDULER 和 RouteAsyncPool 线程池 |
-| **Session 状态感知** | `dispatchRoute` 跨层合并前自动检查 | 已停止的 Context Session 自动跳过跨层合并 |
+`RouteDsl.clearAllRules()` 用于全局清理所有上下文的所有路由规则（如测试套件结束时）。

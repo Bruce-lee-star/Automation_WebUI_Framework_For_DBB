@@ -1,5 +1,6 @@
  package com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.CDPSession;
 import com.microsoft.playwright.Page;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * CDP 旁路采集策略 — 通过 CDP Network 域纯监听，零阻塞。
@@ -29,7 +31,12 @@ public class CDPCaptureStrategy implements CaptureStrategy {
     private static final Logger LOGGER = LoggerFactory.getLogger(CDPCaptureStrategy.class);
 
     private CDPSession cdpSession;
+    private Page page;
+    private CaptureRingBuffer ringBuffer;
     private volatile boolean running;
+    private final Map<String, Map<String, String>> extraRequestHeaders = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, String>> publishedRequestHeaders = new ConcurrentHashMap<>();
+
 
     @Override
     public void start(Page page, CaptureRingBuffer ringBuffer) {
@@ -39,6 +46,8 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         }
 
         try {
+            this.page = page;
+            this.ringBuffer = ringBuffer;
             this.cdpSession = page.context().newCDPSession(page);
         } catch (PlaywrightException e) {
             LOGGER.warn("[CDPCaptureStrategy] Failed to create CDP session: {}. "
@@ -50,6 +59,26 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         cdpSession.send("Network.enable");
 
         // ── 订阅 CDP 事件 ──
+        cdpSession.on("Network.requestWillBeSentExtraInfo", event -> {
+            if (!running) return;
+            try {
+                String requestId = event.get("requestId").getAsString();
+                JsonObject headersObj = event.getAsJsonObject("headers");
+                Map<String, String> headers = new HashMap<>();
+                if (headersObj != null) {
+                    headersObj.entrySet().forEach(e -> headers.put(e.getKey(), e.getValue().getAsString()));
+                }
+                Map<String, String> published = publishedRequestHeaders.get(requestId);
+                if (published != null) {
+                    mergeHeadersCaseInsensitive(published, headers);
+                } else {
+                    extraRequestHeaders.put(requestId, headers);
+                }
+            } catch (Exception e) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[CDPCaptureStrategy] Error processing requestWillBeSentExtraInfo: {}", e.getMessage());
+            }
+        });
 
         // requestWillBeSent：拿到请求真实信息（含 modify 后请求体）
         cdpSession.on("Network.requestWillBeSent", event -> {
@@ -60,6 +89,9 @@ public class CDPCaptureStrategy implements CaptureStrategy {
                 String method = request.get("method").getAsString();
                 String url = request.get("url").getAsString();
 
+                // Capture 是 API 存储的唯一入口。MONITOR/MOCK/DELAY/MODIFY
+                // 都保留 CDP 事件，避免跨层或异步 Delay 场景丢失真实响应。
+
                 // 请求头
                 Map<String, String> headers = new HashMap<>();
                 JsonObject headersObj = request.getAsJsonObject("headers");
@@ -67,6 +99,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
                     headersObj.entrySet().forEach(e ->
                             headers.put(e.getKey(), e.getValue().getAsString()));
                 }
+                mergeHeadersCaseInsensitive(headers, extraRequestHeaders.remove(requestId));
 
                 // 请求体（仅 POST/PUT/PATCH 有 postData）
                 byte[] reqBody = null;
@@ -74,8 +107,15 @@ public class CDPCaptureStrategy implements CaptureStrategy {
                     reqBody = request.get("postData").getAsString().getBytes(StandardCharsets.UTF_8);
                 }
 
+                // 资源类型：CDP requestWillBeSent.request.type（XHR/Fetch/Document/Script/Image…）
+                String rawType = request.has("type") && !request.get("type").isJsonNull()
+                        ? request.get("type").getAsString() : null;
+                ResourceType resourceType = ResourceType.fromString(rawType);
+
                 CaptureEvent eventData = CaptureEvent.request(
-                        requestId, method, url, headers, reqBody, CaptureEvent.Source.CDP);
+                        requestId, method, url, headers, reqBody, resourceType, CaptureEvent.Source.CDP)
+                        .withContext(page.context(), page);
+                publishedRequestHeaders.put(requestId, headers);
                 ringBuffer.publish(eventData);
 
             } catch (Exception e) {
@@ -105,7 +145,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
 
                 CaptureEvent eventData = CaptureEvent.responseMeta(
                         requestId, status, headers, CaptureEvent.Source.CDP);
-                ringBuffer.publish(eventData);
+                ringBuffer.publish(eventData.withContext(page.context(), page));
 
             } catch (Exception e) {
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
@@ -145,7 +185,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
 
                 CaptureEvent eventData = CaptureEvent.responseBody(
                         requestId, body, contentType, CaptureEvent.Source.CDP);
-                ringBuffer.publish(eventData);
+                ringBuffer.publish(eventData.withContext(page.context(), page));
 
             } catch (Exception e) {
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
@@ -153,13 +193,46 @@ public class CDPCaptureStrategy implements CaptureStrategy {
             }
         });
 
+        // loadingFailed：请求被 abort / 超时 / 网络错误。立即投喂 FAILED 事件，
+        // 让 EventMerger 释放 captureInFlight，避免 awaitCompletion 被拖到 stale 超时。
+        cdpSession.on("Network.loadingFailed", event -> {
+            if (!running) return;
+            try {
+                String requestId = event.get("requestId").getAsString();
+                publishedRequestHeaders.remove(requestId);
+                extraRequestHeaders.remove(requestId);
+                CaptureEvent eventData = CaptureEvent.failed(requestId, CaptureEvent.Source.CDP);
+                ringBuffer.publish(eventData.withContext(page.context(), page));
+            } catch (Exception e) {
+                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                        "[CDPCaptureStrategy] Error processing loadingFailed: {}", e.getMessage());
+            }
+        });
+
         this.running = true;
         LOGGER.info("[CDPCaptureStrategy] Started CDP Network capture");
+    }
+
+    private static void mergeHeadersCaseInsensitive(Map<String, String> target,
+                                                     Map<String, String> additions) {
+        if (additions == null) return;
+        for (Map.Entry<String, String> addition : additions.entrySet()) {
+            String existingKey = null;
+            for (String key : target.keySet()) {
+                if (key.equalsIgnoreCase(addition.getKey())) {
+                    existingKey = key;
+                    break;
+                }
+            }
+            target.put(existingKey != null ? existingKey : addition.getKey(), addition.getValue());
+        }
     }
 
     @Override
     public void stop() {
         this.running = false;
+        extraRequestHeaders.clear();
+        publishedRequestHeaders.clear();
         if (cdpSession != null) {
             try {
                 // ⭐ 安全清理：先检查 CDP session 是否仍然有效

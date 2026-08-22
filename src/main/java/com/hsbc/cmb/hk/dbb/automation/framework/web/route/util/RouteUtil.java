@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -599,5 +600,20 @@ public final class RouteUtil {
         } catch (Exception ignored) {
             // route 可能已被处置或 page 已关闭，忽略。
         }
+    }
+
+    /** 根据 Route 所属 BrowserContext 获取隔离的 API 捕获上下文。 */
+    public static ApiCaptureContext captureContext(Route route) {
+        if (route != null) {
+            try {
+                if (route.request() != null && route.request().frame() != null
+                        && route.request().frame().page() != null) {
+                    return ApiCaptureContext.forContext(route.request().frame().page().context());
+                }
+            } catch (Exception ignored) {
+                // Page/Context 已销毁时回退共享上下文，保证异常路径仍可安全放行。
+            }
+        }
+        return ApiCaptureContext.getCurrent();
     }
 }

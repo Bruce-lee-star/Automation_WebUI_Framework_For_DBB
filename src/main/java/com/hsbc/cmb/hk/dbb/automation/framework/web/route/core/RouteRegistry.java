@@ -201,7 +201,7 @@ public class RouteRegistry {
         Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.remove(new ContextKey(context));
         if (patterns != null && !patterns.isEmpty()) {
             // ⭐ 同步清除 context 级规则注册表
-            RouteEngine.removeContextRules(patterns.keySet());
+            RouteEngine.removeContextRules(context, patterns.keySet());
             RouteEngine.unrouteAllForContext(context, patterns.keySet());
         }
 
@@ -210,6 +210,9 @@ public class RouteRegistry {
 
         // 3. 清理 Route 防重门控 + 跨层去重集合（本测试上下文所有请求均已处理完毕，安全清空）
         RouteEngine.clearDispatchedRoutes();
+
+        // 4. 清理引擎合并引用存储（避免跨场景残留）
+        RouteEngine.removeEngineRuleStore(context);
 
         LOGGER.debug("[RouteRegistry] Cleared {} patterns for context: {}",
                 patterns != null ? patterns.size() : 0,
@@ -222,6 +225,7 @@ public class RouteRegistry {
     public static void clearAll() {
         CONTEXT_PATTERNS.clear();
         RouteEngine.clearAllMonitorSessions();
+        RouteEngine.clearAllEngineRuleStores();
         ModifyHandler.clearJsonPathCache();
         LOGGER.debug("[RouteRegistry] Cleared all patterns and caches for all contexts");
     }

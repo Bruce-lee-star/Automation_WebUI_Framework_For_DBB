@@ -28,6 +28,14 @@ public class RouteRule {
     private String urlPattern;
     private RouteHandleType type = RouteHandleType.MONITOR;
 
+    /**
+     * ⭐ 监控能力位（基线）：true 表示此规则开启 API 健康监控（断言 expectedStatus / jsonPath）。
+     * <p>监控是<b>不可被覆盖的基线</b>：MODIFY / DELAY 只是挂在它上面的可叠加动作，
+     * 无论是否叠加 modify/delay，监控始终在 resume 后对真实响应断言，失败即报错。
+     * <p>仅当 {@code type == MOCK} 时此位被忽略（MOCK 返回假响应，无真实响应可监控）。
+     */
+    private boolean monitorEnabled = false;
+
     // Mock
     private String mockBody;
     private byte[] mockBodyBytes;
@@ -295,6 +303,21 @@ public class RouteRule {
     public void setType(RouteHandleType type) {
         this.type = type;
         this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
+    }
+
+    /**
+     * 设置监控能力位（基线）。
+     *
+     * @param monitorEnabled true 表示开启 API 健康监控（断言响应），false 关闭
+     */
+    public void setMonitorEnabled(boolean monitorEnabled) {
+        this.monitorEnabled = monitorEnabled;
+        // monitorEnabled 不进入 equals/hashCode（同 pattern 的 monitor/modify 规则需能合并，而非互斥）
+    }
+
+    /** @return 是否开启 API 健康监控（基线能力位） */
+    public boolean isMonitorEnabled() {
+        return monitorEnabled;
     }
 
     public void setMockBody(String mockBody) {
@@ -673,6 +696,135 @@ public class RouteRule {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // 能力位合并（注册阶段，同 pattern 多条规则叠加）
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 将 {@code other} 的能力位合并进当前规则（用于同 pattern 的多次注册叠加）。
+     *
+     * <p>合并语义：
+     * <ul>
+     *   <li><b>MONITOR（基线）</b>：{@code other.monitorEnabled=true} 时开启（不可被关闭）；
+     *       监控专属字段（expectedStatus / jsonPath 断言 / callbacks 等）一并合并。
+     *   <li><b>MODIFY</b>：{@code other} 持有的 modify 字段（requestHeadersToSet / requestBodyToSet 等）putAll 合并。
+     *   <li><b>DELAY</b>：delayMs 取 max（与跨层合并一致）。
+     *   <li><b>MOCK（终结）</b>：仅当当前非 MOCK 且 other 为 MOCK 时，覆盖为 MOCK（由调用方保证）；
+     *       若当前已是 MOCK，则忽略非 MOCK 的 other（MOCK 不可被降级）。
+     * </ul>
+     *
+     * @param other 另一条同 pattern 规则（不修改它）
+     */
+    public void mergeFrom(RouteRule other) {
+        if (other == null) return;
+
+        // MONITOR 基线：开则保留
+        if (other.monitorEnabled) {
+            this.monitorEnabled = true;
+        }
+        // 监控专属字段合并（仅当 other 提供时才覆盖，避免清空已有）— 全部 null 安全
+        if (other.expectedStatus != null) this.expectedStatus = other.expectedStatus;
+        if (other.jsonPathAssertions != null && !other.jsonPathAssertions.isEmpty()) {
+            if (this.jsonPathAssertions == null) this.jsonPathAssertions = new LinkedHashMap<>();
+            this.jsonPathAssertions.putAll(other.jsonPathAssertions);
+        }
+        if (other.monitorCallbacks != null && !other.monitorCallbacks.isEmpty()) {
+            if (this.monitorCallbacks == null) this.monitorCallbacks = new ArrayList<>();
+            this.monitorCallbacks.addAll(other.monitorCallbacks);
+        }
+
+        // MODIFY 字段合并 — 全部 null 安全
+        if (other.requestHeadersToSet != null && !other.requestHeadersToSet.isEmpty()) {
+            if (this.requestHeadersToSet == null) this.requestHeadersToSet = new HashMap<>();
+            this.requestHeadersToSet.putAll(other.requestHeadersToSet);
+        }
+        if (other.requestHeadersToRemove != null && !other.requestHeadersToRemove.isEmpty()) {
+            if (this.requestHeadersToRemove == null) this.requestHeadersToRemove = new LinkedHashSet<>();
+            this.requestHeadersToRemove.addAll(other.requestHeadersToRemove);
+        }
+        // 请求体：修改 / 新增 / 删除 三维度合并
+        if (other.requestBodyFieldsToModify != null && !other.requestBodyFieldsToModify.isEmpty()) {
+            if (this.requestBodyFieldsToModify == null) this.requestBodyFieldsToModify = new LinkedHashMap<>();
+            this.requestBodyFieldsToModify.putAll(other.requestBodyFieldsToModify);
+        }
+        if (other.requestBodyFieldsToAdd != null && !other.requestBodyFieldsToAdd.isEmpty()) {
+            if (this.requestBodyFieldsToAdd == null) this.requestBodyFieldsToAdd = new LinkedHashMap<>();
+            this.requestBodyFieldsToAdd.putAll(other.requestBodyFieldsToAdd);
+        }
+        if (other.requestBodyFieldsToRemove != null && !other.requestBodyFieldsToRemove.isEmpty()) {
+            if (this.requestBodyFieldsToRemove == null) this.requestBodyFieldsToRemove = new LinkedHashSet<>();
+            this.requestBodyFieldsToRemove.addAll(other.requestBodyFieldsToRemove);
+        }
+        if (other.modifyMethod != null) this.modifyMethod = other.modifyMethod;
+
+        // ⭐ DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
+        //    modify/delay 叠加」）注册时，DELAY 在 mergeFrom 内即合并，确保叠加生效
+        //    （c21：monitor 基线 + overlayDelay 后，有效规则 delayMs 取 max）。
+        //    注意：跨层合并时此值还会再与 context 层 delay 取 max（dispatchRoute 内）。
+        this.delayMs = Math.max(this.delayMs, other.delayMs);
+
+        // MOCK 终结：MOCK 是唯一终结者。能力位合并时，若 other 携带 MOCK 配置，
+        // 则其 mock 字段参与合并（由上层 RouteRegistry 决定 override 语义，
+        // 此处不强改 this.type，避免跨层合并时污染基线规则的类型）。
+        if (other.type == RouteHandleType.MOCK) {
+            if (other.mockBody != null) this.mockBody = other.mockBody;
+            if (other.mockBodyBytes != null) this.mockBodyBytes = other.mockBodyBytes;
+            if (other.mockStatus != 0) this.mockStatus = other.mockStatus;
+            if (other.mockHeaders != null) this.mockHeaders = other.mockHeaders;
+        }
+
+        this.hashCodeCached = false;  // merge 改变内容，失效缓存
+    }
+
+    /**
+     * ⭐ 返回当前规则的<b>深拷贝</b>（仅深拷贝用于能力位合并的集合字段）。
+     * <p>用于跨层合并：避免就地修改被 {@code ENGINE_RULE_STORE} 与闭包持有的原 rule，
+     * 导致跨请求行为漂移与集合无限累积。
+     *
+     * @return 与当前规则内容相等但独立的拷贝
+     */
+    public RouteRule copyForMerge() {
+        RouteRule copy = new RouteRule();
+        copy.urlPattern = this.urlPattern;
+        copy.type = this.type;
+        copy.monitorEnabled = this.monitorEnabled;
+
+        // MONITOR 字段
+        copy.expectedStatus = this.expectedStatus;
+        copy.timeoutMs = this.timeoutMs;
+        copy.minMatches = this.minMatches;
+        copy.autoStopOnMatch = this.autoStopOnMatch;
+        copy.record = this.record;
+        if (this.jsonPathAssertions != null) copy.jsonPathAssertions = new LinkedHashMap<>(this.jsonPathAssertions);
+        if (this.monitorCallbacks != null) copy.monitorCallbacks = new ArrayList<>(this.monitorCallbacks);
+
+        // MODIFY 字段
+        if (this.requestHeadersToSet != null) copy.requestHeadersToSet = new HashMap<>(this.requestHeadersToSet);
+        if (this.requestHeadersToRemove != null) copy.requestHeadersToRemove = new LinkedHashSet<>(this.requestHeadersToRemove);
+        if (this.requestBodyFieldsToModify != null) copy.requestBodyFieldsToModify = new LinkedHashMap<>(this.requestBodyFieldsToModify);
+        if (this.requestBodyFieldsToAdd != null) copy.requestBodyFieldsToAdd = new LinkedHashMap<>(this.requestBodyFieldsToAdd);
+        if (this.requestBodyFieldsToRemove != null) copy.requestBodyFieldsToRemove = new LinkedHashSet<>(this.requestBodyFieldsToRemove);
+        copy.modifyMethod = this.modifyMethod;
+
+        // DELAY 字段
+        copy.delayMs = this.delayMs;
+        copy.delayMinMs = this.delayMinMs;
+        copy.delayMaxMs = this.delayMaxMs;
+
+        // MOCK 字段
+        copy.mockBody = this.mockBody;
+        copy.mockStatus = this.mockStatus;
+        if (this.mockHeaders != null) copy.mockHeaders = new HashMap<>(this.mockHeaders);
+        if (this.mockReplaceFields != null) copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);
+        copy.interceptRealResponse = this.interceptRealResponse;
+
+        // 请求条件匹配
+        copy.resourceTypes = this.resourceTypes;
+        copy.matchMethod = this.matchMethod;
+
+        return copy;
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // equals / hashCode（RouteRule 作为 ConcurrentHashMap key）
     // ═══════════════════════════════════════════════════════════
 
@@ -685,15 +837,16 @@ public class RouteRule {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         RouteRule that = (RouteRule) o;
+        // 相等性仅以 urlPattern + modifyMethod 为准（同 pattern 的规则视为同一逻辑规则，
+        // 其能力位由 mergeFrom() 显式叠加，type 不参与去重）。
         return Objects.equals(urlPattern, that.urlPattern)
-                && type == that.type
                 && Objects.equals(modifyMethod, that.modifyMethod);
     }
 
     @Override
     public int hashCode() {
         if (!hashCodeCached) {
-            cachedHashCode = Objects.hash(urlPattern, type, modifyMethod);
+            cachedHashCode = Objects.hash(urlPattern, modifyMethod);
             hashCodeCached = true;
         }
         return cachedHashCode;

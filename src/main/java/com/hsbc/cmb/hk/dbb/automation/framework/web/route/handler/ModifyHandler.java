@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.*;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -294,18 +295,19 @@ public class ModifyHandler {
                 finalHeaders,
                 finalBody != null ? finalBody : (bodyModified ? "(empty)" : "(unchanged)"));
 
-        // ── 5. route.fetch() 获取真实服务器响应 ────────────────────
-        //    使用 route.fetch() 替代 route.resume()，以便获取真实响应体、状态码和响应头。
-        //    注意：Playwright 的 route.fetch() 发送的是原始请求（未修改的 headers/body/method），
-        //    因此 MODIFY 的请求修改不会实际到达服务器。但浏览器最终收到的是真实响应，
-        //    修改详情（已修改的 headers/body/method）作为元数据存储到 CapturedApiCall 中。
+        // ── 5. route.fetch(opts) 发送「修改后的请求」并获取真实响应 ──
+        //    Q1 决策：MODIFY 只修改请求（headers/body/method）。
+        //    route.fetch(opts) 携带修改后的 headers/body/method 发往服务器（注意：Playwright 的
+        //    fetch(FetchOptions) 会用 opts 中的 method/headers/postData，故<b>实际发送的是修改后的请求</b>），
+        //    同步返回服务器真实响应。随后 route.fulfill(真实响应) 将<b>原样透传</b>给浏览器 —— 不改响应。
         //
-        //    权衡：放弃"修改请求→服务器处理修改后请求"的能力，换取"获取真实响应体"的能力。
-        //    在大多数测试场景中，获取真实响应体比实际修改请求更重要（断言/monitoring 场景）。
+        //    为何不用 route.resume(opts) + req.response()：在带 DELAY 的异步线程场景里，
+        //    resume 后 req.response() 拿到的对象会失效（"Object doesn't exist"），而 fetch 同步返回响应，
+        //    可在任意线程可靠读取。fetch 的真实响应再 fulfill 回浏览器，对前端而言响应未被篡改。
         try {
             // 进入 fetch 前确认页面未关闭
-            if (isPageClosed(route)) {
-                LOGGER.warn("[ModifyHandler] Page/context already closed, skip fetch (resume to avoid blocking): pattern='{}', url='{}'",
+            if (RouteUtil.isPageClosed(route)) {
+                LOGGER.warn("[ModifyHandler] Page/context already closed, skip modify (resume to avoid blocking): pattern='{}', url='{}'",
                         rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
                 try { route.resume(); } catch (Exception ignored) {}
                 return;
@@ -313,17 +315,25 @@ public class ModifyHandler {
 
             Route.FetchOptions fetchOpts = new Route.FetchOptions()
                     .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
-            // ⭐ fetch() 发送原始请求到真实服务器，获取真实响应
+            // ⭐ fetch 携带修改后请求（method/headers/postData 来自上方已计算的 final* 变量）
+            if (finalMethod != null) fetchOpts.setMethod(finalMethod);
+            if (finalHeaders != null && !finalHeaders.isEmpty()) {
+                fetchOpts.setHeaders(finalHeaders);
+            } else {
+                fetchOpts.setHeaders(req.headers());
+            }
+            if (finalBody != null) fetchOpts.setPostData(finalBody);
+
             APIResponse realResp = route.fetch(fetchOpts);
             int realStatus = realResp.status();
             byte[] realBodyBytes = realResp.body();
             String realBody = realBodyBytes != null ? new String(realBodyBytes, StandardCharsets.UTF_8) : "";
             Map<String, String> realRespHeaders = new HashMap<>(realResp.headers());
 
-            LOGGER.info("[ModifyHandler] Real response fetched: pattern='{}', status={}, bodyLength={}",
+            LOGGER.info("[ModifyHandler] Fetched modified request response: pattern='{}', status={}, bodyLength={}",
                     rule.getUrlPattern(), realStatus, realBody.length());
 
-            // ── 6. 构建修改详情 JSON（用于存储到 CapturedApiCall） ───────────
+            // ── 6. 构建修改详情 JSON（用于存储到 CapturedApiCall，不改响应） ──
             String modifyDetail = null;
             try {
                 ObjectNode detailNode = OBJECT_MAPPER.createObjectNode();
@@ -364,25 +374,26 @@ public class ModifyHandler {
                 LOGGER.debug("[ModifyHandler] Failed to build modify detail JSON: {}", e.getMessage());
             }
 
-            // ── 7. fulfill 真实响应给浏览器 ──────────────────────────────
-            //    注意：我们是 MODIFY 场景，真实请求已经到服务器拿到响应。
-            //    这里将真实响应直接返回给浏览器。
-            Route.FulfillOptions fulfillOpts = new Route.FulfillOptions()
-                    .setStatus(realStatus)
-                    .setBody(realBody);
-            if (!realRespHeaders.isEmpty()) {
-                fulfillOpts.setHeaders(realRespHeaders);
-            }
-            route.fulfill(fulfillOpts);
+            // ⭐ Q1：MODIFY 只改请求、不改响应。
+            //    fetch 已发送修改后的请求并拿回真实响应，后续将原样响应 fulfill 给浏览器
+            //    （status/body/headers 完全透传，不做任何篡改）。前端看到的就是服务器真实响应。
+            //    ⚠️ store 必须在 route.fulfill 之前完成：fulfill 会触发浏览器 fetch 的 Promise resolve，
+            //       若 store 在 fulfill 之后，调用方（fetchApi 返回后）读取 CapturedApiCall 时
+            //       可能尚未存储（c21 时序竞态），故先存储再 fulfill。
 
-            LOGGER.info("[ModifyHandler] Modified and fulfilled: url={}, pattern='{}', method={}, status={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
-                    RouteUtil.sanitizeUrl(req.url()), rule.getUrlPattern(),
-                    finalMethod, realStatus,
-                    requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
-                    requestHeadersToRemove != null ? requestHeadersToRemove : "none",
-                    fieldsToModify != null ? fieldsToModify.keySet() : "none",
-                    fieldsToAdd != null ? fieldsToAdd.keySet() : "none",
-                    fieldsToRemove != null ? fieldsToRemove : "none");
+            // ═══════════════════════════════════════════════════════════════
+            // ⭐ 叠加监控（基线）：修改请求后真实响应已拿回，对真实响应断言健康。
+            //    监控不可被 modify 覆盖；断言失败 → Fail-Fast 报错（对应「监控到 API 失败就报错」）。
+            //    注意：modify 用 route.resume(opts) 放行，服务器返回的真实响应原样透传浏览器，
+            //          因此监控断言的真实响应与用户看到的响应一致（不改响应）。
+            // ═══════════════════════════════════════════════════════════════
+            if (rule.isMonitorEnabled()) {
+                ApiCaptureContext monitorCtx = RouteUtil.captureContext(route);
+                MonitorHandler.assertAndRecord(route, rule, monitorCtx,
+                        req.url(), realStatus, realBody,
+                        finalMethod, req.postData(),
+                        new HashMap<>(req.headers()), realRespHeaders);
+            }
 
             SerenityReporter.recordApiOperation("MODIFY", req.url(),
                     String.format("Pattern: %s\nMethod: %s\nStatus: %d\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
@@ -404,14 +415,15 @@ public class ModifyHandler {
                         realRespHeaders,
                         realBody,   // ⭐ 真实响应体
                         System.currentTimeMillis(),
-                        req.url()
+                        req.url(),
+                        null,           // requestBody
+                        modifyDetail   // ⭐ 修改详情（headersSet / modifiedBody / bodyFieldsModified …），供 json() 回退断言
                 );
-                ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+                ApiCaptureContext ctx = RouteUtil.captureContext(route);
                 if (ctx != null) {
                     ctx.storeApiCall(call);
-                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                            "[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                            rule.getUrlPattern(), req.method(), realStatus);
+                    LOGGER.info("[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}, totalCalls={}",
+                            rule.getUrlPattern(), req.method(), realStatus, ctx.getAllApiCalls().size());
                 } else {
                     LOGGER.debug("[ModifyHandler] ApiCaptureContext is null, skipped store for pattern '{}'",
                             rule.getUrlPattern());
@@ -419,12 +431,31 @@ public class ModifyHandler {
             } catch (Exception e) {
                 LOGGER.debug("[ModifyHandler] Failed to store modify call to ApiCaptureContext: {}", e.getMessage());
             }
+
+            // ── fulfill 真实响应给浏览器（改请求、不改响应） ──────────────
+            //    store 已在上方完成，此处 fulfill 触发浏览器 fetch resolve，避免调用方读取竞态。
+            Route.FulfillOptions fulfillOpts = new Route.FulfillOptions()
+                    .setStatus(realStatus)
+                    .setBody(realBody);
+            if (!realRespHeaders.isEmpty()) {
+                fulfillOpts.setHeaders(realRespHeaders);
+            }
+            route.fulfill(fulfillOpts);
+
+            LOGGER.info("[ModifyHandler] Modified request, fulfilled real response (untouched): url={}, pattern='{}', method={}, status={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
+                    RouteUtil.sanitizeUrl(req.url()), rule.getUrlPattern(),
+                    finalMethod, realStatus,
+                    requestHeadersToSet != null ? requestHeadersToSet.keySet() : "none",
+                    requestHeadersToRemove != null ? requestHeadersToRemove : "none",
+                    fieldsToModify != null ? fieldsToModify.keySet() : "none",
+                    fieldsToAdd != null ? fieldsToAdd.keySet() : "none",
+                    fieldsToRemove != null ? fieldsToRemove : "none");
         } catch (PlaywrightException e) {
-            LOGGER.error("[ModifyHandler] Failed to fetch/fulfill route for pattern '{}': {}",
+            LOGGER.error("[ModifyHandler] Failed to modify/resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
-            // 兜底：fetch/fulfill 失败时 resume 放行请求，避免请求永久挂起
+            // 兜底：modify/resume 失败时 resume 放行请求，避免请求永久挂起
             try { route.resume(); } catch (Exception ignored) {
-                LOGGER.error("[ModifyHandler] Failed to resume after fetch failure for pattern '{}'",
+                LOGGER.error("[ModifyHandler] Failed to resume after modify failure for pattern '{}'",
                         rule.getUrlPattern());
             }
         }
@@ -861,6 +892,25 @@ public class ModifyHandler {
         }
     }
 
+    /**
+     * 类型保持：当待写入值是文本节点，而目标位置原值具有更具体的类型（数字/布尔）时，
+     * 将文本按原值类型转换，确保批量替换（如 price 从 "0" → 数字 0）符合类型预期。
+     */
+    private static JsonNode coerceToType(JsonNode value, JsonNode sample) {
+        if (value instanceof TextNode && sample != null && !sample.isTextual() && !sample.isNull()) {
+            String s = ((TextNode) value).textValue();
+            try {
+                if (sample.isInt()) return IntNode.valueOf(Integer.parseInt(s));
+                if (sample.isLong()) return LongNode.valueOf(Long.parseLong(s));
+                if (sample.isDouble() || sample.isFloat()) return DoubleNode.valueOf(Double.parseDouble(s));
+                if (sample.isBoolean()) return BooleanNode.valueOf(Boolean.parseBoolean(s));
+            } catch (NumberFormatException e) {
+                return value;
+            }
+        }
+        return value;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 通配符 [*] 批量字段替换（用于 Mock 响应 List 数据批量处理）
     // ═══════════════════════════════════════════════════════════════
@@ -992,7 +1042,7 @@ public class ModifyHandler {
                 for (int i = 0; i < arr.size(); i++) {
                     JsonNode elem = arr.get(i);
                     if (isLast) {
-                        arr.set(i, typedValue);
+                        arr.set(i, coerceToType(typedValue, arr.get(i)));
                         count++;
                     } else {
                         count += applyWildcardWithRawType(elem,
@@ -1030,7 +1080,7 @@ public class ModifyHandler {
         if (child == null) return 0;
         if (isLast) {
             if (effectiveParent != null && effectiveKey != null) {
-                setJsonNode(effectiveParent, effectiveKey, typedValue);
+                setJsonNode(effectiveParent, effectiveKey, coerceToType(typedValue, child));
                 return 1;
             }
             return 0;

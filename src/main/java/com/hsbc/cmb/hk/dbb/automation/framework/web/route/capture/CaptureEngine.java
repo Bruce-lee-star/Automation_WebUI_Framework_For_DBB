@@ -2,10 +2,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 采集引擎 — 编排整个采集管道的生命周期。
@@ -44,10 +48,11 @@ public class CaptureEngine {
     private final EventMerger merger;
     private volatile CaptureStrategy strategy;      // 非 final：降级时替换
     private final Page page;
+    private final BrowserContext browserContext;
     private volatile String strategyName;            // 非 final：降级时同步更新
 
     private volatile Health health = Health.HEALTHY;
-    private volatile boolean running;
+    private final AtomicBoolean running = new AtomicBoolean(false);
 
     /**
      * 创建采集引擎并自动启动。
@@ -61,6 +66,7 @@ public class CaptureEngine {
             throw new IllegalArgumentException("Page must not be null");
         }
         this.page = page;
+        this.browserContext = page.context();
         this.ringBuffer = new CaptureRingBuffer();
         this.threadPool = new CaptureThreadPool();
 
@@ -96,6 +102,8 @@ public class CaptureEngine {
             if (!fallback.isAvailable()) {
                 LOGGER.error("[CaptureEngine] Fallback strategy also unavailable. "
                         + "Capture will be disabled.");
+                fallback.stop();
+                strategy.stop();
                 health = Health.FAILED;
                 return;
             }
@@ -105,9 +113,9 @@ public class CaptureEngine {
         }
 
         // 3. 启动 merger 消费者线程
-        threadPool.submitMerger(merger);
+        Future<?> mergerFuture = threadPool.submitMerger(merger);
 
-        this.running = true;
+        this.running.set(true);
         LOGGER.info("[CaptureEngine] Started with strategy '{}', ringBuffer cap={}",
                 strategyName, ringBuffer.capacity());
 
@@ -136,14 +144,13 @@ public class CaptureEngine {
      * 停止采集引擎。
      */
     public void stop() {
-        if (!running) return;
-        this.running = false;
+        if (!running.compareAndSet(true, false)) return;
 
         // 1. 停止策略
         strategy.stop();
 
-        // 2. 停止 merger
-        merger.stop();
+        // 2. 停止 merger（中断并等待带超时，避免线程残留/关闭挂起）
+        merger.stop(5000);
 
         LOGGER.info("[CaptureEngine] Stopped. Metrics: {}", metrics().toSummary());
     }
@@ -200,7 +207,7 @@ public class CaptureEngine {
 
     /** 是否在运行 */
     public boolean isRunning() {
-        return running;
+        return running.get();
     }
 
     // ── Route 集成 ──
@@ -212,8 +219,16 @@ public class CaptureEngine {
      * 在处理 MOCK/MODIFY 路由时调用，将事件投喂到 RingBuffer。
      */
     public void feedRouteEvent(CaptureEvent event) {
-        if (!running) return;
-        ringBuffer.publish(event);
+        if (!running.get()) return;
+        ringBuffer.publish(event.withContext(browserContext, page));
+    }
+
+    public BrowserContext browserContext() {
+        return browserContext;
+    }
+
+    public Page page() {
+        return page;
     }
 
     // ── 内部 ──
@@ -226,7 +241,17 @@ public class CaptureEngine {
      * CDP 异常并返回 false，由本方法据此降级。
      */
     private static CaptureStrategy selectStrategy(Page page) {
-        // 先尝试 CDP（不创建 test session 探测，避免泄漏）
+        // ⭐ 支持系统属性强制指定策略：-Droute.capture.strategy=PLAYWRIGHT 或 =CDP
+        //    PLAYWRIGHT（page.onRequest/onResponse）：批量测试套件下更稳定（跟随 page 生命周期，
+        //    无 CDP session 反复启停的竞态），配合 RouteEngine.feedCaptureEvent 投喂 MOCK/MODIFY 全覆盖四类。
+        //    CDP（默认）：旁路监听真实网络栈，能看到 route.fetch 修改后的请求体，但反复启停下可能间歇性丢事件。
+        String forced = System.getProperty("route.capture.strategy", "CDP");
+        if ("PLAYWRIGHT".equalsIgnoreCase(forced)) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[CaptureEngine] Using PlaywrightEventCaptureStrategy (forced by system property)");
+            return new PlaywrightEventCaptureStrategy();
+        }
+        // 默认 CDP（不创建 test session 探测，避免泄漏）
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[CaptureEngine] Attempting CDPCaptureStrategy...");
         return new CDPCaptureStrategy();

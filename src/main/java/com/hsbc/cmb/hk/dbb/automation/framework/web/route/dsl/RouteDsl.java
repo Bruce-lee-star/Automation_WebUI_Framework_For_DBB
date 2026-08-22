@@ -2,6 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
@@ -79,6 +81,9 @@ public class RouteDsl {
      * 创建绑定到 Page 的 DSL 实例。
      */
     public static RouteDsl on(Page page) {
+        if (page != null) {
+            ApiCaptureContext.bindCurrentContext(page.context());
+        }
         return new RouteDsl(page);
     }
 
@@ -86,6 +91,9 @@ public class RouteDsl {
      * 创建绑定到 BrowserContext 的 DSL 实例。
      */
     public static RouteDsl on(BrowserContext context) {
+        if (context != null) {
+            ApiCaptureContext.bindCurrentContext(context);
+        }
         return new RouteDsl(context);
     }
 
@@ -187,6 +195,21 @@ public class RouteDsl {
      *     .start();
      * }</pre>
      */
+    /** 只清理指定 BrowserContext，适用于并行测试。 */
+    public static void clear(BrowserContext context) {
+        if (context == null) return;
+        RouteRegistry.clearContext(context);
+        ApiCaptureContext.removeContext(context);
+    }
+
+    /** 只清理指定 Page 及其页面级规则，不影响其它 Page/Context。 */
+    public static void clear(Page page) {
+        if (page == null) return;
+        RouteRegistry.clearContext(page);
+        RouteEngine.removePageRules(page);
+        ApiCapture.stop(page);
+    }
+
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
         RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES/CROSS_LAYER_HANDLED_URLS + JSONPath cache
@@ -212,20 +235,23 @@ public class RouteDsl {
         }
 
         /**
-         * 切换到 Monitor 监控模式。
+         * 切换到 Monitor 监控模式（基线能力位）。
+         * <p>Monitor 是<b>不可覆盖的基线</b>：后续可叠加 {@code modifyRequest()} / {@code delay()}，
+         * 监控始终在请求放行后对真实响应断言，失败即报错。
          * <p>Monitor 默认在匹配后自动停止（autoStopOnMatch=true）。
          *
          * @return MonitorApiDsl — 仅可调用 Monitor 相关方法 + 公共方法
          */
         public MonitorApiDsl monitor() {
-            rule.setType(RouteHandleType.MONITOR);
+            rule.setMonitorEnabled(true);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
                     "[RouteDsl] api('{}') -> monitor()", rule.getUrlPattern());
             return new MonitorApiDsl(parent, rule);
         }
 
         /**
-         * 切换到 Mock 拦截并自定义响应模式。
+         * 切换到 Mock 拦截并自定义响应模式（终结型）。
+         * <p>Mock 直接 fulfill 假响应，不发真实请求，因此监控/修改/delay 均无意义（被忽略）。
          * <p>Mock 默认持续拦截，不自动停止（autoStopOnMatch=false）。
          * <p>Mock 响应体通过后续的 {@link MockApiDsl#mockBody(String)} 设置。
          *
@@ -240,13 +266,13 @@ public class RouteDsl {
         }
 
         /**
-         * 切换到 Modify 修改请求模式（增删改请求头/请求体/请求方法）。
+         * 切换到 Modify 修改请求模式（可叠加能力位）。
+         * <p>Modify 在放行前修改请求头/体/方法，仍依赖真实后端返回，因此可与 Monitor 共存。
          * <p>Modify 默认持续拦截，不自动停止（autoStopOnMatch=false）。
          *
          * @return ModifyApiDsl — 仅可调用 Modify 相关方法 + 公共方法
          */
         public ModifyApiDsl modifyRequest() {
-            rule.setType(RouteHandleType.MODIFY);
             rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
                     "[RouteDsl] api('{}') -> modifyRequest()", rule.getUrlPattern());
@@ -254,21 +280,18 @@ public class RouteDsl {
         }
 
         /**
-         * 切换到 Delay 高延迟模式。
+         * 切换到 Delay 高延迟模式（可叠加能力位）。
          *
          * <p>拦截匹配请求，延迟指定秒数后再放行原始请求（{@code route.resume()}），
          * 由浏览器网络栈正常完成请求-响应。不使用 {@code route.fetch()}，无 DNS 解析风险。
          *
-         * <p>与 BaseApiDsl 中其他类型的 delay 属性不同：
-         * 此模式是独立的 DELAY 类型，专注于高延迟模拟场景。
-         *
+         * <p>Delay 是可叠加的横切属性：可与 Monitor / Modify 共存（延迟后真实响应仍被监控断言）。
          * <p>Delay 默认持续拦截所有匹配请求，不自动停止（autoStopOnMatch=false）。
          *
          * @param delaySecs 延迟秒数，必须 ≥ 0
          * @return DelayApiDsl — 可调用 {@link DelayApiDsl#randomDelay(long, long)} 切换随机模式
          */
         public DelayApiDsl delay(long delaySecs) {
-            rule.setType(RouteHandleType.DELAY);
             rule.setDelayMs(delaySecs * 1000);
             rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,

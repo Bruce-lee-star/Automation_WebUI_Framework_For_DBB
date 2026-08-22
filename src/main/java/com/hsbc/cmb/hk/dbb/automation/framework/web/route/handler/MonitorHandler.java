@@ -10,7 +10,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.DatabaseStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.FileStoreMonitorCallback;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -44,6 +43,36 @@ public class MonitorHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
 
+    /** 等待真实响应 / 兜底请求的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
+    private static final double ROUTE_FETCH_TIMEOUT_MS = getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+
+    private static double getEnvDouble(String key, double defaultValue) {
+        String v = System.getenv(key);
+        if (v != null) {
+            try {
+                return Double.parseDouble(v.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return defaultValue;
+    }
+
+    /** 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。 */
+    private static boolean hasDelay(RouteRule rule) {
+        return rule != null && (rule.getDelayMs() > 0
+                || rule.getDelayMinMs() > 0 || rule.getDelayMaxMs() > 0);
+    }
+
+    private static String literalPathOf(String urlPattern) {
+        if (urlPattern == null || urlPattern.isEmpty()) return null;
+        String p = urlPattern;
+        while (p.startsWith("**")) p = p.substring(2);
+        while (p.endsWith("**")) p = p.substring(0, p.length() - 2);
+        int star = p.indexOf('*');
+        if (star >= 0) p = p.substring(0, star);
+        return p.isEmpty() ? null : p;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // ⭐ 性能优化：JsonPath 编译缓存（避免每次断言都重新编译表达式）
     // ═══════════════════════════════════════════════════════════════
@@ -74,11 +103,11 @@ public class MonitorHandler {
         }
 
         // 获取 API 监控上下文并增加活动请求计数
-        ApiCaptureContext context = ApiCaptureContext.getCurrent();
+        ApiCaptureContext context = RouteUtil.captureContext(route);
         if (context == null) {
             LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
                     rule.getUrlPattern());
-            // ⭐ 必须调用 route.resume()，否则请求会永久挂起
+            // ⭐ 必须放行请求，否则请求会永久挂起
             RouteUtil.resumeIfOpen(route);
             return;
         }
@@ -88,22 +117,70 @@ public class MonitorHandler {
                 rule.getUrlPattern(), rule.getExpectedStatus(),
                 rule.getJsonPathAssertions() != null ? rule.getJsonPathAssertions().size() : 0);
 
-        // 放行请求（异常安全，不阻塞页面）
-        try {
-            route.resume();
-        } catch (PlaywrightException e) {
-            LOGGER.error("[MonitorHandler] Failed to resume route for pattern '{}': {}",
-                    rule.getUrlPattern(), e.getMessage(), e);
+        // DELAY 场景由 CDP/EventMerger 捕获真实响应；此处只放行，不再操作易失效的 Response 对象。
+        if (hasDelay(rule)) {
+            RouteUtil.resumeIfOpen(route);
             return;
         }
 
-        // 在 Playwright 事件线程中同步读取 Response body（线程安全）
+        // ⭐⭐ 用 page.waitForResponse 可靠获取真实响应（源码级确认，见 Playwright RouteImpl/RequestImpl）：
+        //    • route.request().response() 是「实时 channel 调用 + 依赖对象表」，异步延迟线程里
+        //      Response 对象被 GC 后从对象表移除 → "Object doesn't exist: response@..."。
+        //    • page.waitForResponse(predicate, code) 基于 Playwright 自身管道的 "response" 服务端推送事件，
+        //      DELAY 放行（resume）后请求继续完成必然触发该事件；返回的 Response 被 waitForResponse 强引用持有，
+        //      不被 GC → 可安全读 body/status/headers。这是不依赖失效对象、不依赖 CDP 的可靠方式。
         Request req = route.request();
-        Response res = req.response();
+        com.microsoft.playwright.Frame frame = req.frame();
+        Response res = null;
+        if (frame != null) {
+            com.microsoft.playwright.Page page = frame.page();
+            if (page != null) {
+                // ⭐ 超时保护：绝不传 0（Playwright 源码 TimeoutSettings.createWaitable 中 timeout==0
+                //   会返回 WaitableNever 无限等待 → 死等）。ROUTE_FETCH_TIMEOUT_MS 若被设成 0/负数，
+                //   强制回落到 20s 上限，保证最多阻塞 20s，绝不永久挂起。
+                double wfrTimeout = Math.min(20000, ROUTE_FETCH_TIMEOUT_MS);
+                if (wfrTimeout <= 0) wfrTimeout = 20000;
+                // ⭐ predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
+                //    predicate 永不匹配 → 每个请求白等满 20s 超时（性能问题）。
+                final String lit = literalPathOf(rule.getUrlPattern());
+                try {
+                    com.microsoft.playwright.Page.WaitForResponseOptions wfrOpts =
+                            new com.microsoft.playwright.Page.WaitForResponseOptions()
+                                    .setTimeout(wfrTimeout);
+                    res = page.waitForResponse(
+                            r -> {
+                                if (r == null || r.request() == null) return false;
+                                String ru = r.request().url();
+                                return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                            },
+                            wfrOpts,
+                            () -> {
+                                // 放行：失败则快速让 waitForResponse 结束（不吞掉等待），避免挂起
+                                if (RouteUtil.isPageClosed(route)) return;
+                                try {
+                                    route.resume();
+                                } catch (PlaywrightException re) {
+                                    // 放行失败（route 已 handled / 页面已关闭）：此时请求要么已放行、
+                                    // 要么已释放，无需继续等响应。抛出让 waitForResponse 尽早返回。
+                                    throw re;
+                                }
+                            });
+                } catch (PlaywrightException e) {
+                    LoggingConfigUtil.logWarnIfVerbose(LOGGER,
+                            "[MonitorHandler] waitForResponse failed/expired (async/delayed context), skip assertion: pattern='{}', url='{}', error='{}'",
+                            rule.getUrlPattern(), req.url(), e.getMessage());
+                    // 兜底放行，避免请求永久挂起
+                    try { if (!RouteUtil.isPageClosed(route)) route.resume(); } catch (Exception ignored) {}
+                    return;
+                }
+            }
+        }
         if (res == null) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] No response available for pattern '{}', url='{}'",
+                    "[MonitorHandler] No response available (waitForResponse) for pattern='{}', url='{}'",
                     rule.getUrlPattern(), req.url());
+            // 兜底放行
+            try { if (!RouteUtil.isPageClosed(route)) route.resume(); } catch (Exception ignored) {}
             return;
         }
 
@@ -118,9 +195,6 @@ public class MonitorHandler {
             return;
         }
 
-        // ═══════════════════════════════════════════════════════════════
-        // ⭐⭐⭐ 同步断言：在 Playwright 事件线程上立即执行
-        // ═══════════════════════════════════════════════════════════════
         String body = new String(bodyBytes, StandardCharsets.UTF_8);
         String url = req.url();
         int status = res.status();
@@ -129,23 +203,62 @@ public class MonitorHandler {
         LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
                 RouteUtil.sanitizeUrl(url), status, body.length(), urlPattern);
 
+        // ⭐ 复用统一的「断言 + 记录」逻辑（ModifyHandler 叠加监控时也调用此方法）
+        assertAndRecord(route, rule, context, url, status, body,
+                req.method(), req.postData(), snapshotHeadersSafely(req.headers()),
+                snapshotHeadersSafely(res.headers()));
+    }
+
+    /**
+     * ⭐ 统一的「断言 + 记录」逻辑：供 {@link #handle(Route, RouteRule)}（纯监控）
+     * 与 {@link ModifyHandler}（修改请求后叠加监控）共同复用。
+     *
+     * <p>行为：
+     * <ul>
+     *   <li>在 Playwright 事件线程上<b>同步断言</b>（状态码 / JSONPath），失败 → Fail-Fast 中断测试</li>
+     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录走 {@link RouteAsyncPool} 异步</li>
+     * </ul>
+     *
+     * <p>⭐ 监控是<b>不可被覆盖的基线</b>：无论是否叠加 Modify/Delay，真实响应拿回后都会在此断言健康，
+     * 断言失败即报错（对应「监控到 API 失败就报错」的诉求）。
+     *
+     * @param route        Playwright 路由对象（用于异常日志）
+     * @param rule         路由规则（含断言配置）
+     * @param context      当前 ApiCaptureContext（可为 null，null 时直接跳过）
+     * @param url          实际请求 URL
+     * @param status       HTTP 状态码（真实响应）
+     * @param body         响应体（真实响应）
+     * @param method       请求方法
+     * @param reqBody      请求体
+     * @param reqHeaders   请求头快照（线程安全副本）
+     * @param resHeaders   响应头快照（线程安全副本）
+     */
+    public static void assertAndRecord(Route route, RouteRule rule, ApiCaptureContext context,
+                                       String url, int status, String body,
+                                       String method, String reqBody,
+                                       Map<String, String> reqHeaders, Map<String, String> resHeaders) {
+        String urlPattern = rule.getUrlPattern();
+
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[MonitorHandler] Response headers: {}", snapshotHeadersSafely(res.headers()));
+                "[MonitorHandler] Response headers: {}", resHeaders);
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[MonitorHandler] Response body (first 500 chars): {}",
-                body.length() > 500 ? body.substring(0, 500) + "..." : body);
+                body != null && body.length() > 500 ? body.substring(0, 500) + "..." : body);
 
-        // 同步执行断言 — 失败立即中断测试线程（不等待异步任务）
+        // ═══════════════════════════════════════════════════════════════
+        // ⭐⭐⭐ 同步断言：在 Playwright 事件线程上立即执行
+        // ═══════════════════════════════════════════════════════════════
         boolean assertionsPassed = executeAssertions(rule, url, status, body, context);
         if (!assertionsPassed) {
             LoggingConfigUtil.logErrorIfVerbose(LOGGER,
                     "[MonitorHandler] ═══ ASSERTIONS FAILED: pattern='{}', url='{}' ═══", urlPattern, url);
-            // ⭐⭐⭐ Fail-Fast（仅 interrupt，不关闭 Page）：
-            //   关闭 page 会导致浏览器 context 状态损坏，后续 Scenario 无法继续执行。
-            //   thread.interrupt() 已足够中断主线程当前阻塞的 Playwright IO 操作，
-            //   通过 checkAndFailOnApiAssertions() 在步骤结束时统一抛 AssertionError。
-            context.signalFailFast();
-
+            if (context != null) {
+                // ⭐⭐⭐ Fail-Fast（仅 interrupt，不关闭 Page）：
+                //   关闭 page 会导致浏览器 context 状态损坏，后续 Scenario 无法继续执行。
+                //   thread.interrupt() 已足够中断主线程当前阻塞的 Playwright IO 操作，
+                //   通过 checkAndFailOnApiAssertions() 在步骤结束时统一抛 AssertionError。
+                context.signalFailFast();
+            }
             // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录
             throw new RouteException.ApiAssertionException(
                     urlPattern, "ASSERTION",
@@ -154,97 +267,78 @@ public class MonitorHandler {
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // 异步任务前置工作：在 Playwright 事件线程上提前快照跨线程数据
+        // ⭐ 同步存储本调用（单一来源，覆盖所有 Page）：
+        //   capture 目录的 CDP 旁路仅绑定启动时传入的 Page，对测试中新创建的
+        //   Page（如跨层/Context 场景）捕获不到；且异步写出存在查询竞态。
+        //   故此处同步 storeApiCall（可靠、即时可查），CDP 旁路对 MONITOR 请求跳过
+        //   （RouteEngine.isSyncStoredRuleForUrl），避免重复存储。
+        //   本方法其余部分仅负责：断言、匹配计数、回调、报告、持久化（同步，已删 RouteAsyncPool）。
         // ═══════════════════════════════════════════════════════════════
-        // ⭐ 性能优化：传递已解码的 body String（不可变，线程安全），
-        //    避免异步池中重复执行 new String(byte[], charset)
-        final String fBody = body;
-        final ApiCaptureContext fContext = context;
-        final String fAsyncUrl = req.url();
-        final int fAsyncStatus = res.status();
-        final String fReqMethod = req.method();
-        final String fReqBody = req.postData(); // 事件线程同步读取请求体（与 res.body() 一致）
-        // ⭐ 性能优化：复用头部快照（不再为日志和异步任务分别拷贝）
-        final Map<String, String> fReqHeaders = snapshotHeadersSafely(req.headers());
-        final Map<String, String> fResHeaders = snapshotHeadersSafely(res.headers());
+        if (context == null) return;
+        // ⭐ 只构造一次 CapturedApiCall，同时用于 storeApiCall 与（断言失败时的）MonitorFailureCollector，
+        //   消除重复构造（此前两处字段完全相同地 new 了一次）。
+        CapturedApiCall captured = new CapturedApiCall(
+                urlPattern, method, reqHeaders, status, resHeaders, body,
+                System.currentTimeMillis(), url, reqBody);
+        try {
+            context.storeApiCall(captured);
+        } catch (Exception e) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] Failed to store monitor call: {}", e.getMessage());
+        }
+        context.incrementActiveRequests();
 
-        fContext.incrementActiveRequests();
+        try {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[MonitorHandler] Record START: pattern='{}', url='{}', status={}, bodyLen={}",
+                    urlPattern, url, status, body.length());
 
-        RouteAsyncPool.run(() -> {
-            try {
-                // ⭐ 直接使用已解码的 String，避免重复 new String(byte[], charset)
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[MonitorHandler] Async storage START: pattern='{}', url='{}', status={}, bodyLen={}",
-                        urlPattern, fAsyncUrl, fAsyncStatus, fBody.length());
-
-                // 存储 response body（向后兼容）
-                fContext.storeResponse(urlPattern, fBody);
-
-                // 存储完整的 CapturedApiCall（含 headers 等完整信息）
-                CapturedApiCall call = new CapturedApiCall(
-                        urlPattern,     // 存储 key = 用户配置的 urlPattern
-                        fReqMethod,
-                        fReqHeaders,
-                        fAsyncStatus,
-                        fResHeaders,
-                        fBody,
-                        System.currentTimeMillis(),
-                        fAsyncUrl,      // 实际请求 URL，用于毫秒级精确检索
-                        fReqBody        // 请求体，完整 request 信息供失败通知
-                );
-                fContext.storeApiCall(call);
-
-                // 监控断言失败 → 归集到失败收集器（按 owner 去重，供 CI 邮件发送）
-                if (fContext.hasAssertionFailures()) {
-                    for (ApiCaptureContext.AssertionFailureDetail d : fContext.getFailureDetails()) {
-                        if (d.url.equals(fAsyncUrl) || d.url.equals(urlPattern)) {
-                            String owner = ApiMonitorOrchestrator.getInstance().getOwner(urlPattern);
-                            String reason = String.format("%s expected=%s actual=%s (%s)",
-                                    d.assertionType, d.expectedValue, d.actualValue, d.failMessage);
-                            MonitorFailureCollector.getInstance().record(call, urlPattern, owner, reason);
-                        }
+            // 监控断言失败 → 归集到失败收集器（按 owner 去重，供 CI 邮件发送）
+            if (context.hasAssertionFailures()) {
+                for (ApiCaptureContext.AssertionFailureDetail d : context.getFailureDetails()) {
+                    if (d.url.equals(url) || d.url.equals(urlPattern)) {
+                        String owner = ApiMonitorOrchestrator.getInstance().getOwner(urlPattern);
+                        String reason = String.format("%s expected=%s actual=%s (%s)",
+                                d.assertionType, d.expectedValue, d.actualValue, d.failMessage);
+                        MonitorFailureCollector.getInstance().record(captured, urlPattern, owner, reason);
                     }
                 }
-
-                // 记录到 Serenity 报告
-                if (rule.isRecord()) {
-                    SerenityReporter.recordApiOperation("MONITOR", fAsyncUrl,
-                            String.format("Status: %d\nBody: %s", fAsyncStatus,
-                                    fBody.length() > 2000 ? fBody.substring(0, 2000) + "..." : fBody));
-                }
-
-                // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
-                RouteEngine.onMonitorMatch(rule);
-
-                // ═══════════════════════════════════════════════════════════════
-                // 执行用户注册的 Monitor 响应回调
-                // ═══════════════════════════════════════════════════════════════
-                invokeCallbacks(rule, fAsyncUrl, fAsyncStatus, fBody,
-                        fResHeaders, fReqMethod);
-
-                // ═══════════════════════════════════════════════════════════════
-                // 框架内置：根据配置自动决定是否持久化到数据库
-                // 无需用户在业务层手动注册 DatabaseStoreMonitorCallback
-                // ═══════════════════════════════════════════════════════════════
-                DatabaseStoreMonitorCallback.INSTANCE.onResponse(
-                        fAsyncUrl, fAsyncStatus, fBody, fResHeaders, fReqMethod);
-
-                // ═══════════════════════════════════════════════════════════════
-                // 框架内置：根据配置自动决定是否将监控数据写入文件
-                // 文件名以 endpoint（urlPattern）命名，多个时自动编号 _1、_2 …
-                // ═══════════════════════════════════════════════════════════════
-                FileStoreMonitorCallback.INSTANCE.onResponse(
-                        fAsyncUrl, urlPattern, fAsyncStatus, fBody, fResHeaders, fReqMethod);
-
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[MonitorHandler] Async storage DONE: pattern='{}', url='{}'", urlPattern, fAsyncUrl);
-
-            } catch (Exception e) {
-                LOGGER.error("[MonitorHandler] Error in async storage: {}", e.getMessage(), e);
-            } finally {
-                fContext.decrementActiveRequests();
             }
-        });
+
+            // 记录到 Serenity 报告
+            if (rule.isRecord()) {
+                SerenityReporter.recordApiOperation("MONITOR", url,
+                        String.format("Status: %d\nBody: %s", status,
+                                body.length() > 2000 ? body.substring(0, 2000) + "..." : body));
+            }
+
+            // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
+            RouteEngine.onMonitorMatch(rule);
+
+            // ═══════════════════════════════════════════════════════════════
+            // 执行用户注册的 Monitor 响应回调
+            // ═══════════════════════════════════════════════════════════════
+            invokeCallbacks(rule, url, status, body, resHeaders, method);
+
+            // ═══════════════════════════════════════════════════════════════
+            // 框架内置：根据配置自动决定是否持久化到数据库
+            // 无需用户在业务层手动注册 DatabaseStoreMonitorCallback
+            // ═══════════════════════════════════════════════════════════════
+            DatabaseStoreMonitorCallback.INSTANCE.onResponse(url, status, body, resHeaders, method);
+
+            // ═══════════════════════════════════════════════════════════════
+            // 框架内置：根据配置自动决定是否将监控数据写入文件
+            // ═══════════════════════════════════════════════════════════════
+            FileStoreMonitorCallback.INSTANCE.onResponse(url, urlPattern, status, body, resHeaders, method);
+
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[MonitorHandler] Record DONE: pattern='{}', url='{}'", urlPattern, url);
+
+        } catch (Exception e) {
+            LOGGER.error("[MonitorHandler] Error recording monitor match: {}", e.getMessage(), e);
+        } finally {
+            context.decrementActiveRequests();
+        }
     }
 
     /**

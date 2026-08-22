@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 事件合并器 — 按 requestId 将多个 Phase 事件合并为一个 {@link CapturedApiCall}。
@@ -26,14 +28,16 @@ import java.util.concurrent.atomic.AtomicLong;
  * </ul>
  */
 public class EventMerger implements Runnable {
+    private static final int MAX_CAPTURE_BODY_BYTES = 5 * 1024 * 1024;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(EventMerger.class);
 
-    /** Slot 超时时间（毫秒），超过此时间未完成的 slot 被视为 stale */
-    private static final long SLOT_TIMEOUT_MS = 30_000;
+    /** Slot 超时时间（毫秒），超过此时间未完成的 slot 被视为 stale。
+     *  调小以便在 awaitCompletion(10s) 内清理偶发事件丢失导致的不完整 slot，释放 captureInFlight 计数。 */
+    static final long SLOT_TIMEOUT_MS = 3_000;
 
     /** 清理间隔（毫秒） */
-    private static final long CLEANUP_INTERVAL_MS = 5_000;
+    private static final long CLEANUP_INTERVAL_MS = 1_000;
 
     private final CaptureRingBuffer ringBuffer;
     private final CaptureThreadPool threadPool;
@@ -45,6 +49,8 @@ public class EventMerger implements Runnable {
     private volatile boolean running;
     /** ⭐ 定时清理任务的引用，用于 stop() 时取消 */
     private ScheduledFuture<?> cleanupFuture;
+    /** 合并线程引用，用于 stop() 时中断并带超时 join，避免线程泄漏 */
+    private final AtomicReference<Thread> mergerThread = new AtomicReference<>();
 
     /**
      * @param ringBuffer 事件缓冲区
@@ -58,6 +64,7 @@ public class EventMerger implements Runnable {
     @Override
     public void run() {
         this.running = true;
+        mergerThread.set(Thread.currentThread());
         LOGGER.info("[EventMerger] Started merger loop");
 
         // ⭐ 启动定时清理并保存引用，用于 stop() 时取消
@@ -96,6 +103,16 @@ public class EventMerger implements Runnable {
                 }
             }
         }
+        // ⭐ 排空后残留的未完整 slot：其 captureInFlight 计数需释放，
+        // 否则 merger 停止后计数永久残留，导致后续 awaitCompletion 一直等到超时。
+        if (!slots.isEmpty()) {
+            for (MergingSlot slot : slots.values()) {
+                if (slot.inFlightCounted.compareAndSet(true, false)) {
+                    decrement(slot);
+                }
+            }
+            slots.clear();
+        }
     }
 
     /** 停止合并器 */
@@ -105,6 +122,30 @@ public class EventMerger implements Runnable {
         ScheduledFuture<?> f = this.cleanupFuture;
         if (f != null && !f.isCancelled() && !f.isDone()) {
             f.cancel(false);
+        }
+        // ⭐ 中断合并线程，使其在 poll(500) 返回后尽快退出，避免 stop 后线程残留
+        Thread t = mergerThread.get();
+        if (t != null) {
+            t.interrupt();
+        }
+    }
+
+    /**
+     * 带超时的停止：中断并等待线程退出，防止关闭流程挂起或线程泄漏。
+     *
+     * @param timeoutMs 最大等待毫秒数
+     * @return 线程是否在超时前退出
+     */
+    public boolean stop(long timeoutMs) {
+        stop();
+        Thread t = mergerThread.get();
+        if (t == null || Thread.currentThread() == t) return true;
+        try {
+            t.join(Math.max(1L, timeoutMs));
+            return !t.isAlive();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 
@@ -121,19 +162,46 @@ public class EventMerger implements Runnable {
      * 如果 slot 已完整，则合成 CapturedApiCall 并清理 slot。
      */
     private void merge(CaptureEvent event) {
+        // ⭐ 过滤页面资源类请求（document/script/style/image/font/media/websocket/manifest）：
+        //   capture 目录只采集「API 调用」，页面资源请求不应写入 CapturedApiCall，
+        //   也不应计入 captureInFlight —— 否则 page.navigate 加载页面时，
+        //   这些资源请求的 slot 若未完整完成，会残留计数导致 awaitCompletion 一直超时。
+        // ⭐ 只存「命中已注册规则」的 API（health check / 动态新接口不存）。
+        //    ⭐ 性能优化：resolveEndpointIfCovered 一次遍历同时完成「是否覆盖」与「endpoint 解析」，
+        //    endpoint 存于局部变量，供下方 switch REQUEST 分支缓存到 slot，buildApiCall 复用。
+        //    每请求只对规则集遍历<b>一次</b>（原先「过滤 + buildApiCall」各遍历一次 → 双重遍历）。
+        String coveredEndpoint = null;
+        if (event.phase == CaptureEvent.Phase.REQUEST || event.phase == CaptureEvent.Phase.FETCH_REQUEST) {
+            if (!isApiRequest(event)) {
+                return;
+            }
+            coveredEndpoint = RouteEngine.resolveEndpointIfCovered(event.url);
+            // 没有注册任何规则时保留兼容行为：允许独立采集器记录 API；
+            // 一旦存在规则，则严格过滤未覆盖的请求。
+            if (coveredEndpoint == null && RouteEngine.hasCaptureRules()) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[EventMerger] Skip uncovered API (no matching rule): url='{}'", event.url);
+                return;
+            }
+        }
         MergingSlot slot = slots.computeIfAbsent(event.requestId, k -> new MergingSlot(event.requestId));
         slot.lastActivity = System.currentTimeMillis();
 
         switch (event.phase) {
             case REQUEST:
                 slot.request = event;
+                // ⭐ 缓存 endpoint（已在上方一次遍历算出，直接存入，buildApiCall 复用）
+                if (slot.endpoint == null && coveredEndpoint != null) {
+                    slot.endpoint = coveredEndpoint;
+                }
                 break;
             case RESPONSE_META:
                 slot.responseMeta = event;
                 break;
             case RESPONSE_BODY:
                 slot.bodyReady = true;
-                slot.responseBody = event.respBody;  // ⭐ 存储 body 数据，供 buildApiCall 使用
+                slot.originalResponseBodyBytes = event.respBody != null ? event.respBody.length : 0;
+                slot.responseBody = limitBody(event.respBody);  // 限制单响应内存占用
                 break;
             case MOCK_FULL:
                 slot.mockFull = event;
@@ -146,6 +214,19 @@ public class EventMerger implements Runnable {
                 slot.fetchResponse = event;
                 slot.completed = true;
                 break;
+            case FAILED:
+                // 请求被 abort / 超时 / 网络错误：立即结束 slot，仅释放计数，不存储伪造调用。
+                slot.failed = true;
+                slot.completed = true;
+                break;
+        }
+
+        // ⭐ REQUEST / FETCH_REQUEST 代表一个"在途请求"已开始（将在响应到达后合并写出）。
+        // 计入 captureInFlight，使 awaitCompletion 也能覆盖纯采集管道在途请求。
+        if ((event.phase == CaptureEvent.Phase.REQUEST || event.phase == CaptureEvent.Phase.FETCH_REQUEST)
+                && slot.inFlightCounted.compareAndSet(false, true)) {
+            slot.owner = contextFor(event);
+            slot.owner.incrementCaptureInFlight();
         }
 
         // 检查是否完整
@@ -160,22 +241,88 @@ public class EventMerger implements Runnable {
     private boolean isSlotComplete(MergingSlot slot) {
         if (slot.mockFull != null) return true;
         if (slot.fetchRequest != null && slot.fetchResponse != null) return true;
+        if (slot.failed) return true;
         return slot.request != null && slot.responseMeta != null && slot.bodyReady;
+    }
+
+    /** 是否是需要采集的 API 类请求（XHR/Fetch/API 投喂/OTHER 兜底），排除页面资源类请求 */
+    private boolean isApiRequest(CaptureEvent event) {
+        ResourceType rt = event.resourceType;
+        if (rt == null) return true;   // 未知类型 → 保守保留
+        switch (rt) {
+            case XHR:
+            case FETCH:
+            case API:
+            case OTHER:
+                return true;
+            default:
+                // DOCUMENT / SCRIPT / STYLESHEET / IMAGE / FONT / MEDIA / WEBSOCKET / MANIFEST
+                return false;
+        }
     }
 
     /**
      * 将完整的 slot 合成为 CapturedApiCall 存入 ApiCaptureContext。
      */
+    private static byte[] limitBody(byte[] body) {
+        if (body == null || body.length <= MAX_CAPTURE_BODY_BYTES) return body;
+        byte[] limited = new byte[MAX_CAPTURE_BODY_BYTES];
+        System.arraycopy(body, 0, limited, 0, MAX_CAPTURE_BODY_BYTES);
+        return limited;
+    }
+
+    private ApiCaptureContext slotContext(MergingSlot slot) {
+        if (slot.owner != null) return slot.owner;
+        CaptureEvent event = slot.request != null ? slot.request
+                : slot.fetchRequest != null ? slot.fetchRequest
+                : slot.mockFull;
+        return contextFor(event);
+    }
+
+    /** 释放 slot 的采集在途计数，优先使用 +1 时锁定的 owner，避免错减到其它/已关闭实例 */
+    private void decrement(MergingSlot slot) {
+        ApiCaptureContext ctx = slot.owner != null ? slot.owner : slotContext(slot);
+        ctx.decrementCaptureInFlight();
+    }
+
+    private ApiCaptureContext contextFor(CaptureEvent event) {
+        return event != null && event.browserContext != null
+                ? ApiCaptureContext.forContext(event.browserContext)
+                : ApiCaptureContext.getCurrent();
+    }
+
     private void completeSlot(MergingSlot slot) {
         try {
+            // 异常终止（abort/超时/网络错误）只释放计数，不存储伪造调用。
+            if (slot.failed) {
+                return;
+            }
             CapturedApiCall call = buildApiCall(slot);
             if (call != null) {
-                ApiCaptureContext.getCurrent().storeApiCall(call);
+                // ⭐ 避免与 RouteHandler 同步存储重复：若该 URL 命中 MOCK/MONITOR（无 DELAY）
+                // 规则，Handler 已同步 storeApiCall，此处 CDP 旁路跳过存储（仍释放计数）。
+                if (!"MOCK".equalsIgnoreCase(call.captureSource())
+                        && !"ROUTE".equalsIgnoreCase(call.captureSource())
+                        && RouteEngine.isSyncStoredRuleForUrl(call.requestUrl())) {
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[EventMerger] Skip CDP duplicate store for sync-stored rule url='{}'",
+                            call.requestUrl());
+                    return;
+                }
+                if (slot.originalResponseBodyBytes > MAX_CAPTURE_BODY_BYTES) {
+                    call.markBodyTruncated(slot.originalResponseBodyBytes);
+                }
+                slotContext(slot).storeApiCall(call);
                 completedCalls.incrementAndGet();
             }
         } catch (Exception e) {
             LOGGER.error("[EventMerger] Failed to complete slot reqId={}: {}", slot.requestId, e.getMessage());
             failedMerges.incrementAndGet();
+        } finally {
+            // ⭐ slot 结束（无论成功/失败）递减采集在途计数
+            if (slot.inFlightCounted.compareAndSet(true, false)) {
+                decrement(slot);
+            }
         }
     }
 
@@ -186,8 +333,8 @@ public class EventMerger implements Runnable {
         // ── MOCK：从 mockFull 构建 ──
         if (slot.mockFull != null) {
             CaptureEvent e = slot.mockFull;
-            // 从 URL 中提取 endpoint（去掉 host）
-            String endpoint = extractEndpoint(e.url);
+            // 从 URL 中提取 endpoint（优先复用 REQUEST 阶段缓存的 endpoint，映射到已注册 urlPattern）
+            String endpoint = slot.endpoint != null ? slot.endpoint : RouteEngine.resolveEndpointForUrl(e.url);
             return new CapturedApiCall.Builder()
                     .endpoint(endpoint)
                     .method(e.method != null ? e.method : "UNKNOWN")
@@ -200,6 +347,7 @@ public class EventMerger implements Runnable {
                     .timestamp(e.timestamp)
                     .fromMock(true)
                     .captureSource("MOCK")
+                    .resourceType(e.resourceType)
                     .build();
         }
 
@@ -207,7 +355,7 @@ public class EventMerger implements Runnable {
         if (slot.fetchRequest != null && slot.fetchResponse != null) {
             CaptureEvent req = slot.fetchRequest;
             CaptureEvent resp = slot.fetchResponse;
-            String endpoint = extractEndpoint(req.url);
+            String endpoint = slot.endpoint != null ? slot.endpoint : RouteEngine.resolveEndpointForUrl(req.url);
             return new CapturedApiCall.Builder()
                     .endpoint(endpoint)
                     .method(req.method != null ? req.method : "UNKNOWN")
@@ -220,6 +368,7 @@ public class EventMerger implements Runnable {
                     .timestamp(resp.timestamp)
                     .fromMock(false)
                     .captureSource("MODIFY")
+                    .resourceType(req.resourceType)
                     .build();
         }
 
@@ -227,7 +376,7 @@ public class EventMerger implements Runnable {
         if (slot.request != null && slot.responseMeta != null) {
             CaptureEvent req = slot.request;
             CaptureEvent resp = slot.responseMeta;
-            String endpoint = extractEndpoint(req.url);
+            String endpoint = slot.endpoint != null ? slot.endpoint : RouteEngine.resolveEndpointForUrl(req.url);
             // ⭐ body 已由策略（CDP/Playwright）在事件处理时直接读取，无需异步 re-fetch
             String bodyStr = slot.responseBody != null
                     ? new String(slot.responseBody, StandardCharsets.UTF_8)
@@ -244,6 +393,7 @@ public class EventMerger implements Runnable {
                     .timestamp(resp.timestamp)
                     .fromMock(false)
                     .captureSource(slot.request.source == CaptureEvent.Source.CDP ? "CDP" : "PLAYWRIGHT")
+                    .resourceType(req.resourceType)
                     .build();
         }
 
@@ -262,6 +412,10 @@ public class EventMerger implements Runnable {
                     LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                             "[EventMerger] Cleaned stale slot reqId={}, phase={}",
                             slot.requestId, describeSlotPhase(slot));
+                    // ⭐ 超时 slot 同样是一次"在途请求结束"，递减采集在途计数，避免残留导致 awaitCompletion 被拖到超时
+                    if (slot.inFlightCounted.compareAndSet(true, false)) {
+                        decrement(slot);
+                    }
                     return true;
                 }
                 return false;
@@ -306,11 +460,21 @@ public class EventMerger implements Runnable {
         boolean bodyReady;
         /** ⭐ 策略在事件处理时直接读取的响应体数据（CDP Network.getResponseBody / Playwright response.body()） */
         byte[] responseBody;
+        long originalResponseBodyBytes;
         CaptureEvent mockFull;
         CaptureEvent fetchRequest;
         CaptureEvent fetchResponse;
+        /** 异常终止（abort/超时/网络错误）标记，仅释放计数不存储调用 */
+        boolean failed;
+        /** +1 时锁定归属 Context，避免 -1 时重新解析到其它/已关闭实例 */
+        ApiCaptureContext owner;
         long lastActivity;
         boolean completed;
+        /** 标记该 slot 是否已计入 captureInFlight，避免重复 +1 / 漏 -1 */
+        final java.util.concurrent.atomic.AtomicBoolean inFlightCounted =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        /** ⭐ 解析出的 endpoint（命中的 urlPattern）。REQUEST 阶段一次遍历算出，buildApiCall 复用，避免重复遍历规则集。 */
+        String endpoint;
 
         MergingSlot(String requestId) {
             this.requestId = requestId;

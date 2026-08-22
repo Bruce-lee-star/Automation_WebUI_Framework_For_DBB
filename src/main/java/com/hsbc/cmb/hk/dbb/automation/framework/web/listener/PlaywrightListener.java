@@ -269,6 +269,30 @@ public class PlaywrightListener implements StepListener {
         skippedTests.incrementAndGet();
         LoggingConfigUtil.logInfoIfVerbose(logger, "Test skipped: {}", currentTestName.get());
         recordTestData("testSkipped", true);
+        cleanupAfterAbnormalTermination("testSkipped");
+    }
+
+    /**
+     * 异常/跳过路径的幂等清理。Serenity 不保证 skipped、ignored 或 step error
+     * 一定随后触发完整的 testFinished，因此这些入口必须主动释放路由、采集和线程状态。
+     */
+    private void cleanupAfterAbnormalTermination(String reason) {
+        try {
+            ApiCapture.stop();
+        } catch (Exception e) {
+            logger.debug("ApiCapture cleanup failed on {}: {}", reason, e.getMessage());
+        }
+        try {
+            cleanupRouteRegistryForCurrentThread();
+        } catch (Exception e) {
+            logger.debug("Route cleanup failed on {}: {}", reason, e.getMessage());
+        }
+        try {
+            RouteEngine.clearDispatchedRoutes();
+        } catch (Exception e) {
+            logger.debug("RouteEngine cleanup failed on {}: {}", reason, e.getMessage());
+        }
+        cleanupThreadLocals();
     }
 
     /**
@@ -468,6 +492,7 @@ public class PlaywrightListener implements StepListener {
         }
 
         recordTestData("stepFailureStackTrace", getStackTrace(failure.getException()));
+        cleanupAfterAbnormalTermination("stepFailed");
     }
 
     @Override
@@ -519,6 +544,8 @@ public class PlaywrightListener implements StepListener {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Cleaned up page and context resources after last step failure");
         } catch (Exception e) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Failed to clean up resources after last step failure: {}", e.getMessage());
+        } finally {
+            cleanupAfterAbnormalTermination("lastStepFailed");
         }
     }
 
@@ -526,6 +553,7 @@ public class PlaywrightListener implements StepListener {
     public void stepIgnored() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Step ignored");
         recordTestData("stepIgnored", true);
+        cleanupAfterAbnormalTermination("stepIgnored");
     }
 
     /**

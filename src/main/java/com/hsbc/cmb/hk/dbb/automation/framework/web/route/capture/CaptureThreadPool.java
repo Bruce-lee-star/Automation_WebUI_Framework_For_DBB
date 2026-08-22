@@ -47,9 +47,9 @@ public class CaptureThreadPool {
 
     // ── 提交任务 ──
 
-    /** 提交 merger 任务（EventMerger 主循环） */
-    public void submitMerger(Runnable task) {
-        mergerPool.submit(task);
+    /** 提交 merger 任务（EventMerger 主循环），返回 Future 便于关闭时等待 */
+    public Future<?> submitMerger(Runnable task) {
+        return mergerPool.submit(task);
     }
 
     /** 提交 body fetch 任务 */
@@ -80,10 +80,16 @@ public class CaptureThreadPool {
 
         cleanupPool.shutdownNow();
 
-        shutdownPool(mergerPool, "merger", timeoutMs);
-        shutdownPool(bodyFetchPool, "body-fetch", timeoutMs);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        shutdownPool(mergerPool, "merger", remainingMillis(deadline));
+        shutdownPool(bodyFetchPool, "body-fetch", remainingMillis(deadline));
 
         LOGGER.info("[CaptureThreadPool] Shutdown complete");
+    }
+
+    private static long remainingMillis(long deadlineNanos) {
+        long remaining = deadlineNanos - System.nanoTime();
+        return Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
     }
 
     private void shutdownPool(ThreadPoolExecutor pool, String name, long timeoutMs) {
@@ -107,7 +113,7 @@ public class CaptureThreadPool {
         return new ThreadPoolExecutor(
                 nThreads, nThreads,
                 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(),
+                new LinkedBlockingQueue<>(2048),
                 r -> {
                     Thread t = new Thread(r, THREAD_PREFIX + "-" + name + "-%d");
                     t.setDaemon(true);

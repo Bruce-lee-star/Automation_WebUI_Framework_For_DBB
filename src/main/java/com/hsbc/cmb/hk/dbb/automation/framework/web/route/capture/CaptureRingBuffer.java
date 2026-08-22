@@ -4,8 +4,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * 无锁环形缓冲区 — DROP_NEWEST，固定容量。
@@ -39,9 +41,13 @@ public class CaptureRingBuffer {
 
     private final int capacity;
     private final AtomicReferenceArray<CaptureEvent> buffer;
+    /** 每个槽位对应的已完成序号，避免消费者读到生产者尚未写入的 null。 */
+    private final AtomicLongArray publishedSeq;
     private final AtomicLong writeSeq = new AtomicLong(0);
     private final AtomicLong readSeq = new AtomicLong(0);
     private final AtomicLong droppedCount = new AtomicLong(0);
+    /** publish/poll/drain 的短临界区，保证多生产者下序号与槽位原子提交。 */
+    private final ReentrantLock stateLock = new ReentrantLock();
 
     /**
      * @param capacity 缓冲区容量（必须是 2 的幂，默认 8192）
@@ -52,6 +58,10 @@ public class CaptureRingBuffer {
         }
         this.capacity = capacity;
         this.buffer = new AtomicReferenceArray<>(capacity);
+        this.publishedSeq = new AtomicLongArray(capacity);
+        for (int i = 0; i < capacity; i++) {
+            this.publishedSeq.set(i, -1L);
+        }
     }
 
     public CaptureRingBuffer() {
@@ -66,20 +76,22 @@ public class CaptureRingBuffer {
     public boolean publish(CaptureEvent event) {
         if (event == null) return false;
 
-        long w = writeSeq.getAndIncrement();
-        long r = readSeq.get();
-        long pending = w - r;
-
-        // 缓冲区满 → DROP_NEWEST
-        if (pending >= capacity) {
-            droppedCount.incrementAndGet();
-            logIfFrequentDrop();
-            return false;
+        stateLock.lock();
+        try {
+            long w = writeSeq.get();
+            long r = readSeq.get();
+            if (w - r >= capacity) {
+                droppedCount.incrementAndGet();
+                logIfFrequentDrop();
+                return false;
+            }
+            buffer.set(mask(w), event);
+            publishedSeq.set(mask(w), w);
+            writeSeq.incrementAndGet();
+            return true;
+        } finally {
+            stateLock.unlock();
         }
-
-        // 写入
-        buffer.set(mask(w), event);
-        return true;
     }
 
     /**
@@ -97,13 +109,18 @@ public class CaptureRingBuffer {
 
             if (r < w) {
                 // 有可用事件
-                int idx = mask(r);
-                CaptureEvent event = buffer.getAndSet(idx, null);
-                // 无论是否取到事件都必须推进 readSeq（与 drain 保持一致），
-                // 避免 writeSeq 已推进但 slot 尚未写入（null）时陷入忙等/park 循环。
-                readSeq.incrementAndGet();
-                if (event != null) {
-                    return event;
+                stateLock.lock();
+                try {
+                    r = readSeq.get();
+                    w = writeSeq.get();
+                    if (r < w && publishedSeq.get(mask(r)) == r) {
+                        CaptureEvent event = buffer.getAndSet(mask(r), null);
+                        publishedSeq.set(mask(r), -1L);
+                        readSeq.incrementAndGet();
+                        return event;
+                    }
+                } finally {
+                    stateLock.unlock();
                 }
                 continue;
             }
@@ -133,13 +150,22 @@ public class CaptureRingBuffer {
             long w = writeSeq.get();
             if (r >= w) break;
 
-            int idx = mask(r);
-            CaptureEvent event = buffer.getAndSet(idx, null);
-            // 无论是否取到事件都必须推进 readSeq，否则在 writeSeq 已推进但 slot
-            // 尚未写入（null）时会无限自旋，导致消费者线程 CPU 跑满、测试卡死。
-            readSeq.incrementAndGet();
-            if (event != null) {
-                remaining.add(event);
+            stateLock.lock();
+            try {
+                r = readSeq.get();
+                w = writeSeq.get();
+                if (r >= w || publishedSeq.get(mask(r)) != r) {
+                    continue;
+                }
+                int idx = mask(r);
+                CaptureEvent event = buffer.getAndSet(idx, null);
+                publishedSeq.set(idx, -1L);
+                readSeq.incrementAndGet();
+                if (event != null) {
+                    remaining.add(event);
+                }
+            } finally {
+                stateLock.unlock();
             }
         }
         return remaining;

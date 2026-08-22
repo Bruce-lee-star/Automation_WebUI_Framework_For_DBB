@@ -127,7 +127,11 @@ public class MockHandler {
                             rule.getUrlPattern(), status,
                             body.length() > 500 ? body.substring(0, 500) + "..." : body));
 
-            // ── 7. 存储 Mock 调用到 ApiCaptureContext ───────────────
+            // ── 7. 同步存储 Mock 调用到 ApiCaptureContext ───────────────
+            //    ⭐ MOCK 的 route.fulfill() 不发真实网络请求，CDP 旁路看不到响应；
+            //       且测试常在无 awaitCompletion 的情况下直接 getLastApiCall 查询，
+            //       异步投喂存在写出竞态。故此处同步 storeApiCall 确保即时可查。
+            //       （同时关闭 feedCaptureEvent 对 MOCK 的 mockFull 投喂，避免重复存储。）
             try {
                 String method = route.request().method();
                 Map<String, String> requestHeaders = new HashMap<>(route.request().headers());
@@ -136,12 +140,12 @@ public class MockHandler {
                         method,
                         requestHeaders,
                         status,
-                        rule.getMockHeaders(),  // Mock 自定义响应头
+                        rule.getMockHeaders() != null ? new HashMap<>(rule.getMockHeaders()) : null,  // Mock 自定义响应头
                         body,
                         System.currentTimeMillis(),
                         url    // 实际请求 URL，用于毫秒级精确检索
                 );
-                ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+                ApiCaptureContext ctx = RouteUtil.captureContext(route);
                 ctx.storeApiCall(call);
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                         "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
@@ -248,9 +252,8 @@ public class MockHandler {
             LOGGER.info("[MockHandler] Fulfilled modified real response: url={}, pattern='{}', status={}, bodyLength={}",
                     RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
 
-            // ── 5. 存储到 ApiCaptureContext ─────────────────────────
-            storeInterceptedCall(route, rule, url, status, respHeaders, body);
-
+            // ⭐ 存储统一交给 capture 目录：intercept 用 route.fetch 发真实请求，CDP 旁路可捕获；
+            //    不再重复 storeInterceptedCall，消除重复存储。
         } catch (PlaywrightException e) {
             LOGGER.error("[MockHandler] Failed to intercept real response for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
@@ -259,33 +262,6 @@ public class MockHandler {
                 LOGGER.error("[MockHandler] Failed to resume after intercept failure for pattern '{}'",
                         rule.getUrlPattern());
             }
-        }
-    }
-
-    /** 将被拦截修改后的调用存入 ApiCaptureContext。 */
-    private static void storeInterceptedCall(Route route, RouteRule rule, String url,
-                                              int status, Map<String, String> respHeaders, String body) {
-        try {
-            String method = route.request().method();
-            // ⭐ 从 route.request() 获取原始请求头，包含 method/headers/content-type 等
-            Map<String, String> requestHeaders = new HashMap<>(route.request().headers());
-            CapturedApiCall call = new CapturedApiCall(
-                    rule.getUrlPattern(),
-                    method,
-                    requestHeaders,
-                    status,
-                    respHeaders,
-                    body,
-                    System.currentTimeMillis(),
-                    url
-            );
-            ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
-            ctx.storeApiCall(call);
-            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[MockHandler] Stored intercepted call to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                    rule.getUrlPattern(), method, status);
-        } catch (Exception e) {
-            LOGGER.debug("[MockHandler] Failed to store intercepted call to ApiCaptureContext: {}", e.getMessage());
         }
     }
 

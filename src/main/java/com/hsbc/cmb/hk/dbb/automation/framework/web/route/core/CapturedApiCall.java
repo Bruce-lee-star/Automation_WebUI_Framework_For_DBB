@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ResourceType;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import org.slf4j.Logger;
@@ -40,9 +41,15 @@ public class CapturedApiCall {
     // ── 采集信息（采集管道新增字段） ──
     private final boolean fromMock;       // 是否来自 Mock 拦截
     private final String captureSource;   // 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY
+    private final ResourceType resourceType;    // 资源类型（CDP type / Playwright resourceType）
+
+    // ── 修改详情（ModifyHandler 回填：headersSet / modifiedBody / bodyFieldsModified …） ──
+    private final String modifyDetail;
 
     // ── 时间信息 ──
     private final long timestamp;
+    private boolean bodyTruncated;
+    private long originalBodyBytes;
 
     // ═══════════════════════════════════════════════════════════════
     // ⭐ 性能优化：懒缓存 JsonPath DocumentContext（避免重复解析 JSON）
@@ -113,7 +120,24 @@ public class CapturedApiCall {
         this.responseBody = responseBody;
         this.fromMock = false;
         this.captureSource = "MONITOR";
+        this.resourceType = null;
+        this.modifyDetail = null;
         this.timestamp = timestamp;
+    }
+
+    /**
+     * 含修改详情（modifyDetail）的构造器，供 ModifyHandler / MockHandler 回填「做了什么修改」。
+     *
+     * @param requestBody   请求体（POST/PUT 等），可为 null
+     * @param modifyDetail  修改详情 JSON（如 headersSet / modifiedBody / bodyFieldsModified …），可为 null
+     */
+    public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp, String requestUrl,
+                    String requestBody, String modifyDetail) {
+        this(endpoint, method, requestHeaders, requestUrl, requestBody,
+                statusCode, responseHeaders, responseBody, timestamp,
+                false, "MODIFY", null, modifyDetail);
     }
 
     /**
@@ -123,7 +147,18 @@ public class CapturedApiCall {
                     String requestUrl, String requestBody,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp,
-                    boolean fromMock, String captureSource) {
+                    boolean fromMock, String captureSource, ResourceType resourceType) {
+        this(endpoint, method, requestHeaders, requestUrl, requestBody,
+                statusCode, responseHeaders, responseBody, timestamp,
+                fromMock, captureSource, resourceType, null);
+    }
+
+    CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    String requestUrl, String requestBody,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp,
+                    boolean fromMock, String captureSource, ResourceType resourceType,
+                    String modifyDetail) {
         this.endpoint = endpoint;
         this.requestUrl = requestUrl;
         this.requestBody = requestBody;
@@ -138,6 +173,8 @@ public class CapturedApiCall {
         this.responseBody = responseBody;
         this.fromMock = fromMock;
         this.captureSource = captureSource != null ? captureSource : "UNKNOWN";
+        this.resourceType = resourceType;
+        this.modifyDetail = modifyDetail;
         this.timestamp = timestamp;
     }
 
@@ -166,6 +203,15 @@ public class CapturedApiCall {
     /** 响应体字符串 */
     public String responseBody() { return responseBody; }
 
+    public boolean bodyTruncated() { return bodyTruncated; }
+
+    public long originalBodyBytes() { return originalBodyBytes; }
+
+    public void markBodyTruncated(long originalBytes) {
+        this.bodyTruncated = true;
+        this.originalBodyBytes = Math.max(originalBytes, 0L);
+    }
+
     /** 请求体字符串（POST/PUT 等），可能为 null */
     public String requestBody() { return requestBody; }
 
@@ -177,6 +223,36 @@ public class CapturedApiCall {
 
     /** 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY / MONITOR */
     public String captureSource() { return captureSource; }
+
+    /** 资源类型枚举（XHR / FETCH / DOCUMENT / SCRIPT / IMAGE …；MOCK/MODIFY 投喂为 API；未知为 OTHER）。可为 null。 */
+    public ResourceType resourceType() { return resourceType; }
+
+    /**
+     * Modify/Mock 等场景的「修改详情」JSON。
+     * 由对应 Handler 在拦截时构建（如 headersSet / modifiedBody / bodyFieldsModified 等），
+     * 用于断言「做了什么修改」。无修改时为 null。
+     */
+    public String modifyDetail() { return modifyDetail; }
+
+    /** 是否 XHR 类型请求 */
+    public boolean isXhr() {
+        return resourceType == ResourceType.XHR;
+    }
+
+    /** 是否 Fetch 类型请求 */
+    public boolean isFetch() {
+        return resourceType == ResourceType.FETCH;
+    }
+
+    /** 是否 API 类请求（XHR / FETCH / API 投喂） */
+    public boolean isApiType() {
+        return resourceType != null && resourceType.isApi();
+    }
+
+    /** 资源类型原始字符串（枚举名，大写；未知/缺失时返回 "OTHER"）。便于日志/序列化。 */
+    public String resourceTypeName() {
+        return resourceType != null ? resourceType.name() : ResourceType.OTHER.name();
+    }
 
     // ═══════════════════════════════════════════════════════════
     // 便捷查询
@@ -215,12 +291,42 @@ public class CapturedApiCall {
      * @return 提取的字段值，路径无效返回 null
      */
     public Object json(String jsonPath) {
-        if (responseBody == null || jsonPath == null) return null;
+        if (jsonPath == null) return null;
+        // 优先从响应体解析
+        if (responseBody != null) {
+            try {
+                return getOrParseDocument().read(jsonPath);
+            } catch (Exception e) {
+                LOGGER.debug("[CapturedApiCall] '{}' not found in responseBody of {}: {}",
+                        jsonPath, endpoint, e.getMessage());
+            }
+        }
+        // 回退：从 modifyDetail（修改详情 JSON）解析，满足 modify/mock 场景的修改断言
+        if (modifyDetail != null) {
+            try {
+                return JsonPath.parse(modifyDetail).read(jsonPath);
+            } catch (Exception e) {
+                LOGGER.debug("[CapturedApiCall] '{}' not found in modifyDetail of {}: {}",
+                        jsonPath, endpoint, e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 按 JsonPath 从「修改详情」({@link #modifyDetail()}) 中提取字段值。
+     * 用于断言 Modify/Mock 等场景「做了什么修改」（headersSet / modifiedBody / bodyFieldsModified …）。
+     * 修改详情查询不应回退到响应体，故提供专用入口。
+     *
+     * @param jsonPath JsonPath 表达式
+     * @return 提取的字段值，无修改详情或不匹配时返回 null
+     */
+    public Object modifyDetailJson(String jsonPath) {
+        if (jsonPath == null || modifyDetail == null) return null;
         try {
-            DocumentContext ctx = getOrParseDocument();
-            return ctx.read(jsonPath);
+            return JsonPath.parse(modifyDetail).read(jsonPath);
         } catch (Exception e) {
-            LOGGER.warn("[CapturedApiCall] Failed to extract '{}' from {}: {}",
+            LOGGER.debug("[CapturedApiCall] '{}' not found in modifyDetail of {}: {}",
                     jsonPath, endpoint, e.getMessage());
             return null;
         }
@@ -238,15 +344,24 @@ public class CapturedApiCall {
      */
     @SuppressWarnings("unchecked")
     public <T> T json(String jsonPath, Class<T> type) {
-        if (responseBody == null || jsonPath == null) return null;
-        try {
-            DocumentContext ctx = getOrParseDocument();
-            return ctx.read(jsonPath, type);
-        } catch (Exception e) {
-            LOGGER.warn("[CapturedApiCall] Failed to extract '{}' as {} from {}: {}",
-                    jsonPath, type.getSimpleName(), endpoint, e.getMessage());
-            return null;
+        if (jsonPath == null) return null;
+        if (responseBody != null) {
+            try {
+                return getOrParseDocument().read(jsonPath, type);
+            } catch (Exception e) {
+                LOGGER.debug("[CapturedApiCall] '{}' as {} not found in responseBody of {}: {}",
+                        jsonPath, type.getSimpleName(), endpoint, e.getMessage());
+            }
         }
+        if (modifyDetail != null) {
+            try {
+                return JsonPath.parse(modifyDetail).read(jsonPath, type);
+            } catch (Exception e) {
+                LOGGER.debug("[CapturedApiCall] '{}' as {} not found in modifyDetail of {}: {}",
+                        jsonPath, type.getSimpleName(), endpoint, e.getMessage());
+            }
+        }
+        return null;
     }
 
     /**
@@ -337,6 +452,7 @@ public class CapturedApiCall {
         private long timestamp;
         private boolean fromMock;
         private String captureSource;
+        private ResourceType resourceType;
 
         public Builder endpoint(String endpoint) { this.endpoint = endpoint; return this; }
         public Builder method(String method) { this.method = method; return this; }
@@ -349,12 +465,13 @@ public class CapturedApiCall {
         public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
         public Builder fromMock(boolean fromMock) { this.fromMock = fromMock; return this; }
         public Builder captureSource(String captureSource) { this.captureSource = captureSource; return this; }
+        public Builder resourceType(ResourceType resourceType) { this.resourceType = resourceType; return this; }
 
         public CapturedApiCall build() {
             return new CapturedApiCall(
                     endpoint, method, requestHeaders, requestUrl, requestBody,
                     statusCode, responseHeaders, responseBody, timestamp,
-                    fromMock, captureSource);
+                    fromMock, captureSource, resourceType);
         }
     }
 }

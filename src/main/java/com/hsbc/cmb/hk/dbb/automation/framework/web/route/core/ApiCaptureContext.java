@@ -1064,28 +1064,13 @@ public class ApiCaptureContext {
         //    超时时间超过 50ms 时使用 wait 模式；短超时保留轮询以降低切换开销。
         long deadline = System.currentTimeMillis() + timeoutMs;
 
-        if (timeoutMs > 50) {
-            // 长超时：条件等待（线程 parked，零 CPU）
-            synchronized (apiCallLock) {
-                while (System.currentTimeMillis() < deadline) {
-                    long remaining = deadline - System.currentTimeMillis();
-                    if (remaining <= 0) break;
-                    try {
-                        apiCallLock.wait(remaining);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return null;
-                    }
-                    found = scanForMatching(predicate);
-                    if (found != null) return found;
-                }
-            }
-        } else {
-            // 短超时：轻量轮询（避免 wait/notify 上下文切换开销）
-            int pollInterval = 10;
+        // 条件等待：无论超时长短都使用通知机制，避免轮询和 Thread.sleep 占用等待线程。
+        synchronized (apiCallLock) {
             while (System.currentTimeMillis() < deadline) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) break;
                 try {
-                    Thread.sleep(pollInterval);
+                    apiCallLock.wait(remaining);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return null;

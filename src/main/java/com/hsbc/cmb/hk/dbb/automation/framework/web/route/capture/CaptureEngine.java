@@ -43,9 +43,15 @@ public class CaptureEngine {
     /** RingBuffer 堆积告警阈值 */
     private static final long STALL_THRESHOLD = 5000;
 
+    /** 关闭兜底超时；正常路径由 EventMerger 的退出信号驱动，不会固定等待。 */
+    private static final long SHUTDOWN_TIMEOUT_MS =
+            Long.getLong("route.capture.shutdown-timeout-ms", 1000L);
+
     private final CaptureRingBuffer ringBuffer;
     private final CaptureThreadPool threadPool;
     private final EventMerger merger;
+    /** 由线程池管理的 merger 任务句柄，用于生命周期观测和兜底取消。 */
+    private volatile Future<?> mergerFuture;
     private volatile CaptureStrategy strategy;      // 非 final：降级时替换
     private final Page page;
     private final BrowserContext browserContext;
@@ -113,7 +119,7 @@ public class CaptureEngine {
         }
 
         // 3. 启动 merger 消费者线程
-        Future<?> mergerFuture = threadPool.submitMerger(merger);
+        this.mergerFuture = threadPool.submitMerger(merger);
 
         this.running.set(true);
         LOGGER.info("[CaptureEngine] Started with strategy '{}', ringBuffer cap={}",
@@ -149,8 +155,15 @@ public class CaptureEngine {
         // 1. 停止策略
         strategy.stop();
 
-        // 2. 停止 merger（中断并等待带超时，避免线程残留/关闭挂起）
-        merger.stop(5000);
+        // 2. 先中断 merger，仅给正常排空一个短窗口，避免每个 case 固定等待 5 秒。
+        boolean mergerStopped = merger.stop(SHUTDOWN_TIMEOUT_MS);
+        if (!mergerStopped) {
+            Future<?> task = mergerFuture;
+            if (task != null) task.cancel(true);
+            LOGGER.warn("[CaptureEngine] Merger did not stop within {}ms; task cancellation requested",
+                    SHUTDOWN_TIMEOUT_MS);
+        }
+        mergerFuture = null;
 
         LOGGER.info("[CaptureEngine] Stopped. Metrics: {}", metrics().toSummary());
     }
@@ -160,7 +173,7 @@ public class CaptureEngine {
      */
     public void shutdown() {
         stop();
-        threadPool.shutdown(5000);
+        threadPool.shutdown(SHUTDOWN_TIMEOUT_MS);
         LOGGER.info("[CaptureEngine] Shutdown complete");
     }
 
@@ -241,19 +254,10 @@ public class CaptureEngine {
      * CDP 异常并返回 false，由本方法据此降级。
      */
     private static CaptureStrategy selectStrategy(Page page) {
-        // ⭐ 支持系统属性强制指定策略：-Droute.capture.strategy=PLAYWRIGHT 或 =CDP
-        //    PLAYWRIGHT（page.onRequest/onResponse）：批量测试套件下更稳定（跟随 page 生命周期，
-        //    无 CDP session 反复启停的竞态），配合 RouteEngine.feedCaptureEvent 投喂 MOCK/MODIFY 全覆盖四类。
-        //    CDP（默认）：旁路监听真实网络栈，能看到 route.fetch 修改后的请求体，但反复启停下可能间歇性丢事件。
-        String forced = System.getProperty("route.capture.strategy", "CDP");
-        if ("PLAYWRIGHT".equalsIgnoreCase(forced)) {
-            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[CaptureEngine] Using PlaywrightEventCaptureStrategy (forced by system property)");
-            return new PlaywrightEventCaptureStrategy();
-        }
-        // 默认 CDP（不创建 test session 探测，避免泄漏）
-        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[CaptureEngine] Attempting CDPCaptureStrategy...");
-        return new CDPCaptureStrategy();
+        // ⭐ 采集策略交由工厂按浏览器内核显式分发：
+        //    chromium → CDP（保真度最高）；firefox/webkit → Playwright 事件（CDP 不可靠）；
+        //    未知 → 安全默认 Playwright 事件。系统属性 -Droute.capture.strategy 可强制覆盖。
+        //    避免「非 Chromium 上 CDP 静默产出残缺数据」的企业级假正常风险。
+        return CaptureStrategyFactory.create(page);
     }
 }

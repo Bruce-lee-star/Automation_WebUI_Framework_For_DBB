@@ -51,11 +51,17 @@ public class FullRouteFrameworkTest {
     @BeforeClass
     public static void globalSetup() {
         playwright = Playwright.create();
-        browser = playwright.chromium().launch(
-                new BrowserType.LaunchOptions()
-                        .setHeadless(false)
-                        .setArgs(List.of("--disable-web-security"))
-        );
+        String browserName = System.getProperty("route.test.browser", "chromium");
+        BrowserType browserType = switch (browserName.toLowerCase(Locale.ROOT)) {
+            case "firefox" -> playwright.firefox();
+            case "webkit" -> playwright.webkit();
+            default -> playwright.chromium();
+        };
+        BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions().setHeadless(true);
+        if (browserName.equalsIgnoreCase("chromium")) {
+            launchOptions.setArgs(List.of("--disable-web-security"));
+        }
+        browser = browserType.launch(launchOptions);
     }
 
     @AfterClass
@@ -78,7 +84,9 @@ public class FullRouteFrameworkTest {
         //    MOCK 的 route.fulfill 由 RouteEngine.feedCaptureEvent 投喂 mockFull 事件。
         //    因此 Handler 层不再各自 storeApiCall（消除重复/竞态存储），存储唯一来源 = capture 管道。
         //    ⚠ 必须用 CDP 旁路：Playwright page.onRequest 在 page.route 拦截后不触发，无法采集。
-        System.setProperty("route.capture.strategy", "CDP");
+        System.setProperty("route.capture.strategy",
+                System.getProperty("route.test.browser", "chromium").equalsIgnoreCase("chromium")
+                        ? "CDP" : "PLAYWRIGHT");
         ApiCapture.start(page);
 
         // ⭐ 每个测试前重置 demo service 数据，消除测试间共享有状态服务导致的数据污染
@@ -263,7 +271,7 @@ public class FullRouteFrameworkTest {
         dsl.start();
 
         navigateToApi("/api/users");
-        Thread.sleep(4000);  // 等待 timeout 调度触发
+        page.waitForTimeout(4000);  // 等待 timeout 调度触发
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         assertNotNull("Context should remain accessible after timeout", ctx);
@@ -1166,7 +1174,7 @@ public class FullRouteFrameworkTest {
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
-        Thread.sleep(2000);
+        page.waitForTimeout(2000);
         // onlyXhr 时 fetch 不应被拦截 → 无捕获
         dslXhr.clear();
 
@@ -1259,7 +1267,7 @@ public class FullRouteFrameworkTest {
         dslOrigin.start();
 
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
-        pause(500);
+        page.waitForTimeout(500);
 
         // 同源 fetch 不带 Origin → Mock 不生效
         // 验证无 Mock 数据被捕获（mock 不生效时真实响应通过，但 monitor 未设置）
@@ -1311,7 +1319,7 @@ public class FullRouteFrameworkTest {
 
         // fetch 请求是 fetch 类型 → 应被 mock 拦截
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
-        pause(500);
+        page.waitForTimeout(500);
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         CapturedApiCall call = ctx.getLastApiCall("/api/users");
@@ -1695,7 +1703,7 @@ public class FullRouteFrameworkTest {
 
         // 使用 page.evaluate fetch 而非 navigate，避免导航中止
         page.evaluate("() => fetch('" + BASE_URL + "/api/echo')");
-        pause(500);
+        page.waitForTimeout(500);
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         CapturedApiCall call = ctx.getLastApiCall("/api/echo");
@@ -2688,7 +2696,7 @@ public class FullRouteFrameworkTest {
         // （但 decrement 在独立线程中执行，最多再等一小段时间）
         long maxWait = System.currentTimeMillis() + 3000;
         while (ctx.getActiveRequests() > 0 && System.currentTimeMillis() < maxWait) {
-            pause(50);
+            page.waitForTimeout(50);
         }
         assertEquals("After awaitCompletion, active requests should be 0",
                 0, ctx.getActiveRequests());
@@ -2722,7 +2730,7 @@ public class FullRouteFrameworkTest {
 
         // fetch 请求 → 应被 mock 拦截
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
-        pause(500);
+        page.waitForTimeout(500);
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         CapturedApiCall fetchCall = ctx.getLastApiCall("/api/users");
@@ -2754,7 +2762,7 @@ public class FullRouteFrameworkTest {
 
         // 在同一页面内发起 fetch
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
-        pause(500);
+        page.waitForTimeout(500);
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         CapturedApiCall call = ctx.getLastApiCall("/api/users");
@@ -3231,11 +3239,4 @@ public class FullRouteFrameworkTest {
     // Helper methods
     // ═══════════════════════════════════════════════════════════════
 
-    private static void pause(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

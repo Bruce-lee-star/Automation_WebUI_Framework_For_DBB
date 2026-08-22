@@ -24,6 +24,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 /**
@@ -352,6 +353,8 @@ public class RouteEngine {
             // ⭐ 仅在锁内完成 store 的纯内存状态决策，绝不持有锁调用原生 page.route()（JNI/网络 IO）。
             //    原生注册放在锁外执行，避免高并发注册/异常时持锁做 IO 导致线程长时间阻塞甚至重入风险。
             final boolean[] needRegister = {false};
+            final boolean[] needRefresh = {false};
+            final RouteRule[] mergedRule = {null};
             synchronized (store) {
                 RouteRule existing = store.get(pattern);
                 if (existing == null) {
@@ -371,12 +374,29 @@ public class RouteEngine {
                         existing.setType(RouteHandleType.MOCK);
                         LOGGER.info("[RouteEngine] Type upgraded to MOCK (terminal) for pattern '{}' on Page", pattern);
                     }
-                    refreshMonitorSession(page, pattern, existing);
+                    // ⭐ 标记需在锁外刷新 MonitorSession（写全局 SESSIONS + 调度超时任务，不应持 store 锁）
+                    needRefresh[0] = true;
+                    mergedRule[0] = existing;
                 }
             }
-            // 锁外执行原生路由注册（JNI），不阻塞其它线程对 store 的访问
+            // 锁外执行原生路由注册（JNI）与 MonitorSession 刷新，不阻塞其它线程对 store 的访问
             if (needRegister[0]) {
-                registerRouteToPage(page, pattern, rule);
+                try {
+                    registerRouteToPage(page, pattern, rule);
+                } catch (Throwable t) {
+                    // ⭐ 关键一致性保护：原生注册失败时回滚锁内已提交的 store + RouteRegistry，
+                    //    避免「内存认为已注册、但实际路由从未绑定」的静默失效（请求不被拦截且无告警）。
+                    synchronized (store) {
+                        store.remove(pattern);
+                    }
+                    RouteRegistry.unregister(page, pattern);
+                    LOGGER.error("[RouteEngine] Native route registration failed for pattern '{}' on Page "
+                            + "— rolled back in-memory state to avoid silent mismatch: {}",
+                            pattern, t.getMessage());
+                }
+            }
+            if (needRefresh[0]) {
+                refreshMonitorSession(page, pattern, mergedRule[0]);
             }
         }, rules);
     }
@@ -405,6 +425,8 @@ public class RouteEngine {
             // ⭐ 仅在锁内完成 store 的纯内存状态决策，绝不持有锁调用原生 context.route()（JNI/网络 IO）。
             //    原生注册放在锁外执行，避免高并发注册/异常时持锁做 IO 导致线程长时间阻塞甚至重入风险。
             final boolean[] needRegister = {false};
+            final boolean[] needRefresh = {false};
+            final RouteRule[] mergedRule = {null};
             synchronized (store) {
                 RouteRule existing = store.get(pattern);
                 if (existing == null) {
@@ -424,12 +446,30 @@ public class RouteEngine {
                         existing.setType(RouteHandleType.MOCK);
                         LOGGER.info("[RouteEngine] Type upgraded to MOCK (terminal) for pattern '{}' on BrowserContext", pattern);
                     }
-                    refreshMonitorSession(context, pattern, existing);
+                    // ⭐ 标记需在锁外刷新 MonitorSession（写全局 SESSIONS + 调度超时任务，不应持 store 锁）
+                    needRefresh[0] = true;
+                    mergedRule[0] = existing;
                 }
             }
-            // 锁外执行原生路由注册（JNI），不阻塞其它线程对 store 的访问
+            // 锁外执行原生路由注册（JNI）与 MonitorSession 刷新，不阻塞其它线程对 store 的访问
             if (needRegister[0]) {
-                registerRouteToContext(context, pattern, rule);
+                try {
+                    registerRouteToContext(context, pattern, rule);
+                } catch (Throwable t) {
+                    // ⭐ 关键一致性保护：原生注册失败（page 关闭竞态 / pattern 非法等）时，
+                    //    必须回滚锁内已提交的 store + RouteRegistry 写入，否则会出现
+                    //    「内存认为已注册、但实际路由从未绑定」的静默失效（请求完全不被拦截且无告警）。
+                    synchronized (store) {
+                        store.remove(pattern);
+                    }
+                    RouteRegistry.unregister(context, pattern);
+                    LOGGER.error("[RouteEngine] Native route registration failed for pattern '{}' on "
+                            + "BrowserContext — rolled back in-memory state to avoid silent mismatch: {}",
+                            pattern, t.getMessage());
+                }
+            }
+            if (needRefresh[0]) {
+                refreshMonitorSession(context, pattern, mergedRule[0]);
             }
         }, rules);
     }
@@ -532,6 +572,15 @@ public class RouteEngine {
 
         // ⭐ #1 性能优化：缓存 route.request() JNI 调用，避免多次跨语言桥接
         Request req = route.request();
+        // ⭐ 异步路径标记：schedule() 分支（MOCK/MODIFY/MONITOR 延迟、DELAY）的 route 生命周期
+        //    由 executeHandlerScheduled/action 的 finally 负责释放防重门控。外层 finally 仅对
+        //    同步路径释放，避免提前清除 pending route 的门控导致重叠 pattern 二次 dispatch 失防。
+        //    （声明在 try 外，使 catch/finally 可访问；数组形式以支持 lambda 内修改）
+        final boolean[] asyncHandled = {false};
+        // ⭐ 最外层兜底 try：覆盖 dispatchRoute 早期逻辑（规则查询、能力位合并、MOCK 短路、
+        //    MODIFY fetch 前的 route.request()/incrementActiveRequests 等）。任何未预期异常都强制
+        //    resume 兜底，确保 route 绝不永久挂起（详见方法末尾 catch/finally）。
+        try {
         String reqUrl = req.url();
         String reqMethod = req.method();
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
@@ -712,6 +761,7 @@ public class RouteEngine {
         // 1) MOCK 终结：直接 fulfill 假响应，不发真实请求（监控/修改/delay 均无意义）
         if (finalRule.getType() == RouteHandleType.MOCK) {
             if (effectiveDelay > 0) {
+                asyncHandled[0] = true;
                 delayScheduler(route).schedule(
                         () -> executeHandlerScheduled(route, finalRule, MockHandler::handle),
                         effectiveDelay, TimeUnit.MILLISECONDS);
@@ -730,6 +780,7 @@ public class RouteEngine {
                 || finalRule.getModifyMethod() != null;
         if (hasModify) {
             if (effectiveDelay > 0) {
+                asyncHandled[0] = true;
                 delayScheduler(route).schedule(
                         () -> executeHandlerScheduled(route, finalRule, ModifyHandler::handle),
                         effectiveDelay, TimeUnit.MILLISECONDS);
@@ -742,6 +793,7 @@ public class RouteEngine {
         // 3) MONITOR（基线）：delay 后 resume + 对真实响应断言；监控失败即报错
         if (finalRule.isMonitorEnabled()) {
             if (effectiveDelay > 0) {
+                asyncHandled[0] = true;
                 delayScheduler(route).schedule(
                         () -> executeHandlerScheduled(route, finalRule, MonitorHandler::handle),
                         effectiveDelay, TimeUnit.MILLISECONDS);
@@ -757,6 +809,7 @@ public class RouteEngine {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] ═══ dispatchRoute DELAY: scheduling for pattern='{}', url='{}', crossLayerMerged={}, delay={}ms ═══",
                     finalRule.getUrlPattern(), reqUrl, crossLayerDelayMerged, delayMs);
+            asyncHandled[0] = true;
             scheduleDelay(route, finalRule, scheduledMs);
             return;
         }
@@ -766,8 +819,29 @@ public class RouteEngine {
         try {
             route.resume();
         } catch (Exception ignored) {
+            // 已失效/已关闭：忽略
+        }
+        } catch (Exception e) {
+            // ⭐ 最外层兜底：dispatchRoute 早期逻辑（规则查询、能力位合并、MOCK 短路、MODIFY fetch 前的
+            //    route.request()/incrementActiveRequests 等）若抛未预期异常，必须 force-resume 兜底，
+            //    否则该 route 既未 fulfill 也未 resume → 请求永久挂起（浏览器转圈、测试 block）。
+            //    对已 resume/fulfill 的分支，重复 resume 被 Playwright 忽略（幂等），无副作用。
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteEngine] dispatchRoute unexpected error for pattern='{}', force-resume to avoid hang: {}",
+                    rule.getUrlPattern(), e.getMessage());
+            try {
+                route.resume();
+            } catch (Exception ignored) {
+                // route 已失效/页面已关闭，放行失败也无所谓（不挂起即可）
+            }
         } finally {
-            DISPATCHED_ROUTES.remove(route);
+            // ⭐ 防重门控释放：仅对同步路径在此释放。异步路径（MOCK/MODIFY/MONITOR 延迟、DELAY）
+            //    的 route 仍在 pending，其生命周期由 executeHandlerScheduled/action 的 finally 负责释放；
+            //    若此处提前清除，会导致重叠 pattern 二次 dispatch 失去防重保护。同步路径（含兜底 resume、
+            //    早期异常 force-resume）在此统一释放，避免同 pattern 后续请求被永久吞掉。
+            if (!asyncHandled[0]) {
+                DISPATCHED_ROUTES.remove(route);
+            }
         }
     }
 
@@ -1018,7 +1092,16 @@ public class RouteEngine {
         }
 
         MonitorSession session = new MonitorSession(context, normalizedPattern, rule);
-        SESSIONS.put(rule, session);
+        // ⭐ 用 putIfAbsent 去重：并发 register 同一 rule 时（不同 context 各自持 store 锁，但都写全局 SESSIONS），
+        //    防止 TOCTOU 导致重复创建 session —— 重复创建会让先建的 session 的 timeoutFuture 永不取消
+        //    （仅最后一个被 stop），并造成 matchCount 计数分散、超时任务泄漏。已存在则复用，不重复 scheduleTimeout。
+        MonitorSession existing = SESSIONS.putIfAbsent(rule, session);
+        if (existing != null) {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[RouteEngine] MonitorSession already exists for rule (pattern='{}'), reusing",
+                    normalizedPattern);
+            return;
+        }
 
         if (rule.getTimeoutMs() > 0) {
             session.scheduleTimeout();
@@ -1543,9 +1626,11 @@ public class RouteEngine {
                 return System.identityHashCode(context) + "|" + url;
             }
         } catch (Exception ignored) {
-            // Page/Context 已关闭时回退 URL key，保证清理路径不阻塞。
+            // Page/Context 已关闭时回退：用 route 自身 identityHash 作 key，避免所有异常路径共用
+            // 同一个 "legacy|url" 造成跨 route / 跨 case 的串扰（相同 URL 短时间互相 skip）。
+            // route 对象本身在 dispatchRoute 生命周期内仍可达，取其 identityHash 即可保证 key 唯一性。
         }
-        return "legacy|" + url;
+        return "route_" + System.identityHashCode(route) + "|" + url;
     }
 
     private static void purgeExpiredCrossLayerEntries() {
@@ -1745,7 +1830,9 @@ public class RouteEngine {
         final RouteRule rule;
         final AtomicInteger matchCount = new AtomicInteger(0);
         final AtomicBoolean stopped = new AtomicBoolean(false);
-        ScheduledFuture<?> timeoutFuture;
+        // ⭐ 用 AtomicReference 持有超时任务：scheduleTimeout（SCHEDULER 线程写）与 stop（dispatch 线程读）跨线程，
+        //    普通字段存在可见性风险，极端下 stop() 可能读到 stale null 而漏取消。AtomicReference 提供 happens-before 保证。
+        final AtomicReference<ScheduledFuture<?>> timeoutFutureRef = new AtomicReference<>();
 
         MonitorSession(Object context, String pattern, RouteRule rule) {
             this.context = context;
@@ -1755,7 +1842,7 @@ public class RouteEngine {
 
         void scheduleTimeout() {
             long timeoutMs = rule.getTimeoutMs();
-            this.timeoutFuture = SCHEDULER.schedule(this::onTimeout, timeoutMs, TimeUnit.MILLISECONDS);
+            timeoutFutureRef.set(SCHEDULER.schedule(this::onTimeout, timeoutMs, TimeUnit.MILLISECONDS));
         }
 
         void onTimeout() {
@@ -1789,13 +1876,15 @@ public class RouteEngine {
                 return;  // 已停止（CAS 防重复）
             }
 
+            ScheduledFuture<?> tfLog = timeoutFutureRef.get();
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteEngine] MonitorSession.stop() START: pattern='{}', totalMatches={}, timeoutFuture={}",
-                    pattern, matchCount.get(), timeoutFuture != null && !timeoutFuture.isDone());
+                    pattern, matchCount.get(), tfLog != null && !tfLog.isDone());
 
             // 取消超时任务
-            if (timeoutFuture != null && !timeoutFuture.isDone()) {
-                timeoutFuture.cancel(false);
+            ScheduledFuture<?> tf = timeoutFutureRef.get();
+            if (tf != null && !tf.isDone()) {
+                tf.cancel(false);
                 LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                         "[RouteEngine] MonitorSession.stop() timeout future cancelled for pattern='{}'", pattern);
             }

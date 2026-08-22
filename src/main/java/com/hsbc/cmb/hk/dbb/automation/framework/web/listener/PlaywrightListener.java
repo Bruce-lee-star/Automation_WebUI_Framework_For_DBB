@@ -8,6 +8,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -277,20 +278,13 @@ public class PlaywrightListener implements StepListener {
      * 一定随后触发完整的 testFinished，因此这些入口必须主动释放路由、采集和线程状态。
      */
     private void cleanupAfterAbnormalTermination(String reason) {
+        // ⭐ 异常终止路径：scenario 已被中断（断言失败/超时/跳过），
+        //    此时做全局全量复位（resetAll 内部已异常隔离），确保路由/采集状态不残留到下个 case。
+        //    resetAll 包含：停止采集引擎 + 清空 RouteRegistry 全量 + 兜底清空防重门控。
         try {
-            ApiCapture.stop();
+            RouteDsl.resetAll();
         } catch (Exception e) {
-            logger.debug("ApiCapture cleanup failed on {}: {}", reason, e.getMessage());
-        }
-        try {
-            cleanupRouteRegistryForCurrentThread();
-        } catch (Exception e) {
-            logger.debug("Route cleanup failed on {}: {}", reason, e.getMessage());
-        }
-        try {
-            RouteEngine.clearDispatchedRoutes();
-        } catch (Exception e) {
-            logger.debug("RouteEngine cleanup failed on {}: {}", reason, e.getMessage());
+            logger.debug("RouteDsl.resetAll() on abnormal termination ({}) failed: {}", reason, e.getMessage());
         }
         cleanupThreadLocals();
     }

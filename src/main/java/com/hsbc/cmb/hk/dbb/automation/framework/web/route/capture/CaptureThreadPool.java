@@ -22,6 +22,7 @@ public class CaptureThreadPool {
 
     /** 线程名前缀，便于故障排查 */
     private static final String THREAD_PREFIX = "capture";
+    private static final AtomicInteger THREAD_ID = new AtomicInteger();
 
     private final ThreadPoolExecutor mergerPool;
     private final ThreadPoolExecutor bodyFetchPool;
@@ -35,7 +36,7 @@ public class CaptureThreadPool {
         this.mergerPool = createPool(mergerThreads, "merger");
         this.bodyFetchPool = createPool(bodyFetchThreads, "body-fetch");
         this.cleanupPool = Executors.newScheduledThreadPool(1, r -> {
-            Thread t = new Thread(r, THREAD_PREFIX + "-cleanup-1");
+            Thread t = new Thread(r, THREAD_PREFIX + "-cleanup-" + THREAD_ID.incrementAndGet());
             t.setDaemon(true);
             return t;
         });
@@ -115,7 +116,7 @@ public class CaptureThreadPool {
                 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(2048),
                 r -> {
-                    Thread t = new Thread(r, THREAD_PREFIX + "-" + name + "-%d");
+                    Thread t = new Thread(r, THREAD_PREFIX + "-" + name + "-" + THREAD_ID.incrementAndGet());
                     t.setDaemon(true);
                     return t;
                 },

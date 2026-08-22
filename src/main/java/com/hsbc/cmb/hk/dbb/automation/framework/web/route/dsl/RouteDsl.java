@@ -210,6 +210,61 @@ public class RouteDsl {
         ApiCapture.stop(page);
     }
 
+    /**
+     * ⭐ 全局全量清理 — 唯一对外暴露的全量复位入口（suite 级 / 单线程批量 / 测试显式调用）。
+     *
+     * <p>编排顺序（异常隔离，单步失败不影响其余步骤）：
+     * <ol>
+     *   <li>停止采集引擎（释放 CDP session + 线程池，避免线程/连接泄漏）</li>
+     *   <li>清空 RouteRegistry 全量（MonitorSession / DISPATCHED_ROUTES / CONTEXT_RULES /
+     *       PAGE_RULES / ENGINE_RULE_STORE / 跨层去重 / JSONPath 缓存）</li>
+     *   <li>冗余兜底清空 Route 防重门控（异常路径保险）</li>
+     * </ol>
+     *
+     * <p><b>注意</b>：此方法是<b>全局</b>清理，会清空所有上下文状态，仅适合单线程环境
+     * （套件收尾、调试、或测试主动复位）。并行测试请用 {@link #clear(BrowserContext)} /
+     * {@link #clear(Page)} 做按上下文隔离清理。
+     */
+    public static void resetAll() {
+        resetAllInternal();
+    }
+
+    /**
+     * 全量清理的内部编排（private，封装所有清理步骤细节）。
+     * 对外仅暴露 {@link #resetAll()} 一个 public 总入口。
+     */
+    private static void resetAllInternal() {
+        // 1. 停止采集引擎（释放 CDP session + 线程池）
+        try {
+            ApiCapture.stop();
+        } catch (Exception e) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteDsl] ApiCapture.stop() during resetAll failed: {}", e.getMessage());
+        }
+        // 2. 清空 RouteRegistry 全量（含 MonitorSession / ENGINE_RULE_STORE / JSONPath 缓存）
+        try {
+            RouteRegistry.clearAll();
+        } catch (Exception e) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteDsl] RouteRegistry.clearAll() during resetAll failed: {}", e.getMessage());
+        }
+        // 3. 冗余兜底：清空 Route 防重门控（异常路径保险，幂等）
+        try {
+            RouteEngine.clearDispatchedRoutes();
+        } catch (Exception e) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteDsl] clearDispatchedRoutes() during resetAll failed: {}", e.getMessage());
+        }
+        LOGGER.info("[RouteDsl] resetAll() — full route & capture state reset completed");
+    }
+
+    /**
+     * ⭐ 兼容性全量清理（仅清路由层，不含采集引擎停止）。
+     * 内部委托 {@link RouteRegistry#clearAll()}，保留历史行为供既有调用方使用。
+     *
+     * @deprecated 新代码请使用 {@link #resetAll()} 做完整复位（含采集引擎释放）。
+     */
+    @Deprecated
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
         RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES/CROSS_LAYER_HANDLED_URLS + JSONPath cache

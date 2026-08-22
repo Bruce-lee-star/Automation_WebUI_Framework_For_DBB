@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -47,10 +48,12 @@ public class EventMerger implements Runnable {
     private final AtomicLong staleSlots = new AtomicLong(0);
 
     private volatile boolean running;
-    /** ⭐ 定时清理任务的引用，用于 stop() 时取消 */
-    private ScheduledFuture<?> cleanupFuture;
+    /** ⭐ 定时清理任务的引用（AtomicReference 保证 merger 线程写 / stop 线程读的可见性），用于 stop() 时取消 */
+    private final AtomicReference<ScheduledFuture<?>> cleanupFutureRef = new AtomicReference<>();
     /** 合并线程引用，用于 stop() 时中断并带超时 join，避免线程泄漏 */
     private final AtomicReference<Thread> mergerThread = new AtomicReference<>();
+    /** 合并线程真正完成排空并退出的信号，正常关闭不依赖固定等待。 */
+    private final CountDownLatch stopped = new CountDownLatch(1);
 
     /**
      * @param ringBuffer 事件缓冲区
@@ -68,7 +71,7 @@ public class EventMerger implements Runnable {
         LOGGER.info("[EventMerger] Started merger loop");
 
         // ⭐ 启动定时清理并保存引用，用于 stop() 时取消
-        cleanupFuture = threadPool.scheduleCleanup(this::cleanupStaleSlots, CLEANUP_INTERVAL_MS);
+        cleanupFutureRef.set(threadPool.scheduleCleanup(this::cleanupStaleSlots, CLEANUP_INTERVAL_MS));
 
         try {
             while (running && !Thread.interrupted()) {
@@ -87,6 +90,7 @@ public class EventMerger implements Runnable {
             drainRemaining();
             LOGGER.info("[EventMerger] Merger loop exited, processed {} calls, {} failures, {} stale",
                     completedCalls.get(), failedMerges.get(), staleSlots.get());
+            stopped.countDown();
         }
     }
 
@@ -118,8 +122,8 @@ public class EventMerger implements Runnable {
     /** 停止合并器 */
     public void stop() {
         this.running = false;
-        // ⭐ 取消定时清理任务，防止泄漏
-        ScheduledFuture<?> f = this.cleanupFuture;
+        // ⭐ 取消定时清理任务，防止泄漏（AtomicReference 保证跨线程可见）
+        ScheduledFuture<?> f = cleanupFutureRef.get();
         if (f != null && !f.isCancelled() && !f.isDone()) {
             f.cancel(false);
         }
@@ -138,11 +142,9 @@ public class EventMerger implements Runnable {
      */
     public boolean stop(long timeoutMs) {
         stop();
-        Thread t = mergerThread.get();
-        if (t == null || Thread.currentThread() == t) return true;
+        if (Thread.currentThread() == mergerThread.get()) return true;
         try {
-            t.join(Math.max(1L, timeoutMs));
-            return !t.isAlive();
+            return stopped.await(Math.max(1L, timeoutMs), java.util.concurrent.TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;

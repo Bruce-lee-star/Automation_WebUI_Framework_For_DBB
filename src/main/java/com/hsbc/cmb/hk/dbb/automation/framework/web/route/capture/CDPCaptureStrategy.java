@@ -49,14 +49,18 @@ public class CDPCaptureStrategy implements CaptureStrategy {
             this.page = page;
             this.ringBuffer = ringBuffer;
             this.cdpSession = page.context().newCDPSession(page);
-        } catch (PlaywrightException e) {
-            LOGGER.warn("[CDPCaptureStrategy] Failed to create CDP session: {}. "
+            // 启用 Network 域（只监听，不拦截）；能力探测失败时由上层统一降级。
+            cdpSession.send("Network.enable");
+        } catch (Exception e) {
+            LOGGER.warn("[CDPCaptureStrategy] CDP initialization failed: {}. "
                     + "Falling back to Playwright event capture.", e.getMessage());
+            this.running = false;
+            if (this.cdpSession != null) {
+                try { this.cdpSession.detach(); } catch (Exception ignored) { }
+                this.cdpSession = null;
+            }
             return;
         }
-
-        // 启用 Network 域（只监听，不拦截）
-        cdpSession.send("Network.enable");
 
         // ── 订阅 CDP 事件 ──
         cdpSession.on("Network.requestWillBeSentExtraInfo", event -> {

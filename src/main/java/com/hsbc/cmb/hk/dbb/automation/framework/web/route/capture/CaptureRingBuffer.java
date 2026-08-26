@@ -10,12 +10,13 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 无锁环形缓冲区 — DROP_NEWEST，固定容量。
+ * 有界环形缓冲区（短临界区锁保护）— DROP_NEWEST，固定容量。
  *
  * <p>设计要点：
  * <ul>
  *   <li>生产者（Playwright 事件线程）调用 {@link #publish(CaptureEvent)}，
- *       微秒级返回，永不阻塞事件线程</li>
+ *       微秒级返回，永不阻塞事件线程。短临界区 {@link #stateLock} 仅覆盖序号递增 + 槽位写入，
+ *       不涉及任何慢操作（IO/日志/回调），多生产者下竞争极小</li>
  *   <li>缓冲区写满时丢弃最新事件（DROP_NEWEST），保留已有数据最多的链</li>
  *   <li>固定容量（默认 8192），不支持动态扩容——扩容会改变已有事件的索引映射，
  *       导致消费者读到错误的 slot</li>
@@ -48,6 +49,9 @@ public class CaptureRingBuffer {
     private final AtomicLong droppedCount = new AtomicLong(0);
     /** publish/poll/drain 的短临界区，保证多生产者下序号与槽位原子提交。 */
     private final ReentrantLock stateLock = new ReentrantLock();
+    /** ⭐ P1: 消费者线程引用。发布时 unpark 唤醒，将事件消费延迟从固定轮询（最坏 500ms）
+     *   降到微秒级，消除"导航返回后立即断言但事件尚未被合并"的竞态窗口。 */
+    private volatile Thread consumerThread;
 
     /**
      * @param capacity 缓冲区容量（必须是 2 的幂，默认 8192）
@@ -76,6 +80,7 @@ public class CaptureRingBuffer {
     public boolean publish(CaptureEvent event) {
         if (event == null) return false;
 
+        boolean accepted;
         stateLock.lock();
         try {
             long w = writeSeq.get();
@@ -83,15 +88,30 @@ public class CaptureRingBuffer {
             if (w - r >= capacity) {
                 droppedCount.incrementAndGet();
                 logIfFrequentDrop();
-                return false;
+                accepted = false;
+            } else {
+                buffer.set(mask(w), event);
+                publishedSeq.set(mask(w), w);
+                writeSeq.incrementAndGet();
+                accepted = true;
             }
-            buffer.set(mask(w), event);
-            publishedSeq.set(mask(w), w);
-            writeSeq.incrementAndGet();
-            return true;
         } finally {
             stateLock.unlock();
         }
+
+        // ⭐ P1: 发布成功后唤醒消费者（若有注册），使其立即处理而非等待下一次轮询。
+        if (accepted) {
+            Thread consumer = consumerThread;
+            if (consumer != null) {
+                LockSupport.unpark(consumer);
+            }
+        }
+        return accepted;
+    }
+
+    /** ⭐ P1: 注册消费者线程（EventMerger 启动时调用）。 */
+    public void setConsumer(Thread consumer) {
+        this.consumerThread = consumer;
     }
 
     /**

@@ -10,14 +10,16 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -73,17 +75,40 @@ public final class ApiMonitoringRepository {
     /** 连接池最大连接数（默认 5，可通过配置覆盖） */
     private static int maxPoolSize = 5;
 
-    /** 待写库记录的内存队列（save 只入队，刷入器负责批量落库） */
-    private static final ConcurrentLinkedQueue<ApiMonitoringRecord> PENDING = new ConcurrentLinkedQueue<>();
+    /** 单批最大重试次数：超过则丢弃该记录并告警（审计 P0-3：防止无限重试/内存循环） */
+    private static final int MAX_ATTEMPTS = 3;
 
-    /** 后台批量刷入器（单线程，定时 + 定量触发） */
-    private static volatile ScheduledExecutorService FLUSHER;
+    /**
+     * ⭐ 专属刷库执行器（审计 P0-0）：DB 写库是阻塞型 IO，必须独立于通用异步池（AsyncPool.POOL）。
+     * 若把 flush 塞进通用池，DB 慢/连接池满时会占满 2~6 个通用线程，拖垮路由回调、超时调度与事件记录。
+     * 此处单线程串行刷库，天然串行化批量 INSERT，避免并发抢连接。
+     */
+    private static ScheduledExecutorService DB_FLUSH_EXECUTOR;
+
+    /** 待写库记录的内存队列（save 只入队，刷入器负责批量落库） */
+    private static final ConcurrentLinkedQueue<PendingItem> PENDING = new ConcurrentLinkedQueue<>();
+
+    /**
+     * ⭐ O(1) 队列计数（审计 P0-2）：{@code ConcurrentLinkedQueue.size()} 是 O(n) 全链表遍历，
+     * 在高频 save() 路径上调用会造成可观 CPU 浪费。改用 AtomicInteger 维护精确计数。
+     */
+    private static final AtomicInteger pendingCount = new AtomicInteger(0);
 
     /** 统计：累计入队 / 累计落库 / 累计失败 / 累计丢弃数，便于诊断 */
     private static final AtomicLong enqueuedCount = new AtomicLong(0);
     private static final AtomicLong flushedCount = new AtomicLong(0);
     private static final AtomicLong failedCount = new AtomicLong(0);
     private static final AtomicLong droppedCount = new AtomicLong(0);
+
+    /** 队列项包装：携带重试次数，避免失败重试时无限循环（审计 P0-3） */
+    private static final class PendingItem {
+        final ApiMonitoringRecord record;
+        final int attempts;
+        PendingItem(ApiMonitoringRecord record, int attempts) {
+            this.record = record;
+            this.attempts = attempts;
+        }
+    }
 
     private ApiMonitoringRepository() {}
 
@@ -183,19 +208,19 @@ public final class ApiMonitoringRepository {
         if (!initialized || dataSource == null) return;
         if (record == null) return;
 
-        PENDING.offer(record);
+        PENDING.offer(new PendingItem(record, 0));
         enqueuedCount.incrementAndGet();
+        int count = pendingCount.incrementAndGet();   // O(1) 计数（审计 P0-2）
 
-        // 定量触发：队列达到阈值立即刷，避免积压过多
-        if (PENDING.size() >= BATCH_THRESHOLD) {
-            // 由独立线程触发，避免在调用方线程（可能持有锁/在事件线程）执行写库
-            ScheduledExecutorService f = FLUSHER;
-            if (f != null) {
-                try {
-                    f.execute(ApiMonitoringRepository::flushPendingNow);
-                } catch (Exception ignore) {
-                    // 刷入器未就绪或已关闭，忽略（定时刷入仍会兜底）
-                }
+        // 定量触发：队列达到阈值立即刷，避免积压过多。
+        // 提交到专属 DB 刷库执行器（审计 P0-0），不在调用方线程做 DB IO，
+        // 也不占用通用异步池线程。
+        if (count >= BATCH_THRESHOLD && DB_FLUSH_EXECUTOR != null
+                && !DB_FLUSH_EXECUTOR.isShutdown()) {
+            try {
+                DB_FLUSH_EXECUTOR.submit(ApiMonitoringRepository::flushPendingNow);
+            } catch (Exception ignore) {
+                // 执行器已关闭，定时刷入仍会兜底
             }
         }
     }
@@ -205,17 +230,16 @@ public final class ApiMonitoringRepository {
     // ═══════════════════════════════════════════════════════════════
 
     private static void startFlusher() {
-        ScheduledExecutorService f = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
-            @Override
-            public Thread newThread(Runnable r) {
-                Thread t = new Thread(r, "api-monitor-flusher");
-                t.setDaemon(true);
-                return t;
-            }
-        });
-        FLUSHER = f;
-        // 定时刷入：即使未达条数阈值，也定期把存量落库，防止低流量时记录滞留
-        f.scheduleWithFixedDelay(ApiMonitoringRepository::flushPendingNow,
+        // ⭐ 专属单线程刷库执行器（审计 P0-0）：DB IO 与路由通用异步池彻底隔离，
+        // 防止 DB 慢/连接池满时占满通用池线程，拖垮路由回调与超时调度。
+        ThreadFactory tf = r -> {
+            Thread t = new Thread(r, "api-monitor-flusher");
+            t.setDaemon(true);
+            return t;
+        };
+        DB_FLUSH_EXECUTOR = Executors.newSingleThreadScheduledExecutor(tf);
+        DB_FLUSH_EXECUTOR.scheduleWithFixedDelay(
+                ApiMonitoringRepository::flushPendingNow,
                 FLUSH_INTERVAL_MS, FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
 
@@ -227,30 +251,46 @@ public final class ApiMonitoringRepository {
         if (PENDING.isEmpty()) return;
 
         // 从队列取出一批（不阻塞、不超过单批上限），一次性批量 INSERT
-        List<ApiMonitoringRecord> batch = new ArrayList<>(Math.min(PENDING.size(), MAX_BATCH_PER_FLUSH));
-        while (batch.size() < MAX_BATCH_PER_FLUSH) {
-            ApiMonitoringRecord r = PENDING.poll();
-            if (r == null) break;
-            batch.add(r);
+        List<PendingItem> batch = new ArrayList<>(Math.min(pendingCount.get(), MAX_BATCH_PER_FLUSH));
+        int taken = 0;
+        while (taken < MAX_BATCH_PER_FLUSH) {
+            PendingItem item = PENDING.poll();
+            if (item == null) break;
+            batch.add(item);
+            taken++;
         }
         if (batch.isEmpty()) return;
+        pendingCount.addAndGet(-taken);   // 取出即出队，O(1) 减计数（审计 P0-2）
 
         try {
             insertBatch(batch);
             flushedCount.addAndGet(batch.size());
             LOGGER.debug("[ApiMonitoringRepository] Batch flushed: {} records (pending={})",
-                    batch.size(), PENDING.size());
+                    batch.size(), pendingCount.get());
         } catch (Exception e) {
             failedCount.addAndGet(batch.size());
             LOGGER.warn("[ApiMonitoringRepository] Batch flush failed ({} records), will retry: {}",
                     batch.size(), e.getMessage());
-            // 失败重试：把本批记录放回队列，下一轮定时刷入重试，避免丢数据
-            PENDING.addAll(batch);
+            // 失败重试：递增 attempts，超过上限则丢弃并告警（审计 P0-3：防无限循环/重复落库）
+            int requeued = 0;
+            for (PendingItem item : batch) {
+                int nextAttempts = item.attempts + 1;
+                if (nextAttempts > MAX_ATTEMPTS) {
+                    droppedCount.incrementAndGet();
+                    LOGGER.error("[ApiMonitoringRepository] Dropped after {} failed attempts (endpoint={}, url={}): {}",
+                            MAX_ATTEMPTS, item.record.endpoint(), item.record.requestUrl(), e.getMessage());
+                } else {
+                    PENDING.offer(item.record != null ? new PendingItem(item.record, nextAttempts) : item);
+                    requeued++;
+                }
+            }
+            pendingCount.addAndGet(requeued);   // 重新入队，计数同步回加
             // 保护：若队列因反复失败持续膨胀，丢弃最旧以限流（防止内存无限增长）
             int cap = BATCH_THRESHOLD * 20;
-            while (PENDING.size() > cap) {
-                ApiMonitoringRecord dropped = PENDING.poll();
+            while (pendingCount.get() > cap) {
+                PendingItem dropped = PENDING.poll();
                 if (dropped == null) break;
+                pendingCount.decrementAndGet();
                 droppedCount.incrementAndGet();
             }
         }
@@ -258,27 +298,39 @@ public final class ApiMonitoringRepository {
 
     /**
      * 执行一批记录的批量 INSERT（addBatch + executeBatch）。
+     * <p>⭐ 事务包裹（审计 P0-3）：单批原子提交，失败整体回滚后再重试，
+     * 避免部分成功导致重复记录。
      */
-    private static void insertBatch(List<ApiMonitoringRecord> batch) throws Exception {
+    private static void insertBatch(List<PendingItem> batch) throws Exception {
         String sql = buildInsertSql();
         try (Connection conn = dataSource.getConnection();
              PreparedStatement stmt = conn.prepareStatement(sql)) {
-            for (ApiMonitoringRecord record : batch) {
-                stmt.setString(1, truncate(record.endpoint(), 500));
-                stmt.setString(2, truncate(record.requestUrl(), 2000));
-                stmt.setString(3, record.method());
-                stmt.setInt(4, record.statusCode());
-                stmt.setString(5, toJson(record.requestHeaders()));
-                stmt.setString(6, toJson(record.responseHeaders()));
-                stmt.setString(7, record.safeResponseBody(MAX_BODY_CHARS));
-                stmt.setInt(8, record.bodyLength());
-                stmt.setTimestamp(9, new Timestamp(record.capturedAt()));
-                stmt.setString(10, truncate(record.testRunId(), 100));
-                stmt.setBoolean(11, record.isOk());
-                stmt.addBatch();
+            conn.setAutoCommit(false);   // 事务包裹，单批原子性
+            try {
+                for (PendingItem item : batch) {
+                    ApiMonitoringRecord record = item.record;
+                    stmt.setString(1, truncate(record.endpoint(), 500));
+                    stmt.setString(2, truncate(record.requestUrl(), 2000));
+                    stmt.setString(3, record.method());
+                    stmt.setInt(4, record.statusCode());
+                    stmt.setString(5, toJson(record.requestHeaders()));
+                    stmt.setString(6, toJson(record.responseHeaders()));
+                    stmt.setString(7, record.safeResponseBody(MAX_BODY_CHARS));
+                    stmt.setInt(8, record.bodyLength());
+                    stmt.setTimestamp(9, new Timestamp(record.capturedAt()));
+                    stmt.setString(10, truncate(record.testRunId(), 100));
+                    stmt.setBoolean(11, record.isOk());
+                    stmt.addBatch();
+                }
+                // 一次性批量执行（MySQL rewriteBatchedStatements 会把多条合并成一条多值 INSERT）
+                stmt.executeBatch();
+                conn.commit();   // 整体成功才提交
+            } catch (Exception ex) {
+                try { conn.rollback(); } catch (Exception rb) { /* ignore */ }
+                throw ex;
+            } finally {
+                try { conn.setAutoCommit(true); } catch (Exception ignore) { /* ignore */ }
             }
-            // 一次性批量执行（MySQL rewriteBatchedStatements 会把多条合并成一条多值 INSERT）
-            stmt.executeBatch();
         }
     }
 
@@ -389,9 +441,9 @@ public final class ApiMonitoringRepository {
         return initialized && dataSource != null && !dataSource.isClosed();
     }
 
-    /** 当前待落库的记录数（诊断用） */
+    /** 当前待落库的记录数（诊断用，O(1)） */
     public static int pendingCount() {
-        return PENDING.size();
+        return pendingCount.get();
     }
 
     /** 累计已成功落库的记录数（诊断用） */
@@ -410,18 +462,23 @@ public final class ApiMonitoringRepository {
     public static void shutdown() {
         LOGGER.info("[ApiMonitoringRepository] Shutting down... "
                 + "enqueued={}, flushed={}, failed={}, dropped={}, pending={}",
-                enqueuedCount.get(), flushedCount.get(), failedCount.get(), droppedCount.get(), PENDING.size());
-        // 先 flush 剩余队列，确保不丢数据
+                enqueuedCount.get(), flushedCount.get(), failedCount.get(), droppedCount.get(), pendingCount.get());
+        // 1) 先停止定时刷入，避免 shutdown 期间又触发 flush
+        if (DB_FLUSH_EXECUTOR != null && !DB_FLUSH_EXECUTOR.isShutdown()) {
+            DB_FLUSH_EXECUTOR.shutdown();
+            try {
+                // 等待进行中的 flush 完成，最多 10s
+                DB_FLUSH_EXECUTOR.awaitTermination(10, TimeUnit.SECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                DB_FLUSH_EXECUTOR.shutdownNow();
+            }
+        }
+        // 2) 同步 flush 剩余队列，确保不丢数据（不依赖异步执行器）
         try {
             flushPendingNow();
         } catch (Exception e) {
             LOGGER.warn("[ApiMonitoringRepository] Flush on shutdown failed: {}", e.getMessage());
-        }
-        // 关闭刷入器
-        ScheduledExecutorService f = FLUSHER;
-        if (f != null) {
-            f.shutdownNow();
-            FLUSHER = null;
         }
         initialized = false;
         closeDataSource();
@@ -435,6 +492,7 @@ public final class ApiMonitoringRepository {
         initialized = false;
         initFailed = false;
         PENDING.clear();
+        pendingCount.set(0);
         enqueuedCount.set(0);
         flushedCount.set(0);
         failedCount.set(0);

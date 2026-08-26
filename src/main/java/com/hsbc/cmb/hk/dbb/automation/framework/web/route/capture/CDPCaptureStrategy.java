@@ -1,6 +1,7 @@
  package com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.CDPSession;
 import com.microsoft.playwright.Page;
@@ -21,10 +22,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * <ul>
  *   <li>{@code Network.requestWillBeSent} — 拿到请求（含 modify 后真实体）</li>
  *   <li>{@code Network.responseReceived} — 拿到 status/headers（不含 body）</li>
- *   <li>{@code Network.loadingFinished} — 使用 {@code Network.getResponseBody} 读取 body 并直接投喂</li>
+ *   <li>{@code Network.loadingFinished} — 发布轻量 {@code BODY_READY} 信号，body 由 {@link BodyReader} 在专用线程池按需异步读取</li>
  * </ul>
  *
- * <p>响应体在 CDP 事件线程直接读取，无需异步惰性处理，避免了重新 fetch 的循环风险。
+ * <p>响应体由 {@link BodyReader} 在 bodyFetchPool 线程按需惰性读取（{@code Network.getResponseBody} 本地 IPC），
+ * 绝不在 CDP 事件线程内重入。
  */
 public class CDPCaptureStrategy implements CaptureStrategy {
 
@@ -35,7 +37,11 @@ public class CDPCaptureStrategy implements CaptureStrategy {
     private CaptureRingBuffer ringBuffer;
     private volatile boolean running;
     private final Map<String, Map<String, String>> extraRequestHeaders = new ConcurrentHashMap<>();
-    private final Map<String, Map<String, String>> publishedRequestHeaders = new ConcurrentHashMap<>();
+    /** 诊断：各 CDP 事件名触发计数 */
+    private final java.util.concurrent.ConcurrentHashMap<String, Integer> eventCounts = new java.util.concurrent.ConcurrentHashMap<>();
+    private void countEvent(String name) {
+        eventCounts.merge(name, 1, Integer::sum);
+    }
 
 
     @Override
@@ -65,6 +71,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         // ── 订阅 CDP 事件 ──
         cdpSession.on("Network.requestWillBeSentExtraInfo", event -> {
             if (!running) return;
+            countEvent("requestWillBeSentExtraInfo");
             try {
                 String requestId = event.get("requestId").getAsString();
                 JsonObject headersObj = event.getAsJsonObject("headers");
@@ -72,12 +79,11 @@ public class CDPCaptureStrategy implements CaptureStrategy {
                 if (headersObj != null) {
                     headersObj.entrySet().forEach(e -> headers.put(e.getKey(), e.getValue().getAsString()));
                 }
-                Map<String, String> published = publishedRequestHeaders.get(requestId);
-                if (published != null) {
-                    mergeHeadersCaseInsensitive(published, headers);
-                } else {
-                    extraRequestHeaders.put(requestId, headers);
-                }
+                // ⭐ 仅经 extraRequestHeaders 中转，等待 requestWillBeSent 消费合并。
+                //   注意：Chromium 保证 requestWillBeSentExtraInfo 先于 requestWillBeSent 到达，
+                //   因此不处理「后到」的兜底合并——若真出现（极端顺序反转），补充头会被丢弃，
+                //   但可避免对已发布事件（merger 线程可能正在读取）的跨线程 HashMap 并发修改。
+                extraRequestHeaders.put(requestId, headers);
             } catch (Exception e) {
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[CDPCaptureStrategy] Error processing requestWillBeSentExtraInfo: {}", e.getMessage());
@@ -87,6 +93,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         // requestWillBeSent：拿到请求真实信息（含 modify 后请求体）
         cdpSession.on("Network.requestWillBeSent", event -> {
             if (!running) return;
+            countEvent("requestWillBeSent");
             try {
                 String requestId = event.get("requestId").getAsString();
                 JsonObject request = event.get("request").getAsJsonObject();
@@ -111,15 +118,17 @@ public class CDPCaptureStrategy implements CaptureStrategy {
                     reqBody = request.get("postData").getAsString().getBytes(StandardCharsets.UTF_8);
                 }
 
-                // 资源类型：CDP requestWillBeSent.request.type（XHR/Fetch/Document/Script/Image…）
-                String rawType = request.has("type") && !request.get("type").isJsonNull()
-                        ? request.get("type").getAsString() : null;
+                // ⭐ 资源类型：CDP requestWillBeSent 的 type 字段位于【事件顶层】（不在 request 对象内）！
+                //   XHR/Fetch/Document/Script/Image…。此前误读 request.type 恒为 null，
+                //   导致所有 CDP 采集调用 resourceType 落为 OTHER，使 ofType(XHR/FETCH) 等
+                //   类型过滤断言永远失败（example_filterByResourceType 即此场景）。
+                String rawType = event.has("type") && !event.get("type").isJsonNull()
+                        ? event.get("type").getAsString() : null;
                 ResourceType resourceType = ResourceType.fromString(rawType);
 
                 CaptureEvent eventData = CaptureEvent.request(
                         requestId, method, url, headers, reqBody, resourceType, CaptureEvent.Source.CDP)
                         .withContext(page.context(), page);
-                publishedRequestHeaders.put(requestId, headers);
                 ringBuffer.publish(eventData);
 
             } catch (Exception e) {
@@ -131,6 +140,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         // responseReceived：拿到 status/headers
         cdpSession.on("Network.responseReceived", event -> {
             if (!running) return;
+            countEvent("responseReceived");
             try {
                 String requestId = event.get("requestId").getAsString();
                 JsonObject response = event.getAsJsonObject("response");
@@ -157,40 +167,17 @@ public class CDPCaptureStrategy implements CaptureStrategy {
             }
         });
 
-        // loadingFinished：读取 body 并投喂（使用 CDP Network.getResponseBody 从缓存读取）
-        // 注意：这是本地 IPC 调用，微秒级返回，不会阻塞事件线程
+        // loadingFinished：响应体已就绪，发布轻量 BODY_READY 信号。
+        // ⭐ body 由 BodyReader 在专用线程池（bodyFetchPool）按需异步读取
+        //   （Network.getResponseBody 本地 IPC，微秒级返回），不在 CDP 事件线程同步读取：
+        //   统一经 BodyReader 惰性拉取，避免对未被采集范围覆盖的资源请求做无谓的 body 拉取。
         cdpSession.on("Network.loadingFinished", event -> {
             if (!running) return;
+            countEvent("loadingFinished");
             try {
                 String requestId = event.get("requestId").getAsString();
-
-                // ⭐ 使用 CDP 从浏览器缓存读取响应体，避免异步 re-fetch
-                // 这比 page.request().fetch(url) 更准确（获取原始响应，而非重新请求）
-                byte[] body = null;
-                String contentType = null;
-                try {
-                    // ⭐ CDP send() 接受 JsonObject 参数
-                    com.google.gson.JsonObject cdpParams = new com.google.gson.JsonObject();
-                    cdpParams.addProperty("requestId", requestId);
-                    JsonObject bodyResult = cdpSession.send("Network.getResponseBody", cdpParams);
-                    if (bodyResult != null) {
-                        String bodyStr = bodyResult.get("body").getAsString();
-                        boolean base64Encoded = bodyResult.has("base64Encoded")
-                                && bodyResult.get("base64Encoded").getAsBoolean();
-                        // 根据 encoding 处理
-                        body = base64Encoded
-                                ? java.util.Base64.getDecoder().decode(bodyStr)
-                                : bodyStr.getBytes(StandardCharsets.UTF_8);
-                    }
-                } catch (Exception e) {
-                    LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                            "[CDPCaptureStrategy] Error reading body via CDP: {}", e.getMessage());
-                }
-
-                CaptureEvent eventData = CaptureEvent.responseBody(
-                        requestId, body, contentType, CaptureEvent.Source.CDP);
+                CaptureEvent eventData = CaptureEvent.bodyReady(requestId, CaptureEvent.Source.CDP);
                 ringBuffer.publish(eventData.withContext(page.context(), page));
-
             } catch (Exception e) {
                 LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                         "[CDPCaptureStrategy] Error processing loadingFinished: {}", e.getMessage());
@@ -201,9 +188,9 @@ public class CDPCaptureStrategy implements CaptureStrategy {
         // 让 EventMerger 释放 captureInFlight，避免 awaitCompletion 被拖到 stale 超时。
         cdpSession.on("Network.loadingFailed", event -> {
             if (!running) return;
+            countEvent("loadingFailed");
             try {
                 String requestId = event.get("requestId").getAsString();
-                publishedRequestHeaders.remove(requestId);
                 extraRequestHeaders.remove(requestId);
                 CaptureEvent eventData = CaptureEvent.failed(requestId, CaptureEvent.Source.CDP);
                 ringBuffer.publish(eventData.withContext(page.context(), page));
@@ -236,7 +223,6 @@ public class CDPCaptureStrategy implements CaptureStrategy {
     public void stop() {
         this.running = false;
         extraRequestHeaders.clear();
-        publishedRequestHeaders.clear();
         if (cdpSession != null) {
             try {
                 // ⭐ 安全清理：先检查 CDP session 是否仍然有效
@@ -250,7 +236,7 @@ public class CDPCaptureStrategy implements CaptureStrategy {
             }
             cdpSession = null;
         }
-        LOGGER.info("[CDPCaptureStrategy] Stopped");
+        LOGGER.info("[CDPCaptureStrategy] Stopped. Event counts: {}", eventCounts);
     }
 
     @Override
@@ -262,5 +248,40 @@ public class CDPCaptureStrategy implements CaptureStrategy {
     public boolean isAvailable() {
         // CDP session 创建成功 → 可用；失败 → 需要降级
         return cdpSession != null && running;
+    }
+
+    @Override
+    public boolean providesResponseBody() {
+        // CDP 旁路在 Playwright route 拦截场景下，Network.responseReceived / loadingFinished
+        // 不会为被 route 处理的请求触发（响应由 route 层 fulfill，绕过 CDP 正常响应流），
+        // 因此事件链终态交换拿不到 status/body。此时必须由 Monitor 回退到 page.waitForResponse。
+        // 故 CDP 旁路当前不具备可供事件链接管的 body 能力。
+        return false;
+    }
+
+    @Override
+    public byte[] readResponseBody(String requestId) {
+        // ⭐ 在 bodyFetchPool 线程调用（非 CDP 事件线程）：Network.getResponseBody 本地 IPC 读取浏览器缓存。
+        //   被 route 拦截（MOCK/MODIFY）的请求不走 CDP 正常响应流，这里会失败并返回 null——符合预期。
+        try {
+            JsonObject cdpParams = new JsonObject();
+            cdpParams.addProperty("requestId", requestId);
+            JsonObject bodyResult = cdpSession.send("Network.getResponseBody", cdpParams);
+            if (bodyResult != null) {
+                String bodyStr = bodyResult.get("body").getAsString();
+                boolean base64Encoded = bodyResult.has("base64Encoded")
+                        && bodyResult.get("base64Encoded").getAsBoolean();
+                byte[] decoded = base64Encoded
+                        ? java.util.Base64.getDecoder().decode(bodyStr)
+                        : bodyStr.getBytes(StandardCharsets.UTF_8);
+                // ⭐ 响应体上限防 OOM：超大响应体（下载/大 JSON）截断后再入环缓冲与存储
+                return RouteUtil.truncateBody(decoded);
+            }
+            return null;
+        } catch (Exception e) {
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[CDPCaptureStrategy] Error reading body via CDP for reqId={}: {}", requestId, e.getMessage());
+            return null;
+        }
     }
 }

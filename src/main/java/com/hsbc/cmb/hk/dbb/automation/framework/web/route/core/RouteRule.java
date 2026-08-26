@@ -89,6 +89,23 @@ public class RouteRule {
     /** DELAY 类型随机延迟范围：最大值（毫秒），0 = 不使用随机范围 */
     private long delayMaxMs = 0;
 
+    /**
+     * 一次性拦截次数（对齐 Playwright Route.setTimes）。
+     * <p>0（默认）= 无限次拦截；N>0 = 仅处理前 N 次，之后请求直接放行（走真实网络）。
+     * <p>仅对独立注册的 MOCK / MODIFY / DELAY 规则生效；跨层合并场景安全降级为无限次。
+     */
+    private int times = 0;
+    /** 剩余可处理次数（times>0 时生效） */
+    private int remainingTimes = 0;
+
+    /**
+     * ⭐ 分发期合并的源规则引用（transient，不参与 equals/hashCode/copyForMerge）。
+     * <p>B3 链式模型：dispatchRoute 对规则链执行「分发期合并」（copyForMerge + mergeFrom）
+     * 生成有效规则，本字段指向链头（首个注册、session/times 归属）的原始规则，
+     * 供会话查询、times 递减、跨层 identity 判断使用。
+     */
+    private transient RouteRule mergeSource = null;
+
     // ═══════════════════════════════════════════════════════════
     // 请求条件匹配（新增）
     // ═══════════════════════════════════════════════════════════
@@ -232,6 +249,57 @@ public class RouteRule {
 
     public long getDelayMaxMs() {
         return delayMaxMs;
+    }
+
+    /**
+     * @return 一次性拦截次数（0 = 无限次拦截）
+     */
+    public int getTimes() {
+        return times;
+    }
+
+    /**
+     * 设置一次性拦截次数（0 = 无限次拦截；N>0 = 仅处理前 N 次）。
+     * <p>设置后重置剩余计数。times 不参与 equals/hashCode（对齐 Playwright：
+     * 次数是生命周期配置，不影响规则身份匹配）。
+     *
+     * @param times 拦截次数，负数按 0 处理
+     */
+    public void setTimes(int times) {
+        this.times = Math.max(0, times);
+        this.remainingTimes = this.times;
+    }
+
+    /**
+     * @return true 表示已设置有限次数且剩余次数为 0（应停止拦截、直接放行）
+     */
+    public boolean isTimesExhausted() {
+        return times > 0 && remainingTimes <= 0;
+    }
+
+    /** 成功处理一次后递减剩余计数；归零即视为耗尽。 */
+    public void decrementTimes() {
+        if (times <= 0) {
+            return;
+        }
+        remainingTimes--;
+        if (remainingTimes < 0) {
+            remainingTimes = 0;
+        }
+    }
+
+    /**
+     * ⭐ 返回分发期合并的源规则；未被合并（独立规则）时返回自身。
+     * <p>会话查询 / times 递减 / 跨层 identity 判断应始终作用于源规则，
+     * 而非 copyForMerge 生成的临时有效规则。
+     */
+    public RouteRule getMergeSource() {
+        return mergeSource != null ? mergeSource : this;
+    }
+
+    /** 设置分发期合并的源规则（仅 dispatchRoute 合并时由引擎内部调用）。 */
+    public void setMergeSource(RouteRule mergeSource) {
+        this.mergeSource = mergeSource;
     }
 
     // ─── 请求条件匹配 Getters ────────────────────────────────────

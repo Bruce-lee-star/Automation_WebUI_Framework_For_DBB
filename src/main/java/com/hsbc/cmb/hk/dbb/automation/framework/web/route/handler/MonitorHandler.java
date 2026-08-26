@@ -23,7 +23,11 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * API 监控 Handler — 在 Playwright 事件线程中同步读取响应 body，
@@ -41,21 +45,21 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class MonitorHandler {
 
+    /**
+     * body 读取重试调度器：用于 {@link #readResponseBodyWithRetry} 的异步退避，
+     * 避免 Thread.sleep 阻塞 route 处理线程（线程契约）。
+     */
+    private static final ScheduledExecutorService bodyReadScheduler =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "monitor-body-retry");
+                t.setDaemon(true);
+                return t;
+            });
+
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
 
     /** 等待真实响应 / 兜底请求的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
-    private static final double ROUTE_FETCH_TIMEOUT_MS = getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
-
-    private static double getEnvDouble(String key, double defaultValue) {
-        String v = System.getenv(key);
-        if (v != null) {
-            try {
-                return Double.parseDouble(v.trim());
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        return defaultValue;
-    }
+    private static final double ROUTE_FETCH_TIMEOUT_MS = RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
     /** 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。 */
     private static boolean hasDelay(RouteRule rule) {
@@ -98,7 +102,7 @@ public class MonitorHandler {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[MonitorHandler] Page/Context already closed, resume & skip for pattern='{}'",
                     rule.getUrlPattern());
-            RouteUtil.resumeIfOpen(route);
+            RouteUtil.safeResume(route);
             return;
         }
 
@@ -108,7 +112,7 @@ public class MonitorHandler {
             LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
                     rule.getUrlPattern());
             // ⭐ 必须放行请求，否则请求会永久挂起
-            RouteUtil.resumeIfOpen(route);
+            RouteUtil.safeResume(route);
             return;
         }
 
@@ -119,7 +123,7 @@ public class MonitorHandler {
 
         // DELAY 场景由 CDP/EventMerger 捕获真实响应；此处只放行，不再操作易失效的 Response 对象。
         if (hasDelay(rule)) {
-            RouteUtil.resumeIfOpen(route);
+            RouteUtil.safeResume(route);
             return;
         }
 
@@ -155,22 +159,17 @@ public class MonitorHandler {
                             },
                             wfrOpts,
                             () -> {
-                                // 放行：失败则快速让 waitForResponse 结束（不吞掉等待），避免挂起
+                                // 放行：若 route 已失效（Firefox/WebKit 下 Object doesn't exist）
+                                // 则静默跳过，让 waitForResponse 自然结束，避免抛异常污染等待链路。
                                 if (RouteUtil.isPageClosed(route)) return;
-                                try {
-                                    route.resume();
-                                } catch (PlaywrightException re) {
-                                    // 放行失败（route 已 handled / 页面已关闭）：此时请求要么已放行、
-                                    // 要么已释放，无需继续等响应。抛出让 waitForResponse 尽早返回。
-                                    throw re;
-                                }
+                                RouteUtil.safeResume(route);
                             });
                 } catch (PlaywrightException e) {
                     LoggingConfigUtil.logWarnIfVerbose(LOGGER,
                             "[MonitorHandler] waitForResponse failed/expired (async/delayed context), skip assertion: pattern='{}', url='{}', error='{}'",
                             rule.getUrlPattern(), req.url(), e.getMessage());
                     // 兜底放行，避免请求永久挂起
-                    try { if (!RouteUtil.isPageClosed(route)) route.resume(); } catch (Exception ignored) {}
+                    RouteUtil.safeResume(route);
                     return;
                 }
             }
@@ -180,18 +179,21 @@ public class MonitorHandler {
                     "[MonitorHandler] No response available (waitForResponse) for pattern='{}', url='{}'",
                     rule.getUrlPattern(), req.url());
             // 兜底放行
-            try { if (!RouteUtil.isPageClosed(route)) route.resume(); } catch (Exception ignored) {}
+            RouteUtil.safeResume(route);
             return;
         }
 
-        byte[] bodyBytes;
-        try {
-            bodyBytes = res.body();
-        } catch (Exception e) {
-            LOGGER.debug("[MonitorHandler] Failed to read response body for {}: {}", req.url(), e.getMessage());
+        // ⭐ 生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
+        //    null（响应体尚未缓冲就绪），直接丢弃会导致该 call 丢失（getAllResponsesForUrl 少一条）。
+        //    改为带短重试的读取（非阻塞：用 CompletableFuture.delayedExecutor 调度退避，
+        //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
+        byte[] bodyBytes = readResponseBodyWithRetry(res, rule, req);
+        if (bodyBytes == null) {
+            LOGGER.debug("[MonitorHandler] Response body unavailable after retry for {}: pattern='{}'",
+                    req.url(), rule.getUrlPattern());
             LoggingConfigUtil.logWarnIfVerbose(LOGGER,
-                    "[MonitorHandler] Cannot read response body: pattern='{}', url='{}', error='{}'",
-                    rule.getUrlPattern(), req.url(), e.getMessage());
+                    "[MonitorHandler] Cannot read response body after retry: pattern='{}', url='{}'",
+                    rule.getUrlPattern(), req.url());
             return;
         }
 
@@ -205,8 +207,66 @@ public class MonitorHandler {
 
         // ⭐ 复用统一的「断言 + 记录」逻辑（ModifyHandler 叠加监控时也调用此方法）
         assertAndRecord(route, rule, context, url, status, body,
-                req.method(), req.postData(), snapshotHeadersSafely(req.headers()),
+                req.method(), req.postData(),                 snapshotHeadersSafely(req.headers()),
                 snapshotHeadersSafely(res.headers()));
+    }
+
+    /**
+     * 带短重试地读取响应体，应对 route 回调中 res.body() 偶发返回 null（响应体尚未缓冲就绪）的情况。
+     *
+     * <p>生命周期契约容错：连续 page.navigate 到 API 端点或高并发下，Playwright 的
+     * Response 对象偶发在 body 尚未就绪时被访问，res.body() 返回 null。简单地丢弃会导致
+     * CapturedApiCall 漏存（触发调用方 getAllResponsesForUrl 计数漂移）。
+     *
+     * <p>线程契约：退避通过 {@link CompletableFuture#delayedExecutor} 调度到独立
+     * {@link #bodyReadScheduler} 线程，当前 route 处理线程在退避期间不被 {@code Thread.sleep}
+     * 阻塞（绝不占用线程等待），重试到期后再读取。最后一次成功或耗尽后通过 future 返回，
+     * 调用方以 {@code join()} 获取结果（join 不阻塞线程池事件循环，仅当前任务等待自身结果）。
+     *
+     * @param res  响应对象
+     * @param rule 路由规则（仅用于日志）
+     * @param req  请求对象（仅用于日志）
+     * @return 响应体字节；全部重试后仍不可用则返回 null
+     */
+    private static byte[] readResponseBodyWithRetry(Response res, RouteRule rule, Request req) {
+        final int MAX_ATTEMPTS = 3;
+        final long RETRY_INTERVAL_MS = 50;
+        CompletableFuture<byte[]> future = new CompletableFuture<>();
+        retryBodyOnce(res, rule, req, 1, MAX_ATTEMPTS, RETRY_INTERVAL_MS, future);
+        try {
+            return future.join();
+        } catch (Exception e) {
+            future.cancel(true);
+            return null;
+        }
+    }
+
+    /** 递归异步重试读取 body：每次失败/空 body 后按固定间隔提交下一次读取（非阻塞），不占用当前线程。 */
+    private static void retryBodyOnce(Response res, RouteRule rule, Request req,
+                                       int attempt, int maxAttempts, long intervalMs,
+                                       CompletableFuture<byte[]> result) {
+        try {
+            byte[] body = res.body();
+            if (body != null) {
+                // ⭐ 响应体上限防 OOM：超大响应体截断后再向上传递（监控存储/断言）
+                result.complete(RouteUtil.truncateBody(body));
+                return;
+            }
+        } catch (Exception e) {
+            // Response 已失效：重试无意义，直接完成 null 由调用方决定降级
+            LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                    "[MonitorHandler] res.body() threw on attempt {}/{} for {}: {}",
+                    attempt, maxAttempts, req.url(), e.getMessage());
+            result.complete(null);
+            return;
+        }
+        if (attempt < maxAttempts) {
+            CompletableFuture.runAsync(
+                    () -> retryBodyOnce(res, rule, req, attempt + 1, maxAttempts, intervalMs, result),
+                    CompletableFuture.delayedExecutor(intervalMs, TimeUnit.MILLISECONDS, bodyReadScheduler));
+        } else {
+            result.complete(null);
+        }
     }
 
     /**
@@ -431,21 +491,11 @@ public class MonitorHandler {
         if (cached != null) {
             return cached;
         }
-        // 容量保护：超限时清空缓存后重新编译（JSONPath 表达式量有限，偶发全清代价低）
+        // 容量保护：超限时淘汰约 1/4 旧条目（复用 RouteUtil 统一实现，避免命中率瞬间归零）
         if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX) {
-            evictOldestQuarter(JSONPATH_CACHE);
+            RouteUtil.evictOldestQuarter(JSONPATH_CACHE);
         }
-        return JSONPATH_CACHE.computeIfAbsent(expression, JsonPath::compile);
-    }
-
-    /**
-     * ⭐ #7 容量保护：当 JSONPath 编译缓存超过软上限时触发清空。
-     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
-     * computeIfAbsent 下可能抛出 ConcurrentModificationException）。
-     * JSONPath 表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
-     */
-    private static void evictOldestQuarter(Map<?, ?> map) {
-        map.clear();
+        return JSONPATH_CACHE.computeIfAbsent(expression, RouteUtil::compileJsonPath);
     }
 
     /**

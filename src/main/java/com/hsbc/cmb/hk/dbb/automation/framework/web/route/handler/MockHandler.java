@@ -39,7 +39,7 @@ public class MockHandler {
 
     /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS =
-            getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+            RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
     public static void handle(Route route, RouteRule rule) {
         String url = route.request().url();
@@ -57,7 +57,7 @@ public class MockHandler {
         if (isPageClosed(route)) {
             LOGGER.warn("[MockHandler] Page/context already closed, skip handling (resume to avoid blocking): url='{}', pattern='{}'",
                     RouteUtil.sanitizeUrl(url), rule.getUrlPattern());
-            try { route.resume(); } catch (Exception ignored) {}
+            RouteUtil.safeResume(route);
             return;
         }
 
@@ -116,7 +116,7 @@ public class MockHandler {
 
         // ── 6. 返回 Mock 响应（异常安全，失败时 resume 兜底）──────
         try {
-            route.fulfill(opts);
+            RouteUtil.safeFulfill(route, opts);
             LOGGER.info("[MockHandler] Fulfilled: url={}, pattern='{}', status={}, bodyLength={}",
                     RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
@@ -194,6 +194,9 @@ public class MockHandler {
             return;
         }
 
+        // ⭐ route 生命周期契约守卫：任何异常路径（含非 PlaywrightException 的 RuntimeException）
+        //    都由 finally 兜底终结，避免「已 fetch 但未终结」导致浏览器端请求永久 pending。
+        boolean routeSettled = false;
         try {
             // ── 1. route.fetch() — 真实发送请求到服务器，获取真实响应 ──
             //    无参 fetch 默认继承原请求的 method/headers/cookies
@@ -215,16 +218,7 @@ public class MockHandler {
                     "[MockHandler] Real response body (first 500 chars): {}",
                     body.length() > 500 ? body.substring(0, 500) + "..." : body);
 
-            // ── 2. 合并响应头（真实响应头 + 用户自定义 mockHeaders）──
-            Map<String, String> respHeaders = new HashMap<>(realResp.headers());
-            if (rule.getMockHeaders() != null) {
-                respHeaders.putAll(rule.getMockHeaders());
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[MockHandler] Merged {} custom mock header(s): {}",
-                        rule.getMockHeaders().size(), rule.getMockHeaders().keySet());
-            }
-
-            // ── 3. 应用字段替换（对真实响应体执行通配符批量替换）─────
+            // ── 2. 应用字段替换（对真实响应体执行通配符批量替换）─────
             if (hasReplaceFields && !body.isEmpty()) {
                 try {
                     LoggingConfigUtil.logDebugIfVerbose(LOGGER,
@@ -240,17 +234,45 @@ public class MockHandler {
                 }
             }
 
-            // ── 4. fulfill 修改后的响应给前端 ───────────────────────
-            Route.FulfillOptions opts = new Route.FulfillOptions()
-                    .setStatus(status)
-                    .setBody(body);
-            if (!respHeaders.isEmpty()) {
-                opts.setHeaders(respHeaders);
+            // ── 3. fulfill 给前端 ────────────────────────────────────
+            // 【对齐 Playwright】无字段替换且无自定义响应头时，直接透传真实响应：
+            //   fulfill(setResponse(realResp)) 保留全部真实响应头，且 Playwright 协议层
+            //   对 fetch 结果做 fetchResponseUid 优化（同连接不重复传 body）。
+            boolean hasCustomHeaders = rule.getMockHeaders() != null && !rule.getMockHeaders().isEmpty();
+            if (!hasReplaceFields && !hasCustomHeaders) {
+                route.fulfill(new Route.FulfillOptions().setResponse(realResp));
+                routeSettled = true;
+                LOGGER.info("[MockHandler] Fulfilled real response (passthrough): url={}, pattern='{}', status={}, bodyLength={}",
+                        RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
+            } else {
+                Route.FulfillOptions opts = new Route.FulfillOptions()
+                        .setStatus(status)
+                        .setBody(body);
+                // 合并真实响应头：过滤实体头（body 已解码，content-encoding / content-length /
+                // transfer-encoding 不再适用，保留会导致前端按压缩格式解析纯文本）。
+                Map<String, String> respHeaders = new HashMap<>();
+                for (Map.Entry<String, String> entry : realResp.headers().entrySet()) {
+                    String name = entry.getKey().toLowerCase(java.util.Locale.ROOT);
+                    if ("content-encoding".equals(name) || "content-length".equals(name)
+                            || "transfer-encoding".equals(name)) {
+                        continue;
+                    }
+                    respHeaders.put(entry.getKey(), entry.getValue());
+                }
+                if (hasCustomHeaders) {
+                    respHeaders.putAll(rule.getMockHeaders());
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[MockHandler] Merged {} custom mock header(s): {}",
+                            rule.getMockHeaders().size(), rule.getMockHeaders().keySet());
+                }
+                if (!respHeaders.isEmpty()) {
+                    opts.setHeaders(respHeaders);
+                }
+                route.fulfill(opts);
+                routeSettled = true;
+                LOGGER.info("[MockHandler] Fulfilled modified real response: url={}, pattern='{}', status={}, bodyLength={}",
+                        RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
             }
-
-            route.fulfill(opts);
-            LOGGER.info("[MockHandler] Fulfilled modified real response: url={}, pattern='{}', status={}, bodyLength={}",
-                    RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
 
             // ⭐ 存储统一交给 capture 目录：intercept 用 route.fetch 发真实请求，CDP 旁路可捕获；
             //    不再重复 storeInterceptedCall，消除重复存储。
@@ -262,16 +284,15 @@ public class MockHandler {
                 LOGGER.error("[MockHandler] Failed to resume after intercept failure for pattern '{}'",
                         rule.getUrlPattern());
             }
-        }
-    }
-
-    private static double getEnvDouble(String key, double defaultValue) {
-        String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
-        try {
-            return Double.parseDouble(val.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
+            routeSettled = true;
+        } finally {
+            // ⭐ 生命周期契约最终守卫：非 PlaywrightException（如字段替换逻辑抛出的
+            //    RuntimeException）逃逸时 route 仍未终结，此处兜底放行。
+            if (!routeSettled) {
+                LOGGER.warn("[MockHandler] Route not settled on exit (runtime exception escaped), "
+                        + "resuming to honor route lifecycle contract: pattern='{}'", rule.getUrlPattern());
+                try { route.resume(); } catch (Exception ignored) { }
+            }
         }
     }
 

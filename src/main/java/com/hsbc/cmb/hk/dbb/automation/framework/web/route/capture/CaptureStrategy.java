@@ -43,4 +43,28 @@ public interface CaptureStrategy {
     default boolean isAvailable() {
         return true;
     }
+
+    /**
+     * 当前策略是否能为事件链提供响应体（body）。
+     *
+     * <p>默认 false；仅 CDP 旁路具备 body 能力。Playwright 事件策略不提供 body，
+     * 此时 Monitor 必须回退到既有 {@code page.waitForResponse} 同步路径。
+     */
+    default boolean providesResponseBody() {
+        return false;
+    }
+
+    /**
+     * 读取指定 requestId 的响应体，由 {@link BodyReader} 在专用线程池（bodyFetchPool）中调用。
+     *
+     * <p>绝不在浏览器事件回调线程中执行——实现可安全调用
+     * {@code CDP Network.getResponseBody} 或 {@code Response.body()}。
+     * 读取失败或请求不可用时返回 null（调用方会投喂 null 的 RESPONSE_BODY 事件闭合 slot）。
+     *
+     * @param requestId 本策略发布的请求关联键
+     * @return 响应体字节；失败/不可用返回 null
+     */
+    default byte[] readResponseBody(String requestId) {
+        return null;
+    }
 }

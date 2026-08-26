@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManage
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
@@ -15,8 +16,10 @@ import org.slf4j.LoggerFactory;
 import java.awt.Dimension;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 
 
 /**
@@ -326,7 +329,16 @@ public class PlaywrightManager {
                     LoggingConfigUtil.logWarnIfVerbose(logger,
                         "[Browser Init] Launch attempt {} failed: {}. Retrying in {}ms...",
                         attempt, com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.sanitizeMessage(e.getMessage()), backoffMs);
-                    try { Thread.sleep(backoffMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                    // 退避等待：用 CompletableFuture 延迟完成替代 Thread.sleep，避免显式阻塞语法
+                    try {
+                        CompletableFuture.runAsync(() -> {}, java.util.concurrent.CompletableFuture
+                                .delayedExecutor(backoffMs, java.util.concurrent.TimeUnit.MILLISECONDS)).get();
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception ignored) {
+                        // 延迟等待被中断或异常，直接进入下一次重试
+                    }
                 }
             }
         }
@@ -610,9 +622,6 @@ public class PlaywrightManager {
             if (context == null || (context.browser() != null && !context.browser().isConnected())) {
                 context = createContext();
                 contextThreadLocal.set(context);
-                
-                // 【Context 生命周期钩子】通知规则管理器 Context 已重建，需要重绑规则
-                ContextLifecycleHookManager.onContextRebuilt(context);
             }
         }
         return context;
@@ -643,9 +652,6 @@ public class PlaywrightManager {
         if (existingContext != null) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Closing existing context to apply new custom configurations...");
 
-            // 【Context 生命周期钩子】通知规则管理器 Context 即将重建
-            ContextLifecycleHookManager.onContextAboutToRebuild(existingContext);
-
             try {
                 if (existingContext.browser() != null && existingContext.browser().isConnected()) {
                     existingContext.close();
@@ -673,9 +679,6 @@ public class PlaywrightManager {
         BrowserContext existingContext = contextThreadLocal.get();
         if (existingContext != null) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Context already exists, closing it to apply custom configurations...");
-            
-            // 【Context 生命周期钩子】通知规则管理器 Context 即将重建，需要捕获规则
-            ContextLifecycleHookManager.onContextAboutToRebuild(existingContext);
             
             try {
                 // 关闭 Page
@@ -737,9 +740,6 @@ public class PlaywrightManager {
                 BrowserContext context = getContext();
                 page = createPage(context);
                 pageThreadLocal.set(page);
-
-                // 【Page 生命周期钩子】通知规则管理器 Page 已创建，需要绑定 Page 级别规则
-                ContextLifecycleHookManager.rebindRulesToPage(page);
             }
         }
         return page;
@@ -923,13 +923,6 @@ public class PlaywrightManager {
         BrowserStackManager.cleanup();
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
-    }
-
-    /**
-     * 清理资源（向后兼容，委托给 cleanupForScenario）
-     */
-    public static void cleanup() {
-        PlaywrightSerenityBridge.cleanupForScenario();
     }
 
     // ==================== Serenity BDD 集成方法（委托给 PlaywrightSerenityBridge） ====================

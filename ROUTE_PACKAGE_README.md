@@ -65,6 +65,8 @@ RouteDsl.clearAllRules()      // 静态方法：全局清理所有上下文的�
 
 **请求条件匹配**：`.matchMethod(method)`、`.resourceType(types)`、`.onlyXhr()`、`.onlyFetch()`、`.onlyApi()`、`.matchHeader(key, value)`、`.matchQuery(key, value)`、`.matchBodyRegex(regex)`、`.matchContentType(type)`、`.matchReferrer(referrer)`、`.matchOrigin(origin)`、`.matchFrameUrl(url)`、`.onlyMainFrame(bool)`、`.allowAllFrames()`、`.onlyApiCall(bool)`、`.allowAllRequests()`
 
+**一次性拦截（对齐 Playwright `Route.setTimes`）**：`.times(n)` — 0（默认）无限次；N>0 仅处理前 N 次，之后请求直接放行走真实网络。适用于 MOCK / MODIFY / DELAY；MONITOR 请用 `minMatches` + `autoStopOnMatch`。
+
 **Delay 专用**：`.delay(secs)`、`randomDelay(minSecs, maxSecs)`
 
 ---
@@ -493,6 +495,7 @@ String lastBody = ctx.getLastResponse("/api/login");
 | `matchFrameUrl(value)` | 按包含关系匹配发起请求的 Frame URL。 |
 | `onlyMainFrame(enabled)` | 是否只处理主 Frame；默认开启。 |
 | `allowAllFrames()` | 允许 iframe 等非主 Frame 请求。 |
+| `times(count)` | 一次性拦截次数（对齐 Playwright `Route.setTimes`）：0=无限次（默认）；N>0=仅处理前 N 次，第 N+1 次起直接放行走真实网络。仅对独立注册的 MOCK / MODIFY / DELAY 生效；跨层合并场景安全降级为无限次。MONITOR 请用 `minMatches`+`autoStopOnMatch`。 |
 
 ### 11.4 Monitor 方法
 
@@ -624,3 +627,57 @@ dsl.clear();  // 注销所有 pattern，清理上下文 + MonitorSession
 | **Context Session 超时后残留** | ❌ 自动处理 | Scenario 结束时统一清理 |
 
 `RouteDsl.clearAllRules()` 用于全局清理所有上下文的所有路由规则（如测试套件结束时）。
+
+---
+
+## 附录：与 Playwright Router 模型的对齐计划
+
+> 本附录记录参照 `playwright-java` 1.58 源码（`Router.java` / `RouteImpl.java`）评估得出的演进路线。
+> 已落地部分用 ✅ 标注；规划部分为后续重构方向，**不影响当前 DSL 与测试契约**。
+
+### A. 已对齐（✅ 已落地）
+
+| 项 | Playwright 设计 | 本框架对应实现 |
+|---|---|---|
+| ✅ 响应透传 | `route.fulfill(FulfillOptions.setResponse(apiResponse))` 保留全部真实头 + 协议层 `fetchResponseUid` 优化 | `MockHandler` 无字段替换/无自定义头时直接 `fulfill(setResponse(realResp))`；有替换时过滤 `content-encoding`/`content-length`/`transfer-encoding` 实体头（body 已解码，保留会导致前端按压缩格式解析纯文本） |
+| ✅ 一次性拦截 | `RouteOptions.setTimes(n)` — handler 处理 n 次后自动移除 | `RuleRule.times(n)` + DSL `.times(n)`：递减计数，耗尽后仅放行走真实网络（语义同 session stopped，不 unroute 以避免 Playwright 线程竞态） |
+
+### B. Handler 链替代能力位合并（对应 Playwright `Router.RouteInfo`）— ✅ 已落地（分发期合并方案）
+
+**现状问题（B3 改造前）**：同 pattern 多规则通过 `RouteRule.mergeFrom()` 在**注册期**有损合并到共享可变对象，产生一串工程补偿：
+
+- `equals/hashCode` 只按 `urlPattern + modifyMethod`（放弃值语义）→ 需要 `hashCodeCached` 每 setter 手动失效
+- `copyForMerge()` 深拷贝 + 合并只开不关（DELAY 取 max、MODIFY putAll、MONITOR 只开不关）
+- 被迫引入 `MonitorSessionKey`（因 mergeFrom 会改 hash）
+- `CROSS_LAYER_HANDLED_URLS` / `DISPATCHED_ROUTES` 静态防重门控
+
+**已落地实现（B3 链式模型）**：
+
+```java
+// 同 pattern 多次注册 → 不再就地 mergeFrom，而是追加为规则链（后注册优先）
+Map<String, List<RouteRule>> ENGINE_RULE_STORE;   // 值类型 List<RouteRule>（规则链）
+// 分发时对链执行「分发期合并」：copyForMerge + 依次 mergeFrom 生成一次性有效规则，
+// 语义与就地合并一致，但无注册期共享可变状态（链上原始规则永不被修改）
+RouteRule effective = rule.copyForMerge();
+for (RouteRule next : chainTail) effective.mergeFrom(next);
+// 会话 / times / 跨层 identity 归源链头 mergeSource，而非合并临时对象
+```
+
+**迁移要点落地情况**：
+
+1. ✅ **注册追加链尾**：注册不再 `mergeFrom`，同 pattern 规则追加为链节点（后注册优先）
+2. ✅ **分发期合并**：`dispatchRoute` 对链执行 `copyForMerge + mergeFrom` 生成一次性有效规则（用后即弃，无共享可变状态），等效替代逐节点能力位检查；MONITOR 事件链监听仍为规划（保留 route 内 fetch 兜底路径）
+3. ✅ **`times` 归零放行**：对齐 Playwright `Route.setTimes`，递减计数耗尽后仅放行走真实网络（不 unroute 避免线程竞态）
+4. ⏳ **保留 `mergeFrom`/`copyForMerge`**：在分发期合并方案下二者作为「合并算法」被复用（不再注册期落库），故不删除；`hashCodeCached`/`MonitorSessionKey`/`CROSS_LAYER_HANDLED_URLS` 仍在使用，待 C（Router 实例化）阶段收敛
+
+**兼容约束**：DSL API（`RouteDsl` 全部方法）、行为语义（4.4 优先级覆盖、八多规则组合）、86+ 现有测试全部保持（`b17_mock_times_one_shot` 新增验证 times 一次性拦截）。
+
+### C. 规划：Router 实例化收敛全局状态
+
+- 现状：`RouteEngine` 为静态全局类（`ENGINE_RULE_STORE`/`SESSIONS`/`PAGE_RULES`/`CONTEXT_RULES`/`DISPATCHED_ROUTES` 等十余张静态表），依赖 `PageRef`/TTL/容量上限防御跨测试残留。
+- 目标（对齐 Playwright：每个 `BrowserContext` 一个 `Router` 实例）：
+  1. `ContextRouteEngine`（已有雏形）扩展为完整 Router：持有本 context 的规则链 + 会话表 + 防重状态
+  2. 请求分发：page 层链优先，未处理/fallback 自动落到 context 层链（替代 `CROSS_LAYER_HANDLED_URLS` 手动跨层合并）
+  3. 静态查询 API（`resolveEndpointForUrl` 等）委托给 context 实例；`clear`/`resetAll` 随 context 生命周期自然销毁
+  4. 消除 `PageRef`、TTL 扫描、`MAX_*_ENTRIES` 容量上限等防御性复杂度
+- 风险：改动面最大，需分步迁移（先实例化 session 表 → 再实例化规则链 → 最后收敛静态查询 API），每步保持全量测试通过。

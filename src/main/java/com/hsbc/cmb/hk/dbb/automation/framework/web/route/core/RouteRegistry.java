@@ -260,13 +260,15 @@ public class RouteRegistry {
      */
     static void purgeDeadEntries() {
         int removed = 0;
-        Iterator<ContextKey> it = CONTEXT_PATTERNS.keySet().iterator();
-        while (it.hasNext()) {
-            ContextKey key = it.next();
-            if (key.isDead()) {
-                it.remove();
-                removed++;
-            }
+        // 修复：CONTEXT_PATTERNS 是 ConcurrentHashMap，keySet 迭代器 .remove() 在结构变更时会抛
+        // IllegalStateException。改为先收集 dead key，再逐个 remove(key)（原子且并发安全）。
+        java.util.List<ContextKey> deadKeys = new java.util.ArrayList<>();
+        for (ContextKey key : CONTEXT_PATTERNS.keySet()) {
+            if (key.isDead()) deadKeys.add(key);
+        }
+        for (ContextKey key : deadKeys) {
+            CONTEXT_PATTERNS.remove(key);
+            removed++;
         }
         if (removed > 0) {
             LOGGER.debug("[RouteRegistry] Purged {} dead context entries (GC-reclaimed)", removed);

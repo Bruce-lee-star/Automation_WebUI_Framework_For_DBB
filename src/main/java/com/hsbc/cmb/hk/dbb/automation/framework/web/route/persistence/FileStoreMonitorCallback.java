@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -269,14 +270,23 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     private Map<String, Object> buildJson(String urlPattern, String url, int status,
                                           String body, Map<String, String> responseHeaders,
                                           String method) {
+        // ⭐ P0 安全修复：本文件是「落本地磁盘」这条数据出域路径，此前完全绕过脱敏，
+        //    Cookie / Authorization / 令牌 / 账号等明文写入 JSON 文件，是系统性泄露点。
+        //    脱敏是数据出域的强制收口 —— 与 ApiMonitoringRecord（落库）保持同一标准。
+        String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
+        String safeBody = SensitiveDataSanitizer.sanitizeBody(body);
+        Map<String, String> safeHeaders = SensitiveDataSanitizer.sanitizeHeaders(responseHeaders);
+
         Map<String, Object> json = new LinkedHashMap<>();
-        json.put("endpoint", urlPattern != null ? urlPattern : url);
-        json.put("requestUrl", url);
+        json.put("endpoint", urlPattern != null ? urlPattern : safeUrl);
+        json.put("requestUrl", safeUrl);
         json.put("method", method);
         json.put("statusCode", status);
         json.put("requestHeaders", null);
-        json.put("responseHeaders", responseHeaders);
-        json.put("responseBody", body);
+        json.put("responseHeaders", safeHeaders);
+        json.put("responseBody", safeBody);
+        // ⭐ bodyLength 取【原始】长度：脱敏会改变字符串长度，用脱敏后长度会让
+        //    "响应体大小" 这一诊断维度失真（掩码串比真实令牌短或长）。
         json.put("bodyLength", body != null ? body.length() : 0);
         json.put("capturedAt", System.currentTimeMillis());
         json.put("testRunId",

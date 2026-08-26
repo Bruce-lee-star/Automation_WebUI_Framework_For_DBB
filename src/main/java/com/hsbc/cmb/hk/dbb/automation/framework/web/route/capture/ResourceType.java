@@ -7,7 +7,7 @@ import java.util.Locale;
  *
  * <p>统一收敛 CDP / Playwright 两套命名体系：
  * <ul>
- *   <li>CDP（{@code Network.requestWillBeSent} 的 {@code request.type}）返回首字母大写，如 {@code XHR}/{@code Fetch}/{@code Document}</li>
+ *   <li>CDP（{@code Network.requestWillBeSent} 的顶层 {@code type} 字段）返回首字母大写，如 {@code XHR}/{@code Fetch}/{@code Document}</li>
  *   <li>Playwright（{@code Request.resourceType()}）返回小写，如 {@code xhr}/{@code fetch}/{@code document}</li>
  * </ul>
  * 本枚举以「标准名（大写）」为唯一标识，并通过 {@link #playwrightName} 保留与 Playwright 的对应关系，

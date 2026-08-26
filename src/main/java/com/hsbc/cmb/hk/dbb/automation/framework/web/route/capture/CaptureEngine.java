@@ -80,7 +80,7 @@ public class CaptureEngine {
         this.strategy = selectStrategy(page);
         this.strategyName = strategy.name();
 
-        // 创建 EventMerger（不再需要 page 参数，body 由策略直接读取）
+        // 创建 EventMerger（不再需要 page 参数；body 由 BodyReader 在 bodyFetchPool 线程按需异步读取）
         this.merger = new EventMerger(ringBuffer, threadPool);
 
         // 启动（异常安全：失败时立即清理已分配的资源）
@@ -117,6 +117,10 @@ public class CaptureEngine {
             // 直接修改 final 字段在 Java 中不可行，因此通过内部 setter 实现
             setStrategy(fallback);
         }
+
+        // ⭐ 绑定 body 读取能力：策略选定/降级完成后，BodyReader 才能在 bodyFetchPool
+        //   线程按需拉取响应体（策略只发布轻量 BODY_READY 信号）。
+        merger.bindBodyReader(strategy);
 
         // 3. 启动 merger 消费者线程
         this.mergerFuture = threadPool.submitMerger(merger);
@@ -223,6 +227,42 @@ public class CaptureEngine {
         return running.get();
     }
 
+    /**
+     * 当前采集策略是否能为旁路事件链提供响应体。
+     *
+     * <p>仅 CDP 旁路具备 body 能力（已确认能经 {@code NetworkResponse.getResponseBody} 取回 body）。
+     * Playwright 事件策略不提供 body，此时 {@link MonitorHandler} 必须回退到既有
+     * {@code page.waitForResponse} 同步路径，不能由事件链接管 body 读取，否则断言会退化。
+     */
+    public boolean providesResponseBody() {
+        return running.get() && strategy != null && strategy.providesResponseBody();
+    }
+
+    /**
+     * 阻塞等待匹配 URL 的事件链终态交换（旁路诊断/接管用）。
+     *
+     * <p>仅用于 {@link MonitorHandler} 在 {@link #providesResponseBody()} 为真时的可选接管路径；
+     * 调用方必须自行处理超时与缺失回退，禁止依赖此路径保证采集成功。
+     */
+    public NetworkExchange waitForExchange(String requestUrl, long timeoutMs) {
+        if (!running.get()) return null;
+        return merger.waitForExchange(requestUrl, timeoutMs);
+    }
+
+    /**
+     * 最近的事件链终态快照，仅用于迁移诊断；不代表或替代既有 API 捕获结果。
+     */
+    public java.util.List<NetworkExchange> recentExchanges() {
+        return merger.recentExchanges();
+    }
+
+    /** 事件链终态与响应体能力诊断指标；不替代既有 CaptureMetrics。 */
+    public NetworkExchangeMetrics exchangeMetrics() {
+        NetworkEventCorrelator correlator = (strategy instanceof PlaywrightEventCaptureStrategy)
+                ? ((PlaywrightEventCaptureStrategy) strategy).getCorrelator() : null;
+        return merger.exchangeMetrics(correlator);
+    }
+
     // ── Route 集成 ──
 
     /**
@@ -256,8 +296,8 @@ public class CaptureEngine {
     private static CaptureStrategy selectStrategy(Page page) {
         // ⭐ 采集策略交由工厂按浏览器内核显式分发：
         //    chromium → CDP（保真度最高）；firefox/webkit → Playwright 事件（CDP 不可靠）；
-        //    未知 → 安全默认 Playwright 事件。系统属性 -Droute.capture.strategy 可强制覆盖。
-        //    避免「非 Chromium 上 CDP 静默产出残缺数据」的企业级假正常风险。
+        //    未知 → 安全默认 Playwright 事件。避免「非 Chromium 上 CDP 静默产出残缺数据」
+        //    的企业级假正常风险。
         return CaptureStrategyFactory.create(page);
     }
 }

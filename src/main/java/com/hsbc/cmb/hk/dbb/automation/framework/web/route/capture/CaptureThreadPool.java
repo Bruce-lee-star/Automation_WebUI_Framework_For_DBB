@@ -27,6 +27,8 @@ public class CaptureThreadPool {
     private final ThreadPoolExecutor mergerPool;
     private final ThreadPoolExecutor bodyFetchPool;
     private final ScheduledExecutorService cleanupPool;
+    /** body 读取退避调度器：用于 readWithRetry 的异步退避，避免 Thread.sleep 阻塞 bodyFetchPool 线程 */
+    private final ScheduledExecutorService bodyFetchScheduler;
 
     /**
      * @param mergerThreads   merger 线程数（推荐 1）
@@ -37,6 +39,12 @@ public class CaptureThreadPool {
         this.bodyFetchPool = createPool(bodyFetchThreads, "body-fetch");
         this.cleanupPool = Executors.newScheduledThreadPool(1, r -> {
             Thread t = new Thread(r, THREAD_PREFIX + "-cleanup-" + THREAD_ID.incrementAndGet());
+            t.setDaemon(true);
+            return t;
+        });
+        this.bodyFetchScheduler = Executors.newScheduledThreadPool(
+                Math.max(1, bodyFetchThreads), r -> {
+            Thread t = new Thread(r, THREAD_PREFIX + "-body-backoff-" + THREAD_ID.incrementAndGet());
             t.setDaemon(true);
             return t;
         });
@@ -63,6 +71,16 @@ public class CaptureThreadPool {
         return cleanupPool.scheduleAtFixedRate(task, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
     }
 
+    /** 提交一次性延迟任务（用于事件缺失时的兜底触发，如 RESPONSE_META 后未收到 BODY_READY 的主动 body 拉取） */
+    public ScheduledFuture<?> scheduleOnce(Runnable task, long delayMs) {
+        return cleanupPool.schedule(task, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    /** 返回 body 读取退避调度器（异步退避，不阻塞 bodyFetchPool 线程） */
+    public ScheduledExecutorService bodyFetchScheduler() {
+        return bodyFetchScheduler;
+    }
+
     // ── 指标 ──
 
     public int mergerActiveCount() { return mergerPool.getActiveCount(); }
@@ -80,6 +98,7 @@ public class CaptureThreadPool {
         LOGGER.info("[CaptureThreadPool] Shutting down (timeout={}ms)...", timeoutMs);
 
         cleanupPool.shutdownNow();
+        bodyFetchScheduler.shutdownNow();
 
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
         shutdownPool(mergerPool, "merger", remainingMillis(deadline));

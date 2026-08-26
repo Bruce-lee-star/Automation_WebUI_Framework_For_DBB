@@ -82,6 +82,13 @@ public final class SerenityReporter {
      */
     public static void recordApiOperation(String operation, String url, String detail) {
         try {
+            // ⭐ P0 安全修复：Serenity 报告是泄露面最大的 sink —— HTML 报告会被归档、
+            //    共享给团队、上传 CI 制品，一次分享即一次数据泄露。此前完全绕过脱敏，
+            //    请求/响应体与 URL query 中的凭据明文写入报告。
+            //    在入队处统一脱敏（而非 flush 处），确保队列中驻留的数据本身已是安全的。
+            url = SensitiveDataSanitizer.sanitizeUrl(url);
+            detail = SensitiveDataSanitizer.sanitizeBody(detail);
+
             // 队列容量保护：超过上限丢弃最旧记录
             int current = pendingCount.incrementAndGet();
             if (current > MAX_PENDING_RECORDS) {

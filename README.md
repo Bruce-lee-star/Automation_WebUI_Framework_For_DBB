@@ -162,14 +162,13 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   │   ├── ApiMonitoringRepository.java # HikariCP DB 仓库（MySQL/PostgreSQL）
 │   │   │   │   └── DatabaseStoreMonitorCallback.java # 内置 DB 存储回调
 │   │   │   └── util/                    # RouteAsyncPool / SerenityReporter / RouteUtil
-│   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（7 个类）
+│   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（6 个类）
 │   │   │   ├── PlaywrightManager.java   # Playwright/Browser/Context/Page 管理层
 │   │   │   ├── PlaywrightContextManager.java  # Context 创建与 Page 稳定化
 │   │   │   ├── PlaywrightConfigManager.java   # 浏览器类型判断与配置
 │   │   │   ├── PlaywrightInitializer.java     # Playwright 实例初始化
 │   │   │   ├── ProxyConfigResolver.java       # 统一代理解析器（所有代理场景的唯一入口）
-│   │   │   ├── CustomOptionsManager.java      # 自定义 Context 选项（链式 API）
-│   │   │   └── ContextLifecycleHookManager.java # Context 生命周期钩子
+│   │   │   └── CustomOptionsManager.java      # 自定义 Context 选项（链式 API）
 │   │   ├── config/                     # 配置中心
 │   │   │   ├── FrameworkConfig.java    # 枚举式集中配置（含全部默认值和说明）
 │   │   │   ├── AutoBrowserProcessor.java  # @AutoBrowser 注解处理器

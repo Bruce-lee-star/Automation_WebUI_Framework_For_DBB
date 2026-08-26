@@ -11,11 +11,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
-import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
-import com.jayway.jsonpath.Option;
-import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
-import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
@@ -37,20 +33,15 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><b>类型保持</b>：替换值时保留原字段类型（数字→数字，布尔→布尔，null→null），避免类型篡改</li>
  *   <li><b>安全降级</b>：JSON 解析失败时退化为字符串替换，但仅在 {@code allowFallbackStringReplace=true} 时启用</li>
  *   <li><b>请求头判空</b>：使用 Optional 包装，避免空指针</li>
- *   <li><b>异常安全</b>：route.resume() 包裹 try-catch，避免单请求失败导致整个路由崩溃</li>
+ *   <li><b>异常安全</b>：route.resume()/fulfill() 统一走 RouteUtil.safeResume/safeFulfill，
+ *       识别 Firefox/WebKit 下 "Object doesn't exist" 等已销毁 route 信号并静默跳过，
+ *       避免跨浏览器脆弱性（请求挂起 / 0次或2次 resume）。</li>
  * </ul>
  */
 public class ModifyHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ModifyHandler.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-
-    /** JsonPath 配置：使用 Jackson 提供器，禁止自动创建缺失路径 */
-    private static final Configuration JSONPATH_CONFIG = Configuration.builder()
-            .jsonProvider(new JacksonJsonProvider())
-            .mappingProvider(new JacksonMappingProvider())
-            .options(Option.SUPPRESS_EXCEPTIONS)
-            .build();
 
     /** JsonPath 编译缓存：避免重复解析相同路径表达式。
      *  使用简单容量限制防止长期运行缓慢增长。 */
@@ -61,7 +52,7 @@ public class ModifyHandler {
 
     /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS =
-            getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+            RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
     /** 是否在 JSON 解析失败时退化为字符串替换（False=仅处理 JSON） */
     private static volatile boolean allowFallbackStringReplace = false;
@@ -72,16 +63,6 @@ public class ModifyHandler {
      */
     public static void setAllowFallbackStringReplace(boolean allow) {
         allowFallbackStringReplace = allow;
-    }
-
-    /**
-     * ⭐ #7 容量保护：当 JSONPath 编译缓存超过软上限时触发清空。
-     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
-     * computeIfAbsent 下可能抛出 ConcurrentModificationException）。
-     * JSONPath 表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
-     */
-    private static void evictOldestQuarter(Map<?, ?> map) {
-        map.clear();
     }
 
     /**
@@ -124,7 +105,7 @@ public class ModifyHandler {
 
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[ModifyHandler] ── handle() START: pattern='{}', url='{}', method={}, "
-                + "headersToSet={}, headersToRemove={}, bodyMods={}, modifyMethod={} ──",
+                        + "headersToSet={}, headersToRemove={}, bodyMods={}, modifyMethod={} ──",
                 rule.getUrlPattern(), req.url(), req.method(),
                 requestHeadersToSet != null ? requestHeadersToSet.size() : 0,
                 requestHeadersToRemove != null ? requestHeadersToRemove.size() : 0,
@@ -304,12 +285,17 @@ public class ModifyHandler {
         //    为何不用 route.resume(opts) + req.response()：在带 DELAY 的异步线程场景里，
         //    resume 后 req.response() 拿到的对象会失效（"Object doesn't exist"），而 fetch 同步返回响应，
         //    可在任意线程可靠读取。fetch 的真实响应再 fulfill 回浏览器，对前端而言响应未被篡改。
+        // ⭐ route 生命周期契约守卫：标记 route 是否已被终结（fulfill/resume/abort 恰好一次）。
+        //    任何异常路径（含非 PlaywrightException 的断言异常）都由 finally 兜底终结，
+        //    确保绝不出现「已 fetch 但未终结」导致的浏览器端永久 pending。
+        boolean routeSettled = false;
         try {
             // 进入 fetch 前确认页面未关闭
             if (RouteUtil.isPageClosed(route)) {
                 LOGGER.warn("[ModifyHandler] Page/context already closed, skip modify (resume to avoid blocking): pattern='{}', url='{}'",
                         rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-                try { route.resume(); } catch (Exception ignored) {}
+                RouteUtil.safeResume(route);
+                routeSettled = true;
                 return;
             }
 
@@ -381,20 +367,6 @@ public class ModifyHandler {
             //       若 store 在 fulfill 之后，调用方（fetchApi 返回后）读取 CapturedApiCall 时
             //       可能尚未存储（c21 时序竞态），故先存储再 fulfill。
 
-            // ═══════════════════════════════════════════════════════════════
-            // ⭐ 叠加监控（基线）：修改请求后真实响应已拿回，对真实响应断言健康。
-            //    监控不可被 modify 覆盖；断言失败 → Fail-Fast 报错（对应「监控到 API 失败就报错」）。
-            //    注意：modify 用 route.resume(opts) 放行，服务器返回的真实响应原样透传浏览器，
-            //          因此监控断言的真实响应与用户看到的响应一致（不改响应）。
-            // ═══════════════════════════════════════════════════════════════
-            if (rule.isMonitorEnabled()) {
-                ApiCaptureContext monitorCtx = RouteUtil.captureContext(route);
-                MonitorHandler.assertAndRecord(route, rule, monitorCtx,
-                        req.url(), realStatus, realBody,
-                        finalMethod, req.postData(),
-                        new HashMap<>(req.headers()), realRespHeaders);
-            }
-
             SerenityReporter.recordApiOperation("MODIFY", req.url(),
                     String.format("Pattern: %s\nMethod: %s\nStatus: %d\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
                             rule.getUrlPattern(),
@@ -434,13 +406,41 @@ public class ModifyHandler {
 
             // ── fulfill 真实响应给浏览器（改请求、不改响应） ──────────────
             //    store 已在上方完成，此处 fulfill 触发浏览器 fetch resolve，避免调用方读取竞态。
+            //
+            // ⭐ 修复（头体一致性）：realBody 是 APIResponse.body() 返回的【已解码】字节，
+            //    而 realRespHeaders 来自服务器原始响应，可能带 content-encoding: gzip/br/deflate
+            //    与压缩后的 content-length。若原样下发，浏览器会按 header 再解压一次
+            //    （解压失败 → net::ERR_CONTENT_DECODING_FAILED）或按错误长度截断 body。
+            //    故 fulfill 前必须剥离这三个由传输层决定的头，交由 Playwright 按实际 body 重算。
             Route.FulfillOptions fulfillOpts = new Route.FulfillOptions()
                     .setStatus(realStatus)
                     .setBody(realBody);
-            if (!realRespHeaders.isEmpty()) {
-                fulfillOpts.setHeaders(realRespHeaders);
+            Map<String, String> fulfillHeaders = stripTransportHeaders(realRespHeaders);
+            if (!fulfillHeaders.isEmpty()) {
+                fulfillOpts.setHeaders(fulfillHeaders);
             }
-            route.fulfill(fulfillOpts);
+            RouteUtil.safeFulfill(route, fulfillOpts);
+            routeSettled = true;
+
+            // ═══════════════════════════════════════════════════════════════
+            // ⭐ 叠加监控（基线）：修改请求后真实响应已拿回，对真实响应断言健康。
+            //    监控不可被 modify 覆盖；断言失败 → Fail-Fast 报错（对应「监控到 API 失败就报错」）。
+            //
+            // ⭐ 修复（route 生命周期契约）：断言【必须】放在 safeFulfill 之后。
+            //    assertAndRecord 断言失败时会抛 RouteException.ApiAssertionException，
+            //    而它继承自 RuntimeException（不是 PlaywrightException），下方
+            //    catch (PlaywrightException) 捕不到 → 若断言在 fulfill 之前，
+            //    route 已被 fetch 但永不终结，浏览器端该请求永久 pending、页面卡死。
+            //    现在 fulfill 先完成（响应原样透传，与断言结果无关——MODIFY 只改请求不改响应），
+            //    断言异常再向上传播报错，两者互不干扰。
+            // ═══════════════════════════════════════════════════════════════
+            if (rule.isMonitorEnabled()) {
+                ApiCaptureContext monitorCtx = RouteUtil.captureContext(route);
+                MonitorHandler.assertAndRecord(route, rule, monitorCtx,
+                        req.url(), realStatus, realBody,
+                        finalMethod, req.postData(),
+                        new HashMap<>(req.headers()), realRespHeaders);
+            }
 
             LOGGER.info("[ModifyHandler] Modified request, fulfilled real response (untouched): url={}, pattern='{}', method={}, status={}, headersSet={}, headersRemoved={}, bodyModified={}, bodyAdded={}, bodyRemoved={}",
                     RouteUtil.sanitizeUrl(req.url()), rule.getUrlPattern(),
@@ -453,12 +453,60 @@ public class ModifyHandler {
         } catch (PlaywrightException e) {
             LOGGER.error("[ModifyHandler] Failed to modify/resume route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
-            // 兜底：modify/resume 失败时 resume 放行请求，避免请求永久挂起
-            try { route.resume(); } catch (Exception ignored) {
-                LOGGER.error("[ModifyHandler] Failed to resume after modify failure for pattern '{}'",
-                        rule.getUrlPattern());
+            // 兜底：modify/resume 失败时 safeResume 放行请求，避免请求永久挂起。
+            // safeResume 会自动识别 Firefox/WebKit 下 "Object doesn't exist" 等已销毁 route 信号并静默跳过。
+            RouteUtil.safeResume(route);
+            routeSettled = true;
+            LOGGER.error("[ModifyHandler] Failed to resume after modify failure for pattern='{}'",
+                    rule.getUrlPattern());
+        } finally {
+            // ⭐ 生命周期契约最终守卫：断言异常（ApiAssertionException extends RuntimeException）
+            //    或任何未预期的 RuntimeException 逃逸时，route 可能仍未终结。
+            //    此处兜底 resume 放行，避免浏览器端请求永久 pending。
+            //    注意：safeResume 对已终结的 route 是幂等安全的（内部识别 "already handled" 并静默跳过），
+            //    但仍以 routeSettled 精确门控，避免无谓的 IPC 往返与噪音日志。
+            if (!routeSettled) {
+                LOGGER.warn("[ModifyHandler] Route not settled on exit (assertion/runtime exception escaped), "
+                        + "resuming to honor route lifecycle contract: pattern='{}'", rule.getUrlPattern());
+                RouteUtil.safeResume(route);
             }
         }
+    }
+
+    /**
+     * 剥离由传输层决定、不应随改写后 body 一起下发的响应头。
+     *
+     * <p>{@code APIResponse.body()} 返回的是<b>已解码</b>的字节流，但 {@code APIResponse.headers()}
+     * 仍保留服务器原始响应头。若把 {@code content-encoding} / {@code content-length} /
+     * {@code transfer-encoding} 原样 fulfill 回浏览器，会产生两类故障：
+     * <ul>
+     *   <li>{@code content-encoding: gzip|br|deflate} → 浏览器对已解码 body 再解压一次，
+     *       报 {@code net::ERR_CONTENT_DECODING_FAILED}，前端拿到空响应</li>
+     *   <li>{@code content-length: <压缩后长度>} → body 被按错误长度截断，JSON 解析失败</li>
+     *   <li>{@code transfer-encoding: chunked} → 与 fulfill 的固定长度语义冲突</li>
+     * </ul>
+     * 剥离后由 Playwright 依实际 body 重新计算，保证头体一致。
+     *
+     * @param headers 服务器原始响应头（不会被修改）
+     * @return 新的 Map，已移除传输层头（大小写不敏感匹配）
+     */
+    private static Map<String, String> stripTransportHeaders(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return new HashMap<>();
+        }
+        Map<String, String> cleaned = new HashMap<>(headers.size());
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            String key = e.getKey();
+            if (key == null) continue;
+            String lower = key.toLowerCase(java.util.Locale.ROOT);
+            if ("content-encoding".equals(lower)
+                    || "content-length".equals(lower)
+                    || "transfer-encoding".equals(lower)) {
+                continue;
+            }
+            cleaned.put(key, e.getValue());
+        }
+        return cleaned;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -473,10 +521,10 @@ public class ModifyHandler {
         Object existingValue;
         try {
             if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX_SIZE) {
-                evictOldestQuarter(JSONPATH_CACHE);
+                RouteUtil.evictOldestQuarter(JSONPATH_CACHE);
             }
-            JsonPath compiled = JSONPATH_CACHE.computeIfAbsent(path, p -> JsonPath.compile(p));
-            existingValue = compiled.read(root, JSONPATH_CONFIG);
+            JsonPath compiled = JSONPATH_CACHE.computeIfAbsent(path, p -> RouteUtil.compileJsonPath(p));
+            existingValue = compiled.read(root, RouteUtil.JSONPATH_CONFIG);
         } catch (Exception e) {
             existingValue = null;
         }
@@ -654,8 +702,6 @@ public class ModifyHandler {
      * <ul>
      *   <li>null → 智能推断</li>
      *   <li>布尔 → BooleanNode</li>
-     *   <li>整数类型 → IntNode / LongNode</li>
-     *   <li>浮点类型 → DecimalNode</li>
      *   <li>JSON 结构 → 字符串（避免破坏结构）</li>
      *   <li>其他 → TextNode</li>
      * </ul>
@@ -988,7 +1034,7 @@ public class ModifyHandler {
         if (value instanceof Number) {
             return new DecimalNode(new BigDecimal(value.toString()));
         }
-        // ⭐ Collection → ArrayNode（支持空列表 []
+        // ⭐ Collection → ArrayNode（支持空列表 [])
         if (value instanceof Collection) {
             ArrayNode arr = OBJECT_MAPPER.createArrayNode();
             for (Object elem : (Collection<?>) value) {
@@ -1538,15 +1584,5 @@ public class ModifyHandler {
      */
     private static boolean isPageClosed(Route route) {
         return RouteUtil.isPageClosed(route);
-    }
-
-    private static double getEnvDouble(String key, double defaultValue) {
-        String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
-        try {
-            return Double.parseDouble(val.trim());
-        } catch (NumberFormatException e) {
-            return defaultValue;
-        }
     }
 }

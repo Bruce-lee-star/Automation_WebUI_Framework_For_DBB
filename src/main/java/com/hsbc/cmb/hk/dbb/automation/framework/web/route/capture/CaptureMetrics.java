@@ -99,11 +99,11 @@ public class CaptureMetrics {
     /** 格式化输出 */
     public String toSummary() {
         return String.format(
-                "CaptureMetrics{health=%s, ringBuf{pending=%d, dropped=%d, cap=%d}, "
+                "CaptureMetrics{health=%s, ringBuf{published=%d, pending=%d, dropped=%d, cap=%d}, "
                         + "merger{completed=%d, failed=%d, stale=%d}, "
                         + "bodyFetch{fetched=%d, failed=%d}, "
                         + "pool{active=%d, queue=%d, completed=%d}}",
-                health, ringBufferPending, ringBufferDropped, ringBufferCapacity,
+                health, ringBufferTotalPublished, ringBufferPending, ringBufferDropped, ringBufferCapacity,
                 mergerCompletedCalls, mergerFailedMerges,
                 mergerStaleSlots, bodyFetchCount, bodyFetchFailures,
                 threadPoolActiveCount, threadPoolQueueSize, threadPoolCompletedTaskCount);

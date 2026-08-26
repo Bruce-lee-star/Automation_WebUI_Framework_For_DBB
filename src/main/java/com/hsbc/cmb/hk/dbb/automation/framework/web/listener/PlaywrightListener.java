@@ -703,7 +703,7 @@ public class PlaywrightListener implements StepListener {
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
         // ⭐⭐⭐ 新增：清理 API 捕获上下文
-        ApiCaptureContext.removeCurrent();
+        ApiCaptureContext.resetCurrent();
     }
 
     private String getStackTrace(Throwable throwable) {
@@ -1059,7 +1059,7 @@ public class PlaywrightListener implements StepListener {
         } finally {
             // 确保异常和正常路径均清理 ThreadLocal 和 API 捕获上下文
             cleanupThreadLocals();
-            ApiCaptureContext.removeCurrent();
+            ApiCaptureContext.resetCurrent();
         }
     }
 
@@ -1372,7 +1372,7 @@ public class PlaywrightListener implements StepListener {
                 result.setResult(TestResult.FAILURE);
             }
         }
-        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiCaptureContext.removeCurrent()
+        // 不在此处 reset()，由 cleanupThreadLocals() 统一调用 ApiCaptureContext.resetCurrent()
     }
 
     // ═══════════════════════════════════════════════════════════════════

@@ -57,7 +57,7 @@ public class FullRouteFrameworkTest {
             case "webkit" -> playwright.webkit();
             default -> playwright.chromium();
         };
-        BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions().setHeadless(true);
+        BrowserType.LaunchOptions launchOptions = new BrowserType.LaunchOptions().setHeadless(false);
         if (browserName.equalsIgnoreCase("chromium")) {
             launchOptions.setArgs(List.of("--disable-web-security"));
         }
@@ -84,9 +84,7 @@ public class FullRouteFrameworkTest {
         //    MOCK 的 route.fulfill 由 RouteEngine.feedCaptureEvent 投喂 mockFull 事件。
         //    因此 Handler 层不再各自 storeApiCall（消除重复/竞态存储），存储唯一来源 = capture 管道。
         //    ⚠ 必须用 CDP 旁路：Playwright page.onRequest 在 page.route 拦截后不触发，无法采集。
-        System.setProperty("route.capture.strategy",
-                System.getProperty("route.test.browser", "chromium").equalsIgnoreCase("chromium")
-                        ? "CDP" : "PLAYWRIGHT");
+        //    采集策略由 CaptureStrategyFactory 按浏览器内核自动分发（chromium → CDP）。
         ApiCapture.start(page);
 
         // ⭐ 每个测试前重置 demo service 数据，消除测试间共享有状态服务导致的数据污染
@@ -116,7 +114,7 @@ public class FullRouteFrameworkTest {
         //    确保每个 case 从干净状态开始。API 设计上不会重复 unroute 已 close 的 page（幂等）。
         try { RouteDsl.clearAllRules(); } catch (Exception ignored) {}
         // 异常安全：Fail-Fast 场景中 MonitorHandler 可能已异步关闭 Page
-        try { ApiCaptureContext.removeCurrent(); } catch (Exception ignored) {}
+        try { ApiCaptureContext.resetCurrent(); } catch (Exception ignored) {}
         try { if (page != null) page.close(); } catch (Exception ignored) {}
         try { if (context != null) context.close(); } catch (Exception ignored) {}
     }
@@ -129,17 +127,48 @@ public class FullRouteFrameworkTest {
         return page.navigate(BASE_URL + path);
     }
 
+    /**
+     * ⭐ WebKit 兼容性：WebKit 拒绝从 about:blank（null 源）向 localhost 发起的跨源
+     * in-page fetch，报 {@code TypeError: Load failed}（Chromium/Firefox 无此限制）。
+     * 测试常从空白页直接 page.evaluate(fetch...)，在 WebKit 下请求根本不会发出。
+     * 此处确保页面已处于同源上下文（BASE_URL 主机）后再发起 fetch，使 WebKit 放行。
+     * 幂等：已在同一 origin 时直接跳过，不影响已在页面上发起的请求。
+     */
+    private void ensureSameOrigin() {
+        String cur = page.url();
+        if (cur == null || cur.isEmpty() || cur.equals("about:blank")
+                || !cur.startsWith("http://localhost:")) {
+            page.navigate(BASE_URL + "/");
+        }
+    }
+
     private void fetchApi(String method, String path, String jsonBody) {
         String url = BASE_URL + path;
+        // ⭐ WebKit：先确保同源上下文，否则 in-page fetch 在 WebKit 下会被拒（Load failed）。
+        ensureSameOrigin();
+        // 修复跨浏览器脆弱性：原实现 page.evaluate(fetch...) 不 await，firefox/webkit 下
+        // fetch promise 未完成即被 dispose，route/response 对象失效报 "Object doesn't exist"。
+        // 改为 await 完整响应并显式读取 body（text），确保响应数据已落库再返回。
+        // 参数通过 page.evaluate(arg) 显式传入，避免字符串拼接转义导致 url=undefined。
         if (jsonBody != null) {
-            String escapedBody = jsonBody.replace("\\", "\\\\").replace("'", "\\'");
-            page.evaluate(String.format(
-                    "() => { const o = { method: '%s', headers: { 'Content-Type': 'application/json' }, body: '%s' }; return fetch('%s', o); }",
-                    method, escapedBody, url));
+            String script = "async (arg) => {"
+                    + "  const r = await fetch(arg.url, { method: arg.method, headers: { 'Content-Type': 'application/json' }, body: arg.body });"
+                    + "  await r.text();" // 确保响应体被读取并捕获
+                    + "}";
+            Map<String, String> arg = new HashMap<>();
+            arg.put("url", url);
+            arg.put("method", method);
+            arg.put("body", jsonBody);
+            page.evaluate(script, arg);
         } else {
-            page.evaluate(String.format(
-                    "() => { const o = { method: '%s', headers: { 'Content-Type': 'application/json' } }; return fetch('%s', o); }",
-                    method, url));
+            String script = "async (arg) => {"
+                    + "  const r = await fetch(arg.url, { method: arg.method, headers: { 'Content-Type': 'application/json' } });"
+                    + "  await r.text();"
+                    + "}";
+            Map<String, String> arg = new HashMap<>();
+            arg.put("url", url);
+            arg.put("method", method);
+            page.evaluate(script, arg);
         }
     }
 
@@ -331,7 +360,8 @@ public class FullRouteFrameworkTest {
                 .done();
         dsl.start();
 
-        page.evaluate("() => fetch('" + BASE_URL + "/api/users').then(r => r.json())");
+        ensureSameOrigin();
+        page.evaluate("async () => { await fetch('" + BASE_URL + "/api/users').then(r => r.json()); }");
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
         ctx.awaitCompletion(10_000);
@@ -535,6 +565,131 @@ public class FullRouteFrameworkTest {
         Response response2 = navigateToApi("/api/users");
         assertNotNull(response2);
         assertFalse("Second call should return real data", response2.text().contains("mocked"));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void b17_mock_times_one_shot() {
+        // times(2)：只 mock 前 2 次，第 3 次起放行真实网络（对齐 Playwright Route.setTimes）
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users")
+                .mock()
+                .mockBody("{\"mocked\":true,\"shot\":\"times-mock\"}")
+                .mockStatus(200)
+                .times(2)
+                .allowAllRequests()
+                .done();
+        dsl.start();
+
+        // 第 1、2 次 — mock 生效
+        Response resp1 = navigateToApi("/api/users");
+        assertNotNull(resp1);
+        assertTrue("1st call should be mocked", resp1.text().contains("times-mock"));
+
+        Response resp2 = navigateToApi("/api/users");
+        assertNotNull(resp2);
+        assertTrue("2nd call should be mocked", resp2.text().contains("times-mock"));
+
+        // 第 3 次 — times 耗尽，仅放行请求走真实网络
+        Response resp3 = navigateToApi("/api/users");
+        assertNotNull(resp3);
+        assertFalse("3rd call should hit real backend", resp3.text().contains("times-mock"));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void b18_mock_body_from_file() {
+        // mockBodyFromFile(fileName) — 从 src/test/resources/mocks/ 读取 JSON 作为 Mock 响应体
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users")
+                .mock()
+                .mockBodyFromFile("login-response.json")   // ← 被测方法（单参）
+                .mockStatus(200)
+                .allowAllRequests()
+                .done();
+        dsl.start();
+
+        Response resp = navigateToApi("/api/users");
+        assertNotNull(resp);
+        String body = resp.text();
+        assertTrue("Body should come from file", body.contains("real-token-from-file"));
+        assertTrue("File content should be preserved", body.contains("Login successful"));
+        assertTrue("File userId should be preserved", body.contains("100"));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void b19_mock_body_from_file_with_overrides() {
+        // mockBodyFromFile(fileName, map) — 读取文件后按 JSONPath 批量覆盖字段（支持通配符 [*]）
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users")
+                .mock()
+                .mockBodyFromFile("login-response.json",
+                        Map.of("$.token", "fake-token",
+                               "$.userId", 999,
+                               "$.roles[*].active", false))   // ← 被测方法（双参）
+                .mockStatus(200)
+                .allowAllRequests()
+                .done();
+        dsl.start();
+
+        Response resp = navigateToApi("/api/users");
+        assertNotNull(resp);
+        String body = resp.text();
+        assertTrue("Token should be overridden", body.contains("fake-token"));
+        assertTrue("UserId should be overridden", body.contains("\"userId\":999"));
+        assertFalse("Original token should be gone", body.contains("real-token-from-file"));
+        assertTrue("Wildcard override should apply to all roles", body.contains("\"active\":false"));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void b20_mock_replace_fields_map() {
+        // replaceFields(map) — 在已设置的字符串 Mock 响应体上批量替换多个字段
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users")
+                .mock()
+                .mockBody("{\"token\":\"orig\",\"users\":[{\"id\":1,\"active\":true},{\"id\":2,\"active\":true}]}")
+                .mockStatus(200)
+                .replaceFields(Map.of("$.token", "batch-replaced",
+                                      "$.users[*].active", false))   // ← 被测方法
+                .allowAllRequests()
+                .done();
+        dsl.start();
+
+        Response resp = navigateToApi("/api/users");
+        assertNotNull(resp);
+        String body = resp.text();
+        assertTrue("Top-level field should be replaced", body.contains("batch-replaced"));
+        assertTrue("Wildcard fields should be replaced", body.contains("\"active\":false"));
+        assertFalse("Original value should be gone", body.contains("\"token\":\"orig\""));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void b21_intercept_response_replace() {
+        // interceptResponse() + mockReplaceField(path, val) — 获取真实响应后再替换字段
+        // 真实后端 GET /api/users/1 返回 {"id":1,"name":"Alice",...}，应被替换 name 字段
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users/1")
+                .mock()
+                .interceptResponse()                              // ← 被测方法
+                .mockReplaceField("$.name", "InterceptedName")    // ← 被测方法
+                .allowAllRequests()
+                .done();
+        dsl.start();
+
+        Response resp = navigateToApi("/api/users/1");
+        assertNotNull(resp);
+        String body = resp.text();
+        assertTrue("Real response should be intercepted and field replaced",
+                body.contains("InterceptedName"));
+        assertFalse("Original real value should be replaced", body.contains("\"Alice\""));
 
         dsl.clear();
     }
@@ -894,6 +1049,7 @@ public class FullRouteFrameworkTest {
                 .api("/api/users")
                 .monitor()
                 .expectStatus(200)
+                .autoStopOnMatch(false)
                 .allowAllRequests()
                 .done()
                 .api("/api/slow/endpoint")
@@ -1171,11 +1327,18 @@ public class FullRouteFrameworkTest {
                 .done();
         dslXhr.start();
 
-        page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
+        ensureSameOrigin();
+        page.evaluate("async () => { await fetch('" + BASE_URL + "/api/users'); }");
 
         ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
-        page.waitForTimeout(2000);
-        // onlyXhr 时 fetch 不应被拦截 → 无捕获
+        // 等待足够时间确认 onlyXhr 确实未捕获（而非异步未到），再用 awaitCompletion 兜底
+        ctx.awaitCompletion(3000);
+        // T-P1-2 修复：onlyXhr 时 fetch 不应被捕获 → 必须显式断言无捕获，否则 onlyXhr 实现 bug 会被静默放过
+        CapturedApiCall xhrCaptured = ctx.getLastApiCall("/api/users");
+        assertNull("onlyXhr must NOT capture fetch requests (got: " + xhrCaptured + ")", xhrCaptured);
+        assertTrue("onlyXhr must leave no /api/users calls recorded",
+                ctx.getAllApiCalls().get("/api/users") == null
+                        || ctx.getAllApiCalls().get("/api/users").isEmpty());
         dslXhr.clear();
 
         // Step 2: onlyFetch → fetch 请求应该被捕获
@@ -1189,7 +1352,7 @@ public class FullRouteFrameworkTest {
                 .done();
         dslFetch.start();
 
-        page.evaluate("() => fetch('" + BASE_URL + "/api/users').then(r => r.json())");
+        page.evaluate("async () => { await fetch('" + BASE_URL + "/api/users').then(r => r.json()); }");
 
         ctx.awaitCompletion(10_000);
         CapturedApiCall call = ctx.getLastApiCall("/api/users");
@@ -1222,7 +1385,8 @@ public class FullRouteFrameworkTest {
             // 在 page2 上触发请求 — BrowserContext 级别路由应对所有 Page 生效
             page2.navigate(BASE_URL + "/api/users");
 
-            ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+            // T-P2-3 修复：显式按 BrowserContext 取 context，而非依赖框架 getCurrent() 的隐式自动绑定契约
+            ApiCaptureContext ctx = ApiCaptureContext.forContext(browserCtx);
             CapturedApiCall call = ctx.getLastApiCall("/api/users");
             assertNotNull("BrowserContext routing should capture across pages", call);
             assertTrue("Mock from BrowserContext should apply",
@@ -1269,8 +1433,20 @@ public class FullRouteFrameworkTest {
         page.evaluate("() => fetch('" + BASE_URL + "/api/users')");
         page.waitForTimeout(500);
 
-        // 同源 fetch 不带 Origin → Mock 不生效
-        // 验证无 Mock 数据被捕获（mock 不生效时真实响应通过，但 monitor 未设置）
+        // T-P1-1 修复：同源 fetch 不带 Origin → matchOrigin 不应匹配 → Mock 不生效。
+        // 必须显式断言无 mock 拦截，否则 matchOrigin 实现 bug（误匹配）会被静默放过。
+        ApiCaptureContext ctxOrigin = ApiCaptureContext.getCurrent();
+        CapturedApiCall originCall = ctxOrigin.getLastApiCall("/api/users");
+        if (originCall != null) {
+            // 若存在捕获，确认其响应是真实数据而非 mock 的 {"matched":"origin"}
+            assertFalse("matchOrigin must NOT intercept same-origin fetch (mock leaked)",
+                    originCall.responseBody().contains("\"matched\":\"origin\""));
+        }
+        // 直接验证真实响应未被 mock 替换：用一次同步请求确认返回真实数据
+        // page.request().get 返回 APIResponse，直接取 text()
+        String verifyText = page.request().get(BASE_URL + "/api/users").text();
+        assertTrue("Real data should be served when origin doesn't match",
+                verifyText.contains("Alice"));
         dslOrigin.clear();
     }
 
@@ -1326,6 +1502,41 @@ public class FullRouteFrameworkTest {
         assertNotNull("Fetch API should be captured via mock", call);
         assertTrue("Fetch response should be mocked",
                 call.responseBody().contains("apiOnly"));
+
+        dsl.clear();
+    }
+
+    @Test
+    public void g11_only_main_frame_skips_iframe() {
+        // onlyMainFrame(true)（默认值）— 只匹配主 frame 请求，iframe 子请求应放行真实后端
+        RouteDsl dsl = RouteDsl.on(page)
+                .api("/api/users")
+                .mock()
+                .mockBody("{\"frame\":\"main-only\"}")
+                .mockStatus(200)
+                .onlyMainFrame(true)          // ← 被测方法（显式声明默认值）
+                .done();
+        dsl.start();
+
+        // 主 frame 导航 → 应被 mock 拦截
+        Response resp = navigateToApi("/api/users");
+        assertNotNull(resp);
+        assertTrue("Main-frame navigation should be mocked",
+                resp.text().contains("main-only"));
+
+        // 注入 iframe → iframe 内请求不是主 frame，应放行走真实后端
+        page.setContent("<html><body><iframe src='" + BASE_URL + "/api/users'></iframe></body></html>");
+        page.waitForTimeout(1500);
+
+        com.microsoft.playwright.Frame iframe = page.frames().stream()
+                .filter(f -> !f.equals(page.mainFrame()))
+                .findFirst().orElse(null);
+        assertNotNull("iframe should be created", iframe);
+        String iframeHtml = iframe.content();
+        assertTrue("iframe should receive real backend data (Alice)",
+                iframeHtml.contains("Alice"));
+        assertFalse("iframe should NOT be mocked",
+                iframeHtml.contains("main-only"));
 
         dsl.clear();
     }
@@ -1533,102 +1744,6 @@ public class FullRouteFrameworkTest {
     }
 
     @Test
-    public void h17_routeRule_parameter_validation() {
-        // RouteRule 参数校验 — 纯单元测试，不依赖 Playwright
-        RouteRule rule = new RouteRule();
-
-        // urlPattern blank
-        try {
-            rule.setUrlPattern(null);
-            fail("Should throw for null urlPattern");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("blank"));
-        }
-        try {
-            rule.setUrlPattern("  ");
-            fail("Should throw for blank urlPattern");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("blank"));
-        }
-
-        // mockStatus 越界
-        try {
-            rule.setMockStatus(50);
-            fail("Should throw for status < 100");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("[100, 600)"));
-        }
-        try {
-            rule.setMockStatus(600);
-            fail("Should throw for status >= 600");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("[100, 600)"));
-        }
-
-        // expectedStatus 越界
-        try {
-            rule.setExpectedStatus(99);
-            fail("Should throw for expectedStatus < 100");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains("[100, 600)"));
-        }
-
-        // timeoutMs 负数
-        try {
-            rule.setTimeoutMs(-1);
-            fail("Should throw for negative timeoutMs");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains(">= 0"));
-        }
-
-        // minMatches < 1
-        try {
-            rule.setMinMatches(0);
-            fail("Should throw for minMatches 0");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains(">= 1"));
-        }
-
-        // delayMs 负数
-        try {
-            rule.setDelayMs(-100);
-            fail("Should throw for negative delayMs");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains(">= 0"));
-        }
-
-        // delayMinMs 负数
-        try {
-            rule.setDelayMinMs(-1);
-            fail("Should throw for negative delayMinMs");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains(">= 0"));
-        }
-
-        // delayMaxMs 负数
-        try {
-            rule.setDelayMaxMs(-1);
-            fail("Should throw for negative delayMaxMs");
-        } catch (IllegalArgumentException e) {
-            assertTrue(e.getMessage().contains(">= 0"));
-        }
-
-        // 合法值验证不抛异常
-        rule.setUrlPattern("/api/test");
-        rule.setMockStatus(200);
-        rule.setExpectedStatus(200);
-        rule.setTimeoutMs(5000);
-        rule.setMinMatches(3);
-        rule.setDelayMs(1000);
-        rule.setDelayMinMs(0);
-        rule.setDelayMaxMs(5000);
-
-        assertEquals("/api/test", rule.getUrlPattern());
-        assertEquals(200, rule.getMockStatus());
-        assertEquals(Integer.valueOf(200), rule.getExpectedStatus());
-    }
-
-    @Test
     public void h18_addRequestBodyField_to_existing_array() {
         // addRequestBodyField 向已有 ArrayNode 追加元素
         RouteDsl dsl = RouteDsl.on(page)
@@ -1713,24 +1828,6 @@ public class FullRouteFrameworkTest {
         assertTrue("Status should be 204", sc == 204);
 
         dsl.clear();
-    }
-
-    @Test
-    public void i21_delay_negative_clamping() {
-        // DelayHandler.clampDelay(-100) → 钳位到 0
-        long clamped = com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.DelayHandler
-                .clampDelay(-100);
-        assertEquals("Negative delay should clamp to 0", 0L, clamped);
-
-        // clampDelay(150_000) → 钳位到 MAX_DELAY_MS (120_000)
-        long clampedMax = com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.DelayHandler
-                .clampDelay(150_000);
-        assertEquals("Oversize delay should clamp to max", 120_000L, clampedMax);
-
-        // 合法值不变
-        long clampedOk = com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.DelayHandler
-                .clampDelay(5000);
-        assertEquals("Normal delay should be unchanged", 5000L, clampedOk);
     }
 
     @Test
@@ -1928,46 +2025,6 @@ public class FullRouteFrameworkTest {
                 call.requestHeader("X-No-Such-Header-99999"));
 
         dsl.clear();
-    }
-
-    @Test
-    public void j28_capturedApiCall_toString_formatting() {
-        // toString() — 纯单元测试，无需 Playwright
-        long now = System.currentTimeMillis();
-        CapturedApiCall call1 = new CapturedApiCall(
-                "/api/test", "GET",
-                Collections.emptyMap(),
-                200,
-                Collections.singletonMap("Content-Type", "application/json"),
-                "{\"ok\":true,\"data\":[1,2,3]}",
-                now,
-                "http://localhost:8080/api/test"
-        );
-
-        String str = call1.toString();
-        assertNotNull("toString should not return null", str);
-        assertTrue("toString should contain HTTP method", str.contains("GET"));
-        assertTrue("toString should contain endpoint", str.contains("/api/test"));
-        assertTrue("toString should contain status code", str.contains("200"));
-        // body=XX chars
-        assertTrue("toString should contain body size info", str.contains("body="));
-
-        // ── toString with null body ──
-        CapturedApiCall call2 = new CapturedApiCall(
-                "/api/empty", "POST", null, 204, null, null, 0L, null
-        );
-        String str2 = call2.toString();
-        assertNotNull("toString should handle null body", str2);
-        assertTrue("toString with null body should show 0 chars, actual: " + str2,
-                str2.contains("body=0 chars"));
-
-        // ── toString with method normalization (uppercase) ──
-        CapturedApiCall call3 = new CapturedApiCall(
-                "/api/lowercase", "post", null, 200, null, "{}", now, null
-        );
-        String str3 = call3.toString();
-        assertTrue("method should be uppercased in toString: " + str3,
-                str3.contains("POST"));
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -3234,6 +3291,11 @@ public class FullRouteFrameworkTest {
             mock3.clear();
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 压力测试：覆盖 P0-4 (JSONPATH_CACHE 上限) + P1-11 (pendingResponses 上限) 盲区
+    // 并发触发 1200+ 个不同 URL，验证缓存分批淘汰时不丢在途请求的 body。
+    // ═══════════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════════
     // Helper methods

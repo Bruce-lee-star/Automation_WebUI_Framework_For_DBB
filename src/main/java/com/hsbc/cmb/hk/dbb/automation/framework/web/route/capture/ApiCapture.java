@@ -11,6 +11,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
@@ -63,6 +67,9 @@ public class ApiCapture {
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentHashMap<BrowserContext, java.util.Set<Page>> CONTEXT_PAGES =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** ⭐ 已注册 Context 关闭钩子的实例集合（幂等注册防重复，Playwright 无移除 listener API） */
+    private static final java.util.concurrent.ConcurrentHashMap<BrowserContext, Boolean> CONTEXT_CLOSE_REGISTERED =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** 启动 BrowserContext 级采集；已有 Page 需随后 attach。 */
     public static void start(BrowserContext context) {
@@ -71,7 +78,17 @@ public class ApiCapture {
         java.util.Set<Page> pages = CONTEXT_PAGES.computeIfAbsent(context,
                 ignored -> java.util.concurrent.ConcurrentHashMap.newKeySet());
         ApiCaptureContext.bindCurrentContext(context);
-        if (pages.isEmpty()) {
+        registerContextCloseHook(context);
+    }
+
+    /**
+     * ⭐ 注册 Context 级关闭钩子（幂等）：中途 Context 被关闭（登录态切换重建 / 浏览器退出等）时，
+     * 自动停止该 Context 下全部 Page 采集，并清理 {@link ApiCaptureContext} 与 Context 级路由引擎。
+     * 无论从 {@link #start(BrowserContext)} 还是 {@link #start(Page)} 进入都只注册一次。
+     */
+    private static void registerContextCloseHook(BrowserContext context) {
+        if (context == null) return;
+        if (CONTEXT_CLOSE_REGISTERED.putIfAbsent(context, Boolean.TRUE) == null) {
             context.onClose(ignored -> stop(context));
         }
     }
@@ -145,8 +162,15 @@ public class ApiCapture {
             PAGE_ENGINES.put(page, created);
             BrowserContext pageContext = page.context();
             CONTEXT_PAGES.computeIfAbsent(pageContext, ignored -> java.util.concurrent.ConcurrentHashMap.newKeySet()).add(page);
+            // ⭐ Page 关闭 → 停止该 Page 采集；Context 关闭 → 停止该 Context 下全部采集并清理
+            //   （Context 级数据/路由清理必须走 stop(context)，仅 page.onClose 的 detach 不够）。
+            registerContextCloseHook(pageContext);
             page.onClose(ignored -> detach(page));
             RouteEngine.bindCaptureEngine(page, created);
+            // ⭐ P0: 将调用线程绑定到该 Page 所属 BrowserContext，使 getCurrent() 与
+            //   EventMerger（按 browserContext 写入 forContext 实例）指向同一捕获上下文，
+            //   消除"merger 写入 BY_CONTEXT 实例、测试查询 SHARED 实例"的数据不可见问题。
+            ApiCaptureContext.bindCurrentContext(pageContext);
             engine = created;
             LOGGER.info("[ApiCapture] Started for Page with strategy '{}' (activePages={})",
                     created.strategyName(), PAGE_ENGINES.size());
@@ -193,13 +217,69 @@ public class ApiCapture {
             if (engine == removed) {
                 engine = PAGE_ENGINES.values().stream().findFirst().orElse(null);
             }
+            // ⭐ P0: 若该 Page 所属 Context 下已无其它活动采集会话，清理 Context 级捕获上下文，
+            //   避免 BY_CONTEXT 实例泄漏、以及 CURRENT_CONTEXT 跨用例残留导致数据串扰。
+            releaseContextIfOrphaned(page);
             LOGGER.info("[ApiCapture] Stopped Page capture session (activePages={})", PAGE_ENGINES.size());
+        }
+    }
+
+    /**
+     * ⭐ P0: 当 Page 所属 BrowserContext 已无其它活动采集会话时，清理该 Context 的
+     * 捕获上下文（BY_CONTEXT 实例）与当前线程绑定，防止跨用例数据串扰与实例泄漏。
+     * 若 Context 下仍有其它 Page 在采集，则保留（多 Page 共享 Context 的场景）。
+     */
+    private static void releaseContextIfOrphaned(Page page) {
+        BrowserContext pageContext;
+        try {
+            pageContext = page.context();
+        } catch (Exception e) {
+            // Page 已关闭：Context 级清理由 onClose → detach / stop(context) 完成
+            return;
+        }
+        if (pageContext == null) return;
+        // 仍存在同 Context 的活动采集会话 → 保留 Context 级绑定
+        for (Page other : PAGE_ENGINES.keySet()) {
+            if (other == page) continue;
+            try {
+                if (other.context() == pageContext) return;
+            } catch (Exception ignored) {
+                // 其它 Page 已关闭，忽略
+            }
+        }
+        java.util.Set<Page> pages = CONTEXT_PAGES.get(pageContext);
+        if (pages != null) {
+            pages.remove(page);
+            if (pages.isEmpty()) {
+                CONTEXT_PAGES.remove(pageContext, pages);
+            }
+        }
+        ApiCaptureContext.removeContext(pageContext);
+        if (ApiCaptureContext.isCurrentContext(pageContext)) {
+            ApiCaptureContext.unbindCurrentContext();
         }
     }
 
     /** 当前活动 Page 采集会话数。 */
     public static int activePageCount() {
         return PAGE_ENGINES.size();
+    }
+
+    /**
+     * 获取指定 Page 最近的事件链终态快照，仅用于迁移诊断。
+     * 不触发写入、断言、回调或持久化，也不改变既有捕获查询结果。
+     */
+    public static List<NetworkExchange> recentExchanges(Page page) {
+        CaptureEngine pageEngine = page == null ? null : PAGE_ENGINES.get(page);
+        if (pageEngine == null) pageEngine = engine; // 回退到全局采集引擎（Chromium CDP 路径）
+        return pageEngine == null ? List.of() : pageEngine.recentExchanges();
+    }
+
+    /** 获取指定 Page 的事件链旁路诊断指标，不影响既有 CaptureMetrics。 */
+    public static NetworkExchangeMetrics exchangeMetrics(Page page) {
+        CaptureEngine pageEngine = page == null ? null : PAGE_ENGINES.get(page);
+        return pageEngine == null ? new NetworkExchangeMetrics(0, 0, 0, 0, 0, 0, 0, 0, 0)
+                : pageEngine.exchangeMetrics();
     }
 
     /**
@@ -265,10 +345,23 @@ public class ApiCapture {
     /**
      * 获取所有已采集的 API 调用。
      *
+     * <p>⭐ P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，回退到全局
+     * {@code engine} / {@code CURRENT_CONTEXT} 会导致跨测试数据串扰。此时立即失败
+     * （fail-fast）而非静默返回错误数据，强制调用方改用 {@link #getAll(BrowserContext)}。
+     *
      * @return 所有 API 调用（按 endpoint 分组）
      */
     public static java.util.Map<String, List<CapturedApiCall>> getAll() {
-        return ApiCaptureContext.getCurrent().getAllApiCalls();
+        // 修复 P1-12：size() 检查与 getCurrent() 必须在同一把类锁内完成，否则并发 start(page)
+        // 可能使 size 从 1 变为 2 发生在检查之后，导致读到错误的跨 context 数据（TOCTOU 竞态）。
+        synchronized (ApiCapture.class) {
+            if (PAGE_ENGINES.size() > 1) {
+                throw new IllegalStateException(
+                        "ApiCapture.getAll() detected multiple active Pages (" + PAGE_ENGINES.size()
+                                + "). Use getAll(Page) / getAll(BrowserContext) to avoid cross-test data contamination.");
+            }
+            return ApiCaptureContext.getCurrent().getAllApiCalls();
+        }
     }
 
     /** Context 隔离版本：获取指定 BrowserContext 的全部 API 调用。 */
@@ -337,6 +430,8 @@ public class ApiCapture {
         private final Pattern regex;
         /** 资源类型过滤（枚举集合），null 表示不过滤 */
         private Set<ResourceType> resourceTypeFilter;
+        /** ⭐ P1: 断言首次未命中时，等待采集管道在途请求闭合的超时上限 */
+        private static final long CAPTURE_AWAIT_TIMEOUT_MS = 1_500L;
 
         ApiAssertion(String urlPattern) {
             this.urlPattern = urlPattern;
@@ -494,32 +589,138 @@ public class ApiCapture {
         private CapturedApiCall findCall() {
             ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
 
-            // 1. 精确匹配（限定在当前步骤窗口内，R4）
-            CapturedApiCall call = ctx.getLastApiCallSinceStepStart(urlPattern);
-            if (call != null && matchType(call)) return call;
+            // 1/1b. 快路径：endpoint key + 完整 URL 索引双通道精确匹配
+            CapturedApiCall call = fastExactMatch(ctx);
+            if (call != null) return call;
+
+            // ⭐ P1: 竞态兜底 — 等待采集管道在途请求闭合后再重试。
+            //   navigate() 刚返回就断言时，CDP 事件可能仍在"事件回调→RingBuffer→merger 合并"链路中；
+            //   awaitCompletion 覆盖 captureInFlight（merger 消费 REQUEST 时计数、合并/超时后归零）。
+            awaitCapturePipeline(ctx);
+
+            // ⭐ P1.2: 投递式等待 — awaitCompletion 可能在 captureInFlight==0
+            //   （CDP 事件尚未到达 merger、REQUEST 还没计数）时立即返回；若此时只扫一次就放弃，
+            //   调用会在随后几毫秒入库但断言已失败（example_assertApiByUrl 偶发失败即此竞态）。
+            //   先补扫一次已入库调用；仍未命中则注册一次性谓词，storeApiCall 入库时
+            //   直接评估并精确完成 future —— 命中即返回，零重扫、零广播唤醒。
+            call = fastExactMatch(ctx);
+            if (call != null) return call;
 
             // 2. 通配符匹配：仅遍历当前步骤窗口内的调用（R3/R4）
             //    避免命中上一步遗留调用或错误 endpoint，消除"全局最新时间戳"误匹配。
+            CapturedApiCall best = wildcardScan(ctx);
+            if (best != null) return best;
+
+            long stepStart = ctx.getStepStartTimestamp();
+            CompletableFuture<CapturedApiCall> waiter =
+                    ctx.registerApiCallWaiter(c -> matchesPattern(c, stepStart));
+            // 关闭"注册前入库 → 投递丢失"竞态：调用可能在注册与评估之间已入库，
+            // 注册后立即补扫一次（单次检查，非轮询），命中即返回。
+            CapturedApiCall late = fastExactMatch(ctx);
+            if (late == null) late = wildcardScan(ctx);
+            if (late != null) {
+                ctx.unregisterApiCallWaiter(waiter);
+                return late;
+            }
+            try {
+                return waiter.get(CAPTURE_AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            } catch (TimeoutException | ExecutionException e) {
+                return null;
+            } finally {
+                ctx.unregisterApiCallWaiter(waiter);
+            }
+        }
+
+        /**
+         * ⭐ P1.2: 投递式匹配谓词 — 与 fastExactMatch/wildcardScan 同源：
+         * endpoint key（path-only）与完整 URL 双通道 + 步骤窗口 + 资源类型过滤。
+         */
+        private boolean matchesPattern(CapturedApiCall c, long stepStart) {
+            if (c == null) return false;
+            if (stepStart != 0L && c.timestamp() < stepStart) return false;
+            if (!matchType(c)) return false;
+            String endpoint = c.endpoint();
+            String url = c.requestUrl();
+            if (urlPattern.equals(endpoint) || urlPattern.equals(url)) return true;
+            if (endpoint != null && regex.matcher(endpoint).matches()) return true;
+            return url != null && regex.matcher(url).matches();
+        }
+
+        /** ⭐ 快路径精确匹配：endpoint key（path-only）+ 完整 URL 索引双通道（限定步骤窗口）。 */
+        private CapturedApiCall fastExactMatch(ApiCaptureContext ctx) {
+            // 1. 精确匹配（限定在当前步骤窗口内，R4）— 按 endpoint key（path-only）检索
+            CapturedApiCall call = ctx.getLastApiCallSinceStepStart(urlPattern);
+            if (call != null && matchType(call)) return call;
+
+            // 1b. ⭐ P2: 完整 URL 精确索引（O(1)，apiCallsByUrl）——pattern 传完整 URL 时
+            //     endpoint key 无法命中（存储键为 path-only），这里补一次 URL 索引查询。
+            if (!containsGlobWildcard(urlPattern)) {
+                CapturedApiCall byUrl = lastSinceStepStart(ctx.getCallsByUrl(urlPattern), ctx);
+                if (byUrl != null && matchType(byUrl)) return byUrl;
+            }
+            return null;
+        }
+
+        /** ⭐ 步骤 2：通配符全量扫描（Bug B 修复：遍历每个 endpoint 的全部调用而非仅最后一条）。 */
+        private CapturedApiCall wildcardScan(ApiCaptureContext ctx) {
             java.util.Map<String, List<CapturedApiCall>> all = ctx.getAllApiCalls();
             CapturedApiCall best = null;
             long bestTimestamp = 0;
             long stepStart = ctx.getStepStartTimestamp();
             for (java.util.Map.Entry<String, List<CapturedApiCall>> e : all.entrySet()) {
-                if (regex.matcher(e.getKey()).matches()) {
-                    List<CapturedApiCall> calls = e.getValue();
-                    if (calls != null && !calls.isEmpty()) {
-                        // 仅考虑本步骤窗口内的调用
-                        CapturedApiCall last = calls.get(calls.size() - 1);
-                        if (stepStart != 0L && last.timestamp() < stepStart) continue;
-                        if (!matchType(last)) continue;
-                        if (last.timestamp() > bestTimestamp) {
-                            best = last;
-                            bestTimestamp = last.timestamp();
-                        }
+                List<CapturedApiCall> calls = e.getValue();
+                if (calls == null || calls.isEmpty()) continue;
+                // ⭐ Bug B 修复：遍历该 endpoint 的全部调用（而不只是最后一条）。
+                //   同一 URL 可能先发 XHR 后被 DOCUMENT 导航覆盖，仅看最后一条会因
+                //   matchType/regex 不命中而漏掉更早的匹配调用（example_filterByResourceType 即此场景）。
+                for (CapturedApiCall c : calls) {
+                    if (c == null) continue;
+                    // 仅考虑本步骤窗口内的调用
+                    if (stepStart != 0L && c.timestamp() < stepStart) continue;
+                    // ⭐ P2: endpoint key（path-only）与完整 URL 双通道匹配——
+                    //   pattern 为完整 URL（如 https://httpbin.org/**）时，仅匹配 key 必然落空。
+                    if (!regex.matcher(e.getKey()).matches()
+                            && !regex.matcher(c.requestUrl()).matches()) {
+                        continue;
+                    }
+                    if (!matchType(c)) continue;
+                    if (c.timestamp() > bestTimestamp) {
+                        best = c;
+                        bestTimestamp = c.timestamp();
                     }
                 }
             }
             return best;
+        }
+
+        /** ⭐ P2: 取列表内步骤窗口中的最近一条调用（列表按时间追加，倒序查找）。 */
+        private CapturedApiCall lastSinceStepStart(List<CapturedApiCall> calls, ApiCaptureContext ctx) {
+            if (calls == null || calls.isEmpty()) return null;
+            long stepStart = ctx == null ? 0L : ctx.getStepStartTimestamp();
+            for (int i = calls.size() - 1; i >= 0; i--) {
+                CapturedApiCall c = calls.get(i);
+                if (c == null) continue;
+                if (stepStart != 0L && c.timestamp() < stepStart) continue;
+                return c;
+            }
+            return null;
+        }
+
+        /** ⭐ P1: 有限等待采集管道在途请求闭合，不抛出中断异常。 */
+        private void awaitCapturePipeline(ApiCaptureContext ctx) {
+            if (ctx == null) return;
+            try {
+                ctx.awaitCompletion(CAPTURE_AWAIT_TIMEOUT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static boolean containsGlobWildcard(String s) {
+            return s != null && s.indexOf('*') >= 0;
         }
 
         /** 资源类型过滤：filter 为 null 或空集合时直接通过；否则匹配调用方的 ResourceType 是否在集合内 */

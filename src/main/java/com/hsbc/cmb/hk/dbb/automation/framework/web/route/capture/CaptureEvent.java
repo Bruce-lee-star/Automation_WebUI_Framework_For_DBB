@@ -25,7 +25,9 @@ public class CaptureEvent {
         REQUEST,
         /** CDP Network.responseReceived — 响应元数据（status/headers，不含 body） */
         RESPONSE_META,
-        /** CDP Network.loadingFinished — 响应体已就绪，可异步读取 */
+        /** 响应体已就绪信号（CDP loadingFinished / Playwright onResponse）— 轻量，不含 body，由 BodyReader 按需异步读取 */
+        BODY_READY,
+        /** 异步 body 读取完成（BodyReader 在专用线程池投喂；失败时 body 为 null，用于闭合 slot） */
         RESPONSE_BODY,
         /** Route 回调 — MOCK fulfill 参数（浏览器未发真实请求） */
         MOCK_FULL,
@@ -109,11 +111,18 @@ public class CaptureEvent {
                 null, null, null, null, null, status, respHeaders, null, null);
     }
 
-    /** 创建 RESPONSE_BODY phase 事件（CDP loadingFinished 或异步 body 读取完成） */
+    /** 创建 RESPONSE_BODY phase 事件（BodyReader 异步 body 读取完成后投喂；失败时 body 为 null） */
     public static CaptureEvent responseBody(String requestId, byte[] body,
                                             String contentType, Source source) {
         return new CaptureEvent(requestId, Phase.RESPONSE_BODY, source, System.currentTimeMillis(),
                 null, null, null, null, null, 0, null, body, contentType);
+    }
+
+    /** 创建 BODY_READY phase 事件（CDP loadingFinished / Playwright onResponse）—
+     *  仅信号，不含 body。EventMerger 判定命中采集范围后触发 {@link BodyReader} 按需异步读取。 */
+    public static CaptureEvent bodyReady(String requestId, Source source) {
+        return new CaptureEvent(requestId, Phase.BODY_READY, source, System.currentTimeMillis(),
+                null, null, null, null, null, 0, null, null, null);
     }
 
     /** 创建 MOCK_FULL phase 事件（Route handler 投喂）—— 视为 API 调用 */

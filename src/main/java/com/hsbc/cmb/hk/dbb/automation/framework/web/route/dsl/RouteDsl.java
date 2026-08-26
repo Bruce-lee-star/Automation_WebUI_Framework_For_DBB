@@ -174,27 +174,6 @@ public class RouteDsl {
         rules.clear();
     }
 
-    /**
-     * ⭐ 静态全局清理方法 — 清除所有上下文的所有 RouteRule、MonitorSession、Route 防重门控。
-     *
-     * <p>适用场景：
-     * <ul>
-     *   <li>Step 中需要先清除所有已注册 Rule，再重新注册新的 Rule（全局复位）</li>
-     *   <li>After Scenario hook 中确保跨 Scenario 无残留路由</li>
-     *   <li>测试套件结束时彻底清理所有路由</li>
-     * </ul>
-     *
-     * <pre>{@code
-     * // 在 Step 中：先清所有 Rule，再注册新的一组
-     * RouteDsl.clearAllRules();
-     * RouteDsl.on(page)
-     *     .api("/api/new-endpoint")
-     *     .monitor()
-     *     .expectStatus(200)
-     *     .done()
-     *     .start();
-     * }</pre>
-     */
     /** 只清理指定 BrowserContext，适用于并行测试。 */
     public static void clear(BrowserContext context) {
         if (context == null) return;
@@ -255,16 +234,39 @@ public class RouteDsl {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[RouteDsl] clearDispatchedRoutes() during resetAll failed: {}", e.getMessage());
         }
+        // 4. ⭐ 释放按 BrowserContext 隔离的捕获上下文 + 解绑当前线程。
+        //    BY_CONTEXT 以 BrowserContext 为强引用 key，只清路由层不会回收它；
+        //    同时解绑 ThreadLocal，避免线程池复用把已关闭 context 带进下一个用例。
+        try {
+            ApiCaptureContext.removeAllContexts();
+        } catch (Exception e) {
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[RouteDsl] ApiCaptureContext.removeAllContexts() during resetAll failed: {}", e.getMessage());
+        }
         LOGGER.info("[RouteDsl] resetAll() — full route & capture state reset completed");
     }
 
     /**
-     * ⭐ 兼容性全量清理（仅清路由层，不含采集引擎停止）。
-     * 内部委托 {@link RouteRegistry#clearAll()}，保留历史行为供既有调用方使用。
+     * ⭐ 轻量全局清理 — 清除所有上下文的所有 RouteRule、MonitorSession、Route 防重门控。
      *
-     * @deprecated 新代码请使用 {@link #resetAll()} 做完整复位（含采集引擎释放）。
+     * <p>与 {@link #resetAll()} 的分工：
+     * <ul>
+     *   <li>本方法仅清路由层（内部委托 {@link RouteRegistry#clearAll()}），<b>不停采集引擎</b>，
+     *       适合 Step 内「先清所有 Rule 再注册新一组」或 After Scenario hook 的全局复位</li>
+     *   <li>{@link #resetAll()} 为全量复位（含采集引擎释放），适合套件收尾/调试</li>
+     * </ul>
+     *
+     * <pre>{@code
+     * // 在 Step 中：先清所有 Rule，再注册新的一组
+     * RouteDsl.clearAllRules();
+     * RouteDsl.on(page)
+     *     .api("/api/new-endpoint")
+     *     .monitor()
+     *     .expectStatus(200)
+     *     .done()
+     *     .start();
+     * }</pre>
      */
-    @Deprecated
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
         RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES/CROSS_LAYER_HANDLED_URLS + JSONPath cache
@@ -328,6 +330,10 @@ public class RouteDsl {
          * @return ModifyApiDsl — 仅可调用 Modify 相关方法 + 公共方法
          */
         public ModifyApiDsl modifyRequest() {
+            // ⭐ 必须显式置 type=MODIFY：构造器默认 MONITOR，若不覆盖会让规则「自称监控」，
+            //    连带污染 RouteEngine 三处按 type 的判定 —— 采集事件投喂分支、
+            //    匹配计数门控、MonitorSession 创建判定（详见 RouteEngine 对应注释）。
+            rule.setType(RouteHandleType.MODIFY);
             rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
                     "[RouteDsl] api('{}') -> modifyRequest()", rule.getUrlPattern());
@@ -347,6 +353,9 @@ public class RouteDsl {
          * @return DelayApiDsl — 可调用 {@link DelayApiDsl#randomDelay(long, long)} 切换随机模式
          */
         public DelayApiDsl delay(long delaySecs) {
+            // ⭐ 同 modifyRequest()：显式置 type=DELAY，避免沿用构造器默认 MONITOR
+            //    而被误判为携带监控能力（会创建永不被计数的多余 MonitorSession）。
+            rule.setType(RouteHandleType.DELAY);
             rule.setDelayMs(delaySecs * 1000);
             rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
@@ -408,6 +417,25 @@ public class RouteDsl {
          */
         public T autoStopOnMatch(boolean autoStopOnMatch) {
             rule.setAutoStopOnMatch(autoStopOnMatch);
+            return self();
+        }
+
+        /**
+         * 一次性拦截次数（对齐 Playwright Route.setTimes）。
+         * <p>0（默认）= 无限次拦截；N&gt;0 = 仅处理前 N 次，第 N+1 次起请求直接放行（走真实网络）。
+         * <p>适用类型：
+         * <ul>
+         *   <li>MOCK — 只 mock 前 N 次，之后返回真实响应</li>
+         *   <li>MODIFY — 只改前 N 次请求，之后原样放行</li>
+         *   <li>DELAY — 只延迟前 N 次，之后立即放行</li>
+         * </ul>
+         * <p>注意：MONITOR 请使用 {@link #minMatches} + {@link #autoStopOnMatch} 控制监听次数。
+         * <p>跨层合并场景（page 规则与 context 规则重叠）下安全降级为无限次。
+         *
+         * @param times 拦截次数，0 = 无限次
+         */
+        public T times(int times) {
+            rule.setTimes(times);
             return self();
         }
 

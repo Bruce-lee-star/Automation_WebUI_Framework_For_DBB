@@ -281,12 +281,16 @@ public class SessionManager {
                 } else {
                     // Feature 模式
                     if (PlaywrightManager.hasContext()) {
-                        // Context 已存在（前一个 Scenario 的登录态仍在）
-                        // 当前是不同的登录用户 → 清除当前 Context 的 cookies → 返回 false 触发登录流程
+                        // Context 已存在（前一个 Scenario 的登录态仍在），当前是不同的登录用户。
+                        // ⭐ 丢弃旧用户的整个 Context（cookies/localStorage/IndexedDB 等 storageState
+                        //    之外的残留一并销毁），并设置新 sessionKey 的 storageStatePath，
+                        //    使下次 getContext() 创建的全新 Context 从干净起点加载 → 返回 false 触发登录。
+                        //    ⭐ 重建由 PlaywrightManager 生命周期统一管理：setStorageStatePath 内部
+                        //    触发 scheduleContextRebuild() → 立即关闭旧 page+context（ThreadLocal
+                        //    一并清理）。SessionManager 只负责 session 状态，不直接控制 page/context。
                         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                                "Feature mode: Context already exists with different session, clearing cookies and returning false to trigger login for {}", sessionKey);
-                        BrowserContext context = PlaywrightManager.getContext();
-                        context.clearCookies();
+                                "Feature mode: Context exists with different session — rebuilding Context for new storageState, triggering login for {}", sessionKey);
+                        PlaywrightManager.customOptions().setStorageStatePath(sessionPath);
                         return false;
                     }
                     // 首个 Scenario 或 Context 还未创建 → setStorageStatePath，后续 createContext 时应用

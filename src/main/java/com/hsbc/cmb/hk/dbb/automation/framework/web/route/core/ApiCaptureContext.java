@@ -5,19 +5,25 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import com.microsoft.playwright.BrowserContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import java.util.regex.Pattern;
 
 /**
@@ -65,7 +71,17 @@ public class ApiCaptureContext {
      */
     private static final ApiCaptureContext SHARED = new ApiCaptureContext();
     private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT = new ConcurrentHashMap<>();
-    private static final ThreadLocal<BrowserContext> CURRENT_CONTEXT = new ThreadLocal<>();
+
+    /**
+     * 当前测试线程绑定的 BrowserContext。
+     *
+     * <p>⭐ 用 {@link WeakReference} 包装：Cucumber/JUnit 的执行线程会被线程池复用，
+     * 而 {@code RouteDsl.on(...)} 只负责 bind、并不保证在用例结束时 unbind。
+     * 若直接强引用 BrowserContext，线程的 ThreadLocalMap 会把已关闭的 BrowserContext
+     * 钉在堆上直到该线程销毁（并行 N 线程 × 整个 JVM 生命周期），且下一个用例复用该线程时
+     * 会读到上一个用例的死 context —— 既泄漏又串扰。
+     */
+    private static final ThreadLocal<WeakReference<BrowserContext>> CURRENT_CONTEXT = new ThreadLocal<>();
 
     /** 获取 BrowserContext 隔离的捕获上下文；旧 API 继续使用共享上下文。 */
     public static ApiCaptureContext forContext(BrowserContext context) {
@@ -78,6 +94,11 @@ public class ApiCaptureContext {
         if (context == null) return;
         ApiCaptureContext removed = BY_CONTEXT.remove(context);
         if (removed != null) removed.reset();
+        // ⭐ 源头解绑：调用方已宣告该 context 生命周期结束，若当前线程仍绑在它上面，
+        //    立即解绑，避免后续 getCurrent() 再次把它 computeIfAbsent 复活。
+        if (isCurrentContext(context)) {
+            CURRENT_CONTEXT.remove();
+        }
     }
 
     /** 当前已注册的 Context 数量。 */
@@ -86,46 +107,84 @@ public class ApiCaptureContext {
     }
 
     /**
-     * 获取全局共享的 API 捕获上下文实例。
+     * 移除并重置<b>所有</b> BrowserContext 的捕获上下文（套件级全量复位专用）。
      *
-     * <p>⭐ 任意线程调用均返回同一实例，保证跨线程状态一致性。
+     * <p>⭐ 补齐泄漏出口：{@code BY_CONTEXT} 以 BrowserContext 为强引用 key，
+     * 若用例只走 {@code resetAll()} 而没有逐个 {@code removeContext}，
+     * 已关闭的 BrowserContext 及其全部 CapturedApiCall 快照会常驻堆内存。
+     */
+    public static void removeAllContexts() {
+        int size = BY_CONTEXT.size();
+        for (Iterator<Map.Entry<BrowserContext, ApiCaptureContext>> it = BY_CONTEXT.entrySet().iterator();
+             it.hasNext(); ) {
+            Map.Entry<BrowserContext, ApiCaptureContext> entry = it.next();
+            try {
+                entry.getValue().reset();
+            } catch (Exception ignored) {
+                // 单个 context 重置失败不影响其余条目回收
+            }
+            it.remove();
+        }
+        CURRENT_CONTEXT.remove();
+        SHARED.reset();
+        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                "[ApiCaptureContext] removeAllContexts() — released {} per-context instance(s)", size);
+    }
+
+    /**
+     * 获取当前线程绑定的 API 捕获上下文；未绑定或绑定已失效时回退全局共享实例。
+     *
+     * <p>⭐ 失效绑定自愈：这里刻意<b>不</b>用 {@link #forContext} 的 computeIfAbsent。
+     * 一旦 {@code removeContext} 已回收该 context（用例收尾），或 BrowserContext 已被 GC，
+     * 复活条目等于把上一个用例的状态带进下一个用例。此时就地 remove 掉 ThreadLocal
+     * 并回退 SHARED，让线程自我修复。
      */
     public static ApiCaptureContext getCurrent() {
-        BrowserContext context = CURRENT_CONTEXT.get();
-        return context == null ? SHARED : forContext(context);
+        BrowserContext context = currentContextOrNull();
+        if (context == null) return SHARED;
+        ApiCaptureContext existing = BY_CONTEXT.get(context);
+        if (existing != null) return existing;
+        CURRENT_CONTEXT.remove();
+        return SHARED;
     }
 
     /** 将当前测试线程绑定到指定 BrowserContext，供旧兼容 API 正确隔离。 */
     public static void bindCurrentContext(BrowserContext context) {
         if (context == null) CURRENT_CONTEXT.remove();
         else {
-            CURRENT_CONTEXT.set(context);
+            CURRENT_CONTEXT.set(new WeakReference<>(context));
             forContext(context);
         }
     }
 
-    /** 清除当前测试线程的 Context 绑定，防止线程池线程污染后续测试。 */
+    /** 判断当前线程是否正绑定在指定 BrowserContext 上。 */
     public static boolean isCurrentContext(BrowserContext context) {
-        return context != null && CURRENT_CONTEXT.get() == context;
+        return context != null && currentContextOrNull() == context;
     }
 
+    /** 清除当前测试线程的 Context 绑定，防止线程池线程污染后续测试。 */
     public static void unbindCurrentContext() {
         CURRENT_CONTEXT.remove();
     }
 
     /**
-     * 重置 API 捕获上下文（测试开始时调用）。
-     * <p>注意：此方法会重置全局共享实例的断言和响应存储状态。
+     * 解引用当前线程绑定的 BrowserContext；引用已被 GC 清空时顺手移除 ThreadLocal 条目。
      */
-    public static void resetCurrent() {
-        SHARED.reset();
+    private static BrowserContext currentContextOrNull() {
+        WeakReference<BrowserContext> ref = CURRENT_CONTEXT.get();
+        if (ref == null) return null;
+        BrowserContext context = ref.get();
+        if (context == null) {
+            CURRENT_CONTEXT.remove();
+        }
+        return context;
     }
 
     /**
-     * 清理 API 捕获上下文（测试结束时调用）。
-     * <p>⭐ 不再使用 ThreadLocal.remove，改为 reset 重置状态即可。
+     * 重置 API 捕获上下文（测试开始/结束时统一调用，与线程解绑不再使用 ThreadLocal.remove）。
+     * <p>注意：此方法会重置全局共享实例的断言和响应存储状态。
      */
-    public static void removeCurrent() {
+    public static void resetCurrent() {
         SHARED.reset();
     }
 
@@ -173,6 +232,14 @@ public class ApiCaptureContext {
      * REQUEST/FETCH_REQUEST 时 +1、slot 完成时 -1。
      */
     private final AtomicInteger captureInFlight = new AtomicInteger(0);
+    /**
+     * ⭐ 单调递增「曾观察到的请求数」：每次有请求进入采集/拦截（activeRequests 或 captureInFlight +1）
+     * 即 +1，永不减。用于 {@link #awaitCompletion(long)} 的首活动门控，吸收「触发请求→Route 拦截」
+     * 之间的时序间隙——若用 activeRequests==0 直接判定「无活动」会因并发 fire-and-forget fetch
+     * 在 evaluate 返回后、route 拦截前的瞬时归零而提前返回（f31 丢并发）。单调性保证一旦有活动即永久可见，
+     * 不会因请求在两次检查间瞬时完成而漏唤醒导致空等超时。
+     */
+    private final AtomicLong observedRequests = new AtomicLong(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
 
     /** 等待锁：decrement → 0 时通知 awaitCompletion 的调用方 */
@@ -189,6 +256,16 @@ public class ApiCaptureContext {
 
     // ⭐ #5 wait/notify 锁：waitForApi 使用条件等待替代忙轮询
     private final Object apiCallLock = new Object();
+
+    /**
+     * ⭐ #6 投递式等待器注册表（点对点投递，替代"广播 notifyAll + 调用方重扫"）。
+     *
+     * <p>storeApiCall 在入库时直接评估已注册的谓词，命中即完成对应 future，
+     * 等待方零重扫、零广播唤醒；未命中则继续等待直到超时/重置。
+     * 所有操作均在持有 {@code apiCallLock} 时执行，与存储写入严格串行。
+     */
+    private final Map<CompletableFuture<CapturedApiCall>, Predicate<CapturedApiCall>> apiCallWaiters =
+            new ConcurrentHashMap<>();
 
     // ⭐ P3: 最近调用平铺列表 — 用于 scanForMatching 快速扫描。
     //   改用有界 ArrayDeque + 单锁，淘汰最老元素为 O(1)；
@@ -244,13 +321,10 @@ public class ApiCaptureContext {
      */
     public void signalFailFast() {
         hasAssertionFailures.set(true);
-        if (activeRequests.get() > 0) {
-            LOGGER.debug("[ApiCaptureContext] Draining activeRequests ({}) after assertion failure",
-                    activeRequests.get());
-            activeRequests.set(0);
-            synchronized (completionLock) {
-                completionLock.notifyAll();
-            }
+        // 失败状态与请求账本分离：计数只能由取得请求所有权的路径递减，
+        // 不能在此重置，否则原 finally 再递减会得到负数并破坏后续等待语义。
+        synchronized (completionLock) {
+            completionLock.notifyAll();
         }
     }
 
@@ -375,6 +449,7 @@ public class ApiCaptureContext {
     }
 
     public void incrementActiveRequests() {
+        observedRequests.incrementAndGet();
         int count = activeRequests.incrementAndGet();
         if (count == 1) {
             // ⭐ 0→1 时通知 waitForActiveRequest() 的调用方（DELAY 延迟载荷场景）
@@ -390,7 +465,7 @@ public class ApiCaptureContext {
      * 递减活动请求计数。当计数归零时通知所有等待 {@link #awaitCompletion} 的线程。
      */
     public void decrementActiveRequests() {
-        int remaining = activeRequests.decrementAndGet();
+        int remaining = activeRequests.updateAndGet(current -> Math.max(0, current - 1));
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[ApiCaptureContext] decrementActiveRequests -> {}", remaining);
         if (remaining == 0) {
@@ -409,6 +484,7 @@ public class ApiCaptureContext {
      * 由 EventMerger 在收到 REQUEST / FETCH_REQUEST 时调用。
      */
     public void incrementCaptureInFlight() {
+        observedRequests.incrementAndGet();
         int count = captureInFlight.incrementAndGet();
         if (count == 1) {
             synchronized (completionLock) {
@@ -423,7 +499,7 @@ public class ApiCaptureContext {
      * ⭐ 采集管道在途 -1：slot 已合并写出（无论成功/失败）。归零时通知等待方。
      */
     public void decrementCaptureInFlight() {
-        int remaining = captureInFlight.decrementAndGet();
+        int remaining = captureInFlight.updateAndGet(current -> Math.max(0, current - 1));
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                 "[ApiCaptureContext] decrementCaptureInFlight -> {}", remaining);
         if (remaining == 0) {
@@ -489,11 +565,28 @@ public class ApiCaptureContext {
      * @throws InterruptedException 如果等待被中断
      */
     public boolean awaitCompletion(long timeoutMs) throws InterruptedException {
-        if (activeRequests.get() == 0 && captureInFlight.get() == 0) {
-            return true;
-        }
         long deadline = System.currentTimeMillis() + timeoutMs;
         synchronized (completionLock) {
+            // 1) ⭐ 首活动门控：等待首个请求被拦截/采集。
+            //    修复 f31 丢并发：fire-and-forget 并发 fetch 在 page.evaluate 返回后、Route 拦截前，
+            //    存在 activeRequests==0 && captureInFlight==0 的时序窗口；原逻辑在此直接 return true，
+            //    导致断言在捕获前执行。改用单调递增的 observedRequests 作首活动信号——
+            //    其在 incrementActiveRequests/incrementCaptureInFlight 时 +1（早于 notifyAll），
+            //    门控先检查再 wait，故不会漏唤醒；一旦有活动即永久可见，避免空等超时。
+            //    若整个超时周期内都无请求被观察，则视为「无待处理请求」返回 true（与旧语义一致）。
+            while (observedRequests.get() == 0) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    return true;
+                }
+                inWaitState = true;
+                try {
+                    completionLock.wait(remaining);
+                } finally {
+                    inWaitState = false;
+                }
+            }
+            // 2) 排空门控：等待全部进行中请求完成（activeRequests + captureInFlight 归零）。
             while (activeRequests.get() > 0 || captureInFlight.get() > 0) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {
@@ -596,6 +689,7 @@ public class ApiCaptureContext {
                 activeRequests.get(), failureDetails.size(), getTotalResponseCount(),
                 apiCallsPerUrl.size(), apiCallsByUrl.size(), recentCalls.size(), wildcardPatternKeys.size());
         activeRequests.set(0);
+        observedRequests.set(0);
         hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStorage.clear();
@@ -612,6 +706,13 @@ public class ApiCaptureContext {
             }
             wildcardPatternKeys.clear();
             apiCallLock.notifyAll();
+            // ⭐ #6 重置语义：所有投递式等待器立即以 null 完成（调用方返回 null），避免空等至超时
+            if (!apiCallWaiters.isEmpty()) {
+                for (CompletableFuture<CapturedApiCall> f : apiCallWaiters.keySet()) {
+                    f.complete(null);
+                }
+                apiCallWaiters.clear();
+            }
         }
         totalResponseSize.set(0L);
         // ⭐ R4: 测试级重置时清除步骤窗口标记
@@ -676,6 +777,8 @@ public class ApiCaptureContext {
 
             // 通知 waitForApi 等待线程有新调用到达
             apiCallLock.notifyAll();
+            // ⭐ #6 投递式唤醒：直接评估注册表谓词，命中即精确完成对应 future（点对点，非广播+重扫）
+            deliverToWaiters(call);
         }
 
         LoggingConfigUtil.logTraceIfVerbose(LOGGER,
@@ -781,6 +884,13 @@ public class ApiCaptureContext {
                 return new ArrayList<>(bestMatch);
             }
         }
+
+        // 3. ⭐ 完整 URL 兜底：调用方可能传完整 URL（如 https://host/api/users/1），
+        //    而存储 key 是 path-only endpoint（/api/users/1）；改用 requestUrl 精确索引匹配。
+        List<CapturedApiCall> byUrl = getCallsByUrl(endpoint);
+        if (!byUrl.isEmpty()) {
+            return byUrl;
+        }
         return Collections.emptyList();
     }
 
@@ -820,7 +930,13 @@ public class ApiCaptureContext {
                 }
             }
         }
-        return latest;
+        if (latest != null) {
+            return latest;
+        }
+
+        // 3. ⭐ 完整 URL 兜底：调用方可能传完整 URL（如 https://host/api/users/1），
+        //    而存储 key 是 path-only endpoint（/api/users/1）；改用 requestUrl 精确索引匹配。
+        return getCallByUrl(endpoint);
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -905,7 +1021,7 @@ public class ApiCaptureContext {
 
         // ⭐ #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空导致命中率归零）
         if (PATTERN_CACHE.size() >= MAX_PATTERN_CACHE_SIZE) {
-            evictOldestQuarter(PATTERN_CACHE);
+            RouteUtil.evictOldestQuarter(PATTERN_CACHE);
         }
         PATTERN_CACHE.put(glob, compiled);
         return compiled;
@@ -913,15 +1029,11 @@ public class ApiCaptureContext {
 
     /**
      * ⭐ #7 伪 LRU 淘汰辅助：从 ConcurrentHashMap 中移除约 25% 的条目。
-     * <p>使用弱一致性迭代器，适合并发场景下的近似 LRU。
+     * <p>委托 {@link RouteUtil#evictOldestQuarter(Map)} 的统一实现；保留此方法以兼容
+     * {@code RouteCoreEvictionTest} 对框架内部淘汰逻辑的直接验证。
      */
     private static void evictOldestQuarter(ConcurrentHashMap<?, ?> map) {
-        int evictCount = Math.max(1, map.size() / 4);
-        Iterator<?> it = map.keySet().iterator();
-        for (int i = 0; i < evictCount && it.hasNext(); i++) {
-            it.next();
-            it.remove();
-        }
+        RouteUtil.evictOldestQuarter(map);
     }
 
     /**
@@ -1059,27 +1171,67 @@ public class ApiCaptureContext {
         CapturedApiCall found = scanForMatching(predicate);
         if (found != null) return found;
 
-        // ── ⭐ #5 条件等待：使用 wait/notify 替代忙轮询（Thread.sleep）──
-        //    storeApiCall 在新调用存储后 notifyAll，waitForApi 被精确唤醒。
-        //    超时时间超过 50ms 时使用 wait 模式；短超时保留轮询以降低切换开销。
-        long deadline = System.currentTimeMillis() + timeoutMs;
+        // ── ⭐ #6 投递式等待：注册一次性谓词，storeApiCall 入库时直接评估并精确完成 future ──
+        //    命中即返回；零重扫、零广播唤醒（替代旧的"notifyAll + 重扫"模式）。
+        CompletableFuture<CapturedApiCall> waiter = registerApiCallWaiter(predicate);
+        // 关闭"注册前入库 → 投递丢失"竞态：注册后立即补扫一次（单次检查，非轮询）
+        found = scanForMatching(predicate);
+        if (found != null) {
+            unregisterApiCallWaiter(waiter);
+            return found;
+        }
+        try {
+            return waiter.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (TimeoutException | ExecutionException e) {
+            return null;
+        } finally {
+            unregisterApiCallWaiter(waiter);
+        }
+    }
 
-        // 条件等待：无论超时长短都使用通知机制，避免轮询和 Thread.sleep 占用等待线程。
+    /**
+     * ⭐ #6 注册一次性投递式等待器：谓词将在后续每次入库时被直接评估，
+     * 命中即完成返回的 future（点对点投递）。若调用早已入库，请先自行扫描。
+     *
+     * @param predicate 匹配谓词（在存储线程持有 apiCallLock 时评估，必须廉价且非阻塞）
+     * @return 完成时为命中调用的 future
+     */
+    public CompletableFuture<CapturedApiCall> registerApiCallWaiter(Predicate<CapturedApiCall> predicate) {
+        CompletableFuture<CapturedApiCall> future = new CompletableFuture<>();
         synchronized (apiCallLock) {
-            while (System.currentTimeMillis() < deadline) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0) break;
-                try {
-                    apiCallLock.wait(remaining);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                }
-                found = scanForMatching(predicate);
-                if (found != null) return found;
+            apiCallWaiters.put(future, predicate);
+        }
+        return future;
+    }
+
+    /**
+     * ⭐ #6 注销投递式等待器（幂等）：超时/中断/正常返回后必须调用，避免注册表泄漏。
+     */
+    public void unregisterApiCallWaiter(CompletableFuture<CapturedApiCall> waiter) {
+        if (waiter == null) return;
+        synchronized (apiCallLock) {
+            apiCallWaiters.remove(waiter);
+        }
+    }
+
+    /**
+     * ⭐ #6 投递式唤醒：在 storeApiCall 持有 apiCallLock 时调用，评估所有注册谓词，
+     * 命中即移除并完成对应 future。谓词必须廉价（仅字段比对），绝不可阻塞。
+     */
+    private void deliverToWaiters(CapturedApiCall call) {
+        if (apiCallWaiters.isEmpty()) return;
+        var it = apiCallWaiters.entrySet().iterator();
+        while (it.hasNext()) {
+            var entry = it.next();
+            Predicate<CapturedApiCall> predicate = entry.getValue();
+            if (predicate != null && predicate.test(call)) {
+                it.remove();
+                entry.getKey().complete(call);
             }
         }
-        return null;
     }
 
     /**

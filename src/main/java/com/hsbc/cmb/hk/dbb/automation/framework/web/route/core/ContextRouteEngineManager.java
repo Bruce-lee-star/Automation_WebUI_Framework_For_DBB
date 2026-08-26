@@ -16,9 +16,10 @@ public final class ContextRouteEngineManager {
 
     public static ContextRouteEngine start(BrowserContext context) {
         if (context == null) throw new IllegalArgumentException("BrowserContext must not be null");
-        return ENGINES.compute(context, (ignored, existing) ->
+        ContextRouteEngine engine = ENGINES.compute(context, (ignored, existing) ->
                 existing == null || existing.state() == ContextRouteEngine.State.CLOSED
                         ? new ContextRouteEngine(context) : existing);
+        return engine;
     }
 
     public static ContextRouteEngine get(BrowserContext context) {
@@ -33,7 +34,12 @@ public final class ContextRouteEngineManager {
     public static void stop(BrowserContext context) {
         if (context == null) return;
         ContextRouteEngine engine = ENGINES.remove(context);
-        if (engine != null) engine.close();
+        if (engine != null) {
+            engine.close();
+            // ⭐ context 生命周期结束：清理旧 Context 的规则索引与引擎合并引用
+            //   （保留重建快照 CONTEXT_RULE_STORE，供后续新建 Context 重绑规则）。
+            RouteEngine.cleanupClosedContext(context);
+        }
     }
 
     public static int size() {

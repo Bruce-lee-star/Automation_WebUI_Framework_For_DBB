@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
@@ -75,7 +76,81 @@ public final class RouteUtil {
     /** Pattern 缓存容量上限 */
     private static final int PATTERN_CACHE_MAX = 200;
 
+    /** 响应体读取/存储上限（字节），超过则截断，防止大响应体（如下载、大 JSON）导致 OOM。
+     *  可用环境变量 ROUTE_MAX_BODY_BYTES 覆盖，默认 5MB。 */
+    public static final long MAX_BODY_BYTES = getEnvLong("ROUTE_MAX_BODY_BYTES", 5L * 1024 * 1024);
+
+    /**
+     * 截断响应体字节数组，防止超大响应体撑爆内存。
+     * @param body 原始字节数组（可能为 null）
+     * @return 不超过 {@link #MAX_BODY_BYTES} 的字节数组；未超限则原样返回
+     */
+    public static byte[] truncateBody(byte[] body) {
+        if (body == null || body.length <= MAX_BODY_BYTES) return body;
+        byte[] truncated = Arrays.copyOf(body, (int) Math.min(MAX_BODY_BYTES, Integer.MAX_VALUE));
+        LOGGER.debug("[RouteUtil] Response body truncated from {} to {} bytes (ROUTE_MAX_BODY_BYTES)",
+                body.length, truncated.length);
+        return truncated;
+    }
+
+    /**
+     * 截断响应体字符串（与 {@link #truncateBody(byte[])} 同源，供字符串路径复用）。
+     */
+    public static String truncateBody(String body) {
+        if (body == null || body.length() <= MAX_BODY_BYTES) return body;
+        String truncated = body.substring(0, (int) Math.min(MAX_BODY_BYTES, Integer.MAX_VALUE));
+        LOGGER.debug("[RouteUtil] Response body truncated from {} to {} chars (ROUTE_MAX_BODY_BYTES)",
+                body.length(), truncated.length());
+        return truncated;
+    }
+
+    /** 从环境变量读取 long（解析失败/缺失时返回默认值）。 */
+    public static long getEnvLong(String key, long defaultValue) {
+        String val = System.getenv(key);
+        if (val == null || val.trim().isEmpty()) return defaultValue;
+        try {
+            return Long.parseLong(val.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    /** 从环境变量读取 double（解析失败/缺失时返回默认值）。集中实现，消除各 Handler 的重复副本。 */
+    public static double getEnvDouble(String key, double defaultValue) {
+        String val = System.getenv(key);
+        if (val == null || val.trim().isEmpty()) return defaultValue;
+        try {
+            return Double.parseDouble(val.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
     private RouteUtil() {}
+
+    /**
+     * 全局统一 JsonPath 配置（⭐ 一致性修复：此前 ModifyHandler 使用自定义 Configuration，
+     * 而 MonitorHandler / MonitorAssertionEvaluator 直接用 {@code JsonPath.compile} 默认配置，
+     * 两者在缺失字段处理、异常策略上存在语义差异，会导致同一表达式在不同 Handler 下行为不一致）。
+     * <p>统一采用 Jackson 提供器 + {@code Option.SUPPRESS_EXCEPTIONS}（缺失路径返回 null/空，
+     * 不抛异常），保证 MOCK/MONITOR/MODIFY 三路径解析语义一致。
+     */
+    public static final com.jayway.jsonpath.Configuration JSONPATH_CONFIG =
+            com.jayway.jsonpath.Configuration.builder()
+                    .jsonProvider(new com.jayway.jsonpath.spi.json.JacksonJsonProvider())
+                    .mappingProvider(new com.jayway.jsonpath.spi.mapper.JacksonMappingProvider())
+                    .options(com.jayway.jsonpath.Option.SUPPRESS_EXCEPTIONS)
+                    .build();
+
+    /**
+     * 编译 JsonPath 表达式（供各 Handler 复用）。
+     * <p>仅做路径编译；统一解析语义（Jackson 提供器 + SUPPRESS_EXCEPTIONS）在
+     * {@code .read(document, JSONPATH_CONFIG)} 时生效，故此处无需在编译期绑定配置。
+     */
+    public static com.jayway.jsonpath.JsonPath compileJsonPath(String expression) {
+        return JsonPath.compile(expression);
+    }
+
 
     /**
      * 检查请求是否匹配规则中定义的所有请求条件。
@@ -364,14 +439,32 @@ public final class RouteUtil {
     }
 
     /**
-     * ⭐ P2: 容量保护 — 当 Pattern 缓存超过软上限时触发清空。
-     * <p>刻意不用迭代器 remove（ConcurrentHashMap 的 keySet 迭代器在并发
-     * computeIfAbsent 下可能抛出 ConcurrentModificationException，与
-     * ModifyHandler/MonitorHandler 的 evictOldestQuarter 同源问题）。
-     * 正则表达式总量有限且编译廉价，偶发全清比迭代器并发删除更安全。
+     * ⭐ 统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorAssertionEvaluator /
+     * ApiCaptureContext 同源策略）。避免 entrySet().iterator().remove() 在结构变更时抛
+     * IllegalStateException，也避免简单 map.clear() 使缓存命中率瞬间归零。
+     * 供 RouteEngine / PassiveMonitorRegistry / 各 Handler 的 JSONPATH_CACHE 等复用。
      */
-    private static void evictOldestQuarter(ConcurrentHashMap<?, ?> map) {
-        map.clear();
+    public static void evictOldestQuarter(Map<?, ?> map) {
+        if (map == null || map.isEmpty()) return;
+        int target = Math.max(1, map.size() / 4);
+        int removed = 0;
+        Iterator<?> it = map.keySet().iterator();
+        while (it.hasNext() && removed < target) {
+            Object key = it.next();
+            map.remove(key);
+            removed++;
+        }
+    }
+
+    /**
+     * 从缓存获取或编译一个正则表达式 Pattern（公开入口，供 RouteEngine.globMatches /
+     * PassiveMonitorRegistry 复用同一份 PATTERN_CACHE，避免各自重复编译）。
+     *
+     * @param regex 正则表达式字符串（作为缓存 key）
+     * @return 编译后的 Pattern
+     */
+    public static Pattern compileCached(String regex) {
+        return getOrCompilePattern(regex);
     }
 
     /**
@@ -599,6 +692,82 @@ public final class RouteUtil {
             route.resume();
         } catch (Exception ignored) {
             // route 可能已被处置或 page 已关闭，忽略。
+        }
+    }
+
+    /**
+     * 判断 Playwright 异常是否表示 route 对象已失效/销毁。
+     *
+     * <p>生命周期契约修复：Chromium 下 route 销毁后操作主要抛
+     * {@code Connection closed} / {@code Target closed}；而 Firefox/WebKit 下 route 在
+     * 请求完成或被自动清理后，对其 resume/fulfill/abort 会抛
+     * {@code Object doesn't exist: route} / {@code route has been already handled}
+     * 等不同文案。统一识别这些"已死"信号，避免误判为可操作对象而重复调用。
+     *
+     * @param e 捕获的异常（可为 null）
+     * @return true 表示 route 已失效，应静默 no-op 而非再次尝试
+     */
+    public static boolean isRouteDeadException(Throwable e) {
+        if (e == null) return false;
+        String msg = e.getMessage();
+        if (msg == null) {
+            // 无 message 时向上回溯（Playwright 常包装一层）
+            Throwable cause = e.getCause();
+            if (cause != null && cause.getMessage() != null) {
+                msg = cause.getMessage();
+            } else {
+                return false;
+            }
+        }
+        String m = msg.toLowerCase();
+        return m.contains("object doesn't exist")
+                || m.contains("route")
+                && (m.contains("doesn't exist") || m.contains("already handled")
+                    || m.contains("already disposed") || m.contains("closed"));
+    }
+
+    /**
+     * 安全 resume：route 已死则静默跳过，绝不抛异常、绝不重复操作。
+     *
+     * <p>exactly-one 与生命周期契约的统一守门人：所有对 route.resume() 的调用
+     * 都应经过本方法（或 safeFulfill/safeAbort），确保 Firefox/WebKit 下销毁的
+     * route 不会被反复操作而污染日志、计数与延迟路径的落库逻辑。
+     */
+    public static void safeResume(Route route) {
+        if (route == null) return;
+        try {
+            route.resume();
+        } catch (Exception e) {
+            if (!isRouteDeadException(e)) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteUtil] safeResume unexpected error (ignored): {}", e.getMessage());
+            }
+        }
+    }
+
+    /** 安全 fulfill：route 已死则静默跳过。 */
+    public static void safeFulfill(Route route, Route.FulfillOptions options) {
+        if (route == null) return;
+        try {
+            route.fulfill(options);
+        } catch (Exception e) {
+            if (!isRouteDeadException(e)) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteUtil] safeFulfill unexpected error (ignored): {}", e.getMessage());
+            }
+        }
+    }
+
+    /** 安全 abort：route 已死则静默跳过。 */
+    public static void safeAbort(Route route) {
+        if (route == null) return;
+        try {
+            route.abort();
+        } catch (Exception e) {
+            if (!isRouteDeadException(e)) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteUtil] safeAbort unexpected error (ignored): {}", e.getMessage());
+            }
         }
     }
 

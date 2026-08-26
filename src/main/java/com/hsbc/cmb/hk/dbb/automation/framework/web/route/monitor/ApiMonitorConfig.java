@@ -34,7 +34,7 @@ public class ApiMonitorConfig {
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(ApiMonitorConfig.class);
 
     /** 功能名 → (endpoint pattern → 监控参数) */
-    private Map<String, Map<String, EndpointConfig>> features;
+    private volatile Map<String, Map<String, EndpointConfig>> features;
 
     /** 默认配置文件路径（classpath 或文件系统） */
     public static final String DEFAULT_CONFIG_PATH = "config/api-monitor-config.json";
@@ -42,10 +42,12 @@ public class ApiMonitorConfig {
     private static volatile ApiMonitorConfig INSTANCE;
 
     public Map<String, Map<String, EndpointConfig>> getFeatures() {
-        return features == null ? Collections.emptyMap() : features;
+        Map<String, Map<String, EndpointConfig>> f = features;
+        return f == null ? Collections.emptyMap() : f;
     }
 
-    public void setFeatures(Map<String, Map<String, EndpointConfig>> features) {
+    /** ⭐ P2: 加锁保护，避免运行时并发 set 导致的不一致（volatile 仅保证可见性，不保证原子发布）。 */
+    public synchronized void setFeatures(Map<String, Map<String, EndpointConfig>> features) {
         this.features = features;
     }
 
@@ -73,14 +75,23 @@ public class ApiMonitorConfig {
      *                  或 {@code src/test/resources/config/api-monitor-config-uat.json}）
      * @return 已加载的配置实例（供链式调用 / 校验）
      */
+    /**
+     * 加载指定的 JSON 监控清单并设为单例实例。
+     * 修复 P1-9：必须与 {@link #getInstance()} 共用同一把类锁，否则 {@code volatile INSTANCE}
+     * 的"无锁覆盖"会破坏双检锁语义，导致并发线程拿到不一致（半初始化或旧）的 config 实例。
+     */
     public static ApiMonitorConfig loadFrom(String configPath) {
-        INSTANCE = load(configPath);
-        return INSTANCE;
+        synchronized (ApiMonitorConfig.class) {
+            INSTANCE = load(configPath);
+            return INSTANCE;
+        }
     }
 
-    /** 用于测试或显式重载 */
+    /** 用于测试或显式重载（与 loadFrom/getInstance 共用类锁，保证可见性一致） */
     public static void reset() {
-        INSTANCE = null;
+        synchronized (ApiMonitorConfig.class) {
+            INSTANCE = null;
+        }
     }
 
     /**

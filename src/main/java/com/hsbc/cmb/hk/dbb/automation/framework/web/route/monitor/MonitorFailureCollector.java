@@ -71,9 +71,7 @@ public class MonitorFailureCollector {
      */
     public void record(CapturedApiCall call, String pattern, String owner, String reason) {
         String status = call.statusCode() == 0 ? "N/A" : String.valueOf(call.statusCode());
-        String body = call.responseBody() == null ? "" : call.responseBody();
-        // 指纹：pattern + 状态码 + 响应体 hash，确保同一错误的多次触发被合并
-        String fingerprint = pattern + "|" + status + "|" + Integer.toHexString(body.hashCode());
+        String fingerprint = fingerprintFor(call, pattern);
         FailedApiCall existing = dedupMap.get(fingerprint);
         if (existing != null) {
             String scn = safeScenario();
@@ -150,6 +148,20 @@ public class MonitorFailureCollector {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 生成失败去重指纹（修复 P0-5）。
+     * ① 用 NUL(\u0000) 作分隔符，杜绝 pattern/status 含 '|' 时的分隔符碰撞误合并；
+     * ② 拼接 body 前 256 字符（而非纯 hashCode），避免不同 body 哈希碰撞被错误合并，
+     *    同时空 body 显式记为 "<empty>"，避免所有空 body 失败被误合并为一条；
+     * ③ method 纳入指纹，同源不同方法的失败区分开。
+     */
+    static String fingerprintFor(CapturedApiCall call, String pattern) {
+        String status = call.statusCode() == 0 ? "N/A" : String.valueOf(call.statusCode());
+        String body = call.responseBody() == null ? "" : call.responseBody();
+        String bodySig = body.isEmpty() ? "<empty>" : body.substring(0, Math.min(256, body.length()));
+        return pattern + '\u0000' + status + '\u0000' + call.method() + '\u0000' + bodySig;
     }
 
     /** 单条去重后的失败记录 */

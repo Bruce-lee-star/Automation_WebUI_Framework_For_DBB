@@ -99,6 +99,48 @@ public final class RoleElementPicker {
         return false;
     }
 
+    /**
+     * 彻底清理指定 BrowserContext 在所有静态 Map 中的状态。
+     * <p>
+     * 调用时机：BrowserContext 关闭之后（PlaywrightManager.closeContext 钩子 / @AfterMethod / hook）。
+     * 否则长跑测试中累积的 CTX_* Map 会导致内存泄漏、上下文复活后命中陈旧状态。
+     * </p>
+     */
+    public static void cleanupContext(BrowserContext ctx) {
+        if (ctx == null) return;
+        CTX_CMD_QUEUES.remove(ctx);
+        CTX_PICK_STATES.remove(ctx);
+        CTX_BRIDGED.remove(ctx);
+        CTX_PICK_MODES.remove(ctx);
+        CTX_FRAMEWORK_CLOSED.remove(ctx);
+        // 同步清理 LAST_PICK_ORIGIN 中属于该 context 的 page
+        LAST_PICK_ORIGIN.keySet().removeIf(p -> {
+            try {
+                return p != null && p.context() == ctx;
+            } catch (Exception ignore) {
+                return true; // 页面已关闭，保守清理
+            }
+        });
+    }
+
+    /** 清理指定 Page 的 page-level 状态（frameNavigated 跟踪）。 */
+    public static void cleanupPage(Page page) {
+        if (page == null) return;
+        LAST_PICK_ORIGIN.remove(page);
+    }
+
+    /** 清空所有静态 Map —— 主要用于 JVM 关闭或测试集群重置。 */
+    public static void clearAll() {
+        CTX_CMD_QUEUES.clear();
+        CTX_PICK_STATES.clear();
+        CTX_BRIDGED.clear();
+        CTX_PICK_MODES.clear();
+        CTX_FRAMEWORK_CLOSED.clear();
+        LAST_PICK_ORIGIN.clear();
+        // STATE_DELETED 中的 map 引用虽长，但已无法命中任何 CTX_PICK_STATES，安全清理
+        STATE_DELETED.clear();
+    }
+
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
     private static void setPickMode(Page anyPage, PickMode mode,
                                     LinkedHashMap<Page, String> pageNames) {
@@ -122,7 +164,8 @@ public final class RoleElementPicker {
     // 用于 onFrameNavigated 重激活时区分"同源导航（门控脚本已注入，仅轻量保活）"与"跨域导航（门控因
     // localStorage 隔离未注入，需强制重注入库）"——同源永远不强制 start，杜绝一次导航多次 onFrameNavigated
     // 反复重注入导致"扫描了很多元素"的放大现象。
-    private static volatile String LAST_PICK_ORIGIN = "";
+    // 注意：必须按 page 隔离，否则并发执行/重入注入会相互覆盖，导致后续判断错乱。
+    private static final Map<Page, String> LAST_PICK_ORIGIN = new ConcurrentHashMap<>();
     // 跨域强制重注入去抖：key=page，value=上次强制 start 时间戳。同一 page 在 FORCE_START_DEBOUNCE_MS
     // 内不重复强制 start（一次导航会触发 onFrameNavigated 多次：about:blank 过渡/重定向/主框架/iframe）。
     private static final long FORCE_START_DEBOUNCE_MS = 2000L;
@@ -1889,7 +1932,7 @@ public final class RoleElementPicker {
             // 故 about:blank/空 origin 绝不更新 LAST_PICK_ORIGIN，保持上一有效 origin 作为去抖基准。
             try {
                 String __o = safeOrigin(page.url());
-                if (!__o.isEmpty()) LAST_PICK_ORIGIN = __o;
+                if (!__o.isEmpty()) LAST_PICK_ORIGIN.put(page, __o);
             } catch (Exception ignore) {}
         } catch (Exception e) { log.warn("[picker][start] 诊断读取失败：{}", e.getMessage()); }
     }
@@ -4020,7 +4063,7 @@ public final class RoleElementPicker {
                 // 销毁的文档"上失效——表现即"跨域新页面点击有蓝框 active:true，但 __roleOnPick 回传不进 Java"。
                 // 故跨域场景【跳过此处 applyPickState 覆盖】，把数据恢复完全交给唯一的 start() 权威重建。
                 String __navOrigin = safeOrigin(page.url());
-                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(LAST_PICK_ORIGIN);
+                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(LAST_PICK_ORIGIN.get(page));
                 // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
                 //  - 整页重建（livePicks=false）：用 applyPickState 从快照整体恢复（含 nls 反查表）；
                 //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，

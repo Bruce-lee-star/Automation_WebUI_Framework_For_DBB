@@ -30,11 +30,11 @@ public class FileReader {
     }
 
     public static InputStream readFileAsInputStream (final String relativePathOfFile) {
-        InputStream inputStream = null;
-        if (relativePathOfFile != null && relativePathOfFile.isEmpty()) {
-            inputStream = Thread.currentThread().getContextClassLoader().getResourceAsStream(relativePathOfFile);
+        if (relativePathOfFile == null || relativePathOfFile.isEmpty()) {
+            LOGGER.warn("Resource path is null or empty");
+            return null;
         }
-        return inputStream;
+        return Thread.currentThread().getContextClassLoader().getResourceAsStream(relativePathOfFile);
     }
 
 }

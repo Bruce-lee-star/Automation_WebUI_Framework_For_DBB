@@ -93,9 +93,11 @@ public final class MonitorResultRecorder {
         final int status = response.status();
         final String body = response.body();
         final Map<String, String> resHeaders = response.responseHeaders();
+        final Map<String, String> reqHeaders = response.requestHeaders();
         final String method = response.method();
         final String pattern = rule.urlPattern();
-        final List<Object> callbacks = List.copyOf(rule.monitorCallbacks());
+        // ⭐ P2-18：monitorCallbacks() 在 MonitorRuleSnapshot 构造时已是不可变副本，无需二次 copyOf
+        final List<Object> callbacks = rule.monitorCallbacksTyped();
         RouteAsyncPool.run(() -> {
             for (Object callback : callbacks) {
                 if (!(callback instanceof MonitorCallback monitorCallback)) continue;
@@ -106,8 +108,8 @@ public final class MonitorResultRecorder {
                 }
             }
             try {
-                DatabaseStoreMonitorCallback.INSTANCE.onResponse(url, status, body, resHeaders, method);
-                FileStoreMonitorCallback.INSTANCE.onResponse(url, status, body, resHeaders, method);
+                DatabaseStoreMonitorCallback.INSTANCE.onResponse(url, status, body, reqHeaders, resHeaders, method);
+                FileStoreMonitorCallback.INSTANCE.onResponse(url, pattern, status, body, reqHeaders, resHeaders, method);
             } catch (Exception e) {
                 LOGGER.warn("Monitor persistence callback failed for pattern='{}': {}", pattern, e.getMessage());
             }

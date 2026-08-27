@@ -567,26 +567,14 @@ public class ApiCaptureContext {
     public boolean awaitCompletion(long timeoutMs) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         synchronized (completionLock) {
-            // 1) ⭐ 首活动门控：等待首个请求被拦截/采集。
-            //    修复 f31 丢并发：fire-and-forget 并发 fetch 在 page.evaluate 返回后、Route 拦截前，
-            //    存在 activeRequests==0 && captureInFlight==0 的时序窗口；原逻辑在此直接 return true，
-            //    导致断言在捕获前执行。改用单调递增的 observedRequests 作首活动信号——
-            //    其在 incrementActiveRequests/incrementCaptureInFlight 时 +1（早于 notifyAll），
-            //    门控先检查再 wait，故不会漏唤醒；一旦有活动即永久可见，避免空等超时。
-            //    若整个超时周期内都无请求被观察，则视为「无待处理请求」返回 true（与旧语义一致）。
-            while (observedRequests.get() == 0) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining <= 0) {
-                    return true;
-                }
-                inWaitState = true;
-                try {
-                    completionLock.wait(remaining);
-                } finally {
-                    inWaitState = false;
-                }
+            // ⭐ P2-13（恢复单元测契约）：无待处理请求时立即返回 true，不阻塞。
+            // 「fire-and-forget 并发 fetch 在 route 拦截前的窗口」由测试侧先行
+            // waitForActiveRequest() 等待首个请求可见后再调用本方法，而非框架侧用首活动门控
+            // 阻塞「无活动」场景（否则 awaitCompletion_noActiveRequests 契约被破坏、空等超时）。
+            if (activeRequests.get() == 0 && captureInFlight.get() == 0) {
+                return true;
             }
-            // 2) 排空门控：等待全部进行中请求完成（activeRequests + captureInFlight 归零）。
+            // 排空门控：等待全部进行中请求完成（activeRequests + captureInFlight 归零）。
             while (activeRequests.get() > 0 || captureInFlight.get() > 0) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {

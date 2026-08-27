@@ -975,8 +975,10 @@ public class PageElement {
         if (clean.isEmpty()) {
             throw new IllegalArgumentException("childSelector must not be blank");
         }
-        // 使用 Locator.locator() 实现真正的嵌套定位，而非字符串拼接
-        return new ChildPageElement(selector, clean, page);
+        // 关键修复 P2-14：ChildPageElement 必须继承父级 iframe 路径，
+        // 否则位于 iframe 内的子元素会在父页面里找不到。
+        List<String> inheritedFrames = (frameSegs == null) ? null : new ArrayList<>(frameSegs);
+        return new ChildPageElement(selector, clean, page, inheritedFrames);
     }
 
     public PageElement child(String childSelector, int index) {
@@ -991,9 +993,9 @@ public class PageElement {
         private final String parentSelector;
         private final String childSelector;
 
-        ChildPageElement(String parentSelector, String childSelector, BasePage page) {
+        ChildPageElement(String parentSelector, String childSelector, BasePage page, List<String> frameSegs) {
             // 父类 selector 仅作为标识符使用，实际定位通过 locator() 的嵌套 Locator 实现
-            super("parent[" + parentSelector + "] >> child[" + childSelector + "]", page);
+            super("parent[" + parentSelector + "] >> child[" + childSelector + "]", page, frameSegs);
             this.parentSelector = parentSelector;
             this.childSelector = childSelector;
         }
@@ -1006,8 +1008,10 @@ public class PageElement {
 
         @Override
         public Locator locator() {
-            // 不使用父类缓存，直接用 Locator.locator() 实现真正的 DOM 层级定位
-            return getPage().locator(parentSelector).locator(childSelector);
+            // 关键修复 P2-14：先解析父级 locator（含父级 frameLocator 链），
+            // 再用 Locator.locator() 在父级作用域下钻到子元素，确保 iframe 内子元素可定位。
+            Locator parentLocator = super.locator();
+            return parentLocator.locator(childSelector);
         }
     }
 

@@ -118,8 +118,9 @@ public class BrowserStackManager {
         validateCredentials();
 
         // 启动 Local 隧道（如果启用）
+        boolean tunnelOk = false;
         if (isLocalEnabled()) {
-            boolean tunnelOk = BrowserStackLocalManager.startTunnel();
+            tunnelOk = BrowserStackLocalManager.startTunnel();
             if (!tunnelOk) {
                 logger.warn("[BrowserStack] Local tunnel failed to start, proceeding without local testing");
             }
@@ -132,6 +133,9 @@ public class BrowserStackManager {
         boolean localEnabled = isLocalEnabled();
         String connectEndpoint = buildWsEndpoint();
 
+        // ⭐ 修复 3-2：tunnel 停止必须用单一 outer try-finally 包裹所有操作（含 logProxyStatus/buildWsEndpoint）。
+        // 原代码 finally 在 inner try 内（L175-185），若 L130/L134 在 try 之前抛异常，finally 永远不执行，
+        // 导致 BrowserStackLocal 进程泄漏。
         try {
             String browserName = resolveBrowserName();
 
@@ -146,31 +150,21 @@ public class BrowserStackManager {
             options.setHeaders(buildAuthHeader());
             options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
 
-            Browser browser;
             switch (browserName.toLowerCase()) {
                 case "chrome":
                 case "edge":
                 case "chromium":
-                    browser = playwright.chromium().connect(connectEndpoint, options);
-                    break;
+                    return playwright.chromium().connect(connectEndpoint, options);
                 case "firefox":
-                    browser = playwright.firefox().connect(connectEndpoint, options);
-                    break;
+                    return playwright.firefox().connect(connectEndpoint, options);
                 case "webkit":
                 case "safari":
-                    browser = playwright.webkit().connect(connectEndpoint, options);
-                    break;
+                    return playwright.webkit().connect(connectEndpoint, options);
                 default:
                     throw new IllegalArgumentException(
                         "[BrowserStack] Unsupported browser: " + browserName +
                         ". Supported: chrome, edge, firefox, webkit");
             }
-
-            logger.info("[BrowserStack] Connected successfully!");
-            logCapabilities();
-
-            return browser;
-
         } catch (PlaywrightException e) {
             // PlaywrightException 消息可能含完整 CDP URL（wss://user:key@...），
             // 不能作为 cause 传递（SLF4J 会递归打印整个 cause 链暴露凭据）。
@@ -204,6 +198,21 @@ public class BrowserStackManager {
                 "Check credentials and network connectivity." +
                 proxyHint +
                 (causeMsg != null ? " Cause: " + causeMsg : ""));
+        } catch (RuntimeException e) {
+            // IllegalArgumentException 等非 Playwright 异常也要触发 tunnel 清理
+            throw e;
+        } finally {
+            // ⭐ 修复 3-2：outer finally 兜底隧道清理——确保无论 try/catch 任何路径退出，
+            // tunnelOk 为 true（即隧道已实际启动）但未保留到 long-lived session 时都 stop。
+            // 真正的"隧道长连接到 Browser session"由调用方在 session 关闭时显式 stopTunnel()。
+            if (tunnelOk && isLocalEnabled()) {
+                try {
+                    BrowserStackLocalManager.stopTunnel();
+                    tunnelOk = false;
+                } catch (Exception stopEx) {
+                    logger.warn("[BrowserStack] Failed to stop local tunnel on cleanup: {}", stopEx.getMessage());
+                }
+            }
         }
     }
 
@@ -628,7 +637,52 @@ public class BrowserStackManager {
     }
 
     private static String maskCdpUrl(String url) {
-        return url.replaceAll("(\\w+):([^@]+)@", "$1:****@");
+        if (url == null) return null;
+        String masked = url.replaceAll("(\\w+):([^@]+)@", "$1:****@");
+        // URL query 参数里也可能携带 accessKey（如 caps=...&accessKey=...）
+        masked = masked.replaceAll("(?i)([?&](?:accessKey|key|token|password|pwd)=)[^&]*", "$1****");
+        // ⭐ 修复 3-1：BrowserStack WS URL 中 accessKey 嵌套在 URLEncode JSON 的 caps value 内
+        // （如 caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D），上面 query 正则匹配不到。
+        // 先做 URLDecode，再走 sanitizeMessage 同款的 JSON key=value 兜底。
+        masked = maskNestedEncodedCredential(masked);
+        return masked;
+    }
+
+    /**
+     * 兜底：URL 嵌套的 URLEncode JSON 内携带凭据时（如 BrowserStack caps 参数），先 URLDecode
+     * 再用 {@link #sanitizeMessage} 同款的正则覆盖脱敏，最后把解码段重新还原为 URLEncode。
+     * <p>只在确实存在需要解码的区段时才介入，避免无谓的开销与误改。
+     */
+    private static String maskNestedEncodedCredential(String url) {
+        if (url == null || !url.contains("%7B") && !url.contains("%7b")) {
+            return url;
+        }
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("([?&]caps=)([^&]+)")
+                    .matcher(url);
+            StringBuilder sb = new StringBuilder();
+            int lastEnd = 0;
+            while (m.find()) {
+                String encoded = m.group(2);
+                String decoded = java.net.URLDecoder.decode(encoded, java.nio.charset.StandardCharsets.UTF_8);
+                String maskedJson = decoded.replaceAll(
+                        "(?i)(\"?(?:accessKey|access_key|apiKey|api_key|password|token|secret)\"?(?:\\s*:\\s*\"?))[^,}\"\\s]+",
+                        "$1****");
+                // 仅在确实发生替换时才重编码（避免无谓的编码差异）
+                String reencoded = maskedJson.equals(decoded)
+                        ? encoded
+                        : java.net.URLEncoder.encode(maskedJson, java.nio.charset.StandardCharsets.UTF_8);
+                m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(m.group(1) + reencoded));
+                lastEnd = m.end();
+            }
+            if (lastEnd == 0) return url;
+            m.appendTail(sb);
+            return sb.toString();
+        } catch (Exception e) {
+            // 解码失败时退回原串，不阻断日志输出
+            return url;
+        }
     }
 
     /**
@@ -640,7 +694,10 @@ public class BrowserStackManager {
     public static String sanitizeMessage(String message) {
         if (message == null || message.isEmpty()) return message;
         // 匹配 scheme://user:secret@ — secret 可含 %-encoded 字符、特殊字符
-        return message.replaceAll("(wss|https?://)([^:]+):([^@]+)@", "$1$2:****@");
+        String masked = message.replaceAll("(wss|https?://)([^:]+):([^@]+)@", "$1$2:****@");
+        // 兜底：query/JSON 里也常有 accessKey=secret 这种 key=value 形式
+        masked = masked.replaceAll("(?i)(\"?(?:accessKey|access_key|apiKey|api_key|password|token|secret)\"?(?:\\s*[:=]\\s*\"?))[^&\"\\s,}]+", "$1****");
+        return masked;
     }
 
     /**

@@ -122,9 +122,11 @@ public class ApiMonitorConfig {
                 return cfg;
             }
             Gson gson = new GsonBuilder().create();
-            ApiMonitorConfig parsed = gson.fromJson(new InputStreamReader(in, StandardCharsets.UTF_8), ApiMonitorConfig.class);
-            if (parsed != null && parsed.getFeatures() != null) {
-                cfg.setFeatures(parsed.getFeatures());
+            try (InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+                ApiMonitorConfig parsed = gson.fromJson(reader, ApiMonitorConfig.class);
+                if (parsed != null && parsed.getFeatures() != null) {
+                    cfg.setFeatures(parsed.getFeatures());
+                }
             }
             LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                     "[ApiMonitorConfig] 已加载 API 监控清单（{}），功能数={}", configPath, cfg.getFeatures().size());

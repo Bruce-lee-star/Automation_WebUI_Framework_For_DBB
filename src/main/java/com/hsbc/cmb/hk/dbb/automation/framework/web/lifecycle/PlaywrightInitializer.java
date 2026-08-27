@@ -7,11 +7,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +43,29 @@ class PlaywrightInitializer {
     private static final List<Process> downloadProcesses = new ArrayList<>();
     
     /**
+     * ⭐ 修复问题2：创建目录并显式限制为仅所有者可读写执行（等效 Unix 0700）。
+     * Files.createDirectories 依赖进程 umask，在共享/CI 环境下可能创建出 0755/0775，
+     * 而 Playwright 缓存/临时目录可能含浏览器二进制或 Firefox profile（含 cookie），权限过宽有泄露风险。
+     * 优先用 POSIX 精确权限；非 POSIX 系统回退到 ownerOnly 的 setReadable/Writable/Executable。
+     */
+    private static void createRestrictedDir(Path dir) throws IOException {
+        Files.createDirectories(dir);
+        try {
+            Set<PosixFilePermission> perms = EnumSet.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE);
+            Files.setPosixFilePermissions(dir, perms);
+        } catch (UnsupportedOperationException | IOException e) {
+            // 非 POSIX（如 Windows）：依赖 ACL，退化为仅所有者可读写执行
+            File f = dir.toFile();
+            f.setReadable(true, true);
+            f.setWritable(true, true);
+            f.setExecutable(true, true);
+        }
+    }
+
+    /**
      * 初始化 Playwright 路径配置
      */
     static void initializePlaywrightPaths() {
@@ -60,18 +87,18 @@ class PlaywrightInitializer {
         try {
             cachePath = Paths.get(browserPath).toAbsolutePath();
             if (!Files.exists(cachePath)) {
-                Files.createDirectories(cachePath);
+                createRestrictedDir(cachePath);
             }
 
             cachePath = Paths.get(driverTmp).toAbsolutePath();
             if (!Files.exists(cachePath)) {
-                Files.createDirectories(cachePath);
+                createRestrictedDir(cachePath);
             }
 
             // 创建浏览器临时目录（Firefox profile 等临时文件）
             Path tempPath = Paths.get(DEFAULT_PLAYWRIGHT_TEMP_PATH).toAbsolutePath();
             if (!Files.exists(tempPath)) {
-                Files.createDirectories(tempPath);
+                createRestrictedDir(tempPath);
             }
 
         } catch (Exception e) {
@@ -374,7 +401,7 @@ class PlaywrightInitializer {
             Path driverTmpPath = Paths.get(DEFAULT_PLAYWRIGHT_DRIVER_PATH).toAbsolutePath();
             try {
                 if (!Files.exists(driverTmpPath)) {
-                    Files.createDirectories(driverTmpPath);
+                    createRestrictedDir(driverTmpPath);
                 }
             } catch (IOException e) {
                 LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Failed to create driver tmp dir: {}", driverTmpPath);
@@ -403,7 +430,7 @@ class PlaywrightInitializer {
             }
 
             try {
-                int exitCode = process.waitFor();
+                int exitCode = waitForDownloadProcess(process, browserType);
                 if (exitCode == 0) {
                     LoggingConfigUtil.logInfoIfVerbose(logger, "[Static Init] Playwright {} browser downloaded successfully!", browserType);
                 } else {
@@ -411,6 +438,9 @@ class PlaywrightInitializer {
                     LoggingConfigUtil.logWarnIfVerbose(logger, "[Static Init] Browsers will be downloaded on first use");
                 }
             } finally {
+                if (process.isAlive()) {
+                    process.destroyForcibly();
+                }
                 synchronized (downloadProcesses) {
                     downloadProcesses.remove(process);
                 }
@@ -454,6 +484,26 @@ class PlaywrightInitializer {
             LoggingConfigUtil.logDebugIfVerbose(logger,
                     "[Static Init] No download proxy configured — direct connection will be used");
         }
+    }
+
+    private static int waitForDownloadProcess(Process process, String browserType) {
+        int timeoutMinutes = FrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_TIMEOUT_MINUTES.mapValue(Integer::parseInt);
+        long timeoutMs = timeoutMinutes * 60 * 1000L;
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (!process.isAlive()) {
+                    return process.exitValue();
+                }
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return -1;
+            }
+        }
+        logger.warn("[Static Init] Playwright {} browser download timed out after {} minutes — forcibly terminating", browserType, timeoutMinutes);
+        process.destroyForcibly();
+        return -1;
     }
 
     private static boolean isBlank(String s) {

@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 路由规则数据模型 — 统一承载 MONITOR / MODIFY / MOCK 三种类型的配置。
@@ -95,8 +96,8 @@ public class RouteRule {
      * <p>仅对独立注册的 MOCK / MODIFY / DELAY 规则生效；跨层合并场景安全降级为无限次。
      */
     private int times = 0;
-    /** 剩余可处理次数（times>0 时生效） */
-    private int remainingTimes = 0;
+    /** 剩余可处理次数（times>0 时生效）；原子化以避免 Playwright 事件线程与 DELAY 调度线程并发递减竞态（P1-10） */
+    private final AtomicInteger remainingTimes = new AtomicInteger(0);
 
     /**
      * ⭐ 分发期合并的源规则引用（transient，不参与 equals/hashCode/copyForMerge）。
@@ -267,25 +268,23 @@ public class RouteRule {
      */
     public void setTimes(int times) {
         this.times = Math.max(0, times);
-        this.remainingTimes = this.times;
+        this.remainingTimes.set(this.times);
     }
 
     /**
      * @return true 表示已设置有限次数且剩余次数为 0（应停止拦截、直接放行）
      */
     public boolean isTimesExhausted() {
-        return times > 0 && remainingTimes <= 0;
+        return times > 0 && remainingTimes.get() <= 0;
     }
 
-    /** 成功处理一次后递减剩余计数；归零即视为耗尽。 */
+    /** 成功处理一次后原子递减剩余计数；归零即视为耗尽（P1-10：AtomicInteger 防并发多拦）。 */
     public void decrementTimes() {
         if (times <= 0) {
             return;
         }
-        remainingTimes--;
-        if (remainingTimes < 0) {
-            remainingTimes = 0;
-        }
+        // getAndUpdate 保证「读取-递减-写回」原子，避免两个并发路径同时读到 1 各处理一次
+        remainingTimes.getAndUpdate(v -> v <= 0 ? 0 : v - 1);
     }
 
     /**

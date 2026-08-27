@@ -211,7 +211,8 @@ public class RoleElementBinder {
 
             field.set(self, new PageElement(supplier, desc, self));
         } catch (Exception e) {
-            throw new ElementException("Init RoleElement field failed: " + field.getName());
+            // 关键修复 P3-27：保留原始 cause 便于调试 —— ElementException 应传入原异常
+            throw new ElementException("Init RoleElement field failed: " + field.getName(), e);
         }
     }
 

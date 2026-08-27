@@ -73,6 +73,10 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(FileStoreMonitorCallback.class);
 
+    /** ⭐ P2-17：Gson 可复用、线程安全，静态化避免每次写文件 new Gson（参照 ApiMonitoringRepository.GSON） */
+    private static final Gson GSON_PRETTY = new GsonBuilder().setPrettyPrinting().create();
+    private static final Gson GSON_COMPACT = new Gson();
+
     /** 单例 */
     public static final FileStoreMonitorCallback INSTANCE = new FileStoreMonitorCallback();
 
@@ -129,19 +133,20 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     @Override
     public void onResponse(String url, int status, String body,
                            Map<String, String> responseHeaders, String method) {
-        // 业务侧注册时拿不到 urlPattern，退化为使用 url 作为 endpoint
-        onResponse(url, null, status, body, responseHeaders, method);
+        // 业务侧注册时拿不到 urlPattern / requestHeaders，退化为使用 url 作为 endpoint（请求头置空）
+        onResponse(url, null, status, body, null, responseHeaders, method);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 框架内部调用（带 urlPattern，用于更稳定的 endpoint 命名）
+    // 框架内部调用（带 urlPattern + requestHeaders，用于更稳定的 endpoint 命名与完整落盘）
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * 框架内部入口：携带 urlPattern，命名更贴切。
+     * 框架内部入口：携带 urlPattern 与 requestHeaders，命名更贴切且请求头可落盘（P2-24 修复：补上请求头）。
      */
     public void onResponse(String url, String urlPattern, int status, String body,
-                           Map<String, String> responseHeaders, String method) {
+                           Map<String, String> requestHeaders, Map<String, String> responseHeaders,
+                           String method) {
         if (!configChecked) {
             checkConfigAndInit();
             configChecked = true;
@@ -159,12 +164,9 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
             String fileName = baseName + (index == 0 ? "" : "_" + index) + ".json";
 
             Map<String, Object> json = buildJson(urlPattern, url, status, body,
-                    responseHeaders, method);
+                    requestHeaders, responseHeaders, method);
 
-            Gson gson = pretty
-                    ? new GsonBuilder().setPrettyPrinting().create()
-                    : new Gson();
-            String content = gson.toJson(json);
+            String content = (pretty ? GSON_PRETTY : GSON_COMPACT).toJson(json);
 
             if (!targetDir.exists() && !targetDir.mkdirs()) {
                 LOGGER.warn("[FileStoreMonitorCallback] Cannot create dir '{}', skip write.",
@@ -268,13 +270,14 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     // ═══════════════════════════════════════════════════════════════
 
     private Map<String, Object> buildJson(String urlPattern, String url, int status,
-                                          String body, Map<String, String> responseHeaders,
-                                          String method) {
+                                          String body, Map<String, String> requestHeaders,
+                                          Map<String, String> responseHeaders, String method) {
         // ⭐ P0 安全修复：本文件是「落本地磁盘」这条数据出域路径，此前完全绕过脱敏，
         //    Cookie / Authorization / 令牌 / 账号等明文写入 JSON 文件，是系统性泄露点。
         //    脱敏是数据出域的强制收口 —— 与 ApiMonitoringRecord（落库）保持同一标准。
         String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
         String safeBody = SensitiveDataSanitizer.sanitizeBody(body);
+        Map<String, String> safeReqHeaders = SensitiveDataSanitizer.sanitizeHeaders(requestHeaders);
         Map<String, String> safeHeaders = SensitiveDataSanitizer.sanitizeHeaders(responseHeaders);
 
         Map<String, Object> json = new LinkedHashMap<>();
@@ -282,7 +285,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         json.put("requestUrl", safeUrl);
         json.put("method", method);
         json.put("statusCode", status);
-        json.put("requestHeaders", null);
+        json.put("requestHeaders", safeReqHeaders);
         json.put("responseHeaders", safeHeaders);
         json.put("responseBody", safeBody);
         // ⭐ bodyLength 取【原始】长度：脱敏会改变字符串长度，用脱敏后长度会让

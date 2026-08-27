@@ -69,6 +69,14 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
     @Override
     public void onResponse(String url, int status, String body,
                            Map<String, String> responseHeaders, String method) {
+        // 业务侧注册时拿不到 requestHeaders，退化为 null（记录构建期脱敏为 Map.of）
+        onResponse(url, status, body, null, responseHeaders, method);
+    }
+
+    /** 框架内部入口：携带 requestHeaders，与文件 sink 一致补全请求头落库（修复 P2-24 同类缺口）。 */
+    public void onResponse(String url, int status, String body,
+                           Map<String, String> requestHeaders, Map<String, String> responseHeaders,
+                           String method) {
         if (!configChecked) {
             checkConfigAndInit();
             configChecked = true;
@@ -87,6 +95,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
                     .requestUrl(url)
                     .method(method)
                     .statusCode(status)
+                    .requestHeaders(requestHeaders)
                     .responseHeaders(responseHeaders)
                     .responseBody(body)
                     .capturedAt(System.currentTimeMillis())

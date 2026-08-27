@@ -136,8 +136,13 @@ class PlaywrightSerenityBridge {
         cleanupThreadLocals(false);
         if (preservedStorageStatePath != null) {
             CustomOptionsManager.customStorageStatePath.set(preservedStorageStatePath);
+            // ⭐ 修复问题3：先快照 context 存活状态，再据此设置 flag，避免"检查存活"与"设置 flag"
+            // 之间的竞态窗口（若浏览器在此期间断开，flag 被设为 true 但 context 已不可用）。
             BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
-            if (existingContext == null || (existingContext.browser() != null && !existingContext.browser().isConnected())) {
+            boolean contextDead = (existingContext == null)
+                    || (existingContext.browser() == null)
+                    || !existingContext.browser().isConnected();
+            if (contextDead) {
                 CustomOptionsManager.customContextOptionsFlag.set(true);
                 LoggingConfigUtil.logDebugIfVerbose(logger, "Feature mode: context null/closed, set flag to apply storage state");
             } else {

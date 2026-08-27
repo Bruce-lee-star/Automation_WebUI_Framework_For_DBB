@@ -139,7 +139,13 @@ public class CaptureThreadPool {
                     t.setDaemon(true);
                     return t;
                 },
-                (r, executor) -> LOGGER.warn("[CaptureThreadPool] {} pool rejected task: {}", name, r)
+                // ⭐ P2-5：CallerRuns 限流背压，队列满时由调用方线程执行任务而非静默丢弃（避免采集数据丢失）
+                (r, executor) -> {
+                    LOGGER.warn("[CaptureThreadPool] {} pool queue full, running task on caller thread (backpressure): {}", name, r);
+                    if (!executor.isShutdown()) {
+                        r.run();
+                    }
+                }
         );
     }
 }

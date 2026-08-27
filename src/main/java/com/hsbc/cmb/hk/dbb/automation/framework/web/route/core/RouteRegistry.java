@@ -208,8 +208,9 @@ public class RouteRegistry {
         // 2. 清理 MonitorSession（停止定时器 + unroute，Playwright 对已注销的 pattern 幂等）
         RouteEngine.clearMonitorSessions(context);
 
-        // 3. 清理 Route 防重门控 + 跨层去重集合（本测试上下文所有请求均已处理完毕，安全清空）
-        RouteEngine.clearDispatchedRoutes();
+        // 3. 清理 Route 防重门控 + 跨层去重集合（⭐ 修复 P0-1：按 Context 精确清理，
+        //    仅移除当前 context 的桶，避免并行测试下全局清空误杀其它 Context 的防重门控）
+        RouteEngine.clearDispatchedRoutes(toBrowserContext(context));
 
         // 4. 清理引擎合并引用存储（避免跨场景残留）
         RouteEngine.removeEngineRuleStore(context);
@@ -287,6 +288,14 @@ public class RouteRegistry {
      *   <li>{@link #isDead()} 返回 true 表示包裹对象已被 GC 回收</li>
      * </ul>
      */
+    /**
+     * 将 clearContext 的 Object 参数还原为 BrowserContext（注册时传入的即 BrowserContext 实例）。
+     * 非 BrowserContext 时返回 null（调用方降级为不精确清理防重桶）。
+     */
+    private static BrowserContext toBrowserContext(Object context) {
+        return context instanceof BrowserContext ? (BrowserContext) context : null;
+    }
+
     private static final class ContextKey {
         private final int identityHash;
         private final WeakReference<Object> ref;

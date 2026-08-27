@@ -76,6 +76,17 @@ public final class RouteUtil {
     /** Pattern 缓存容量上限 */
     private static final int PATTERN_CACHE_MAX = 200;
 
+    // ═══════════════════════════════════════════════════════════════
+    // JsonPath 编译缓存（⭐ P2-15：单一共享，替代 ModifyHandler / MonitorHandler /
+    // MonitorAssertionEvaluator 各自维护的三份缓存，提升命中率、消除重复编译）
+    // ═══════════════════════════════════════════════════════════════
+
+    /** JsonPath 编译缓存，容量上限 1024（超出后淘汰约 1/4 旧条目） */
+    private static final ConcurrentHashMap<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
+
+    /** JsonPath 缓存容量上限 */
+    private static final int JSONPATH_CACHE_MAX = 1024;
+
     /** 响应体读取/存储上限（字节），超过则截断，防止大响应体（如下载、大 JSON）导致 OOM。
      *  可用环境变量 ROUTE_MAX_BODY_BYTES 覆盖，默认 5MB。 */
     public static final long MAX_BODY_BYTES = getEnvLong("ROUTE_MAX_BODY_BYTES", 5L * 1024 * 1024);
@@ -468,6 +479,30 @@ public final class RouteUtil {
     }
 
     /**
+     * 从缓存获取或编译一个 JsonPath 表达式（⭐ P2-15：单一共享入口，供 ModifyHandler /
+     * MonitorHandler / MonitorAssertionEvaluator 复用同一份 JSONPATH_CACHE）。
+     *
+     * @param expression JsonPath 表达式字符串（作为缓存 key）
+     * @return 编译后的 JsonPath
+     */
+    public static JsonPath compileJsonPathCached(String expression) {
+        if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX) {
+            evictOldestQuarter(JSONPATH_CACHE);
+        }
+        return JSONPATH_CACHE.computeIfAbsent(expression, RouteUtil::compileJsonPath);
+    }
+
+    /** 清空 JsonPath 缓存（供 ModifyHandler.clearJsonPathCache 等委托调用） */
+    public static void clearJsonPathCache() {
+        JSONPATH_CACHE.clear();
+    }
+
+    /** 获取 JsonPath 缓存条目数（用于监控） */
+    public static int getJsonPathCacheSize() {
+        return JSONPATH_CACHE.size();
+    }
+
+    /**
      * Referrer 包含匹配。
      */
     private static boolean matchReferrer(Request req, RouteRule rule) {
@@ -720,10 +755,13 @@ public final class RouteUtil {
             }
         }
         String m = msg.toLowerCase();
+        // ⭐ 修复 5.4：覆盖 Playwright 全部生命周期失效文案（Chromium / Firefox / WebKit 差异）
         return m.contains("object doesn't exist")
                 || m.contains("route")
                 && (m.contains("doesn't exist") || m.contains("already handled")
-                    || m.contains("already disposed") || m.contains("closed"));
+                    || m.contains("already disposed") || m.contains("already closed")
+                    || m.contains("connection closed") || m.contains("target closed")
+                    || m.contains("context closed") || m.contains("execution context"));
     }
 
     /**

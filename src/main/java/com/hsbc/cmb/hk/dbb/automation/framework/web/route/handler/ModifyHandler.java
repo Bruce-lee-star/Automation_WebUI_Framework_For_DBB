@@ -43,13 +43,6 @@ public class ModifyHandler {
     private static final Logger LOGGER = LoggerFactory.getLogger(ModifyHandler.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    /** JsonPath 编译缓存：避免重复解析相同路径表达式。
-     *  使用简单容量限制防止长期运行缓慢增长。 */
-    private static final Map<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
-
-    /** JSONPath 缓存容量上限，超过后清空重建 */
-    private static final int JSONPATH_CACHE_MAX_SIZE = 200;
-
     /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS =
             RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
@@ -72,20 +65,15 @@ public class ModifyHandler {
      * 场景下缓存缓慢增长。单次测试中缓存 < 200 条目会自动清空旧条目。
      */
     public static void clearJsonPathCache() {
-        int size = JSONPATH_CACHE.size();
-        JSONPATH_CACHE.clear();
-        if (size > 0) {
-            LOGGER.debug("[ModifyHandler] JSONPath cache cleared ({} entries freed)", size);
-            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[ModifyHandler] JSONPath cache cleared: {} entries freed", size);
-        }
+        RouteUtil.clearJsonPathCache();
     }
 
     /**
      * 获取 JSONPath 缓存条目数（用于监控）。
      */
     public static int getJsonPathCacheSize() {
-        return JSONPATH_CACHE.size();
+        // ⭐ P2-15：缓存已收敛至 RouteUtil 共享 JSONPATH_CACHE，此处返回共享缓存规模
+        return RouteUtil.getJsonPathCacheSize();
     }
 
     public static void handle(Route route, RouteRule rule) {
@@ -520,10 +508,7 @@ public class ModifyHandler {
         // 类型推断
         Object existingValue;
         try {
-            if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX_SIZE) {
-                RouteUtil.evictOldestQuarter(JSONPATH_CACHE);
-            }
-            JsonPath compiled = JSONPATH_CACHE.computeIfAbsent(path, p -> RouteUtil.compileJsonPath(p));
+            JsonPath compiled = RouteUtil.compileJsonPathCached(path);
             existingValue = compiled.read(root, RouteUtil.JSONPATH_CONFIG);
         } catch (Exception e) {
             existingValue = null;

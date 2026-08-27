@@ -1255,6 +1255,16 @@ public enum FrameworkConfig {
         "playwright.proxy.https.password",
         "",
         "HTTPS 代理密码"
+    ),
+
+    /**
+     * Playwright 浏览器下载超时时间（分钟）
+     * 下载超过此时间未完成则强制终止进程
+     */
+    PLAYWRIGHT_BROWSER_DOWNLOAD_TIMEOUT_MINUTES(
+        "playwright.browser.download.timeout.minutes",
+        "5",
+        "浏览器下载超时时间（分钟）"
     );
 
     private final String key;

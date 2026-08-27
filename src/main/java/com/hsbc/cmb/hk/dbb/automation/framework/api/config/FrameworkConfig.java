@@ -45,19 +45,28 @@ public class FrameworkConfig {
      * @return socket timeout (default: 30000ms)
      */
     public static int getSocketTimeout() {
-        return config.hasPath("http.socket.timeout.value")
-            ? config.getInt("http.socket.timeout.value")
-            : 30000;
+        // 优先读取 ConfigKeys.HTTP_SOCKET_TIMEOUT ("http.socket.timeout")，
+        // 再回退到历史 key "http.socket.timeout.value"（二者读不到再回退 fallback 字段或默认值）
+        if (config.hasPath("http.socket.timeout")) {
+            return config.getInt("http.socket.timeout");
+        }
+        if (config.hasPath("http.socket.timeout.value")) {
+            return config.getInt("http.socket.timeout.value");
+        }
+        if (config.hasPath("http.socket.timeout.fallback")) {
+            return config.getInt("http.socket.timeout.fallback");
+        }
+        return 30000;
     }
 
     /**
-     * Check if SSL validation should be relaxed
-     * @return true if SSL validation should be relaxed (default: true)
+     * Check if SSL validation should be relaxed.
+     * 注意：默认改为 false —— 安全优先；如需宽松校验请在配置中显式开启 http.ssl.relax-validation=true。
+     * @return true if SSL validation should be relaxed (default: false)
      */
     public static boolean isSslRelaxValidation() {
         return config.hasPath("http.ssl.relax-validation")
-            ? config.getBoolean("http.ssl.relax-validation")
-            : true;
+            && config.getBoolean("http.ssl.relax-validation");
     }
 
     // ========================================
@@ -171,9 +180,14 @@ public class FrameworkConfig {
      * @return default base URI (default: http://localhost)
      */
     public static String getDefaultBaseUri() {
-        return config.hasPath("api.base-uri.default")
-            ? config.getString("api.base-uri.default")
-            : "http://localhost";
+        // 兼容历史 key "api.base-uri.default" 与 ConfigProvider 标准键 "api.base.uri.default"
+        if (config.hasPath("api.base.uri.default")) {
+            return config.getString("api.base.uri.default");
+        }
+        if (config.hasPath("api.base-uri.default")) {
+            return config.getString("api.base-uri.default");
+        }
+        return "http://localhost";
     }
 
     // ========================================

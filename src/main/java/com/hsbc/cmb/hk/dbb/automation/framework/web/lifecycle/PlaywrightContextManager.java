@@ -53,29 +53,34 @@ class PlaywrightContextManager {
             configureCustomContextOptions(contextOptions);
         }
 
-        // 初始化 Context
-        BrowserContext context = currentBrowser.newContext(contextOptions);
+        // ⭐ 修复问题3：用 try-finally 确保 customContextOptionsFlag 在 newContext() 抛异常（浏览器断开/
+        // 参数非法）时也能重置，避免该线程后续重试持续携带已失效的自定义配置而反复失败。
+        BrowserContext context;
+        try {
+            // 初始化 Context
+            context = currentBrowser.newContext(contextOptions);
 
-        // ⭐ 监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
-        context.onPage(newPage -> {
-            LoggingConfigUtil.logInfoIfVerbose(logger,
-                    "New page detected via window.open(): url={}", newPage.url());
-            newPage.onLoad(pageLoad -> {
-                LoggingConfigUtil.logDebugIfVerbose(logger,
-                        "New page loaded: url={}, title={}", newPage.url(), newPage.title());
+            // ⭐ 监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
+            context.onPage(newPage -> {
+                LoggingConfigUtil.logInfoIfVerbose(logger,
+                        "New page detected via window.open(): url={}", newPage.url());
+                newPage.onLoad(pageLoad -> {
+                    LoggingConfigUtil.logDebugIfVerbose(logger,
+                            "New page loaded: url={}, title={}", newPage.url(), newPage.title());
+                });
             });
-        });
 
-        // 设置超时
-        configureTimeouts(context);
+            // 设置超时
+            configureTimeouts(context);
 
-        // 启用 tracing（如果配置了）
-        enableTracing(context);
-
-        // 重置标志
-        if (customFlag != null && customFlag) {
-            CustomOptionsManager.customContextOptionsFlag.set(false);
-            LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options applied, flag reset to false");
+            // 启用 tracing（如果配置了）
+            enableTracing(context);
+        } finally {
+            // 重置标志（成功或失败都执行）
+            if (customFlag != null && customFlag) {
+                CustomOptionsManager.customContextOptionsFlag.set(false);
+                LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options applied, flag reset to false");
+            }
         }
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "BrowserContext created successfully");

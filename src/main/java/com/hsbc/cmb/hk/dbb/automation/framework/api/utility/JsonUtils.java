@@ -12,6 +12,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -22,6 +23,29 @@ public class JsonUtils {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(JsonUtils.class);
     private static final ObjectMapper OBJECT_MAPPER = createObjectMapper();
+
+    // 关键修复 P3-25：JsonPath.parse 的轻量 LRU 缓存 —— 同一 json 字符串多次解析时复用 DocumentContext，
+    // 减少重复 parse（特别在断言循环中常见）。最大 256 项，超过自动清理最早条目。
+    private static final Map<String, DocumentContext> PARSE_CACHE = Collections.synchronizedMap(
+            new LinkedHashMap<String, DocumentContext>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, DocumentContext> eldest) {
+                    return size() > 256;
+                }
+            });
+
+    /**
+     * 带缓存的 JsonPath.parse —— 同一 json 串多次解析时复用 DocumentContext，
+     * 减少 JsonPath.parse 的重复解析开销（P3-25 性能优化）。
+     */
+    private static DocumentContext parseCached(String json) {
+        DocumentContext ctx = PARSE_CACHE.get(json);
+        if (ctx == null) {
+            ctx = JsonPath.parse(json);
+            PARSE_CACHE.put(json, ctx);
+        }
+        return ctx;
+    }
 
     /**
      * Create configurable ObjectMapper based on framework configuration
@@ -106,7 +130,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath);
         } catch (Exception e) {
             LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
@@ -123,7 +147,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath, type);
         } catch (Exception e) {
             LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
@@ -140,7 +164,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath, typeRef);
         } catch (Exception e) {
             LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
@@ -157,7 +181,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             documentContext.set(jsonPath, value);
             return documentContext.jsonString();
         } catch (Exception e) {
@@ -175,7 +199,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             documentContext.delete(jsonPath);
             return documentContext.jsonString();
         } catch (Exception e) {
@@ -273,7 +297,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath);
         } catch (Exception e) {
             LOGGER.error("获取JSON路径值列表失败: {}, 路径: {}", e.getMessage(), jsonPath);
@@ -290,7 +314,7 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = JsonPath.parse(json);
+            DocumentContext documentContext = parseCached(json);
             Object value = documentContext.read(jsonPath);
             return value != null;
         } catch (Exception e) {

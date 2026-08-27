@@ -60,6 +60,30 @@ public class CustomOptionsManager {
     // ==================== 内部工具方法 ====================
 
     /**
+     * ⭐ 修复 2.3：强制清除当前线程的全部 14 个自定义配置 ThreadLocal。
+     * 之前仅通过 cleanupThreadLocals(true) 的 remove 调用清理，但为降低线程池复用场景下的
+     * 内存泄漏风险，PlaywrightManager.cleanupForScenario() 会直接调用本方法，不依赖 Bridge 调用链。
+     */
+    static void removeAllThreadLocals() {
+        customContextOptionsFlag.remove();
+        customStorageStatePath.remove();
+        customLocale.remove();
+        customTimezoneId.remove();
+        customUserAgent.remove();
+        customPermissions.remove();
+        customIsMobile.remove();
+        customHasTouch.remove();
+        customColorScheme.remove();
+        customGeolocation.remove();
+        customDeviceScaleFactor.remove();
+        customViewportWidth.remove();
+        customViewportHeight.remove();
+        customProxyEnabled.remove();
+    }
+
+    // ==================== 内部工具方法 ====================
+
+    /**
      * 统一的自定义选项设置模板：设 ThreadLocal → 标记 flag → 日志 → 触发 Context 延迟重建。
      */
     private static <T> void applyCustomOption(T value, String optionName, Runnable setter) {
@@ -197,13 +221,17 @@ public class CustomOptionsManager {
     // ========== 批量设置方法 ==========
 
     /**
-     * 清除当前线程所有自定义选项（恢复使用配置文件默认值）
+     * ⭐ 修复问题2：重命名以准确表达语义。
+     * 本方法仅禁用"自定义配置应用"（标记 {@code customContextOptionsFlag = false}），
+     * 并不清除其它 ThreadLocal（locale、viewport、userAgent 等仍保留旧值）。
+     * 若需在 scenario/feature 结束彻底释放所有配置引用、避免线程池复用场景下的残留污染，
+     * 应调用 {@link #removeAllThreadLocals()}（或经由 PlaywrightManager.cleanupForScenario()）。
      * <p>
-     * 调用后需要手动触发 Context 重建才能生效
+     * 调用后需要手动触发 Context 重建才能生效。
      *
      * @return this，支持链式调用
      */
-    public CustomOptionsManager clearAll() {
+    public CustomOptionsManager disableCustomOptions() {
         customContextOptionsFlag.set(false);
         return this;
     }

@@ -13,8 +13,6 @@ import java.util.concurrent.ConcurrentHashMap;
 /** 浏览器无关的 Monitor 状态码和 JSONPath 断言器。 */
 public final class MonitorAssertionEvaluator {
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorAssertionEvaluator.class);
-    private static final Map<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
-    private static final int CACHE_LIMIT = 1024;
 
     private MonitorAssertionEvaluator() {
     }
@@ -68,14 +66,8 @@ public final class MonitorAssertionEvaluator {
     }
 
     private static JsonPath jsonPath(String expression) {
-        JsonPath cached = JSONPATH_CACHE.get(expression);
-        if (cached != null) return cached;
-        if (JSONPATH_CACHE.size() >= CACHE_LIMIT) {
-            // 修复 P0-4：原实现 size 达上限后 clear() 全量清空，导致周期性 CPU 尖刺与缓存失效。
-            // 改为弱一致性批量淘汰约 1/4 旧条目，保留热点编译结果，避免性能抖动。
-            RouteUtil.evictOldestQuarter(JSONPATH_CACHE);
-        }
-        return JSONPATH_CACHE.computeIfAbsent(expression, RouteUtil::compileJsonPath);
+        // ⭐ P2-15：委托 RouteUtil 共享缓存（容量保护/淘汰已在内部处理）
+        return RouteUtil.compileJsonPathCached(expression);
     }
 
     /** 弱一致性批量移除约 1/4 条目（与 P0-1 同策略）。不保证精确，但足以抑制无限增长。

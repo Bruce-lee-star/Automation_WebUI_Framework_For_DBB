@@ -205,6 +205,10 @@ public class RouteDsl {
      * {@link #clear(Page)} 做按上下文隔离清理。
      */
     public static void resetAll() {
+        // ⭐ P2-19：全局清理会清空所有上下文状态，并行测试下会误杀其它 context 的防重门控 / 规则。
+        // 保持全局语义（单线程套件收尾 / 调试契约），但显式告警，引导并行场景改用 clear(context) / clear(page)。
+        LOGGER.warn("[RouteDsl] resetAll() — GLOBAL cleanup: clears ALL contexts/rules/dispatched-routes. "
+                + "In PARALLEL test execution use clear(BrowserContext)/clear(Page) to avoid cross-context pollution.");
         resetAllInternal();
     }
 
@@ -606,6 +610,15 @@ public class RouteDsl {
             if (rule.getUrlPattern() == null || rule.getUrlPattern().trim().isEmpty()) {
                 throw new IllegalArgumentException("urlPattern cannot be blank. "
                         + "Please call api(\"pattern\") before done().");
+            }
+            // ⭐ P2-21：type=MONITOR 但未调 monitor() 会导致规则等于空操作（监控能力位关闭）。
+            // 自动启用监控能力位（收取监控但无断言），避免静默空规则；同时给出 warn 提示显式调用 monitor()。
+            if (rule.getType() == RouteHandleType.MONITOR && !rule.isMonitorEnabled()) {
+                rule.setMonitorEnabled(true);
+                RouteDsl.LOGGER.warn("[RouteDsl] done() — type=MONITOR but monitor() not called; "
+                        + "auto-enabled monitor capability (collect-only). Pattern='{}'. "
+                        + "Call .monitor() for assertions, or .mock()/.modifyRequest()/.delay() for other intents.",
+                        rule.getUrlPattern());
             }
             parent.rules.add(rule);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,

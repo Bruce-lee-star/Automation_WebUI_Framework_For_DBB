@@ -16,11 +16,15 @@ public final class MonitorCompletionCoordinator {
     private MonitorCompletionCoordinator() {
     }
 
-    /** 保持既有 route Monitor 的完成、失败和副作用顺序。 */
+    /** 保持既有 route Monitor 的完成、失败和副作用顺序。
+     *  ⭐ P2-20：失败路径统一与 snapshot 版一致（recordFailure + signalFailFast + throw），
+     *  避免 rule 版漏记失败报告导致失败报告缺失该记录。 */
     public static void complete(RouteRule rule, ApiCaptureContext context, MonitorResponse response) {
         MonitorRuleSnapshot snapshot = MonitorRuleSnapshot.from(rule);
         if (!MonitorAssertionEvaluator.evaluate(snapshot, response, context)) {
-            signalLegacyFailure(rule, context, response);
+            MonitorResultRecorder.recordFailure(snapshot, response, failureReason(snapshot, response));
+            if (context != null) context.signalFailFast();
+            throw assertionFailure(snapshot, response);
         }
         if (context == null) return;
         completeSuccess(snapshot, rule, context, response);
@@ -58,14 +62,6 @@ public final class MonitorCompletionCoordinator {
         } finally {
             context.decrementActiveRequests();
         }
-    }
-
-    private static void signalLegacyFailure(RouteRule rule, ApiCaptureContext context,
-                                            MonitorResponse response) {
-        if (context != null) context.signalFailFast();
-        throw new RouteException.ApiAssertionException(rule.getUrlPattern(), "ASSERTION",
-                rule.getExpectedStatus() == null ? "N/A" : String.valueOf(rule.getExpectedStatus()),
-                String.valueOf(response.status()));
     }
 
     private static RouteException.ApiAssertionException assertionFailure(MonitorRuleSnapshot snapshot,

@@ -73,6 +73,8 @@ public class AxeCoreScanner {
         private int violationCount;
         private int incompleteCount;
         private int passCount;
+        private boolean scanError;
+        private String scanErrorMessage;
         private List<Rule> violations = new ArrayList<>();
         private List<Rule> incomplete = new ArrayList<>();
         private List<Rule> passes = new ArrayList<>();
@@ -103,7 +105,13 @@ public class AxeCoreScanner {
         }
 
         public boolean isPassed() {
-            return violationCount == 0;
+            return !scanError && violationCount == 0;
+        }
+        public boolean isScanError() { return scanError; }
+        public String getScanErrorMessage() { return scanErrorMessage; }
+        public void setScanError(boolean scanError, String message) {
+            this.scanError = scanError;
+            this.scanErrorMessage = message;
         }
     }
 
@@ -234,6 +242,7 @@ public class AxeCoreScanner {
 
         } catch (Exception e) {
             logger.error("Error during axe-core scan for {}: {}", pageName, e.getMessage(), e);
+            result.setScanError(true, e.getClass().getSimpleName() + ": " + e.getMessage());
         }
 
         return result;

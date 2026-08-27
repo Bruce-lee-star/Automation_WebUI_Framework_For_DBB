@@ -61,8 +61,7 @@ public class ApiCapture {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiCapture.class);
 
-    /** 兼容旧 API 的默认采集引擎；实际引擎按 Page 管理。 */
-    private static volatile CaptureEngine engine;
+    // ⭐ 采集引擎按 Page 隔离管理（PAGE_ENGINES），不再维护全局回退引擎字段，避免跨 Page 串线
     private static final java.util.concurrent.ConcurrentHashMap<Page, CaptureEngine> PAGE_ENGINES =
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentHashMap<BrowserContext, java.util.Set<Page>> CONTEXT_PAGES =
@@ -120,14 +119,24 @@ public class ApiCapture {
     /** 停止 Context 下全部 Page 采集。 */
     public static void stop(BrowserContext context) {
         if (context == null) return;
-        java.util.Set<Page> pages = CONTEXT_PAGES.remove(context);
-        if (pages != null) {
-            for (Page page : new java.util.ArrayList<>(pages)) stop(page);
-        }
-        ApiCaptureContext.removeContext(context);
-        com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ContextRouteEngineManager.stop(context);
-        if (ApiCaptureContext.isCurrentContext(context)) {
-            ApiCaptureContext.unbindCurrentContext();
+        // ⭐ 修复 P0-1：与 start(Page)/stop(Page)/stop() 共用 ApiCapture.class 锁，
+        // 防止并发 start(Page) 向 CONTEXT_PAGES 写入的同时本方法遍历并移除同一 set，
+        // 导致 ConcurrentModificationException 或对同一 Page 双 stop。
+        synchronized (ApiCapture.class) {
+            java.util.Set<Page> pages = CONTEXT_PAGES.remove(context);
+            if (pages != null) {
+                for (Page page : new java.util.ArrayList<>(pages)) stop(page);
+            }
+            ApiCaptureContext.removeContext(context);
+            com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ContextRouteEngineManager.stop(context);
+            if (ApiCaptureContext.isCurrentContext(context)) {
+                ApiCaptureContext.unbindCurrentContext();
+            }
+            // ⭐ 修复 P0-2：Context 关闭后清理幂等注册标记，避免 BrowserContext 强引用常驻 Map 导致泄漏
+            CONTEXT_CLOSE_REGISTERED.remove(context);
+            // ⭐ 修复 P1-1：显式清理 RouteRegistry 中该 Context 的残留条目（含 WeakReference 失效的 ContextKey），
+            // 弥补 purgeDeadEntries 仅在 register 时触发、长时不注册则死条目残留的内存泄漏。
+            com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry.clearContext(context);
         }
     }
 
@@ -155,7 +164,6 @@ public class ApiCapture {
         synchronized (ApiCapture.class) {
             CaptureEngine existing = PAGE_ENGINES.get(page);
             if (existing != null && existing.isRunning()) {
-                engine = existing;
                 return;
             }
             CaptureEngine created = new CaptureEngine(page);
@@ -171,7 +179,6 @@ public class ApiCapture {
             //   EventMerger（按 browserContext 写入 forContext 实例）指向同一捕获上下文，
             //   消除"merger 写入 BY_CONTEXT 实例、测试查询 SHARED 实例"的数据不可见问题。
             ApiCaptureContext.bindCurrentContext(pageContext);
-            engine = created;
             LOGGER.info("[ApiCapture] Started for Page with strategy '{}' (activePages={})",
                     created.strategyName(), PAGE_ENGINES.size());
         }
@@ -196,7 +203,6 @@ public class ApiCapture {
             for (Page page : new java.util.ArrayList<>(PAGE_ENGINES.keySet())) {
                 stop(page);
             }
-            engine = null;
             LOGGER.info("[ApiCapture] Stopped all Page capture sessions");
         }
     }
@@ -213,9 +219,6 @@ public class ApiCapture {
                 removed.shutdown();
             } catch (Exception e) {
                 LOGGER.warn("[ApiCapture] Error during Page capture shutdown: {}", e.getMessage());
-            }
-            if (engine == removed) {
-                engine = PAGE_ENGINES.values().stream().findFirst().orElse(null);
             }
             // ⭐ P0: 若该 Page 所属 Context 下已无其它活动采集会话，清理 Context 级捕获上下文，
             //   避免 BY_CONTEXT 实例泄漏、以及 CURRENT_CONTEXT 跨用例残留导致数据串扰。
@@ -270,8 +273,8 @@ public class ApiCapture {
      * 不触发写入、断言、回调或持久化，也不改变既有捕获查询结果。
      */
     public static List<NetworkExchange> recentExchanges(Page page) {
+        // ⭐ 按 Page 隔离获取；全局回退引擎已移除，无 Page 引擎时返回空（调用方应改用 getXxx(Page/Context) 隔离 API）
         CaptureEngine pageEngine = page == null ? null : PAGE_ENGINES.get(page);
-        if (pageEngine == null) pageEngine = engine; // 回退到全局采集引擎（Chromium CDP 路径）
         return pageEngine == null ? List.of() : pageEngine.recentExchanges();
     }
 
@@ -283,10 +286,10 @@ public class ApiCapture {
     }
 
     /**
-     * 是否正在采集。
+     * 是否正在采集（按 Page 隔离判定：任一 Page 引擎在运行即为 true）。
      */
     public static boolean isActive() {
-        return engine != null && engine.isRunning();
+        return PAGE_ENGINES.values().stream().anyMatch(e -> e != null && e.isRunning());
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -345,8 +348,8 @@ public class ApiCapture {
     /**
      * 获取所有已采集的 API 调用。
      *
-     * <p>⭐ P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，回退到全局
-     * {@code engine} / {@code CURRENT_CONTEXT} 会导致跨测试数据串扰。此时立即失败
+     * <p>⭐ P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，回退到
+     * {@code CURRENT_CONTEXT} 会导致跨测试数据串扰。此时立即失败
      * （fail-fast）而非静默返回错误数据，强制调用方改用 {@link #getAll(BrowserContext)}。
      *
      * @return 所有 API 调用（按 endpoint 分组）
@@ -385,10 +388,12 @@ public class ApiCapture {
     }
 
     /**
-     * 获取采集引擎的运行时指标。
+     * 获取采集引擎的运行时指标（按 Page 隔离：返回任一运行中引擎的指标）。
      */
     public static CaptureMetrics metrics() {
-        CaptureEngine e = engine;
+        CaptureEngine e = PAGE_ENGINES.values().stream()
+                .filter(en -> en != null && en.isRunning())
+                .findFirst().orElse(null);
         return e != null ? e.metrics() : null;
     }
 

@@ -71,8 +71,13 @@ public final class PassiveMonitorRegistry {
         if (state == null || state.status() == null || !state.markProcessed()) return;
         Entry entry = find(state);
         if (entry == null || !entry.accepting()) return;
+        // ⭐ 修复 5.5：防御 Page/Context 已关闭或为空（Firefox/WebKit 下响应到达时页面可能已销毁）
+        Page page = state.page();
+        if (page == null || page.isClosed()) return;
+        BrowserContext ctx = page.context();
+        if (ctx == null) return;
         try {
-            ApiCaptureContext context = ApiCaptureContext.forContext(state.page().context());
+            ApiCaptureContext context = ApiCaptureContext.forContext(ctx);
             MonitorResponseProcessor.processEvent(entry.snapshot, context,
                     new MonitorResponse(state.url(), state.status(), null, state.method(),
                             state.requestBody(), state.requestHeaders(), state.responseHeaders()));
@@ -105,10 +110,15 @@ public final class PassiveMonitorRegistry {
     }
 
     private static Entry find(NetworkRequestState state) {
-        Entry pageEntry = findBest(PAGE_RULES.get(state.page()), state);
+        // ⭐ 修复 5.5：Page 可能为空或已关闭，先判空再访问 context（避免 NPE）
+        Page page = state.page();
+        if (page == null || page.isClosed()) return null;
+        Entry pageEntry = findBest(PAGE_RULES.get(page), state);
         if (pageEntry != null) return pageEntry;
         try {
-            return findBest(CONTEXT_RULES.get(state.page().context()), state);
+            BrowserContext ctx = page.context();
+            if (ctx == null) return null;
+            return findBest(CONTEXT_RULES.get(ctx), state);
         } catch (Exception ignored) {
             return null;
         }

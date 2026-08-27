@@ -40,6 +40,15 @@ public record MonitorRuleSnapshot(
         monitorCallbacks = monitorCallbacks == null ? List.of() : List.copyOf(monitorCallbacks);
     }
 
+    /**
+     * ⭐ P2-18：强类型回调列表（不可变，与 {@link #monitorCallbacks()} 同引用）。
+     * 供 {@code MonitorResultRecorder.dispatchCallbacks} 直接复用，避免每次匹配二次 {@code List.copyOf}。
+     */
+    @SuppressWarnings("unchecked")
+    public List<Object> monitorCallbacksTyped() {
+        return (List<Object>) monitorCallbacks;
+    }
+
     public static MonitorRuleSnapshot from(RouteRule rule) {
         return new MonitorRuleSnapshot(
                 rule.getUrlPattern(), rule.getType(), rule.isMonitorEnabled(), rule.isRecord(),

@@ -478,7 +478,10 @@ public final class ApiMonitoringRepository {
         try {
             flushPendingNow();
         } catch (Exception e) {
-            LOGGER.warn("[ApiMonitoringRepository] Flush on shutdown failed: {}", e.getMessage());
+            // 关键修复 P3-26：flush 失败是数据丢失，必须 error 记录并附堆栈，
+            // 便于事后追溯；监控数据丢失不应被静默吞掉。
+            LOGGER.error("[ApiMonitoringRepository] Flush on shutdown failed — monitor data may be lost: {}",
+                    e.getMessage(), e);
         }
         initialized = false;
         closeDataSource();
@@ -489,6 +492,8 @@ public final class ApiMonitoringRepository {
      */
     static synchronized void reset() {
         shutdown();
+        // ⭐ 修复低危：shutdown 后清空执行器引用，避免下次 init() 创建新执行器时旧引用残留
+        DB_FLUSH_EXECUTOR = null;
         initialized = false;
         initFailed = false;
         PENDING.clear();

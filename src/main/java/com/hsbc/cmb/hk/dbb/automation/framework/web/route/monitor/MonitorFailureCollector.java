@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 
 import java.util.ArrayList;
@@ -72,36 +73,38 @@ public class MonitorFailureCollector {
     public void record(CapturedApiCall call, String pattern, String owner, String reason) {
         String status = call.statusCode() == 0 ? "N/A" : String.valueOf(call.statusCode());
         String fingerprint = fingerprintFor(call, pattern);
-        FailedApiCall existing = dedupMap.get(fingerprint);
-        if (existing != null) {
-            String scn = safeScenario();
-            if (scn != null && !existing.getScenarios().contains(scn)) {
-                existing.getScenarios().add(scn);
+        // ⭐ P1-11：用 compute 原子合并，消除 get-then-put 竞态（同指纹并发只生成一条记录）
+        dedupMap.compute(fingerprint, (fp, existing) -> {
+            if (existing != null) {
+                String scn = safeScenario();
+                if (scn != null && !existing.getScenarios().contains(scn)) {
+                    existing.getScenarios().add(scn);
+                }
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[ApiMonitor] 重复失败已合并：pattern='{}' status='{}'", pattern, status);
+                return existing;
             }
-            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[ApiMonitor] 重复失败已合并：pattern='{}' status='{}'", pattern, status);
-            return;
-        }
-
-        FailedApiCall rec = new FailedApiCall();
-        rec.setFeature(currentFeature());
-        rec.setPattern(pattern);
-        rec.setOwner(owner == null || owner.trim().isEmpty() ? UNASSIGNED : owner.trim());
-        rec.setStatus(status);
-        rec.setMethod(call.method());
-        rec.setRequestUrl(call.requestUrl());
-        rec.setRequestHeaders(call.requestHeaders());
-        rec.setRequestBody(call.requestBody());
-        rec.setResponseHeaders(call.responseHeaders());
-        rec.setResponseBody(call.responseBody());
-        rec.setReason(reason);
-        String scn = safeScenario();
-        if (scn != null) {
-            rec.getScenarios().add(scn);
-        }
-        dedupMap.put(fingerprint, rec);
-        LoggingConfigUtil.logInfoIfVerbose(LOGGER,
-                "[ApiMonitor] 记录 API 失败：owner='{}' pattern='{}' status='{}'", rec.getOwner(), pattern, status);
+            FailedApiCall rec = new FailedApiCall();
+            rec.setFeature(currentFeature());
+            rec.setPattern(pattern);
+            rec.setOwner(owner == null || owner.trim().isEmpty() ? UNASSIGNED : owner.trim());
+            rec.setStatus(status);
+            rec.setMethod(call.method());
+            // ⭐ P1-1：出域 sink（报告/邮件）统一脱敏收口，内存 CapturedApiCall 可保持原始供断言
+            rec.setRequestUrl(SensitiveDataSanitizer.sanitizeUrl(call.requestUrl()));
+            rec.setRequestHeaders(SensitiveDataSanitizer.sanitizeHeaders(call.requestHeaders()));
+            rec.setRequestBody(SensitiveDataSanitizer.sanitizeBody(call.requestBody()));
+            rec.setResponseHeaders(SensitiveDataSanitizer.sanitizeHeaders(call.responseHeaders()));
+            rec.setResponseBody(SensitiveDataSanitizer.sanitizeBody(call.responseBody()));
+            rec.setReason(reason);
+            String scn = safeScenario();
+            if (scn != null) {
+                rec.getScenarios().add(scn);
+            }
+            LoggingConfigUtil.logInfoIfVerbose(LOGGER,
+                    "[ApiMonitor] 记录 API 失败：owner='{}' pattern='{}' status='{}'", rec.getOwner(), pattern, status);
+            return rec;
+        });
     }
 
     /** 按 owner 分组（供 CI 邮件循环） */

@@ -143,8 +143,16 @@ public class RestJobProvider extends AbstractApiJobHelper {
     }
 
     public ValidatableResponse getValidatableResponse() {
-        return (ValidatableResponse) this.getEntity().getValidatableResponse();
-
+        Object raw = this.getEntity().getValidatableResponse();
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof ValidatableResponse) {
+            return (ValidatableResponse) raw;
+        }
+        LOGGER.warn("Entity.validatableResponse is not a ValidatableResponse instance, actual type: {}",
+                raw.getClass().getName());
+        return null;
     }
 
     public int getResponseCode() {
@@ -173,10 +181,24 @@ public class RestJobProvider extends AbstractApiJobHelper {
 
     public void switchBasePath(final String key){
         final String basePath = ConfigProvider.getConfig(ConfigKeys.API_BASE_PATH.toString()).getString(key);
+        if (basePath == null || basePath.isEmpty()) {
+            LOGGER.warn("switchBasePath({}) — key not found under {}", key, ConfigKeys.API_BASE_PATH);
+            return;
+        }
+        // 仅记录候选值；运行时 basePath 通过 Entity.setBasePath 注入（Entity 优先级最高）。
+        // 此方法保留为占位 —— 调用方在切换后应重置 Entity。
+        LOGGER.warn("switchBasePath({}) -> [{}]. Reminder: re-create Entity/BaseStep to apply the change.",
+                key, basePath);
     }
 
     public void switchBaseUri(final String key){
-        final String basePath = ConfigProvider.getConfig(ConfigKeys.API_BASE_URI.toString()).getString(key);
+        final String baseUri = ConfigProvider.getConfig(ConfigKeys.API_BASE_URI.toString()).getString(key);
+        if (baseUri == null || baseUri.isEmpty()) {
+            LOGGER.warn("switchBaseUri({}) — key not found under {}", key, ConfigKeys.API_BASE_URI);
+            return;
+        }
+        LOGGER.warn("switchBaseUri({}) -> [{}]. Reminder: re-create Entity/BaseStep to apply the change.",
+                key, baseUri);
     }
 
 }

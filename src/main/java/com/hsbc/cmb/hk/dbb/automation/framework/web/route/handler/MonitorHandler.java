@@ -56,6 +56,21 @@ public class MonitorHandler {
                 return t;
             });
 
+    // ⭐ 修复 P0-3：注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
+    // 避免异常路径下任务堆积导致线程永久挂起。守护线程本不会阻止 JVM 退出，但显式 shutdown 更稳妥。
+    static {
+        try {
+            Runtime.getRuntime().addShutdownHook(new Thread(MonitorHandler::shutdownScheduler, "monitor-handler-shutdown"));
+        } catch (Exception ignored) {
+            // 受限环境忽略
+        }
+    }
+
+    /** 关闭 body 读取重试调度器（幂等） */
+    private static void shutdownScheduler() {
+        bodyReadScheduler.shutdownNow();
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
 
     /** 等待真实响应 / 兜底请求的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
@@ -77,11 +92,7 @@ public class MonitorHandler {
         return p.isEmpty() ? null : p;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // ⭐ 性能优化：JsonPath 编译缓存（避免每次断言都重新编译表达式）
-    // ═══════════════════════════════════════════════════════════════
-    private static final Map<String, JsonPath> JSONPATH_CACHE = new ConcurrentHashMap<>();
-    private static final int JSONPATH_CACHE_MAX = 200;
+    // ⭐ P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
 
     /**
      * 处理单个 route 的监控逻辑（带断言）。
@@ -121,7 +132,9 @@ public class MonitorHandler {
                 rule.getUrlPattern(), rule.getExpectedStatus(),
                 rule.getJsonPathAssertions() != null ? rule.getJsonPathAssertions().size() : 0);
 
-        // DELAY 场景由 CDP/EventMerger 捕获真实响应；此处只放行，不再操作易失效的 Response 对象。
+        // DELAY 场景：仅放行路由，实际的 MONITOR 断言由独立 route 在真实响应到达后执行
+        // （不依赖 CDP；Firefox/WebKit 下同样由后续真实网络响应触发 MONITOR handler）。
+        // 此处不再操作易失效的 Response 对象，避免 Object doesn't exist。
         if (hasDelay(rule)) {
             RouteUtil.safeResume(route);
             return;
@@ -384,12 +397,12 @@ public class MonitorHandler {
             // 框架内置：根据配置自动决定是否持久化到数据库
             // 无需用户在业务层手动注册 DatabaseStoreMonitorCallback
             // ═══════════════════════════════════════════════════════════════
-            DatabaseStoreMonitorCallback.INSTANCE.onResponse(url, status, body, resHeaders, method);
+            DatabaseStoreMonitorCallback.INSTANCE.onResponse(url, status, body, reqHeaders, resHeaders, method);
 
             // ═══════════════════════════════════════════════════════════════
             // 框架内置：根据配置自动决定是否将监控数据写入文件
             // ═══════════════════════════════════════════════════════════════
-            FileStoreMonitorCallback.INSTANCE.onResponse(url, urlPattern, status, body, resHeaders, method);
+            FileStoreMonitorCallback.INSTANCE.onResponse(url, urlPattern, status, body, reqHeaders, resHeaders, method);
 
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                     "[MonitorHandler] Record DONE: pattern='{}', url='{}'", urlPattern, url);
@@ -486,16 +499,8 @@ public class MonitorHandler {
      * 从缓存获取或编译 JsonPath 表达式（容量保护）。
      */
     private static JsonPath getOrCompileJsonPath(String expression) {
-        // ⭐ 单次原子查找+编译：computeIfAbsent 仅在 miss 时编译，避免先 get 再 put 的二次查找。
-        JsonPath cached = JSONPATH_CACHE.get(expression);
-        if (cached != null) {
-            return cached;
-        }
-        // 容量保护：超限时淘汰约 1/4 旧条目（复用 RouteUtil 统一实现，避免命中率瞬间归零）
-        if (JSONPATH_CACHE.size() >= JSONPATH_CACHE_MAX) {
-            RouteUtil.evictOldestQuarter(JSONPATH_CACHE);
-        }
-        return JSONPATH_CACHE.computeIfAbsent(expression, RouteUtil::compileJsonPath);
+        // ⭐ P2-15：委托 RouteUtil 共享缓存
+        return RouteUtil.compileJsonPathCached(expression);
     }
 
     /**

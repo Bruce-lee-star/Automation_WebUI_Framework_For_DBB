@@ -216,6 +216,18 @@ public abstract class BasePage {
         currentPage.remove();
     }
 
+    /**
+     * 一键清理当前线程所有静态 ThreadLocal —— 必须在 BrowserContext 关闭之后调用，
+     * 否则线程池复用的下一条测试会读取到旧 Page 的 iframe/shadow 上下文。
+     * <p>
+     * 适用场景：{@code @AfterMethod} / TestNG {@code afterTestMethod} / 线程池 {@code afterExecute}。
+     */
+    public static void clearAllThreadLocals() {
+        currentPage.remove();
+        currentFrame.remove();
+        currentShadow.remove();
+    }
+
     public Page getPage() {
         ensurePageValid();
         return page;

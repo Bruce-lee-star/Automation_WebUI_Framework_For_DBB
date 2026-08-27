@@ -115,7 +115,16 @@ public class ElementDiagnosticsCollector {
             boolean detailed = PlaywrightManager.config().isElementDetailedDiagnostics();
             String script = buildBatchDiagnosticScript(detailed);
             @SuppressWarnings("unchecked")
-            Map<String, Object> result = (Map<String, Object>) evaluateInContext(script, selector);
+            Map<String, Object> result;
+            // 关键修复 P2-19：使用 locator.evaluate() 而非 page.evaluate(selector)，
+            // 这样可以正确处理 CSS / XPath / role / text 等所有 Playwright 支持的定位语义，
+            // 避免 document.querySelector 对非 CSS 描述符失效导致误报"元素不存在"。
+            if (locator != null) {
+                Object evalResult = locator.evaluate(script, "self");
+                result = (evalResult instanceof Map) ? (Map<String, Object>) evalResult : null;
+            } else {
+                result = (Map<String, Object>) evaluateInContext(script, selector);
+            }
 
             info.existsInDom(getBoolean(result, "exists"))
                .isVisible(getBoolean(result, "visible"))

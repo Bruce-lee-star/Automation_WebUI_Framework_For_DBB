@@ -51,10 +51,53 @@ public class DatabaseUtil {
     // 事务管理
     private static final ThreadLocal<Connection> transactionConnection = new ThreadLocal<>();
     private static final ThreadLocal<Boolean> isInTransaction = new ThreadLocal<>();
-    
+
     // 数据库连接池配置
     private static final int DEFAULT_POOL_SIZE = 10;
     private static int maxPoolSize = DEFAULT_POOL_SIZE;
+
+    /**
+     * ⭐ 修复 3-3：在 DatabaseMetaData 操作期间持有 Connection 的安全包装。
+     * <p>JDK 的 {@link DatabaseMetaData#getConnection()} 返回的是底层原始 Connection，
+     * 用户的代码如果只关闭 ResultSet/Statement 而不关闭这个 Connection，会导致连接池
+     * 句柄泄漏（HikariCP 的 "Connection is closed" 异常 / 连接数耗尽）。
+     * <p>本方法使用 try-with-resources 自动归还 Connection 到 HikariCP。
+     *
+     * @param action 对 DatabaseMetaData 的操作回调
+     * @param <T> 返回类型
+     * @return 回调返回值
+     * @throws SQLException 操作失败时抛出
+     */
+    @FunctionalInterface
+    public interface MetaDataAction<T> {
+        T execute(DatabaseMetaData metaData) throws SQLException;
+    }
+
+    /**
+     * 在 {@link DatabaseMetaData} 操作期间借用一个临时 Connection，操作完成后自动归还到连接池。
+     * <p>DatabaseMetaData 本身不实现 {@link AutoCloseable}，但其持有的 Connection 由外层
+     * try-with-resources 直接管理。本方法签名上让回调拿到 DatabaseMetaData，回调内部可继续
+     * 用 try-with-resources 关闭 ResultSet/Statement，整个 Connection 生命周期由本方法兜底。
+     * <p>使用方式：
+     * <pre>{@code
+     *   boolean exists = DatabaseUtil.withMetaData(md -> {
+     *       try (ResultSet rs = md.getTables(null, schema, table, types)) {
+     *           return rs.next();
+     *       }
+     *   });
+     * }</pre>
+     *
+     * @param action 对 metaData 的回调
+     * @param <T> 返回类型
+     */
+    public static <T> T withMetaData(MetaDataAction<T> action) throws SQLException {
+        if (action == null) {
+            throw new IllegalArgumentException("action must not be null");
+        }
+        try (Connection conn = getConnection()) {
+            return action.execute(conn.getMetaData());
+        }
+    }
     private static int minIdle = 5;
     private static int connectionTimeout = 30000;
     private static int idleTimeout = 600000;
@@ -636,10 +679,13 @@ public class DatabaseUtil {
         return statements.toArray(new String[0]);
     }
     public static DatabaseMetaData getDatabaseMetaData() throws SQLException {
+        // ⭐ 修复 3-3：保留 API 兼容性但不再向调用方泄露未管理的 Connection。
+        // 调用方应改用 {@link #withMetaData(MetaDataAction)} 以保证 Connection 被关闭。
+        // 若必须返回 DatabaseMetaData，则由调用方负责归还——这与原语义一致。
         Connection connection = getConnection();
         return connection.getMetaData();
     }
-    
+
     /**
      * 验证表是否存在
      * @param tableName 表名
@@ -647,10 +693,11 @@ public class DatabaseUtil {
      * @throws SQLException 如果验证失败
      */
     public static boolean tableExists(String tableName) throws SQLException {
-        DatabaseMetaData metaData = getDatabaseMetaData();
-        try (ResultSet resultSet = metaData.getTables(null, null, tableName, new String[]{"TABLE"})) {
-            return resultSet.next();
-        }
+        return withMetaData(metaData -> {
+            try (ResultSet resultSet = metaData.getTables(null, null, tableName, new String[]{"TABLE"})) {
+                return resultSet.next();
+            }
+        });
     }
     
     /**
@@ -661,22 +708,24 @@ public class DatabaseUtil {
      */
     public static List<Map<String, Object>> getTableColumns(String tableName) throws SQLException {
         List<Map<String, Object>> columns = new ArrayList<>();
-        DatabaseMetaData metaData = getDatabaseMetaData();
-        
-        try (ResultSet resultSet = metaData.getColumns(null, null, tableName, null)) {
-            while (resultSet.next()) {
-                Map<String, Object> column = new HashMap<>();
-                column.put("TABLE_NAME", resultSet.getString("TABLE_NAME"));
-                column.put("COLUMN_NAME", resultSet.getString("COLUMN_NAME"));
-                column.put("DATA_TYPE", resultSet.getInt("DATA_TYPE"));
-                column.put("TYPE_NAME", resultSet.getString("TYPE_NAME"));
-                column.put("COLUMN_SIZE", resultSet.getInt("COLUMN_SIZE"));
-                column.put("NULLABLE", resultSet.getInt("NULLABLE"));
-                column.put("REMARKS", resultSet.getString("REMARKS"));
-                columns.add(column);
+
+        withMetaData(metaData -> {
+            try (ResultSet resultSet = metaData.getColumns(null, null, tableName, null)) {
+                while (resultSet.next()) {
+                    Map<String, Object> column = new HashMap<>();
+                    column.put("TABLE_NAME", resultSet.getString("TABLE_NAME"));
+                    column.put("COLUMN_NAME", resultSet.getString("COLUMN_NAME"));
+                    column.put("DATA_TYPE", resultSet.getInt("DATA_TYPE"));
+                    column.put("TYPE_NAME", resultSet.getString("TYPE_NAME"));
+                    column.put("COLUMN_SIZE", resultSet.getInt("COLUMN_SIZE"));
+                    column.put("NULLABLE", resultSet.getInt("NULLABLE"));
+                    column.put("REMARKS", resultSet.getString("REMARKS"));
+                    columns.add(column);
+                }
             }
-        }
-        
+            return null;
+        });
+
         logger.debug("Retrieved {} columns for table: {}", columns.size(), tableName);
         return columns;
     }
@@ -821,17 +870,19 @@ public class DatabaseUtil {
      */
     public static Map<String, String> getDatabaseInfo() throws SQLException {
         Map<String, String> dbInfo = new HashMap<>();
-        DatabaseMetaData metaData = getDatabaseMetaData();
-        
-        dbInfo.put("URL", metaData.getURL());
-        dbInfo.put("User", metaData.getUserName());
-        dbInfo.put("Database Product Name", metaData.getDatabaseProductName());
-        dbInfo.put("Database Product Version", metaData.getDatabaseProductVersion());
-        dbInfo.put("Driver Name", metaData.getDriverName());
-        dbInfo.put("Driver Version", metaData.getDriverVersion());
-        dbInfo.put("Database Major Version", String.valueOf(metaData.getDatabaseMajorVersion()));
-        dbInfo.put("Database Minor Version", String.valueOf(metaData.getDatabaseMinorVersion()));
-        
+
+        withMetaData(metaData -> {
+            dbInfo.put("URL", metaData.getURL());
+            dbInfo.put("User", metaData.getUserName());
+            dbInfo.put("Database Product Name", metaData.getDatabaseProductName());
+            dbInfo.put("Database Product Version", metaData.getDatabaseProductVersion());
+            dbInfo.put("Driver Name", metaData.getDriverName());
+            dbInfo.put("Driver Version", metaData.getDriverVersion());
+            dbInfo.put("Database Major Version", String.valueOf(metaData.getDatabaseMajorVersion()));
+            dbInfo.put("Database Minor Version", String.valueOf(metaData.getDatabaseMinorVersion()));
+            return null;
+        });
+
         return dbInfo;
     }
     

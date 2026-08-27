@@ -45,6 +45,15 @@ public class FrameworkState {
         contextVariables.clear();
         lastException = null;
     }
+
+    /**
+     * 仅标记已初始化（不重置/清理任何状态）。
+     * 用于 PlaywrightManager 的懒初始化路径：configId 已设置但 frameworkState 尚未
+     * 经过完整 initialize() 时，避免 getContext()/getPage() 误判"未初始化"而抛异常。
+     */
+    public void markInitialized() {
+        initialized.set(true);
+    }
     
     // 启动框架
     public void start() {

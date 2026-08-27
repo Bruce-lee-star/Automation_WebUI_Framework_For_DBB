@@ -175,6 +175,15 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void testStarted(String description, ZonedDateTime startTime) {
         StepListener.super.testStarted(description, startTime);
+        // 关键修复 P2-21：委派到注册的 StepListener，否则业务 StepListener 接收不到事件。
+        for (StepListener listener : delegateListeners) {
+            try {
+                listener.testStarted(description, startTime);
+            } catch (Exception e) {
+                logger.warn("Error in delegate listener testStarted(description, startTime): {}",
+                        listener.getClass().getSimpleName(), e);
+            }
+        }
     }
 
     // 内部实现方法，不直接作为接口方法
@@ -263,6 +272,14 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void stepFailed(StepFailure failure, List<ScreenshotAndHtmlSource> screenshotList, boolean isInDataDrivenTest) {
         StepListener.super.stepFailed(failure, screenshotList, isInDataDrivenTest);
+        for (StepListener listener : delegateListeners) {
+            try {
+                listener.stepFailed(failure, screenshotList, isInDataDrivenTest);
+            } catch (Exception e) {
+                logger.warn("Error in delegate listener stepFailed: {}",
+                        listener.getClass().getSimpleName(), e);
+            }
+        }
     }
 
     @Override
@@ -425,6 +442,14 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void testFinished(TestOutcome result, boolean isInDataDrivenTest) {
         StepListener.super.testFinished(result, isInDataDrivenTest);
+        for (StepListener listener : delegateListeners) {
+            try {
+                listener.testFinished(result, isInDataDrivenTest);
+            } catch (Exception e) {
+                logger.warn("Error in delegate listener testFinished(outcome, isInDataDrivenTest): {}",
+                        listener.getClass().getSimpleName(), e);
+            }
+        }
     }
 
     @Override

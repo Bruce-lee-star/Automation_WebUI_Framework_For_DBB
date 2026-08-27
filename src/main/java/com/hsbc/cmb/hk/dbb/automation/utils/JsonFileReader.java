@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,7 +46,7 @@ public class JsonFileReader {
         }
         
         try {
-            Path path = resolvePath(filePath);
+            Path path = resolveFileSystemPath(filePath);
             
             // 检查文件是否存在
             if (!Files.exists(path)) {
@@ -89,36 +90,16 @@ public class JsonFileReader {
     }
     
     /**
-     * 解析文件路径
-     * 支持相对路径和绝对路径
+     * 解析文件系统路径（仅用于用户显式提供的路径或项目根路径兼容）。
+     * <p>不含 classpath Resources 加载——Resources 由 {@link #readFromClasspath(String)} 负责。
      */
-    private static Path resolvePath(String filePath) {
+    private static Path resolveFileSystemPath(String filePath) {
         Path path = Paths.get(filePath);
-        
-        // 如果是绝对路径，直接返回
         if (path.isAbsolute()) {
             return path;
         }
-        
-        // 相对路径：尝试多个基础路径
-        Path[] basePaths = {
-            Paths.get(""),                                    // 项目根目录
-            Paths.get("src/test/resources"),                  // 测试资源目录
-            Paths.get("src/test/resources/mocks"),            // Mock 数据目录
-            Paths.get(System.getProperty("user.dir"))         // 当前工作目录
-        };
-        
-        for (Path basePath : basePaths) {
-            Path resolved = basePath.resolve(filePath);
-            if (Files.exists(resolved)) {
-                logger.debug("Resolved path: {} -> {}", filePath, resolved.toAbsolutePath());
-                return resolved;
-            }
-        }
-        
-        // 如果都找不到，返回原路径
-        logger.debug("Using original path: {}", filePath);
-        return path;
+        // 相对路径统一基于项目根（user.dir）解析，单一基准，避免散乱猜测
+        return Paths.get(System.getProperty("user.dir")).resolve(filePath);
     }
     
     /**
@@ -174,7 +155,7 @@ public class JsonFileReader {
      */
     public static boolean fileExists(String filePath) {
         try {
-            Path path = resolvePath(filePath);
+            Path path = resolveFileSystemPath(filePath);
             return Files.exists(path) && Files.isRegularFile(path);
         } catch (Exception e) {
             logger.debug("Error checking file existence: {}", filePath, e);
@@ -210,31 +191,104 @@ public class JsonFileReader {
     }
     
     /**
-     * 读取 Mock 数据文件（专用方法）
-     * 自动从 mocks 目录读取
+     * 读取 Mock 数据文件（专用方法）。
+     *
+     * <p>加载策略（清晰、无散乱路径猜测、不硬编码子目录）：
+     * <ol>
+     *   <li><b>默认：从 Resources（classpath）加载</b>——优先于文件系统，按文件名直接读取
+     *       （{@code <fileName>} 或 {@code <fileName>.json}）。这是打包后唯一可靠的方式。</li>
+     *   <li><b>兼容：用户提供的目录 / 项目根路径</b>——当文件名含路径分隔符（用户显式指定目录）
+     *       或 classpath 未命中时，回退到基于项目根（{@code user.dir}）的文件系统解析。</li>
+     * </ol>
+     *
+     * @param fileName mock 文件名（可含相对/绝对路径，由用户指定目录）
+     * @return JSON 内容；若均找不到或非合法 JSON 则返回 null
      */
     public static String readMockData(String fileName) {
-        // 如果已经包含路径，直接读取
+        if (fileName == null || fileName.trim().isEmpty()) {
+            logger.error("Mock file name is null or empty");
+            return null;
+        }
+
+        // 文件名已含路径（用户显式指定目录）：classpath 资源优先，文件系统兼容
         if (fileName.contains("/") || fileName.contains("\\")) {
-            return readAndValidateJsonFile(fileName);
+            String fromResources = readFromClasspath(fileName);
+            if (fromResources != null) return fromResources;
+            String fromFs = readFromFilesystem(fileName);
+            if (fromFs != null) return fromFs;
+            logger.error("Mock data file not found: {}", fileName);
+            return null;
         }
-        
-        // 自动添加 mocks 目录前缀和 .json 后缀
-        String[] possiblePaths = {
-            "src/test/resources/mocks/" + fileName,
-            "src/test/resources/mocks/" + fileName + ".json",
-            "mocks/" + fileName,
-            "mocks/" + fileName + ".json"
-        };
-        
-        for (String path : possiblePaths) {
-            if (fileExists(path)) {
-                logger.debug("Found mock data file: {}", path);
-                return readAndValidateJsonFile(path);
-            }
-        }
-        
-        logger.error("Mock data file not found: {}. Searched in: {}", fileName, String.join(", ", possiblePaths));
+
+        // 默认：从 classpath Resources 根按文件名加载（优先，无需 .json 后缀也可命中）
+        String fromResources = readFromClasspath(fileName);
+        if (fromResources != null) return fromResources;
+        fromResources = readFromClasspath(fileName + ".json");
+        if (fromResources != null) return fromResources;
+
+        // 兼容：项目根路径文件系统（按文件名）
+        String fromFs = readFromFilesystem(fileName);
+        if (fromFs != null) return fromFs;
+        fromFs = readFromFilesystem(fileName + ".json");
+        if (fromFs != null) return fromFs;
+
+        logger.error("Mock data file not found: {}. Expected in classpath or project-root (with optional .json).", fileName);
         return null;
+    }
+
+    /**
+     * 从 classpath Resources 加载资源内容（默认编码 UTF-8）。
+     *
+     * @return 内容字符串；资源不存在或读取失败返回 null
+     */
+    private static String readFromClasspath(String resourcePath) {
+        try (InputStream in = JsonFileReader.class.getClassLoader().getResourceAsStream(resourcePath)) {
+            if (in == null) {
+                logger.debug("Classpath resource not found: {}", resourcePath);
+                return null;
+            }
+            byte[] bytes = in.readAllBytes();
+            if (bytes.length == 0) {
+                logger.warn("Classpath resource is empty: {}", resourcePath);
+                return null;
+            }
+            String content = new String(bytes, StandardCharsets.UTF_8);
+            if (!isValidJsonFormat(content)) {
+                logger.warn("Classpath resource may not be valid JSON: {}", resourcePath);
+            }
+            logger.info("Loaded mock data from classpath: {} ({} bytes)", resourcePath, content.length());
+            return content;
+        } catch (IOException e) {
+            logger.error("Failed to read classpath resource: {}", resourcePath, e);
+            return null;
+        }
+    }
+
+    /**
+     * 从文件系统（用户目录 / 项目根路径）加载 JSON 文件。
+     *
+     * @return 内容字符串；文件不存在或读取失败返回 null
+     */
+    private static String readFromFilesystem(String filePath) {
+        Path path = resolveFileSystemPath(filePath);
+        if (!Files.exists(path) || !Files.isRegularFile(path)) {
+            logger.debug("File not found on filesystem: {}", path.toAbsolutePath());
+            return null;
+        }
+        try {
+            String content = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+            if (content.trim().isEmpty()) {
+                logger.warn("File is empty: {}", filePath);
+                return null;
+            }
+            if (!isValidJsonFormat(content)) {
+                logger.warn("File content may not be valid JSON: {}", filePath);
+            }
+            logger.info("Loaded mock data from filesystem: {} ({} bytes)", path.toAbsolutePath(), content.length());
+            return content;
+        } catch (IOException e) {
+            logger.error("Failed to read file: {}", filePath, e);
+            return null;
+        }
     }
 }

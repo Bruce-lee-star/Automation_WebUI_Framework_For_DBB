@@ -1,10 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorContextCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ConditionalFieldRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
@@ -128,27 +129,8 @@ public class RouteDsl {
         }
         RouteEngine.register(context, rules);
 
-        // ⭐ 页面级路由：监听页面关闭事件，自动重新注册到同 context 的下一个可用页面
-        if (context instanceof Page) {
-            final Page page = (Page) context;
-            final List<RouteRule> capturedRules = new java.util.ArrayList<>(rules);
-            page.onClose(p -> {
-                BrowserContext ctx = p.context();
-                if (ctx == null) {
-                    LOGGER.debug("[RouteDsl] Page closed but context is null, cannot re-register rules");
-                    return;
-                }
-                // 查找同 context 中的下一个可用页面
-                for (Page otherPage : ctx.pages()) {
-                    if (otherPage != p && !otherPage.isClosed()) {
-                        LOGGER.info("[RouteDsl] Page closed, re-registering {} rule(s) on another page in the same context",
-                                capturedRules.size());
-                        RouteEngine.reRegisterRules(p, otherPage);
-                        break;
-                    }
-                }
-            });
-        }
+        // ⭐ 统一绑定模型：page 规则已升级为 context 级绑定，由 Playwright 自动覆盖同 context 全部页面，
+        //    跨页迁移竞态不再存在，故无需 page.onClose 重注册。
     }
 
     /**
@@ -186,7 +168,7 @@ public class RouteDsl {
         if (page == null) return;
         RouteRegistry.clearContext(page);
         RouteEngine.removePageRules(page);
-        ApiCapture.stop(page);
+        ApiCaptureContext.stop(page);
     }
 
     /**
@@ -219,10 +201,10 @@ public class RouteDsl {
     private static void resetAllInternal() {
         // 1. 停止采集引擎（释放 CDP session + 线程池）
         try {
-            ApiCapture.stop();
+            ApiCaptureContext.stop();
         } catch (Exception e) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteDsl] ApiCapture.stop() during resetAll failed: {}", e.getMessage());
+                    "[RouteDsl] ApiCaptureContext.stop() during resetAll failed: {}", e.getMessage());
         }
         // 2. 清空 RouteRegistry 全量（含 MonitorSession / ENGINE_RULE_STORE / JSONPath 缓存）
         try {
@@ -273,7 +255,7 @@ public class RouteDsl {
      */
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
-        RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES/CROSS_LAYER_HANDLED_URLS + JSONPath cache
+        RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES + JSONPath cache
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteDsl] clearAllRules() completed");
     }
 
@@ -710,6 +692,21 @@ public class RouteDsl {
             rule.addMonitorCallback(callback);
             return this;
         }
+
+        /**
+         * 注册携带 {@link ApiCaptureContext} 的 Monitor 回调（6 参 onResponse）。
+         *
+         * <p>回调里可直接 {@code context.setShared(key, value)} 把数据回传到主线程
+         * （主线程用 {@code ApiCaptureContext.getCurrent().awaitShared(key, timeout)} 读取），
+         * 也可设置框架级全局变量（如 {@code NLSUtils.setLanguage}，已全局化、对主线程可见）。
+         * 6 参 lambda 会自动匹配本重载；5 参 lambda 匹配 {@link #onResponse(MonitorCallback)}。
+         *
+         * @param callback 6 参回调实例（支持 Lambda 表达式和方法引用）
+         */
+        public MonitorApiDsl onResponse(MonitorContextCallback callback) {
+            rule.addMonitorCallback(callback);
+            return this;
+        }
     }
 
     // ==================== Mock 专用 DSL ====================
@@ -735,7 +732,7 @@ public class RouteDsl {
      * // 纯 Mock — 读 JSON 文件 + 链式增量改字段（不依赖真实服务器）
      * .api("/api/login")
      *     .mock()
-     *     .mockBodyFromFile("login-response.json")
+     *     .mockBodyFromFile("mocks/login-response.json")
      *     .replaceField("$.data.token", "fake-token")
      *     .replaceField("$.users[*].active", true)
      *     .mockStatus(200)
@@ -805,9 +802,13 @@ public class RouteDsl {
         /**
          * 从 JSON 文件读取 Mock 响应体（纯 Mock 模式）。
          * <p>等价于 {@code mockBody(JsonFileReader.readMockData(fileName))}。
-         * 文件名不含路径时自动从 {@code src/test/resources/mocks/} 目录查找（见 {@link JsonFileReader#readMockData}）。
          *
-         * @param fileName JSON 文件名（如 "login-response.json"）；含路径分隔符时按路径直接读取
+         * <p><b>路径由调用方指定</b>：文件位于 {@code src/test/resources/mocks/} 时，
+         * 请传入 {@code "mocks/login-response.json"}。框架不预设任何约定目录，
+         * 以保证不同工程结构下行为一致。
+         *
+         * @param fileName JSON 文件路径（相对 classpath 或项目根；不含路径时按 classpath 根解析，
+         *                 此时可省略 {@code .json} 后缀）
          * @throws IllegalArgumentException 文件不存在或内容为空时抛出，避免静默返回空响应
          */
         public MockApiDsl mockBodyFromFile(String fileName) {
@@ -833,7 +834,7 @@ public class RouteDsl {
          * <pre>{@code
          * .api("/api/login")
          *     .mock()
-         *     .mockBodyFromFile("login-response.json",
+         *     .mockBodyFromFile("mocks/login-response.json",
          *         Map.of("$.data.token", "fake-token",
          *                "$.users[*].active", true))
          *     .mockStatus(200)
@@ -864,7 +865,7 @@ public class RouteDsl {
          * 在 {@code mockBody() / mockBodyFromFile()} 之后逐步修改响应体，无需把所有字段塞进一个 Map：
          * <pre>{@code
          * .mock()
-         *     .mockBodyFromFile("login-response.json")
+         *     .mockBodyFromFile("mocks/login-response.json")
          *     .replaceField("$.data.token", "fake-token")
          *     .replaceField("$.users[*].active", true)
          *     .mockStatus(200)
@@ -1039,6 +1040,61 @@ public class RouteDsl {
         public InterceptMockDsl mockReplaceField(String jsonPath, Object value) {
             rule.addMockReplaceField(jsonPath, value);
             return this;
+        }
+
+        /**
+         * 条件字段修改 — 仅 {@code interceptRealResponse=true} 模式生效。
+         * <p>当响应里 {@code whenJsonPath} 取值满足 {@code op}/{@code expected} 时，
+         * 才对 {@code thenSetJsonPath} 设置新值；不满足条件则保留原值（不影响其它数据）。
+         *
+         * <p>支持 JSONPath 通配符 {@code [*]}，逐元素独立评估：
+         * <pre>{@code
+         * .when("$.users[*].status", "EQUALS", "ACTIVE")
+         *     .thenSet("$.users[*].vip", true)
+         * .when("$.users[*].age", "GT", 18)
+         *     .thenSet("$.users[*].canVote", true);
+         * }</pre>
+         *
+         * <p>支持的 op：EQUALS / NOT_EQUALS / CONTAINS / NOT_CONTAINS / REGEX /
+         * EXISTS / NOT_EXISTS / GT / LT / GTE / LTE
+         *
+         * @param whenJsonPath 条件判断的 JSONPath（读取响应里的某个字段）
+         * @param op           条件操作符（字符串，忽略大小写）
+         * @param expected     期望比对值（与 whenJsonPath 读取的实际值比较）
+         * @return ConditionalWhen — 继续调用 {@link ConditionalWhen#thenSet(String, Object)} 指定要改的字段
+         */
+        public ConditionalWhen when(String whenJsonPath, String op, Object expected) {
+            return new ConditionalWhen(this, whenJsonPath, op, expected);
+        }
+
+        /**
+         * 条件字段修改的中间构建器（由 {@link #when(String, String, Object)} 返回）。
+         * <p>{@link #thenSet(String, Object)} 完成后返回外层 {@link InterceptMockDsl}，可继续链式 {@code when(...)}。
+         */
+        public class ConditionalWhen {
+            private final InterceptMockDsl outer;
+            private final String whenJsonPath;
+            private final ConditionalFieldRule.ConditionOp op;
+            private final Object expected;
+
+            ConditionalWhen(InterceptMockDsl outer, String whenJsonPath, String op, Object expected) {
+                this.outer = outer;
+                this.whenJsonPath = whenJsonPath;
+                this.op = ConditionalFieldRule.ConditionOp.from(op);
+                this.expected = expected;
+            }
+
+            /**
+             * 指定满足条件时要修改的目标字段与值，并登记该条件规则。
+             * @param thenSetJsonPath 目标字段 JSONPath（支持通配符 [*]，与 when 路径层级对齐时逐元素生效）
+             * @param setValue       满足条件时目标字段被设置成的值
+             * @return 外层 {@link InterceptMockDsl}，可继续 {@code when(...)}
+             */
+            public InterceptMockDsl thenSet(String thenSetJsonPath, Object setValue) {
+                outer.rule.addConditionalField(
+                        new ConditionalFieldRule(whenJsonPath, op, expected, thenSetJsonPath, setValue));
+                return outer;
+            }
         }
 
         /**

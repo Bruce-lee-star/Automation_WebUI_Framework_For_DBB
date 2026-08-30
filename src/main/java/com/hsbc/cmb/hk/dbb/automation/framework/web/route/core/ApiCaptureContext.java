@@ -12,6 +12,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import java.util.regex.Pattern;
 
@@ -70,7 +72,12 @@ public class ApiCaptureContext {
      * 所有可变字段均使用线程安全结构，无需额外同步。
      */
     private static final ApiCaptureContext SHARED = new ApiCaptureContext();
-    private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT = new ConcurrentHashMap<>();
+    // ⭐ 修复 B-1：原 BY_CONTEXT 用 BrowserContext 强引用作 key，若 removeContext/removeAllContexts
+    //   遗漏调用，已关闭的 BrowserContext 会被钉在堆上（整个 JVM 生命周期）造成泄漏，且与
+    //   CURRENT_CONTEXT 的 WeakReference 设计不一致。改为 WeakHashMap（弱 key），context 被 GC 后
+    //   对应 entry 自动失效，避免泄漏。WeakHashMap 非并发安全，用 synchronizedMap 包装。
+    private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
      * 当前测试线程绑定的 BrowserContext。
@@ -186,6 +193,12 @@ public class ApiCaptureContext {
      */
     public static void resetCurrent() {
         SHARED.reset();
+        SHARED.clearShared();
+        // ⭐ 清理时机对齐：NLSUtils 已全局化（跨线程可见，支持 Monitor 回调影响主线程），
+        // 但全局值若不在 context 生命周期边界清理，会跨用例串扰。
+        // 故在每次 resetCurrent（用例 before/after、scenario 边界）时一并清理语言 ThreadLocal，
+        // 确保「用例 A 的回调设的语言」不会泄漏到「用例 B 的 getLanguage」。
+        com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils.reset();
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -226,21 +239,102 @@ public class ApiCaptureContext {
 
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     /**
-     * ⭐ 采集管道在途计数：覆盖「事件已 publish 但尚未合并写出」的请求
-     * （与 Monitor 异步任务计数互补，避免 {@code awaitCompletion} 语义仅反映
-     * Monitor 任务而遗漏纯采集管道在途请求）。由 EventMerger 在收到
-     * REQUEST/FETCH_REQUEST 时 +1、slot 完成时 -1。
-     */
-    private final AtomicInteger captureInFlight = new AtomicInteger(0);
-    /**
-     * ⭐ 单调递增「曾观察到的请求数」：每次有请求进入采集/拦截（activeRequests 或 captureInFlight +1）
-     * 即 +1，永不减。用于 {@link #awaitCompletion(long)} 的首活动门控，吸收「触发请求→Route 拦截」
+     * ⭐ 单调递增「曾观察到的请求数」：每次有请求进入拦截（activeRequests +1）即 +1，永不减。
+     * 用于 {@link #awaitCompletion(long)} 的首活动门控，吸收「触发请求→Route 拦截」
      * 之间的时序间隙——若用 activeRequests==0 直接判定「无活动」会因并发 fire-and-forget fetch
      * 在 evaluate 返回后、route 拦截前的瞬时归零而提前返回（f31 丢并发）。单调性保证一旦有活动即永久可见，
      * 不会因请求在两次检查间瞬时完成而漏唤醒导致空等超时。
      */
     private final AtomicLong observedRequests = new AtomicLong(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
+
+    /**
+     * ⭐ 主线程 ↔ Monitor 事件线程的回传通道（共享状态）。
+     * <p>问题背景：Monitor 的 {@code onResponse} 在 <b>Playwright 事件线程</b>执行，
+     * 它们在回调内部修改的局部变量无法回传到<b>测试主线程</b>，主线程拿不到。
+     * 这里提供一个并发安全的共享 Map：Monitor 回调 / 断言可写入任意键值，
+     * 主线程随后通过 {@link #getShared(String)} / {@link #awaitShared(String, long)} 读取，
+     * 从而让 Monitor 真正「影响」主线程的变量/分支判断。
+     * <p>典型用法：
+     * <pre>{@code
+     *   // Monitor 回调（事件线程）
+     *   ctx.setShared("lastOrderId", JsonPath.read(body, "$.orderId"));
+     *   // 主线程
+     *   String orderId = (String) ApiCaptureContext.getCurrent().awaitShared("lastOrderId", 5000);
+     * }</pre>
+     */
+    private final ConcurrentHashMap<String, Object> sharedState = new ConcurrentHashMap<>();
+
+    /** 共享状态读写锁（awaitShared 的条件等待） */
+    private final Object sharedStateLock = new Object();
+
+    /**
+     * 向共享状态写入一个键值（事件线程调用，主线程可读取）。
+     * @param key 键
+     * @param value 值（可为 null，等价于移除）
+     */
+    public void setShared(String key, Object value) {
+        if (key == null) return;
+        if (value == null) {
+            sharedState.remove(key);
+        } else {
+            sharedState.put(key, value);
+        }
+        synchronized (sharedStateLock) {
+            sharedStateLock.notifyAll();
+        }
+    }
+
+    /**
+     * 读取共享状态（主线程调用）。未设置时返回 null。
+     */
+    public Object getShared(String key) {
+        return key == null ? null : sharedState.get(key);
+    }
+
+    /**
+     * 读取共享状态（带类型转换）。
+     */
+    public <T> T getShared(String key, Class<T> type) {
+        Object v = getShared(key);
+        return type != null && type.isInstance(v) ? type.cast(v) : null;
+    }
+
+    /**
+     * 阻塞等待某个 key 在共享状态中出现（主线程调用）。
+     * <p>用于让主线程「等待 Monitor 事件线程把值写回」再继续，
+     * 解决 onResponse 无法直接影响主线程局部变量的问题。
+     *
+     * @param key 键
+     * @param timeoutMs 超时（毫秒），<=0 表示不等待立即返回
+     * @return key 出现时的值，超时仍不存在返回 null
+     */
+    public Object awaitShared(String key, long timeoutMs) {
+        if (key == null) return null;
+        Object v = sharedState.get(key);
+        if (v != null) return v;
+        if (timeoutMs <= 0) return null;
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        synchronized (sharedStateLock) {
+            while (true) {
+                Object cur = sharedState.get(key);
+                if (cur != null) return cur;
+                long remain = deadline - System.currentTimeMillis();
+                if (remain <= 0) return null;
+                try {
+                    sharedStateLock.wait(remain);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return sharedState.get(key);
+                }
+            }
+        }
+    }
+
+    /** 清空共享状态（resetCurrent 时调用，避免跨场景串扰）。 */
+    public void clearShared() {
+        sharedState.clear();
+    }
 
     /** 等待锁：decrement → 0 时通知 awaitCompletion 的调用方 */
     private final Object completionLock = new Object();
@@ -352,6 +446,22 @@ public class ApiCaptureContext {
      * <p>Key = 请求端点（路径+查询，不含 host），Value = 该端点被调用的所有快照（按顺序）。
      */
     private final Map<String, List<CapturedApiCall>> apiCallsPerUrl = new ConcurrentHashMap<>();
+
+    /**
+     * ⭐ DELAY 维度标记存储 —— <b>独立于</b> {@link #apiCallsPerUrl}。
+     *
+     * <p>DELAY 与其它三种能力<b>性质不同</b>：MOCK / MODIFY / MONITOR 各自都持有一次完整调用的
+     * 请求/响应内容，而 DELAY 只是「该请求被延迟过」这一<b>事实标记</b>
+     * （在请求放行之前落库，不含响应，{@code statusCode=0}）。
+     *
+     * <p>若把它混入主快照存储，按 endpoint 的通用查询
+     * （{@code getLastApiCall} / {@code getApiCalls} / {@code waitForApi}）会先命中这条无响应的
+     * 占位记录，调用方被迫在每一处都写「跳过 DELAY」的过滤逻辑 —— 这是典型的语义泄漏。
+     *
+     * <p>因此：主快照存储<b>只放完整调用</b>；DELAY 标记单独存放，
+     * 仅通过 {@code getAllByType(RouteHandleType.DELAY)} 等按类型查询暴露。
+     */
+    private final Map<String, List<CapturedApiCall>> delayMarkersByEndpoint = new ConcurrentHashMap<>();
 
     /**
      * Response body 存储。
@@ -480,40 +590,6 @@ public class ApiCaptureContext {
     }
 
     /**
-     * ⭐ 采集管道在途 +1：事件已 publish 但尚未合并写出为 CapturedApiCall。
-     * 由 EventMerger 在收到 REQUEST / FETCH_REQUEST 时调用。
-     */
-    public void incrementCaptureInFlight() {
-        observedRequests.incrementAndGet();
-        int count = captureInFlight.incrementAndGet();
-        if (count == 1) {
-            synchronized (completionLock) {
-                completionLock.notifyAll();
-            }
-        }
-        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiCaptureContext] incrementCaptureInFlight -> {}", count);
-    }
-
-    /**
-     * ⭐ 采集管道在途 -1：slot 已合并写出（无论成功/失败）。归零时通知等待方。
-     */
-    public void decrementCaptureInFlight() {
-        int remaining = captureInFlight.updateAndGet(current -> Math.max(0, current - 1));
-        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[ApiCaptureContext] decrementCaptureInFlight -> {}", remaining);
-        if (remaining == 0) {
-            synchronized (completionLock) {
-                completionLock.notifyAll();
-            }
-        }
-    }
-
-    public int getCaptureInFlight() {
-        return captureInFlight.get();
-    }
-
-    /**
      * 阻塞等待至少一个请求被 Route 拦截过（activeRequests 从 0→1）。
      *
      * <p>典型用途：DELAY 延迟载荷的 loading UI 验证。操作触发 API 请求后，
@@ -532,12 +608,12 @@ public class ApiCaptureContext {
      * @return true=已有请求被拦截，false=超时
      */
     public boolean waitForActiveRequest(long timeoutMs) {
-        if (activeRequests.get() > 0 || captureInFlight.get() > 0) {
+        if (activeRequests.get() > 0) {
             return true;
         }
         long deadline = System.currentTimeMillis() + timeoutMs;
         synchronized (completionLock) {
-            while (activeRequests.get() == 0 && captureInFlight.get() == 0) {
+            while (activeRequests.get() == 0) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {
                     LOGGER.warn("[ApiCaptureContext] waitForActiveRequest timed out after {}ms", timeoutMs);
@@ -571,11 +647,11 @@ public class ApiCaptureContext {
             // 「fire-and-forget 并发 fetch 在 route 拦截前的窗口」由测试侧先行
             // waitForActiveRequest() 等待首个请求可见后再调用本方法，而非框架侧用首活动门控
             // 阻塞「无活动」场景（否则 awaitCompletion_noActiveRequests 契约被破坏、空等超时）。
-            if (activeRequests.get() == 0 && captureInFlight.get() == 0) {
+            if (activeRequests.get() == 0) {
                 return true;
             }
-            // 排空门控：等待全部进行中请求完成（activeRequests + captureInFlight 归零）。
-            while (activeRequests.get() > 0 || captureInFlight.get() > 0) {
+            // 排空门控：等待全部进行中请求完成（activeRequests 归零）。
+            while (activeRequests.get() > 0) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {
                     return false;
@@ -686,6 +762,7 @@ public class ApiCaptureContext {
         synchronized (apiCallLock) {
             apiCallsPerUrl.clear();
             apiCallsByUrl.clear();
+            delayMarkersByEndpoint.clear();
             recentCallsLock.lock();
             try {
                 recentCalls.clear();
@@ -706,8 +783,6 @@ public class ApiCaptureContext {
         // ⭐ R4: 测试级重置时清除步骤窗口标记
         stepStartTimestamp = 0L;
         testThread = null;
-        // 重置在途计数：正在进行的请求视为被取消
-        captureInFlight.set(0);
         synchronized (completionLock) {
             completionLock.notifyAll();
         }
@@ -716,6 +791,35 @@ public class ApiCaptureContext {
     // ═══════════════════════════════════════════════════════════
     // CapturedApiCall 存储（推荐）
     // ═══════════════════════════════════════════════════════════
+
+    /**
+     * ⭐ 存储一条 <b>DELAY 维度标记</b>（由 {@code RouteEngine} 的延迟分支调用）。
+     *
+     * <p>与 {@link #storeApiCall(CapturedApiCall)} 的区别：本方法写入<b>独立</b>的
+     * {@link #delayMarkersByEndpoint}，不进入主快照存储，因此不会影响
+     * {@code getLastApiCall} / {@code getApiCalls} / {@code waitForApi} 等通用查询 ——
+     * 这些查询<b>永远只会返回带有完整请求/响应内容的调用</b>。
+     *
+     * <p>延迟标记仍可通过 {@link #getAllByType(RouteHandleType)} 以
+     * {@code RouteHandleType.DELAY} 检索，用于回答「哪些请求被延迟过」。
+     *
+     * @param call 延迟标记（{@code handleType == DELAY}）
+     */
+    public void storeDelayMarker(CapturedApiCall call) {
+        if (call == null || call.endpoint() == null) return;
+        String endpoint = call.endpoint();
+        synchronized (apiCallLock) {
+            List<CapturedApiCall> markers = delayMarkersByEndpoint.computeIfAbsent(endpoint, k ->
+                    java.util.Collections.synchronizedList(new java.util.LinkedList<>()));
+            markers.add(call);
+            while (markers.size() > MAX_CALLS_PER_ENDPOINT) {
+                markers.remove(0);
+            }
+        }
+        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
+                "[ApiCaptureContext] storeDelayMarker: endpoint='{}', method={}, url='{}'",
+                endpoint, call.method(), RouteUtil.sanitizeUrl(call.requestUrl()));
+    }
 
     /**
      * 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。
@@ -732,6 +836,20 @@ public class ApiCaptureContext {
         // ⭐ 与 reset() 串行：索引写与 reset 的 clear 持同一把 apiCallLock，
         // 避免 merger 正在写出时 reset 并发清空导致的数据丢失竞态。
         synchronized (apiCallLock) {
+            // ⭐ 修复 B-2：50MB 总体积守门必须覆盖 CapturedApiCall 完整快照。
+            //   原守门只统计 responseStorage（去重 body），而 storeApiCall 把完整
+            //   responseBody 存进了 apiCallsPerUrl/apiCallsByUrl/recentCalls 三处，
+            //   导致"每端点一条大响应"即可绕过守门造成 OOM。此处同 addResponse 一致：
+            //   超限则拒绝存储，避免双重存储放大。
+            int callBodySize = call.responseBody() != null ? call.responseBody().length() : 0;
+            if (totalResponseSize.get() >= MAX_RESPONSE_TOTAL_SIZE) {
+                LOGGER.warn("[ApiCaptureContext] CapturedApiCall total size limit reached ({} >= {}). "
+                                + "Rejecting storeApiCall for endpoint='{}' to prevent OOM.",
+                        formatBytes(totalResponseSize.get()), formatBytes(MAX_RESPONSE_TOTAL_SIZE), endpoint);
+                return;
+            }
+            totalResponseSize.addAndGet(callBodySize);
+
             List<CapturedApiCall> endpointCalls = apiCallsPerUrl.computeIfAbsent(endpoint, k ->
                     java.util.Collections.synchronizedList(new java.util.LinkedList<>()));
             endpointCalls.add(call);
@@ -1091,6 +1209,134 @@ public class ApiCaptureContext {
     }
 
     // ═══════════════════════════════════════════════════════════
+    // ⭐ 按能力类型查询（MOCK / MODIFY / DELAY / MONITOR）
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * ⭐ 按路由能力类型获取全部 API 调用快照（按时间升序）。
+     *
+     * <p>四种能力各自独立落库，因此同一 endpoint 在复合场景下可能产生<b>多条不同类型</b>的记录：
+     * <ul>
+     *   <li>{@code MONITOR} — 对真实响应的观察结果（含被 MODIFY / DELAY 干预后的真实响应）</li>
+     *   <li>{@code MODIFY}  — 请求被改写后拿回的真实响应（含 modifyDetail 修改详情）</li>
+     *   <li>{@code DELAY}   — 纯延迟放行的请求元数据（响应未返回，status=0）</li>
+     *   <li>{@code MOCK}    — fulfill 注入的假响应（含 interceptRealResponse 改写后的响应）</li>
+     * </ul>
+     *
+     * <pre>{@code
+     * List<CapturedApiCall> mocked = ctx.getAllByType(RouteHandleType.MOCK);
+     * List<CapturedApiCall> monitored = ctx.getAllByType(RouteHandleType.MONITOR);
+     * }</pre>
+     *
+     * @param type 能力类型（MOCK / MODIFY / DELAY / MONITOR）；null 返回空列表
+     * @return 该类型的全部快照（不可变副本），无记录返回空列表
+     */
+    public List<CapturedApiCall> getAllByType(RouteHandleType type) {
+        if (type == null) return Collections.emptyList();
+        // ⭐ DELAY 是维度标记，存放在独立索引中（不污染主快照存储）
+        if (type == RouteHandleType.DELAY) {
+            List<CapturedApiCall> result = new ArrayList<>();
+            for (List<CapturedApiCall> list : delayMarkersByEndpoint.values()) {
+                if (list == null || list.isEmpty()) continue;
+                synchronized (list) {
+                    result.addAll(list);
+                }
+            }
+            result.sort(java.util.Comparator.comparingLong(CapturedApiCall::timestamp));
+            return result;
+        }
+        List<CapturedApiCall> result = new ArrayList<>();
+        for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
+            List<CapturedApiCall> list = e.getValue();
+            if (list == null || list.isEmpty()) continue;
+            synchronized (list) {
+                for (CapturedApiCall c : list) {
+                    if (c != null && c.handleType() == type) result.add(c);
+                }
+            }
+        }
+        result.sort(java.util.Comparator.comparingLong(CapturedApiCall::timestamp));
+        return result;
+    }
+
+    /**
+     * ⭐ 按「能力类型 + endpoint」获取指定端点的全部快照。
+     *
+     * <p>endpoint 匹配语义与 {@link #getApiCalls(String)} 完全一致
+     * （精确匹配 → Ant 通配符 fallback → 完整 URL 兜底）。
+     *
+     * @param endpoint 端点（urlPattern 或完整 URL）
+     * @param type     能力类型
+     * @return 该端点该类型的全部快照，无记录返回空列表
+     */
+    public List<CapturedApiCall> getApiCallsByType(String endpoint, RouteHandleType type) {
+        if (type == null) return Collections.emptyList();
+        // ⭐ DELAY 走独立索引
+        if (type == RouteHandleType.DELAY) {
+            List<CapturedApiCall> markers = delayMarkersByEndpoint.get(endpoint);
+            if (markers == null || markers.isEmpty()) return Collections.emptyList();
+            synchronized (markers) {
+                return new ArrayList<>(markers);
+            }
+        }
+        List<CapturedApiCall> all = getApiCalls(endpoint);
+        if (all.isEmpty()) return Collections.emptyList();
+        List<CapturedApiCall> filtered = new ArrayList<>();
+        for (CapturedApiCall c : all) {
+            if (c != null && c.handleType() == type) filtered.add(c);
+        }
+        return filtered;
+    }
+
+    /**
+     * ⭐ 按「能力类型 + endpoint」获取最近一次快照。
+     *
+     * @param endpoint 端点（urlPattern 或完整 URL）
+     * @param type     能力类型
+     * @return 最近一次该类型的快照；无记录返回 null
+     */
+    public CapturedApiCall getLastApiCallByType(String endpoint, RouteHandleType type) {
+        List<CapturedApiCall> calls = getApiCallsByType(endpoint, type);
+        return calls.isEmpty() ? null : calls.get(calls.size() - 1);
+    }
+
+    /**
+     * ⭐ 按能力类型分组获取全部快照。
+     *
+     * <p>返回值四种 key 恒存在（无记录时为 {@code null}，与 {@link java.util.EnumMap} 语义一致），
+     * 调用方无需判空 Map 本身。
+     *
+     * @return key=能力类型，value=该类型的全部快照（按时间升序）
+     */
+    public Map<RouteHandleType, List<CapturedApiCall>> getAllGroupedByType() {
+        Map<RouteHandleType, List<CapturedApiCall>> grouped = new java.util.EnumMap<>(RouteHandleType.class);
+        for (RouteHandleType t : RouteHandleType.values()) {
+            grouped.put(t, new ArrayList<>());
+        }
+        for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
+            List<CapturedApiCall> list = e.getValue();
+            if (list == null || list.isEmpty()) continue;
+            synchronized (list) {
+                for (CapturedApiCall c : list) {
+                    if (c != null) grouped.get(c.handleType()).add(c);
+                }
+            }
+        }
+        // ⭐ DELAY 来自独立索引
+        List<CapturedApiCall> delayBucket = grouped.get(RouteHandleType.DELAY);
+        for (List<CapturedApiCall> list : delayMarkersByEndpoint.values()) {
+            if (list == null || list.isEmpty()) continue;
+            synchronized (list) {
+                delayBucket.addAll(list);
+            }
+        }
+        for (List<CapturedApiCall> l : grouped.values()) {
+            l.sort(java.util.Comparator.comparingLong(CapturedApiCall::timestamp));
+        }
+        return grouped;
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // ⭐ 性能优化：URL 精确索引 + Predicate 条件等待
     // ═══════════════════════════════════════════════════════════
 
@@ -1325,8 +1571,7 @@ public class ApiCaptureContext {
         if (list != null && !list.isEmpty()) {
             return list.get(list.size() - 1);
         }
-        // ⭐ 向后兼容回退：MONITOR 存储已交给 capture 目录（CapturedApiCall），
-        //    从最近一次调用读取响应体。
+        // ⭐ 向后兼容回退：响应体统一存在 CapturedApiCall 上，从最近一次调用读取。
         CapturedApiCall call = getLastApiCall(endpoint);
         return call != null ? call.responseBody() : null;
     }
@@ -1458,8 +1703,612 @@ public class ApiCaptureContext {
      */
     public void clearStoredResponses() {
         responseStorage.clear();
-        // ⭐ 向后兼容：MONITOR 存储已交给 capture 目录（CapturedApiCall），
+        // ⭐ 向后兼容：响应体统一存在 CapturedApiCall 上，
         //    清空响应存储时同步清空调用存储，保证 getResponseCountForUrl 回退后归零。
         apiCallsPerUrl.clear();
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 原 ApiCapture 生命周期门面 / 断言逻辑（已并入本类，移除独立 ApiCapture 类）
+    // ═══════════════════════════════════════════════════════════════
+
+    // ⭐ 按 Context 隔离管理其下活动的 Page（不再维护 CaptureEngine 字段，旁路采集已移除）
+    private static final ConcurrentHashMap<BrowserContext, Set<Page>> CONTEXT_PAGES =
+            new ConcurrentHashMap<>();
+    /** ⭐ 已注册 Context 关闭钩子的实例集合（幂等注册防重复，Playwright 无移除 listener API） */
+    private static final ConcurrentHashMap<BrowserContext, Boolean> CONTEXT_CLOSE_REGISTERED =
+            new ConcurrentHashMap<>();
+
+    /** 启动 BrowserContext 级采集；已有 Page 需随后 attach。 */
+    public static void start(BrowserContext context) {
+        if (context == null) throw new IllegalArgumentException("BrowserContext must not be null");
+        RouteEngine.startContextEngine(context);
+        CONTEXT_PAGES.computeIfAbsent(context, ignored -> ConcurrentHashMap.newKeySet());
+        ApiCaptureContext.bindCurrentContext(context);
+        registerContextCloseHook(context);
+    }
+
+    /**
+     * ⭐ 注册 Context 级关闭钩子（幂等）：中途 Context 被关闭（登录态切换重建 / 浏览器退出等）时，
+     * 自动停止该 Context 下全部 Page 采集，并清理 {@link ApiCaptureContext} 与 Context 级路由引擎。
+     * 无论从 {@link #start(BrowserContext)} 还是 {@link #start(Page)} 进入都只注册一次。
+     */
+    private static void registerContextCloseHook(BrowserContext context) {
+        if (context == null) return;
+        if (CONTEXT_CLOSE_REGISTERED.putIfAbsent(context, Boolean.TRUE) == null) {
+            context.onClose(ignored -> stop(context));
+        }
+    }
+
+    /** 将 Page 加入所属 BrowserContext 的采集会话。 */
+    public static void attach(Page page) {
+        if (page == null) throw new IllegalArgumentException("Page must not be null");
+        BrowserContext context = page.context();
+        start(context);
+        start(page);
+        CONTEXT_PAGES.get(context).add(page);
+    }
+
+    /** 从 Context 会话中移除 Page，不影响其它 Page。 */
+    public static void detach(Page page) {
+        if (page == null) return;
+        BrowserContext context = null;
+        try { context = page.context(); } catch (Exception ignored) { }
+        if (context != null) {
+            Set<Page> pages = CONTEXT_PAGES.get(context);
+            if (pages != null) {
+                pages.remove(page);
+                if (pages.isEmpty()) CONTEXT_PAGES.remove(context, pages);
+            }
+        }
+        stop(page);
+    }
+
+    /** 停止 Context 下全部 Page 采集。 */
+    public static void stop(BrowserContext context) {
+        if (context == null) return;
+        // ⭐ 与 start(Page)/stop(Page)/stop() 共用 ApiCaptureContext.class 锁，防止并发修改 CONTEXT_PAGES
+        synchronized (ApiCaptureContext.class) {
+            Set<Page> pages = CONTEXT_PAGES.remove(context);
+            if (pages != null) {
+                for (Page page : new ArrayList<>(pages)) stop(page);
+            }
+            ApiCaptureContext.removeContext(context);
+            RouteEngine.stopContextEngine(context);
+            if (ApiCaptureContext.isCurrentContext(context)) {
+                ApiCaptureContext.unbindCurrentContext();
+            }
+            // ⭐ 修复 P0-2：Context 关闭后清理幂等注册标记，避免 BrowserContext 强引用常驻 Map 导致泄漏
+            CONTEXT_CLOSE_REGISTERED.remove(context);
+            // ⭐ 显式清理 RouteRegistry 中该 Context 的残留条目（弱引用 ContextKey 失效后由本调用兜底清除，
+            // 不依赖已移除的 purgeDeadEntries 定时扫描），避免死条目残留导致的内存泄漏。
+            RouteRegistry.clearContext(context);
+        }
+    }
+
+    /** 活动 Context 采集会话数，便于排查泄漏。 */
+    public static int activeContextCount() {
+        return CONTEXT_PAGES.size();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 启动 / 停止
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 快速启动 — 一行代码开启全量 API 采集。
+     *
+     * <p>⭐ 旁路采集已移除：本方法仅绑定当前线程到 Page 所属 Context、登记 Page 到会话、
+     * 注册关闭钩子，真实的响应采集由各 Route Handler 在 route 事件线程内同步完成。
+     *
+     * @param page Playwright Page 实例
+     */
+    public static void start(Page page) {
+        if (page == null) {
+            throw new IllegalArgumentException("Page must not be null");
+        }
+        synchronized (ApiCaptureContext.class) {
+            BrowserContext pageContext = page.context();
+            CONTEXT_PAGES.computeIfAbsent(pageContext, ignored -> ConcurrentHashMap.newKeySet()).add(page);
+            registerContextCloseHook(pageContext);
+            page.onClose(ignored -> detach(page));
+            // ⭐ 将调用线程绑定到该 Page 所属 BrowserContext，使 getCurrent() 指向正确的捕获上下文，
+            //   消除跨用例数据串扰问题。
+            ApiCaptureContext.bindCurrentContext(pageContext);
+            LOGGER.info("[ApiCapture] Started for Page (activePages={})", activePageCount());
+        }
+    }
+
+    /**
+     * 链式启动入口（保留扩展空间）。
+     *
+     * <pre>{@code
+     * ApiCaptureContext.on(page).start();
+     * }</pre>
+     */
+    public static ApiCaptureStart on(Page page) {
+        return new ApiCaptureStart(page);
+    }
+
+    /** 停止采集并释放资源。 */
+    public static void stop() {
+        synchronized (ApiCaptureContext.class) {
+            for (Map.Entry<BrowserContext, Set<Page>> entry : new ArrayList<>(CONTEXT_PAGES.entrySet())) {
+                for (Page page : new ArrayList<>(entry.getValue())) {
+                    stop(page);
+                }
+            }
+            LOGGER.info("[ApiCapture] Stopped all Page capture sessions");
+        }
+    }
+
+    /** 停止并移除指定 Page 的采集会话，不影响同一 Context 的其它 Page。 */
+    public static void stop(Page page) {
+        if (page == null) return;
+        synchronized (ApiCaptureContext.class) {
+            releaseContextIfOrphaned(page);
+            LOGGER.info("[ApiCapture] Stopped Page capture session (activePages={})", activePageCount());
+        }
+    }
+
+    /**
+     * ⭐ 当 Page 所属 BrowserContext 已无其它活动采集会话时，清理该 Context 的
+     * 捕获上下文（BY_CONTEXT 实例）与当前线程绑定，防止跨用例数据串扰与实例泄漏。
+     */
+    private static void releaseContextIfOrphaned(Page page) {
+        BrowserContext pageContext;
+        try {
+            pageContext = page.context();
+        } catch (Exception e) {
+            return;
+        }
+        if (pageContext == null) return;
+        // 仍存在同 Context 的活动采集会话 → 保留 Context 级绑定
+        for (Map.Entry<BrowserContext, Set<Page>> entry : CONTEXT_PAGES.entrySet()) {
+            if (entry.getKey() == pageContext) continue;
+            for (Page other : entry.getValue()) {
+                try {
+                    if (other.context() == pageContext) return;
+                } catch (Exception ignored) {
+                    // 其它 Page 已关闭，忽略
+                }
+            }
+        }
+        Set<Page> pages = CONTEXT_PAGES.get(pageContext);
+        if (pages != null) {
+            pages.remove(page);
+            if (pages.isEmpty()) {
+                CONTEXT_PAGES.remove(pageContext, pages);
+            }
+        }
+        ApiCaptureContext.removeContext(pageContext);
+        if (ApiCaptureContext.isCurrentContext(pageContext)) {
+            ApiCaptureContext.unbindCurrentContext();
+        }
+    }
+
+    /** 当前活动 Page 采集会话数。 */
+    public static int activePageCount() {
+        int total = 0;
+        for (Set<Page> pages : CONTEXT_PAGES.values()) {
+            total += pages.size();
+        }
+        return total;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 断言
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 创建断言器 — 按 URL 模式匹配已采集的 API 调用。
+     *
+     * <p>支持 Ant 风格通配符匹配：
+     * <ul>
+     *   <li>{@code /api/users/*} — 匹配单层路径</li>
+     *   <li>{@code /api/**} — 匹配任意层级路径</li>
+     * </ul>
+     *
+     * <pre>{@code
+     * ApiCaptureContext.assertThat("/api/user/list").statusIs(200);
+     * ApiCaptureContext.assertThat("/api/user/detail").jsonPath("$.code", 0);
+     * }</pre>
+     *
+     * @param urlPattern URL 模式（支持 Ant glob 通配符）
+     * @return 断言器
+     */
+    public static ApiAssertion assertThat(String urlPattern) {
+        return new ApiAssertion(urlPattern);
+    }
+
+
+
+    /** Context 隔离版本：等待指定 BrowserContext 的 API 调用。 */
+    public static CapturedApiCall waitForApi(BrowserContext context,
+                                             Predicate<CapturedApiCall> predicate,
+                                             long timeoutMs) {
+        return ApiCaptureContext.forContext(context).waitForApi(predicate, timeoutMs);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 查询
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 获取所有已采集的 API 调用。
+     *
+     * <p>⭐ P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，回退到
+     * {@code CURRENT_CONTEXT} 会导致跨测试数据串扰。此时立即失败
+     * （fail-fast）而非静默返回错误数据，强制调用方改用 {@link #getAll(BrowserContext)}。
+     *
+     * @return 所有 API 调用（按 endpoint 分组）
+     */
+    public static Map<String, List<CapturedApiCall>> getAll() {
+        // 修复 P1-12：size() 检查与 getCurrent() 必须在同一把类锁内完成，否则并发 start(page)
+        // 可能使 size 从 1 变为 2 发生在检查之后，导致读到错误的跨 context 数据（TOCTOU 竞态）。
+        synchronized (ApiCaptureContext.class) {
+            if (activePageCount() > 1) {
+                throw new IllegalStateException(
+                        "ApiCapture.getAll() detected multiple active Pages (" + activePageCount()
+                                + "). Use getAll(Page) / getAll(BrowserContext) to avoid cross-test data contamination.");
+            }
+            return ApiCaptureContext.getCurrent().getAllApiCalls();
+        }
+    }
+
+    /** Context 隔离版本：获取指定 BrowserContext 的全部 API 调用。 */
+    public static Map<String, List<CapturedApiCall>> getAll(BrowserContext context) {
+        return ApiCaptureContext.forContext(context).getAllApiCalls();
+    }
+
+    /**
+     * 获取指定 endpoint 的最近一次 API 调用。
+     *
+     * @param endpoint 请求端点（路径+查询，不含 host）
+     * @return 最近一次调用，未找到返回 null
+     */
+    public static CapturedApiCall getLast(String endpoint) {
+        return ApiCaptureContext.getCurrent().getLastApiCall(endpoint);
+    }
+
+    /** Context 隔离版本：获取指定 BrowserContext 的最近一次 API 调用。 */
+    public static CapturedApiCall getLast(BrowserContext context, String endpoint) {
+        return ApiCaptureContext.forContext(context).getLastApiCall(endpoint);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 按能力类型查询（MOCK / MODIFY / DELAY / MONITOR）
+    // ═══════════════════════════════════════════════════════════
+
+
+
+    /** Context 隔离版本：按能力类型获取指定 BrowserContext 的全部快照。 */
+    public static List<CapturedApiCall> getAllByType(BrowserContext context, RouteHandleType type) {
+        return ApiCaptureContext.forContext(context).getAllByType(type);
+    }
+
+
+
+    /** ⭐ 按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
+    public static CapturedApiCall getLastByType(String endpoint, RouteHandleType type) {
+        return ApiCaptureContext.getCurrent().getLastApiCallByType(endpoint, type);
+    }
+
+
+
+    // ═══════════════════════════════════════════════════════════
+    // 内部：链式启动
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 链式启动辅助类。
+     */
+    public static class ApiCaptureStart {
+        private final Page page;
+
+        ApiCaptureStart(Page page) {
+            this.page = page;
+        }
+
+        /**
+         * 启动采集。
+         */
+        public void start() {
+            ApiCaptureContext.start(page);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 内部：断言器
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * API 断言器 — 流式 API 对采集结果进行断言。
+     *
+     * <p>支持 status、jsonPath、bodyContains、isMock 断言。
+     * 断言失败时自动保留完整快照并记录到测试报告。
+     */
+    public static class ApiAssertion {
+
+        private final String urlPattern;
+        private final Pattern regex;
+        /** ⭐ P1: 断言首次未命中时，等待采集管道在途请求闭合的超时上限 */
+        private static final long CAPTURE_AWAIT_TIMEOUT_MS = 1_500L;
+
+        ApiAssertion(String urlPattern) {
+            this.urlPattern = urlPattern;
+            this.regex = globToRegex(urlPattern);
+        }
+
+        /**
+         * 断言 HTTP 状态码。
+         *
+         * @param expectedStatus 期望的状态码
+         * @return 当前断言器（链式调用）
+         * @throws AssertionError 如果断言失败
+         */
+        public ApiAssertion statusIs(int expectedStatus) {
+            CapturedApiCall call = findCall();
+            if (call == null) {
+                String msg = "No API call matched pattern '" + urlPattern + "'";
+                recordFailure(msg);
+                throw new AssertionError(msg);
+            }
+            if (call.statusCode() != expectedStatus) {
+                String msg = String.format("Expected status %d for '%s', but got %d",
+                        expectedStatus, urlPattern, call.statusCode());
+                ApiCaptureContext.getCurrent().recordAssertionFailure(
+                        call.requestUrl(), "STATUS",
+                        String.valueOf(expectedStatus), String.valueOf(call.statusCode()),
+                        "pattern=" + urlPattern);
+                throw new AssertionError(msg);
+            }
+            return this;
+        }
+
+        /**
+         * 断言 JSONPath 表达式的值。
+         *
+         * @param jsonPath JSONPath 表达式
+         * @param expectedValue 期望值
+         * @return 当前断言器（链式调用）
+         * @throws AssertionError 如果断言失败
+         */
+        public ApiAssertion jsonPath(String jsonPath, Object expectedValue) {
+            CapturedApiCall call = findCall();
+            if (call == null) {
+                String msg = "No API call matched pattern '" + urlPattern + "'";
+                recordFailure(msg);
+                throw new AssertionError(msg);
+            }
+            Object actual = call.json(jsonPath);
+            if (actual == null || !actual.equals(expectedValue)) {
+                String msg = String.format("JSONPath '%s' for '%s': expected '%s', but got '%s'",
+                        jsonPath, urlPattern, expectedValue, actual);
+                ApiCaptureContext.getCurrent().recordAssertionFailure(
+                        call.requestUrl(), "JSONPATH",
+                        String.valueOf(expectedValue), String.valueOf(actual),
+                        "jsonPath=" + jsonPath + ", pattern=" + urlPattern);
+                throw new AssertionError(msg);
+            }
+            return this;
+        }
+
+        /**
+         * 断言响应体包含指定字符串。
+         *
+         * @param content 期望包含的字符串
+         * @return 当前断言器（链式调用）
+         * @throws AssertionError 如果断言失败
+         */
+        public ApiAssertion bodyContains(String content) {
+            CapturedApiCall call = findCall();
+            if (call == null) {
+                String msg = "No API call matched pattern '" + urlPattern + "'";
+                recordFailure(msg);
+                throw new AssertionError(msg);
+            }
+            String body = call.responseBody();
+            if (body == null || !body.contains(content)) {
+                String msg = String.format("Response body for '%s' does not contain '%s'",
+                        urlPattern, content);
+                ApiCaptureContext.getCurrent().recordAssertionFailure(
+                        call.requestUrl(), "BODY_CONTAINS",
+                        content, body != null ? body.substring(0, Math.min(100, body.length())) : "null",
+                        "pattern=" + urlPattern);
+                throw new AssertionError(msg);
+            }
+            return this;
+        }
+
+        /**
+         * 断言这是一个 Mock 响应。
+         */
+        public ApiAssertion isMock() {
+            CapturedApiCall call = findCall();
+            if (call == null) {
+                String msg = "No API call matched pattern '" + urlPattern + "'";
+                recordFailure(msg);
+                throw new AssertionError(msg);
+            }
+            if (!call.fromMock()) {
+                String msg = String.format("Expected '%s' to be a mock response, but it was not",
+                        urlPattern);
+                ApiCaptureContext.getCurrent().recordAssertionFailure(
+                        call.requestUrl(), "IS_MOCK",
+                        "true", "false", "pattern=" + urlPattern);
+                throw new AssertionError(msg);
+            }
+            return this;
+        }
+
+        /**
+         * 获取匹配的 API 调用（不断言）。
+         */
+        public CapturedApiCall get() {
+            return findCall();
+        }
+
+        // ── 内部 ──
+
+        private CapturedApiCall findCall() {
+            ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+
+            // 1/1b. 快路径：endpoint key + 完整 URL 索引双通道精确匹配
+            CapturedApiCall call = fastExactMatch(ctx);
+            if (call != null) return call;
+
+            // ⭐ P1: 竞态兜底 — 等待采集管道在途请求闭合后再重试。
+            awaitCapturePipeline(ctx);
+
+            // ⭐ P1.2: 投递式等待 — awaitCompletion 可能在 captureInFlight==0
+            //   （事件尚未到达 merger、REQUEST 还没计数）时立即返回；若此时只扫一次就放弃，
+            //   调用会在随后几毫秒入库但断言已失败。先补扫一次已入库调用；仍未命中则
+            //   注册一次性谓词，storeApiCall 入库时直接评估并精确完成 future。
+            call = fastExactMatch(ctx);
+            if (call != null) return call;
+
+            // 2. 通配符匹配：仅遍历当前步骤窗口内的调用
+            CapturedApiCall best = wildcardScan(ctx);
+            if (best != null) return best;
+
+            long stepStart = ctx.getStepStartTimestamp();
+            CompletableFuture<CapturedApiCall> waiter =
+                    ctx.registerApiCallWaiter(c -> matchesPattern(c, stepStart));
+            // 关闭"注册前入库 → 投递丢失"竞态：调用可能在注册与评估之间已入库，
+            // 注册后立即补扫一次（单次检查，非轮询），命中即返回。
+            CapturedApiCall late = fastExactMatch(ctx);
+            if (late == null) late = wildcardScan(ctx);
+            if (late != null) {
+                ctx.unregisterApiCallWaiter(waiter);
+                return late;
+            }
+            try {
+                return waiter.get(CAPTURE_AWAIT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            } catch (TimeoutException | ExecutionException e) {
+                return null;
+            } finally {
+                ctx.unregisterApiCallWaiter(waiter);
+            }
+        }
+
+        /**
+         * ⭐ P1.2: 投递式匹配谓词 — 与 fastExactMatch/wildcardScan 同源：
+         * endpoint key（path-only）与完整 URL 双通道 + 步骤窗口。
+         */
+        private boolean matchesPattern(CapturedApiCall c, long stepStart) {
+            if (c == null) return false;
+            if (stepStart != 0L && c.timestamp() < stepStart) return false;
+            String endpoint = c.endpoint();
+            String url = c.requestUrl();
+            if (urlPattern.equals(endpoint) || urlPattern.equals(url)) return true;
+            if (endpoint != null && regex.matcher(endpoint).matches()) return true;
+            return url != null && regex.matcher(url).matches();
+        }
+
+        /** ⭐ 快路径精确匹配：endpoint key（path-only）+ 完整 URL 索引双通道（限定步骤窗口）。 */
+        private CapturedApiCall fastExactMatch(ApiCaptureContext ctx) {
+            // 1. 精确匹配（限定在当前步骤窗口内，R4）— 按 endpoint key（path-only）检索
+            CapturedApiCall call = ctx.getLastApiCallSinceStepStart(urlPattern);
+            if (call != null) return call;
+
+            // 1b. ⭐ P2: 完整 URL 精确索引（O(1)，apiCallsByUrl）——pattern 传完整 URL 时
+            //     endpoint key 无法命中（存储键为 path-only），这里补一次 URL 索引查询。
+            if (!containsGlobWildcard(urlPattern)) {
+                CapturedApiCall byUrl = lastSinceStepStart(ctx.getCallsByUrl(urlPattern), ctx);
+                if (byUrl != null) return byUrl;
+            }
+            return null;
+        }
+
+        /** ⭐ 步骤 2：通配符全量扫描（遍历每个 endpoint 的全部调用而非仅最后一条）。 */
+        private CapturedApiCall wildcardScan(ApiCaptureContext ctx) {
+            Map<String, List<CapturedApiCall>> all = ctx.getAllApiCalls();
+            CapturedApiCall best = null;
+            long bestTimestamp = 0;
+            long stepStart = ctx.getStepStartTimestamp();
+            for (Map.Entry<String, List<CapturedApiCall>> e : all.entrySet()) {
+                List<CapturedApiCall> calls = e.getValue();
+                if (calls == null || calls.isEmpty()) continue;
+                for (CapturedApiCall c : calls) {
+                    if (c == null) continue;
+                    // 仅考虑本步骤窗口内的调用
+                    if (stepStart != 0L && c.timestamp() < stepStart) continue;
+                    if (!regex.matcher(e.getKey()).matches()
+                            && !regex.matcher(c.requestUrl()).matches()) {
+                        continue;
+                    }
+                    if (c.timestamp() > bestTimestamp) {
+                        best = c;
+                        bestTimestamp = c.timestamp();
+                    }
+                }
+            }
+            return best;
+        }
+
+        /** ⭐ P2: 取列表内步骤窗口中的最近一条调用（列表按时间追加，倒序查找）。 */
+        private CapturedApiCall lastSinceStepStart(List<CapturedApiCall> calls, ApiCaptureContext ctx) {
+            if (calls == null || calls.isEmpty()) return null;
+            long stepStart = ctx == null ? 0L : ctx.getStepStartTimestamp();
+            for (int i = calls.size() - 1; i >= 0; i--) {
+                CapturedApiCall c = calls.get(i);
+                if (c == null) continue;
+                if (stepStart != 0L && c.timestamp() < stepStart) continue;
+                return c;
+            }
+            return null;
+        }
+
+        /** ⭐ P1: 有限等待采集管道在途请求闭合，不抛出中断异常。 */
+        private void awaitCapturePipeline(ApiCaptureContext ctx) {
+            if (ctx == null) return;
+            try {
+                ctx.awaitCompletion(CAPTURE_AWAIT_TIMEOUT_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private static boolean containsGlobWildcard(String s) {
+            return s != null && s.indexOf('*') >= 0;
+        }
+
+        private void recordFailure(String msg) {
+            ApiCaptureContext.getCurrent().recordAssertionFailure(
+                    urlPattern, "NO_MATCH", "ANY", "NONE", msg);
+        }
+
+        /**
+         * 将 Ant glob 模式转换为正则。
+         */
+        private static Pattern globToRegex(String glob) {
+            StringBuilder sb = new StringBuilder("^");
+            int len = glob.length();
+            int i = 0;
+            while (i < len) {
+                char c = glob.charAt(i);
+                if (c == '*' && i + 1 < len && glob.charAt(i + 1) == '*') {
+                    sb.append(".*");
+                    i += 2;
+                } else if (c == '*') {
+                    sb.append("[^/]*");
+                    i++;
+                } else {
+                    if (c == '.' || c == '+' || c == '?' || c == '(' || c == ')'
+                            || c == '[' || c == ']' || c == '{' || c == '}'
+                            || c == '\\' || c == '^' || c == '$' || c == '|') {
+                        sb.append('\\');
+                    }
+                    sb.append(c);
+                    i++;
+                }
+            }
+            sb.append('$');
+            return Pattern.compile(sb.toString());
+        }
     }
 }

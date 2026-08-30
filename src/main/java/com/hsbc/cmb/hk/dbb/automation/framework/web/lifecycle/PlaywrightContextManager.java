@@ -125,6 +125,7 @@ class PlaywrightContextManager {
             try {
                 // ⭐ 先释放路由层资源：停止 MonitorSession 定时器、unroute、清理注册表与防重门控，
                 //    避免调度器线程池持有已销毁 context 引用导致内存泄漏 / 对已关闭 context 无效调度。
+                //    统一走 RouteLifecycle 生命周期钩子（含关闭前泄漏诊断）。
                 try {
                     RouteRegistry.clearContext(context);
                 } catch (Exception re) {
@@ -132,11 +133,25 @@ class PlaywrightContextManager {
                 }
                 // 停止 tracing（以框架配置为准，避免与系统环境变量不一致导致误判）
                 if (FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED)) {
+                    // ⭐ 修复 A-2：tracing().stop() 会写磁盘 trace 文件，无超时且可能长时间阻塞
+                    //    （磁盘 IO 卡顿 / 大 trace）。外层 closeContext 在 PlaywrightManager.CONTEXT_LOCK
+                    //    同步块内调用，阻塞会拖住所有线程的 context 关闭。
+                    //    故改为带超时的异步执行：超时即放弃写 trace，保证 context.close() 不被拖累。
                     try {
                         String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
-                        context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath)));
+                        java.util.concurrent.Future<Void> traceTask = java.util.concurrent.CompletableFuture.runAsync(() ->
+                                context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath))));
+                        try {
+                            traceTask.get(15, java.util.concurrent.TimeUnit.SECONDS);
+                        } catch (java.util.concurrent.TimeoutException toe) {
+                            traceTask.cancel(true);
+                            LoggingConfigUtil.logWarnIfVerbose(logger,
+                                    "Tracing stop timed out (15s), skipping trace to avoid blocking context close");
+                        } catch (Exception te) {
+                            // tracing 未启动或已停止时 stop 会抛异常，忽略，不阻塞关闭流程
+                            LoggingConfigUtil.logDebugIfVerbose(logger, "Tracing stop skipped on context close: {}", te.getMessage());
+                        }
                     } catch (Exception te) {
-                        // tracing 未启动或已停止时 stop 会抛异常，忽略，不阻塞关闭流程
                         LoggingConfigUtil.logDebugIfVerbose(logger, "Tracing stop skipped on context close: {}", te.getMessage());
                     }
                 }
@@ -163,6 +178,7 @@ class PlaywrightContextManager {
                 if (!page.isClosed()) {
                     // ⭐ 先释放该 Page 上的路由层资源（停止 MonitorSession 定时器、清理注册表），
                     //    再关闭 Page，避免调度器线程池持有已销毁 page 引用导致内存泄漏。
+                    //    统一走 RouteRegistry.clearContext 释放。
                     try {
                         RouteRegistry.clearContext(page);
                     } catch (Exception re) {

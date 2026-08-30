@@ -4,10 +4,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ApiCapture;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
@@ -181,7 +183,7 @@ public class PlaywrightListener implements StepListener {
         apiFailureAlreadyHandled.set(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
-        ApiCapture.stop();
+        ApiCaptureContext.stop();
 
         // ⭐⭐⭐ 阶段识别：discovery 阶段跳过 Playwright 资源初始化
         if (!discoveryPhaseCompleted) {
@@ -258,7 +260,7 @@ public class PlaywrightListener implements StepListener {
         } finally {
             // ⭐ 安全清理：scenario 结束时立即停止采集引擎，而非等到下一个 scenario 开始
             //    避免 scenario 被中断（断言失败/超时）后引擎仍在运行
-            try { ApiCapture.stop(); } catch (Exception ignored) { }
+            try { ApiCaptureContext.stop(); } catch (Exception ignored) { }
 
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
@@ -666,22 +668,14 @@ public class PlaywrightListener implements StepListener {
      */
     private void cleanupRouteRegistryForCurrentThread() {
         try {
-            Object page = PlaywrightManager.getPage();
-            if (page != null) {
-                RouteRegistry.clearContext(page);
-            }
+            Page page = PlaywrightManager.getPage();
+            BrowserContext context = PlaywrightManager.getContext();
+            // ⭐ 统一走 RouteRegistry 释放路由层资源（停止 MonitorSession、unroute、清理注册表与防重门控）
+            RouteRegistry.clearContext(page);
+            RouteRegistry.clearContext(context);
         } catch (Exception e) {
-            logger.debug("RouteRegistry cleanup for Page skipped: {}", e.getMessage());
+            logger.debug("RouteRegistry cleanup for current thread skipped: {}", e.getMessage());
         }
-        try {
-            Object context = PlaywrightManager.getContext();
-            if (context != null) {
-                RouteRegistry.clearContext(context);
-            }
-        } catch (Exception e) {
-            logger.debug("RouteRegistry cleanup for BrowserContext skipped: {}", e.getMessage());
-        }
-        // RouteEngine.clearDispatchedRoutes() 已由 RouteRegistry.clearContext() 内部调用，无需重复
     }
 
     private void cleanupThreadLocals() {
@@ -963,7 +957,7 @@ public class PlaywrightListener implements StepListener {
         apiFailureAlreadyHandled.set(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
-        ApiCapture.stop();
+        ApiCaptureContext.stop();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -996,7 +990,7 @@ public class PlaywrightListener implements StepListener {
         apiFailureAlreadyHandled.set(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
-        ApiCapture.stop();
+        ApiCaptureContext.stop();
 
         try {
             FrameworkCore.getInstance().beforeTest();
@@ -1046,7 +1040,7 @@ public class PlaywrightListener implements StepListener {
             BasePage.clearCurrentPage();
 
             // ⭐⭐⭐ 采集管道清理：确保 scenario 结束时采集引擎释放
-            ApiCapture.stop();
+            ApiCaptureContext.stop();
         } catch (Exception e) {
             // ⭐ testFinished 属收尾回调：清理阶段异常不应上抛中断 Serenity 收尾流程。
             // 仅记录日志 + 兜底清空防重门控，ThreadLocal 与 API 上下文清理交由 finally 保证。
@@ -1142,7 +1136,7 @@ public class PlaywrightListener implements StepListener {
                 PlaywrightManager.cleanupForScenario();
                 BasePage.clearCurrentPage();
                 // ⭐⭐⭐ 采集管道清理：确保 scenario 结束时采集引擎释放
-                ApiCapture.stop();
+                ApiCaptureContext.stop();
             } catch (Exception e) {
                 logger.error("Failed to clean up Playwright resources after test: {}", e.getMessage());
             }

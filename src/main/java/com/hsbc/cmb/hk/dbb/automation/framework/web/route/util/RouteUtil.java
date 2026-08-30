@@ -4,7 +4,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.Page;
-import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import org.slf4j.Logger;
@@ -15,8 +14,6 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * 路由匹配工具类 — 根据 Request 属性判断是否匹配 RouteRule 中定义的请求条件。
@@ -55,26 +52,6 @@ public final class RouteUtil {
     public static final String RT_WEBSOCKET = "websocket";
     public static final String RT_MANIFEST = "manifest";
     public static final String RT_OTHER = "other";
-
-    /** 默认 API 资源类型（不拦截静态资源） */
-    private static final Set<String> DEFAULT_API_TYPES = new HashSet<>(
-            Arrays.asList(RT_XHR, RT_FETCH));
-
-    /** 所有合法资源类型名称 */
-    private static final Set<String> VALID_RESOURCE_TYPES = Collections.unmodifiableSet(new HashSet<>(
-            Arrays.asList(RT_XHR, RT_FETCH, RT_SCRIPT, RT_STYLESHEET,
-                    RT_IMAGE, RT_FONT, RT_MEDIA, RT_DOCUMENT,
-                    RT_WEBSOCKET, RT_MANIFEST, RT_OTHER)));
-
-    // ═══════════════════════════════════════════════════════════════
-    // Regex 缓存（避免高并发下重复编译 Pattern）
-    // ═══════════════════════════════════════════════════════════════
-
-    /** 编译后 Pattern 缓存，容量上限 200（超出后清空重建，防御无限增长） */
-    private static final ConcurrentHashMap<String, Pattern> PATTERN_CACHE = new ConcurrentHashMap<>();
-
-    /** Pattern 缓存容量上限 */
-    private static final int PATTERN_CACHE_MAX = 200;
 
     // ═══════════════════════════════════════════════════════════════
     // JsonPath 编译缓存（⭐ P2-15：单一共享，替代 ModifyHandler / MonitorHandler /
@@ -166,294 +143,34 @@ public final class RouteUtil {
     /**
      * 检查请求是否匹配规则中定义的所有请求条件。
      *
+     * <p>⭐ Phase 2（enterprise-api-interception-design-final.md）：匹配逻辑已统一收敛到
+     * {@link ApiMatcher}，本方法作为兼容入口委托给 {@link ApiMatcher#matchesRequest(Route)}，
+     * 保证 MONITOR / MODIFY / MOCK / DELAY 四种能力共用同一套匹配实现。
+     *
      * @param route Playwright Route 对象
      * @param rule  路由规则
      * @return true = 匹配所有条件，应该处理；false = 不匹配，跳过
      */
     public static boolean requestMatches(Route route, RouteRule rule) {
-        Request req = route.request();
-
-        LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                "[RouteUtil] requestMatches START: pattern='{}', url='{}', method={}, resourceType='{}'",
-                rule.getUrlPattern(), req.url(), req.method(), req.resourceType());
-
-        try {
-            // ── 1. Resource Type ────────────────────────────────────
-            if (!matchResourceType(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at ResourceType: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 2. HTTP Method ──────────────────────────────────────
-            if (!matchMethod(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Method: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 3. Request Headers ──────────────────────────────────
-            if (!matchHeaders(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Headers: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 4. Query Parameters ────────────────────────────────
-            if (!matchQueryParams(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at QueryParams: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 5. Content-Type ────────────────────────────────────
-            if (!matchContentType(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at ContentType: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 6. Body Regex ──────────────────────────────────────
-            if (!matchBodyRegex(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at BodyRegex: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 7. Referrer ─────────────────────────────────────────
-            if (!matchReferrer(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Referrer: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 8. Origin ───────────────────────────────────────────
-            if (!matchOrigin(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Origin: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 9. Frame ────────────────────────────────────────────
-            if (!matchFrame(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Frame: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            // ── 10. Navigation ──────────────────────────────────────
-            if (!matchNavigation(req, rule)) {
-                LoggingConfigUtil.logTraceIfVerbose(LOGGER,
-                        "[RouteUtil] requestMatches FAIL at Navigation: pattern='{}'", rule.getUrlPattern());
-                return false;
-            }
-
-            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteUtil] requestMatches ALL PASSED: pattern='{}', url='{}'",
-                    rule.getUrlPattern(), req.url());
-            return true;
-        } catch (Exception e) {
-            LOGGER.warn("[RouteUtil] Error during request matching for pattern '{}': {}",
-                    rule.getUrlPattern(), e.getMessage());
-            return false;  // 异常时保守跳过，避免误匹配
-        }
+        return new ApiMatcher(rule).matchesRequest(route);
     }
 
     // ═══════════════════════════════════════════════════════════════
     // 各维度匹配方法
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * Resource Type 匹配。
-     * <p>使用 {@link #RT_XHR} 等常量代替魔法字符串。
-     * <p>规则：如果 rule 未设置 resourceTypes 且 onlyApiCall=true，
-     * 则只匹配 xhr/fetch 类型。如果 rule 显式设置了 resourceTypes，按设置匹配。
-     */
-    private static boolean matchResourceType(Request req, RouteRule rule) {
-        Set<String> allowedTypes = rule.getResourceTypeSet();
-
-        // 配置了 resourceTypes 时检查是否全部合法（仅日志警告，不阻断）
-        if (allowedTypes != null && !allowedTypes.isEmpty()) {
-            for (String t : allowedTypes) {
-                if (!VALID_RESOURCE_TYPES.contains(t)) {
-                    LOGGER.warn("[RouteUtil] Unknown resource type '{}' in rule, valid types: {}",
-                            t, VALID_RESOURCE_TYPES);
-                }
-            }
-        }
-
-        // 未配置任何资源类型过滤 + 默认 API only → 只匹配 xhr/fetch
-        if (allowedTypes == null && rule.isOnlyApiCall()) {
-            allowedTypes = DEFAULT_API_TYPES;
-        }
-
-        // 未配置且不限制 → 匹配所有类型
-        if (allowedTypes == null || allowedTypes.isEmpty()) {
-            return true;
-        }
-
-        String actualType = req.resourceType() != null
-                ? req.resourceType().toLowerCase() : "";
-        boolean match = allowedTypes.contains(actualType);
-        if (!match) {
-            LOGGER.debug("[RouteUtil] Resource type mismatch: expected={}, actual={}, url={}",
-                    allowedTypes, actualType, req.url());
-        }
-        return match;
-    }
-
-    /**
-     * HTTP Method 匹配。
-     */
-    private static boolean matchMethod(Request req, RouteRule rule) {
-        String expectedMethod = rule.getMatchMethod();
-        if (expectedMethod == null || expectedMethod.trim().isEmpty()) {
-            return true;  // 未设置则不限制
-        }
-        boolean match = expectedMethod.equalsIgnoreCase(req.method());
-        if (!match) {
-            LOGGER.debug("[RouteUtil] Method mismatch: expected={}, actual={}, url={}",
-                    expectedMethod, req.method(), req.url());
-        }
-        return match;
-    }
-
-    /**
-     * Header 精确匹配。所有 rule.matchHeaders 中的 key-value 必须完全匹配。
-     */
-    private static boolean matchHeaders(Request req, RouteRule rule) {
-        Map<String, String> requiredHeaders = rule.getMatchHeaders();
-        if (requiredHeaders == null || requiredHeaders.isEmpty()) {
-            return true;
-        }
-        Map<String, String> actualHeaders = req.headers();
-        for (Map.Entry<String, String> entry : requiredHeaders.entrySet()) {
-            String key = entry.getKey();
-            String expected = entry.getValue();
-            String actual = actualHeaders.getOrDefault(key, "");
-            if (!expected.equals(actual)) {
-                LOGGER.debug("[RouteUtil] Header mismatch: {} expected='{}', actual='{}', url={}",
-                        key, expected, actual, req.url());
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Query Parameter 精确匹配。
-     */
-    private static boolean matchQueryParams(Request req, RouteRule rule) {
-        Map<String, String> requiredQuery = rule.getMatchQuery();
-        if (requiredQuery == null || requiredQuery.isEmpty()) {
-            return true;
-        }
-        Map<String, String> actualQuery = parseQueryParams(req.url());
-        for (Map.Entry<String, String> entry : requiredQuery.entrySet()) {
-            String key = entry.getKey();
-            String expected = entry.getValue();
-            String actual = actualQuery.getOrDefault(key, "");
-            if (!expected.equals(actual)) {
-                LOGGER.debug("[RouteUtil] Query mismatch: {} expected='{}', actual='{}', url={}",
-                        key, expected, actual, req.url());
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Content-Type 匹配（包含匹配，非精确匹配）。
-     * <p>如 matchContentType="json" 可匹配 "application/json" 和 "application/json;charset=UTF-8"。
-     */
-    private static boolean matchContentType(Request req, RouteRule rule) {
-        String expectedCt = rule.getMatchContentType();
-        if (expectedCt == null || expectedCt.trim().isEmpty()) {
-            return true;
-        }
-        Map<String, String> headers = req.headers();
-        String actualCt = "";
-        for (Map.Entry<String, String> entry : headers.entrySet()) {
-            if ("content-type".equalsIgnoreCase(entry.getKey())) {
-                actualCt = entry.getValue().toLowerCase();
-                break;
-            }
-        }
-        boolean match = actualCt.contains(expectedCt.toLowerCase());
-        if (!match) {
-            LOGGER.debug("[RouteUtil] Content-Type mismatch: expected contains='{}', actual='{}', url={}",
-                    expectedCt, actualCt, req.url());
-        }
-        return match;
-    }
-
     // ═══════════════════════════════════════════════════════════════
-    // ⭐ S1: ReDoS 防护 — 正则表达式长度上限（拒绝指数回溯恶意正则）
+    // ⭐ Phase 2: 请求匹配逻辑已统一收敛到 ApiMatcher（见 requestMatches 委托）。
+    //   原 matchResourceType / matchMethod / matchHeaders / matchQueryParams /
+    //   matchContentType / matchBodyRegex / matchReferrer / matchOrigin /
+    //   matchFrame / matchNavigation 十个私有方法已迁移至 ApiMatcher，此处删除避免死代码。
     // ═══════════════════════════════════════════════════════════════
-    private static final int MAX_REGEX_LENGTH = 1000;
-    private static final int MAX_BODY_LENGTH_FOR_REGEX = 500_000; // 500KB
-
-    /**
-     * Request Body Regex 匹配。
-     * <p>使用预编译 Pattern 缓存，避免高并发下重复编译开销。
-     * <p>⭐ S1: ReDoS 防护 — 正则超长拒绝编译，body 过大拒绝匹配。
-     */
-    private static boolean matchBodyRegex(Request req, RouteRule rule) {
-        String regex = rule.getMatchBodyRegex();
-        if (regex == null || regex.trim().isEmpty()) {
-            return true;
-        }
-        // ⭐ S1: ReDoS — 拒绝超长正则（指数回溯风险）
-        if (regex.length() > MAX_REGEX_LENGTH) {
-            LOGGER.warn("[RouteUtil] Body regex too long ({} chars), rejected for ReDoS protection: pattern='{}'",
-                    regex.length(), regex);
-            return false;
-        }
-        byte[] postData = req.postDataBuffer();
-        if (postData == null || postData.length == 0) {
-            return false;
-        }
-        // ⭐ S1: ReDoS — body 过大时跳过正则匹配（防止 CPU 长时间占用）
-        if (postData.length > MAX_BODY_LENGTH_FOR_REGEX) {
-            LOGGER.debug("[RouteUtil] Body too large for regex matching ({} bytes), skipping", postData.length);
-            return false;
-        }
-        try {
-            String body = new String(postData, StandardCharsets.UTF_8);
-            Pattern pattern = getOrCompilePattern(regex);
-            boolean match = pattern.matcher(body).matches();
-            if (!match) {
-                LOGGER.debug("[RouteUtil] Body regex mismatch: pattern='{}', url={}", regex, req.url());
-            }
-            return match;
-        } catch (Exception e) {
-            LOGGER.warn("[RouteUtil] Body regex error: pattern='{}', error={}", regex, e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * 从缓存获取或编译一个正则表达式 Pattern。
-     * <p>超限时使用伪 LRU 淘汰 ~25% 条目（避免全量清空导致命中率归零）。
-     *
-     * @param regex 正则表达式字符串
-     * @return 编译后的 Pattern
-     * @throws PatternSyntaxException 正则语法错误
-     */
-    private static Pattern getOrCompilePattern(String regex) {
-        // ⭐ P2: 伪 LRU 淘汰替代全量 clear()，避免缓存命中率瞬间归零
-        if (PATTERN_CACHE.size() >= PATTERN_CACHE_MAX) {
-            LOGGER.debug("[RouteUtil] Pattern cache reached max ({}), evicting oldest ~25%", PATTERN_CACHE_MAX);
-            evictOldestQuarter(PATTERN_CACHE);
-        }
-        return PATTERN_CACHE.computeIfAbsent(regex, Pattern::compile);
-    }
 
     /**
      * ⭐ 统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorAssertionEvaluator /
      * ApiCaptureContext 同源策略）。避免 entrySet().iterator().remove() 在结构变更时抛
      * IllegalStateException，也避免简单 map.clear() 使缓存命中率瞬间归零。
-     * 供 RouteEngine / PassiveMonitorRegistry / 各 Handler 的 JSONPATH_CACHE 等复用。
+     * 供 RouteEngine / ApiCaptureContext / 各 Handler 的 JSONPATH_CACHE 等复用。
      */
     public static void evictOldestQuarter(Map<?, ?> map) {
         if (map == null || map.isEmpty()) return;
@@ -465,17 +182,6 @@ public final class RouteUtil {
             map.remove(key);
             removed++;
         }
-    }
-
-    /**
-     * 从缓存获取或编译一个正则表达式 Pattern（公开入口，供 RouteEngine.globMatches /
-     * PassiveMonitorRegistry 复用同一份 PATTERN_CACHE，避免各自重复编译）。
-     *
-     * @param regex 正则表达式字符串（作为缓存 key）
-     * @return 编译后的 Pattern
-     */
-    public static Pattern compileCached(String regex) {
-        return getOrCompilePattern(regex);
     }
 
     /**
@@ -500,99 +206,6 @@ public final class RouteUtil {
     /** 获取 JsonPath 缓存条目数（用于监控） */
     public static int getJsonPathCacheSize() {
         return JSONPATH_CACHE.size();
-    }
-
-    /**
-     * Referrer 包含匹配。
-     */
-    private static boolean matchReferrer(Request req, RouteRule rule) {
-        String expected = rule.getMatchReferrer();
-        if (expected == null || expected.trim().isEmpty()) {
-            return true;
-        }
-        Map<String, String> headers = req.headers();
-        String actual = headers.getOrDefault("referer", "");
-        boolean match = actual.contains(expected);
-        if (!match) {
-            LOGGER.debug("[RouteUtil] Referrer mismatch: expected contains='{}', actual='{}', url={}",
-                    expected, actual, req.url());
-        }
-        return match;
-    }
-
-    /**
-     * Origin 包含匹配。
-     */
-    private static boolean matchOrigin(Request req, RouteRule rule) {
-        String expected = rule.getMatchOrigin();
-        if (expected == null || expected.trim().isEmpty()) {
-            return true;
-        }
-        Map<String, String> headers = req.headers();
-        String actual = headers.getOrDefault("origin", "");
-        boolean match = actual.contains(expected);
-        if (!match) {
-            LOGGER.debug("[RouteUtil] Origin mismatch: expected contains='{}', actual='{}', url={}",
-                    expected, actual, req.url());
-        }
-        return match;
-    }
-
-    /**
-     * Frame 匹配。
-     * <p>如果 onlyMainFrame=true（默认），只匹配主 Frame 的请求，忽略 iframe/worker。
-     * <p>如果设置了 matchFrameUrl，则 Frame URL 必须包含该值。
-     */
-    private static boolean matchFrame(Request req, RouteRule rule) {
-        // ⭐ P1: Cache req.frame() — Playwright frame() 是跨 JNI 桥调用，有显著开销
-        //   缓存后从最多 3 次 JNI 调用降为最多 1 次
-        com.microsoft.playwright.Frame frame = null;
-        boolean frameResolved = false;
-
-        // 主 Frame 限定
-        if (rule.isOnlyMainFrame()) {
-            frame = req.frame();
-            frameResolved = true;
-            if (frame != null) {
-                boolean isMainFrame = frame.parentFrame() == null;
-                if (!isMainFrame) {
-                    LOGGER.debug("[RouteUtil] Frame mismatch: not main frame, url={}", req.url());
-                    return false;
-                }
-            }
-        }
-
-        // Frame URL 包含匹配
-        String expectedFrameUrl = rule.getMatchFrameUrl();
-        if (expectedFrameUrl != null && !expectedFrameUrl.trim().isEmpty()) {
-            if (!frameResolved) {
-                frame = req.frame();
-            }
-            if (frame == null) {
-                return false;
-            }
-            String actualFrameUrl = frame.url();
-            boolean match = actualFrameUrl.contains(expectedFrameUrl);
-            if (!match) {
-                LOGGER.debug("[RouteUtil] Frame URL mismatch: expected contains='{}', actual='{}', req={}",
-                        expectedFrameUrl, actualFrameUrl, req.url());
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Navigation 匹配。
-     * <p>如果 onlyApiCall=true，跳过 isNavigationRequest 为 true 的请求（页面跳转）。
-     */
-    private static boolean matchNavigation(Request req, RouteRule rule) {
-        if (rule.isOnlyApiCall() && req.isNavigationRequest()) {
-            LOGGER.debug("[RouteUtil] Navigation request skipped (onlyApiCall=true): url={}", req.url());
-            return false;
-        }
-        return true;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -674,7 +287,12 @@ public final class RouteUtil {
             }
             return url;
         } catch (Exception e) {
-            return url; // 解析失败，保守返回原始 URL
+            // ⭐ 修复 R1：解析失败时绝不出域原始 URL（可能含明文 token/key）。
+            // 降级策略：用正则剥离所有 query（"?..." 及 "#..." 之后），并委托 SensitiveDataSanitizer
+            // 兜底自由文本中的 Bearer/JWT/Authorization 等形态，避免敏感值泄漏到日志/报告。
+            String stripped = url.replaceAll("[?#].*$", "");
+            return com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer
+                    .sanitizeFreeText(stripped);
         }
     }
 
@@ -706,8 +324,7 @@ public final class RouteUtil {
     /**
      * 判断 Page 是否已关闭。
      *
-     * <p>用于采集层（{@link com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.EventMerger}）
-     * 在异步 body 读取前检查页面状态，避免对已关闭页面执行耗时操作。
+     * <p>用于在响应体读取前检查页面状态，避免对已关闭页面执行耗时操作。
      */
     public static boolean isPageClosed(Page page) {
         if (page == null) return true;
@@ -727,6 +344,36 @@ public final class RouteUtil {
             route.resume();
         } catch (Exception ignored) {
             // route 可能已被处置或 page 已关闭，忽略。
+        }
+    }
+
+    /**
+     * 安全 fallback：把请求交给【下一个】匹配的 route handler。
+     *
+     * <p>⭐ 与 {@link #resumeIfOpen(Route)} 的关键差异：
+     * <ul>
+     *   <li>{@code resume()} —— <b>终结</b> Playwright 的 handler 链，请求直接放行到网络；
+     *       后续注册的同 pattern handler <b>不会再被调用</b>。</li>
+     *   <li>{@code fallback()} —— 语义是"本 handler 不处理，交给下一个 handler"；
+     *       若已无下一个 handler，才退化为继续发往网络。</li>
+     * </ul>
+     *
+     * <p>适用于「本 handler 已无规则可依」的场景（如规则链被 {@code clear()} 就地清空）：
+     * 此时若用 resume，会连后续重新注册的同 pattern handler 一并终结，导致规则静默失效。
+     *
+     * <p>降级保障：fallback 在部分场景可能不被支持（如浏览器版本较旧或已无后续 handler），
+     * 此时退化为 resume，<b>保证请求绝不被挂起</b>。
+     */
+    public static void fallbackIfOpen(Route route) {
+        if (route == null) return;
+        try {
+            route.fallback();
+        } catch (Exception e) {
+            try {
+                route.resume();
+            } catch (Exception ignored) {
+                // route 可能已被处置或 page 已关闭，忽略。
+            }
         }
     }
 
@@ -781,6 +428,36 @@ public final class RouteUtil {
                         "[RouteUtil] safeResume unexpected error (ignored): {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * 安全 resume（带修改请求选项）：route 已死则静默跳过。
+     * B 方案 MODIFY 用其下发改写后的请求（method/headers/postData），由浏览器发真实请求。
+     */
+    public static void safeResume(Route route, Route.ResumeOptions options) {
+        if (route == null || options == null) return;
+        try {
+            route.resume(options);
+        } catch (Exception e) {
+            if (!isRouteDeadException(e)) {
+                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                        "[RouteUtil] safeResume(opts) unexpected error (ignored): {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。
+     * 与 MonitorHandler.literalPathOf 等价，提取至此便于 Handler 间复用。
+     */
+    public static String literalPathOf(String urlPattern) {
+        if (urlPattern == null || urlPattern.isEmpty()) return null;
+        String p = urlPattern;
+        while (p.startsWith("**")) p = p.substring(2);
+        while (p.endsWith("**")) p = p.substring(0, p.length() - 2);
+        int star = p.indexOf('*');
+        if (star >= 0) p = p.substring(0, star);
+        return p.isEmpty() ? null : p;
     }
 
     /** 安全 fulfill：route 已死则静默跳过。 */

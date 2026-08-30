@@ -39,8 +39,45 @@ public final class NLSUtils {
 
     private static final Logger log = LoggerFactory.getLogger(NLSUtils.class);
 
-    /** 当前语言：仅由 setLanguage 设置；初始为 null，get 前必须先设置 */
-    private static final ThreadLocal<String> currentLang = new ThreadLocal<>();
+    /**
+     * 当前语言 — 进程级全局值（带写入序号，见 {@link LangValue}）。
+     *
+     * <p>⭐ 跨线程修正（两轮）：
+     *
+     * <p><b>第一轮</b>：原实现纯 {@code ThreadLocal}，在 Monitor 的 onResponse 回调线程里
+     * {@code setLanguage} 后，测试主线程读不到（线程副本隔离）。改为「全局 + 线程级覆盖」双轨。
+     *
+     * <p><b>第二轮（本次修复 —— 覆盖遮蔽 bug）</b>：双轨的判定原为「线程覆盖优先，否则回退全局」，
+     * 这会产生<b>陈旧值遮蔽</b>：
+     * <pre>
+     *   主线程   setLanguage("en")  →  global="en", 主线程 override="en"
+     *   回调线程 setLanguage("zh")  →  global="zh", 回调线程 override="zh"
+     *   主线程   getLanguage()      →  主线程 override="en"（陈旧）→ 返回 "en"  ❌ 应为 "zh"
+     * </pre>
+     * 即只要主线程曾经设置过语言，回调线程随后的设置就<b>永远</b>对主线程不可见 ——
+     * 而「先设初值、再由 API 响应回调改成实际语言」恰恰是最典型的用法。
+     *
+     * <p>修复：为每次写入分配<b>全局单调序号</b>，{@code getLanguage()} 比较全局值与线程覆盖的
+     * 序号，取<b>较新</b>者。这样既保留并发隔离能力（本线程后写仍优先生效），
+     * 又保证跨线程的最新写入不会被陈旧线程副本遮蔽。
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<LangValue> globalLang =
+            new java.util.concurrent.atomic.AtomicReference<>();
+
+    /** 线程级语言覆盖（用于并发多场景互不干扰的隔离场景），同样带写入序号。 */
+    private static final ThreadLocal<LangValue> threadLangOverride = new ThreadLocal<>();
+
+    /** 全局单调写入序号：用于判定「哪个写入更新」。 */
+    private static final java.util.concurrent.atomic.AtomicLong LANG_WRITE_SEQ =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * 带写入序号的语言值。
+     *
+     * @param lang 语言标识
+     * @param seq  写入时的全局单调序号（越大越新）
+     */
+    private record LangValue(String lang, long seq) {}
 
     /** 缓存：filePath -> (lang -> (key -> value)) */
     private static final Map<String, Map<String, Map<String, String>>> CACHE =
@@ -59,17 +96,47 @@ public final class NLSUtils {
      * @param lang 语言标识
      */
     public static void setLanguage(String lang) {
-        currentLang.set(lang);
+        if (lang == null) {
+            // 传入 null 等价于清除：同样写入「空值标记」使其它线程的副本失效
+            threadLangOverride.remove();
+            globalLang.set(clearedMarker());
+        } else {
+            // ⭐ 同时写入全局值与当前线程副本，且两者共享同一个序号：
+            //   单线程场景行为不变；跨线程场景（Monitor 回调线程设置、主线程读取）
+            //   由 getLanguage() 的「序号取新」判定保证可见。
+            LangValue v = new LangValue(lang, LANG_WRITE_SEQ.incrementAndGet());
+            globalLang.set(v);
+            threadLangOverride.set(v);
+        }
         log.info("[NLS] language switched to: {}", lang);
     }
 
     public static String getLanguage() {
-        return currentLang.get();
+        // ⭐ 取「写入更新的那个」，而非无条件优先线程副本（否则陈旧副本会遮蔽跨线程新值）
+        LangValue override = threadLangOverride.get();
+        LangValue global = globalLang.get();
+        if (override == null) return global == null ? null : global.lang;
+        if (global == null) return override.lang;
+        return global.seq() >= override.seq() ? global.lang() : override.lang();
     }
 
-    /** 清理当前线程的语言状态，避免污染后续用例 */
+    /**
+     * 构造一个「较新序号的空值标记」：用于清除/重置场景，使其它线程的陈旧线程副本
+     * 因序号更旧而被 {@link #getLanguage()} 忽略（线程副本无法被跨线程直接擦除）。
+     */
+    private static LangValue clearedMarker() {
+        return new LangValue(null, LANG_WRITE_SEQ.incrementAndGet());
+    }
+
+    /**
+     * 清理语言状态，避免污染后续用例。
+     *
+     * <p>同时清线程副本与全局值（仅清线程副本是不够的：全局值会继续被其它线程读到）。
+     * 全局侧写入「空值标记」并占用更新的序号，使任何线程残留的陈旧副本均因序号更旧而失效。
+     */
     public static void reset() {
-        currentLang.remove();
+        threadLangOverride.remove();
+        globalLang.set(clearedMarker());
     }
 
     /**
@@ -143,7 +210,7 @@ public final class NLSUtils {
      * @return 当前语言下的文本
      */
     public static String get(String filePath, String key) {
-        String lang = currentLang.get();
+        String lang = getLanguage();
         if (lang == null || lang.isEmpty()) {
             throw new IllegalStateException(
                     "[NLS] current language not set — call setLanguage(\"xx\") first "

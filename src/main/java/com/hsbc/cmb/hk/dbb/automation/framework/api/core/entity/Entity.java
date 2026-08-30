@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.assembler.headersImpl.Header
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.APIResources;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
 import com.typesafe.config.Config;
 import org.apache.commons.lang3.StringUtils;
@@ -151,8 +152,20 @@ public class Entity {
         log.debug("Set endpoint: {}", endpoint);
     }
 
+    /**
+     * 返回请求头的<b>防御性副本</b>。
+     * <p>
+     * ⭐ 修复 P2-23：原实现直接把内部 Map 引用交出去，调用方
+     * {@code entity.getRequestHeaders().put(...)} 即可绕过 {@link #addRequestHeader}
+     * 直接改写内部状态（无校验、无日志、跨线程共享时更危险）。
+     * <p>
+     * 变更安全性：全仓库已确认没有任何调用点依赖"通过返回值修改"这一行为
+     * （{@code Rest*Job} 只读取；{@code AbstractApiJobHelper#getRequestHeaders()} 本身就在自行拷贝），
+     * 故返回副本不会破坏现有用法。需要修改请显式调用
+     * {@link #addRequestHeader(String, Object)} 或 {@link #setRequestHeaders(Map)}。
+     */
     public Map<String, Object> getRequestHeaders() {
-        return requestHeaders;
+        return new HashMap<>(requestHeaders);
     }
 
     public void setRequestHeaders(Map<String, Object> requestHeaders) {
@@ -162,7 +175,8 @@ public class Entity {
 
     public void addRequestHeader(String name, Object value) {
         this.requestHeaders.put(name, value);
-        log.debug("Add request header: {} = {}", name, value);
+        // ⭐ 修复 P2-26：header 值可能是 Authorization / 会话 token，日志须脱敏
+        log.debug("Add request header: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     public void removeRequestHeader(String name) {

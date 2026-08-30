@@ -18,7 +18,9 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -40,17 +42,25 @@ public class ElementDiagnosticsCollector {
     private static final Logger logger = LoggerFactory.getLogger(ElementDiagnosticsCollector.class);
 
     /** 共享诊断线程池——daemon 线程，JVM 退出时自动回收 */
-    private static final ExecutorService DIAGNOSTIC_EXECUTOR = Executors.newCachedThreadPool(new ThreadFactory() {
-        private final AtomicInteger counter = new AtomicInteger(0);
-        @Override
-        public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, "diagnostic-" + counter.incrementAndGet());
-            t.setDaemon(true);
-            t.setUncaughtExceptionHandler((th, ex) ->
-                logger.warn("[diagnostic] Uncaught in thread {}: {}", th.getName(), ex.getMessage()));
-            return t;
-        }
-    });
+    // ⭐ 修复 B-3：原 newCachedThreadPool 无界，失败路径高并发（成百上千元素诊断）会无限新建线程、
+    //   耗尽系统线程/内存。改为固定大小（失败诊断本就属低频兜底，8 线程足够）+ 调用者运行拒绝策略
+    //   （诊断任务在调用线程同步执行，保证失败信息不丢，同时避免队列积压导致 OOM）。
+    private static final int DIAGNOSTIC_MAX_THREADS = 8;
+    private static final ExecutorService DIAGNOSTIC_EXECUTOR =
+            new ThreadPoolExecutor(DIAGNOSTIC_MAX_THREADS, DIAGNOSTIC_MAX_THREADS, 0L, TimeUnit.MILLISECONDS,
+                    new LinkedBlockingQueue<>(DIAGNOSTIC_MAX_THREADS * 2),
+                    new ThreadFactory() {
+                        private final AtomicInteger counter = new AtomicInteger(0);
+                        @Override
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r, "diagnostic-" + counter.incrementAndGet());
+                            t.setDaemon(true);
+                            t.setUncaughtExceptionHandler((th, ex) ->
+                                logger.warn("[diagnostic] Uncaught in thread {}: {}", th.getName(), ex.getMessage()));
+                            return t;
+                        }
+                    },
+                    new ThreadPoolExecutor.CallerRunsPolicy());
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

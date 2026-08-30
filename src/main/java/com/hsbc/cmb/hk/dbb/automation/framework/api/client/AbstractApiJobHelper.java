@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.client;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.jayway.jsonpath.*;
 import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
 import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
@@ -50,7 +51,7 @@ public class AbstractApiJobHelper extends ApiJob {
         Map<String, Object> params = getter.get();
         modifier.accept(params);
         setter.accept(params);
-        LOGGER.info("{} {} parameters, Detail: {}", action, detail, params);
+        LOGGER.info("{} {} parameters, Detail: {}", action, detail, ApiLogSanitizer.toLogString(params));
     }
 
 
@@ -62,7 +63,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Map<String, Object> getRequestHeaders() {
         Entity entity = this.getEntity();
         Map<String, Object> headers = new HashMap<>(entity.getRequestHeaders()); // 返回复制，避免外部修改
-        LOGGER.info("Retrieved request headers: {}", headers);
+        LOGGER.info("Retrieved request headers: {}", ApiLogSanitizer.toLogString(headers));
         return headers;
     }
 
@@ -74,7 +75,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Object getRequestHeader(final String headerName) {
         Entity entity = this.getEntity();
         Object value = entity.getRequestHeaders().get(headerName);
-        LOGGER.info("Retrieved header '{}': {}", headerName, value);
+        LOGGER.info("Retrieved header '{}': {}", headerName, ApiLogSanitizer.valueForLog(headerName, value));
         return value;
     }
 
@@ -85,7 +86,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Map<String, Object> getPathParams() {
         Entity entity = this.getEntity();
         Map<String, Object> pathParams = new HashMap<>(entity.getPathParams());
-        LOGGER.info("Retrieved path parameters: {}", pathParams);
+        LOGGER.info("Retrieved path parameters: {}", ApiLogSanitizer.toLogString(pathParams));
         return pathParams;
     }
 
@@ -97,7 +98,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Object getPathParam(final String paramName) {
         Entity entity = this.getEntity();
         Object value = entity.getPathParams().get(paramName);
-        LOGGER.info("Retrieved path parameter '{}': {}", paramName, value);
+        LOGGER.info("Retrieved path parameter '{}': {}", paramName, ApiLogSanitizer.valueForLog(paramName, value));
         return value;
     }
 
@@ -108,7 +109,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Map<String, Object> getQueryParams() {
         Entity entity = this.getEntity();
         Map<String, Object> queryParams = new HashMap<>(entity.getQueryParams());
-        LOGGER.info("Retrieved query parameters: {}", queryParams);
+        LOGGER.info("Retrieved query parameters: {}", ApiLogSanitizer.toLogString(queryParams));
         return queryParams;
     }
 
@@ -120,7 +121,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Object getQueryParam(final String paramName) {
         Entity entity = this.getEntity();
         Object value = entity.getQueryParams().get(paramName);
-        LOGGER.info("Retrieved query parameter '{}': {}", paramName, value);
+        LOGGER.info("Retrieved query parameter '{}': {}", paramName, ApiLogSanitizer.valueForLog(paramName, value));
         return value;
     }
 
@@ -131,7 +132,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Map<String, Object> getFormParams() {
         Entity entity = this.getEntity();
         Map<String, Object> formParams = new HashMap<>(entity.getFormParams());
-        LOGGER.info("Retrieved form parameters: {}", formParams);
+        LOGGER.info("Retrieved form parameters: {}", ApiLogSanitizer.toLogString(formParams));
         return formParams;
     }
 
@@ -143,7 +144,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Object getFormParam(final String paramName) {
         Entity entity = this.getEntity();
         Object value = entity.getFormParams().get(paramName);
-        LOGGER.info("Retrieved form parameter '{}': {}", paramName, value);
+        LOGGER.info("Retrieved form parameter '{}': {}", paramName, ApiLogSanitizer.valueForLog(paramName, value));
         return value;
     }
 
@@ -166,7 +167,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public Object getCookie(final String cookieName) {
         Entity entity = this.getEntity();
         Object value = entity.getCookies().get(cookieName);
-        LOGGER.info("Retrieved cookie '{}': {}", cookieName, value);
+        LOGGER.info("Retrieved cookie '{}': {}", cookieName, ApiLogSanitizer.valueForLog(cookieName, value));
         return value;
     }
 
@@ -177,7 +178,7 @@ public class AbstractApiJobHelper extends ApiJob {
     public String getRequestPayload() {
         Entity entity = this.getEntity();
         String payload = entity.getRequestPayload();
-        LOGGER.info("Retrieved request payload: {}", payload);
+        LOGGER.info("Retrieved request payload: {}", ApiLogSanitizer.bodyForLog(payload));
         return payload;
     }
 
@@ -268,7 +269,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.setRequestPayload(payload);
-        LOGGER.info("Set request payload: {}", payload);
+        LOGGER.info("Set request payload: {}", ApiLogSanitizer.bodyForLog(payload));
     }
 
     /**
@@ -283,7 +284,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.addRequestHeader(name, value);
-        LOGGER.info("Added request header: {} = {}", name, value);
+        LOGGER.info("Added request header: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     /**
@@ -298,7 +299,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.addPathParam(name, value);
-        LOGGER.info("Added path parameter: {} = {}", name, value);
+        LOGGER.info("Added path parameter: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     /**
@@ -313,7 +314,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.addQueryParam(name, value);
-        LOGGER.info("Added query parameter: {} = {}", name, value);
+        LOGGER.info("Added query parameter: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     /**
@@ -328,7 +329,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.addFormParam(name, value);
-        LOGGER.info("Added form parameter: {} = {}", name, value);
+        LOGGER.info("Added form parameter: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     /**
@@ -343,7 +344,7 @@ public class AbstractApiJobHelper extends ApiJob {
             return;
         }
         entity.addCookie(name, value);
-        LOGGER.info("Added cookie: {} = {}", name, value);
+        LOGGER.info("Added cookie: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 
     /**

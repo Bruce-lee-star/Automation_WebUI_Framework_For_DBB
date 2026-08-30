@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.ResourceType;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import org.slf4j.Logger;
@@ -38,10 +38,17 @@ public class CapturedApiCall {
     private final Map<String, String> responseHeaders;
     private final String responseBody;
 
-    // ── 采集信息（采集管道新增字段） ──
+    // ── 采集信息 ──
     private final boolean fromMock;       // 是否来自 Mock 拦截
-    private final String captureSource;   // 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY
-    private final ResourceType resourceType;    // 资源类型（CDP type / Playwright resourceType）
+    private final String captureSource;   // 采集来源：MOCK / MODIFY / DELAY / MONITOR
+    /**
+     * ⭐ 产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR），
+     * 供 {@link ApiCaptureContext#getAllByType(RouteHandleType)} 按能力维度检索。
+     *
+     * <p>与 {@code captureSource} 的区别：{@code captureSource} 是自由字符串（历史字段），
+     * 本字段是枚举，作为「按类型查询」的<b>唯一判据</b>。
+     */
+    private final RouteHandleType handleType;
 
     // ── 修改详情（ModifyHandler 回填：headersSet / modifiedBody / bodyFieldsModified …） ──
     private final String modifyDetail;
@@ -106,23 +113,27 @@ public class CapturedApiCall {
     public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp, String requestUrl, String requestBody) {
-        this.endpoint = endpoint;
-        this.requestUrl = requestUrl;
-        this.requestBody = requestBody;
-        this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
-        this.requestHeaders = requestHeaders != null
-                ? Collections.unmodifiableMap(new HashMap<>(requestHeaders))
-                : Collections.emptyMap();
-        this.statusCode = statusCode;
-        this.responseHeaders = responseHeaders != null
-                ? Collections.unmodifiableMap(new HashMap<>(responseHeaders))
-                : Collections.emptyMap();
-        this.responseBody = responseBody;
-        this.fromMock = false;
-        this.captureSource = "MONITOR";
-        this.resourceType = null;
-        this.modifyDetail = null;
-        this.timestamp = timestamp;
+        this(endpoint, method, requestHeaders, requestUrl, requestBody,
+                statusCode, responseHeaders, responseBody, timestamp,
+                false, RouteHandleType.MONITOR.name(), null, RouteHandleType.MONITOR);
+    }
+
+    /**
+     * ⭐ 指定能力类型的构造器。各 Handler 落库时<b>必须</b>显式传入自身类型
+     * （MOCK / MODIFY / DELAY / MONITOR），否则默认按 MONITOR 归类，
+     * 会导致 {@code ApiCaptureContext.getAllByType(...)} 查不到 mock / delay 的调用。
+     *
+     * @param handleType 产生本次快照的路由能力类型
+     */
+    public CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
+                    int statusCode, Map<String, String> responseHeaders,
+                    String responseBody, long timestamp, String requestUrl, String requestBody,
+                    RouteHandleType handleType) {
+        this(endpoint, method, requestHeaders, requestUrl, requestBody,
+                statusCode, responseHeaders, responseBody, timestamp,
+                handleType == RouteHandleType.MOCK,
+                handleType == null ? "MONITOR" : handleType.name(),
+                null, handleType == null ? RouteHandleType.MONITOR : handleType);
     }
 
     /**
@@ -137,7 +148,7 @@ public class CapturedApiCall {
                     String requestBody, String modifyDetail) {
         this(endpoint, method, requestHeaders, requestUrl, requestBody,
                 statusCode, responseHeaders, responseBody, timestamp,
-                false, "MODIFY", null, modifyDetail);
+                false, RouteHandleType.MODIFY.name(), modifyDetail, RouteHandleType.MODIFY);
     }
 
     /**
@@ -147,35 +158,50 @@ public class CapturedApiCall {
                     String requestUrl, String requestBody,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp,
-                    boolean fromMock, String captureSource, ResourceType resourceType) {
+                    boolean fromMock, String captureSource, RouteHandleType handleType) {
         this(endpoint, method, requestHeaders, requestUrl, requestBody,
                 statusCode, responseHeaders, responseBody, timestamp,
-                fromMock, captureSource, resourceType, null);
+                fromMock, captureSource, null, handleType);
     }
 
     CapturedApiCall(String endpoint, String method, Map<String, String> requestHeaders,
                     String requestUrl, String requestBody,
                     int statusCode, Map<String, String> responseHeaders,
                     String responseBody, long timestamp,
-                    boolean fromMock, String captureSource, ResourceType resourceType,
-                    String modifyDetail) {
+                    boolean fromMock, String captureSource, String modifyDetail,
+                    RouteHandleType handleType) {
         this.endpoint = endpoint;
         this.requestUrl = requestUrl;
-        this.requestBody = requestBody;
         this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
-        this.requestHeaders = requestHeaders != null
-                ? Collections.unmodifiableMap(new HashMap<>(requestHeaders))
-                : Collections.emptyMap();
+        // ⭐ 修复 R4：在构造期即对所有出站数据做脱敏，避免明文敏感 body/header 长期驻留内存，
+        // 即使后续 DTO 导出时才脱敏，内存快照（heap dump / 序列化）也不会暴露原始值。
+        this.requestBody = sanitizeBody(requestBody);
+        this.requestHeaders = sanitizeHeaders(requestHeaders);
         this.statusCode = statusCode;
-        this.responseHeaders = responseHeaders != null
-                ? Collections.unmodifiableMap(new HashMap<>(responseHeaders))
-                : Collections.emptyMap();
-        this.responseBody = responseBody;
+        this.responseHeaders = sanitizeHeaders(responseHeaders);
+        this.responseBody = sanitizeBody(responseBody);
         this.fromMock = fromMock;
         this.captureSource = captureSource != null ? captureSource : "UNKNOWN";
-        this.resourceType = resourceType;
-        this.modifyDetail = modifyDetail;
+        this.modifyDetail = sanitizeBody(modifyDetail);
+        this.handleType = handleType != null ? handleType : RouteHandleType.MONITOR;
         this.timestamp = timestamp;
+    }
+
+    /** ⭐ 修复 R4：对单个 body 字符串按格式脱敏（JSON/XML/form/纯文本统一收口）。 */
+    private static String sanitizeBody(String body) {
+        if (body == null || body.isEmpty()) return body;
+        return SensitiveDataSanitizer.sanitizeBody(body);
+    }
+
+    /** ⭐ 修复 R4：对所有 header 值脱敏（Authorization/Cookie/Set-Cookie 等含凭据）。 */
+    private static Map<String, String> sanitizeHeaders(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) return Collections.emptyMap();
+        Map<String, String> sanitized = new HashMap<>(headers.size());
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            String v = e.getValue();
+            sanitized.put(e.getKey(), (v == null || v.isEmpty()) ? v : SensitiveDataSanitizer.sanitizeBody(v));
+        }
+        return Collections.unmodifiableMap(sanitized);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -221,11 +247,30 @@ public class CapturedApiCall {
     /** 是否来自 Mock 拦截 */
     public boolean fromMock() { return fromMock; }
 
-    /** 采集来源：CDP / PLAYWRIGHT / MOCK / MODIFY / MONITOR */
+    /** 采集来源：MOCK / MODIFY / DELAY / MONITOR */
     public String captureSource() { return captureSource; }
 
-    /** 资源类型枚举（XHR / FETCH / DOCUMENT / SCRIPT / IMAGE …；MOCK/MODIFY 投喂为 API；未知为 OTHER）。可为 null。 */
-    public ResourceType resourceType() { return resourceType; }
+    /**
+     * ⭐ 产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR）。
+     *
+     * <p>用于 {@code ApiCaptureContext.getAllByType(type)} 按能力维度检索。
+     * 同一 endpoint 可能同时产生多条不同类型的快照（如 MODIFY + MONITOR 叠加）。
+     */
+    public RouteHandleType handleType() { return handleType; }
+
+    /**
+     * 是否为 <b>DELAY 维度标记</b>（非完整调用快照）。
+     *
+     * <p>DELAY 只记录「该请求被延迟过」这一事实，且在请求放行<b>之前</b>落库，
+     * 因此不含响应信息：{@code statusCode == 0} 且 {@code responseBody == null}。
+     * 它与同一请求的 MODIFY / MONITOR 完整快照<b>并存</b>，用于回答「哪些请求被延迟过」。
+     *
+     * <p>按 endpoint 做通用查询（{@code getLastApiCall} / {@code getApiCalls}）时，
+     * 若只关心带响应的快照，可用本方法过滤掉延迟标记，避免拿到空 body。
+     */
+    public boolean isDelayMarker() {
+        return handleType == RouteHandleType.DELAY;
+    }
 
     /**
      * Modify/Mock 等场景的「修改详情」JSON。
@@ -234,24 +279,49 @@ public class CapturedApiCall {
      */
     public String modifyDetail() { return modifyDetail; }
 
-    /** 是否 XHR 类型请求 */
+    /**
+     * 是否 XHR 类型请求。
+     *
+     * <p>⚠️ <b>恒为 false</b>：全局旁路采集（CDP {@code Network.requestWillBeSent}）移除后，
+     * Playwright {@code Route} 不暴露 {@code ResourceType}，框架已无资源类型数据源。
+     * 保留本方法仅为向后兼容，请勿依赖其返回值做断言。
+     *
+     * @deprecated 无数据源支撑，恒返回 false；资源类型过滤请用
+     *             {@code RouteDsl.resourceType(...)} / {@code onlyApi(...)} 在注册期完成。
+     */
+    @Deprecated
     public boolean isXhr() {
-        return resourceType == ResourceType.XHR;
+        return false;
     }
 
-    /** 是否 Fetch 类型请求 */
+    /**
+     * 是否 Fetch 类型请求。
+     *
+     * @deprecated 同 {@link #isXhr()}，无数据源支撑，恒返回 false。
+     */
+    @Deprecated
     public boolean isFetch() {
-        return resourceType == ResourceType.FETCH;
+        return false;
     }
 
-    /** 是否 API 类请求（XHR / FETCH / API 投喂） */
+    /**
+     * 是否 API 类请求（XHR / Fetch）。
+     *
+     * @deprecated 同 {@link #isXhr()}，无数据源支撑，恒返回 false。
+     */
+    @Deprecated
     public boolean isApiType() {
-        return resourceType != null && resourceType.isApi();
+        return false;
     }
 
-    /** 资源类型原始字符串（枚举名，大写；未知/缺失时返回 "OTHER"）。便于日志/序列化。 */
+    /**
+     * 资源类型原始字符串。
+     *
+     * @deprecated 无数据源支撑，恒返回 {@code "OTHER"}。
+     */
+    @Deprecated
     public String resourceTypeName() {
-        return resourceType != null ? resourceType.name() : ResourceType.OTHER.name();
+        return "OTHER";
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -452,7 +522,7 @@ public class CapturedApiCall {
         private long timestamp;
         private boolean fromMock;
         private String captureSource;
-        private ResourceType resourceType;
+        private RouteHandleType handleType;
 
         public Builder endpoint(String endpoint) { this.endpoint = endpoint; return this; }
         public Builder method(String method) { this.method = method; return this; }
@@ -465,13 +535,23 @@ public class CapturedApiCall {
         public Builder timestamp(long timestamp) { this.timestamp = timestamp; return this; }
         public Builder fromMock(boolean fromMock) { this.fromMock = fromMock; return this; }
         public Builder captureSource(String captureSource) { this.captureSource = captureSource; return this; }
-        public Builder resourceType(ResourceType resourceType) { this.resourceType = resourceType; return this; }
+
+        /** ⭐ 指定能力类型（MOCK / MODIFY / DELAY / MONITOR）；未指定时由 captureSource 推导。 */
+        public Builder handleType(RouteHandleType handleType) { this.handleType = handleType; return this; }
 
         public CapturedApiCall build() {
+            RouteHandleType type = handleType;
+            if (type == null && captureSource != null) {
+                try {
+                    type = RouteHandleType.valueOf(captureSource.toUpperCase(java.util.Locale.ROOT));
+                } catch (IllegalArgumentException ignored) {
+                    type = RouteHandleType.MONITOR;
+                }
+            }
             return new CapturedApiCall(
                     endpoint, method, requestHeaders, requestUrl, requestBody,
                     statusCode, responseHeaders, responseBody, timestamp,
-                    fromMock, captureSource, resourceType);
+                    fromMock, captureSource, type);
         }
     }
 }

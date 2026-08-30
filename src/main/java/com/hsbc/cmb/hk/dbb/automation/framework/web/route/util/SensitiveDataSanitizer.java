@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 
 import java.util.Arrays;
 import java.util.HashMap;
@@ -74,6 +75,9 @@ public final class SensitiveDataSanitizer {
             // ── 密钥类 ──
             "secret", "clientsecret", "apikey", "secretkey", "privatekey",
             "publickey", "signature", "sign", "hmac", "salt",
+            // ── 云测/网关平台密钥（BrowserStack / SauceLabs 等，caps 内层明文传递）──
+            "accesskey", "browserstackaccesskey", "browserstackusername",
+            "authkey", "userkey", "licensekey", "subscriptionkey",
             // ── 认证与会话 ──
             "authorization", "credentials", "credential", "sessionid", "jsessionid",
             "sessionkey", "cookie",
@@ -114,6 +118,31 @@ public final class SensitiveDataSanitizer {
 
     /** JSON 树遍历的最大深度，防御恶意深嵌套导致的栈溢出。 */
     private static final int MAX_DEPTH = 64;
+
+    /** ⭐ 修复 R2：Bearer/Basic/Digest 等认证方案后的凭证（保留方案名，遮蔽凭据）。 */
+    private static final Pattern FREE_TEXT_AUTH_SCHEME =
+            Pattern.compile("(?i)(\\b(?:Bearer|Basic|Digest|APIKey|Token)\\s+)([A-Za-z0-9._~+/-]+=*)");
+
+    /** ⭐ 修复 R2：独立 JWT（三段式 base64url，header.payload.signature）。 */
+    private static final Pattern FREE_TEXT_JWT =
+            Pattern.compile("(?i)([A-Za-z0-9_=-]{8,}\\.[A-Za-z0-9_=-]{8,}\\.)([A-Za-z0-9_=-]+)");
+
+    /** ⭐ 修复 R2：URL 中的 //user:pass@host 或 ?token=xxx 形态凭据。 */
+    private static final Pattern FREE_TEXT_URL_CREDENTIAL =
+            Pattern.compile("(?i)([?&](?:token|access_token|api_key|apikey|secret|password|key|auth)=)([^&\\s\"']+)");
+
+    /**
+     * ⭐ 修复 S1：URLEncode 内层 JSON 凭据（云测平台 caps 场景）。
+     * <p>BrowserStack 把 caps JSON 整体 URLEncode 后塞进 URL：
+     * {@code wss://cdp.browserstack.com/playwright?caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D}
+     * 此时 {@code :} 被编码为 {@code %3A}、{@code "} 为 {@code %22}，
+     * {@link #maskFreeTextLine} 找不到明文 {@code :}/{@code =} 分隔符而退到
+     * {@link #maskFreeTextTokens}，后者只认 Bearer/JWT/明文 URL 参数 → 密钥漏网。
+     * <p>分组：1=key 前引号，2=key，3=key 后引号，4=分隔符(%3A/%3D)，5=值前引号，6=值。
+     */
+    private static final Pattern FREE_TEXT_URL_ENCODED_SECRET = Pattern.compile(
+            "(?i)(%22|%27)?([\\w.\\-]*(?:key|secret|token|password|passwd|pwd|credential)[\\w.\\-]*)"
+                    + "(%22|%27)?(%3A|%3D)(%22|%27)?([^&%\\s\"']*)");
 
     private SensitiveDataSanitizer() {
     }
@@ -223,9 +252,18 @@ public final class SensitiveDataSanitizer {
      * 递归遮蔽节点。命中敏感 key 时，无论其值是标量、对象还是数组，
      * <b>整棵子树</b>都替换为掩码 —— 例如 {@code "credentials":{...}}
      * 下的所有内容都不应出域。
+     *
+     * <p>⭐ 修复 R3：超过 {@link #MAX_DEPTH} 的节点不再原样保留（否则深嵌套敏感字段
+     * 会明文出域），而是整体掩码：标量直接替换为 {@link #MASK}；容器节点由调用方
+     * （持有父节点引用）删除该字段，避免子树内容泄漏。</p>
      */
     private static void maskNode(JsonNode node, int depth) {
-        if (node == null || depth > MAX_DEPTH) return;
+        if (node == null) return;
+        if (depth > MAX_DEPTH) {
+            // 超深子树：递归遮蔽所有子节点（尽力而为），并在父层由 removeSensitiveDeep 删除该字段
+            maskNodeDeep(node);
+            throw new MaxDepthExceededException();
+        }
 
         if (node.isObject()) {
             ObjectNode obj = (ObjectNode) node;
@@ -239,16 +277,59 @@ public final class SensitiveDataSanitizer {
                     // 命中：整棵子树替换为掩码（对象/数组/标量一律）
                     obj.put(field, MASK);
                 } else {
-                    maskNode(obj.get(field), depth + 1);
+                    try {
+                        maskNode(obj.get(field), depth + 1);
+                    } catch (MaxDepthExceededException e) {
+                        // ⭐ 修复 R3：超深子节点整体删除，避免深嵌套敏感值出域
+                        obj.remove(field);
+                    }
                 }
             }
         } else if (node.isArray()) {
             ArrayNode arr = (ArrayNode) node;
             for (int i = 0; i < arr.size(); i++) {
-                maskNode(arr.get(i), depth + 1);
+                try {
+                    maskNode(arr.get(i), depth + 1);
+                } catch (MaxDepthExceededException e) {
+                    arr.remove(i);
+                }
             }
         }
         // 标量节点：无 key 上下文，由父层决定是否遮蔽
+    }
+
+    /** 超深子树兜底：递归把每个标量替换为掩码（容器保留结构但内容已掩码）。 */
+    private static void maskNodeDeep(JsonNode node) {
+        if (node == null) return;
+        if (node.isObject()) {
+            ObjectNode obj = (ObjectNode) node;
+            Iterator<String> names = obj.fieldNames();
+            java.util.List<String> fields = new java.util.ArrayList<>();
+            while (names.hasNext()) fields.add(names.next());
+            for (String field : fields) {
+                JsonNode child = obj.get(field);
+                if (child.isValueNode()) {
+                    obj.put(field, MASK);
+                } else {
+                    maskNodeDeep(child);
+                }
+            }
+        } else if (node.isArray()) {
+            ArrayNode arr = (ArrayNode) node;
+            for (int i = 0; i < arr.size(); i++) {
+                JsonNode child = arr.get(i);
+                if (child.isValueNode()) {
+                    arr.set(i, TextNode.valueOf(MASK));
+                } else {
+                    maskNodeDeep(child);
+                }
+            }
+        }
+    }
+
+    /** 超深中断信号：仅用于 unwind 调用栈，不对外抛出。 */
+    private static final class MaxDepthExceededException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -347,7 +428,7 @@ public final class SensitiveDataSanitizer {
      * 纯文本兜底遮蔽：逐行查找 {@code 敏感词<分隔符>值} 形态并遮蔽值部分。
      * <p>覆盖日志片段、非结构化响应等场景。宁可过度遮蔽，不可漏出。
      */
-    private static String sanitizeFreeText(String text) {
+    public static String sanitizeFreeText(String text) {
         String[] lines = text.split("\n", -1);
         StringBuilder out = new StringBuilder(text.length());
         for (int i = 0; i < lines.length; i++) {
@@ -365,7 +446,10 @@ public final class SensitiveDataSanitizer {
             char c = line.charAt(i);
             if (c == ':' || c == '=') { sep = i; break; }
         }
-        if (sep <= 0 || sep >= line.length() - 1) return line;
+        if (sep <= 0 || sep >= line.length() - 1) {
+            // ⭐ 修复 R2：无 key=value 结构时仍可能含 Bearer/JWT/URL token，走正则兜底
+            return maskFreeTextTokens(line);
+        }
         String key = line.substring(0, sep).trim();
         // 去掉可能包裹的引号
         if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
@@ -374,7 +458,53 @@ public final class SensitiveDataSanitizer {
         if (isSensitiveBodyKey(key)) {
             return line.substring(0, sep + 1) + " " + MASK;
         }
-        return line;
+        // ⭐ 修复 R2：非敏感 key 的值部分仍可能含 Bearer/JWT，走正则兜底
+        return maskFreeTextTokens(line);
+    }
+
+    /** ⭐ 修复 R2：覆盖自由文本中的 Bearer token、Authorization 头、独立 JWT、URL 内嵌凭据。 */
+    private static String maskFreeTextTokens(String text) {
+        if (text == null) return null;
+        // Bearer / Basic / Digest 等认证方案后的凭证
+        text = FREE_TEXT_AUTH_SCHEME.matcher(text)
+                .replaceAll(m -> m.group(1) + " " + m.group(2).substring(0, Math.min(m.group(2).length(), 0)) + MASK);
+        // 独立 JWT（三段式 base64url）
+        // ⭐ 修复：原写法 replaceAll("$1" + MASK + "$3")，但该正则只有 2 个捕获组，
+        //    引用 $3 会在【命中时】抛 IndexOutOfBoundsException —— 即日志里真出现 JWT 就崩，
+        //    与"脱敏不得引入新故障"的初衷相悖。改为仅保留前缀组 + 掩码。
+        text = FREE_TEXT_JWT.matcher(text).replaceAll("$1" + MASK);
+        // URL 中 //user:pass@ 或 ?token=xxx 形态（同样只有 2 组，修正 $3 → 无）
+        text = FREE_TEXT_URL_CREDENTIAL.matcher(text).replaceAll("$1" + MASK);
+        // ⭐ 修复 S1：URLEncode 内层 JSON 凭据（BrowserStack caps 里的 accessKey 等）
+        text = maskUrlEncodedSecrets(text);
+        return text;
+    }
+
+    /**
+     * ⭐ 修复 S1：逐匹配遮蔽 URLEncode 后的 {@code key%3Avalue} / {@code %22key%22%3A%22value%22} 形态。
+     * <p>仅当 key 解码后命中敏感词表才遮蔽，避免误伤普通 URL 参数。
+     */
+    private static String maskUrlEncodedSecrets(String text) {
+        if (text == null || text.isEmpty()) return text;
+        Matcher m = FREE_TEXT_URL_ENCODED_SECRET.matcher(text);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String key = urlDecodeQuiet(m.group(2));
+            String replacement;
+            if (isSensitiveBodyKey(key)) {
+                replacement = nullToEmpty(m.group(1)) + m.group(2) + nullToEmpty(m.group(3))
+                        + m.group(4) + nullToEmpty(m.group(5)) + MASK;
+            } else {
+                replacement = m.group(0);
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
     }
 
     // ═══════════════════════════════════════════════════════════════

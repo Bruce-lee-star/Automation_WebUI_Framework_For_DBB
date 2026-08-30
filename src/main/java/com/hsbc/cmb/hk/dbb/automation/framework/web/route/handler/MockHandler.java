@@ -1,7 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ConditionalFieldRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
@@ -14,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -41,7 +44,7 @@ public class MockHandler {
     private static final double ROUTE_FETCH_TIMEOUT_MS =
             RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
-    public static void handle(Route route, RouteRule rule) {
+    public static void handle(Route route, RouteRule rule, long delayMs) {
         String url = route.request().url();
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[MockHandler] ── handle() START: pattern='{}', url='{}', mockStatus={}, replaceFields={}, interceptRealResponse={} ──",
@@ -114,7 +117,18 @@ public class MockHandler {
             opts.setHeaders(new java.util.HashMap<>(rule.getMockHeaders()));
         }
 
-        // ── 6. 返回 Mock 响应（异常安全，失败时 resume 兜底）──────
+        // ── 6. 同步存储 Mock 调用到 ApiCaptureContext（⭐ 必须在 fulfill 之前）────
+        //    ⭐ MOCK 的 route.fulfill() 不发真实网络请求，不会有真实响应到达，
+        //       因此必须由本 Handler 自行落库，否则该调用在 ApiCaptureContext 中完全不可见。
+        //    ⭐ 时序契约（与 ModifyHandler 一致，修复 c21 竞态）：
+        //       fulfill 会立即 resolve 浏览器侧的 fetch Promise，测试代码随即被唤醒并查询
+        //       getLastApiCall / waitForApi。若 store 在 fulfill 之后，查询线程完全可能
+        //       先于 store 执行 —— 拿到 null 而误判"mock 未生效"。故先 store 再 fulfill。
+        //    ⭐ handleType 显式标记为 MOCK：MOCK 是 terminal（短路），
+        //       不产生真实网络响应，也不叠加 MONITOR 断言（见 RouteHandleType）。
+        storeMockCall(route, rule, url, status, body);
+
+        // ── 7. 返回 Mock 响应（异常安全，失败时 resume 兜底）──────
         try {
             RouteUtil.safeFulfill(route, opts);
             LOGGER.info("[MockHandler] Fulfilled: url={}, pattern='{}', status={}, bodyLength={}",
@@ -126,33 +140,6 @@ public class MockHandler {
                     String.format("Pattern: %s\nStatus: %d\nBody: %s",
                             rule.getUrlPattern(), status,
                             body.length() > 500 ? body.substring(0, 500) + "..." : body));
-
-            // ── 7. 同步存储 Mock 调用到 ApiCaptureContext ───────────────
-            //    ⭐ MOCK 的 route.fulfill() 不发真实网络请求，CDP 旁路看不到响应；
-            //       且测试常在无 awaitCompletion 的情况下直接 getLastApiCall 查询，
-            //       异步投喂存在写出竞态。故此处同步 storeApiCall 确保即时可查。
-            //       （同时关闭 feedCaptureEvent 对 MOCK 的 mockFull 投喂，避免重复存储。）
-            try {
-                String method = route.request().method();
-                Map<String, String> requestHeaders = new HashMap<>(route.request().headers());
-                CapturedApiCall call = new CapturedApiCall(
-                        rule.getUrlPattern(),
-                        method,
-                        requestHeaders,
-                        status,
-                        rule.getMockHeaders() != null ? new HashMap<>(rule.getMockHeaders()) : null,  // Mock 自定义响应头
-                        body,
-                        System.currentTimeMillis(),
-                        url    // 实际请求 URL，用于毫秒级精确检索
-                );
-                ApiCaptureContext ctx = RouteUtil.captureContext(route);
-                ctx.storeApiCall(call);
-                LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                        "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
-                        rule.getUrlPattern(), method, status);
-            } catch (Exception e) {
-                LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
-            }
         } catch (PlaywrightException e) {
             LOGGER.error("[MockHandler] Failed to fulfill route for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
@@ -161,6 +148,34 @@ public class MockHandler {
                 LOGGER.error("[MockHandler] Failed to resume route after fulfill failure for pattern '{}'",
                         rule.getUrlPattern());
             }
+        }
+    }
+
+    /**
+     * 落库纯 Mock 调用的快照（在 fulfill 之前调用，规避 c21 查询竞态）。
+     */
+    private static void storeMockCall(Route route, RouteRule rule, String url, int status, String body) {
+        try {
+            ApiCaptureContext ctx = RouteUtil.captureContext(route);
+            if (ctx == null) return;
+            CapturedApiCall call = new CapturedApiCall(
+                    rule.getUrlPattern(),
+                    route.request().method(),
+                    new HashMap<>(route.request().headers()),
+                    status,
+                    rule.getMockHeaders() != null ? new HashMap<>(rule.getMockHeaders()) : null,
+                    body,
+                    System.currentTimeMillis(),
+                    url,
+                    route.request().postData(),
+                    RouteHandleType.MOCK
+            );
+            ctx.storeApiCall(call);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MockHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}",
+                    rule.getUrlPattern(), call.method(), status);
+        } catch (Exception e) {
+            LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
         }
     }
 
@@ -180,11 +195,14 @@ public class MockHandler {
      * @param url   请求 URL（已缓存，避免重复 JNI 调用）
      */
     private static void handleInterceptRealResponse(Route route, RouteRule rule, String url) {
+        // ⭐ 修复 C-2：url 可能含 token（?token=），统一脱敏后再记录
         LOGGER.info("[MockHandler] Intercepting real response: pattern='{}', url='{}'",
-                rule.getUrlPattern(), url);
+                rule.getUrlPattern(), RouteUtil.sanitizeUrl(url));
 
         Map<String, Object> replaceFields = rule.getMockReplaceFields();
         boolean hasReplaceFields = replaceFields != null && !replaceFields.isEmpty();
+        List<ConditionalFieldRule> conditionalFields = rule.getConditionalFields();
+        boolean hasConditionalFields = conditionalFields != null && !conditionalFields.isEmpty();
 
         // 进入 fetch 前再次确认页面未关闭（避免 handle() 检查后、fetch 阻塞期间页面被关闭）
         if (isPageClosed(route)) {
@@ -234,12 +252,40 @@ public class MockHandler {
                 }
             }
 
-            // ── 3. fulfill 给前端 ────────────────────────────────────
+            // ── 2b. 条件字段修改（仅 interceptRealResponse 模式生效）─────
+            //   当响应里某 JSONPath 满足条件时才修改另一字段，不满足保留原值（不影响其它数据）。
+            //   在 replaceFields 之后独立评估，多个规则可叠加。
+            if (hasConditionalFields && !body.isEmpty()) {
+                try {
+                    LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                            "[MockHandler] Applying {} conditional field rule(s) to real response: {}",
+                            conditionalFields.size(), conditionalFields);
+                    body = ModifyHandler.applyConditionalFields(body, conditionalFields);
+                    LOGGER.info("[MockHandler] Applied {} conditional field rule(s) to real response for pattern '{}'",
+                            conditionalFields.size(), rule.getUrlPattern());
+                } catch (Exception e) {
+                    LOGGER.warn("[MockHandler] Failed to apply conditional fields to real response for pattern '{}': {}",
+                            rule.getUrlPattern(), e.getMessage());
+                    // 失败不阻塞 — 使用现有响应体
+                }
+            }
+
+            // ── 3. 同步存储（⭐ 必须在 fulfill 之前，规避 c21 查询竞态）──────
+            //    ⭐ 拦截真实响应模式下，请求由 route.fetch() 在 route 内部发出，
+            //       浏览器侧不会为它生成独立的网络响应事件（响应由 fulfill 直接注入），
+            //       因此没有任何其它通道会记录本次调用 —— 必须在此同步落库。
+            //    ⭐ handleType = MOCK：最终对外响应是 fulfill 注入的（已替换字段），
+            //       对前端与查询方而言这是一次 mock 响应，非真实网络响应。
+            //    ⭐ 时序同纯 Mock 分支：fulfill 会立即 resolve 浏览器侧 fetch，
+            //       先 store 才能保证调用方唤醒后查得到。
+            storeInterceptedCall(route, rule, url, status, body, realResp.headers());
+
+            // ── 4. fulfill 给前端 ────────────────────────────────────
             // 【对齐 Playwright】无字段替换且无自定义响应头时，直接透传真实响应：
             //   fulfill(setResponse(realResp)) 保留全部真实响应头，且 Playwright 协议层
             //   对 fetch 结果做 fetchResponseUid 优化（同连接不重复传 body）。
             boolean hasCustomHeaders = rule.getMockHeaders() != null && !rule.getMockHeaders().isEmpty();
-            if (!hasReplaceFields && !hasCustomHeaders) {
+            if (!hasReplaceFields && !hasConditionalFields && !hasCustomHeaders) {
                 route.fulfill(new Route.FulfillOptions().setResponse(realResp));
                 routeSettled = true;
                 LOGGER.info("[MockHandler] Fulfilled real response (passthrough): url={}, pattern='{}', status={}, bodyLength={}",
@@ -274,8 +320,6 @@ public class MockHandler {
                         RouteUtil.sanitizeUrl(url), rule.getUrlPattern(), status, body.length());
             }
 
-            // ⭐ 存储统一交给 capture 目录：intercept 用 route.fetch 发真实请求，CDP 旁路可捕获；
-            //    不再重复 storeInterceptedCall，消除重复存储。
         } catch (PlaywrightException e) {
             LOGGER.error("[MockHandler] Failed to intercept real response for pattern '{}': {}",
                     rule.getUrlPattern(), e.getMessage(), e);
@@ -293,6 +337,39 @@ public class MockHandler {
                         + "resuming to honor route lifecycle contract: pattern='{}'", rule.getUrlPattern());
                 try { route.resume(); } catch (Exception ignored) { }
             }
+        }
+    }
+
+    /**
+     * 落库「拦截真实响应后改写」的调用快照。
+     *
+     * <p>存储的是<b>改写后的最终响应</b>（即前端实际收到的内容），
+     * 与纯 Mock 分支一致地标记为 {@link RouteHandleType#MOCK}。
+     */
+    private static void storeInterceptedCall(Route route, RouteRule rule, String url,
+                                             int status, String body,
+                                             Map<String, String> realRespHeaders) {
+        try {
+            ApiCaptureContext ctx = RouteUtil.captureContext(route);
+            if (ctx == null) return;
+            CapturedApiCall call = new CapturedApiCall(
+                    rule.getUrlPattern(),
+                    route.request().method(),
+                    new HashMap<>(route.request().headers()),
+                    status,
+                    realRespHeaders != null ? new HashMap<>(realRespHeaders) : null,
+                    body,
+                    System.currentTimeMillis(),
+                    url,
+                    route.request().postData(),
+                    RouteHandleType.MOCK
+            );
+            ctx.storeApiCall(call);
+            LoggingConfigUtil.logDebugIfVerbose(LOGGER,
+                    "[MockHandler] Stored intercepted call: endpoint='{}', status={}",
+                    rule.getUrlPattern(), status);
+        } catch (Exception e) {
+            LOGGER.debug("[MockHandler] Failed to store intercepted call: {}", e.getMessage());
         }
     }
 

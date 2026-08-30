@@ -18,7 +18,6 @@
         <serenity.cucumber.version>4.3.4</serenity.cucumber.version>
         <playwright.version>1.58.0</playwright.version>
         <junit.version>4.13.2</junit.version>
-        <cucumber.version>7.14.0</cucumber.version>
 
         <typesafe.config.version>1.4.2</typesafe.config.version>
         <gson.version>2.10.1</gson.version>
@@ -143,6 +142,17 @@
         </dependency>
         
         <!-- Spring Context for @Autowired support -->
+        <!-- ⭐ 修复 P3-33：commons-lang3 原先未在 pom 中显式声明，仅靠传递依赖拉入，
+             构建脆弱（传递路径一变就可能编译失败）；且实际解析到的是 2014 年的 3.3.1，
+             存在若干已知 CVE。这里显式声明并升级到 3.17.0。
+             兼容性：项目仅使用 org.apache.commons.lang3.StringUtils（6 处，均在 api 模块），
+             其核心 API 在 3.x 全系列保持稳定向后兼容，升级风险可控。 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>3.17.0</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-context</artifactId>
@@ -166,11 +176,19 @@
             <version>${json.version}</version>
         </dependency>
 
-        <!-- Selenium support (required by Serenity internally) -->
+        <!-- Selenium support (required by Serenity internally)
+             ⭐ 修复 P1-12：原实现从 serenity-core / serenity-cucumber 排除全部 selenium-*，
+             再显式钉死 selenium-support:4.15.0。但 Serenity 4.3.4 官方配套的是
+             selenium.version=4.38.0（见 serenity-bdd:4.3.4 父 POM）——4.15.0 与 4.38.0
+             相隔 23 个 minor 版本，Serenity 内部类引用的 Selenium API 在 4.15.0 上可能
+             并不存在，运行时会以 NoSuchMethodError / NoClassDefFoundError 的形式暴露。
+             这里对齐到 Serenity 官方配套的 4.38.0。
+             注：排除 Serenity 自带 selenium 是为配合 Playwright 做依赖瘦身，该意图保留；
+             但"手动钉的版本"必须与 Serenity 期望的一致，否则瘦身即埋雷。 -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-support</artifactId>
-            <version>4.15.0</version>
+            <version>4.38.0</version>
         </dependency>
 
         <!-- ==================== Playwright ==================== -->
@@ -256,7 +274,11 @@
                 </configuration>
             </plugin>
 
-            <!-- 确保 surefire 支持 JUnit5 -->
+            <!-- ⭐ 修复 P1-13：原注释写"确保 surefire 支持 JUnit5"，与事实不符。
+                 本项目实际使用 JUnit 4.13.2（见 <junit.version> 与 serenity-junit），
+                 并未引入 junit-jupiter / junit-platform，因此不存在 JUnit5 场景。
+                 该矛盾注释会误导维护者按 JUnit5 的思路排查问题。
+                 说明：surefire 2.x/3.x 原生同时支持 JUnit4 与 JUnit5，此处无需额外适配。 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
@@ -267,6 +289,23 @@
                         <include>**/*Test.java</include>
                     </includes>
                     <useModulePath>false</useModulePath>
+                    <!-- ⭐ 修复 D-1：原配置无全局超时，单个用例 driver.quit 阻塞/死锁会让整个套件挂起、CI 永不返回。
+                         forkedProcessTimeoutInSeconds 在 fork 的 JVM 整体超时（含所有用例）后强制 kill 并打印线程栈，
+                         避免 CI 永久等待。300s 为单次运行上限，可按项目规模调整。 -->
+                    <!-- ⚠️ 定位说明：本值是【防死锁的最后防线】，不是时间预算，
+                         请勿靠调大它来"让慢测试跑完"。
+                         它触发时会【强杀整个 fork JVM】：未完成的用例结果全部丢失，
+                         并且会把"被中断"误报成失败（曾出现 300s 触发产生一批假失败，
+                         被误判为代码回归）。
+                         真正的用例级保护请用 JUnit 的 @Rule Timeout / @Test(timeout=...)，
+                         它只失败单个用例且能精确定位，不影响其余结果。
+                         实测 384 个用例中 280+ 个纯单元测试≈0s，耗时集中在 4 个
+                         真实浏览器测试类（合计约 335s），故此处留足约 5 倍余量。 -->
+                    <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                    <!-- 单 fork JVM 跑全部用例（forkCount=1 reuseForks=true），超时兜底防止单用例死锁拖垮整轮；
+                         若需更强的用例级隔离，可改 reuseForks=false（代价是启动更慢）。 -->
+                    <forkCount>1</forkCount>
+                    <reuseForks>true</reuseForks>
                     <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang.reflect=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
@@ -279,6 +318,11 @@
                     <useFile>false</useFile>
                     <rerunFailingTestsCount>${rerunFailingTestsCount}</rerunFailingTestsCount>
                     <forkCount>1</forkCount>
+                    <!-- ⭐ 修复 A1：failsafe 运行 Cucumber 主流程（*IT / CucumberTestRunner），
+                         原配置无全局超时，Playwright 导航/采集阻塞会让整轮 CI 永久挂起。
+                         该超时作用于 fork 的 JVM 整体（含全部 scenario），超时后强制 kill 并打印线程栈。
+                         600s 为单次运行上限，可按项目规模调整。 -->
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                     <includes>
                         <include>**/*IT.java</include>
                         <include>**/integration/**/*Test.java</include>

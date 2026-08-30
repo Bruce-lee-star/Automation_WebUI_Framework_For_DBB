@@ -3,8 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 框架配置管理器
@@ -14,16 +14,20 @@ import java.util.Map;
  * 2. 配置验证
  * 3. 动态配置更新
  * 4. 配置缓存和刷新
+ * <p>
+ * 并发契约：本类是全局共享的静态工具类，{@code getValue()/setValue()} 会在每次
+ * {@code getPage()/getContext()} 时被多个 scenario 线程并发调用，因此缓存必须是并发容器，
+ * 且缓存开关的写入必须对其他线程立即可见。
  */
 public class FrameworkConfigManager {
     
     private static final Logger logger = LoggerFactory.getLogger(FrameworkConfigManager.class);
     
-    // 配置缓存
-    private static final Map<FrameworkConfig, Object> configCache = new HashMap<>();
+    // 配置缓存（并发安全。注意：ConcurrentHashMap 不接受 null 值，见 getValue/setValue 的 null 处理）
+    private static final Map<FrameworkConfig, Object> configCache = new ConcurrentHashMap<>();
     
-    // 是否启用缓存
-    private static boolean cacheEnabled = true;
+    // 是否启用缓存（volatile：保证 enableCache()/disableCache() 的写入对其他线程立即可见）
+    private static volatile boolean cacheEnabled = true;
     
     /**
      * 私有构造函数，防止实例化
@@ -38,16 +42,27 @@ public class FrameworkConfigManager {
      */
     @SuppressWarnings("unchecked")
     public static <T> T getValue(FrameworkConfig config) {
-        if (cacheEnabled && configCache.containsKey(config)) {
-            return (T) configCache.get(config);
+        if (!cacheEnabled) {
+            return (T) resolve(config);
         }
-        
-        T value = config.mapValue(v -> {
+        // 原实现的 containsKey→get→put 是 check-then-act：多线程并发读写裸 HashMap 会造成
+        // 结构性损坏（丢条目 / 扩容死循环 / ConcurrentModificationException）。
+        // 改用原子 computeIfAbsent；映射函数返回 null 时不写入条目，语义等价于原先
+        // "解析失败(null) 不入缓存、下次重算"，且天然满足 ConcurrentHashMap 的 non-null 约束。
+        return (T) configCache.computeIfAbsent(config, FrameworkConfigManager::resolve);
+    }
+
+    /**
+     * 解析配置的原始值（缓存未命中时调用）。解析失败返回 null。
+     */
+    @SuppressWarnings("unchecked")
+    private static Object resolve(FrameworkConfig config) {
+        return config.mapValue(v -> {
             // 尝试按类型解析
-            if (config.getKey().toLowerCase().contains("timeout") || 
+            if (config.getKey().toLowerCase().contains("timeout") ||
                 config.getKey().toLowerCase().contains("wait")) {
                 try {
-                    return (T) Integer.valueOf(v);
+                    return (Object) Integer.valueOf(v);
                 } catch (NumberFormatException e) {
                     logger.warn("Failed to parse integer value for {}: {}", config.getKey(), v);
                     return null;
@@ -55,16 +70,10 @@ public class FrameworkConfigManager {
             }
             if (config.getKey().toLowerCase().contains("enabled") ||
                 config.getKey().toLowerCase().contains("has")) {
-                return (T) Boolean.valueOf(v);
+                return (Object) Boolean.valueOf(v);
             }
-            return (T) v;
+            return (Object) v;
         });
-        
-        if (cacheEnabled) {
-            configCache.put(config, value);
-        }
-        
-        return value;
     }
 
     /**
@@ -170,7 +179,13 @@ public class FrameworkConfigManager {
     public static void setValue(FrameworkConfig config, String value) {
         config.setValue(value);
         if (cacheEnabled) {
-            configCache.put(config, value);
+            // ConcurrentHashMap 不接受 null 值：null 表示"无可缓存值"，移除旧缓存条目，
+            // 使下次 getValue() 重新解析，而不是抛出 NullPointerException。
+            if (value != null) {
+                configCache.put(config, value);
+            } else {
+                configCache.remove(config);
+            }
         }
         logger.debug("Updated config: {} = {}", config.getKey(), value);
     }

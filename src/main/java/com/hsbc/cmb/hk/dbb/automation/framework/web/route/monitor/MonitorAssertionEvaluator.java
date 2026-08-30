@@ -36,7 +36,9 @@ public final class MonitorAssertionEvaluator {
             if (response.bodyAvailability() == BodyAvailability.UNAVAILABLE
                     || response.bodyAvailability() == BodyAvailability.NOT_REQUESTED) {
                 if (context != null) {
-                    context.recordAssertionFailure(response.url(), "BODY_UNAVAILABLE", "JSON body",
+                    // ⭐ 修复 B-5：response.url() 可能含 token（?token=），存入断言失败记录（最终进入报告/日志）
+                    //   前先脱敏，避免敏感信息泄露到测试报告。
+                    context.recordAssertionFailure(RouteUtil.sanitizeUrl(response.url()), "BODY_UNAVAILABLE", "JSON body",
                             response.bodyAvailability().name(), "body required by JSONPath assertion");
                 }
                 return false;
@@ -46,7 +48,8 @@ public final class MonitorAssertionEvaluator {
                     Object actual = jsonPath(entry.getKey()).read(response.body());
                     if (!compare(actual, entry.getValue())) {
                         if (context != null) {
-                            context.recordAssertionFailure(response.url(), "JSONPATH",
+                            // ⭐ 修复 B-5：response.url() 脱敏后再存入断言失败记录
+                            context.recordAssertionFailure(RouteUtil.sanitizeUrl(response.url()), "JSONPATH",
                                     String.valueOf(entry.getValue()), String.valueOf(actual),
                                     "path=" + entry.getKey());
                         }

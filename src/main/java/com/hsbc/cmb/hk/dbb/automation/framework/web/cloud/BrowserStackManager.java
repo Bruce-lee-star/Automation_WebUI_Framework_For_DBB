@@ -638,12 +638,12 @@ public class BrowserStackManager {
 
     private static String maskCdpUrl(String url) {
         if (url == null) return null;
-        String masked = url.replaceAll("(\\w+):([^@]+)@", "$1:****@");
-        // URL query 参数里也可能携带 accessKey（如 caps=...&accessKey=...）
-        masked = masked.replaceAll("(?i)([?&](?:accessKey|key|token|password|pwd)=)[^&]*", "$1****");
-        // ⭐ 修复 3-1：BrowserStack WS URL 中 accessKey 嵌套在 URLEncode JSON 的 caps value 内
-        // （如 caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D），上面 query 正则匹配不到。
-        // 先做 URLDecode，再走 sanitizeMessage 同款的 JSON key=value 兜底。
+        // ⭐ 修复 R8：统一委托 RouteUtil.sanitizeUrl（含 query 敏感 key 剥离 + 解析失败兜底掩码），
+        // 不再维护独立正则，避免与框架其它出域路径的脱敏策略漂移。
+        String masked = com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil.sanitizeUrl(url);
+        // ⭐ 修复 3-1 + R8：BrowserStack WS URL 特有形态——accessKey 嵌套在 URLEncode JSON 的 caps value 内
+        // （如 caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D），RouteUtil 的 query 正则匹配不到。
+        // 此兜底仅针对该特有形态，保持公共脱敏类的职责单一。
         masked = maskNestedEncodedCredential(masked);
         return masked;
     }
@@ -688,16 +688,14 @@ public class BrowserStackManager {
     /**
      * 脱敏异常/日志消息中的凭据（wss:// / https?:// 中的密码、accessKey）。
      * <p>用于防止 Playwright 内部异常消息（含完整 CDP URL）被日志打印出去。
-     * <p>正则匹配 {@code scheme://user:secret@host}，将 secret 替换为 {@code ****}。
-     * <p>兼容 URL 编码后的密码（如 {@code pass%40word}），因为正则用 {@code [^@]+} 匹配。
+     * <p>⭐ 修复 R8：统一委托框架公共脱敏类 {@code SensitiveDataSanitizer.sanitizeFreeText}，
+     * 覆盖 {@code scheme://user:secret@}、query/JSON key=value、Bearer/JWT、超深嵌套 JSON，
+     * 不再维护 BrowserStack 私有的双套正则，避免与全局脱敏策略漂移。
      */
     public static String sanitizeMessage(String message) {
         if (message == null || message.isEmpty()) return message;
-        // 匹配 scheme://user:secret@ — secret 可含 %-encoded 字符、特殊字符
-        String masked = message.replaceAll("(wss|https?://)([^:]+):([^@]+)@", "$1$2:****@");
-        // 兜底：query/JSON 里也常有 accessKey=secret 这种 key=value 形式
-        masked = masked.replaceAll("(?i)(\"?(?:accessKey|access_key|apiKey|api_key|password|token|secret)\"?(?:\\s*[:=]\\s*\"?))[^&\"\\s,}]+", "$1****");
-        return masked;
+        return com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer
+                .sanitizeFreeText(message);
     }
 
     /**

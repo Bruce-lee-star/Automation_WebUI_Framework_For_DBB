@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
 import com.typesafe.config.Config;
 import org.slf4j.Logger;
@@ -19,6 +20,13 @@ public class EntityBuilder {
      * @throws IllegalArgumentException if entityName is null or empty
      */
     public static Entity build(String entityName) {
+        return buildInternal(entityName, null);
+    }
+
+    /**
+     * 内部构建实现：env 作为显式参数一路传递，不写入任何全局状态。
+     */
+    private static Entity buildInternal(String entityName, String env) {
         // Validate entity name is not null or empty
         if (entityName == null || entityName.trim().isEmpty()) {
             String errorMsg = "Entity name is required! Cannot build empty entity.";
@@ -33,8 +41,8 @@ public class EntityBuilder {
         LOGGER.info("Start building entity, entity name: {}", entityName);
 
         try {
-            // Load configuration for this entity
-            Config config = ConfigProvider.config(entity);
+            // Load configuration for this entity（env 显式传入，不再依赖 JVM 全局属性）
+            Config config = ConfigProvider.config(entity, env);
             if (config == null || config.isEmpty()) {
                 String errorMsg = "Loaded configuration is empty, entity name: " + entityName;
                 LOGGER.error(errorMsg);
@@ -43,7 +51,9 @@ public class EntityBuilder {
 
             // Build final entity (copy constructor + auto load headers etc.)
             Entity builtEntity = new Entity(entity);
-            LOGGER.info("Entity built successfully, headers: {}", builtEntity.getRequestHeaders());
+            // ⭐ 修复 P2-26：headers 可能含 Authorization / 会话 token，日志必须脱敏后再输出
+            LOGGER.info("Entity built successfully, headers: {}",
+                    ApiLogSanitizer.toLogString(builtEntity.getRequestHeaders()));
             return builtEntity;
 
         } catch (IllegalArgumentException e) {
@@ -66,14 +76,14 @@ public class EntityBuilder {
      * @throws IllegalArgumentException if entityName is null or empty
      */
     public static Entity build(String entityName, String env) {
-        // Set environment if provided
-        if (env != null && !env.trim().isEmpty()) {
-            System.setProperty(Constants.ENV, env.trim());
-            LOGGER.info("Setting environment to: {}", env);
+        // ⭐ 修复 P2-21：原实现通过 System.setProperty(Constants.ENV, env) 写入【JVM 全局】属性，
+        //    并行 scenario 下线程 A 设置的环境会被线程 B 读到，造成配置串扰且极难排查。
+        //    改为把 env 作为显式参数传递，仅对本次构建生效，不再触碰任何全局状态。
+        String normalizedEnv = (env == null || env.trim().isEmpty()) ? null : env.trim();
+        if (normalizedEnv != null) {
+            LOGGER.info("Building entity '{}' with environment override: {}", entityName, normalizedEnv);
         }
-
-        // Call the original build method
-        return build(entityName);
+        return buildInternal(entityName, normalizedEnv);
     }
 
     /**

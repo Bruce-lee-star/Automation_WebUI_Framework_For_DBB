@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.capture.EventMerger;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
@@ -21,6 +20,9 @@ import java.util.Map;
 /** 负责 Monitor 结果的单次记录和匹配计数，不依赖浏览器对象。 */
 public final class MonitorResultRecorder {
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorResultRecorder.class);
+
+    /** ⭐ 单次采集存储的响应体字节上限（防止超大响应体打爆内存）。 */
+    private static final int MAX_CAPTURE_BODY_BYTES = 2 * 1024 * 1024;
 
     private MonitorResultRecorder() {
     }
@@ -76,9 +78,9 @@ public final class MonitorResultRecorder {
     private static StoredBody limitStoredBody(String body) {
         if (body == null) return new StoredBody(null, false, 0L);
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        if (bytes.length <= EventMerger.MAX_CAPTURE_BODY_BYTES) return new StoredBody(body, false, bytes.length);
+        if (bytes.length <= MAX_CAPTURE_BODY_BYTES) return new StoredBody(body, false, bytes.length);
         // 避免截断 UTF-8 多字节序列：先按字节截取再以 UTF-8 解码，替换不完整尾部字符。
-        String limited = new String(bytes, 0, EventMerger.MAX_CAPTURE_BODY_BYTES, StandardCharsets.UTF_8);
+        String limited = new String(bytes, 0, MAX_CAPTURE_BODY_BYTES, StandardCharsets.UTF_8);
         return new StoredBody(limited, true, bytes.length);
     }
 

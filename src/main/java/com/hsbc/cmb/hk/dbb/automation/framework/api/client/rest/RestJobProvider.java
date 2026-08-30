@@ -167,38 +167,54 @@ public class RestJobProvider extends AbstractApiJobHelper {
         this.getEntity().setRequestPayload(requestBody);
     }
 
+    /**
+     * @deprecated ⭐ 修复 P3-31：命名与全框架不一致（其余各处均为 {@code setEndpoint}，
+     *             见 {@code Entity} / {@code AbstractApiJobHelper} / {@code BaseStep}）。
+     *             本类继承自 {@link AbstractApiJobHelper}，后者的 {@code setEndpoint(String)}
+     *             已提供同名字段的能力，两者重复；且经全仓库检索，本方法<b>无任何调用点</b>。
+     *             请改用 {@code setEndpoint(...)}。本方法仅为兼容保留，后续版本将移除。
+     *             （保留原有"自动补前导 /"的行为，避免兼容期语义变化。）
+     */
+    @Deprecated
     public void setEndPoint(final String endPoint){
-        if(endPoint.startsWith("/")){
-            this.getEntity().setEndpoint(endPoint);
-        }else {
-            this.getEntity().setEndpoint("/" + endPoint);
-        }
+        setEndpoint(endPoint != null && endPoint.startsWith("/") ? endPoint : "/" + endPoint);
     }
 
+    /**
+     * @deprecated ⭐ 修复 P3-31：命名不一致（应为 {@code getEndpoint}），且无调用点。
+     *             请改用继承自 {@link AbstractApiJobHelper#getEndpoint()} 的同名方法。
+     */
+    @Deprecated
     public String getEndPoint(){
-        return this.getEntity().getEndpoint();
+        return getEndpoint();
     }
 
+    /**
+     * ⭐ 修复 P2-24：原实现查到配置值后<b>只打印一条 warn 就返回</b>，是彻底的 no-op ——
+     * 调用方会误以为 basePath 已切换，实际 Entity 上的值毫无变化，属于典型的"静默失败"，
+     * 排查成本极高。现改为真正写入 Entity，使方法名与行为一致。
+     */
     public void switchBasePath(final String key){
         final String basePath = ConfigProvider.getConfig(ConfigKeys.API_BASE_PATH.toString()).getString(key);
         if (basePath == null || basePath.isEmpty()) {
             LOGGER.warn("switchBasePath({}) — key not found under {}", key, ConfigKeys.API_BASE_PATH);
             return;
         }
-        // 仅记录候选值；运行时 basePath 通过 Entity.setBasePath 注入（Entity 优先级最高）。
-        // 此方法保留为占位 —— 调用方在切换后应重置 Entity。
-        LOGGER.warn("switchBasePath({}) -> [{}]. Reminder: re-create Entity/BaseStep to apply the change.",
-                key, basePath);
+        this.getEntity().setBasePath(basePath);
+        LOGGER.info("switchBasePath({}) applied -> {}", key, basePath);
     }
 
+    /**
+     * ⭐ 修复 P2-24：同 {@link #switchBasePath(String)}，原为 no-op，现真正写入 Entity。
+     */
     public void switchBaseUri(final String key){
         final String baseUri = ConfigProvider.getConfig(ConfigKeys.API_BASE_URI.toString()).getString(key);
         if (baseUri == null || baseUri.isEmpty()) {
             LOGGER.warn("switchBaseUri({}) — key not found under {}", key, ConfigKeys.API_BASE_URI);
             return;
         }
-        LOGGER.warn("switchBaseUri({}) -> [{}]. Reminder: re-create Entity/BaseStep to apply the change.",
-                key, baseUri);
+        this.getEntity().setBaseUri(baseUri);
+        LOGGER.info("switchBaseUri({}) applied -> {}", key, baseUri);
     }
 
 }

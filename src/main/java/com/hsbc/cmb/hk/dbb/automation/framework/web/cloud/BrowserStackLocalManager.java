@@ -118,6 +118,13 @@ public class BrowserStackLocalManager {
                 logger.debug("[BS Local] No proxy configured, tunnel will connect directly");
             }
 
+            // ⭐ 修复 C-5（防御性）：BrowserStackLocal 启动命令含 --key=<secret>（L83-84）。
+            //   当前日志仅打印 binaryPath/identifier（L124），不打印完整 command，故无明文泄露。
+            //   但子进程（binary）可能将命令行回显到 stderr（已 redirectErrorStream(true) 汇入框架日志流），
+            //   框架层无法拦截子进程输出。若将来需要记录完整命令用于排障，必须先用 maskKey 脱敏：
+            //       String maskedCmd = command.stream().map(a -> a.startsWith("--key=")
+            //           ? "--key=***" : a).collect(Collectors.joining(" "));
+            //   此处保持不打印 command，从根源规避泄露。
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.redirectErrorStream(true);
 

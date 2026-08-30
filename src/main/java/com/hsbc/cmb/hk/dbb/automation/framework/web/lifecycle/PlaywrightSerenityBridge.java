@@ -104,15 +104,19 @@ class PlaywrightSerenityBridge {
     // ==================== 自定义配置重置 ====================
 
     /**
-     * 重置所有自定义配置（核心：保证下一个场景默认不继承）
+     * 重置所有自定义配置（核心：保证下一个场景默认不继承）。
+     * <p>
+     * ⭐ 修复 P3-29：原实现先判断 {@code !browser().isConnected()} 并打印
+     * “Cannot reset custom options: Context is still in use. Clearing anyway.”，
+     * 随后却<b>无条件</b>执行 {@code cleanupThreadLocals(true)} ——
+     * 该告警分支形同虚设，且措辞自相矛盾（先说 Cannot reset，又说 Clearing anyway），
+     * 会误导排障者以为"清理没生效、配置被继承了"。
+     * <p>
+     * 事实上无论浏览器是否仍连接，这些 ThreadLocal 都必须清理：否则线程复用时既泄漏，
+     * 又会让下一个场景误继承上一个场景的自定义配置。故直接删除该死分支。
      */
     static void resetCustomContextOptions() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Resetting custom context options for next scenario...");
-        BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
-        if (existingContext != null && !existingContext.browser().isConnected()) {
-            LoggingConfigUtil.logWarnIfVerbose(logger,
-                    "Cannot reset custom options: Context is still in use. Clearing anyway.");
-        }
         cleanupThreadLocals(true);
         LoggingConfigUtil.logInfoIfVerbose(logger, "Custom context options reset completed");
     }
@@ -387,14 +391,19 @@ class PlaywrightSerenityBridge {
 
         String restartStrategy = PlaywrightManager.config().getRestartStrategy();
         if ("feature".equalsIgnoreCase(restartStrategy)) {
+            // ⭐ 修复 P3-35：原实现用 if/else 区分"context 为空或浏览器已断开"与"context 存在"，
+            //   但两个分支<b>都只打印日志</b>，没有任何实际行为差异；且注释声称
+            //   "pre-creating Context" 却并未真的创建 Context，属误导性代码。
+            //   Context 的创建是懒加载的（首次 getContext() 时按需建立），此处不应预判，
+            //   故合并为一条如实反映当前状态的日志。
             BrowserContext context = PlaywrightManager.contextThreadLocal.get();
-            if (context == null || (context.browser() != null && !context.browser().isConnected())) {
-                LoggingConfigUtil.logInfoIfVerbose(logger,
-                        "Feature mode: pre-creating Context for feature-level reuse");
-            } else {
-                LoggingConfigUtil.logInfoIfVerbose(logger,
-                        "Feature mode: Context already exists, will be reused across scenarios");
-            }
+            boolean reusable = context != null
+                    && context.browser() != null
+                    && context.browser().isConnected();
+            LoggingConfigUtil.logInfoIfVerbose(logger,
+                    "Feature mode: Context {} (Contexts are created lazily on first use)",
+                    reusable ? "exists and will be reused across scenarios"
+                            : "is not created yet — it will be built lazily on first use");
         }
         LoggingConfigUtil.logInfoIfVerbose(logger, "Feature initialization completed");
     }

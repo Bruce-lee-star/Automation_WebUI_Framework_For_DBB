@@ -16,6 +16,8 @@ import java.util.HashSet;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -55,6 +57,60 @@ public class SessionManager {
                 t.setDaemon(true);
                 return t;
             });
+
+    // ⭐ 修复 A7：注册 JVM 关闭钩子，优雅收回 IO 守卫线程。
+    //    原实现是静态单线程池且从不 shutdown：守护线程虽不阻止 JVM 退出，但队列中
+    //    已提交却未执行的 session IO（saveSession 落盘）会被静默丢弃，导致"本应缓存的
+    //    登录态丢失、下次跑批重新登录"。显式关闭可保证已提交任务排空。
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            SESSION_IO_EXECUTOR.shutdown();
+            try {
+                if (!SESSION_IO_EXECUTOR.awaitTermination(2, TimeUnit.SECONDS)) {
+                    SESSION_IO_EXECUTOR.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                SESSION_IO_EXECUTOR.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }, "session-io-shutdown-hook"));
+    }
+
+    // ==================== 同 user 登录单飞（single-flight） ====================
+    // 防止并行 scenario / 跨 feature 同 sessionKey 并发 restoreSession 时，两个线程都看到
+    // "session 文件不存在" 而各自登录 → 服务端（单会话策略）把对端踢下线。
+    // 约定：首个进入的线程（leader）执行真实登录并在 saveSession 成功后 complete；其余线程（follower）
+    // 阻塞等待 leader 完成，成功后直接复用已落盘的 storageState，不再触发第二次登录。
+    // 注意：仅 FileChannel 锁无法跨 JVM；本协调基于 JVM 内静态 Map，覆盖 Serenity 单 JVM 多线程并行
+    // （forkCount=0）这一主场景。多 JVM（forkCount>0）需额外文件锁兜底。
+    private static final long SINGLE_FLIGHT_TIMEOUT_MS = 60_000L;
+    private static final ConcurrentHashMap<String, LoginGuard> loginGuards = new ConcurrentHashMap<>();
+
+    /**
+     * 单飞守卫：leader 登录完成后 {@link #complete(boolean)} 释放，follower 通过 {@link #await(long)} 等待。
+     */
+    private static final class LoginGuard {
+        private final CountDownLatch latch = new CountDownLatch(1);
+        private volatile boolean success;
+
+        boolean await(long ms) {
+            try {
+                return latch.await(ms, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
+        void complete(boolean ok) {
+            success = ok;
+            latch.countDown();
+        }
+
+        boolean isSuccess() {
+            return success;
+        }
+    }
 
     // ==================== Feature 级别 Session 缓存 ====================
     // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
@@ -313,7 +369,81 @@ public class SessionManager {
         } else {
             LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "No valid session for: {}, waiting for login", sessionKey);
+
+            // ⭐ 单飞协调：同 sessionKey 并发"未命中"时只允许一个线程真实登录，
+            //   否则两个线程都会看到"无 session 文件"而各自登录，触发服务端单会话策略把对端踢下线。
+            LoginGuard guard = acquireOrAwait(sessionKey);
+            if (guard == null) {
+                // 本线程是 leader：返回 false 交由业务层登录，
+                // 登录成功后 saveSession() 会释放守卫并唤醒 follower。
+                return false;
+            }
+
+            // follower：leader 已结束（成功落盘 / 失败 / 超时）
+            if (guard.isSuccess() && hasSession(sessionKey)) {
+                String leaderHomeUrl = loadHomeUrl(sessionKey);
+                if (leaderHomeUrl != null && !leaderHomeUrl.isEmpty()) {
+                    Path sessionPath = getSessionPath(sessionKey);
+                    PlaywrightManager.customOptions().setStorageStatePath(sessionPath);
+                    if ("feature".equalsIgnoreCase(restartStrategy)) {
+                        markFeatureSessionRestored(sessionKey, leaderHomeUrl);
+                    }
+                    LoggingConfigUtil.logInfoIfVerbose(LOGGER,
+                        "Reusing session persisted by single-flight leader: {}", sessionKey);
+                    return true;
+                }
+            }
+
+            // leader 登录失败或落盘不可读 → 摘除失效守卫，本线程接替为 leader 自行登录
+            loginGuards.remove(sessionKey, guard);
+            LoggingConfigUtil.logWarnIfVerbose(LOGGER,
+                "Single-flight leader did not produce a usable session for {} — this thread will login", sessionKey);
             return false;
+        }
+    }
+
+    /**
+     * 单飞协调：为同一 sessionKey 竞争"登录权"。
+     *
+     * @return {@code null} 表示本线程是 leader（应执行真实登录，并在成功后调用
+     *         {@link #saveSession(String, String)} 释放守卫）；非 null 表示本线程是 follower
+     *         且已等到 leader 结束，调用方需检查 {@link LoginGuard#isSuccess()} 与 session 可用性。
+     */
+    private static LoginGuard acquireOrAwait(String sessionKey) {
+        if (sessionKey == null) {
+            return null;
+        }
+        LoginGuard candidate = new LoginGuard();
+        LoginGuard existing = loginGuards.putIfAbsent(sessionKey, candidate);
+        if (existing == null) {
+            return null; // 本线程是 leader
+        }
+
+        boolean completed = existing.await(SINGLE_FLIGHT_TIMEOUT_MS);
+        if (!completed) {
+            // leader 超时未落盘（登录失败/被中断/业务层未调 saveSession）：
+            // 摘除失效守卫，避免后续线程被一个已死的守卫永久阻塞；本线程接替为 leader。
+            loginGuards.remove(sessionKey, existing);
+            LOGGER.warn("[SessionManager] Timed out {}ms waiting for concurrent login of sessionKey={} "
+                    + "→ proceeding as leader", SINGLE_FLIGHT_TIMEOUT_MS, sessionKey);
+            return null;
+        }
+        return existing; // follower：leader 已结束
+    }
+
+    /**
+     * 释放单飞守卫并唤醒所有等待同一 sessionKey 的 follower。
+     *
+     * @param sessionKey session 标识
+     * @param success    leader 是否成功落盘 session
+     */
+    private static void completeLoginGuard(String sessionKey, boolean success) {
+        if (sessionKey == null) {
+            return;
+        }
+        LoginGuard guard = loginGuards.remove(sessionKey);
+        if (guard != null) {
+            guard.complete(success);
         }
     }
 
@@ -363,7 +493,12 @@ public class SessionManager {
 
             LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "Session saved successfully: {} -> {}", sessionKey, sessionPath);
+
+            // ⭐ 释放单飞守卫：唤醒等待同一 sessionKey 的并发线程复用刚落盘的 storageState
+            completeLoginGuard(sessionKey, true);
         } catch (Exception e) {
+            // 登录/落盘失败同样必须释放守卫，否则 follower 会一直阻塞到 SINGLE_FLIGHT_TIMEOUT_MS
+            completeLoginGuard(sessionKey, false);
             LOGGER.error("Failed to save session for: {}", sessionKey, e);
             throw new RuntimeException("Failed to save session", e);
         }
@@ -392,6 +527,11 @@ public class SessionManager {
      */
     public static boolean clearSession(String sessionKey) {
         try {
+            // ⭐ 单飞守卫兜底：session 被显式清除后，在途 leader 即将落盘的 storageState
+            //    对应的正是这份被删的 session，等待它已无意义。先释放守卫（标记失败），
+            //    让 follower 立即自行登录，而不是白等到 SINGLE_FLIGHT_TIMEOUT_MS。
+            completeLoginGuard(sessionKey, false);
+
             Path sessionPath = getSessionPath(sessionKey);
             Path metaPath = getMetaPath(sessionKey);
             

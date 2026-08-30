@@ -20,8 +20,11 @@ public interface RouteHandler {
     /**
      * 处理单个路由请求。
      *
-     * @param route Playwright Route 对象
-     * @param rule  匹配到的路由规则
+     * @param route   Playwright Route 对象
+     * @param rule    匹配到的路由规则
+     * @param delayMs 已合并的有效延迟（毫秒）；0 表示无延迟。实现应在事件线程内通过
+     *                {@code page.waitForResponse} 的 action 回调把 resume 调度到延迟线程，
+     *                而非阻塞事件线程（B 方案：观测统一在事件线程，resume 经延迟线程驱动）。
      */
-    void handle(Route route, RouteRule rule);
+    void handle(Route route, RouteRule rule, long delayMs);
 }

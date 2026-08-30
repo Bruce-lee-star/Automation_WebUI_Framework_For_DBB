@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,14 +91,23 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
                 testRunId = "run-" + System.currentTimeMillis();
             }
 
+            // ⭐ 修复 S2：DB 是数据出域路径（与落本地磁盘的 FileStoreMonitorCallback 同级），
+            //    此前完全绕过脱敏 —— Authorization / Cookie / token / 密码 / PII 会明文入库。
+            //    统一在此收口脱敏，与 FileStoreMonitorCallback.buildJson 保持同一标准，
+            //    避免两个 sink 行为不一致导致「换个 sink 就泄露」。
+            String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
+            String safeBody = SensitiveDataSanitizer.sanitizeBody(body);
+            Map<String, String> safeRequestHeaders = SensitiveDataSanitizer.sanitizeHeaders(requestHeaders);
+            Map<String, String> safeResponseHeaders = SensitiveDataSanitizer.sanitizeHeaders(responseHeaders);
+
             ApiMonitoringRecord record = ApiMonitoringRecord.builder()
-                    .endpoint(url)
-                    .requestUrl(url)
+                    .endpoint(safeUrl)
+                    .requestUrl(safeUrl)
                     .method(method)
                     .statusCode(status)
-                    .requestHeaders(requestHeaders)
-                    .responseHeaders(responseHeaders)
-                    .responseBody(body)
+                    .requestHeaders(safeRequestHeaders)
+                    .responseHeaders(safeResponseHeaders)
+                    .responseBody(safeBody)
                     .capturedAt(System.currentTimeMillis())
                     .testRunId(testRunId)
                     .build();

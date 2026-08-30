@@ -617,10 +617,6 @@ public abstract class BasePage {
         Page oldPage = this.page;
         page = target;
         PlaywrightManager.setPage(page);
-        // ⭐ 跨页面路由规则重新注册：将旧页面的路由规则自动迁移到新页面
-        if (oldPage != null && oldPage != target) {
-            RouteEngine.reRegisterRules(oldPage, target);
-        }
     }
 
     /**

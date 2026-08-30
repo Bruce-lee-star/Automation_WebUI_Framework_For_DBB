@@ -496,9 +496,12 @@ public class AxeCoreScanner {
      * Cleanup and reset scanner
      */
     public static void cleanup() {
+        // ⭐ 修复 B-6：原 initialized.set(false) 仅置标记、ThreadLocal entry 仍驻留线程，
+        //   线程池复用场景下 results/config/initialized 的 entry 长期不死（results 持 List 引用）。
+        //   改为 .remove() 彻底清除 entry，下次 initialize 会重新 set，行为与 set(false) 等价但无泄漏。
         results.remove();
         config.remove();
-        initialized.set(false);
+        initialized.remove();
         logger.info("AxeCoreScanner cleanup completed");
     }
 

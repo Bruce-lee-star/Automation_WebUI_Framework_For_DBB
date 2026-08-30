@@ -55,6 +55,13 @@ public class RouteRule {
      */
     private boolean interceptRealResponse = false;
 
+    /**
+     * 条件字段修改规则列表（仅 {@code interceptRealResponse=true} 模式生效）。
+     * <p>当响应里某 JSONPath 满足条件时才修改另一个字段，不满足条件则保留原值（不影响其它数据）。
+     * 在 {@code mockReplaceFields} 之后独立评估，多个规则可叠加。
+     */
+    private List<ConditionalFieldRule> conditionalFields;
+
     // ModifyRequest — 增删改三个维度
     /** 请求头：设置/新增 key → value（覆盖已有同名头） */
     private Map<String, String> requestHeadersToSet;
@@ -107,6 +114,20 @@ public class RouteRule {
      */
     private transient RouteRule mergeSource = null;
 
+    /**
+     * ⭐ Phase 5 统一绑定模型：规则作用域标签。
+     * 默认 {@link RouteRuleScope#CONTEXT} 以保持向后兼容（旧代码仅走 context 绑定）。
+     * 统一绑定落地后，page 级规则以 {@link #PAGE} + {@link #pageRef} 表达，
+     * 不再依赖 {@code page.route}+{@code context.route} 双绑定与 URL 去重集。
+     */
+    private RouteRuleScope scope = RouteRuleScope.CONTEXT;
+
+    /**
+     * ⭐ Phase 5：page 级规则归属的 Page 引用（逻辑标签，可为 null）。仅当 {@link #scope}=PAGE 时有意义。
+     * 仅作逻辑归属标记，不参与 Playwright 对象生命周期管理（规避 PageRef 弱引用 GC 不确定性）。
+     */
+    private Object pageRef;
+
     // ═══════════════════════════════════════════════════════════
     // 请求条件匹配（新增）
     // ═══════════════════════════════════════════════════════════
@@ -156,6 +177,34 @@ public class RouteRule {
 
     public RouteHandleType getType() {
         return type;
+    }
+
+    /**
+     * ⭐ Phase 5：获取规则作用域（PAGE / CONTEXT）。默认 CONTEXT。
+     */
+    public RouteRuleScope getScope() {
+        return scope;
+    }
+
+    /**
+     * ⭐ Phase 5：设置规则作用域。
+     */
+    public void setScope(RouteRuleScope scope) {
+        this.scope = scope;
+    }
+
+    /**
+     * ⭐ Phase 5：获取 page 级规则归属的 Page 引用（逻辑标签，可为 null）。
+     */
+    public Object getPageRef() {
+        return pageRef;
+    }
+
+    /**
+     * ⭐ Phase 5：设置 page 级规则归属的 Page 引用（逻辑标签）。
+     */
+    public void setPageRef(Object pageRef) {
+        this.pageRef = pageRef;
     }
 
     public String getMockBody() {
@@ -435,6 +484,25 @@ public class RouteRule {
         this.mockReplaceFields = mockReplaceFields;
     }
 
+    /**
+     * 追加一条条件字段修改规则（仅 interceptRealResponse 模式生效）。
+     * @see ConditionalFieldRule
+     */
+    public void addConditionalField(ConditionalFieldRule rule) {
+        if (conditionalFields == null) {
+            conditionalFields = new ArrayList<>();
+        }
+        conditionalFields.add(rule);
+    }
+
+    public List<ConditionalFieldRule> getConditionalFields() {
+        return conditionalFields;
+    }
+
+    public void setConditionalFields(List<ConditionalFieldRule> conditionalFields) {
+        this.conditionalFields = conditionalFields;
+    }
+
     // ─── ModifyRequest Setters ─────────────────────────────────────
 
     /**
@@ -560,6 +628,44 @@ public class RouteRule {
             monitorCallbacks = new ArrayList<>();
         }
         monitorCallbacks.add(callback);
+    }
+
+    /**
+     * 注册「携带 ApiCaptureContext 的」Monitor 回调（6 参 onResponse）。
+     *
+     * <p>适配为 {@link MonitorCallback} 存入同一列表，使两条派发路径（6 参的
+     * {@code invokeCallbacks} 与 5 参的 {@code dispatchCallbacks}）都能安全处理：
+     * 用 {@code AtomicBoolean} 保证用户回调<b>至多触发一次</b>（以先到达、且带 context 的为准），
+     * 既避免重复触发，也避免「只走了 5 参路径导致 context 丢失」。
+     *
+     * @param callback 6 参回调实例
+     */
+    public void addMonitorCallback(MonitorContextCallback callback) {
+        if (callback == null) return;
+        if (monitorCallbacks == null) {
+            monitorCallbacks = new ArrayList<>();
+        }
+        java.util.concurrent.atomic.AtomicBoolean fired = new java.util.concurrent.atomic.AtomicBoolean(false);
+        monitorCallbacks.add(new MonitorCallback() {
+            @Override
+            public void onResponse(String url, int status, String body,
+                                   Map<String, String> responseHeaders, String method) {
+                // 5 参派发（无 context）：仅在同一次采集 6 参路径未触发时才兜底执行，
+                // 且以 null context 兜底，避免重复触发。
+                if (fired.compareAndSet(false, true)) {
+                    callback.onResponse(url, status, body, responseHeaders, method, null);
+                }
+            }
+
+            @Override
+            public void onResponse(String url, int status, String body,
+                                   Map<String, String> responseHeaders, String method,
+                                   ApiCaptureContext context) {
+                if (fired.compareAndSet(false, true)) {
+                    callback.onResponse(url, status, body, responseHeaders, method, context);
+                }
+            }
+        });
     }
 
     /**
@@ -883,6 +989,7 @@ public class RouteRule {
         if (this.mockHeaders != null) copy.mockHeaders = new HashMap<>(this.mockHeaders);
         if (this.mockReplaceFields != null) copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);
         copy.interceptRealResponse = this.interceptRealResponse;
+        if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
 
         // 请求条件匹配
         copy.resourceTypes = this.resourceTypes;

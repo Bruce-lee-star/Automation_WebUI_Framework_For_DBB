@@ -86,8 +86,24 @@ public class MonitorFailureReportWriter {
             Path path = Paths.get(MD_REPORT);
             Files.createDirectories(path.getParent());
             Files.write(path, sb.toString().getBytes(StandardCharsets.UTF_8));
+            // ⭐ 修复 S4：该报告含 URL / 请求响应体等业务数据，收紧为仅属主可读写（600），
+            //    避免多用户 CI 节点上被同机其它账号读取。非 POSIX 文件系统静默跳过。
+            restrictToOwnerOnly(path);
         } catch (IOException e) {
             LOGGER.warn("[ApiMonitor] 写出 {} 失败：{}", MD_REPORT, e.getMessage());
+        }
+    }
+
+    /** ⭐ 修复 S4：best-effort 收紧为「仅属主可读写」；非 POSIX 文件系统（Windows）静默忽略。 */
+    private static void restrictToOwnerOnly(Path path) {
+        try {
+            Files.setPosixFilePermissions(path, java.util.EnumSet.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException e) {
+            // 非 POSIX 文件系统：不支持，忽略
+        } catch (Exception e) {
+            LOGGER.debug("[ApiMonitor] Could not restrict permissions on '{}': {}", path, e.getMessage());
         }
     }
 

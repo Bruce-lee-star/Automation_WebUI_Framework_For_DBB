@@ -678,12 +678,35 @@ public class DatabaseUtil {
         }
         return statements.toArray(new String[0]);
     }
+    /**
+     * ⚠️ 已废弃：此方法会泄漏未管理的 {@link Connection}（返回 DatabaseMetaData 后连接无法被调用方关闭，
+     * 而 DatabaseMetaData 又强依赖该连接存活，故无法在方法内安全关闭）。
+     * 全仓库已无调用方，新增代码一律使用 {@link #withMetaData(MetaDataAction)}（try-with-resources 自动归还连接）。
+     * 保留仅为兼容历史二进制，禁止使用。
+     */
+    @Deprecated
     public static DatabaseMetaData getDatabaseMetaData() throws SQLException {
-        // ⭐ 修复 3-3：保留 API 兼容性但不再向调用方泄露未管理的 Connection。
-        // 调用方应改用 {@link #withMetaData(MetaDataAction)} 以保证 Connection 被关闭。
-        // 若必须返回 DatabaseMetaData，则由调用方负责归还——这与原语义一致。
+        // ⭐ 修复 3-3 / B-4：原实现 connection 未被关闭，长流程（dataExists/validateData 多次调用）
+        // 会累积未归还连接到连接池上限，导致后续获取连接永久阻塞。现仅保留 API 壳并明确弃用，
+        // 真正的数据访问应走 withMetaData（连接自动关闭）。
         Connection connection = getConnection();
-        return connection.getMetaData();
+        try {
+            return connection.getMetaData();
+        } finally {
+            // 注：getMetaData 返回的元数据与 connection 绑定，连接关闭后元数据即失效；
+            // 因全仓库已无调用方，此处关闭连接是为了消除泄漏而非保证元数据可用。
+            closeQuietly(connection);
+        }
+    }
+
+    private static void closeQuietly(Connection conn) {
+        if (conn != null) {
+            try {
+                conn.close();
+            } catch (SQLException ignored) {
+                // 连接归还失败不阻断主流程
+            }
+        }
     }
 
     /**

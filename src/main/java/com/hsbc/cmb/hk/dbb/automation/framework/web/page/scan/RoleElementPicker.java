@@ -139,6 +139,12 @@ public final class RoleElementPicker {
         LAST_PICK_ORIGIN.clear();
         // STATE_DELETED 中的 map 引用虽长，但已无法命中任何 CTX_PICK_STATES，安全清理
         STATE_DELETED.clear();
+        // ⭐ 修复 P3：补齐此前遗漏的两个静态缓存。
+        //    GLOBAL_URL_TO_CLASS（URL → 派生类名）与 NLS_REVERSE_CACHE（nls 反查 JSON）
+        //    都是 JVM 生命周期的静态 Map，clearAll 漏掉会让"重置/清空"名不副实：
+        //    重置后仍持有旧站点 URL 与旧 nls 解析结果。
+        GLOBAL_URL_TO_CLASS.clear();
+        NLS_REVERSE_CACHE.clear();
     }
 
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
@@ -1956,6 +1962,8 @@ public final class RoleElementPicker {
     private static final Map<String, CachedNls> NLS_REVERSE_CACHE = new ConcurrentHashMap<>();
     private static final long NLS_CACHE_TTL_MS =
             Long.getLong("rolePicker.nlsCacheTtlMs", 5 * 60 * 1000L);
+    /** ⭐ 修复 P3：软上限，达到后写入前先清理过期条目（nls 组合数很少，正常远不会触发）。 */
+    private static final int NLS_REVERSE_CACHE_SOFT_MAX = 256;
 
     private static final class CachedNls {
         final String json;
@@ -1976,6 +1984,12 @@ public final class RoleElementPicker {
         CachedNls cached = NLS_REVERSE_CACHE.get(key);
         if (cached != null && cached.fresh()) return cached.json;
         String json = buildNlsReverseJsonUncached(nlsFiles);
+        // ⭐ 修复 P3：TTL 只在【读取时】判定新鲜度，过期条目永远不会被移除，
+        //    于是 Map 在长跑会话中只增不减（每次换一组 nls 文件就多一条）。
+        //    写入时顺带清掉已过期条目 —— put 本身是低频操作，清理开销可忽略。
+        if (NLS_REVERSE_CACHE.size() >= NLS_REVERSE_CACHE_SOFT_MAX) {
+            NLS_REVERSE_CACHE.entrySet().removeIf(e -> e.getValue() == null || !e.getValue().fresh());
+        }
         NLS_REVERSE_CACHE.put(key, new CachedNls(json));
         return json;
     }
@@ -4542,6 +4556,8 @@ public final class RoleElementPicker {
      * 映射后，同一 URL 首次派生即记住，之后任何会话/导航都复用，永不再派生重复类。
      */
     private static final java.util.Map<String, String> GLOBAL_URL_TO_CLASS = new java.util.concurrent.ConcurrentHashMap<>();
+    /** ⭐ 修复 P3：URL→类名映射上限。原实现无上限，每派生一个新 URL 的类名就登记一条、只增不减。 */
+    private static final int GLOBAL_URL_TO_CLASS_MAX = 1024;
 
     /** 语言/地区码路径片段（首段），如 en / zh / zh-HK / en_US，用于 URL 归一化时忽略语言差异。
      *  仅当首段恰好是一个 IETF 风格的语言码时才剥离，尽量降低误伤真实内容路径的概率。 */
@@ -4600,6 +4616,18 @@ public final class RoleElementPicker {
         allUsed.addAll(urlToClass.values());
         String cls = pageClassNameFromUrl(url, allUsed);
         urlToClass.put(key, cls);
+        // ⭐ 修复 P3：达到上限时批量淘汰约 1/4，避免 Map 在长跑 / 多站点扫描下无限增长。
+        //    这里内联淘汰而非复用 RouteUtil.evictOldestQuarter，是为了不新增
+        //    web.page → web.route 的反向依赖（见评审 A4 的分层问题）。
+        if (GLOBAL_URL_TO_CLASS.size() >= GLOBAL_URL_TO_CLASS_MAX) {
+            int toRemove = Math.max(1, GLOBAL_URL_TO_CLASS.size() / 4);
+            int removed = 0;
+            java.util.Iterator<String> it = GLOBAL_URL_TO_CLASS.keySet().iterator();
+            while (it.hasNext() && removed++ < toRemove) {
+                it.next();
+                it.remove();
+            }
+        }
         GLOBAL_URL_TO_CLASS.put(key, cls);
         return cls;
     }

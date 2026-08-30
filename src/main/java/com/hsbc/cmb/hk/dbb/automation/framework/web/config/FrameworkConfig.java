@@ -9,6 +9,16 @@ import java.util.function.Function;
  * Usage:
  * FrameworkConfig.SCREENSHOT_STRATEGY.getValue()
  * FrameworkConfig.BROWSER_RESTART_STRATEGY.getValue()
+ *
+ * <p>⚠️ 同名类消歧（P3-31）：本类专管 <b>Web/Playwright</b> 侧配置（浏览器类型、headless、
+ * Context/Page 策略、截图、BrowserStack、路由采集等），服务 {@code framework.web.*}。
+ *
+ * <p>另有一个同名类 {@code com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig}，
+ * 专管 <b>API/HTTP</b> 侧配置（连接超时、socket 超时、SSL 校验等），服务 {@code framework.api.*}。
+ *
+ * <p>两者<b>刻意不合并</b>：api 与 web 是两个独立模块边界，合并会迫使其中一方依赖另一方
+ * （当前 api 与 web 之间仅存在少量工具类引用，不应再引入配置层耦合）。
+ * 若在某个类中同时用到两者，请使用全限定名或 static import 别名以规避同名冲突。
  */
 public enum FrameworkConfig {
 

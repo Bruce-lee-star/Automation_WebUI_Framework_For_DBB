@@ -26,6 +26,14 @@ public final class RouteAsyncPool {
         AsyncPool.runWithTimeout(task, timeoutMs);
     }
 
+    /**
+     * ⭐ 在 Monitor 回调专用串行线程上执行任务（顺序、与主流程共享上下文）。
+     * 用于 onResponse 回调，使用户在回调中修改的全局/共享状态对主线程可见。
+     */
+    public static void runOnMonitorCallbackThread(Runnable task) {
+        AsyncPool.runOnMonitorCallbackThread(task);
+    }
+
     // ─── 监控指标（透传 AsyncPool）────────────────────────────
 
     public static int getActiveCount() { return AsyncPool.getActiveCount(); }

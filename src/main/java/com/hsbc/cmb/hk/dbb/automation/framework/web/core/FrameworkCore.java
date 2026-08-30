@@ -294,11 +294,16 @@ public class FrameworkCore {
         logger.error("Exception occurred in FrameworkCore", e);
         frameworkState.setLastException(e);
 
-        // 尝试清理资源
+        // ⭐ 修复 P0-2：禁止在此调用 getInstance().cleanup()（其最终执行
+        //    PlaywrightManager.cleanupAll()）。cleanupAll() 会关闭【所有线程】的
+        //    Browser/Playwright 实例——并行运行下，单个 scenario 的一次异常会关停其余
+        //    所有并发场景的浏览器，导致整轮测试集体失败，且故障现象与根因完全脱节。
+        //    异常处理的作用域必须限定为"当前线程的 scenario 级资源"，与正常路径
+        //    afterTest() → PlaywrightManager.cleanupForScenario() 保持一致。
         try {
-            FrameworkCore.getInstance().cleanup();
+            PlaywrightManager.cleanupForScenario();
         } catch (Exception cleanupException) {
-            logger.error("Failed to cleanup resources after exception", cleanupException);
+            logger.error("Failed to clean up scenario resources after exception", cleanupException);
         }
     }
 }

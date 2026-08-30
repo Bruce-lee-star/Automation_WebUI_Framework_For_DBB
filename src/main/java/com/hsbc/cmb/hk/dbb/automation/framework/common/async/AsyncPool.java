@@ -52,6 +52,42 @@ public final class AsyncPool {
     private static final ThreadPoolExecutor POOL;
     private static final ScheduledThreadPoolExecutor SCHEDULER;
 
+    /**
+     * ⭐ 串行单线程执行器 — 专用于 Monitor 用户回调（onResponse）。
+     * <p>Playwright route 拦截在事件线程触发，若直接在该线程执行用户回调，用户无法预期
+     * "回调里修改的全局/共享状态（如 NLSUtils.setLanguage）对主线程不可见"（ThreadLocal 隔离）。
+     * 统一桥接到本串行线程后，所有回调在<b>同一受管上下文线程</b>顺序执行，配合已全局化的
+     * 框架状态（NLSUtils 等），用户业务代码无需理解线程模型即可"影响主线程"。
+     */
+    /**
+     * ⭐ 修复 P1：Monitor 回调队列容量上限。
+     * <p>原实现用 {@code Executors.newSingleThreadExecutor()}，其队列是
+     * <b>无界</b> LinkedBlockingQueue：慢回调（如 DB 校验）持续积压会让队列无限增长直至 OOM；
+     * 且无拒绝策略，积压只能靠消费者追上来消化。
+     * <p>注意：<b>仍然保持单线程</b>。串行执行是本执行器的<b>语义契约</b>（见上：回调里修改的
+     * 共享状态需在【同一受管线程】顺序生效），改成多线程会引入竞态并破坏用户可见性保证。
+     * 因此这里只做「有界」，不做「并发」——慢回调的吞吐问题应通过把重活改投
+     * {@link #run(Runnable)} 解决，而不是拆散本串行队列。
+     */
+    private static final int MONITOR_CALLBACK_QUEUE_CAPACITY = 10_000;
+
+    private static final ExecutorService MONITOR_CALLBACK_EXECUTOR =
+            new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                    new ArrayBlockingQueue<>(MONITOR_CALLBACK_QUEUE_CAPACITY),
+                    r -> {
+                        Thread t = new Thread(r, "monitor-callback");
+                        t.setDaemon(true);
+                        t.setPriority(Thread.NORM_PRIORITY - 1);
+                        return t;
+                    },
+                    // 队列满：丢弃 + 告警，绝不反压提交方。
+                    // 若用 CallerRunsPolicy，回调会在 Playwright 事件线程上执行，
+                    // 把「回调慢」放大成「路由拦截阻塞 → 整轮测试卡死」，违背永不卡死原则。
+                    (task, executor) -> LOGGER.warn(
+                            "[AsyncPool] Monitor callback queue full (capacity={}), dropping task to avoid OOM. "
+                                    + "Consider moving heavy work out of onResponse into AsyncPool.run().",
+                            MONITOR_CALLBACK_QUEUE_CAPACITY));
+
     private static final int CORE_THREADS;
     private static final int MAX_THREADS;
     private static final int QUEUE_CAPACITY;
@@ -303,6 +339,16 @@ public final class AsyncPool {
                 POOL.shutdownNow();
             }
             SCHEDULER.awaitTermination(5, TimeUnit.SECONDS);
+            // ⭐ 关闭 Monitor 回调串行执行器
+            MONITOR_CALLBACK_EXECUTOR.shutdown();
+            try {
+                if (!MONITOR_CALLBACK_EXECUTOR.awaitTermination(5, TimeUnit.SECONDS)) {
+                    MONITOR_CALLBACK_EXECUTOR.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                MONITOR_CALLBACK_EXECUTOR.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
             // per-context 池的终结等待放在 SCHEDULER 之后
             if (ctxSchedulers > 0) {
                 for (ScheduledExecutorService s : CONTEXT_SCHEDULERS.values()) {
@@ -315,6 +361,7 @@ public final class AsyncPool {
             LOGGER.warn("[AsyncPool] Interrupted during shutdown, forcing shutdownNow");
             POOL.shutdownNow();
             SCHEDULER.shutdownNow();
+            MONITOR_CALLBACK_EXECUTOR.shutdownNow();
             for (ScheduledExecutorService s : CONTEXT_SCHEDULERS.values()) {
                 s.shutdownNow();
             }
@@ -353,6 +400,35 @@ public final class AsyncPool {
 
     /** 手动关闭（由管理代码调用）。 */
     public static void shutdown() { shutdownGracefully(); }
+
+    /**
+     * ⭐ 在 Monitor 回调专用串行线程上执行任务（顺序、与主流程共享上下文）。
+     * 用于 onResponse 回调，使用户在回调中修改的全局/共享状态对主线程可见。
+     * task 为 null 静默跳过。
+     */
+    public static void runOnMonitorCallbackThread(Runnable task) {
+        if (task == null) return;
+        try {
+            MONITOR_CALLBACK_EXECUTOR.execute(() -> {
+                try {
+                    task.run();
+                } catch (Throwable t) {
+                    LOGGER.error("[AsyncPool] Monitor callback task threw exception: {}", t.getMessage(), t);
+                } finally {
+                    completedTaskCount.incrementAndGet();
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            LOGGER.error("[AsyncPool] Monitor callback executor rejected: {}", e.getMessage());
+            try {
+                task.run();
+            } catch (Exception ex) {
+                LOGGER.error("[AsyncPool] Monitor callback fallback failed", ex);
+            }
+        } catch (Exception e) {
+            LoggingConfigUtil.logWarnIfVerbose(LOGGER, "[AsyncPool] Monitor callback submit failed: {}", e.getMessage());
+        }
+    }
 
     // ─── 内部工具 ──────────────────────────────────────────────
 

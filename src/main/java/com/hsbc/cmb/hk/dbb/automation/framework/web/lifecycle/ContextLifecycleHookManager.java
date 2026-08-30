@@ -325,10 +325,27 @@ public class ContextLifecycleHookManager {
     }
 
     // ==================== 与 PlaywrightManager 集成 ====================
+    // ⭐ 修复 P2-20：本节方法（onContextAboutToRebuild / onContextRebuilt / rebindRulesToPage）
+    //    经全仓库检索确认【当前均无调用点】。其原 Javadoc 声称
+    //    "由 PlaywrightManager#scheduleContextRebuild() / getContext() 调用"，与事实不符，
+    //    属<b>误导性注释</b>——会让维护者误以为"Context 重建时路由规则会自动保留"。
+    //    事实是：Context 重建时已注册的路由规则会被静默丢弃。
+    //
+    //    选择"如实标注"而非直接删除的原因：它们是 public API，外部业务层可能已调用；
+    //    且"重建后保留规则"本身是合理需求，实现已具备，只差接线。
+    //
+    //    ▸ 若要真正启用：在 PlaywrightManager.scheduleContextRebuild() 内、关闭旧 Context
+    //      之前调用 onContextAboutToRebuild(oldContext)；在 getContext() 创建新 Context
+    //      之后调用 onContextRebuilt(newContext)。
+    //      启用前须确认 RouteRegistry 允许对【新 Context】重新注册相同规则，否则
+    //      rebindRules 会因快照中的旧 Route 句柄失效而直接返回 0（见 rebindRules 注释）。
 
     /**
-     * 在 Context 重建前执行捕获
-     * 由 {@link PlaywrightManager#scheduleContextRebuild()} 调用
+     * 在 Context 重建前执行规则捕获。
+     *
+     * <p>⚠️ <b>当前无调用点</b>（详见本节顶部 P2-20 说明）：原 Javadoc 声称
+     * "由 {@link PlaywrightManager#scheduleContextRebuild()} 调用"，但实际并未接入，
+     * 因此 Context 重建时路由规则<b>不会</b>被保留。
      */
     public static void onContextAboutToRebuild(BrowserContext oldContext) {
         if (oldContext == null) return;
@@ -347,8 +364,10 @@ public class ContextLifecycleHookManager {
     }
 
     /**
-     * 在 Context 重建后执行重绑定
-     * 由 PlaywrightManager.getContext() 调用
+     * 在 Context 重建后执行规则重绑定。
+     *
+     * <p>⚠️ <b>当前无调用点</b>（详见本节顶部 P2-20 说明）：原 Javadoc 声称
+     * "由 PlaywrightManager.getContext() 调用"，但实际并未接入。
      */
     public static void onContextRebuilt(BrowserContext newContext) {
         if (newContext == null) return;

@@ -193,15 +193,21 @@ public class JsonFileReader {
     /**
      * 读取 Mock 数据文件（专用方法）。
      *
-     * <p>加载策略（清晰、无散乱路径猜测、不硬编码子目录）：
+     * <p>加载策略（<b>路径完全由调用方决定，框架不预设任何约定目录</b>）：
      * <ol>
-     *   <li><b>默认：从 Resources（classpath）加载</b>——优先于文件系统，按文件名直接读取
-     *       （{@code <fileName>} 或 {@code <fileName>.json}）。这是打包后唯一可靠的方式。</li>
-     *   <li><b>兼容：用户提供的目录 / 项目根路径</b>——当文件名含路径分隔符（用户显式指定目录）
-     *       或 classpath 未命中时，回退到基于项目根（{@code user.dir}）的文件系统解析。</li>
+     *   <li><b>classpath</b>——按传入值原样解析。打包后唯一可靠的方式。</li>
+     *   <li><b>文件系统</b>——classpath 未命中时，回退到基于项目根（{@code user.dir}）解析。</li>
      * </ol>
      *
-     * @param fileName mock 文件名（可含相对/绝对路径，由用户指定目录）
+     * <p>两种输入形态的差异<b>只有一处</b>：不含路径分隔符时会额外尝试追加 {@code .json}
+     * 后缀（便于直接传 {@code "login-response"}）；含路径分隔符时严格按传入路径解析，
+     * 不做任何拼接或猜测。
+     *
+     * <p>因此文件若放在 {@code src/test/resources/mocks/} 下，请显式传入
+     * {@code "mocks/login-response.json"}。框架不猜测 {@code mocks/} 这类约定子目录，
+     * 否则同一份代码在不同工程结构下行为不一致，且查找失败时难以定位。
+     *
+     * @param fileName mock 文件路径（相对 classpath 或项目根；含目录时需由调用方显式给出）
      * @return JSON 内容；若均找不到或非合法 JSON 则返回 null
      */
     public static String readMockData(String fileName) {
@@ -220,7 +226,7 @@ public class JsonFileReader {
             return null;
         }
 
-        // 默认：从 classpath Resources 根按文件名加载（优先，无需 .json 后缀也可命中）
+        // classpath 优先；不含路径时额外尝试 .json 后缀（这是两种输入形态的唯一差异）
         String fromResources = readFromClasspath(fileName);
         if (fromResources != null) return fromResources;
         fromResources = readFromClasspath(fileName + ".json");

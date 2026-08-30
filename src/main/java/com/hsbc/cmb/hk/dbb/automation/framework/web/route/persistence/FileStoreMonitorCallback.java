@@ -176,6 +176,10 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
             File target = new File(targetDir, fileName);
             Files.write(target.toPath(), content.getBytes(StandardCharsets.UTF_8));
+            // ⭐ 修复 S4：落盘内容虽已脱敏，仍可能含业务数据（URL、响应结构、账号片段）。
+            //    target/ 下文件按 umask 创建（常见 002 → 664），在多用户 CI 节点上
+            //    同机其它账号可读。尽力收紧为 600（仅属主读写）；非 POSIX 文件系统静默跳过。
+            restrictToOwnerOnly(target.toPath());
             LOGGER.debug("[FileStoreMonitorCallback] Wrote monitor data -> {} (endpoint='{}', scenario='{}')",
                     target.getAbsolutePath(),
                     urlPattern != null ? urlPattern : url,
@@ -184,6 +188,25 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         } catch (Exception e) {
             LOGGER.warn("[FileStoreMonitorCallback] Failed to write monitor file for '{}': {}",
                     url, e.getMessage());
+        }
+    }
+
+    /**
+     * ⭐ 修复 S4：尽力把文件权限收紧为「仅属主可读写」（600）。
+     * <p>多用户 CI 节点上 {@code target/} 下的报告文件默认对同机其它账号可读；
+     * 非 POSIX 文件系统（如 Windows NTFS）不支持 POSIX 权限，此时静默忽略 ——
+     * 权限加固是best-effort，绝不能因设置失败而影响主流程。
+     */
+    private static void restrictToOwnerOnly(java.nio.file.Path path) {
+        try {
+            java.nio.file.Files.setPosixFilePermissions(path, java.util.EnumSet.of(
+                    java.nio.file.attribute.PosixFilePermission.OWNER_READ,
+                    java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
+        } catch (UnsupportedOperationException e) {
+            // 非 POSIX 文件系统：不支持，忽略
+        } catch (Exception e) {
+            LOGGER.debug("[FileStoreMonitorCallback] Could not restrict permissions on '{}': {}",
+                    path, e.getMessage());
         }
     }
 

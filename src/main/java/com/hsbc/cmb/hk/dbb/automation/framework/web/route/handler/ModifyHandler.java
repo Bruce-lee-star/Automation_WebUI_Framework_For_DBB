@@ -5,16 +5,19 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.*;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ConditionalFieldRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.jayway.jsonpath.JsonPath;
-import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
+import com.microsoft.playwright.Response;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,7 +79,7 @@ public class ModifyHandler {
         return RouteUtil.getJsonPathCacheSize();
     }
 
-    public static void handle(Route route, RouteRule rule) {
+    public static void handle(Route route, RouteRule rule, long delayMs) {
         Request req = route.request();
         Route.ResumeOptions opts = new Route.ResumeOptions();
 
@@ -261,21 +264,19 @@ public class ModifyHandler {
                 RouteUtil.sanitizeUrl(req.url()),
                 req.method(), finalMethod,
                 rule.getUrlPattern(),
-                finalHeaders,
-                finalBody != null ? finalBody : (bodyModified ? "(empty)" : "(unchanged)"));
+                // ⭐ 修复 C-2：finalHeaders 含 Authorization/Cookie、finalBody 含明文响应体，
+                //   直接记录会泄露敏感信息。URL 已走 RouteUtil.sanitizeUrl，此处对 header/body 脱敏。
+                SensitiveDataSanitizer.sanitizeHeaders(finalHeaders),
+                SensitiveDataSanitizer.sanitizeBody(
+                        finalBody != null ? finalBody : (bodyModified ? "(empty)" : "(unchanged)")));
 
-        // ── 5. route.fetch(opts) 发送「修改后的请求」并获取真实响应 ──
-        //    Q1 决策：MODIFY 只修改请求（headers/body/method）。
-        //    route.fetch(opts) 携带修改后的 headers/body/method 发往服务器（注意：Playwright 的
-        //    fetch(FetchOptions) 会用 opts 中的 method/headers/postData，故<b>实际发送的是修改后的请求</b>），
-        //    同步返回服务器真实响应。随后 route.fulfill(真实响应) 将<b>原样透传</b>给浏览器 —— 不改响应。
-        //
-        //    为何不用 route.resume(opts) + req.response()：在带 DELAY 的异步线程场景里，
-        //    resume 后 req.response() 拿到的对象会失效（"Object doesn't exist"），而 fetch 同步返回响应，
-        //    可在任意线程可靠读取。fetch 的真实响应再 fulfill 回浏览器，对前端而言响应未被篡改。
-        // ⭐ route 生命周期契约守卫：标记 route 是否已被终结（fulfill/resume/abort 恰好一次）。
-        //    任何异常路径（含非 PlaywrightException 的断言异常）都由 finally 兜底终结，
-        //    确保绝不出现「已 fetch 但未终结」导致的浏览器端永久 pending。
+        // ── 5. MODIFY 只修改请求（headers/body/method），经 route.resume(opts) 放行 ──
+        //    Q1 决策：MODIFY 改请求后由浏览器发真实请求，真实响应<b>直接回浏览器</b>，不再经 fetch/fulfill 代理。
+        //    resume 的 options（method/headers/postData）即上方计算的 final* 变量；真实响应由
+        //    observeRealResponse 内 page.waitForResponse 观测（resume 经其 action 回调调度到延迟线程）。
+        // ⭐ route 生命周期契约守卫：标记 route 是否已被终结（resume 恰好一次）。
+        //    observeRealResponse 内部已保证「resume 恰好一次」；任何异常路径由 finally 兜底，
+        //    确保绝不出现「未终结」导致的浏览器端永久 pending。
         boolean routeSettled = false;
         try {
             // 进入 fetch 前确认页面未关闭
@@ -287,24 +288,21 @@ public class ModifyHandler {
                 return;
             }
 
-            Route.FetchOptions fetchOpts = new Route.FetchOptions()
-                    .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
-            // ⭐ fetch 携带修改后请求（method/headers/postData 来自上方已计算的 final* 变量）
-            if (finalMethod != null) fetchOpts.setMethod(finalMethod);
-            if (finalHeaders != null && !finalHeaders.isEmpty()) {
-                fetchOpts.setHeaders(finalHeaders);
-            } else {
-                fetchOpts.setHeaders(req.headers());
+            // ⭐ B 方案：改请求后由 route.resume(opts) 放行（浏览器发真实请求，真实响应直接回浏览器），
+            //    观测走 handler 内 page.waitForResponse（执行 resume 经其 action 回调调度到延迟线程）。
+            //    彻底弃用 route.fetch + fulfill 代理。
+            Response realResp = observeRealResponse(route, rule, opts, delayMs);
+            if (realResp == null) {
+                // 观测失败：兜底放行已由 observeRealResponse 内部处理，直接返回（route 已 settle）
+                routeSettled = true;
+                return;
             }
-            if (finalBody != null) fetchOpts.setPostData(finalBody);
-
-            APIResponse realResp = route.fetch(fetchOpts);
             int realStatus = realResp.status();
             byte[] realBodyBytes = realResp.body();
             String realBody = realBodyBytes != null ? new String(realBodyBytes, StandardCharsets.UTF_8) : "";
             Map<String, String> realRespHeaders = new HashMap<>(realResp.headers());
 
-            LOGGER.info("[ModifyHandler] Fetched modified request response: pattern='{}', status={}, bodyLength={}",
+            LOGGER.info("[ModifyHandler] Resumed(modify) real response: pattern='{}', status={}, bodyLength={}",
                     rule.getUrlPattern(), realStatus, realBody.length());
 
             // ── 6. 构建修改详情 JSON（用于存储到 CapturedApiCall，不改响应） ──
@@ -366,6 +364,9 @@ public class ModifyHandler {
                             fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
 
             // ── 8. 存储 Modify 调用到 ApiCaptureContext（含真实响应） ──────
+            //    ⭐ handleType=MODIFY：本快照记录的是「请求被改写后拿回的真实响应」，
+            //       与叠加的 MONITOR 快照（由 assertAndRecord 落库）是两条独立记录，
+            //       分别可通过 getAllByType(MODIFY) / getAllByType(MONITOR) 查询。
             try {
                 CapturedApiCall call = new CapturedApiCall(
                         rule.getUrlPattern(),
@@ -392,22 +393,9 @@ public class ModifyHandler {
                 LOGGER.debug("[ModifyHandler] Failed to store modify call to ApiCaptureContext: {}", e.getMessage());
             }
 
-            // ── fulfill 真实响应给浏览器（改请求、不改响应） ──────────────
-            //    store 已在上方完成，此处 fulfill 触发浏览器 fetch resolve，避免调用方读取竞态。
-            //
-            // ⭐ 修复（头体一致性）：realBody 是 APIResponse.body() 返回的【已解码】字节，
-            //    而 realRespHeaders 来自服务器原始响应，可能带 content-encoding: gzip/br/deflate
-            //    与压缩后的 content-length。若原样下发，浏览器会按 header 再解压一次
-            //    （解压失败 → net::ERR_CONTENT_DECODING_FAILED）或按错误长度截断 body。
-            //    故 fulfill 前必须剥离这三个由传输层决定的头，交由 Playwright 按实际 body 重算。
-            Route.FulfillOptions fulfillOpts = new Route.FulfillOptions()
-                    .setStatus(realStatus)
-                    .setBody(realBody);
-            Map<String, String> fulfillHeaders = stripTransportHeaders(realRespHeaders);
-            if (!fulfillHeaders.isEmpty()) {
-                fulfillOpts.setHeaders(fulfillHeaders);
-            }
-            RouteUtil.safeFulfill(route, fulfillOpts);
+            // ── 响应交由浏览器（resume 放行后服务器真实响应直接到达，无需 fulfill 代理） ──
+            //    真实响应体/头已用于上方 store 与下方叠加 MONITOR 断言；resume 在 observeRealResponse
+            //    的 action 回调中已完成，route 已 settle。
             routeSettled = true;
 
             // ═══════════════════════════════════════════════════════════════
@@ -462,39 +450,51 @@ public class ModifyHandler {
     }
 
     /**
-     * 剥离由传输层决定、不应随改写后 body 一起下发的响应头。
+     * ⭐ B 方案核心：改请求后由 {@code route.resume(opts)} 放行，真实响应经
+     * {@code page.waitForResponse} 观测。resume 必须在 waitForResponse 的 action 回调内触发，
+     * 且经 {@link RouteEngine#scheduleDeferred} 调度到延迟线程（{@code delayMs<=0} 立即执行），
+     * 避免在延迟调度线程直接驱动 waitForResponse 的对象表竞态（Object doesn't exist）。
      *
-     * <p>{@code APIResponse.body()} 返回的是<b>已解码</b>的字节流，但 {@code APIResponse.headers()}
-     * 仍保留服务器原始响应头。若把 {@code content-encoding} / {@code content-length} /
-     * {@code transfer-encoding} 原样 fulfill 回浏览器，会产生两类故障：
-     * <ul>
-     *   <li>{@code content-encoding: gzip|br|deflate} → 浏览器对已解码 body 再解压一次，
-     *       报 {@code net::ERR_CONTENT_DECODING_FAILED}，前端拿到空响应</li>
-     *   <li>{@code content-length: <压缩后长度>} → body 被按错误长度截断，JSON 解析失败</li>
-     *   <li>{@code transfer-encoding: chunked} → 与 fulfill 的固定长度语义冲突</li>
-     * </ul>
-     * 剥离后由 Playwright 依实际 body 重新计算，保证头体一致。
-     *
-     * @param headers 服务器原始响应头（不会被修改）
-     * @return 新的 Map，已移除传输层头（大小写不敏感匹配）
+     * @return 真实响应；观测失败（超时 / 页面关闭）时返回 {@code null}（内部已兜底 resume）。
      */
-    private static Map<String, String> stripTransportHeaders(Map<String, String> headers) {
-        if (headers == null || headers.isEmpty()) {
-            return new HashMap<>();
+    private static Response observeRealResponse(Route route, RouteRule rule, Route.ResumeOptions opts, long delayMs) {
+        Request req = route.request();
+        com.microsoft.playwright.Frame frame = req.frame();
+        if (frame == null) {
+            RouteUtil.safeResume(route, opts);
+            return null;
         }
-        Map<String, String> cleaned = new HashMap<>(headers.size());
-        for (Map.Entry<String, String> e : headers.entrySet()) {
-            String key = e.getKey();
-            if (key == null) continue;
-            String lower = key.toLowerCase(java.util.Locale.ROOT);
-            if ("content-encoding".equals(lower)
-                    || "content-length".equals(lower)
-                    || "transfer-encoding".equals(lower)) {
-                continue;
-            }
-            cleaned.put(key, e.getValue());
+        com.microsoft.playwright.Page page = frame.page();
+        if (page == null) {
+            RouteUtil.safeResume(route, opts);
+            return null;
         }
-        return cleaned;
+        // ⭐ 超时保护：绝不传 0（timeout==0 → WaitableNever 死等）。ROUTE_FETCH_TIMEOUT_MS 为 0/负时回落 30s（对齐 Playwright 默认）。
+        double wfrTimeout = Math.min(30000, ROUTE_FETCH_TIMEOUT_MS);
+        if (wfrTimeout <= 0) wfrTimeout = 30000;
+        // ⭐ predicate 用「URL 包含字面路径」：避免响应重定向/参数规范化后 predicate 永不匹配 → 白等满超时。
+        final String lit = RouteUtil.literalPathOf(rule.getUrlPattern());
+        try {
+            com.microsoft.playwright.Page.WaitForResponseOptions wfrOpts =
+                    new com.microsoft.playwright.Page.WaitForResponseOptions().setTimeout(wfrTimeout);
+            return page.waitForResponse(
+                    r -> {
+                        if (r == null || r.request() == null) return false;
+                        String ru = r.request().url();
+                        return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                    },
+                    wfrOpts,
+                    () -> {
+                        if (RouteUtil.isPageClosed(route)) return;
+                        RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
+                    });
+        } catch (PlaywrightException e) {
+            LoggingConfigUtil.logWarnIfVerbose(LOGGER,
+                    "[ModifyHandler] waitForResponse failed, fallback resume: pattern='{}', error='{}'",
+                    rule.getUrlPattern(), e.getMessage());
+            RouteUtil.safeResume(route, opts);
+            return null;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -996,6 +996,220 @@ public class ModifyHandler {
             LOGGER.warn("[ModifyHandler] Batch wildcard replace failed: {}", e.getMessage());
             return jsonBody;
         }
+    }
+
+    /**
+     * 条件字段修改 — 仅 {@code interceptRealResponse=true} 模式生效。
+     *
+     * <p>语义：对每条 {@link ConditionalFieldRule}，当响应里 {@code whenJsonPath} 取值满足
+     * {@code op}/{@code expected} 时，才对 {@code thenSetJsonPath} 设置 {@code setValue}；
+     * 不满足条件则保留原值（不影响其它数据）。
+     *
+     * <p>对齐规则：当 {@code whenJsonPath} 与 {@code thenSetJsonPath} 的层级（含 [*] 通配符位置）
+     * 一一对应时，按数组索引逐元素独立评估（如 {@code $.users[*].status} → {@code $.users[*].flag}，
+     * 仅 status 达标的元素其 flag 被修改，互不影响）。若两者层级不对齐，则退化为「全局条件」：
+     * when 路径任一匹配值满足条件时，then 路径整体写入 setValue。
+     *
+     * @param jsonBody 原始 JSON body 字符串（已 fetch 的真实响应）
+     * @param rules    条件修改规则列表（null/空直接返回原串）
+     * @return 修改后的 JSON 字符串；解析失败时返回原字符串
+     */
+    public static String applyConditionalFields(String jsonBody, List<ConditionalFieldRule> rules) {
+        if (rules == null || rules.isEmpty()) {
+            return jsonBody;
+        }
+        try {
+            JsonNode root = OBJECT_MAPPER.readTree(jsonBody);
+            for (ConditionalFieldRule rule : rules) {
+                if (rule == null || !rule.isValid()) {
+                    LOGGER.warn("[ModifyHandler] Skipping invalid conditional rule: {}", rule);
+                    continue;
+                }
+                try {
+                    List<PathSegment> whenSegs = parseWildcardPath(rule.getWhenJsonPath());
+                    List<PathSegment> thenSegs = parseWildcardPath(rule.getThenSetJsonPath());
+                    if (whenSegs.isEmpty() || thenSegs.isEmpty()) {
+                        LOGGER.warn("[ModifyHandler] Empty path in conditional rule: {}", rule);
+                        continue;
+                    }
+                    JsonNode setValue = rawValueToJsonNode(rule.getSetValue());
+                    boolean aligned = whenSegs.size() == thenSegs.size();
+                    applyConditionalRec(root, root, null, null,
+                            whenSegs, 0, thenSegs, 0, rule.getOp(), rule.getExpected(), setValue, aligned);
+                    LOGGER.debug("[ModifyHandler] Applied conditional rule: {}", rule);
+                } catch (Exception e) {
+                    LOGGER.warn("[ModifyHandler] Conditional rule failed: {} -> {}", rule, e.getMessage());
+                }
+            }
+            return OBJECT_MAPPER.writeValueAsString(root);
+        } catch (Exception e) {
+            LOGGER.warn("[ModifyHandler] Conditional fields apply failed: {}", e.getMessage());
+            return jsonBody;
+        }
+    }
+
+    /**
+     * 递归对齐评估条件字段修改。
+     *
+     * @param whenNode 当前 when 子树根
+     * @param thenNode 当前 then 子树根（与 whenNode 对应）
+     * @param whenSegs/thenSegs 路径段
+     * @param whenIdx/thenIdx 当前段索引
+     * @param aligned  when/then 段数是否相等（决定是否逐元素对齐）
+     */
+    private static void applyConditionalRec(JsonNode whenNode, JsonNode thenNode,
+                                            ObjectNode thenParent, String thenKey,
+                                            List<PathSegment> whenSegs, int whenIdx,
+                                            List<PathSegment> thenSegs, int thenIdx,
+                                            ConditionalFieldRule.ConditionOp op, Object expected,
+                                            JsonNode setValue, boolean aligned) {
+        if (whenNode == null || thenNode == null) return;
+        boolean whenLast = (whenIdx == whenSegs.size() - 1);
+        boolean thenLast = (thenIdx == thenSegs.size() - 1);
+        PathSegment ws = whenSegs.get(whenIdx);
+        PathSegment ts = thenSegs.get(thenIdx);
+
+        if (whenLast && thenLast) {
+            // 末段：评估 when 节点值，满足则在 thenNode 上写值
+            JsonNode actual = resolveLeaf(whenNode, ws);
+            if (evalCondition(actual, op, expected)) {
+                if (thenNode instanceof ObjectNode && ts.fieldName != null && !ts.isWildcard()) {
+                    setJsonNode((ObjectNode) thenNode, ts.fieldName,
+                            coerceToType(setValue, thenNode.get(ts.fieldName)));
+                }
+            }
+            return;
+        }
+        if (whenLast != thenLast) {
+            // 层级不对齐：退化为全局条件 — 整个 when 子树任意叶节点满足条件则 then 整体写入
+            if (whenLast) {
+                if (evalCondition(resolveLeaf(whenNode, ws), op, expected)) {
+                    writeThenWhole(thenNode, thenSegs, thenIdx, setValue);
+                }
+                return;
+            }
+        }
+
+        // 通配符对齐：两边都是 [*]，按数组索引一一对应
+        if (ws.isWildcard() && ts.isWildcard() && aligned) {
+            JsonNode whenArr = ws.isRootWildcard() ? whenNode : whenNode.get(ws.fieldName);
+            JsonNode thenArr = ts.isRootWildcard() ? thenNode : thenNode.get(ts.fieldName);
+            if (whenArr instanceof ArrayNode && thenArr instanceof ArrayNode) {
+                ArrayNode wa = (ArrayNode) whenArr, ta = (ArrayNode) thenArr;
+                int n = Math.min(wa.size(), ta.size());
+                for (int i = 0; i < n; i++) {
+                    applyConditionalRec(wa.get(i), ta.get(i), null, null,
+                            whenSegs, whenIdx + 1, thenSegs, thenIdx + 1, op, expected, setValue, aligned);
+                }
+            }
+            return;
+        }
+
+        // 精确导航
+        JsonNode wChild = navigate(whenNode, ws);
+        JsonNode tChild = navigate(thenNode, ts);
+        if (wChild == null || tChild == null) return;
+        applyConditionalRec(wChild, tChild, null, null,
+                whenSegs, whenIdx + 1, thenSegs, thenIdx + 1, op, expected, setValue, aligned);
+    }
+
+    /** then 路径整段写入（退化全局条件模式） */
+    private static void writeThenWhole(JsonNode thenNode, List<PathSegment> thenSegs, int thenIdx, JsonNode setValue) {
+        PathSegment ts = thenSegs.get(thenIdx);
+        boolean last = (thenIdx == thenSegs.size() - 1);
+        if (last) {
+            if (thenNode instanceof ObjectNode && ts.fieldName != null && !ts.isWildcard()) {
+                setJsonNode((ObjectNode) thenNode, ts.fieldName,
+                        coerceToType(setValue, thenNode.get(ts.fieldName)));
+            } else if (ts.isWildcard() && thenNode instanceof ArrayNode) {
+                ArrayNode arr = (ArrayNode) thenNode;
+                for (int i = 0; i < arr.size(); i++) {
+                    arr.set(i, coerceToType(setValue, arr.get(i)));
+                }
+            }
+            return;
+        }
+        JsonNode child = navigate(thenNode, ts);
+        if (child != null) writeThenWhole(child, thenSegs, thenIdx + 1, setValue);
+    }
+
+    /** 解析末段叶节点：通配符则取首个元素，否则精确取字段 */
+    private static JsonNode resolveLeaf(JsonNode node, PathSegment seg) {
+        if (seg.isWildcard()) {
+            JsonNode arr = seg.isRootWildcard() ? node : node.get(seg.fieldName);
+            if (arr instanceof ArrayNode && arr.size() > 0) return arr.get(0);
+            return arr;
+        }
+        return node.get(seg.fieldName);
+    }
+
+    /** 精确导航到段的子节点（不写入） */
+    private static JsonNode navigate(JsonNode node, PathSegment seg) {
+        if (seg.isWildcard()) {
+            return seg.isRootWildcard() ? node : node.get(seg.fieldName);
+        }
+        JsonNode child = node.get(seg.fieldName);
+        if (child instanceof ArrayNode && seg.arrayIndex != null) {
+            ArrayNode arr = (ArrayNode) child;
+            if (seg.arrayIndex >= 0 && seg.arrayIndex < arr.size()) return arr.get(seg.arrayIndex);
+            return null;
+        }
+        return child;
+    }
+
+    /**
+     * 条件判断：actual 为响应里 when 路径取到的值（JsonNode，可能为 null/missing），
+     * expected 为规则期望比对值（Object，DSL 传入的 String/Number/Boolean 等）。
+     */
+    private static boolean evalCondition(JsonNode actual, ConditionalFieldRule.ConditionOp op, Object expected) {
+        switch (op) {
+            case EXISTS:
+                return actual != null && !actual.isMissingNode() && !actual.isNull();
+            case NOT_EXISTS:
+                return actual == null || actual.isMissingNode() || actual.isNull();
+            case EQUALS:
+                return compareEquals(actual, expected);
+            case NOT_EQUALS:
+                return !compareEquals(actual, expected);
+            case CONTAINS:
+                return actual != null && actual.isTextual()
+                        && actual.asText().contains(expected == null ? "" : expected.toString());
+            case NOT_CONTAINS:
+                return actual != null && actual.isTextual()
+                        && !actual.asText().contains(expected == null ? "" : expected.toString());
+            case REGEX:
+                return actual != null && actual.isTextual() && expected != null
+                        && actual.asText().matches(expected.toString());
+            case GT:
+                return compareNumeric(actual, expected) > 0;
+            case LT:
+                return compareNumeric(actual, expected) < 0;
+            case GTE:
+                return compareNumeric(actual, expected) >= 0;
+            case LTE:
+                return compareNumeric(actual, expected) <= 0;
+            default:
+                return false;
+        }
+    }
+
+    /** 类型感知相等比较：数字按数值、布尔按布尔、其余按文本 */
+    private static boolean compareEquals(JsonNode actual, Object expected) {
+        if (actual == null || actual.isMissingNode()) return expected == null;
+        if (expected == null) return actual.isNull();
+        if (actual.isNumber() && expected instanceof Number) {
+            return actual.doubleValue() == ((Number) expected).doubleValue();
+        }
+        if (actual.isBoolean() && expected instanceof Boolean) {
+            return actual.booleanValue() == (Boolean) expected;
+        }
+        return actual.asText().equals(expected.toString());
+    }
+
+    /** 数值比较：actual(JsonNode) 与 expected(Object)；不可比返回 0 */
+    private static int compareNumeric(JsonNode actual, Object expected) {
+        if (actual == null || !actual.isNumber() || !(expected instanceof Number)) return 0;
+        return Double.compare(actual.doubleValue(), ((Number) expected).doubleValue());
     }
 
     /**

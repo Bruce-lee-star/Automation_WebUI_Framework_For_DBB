@@ -32,7 +32,12 @@ import java.util.Map;
  * <p><b>注意</b>：Playwright 会将 HTTP header 名称规范化为小写
  * （如 {@code content-type} 而非 {@code Content-Type}）。
  * 建议使用 {@link #headerValue(Map, String)} 进行大小写不敏感查找，
- * 而非直接调用 {@code headers.get("Content-Type")}。 */
+ * 而非直接调用 {@code headers.get("Content-Type")}。
+ *
+ * <p><b>⭐ 回传主线程</b>：回调在 Playwright 事件线程执行，无法直接修改主线程局部变量。
+ * 若需把响应数据（如 orderId）回传给主流程，请用 {@link #onResponse(String, int, String, Map, String, ApiCaptureContext)}
+ * 并在其中调用 {@code context.setShared("key", value)}，主线程再用
+ * {@code ApiCaptureContext.getCurrent().awaitShared("key", timeout)} 读取。 */
 @FunctionalInterface
 public interface MonitorCallback {
 
@@ -50,7 +55,28 @@ public interface MonitorCallback {
      * @param method          请求方法（GET/POST/PUT/DELETE...）
      */
     void onResponse(String url, int status, String body,
-                    Map<String, String> responseHeaders, String method);
+                   Map<String, String> responseHeaders, String method);
+
+    /**
+     * ⭐ 扩展回调：携带 {@link ApiCaptureContext}，使回调能把数据回传到主线程。
+     * <p>在事件线程中调用 {@code context.setShared("key", value)}，主线程随后用
+     * {@code ApiCaptureContext.getCurrent().awaitShared("key", timeout)} 阻塞等待并读取，
+     * 从而让 Monitor 的 onResponse 真正「影响」主线程的变量/分支判断。
+     * <p>默认实现委托 {@link #onResponse(String, int, String, Map, String)}，
+     * 保证旧版无 context 的 lambda 仍向后兼容。
+     *
+     * @param url             请求 URL
+     * @param status          HTTP 状态码
+     * @param body            响应体字符串
+     * @param responseHeaders 响应头快照（key 为小写）
+     * @param method          请求方法
+     * @param context         当前 API 捕获上下文（事件线程与主线程共享同一实例）
+     */
+    default void onResponse(String url, int status, String body,
+                            Map<String, String> responseHeaders, String method,
+                            ApiCaptureContext context) {
+        onResponse(url, status, body, responseHeaders, method);
+    }
 
     /**
      * 从 Header Map 中按名称查找值（大小写不敏感）。

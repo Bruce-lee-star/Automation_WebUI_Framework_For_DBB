@@ -640,7 +640,7 @@ public class PlaywrightListener implements StepListener {
 
     private void recordTestData(String key, Object value) {
         String testName = currentTestName.get();
-        if (testName != null && key != null) {
+        if (testName != null && key != null && value != null) {
             String dataKey = testName + "." + key;
             testData.put(dataKey, value);
 

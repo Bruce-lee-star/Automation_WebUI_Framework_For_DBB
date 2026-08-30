@@ -163,10 +163,18 @@ public class RouteDsl {
         ApiCaptureContext.removeContext(context);
     }
 
-    /** 只清理指定 Page 及其页面级规则，不影响其它 Page/Context。 */
+    /**
+     * 只清理指定 Page 及其页面级规则，不影响其它 Page/Context。
+     *
+     * <p><b>重要（feature 模式隔离）</b>：{@code RouteDsl.on(Page)} 内部走
+     * {@code RouteEngine.register(Page)} → 实际以 {@code page.context()} 为 key 注册到 BrowserContext
+     * （见 {@code RouteEngine#register(Page, List)} 的 {@code register(page.context(), rules)}）。
+     * 因此这里必须以 {@code page.context()} 为 key 调用 {@link RouteRegistry#clearContext(Object)}，
+     * 否则在 context 复用（feature 不重建 context）的场景下，路由闭包会残留在原 context 上、跨 Scenario 污染。
+     */
     public static void clear(Page page) {
         if (page == null) return;
-        RouteRegistry.clearContext(page);
+        RouteRegistry.clearContext(page.context());
         RouteEngine.removePageRules(page);
         ApiCaptureContext.stop(page);
     }

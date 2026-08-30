@@ -305,8 +305,14 @@ class PlaywrightSerenityBridge {
     static void initializeForScenario() {
         LoggingConfigUtil.logDebugIfVerbose(logger, "Initializing for scenario...");
 
-        if (!PlaywrightManager.getFrameworkState().isInitialized() || PlaywrightManager.currentConfigId.get() == null) {
+        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
+        }
+        // ⚠️ 修复级联：scenario 级 cleanupForScenario 会移除 currentConfigId（见 PlaywrightManager），
+        //   但 frameworkState 仍 initialized。此处懒重建 configId，避免 beforeTest 误报"环境未初始化"
+        //   而级联抛 IllegalStateException（场景实际仍能靠 getPage() 懒初始化正常运行）。
+        if (PlaywrightManager.currentConfigId.get() == null) {
+            PlaywrightManager.ensureConfigId();
         }
 
         String restartBrowserForEach = PlaywrightManager.config().getRestartStrategy();
@@ -383,8 +389,12 @@ class PlaywrightSerenityBridge {
     static void initializeForFeature() {
         LoggingConfigUtil.logInfoIfVerbose(logger, "Initializing for feature...");
 
-        if (!PlaywrightManager.getFrameworkState().isInitialized() || PlaywrightManager.currentConfigId.get() == null) {
+        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
+        }
+        // ⚠️ 同 initializeForScenario：currentConfigId 被 scenario 级清理移除后懒重建，避免级联抛错
+        if (PlaywrightManager.currentConfigId.get() == null) {
+            PlaywrightManager.ensureConfigId();
         }
 
         SessionManager.resetFeatureSession();

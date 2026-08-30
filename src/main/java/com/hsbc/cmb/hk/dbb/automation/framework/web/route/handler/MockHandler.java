@@ -110,11 +110,17 @@ public class MockHandler {
         }
 
         // ── 5. 附带自定义响应头 ────────────────────────────────────
+        // ⚠️ 跨域 mock（如 matchOrigin 跨域请求）必须带 CORS 头，否则浏览器 CORS 拦截导致 fetch 失败。
+        Map<String, String> respHeaders = new HashMap<>();
         if (rule.getMockHeaders() != null) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                     "[MockHandler] Including {} custom mock header(s): {}",
                     rule.getMockHeaders().size(), rule.getMockHeaders().keySet());
-            opts.setHeaders(new java.util.HashMap<>(rule.getMockHeaders()));
+            respHeaders.putAll(rule.getMockHeaders());
+        }
+        respHeaders.putIfAbsent("Access-Control-Allow-Origin", "*");
+        if (!respHeaders.isEmpty()) {
+            opts.setHeaders(respHeaders);
         }
 
         // ── 6. 同步存储 Mock 调用到 ApiCaptureContext（⭐ 必须在 fulfill 之前）────
@@ -311,6 +317,8 @@ public class MockHandler {
                             "[MockHandler] Merged {} custom mock header(s): {}",
                             rule.getMockHeaders().size(), rule.getMockHeaders().keySet());
                 }
+                // ⚠️ 跨域拦截（如 matchOrigin 跨域请求）补 CORS 头，避免浏览器 CORS 拦截
+                respHeaders.putIfAbsent("Access-Control-Allow-Origin", "*");
                 if (!respHeaders.isEmpty()) {
                     opts.setHeaders(respHeaders);
                 }

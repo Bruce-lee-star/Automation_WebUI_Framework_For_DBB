@@ -483,6 +483,16 @@ public class PlaywrightManager {
     }
 
     /**
+     * 懒重建（或返回）当前 configId。
+     * <p>供 scenario/feature 级清理（{@code cleanupForScenario} 会移除 {@code currentConfigId}）之后，
+     * {@code beforeTest} 恢复环境使用：若 frameworkState 仍 initialized 但 configId 已被清空，
+     * 此处就地重建，避免 {@code initializeForScenario} 误报"环境未初始化"而级联抛错。
+     */
+    public static String ensureConfigId() {
+        return getCurrentConfigId();
+    }
+
+    /**
      * 获取 Playwright 实例
      */
     public static Playwright getPlaywright() {

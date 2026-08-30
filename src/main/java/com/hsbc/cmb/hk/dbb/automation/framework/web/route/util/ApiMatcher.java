@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.util;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -393,14 +394,46 @@ public final class ApiMatcher {
         if (matchOrigin == null || matchOrigin.trim().isEmpty()) {
             return true;
         }
-        Map<String, String> headers = req.headers();
-        String actual = headers.getOrDefault("origin", "");
+        String actual = req.headers().getOrDefault("origin", "");
+        if (actual.isEmpty()) {
+            // ⚠️ 修复：Playwright 某些版本不在 request.headers() 暴露 origin（forbidden header），
+            //    从发起请求的 frame URL 推导 origin 兜底（fetch/xhr 的 Origin 即发起方 frame 的 origin）。
+            try {
+                Frame f = req.frame();
+                if (f != null) {
+                    actual = originOf(f.url());
+                }
+            } catch (Exception ignored) {
+                // 推导失败则保持空
+            }
+        }
         boolean match = actual.contains(matchOrigin);
         if (!match) {
             LOGGER.debug("[ApiMatcher] Origin mismatch: expected contains='{}', actual='{}', url={}",
                     matchOrigin, actual, RouteUtil.sanitizeUrl(req.url()));
         }
         return match;
+    }
+
+    /** 从 URL 推导 origin（scheme://authority），用于兜底获取 Origin。 */
+    private static String originOf(String url) {
+        if (url == null || url.isEmpty()) {
+            return "";
+        }
+        int idx = url.indexOf("://");
+        if (idx < 0) {
+            return url;
+        }
+        String scheme = url.substring(0, idx);
+        String rest = url.substring(idx + 3);
+        int end = rest.length();
+        for (char c : new char[]{'/', '?', '#'}) {
+            int p = rest.indexOf(c);
+            if (p >= 0 && p < end) {
+                end = p;
+            }
+        }
+        return scheme + "://" + rest.substring(0, end);
     }
 
     /**

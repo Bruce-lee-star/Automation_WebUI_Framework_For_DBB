@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSanitizer;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -74,7 +75,7 @@ public class MonitorFailureReportWriter {
                         sb.append("  - **Endpoint**：`").append(call.getPattern()).append("`\n");
                         sb.append("  - **状态**：").append(call.getStatus())
                                 .append("  **方法**：").append(nullToDash(call.getMethod())).append("\n");
-                        sb.append("  - **URL**：").append(nullToDash(call.getRequestUrl())).append("\n");
+                        sb.append("  - **URL**：").append(nullToDash(SensitiveDataSanitizer.sanitizeUrl(call.getRequestUrl()))).append("\n");
                         sb.append("  - **失败原因**：").append(nullToDash(call.getReason())).append("\n");
                         sb.append("  - **触发 Scenario**：").append(String.join(", ", call.getScenarios())).append("\n");
                         sb.append("  - **Request Body**：\n```\n").append(nullToDash(call.getRequestBody())).append("\n```\n");

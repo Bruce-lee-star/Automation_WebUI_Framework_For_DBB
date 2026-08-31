@@ -171,7 +171,7 @@ public class CapturedApiCall {
                     boolean fromMock, String captureSource, String modifyDetail,
                     RouteHandleType handleType) {
         this.endpoint = endpoint;
-        this.requestUrl = requestUrl;
+        this.requestUrl = SensitiveDataSanitizer.sanitizeUrl(requestUrl); // T0-1: 收口 requestUrl 脱敏（此前 query 中 token/sessionId 可经 getRequestUrl 出域）
         this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
         // ⭐ 修复 R4：在构造期即对所有出站数据做脱敏，避免明文敏感 body/header 长期驻留内存，
         // 即使后续 DTO 导出时才脱敏，内存快照（heap dump / 序列化）也不会暴露原始值。

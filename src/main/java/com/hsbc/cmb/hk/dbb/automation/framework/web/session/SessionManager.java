@@ -63,17 +63,19 @@ public class SessionManager {
     //    已提交却未执行的 session IO（saveSession 落盘）会被静默丢弃，导致"本应缓存的
     //    登录态丢失、下次跑批重新登录"。显式关闭可保证已提交任务排空。
     static {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            SESSION_IO_EXECUTOR.shutdown();
-            try {
-                if (!SESSION_IO_EXECUTOR.awaitTermination(2, TimeUnit.SECONDS)) {
-                    SESSION_IO_EXECUTOR.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                SESSION_IO_EXECUTOR.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }, "session-io-shutdown-hook"));
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_SESSION_IO,
+                "session-io", () -> {
+                    SESSION_IO_EXECUTOR.shutdown();
+                    try {
+                        if (!SESSION_IO_EXECUTOR.awaitTermination(2, TimeUnit.SECONDS)) {
+                            SESSION_IO_EXECUTOR.shutdownNow();
+                        }
+                    } catch (InterruptedException e) {
+                        SESSION_IO_EXECUTOR.shutdownNow();
+                        Thread.currentThread().interrupt();
+                    }
+                });
     }
 
     // ==================== 同 user 登录单飞（single-flight） ====================
@@ -218,7 +220,13 @@ public class SessionManager {
      */
     public static void resetFeatureSession() {
         LoggingConfigUtil.logInfoIfVerbose(LOGGER, "Resetting feature-level session state");
+        String featureKey = currentFeatureSessionKey.get();
         currentFeatureSessionKey.remove();
+        // ⭐ 修复 H11（防御）：Feature 结束时清理可能残留的单飞守卫，避免跨 Feature 的静态 Map 条目堆积
+        // （正常成功路径已由 completeLoginGuard 在 saveSession 内移除，此处为异常/未落盘路径兜底）。
+        if (featureKey != null) {
+            loginGuards.remove(featureKey);
+        }
         featureSessionRestored.remove();
         currentFeatureHomeUrl.remove();
     }

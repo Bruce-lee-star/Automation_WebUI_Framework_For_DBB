@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * 通用异步任务池 — 全项目统一的异步执行入口 + 集中监控。
  *
- * <p>从路由域的 {@code RouteAsyncPool} 抽取并泛化，供任意模块复用：
+ * <p>由原路由域异步池抽取并泛化，供任意模块复用：
  * 数据库刷入器、超时调度、事件回调、报告记录等"不阻塞调用方线程"的任务。
  *
  * <p>核心能力：
@@ -45,6 +45,8 @@ public final class AsyncPool {
     private static final AtomicLong timeoutCount = new AtomicLong(0);
     private static final AtomicLong pendingTimeoutCount = new AtomicLong(0);
     private static final AtomicLong pendingScheduleCount = new AtomicLong(0);
+    /** Monitor 回调因队列满/已关闭被丢弃的累计数（⭐ 修复 H17：让静默丢弃变为可观测） */
+    private static final AtomicLong monitorCallbackDroppedCount = new AtomicLong(0);
 
     /** 活跃的 per-Context 调度器（由 ContextRouteEngine 注册，关闭时移除） */
     private static final Map<String, ScheduledThreadPoolExecutor> CONTEXT_SCHEDULERS = new ConcurrentHashMap<>();
@@ -83,10 +85,12 @@ public final class AsyncPool {
                     // 队列满：丢弃 + 告警，绝不反压提交方。
                     // 若用 CallerRunsPolicy，回调会在 Playwright 事件线程上执行，
                     // 把「回调慢」放大成「路由拦截阻塞 → 整轮测试卡死」，违背永不卡死原则。
-                    (task, executor) -> LOGGER.warn(
-                            "[AsyncPool] Monitor callback queue full (capacity={}), dropping task to avoid OOM. "
-                                    + "Consider moving heavy work out of onResponse into AsyncPool.run().",
-                            MONITOR_CALLBACK_QUEUE_CAPACITY));
+                    (task, executor) -> {
+                        long dropped = monitorCallbackDroppedCount.incrementAndGet();
+                        LOGGER.error("[AsyncPool] Monitor callback queue full (capacity={}), dropping task to avoid OOM. "
+                                + "Dropped total: {}. Consider moving heavy work out of onResponse into AsyncPool.run().",
+                                MONITOR_CALLBACK_QUEUE_CAPACITY, dropped);
+                    });
 
     private static final int CORE_THREADS;
     private static final int MAX_THREADS;
@@ -135,10 +139,12 @@ public final class AsyncPool {
         });
         SCHEDULER.setRemoveOnCancelPolicy(true);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            LOGGER.info("[AsyncPool] JVM shutdown hook triggered.");
-            shutdownGracefully();
-        }, "async-shutdown"));
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_ASYNC_POOL,
+                "async-pool", () -> {
+                    LOGGER.info("[AsyncPool] JVM shutdown hook triggered.");
+                    shutdownGracefully();
+                });
 
         LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                 "[AsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms, maxPendingTimeouts={}",
@@ -357,6 +363,8 @@ public final class AsyncPool {
                     }
                 }
             }
+            // ⭐ 修复 H18：关闭后清空映射，避免残留已终止调度器引用（getActiveContextSchedulerCount 误报 + 引用滞留）
+            CONTEXT_SCHEDULERS.clear();
         } catch (InterruptedException e) {
             LOGGER.warn("[AsyncPool] Interrupted during shutdown, forcing shutdownNow");
             POOL.shutdownNow();
@@ -380,6 +388,7 @@ public final class AsyncPool {
     public static long getTimeoutCount() { return timeoutCount.get(); }
     public static long getPendingTimeoutCount() { return pendingTimeoutCount.get(); }
     public static long getPendingScheduleCount() { return pendingScheduleCount.get(); }
+    public static long getMonitorCallbackDroppedCount() { return monitorCallbackDroppedCount.get(); }
 
     public static double getQueueUsage() { return (double) POOL.getQueue().size() / QUEUE_CAPACITY; }
     public static double getThreadUsage() {
@@ -390,12 +399,12 @@ public final class AsyncPool {
     public static String getStatusSnapshot() {
         return String.format(
                 "[AsyncPool] active=%d, pool=%d/%d, queue=%d/%d (%.0f%%), threads=%.0f%%, "
-                        + "completed=%d, rejected=%d, timeouts=%d, pendingTimeouts=%d/%d, pendingSched=%d, ctxSched=%d",
+                        + "completed=%d, rejected=%d, timeouts=%d, pendingTimeouts=%d/%d, pendingSched=%d, ctxSched=%d, monitorDropped=%d",
                 POOL.getActiveCount(), POOL.getPoolSize(), POOL.getMaximumPoolSize(),
                 POOL.getQueue().size(), QUEUE_CAPACITY, getQueueUsage() * 100, getThreadUsage() * 100,
                 POOL.getCompletedTaskCount() + completedTaskCount.get(), rejectedCount.get(),
                 timeoutCount.get(), pendingTimeoutCount.get(), MAX_PENDING_TIMEOUTS, pendingScheduleCount.get(),
-                CONTEXT_SCHEDULERS.size());
+                CONTEXT_SCHEDULERS.size(), monitorCallbackDroppedCount.get());
     }
 
     /** 手动关闭（由管理代码调用）。 */
@@ -408,6 +417,16 @@ public final class AsyncPool {
      */
     public static void runOnMonitorCallbackThread(Runnable task) {
         if (task == null) return;
+        // ⭐ 修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
+        // （调用方多为 Playwright 事件线程，同步执行用户回调会阻塞路由拦截 → 整轮测试卡死）。
+        // 统一策略：准入控制 + 计数丢弃（可观测），但绝不阻塞提交方。
+        if (MONITOR_CALLBACK_EXECUTOR.isShutdown()
+                || ((ThreadPoolExecutor) MONITOR_CALLBACK_EXECUTOR).getQueue().size() >= MONITOR_CALLBACK_QUEUE_CAPACITY) {
+            long dropped = monitorCallbackDroppedCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] Monitor callback DROPPED (queue full or shutdown). Dropped total: {}. "
+                    + "Consider moving heavy work out of onResponse into AsyncPool.run().", dropped);
+            return;
+        }
         try {
             MONITOR_CALLBACK_EXECUTOR.execute(() -> {
                 try {
@@ -419,14 +438,11 @@ public final class AsyncPool {
                 }
             });
         } catch (RejectedExecutionException e) {
-            LOGGER.error("[AsyncPool] Monitor callback executor rejected: {}", e.getMessage());
-            try {
-                task.run();
-            } catch (Exception ex) {
-                LOGGER.error("[AsyncPool] Monitor callback fallback failed", ex);
-            }
+            long dropped = monitorCallbackDroppedCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] Monitor callback REJECTED (DROPPED). Dropped total: {}. {}", dropped, e.getMessage());
         } catch (Exception e) {
-            LoggingConfigUtil.logWarnIfVerbose(LOGGER, "[AsyncPool] Monitor callback submit failed: {}", e.getMessage());
+            long dropped = monitorCallbackDroppedCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] Monitor callback submit failed (DROPPED). Dropped total: {}. {}", dropped, e.getMessage());
         }
     }
 
@@ -458,7 +474,13 @@ public final class AsyncPool {
         String val = System.getenv(key);
         if (val == null || val.trim().isEmpty()) return defaultValue;
         try {
-            return Double.parseDouble(val.trim());
+            double parsed = Double.parseDouble(val.trim());
+            // 防御：拒绝 NaN / ±Infinity（如误配 "NaN"/"Infinity"），回退默认值（修复 L3）
+            if (Double.isNaN(parsed) || Double.isInfinite(parsed)) {
+                LOGGER.warn("[AsyncPool] Invalid double for {}: '{}' is NaN/Infinity, default {}", key, val, defaultValue);
+                return defaultValue;
+            }
+            return parsed;
         } catch (NumberFormatException e) {
             LOGGER.warn("[AsyncPool] Invalid double for {}: '{}', default {}", key, val, defaultValue);
             return defaultValue;

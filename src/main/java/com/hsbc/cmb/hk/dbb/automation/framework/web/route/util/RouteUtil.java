@@ -54,8 +54,8 @@ public final class RouteUtil {
     public static final String RT_OTHER = "other";
 
     // ═══════════════════════════════════════════════════════════════
-    // JsonPath 编译缓存（⭐ P2-15：单一共享，替代 ModifyHandler / MonitorHandler /
-    // MonitorAssertionEvaluator 各自维护的三份缓存，提升命中率、消除重复编译）
+    // JsonPath 编译缓存（⭐ P2-15：单一共享，替代 ModifyHandler / MonitorHandler
+    // 各自维护的缓存，提升命中率、消除重复编译）
     // ═══════════════════════════════════════════════════════════════
 
     /** JsonPath 编译缓存，容量上限 1024（超出后淘汰约 1/4 旧条目） */
@@ -108,7 +108,13 @@ public final class RouteUtil {
         String val = System.getenv(key);
         if (val == null || val.trim().isEmpty()) return defaultValue;
         try {
-            return Double.parseDouble(val.trim());
+            double parsed = Double.parseDouble(val.trim());
+            // 防御：拒绝 NaN / ±Infinity（如误配 "NaN"/"Infinity"），回退默认值，
+            // 避免污染超时/告警阈值等 double 型配置（修复 L3）
+            if (Double.isNaN(parsed) || Double.isInfinite(parsed)) {
+                return defaultValue;
+            }
+            return parsed;
         } catch (NumberFormatException e) {
             return defaultValue;
         }
@@ -118,7 +124,7 @@ public final class RouteUtil {
 
     /**
      * 全局统一 JsonPath 配置（⭐ 一致性修复：此前 ModifyHandler 使用自定义 Configuration，
-     * 而 MonitorHandler / MonitorAssertionEvaluator 直接用 {@code JsonPath.compile} 默认配置，
+     * 而 MonitorHandler 直接用 {@code JsonPath.compile} 默认配置，
      * 两者在缺失字段处理、异常策略上存在语义差异，会导致同一表达式在不同 Handler 下行为不一致）。
      * <p>统一采用 Jackson 提供器 + {@code Option.SUPPRESS_EXCEPTIONS}（缺失路径返回 null/空，
      * 不抛异常），保证 MOCK/MONITOR/MODIFY 三路径解析语义一致。
@@ -167,7 +173,7 @@ public final class RouteUtil {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * ⭐ 统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorAssertionEvaluator /
+     * ⭐ 统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorHandler /
      * ApiCaptureContext 同源策略）。避免 entrySet().iterator().remove() 在结构变更时抛
      * IllegalStateException，也避免简单 map.clear() 使缓存命中率瞬间归零。
      * 供 RouteEngine / ApiCaptureContext / 各 Handler 的 JSONPATH_CACHE 等复用。
@@ -186,7 +192,7 @@ public final class RouteUtil {
 
     /**
      * 从缓存获取或编译一个 JsonPath 表达式（⭐ P2-15：单一共享入口，供 ModifyHandler /
-     * MonitorHandler / MonitorAssertionEvaluator 复用同一份 JSONPATH_CACHE）。
+     * MonitorHandler 复用同一份 JSONPATH_CACHE）。
      *
      * @param expression JsonPath 表达式字符串（作为缓存 key）
      * @return 编译后的 JsonPath

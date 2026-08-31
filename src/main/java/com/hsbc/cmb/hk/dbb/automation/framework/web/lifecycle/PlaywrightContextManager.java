@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -21,6 +22,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Context 和 Page 管理器 - 负责 Context 和 Page 的创建、配置和关闭
@@ -33,6 +36,24 @@ import java.util.List;
 class PlaywrightContextManager {
     
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightContextManager.class);
+
+    /**
+     * ⭐ 修复 Medium(#2)：tracing().stop() 写磁盘 trace 文件属阻塞 IO。原实现用
+     *   CompletableFuture.runAsync(...) 隐式提交到 ForkJoinPool.commonPool()（JVM 共享池），
+     *   既污染共享池又不受框架生命周期管理（JVM 退出时可能被强杀导致 trace 文件损坏）。
+     *   改为提交到本类专属、受 ShutdownCoordinator 管理的守护线程池。
+     */
+    private static final ExecutorService TRACE_EXECUTOR =
+            Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "pw-context-trace");
+                t.setDaemon(true);
+                return t;
+            });
+    static {
+        ShutdownCoordinator.register(
+                ShutdownCoordinator.ORDER_DIAGNOSTICS,
+                "pw-context-trace", TRACE_EXECUTOR::shutdownNow);
+    }
 
     /**
      * 创建新的 BrowserContext
@@ -140,7 +161,7 @@ class PlaywrightContextManager {
                     try {
                         String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
                         java.util.concurrent.Future<Void> traceTask = java.util.concurrent.CompletableFuture.runAsync(() ->
-                                context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath))));
+                                context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath))), TRACE_EXECUTOR);
                         try {
                             traceTask.get(15, java.util.concurrent.TimeUnit.SECONDS);
                         } catch (java.util.concurrent.TimeoutException toe) {

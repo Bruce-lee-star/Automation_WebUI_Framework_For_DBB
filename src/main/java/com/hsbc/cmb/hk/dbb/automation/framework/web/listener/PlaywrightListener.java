@@ -11,6 +11,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRegistry;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -179,6 +181,11 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 监控上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 绑定当前 scenario 名：让 API 监控失败记录能归属到具体场景
+        //   （MonitorFailureCollector 按指纹去重合并，同时累计触发该失败的场景列表）
+        MonitorFailureCollector.getInstance().setCurrentScenario(testName);
+        // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
+        SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
@@ -696,6 +703,11 @@ public class PlaywrightListener implements StepListener {
         clearReportedFailures();  // ⭐ 清空失败日志去重记录，避免跨 scenario 误杀
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
+        // ⭐ 修复 M1：清理 API 监控失败归集器的 scenario/feature ThreadLocal，
+        //    避免线程池复用时失败被错误归因到上一个 scenario（陈旧 ThreadLocal 残留）。
+        MonitorFailureCollector.getInstance().clearCurrentScenario();
+        MonitorFailureCollector.getInstance().clearCurrentFeature();
+
         // ⭐⭐⭐ 新增：清理 API 捕获上下文
         ApiCaptureContext.resetCurrent();
     }
@@ -953,6 +965,10 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 绑定当前 scenario 名：让 API 监控失败记录能归属到具体场景
+        MonitorFailureCollector.getInstance().setCurrentScenario(testName);
+        // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
+        SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
@@ -986,6 +1002,10 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐⭐⭐ 新增：重置 API 捕获上下文
         ApiCaptureContext.resetCurrent();
+        // ⭐ 绑定当前 scenario 名：让 API 监控失败记录能归属到具体场景
+        MonitorFailureCollector.getInstance().setCurrentScenario(testName);
+        // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
+        SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
         apiFailureAlreadyHandled.set(false);
 
@@ -1070,6 +1090,10 @@ public class PlaywrightListener implements StepListener {
             // ⭐⭐⭐ 新增：检查 API 断言失败并标记测试结果
             checkAndMarkApiAssertionFailures(result);
 
+            // ⭐ 将本场景产生的 API 记录刷入 Serenity 报告。必须在 Serenity 仍关联本场景时执行，
+            //    否则残留会滞留在队列中，被下一场景的 flush 带走造成跨场景串扰。
+            SerenityReporter.flushPendingApiOperations();
+
             Long startTime = testStartTime.get();
             if (startTime == null) {
                 return;
@@ -1126,6 +1150,9 @@ public class PlaywrightListener implements StepListener {
         } finally {
             // 【关键】finally 保证：无论中间是否抛异常，ThreadLocal 一定会被清理
             cleanupThreadLocals();
+            // ⭐ 解绑当前线程的 scenario 归属：Cucumber 执行线程会被线程池复用，
+            //   不 remove 会把上一个 scenario 名带到下一个用例（MonitorFailureCollector 归属串扰）
+            MonitorFailureCollector.getInstance().clearCurrentScenario();
             // ⭐ 新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
             cleanupRouteRegistryForCurrentThread();
 

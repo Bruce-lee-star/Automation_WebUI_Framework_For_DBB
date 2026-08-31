@@ -1,7 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorContextCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
@@ -161,6 +159,7 @@ public class RouteDsl {
         if (context == null) return;
         RouteRegistry.clearContext(context);
         ApiCaptureContext.removeContext(context);
+        RouteEngine.clearStoppedCapabilities(context);
     }
 
     /**
@@ -177,6 +176,7 @@ public class RouteDsl {
         RouteRegistry.clearContext(page.context());
         RouteEngine.removePageRules(page);
         ApiCaptureContext.stop(page);
+        RouteEngine.clearStoppedCapabilities(page.context());
     }
 
     /**
@@ -224,9 +224,10 @@ public class RouteDsl {
         // 3. 冗余兜底：清空 Route 防重门控（异常路径保险，幂等）
         try {
             RouteEngine.clearDispatchedRoutes();
+            RouteEngine.clearAllStoppedCapabilities();
         } catch (Exception e) {
             LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                    "[RouteDsl] clearDispatchedRoutes() during resetAll failed: {}", e.getMessage());
+                    "[RouteDsl] clearDispatchedRoutes()/clearAllStoppedCapabilities() during resetAll failed: {}", e.getMessage());
         }
         // 4. ⭐ 释放按 BrowserContext 隔离的捕获上下文 + 解绑当前线程。
         //    BY_CONTEXT 以 BrowserContext 为强引用 key，只清路由层不会回收它；
@@ -264,7 +265,37 @@ public class RouteDsl {
     public static void clearAllRules() {
         LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
         RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES + JSONPath cache
+        RouteEngine.clearAllStoppedCapabilities();
         LoggingConfigUtil.logDebugIfVerbose(LOGGER, "[RouteDsl] clearAllRules() completed");
+    }
+
+    // ==================== 按能力维度显式停止（monitor / modify / delay / mock / all）====================
+    // ⭐ 仅停止指定能力，不影响同一 API 的其它能力；路由仍注册（不 unroute）。
+    //    context 可传 Page 或 BrowserContext；传 Page 时自动解析为其所属 BrowserContext。
+
+    /** 显式停止某 API 的 MONITOR 能力（delay / modify / mock 不受影响）。 */
+    public static void stopMonitor(Object context, String urlPattern) {
+        RouteEngine.stopMonitor(context, urlPattern);
+    }
+
+    /** 显式停止某 API 的 MODIFY 能力（monitor / delay / mock 不受影响）。 */
+    public static void stopModify(Object context, String urlPattern) {
+        RouteEngine.stopModify(context, urlPattern);
+    }
+
+    /** 显式停止某 API 的 DELAY 能力（monitor / modify / mock 不受影响）。 */
+    public static void stopDelay(Object context, String urlPattern) {
+        RouteEngine.stopDelay(context, urlPattern);
+    }
+
+    /** 显式停止某 API 的 MOCK 能力（monitor / modify / delay 不受影响）。 */
+    public static void stopMock(Object context, String urlPattern) {
+        RouteEngine.stopMock(context, urlPattern);
+    }
+
+    /** 显式停止某 API 的【全部】能力（monitor / modify / delay / mock 一并停止，但路由仍注册）。 */
+    public static void stopApi(Object context, String urlPattern) {
+        RouteEngine.stopAll(context, urlPattern);
     }
 
     // ==================== 入口点 — 仅提供三个分支方法 ====================
@@ -289,12 +320,14 @@ public class RouteDsl {
          * 切换到 Monitor 监控模式（基线能力位）。
          * <p>Monitor 是<b>不可覆盖的基线</b>：后续可叠加 {@code modifyRequest()} / {@code delay()}，
          * 监控始终在请求放行后对真实响应断言，失败即报错。
-         * <p>Monitor 默认在匹配后自动停止（autoStopOnMatch=true）。
+         * <p>Monitor 默认【不】自动停止（autoStopOnMatch=false）：持续监控直到显式 stopMonitor / stopApi。
          *
          * @return MonitorApiDsl — 仅可调用 Monitor 相关方法 + 公共方法
          */
         public MonitorApiDsl monitor() {
             rule.setMonitorEnabled(true);
+            // ⭐ monitor 默认不自动停：持续监控，直到显式 stopMonitor / stopApi 释放
+            rule.setAutoStopOnMatch(false);
             LoggingConfigUtil.logDebugIfVerbose(RouteDsl.LOGGER,
                     "[RouteDsl] api('{}') -> monitor()", rule.getUrlPattern());
             return new MonitorApiDsl(parent, rule);
@@ -404,7 +437,7 @@ public class RouteDsl {
         /**
          * 目标匹配后是否自动停止。
          * <ul>
-         *   <li>MONITOR — 默认 {@code true}：达到 minMatches 后自动 unroute</li>
+         *   <li>MONITOR — 默认 {@code false}：持续监控直到显式 stopMonitor / stopApi（与 mock/modify/delay 一致）</li>
          *   <li>MOCK   — 默认 {@code false}：持续拦截直到超时或测试结束</li>
          *   <li>MODIFY — 默认 {@code false}：持续拦截直到超时或测试结束</li>
          * </ul>
@@ -668,53 +701,6 @@ public class RouteDsl {
             return this;
         }
 
-        /**
-         * 注册 Monitor 响应回调 — 每次捕获到匹配请求且断言通过时触发。
-         *
-         * <p>回调在 {@code RouteAsyncPool} 异步线程中执行，不阻塞 Playwright 事件线程。
-         * 可多次调用注册多个回调，按注册顺序执行。
-         *
-         * <p>典型用途：
-         * <ul>
-         *   <li>自定义数据校验逻辑（超越状态码/JSONPath 断言）</li>
-         *   <li>从响应中提取字段写入上下文（如 token、userId）</li>
-         *   <li>自定义日志/报告输出</li>
-         *   <li>触发外部系统操作（如通知、记录）</li>
-         * </ul>
-         *
-         * <pre>{@code
-         * .api("/api/login")
-         *     .monitor()
-         *     .expectStatus(200)
-         *     .onResponse((url, status, body, headers, method) -> {
-         *         // 提取 token 并存储到测试上下文
-         *         String token = JsonPath.read(body, "$.data.token");
-         *         TestContext.put("authToken", token);
-         *     })
-         *     .done()
-         * }</pre>
-         *
-         * @param callback 回调实例（支持 Lambda 表达式和方法引用）
-         */
-        public MonitorApiDsl onResponse(MonitorCallback callback) {
-            rule.addMonitorCallback(callback);
-            return this;
-        }
-
-        /**
-         * 注册携带 {@link ApiCaptureContext} 的 Monitor 回调（6 参 onResponse）。
-         *
-         * <p>回调里可直接 {@code context.setShared(key, value)} 把数据回传到主线程
-         * （主线程用 {@code ApiCaptureContext.getCurrent().awaitShared(key, timeout)} 读取），
-         * 也可设置框架级全局变量（如 {@code NLSUtils.setLanguage}，已全局化、对主线程可见）。
-         * 6 参 lambda 会自动匹配本重载；5 参 lambda 匹配 {@link #onResponse(MonitorCallback)}。
-         *
-         * @param callback 6 参回调实例（支持 Lambda 表达式和方法引用）
-         */
-        public MonitorApiDsl onResponse(MonitorContextCallback callback) {
-            rule.addMonitorCallback(callback);
-            return this;
-        }
     }
 
     // ==================== Mock 专用 DSL ====================
@@ -1065,6 +1051,11 @@ public class RouteDsl {
          *
          * <p>支持的 op：EQUALS / NOT_EQUALS / CONTAINS / NOT_CONTAINS / REGEX /
          * EXISTS / NOT_EXISTS / GT / LT / GTE / LTE
+         *
+         * <p>⚠️ <b>REGEX 为全字符串匹配</b>：底层使用 {@code String.matches()}（等价于
+         * {@code Pattern.matches(regex, input)}），<b>不是</b> {@code find()} 的部分匹配。
+         * 例如匹配「以 A 或 C 开头」应写 {@code "^[AC].*"}；若写成 {@code "^[AC]"}，
+         * 模式只消耗首字符、剩余字符无对应模式，将<b>永远匹配失败</b>。
          *
          * @param whenJsonPath 条件判断的 JSONPath（读取响应里的某个字段）
          * @param op           条件操作符（字符串，忽略大小写）

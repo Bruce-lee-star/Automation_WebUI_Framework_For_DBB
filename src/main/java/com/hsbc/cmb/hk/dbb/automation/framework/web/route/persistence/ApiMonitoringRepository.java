@@ -68,6 +68,9 @@ public final class ApiMonitoringRepository {
     /** 单批最多插入条数（防止一次 executeBatch 过大占内存） */
     private static final int MAX_BATCH_PER_FLUSH = 500;
 
+    /** 待写库队列硬上限（成功路径也限流，防止 DB 刷库健康但滞后时内存无限增长）；默认 BATCH_THRESHOLD*20 */
+    private static final int PENDING_HARD_CAP = getEnvInt("ROUTE_MONITOR_PENDING_CAP", BATCH_THRESHOLD * 20);
+
     private static volatile HikariDataSource dataSource;
     private static volatile boolean initialized = false;
     private static volatile boolean initFailed = false;
@@ -83,7 +86,7 @@ public final class ApiMonitoringRepository {
      * 若把 flush 塞进通用池，DB 慢/连接池满时会占满 2~6 个通用线程，拖垮路由回调、超时调度与事件记录。
      * 此处单线程串行刷库，天然串行化批量 INSERT，避免并发抢连接。
      */
-    private static ScheduledExecutorService DB_FLUSH_EXECUTOR;
+    private static volatile ScheduledExecutorService DB_FLUSH_EXECUTOR;
 
     /** 待写库记录的内存队列（save 只入队，刷入器负责批量落库） */
     private static final ConcurrentLinkedQueue<PendingItem> PENDING = new ConcurrentLinkedQueue<>();
@@ -143,24 +146,29 @@ public final class ApiMonitoringRepository {
             LOGGER.info("[ApiMonitoringRepository] Initializing DB connection: type={}, url={}, user={}",
                     dbType, maskUrl(dbUrl), dbUser);
 
-            HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(dbUrl);
-            config.setUsername(dbUser);
-            config.setPassword(dbPassword);
-            config.setDriverClassName(driverClass(dbType));
-            config.setMaximumPoolSize(maxPoolSize);
-            config.setMinimumIdle(1);
-            config.setConnectionTimeout(3000);
-            config.setMaxLifetime(1800000);
-            config.setPoolName("ApiMonitorPool");
+            com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec spec =
+                    new com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec();
+            spec.jdbcUrl = dbUrl;
+            spec.username = dbUser;
+            spec.password = dbPassword;
+            spec.driverClass = driverClass(dbType);
+            spec.maxPoolSize = maxPoolSize;
+            spec.minIdle = 1;
+            spec.connectionTimeoutMs = 3000;
+            spec.idleTimeoutMs = -1; // 原内联未设 idleTimeout，沿用 Hikari 默认
+            spec.maxLifetimeMs = 1800000;
+            spec.poolName = "ApiMonitorPool";
 
-            if ("MYSQL".equalsIgnoreCase(dbType)) {
-                config.addDataSourceProperty("cachePrepStmts", "true");
-                config.addDataSourceProperty("prepStmtCacheSize", "250");
-                config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
-                // 核心优化：把批量 INSERT 合并成一条多值 INSERT，写库性能提升巨大
-                config.addDataSourceProperty("rewriteBatchedStatements", "true");
-            }
+            HikariConfig config = com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.build(
+                    spec, cfg -> {
+                        if ("MYSQL".equalsIgnoreCase(dbType)) {
+                            cfg.addDataSourceProperty("cachePrepStmts", "true");
+                            cfg.addDataSourceProperty("prepStmtCacheSize", "250");
+                            cfg.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+                            // 核心优化：把批量 INSERT 合并成一条多值 INSERT，写库性能提升巨大
+                            cfg.addDataSourceProperty("rewriteBatchedStatements", "true");
+                        }
+                    });
 
             dataSource = new HikariDataSource(config);
 
@@ -171,14 +179,16 @@ public final class ApiMonitoringRepository {
                 ensureTableExists(conn, dbType);
             }
 
-            initialized = true;
-
-            // 启动后台批量刷入器（定时 + 定量双触发）
+            // 先启动后台批量刷入器（定时 + 定量双触发），再标记 initialized，
+            // 消除"已初始化但刷库执行器尚未创建/可见"的窗口（修复 H2）
             startFlusher();
 
-            // 注册 JVM 关闭钩子，确保退出时 flush 剩余队列
-            Runtime.getRuntime().addShutdownHook(new Thread(ApiMonitoringRepository::flushPendingNow,
-                    "api-monitor-flush-shutdown"));
+            initialized = true;
+
+            // 注册到统一关闭编排器（早于连接池关闭），确保退出时 flush 剩余队列
+            com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                    com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_API_MONITOR_FLUSH,
+                    "api-monitor-flush", ApiMonitoringRepository::shutdown);
 
             LOGGER.info("[ApiMonitoringRepository] Initialized successfully, pool max size={}, "
                             + "batchThreshold={}, flushInterval={}ms",
@@ -211,6 +221,18 @@ public final class ApiMonitoringRepository {
         PENDING.offer(new PendingItem(record, 0));
         enqueuedCount.incrementAndGet();
         int count = pendingCount.incrementAndGet();   // O(1) 计数（审计 P0-2）
+
+        // ⭐ 修复（漏网之鱼 #4）：成功路径也设硬上限，防止 DB 刷库健康但滞后时
+        // 内存队列无限增长。超过上限则丢弃最旧记录，与失败路径限流策略一致。
+        if (count > PENDING_HARD_CAP) {
+            PendingItem dropped = PENDING.poll();
+            if (dropped != null) {
+                pendingCount.decrementAndGet();
+                droppedCount.incrementAndGet();
+                LOGGER.warn("[ApiMonitoringRepository] Pending queue exceeded hard cap ({}), dropping oldest to apply backpressure.",
+                        PENDING_HARD_CAP);
+            }
+        }
 
         // 定量触发：队列达到阈值立即刷，避免积压过多。
         // 提交到专属 DB 刷库执行器（审计 P0-0），不在调用方线程做 DB IO，
@@ -286,7 +308,7 @@ public final class ApiMonitoringRepository {
             }
             pendingCount.addAndGet(requeued);   // 重新入队，计数同步回加
             // 保护：若队列因反复失败持续膨胀，丢弃最旧以限流（防止内存无限增长）
-            int cap = BATCH_THRESHOLD * 20;
+            int cap = PENDING_HARD_CAP;
             while (pendingCount.get() > cap) {
                 PendingItem dropped = PENDING.poll();
                 if (dropped == null) break;

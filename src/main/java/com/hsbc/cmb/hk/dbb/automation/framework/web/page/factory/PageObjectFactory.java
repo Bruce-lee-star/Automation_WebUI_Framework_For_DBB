@@ -445,7 +445,9 @@ public class PageObjectFactory {
         int requestCount = requestScopedInstances.size();
         
         singleInstances.clear();
-        threadInstances.get().clear();
+        // ⭐ 修复 Medium(#1)：clearAll 需释放 ThreadLocal 绑定（而非仅清空内部 map），
+        // 否则 Serenity 复用 worker 线程时 ThreadLocalMap 长期持有该 map 及潜在过期 Page/Context 引用，造成滞留。
+        threadInstances.remove();
         requestScopedInstances.clear();
         
         LoggingConfigUtil.logInfoIfVerbose(logger, "Cleared all PageObject instances: {} singletons, {} thread-isolated, {} request-scoped", 

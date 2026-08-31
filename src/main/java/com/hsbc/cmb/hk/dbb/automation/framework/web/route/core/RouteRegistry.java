@@ -9,8 +9,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.ref.WeakReference;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -46,13 +48,20 @@ public class RouteRegistry {
      * Key: ContextKey（WeakReference 包装的 Page/BrowserContext），
      * Value: 该上下文已注册的 pattern → RouteHandleType 映射。
      *
-     * <p>ContextKey 使用身份哈希 + WeakReference，确保：
-     * <ol>
-     *   <li>两个不同的 ContextKey 包裹同一个 Page 实例时 equals() 返回 true</li>
-     *   <li>Page 对象被外部释放后，StrongKey 不会阻止 GC</li>
-     * </ol>
+     * <p>⭐ 修复（漏网之鱼 #1）：由 {@code ConcurrentHashMap} 改为
+     * {@code Collections.synchronizedMap(new WeakHashMap<>())}。
+     * <ul>
+     *   <li>原实现把 WeakReference 包进 ConcurrentHashMap 的 key，属于「假弱键」反模式——
+     *       WeakReference 不会自动清除 CHM 条目，只有 WeakHashMap（配合 ReferenceQueue）才会；
+     *       原条目（ContextKey + 内层 pattern 表）被强引用钉死，直到显式 clearContext/clearAll，
+     *       一旦某 context 被 GC 但清理未触发即永久泄漏，且无 GC 兜底。</li>
+     *   <li>改为 WeakHashMap 后，context 被 GC 时条目自动回收，作为显式清理的防御性兜底；
+     *       synchronizedMap 包装保证并发注册（Playwright 事件线程）的线程安全。</li>
+     *   <li>仍保留 ContextKey 的身份哈希 + equals（同一实例的两个键相等），注册/反查语义不变。</li>
+     * </ul>
      */
-    private static final ConcurrentHashMap<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS = new ConcurrentHashMap<>();
+    private static final Map<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
      * 按 Page 上下文注册 pattern。
@@ -172,8 +181,10 @@ public class RouteRegistry {
         // ⭐ 修复 R7：clearAll 阶段对仍存活的 context 调用原生 unrouteAll 兜底，
         // 防止后续 Playwright 原生 route handler 因只清静态 Map 而未解绑，
         // 在 Context 再次启用时残留旧 handler 造成请求被错误拦截。
-        for (Map.Entry<ContextKey, Map<String, RouteHandleType>> entry : CONTEXT_PATTERNS.entrySet()) {
-            Object ctx = entry.getKey().get();
+        // ⭐ 修复（漏网之鱼 #1）：synchronizedMap 的迭代必须手动加锁，避免与并发 register/clear 抛 CME。
+        synchronized (CONTEXT_PATTERNS) {
+            for (Map.Entry<ContextKey, Map<String, RouteHandleType>> entry : CONTEXT_PATTERNS.entrySet()) {
+                Object ctx = entry.getKey().get();
             if (ctx != null && !entry.getValue().isEmpty()) {
                 try {
                     if (ctx instanceof Page) {
@@ -197,6 +208,7 @@ public class RouteRegistry {
                     }
                 }
             }
+        }
         }
         CONTEXT_PATTERNS.clear();
         RouteEngine.clearAllMonitorSessions();

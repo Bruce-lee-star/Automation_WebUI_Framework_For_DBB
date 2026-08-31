@@ -390,6 +390,9 @@ public class SummaryReportGenerator {
                     logger.info("[ApiMonitor] 已写出 API 监控失败报告（{} 个 owner），"
                             + "见 target/monitor-failures-by-owner.json", ownerCount);
                 }
+                // ⭐ 修复 C2：报告写出后清空归集器，防止多套件同 JVM 运行时失败记录跨套件累积（OOM 路径）。
+                com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor
+                        .MonitorFailureCollector.getInstance().clear();
             } catch (Exception ex) {
                 logger.warn("[ApiMonitor] 写出监控失败报告异常（不影响主报告）：{}", ex.getMessage());
             }

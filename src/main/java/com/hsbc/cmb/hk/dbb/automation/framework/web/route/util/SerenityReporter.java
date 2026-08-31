@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>待报告队列机制</h3>
  * <p>Route Handler（MonitorHandler / MockHandler / ModifyHandler）在 Playwright
- * 事件线程或 RouteAsyncPool worker 线程中触发，这些线程与 Serenity 测试主线程
+ * 事件线程或 AsyncPool worker 线程中触发，这些线程与 Serenity 测试主线程
  * 无 ThreadLocal 关联，直接调用 {@code Serenity.recordReportData()} 数据会丢失。
  *
  * <p>解决方案：
@@ -35,7 +35,7 @@ public final class SerenityReporter {
 
     /**
      * 线程安全的待报告 API 操作队列。
-     * Handler（Playwright 事件线程 / RouteAsyncPool worker 线程）入队，
+     * Handler（Playwright 事件线程 / AsyncPool worker 线程）入队，
      * SerenityBasePage 拦截器（主线程）出队写入 Serenity 报告。
      */
     private static final Queue<PendingApiRecord> pendingQueue = new ConcurrentLinkedQueue<>();
@@ -157,6 +157,31 @@ public final class SerenityReporter {
             LoggingConfigUtil.logDebugIfVerbose(logger,
                     "[SerenityReporter] flushPendingApiOperations DONE: flushed {} API record(s)", flushed);
         }
+    }
+
+    /**
+     * 丢弃待报告队列中残留的记录（不写入任何报告）。
+     *
+     * <p>用途：scenario 开始时调用，确保新场景的报告中不会出现上一场景残留的
+     * API 记录。残留只会出现在上一场景 {@code testFinished} 未被触发的异常中断路径，
+     * 此时若直接 {@link #flushPendingApiOperations()}，这些记录会被错误地写入
+     * <b>当前</b>（新的）场景报告，造成跨场景串扰 —— 因此这里选择丢弃而非补写。
+     *
+     * @return 丢弃的记录数（0 表示队列本就为空）
+     */
+    public static int discardPendingApiOperations() {
+        if (pendingQueue.isEmpty()) {
+            return 0;
+        }
+        int drained = 0;
+        while (pendingQueue.poll() != null) {
+            drained++;
+        }
+        pendingCount.set(0);
+        LoggingConfigUtil.logDebugIfVerbose(logger,
+                "[SerenityReporter] discardPendingApiOperations: dropped {} stale API record(s) from previous scenario",
+                drained);
+        return drained;
     }
 
     /**

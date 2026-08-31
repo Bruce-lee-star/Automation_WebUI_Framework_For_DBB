@@ -4,14 +4,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.DatabaseStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.FileStoreMonitorCallback;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
@@ -33,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * API 监控 Handler — 在 Playwright 事件线程中同步读取响应 body，
- * 拷贝 byte[] 后交给 RouteAsyncPool 异步执行断言和报告记录。
+ * 拷贝 byte[] 后交给 AsyncPool 异步执行断言和报告记录。
  *
  * <p>关键设计原则：
  * <ul>
@@ -61,16 +59,21 @@ public class MonitorHandler {
     // ⭐ 修复 P0-3：注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
     // 避免异常路径下任务堆积导致线程永久挂起。守护线程本不会阻止 JVM 退出，但显式 shutdown 更稳妥。
     static {
-        try {
-            Runtime.getRuntime().addShutdownHook(new Thread(MonitorHandler::shutdownScheduler, "monitor-handler-shutdown"));
-        } catch (Exception ignored) {
-            // 受限环境忽略
-        }
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_MONITOR_HANDLER,
+                "monitor-handler", MonitorHandler::shutdownScheduler);
     }
 
-    /** 关闭 body 读取重试调度器（幂等） */
+    /** 关闭 body 读取重试调度器（幂等，等待进行中重试完成） */
     private static void shutdownScheduler() {
-        bodyReadScheduler.shutdownNow();
+        try {
+            bodyReadScheduler.shutdownNow();
+            if (!bodyReadScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[MonitorHandler] bodyReadScheduler did not terminate in time");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
@@ -97,11 +100,11 @@ public class MonitorHandler {
      * <p><b>⭐⭐⭐ 重要架构变更 — 同步断言 + Fail-Fast</b>：
      * <ul>
      *   <li>断言（状态码 / JSONPath）在 Playwright 事件线程上<b>同步执行</b>，
-     *       不再提交到 RouteAsyncPool 异步线程</li>
+     *       不再提交到 AsyncPool 异步线程</li>
      *   <li>断言失败 → 调用 {@code context.signalFailFast()} 置失败标志（<b>不中断</b>主测试线程），
      *       由 PlaywrightListener 在步骤结束时经 {@code checkAndFailOnApiAssertions()} 抛 AssertionError，仅当前 Step 失败</li>
      *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录仍提交到
-     *       RouteAsyncPool 异步执行（繁重操作不阻塞事件线程）</li>
+     *       AsyncPool 异步执行（繁重操作不阻塞事件线程）</li>
      * </ul>
      */
     public static void handle(Route route, RouteRule rule, long delayMs) {
@@ -345,6 +348,12 @@ public class MonitorHandler {
             return;
         }
         if (attempt < maxAttempts) {
+            if (bodyReadScheduler.isShutdown()) {
+                // ⭐ 修复 Medium：调度器已关闭（JVM 收尾/异常路径）时不再重试，
+                // 立即走兜底，避免向已停执行器提交触发 RejectedExecution + 浪费 join 超时窗口。
+                result.complete(null);
+                return;
+            }
             CompletableFuture.runAsync(
                     () -> retryBodyOnce(res, rule, req, attempt + 1, maxAttempts, intervalMs, result),
                     CompletableFuture.delayedExecutor(intervalMs, TimeUnit.MILLISECONDS, bodyReadScheduler));
@@ -360,7 +369,7 @@ public class MonitorHandler {
      * <p>行为：
      * <ul>
      *   <li>在 Playwright 事件线程上<b>同步断言</b>（状态码 / JSONPath），失败 → Fail-Fast 中断测试</li>
-     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录走 {@link RouteAsyncPool} 异步</li>
+     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录走 {@link AsyncPool} 异步</li>
      * </ul>
      *
      * <p>⭐ 监控是<b>不可被覆盖的基线</b>：无论是否叠加 Modify/Delay，真实响应拿回后都会在此断言健康，
@@ -464,11 +473,6 @@ public class MonitorHandler {
 
             // 通知 RouteEngine 完成一次匹配（触发 auto-stop / minMatches 检查）
             RouteEngine.onMonitorMatch(rule);
-
-            // ═══════════════════════════════════════════════════════════════
-            // 执行用户注册的 Monitor 响应回调
-            // ═══════════════════════════════════════════════════════════════
-            invokeCallbacks(rule, url, status, body, resHeaders, method, context);
 
             // ═══════════════════════════════════════════════════════════════
             // 框架内置：根据配置自动决定是否持久化到数据库
@@ -621,51 +625,5 @@ public class MonitorHandler {
         }
     }
 
-    /**
-     * 调用 RouteRule 中注册的所有 Monitor 响应回调。
-     * <p>每个回调独立 try-catch，单个回调失败不影响其他回调执行。
-     *
-     * @param rule            路由规则
-     * @param url             请求 URL
-     * @param status          HTTP 状态码
-     * @param body            响应体字符串
-     * @param responseHeaders 响应头快照（线程安全的 Map 副本）
-     * @param method          请求方法
-     */
-    private static void invokeCallbacks(RouteRule rule, String url, int status,
-                                         String body, Map<String, String> responseHeaders,
-                                         String method, ApiCaptureContext context) {
-        java.util.List<MonitorCallback> callbacks = rule.getMonitorCallbacks();
-        if (callbacks == null || callbacks.isEmpty()) return;
-
-        LoggingConfigUtil.logDebugIfVerbose(LOGGER,
-                "[MonitorHandler] Invoking {} monitor callback(s) for pattern='{}', url='{}'",
-                callbacks.size(), rule.getUrlPattern(), url);
-
-        // ⭐ 默认 onResponse 跑在「Monitor 回调专用串行线程」而非 Playwright 事件线程。
-        // 用户无需理解线程模型：在回调里修改的全局/共享状态（如 NLSUtils.setLanguage）
-        // 因已全局化而对主线程可见，无需额外 awaitShared 桥接。
-        // ⭐ 竞态修复：用户回调已异步化，若仅在事件线程 finally 中 decrementActiveRequests，
-        //   主线程 awaitCompletion 会在回调真正执行前误判「无活动」提前返回。
-        //   故此处为「回调活动」额外 increment，并在串行任务末尾 decrement，
-        //   与事件线程的 increment/finally-decrement 配对，确保 awaitCompletion 等到回调真正完成。
-        context.incrementActiveRequests();
-        for (int i = 0; i < callbacks.size(); i++) {
-            final int idx = i;
-            final MonitorCallback cb = callbacks.get(i);
-            RouteAsyncPool.runOnMonitorCallbackThread(() -> {
-                try {
-                    // 优先调用带 ApiCaptureContext 的重载，使回调可经 context.setShared(...) 回传数据到主线程；
-                    // 旧版无 context 的 lambda 通过 default 方法自动委托，向后兼容。
-                    cb.onResponse(url, status, body, responseHeaders, method, context);
-                } catch (Exception e) {
-                    LOGGER.error("[MonitorHandler] Monitor callback #{} failed for pattern='{}', url='{}': {}",
-                            idx, rule.getUrlPattern(), url, e.getMessage(), e);
-                } finally {
-                    context.decrementActiveRequests();
-                }
-            });
-        }
-    }
 
 }

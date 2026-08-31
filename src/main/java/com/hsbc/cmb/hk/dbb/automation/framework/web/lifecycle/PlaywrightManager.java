@@ -20,6 +20,7 @@ import java.awt.Dimension;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -61,6 +62,9 @@ public class PlaywrightManager {
     // 框架状态引用
     static final FrameworkState frameworkState = FrameworkState.getInstance();
 
+    // ⭐ 修复 H6/H8：初始化幂等判据（static synchronized 已提供类级互斥，再补一道可见性判据）
+    private static final AtomicBoolean FULL_INIT = new AtomicBoolean(false);
+
     // ==================== ThreadLocal 变量（3个，集中管理） ====================
 
     // ---- 核心 Page/Context ----
@@ -101,7 +105,9 @@ public class PlaywrightManager {
      * 这样可以支持 @AutoBrowser 动态浏览器切换，避免启动多余的浏览器实例
      */
     public static synchronized void initialize() {
-        if (frameworkState.isInitialized() && currentConfigId.get() != null) {
+        // ⭐ 修复 H6/H8：用 FULL_INIT 作幂等判据（frameworkState.isInitialized 在浏览器就绪前可能为 false，
+        // 旧判据导致每次进入都重算 configId；static synchronized 已提供类级互斥，FULL_INIT 再补可见性判据）。
+        if (FULL_INIT.get() && currentConfigId.get() != null) {
             LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright environment already initialized with config: {}", currentConfigId.get());
             return;
         }
@@ -112,6 +118,7 @@ public class PlaywrightManager {
         // 原因：浏览器可能尚未安装，提前创建会导致初次 launch 时找不到二进制
         // Playwright 实例延迟到 initializeBrowser() 中、浏览器就绪后再创建
         currentConfigId.set(configId);
+        FULL_INIT.set(true);
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "Playwright environment initialized (Playwright/Browser deferred to first access)");
     }
@@ -346,6 +353,16 @@ public class PlaywrightManager {
 
         LoggingConfigUtil.logErrorIfVerbose(logger, "Failed to initialize Browser after {} attempts for config: {}", maxRetries, configId, lastException);
         browserInstances.remove(configId);
+        // ⭐ 修复 Medium：启动失败路径必须释放 L292 已创建的 Playwright 节点子进程，
+        // 否则仅 remove browserInstances 仍会泄漏 playwrightInstances 持有的进程。
+        Playwright leakedPw = playwrightInstances.remove(configId);
+        if (leakedPw != null) {
+            try {
+                leakedPw.close();
+            } catch (Exception e) {
+                logger.warn("[Playwright] Failed to close leaked playwright instance for config {}: {}", configId, e.getMessage());
+            }
+        }
         throw new BrowserException("Failed to initialize Browser for config: " + configId, lastException);
     }
 
@@ -580,12 +597,13 @@ public class PlaywrightManager {
         logger.info("[getBrowser] Switching browser...");
 
         // ⭐ 1. 在 BROWSER_LOCK 之外关闭旧 Context 和 Page（避免死锁）
+        // ⭐ 修复 H7：先把当前 configId 标记为"已废弃"，再关闭旧 Context/Page。
+        // 顺序上移确保并发线程在 BROWSER_LOCK 外即可感知 retired 并重建立即生效（见 getContext 的 retired 预检），
+        // 避免"标记前已取到旧 context"的竞态窗口。
+        RETIRED_CONFIG_IDS.add(currentConfig);
+
         closePage();
         closeContext();
-
-        // ⭐ 修复 1.2：先把当前 configId 标记为"已废弃"，让并发进入 getContext()/getPage()
-        // 的其它线程感知到自己的 configId 失效并强制重建，避免绑定到即将关闭的旧 Browser。
-                RETIRED_CONFIG_IDS.add(currentConfig);
 
         // ⭐ 2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
         synchronized (BROWSER_LOCK) {
@@ -884,7 +902,7 @@ public class PlaywrightManager {
                         // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时），兜底静默
                     }
                 });
-                safeClean("ContextRouteEngineManager.stop", () -> com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine.stopContextEngine(context));
+                safeClean("RouteEngine.stopContextEngine", () -> com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine.stopContextEngine(context));
                 safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
                 contextThreadLocal.remove();
             }
@@ -1003,11 +1021,15 @@ public class PlaywrightManager {
                 }
                 playwrightInstances.clear();
 
-                // ⭐ 修复 L1：newConfigId 生成 + 初始化必须在 BROWSER_LOCK 内原子完成。
-                // 原代码在锁外调用 initializePlaywright/initializeBrowser，并发 restartBrowser
-                // 会各自创建一个 Browser，后写者覆盖 browserInstances/playwrightInstances，
-                // 前一个 Browser 失去引用 → 永不关闭（泄漏）。
-                String newConfigId = generateConfigId();
+                // ⭐ 修复 H9：重启前清空路由层引用与废弃标记，避免旧 configId 的调度器/路由 handler 持有
+                // 已销毁 context 造成内存泄漏与跨场景串扰（与 cleanupAll 一致的收口顺序）。
+                RETIRED_CONFIG_IDS.clear();
+                com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine.stopAllContextEngines();
+                RouteRegistry.clearAll();
+
+                // ⭐ 修复 L1/H9：newConfigId 生成 + 初始化必须在 BROWSER_LOCK 内原子完成；
+                // 附加 nanoTime 后缀确保与旧 key 不碰撞（配置未变时 generateConfigId 可能复用旧值）。
+                String newConfigId = generateConfigId() + "_r" + System.nanoTime();
                 LoggingConfigUtil.logInfoIfVerbose(logger, "Generating new configId: {} (old was: {})", newConfigId, oldConfigId);
 
                 initializePlaywright(newConfigId);
@@ -1102,7 +1124,7 @@ public class PlaywrightManager {
         // ContextRouteEngineManager 调度任务残留导致的泄漏与跨场景路由串扰。
         safeClean("ContextRouteEngineManager.stopAll", () -> com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine.stopAllContextEngines());
         safeClean("RouteRegistry.clearAll", () -> RouteRegistry.clearAll());
-        safeClean("RouteAsyncPool.shutdown", () -> com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteAsyncPool.shutdown());
+        safeClean("AsyncPool.shutdown", () -> com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool.shutdown());
 
         LoggingConfigUtil.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
     }

@@ -8,6 +8,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ConditionalFieldRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
@@ -410,7 +411,7 @@ public class ModifyHandler {
             //    现在 fulfill 先完成（响应原样透传，与断言结果无关——MODIFY 只改请求不改响应），
             //    断言异常再向上传播报错，两者互不干扰。
             // ═══════════════════════════════════════════════════════════════
-            if (rule.isMonitorEnabled()) {
+            if (rule.isMonitorEnabled() && !rule.isCapabilityStopped(RouteHandleType.MONITOR)) {
                 ApiCaptureContext monitorCtx = RouteUtil.captureContext(route);
                 MonitorHandler.assertAndRecord(route, rule, monitorCtx,
                         req.url(), realStatus, realBody,

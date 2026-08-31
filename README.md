@@ -150,7 +150,7 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   ├── core/ApiCaptureContext.java  # ThreadLocal 捕获上下文
 │   │   │   ├── core/CapturedApiCall.java    # API 调用快照
 │   │   │   ├── core/RouteMonitor.java       # 监控门面
-│   │   │   ├── core/MonitorCallback.java    # Monitor 响应回调 @FunctionalInterface
+│   │   │   ├── core/MonitorCallback.java    # Monitor 回调契约（内部持久化用，非用户 DSL）
 │   │   │   ├── core/RouteException.java     # 三层异常体系
 │   │   │   ├── dsl/RouteDsl.java        # 流式 DSL（外部唯一入口）
 │   │   │   ├── handler/MonitorHandler.java  # 监控处理器
@@ -161,7 +161,7 @@ Automation_WebUI_Framework_For_DBB/
 │   │   │   │   ├── ApiMonitoringRecord.java  # 监控记录实体
 │   │   │   │   ├── ApiMonitoringRepository.java # HikariCP DB 仓库（MySQL/PostgreSQL）
 │   │   │   │   └── DatabaseStoreMonitorCallback.java # 内置 DB 存储回调
-│   │   │   └── util/                    # RouteAsyncPool / SerenityReporter / RouteUtil
+│   │   │   └── util/                    # AsyncPool / SerenityReporter / RouteUtil
 │   │   ├── lifecycle/                   # ★ Playwright 生命周期管理（6 个类）
 │   │   │   ├── PlaywrightManager.java   # Playwright/Browser/Context/Page 管理层
 │   │   │   ├── PlaywrightContextManager.java  # Context 创建与 Page 稳定化
@@ -322,17 +322,19 @@ RouteDsl.on(page)
     .done()
     .start();
 
-// Monitor + 响应回调 — 断言通过后异步触发自定义逻辑
+// Monitor — 声明式断言（响应自动存入 ApiCaptureContext，主线程可直接读取）
 RouteDsl.on(page)
     .api("/api/login")
     .monitor()
     .expectStatus(200)
-    .onResponse((url, status, body, headers, method) -> {
-        String token = JsonPath.read(body, "$.data.token");
-        System.out.println("Token: " + token);
-    })
+    .expectJsonPath("$.data.token", "*")
     .done()
     .start();
+
+// 主线程读取响应体
+CapturedApiCall call = ApiCaptureContext.getCurrent().getLastApiCall("/api/login");
+String token = (String) call.json("$.data.token");
+System.out.println("Token: " + token);
 
 // Mock — 纯 Mock 模式：拦截并返回自定义响应（不访问真实服务器）
 RouteDsl.on(page)
@@ -394,7 +396,7 @@ RouteDsl.on(page)
 
 - **优先级覆盖**：MOCK(4) > MODIFY(3) > DELAY(2) > MONITOR(1)
 - **Page/Context 双层级注册**：跨层自动合并延迟配置
-- **Monitor 响应回调**：`onResponse()` Lambda 异步触发，断言通过后自动执行自定义逻辑
+- **Monitor 响应数据主线程可读**：断言通过后响应自动存入 `ApiCaptureContext`，主线程用 `getLastApiCall()` / `getAllResponsesForUrl()` 直接读取（不再提供 `onResponse()` 回调 DSL）
 - **MonitorSession 自动停止**：支持超时、最小匹配次数 + `autoStopOnMatch` 双重机制
 - **Monitor DB 持久化**：`DatabaseStoreMonitorCallback` 内置回调，Monitor 数据自动写入 MySQL/PostgreSQL（HikariCP 连接池，支持静默降级）
 - **线程安全**：ConcurrentHashMap + AtomicLong + byte[] 拷贝跨线程

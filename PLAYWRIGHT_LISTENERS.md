@@ -254,40 +254,28 @@ context.route(pattern, route -> dispatchRoute(route, rule));
 
 ---
 
-### 2.6 RouteDsl 自定义 `onResponse` 回调 — Monitor 模式回调
+### 2.6 Monitor 响应数据 — 主线程直接读取（不再提供 `onResponse` 回调 DSL）
 
-| 维度 | 说明 |
-|------|------|
-| **注册位置** | 测试代码中通过 `RouteDsl.monitor().onResponse(callback)` |
-| **注册时机** | 测试运行时 |
-| **触发条件** | route 拦截到匹配请求 → MonitorHandler 处理 → 断言通过后 |
-| **生命周期** | 跟随 MockRule，测试结束清理 |
-| **用途** | 业务侧自定义 API 响应处理逻辑 |
+Monitor 模式的核心能力是**声明式断言**（`expectStatus` / `expectJsonPath`），捕获到的真实响应会自动写入 `ApiCaptureContext`，主线程无需任何回调即可读取。
+
+> ⚠️ **已移除 `RouteDsl.monitor().onResponse(callback)` 公开 DSL**：用户回调派发链路（`MonitorContextCallback` / `RouteRule.monitorCallbacks` / `MonitorHandler.invokeCallbacks`）已删除。这**不影响**框架内置持久化——`FileStoreMonitorCallback` / `DatabaseStoreMonitorCallback` 仍在 `MonitorHandler.assertAndRecord` 中直接调用，文件/DB 录制照常工作。
+
+**主线程读取示例：**
 
 ```java
-// 测试代码示例
 RouteDsl.on(page)
     .api("/api/users/**")
     .monitor()
     .expectStatus(200)
     .expectHeader("content-type", "application/json")
-    .onResponse((url, status, body, headers, method) -> {
-        // 自定义处理：校验响应体字段
-        JSONObject json = new JSONObject(body);
-        assertTrue(json.has("userId"));
-        assertFalse(body.contains("ERROR"));
-    });
-```
+    .done()
+    .start();
 
-**回调接口定义：**
-
-```java
-// MonitorCallback.java
-@FunctionalInterface
-public interface MonitorCallback {
-    void onResponse(String url, int status, String body,
-                    Map<String, String> responseHeaders, String method);
-}
+// 主线程触发请求后读取响应
+ApiCaptureContext ctx = ApiCaptureContext.getCurrent();
+CapturedApiCall call = ctx.getLastApiCall("/api/users/**");
+assert call.statusCode() == 200;
+assert !call.getResponseBody().contains("ERROR");
 ```
 
 ---
@@ -471,7 +459,7 @@ Playwright 原生监听器基于 CDP 事件，性能开销极小（微秒级）�
 | `page.onceDialog(Dialog::dismiss)` | Page | `once`(一次性) | `BasePage.dismissAlert()` | 自动关闭弹窗 |
 | `page.route(pattern, handler)` | Page | `on`(持续) | `RouteEngine.registerRouteToPage()` | Page 级网络拦截 |
 | `context.route(pattern, handler)` | BrowserContext | `on`(持续) | `RouteEngine.registerRouteToContext()` | Context 级网络拦截 |
-| `MonitorCallback.onResponse()` | 自定义接口 | 回调 | `RouteDsl.onResponse()` 注册 | 监控模式自定义处理 |
+| `MonitorCallback` | 框架内部持久化契约（`FileStore`/`Database` 回调实现） | 落库 | `MonitorHandler.assertAndRecord` 直接调用 | 监控响应持久化（非用户 DSL） |
 
 ---
 

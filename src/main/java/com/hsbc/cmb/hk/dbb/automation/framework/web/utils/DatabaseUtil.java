@@ -41,12 +41,12 @@ public class DatabaseUtil {
     }
     
     // 连接池配置
-    private static HikariDataSource dataSource;
+    private static volatile HikariDataSource dataSource;
     private static DatabaseType databaseType;
     private static String dbUrl;
     private static String dbUser;
     private static char[] dbPassword;     // 使用 char[] 防止内存 dump 泄露
-    private static boolean useConnectionPool = false;
+    private static volatile boolean useConnectionPool = false;
     
     // 事务管理
     private static final ThreadLocal<Connection> transactionConnection = new ThreadLocal<>();
@@ -94,14 +94,23 @@ public class DatabaseUtil {
         if (action == null) {
             throw new IllegalArgumentException("action must not be null");
         }
-        try (Connection conn = getConnection()) {
+        // ⭐ 修复 H3：统一经由 closeResources 关闭/归还连接（非池模式也能对称归还信号量许可），
+        //    避免 try-with-resources 直接 close 导致许可泄漏、最终信号量耗尽死锁。
+        Connection conn = getConnection();
+        try {
             return action.execute(conn.getMetaData());
+        } finally {
+            closeResources(null, null, conn);
         }
     }
     private static int minIdle = 5;
     private static int connectionTimeout = 30000;
     private static int idleTimeout = 600000;
     private static int maxLifetime = 1800000;
+
+    // ⭐ 修复 H3：非池模式下对物理连接数做背压（并发上限），防止无限制创建物理连接打爆数据库。
+    private static final java.util.concurrent.Semaphore NON_POOL_SEMAPHORE =
+            new java.util.concurrent.Semaphore(DEFAULT_POOL_SIZE);
     
     /**
      * 初始化数据库配置
@@ -111,7 +120,7 @@ public class DatabaseUtil {
      * @param password 数据库密码
      * @param usePool 是否使用连接池
      */
-    public static void initializeDatabaseConfig(DatabaseType type, String url, String user, String password, boolean usePool) {
+    public static synchronized void initializeDatabaseConfig(DatabaseType type, String url, String user, String password, boolean usePool) {
         // 安全处理：清除旧密码
         clearPassword();
         
@@ -143,55 +152,68 @@ public class DatabaseUtil {
      * 初始化连接池
      */
     private static void initializeConnectionPool() {
+        // 幂等：若已有存活池，先关闭再重建，避免重复初始化覆盖旧池导致连接池泄漏（修复 C3）
+        if (dataSource != null) {
+            try {
+                dataSource.close();
+            } catch (Exception ignored) {
+                // 已部分关闭的池忽略
+            }
+        }
         try {
-            HikariConfig config = new HikariConfig();
-            config.setJdbcUrl(dbUrl);
-            config.setUsername(dbUser);
             // JDBC 驱动要求 String 密码，临时转换后清除引用（减小内存窗口期）
             String pwd = dbPassword != null ? new String(dbPassword) : null;
-            config.setPassword(pwd);
+            com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec spec =
+                    new com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec();
+            spec.jdbcUrl = dbUrl;
+            spec.username = dbUser;
+            spec.password = pwd;
+            spec.driverClass = databaseType.getDriverClass();
+            spec.maxPoolSize = maxPoolSize;
+            spec.minIdle = minIdle;
+            spec.connectionTimeoutMs = connectionTimeout;
+            spec.idleTimeoutMs = idleTimeout;
+            spec.maxLifetimeMs = maxLifetime;
+            spec.poolName = "DatabasePool-" + databaseType.name();
             pwd = null;  // 尽快清除 String 引用
-            config.setDriverClassName(databaseType.getDriverClass());
-            config.setMaximumPoolSize(maxPoolSize);
-            config.setMinimumIdle(minIdle);
-            config.setConnectionTimeout(connectionTimeout);
-            config.setIdleTimeout(idleTimeout);
-            config.setMaxLifetime(maxLifetime);
-            config.setPoolName("DatabasePool-" + databaseType.name());
-            
-            // 数据库特定配置
-            switch (databaseType) {
-                case MYSQL:
-                    config.addDataSourceProperty("cachePrepStmts", "true");
-                    config.addDataSourceProperty("prepStmtCacheSize", "250");
-                    config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
-                    config.addDataSourceProperty("useSSL", "false");
-                    config.addDataSourceProperty("serverTimezone", "UTC");
-                    logger.warn("MySQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
-                    break;
-                case POSTGRESQL:
-                    config.addDataSourceProperty("ssl", "false");
-                    config.addDataSourceProperty("sslmode", "disable");
-                    logger.warn("PostgreSQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
-                    break;
-                case ORACLE:
-                    config.addDataSourceProperty("oracle.jdbc.timezoneAsRegion", "false");
-                    break;
-                case SQLSERVER:
-                    config.addDataSourceProperty("encrypt", "false");
-                    config.addDataSourceProperty("trustServerCertificate", "true");
-                    break;
-                case DB2:
-                    config.addDataSourceProperty("driverType", "4");
-                    break;
-            }
-            
+
+            HikariConfig config = com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.build(
+                    spec, DatabaseUtil::applyDatabaseSpecific);
             dataSource = new HikariDataSource(config);
             logger.info("Connection pool initialized successfully with {} max connections", maxPoolSize);
-            
+
         } catch (Exception e) {
             logger.error("Failed to initialize connection pool", e);
             throw new InitializationException("Failed to initialize connection pool", e);
+        }
+    }
+
+    /** 数据库特有 Hikari 属性（原 switch 逻辑，行为不变）。 */
+    private static void applyDatabaseSpecific(HikariConfig config) {
+        switch (databaseType) {
+            case MYSQL:
+                config.addDataSourceProperty("cachePrepStmts", "true");
+                config.addDataSourceProperty("prepStmtCacheSize", "250");
+                config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+                config.addDataSourceProperty("useSSL", "false");
+                config.addDataSourceProperty("serverTimezone", "UTC");
+                logger.warn("MySQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
+                break;
+            case POSTGRESQL:
+                config.addDataSourceProperty("ssl", "false");
+                config.addDataSourceProperty("sslmode", "disable");
+                logger.warn("PostgreSQL SSL is DISABLED. Enable via system property 'db.ssl.enabled=true' for production environments.");
+                break;
+            case ORACLE:
+                config.addDataSourceProperty("oracle.jdbc.timezoneAsRegion", "false");
+                break;
+            case SQLSERVER:
+                config.addDataSourceProperty("encrypt", "false");
+                config.addDataSourceProperty("trustServerCertificate", "true");
+                break;
+            case DB2:
+                config.addDataSourceProperty("driverType", "4");
+                break;
         }
     }
     
@@ -202,10 +224,15 @@ public class DatabaseUtil {
      */
     public static Connection getConnection() throws SQLException {
         // 如果在事务中，返回事务连接
-        if (isInTransaction.get() != null && isInTransaction.get()) {
+        Boolean inTx = isInTransaction.get();
+        if (inTx != null && inTx) {
             Connection conn = transactionConnection.get();
             if (conn == null || conn.isClosed()) {
-                conn = getNewConnection();
+                // ⭐ 修复 H3：池模式下事务连接也应取自连接池（原实现误用 getNewConnection 建物理连接，
+                //    既破坏池语义又造成物理连接泄漏）；仅非池模式才建物理连接。
+                conn = (useConnectionPool && dataSource != null)
+                        ? dataSource.getConnection()
+                        : getNewConnection();
                 transactionConnection.set(conn);
             }
             return conn;
@@ -226,6 +253,13 @@ public class DatabaseUtil {
      * @throws SQLException 如果连接失败
      */
     private static Connection getNewConnection() throws SQLException {
+        // ⭐ 修复 H3：非池模式下对物理连接数做背压，防止无限制创建物理连接打爆数据库。
+        try {
+            NON_POOL_SEMAPHORE.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new SQLException("Interrupted while acquiring non-pool connection permit", e);
+        }
         try {
             Class.forName(databaseType.getDriverClass());
             Properties props = new Properties();
@@ -258,9 +292,11 @@ public class DatabaseUtil {
             logger.debug("New database connection established successfully");
             return connection;
         } catch (ClassNotFoundException e) {
+            NON_POOL_SEMAPHORE.release();
             logger.error("JDBC driver not found: {}", databaseType.getDriverClass(), e);
             throw new SQLException("JDBC driver not found: " + databaseType.getDriverClass(), e);
         } catch (SQLException e) {
+            NON_POOL_SEMAPHORE.release();
             logger.error("Failed to establish database connection to: {}", maskPasswordInUrl(dbUrl), e);
             throw e;
         }
@@ -705,6 +741,11 @@ public class DatabaseUtil {
                 conn.close();
             } catch (SQLException ignored) {
                 // 连接归还失败不阻断主流程
+            } finally {
+                // ⭐ 修复 H3：非池模式物理连接关闭时归还信号量许可（与 acquire 对称）
+                if (!useConnectionPool) {
+                    NON_POOL_SEMAPHORE.release();
+                }
             }
         }
     }
@@ -835,9 +876,20 @@ public class DatabaseUtil {
                 if (useConnectionPool) {
                     connection.close();
                     logger.debug("Connection returned to pool");
-                } else if (!connection.isClosed()) {
-                    connection.close();
-                    logger.debug("Database connection closed");
+                } else {
+                    // ⭐ 修复 H4：非池模式必须确保物理连接许可回收到位。
+                    // 原实现若 connection.isClosed()/close() 抛 SQLException，会落入外层 catch 而跳过
+                    // NON_POOL_SEMAPHORE.release()，导致许可永久泄漏（破坏 H3 的对称释放）。
+                    // 用独立 try/finally 保证：无论 close 是否成功，许可都归还。
+                    try {
+                        if (!connection.isClosed()) {
+                            connection.close();
+                        }
+                    } finally {
+                        // ⭐ 修复 H3：归还非池模式物理连接占用的许可（与 getNewConnection 的 acquire 对称）
+                        NON_POOL_SEMAPHORE.release();
+                        logger.debug("Database connection closed (permit released)");
+                    }
                 }
             }
         } catch (SQLException e) {
@@ -951,6 +1003,7 @@ public class DatabaseUtil {
     public static void shutdownConnectionPool() {
         if (dataSource != null) {
             dataSource.close();
+            dataSource = null;   // 置空，避免二次初始化时旧池引用残留在静态字段（修复 C3）
             logger.info("Connection pool shutdown completed");
         }
         clearPassword();

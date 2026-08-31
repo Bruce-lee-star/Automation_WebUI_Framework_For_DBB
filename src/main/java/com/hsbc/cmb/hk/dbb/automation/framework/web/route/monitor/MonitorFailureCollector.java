@@ -5,10 +5,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.SensitiveDataSani
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * API 监控失败归集器（单例）。
@@ -30,8 +30,24 @@ public class MonitorFailureCollector {
 
     private static final String UNASSIGNED = "unassigned";
 
-    /** 指纹 → 去重后的失败记录 */
-    private final Map<String, FailedApiCall> dedupMap = new ConcurrentHashMap<>();
+    /** 失败记录上限：防止长跑套件（数千 scenario）下 dedupMap 无界增长导致 OOM。 */
+    private static final int MAX_FAILURE_RECORDS = 500;
+
+    /** 单条记录 request/response body 存储上限（字符），防止超长报文撑大内存。 */
+    private static final int MAX_BODY_LEN = 4096;
+
+    /**
+     * 指纹 → 去重后的失败记录。
+     * ⭐ 修复 C2：改用 LRU 有界 Map（access-order LinkedHashMap + removeEldestEntry），
+     * 超过 {@link #MAX_FAILURE_RECORDS} 时自动淘汰最久未访问记录，避免堆内存无界增长（原 OOM 路径）。
+     */
+    private final Map<String, FailedApiCall> dedupMap = Collections.synchronizedMap(
+            new LinkedHashMap<String, FailedApiCall>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, FailedApiCall> eldest) {
+                    return size() > MAX_FAILURE_RECORDS;
+                }
+            });
 
     /** 当前 scenario 名（由测试框架在 scenario 开始时 set） */
     private final ThreadLocal<String> currentScenario = new ThreadLocal<>();
@@ -49,6 +65,11 @@ public class MonitorFailureCollector {
         return INSTANCE;
     }
 
+    /**
+     * ⚠️ 已废弃：运行期禁止调用。置空 INSTANCE 会使已通过 context.onClose 注册的关闭钩子指向旧实例，
+     * 导致新旧两个单例并存、isRegistered() 语义分裂。清理失败记录请改用 {@link #clear()}。
+     */
+    @Deprecated
     public static void reset() {
         INSTANCE = null;
     }
@@ -93,9 +114,9 @@ public class MonitorFailureCollector {
             // ⭐ P1-1：出域 sink（报告/邮件）统一脱敏收口，内存 CapturedApiCall 可保持原始供断言
             rec.setRequestUrl(SensitiveDataSanitizer.sanitizeUrl(call.requestUrl()));
             rec.setRequestHeaders(SensitiveDataSanitizer.sanitizeHeaders(call.requestHeaders()));
-            rec.setRequestBody(SensitiveDataSanitizer.sanitizeBody(call.requestBody()));
+            rec.setRequestBody(cap(SensitiveDataSanitizer.sanitizeBody(call.requestBody())));
             rec.setResponseHeaders(SensitiveDataSanitizer.sanitizeHeaders(call.responseHeaders()));
-            rec.setResponseBody(SensitiveDataSanitizer.sanitizeBody(call.responseBody()));
+            rec.setResponseBody(cap(SensitiveDataSanitizer.sanitizeBody(call.responseBody())));
             rec.setReason(reason);
             String scn = safeScenario();
             if (scn != null) {
@@ -110,8 +131,11 @@ public class MonitorFailureCollector {
     /** 按 owner 分组（供 CI 邮件循环） */
     public Map<String, List<FailedApiCall>> getFailuresByOwner() {
         Map<String, List<FailedApiCall>> byOwner = new LinkedHashMap<>();
-        for (FailedApiCall call : dedupMap.values()) {
-            byOwner.computeIfAbsent(call.getOwner(), k -> new ArrayList<>()).add(call);
+        // ⭐ 修复 C2：synchronizedMap 的迭代必须手动加锁，避免与 record() 并发修改抛 CME。
+        synchronized (dedupMap) {
+            for (FailedApiCall call : dedupMap.values()) {
+                byOwner.computeIfAbsent(call.getOwner(), k -> new ArrayList<>()).add(call);
+            }
         }
         return byOwner;
     }
@@ -165,6 +189,12 @@ public class MonitorFailureCollector {
         String body = call.responseBody() == null ? "" : call.responseBody();
         String bodySig = body.isEmpty() ? "<empty>" : body.substring(0, Math.min(256, body.length()));
         return pattern + '\u0000' + status + '\u0000' + call.method() + '\u0000' + bodySig;
+    }
+
+    /** 截断过长的报文，避免单条失败记录占用过多内存（防御性上限，配合 LRU 双重防护）。 */
+    private static String cap(String s) {
+        if (s == null) return null;
+        return s.length() > MAX_BODY_LEN ? s.substring(0, MAX_BODY_LEN) + "...[truncated]" : s;
     }
 
     /** 单条去重后的失败记录 */

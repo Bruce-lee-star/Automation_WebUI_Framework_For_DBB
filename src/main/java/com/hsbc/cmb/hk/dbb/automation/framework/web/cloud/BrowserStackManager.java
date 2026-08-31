@@ -136,6 +136,7 @@ public class BrowserStackManager {
         // ⭐ 修复 3-2：tunnel 停止必须用单一 outer try-finally 包裹所有操作（含 logProxyStatus/buildWsEndpoint）。
         // 原代码 finally 在 inner try 内（L175-185），若 L130/L134 在 try 之前抛异常，finally 永远不执行，
         // 导致 BrowserStackLocal 进程泄漏。
+        boolean connected = false;
         try {
             String browserName = resolveBrowserName();
 
@@ -150,21 +151,28 @@ public class BrowserStackManager {
             options.setHeaders(buildAuthHeader());
             options.setTimeout(CONNECT_TIMEOUT_SECONDS * 1000L);
 
+            Browser browser;
             switch (browserName.toLowerCase()) {
                 case "chrome":
                 case "edge":
                 case "chromium":
-                    return playwright.chromium().connect(connectEndpoint, options);
+                    browser = playwright.chromium().connect(connectEndpoint, options);
+                    break;
                 case "firefox":
-                    return playwright.firefox().connect(connectEndpoint, options);
+                    browser = playwright.firefox().connect(connectEndpoint, options);
+                    break;
                 case "webkit":
                 case "safari":
-                    return playwright.webkit().connect(connectEndpoint, options);
+                    browser = playwright.webkit().connect(connectEndpoint, options);
+                    break;
                 default:
                     throw new IllegalArgumentException(
                         "[BrowserStack] Unsupported browser: " + browserName +
                         ". Supported: chrome, edge, firefox, webkit");
             }
+            // ⭐ 修复 H14：成功建立连接后才标记 connected；成功路径隧道须保持存活（调用方 session 关闭时 stopTunnel）
+            connected = true;
+            return browser;
         } catch (PlaywrightException e) {
             // PlaywrightException 消息可能含完整 CDP URL（wss://user:key@...），
             // 不能作为 cause 传递（SLF4J 会递归打印整个 cause 链暴露凭据）。
@@ -202,10 +210,10 @@ public class BrowserStackManager {
             // IllegalArgumentException 等非 Playwright 异常也要触发 tunnel 清理
             throw e;
         } finally {
-            // ⭐ 修复 3-2：outer finally 兜底隧道清理——确保无论 try/catch 任何路径退出，
-            // tunnelOk 为 true（即隧道已实际启动）但未保留到 long-lived session 时都 stop。
-            // 真正的"隧道长连接到 Browser session"由调用方在 session 关闭时显式 stopTunnel()。
-            if (tunnelOk && isLocalEnabled()) {
+            // ⭐ 修复 H14：仅当连接失败（connected=false）才在 finally 清理 Local 隧道；
+            // 成功路径必须保留隧道（由调用方在 session 关闭时显式 stopTunnel），
+            // 否则隧道在 Browser 会话仍需时即被拆除，导致后续 CDP/WS 流量失败。
+            if (tunnelOk && isLocalEnabled() && !connected) {
                 try {
                     BrowserStackLocalManager.stopTunnel();
                     tunnelOk = false;

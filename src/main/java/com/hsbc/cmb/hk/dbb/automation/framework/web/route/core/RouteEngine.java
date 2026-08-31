@@ -12,6 +12,7 @@ import com.microsoft.playwright.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.ArrayList;
 import java.util.regex.Pattern;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 
 /**
@@ -127,11 +129,9 @@ public class RouteEngine {
     // ⭐ 修复 P0-3：注册 JVM 关闭钩子，确保进程退出时优雅关闭调度器（DELAY_SCHEDULER 等），
     // 避免并行测试或浏览器崩溃场景下线程池任务永久挂起。shutdown() 内部由 scheduledShutdown CAS 保护，重复调用安全。
     static {
-        try {
-            Runtime.getRuntime().addShutdownHook(new Thread(RouteEngine::shutdown, "route-engine-shutdown"));
-        } catch (Exception ignored) {
-            // 某些受限环境（如部分应用服务器）不允许注册关闭钩子，忽略即可
-        }
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_ROUTE_ENGINE,
+                "route-engine", RouteEngine::shutdown);
     }
 
     private static ScheduledExecutorService newDelayScheduler() {
@@ -245,23 +245,38 @@ public class RouteEngine {
      */
     public static void scheduleDeferred(Route route, long delayMs, Runnable action) {
         if (action == null) return;
-        if (delayMs > 0) {
+        if (delayMs <= 0) {
+            action.run();
+            return;
+        }
+        try {
             delayScheduler(route).schedule(action, delayMs, TimeUnit.MILLISECONDS);
-        } else {
+        } catch (RejectedExecutionException | NullPointerException e) {
+            // 调度器已关闭（常见于 shutdown 后的收尾窗口）：降级为立即执行，
+            // 避免延迟动作（如 safeResume）永不触发导致请求永久挂起。
+            LOGGER.debug("[RouteEngine] Deferred scheduler unavailable after shutdown, running action immediately");
             action.run();
         }
     }
 
     private static ScheduledExecutorService delayScheduler() {
         ScheduledExecutorService current = DELAY_SCHEDULER;
-        if (current == null || current.isShutdown() || current.isTerminated()) {
-            synchronized (RouteEngine.class) {
-                current = DELAY_SCHEDULER;
-                if (current == null || current.isShutdown() || current.isTerminated()) {
-                    DELAY_SCHEDULER = current = newDelayScheduler();
-                    scheduledShutdown.set(false);
-                }
+        if (current != null && !current.isShutdown() && !current.isTerminated()) {
+            return current;
+        }
+        // 已 shutdown：不再懒重建，避免框架拆除后调度器复活、绕过生命周期（修复 C1）
+        if (scheduledShutdown.get()) {
+            return current;
+        }
+        synchronized (RouteEngine.class) {
+            current = DELAY_SCHEDULER;
+            if (current != null && !current.isShutdown() && !current.isTerminated()) {
+                return current;
             }
+            if (scheduledShutdown.get()) {
+                return current;
+            }
+            DELAY_SCHEDULER = current = newDelayScheduler();
         }
         return current;
     }
@@ -781,6 +796,13 @@ public class RouteEngine {
         }
         rule = resolved.rule;
         delayMs = resolved.delayMs;
+        // ═══ 应用显式停止的能力（仅影响指定能力，不影响同 pattern 其它能力）═══
+        //    stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入的停止标记在此注入有效规则，
+        //    由 selectCapability 及各 handler 守卫跳过对应能力。
+        applyStoppedCapabilities(rule, route);
+        if (rule.isCapabilityStopped(RouteHandleType.DELAY)) {
+            delayMs = 0;  // 停止 DELAY：清零延迟，避免后续 handler 仍按原延迟等待
+        }
         // 统一合并路径下无独立跨层延迟合并标记需求（保留供后续 DELAY 调度判定兼容），恒为 false
         boolean crossLayerDelayMerged = false;
 
@@ -873,16 +895,21 @@ public class RouteEngine {
      * @return 命中的能力类型；无任何能力位命中时返回 null（由调用方 resume 放行）
      */
     public static RouteHandleType selectCapability(RouteRule rule) {
-        if (rule.getType() == RouteHandleType.MOCK) {
+        // ⭐ 任一能力被显式停止（stopMonitor/stopModify/stopDelay/stopMock）时跳过，不影响同 pattern 其它能力
+        if (rule.getType() == RouteHandleType.MOCK
+                && !rule.isCapabilityStopped(RouteHandleType.MOCK)) {
             return RouteHandleType.MOCK;
         }
-        if (hasModifyCapability(rule)) {
+        if (hasModifyCapability(rule)
+                && !rule.isCapabilityStopped(RouteHandleType.MODIFY)) {
             return RouteHandleType.MODIFY;
         }
-        if (rule.getType() == RouteHandleType.DELAY || rule.getDelayMs() > 0) {
+        if ((rule.getType() == RouteHandleType.DELAY || rule.getDelayMs() > 0)
+                && !rule.isCapabilityStopped(RouteHandleType.DELAY)) {
             return RouteHandleType.DELAY;
         }
-        if (rule.isMonitorEnabled()) {
+        if (rule.isMonitorEnabled()
+                && !rule.isCapabilityStopped(RouteHandleType.MONITOR)) {
             return RouteHandleType.MONITOR;
         }
         return null;
@@ -967,7 +994,7 @@ public class RouteEngine {
             return;
         }
 
-        if (rule.isMonitorEnabled()) {
+        if (rule.isMonitorEnabled() && !rule.isCapabilityStopped(RouteHandleType.MONITOR)) {
             // ⭐ B 方案：事件线程同步观测（page.waitForResponse），resume 经其 action 回调调度到延迟线程
             //    （见 MonitorHandler.handle），彻底弃用 route.fetch。
             //    onMonitorMatch 由 handle → assertAndRecord 内部处理；times / dispatched 门控在此清理。
@@ -1192,6 +1219,9 @@ public class RouteEngine {
             installed.set(true);
             return session;
         });
+        // ⭐ 防御性：将实际生效的会话（新建或复用的活跃会话）引用挂到链头原始规则，
+        //   供 sessionForRule/sessionForRoute 走 O(1) 定位，避免依赖 session.rule == mergeSource 的身份相等假设。
+        rule.setMonitorSessionRef(SESSIONS.get(key));
         if (!installed.get()) {
             LoggingConfigUtil.logTraceIfVerbose(LOGGER,
                     "[RouteEngine] MonitorSession already exists for pattern='{}', reusing",
@@ -1269,6 +1299,9 @@ public class RouteEngine {
         if (rule == null) return null;
         // ⭐ B3：分发期合并拷贝经 getMergeSource() 解引用到链头（session.rule 绑定链头）
         RouteRule source = rule.getMergeSource();
+        // ⭐ 防御性快路径：链头已持有会话引用则 O(1) 返回，避免全表遍历与身份相等脆弱假设
+        MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
+        if (ref != null) return ref;
         for (MonitorSession session : SESSIONS.values()) {
             if (session.rule == source) return session;
         }
@@ -1284,8 +1317,14 @@ public class RouteEngine {
         try {
             page = route.request().frame().page();
         } catch (Exception ignored) {
-            return sessionForRule(source);
+            // 页面关闭竞态：回退到纯规则身份查询（无法定位 page/context）
+            MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
+            return ref != null ? ref : sessionForRule(source);
         }
+        // ⭐ 防御性快路径：链头已持有会话引用且上下文一致 → O(1) 返回。
+        //   多 context 复用同一规则实例时，ref 可能指向最后注册的 session，故必须校验 context 一致，否则退回遍历。
+        MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
+        if (ref != null && ref.context == page.context()) return ref;
         MonitorSession contextSession = null;
         for (MonitorSession session : SESSIONS.values()) {
             if (session.rule != source) continue;
@@ -1355,6 +1394,123 @@ public class RouteEngine {
                         pattern, context.getClass().getSimpleName(), e.getMessage());
             }
         }
+    }
+
+    // ─── 按能力维度显式停止（monitor / modify / delay / mock / all）──────────────
+
+    /**
+     * 已显式停止的能力，按（上下文 + 归一化 pattern）索引。
+     * <p>停止仅作用于指定能力，同一 API 的其它能力不受影响；不影响路由注册本身（不 unroute）。
+     */
+    private static final Map<Object, Map<String, Set<RouteHandleType>>> STOPPED_CAPS =
+            new ConcurrentHashMap<>();
+
+    /** 显式停止某 API 的 MONITOR 能力（delay / modify / mock 不受影响）。 */
+    public static void stopMonitor(Object context, String urlPattern) {
+        stopCapability(context, urlPattern, RouteHandleType.MONITOR);
+    }
+
+    /** 显式停止某 API 的 MODIFY 能力（monitor / delay / mock 不受影响）。 */
+    public static void stopModify(Object context, String urlPattern) {
+        stopCapability(context, urlPattern, RouteHandleType.MODIFY);
+    }
+
+    /** 显式停止某 API 的 DELAY 能力（monitor / modify / mock 不受影响）。 */
+    public static void stopDelay(Object context, String urlPattern) {
+        stopCapability(context, urlPattern, RouteHandleType.DELAY);
+    }
+
+    /** 显式停止某 API 的 MOCK 能力（monitor / modify / delay 不受影响）。 */
+    public static void stopMock(Object context, String urlPattern) {
+        stopCapability(context, urlPattern, RouteHandleType.MOCK);
+    }
+
+    /** 显式停止某 API 的【全部】能力（monitor / modify / delay / mock 一并停止，但路由仍注册）。 */
+    public static void stopAll(Object context, String urlPattern) {
+        stopCapability(context, urlPattern, null);
+    }
+
+    private static void stopCapability(Object context, String urlPattern, RouteHandleType cap) {
+        Object ctx = resolveContext(context);
+        if (ctx == null || urlPattern == null || urlPattern.trim().isEmpty()) {
+            LOGGER.warn("[RouteEngine] stopCapability ignored: context={}, pattern={}",
+                    context == null ? "null" : context.getClass().getSimpleName(), urlPattern);
+            return;
+        }
+        String normalized = normalizePattern(urlPattern);
+        Map<String, Set<RouteHandleType>> byPattern = STOPPED_CAPS
+                .computeIfAbsent(ctx, k -> new ConcurrentHashMap<>());
+        Set<RouteHandleType> set = byPattern.computeIfAbsent(normalized,
+                k -> EnumSet.noneOf(RouteHandleType.class));
+        if (cap == null) {
+            set.addAll(EnumSet.allOf(RouteHandleType.class));
+        } else {
+            set.add(cap);
+        }
+        // 停止 monitor（或全停）时一并停止其 MonitorSession（取消超时 / 标记 stopped）
+        if (cap == null || cap == RouteHandleType.MONITOR) {
+            SESSIONS.entrySet().removeIf(entry -> {
+                boolean match = entry.getKey().scope == ctx
+                        && entry.getKey().pattern.equals(normalized);
+                if (match) {
+                    entry.getValue().stop();
+                }
+                return match;
+            });
+        }
+        LOGGER.info("[RouteEngine] stopCapability: {} stopped for pattern='{}' on {}",
+                cap == null ? "ALL" : cap, normalized, ctx.getClass().getSimpleName());
+    }
+
+    /** 清理指定上下文的全部「已停止能力」标记（clear/clearAll 时同步调用，防跨用例残留）。 */
+    public static void clearStoppedCapabilities(Object context) {
+        Object ctx = resolveContext(context);
+        if (ctx == null) return;
+        STOPPED_CAPS.remove(ctx);
+    }
+
+    /** 全局清理全部「已停止能力」标记。 */
+    public static void clearAllStoppedCapabilities() {
+        STOPPED_CAPS.clear();
+    }
+
+    /** 将全局已停止能力注入当前请求的有效规则（按 context + pattern 匹配）。 */
+    private static void applyStoppedCapabilities(RouteRule rule, Route route) {
+        Object ctx = contextOf(route);
+        if (ctx == null) return;
+        Map<String, Set<RouteHandleType>> byPattern = STOPPED_CAPS.get(ctx);
+        if (byPattern == null) return;
+        Set<RouteHandleType> stopped = byPattern.get(normalizePattern(rule.getUrlPattern()));
+        if (stopped == null || stopped.isEmpty()) return;
+        for (RouteHandleType t : stopped) {
+            rule.stopCapability(t);
+        }
+    }
+
+    /** 解析上下文对象（Page → 其 BrowserContext；BrowserContext 原样返回；其它返回 null）。 */
+    private static Object resolveContext(Object context) {
+        if (context instanceof Page) {
+            try {
+                return ((Page) context).context();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        if (context instanceof BrowserContext) return context;
+        return null;
+    }
+
+    /** 与 registerInternal 一致的 pattern 归一化（补齐 ** 前缀 / 后缀）。 */
+    private static String normalizePattern(String urlPattern) {
+        if (urlPattern == null) return null;
+        String normalized = urlPattern;
+        if (!normalized.startsWith("**")) {
+            normalized = normalized.startsWith("/") ? "**" + normalized : "**/" + normalized;
+        }
+        if (!normalized.endsWith("**")) {
+            normalized = TRAILING_WILDCARDS.matcher(normalized).replaceFirst("") + "**";
+        }
+        return normalized;
     }
 
     /**
@@ -1572,10 +1728,17 @@ public class RouteEngine {
      * @param patterns 要移除的 normalized pattern 集合
      */
     public static void removeContextRules(Object context, Set<String> patterns) {
-        if (context == null || patterns == null || patterns.isEmpty()) return;
+        if (context == null) return;
+        // ⭐ 必须先移除 context 条目：原实现在 patterns 为空时直接 return，导致「空 Map 残留」
+        //    强引用已关闭的 BrowserContext，造成泄漏（见 cleanupClosedContext 注释）。
         Map<String, List<RouteRule>> scoped = CONTEXT_RULES_BY_CONTEXT.remove(context);
         if (scoped == null) return;
-        for (String pattern : patterns) {
+        // patterns 为 null/空时视为「清理该 context 全部规则」（如 context 关闭时的整体清理）：
+        // 复制 keySet 后再遍历，避免并发修改异常（scoped.keySet() 是视图，遍历中 remove 会 CME）。
+        Set<String> toRemove = (patterns == null || patterns.isEmpty())
+                ? new HashSet<>(scoped.keySet())
+                : patterns;
+        for (String pattern : toRemove) {
             List<RouteRule> ownerChain = scoped.remove(pattern);
             if (ownerChain != null) {
                 CONTEXT_RULE_PATHS.remove(pattern);
@@ -1597,7 +1760,7 @@ public class RouteEngine {
         }
         LoggingConfigUtil.logDebugIfVerbose(LOGGER,
                 "[RouteEngine] Removed {} context rules for context, remaining: {}",
-                patterns.size(), scoped.size());
+                toRemove.size(), scoped.size());
     }
 
     /**
@@ -1632,6 +1795,9 @@ public class RouteEngine {
         // 3. 清理 Route 防重门控 + 跨层去重集合（⭐ 修复 P0-1：按 Context 精确清理，
         //    仅移除当前 context 的桶，避免并行测试下全局清空误杀其它 Context 的防重门控）
         clearDispatchedRoutes(context instanceof BrowserContext ? (BrowserContext) context : null);
+
+        // ⭐ 修复 C1：同步清理 per-context 的「已停止能力」标记，防强引用泄漏与跨用例残留。
+        clearStoppedCapabilities(context);
     }
 
     /**
@@ -1679,10 +1845,20 @@ public class RouteEngine {
      */
     public static void cleanupClosedContext(BrowserContext context) {
         if (context == null) return;
+        // ⭐ 防重门控 + MonitorSession 必须【无条件】清理，且都早于下方的 scoped 判空分支：
+        //    DISPATCHED_ROUTES / SESSIONS 均以 BrowserContext 为键。二者若在「scoped 非空」分支内清理，
+        //    则「注册过防重门控 / 纯 monitor 但没有路由规则」的 context 关闭后条目会永久残留（空 Map 泄漏）。
+        //    clearDispatchedRoutes / clearMonitorSessions 均按 context 精确移除，不影响并行场景。
+        clearDispatchedRoutes(context);
+        clearMonitorSessions(context);
+        // ⭐ 修复 C1：清理 per-context 的「已停止能力」标记。STOPPED_CAPS 以 BrowserContext 为强引用键，
+        //    若不在此清理，已关闭的 context 会被钉在堆上（泄漏），且 stopMonitor/stopModify 标记会跨用例残留。
+        clearStoppedCapabilities(context);
         Map<String, List<RouteRule>> scoped = CONTEXT_RULES_BY_CONTEXT.get(context);
-        if (scoped != null && !scoped.isEmpty()) {
+        if (scoped != null) {
+            // ⭐ 即使 scoped 为空 Map 也要走 removeContextRules：该方法现在会无条件移除 context 条目，
+            //    避免「空 Map 强引用已关闭 BrowserContext」的残留泄漏。
             removeContextRules(context, new HashSet<>(scoped.keySet()));
-            clearMonitorSessions(context);
         }
     }
 

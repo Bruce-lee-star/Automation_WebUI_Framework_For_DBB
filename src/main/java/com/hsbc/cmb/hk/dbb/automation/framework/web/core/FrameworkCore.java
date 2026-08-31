@@ -39,18 +39,20 @@ public class FrameworkCore {
             LoggingConfigUtil.logWarnIfVerbose(logger, "AWT toolkit pre-init skipped: {}", t.getMessage());
         }
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            try {
-                LoggingConfigUtil.logInfoIfVerbose(logger, "JVM Shutdown Hook: Cleaning up resources...");
-                if (frameworkState.isInitialized()) {
-                    PlaywrightManager.cleanupAll();
-                    frameworkState.cleanup();
-                }
-                LoggingConfigUtil.logInfoIfVerbose(logger,"JVM Shutdown Hook completed");
-            } catch (Exception e) {
-                LoggingConfigUtil.logErrorIfVerbose(logger,"Error during JVM shutdown cleanup", e);
-            }
-        }));
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_FRAMEWORK_CORE,
+                "framework-core", () -> {
+                    try {
+                        LoggingConfigUtil.logInfoIfVerbose(logger, "JVM Shutdown Hook: Cleaning up resources...");
+                        if (frameworkState.isInitialized()) {
+                            PlaywrightManager.cleanupAll();
+                            frameworkState.cleanup();
+                        }
+                        LoggingConfigUtil.logInfoIfVerbose(logger,"JVM Shutdown Hook completed");
+                    } catch (Exception e) {
+                        LoggingConfigUtil.logErrorIfVerbose(logger,"Error during JVM shutdown cleanup", e);
+                    }
+                });
     }
     
     // 私有构造函数，防止外部实例化

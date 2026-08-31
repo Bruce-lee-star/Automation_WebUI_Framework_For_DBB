@@ -1,9 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.LoggingConfigUtil;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
 
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -33,6 +35,12 @@ public class ApiMonitorOrchestrator {
     /** pattern → apiOwner（供失败时反查通知对象，单人） */
     private final Map<String, String> patternToOwner = new ConcurrentHashMap<>();
 
+    /** pattern → 注册时所在的 BrowserContext（用于 context 关闭时精确释放去重标记，防跨 context 残留） */
+    private final Map<String, BrowserContext> patternToContext = new ConcurrentHashMap<>();
+
+    /** 已注册 context 关闭钩子的 context 集合（幂等，防止重复注册 onClose 监听） */
+    private final Set<BrowserContext> closeHooks = ConcurrentHashMap.newKeySet();
+
     private static volatile ApiMonitorOrchestrator INSTANCE;
 
     public static ApiMonitorOrchestrator getInstance() {
@@ -46,6 +54,12 @@ public class ApiMonitorOrchestrator {
         return INSTANCE;
     }
 
+    /**
+     * ⚠️ 已废弃：运行期禁止调用。
+     * 置空 INSTANCE 后，已通过 context.onClose 注册的关闭钩子 lambda 仍持有【旧实例】引用，
+     * 会导致新旧两个单例并存、isRegistered() 语义分裂。仅在 JVM 退出/完全重建时使用。
+     */
+    @Deprecated
     public static void reset() {
         INSTANCE = null;
     }
@@ -86,6 +100,10 @@ public class ApiMonitorOrchestrator {
         }
 
         int registered = 0;
+        // ⭐ 为当前 context 注册一次关闭钩子：context 关闭时自动释放其下 pattern 的去重标记与 owner 映射，
+        //    使进程级单例的 registeredPatterns 不会跨 context 无限累积（原实现仅依赖套件结束的 clear()，
+        //    而 clear() 当前无人调用，存在状态残留隐患）。不影响「同一 context 内跨 case 去重」的设计意图。
+        ensureCloseHook(page.context());
         for (Map.Entry<String, ApiMonitorConfig.EndpointConfig> e : endpoints.entrySet()) {
             String pattern = e.getKey();
             ApiMonitorConfig.EndpointConfig cfg = e.getValue();
@@ -108,12 +126,14 @@ public class ApiMonitorOrchestrator {
                         .start();
                 registered++;
                 patternToOwner.put(pattern, cfg.getApiOwner());
+                patternToContext.put(pattern, page.context());
                 LoggingConfigUtil.logInfoIfVerbose(LOGGER,
                         "[ApiMonitor] 已注册监控：功能='{}' pattern='{}' owner='{}'",
                         featureKey, pattern, cfg.getApiOwner());
             } catch (RuntimeException ex) {
-                // 注册失败不影响主流程，但移除去重标记以便下次重试
+                // 注册失败不影响主流程，但移除去重标记与 context 关联以便下次重试
                 registeredPatterns.remove(pattern);
+                patternToContext.remove(pattern);
                 LOGGER.warn("[ApiMonitor] 注册监控失败：pattern='{}' error={}", pattern, ex.getMessage());
             }
         }
@@ -130,9 +150,53 @@ public class ApiMonitorOrchestrator {
         return patternToOwner.get(pattern);
     }
 
-    /** 清空去重记录（测试套件结束时调用） */
+    /** 清空去重记录（测试套件结束时调用；亦作为 {@link #deregisterContext(BrowserContext)} 的兜底） */
     public void clear() {
         registeredPatterns.clear();
         patternToOwner.clear();
+        patternToContext.clear();
+        closeHooks.clear();
+    }
+
+    /**
+     * ⭐ 为指定 context 幂等注册关闭钩子：context 关闭时自动释放其下所有已注册 pattern 的去重标记、
+     * owner 映射与 context 关联，避免进程级单例状态跨 context 残留。
+     * <p>复用 Playwright 的 {@code onClose} 机制（与 ApiCaptureContext 的 context 清理同源），
+     * 多个 onClose 监听可并存，互不干扰。
+     */
+    private void ensureCloseHook(BrowserContext context) {
+        if (context == null) return;
+        if (closeHooks.add(context)) {
+            try {
+                context.onClose(ignored -> deregisterContext(context));
+            } catch (RuntimeException ignored) {
+                // context 已不可用时忽略（如注册时 page 已关闭）
+            }
+        }
+    }
+
+    /**
+     * 释放指定 context 下所有已注册 pattern 的去重标记、owner 映射与 context 关联（context 关闭时调用）。
+     * <p>传入 {@code null} 等同于 {@link #clear()}（套件结束兜底）。
+     * <p>仅释放该 context 的条目，其它 context 的注册不受影响 —— 既修复跨 context 残留，
+     * 又保留「同一 context 内跨 case 去重」的设计意图。
+     */
+    public void deregisterContext(BrowserContext context) {
+        if (context == null) {
+            clear();
+            return;
+        }
+        closeHooks.remove(context);
+        Set<String> toRemove = new HashSet<>();
+        for (Map.Entry<String, BrowserContext> entry : patternToContext.entrySet()) {
+            if (entry.getValue() == context) {
+                toRemove.add(entry.getKey());
+            }
+        }
+        for (String pattern : toRemove) {
+            registeredPatterns.remove(pattern);
+            patternToOwner.remove(pattern);
+            patternToContext.remove(pattern);
+        }
     }
 }

@@ -63,17 +63,19 @@ public class ElementDiagnosticsCollector {
                     new ThreadPoolExecutor.CallerRunsPolicy());
 
     static {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            DIAGNOSTIC_EXECUTOR.shutdown();
-            try {
-                if (!DIAGNOSTIC_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
-                    DIAGNOSTIC_EXECUTOR.shutdownNow();
-                }
-            } catch (InterruptedException e) {
-                DIAGNOSTIC_EXECUTOR.shutdownNow();
-                Thread.currentThread().interrupt();
-            }
-        }, "diagnostic-shutdown"));
+        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_DIAGNOSTICS,
+                "diagnostics", () -> {
+                    DIAGNOSTIC_EXECUTOR.shutdown();
+                    try {
+                        if (!DIAGNOSTIC_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
+                            DIAGNOSTIC_EXECUTOR.shutdownNow();
+                        }
+                    } catch (InterruptedException e) {
+                        DIAGNOSTIC_EXECUTOR.shutdownNow();
+                        Thread.currentThread().interrupt();
+                    }
+                });
     }
 
 

@@ -67,7 +67,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p><b>线程安全</b>：每个 endpoint 的文件名序号使用 {@code ConcurrentHashMap<String, AtomicInteger>}
  * 保证并发安全；scenario 切换时的重置在同步块内完成，避免多线程竞态导致序号错乱。
- * 文件写入在调用方（RouteAsyncPool 异步线程）中同步完成。
+ * 文件写入在调用方（AsyncPool 异步线程）中同步完成。
  */
 public final class FileStoreMonitorCallback implements MonitorCallback {
 

@@ -37,6 +37,25 @@ public class RouteRule {
      */
     private boolean monitorEnabled = false;
 
+    /**
+     * ⭐ 已显式停止的能力集合（按能力维度，而非整条 pattern）。
+     * <p>由 RouteEngine.stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入，
+     * 分发期注入到有效规则；对应能力在 selectCapability 及 handler 内被跳过，
+     * 不影响同一 pattern 的其它能力。不参与 equals/hashCode 比较，仅做拷贝传递。
+     */
+    private final java.util.EnumSet<RouteHandleType> stoppedCapabilities =
+            java.util.EnumSet.noneOf(RouteHandleType.class);
+
+    /** 标记某能力被显式停止（生效后该能力在本次 pattern 后续请求中不再执行）。 */
+    public void stopCapability(RouteHandleType type) {
+        if (type != null) stoppedCapabilities.add(type);
+    }
+
+    /** 查询某能力是否已被显式停止。 */
+    public boolean isCapabilityStopped(RouteHandleType type) {
+        return type != null && stoppedCapabilities.contains(type);
+    }
+
     // Mock
     private String mockBody;
     private byte[] mockBodyBytes;
@@ -81,13 +100,11 @@ public class RouteRule {
     private Integer expectedStatus;  // 期望的 HTTP 状态码
     private Map<String, Object> jsonPathAssertions;  // JSONPath 断言
 
-    /** Monitor 响应回调列表（断言通过后异步执行） */
-    private List<MonitorCallback> monitorCallbacks;
 
     // Monitor 自动停止控制
     private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
-    private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 默认停止；MOCK/MODIFY 由 DSL 覆盖为 false）
+    private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 经 DSL monitor() 显式置 false → 默认不自动停；MOCK/MODIFY 由 DSL 覆盖为 false）
 
     // DELAY 类型的高延迟模拟（毫秒），0 = 无延迟
     private long delayMs = 0;
@@ -113,6 +130,15 @@ public class RouteRule {
      * 供会话查询、times 递减、跨层 identity 判断使用。
      */
     private transient RouteRule mergeSource = null;
+
+    /**
+     * ⭐ 防御性：指向本规则所属 MonitorSession 的稳定引用（transient，不参与 equals/hashCode/copyForMerge）。
+     * <p>由 RouteEngine.startMonitorSession 在创建/复用会话时写入「链头」原始规则。
+     * 会话查询（sessionForRule/sessionForRoute）优先用 O(1) 引用定位，避免依赖
+     * {@code session.rule == mergeSource} 的「身份相等」脆弱假设；多 context 复用同规则实例时由
+     * sessionForRoute 的 context 一致性校验兜底，最坏退回全表遍历。
+     */
+    private transient Object monitorSessionRef = null;
 
     /**
      * ⭐ Phase 5 统一绑定模型：规则作用域标签。
@@ -349,6 +375,12 @@ public class RouteRule {
     public void setMergeSource(RouteRule mergeSource) {
         this.mergeSource = mergeSource;
     }
+
+    /** 设置本规则所属 MonitorSession 的稳定引用（仅由 RouteEngine 内部在会话创建/复用时调用）。 */
+    public void setMonitorSessionRef(Object ref) { this.monitorSessionRef = ref; }
+
+    /** 获取本规则所属 MonitorSession 的稳定引用（可能为 null）。 */
+    public Object getMonitorSessionRef() { return monitorSessionRef; }
 
     // ─── 请求条件匹配 Getters ────────────────────────────────────
 
@@ -618,66 +650,6 @@ public class RouteRule {
     }
 
     /**
-     * 注册一个 Monitor 响应回调。
-     * <p>可多次调用注册多个回调，按注册顺序执行。
-     *
-     * @param callback 回调实例
-     */
-    public void addMonitorCallback(MonitorCallback callback) {
-        if (monitorCallbacks == null) {
-            monitorCallbacks = new ArrayList<>();
-        }
-        monitorCallbacks.add(callback);
-    }
-
-    /**
-     * 注册「携带 ApiCaptureContext 的」Monitor 回调（6 参 onResponse）。
-     *
-     * <p>适配为 {@link MonitorCallback} 存入同一列表，使两条派发路径（6 参的
-     * {@code invokeCallbacks} 与 5 参的 {@code dispatchCallbacks}）都能安全处理：
-     * 用 {@code AtomicBoolean} 保证用户回调<b>至多触发一次</b>（以先到达、且带 context 的为准），
-     * 既避免重复触发，也避免「只走了 5 参路径导致 context 丢失」。
-     *
-     * @param callback 6 参回调实例
-     */
-    public void addMonitorCallback(MonitorContextCallback callback) {
-        if (callback == null) return;
-        if (monitorCallbacks == null) {
-            monitorCallbacks = new ArrayList<>();
-        }
-        java.util.concurrent.atomic.AtomicBoolean fired = new java.util.concurrent.atomic.AtomicBoolean(false);
-        monitorCallbacks.add(new MonitorCallback() {
-            @Override
-            public void onResponse(String url, int status, String body,
-                                   Map<String, String> responseHeaders, String method) {
-                // 5 参派发（无 context）：仅在同一次采集 6 参路径未触发时才兜底执行，
-                // 且以 null context 兜底，避免重复触发。
-                if (fired.compareAndSet(false, true)) {
-                    callback.onResponse(url, status, body, responseHeaders, method, null);
-                }
-            }
-
-            @Override
-            public void onResponse(String url, int status, String body,
-                                   Map<String, String> responseHeaders, String method,
-                                   ApiCaptureContext context) {
-                if (fired.compareAndSet(false, true)) {
-                    callback.onResponse(url, status, body, responseHeaders, method, context);
-                }
-            }
-        });
-    }
-
-    /**
-     * 获取 Monitor 响应回调列表。
-     *
-     * @return 回调列表，未注册时返回 null
-     */
-    public List<MonitorCallback> getMonitorCallbacks() {
-        return monitorCallbacks;
-    }
-
-    /**
      * 设置 Monitor 超时（毫秒）。0 表示永不超时。
      *
      * @param timeoutMs 超时毫秒数，必须 ≥ 0
@@ -900,10 +872,6 @@ public class RouteRule {
             if (this.jsonPathAssertions == null) this.jsonPathAssertions = new LinkedHashMap<>();
             this.jsonPathAssertions.putAll(other.jsonPathAssertions);
         }
-        if (other.monitorCallbacks != null && !other.monitorCallbacks.isEmpty()) {
-            if (this.monitorCallbacks == null) this.monitorCallbacks = new ArrayList<>();
-            this.monitorCallbacks.addAll(other.monitorCallbacks);
-        }
 
         // MODIFY 字段合并 — 全部 null 安全
         if (other.requestHeadersToSet != null && !other.requestHeadersToSet.isEmpty()) {
@@ -968,7 +936,6 @@ public class RouteRule {
         copy.autoStopOnMatch = this.autoStopOnMatch;
         copy.record = this.record;
         if (this.jsonPathAssertions != null) copy.jsonPathAssertions = new LinkedHashMap<>(this.jsonPathAssertions);
-        if (this.monitorCallbacks != null) copy.monitorCallbacks = new ArrayList<>(this.monitorCallbacks);
 
         // MODIFY 字段
         if (this.requestHeadersToSet != null) copy.requestHeadersToSet = new HashMap<>(this.requestHeadersToSet);
@@ -990,6 +957,9 @@ public class RouteRule {
         if (this.mockReplaceFields != null) copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);
         copy.interceptRealResponse = this.interceptRealResponse;
         if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
+
+        // ⭐ 拷贝已停止能力集合（EnumSet 可变，逐元素拷贝避免与源规则共享同一集合）
+        copy.stoppedCapabilities.addAll(this.stoppedCapabilities);
 
         // 请求条件匹配
         copy.resourceTypes = this.resourceTypes;

@@ -189,11 +189,23 @@ public class ApiCaptureContext {
 
     /**
      * 重置 API 捕获上下文（测试开始/结束时统一调用，与线程解绑不再使用 ThreadLocal.remove）。
-     * <p>注意：此方法会重置全局共享实例的断言和响应存储状态。
+     * <p>注意：此方法会重置全局共享实例的断言和响应存储状态；
+     * 若当前线程绑定了 BrowserContext，还会一并重置该 context 对应的 per-context 实例。
      */
     public static void resetCurrent() {
         SHARED.reset();
-        SHARED.clearShared();
+        // ⭐ 同时重置当前线程绑定的 per-context 实例：
+        //    feature 模式下 BrowserContext 会被多个 scenario 复用，而 getCurrent() 返回的是
+        //    BY_CONTEXT 中的 per-context 实例。若只重置 SHARED，上一场景累积的 captured calls
+        //    与断言失败状态会随复用的 context 带入下一场景（跨场景串扰）。
+        //    这里只清空实例状态、不移除条目，保持 forContext 的复用语义。
+        BrowserContext bound = currentContextOrNull();
+        if (bound != null) {
+            ApiCaptureContext perContext = BY_CONTEXT.get(bound);
+            if (perContext != null) {
+                perContext.reset();
+            }
+        }
         // ⭐ 清理时机对齐：NLSUtils 已全局化（跨线程可见，支持 Monitor 回调影响主线程），
         // 但全局值若不在 context 生命周期边界清理，会跨用例串扰。
         // 故在每次 resetCurrent（用例 before/after、scenario 边界）时一并清理语言 ThreadLocal，
@@ -248,93 +260,6 @@ public class ApiCaptureContext {
     private final AtomicLong observedRequests = new AtomicLong(0);
     private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
 
-    /**
-     * ⭐ 主线程 ↔ Monitor 事件线程的回传通道（共享状态）。
-     * <p>问题背景：Monitor 的 {@code onResponse} 在 <b>Playwright 事件线程</b>执行，
-     * 它们在回调内部修改的局部变量无法回传到<b>测试主线程</b>，主线程拿不到。
-     * 这里提供一个并发安全的共享 Map：Monitor 回调 / 断言可写入任意键值，
-     * 主线程随后通过 {@link #getShared(String)} / {@link #awaitShared(String, long)} 读取，
-     * 从而让 Monitor 真正「影响」主线程的变量/分支判断。
-     * <p>典型用法：
-     * <pre>{@code
-     *   // Monitor 回调（事件线程）
-     *   ctx.setShared("lastOrderId", JsonPath.read(body, "$.orderId"));
-     *   // 主线程
-     *   String orderId = (String) ApiCaptureContext.getCurrent().awaitShared("lastOrderId", 5000);
-     * }</pre>
-     */
-    private final ConcurrentHashMap<String, Object> sharedState = new ConcurrentHashMap<>();
-
-    /** 共享状态读写锁（awaitShared 的条件等待） */
-    private final Object sharedStateLock = new Object();
-
-    /**
-     * 向共享状态写入一个键值（事件线程调用，主线程可读取）。
-     * @param key 键
-     * @param value 值（可为 null，等价于移除）
-     */
-    public void setShared(String key, Object value) {
-        if (key == null) return;
-        if (value == null) {
-            sharedState.remove(key);
-        } else {
-            sharedState.put(key, value);
-        }
-        synchronized (sharedStateLock) {
-            sharedStateLock.notifyAll();
-        }
-    }
-
-    /**
-     * 读取共享状态（主线程调用）。未设置时返回 null。
-     */
-    public Object getShared(String key) {
-        return key == null ? null : sharedState.get(key);
-    }
-
-    /**
-     * 读取共享状态（带类型转换）。
-     */
-    public <T> T getShared(String key, Class<T> type) {
-        Object v = getShared(key);
-        return type != null && type.isInstance(v) ? type.cast(v) : null;
-    }
-
-    /**
-     * 阻塞等待某个 key 在共享状态中出现（主线程调用）。
-     * <p>用于让主线程「等待 Monitor 事件线程把值写回」再继续，
-     * 解决 onResponse 无法直接影响主线程局部变量的问题。
-     *
-     * @param key 键
-     * @param timeoutMs 超时（毫秒），<=0 表示不等待立即返回
-     * @return key 出现时的值，超时仍不存在返回 null
-     */
-    public Object awaitShared(String key, long timeoutMs) {
-        if (key == null) return null;
-        Object v = sharedState.get(key);
-        if (v != null) return v;
-        if (timeoutMs <= 0) return null;
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        synchronized (sharedStateLock) {
-            while (true) {
-                Object cur = sharedState.get(key);
-                if (cur != null) return cur;
-                long remain = deadline - System.currentTimeMillis();
-                if (remain <= 0) return null;
-                try {
-                    sharedStateLock.wait(remain);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return sharedState.get(key);
-                }
-            }
-        }
-    }
-
-    /** 清空共享状态（resetCurrent 时调用，避免跨场景串扰）。 */
-    public void clearShared() {
-        sharedState.clear();
-    }
 
     /** 等待锁：decrement → 0 时通知 awaitCompletion 的调用方 */
     private final Object completionLock = new Object();
@@ -854,7 +779,13 @@ public class ApiCaptureContext {
                     java.util.Collections.synchronizedList(new java.util.LinkedList<>()));
             endpointCalls.add(call);
             while (endpointCalls.size() > MAX_CALLS_PER_ENDPOINT) {
-                endpointCalls.remove(0);
+                // ⭐ 修复 H1：淘汰最老调用时必须回减总体积，否则计数器只增不减，
+                //    越过 MAX_RESPONSE_TOTAL_SIZE 后所有 storeApiCall 被永久静默拒绝（监控快照全丢）。
+                CapturedApiCall evicted = endpointCalls.remove(0);
+                if (evicted != null) {
+                    int evictedLen = evicted.responseBody() != null ? evicted.responseBody().length() : 0;
+                    totalResponseSize.addAndGet(-evictedLen);
+                }
             }
 
             if (containsGlobWildcard(endpoint)) {

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Route Coverage Harness</title>
+</head>
+<body>
+<h1>Route Coverage Harness</h1>
+<!-- 隐藏 iframe：加载后自动向 /web/api/iframe-echo 发起 fetch，用于 frame 相关匹配测试 -->
+<iframe src="/web/frame.html" style="display:none"></iframe>
+
+<script>
+/**
+ * 在页面 JS 上下文内发起各种「请求形态」的统一入口。
+ * Route 引擎只拦截页面上下文内的请求（fetch / navigation / 资源加载 / iframe 内请求），
+ * 因此所有触发都必须经由本页 JS，而非 Playwright 的 APIRequestContext。
+ */
+window.__cov = {
+    // 通用 fetch：支持 method / headers / body / referrer，返回 {status, body, headers}
+    request: async (o) => {
+        const init = {};
+        if (o.method) init.method = o.method;
+        if (o.headers) init.headers = o.headers;
+        if (o.body) init.body = o.body;
+        if (o.referrer) {
+            init.referrer = o.referrer;
+            init.referrerPolicy = o.referrerPolicy || 'unsafe-url';
+        }
+        const r = await fetch(o.url, init);
+        const b = await r.text();
+        const h = {};
+        r.headers.forEach((v, k) => { h[k] = v; });
+        return JSON.stringify({ status: r.status, body: b, headers: h });
+    },
+    // XMLHttpRequest（resourceType=xhr）
+    xhr: async (o) => {
+        return await new Promise((resolve, reject) => {
+            const x = new XMLHttpRequest();
+            x.open(o.method || 'GET', o.url, true);
+            if (o.headers) Object.keys(o.headers).forEach(k => x.setRequestHeader(k, o.headers[k]));
+            x.onload = () => resolve(JSON.stringify({ status: x.status, body: x.responseText, headers: {} }));
+            x.onerror = () => reject(new Error('xhr error'));
+            x.send(o.body || null);
+        });
+    },
+    // 图片加载（resourceType=image）
+    image: async (u) => {
+        return await new Promise(res => {
+            const i = new Image();
+            i.onload = () => res('ok');
+            i.onerror = () => res('err');
+            i.src = u;
+        });
+    },
+    // 脚本加载（resourceType=script）
+    script: async (u) => {
+        return await new Promise(res => {
+            const s = document.createElement('script');
+            s.src = u;
+            s.onload = () => res('ok');
+            s.onerror = () => res('err');
+            document.body.appendChild(s);
+        });
+    }
+};
+window.__ready = true;
+</script>
+</body>
+</html>

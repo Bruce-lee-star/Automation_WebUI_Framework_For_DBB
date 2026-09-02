@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>frame</title>
+</head>
+<body>
+<!-- 本页被 coverage.html 以 iframe 方式加载；加载后自动向 /web/api/iframe-echo 发起 fetch，
+     其请求的 frame.url() 包含 "frame.html"，用于 onlyMainFrame / allowAllFrames / matchFrameUrl 匹配。 -->
+<script>
+fetch('/web/api/iframe-echo').then(r => r.text()).catch(() => {});
+</script>
+</body>
+</html>

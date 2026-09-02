@@ -1,0 +1,81 @@
+name: Deploy Serenity Report to External Repo Pages
+
+# 角色定位：本 workflow 不跑测试，只做「结果部署」。
+# 测试由外部 pipeline 在自己的机器上跑完，并把 Serenity 报告目录
+# （target/site/serenity）推到【本仓库】的 reports-staging 分支。
+# 本 Action 被 pipeline 在指定时机调用，拉取该分支的报告，部署到
+# 【指定外部仓库】的 GitHub Pages，生成可访问的网页报告链接。
+#
+# 触发（仅由 pipeline 显式调用，无自动触发器）：
+#   gh workflow run serenity-report-push.yml -f source_branch=reports-staging
+#   gh workflow run serenity-report-push.yml            # 默认 reports-staging
+#
+# 前置（由外部 pipeline 完成）：
+#   1) 在自己机器跑完测试，产出 target/site/serenity
+#   2) 将该目录推到本仓库 reports-staging 分支，例如：
+#        git switch -c reports-staging  (首次)
+#        cp -r target/site/serenity ./serenity-report
+#        git add serenity-report && git commit -m "report" && git push origin reports-staging
+#   3) 调本 workflow，等完成后发邮件（附下方 Pages 链接）
+#
+# 仓库 Secrets 配置：
+#   - PERSONAL_TOKEN：具有【外部报告仓库】write 权限的 Personal Access Token（repo 范围）
+#   - 外部仓库需先在 Settings → Pages → Source 选 "Deploy from a branch" → branch: gh-pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Branch in THIS repo that holds the serenity report (pushed by pipeline)'
+        required: false
+        default: 'reports-staging'
+
+permissions:
+  contents: read
+
+env:
+  REPORT_REPO: hsbc/dbb-serenity-reports      # 外部报告仓库 org/repo（改成实际）
+  REPORT_BRANCH: gh-pages                      # 外部仓库 Pages 分支
+  REPORT_SRC_DIR: serenity-report              # 本仓库 source_branch 下放报告的目录名
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest        # 纯部署，无 Windows 依赖，用 Linux 更快更省
+    steps:
+      - name: Checkout report branch (from THIS repo)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.source_branch }}
+          path: report-src
+
+      - name: Verify report exists
+        shell: bash
+        run: |
+          if [ ! -f "report-src/${{ env.REPORT_SRC_DIR }}/index.html" ]; then
+            echo "::error::报告未找到：report-src/${{ env.REPORT_SRC_DIR }}/index.html"
+            echo "请确认 pipeline 已把 Serenity 报告推到本仓库分支 ${{ github.event.inputs.source_branch }} 的 ${{ env.REPORT_SRC_DIR }}/ 下"
+            exit 1
+          fi
+          echo "报告校验通过，准备部署到外部仓库 Pages。"
+
+      - name: Deploy report to external repo Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.PERSONAL_TOKEN }}
+          external_repository: ${{ env.REPORT_REPO }}
+          publish_branch: ${{ env.REPORT_BRANCH }}
+          publish_dir: report-src/${{ env.REPORT_SRC_DIR }}
+          keep_files: false            # 全量替换，每次部署即本次报告
+          commit_message: "Serenity report deployed from ${{ github.repository }}@${{ github.event.inputs.source_branch }} run ${{ github.run_id }}"
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
+
+      - name: Print report link
+        shell: bash
+        run: |
+          BASE="https://${REPORT_REPO%%/*}.github.io/${REPORT_REPO#*/}/"
+          echo "=========================================="
+          echo "网页报告链接（外部仓库 Pages）:"
+          echo "  ${BASE}"
+          echo "（pipeline 可将该链接放入邮件发送给团队）"
+          echo "=========================================="

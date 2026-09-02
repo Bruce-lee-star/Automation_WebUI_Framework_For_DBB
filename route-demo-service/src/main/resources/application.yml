@@ -1,0 +1,18 @@
+server:
+  port: 8888
+  servlet:
+    context-path: /demo
+
+spring:
+  application:
+    name: route-demo-service
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+
+logging:
+  level:
+    com.example.demo: DEBUG
+    com.hsbc.cmb.hk.dbb.automation.framework.web.route: TRACE

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RoleElement Picker 全场景录制测试页</title>
+  <style>
+    body { font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; margin: 24px; color: #222; }
+    h1 { font-size: 22px; }
+    section { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 16px 0; }
+    h2 { font-size: 16px; margin-top: 0; color: #0b66c3; }
+    label { display: block; margin: 8px 0 4px; font-weight: 600; }
+    input[type="text"], input[type="password"], input[type="email"], input[type="search"],
+    input[type="tel"], input[type="url"], input[type="number"], select, textarea {
+      width: 280px; padding: 6px 8px; border: 1px solid #bbb; border-radius: 4px;
+    }
+    button { padding: 8px 14px; margin: 6px 6px 0 0; border: none; border-radius: 4px;
+             background: #0b66c3; color: #fff; cursor: pointer; }
+    button.secondary { background: #6c757d; }
+    #hoverTarget { display: inline-block; padding: 10px 16px; background: #e7f1fb;
+                   border: 1px dashed #0b66c3; border-radius: 4px; cursor: pointer; }
+    #hoverResult { margin-left: 12px; color: #0b88c8; font-weight: 600; }
+    .popup-link { display: inline-block; margin-top: 8px; }
+    .log { margin-top: 10px; padding: 8px; background: #f6f8fa; border-radius: 4px;
+           font-family: monospace; font-size: 13px; min-height: 40px; white-space: pre-wrap; }
+    .checkbox-row { margin: 6px 0; }
+    a.download { display: inline-block; margin: 6px 0; color: #0b66c3; }
+  </style>
+</head>
+<body>
+  <h1>RoleElement Picker 全场景录制测试页</h1>
+  <p>打开本页 → 启动拾取 → 依次操作下列每个区块 → 停止拾取 → 生成代码，验证各类信号是否正确录制。</p>
+
+  <!-- 1. 基础点击 -->
+  <section>
+    <h2>1. 单击 Click（button / link）</h2>
+    <button id="btnSubmit" onclick="log('点击了 提交按钮')">提交</button>
+    <button id="btnCancel" class="secondary" onclick="log('点击了 取消按钮')">取消</button>
+    <a href="#" id="linkHome" onclick="log('点击了 首页链接'); return false;">返回首页</a>
+    <div class="log" id="logClick"></div>
+  </section>
+
+  <!-- 2. 双击 -->
+  <section>
+    <h2>2. 双击 Double Click</h2>
+    <button id="btnDbl" ondblclick="log('双击了 编辑按钮')">编辑</button>
+    <div class="log" id="logDbl"></div>
+  </section>
+
+  <!-- 3. 悬停 -->
+  <section>
+    <h2>3. 悬停 Hover（开启“悬停拾取”后停留约 0.45s）</h2>
+    <span id="hoverTarget">把鼠标移到我上面（悬停）</span>
+    <span id="hoverResult"></span>
+    <script>
+      document.getElementById('hoverTarget').addEventListener('mouseenter', function(){
+        document.getElementById('hoverResult').textContent = '已悬停（hover 触发）';
+      });
+    </script>
+  </section>
+
+  <!-- 4. 输入 fill/type -->
+  <section>
+    <h2>4. 文本输入 Type / Fill</h2>
+    <label for="txtName">姓名（textbox）</label>
+    <input type="text" id="txtName" placeholder="请输入姓名" />
+    <label for="txtPwd">密码（password -> textbox role）</label>
+    <input type="password" id="txtPwd" placeholder="请输入密码" />
+    <label for="txtSearch">搜索（searchbox）</label>
+    <input type="search" id="txtSearch" placeholder="搜索内容" />
+    <label for="numAge">年龄（spinbutton）</label>
+    <input type="number" id="numAge" placeholder="0" />
+  </section>
+
+  <!-- 5. 复选框 / 单选 check & uncheck -->
+  <section>
+    <h2>5. 复选框 Check / Uncheck</h2>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chkAgree" />
+      <label for="chkAgree" style="display:inline;font-weight:400;">我已阅读并同意条款（默认未勾选）</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="chkNews" checked />
+      <label for="chkNews" style="display:inline;font-weight:400;">订阅新闻（默认已勾选）</label>
+    </div>
+    <div class="checkbox-row">
+      <input type="radio" name="gender" id="rdMale" />
+      <label for="rdMale" style="display:inline;font-weight:400;">男</label>
+      <input type="radio" name="gender" id="rdFemale" />
+      <label for="rdFemale" style="display:inline;font-weight:400;">女</label>
+    </div>
+  </section>
+
+  <!-- 6. 下拉选择 selectOption -->
+  <section>
+    <h2>6. 下拉选择 SelectOption（原生 &lt;select&gt;）</h2>
+    <label for="selAccount">账户类型（combobox）</label>
+    <select id="selAccount">
+      <option value="">-- 请选择 --</option>
+      <option value="CNY">人民币账户</option>
+      <option value="USD">美元账户</option>
+      <option value="HKD">港币账户</option>
+    </select>
+    <label for="selCity">城市（listbox，multiple）</label>
+    <select id="selCity" multiple size="3">
+      <option value="HK">香港</option>
+      <option value="SH">上海</option>
+      <option value="BJ">北京</option>
+    </select>
+  </section>
+
+  <!-- 7. 弹出新页面 popup -->
+  <section>
+    <h2>7. 弹出新页面 Popup（target=_blank）</h2>
+    <a href="about:blank" target="_blank" id="lnkPopup" onclick="log('触发了 新窗口打开'); return true;">打开新窗口（popup）</a>
+  </section>
+
+  <!-- 8. 下载 download -->
+  <section>
+    <h2>8. 下载 Download</h2>
+    <a href="data:application/octet-stream;base64,SGVsbG8=" download="sample.txt" id="lnkDownload">下载示例文件（download）</a>
+  </section>
+
+  <!-- 9. 原生对话框 dialog -->
+  <section>
+    <h2>9. 原生对话框 Dialog（alert / confirm / prompt）</h2>
+    <button id="btnAlert" onclick="alert('这是一个提示框'); log('alert 已触发');">触发 Alert</button>
+    <button id="btnConfirm" class="secondary" onclick="confirm('确定要继续吗？'); log('confirm 已触发');">触发 Confirm</button>
+    <button id="btnPrompt" class="secondary" onclick="prompt('请输入您的姓名'); log('prompt 已触发');">触发 Prompt</button>
+  </section>
+
+  <script>
+    function log(msg) {
+      var ids = {
+        '点击了 提交按钮': 'logClick', '点击了 取消按钮': 'logClick',
+        '点击了 首页链接': 'logClick', '双击了 编辑按钮': 'logDbl'
+      };
+      var box = document.getElementById(ids[msg] || 'logClick');
+      box.textContent += msg + '\n';
+    }
+  </script>
+</body>
+</html>

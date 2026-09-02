@@ -1,0 +1,23 @@
+{
+  "login": {
+    "api/login": {
+      "timeout": 30,
+      "autoStopMonitor": true,
+      "apiOwner": "zhangsan@company.com",
+      "expectStatus": 200
+    },
+    "api/auth/assert": {
+      "timeout": 30,
+      "autoStopMonitor": false,
+      "apiOwner": "lisi@company.com",
+      "expectStatus": 200
+    }
+  },
+  "transfer": {
+    "api/transfer/**": {
+      "timeout": 45,
+      "autoStopMonitor": true,
+      "apiOwner": "wangwu@company.com"
+    }
+  }
+}

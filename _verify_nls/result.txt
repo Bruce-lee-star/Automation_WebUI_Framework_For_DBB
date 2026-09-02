@@ -1,0 +1,6 @@
+PASS: b1 role=button
+PASS: b1 命中 key=forgot_username (实:forgot_username)
+PASS: b1 matched
+PASS: b2 未命中 key=null
+FAIL: link 命中 key=next (实:undefined)
+DONE

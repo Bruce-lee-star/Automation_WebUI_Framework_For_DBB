@@ -1,0 +1,12 @@
+server:
+  port: 8899
+  servlet:
+    context-path: /web
+
+spring:
+  application:
+    name: route-demo-web
+
+logging:
+  level:
+    com.example.demoweb: DEBUG

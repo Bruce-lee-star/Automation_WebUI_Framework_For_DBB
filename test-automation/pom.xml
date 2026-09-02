@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+        <artifactId>Automation_WebUI_Framework_BDD</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>test-automation</artifactId>
+    <name>Test Automation</name>
+    <description>Cucumber/Serenity test suite: features, step definitions, CucumberTestRunnerIT. Aggregates all framework modules.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-reporting</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-web</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-route</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- 纯单测：mock Playwright Page/BrowserContext，校验 start(page) 监听器幂等注册（不依赖浏览器运行时） -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>4.5.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>1.12.23</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.objenesis</groupId>
+            <artifactId>objenesis</artifactId>
+            <version>3.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven-failsafe-plugin.version}</version>
+                <configuration>
+                    <useFile>false</useFile>
+                    <rerunFailingTestsCount>${rerunFailingTestsCount}</rerunFailingTestsCount>
+                    <forkCount>1</forkCount>
+                    <!-- Cucumber 主流程整体超时兜底（防 Playwright 导航/采集阻塞拖垮整轮） -->
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
+                    <includes>
+                        <include>**/*IT.java</include>
+                        <include>**/integration/**/*Test.java</include>
+                        <include>**/CucumberTestRunner*.java</include>
+                    </includes>
+                    <testClassesDirectory>${project.build.testOutputDirectory}</testClassesDirectory>
+                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+                    <useModulePath>false</useModulePath>
+                    <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang.reflect=ALL-UNNAMED</argLine>
+                    <systemPropertyVariables>
+                        <serenity.outputDirectory>${project.build.directory}/site/serenity</serenity.outputDirectory>
+                        <cucumber.filter.tags>${tags}</cucumber.filter.tags>
+                    </systemPropertyVariables>
+                    <failIfNoTests>false</failIfNoTests>
+                    <reportsDirectory>${project.build.directory}/failsafe-reports</reportsDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>integration-test</id>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>net.serenity-bdd.maven.plugins</groupId>
+                <artifactId>serenity-maven-plugin</artifactId>
+                <version>${serenity.version}</version>
+                <executions>
+                    <execution>
+                        <id>serenity-reports</id>
+                        <phase>post-integration-test</phase>
+                        <goals>
+                            <goal>aggregate</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/site/serenity</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>generate-summary-report</id>
+                        <phase>post-integration-test</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator</mainClass>
+                            <arguments>
+                                <argument>${project.build.directory}/site/serenity</argument>
+                            </arguments>
+                            <classpathScope>compile</classpathScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

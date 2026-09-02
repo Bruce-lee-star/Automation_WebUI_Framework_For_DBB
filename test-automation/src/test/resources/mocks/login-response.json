@@ -1,0 +1,9 @@
+{
+  "token": "real-token-from-file",
+  "message": "Login successful",
+  "userId": 100,
+  "roles": [
+    { "name": "USER", "active": true },
+    { "name": "ADMIN", "active": false }
+  ]
+}

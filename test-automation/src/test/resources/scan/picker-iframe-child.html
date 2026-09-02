@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>iframe 子页面</title></head>
+<body style="font-family:sans-serif">
+  <h3>iframe 1</h3>
+  <button id="f1-btn">iframe 内按钮</button>
+  <input id="f1-input" aria-label="iframe输入框">
+  <my-component id="f1-comp"><button id="f1-light">iframe 内 Light DOM 按钮</button></my-component>
+  <iframe id="frame-2" name="frameTwo" src="picker-iframe-grandchild.html"></iframe>
+  <script>
+    customElements.define('my-component', class extends HTMLElement {
+      connectedCallback(){
+        if (!this.shadowRoot) {
+          var sr = this.attachShadow({mode:'open'});
+          sr.innerHTML = '<style>button{font:inherit;padding:4px 8px;}</style>'
+            + '<button id="f1-shadow-btn">iframe 内 Shadow 按钮</button>'
+            + '<input id="f1-shadow-input" aria-label="iframe内shadow输入框">';
+        }
+      }
+    });
+  </script>
+</body>
+</html>

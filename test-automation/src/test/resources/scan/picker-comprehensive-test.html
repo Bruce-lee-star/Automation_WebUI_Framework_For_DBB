@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RoleElementPicker 综合测试页</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 20px; max-width: 900px; }
+  section { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  h2 { margin-top: 0; font-size: 16px; }
+  .hidden { display: none; }
+  .vis-hidden { visibility: hidden; }
+  .opaque { opacity: 0; }
+  #overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: none; align-items: center; justify-content: center; }
+  #overlay .box { background: #fff; padding: 24px; border-radius: 8px; }
+  .floating { position: fixed; right: 20px; bottom: 20px; }
+  my-component { display: block; padding: 8px; border: 1px dashed #999; margin: 6px 0; }
+  iframe { width: 100%; height: 180px; border: 1px solid #aaa; }
+  .keyonly { position: absolute; left: -9999px; }
+</style>
+</head>
+<body>
+<h1>RoleElementPicker 综合测试页</h1>
+
+<section id="sec-role">
+  <h2>1. 角色与状态</h2>
+  <button id="btn-submit" onclick="log('submit')">提交</button>
+  <button id="btn-disabled" disabled>禁用按钮</button>
+  <button id="btn-pressed" aria-pressed="true" onclick="togglePressed(this)">切换(已按下)</button>
+  <button id="btn-expanded" aria-expanded="false" onclick="toggleExpanded(this)">展开</button>
+  <a id="link-home" href="#home">首页链接</a>
+  <input id="input-name" aria-label="姓名" placeholder="请输入姓名">
+  <img id="img-logo" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E" alt="公司Logo">
+  <h3 id="heading-1">区块标题</h3>
+</section>
+
+<section id="sec-checkbox">
+  <h2>2. 勾选状态（原生 / ARIA）</h2>
+  <label><input type="checkbox" id="cb-native" checked> 原生 checkbox（已勾选）</label><br>
+  <label><input type="checkbox" id="cb-native-off"> 原生 checkbox（未勾选）</label><br>
+  <div id="aria-cb" role="checkbox" aria-checked="true" tabindex="0" onclick="toggleAriaCb(this)">ARIA checkbox（已勾选）</div>
+  <div id="aria-sw" role="switch" aria-checked="false" tabindex="0" onclick="toggleAriaCb(this)">ARIA switch（未勾选）</div>
+</section>
+
+<section id="sec-visibility">
+  <h2>3. 可见性边界</h2>
+  <button id="btn-hidden" class="hidden">display:none 按钮</button>
+  <button id="btn-vis-hidden" class="vis-hidden">visibility:hidden 按钮</button>
+  <button id="btn-opaque" class="opaque">opacity:0 按钮</button>
+  <div id="clipped" style="overflow:hidden;height:10px">被裁剪容器内的可见按钮
+    <button id="btn-clipped">裁剪内按钮</button>
+  </div>
+</section>
+
+<section id="sec-shadow">
+  <h2>4. Shadow DOM</h2>
+  <my-component id="comp-1"><button id="light-btn">Light DOM 按钮</button></my-component>
+  <my-component id="comp-2"></my-component>
+</section>
+
+<section id="sec-iframe">
+  <h2>5. iframe（单层 + 嵌套，使用真实 src 而非 srcdoc）</h2>
+  <iframe id="frame-1" name="frameOne" src="picker-iframe-child.html"></iframe>
+</section>
+
+<section id="sec-dialog">
+  <h2>6. Alert / Dialog / 跳转</h2>
+  <button id="btn-alert" onclick="setTimeout(function(){alert('这是一个 alert');},50)">触发 Alert</button>
+  <button id="btn-confirm" onclick="setTimeout(function(){confirm('确认？')},50)">触发 Confirm</button>
+  <button id="btn-overlay" onclick="document.getElementById('overlay').style.display='flex'">打开模态遮罩</button>
+  <button id="btn-spa" onclick="spaNav()">SPA 跳转（改 hash）</button>
+  <button id="btn-popup" onclick="window.open(location.href+'#popup','_blank')">打开弹窗</button>
+  <div id="overlay"><div class="box">模态遮罩
+    <button id="btn-overlay-close" onclick="document.getElementById('overlay').style.display='none'">关闭遮罩</button>
+  </div></div>
+</section>
+
+<section id="sec-keyboard">
+  <h2>7. 键盘可达元素（focusin 拾取）</h2>
+  <button id="btn-key" class="keyonly" tabindex="0">键盘才可达的元素</button>
+  <a id="link-key" href="#k" class="keyonly" tabindex="0">键盘链接</a>
+</section>
+
+<script>
+  function log(m){ console.log('[test] ' + m); }
+  function togglePressed(el){ var p = el.getAttribute('aria-pressed')==='true'; el.setAttribute('aria-pressed', String(!p)); }
+  function toggleExpanded(el){ var e = el.getAttribute('aria-expanded')==='true'; el.setAttribute('aria-expanded', String(!e)); }
+  function toggleAriaCb(el){ var c = el.getAttribute('aria-checked')==='true'; el.setAttribute('aria-checked', String(!c)); }
+  function spaNav(){ location.hash = '#spa-' + Date.now(); }
+
+  // 注册 Shadow DOM 内容（open shadowRoot）
+  customElements.define('my-component', class extends HTMLElement {
+    connectedCallback(){
+      if (!this.shadowRoot) {
+        var sr = this.attachShadow({mode:'open'});
+        sr.innerHTML = '<style>button{font:inherit;padding:4px 8px;}</style>'
+          + '<button id="shadow-btn">Shadow 内按钮</button>'
+          + '<input id="shadow-input" aria-label="shadow输入框">';
+      }
+    }
+  });
+</script>
+</body>
+</html>

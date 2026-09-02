@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+        <artifactId>Automation_WebUI_Framework_BDD</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>framework-api</artifactId>
+    <name>Automation Framework - API</name>
+    <description>API testing layer: framework.api. Depends on core (and reporting).</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-reporting</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

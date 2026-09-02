@@ -143,7 +143,7 @@ public final class RoleElementPicker {
         //    GLOBAL_URL_TO_CLASS（URL → 派生类名）与 NLS_REVERSE_CACHE（nls 反查 JSON）
         //    都是 JVM 生命周期的静态 Map，clearAll 漏掉会让"重置/清空"名不副实：
         //    重置后仍持有旧站点 URL 与旧 nls 解析结果。
-        GLOBAL_URL_TO_CLASS.clear();
+        RolePickerClassNameResolver.clear();
         RolePickerNlsCache.clear();
     }
 
@@ -3323,7 +3323,7 @@ public final class RoleElementPicker {
             throw new IllegalArgumentException("[picker] openPanel 至少需要 1 个 NLS 文件路径参数");
         }
         // page / steps 类名由 URL 决定，与弹窗/导航新页面同源派生。
-        final String pageClassName = pageClassNameFromUrl(page.url(), GLOBAL_URL_TO_CLASS.values());
+        final String pageClassName = RolePickerClassNameResolver.pageClassNameFromUrl(page.url(), RolePickerClassNameResolver.values());
         // 【步骤类命名】Step 类不复用 Page 类的 "XxxPage"+Steps（会拼成 XxxPageSteps），
         // 而是去掉 Page 类后缀的 "Page" 再拼 "Steps"，即页面类 LogonPage → 步骤类 LogonSteps。
         final String stepBase = pageClassName.endsWith("Page")
@@ -3385,10 +3385,10 @@ public final class RoleElementPicker {
         // pick 会话的局部变量，跨"停止→再开始"或多次运行会被重建，导致同 URL 在新会话重新派生类名；
         // 若既有类名因 pageNames 残留被计入去重，就派生出 XxxPage2。提升为全局持久映射后，同一 URL 首次
         // 派生即记住，之后任何会话/导航都复用，永不再派生重复类。
-        final LinkedHashMap<String, String> urlToClass = new LinkedHashMap<>(GLOBAL_URL_TO_CLASS);
-        String rootNorm = normalizeUrl(page.url());
+        final LinkedHashMap<String, String> urlToClass = RolePickerClassNameResolver.snapshot();
+        String rootNorm = RolePickerClassNameResolver.normalizeUrl(page.url());
         urlToClass.put(rootNorm, pageClassName);
-        GLOBAL_URL_TO_CLASS.put(rootNorm, pageClassName);
+        RolePickerClassNameResolver.put(rootNorm, pageClassName);
         // openedPages：会话期间新开出的页面（弹窗/新标签页），关闭面板时一并关闭。
         final List<Page> openedPages = new ArrayList<>();
         // 命令事件队列：面板按钮点击经 exposeFunction 异步投递到这里，主循环阻塞消费（事件驱动，无需忙轮询）。
@@ -3902,7 +3902,7 @@ public final class RoleElementPicker {
                 // 新拾取元素被打错页类、面板按激活页过滤后显示为 0。此处【提前、无条件】按最新 URL 重解析并刷新
                 // 当前页类名（含浏览器侧 window.__rolePageName），且与后续数据恢复解耦——即便恢复逻辑抛异常也不影响
                 // 类名正确性。这同时实现"导航后聚焦当前真实页面"的诉求。
-                String resolvedCls = resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
+                String resolvedCls = RolePickerClassNameResolver.resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
                 if (resolvedCls != null && !resolvedCls.equals(prevCls)) {
                     pageNames.put(page, resolvedCls);
                     prevCls = resolvedCls;
@@ -4089,7 +4089,7 @@ public final class RoleElementPicker {
                 // 依据新 URL 解析本页类名：优先复用会话级 urlToClass 稳定映射（同一 URL 复用同一类名，
                 // 避免"回到默认页 URL 又派生出 LogonPage 之类重复页类"）——仅当该 URL 从未见过时才派生新类名。
                 String curCls = pageNames.get(page);
-                String newCls = resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
+                String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
                 page.evaluate("window.__rolePageName = " + GSON.toJson(newCls) + ";"
                         + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(newCls) + ");}catch(e){}");
                 if (!newCls.equals(curCls)) { pageNames.put(page, newCls); navigatedPages.add(page); }
@@ -4261,7 +4261,7 @@ public final class RoleElementPicker {
                 // 从源头杜绝跨页 pageClass 串味。幂等、仅当解析结果变化时写回。
                 try {
                     String curCls = pageNames.get(p);
-                    String newCls = resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
+                    String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
                     if (newCls != null && !newCls.equals(curCls)) {
                         pageNames.put(p, newCls);
                     }
@@ -4291,7 +4291,7 @@ public final class RoleElementPicker {
             // 命令桥/拾取桥/面板重建脚本均已在 context 级一次性注册（registerContextBridges /
             // registerContextInitScripts），本页自动持有，无需逐页补注册。
             // 按 URL 解析并登记本页类名（复用会话稳定映射 urlToClass）
-            String cls = resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
+            String cls = RolePickerClassNameResolver.resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
             pageNames.put(p, cls);
             if (!openedPages.contains(p)) openedPages.add(p);
             // 暴露页面类名 + 开启面板开关（与 openPanel/followPage 一致）
@@ -4324,7 +4324,7 @@ public final class RoleElementPicker {
             // 两个页面各自维护自己的面板与 active 状态，互不干扰（不再调用 closePanel/stop(opener)）。
             // 由 URL 解析新页面的 Page 类名（优先复用 urlToClass 稳定映射，同一 URL 复用同一类名），
             // 登记进 pageNames / openedPages，供生成时落到对应类。
-            String cls = resolvePageClassForUrl(newPage.url(), pageNames.values(), urlToClass);
+            String cls = RolePickerClassNameResolver.resolvePageClassForUrl(newPage.url(), pageNames.values(), urlToClass);
             pageNames.put(newPage, cls);
             openedPages.add(newPage);
             // 关键修复：打开新页面【不再】把默认页当前步收尾成一个 step。step 的唯一边界是"开始→停止"，
@@ -4378,37 +4378,6 @@ public final class RoleElementPicker {
      *  清洗为首字母大写的合法 Java 标识符后加 "Page"。
      *  特殊情况：片段为空（根路径 / 仅域名 / 结尾斜杠）→ 退回 "Index"；
      *  与 used 中已有类名重复时追加 2/3… 去重。 */
-    private static String pageClassNameFromUrl(String url, Collection<String> used) {
-        String raw = url == null ? "" : url.trim();
-        int q = raw.indexOf('?'); if (q >= 0) raw = raw.substring(0, q);
-        int h = raw.indexOf('#'); if (h >= 0) raw = raw.substring(0, h);
-        int s = raw.lastIndexOf('/');
-        String seg = (s >= 0) ? raw.substring(s + 1) : raw;
-        if (seg.isEmpty()) seg = "Index";           // 特殊：根路径 / 仅域名
-        String base = toClassNameSegment(seg);
-        if (base.isEmpty()) base = "Index";
-        String candidate = base + "Page";
-        String unique = candidate;
-        int n = 2;
-        while (used.contains(unique)) unique = candidate + (n++);
-        return unique;
-    }
-
-    /**
-     * 跨多次 pick 运行持久化的"URL → Page 类名"稳定映射。
-     * 关键修复（修复"同一 URL 来回跳转却生成 XxxPage / XxxPage2 两个类"）：
-     * 旧实现 urlToClass 是每次 pick 会话的局部变量，跨"停止→再开始"或多次运行会被重建，导致同 URL
-     * 在新会话重新派生类名；若既有类名因 pageNames 残留被计入去重，就派生出 XxxPage2。提升为全局持久
-     * 映射后，同一 URL 首次派生即记住，之后任何会话/导航都复用，永不再派生重复类。
-     */
-    private static final java.util.Map<String, String> GLOBAL_URL_TO_CLASS = new java.util.concurrent.ConcurrentHashMap<>();
-    /** ⭐ 修复 P3：URL→类名映射上限。原实现无上限，每派生一个新 URL 的类名就登记一条、只增不减。 */
-    private static final int GLOBAL_URL_TO_CLASS_MAX = 1024;
-
-    /** 语言/地区码路径片段（首段），如 en / zh / zh-HK / en_US，用于 URL 归一化时忽略语言差异。
-     *  仅当首段恰好是一个 IETF 风格的语言码时才剥离，尽量降低误伤真实内容路径的概率。 */
-    private static final java.util.regex.Pattern LOCALE_SEGMENT =
-            java.util.regex.Pattern.compile("(?i)^/[a-z]{2}([-_][a-z]{2,4})?(?=/|$)");
 
     /** 安全提取 URL 的 origin（protocol//host[:port]），用于跨域判断。无法解析时返回空串。 */
     private static String safeOrigin(String url) {
@@ -4429,54 +4398,6 @@ public final class RoleElementPicker {
         }
     }
 
-    /** 归一化 URL：去 query/hash，剥离首段语言/地区码，并去除末尾斜杠，作为 urlToClass 的稳定键。
-     *  去除末尾斜杠可让肉眼"相同"但末尾斜杠有差异的 URL（如 /help 与 /help/）映射到同一页类；
-     *  剥离语言码可让同一页面在切换语言后（如 /en/accounts 与 /zh/accounts）归并到同一页类，
-     *  避免它们被误判为两个不同页面而派生出 XxxPage / XxxPage2（修复"切换语言后同一页生成 Page2"）。 */
-    private static String normalizeUrl(String url) {
-        String raw = url == null ? "" : url.trim();
-        int q = raw.indexOf('?'); if (q >= 0) raw = raw.substring(0, q);
-        int h = raw.indexOf('#'); if (h >= 0) raw = raw.substring(0, h);
-        // 忽略语言/地区码片段：/en/accounts 与 /zh/accounts 归并为 /accounts，复用同一页类。
-        java.util.regex.Matcher lm = LOCALE_SEGMENT.matcher(raw);
-        if (lm.find()) {
-            raw = raw.substring(0, lm.start()) + raw.substring(lm.end());
-            log.debug("[picker][normalize] 剥离语言码，归一化键={}", raw);
-        }
-        while (raw.length() > 1 && raw.endsWith("/")) raw = raw.substring(0, raw.length() - 1);
-        return raw;
-    }
-
-    /**
-     * 解析某 URL 对应的 Page 类名：优先复用会话级 urlToClass 稳定映射（同一 URL 全程复用同一类名，
-     * 避免"离开默认页又回到默认页 URL 时被派生成 LogonPage 等重复类"）。
-     * 仅当该 URL 从未出现时才用 pageClassNameFromUrl 派生，并登记进映射；派生时把已有的映射类名
-     * 一并计入 used，避免与已分配类重名。
-     */
-    private static String resolvePageClassForUrl(String url, Collection<String> used,
-                                                 LinkedHashMap<String, String> urlToClass) {
-        String key = normalizeUrl(url);
-        String existing = urlToClass.get(key);
-        if (existing != null) return existing;
-        Set<String> allUsed = new LinkedHashSet<>(used);
-        allUsed.addAll(urlToClass.values());
-        String cls = pageClassNameFromUrl(url, allUsed);
-        urlToClass.put(key, cls);
-        // ⭐ 修复 P3：达到上限时批量淘汰约 1/4，避免 Map 在长跑 / 多站点扫描下无限增长。
-        //    这里内联淘汰而非复用 RouteUtil.evictOldestQuarter，是为了不新增
-        //    web.page → web.route 的反向依赖（见评审 A4 的分层问题）。
-        if (GLOBAL_URL_TO_CLASS.size() >= GLOBAL_URL_TO_CLASS_MAX) {
-            int toRemove = Math.max(1, GLOBAL_URL_TO_CLASS.size() / 4);
-            int removed = 0;
-            java.util.Iterator<String> it = GLOBAL_URL_TO_CLASS.keySet().iterator();
-            while (it.hasNext() && removed++ < toRemove) {
-                it.next();
-                it.remove();
-            }
-        }
-        GLOBAL_URL_TO_CLASS.put(key, cls);
-        return cls;
-    }
 
     /**
      * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 STATE_DELETED）。
@@ -4526,25 +4447,6 @@ public final class RoleElementPicker {
     }
 
     /** 把任意片段清洗为合法 Java 类名的"主体"（首字母大写；- _ . 空格 / 作单词边界；其余字符丢弃）。 */
-    private static String toClassNameSegment(String seg) {
-        if (seg == null || seg.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        boolean upperNext = true;
-        for (int i = 0; i < seg.length(); i++) {
-            char c = seg.charAt(i);
-            if (Character.isLetterOrDigit(c)) {
-                sb.append(upperNext ? Character.toUpperCase(c) : c);
-                upperNext = false;
-            } else if (c == '-' || c == '_' || c == '.' || c == ' ' || c == '/') {
-                upperNext = true;   // 分隔符 → 下一词首字母大写
-            }
-            // 其余字符丢弃
-        }
-        String s = sb.toString().replaceAll("[^\\p{L}\\p{N}_$]", "");
-        if (s.isEmpty()) return "";
-        if (!Character.isJavaIdentifierStart(s.charAt(0))) s = "P" + s;
-        return s;
-    }
 
     /** 移除常驻面板，并还原 docked 预留的右侧页面空间。
      *  页面可能已关闭（如关闭的是根页面导致会话结束、或会话收尾时页面已被回收），

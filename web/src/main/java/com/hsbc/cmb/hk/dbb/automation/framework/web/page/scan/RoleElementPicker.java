@@ -144,7 +144,7 @@ public final class RoleElementPicker {
         //    都是 JVM 生命周期的静态 Map，clearAll 漏掉会让"重置/清空"名不副实：
         //    重置后仍持有旧站点 URL 与旧 nls 解析结果。
         GLOBAL_URL_TO_CLASS.clear();
-        NLS_REVERSE_CACHE.clear();
+        RolePickerNlsCache.clear();
     }
 
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
@@ -1131,7 +1131,7 @@ public final class RoleElementPicker {
                 // 进入手动拾取模式（互斥：此时整页/区域扫描按钮禁用，点击页面只拾取被点元素）。
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.MANUAL, pageNames);
                 // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击"开始"的延迟。
-                String startNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
+                String startNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
                 for (Page p : pageNames.keySet()) {
                     if (!p.isClosed()) { log.info("[picker][start] 对页面 {} 调用 start", p.url()); start(p, startNls); }
                 }
@@ -1148,7 +1148,7 @@ public final class RoleElementPicker {
                 active[0] = true;
                 // 进入整页扫描模式（互斥：扫描期间禁用开始/区域扫描按钮）。
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.SCAN_PAGE, pageNames);
-                String scanNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
+                String scanNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
                 // 【关键修复"全页扫描后旧元素仍持有旧序号（如 i18n:user_name 残留 [2,12]）"】
                 // start() 只清空浏览器侧 __rolePicks 的 _pickNos，但 Java 侧 javaPickBySig 仍保留旧序号。
                 // 扫描时 __recordPick 因 __scanning=true 不分配序号（_pickNos=null/空），
@@ -1267,7 +1267,7 @@ public final class RoleElementPicker {
                 active[0] = true;
                 // 进入区域扫描模式（互斥：扫描期间禁用开始/整页扫描按钮）。
                 setPickMode(pageNames.keySet().iterator().next(), PickMode.SCAN_REGION, pageNames);
-                String regionNls = buildNlsReverseJson(Arrays.asList(nlsFiles));
+                String regionNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
                 if (!page.isClosed()) start(page, regionNls);
                 // 【修复"整页扫描 → 停止拾取 → 区域选择，整页扫描元素被清空"】
                 // 原实现为让"区域扫描结果 = 纯本次选中区域元素"，进入区域点选态前清空了三处：
@@ -1386,7 +1386,7 @@ public final class RoleElementPicker {
                                 // 先强制补注入一次再扫描，确保区域内任意层 iframe（含跨源）都能被区域扫描穿透。
                                 if (rf instanceof Number && ((Number) rf).intValue() < 0) {
                                     try {
-                                        frameInjectOnce(f, buildNlsReverseJson(Arrays.asList(nlsFiles)));
+                                        frameInjectOnce(f, RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles)));
                                         f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
                                     } catch (Exception reInjEx) {
                                         String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
@@ -1922,96 +1922,6 @@ public final class RoleElementPicker {
      * 同一规范化文本/正则源以首个文件优先（putIfAbsent）。供拾取时把 a11y name 反查为对应 key，
      * 从而支持「一个页面用到多个 nls json」的场景。
      */
-    /**
-     * nls 反向查表缓存：同一组 nls 文件在会话内只解析一次，避免每次开始拾取（openPanel / ▶ 启动 /
-     * pick）都重读并解析磁盘上的 nls json。key 为排序去重后的文件路径拼接（忽略传参顺序差异）；
-     * 带 TTL，文件被更新后到期自动重建。可通过系统属性 {@code rolePicker.nlsCacheTtlMs} 调整有效期（毫秒）。
-     */
-    private static final Map<String, CachedNls> NLS_REVERSE_CACHE = new ConcurrentHashMap<>();
-    private static final long NLS_CACHE_TTL_MS =
-            Long.getLong("rolePicker.nlsCacheTtlMs", 5 * 60 * 1000L);
-    /** ⭐ 修复 P3：软上限，达到后写入前先清理过期条目（nls 组合数很少，正常远不会触发）。 */
-    private static final int NLS_REVERSE_CACHE_SOFT_MAX = 256;
-
-    private static final class CachedNls {
-        final String json;
-        final long ts;
-        CachedNls(String json) { this.json = json; this.ts = System.currentTimeMillis(); }
-        boolean fresh() { return System.currentTimeMillis() - ts < NLS_CACHE_TTL_MS; }
-    }
-
-    private static String buildNlsReverseJson(List<String> nlsFiles) {
-        if (nlsFiles == null || nlsFiles.isEmpty()) return "{}";
-        // 稳定 key：排序 + 去重 + 去首尾空白，忽略传参顺序差异（["a","b"] 与 ["b","a"] 命中同一缓存）
-        String key = nlsFiles.stream()
-                .filter(f -> f != null && !f.isBlank())
-                .map(String::trim)
-                .sorted().distinct()
-                .collect(Collectors.joining("\u0000"));
-        if (key.isEmpty()) return "{}";
-        CachedNls cached = NLS_REVERSE_CACHE.get(key);
-        if (cached != null && cached.fresh()) return cached.json;
-        String json = buildNlsReverseJsonUncached(nlsFiles);
-        // ⭐ 修复 P3：TTL 只在【读取时】判定新鲜度，过期条目永远不会被移除，
-        //    于是 Map 在长跑会话中只增不减（每次换一组 nls 文件就多一条）。
-        //    写入时顺带清掉已过期条目 —— put 本身是低频操作，清理开销可忽略。
-        if (NLS_REVERSE_CACHE.size() >= NLS_REVERSE_CACHE_SOFT_MAX) {
-            NLS_REVERSE_CACHE.entrySet().removeIf(e -> e.getValue() == null || !e.getValue().fresh());
-        }
-        NLS_REVERSE_CACHE.put(key, new CachedNls(json));
-        return json;
-    }
-
-    /** 单文件便捷重载（向后兼容），走带缓存的 {@link #buildNlsReverseJson(List)} */
-    private static String buildNlsReverseJson(String nlsFile) {
-        return buildNlsReverseJson(List.of(nlsFile));
-    }
-
-    /** 实际解析 nls 文件构建反向查表（带缓存，外部一律走 {@link #buildNlsReverseJson}） */
-    private static String buildNlsReverseJsonUncached(List<String> nlsFiles) {
-        try {
-            Map<String, String> exact = new LinkedHashMap<>();
-            Map<String, String> templates = new LinkedHashMap<>();
-            for (String nlsFile : nlsFiles) {
-                if (nlsFile == null || nlsFile.isBlank()) continue;
-                Map<String, Map<String, String>> tables = NLSUtils.rawTables(nlsFile);
-                for (Map<String, String> table : tables.values()) {
-                    if (table == null) continue;
-                    for (Map.Entry<String, String> en : table.entrySet()) {
-                        // 反查 key 必须基于「页面可见文本」：nls 值里常内嵌 <a>/<strong>/<img> 与
-                        // &nbsp;/&copy; 等实体，浏览器渲染后可见文本已无标签，故精确表与模板正则
-                        // 一律用 NLSUtils.visibleText / templateRegexSource（二者都会剥 HTML + 解码实体）。
-                        // 否则如 tab_security_device("保安編碼器&nbsp; <img...>") 的 key 会带 <img>，
-                        // 与浏览器算出的可访问名 "保安編碼器" 对不上，反查失败退化为字面值。
-                        String visible = NLSUtils.visibleText(en.getValue());
-                        if (visible.isEmpty()) continue;
-                        if (en.getValue().contains("{{")) {
-                            // 含模板变量：无法精确反查，改用正则源（跨语言匹配替换后的可见文本）
-                            String src = NLSUtils.templateRegexSource(en.getValue());
-                            if (!src.isEmpty()) templates.putIfAbsent(src, en.getKey());
-                        } else {
-                            exact.putIfAbsent(visible, en.getKey());
-                        }
-                    }
-                }
-            }
-            if (exact.isEmpty() && templates.isEmpty()) {
-                log.warn("[picker] nls 文件无可用条目，无法反查 key：{}", nlsFiles);
-                return "{}";
-            }
-            Map<String, Object> out = new LinkedHashMap<>();
-            out.put("exact", exact);
-            out.put("templates", templates.entrySet().stream()
-                    .map(e -> new String[]{e.getKey(), e.getValue()})
-                    .toArray(String[][]::new));
-            log.info("[picker] 已加载 nls 反向查表（精确 {} 条 / 模板 {} 条），拾取时将自动匹配 key：{}",
-                    exact.size(), templates.size(), nlsFiles);
-            return GSON.toJson(out);
-        } catch (Exception e) {
-            log.warn("[picker] 加载 nls 文件失败，拾取时无法反查 key，将回退到 name 派生 slug：{}", nlsFiles, e);
-            return "{}";
-        }
-    }
 
     /** 关闭拾取模式，清理注入的监听与提示条 */
     public static void stop(Page page) {
@@ -3287,7 +3197,7 @@ public final class RoleElementPicker {
             log.info("[picker] 检测到 CI 运行环境，跳过拾取（pick）。");
             return new ArrayList<>();
         }
-        String reverse = buildNlsReverseJson(Arrays.asList(nlsFiles));
+        String reverse = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
         start(page, reverse);
         try {
             page.waitForFunction("() => window.__pickDone === true", null,
@@ -3435,7 +3345,7 @@ public final class RoleElementPicker {
         // context 下所有当前与未来页面（导航/弹窗/新标签页）自动生效，由浏览器原生保证存活。
         final BrowserContext ctx = page.context();
         // 弹窗页/导航后点击时需要 nls 反向表反查 key；预先构建一次（含缓存），供门控注入脚本内嵌。
-        final String nlsReverseJson = buildNlsReverseJson(Arrays.asList(nlsFiles));
+        final String nlsReverseJson = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
         // 开启面板开关：刷新/导航后 context 级 addInitScript 会自动重建面板，避免"刷新后面板消失"。
         page.evaluate("try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}");
         // 清掉上一次会话可能残留的拾取落盘态与拾取开关（浏览器上下文虽每次重建，仍防御性清理），

@@ -52,3 +52,13 @@ playwright-report/
 
 # Local configuration
 local.properties
+
+# Junk / scratch (excluded from repo)
+node_modules/
+_tbtest/
+_verify_nls/node_modules/
+.workbuddy/
+1.txt
+ROUTE_FRAMEWORK_GUIDE.md
+ROUTE_SCOPE_AND_PRIORITY.md
+ENTERPRISE_ARCHITECTURE_TASKS.md

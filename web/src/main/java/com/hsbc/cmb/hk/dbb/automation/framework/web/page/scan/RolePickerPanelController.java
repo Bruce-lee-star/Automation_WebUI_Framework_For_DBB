@@ -342,10 +342,16 @@ public final class RolePickerPanelController {
         // auto-generate step while picking (no need to click stop): each change in javaPickBySig
         // rebuilds one step (start->stop = one step) + page classes and fills the panel silently.
         // page class is auto-derived from each pick's page url; alert/iframe/new-page handled by generator.
-        if (!javaPickBySig.isEmpty()) {
+        // 读者侧加锁前快照：javaPickBySig 的写入方（__roleOnPick / console / mergeFramePicksToMain）均在
+        // synchronized(javaPickBySig) 内结构修改，而本读端（面板主循环线程）此前未取锁即遍历/读 size，
+        // 与派发线程的并发写入存在 ConcurrentModificationException / 撕裂读风险。此处加同一把锁取不可变快照，
+        // 后续全部基于快照操作，既消除竞态又不把锁延伸到 page.evaluate 等阻塞调用。
+        List<RoleEntry> pickSnap;
+        synchronized (javaPickBySig) { pickSnap = new ArrayList<>(javaPickBySig.values()); }
+        if (!pickSnap.isEmpty()) {
             StringBuilder sigBuilder = new StringBuilder();
-            sigBuilder.append(javaPickBySig.size()).append('#');
-            for (RoleEntry e : javaPickBySig.values()) {
+            sigBuilder.append(pickSnap.size()).append('#');
+            for (RoleEntry e : pickSnap) {
                 sigBuilder.append(e.getSigKey()).append('|');
             }
             String newSig = sigBuilder.toString();
@@ -353,7 +359,7 @@ public final class RolePickerPanelController {
                 lastAutoGenSig[0] = newSig;
                 try {
                     PickSnapshot autoSnap = RolePickerCodeAssembler.snapWithAutoStep(
-                            new PickSnapshot(pageClassName, new ArrayList<>(javaPickBySig.values()),
+                            new PickSnapshot(pageClassName, new ArrayList<>(pickSnap),
                                     new ArrayList<>(), new ArrayList<>()));
                     LinkedHashMap<String, String> autoPage = RolePickerCodeAssembler.buildPageClassCode(autoSnap.entries, packageName, pageClassName, nlsFiles);
                     LinkedHashMap<String, String> autoStep = RolePickerCodeAssembler.buildStepCode(autoSnap, packageName, stepClassName);

@@ -548,9 +548,13 @@ public final class RolePickerScripts {
             + "     if (k) __cs[k] = true;"
             + "     window.__currentStep.push(p); });"
             + "   window.__steps = window.__steps || [];"
+            // 去重由 O(k^2) 双层扫描（每轮 2×JSON.stringify）降为 O(k)：先建已有 step 的序列化 seen 集合，
+            // 再对快照 step 单次判定并入（行为等价：仍按 JSON.stringify(ex)===JSON.stringify(st2) 口径去重）。
+            + "   var __seenSteps = {};"
+            + "   window.__steps.forEach(function(ex){ try{ __seenSteps[JSON.stringify(ex)] = true; }catch(e){} });"
             + "   (s.steps||[]).forEach(function(st2){"
-            + "     var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
-            + "     if(!dup) window.__steps.push(st2); });"
+            + "     var __k2; try{ __k2 = JSON.stringify(st2); }catch(e){ __k2 = ''; }"
+            + "     if (__k2 && !__seenSteps[__k2]) { __seenSteps[__k2] = true; window.__steps.push(st2); } });"
             + " } catch(e){}"
             + "})()";
 
@@ -616,9 +620,13 @@ public final class RolePickerScripts {
             + "   if (k) window.__rolePickSigs[k] = true;"
             + "   window.__rolePicks.push(p); });"
             + " window.__steps = window.__steps || [];"
+            // 去重由 O(k^2) 双层扫描（每轮 2×JSON.stringify）降为 O(k)：先建已有 step 的序列化 seen 集合，
+            // 再对快照 step 单次判定并入（行为等价：仍按 JSON.stringify(ex)===JSON.stringify(st2) 口径去重）。
+            + " var __seenSteps = {};"
+            + " window.__steps.forEach(function(ex){ try{ __seenSteps[JSON.stringify(ex)] = true; }catch(e){} });"
             + " (s.steps||[]).forEach(function(st2){"
-            + "   var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
-            + "   if(!dup) window.__steps.push(st2); });"
+            + "   var __k2; try{ __k2 = JSON.stringify(st2); }catch(e){ __k2 = ''; }"
+            + "   if (__k2 && !__seenSteps[__k2]) { __seenSteps[__k2] = true; window.__steps.push(st2); } });"
             // 关键修复：URL 变化若把"进行中 step"（__currentStep）一并清空、但 window 未销毁（livePicks 为真），
             // 从快照补回，避免当前 step 元素在导航后"凭空消失"。仅当仍处于拾取中、当前 __currentStep 已丢失
             // 且快照确有内容时才补，防止 stop 后再导航被误恢复出游离 step。

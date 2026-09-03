@@ -108,10 +108,15 @@ final class RolePickerPanelSync {
      */
     static void syncPanelToBrowser(Page page, LinkedHashSet<String> pageClasses, LinkedHashMap<String, RoleEntry> state, boolean overwriteNos) {
         if (page == null || page.isClosed() || state == null) return;
+        // 读者侧加锁前快照：state（即 javaPickBySig）写入方在 synchronized(state) 内结构修改，本读端此前未取锁即
+        // 两次遍历 state.values()，与派发线程并发写入存在 ConcurrentModificationException 风险。此处加同一把锁取
+        // 不可变快照，后续基于快照构建 ETag 签名与过滤列表，锁不延伸到 page.evaluate 阻塞调用。
+        List<RoleEntry> snap;
+        synchronized (state) { snap = new ArrayList<>(state.values()); }
         try {
             StringBuilder sig = new StringBuilder();
             sig.append(pageClasses == null ? "*" : pageClasses.toString());
-            for (RoleEntry e : state.values()) {
+            for (RoleEntry e : snap) {
                 String pc = e.getPageClass();
                 if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) {
                     sig.append('\u0001').append(e.getSigKey()).append('|')
@@ -125,7 +130,7 @@ final class RolePickerPanelSync {
             if (newSig.equals(prev)) return;
             LAST_SYNC_SIG.put(page, newSig);
             List<RoleEntry> filtered = new ArrayList<>();
-            for (RoleEntry e : state.values()) {
+            for (RoleEntry e : snap) {
                 String pc = e.getPageClass();
                 if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) filtered.add(e);
             }

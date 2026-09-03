@@ -4,6 +4,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Browser-injected script constants and resource loader, extracted from RoleElementPicker (T5-1 step 1).
@@ -307,6 +309,143 @@ final class RolePickerScripts {
             + "         : Object.keys(pbp).map(function(k2){return pbp[k2];}).join('\\n\\n');"
             + "     } } catch(e){}"
             + " }, 60); })()";
+
+    /** start() 注入后诊断快照（origin / 会话开关 / 激活态 / 三大监听是否真正挂载）。 */
+    static final String START_DIAG_JS = "(function(){ return JSON.stringify({"
+            + " origin: location.origin,"
+            + " winSwitch: !!window.__rolePickSessionOn,"
+            + " active: !!window.__rolePickActive,"
+            + " hasClick: typeof window.__rolePickClick==='function',"
+            + " hasMove: typeof window.__rolePickMove==='function',"
+            + " hasRecord: typeof window.__recordPick==='function'"
+            + "}); })()";
+
+    /**
+     * SPA / 同 window 跳转时，把 Java 快照的 picks/steps 合并回当前 window（按 __mergeKey 去重，
+     * 并在进行中 step 丢失时从快照补回）。实参 a: {stateJson}（JSON 字符串，脚本内 JSON.parse）。
+     */
+    static final String MERGE_SNAPSHOT_PICKS_JS = "(a) => {"
+            + " var s = JSON.parse(a.stateJson);"
+            + " var picks = (s && s.picks) || [];"
+            + " window.__rolePicks = window.__rolePicks || [];"
+            + " window.__rolePickSigs = window.__rolePickSigs || {};"
+            + MERGE_KEY_SHIM
+            // 定位器唯一型策略按 _sig 全局去重，防止 SPA 路由/同页跳转合并快照时把同一 locator 元素
+            // 以不同 pageClass 追加成副本；role/closeOp 保持页面作用域键。
+            + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+            + " var __loc = {};"
+            + " window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
+            + " picks.forEach(function(p){"
+            + "   var sig=(p&&p._sig)||'';"
+            + "   var li=(p&&__LOCID[p.strategy]);"
+            + "   if (li && sig && __loc[sig]) return;"
+            + "   if (li && sig) __loc[sig]=true;"
+            + "   var k = window.__mergeKey(p);"
+            + "   if (k && window.__rolePickSigs[k]) return;"
+            + "   if (k) window.__rolePickSigs[k] = true;"
+            + "   window.__rolePicks.push(p); });"
+            + " window.__steps = window.__steps || [];"
+            + " (s.steps||[]).forEach(function(st2){"
+            + "   var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
+            + "   if(!dup) window.__steps.push(st2); });"
+            // 关键修复：URL 变化若把"进行中 step"（__currentStep）一并清空、但 window 未销毁（livePicks 为真），
+            // 从快照补回，避免当前 step 元素在导航后"凭空消失"。仅当仍处于拾取中、当前 __currentStep 已丢失
+            // 且快照确有内容时才补，防止 stop 后再导航被误恢复出游离 step。
+            + " if (window.__rolePickActive && !Array.isArray(window.__currentStep)"
+            + "     && (s.currentStep||[]).length) {"
+            + "   window.__currentStep = s.currentStep; }"
+            + "}";
+
+    /** livePicks 场景补合并：仅把快照里有、而当前 window.__rolePicks 没有的元素按签名去重补回。实参 a: {stateJson}。 */
+    static final String MERGE_MISSING_PICKS_JS = "(a) => {"
+            + " try {"
+            + "   var s = JSON.parse(a.stateJson);"
+            + "   window.__rolePicks = window.__rolePicks || [];"
+            + "   window.__rolePickSigs = window.__rolePickSigs || {};"
+            + MERGE_KEY_SHIM
+            + "   var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+            + "   var __loc = {};"
+            + "   window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
+            + "   (s.picks||[]).forEach(function(p){"
+            + "     var sig=(p&&p._sig)||'';"
+            + "     var li=(p&&__LOCID[p.strategy]);"
+            + "     if (li && sig && __loc[sig]) return;"
+            + "     if (li && sig) __loc[sig]=true;"
+            + "     var k = window.__mergeKey(p);"
+            + "     if (k && window.__rolePickSigs[k]) return;"
+            + "     if (k) window.__rolePickSigs[k] = true;"
+            + "     window.__rolePicks.push(p); });"
+            + " } catch(e){}"
+            + "}";
+
+    /** 设置拾取模式并刷新面板开关。实参 a: {mode}。 */
+    static final String SET_PICK_MODE_JS = "(a) => {"
+            + " try{ window.__roleMode = a.mode; if(window.__roleRefreshToggle) window.__roleRefreshToggle(); }catch(e){} }";
+
+    /** 设置当前页类名并持久化，同时清空 __currentPageInstance。实参 a: {pageName}。 */
+    static final String SET_PAGE_NAME_AND_RESET_INSTANCE_JS = "(a) => {"
+            + " window.__rolePageName = a.pageName; window.__currentPageInstance = null;"
+            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
+
+    /** 设置当前页类名并持久化（保留 __currentPageInstance）。实参 a: {pageName}。 */
+    static final String SET_PAGE_NAME_JS = "(a) => {"
+            + " window.__rolePageName = a.pageName;"
+            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
+
+    /** 设置自动步骤计数。实参 a: {n}。 */
+    static final String SET_AUTO_STEP_COUNT_JS = "(a) => { try{window.__roleAutoStepCount = a.n;}catch(e){} }";
+
+    /** 更新面板顶部状态文字（第一步：写入消息对象）。实参 a: {msg}。 */
+    static final String SET_STATUS_MSG_JS = "(a) => { window.__roleStatusMsg = a.msg; }";
+
+    /** 更新面板顶部状态文字（第二步：刷新 DOM）。 */
+    static final String UPDATE_STATUS_DOM_JS = "var st = document.getElementById('__roleStatus');"
+            + " if (st) st.textContent = window.__roleStatusMsg;";
+
+    /** 把按页生成的页面类/步骤代码写入面板多 Tab 并更新状态。实参 a: {pageByPage, stepByPage, msg}。 */
+    static final String FILL_CODE_JS = "(a) => {"
+            + " window.__fillCodeTabs({ pageByPage: a.pageByPage, stepByPage: a.stepByPage, msg: a.msg });"
+            + "}";
+
+    /**
+     * 把拾取会话状态注入目标页面（不依赖 window.opener，兼容 rel="noopener" / 跨域弹窗）。
+     * 实参 a: {nlsFiles, nlsReverseJson, stateJson}；后两者为 JSON 字符串，脚本内 JSON.parse 复原。
+     */
+    static final String APPLY_PICK_STATE_JS = "(a) => {"
+            + " try { localStorage.setItem('__rolePanelEnabled','1'); } catch(e){}"
+            + " window.__nlsFiles = a.nlsFiles;"
+            + " var __o = JSON.parse(a.nlsReverseJson || '{}');"
+            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
+            // 保留 start() 已写入的录制根约束（弹窗恢复状态时不覆盖，避免退化成整页录制）。
+            + " if (window.__rolePickRoot === undefined) window.__rolePickRoot = null;"
+            + " var s = JSON.parse(a.stateJson);"
+            + " window.__rolePicks = s.picks || [];"
+            // 恢复即视为"已拾取完成"：清除扫描候选的 __isScan 标记，否则这些元素进不了选择集
+            // （点封装按钮 return 0、Java 侧永不生成代码）。
+            + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"
+            + " window.__steps = s.steps || [];"
+            + " window.__currentStep = s.currentStep || [];"
+            + " window.__rolePickSigs = s.sigs || {};"
+            // 续接全局序号计数器：取已有 _pickNos 最大值，避免重注入归零导致跨页序号冲突/面板 index 跳回 1。
+            + " (function(){ var mx=0; (window.__rolePicks||[]).forEach(function(p){"
+            + "   (p&&Array.isArray(p._pickNos)?p._pickNos:[]).forEach(function(n){ if(n>mx)mx=n; }); });"
+            + "   window.__rolePickSeq = mx; })();"
+            + " window.__rolePickActive = false;"
+            + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
+            + "}";
+
+    /**
+     * 构造 evaluate 实参（k1, v1, k2, v2 ...），避免每个调用点重复 new Map + 多次 put。
+     * 供 `page.evaluate(SCRIPT, args(...))` 使用，使调用点保持单行。
+     */
+    static Map<String, Object> args(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            m.put(String.valueOf(kv[i]), kv[i + 1]);
+        }
+        return m;
+    }
 
     static String concat(String a, String b) {
         return a + b;

@@ -1513,14 +1513,7 @@ public final class RoleElementPicker {
         } catch (Exception ignore) {}
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
-            String d = page.evaluate("(function(){ return JSON.stringify({"
-                    + " origin: location.origin,"
-                    + " winSwitch: !!window.__rolePickSessionOn,"
-                    + " active: !!window.__rolePickActive,"
-                    + " hasClick: typeof window.__rolePickClick==='function',"
-                    + " hasMove: typeof window.__rolePickMove==='function',"
-                    + " hasRecord: typeof window.__recordPick==='function'"
-                    + "}); })()").toString();
+            String d = page.evaluate(RolePickerScripts.START_DIAG_JS).toString();
             log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
             // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
             // 【修复"跳转到新页面拾取不到"】popup 在 onPopup 回调触发时文档还是 about:blank（origin 为空串），
@@ -2106,8 +2099,8 @@ public final class RoleElementPicker {
         final java.util.Set<Page> navigatedPages =
                 java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
         // 把根页类名暴露给面板标题展示（新页面在 followPage 里设置），并持久化以便整页重建后恢复。
-        page.evaluate("window.__rolePageName = " + GSON.toJson(pageClassName) + "; window.__currentPageInstance = null;"
-                + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(pageClassName) + ");}catch(e){}");
+        page.evaluate(RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS,
+                RolePickerScripts.args("pageName", pageClassName));
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
         registerPopupFollow(page, null, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
@@ -2231,7 +2224,8 @@ public final class RoleElementPicker {
                                     for (Page pg : pageNames.keySet()) {
                                         if (!pg.isClosed()) {
                                             fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
-                                            try { pg.evaluate("try{window.__roleAutoStepCount = " + autoSnap.steps.size() + ";}catch(e){}"); } catch (Exception ignore) {}
+                                            try { pg.evaluate(RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
+                        RolePickerScripts.args("n", autoSnap.steps.size())); } catch (Exception ignore) {}
                                         }
                                     }
                                 }
@@ -2643,39 +2637,8 @@ public final class RoleElementPicker {
                     // 仅同域整页跳转 localStorage 才保留，跨域（如弹窗 PDF）自然为空、不影响。
                     page.evaluate(RolePickerScripts.MERGE_LOCALSTORAGE_PICKS_JS);
                 } else {
-                    page.evaluate("(function(){"
-                            + " var s = " + st + ";"
-                            + " var picks = (s && s.picks) || [];"
-                            + " window.__rolePicks = window.__rolePicks || [];"
-                            + " window.__rolePickSigs = window.__rolePickSigs || {};"
-                            + MERGE_KEY_SHIM
-                            // 同上：定位器唯一型策略按 _sig 全局去重，防止 SPA 路由/同页跳转合并快照时
-                            // 把同一 locator 元素以不同 pageClass 追加成副本；role/closeOp 保持页面作用域键。
-                            + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
-                            + " var __loc = {};"
-                            + " window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
-                            + " picks.forEach(function(p){"
-                            + "   var sig=(p&&p._sig)||'';"
-                            + "   var li=(p&&__LOCID[p.strategy]);"
-                            + "   if (li && sig && __loc[sig]) return;"
-                            + "   if (li && sig) __loc[sig]=true;"
-                            // 统一走 __mergeKey（复用已固化 _sigKey），口径与入库一致。
-                            + "   var k = window.__mergeKey(p);"
-                            + "   if (k && window.__rolePickSigs[k]) return;"
-                            + "   if (k) window.__rolePickSigs[k] = true;"
-                            + "   window.__rolePicks.push(p); });"
-                            + " window.__steps = window.__steps || [];"
-                            + " (s.steps||[]).forEach(function(st2){"
-                            + "   var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
-                            + "   if(!dup) window.__steps.push(st2); });"
-                            // 关键修复：URL 变化若把"进行中 step"（__currentStep）一并清空、但 window 未销毁
-                            // （livePicks 为真），从快照补回，避免当前 step 元素在导航后"凭空消失"。
-                            // 仅当仍处于拾取中、当前 __currentStep 已丢失、且快照确有内容时才补，
-                            // 防止 stop 后再导航被误恢复出游离 step。
-                            + " if (window.__rolePickActive && !Array.isArray(window.__currentStep)"
-                            + "     && (s.currentStep||[]).length) {"
-                            + "   window.__currentStep = s.currentStep; }"
-                            + "})()");
+                    page.evaluate(RolePickerScripts.MERGE_SNAPSHOT_PICKS_JS,
+                            RolePickerScripts.args("stateJson", st));
                 }
                 // 关键修复（跨页累积不丢失）：SPA / 同 window 跳转时 livePicks=true，上面 if 分支【不会】执行，
                 // 因而从不把 Java 快照 st 中"当前窗口缺失"的元素合并回来。一旦此类导航把 window.__rolePicks
@@ -2683,27 +2646,8 @@ public final class RoleElementPicker {
                 // 表现为"跳转到另一页后之前页面的元素不在了"。此处对 livePicks=true 也补一次合并：
                 // 仅把 st 里有、而当前 window.__rolePicks 没有的元素按签名去重补回（不整体覆盖，不影响导航后新拾元素）。
                 if (livePicks && st != null && !st.isEmpty()) {
-                    page.evaluate("(function(){"
-                            + " try {"
-                            + "   var s = " + st + ";"
-                            + "   window.__rolePicks = window.__rolePicks || [];"
-                            + "   window.__rolePickSigs = window.__rolePickSigs || {};"
-                            + MERGE_KEY_SHIM
-                            + "   var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
-                            + "   var __loc = {};"
-                            + "   window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
-                            + "   (s.picks||[]).forEach(function(p){"
-                            + "     var sig=(p&&p._sig)||'';"
-                            + "     var li=(p&&__LOCID[p.strategy]);"
-                            + "     if (li && sig && __loc[sig]) return;"
-                            + "     if (li && sig) __loc[sig]=true;"
-                            // 统一走 __mergeKey：此前手搓键与入库口径不一致，是重复收录的根因之一。
-                            + "     var k = window.__mergeKey(p);"
-                            + "     if (k && window.__rolePickSigs[k]) return;"
-                            + "     if (k) window.__rolePickSigs[k] = true;"
-                            + "     window.__rolePicks.push(p); });"
-                            + " } catch(e){}"
-                            + "})()");
+                    page.evaluate(RolePickerScripts.MERGE_MISSING_PICKS_JS,
+                            RolePickerScripts.args("stateJson", st));
                 }
                 // 导航后始终重渲染面板列表并滚动到底部，确保已恢复/合并的元素可见（修复"URL 变化后元素看不见"）；
                 // 用 setTimeout 兜底等待 PANEL_SCRIPT 的 build() 完成（body 就绪才挂载面板），避免提前渲染找不到节点，
@@ -2713,8 +2657,7 @@ public final class RoleElementPicker {
                 // 避免"回到默认页 URL 又派生出 LogonPage 之类重复页类"）——仅当该 URL 从未见过时才派生新类名。
                 String curCls = pageNames.get(page);
                 String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
-                page.evaluate("window.__rolePageName = " + GSON.toJson(newCls) + ";"
-                        + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(newCls) + ");}catch(e){}");
+                page.evaluate(RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", newCls));
                 if (!newCls.equals(curCls)) { pageNames.put(page, newCls); navigatedPages.add(page); }
                 } catch (Exception restoreEx) {
                     // 数据恢复（applyPickState / 合并 / 渲染 / 类名解析）任一 evaluate 因导航瞬间页面不稳抛异常，
@@ -2967,34 +2910,8 @@ public final class RoleElementPicker {
         log.info("[picker][applyPickState] 用 Java 快照恢复数据（picks={} / steps={} / currentStep={}），"
                         + "即将把 __rolePickActive 置 false，等待 onFrameNavigated 重激活；target={}",
                 pickCountOf(stateJson), stepCountOf(stateJson), currentStepCountOf(stateJson), target.url());
-        target.evaluate("(function() {"
-                + " try { localStorage.setItem('__rolePanelEnabled','1'); } catch(e){}"
-                + " window.__nlsFiles = " + GSON.toJson(nlsFiles) + ";"
-                + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
-                + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
-                + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
-                // 保留 start() 已写入的录制根约束（弹窗恢复状态时不覆盖，避免退化成整页录制）。
-                + " if (window.__rolePickRoot === undefined) window.__rolePickRoot = null;"
-                + " var s = " + stateJson + ";"
-                + " window.__rolePicks = s.picks || [];"
-                // 【关键修复"导航恢复后点元素/封装不进 step"】applyPickState 仅在导航恢复（非实时扫描）时调用，
-                // 此时 __scanning 已 false。扫描产生的候选带 __isScan 标记（仅候选、不进 __currentStep），
-                // 经恢复后若保留该标记，用户回 LogonPage 再点这些元素会因 __isScan 守卫进不了选择集，
-                // 导致 __currentStep 始终为空、点封装按钮 return 0、Java 侧永远不生成代码。
-                // 恢复即视为"已拾取完成"，清除 __isScan 使这些候选等同手动拾取、可正常勾选封装。
-                + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"
-                + " window.__steps = s.steps || [];"
-                + " window.__currentStep = s.currentStep || [];"
-                + " window.__rolePickSigs = s.sigs || {};"
-                // 【修复"跨页拾取 index 被重置"】恢复快照后，续接全局拾取序号计数器 __rolePickSeq，
-                // 取已有 pick._pickNos 的最大值（无则 0），使后续跨页新拾取的序号接着递增（如 8→9），
-                // 而非脚本重注入时归零从 1 重数，避免与已恢复的 [1..8] 序号冲突、面板 index 跳回 1。
-                + " (function(){ var mx=0; (window.__rolePicks||[]).forEach(function(p){"
-                + "   (p&&Array.isArray(p._pickNos)?p._pickNos:[]).forEach(function(n){ if(n>mx)mx=n; }); });"
-                + "   window.__rolePickSeq = mx; })();"
-                + " window.__rolePickActive = false;"
-                + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
-                + "})()");
+        target.evaluate(RolePickerScripts.APPLY_PICK_STATE_JS, RolePickerScripts.args(
+                "nlsFiles", nlsFiles, "nlsReverseJson", nlsReverseJson, "stateJson", stateJson));
     }
 
     // 诊断辅助：从快照 JSON 里安全解析各类计数，避免 applyPickState 日志打印整段 state（可能很大）。
@@ -3025,20 +2942,18 @@ public final class RoleElementPicker {
 
     /** 更新面板顶部状态文字 */
     private static void setStatus(Page page, String msg) {
-        page.evaluate("window.__roleStatusMsg = " + GSON.toJson(msg));
-        page.evaluate("var st = document.getElementById('__roleStatus'); if (st) st.textContent = window.__roleStatusMsg;");
+        page.evaluate(RolePickerScripts.SET_STATUS_MSG_JS, RolePickerScripts.args("msg", msg));
+        page.evaluate(RolePickerScripts.UPDATE_STATUS_DOM_JS);
     }
 
     /** 把按页生成的页面类/步骤代码分别写入面板的多 Tab，并更新状态 */
     private static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage, LinkedHashMap<String, String> stepByPage, String msg) {
         // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate，
         // 点击"停止"后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
-        page.evaluate("(function(){"
-                + " window.__fillCodeTabs({"
-                + " pageByPage:" + GSON.toJson(pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage)
-                + ", stepByPage:" + GSON.toJson(stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage)
-                + ", msg:" + GSON.toJson(msg == null ? "" : msg) + "});"
-                + "})()");
+        page.evaluate(RolePickerScripts.FILL_CODE_JS, RolePickerScripts.args(
+                "pageByPage", pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage,
+                "stepByPage", stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage,
+                "msg", msg == null ? "" : msg));
     }
 
 

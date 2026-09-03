@@ -145,18 +145,20 @@ public final class RolePickerPanelController {
         // 同标签跳转到新页面后直接关闭时，补登记 closeCurrentPage 步骤（普通单页录制末尾不追加）。
         final java.util.Set<Page> navigatedPages =
                 java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
+        // 收敛本次拾取会话的可变工作集到 RolePickerContext，消除下游方法的 16 参数长签名（行为零变更）。
+        final RolePickerContext pc = new RolePickerContext(current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
         // 把根页类名暴露给面板标题展示（新页面在 followPage 里设置），并持久化以便整页重建后恢复。
         page.evaluate(RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS,
                 RolePickerScripts.args("pageName", pageClassName));
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
-        registerPopupFollow(page, null, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+        registerPopupFollow(pc, page, null);
         // 上下文级"任意新页面"监听：覆盖非 window.open 打开的新标签页（onPopup 仅捕获弹窗）。
         // 用 opener()==null 过滤掉弹窗（弹窗已由上面的 onPopup 跟随），避免重复跟随。
         ctx.onPage(p -> {
             if (p.opener() != null) return;
             log.info("[picker] 新页面打开（onPage）：{}", p.url());
-            followPage(current[0], p, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+            followPage(pc, current[0], p);
         });
 
         log.info("[picker] 面板已打开（同窗口 docked 右侧，不另开窗口）：▶ 开始拾取 → 点击元素 → ⏹ 停止生成代码 → 📋 复制；✕ 关闭结束。");
@@ -199,88 +201,7 @@ public final class RolePickerPanelController {
                     break;
                 }
                 if (ev == null) {
-                    // 抽干浏览器端兜底命令队列 window.__panelCmds：当 exposeFunction 绑定尚未就绪时，
-                    // 面板按钮 pushCmd 会把命令推入该队列（见 PANEL_SCRIPT）。若 Java 不消费，▶ 开始/停止等
-                    // 命令会静默丢失 → active[0] 永远 false、START_SCRIPT 永不注入、点击拾取不到。
-                    // 此处每轮空闲把所有被跟踪页的兜底命令并入 cmdQueue，保证命令零丢失（与 exposeFunction 幂等、不重投）。
-                    try {
-                        for (Page pg : pageNames.keySet()) {
-                            if (!pg.isClosed()) drainPanelCmds(pg, cmdQueue);
-                        }
-                    } catch (Exception ignore) {}
-                    // 空闲（1s 内无命令）：周期性缓存"所有被跟踪页面"的拾取快照，供导航重建/关闭后恢复。
-                    // 关键优化：快照刷新不再放在【每个命令迭代】里——否则每次点按钮都要先对"每个被跟踪页面"
-                    // 各做一次 page.evaluate 读快照（N 页 = N 次往返），造成"点按钮要好久才有反应"。
-                    // 仅空闲时刷新一次即可：onClose 关闭瞬间会自读最新快照；整页跳转前的最后点击另有
-                    // localStorage 落盘合并兜底（见 onFrameNavigated），正确性不受影响，点击延迟大幅下降。
-                    try {
-                        for (Page pg : pageNames.keySet()) {
-                            if (pg.isClosed()) continue;
-                            String snap = readPickStateJson(pg);
-                            String prev = snapshots.get(pg);
-                            boolean prevEmpty = (prev == null || prev.isEmpty() || isEmptyState(prev));
-                            boolean curEmpty = isEmptyState(snap);
-                            if (prevEmpty || !curEmpty) snapshots.put(pg, snap);
-                        }
-                    } catch (Exception ignore) {}
-                    // 以 Java 权威内存态兜底刷新实时面板：浏览器侧 window.__rolePicks 因跨 iframe/导航时序
-                    // 可能未可靠填充，导致"内存态增长、面板空白"。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
-                    // 的面板并渲染（按各页 pageClass 过滤只显示该页拾取），保证用户在任一页面点击时面板都实时反映
-                    // 已拾元素（生成链路仍走 javaPickBySig，不受影响）。
-                    // 【关键修复"区域选择穿透不了 iframe"】
-                    // syncPanelToBrowser 只同步 javaPickBySig；区域扫描穿透 iframe 的元素进【iframe 的
-                    // __rolePicks】且经 postMessage/console 回传 Java，若回传链路延迟/失败则 javaPickBySig
-                    // 暂缺 iframe 元素，syncPanelToBrowser 同步不到 → 面板只见主框架元素（表象"穿透不了"）。
-                    // 每轮空闲先 mergeFramePicksToMain 把各 iframe 的 __rolePicks 直接合并进主框架（Playwright
-                    // 协议访问不受 file:// 跨源限制，不依赖 Java 回传），再 syncPanelToBrowser 回灌，双保险
-                    // 确保区域扫描穿透的 iframe 元素最终一定出现在面板。
-                    try {
-                        for (Page pg : pageNames.keySet()) {
-                            if (pg.isClosed()) continue;
-                            try { mergeFramePicksToMain(pg, javaPickBySig); } catch (Exception me) { /* ignore */ }
-                            syncPanelToBrowser(pg, null, javaPickBySig, false);
-                        }
-                    } catch (Exception ignore) {}
-                    // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
-                    // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
-                    // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。
-                    if (active[0]) {
-                        for (Page pg : pageNames.keySet()) {
-                            if (!pg.isClosed()) ensurePickingActive(pg, nlsReverseJson, nlsFiles);
-                        }
-                    }
-                    // auto-generate step while picking (no need to click stop): each change in javaPickBySig
-                    // rebuilds one step (start->stop = one step) + page classes and fills the panel silently.
-                    // page class is auto-derived from each pick's page url; alert/iframe/new-page handled by generator.
-                    if (!javaPickBySig.isEmpty()) {
-                        StringBuilder sigBuilder = new StringBuilder();
-                        sigBuilder.append(javaPickBySig.size()).append('#');
-                        for (RoleEntry e : javaPickBySig.values()) {
-                            sigBuilder.append(e.getSigKey()).append('|');
-                        }
-                        String newSig = sigBuilder.toString();
-                        if (!newSig.equals(lastAutoGenSig[0])) {
-                            lastAutoGenSig[0] = newSig;
-                            try {
-                                PickSnapshot autoSnap = RolePickerCodeAssembler.snapWithAutoStep(
-                                        new PickSnapshot(pageClassName, new ArrayList<>(javaPickBySig.values()),
-                                                new ArrayList<>(), new ArrayList<>()));
-                                LinkedHashMap<String, String> autoPage = RolePickerCodeAssembler.buildPageClassCode(autoSnap.entries, packageName, pageClassName, nlsFiles);
-                                LinkedHashMap<String, String> autoStep = RolePickerCodeAssembler.buildStepCode(autoSnap, packageName, stepClassName);
-                                if (!autoPage.isEmpty() || !autoStep.isEmpty()) {
-                                    for (Page pg : pageNames.keySet()) {
-                                        if (!pg.isClosed()) {
-                                            fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
-                                            try { pg.evaluate(RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
-                        RolePickerScripts.args("n", autoSnap.steps.size())); } catch (Exception ignore) {}
-                                        }
-                                    }
-                                }
-                            } catch (Exception autoEx) {
-                                log.warn("[picker] auto-generate step failed: {}", autoEx.getMessage());
-                            }
-                        }
-                    }
+                    handleIdle(pc, lastAutoGenSig);
                     continue;
                 }
                 if (ev.page != null && ev.page.isClosed()) continue;   // 页面已关闭：丢弃其命令
@@ -290,11 +211,11 @@ public final class RolePickerPanelController {
                 // 任何在 stop→再 start 之间、或 onPage/onPopup/followPage 因异常漏登记的打开页面都会被补登，
                 // 确保"停止后再点开始"不会遗漏某页（表现为点了开始却拾取不了）。
                 if ("start".equals(cmd)) {
-                    reconcileTrackedPages(ev.page, pageNames, snapshots, urlToClass, openedPages, cmdQueue, javaPickBySig);
+                    reconcileTrackedPages(pc, ev.page);
                 }
                 PickerResult r;
                 try {
-                    r = runPickerCommand(current[0], cmd, packageName, pageClassName, stepClassName, pageNames, snapshots, nlsFiles, active, javaPickBySig);
+                    r = runPickerCommand(pc, current[0], cmd);
                 } catch (Exception cmdEx) {
                     // 命令消费期间（典型：stop 命令的 page.evaluate 撞上整页跳转/导航导致 execution context 销毁）
                     // 抛出的异常若直接冒泡会撕裂主循环、进入 finally 静默关面板，表现为"点了停止却卡住/没反应"。
@@ -357,16 +278,118 @@ public final class RolePickerPanelController {
      * 并让 {@code current[0]} 指向新页面继续拾取。面板是注入式 docked（同窗口），
      * 故需在弹窗页也重建面板；新页面自身若再弹窗会递归注册，支持多级弹窗。
      */
-    static void registerPopupFollow(Page page, Page parent, Page[] current,
-                                        boolean[] rootClosed, String nlsReverseJson,
-                                        String[] nlsFiles, String packageName, String pageClassName,
-                                        String stepClassName, boolean[] active,
-                                        LinkedHashMap<Page, String> pageNames,
-                                        LinkedHashMap<Page, String> snapshots,
-                                    LinkedHashMap<String, String> urlToClass,
-                                    List<Page> openedPages, BlockingQueue<CmdEvent> cmdQueue,
-                                    java.util.Set<Page> navigatedPages, Object closeSignal,
-                                    LinkedHashMap<String, RoleEntry> javaPickBySig) {
+    private static void handleIdle(RolePickerContext pc, String[] lastAutoGenSig) {
+        LinkedHashMap<Page, String> pageNames = pc.pageNames;
+        BlockingQueue<CmdEvent> cmdQueue = pc.cmdQueue;
+        LinkedHashMap<Page, String> snapshots = pc.snapshots;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = pc.javaPickBySig;
+        boolean[] active = pc.active;
+        String nlsReverseJson = pc.nlsReverseJson;
+        String[] nlsFiles = pc.nlsFiles;
+        String packageName = pc.packageName;
+        String pageClassName = pc.pageClassName;
+        String stepClassName = pc.stepClassName;
+        // 抽干浏览器端兜底命令队列 window.__panelCmds：当 exposeFunction 绑定尚未就绪时，
+        // 面板按钮 pushCmd 会把命令推入该队列（见 PANEL_SCRIPT）。若 Java 不消费，▶ 开始/停止等
+        // 命令会静默丢失 → active[0] 永远 false、START_SCRIPT 永不注入、点击拾取不到。
+        // 此处每轮空闲把所有被跟踪页的兜底命令并入 cmdQueue，保证命令零丢失（与 exposeFunction 幂等、不重投）。
+        try {
+            for (Page pg : pageNames.keySet()) {
+                if (!pg.isClosed()) drainPanelCmds(pg, cmdQueue);
+            }
+        } catch (Exception ignore) {}
+        // 空闲（1s 内无命令）：周期性缓存"所有被跟踪页面"的拾取快照，供导航重建/关闭后恢复。
+        // 关键优化：快照刷新不再放在【每个命令迭代】里——否则每次点按钮都要先对"每个被跟踪页面"
+        // 各做一次 page.evaluate 读快照（N 页 = N 次往返），造成"点按钮要好久才有反应"。
+        // 仅空闲时刷新一次即可：onClose 关闭瞬间会自读最新快照；整页跳转前的最后点击另有
+        // localStorage 落盘合并兜底（见 onFrameNavigated），正确性不受影响，点击延迟大幅下降。
+        try {
+            for (Page pg : pageNames.keySet()) {
+                if (pg.isClosed()) continue;
+                String snap = readPickStateJson(pg);
+                String prev = snapshots.get(pg);
+                boolean prevEmpty = (prev == null || prev.isEmpty() || isEmptyState(prev));
+                boolean curEmpty = isEmptyState(snap);
+                if (prevEmpty || !curEmpty) snapshots.put(pg, snap);
+            }
+        } catch (Exception ignore) {}
+        // 以 Java 权威内存态兜底刷新实时面板：浏览器侧 window.__rolePicks 因跨 iframe/导航时序
+        // 可能未可靠填充，导致"内存态增长、面板空白"。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
+        // 的面板并渲染（按各页 pageClass 过滤只显示该页拾取），保证用户在任一页面点击时面板都实时反映
+        // 已拾元素（生成链路仍走 javaPickBySig，不受影响）。
+        // 【关键修复"区域选择穿透不了 iframe"】
+        // syncPanelToBrowser 只同步 javaPickBySig；区域扫描穿透 iframe 的元素进【iframe 的
+        // __rolePicks】且经 postMessage/console 回传 Java，若回传链路延迟/失败则 javaPickBySig
+        // 暂缺 iframe 元素，syncPanelToBrowser 同步不到 → 面板只见主框架元素（表象"穿透不了"）。
+        // 每轮空闲先 mergeFramePicksToMain 把各 iframe 的 __rolePicks 直接合并进主框架（Playwright
+        // 协议访问不受 file:// 跨源限制，不依赖 Java 回传），再 syncPanelToBrowser 回灌，双保险
+        // 确保区域扫描穿透的 iframe 元素最终一定出现在面板。
+        try {
+            for (Page pg : pageNames.keySet()) {
+                if (pg.isClosed()) continue;
+                try { mergeFramePicksToMain(pg, javaPickBySig); } catch (Exception me) { /* ignore */ }
+                syncPanelToBrowser(pg, null, javaPickBySig, false);
+            }
+        } catch (Exception ignore) {}
+        // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
+        // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
+        // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。
+        if (active[0]) {
+            for (Page pg : pageNames.keySet()) {
+                if (!pg.isClosed()) ensurePickingActive(pg, nlsReverseJson, nlsFiles);
+            }
+        }
+        // auto-generate step while picking (no need to click stop): each change in javaPickBySig
+        // rebuilds one step (start->stop = one step) + page classes and fills the panel silently.
+        // page class is auto-derived from each pick's page url; alert/iframe/new-page handled by generator.
+        if (!javaPickBySig.isEmpty()) {
+            StringBuilder sigBuilder = new StringBuilder();
+            sigBuilder.append(javaPickBySig.size()).append('#');
+            for (RoleEntry e : javaPickBySig.values()) {
+                sigBuilder.append(e.getSigKey()).append('|');
+            }
+            String newSig = sigBuilder.toString();
+            if (!newSig.equals(lastAutoGenSig[0])) {
+                lastAutoGenSig[0] = newSig;
+                try {
+                    PickSnapshot autoSnap = RolePickerCodeAssembler.snapWithAutoStep(
+                            new PickSnapshot(pageClassName, new ArrayList<>(javaPickBySig.values()),
+                                    new ArrayList<>(), new ArrayList<>()));
+                    LinkedHashMap<String, String> autoPage = RolePickerCodeAssembler.buildPageClassCode(autoSnap.entries, packageName, pageClassName, nlsFiles);
+                    LinkedHashMap<String, String> autoStep = RolePickerCodeAssembler.buildStepCode(autoSnap, packageName, stepClassName);
+                    if (!autoPage.isEmpty() || !autoStep.isEmpty()) {
+                        for (Page pg : pageNames.keySet()) {
+                            if (!pg.isClosed()) {
+                                fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
+                                try { pg.evaluate(RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
+                                    RolePickerScripts.args("n", autoSnap.steps.size())); } catch (Exception ignore) {}
+                            }
+                        }
+                    }
+                } catch (Exception autoEx) {
+                    log.warn("[picker] auto-generate step failed: {}", autoEx.getMessage());
+                }
+            }
+        }
+    }
+
+    static void registerPopupFollow(RolePickerContext ctx, Page page, Page parent) {
+        Page[] current = ctx.current;
+        boolean[] rootClosed = ctx.rootClosed;
+        boolean[] active = ctx.active;
+        String nlsReverseJson = ctx.nlsReverseJson;
+        String[] nlsFiles = ctx.nlsFiles;
+        String packageName = ctx.packageName;
+        String pageClassName = ctx.pageClassName;
+        String stepClassName = ctx.stepClassName;
+        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        List<Page> openedPages = ctx.openedPages;
+        BlockingQueue<CmdEvent> cmdQueue = ctx.cmdQueue;
+        java.util.Set<Page> navigatedPages = ctx.navigatedPages;
+        Object closeSignal = ctx.closeSignal;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         // 弹窗（window.open / target=_blank 等）跟随：复用 followPage 把 inspector 跟随到新页面。
         page.onPopup(popup -> {
             // 新页面弹出时，把"最近一次拾取的元素"标记为 popup（其触发动作会打开新页），
@@ -378,7 +401,7 @@ public final class RolePickerPanelController {
                     if (e != null) { e.setPopup(true); log.info("[picker] onPopup 捕获新页面，回写最近拾取元素 popup 标记：{}", sig); }
                 }
             } catch (Exception ex) { log.warn("[picker] onPopup 标记失败（已忽略）：{}", ex.getMessage()); }
-            followPage(page, popup, current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+            followPage(ctx, page, popup);
         });
         // 原生对话框（alert/confirm/prompt）捕获：Playwright 官方机制，不依赖浏览器侧 JS hook 的脆弱时序。
         // dialog 出现时，把"最近一次拾取的元素"（浏览器侧 window.__lastPickSig）标记为 dialog 并回写 Java 权威内存态，

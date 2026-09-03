@@ -194,6 +194,25 @@ public final class RoleElementPicker {
         if (!first) return;
         // 命令桥：BindingCallback 的 Source 自带来源 Page，天然区分命令来自哪个页面
         // （新页/默认页共享同一绑定，CmdEvent.page 记录来源）。绑定对 context 下所有页面、所有导航存活。
+        registerCmdBridge(ctx);
+        // 拾取桥：浏览器端经 window.__roleOnPick(JSON.stringify(pick)) 异步投递，零往返回传 Java 内存态。
+        registerPickBridge(ctx);
+        // 删除桥：面板「垃圾桶」删除选中元素时，同步落到 Java 侧权威内存态（否则主循环 syncPanelToBrowser 会"复活"被删元素）。
+        registerDeleteBridge(ctx);
+        // 控制台兜底桥：context 级 onConsoleMessage 捕获所有页面的兜底回传与拾取链路报错，即使绑定失效回传也不丢失。
+        registerConsoleBridge(ctx);
+        // 动态 iframe 监听器：context 级对每个（含弹窗/新开）页面挂 onFrameAttached，覆盖运行时新附加/动态创建的 iframe。
+        registerFrameAttachListener(ctx);
+    }
+
+
+
+
+
+
+
+    /** 命令桥：浏览器侧经 window.__rolePickerCmd 投递，零往返把命令入队；BindingCallback 的 Source 自带来源 Page，天然区分命令来自哪个页面。 */
+    private static void registerCmdBridge(BrowserContext ctx) {
         ctx.exposeBinding("__rolePickerCmd", (source, args) -> {
             BlockingQueue<CmdEvent> q = RolePickerSessionState.CTX_CMD_QUEUES.get(ctx);
             if (q == null) return null;
@@ -217,7 +236,10 @@ public final class RoleElementPicker {
             q.offer(new CmdEvent(source.page(), c));
             return null;
         });
-        // 拾取桥：浏览器端经 window.__roleOnPick(JSON.stringify(pick)) 异步投递，零往返回传 Java 内存态。
+    }
+
+    /** 拾取桥：浏览器端经 window.__roleOnPick(JSON.stringify(pick)) 异步投递，零往返回传 Java 内存态，带回补 framePath 与去重合并。 */
+    private static void registerPickBridge(BrowserContext ctx) {
         ctx.exposeBinding("__roleOnPick", (source, args) -> {
             LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
             if (map == null) return null;
@@ -278,13 +300,10 @@ public final class RoleElementPicker {
             }
             return null;
         });
-        // 删除桥：面板「垃圾桶」删除选中元素时，浏览器端经 window.__roleOnDelete(JSON.stringify(keys)) 回传。
-        // 【必需】此前删除只从浏览器 window.__rolePicks 里 filter 掉，未同步 Java 权威内存态 javaPickBySig；
-        // 而主循环每轮空闲（~1s）都会 syncPanelToBrowser 把 javaPickBySig 整体 merge 回浏览器，
-        // 被删元素随即"复活"，表现为「删除没起作用」；且代码生成读的就是 javaPickBySig，
-        // 界面删掉了生成的代码里仍然存在。故必须让删除同时落到 Java 侧。
-        // 传入的每个键可能是 _sig 或 _sigKey——因 pickDedupKey 对「定位器唯一型策略」用 _sig 作 map key、
-        // 对 role/closeOp 用 _sigKey，浏览器无法预知用了哪个，故两者都发、Java 侧按任一命中即移除。
+    }
+
+    /** 删除桥：面板「垃圾桶」删除选中元素时，浏览器端经 window.__roleOnDelete 回传，精确同步到 Java 侧权威内存态（含值级兜底匹配，杜绝删除残留）。 */
+    private static void registerDeleteBridge(BrowserContext ctx) {
         ctx.exposeBinding("__roleOnDelete", (source, args) -> {
             LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
             if (map == null) return null;
@@ -391,8 +410,10 @@ public final class RoleElementPicker {
             }
             return null;
         });
-        // 控制台兜底桥：context 级 onConsoleMessage 捕获所有页面的 __roleOnPick:: 兜底回传与拾取链路报错，
-        // 即使某页面绑定因导航/上下文异常失效，拾取回传也不丢失（按 sig 去重，与 exposeBinding 投递幂等）。
+    }
+
+    /** 控制台兜底桥：context 级 onConsoleMessage 捕获所有页面的 __roleOnPick::/__roleOnDelete:: 兜底回传与拾取链路报错，即使绑定失效回传也不丢失。 */
+    private static void registerConsoleBridge(BrowserContext ctx) {
         ctx.onConsoleMessage(msg -> {
             String t = msg.text();
             if (t == null) return;
@@ -517,19 +538,12 @@ public final class RoleElementPicker {
                 log.info("[browser]{}", t);
             }
         });
-        // 动态 iframe 监听器：context 级对每个（含弹窗/新开）页面挂 onFrameAttached，
-        // 覆盖 start() 遍历当时已存在 frame 之外的"运行时新附加/动态创建的 iframe"。
-        // 此前动态 iframe 因 start 之后才出现而未注入拾取脚本，导致 iframe 内元素点不到、
-        // 生成不出 switchToFrame 包裹的 step。现由 frame 监听器在 frame 一附加即自动注入，
-        // 与 start() 的补挂逻辑共用 registerFrameInjection，保证同源 frame 一律可拾取。
-        ctx.onPage(p -> RolePickerScriptInjector.registerFrameInjection(p, RolePickerSessionState.CTX_PICKER_NLS.get(ctx)));
     }
 
-
-
-
-
-
+    /** 动态 iframe 监听器：context 级对每个（含弹窗/新开）页面挂 onFrameAttached，覆盖运行时新附加/动态创建的 iframe。 */
+    private static void registerFrameAttachListener(BrowserContext ctx) {
+        ctx.onPage(p -> RolePickerScriptInjector.registerFrameInjection(p, RolePickerSessionState.CTX_PICKER_NLS.get(ctx)));
+    }
 
     /**
      * 把"面板重建 + 门控拾取"初始化脚本一次性注册到 {@link BrowserContext}：
@@ -613,15 +627,8 @@ public final class RoleElementPicker {
      *
      * @return 含后续动作与（stop 时的）生成代码
      */
-    static PickerResult runPickerCommand(Page page, String cmd,
-                                         String packageName, String pageClassName,
-                                         String stepClassName,
-                                         LinkedHashMap<Page, String> pageNames,
-                                         LinkedHashMap<Page, String> snapshots,
-                                         String[] nlsFiles, boolean[] active,
-                                         LinkedHashMap<String, RoleEntry> javaPickBySig) {
-        return RolePickerCommandEngine.runPickerCommand(page, cmd, packageName, pageClassName,
-                stepClassName, pageNames, snapshots, nlsFiles, active, javaPickBySig);
+    static PickerResult runPickerCommand(RolePickerContext ctx, Page page, String cmd) {
+        return RolePickerCommandEngine.runPickerCommand(ctx, page, cmd);
     }
 
     /**
@@ -1111,19 +1118,10 @@ public final class RoleElementPicker {
      * 并让 {@code current[0]} 指向新页面继续拾取。面板是注入式 docked（同窗口），
      * 故需在弹窗页也重建面板；新页面自身若再弹窗会递归注册，支持多级弹窗。
      */
-    static void registerPopupFollow(Page page, Page parent, Page[] current,
-                                        boolean[] rootClosed, String nlsReverseJson,
-                                        String[] nlsFiles, String packageName, String pageClassName,
-                                        String stepClassName, boolean[] active,
-                                        LinkedHashMap<Page, String> pageNames,
-                                        LinkedHashMap<Page, String> snapshots,
-                                    LinkedHashMap<String, String> urlToClass,
-                                    List<Page> openedPages, BlockingQueue<CmdEvent> cmdQueue,
-                                    java.util.Set<Page> navigatedPages, Object closeSignal,
-                                    LinkedHashMap<String, RoleEntry> javaPickBySig) {
+    static void registerPopupFollow(RolePickerContext ctx, Page page, Page parent) {
         // 面板会话编排逻辑已下沉至 RolePickerPanelController（T5-1 拆分），此处仅保留转发 facade，
         // 供 RolePickerPageTracker 等既有调用方零改动复用。
-        RolePickerPanelController.registerPopupFollow(page, parent, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+        RolePickerPanelController.registerPopupFollow(ctx, page, parent);
     }
 
     /** 由页面 URL 派生 Page 类名：取 path 最后一个 '/' 之后、'?'（及 '#'）之前的片段，
@@ -1275,7 +1273,6 @@ public final class RoleElementPicker {
                 "stepByPage", stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage,
                 "msg", msg == null ? "" : msg));
     }
-
 
     static String asString(Object o) {
         return o == null ? null : o.toString();

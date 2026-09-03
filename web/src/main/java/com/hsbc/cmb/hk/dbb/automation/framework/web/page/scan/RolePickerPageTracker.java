@@ -30,16 +30,18 @@ final class RolePickerPageTracker {
      * 彻底消除"停止后再点开始，某个已打开页面点了开始却拾取不了"的问题。
      * 已登记页面不重复初始化（幂等）：命令桥/拾取桥用 Map 守卫仅注册一次；面板 addInitScript 仅对漏登页调用一次。
      */
-    static void reconcileTrackedPages(Page trigger, LinkedHashMap<Page, String> pageNames,
-                                      LinkedHashMap<Page, String> snapshots,
-                                      LinkedHashMap<String, String> urlToClass, List<Page> openedPages,
-                                      BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue,
-                                      LinkedHashMap<String, RoleEntry> javaPickBySig) {
+    static void reconcileTrackedPages(RolePickerContext ctx, Page trigger) {
+        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        List<Page> openedPages = ctx.openedPages;
+        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         if (trigger == null || trigger.isClosed()) return;
         for (Page p : trigger.context().pages()) {
             if (p == null || p.isClosed()) continue;
             if (!pageNames.containsKey(p)) {
-                ensurePageTracked(p, pageNames, snapshots, urlToClass, openedPages, cmdQueue, javaPickBySig);
+                ensurePageTracked(ctx, p);
             } else {
                 // 【修复"手动跳转后删除跨页误伤 / 再扫描为 0"】
                 // 用户可能在面板之外手动导航（如直接改 URL、点原生链接跳转），这类跳转不经过
@@ -68,11 +70,13 @@ final class RolePickerPageTracker {
      * 与 followPage 的区别：不注册子页跟随（避免重复 onPopup/onClose 监听），仅靠每次 start 的 reconcile
      * 形成闭环——若漏登页再开子页，子页也会在下次 start 时被补登。
      */
-    static void ensurePageTracked(Page p, LinkedHashMap<Page, String> pageNames,
-                                  LinkedHashMap<Page, String> snapshots,
-                                  LinkedHashMap<String, String> urlToClass, List<Page> openedPages,
-                                  BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue,
-                                  LinkedHashMap<String, RoleEntry> javaPickBySig) {
+    static void ensurePageTracked(RolePickerContext ctx, Page p) {
+        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        List<Page> openedPages = ctx.openedPages;
+        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         try {
             // 命令桥/拾取桥/面板重建脚本均已在 context 级一次性注册（registerContextBridges /
             // registerContextInitScripts），本页自动持有，无需逐页补注册。
@@ -96,15 +100,23 @@ final class RolePickerPageTracker {
      * 多页面模型：新页面加载当前面板（携带已抓元素），并继续把新页面拾取的元素归属到对应 Page 类；
      * 元素按各页 window.__rolePageName 打 _pageClass 标签，生成时据此分组，实现"打开新页显示之前抓的元素"。
      */
-    static void followPage(Page opener, Page newPage, Page[] current, boolean[] rootClosed, boolean[] active,
-                           String nlsReverseJson, String[] nlsFiles, String packageName,
-                           String pageClassName, String stepClassName,
-                           LinkedHashMap<Page, String> pageNames,
-                           LinkedHashMap<Page, String> snapshots,
-                           LinkedHashMap<String, String> urlToClass,
-                           List<Page> openedPages, BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue,
-                           Set<Page> navigatedPages, Object closeSignal,
-                           LinkedHashMap<String, RoleEntry> javaPickBySig) {
+    static void followPage(RolePickerContext ctx, Page opener, Page newPage) {
+        Page[] current = ctx.current;
+        boolean[] rootClosed = ctx.rootClosed;
+        boolean[] active = ctx.active;
+        String nlsReverseJson = ctx.nlsReverseJson;
+        String[] nlsFiles = ctx.nlsFiles;
+        String packageName = ctx.packageName;
+        String pageClassName = ctx.pageClassName;
+        String stepClassName = ctx.stepClassName;
+        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        List<Page> openedPages = ctx.openedPages;
+        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        Set<Page> navigatedPages = ctx.navigatedPages;
+        Object closeSignal = ctx.closeSignal;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         try {
             final boolean sessionActive = active[0];
             // 命令桥/拾取桥已在 context 级一次性注册（registerContextBridges），新页面自动持有绑定，
@@ -156,7 +168,7 @@ final class RolePickerPageTracker {
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, RoleElementPicker.readPickStateJson(newPage));
             // 新页面若再弹窗/再开页，继续跟随；把"是否处于拾取态"传下去，供其 onClose 回退父页时恢复。
-            RoleElementPicker.registerPopupFollow(newPage, opener, current, rootClosed, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, active, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
+            RoleElementPicker.registerPopupFollow(ctx, newPage, opener);
             log.info("[picker] 已在新页面（{}）注入独立面板，默认页面板保留不消失。", cls);
         } catch (Exception e) {
             log.warn("[picker] 页面跟随失败：{}", e.getMessage());

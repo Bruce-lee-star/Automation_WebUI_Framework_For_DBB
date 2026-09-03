@@ -11,10 +11,17 @@ import java.util.Map;
  * Browser-injected script constants and resource loader, extracted from RoleElementPicker (T5-1 step 1).
  * Restored real values: the original step-1 extraction left self-referential null stubs, dropping the
  * actual scripts. Values copied verbatim from the pre-extraction source. Pure data + stateless helpers.
+ *
+ * 常量按【依赖顺序】归类：被其他常量引用的基础常量（MERGE_KEY_SHIM / START_SCRIPT 及其部件）一律前置，
+ * 保证其在引用者之前声明（Java 禁止编译期常量表达式中引用后声明的字段），纯整理、零行为变更。
  */
 public final class RolePickerScripts {
 
     private RolePickerScripts() {}
+
+    // =====================================================================
+    // A. 面板门控 + 合并去重键（最基础，被后续合并脚本广泛引用，必须前置）
+    // =====================================================================
 
     public static final String PANEL_BOOTSTRAP_SCRIPT = // 墓碑门控：context 级 addInitScript 无法撤销，会话结束（closePanel/finally 置 '0'）后
             // 引导脚本必须自行退出，否则会话结束后的任意导航都会把面板重新拉起来。
@@ -50,6 +57,10 @@ public final class RolePickerScripts {
             + "   return JSON.stringify([p._sig || '', pk]);"
             + " }catch(e){ return ''; } }; }";
 
+    // =====================================================================
+    // B. 核心拾取 / 面板脚本资源（.js 文件加载 + 拼接，START_SCRIPT/PANEL_SCRIPT 被 C/D 引用，前置）
+    // =====================================================================
+
     public static final String START_SCRIPT_A = loadScript("picker-core-a.js");
 
     public static final String START_SCRIPT_B1 = loadScript("picker-core-b1.js");
@@ -68,79 +79,18 @@ public final class RolePickerScripts {
 
     public static final String PANEL_SCRIPT = concat(PANEL_SCRIPT_A, PANEL_SCRIPT_B);
 
-    public static final String PICK_STATE_READER_JS = "(function(){"
-            + " function norm(s){ var t=(s&&typeof s==='object')?s:null;"
-            + "   var pc=(t&&typeof t.pageClass==='string')?t.pageClass:'';"
-            + "   var ps=(t&&t.picks)?t.picks:(Array.isArray(s)?s:[]);"
-            + "   return {pageClass:pc, picks:ps}; }"
-            // 读取兜底去重：window.__rolePicks 在 start() 重注入清空 __rolePickSigs + 重建、与
-            // pageshow 恢复 / syncPanelToBrowser 每轮同步交错时，可能因重建竞态残留重复项（同组元素整组重复）。
-            // 这里在回传 Java 前按权威键 __mergeKey 压缩一次，保证生成链路拿到的 picks 永不重复，
-            // 无论浏览器侧数组因何种时序竞态累积了副本，最终页面类都不会出现重复字段。
-            + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
-            + "   if (!p) return '';"
-            + "   if (p._sigKey) return p._sigKey;"
-            + "   if (typeof window.__sigKey === 'function') return window.__sigKey(p);"
-            + "   var pk = p._pageClass || '';"
-            + "   if (!pk) { try { pk = (location.origin||'') + (location.pathname||''); } catch(e){} }"
-            + "   return JSON.stringify([p._sig || '', pk]);"
-            + " }catch(e){ return ''; } }; }"
-            + " var __seen = {}; var __out = [];"
-            + " (window.__rolePicks||[]).forEach(function(p){ try{"
-            + "   var k = window.__mergeKey(p);"
-            + "   if (!k) { __out.push(p); return; }"  // 极端兜底：无键者原样保留，不丢元素
-            + "   if (__seen[k]) return; __seen[k] = true; __out.push(p);"
-            + " }catch(e){ __out.push(p); } });"
-            + " return {"
-            + "   pageClass: (window.__rolePageName||''),"
-            + "   picks: __out,"
-            + "   steps: Array.from(window.__steps||[]).filter(function(s){"
-            + "     return !(s&&typeof s==='object'&&typeof s.op==='string'); }).map(norm),"
-            + "   ops: Array.from(window.__steps||[]).filter(function(s){"
-            + "     return (s&&typeof s==='object'&&typeof s.op==='string'); })"
-            + "     .map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })"
-            + " };"
-            + "})()";
+    // =====================================================================
+    // C. 会话 / 门控开关（被引用者在先：STOP_SESSION_ON_JS→CLEANUP、REMOVE_PICK_STATE_JS→CLEAR、
+    //    SET_PANEL_FORCE_JS→PANEL_FORCE_AND_ENABLE；SET_NLS_AND_SESSION 引用 START_SCRIPT 已在 B）
+    // =====================================================================
 
-    // ===== T5-1 step 3：从 RoleElementPicker 的内联 evaluate 调用外置的脚本常量（去重 + 消除字符串拼接） =====
+    /** 开启面板（墓碑门控未置位时强制置 1）。 */
+    public static final String ENABLE_PANEL_JS =
+            "try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}";
 
-    /** repickNos 同步删除：读取浏览器侧 __rolePicks 的 sigKey 集合。 */
-    public static final String READ_PICK_SIGS_JS =
-            "() => (window.__rolePicks||[]).map(function(p){ return p._sigKey||p._sig||''; })";
-
-    /** repickNos 回灌诊断：读取浏览器侧 __rolePicks 的 {k, n} 列表。 */
-    public static final String READ_PICK_KEYS_JS =
-            "() => (window.__rolePicks||[]).map(function(p){ return {k:(p._sigKey||p._sig||''), n:(p._pickNos||null)}; })";
-
-    /** 开始整页/区域扫描前清空浏览器侧拾取全局态（与 Java 内存态对齐，使扫描从空开始）。 */
-    public static final String RESET_PICKS_JS =
-            "try{ window.__rolePicks = []; window.__rolePickSigs = {}; window.__sigToPick = {}; }catch(e){}";
-
-    /** 在单个 frame 内执行 __roleScanPage(null)，返回新增元素数；未就绪返回 -1（供调用方补注入）。 */
-    public static final String SCAN_PAGE_IN_FRAME_JS =
-            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
-
-    /** 启动区域点选（调用 window.__roleStartRegionSelect），成功返回 true。 */
-    public static final String START_REGION_SELECT_JS =
-            "(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()";
-
-    /** 清理区域选区态（移除蓝色遮罩 / 事件监听）。 */
-    public static final String END_REGION_SELECT_JS =
-            "try{ if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect(); }catch(e){}";
-
-    /** 标记本次停止已生效（自愈钩子据此不再复活拾取）。 */
-    public static final String SET_PICK_STOPPED_JS =
-            "try{window.__rolePickStopped=true;}catch(e){}";
-
-    /** 读取浏览器侧已拾取元素数量（诊断用）。 */
-    public static final String READ_PICK_COUNT_JS =
-            "() => (window.__rolePicks||[]).length";
-
-    /** getPageOpsWithPage：读取浏览器侧 __steps 中带 op 的项并映射为 {pageClass, op}。 */
-    public static final String READ_OPS_JS =
-            "Array.from(window.__steps || []).filter(function(s){"
-            + " return (s && typeof s === 'object' && typeof s.op === 'string'); })"
-            + ".map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })";
+    /** 关闭面板（墓碑门控复位为 0）。 */
+    public static final String DISABLE_PANEL_JS =
+            "try{localStorage.setItem('__rolePanelEnabled','0')}catch(e){}";
 
     /** 停止时清除会话开关（阻断门控脚本在后续新文档自启拾取）。 */
     public static final String STOP_SESSION_ON_JS =
@@ -151,14 +101,6 @@ public final class RolePickerScripts {
             + " try{window.__rolePickStopped=true;}catch(e){}"
             + " try{window.__rolePickWanted=false;}catch(e){}";
 
-    /** 开启面板（墓碑门控未置位时强制置 1）。 */
-    public static final String ENABLE_PANEL_JS =
-            "try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}";
-
-    /** 关闭面板（墓碑门控复位为 0）。 */
-    public static final String DISABLE_PANEL_JS =
-            "try{localStorage.setItem('__rolePanelEnabled','0')}catch(e){}";
-
     /** 清除持久化拾取态（__rolePickState）。 */
     public static final String REMOVE_PICK_STATE_JS =
             "try{localStorage.removeItem('__rolePickState')}catch(e){}";
@@ -167,25 +109,9 @@ public final class RolePickerScripts {
     public static final String CLEAR_PICKER_STATE_JS = REMOVE_PICK_STATE_JS
             + " try{localStorage.removeItem('__rolePickerCode')}catch(e){}";
 
-    /** 触发 afterFillJump 钩子（若存在）。 */
-    public static final String INVOKE_AFTER_FILL_JUMP_JS =
-            "try{if(window.__afterFillJump)window.__afterFillJump();}catch(e){}";
-
-    /** 读取最近一次拾取签名（兜底空串）。 */
-    public static final String READ_LAST_PICK_SIG_JS =
-            "window.__lastPickSig || ''";
-
     /** 强制面板重建（置 __rolePanelForce）。 */
     public static final String SET_PANEL_FORCE_JS =
             "try{window.__rolePanelForce=true;}catch(e){}";
-
-    /** 触发面板重渲染（若存在）。 */
-    public static final String RENDER_PICKS_JS =
-            "if(window.__renderPicks) window.__renderPicks();";
-
-    /** 置拾取激活态并立即重渲染面板。 */
-    public static final String SET_PICK_ACTIVE_AND_RENDER_JS =
-            "try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}";
 
     /** 强制面板重建 + 开启面板（墓碑门控置 1）。 */
     public static final String PANEL_FORCE_AND_ENABLE_JS = SET_PANEL_FORCE_JS
@@ -206,6 +132,10 @@ public final class RolePickerScripts {
 
     /** 写入 NLS 文件清单（nlsFiles 经 Playwright 序列化后赋值给 window.__nlsFiles）。 */
     public static final String SET_NLS_FILES_JS = "(a) => { window.__nlsFiles = a.files; }";
+
+    // =====================================================================
+    // D. 生命周期注入（START_INJECT_JS 引用 START_SCRIPT，已在 B；其余独立）
+    // =====================================================================
 
     /** start() 拾取注入脚本：会话置位 + nls 反查表 + 重挂监听（START_SCRIPT / __roleGatedStart）+ 录制根容器。 */
     public static final String START_INJECT_JS = "(function(args){"
@@ -261,26 +191,53 @@ public final class RolePickerScripts {
             + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}"
             + " })";
 
-    public static final String DRAIN_PANEL_CMDS_JS = "(function(){"
-            + " try { var a = window.__panelCmds || []; window.__panelCmds = []; return a; }"
-            + " catch(e){ return []; } })()";
-
-    public static final String READ_REGION_FRAMES_JS = "() => {"
-            + " var out = { urls:[], names:[] };"
-            + " var roots = window.__regionSelected || [];"
-            + " for (var i=0;i<roots.length;i++){"
-            + "   var r = roots[i]; if (!r || !r.querySelectorAll) continue;"
-            + "   var fs = r.querySelectorAll('iframe, frame');"
-            + "   for (var j=0;j<fs.length;j++){"
-            + "     var el = fs[j];"
-            + "     var src = el.getAttribute && el.getAttribute('src');"
-            + "     if (src) out.urls.push(src);"
-            + "     if (el.name) out.names.push(el.name);"
-            + "     if (el.id) out.names.push(el.id);"
-            + "   }"
-            + " }"
-            + " return out;"
+    /**
+     * 把拾取会话状态注入目标页面（不依赖 window.opener，兼容 rel="noopener" / 跨域弹窗）。
+     * 实参 a: {nlsFiles, nlsReverseJson, stateJson}；后两者为 JSON 字符串，脚本内 JSON.parse 复原。
+     */
+    public static final String APPLY_PICK_STATE_JS = "(a) => {"
+            + " try { localStorage.setItem('__rolePanelEnabled','1'); } catch(e){}"
+            + " window.__nlsFiles = a.nlsFiles;"
+            + " var __o = JSON.parse(a.nlsReverseJson || '{}');"
+            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
+            // 保留 start() 已写入的录制根约束（弹窗恢复状态时不覆盖，避免退化成整页录制）。
+            + " if (window.__rolePickRoot === undefined) window.__rolePickRoot = null;"
+            + " var s = JSON.parse(a.stateJson);"
+            + " window.__rolePicks = s.picks || [];"
+            // 恢复即视为"已拾取完成"：清除扫描候选的 __isScan 标记，否则这些元素进不了选择集
+            // （点封装按钮 return 0、Java 侧永不生成代码）。
+            + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"
+            + " window.__steps = s.steps || [];"
+            + " window.__currentStep = s.currentStep || [];"
+            + " window.__rolePickSigs = s.sigs || {};"
+            // 续接全局序号计数器：取已有 _pickNos 最大值，避免重注入归零导致跨页序号冲突/面板 index 跳回 1。
+            + " (function(){ var mx=0; (window.__rolePicks||[]).forEach(function(p){"
+            + "   (p&&Array.isArray(p._pickNos)?p._pickNos:[]).forEach(function(n){ if(n>mx)mx=n; }); });"
+            + "   window.__rolePickSeq = mx; })();"
+            + " window.__rolePickActive = false;"
+            + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
             + "}";
+
+    /** 移除常驻面板：摘除点击/悬停/按键/焦点/滚动监听，复位 active，清会话开关并写面板墓碑（阻断门控自启）。 */
+    public static final String CLOSE_PANEL_JS = "(function(){"
+            + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
+            + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
+            + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
+            + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
+            + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
+            + " try{ window.__rolePickActive = false; }catch(e){}"
+            + " try{ localStorage.removeItem('__rolePickSessionOn'); }catch(e){}"
+            + " try{ window.__rolePickSessionOn = false; }catch(e){}"
+            + " try{ localStorage.setItem('__rolePanelEnabled','0'); }catch(e){}"
+            + " try{ window.__rolePanelForce = false; }catch(e){}"
+            + " var p = document.getElementById('__rolePanel'); if (p) { p.remove();"
+            + " try { document.body.style.marginRight = ''; document.documentElement.style.overflowX = ''; } catch(e){} }"
+            + "})()";
+
+    /** 开始整页/区域扫描前清空浏览器侧拾取全局态（与 Java 内存态对齐，使扫描从空开始）。 */
+    public static final String RESET_PICKS_JS =
+            "try{ window.__rolePicks = []; window.__rolePickSigs = {}; window.__sigToPick = {}; }catch(e){}";
 
     public static final String CLEAR_PICKS_JS = "try{"
             + " if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect();"
@@ -306,6 +263,179 @@ public final class RolePickerScripts {
             + " if(window.refreshSelInfo)window.refreshSelInfo();"
             + "}catch(e){}";
 
+    /** 清空浏览器侧进行中 step（__currentStep）；用于 followPage 把 opener 的 step 整体转移到新页后清空源页。 */
+    public static final String CLEAR_CURRENT_STEP_JS = "try{ window.__currentStep = []; }catch(e){}";
+
+    /** 标记本次停止已生效（自愈钩子据此不再复活拾取）。 */
+    public static final String SET_PICK_STOPPED_JS =
+            "try{window.__rolePickStopped=true;}catch(e){}";
+
+    /** 读取浏览器侧是否已显式停止拾取（__rolePickStopped），供 onFrameNavigated 跳过重激活。 */
+    public static final String IS_PICK_STOPPED_JS =
+            "try { return !!window.__rolePickStopped; } catch(e){ return false; }";
+
+    /** 读取浏览器侧拾取会话开关是否置位（localStorage / window 双判），供 onFrameNavigated 重激活判定。 */
+    public static final String IS_SESSION_ON_JS =
+            "try { return localStorage.getItem('__rolePickSessionOn')==='1' || !!window.__rolePickSessionOn; } catch(e){ return !!window.__rolePickSessionOn; }";
+
+    /** 置拾取激活态并立即重渲染面板。 */
+    public static final String SET_PICK_ACTIVE_AND_RENDER_JS =
+            "try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}";
+
+    /** 触发面板重渲染（若存在）。 */
+    public static final String RENDER_PICKS_JS =
+            "if(window.__renderPicks) window.__renderPicks();";
+
+    /** 触发 afterFillJump 钩子（若存在）。 */
+    public static final String INVOKE_AFTER_FILL_JUMP_JS =
+            "try{if(window.__afterFillJump)window.__afterFillJump();}catch(e){}";
+
+    // =====================================================================
+    // E. 面板 / 页面状态控制（页类名、模式、状态栏、代码填充）
+    // =====================================================================
+
+    /** 设置拾取模式并刷新面板开关。实参 a: {mode}。 */
+    public static final String SET_PICK_MODE_JS = "(a) => {"
+            + " try{ window.__roleMode = a.mode; if(window.__roleRefreshToggle) window.__roleRefreshToggle(); }catch(e){} }";
+
+    /** 仅当浏览器侧页类名与期望值不同时才设置并持久化（避免无谓写入）。实参 a: {pageName}。 */
+    public static final String SET_PAGE_NAME_IF_CHANGED_JS = "(a) => {"
+            + " try{ if(window.__rolePageName!==a.pageName){"
+            + " window.__rolePageName=a.pageName;"
+            + " try{localStorage.setItem('__rolePageName',a.pageName);}catch(e){}"
+            + " } }catch(e){} }";
+
+    /** 设置当前页类名并持久化，同时清空 __currentPageInstance。实参 a: {pageName}。 */
+    public static final String SET_PAGE_NAME_AND_RESET_INSTANCE_JS = "(a) => {"
+            + " window.__rolePageName = a.pageName; window.__currentPageInstance = null;"
+            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
+
+    /** 设置当前页类名并持久化（保留 __currentPageInstance）。实参 a: {pageName}。 */
+    public static final String SET_PAGE_NAME_JS = "(a) => {"
+            + " window.__rolePageName = a.pageName;"
+            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
+
+    /** 设置自动步骤计数。实参 a: {n}。 */
+    public static final String SET_AUTO_STEP_COUNT_JS = "(a) => { try{window.__roleAutoStepCount = a.n;}catch(e){} }";
+
+    /** 更新面板顶部状态文字（第一步：写入消息对象）。实参 a: {msg}。 */
+    public static final String SET_STATUS_MSG_JS = "(a) => { window.__roleStatusMsg = a.msg; }";
+
+    /** 更新面板顶部状态文字（第二步：刷新 DOM）。 */
+    public static final String UPDATE_STATUS_DOM_JS = "var st = document.getElementById('__roleStatus');"
+            + " if (st) st.textContent = window.__roleStatusMsg;";
+
+    /** 把按页生成的页面类/步骤代码写入面板多 Tab 并更新状态。实参 a: {pageByPage, stepByPage, msg}。 */
+    public static final String FILL_CODE_JS = "(a) => {"
+            + " window.__fillCodeTabs({ pageByPage: a.pageByPage, stepByPage: a.stepByPage, msg: a.msg });"
+            + "}";
+
+    /** 面板是否已挂载且渲染函数就绪。 */
+    public static final String HAS_PANEL_JS = "!!(document.getElementById('__rolePanel') && window.__renderPicks)";
+
+    // =====================================================================
+    // F. 区域选择（整页/区域扫描、iframe 帧列举）
+    // =====================================================================
+
+    /** 在单个 frame 内执行 __roleScanPage(null)，返回新增元素数；未就绪返回 -1（供调用方补注入）。 */
+    public static final String SCAN_PAGE_IN_FRAME_JS =
+            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
+
+    public static final String FRAME_SCAN_JS = "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
+
+    /** 启动区域点选（调用 window.__roleStartRegionSelect），成功返回 true。 */
+    public static final String START_REGION_SELECT_JS =
+            "(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()";
+
+    /** 清理区域选区态（移除蓝色遮罩 / 事件监听）。 */
+    public static final String END_REGION_SELECT_JS =
+            "try{ if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect(); }catch(e){}";
+
+    public static final String READ_REGION_FRAMES_JS = "() => {"
+            + " var out = { urls:[], names:[] };"
+            + " var roots = window.__regionSelected || [];"
+            + " for (var i=0;i<roots.length;i++){"
+            + "   var r = roots[i]; if (!r || !r.querySelectorAll) continue;"
+            + "   var fs = r.querySelectorAll('iframe, frame');"
+            + "   for (var j=0;j<fs.length;j++){"
+            + "     var el = fs[j];"
+            + "     var src = el.getAttribute && el.getAttribute('src');"
+            + "     if (src) out.urls.push(src);"
+            + "     if (el.name) out.names.push(el.name);"
+            + "     if (el.id) out.names.push(el.id);"
+            + "   }"
+            + " }"
+            + " return out;"
+            + "}";
+
+    // =====================================================================
+    // G. 状态读取 / 诊断快照（纯读取，无跨常量依赖）
+    // =====================================================================
+
+    public static final String PICK_STATE_READER_JS = "(function(){"
+            + " function norm(s){ var t=(s&&typeof s==='object')?s:null;"
+            + "   var pc=(t&&typeof t.pageClass==='string')?t.pageClass:'';"
+            + "   var ps=(t&&t.picks)?t.picks:(Array.isArray(s)?s:[]);"
+            + "   return {pageClass:pc, picks:ps}; }"
+            // 读取兜底去重：window.__rolePicks 在 start() 重注入清空 __rolePickSigs + 重建、与
+            // pageshow 恢复 / syncPanelToBrowser 每轮同步交错时，可能因重建竞态残留重复项（同组元素整组重复）。
+            // 这里在回传 Java 前按权威键 __mergeKey 压缩一次，保证生成链路拿到的 picks 永不重复，
+            // 无论浏览器侧数组因何种时序竞态累积了副本，最终页面类都不会出现重复字段。
+            + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
+            + "   if (!p) return '';"
+            + "   if (p._sigKey) return p._sigKey;"
+            + "   if (typeof window.__sigKey === 'function') return window.__sigKey(p);"
+            + "   var pk = p._pageClass || '';"
+            + "   if (!pk) { try { pk = (location.origin||'') + (location.pathname||''); } catch(e){} }"
+            + "   return JSON.stringify([p._sig || '', pk]);"
+            + " }catch(e){ return ''; } }; }"
+            + " var __seen = {}; var __out = [];"
+            + " (window.__rolePicks||[]).forEach(function(p){ try{"
+            + "   var k = window.__mergeKey(p);"
+            + "   if (!k) { __out.push(p); return; }"  // 极端兜底：无键者原样保留，不丢元素
+            + "   if (__seen[k]) return; __seen[k] = true; __out.push(p);"
+            + " }catch(e){ __out.push(p); } });"
+            + " return {"
+            + "   pageClass: (window.__rolePageName||''),"
+            + "   picks: __out,"
+            + "   steps: Array.from(window.__steps||[]).filter(function(s){"
+            + "     return !(s&&typeof s==='object'&&typeof s.op==='string'); }).map(norm),"
+            + "   ops: Array.from(window.__steps||[]).filter(function(s){"
+            + "     return (s&&typeof s==='object'&&typeof s.op==='string'); })"
+            + "     .map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })"
+            + " };"
+            + "})()";
+
+    /** repickNos 同步删除：读取浏览器侧 __rolePicks 的 sigKey 集合。 */
+    public static final String READ_PICK_SIGS_JS =
+            "() => (window.__rolePicks||[]).map(function(p){ return p._sigKey||p._sig||''; })";
+
+    /** repickNos 回灌诊断：读取浏览器侧 __rolePicks 的 {k, n} 列表。 */
+    public static final String READ_PICK_KEYS_JS =
+            "() => (window.__rolePicks||[]).map(function(p){ return {k:(p._sigKey||p._sig||''), n:(p._pickNos||null)}; })";
+
+    /** 读取浏览器侧已拾取元素数量（诊断用）。 */
+    public static final String READ_PICK_COUNT_JS =
+            "() => (window.__rolePicks||[]).length";
+
+    /** 读取最近一次拾取签名（兜底空串）。 */
+    public static final String READ_LAST_PICK_SIG_JS =
+            "window.__lastPickSig || ''";
+
+    /** 读取拾取会话状态 JSON 字符串（picks/steps/currentStep/sigs/active），供跨页面（弹窗开合）搬运。 */
+    public static final String READ_PICK_STATE_JSON_JS = "(function() {"
+            + " try {"
+            + "   return JSON.stringify({"
+            + "     picks: window.__rolePicks || [],"
+            + "     steps: window.__steps || [],"
+            + "     currentStep: window.__currentStep || [],"
+            + "     sigs: window.__rolePickSigs || {},"
+            + "     active: !!window.__rolePickActive });"
+            + " } catch (e) {"
+            + "   return JSON.stringify({picks:[],steps:[],currentStep:[],sigs:{},active:false});"
+            + " }"
+            + "})()";
+
     public static final String READ_FRAME_PICKS_JS = "(function(){"
             + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
             + "   if (!p) return ''; if (p._sigKey) return p._sigKey;"
@@ -321,10 +451,72 @@ public final class RolePickerScripts {
     /** 读取某 iframe 的 window.__rolePicks 原始 JSON 字符串（跨源 frame 经 Playwright 协议读取，不受 file:// 跨源限制）。 */
     public static final String READ_FRAME_PICKS_RAW_JS = "() => JSON.stringify(window.__rolePicks||[])";
 
-    /** 清空浏览器侧进行中 step（__currentStep）；用于 followPage 把 opener 的 step 整体转移到新页后清空源页。 */
-    public static final String CLEAR_CURRENT_STEP_JS = "try{ window.__currentStep = []; }catch(e){}";
+    /** getPageOpsWithPage：读取浏览器侧 __steps 中带 op 的项并映射为 {pageClass, op}。 */
+    public static final String READ_OPS_JS =
+            "Array.from(window.__steps || []).filter(function(s){"
+            + " return (s && typeof s === 'object' && typeof s.op === 'string'); })"
+            + ".map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })";
 
-    public static final String FRAME_SCAN_JS = "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
+    /** 读取「页面级操作」step（含 op 字段，如关闭页面），供生成 closeCurrentPage() 等步骤。 */
+    public static final String READ_PAGE_OPS_JS = "Array.from(window.__steps || []).filter(function(s){"
+            + " return (s && typeof s === 'object' && typeof s.op === 'string'); })"
+            + ".map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })";
+
+    /** 读取元素 step 序列并归一为 {pageClass, picks}（过滤掉含 op 的页面级操作 step）。 */
+    public static final String READ_STEPS_WITH_PAGE_JS = "Array.from(window.__steps || []).filter(function(s){"
+            + " return !(s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){"
+            + " var t = (s && typeof s === 'object') ? s : null;"
+            + " var pc = (t && typeof t.pageClass === 'string') ? t.pageClass : '';"
+            + " var ps = (t && t.picks) ? t.picks : (Array.isArray(s) ? s : []);"
+            + " return {pageClass: pc, picks: ps}; })";
+
+    /** 导航恢复/激活后的运行时诊断快照（会话开关、激活态、三大监听是否注入）。 */
+    public static final String NAV_DIAG_JS = "(function(){"
+            + " try {"
+            + "   var ls='?'; try{ ls = localStorage.getItem('__rolePickSessionOn'); }catch(e){ ls='LS_ERR:'+e; }"
+            + "   var gi = window.__gateInit || null;"
+            + "   return JSON.stringify({"
+            + "     url: location.href, origin: location.origin,"
+            + "     lsSwitch: ls,"
+            + "     winSwitch: !!window.__rolePickSessionOn,"
+            + "     active: !!window.__rolePickActive,"
+            + "     hasClick: typeof window.__rolePickClick === 'function',"
+            + "     hasMove: typeof window.__rolePickMove === 'function',"
+            + "     hasRecord: typeof window.__recordPick === 'function',"
+            + "     hasLib: !!window.__rolePickerLib,"
+            + "     lastClickTs: window.__lastClickTs || 0,"
+            + "     lastClickActive: !!window.__lastClickActive,"
+            + "     mouseLog: (window.__roleMouseLog||[]).slice(-12),"
+            + "     gateInit: gi"
+            + "   });"
+            + " } catch(e){ return 'DIAG_ERR:'+e; }"
+            + "})()";
+
+    /** start() 注入后诊断快照（origin / 会话开关 / 激活态 / 三大监听是否真正挂载）。 */
+    public static final String START_DIAG_JS = "(function(){ return JSON.stringify({"
+            + " origin: location.origin,"
+            + " winSwitch: !!window.__rolePickSessionOn,"
+            + " active: !!window.__rolePickActive,"
+            + " hasClick: typeof window.__rolePickClick==='function',"
+            + " hasMove: typeof window.__rolePickMove==='function',"
+            + " hasRecord: typeof window.__recordPick==='function'"
+            + "}); })()";
+
+    public static final String DRAIN_PANEL_CMDS_JS = "(function(){"
+            + " try { var a = window.__panelCmds || []; window.__panelCmds = []; return a; }"
+            + " catch(e){ return []; } })()";
+
+    /** 把最近一次拾取标记为 download（下载监听触发时）。 */
+    public static final String MARK_LAST_PICK_DOWNLOAD_JS = "if(window.__rolePicks && window.__rolePicks.length){"
+            + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.download = true; }";
+
+    /** 把最近一次拾取标记为 upload（文件选择框监听触发时）。 */
+    public static final String MARK_LAST_PICK_UPLOAD_JS = "if(window.__rolePicks && window.__rolePicks.length){"
+            + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.upload = true; }";
+
+    // =====================================================================
+    // H. 快照合并（均引用前置的 MERGE_KEY_SHIM）
+    // =====================================================================
 
     /** 整页跳转后，把 pagehide 落盘到 localStorage 的拾取态按权威键合并回当前 window（补回 Java 快照未覆盖的最新点击）。 */
     public static final String MERGE_LOCALSTORAGE_PICKS_JS = "(function(){"
@@ -362,82 +554,6 @@ public final class RolePickerScripts {
             + " } catch(e){}"
             + "})()";
 
-    /** 导航恢复/激活后的运行时诊断快照（会话开关、激活态、三大监听是否注入）。 */
-    public static final String NAV_DIAG_JS = "(function(){"
-            + " try {"
-            + "   var ls='?'; try{ ls = localStorage.getItem('__rolePickSessionOn'); }catch(e){ ls='LS_ERR:'+e; }"
-            + "   var gi = window.__gateInit || null;"
-            + "   return JSON.stringify({"
-            + "     url: location.href, origin: location.origin,"
-            + "     lsSwitch: ls,"
-            + "     winSwitch: !!window.__rolePickSessionOn,"
-            + "     active: !!window.__rolePickActive,"
-            + "     hasClick: typeof window.__rolePickClick === 'function',"
-            + "     hasMove: typeof window.__rolePickMove === 'function',"
-            + "     hasRecord: typeof window.__recordPick === 'function',"
-            + "     hasLib: !!window.__rolePickerLib,"
-            + "     lastClickTs: window.__lastClickTs || 0,"
-            + "     lastClickActive: !!window.__lastClickActive,"
-            + "     mouseLog: (window.__roleMouseLog||[]).slice(-12),"
-            + "     gateInit: gi"
-            + "   });"
-            + " } catch(e){ return 'DIAG_ERR:'+e; }"
-            + "})()";
-
-    /** 移除常驻面板：摘除点击/悬停/按键/焦点/滚动监听，复位 active，清会话开关并写面板墓碑（阻断门控自启）。 */
-    public static final String CLOSE_PANEL_JS = "(function(){"
-            + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
-            + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
-            + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
-            + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
-            + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
-            + " try{ window.__rolePickActive = false; }catch(e){}"
-            + " try{ localStorage.removeItem('__rolePickSessionOn'); }catch(e){}"
-            + " try{ window.__rolePickSessionOn = false; }catch(e){}"
-            + " try{ localStorage.setItem('__rolePanelEnabled','0'); }catch(e){}"
-            + " try{ window.__rolePanelForce = false; }catch(e){}"
-            + " var p = document.getElementById('__rolePanel'); if (p) { p.remove();"
-            + " try { document.body.style.marginRight = ''; document.documentElement.style.overflowX = ''; } catch(e){} }"
-            + "})()";
-
-    /** 读取拾取会话状态 JSON 字符串（picks/steps/currentStep/sigs/active），供跨页面（弹窗开合）搬运。 */
-    public static final String READ_PICK_STATE_JSON_JS = "(function() {"
-            + " try {"
-            + "   return JSON.stringify({"
-            + "     picks: window.__rolePicks || [],"
-            + "     steps: window.__steps || [],"
-            + "     currentStep: window.__currentStep || [],"
-            + "     sigs: window.__rolePickSigs || {},"
-            + "     active: !!window.__rolePickActive });"
-            + " } catch (e) {"
-            + "   return JSON.stringify({picks:[],steps:[],currentStep:[],sigs:{},active:false});"
-            + " }"
-            + "})()";
-
-    /** 读取「页面级操作」step（含 op 字段，如关闭页面），供生成 closeCurrentPage() 等步骤。 */
-    public static final String READ_PAGE_OPS_JS = "Array.from(window.__steps || []).filter(function(s){"
-            + " return (s && typeof s === 'object' && typeof s.op === 'string'); })"
-            + ".map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })";
-
-    /** 读取元素 step 序列并归一为 {pageClass, picks}（过滤掉含 op 的页面级操作 step）。 */
-    public static final String READ_STEPS_WITH_PAGE_JS = "Array.from(window.__steps || []).filter(function(s){"
-            + " return !(s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){"
-            + " var t = (s && typeof s === 'object') ? s : null;"
-            + " var pc = (t && typeof t.pageClass === 'string') ? t.pageClass : '';"
-            + " var ps = (t && t.picks) ? t.picks : (Array.isArray(s) ? s : []);"
-            + " return {pageClass: pc, picks: ps}; })";
-
-    /** 面板是否已挂载且渲染函数就绪。 */
-    public static final String HAS_PANEL_JS = "!!(document.getElementById('__rolePanel') && window.__renderPicks)";
-
-    /** 把最近一次拾取标记为 download（下载监听触发时）。 */
-    public static final String MARK_LAST_PICK_DOWNLOAD_JS = "if(window.__rolePicks && window.__rolePicks.length){"
-            + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.download = true; }";
-
-    /** 把最近一次拾取标记为 upload（文件选择框监听触发时）。 */
-    public static final String MARK_LAST_PICK_UPLOAD_JS = "if(window.__rolePicks && window.__rolePicks.length){"
-            + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.upload = true; }";
-
     /**
      * 导航后兜底（延迟 60ms 等面板 build 完成）：用【稳定键】对 __rolePicks 做一次全局压实
      * （绝不用 location 兜底键，否则元素随跳转成倍累积），再重渲染面板、滚动到底、恢复上次生成的代码。
@@ -474,30 +590,6 @@ public final class RolePickerScripts {
             + "         : Object.keys(pbp).map(function(k2){return pbp[k2];}).join('\\n\\n');"
             + "     } } catch(e){}"
             + " }, 60); })()";
-
-    /** start() 注入后诊断快照（origin / 会话开关 / 激活态 / 三大监听是否真正挂载）。 */
-    public static final String START_DIAG_JS = "(function(){ return JSON.stringify({"
-            + " origin: location.origin,"
-            + " winSwitch: !!window.__rolePickSessionOn,"
-            + " active: !!window.__rolePickActive,"
-            + " hasClick: typeof window.__rolePickClick==='function',"
-            + " hasMove: typeof window.__rolePickMove==='function',"
-            + " hasRecord: typeof window.__recordPick==='function'"
-            + "}); })()";
-
-    /** 读取浏览器侧是否已显式停止拾取（__rolePickStopped），供 onFrameNavigated 跳过重激活。 */
-    public static final String IS_PICK_STOPPED_JS =
-            "try { return !!window.__rolePickStopped; } catch(e){ return false; }";
-
-    /** 读取浏览器侧拾取会话开关是否置位（localStorage / window 双判），供 onFrameNavigated 重激活判定。 */
-    public static final String IS_SESSION_ON_JS =
-            "try { return localStorage.getItem('__rolePickSessionOn')==='1' || !!window.__rolePickSessionOn; } catch(e){ return !!window.__rolePickSessionOn; }";
-
-    /** waitForFunction 条件：用户点击结束拾取（__pickDone 置位）。 */
-    public static final String WAIT_PICK_DONE_JS = "() => window.__pickDone === true";
-
-    /** waitForFunction 条件：代码面板已关闭（__codePanelClosed 置位）。 */
-    public static final String WAIT_CODE_PANEL_CLOSED_JS = "() => window.__codePanelClosed === true";
 
     /**
      * SPA / 同 window 跳转时，把 Java 快照的 picks/steps 合并回当前 window（按 __mergeKey 去重，
@@ -629,70 +721,6 @@ public final class RolePickerScripts {
             + " window.__steps.push({op:'close', pageClass:a.closedCls});"
             + "}";
 
-    /** 仅当浏览器侧页类名与期望值不同时才设置并持久化（避免无谓写入）。实参 a: {pageName}。 */
-    public static final String SET_PAGE_NAME_IF_CHANGED_JS = "(a) => {"
-            + " try{ if(window.__rolePageName!==a.pageName){"
-            + " window.__rolePageName=a.pageName;"
-            + " try{localStorage.setItem('__rolePageName',a.pageName);}catch(e){}"
-            + " } }catch(e){} }";
-
-    /** 设置拾取模式并刷新面板开关。实参 a: {mode}。 */
-    public static final String SET_PICK_MODE_JS = "(a) => {"
-            + " try{ window.__roleMode = a.mode; if(window.__roleRefreshToggle) window.__roleRefreshToggle(); }catch(e){} }";
-
-    /** 设置当前页类名并持久化，同时清空 __currentPageInstance。实参 a: {pageName}。 */
-    public static final String SET_PAGE_NAME_AND_RESET_INSTANCE_JS = "(a) => {"
-            + " window.__rolePageName = a.pageName; window.__currentPageInstance = null;"
-            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
-
-    /** 设置当前页类名并持久化（保留 __currentPageInstance）。实参 a: {pageName}。 */
-    public static final String SET_PAGE_NAME_JS = "(a) => {"
-            + " window.__rolePageName = a.pageName;"
-            + " try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }";
-
-    /** 设置自动步骤计数。实参 a: {n}。 */
-    public static final String SET_AUTO_STEP_COUNT_JS = "(a) => { try{window.__roleAutoStepCount = a.n;}catch(e){} }";
-
-    /** 更新面板顶部状态文字（第一步：写入消息对象）。实参 a: {msg}。 */
-    public static final String SET_STATUS_MSG_JS = "(a) => { window.__roleStatusMsg = a.msg; }";
-
-    /** 更新面板顶部状态文字（第二步：刷新 DOM）。 */
-    public static final String UPDATE_STATUS_DOM_JS = "var st = document.getElementById('__roleStatus');"
-            + " if (st) st.textContent = window.__roleStatusMsg;";
-
-    /** 把按页生成的页面类/步骤代码写入面板多 Tab 并更新状态。实参 a: {pageByPage, stepByPage, msg}。 */
-    public static final String FILL_CODE_JS = "(a) => {"
-            + " window.__fillCodeTabs({ pageByPage: a.pageByPage, stepByPage: a.stepByPage, msg: a.msg });"
-            + "}";
-
-    /**
-     * 把拾取会话状态注入目标页面（不依赖 window.opener，兼容 rel="noopener" / 跨域弹窗）。
-     * 实参 a: {nlsFiles, nlsReverseJson, stateJson}；后两者为 JSON 字符串，脚本内 JSON.parse 复原。
-     */
-    public static final String APPLY_PICK_STATE_JS = "(a) => {"
-            + " try { localStorage.setItem('__rolePanelEnabled','1'); } catch(e){}"
-            + " window.__nlsFiles = a.nlsFiles;"
-            + " var __o = JSON.parse(a.nlsReverseJson || '{}');"
-            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
-            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
-            // 保留 start() 已写入的录制根约束（弹窗恢复状态时不覆盖，避免退化成整页录制）。
-            + " if (window.__rolePickRoot === undefined) window.__rolePickRoot = null;"
-            + " var s = JSON.parse(a.stateJson);"
-            + " window.__rolePicks = s.picks || [];"
-            // 恢复即视为"已拾取完成"：清除扫描候选的 __isScan 标记，否则这些元素进不了选择集
-            // （点封装按钮 return 0、Java 侧永不生成代码）。
-            + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"
-            + " window.__steps = s.steps || [];"
-            + " window.__currentStep = s.currentStep || [];"
-            + " window.__rolePickSigs = s.sigs || {};"
-            // 续接全局序号计数器：取已有 _pickNos 最大值，避免重注入归零导致跨页序号冲突/面板 index 跳回 1。
-            + " (function(){ var mx=0; (window.__rolePicks||[]).forEach(function(p){"
-            + "   (p&&Array.isArray(p._pickNos)?p._pickNos:[]).forEach(function(n){ if(n>mx)mx=n; }); });"
-            + "   window.__rolePickSeq = mx; })();"
-            + " window.__rolePickActive = false;"
-            + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
-            + "}";
-
     /**
      * 把 Java 权威拾取内存态回灌浏览器侧 window.__rolePicks（参数化注入，杜绝字符串拼接破坏语法）。
      * 实参 a: [0]=Base64URL(过滤后 picks JSON)，[1]=Base64URL(删除键 JSON，恒 "[]")，[2]=overwriteNos(boolean)。
@@ -751,6 +779,16 @@ public final class RolePickerScripts {
             + "   })();"
             + "   if (window.__renderPicks) window.__renderPicks();"
             + " } catch(e){} }";
+
+    // =====================================================================
+    // I. waitForFunction 条件
+    // =====================================================================
+
+    /** waitForFunction 条件：用户点击结束拾取（__pickDone 置位）。 */
+    public static final String WAIT_PICK_DONE_JS = "() => window.__pickDone === true";
+
+    /** waitForFunction 条件：代码面板已关闭（__codePanelClosed 置位）。 */
+    public static final String WAIT_CODE_PANEL_CLOSED_JS = "() => window.__codePanelClosed === true";
 
     /**
      * 构造 evaluate 实参（k1, v1, k2, v2 ...），避免每个调用点重复 new Map + 多次 put。

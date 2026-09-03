@@ -14,9 +14,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 椤甸潰绫诲悕娲剧敓涓庛€孶RL 鈫?Page 绫诲悕銆嶇ǔ瀹氭槧灏勶紙浠?{@link RoleElementPicker} 鎶藉嚭锛屽睘 T5-1 鎷嗗垎绗笁姝ワ級銆?
- * 鎵胯浇 URL 褰掍竴鍖栥€佽瑷€鐮佸墺绂汇€佺被鍚嶆娓呮礂涓庡幓閲嶆淳鐢熴€佷互鍙婅法澶氭 pick 杩愯鐨勫叏灞€鎸佷箙鏄犲皠缂撳瓨锛?
- * 鍘熸柟娉曚綋閫愬瓧杩佺Щ锛岀敱 RoleElementPicker 浠ュ畬鍏ㄩ檺瀹氬悕濮旀墭璋冪敤锛岃涓哄畬鍏ㄧ瓑浠枫€?
+ * 页面类名生成与 URL -> Page 类名映射（由 RoleElementPicker 调用，属 T5-1 拆分第三步）。
+ * 负责 URL 归一化、语言编码剥离、类名字段清洗与去重派生，以及跨多次 pick 运行的全局持久映射缓存；
+ * 原方法体逐字平移，由 RoleElementPicker 以完全限定名直接调用，行为完全等价。
  */
 final class RolePickerClassNameResolver {
 
@@ -119,7 +119,7 @@ final class RolePickerClassNameResolver {
         if (s.isEmpty()) return "";
         if (!Character.isJavaIdentifierStart(s.charAt(0))) s = "P" + s;
         return s;
-    }    // ---- 渚?RoleElementPicker 璁块棶鍏ㄥ眬鎸佷箙鏄犲皠鐨勭獎鎺ュ彛 ----
+    }    // ---- 供 RoleElementPicker 访问全局持久映射的接口 ----
     static Collection<String> values() { return GLOBAL_URL_TO_CLASS.values(); }
     static LinkedHashMap<String, String> snapshot() { return new LinkedHashMap<>(GLOBAL_URL_TO_CLASS); }
     static void put(String key, String cls) { GLOBAL_URL_TO_CLASS.put(key, cls); }

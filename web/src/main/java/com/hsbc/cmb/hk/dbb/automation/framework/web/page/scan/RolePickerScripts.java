@@ -102,6 +102,165 @@ public final class RolePickerScripts {
             + " };"
             + "})()";
 
+    // ===== T5-1 step 3：从 RoleElementPicker 的内联 evaluate 调用外置的脚本常量（去重 + 消除字符串拼接） =====
+
+    /** repickNos 同步删除：读取浏览器侧 __rolePicks 的 sigKey 集合。 */
+    public static final String READ_PICK_SIGS_JS =
+            "() => (window.__rolePicks||[]).map(function(p){ return p._sigKey||p._sig||''; })";
+
+    /** repickNos 回灌诊断：读取浏览器侧 __rolePicks 的 {k, n} 列表。 */
+    public static final String READ_PICK_KEYS_JS =
+            "() => (window.__rolePicks||[]).map(function(p){ return {k:(p._sigKey||p._sig||''), n:(p._pickNos||null)}; })";
+
+    /** 开始整页/区域扫描前清空浏览器侧拾取全局态（与 Java 内存态对齐，使扫描从空开始）。 */
+    public static final String RESET_PICKS_JS =
+            "try{ window.__rolePicks = []; window.__rolePickSigs = {}; window.__sigToPick = {}; }catch(e){}";
+
+    /** 在单个 frame 内执行 __roleScanPage(null)，返回新增元素数；未就绪返回 -1（供调用方补注入）。 */
+    public static final String SCAN_PAGE_IN_FRAME_JS =
+            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
+
+    /** 启动区域点选（调用 window.__roleStartRegionSelect），成功返回 true。 */
+    public static final String START_REGION_SELECT_JS =
+            "(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()";
+
+    /** 清理区域选区态（移除蓝色遮罩 / 事件监听）。 */
+    public static final String END_REGION_SELECT_JS =
+            "try{ if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect(); }catch(e){}";
+
+    /** 标记本次停止已生效（自愈钩子据此不再复活拾取）。 */
+    public static final String SET_PICK_STOPPED_JS =
+            "try{window.__rolePickStopped=true;}catch(e){}";
+
+    /** 读取浏览器侧已拾取元素数量（诊断用）。 */
+    public static final String READ_PICK_COUNT_JS =
+            "() => (window.__rolePicks||[]).length";
+
+    /** getPageOpsWithPage：读取浏览器侧 __steps 中带 op 的项并映射为 {pageClass, op}。 */
+    public static final String READ_OPS_JS =
+            "Array.from(window.__steps || []).filter(function(s){"
+            + " return (s && typeof s === 'object' && typeof s.op === 'string'); })"
+            + ".map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })";
+
+    /** 停止时清除会话开关（阻断门控脚本在后续新文档自启拾取）。 */
+    public static final String STOP_SESSION_ON_JS =
+            "try{localStorage.removeItem('__rolePickSessionOn');}catch(e){} try{window.__rolePickSessionOn=false;}catch(e){}";
+
+    /** 停止时清除会话开关 + 复位面板控件状态机（wanted/stopped），随后拼接 STOP_SCRIPT。 */
+    public static final String STOP_SESSION_CLEANUP_JS = STOP_SESSION_ON_JS
+            + " try{window.__rolePickStopped=true;}catch(e){}"
+            + " try{window.__rolePickWanted=false;}catch(e){}";
+
+    /** 开启面板（墓碑门控未置位时强制置 1）。 */
+    public static final String ENABLE_PANEL_JS =
+            "try{localStorage.setItem('__rolePanelEnabled','1')}catch(e){}";
+
+    /** 关闭面板（墓碑门控复位为 0）。 */
+    public static final String DISABLE_PANEL_JS =
+            "try{localStorage.setItem('__rolePanelEnabled','0')}catch(e){}";
+
+    /** 清除持久化拾取态（__rolePickState）。 */
+    public static final String REMOVE_PICK_STATE_JS =
+            "try{localStorage.removeItem('__rolePickState')}catch(e){}";
+
+    /** 清除持久化拾取态 + 生成代码（双 removeItem）。 */
+    public static final String CLEAR_PICKER_STATE_JS = REMOVE_PICK_STATE_JS
+            + " try{localStorage.removeItem('__rolePickerCode')}catch(e){}";
+
+    /** 触发 afterFillJump 钩子（若存在）。 */
+    public static final String INVOKE_AFTER_FILL_JUMP_JS =
+            "try{if(window.__afterFillJump)window.__afterFillJump();}catch(e){}";
+
+    /** 读取最近一次拾取签名（兜底空串）。 */
+    public static final String READ_LAST_PICK_SIG_JS =
+            "window.__lastPickSig || ''";
+
+    /** 强制面板重建（置 __rolePanelForce）。 */
+    public static final String SET_PANEL_FORCE_JS =
+            "try{window.__rolePanelForce=true;}catch(e){}";
+
+    /** 触发面板重渲染（若存在）。 */
+    public static final String RENDER_PICKS_JS =
+            "if(window.__renderPicks) window.__renderPicks();";
+
+    /** 置拾取激活态并立即重渲染面板。 */
+    public static final String SET_PICK_ACTIVE_AND_RENDER_JS =
+            "try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}";
+
+    /** 强制面板重建 + 开启面板（墓碑门控置 1）。 */
+    public static final String PANEL_FORCE_AND_ENABLE_JS = SET_PANEL_FORCE_JS
+            + " try{ localStorage.setItem('__rolePanelEnabled','1'); }catch(e){}";
+
+    /** ensurePickingActive：会话置位 + 注入反向翻译表（nls 经 JSON.parse 复原），门控函数存在则调用否则注入 START_SCRIPT。 */
+    public static final String SET_NLS_AND_SESSION_JS = "(a) => {"
+            + " try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
+            + " try{window.__rolePickSessionOn=true;}catch(e){}"
+            + " var __o = (a && a.nls) ? JSON.parse(a.nls) : {};"
+            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
+            + " if (typeof window.__roleGatedStart === 'function') { window.__roleGatedStart(); }"
+            + " else { " + START_SCRIPT + " } }";
+
+    /** 写入自动生成的页面拾取代码（code 经 Playwright 序列化后作为字符串赋值给 window.__pickerCode）。 */
+    public static final String SET_PICKER_CODE_JS = "(a) => { window.__pickerCode = a.code; }";
+
+    /** 写入 NLS 文件清单（nlsFiles 经 Playwright 序列化后赋值给 window.__nlsFiles）。 */
+    public static final String SET_NLS_FILES_JS = "(a) => { window.__nlsFiles = a.files; }";
+
+    /** start() 拾取注入脚本：会话置位 + nls 反查表 + 重挂监听（START_SCRIPT / __roleGatedStart）+ 录制根容器。 */
+    public static final String START_INJECT_JS = "(function(args){"
+            + " var __nlsArg = args ? args.nls : null;"
+            + " var __rootArg = args ? args.root : null;"
+            + " var __o = (__nlsArg && typeof __nlsArg === 'string') ? JSON.parse(__nlsArg) : (__nlsArg || {});"
+            + " try{localStorage.setItem('__rolePickSessionOn','1');}catch(e){}"
+            + " try{window.__rolePickSessionOn=true;}catch(e){}"
+            + " try{ window.__rolePickWanted = null; }catch(e){}"
+            + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
+            + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
+            + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
+            + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
+            + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
+            + " try{ window.__rolePickerLib = false; }catch(e){}"
+            + " try{"
+            + "   if(Array.isArray(window.__rolePicks)){"
+            + "     window.__rolePicks.forEach(function(p){"
+            + "       if(p){"
+            + "         p._pickNos = [];"
+            + "         p._pickSeq = 0;"
+            + "         p._seqStale = true;"
+            + "         p._manualPick = false;"
+            + "       }"
+            + "     });"
+            + "   }"
+            + "   window.__rolePickSeq = 0;"
+            + "   window.__roleMaxNo = 0;"
+            + "   window.__pickOrder = {};"
+            + " }catch(e){}"
+            + " try{"
+            + "   window.__rolePickSigs = {};"
+            + "   window.__sigToPick = {};"
+            + "   if(Array.isArray(window.__rolePicks)){"
+            + "     window.__rolePicks.forEach(function(p){"
+            + "       if(p){"
+            + "         var k = p._sigKey || (typeof window.__sigKey==='function' ? window.__sigKey(p) : '');"
+            + "         var s = typeof window.__pickSig==='function' ? window.__pickSig(p) : '';"
+            + "         if(k) { window.__rolePickSigs[k] = true; window.__sigToPick[k] = p; }"
+            + "         if(s) { window.__sigToPick[s] = p; }"
+            + "       }"
+            + "     });"
+            + "   }"
+            + " }catch(e){}"
+            + " try{ window.__rolePickSeq = 0; }catch(e){}"
+            + " try{ window.__roleMaxNo = 0; }catch(e){}"
+            + " try{ window.__pickOrder = {}; }catch(e){}"
+            + " try{ window.__rolePickSeq = 0; }catch(e){}"
+            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
+            + " if (typeof window.__roleGatedStart === 'function') { window.__roleGatedStart(); } else { " + START_SCRIPT + " }"
+            + " window.__rolePickRoot = __rootArg;"
+            + " try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){}"
+            + " })";
+
     public static final String DRAIN_PANEL_CMDS_JS = "(function(){"
             + " try { var a = window.__panelCmds || []; window.__panelCmds = []; return a; }"
             + " catch(e){ return []; } })()";
@@ -158,6 +317,12 @@ public final class RolePickerScripts {
             + " (window.__rolePicks||[]).forEach(function(p){ try{ var k = window.__mergeKey(p);"
             + "   if (!k) { out.push(p); return; } if (seen[k]) return; seen[k]=true; out.push(p);"
             + " }catch(e){ out.push(p); } }); return out; })()";
+
+    /** 读取某 iframe 的 window.__rolePicks 原始 JSON 字符串（跨源 frame 经 Playwright 协议读取，不受 file:// 跨源限制）。 */
+    public static final String READ_FRAME_PICKS_RAW_JS = "() => JSON.stringify(window.__rolePicks||[])";
+
+    /** 清空浏览器侧进行中 step（__currentStep）；用于 followPage 把 opener 的 step 整体转移到新页后清空源页。 */
+    public static final String CLEAR_CURRENT_STEP_JS = "try{ window.__currentStep = []; }catch(e){}";
 
     public static final String FRAME_SCAN_JS = "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()";
 
@@ -319,6 +484,20 @@ public final class RolePickerScripts {
             + " hasMove: typeof window.__rolePickMove==='function',"
             + " hasRecord: typeof window.__recordPick==='function'"
             + "}); })()";
+
+    /** 读取浏览器侧是否已显式停止拾取（__rolePickStopped），供 onFrameNavigated 跳过重激活。 */
+    public static final String IS_PICK_STOPPED_JS =
+            "try { return !!window.__rolePickStopped; } catch(e){ return false; }";
+
+    /** 读取浏览器侧拾取会话开关是否置位（localStorage / window 双判），供 onFrameNavigated 重激活判定。 */
+    public static final String IS_SESSION_ON_JS =
+            "try { return localStorage.getItem('__rolePickSessionOn')==='1' || !!window.__rolePickSessionOn; } catch(e){ return !!window.__rolePickSessionOn; }";
+
+    /** waitForFunction 条件：用户点击结束拾取（__pickDone 置位）。 */
+    public static final String WAIT_PICK_DONE_JS = "() => window.__pickDone === true";
+
+    /** waitForFunction 条件：代码面板已关闭（__codePanelClosed 置位）。 */
+    public static final String WAIT_CODE_PANEL_CLOSED_JS = "() => window.__codePanelClosed === true";
 
     /**
      * SPA / 同 window 跳转时，把 Java 快照的 picks/steps 合并回当前 window（按 __mergeKey 去重，
@@ -513,6 +692,65 @@ public final class RolePickerScripts {
             + " window.__rolePickActive = false;"
             + " try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
             + "}";
+
+    /**
+     * 把 Java 权威拾取内存态回灌浏览器侧 window.__rolePicks（参数化注入，杜绝字符串拼接破坏语法）。
+     * 实参 a: [0]=Base64URL(过滤后 picks JSON)，[1]=Base64URL(删除键 JSON，恒 "[]")，[2]=overwriteNos(boolean)。
+     * 由 RolePickerPanelSync.syncPanelToBrowser 外置而来，行为零变更。
+     */
+    public static final String SYNC_PANEL_TO_BROWSER_JS = "(a) => {"
+            + " try {"
+            + "   function __dec(s){ var b=s.replace(/-/g, '+').replace(/_/g, '/'); return decodeURIComponent(escape(atob(b))); }"
+            + "   var arr = JSON.parse(__dec(a[0]));"
+            + "   var del2 = JSON.parse(__dec(a[1]));"
+            + "   var __overwrite = !!a[2];"
+            + "   if (!(arr instanceof Array)) arr = [];"
+            + "   if (!(del2 instanceof Array)) del2 = [];"
+            + "   if (window.__clearMatchCache) window.__clearMatchCache();"
+            + "   function toPick(p){ if(!p) return p; var o={};"
+            + "     o.strategy=p.strategy; o.role=p.role; o.name=p.name;"
+            + "     o.key=(p.resolvedKey!=null)?p.resolvedKey:undefined;"
+            + "     o.id=(p.strategy==='id' && p.selector)? String(p.selector).replace(/^#/, '') : undefined;"
+            + "     o.css=(p.strategy==='css')?p.selector:undefined;"
+            + "     o.index=p.index; o._pageClass=p.pageClass;"
+            + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
+            + "     o.value=p.value;"
+            + "     o.text=p.text;"
+            + "     o.tag=p.tag;"
+            + "     o.selector=p.selector;"
+            + "     o.resolvedKey=p.resolvedKey;"
+            + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
+            + "     o._seqStale=(p.pickNos==null||p.pickNos.length===0)?true:false;"
+            + "     o._manualPick=false;"
+            + "     return o; }"
+            + "   var __oldNos = {};"
+            + "   (window.__rolePicks||[]).forEach(function(p){ try{ var kk=(p&&p._sigKey)||(typeof window.__pickSig==='function'?window.__pickSig(p):''); if(kk&&Array.isArray(p._pickNos)) __oldNos[kk]=p._pickNos; }catch(e){} });"
+            + "   window.__rolePicks = [];"
+            + "   window.__rolePickSigs = {};"
+            + "   arr.forEach(function(p){"
+            + "     var o = toPick(p);"
+            + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
+            + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(o)"
+            + "            : ((o&&(o._sigKey||o._sig))||null);"
+            + "     if (k) o._sigKey = k;"
+            + "     var __old = (__overwrite) ? null : ((k && __oldNos[k]) ? __oldNos[k] : null);"
+            + "     if (__old && Array.isArray(o._pickNos)) {"
+            + "       var __set = {}; var __keep = [];"
+            + "       __old.concat(o._pickNos).forEach(function(n){ if(n!=null && !__set['_'+n]){ __set['_'+n]=1; __keep.push(n); } });"
+            + "       o._pickNos = __keep;"
+            + "     } else if (__old) { o._pickNos = __old; }"
+            + "     var __del = window.__deletedSigs || {};"
+            + "     if (k && (__del[k] || del2.indexOf(k) >= 0)) return;"
+            + "     if (k) window.__rolePickSigs[k]=true;"
+            + "     window.__rolePicks.push(o); });"
+            + "   (function(){ var __a=window.__rolePicks||[]; var __ns=[];"
+            + "     for(var __i=0;__i<__a.length;__i++){ var __p=__a[__i]; if(__p&&Array.isArray(__p._pickNos)){ for(var __j=0;__j<__p._pickNos.length;__j++){ if(typeof __p._pickNos[__j]==='number') __ns.push(__p._pickNos[__j]); } } }"
+            + "     __ns.sort(function(a,b){return a-b;}); var __m={}; for(var __k=0;__k<__ns.length;__k++) __m[__ns[__k]]=__k+1;"
+            + "     for(var __i2=0;__i2<__a.length;__i2++){ var __p2=__a[__i2]; if(__p2&&Array.isArray(__p2._pickNos)){ var __nn=[]; for(var __j2=0;__j2<__p2._pickNos.length;__j2++){ var __o=__p2._pickNos[__j2]; if(typeof __o==='number'&&__m[__o]!==undefined) __nn.push(__m[__o]); } __nn.sort(function(a,b){return a-b;}); __p2._pickNos=__nn; __p2._pickSeq=__nn.length>0?__nn[__nn.length-1]:0; } }"
+            + "     window.__rolePickSeq=__ns.length; window.__roleMaxNo=__ns.length;"
+            + "   })();"
+            + "   if (window.__renderPicks) window.__renderPicks();"
+            + " } catch(e){} }";
 
     /**
      * 构造 evaluate 实参（k1, v1, k2, v2 ...），避免每个调用点重复 new Map + 多次 put。

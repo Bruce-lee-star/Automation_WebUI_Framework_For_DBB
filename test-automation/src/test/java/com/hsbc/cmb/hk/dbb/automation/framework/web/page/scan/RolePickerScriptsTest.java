@@ -103,11 +103,13 @@ public class RolePickerScriptsTest {
      */
     // File-loaded scripts (and their concat parts) are read verbatim from .js resources, not produced by
     // the extraction refactor, so the delimiter-balance heuristic (which cannot model JS regex / template
-    // literals) must skip them. Only the inline constants are at risk of a dropped '+' or brace.
+    // literals) must skip them. Inline constants that embed such scripts are skipped for the same reason:
+    // START_INJECT_JS and SET_NLS_AND_SESSION_JS both inline START_SCRIPT, which carries regex / template
+    // literals. Only the genuinely inline constants are at risk of a dropped '+' or brace.
     private static final java.util.Set<String> EXTERNAL_OR_FRAGMENT = new java.util.HashSet<>(java.util.Arrays.asList(
             "START_SCRIPT_A", "START_SCRIPT_B1", "START_SCRIPT_B2", "START_SCRIPT",
             "STOP_SCRIPT", "SHOW_PANEL_SCRIPT",
-            "PANEL_SCRIPT_A", "PANEL_SCRIPT_B", "PANEL_SCRIPT"));
+            "PANEL_SCRIPT_A", "PANEL_SCRIPT_B", "PANEL_SCRIPT", "SET_NLS_AND_SESSION_JS", "START_INJECT_JS"));
 
     @Test
     public void everyInlineScriptConstantHasBalancedJsDelimiters() throws Exception {
@@ -142,6 +144,10 @@ public class RolePickerScriptsTest {
                 RolePickerScripts.MERGE_MISSING_PICKS_JS,
                 RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS,
                 RolePickerScripts.MERGE_CLOSE_OP_STEP_JS,
+                RolePickerScripts.SET_NLS_AND_SESSION_JS,
+                RolePickerScripts.SET_PICKER_CODE_JS,
+                RolePickerScripts.SET_NLS_FILES_JS,
+                RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
         };
         for (String s : arrow) {
             assertTrue("arg-taking script must be '(a) => ...' for Playwright to bind args, got: "
@@ -168,6 +174,8 @@ public class RolePickerScriptsTest {
                 RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS.contains("JSON.parse(a.closedState)"));
         assertTrue("MERGE_CLOSE_OP_STEP_JS must parse the closed page state with a default",
                 RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("JSON.parse(a.closedState || '{}')"));
+        assertTrue("SET_NLS_AND_SESSION_JS must parse nls",
+                RolePickerScripts.SET_NLS_AND_SESSION_JS.contains("JSON.parse(a.nls)"));
     }
 
     @Test

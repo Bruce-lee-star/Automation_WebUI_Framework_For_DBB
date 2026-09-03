@@ -14,6 +14,11 @@
     <name>Test Automation</name>
     <description>Cucumber/Serenity test suite: features, step definitions, CucumberTestRunnerIT. Aggregates all framework modules.</description>
 
+    <properties>
+        <!-- Cucumber 标签过滤：默认只跑 @test1；用 -Dtags=@其他 覆盖；-Dtags= （空串）跑全部 -->
+        <tags>@test1</tags>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>

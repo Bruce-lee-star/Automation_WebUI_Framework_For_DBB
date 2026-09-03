@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import com.google.gson.Gson;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,14 +15,11 @@ import java.util.Set;
  *
  * <p>说明：followPage 与仍留在 RoleElementPicker 的 registerPopupFollow 互递归，故本类通过包级可见的
  * RoleElementPicker 静态方法（registerPopupFollow / applyPickState / readPickStateJson / start）回调用；
- * PANEL_SCRIPT 直接取自 RolePickerScripts，GSON 为本地无状态实例。
+ * 注入脚本常量统一取自 RolePickerScripts，调用点零字符串拼接。
  */
 final class RolePickerPageTracker {
 
     private static final Logger log = LoggerFactory.getLogger(RolePickerPageTracker.class);
-
-    /** 与 RoleElementPicker 同语义的 JSON 序列化器（Gson 无状态，独立实例行为等价）。 */
-    private static final Gson GSON = new Gson();
 
     private RolePickerPageTracker() {}
 
@@ -59,11 +55,7 @@ final class RolePickerPageTracker {
                     if (newCls != null && !newCls.equals(curCls)) {
                         pageNames.put(p, newCls);
                     }
-                    p.evaluate("try{"
-                            + "if(window.__rolePageName!==" + GSON.toJson(newCls) + "){"
-                            + "window.__rolePageName=" + GSON.toJson(newCls) + ";"
-                            + "try{localStorage.setItem('__rolePageName'," + GSON.toJson(newCls) + ");}catch(e){}"
-                            + "}}catch(e){}");
+                    p.evaluate(RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args("pageName", newCls));
                 } catch (Exception refreshEx) {
                     log.warn("[picker] reconcile 刷新页面类名失败：{}", refreshEx.getMessage());
                 }
@@ -89,9 +81,8 @@ final class RolePickerPageTracker {
             pageNames.put(p, cls);
             if (!openedPages.contains(p)) openedPages.add(p);
             // 暴露页面类名 + 开启面板开关（与 openPanel/followPage 一致）
-            p.evaluate("window.__rolePageName = " + GSON.toJson(cls) + ";"
-                    + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(cls) + ");}catch(e){}");
-            p.evaluate("try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){} try{window.__rolePanelForce=true;}catch(e){}");
+            p.evaluate(RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", cls));
+            p.evaluate(RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
             p.evaluate(RolePickerScripts.PANEL_SCRIPT);   // 立即重建当前已加载文档的面板
             snapshots.put(p, RoleElementPicker.readPickStateJson(p));
             log.info("[picker][reconcile] 已补登漏跟踪页面并可被拾取：{} -> {}", p.url(), cls);
@@ -134,16 +125,15 @@ final class RolePickerPageTracker {
             // 当前页始终持有全部页面的 pick 并集，故代码生成可在单一窗口按各元素自身 _pageClass 归类。
             RoleElementPicker.applyPickState(newPage, RoleElementPicker.readPickStateJson(opener), nlsReverseJson, nlsFiles);
             if (opener != null && !opener.isClosed()) {
-                opener.evaluate("try{ window.__currentStep = []; }catch(e){}");
+                opener.evaluate(RolePickerScripts.CLEAR_CURRENT_STEP_JS);
             }
-            newPage.evaluate("window.__rolePageName = " + GSON.toJson(cls) + "; window.__currentPageInstance = null;"
-                    + " try{localStorage.setItem('__rolePageName', " + GSON.toJson(cls) + ");}catch(e){}");
+            newPage.evaluate(RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS, RolePickerScripts.args("pageName", cls));
             // 跨源/新页面：localStorage 往往为空或不可写，若直接跑 PANEL_SCRIPT 会因
             // __rolePanelEnabled!=='1' 提前 return，导致新页面没有面板。故显式置位开关，
             // 并用 window.__rolePanelForce 兜底（即使 localStorage 不可用也能重建面板）。
             // 面板重建 addInitScript 已在 context 级注册（registerContextInitScripts），
             // 新页面后续导航（弹窗常伴随重定向）会自动重建面板，无需逐页注册。
-            newPage.evaluate("try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){} try{window.__rolePanelForce=true;}catch(e){}");
+            newPage.evaluate(RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
             // 若会话仍处于拾取中，则在新页面重启点击捕获监听（applyPickState 已把新页 active 置 false）：
             // 经 start() 同时置位会话开关 + 注入 nls，使该页后续导航由 context 门控注入脚本原生保活。
             // 【算法：零等待窗口的双保险注入，杜绝"卡住"】

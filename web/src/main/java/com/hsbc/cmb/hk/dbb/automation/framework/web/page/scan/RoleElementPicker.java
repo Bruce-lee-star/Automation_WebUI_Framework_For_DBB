@@ -55,9 +55,7 @@ public final class RoleElementPicker {
      * 二次打开（同一 context 再次 {@code openPanel}）只更新下方 Map 指向的"当前会话"队列/状态，
      * 回调动态读取，避免命令/拾取被投递到已失效的旧会话队列。
      */
-    private static final Map<BrowserContext, BlockingQueue<CmdEvent>> CTX_CMD_QUEUES = new ConcurrentHashMap<>();
-    private static final Map<BrowserContext, LinkedHashMap<String, RoleEntry>> CTX_PICK_STATES = new ConcurrentHashMap<>();
-    private static final Set<BrowserContext> CTX_BRIDGED = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
     /**
      * 拾取模式（一级概念，三种模式互斥）：
      *  - IDLE：待命（面板显示"▶ 开始拾取"，页面点击不拾取任何元素）
@@ -67,36 +65,11 @@ public final class RoleElementPicker {
      * 与浏览器侧 window.__roleMode 同步，由 Java 权威驱动。
      */
     public enum PickMode { IDLE, MANUAL, SCAN_PAGE, SCAN_REGION }
-    private static final Map<BrowserContext, PickMode> CTX_PICK_MODES = new ConcurrentHashMap<>();
 
-    /**
-     * 标记"由框架主动关闭（BasePage.closeCurrentPage 调 page.close()）"的页面，按 context 隔离。
-     * 目的：onClose 监听无法区分"用户/外部手动关闭"与"代码主动 page.close()"——
-     * 两者都会触发 onClose。代码主动关闭时不该再登记一条 closeCurrentPage 步骤（否则重复且回放会重复关）。
-     * 只有未标记的关闭（即监控到真实外部/手动关闭）才在 onClose 中登记 _closeOp。
-     */
-    private static final Map<BrowserContext, java.util.Set<Page>> CTX_FRAMEWORK_CLOSED =
-            new ConcurrentHashMap<>();
 
     /** 在 BasePage.closeCurrentPage 调 page.close() 前调用：标记本页为"框架主动关闭"。 */
     public static void markFrameworkClose(Page page) {
-        if (page == null) return;
-        BrowserContext ctx = page.context();
-        CTX_FRAMEWORK_CLOSED.computeIfAbsent(ctx, c -> ConcurrentHashMap.newKeySet()).add(page);
-    }
-
-    /** 供 onClose 判断：本次关闭是否来自框架主动调用；读取后清除标记（页面关后即失效）。 */
-    private static boolean consumeFrameworkClose(Page closed) {
-        if (closed == null) return false;
-        try {
-            BrowserContext ctx = closed.context();
-            java.util.Set<Page> set = CTX_FRAMEWORK_CLOSED.get(ctx);
-            if (set != null && set.remove(closed)) {
-                if (set.isEmpty()) CTX_FRAMEWORK_CLOSED.remove(ctx);
-                return true;
-            }
-        } catch (Exception ignore) { /* 页面已关，context 可能失效，按未标记处理 */ }
-        return false;
+        RolePickerSessionState.markFrameworkClose(page);
     }
 
     /**
@@ -107,44 +80,17 @@ public final class RoleElementPicker {
      * </p>
      */
     public static void cleanupContext(BrowserContext ctx) {
-        if (ctx == null) return;
-        CTX_CMD_QUEUES.remove(ctx);
-        CTX_PICK_STATES.remove(ctx);
-        CTX_BRIDGED.remove(ctx);
-        CTX_PICK_MODES.remove(ctx);
-        CTX_FRAMEWORK_CLOSED.remove(ctx);
-        // 同步清理 LAST_PICK_ORIGIN 中属于该 context 的 page
-        LAST_PICK_ORIGIN.keySet().removeIf(p -> {
-            try {
-                return p != null && p.context() == ctx;
-            } catch (Exception ignore) {
-                return true; // 页面已关闭，保守清理
-            }
-        });
+        RolePickerSessionState.cleanupContext(ctx);
     }
 
     /** 清理指定 Page 的 page-level 状态（frameNavigated 跟踪）。 */
     public static void cleanupPage(Page page) {
-        if (page == null) return;
-        LAST_PICK_ORIGIN.remove(page);
+        RolePickerSessionState.cleanupPage(page);
     }
 
     /** 清空所有静态 Map —— 主要用于 JVM 关闭或测试集群重置。 */
     public static void clearAll() {
-        CTX_CMD_QUEUES.clear();
-        CTX_PICK_STATES.clear();
-        CTX_BRIDGED.clear();
-        CTX_PICK_MODES.clear();
-        CTX_FRAMEWORK_CLOSED.clear();
-        LAST_PICK_ORIGIN.clear();
-        // STATE_DELETED 中的 map 引用虽长，但已无法命中任何 CTX_PICK_STATES，安全清理
-        STATE_DELETED.clear();
-        // ⭐ 修复 P3：补齐此前遗漏的两个静态缓存。
-        //    GLOBAL_URL_TO_CLASS（URL → 派生类名）与 NLS_REVERSE_CACHE（nls 反查 JSON）
-        //    都是 JVM 生命周期的静态 Map，clearAll 漏掉会让"重置/清空"名不副实：
-        //    重置后仍持有旧站点 URL 与旧 nls 解析结果。
-        RolePickerClassNameResolver.clear();
-        RolePickerNlsCache.clear();
+        RolePickerSessionState.clearAll();
     }
 
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
@@ -152,7 +98,7 @@ public final class RoleElementPicker {
                                     LinkedHashMap<Page, String> pageNames) {
         if (anyPage == null || anyPage.isClosed()) return;
         BrowserContext ctx = anyPage.context();
-        CTX_PICK_MODES.put(ctx, mode);
+        RolePickerSessionState.CTX_PICK_MODES.put(ctx, mode);
         String jsMode = mode.name().toLowerCase();
         if (pageNames != null) {
             for (Page p : pageNames.keySet()) {
@@ -164,18 +110,8 @@ public final class RoleElementPicker {
     }
     // 上下文级初始化脚本守卫：面板脚本每 context 仅注册一次；拾取脚本按 nls 内容变化才追加注册
     // （addInitScript 无法撤销，重复注册会累积执行；同 nls 幂等跳过，不同 nls 追加后"后注册者后执行"覆盖生效）。
-    private static final Set<BrowserContext> CTX_PANEL_SCRIPTED = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private static final Map<BrowserContext, String> CTX_PICKER_NLS = new ConcurrentHashMap<>();
-    // 最近一次成功 start() 注入的页面 origin（手动开始拾取 / onFrameNavigated 跨域强制重注入后更新）。
-    // 用于 onFrameNavigated 重激活时区分"同源导航（门控脚本已注入，仅轻量保活）"与"跨域导航（门控因
-    // localStorage 隔离未注入，需强制重注入库）"——同源永远不强制 start，杜绝一次导航多次 onFrameNavigated
-    // 反复重注入导致"扫描了很多元素"的放大现象。
-    // 注意：必须按 page 隔离，否则并发执行/重入注入会相互覆盖，导致后续判断错乱。
-    private static final Map<Page, String> LAST_PICK_ORIGIN = new ConcurrentHashMap<>();
-    // 跨域强制重注入去抖：key=page，value=上次强制 start 时间戳。同一 page 在 FORCE_START_DEBOUNCE_MS
-    // 内不重复强制 start（一次导航会触发 onFrameNavigated 多次：about:blank 过渡/重定向/主框架/iframe）。
-    private static final long FORCE_START_DEBOUNCE_MS = 2000L;
-    private static final Map<Page, Long> FORCE_START_TS = new ConcurrentHashMap<>();
+
+
 
     /**
      * 会话级持久"已删集合"：用户主动删除的元素键（_sig / _sigKey / 去索引 locatorKey）。
@@ -186,8 +122,7 @@ public final class RoleElementPicker {
      * 仍按本集合永久屏蔽已删元素，杜绝"区域扫描后已删元素被主循环复活"的回归。
      * key 为 javaPickBySig 对象引用（每会话稳定，O(1) 反查），值为已删键集合。
      */
-    private static final Map<LinkedHashMap<String, RoleEntry>, Set<String>> STATE_DELETED =
-            new ConcurrentHashMap<>();
+
 
 
 
@@ -195,7 +130,7 @@ public final class RoleElementPicker {
      * 面板命令事件：由页面内 {@code window.__rolePickerCmd(c)}（经 {@link Page#exposeFunction} 暴露的
      * Java 回调）投递，携带"哪个页面发的命令"。主循环从阻塞队列取出后据此驱动，避免忙轮询所有页面。
      */
-    private static final class CmdEvent {
+    static final class CmdEvent {
         final Page page;
         final String cmd;
         CmdEvent(Page page, String cmd) { this.page = page; this.cmd = cmd; }
@@ -215,13 +150,13 @@ public final class RoleElementPicker {
     private static void registerContextBridges(BrowserContext ctx,
                                                BlockingQueue<CmdEvent> queue,
                                                LinkedHashMap<String, RoleEntry> javaPickBySig) {
-        CTX_CMD_QUEUES.put(ctx, queue);
+        RolePickerSessionState.CTX_CMD_QUEUES.put(ctx, queue);
         // 【关键修复"二次 openPanel 导致已拾元素清零"】二次 openPanel（设计上支持，见类注释"二次打开只换 Map 指向"）
         // 会 new 一个空 javaPickBySig 并传入；若此处直接 put 覆盖，context 权威内存态会被空 map 替换，
-        // 后续 __roleOnPick 回调（CTX_PICK_STATES.get(ctx)）全部写进空 map → 此前 LogonPage+SetupSecondPwdPage
+        // 后续 __roleOnPick 回调（RolePickerSessionState.CTX_PICK_STATES.get(ctx)）全部写进空 map → 此前 LogonPage+SetupSecondPwdPage
         // 已拾的全部元素丢失（日志现象：内存态 49→1）。故二次打开时把旧会话历史迁移合并进本次 map（保留去重顺序），
-        // 让 openPanel 后续代码（STATE_DELETED 等）拿到"含历史"的同一引用，历史不丢。
-        LinkedHashMap<String, RoleEntry> prev = CTX_PICK_STATES.get(ctx);
+        // 让 openPanel 后续代码（RolePickerSessionState.STATE_DELETED 等）拿到"含历史"的同一引用，历史不丢。
+        LinkedHashMap<String, RoleEntry> prev = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
         // 【diag-migrate】追踪跨会话迁移是否把脏 pickNos/seq 带入本轮（定位 user_name 首号恒为 2 的根因）。
         if (prev != null) {
             for (java.util.Map.Entry<String, RoleEntry> e : prev.entrySet()) {
@@ -246,14 +181,14 @@ public final class RoleElementPicker {
                 }
             }
         }
-        CTX_PICK_STATES.put(ctx, javaPickBySig);
-        boolean first = CTX_BRIDGED.add(ctx);
+        RolePickerSessionState.CTX_PICK_STATES.put(ctx, javaPickBySig);
+        boolean first = RolePickerSessionState.CTX_BRIDGED.add(ctx);
         log.info("[picker] 上下文桥 registerContextBridges：firstReg={}（命令/拾取/控制台桥，context 级一次注册）", first);
         if (!first) return;
         // 命令桥：BindingCallback 的 Source 自带来源 Page，天然区分命令来自哪个页面
         // （新页/默认页共享同一绑定，CmdEvent.page 记录来源）。绑定对 context 下所有页面、所有导航存活。
         ctx.exposeBinding("__rolePickerCmd", (source, args) -> {
-            BlockingQueue<CmdEvent> q = CTX_CMD_QUEUES.get(ctx);
+            BlockingQueue<CmdEvent> q = RolePickerSessionState.CTX_CMD_QUEUES.get(ctx);
             if (q == null) return null;
             String c = null;
             try {
@@ -277,7 +212,7 @@ public final class RoleElementPicker {
         });
         // 拾取桥：浏览器端经 window.__roleOnPick(JSON.stringify(pick)) 异步投递，零往返回传 Java 内存态。
         ctx.exposeBinding("__roleOnPick", (source, args) -> {
-            LinkedHashMap<String, RoleEntry> map = CTX_PICK_STATES.get(ctx);
+            LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
             if (map == null) return null;
             try {
                 if (args == null || args.length == 0) return null;
@@ -344,7 +279,7 @@ public final class RoleElementPicker {
         // 传入的每个键可能是 _sig 或 _sigKey——因 pickDedupKey 对「定位器唯一型策略」用 _sig 作 map key、
         // 对 role/closeOp 用 _sigKey，浏览器无法预知用了哪个，故两者都发、Java 侧按任一命中即移除。
         ctx.exposeBinding("__roleOnDelete", (source, args) -> {
-            LinkedHashMap<String, RoleEntry> map = CTX_PICK_STATES.get(ctx);
+            LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
             if (map == null) return null;
             try {
                 if (args == null || args.length == 0) return null;
@@ -442,11 +377,11 @@ public final class RoleElementPicker {
                     //     });
                     // }
                     // 【修复"已删除元素无法重新拾取"】
-                    // 旧逻辑：STATE_DELETED 永久记录已删键，导致 isDeletedKeyInState 检查命中后跳过元素，
+                    // 旧逻辑：RolePickerSessionState.STATE_DELETED 永久记录已删键，导致 isDeletedKeyInState 检查命中后跳过元素，
                     // 用户永远无法重新拾取已删除的元素。
-                    // 新逻辑：不再写入 STATE_DELETED，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
+                    // 新逻辑：不再写入 RolePickerSessionState.STATE_DELETED，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
                     // 而非"永久封杀该元素"。若需防止跨区域扫描复活，应由浏览器侧 __deletedSigs 临时屏蔽。
-                    // STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
+                    // RolePickerSessionState.STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                 }
                 // 【已禁用"清空所有 frame 的 __rolePicks"】
                 // 原逻辑：删除元素时清空所有 frame 的 __rolePicks/__rolePickSigs/__currentStep。
@@ -486,7 +421,7 @@ public final class RoleElementPicker {
             String t = msg.text();
             if (t == null) return;
             if (t.startsWith("__roleOnPick::")) {
-                LinkedHashMap<String, RoleEntry> map = CTX_PICK_STATES.get(ctx);
+                LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
                 if (map == null) return;
                 try {
                     @SuppressWarnings("unchecked")
@@ -553,7 +488,7 @@ public final class RoleElementPicker {
                 } catch (Exception ignore) {}
             } else if (t.startsWith("__roleOnDelete::")) {
                 // 删除的控制台兜底：与 __roleOnPick:: 对称，绑定失效时删除同样不丢（按键移除天然幂等）。
-                LinkedHashMap<String, RoleEntry> map = CTX_PICK_STATES.get(ctx);
+                LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
                 if (map == null) return;
                 try {
                     @SuppressWarnings("unchecked")
@@ -593,9 +528,9 @@ public final class RoleElementPicker {
                             return false;
                         });
                         // 【修复"已删除元素无法重新拾取"】
-                        // 与 exposeBinding 通道保持一致：不再写入 STATE_DELETED，允许用户重新拾取已删除的元素。
+                        // 与 exposeBinding 通道保持一致：不再写入 RolePickerSessionState.STATE_DELETED，允许用户重新拾取已删除的元素。
                         // 删除的语义是"从当前拾取列表移除"，而非"永久封杀该元素"。
-                        // STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
+                        // RolePickerSessionState.STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                     }
                 } catch (Exception ignore) {}
             } else if ("error".equals(msg.type())
@@ -611,7 +546,7 @@ public final class RoleElementPicker {
         // 此前动态 iframe 因 start 之后才出现而未注入拾取脚本，导致 iframe 内元素点不到、
         // 生成不出 switchToFrame 包裹的 step。现由 frame 监听器在 frame 一附加即自动注入，
         // 与 start() 的补挂逻辑共用 registerFrameInjection，保证同源 frame 一律可拾取。
-        ctx.onPage(p -> registerFrameInjection(p, CTX_PICKER_NLS.get(ctx)));
+        ctx.onPage(p -> registerFrameInjection(p, RolePickerSessionState.CTX_PICKER_NLS.get(ctx)));
     }
 
     /**
@@ -874,14 +809,14 @@ public final class RoleElementPicker {
      * 面板脚本每 context 仅注册一次；拾取脚本按 nls 内容幂等（同 nls 跳过，变化则追加，后注册者后执行覆盖生效）。
      */
     private static void registerContextInitScripts(BrowserContext ctx, String nlsReverseJson) {
-        if (CTX_PANEL_SCRIPTED.add(ctx)) {
+        if (RolePickerSessionState.CTX_PANEL_SCRIPTED.add(ctx)) {
             ctx.addInitScript(PANEL_BOOTSTRAP_SCRIPT);
             ctx.addInitScript(PANEL_SCRIPT);
         }
         String nls = (nlsReverseJson == null || nlsReverseJson.isEmpty()) ? "{}" : nlsReverseJson;
-        if (!nls.equals(CTX_PICKER_NLS.get(ctx))) {
+        if (!nls.equals(RolePickerSessionState.CTX_PICKER_NLS.get(ctx))) {
             ctx.addInitScript(gatedPickerInitScript(nls));
-            CTX_PICKER_NLS.put(ctx, nls);
+            RolePickerSessionState.CTX_PICKER_NLS.put(ctx, nls);
         }
     }
 
@@ -1273,11 +1208,11 @@ public final class RoleElementPicker {
                 // 原实现为让"区域扫描结果 = 纯本次选中区域元素"，进入区域点选态前清空了三处：
                 //   ① 所有 frame 的 __rolePicks/__rolePickSigs
                 //   ② Java 权威内存态 javaPickBySig
-                //   ③ STATE_DELETED 已删集合
+                //   ③ RolePickerSessionState.STATE_DELETED 已删集合
                 // 这导致：先整页扫描、再区域选择时，整页扫描的元素被整体清空，无法与区域扫描结果叠加。
                 // 现按"整页扫描 + 区域扫描互补补充"的期望移除全部清空：区域扫描 __roleScanPage 本身是
                 // 【追加】语义（__scanAdded 记录本次新增并 push 进 __rolePicks），保留已有拾取集即可实现
-                // 叠加。同时保留 __rolePickSigs（去重）防重复、保留 STATE_DELETED（已删屏蔽）防已删元素复活。
+                // 叠加。同时保留 __rolePickSigs（去重）防重复、保留 RolePickerSessionState.STATE_DELETED（已删屏蔽）防已删元素复活。
                 try {
                     page.evaluate("(function(){ try { if(typeof window.__roleStartRegionSelect==='function'){ window.__roleStartRegionSelect(); return true; } } catch(e){} return false; })()");
                 } catch (Exception e) {
@@ -1485,10 +1420,10 @@ public final class RoleElementPicker {
                 // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
                 snap = snapWithAutoStep(snap);
                 // 【修复"删除后整页重新扫描一直为 0"】
-                // 旧实现在生成页面类前按会话级 STATE_DELETED 永久剔除已删元素，导致用户删除后重新整页扫描、
+                // 旧实现在生成页面类前按会话级 RolePickerSessionState.STATE_DELETED 永久剔除已删元素，导致用户删除后重新整页扫描、
                 // 新识别出的元素即便已重新入库 javaPickBySig，生成时仍被剔除，表现为"再扫描一直都是 0"。
                 // 删除语义仅为"从当前内存态移除"（已被 collectDeleteKeys 的 ① ② ③ 兜底 + 源头清空 iframe
-                // 残留完整覆盖），不应永久封杀该元素。故此处【不再】按 STATE_DELETED 剔除，以 javaPickBySig
+                // 残留完整覆盖），不应永久封杀该元素。故此处【不再】按 RolePickerSessionState.STATE_DELETED 剔除，以 javaPickBySig
                 // 当前内容为准直接生成——重新扫描即可正常出现代码。
                 LinkedHashMap<String, String> codePage = buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
                 LinkedHashMap<String, String> codeStep = buildStepCode(snap, packageName, stepClassName);
@@ -1899,14 +1834,14 @@ public final class RoleElementPicker {
             log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
             // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
             // 【修复"跳转到新页面拾取不到"】popup 在 onPopup 回调触发时文档还是 about:blank（origin 为空串），
-            // 若在此处把 LAST_PICK_ORIGIN 更新为空串，会污染全局跨域判据：后续该 popup 导航到真实跨域页时，
+            // 若在此处把 RolePickerSessionState.LAST_PICK_ORIGIN 更新为空串，会污染全局跨域判据：后续该 popup 导航到真实跨域页时，
             // onFrameNavigated 用 curOrigin("https://b.com") != "" 误判为 originChanged=true 而强制重注入——
             // 这本应是对的；但更隐蔽的是：若真实页与根页【同源】，空串会让 originChanged 错判、且把好不容易注入的
             // 库因 about:blank 文档随即销毁而丢失，最终表现为"新页面无蓝框、点击无反应"。
-            // 故 about:blank/空 origin 绝不更新 LAST_PICK_ORIGIN，保持上一有效 origin 作为去抖基准。
+            // 故 about:blank/空 origin 绝不更新 RolePickerSessionState.LAST_PICK_ORIGIN，保持上一有效 origin 作为去抖基准。
             try {
                 String __o = safeOrigin(page.url());
-                if (!__o.isEmpty()) LAST_PICK_ORIGIN.put(page, __o);
+                if (!__o.isEmpty()) RolePickerSessionState.LAST_PICK_ORIGIN.put(page, __o);
             } catch (Exception ignore) {}
         } catch (Exception e) { log.warn("[picker][start] 诊断读取失败：{}", e.getMessage()); }
     }
@@ -2135,7 +2070,7 @@ public final class RoleElementPicker {
                                                 // iframe 自己的 __rolePicks 仍残留已删元素；主循环每轮空闲调用本方法把
                                                 // iframe 残留无条件合并回 javaPickBySig（mergePickIntoMap 无任何删除屏蔽），
                                                 // 导致已删 iframe 元素复活（用户实测：删除全部 10 个后 iframe 元素又回来）。
-                                                // 修复：合并写入前按 STATE_DELETED（跨扫描/跨页面持久已删集合）校验，
+                                                // 修复：合并写入前按 RolePickerSessionState.STATE_DELETED（跨扫描/跨页面持久已删集合）校验，
                                                 // 命中已删键的元素一律跳过，不写入权威内存态——从 Java 侧根治复活。
                                                 if (isDeletedKeyInState(javaPickBySig, key, e, m)) continue;
                                                 mergePickIntoMap(javaPickBySig, key, e);
@@ -2232,11 +2167,11 @@ public final class RoleElementPicker {
                 log.info("[picker][diag-sync] write-back key={} sigKey={} strategy={} pickNos={}", pickDedupKey(new LinkedHashMap<Object,Object>(){{put("_sigKey", e.getSigKey());put("_pageClass", e.getPageClass());}}, e), e.getSigKey(), e.getStrategy(), e.getPickNos());
             }
             // 【修复"删除后整页重新扫描一直为 0"】
-            // 旧实现把会话级 STATE_DELETED 持久集合推给浏览器做 window.__deletedSigs，面板据此永久隐藏已删元素；
+            // 旧实现把会话级 RolePickerSessionState.STATE_DELETED 持久集合推给浏览器做 window.__deletedSigs，面板据此永久隐藏已删元素；
             // 但用户删除后若重新整页扫描，新识别的元素即便已重新入库 javaPickBySig，仍会被 __deletedSigs 命中隐藏，
             // 表现为"再扫描一直都是 0"。删除的语义应只是"从当前内存态移除"（已由 collectDeleteKeys 的 ① ② ③
             // 兜底 + 源头清空 iframe 残留完整覆盖），不应永久封杀该元素再次出现。
-            // 故面板同步【不再】下发 STATE_DELETED 隐藏列表——面板始终以 javaPickBySig 为准（已删元素本就不在此
+            // 故面板同步【不再】下发 RolePickerSessionState.STATE_DELETED 隐藏列表——面板始终以 javaPickBySig 为准（已删元素本就不在此
             // 集合内），用户重新扫描即可正常显示。空数组场景 JS indexOf 仍安全。
             String delJson = "[]";
             // 【关键修复"区域扫描穿透不了 frame"】旧实现把 GSON.toJson 生成的 JSON（含中文名称 / file://
@@ -3678,8 +3613,8 @@ public final class RoleElementPicker {
             try {
                 // 区分"框架主动关闭（closeCurrentPage 主动 page.close()）"与"外部/手动关闭"。
                 // 前者已在代码里显式调用 closeCurrentPage()，若在 onClose 再登记 _closeOp 会重复生成；
-                // 后者才需要补登记 closeCurrentPage 步骤。consumeFrameworkClose 读取即清除标记（页面关后失效）。
-                boolean frameworkClosed = consumeFrameworkClose(closed);
+                // 后者才需要补登记 closeCurrentPage 步骤。RolePickerSessionState.consumeFrameworkClose 读取即清除标记（页面关后失效）。
+                boolean frameworkClosed = RolePickerSessionState.consumeFrameworkClose(closed);
                 // 关闭瞬间尝试抓一份最终快照：页面可能已不可 evaluate，此时 readPickStateJson 返回空集
                 // （{picks:[],...}，见 2491-2496，不抛异常）。关键修复：绝不能拿空集覆盖主循环此前缓存的快照
                 // （那才含新页已拾取的元素）——否则合并时会用空 picks 把新页元素"合并没了"。
@@ -3923,7 +3858,7 @@ public final class RoleElementPicker {
                 // 销毁的文档"上失效——表现即"跨域新页面点击有蓝框 active:true，但 __roleOnPick 回传不进 Java"。
                 // 故跨域场景【跳过此处 applyPickState 覆盖】，把数据恢复完全交给唯一的 start() 权威重建。
                 String __navOrigin = safeOrigin(page.url());
-                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(LAST_PICK_ORIGIN.get(page));
+                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN.get(page));
                 // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
                 //  - 整页重建（livePicks=false）：用 applyPickState 从快照整体恢复（含 nls 反查表）；
                 //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，
@@ -4132,7 +4067,7 @@ public final class RoleElementPicker {
                     // 故以 origin 是否变化作为"是否需要强制重注入"的唯一判据，避免对同源导航（含 SPA hash 变化、整页跳转）
                     // 反复重注入造成"扫描了很多元素"的放大。SPA hash 变化(#/question1)不改变 origin → 视为同源，仅保活。
                     String curOrigin = safeOrigin(page.url());
-                    boolean originChanged = !curOrigin.isEmpty() && !curOrigin.equals(LAST_PICK_ORIGIN);
+                    boolean originChanged = !curOrigin.isEmpty() && !curOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN);
                     if (!originChanged) {
                         // ===== 同源导航：门控脚本已注入库，仅做轻量激活保活 =====
                         // 关键修复（跳转到新页面后元素成倍增加）：监听重挂已由 context 级门控注入脚本
@@ -4157,15 +4092,15 @@ public final class RoleElementPicker {
                         // ===== 跨域导航：门控脚本因 localStorage 隔离未注入 → 强制 start() 重注入整套库 =====
                         // 去抖：一次跨域导航会触发 onFrameNavigated 多次（about:blank 过渡/重定向/主框架/iframe），
                         // 每次都强制 start 会清空并重建 __rolePickSigs、重复渲染所有元素，表现为"扫描了很多元素"。
-                        // 同一 page 在 FORCE_START_DEBOUNCE_MS 内只真正重注入一次。
+                        // 同一 page 在 RolePickerSessionState.FORCE_START_DEBOUNCE_MS 内只真正重注入一次。
                         long now = System.currentTimeMillis();
-                        Long last = FORCE_START_TS.get(page);
-                        if (last != null && (now - last) < FORCE_START_DEBOUNCE_MS) {
+                        Long last = RolePickerSessionState.FORCE_START_TS.get(page);
+                        if (last != null && (now - last) < RolePickerSessionState.FORCE_START_DEBOUNCE_MS) {
                             log.info("[picker][nav] 跨域重注入去抖（{}ms 内已注入，跳过）@ {}", (now - last), page.url());
                         } else {
-                            FORCE_START_TS.put(page, now);
+                            RolePickerSessionState.FORCE_START_TS.put(page, now);
                             log.warn("[picker][nav] 检测到跨域导航库未注入，强制 start() 重注入 @ {} : origin={} -> {}",
-                                    page.url(), LAST_PICK_ORIGIN, curOrigin);
+                                    page.url(), RolePickerSessionState.LAST_PICK_ORIGIN, curOrigin);
                             try {
                                 start(page, nlsReverseJson);
                             } catch (Exception startEx) {
@@ -4255,7 +4190,7 @@ public final class RoleElementPicker {
                 // 用户可能在面板之外手动导航（如直接改 URL、点原生链接跳转），这类跳转不经过
                 // followPage/onPopup 钩子，window.__rolePageName 仍停留在旧页类名，导致新页拾取的元素
                 // 被打上旧 pageClass；两个真实不同的页因此共享同一 pageClass，删除时整桶/值级兜底 +
-                // STATE_DELETED 会把两页当一页一并清除，且已删键永久屏蔽后续扫描。
+                // RolePickerSessionState.STATE_DELETED 会把两页当一页一并清除，且已删键永久屏蔽后续扫描。
                 // 此处对【每个已登记页】按当前 URL 重新解析 pageClass 并刷新其自身 window.__rolePageName，
                 // 确保手动跳转后的页面拿到正确类名（每页写的是"它自己"的类名，而非当前激活页的），
                 // 从源头杜绝跨页 pageClass 串味。幂等、仅当解析结果变化时写回。
@@ -4352,9 +4287,9 @@ public final class RoleElementPicker {
             // onLoadState 触发——但这引入"卡住窗口"：SPA 重定向/不触发 DOMContentLoaded 的页面会让监听永不挂载，
             // 表现为"新页无蓝框、换了个操作才突然好"（实则是别的导航触发 onFrameNavigated 补注入）。
             // 现改为【同步立即 start()】注入当前文档作为兜底，且 start() 已修复：about:blank 不再污染全局
-            // LAST_PICK_ORIGIN。随后真实页导航由两条路径无缝接管，无任何等待间隙：
+            // RolePickerSessionState.LAST_PICK_ORIGIN。随后真实页导航由两条路径无缝接管，无任何等待间隙：
             //   ① context 级门控 addInitScript 在每个新文档早期自动跑，同源导航读得到 localStorage 开关即注入；
-            //   ② onFrameNavigated 对跨域导航强制 start() 重注入（LAST_PICK_ORIGIN 未污染故能正确判跨域）。
+            //   ② onFrameNavigated 对跨域导航强制 start() 重注入（RolePickerSessionState.LAST_PICK_ORIGIN 未污染故能正确判跨域）。
             // 故弹出瞬间即具备基础监听，导航完成后即被真实库接管，用户体感"立即能拾取、不卡"。
             if (sessionActive) {
                 try { start(newPage, nlsReverseJson); } catch (Exception ex) {
@@ -4400,7 +4335,7 @@ public final class RoleElementPicker {
 
 
     /**
-     * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 STATE_DELETED）。
+     * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 RolePickerSessionState.STATE_DELETED）。
      * 删除时 collectDeleteKeys 会把多种键形态都记入 dead 集合（pickDedupKey key / _sig / 去索引 _sig /
      * _sigKey / RoleEntry.sigKey），而这里若只比对单一 key 可能漏命中 → iframe 残留元素经
      * mergeFramePicksToMain 复活。故把与删除同口径的候选键全部拿去比对，任一命中即视为已删。
@@ -4408,9 +4343,9 @@ public final class RoleElementPicker {
     private static boolean isDeletedKeyInState(LinkedHashMap<String, RoleEntry> map, String key,
                                                RoleEntry e, Map<Object, Object> m) {
         try {
-            java.util.Set<String> dead = STATE_DELETED.get(map);
+            java.util.Set<String> dead = RolePickerSessionState.STATE_DELETED.get(map);
             if (dead == null || dead.isEmpty()) return false;
-            // key 即 pickDedupKey（方案 B 下已绑定 pageClass），与 STATE_DELETED 记录同构，精确命中。
+            // key 即 pickDedupKey（方案 B 下已绑定 pageClass），与 RolePickerSessionState.STATE_DELETED 记录同构，精确命中。
             if (key != null && !key.isEmpty() && dead.contains(key)) return true;
             if (e != null && e.getSigKey() != null && dead.contains(e.getSigKey())) return true;
             if (m != null) {

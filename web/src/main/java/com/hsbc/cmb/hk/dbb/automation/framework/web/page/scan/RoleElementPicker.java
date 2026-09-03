@@ -629,9 +629,7 @@ public final class RoleElementPicker {
     /** 用于把参数安全序列化为 JS 字面量（避免手动拼接转义错误） */
     private static final Gson GSON = new Gson();
 
-    // O2：syncPanelToBrowser 的 ETag 缓存——按 Page 记录上次同步的内容签名，未变则跳过整轮同步。
-    private static final java.util.Map<Page, String> LAST_SYNC_SIG =
-            new java.util.concurrent.ConcurrentHashMap<>();
+
 
     /** 反序列化任意拾取态 JSON 的精确泛型类型，避免 {@code fromJson(x, Map.class)} 的未检查转换 */
     private static final java.lang.reflect.Type MAP_STRING_OBJECT_TYPE =
@@ -801,7 +799,7 @@ public final class RoleElementPicker {
                     // 重编号后把最新内存态回灌浏览器面板，保证面板/快照/Java 三侧序号一致。
                     // 强制刷新 ETag：repickNos 只改序号、元素身份未变，若不清除 LAST_SYNC_SIG，
                     // syncPanelToBrowser 的签名短路会跳过回灌，导致面板序号不刷新（被旧值覆盖）。
-                    try { LAST_SYNC_SIG.remove(page); } catch (Exception ignore) {}
+                    try { RolePickerPanelSync.LAST_SYNC_SIG.remove(page); } catch (Exception ignore) {}
                     try { if (!page.isClosed()) syncPanelToBrowser(page, null, javaPickBySig, true); } catch (Exception ignore) {}
                     // 【diag-repick】sync 后回读浏览器侧 __rolePicks 的实际 _pickNos，确认回灌生效（而非旧值残留）。
                     try {
@@ -1708,265 +1706,16 @@ public final class RoleElementPicker {
      * 未被可靠填充，导致点击时面板列表看不到已拾元素。此处以 Java 侧为准，保证面板实时反映已拾内容。
      * 仅用于面板展示；代码生成仍走 javaPickBySig（见 runPickerCommand），不受影响。
      */
-    /**
-     * 【关键修复"整页/区域扫描后 iframe 内元素不进面板"】
-     * 由 Java 侧遍历 page.frames()，读回各 iframe 自己的 window.__rolePicks（Playwright 协议访问不受
-     * file:// 跨源限制），按 sigKey 去重后显式合并进【主框架】window.__rolePicks 并触发渲染，使面板与
-     * readPickSnapshot（读主框架）都能看到 iframe 内元素。整页扫描与区域扫描共用。
-     */
     private static void mergeFramePicksToMain(Page page, LinkedHashMap<String, RoleEntry> javaPickBySig) {
-        if (page == null || page.isClosed()) return;
-        for (com.microsoft.playwright.Frame f : page.frames()) {
-            if (f == null || f.equals(page.mainFrame())) continue;
-            try {
-                // 【关键修复"合并 iframe 拾取失败：SyntaxError: Unexpected end of input"】
-                // 现象：区域扫描穿透 iframe 后，日志每 ~1s 报一次
-                //   [picker] 合并 iframe 拾取到主框架失败（url=...picker-iframe-*.html）
-                //   Error{ message='SyntaxError: Unexpected end of input at eval' }
-                // 根因：iframe 的 pick 含中文名称 / file:// URL / 特殊字符。旧实现是 JSON.stringify 后把
-                // 结果字符串【拼进】page.evaluate 的 JS 里（var arr = " + j + "），Playwright 对这段含中文
-                // 的 JS 二次解析必然抛 SyntaxError；改为直接传 List<Map> 参数（evaluate(script, arg)）时，
-                // Playwright 序列化含特殊字符的 pick 对象内联进表达式仍可能产生不完整 JS（Unexpected end
-                // of input，且嵌套 iframe 的 grandchild 更明显）。
-                // 最稳妥：在 iframe 上下文先 JSON.stringify 成【字符串】，再把该【字符串】作为参数传给
-                // 主框架 evaluate(script, json) —— Playwright 序列化字符串值会正确转义，JS 内 JSON.parse
-                // 还原成数组，彻底避免任何 JS 语法错误。
-                Object frameJson = f.evaluate("() => JSON.stringify(window.__rolePicks||[])");
-                if (frameJson instanceof String) {
-                    final String json = (String) frameJson;
-                    if (!json.isEmpty() && !"[]".equals(json.trim())) {
-                        // 【关键修复"区域扫描穿透了 iframe 却仍看不到 iframe 元素"】
-                        // iframe 自扫结果进【iframe 自己的 __rolePicks】，但若没回传 Java（__roleOnPick/console
-                        // 兜底链路在 file:// 跨源/嵌套场景偶发失效），javaPickBySig 就缺 iframe 元素——
-                        // 而 syncPanelToBrowser 每次用 javaPickBySig【重建】主框架 __rolePicks（虽不清空，
-                        // 但 mergeFramePicksToMain 合并进来的 iframe 元素若无 javaPickBySig 支撑，后续生成/
-                        // 同步路径仍会缺）。故此处 Java 侧把 iframe __rolePicks 解析成 RoleEntry 一并写入
-                        // javaPickBySig，使 iframe 元素进入权威内存态，与主框架合并+面板展示+代码生成对齐。
-                        try {
-                            @SuppressWarnings("unchecked")
-                            java.util.List<?> arr = GSON.fromJson(json, java.util.List.class);
-                            if (arr != null) {
-                                synchronized (javaPickBySig) {
-                                    for (Object item : arr) {
-                                        try {
-                                            if (!(item instanceof java.util.Map)) continue;
-                                            @SuppressWarnings("unchecked")
-                                            java.util.Map<Object, Object> m = (java.util.Map<Object, Object>) item;
-                                            String strat = asString(m.get("strategy"));
-                                            String nm = asString(m.get("name"));
-                                            if ("text".equals(strat) && nm != null && nm.length() >= 25) continue; // 与 __roleScanPage 一致剔除整块文本
-                                            RoleEntry e = RolePickerPickParser.parsePick(m);
-                                            if (e == null) continue;
-                                            // 复用 __roleOnPick 的 backfill：浏览器 framePath 缺失时用 Java 侧计算真实框架路径
-                                            if (e.getFramePath() == null || e.getFramePath().isEmpty()) {
-                                                try {
-                                                    java.util.List<String> fp = RolePickerFramePath.computeFramePath(page, f);
-                                                    if (fp != null && !fp.isEmpty()) e.setFramePath(fp);
-                                                } catch (Exception ignore) {}
-                                            }
-                                            String key = RolePickerPickParser.pickDedupKey(m, e);
-                                            if (key != null && !key.isEmpty()) {
-                                                // 【关键修复"删除所有元素后 iframe 元素又复活"】
-                                                // 删除只清主框架 __rolePicks + Java 权威内存态 + 主框架 __deletedSigs，
-                                                // iframe 自己的 __rolePicks 仍残留已删元素；主循环每轮空闲调用本方法把
-                                                // iframe 残留无条件合并回 javaPickBySig（mergePickIntoMap 无任何删除屏蔽），
-                                                // 导致已删 iframe 元素复活（用户实测：删除全部 10 个后 iframe 元素又回来）。
-                                                // 修复：合并写入前按 RolePickerSessionState.STATE_DELETED（跨扫描/跨页面持久已删集合）校验，
-                                                // 命中已删键的元素一律跳过，不写入权威内存态——从 Java 侧根治复活。
-                                                if (isDeletedKeyInState(javaPickBySig, key, e, m)) continue;
-                                                RolePickerPickParser.mergePickIntoMap(javaPickBySig, key, e);
-                                            }
-                                        } catch (Exception ignore) {}
-                                    }
-                                }
-                            }
-                        } catch (Exception ignore) {}
-                        // 【彻底修复"合并 iframe 拾取到主框架失败：SyntaxError: Unexpected end of input"】
-                        // 根因：Playwright Java 的 page.evaluate(script, arg) 会把 String/复杂 arg 拼接进
-                        // JS 表达式并二次编译，含中文/特殊字符时抛 SyntaxError；此前先后尝试标准 Base64、
-                        // Base64URL 均不可靠。且经诊断，iframe 元素已通过 __roleOnPick/console 回传进入 Java
-                        // 权威内存态 javaPickBySig（本方法第 5459 行 mergePickIntoMap 已写入），主循环的
-                        // syncPanelToBrowser 会以 javaPickBySig 为准回灌主框架 __rolePicks，因此这里的
-                        // page.evaluate 合并是【冗余】的——其唯一副作用是同步主框架 __rolePicks，而该同步
-                        // 由主循环负责。故直接移除这段跨 JS 传参合并，从根上消除 SyntaxError，功能不受影响。
-                    }
-                }
-            } catch (Exception fe) {
-                // url() 可能触发跨 frame 异常，捕获即可
-                try {
-                    String feMsg = fe.getMessage() == null ? "" : fe.getMessage();
-                    // 登录页动态 iframe（crossdomain.html / about:blank）在导航/关闭/context 销毁瞬间被
-                    // evaluate 属正常生命周期竞态（TargetClosedError / Frame was detached），并非合并逻辑
-                    // 故障，降级为 debug 避免刷屏；其余真实合并异常仍 WARN 暴露。
-                    if (feMsg.contains("closed") || feMsg.contains("detached")
-                            || feMsg.contains("TargetClosed") || feMsg.contains("Target page")) {
-                        log.debug("[picker] 跳过已关闭/分离的 iframe（url={}）：{}", f.url(), feMsg);
-                    } else {
-                        log.warn("[picker] 合并 iframe 拾取到主框架失败（url={}）：{}", f.url(), feMsg);
-                    }
-                } catch (Exception ignore) {}
-            }
-        }
+        RolePickerPanelSync.mergeFramePicksToMain(page, javaPickBySig);
     }
 
-    /**
-     * 把 Java 权威拾取内存态（javaPickBySig）按目标页 pageClass 过滤后同步到该页浏览器面板展示数组
-     * window.__rolePicks 并触发渲染。
-     * 修复"当前跟随页(current[0])不是用户正在点击的页时，那个页面的面板空白、看不到已拾元素"：
-     * 改为对每个被跟踪页面分别同步（调用处遍历 pageNames），使任一页面的面板都能实时反映 Java 侧已拾内容。
-     * 仅用于面板展示；代码生成仍走 javaPickBySig（见 runPickerCommand），不受影响。
-     * 注意：不再清空 window.__rolePickSigs，避免干扰浏览器端真实点击的去重计数。
-     */
     private static void syncPanelToBrowser(Page page, LinkedHashSet<String> pageClasses, LinkedHashMap<String, RoleEntry> state) {
-        syncPanelToBrowser(page, pageClasses, state, false);
+        RolePickerPanelSync.syncPanelToBrowser(page, pageClasses, state);
     }
 
-    /**
-     * 把 Java 权威内存态回灌浏览器侧 __rolePicks。
-     * @param overwriteNos true=用户经面板显式编辑序号（repickNos）后调用，整体覆盖浏览器侧旧 _pickNos，
-     *                     不与其并集（避免"旧序号被并回"导致编辑序号不生效）。
-     *                     false=常规拾取回传同步，保留浏览器侧更长 _pickNos 以修复 i18n 并发回传丢号竞态。
-     */
     private static void syncPanelToBrowser(Page page, LinkedHashSet<String> pageClasses, LinkedHashMap<String, RoleEntry> state, boolean overwriteNos) {
-        if (page == null || page.isClosed() || state == null) return;
-        try {
-            // O2：ETag 短路——主循环每 ~1s 调一次，但拾取集未变时没必要重算并 evaluate 全量大对象。
-            // 用「元素身份+选择器+序号」拼成签名，与上次同页同步比较，相同则直接跳过（含浏览器渲染），
-            // 大幅减少拾取静止期以及大拾取集下的 evaluate / JSON 序列化开销。
-            StringBuilder sig = new StringBuilder();
-            sig.append(pageClasses == null ? "*" : pageClasses.toString());
-            for (RoleEntry e : state.values()) {
-                String pc = e.getPageClass();
-                if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) {
-                    sig.append('\u0001').append(e.getSigKey()).append('|')
-                       .append(e.getStrategy()).append('|').append(e.getSelector())
-                       .append('|').append(e.getIndex())
-                       // 序号数组纳入签名：仅改拾取序号（如点 +/删除）时元素身份不变，
-                       // 若不纳入，ETag 短路会让 syncPanelToBrowser 跳过回灌，导致浏览器侧
-                       // _pickNos 被此前某次用旧 pickNos 的回灌覆盖、面板序号不刷新。
-                       .append('|').append(e.getPickNos() == null ? "" : e.getPickNos());
-                }
-            }
-            String newSig = sig.toString();
-            String prev = LAST_SYNC_SIG.get(page);
-            if (newSig.equals(prev)) return;   // 内容未变，跳过整轮同步
-            LAST_SYNC_SIG.put(page, newSig);
-            // 仅取归属该页任一历史页类的拾取（pageClass 为空的元素兜底同步到所有页，避免漏显示）。
-            // 关键修复：用"该页经历过的全部页类集合"而非"当前页类"过滤，使整页跳转后旧页(_pageClass=旧类)
-            // 元素仍保留在面板，实现跨页拾取累积可见（不再被新页类过滤冲掉）。
-            List<RoleEntry> filtered = new ArrayList<>();
-            for (RoleEntry e : state.values()) {
-                String pc = e.getPageClass();
-                // pageClasses 为 null 表示同步全部（跨页累积不丢，按页类由浏览器子 Tab 分组展示）；
-                // 否则只同步归属该页任一历史页类的元素。
-                if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) filtered.add(e);
-            }
-            String json = GSON.toJson(filtered);
-            // 【diag-sync】写出前逐条列出本次回灌浏览器的每个 entry 的 key 与 pickNos，
-            // 用于确认 syncPanelToBrowser 是否把(错误地)为 null/旧值的 pickNos 覆盖回浏览器、冲掉累积序号。
-            for (RoleEntry e : filtered) {
-                log.info("[picker][diag-sync] write-back key={} sigKey={} strategy={} pickNos={}", RolePickerPickParser.pickDedupKey(new LinkedHashMap<Object,Object>(){{put("_sigKey", e.getSigKey());put("_pageClass", e.getPageClass());}}, e), e.getSigKey(), e.getStrategy(), e.getPickNos());
-            }
-            // 【修复"删除后整页重新扫描一直为 0"】
-            // 旧实现把会话级 RolePickerSessionState.STATE_DELETED 持久集合推给浏览器做 window.__deletedSigs，面板据此永久隐藏已删元素；
-            // 但用户删除后若重新整页扫描，新识别的元素即便已重新入库 javaPickBySig，仍会被 __deletedSigs 命中隐藏，
-            // 表现为"再扫描一直都是 0"。删除的语义应只是"从当前内存态移除"（已由 collectDeleteKeys 的 ① ② ③
-            // 兜底 + 源头清空 iframe 残留完整覆盖），不应永久封杀该元素再次出现。
-            // 故面板同步【不再】下发 RolePickerSessionState.STATE_DELETED 隐藏列表——面板始终以 javaPickBySig 为准（已删元素本就不在此
-            // 集合内），用户重新扫描即可正常显示。空数组场景 JS indexOf 仍安全。
-            String delJson = "[]";
-            // 【关键修复"区域扫描穿透不了 frame"】旧实现把 GSON.toJson 生成的 JSON（含中文名称 / file://
-            // URL 的 iframe 元素）直接【拼进】page.evaluate 的 JS 表达式（var arr = " + json + "），且该 JS
-            // 表达式内还带大量中文注释；Playwright 对含非 ASCII 字符的 JS 表达式二次解析会抛
-            // SyntaxError: Unexpected end of input → 同步被 catch 静默吞掉 → 主框架 __rolePicks 不更新，
-            // 面板永远看不到 iframe 内元素。修复：json/delJson 改为【参数传递】（evaluate(script, json, del)），
-            // 并由 Playwright 安全序列化字符串参数；JS 表达式内【移除所有中文注释】，只保留 ASCII。
-            // 【加固】实测确认：Playwright Java 的 page.evaluate(script, arg) 会把 String/复杂 arg 拼接进
-            // JS 表达式，若含中文或 + / = 等特殊字符（标准 Base64、原始 json）会二次解析 SyntaxError。
-            // 故 json/delJson 先 Base64URL 无 padding（仅 [A-Za-z0-9_-]，不含破坏语法的字符）再作为参数，
-            // JS 端先还原成标准 Base64 再 atob+decodeURIComponent+escape 还原 UTF-8 JSON。
-            String syncJsonB64 = java.util.Base64.getUrlEncoder().withoutPadding()
-                    .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            String syncDelB64 = java.util.Base64.getUrlEncoder().withoutPadding()
-                    .encodeToString(delJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            page.evaluate(
-                    "(args) => {"
-                    + " try {"
-                    + "   function __dec(s){ var b=s.replace(/-/g, '+').replace(/_/g, '/'); return decodeURIComponent(escape(atob(b))); }"
-                    + "   var arr = JSON.parse(__dec(args[0]));"
-                    + "   var del2 = JSON.parse(__dec(args[1]));"
-                    + "   if (!(arr instanceof Array)) arr = [];"
-                    + "   if (!(del2 instanceof Array)) del2 = [];"
-                    + "   if (window.__clearMatchCache) window.__clearMatchCache();"
-                    + "   function toPick(p){ if(!p) return p; var o={};"
-                    + "     o.strategy=p.strategy; o.role=p.role; o.name=p.name;"
-                    + "     o.key=(p.resolvedKey!=null)?p.resolvedKey:undefined;"
-                    + "     o.id=(p.strategy==='id' && p.selector)? String(p.selector).replace(/^#/, '') : undefined;"
-                    + "     o.css=(p.strategy==='css')?p.selector:undefined;"
-                    + "     o.index=p.index; o._pageClass=p.pageClass;"
-                    + "     o._sigKey=(p.sigKey!=null&&p.sigKey!=='')?p.sigKey:undefined;"
-                    + "     o.value=p.value;"  // 【关键修复"i18n元素删除不干净"】i18n 策略的 buildSelector 需要 value 字段
-                    + "     o.text=p.text;"    // 透传 text 字段，供 collectDeleteKeys 值级匹配兜底
-                    + "     o.tag=p.tag;"      // 透传 tag 字段，供 collectDeleteKeys 值级匹配兜底
-                    + "     o.selector=p.selector;"  // 透传 selector 字段，供 id/css 型元素删除匹配
-                    + "     o.resolvedKey=p.resolvedKey;"
-                    // 透传全局拾取顺序号数组 _pickNos（如 [1,4,7]）：Java 权威内存态已持有（parsePick 解析），
-                    // 回灌浏览器时原样写出，避免 syncPanelToBrowser 重建 pick 时丢失 → 跨页导航 index 重置。
-                    + "     o._pickNos=(p.pickNos)?p.pickNos:undefined;"
-                    + "     o._seqStale=(p.pickNos==null||p.pickNos.length===0)?true:false;"
-                    + "     o._manualPick=false;"
-                    + "     return o; }"
-                    // 关键修复"repickNos/加号/删除后面板序号不刷新"：此前为 push + __rolePickSigs[k] 去重模式，
-                    // 已存在的元素被跳过 push，浏览器侧旧 pick 对象（带着旧 _pickNos）永不更新；repickNos 虽把
-                    // 最新 nos 写回 Java 权威态并强制重算 ETag，但 evaluate 重跑时仍因 __rolePickSigs[k] 命中而
-                    // 跳过 → 面板序号被旧值钉死。改为【先清空再整体重建】：以 Java 权威内存态为准重建
-                    // window.__rolePicks（含最新 _pickNos），保证三侧（面板/Java/快照）序号始终一致。
-                    // 安全：主循环每轮已先 mergeFramePicksToMain 把 iframe 元素并入 javaPickBySig，重建不丢元素；
-                    // 浏览器侧加号/删除均经 repickNos 同步回 Java，重建时与 Java 态对齐、无回退。
-                    + "   var __overwrite = " + (overwriteNos ? "true" : "false") + ";"
-                    + "   var __oldNos = {};"
-                    + "   (window.__rolePicks||[]).forEach(function(p){ try{ var kk=(p&&p._sigKey)||(typeof window.__pickSig==='function'?window.__pickSig(p):''); if(kk&&Array.isArray(p._pickNos)) __oldNos[kk]=p._pickNos; }catch(e){} });"
-                    + "   window.__rolePicks = [];"
-                    + "   window.__rolePickSigs = {};"
-                    + "   arr.forEach(function(p){"
-                    + "     var o = toPick(p);"
-                    + "     o._sig = (typeof window.__pickSig==='function') ? (window.__pickSig(o)||'') : '';"
-                    + "     var k = (typeof window.__sigKey==='function') ? window.__sigKey(o)"
-                    + "            : ((o&&(o._sigKey||o._sig))||null);"
-                    + "     if (k) o._sigKey = k;"
-                    // 关键修复"sync 重建用残缺 Java 态覆盖浏览器累积序号"：Java 权威态因并发回传竞态
-                    // 可能短暂只持有 [2]（真实应为 [2,5,6,7]），而浏览器侧 accumulator 才是完整累积。
-                    // 重建时若浏览器旧 __rolePicks 中同 _sigKey 元素持有更长的 _pickNos，则以浏览器侧为准，
-                    // 杜绝"sync 一轮就把累积序号冲回旧值"的自循环（label/i18n 元素反复丢失序号的根因）。
-                    // 例外：__overwrite=true 表示本次 sync 来自"用户经面板显式编辑序号(repickNos)"，
-                    // Java 权威态已是用户意图的完整值，必须整体覆盖、禁止与浏览器旧 _pickNos 并集，
-                    // 否则旧序号会被并回，表现为"面板 add/去除序号不生效"。
-                    + "     var __old = (__overwrite) ? null : ((k && __oldNos[k]) ? __oldNos[k] : null);"
-                    + "     if (__old && Array.isArray(o._pickNos)) {"
-                    + "       var __set = {}; var __keep = [];"
-                    + "       __old.concat(o._pickNos).forEach(function(n){ if(n!=null && !__set['_'+n]){ __set['_'+n]=1; __keep.push(n); } });"
-                    + "       o._pickNos = __keep;"
-                    + "     } else if (__old) { o._pickNos = __old; }"
-                    + "     var __del = window.__deletedSigs || {};"
-                    // 仅按含 pageClass 的 k（=__sigKey）命中已删屏蔽集，裸 o._sig 跨页同名会误屏蔽另一页面共用元素。
-                    + "     if (k && (__del[k] || del2.indexOf(k) >= 0)) return;"
-                    + "     if (k) window.__rolePickSigs[k]=true;"
-                    + "     window.__rolePicks.push(o); });"
-                    // 回灌后全局紧凑重排：Java 权威态可能带空洞（如取消勾选/重扫描清空后），原样写回会导致
-                    // 浏览器侧号不连续、与面板 addPickNo 的紧凑语义不一致。统一压缩成 1..N 连续无空洞。
-                    + "   (function(){ var __a=window.__rolePicks||[]; var __ns=[];"
-                    + "     for(var __i=0;__i<__a.length;__i++){ var __p=__a[__i]; if(__p&&Array.isArray(__p._pickNos)){ for(var __j=0;__j<__p._pickNos.length;__j++){ if(typeof __p._pickNos[__j]==='number') __ns.push(__p._pickNos[__j]); } } }"
-                    + "     __ns.sort(function(a,b){return a-b;}); var __m={}; for(var __k=0;__k<__ns.length;__k++) __m[__ns[__k]]=__k+1;"
-                    + "     for(var __i2=0;__i2<__a.length;__i2++){ var __p2=__a[__i2]; if(__p2&&Array.isArray(__p2._pickNos)){ var __nn=[]; for(var __j2=0;__j2<__p2._pickNos.length;__j2++){ var __o=__p2._pickNos[__j2]; if(typeof __o==='number'&&__m[__o]!==undefined) __nn.push(__m[__o]); } __nn.sort(function(a,b){return a-b;}); __p2._pickNos=__nn; __p2._pickSeq=__nn.length>0?__nn[__nn.length-1]:0; } }"
-                    + "     window.__rolePickSeq=__ns.length; window.__roleMaxNo=__ns.length;"
-                    + "   })();"
-                    + "   if (window.__renderPicks) window.__renderPicks();"
-                    + " } catch(e){} }",
-                    java.util.Arrays.asList(syncJsonB64, syncDelB64));
-        } catch (Exception syncE) {
-            // 保留日志（而非静默吞）以便诊断：若面板未显示 iframe 元素 / 删除后残留，可由此定位。
-            try { log.warn("[picker] 同步面板到浏览器失败：{}", syncE.getMessage()); } catch (Exception ignore) {}
-        }
+        RolePickerPanelSync.syncPanelToBrowser(page, pageClasses, state, overwriteNos);
     }
 
     /**
@@ -3438,39 +3187,7 @@ public final class RoleElementPicker {
     }
 
 
-    /**
-     * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 RolePickerSessionState.STATE_DELETED）。
-     * 删除时 collectDeleteKeys 会把多种键形态都记入 dead 集合（pickDedupKey key / _sig / 去索引 _sig /
-     * _sigKey / RoleEntry.sigKey），而这里若只比对单一 key 可能漏命中 → iframe 残留元素经
-     * mergeFramePicksToMain 复活。故把与删除同口径的候选键全部拿去比对，任一命中即视为已删。
-     */
-    private static boolean isDeletedKeyInState(LinkedHashMap<String, RoleEntry> map, String key,
-                                               RoleEntry e, Map<Object, Object> m) {
-        try {
-            java.util.Set<String> dead = RolePickerSessionState.STATE_DELETED.get(map);
-            if (dead == null || dead.isEmpty()) return false;
-            // key 即 pickDedupKey（方案 B 下已绑定 pageClass），与 RolePickerSessionState.STATE_DELETED 记录同构，精确命中。
-            if (key != null && !key.isEmpty() && dead.contains(key)) return true;
-            if (e != null && e.getSigKey() != null && dead.contains(e.getSigKey())) return true;
-            if (m != null) {
-                // 【方案 B】dead 集合里的键均绑定 pageClass（如 "LogonPage|role:link:Language:#0"），
-                // 故裸 _sig 比对一律加 pc 前缀匹配；不再使用跨页裸键比对，杜绝删 A 页误伤 B 页同名元素。
-                Object sig = m.get("_sig");
-                Object pcObj = m.get("_pageClass");
-                String pcStr = (pcObj != null && !String.valueOf(pcObj).isEmpty())
-                        ? String.valueOf(pcObj) : (e != null && e.getPageClass() != null ? e.getPageClass() : "");
-                if (sig != null) {
-                    String sigPc = pcStr + "|" + String.valueOf(sig);
-                    if (dead.contains(sigPc)) return true;
-                }
-                Object sk = m.get("_sigKey");
-                if (sk != null && dead.contains(String.valueOf(sk))) return true;
-            }
-            return false;
-        } catch (Exception ignore) {
-            return false;
-        }
-    }
+
 
     /** 取文件路径/URL 的最后一段（去掉所有路径分隔符前缀），用于 iframe src 与 frame.url() 的模糊匹配。 */
     private static String lastPathSegment(String s) {
@@ -3655,7 +3372,7 @@ public final class RoleElementPicker {
 
 
 
-    private static String asString(Object o) {
+    static String asString(Object o) {
         return o == null ? null : o.toString();
     }
 

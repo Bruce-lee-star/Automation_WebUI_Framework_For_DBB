@@ -54,7 +54,7 @@ final class RolePickerPanelSync {
                                             Map<Object, Object> m = (Map<Object, Object>) item;
                                             String strat = RoleElementPicker.asString(m.get("strategy"));
                                             String nm = RoleElementPicker.asString(m.get("name"));
-                                            if ("text".equals(strat) && nm != null && nm.length() >= 25) continue;
+                                            if (RolePickerConstants.STRATEGY_TEXT.equals(strat) && nm != null && nm.length() >= 25) continue;
                                             RoleEntry e = RolePickerPickParser.parsePick(m);
                                             if (e == null) continue;
                                             if (e.getFramePath() == null || e.getFramePath().isEmpty()) {

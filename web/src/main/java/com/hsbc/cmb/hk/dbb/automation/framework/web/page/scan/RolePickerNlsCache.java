@@ -28,7 +28,7 @@ final class RolePickerNlsCache {
      */
     private static final Map<String, CachedNls> NLS_REVERSE_CACHE = new ConcurrentHashMap<>();
     private static final long NLS_CACHE_TTL_MS =
-            Long.getLong("rolePicker.nlsCacheTtlMs", 5 * 60 * 1000L);
+            Long.getLong(RolePickerConstants.NLS_CACHE_TTL_PROPERTY, RolePickerConstants.TIMEOUT_NLS_CACHE_TTL_MS);
     /** ⭐ 修复 P3：软上限，达到后写入前先清理过期条目（nls 组合数很少，正常远不会触发）。 */
     private static final int NLS_REVERSE_CACHE_SOFT_MAX = 256;
 

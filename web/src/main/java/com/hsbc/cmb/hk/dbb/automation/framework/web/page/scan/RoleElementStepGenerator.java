@@ -91,7 +91,7 @@ public final class RoleElementStepGenerator {
             }
         }
         // 非角色策略：placeholder 通常是输入框；其余（text/title/id/css 等，含 data-i18n 走 @Element 的 css 选择器）默认 click
-        if ("placeholder".equals(e.getStrategy())) {
+        if (RolePickerConstants.STRATEGY_PLACEHOLDER.equals(e.getStrategy())) {
             // 同样对齐 page.pause 的 fill 语义：输入框即使无值也生成 fill("")（输入语义，留待补全）。
             return "fill(\"" + escapeJava(e.getValue() == null ? "" : e.getValue()) + "\")";
         }

@@ -120,16 +120,26 @@ public final class RoleElementPicker {
         synchronized (evalLockOf(frame)) { return frame.evaluate(script, arg); }
     }
 
+    private static String jsModeOf(PickMode mode) {
+        switch (mode) {
+            case IDLE: return RolePickerConstants.MODE_IDLE;
+            case MANUAL: return RolePickerConstants.MODE_MANUAL;
+            case SCAN_PAGE: return RolePickerConstants.MODE_SCAN_PAGE;
+            case SCAN_REGION: return RolePickerConstants.MODE_SCAN_REGION;
+            default: return RolePickerConstants.MODE_IDLE;
+        }
+    }
+
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
     static void setPickMode(Page anyPage, PickMode mode,
                                     Map<Page, String> pageNames) {
         if (anyPage == null || anyPage.isClosed()) return;
         BrowserContext ctx = anyPage.context();
         RolePickerSessionState.CTX_PICK_MODES.put(ctx, mode);
-        String jsMode = mode.name().toLowerCase();
+        String jsMode = jsModeOf(mode);
         if (pageNames != null) {
             for (Page p : pageNames.keySet()) {
-                try { if (!p.isClosed()) pickerEval(p, RolePickerScripts.SET_PICK_MODE_JS, RolePickerScripts.args("mode", jsMode)); }
+                try { if (!p.isClosed()) pickerEval(p, RolePickerScripts.SET_PICK_MODE_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_MODE, jsMode)); }
                 catch (Exception ignore) {}
             }
         }
@@ -871,7 +881,7 @@ public final class RoleElementPicker {
             // 表现即"停止后再点开始却拾取不了 / 跳转到新页面拾取不到"——因为激活态显示 true、函数引用还在（hasClick 为真），
             // 于是误判"无需重挂"，而真实监听早已不工作。START_SCRIPT 对同函数引用 addEventListener 幂等、
             // 不重复定义库，按 1s 节奏重挂安全无副作用，故此处改为"会话开则必重挂"。
-            pickerEval(page, RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args("nls", nlsReverseJson));
+            pickerEval(page, RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_NLS, nlsReverseJson));
             // 自愈保活不仅要重挂主框架监听，还须对所有 frame（含弹窗/新页面内的任意嵌套 iframe）重新注入拾取脚本。
             // 否则"打开新页面 / window.open 弹窗 / 链接点击新标签"等场景，其内嵌 iframe 在自愈时不会被重新注入，
             // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，
@@ -945,7 +955,9 @@ public final class RoleElementPicker {
      */
     static final java.util.Set<String> LOCATOR_IDENTITY_STRATEGIES = java.util.Collections.unmodifiableSet(
             new java.util.HashSet<>(java.util.Arrays.asList(
-            "i18n", "id", "css", "text", "title", "placeholder", "label", "testid", "altText")));
+            RolePickerConstants.STRATEGY_I18N, RolePickerConstants.STRATEGY_ID, RolePickerConstants.STRATEGY_CSS,
+            RolePickerConstants.STRATEGY_TEXT, RolePickerConstants.STRATEGY_TITLE, RolePickerConstants.STRATEGY_PLACEHOLDER,
+            RolePickerConstants.STRATEGY_LABEL, RolePickerConstants.STRATEGY_TEST_ID, RolePickerConstants.STRATEGY_ALT_TEXT)));
 
     /**
      * 判断 javaPickBySig 权威内存态（mem）是否需要替换浏览器读取的步骤 pick（p）。
@@ -1050,7 +1062,7 @@ public final class RoleElementPicker {
             log.info("[picker] 检测到 CI 运行环境，跳过代码面板（showCode）。");
             return;
         }
-        pickerEval(page, RolePickerScripts.SET_PICKER_CODE_JS, RolePickerScripts.args("code", code));
+        pickerEval(page, RolePickerScripts.SET_PICKER_CODE_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_CODE, code));
         pickerEval(page, RolePickerScripts.SHOW_PANEL_SCRIPT);
         log.info("[picker] 代码面板已弹出：点『复制代码』复制，点『关闭』结束。");
         try {
@@ -1279,7 +1291,7 @@ public final class RoleElementPicker {
 
     /** 更新面板顶部状态文字 */
     static void setStatus(Page page, String msg) {
-        pickerEval(page, RolePickerScripts.SET_STATUS_MSG_JS, RolePickerScripts.args("msg", msg));
+        pickerEval(page, RolePickerScripts.SET_STATUS_MSG_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_MSG, msg));
         pickerEval(page, RolePickerScripts.UPDATE_STATUS_DOM_JS);
     }
 

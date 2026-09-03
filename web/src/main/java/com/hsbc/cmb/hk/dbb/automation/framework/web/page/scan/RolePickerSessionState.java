@@ -34,7 +34,6 @@ final class RolePickerSessionState {
     static final Set<BrowserContext> CTX_PANEL_SCRIPTED = Collections.newSetFromMap(new ConcurrentHashMap<>());
     static final Map<BrowserContext, String> CTX_PICKER_NLS = new ConcurrentHashMap<>();
     static final Map<Page, String> LAST_PICK_ORIGIN = new ConcurrentHashMap<>();
-    static final long FORCE_START_DEBOUNCE_MS = 2000L;
     static final Map<Page, Long> FORCE_START_TS = new ConcurrentHashMap<>();
     static final Map<LinkedHashMap<String, RoleEntry>, Set<String>> STATE_DELETED = new ConcurrentHashMap<>();
 

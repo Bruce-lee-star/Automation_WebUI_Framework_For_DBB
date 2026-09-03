@@ -86,7 +86,7 @@ public final class RoleElementPageGenerator {
             // 跳过“整区域级匿名布局 css 定位”：选择器以 body 开头（cssPathOf 在 5 层内找不到 stable id，
             // 只能拼出 body > div:nth-of-type(...) 这类整页级路径）、或纯裸 div 链（div > div > ...，
             // 无任何 id/属性/class 锚点）。这类定位不稳定、无业务语义，不应生成页面类字段。
-            if ("css".equals(e.getStrategy())) {
+            if (RolePickerConstants.STRATEGY_CSS.equals(e.getStrategy())) {
                 String sel = e.getSelector();
                 if (sel != null && (sel.startsWith("body") || sel.startsWith("html")
                         || isBareDivChain(sel))) continue;
@@ -137,11 +137,11 @@ public final class RoleElementPageGenerator {
         String field = toFieldNameWithSuffix(framePrefix, base, suffix, idx, usedNames);
         String annotation;
         switch (strategy) {
-            case "text":
-            case "altText":
-            case "title":
-            case "placeholder":
-            case "label":
+            case RolePickerConstants.STRATEGY_TEXT:
+            case RolePickerConstants.STRATEGY_ALT_TEXT:
+            case RolePickerConstants.STRATEGY_TITLE:
+            case RolePickerConstants.STRATEGY_PLACEHOLDER:
+            case RolePickerConstants.STRATEGY_LABEL:
                 if (matched) {
                     StringBuilder ann = new StringBuilder("    @RoleElement(key = \"").append(escapeJava(resolvedKey)).append("\"");
                     if (e.isCleaned()) ann.append(", exact = false");
@@ -155,15 +155,15 @@ public final class RoleElementPageGenerator {
                     annotation = ann.toString();
                 }
                 break;
-            case "testid": {
+            case RolePickerConstants.STRATEGY_TEST_ID: {
                 StringBuilder ann = new StringBuilder("    @RoleElement(testId = ").append(toJavaStringLiteral(e.getName()));
                 appendFrame(ann, e);
                 ann.append(")");
                 annotation = ann.toString();
                 break;
             }
-            case "id":
-            case "css":
+            case RolePickerConstants.STRATEGY_ID:
+            case RolePickerConstants.STRATEGY_CSS:
             default: {
                 StringBuilder ann = new StringBuilder("    @Element(").append(toJavaStringLiteral(locatingSelector(e)));
                 appendFrame(ann, e);
@@ -327,12 +327,12 @@ public final class RoleElementPageGenerator {
                 hasAriaRole = true;
             } else {
                 switch (e.getStrategy()) {
-                    case "text":
-                    case "altText":
-                    case "title":
-                    case "placeholder":
-                    case "testid":
-                    case "label":
+                    case RolePickerConstants.STRATEGY_TEXT:
+                    case RolePickerConstants.STRATEGY_ALT_TEXT:
+                    case RolePickerConstants.STRATEGY_TITLE:
+                    case RolePickerConstants.STRATEGY_PLACEHOLDER:
+                    case RolePickerConstants.STRATEGY_TEST_ID:
+                    case RolePickerConstants.STRATEGY_LABEL:
                         hasRole = true; break;   // 语义字段也归类于 @RoleElement
                     default:
                         hasElement = true; break;   // id / css 等纯 CSS/XPath
@@ -470,8 +470,8 @@ public final class RoleElementPageGenerator {
     /** 按 strategy 给非角色字段命名加语义后缀，使不同定位策略产出可区分的字段名：
      *  label → Label、placeholder → Input、text → Text、altText → Img、title → Title、testid → TestId */
     private static final Map<String, String> STRATEGY_SUFFIX = Map.of(
-            "placeholder", "Input", "label", "Label", "altText", "Img",
-            "text", "Text", "title", "Title", "testid", "TestId"
+            RolePickerConstants.STRATEGY_PLACEHOLDER, "Input", RolePickerConstants.STRATEGY_LABEL, "Label", RolePickerConstants.STRATEGY_ALT_TEXT, "Img",
+            RolePickerConstants.STRATEGY_TEXT, "Text", RolePickerConstants.STRATEGY_TITLE, "Title", RolePickerConstants.STRATEGY_TEST_ID, "TestId"
     );
 
 
@@ -758,7 +758,7 @@ public final class RoleElementPageGenerator {
             return "role:" + role + ":" + key;
         }
         String strategy = e.getStrategy() == null ? "" : e.getStrategy();
-        if ("id".equals(strategy) || "css".equals(strategy)) {
+        if (RolePickerConstants.STRATEGY_ID.equals(strategy) || RolePickerConstants.STRATEGY_CSS.equals(strategy)) {
             return strategy + ":" + (e.getSelector() == null ? "" : e.getSelector());
         }
         String name = e.getName() == null ? "" : e.getName();

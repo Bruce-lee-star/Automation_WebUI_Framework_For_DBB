@@ -577,37 +577,37 @@ final class RolePickerPickParser {
      */
     static String buildSelector(String strategy, Map<Object, Object> m) {
         switch (strategy) {
-            case "testid":
-            case "placeholder":
-            case "altText":
-            case "title": {
+            case RolePickerConstants.STRATEGY_TEST_ID:
+            case RolePickerConstants.STRATEGY_PLACEHOLDER:
+            case RolePickerConstants.STRATEGY_ALT_TEXT:
+            case RolePickerConstants.STRATEGY_TITLE: {
                 String attr = asString(m.get("attr"));
                 String value = asString(m.get("value"));
                 if (attr == null || value == null) return null;
                 return "[" + attr + "=\"" + escapeSelectorValue(value) + "\"]";
             }
-            case "i18n": {
+            case RolePickerConstants.STRATEGY_I18N: {
                 String value = asString(m.get("value"));
                 if (value == null || value.isBlank()) return null;
                 return "[data-i18n=\"" + escapeSelectorValue(value) + "\"]";
             }
-            case "text": {
+            case RolePickerConstants.STRATEGY_TEXT: {
                 String name = asString(m.get("name"));
                 if (name == null || name.isBlank()) return null;
                 return "text=\"" + escapeSelectorValue(name) + "\"";
             }
-            case "label": {
+            case RolePickerConstants.STRATEGY_LABEL: {
                 // 对齐 page.pause 的 getByLabel：selector 仅作占位/人工核对，
                 // 生成注解与运行期定位均走 @RoleElement(label=...) → byLabel。
                 String name = asString(m.get("name"));
                 if (name == null || name.isBlank()) return null;
                 return "label=\"" + escapeSelectorValue(name) + "\"";
             }
-            case "id": {
+            case RolePickerConstants.STRATEGY_ID: {
                 String id = asString(m.get("id"));
                 return (id == null || id.isBlank()) ? null : "#" + id;
             }
-            case "css": {
+            case RolePickerConstants.STRATEGY_CSS: {
                 String css = asString(m.get("css"));
                 return (css == null || css.isBlank()) ? null : css;
             }

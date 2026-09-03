@@ -182,7 +182,7 @@ final class RolePickerCodeAssembler {
                         droppedPicks++;
                         // 诊断：i18n/定位器型策略元素若因 locatorKey 不匹配被 drop（典型表现"步骤里完全没有这行"），
                         // 打印其 strategy/name/lk 与 aliveKeys 中同类键，便于定位 index(#0) 错位或字段不一致根因。
-                        if ("i18n".equals(e.getStrategy()) || (e.getStrategy() != null
+                        if (RolePickerConstants.STRATEGY_I18N.equals(e.getStrategy()) || (e.getStrategy() != null
                                 && RoleElementPicker.LOCATOR_IDENTITY_STRATEGIES.contains(e.getStrategy()))) {
                             log.info("[picker][drop-diag] 步骤元素被对账剔除：strategy={}, name={}, lk={}, count={}, index={}, aliveKeys(i18n类)={}",
                                     e.getStrategy(), e.getName(), lk, e.getCount(), e.getIndex(),

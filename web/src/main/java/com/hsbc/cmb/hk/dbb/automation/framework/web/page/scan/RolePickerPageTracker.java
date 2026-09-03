@@ -62,7 +62,7 @@ final class RolePickerPageTracker {
                     if (newCls != null && !newCls.equals(curCls)) {
                         pageNames.put(p, newCls);
                     }
-                    pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args("pageName", newCls));
+                    pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
                 } catch (Exception refreshEx) {
                     log.warn("[picker] reconcile 刷新页面类名失败：{}", refreshEx.getMessage());
                 }
@@ -90,7 +90,7 @@ final class RolePickerPageTracker {
             pageNames.put(p, cls);
             if (!openedPages.contains(p)) openedPages.add(p);
             // 暴露页面类名 + 开启面板开关（与 openPanel/followPage 一致）
-            pickerEval(p, RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", cls));
+            pickerEval(p, RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, cls));
             pickerEval(p, RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
             pickerEval(p, RolePickerScripts.PANEL_SCRIPT);   // 立即重建当前已加载文档的面板
             snapshots.put(p, RoleElementPicker.readPickStateJson(p));
@@ -144,7 +144,7 @@ final class RolePickerPageTracker {
             if (opener != null && !opener.isClosed()) {
                 pickerEval(opener, RolePickerScripts.CLEAR_CURRENT_STEP_JS);
             }
-            pickerEval(newPage, RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS, RolePickerScripts.args("pageName", cls));
+            pickerEval(newPage, RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, cls));
             // 跨源/新页面：localStorage 往往为空或不可写，若直接跑 PANEL_SCRIPT 会因
             // __rolePanelEnabled!=='1' 提前 return，导致新页面没有面板。故显式置位开关，
             // 并用 window.__rolePanelForce 兜底（即使 localStorage 不可用也能重建面板）。

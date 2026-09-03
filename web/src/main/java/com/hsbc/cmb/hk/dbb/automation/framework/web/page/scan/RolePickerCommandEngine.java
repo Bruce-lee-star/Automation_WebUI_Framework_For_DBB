@@ -733,15 +733,15 @@ public final class RolePickerCommandEngine {
         PickerResult repick = handleRepickNos(ctx, page, cmd);
         if (repick != null) return repick;
         switch (cmd) {
-            case "start": return cmdStart(ctx, page);
-            case "scan": return cmdScan(ctx, page);
-            case "scanRegion": return cmdScanRegion(ctx, page);
-            case "regionScanned": return cmdRegionScanned(ctx, page);
-            case "package": return cmdPackage(ctx, page);
-            case "refreshCode": return cmdRefreshCode(ctx, page);
-            case "stop": return cmdStop(ctx, page);
-            case "abort": return cmdAbort(ctx, page);
-            case "done": return cmdDone(ctx, page);
+            case RolePickerConstants.CMD_START: return cmdStart(ctx, page);
+            case RolePickerConstants.CMD_SCAN: return cmdScan(ctx, page);
+            case RolePickerConstants.CMD_SCAN_REGION: return cmdScanRegion(ctx, page);
+            case RolePickerConstants.CMD_REGION_SCANNED: return cmdRegionScanned(ctx, page);
+            case RolePickerConstants.CMD_PACKAGE: return cmdPackage(ctx, page);
+            case RolePickerConstants.CMD_REFRESH_CODE: return cmdRefreshCode(ctx, page);
+            case RolePickerConstants.CMD_STOP: return cmdStop(ctx, page);
+            case RolePickerConstants.CMD_ABORT: return cmdAbort(ctx, page);
+            case RolePickerConstants.CMD_DONE: return cmdDone(ctx, page);
             default: return cmdUnknown(ctx, page);
         }
     }}

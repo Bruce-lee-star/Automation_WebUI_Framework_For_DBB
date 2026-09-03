@@ -368,48 +368,17 @@ public final class RoleElementPicker {
                     // 问题：用户点击垃圾箱只删除单个元素，但此逻辑会把同页所有元素一并删除，
                     // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
                     // Java 侧只需精确移除目标元素即可，不再做整桶删除。
-                    // if (!deadPages.isEmpty()) {
-                    //     map.entrySet().removeIf(en -> {
-                    //         RoleEntry re = en.getValue();
-                    //         if (re == null) return false;
-                    //         String rpc = (re.getPageClass() != null) ? re.getPageClass() : "";
-                    //         return !rpc.isEmpty() && deadPages.contains(rpc);
-                    //     });
-                    // }
                     // 【修复"已删除元素无法重新拾取"】
                     // 旧逻辑：RolePickerSessionState.STATE_DELETED 永久记录已删键，导致 isDeletedKeyInState 检查命中后跳过元素，
                     // 用户永远无法重新拾取已删除的元素。
                     // 新逻辑：不再写入 RolePickerSessionState.STATE_DELETED，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
                     // 而非"永久封杀该元素"。若需防止跨区域扫描复活，应由浏览器侧 __deletedSigs 临时屏蔽。
-                    // RolePickerSessionState.STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
                 }
                 // 【已禁用"清空所有 frame 的 __rolePicks"】
                 // 原逻辑：删除元素时清空所有 frame 的 __rolePicks/__rolePickSigs/__currentStep。
                 // 问题：用户点击垃圾箱只删除单个元素，但此逻辑会清空所有 frame 的全部元素，
                 // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
                 // Java 侧只需精确移除目标元素即可，不再做全量清空。
-                // try {
-                //     com.microsoft.playwright.Page srcPage = source.page();
-                //     if (srcPage != null && !srcPage.isClosed()) {
-                //         java.util.List<com.microsoft.playwright.Frame> frames = srcPage.frames();
-                //         for (com.microsoft.playwright.Frame f : frames) {
-                //             if (f == null) continue;
-                //             try {
-                //                 f.evaluate("(function(){"
-                //                         + " window.__rolePicks = [];"
-                //                         + " window.__rolePickSigs = {};"
-                //                         + " window.__currentStep = [];"
-                //                         + " return 1;"
-                //                         + "})()");
-                //             } catch (Exception fe) {
-                //                 String u = null; try { u = f.url(); } catch (Exception ignore) {}
-                //                 log.warn("[picker] __roleOnDelete 清空 frame 残留失败（{}）：{}", u, fe.getMessage());
-                //             }
-                //         }
-                //     }
-                // } catch (Exception pe) {
-                //     log.warn("[picker] __roleOnDelete 清空 iframe 残留异常：{}", pe.getMessage());
-                // }
             } catch (Exception ex) {
                 log.warn("[picker] __roleOnDelete 回传解析失败：{}", ex.getMessage());
             }
@@ -502,7 +471,7 @@ public final class RoleElementPicker {
                             return re != null && re.getSigKey() != null && dead.contains(re.getSigKey());
                         });
                         // 【修复"i18n元素删除不干净"——值级匹配兜底】
-                        // console桥的删除兜底必须与exposeBinding桥的删除逻辑完全一致（见第353-381行），
+                        // console桥的删除兜底必须与exposeBinding桥的删除逻辑完全一致（见 __roleOnDelete 的删除桥接实现），
                         // 否则i18n/text/css等定位器型策略的元素因key格式不一致导致删除miss。
                         // 复制自exposeBinding __roleOnDelete处理器的值级匹配逻辑。
                         map.entrySet().removeIf(en -> {
@@ -3010,7 +2979,7 @@ public final class RoleElementPicker {
                 + " window.__rolePicks = s.picks || [];"
                 // 【关键修复"导航恢复后点元素/封装不进 step"】applyPickState 仅在导航恢复（非实时扫描）时调用，
                 // 此时 __scanning 已 false。扫描产生的候选带 __isScan 标记（仅候选、不进 __currentStep），
-                // 经恢复后若保留该标记，用户回 LogonPage 再点这些元素会因 __isScan 守卫（3631 行）进不了选择集，
+                // 经恢复后若保留该标记，用户回 LogonPage 再点这些元素会因 __isScan 守卫进不了选择集，
                 // 导致 __currentStep 始终为空、点封装按钮 return 0、Java 侧永远不生成代码。
                 // 恢复即视为"已拾取完成"，清除 __isScan 使这些候选等同手动拾取、可正常勾选封装。
                 + " (window.__rolePicks || []).forEach(function(p){ if(p&&p.__isScan){ p.__isScan=false; } });"

@@ -112,9 +112,24 @@ public class RolePickerClassNameResolverTest {
 
     @Test
     public void normalizeStripsLocaleForPathOnlyInput() {
-        // LOCALE_SEGMENT is anchored at "^/", so it only fires for path-style URLs.
         assertEquals("/accounts", RolePickerClassNameResolver.normalizeUrl("/en/accounts"));
         assertEquals("/accounts", RolePickerClassNameResolver.normalizeUrl("/zh-HK/accounts"));
+    }
+
+    @Test
+    public void normalizeStripsLocaleForFullUrl() {
+        // Regression: page.url() is a full URL; locale stripping must fire there too,
+        // otherwise switching language (e.g. /en/accounts vs /zh/accounts) derives two page classes.
+        assertEquals("https://example.com/accounts",
+                RolePickerClassNameResolver.normalizeUrl("https://example.com/en/accounts"));
+        assertEquals("https://example.com/accounts",
+                RolePickerClassNameResolver.normalizeUrl("https://example.com/zh-HK/accounts"));
+    }
+
+    @Test
+    public void normalizeLocaleAndTrailingSlashCombinedForFullUrl() {
+        assertEquals("https://example.com/accounts",
+                RolePickerClassNameResolver.normalizeUrl("https://example.com/en/accounts/"));
     }
 
     @Test

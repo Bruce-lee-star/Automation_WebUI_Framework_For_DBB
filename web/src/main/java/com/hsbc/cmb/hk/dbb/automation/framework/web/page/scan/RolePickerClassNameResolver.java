@@ -52,7 +52,7 @@ final class RolePickerClassNameResolver {
     /** 语言/地区码路径片段（首段），如 en / zh / zh-HK / en_US，用于 URL 归一化时忽略语言差异。
      *  仅当首段恰好是一个 IETF 风格的语言码时才剥离，尽量降低误伤真实内容路径的概率。 */
     private static final java.util.regex.Pattern LOCALE_SEGMENT =
-            java.util.regex.Pattern.compile("(?i)^/[a-z]{2}([-_][a-z]{2,4})?(?=/|$)");
+            java.util.regex.Pattern.compile("(?i)/[a-z]{2}([-_][a-z]{2,4})?(?=/|$)");
     /** 归一化 URL：去 query/hash，剥离首段语言/地区码，并去除末尾斜杠，作为 urlToClass 的稳定键。
      *  去除末尾斜杠可让肉眼"相同"但末尾斜杠有差异的 URL（如 /help 与 /help/）映射到同一页类；
      *  剥离语言码可让同一页面在切换语言后（如 /en/accounts 与 /zh/accounts）归并到同一页类，

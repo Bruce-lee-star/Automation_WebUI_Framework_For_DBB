@@ -378,6 +378,85 @@ final class RolePickerScripts {
             + " } catch(e){}"
             + "}";
 
+    /**
+     * 关闭弹窗时把该页已抓元素"按签名合并"回父页（而非整盘覆盖）：只并入父页还没有的 pick。
+     * 实参 a: {nlsFiles, nlsReverseJson, closedState}。
+     */
+    static final String MERGE_CLOSED_PAGE_PICKS_JS = "(a) => {"
+            + " try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){}"
+            + " window.__nlsFiles = a.nlsFiles;"
+            + " var __o = JSON.parse(a.nlsReverseJson || '{}');"
+            + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
+            + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
+            + " window.__rolePicks = window.__rolePicks || [];"
+            + " window.__rolePickSigs = window.__rolePickSigs || {};"
+            + MERGE_KEY_SHIM
+            + " var s = JSON.parse(a.closedState);"
+            // 定位器唯一型策略按 locator 签名（_sig）全局去重：弹窗打开时被 followPage 复制进来的
+            // "主页元素"与主页已有元素 locator 相同，关弹窗回灌时不应再追加一份。
+            // 角色/closeOp 仍按 [sig, pageClass|URL] 区分，跨页同名元素各自独立。
+            + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
+            + " var __loc = {};"
+            + " (window.__rolePicks||[]).forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
+            + " (s.picks||[]).forEach(function(p){"
+            + "   var sig=(p&&p._sig)||'';"
+            + "   var li=(p&&__LOCID[p.strategy]);"
+            + "   if (li && sig && __loc[sig]) return;"
+            + "   if (li && sig) __loc[sig]=true;"
+            + "   var k = window.__mergeKey(p);"
+            + "   if (k && window.__rolePickSigs[k]) return;"
+            + "   if (k) window.__rolePickSigs[k] = true;"
+            + "   window.__rolePicks.push(p); });"
+            + "}";
+
+    /**
+     * 关闭弹窗时把其"进行中 step"合并回父页当前 step，并登记 _closeOp 关闭标记与 op='close' 页面级操作。
+     * 实参 a: {closedState, closedCls}。
+     */
+    static final String MERGE_CLOSE_OP_STEP_JS = "(a) => {"
+            // 关键修复：合并弹窗 currentStep 时【绝不可】用父页全局 __rolePickSigs 去重——
+            // 否则弹窗打开时被 followPage 搬运进弹窗 currentStep 的"默认页元素"会因其 sig 已存在于默认页
+            // __rolePickSigs 而被误删（表现为"关弹窗 / url 变化后元素找不到"）。此处仅对
+            // "弹窗 currentStep 自身"去重，被搬运来的默认页元素必须原样保留。
+            + " var s = JSON.parse(a.closedState || '{}');"
+            + " var closeMarker = {_closeOp:true, _pageClass:a.closedCls"
+            + "   , _sig:'__close_' + ((window.__roleCloseSeq=(window.__roleCloseSeq||0)+1)), tag:'close'};"
+            + MERGE_KEY_SHIM
+            + " function mergeInto(arr){ if(!arr) return;"
+            + "   var seen = {};"
+            + "   (s.currentStep||[]).forEach(function(p){"
+            + "     var k = window.__mergeKey(p);"
+            + "     if (k && seen[k]) return;"
+            + "     if (k) seen[k] = true;"
+            + "     arr.push(p); });"
+            // 关闭标记插入到"被关闭页的最后一个元素"之后（而非简单 push 到末尾），保留跨页时序。
+            + "   var __ins = -1;"
+            + "   for (var __i = 0; __i < arr.length; __i++) {"
+            + "     var __pc = arr[__i] && (arr[__i]._pageClass || arr[__i].pageClass);"
+            + "     if (__pc === a.closedCls) __ins = __i; }"
+            + "   if (__ins < 0) __ins = arr.length - 1;"
+            + "   arr.splice(__ins + 1, 0, closeMarker); }"
+            // 仍在进行中（未停止）：并入当前 step（__currentStep 是数组）。
+            + " if (Array.isArray(window.__currentStep)) { mergeInto(window.__currentStep); }"
+            // 已停止：并入"最后一个已生成 step"的 picks，不新建 step（"开始-停止"才是唯一 step 边界）。
+            + " else { window.__steps = window.__steps || [];"
+            + "   var last = window.__steps[window.__steps.length-1];"
+            + "   if (!last) { last = {pageClass:a.closedCls, picks:[]}; window.__steps.push(last); }"
+            + "   if (!last.picks) last.picks = [];"
+            + "   mergeInto(last.picks); }"
+            // 同步登记一条 op='close' 的页面级操作，供代码生成器 inferPopupTargetVar 推断"弹窗目标页对象"
+            // （修复"弹窗关闭落在 loginPage 而非 privacyAndSecurityPage"）。_closeOp 仅供 step 内联渲染。
+            + " window.__steps = window.__steps || [];"
+            + " window.__steps.push({op:'close', pageClass:a.closedCls});"
+            + "}";
+
+    /** 仅当浏览器侧页类名与期望值不同时才设置并持久化（避免无谓写入）。实参 a: {pageName}。 */
+    static final String SET_PAGE_NAME_IF_CHANGED_JS = "(a) => {"
+            + " try{ if(window.__rolePageName!==a.pageName){"
+            + " window.__rolePageName=a.pageName;"
+            + " try{localStorage.setItem('__rolePageName',a.pageName);}catch(e){}"
+            + " } }catch(e){} }";
+
     /** 设置拾取模式并刷新面板开关。实参 a: {mode}。 */
     static final String SET_PICK_MODE_JS = "(a) => {"
             + " try{ window.__roleMode = a.mode; if(window.__roleRefreshToggle) window.__roleRefreshToggle(); }catch(e){} }";

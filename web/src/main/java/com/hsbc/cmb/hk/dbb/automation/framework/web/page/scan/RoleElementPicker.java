@@ -2398,35 +2398,8 @@ public final class RoleElementPicker {
                         // 旧页 pick 自带 _pageClass，合并后仍正确归类到各自 Page 类。
                         String closedState = snapshots.get(closed);
                         if (closedState != null && hasPicks(closedState)) {
-                            parent.evaluate(
-                                "(function(){"
-                                + " try{localStorage.setItem('__rolePanelEnabled','1');}catch(e){}"
-                                + " window.__nlsFiles = " + GSON.toJson(nlsFiles) + ";"
-                                + " var __o = " + (nlsReverseJson == null ? "{}" : nlsReverseJson) + ";"
-                                + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
-                                + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
-                                + " window.__rolePicks = window.__rolePicks || [];"
-                                + " window.__rolePickSigs = window.__rolePickSigs || {};"
-                                + MERGE_KEY_SHIM
-                                + " var s = " + closedState + ";"
-                                // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重：
-                                // 弹窗打开时被 followPage 复制进来的"主页元素"与主页已有元素 locator 相同，
-                                // 关弹窗回灌时不应再追加一份（用户明确：回到主页追加一份不是期望的）。
-                                // 角色/closeOp 仍按 [sig, pageClass|URL] 区分，跨页同名元素各自独立。
-                                + " var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
-                                + " var __loc = {};"
-                                + " (window.__rolePicks||[]).forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
-                            + " (s.picks||[]).forEach(function(p){"
-                            + "   var sig=(p&&p._sig)||'';"
-                            + "   var li=(p&&__LOCID[p.strategy]);"
-                            + "   if (li && sig && __loc[sig]) return;"
-                            + "   if (li && sig) __loc[sig]=true;"
-                            // 同下方各合并点：统一走 __mergeKey，避免与入库口径不一致导致重复追加。
-                            + "   var k = window.__mergeKey(p);"
-                            + "   if (k && window.__rolePickSigs[k]) return;"
-                            + "   if (k) window.__rolePickSigs[k] = true;"
-                            + "   window.__rolePicks.push(p); });"
-                            + "})()");
+                            parent.evaluate(RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS, RolePickerScripts.args(
+                                    "nlsFiles", nlsFiles, "nlsReverseJson", nlsReverseJson, "closedState", closedState));
                     }
                         // 关键修复：把关闭页"进行中 step"（__currentStep）合并回父页当前 step，
                         // 使弹窗内拾取的元素随同一 step 继续累积——step 的唯一边界是"开始→停止"，
@@ -2435,51 +2408,8 @@ public final class RoleElementPicker {
                         // 使代码生成器产出 closeCurrentPage() 内联在主流程中（用户明确要求"只有一个条件：开始-停止"）。
                         // 关闭标记按 _sig 去重（支持多次关闭同类弹窗），并随 __currentStep 在停止时被收尾进唯一一个 step。
                         if (closedCls != null && !closedCls.isEmpty()) {
-                            parent.evaluate(
-                                "(function(){"
-                                // 关键修复：合并弹窗 currentStep 时【绝不可】用父页全局 __rolePickSigs 去重——
-                                // 否则弹窗打开时被 followPage 搬运进弹窗 currentStep 的"默认页元素"（如 A）会因其 sig
-                                // 已存在于默认页 __rolePickSigs 而被误删，导致该元素从当前 step 消失
-                                //（表现为"关弹窗 / url 变化后元素找不到"）。此处仅对"弹窗 currentStep 自身"
-                                // 去重（避免弹窗内重复拾取同一元素），被搬运来的默认页元素必须原样保留。
-                                + " var s = " + (closedState == null ? "{}" : closedState) + ";"
-                                + " var closeMarker = {_closeOp:true, _pageClass:" + GSON.toJson(closedCls)
-                                + "   , _sig:'__close_' + ((window.__roleCloseSeq=(window.__roleCloseSeq||0)+1)), tag:'close'};"
-                                + MERGE_KEY_SHIM
-                                + " function mergeInto(arr){ if(!arr) return;"
-                                + "   var seen = {};"
-                                + "   (s.currentStep||[]).forEach(function(p){"
-                                + "     var k = window.__mergeKey(p);"
-                                + "     if (k && seen[k]) return;"
-                                + "     if (k) seen[k] = true;"
-                                + "     arr.push(p); });"
-                                // 关闭标记插入到"被关闭页的最后一个元素"之后（而非简单 push 到末尾），
-                                // 保留跨页时序：关页 → 自动切回父页 → 再在父页拾取的元素应排在 closeCurrentPage 之后。
-                                + "   var __closedCls = " + GSON.toJson(closedCls) + ";"
-                                + "   var __ins = -1;"
-                                + "   for (var __i = 0; __i < arr.length; __i++) {"
-                                + "     var __pc = arr[__i] && (arr[__i]._pageClass || arr[__i].pageClass);"
-                                + "     if (__pc === __closedCls) __ins = __i; }"
-                                + "   if (__ins < 0) __ins = arr.length - 1;"
-                                + "   arr.splice(__ins + 1, 0, closeMarker); }"
-                                // 仍在进行中（未停止）：并入当前 step（__currentStep 是数组）。
-                                + " if (Array.isArray(window.__currentStep)) { mergeInto(window.__currentStep); }"
-                                // 已停止：把弹窗的 currentStep 与关闭标记并入"最后一个已生成 step"的 picks，
-                                // 不新建 step（保持"开始-停止"才是唯一 step 边界）。
-                                + " else { window.__steps = window.__steps || [];"
-                                + "   var last = window.__steps[window.__steps.length-1];"
-                                + "   if (!last) { last = {pageClass:" + GSON.toJson(closedCls) + ", picks:[]}; window.__steps.push(last); }"
-                                + "   if (!last.picks) last.picks = [];"
-                                + "   mergeInto(last.picks); }"
-                                // 同步登记一条"页面级关闭操作"（op='close'，pageClass=被关弹窗页），
-                                // 使 window.__steps 中除 _closeOp 标记外还保有可被解析为 PageOp 的条目。
-                                // 这一步关键：代码生成器的 inferPopupTargetVar 据此推断"弹窗目标页对象"
-                                // （如 privacyAndSecurityPage），从而把新页面绑到目标页对象而非打开页（修复
-                                // "弹窗关闭落在 loginPage 而非 privacyAndSecurityPage"）。_closeOp 仅用于 step 内联渲染，
-                                // 不保证进 __rolePicks（会随封装被过滤），故这里单独补登记可供 opsByPage 消费的操作。
-                                + " window.__steps = window.__steps || [];"
-                                + " window.__steps.push({op:'close', pageClass:" + GSON.toJson(closedCls) + "});"
-                                + "})()");
+                            parent.evaluate(RolePickerScripts.MERGE_CLOSE_OP_STEP_JS, RolePickerScripts.args(
+                                    "closedState", closedState, "closedCls", closedCls));
                         // 框架主动关闭（closeCurrentPage）已在代码显式关闭，跳过重复登记 _closeOp；
                         // 但不 return——仍需执行下方父页回退与面板保留逻辑，使 inspector 回到原页面。
                         if (frameworkClosed) {
@@ -2598,10 +2528,8 @@ public final class RoleElementPicker {
                     prevCls = resolvedCls;
                 }
                 try {
-                    page.evaluate("try{ if(window.__rolePageName!==" + GSON.toJson(resolvedCls) + "){"
-                            + "window.__rolePageName=" + GSON.toJson(resolvedCls) + ";"
-                            + "try{localStorage.setItem('__rolePageName'," + GSON.toJson(resolvedCls) + ");}catch(e){}"
-                            + "}}catch(e){}");
+                    page.evaluate(RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
+                            RolePickerScripts.args("pageName", resolvedCls));
                 } catch (Exception ignoreCls) {}
                 // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
                 log.info("[picker] 页面 URL 变化（onFrameNavigated）：{} （页面类：{}）", page.url(), prevCls);

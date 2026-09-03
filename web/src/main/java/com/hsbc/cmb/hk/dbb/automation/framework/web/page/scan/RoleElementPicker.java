@@ -890,8 +890,7 @@ public final class RoleElementPicker {
                             if (r instanceof Number && ((Number) r).intValue() < 0) {
                                 try {
                                     RolePickerScriptInjector.frameInjectOnce(f, scanNls);
-                                    r = f.evaluate(
-                                            "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
+                                    r = f.evaluate(RolePickerScripts.FRAME_SCAN_JS);
                                 } catch (Exception reInjEx) {
                                     if (log.isDebugEnabled()) log.debug("[picker][scan] iframe 补注入失败（url={}）：{}", f.url(), reInjEx.getMessage());
                                 }
@@ -1011,22 +1010,7 @@ public final class RoleElementPicker {
                     java.util.Set<String> regionFrameUrls = new java.util.HashSet<>();
                     java.util.Set<String> regionFrameNames = new java.util.HashSet<>();
                     try {
-                        Object marks = page.evaluate("() => {"
-                                + " var out = { urls:[], names:[] };"
-                                + " var roots = window.__regionSelected || [];"
-                                + " for (var i=0;i<roots.length;i++){"
-                                + "   var r = roots[i]; if (!r || !r.querySelectorAll) continue;"
-                                + "   var fs = r.querySelectorAll('iframe, frame');"
-                                + "   for (var j=0;j<fs.length;j++){"
-                                + "     var el = fs[j];"
-                                + "     var src = el.getAttribute && el.getAttribute('src');"
-                                + "     if (src) out.urls.push(src);"
-                                + "     if (el.name) out.names.push(el.name);"
-                                + "     if (el.id) out.names.push(el.id);"
-                                + "   }"
-                                + " }"
-                                + " return out;"
-                                + "}");
+                        Object marks = page.evaluate(RolePickerScripts.READ_REGION_FRAMES_JS);
                         if (marks instanceof java.util.Map) {
                             Object u = ((java.util.Map<?, ?>) marks).get("urls");
                             if (u instanceof java.util.List) {
@@ -1352,31 +1336,7 @@ public final class RoleElementPicker {
                     // 修复：stop 时彻底清空浏览器侧全部拾取注册状态（与"下一轮从 1 重新连续"语义一致），
                     // 停止拾取：保留元素列表（__rolePicks），但清除所有序号（重置为 [-,+]）
                     // 这样第二轮拾取时，元素仍在列表中，显示为 [-,+]，用户可重新勾选分配序号
-                    page.evaluate("try{"
-                            // 先清理区域扫描选区态（蓝色遮罩、事件监听等），防止残留
-                            + " if(typeof window.__roleEndRegionSelect==='function') window.__roleEndRegionSelect();"
-                            // 保留 __rolePicks，但清除每个元素的 _pickNos（重置为 [-,+]）
-                            + " if(Array.isArray(window.__rolePicks)){"
-                            + "   window.__rolePicks.forEach(function(p){"
-                            + "     if(p){"
-                            + "       p._pickNos = [];"
-                            + "       p._pickSeq = 0;"
-                            + "       p._seqStale = true;"  // 标记序号过期，渲染时显示 [-,+]
-                            + "       p._manualPick = false;"  // 清除手动拾取标记，允许重新勾选
-                            + "     }"
-                            + "   });"
-                            + " }"
-                            + " try{ if(window.__rolePickSigs) window.__rolePickSigs = {}; }catch(e){}"
-                            + " try{ if(window.__sigToPick) window.__sigToPick = {}; }catch(e){}"
-                            + " try{ window.__rolePickSeq = 0; }catch(e){}"
-                            + " try{ window.__roleMaxNo = 0; }catch(e){}"
-                            + " try{ window.__pickOrder = {}; }catch(e){}"
-                            + " try{ window.__currentStep = []; }catch(e){}"
-                            + " try{ if(window.__currentStep)window.__currentStep.raws=[]; }catch(e){}"
-                            + " try{ window.__steps = []; }catch(e){}"
-                            + " if(window.__renderPicks)window.__renderPicks();"
-                            + " if(window.refreshSelInfo)window.refreshSelInfo();"
-                            + "}catch(e){}");
+                    page.evaluate(RolePickerScripts.CLEAR_PICKS_JS);
                 } catch (Exception ignore) {}
                 int matched = 0;
                 for (RoleEntry e : allEntries) {
@@ -1663,17 +1623,7 @@ public final class RoleElementPicker {
             List<String> fp = RolePickerFramePath.computeFramePath(page, fr);   // 自顶向下的 iframe 选择器链（主框架为空）
             Object raw;
             try {
-                raw = fr.evaluate("(function(){"
-                        + " if (typeof window.__mergeKey !== 'function') { window.__mergeKey = function(p){ try{"
-                        + "   if (!p) return ''; if (p._sigKey) return p._sigKey;"
-                        + "   if (typeof window.__sigKey === 'function') return window.__sigKey(p);"
-                        + "   var pk = p._pageClass || ''; if (!pk) { try { pk = (location.origin||'') + (location.pathname||''); } catch(e){} }"
-                        + "   return JSON.stringify([p._sig || '', pk]);"
-                        + " }catch(e){ return ''; } }; }"
-                        + " var seen = {}; var out = [];"
-                        + " (window.__rolePicks||[]).forEach(function(p){ try{ var k = window.__mergeKey(p);"
-                        + "   if (!k) { out.push(p); return; } if (seen[k]) return; seen[k]=true; out.push(p);"
-                        + " }catch(e){ out.push(p); } }); return out; })()");
+                raw = fr.evaluate(RolePickerScripts.READ_FRAME_PICKS_JS);
             } catch (Exception ignore) { continue; }   // 跨源 frame 读取受限，跳过
             if (raw instanceof List) {
                 for (Object o : (List<Object>) raw) {
@@ -1896,12 +1846,7 @@ public final class RoleElementPicker {
         // 在浏览器内把两种格式归一为 {pageClass, picks}；picks 仍是原始 pick 对象数组。
         // 过滤掉"页面级操作"step（含 op 字段，如关闭页面），它们由 getPageOpsWithPage 单独处理，
         // 否则会被当成"空 pick 的 step"生成无意义方法。
-        Object raw = page.evaluate("Array.from(window.__steps || []).filter(function(s){"
-                + " return !(s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){"
-                + " var t = (s && typeof s === 'object') ? s : null;"
-                + " var pc = (t && typeof t.pageClass === 'string') ? t.pageClass : '';"
-                + " var ps = (t && t.picks) ? t.picks : (Array.isArray(s) ? s : []);"
-                + " return {pageClass: pc, picks: ps}; })");
+        Object raw = page.evaluate(RolePickerScripts.READ_STEPS_WITH_PAGE_JS);
         if (raw instanceof List) {
             for (Object o : (List<Object>) raw) {
                 if (!(o instanceof Map)) continue;
@@ -2609,8 +2554,7 @@ public final class RoleElementPicker {
                     }
                     if (survivor != null) {
                         current[0] = survivor;
-                        boolean hasPanel = Boolean.TRUE.equals(survivor.evaluate(
-                                "!!(document.getElementById('__rolePanel') && window.__renderPicks)"));
+                        boolean hasPanel = Boolean.TRUE.equals(survivor.evaluate(RolePickerScripts.HAS_PANEL_JS));
                         if (!hasPanel) {
                             survivor.evaluate("try{window.__rolePanelForce=true;}catch(e){}");
                             survivor.evaluate(PANEL_SCRIPT);
@@ -2646,16 +2590,14 @@ public final class RoleElementPicker {
         // anchor 下载属性/扩展名已在 __rolePickClick 静态标记，二者互补、幂等。
         page.onDownload(download -> {
             try {
-                page.evaluate("if(window.__rolePicks && window.__rolePicks.length){"
-                        + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.download = true; }");
+                page.evaluate(RolePickerScripts.MARK_LAST_PICK_DOWNLOAD_JS);
             } catch (Exception ignore) { /* 页面已关闭等：忽略 */ }
         });
         // 文件选择框监听：出现上传文件选择框时，把该页面最近一次 pick 标记为 upload（对齐 setInputFiles 录制）。
         page.onFileChooser(fc -> {
             try {
                 Page fp = fc.page();
-                fp.evaluate("if(window.__rolePicks && window.__rolePicks.length){"
-                        + " var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.upload = true; }");
+                fp.evaluate(RolePickerScripts.MARK_LAST_PICK_UPLOAD_JS);
                 log.info("[picker] 捕获文件选择框（上传），已标记最近一次拾取为 upload。");
             } catch (Exception ignore) { /* 页面已关闭等：忽略 */ }
         });
@@ -2730,43 +2672,7 @@ public final class RoleElementPicker {
                     // 于是该元素被旧快照整体覆盖而丢失。此处把浏览器在 pagehide 时落盘到 localStorage 的
                     // 最新拾取态（含跳转前那次点击）合并回来，以"页面级复合键"去重，补回 st 缺失的最新点击元素。
                     // 仅同域整页跳转 localStorage 才保留，跨域（如弹窗 PDF）自然为空、不影响。
-                    page.evaluate("(function(){"
-                            + " try {"
-                            + "   var raw = localStorage.getItem('__rolePickState'); if(!raw) return;"
-                            + "   var s = JSON.parse(raw);"
-                            + "   window.__rolePicks = window.__rolePicks || [];"
-                            + "   window.__rolePickSigs = window.__rolePickSigs || {};"
-                            + MERGE_KEY_SHIM
-                            // 定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）全局去重，
-                            // 避免"跳转再返回"合并时同一元素（如 id=logoHeader）被追加副本；
-                            // role/closeOp 仍按 [sig, pageClass|URL] 区分（与 close-merge、Java 权威态一致）。
-                            + "   var __LOCID={id:1,css:1,i18n:1,text:1,title:1,placeholder:1,label:1,testid:1,altText:1};"
-                            + "   var __loc = {};"
-                            + "   window.__rolePicks.forEach(function(p){ if(p&&__LOCID[p.strategy]){ var ls=p._sig||''; if(ls) __loc[ls]=true; } });"
-                            + "   (s.picks||[]).forEach(function(p){"
-                            + "     var sig=(p&&p._sig)||'';"
-                            + "     var li=(p&&__LOCID[p.strategy]);"
-                            + "     if (li && sig && __loc[sig]) return;"
-                            + "     if (li && sig) __loc[sig]=true;"
-                            // 统一走 __mergeKey：此前手搓键与入库口径不一致，是重复收录的根因之一。
-                            + "     var k = window.__mergeKey(p);"
-                            + "     if (k && window.__rolePickSigs[k]) return;"
-                            + "     if (k) window.__rolePickSigs[k] = true;"
-                            + "     window.__rolePicks.push(p); });"
-                            + "   window.__currentStep = window.__currentStep || [];"
-                            + "   var __cs = {};"
-                            + "   window.__currentStep.forEach(function(p){ var k=window.__mergeKey(p); if(k) __cs[k]=true; });"
-                            + "   (s.currentStep||[]).forEach(function(p){"
-                            + "     var k = window.__mergeKey(p);"
-                            + "     if (k && __cs[k]) return;"
-                            + "     if (k) __cs[k] = true;"
-                            + "     window.__currentStep.push(p); });"
-                            + "   window.__steps = window.__steps || [];"
-                            + "   (s.steps||[]).forEach(function(st2){"
-                            + "     var dup = window.__steps.some(function(ex){ return JSON.stringify(ex)===JSON.stringify(st2); });"
-                            + "     if(!dup) window.__steps.push(st2); });"
-                            + " } catch(e){}"
-                            + "})()");
+                    page.evaluate(RolePickerScripts.MERGE_LOCALSTORAGE_PICKS_JS);
                 } else {
                     page.evaluate("(function(){"
                             + " var s = " + st + ";"
@@ -2833,44 +2739,7 @@ public final class RoleElementPicker {
                 // 导航后始终重渲染面板列表并滚动到底部，确保已恢复/合并的元素可见（修复"URL 变化后元素看不见"）；
                 // 用 setTimeout 兜底等待 PANEL_SCRIPT 的 build() 完成（body 就绪才挂载面板），避免提前渲染找不到节点，
                 // 同时恢复上次生成的代码（页面元素 / 步骤代码两个 Tab），刷新后不丢。
-                page.evaluate("(function(){ setTimeout(function(){"
-                        + MERGE_KEY_SHIM
-                        // 关键修复（导航后元素成倍增加）：applyPickState / localStorage 合并 / SPA 合并 任一路径
-                        // 可能因元素副本的 _sigKey 在 Java 快照往返中丢失、__pageClass 缺失，导致合并去重键不一致
-                        // （location 兜底键会随跳转目标页漂移），每次 onFrameNavigated 触发都多加一份，成倍累积。
-                        // 此处用【稳定键】（绝不用 location 兜底）在所有合并结束后做一次全局压实：
-                        //   稳定键 = _sigKey 优先；否则 [pickSig, _pageClass || 当前页类]。
-                        // 同一区域扫描产出的多份副本（pickSig 相同）无论跳到哪个页面都命中等价稳定键 → 合并为一份。
-                        + "   try {"
-                        + "     var __stableKey = function(pp){"
-                        + "       if (!pp) return '';"
-                        + "       if (pp._sigKey) return pp._sigKey;"
-                        + "       var __s = (typeof window.__pickSig==='function') ? window.__pickSig(pp) : (pp._sig || '');"
-                        + "       var __pk = pp._pageClass || (window.__rolePageName || '');"
-                        + "       return JSON.stringify([__s, __pk]);"
-                        + "     };"
-                        + "     var __seen = {}; var __out = [];"
-                        + "     (window.__rolePicks||[]).forEach(function(p){"
-                        + "       if (!p) return;"
-                        + "       var k = __stableKey(p);"
-                        + "       if (k && __seen[k]) return;"
-                        + "       if (k) { __seen[k] = true; if (!p._sigKey) p._sigKey = k; }"
-                        + "       __out.push(p);"
-                        + "     });"
-                        + "     window.__rolePicks = __out;"
-                        + "     window.__rolePickSigs = __seen;"
-                        + "   } catch(e){}"
-                        + "   try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
-                        + "   try { var l = document.getElementById('__rolePickList'); if (l) l.scrollTop = l.scrollHeight; } catch(e){}"
-                        + "   try { var code = JSON.parse(localStorage.getItem('__rolePickerCode')||'null');"
-                        + "     if (code) {"
-                        + "       var pbp = code.pageByPage || (code.page != null ? {'__merged__': code.page} : {});"
-                        + "       var sbp = code.stepByPage || (code.step != null ? {'__merged__': code.step} : {});"
-                        + "       if (window.__fillCodeTabs) window.__fillCodeTabs({pageByPage: pbp, stepByPage: sbp, msg: code.msg||''});"
-                        + "       window.__pickerCode = (code.page != null) ? code.page"
-                        + "         : Object.keys(pbp).map(function(k2){return pbp[k2];}).join('\\n\\n');"
-                        + "     } } catch(e){}"
-                        + " }, 60); })()");
+                page.evaluate(RolePickerScripts.POST_NAV_COMPACT_AND_RENDER_JS);
                 // 依据新 URL 解析本页类名：优先复用会话级 urlToClass 稳定映射（同一 URL 复用同一类名，
                 // 避免"回到默认页 URL 又派生出 LogonPage 之类重复页类"）——仅当该 URL 从未见过时才派生新类名。
                 String curCls = pageNames.get(page);
@@ -2983,26 +2852,7 @@ public final class RoleElementPicker {
                 //   hasClick/hasMove/hasRecord —— 三大监听/入口函数是否真的被定义（判断 START_SCRIPT 是否注入成功）
                 //   gateInit   —— 门控注入脚本本次执行结果（是否读到开关、是否注入），直接显示是"门控没生效"还是"激活被覆盖"
                 try {
-                    String navDiag = page.evaluate("(function(){"
-                            + " try {"
-                            + "   var ls='?'; try{ ls = localStorage.getItem('__rolePickSessionOn'); }catch(e){ ls='LS_ERR:'+e; }"
-                            + "   var gi = window.__gateInit || null;"
-                            + "   return JSON.stringify({"
-                            + "     url: location.href, origin: location.origin,"
-                            + "     lsSwitch: ls,"
-                            + "     winSwitch: !!window.__rolePickSessionOn,"
-                            + "     active: !!window.__rolePickActive,"
-                            + "     hasClick: typeof window.__rolePickClick === 'function',"
-                            + "     hasMove: typeof window.__rolePickMove === 'function',"
-                            + "     hasRecord: typeof window.__recordPick === 'function',"
-                            + "     hasLib: !!window.__rolePickerLib,"
-                            + "     lastClickTs: window.__lastClickTs || 0,"
-                            + "     lastClickActive: !!window.__lastClickActive,"
-                            + "     mouseLog: (window.__roleMouseLog||[]).slice(-12),"
-                            + "     gateInit: gi"
-                            + "   });"
-                            + " } catch(e){ return 'DIAG_ERR:'+e; }"
-                            + "})()").toString();
+                    String navDiag = page.evaluate(RolePickerScripts.NAV_DIAG_JS).toString();
                     log.info("[picker][nav] 导航恢复/激活后运行时诊断 @ {} : {}", page.url(), navDiag);
                 } catch (Exception diagEx) {
                     log.warn("[picker][nav] 读取诊断失败（页面可能已关闭）：{}", diagEx.getMessage());
@@ -3090,22 +2940,7 @@ public final class RoleElementPicker {
         try {
             // 移除常驻面板的同时，移除点击/悬停/按键捕获监听并复位 active 标记，
             // 否则面板删了、监听器残留，会出现"面板消失却仍可静默拾取、不阻挡程序"（用户不期望）的半吊子状态。
-            page.evaluate("(function(){"
-                    + " try{ if(window.__rolePickClick) document.removeEventListener('click', window.__rolePickClick, true); }catch(e){}"
-                    + " try{ if(window.__rolePickMove) document.removeEventListener('mousemove', window.__rolePickMove, true); }catch(e){}"
-                    + " try{ if(window.__rolePickKey) document.removeEventListener('keydown', window.__rolePickKey, true); }catch(e){}"
-                    + " try{ if(window.__rolePickFocus) document.removeEventListener('focusin', window.__rolePickFocus, true); }catch(e){}"
-                    + " try{ if(window.__rolePickScroll) document.removeEventListener('scroll', window.__rolePickScroll, true); }catch(e){}"
-                    + " try{ window.__rolePickActive = false; }catch(e){}"
-                    // 清除会话开关 + 写面板墓碑：阻断 context 门控/引导注入脚本（无法撤销）
-                    // 在会话结束后的导航中误自启拾取或重建面板。
-                    + " try{ localStorage.removeItem('__rolePickSessionOn'); }catch(e){}"
-                    + " try{ window.__rolePickSessionOn = false; }catch(e){}"
-                    + " try{ localStorage.setItem('__rolePanelEnabled','0'); }catch(e){}"
-                    + " try{ window.__rolePanelForce = false; }catch(e){}"
-                    + " var p = document.getElementById('__rolePanel'); if (p) { p.remove();"
-                    + " try { document.body.style.marginRight = ''; document.documentElement.style.overflowX = ''; } catch(e){} }"
-                    + "})()");
+            page.evaluate(RolePickerScripts.CLOSE_PANEL_JS);
         } catch (Exception ignore) {
             // 页面已关闭/不可操作：忽略，面板与监听随页面销毁一并消失，无需额外处理
         }
@@ -3121,18 +2956,7 @@ public final class RoleElementPicker {
      */
     static String readPickStateJson(Page page) {
         try {
-            Object res = page.evaluate("(function() {"
-                    + " try {"
-                    + "   return JSON.stringify({"
-                    + "     picks: window.__rolePicks || [],"
-                    + "     steps: window.__steps || [],"
-                    + "     currentStep: window.__currentStep || [],"
-                    + "     sigs: window.__rolePickSigs || {},"
-                    + "     active: !!window.__rolePickActive });"
-                    + " } catch (e) {"
-                    + "   return JSON.stringify({picks:[],steps:[],currentStep:[],sigs:{},active:false});"
-                    + " }"
-                    + "})()");
+            Object res = page.evaluate(RolePickerScripts.READ_PICK_STATE_JSON_JS);
             if (res instanceof String) return (String) res;
         } catch (Exception ignore) { /* 页面已关闭等：忽略，返回空集 */ }
         return "{\"picks\":[],\"steps\":[],\"currentStep\":[],\"sigs\":{},\"active\":false}";

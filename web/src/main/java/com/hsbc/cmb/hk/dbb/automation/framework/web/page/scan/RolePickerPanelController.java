@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.CmdEvent;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry.CmdEvent;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerResult;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerAction;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickMode;
@@ -30,9 +30,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAsse
 // 行为保持零回归的桥接：openPanel / registerPopupFollow 原样搬自 RoleElementPicker，
 // 其依赖的私有静态助手已放宽到包内可见，此处显式静态导入以保留原调用形态。
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.setPickMode;
-import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.registerContextBridges;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry.registerContextBridges;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.registerContextInitScripts;
-import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.drainPanelCmds;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry.drainPanelCmds;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.isCiRun;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.runPickerCommand;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.mergeFramePicksToMain;

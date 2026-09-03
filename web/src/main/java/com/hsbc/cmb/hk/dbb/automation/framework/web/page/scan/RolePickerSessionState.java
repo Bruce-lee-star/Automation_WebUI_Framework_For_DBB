@@ -24,7 +24,7 @@ final class RolePickerSessionState {
 
     private RolePickerSessionState() {}
 
-    static final Map<BrowserContext, BlockingQueue<RoleElementPicker.CmdEvent>> CTX_CMD_QUEUES =
+    static final Map<BrowserContext, BlockingQueue<RolePickerBridgeRegistry.CmdEvent>> CTX_CMD_QUEUES =
             new ConcurrentHashMap<>();
     static final Map<BrowserContext, LinkedHashMap<String, RoleEntry>> CTX_PICK_STATES =
             new ConcurrentHashMap<>();

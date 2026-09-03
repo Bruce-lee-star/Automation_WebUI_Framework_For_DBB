@@ -19,7 +19,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.StepRec;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PageOp;
 
-import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.GSON;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry.GSON;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.MAP_STRING_OBJECT_TYPE;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.asString;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.syncPanelToBrowser;

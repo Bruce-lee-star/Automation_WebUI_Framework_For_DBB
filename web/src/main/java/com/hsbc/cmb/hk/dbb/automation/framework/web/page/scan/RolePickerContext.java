@@ -46,7 +46,7 @@ final class RolePickerContext {
     final ConcurrentHashMap<Page, String> snapshots;
     final LinkedHashMap<String, String> urlToClass;
     final CopyOnWriteArrayList<Page> openedPages;
-    final BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue;
+    final BlockingQueue<RolePickerBridgeRegistry.CmdEvent> cmdQueue;
     final Set<Page> navigatedPages;
     final Object closeSignal;
     final LinkedHashMap<String, RoleEntry> javaPickBySig;
@@ -58,7 +58,7 @@ final class RolePickerContext {
                       ConcurrentHashMap<Page, String> snapshots,
                       LinkedHashMap<String, String> urlToClass,
                       CopyOnWriteArrayList<Page> openedPages,
-                      BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue,
+                      BlockingQueue<RolePickerBridgeRegistry.CmdEvent> cmdQueue,
                       Set<Page> navigatedPages, Object closeSignal,
                       LinkedHashMap<String, RoleEntry> javaPickBySig) {
         this.current = current;

@@ -40,7 +40,7 @@ final class RolePickerPageTracker {
         ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
         CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
-        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        BlockingQueue<RolePickerBridgeRegistry.CmdEvent> cmdQueue = ctx.cmdQueue;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         if (trigger == null || trigger.isClosed()) return;
         for (Page p : trigger.context().pages()) {
@@ -80,7 +80,7 @@ final class RolePickerPageTracker {
         ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
         CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
-        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        BlockingQueue<RolePickerBridgeRegistry.CmdEvent> cmdQueue = ctx.cmdQueue;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         try {
             // 命令桥/拾取桥/面板重建脚本均已在 context 级一次性注册（registerContextBridges /
@@ -118,7 +118,7 @@ final class RolePickerPageTracker {
         ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
         CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
-        BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
+        BlockingQueue<RolePickerBridgeRegistry.CmdEvent> cmdQueue = ctx.cmdQueue;
         Set<Page> navigatedPages = ctx.navigatedPages;
         Object closeSignal = ctx.closeSignal;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;

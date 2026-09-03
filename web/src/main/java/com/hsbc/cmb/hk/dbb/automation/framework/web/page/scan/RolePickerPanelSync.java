@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEval;
 
 /**
  * 面板同步引擎：把 Java 权威拾取内存态（javaPickBySig）合并 iframe 拾取、回灌浏览器面板，
@@ -37,7 +38,7 @@ final class RolePickerPanelSync {
         for (Frame f : page.frames()) {
             if (f == null || f.equals(page.mainFrame())) continue;
             try {
-                Object frameJson = f.evaluate(RolePickerScripts.READ_FRAME_PICKS_RAW_JS);
+                Object frameJson = pickerEval(f, RolePickerScripts.READ_FRAME_PICKS_RAW_JS);
                 if (frameJson instanceof String) {
                     final String json = (String) frameJson;
                     if (!json.isEmpty() && !"[]".equals(json.trim())) {
@@ -146,7 +147,7 @@ final class RolePickerPanelSync {
                     .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String syncDelB64 = java.util.Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(delJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            page.evaluate(RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
+            pickerEval(page, RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
                     java.util.Arrays.asList(syncJsonB64, syncDelB64, overwriteNos));
         } catch (Exception syncE) {
             try { log.warn("[picker] 同步面板到浏览器失败：{}", syncE.getMessage()); } catch (Exception ignore) {}

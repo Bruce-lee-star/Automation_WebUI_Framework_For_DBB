@@ -7,6 +7,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickMode;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerResult;
@@ -27,6 +31,7 @@ import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElement
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.fillCode;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.stop;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.start;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEval;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerSnapshotParser.readPickSnapshot;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerSnapshotParser.stopAndRead;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerSnapshotParser.parsePickSnapshot;
@@ -69,7 +74,7 @@ public final class RolePickerCommandEngine {
                     // 解决方案：读取浏览器侧当前 __rolePicks 的 sigKey 集合，删除 Java 侧不存在的元素。
                     try {
                         @SuppressWarnings("unchecked")
-                        List<?> browserPicks = (List<?>) page.evaluate(RolePickerScripts.READ_PICK_SIGS_JS);
+                        List<?> browserPicks = (List<?>) pickerEval(page, RolePickerScripts.READ_PICK_SIGS_JS);
                         java.util.Set<String> browserSigs = new java.util.HashSet<>();
                         if (browserPicks != null) {
                             for (Object o : browserPicks) {
@@ -101,7 +106,7 @@ public final class RolePickerCommandEngine {
                     // 【diag-repick】sync 后回读浏览器侧 __rolePicks 的实际 _pickNos，确认回灌生效（而非旧值残留）。
                     try {
                         @SuppressWarnings("unchecked")
-                        List<?> rp = (List<?>) page.evaluate(RolePickerScripts.READ_PICK_KEYS_JS);
+                        List<?> rp = (List<?>) pickerEval(page, RolePickerScripts.READ_PICK_KEYS_JS);
                         log.info("[picker][diag-repick] 回灌后浏览器侧 __rolePicks: {}", rp);
                     } catch (Exception ignoreR) {}
                     return new PickerResult(PickerAction.CONTINUE, null, null,
@@ -115,13 +120,13 @@ public final class RolePickerCommandEngine {
     }
 
     private static PickerResult cmdStart(RolePickerContext ctx, Page page) {
-        boolean[] active = ctx.active;
+        AtomicBoolean active = ctx.active;
         String[] nlsFiles = ctx.nlsFiles;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         // 多实例：会话级"开始"作用于所有已打开页面，使各页面板同步显示 ⏹ 停止
-        // （active[0] 是会话权威开关，followPage / onFrameNavigated 据此决定是否重启监听）。
-        active[0] = true;
+        // （active.get() 是会话权威开关，followPage / onFrameNavigated 据此决定是否重启监听）。
+        active.set(true);
         // 【关键修复】清空 Java 侧内存态中元素的序号（保留元素本身），使第二轮拾取序号从 1 开始
         // 用户需求：重新拾取时保留已在页面元素列表中的元素，但序号从 1 重新开始
         // 浏览器侧 start 脚本也会同步清空 __rolePicks 中每个元素的 _pickNos，保持 Java/浏览器状态一致
@@ -145,8 +150,8 @@ public final class RolePickerCommandEngine {
     }
 
     private static PickerResult cmdAbort(RolePickerContext ctx, Page page) {
-        boolean[] active = ctx.active;
-        active[0] = false;
+        AtomicBoolean active = ctx.active;
+        active.set(false);
         stop(page);
         return new PickerResult(PickerAction.ABORT, null, null, null);
     }
@@ -166,17 +171,17 @@ public final class RolePickerCommandEngine {
     }
 
     private static PickerResult cmdScan(RolePickerContext ctx, Page page) {
-        boolean[] active = ctx.active;
+        AtomicBoolean active = ctx.active;
         String[] nlsFiles = ctx.nlsFiles;
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         // 整页 role 树扫描：先复用 start 注入拾取库（定义 __roleScanPage/__recordPick），
         // 再对命令来源页运行 window.__roleScanPage()——把整页所有"带可访问名的语义角色元素"
         // 经 __recordPick 记录，与点击拾取同一链路（去重 / 面板渲染 / __roleOnPick 回传 javaPickBySig）。
         // 用户随后点 ⏹ 停止即从 javaPickBySig 生成代码（无需为扫描单独实现生成逻辑）。
-        active[0] = true;
+        active.set(true);
         // 进入整页扫描模式（互斥：扫描期间禁用开始/区域扫描按钮）。
         setPickMode(pageNames.keySet().iterator().next(), PickMode.SCAN_PAGE, pageNames);
         String scanNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
@@ -200,7 +205,7 @@ public final class RolePickerCommandEngine {
         // 确保扫描后点加号新序号从 1 开始。
         if (!page.isClosed()) {
             try {
-                page.evaluate(RolePickerScripts.RESET_PICKS_JS);
+                pickerEval(page, RolePickerScripts.RESET_PICKS_JS);
             } catch (Exception ignored) {}
             start(page, scanNls);
         }
@@ -218,13 +223,13 @@ public final class RolePickerCommandEngine {
             for (com.microsoft.playwright.Frame f : page.frames()) {
                 if (f == null) continue;
                 try {
-                    Object r = f.evaluate(RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
+                    Object r = pickerEval(f, RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
                     // 防御性兜底：跨源/动态 iframe 若因注入竞态漏注入（__roleScanPage 未定义，返回 -1），
                     // 此处先强制补注入一次再扫描，确保任意层 iframe（含跨源）都能被整页扫描穿透。
                     if (r instanceof Number && ((Number) r).intValue() < 0) {
                         try {
                             RolePickerScriptInjector.frameInjectOnce(f, scanNls);
-                            r = f.evaluate(RolePickerScripts.FRAME_SCAN_JS);
+                            r = pickerEval(f, RolePickerScripts.FRAME_SCAN_JS);
                         } catch (Exception reInjEx) {
                             if (log.isDebugEnabled()) log.debug("[picker][scan] iframe 补注入失败（url={}）：{}", f.url(), reInjEx.getMessage());
                         }
@@ -291,13 +296,13 @@ public final class RolePickerCommandEngine {
     }
 
     private static PickerResult cmdScanRegion(RolePickerContext ctx, Page page) {
-        boolean[] active = ctx.active;
+        AtomicBoolean active = ctx.active;
         String[] nlsFiles = ctx.nlsFiles;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         // 区域扫描：点按钮后进入「点选区域」态（__roleStartRegionSelect）：用户点击业务区域内的任意位置，
         // 框架收敛到该业务容器并只扫描这块（避开 leftmenu/topbar 等）；若用户想整页，可在区域扫描后
         // 再点「扫描整页」按钮。点选是浏览器侧异步交互，Java 仅触发并返回提示，结果由浏览器侧回传。
-        active[0] = true;
+        active.set(true);
         // 进入区域扫描模式（互斥：扫描期间禁用开始/整页扫描按钮）。
         setPickMode(pageNames.keySet().iterator().next(), PickMode.SCAN_REGION, pageNames);
         String regionNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
@@ -312,7 +317,7 @@ public final class RolePickerCommandEngine {
         // 【追加】语义（__scanAdded 记录本次新增并 push 进 __rolePicks），保留已有拾取集即可实现
         // 叠加。同时保留 __rolePickSigs（去重）防重复、保留 RolePickerSessionState.STATE_DELETED（已删屏蔽）防已删元素复活。
         try {
-            page.evaluate(RolePickerScripts.START_REGION_SELECT_JS);
+            pickerEval(page, RolePickerScripts.START_REGION_SELECT_JS);
         } catch (Exception e) {
             log.warn("[picker][scanRegion] 启动区域点选失败：{}", e.getMessage());
             return new PickerResult(PickerAction.CONTINUE, null, null,
@@ -327,7 +332,7 @@ public final class RolePickerCommandEngine {
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         // 区域扫描点击后由浏览器侧异步通知（window.__rolePickerCmd('regionScanned')）：此时用户点选的
         // 业务区域元素已同步进入 window.__rolePicks，这里与"整页扫描"一样读取快照并生成页面类，
@@ -355,7 +360,7 @@ public final class RolePickerCommandEngine {
             java.util.Set<String> regionFrameUrls = new java.util.HashSet<>();
             java.util.Set<String> regionFrameNames = new java.util.HashSet<>();
             try {
-                Object marks = page.evaluate(RolePickerScripts.READ_REGION_FRAMES_JS);
+                Object marks = pickerEval(page, RolePickerScripts.READ_REGION_FRAMES_JS);
                 if (marks instanceof java.util.Map) {
                     Object u = ((java.util.Map<?, ?>) marks).get("urls");
                     if (u instanceof java.util.List) {
@@ -406,13 +411,13 @@ public final class RolePickerCommandEngine {
                     }
                     if (!inRegion) continue;
                     try {
-                        Object rf = f.evaluate(RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
+                        Object rf = pickerEval(f, RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
                         // 防御性兜底：跨源/动态 iframe 若因注入竞态漏注入（__roleScanPage 未定义），
                         // 先强制补注入一次再扫描，确保区域内任意层 iframe（含跨源）都能被区域扫描穿透。
                         if (rf instanceof Number && ((Number) rf).intValue() < 0) {
                             try {
                                 RolePickerScriptInjector.frameInjectOnce(f, RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles)));
-                                f.evaluate(RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
+                                pickerEval(f, RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
                             } catch (Exception reInjEx) {
                                 String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
                                 log.warn("[picker][regionScanned] 区域 iframe 补注入失败（url={}）：{}", fUrl, reInjEx.getMessage());
@@ -446,7 +451,7 @@ public final class RolePickerCommandEngine {
                     // 再回 IDLE 使面板按钮复位为"▶ 开始拾取"。
                     // 【关键修复"区域扫描关闭不了、蓝色框框常驻"】旧实现只回 IDLE 但浏览器侧
                     // __roleEndRegionSelect 未调用，导致蓝色遮罩常驻、事件监听残留。
-                    try { if (!page.isClosed()) page.evaluate(RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
+                    try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
                     setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
                     return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
                             "区域扫描完成，已生成页面类（" + snap.entries.size() + " 个字段）");
@@ -456,7 +461,7 @@ public final class RolePickerCommandEngine {
             log.warn("[picker][regionScanned] 生成页面类失败：{}", e.getMessage());
         }
         // 区域扫描完成（无论是否拾取到元素）自动清理选区态并回 IDLE。
-        try { if (!page.isClosed()) page.evaluate(RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
+        try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
         setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
         return new PickerResult(PickerAction.CONTINUE, null, null, "区域扫描未拾取到可定位元素，请点击具体的业务区域");
     }
@@ -498,8 +503,8 @@ public final class RolePickerCommandEngine {
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
         String[] nlsFiles = ctx.nlsFiles;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         // 面板「删除」按钮触发：元素已从 window.__rolePicks / window.__steps / javaPickBySig 移除，
         // 但「页面类」「步骤代码」两个 Tab 里展示的仍是删除前生成好的旧代码文本
         // （代码是生成时一次性写入 textarea 的快照，不会自动跟随数据变化）。
@@ -546,15 +551,15 @@ public final class RolePickerCommandEngine {
     }
 
     private static PickerResult cmdStop(RolePickerContext ctx, Page page) {
-        boolean[] active = ctx.active;
+        AtomicBoolean active = ctx.active;
         String[] nlsFiles = ctx.nlsFiles;
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
-        active[0] = false;
+        active.set(false);
         log.info("[picker][stop] 收到停止命令，对 {} 个被跟踪页面执行停止", pageNames.size());
         // 多实例：停止作用于所有已打开页面，使各页面板同步回 ▶ 开始
         // （否则某页仍显示停止却已失活，造成"点了没反应"的错觉）。
@@ -587,7 +592,7 @@ public final class RolePickerCommandEngine {
                 // 密集导航（onFrameNavigated/整页跳转）时命令来源页的 execution context 可能正在
                 // 销毁/重建，stopAndRead/stop 的 page.evaluate 会抛 "Execution context was destroyed"。
                 // 不向上冒泡撕裂主循环会话：标记已失活并降级为读内存态，保证"停止"在任何导航瞬间都生效，
-                // 不再出现"点了停止却卡住/没反应"的假死（active 已被 active[0]=false 复位）。
+                // 不再出现"点了停止却卡住/没反应"的假死（active 已被 active.get()=false 复位）。
                 log.warn("[picker][stop] 停止页 {} 时 evaluate 失败（导航中可忽略）：{}",
                         p.url(), stopEx.getMessage());
                 try { p.evaluate(RolePickerScripts.SET_PICK_STOPPED_JS); } catch (Exception ignore) {}
@@ -605,7 +610,7 @@ public final class RolePickerCommandEngine {
                 for (com.microsoft.playwright.Frame f : page.frames()) {
                     try {
                         // 与 stopAndRead/readPickSnapshot 同口径：直接读各 frame 的 window.__rolePicks/__steps/__ops
-                        PickSnapshot fs = parsePickSnapshot(f.evaluate(RolePickerScripts.PICK_STATE_READER_JS));
+                        PickSnapshot fs = parsePickSnapshot(pickerEval(f, RolePickerScripts.PICK_STATE_READER_JS));
                         fEntries.addAll(fs.entries); fSteps.addAll(fs.steps); fOps.addAll(fs.ops);
                     } catch (Exception fe) { /* 单 frame 失败忽略，继续其它 frame */ }
                 }
@@ -672,7 +677,7 @@ public final class RolePickerCommandEngine {
             // 诊断：跨域/导航竞态下出现"未拾取到元素"时，记录内存态与浏览器侧 picks 数量，便于定位是否漏拾。
             int jsMem = javaPickBySig.size();
             int browserPicks = 0;
-            try { browserPicks = ((List<?>) page.evaluate(RolePickerScripts.READ_PICK_COUNT_JS)).size(); } catch (Exception ignoreB) {}
+            try { browserPicks = ((List<?>) pickerEval(page, RolePickerScripts.READ_PICK_COUNT_JS)).size(); } catch (Exception ignoreB) {}
             log.warn("[picker][stop] 未拾取到元素 @ {} : 内存态 javaPickBySig={}, 浏览器 __rolePicks={}, 当前页 origin={}",
                     page.url(), jsMem, browserPicks, safeOrigin(page.url()));
             // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。
@@ -704,7 +709,7 @@ public final class RolePickerCommandEngine {
             // 修复：stop 时彻底清空浏览器侧全部拾取注册状态（与"下一轮从 1 重新连续"语义一致），
             // 停止拾取：保留元素列表（__rolePicks），但清除所有序号（重置为 [-,+]）
             // 这样第二轮拾取时，元素仍在列表中，显示为 [-,+]，用户可重新勾选分配序号
-            page.evaluate(RolePickerScripts.CLEAR_PICKS_JS);
+            pickerEval(page, RolePickerScripts.CLEAR_PICKS_JS);
         } catch (Exception ignore) {}
         int matched = 0;
         for (RoleEntry e : allEntries) {

@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
@@ -101,16 +102,34 @@ public final class RoleElementPicker {
         RolePickerSessionState.clearAll();
     }
 
+    // 同页并发 evaluate 串行化（T5-1 ⑤）：Playwright Page 非线程安全，主循环线程与 Playwright 事件线程
+    // 可能在同一 Page 上并发调用 evaluate。按 Page 加锁串行化，避免协议层交错/覆盖；
+    // 锁仅在 evaluate 调用期间持有，evaluate 返回后才触发导航回调，回调不会在持锁期间运行，故不会自死锁。
+    private static final ConcurrentHashMap<Object, Object> EVAL_LOCKS = new ConcurrentHashMap<>();
+    private static Object evalLockOf(Object key) { return EVAL_LOCKS.computeIfAbsent(key, k -> new Object()); }
+    static Object pickerEval(Page page, String script) {
+        synchronized (evalLockOf(page)) { return page.evaluate(script); }
+    }
+    static Object pickerEval(Page page, String script, Object arg) {
+        synchronized (evalLockOf(page)) { return page.evaluate(script, arg); }
+    }
+    static Object pickerEval(Frame frame, String script) {
+        synchronized (evalLockOf(frame)) { return frame.evaluate(script); }
+    }
+    static Object pickerEval(Frame frame, String script, Object arg) {
+        synchronized (evalLockOf(frame)) { return frame.evaluate(script, arg); }
+    }
+
     /** 设置某 context 的拾取模式，并同步到所有未关闭页面（驱动面板按钮态与浏览器侧行为）。 */
     static void setPickMode(Page anyPage, PickMode mode,
-                                    LinkedHashMap<Page, String> pageNames) {
+                                    Map<Page, String> pageNames) {
         if (anyPage == null || anyPage.isClosed()) return;
         BrowserContext ctx = anyPage.context();
         RolePickerSessionState.CTX_PICK_MODES.put(ctx, mode);
         String jsMode = mode.name().toLowerCase();
         if (pageNames != null) {
             for (Page p : pageNames.keySet()) {
-                try { if (!p.isClosed()) p.evaluate(RolePickerScripts.SET_PICK_MODE_JS, RolePickerScripts.args("mode", jsMode)); }
+                try { if (!p.isClosed()) pickerEval(p, RolePickerScripts.SET_PICK_MODE_JS, RolePickerScripts.args("mode", jsMode)); }
                 catch (Exception ignore) {}
             }
         }
@@ -572,7 +591,7 @@ public final class RoleElementPicker {
     static void drainPanelCmds(Page page, BlockingQueue<CmdEvent> cmdQueue) {
         if (page == null || page.isClosed() || cmdQueue == null) return;
         try {
-            Object raw = page.evaluate(RolePickerScripts.DRAIN_PANEL_CMDS_JS);
+            Object raw = pickerEval(page, RolePickerScripts.DRAIN_PANEL_CMDS_JS);
             if (raw instanceof List) {
                 for (Object o : (List<?>) raw) {
                     String c = o == null ? null : o.toString();
@@ -708,7 +727,7 @@ public final class RoleElementPicker {
             startArgs.put("nls", nlsReverseJson);
             // rootSelector 允许为 null（整页扫描）；HashMap 与 Playwright 参数序列化均支持 null。
             startArgs.put("root", rootSelector);
-            page.evaluate(pickStartScript, startArgs);
+            pickerEval(page, pickStartScript, startArgs);
         } catch (Exception e) {
             log.warn("[picker] 拾取脚本注入失败（不影响主流程）：{}", e.getMessage());
         }
@@ -725,7 +744,7 @@ public final class RoleElementPicker {
         } catch (Exception ignore) {}
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
-            String d = page.evaluate(RolePickerScripts.START_DIAG_JS).toString();
+            String d = pickerEval(page, RolePickerScripts.START_DIAG_JS).toString();
             log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
             // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
             // 【修复"跳转到新页面拾取不到"】popup 在 onPopup 回调触发时文档还是 about:blank（origin 为空串），
@@ -765,7 +784,7 @@ public final class RoleElementPicker {
         // 时触发）即便因后续导航/路由变化再次被调用，也直接 return 不再复活拾取；同时清掉 __rolePickWanted，
         // 让开始/停止切换控件的状态机复位（否则 willStart=!(active||wanted) 在 wanted 残留 true 时翻转失效，
         // 表现为"点了停止却仍是开始态/再点开始却拾取不了"）。start() 会重置该标志恢复自愈能力。
-        page.evaluate(RolePickerScripts.STOP_SESSION_CLEANUP_JS + RolePickerScripts.STOP_SCRIPT);
+        pickerEval(page, RolePickerScripts.STOP_SESSION_CLEANUP_JS + RolePickerScripts.STOP_SCRIPT);
     }
 
     /**
@@ -793,7 +812,7 @@ public final class RoleElementPicker {
             List<String> fp = RolePickerFramePath.computeFramePath(page, fr);   // 自顶向下的 iframe 选择器链（主框架为空）
             Object raw;
             try {
-                raw = fr.evaluate(RolePickerScripts.READ_FRAME_PICKS_JS);
+                raw = pickerEval(fr, RolePickerScripts.READ_FRAME_PICKS_JS);
             } catch (Exception ignore) { continue; }   // 跨源 frame 读取受限，跳过
             if (raw instanceof List) {
                 for (Object o : (List<Object>) raw) {
@@ -852,7 +871,7 @@ public final class RoleElementPicker {
             // 表现即"停止后再点开始却拾取不了 / 跳转到新页面拾取不到"——因为激活态显示 true、函数引用还在（hasClick 为真），
             // 于是误判"无需重挂"，而真实监听早已不工作。START_SCRIPT 对同函数引用 addEventListener 幂等、
             // 不重复定义库，按 1s 节奏重挂安全无副作用，故此处改为"会话开则必重挂"。
-            page.evaluate(RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args("nls", nlsReverseJson));
+            pickerEval(page, RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args("nls", nlsReverseJson));
             // 自愈保活不仅要重挂主框架监听，还须对所有 frame（含弹窗/新页面内的任意嵌套 iframe）重新注入拾取脚本。
             // 否则"打开新页面 / window.open 弹窗 / 链接点击新标签"等场景，其内嵌 iframe 在自愈时不会被重新注入，
             // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，
@@ -1031,8 +1050,8 @@ public final class RoleElementPicker {
             log.info("[picker] 检测到 CI 运行环境，跳过代码面板（showCode）。");
             return;
         }
-        page.evaluate(RolePickerScripts.SET_PICKER_CODE_JS, RolePickerScripts.args("code", code));
-        page.evaluate(RolePickerScripts.SHOW_PANEL_SCRIPT);
+        pickerEval(page, RolePickerScripts.SET_PICKER_CODE_JS, RolePickerScripts.args("code", code));
+        pickerEval(page, RolePickerScripts.SHOW_PANEL_SCRIPT);
         log.info("[picker] 代码面板已弹出：点『复制代码』复制，点『关闭』结束。");
         try {
             page.waitForFunction(RolePickerScripts.WAIT_CODE_PANEL_CLOSED_JS, null,
@@ -1170,7 +1189,7 @@ public final class RoleElementPicker {
         try {
             // 移除常驻面板的同时，移除点击/悬停/按键捕获监听并复位 active 标记，
             // 否则面板删了、监听器残留，会出现"面板消失却仍可静默拾取、不阻挡程序"（用户不期望）的半吊子状态。
-            page.evaluate(RolePickerScripts.CLOSE_PANEL_JS);
+            pickerEval(page, RolePickerScripts.CLOSE_PANEL_JS);
         } catch (Exception ignore) {
             // 页面已关闭/不可操作：忽略，面板与监听随页面销毁一并消失，无需额外处理
         }
@@ -1186,7 +1205,7 @@ public final class RoleElementPicker {
      */
     static String readPickStateJson(Page page) {
         try {
-            Object res = page.evaluate(RolePickerScripts.READ_PICK_STATE_JSON_JS);
+            Object res = pickerEval(page, RolePickerScripts.READ_PICK_STATE_JSON_JS);
             if (res instanceof String) return (String) res;
         } catch (Exception ignore) { /* 页面已关闭等：忽略，返回空集 */ }
         return "{\"picks\":[],\"steps\":[],\"currentStep\":[],\"sigs\":{},\"active\":false}";
@@ -1228,7 +1247,7 @@ public final class RoleElementPicker {
         log.info("[picker][applyPickState] 用 Java 快照恢复数据（picks={} / steps={} / currentStep={}），"
                         + "即将把 __rolePickActive 置 false，等待 onFrameNavigated 重激活；target={}",
                 pickCountOf(stateJson), stepCountOf(stateJson), currentStepCountOf(stateJson), target.url());
-        target.evaluate(RolePickerScripts.APPLY_PICK_STATE_JS, RolePickerScripts.args(
+        pickerEval(target, RolePickerScripts.APPLY_PICK_STATE_JS, RolePickerScripts.args(
                 "nlsFiles", nlsFiles, "nlsReverseJson", nlsReverseJson, "stateJson", stateJson));
     }
 
@@ -1260,15 +1279,15 @@ public final class RoleElementPicker {
 
     /** 更新面板顶部状态文字 */
     static void setStatus(Page page, String msg) {
-        page.evaluate(RolePickerScripts.SET_STATUS_MSG_JS, RolePickerScripts.args("msg", msg));
-        page.evaluate(RolePickerScripts.UPDATE_STATUS_DOM_JS);
+        pickerEval(page, RolePickerScripts.SET_STATUS_MSG_JS, RolePickerScripts.args("msg", msg));
+        pickerEval(page, RolePickerScripts.UPDATE_STATUS_DOM_JS);
     }
 
     /** 把按页生成的页面类/步骤代码分别写入面板的多 Tab，并更新状态 */
     static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage, LinkedHashMap<String, String> stepByPage, String msg) {
         // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate，
         // 点击"停止"后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
-        page.evaluate(RolePickerScripts.FILL_CODE_JS, RolePickerScripts.args(
+        pickerEval(page, RolePickerScripts.FILL_CODE_JS, RolePickerScripts.args(
                 "pageByPage", pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage,
                 "stepByPage", stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage,
                 "msg", msg == null ? "" : msg));

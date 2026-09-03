@@ -8,6 +8,11 @@ import java.util.concurrent.BlockingQueue;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEval;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 页面跟踪引擎：维护「被跟踪页面 ↔ 页类名」映射，并在新页面打开/手动跳转/漏登场景下
@@ -31,10 +36,10 @@ final class RolePickerPageTracker {
      * 已登记页面不重复初始化（幂等）：命令桥/拾取桥用 Map 守卫仅注册一次；面板 addInitScript 仅对漏登页调用一次。
      */
     static void reconcileTrackedPages(RolePickerContext ctx, Page trigger) {
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
-        List<Page> openedPages = ctx.openedPages;
+        CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
         BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         if (trigger == null || trigger.isClosed()) return;
@@ -57,7 +62,7 @@ final class RolePickerPageTracker {
                     if (newCls != null && !newCls.equals(curCls)) {
                         pageNames.put(p, newCls);
                     }
-                    p.evaluate(RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args("pageName", newCls));
+                    pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args("pageName", newCls));
                 } catch (Exception refreshEx) {
                     log.warn("[picker] reconcile 刷新页面类名失败：{}", refreshEx.getMessage());
                 }
@@ -71,10 +76,10 @@ final class RolePickerPageTracker {
      * 形成闭环——若漏登页再开子页，子页也会在下次 start 时被补登。
      */
     static void ensurePageTracked(RolePickerContext ctx, Page p) {
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
-        List<Page> openedPages = ctx.openedPages;
+        CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
         BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         try {
@@ -85,9 +90,9 @@ final class RolePickerPageTracker {
             pageNames.put(p, cls);
             if (!openedPages.contains(p)) openedPages.add(p);
             // 暴露页面类名 + 开启面板开关（与 openPanel/followPage 一致）
-            p.evaluate(RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", cls));
-            p.evaluate(RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
-            p.evaluate(RolePickerScripts.PANEL_SCRIPT);   // 立即重建当前已加载文档的面板
+            pickerEval(p, RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", cls));
+            pickerEval(p, RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
+            pickerEval(p, RolePickerScripts.PANEL_SCRIPT);   // 立即重建当前已加载文档的面板
             snapshots.put(p, RoleElementPicker.readPickStateJson(p));
             log.info("[picker][reconcile] 已补登漏跟踪页面并可被拾取：{} -> {}", p.url(), cls);
         } catch (Exception e) {
@@ -101,24 +106,24 @@ final class RolePickerPageTracker {
      * 元素按各页 window.__rolePageName 打 _pageClass 标签，生成时据此分组，实现"打开新页显示之前抓的元素"。
      */
     static void followPage(RolePickerContext ctx, Page opener, Page newPage) {
-        Page[] current = ctx.current;
-        boolean[] rootClosed = ctx.rootClosed;
-        boolean[] active = ctx.active;
+        AtomicReference<Page> current = ctx.current;
+        AtomicBoolean rootClosed = ctx.rootClosed;
+        AtomicBoolean active = ctx.active;
         String nlsReverseJson = ctx.nlsReverseJson;
         String[] nlsFiles = ctx.nlsFiles;
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
-        List<Page> openedPages = ctx.openedPages;
+        CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
         BlockingQueue<RoleElementPicker.CmdEvent> cmdQueue = ctx.cmdQueue;
         Set<Page> navigatedPages = ctx.navigatedPages;
         Object closeSignal = ctx.closeSignal;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         try {
-            final boolean sessionActive = active[0];
+            final boolean sessionActive = active.get();
             // 命令桥/拾取桥已在 context 级一次性注册（registerContextBridges），新页面自动持有绑定，
             // 无需逐页注册；面板按钮点击/拾取回传经 BindingCallback.Source 天然区分来源页面。
             // 多实例：保留原页面（默认页）面板，不关闭、也不停止其拾取态，
@@ -137,15 +142,15 @@ final class RolePickerPageTracker {
             // 当前页始终持有全部页面的 pick 并集，故代码生成可在单一窗口按各元素自身 _pageClass 归类。
             RoleElementPicker.applyPickState(newPage, RoleElementPicker.readPickStateJson(opener), nlsReverseJson, nlsFiles);
             if (opener != null && !opener.isClosed()) {
-                opener.evaluate(RolePickerScripts.CLEAR_CURRENT_STEP_JS);
+                pickerEval(opener, RolePickerScripts.CLEAR_CURRENT_STEP_JS);
             }
-            newPage.evaluate(RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS, RolePickerScripts.args("pageName", cls));
+            pickerEval(newPage, RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS, RolePickerScripts.args("pageName", cls));
             // 跨源/新页面：localStorage 往往为空或不可写，若直接跑 PANEL_SCRIPT 会因
             // __rolePanelEnabled!=='1' 提前 return，导致新页面没有面板。故显式置位开关，
             // 并用 window.__rolePanelForce 兜底（即使 localStorage 不可用也能重建面板）。
             // 面板重建 addInitScript 已在 context 级注册（registerContextInitScripts），
             // 新页面后续导航（弹窗常伴随重定向）会自动重建面板，无需逐页注册。
-            newPage.evaluate(RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
+            pickerEval(newPage, RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
             // 若会话仍处于拾取中，则在新页面重启点击捕获监听（applyPickState 已把新页 active 置 false）：
             // 经 start() 同时置位会话开关 + 注入 nls，使该页后续导航由 context 门控注入脚本原生保活。
             // 【算法：零等待窗口的双保险注入，杜绝"卡住"】
@@ -163,8 +168,8 @@ final class RolePickerPageTracker {
                 }
             }
             // 面板脚本：初始文档也先注入一次；若后续导航重建，onFrameNavigated/PANEL addInitScript 会兜底。
-            try { newPage.evaluate(RolePickerScripts.PANEL_SCRIPT); } catch (Exception ignore) {}
-            current[0] = newPage;
+            try { pickerEval(newPage, RolePickerScripts.PANEL_SCRIPT); } catch (Exception ignore) {}
+            current.set(newPage);
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, RoleElementPicker.readPickStateJson(newPage));
             // 新页面若再弹窗/再开页，继续跟随；把"是否处于拾取态"传下去，供其 onClose 回退父页时恢复。

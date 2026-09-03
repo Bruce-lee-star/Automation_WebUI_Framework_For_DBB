@@ -221,7 +221,7 @@ final class RolePickerCodeAssembler {
     }
 
     static void appendCloseOpStep(Page closed, String pageClass,
-                                          LinkedHashMap<Page, String> snapshots) {
+                                          Map<Page, String> snapshots) {
         try {
             String json = snapshots.get(closed);
             java.util.Map<String, Object> m = (json != null && !json.isEmpty())

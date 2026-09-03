@@ -7,8 +7,12 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.CmdEvent;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerResult;
@@ -45,6 +49,7 @@ import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElement
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.applyPickState;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.safeOrigin;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.start;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEval;
 
 /**
  * 面板会话控制器：承载「常驻控制面板」的开辟与主循环（含弹窗/关闭/导航/下载/上传/崩溃监听）。
@@ -87,33 +92,33 @@ public final class RolePickerPanelController {
         // 弹窗页/导航后点击时需要 nls 反向表反查 key；预先构建一次（含缓存），供门控注入脚本内嵌。
         final String nlsReverseJson = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
         // 开启面板开关：刷新/导航后 context 级 addInitScript 会自动重建面板，避免"刷新后面板消失"。
-        page.evaluate(RolePickerScripts.ENABLE_PANEL_JS);
+        pickerEval(page, RolePickerScripts.ENABLE_PANEL_JS);
         // 清掉上一次会话可能残留的拾取落盘态与拾取开关（浏览器上下文虽每次重建，仍防御性清理），
         // 避免 onFrameNavigated 合并时把旧数据误并入本次会话、或门控注入脚本因残留开关误自启拾取。
-        page.evaluate(RolePickerScripts.CLEAR_PICKER_STATE_JS + RolePickerScripts.STOP_SESSION_ON_JS);
+        pickerEval(page, RolePickerScripts.CLEAR_PICKER_STATE_JS + RolePickerScripts.STOP_SESSION_ON_JS);
         // 把关联的 nls 文件路径暴露给面板（标题展示 files=...），并在导航重建后依然可用。
-        page.evaluate(RolePickerScripts.SET_NLS_FILES_JS, RolePickerScripts.args("files", nlsFiles));
+        pickerEval(page, RolePickerScripts.SET_NLS_FILES_JS, RolePickerScripts.args("files", nlsFiles));
         // context 级初始化脚本：①面板引导 + 面板重建（任意页面/导航自动执行）；
         // ②门控拾取脚本（会话开关打开时每个新文档自动注入 nls + 重挂拾取监听——
         //   "页面怎么变都能拾取"从此由浏览器原生保证，替代手动重挂/自愈兜底的主路径）。
         registerContextInitScripts(ctx, nlsReverseJson);
         // addInitScript 只对注册后的【新文档】生效：当前已加载文档立即补执行一次面板脚本。
-        page.evaluate(RolePickerScripts.PANEL_SCRIPT);
-        final Page[] current = { page };
+        pickerEval(page, RolePickerScripts.PANEL_SCRIPT);
+        final AtomicReference<Page> current = new AtomicReference<>(page);
         // 会话级"是否处于拾取中"状态：跨页面跟随 / 导航 / 关闭回退都以此为权威依据，
         // 驱动面板切换控件显示 ⏹ 停止（而不是每次都重置成 ▶ 开始）。
-        final boolean[] active = { false };
+        final AtomicBoolean active = new AtomicBoolean(false);
         // throttle signature for auto-generating step while picking: recompute only when memory state changes.
         final String[] lastAutoGenSig = { "" };
         // rootClosed：连"根页面（最初打开面板的页面）"都关闭时置位，循环据此结束会话。
-        final boolean[] rootClosed = { false };
+        final AtomicBoolean rootClosed = new AtomicBoolean(false);
         // pageNames：每个被跟踪页面 → 其 Page 类名。根页用传入的 pageClassName；
         // 新页面（弹窗/新标签页）由 URL 派生（见 pageClassNameFromUrl），保证"元素落到对应页代码"。
-        final LinkedHashMap<Page, String> pageNames = new LinkedHashMap<>();
+        final ConcurrentHashMap<Page, String> pageNames = new ConcurrentHashMap<>();
         pageNames.put(page, pageClassName);
         // snapshots：每个被跟踪页面 → 其拾取状态 JSON 快照（readPickStateJson 格式）。
         // 用于导航重建恢复，以及页面关闭后仍能把它拾取的元素生成到对应 Page 类。
-        final LinkedHashMap<Page, String> snapshots = new LinkedHashMap<>();
+        final ConcurrentHashMap<Page, String> snapshots = new ConcurrentHashMap<>();
         // urlToClass：会话级"URL → Page 类名"稳定映射。同一 URL 在会话内首次访问时派生类名并记住，
         // 之后再回到该 URL（即使离开又返回）直接复用原类名，而不是重新派生一个重复类
         // （例如默认页 LoginPage → 跳到第二密页 → 回到登录 URL，若每次都重派生会多出 LogonPage，
@@ -129,7 +134,7 @@ public final class RolePickerPanelController {
         urlToClass.put(rootNorm, pageClassName);
         RolePickerClassNameResolver.put(rootNorm, pageClassName);
         // openedPages：会话期间新开出的页面（弹窗/新标签页），关闭面板时一并关闭。
-        final List<Page> openedPages = new ArrayList<>();
+        final CopyOnWriteArrayList<Page> openedPages = new CopyOnWriteArrayList<>();
         // 命令事件队列：面板按钮点击经 exposeFunction 异步投递到这里，主循环阻塞消费（事件驱动，无需忙轮询）。
         final BlockingQueue<CmdEvent> cmdQueue = new LinkedBlockingQueue<>();
         // 拾取状态权威副本（对齐 page.pause：状态外置到 Java 侧，浏览器只做轻量 UI）。
@@ -137,18 +142,17 @@ public final class RolePickerPanelController {
         // value=RoleEntry），重复点击以最近一次交互为准整条替换、首次插入保序。stop 时优先用此内存态生成代码，
         // 不依赖浏览器全量读取、且对导航/关闭导致的浏览器端状态清空免疫（比 localStorage 更可靠）。
         final LinkedHashMap<String, RoleEntry> javaPickBySig = new LinkedHashMap<>();
-        // closeSignal：关闭事件协调锁。页面关闭（onClose）回调异步执行会把 current[0] 回退到父页，
-        // 主循环检测到 current[0] 已关闭后需等待该回退完成；用 wait/notify 精确等待（而非 Thread.sleep），
+        // closeSignal：关闭事件协调锁。页面关闭（onClose）回调异步执行会把 current.get() 回退到父页，
+        // 主循环检测到 current.get() 已关闭后需等待该回退完成；用 wait/notify 精确等待（而非 Thread.sleep），
         // onClose 完成后立即 notify，主循环即时唤醒，不再空等固定时长，也避免忙睡引入的时序抖动。
         final Object closeSignal = new Object();
         // 记录"发生过整页跳转（URL 变化使 pageClass 改变）"的页面（Identity 比较），用于：
         // 同标签跳转到新页面后直接关闭时，补登记 closeCurrentPage 步骤（普通单页录制末尾不追加）。
-        final java.util.Set<Page> navigatedPages =
-                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Page, Boolean>());
+        final java.util.Set<Page> navigatedPages = java.util.concurrent.ConcurrentHashMap.newKeySet();
         // 收敛本次拾取会话的可变工作集到 RolePickerContext，消除下游方法的 16 参数长签名（行为零变更）。
         final RolePickerContext pc = new RolePickerContext(current, rootClosed, active, nlsReverseJson, nlsFiles, packageName, pageClassName, stepClassName, pageNames, snapshots, urlToClass, openedPages, cmdQueue, navigatedPages, closeSignal, javaPickBySig);
         // 把根页类名暴露给面板标题展示（新页面在 followPage 里设置），并持久化以便整页重建后恢复。
-        page.evaluate(RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS,
+        pickerEval(page, RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS,
                 RolePickerScripts.args("pageName", pageClassName));
         // 命令桥+拾取桥+控制台桥：context 一次注册，所有当前与未来页面共享（替代逐页 exposeFunction）。
         registerContextBridges(ctx, cmdQueue, javaPickBySig);
@@ -158,26 +162,26 @@ public final class RolePickerPanelController {
         ctx.onPage(p -> {
             if (p.opener() != null) return;
             log.info("[picker] 新页面打开（onPage）：{}", p.url());
-            followPage(pc, current[0], p);
+            followPage(pc, current.get(), p);
         });
 
         log.info("[picker] 面板已打开（同窗口 docked 右侧，不另开窗口）：▶ 开始拾取 → 点击元素 → ⏹ 停止生成代码 → 📋 复制；✕ 关闭结束。");
         try {
             while (true) {
-                // 当前跟随的页面（可能是弹窗）已关闭：先让 onClose 回调有机会把 current[0]
+                // 当前跟随的页面（可能是弹窗）已关闭：先让 onClose 回调有机会把 current.get()
                 // 回退到父页（重建面板、继续拾取），再判定是否真的结束会话。
-                // 关键修复：绝不可因"current[0] 指向的弹窗关闭"就直接结束会话——
+                // 关键修复：绝不可因"current.get() 指向的弹窗关闭"就直接结束会话——
                 // 否则会进入 finally 移除所有面板、却残留点击捕获监听，表现为
                 // "面板消失却仍可静默拾取、不阻挡程序"（用户不期望的行为）。
                 try {
-                    if (current[0].isClosed()) {
-                        // 等待 onClose 回调把 current[0] 回退到存活父页（wait/notify 精确唤醒，
+                    if (current.get().isClosed()) {
+                        // 等待 onClose 回调把 current.get() 回退到存活父页（wait/notify 精确唤醒，
                         // 超时仅作兜底，避免 Thread.sleep 固定空等与时序抖动）。
                         synchronized (closeSignal) {
                             try { closeSignal.wait(500); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
                         }
-                        if (!current[0].isClosed()) continue;   // onClose 已把 current[0] 回退到存活父页
-                        if (rootClosed[0]) break;               // 根页关闭且已置位：结束
+                        if (!current.get().isClosed()) continue;   // onClose 已把 current.get() 回退到存活父页
+                        if (rootClosed.get()) break;               // 根页关闭且已置位：结束
                         // onClose 未回退（异常/未触发）：在已跟踪页面里找一个存活页继续，
                         // 仅当"确实没有任何存活页面"时才结束会话。
                         Page alive = null;
@@ -185,7 +189,7 @@ public final class RolePickerPanelController {
                             if (pg != null && !pg.isClosed()) { alive = pg; break; }
                         }
                         if (alive == null) break;
-                        current[0] = alive;
+                        current.set(alive);
                         log.info("[picker] 跟随页已关闭，切换到存活页面 {} 继续会话（面板保留）。", alive.url());
                         continue;
                     }
@@ -205,7 +209,7 @@ public final class RolePickerPanelController {
                     continue;
                 }
                 if (ev.page != null && ev.page.isClosed()) continue;   // 页面已关闭：丢弃其命令
-                current[0] = ev.page;
+                current.set(ev.page);
                 String cmd = ev.cmd;
                 // 每次开始拾取前，把浏览器真实打开的页面（context.pages()）与内存跟踪表对齐：
                 // 任何在 stop→再 start 之间、或 onPage/onPopup/followPage 因异常漏登记的打开页面都会被补登，
@@ -215,11 +219,11 @@ public final class RolePickerPanelController {
                 }
                 PickerResult r;
                 try {
-                    r = runPickerCommand(pc, current[0], cmd);
+                    r = runPickerCommand(pc, current.get(), cmd);
                 } catch (Exception cmdEx) {
                     // 命令消费期间（典型：stop 命令的 page.evaluate 撞上整页跳转/导航导致 execution context 销毁）
                     // 抛出的异常若直接冒泡会撕裂主循环、进入 finally 静默关面板，表现为"点了停止却卡住/没反应"。
-                    // 此处捕获后降级为 CONTINUE：若该命令是 stop 则 active 已被复位（runPickerCommand 在 evaluate 前先置 active[0]=false），
+                    // 此处捕获后降级为 CONTINUE：若该命令是 stop 则 active 已被复位（runPickerCommand 在 evaluate 前先置 active.get()=false），
                     // 会话继续但不会再拾取；其余命令异常仅告警不中断。
                     log.warn("[picker] 处理命令 '{}' 失败（已降级为不中断会话）：{}", cmd, cmdEx.getMessage());
                     if ("stop".equals(cmd)) setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
@@ -245,26 +249,26 @@ public final class RolePickerPanelController {
                             // 仅命令页执行，避免多页都跳；window.__pendingJump 未设置时 __afterFillJump 直接返回。
                             if (p.equals(page)) {
                                 try {
-                                    p.evaluate(RolePickerScripts.INVOKE_AFTER_FILL_JUMP_JS);
+                                    pickerEval(p, RolePickerScripts.INVOKE_AFTER_FILL_JUMP_JS);
                                 } catch (Exception ignore) {}
                             }
                         }
                     }
                 } else {
-                    setStatus(current[0], r.statusMsg);
+                    setStatus(current.get(), r.statusMsg);
                 }
             }
         } finally {
             // 关闭开关并移除面板（撤销 docked 预留的右侧空间）：写墓碑 '0'（而非 remove），
             // 使 context 级引导注入脚本（无法撤销）在之后的导航中自行退出、不再重建面板。
-            try { page.evaluate(RolePickerScripts.DISABLE_PANEL_JS); } catch (Exception ignore) {}
-            try { page.evaluate(RolePickerScripts.REMOVE_PICK_STATE_JS); } catch (Exception ignore) {}
+            try { pickerEval(page, RolePickerScripts.DISABLE_PANEL_JS); } catch (Exception ignore) {}
+            try { pickerEval(page, RolePickerScripts.REMOVE_PICK_STATE_JS); } catch (Exception ignore) {}
             // 多实例：可能有多个页面各自带面板（默认页 + 若干弹窗），逐一关闭，避免残留。
             closePanel(page);
             for (Page p : openedPages) {
                 try { if (p != null && !p.isClosed()) closePanel(p); } catch (Exception ignore) {}
             }
-            if (current[0] != page) closePanel(current[0]);
+            if (current.get() != page) closePanel(current.get());
             // 关闭面板时一并关闭会话期间新开出的页面（弹窗/新标签页），仅保留最初的根页面。
             for (Page p : openedPages) {
                 try { if (p != null && !p.isClosed()) p.close(); } catch (Exception ignore) {}
@@ -275,15 +279,15 @@ public final class RolePickerPanelController {
     /**
      * 注册"弹窗跟随"：当页面弹出新标签页（target=_blank）时，把原页面的拾取状态
      * （__rolePicks / __steps / __currentStep / __rolePickSigs）转移到新页面，
-     * 并让 {@code current[0]} 指向新页面继续拾取。面板是注入式 docked（同窗口），
+     * 并让 {@code current.get()} 指向新页面继续拾取。面板是注入式 docked（同窗口），
      * 故需在弹窗页也重建面板；新页面自身若再弹窗会递归注册，支持多级弹窗。
      */
     private static void handleIdle(RolePickerContext pc, String[] lastAutoGenSig) {
-        LinkedHashMap<Page, String> pageNames = pc.pageNames;
+        ConcurrentHashMap<Page, String> pageNames = pc.pageNames;
         BlockingQueue<CmdEvent> cmdQueue = pc.cmdQueue;
-        LinkedHashMap<Page, String> snapshots = pc.snapshots;
+        ConcurrentHashMap<Page, String> snapshots = pc.snapshots;
         LinkedHashMap<String, RoleEntry> javaPickBySig = pc.javaPickBySig;
-        boolean[] active = pc.active;
+        AtomicBoolean active = pc.active;
         String nlsReverseJson = pc.nlsReverseJson;
         String[] nlsFiles = pc.nlsFiles;
         String packageName = pc.packageName;
@@ -291,7 +295,7 @@ public final class RolePickerPanelController {
         String stepClassName = pc.stepClassName;
         // 抽干浏览器端兜底命令队列 window.__panelCmds：当 exposeFunction 绑定尚未就绪时，
         // 面板按钮 pushCmd 会把命令推入该队列（见 PANEL_SCRIPT）。若 Java 不消费，▶ 开始/停止等
-        // 命令会静默丢失 → active[0] 永远 false、START_SCRIPT 永不注入、点击拾取不到。
+        // 命令会静默丢失 → active.get() 永远 false、START_SCRIPT 永不注入、点击拾取不到。
         // 此处每轮空闲把所有被跟踪页的兜底命令并入 cmdQueue，保证命令零丢失（与 exposeFunction 幂等、不重投）。
         try {
             for (Page pg : pageNames.keySet()) {
@@ -334,7 +338,7 @@ public final class RolePickerPanelController {
         // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
         // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
         // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。
-        if (active[0]) {
+        if (active.get()) {
             for (Page pg : pageNames.keySet()) {
                 if (!pg.isClosed()) ensurePickingActive(pg, nlsReverseJson, nlsFiles);
             }
@@ -367,7 +371,7 @@ public final class RolePickerPanelController {
                         for (Page pg : pageNames.keySet()) {
                             if (!pg.isClosed()) {
                                 fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
-                                try { pg.evaluate(RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
+                                try { pickerEval(pg, RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
                                     RolePickerScripts.args("n", autoSnap.steps.size())); } catch (Exception ignore) {}
                             }
                         }
@@ -380,18 +384,18 @@ public final class RolePickerPanelController {
     }
 
     static void registerPopupFollow(RolePickerContext ctx, Page page, Page parent) {
-        Page[] current = ctx.current;
-        boolean[] rootClosed = ctx.rootClosed;
-        boolean[] active = ctx.active;
+        AtomicReference<Page> current = ctx.current;
+        AtomicBoolean rootClosed = ctx.rootClosed;
+        AtomicBoolean active = ctx.active;
         String nlsReverseJson = ctx.nlsReverseJson;
         String[] nlsFiles = ctx.nlsFiles;
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
-        LinkedHashMap<Page, String> pageNames = ctx.pageNames;
-        LinkedHashMap<Page, String> snapshots = ctx.snapshots;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
-        List<Page> openedPages = ctx.openedPages;
+        CopyOnWriteArrayList<Page> openedPages = ctx.openedPages;
         BlockingQueue<CmdEvent> cmdQueue = ctx.cmdQueue;
         java.util.Set<Page> navigatedPages = ctx.navigatedPages;
         Object closeSignal = ctx.closeSignal;
@@ -401,7 +405,7 @@ public final class RolePickerPanelController {
             // 新页面弹出时，把"最近一次拾取的元素"标记为 popup（其触发动作会打开新页），
             // 生成 step 时包装为 waitForNewPage(() -> element.click())（对齐 page.pause() 的 codegen 输出）。
             try {
-                String sig = page.evaluate(RolePickerScripts.READ_LAST_PICK_SIG_JS).toString();
+                String sig = pickerEval(page, RolePickerScripts.READ_LAST_PICK_SIG_JS).toString();
                 if (sig != null && !sig.isEmpty()) {
                     RoleEntry e = javaPickBySig.get(sig);
                     if (e != null) { e.setPopup(true); log.info("[picker] onPopup 捕获新页面，回写最近拾取元素 popup 标记：{}", sig); }
@@ -424,7 +428,7 @@ public final class RolePickerPanelController {
                 }
                 // 再读 sig 回写 Java 内存态（此时 dialog 已处理，evaluate 安全；浏览器侧 __rolePickClick
                 // 的 setTimeout(0) 也会经 __roleOnPick 回传带 dialog 标记的元素，二者幂等）。
-                String sig = page.evaluate(RolePickerScripts.READ_LAST_PICK_SIG_JS).toString();
+                String sig = pickerEval(page, RolePickerScripts.READ_LAST_PICK_SIG_JS).toString();
                 if (sig != null && !sig.isEmpty()) {
                     RoleEntry e = javaPickBySig.get(sig);
                     if (e != null) {
@@ -460,12 +464,12 @@ public final class RolePickerPanelController {
                 String closedCls = pageNames.get(closed);   // 提升至 if/else 之前，使根页（else）分支也能引用
                 if (parent != null && !parent.isClosed()) {
                     // 先切回父页并保留其面板：即使后续合并/渲染操作抛异常，也不影响"回退父页 + 面板存活"，
-                    // 否则 onClose 中途异常会跳过 current[0]=parent，主循环将把"弹窗关闭"误判为会话结束，
+                    // 否则 onClose 中途异常会跳过 current.get()=parent，主循环将把"弹窗关闭"误判为会话结束，
                     // 进入 finally 删除所有面板却残留点击监听，表现为"面板消失却仍可静默拾取"（用户不期望）。
-                    current[0] = parent;
+                    current.set(parent);
                     // 父页此前一直处于拾取态（active 未被触碰），监听器仍存活；幂等重启以兜底，
                     // 不会因重复 START 而重复挂监听（START_SCRIPT 内已做 __rolePickActive 早退）。
-                    try { if (active[0]) parent.evaluate(RolePickerScripts.START_SCRIPT); } catch (Exception ignore) {}
+                    try { if (active.get()) pickerEval(parent, RolePickerScripts.START_SCRIPT); } catch (Exception ignore) {}
                     // 合并关闭页已抓元素到父页 + 把"关闭该页"内联为当前 step 的一个操作标记：
                     // 与"回退父页/面板存活"解耦，单独容错，避免一处瞬态异常中断整段。
                     try {
@@ -474,7 +478,7 @@ public final class RolePickerPanelController {
                         // 旧页 pick 自带 _pageClass，合并后仍正确归类到各自 Page 类。
                         String closedState = snapshots.get(closed);
                         if (closedState != null && hasPicks(closedState)) {
-                            parent.evaluate(RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS, RolePickerScripts.args(
+                            pickerEval(parent, RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS, RolePickerScripts.args(
                                     "nlsFiles", nlsFiles, "nlsReverseJson", nlsReverseJson, "closedState", closedState));
                     }
                         // 关键修复：把关闭页"进行中 step"（__currentStep）合并回父页当前 step，
@@ -484,7 +488,7 @@ public final class RolePickerPanelController {
                         // 使代码生成器产出 closeCurrentPage() 内联在主流程中（用户明确要求"只有一个条件：开始-停止"）。
                         // 关闭标记按 _sig 去重（支持多次关闭同类弹窗），并随 __currentStep 在停止时被收尾进唯一一个 step。
                         if (closedCls != null && !closedCls.isEmpty()) {
-                            parent.evaluate(RolePickerScripts.MERGE_CLOSE_OP_STEP_JS, RolePickerScripts.args(
+                            pickerEval(parent, RolePickerScripts.MERGE_CLOSE_OP_STEP_JS, RolePickerScripts.args(
                                     "closedState", closedState, "closedCls", closedCls));
                         // 框架主动关闭（closeCurrentPage）已在代码显式关闭，跳过重复登记 _closeOp；
                         // 但不 return——仍需执行下方父页回退与面板保留逻辑，使 inspector 回到原页面。
@@ -499,15 +503,15 @@ public final class RolePickerPanelController {
                     } catch (Exception ignore) { /* 合并失败不影响回退与面板存活 */ }
                     // 面板：有则重渲染（不重建、不闪烁），丢失则兜底挂载一次并立即渲染，确保面板可见、可继续拾取。
                     try {
-                        parent.evaluate(RolePickerScripts.SET_PANEL_FORCE_JS);
-                        boolean parentHasPanel = Boolean.TRUE.equals(parent.evaluate(
+                        pickerEval(parent, RolePickerScripts.SET_PANEL_FORCE_JS);
+                        boolean parentHasPanel = Boolean.TRUE.equals(pickerEval(parent, 
                                 "!!(document.getElementById('__rolePanel') && window.__renderPicks)"));
-                        if (parentHasPanel) parent.evaluate(RolePickerScripts.RENDER_PICKS_JS);
+                        if (parentHasPanel) pickerEval(parent, RolePickerScripts.RENDER_PICKS_JS);
                         else {
                             // 面板容器确已丢失：兜底挂载一次，挂载后立刻渲染合并回父页的拾取，
                             // 确保面板"挂载即可见、可继续拾取"，杜绝"面板不见却后台静默拾取"的半吊子状态。
-                            parent.evaluate(RolePickerScripts.PANEL_SCRIPT);
-                            parent.evaluate(RolePickerScripts.RENDER_PICKS_JS);
+                            pickerEval(parent, RolePickerScripts.PANEL_SCRIPT);
+                            pickerEval(parent, RolePickerScripts.RENDER_PICKS_JS);
                         }
                         setStatus(parent, "[picker] 已返回默认页面，可继续点选或停止生成代码。");
                     } catch (Exception ignore) { /* 面板渲染失败：忽略，主循环会继续在存活页面试图恢复 */ }
@@ -522,18 +526,18 @@ public final class RolePickerPanelController {
                         if (p != null && !p.isClosed()) survivor = p;
                     }
                     if (survivor != null) {
-                        current[0] = survivor;
-                        boolean hasPanel = Boolean.TRUE.equals(survivor.evaluate(RolePickerScripts.HAS_PANEL_JS));
+                        current.set(survivor);
+                        boolean hasPanel = Boolean.TRUE.equals(pickerEval(survivor, RolePickerScripts.HAS_PANEL_JS));
                         if (!hasPanel) {
-                            survivor.evaluate(RolePickerScripts.SET_PANEL_FORCE_JS);
-                            survivor.evaluate(RolePickerScripts.PANEL_SCRIPT);
+                            pickerEval(survivor, RolePickerScripts.SET_PANEL_FORCE_JS);
+                            pickerEval(survivor, RolePickerScripts.PANEL_SCRIPT);
                         }
-                        survivor.evaluate(RolePickerScripts.RENDER_PICKS_JS);
+                        pickerEval(survivor, RolePickerScripts.RENDER_PICKS_JS);
                         setStatus(survivor, "[picker] 默认页面已关闭，已切换到存活页面继续拾取（面板保留）。");
                         log.info("[picker] 根页面已关闭，但仍有存活页面，切换到 {} 继续会话（面板保留）。",
                                 survivor.url());
                     } else {
-                        rootClosed[0] = true;   // 连根页面都关了、且无其它存活页面：结束会话
+                        rootClosed.set(true);   // 连根页面都关了、且无其它存活页面：结束会话
                         log.info("[picker] 原页面已关闭，拾取会话结束。");
                     }
                     // 同标签整页跳转到新页面后"直接关闭"该根页：原逻辑只在"有存活父页"的弹窗分支
@@ -559,14 +563,14 @@ public final class RolePickerPanelController {
         // anchor 下载属性/扩展名已在 __rolePickClick 静态标记，二者互补、幂等。
         page.onDownload(download -> {
             try {
-                page.evaluate(RolePickerScripts.MARK_LAST_PICK_DOWNLOAD_JS);
+                pickerEval(page, RolePickerScripts.MARK_LAST_PICK_DOWNLOAD_JS);
             } catch (Exception ignore) { /* 页面已关闭等：忽略 */ }
         });
         // 文件选择框监听：出现上传文件选择框时，把该页面最近一次 pick 标记为 upload（对齐 setInputFiles 录制）。
         page.onFileChooser(fc -> {
             try {
                 Page fp = fc.page();
-                fp.evaluate(RolePickerScripts.MARK_LAST_PICK_UPLOAD_JS);
+                pickerEval(fp, RolePickerScripts.MARK_LAST_PICK_UPLOAD_JS);
                 log.info("[picker] 捕获文件选择框（上传），已标记最近一次拾取为 upload。");
             } catch (Exception ignore) { /* 页面已关闭等：忽略 */ }
         });
@@ -587,9 +591,9 @@ public final class RolePickerPanelController {
                     // 处理（持有正确的 nls 反向表），此处不再重复，避免两处逻辑分散与 nls 不一致。
                     return;
                 }
-                log.info("[picker][nav] 触发 onFrameNavigated：page={} active[0]={}", page.url(), active[0]);
+                log.info("[picker][nav] 触发 onFrameNavigated：page={} active.get()={}", page.url(), active.get());
                 // 仅当该页属于本次拾取会话（有快照）才处理；其它无关页面 snapshots 为 null 自然跳过。
-                // current[0] 只决定"正在操作的页面"，不影响各页自身面板状态的恢复。
+                // current.get() 只决定"正在操作的页面"，不影响各页自身面板状态的恢复。
                 String st = snapshots.get(page);
                 String prevCls = pageNames.get(page);
                 // 【修复"导航回来后页面类串味 / 扫描为 0"】
@@ -604,7 +608,7 @@ public final class RolePickerPanelController {
                     prevCls = resolvedCls;
                 }
                 try {
-                    page.evaluate(RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
+                    pickerEval(page, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
                             RolePickerScripts.args("pageName", resolvedCls));
                 } catch (Exception ignoreCls) {}
                 // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
@@ -623,7 +627,7 @@ public final class RolePickerPanelController {
                 //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，
                 //    避免某些导航把 window.__rolePicks 连带清空，导致"元素不见了"。
                 try {
-                boolean livePicks = Boolean.TRUE.equals(page.evaluate(
+                boolean livePicks = Boolean.TRUE.equals(pickerEval(page, 
                         "!!(window.__rolePicks && window.__rolePicks.length)"));
                 if (!livePicks) {
                     // 仅当 Java 快照非空才整体恢复（含 nls 反查表）；为空不再提前 return，
@@ -639,9 +643,9 @@ public final class RolePickerPanelController {
                     // 于是该元素被旧快照整体覆盖而丢失。此处把浏览器在 pagehide 时落盘到 localStorage 的
                     // 最新拾取态（含跳转前那次点击）合并回来，以"页面级复合键"去重，补回 st 缺失的最新点击元素。
                     // 仅同域整页跳转 localStorage 才保留，跨域（如弹窗 PDF）自然为空、不影响。
-                    page.evaluate(RolePickerScripts.MERGE_LOCALSTORAGE_PICKS_JS);
+                    pickerEval(page, RolePickerScripts.MERGE_LOCALSTORAGE_PICKS_JS);
                 } else {
-                    page.evaluate(RolePickerScripts.MERGE_SNAPSHOT_PICKS_JS,
+                    pickerEval(page, RolePickerScripts.MERGE_SNAPSHOT_PICKS_JS,
                             RolePickerScripts.args("stateJson", st));
                 }
                 // 关键修复（跨页累积不丢失）：SPA / 同 window 跳转时 livePicks=true，上面 if 分支【不会】执行，
@@ -650,18 +654,18 @@ public final class RolePickerPanelController {
                 // 表现为"跳转到另一页后之前页面的元素不在了"。此处对 livePicks=true 也补一次合并：
                 // 仅把 st 里有、而当前 window.__rolePicks 没有的元素按签名去重补回（不整体覆盖，不影响导航后新拾元素）。
                 if (livePicks && st != null && !st.isEmpty()) {
-                    page.evaluate(RolePickerScripts.MERGE_MISSING_PICKS_JS,
+                    pickerEval(page, RolePickerScripts.MERGE_MISSING_PICKS_JS,
                             RolePickerScripts.args("stateJson", st));
                 }
                 // 导航后始终重渲染面板列表并滚动到底部，确保已恢复/合并的元素可见（修复"URL 变化后元素看不见"）；
                 // 用 setTimeout 兜底等待 PANEL_SCRIPT 的 build() 完成（body 就绪才挂载面板），避免提前渲染找不到节点，
                 // 同时恢复上次生成的代码（页面元素 / 步骤代码两个 Tab），刷新后不丢。
-                page.evaluate(RolePickerScripts.POST_NAV_COMPACT_AND_RENDER_JS);
+                pickerEval(page, RolePickerScripts.POST_NAV_COMPACT_AND_RENDER_JS);
                 // 依据新 URL 解析本页类名：优先复用会话级 urlToClass 稳定映射（同一 URL 复用同一类名，
                 // 避免"回到默认页 URL 又派生出 LogonPage 之类重复页类"）——仅当该 URL 从未见过时才派生新类名。
                 String curCls = pageNames.get(page);
                 String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(page.url(), pageNames.values(), urlToClass);
-                page.evaluate(RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", newCls));
+                pickerEval(page, RolePickerScripts.SET_PAGE_NAME_JS, RolePickerScripts.args("pageName", newCls));
                 if (!newCls.equals(curCls)) { pageNames.put(page, newCls); navigatedPages.add(page); }
                 } catch (Exception restoreEx) {
                     // 数据恢复（applyPickState / 合并 / 渲染 / 类名解析）任一 evaluate 因导航瞬间页面不稳抛异常，
@@ -673,19 +677,19 @@ public final class RolePickerPanelController {
                 // 但 applyPickState 恢复数据时会把 __rolePickActive 置 false。若会话仍处于拾取中，
                 // 经 start() 幂等恢复激活位（监听已在则早退仅保活），并置位会话开关——
                 // 覆盖跨源导航后 localStorage 开关丢失的边界，使该页后续导航恢复浏览器原生保活。
-                // 触发条件不再单纯依赖 Java 侧 active[0]（可能与浏览器态不同步），而以浏览器侧会话开关为准，
+                // 触发条件不再单纯依赖 Java 侧 active.get()（可能与浏览器态不同步），而以浏览器侧会话开关为准，
                 // 只要门控脚本此前读到过开关（localStorage/__rolePickSessionOn）就重激活，保证"刷新/跳转后必能拾取"。
-                boolean sessionOn = active[0];
+                boolean sessionOn = active.get();
                 // 【修复"停止不了"】用户已显式停止（stop 置位 __rolePickStopped）后，即便后续发生导航，
                 // 也绝不再重激活拾取——否则 stop 后又被 onFrameNavigated 复活，表现为"点了停止还是停不掉"。
                 boolean explicitStop = false;
                 try {
-                    explicitStop = Boolean.TRUE.equals(page.evaluate(
+                    explicitStop = Boolean.TRUE.equals(pickerEval(page, 
                             RolePickerScripts.IS_PICK_STOPPED_JS));
                 } catch (Exception ignore) {}
                 if (!explicitStop && !sessionOn) {
                     try {
-                        sessionOn = Boolean.TRUE.equals(page.evaluate(
+                        sessionOn = Boolean.TRUE.equals(pickerEval(page, 
                                 RolePickerScripts.IS_SESSION_ON_JS));
                     } catch (Exception ignore) {}
                 }
@@ -693,7 +697,7 @@ public final class RolePickerPanelController {
                     log.info("[picker][nav] 会话拾取中：同步激活状态 @ {}", page.url());
                     // 跨域（或任何门控脚本因 localStorage 隔离未注入）导航后，新文档的 gatedPickerInitScript
                     // 因读不到 localStorage.__rolePickSessionOn 而提前 return，整套拾取库（__recordPick/点击监听）
-                    // 从未注入 → 表现为"无蓝框、点击无反应"。Java 主循环权威开关 active[0] 仍为 true，故进入本分支，
+                    // 从未注入 → 表现为"无蓝框、点击无反应"。Java 主循环权威开关 active.get() 仍为 true，故进入本分支，
                     // 但仅置 window.__rolePickActive 是"假激活"（库不存在）。必须直接 start() 真正重注入整套库。
                     // 同源导航：门控脚本已在新文档早期注入库，仅做轻量保活即可（避免反复重注入竞态放大，见下）。
                     // 同源 vs 跨域判断：门控脚本(gatedPickerInitScript)靠 localStorage.__rolePickSessionOn 在【每个新文档】
@@ -714,13 +718,13 @@ public final class RolePickerPanelController {
                         // 形成"反复重注入 + 反复合并"的循环，导致已拾元素成倍累积。
                         // 这里仅做轻量激活保活：置位激活态并触发面板渲染，监听由门控脚本保证存活。
                         try {
-                            page.evaluate(RolePickerScripts.SET_PICK_ACTIVE_AND_RENDER_JS);
+                            pickerEval(page, RolePickerScripts.SET_PICK_ACTIVE_AND_RENDER_JS);
                         } catch (Exception ex) {
                             // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
                             // 此处等待 DOM 就绪后重试一次轻量激活保活（仍不重注入整套库）。
                             log.warn("[picker][nav] 激活保活首轮失败，等待页面就绪后重试 @ {} : {}", page.url(), ex.getMessage());
                             try { page.waitForLoadState(); } catch (Exception ignore2) {}
-                            try { page.evaluate(RolePickerScripts.SET_PICK_ACTIVE_AND_RENDER_JS); }
+                            try { pickerEval(page, RolePickerScripts.SET_PICK_ACTIVE_AND_RENDER_JS); }
                             catch (Exception ex2) { log.warn("[picker][nav] 激活保活重试仍失败 @ {} : {}", page.url(), ex2.getMessage()); }
                         }
                     } else {
@@ -753,7 +757,7 @@ public final class RolePickerPanelController {
                             // localStorage.__rolePanelEnabled 因 origin 隔离读不到、window.__rolePanelForce 随旧文档销毁丢失
                             // → 面板不显示（有蓝框能拾取却看不到已拾列表）。此处显式置位兜底开关确保面板显示。
                             try {
-                                page.evaluate(RolePickerScripts.PANEL_FORCE_AND_ENABLE_JS);
+                                pickerEval(page, RolePickerScripts.PANEL_FORCE_AND_ENABLE_JS);
                             } catch (Exception ignorePanel) {}
                         }
                     }
@@ -768,7 +772,7 @@ public final class RolePickerPanelController {
                 //   hasClick/hasMove/hasRecord —— 三大监听/入口函数是否真的被定义（判断 START_SCRIPT 是否注入成功）
                 //   gateInit   —— 门控注入脚本本次执行结果（是否读到开关、是否注入），直接显示是"门控没生效"还是"激活被覆盖"
                 try {
-                    String navDiag = page.evaluate(RolePickerScripts.NAV_DIAG_JS).toString();
+                    String navDiag = pickerEval(page, RolePickerScripts.NAV_DIAG_JS).toString();
                     log.info("[picker][nav] 导航恢复/激活后运行时诊断 @ {} : {}", page.url(), navDiag);
                 } catch (Exception diagEx) {
                     log.warn("[picker][nav] 读取诊断失败（页面可能已关闭）：{}", diagEx.getMessage());

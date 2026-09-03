@@ -546,106 +546,10 @@ public final class RoleElementPicker {
         // 此前动态 iframe 因 start 之后才出现而未注入拾取脚本，导致 iframe 内元素点不到、
         // 生成不出 switchToFrame 包裹的 step。现由 frame 监听器在 frame 一附加即自动注入，
         // 与 start() 的补挂逻辑共用 registerFrameInjection，保证同源 frame 一律可拾取。
-        ctx.onPage(p -> registerFrameInjection(p, RolePickerSessionState.CTX_PICKER_NLS.get(ctx)));
+        ctx.onPage(p -> RolePickerScriptInjector.registerFrameInjection(p, RolePickerSessionState.CTX_PICKER_NLS.get(ctx)));
     }
 
-    /**
-     * 为指定页面注入拾取脚本到其所有 frame（含主框架与同源 iframe），并注册 frame 监听器，
-     * 使「start 之后动态附加的 iframe」一出现即自动注入。门控脚本仅在拾取会话开启时挂载 START_SCRIPT，
-     * 对未参与拾取的页面零侵入。nls 反向表可为 null（仅影响 NLS key 反查，不影响拾取本身）。
-     *
-     * 复合嵌套 frame 场景（frame 内嵌 frame，多层）：Playwright 的 Frame 接口【没有】onFrameAttached /
-     * onFrameNavigated（仅 Page 有），而 Page 级监听的参数 frame 虽只"直接挂名"于主框架，但【任意深度的
-     * 子 frame 发生导航时，Page.onFrameNavigated 都会以该子 frame 本身为参数触发】。因此本实现以
-     * onFrameNavigated 为核心覆盖信号：每次导航（含嵌套 frame 首次加载）到来即对该 frame 注入，并额外对
-     * page.frames()（递归返回全部层）做一次全量补注入兜底，确保 A 内嵌 B、B 内嵌 C 任意深度的 frame 均被注入；
-     * onFrameAttached 则负责"动态附加的 iframe"在 about:blank 阶段先注入一层，并遍历其 childFrames() 立即
-     * 补入已存在的更深层 frame。
-     */
-    private static void registerFrameInjection(Page page, String nlsReverseJson) {
-        try {
-            // ① 对当前已存在的全部 frame（含主框架与任意层嵌套 iframe，page.frames() 递归返回）立即补挂。
-            for (Frame f : page.frames()) {
-                try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
-            }
-            // ② 动态附加的 iframe（含运行时创建）：立即注入，并遍历其当前已存在的子 frame 递归补注入。
-            page.onFrameAttached(frame -> {
-                try {
-                    // 页面/连接已关闭时不再注入，避免 connection closed 刷屏
-                    if (page.isClosed()) return;
-                    frameInjectOnce(frame, nlsReverseJson);
-                    for (Frame child : frame.childFrames()) {
-                        try { frameInjectOnce(child, nlsReverseJson); } catch (Exception ignore) {}
-                    }
-                } catch (Exception ignore) {}
-            });
-            // ③ 任意 frame（含嵌套深层）导航到真实文档 → 立即注入该 frame，并对全树 page.frames() 兜底补注入。
-            //    onFrameAttached 多在 about:blank 阶段触发，其 window 随真正子文档加载而销毁，故需在此以
-            //    force=true 再注入一次，确保子文档内 __renumberStep 等依赖完整，可被拾取并聚合。
-            //    主框架导航由 registerPopupFollow 单独处理（涉及快照/页类派生），此处仅处理子 frame。
-            page.onFrameNavigated(frame -> {
-                try {
-                    // 页面/连接已关闭时不再注入，避免 connection closed 刷屏
-                    if (page.isClosed()) return;
-                    if (frame == page.mainFrame()) return;
-                    frameInjectOnce(frame, nlsReverseJson);
-                    for (Frame f : page.frames()) {        // 全量兜底：覆盖本次导航链上更深层的兄弟/子 frame
-                        try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
-                    }
-                } catch (Exception ignore) {}
-            });
-        } catch (Exception ignore) {}
-    }
 
-    /** 对单个 frame 注入拾取脚本：Playwright 的 Frame 无 addInitScript（仅 Page 有），
-     *  故对当前已就绪文档直接 evaluate 注入；后续导航由 onFrameNavigated 监听兜底重新注入。
-     *  以 force=true 注入门控脚本：动态/子 frame 是独立 window，其会话开关标记与父页不互通
-     *  （file:// 下 origin 不同、execution context 随文档切换重置），若仍走 on 判定会误判 false 而 return，
-     *  导致 __renumberStep 等依赖未定义。force=true 跳过判定、直接执行 START_SCRIPT，确保子 frame 内拾取依赖完整。
-     *  仅影响已开启拾取会话期间注入的 frame，对无关页面无副作用。 */
-    private static void frameInjectOnce(Frame frame, String nlsReverseJson) {
-        // 连接/页面已关闭或 frame 已分离时，evaluate 必然抛 PlaywrightException: connection closed，
-        // 且监听器在浏览器关闭/导航销毁期间会被反复触发，若在此刷屏会大量污染日志。
-        // 先在注入前做廉价的有效性检查，无效则静默返回。
-        if (frame == null) return;
-        try {
-            Page owner = frame.page();
-            if (owner == null || owner.isClosed()) return;
-        } catch (Exception ignore) { return; }
-        if (frame.isDetached()) return;
-        try {
-            frame.evaluate(gatedPickerInitScript(nlsReverseJson, true));
-        } catch (Exception ex) {
-            // 动态/子 frame 注入失败的两种性质需区分：
-            //  (a) 真不可注入：frame 已关闭/已分离 → 永久跳过，丢弃。
-            //  (b) 执行上下文竞态：子 frame 在 onFrameAttached 的 about:blank 阶段、或跨源 frame 文档切换瞬间，
-            //       execution context 尚未就绪，evaluate 抛 "Execution context was destroyed" / "frame was detached"。
-            //       这类是【暂时性】的——onFrameNavigated 兜底虽也会调本方法，但若导航事件与 context 就绪仍有微小错位，
-            //       跨源/动态 iframe 可能在本会话内再无机会注入，表现为"iframe 内元素点不到"。
-            // 优化：对 (b) 立即重试一次（同方法再 evaluate 一次）。onFrameNavigated 触发时 context 通常已就绪，
-            // 首轮失败多为 about:blank 残留，重试一次即可成功，无需引入后台轮询线程。
-            // 若重试仍失败，判为 (a) 真不可注入，静默跳过（用 log.debug 避免连接关闭时海量刷屏）。
-            String url;
-            try { url = frame.url(); } catch (Exception urlEx) { url = "<closed>"; }
-            boolean detached = false;
-            try { detached = frame.isDetached(); } catch (Exception ignore) {}
-            if (!detached) {
-                try {
-                    frame.evaluate(gatedPickerInitScript(nlsReverseJson, true)); // 竞态重试一次
-                    if (log.isDebugEnabled()) {
-                        log.debug("[frameInjectOnce][retry-ok] 首轮竞态后重试成功 frame={}", url);
-                    }
-                    return;
-                } catch (Exception ex2) {
-                    if (log.isDebugEnabled()) {
-                        log.debug("[frameInjectOnce][skip] frame={} : {}", url, ex2.toString());
-                    }
-                }
-            } else if (log.isDebugEnabled()) {
-                log.debug("[frameInjectOnce][skip-detached] frame={} : {}", url, ex.toString());
-            }
-        }
-    }
 
     /**
      * 面板引导脚本：每个新文档解析早期置位面板开关并恢复页名（跨源导航时 localStorage 可能为空/不可写，
@@ -662,145 +566,7 @@ public final class RoleElementPicker {
      */
     private static final String MERGE_KEY_SHIM = RolePickerScripts.MERGE_KEY_SHIM;
 
-    /**
-     * 门控式拾取初始化脚本（对齐 {@code page.pause()} 的 Recorder：拾取脚本经 context 注入脚本
-     * 在【每个新文档】自动重跑，跨导航/弹窗/新标签页由浏览器原生保证监听重挂，无需 Java 端手动跟踪）。
-     * 门控：仅当"会话拾取开关"（localStorage __rolePickSessionOn，由 start/stop 置位/清除）打开时
-     * 才注入 nls 反向表并挂载 START_SCRIPT；未拾取时新文档零侵入。
-     */
-    private static String gatedPickerInitScript(String nlsReverseJson) {
-        return gatedPickerInitScript(nlsReverseJson, false);
-    }
 
-    /**
-     * 门控初始化脚本。force=true 时跳过"会话开关"判定、直接执行 START_SCRIPT（定义 __renumberStep 等全套函数），
-     * 用于"运行时新附加/导航的 iframe"：这类子 frame 是独立 window，其 localStorage/window 会话标记与父页不互通
-     * （file:// 下不同路径 origin 不同、execution context 随文档切换重置），若仍走 on 判定会误判为 false 而直接 return，
-     * 导致 __recordPick 调用 __renumberStep 报 "is not a function"。动态 iframe 的注入由 frameInjectOnce 以 force=true 调用，
-     * 确保子 frame 内的拾取依赖完整；仅影响已开始拾取会话期间注入的 frame，对无关页面无副作用。
-     */
-    private static String gatedPickerInitScript(String nlsReverseJson, boolean force) {
-        return "(function(){"
-                // 诊断回写：浏览器 console 已被吞（无 onConsoleMessage 监听），故把门控执行结果写入
-                // window.__gateInit，供 Java 在 onFrameNavigated / start 后回读，定位"刷新后拾取不了"。
-                + " var __gi = { ts: Date.now(), url: location.href, origin: location.origin };"
-                + " var __force = " + (force ? "true" : "false") + ";"
-                + " var on=false;"
-                + " try{ on = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){ __gi.lsErr = String(e); }"
-                + " try{ if(!on) on = !!window.__rolePickSessionOn; }catch(e){}"
-                + " if(__force) on = true;"
-                + " __gi.switchOn = on;"
-                // 无条件定义"开启监听"入口（即便本次文档早期会话开关尚未置位）：仅定义、不调用，
-                // 所有调用处（__roleReenable / __roleSpaHeal / start）均带会话开关自检，不会误开启拾取。
-                // 提前定义可保证"文档早期会话未开、之后才点开始"的场景下，刷新/跳转/SPA 自愈仍能复用同一入口。
-                + " window.__roleGatedStart = function(){ " + START_SCRIPT + " };"
-                // ===== 同页 URL 变更（SPA 路由切换）自愈：修复"同页 url 变化后已拾元素消失 / 拾取不了" =====
-                // 无条件注册（即便本次文档早期会话未开启）：函数体自带会话开关自检，会话未开时整体 no-op，安全。
-                // pushState/replaceState/popstate/hashchange 不会触发 load/pageshow/onFrameNavigated，
-                // 框架重渲染 document 子树往往静默移除 document 级点击监听、甚至把 docked 面板 DOM（#__rolePanel）冲掉，
-                // 表现为"同页路由切换后，之前抓取的元素看不见、点了也没反应"。
-                // 故在此类事件上二次自检：开关仍在则重挂监听；面板 DOM 若被冲掉则重建；并立即重渲染已拾元素。
-                // 已拾元素存于 window.__rolePicks（按本标签页累积的展示数组，不随 DOM 重建丢失），重渲染即可恢复显示。
-                + " function __roleSpaHeal(){ try {"
-                + "   var on2=false; try{ on2 = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){}"
-                + "   try{ if(!on2) on2 = !!window.__rolePickSessionOn; }catch(e){}"
-                + "   if (on2 && typeof window.__roleGatedStart === 'function') { try{ window.__roleGatedStart(); }catch(e){} }"
-                + "   try { if (!document.getElementById('__rolePanel') && typeof window.__roleEnsurePanel === 'function') window.__roleEnsurePanel(); } catch(e){}"
-                + "   try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
-                + " } catch(e){} }"
-                + " (function(){ try {"
-                + "   var __ps = history.pushState, __rs = history.replaceState;"
-                + "   history.pushState = function(){ try{ __ps.apply(history, arguments); }catch(e){} __roleSpaHeal(); };"
-                + "   history.replaceState = function(){ try{ __rs.apply(history, arguments); }catch(e){} __roleSpaHeal(); };"
-                + " } catch(e){} })();"
-                + " window.addEventListener('popstate', __roleSpaHeal);"
-                + " window.addEventListener('hashchange', __roleSpaHeal);"
-                // Ultimate fallback: some SPA/micro-frontend frameworks rebuild the document subtree via innerHTML,
-                // neither using pushState nor hashchange. Relying only on the three listeners above would miss such
-                // cases and let the panel DOM (#__rolePanel) be silently wiped without triggering self-heal.
-                // Use a MutationObserver to self-heal when #__rolePanel disappears; a "phase flag + debounce" prevents
-                + " (function(){ try {"
-                + "   var __healing=false, __healT=null;"
-                + "   var __mo = new MutationObserver(function(){"
-                + "     if(__healing) return;"
-                + "     if(!document.getElementById('__rolePanel')){"
-                + "       if(__healT) clearTimeout(__healT);"
-                + "       __healT = setTimeout(function(){ try{ __roleSpaHeal(); }catch(e){} }, 50);"
-                + "     }"
-                + "   });"
-                + "   var __origHeal = __roleSpaHeal;"
-                + "   __roleSpaHeal = function(){ __healing=true; try{ __origHeal(); }catch(e){} __healing=false; };"
-                + "   __mo.observe(document.documentElement, { childList:true, subtree:true });"
-                + " } catch(e){} })();"
-                + " if(!on){ window.__gateInit = __gi; return; }"
-                // 关键加固：nls 反查表改为「JSON 字符串字面量内联 + JSON.parse」：
-                // 用 GSON.toJson 把 nls JSON 文本再包一层引号转义为合法的 JS 字符串字面量，
-                // 无论 nls 内容含何种特殊字符都不会破坏脚本语法；即便解析失败也被 catch 降级为 {}。
-                // （addInitScript 不支持传参，无法用 arguments[0]，故采用内联字符串方案。）
-                + " var __nlsArg = " + (nlsReverseJson == null ? "\"\"" : GSON.toJson(nlsReverseJson)) + ";"
-                + " var __o; try { __o = (__nlsArg && typeof __nlsArg === 'string') ? JSON.parse(__nlsArg) : (__nlsArg || {}); } catch(e){ __o = {}; __gi.nlsErr = String(e); }"
-                + " window.__nlsReverse = (__o && __o.exact) ? __o.exact : (__o && __o.templates ? {} : (__o || {}));"
-                + " window.__nlsTemplates = (__o && __o.templates) ? __o.templates : [];"
-                // 记忆体开关兜底：即便跨源/localStorage 不可用，浏览器侧也持有本会话开启态，
-                // 供 onFrameNavigated 的会话开关自检（读 window.__rolePickSessionOn）与 load/pageshow 自检使用。
-                + " try{ window.__rolePickSessionOn = true; }catch(e){}"
-                // start 时复位显式停止标志（被 stop 置 true 后，重新开始时恢复自愈能力，
-                // 否则 __roleReenable 会因 stopped=true 永久拒绝自启，导致"停止后再开始拾取不了"）。
-                + " try{ window.__rolePickStopped = false; }catch(e){}"
-                + " window.__roleGatedStart();"
-                // ===== 浏览器侧自愈（核心修复"刷新/跳转后拾取不了"）=====
-                // 仅靠文档早期 addInitScript 不可靠：现代 SPA/微前端框架可能在初始化阶段重建 document 子树、
-                // 或浏览器以 bfcache 前进/后退/刷新恢复旧文档（addInitScript 不重跑）、或导航瞬间执行上下文竞态，
-                // 都可能让文档早期的监听没"粘住"。故在 load 与 pageshow 两个全文档就绪时机二次自检：
-                //   开关仍在 且（点击监听缺失 或 未激活）→ 重新执行 START_SCRIPT（幂等：已激活则早退仅保活）。
-                // 该机制完全不依赖 Java 侧 onFrameNavigated / ensurePickingActive 的时序，从根上保证"页面怎么变都能拾取"。
-                + " function __roleReenable(){ try {"
-                + "   if (window.__rolePickStopped === true) return;"   // 显式停止后绝不自愈复活（修复"停止不了"）
-                + "   var on2=false; try{ on2 = localStorage.getItem('__rolePickSessionOn')==='1'; }catch(e){}"
-                + "   try{ if(!on2) on2 = !!window.__rolePickSessionOn; }catch(e){}"
-                + "   if (!on2) return;"
-                + "   try{ window.__rolePickSessionOn = true; }catch(e){}"
-                + "   if (typeof window.__roleGatedStart === 'function') window.__roleGatedStart();"
-                + "   try {"
-                // 【修复"跨会话脏序号污染本轮（user_name 拿到 2 而非 4/5）"】
-                // 旧实现会从 localStorage['__rolePickState'] 把上一轮残留的 picks（含 user_name:[2]）重新 push 回 __rolePicks，
-                // 即使上面已 window.__rolePicks=[] 清空，这里仍把脏数据恢复回来 → dup 分支命中 → 回传脏首号 2。
-                // Java 端 javaPickBySig 每次 openPanel 都从空开始，浏览器端也须从空起步，故 start 时彻底不恢复 localStorage 残留。
-                + "     try{ localStorage.removeItem('__rolePickState'); }catch(e){}"
-                + "     if (false) {"
-                + "       var s = JSON.parse('{}');"
-                + "       window.__rolePicks = [];"
-                + "       window.__rolePickSigs = {};"
-                // 去重键必须走权威函数 __mergeKey（内部优先复用已固化的 p._sigKey）。
-                // 曾在此处手搓 JSON.stringify([p._sig, p._pageClass])，与入库时 __sigKey() 的口径不一致：
-                // 已固化 _sigKey 的元素在这里被重算出另一个键 → 每次导航/恢复合并都判为"新元素"而追加，
-                // 是"同组元素重复 4/5/6 次且越扫越多"的真正根因。
-                + "       (s.picks||[]).forEach(function(p){"
-                + "         var k = window.__mergeKey(p);"
-                + "         if (k && window.__rolePickSigs[k]) return;"
-                + "         if (k) window.__rolePickSigs[k] = true; window.__rolePicks.push(p); });"
-                + "       window.__currentStep = window.__currentStep || [];"
-                + "       var __cs = {}; window.__currentStep.forEach(function(p){ var k=window.__mergeKey(p); if(k) __cs[k]=true; });"
-                + "       (s.currentStep||[]).forEach(function(p){ var k=window.__mergeKey(p); if(k&&__cs[k])return; if(k)__cs[k]=true; window.__currentStep.push(p); });"
-                + "     }"
-                + "   } catch(e){}"
-                + "   try { if (window.__renderPicks) window.__renderPicks(); } catch(e){}"
-                + " } catch(e){} }"
-                + " window.addEventListener('load', __roleReenable);"
-                + " window.addEventListener('pageshow', __roleReenable);"
-                // 关键修复：已加载的子 frame（如 start() 前就完成导航的 iframe）不会再触发 load/pageshow，
-                // 若仅依赖上面两个监听，门控脚本永不执行 → 该 iframe 内无拾取监听、postMessage 上送不到顶层。
-                // 故若文档当前已处于 readyState!=='loading'（即已加载完成），立即执行一次 __roleReenable 完成挂载；
-                // 尚未加载的文档仍走 load/pageshow 自愈路径，二者不冲突。
-                + " try{ if (document.readyState !== 'loading') { window.__roleReenable(); } }catch(e){}"
-                + " __gi.injected = true;"
-                + " __gi.activeAfter = !!window.__rolePickActive;"
-                + " __gi.hasClick = typeof window.__rolePickClick === 'function';"
-                + " __gi.hasMove = typeof window.__rolePickMove === 'function';"
-                + " __gi.hasKey = typeof window.__rolePickKey === 'function';"
-                + " window.__gateInit = __gi;"
-                + "})();";
-    }
 
     /**
      * 把"面板重建 + 门控拾取"初始化脚本一次性注册到 {@link BrowserContext}：
@@ -815,7 +581,7 @@ public final class RoleElementPicker {
         }
         String nls = (nlsReverseJson == null || nlsReverseJson.isEmpty()) ? "{}" : nlsReverseJson;
         if (!nls.equals(RolePickerSessionState.CTX_PICKER_NLS.get(ctx))) {
-            ctx.addInitScript(gatedPickerInitScript(nls));
+            ctx.addInitScript(RolePickerScriptInjector.gatedPickerInitScript(nls));
             RolePickerSessionState.CTX_PICKER_NLS.put(ctx, nls);
         }
     }
@@ -1128,7 +894,7 @@ public final class RoleElementPicker {
                             // 此处先强制补注入一次再扫描，确保任意层 iframe（含跨源）都能被整页扫描穿透。
                             if (r instanceof Number && ((Number) r).intValue() < 0) {
                                 try {
-                                    frameInjectOnce(f, scanNls);
+                                    RolePickerScriptInjector.frameInjectOnce(f, scanNls);
                                     r = f.evaluate(
                                             "(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
                                 } catch (Exception reInjEx) {
@@ -1321,7 +1087,7 @@ public final class RoleElementPicker {
                                 // 先强制补注入一次再扫描，确保区域内任意层 iframe（含跨源）都能被区域扫描穿透。
                                 if (rf instanceof Number && ((Number) rf).intValue() < 0) {
                                     try {
-                                        frameInjectOnce(f, RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles)));
+                                        RolePickerScriptInjector.frameInjectOnce(f, RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles)));
                                         f.evaluate("(function(){ try { return (typeof window.__roleScanPage==='function') ? window.__roleScanPage(null) : -1; } catch(e){ return -1; } })()");
                                     } catch (Exception reInjEx) {
                                         String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
@@ -1819,7 +1585,7 @@ public final class RoleElementPicker {
             // 复用统一注入入口：① 对当前已存在的所有子 frame 立即补挂（修复"start 前已加载的 iframe 拾取不到"）；
             // ② 注册 onFrameAttached 监听，使 start 之后动态创建的 iframe 一附加即自动注入拾取脚本
             //    （修复"动态 iframe 内元素点不到、生成不出 switchToFrame 包裹 step"）。
-            registerFrameInjection(page, nlsReverseJson);
+            RolePickerScriptInjector.registerFrameInjection(page, nlsReverseJson);
         } catch (Exception ignore) {}
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
@@ -2295,7 +2061,7 @@ public final class RoleElementPicker {
             // 否则"打开新页面 / window.open 弹窗 / 链接点击新标签"等场景，其内嵌 iframe 在自愈时不会被重新注入，
             // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，
             // 与 onFrameNavigated 兜底同源，覆盖 frame 内嵌 frame 的复合情况。
-            registerFrameInjection(page, nlsReverseJson);
+            RolePickerScriptInjector.registerFrameInjection(page, nlsReverseJson);
         } catch (Exception ignore) {}
     }
 
@@ -4545,4 +4311,3 @@ public final class RoleElementPicker {
      */
 
 }
-

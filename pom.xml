@@ -291,7 +291,10 @@
                     <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
-                    <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang.reflect=ALL-UNNAMED</argLine>
+                    <!-- ⚠ JDK16+ 强封装：Serenity REST(RestSpecificationFactory) 在静态初始化时用 ByteBuddy
+                         反射注入类，需 java.base 打开 java.lang(ClassLoader.getPackage/defineClass)；
+                         java.lang.reflect 供 Mockito/Serenity 反射增强；java.util 供 RestAssured 的 Groovy 反射。 -->
+                    <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
 

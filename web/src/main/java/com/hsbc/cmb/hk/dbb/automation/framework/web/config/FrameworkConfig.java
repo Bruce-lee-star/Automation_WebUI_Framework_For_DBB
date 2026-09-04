@@ -414,6 +414,22 @@ public enum FrameworkConfig {
         "窗口最大化参数"
     ),
 
+    /**
+     * 共享 Browser 模式（一个 Browser 实例 + 多 Context 并发）。
+     * <p>{@code true}：所有 worker 线程共享同一个 Browser 实例，每个线程/场景持有独立 BrowserContext。
+     * 这是 Playwright 官方推荐的并发模型——进程更少、启动更快，隔离性由 BrowserContext 保证
+     * （cookie / storage / 会话彼此独立）。</p>
+     * <p>{@code false}（默认）：每个线程持有独立 Browser 实例，即 T3-2 语义，
+     * 重启与故障的作用域完全收敛到本线程。</p>
+     * <p>⚠ 共享模式下 {@code restartBrowser()} 会降级为「仅重建本线程 Context」，
+     * <b>不会</b>关闭共享 Browser，否则会连带杀掉其它并发 scenario（即 T3-2 修复的 P0）。</p>
+     */
+    PLAYWRIGHT_SHARED_BROWSER_ENABLED(
+        "serenity.playwright.shared.browser.enabled",
+        "false",
+        "共享 Browser 模式：一个 Browser 实例 + 多 Context 并行"
+    ),
+
     // ==================== Playwright 上下文配置 ====================
 
     /**

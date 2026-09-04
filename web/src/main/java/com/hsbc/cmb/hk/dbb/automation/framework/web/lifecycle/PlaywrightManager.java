@@ -44,12 +44,30 @@ public class PlaywrightManager {
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightManager.class);
 
     // ==================== 非 ThreadLocal 静态变量 ====================
-    // 线程安全的实例存储
+    // 线程安全的实例回收容器（T3-2 企业级隔离）。
+    // ⚠️ 默认不变式：Map 的 VALUE（Browser/Playwright 实例）绝不跨线程共享——
+    // 存储键为 "threadId:configId"（见 {@link #keyFor}），保证每个 worker 线程拥有独立实例。
+    // 共享 ConcurrentHashMap 仅作为跨线程安全的回收/清理容器（供 cleanupAll 统一关闭），
+    // 不再像旧实现那样按 configId 跨线程复用同一个 Browser（评审 P0：单点故障 + 全局串行化）。
+    //
+    // ⭐ 例外——共享 Browser 模式（serenity.playwright.shared.browser.enabled=true）：
+    // 此时 keyFor() 返回 "shared:configId"，所有线程【有意】复用同一个 Browser 实例，
+    // 隔离性改由 per-thread 的 BrowserContext 保证（Playwright 官方并发模型）。
+    // 该模式下的配套约束见 restartBrowser()：重启降级为「仅重建本线程 Context」，绝不关闭共享 Browser。
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
 
-    // 线程安全锁：保护共享资源（Browser 实例）
-    private static final Object BROWSER_LOCK = new Object();
+    // 线程级锁（T3-2）：Browser 创建/关闭现已按 threadId 隔离，无需全局互斥。
+    // 降级为 per-thread 锁可在放开并行创建的同时，仍保证单线程内创建/切换的原子性。
+    private static final ThreadLocal<Object> BROWSER_LOCK = ThreadLocal.withInitial(Object::new);
+
+    // ⭐ 共享 Browser 模式（一 Browser + 多 Context）下的【进程级】互斥锁。
+    // 该模式下 Browser 被所有 worker 线程共享，必须用真正的静态锁保证并发只有一个 Browser 被创建；
+    // per-thread 的 BROWSER_LOCK 在共享模式下无法提供跨线程互斥（每个线程拿到的都是各自的锁对象）。
+    private static final Object SHARED_BROWSER_LOCK = new Object();
+
+    // 共享模式下 Browser/Playwright 实例的存储键前缀（去掉 threadId 维度，使所有线程命中同一实例）
+    private static final String SHARED_KEY_PREFIX = "shared:";
 
     // Context/Page 细粒度锁：保护 Context 和 Page 创建/销毁
     private static final Object CONTEXT_LOCK = new Object();
@@ -158,13 +176,13 @@ public class PlaywrightManager {
         try {
             Playwright.CreateOptions createOptions = getCreateOptions();
             Playwright playwright = Playwright.create(createOptions);
-            playwrightInstances.put(configId, playwright);
+            playwrightInstances.put(keyFor(configId), playwright);
             VerboseLogging.logInfoIfVerbose(logger, "Playwright initialized successfully for config: {}", configId);
         } catch (Exception e) {
             VerboseLogging.logErrorIfVerbose(logger, "Failed to initialize Playwright for config: {}", configId, e);
             // 清理已创建的实例（如果有）
-            if (playwrightInstances.containsKey(configId)) {
-                playwrightInstances.remove(configId);
+            if (playwrightInstances.containsKey(keyFor(configId))) {
+                playwrightInstances.remove(keyFor(configId));
             }
             throw new InitializationException("Failed to initialize Playwright for config: " + configId, e);
         }
@@ -225,7 +243,7 @@ public class PlaywrightManager {
         VerboseLogging.logInfoIfVerbose(logger, "Initializing Browser for config: {}", configId);
 
         // 双重检查：如果已经有连接的浏览器实例，直接返回
-        Browser existingBrowser = browserInstances.get(configId);
+        Browser existingBrowser = browserInstances.get(keyFor(configId));
         if (existingBrowser != null && existingBrowser.isConnected()) {
             VerboseLogging.logInfoIfVerbose(logger, "Browser already initialized and connected for config: {}", configId);
             return;
@@ -250,13 +268,13 @@ public class PlaywrightManager {
 
         // 确保 Playwright 实例最新（不在 initialize() 中提前创建）
         // 时刻保持：Playwright 实例在浏览器二进制就绪后创建
-        if (playwrightInstances.containsKey(configId)) {
-            Playwright oldPw = playwrightInstances.remove(configId);
+        if (playwrightInstances.containsKey(keyFor(configId))) {
+            Playwright oldPw = playwrightInstances.remove(keyFor(configId));
             try { oldPw.close(); } catch (Exception e) { logger.warn("[Playwright] Failed to close old playwright instance for config {}: {}", configId, e.getMessage()); }
         }
         initializePlaywright(configId);
 
-        Playwright playwright = playwrightInstances.get(configId);
+        Playwright playwright = playwrightInstances.get(keyFor(configId));
         if (playwright == null) {
             throw new InitializationException("Playwright instance is null after initialization for config: " + configId);
         }
@@ -295,7 +313,7 @@ public class PlaywrightManager {
                     attempt, maxRetries, browserType, config().getBrowserChannel(), headless);
                 
                 Browser browser = setupBrowser(playwright, browserType, launchOptions);
-                browserInstances.put(configId, browser);
+                browserInstances.put(keyFor(configId), browser);
 
                 long elapsed = System.currentTimeMillis() - initStart;
                 VerboseLogging.logInfoIfVerbose(logger, "[Browser Init] Browser initialized in {}ms: {} for config: {}",
@@ -315,10 +333,10 @@ public class PlaywrightManager {
         }
 
         VerboseLogging.logErrorIfVerbose(logger, "Failed to initialize Browser after {} attempts for config: {}", maxRetries, configId, lastException);
-        browserInstances.remove(configId);
+        browserInstances.remove(keyFor(configId));
         // ⭐ 修复 Medium：启动失败路径必须释放 L292 已创建的 Playwright 节点子进程，
         // 否则仅 remove browserInstances 仍会泄漏 playwrightInstances 持有的进程。
-        Playwright leakedPw = playwrightInstances.remove(configId);
+        Playwright leakedPw = playwrightInstances.remove(keyFor(configId));
         if (leakedPw != null) {
             try {
                 leakedPw.close();
@@ -456,6 +474,105 @@ public class PlaywrightManager {
     }
 
     /**
+     * 构造「线程隔离」存储键（T3-2 企业级隔离）。
+     * <p>旧实现按 configId 在共享 Map 中跨线程复用同一 Browser 实例（评审 P0：单点故障 + 全局串行化）。
+     * 现以 {@code threadId:configId} 为键，使每个 worker 线程拥有独立 Browser/Playwright 实例——
+     * 并行场景下各 scenario 线程互不共享 Browser 对象，故障与 {@code restartBrowser} 作用域均收敛到本线程。
+     * 共享 {@code ConcurrentHashMap} 仅作为线程安全的回收容器，KEY 保证 VALUE 永不跨线程共享。</p>
+     *
+     * @param configId 当前线程的浏览器配置标识
+     * @return 线程隔离的存储键
+     */
+    /**
+     * JVM 级<b>不可变</b>开关：是否启用「共享 Browser」模式（一个 Browser 实例 + 多 Context 并发）。
+     *
+     * <p><b>为何在类加载时解析一次、而不是每次现读配置：</b>{@link #keyFor(String)} 决定了 Browser 实例
+     * 在 {@link #browserInstances} 中的存储键。若该开关在 JVM 运行期间发生翻转，同一个 configId 会先后
+     * 映射到不同的键，使已创建的 Browser 变成<b>无法回收的孤儿实例</b>（既不在当前键上，
+     * 也只有 cleanupAll 能扫到）。因此并发隔离模型必须对 JVM 生命周期全局稳定。
+     * <p>由 {@code serenity.playwright.shared.browser.enabled} 控制，默认 {@code false}
+     * （保持 T3-2 每线程独立 Browser 的既有行为）。
+     */
+    static final boolean SHARED_BROWSER_MODE = resolveSharedBrowserMode();
+
+    /**
+     * 当前 JVM 是否启用「共享 Browser」模式。
+     *
+     * @return true 表示共享单个 Browser，各线程通过独立 BrowserContext 隔离
+     * @apiNote <b>框架内部能力（生命周期决策用）</b>，业务 Page / 业务步骤请勿依赖：
+     *          该取值决定并发隔离模型，业务侧依赖它会导致与框架生命周期耦合。
+     */
+    static boolean isSharedBrowserMode() {
+        return SHARED_BROWSER_MODE;
+    }
+
+    /**
+     * 解析共享 Browser 开关的原始配置值（<b>纯函数</b>，便于单测覆盖各种输入）。
+     *
+     * <p>容错策略：{@code null} / 空白 → false（默认值）；无法识别的非法值 → false 并<b>告警</b>，
+     * 避免静默降级后被误认为「已开启」而难以排查。</p>
+     *
+     * @param rawValue 原始配置值，可为 null
+     * @return 是否启用共享 Browser 模式
+     */
+    static boolean parseSharedBrowserMode(String rawValue) {
+        if (rawValue == null || rawValue.isBlank()) {
+            return false;
+        }
+        String normalized = rawValue.trim();
+        if ("true".equalsIgnoreCase(normalized)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(normalized)) {
+            return false;
+        }
+        logger.warn("[shared-browser] Unrecognized value '{}' for "
+                        + "serenity.playwright.shared.browser.enabled (expected true/false); falling back to false",
+                rawValue);
+        return false;
+    }
+
+    /**
+     * 计算 Browser/Playwright 实例的存储键（<b>纯函数</b>，便于单测覆盖两种模式）。
+     *
+     * @param configId   当前线程的浏览器配置标识
+     * @param sharedMode 是否共享 Browser 模式
+     * @return 共享模式为 {@code "shared:<configId>"}（所有线程一致）；
+     *         否则为 {@code "<threadId>:<configId>"}（每线程唯一）
+     * @throws IllegalArgumentException configId 为 null 或空白时抛出（否则会生成无法定位的孤儿键）
+     */
+    static String keyFor(String configId, boolean sharedMode) {
+        if (configId == null || configId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "configId must not be null or blank: it would produce an unusable Browser instance key");
+        }
+        return sharedMode
+                ? SHARED_KEY_PREFIX + configId
+                : Thread.currentThread().getId() + ":" + configId;
+    }
+
+    private static String keyFor(String configId) {
+        return keyFor(configId, SHARED_BROWSER_MODE);
+    }
+
+    /**
+     * Browser 创建/切换所用的互斥锁（<b>纯函数</b>，便于单测覆盖两种模式）。
+     * <p>共享模式返回进程级 {@link #SHARED_BROWSER_LOCK}（保证并发只创建一个 Browser）；
+     * 否则返回 per-thread {@link #BROWSER_LOCK}（T3-2：各线程创建互不阻塞）。</p>
+     */
+    static Object browserLock(boolean sharedMode) {
+        return sharedMode ? SHARED_BROWSER_LOCK : BROWSER_LOCK.get();
+    }
+
+    private static Object browserLock() {
+        return browserLock(SHARED_BROWSER_MODE);
+    }
+
+    private static boolean resolveSharedBrowserMode() {
+        return parseSharedBrowserMode(FrameworkConfig.PLAYWRIGHT_SHARED_BROWSER_ENABLED.getValue());
+    }
+
+    /**
      * 获取 Playwright 实例
      */
     public static Playwright getPlaywright() {
@@ -463,7 +580,7 @@ public class PlaywrightManager {
         if (configId == null) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
-        return playwrightInstances.get(configId);
+        return playwrightInstances.get(keyFor(configId));
     }
 
     /**
@@ -483,7 +600,7 @@ public class PlaywrightManager {
         String desiredBrowserType = config().getBrowserType();
         
         // 快速路径：检查当前浏览器实例是否有效（无锁）
-        Browser currentBrowser = browserInstances.get(currentConfig);
+        Browser currentBrowser = browserInstances.get(keyFor(currentConfig));
         if (currentBrowser != null && currentBrowser.isConnected()) {
             // 浏览器已存在且连接正常，检查是否需要切换
             String[] configParts = currentConfig.split("_");
@@ -501,9 +618,9 @@ public class PlaywrightManager {
         ensureBrowserInstalledForType();
         
         // 慢速路径：浏览器不存在或断开，加锁创建
-        synchronized (BROWSER_LOCK) {
+        synchronized (browserLock()) {
             // 双重检查：另一个线程可能已在等待期间创建了浏览器
-            currentBrowser = browserInstances.get(currentConfig);
+            currentBrowser = browserInstances.get(keyFor(currentConfig));
             if (currentBrowser != null && currentBrowser.isConnected()) {
                 return currentBrowser;
             }
@@ -526,7 +643,7 @@ public class PlaywrightManager {
             // 初始化浏览器
             initializeBrowser(currentConfig);
             
-            return browserInstances.get(currentConfig);
+            return browserInstances.get(keyFor(currentConfig));
         }
     }
 
@@ -552,9 +669,10 @@ public class PlaywrightManager {
         closeContext();
 
         // ⭐ 2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
-        synchronized (BROWSER_LOCK) {
+        //      （共享模式下使用进程级锁：Browser 被所有线程共享，切换必须全局互斥）
+        synchronized (browserLock()) {
             // 关闭旧浏览器
-            Browser oldBrowser = browserInstances.get(currentConfig);
+            Browser oldBrowser = browserInstances.get(keyFor(currentConfig));
             if (oldBrowser != null && oldBrowser.isConnected()) {
                 logger.info("[getBrowser] Closing old browser: {}", currentBrowserType);
                 try {
@@ -562,12 +680,12 @@ public class PlaywrightManager {
                 } catch (Exception e) {
                     logger.warn("[getBrowser] Error closing old browser: {}", e.getMessage());
                 }
-                browserInstances.remove(currentConfig);
+                browserInstances.remove(keyFor(currentConfig));
             }
 
             // ⭐ 修复 3.2：显式关闭旧 configId 对应的 Playwright 实例（Node 子进程），
             // 否则旧 Playwright 会一直留在 playwrightInstances Map 直到下次 initializeBrowser 才清理，造成泄漏。
-            Playwright oldPlaywright = playwrightInstances.remove(currentConfig);
+            Playwright oldPlaywright = playwrightInstances.remove(keyFor(currentConfig));
             if (oldPlaywright != null) {
                 try {
                     oldPlaywright.close();
@@ -590,7 +708,7 @@ public class PlaywrightManager {
             // 切换完成，清除废弃标记
             RETIRED_CONFIG_IDS.remove(currentConfig);
 
-            return browserInstances.get(newConfigId);
+            return browserInstances.get(keyFor(newConfigId));
         }
     }
 
@@ -881,24 +999,30 @@ public class PlaywrightManager {
     /**
      * 重启浏览器（用于重跑测试时或浏览器类型切换）
      * <p>
-     * ⚠️ <b>作用域警告（P1-6）：这是一个【全局】操作。</b>
-     * {@code Browser} 实例按 configId（{@code browserType_headless[_channel]}）在
-     * {@link #browserInstances} 中共享——同一配置下的所有 scenario 线程复用同一个 Browser。
-     * 因此本方法必然影响所有并发线程：在并行运行下调用它会杀掉其它场景的浏览器，
-     * 使整轮测试集体失败，且故障现象与真实根因完全脱节。
+     * ⚠️ <b>作用域（T3-2 企业级隔离）：本操作仅作用于【当前线程】拥有的 Browser/Playwright 实例。</b>
+     * 自 T3-2 起，Browser 按 {@code threadId:configId} 在 {@link #browserInstances} 中分桶，
+     * 每个 worker 线程持有独立实例，故 {@code restartBrowser()} 不再误杀其它并发 scenario 的浏览器
+     * （旧实现按 configId 跨线程共享同一 Browser，重启会连带杀掉所有并发场景）。
      * <p>
-     * 防护：执行前会检测"本线程之外是否仍有处于打开状态的 BrowserContext"，若有则
-     * <b>拒绝执行并抛出 {@link BrowserException}</b>（fail-fast），而不是静默误杀。
-     * <strong>禁止在并行执行（多线程并发 scenario）期间调用本方法。</strong>
+     * 防护：执行前仍会检测"本线程除自身 context 外是否仍有其它打开的 BrowserContext"，若有则
+     * <b>拒绝执行并抛出 {@link BrowserException}</b>（fail-fast）。
      * <p>
-     * ⭐ 修复 1.1：不再使用 {@code synchronized (PlaywrightManager.class)} 类锁（会全局挂起所有
-     * initialize() 调用），改为仅在操作共享 Map 时持有细粒度 BROWSER_LOCK。closePage()/closeContext()
+     * ⭐ 修复 1.1：不再使用 {@code synchronized (PlaywrightManager.class)} 类锁，改为仅在操作本线程实例时
+     * 持有 per-thread 的 BROWSER_LOCK（已降级为 ThreadLocal，见字段声明）。closePage()/closeContext()
      * 在锁外执行，保持与 getPage()/getContext() 一致的锁获取顺序（PAGE_LOCK → CONTEXT_LOCK），避免死锁。
      */
     public static void restartBrowser() {
         String oldConfigId = getCurrentConfigId();
         if (oldConfigId == null) {
             logger.warn("Cannot restart browser: configId is null. Browser not initialized.");
+            return;
+        }
+
+        // ⭐ 共享 Browser 模式：Browser 由所有线程共享，绝不能关闭——否则会连带杀掉其它并发 scenario
+        //    的 Context（正是 T3-2 修复掉的 P0）。此模式下"重启"降级为【仅重建本线程的 Context/Page】，
+        //    隔离语义由 BrowserContext 保证（cookie / storage 彼此独立），与 Browser 级隔离等价。
+        if (isSharedBrowserMode()) {
+            restartContextOnly(oldConfigId);
             return;
         }
 
@@ -909,15 +1033,20 @@ public class PlaywrightManager {
             closePage();
             closeContext();
 
-            // ⭐ 修复 P1-6：全局误杀防护（fail-fast）。
-            //    Browser 按 configId 跨线程共享，本操作必然是全局作用域；若本线程之外仍有打开的
-            //    BrowserContext，说明其它并发 scenario 正在使用浏览器，此时重启会连带杀掉它们。
-            //    这里主动拒绝执行，而不是静默造成整轮并行测试崩溃。
+            // ⭐ 修复 P1-6（T3-2 线程作用域化）：restartBrowser 现已收敛到【本线程】实例。
+            //    fail-fast 仍保留：若本线程除自身 context 外仍有其它打开的 BrowserContext，
+            //    说明本线程仍有未清理的 context，主动拒绝执行以避免半清理状态。
             //    注：browser.contexts() 仅返回【未关闭】的 context，故该判定是准确的；
             //    若探测本身抛出异常，同样不会走到后续关闭逻辑（失败即拒绝，方向安全）。
+            // T3-2 线程隔离：仅检视【本线程】拥有的实例（键以 threadId: 前缀），其余跳过。
+            final long tid = Thread.currentThread().getId();
+            final String prefix = tid + ":";
             BrowserContext selfContext = contextThreadLocal.get();
             List<String> foreignOwners = new ArrayList<>();
             for (Map.Entry<String, Browser> entry : browserInstances.entrySet()) {
+                if (!entry.getKey().startsWith(prefix)) {
+                    continue;
+                }
                 Browser browser = entry.getValue();
                 if (browser == null || !browser.isConnected()) {
                     continue;
@@ -931,16 +1060,17 @@ public class PlaywrightManager {
             }
             if (!foreignOwners.isEmpty()) {
                 throw new BrowserException("restartBrowser() refused: " + foreignOwners.size()
-                        + " other BrowserContext(s) are still open on config(s) " + foreignOwners
-                        + ". Browser instances are SHARED across scenario threads by configId, so a restart "
-                        + "is a global operation that would kill other concurrent scenarios. "
-                        + "Do NOT call restartBrowser() during parallel execution.");
+                        + " other BrowserContext(s) are still open on THIS thread's browser(s) " + foreignOwners
+                        + ". Close them before restarting.");
             }
 
             // 仅对共享实例 Map 的遍历与重建加细粒度锁，缩小临界区，避免全局挂起
-            synchronized (BROWSER_LOCK) {
-                // 关闭所有浏览器实例，确保没有残留的实例
+            synchronized (BROWSER_LOCK.get()) {
+                // T3-2 线程隔离：仅关闭【本线程】的浏览器实例（匹配前缀），按 key 精确移除，不动其它线程。
                 for (Map.Entry<String, Browser> entry : browserInstances.entrySet()) {
+                    if (!entry.getKey().startsWith(prefix)) {
+                        continue;
+                    }
                     Browser browser = entry.getValue();
                     if (browser != null && browser.isConnected()) {
                         try {
@@ -950,11 +1080,14 @@ public class PlaywrightManager {
                             logger.warn("Error closing browser instance for config {}: {}", entry.getKey(), e.getMessage());
                         }
                     }
+                    browserInstances.remove(entry.getKey());
                 }
-                browserInstances.clear();
 
-                // 关闭所有Playwright实例
+                // 关闭本线程所有 Playwright 实例（仅匹配前缀），按 key 精确移除。
                 for (Map.Entry<String, Playwright> entry : playwrightInstances.entrySet()) {
+                    if (!entry.getKey().startsWith(prefix)) {
+                        continue;
+                    }
                     Playwright playwright = entry.getValue();
                     if (playwright != null) {
                         try {
@@ -964,8 +1097,8 @@ public class PlaywrightManager {
                             logger.warn("Error closing Playwright instance for config {}: {}", entry.getKey(), e.getMessage());
                         }
                     }
+                    playwrightInstances.remove(entry.getKey());
                 }
-                playwrightInstances.clear();
 
                 // ⭐ 修复 H9：重启前清空路由层引用与废弃标记，避免旧 configId 的调度器/路由 handler 持有
                 // 已销毁 context 造成内存泄漏与跨场景串扰（与 cleanupAll 一致的收口顺序）。
@@ -988,6 +1121,36 @@ public class PlaywrightManager {
             logger.error("Failed to restart browser for config: {}", oldConfigId, e);
             throw new BrowserException("Failed to restart browser for config: " + oldConfigId, e);
         }
+    }
+
+    /**
+     * 共享 Browser 模式下的"重启"：<b>仅重建本线程的 Page/Context，不动共享 Browser</b>。
+     * <p>{@link #closePage()} / {@link #closeContext()} 只作用于 ThreadLocal（本线程），
+     * 不会影响其它并发 scenario。下次 {@code getContext()} / {@code getPage()} 访问时，
+     * 会从共享 Browser 上新建一个干净的 Context。</p>
+     *
+     * @param configId 当前线程的浏览器配置标识（仅用于日志与异常信息）
+     * @throws IllegalArgumentException configId 为 null 或空白时抛出
+     * @throws BrowserException        本线程 Page/Context 关闭失败时抛出
+     */
+    static void restartContextOnly(String configId) {
+        if (configId == null || configId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "configId must not be null or blank when restarting context (shared browser mode)");
+        }
+        VerboseLogging.logInfoIfVerbose(logger,
+                "🔄 [shared-browser] Restarting CONTEXT only for config: {} (shared Browser preserved)", configId);
+        try {
+            closePage();
+            closeContext();
+        } catch (Exception e) {
+            logger.error("[shared-browser] Failed to restart context for config: {}", configId, e);
+            throw new BrowserException(
+                    "Failed to restart context (shared browser mode) for config: " + configId, e);
+        }
+        VerboseLogging.logInfoIfVerbose(logger,
+                "✅ [shared-browser] Context restarted for config: {}; a fresh context will be created on next access",
+                configId);
     }
 
 

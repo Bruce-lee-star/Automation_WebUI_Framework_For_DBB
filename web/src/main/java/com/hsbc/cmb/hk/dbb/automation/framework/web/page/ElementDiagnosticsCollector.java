@@ -122,31 +122,34 @@ public class ElementDiagnosticsCollector {
         ElementOperationException.DiagnosticInfo info = ElementOperationException.DiagnosticInfo.create();
 
         try {
-            // 批量收集：一次 page.evaluate() 完成存在性/可见性/可编辑性/可交互性/数量/标签/属性检查
+            // 批量收集：一次 evaluate() 完成存在性/可见性/可编辑性/数量/标签/属性检查
             boolean detailed = PlaywrightManager.config().isElementDetailedDiagnostics();
-            String script = buildBatchDiagnosticScript(detailed);
-            @SuppressWarnings("unchecked")
             Map<String, Object> result;
-            // 关键修复 P2-19：使用 locator.evaluate() 而非 page.evaluate(selector)，
-            // 这样可以正确处理 CSS / XPath / role / text 等所有 Playwright 支持的定位语义，
-            // 避免 document.querySelector 对非 CSS 描述符失效导致误报"元素不存在"。
+
+            // 使用 locator.evaluate() 而非 page.evaluate(selector)，以正确处理
+            // CSS / XPath / role / text 等所有 Playwright 支持的定位语义（P2-19）。
+            // ⚠ 但 locator 语义下传入脚本的是【元素】而非选择器字符串，必须配套使用
+            //   buildElementDiagnosticScript（见其 Javadoc），否则 querySelector 会把元素当选择器而抛 SyntaxError。
             if (locator != null) {
-                Object evalResult = locator.evaluate(script, "self");
-                result = (evalResult instanceof Map) ? (Map<String, Object>) evalResult : null;
+                result = castToMap(locator.evaluate(buildElementDiagnosticScript(detailed), null));
             } else {
-                result = (Map<String, Object>) evaluateInContext(script, selector);
+                if (selector == null || selector.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "Cannot collect element diagnostics: locator is null and selector is blank");
+                }
+                result = castToMap(evaluateInContext(buildSelectorDiagnosticScript(detailed), selector));
             }
 
             info.existsInDom(getBoolean(result, "exists"))
                .isVisible(getBoolean(result, "visible"))
                .isEnabled(getBoolean(result, "enabled"))
                .isEditable(getBoolean(result, "editable"))
-               .elementCount(getInt(result, "count"));
+               // locator 语义无法由单元素推导匹配数，改用 locator.count()；selector 语义由脚本统计
+               .elementCount(locator != null ? getElementCount() : getInt(result, "count"));
 
             if (detailed) {
                 info.tagName(getString(result, "tagName"));
-                @SuppressWarnings("unchecked")
-                Map<String, String> attrs = (Map<String, String>) result.get("attributes");
+                Map<String, String> attrs = castToStringMap(result == null ? null : result.get("attributes"));
                 if (attrs != null) {
                     info.attributes(attrs);
                 }
@@ -165,25 +168,73 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 构建批量诊断 JS 脚本——一次 DOM 查询返回所有所需字段。
-     * 精简为基础检查：exists / visible / enabled / count，复杂诊断移到单独工具类。
+     * 构建【以元素为入参】的诊断脚本，配合 {@code locator.evaluate()} 使用。
+     *
+     * <p>⚠ <b>为什么必须与 {@link #buildSelectorDiagnosticScript(boolean)} 分开：</b>
+     * Playwright 的 {@code Locator.evaluate(script, arg)} 会把匹配到的<b>元素</b>作为第一个实参传入脚本；
+     * 若沿用 {@code document.querySelector(s)} 的写法，实参会变成元素对象本身，从而抛出
+     * {@code SyntaxError: '[object HTMLInputElement]' is not a valid selector}。
+     * 该错误只在元素定位失败时暴露，导致「最需要诊断信息的时刻，采集器必然失效」。</p>
+     *
+     * <p>locator 语义下无法由单个元素推导匹配总数，count 改由 {@link #getElementCount()} 提供。</p>
      */
-    private static String buildBatchDiagnosticScript(boolean detailed) {
+    private static String buildElementDiagnosticScript(boolean detailed) {
         StringBuilder sb = new StringBuilder(512);
-        sb.append("(s) => {")
-          .append("const e=document.querySelector(s);")
-          .append("if(!e) return {exists:false,visible:false,enabled:false,count:0};")
+        sb.append("(e) => {")
+          .append("if(!e) return {exists:false,visible:false,enabled:false,editable:false};")
           .append("const cs=getComputedStyle(e);")
           .append("const r={")
           .append("exists:true,")
           .append("visible:e.offsetParent!==null&&cs.display!=='none'&&cs.visibility!=='hidden'&&parseFloat(cs.opacity)>0,")
           .append("enabled:!e.disabled,")
-          .append("count:document.querySelectorAll(s).length");
+          .append("editable:!e.disabled&&!e.readOnly");
         if (detailed) {
-            sb.append(",tagName:e.tagName");
+            sb.append(DIAGNOSTIC_DETAIL_FIELDS);
         }
         sb.append("};return r;}");
         return sb.toString();
+    }
+
+    /**
+     * 构建【以选择器字符串为入参】的诊断脚本，配合 {@code page/frame.evaluate()} 使用。
+     * 仅适用于 CSS 选择器；非 CSS 描述符请走 {@link #buildElementDiagnosticScript(boolean)}。
+     */
+    private static String buildSelectorDiagnosticScript(boolean detailed) {
+        StringBuilder sb = new StringBuilder(512);
+        sb.append("(s) => {")
+          .append("const e=document.querySelector(s);")
+          .append("if(!e) return {exists:false,visible:false,enabled:false,editable:false,count:0};")
+          .append("const cs=getComputedStyle(e);")
+          .append("const r={")
+          .append("exists:true,")
+          .append("visible:e.offsetParent!==null&&cs.display!=='none'&&cs.visibility!=='hidden'&&parseFloat(cs.opacity)>0,")
+          .append("enabled:!e.disabled,")
+          .append("editable:!e.disabled&&!e.readOnly,")
+          .append("count:document.querySelectorAll(s).length");
+        if (detailed) {
+            sb.append(DIAGNOSTIC_DETAIL_FIELDS);
+        }
+        sb.append("};return r;}");
+        return sb.toString();
+    }
+
+    /**
+     * 详细模式下追加的字段：tagName 与元素属性集合。
+     * <p>⚠ 旧实现只追加了 {@code tagName}，却从未产出 {@code attributes}，
+     * 而调用方一直在读取 {@code attributes} → 该诊断项恒为 null（静默失真）。</p>
+     */
+    private static final String DIAGNOSTIC_DETAIL_FIELDS =
+            ",tagName:e.tagName"
+          + ",attributes:Object.fromEntries(Array.from(e.attributes||[]).map(a=>[a.name,a.value]))";
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> castToMap(Object value) {
+        return (value instanceof Map) ? (Map<String, Object>) value : null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> castToStringMap(Object value) {
+        return (value instanceof Map) ? (Map<String, String>) value : null;
     }
 
     private static boolean getBoolean(Map<String, Object> map, String key) {

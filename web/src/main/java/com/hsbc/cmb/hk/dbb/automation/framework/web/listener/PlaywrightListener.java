@@ -61,11 +61,34 @@ public class PlaywrightListener implements StepListener {
     // 记录当前 Cucumber 级别步骤，避免为 Serenity 子步骤重复截图
     private static final ThreadLocal<String> currentCucumberStep = new ThreadLocal<>();
 
-    // 防止截图触发的 stepFinished 递归调用
-    private static final ThreadLocal<Boolean> takingScreenshot = ThreadLocal.withInitial(() -> false);
+    // ⭐ 步骤/截图/API 失败守卫（防重入、防双重处理）统一收拢为单个 per-thread 状态对象。
+    // 削减 static ThreadLocal 数量，集中清理（cleanupThreadLocals 仅移除一个 ThreadLocal），
+    // 消除"新增回调路径漏清某个 ThreadLocal → 跨 scenario 残留"的缺口。此为 T3-1 TestContext 收拢的首块接缝。
+    private static final ThreadLocal<ListenerGuardState> listenerGuards = ThreadLocal.withInitial(ListenerGuardState::new);
 
-    // 防止 stepFailed 和 stepFinished 重复调用 StepEventBus.stepFinished()
-    private static final ThreadLocal<Boolean> failureScreenshotsAlreadySent = ThreadLocal.withInitial(() -> false);
+    private static ListenerGuardState guards() {
+        return listenerGuards.get();
+    }
+
+    /** per-thread 守卫状态：收拢原 5 个 ThreadLocal<Boolean> 守卫（T3-1 TestContext 接缝）。 */
+    private static final class ListenerGuardState {
+        private boolean takingScreenshot;
+        private boolean failureScreenshotsAlreadySent;
+        private boolean stepFinishProcessed;
+        private boolean stepFinishReentrant;
+        private boolean apiFailureAlreadyHandled;
+
+        boolean isTakingScreenshot() { return takingScreenshot; }
+        void setTakingScreenshot(boolean v) { takingScreenshot = v; }
+        boolean isFailureScreenshotsAlreadySent() { return failureScreenshotsAlreadySent; }
+        void setFailureScreenshotsAlreadySent(boolean v) { failureScreenshotsAlreadySent = v; }
+        boolean isStepFinishProcessed() { return stepFinishProcessed; }
+        void setStepFinishProcessed(boolean v) { stepFinishProcessed = v; }
+        boolean isStepFinishReentrant() { return stepFinishReentrant; }
+        void setStepFinishReentrant(boolean v) { stepFinishReentrant = v; }
+        boolean isApiFailureAlreadyHandled() { return apiFailureAlreadyHandled; }
+        void setApiFailureAlreadyHandled(boolean v) { apiFailureAlreadyHandled = v; }
+    }
 
     /**
      * ⭐ 失败日志去重器：同一 Throwable 实例在一次 scenario 线程生命周期内只完整打印一次。
@@ -93,17 +116,6 @@ public class PlaywrightListener implements StepListener {
     private static void clearReportedFailures() {
         reportedFailures.get().clear();
     }
-
-    // ⭐ 防止 stepFinished() 无参版与 stepFinishedInternal() 参数化版双重处理
-    private static final ThreadLocal<Boolean> stepFinishProcessed = ThreadLocal.withInitial(() -> false);
-
-    // ⭐ 防止 stepFinishedInternal() 调用 StepEventBus.stepFinished() 导致递归重入
-    private static final ThreadLocal<Boolean> stepFinishReentrantGuard = ThreadLocal.withInitial(() -> false);
-
-    // ⭐ 防止 API 断言失败在同一 case 中通过 StepEventBus 重复标记（防递归死循环）
-    //    一旦 checkAndFailOnApiAssertions 通过 StepEventBus.markFailed() 标记后，
-    //    同一 case 内后续步骤不再重复触发 StepEventBus 操作
-    private static final ThreadLocal<Boolean> apiFailureAlreadyHandled = ThreadLocal.withInitial(() -> false);
 
     /**
      * ⭐⭐⭐ 失败传播机制说明（重要）。
@@ -181,7 +193,7 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
         SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
-        apiFailureAlreadyHandled.set(false);
+        guards().setApiFailureAlreadyHandled(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
         RouteLifecycleRegistry.get().stopCapture();
@@ -323,9 +335,9 @@ public class PlaywrightListener implements StepListener {
         clearStepScreenshotsImmediately();
 
         // 重置所有防双重处理标志
-        stepFinishProcessed.set(false);
-        failureScreenshotsAlreadySent.set(false);
-        stepFinishReentrantGuard.set(false);
+        guards().setStepFinishProcessed(false);
+        guards().setFailureScreenshotsAlreadySent(false);
+        guards().setStepFinishReentrant(false);
 
         // 用全新 ArrayList 替换旧列表（彻底断开任何外部引用）
         currentStepScreenshots.set(new ArrayList<>());
@@ -356,21 +368,21 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void stepFinished() {
         // ⭐ 防递归重入：StepEventBus.stepFinished() 会重新触发事件分发
-        if (stepFinishReentrantGuard.get()) {
+        if (guards().isStepFinishReentrant()) {
             return;
         }
-        stepFinishReentrantGuard.set(true);
+        guards().setStepFinishReentrant(true);
 
         // ⭐ 防双重处理：如果参数化版 stepFinishedInternal 已经处理过，跳过
-        if (stepFinishProcessed.get()) {
+        if (guards().isStepFinishProcessed()) {
             VerboseLogging.logDebugIfVerbose(logger, "stepFinished() skipped - already processed by stepFinishedInternal");
-            stepFinishReentrantGuard.set(false);
+            guards().setStepFinishReentrant(false);
             return;
         }
 
         Long startTime = stepStartTime.get();
         if (startTime == null) {
-            stepFinishReentrantGuard.set(false);
+            guards().setStepFinishReentrant(false);
             return;
         }
 
@@ -394,7 +406,7 @@ public class PlaywrightListener implements StepListener {
 
         // 手动调用 StepEventBus 的 stepFinished 方法来传递截图（仅在 stepFailed 未发送过时）
         List<ScreenshotAndHtmlSource> stepScreenshots = currentStepScreenshots.get();
-        if (stepScreenshots != null && !stepScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
+        if (stepScreenshots != null && !stepScreenshots.isEmpty() && !guards().isFailureScreenshotsAlreadySent()) {
             VerboseLogging.logDebugIfVerbose(logger, "Manually calling StepEventBus.stepFinished() with {} screenshots", stepScreenshots.size());
             try {
                 // ⭐ 防残留：传递新 list 副本，避免之后 clear() 影响 Serenity 保留的引用
@@ -403,14 +415,14 @@ public class PlaywrightListener implements StepListener {
                 // 清空截图列表，避免重复添加
                 stepScreenshots.clear();
                 // 标记已处理，防止参数化版本重复处理
-                stepFinishProcessed.set(true);
+                guards().setStepFinishProcessed(true);
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
-        } else if (failureScreenshotsAlreadySent.get()) {
+        } else if (guards().isFailureScreenshotsAlreadySent()) {
             VerboseLogging.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() - already sent by stepFailed");
             if (stepScreenshots != null) stepScreenshots.clear();
-            stepFinishProcessed.set(true);
+            guards().setStepFinishProcessed(true);
         } else {
             VerboseLogging.logDebugIfVerbose(logger, "No screenshots to pass to StepEventBus.stepFinished()");
         }
@@ -418,9 +430,9 @@ public class PlaywrightListener implements StepListener {
         // 重置标志供下一个步骤使用
         // ⭐ 不再 remove stepFinishProcessed 和 failureScreenshotsAlreadySent
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
-        failureScreenshotsAlreadySent.set(false);
-        stepFinishProcessed.set(false);
-        stepFinishReentrantGuard.set(false);
+        guards().setFailureScreenshotsAlreadySent(false);
+        guards().setStepFinishProcessed(false);
+        guards().setStepFinishReentrant(false);
 
         // ⭐⭐⭐ 框架级 API 断言检查（每个步骤结束时兜底执行）
         checkAndFailOnApiAssertions();
@@ -431,7 +443,7 @@ public class PlaywrightListener implements StepListener {
         if (failure == null) return;
 
         // ⭐ 防重复：如果已经发送过失败截图（如 stepFailed param 版已处理），直接跳过
-        if (failureScreenshotsAlreadySent.get()) {
+        if (guards().isFailureScreenshotsAlreadySent()) {
             logger.debug("stepFailed: screenshots already sent by previous handler, skipping");
             return;
         }
@@ -480,7 +492,7 @@ public class PlaywrightListener implements StepListener {
                 StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 VerboseLogging.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with failure screenshots");
                 // 标记已发送，防止后续 stepFinished() / lastStepFailed 重复调用
-                failureScreenshotsAlreadySent.set(true);
+                guards().setFailureScreenshotsAlreadySent(true);
                 // 清空截图列表，避免重复处理
                 stepScreenshots.clear();
             } catch (Exception e) {
@@ -495,7 +507,7 @@ public class PlaywrightListener implements StepListener {
     @Override
     public void lastStepFailed(StepFailure failure) {
         // ⭐ 最优先检查：如果 stepFailed 已经发送过截图和报告，全部跳过（零开销）
-        if (failureScreenshotsAlreadySent.get()) {
+        if (guards().isFailureScreenshotsAlreadySent()) {
             logger.debug("lastStepFailed: screenshots already sent by stepFailed, skipping all work");
             return;
         }
@@ -521,7 +533,7 @@ public class PlaywrightListener implements StepListener {
                 // ⭐ 防残留：传递新 list 副本
                 StepEventBus.getEventBus().stepFinished(new ArrayList<>(stepScreenshots), ZonedDateTime.now());
                 VerboseLogging.logDebugIfVerbose(logger, "Successfully called StepEventBus.stepFinished() with last step failure screenshots");
-                failureScreenshotsAlreadySent.set(true);  // ⭐ 标记已发送，防止后续重复
+                guards().setFailureScreenshotsAlreadySent(true);  // ⭐ 标记已发送，防止后续重复
                 // 清空截图列表，避免重复处理
                 stepScreenshots.clear();
             } catch (Exception e) {
@@ -560,14 +572,14 @@ public class PlaywrightListener implements StepListener {
      */
     private ScreenshotAndHtmlSource takeScreenshot(String screenshotName) {
         // 防止递归调用
-        if (takingScreenshot.get()) {
+        if (guards().isTakingScreenshot()) {
             VerboseLogging.logDebugIfVerbose(
                     logger, "Skipping screenshot - already taking screenshot to prevent recursion");
             return null;
         }
 
         try {
-            takingScreenshot.set(true);
+            guards().setTakingScreenshot(true);
 
             String screenshotPath = PlaywrightManager.takeScreenshot(screenshotName);
 
@@ -591,7 +603,7 @@ public class PlaywrightListener implements StepListener {
         } catch (Exception e) {
             VerboseLogging.logInfoIfVerbose(logger, "Failed to capture screenshot: {}", screenshotName, e);
         } finally {
-            takingScreenshot.set(false);
+            guards().setTakingScreenshot(false);
         }
 
         return null;
@@ -688,11 +700,7 @@ public class PlaywrightListener implements StepListener {
         stepStartTime.remove();
         currentStepName.remove();
         currentCucumberStep.remove();
-        takingScreenshot.remove();
-        failureScreenshotsAlreadySent.remove();
-        stepFinishProcessed.remove();  // ⭐ 清理防双重处理标志
-        stepFinishReentrantGuard.remove();  // ⭐ 清理重入防护标志
-        apiFailureAlreadyHandled.remove();  // ⭐ 清理 API 失败标记
+        listenerGuards.remove();  // ⭐ 清理收拢后的 5 个守卫标志（防双重处理 / 重入 / API 失败）
         clearReportedFailures();  // ⭐ 清空失败日志去重记录，避免跨 scenario 误杀
         // currentStepScreenshots 已由 clearStepScreenshotsImmediately() 处理
 
@@ -727,19 +735,19 @@ public class PlaywrightListener implements StepListener {
     private void stepFinishedInternal(List<ScreenshotAndHtmlSource> screenshots, ZonedDateTime timestamp) {
         // ⭐ 防递归重入：StepEventBus.stepFinished() 会触发事件重新分发到本监听器，
         // 导致 stepFinishedInternal() → StepEventBus.stepFinished() → stepFinishedInternal() → ... 无限递归
-        if (stepFinishReentrantGuard.get()) {
+        if (guards().isStepFinishReentrant()) {
             return;
         }
-        stepFinishReentrantGuard.set(true);
+        guards().setStepFinishReentrant(true);
 
         // ⭐ 防双重处理：如果无参版 stepFinished() 已经处理过，跳过截图和发送
-        boolean alreadyProcessed = stepFinishProcessed.get();
+        boolean alreadyProcessed = guards().isStepFinishProcessed();
 
         Long startTime = stepStartTime.get();
         if (startTime == null) {
             // 即使没有 startTime 也要清理标志
-            stepFinishProcessed.remove();
-            stepFinishReentrantGuard.set(false);
+            guards().setStepFinishProcessed(false);
+            guards().setStepFinishReentrant(false);
             return;
         }
 
@@ -799,7 +807,7 @@ public class PlaywrightListener implements StepListener {
         }
 
         // ⭐ 防双重发送：仅当无参版 stepFinished() 未处理时才发送 StepEventBus
-        if (!alreadyProcessed && mergedScreenshots != null && !mergedScreenshots.isEmpty() && !failureScreenshotsAlreadySent.get()) {
+        if (!alreadyProcessed && mergedScreenshots != null && !mergedScreenshots.isEmpty() && !guards().isFailureScreenshotsAlreadySent()) {
             recordTestData("stepScreenshotsCount", mergedScreenshots.size());
             // 手动调用 StepEventBus 的 stepFinished 方法来传递截图
             VerboseLogging.logDebugIfVerbose(
@@ -809,11 +817,11 @@ public class PlaywrightListener implements StepListener {
                 VerboseLogging.logDebugIfVerbose(
                         logger, "Successfully called StepEventBus.stepFinished() with screenshots");
                 // 标记已处理，防止无参版 stepFinished() 重复处理
-                stepFinishProcessed.set(true);
+                guards().setStepFinishProcessed(true);
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
-        } else if (failureScreenshotsAlreadySent.get()) {
+        } else if (guards().isFailureScreenshotsAlreadySent()) {
             VerboseLogging.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() in stepFinishedInternal - already sent by stepFailed");
             // ⭐ 防残留：清空 Serenity 传入的 list
             if (screenshots != null) screenshots.clear();
@@ -825,9 +833,9 @@ public class PlaywrightListener implements StepListener {
         // 重置标志供下一个步骤使用
         // ⭐ 不再 remove stepFinishProcessed 和 failureScreenshotsAlreadySent
         // 改为在 stepStarted 中重置为 false，防止步骤间窗口期注入脏数据
-        failureScreenshotsAlreadySent.set(false);
-        stepFinishProcessed.set(false);
-        stepFinishReentrantGuard.set(false);
+        guards().setFailureScreenshotsAlreadySent(false);
+        guards().setStepFinishProcessed(false);
+        guards().setStepFinishReentrant(false);
 
         // ⭐⭐⭐ 框架级 API 断言检查（每个 Cucumber 步骤结束时自动执行）
         checkAndFailOnApiAssertions();
@@ -963,7 +971,7 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
         SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
-        apiFailureAlreadyHandled.set(false);
+        guards().setApiFailureAlreadyHandled(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
         RouteLifecycleRegistry.get().stopCapture();
@@ -1000,7 +1008,7 @@ public class PlaywrightListener implements StepListener {
         // ⭐ 丢弃上一场景残留的待报告 API 记录，避免其被写入本场景报告（跨场景串扰）
         SerenityReporter.discardPendingApiOperations();
         // ⭐ 重置 API 失败标记（每个新 case 重新开始追踪）
-        apiFailureAlreadyHandled.set(false);
+        guards().setApiFailureAlreadyHandled(false);
 
         // ⭐ 安全清理：确保上一个 scenario 的采集引擎已释放
         RouteLifecycleRegistry.get().stopCapture();
@@ -1177,7 +1185,7 @@ public class PlaywrightListener implements StepListener {
                            boolean takeScreenshotOnFailure, ZonedDateTime timestamp) {
         // ⭐ 防重复 + 委托：统一交给无参 stepFailed(StepFailure) 处理截图和报告发送
         // 避免两个方法维护几乎相同逻辑导致的 drift 风险
-        if (failure == null || failureScreenshotsAlreadySent.get()) return;
+        if (failure == null || guards().isFailureScreenshotsAlreadySent()) return;
 
         if (timestamp != null) {
             recordTestData("stepFailureTimestamp", timestamp.toInstant().toEpochMilli());
@@ -1246,7 +1254,7 @@ public class PlaywrightListener implements StepListener {
         // 都会触发此回调 → 每个步骤产生 3~10 张 SCREEN_CHANGE 截图 → 报告巨长不可读
         //
         // 如果未来需要重新启用（仅用于调试特定场景），取消下面的注释即可：
-        // if (stepStartTime.get() != null && !stepFinishProcessed.get() && currentStepName.get() != null) {
+        // if (stepStartTime.get() != null && !guards().isStepFinishProcessed() && currentStepName.get() != null) {
         //     takeScreenshotAndRegister("SCREEN_CHANGE");
         // }
         VerboseLogging.logDebugIfVerbose(logger, "SCREEN_CHANGE screenshot disabled (report length optimization)");
@@ -1356,7 +1364,7 @@ public class PlaywrightListener implements StepListener {
             // ⭐ 防重复：如果 checkAndFailOnApiAssertions 已经通过 StepEventBus 触发过一次
             // （testFailed 回调 → 本方法），则跳过详细日志和 Serenity 记录，
             // 避免 testFailed 回调和 testFinished 各调一次导致重复打印
-            boolean alreadyHandledAtStep = apiFailureAlreadyHandled.get();
+            boolean alreadyHandledAtStep = guards().isApiFailureAlreadyHandled();
 
             if (!alreadyHandledAtStep) {
                 // 首次检测到（testFinished 兜底路径）：打印完整报告
@@ -1421,7 +1429,7 @@ public class PlaywrightListener implements StepListener {
 
         // ⭐ 防重入：同一 case 里只通过 StepEventBus 标记一次，
         // 防止 StepEventBus 回调链路再次进入此方法导致死循环
-        if (apiFailureAlreadyHandled.get()) {
+        if (guards().isApiFailureAlreadyHandled()) {
             return;
         }
 
@@ -1439,7 +1447,7 @@ public class PlaywrightListener implements StepListener {
         }
 
         // ⭐ 标记已处理，必须在调用 StepEventBus 之前设置（防回调重入）
-        apiFailureAlreadyHandled.set(true);
+        guards().setApiFailureAlreadyHandled(true);
 
         String report = context.buildFailureReport();
         String details = context.buildFailureDetails();

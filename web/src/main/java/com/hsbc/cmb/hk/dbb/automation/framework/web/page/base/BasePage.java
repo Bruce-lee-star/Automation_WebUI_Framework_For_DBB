@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
@@ -12,7 +13,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageElementActions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
@@ -33,35 +36,53 @@ import java.util.regex.Pattern;
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
 
-    protected Page page;
-    protected BrowserContext context;
-    private static final ThreadLocal<BasePage> currentPage = new ThreadLocal<>();
+    protected volatile Page page;
+    protected volatile BrowserContext context;
 
     /**
-     * 当前 iframe 上下文（Playwright Frame），使用 ThreadLocal 使所有 Page 实例共享。
+     * 当前 iframe 上下文（Playwright Frame），按 BasePage 实例隔离（非 ThreadLocal）。
      * <p>null 表示当前在主页面 DOM 中操作。
      * <p>设置后，所有通过 {@link #locator(String)} 创建的 Locator 将自动在 iframe 内查找元素，
      * 从而解决"切到 iframe 后元素 not found in DOM"的经典问题。
+     * <p><b>企业级修正（C1 根因）：</b>原实现为 static ThreadLocal，导致同线程内任意 Page 实例切 iframe 都会
+     * 污染其它 Page 实例的上下文（A 切 frame 后 B 的 locator 误入该 iframe）。现改为每实例独立持有
+     * （{@link FrameSlot}），彻底消除跨实例状态泄漏与顺序相关竞态。
      */
-    private static final ThreadLocal<Frame> currentFrame = new ThreadLocal<>();
+    private final FrameSlot currentFrame = new FrameSlot();
 
     /**
-     * 当前 open shadowRoot 上下文栈（自外向内，保存各层宿主的 CSS 选择器），使用 ThreadLocal 使所有 Page 实例共享。
+     * 当前 open shadowRoot 上下文栈（自外向内，保存各层宿主的 CSS 选择器），按 BasePage 实例隔离（非 ThreadLocal）。
      * <p>空栈表示当前在普通 DOM（主页面或已切到的 iframe）内操作。shadow 可嵌套，故用栈保存每一层宿主。
      * <p>定位时把栈内宿主用 Playwright 官方的 {@code >>>} shadow 穿透组合器拼接成前缀，例如
      * {@code #app-host >>> comp-menu#menu >>> #inner}，从而显式穿透 open shadowRoot（对标 page.pause() 的
      * shadow piercing 录制）。{@code >>>} 是选择器引擎内置语法，可一次性穿透任意层 open shadow，无需
      * 逐层调用 shadowRoot()（Playwright Java 的 ElementHandle 未暴露该便捷方法）。
+     * <p><b>企业级修正（C1 根因）：</b>同上，改为每实例独立持有（{@link ShadowSlot}），避免跨实例/跨 scenario
+     * 的 shadow 上下文泄漏。
      */
-    private static final ThreadLocal<java.util.Deque<String>> currentShadow =
-            ThreadLocal.withInitial(java.util.ArrayDeque::new);
+    private final ShadowSlot currentShadow = new ShadowSlot();
+
+    /** iframe 上下文槽：按实例隔离，提供与原 ThreadLocal 一致的方法签名，替代 static ThreadLocal（C1 根因修复）。 */
+    private static final class FrameSlot {
+        private volatile Frame value;
+        Frame get() { return value; }
+        void set(Frame f) { value = f; }
+        void remove() { value = null; }
+    }
+
+    /** open-shadow 上下文栈槽：按实例隔离，提供与原 ThreadLocal 一致的方法签名，替代 static ThreadLocal（C1 根因修复）。 */
+    private static final class ShadowSlot {
+        private final java.util.Deque<String> stack = new java.util.ArrayDeque<>();
+        java.util.Deque<String> get() { return stack; }
+        void remove() { stack.clear(); }
+    }
 
     // ===================== 全局文本统一格式化工具 =====================
     /**
      * 文本标准化：委托给 {@link TextNormalizer#normalize(String)} 统一实现，
      * 避免 BasePage 和 PageElement 重复定义相同的 Pattern 常量和 normalize 逻辑。
      */
-    protected String normalizeText(String raw) {
+    public String normalizeText(String raw) {
         return TextNormalizer.normalize(raw);
     }
 
@@ -84,10 +105,7 @@ public abstract class BasePage {
                 // 双重检查：锁内再次确认 page 仍无效
                 if (page == null || isPageClosed(page)) {
                     page = PlaywrightManager.getPage();
-                    currentFrame.remove(); // 页面重建后重置 iframe 上下文
-                    setCurrentPage();
-                    // 页面切换后重新绑定所有 @Element 注解字段到新 Page
-                    initializeAnnotatedFields();
+                    resetFrameAndShadowContext(); // 页面重建后重置 iframe/shadow 上下文
                 }
             }
         } else {
@@ -95,17 +113,48 @@ public abstract class BasePage {
             Page managerPage = PlaywrightManager.getPage();
             if (managerPage != page) {
                 page = managerPage;
-                currentFrame.remove();
-                setCurrentPage();
-                initializeAnnotatedFields();
+                resetFrameAndShadowContext();
+            } else {
+                // 防御：页面内导航可能已使当前 iframe Frame detached，自动清理避免状态泄漏（C1/C5）
+                clearStaleFrameContextIfNeeded();
             }
         }
     }
 
     /**
-     * 安全检查 Page 是否已关闭（避免 isClosed() 抛异常导致流程中断）
+     * 重置当前线程的 iframe 与 open-shadow 上下文（同时清理，避免 shadow 宿主选择器跨页面泄漏）。
+     * 页面切换/重建后调用，确保后续 locator() 解析到新 Page 而非失效的旧 Frame/shadow。
      */
-    private boolean isPageClosed(Page p) {
+    private void resetFrameAndShadowContext() {
+        currentFrame.remove();
+        currentShadow.get().clear();
+        initializeAnnotatedFields();
+    }
+
+    /**
+     * 防御性清理：若当前线程已切入 iframe，但其所属 Frame 已 detached 或指向其它 Page
+     * （页面内导航导致旧 Frame 失效的常见场景），则自动清掉 iframe/shadow 上下文，
+     * 防止"顺序相关"的跨用例/跨操作状态泄漏。
+     */
+    private void clearStaleFrameContextIfNeeded() {
+        Frame f = currentFrame.get();
+        if (f == null) return;
+        try {
+            Page fp = f.page();
+            if (fp == null || fp.isClosed() || fp != page) {
+                resetFrameAndShadowContext();
+            }
+        } catch (Exception e) {
+            // Frame 已 detached，访问其 page 会抛异常 —— 直接清理
+            resetFrameAndShadowContext();
+        }
+    }
+
+    /**
+     * 安全检查 Page 是否已关闭（避免 isClosed() 抛异常导致流程中断）。
+     * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
+     */
+    boolean isPageClosed(Page p) {
         if (p == null) return true;
         try {
             return p.isClosed();
@@ -127,7 +176,7 @@ public abstract class BasePage {
      * 后续调用（页面切换）：复用已有对象（避免重建对象和反射赋值的开销），
      * Locator 不再缓存，每次调用 locator() 自动绑定新 Page 实例。
      */
-    private void initializeAnnotatedFields() {
+    private synchronized void initializeAnnotatedFields() {
         Class<?> clazz = this.getClass();
         while (clazz != null && clazz != BasePage.class) {
             for (Field field : clazz.getDeclaredFields()) {
@@ -203,28 +252,42 @@ public abstract class BasePage {
 
 
 
+    /**
+     * 返回当前线程"当前活跃"的 BasePage 实例。
+     *
+     * @deprecated 自 2026-09 起废弃：{@code currentPage} 静态跟踪已被移除（全仓无读取方，属死状态），
+     * 故本方法始终返回 {@code null}。跨实例"当前页"语义将统一由 T3-1 {@code TestContext} 承接。
+     */
+    @Deprecated
     public static BasePage getCurrentPage() {
-        return currentPage.get();
-    }
-
-    protected void setCurrentPage() {
-        currentPage.set(this);
-    }
-
-    public static void clearCurrentPage() {
-        currentPage.remove();
+        return null;
     }
 
     /**
-     * 一键清理当前线程所有静态 ThreadLocal —— 必须在 BrowserContext 关闭之后调用，
-     * 否则线程池复用的下一条测试会读取到旧 Page 的 iframe/shadow 上下文。
-     * <p>
-     * 适用场景：{@code @AfterMethod} / TestNG {@code afterTestMethod} / 线程池 {@code afterExecute}。
+     * @deprecated 自 2026-09 起废弃：{@code currentPage} 字段已移除，本方法现为空实现。
+     * 原意图（防止线程复用引用过期 Page 对象）已无意义——不再存在线程级共享的 Page 引用。
+     * 线程级清理将随 T3-1 {@code TestContext} 收拢。
      */
+    @Deprecated
+    public static void clearCurrentPage() {
+        // 空实现：currentPage 字段已移除（死状态）。
+    }
+
+    /**
+     * 清理当前线程的静态上下文。
+     * <p>
+     * <b>企业级修正（C1）：</b>iframe/shadow 上下文已不再是 static ThreadLocal，而是各 BasePage 实例独立持有
+     * （见 {@link #currentFrame} / {@link #currentShadow}），因此不再存在"线程级全局"泄漏——线程池复用下一条用例
+     * 创建的新 BasePage 实例天然拿到干净的 iframe/shadow 上下文。
+     * <p>
+     * <b>2026-09 更新：</b>{@code currentPage} 静态引用亦已移除（全仓无读取方，属死状态），故本方法现为空实现，
+     * 仅保留签名以兼容 {@code PlaywrightManager} 的收尾清理调用。其职责将在 T3-1 {@code TestContext} 中统一承接。
+     *
+     * @deprecated 等待并入 T3-1 {@code TestContext}；当前为空实现。
+     */
+    @Deprecated
     public static void clearAllThreadLocals() {
-        currentPage.remove();
-        currentFrame.remove();
-        currentShadow.remove();
+        // 空实现：currentPage 字段已移除（死状态）。
     }
 
     public Page getPage() {
@@ -251,31 +314,31 @@ public abstract class BasePage {
 
 
     public void waitForElementExists(String selector, int timeout) {
-        element(selector).waitForExists(timeout);
+        PageWaits.waitForElementExists(this, selector, timeout);
     }
 
     public void waitForElementNotExists(String selector, int timeout) {
-        element(selector).waitForNotExists(timeout);
+        PageWaits.waitForElementNotExists(this, selector, timeout);
     }
 
     public void waitForElementEditable(String selector, int timeout) {
-        element(selector).waitForEditable(timeout);
+        PageWaits.waitForElementEditable(this, selector, timeout);
     }
 
     public void waitForElementEnabled(String selector, int timeout) {
-        element(selector).waitForEnabled(timeout);
+        PageWaits.waitForElementEnabled(this, selector, timeout);
     }
 
     public void waitForElementDisabled(String selector, int timeout) {
-        element(selector).waitForDisabled(timeout);
+        PageWaits.waitForElementDisabled(this, selector, timeout);
     }
 
     public void waitForElementChecked(String selector, int timeout) {
-        element(selector).waitForChecked(timeout);
+        PageWaits.waitForElementChecked(this, selector, timeout);
     }
 
     public void waitForElementNotChecked(String selector, int timeout) {
-        element(selector).waitForNotChecked(timeout);
+        PageWaits.waitForElementNotChecked(this, selector, timeout);
     }
 
 
@@ -284,30 +347,23 @@ public abstract class BasePage {
 
 
     public void waitForNetworkIdle(int timeout) {
-        ensurePageValid();
-        page.waitForLoadState(LoadState.NETWORKIDLE, new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+        PageWaits.waitForNetworkIdle(this, timeout);
     }
 
     public void waitForPageFullyLoaded(int timeout) {
-        ensurePageValid();
-        page.waitForLoadState(LoadState.LOAD, new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+        PageWaits.waitForPageFullyLoaded(this, timeout);
     }
 
     public void waitForDOMContentLoaded(int timeout) {
-        ensurePageValid();
-        page.waitForLoadState(LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+        PageWaits.waitForDOMContentLoaded(this, timeout);
     }
 
     public void shouldBeVisible(String selector) {
-        if (!locator(selector).isVisible()) {
-            throw new ElementException("Element should be visible: " + selector);
-        }
+        PageWaits.shouldBeVisible(this, selector);
     }
 
     public void shouldBeNotVisible(String selector) {
-        if (!locator(selector).isHidden()) {
-            throw new ElementException("Element should be hidden: " + selector);
-        }
+        PageWaits.shouldBeNotVisible(this, selector);
     }
 
     /**
@@ -320,24 +376,15 @@ public abstract class BasePage {
      * @return 验证通过返回 true，否则 false
      */
     public boolean retryWithValidation(Runnable operation, BooleanSupplier validation, int maxRetries, String desc) {
-        return retryWithValidation(operation, validation, maxRetries, 500, desc);
+        return PageWaits.retryWithValidation(this, operation, validation, maxRetries, desc);
     }
 
     public void retry(Runnable runnable, String desc) {
-        retry(runnable, 3, 1000, desc);
+        PageWaits.retry(this, runnable, desc);
     }
 
     public void retry(Runnable runnable, int retries, int intervalMs, String desc) {
-        ensurePageValid();
-        for (int i = 0; i <= retries; i++) {
-            try {
-                runnable.run();
-                return;
-            } catch (Exception e) {
-                if (i == retries) throw new RuntimeException("Retry failed: " + desc, e);
-                page.waitForTimeout((double) intervalMs);
-            }
-        }
+        PageWaits.retry(this, runnable, retries, intervalMs, desc);
     }
 
     /**
@@ -352,16 +399,7 @@ public abstract class BasePage {
      */
     public boolean retryWithValidation(Runnable operation, BooleanSupplier validation,
                                        int maxRetries, int retryIntervalMs, String desc) {
-        ensurePageValid();
-        for (int i = 0; i <= maxRetries; i++) {
-            try {
-                operation.run();
-                if (validation.getAsBoolean()) return true;
-            } catch (Exception ignored) {
-            }
-            page.waitForTimeout((double) retryIntervalMs);
-        }
-        return false;
+        return PageWaits.retryWithValidation(this, operation, validation, maxRetries, retryIntervalMs, desc);
     }
 
     /**
@@ -385,7 +423,7 @@ public abstract class BasePage {
     }
 
     public void navigateToWithRetry(String url, int retries) {
-        retry(() -> navigateTo(url), retries, 1000, "navigate to: " + url);
+        PageNavigation.navigateToWithRetry(this, url, retries);
     }
 
     /**
@@ -433,125 +471,96 @@ public abstract class BasePage {
     }
 
     public void click(String selector) {
-        try {
-            element(selector).click();
-        } catch (ElementOperationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ElementOperationException("click", selector, 
-                "Failed to click element: " + selector, e);
-        }
+        PageElementActions.click(this, selector);
     }
 
     public void jsClick(String selector) {
-        locator(selector).evaluate("el => el.click()");
+        PageElementActions.jsClick(this, selector);
     }
 
     public void type(String selector, String text) {
-        element(selector).type(text);
+        PageElementActions.type(this, selector, text);
     }
 
     public void append(String selector, String text) {
-        PageElement pe = element(selector);
-        pe.focus();
-        String current = pe.getValue();
-        if (current == null) current = "";
-        pe.fill(current + text);
+        PageElementActions.append(this, selector, text);
     }
 
     public void clear(String selector) {
-        element(selector).clear();
+        PageElementActions.clear(this, selector);
     }
 
     // ===================== 读取文本 全部归一化 =====================
     public String getText(String selector) {
-        return element(selector).getText();
+        return PageElementActions.getText(this, selector);
     }
 
     public String getInputValue(String selector) {
-        return element(selector).getValue();
+        return PageElementActions.getInputValue(this, selector);
     }
 
     public String getAttribute(String selector, String attr) {
-        return element(selector).getAttribute(attr);
+        return PageElementActions.getAttribute(this, selector, attr);
     }
 
     public String getAttributeValue(String selector, String attr, String defaultValue) {
-        String val = getAttribute(selector, attr);
-        return val == null ? defaultValue : normalizeText(val);
+        return PageElementActions.getAttributeValue(this, selector, attr, defaultValue);
     }
 
     public void selectOption(String selector, int index) {
-        element(selector).selectByIndex(index);
+        PageElementActions.selectOption(this, selector, index);
     }
 
     public void selectByVisibleText(String selector, String text) {
-        element(selector).selectByVisibleText(text);
+        PageElementActions.selectByVisibleText(this, selector, text);
     }
 
     public void check(String selector) {
-        element(selector).check();
+        PageElementActions.check(this, selector);
     }
 
     public void uncheck(String selector) {
-        element(selector).uncheck();
+        PageElementActions.uncheck(this, selector);
     }
 
     public boolean isChecked(String selector) {
-        return element(selector).isChecked();
+        return PageElementActions.isChecked(this, selector);
     }
 
     public boolean isEnabled(String selector) {
-        return element(selector).isEnabled();
+        return PageElementActions.isEnabled(this, selector);
     }
 
     public boolean isDisabled(String selector) {
-        return element(selector).isDisabled();
+        return PageElementActions.isDisabled(this, selector);
     }
 
     public boolean isVisible(String selector) {
-        return element(selector).isVisible();
+        return PageElementActions.isVisible(this, selector);
     }
 
     public boolean isHidden(String selector) {
-        return element(selector).isNotVisible();
+        return PageElementActions.isHidden(this, selector);
     }
 
     public int getElementCount(String selector) {
-        return locator(selector).count();
+        return PageElementActions.getElementCount(this, selector);
+    }
+
+    public void dblclick(String selector) {
+        PageElementActions.dblclick(this, selector);
+    }
+
+    public void dispatchEvent(String selector, String type) {
+        PageElementActions.dispatchEvent(this, selector, type);
+    }
+
+    public PlaywrightConfigManager getConfig() {
+        return PlaywrightManager.config();
     }
 
     public void navigateTo(String url) {
-        ensurePageValid();
-        String pageLoadState = PlaywrightManager.config().getPageLoadState();
-        Page.NavigateOptions options = new Page.NavigateOptions();
-        options.setTimeout((long) PlaywrightManager.config().getNavigationTimeout());
-        // 根据配置设置等待策略
-        switch (pageLoadState.toLowerCase()) {
-            case "networkidle":
-                options.setWaitUntil(WaitUntilState.NETWORKIDLE);
-                break;
-            case "domcontentloaded":
-                options.setWaitUntil(WaitUntilState.DOMCONTENTLOADED);
-                break;
-            case "commit":
-                options.setWaitUntil(WaitUntilState.COMMIT);
-                break;
-            default:
-                options.setWaitUntil(WaitUntilState.LOAD);
-        }
-        try {
-            // navigate 已经根据 options 中的 waitUntil 等待页面加载
-            // 不需要再额外 waitForLoadState，避免重复等待
-            page.navigate(url, options);
-            logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
-            resetFrameContextAfterNavigation();
-        } catch (TimeoutError e) {
-            // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
-            throw new NavigationException(url, PlaywrightManager.config().getNavigationTimeout(), e);
-        } catch (PlaywrightException e) {
-            throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
-        }
+        PageNavigation.navigateTo(this, url);
     }
 
     /**
@@ -560,59 +569,47 @@ public abstract class BasePage {
      * 必须将 currentFrame 置为 null 并刷新 @Element 注解字段（确保后续 locator() 绑定新 Page），
      * 否则后续元素操作会在已失效的 Frame 上执行导致报错。
      */
-    private void resetFrameContextAfterNavigation() {
-        if (currentFrame.get() != null) {
-            currentFrame.remove();
-            initializeAnnotatedFields();
-            logger.debug("Reset iframe context after page navigation");
-        }
+    public void resetFrameContextAfterNavigation() {
+        // 页面导航后 Frame 会 detached，iframe 与 open-shadow 上下文均失效，统一清理（C1/C5）
+        resetFrameAndShadowContext();
+        logger.debug("Reset iframe/shadow context after page navigation");
     }
 
     public String getCurrentUrl() {
-        ensurePageValid();
-        return page.url();
+        return PageNavigation.getCurrentUrl(this);
     }
 
     public String getTitle() {
-        ensurePageValid();
-        return page.title();
+        return PageNavigation.getTitle(this);
     }
 
     public void refresh() {
-        ensurePageValid();
-        page.reload();
-        resetFrameContextAfterNavigation();
+        PageNavigation.refresh(this);
     }
 
     public void back() {
-        ensurePageValid();
-        page.goBack();
-        resetFrameContextAfterNavigation();
+        PageNavigation.back(this);
     }
 
     public void forward() {
-        ensurePageValid();
-        page.goForward();
-        resetFrameContextAfterNavigation();
+        PageNavigation.forward(this);
     }
 
     // ===================== 页面切换内部工具方法 =====================
 
     /**
-     * 页面切换后的统一后置处理：重置 iframe 上下文、登记 ThreadLocal、刷新 @Element 字段。
-     * <p>6 个 switch/reset 类方法统一走此入口，消除重复代码。
+     * 页面切换后的统一后置处理：重置 iframe 上下文、刷新 @Element 字段。
+     * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
-    private void onPageSwitched() {
-        currentFrame.remove();
-        setCurrentPage();
-        initializeAnnotatedFields();
+    void onPageSwitched() {
+        resetFrameAndShadowContext();
     }
 
     /**
      * 设置当前 page 引用并同步到 PlaywrightManager，使同一 context 内的其他 PageObject 实例可感知。
-     * <p>同时自动将旧页面的路由规则重新注册到新页面上，确保 API 监控、Mock 等规则在跨页面场景下不丢失。
+     * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
-    private void setPageReference(Page target) {
+    void setPageReference(Page target) {
         Page oldPage = this.page;
         page = target;
         PlaywrightManager.setPage(page);
@@ -620,23 +617,13 @@ public abstract class BasePage {
 
     /**
      * 安全 bringToFront：page 已关闭或异常时仅 warn 不抛异常。
+     * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
-    private void safeBringToFront() {
+    void safeBringToFront() {
         try {
             page.bringToFront();
         } catch (Exception e) {
             VerboseLogging.logWarnIfVerbose(logger, "bringToFront() failed: {}", e.getMessage());
-        }
-    }
-
-    /**
-     * 安全记录页面切换日志（url/title 可能在 page 已关闭时抛异常）。
-     */
-    private void logPageSwitchInfo() {
-        try {
-            logger.info("Switch to page: url={}, title={}", page.url(), page.title());
-        } catch (Exception e) {
-            VerboseLogging.logWarnIfVerbose(logger, "Unable to log new page info (url/title): {}", e.getMessage());
         }
     }
 
@@ -655,27 +642,7 @@ public abstract class BasePage {
      * @param index 页面索引，支持负数（-1 = 最后一个，-2 = 倒数第二个…）
      */
     public void switchToPage(int index) {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-        if (pages.isEmpty()) throw new TimeoutException("No pages available in context");
-
-        int resolved = index >= 0 ? index : pages.size() + index;
-        if (resolved < 0 || resolved >= pages.size())
-            throw new IndexOutOfBoundsException("Invalid page index: " + index);
-
-        Page target = pages.get(resolved);
-
-        // 负数索引场景：目标可能已关闭，从该位置向前回退
-        if (index < 0 && isPageClosed(target)) {
-            target = findLastAvailablePage(pages, resolved);
-        }
-        if (isPageClosed(target))
-            throw new TimeoutException("Target page at index " + index + " is closed");
-
-        setPageReference(target);
-        safeBringToFront();
-        onPageSwitched();
-        logPageSwitchInfo();
+        PageLifecycleCoordinator.switchToPage(this, index);
     }
 
     /**
@@ -685,18 +652,7 @@ public abstract class BasePage {
      * @param page 目标页面（Page 实例，不能为 null 或已关闭）
      */
     public Page switchToPage(Page page) {
-        if (page == null) {
-            throw new IllegalArgumentException("page must not be null");
-        }
-        if (page.isClosed()) {
-            throw new TimeoutException("Target page is already closed");
-        }
-        ensureContextValid();
-        setPageReference(page);
-        safeBringToFront();
-        onPageSwitched();
-        logPageSwitchInfo();
-        return page;
+        return PageLifecycleCoordinator.switchToPage(this, page);
     }
 
     /**
@@ -718,12 +674,7 @@ public abstract class BasePage {
      * @return 新打开的 Page 实例
      */
     public Page waitForNewPage(Runnable trigger, int timeoutSecs) {
-        ensureContextValid();
-        try {
-            return acceptNewPage(context.waitForPage(() -> trigger.run()));
-        } catch (PlaywrightException e) {
-            throw new TimeoutException("Waiting for new page timed out after " + timeoutSecs + " seconds", e);
-        }
+        return PageLifecycleCoordinator.waitForNewPage(this, trigger, timeoutSecs);
     }
 
     /**
@@ -738,20 +689,7 @@ public abstract class BasePage {
      * @return 新打开的 Page 实例
      */
     public Page waitForNewPage(int timeoutSecs) {
-        ensureContextValid();
-        // 快速路径：前序步骤可能已触发新页面，直接检查是否已存在
-        for (int i = context.pages().size() - 1; i >= 0; i--) {
-            Page p = context.pages().get(i);
-            if (p != page && !isPageClosed(p)) {
-                return acceptNewPage(p);
-            }
-        }
-        // 慢路径：注册 Playwright 原生 page 事件监听
-        try {
-            return acceptNewPage(context.waitForPage(() -> {}));
-        } catch (PlaywrightException e) {
-            throw new TimeoutException("Waiting for new page timed out after " + timeoutSecs + " seconds", e);
-        }
+        return PageLifecycleCoordinator.waitForNewPage(this, timeoutSecs);
     }
 
     /**
@@ -774,32 +712,7 @@ public abstract class BasePage {
      * @param timeoutSecs 等待超时秒数
      */
     public void waitForDownload(Runnable trigger, int timeoutSecs) {
-        ensurePageValid();
-        try {
-            page.waitForDownload(new Page.WaitForDownloadOptions().setTimeout((long) timeoutSecs * 1000),
-                    () -> trigger.run());
-        } catch (PlaywrightException e) {
-            throw new TimeoutException("Waiting for download timed out after " + timeoutSecs + " seconds", e);
-        }
-    }
-
-    /** 新页面校验 + 切换 + 日志，供两个重载共用 */
-    private Page acceptNewPage(Page newPage) {
-        try {
-            if (newPage.isClosed()) {
-                throw new TimeoutException("New page was created but already closed");
-            }
-        } catch (Exception e) {
-            if (e instanceof TimeoutException) throw (TimeoutException) e;
-            VerboseLogging.logWarnIfVerbose(logger,
-                    "isClosed() check failed, page may already be gone: {}", e.getMessage());
-            throw new TimeoutException("New page is no longer available (closed/destroyed)");
-        }
-        setPageReference(newPage);
-        safeBringToFront();
-        onPageSwitched();
-        logPageSwitchInfo();
-        return newPage;
+        PageLifecycleCoordinator.waitForDownload(this, trigger, timeoutSecs);
     }
 
     /**
@@ -807,52 +720,7 @@ public abstract class BasePage {
      * <p>若当前已是最前页面则切换到 index 0；不会关闭唯一页面。
      */
     public void closeCurrentPage() {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-
-        if (pages.isEmpty()) {
-            VerboseLogging.logWarnIfVerbose(logger, "No pages available in context");
-            page = null;
-            return;
-        }
-
-        if (pages.size() <= 1) {
-            VerboseLogging.logWarnIfVerbose(logger,
-                    "Only one page available (size={}), skipping close to avoid losing the last page", pages.size());
-            Page onlyPage = pages.get(0);
-            if (page != onlyPage) {
-                setPageReference(onlyPage);
-                onPageSwitched();
-            }
-            return;
-        }
-
-        int currentIndex = pages.indexOf(page);
-        try {
-            if (page != null && !page.isClosed()) {
-                // 标记本页为"框架主动关闭"：onClose 据此不再补登记 closeCurrentPage 步骤
-                // （代码已显式调用 closeCurrentPage，重复登记会导致回放重复关闭）。
-                RoleElementPicker.markFrameworkClose(page);
-                page.close();
-            } else {
-                VerboseLogging.logDebugIfVerbose(logger,
-                        "Current page reference is null or already closed, skip close()");
-            }
-        } catch (Exception e) {
-            VerboseLogging.logWarnIfVerbose(logger,
-                    "Exception while closing current page: {}", e.getMessage());
-        }
-
-        List<Page> updatedPages = context.pages();
-        if (updatedPages.isEmpty()) {
-            VerboseLogging.logWarnIfVerbose(logger,
-                    "No pages available after closing current page, page reference will be null");
-            page = null;
-            return;
-        }
-        int targetIndex = Math.max(0, Math.min(currentIndex, updatedPages.size()) - 1);
-        setPageReference(updatedPages.get(targetIndex));
-        onPageSwitched();
+        PageLifecycleCoordinator.closeCurrentPage(this);
     }
 
     /**
@@ -861,36 +729,14 @@ public abstract class BasePage {
      * <p>若仅剩 1 个页面或 context 为空则不执行任何关闭操作。
      */
     public void closeOtherPages() {
-        ensureContextValid();
-        List<Page> pages = context.pages();
-        if (pages.size() <= 1) {
-            VerboseLogging.logInfoIfVerbose(logger,
-                    "closeOtherPages skipped: page count={}, nothing to close", pages.size());
-            return;
-        }
-
-        for (Page p : pages) {
-            if (p == page) continue;
-            try {
-                if (!p.isClosed()) {
-                    // 标记为"框架主动关闭"，onClose 不再补登记 closeCurrentPage 步骤。
-                    RoleElementPicker.markFrameworkClose(p);
-                    p.close();
-                }
-            } catch (Exception e) {
-                VerboseLogging.logWarnIfVerbose(logger,
-                        "Exception while closing other page: {}", e.getMessage());
-            }
-        }
-        VerboseLogging.logInfoIfVerbose(logger,
-                "closeOtherPages done: closed {} other pages, current page retained",
-                pages.size() - 1);
+        PageLifecycleCoordinator.closeOtherPages(this);
     }
 
     // ===================== 内部辅助 =====================
 
-    /** 从后往前找第一个未关闭的页面（兜底逻辑，供 switchToPage 负数索引使用） */
-    private Page findLastAvailablePage(List<Page> pages, int startFrom) {
+    /** 从后往前找第一个未关闭的页面（兜底逻辑，供 switchToPage 负数索引使用）。
+     * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。 */
+    Page findLastAvailablePage(List<Page> pages, int startFrom) {
         for (int i = startFrom; i >= 0; i--) {
             try {
                 if (!pages.get(i).isClosed()) {
@@ -916,6 +762,71 @@ public abstract class BasePage {
         return currentFrame.get();
     }
 
+    // ===================== 框架内部上下文 seam（包级私有，仅供同包 PageFrameShadow 委派调用） =====================
+    // 以下 7 个方法为框架内部状态机的受控入口，不属于页面对象的公开 API，请勿直接调用。
+    // 刻意设为包级私有（非 public）：业务 Page 处于不同包，编译期即无法访问，杜绝误用。
+
+    /**
+     * 激活指定 iframe 上下文：设置 currentFrame 并重新绑定 @Element 注解字段。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    void activateFrame(Frame frame) {
+        currentFrame.set(frame);
+        initializeAnnotatedFields();
+    }
+
+    /**
+     * 退出 iframe 回到主文档上下文（若当前处于 iframe 内）。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    void deactivateFrame() {
+        if (currentFrame.get() != null) {
+            currentFrame.remove();
+            initializeAnnotatedFields();
+        }
+    }
+
+    /**
+     * 将宿主选择器压入 shadow 上下文栈。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    void pushShadow(String hostSelector) {
+        currentShadow.get().push(hostSelector);
+    }
+
+    /**
+     * 弹出最内层 shadow 宿主；栈空时返回 null。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    String popShadow() {
+        java.util.Deque<String> stack = currentShadow.get();
+        return stack.isEmpty() ? null : stack.pop();
+    }
+
+    /**
+     * 清空整个 shadow 上下文栈。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    void clearShadows() {
+        currentShadow.get().clear();
+    }
+
+    /**
+     * 当前 shadow 嵌套深度。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    int getShadowDepth() {
+        return currentShadow.get().size();
+    }
+
+    /**
+     * 当前最内层 shadow 宿主（栈顶），栈空时返回 null。
+     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
+     */
+    String peekShadow() {
+        return currentShadow.get().peek();
+    }
+
     // ===================== iframe 切换（对标 Selenium switchTo().frame() / defaultContent()） =====================
 
     /**
@@ -936,26 +847,7 @@ public abstract class BasePage {
      * @return 切换后的 Playwright Frame（与 {@link #switchToFrame(int)} 返回类型一致）
      */
     public Frame switchToFrame(String nameOrSelector) {
-        ensurePageValid();
-        // 策略 1：按 Playwright 原生 frame(name) 查找（匹配 name/id 属性）
-        Frame frame = page.frame(nameOrSelector);
-        if (frame == null) {
-            // 策略 2：回退为 CSS 选择器
-            try {
-                com.microsoft.playwright.ElementHandle iframeEl = page.locator(nameOrSelector).elementHandle();
-                frame = iframeEl.contentFrame();
-            } catch (Exception e) {
-                logger.error("Failed to switch to iframe by selector '{}': {}", nameOrSelector, e.getMessage());
-            }
-        }
-        if (frame == null) {
-            throw new RuntimeException("Frame not found: '" + nameOrSelector
-                    + "'. Tried as name/id and CSS selector. Available frames: " + page.frames().size());
-        }
-        currentFrame.set(frame);
-        initializeAnnotatedFields();
-        logger.info("Switched to iframe: '{}'", nameOrSelector);
-        return frame;
+        return PageFrameShadow.switchToFrame(this, nameOrSelector);
     }
 
     // ===================== shadowRoot 切换（对齐 page.pause() 的 >>> shadow 穿透录制） =====================
@@ -980,11 +872,7 @@ public abstract class BasePage {
      * @param hostSelector 宿主元素的 CSS 选择器（在当前查找域内定位）
      */
     public void switchToShadow(String hostSelector) {
-        if (hostSelector == null || hostSelector.isBlank()) {
-            throw new RuntimeException("switchToShadow: hostSelector 不能为空");
-        }
-        currentShadow.get().push(hostSelector.trim());
-        logger.info("Switched into shadowRoot of '{}' (depth={})", hostSelector, currentShadow.get().size());
+        PageFrameShadow.switchToShadow(this, hostSelector);
     }
 
     /**
@@ -995,13 +883,7 @@ public abstract class BasePage {
      * @return 弹出的宿主选择器，或 null（当前本就不在 shadow 内）
      */
     public String switchToDefaultShadow() {
-        java.util.Deque<String> stack = currentShadow.get();
-        if (stack.isEmpty()) {
-            return null;
-        }
-        String popped = stack.pop();
-        logger.info("Exited one shadowRoot (depth now {})", stack.size());
-        return popped;
+        return PageFrameShadow.switchToDefaultShadow(this);
     }
 
     /**
@@ -1010,8 +892,7 @@ public abstract class BasePage {
      * switchToDefaultShadowAll 回 DOM 顶层（仍可处于某 iframe 内）。
      */
     public void switchToDefaultShadowAll() {
-        currentShadow.get().clear();
-        logger.info("Exited all shadowRoots");
+        PageFrameShadow.switchToDefaultShadowAll(this);
     }
 
     /**
@@ -1036,50 +917,14 @@ public abstract class BasePage {
      * @return 切换后的 Playwright Frame（已就绪）
      */
     public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector, int timeoutSecs) {
-        ensurePageValid();
-        int timeoutMs = (timeoutSecs > 0) ? timeoutSecs * 1000
-                : (int) PlaywrightManager.config().getNavigationTimeout();
-        // 若 iframe 已挂载（静态场景），直接切，无需走事件监听
-        Frame existing = matchFrame(nameOrSelector);
-        if (existing != null) {
-            currentFrame.set(existing);
-            initializeAnnotatedFields();
-            logger.info("Switched to iframe (already attached): '{}'", nameOrSelector);
-            return existing;
-        }
-        // 纯事件驱动：注册 onFrameAttached 监听，命中即放行（用 latch 等待，无轮询）
-        final Frame[] matched = {null};
-        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-        java.util.function.Consumer<Frame> listener = f -> {
-            if (matched[0] == null && frameMatches(f, nameOrSelector)) {
-                matched[0] = f;
-                latch.countDown();
-            }
-        };
-        page.onFrameAttached(listener);
-        try {
-            if (trigger != null) trigger.run();   // 执行触发动作，期间监听捕获目标 frame
-            boolean got = false;
-            try { got = latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS); }
-            catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
-            if (!got || matched[0] == null) {
-                throw new RuntimeException("Timed out (" + (timeoutMs / 1000) + "s) waiting for iframe to attach: '"
-                        + nameOrSelector + "'. Available frames: " + page.frames().size());
-            }
-        } finally {
-            try { page.offFrameAttached(listener); } catch (Exception ignore) {}
-        }
-        currentFrame.set(matched[0]);
-        initializeAnnotatedFields();
-        logger.info("Switched to iframe (waited & ready via onFrameAttached): '{}'", nameOrSelector);
-        return matched[0];
+        return PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector, timeoutSecs);
     }
 
     /**
      * {@link #switchToFrameAndWait(Runnable, String, int)} 的默认超时重载。
      */
     public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector) {
-        return switchToFrameAndWait(trigger, nameOrSelector, 0);
+        return PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector);
     }
 
     /**
@@ -1087,7 +932,7 @@ public abstract class BasePage {
      * 适用于"iframe 可能在监听注册前后才 attach"的非交互场景。
      */
     public Frame switchToFrameAndWait(String nameOrSelector, int timeoutSecs) {
-        return switchToFrameAndWait((Runnable) null, nameOrSelector, timeoutSecs);
+        return PageFrameShadow.switchToFrameAndWait(this, nameOrSelector, timeoutSecs);
     }
 
     /**
@@ -1095,24 +940,6 @@ public abstract class BasePage {
      */
     public Frame switchToFrameAndWait(String nameOrSelector) {
         return switchToFrameAndWait((Runnable) null, nameOrSelector, 0);
-    }
-
-    /** 按 name/id 精确匹配或 url 片段兜底查找已存在的 frame。 */
-    private Frame matchFrame(String nameOrSelector) {
-        Frame f = page.frame(nameOrSelector);
-        if (f != null) return f;
-        for (Frame fr : page.frames()) {
-            if (frameMatches(fr, nameOrSelector)) return fr;
-        }
-        return null;
-    }
-
-    /** frame 是否匹配给定的 name/id 或 url 片段。 */
-    private boolean frameMatches(Frame f, String nameOrSelector) {
-        if (f == null) return false;
-        if (nameOrSelector.equals(f.name())) return true;          // name/id 精确匹配
-        String url = f.url();
-        return url != null && url.contains(nameOrSelector);          // url 片段兜底
     }
 
     /**
@@ -1138,23 +965,16 @@ public abstract class BasePage {
      * 切换回主页面 DOM（退出 iframe），对标 Selenium {@code switchTo().defaultContent()}。
      */
     public void switchToDefaultContent() {
-        if (currentFrame.get() != null) {
-            currentFrame.remove();
-            initializeAnnotatedFields();
-            logger.info("Switched back to default content (top-level page)");
-        }
+        PageFrameShadow.switchToDefaultContent(this);
     }
 
     /** 获取当前 Page 中所有 Frame 列表。 */
     public List<Frame> getAllFrames() {
-        ensurePageValid();
-        return page.frames();
+        return PageFrameShadow.getAllFrames(this);
     }
 
     public void executeInFrame(String frameName, Consumer<Frame> action) {
-        Frame frame = getFrame(frameName);
-        if (frame == null) throw new RuntimeException("Frame not found: " + frameName);
-        action.accept(frame);
+        PageFrameShadow.executeInFrame(this, frameName, action);
     }
 
     public void scrollToElementCenter(String selector) {
@@ -1236,10 +1056,7 @@ public abstract class BasePage {
     }
 
     public void setContent(String html) {
-        ensurePageValid();
-        page.setContent(html);
-        // 替换页面内容后，所有 iframe 均被销毁，必须重置 iframe 上下文
-        resetFrameContextAfterNavigation();
+        PageNavigation.setContent(this, html);
     }
 
     public void setViewportSize(int width, int height) {
@@ -1432,15 +1249,15 @@ public abstract class BasePage {
     }
 
     public void dragAndDrop(String sourceSelector, String targetSelector) {
-        locator(sourceSelector).dragTo(locator(targetSelector));
+        PageElementActions.dragAndDrop(this, sourceSelector, targetSelector);
     }
 
     public void focus(String selector) {
-        locator(selector).focus();
+        PageElementActions.focus(this, selector);
     }
 
     public void hover(String selector) {
-        locator(selector).hover();
+        PageElementActions.hover(this, selector);
     }
 
     public Locator byTitle(String title) {

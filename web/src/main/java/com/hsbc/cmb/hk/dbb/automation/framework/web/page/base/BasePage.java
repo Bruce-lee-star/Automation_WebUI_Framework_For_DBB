@@ -2,9 +2,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
@@ -744,7 +741,7 @@ public abstract class BasePage {
                             "Latest window was closed, falling back to window at index {}", i);
                     return pages.get(i);
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { /* 页面状态探测：忽略探测过程中的异常，继续向前回退 */ }
         }
         return pages.get(startFrom); // 全部已关闭，返回原目标由调用方 isClosed 抛异常
     }

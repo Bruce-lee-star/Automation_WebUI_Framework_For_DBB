@@ -2,7 +2,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;

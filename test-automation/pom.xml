@@ -90,7 +90,7 @@
                     <!-- ⚠ JDK16+ 强封装：Serenity REST(RestSpecificationFactory) 在静态初始化时用 ByteBuddy
                          反射注入类，需 java.base 打开 java.lang(ClassLoader.getPackage/defineClass)；
                          java.lang.reflect 供 Mockito/Serenity 反射增强；java.util 供 RestAssured 的 Groovy 反射。 -->
-                    <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
+                    <argLine>@{jacocoArgLine} -XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
                     <systemPropertyVariables>
                         <serenity.outputDirectory>${project.build.directory}/site/serenity</serenity.outputDirectory>
                         <cucumber.filter.tags>${tags}</cucumber.filter.tags>
@@ -122,6 +122,35 @@
                         </goals>
                         <configuration>
                             <outputDirectory>${project.build.directory}/site/serenity</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              JaCoCo：覆盖率探针（prepare-agent 在父 pom 注入）。
+              当前单元测试为“行为护盾”（Mockito 隔离，验证委派转发），并不执行 framework-web 实现，
+              故 framework-web 行覆盖率约 0%；覆盖率“只升不降”门禁（check）待 T1-9 补充真实覆盖测试后启用。
+              此处仅出报告（聚焦刚拆分的 BasePage 包），便于 CI/人工查看覆盖缺口。
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                        <configuration>
+                            <formats>
+                                <format>XML</format>
+                            </formats>
+                            <!-- 聚焦刚完成的 BasePage 拆分包，避免报告被全量框架类淹没 -->
+                            <classfiles>
+                                <dir>${maven.multiModuleProjectDirectory}/web/target/classes/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base</dir>
+                            </classfiles>
                         </configuration>
                     </execution>
                 </executions>

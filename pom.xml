@@ -46,6 +46,11 @@
         <maven-surefire-plugin.version>3.2.5</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.2.5</maven-failsafe-plugin.version>
 
+        <!-- 门禁（Phase 1 收尾）：JaCoCo 覆盖率 + Checkstyle 风格 -->
+        <jacoco.version>0.8.12</jacoco.version>
+        <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
+        <checkstyle.config.location>checkstyle.xml</checkstyle.config.location>
+
         <!-- 默认跑 @route；CI 可用 -Dtags=@api 覆盖（见 test-automation 的 failsafe 配置） -->
         <tags>@route</tags>
 
@@ -294,7 +299,9 @@
                     <!-- ⚠ JDK16+ 强封装：Serenity REST(RestSpecificationFactory) 在静态初始化时用 ByteBuddy
                          反射注入类，需 java.base 打开 java.lang(ClassLoader.getPackage/defineClass)；
                          java.lang.reflect 供 Mockito/Serenity 反射增强；java.util 供 RestAssured 的 Groovy 反射。 -->
-                    <argLine>-XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
+                    <!-- @{jacocoArgLine} 由 jacoco prepare-agent 在 initialize 阶段注入（覆盖率探针），
+                         未启用 jacoco 时该属性为空，不影响原 add-opens 强封装配置 -->
+                    <argLine>@{jacocoArgLine} -XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
 
@@ -302,6 +309,48 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-clean-plugin</artifactId>
                 <version>3.2.0</version>
+            </plugin>
+
+            <!-- JaCoCo：覆盖率探针。prepare-agent 为所有模块注入 agent（jacocoArgLine），
+                 实际 report/check 仅在 test-automation（含测试）中执行，见该模块 pom。 -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <propertyName>jacocoArgLine</propertyName>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Checkstyle：风格门禁（T1-2）。仅校验刚完成的重构包，failOnViolation 直接卡 verify。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>${checkstyle.plugin.version}</version>
+                <configuration>
+                    <configLocation>${checkstyle.config.location}</configLocation>
+                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                    <violationSeverity>error</violationSeverity>
+                    <failOnViolation>true</failOnViolation>
+                    <includes>**/framework/web/page/base/**,**/framework/web/page/ElementDiagnosticsCollector.java</includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>checkstyle-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

@@ -352,6 +352,41 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- Maven Enforcer：依赖治理门禁（T1-5）。
+                 requireUpperBoundDeps 防止传递依赖版本被低版本覆盖（如 selenium 4.15 vs 4.38 问题复发）；
+                 banDuplicatePomDependencyVersions 防止同一依赖在 dependencyManagement 多版本声明；
+                 requireJavaVersion/requireMavenVersion 锁定构建环境。存量违规通过渐进式启用治理，新代码零容忍。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>enforce-build-env</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireMavenVersion>
+                                    <version>3.6.0</version>
+                                </requireMavenVersion>
+                                <requireJavaVersion>
+                                    <version>[21,)</version>
+                                </requireJavaVersion>
+                                <!-- requireUpperBoundDeps 暂未启用（渐进式启用，避免 R3 门禁过严阻塞交付）。
+                                     validate 实测抓出 7 处版本收敛冲突，均因直接钉版本低于 serenity 等传递上限：
+                                       commons-lang3 3.17.0→3.19.0 / gson 2.10.1↑ / config 1.4.2↑ /
+                                       error_prone_annotations 2.41.0↑ / htmlunit 4.7.0↑ / slf4j-api 2.0.16↑ /
+                                       jackson-annotations 2.17.0→2.21.x
+                                     留作依赖收敛专项（T1-5 收敛子任务），统一在 dependencyManagement 收敛上限后启用。 -->
+                                <banDuplicatePomDependencyVersions/>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

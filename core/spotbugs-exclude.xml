@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator$Task"/><Bug pattern="EQ_COMPARETO_USE_OBJECT_EQUALS"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry"/><Bug pattern="EI_EXPOSE_STATIC_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool"/><Bug pattern="DLS_DEAD_LOCAL_STORE"/></Match>
+</FindBugsFilter>

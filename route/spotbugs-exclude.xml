@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl$BaseApiDsl"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="UG_SYNC_SET_UNSYNC_GET"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="AT_NONATOMIC_64BIT_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureReportWriter"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="AT_NONATOMIC_64BIT_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureManager"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureLifecycle"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.ApiMonitoringRecord$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.ApiMonitoringRecord"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureManager"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="NN_NAKED_NOTIFY"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine"/><Bug pattern="DCN_NULLPOINTER_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+</FindBugsFilter>

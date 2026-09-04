@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.client.rest.RestJobProvider"/><Bug pattern="NM_VERY_CONFUSING"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.client.rest.AbstractRestJob"/><Bug pattern="DLS_DEAD_LOCAL_STORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.client.ApiJob"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.client.ApiJob"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointProvider"/><Bug pattern="DB_DUPLICATE_BRANCHES"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointConfig"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+</FindBugsFilter>

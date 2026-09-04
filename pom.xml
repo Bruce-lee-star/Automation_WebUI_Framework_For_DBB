@@ -51,6 +51,10 @@
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
         <checkstyle.config.location>checkstyle.xml</checkstyle.config.location>
 
+        <!-- SpotBugs 门禁（T1-3）版本与排除过滤器 -->
+        <spotbugs.plugin.version>4.9.8.5</spotbugs.plugin.version>
+        <spotbugs.version>4.9.8</spotbugs.version>
+
         <!-- 默认跑 @route；CI 可用 -Dtags=@api 覆盖（见 test-automation 的 failsafe 配置） -->
         <tags>@route</tags>
 
@@ -401,6 +405,39 @@
                                 <banDuplicatePomDependencyVersions/>
                             </rules>
                         </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- SpotBugs：字节码静态缺陷门禁（T1-3）。先产出存量基线，用 excludeFilter 冻结已知/可接受项，
+                 新代码零容忍。基线收敛后再把 check 目标绑定到 verify 形成硬门禁。 -->
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>${spotbugs.plugin.version}</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.github.spotbugs</groupId>
+                        <artifactId>spotbugs</artifactId>
+                        <version>${spotbugs.version}</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <effort>Max</effort>
+                    <threshold>Medium</threshold>
+                    <failOnError>true</failOnError>
+                    <includeTests>true</includeTests>
+                    <!-- 模块级排除过滤器：更新基线用 spotbugs:updateExcludeFilter 自动生成抑制项；
+                         各模块独立文件避免反应器内互相覆盖。 -->
+                    <excludeFilterFile>${project.basedir}/spotbugs-exclude.xml</excludeFilterFile>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>spotbugs-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
                     </execution>
                 </executions>
             </plugin>

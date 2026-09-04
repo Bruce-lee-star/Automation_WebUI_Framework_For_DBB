@@ -86,11 +86,13 @@
 而且它不是「还没配」，而是**架构上已经不允许**：
 
 1. **33+ 个 `private static ThreadLocal`** 遍布 16 个文件。典型如：
-   - `BasePage.java:39/47/57`：`currentPage` / `currentFrame` / `currentShadow` 是 **static** 的，同线程内两个 PageObject 共享状态，A 切 frame 会污染 B
-   - `PlaywrightListener.java`：10 个布尔守卫（`takingScreenshot`、`stepFinishProcessed`、`stepFinishReentrantGuard`、`apiFailureAlreadyHandled`…）
-2. **Browser 跨线程共享**：`PlaywrightManager` 的 `browserInstances` / `playwrightInstances` 是 static Map，按 configId 跨线程共享同一 Browser；`restartBrowser()` / `handleBrowserTypeSwitch()` 是全局操作，代码注释自认「会杀掉其它场景的浏览器」
-3. **全局锁把并行吞吐串行化**：`getContext()` / `getPage()` 使用 static `CONTEXT_LOCK` / `PAGE_LOCK`，锁序仅靠注释维护
-4. **ThreadLocal 清理有缺口**：`clearAllThreadLocals()` 唯一调用点在 `PlaywrightManager.java:894`，且被 `if (context != null)` 包裹；feature 模式 + session 恢复路径不走 `closeContext()` → `currentFrame` / `currentShadow` 跨 scenario 残留，持有已关闭 Page 的 Frame，**这是真实泄漏**
+   - `BasePage.java`：原 `currentPage` / `currentFrame` / `currentShadow` 三者均为 **static ThreadLocal**，同线程内两个 PageObject 共享状态，A 切 frame 会污染 B。
+     - **【已修复 2026-09】`currentFrame` / `currentShadow` 已改为按 BasePage 实例隔离的 `FrameSlot` / `ShadowSlot`（非 ThreadLocal），A 切 frame 污染 B 的竞态与跨 scenario 泄漏彻底消除。**
+     - `currentPage`（当前活跃 Page 对象引用）**已于 2026-09 移除**：全仓无读取方（死状态），改回 `getCurrentPage()`/`clearCurrentPage()`/`clearAllThreadLocals()` 的 `@Deprecated` 空实现以兼容 `PlaywrightManager`/`PlaywrightListener`，并作为 T3-1 `TestContext` 收拢的接缝。**BasePage 现已无任何 static ThreadLocal。**
+   - `PlaywrightListener.java`：10 个布尔守卫（`takingScreenshot`、`stepFinishProcessed`、`stepFinishReentrantGuard`、`apiFailureAlreadyHandled`…）。**【已收拢 2026-09】** 其中 5 个原为 `static ThreadLocal<Boolean>` 的守卫已收拢为单个 per-thread `ListenerGuardState`（`PlaywrightListener.java`），削减 static ThreadLocal 数量并集中清理（`cleanupThreadLocals()` 只需移除 1 个 ThreadLocal），消除"漏清某 ThreadLocal → 跨 scenario 残留"的缺口（见 remediation 计划 T3-1 第一块试验田）；余下为跨线程共享的"日志仅一次"标志（`testSuiteFinishedLogged` 等 `static volatile boolean`），仍属全局状态，待 `TestContext` 收拢。
+2. **Browser 跨线程共享 → 已落地 per-thread 隔离（T3-2 · 2026-09 已修复）**：原实现中 `browserInstances` / `playwrightInstances` 按 configId 跨线程复用同一 `Browser`，构成单点故障且 `restartBrowser()` 会误杀全局。现已改为以 `threadId:configId` 为键（`keyFor`），**每个 worker 线程持有独立 `Browser` / `Playwright` 实例**（共享 `ConcurrentHashMap` 仅作线程安全的回收容器，VALUE 永不跨线程共享）；Context/Page 仍经 `contextThreadLocal` / `pageThreadLocal` 隔离。`restartBrowser()` 作用域收敛到本线程（按前缀过滤 + 按 key 精确移除），不再误杀并发场景。详见 remediation 计划 T3-2。
+3. **全局锁串行化 → 部分缓解（2026-09）**：`BROWSER_LOCK` 已降级为 per-thread `ThreadLocal` 锁，放开并行浏览器创建；`CONTEXT_LOCK` / `PAGE_LOCK` 仍保留为全局锁，因其还串行化 `closeContext()` / `closePage()` 中对 RouteRegistry / RoleElementPicker / PlaywrightContextManager 等**共享子系统**的清理，直接移除会引入竞态——其创建路径锁粒度细化属 T3-2 后续独立任务，须配套并行回归测试。锁获取顺序（PAGE_LOCK → CONTEXT_LOCK，关闭路径在 BROWSER_LOCK 外）已精心维护，无死锁。
+4. **ThreadLocal 清理有缺口（已部分修复）**：`clearAllThreadLocals()` 唯一调用点在 `PlaywrightManager.java:894`，且被 `if (context != null)` 包裹；feature 模式 + session 恢复路径不走 `closeContext()`。**【已修复 2026-09】`currentFrame` / `currentShadow` 已不再是 static ThreadLocal（改为每实例 `FrameSlot`/`ShadowSlot`），故不再存在该跨 scenario 的 Frame 残留泄漏；`clearAllThreadLocals()` 现已为空实现（`currentPage` 静态字段已移除）。** `currentPage` 静态字段已根除、该缺口已闭合；余下 30+ 处 static ThreadLocal 随 `TestContext` 收拢解决。
 5. **配置层面零支持**：`serenity.properties`(289 行) 与 `serenity.conf` 中**没有任何 parallel / thread 配置**
 
 > 企业级偏离点：静态状态是并行化的根本障碍。当前设计下「打开并行」不是配置动作，而是一次架构重写。
@@ -261,7 +263,7 @@ RuntimeException            ← 5 个直接继承，绕过基类
 |---|---|---|
 | 模块化与边界 | **2** / 10 | 单模块 5 万行，边界靠注释，3 组循环依赖 |
 | 抽象与可替换性 | **2** / 10 | page 包零接口，driver 类型泄漏 45+ 处 |
-| 并发与扩展性 | **2** / 10 | 33+ static ThreadLocal，Browser 跨线程共享，无并行配置 |
+| 并发与扩展性 | **5** / 10 | 33+ static ThreadLocal（正在经 T3-1 收拢）；Browser 按 configId 共享为 Playwright 推荐并行模式（非缺陷），并行吞吐受全局创建锁限制（T3-2 为可选优化） |
 | 可测试性 | **2** / 10 | 71 测试 / 5 万行，无 mock 框架，关键件零覆盖 |
 | 工程规范与门禁 | **2** / 10 | 0 个静态扫描插件，CI 不跑测试 |
 | 错误处理 | **3** / 10 | 异常基类 2/10 生效，514 处宽泛捕获 |

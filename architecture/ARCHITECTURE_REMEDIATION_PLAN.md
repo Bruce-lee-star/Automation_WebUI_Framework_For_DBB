@@ -786,7 +786,9 @@ noClasses().that().resideInPackage("..web.page.base..")
 4. **修复清理缺口**（重点）：
    - `clearAllThreadLocals()` 唯一调用点在 `PlaywrightManager.java:894` 且被 `if (context != null)` 包裹（`:889`）
    - feature 模式 + session 恢复路径（`PlaywrightSerenityBridge.java:375-380`）**不走 `closeContext()`** → `currentFrame` / `currentShadow` 跨 scenario 残留，持有已关闭 Page 的 Frame，**这是真实泄漏**
+   - **【已修复 2026-09，`BasePage` 范围】** `currentFrame` / `currentShadow` 已改为按 BasePage 实例隔离的 `FrameSlot` / `ShadowSlot`（非 ThreadLocal），该泄漏在 `BasePage` 范围内已根除；`clearAllThreadLocals()` 现已为空实现（`currentPage` 静态字段已移除）。`currentPage` 静态 ThreadLocal 已根除；余下 30+ 处 static ThreadLocal 仍按本步骤并入 `TestContext` 统一收拢。
    - 改为 AOP/监听器统一在 scenario 结束时清理，不依赖调用方自觉
+   - **【已收拢 2026-09，第一块试验田】** `PlaywrightListener` 的 5 个 `static ThreadLocal<Boolean>` 守卫（`takingScreenshot` / `failureScreenshotsAlreadySent` / `stepFinishProcessed` / `stepFinishReentrantGuard` / `apiFailureAlreadyHandled`）已收拢为单个 per-thread `ListenerGuardState`，削减 static ThreadLocal 数量并集中清理（`cleanupThreadLocals()` 只需移除 1 个 ThreadLocal），消除"漏清某 ThreadLocal → 跨 scenario 残留"的缺口。
 5. `TestContext` 通过构造注入传递给各组件，逐步消灭 `getInstance()` 单例（现 14 个）
 
 **验收标准**
@@ -803,25 +805,30 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 ---
 
-### T3-2　Browser 实例 per-thread / 池化　【P0】
+### T3-2　Browser 实例 per-thread / 池化　【P1 · 核心隔离已落地，锁粒度细化待续】
+
+> ⚠️ **2026-09 复核 + 落地结论**：原评审将此条列为 P0「致命跨线程共享」。审计 + Playwright 官方多线程文档核对确认：旧实现中**按 configId 跨线程复用同一 `Browser`** 虽在正确性上可被 Playwright 传输层串行化容忍，但确实构成**单点故障**（`restartBrowser()` 全局误杀）并**限制并行吞吐**——属企业级韧性缺陷，故按用户指示**已落地 per-thread 隔离**。
+> - `browserInstances` / `playwrightInstances` 现已改为以 `threadId:configId` 为键（`keyFor`），**每个 worker 线程持有独立 `Browser` / `Playwright` 实例**；共享 `ConcurrentHashMap` 仅作线程安全的回收容器，VALUE 永不跨线程共享。Context/Page 仍经 `contextThreadLocal` / `pageThreadLocal` 隔离。
+> - `BROWSER_LOCK` 已降级为 per-thread `ThreadLocal` 锁，放开并行浏览器创建。
+> - `restartBrowser()` 作用域收敛到本线程（按 `threadId:` 前缀过滤 + 按 key 精确移除），**不再误杀其它并发 scenario 的浏览器**。
+> - **残留（后续独立任务，需并行回归基线）**：`CONTEXT_LOCK` / `PAGE_LOCK` 仍保留为全局锁——因其还串行化 `closeContext()` / `closePage()` 中对 RouteRegistry / RoleElementPicker / PlaywrightContextManager 等**共享子系统**的清理，直接移除会引入竞态；创建路径锁粒度细化（per-configId）可进一步提升并行吞吐，但须配套「4 线程并发 4 scenario」回归测试方可落实。
 
 | 项 | 内容 |
 |---|---|
-| **目标** | 消除跨线程共享 Browser 与全局锁串行化 |
-| **现状证据** | `PlaywrightManager` 的 `browserInstances` / `playwrightInstances` 是 static Map（`:47-48`），按 configId **跨线程共享同一 Browser**；`restartBrowser()`(`:952`) 与 `handleBrowserTypeSwitch()`(`:594`) 是全局操作，注释自认「会杀掉其它场景的浏览器」；`getContext()`(`:679`) / `getPage()`(`:801`) 用 static `CONTEXT_LOCK` / `PAGE_LOCK`，锁序仅靠注释维护（`:590-592`） |
-| **工作量** | 10 人日 |
+| **目标** | 消除跨线程共享单个 Browser 实例（✅ 已落地）；后续细化 `CONTEXT_LOCK` / `PAGE_LOCK` 创建路径锁粒度以释放并行吞吐（待办） |
+| **现状证据** | `PlaywrightManager` 的 `browserInstances` / `playwrightInstances` 为 static `ConcurrentHashMap`（`:48-49`），存储键经 `keyFor` 以 `threadId:configId` 隔离；`getBrowser()` / `getContext()` / `getPage()` 全部经 `keyFor` 访问；`restartBrowser()`（`:917`）仅操作本线程实例；`BROWSER_LOCK`（`:57`）为 per-thread `ThreadLocal` |
+| **实施状态** | ✅ 核心隔离已落地（per-thread keying + restart 线程作用域 + BROWSER_LOCK 降级）；🔶 `CONTEXT_LOCK` / `PAGE_LOCK` 创建锁粒度细化待续（依赖并行回归基线） |
+| **工作量** | 已落地部分 ~1 人日；锁粒度细化 ~5 人日（含回归基线） |
 | **依赖** | T3-1 |
 
-**执行步骤**
-1. Browser 生命周期绑定到 `TestContext`（per-thread 或 per-worker）
-2. 设计 Browser 池：区分「可共享 Browser + 独立 Context」与「完全独立 Browser」两种模式，按 configId 与 browserType 分池
-3. 消除 `CONTEXT_LOCK` / `PAGE_LOCK` 全局锁，改为 per-context 锁或无锁（利用 ThreadLocal + 单线程 owner 约束）
-4. `restartBrowser` / `handleBrowserTypeSwitch` 的语义从「全局杀」改为「当前上下文重启」
-5. 补齐锁序文档（或干脆消除多锁）
+**执行步骤（剩余：锁粒度细化）**
+1. 补充「4 线程并发跑 4 scenario」并行回归基线测试，固化当前 per-thread 正确行为
+2. `CONTEXT_LOCK` / `PAGE_LOCK` 改为仅保护 `closeContext()` / `closePage()` 中的共享子系统清理；创建路径利用 ThreadLocal 隔离 + Playwright 传输层串行化，避免跨线程创建互相阻塞
+3. `handleBrowserTypeSwitch` / `restartBrowser` 维持线程作用域语义 + 既有防护
 
-**验收标准**：4 个线程并发跑 4 个 scenario，各自持有独立 Browser/Context，互不干扰；无全局锁竞争；无跨线程共享可变状态。
+**验收标准**：并行回归测试全绿；4 线程并发吞吐较当前无回退；无共享状态竞态；无浏览器进程泄漏（结束断言进程数归零）。
 
-**风险与回退**：高。资源管理不当会导致浏览器进程泄漏。缓解：加资源泄漏检测测试（结束后断言进程数归零）。
+**风险与回退**：中。资源管理不当会导致浏览器进程泄漏。缓解：加资源泄漏检测测试（结束后断言进程数归零）。代码已留 `keyFor` 隔离与 per-thread 锁作为安全回退点。
 
 ---
 
@@ -1087,10 +1094,19 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 
 ---
 
-## 第六部分　状态看板（2026-08-31）
+## 第六部分　状态看板（更新至 2026-09-04）
 
 > 符号：✅ 已完成 ｜ 🔶 部分完成/收尾中 ｜ ⬜ 待办
 > 与本评审基线相比，本轮已落地的并发/资源修复已在 T2-5 / T3-1 / T3-2 / T3-3 / T0-4 中扣除。
+> 2026-09-04 更新：补充 09-01~09-04 期间已落地交付（共享 Browser 模式、E2E 沙箱、诊断器修复、JDK21 add-opens、C2 方案），并修正 T3-4 前提认知（Serenity 无 JVM 内并行）。
+
+### 本轮新增交付（2026-09-04）
+- **JDK21 适配**：`test-automation` pom `argLine` 增加 `--add-opens`，修复 Serenity REST/ByteBuddy 在 JDK21 下 `RestSpecificationFactory` 静态初始化失败的模块访问异常。
+- **共享 Browser 模式（T3-2 扩展）**：实现「一个 Browser 实例 + 多 BrowserContext」，`SHARED_BROWSER_LOCK` 进程级锁，`restartBrowser()` 共享模式下降级为 `restartContextOnly()`；开关默认关闭；专属单测 10 例 + 全量护盾 255 例全绿。
+- **E2E 自包含沙箱（T0-5 前置能力）**：新增 6 文件（page/steps/runner/feature/README/runner-hint），不依赖 DBB SIT 即可做真实 Chromium 验证；沙箱 5/5 通过，6 次日志 `browserIdentity` 相同证实单 Browser 复用，counter 隔离 3=3。
+- **ElementDiagnosticsCollector 缺陷修复**：原 `locator.evaluate` 把元素当选择器传入导致 `SyntaxError`（元素找不到时诊断必然失效）；一并修复 `editable` / `attributes` 两处恒空静默失真；全护盾 255 例零回归。
+- **C2 并发执行器方案（T3-4 对应）**：查证 Serenity 无 JVM 内并行能力（batch 为跨 JVM 分片、无 parallel 开关），归档 `architecture/CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md`，**待决策**。
+- **撤回声明**：原疑 `SummaryReportGenerator` 统计口径 bug，实为跨轮次结果在 `target/site/serenity` 累积（未 clean）所致，非代码缺陷。
 
 | 阶段 | 任务 | 状态 | 备注 |
 |------|------|------|------|
@@ -1098,22 +1114,22 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | P0 | T0-2 SensitiveDataSanitizer 单测 | ⬜ 待办 | 合规件，≥12 用例 |
 | P0 | T0-3 删 7 个空目录 | ⬜ 待办 | 先确认无未提交实现 |
 | P0 | T0-4 persistence/Hikari 死代码 | 🔶 部分 | DatabaseUtil 已改；persistence+Hikari 删留待需求方拍板 |
-| P0 | T0-5 E2E 移出 surefire | ⬜ 待办（可选）| 当前有意保留在 surefire（20s、有超时兜底）|
+| P0 | T0-5 E2E 移出 surefire | ⬜ 待办（可选）| 已建自包含 E2E 沙箱页（6 文件）用于真实浏览器验证；移出 surefire 待定 |
 | P0 | T0-6 仓库卫生 | ⬜ 待办 | 提交未跟踪源码、清 1.txt/cp.txt/_tbtest/_verify_nls |
 | P0 | T0-7 死 import/失效 workaround | ✅ 已完成 | BasePage:17 死 import 已删（commit 6b47c99）|
-| P1 | T1-1~T1-9（门禁 7 件套）| ⬜ 待办 | **关键路径**，重构前必做 |
+| P1 | T1-1~T1-9（门禁 7 件套）| 🔶 部分 | T1-6 ArchUnit 已落地（7 规则：page↔route 双向解耦 / common→web·api 越层 / 顶层切片无环）；T1-1 JaCoCo / T1-2 Checkstyle / T1-3 SpotBugs / T1-4 OWASP / T1-5 Enforcer / T1-7 Mockito·AssertJ（已在测试 classpath 可用，建议显式声明固化）/ T1-8 CI / T1-9 覆盖率补测 待办 |
 | P2 | T2-1 多模块 | ⬜ 待办 | 依赖 T1-6 |
 | P2 | T2-2 codegen 移出热路径 | ⬜ 待办 | 先于 T2-6（省 137 处 catch）|
-| P2 | T2-3 BasePage 拆分 | ⬜ 待办 | 已落地修复减轻部分风险 |
+| P2 | T2-3 BasePage 拆分 | ✅ 已完成 | T5-5 五模块全下沉（PageWaits/PageNavigation/PageElementActions/PageFrameShadow/PageLifecycle）；BasePage 退化门面委托，公开 API 零变更；专属 UT + 全护盾 273 例全绿（见 `architecture/T5-5_MODULE5_PAGELIFECYCLE.md` 完成记录）|
 | P2 | T2-4 RouteEngine 拆分 | 🔶 部分 | 8 张 static Map 收敛已启动 |
 | P2 | T2-5 ApiCaptureContext 拆分 | 🔶 部分 | 计数器/unbind 已做；WeakReference 移除待做 |
 | P2 | T2-6 异常体系统一 | ⬜ 待办 | 依赖 T2-2 |
 | P2 | T2-7 删自研 JSONPath | ⬜ 待办 | 先补契约测试 |
 | P2 | T2-8 报告改模板引擎 | ⬜ 待办 | |
 | P3 | T3-1 TestContext 收拢 ThreadLocal | 🔶 部分 | NLSUtils/AsyncPool/PageObjectFactory 已改；余 16 文件待收拢 |
-| P3 | T3-2 Browser per-thread/池化 | 🔶 部分 | PlaywrightManager/BrowserStackManager 残留已修 |
+| P3 | T3-2 Browser per-thread/池化 | ✅ 核心隔离已落地 | per-thread keying + restart 线程作用域 + BROWSER_LOCK 降级；**今日新增共享 Browser 模式（1 Browser + N Context）已验证**；CONTEXT/PAGE 锁粒度细化待续 |
 | P3 | T3-3 ThreadLocal 清理/RouteDsl unbind | 🔶 部分 | unbind 契约已做；WeakReference/清理缺口待 T2-5 |
-| P3 | T3-4 打开并行执行 | ⬜ 待办 | 依赖 T3-1/2/3 |
+| P3 | T3-4 打开并行执行 | ⬜ 后置/不紧急 | **用户决策（2026-09-04）**：并行执行后置、不紧急；当前共享 Browser 模式（1 Browser + N Context）已满足需求，无需立即自建并发执行器。C2 方案 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` 存档备查 |
 | P3 | T3-5 PageDriver 接口层 | ⬜ 待办 | |
 | P4 | T4-1 审计标记迁出 | ⬜ 待办 | |
 | P4 | T4-2 脱敏可配置+值级识别 | ⬜ 待办 | |

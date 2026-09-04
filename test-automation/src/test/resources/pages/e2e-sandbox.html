@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>E2E Sandbox</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 24px; color: #222; }
+        h1 { font-size: 20px; }
+        .row { margin: 10px 0; }
+        label { display: inline-block; width: 90px; }
+        input { padding: 5px; width: 200px; }
+        button { padding: 6px 14px; cursor: pointer; }
+        #message { margin-top: 14px; font-weight: bold; color: #1b5e20; min-height: 22px; }
+        #asyncPanel {
+            display: none; margin-top: 14px; padding: 10px;
+            background: #eef7ee; border: 1px solid #b7dfb7; width: fit-content;
+        }
+        #counter { font-weight: bold; }
+    </style>
+</head>
+<body>
+<h1 id="title">E2E Sandbox</h1>
+
+<div class="row">
+    <label for="username">Username</label>
+    <input id="username" type="text" placeholder="enter username">
+</div>
+<div class="row">
+    <label for="password">Password</label>
+    <input id="password" type="password" placeholder="enter password">
+</div>
+<div class="row">
+    <button id="signin" type="button">Sign In</button>
+</div>
+
+<div id="message"></div>
+
+<div class="row" style="margin-top:18px">
+    <button id="loadAsync" type="button">Load Data</button>
+    <button id="increment" type="button">Increment</button>
+    <span>Counter: <span id="counter">0</span></span>
+</div>
+
+<div id="asyncPanel">Async data loaded</div>
+
+<script>
+    (function () {
+        var counter = 0;
+        var usernameEl = document.getElementById('username');
+        var passwordEl = document.getElementById('password');
+        var messageEl = document.getElementById('message');
+        var counterEl = document.getElementById('counter');
+        var panelEl = document.getElementById('asyncPanel');
+
+        document.getElementById('signin').addEventListener('click', function () {
+            var user = (usernameEl.value || '').trim();
+            var pwd = (passwordEl.value || '').trim();
+            if (!user || !pwd) {
+                messageEl.textContent = 'ERROR: username and password are required';
+                return;
+            }
+            messageEl.textContent = 'Welcome, ' + user;
+        });
+
+        document.getElementById('increment').addEventListener('click', function () {
+            counter += 1;
+            counterEl.textContent = String(counter);
+        });
+
+        document.getElementById('loadAsync').addEventListener('click', function () {
+            panelEl.style.display = 'none';
+            setTimeout(function () {
+                panelEl.style.display = 'block';
+            }, 1200);
+        });
+    })();
+</script>
+</body>
+</html>

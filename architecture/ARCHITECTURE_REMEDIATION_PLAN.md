@@ -1111,15 +1111,15 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | 阶段 | 任务 | 状态 | 备注 |
 |------|------|------|------|
 | P0 | T0-1 requestUrl 脱敏收口 | ✅ 已完成 | commit 6b47c99（含回归测试 3 用例）|
-| P0 | T0-2 SensitiveDataSanitizer 单测 | ⬜ 待办 | 合规件，≥12 用例 |
+| P0 | T0-2 SensitiveDataSanitizer 单测 | ✅ 已完成 | 合规件回归护盾，18 用例（header/body/url/freeText/规范化匹配/附加键注册/统一掩码）|
 | P0 | T0-3 删 7 个空目录 | ⬜ 待办 | 先确认无未提交实现 |
 | P0 | T0-4 persistence/Hikari 死代码 | 🔶 部分 | DatabaseUtil 已改；persistence+Hikari 删留待需求方拍板 |
 | P0 | T0-5 E2E 移出 surefire | ⬜ 待办（可选）| 已建自包含 E2E 沙箱页（6 文件）用于真实浏览器验证；移出 surefire 待定 |
 | P0 | T0-6 仓库卫生 | ⬜ 待办 | 提交未跟踪源码、清 1.txt/cp.txt/_tbtest/_verify_nls |
 | P0 | T0-7 死 import/失效 workaround | ✅ 已完成 | BasePage:17 死 import 已删（commit 6b47c99）|
-| P1 | T1-1~T1-9（门禁 7 件套）| 🔶 部分 | T1-6 ArchUnit 已落地（7 规则：page↔route 双向解耦 / common→web·api 越层 / 顶层切片无环）；T1-1 JaCoCo / T1-2 Checkstyle / T1-3 SpotBugs / T1-4 OWASP / T1-5 Enforcer / T1-7 Mockito·AssertJ（已在测试 classpath 可用，建议显式声明固化）/ T1-8 CI / T1-9 覆盖率补测 待办 |
+| P1 | T1-1~T1-9（门禁 7 件套）| 🔶 部分 | T1-6 ArchUnit ✅（7 规则：page↔route 双向解耦 / common→web·api 越层 / 顶层切片无环）；T1-2 Checkstyle ✅（verify 门禁，作用域限定重构包，0 违规）；T1-1 JaCoCo 🔶（prepare-agent+report 已接线，check 门禁因框架单测为行为护盾、覆盖率约 0% 暂未启用，待 T1-9）；T1-3 SpotBugs / T1-4 OWASP / T1-5 Enforcer / T1-7 Mockito·AssertJ（测试 classpath 可用，建议显式声明）/ T1-8 CI / T1-9 覆盖率补测 待办 |
 | P2 | T2-1 多模块 | ⬜ 待办 | 依赖 T1-6 |
-| P2 | T2-2 codegen 移出热路径 | ⬜ 待办 | 先于 T2-6（省 137 处 catch）|
+| P2 | T2-2 codegen 移出热路径 | 🔶 部分 | 137 处空 catch 集中在 page/scan（codegen）包；计划要求先于 T2-1（Maven 多模块，尚未做）实施，且属高风险重构，建议先完成 T2-1 再推进 |
 | P2 | T2-3 BasePage 拆分 | ✅ 已完成 | T5-5 五模块全下沉（PageWaits/PageNavigation/PageElementActions/PageFrameShadow/PageLifecycle）；BasePage 退化门面委托，公开 API 零变更；专属 UT + 全护盾 273 例全绿（见 `architecture/T5-5_MODULE5_PAGELIFECYCLE.md` 完成记录）|
 | P2 | T2-4 RouteEngine 拆分 | 🔶 部分 | 8 张 static Map 收敛已启动 |
 | P2 | T2-5 ApiCaptureContext 拆分 | 🔶 部分 | 计数器/unbind 已做；WeakReference 移除待做 |

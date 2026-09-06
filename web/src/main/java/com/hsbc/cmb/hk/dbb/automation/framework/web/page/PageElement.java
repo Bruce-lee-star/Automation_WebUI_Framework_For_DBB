@@ -7,7 +7,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import java.util.ArrayList;
 import java.util.List;
-import com.microsoft.playwright.ElementHandle;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
@@ -907,10 +906,6 @@ public class PageElement {
 
     public int count() {
         return locatorInternal().count();
-    }
-
-    protected ElementHandle elementHandle() {
-        return locatorInternal().elementHandle();
     }
 
     // ==================== Child Element ====================

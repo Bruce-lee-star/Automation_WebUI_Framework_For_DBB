@@ -412,11 +412,8 @@ PageElement cellWithIndex = row.child("td", 2);  // + nth=2
 // 元素数量
 int count = element.count();
 
-// 边界框（确保可见后获取）
-BoundingBox box = element.getBoundingBoxSafe();
-
-// 底层 ElementHandle
-ElementHandle handle = element.elementHandle();
+// 边界框（确保可见后获取，返回框架中立的 ElementRect）
+ElementRect box = element.getBoundingBoxSafe();
 ```
 
 ---

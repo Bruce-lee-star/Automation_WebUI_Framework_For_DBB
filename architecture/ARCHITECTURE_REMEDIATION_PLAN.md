@@ -1023,7 +1023,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 - **泄漏面清单（page 包内，共 11 文件 / 34 处 `com.microsoft.playwright` 引用）**：
   - ~~核心 public API 泄漏：PageElement.locator() / PageElementList.locator() / allLocators() 返回 Locator（**增量 2 已消除**）~~；
-  - 残余 public API 泄漏（归增量 3）：`PageElement.elementHandle()` 返回 `ElementHandle`（注：`getBoundingBoxSafe()` 已改返回 `ElementRect`、`BasePage.locator(String)` 已返回 `PageElement`，二者泄漏已先行消除）；
+  - 残余 public API 泄漏已全部消除：`getBoundingBoxSafe()`→`ElementRect`、`BasePage.locator(String)`→`PageElement`、`PageElement.elementHandle()`（原返回 `ElementHandle`）已于 2026-09-06 删除（零内部调用方）；page 包 public/protected API 现已无任何 `com.microsoft.playwright` 类型泄漏。
   - 实现层引用（`base/impl`、`binding`、`factory`、`delegate/PageNavigation`、`delegate/PageWaits`、`PageFrameShadow`、`PageLifecycleCoordinator`、`ElementDiagnosticsCollector`）——内部使用，保持。
 - ~~**首增量交付（plan 步骤 1-2）—— 已于 2026-09-06 退役**~~：
   - 新增 `web.page.driver` 包：`ElementDriver` / `PageDriver` 接口（框架中立，public API 零 Playwright 类型）+ `ElementRect` POJO（替代 `BoundingBox`）；
@@ -1038,7 +1038,7 @@ noClasses().that().resideInPackage("..web.page.base..")
   - ~~增量 2：locator()/allLocators() 收口 ElementDriver（**已于 2026-09-06 落地后退役**）~~；
   - **增量 3**：迁移其余 Playwright 类型出 public API（`elementHandle`→经 `ElementDriver` 收敛；`getBoundingBoxSafe`→`ElementRect`；`BasePage.locator(String)` 经 `PageDriver` 收口；`SelectOption`/`AriaRole`/`Cookie`/`Frame` 等按调用点收敛）；
   - **增量 4**：解锁 ArchUnit 规则 6 为 hard-fail（`FreezingArchRule` 冻结存量、只拦新增）——即本任务验收标准。
-- **当前状态**：driver 接口层（PageDriver/ElementDriver/Playwright*Driver）已整体退役（2026-09-06）；`ElementRect` 迁至 `web.page` 同包。T3-5 目标（public API 零 Playwright 类型）经 `PageElement`/`PageElementList`/`ElementRect` 直接满足。残余 `PageElement.elementHandle()` 仍返回 `ElementHandle`，归增量 3 待办。
+- **当前状态**：driver 接口层（PageDriver/ElementDriver/Playwright*Driver）已整体退役（2026-09-06）；`ElementRect` 迁至 `web.page` 同包；`PageElement.elementHandle()`（返回 `ElementHandle`）于同日删除（零内部调用方）。T3-5 目标（public/protected API 零 Playwright 类型）已完全达成：page 包仅于实现层（`locatorInternal()`、`PageFrameShadow` 等）使用 Playwright 类型，对外统一收口为 `PageElement`/`PageElementList`/`ElementRect`。
 - **退役动作（2026-09-06）**：
   - 删除 `web.page.driver` 包（`PageDriver`/`ElementDriver` 接口 + `impl/PlaywrightPageDriver`/`impl/PlaywrightElementDriver` 实现）与测试 `PlaywrightElementDriverTest`；`ElementRect` 迁至 `web.page` 同包（作为 `PageElement` 同伴值类型，替代 `BoundingBox`）。
   - `PageElementList.locator()` 改为返回 `PageElement`、`allLocators()` 改为返回 `List<PageElement>`（经 `new PageElement(Supplier<Locator>, desc, page)` 构造，保留实时解析与 iframe 下钻，二进制兼容）。
@@ -1316,7 +1316,7 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | P3 | T3-2 Browser per-thread/池化 | ✅ 核心隔离已落地 | per-thread keying + restart 线程作用域 + BROWSER_LOCK 降级；**今日新增共享 Browser 模式（1 Browser + N Context）已验证**；CONTEXT/PAGE 锁粒度细化待续 |
 | P3 | T3-3 ThreadLocal 清理/RouteDsl unbind | ✅ 已完成 | closeContext 清理解耦（移出 if + 补 CustomOptionsManager 全量清理）；feature/session 路径清理已闭环；RouteDsl unbind/WeakReference 已于 T2-5 完成；新增 PlaywrightManagerCloseContextCleanupTest；全护盾 341 例零回归 |
 | P3 | T3-4 打开并行执行 | ⬜ 后置/不紧急 | **用户决策（2026-09-04）**：并行执行后置、不紧急；当前共享 Browser 模式（1 Browser + N Context）已满足需求，无需立即自建并发执行器。C2 方案 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` 存档备查 |
-| P3 | T3-5 public API 中立化（PageDriver 接口层已退役） | ✅ 目标达成（接口层撤销） | driver 接口层（PageDriver/ElementDriver/Playwright*Driver）经 2026-09-06 复审判定冗余平行抽象后整体退役；public API 零 Playwright 类型目标经 PageElement/PageElementList/ElementRect 直接满足；残余 `PageElement.elementHandle()`→`ElementHandle` 归增量 3 待办 |
+| P3 | T3-5 public API 中立化（已完成） | ✅ 完成（2026-09-06） | driver 接口层（PageDriver/ElementDriver/Playwright*Driver）经复审判定冗余平行抽象后整体退役；`ElementRect` 迁至 `web.page`；`PageElement.elementHandle()`（返回 `ElementHandle`）删除（零内部调用方）；page 包 public/protected API 已无任何 `com.microsoft.playwright` 类型泄漏 |
 | P4 | T4-1 审计标记迁出 | 🔶 部分 | 需先 re-triage：⭐ 跨 **93 文件**（非此前"~15"），`修复P[0-9]` 模式 0 命中（标记格式已变）；随 T2 收尾的标记清零须逐文件判定后方可删，不可盲删 |
 | P4 | T4-2 脱敏可配置+值级识别 | 🔶 部分 | 可配置已落地（`sensitive.data.extra.*.keys` 配置叠加 + `registerExtraSensitiveKeys` 程序化注入 + 热更新；值级正则已覆盖 Bearer/JWT/URL 凭据）；"按值形态(卡号/手机号)识别"仍 ⬜，误伤风险大，本次未做 |
 | P4 | T4-3 配置源收敛 | ✅ 已完成 | 核查结论：属性配置体系**早已统一到 `core.ConfigSource`**——`framework.web.config.FrameworkConfig.getValue()` 本就 `return ConfigSource.resolve(...)`（:1323），`ProxyConfigResolver`/`PlaywrightConfigManager` 均经 `FrameworkConfigManager` 门面间接走 `ConfigSource`，`ENC(...)` 解密全覆盖。本阶段仅修两处真正旁路：① `SensitiveDataSanitizer.readExtraConfig` 收敛到 `ConfigSource`（补密文解密）；② `VerboseLogging.serenityLoggingLevel` 直读收敛到 `ConfigSource`。**刻意例外**（非 sprawl，不强行并入）：`PlaywrightListener`/`ScreenshotStrategy` 使用 Serenity `EnvironmentVariables` **对象 API**（非按 key 读，重写风险高且无 `ENC` 需求）；`api.ConfigProvider` 按设计用 Typesafe Config（见 `ConfigSource` 文档）。 |

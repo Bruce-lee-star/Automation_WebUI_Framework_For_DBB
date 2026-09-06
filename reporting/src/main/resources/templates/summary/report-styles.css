@@ -1,0 +1,205 @@
+<style media="all" type="text/css">
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.5;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+        background-color: #f6f6f6;
+        margin: 0;
+        padding: 20px;
+        width: 100%;
+        min-height: 100vh;
+    }
+
+    /* ====== 响应式容器：适配 Jenkins iframe 和直接访问 ====== */
+    .body-table {
+        width: 100%;
+        min-height: 100vh;
+    }
+
+    .container {
+        margin: 0 auto !important;
+        width: 95% !important;
+        max-width: 1200px !important;  /* 宽屏：适合Jenkins浏览器查看 */
+        padding: 20px !important;
+    }
+
+    /* 小屏幕回退（移动端）*/
+    @media (max-width: 768px) {
+        .container {
+            width: 100% !important;
+            padding: 10px !important;
+        }
+        body { padding: 10px; }
+    }
+
+    table {
+        border-collapse: separate;
+        mso-table-lspace: 0pt;
+        mso-table-rspace: 0pt;
+        width: 100%;
+    }
+    table td {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        vertical-align: top;
+    }
+    .content {
+        box-sizing: border-box;
+        display: block;
+        margin: 0 auto;
+        max-width: 100%;
+        padding: 0;
+    }
+    .main {
+        background: #fff;
+        border-radius: 8px;  /* 更圆润的边角 */
+        box-shadow: 0 2px 12px rgba(0,0,0,0.08);  /* 轻微阴影增强层次感 */
+        width: 100%;
+        overflow: hidden;  /* 防止内容溢出 */
+    }
+    .wrapper {
+        box-sizing: border-box;
+        padding: 24px;
+    }
+    .compact-wrapper {
+        box-sizing: border-box;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+    }
+    .content-block {
+        padding-top: 0;
+        padding-bottom: 20px;
+    }
+    .flush-top { margin-top: 0; padding-top: 0; }
+    .flush-bottom { margin-bottom: 0; padding-bottom: 0; }
+    .header { margin-bottom: 16px; margin-top: 0; width: 100%; }
+    .footer {
+        clear: both;
+        padding: 20px;
+        text-align: center;
+        width: 100%;
+        background-color: #f8f9fa;  /* 浅灰背景区分footer */
+        border-top: 1px solid #e9ecef;
+    }
+    .footer td,.footer p,.footer span,.footer a {
+        color:#6c757d;
+        font-size:13px;
+        text-align:center;
+    }
+    .section-callout { background-color:#1abc9c; color:#ffffff; }
+    .section-callout-subtle { background-color:#f7f7f7; border-bottom:1px solid #e9e9e9; border-top:1px solid #e9e9e9; }
+    .alert { min-width:100%; }
+    .alert td {
+        border-radius:8px 8px 0 0;
+        color:#ffffff;
+        font-size:16px;  /* 稍大的标题 */
+        font-weight:600;
+        padding:28px;
+        text-align:center;
+    }
+    .alert.alert-success td {
+        background: linear-gradient(135deg, #5FB0E0 0%, #4A9BD1 100%);  /* 渐变背景 */
+    }
+    .align-center { text-align:center; }
+    .align-right { text-align:right; }
+    .align-left { text-align:left; }
+    .text-link {
+        color:#007bff !important;
+        text-decoration:none !important;
+        transition: color 0.2s ease;
+    }
+    .text-link:hover {
+        text-decoration: underline !important;
+        color: #0056b3 !important;
+    }
+
+    /* ====== 按钮样式增强 ====== */
+    a[style*="background"] {
+        display: inline-block !important;
+        padding: 10px 20px !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+        text-decoration: none !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+    }
+    a[style*="background"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+    }
+    .legend { border:1px solid #acb1b9; margin-top:20px; }
+    .legend .overview { font-weight:bold; font-size:1.1em; color:#515151; background-color:#EBEBEB; padding:4px 0 4px 5px; }
+    .legend td { vertical-align:middle; }
+    .legend-key { font-weight:bold; padding-left:4px; font-size:0.9em; white-space:nowrap; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-left:solid 0.5px #DDDDDD; }
+    .legend-result { font-weight:bold; font-size:0.9em; padding-left:4px; text-align:right; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-right:solid 0.5px #DDDDDD; }
+    .legend-result span { border-radius:4px; padding:2px 4px; white-space:nowrap; }
+    .environment { border:1px solid #acb1b9; background-color:#EBEBEB; }
+    .environment td { color:#69727f; font-size:0.9em; text-align:center; }
+    .result-bar td { text-align:center; font-size:0.9em; }
+    .success-background { background-color:#52B255; color:white; }
+    .pending-background { background-color:#5FB0E0; color:white; }
+    .ignored-background { background-color:#C9C9C9; color:black; }
+    .failure-background { background-color:#f44336; color:white; }
+    .error-background { background-color:#ECA43A; color:white; }
+    .compromised-background { background-color:#9C77AD; color:white; }
+    .for-success { color:#52B255; }
+    .for-passing { color:#52B255; }
+    .for-failure { color:#f44336; }
+    .for-error { color:#ECA43A; }
+    .for-pending { color:#5FB0E0; }
+    .for-ignored { color:#acb1b9; }
+    .for-compromised { color:#9C77AD; }
+    .failure-scoreboard { border:1px solid #acb1b9; border-collapse:separate; }
+    .failure-scoreboard th { text-align:left; }
+    .failure-scoreboard tr:nth-child(even) { background:#f5f5f5 }
+    .summary-bar { width:100%; }
+    .summary { height:30px; font-size:1em; font-weight:bold; text-align:center; padding-top:10px; vertical-align:middle; white-space:nowrap; }
+    .timings { border:0 solid #acb1b9; padding:0 5px; }
+    .timings th { color:grey; text-align:right; font-size:0.9em; }
+    .timings td { color:grey; text-align:right; font-size:0.9em; }
+    .test-results-table {
+        border:1px solid #dee2e6;
+        margin-bottom:20px;
+        border-collapse:collapse;
+        border-radius: 8px;  /* 圆角 */
+        overflow: hidden;   /* 防止圆角被裁剪 */
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);  /* 轻微阴影 */
+    }
+    .test-results-table th {
+        border:1px solid #dee2e6;
+        padding:12px 16px;
+        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+        text-align:left;
+        font-weight: 600;
+        font-size: 13px;
+        color: #495057;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .test-results-table td {
+        border:1px solid #dee2e6;
+        padding:12px 16px;
+    }
+    .test-results-table tr:hover {
+        background-color: #f8f9fa;  /* 悬停高亮 */
+    }
+    .categories tr td { border:0.5px solid #dddddd; }
+    tr.categories, th.categories, td.categories { border:0.5px solid grey; }
+    .failure-list { border:1px solid grey; }
+    .feature { font-style:italic; }
+    .scenarioName { padding-left:8px; min-width:4em; width:55%; }
+    .tag-title { text-transform:capitalize; }
+    .tag-subtitle { text-transform:capitalize; width:50%; }
+    h3 { font-size:20px; text-align:center; color:#222222; font-weight:400; margin:0; }
+    h4 { font-size:18px; margin-top:20px; color:#222222; font-weight:500; }
+    .summary-bar-cell { height:2em; vertical-align:middle; }
+    .count-badge { padding:0px; width:25px; text-align:center; }
+    .frequent-failure { font-weight:bold; }
+</style>

@@ -1,0 +1,6 @@
+# T2-8：golden 基线与报告模板须「逐字节一致」，钉死 LF，
+# 禁止 core.autocrlf 在 checkout 时把工作树文件转成 CRLF（否则 golden 字节比对会失败）。
+*.ftl text eol=lf
+# 报表内联样式：作为静态资源原样注入 ${css}，同样参与 golden 逐字节比对
+reporting/src/main/resources/templates/summary/*.css text eol=lf
+reporting/src/test/resources/golden/*.html text eol=lf

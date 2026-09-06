@@ -602,230 +602,39 @@ public class SummaryReportGenerator {
         Template tpl = FM_CFG.getTemplate(name);
         StringWriter out = new StringWriter();
         tpl.process(model, out);
-        return out.toString();
+        // 统一归一为 LF：golden 基线以 LF 为准，模板文件在 Windows 工作区可能被写成 CRLF。
+        // 注：模板自身的行尾风格会影响 Freemarker 对「文件末尾换行」的处理（CRLF 会被吞掉），
+        // 故 .gitattributes 已钉死 *.ftl 为 eol=lf，此处归一化仅作为防御性兜底。
+        return out.toString().replace("\r\n", "\n").replace('\r', '\n');
     }
 
+    /**
+     * 报表内联 CSS。
+     *
+     * <p>为何<b>不走 Freemarker</b>：本段样式是 100% 静态内容，交给模板引擎解析只会
+     * 引入 {@code ${} / <#>} 误判风险且毫无收益，故作为静态资源从 classpath 读取，
+     * 再注入骨架模板的 {@code ${css}} 占位符。
+     */
     private String getFullCss() {
-        return """
-                <style media="all" type="text/css">
-                    * { box-sizing: border-box; }
-                    
-                    body {
-                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                        -webkit-font-smoothing: antialiased;
-                        font-size: 14px;
-                        line-height: 1.5;
-                        -ms-text-size-adjust: 100%;
-                        -webkit-text-size-adjust: 100%;
-                        background-color: #f6f6f6;
-                        margin: 0;
-                        padding: 20px;
-                        width: 100%;
-                        min-height: 100vh;
-                    }
-                    
-                    /* ====== 响应式容器：适配 Jenkins iframe 和直接访问 ====== */
-                    .body-table {
-                        width: 100%;
-                        min-height: 100vh;
-                    }
-                    
-                    .container {
-                        margin: 0 auto !important;
-                        width: 95% !important;
-                        max-width: 1200px !important;  /* 宽屏：适合Jenkins浏览器查看 */
-                        padding: 20px !important;
-                    }
-                    
-                    /* 小屏幕回退（移动端）*/
-                    @media (max-width: 768px) {
-                        .container {
-                            width: 100% !important;
-                            padding: 10px !important;
-                        }
-                        body { padding: 10px; }
-                    }
-                    
-                    table {
-                        border-collapse: separate;
-                        mso-table-lspace: 0pt;
-                        mso-table-rspace: 0pt;
-                        width: 100%;
-                    }
-                    table td {
-                        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                        font-size: 14px;
-                        vertical-align: top;
-                    }
-                    .content {
-                        box-sizing: border-box;
-                        display: block;
-                        margin: 0 auto;
-                        max-width: 100%;
-                        padding: 0;
-                    }
-                    .main {
-                        background: #fff;
-                        border-radius: 8px;  /* 更圆润的边角 */
-                        box-shadow: 0 2px 12px rgba(0,0,0,0.08);  /* 轻微阴影增强层次感 */
-                        width: 100%;
-                        overflow: hidden;  /* 防止内容溢出 */
-                    }
-                    .wrapper {
-                        box-sizing: border-box;
-                        padding: 24px;
-                    }
-                    .compact-wrapper {
-                        box-sizing: border-box;
-                        padding-left: 24px;
-                        padding-right: 24px;
-                        padding-top: 12px;
-                        padding-bottom: 12px;
-                    }
-                    .content-block { 
-                        padding-top: 0; 
-                        padding-bottom: 20px; 
-                    }
-                    .flush-top { margin-top: 0; padding-top: 0; }
-                    .flush-bottom { margin-bottom: 0; padding-bottom: 0; }
-                    .header { margin-bottom: 16px; margin-top: 0; width: 100%; }
-                    .footer { 
-                        clear: both; 
-                        padding: 20px; 
-                        text-align: center; 
-                        width: 100%; 
-                        background-color: #f8f9fa;  /* 浅灰背景区分footer */
-                        border-top: 1px solid #e9ecef;
-                    }
-                    .footer td,.footer p,.footer span,.footer a { 
-                        color:#6c757d; 
-                        font-size:13px; 
-                        text-align:center; 
-                    }
-                    .section-callout { background-color:#1abc9c; color:#ffffff; }
-                    .section-callout-subtle { background-color:#f7f7f7; border-bottom:1px solid #e9e9e9; border-top:1px solid #e9e9e9; }
-                    .alert { min-width:100%; }
-                    .alert td { 
-                        border-radius:8px 8px 0 0; 
-                        color:#ffffff; 
-                        font-size:16px;  /* 稍大的标题 */
-                        font-weight:600;
-                        padding:28px; 
-                        text-align:center;
-                    }
-                    .alert.alert-success td { 
-                        background: linear-gradient(135deg, #5FB0E0 0%, #4A9BD1 100%);  /* 渐变背景 */
-                    }
-                    .align-center { text-align:center; }
-                    .align-right { text-align:right; }
-                    .align-left { text-align:left; }
-                    .text-link { 
-                        color:#007bff !important; 
-                        text-decoration:none !important;
-                        transition: color 0.2s ease;
-                    }
-                    .text-link:hover {
-                        text-decoration: underline !important;
-                        color: #0056b3 !important;
-                    }
-                    
-                    /* ====== 按钮样式增强 ====== */
-                    a[style*="background"] {
-                        display: inline-block !important;
-                        padding: 10px 20px !important;
-                        border-radius: 6px !important;
-                        font-weight: 600 !important;
-                        text-decoration: none !important;
-                        transition: all 0.2s ease !important;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-                    }
-                    a[style*="background"]:hover {
-                        transform: translateY(-1px);
-                        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
-                    }
-                    .legend { border:1px solid #acb1b9; margin-top:20px; }
-                    .legend .overview { font-weight:bold; font-size:1.1em; color:#515151; background-color:#EBEBEB; padding:4px 0 4px 5px; }
-                    .legend td { vertical-align:middle; }
-                    .legend-key { font-weight:bold; padding-left:4px; font-size:0.9em; white-space:nowrap; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-left:solid 0.5px #DDDDDD; }
-                    .legend-result { font-weight:bold; font-size:0.9em; padding-left:4px; text-align:right; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-right:solid 0.5px #DDDDDD; }
-                    .legend-result span { border-radius:4px; padding:2px 4px; white-space:nowrap; }
-                    .environment { border:1px solid #acb1b9; background-color:#EBEBEB; }
-                    .environment td { color:#69727f; font-size:0.9em; text-align:center; }
-                    .result-bar td { text-align:center; font-size:0.9em; }
-                    .success-background { background-color:#52B255; color:white; }
-                    .pending-background { background-color:#5FB0E0; color:white; }
-                    .ignored-background { background-color:#C9C9C9; color:black; }
-                    .failure-background { background-color:#f44336; color:white; }
-                    .error-background { background-color:#ECA43A; color:white; }
-                    .compromised-background { background-color:#9C77AD; color:white; }
-                    .for-success { color:#52B255; }
-                    .for-passing { color:#52B255; }
-                    .for-failure { color:#f44336; }
-                    .for-error { color:#ECA43A; }
-                    .for-pending { color:#5FB0E0; }
-                    .for-ignored { color:#acb1b9; }
-                    .for-compromised { color:#9C77AD; }
-                    .failure-scoreboard { border:1px solid #acb1b9; border-collapse:separate; }
-                    .failure-scoreboard th { text-align:left; }
-                    .failure-scoreboard tr:nth-child(even) { background:#f5f5f5 }
-                    .summary-bar { width:100%; }
-                    .summary { height:30px; font-size:1em; font-weight:bold; text-align:center; padding-top:10px; vertical-align:middle; white-space:nowrap; }
-                    .timings { border:0 solid #acb1b9; padding:0 5px; }
-                    .timings th { color:grey; text-align:right; font-size:0.9em; }
-                    .timings td { color:grey; text-align:right; font-size:0.9em; }
-                    .test-results-table { 
-                        border:1px solid #dee2e6; 
-                        margin-bottom:20px; 
-                        border-collapse:collapse;
-                        border-radius: 8px;  /* 圆角 */
-                        overflow: hidden;   /* 防止圆角被裁剪 */
-                        box-shadow: 0 1px 3px rgba(0,0,0,0.05);  /* 轻微阴影 */
-                    }
-                    .test-results-table th { 
-                        border:1px solid #dee2e6; 
-                        padding:12px 16px; 
-                        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
-                        text-align:left;
-                        font-weight: 600;
-                        font-size: 13px;
-                        color: #495057;
-                        text-transform: uppercase;
-                        letter-spacing: 0.5px;
-                    }
-                    .test-results-table td { 
-                        border:1px solid #dee2e6; 
-                        padding:12px 16px;
-                    }
-                    .test-results-table tr:hover {
-                        background-color: #f8f9fa;  /* 悬停高亮 */
-                    }
-                    .categories tr td { border:0.5px solid #dddddd; }
-                    tr.categories, th.categories, td.categories { border:0.5px solid grey; }
-                    .failure-list { border:1px solid grey; }
-                    .feature { font-style:italic; }
-                    .scenarioName { padding-left:8px; min-width:4em; width:55%; }
-                    .tag-title { text-transform:capitalize; }
-                    .tag-subtitle { text-transform:capitalize; width:50%; }
-                    h3 { font-size:20px; text-align:center; color:#222222; font-weight:400; margin:0; }
-                    h4 { font-size:18px; margin-top:20px; color:#222222; font-weight:500; }
-                    .summary-bar-cell { height:2em; vertical-align:middle; }
-                    .count-badge { padding:0px; width:25px; text-align:center; }
-                    .frequent-failure { font-weight:bold; }
-                </style>""";
+        String name = "/templates/summary/report-styles.css";
+        try (InputStream in = SummaryReportGenerator.class.getResourceAsStream(name)) {
+            if (in == null) {
+                throw new IllegalStateException("缺少报表样式资源：" + name);
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new IllegalStateException("读取报表样式资源失败：" + name, e);
+        }
     }
 
     private void appendAlertBar(StringBuilder sb) {
-        sb.append("                    <tr>\n");
-        sb.append("                        <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-        sb.append("                            <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" class=\"alert alert-success\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;min-width:100%;\">\n");
-        sb.append("                                <tr>\n");
-        sb.append("                                    <td align=\"center\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;border-radius:4px 4px 0 0;color:#ffffff;background-color:#5FB0E0;font-size:1.3em;font-weight:400;padding:24px;text-align:center;\">\n");
-        sb.append("                                        <span class=\"test-suite-title\" style=\"font-size:1.3em;color:white;font-weight:bold;\"><span>").append(escape(reportTitle)).append("</span></span>\n");
-        sb.append("                                    </td>\n");
-        sb.append("                                </tr>\n");
-        sb.append("                            </table>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+        Map<String, Object> model = new HashMap<>();
+        model.put("title", escape(reportTitle));
+        try {
+            sb.append(renderSummaryTemplate("summary/alert-bar.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render alert-bar fragment", e);
+        }
     }
 
     private void appendSummarySection(StringBuilder sb) {
@@ -836,75 +645,45 @@ public class SummaryReportGenerator {
         long pending = count(TestResult.PENDING);
         long ignored = count(TestResult.IGNORED);
         long compromised = count(TestResult.COMPROMISED);
-        long skipped = count(TestResult.SKIPPED);
-
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding:24px;\">\n");
-        sb.append("                            <table border=\"0\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-        sb.append("                                <tr>\n");
-        sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-
-        // Summary bar
-        sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"summary-bar\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-        sb.append("                                            <tr>\n");
 
         int[] widths = calculateBarWidths(total, pass, pending, ignored, fail, error, compromised);
-        appendBarCell(sb, "success-background", widths[0], pass, total, "passing tests");
-        appendBarCell(sb, "pending-background", widths[1], pending, total, "pending tests");
-        appendBarCell(sb, "ignored-background", widths[2], ignored, total, "ignored tests");
-        appendBarCell(sb, "failure-background", widths[3], fail, total, "failing tests");
-        appendBarCell(sb, "error-background", widths[4], error, total, "broken tests");
-        appendBarCell(sb, "compromised-background", widths[5], compromised, total, "compromised tests");
+        List<Map<String, Object>> barCells = List.of(
+                barCell("success-background", widths[0], pass, total, "passing tests"),
+                barCell("pending-background", widths[1], pending, total, "pending tests"),
+                barCell("ignored-background", widths[2], ignored, total, "ignored tests"),
+                barCell("failure-background", widths[3], fail, total, "failing tests"),
+                barCell("error-background", widths[4], error, total, "broken tests"),
+                barCell("compromised-background", widths[5], compromised, total, "compromised tests"));
 
-        sb.append("                                            </tr>\n");
-        sb.append("                                        </table>\n");
+        List<Map<String, Object>> legendRows1 = List.of(
+                legendRow("Passing", pass, "for-passing", "success-badge"),
+                legendRow("Pending", pending, "for-pending", "pending-badge"),
+                legendRow("Ignored", ignored, "for-ignored", "ignored-badge"));
+        List<Map<String, Object>> legendRows2 = List.of(
+                legendRow("Failing", fail, "for-failure", "failure-badge"),
+                legendRow("Broken", error, "for-error", "error-badge"),
+                legendRow("Compromised", compromised, "for-compromised", "compromised-badge"));
 
-        // Legend overview
-        sb.append("                                        <table cellspacing=\"0\" cellpadding=\"2\" class=\"legend\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border:1px solid #acb1b9;margin-top:20px;\">\n");
-        sb.append("                                            <tr>\n");
-        sb.append("                                                <td class=\"overview\" colspan=\"6\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;font-weight:bold;font-size:1.1em;color:#515151;background-color:#EBEBEB;padding:4px 0 4px 5px;\"><span>").append(total).append(" test").append(total != 1 ? "s" : "").append(" executed on</span>\n");
-        sb.append("                                                    <span>").append(testExecutionTime != null ? testExecutionTime.format(FORMATTER) : reportTime.format(FORMATTER)).append("</span>\n");
-        sb.append("                                                </td>\n");
-        sb.append("                                            </tr>\n");
-        sb.append("                                        </table>\n");
+        Map<String, Object> timings = new HashMap<>();
+        timings.put("total", format(totalDuration));
+        timings.put("clock", format(clockTime));
+        timings.put("avg", format((long) avgDuration));
+        timings.put("max", format(maxDuration));
+        timings.put("min", format(minDuration));
 
-        // Result counts
-        sb.append("                                        <table cellspacing=\"0\" cellpadding=\"2\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-        sb.append("                                            <tr>\n");
-        appendLegendRow(sb, "Passing", pass, "for-passing", "success-badge");
-        appendLegendRow(sb, "Pending", pending, "for-pending", "pending-badge");
-        appendLegendRow(sb, "Ignored", ignored, "for-ignored", "ignored-badge");
-        sb.append("                                            </tr>\n");
-        sb.append("                                            <tr>\n");
-        appendLegendRow(sb, "Failing", fail, "for-failure", "failure-badge");
-        appendLegendRow(sb, "Broken", error, "for-error", "error-badge");
-        appendLegendRow(sb, "Compromised", compromised, "for-compromised", "compromised-badge");
-        sb.append("                                            </tr>\n");
-        sb.append("                                        </table>\n");
-
-        // Timings
-        sb.append("                                        <table class=\"timings\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;padding:0 5px;\">\n");
-        sb.append("                                            <tr>\n");
-        sb.append("                                                <th style=\"color:grey;text-align:right;font-size:0.9em;\">Total test execution time</th>\n");
-        sb.append("                                                <th style=\"color:grey;text-align:right;font-size:0.9em;\">Total clock time</th>\n");
-        sb.append("                                                <th style=\"color:grey;text-align:right;font-size:0.9em;\">Average test execution time</th>\n");
-        sb.append("                                                <th style=\"color:grey;text-align:right;font-size:0.9em;\">Max test execution time</th>\n");
-        sb.append("                                                <th style=\"color:grey;text-align:right;font-size:0.9em;\">Min test execution time</th>\n");
-        sb.append("                                            </tr>\n");
-        sb.append("                                            <tr>\n");
-        sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format(totalDuration)).append("</td>\n");
-        sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format(clockTime)).append("</td>\n");
-        sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format((long) avgDuration)).append("</td>\n");
-        sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format(maxDuration)).append("</td>\n");
-        sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;\">").append(format(minDuration)).append("</td>\n");
-        sb.append("                                            </tr>\n");
-        sb.append("                                        </table>\n");
-
-        sb.append("                                    </td>\n");
-        sb.append("                                </tr>\n");
-        sb.append("                            </table>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+        Map<String, Object> model = new HashMap<>();
+        model.put("total", total);
+        model.put("totalSuffix", total != 1 ? "s" : "");
+        model.put("execTime", (testExecutionTime != null ? testExecutionTime : reportTime).format(FORMATTER));
+        model.put("barCells", barCells);
+        model.put("legendRows1", legendRows1);
+        model.put("legendRows2", legendRows2);
+        model.put("timings", timings);
+        try {
+            sb.append(renderSummaryTemplate("summary/summary-section.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render summary-section fragment", e);
+        }
     }
 
     private int[] calculateBarWidths(long total, long... counts) {
@@ -929,27 +708,39 @@ public class SummaryReportGenerator {
         return widths;
     }
 
-    private void appendBarCell(StringBuilder sb, String cssClass, int width, long count, long total, String title) {
+    /**
+     * Summary bar 单格的视图模型。{@code width <= 0} 时缺少 percent/padding 等键，
+     * 模板据此走「单行零占比」分支——与原实现的 {@code if/else} 完全等价。
+     */
+    private static Map<String, Object> barCell(String cssClass, int width, long count, long total, String title) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("cssClass", cssClass);
+        m.put("width", width);
         if (width > 0) {
-            sb.append("                                                <td class=\"").append(cssClass).append(" summary summary-bar-cell\" width=\"").append(width).append("%\" valign=\"middle\" align=\"center\" style=\"padding:").append(count > 0 ? "8px" : "0px").append(";\">\n");
-            if (count > 0) {
-                int percent = total > 0 ? (int)((count * 100) / total) : 0;
-                sb.append("                                                        <span class=\"summary\" title=\"").append(count).append(" ").append(title).append("\">").append(percent).append("%</span>\n");
-            }
-            sb.append("                                                </td>\n");
-        } else {
-            sb.append("                                                <td class=\"").append(cssClass).append(" summary summary-bar-cell\" width=\"0%\" valign=\"middle\" align=\"center\" style=\"padding:0px;\"></td>\n");
+            m.put("padding", count > 0 ? "8px" : "0px");
+            m.put("hasCount", count > 0);
+            m.put("count", count);
+            m.put("title", title);
+            m.put("percent", total > 0 ? (int) ((count * 100) / total) : 0);
         }
+        return m;
     }
 
-    private void appendLegendRow(StringBuilder sb, String label, long count, String colorClass, String badgeClass) {
-        sb.append("                                                <td class=\"").append(colorClass).append(" legend-key legend-label\" width=\"30%\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;").append(getColorStyle(colorClass)).append("\">").append(label).append("</td>\n");
-        sb.append("                                                <td class=\"").append(colorClass).append(" legend-result\" style=\"font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;").append(getColorStyle(colorClass)).append("\">\n");
-        sb.append("                                                    <span class=\"").append(badgeClass).append("\" style=\"border-radius:4px;padding:2px 4px;white-space:nowrap;\">").append(count).append("</span>\n");
-        sb.append("                                                </td>\n");
+    /**
+     * 图例行的视图模型。{@code colorStyle} 复用 {@link #getColorStyle(String)}，
+     * 保证与改造前的内联取值完全一致。
+     */
+    private static Map<String, Object> legendRow(String label, long count, String colorClass, String badgeClass) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("label", label);
+        m.put("count", count);
+        m.put("colorClass", colorClass);
+        m.put("badgeClass", badgeClass);
+        m.put("colorStyle", getColorStyle(colorClass));
+        return m;
     }
 
-    private String getColorStyle(String colorClass) {
+    private static String getColorStyle(String colorClass) {
         return switch (colorClass) {
             case "for-passing", "for-success" -> "color:#52B255;";
             case "for-pending" -> "color:#5FB0E0;";
@@ -962,51 +753,29 @@ public class SummaryReportGenerator {
     }
 
     private void appendViewFullReportButton(StringBuilder sb) {
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <div style=\"display:flex;flex-wrap:wrap;gap:10px;align-items:center;\">\n");
-
-        String fullReportLink = this.fullReportUrl;
-        sb.append("                                <a style=\"text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:10px 24px;background:#316d91;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;\" href=\"").append(fullReportLink).append("\" target=\"_blank\">View full report</a>\n");
-
-        String zipLink = buildDownloadUrl(zipFileName);
-        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:10px 24px;background:#52B255;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;\" href=\"").append(zipLink).append("\" target=\"_blank\">Download ZIP</a>\n");
-
-        sb.append("                            </div>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+        Map<String, Object> model = new HashMap<>();
+        model.put("fullReportLink", this.fullReportUrl);
+        model.put("zipLink", buildDownloadUrl(zipFileName));
+        try {
+            sb.append(renderSummaryTemplate("summary/view-full-report-button.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render view-full-report-button fragment", e);
+        }
     }
 
     private void appendCoverageSection(StringBuilder sb) {
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;\">Functional Coverage</h3>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <h4 class=\"tag-title\" style=\"color:#222222;font-family:Helvetica, sans-serif;line-height:1.4;margin:0;font-weight:500;font-size:18px;margin-top:20px;text-transform:capitalize;\">Feature</h4>\n");
-        sb.append("                            <table class=\"test-results-table categories\" style=\"border-collapse:collapse;width:100%;border:1px solid grey;margin-bottom:26px;table-layout:fixed;\">\n");
-        sb.append("                                <tr>\n");
-        sb.append("                                    <th width=\"50%\" style=\"text-align:left;white-space:nowrap;\">Category</th>\n");
-        sb.append("                                    <th width=\"8%\" style=\"text-align:left;white-space:nowrap;\">Tests</th>\n");
-        sb.append("                                    <th width=\"8%\" style=\"text-align:left;white-space:nowrap;\">Pass</th>\n");
-        sb.append("                                    <th width=\"34%\" style=\"text-align:left;white-space:nowrap;\">Results</th>\n");
-        sb.append("                                </tr>\n");
-
-        Map<String, FeatureStats> statsMap = calculateFeatureStats();
-        for (Map.Entry<String, FeatureStats> entry : statsMap.entrySet()) {
+        List<Map<String, Object>> features = new ArrayList<>();
+        for (Map.Entry<String, FeatureStats> entry : calculateFeatureStats().entrySet()) {
             String feature = entry.getKey();
             FeatureStats stats = entry.getValue();
-            String htmlLink = buildHtmlLink(featureToHtmlMap.getOrDefault(feature, "index.html"));
 
-            sb.append("                                <tr>\n");
-            sb.append("                                    <td class=\"tag-subtitle categories\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;\"><a href=\"").append(htmlLink).append("\" target=\"_blank\">").append(escape(feature)).append("</a></td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;\">").append(stats.total).append("</td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;\">").append(stats.passPercent()).append("%</td>\n");
-            sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;\">\n");
+            Map<String, Object> f = new HashMap<>();
+            f.put("name", escape(feature));
+            f.put("link", buildHtmlLink(featureToHtmlMap.getOrDefault(feature, "index.html")));
+            f.put("total", stats.total);
+            f.put("passPercent", stats.passPercent());
 
-            // Result bar - 显示通过/失败/错误的混合比例
+            // Result bar：显示通过/失败/错误的混合比例
             int passWidth = stats.total > 0 ? (stats.passed * 100) / stats.total : 0;
             int failWidth = stats.total > 0 ? (stats.failed * 100) / stats.total : 0;
             int errorWidth = stats.total > 0 ? (stats.error * 100) / stats.total : 0;
@@ -1015,35 +784,23 @@ public class SummaryReportGenerator {
             if (sum > 0 && sum < 100 && passWidth > 0) {
                 passWidth += (100 - sum);
             }
-
-            sb.append("                                        <table cellspacing=\"0\" cellpadding=\"0\" class=\"result-bar\" width=\"100%\" style=\"border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-            sb.append("                                            <tr>\n");
-
-            if (passWidth == 100 && stats.total > 0) {
-                // 全部通过：只显示一个 100% 绿色条
-                sb.append("                                                <td class=\"success-background\" title=\"All ").append(stats.passed).append(" tests passed (100%)\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>100%</span></td>\n");
-            } else {
-                // 混合结果：按比例显示各段
-                if (passWidth > 0) {
-                    sb.append("                                                <td class=\"success-background\" title=\"").append(stats.passed).append(" passing tests (").append(passWidth).append("%)\" width=\"").append(passWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#52B255;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.passed).append("</span></td>\n");
-                }
-                if (failWidth > 0) {
-                    sb.append("                                                <td class=\"failure-background\" title=\"").append(stats.failed).append(" failing tests (").append(failWidth).append("%)\" width=\"").append(failWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.failed).append("</span></td>\n");
-                }
-                if (errorWidth > 0) {
-                    sb.append("                                                <td class=\"error-background\" title=\"").append(stats.error).append(" broken tests (").append(errorWidth).append("%)\" width=\"").append(errorWidth).append("%\" style=\"font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#ECA43A;color:white;text-align:center;font-size:0.9em;padding:4px;\"><span>").append(stats.error).append("</span></td>\n");
-                }
-            }
-
-            sb.append("                                            </tr>\n");
-            sb.append("                                        </table>\n");
-            sb.append("                                    </td>\n");
-            sb.append("                                </tr>\n");
+            f.put("allPass", passWidth == 100 && stats.total > 0);
+            f.put("passWidth", passWidth);
+            f.put("failWidth", failWidth);
+            f.put("errorWidth", errorWidth);
+            f.put("passed", stats.passed);
+            f.put("failed", stats.failed);
+            f.put("error", stats.error);
+            features.add(f);
         }
 
-        sb.append("                            </table>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+        Map<String, Object> model = new HashMap<>();
+        model.put("features", features);
+        try {
+            sb.append(renderSummaryTemplate("summary/coverage-section.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render coverage-section fragment", e);
+        }
     }
 
     private Map<String, FeatureStats> calculateFeatureStats() {
@@ -1134,101 +891,63 @@ public class SummaryReportGenerator {
             return;
         }
 
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;\">Test Failure Overview</h3>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <table style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-        sb.append("                                <tr>\n");
-
-        // Most Frequent Failures
-        sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-        sb.append("                                        <table class=\"failure-scoreboard\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;\">\n");
-        sb.append("                                            <tr>\n");
-        sb.append("                                                <th colspan=\"2\" style=\"text-align:left;\">Most Frequent Failures</th>\n");
-        sb.append("                                            </tr>\n");
-
+        List<Map<String, Object>> frequentFailures = new ArrayList<>();
         for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
-            sb.append("                                            <tr class=\"for-failure\" style=\"color:#f44336;\">\n");
-            sb.append("                                                <td width=\"100%\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\" class=\"frequent-failure for-error\">").append(escape(entry.getKey())).append("</td>\n");
-            sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\"><span class='count-badge for-failure' style=\"color:#f44336;\">").append(entry.getValue()).append("</span></td>\n");
-            sb.append("                                            </tr>\n");
+            frequentFailures.add(failureRow(escape(entry.getKey()), entry.getValue()));
         }
-
-        sb.append("                                        </table>\n");
-        sb.append("                                    </td>\n");
-
-        // Most Unstable Features
-        sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">\n");
-        sb.append("                                        <table class=\"failure-scoreboard\" style=\"border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;\">\n");
-        sb.append("                                            <tr>\n");
-        sb.append("                                                <th style=\"text-align:left;\">Most Unstable Features</th>\n");
-        sb.append("                                                <th style=\"text-align:left;\">Fails</th>\n");
-        sb.append("                                            </tr>\n");
-
+        List<Map<String, Object>> unstableFeatures = new ArrayList<>();
         for (Map.Entry<String, FeatureFailureStats> entry : featureFailures.entrySet()) {
-            sb.append("                                            <tr class=\"for-failure\" style=\"color:#f44336;\">\n");
-            sb.append("                                                <td class=\"unstable-feature\" width=\"100%\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\">").append(escape(entry.getKey())).append("</td>\n");
-            sb.append("                                                <td style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;\"><span class='count-badge for-failure' style=\"color:#f44336;\">").append(entry.getValue().count).append("</span></td>\n");
-            sb.append("                                            </tr>\n");
+            unstableFeatures.add(failureRow(escape(entry.getKey()), entry.getValue().count));
         }
 
-        sb.append("                                        </table>\n");
-        sb.append("                                    </td>\n");
-        sb.append("                                </tr>\n");
-        sb.append("                            </table>\n");
-
-        // 错误类型饼图
-        if (!failureCounts.isEmpty()) {
-            appendErrorTypePieChart(sb, failureCounts);
+        Map<String, Object> model = new HashMap<>();
+        model.put("frequentFailures", frequentFailures);
+        model.put("unstableFeatures", unstableFeatures);
+        try {
+            // 错误类型饼图（此处 failureCounts 已保证非空）
+            model.put("pieChart", renderErrorTypePieChart(failureCounts));
+            sb.append(renderSummaryTemplate("summary/failure-overview.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render failure-overview fragment", e);
         }
+    }
 
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+    /** 失败/不稳定条目行的视图模型。 */
+    private static Map<String, Object> failureRow(String name, int count) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("name", name);
+        m.put("count", count);
+        return m;
     }
 
     /**
      * 生成错误类型分布饼图（纯 CSS conic-gradient）
      * 兼容 Outlook / Gmail / Apple Mail 等主流邮件客户端
      */
-    private void appendErrorTypePieChart(StringBuilder sb, Map<String, Integer> failureCounts) {
+    private String renderErrorTypePieChart(Map<String, Integer> failureCounts)
+            throws TemplateException, IOException {
         int total = failureCounts.values().stream().mapToInt(Integer::intValue).sum();
         // 使用区分度高的颜色（红、橙、蓝、绿、紫、青等）
         String[] colors = {"#e53935", "#ff9800", "#2196f3", "#4caf50", "#9c27b0",
                           "#00bcd4", "#ff5722", "#673ab7", "#009688", "#795548"};
-
-        sb.append("                            <div style=\"margin-top:20px;text-align:center;\">\n");
-        sb.append("                                <h4 style=\"margin:0 0 12px 0;font-size:16px;color:#333;\">Failure Analysis</h4>\n");
-
         int pieSize = 240;
-        int halfPie = pieSize / 2;
-        int containerWidth = pieSize;
-        int containerHeight = pieSize + 80; // 底部图例高度
-        int colorIdx = 0;
+
+        Map<String, Object> model = new HashMap<>();
+        model.put("pieSize", pieSize);
+        model.put("single", failureCounts.size() == 1);
 
         if (failureCounts.size() == 1) {
             // 单分类 → 实心圆，中心只显示百分比
             Map.Entry<String, Integer> onlyEntry = failureCounts.entrySet().iterator().next();
             double pct = (double) onlyEntry.getValue() / total * 100;
-
-            sb.append("                                <div style=\"display:inline-block;width:")
-              .append(pieSize).append("px;height:").append(pieSize)
-              .append("px;border-radius:50%;background:").append(colors[0])
-              .append(";box-shadow:0 2px 8px rgba(0,0,0,0.15);position:relative;\">\n");
-            sb.append("                                    <div style=\"position:absolute;top:50%;left:50%")
-              .append(";transform:translate(-50%,-50%);text-align:center;\">\n");
-            sb.append("                                        <div style=\"font-size:28px;font-weight:bold;color:#fff;\">")
-              .append(String.format("%.0f", pct)).append("%</div>\n");
-            sb.append("                                    </div>\n");
-            sb.append("                                </div>\n");
-
+            model.put("singleColor", colors[0]);
+            model.put("singlePct", String.format("%.0f", pct));
         } else {
             // 多分类 → 饼图 + 底部图例
             StringBuilder gradient = new StringBuilder();
+            List<Map<String, Object>> legend = new ArrayList<>();
             double currentPct = 0;
+            int colorIdx = 0;
 
             for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
                 double pct = (double) entry.getValue() / total * 100;
@@ -1236,39 +955,22 @@ public class SummaryReportGenerator {
                 // conic-gradient: color start% end% (百分比直接是 0-100)
                 if (gradient.length() > 0) gradient.append(", ");
                 gradient.append(colors[colorIdx % colors.length])
-                  .append(" ").append(String.format("%.2f", currentPct)).append("%")
-                  .append(" ").append(String.format("%.2f", currentPct + pct)).append("%");
+                        .append(" ").append(String.format("%.2f", currentPct)).append("%")
+                        .append(" ").append(String.format("%.2f", currentPct + pct)).append("%");
+
+                Map<String, Object> leg = new HashMap<>();
+                leg.put("color", colors[colorIdx % colors.length]);
+                leg.put("name", escape(entry.getKey()));
+                leg.put("pct", String.format("%.0f%%", pct));
+                legend.add(leg);
 
                 currentPct += pct;
                 colorIdx++;
             }
-
-            // 饼图本体（居中）
-            sb.append("                                <div style=\"display:inline-block;")
-              .append("width:").append(pieSize).append("px;height:").append(pieSize)
-              .append("px;border-radius:50%;background:conic-gradient(from -90deg, ")
-              .append(gradient).append(");box-shadow:0 2px 8px rgba(0,0,0,0.15);margin:0 auto;\"></div>\n");
-
-            // 底部图例（简化：仅显示颜色 + 名称 + 百分比）
-            sb.append("                                <div style=\"margin-top:16px;padding:12px;background:#f5f5f5;border-radius:8px;\">");
-            sb.append("                                    <div style=\"display:flex;flex-wrap:wrap;justify-content:center;gap:16px;\">");
-            colorIdx = 0;
-            for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
-                double pct = (double) entry.getValue() / total * 100;
-                sb.append("                                        <div style=\"display:flex;align-items:center;gap:6px;\">\n");
-                sb.append("                                            <span style=\"display:inline-block;width:12px;height:12px;background:")
-                  .append(colors[colorIdx % colors.length])
-                  .append(";border-radius:2px;\"></span>");
-                sb.append("                                            <span style=\"font-size:12px;color:#333;\">")
-                  .append(escape(entry.getKey())).append(": ")
-                  .append(String.format("%.0f%%", pct)).append("</span>");
-                sb.append("                                        </div>\n");
-                colorIdx++;
-            }
-            sb.append("                                    </div>");
-            sb.append("                                </div>");
+            model.put("gradient", gradient.toString());
+            model.put("legend", legend);
         }
-        sb.append("                            </div>\n");
+        return renderSummaryTemplate("summary/error-type-pie-chart.ftl", model);
     }
 
     private static class FeatureFailureStats {
@@ -1560,121 +1262,88 @@ public class SummaryReportGenerator {
             }
         }
 
-        // Full Failure List
+        // Full Failure List：先按 feature 分组，保证同一 feature 只显示一次标题并聚合其下全部 scenario
+        List<Map<String, Object>> failureGroups = new ArrayList<>();
         if (!failures.isEmpty()) {
-            sb.append("                    <tr>\n");
-            sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-            sb.append("                            <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;\">Full Failure List</h3>\n");
-            sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-            sb.append("                                <tr>\n");
-            sb.append("                                    <th style=\"text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Requirement</th>\n");
-            sb.append("                                    <th style=\"text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Failure</th>\n");
-            sb.append("                                </tr>\n");
-
-            // 先按 feature 分组，保证同一 feature 只显示一次标题并聚合其下全部 scenario
             Map<String, List<FailureInfo>> failuresByFeature = new LinkedHashMap<>();
             for (FailureInfo f : failures) {
                 failuresByFeature.computeIfAbsent(f.feature, k -> new ArrayList<>()).add(f);
             }
-
             for (Map.Entry<String, List<FailureInfo>> entry : failuresByFeature.entrySet()) {
-                sb.append("                                <tr>\n");
-                sb.append("                                    <td colspan=\"2\" class=\"feature\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(entry.getKey())).append("</td>\n");
-                sb.append("                                </tr>\n");
-
+                List<Map<String, Object>> scenarios = new ArrayList<>();
                 for (FailureInfo f : entry.getValue()) {
-                    sb.append("                                <tr>\n");
-                    sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                    sb.append("                                        <a href=\"").append(f.htmlLink).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(f.scenario)).append("</a>\n");
-                    sb.append("                                    </td>\n");
-                    sb.append("                                    <td class=\"scenarioResult\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                    appendResultLabel(sb, f.result);
-                    if (f.error != null && !f.error.isEmpty()) {
-                        sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(f.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(f.error))).append("</div>\n");
-                    }
-                    sb.append("                                    </td>\n");
-                    sb.append("                                </tr>\n");
+                    Map<String, Object> s = new LinkedHashMap<>();
+                    s.put("link", f.htmlLink);
+                    s.put("name", escape(f.scenario));
+                    s.put("labelColor", resultColor(f.result));
+                    s.put("labelText", f.result.name().toLowerCase());
+                    s.put("color", resultColor(f.result));
+                    s.put("hasError", f.error != null && !f.error.isEmpty());
+                    s.put("error", f.error == null ? "" : truncateError(escape(f.error)));
+                    scenarios.add(s);
                 }
+                Map<String, Object> group = new LinkedHashMap<>();
+                group.put("feature", escape(entry.getKey()));
+                group.put("scenarios", scenarios);
+                failureGroups.add(group);
             }
-
-            sb.append("                            </table>\n");
-            sb.append("                        </td>\n");
-            sb.append("                    </tr>\n");
         }
-
-        // Full Test Results
-        sb.append("                    <tr>\n");
-        sb.append("                        <td class=\"compact-wrapper\" style=\"font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;\">\n");
-        sb.append("                            <div style=\"text-align:center;\">\n");
-        sb.append("                                <h3 style=\"color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;display:inline;\">Full Test Results</h3>\n");
-        sb.append("                                <a style=\"text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;\" href=\"").append(buildDownloadUrl(csvFileName)).append("\" target=\"_blank\">Download CSV</a>\n");
-        sb.append("                            </div>\n");
-        sb.append("                            <table class=\"failure-list failure-scoreboard\" style=\"border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;\">\n");
-        sb.append("                                <tr>\n");
-        sb.append("                                    <th style=\"text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Requirement</th>\n");
-        sb.append("                                    <th style=\"text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;\">Result</th>\n");
-        sb.append("                                </tr>\n");
 
         // 先按归一化后的 feature 分组，保证同一 feature 只显示一次标题，
         // 并聚合该 feature 下的所有 scenario（testOutcomes + simpleTestOutcomes）。
         // 这样即使 testOutcomes 内部顺序交错，也不会出现同一 feature 重复展示的问题。
-        Map<String, List<Runnable>> rowsByFeature = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> rowsByFeature = new LinkedHashMap<>();
         for (TestOutcome t : testOutcomes) {
-            String feature = normalizeFeatureName(getFeature(t));
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
-            TestOutcome outcome = t;
-            rowsByFeature.computeIfAbsent(feature, k -> new ArrayList<>()).add(() -> {
-                sb.append("                                <tr>\n");
-                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(outcome.getName())).append("</a>\n");
-                sb.append("                                    </td>\n");
-                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-
-                appendResultLabel(sb, outcome.getResult());
-                if (outcome.getResult() != TestResult.SUCCESS && outcome.getResult() != TestResult.IGNORED && outcome.getResult() != TestResult.SKIPPED) {
-                    String error = outcome.getTestFailureMessage() != null ? outcome.getTestFailureMessage() : "Test failed";
-                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(outcome.getResult())).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(error))).append("</div>\n");
-                }
-
-                sb.append("                                    </td>\n");
-                sb.append("                                </tr>\n");
-            });
+            String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
+            rowsByFeature.computeIfAbsent(normalizeFeatureName(getFeature(t)), k -> new ArrayList<>())
+                    .add(resultRow(html, escape(t.getName()), t.getResult(), error));
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
-            String feature = normalizeFeatureName(t.featureName);
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
-            SimpleTestOutcome outcome = t;
-            rowsByFeature.computeIfAbsent(feature, k -> new ArrayList<>()).add(() -> {
-                sb.append("                                <tr>\n");
-                sb.append("                                    <td class=\"scenarioName\" style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-                sb.append("                                        <a href=\"").append(html).append("\" target=\"_blank\" style=\"color:#0066cc;text-decoration:none;\">").append(escape(outcome.title)).append("</a>\n");
-                sb.append("                                    </td>\n");
-                sb.append("                                    <td style=\"font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;\">\n");
-
-                appendResultLabel(sb, outcome.result);
-                if (outcome.result != TestResult.SUCCESS && outcome.result != TestResult.IGNORED && outcome.result != TestResult.SKIPPED) {
-                    sb.append("<div style=\"margin-top:4px;padding-left:1em;color:").append(resultColor(outcome.result)).append(";font-size:11px;line-height:1.3;word-break:break-all;\">").append(truncateError(escape(outcome.errorMessage != null && !outcome.errorMessage.isEmpty() ? outcome.errorMessage : "Test failed"))).append("</div>\n");
-                }
-
-                sb.append("                                    </td>\n");
-                sb.append("                                </tr>\n");
-            });
+            String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
+            rowsByFeature.computeIfAbsent(normalizeFeatureName(t.featureName), k -> new ArrayList<>())
+                    .add(resultRow(html, escape(t.title), t.result, error));
         }
 
-        for (Map.Entry<String, List<Runnable>> entry : rowsByFeature.entrySet()) {
-            sb.append("                                <tr>\n");
-            sb.append("                                    <td colspan=\"2\" class=\"feature feature-title\" style=\"font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;\">").append(escape(entry.getKey())).append("</td>\n");
-            sb.append("                                </tr>\n");
-            for (Runnable row : entry.getValue()) {
-                row.run();
-            }
+        List<Map<String, Object>> resultGroups = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : rowsByFeature.entrySet()) {
+            Map<String, Object> group = new LinkedHashMap<>();
+            group.put("feature", escape(entry.getKey()));
+            group.put("rows", entry.getValue());
+            resultGroups.add(group);
         }
 
-        sb.append("                            </table>\n");
-        sb.append("                        </td>\n");
-        sb.append("                    </tr>\n");
+        Map<String, Object> model = new HashMap<>();
+        model.put("hasFailures", !failures.isEmpty());
+        model.put("failureGroups", failureGroups);
+        model.put("csvLink", buildDownloadUrl(csvFileName));
+        model.put("resultGroups", resultGroups);
+        try {
+            sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftl", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render failure-and-result-list fragment", e);
+        }
+    }
+
+    /**
+     * Full Test Results 的单行视图模型。
+     * 错误块仅对失败/错误类结果渲染（SUCCESS / IGNORED / SKIPPED 不展示），与原实现完全一致。
+     */
+    private Map<String, Object> resultRow(String link, String name, TestResult result, String error) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("link", link);
+        m.put("name", name);
+        m.put("labelColor", resultColor(result));
+        m.put("labelText", result.name().toLowerCase());
+        m.put("color", resultColor(result));
+        m.put("hasError", result != TestResult.SUCCESS
+                && result != TestResult.IGNORED
+                && result != TestResult.SKIPPED);
+        m.put("error", error == null ? "" : truncateError(escape(error)));
+        return m;
     }
 
     private static class FailureInfo {
@@ -1706,13 +1375,6 @@ public class SummaryReportGenerator {
         if (r == TestResult.IGNORED || r == TestResult.SKIPPED) return "#9e9e9e";
         if (r == TestResult.COMPROMISED) return "#9C77AD";
         return "#666666";
-    }
-
-    /** Build result label span - colored bold text. */
-    private void appendResultLabel(StringBuilder sb, TestResult r) {
-        sb.append("<span style=\"color:").append(resultColor(r))
-          .append(";font-size:12px;font-weight:bold;text-transform:uppercase;\">")
-          .append(r.name().toLowerCase()).append("</span>");
     }
 
     private long count(TestResult r) {

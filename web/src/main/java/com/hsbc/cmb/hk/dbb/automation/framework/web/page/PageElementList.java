@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public final class PageElementList extends AbstractList<PageElement> {
     private static final Logger logger = LoggerFactory.getLogger(PageElementList.class);
@@ -40,16 +41,24 @@ public final class PageElementList extends AbstractList<PageElement> {
      * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
      * 若元素位于 iframe 内，逐层 frameLocator 下钻。
      */
-    public Locator locator() {
+    protected Locator locatorInternal() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
-        Locator base = page.locator(selector);
+        Locator base = page.locatorInternal(selector);
         if (frameSegs != null) {
             for (String seg : frameSegs) {
                 base = page.getPage().frameLocator(seg).locator(base);
             }
         }
         return base;
+    }
+
+    /**
+     * 返回绑定到当前列表选择器的 {@link PageElement}（实时解析、不缓存 Locator）。
+     * 遵循框架元素返回规则：统一返回 {@code PageElement}，不向业务泄漏 Playwright 驱动类型。
+     */
+    public PageElement locator() {
+        return new PageElement(() -> locatorInternal(), selector, page);
     }
 
     public String getSelector() {
@@ -59,7 +68,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     // ========================== 核心等待 ==========================
     public void waitForExists(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
+            locatorInternal().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.ATTACHED)
                     .setTimeout((long) timeoutSec * 1000));
         } catch (Exception e) {
@@ -69,7 +78,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
     public void waitForVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
+            locatorInternal().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
         } catch (Exception e) {
@@ -99,18 +108,18 @@ public final class PageElementList extends AbstractList<PageElement> {
         try {
             // 使用 Playwright 原生等待：等待第 expectCount 个元素出现在 DOM 中
             // nth(expectCount - 1) 定位到第 N 个元素（0-based），waitFor ATTACHED 等待其出现
-            locator().nth(expectCount - 1).waitFor(new Locator.WaitForOptions()
+            locatorInternal().nth(expectCount - 1).waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.ATTACHED)
                     .setTimeout(timeoutMs));
 
             // 确认数量（此时第 N 个元素已出现在 DOM，但 count 可能更多）
-            int actual = locator().count();
+            int actual = locatorInternal().count();
             if (actual < expectCount) {
                 throw new IllegalStateException(
                         String.format("Expected ≥ %d, found %d: %s", expectCount, actual, selector));
             }
         } catch (TimeoutError e) {
-            int actual = locator().count();
+            int actual = locatorInternal().count();
             throw new IllegalStateException(
                     String.format("Timeout after %ds: expected ≥ %d, found %d: %s",
                             timeoutSec, expectCount, actual, selector), e);
@@ -131,7 +140,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
     public int size(int timeoutSec) {
         try {
-            Locator loc = locator();
+            Locator loc = locatorInternal();
             loc.first().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
@@ -194,7 +203,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
     public boolean isEmpty(int timeoutSec) {
         try {
-            locator().first().waitFor(new Locator.WaitForOptions()
+            locatorInternal().first().waitFor(new Locator.WaitForOptions()
                     .setState(WaitForSelectorState.VISIBLE)
                     .setTimeout((long) timeoutSec * 1000));
             return false;
@@ -226,12 +235,14 @@ public final class PageElementList extends AbstractList<PageElement> {
     }
 
     /**
-     * 返回当前 DOM 快照中的所有 Locator（非实时集合，调用后 DOM 变化不会反映在返回列表中）。
-     * 全版本 Playwright 兼容。
+     * 返回当前 DOM 快照中的所有元素（非实时集合，调用后 DOM 变化不会反映在返回列表中）。
+     * 统一返回 {@code List<PageElement>}，不再泄漏 Playwright 驱动类型。
      */
-    public List<Locator> allLocators() {
+    public List<PageElement> allLocators() {
         waitForVisible(defaultTimeoutMs / 1000);
-        return locator().all();
+        return locatorInternal().all().stream()
+                .map(loc -> new PageElement(() -> loc, selector, page))
+                .collect(Collectors.toList());
     }
 
     public void waitFor() {
@@ -253,13 +264,13 @@ public final class PageElementList extends AbstractList<PageElement> {
         }
 
         /**
-         * 通过父类 locator().nth(index) 获取定位器。
+         * 通过父类 locatorInternal().nth(index) 获取定位器。
          * Locator 不再缓存——父类的 locator() 每次动态绑定新 Page 实例，
          * 页面切换后自动使用新的 Page 重新创建 Locator。
          */
         @Override
-        public Locator locator() {
-            return super.locator().nth(index);
+        protected Locator locatorInternal() {
+            return super.locatorInternal().nth(index);
         }
 
         private int getIndex() {

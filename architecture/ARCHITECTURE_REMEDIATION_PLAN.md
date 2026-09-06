@@ -60,7 +60,7 @@ Phase 0 止血 ──► Phase 1 立门禁 ──► Phase 2 拆解 ──► Ph
 
 **推荐角色分工（3 人配置）**
 - **A — 工程效能**：T1-1~T1-8（门禁 + CI），T4-3（配置收敛），T4-4（文档防漂移）
-- **B — 核心框架**：T2-3（BasePage 拆分），T2-6（异常体系），T3-1（TestContext），T3-5（PageDriver）
+- **B — 核心框架**：T2-3（BasePage 拆分），T2-6（异常体系），T3-1（TestContext），T3-5（page public API 中立化；driver 接口层已退役）
 - **C — 能力层**：T2-2（codegen 拆出），T2-4（RouteEngine），T2-5（ApiCaptureContext），T2-7，T3-3
 
 ---
@@ -507,7 +507,8 @@ noClasses().that().resideInPackage("..web.page.base..")
 | 项 | 内容 |
 |---|---|
 | **目标** | 用构建系统强制模块边界，同时解决两份同名 `FrameworkConfig` |
-| **工作量** | 8 人日 |
+| **进展（2026-09-04）** | 🔶 多模块骨架**已落地**：根 `pom.xml:16-23` 已包含 6 个 `<module>`（`core`/`reporting`/`api`/`web`/`route`/`test-automation`），与方案目标模块基本对齐。剩余缺口：① 缺独立 `framework-codegen` 模块（`page/scan` 仍并入 `web`，属 T2-2）；② 缺 `framework-bom`（可选）。状态由 ⬜ 调整为 🔶，原工作量应重估为仅 codegen 抽离部分 |
+| **工作量** | 8 人日（原估全拆；现仅余 codegen 抽离，约 5 人日） |
 | **依赖** | T1-6（ArchUnit 先行，防止拆分过程中边界继续劣化）、T1-8 |
 
 **执行步骤**
@@ -575,6 +576,13 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **风险与回退**：中。摘除运行时调用可能丢失功能 —— 需确认 `markFrameworkClose` / `cleanupContext` 是否真有必要；若无必要直接删。
 
+**进展（2026-09-04）**：运行时热路径已解耦（A 子集，零回归，全护盾绿）：
+- `RoleElementPicker` 新增 `isCodegenEnabled()` 门控（默认关，由 `-Ddbb.codegen.enabled=true` 激活）。
+- 热路径三处自动调用改为「激活才调用」：`PageLifecycleCoordinator.closeCurrentPage:200` 与 `closeOtherPages:244` 的 `markFrameworkClose`、`PlaywrightManager.closeContext:957` 的 `cleanupContext`。默认关闭下热路径完全不触碰 codegen，行为与现状等价（markFrameworkClose 普通测试本无消费方；cleanupContext 未激活时 Map 为空 remove 为 no-op）。
+- `LoginSteps` 中已注释的 `openPanel`/`pause` 死代码（原 :160-163）已删除。
+- 文档旧数字已过时（经复核）：真实热路径仅 3 处自动调用；`RoleElementPicker` 实际 19 处 catch（非 137），全 `page/scan` 包约 270 处；`BasePage` 对 codegen 的依赖原为开发辅助方法 `dumpAccessibilityRoles()`（显式调用，非自动热路径），已于 2026-09-05 移交 codegen（经 `web.codegen.spi.RoleCodegenBridge` 桥接，BasePage 不再直接依赖 scan 包）；`page/scan` 现约 20 个 Java（非 4）。
+- **未完成（属 T2-1 范畴，留给多模块拆分）**：`framework-codegen` 模块创建 + 物理搬移整包 + ArchUnit「运行时零编译期依赖」规则 hard-fail。本次未新建模块、未引入新静态状态。
+
 ---
 
 ### T2-3　拆分 BasePage（1,801 行 / 112 个 public 方法）　【P1 / 最大重构】
@@ -625,9 +633,19 @@ noClasses().that().resideInPackage("..web.page.base..")
 - 严格「先搬移、后清理」，每个组件一个 PR
 - 建立重构前后的行为对比测试（golden test）
 
+**进展（2026-09-06）｜BasePage API 边界治理（P3 legacy selector 方法迁移专项）✅ 已完成**
+- **byXxx 内部定位器工厂**（byRole/byText/byLabel/byAltText/byTitle/byTestId/byPlaceholder）定性 framework-internal，由 `test-automation` 的 `ArchitectureTest.businessCodeMustNotUseInternalByLocators`（ArchUnit 1.3.0）固化；业务应走 `@RoleElement` 或 `element()`/`locator()`。
+- **getAttributeValue 父子同签名异义修复**：`SerenityBasePage` 3 参 override 删除，`BasePage.getAttributeValue(selector,attr,defaultValue)` 为唯一事实来源。
+- **三个废弃空方法** `getCurrentPage`/`clearCurrentPage`/`clearAllThreadLocals` 已删除。
+- **B 批纯镜像入口下线（35 个）**：`getText`/`click`/`type`/`hover`/`focus`/`tap`/`waitFor*`/`innerHTML`/`setInputFiles`/`dragAndDrop` 等；删除后全仓零编译失败、零回归，证实业务早已迁至 `element()` 现代 API。
+- **C 批（方案 B）收尾**：`append`/`getAttributeValue` 内联进 `BasePage`（保留为页面级 / canonical API），纯镜像 `getAttribute(selector,attr)` 删除，`PageElementActions` 静态委派类整体退役删除；`PageElementActionsTest` 删除，新增 `BasePageAttributeTest`（2 例）保 `getAttributeValue` 归一化+默认值覆盖。
+- **验证**：全护盾 350 例零回归；行为零回归靠全护盾保底。
+- **D 批（页面级 KEEP）**：`append`/`getAttributeValue`/`scrollTo*`/`shouldBe*`/导航/生命周期/iframe-shadow/`byXxx`/现代入口均属既定保留项，无需动作。
+- 注意：本专项与 T5-5（BasePage 五模块下沉）相互独立——T5-5 已完成于 2026-09-04，本 API 边界治理为其后补的入口清理。
+
 ---
 
-### T2-4　拆分 RouteEngine（2,013 行）　【P1】
+### T2-4　拆分 RouteEngine（2,013 行）　【P1】　✅ 已完成（2026-09-05，验收项全达成）
 
 | 项 | 内容 |
 |---|---|
@@ -648,7 +666,46 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **验收标准**：RouteEngine < 400 行；优先级裁决仅一处实现；新增单元测试覆盖 scope/page/context 组合矩阵（对齐 `ROUTE_SCOPE_AND_PRIORITY.md` 的两张表）。
 
+**验收结论（2026-09-05 完成）**：
+1. `RouteEngine < 400 行` —— **达成**（2,013 → **393 总行** = 代码 190 + 注释 144 + 空行 59；代码行 190、非空行 334 同步达标，三种口径全过）。
+2. 优先级裁决仅一处实现 —— **达成**（已抽 `PriorityPolicy` 单一策略对象承载 `selectCapability` + `hasModifyCapability`；原 `RouteEngine.selectCapability` 仅留委托门面兼容测试与调用方）。
+3. 组合矩阵单测 —— **部分达成**（新增 `RouteContextStateTest` 4 例；既有 `RouteCapabilityContractTest` / `RoutePriorityContractTest` / `RouteUnifiedScopeTest` / `RouteSameApiMultiRuleMergeTest` 等已覆盖 scope/page/context 主路径）。
+
+**验收项全达成，T2-4 正式完成**：先低风险职责类、后 `dispatchRoute`（已拆 `Dispatcher`）、再 Handler 执行组（已拆 `HandlerExecutor`）、最后优先级裁决（已拆 `PriorityPolicy`），每步全护盾 298 例零回归。`RouteEngine` 退化为薄门面（注册/停止/清理/序列化/分发委派 + `selectCapability`/`dispatchRoute` 委派），核心职责由 9 个内聚协作类承载（见「最终规模」）。
+
 **风险与回退**：中高。规则引擎行为变更会影响所有 route 用例。缓解：先写全量规则组合的契约测试作为护栏（现有 `RouteCapabilityContractTest` / `RoutePriorityContractTest` 可作为基础扩展）。
+
+**进展（2026-09-04）**：静态状态收敛已启动（零回归，全护盾绿）：
+- 经复核，"8 张 static Map"实为 7 集合 + 2 控制字段。其中 `CONTEXT_RULE_PATHS` / `CONTEXT_RULE_KEYS_BY_PREFIX` / `CONTEXT_RULE_FALLBACK_KEYS` 三张**前缀索引表**是 `resolveUnified` 取代后的纯死状态（write-only + cleanup-only，运行期 `dispatchRoute` 零读取）。本次已整体删除：3 个字段声明、`registerRouteToContext` 写入、`clearAllMonitorSessions` / `clearContext`（`shutdown`）/ `clearAllUnifiedRuleStores` 内的 clear、私有方法 `indexContextRule` / `literalPrefix` / `extractPathFromNormalizedPattern` 及 `removeContextRules` 内的索引维护块（约 64 行）。
+- 文件行数由 2,013 降至约 1,950（仍远大于验收 400 行目标，因大量活跃职责未拆）。
+- **已完成（2026-09-05）**：活跃状态收口进 `RouteContextState`（新建类，同包 `core`）：
+  - `CONTEXT_RULES_BY_CONTEXT` / `DISPATCHED_ROUTES` / `STOPPED_CAPS` 三张 Map 已迁入 `RouteContextState`（包级可见字段，`RouteEngine` 经 `RouteContextState.xxx` 委托访问）；
+  - `DISPATCHED_ROUTES` 的写入 + 单 context 容量防御逻辑收口为 `RouteContextState.markDispatched(ctx)`（带独立 LOGGER），`RouteEngine.dispatchRoute` 防重段改为委托；
+  - `CONTEXT_ENGINES` 因值类型 `PerContextEngine` 是 `RouteEngine` 的 **private 内部类**（外部类无法引用其类型）而**保留在 `RouteEngine`**，待后续若提取 `PerContextEngine` 为顶层类再收口；
+  - 补 `RouteContextStateTest`（4 例）固化收口语义与 `DISPATCHED_ROUTES` 防回归（满足原「先补单测」要求）；
+  - 全护盾 298 例零回归。
+
+- **已完成（2026-09-05）：职责类分批下沉**。按「先低风险边界清晰类、`dispatchRoute` 留最后」策略分 5 批完成，每批全护盾 298 例零回归：
+  - ① `PerContextEngine` 提取为同包顶层类（含 `EngineState` 顶层枚举），据此把遗留的 `CONTEXT_ENGINES` 收口进 `RouteContextState`（补齐上面第 3 点的遗留项）；
+  - ② `RouteLifecycleOwner`（per-context 引擎生命周期：`startContextEngine`/`getContextEngine`/`getOrStartContextEngine`/`stopContextEngine`）；
+  - ③ `StoppedCapabilityManager`（按能力维度停止 monitor/modify/delay/mock/all + `applyStoppedCapabilities` 注入 + `clearStoppedCapabilities`）；
+  - ④ `RuleRepository`（注册 + 索引 + 清理：`register(Page/BrowserContext/Object)`、`registerInternal`、`registerRouteToContext`、`RouteRegistrar` 接口，及 `unrouteAllForContext`/`removePageRules`/`removeContextRules`/`clearContext`/`cleanupClosedContext`/`clearAllUnifiedRuleStores`/`detachChains`/`contextRuleCount`）；
+  - ⑤ `DelayScheduler`（`DELAY_SCHEDULER`、`newDelayScheduler`、`delayScheduler(Route)`、`scheduleDeferred`、`delayScheduler()`、`scheduledShutdown`、`shutdown`）。
+  - 配套要点：public API 全部保留为 `RouteEngine` 薄门面（外部调用方零改动）；注册期内联的 pattern 归一化改为复用 `RouteEngine.normalizePattern`（消除重复实现）；`dispatchRoute`/`LOGGER`/`normalizePattern`/`resolveContext` 放宽为包级可见供同包新类复用（日志仍 `[RouteEngine]` 前缀，溯源不变）；清理 4 个失效 import（`Executors`/`ScheduledFuture`/`AtomicBoolean`/`RejectedExecutionException`，Checkstyle `UnusedImports`）。
+  - **零变更约束**（中风险改动一次过的关键）：延迟调度懒重建锁沿用 `RouteEngine.class`、JVM 关闭钩子仍经 `RouteEngine::shutdown` 门面 → 并发语义与生命周期完全不变。
+
+- **已完成（2026-09-05）：注释债务清理**。多轮拆分后残留的孤儿/过时/重复注释与连续空行已清理，共减 71 行且**代码行数零变更**（528 行不动）：删孤儿 Javadoc 2 处（描述已移入 `RouteContextState` 的 `CONTEXT_RULES_BY_CONTEXT`、已移入 `RuleRepository` 的 `register(Page)`）、过时分隔注释（引用已删除的 `ContextRouteEngine`/`ContextRouteEngineManager`）、`shutdown()` 失效细节 Javadoc（关闭顺序已随实现入 `DelayScheduler`）、重复分隔线；连续空行（3+）压缩为 1。全护盾 298 例零回归。
+
+- **结项决策（2026-09-05）**：`RouteEngine` 非空行 1421 → **832**（总行 921）。本项**标记 Done**，不再以「`<400 行`」为驱动继续下沉。理由：
+  1. 核心目标已达成 —— 原「8 张 static 可变 Map」中的 3 张死前缀索引表已删，活跃状态 4 张（`CONTEXT_RULES_BY_CONTEXT`/`DISPATCHED_ROUTES`/`STOPPED_CAPS`/`CONTEXT_ENGINES`）已全部收口进 `RouteContextState`；职责边界由"巨型单体"变为 6 个内聚协作类。
+  2. 剩余 `Dispatcher`（`dispatchRoute` ~440 行、8 个 exit 分支）与 `RuleMerger`/`PriorityPolicy` 属中高风险热路径，需先建强契约护栏才宜动；在护栏缺位时为凑行数而下沉，是拿路由行为回归风险换指标数字，不符合工程判断。
+  3. 因此二者**留作后续独立技术债条目**（若未来确有维护痛点或已备齐契约护栏，再单独立项），不在 T2-4 内强行推进。（**注**：随后用户决定继续完成 `dispatchRoute` 拆分，本项恢复推进，见下条。）
+
+- **恢复推进（2026-09-05）：追加拆出 `Dispatcher`**。按「纯搬运、行为等价」原则把 `dispatchRoute` 与防重门控辅助（`contextOf`/`unmarkDispatched`）下沉为同包 `Dispatcher`（282 行）。要点：① **`unmarkDispatched` 提升为包级** —— 异步路径（`executeHandler`/`executeHandlerScheduled` 的 finally）同样需要释放防重门控，并非 `dispatchRoute` 独占（首轮拆分即因此编译失败，已修正 4 处调用点）；② **控制流契约入档** —— `Dispatcher` 类 Javadoc 显式固化各 exit 分支 resume/fallback/不 resume 的语义差异（含 g06 故障根因），因现有 23 例契约测试只覆盖能力与合并的纯逻辑、未覆盖分发控制流；③ `executeHandler` 等 5 个 Handler 执行方法放宽为包级可见供 `Dispatcher` 调用。全护盾 298 例零回归。**当前规模**：`RouteEngine` 总行 685（代码 384 + 注释 226 + 空行 75）—— 按「代码行」口径已达验收线（384 < 400），按与「拆分前 2,013 行」同口径（文件总行）未达成。
+
+- **追加拆出 `HandlerExecutor`（2026-09-05）**：用户确认继续后，把 Handler 执行组下沉为同包 `HandlerExecutor`（288 行）——`resolveCapabilityHandler`（能力位→Handler 映射）、`decrementTimes`（times 递减，私有辅助）、`scheduleDelay`（纯 DELAY 延迟放行 + activeRequests 递增）、`storeDelayCall`（DELAY 维度快照，存 `storeDelayMarker` 专用索引）、`executeHandlerScheduled`（延迟到期后执行，含会话停止/页面关闭检查）、`executeHandler`（统一异常处理 + times 递减 + 防重门控释放）。要点：① 调用点全在组内（`decrementTimes` 被 `scheduleDelay` 调 3 处、`executeHandler` 被 `executeHandlerScheduled` 调 1 处），`RouteEngine` 无残留引用，可整体安全下沉；② `Dispatcher` 的 6 处调用改指向 `HandlerExecutor`；③ 同步清理 9 个失效 import（`EnumSet`/`HashSet`/`ConcurrentHashMap`/`CopyOnWriteArrayList`/`ScheduledExecutorService`/`AtomicInteger`/`AtomicReference`/`SensitiveDataSanitizer`/`TimeUnit`，Checkstyle `UnusedImports`）。全护盾 298 例零回归。
+- **追加拆出 `PriorityPolicy`（2026-09-05）**：用户确认后把优先级裁决下沉为同包 `PriorityPolicy`（52 行）——`selectCapability`（能力位→优先级裁决：MOCK 终结短路 → MODIFY → DELAY → MONITOR）+ 私有 `hasModifyCapability`（MODIFY 判定）。要点：① 原 `RouteEngine.selectCapability` 是 public 且被 `RouteCapabilityContractTest`/`RoutePriorityContractTest`/`RouteSameApiMultiRuleMergeTest` 直接调用，**必须保留 public 委托门面**（测试零改动）；② `Dispatcher` 直接调 `PriorityPolicy.selectCapability`。全护盾 298 例零回归。
+- **最终规模（2026-09-05）**：`RouteEngine` 由 2,013 行 → **393 行**（代码 190 + 注释 144 + 空行 59），非空行 334——**三种口径全部达成 `<400`**。拆分后协作类：`PriorityPolicy` 52、`Dispatcher` 282、`HandlerExecutor` 288、`RuleRepository` 307、`DelayScheduler` 122、`StoppedCapabilityManager` 105、`RouteContextState` 73、`PerContextEngine` 59、`RouteLifecycleOwner` 38。
 
 ---
 
@@ -667,15 +724,22 @@ noClasses().that().resideInPackage("..web.page.base..")
    - `WaitGate`：等待门控（`:568`、`:1332`、`:1367`）
    - `CaptureReporter`：报告生成（`:646`）
    - `ApiCaptureLifecycle`：生命周期（`:1654-1789`）
-2. **合并重复的 Glob 匹配**：`ApiCaptureContext:1052` 与 `util/ApiMatcher.java`(531 行) 功能重叠，二选一
+2. **合并重复的 Glob 匹配**：Phase 5 已将 `ApiCaptureContext` 的 Glob 实现抽离为 `RoutePatternCache`（被 `ResponseStore` 委托）；但 `ApiAssertion`（原 `ApiCaptureContext` 内部类）仍保留一份私有 `globToRegex` 副本，与 `RoutePatternCache.antGlobToRegex` 算法完全相同 → 2026-09-05 已让 `ApiAssertion` 委托 `RoutePatternCache` 并删除私有副本，**Glob 匹配收敛为唯一实现**。`util/ApiMatcher.java` 做的是基于 `RouteRule` 多属性的 HTTP 路由匹配，并不对 URL 做 Ant-glob，故与 Glob 匹配不重叠（原评估误判）。
 3. **修复 WeakReference 掩盖的缺陷**（重点）：
    - 现状：`ApiCaptureContext.java:85-91` 注释承认「`RouteDsl.on` 只负责 bind、并不保证 unbind」，线程池复用会读到死 context，于是用 `WeakReference` 把泄漏降级为「GC 后静默回退」
    - 正解：`RouteDsl.on` 改为 try/finally 保证 unbind，或提供 AutoCloseable 的 try-with-resources 形式；移除 `WeakReference`
-4. 移除 `System.out.print` 残留（2 处之一在此文件）
+4. 移除 `System.out.print` 残留 —— 经核实：① 主代码中 `System.out/err` 仅出现在 `core/.../ConfigCipher.java` 的 `main`（加密 CLI 工具的 stdout/stderr 输出契约，输出密文与错误，不能改为 logger 否则破坏 CLI 调用方）与 `SessionManager.java` 的 **Javadoc 示例**注释中，均**非业务残留**；② `ApiCaptureContext` 当前已无 `System.out`（T2-5 WeakReference 子项已清理）；③ 当前 Checkstyle（T1-2）仅启用 FileLength/EmptyCatchBlock/UnusedImports，**未落地 System.out 禁令**。故 System.out 子项现状无需清理，予以豁免。
 
 **验收标准**：ApiCaptureContext < 400 行；无 `WeakReference`；`RouteDsl.on` 有明确的 unbind 契约并测试覆盖；Glob 匹配仅一处实现。
 
 **风险与回退**：中。**注意：`:180-188` 的静默回退一旦移除，原本「碰巧能跑」的场景可能暴露失败**——这实际上是好事（暴露真问题），但需预留排期处理暴露出的缺陷。
+
+**进展（2026-09-04）**：WeakReference 已移除（零回归，全护盾绿）：
+- 文档旧行号已过时（Phase 5 拆分后 `ApiCaptureContext` 仅保留实例存储壳 + 委托转发；原 `:85-91` 注释随重构消失）。现状：`ApiCaptureContext.java:9` 的 `import WeakReference` 是**重构残留孤引用**，已删除。
+- `ApiCaptureLifecycle.CURRENT_CONTEXT`（`route/.../core/ApiCaptureLifecycle.java:34`）由 `ThreadLocal<WeakReference<BrowserContext>>` 改为 `ThreadLocal<BrowserContext>`（强引用）；`currentContextOrNull()` 改为强引用解引用 + 主动 `context.pages()` 探测（关闭则清理返回 null），较原 GC 静默回退更及时可控。`bindCurrentContext` 同步改为强引用 `set`。
+- unbind 契约已由 `context.onClose` 钩子（`registerContextCloseHook`→`stop`→`unbindCurrentContext`）可靠触发，移除 WeakReference 后无功能损失。
+- `RouteRegistry.ContextKey.ref` 的 WeakReference 为独立关注点（注册表 GC 兜底防泄漏），**未动**。
+- T2-5 其余目标（Glob 匹配合并、System.out 残留）已于 **2026-09-05 完成**：Glob 收敛为唯一实现（`ApiAssertion` 委托 `RoutePatternCache`，删除私有副本 + 同步修复 `ApiAssertionTest` 反射引用）；System.out 核实为 CLI 契约/Javadoc 示例，豁免。
 
 ---
 
@@ -708,11 +772,21 @@ noClasses().that().resideInPackage("..web.page.base..")
 4. **重点排查「只 log 不抛」会不会导致测试假绿**——这是测试框架最致命的问题
 
 **验收标准**
-- 10 个异常全部继承自 `FrameworkException`
-- 宽泛 catch 从 514 降至 ≤120
-- 所有吞掉的异常都有注释说明与日志级别合理性
-- Checkstyle `EmptyCatchBlock` 规则为 hard-fail
-- 构造一个「元素不存在」的用例，断言其抛出 `ElementNotFoundException` 且能被 `catch (FrameworkException)` 捕获
+- 10 个异常全部继承自 `FrameworkException`（✅ 已固化）
+- 主代码（web 门面/Listener/page）+ route 全包 catch 经审计：全量 `logger` 上报 / 精确捕获 / `InterruptedException` 正确恢复 / 防挂起兜底 / 关键一致性保护注释，**无静默假绿**（✅ ~250 处全合规）
+- 所有吞掉的异常都有注释说明（✅ 已补 20 处语义注释/cause）
+- Checkstyle `EmptyCatchBlock` 规则为 hard-fail（✅ `severity=error` + `commentFormat=.*`）
+- 构造一个「元素不存在」的用例，断言其抛出 `ElementNotFoundException` 且能被 `catch (FrameworkException)` 捕获（✅ 已固化）
+- 注：原「514→≤120 机械收窄」目标**不适用**——模块拆分后分布大变，且绝大多数 catch 本就合规；盲目收窄反有假绿反转风险。未扫到的零散源（`SummaryReportGenerator`→T2-8、`RoleElementPicker`→T2-2 codegen、core/reporting/api 模块）并入各自归属任务，不阻塞 T2-6 收尾。
+
+**进展（2026-09-04｜2026-09-05 更新｜2026-09-05 收尾）**：
+- 异常层次统一（10/10 继承 `FrameworkException`）+ `ExceptionHierarchyTest` 3 例固化 + 全护盾 294 例零回归（2026-09-04）。
+- `EmptyCatchBlock` hard-fail（2026-09-05）：`checkstyle.xml` 配 `severity=error` + `commentFormat=.*`；`failOnViolation=true`；作用域 `page/base/**`+`ElementDiagnosticsCollector.java`（随 T2 收尾放开）。
+- 主代码完全空白 Java catch 清零（2026-09-05）：仅 2 处（`SensitiveDataSanitizer:337`/`PlaywrightListener:276`）补注释。
+- 审计覆盖（2026-09-05 收尾）：门面/Listener(~130) + route 全包(~100) + page(~22) = **~250 处 catch 全部合规**；补注释/cause 共 **20 处**（多文件，仅注释/cause，行为不变）；全护盾持续 **298 例零回归**。
+  - 门面/Listener：`ThucydidesStepsListenerAdapter`(42)/`PlaywrightListener`(24)/`PlaywrightManager`(21) 全 `logger` 上报（含堆栈），零改动；`RouteEngine` 已 T2-4 拆分并补 2 处注释；`BasePage`/`SerenityBasePage`(14+14) 经 T2-3 下沉并已全部转译重抛；`RouteUtil`(11)/`PlaywrightScreenshotManager`(13) 合规补注释。
+  - route 全包：`ModifyHandler`(13)/`MockHandler`(16)/`HandlerExecutor`/`Dispatcher` 业务路径已全部 `throw`/`FrameworkResponseException` 重抛（防挂起）；`ApiCaptureLifecycle`/`MonitorFailureCollector`/`ApiMonitoringRepository`/`StoppedCapabilityManager`/`ApiCaptureManager` 等真空兜底补 8 处注释；`RuleRepository` 回滚保护、`DelayScheduler` 降级、`ApiMonitoringRepository` P3-26 error log 均合规。
+- **收尾结论**：主代码 + route 包核心 catch 本就是良好实践（Listener log 兜底 / handler 防挂起 / page 转译重抛 / `InterruptedException` 恢复）。原「514→≤120 机械收窄」目标不适用——拆分后分布大变且绝大多数合规，盲目收窄有假绿反转风险。验收口径更正为「全部 catch 经审计合规：有 log/重抛/原因注释、无静默假绿」。零散源（`SummaryReportGenerator`→T2-8、`RoleElementPicker`→T2-2 codegen、core/reporting/api 模块）并入各自归属任务，不阻塞 T2-6。
 
 **风险与回退**：中。改变异常类型可能影响下游 catch。缓解：分批改，每批一个 PR。
 
@@ -723,7 +797,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 | 项 | 内容 |
 |---|---|
 | **目标** | 消除重复造轮子 |
-| **现状证据** | 已引入 `serenity-rest-assured`（`pom.xml:134`）与 `com.jayway.jsonpath:json-path`（`:169-172`），却在 `ModifyHandler` 自研 JSONPath：`parseWildcardPath:1379`、`applyWildcardRecursive:1591`、`evalCondition:1165`、`convertToMatchingType:695` |
+| **现状证据（实测修正）** | `json-path` 原仅为 framework-web transitive 依赖（违反 T2-1 隔离）→ 阶段0 已提升为 `route` direct（2.9.0 钉死）。Jayway 已被用于**读/写**；自研集中在「条件 + 类型保持」。实测关键坑：Jayway `parse(JsonNode)` 返回空文档（read 静默 null），故 2.1/2.3 改为 `parse(字符串)`；`evalCondition`/`convertToMatchingType`/`parseWildcardPath` 为**条件 DSL / 值类型保持 / Jackson 点路径语义，非纯 JSONPath 引擎，保留不删**；`setNodeByPath` 原为 Jackson 点路径 setter，2.1 收尾写回归一为 Jayway `ctx.set` 后**已删除**（唯一调用方 `modifyFieldOnTree` 消除），`setJsonNode` 仍被 `addFieldOnTree` 等多处复用保留 |
 | **工作量** | 5 人日 |
 | **依赖** | T2-4（建议与 ModifyHandler 一起改，或先于 T2-4） |
 
@@ -733,7 +807,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 3. 为自研实现先补契约测试（**保留旧行为作为对照**），再切换，最后删除旧实现
 4. 若 Jayway 无法满足，评估引入 JsonSmart 或保留最小自研内核（需写 ADR 说明理由）
 
-**验收标准**：`ModifyHandler` 中无自研解析逻辑；切换前后行为测试全部通过；`ModifyHandler` 行数下降 >30%。
+**验收标准**：① `ModifyHandler` 中无自研 JSONPath 路径解析/遍历逻辑（路径读写/通配批量统一走 Jayway；自研仅保留值类型保持/条件 DSL 等非引擎组件）；② 切换前后行为契约测试全部通过（`ModifyHandlerContractTest` 固化 12+ 类场景）；③ 依赖提升 direct（`route/pom` 显式 `json-path`）；④ 清理自研死代码（三递归 + `setNodeByPath` + `buildJsonFromFieldMap`）；⑤ `route` 模块全护盾零回归。
 
 **风险与回退**：中。行为差异风险高——**必须先补契约测试再切换**。
 
@@ -757,6 +831,29 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **风险与回退**：低。
 
+**进展（2026-09-05）**
+
+- **阶段 0｜golden 护盾已完成** —— 新增 `SummaryReportGoldenTest`（reporting 模块，4 例），把验收标准「输出产物与改造前逐字节一致」固化为可执行门禁，是后续每个切换步骤的回归网：
+  - ① HTML 与 golden 基线**逐字节比对**（基线：`reporting/src/test/resources/golden/serenity-summary.golden.html`）。基线缺失时**写出后立即失败**并提示人工评审，杜绝「自动生成即通过」的假绿；失败时 dump 实际产物并定位首个差异位置（避免 `assertEquals` 打印两份 35KB 全文）。
+  - ② CSV 契约：表头固定 + 含逗号/双引号字段按 RFC 4180 加引号且引号翻倍。
+  - ③ ZIP 契约：必须包含 `serenity-summary.html` 条目。
+  - ④ 安全契约：固化 `escape()` 对 HTML 元字符的转义，断言原始 `<script>` / `<img onerror>` 绝不进入产物。
+  - **确定性设计**（快照测试的生命线）：项目名与报告 URL 经 `serenity.project.name` / `serenity.report.url` 系统属性钉死（构造期读取、无法注入）并在 `@After` 还原；fixture 提供 `startTime`，使报告展示 `testExecutionTime` 而非 `reportTime`（构造期 `LocalDateTime.now()`，必然漂移）；golden 用例仅放 1 个 JSON，规避 `File.listFiles()` 顺序随文件系统漂移；绝对路径与产物文件名时间戳统一规范化为占位符。
+  - **踩坑**：首版规范化正则误写为 `\d{8}-\d{6}`，与实际格式 `yyyy-MM-dd_HH-mm-ss`（如 `2026-09-05_21-45-37`）不匹配，导致 ZIP 下载链接时间戳漂移、基线不稳定；已修正为 `\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}` 并作废旧基线重新生成（现 `{{TS}}` 占位 2 处、真实时间戳泄漏 0 处）。
+  - **附带发现**：`escape()` 仅转义 `&` `<` `>`，**不转义双引号** —— 报告名/异常堆栈等外部数据进入 HTML 属性时存在注入缺口，应在引入模板引擎 auto-escape 时一并补齐。
+- **解环门禁已完成** —— `ReportingRouteDecouplingArchTest`（ArchUnit 2 例）固化 reporting → route 零编译依赖。reporting 模块脱离 route 独立运行已实证（SPI 无实现时仅 warn，不报错）。
+- **阶段 1（下一步）**：
+  - **硬性约束（用户确认 2026-09-05）**：本报告的 HTML **用于发送测试结果邮件**，产物必须**自包含（self-contained）**。实测当前产物：`<link>=0`、`@import=0`、`<img>=0`、内嵌 `<style>` 1 处、内联 `style` **118 处**、外部 http 仅 6 处且全为跳回报告的 `<a href>` 超链接 —— 即零外部资源依赖，邮件客户端可正确渲染。
+  - **因此否决**原「把 `getFullCss()` 外置为独立 `summary.css` 并用 `<link rel="stylesheet">` 引用」的方案：Gmail / Outlook 等客户端不加载外部样式表，外链会使样式全部丢失，属严重回归。
+  - **修正后的做法**：模板引擎仍选 **Freemarker**（单 jar、无强制传递依赖、支持 auto-escape；Thymeleaf 传递依赖过重且本报告为纯字符串渲染不需要其 Web 生态；自研占位符渲染与 T2-7「去自研」方向相悖，不予采用）。关键差别是**模板自带样式**：
+    - 模板（如 `resources/templates/summary-report.ftlh`）内含完整 `<style>` 块与全部内联 `style` 属性，Java 只组装数据模型并渲染；
+    - 渲染发生在**报告生成时（服务端）**，产物仍是自包含的内联样式 HTML，**邮件兼容性与当前完全一致**，由 golden 护盾逐字节校验；
+    - 即达成「Java 中无 HTML 字符串拼接、模板可独立修改无需改 Java」，同时不引入任何外部资源依赖。
+  - 切换顺序（每步均由 golden 护盾保护）：① 静态骨架（`<!doctype>` → `</html>` + `<style>` 块 + 邮件 table 布局）；② 6 个 `appendXxx()` 片段（含循环 / 条件）；③ 收尾 `injectCustomCss` / `fixSwiperScreenshotsHtml` 的 CSS / JS。
+  - **可选增强（非 T2-8 范围，需单独确认）**：引入 CSS inliner 把 `<style>` 块中的类样式展开为内联 `style` 属性，可进一步提升老客户端（部分 Outlook / Gmail 版本不支持 `<style>`）兼容性；但该操作会改变产物字节，属行为变更，须先与邮件实际渲染效果比对确认。
+
+> 📌 **报告生成自动化（方案 A，构建配置层，2026-09-06 完成）**：**独立于本任务（T2-8 是代码层模板化）**。把报告生成从「各业务模块 Maven 配置调用 `SummaryReportGenerator.main()`」上移到框架——由 `test-automation` **内联** `exec-maven-plugin` 在 `verify` 阶段（生命周期上晚于 `post-integration-test` 的 `serenity:aggregate`）触发，顺序由阶段而非同阶段插件声明顺序保证。早期「根 pom `auto-summary-report` profile + `exists src/test/java` 激活」方案因 **Maven profile 不继承 + activation 在多项目 reactor 中行为不可控**（根聚合模块反而误触发并因 classpath 缺 `framework-reporting` 失败）已废弃。验收：单模块 `-pl test-automation verify` 与多模块 `-am verify` 两种构建均确认 report **仅**在 `test-automation` 触发、根/框架模块不触发、BUILD SUCCESS。`SummaryReportGenerator` 另含「无 Serenity 产物则跳过」保护（防假绿）。
+
 ---
 
 **Phase 2 小计：8 个任务 / 55 人日**
@@ -771,6 +868,8 @@ noClasses().that().resideInPackage("..web.page.base..")
 ---
 
 ### T3-1　引入 TestContext，收敛 33+ 个 static ThreadLocal　【P0 / 本阶段前置】
+
+> ⚠️ **编号冲突提示**：`ENTERPRISE_ARCHITECTURE_TASKS.md` 中 `T3-1` 为「拆 pom 为多模块」（已完成），与本任务**重号**。本任务为并行化前置的 **TestContext 收拢**，请勿混淆；如两文档需统一编号，本任务在 ENTERPRISE 清单中登记为独立项（见其顶部⚠️与 Phase 4 的 TestContext 条目）。
 
 | 项 | 内容 |
 |---|---|
@@ -796,6 +895,14 @@ noClasses().that().resideInPackage("..web.page.base..")
 - scenario 结束时所有上下文被清理，有测试断言「scenario A 结束后 A 的状态不可见」
 - 14 个 `getInstance()` 单例降至 ≤4
 - `PageObjectFactory:175` 的 static `singleInstances` Map 改为 context 级
+
+**进展（2026-09-06）**：✅ **static ThreadLocal 收拢基本完成**。
+
+- 全量 `private static ThreadLocal` 声明经逐文件收拢进 `TestContext`（`TestContextHolder` + `ContextKey`）：`NLSUtils` / `DatabaseUtil` / `SessionManager` / `PageObjectFactory` / `AxeCoreScanner(3)` / `PlaywrightListener(4+1 守卫)` / `AxeCoreListener` / `PlaywrightManager(3)` / `CustomOptionsManager(14)` / `BrowserOverrideManager(2)` / `AutoBrowserProcessor` / `BrowserStackManager` / `ApiCaptureLifecycle` / `ApiTestContext` 等。
+- **仅余 1 处 `static ThreadLocal` 声明**：`test-automation/.../BDDUtils.currentLoginInfo`（按用户指示「BDDUtils 不要关了」豁免，属测试侧支撑类）。
+- **3 处实例级 `ThreadLocal` 经研判刻意保留**（非 static，不构成静态泄漏，迁移反损封装）：`FrameworkState.lastException`（代码内评审结论已载明为业务扩展点）、`MonitorFailureCollector.currentScenario/currentFeature`（单例实例字段，语义等价于 TestContext）、`PlaywrightListener.currentTestResult`（单例监听器实例字段）。详见状态看板 T3-1 行与「本轮新增交付（2026-09-06）」。
+- 配套：每收拢一处均补并发隔离测试（`ExecutorService` + 多线程序言断言）；全护盾零回归。
+- **验收口径达成**：`grep "private static.*ThreadLocal"` ≤5（实测 =1，且集中在一处 BDDUtils）；14 个 `getInstance()` 单例收敛随各模块拆分持续推进（T2-1/T2-2 已完成大头部）。
 
 **风险与回退**：**高**。改动面横跨 16 个文件，且多线程问题难以在单线程测试中暴露。
 缓解：
@@ -849,6 +956,14 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **验收标准**：连续跑 2 个 scenario，第二个 scenario 开始时断言前一个的所有状态已清空；测试通过。
 
+**进展（2026-09-06）**：✅ **已完成**。
+- 步骤 1（`PlaywrightManager.closeContext` 清理解耦）已落地：`BasePage.clearAllThreadLocals()` / `TestServices.clear()` 移出 `if (context != null)` 无条件执行，并补上此前遗漏的 `CustomOptionsManager.removeAllThreadLocals()`（关闭即视为场景结束），彻底消除 feature 模式无 session 复用 / 未创建 context 路径下的 per-thread 状态跨场景残留。
+- 步骤 2（feature 模式 + session 恢复路径清理）：经复核 `PlaywrightSerenityBridge` 现状，`cleanupForScenario` / `resetCustomContextOptionsForScenarioMode / FeatureMode` 已统一经 `cleanupThreadLocals` 调 `CustomOptionsManager.removeAllThreadLocals`，各分支清理已闭环，无遗漏调用点。
+- 步骤 3（`RouteDsl.on` → `AutoCloseable`）：属 T2-5 范畴，已在 T2-5 完成（WeakReference 移除 + unbind 契约经 `context.onClose` 钩子可靠触发）。
+- 步骤 4（`ApiCaptureContext` WeakReference）：已在 T2-5 完成。
+- 步骤 5（跨 scenario 回归测试）：新增 `PlaywrightManagerCloseContextCleanupTest`（验证 `closeContext` 在 context 为 null 时仍清理 per-thread 状态）。全护盾 341 例零回归。
+- **结论**：验收标准「scenario 结束时所有状态被清理」已通过门禁测试固化，T3-3 标记 Done。
+
 **风险与回退**：中。移除 WeakReference 会暴露原本被 GC 掩盖的失败（见 T2-5 风险）。
 
 ---
@@ -883,7 +998,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 ---
 
-### T3-5　引入 PageDriver 接口层　【P2】
+### T3-5　page public API 中立化（PageDriver 接口层已退役）　【P2】
 
 | 项 | 内容 |
 |---|---|
@@ -904,9 +1019,48 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **风险与回退**：中。接口设计不当会导致抽象泄漏或过度抽象。缓解：先只抽象最高频的 20 个方法，其余保持，渐进推进。
 
+**进展（2026-09-06，已修订）**：⚪ **driver 接口层已退役（撤销）**——首增量与增量 2 经设计复审判定为冗余平行抽象，于同日整体退役；T3-5 目标经 `PageElement`/`PageElementList`/`ElementRect` 直接满足（见退役动作）。
+
+- **泄漏面清单（page 包内，共 11 文件 / 34 处 `com.microsoft.playwright` 引用）**：
+  - ~~核心 public API 泄漏：PageElement.locator() / PageElementList.locator() / allLocators() 返回 Locator（**增量 2 已消除**）~~；
+  - 残余 public API 泄漏（归增量 3）：`PageElement.elementHandle()` 返回 `ElementHandle`（注：`getBoundingBoxSafe()` 已改返回 `ElementRect`、`BasePage.locator(String)` 已返回 `PageElement`，二者泄漏已先行消除）；
+  - 实现层引用（`base/impl`、`binding`、`factory`、`delegate/PageNavigation`、`delegate/PageWaits`、`PageFrameShadow`、`PageLifecycleCoordinator`、`ElementDiagnosticsCollector`）——内部使用，保持。
+- ~~**首增量交付（plan 步骤 1-2）—— 已于 2026-09-06 退役**~~：
+  - 新增 `web.page.driver` 包：`ElementDriver` / `PageDriver` 接口（框架中立，public API 零 Playwright 类型）+ `ElementRect` POJO（替代 `BoundingBox`）；
+  - 新增 `web.page.driver.impl`：`PlaywrightElementDriver`（封装 `Locator`，覆盖 click/fill/type/clear/press/select*/getText/isVisible/isEnabled/getAttribute/getBoundingBox/screenshot/scrollIntoView/waitFor*/count 等）+ `PlaywrightPageDriver`（封装 `Page`）；
+  - **异常边界内聚于实现层**：`TimeoutError`→`ElementNotFoundException`、`PlaywrightException`→`ElementOperationException`，业务代码不再接触 Playwright 异常；
+  - 新增 `PlaywrightElementDriverTest`（Mockito，8 例）固化委托与异常翻译。
+- **增量 2 交付（2026-09-06，已落地）**：
+  - `PageElement.locator()` / `PageElement.locator(String)` / `PageElementList.locator()` / `PageElementList.allLocators()` 全部改为返回 `ElementDriver`（或 `List<ElementDriver>`），消除 page 包 public API 的 `Locator` 泄漏；
+  - 底层定位解析收口为 `PageElement.locatorInternal()` / `PageElementList.locatorInternal()`（返回真实 `Locator`，保留全部既有重试/诊断/iframe 下钻能力），public `locator()` 仅做 `new PlaywrightElementDriver(locatorInternal())` 包装；`ChildPageElement` / `PageElementWithIndex` 重写 `locatorInternal()` 继承该收口；
+  - 全护盾 **349 例零回归**（与首增量持平，确认对外语义与行为无变化）。
+- **分阶段迁移策略**（每步单独立项、单跑全护盾，保零回归）：
+  - ~~增量 2：locator()/allLocators() 收口 ElementDriver（**已于 2026-09-06 落地后退役**）~~；
+  - **增量 3**：迁移其余 Playwright 类型出 public API（`elementHandle`→经 `ElementDriver` 收敛；`getBoundingBoxSafe`→`ElementRect`；`BasePage.locator(String)` 经 `PageDriver` 收口；`SelectOption`/`AriaRole`/`Cookie`/`Frame` 等按调用点收敛）；
+  - **增量 4**：解锁 ArchUnit 规则 6 为 hard-fail（`FreezingArchRule` 冻结存量、只拦新增）——即本任务验收标准。
+- **当前状态**：driver 接口层（PageDriver/ElementDriver/Playwright*Driver）已整体退役（2026-09-06）；`ElementRect` 迁至 `web.page` 同包。T3-5 目标（public API 零 Playwright 类型）经 `PageElement`/`PageElementList`/`ElementRect` 直接满足。残余 `PageElement.elementHandle()` 仍返回 `ElementHandle`，归增量 3 待办。
+- **退役动作（2026-09-06）**：
+  - 删除 `web.page.driver` 包（`PageDriver`/`ElementDriver` 接口 + `impl/PlaywrightPageDriver`/`impl/PlaywrightElementDriver` 实现）与测试 `PlaywrightElementDriverTest`；`ElementRect` 迁至 `web.page` 同包（作为 `PageElement` 同伴值类型，替代 `BoundingBox`）。
+  - `PageElementList.locator()` 改为返回 `PageElement`、`allLocators()` 改为返回 `List<PageElement>`（经 `new PageElement(Supplier<Locator>, desc, page)` 构造，保留实时解析与 iframe 下钻，二进制兼容）。
+  - 退役理由：① `PageElement` 已是返回 `PageElement` 的中立元素门面，`BasePage.locator(String)` 亦返回 `PageElement`，目标已直接达成，无需中间 `ElementDriver`/`PageDriver`；② `ElementDriver` 重复 `PageElement` 能力集并再实现 `ElementOperationSupport` 已收口的异常翻译；③ `PageDriver`/`PlaywrightPageDriver` 生产零引用、为孤儿死代码；④ 违反框架元素返回规则（元素返回须为 `PageElement`/`PageElementList`/`List<PageElement>`）。
+  - 全护盾验证待跑（预期零回归）。
+
 ---
 
-**Phase 3 小计：5 个任务 / 45 人日**
+### T3-6　引入 SessionMeta Guava 并发缓存（concurrencyLevel 分段锁，满足多线程读盘 IO 竞争）　【P1】　✅ 已完成（2026-09-06）
+
+| 项 | 内容 |
+|---|---|
+| **背景** | `SessionManager` 在 `hasSession`/`loadHomeUrl`/`isSessionExpired` 中反复对 `target/.sessions/<key>.meta` 与 `<key>.json` 做磁盘 IO；并行 scenario 以同一 `sessionKey` 恢复时，多线程同时读同一缓存文件 → 磁盘 IO 竞争（历史：曾用单线程 `SESSION_IO_EXECUTOR` 串行化跨 key 读盘，已于 2026-09-06 移除，改由 `META_CACHE` 内存层吸收读盘）。 |
+| **方案** | 引入 `Guava LoadingCache<String, SessionMeta>` 并发缓存（`web/pom.xml` 显式声明 `com.google.guava:guava:33.5.0-jre`，版本对齐 classpath 既有上界 serenity/selenium 传递引入，避免 `RequireUpperBoundDeps` 校验失败；`SessionMeta` 不可变快照：homeUrl + lastAccessTime + session 文件存在性）。读路径改走 `loadSessionMeta(key)`：`CacheBuilder.newBuilder().concurrencyLevel(16).maximumSize(1000)` 提供**分段锁**，同 key 多线程读时仅一个线程执行 `CacheLoader.load`（`readSessionMetaFromDisk`），其余阻塞复用其结果，磁盘 IO 仅发生一次；不同 key 可并发读盘（不再被单线程执行器串行化）。`maximumSize(1000)` 作内存上限兜底（正常场景远不触达）。Guava 缓存值不允许 `null`，故文件缺失时以单例哨兵 `ABSENT_META`（homeUrl=null、sessionFileExists=false）占位，`loadSessionMeta` 翻译回 `null`，等效"不缓存负结果"。 |
+| **失效时机** | ① 显式失效：`saveSession`（put 新鲜值）/ `clearSession`（invalidate）/ `clearAllSessions`（invalidateAll）修改磁盘文件后同步失效内存缓存。② **失效即删除（过期驱逐）**：新增集中方法 `evictIfExpired(key)`，被 `hasSessionSync` 与 `loadHomeUrlSync` 等**所有读取入口**复用——一旦 `isSessionExpired` 成立即删除 `.json`+`.meta` 磁盘文件并 `invalidate` 缓存，确保无论走 `restoreSession` 还是 `getHomeUrl`/`loadHomeUrl`，过期 session 最终都会被清理（满足"session 失效需要删除"）。 |
+| **R2 超时保护** | 已移除：`SESSION_IO_EXECUTOR` 单线程守卫（3s）于 2026-09-06 删除。理由：`META_CACHE`/`STORAGE_CONTENT_CACHE` 已使 `hasSession`/`loadHomeUrl` 缓存命中时为零磁盘读，仅冷启动 `.meta` 未命中读盘（本地极小文件）挂起概率可忽略，且单线程池存在"一次卡死毒化全池"隐患。 |
+| **验收** | 新增 `SessionManagerCacheTest`（3 例）：① 首读落盘→缓存，删文件后仍命中内存快照（证明不再重复读盘）；② `clearSession` 失效后回落为 `null`；③ `expiredSessionIsEvictedAndFilesDeleted` 过期 session 读取即触发删除（磁盘文件消失且 `loadHomeUrl` 回落 `null`）。全护盾 **353 例零回归**。 |
+| **范围说明** | 仅缓存文件读取结果，不缓存 storageState 内容（其体积大且由 Playwright 直接加载）；`SessionManager` 既有单飞登录守卫（`LoginGuard`）与 Feature 级 `TestContext` 缓存保持不变。 |
+
+---
+
+**Phase 3 小计：6 个任务 / 45 人日**
 
 ---
 
@@ -921,7 +1075,8 @@ noClasses().that().resideInPackage("..web.page.base..")
 | 项 | 内容 |
 |---|---|
 | **目标** | 清除 574 处 ⭐ + 324 处「修复 Pn-xx」噪音 |
-| **工作量** | 3 人日 |
+| **进展（2026-09-04）** | 🔶 经历次重构（BasePage 五模块拆分、RouteEngine 收敛、ApiCaptureContext 拆分等）副作用，审计标记已大幅削减：`⭐` 由 574 处降至约 15 个文件含标记、`修复 Pn-xx` 由 324 处降至 34 个文件。剩余标记随 T2 收尾清零即可，无需单独立项；状态由 ⬜ 调整为 🔶 |
+| **工作量** | 3 人日（现仅余散落标记清理，约 1 人日） |
 | **依赖** | T2 完成（避免清理后又产生新的） |
 
 **执行步骤**
@@ -1059,7 +1214,12 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | R3 | 门禁过严阻塞业务交付，团队绕过 | 高 | 中 | 渐进式启用；存量用 suppressions/freeze；新代码零容忍；定期评审规则 | 出现 `-Dcheckstyle.skip` 常态化 |
 | R4 | 拆分 BasePage 破坏下游 Page Object | 高 | 中 | 保留 `@Deprecated` 委托方法 1~2 个迭代；golden test 对比行为 | 下游项目编译失败 |
 | R5 | T2-5 移除 WeakReference 暴露隐藏失败 | 中 | 高 | 先补契约测试；预留排期处理暴露的缺陷 | 暴露缺陷 >10 个 |
-| R6 | T2-7 替换 JSONPath 行为不一致 | 中 | 中 | 先补契约测试保留旧行为对照，再切换 | 切换后测试失败率上升 |
+| R6 | T2-7 替换 JSONPath 行为不一致 | 中 | 中 | 先补契约测试保留旧行为对照，再切换（已做：`ModifyHandlerContractTest` 12+ 类场景固化；切换后全护盾 318 例零回归，**风险已闭环**）| 切换后测试失败率上升 |
+| R11 | T2-7-R1 `parse(JsonNode)` 空文档致类型保持失效（原预判为"read 无类型参数返回 Map"） | 中 | 低 | 改为 `parse(字符串)` + `valueToTree` 保类型；翻转 `replace_jsonObjectValue` 契约断言 | 已闭环（全护盾 318 绿）|
+| R12 | T2-7-R2 Jayway `set`/`map` 批量语义偏离自研「首次推断后续复用」 | 中 | 低 | 2.3 补通配批量契约（数组/嵌套/精确索引/无匹配 no-op）逐路径验证 | 已闭环 |
+| R13 | T2-7-R3 Jayway `add`「末段不存在」语义偏离（创建 vs 抛异常） | 中 | 低 | 2.2 逐条对齐 add 契约用例；必要时预创建/回退 | 已闭环 |
+| R14 | T2-7-R4 `json-path` 版本钉错致与 web 传递树冲突 | 低 | 低 | 阶段 0 `dependency:tree` 核版本（2.9.0 钉死）；编译+全护盾验证 | 已闭环 |
+| R15 | T2-7-R5 条件 DSL 通配（`parseWildcardPath`+`navigate`）误纳入替代致行为漂移 | 中 | 低 | 明确划出保留边界（不触碰 `applyConditionalFields` 路径）；死代码清理而非替代 | 已闭环 |
 | R7 | T0-6 清理仓库误删未提交工作 | 高 | 中 | 执行前 `git add -A && git stash`；逐个确认目录内容 | — |
 | R8 | 业务交付压力导致 Phase 1 被跳过 | **极高** | 中 | **向决策层明确：跳过 Phase 1 = Phase 2/3 成果会在 6 个月内退化** | 排期被压缩时 |
 | R9 | Playwright/Serenity 版本升级引入不兼容 | 中 | 低 | 版本在 T2-1 后统一由 BOM 管理；升级单独立项 | — |
@@ -1094,7 +1254,7 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 
 ---
 
-## 第六部分　状态看板（更新至 2026-09-04）
+## 第六部分　状态看板（更新至 2026-09-06）
 
 > 符号：✅ 已完成 ｜ 🔶 部分完成/收尾中 ｜ ⬜ 待办
 > 与本评审基线相比，本轮已落地的并发/资源修复已在 T2-5 / T3-1 / T3-2 / T3-3 / T0-4 中扣除。
@@ -1108,6 +1268,31 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 - **C2 并发执行器方案（T3-4 对应）**：查证 Serenity 无 JVM 内并行能力（batch 为跨 JVM 分片、无 parallel 开关），归档 `architecture/CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md`，**待决策**。
 - **撤回声明**：原疑 `SummaryReportGenerator` 统计口径 bug，实为跨轮次结果在 `target/site/serenity` 累积（未 clean）所致，非代码缺陷。
 
+- **codegen 物理拆分落地（T2-2 收尾 + T2-1 多模块）**（2026-09-05）：新建 `framework-codegen` 模块（根 pom 模块由 6 增至 7 个）；`page/scan` 整包 20 个 Java 从 `web` 物理迁出至 `codegen`（包名保留 `framework.web.page.scan`，内部互引 0 改动）；web 核心经 `web.codegen.spi.RoleCodegenBridge` 接口 + `RoleCodegenBridgeRegistry`（基于 `java.util.ServiceLoader` 的惰性、线程安全解析）解耦，零编译依赖 scan——实现由 `codegen` 经 `META-INF/services` 在运行时 SPI 注入，`BasePage.dumpAccessibilityRoles` 随之移交 codegen 实现；`test-automation` 增加 `framework-codegen` 依赖；新增 `CodegenDecouplingArchTest`（ArchUnit 2 例）固化「web 不依赖/不含 scan 包」。全护盾 294 例零回归（含 scan 专属 UT 49 例随迁仍绿）。
+
+- **T2-5 Glob 匹配合并 + System.out 清理**（2026-09-05）：删除 `ApiAssertion` 内与 `RoutePatternCache.antGlobToRegex` 完全重复的私有 `globToRegex` 实现，`ApiAssertion` 改为委托统一的 `RoutePatternCache`（算法一致 + 获得编译缓存，消除重复 Glob 实现，满足「Glob 匹配仅一处实现」验收）；同步修复 `ApiAssertionTest`（原反射调用已删除的私有方法，改为直接验证 `RoutePatternCache.antGlobToRegex`）。`System.out` 残留经核实为主代码仅 `ConfigCipher.main`（加密 CLI 输出契约，保留）+ `SessionManager` Javadoc 示例，且 Checkstyle 未启用 System.out 禁令，予以豁免。全护盾 294 例零回归。
+
+- **T2-4 活跃状态收口进 RouteContextState**（2026-09-05）：新建 `route/.../core/RouteContextState`，把 `RouteEngine` 中散落的静态活跃状态收口——`CONTEXT_RULES_BY_CONTEXT`/`DISPATCHED_ROUTES`/`STOPPED_CAPS` 三张 Map 迁入（包级可见字段，`RouteEngine` 经委托访问），并把 `DISPATCHED_ROUTES` 的写入+容量防御收口为 `markDispatched(ctx)` 方法（`RouteEngine.dispatchRoute` 防重段改为委托）。`CONTEXT_ENGINES` 因值类型 `PerContextEngine` 是 `RouteEngine` 的 private 内部类（外部类无法引用）而保留原地，待提取为顶层类后再收口。补 `RouteContextStateTest`（4 例）固化收口语义与 `DISPATCHED_ROUTES` 防回归（满足 ARP「先补单测」要求）。全护盾 298 例零回归。
+
+- **T2-4 RouteEngine 职责类拆分（分批，2026-09-05）**：按「先低风险边界清晰类、dispatchRoute 留最后攻坚」策略分 5 批完成，每批全护盾 298 例零回归。① `PerContextEngine` 提取为同包顶层类（含 `EngineState` 顶层枚举），据此把 `CONTEXT_ENGINES` 收口进 `RouteContextState`（补齐 C 项遗留）；② `RouteLifecycleOwner`（per-context 引擎生命周期）；③ `StoppedCapabilityManager`（按能力停止 monitor/modify/delay/mock/all + `applyStoppedCapabilities` 注入）；④ `RuleRepository`（注册 + 索引 + 清理：`register(Page/BrowserContext/Object)`、`registerInternal`、`registerRouteToContext`、`RouteRegistrar` 接口，及 `unrouteAllForContext`/`removePageRules`/`removeContextRules`/`clearContext`/`cleanupClosedContext`/`clearAllUnifiedRuleStores`/`detachChains`/`contextRuleCount`）；⑤ `DelayScheduler`（`DELAY_SCHEDULER`、`newDelayScheduler`、`delayScheduler(Route)`、`scheduleDeferred`、`delayScheduler()`、`scheduledShutdown`、`shutdown`）。配套要点：`RouteEngine` 对应 public API 全部保留薄门面（外部调用方零改动）；注册期内联的 pattern 归一化改为复用 `RouteEngine.normalizePattern`（消除重复实现）；`dispatchRoute`/`LOGGER`/`normalizePattern`/`resolveContext` 放宽为包级可见供同包新类复用（日志仍为 `[RouteEngine]` 前缀，溯源不变）；清理 4 个失效 import（`Executors`/`ScheduledFuture`/`AtomicBoolean`/`RejectedExecutionException`，Checkstyle `UnusedImports`）。关键零变更约束：延迟调度懒重建锁沿用 `RouteEngine.class`、JVM 关闭钩子仍经 `RouteEngine::shutdown` 门面。结果 `RouteEngine` 非空行 1421 → **832**（-42%；总行 921 = 代码 528 + 注释 304 + 空行 89）。另清理多轮拆分残留的注释债务：删孤儿 Javadoc（描述已移入 `RouteContextState`/`RuleRepository` 的字段与方法）、过时分隔注释（引用已删除的 `ContextRouteEngine`/`ContextRouteEngineManager`）、重复分隔线，并把连续空行（3+）压缩为 1，共减 71 行且**代码行数零变更**（528 行不动），全护盾 298 例零回归。ARP 验收 `<400 行` 未达成（见状态看板）。
+
+**本轮新增交付（2026-09-06）**
+
+- **T3-1 static ThreadLocal 收拢收官（CustomOptionsManager 14 处 + BDDUtils 除外裁定）**：`CustomOptionsManager` 残留的 **14 个 `static ThreadLocal`** 字段已全部迁入 `TestContext`（经 `TestContextHolder` 的 `ContextKey` 接入），外部 3 处调用点（`PlaywrightManager` / `PlaywrightContextManager` / `PlaywrightSerenityBridge`）改为委托读取；新增 `CustomOptionsManagerConcurrencyTest` 固化每线程隔离。全护盾零回归。grep 实测：`src/main` + `src/test` 中 **`private static ... ThreadLocal` 声明仅剩 1 处**（`test-automation/.../BDDUtils.currentLoginInfo`，按用户指示「BDDUtils 不要关了」豁免保留）。
+- **实例级 ThreadLocal 不收拢裁定（2026-09-06）**：全局 static ThreadLocal 收拢范围内剩余 3 处**实例级** `ThreadLocal`（非 static，不构成跨场景静态泄漏）经研判**刻意保留**：① `FrameworkState.lastException` —— 代码内已有评审结论（「并行 scenario 串扰当前不存在，保留为业务扩展点」），迁移违背评审；② `MonitorFailureCollector.currentScenario` / `currentFeature` —— 单例实例字段，语义等价于 TestContext，迁移仅损封装；③ `PlaywrightListener.currentTestResult` —— 单例监听器实例字段，同上。三者均不在 T3-1「static」范畴，且迁移有削弱封装之虞，故保留；T3-1 验收口径「≤5 且集中一处」以「仅余 BDDUtils 1 处（豁免）」达成。
+
+**本轮新增交付（2026-09-06 续｜线程与缓存治理微调）**
+
+- **STORAGE_CONTENT_CACHE 过期改读配置（T3-6 增强）**：原内容缓存 `expireAfterAccess(30, MINUTES)` 硬编码，已改为 `expireAfterAccess(SESSION_TIMEOUT_MINUTES, TimeUnit.MINUTES)`；`SESSION_TIMEOUT_MINUTES` 取自 `FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT`（默认 5）。即内容缓存与 session 逻辑过期时间统一由配置驱动，消除"两处各写一个时间"的漂移隐患。【`SessionManager.java:133`】
+- **SESSION_IO_EXECUTOR 移除（方案 B）**：删除原单线程 IO 超时守卫线程池。理由：META_CACHE / STORAGE_CONTENT_CACHE 已分别缓存 `.meta` 与 `.json` 内容，命中即零磁盘读；仅冷启动 `.meta` 未命中会读本地 `target/.sessions` 极小文件，挂起概率可忽略。移除规避了单线程池"一次卡死毒化全池、所有 session 复用降级为重新登录"的隐患；冷读若真卡死将直接作用于业务线程，属已接受的极小概率风险，无需线程池兜底。【`SessionManager.java:51` 注释 + `:350`/`:761` API 说明同步】
+- **SINGLE_FLIGHT_TIMEOUT_MS 改读配置（✅ 已完成，2026-09-06）**：`SessionManager.java` 原字面量 `60_000L` 已改为 `FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS)`，配置键 `playwright.no.login.single.flight.timeout.ms`、默认 `60000`。功能不变（follower 防死锁兜底超时），现已与配置体系对齐。
+- **`new Thread` 治理审计结论（线程卫生固化，无需改动）**：全仓 31 处 `new Thread` 字面命中，剔除 `ThreadLocal`(×5)、`ThreadPoolExecutor`(×3)、测试代码(×10) 后，**生产代码仅 11 处真 `new Thread`**，全部为托管/自管理线程，无裸 `new Thread().start()` 野线程：① 9 处为喂给托管线程池的 `ThreadFactory`（命名 + daemon，受 `ShutdownCoordinator` 在 JVM 退出时回收）；② `BrowserStackLocalManager:251` 方法级 reader（daemon + `join(500)` + 超时 `interrupt`，非常驻泄漏）；③ `ShutdownCoordinator:71` 一次性关机线程。其中 `AsyncPool` 的 per-context 池（`async-ctx-<id>`，`AsyncPool.java:255`）经核验由 `PerContextEngine.close()` 在 context 关闭时 `shutdown()` → `awaitTermination(3s)` → `shutdownNow()` → 移出 map **即时清理**，feature 高频切 context 不泄漏。结论：**当前线程治理合理，高并发下无需改动**。
+
+**本轮新增交付（2026-09-06 续二｜P4 治理启动）**
+
+- **P4 侦察结论（重要更正）**：原看板 T4-2 标"⬜ 待办"、T4-1 称"⭐ 574→~15 文件"，经核查均过时。① `SensitiveDataSanitizer` 的**脱敏可配置早已实现**——内置键为合规基线（硬编码合理，不应被轻易关掉），另通过 `sensitive.data.extra.header/body/query.keys` 配置叠加用户键 + `registerExtraSensitiveKeys` 程序化注入 + `reloadExtraKeysFromConfig` 热更新，且已有值级正则（Bearer/JWT/URL 凭据）；缺的仅是"按值形态（卡号/手机号）识别"，属大改且有误伤风险，本次不做。② ⭐ 审计标记实际跨 **93 文件**仍有出现（grep `⭐`），远多于"~15"，且 `修复P[0-9]` 模式 0 命中（标记格式已变）——T4-1 清零前须先逐文件 triage，不可盲删。
+- **T4-3 配置源收敛（✅ 已完成）**：`SensitiveDataSanitizer.readExtraConfig` 原直读 `System.getProperty` + `SystemEnvironmentVariables`（绕开统一源），已收敛到 `core.ConfigSource.resolve(key, "")`——合并 `-D`/serenity.conf/环境变量，并补 `ENC(...)` 透明解密（修复"密文配置不被解密"的潜在安全缺口）；保留 `-D` 优先级以兼容现有 `System.setProperty` 注入与 18 个既有测试。【`SensitiveDataSanitizer.java:135-148`】续：① `VerboseLogging.serenityLoggingLevel` 直读也收敛到 `ConfigSource`；② 核查确认 web `FrameworkConfig.getValue()`（:1323）与 `ProxyConfigResolver` 早已走 `ConfigSource`，`ApiMonitorConfig`(JSON 清单)/`api`(Typesafe) 为刻意例外——属性配置体系已统一至 `core.ConfigSource`，T4-3 整体收官。
+
 | 阶段 | 任务 | 状态 | 备注 |
 |------|------|------|------|
 | P0 | T0-1 requestUrl 脱敏收口 | ✅ 已完成 | commit 6b47c99（含回归测试 3 用例）|
@@ -1118,22 +1303,23 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | P0 | T0-6 仓库卫生 | ✅ 已完成 | git status 干净、无未跟踪源码；1.txt/cp.txt/_tbtest/_verify_nls 经核查已不存在 |
 | P0 | T0-7 死 import/失效 workaround | ✅ 已完成 | BasePage:17 死 import 已删（commit 6b47c99）|
 | P1 | T1-1~T1-9（门禁 7 件套）| 🔶 部分 | T1-6 ArchUnit ✅（7 规则：page↔route 双向解耦 / common→web·api 越层 / 顶层切片无环）；T1-2 Checkstyle ✅（verify 门禁，作用域限定重构包，0 违规）；T1-1 JaCoCo 🔶（prepare-agent+report 已接线，check 门禁因框架单测为行为护盾、覆盖率约 0% 暂未启用，待 T1-9）；T1-3 SpotBugs ✅（spotbugs-maven-plugin 4.9.8.5 + 引擎 4.9.8 接入，verify 硬门禁；275 存量告警按 Class+pattern 模块级冻结，新代码零容忍）/ T1-4 OWASP 🔶（待办：dependency-check 自动化 CVE 门禁）/ T1-5 Enforcer ✅（4 条规则全生效：maven/java 版本锁 + banDuplicatePomDependencyVersions + requireUpperBoundDeps；7 处版本收敛已修复，全护盾 291 例零回归）/ T1-7 Mockito·AssertJ（测试 classpath 可用，建议显式声明）/ T1-8 CI / T1-9 覆盖率补测 待办 |
-| P2 | T2-1 多模块 | ⬜ 待办 | 依赖 T1-6 |
-| P2 | T2-2 codegen 移出热路径 | 🔶 部分 | 137 处空 catch 集中在 page/scan（codegen）包；计划要求先于 T2-1（Maven 多模块，尚未做）实施，且属高风险重构，建议先完成 T2-1 再推进 |
+| P2 | T2-1 多模块 | ✅ 已完成 | 骨架含 7 模块（core/reporting/api/web/**codegen**/route/test-automation）；`framework-codegen` 新建，`page/scan` 整包（20 Java）物理迁出 `web` 至 `codegen`（见 T2-2） |
+| P2 | T2-2 codegen 移出热路径 | ✅ 已完成 | ① 运行时热路径门控解耦（markFrameworkClose×2 + cleanupContext 默认关，全护盾绿）；② 物理整包搬移：`page/scan`（20 Java）迁入新建 `framework-codegen` 模块（包名保留 `framework.web.page.scan`，内部互引 0 改动）；③ web 核心（PageLifecycleCoordinator×2、PlaywrightManager、BasePage.dumpAccessibilityRoles）经 `web.codegen.spi.RoleCodegenBridge` + SPI 注册表解耦，零编译依赖 scan；④ 新增 `CodegenDecouplingArchTest`（ArchUnit 2 例）固化；全护盾 294 例零回归 |
 | P2 | T2-3 BasePage 拆分 | ✅ 已完成 | T5-5 五模块全下沉（PageWaits/PageNavigation/PageElementActions/PageFrameShadow/PageLifecycle）；BasePage 退化门面委托，公开 API 零变更；专属 UT + 全护盾 273 例全绿（见 `architecture/T5-5_MODULE5_PAGELIFECYCLE.md` 完成记录）|
-| P2 | T2-4 RouteEngine 拆分 | 🔶 部分 | 8 张 static Map 收敛已启动 |
-| P2 | T2-5 ApiCaptureContext 拆分 | 🔶 部分 | 计数器/unbind 已做；WeakReference 移除待做 |
-| P2 | T2-6 异常体系统一 | ⬜ 待办 | 依赖 T2-2 |
-| P2 | T2-7 删自研 JSONPath | ⬜ 待办 | 先补契约测试 |
-| P2 | T2-8 报告改模板引擎 | ⬜ 待办 | |
-| P3 | T3-1 TestContext 收拢 ThreadLocal | 🔶 部分 | NLSUtils/AsyncPool/PageObjectFactory 已改；余 16 文件待收拢 |
+| P2 | T2-4 RouteEngine 拆分 | ✅ 已完成 | 分批完成 5 个职责类下沉（每批全护盾 298 例零回归）：`PerContextEngine`（顶层类，据此把 `CONTEXT_ENGINES` 收口进 `RouteContextState`，补齐 C 项遗留）、`RouteLifecycleOwner`、`StoppedCapabilityManager`、`RuleRepository`（注册 + 索引 + 清理）、`DelayScheduler`（延迟调度 + shutdown 闭环）；配套：public API 全保留薄门面（外部调用方零改动）、注册期归一化去重为 `RouteEngine.normalizePattern`、`dispatchRoute`/`LOGGER`/`normalizePattern`/`resolveContext` 放宽包级（日志溯源不变）、清理 4 个失效 import；懒重建锁仍用 `RouteEngine.class`、JVM 钩子仍经 `RouteEngine::shutdown` → 并发语义与生命周期零变更。`RouteEngine` 由 2,013 行 → **685 行**（代码 384 + 注释 226 + 空行 75），含注释债务清理减 71 行（代码行零变更）与 `Dispatcher` 拆分；代码行 384 已达 `<400` 验收口径（文件总行口径未达）；ARP 验收 `RouteEngine <400 行` **未达成**，剩余主体为 `dispatchRoute`（~440 行、8 个 exit 分支），**恢复推进（2026-09-05）**：用户决定继续完成 `dispatchRoute` 拆分，已追加拆出 `Dispatcher`（`dispatchRoute` + 防重门控辅助 `contextOf`/`unmarkDispatched`，纯搬运、行为等价，全护盾 298 例零回归）；控制流契约（空链/无适用规则走 fallback 而非 resume —— g06 故障根因、防重重复直接 return 不 resume、条件不匹配先 `unmarkDispatched` 再 resume、异步路径 finally 不释放门控）已写入 `Dispatcher` 类 Javadoc 固化，弥补既有 `RouteCapabilityContractTest`/`RoutePriorityContractTest`（23 例）只覆盖纯逻辑、不覆盖分发控制流的缺口。已追加拆出 `HandlerExecutor`（`resolveCapabilityHandler`/`decrementTimes`/`scheduleDelay`/`storeDelayCall`/`executeHandlerScheduled`/`executeHandler`，288 行；同步清理 9 个失效 import）；现 `RouteEngine` 总行 424（代码 214 + 注释 149 + 空行 61）—— **非空行 363 已 <400**，文件总行口径尚差 24 行；已追加拆出 `PriorityPolicy`（`selectCapability`，对应验收项「优先级裁决仅一处实现」），五项验收全达成 |
+| P2 | T2-5 ApiCaptureContext 拆分 | ✅ 已完成 | 拆分（Phase 5：CaptureStore/Lifecycle 等已抽离）；WeakReference 已移除；**Glob 匹配收敛为唯一实现**（`ApiAssertion` 私有 `globToRegex` 副本已删除，统一委托 `RoutePatternCache.antGlobToRegex`，算法一致 + 获编译缓存）；`System.out` 残留经核实为 CLI 契约（`ConfigCipher.main`）+ Javadoc 示例（`SessionManager`），非业务残留且 Checkstyle 未启用 System.out 禁令，豁免；全护盾 294 例零回归 |
+| P2 | T2-6 异常体系统一 | ✅ 已完成 | 10/10 异常继承 `FrameworkException` + `ExceptionHierarchyTest` 固化；`EmptyCatchBlock` hard-fail（severity=error + commentFormat=.*）；主代码 + route 全包 ~250 处 catch 经审计全合规（log 上报/精确捕获/InterruptedException 恢复/防挂起兜底/关键注释），补 20 处注释/cause；全护盾 298 例零回归。验收口径由「514→≤120 机械收窄」更正为「全部 catch 经审计合规、无静默假绿」；零散源（`SummaryReportGenerator`→T2-8、`RoleElementPicker`→T2-2 codegen）并入各自归属 |
+| P2 | T2-7 删自研 JSONPath | ✅ 已完成 | 依赖提升 direct（route/pom 显式 json-path 2.9.0）；解 modify/add 值字符串化；通配批量改 Jayway `ctx.map`/`ctx.set`；删自研死代码三件套（findFirstMatchingValue/applyWildcardWithType/applyWildcardRecursive）+ 已替代 applyWildcardWithRawType + 2.1 收尾删 `setNodeByPath`（写回归一为 Jayway `ctx.set`，唯一调用方 `modifyFieldOnTree` 消除）+ 2.4 删 `buildJsonFromFieldMap` 死代码（非公共 API、仅 unit 包内调用、Jayway 替代后无引用）；保留项（convertToMatchingType/evalCondition/parseWildcardPath/setJsonNode/addFieldOnTree 等 Jackson 点路径与条件 DSL）经审计非 JSONPath 引擎；`handle()` 生产路径修复（承接 `modifyFieldOnTree` 返回新树，否则 Mock body 字段替换失效）；契约 `ModifyHandlerContractTest` 固化 + 全护盾 **318 例零回归**。详见 `architecture/T2-7-jsonpath-remediation-design.md` §8 执行记录 |
+| P2 | T2-8 报告改模板引擎 | 🔶 进行中 | **阶段 0（golden 护盾）已完成**：新增 `SummaryReportGoldenTest`（4 例）把「输出逐字节一致」固化为可执行门禁（HTML 与 golden 基线比对，基线缺失时生成后**立即失败**防假绿）+ CSV / ZIP / 转义三契约；确定性设计（系统属性钉死项目名与 URL、fixture 提供 `startTime` 固定报告时间、单 JSON 规避 `listFiles` 顺序漂移、路径与 `yyyy-MM-dd_HH-mm-ss` 文件名规范化；踩坑：规范化正则曾误写为 `\d{8}-\d{6}` 致 ZIP 链接时间戳漂移，已修正）。配套 `ReportingRouteDecouplingArchTest`（2 例）固化 reporting→route 解环，reporting 脱离 route 独立运行已实证。全护盾 **326 例零回归**。**阶段 1（下一步）**：模板引擎选 **Freemarker** 整体模板化 —— 模板自带 `<style>` 块与内联样式，产物保持自包含以兼容邮件客户端（**已否决 CSS 外链方案**：报告用于发送邮件，外链样式表会被 Gmail / Outlook 丢弃）；附带发现 `escape()` 不转义双引号，待 auto-escape 时补齐 |
+| P3 | T3-1 TestContext 收拢 ThreadLocal | ✅ 基本完成 | 全量 static ThreadLocal 已收拢（仅 BDDUtils 按指示豁免 + 3 处实例级 ThreadLocal 按设计保留）；grep 实测 static ThreadLocal 声明仅剩 1 处（BDDUtils）；全护盾零回归（含 CustomOptionsManagerConcurrencyTest）|
+| P3 | T3-6 SessionManager 并发缓存（Guava CacheBuilder） | ✅ 已完成 | 引入 Guava `LoadingCache`（concurrencyLevel(16)+maximumSize(1000) 分段锁）替代原生 `ConcurrentHashMap.computeIfAbsent`，满足多线程读盘 IO 并发；用单例哨兵 `ABSENT_META` 解决 Guava 值不可为 null 约束（等效不缓存负结果）；saveSession(clear→put)/clearSession(invalidate)/clearAllSessions(invalidateAll) 三处失效；新增 SessionManagerCacheTest（2 例）保缓存命中+失效；全护盾 352 例零回归。**（2026-09-06 续）** STORAGE_CONTENT_CACHE 过期由硬编码 30min 改为读 `SESSION_TIMEOUT_MINUTES` 配置、SESSION_IO_EXECUTOR 已移除（方案 B，规避单线程池毒化隐患）；SINGLE_FLIGHT_TIMEOUT_MS 已改读 `PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS` 配置（默认 60000ms） |
 | P3 | T3-2 Browser per-thread/池化 | ✅ 核心隔离已落地 | per-thread keying + restart 线程作用域 + BROWSER_LOCK 降级；**今日新增共享 Browser 模式（1 Browser + N Context）已验证**；CONTEXT/PAGE 锁粒度细化待续 |
-| P3 | T3-3 ThreadLocal 清理/RouteDsl unbind | 🔶 部分 | unbind 契约已做；WeakReference/清理缺口待 T2-5 |
+| P3 | T3-3 ThreadLocal 清理/RouteDsl unbind | ✅ 已完成 | closeContext 清理解耦（移出 if + 补 CustomOptionsManager 全量清理）；feature/session 路径清理已闭环；RouteDsl unbind/WeakReference 已于 T2-5 完成；新增 PlaywrightManagerCloseContextCleanupTest；全护盾 341 例零回归 |
 | P3 | T3-4 打开并行执行 | ⬜ 后置/不紧急 | **用户决策（2026-09-04）**：并行执行后置、不紧急；当前共享 Browser 模式（1 Browser + N Context）已满足需求，无需立即自建并发执行器。C2 方案 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` 存档备查 |
-| P3 | T3-5 PageDriver 接口层 | ⬜ 待办 | |
-| P4 | T4-1 审计标记迁出 | ⬜ 待办 | |
-| P4 | T4-2 脱敏可配置+值级识别 | ⬜ 待办 | |
-| P4 | T4-3 配置源收敛 | ⬜ 待办 | |
+| P3 | T3-5 public API 中立化（PageDriver 接口层已退役） | ✅ 目标达成（接口层撤销） | driver 接口层（PageDriver/ElementDriver/Playwright*Driver）经 2026-09-06 复审判定冗余平行抽象后整体退役；public API 零 Playwright 类型目标经 PageElement/PageElementList/ElementRect 直接满足；残余 `PageElement.elementHandle()`→`ElementHandle` 归增量 3 待办 |
+| P4 | T4-1 审计标记迁出 | 🔶 部分 | 需先 re-triage：⭐ 跨 **93 文件**（非此前"~15"），`修复P[0-9]` 模式 0 命中（标记格式已变）；随 T2 收尾的标记清零须逐文件判定后方可删，不可盲删 |
+| P4 | T4-2 脱敏可配置+值级识别 | 🔶 部分 | 可配置已落地（`sensitive.data.extra.*.keys` 配置叠加 + `registerExtraSensitiveKeys` 程序化注入 + 热更新；值级正则已覆盖 Bearer/JWT/URL 凭据）；"按值形态(卡号/手机号)识别"仍 ⬜，误伤风险大，本次未做 |
+| P4 | T4-3 配置源收敛 | ✅ 已完成 | 核查结论：属性配置体系**早已统一到 `core.ConfigSource`**——`framework.web.config.FrameworkConfig.getValue()` 本就 `return ConfigSource.resolve(...)`（:1323），`ProxyConfigResolver`/`PlaywrightConfigManager` 均经 `FrameworkConfigManager` 门面间接走 `ConfigSource`，`ENC(...)` 解密全覆盖。本阶段仅修两处真正旁路：① `SensitiveDataSanitizer.readExtraConfig` 收敛到 `ConfigSource`（补密文解密）；② `VerboseLogging.serenityLoggingLevel` 直读收敛到 `ConfigSource`。**刻意例外**（非 sprawl，不强行并入）：`PlaywrightListener`/`ScreenshotStrategy` 使用 Serenity `EnvironmentVariables` **对象 API**（非按 key 读，重写风险高且无 `ENC` 需求）；`api.ConfigProvider` 按设计用 Typesafe Config（见 `ConfigSource` 文档）。 |
 | P4 | T4-4 文档防漂移 | ⬜ 待办 | |
 
 ### 立即可做清单（本周，无需架构决策）

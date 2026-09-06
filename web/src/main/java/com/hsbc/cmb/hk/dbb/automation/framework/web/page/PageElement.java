@@ -97,14 +97,14 @@ public class PageElement {
      * 确保 Page 关闭重建后返回绑定到新 Page 实例的 Locator。
      * 若提供了动态定位器供应商（NLS / 角色定位），优先使用之，实现语言切换后自动重解析。
      */
-    public Locator locator() {
+    protected Locator locatorInternal() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
         Locator base;
         if (locatorSupplier != null) {
             base = locatorSupplier.get();
         } else {
-            base = page.locator(selector);
+            base = page.locatorInternal(selector);
         }
         // 对齐 page.pause() 的 frameLocator 录制：元素位于 iframe 内时逐层下钻到 iframe 中的真实元素。
         if (frameSegs != null) {
@@ -113,10 +113,6 @@ public class PageElement {
             }
         }
         return base;
-    }
-
-    public Locator locator(String relativeSelector) {
-        return locator().locator(relativeSelector);
     }
 
     /**
@@ -131,213 +127,83 @@ public class PageElement {
      * @return 指向第 index 个匹配元素的 PageElement
      */
     public PageElement nth(int index) {
-        return new PageElement(() -> locator().nth(index),
+        return new PageElement(() -> locatorInternal().nth(index),
                 selector + " >> nth=" + index, page);
     }
 
-    // ==================== Safe Execution Template ====================
+    // ==================== 组合定位：filter / or（收口 Playwright Locator 组合能力） ====================
     /**
-     * 安全的 Locator 操作执行模板——统一处理 Playwright 异常转换 + 自动诊断收集。
-     * 消除 getText/getAttribute/getValue 等方法中重复的 try-catch 模板。
-     * 失败时自动收集 DOM 诊断信息并捕获截图。
+     * 按可见文本过滤（对齐 Playwright {@code Locator.filter(hasText)}）。
+     * 返回的新 {@link PageElement} 复用本类全套重试 / 诊断 / 截图能力。
+     *
+     * @param text 过滤文本（子串匹配）
+     * @return 过滤后的 PageElement
+     */
+    public PageElement filter(String text) {
+        return new PageElement(() -> locatorInternal().filter(
+                        new Locator.FilterOptions().setHasText(text)),
+                selector + " >> filter(text=" + text + ")", page);
+    }
+
+    /** 无参过滤（保留原定位器语义，等价 {@code Locator.filter()}）。 */
+    public PageElement filter() {
+        return new PageElement(() -> locatorInternal().filter(),
+                selector + " >> filter()", page);
+    }
+
+    /**
+     * 过滤出包含指定子元素者（对齐 Playwright {@code Locator.filter(has)}）。
+     *
+     * @param has 作为“包含”条件的子元素定位器
+     * @return 过滤后的 PageElement
+     */
+    public PageElement filterBy(PageElement has) {
+        Objects.requireNonNull(has, "has locator cannot be null");
+        return new PageElement(() -> locatorInternal().filter(
+                        new Locator.FilterOptions().setHas(has.locatorInternal())),
+                selector + " >> filter(has=" + has.getSelector() + ")", page);
+    }
+
+    /**
+     * 过滤掉包含指定子元素者（对齐 Playwright {@code Locator.filter(hasNot)}）。
+     *
+     * @param hasNot 作为“排除”条件的子元素定位器
+     * @return 过滤后的 PageElement
+     */
+    public PageElement filterNot(PageElement hasNot) {
+        Objects.requireNonNull(hasNot, "hasNot locator cannot be null");
+        return new PageElement(() -> locatorInternal().filter(
+                        new Locator.FilterOptions().setHasNot(hasNot.locatorInternal())),
+                selector + " >> filter(hasNot=" + hasNot.getSelector() + ")", page);
+    }
+
+    /**
+     * 逻辑或：本元素或 other（对齐 Playwright {@code Locator.or}）。
+     *
+     * @param other 备选定位器
+     * @return 两者并集的 PageElement
+     */
+    public PageElement or(PageElement other) {
+        Objects.requireNonNull(other, "other locator cannot be null");
+        return new PageElement(() -> locatorInternal().or(other.locatorInternal()),
+                selector + " | " + other.getSelector(), page);
+    }
+
+    // ==================== Safe Execution Template（委托 ElementOperationSupport） ====================
+    /**
+     * 安全的 Locator 操作执行模板——统一异常翻译 + 自动诊断收集。
+     * 实现下沉至 {@link ElementOperationSupport}，本方法仅做薄委托，公开行为零变更。
      */
     private <T> T executeSafely(Supplier<T> action, String operation) {
-        try {
-            return action.get();
-        } catch (TimeoutError e) {
-            ElementNotFoundException ex = new ElementNotFoundException(selector, e);
-            captureDiagnosticsAndLog(operation, ex, selector);
-            throw ex;
-        } catch (PlaywrightException e) {
-            ElementOperationException ex = new ElementOperationException(operation, selector,
-                "Failed: " + operation, e);
-            captureDiagnosticsAndLog(operation, ex, selector);
-            throw ex;
-        }
+        return ElementOperationSupport.executeSafely(this::locatorInternal, selector, page, action, operation);
     }
 
-    /**
-     * 失败时自动收集诊断信息 + 截图（executeSafely 的失败路径）。
-     * 与 executeWithRetry 中的 captureFailureAndLog 不同，
-     * 这里只收集基础诊断信息用于快速定位问题，不做完整的 DOM 上下文分析。
-     */
-    private void captureDiagnosticsAndLog(String operation, RuntimeException ex, String selector) {
-        try {
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
-            ElementOperationException.DiagnosticInfo info = diagnostics.collect();
-            String screenshotPath = diagnostics.captureFailureScreenshot(operation);
-            logger.debug("[{}] failed on '{}' | exists={} visible={} enabled={} count={} | screenshot={}",
-                operation, selector,
-                info.existsInDom(), info.isVisible(), info.isEnabled(), info.elementCount(),
-                screenshotPath != null ? screenshotPath : "N/A");
-        } catch (Exception ignored) {
-            // 诊断收集本身不应影响主异常抛出
-        }
-    }
-
-    // ==================== Retry Core (Enterprise-grade) ====================
-    /**
-     * 带成功检查的重试机制
-     *
-     * Enterprise-grade retry mechanism with:
-     * - Idempotency guarantee
-     * - Detailed diagnostics on failure
-     * - Configurable retry parameters
-     * - Custom exception with full context
-     */
     private void executeWithRetry(Supplier<Boolean> action, String operation) {
-        executeWithRetry(action, operation, null);
+        ElementOperationSupport.executeWithRetry(this::locatorInternal, selector, page, action, operation);
     }
 
     private void executeWithRetry(Supplier<Boolean> action, String operation, String testName) {
-        long startTime = System.currentTimeMillis();
-
-        int maxRetry = PlaywrightManager.config().getElementMaxRetry();
-        Exception lastEx = null;
-        long deadline = startTime + PlaywrightManager.config().getElementOperationTimeout();
-
-        for (int i = 0; i <= maxRetry; i++) {
-            // 检查是否已经超过截止时间
-            if (System.currentTimeMillis() > deadline) {
-                logger.warn("[{}] Exceeded max wait time ({} ms) after {} attempts: {}",
-                    operation, PlaywrightManager.config().getElementOperationTimeout(), i, selector);
-                break;
-            }
-
-            try {
-                // Playwright 内置 actionability check（attached→visible→stable→enabled→receives events）
-                // 无需额外 pre-flight 检查
-                action.get();
-                logger.debug("[{}] success on attempt {}/{}: {}",
-                    operation, i + 1, maxRetry + 1, selector);
-                return;
-            } catch (TimeoutError e) {
-                lastEx = e;
-                if (i == maxRetry || !isRetriable(e)) {
-                    logger.warn("[{}] Timeout on attempt {}/{}: {}",
-                        operation, i + 1, maxRetry + 1, selector);
-                    break;
-                }
-                logger.warn("[Retry {}/{}] {} timed out: {}",
-                    i + 1, maxRetry, operation, e.getMessage());
-                page.waitForTimeout((int) PlaywrightManager.config().getElementRetryDelayMs());
-            } catch (PlaywrightException e) {
-                lastEx = e;
-                if (i == maxRetry || !isRetriable(e)) {
-                    break;
-                }
-                logger.warn("[Retry {}/{}] {} failed: {}",
-                    i + 1, maxRetry, operation, e.getMessage());
-                page.waitForTimeout((int) PlaywrightManager.config().getElementRetryDelayMs());
-            } catch (Exception e) {
-                lastEx = e;
-                logger.warn("[{}] Non-retriable exception: {}", operation, e.getMessage());
-                break;
-            }
-        }
-
-        // Build detailed exception with full diagnostic info
-        // 诊断收集器延迟创建——仅在失败路径才收集
-        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(locator(), selector, page.getPageRaw(), page.getCurrentFrame());
-        ElementOperationException.DiagnosticInfo info = diagnostics.collect();
-        info.retryCount(maxRetry + 1);
-
-        String elementState = determineElementState(info);
-        String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics, maxRetry, elementState);
-
-        ElementOperationException ex = ElementOperationException.builder()
-            .selector(selector)
-            .operation(operation)
-            .pageUrl(diagnostics.getPageUrl())
-            .elementState(elementState)
-            .diagnosticInfo(info)
-            .cause(lastEx)
-            .customMessage(customMessage)
-            .build();
-
-        captureFailureAndLog(operation, testName, ex, diagnostics);
-        throw ex;
-    }
-
-    private static String determineElementState(ElementOperationException.DiagnosticInfo diag) {
-        if (!diag.existsInDom()) return "NOT_FOUND_IN_DOM";
-        if (!diag.isVisible()) return "NOT_VISIBLE";
-        if (!diag.isEnabled()) return "NOT_ENABLED";
-        if (!diag.isEditable()) return "NOT_EDITABLE";
-        return "INTERACTABLE_BUT_FAILED";
-    }
-
-    private String buildDetailedErrorMessage(String operation, Exception lastEx,
-            ElementDiagnosticsCollector dc, int maxRetry, String elementState) {
-        // 简洁一行格式 — 详细诊断信息（DOM context, HTML snippet 等）可到 Serenity 报告查看
-        String cause = lastEx instanceof TimeoutError ? "TimeoutError"
-            : (lastEx != null ? lastEx.getClass().getSimpleName() : "unknown");
-        return String.format("[%s] %s failed after %d attempts on '%s' | page=%s title=%s obstruction=%s | cause=%s",
-            elementState, operation, maxRetry + 1, selector,
-            dc.getPageUrl(), dc.getPageTitle(), dc.getObstructingElements(), cause);
-    }
-
-    private void captureFailureAndLog(String operation, String testName, ElementOperationException ex,
-                                      ElementDiagnosticsCollector diagnostics) {
-        String screenshotPath = null;
-        try {
-            screenshotPath = diagnostics.captureFailureScreenshot(
-                testName != null ? testName : operation);
-        } catch (Exception e) {
-            logger.warn("Failed to capture failure screenshot: {}", e.getMessage());
-        }
-
-        if (screenshotPath != null) {
-            logger.debug("Failure screenshot saved: {}", screenshotPath);
-        }
-        // 降级为 WARN，避免与上游重试日志 + 下游 Listener 层形成三重 error 重复输出
-        // 异常最终会被抛出并由 PlaywrightListener.stepFailed() 统一记录 error 日志
-        logger.warn("Element operation failed: {}", ex.getMessage());
-    }
-
-    /**
-     * 判断异常是否值得重试。
-     * <p>仅 TimeoutError 类型的异常可能重试（原因：Playwright 的所有可交互性检查
-     * 超时后都以 TimeoutError 体现——元素被遮挡/动画中/DOM 分离等都是 TimeoutError）。
-     * <p>非 TimeoutError（如网络错误、协议错误等）绝不可能通过重试解决，直接失败。
-     */
-    private boolean isRetriable(PlaywrightException e) {
-        // 只有 TimeoutError 才可能是临时性问题（重试可能成功）。
-        // 注意：TargetClosedError 等其它 PlaywrightException 子类（页面/上下文已关闭）
-        // 不属于 TimeoutError，到这里直接返回 false，避免对“已崩溃”的场景做无意义重试。
-        if (!(e instanceof TimeoutError)) {
-            return false;
-        }
-
-        String m = e.getMessage();
-        if (m == null) {
-            return true; // 消息为空时保守重试（TimeoutError 本身已限定范围）
-        }
-        m = m.toLowerCase();
-
-        // 1. 元素被遮挡或拦截（等待后可能消失）
-        if (m.contains("intercepted") || m.contains("obscured")) {
-            return true;
-        }
-
-        // 2. 元素暂时不可交互（可能在动画中）
-        if (m.contains("not interactable") || m.contains("not clickable") || m.contains("not visible")) {
-            return true;
-        }
-
-        // 3. 元素从 DOM 分离（页面正在更新）
-        if (m.contains("detached") || m.contains("not attached")) {
-            return true;
-        }
-
-        // 以下 TimeoutError 不重试（重试也不会成功，浪费时间）：
-        // - "element not found" → 选择器错误，重试没用
-        // - "net::ERR_*" → 网络错误导致的 TimeoutError，重试没用
-        // - 其他无法识别的 TimeoutError → 保守不重试，避免无限等待
-        // 说明：Playwright Java 绑定对“元素不可见/不稳定/不可交互”仅以 TimeoutError + 文案区分，
-        // 并无 ElementIsNotVisibleError 等具名子类，故此处仍以文案匹配作为判据。
-
-        return false;
+        ElementOperationSupport.executeWithRetry(this::locatorInternal, selector, page, action, operation, testName);
     }
 
     // ==================== Execute with Test Name (for Screenshots) ====================
@@ -346,8 +212,8 @@ public class PageElement {
      */
     public PageElement click(String testName) {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().click(new Locator.ClickOptions().setDelay(100));
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().click(new Locator.ClickOptions().setDelay(100).setTimeout(opTimeout()));
             page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "click", testName);
@@ -356,8 +222,8 @@ public class PageElement {
 
     public PageElement fill(String text, String testName) {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().fill(text);
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().fill(text, new Locator.FillOptions().setTimeout(opTimeout()));
             return true;
         }, "fill", testName);
         return this;
@@ -370,8 +236,8 @@ public class PageElement {
 
     public PageElement doubleClick() {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().dblclick();
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().dblclick(new Locator.DblclickOptions().setTimeout(opTimeout()));
             page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "doubleClick");
@@ -380,11 +246,28 @@ public class PageElement {
 
     public PageElement rightClick() {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT));
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT).setTimeout(opTimeout()));
             page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "rightClick");
+        return this;
+    }
+
+    /**
+     * 通过 JavaScript 直接触发元素 {@code click()}（绕过 Playwright 的 actionability 检查）。
+     *
+     * <p>存在合理性：正常 {@link #click()} 在元素被遮罩/拦截或不可见时会被 Playwright 拒绝，
+     * 此时需以 JS 方式强制触发点击。这是真实且常见的交互需求，故作为具名能力保留在元素门面，
+     * 而非散落为 {@code BasePage.jsClick(String)} 这类字符串选择器入口。
+     *
+     * @return 当前元素（支持链式调用）
+     */
+    public PageElement jsClick() {
+        executeWithRetry(() -> {
+            locatorInternal().evaluate("el => el.click()");
+            return true;
+        }, "jsClick");
         return this;
     }
 
@@ -395,8 +278,8 @@ public class PageElement {
 
     public PageElement type(String text) {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().pressSequentially(text);
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().pressSequentially(text);
             return true;
         }, "type");
         return this;
@@ -404,8 +287,8 @@ public class PageElement {
 
     public PageElement clear() {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().clear();
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().clear();
             return true;
         }, "clear");
         return this;
@@ -413,9 +296,9 @@ public class PageElement {
 
     public PageElement clearAndSetValue(String text) {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().clear();
-            locator().fill(text);
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().clear();
+            locatorInternal().fill(text, new Locator.FillOptions().setTimeout(opTimeout()));
             return true;
         }, "clearAndSetValue");
         return this;
@@ -423,9 +306,9 @@ public class PageElement {
 
     public PageElement clearAndTypeSequentially(String text) {
         executeWithRetry(() -> {
-            locator().scrollIntoViewIfNeeded();
-            locator().clear();
-            locator().pressSequentially(text);
+            locatorInternal().scrollIntoViewIfNeeded();
+            locatorInternal().clear();
+            locatorInternal().pressSequentially(text, new Locator.PressSequentiallyOptions().setTimeout(opTimeout()));
             return true;
         }, "clearAndTypeSequentially");
         return this;
@@ -434,7 +317,7 @@ public class PageElement {
     // ==================== Keyboard ====================
     public PageElement press(String key) {
         executeWithRetry(() -> {
-            locator().press(key);
+            locatorInternal().press(key, new Locator.PressOptions().setTimeout(opTimeout()));
             return true;
         }, "press");
         return this;
@@ -442,7 +325,7 @@ public class PageElement {
 
     public PageElement selectText() {
         executeWithRetry(() -> {
-            locator().selectText();
+            locatorInternal().selectText();
             return true;
         }, "selectText");
         return this;
@@ -465,7 +348,7 @@ public class PageElement {
      */
     public boolean isVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
+            locatorInternal().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.VISIBLE).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (PlaywrightException e) {
             return false;
@@ -479,7 +362,7 @@ public class PageElement {
 
     public boolean isNotVisible(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
+            locatorInternal().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.HIDDEN).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (PlaywrightException e) {
             return false;
@@ -501,7 +384,7 @@ public class PageElement {
      */
     public boolean exists(int timeoutSec) {
         try {
-            locator().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
+            locatorInternal().waitFor(new Locator.WaitForOptions().setState(WaitForSelectorState.ATTACHED).setTimeout((long) timeoutSec * 1000));
             return true;
         } catch (PlaywrightException e) {
             return false;
@@ -523,7 +406,7 @@ public class PageElement {
      */
     public boolean isEnabled(int timeoutSec) {
         try {
-            return locator().isEnabled(new Locator.IsEnabledOptions()
+            return locatorInternal().isEnabled(new Locator.IsEnabledOptions()
                     .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
@@ -553,7 +436,7 @@ public class PageElement {
      */
     public boolean isEditable(int timeoutSec) {
         try {
-            return locator().isEditable(new Locator.IsEditableOptions()
+            return locatorInternal().isEditable(new Locator.IsEditableOptions()
                     .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
@@ -574,7 +457,7 @@ public class PageElement {
      */
     public boolean isChecked(int timeoutSec) {
         try {
-            return locator().isChecked(new Locator.IsCheckedOptions()
+            return locatorInternal().isChecked(new Locator.IsCheckedOptions()
                     .setTimeout((double) timeoutSec * 1000));
         } catch (PlaywrightException e) {
             return false;
@@ -584,7 +467,7 @@ public class PageElement {
     // ==================== Text & Attribute ====================
     public String getText() {
         return executeSafely(() -> {
-            String raw = locator().innerText();
+            String raw = locatorInternal().innerText();
             if (raw == null) {
                 logger.warn("getText() returned null for selector: {}", selector);
                 return "";
@@ -598,31 +481,31 @@ public class PageElement {
      */
     public String getTextRaw() {
         return executeSafely(() -> {
-            String raw = locator().innerText();
+            String raw = locatorInternal().innerText();
             return raw != null ? raw : "";
         }, "getTextRaw");
     }
 
     public String getInnerHtml() {
-        return executeSafely(() -> locator().innerHTML(), "getInnerHtml");
+        return executeSafely(() -> locatorInternal().innerHTML(), "getInnerHtml");
     }
 
     public List<String> getAllTextContents() {
-        return executeSafely(() -> locator().allTextContents(), "getAllTextContents");
+        return executeSafely(() -> locatorInternal().allTextContents(), "getAllTextContents");
     }
 
     public String getAttribute(String attr) {
-        return executeSafely(() -> locator().getAttribute(attr), "getAttribute");
+        return executeSafely(() -> locatorInternal().getAttribute(attr), "getAttribute");
     }
 
     public String getValue() {
-        return executeSafely(() -> locator().inputValue(), "getValue");
+        return executeSafely(() -> locatorInternal().inputValue(), "getValue");
     }
 
     // ==================== Select ====================
     public PageElement selectByValue(String value) {
         executeWithRetry(() -> {
-            locator().selectOption(value);
+            locatorInternal().selectOption(value, new Locator.SelectOptionOptions().setTimeout(opTimeout()));
             return true;
         }, "selectByValue");
         return this;
@@ -630,7 +513,7 @@ public class PageElement {
 
     public PageElement selectByIndex(int index) {
         executeWithRetry(() -> {
-            locator().selectOption(new SelectOption().setIndex(index));
+            locatorInternal().selectOption(new SelectOption().setIndex(index), new Locator.SelectOptionOptions().setTimeout(opTimeout()));
             return true;
         }, "selectByIndex");
         return this;
@@ -638,7 +521,7 @@ public class PageElement {
 
     public PageElement selectByVisibleText(String text) {
         executeWithRetry(() -> {
-            locator().selectOption(new SelectOption().setLabel(text));
+            locatorInternal().selectOption(new SelectOption().setLabel(text), new Locator.SelectOptionOptions().setTimeout(opTimeout()));
             return true;
         }, "selectByVisibleText");
         return this;
@@ -647,6 +530,11 @@ public class PageElement {
     // ==================== WaitFor (Full Set) ====================
     private int getDefaultTimeoutMs() {
         return PlaywrightManager.config().getElementCheckTimeout();
+    }
+
+    /** 元素动作单次操作超时（毫秒），由 {@code playwright.element.operation.timeout} 驱动，注入 Playwright 原生 actionability 等待窗口。 */
+    private double opTimeout() {
+        return PlaywrightManager.config().getElementOperationTimeout();
     }
 
     public PageElement waitForVisible() {
@@ -781,7 +669,7 @@ public class PageElement {
             BiFunction<TimeoutError, Integer, RuntimeException> onTimeout,
             BiFunction<PlaywrightException, Integer, RuntimeException> onOther) {
         try {
-            locator().waitFor(new Locator.WaitForOptions()
+            locatorInternal().waitFor(new Locator.WaitForOptions()
                     .setState(expect).setTimeout((long) timeoutSec * 1000));
             return this;
         } catch (TimeoutError e) {
@@ -804,7 +692,7 @@ public class PageElement {
     private PageElement waitForPredicate(Function<Locator, Boolean> check,
             boolean expectTrue, int timeoutSec, String op, String failMsg) {
         try {
-            boolean actual = Boolean.TRUE.equals(check.apply(locator()));
+            boolean actual = Boolean.TRUE.equals(check.apply(locatorInternal()));
             if (actual != expectTrue) {
                 throw new ElementOperationException(op, selector, failMsg, null);
             }
@@ -818,7 +706,7 @@ public class PageElement {
     // ==================== Event & JS ====================
     public PageElement dispatchEvent(String event) {
         executeWithRetry(() -> {
-            locator().dispatchEvent(event);
+            locatorInternal().dispatchEvent(event);
             return true;
         }, "dispatchEvent");
         return this;
@@ -826,10 +714,71 @@ public class PageElement {
 
     public PageElement dispatchEvent(String event, Object arg) {
         executeWithRetry(() -> {
-            locator().dispatchEvent(event, arg);
+            locatorInternal().dispatchEvent(event, arg);
             return true;
         }, "dispatchEventWithArg");
         return this;
+    }
+
+    // ==================== JS 求值 / 焦点 / 触摸（收口 Playwright Locator 能力） ====================
+    /**
+     * 在元素上执行任意 JavaScript 表达式（T3-5 补齐全量能力，供 jsClick / 自定义断言等场景使用）。
+     * 等价于 Playwright {@code Locator.evaluate}，经框架异常翻译为 {@link ElementOperationException}。
+     *
+     * @param expression JS 表达式（函数体或表达式；若需参数，用 {@link #evaluate(String, Object)}）
+     * @return 表达式返回值（JSON 反序列化对象）
+     */
+    public Object evaluate(String expression) {
+        try {
+            return locatorInternal().evaluate(expression);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("evaluate", selector,
+                    "Failed to evaluate expression: " + expression, e);
+        }
+    }
+
+    /** 带参数版本的 {@link #evaluate(String)}，参数 {@code arg} 在表达式中以 {@code arg} 访问。 */
+    public Object evaluate(String expression, Object arg) {
+        try {
+            return locatorInternal().evaluate(expression, arg);
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("evaluate", selector,
+                    "Failed to evaluate expression: " + expression, e);
+        }
+    }
+
+    /** 让元素失去焦点（对齐 Playwright {@code Locator.blur}）。 */
+    public PageElement blur() {
+        executeWithRetry(() -> {
+            locatorInternal().blur();
+            return true;
+        }, "blur");
+        return this;
+    }
+
+    /** 触摸点击（对齐 Playwright {@code Locator.tap}，适用于触摸设备）。 */
+    public PageElement tap() {
+        executeWithRetry(() -> {
+            locatorInternal().tap(new Locator.TapOptions().setTimeout(opTimeout()));
+            return true;
+        }, "tap");
+        return this;
+    }
+
+    // ==================== 无障碍 / ARIA 快照（T3-5 补全 ariaSnapshot 能力） ====================
+    /**
+     * 获取元素的 ARIA 快照（对齐 Playwright {@code Locator.ariaSnapshot()}）。
+     * 用于无障碍合规断言与可访问性回归检测；检索失败经框架异常翻译为 {@link ElementOperationException}。
+     *
+     * @return ARIA 快照文本（默认仅含“有趣”节点）
+     */
+    public String ariaSnapshot() {
+        try {
+            return locatorInternal().ariaSnapshot();
+        } catch (PlaywrightException e) {
+            throw new ElementOperationException("ariaSnapshot", selector,
+                    "Failed to capture ARIA snapshot", e);
+        }
     }
 
     // ==================== Hover / Focus / Check / Scroll ====================
@@ -838,7 +787,7 @@ public class PageElement {
      */
     public PageElement scrollIntoView() {
         executeWithRetry(() -> {
-            locator().evaluate("el => el.scrollIntoView({ behavior: 'instant', block: 'center' })");
+            locatorInternal().evaluate("el => el.scrollIntoView({ behavior: 'instant', block: 'center' })");
             return true;
         }, "scrollIntoView");
         return this;
@@ -846,7 +795,7 @@ public class PageElement {
 
     public PageElement hover() {
         executeWithRetry(() -> {
-            locator().hover();
+            locatorInternal().hover(new Locator.HoverOptions().setTimeout(opTimeout()));
             return true;
         }, "hover");
         return this;
@@ -854,7 +803,7 @@ public class PageElement {
 
     public PageElement focus() {
         executeWithRetry(() -> {
-            locator().focus();
+            locatorInternal().focus(new Locator.FocusOptions().setTimeout(opTimeout()));
             return true;
         }, "focus");
         return this;
@@ -862,7 +811,7 @@ public class PageElement {
 
     public PageElement check() {
         executeWithRetry(() -> {
-            locator().check();
+            locatorInternal().check(new Locator.CheckOptions().setTimeout(opTimeout()));
             return true;
         }, "check");
         return this;
@@ -870,7 +819,7 @@ public class PageElement {
 
     public PageElement uncheck() {
         executeWithRetry(() -> {
-            locator().uncheck();
+            locatorInternal().uncheck(new Locator.UncheckOptions().setTimeout(opTimeout()));
             return true;
         }, "uncheck");
         return this;
@@ -887,7 +836,7 @@ public class PageElement {
         Boolean current = isChecked();
         if (current != null && current == target) return this; // 已满足，无需操作
         executeWithRetry(() -> {
-            locator().setChecked(target);
+            locatorInternal().setChecked(target, new Locator.SetCheckedOptions().setTimeout(opTimeout()));
             return true;
         }, "setChecked");
         return this;
@@ -897,7 +846,7 @@ public class PageElement {
     public PageElement uploadFile(String... paths) {
         Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
         executeWithRetry(() -> {
-            locator().setInputFiles(pathArray);
+            locatorInternal().setInputFiles(pathArray, new Locator.SetInputFilesOptions().setTimeout(opTimeout()));
             return true;
         }, "uploadFile");
         return this;
@@ -905,7 +854,7 @@ public class PageElement {
 
     public byte[] screenshot() {
         try {
-            return locator().screenshot();
+            return locatorInternal().screenshot();
         } catch (PlaywrightException e) {
             logger.error("screenshot failed: {}", selector, e);
             return null;
@@ -914,7 +863,7 @@ public class PageElement {
 
     public PageElement dragTo(PageElement target) {
         executeWithRetry(() -> {
-            locator().dragTo(target.locator());
+            locatorInternal().dragTo(target.locatorInternal(), new Locator.DragToOptions().setTimeout(opTimeout()));
             return true;
         }, "dragTo");
         return this;
@@ -934,7 +883,7 @@ public class PageElement {
      */
     public boolean isParsable() {
         try {
-            locator().count();
+            locatorInternal().count();
             return true;
         } catch (Exception e) {
             return false;
@@ -946,9 +895,10 @@ public class PageElement {
      * 不需要额外调用 waitForVisible()。
      * 元素不可见/未挂载时返回 null 而非抛异常（与 "Safe" 语义一致，便于调用方优雅降级）。
      */
-    public BoundingBox getBoundingBoxSafe() {
+    public ElementRect getBoundingBoxSafe() {
         try {
-            return locator().boundingBox();
+            com.microsoft.playwright.options.BoundingBox box = locatorInternal().boundingBox();
+            return box == null ? null : new ElementRect(box.x, box.y, box.width, box.height);
         } catch (PlaywrightException e) {
             logger.warn("getBoundingBoxSafe failed for {}: {}", selector, e.getMessage());
             return null;
@@ -956,11 +906,11 @@ public class PageElement {
     }
 
     public int count() {
-        return locator().count();
+        return locatorInternal().count();
     }
 
-    public ElementHandle elementHandle() {
-        return locator().elementHandle();
+    protected ElementHandle elementHandle() {
+        return locatorInternal().elementHandle();
     }
 
     // ==================== Child Element ====================
@@ -1007,10 +957,10 @@ public class PageElement {
         }
 
         @Override
-        public Locator locator() {
+        protected Locator locatorInternal() {
             // 关键修复 P2-14：先解析父级 locator（含父级 frameLocator 链），
             // 再用 Locator.locator() 在父级作用域下钻到子元素，确保 iframe 内子元素可定位。
-            Locator parentLocator = super.locator();
+            Locator parentLocator = super.locatorInternal();
             return parentLocator.locator(childSelector);
         }
     }

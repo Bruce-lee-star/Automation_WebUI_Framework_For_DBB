@@ -330,7 +330,7 @@ RuntimeException            ← 5 个直接继承，绕过基类
 | 24 | Browser 实例改 per-thread 或池化，移除跨线程共享 static Map 与全局 `CONTEXT_LOCK`/`PAGE_LOCK` |
 | 25 | 修 ThreadLocal 清理缺口：feature 模式 + session 恢复路径必须走清理；`RouteDsl.on` 补 try/finally unbind，移除靠 GC 兜底的 `WeakReference` |
 | 26 | 打开 Cucumber/Serenity 并行执行，用 `route-demo-web` 做并行回归验证 |
-| 27 | 引入 `PageDriver` 接口层，把 Playwright 类型从 public API 收回 |
+| 27 | 收回 Playwright 类型出 public API（经 `PageElement`/`PageElementList`/`ElementRect` 直接满足；`PageDriver` 接口层经复审判定冗余后已退役） |
 
 ### Phase 4　治理（持续）
 

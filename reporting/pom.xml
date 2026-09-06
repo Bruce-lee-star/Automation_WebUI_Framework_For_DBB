@@ -20,5 +20,33 @@
             <artifactId>framework-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- T2-8：迁移 SummaryReportGenerator 入本模块，需其依赖 -->
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>${gson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-model</artifactId>
+            <version>${serenity.version}</version>
+            <exclusions>
+                <!-- 与项目其余 serenity 构件一致：排除传递的 commons-logging，
+                     统一收敛到项目上界 1.2（由 slf4j 桥接提供 LogFactory） -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- T2-8：报告模板引擎（把 2,184 行里的 HTML/CSS 硬编码拼接改为模板渲染）。
+             Freemarker 2.3.34 本就随 Serenity 传递进入本模块 classpath（零新增依赖）；
+             此处按「用到了就必须显式声明」提升为 direct —— 不把上游的传递依赖当作隐式契约，
+             否则上游一旦移除或降级，本模块会无征兆地编译失败。 -->
+        <dependency>
+            <groupId>org.freemarker</groupId>
+            <artifactId>freemarker</artifactId>
+            <version>${freemarker.version}</version>
+        </dependency>
     </dependencies>
 </project>

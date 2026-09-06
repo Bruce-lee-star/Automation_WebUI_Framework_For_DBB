@@ -1,0 +1,446 @@
+<!doctype html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>Golden Baseline Project - Test Report</title>
+<style media="all" type="text/css">
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        font-size: 14px;
+        line-height: 1.5;
+        -ms-text-size-adjust: 100%;
+        -webkit-text-size-adjust: 100%;
+        background-color: #f6f6f6;
+        margin: 0;
+        padding: 20px;
+        width: 100%;
+        min-height: 100vh;
+    }
+
+    /* ====== 响应式容器：适配 Jenkins iframe 和直接访问 ====== */
+    .body-table {
+        width: 100%;
+        min-height: 100vh;
+    }
+
+    .container {
+        margin: 0 auto !important;
+        width: 95% !important;
+        max-width: 1200px !important;  /* 宽屏：适合Jenkins浏览器查看 */
+        padding: 20px !important;
+    }
+
+    /* 小屏幕回退（移动端）*/
+    @media (max-width: 768px) {
+        .container {
+            width: 100% !important;
+            padding: 10px !important;
+        }
+        body { padding: 10px; }
+    }
+
+    table {
+        border-collapse: separate;
+        mso-table-lspace: 0pt;
+        mso-table-rspace: 0pt;
+        width: 100%;
+    }
+    table td {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        vertical-align: top;
+    }
+    .content {
+        box-sizing: border-box;
+        display: block;
+        margin: 0 auto;
+        max-width: 100%;
+        padding: 0;
+    }
+    .main {
+        background: #fff;
+        border-radius: 8px;  /* 更圆润的边角 */
+        box-shadow: 0 2px 12px rgba(0,0,0,0.08);  /* 轻微阴影增强层次感 */
+        width: 100%;
+        overflow: hidden;  /* 防止内容溢出 */
+    }
+    .wrapper {
+        box-sizing: border-box;
+        padding: 24px;
+    }
+    .compact-wrapper {
+        box-sizing: border-box;
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+    }
+    .content-block {
+        padding-top: 0;
+        padding-bottom: 20px;
+    }
+    .flush-top { margin-top: 0; padding-top: 0; }
+    .flush-bottom { margin-bottom: 0; padding-bottom: 0; }
+    .header { margin-bottom: 16px; margin-top: 0; width: 100%; }
+    .footer {
+        clear: both;
+        padding: 20px;
+        text-align: center;
+        width: 100%;
+        background-color: #f8f9fa;  /* 浅灰背景区分footer */
+        border-top: 1px solid #e9ecef;
+    }
+    .footer td,.footer p,.footer span,.footer a {
+        color:#6c757d;
+        font-size:13px;
+        text-align:center;
+    }
+    .section-callout { background-color:#1abc9c; color:#ffffff; }
+    .section-callout-subtle { background-color:#f7f7f7; border-bottom:1px solid #e9e9e9; border-top:1px solid #e9e9e9; }
+    .alert { min-width:100%; }
+    .alert td {
+        border-radius:8px 8px 0 0;
+        color:#ffffff;
+        font-size:16px;  /* 稍大的标题 */
+        font-weight:600;
+        padding:28px;
+        text-align:center;
+    }
+    .alert.alert-success td {
+        background: linear-gradient(135deg, #5FB0E0 0%, #4A9BD1 100%);  /* 渐变背景 */
+    }
+    .align-center { text-align:center; }
+    .align-right { text-align:right; }
+    .align-left { text-align:left; }
+    .text-link {
+        color:#007bff !important;
+        text-decoration:none !important;
+        transition: color 0.2s ease;
+    }
+    .text-link:hover {
+        text-decoration: underline !important;
+        color: #0056b3 !important;
+    }
+
+    /* ====== 按钮样式增强 ====== */
+    a[style*="background"] {
+        display: inline-block !important;
+        padding: 10px 20px !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+        text-decoration: none !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+    }
+    a[style*="background"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+    }
+    .legend { border:1px solid #acb1b9; margin-top:20px; }
+    .legend .overview { font-weight:bold; font-size:1.1em; color:#515151; background-color:#EBEBEB; padding:4px 0 4px 5px; }
+    .legend td { vertical-align:middle; }
+    .legend-key { font-weight:bold; padding-left:4px; font-size:0.9em; white-space:nowrap; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-left:solid 0.5px #DDDDDD; }
+    .legend-result { font-weight:bold; font-size:0.9em; padding-left:4px; text-align:right; border-top:solid 0.5px #DDDDDD; border-bottom:solid 0.5px #DDDDDD; border-right:solid 0.5px #DDDDDD; }
+    .legend-result span { border-radius:4px; padding:2px 4px; white-space:nowrap; }
+    .environment { border:1px solid #acb1b9; background-color:#EBEBEB; }
+    .environment td { color:#69727f; font-size:0.9em; text-align:center; }
+    .result-bar td { text-align:center; font-size:0.9em; }
+    .success-background { background-color:#52B255; color:white; }
+    .pending-background { background-color:#5FB0E0; color:white; }
+    .ignored-background { background-color:#C9C9C9; color:black; }
+    .failure-background { background-color:#f44336; color:white; }
+    .error-background { background-color:#ECA43A; color:white; }
+    .compromised-background { background-color:#9C77AD; color:white; }
+    .for-success { color:#52B255; }
+    .for-passing { color:#52B255; }
+    .for-failure { color:#f44336; }
+    .for-error { color:#ECA43A; }
+    .for-pending { color:#5FB0E0; }
+    .for-ignored { color:#acb1b9; }
+    .for-compromised { color:#9C77AD; }
+    .failure-scoreboard { border:1px solid #acb1b9; border-collapse:separate; }
+    .failure-scoreboard th { text-align:left; }
+    .failure-scoreboard tr:nth-child(even) { background:#f5f5f5 }
+    .summary-bar { width:100%; }
+    .summary { height:30px; font-size:1em; font-weight:bold; text-align:center; padding-top:10px; vertical-align:middle; white-space:nowrap; }
+    .timings { border:0 solid #acb1b9; padding:0 5px; }
+    .timings th { color:grey; text-align:right; font-size:0.9em; }
+    .timings td { color:grey; text-align:right; font-size:0.9em; }
+    .test-results-table {
+        border:1px solid #dee2e6;
+        margin-bottom:20px;
+        border-collapse:collapse;
+        border-radius: 8px;  /* 圆角 */
+        overflow: hidden;   /* 防止圆角被裁剪 */
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);  /* 轻微阴影 */
+    }
+    .test-results-table th {
+        border:1px solid #dee2e6;
+        padding:12px 16px;
+        background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+        text-align:left;
+        font-weight: 600;
+        font-size: 13px;
+        color: #495057;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .test-results-table td {
+        border:1px solid #dee2e6;
+        padding:12px 16px;
+    }
+    .test-results-table tr:hover {
+        background-color: #f8f9fa;  /* 悬停高亮 */
+    }
+    .categories tr td { border:0.5px solid #dddddd; }
+    tr.categories, th.categories, td.categories { border:0.5px solid grey; }
+    .failure-list { border:1px solid grey; }
+    .feature { font-style:italic; }
+    .scenarioName { padding-left:8px; min-width:4em; width:55%; }
+    .tag-title { text-transform:capitalize; }
+    .tag-subtitle { text-transform:capitalize; width:50%; }
+    h3 { font-size:20px; text-align:center; color:#222222; font-weight:400; margin:0; }
+    h4 { font-size:18px; margin-top:20px; color:#222222; font-weight:500; }
+    .summary-bar-cell { height:2em; vertical-align:middle; }
+    .count-badge { padding:0px; width:25px; text-align:center; }
+    .frequent-failure { font-weight:bold; }
+</style></head>
+<body style="font-family:Helvetica, sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.4;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;background-color:#f6f6f6;margin:0;padding:0;width:100%;overflow-x:hidden;">
+<table border="0" cellpadding="0" cellspacing="0" class="body" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+    <tr>
+        <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">&nbsp;</td>
+        <td class="container" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;margin:0 auto !important;max-width:600px;padding:0;padding-top:24px;width:90%;">
+            <div class="content" style="box-sizing:border-box;display:block;margin:0 auto;max-width:100%;padding:0;">
+                <table border="0" cellpadding="0" cellspacing="0" class="main" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;background:#fff;border-radius:4px;width:100%;">
+                    <tr>
+                        <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">
+                            <table border="0" cellpadding="0" cellspacing="0" class="alert alert-success" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;min-width:100%;">
+                                <tr>
+                                    <td align="center" style="font-family:Helvetica, sans-serif;vertical-align:top;border-radius:4px 4px 0 0;color:#ffffff;background-color:#5FB0E0;font-size:1.3em;font-weight:400;padding:24px;text-align:center;">
+                                        <span class="test-suite-title" style="font-size:1.3em;color:white;font-weight:bold;"><span>Golden Baseline Project</span></span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding:24px;">
+                            <table border="0" cellpadding="0" cellspacing="0" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                <tr>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">
+                                        <table cellspacing="0" cellpadding="0" class="summary-bar" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                            <tr>
+                                                <td class="success-background summary summary-bar-cell" width="0%" valign="middle" align="center" style="padding:0px;"></td>
+                                                <td class="pending-background summary summary-bar-cell" width="0%" valign="middle" align="center" style="padding:0px;"></td>
+                                                <td class="ignored-background summary summary-bar-cell" width="0%" valign="middle" align="center" style="padding:0px;"></td>
+                                                <td class="failure-background summary summary-bar-cell" width="100%" valign="middle" align="center" style="padding:8px;">
+                                                        <span class="summary" title="1 failing tests">100%</span>
+                                                </td>
+                                                <td class="error-background summary summary-bar-cell" width="0%" valign="middle" align="center" style="padding:0px;"></td>
+                                                <td class="compromised-background summary summary-bar-cell" width="0%" valign="middle" align="center" style="padding:0px;"></td>
+                                            </tr>
+                                        </table>
+                                        <table cellspacing="0" cellpadding="2" class="legend" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border:1px solid #acb1b9;margin-top:20px;">
+                                            <tr>
+                                                <td class="overview" colspan="6" style="font-family:Helvetica, sans-serif;vertical-align:middle;font-weight:bold;font-size:1.1em;color:#515151;background-color:#EBEBEB;padding:4px 0 4px 5px;"><span>1 test executed on</span>
+                                                    <span>星期二 九月 01 2026 at 10:00:00</span>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                        <table cellspacing="0" cellpadding="2" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                            <tr>
+                                                <td class="for-passing legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#52B255;">Passing</td>
+                                                <td class="for-passing legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#52B255;">
+                                                    <span class="success-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">0</span>
+                                                </td>
+                                                <td class="for-pending legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#5FB0E0;">Pending</td>
+                                                <td class="for-pending legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#5FB0E0;">
+                                                    <span class="pending-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">0</span>
+                                                </td>
+                                                <td class="for-ignored legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#acb1b9;">Ignored</td>
+                                                <td class="for-ignored legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#acb1b9;">
+                                                    <span class="ignored-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">0</span>
+                                                </td>
+                                            </tr>
+                                            <tr>
+                                                <td class="for-failure legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#f44336;">Failing</td>
+                                                <td class="for-failure legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#f44336;">
+                                                    <span class="failure-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">1</span>
+                                                </td>
+                                                <td class="for-error legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#ECA43A;">Broken</td>
+                                                <td class="for-error legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#ECA43A;">
+                                                    <span class="error-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">0</span>
+                                                </td>
+                                                <td class="for-compromised legend-key legend-label" width="30%" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;padding-left:4px;font-size:0.9em;white-space:nowrap;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-left:solid 0.5px #DDDDDD;color:#9C77AD;">Compromised</td>
+                                                <td class="for-compromised legend-result" style="font-family:Helvetica, sans-serif;vertical-align:top;font-weight:bold;font-size:0.9em;padding-left:4px;border-top:solid 0.5px #DDDDDD;border-bottom:solid 0.5px #DDDDDD;border-right:solid 0.5px #DDDDDD;text-align:right;color:#9C77AD;">
+                                                    <span class="compromised-badge" style="border-radius:4px;padding:2px 4px;white-space:nowrap;">0</span>
+                                                </td>
+                                            </tr>
+                                        </table>
+                                        <table class="timings" cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;padding:0 5px;">
+                                            <tr>
+                                                <th style="color:grey;text-align:right;font-size:0.9em;">Total test execution time</th>
+                                                <th style="color:grey;text-align:right;font-size:0.9em;">Total clock time</th>
+                                                <th style="color:grey;text-align:right;font-size:0.9em;">Average test execution time</th>
+                                                <th style="color:grey;text-align:right;font-size:0.9em;">Max test execution time</th>
+                                                <th style="color:grey;text-align:right;font-size:0.9em;">Min test execution time</th>
+                                            </tr>
+                                            <tr>
+                                                <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;">1s</td>
+                                                <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;">1s</td>
+                                                <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;">1s</td>
+                                                <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;">1s</td>
+                                                <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:grey;text-align:right;font-size:0.9em;">1s</td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+                                <a style="text-transform:uppercase;color:#8accf2;text-decoration:none;font-weight:bold;padding:10px 24px;background:#316d91;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;" href="https://reports.example.com/job/42/Serenity_20Summary_20Report/" target="_blank">View full report</a>
+                                <a style="text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:10px 24px;background:#52B255;border-radius:4px;font-size:14px;display:inline-block;white-space:nowrap;" href="https://reports.example.com/job/42/Serenity_20Summary_20Report/test-report-{{TS}}.zip" target="_blank">Download ZIP</a>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <h3 style="color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;">Functional Coverage</h3>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <h4 class="tag-title" style="color:#222222;font-family:Helvetica, sans-serif;line-height:1.4;margin:0;font-weight:500;font-size:18px;margin-top:20px;text-transform:capitalize;">Feature</h4>
+                            <table class="test-results-table categories" style="border-collapse:collapse;width:100%;border:1px solid grey;margin-bottom:26px;table-layout:fixed;">
+                                <tr>
+                                    <th width="50%" style="text-align:left;white-space:nowrap;">Category</th>
+                                    <th width="8%" style="text-align:left;white-space:nowrap;">Tests</th>
+                                    <th width="8%" style="text-align:left;white-space:nowrap;">Pass</th>
+                                    <th width="34%" style="text-align:left;white-space:nowrap;">Results</th>
+                                </tr>
+                                <tr>
+                                    <td class="tag-subtitle categories" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;"><a href="https://reports.example.com/job/42/Serenity_20Summary_20Report/index.html" target="_blank">Golden Feature</a></td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;">1</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;">0%</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;">
+                                        <table cellspacing="0" cellpadding="0" class="result-bar" width="100%" style="border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                            <tr>
+                                                <td class="failure-background" title="1 failing tests (100%)" width="100%" style="font-family:Helvetica, sans-serif;vertical-align:middle;background-color:#f44336;color:white;text-align:center;font-size:0.9em;padding:4px;"><span>1</span></td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <h3 style="color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;">Test Failure Overview</h3>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <table style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                <tr>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">
+                                        <table class="failure-scoreboard" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;">
+                                            <tr>
+                                                <th colspan="2" style="text-align:left;">Most Frequent Failures</th>
+                                            </tr>
+                                            <tr class="for-failure" style="color:#f44336;">
+                                                <td width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;" class="frequent-failure for-error">Other</td>
+                                                <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;"><span class='count-badge for-failure' style="color:#f44336;">1</span></td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">
+                                        <table class="failure-scoreboard" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;border-style:solid;border-width:1px;border-color:#acb1b9;">
+                                            <tr>
+                                                <th style="text-align:left;">Most Unstable Features</th>
+                                                <th style="text-align:left;">Fails</th>
+                                            </tr>
+                                            <tr class="for-failure" style="color:#f44336;">
+                                                <td class="unstable-feature" width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">Golden Feature</td>
+                                                <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;"><span class='count-badge for-failure' style="color:#f44336;">1</span></td>
+                                            </tr>
+                                        </table>
+                                    </td>
+                                </tr>
+                            </table>
+                            <div style="margin-top:20px;text-align:center;">
+                                <h4 style="margin:0 0 12px 0;font-size:16px;color:#333;">Failure Analysis</h4>
+                                <div style="display:inline-block;width:240px;height:240px;border-radius:50%;background:#e53935;box-shadow:0 2px 8px rgba(0,0,0,0.15);position:relative;">
+                                    <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;">
+                                        <div style="font-size:28px;font-weight:bold;color:#fff;">100%</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <h3 style="color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;">Full Failure List</h3>
+                            <table class="failure-list failure-scoreboard" style="border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                <tr>
+                                    <th style="text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
+                                    <th style="text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Failure</th>
+                                </tr>
+                                <tr>
+                                    <td colspan="2" class="feature" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">Golden Feature</td>
+                                </tr>
+                                <tr>
+                                    <td class="scenarioName" style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
+                                        <a href="https://reports.example.com/job/42/Serenity_20Summary_20Report/golden.html" target="_blank" style="color:#0066cc;text-decoration:none;">Checkout &amp; Payment &lt;special&gt; chars</a>
+                                    </td>
+                                    <td class="scenarioResult" style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
+<span style="color:#f44336;font-size:12px;font-weight:bold;text-transform:uppercase;">failure</span><div style="margin-top:4px;padding-left:1em;color:#f44336;font-size:11px;line-height:1.3;word-break:break-all;">expected &lt;ok&gt; but was &lt;bad&gt;</div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:4px;padding-bottom:4px;">
+                            <div style="text-align:center;">
+                                <h3 style="color:#222222;font-family:Helvetica, sans-serif;font-weight:400;line-height:1.4;margin:0;font-size:20px;text-align:center;display:inline;">Full Test Results</h3>
+                                <a style="text-transform:uppercase;color:#ffffff;text-decoration:none;font-weight:bold;padding:0.3em 0.8em;background:#5FB0E0;border-radius:4px;font-size:12px;margin-left:15px;" href="https://reports.example.com/job/42/Serenity_20Summary_20Report/test-results-{{TS}}.csv" target="_blank">Download CSV</a>
+                            </div>
+                            <table class="failure-list failure-scoreboard" style="border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
+                                <tr>
+                                    <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
+                                    <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Result</th>
+                                </tr>
+                                <tr>
+                                    <td colspan="2" class="feature feature-title" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">Golden Feature</td>
+                                </tr>
+                                <tr>
+                                    <td class="scenarioName" style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 24px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
+                                        <a href="https://reports.example.com/job/42/Serenity_20Summary_20Report/golden.html" target="_blank" style="color:#0066cc;text-decoration:none;">Checkout &amp; Payment &lt;special&gt; chars</a>
+                                    </td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
+<span style="color:#f44336;font-size:12px;font-weight:bold;text-transform:uppercase;">failure</span><div style="margin-top:4px;padding-left:1em;color:#f44336;font-size:11px;line-height:1.3;word-break:break-all;">expected &lt;ok&gt; but was &lt;bad&gt;</div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr class="footer" style="clear:both;padding-top:24px;text-align:center;width:100%;">
+                        <td style="font-family:Helvetica, sans-serif;vertical-align:top;color:#999999;font-size:12px;text-align:center;">
+                            Report produced by Serenity BDD
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        </td>
+        <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">&nbsp;</td>
+    </tr>
+</table>
+</body>
+</html>

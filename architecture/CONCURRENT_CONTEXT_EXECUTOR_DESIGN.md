@@ -2,7 +2,7 @@
 
 > 依据：`ARCHITECTURE_REMEDIATION_PLAN.md` 第 1.1 节成功度量——Phase 3「并行执行 4 workers / 回归总时长 ≤ 0.4T」
 > 版本：v1.0（待评审）　编制日期：2026-09-04
-> 状态：**后置 / 不紧急（用户决策 2026-09-04）**：并行执行后置、不紧急；当前「共享 Browser 模式」已满足需求，本方案存档备查，短期内不实施
+> 状态：**企业级升级设计中（2026-09-07，结合 serenity-core 原语调研）**：原 C2 + SSO 附录 A 已就绪；现补齐「Serenity 线程绑定桥接 / 执行引擎选型 / 共享 Browser 韧性兜底 / 可观测性」四大企业级维度，目标升级为可落地方案（见第九节）。前置能力「共享 Browser 模式」已实现并验证通过。
 > 前置能力：共享 Browser 模式（「一个 Browser + 多 Context」）已实现并验证通过
 
 ---
@@ -255,7 +255,7 @@ runAll(tasks, options)
 
 ## 八、待决策项
 
-1. **是否按本方案实施**（用户决策 2026-09-04：**后置、不紧急**，当前不实施；共享 Browser 模式已满足需求）
+1. **是否按本方案实施**（用户决策 2026-09-07 更新：由「后置/不紧急」升级为「企业级升级设计中」；共享 Browser 模式已满足需求，但新增 Serenity 线程绑定桥接后可落地为正式能力，见第九节）
 2. 并发度硬上限初值取多少（建议 8，待压测校准）
 3. 风险 1 的「共享 Browser 单点」是否接受；是否需要「崩溃自动重建」兜底
 4. 风险 4 的浏览器类型切换：fail-fast 还是维持现状
@@ -394,3 +394,109 @@ public final class ConcurrencyGate {
 | 3 | 海量 key 导致 `GATES` Map 无界增长 | 加 size 上限 + LRU/弱引用淘汰；或按 key 维度上限仅缓存"活跃"信号量，空闲即清理 |
 | 4 | 与 JUnit 5 集成耦合 | 闸门 runner 无关，仅在 JUnit 5（JVM 内并行）生效；Serenity 跨 JVM `batch` 按环境天然隔离，无需闸门 |
 | 5 | `ConcurrentHashMap` 不允许 null key | 已用 `if (key == null) return` 规避（无身份场景根本不进 Map） |
+
+---
+
+## 九、企业级升级设计（结合 serenity-core 原语调研，2026-09-07）
+
+> 本章把 C2 + SSO 附录从「存档设计」升级为「可落地企业级方案」。核心增量来自对 `D:\IdeaProject\serenity-core` 真实并发原语的调研，以及对我方框架 `StepEventBus` / `TestContextHolder` / `ApiCaptureContext` 实际依赖的核查。
+
+### 9.1 调研结论：Serenity 的并发原语（源码实证）
+
+| 原语 | 位置（serenity-core） | 语义 | 对本方案的含义 |
+|---|---|---|---|
+| `StepEventBus` | `net.thucydides.core.steps.StepEventBus.java` | `stepEventBusThreadLocal`（`ThreadLocal<StepEventBus>`）+ `STICKY_EVENT_BUSES`（`ConcurrentMap<Object,StepEventBus>`）；`getEventBus()` 按线程惰性新建；`setCurrentBusToEventBusFor(key)` / `eventBusFor(key)` 把任意线程切到 key 对应的粘性总线 | **报告 / 断言严格绑定到 runner 线程**；worker 线程若直接 `getEventBus()` 会拿到无监听器的全新总线 |
+| `BatchManager` | `net.thucydides.core.batches.SystemVariableBasedBatchManager.java` | `shouldExecuteThisTest()`：`testCaseCount % batchCount == batchNumber` → **跨 JVM / CI 分片**，非 JVM 内多线程 | 跨环境并行只能靠多 JVM；JVM 内的同环境并行必须由本方案自建 |
+| WebDriver 线程绑定 | `net.thucydides.core.webdriver.WebdriverProxyFactory.java` / `SerenityWebdriverManager.java` | WebDriver 经 `ThreadLocal` 按线程持有 | 与我们的 `PlaywrightManager` `contextThreadLocal` 同构，可作为 Context 隔离的参照实现 |
+
+**关键推论（与 1.2 一致但更精确）**：Serenity 没有任何 JVM 内并行执行器；其 `StepEventBus` 与我们的 `TestContextHolder` 均为 `ThreadLocal`，因此**在自定义线程池中运行的任务若直接调用 `StepEventBus.getEventBus()` / `TestContextHolder.get()`，会落到 worker 线程私有的、与编排测试线程隔离的状态**——这正是 C2 当初未覆盖、却决定方案成败的缺口。
+
+### 9.2 当前 C2 的关键缺口（企业级必须补齐）
+
+| # | 缺口 | 实证（我方代码） | 后果 |
+|---|---|---|---|
+| G1 | `StepEventBus` 串扰 | `StepFailureAggregator.checkAndFailOnApiAssertions()` line 126、`checkAndFailOnPageErrors()` line 155 调 `StepEventBus.getEventBus().testFailed(...)`；`PlaywrightListener` line 355/436/478/689 调 `stepFinished(...)` | worker 线程拿到无监听器的全新总线 → 失败不标红、步骤不进报告 |
+| G2 | `TestContextHolder` 串扰 | `core/.../context/TestContextHolder.java`（`ThreadLocal<TestContext>`）；`PageEventMonitor` 经它收集页面错误，`PlaywrightListener.checkAndFailOnPageErrors()` 在 test 线程 `drainPendingPageErrors()` | worker 线程的页面错误滞留在 worker `TestContext`，test 线程 drain 为空 → 页面错误漏报 |
+| G3 | `ApiCaptureContext` 全局静态态 | `route/.../core/ApiCaptureContext` 以 `static` Map 收口 API 抓包；并发任务各自 `page.onResponse` 同时写全局态 | 并发写入需 `ConcurrentHashMap` / 同步保障，否则计数漂移或 `ConcurrentModificationException` |
+
+### 9.3 桥接策略（核心决策）
+
+**原则：Serenity 集成留在编排线程；worker 线程仅产出结构化结果，不直接触碰 `StepEventBus` / `TestContextHolder`。**
+
+```
+编排线程（JUnit/Cucumber runner 线程）
+  ├─ 持有正确 StepEventBus（已注册 ThucydidesStepsListenerAdapter）+ TestContext
+  ├─ 调 ConcurrentContextExecutor.runAll(tasks, options)
+  │     └─ 工作线程-N：执行 ContextTask，仅与 BrowserContext/Page 交互
+  │           ├─ 失败 / 页面错误 → 汇聚进 ContextTaskResult（failure / diagnostics）
+  │           └─ finally：PlaywrightManager.cleanupForScenario() + TestContextHolder.resetForCurrentThread()
+  └─ runAll 返回后：编排线程对每个失败结果回放既有失败路径
+        （在 test 线程上经正确总线 testFailed）→ Serenity 报告 / IDE 标红零回归
+```
+
+- **失败回放**：编排线程在 `runAll` 后遍历 `ContextTaskResult`，对失败项调用既有 `StepFailureAggregator` 等价逻辑（在 test 线程 `getEventBus()` 上 `testFailed`）——复用现有 Serenity 标记通道，零新增报告代码。
+- **页面错误汇聚**：并发任务内 `playwright.page.error.failOnError` 不自动标红；worker 线程 `drainPendingPageErrors()` 后随 `ContextTaskResult` 回传，由编排线程统一 `drain` + 标记。
+- **`ApiCaptureContext` 加固（G3）**：将全局静态 Map 收敛为 `ConcurrentHashMap` 或加锁；若需按任务隔离，可在 `ContextTaskResult` 中携带 `ApiCall` 快照，避免跨任务共享全局态。
+
+### 9.4 备选：per-task 粘性总线（任务级可观测性增强，默认不采用）
+
+若未来需要"每个并发任务在 Serenity 报告中独立成段"，可模仿 serenity-core：
+
+```java
+// 编排线程：先把本测试总线注册进粘性表（key 唯一）
+StepEventBus.setCurrentBusToEventBusFor(taskKey);   // 仅设置线程局部；不会携带已注册监听器
+// 工作线程：切到同一粘性总线，并注册与 test 线程相同监听器集合
+StepEventBus.setCurrentBusToEventBusFor(taskKey);
+StepEventBus.getEventBus().registerListener(/* ThucydidesStepsListenerAdapter 等 */);
+```
+
+> 注意：`setCurrentBusToEventBusFor` 仅切换线程局部总线、**不迁移已注册监听器**；若采用此路径，必须在每个 task 的总线上重新注册与 test 线程一致的监听器集合，否则报告缺失。复杂度高，**默认不采用**，列为"任务级可观测性"增强候选项（待评估）。
+
+### 9.5 执行引擎选型
+
+| 引擎 | 适用 | 结论 |
+|---|---|---|
+| 有界固定线程池（`ThreadPoolExecutor` + 自定义 `ThreadFactory`，线程名 `dbb-ctx-N`） | 通用、可控 | **缺省**；并发度 `min(tasks, parallelism, 硬上限)`；`finally` 内 `shutdownNow()` + 有界 `awaitTermination` |
+| 虚拟线程（`Executors.newVirtualThreadPerTaskExecutor()`，JDK 21+） | I/O 密集（Playwright 导航/等待阻塞 carrier 线程） | **增强备选**：轻量、无池上限焦虑；需先审计 `BasePage` 同步 API 与 `synchronized`/native 锁的 carrier 线程 pinning 风险，确认无 `Object.wait` 长持锁 |
+| `ForkJoinPool.commonPool()` | — | **不采用**：被框架其它处共享，难以隔离、命名与超时控制 |
+
+### 9.6 韧性兜底
+
+- **共享 Browser 单点（风险 1 升级）**：`getBrowser()` 既有 `isConnected` 双重检查；新增 `BrowserCrashGuard`——检测到断开后在进程级锁内重建 Browser，并对失败任务做 **replay**（带身份亲和：同 `ConcurrencyPartitionKey` 任务优先复用同一重建后 Context）。
+- **单任务超时**：`future.get(perTaskTimeout)` 超时 `cancel(true)` 兜底；真实耗时上限仍依赖框架既有 navigation / element 超时（G1 已在 3.5 明示为 best-effort）。
+
+### 9.7 可观测性
+
+- 每任务：`MDC.put("taskName" / "browserIdentity")` 便于日志追踪；记 `threadName / durationMs / openContexts / 成功或失败`。
+- 汇总：总耗时、成功数、失败数、并发度、是否共享 Browser 模式、被 SSO 闸门串行化的身份数。
+- 可选 `Micrometer` `Timer`/`Gauge`（SPI 式可选依赖，不强制引入）。
+
+### 9.8 企业级约束对照（补充）
+
+| 约束 | 落实方式（增量） |
+|---|---|
+| 线程安全 / 并发可见性 | G1/G2 桥接（Serenity 状态留在编排线程）；G3 `ApiCaptureContext` 静态态 `ConcurrentHashMap` 化；`ConcurrentHashMap` 结果收集 |
+| 清晰 API 边界 | 桥接逻辑收口于 `ConcurrentContextExecutor`（lifecycle 同包）+ 新增 `SerenityBusBridge` / `TestContextBridge` 包级私有协作类；不向业务 Page 外泄 |
+| 可观测性 | MDC 线程命名 + 每任务/汇总两级日志 + 可选 Micrometer |
+| 健壮错误处理 | 入参校验抛 `IllegalArgumentException`；单任务失败隔离进 `ContextTaskResult`；超时兜底；`finally` 配对清理不泄漏 |
+| 单测 / 全护盾 | 专属单测 + Serenity 桥接单测（断言 test 线程总线被正确标记）+ 多线程 IT + 全护盾 |
+
+### 9.9 更新风险与对策
+
+| # | 风险 | 对策 |
+|---|---|---|
+| G1 | `StepEventBus` 串扰（worker 总线无监听器） | 报告/断言只在编排线程回放（9.3）；per-task 粘性总线仅作备选（9.4） |
+| G2 | `TestContextHolder` 串扰（页面错误滞留在 worker） | 并发任务内禁自动标红，错误随 `ContextTaskResult` 回传编排线程统一 drain（9.3） |
+| G3 | `ApiCaptureContext` 全局静态态并发不安全 | 收敛为 `ConcurrentHashMap` 或按任务快照隔离（9.3） |
+| R2 | 单 Browser 可承载并发 Context 数未验证 | 4→8→16 梯度压测校准硬上限 |
+| R6 | 虚拟线程 pinning（若采用 9.5 增强） | 先审计 `BasePage` 同步 API 与长持锁，再启用开关 |
+| R7 | 共享 Browser 崩溃波及全部任务 | `BrowserCrashGuard` 重建 + 失败任务 replay（9.6） |
+
+### 9.10 落地步骤（企业级，待启动）
+
+1. `FrameworkConfig` 新增配置项：`parallelism` / `task.timeout.seconds` / `virtual.thread.enabled` / `bridge.mode`（沿用三段式纯函数解析）。
+2. `lifecycle` 包：`ConcurrentContextExecutor` + `ContextTask` / `ContextTaskResult` / `ConcurrentContextOptions`（第三节）。
+3. 桥接协作类（包级私有）：`SerenityBusBridge`（编排线程→worker 结果回放）、`TestContextBridge`（worker→编排 页面错误汇聚）。
+4. `ApiCaptureContext` 并发安全审计与加固（`ConcurrentHashMap` / 同步）。
+5. 单测 ≥ 12 例 + Serenity 桥接单测（断言 test 线程 `StepEventBus` 被正确 `testFailed`、页面错误被汇聚）+ 多线程 IT（`api/core/web/route/reporting` 跨会话保行为）+ 全护盾 + E2E 沙箱回归。
+6. 补充 `README` / 配置示例（含 SSO 闸门 `CONCURRENCY_PARTITION_*`）。

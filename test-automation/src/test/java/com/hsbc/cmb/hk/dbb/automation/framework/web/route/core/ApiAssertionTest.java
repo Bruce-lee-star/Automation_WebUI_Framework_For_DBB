@@ -10,44 +10,43 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 /**
- * 固化 Phase 5 抽离出的 {@link ApiAssertion} 编译层契约（与拆分前语义严格一致）。
+ * 固化 route 模块统一的 Ant-glob 编译实现（{@link RoutePatternCache#antGlobToRegex}）。
  *
- * <p>{@code statusIs/jsonPath/bodyContains/isMock/get} 等运行时方法依赖
- * {@code ApiCaptureContext.getCurrent()} 全局采集上下文（由集成护盾覆盖）；
- * 本类锁定<b>抽离后独立的 glob 编译实现</b>不应发生漂移：
+ * <p>该实现被 {@link ApiAssertion} 与 {@link ResponseStore} 共同委托，是全局唯一一处
+ * Ant-glob→正则转换（T2-5 合并重复的 Glob 匹配后收敛），故本类直接锁定其语义不漂移：
  * <ul>
- *   <li>构造器调用私有 {@code globToRegex} 不抛；</li>
- *   <li>{@code globToRegex} 的 {@code **}/{@code *}/特殊字符语义与 {@link RoutePatternCache} 平行一致；</li>
- *   <li>{@code containsGlobWildcard} 通配符探测正确。</li>
+ *   <li>{@code ApiAssertion} 构造经委托不抛（间接验证统一实现可用）；</li>
+ *   <li>{@code RoutePatternCache.antGlobToRegex} 的 {@code **}/{@code *}/特殊字符语义正确；</li>
+ *   <li>{@code ApiAssertion.containsGlobWildcard} 通配符探测正确。</li>
  * </ul>
- * 通过反射访问 private 静态方法（同包 + setAccessible），避免为测试放宽可见性。
  * <b>不依赖 Playwright</b>。
  */
 public class ApiAssertionTest {
 
     @Test
     public void ctor_compilesGlobWithoutThrowing() {
+        // 构造器经 RoutePatternCache.antGlobToRegex 委托，不抛即证明统一实现可用
         ApiAssertion a = new ApiAssertion("/api/**");
         assertNotNull(a);
     }
 
     @Test
-    public void globToRegex_singleStar_doesNotCrossSlash() throws Exception {
-        Pattern p = (Pattern) globToRegex.invoke(null, "*.json");
+    public void antGlobToRegex_singleStar_doesNotCrossSlash() {
+        Pattern p = RoutePatternCache.antGlobToRegex("*.json");
         assertTrue("单层 * 匹配同目录文件", p.matcher("foo.json").matches());
         assertFalse("单层 * 不应跨越 /", p.matcher("a/b.json").matches());
     }
 
     @Test
-    public void globToRegex_doubleStar_crossesSlash() throws Exception {
-        Pattern p = (Pattern) globToRegex.invoke(null, "/api/**");
+    public void antGlobToRegex_doubleStar_crossesSlash() {
+        Pattern p = RoutePatternCache.antGlobToRegex("/api/**");
         assertTrue("** 应匹配任意深层路径", p.matcher("/api/x/y").matches());
         assertFalse("** 不应匹配其他前缀", p.matcher("/other/x").matches());
     }
 
     @Test
-    public void globToRegex_escapesSpecialChars() throws Exception {
-        Pattern p = (Pattern) globToRegex.invoke(null, "a.b");
+    public void antGlobToRegex_escapesSpecialChars() {
+        Pattern p = RoutePatternCache.antGlobToRegex("a.b");
         assertTrue("字面点应匹配", p.matcher("a.b").matches());
         assertFalse("未转义的点会错误匹配任意字符", p.matcher("axb").matches());
     }
@@ -58,13 +57,10 @@ public class ApiAssertionTest {
         assertFalse((Boolean) containsGlobWildcard.invoke(null, "abc"));
     }
 
-    private static final Method globToRegex;
     private static final Method containsGlobWildcard;
 
     static {
         try {
-            globToRegex = ApiAssertion.class.getDeclaredMethod("globToRegex", String.class);
-            globToRegex.setAccessible(true);
             containsGlobWildcard = ApiAssertion.class.getDeclaredMethod("containsGlobWildcard", String.class);
             containsGlobWildcard.setAccessible(true);
         } catch (NoSuchMethodException e) {

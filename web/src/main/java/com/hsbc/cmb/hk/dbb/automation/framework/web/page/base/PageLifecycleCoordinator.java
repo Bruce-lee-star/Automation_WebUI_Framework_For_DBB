@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import org.slf4j.Logger;
@@ -197,7 +197,12 @@ public final class PageLifecycleCoordinator {
             if (bp.page != null && !bp.page.isClosed()) {
                 // 标记本页为"框架主动关闭"：onClose 据此不再补登记 closeCurrentPage 步骤
                 // （代码已显式调用 closeCurrentPage，重复登记会导致回放重复关闭）。
-                RoleElementPicker.markFrameworkClose(bp.page);
+                // 经 codegen 桥接（未注册=no-op，等价于默认关闭，零回归）。
+                RoleCodegenBridgeRegistry.getBridge().ifPresent(b -> {
+                    if (b.isCodegenEnabled()) {
+                        b.markFrameworkClose(bp.page);
+                    }
+                });
                 bp.page.close();
             } else {
                 VerboseLogging.logDebugIfVerbose(log,
@@ -241,7 +246,12 @@ public final class PageLifecycleCoordinator {
             try {
                 if (!p.isClosed()) {
                     // 标记为"框架主动关闭"，onClose 不再补登记 closeCurrentPage 步骤。
-                    RoleElementPicker.markFrameworkClose(p);
+                    // 经 codegen 桥接（未注册=no-op，等价于默认关闭，零回归）。
+                    RoleCodegenBridgeRegistry.getBridge().ifPresent(b -> {
+                        if (b.isCodegenEnabled()) {
+                            b.markFrameworkClose(p);
+                        }
+                    });
                     p.close();
                 }
             } catch (Exception e) {

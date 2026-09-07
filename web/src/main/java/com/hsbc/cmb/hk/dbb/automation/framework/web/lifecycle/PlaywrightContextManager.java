@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Download;
@@ -38,7 +39,7 @@ class PlaywrightContextManager {
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightContextManager.class);
 
     /**
-     * ⭐ 修复 Medium(#2)：tracing().stop() 写磁盘 trace 文件属阻塞 IO。原实现用
+     *  修复 Medium(#2)：tracing().stop() 写磁盘 trace 文件属阻塞 IO。原实现用
      *   CompletableFuture.runAsync(...) 隐式提交到 ForkJoinPool.commonPool()（JVM 共享池），
      *   既污染共享池又不受框架生命周期管理（JVM 退出时可能被强杀导致 trace 文件损坏）。
      *   改为提交到本类专属、受 ShutdownCoordinator 管理的守护线程池。
@@ -68,20 +69,20 @@ class PlaywrightContextManager {
         configureDefaultContextOptions(contextOptions);
 
         // 条件注入自定义配置
-        Boolean customFlag = CustomOptionsManager.customContextOptionsFlag.get();
+        Boolean customFlag = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_CONTEXT_OPTIONS_FLAG_KEY);
         if (customFlag != null && customFlag) {
             VerboseLogging.logInfoIfVerbose(logger, "Applying custom context options...");
             configureCustomContextOptions(contextOptions);
         }
 
-        // ⭐ 修复问题3：用 try-finally 确保 customContextOptionsFlag 在 newContext() 抛异常（浏览器断开/
+        //  修复问题3：用 try-finally 确保 customContextOptionsFlag 在 newContext() 抛异常（浏览器断开/
         // 参数非法）时也能重置，避免该线程后续重试持续携带已失效的自定义配置而反复失败。
         BrowserContext context;
         try {
             // 初始化 Context
             context = currentBrowser.newContext(contextOptions);
 
-            // ⭐ 监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
+            //  监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
             context.onPage(newPage -> {
                 VerboseLogging.logInfoIfVerbose(logger,
                         "New page detected via window.open(): url={}", newPage.url());
@@ -91,6 +92,10 @@ class PlaywrightContextManager {
                 });
             });
 
+            // 注册页面级可观测性诊断监听（未捕获异常/控制台错误/网络失败/崩溃）
+            // 经 context.onPage 覆盖所有新建页面（含 window.open 弹窗），与上方 onPage 日志互不冲突
+            PageEventMonitor.register(context);
+
             // 设置超时
             configureTimeouts(context);
 
@@ -99,7 +104,7 @@ class PlaywrightContextManager {
         } finally {
             // 重置标志（成功或失败都执行）
             if (customFlag != null && customFlag) {
-                CustomOptionsManager.customContextOptionsFlag.set(false);
+                TestContextHolder.get().set(CustomOptionsManager.CUSTOM_CONTEXT_OPTIONS_FLAG_KEY, false);
                 VerboseLogging.logInfoIfVerbose(logger, "Custom context options applied, flag reset to false");
             }
         }
@@ -134,6 +139,9 @@ class PlaywrightContextManager {
         });
 
         stabilizePage(page);
+        // 注册页面级可观测性诊断监听（未捕获异常/控制台错误/网络失败/崩溃）
+        // 幂等：若 context.onPage 已先行注册，此处为 no-op
+        PageEventMonitor.register(page);
         VerboseLogging.logInfoIfVerbose(logger, "Page created successfully");
         return page;
     }
@@ -144,7 +152,7 @@ class PlaywrightContextManager {
     static void closeContext(BrowserContext context) {
         if (context != null) {
             try {
-                // ⭐ 先释放路由层资源：停止 MonitorSession 定时器、unroute、清理注册表与防重门控，
+                //  先释放路由层资源：停止 MonitorSession 定时器、unroute、清理注册表与防重门控，
                 //    避免调度器线程池持有已销毁 context 引用导致内存泄漏 / 对已关闭 context 无效调度。
                 //    统一走 RouteLifecycle 生命周期钩子（含关闭前泄漏诊断）。
                 try {
@@ -154,7 +162,7 @@ class PlaywrightContextManager {
                 }
                 // 停止 tracing（以框架配置为准，避免与系统环境变量不一致导致误判）
                 if (FrameworkConfigManager.getBoolean(FrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED)) {
-                    // ⭐ 修复 A-2：tracing().stop() 会写磁盘 trace 文件，无超时且可能长时间阻塞
+                    //  修复 A-2：tracing().stop() 会写磁盘 trace 文件，无超时且可能长时间阻塞
                     //    （磁盘 IO 卡顿 / 大 trace）。外层 closeContext 在 PlaywrightManager.CONTEXT_LOCK
                     //    同步块内调用，阻塞会拖住所有线程的 context 关闭。
                     //    故改为带超时的异步执行：超时即放弃写 trace，保证 context.close() 不被拖累。
@@ -176,7 +184,7 @@ class PlaywrightContextManager {
                         VerboseLogging.logDebugIfVerbose(logger, "Tracing stop skipped on context close: {}", te.getMessage());
                     }
                 }
-                // ⭐ 独立的 close try：即使上面任何步骤抛异常，也要保证 context.close() 被执行，
+                //  独立的 close try：即使上面任何步骤抛异常，也要保证 context.close() 被执行，
                 //    否则已关闭失败会导致 context 资源泄漏。
                 //    注意：BrowserContext 无 isClosed() 方法，用 browser 连接状态判断其是否仍活跃。
                 if (context.browser() != null && context.browser().isConnected()) {
@@ -197,7 +205,7 @@ class PlaywrightContextManager {
         if (page != null) {
             try {
                 if (!page.isClosed()) {
-                    // ⭐ 先释放该 Page 上的路由层资源（停止 MonitorSession 定时器、清理注册表），
+                    //  先释放该 Page 上的路由层资源（停止 MonitorSession 定时器、清理注册表），
                     //    再关闭 Page，避免调度器线程池持有已销毁 page 引用导致内存泄漏。
                     //    统一走 RouteRegistry.clearContext 释放。
                     try {
@@ -309,11 +317,17 @@ class PlaywrightContextManager {
     private static void configureCustomContextOptions(Browser.NewContextOptions contextOptions) {
         CustomOptionsManager cm = PlaywrightManager.customOptions();
 
-        // StorageState（特殊：需要 Files.exists 检查）
-        Path storagePath = cm.getStorageStatePath();
-        if (storagePath != null && Files.exists(storagePath)) {
-            contextOptions.setStorageStatePath(storagePath);
-            VerboseLogging.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
+        // StorageState：优先用内存缓存的 JSON 内容（零文件 IO）；否则退回文件路径
+        String storageState = cm.getStorageState();
+        if (storageState != null && !storageState.isEmpty()) {
+            contextOptions.setStorageState(storageState);
+            VerboseLogging.logInfoIfVerbose(logger, "Using in-memory storageState (from cache)");
+        } else {
+            Path storagePath = cm.getStorageStatePath();
+            if (storagePath != null && Files.exists(storagePath)) {
+                contextOptions.setStorageStatePath(storagePath);
+                VerboseLogging.logInfoIfVerbose(logger, "Using custom storageStatePath: {}", storagePath);
+            }
         }
 
         applyIfNotEmpty(cm.getLocale(), "locale", () -> contextOptions.setLocale(cm.getLocale()));
@@ -428,8 +442,8 @@ class PlaywrightContextManager {
                             + "});"
             );
 
-            Integer customViewportWidthVal = CustomOptionsManager.customViewportWidth.get();
-            Integer customViewportHeightVal = CustomOptionsManager.customViewportHeight.get();
+            Integer customViewportWidthVal = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_VIEWPORT_WIDTH_KEY);
+            Integer customViewportHeightVal = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_VIEWPORT_HEIGHT_KEY);
 
             if (customViewportWidthVal != null && customViewportHeightVal != null) {
                 // 用户自定义 viewport：直接应用

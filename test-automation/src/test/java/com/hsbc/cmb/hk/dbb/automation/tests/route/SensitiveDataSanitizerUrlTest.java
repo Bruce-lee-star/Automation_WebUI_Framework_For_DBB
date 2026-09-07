@@ -46,6 +46,22 @@ public class SensitiveDataSanitizerUrlTest {
     }
 
     @Test
+    public void shouldStripUserinfoFromUrl() {
+        // JDBC URL 内嵌凭据（user:pass@）
+        String jdbc = "jdbc:mysql://root:secret@localhost:3306/route_monitor";
+        String maskedJdbc = SensitiveDataSanitizer.sanitizeUrl(jdbc);
+        assertNotNull(maskedJdbc);
+        assertFalse("JDBC URL 内嵌密码不应出域", maskedJdbc.contains("secret"));
+        assertFalse("JDBC URL 内嵌账号不应出域", maskedJdbc.contains("root"));
+        // HTTP URL 内嵌凭据
+        String http = "https://admin:pwd123@api.example.com/login";
+        String maskedHttp = SensitiveDataSanitizer.sanitizeUrl(http);
+        assertNotNull(maskedHttp);
+        assertFalse("HTTP URL 内嵌密码不应出域", maskedHttp.contains("pwd123"));
+        assertFalse("HTTP URL 内嵌账号不应出域", maskedHttp.contains("admin"));
+    }
+
+    @Test
     public void shouldMaskUserConfiguredExtraHeaderKey() {
         SensitiveDataSanitizer.registerExtraSensitiveKeys("x-custom-secret", null, null);
         Map<String, String> headers = new HashMap<>();

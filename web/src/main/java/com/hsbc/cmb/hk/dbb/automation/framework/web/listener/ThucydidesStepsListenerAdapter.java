@@ -175,7 +175,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void testStarted(String description, ZonedDateTime startTime) {
         StepListener.super.testStarted(description, startTime);
-        // 关键修复 P2-21：委派到注册的 StepListener，否则业务 StepListener 接收不到事件。
+        // 关键委派到注册的 StepListener，否则业务 StepListener 接收不到事件。
         for (StepListener listener : delegateListeners) {
             try {
                 listener.testStarted(description, startTime);
@@ -379,7 +379,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
     @Override
     public void testSuiteFinished() {
         VerboseLogging.logDebugIfVerbose(logger, "Test suite finished");
-        // ⭐ 修复 P3-35：lastTestSuiteName 是静态字段，原实现从不复位。
+        //  lastTestSuiteName 是静态字段，原实现从不复位。
         //    当多个 suite 连续执行、或同一 suite 重跑时，若后续 story 与先前同名，
         //    其 testSuiteStarted 日志会被"去重"逻辑误判为重复而静默吞掉，
         //    造成"这个 suite 到底跑没跑"的排障困扰。

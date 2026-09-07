@@ -24,7 +24,7 @@ public class FrameworkConfig {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(FrameworkConfig.class);
     /**
-     * ⭐ 修复 A3：原实现在【类加载时】把配置缓存成静态快照
+     *  修复 A3：原实现在【类加载时】把配置缓存成静态快照
      * （{@code private static Config config = ConfigProvider.getConfig();}）。
      * 一旦 ConfigProvider 在类初始化之后为不同 entity / 测试阶段返回新的 Config 实例，
      * 本类会一直读取那份陈旧快照，导致多实体配置被静默忽略。

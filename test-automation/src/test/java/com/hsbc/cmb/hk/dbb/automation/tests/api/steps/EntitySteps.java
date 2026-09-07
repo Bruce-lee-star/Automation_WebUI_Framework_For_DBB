@@ -9,7 +9,7 @@ import net.serenitybdd.core.steps.UIInteractionSteps;
  * Entity Initialization Steps
  * Handles entity building and initialization
  *
- * <p>⭐ 修复 P1-14：本类原先使用 {@code @Autowired private BaseStep baseStep;} ——
+ * <p> 本类原先使用 {@code @Autowired private BaseStep baseStep;} ——
  * 项目没有 Spring 容器，该字段恒为 null；且本类原本还会给该字段<b>重新赋值</b>，
  * 即便注入成功，重新赋值也只会作用于自己这一个实例，其它 step 类依旧拿不到。
  *

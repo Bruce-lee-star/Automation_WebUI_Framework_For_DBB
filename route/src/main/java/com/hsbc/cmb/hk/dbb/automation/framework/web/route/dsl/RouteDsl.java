@@ -127,7 +127,7 @@ public class RouteDsl {
         }
         RouteEngine.register(context, rules);
 
-        // ⭐ 统一绑定模型：page 规则已升级为 context 级绑定，由 Playwright 自动覆盖同 context 全部页面，
+        //  统一绑定模型：page 规则已升级为 context 级绑定，由 Playwright 自动覆盖同 context 全部页面，
         //    跨页迁移竞态不再存在，故无需 page.onClose 重注册。
     }
 
@@ -180,7 +180,7 @@ public class RouteDsl {
     }
 
     /**
-     * ⭐ 全局全量清理 — 唯一对外暴露的全量复位入口（suite 级 / 单线程批量 / 测试显式调用）。
+     *  全局全量清理 — 唯一对外暴露的全量复位入口（suite 级 / 单线程批量 / 测试显式调用）。
      *
      * <p>编排顺序（异常隔离，单步失败不影响其余步骤）：
      * <ol>
@@ -195,7 +195,7 @@ public class RouteDsl {
      * {@link #clear(Page)} 做按上下文隔离清理。
      */
     public static void resetAll() {
-        // ⭐ P2-19：全局清理会清空所有上下文状态，并行测试下会误杀其它 context 的防重门控 / 规则。
+        //  P2-19：全局清理会清空所有上下文状态，并行测试下会误杀其它 context 的防重门控 / 规则。
         // 保持全局语义（单线程套件收尾 / 调试契约），但显式告警，引导并行场景改用 clear(context) / clear(page)。
         LOGGER.warn("[RouteDsl] resetAll() — GLOBAL cleanup: clears ALL contexts/rules/dispatched-routes. "
                 + "In PARALLEL test execution use clear(BrowserContext)/clear(Page) to avoid cross-context pollution.");
@@ -229,7 +229,7 @@ public class RouteDsl {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[RouteDsl] clearDispatchedRoutes()/clearAllStoppedCapabilities() during resetAll failed: {}", e.getMessage());
         }
-        // 4. ⭐ 释放按 BrowserContext 隔离的捕获上下文 + 解绑当前线程。
+        // 4.  释放按 BrowserContext 隔离的捕获上下文 + 解绑当前线程。
         //    BY_CONTEXT 以 BrowserContext 为强引用 key，只清路由层不会回收它；
         //    同时解绑 ThreadLocal，避免线程池复用把已关闭 context 带进下一个用例。
         try {
@@ -242,7 +242,7 @@ public class RouteDsl {
     }
 
     /**
-     * ⭐ 轻量全局清理 — 清除所有上下文的所有 RouteRule、MonitorSession、Route 防重门控。
+     *  轻量全局清理 — 清除所有上下文的所有 RouteRule、MonitorSession、Route 防重门控。
      *
      * <p>与 {@link #resetAll()} 的分工：
      * <ul>
@@ -270,7 +270,7 @@ public class RouteDsl {
     }
 
     // ==================== 按能力维度显式停止（monitor / modify / delay / mock / all）====================
-    // ⭐ 仅停止指定能力，不影响同一 API 的其它能力；路由仍注册（不 unroute）。
+    //  仅停止指定能力，不影响同一 API 的其它能力；路由仍注册（不 unroute）。
     //    context 可传 Page 或 BrowserContext；传 Page 时自动解析为其所属 BrowserContext。
 
     /** 显式停止某 API 的 MONITOR 能力（delay / modify / mock 不受影响）。 */
@@ -326,7 +326,7 @@ public class RouteDsl {
          */
         public MonitorApiDsl monitor() {
             rule.setMonitorEnabled(true);
-            // ⭐ monitor 默认不自动停：持续监控，直到显式 stopMonitor / stopApi 释放
+            //  monitor 默认不自动停：持续监控，直到显式 stopMonitor / stopApi 释放
             rule.setAutoStopOnMatch(false);
             VerboseLogging.logDebugIfVerbose(RouteDsl.LOGGER,
                     "[RouteDsl] api('{}') -> monitor()", rule.getUrlPattern());
@@ -357,7 +357,7 @@ public class RouteDsl {
          * @return ModifyApiDsl — 仅可调用 Modify 相关方法 + 公共方法
          */
         public ModifyApiDsl modifyRequest() {
-            // ⭐ 必须显式置 type=MODIFY：构造器默认 MONITOR，若不覆盖会让规则「自称监控」，
+            //  必须显式置 type=MODIFY：构造器默认 MONITOR，若不覆盖会让规则「自称监控」，
             //    连带污染 RouteEngine 三处按 type 的判定 —— 采集事件投喂分支、
             //    匹配计数门控、MonitorSession 创建判定（详见 RouteEngine 对应注释）。
             rule.setType(RouteHandleType.MODIFY);
@@ -380,7 +380,7 @@ public class RouteDsl {
          * @return DelayApiDsl — 可调用 {@link DelayApiDsl#randomDelay(long, long)} 切换随机模式
          */
         public DelayApiDsl delay(long delaySecs) {
-            // ⭐ 同 modifyRequest()：显式置 type=DELAY，避免沿用构造器默认 MONITOR
+            //  同 modifyRequest()：显式置 type=DELAY，避免沿用构造器默认 MONITOR
             //    而被误判为携带监控能力（会创建永不被计数的多余 MonitorSession）。
             rule.setType(RouteHandleType.DELAY);
             rule.setDelayMs(delaySecs * 1000);
@@ -634,7 +634,7 @@ public class RouteDsl {
                 throw new IllegalArgumentException("urlPattern cannot be blank. "
                         + "Please call api(\"pattern\") before done().");
             }
-            // ⭐ P2-21：type=MONITOR 但未调 monitor() 会导致规则等于空操作（监控能力位关闭）。
+            //  P2-21：type=MONITOR 但未调 monitor() 会导致规则等于空操作（监控能力位关闭）。
             // 自动启用监控能力位（收取监控但无断言），避免静默空规则；同时给出 warn 提示显式调用 monitor()。
             if (rule.getType() == RouteHandleType.MONITOR && !rule.isMonitorEnabled()) {
                 rule.setMonitorEnabled(true);
@@ -1026,7 +1026,7 @@ public class RouteDsl {
          * .mockReplaceField("$.data.users[*].email", "modified@test.com")
          * }</pre>
          *
-         * ⭐ value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等原始类型。
+         *  value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等原始类型。
          *
          * @param jsonPath JSONPath 表达式（支持通配符 [*]）
          * @param value    替换值（支持 String / Number / Boolean / null，自动保持原字段类型）

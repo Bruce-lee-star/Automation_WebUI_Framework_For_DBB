@@ -73,7 +73,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(FileStoreMonitorCallback.class);
 
-    /** ⭐ P2-17：Gson 可复用、线程安全，静态化避免每次写文件 new Gson（参照 ApiMonitoringRepository.GSON） */
+    /**  P2-17：Gson 可复用、线程安全，静态化避免每次写文件 new Gson（参照 ApiMonitoringRepository.GSON） */
     private static final Gson GSON_PRETTY = new GsonBuilder().setPrettyPrinting().create();
     private static final Gson GSON_COMPACT = new Gson();
 
@@ -176,7 +176,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
             File target = new File(targetDir, fileName);
             Files.write(target.toPath(), content.getBytes(StandardCharsets.UTF_8));
-            // ⭐ 修复 S4：落盘内容虽已脱敏，仍可能含业务数据（URL、响应结构、账号片段）。
+            //  修复 S4：落盘内容虽已脱敏，仍可能含业务数据（URL、响应结构、账号片段）。
             //    target/ 下文件按 umask 创建（常见 002 → 664），在多用户 CI 节点上
             //    同机其它账号可读。尽力收紧为 600（仅属主读写）；非 POSIX 文件系统静默跳过。
             restrictToOwnerOnly(target.toPath());
@@ -192,7 +192,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     }
 
     /**
-     * ⭐ 修复 S4：尽力把文件权限收紧为「仅属主可读写」（600）。
+     *  修复 S4：尽力把文件权限收紧为「仅属主可读写」（600）。
      * <p>多用户 CI 节点上 {@code target/} 下的报告文件默认对同机其它账号可读；
      * 非 POSIX 文件系统（如 Windows NTFS）不支持 POSIX 权限，此时静默忽略 ——
      * 权限加固是best-effort，绝不能因设置失败而影响主流程。
@@ -295,7 +295,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     private Map<String, Object> buildJson(String urlPattern, String url, int status,
                                           String body, Map<String, String> requestHeaders,
                                           Map<String, String> responseHeaders, String method) {
-        // ⭐ P0 安全修复：本文件是「落本地磁盘」这条数据出域路径，此前完全绕过脱敏，
+        //  P0 安全修复：本文件是「落本地磁盘」这条数据出域路径，此前完全绕过脱敏，
         //    Cookie / Authorization / 令牌 / 账号等明文写入 JSON 文件，是系统性泄露点。
         //    脱敏是数据出域的强制收口 —— 与 ApiMonitoringRecord（落库）保持同一标准。
         String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
@@ -311,7 +311,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         json.put("requestHeaders", safeReqHeaders);
         json.put("responseHeaders", safeHeaders);
         json.put("responseBody", safeBody);
-        // ⭐ bodyLength 取【原始】长度：脱敏会改变字符串长度，用脱敏后长度会让
+        //  bodyLength 取【原始】长度：脱敏会改变字符串长度，用脱敏后长度会让
         //    "响应体大小" 这一诊断维度失真（掩码串比真实令牌短或长）。
         json.put("bodyLength", body != null ? body.length() : 0);
         json.put("capturedAt", System.currentTimeMillis());

@@ -1,0 +1,25 @@
+name: Doc Drift Check
+
+# T4-4：README 技术栈版本必须与根 pom <properties> 一致。
+# 仅在 pom / README / 校验脚本变更时触发，避免无关提交空跑。
+on:
+  push:
+    paths:
+      - 'pom.xml'
+      - 'README.md'
+      - 'tools/check-doc-drift.sh'
+      - 'tools/check-doc-drift.ps1'
+  pull_request:
+    paths:
+      - 'pom.xml'
+      - 'README.md'
+      - 'tools/check-doc-drift.sh'
+      - 'tools/check-doc-drift.ps1'
+
+jobs:
+  doc-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify README versions match pom
+        run: bash tools/check-doc-drift.sh

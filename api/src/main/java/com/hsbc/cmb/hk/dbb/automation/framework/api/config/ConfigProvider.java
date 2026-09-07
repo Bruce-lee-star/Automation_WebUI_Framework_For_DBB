@@ -40,7 +40,7 @@ public class ConfigProvider {
     private static final String HEADERS_NODE = "headers";
 
     // Configurable paths (loaded from application.conf)
-    // ⭐ 修复 P2-22：这些字段虽主要由静态块初始化，但会被并行线程读取；
+    //  这些字段虽主要由静态块初始化，但会被并行线程读取；
     //    加 volatile 保证写入对所有线程立即可见，避免读到 null / 默认值。
     private static volatile String basePath;
     private static volatile String configDir;
@@ -49,7 +49,7 @@ public class ConfigProvider {
     /**
      * 全局配置快照（进程级共享可变状态）。
      * <p>
-     * ⭐ 修复 P2-22：原为非 volatile 静态可变字段，且 {@link #getConfig()} 以无锁的
+     *  原为非 volatile 静态可变字段，且 {@link #getConfig()} 以无锁的
      * check-then-act 方式读写它——与 {@code synchronized} 的 {@link #config(Entity)}
      * 之间没有 happens-before 关系，并发下会重复加载、互相覆盖，或读到过期值。
      * <p>
@@ -161,7 +161,7 @@ public class ConfigProvider {
     /**
      * Load and merge configurations with an explicit environment override (thread-safe).
      * <p>
-     * ⭐ 修复 P2-21：提供显式 env 入参，替代原先"调用方先
+     *  提供显式 env 入参，替代原先"调用方先
      * {@code System.setProperty(ENV, env)} 再调用本方法"的写法——后者污染 JVM 全局状态，
      * 并行 scenario 下线程 A 设置的环境会被线程 B 读到，造成配置串扰。
      *
@@ -211,7 +211,7 @@ public class ConfigProvider {
 
             // 5. Assign to global config
             config = finalConfig.resolve();
-            // ⭐ 修复 P2-26：root().unwrapped() 会展开全部 header 值（含 Authorization、
+            //  root().unwrapped() 会展开全部 header 值（含 Authorization、
             //    Cookie、会话 token），原先直接以 INFO 打印即构成凭证泄露。改为输出脱敏结果。
             LOGGER.info("[4/4] Global config assignment completed, final headers: {}",
                     describeHeadersForLog(config));
@@ -318,7 +318,7 @@ public class ConfigProvider {
      */
     private static Config mergeEnvConfig(Config baseCombinedConfig, String envOverride) {
         // Use EnvironmentUtils (replacement for deprecated SystemEnvironmentVariables) to get environment configuration
-        // ⭐ 修复 P2-21：优先采用显式传入的 env，避免依赖 JVM 全局 System property
+        //  优先采用显式传入的 env，避免依赖 JVM 全局 System property
         String activeEnv = (envOverride != null && !envOverride.trim().isEmpty())
                 ? envOverride.trim()
                 : EnvironmentUtils.currentEnvironment().getProperty(Constants.ENV);
@@ -363,7 +363,7 @@ public class ConfigProvider {
     /**
      * 以脱敏形式描述配置中的 headers 节点，仅供日志使用。
      * <p>
-     * ⭐ 修复 P2-26：{@code root().unwrapped()} 会展开全部 header 值，直接打印会泄露
+     *  {@code root().unwrapped()} 会展开全部 header 值，直接打印会泄露
      * Authorization / Cookie / 会话 token，故统一经 {@link ApiLogSanitizer} 脱敏。
      */
     private static String describeHeadersForLog(Config cfg) {
@@ -413,7 +413,7 @@ public class ConfigProvider {
     }
 
     public static Config getConfig() {
-        // ⭐ 修复 P2-22：原实现是无锁的 check-then-act（判空后写全局字段），与 synchronized 的
+        //  原实现是无锁的 check-then-act（判空后写全局字段），与 synchronized 的
         //    config(Entity) 并发时会重复加载并互相覆盖，且非 volatile 读取可能拿到过期值。
         //    改为 volatile + 双重检查锁定：已初始化时完全无锁（热路径），仅在缺失时进入同步块。
         //    注：原实现在此处每次调用都打一条 debug 日志，本方法属热路径，故移除该日志。

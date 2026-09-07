@@ -45,7 +45,7 @@ public final class AsyncPool {
     private static final AtomicLong timeoutCount = new AtomicLong(0);
     private static final AtomicLong pendingTimeoutCount = new AtomicLong(0);
     private static final AtomicLong pendingScheduleCount = new AtomicLong(0);
-    /** Monitor 回调因队列满/已关闭被丢弃的累计数（⭐ 修复 H17：让静默丢弃变为可观测） */
+    /** Monitor 回调因队列满/已关闭被丢弃的累计数（ 修复 H17：让静默丢弃变为可观测） */
     private static final AtomicLong monitorCallbackDroppedCount = new AtomicLong(0);
 
     /** 活跃的 per-Context 调度器（由 ContextRouteEngine 注册，关闭时移除） */
@@ -55,14 +55,14 @@ public final class AsyncPool {
     private static final ScheduledThreadPoolExecutor SCHEDULER;
 
     /**
-     * ⭐ 串行单线程执行器 — 专用于 Monitor 用户回调（onResponse）。
+     *  串行单线程执行器 — 专用于 Monitor 用户回调（onResponse）。
      * <p>Playwright route 拦截在事件线程触发，若直接在该线程执行用户回调，用户无法预期
      * "回调里修改的全局/共享状态（如 NLSUtils.setLanguage）对主线程不可见"（ThreadLocal 隔离）。
      * 统一桥接到本串行线程后，所有回调在<b>同一受管上下文线程</b>顺序执行，配合已全局化的
      * 框架状态（NLSUtils 等），用户业务代码无需理解线程模型即可"影响主线程"。
      */
     /**
-     * ⭐ 修复 P1：Monitor 回调队列容量上限。
+     *  Monitor 回调队列容量上限。
      * <p>原实现用 {@code Executors.newSingleThreadExecutor()}，其队列是
      * <b>无界</b> LinkedBlockingQueue：慢回调（如 DB 校验）持续积压会让队列无限增长直至 OOM；
      * 且无拒绝策略，积压只能靠消费者追上来消化。
@@ -328,7 +328,7 @@ public final class AsyncPool {
                 timeoutCount.get(), pendingTimeoutCount.get(), pendingScheduleCount.get());
         POOL.shutdown();
         SCHEDULER.shutdown();
-        // 关键修复 P3-23：遍历关闭每个 per-context Scheduler，避免线程池残留
+        // 关键遍历关闭每个 per-context Scheduler，避免线程池残留
         int ctxSchedulers = CONTEXT_SCHEDULERS.size();
         if (ctxSchedulers > 0) {
             LOGGER.info("[AsyncPool] Shutting down {} per-context scheduler(s)", ctxSchedulers);
@@ -345,7 +345,7 @@ public final class AsyncPool {
                 POOL.shutdownNow();
             }
             SCHEDULER.awaitTermination(5, TimeUnit.SECONDS);
-            // ⭐ 关闭 Monitor 回调串行执行器
+            //  关闭 Monitor 回调串行执行器
             MONITOR_CALLBACK_EXECUTOR.shutdown();
             try {
                 if (!MONITOR_CALLBACK_EXECUTOR.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -363,7 +363,7 @@ public final class AsyncPool {
                     }
                 }
             }
-            // ⭐ 修复 H18：关闭后清空映射，避免残留已终止调度器引用（getActiveContextSchedulerCount 误报 + 引用滞留）
+            //  修复 H18：关闭后清空映射，避免残留已终止调度器引用（getActiveContextSchedulerCount 误报 + 引用滞留）
             CONTEXT_SCHEDULERS.clear();
         } catch (InterruptedException e) {
             LOGGER.warn("[AsyncPool] Interrupted during shutdown, forcing shutdownNow");
@@ -411,13 +411,13 @@ public final class AsyncPool {
     public static void shutdown() { shutdownGracefully(); }
 
     /**
-     * ⭐ 在 Monitor 回调专用串行线程上执行任务（顺序、与主流程共享上下文）。
+     *  在 Monitor 回调专用串行线程上执行任务（顺序、与主流程共享上下文）。
      * 用于 onResponse 回调，使用户在回调中修改的全局/共享状态对主线程可见。
      * task 为 null 静默跳过。
      */
     public static void runOnMonitorCallbackThread(Runnable task) {
         if (task == null) return;
-        // ⭐ 修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
+        //  修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
         // （调用方多为 Playwright 事件线程，同步执行用户回调会阻塞路由拦截 → 整轮测试卡死）。
         // 统一策略：准入控制 + 计数丢弃（可观测），但绝不阻塞提交方。
         if (MONITOR_CALLBACK_EXECUTOR.isShutdown()

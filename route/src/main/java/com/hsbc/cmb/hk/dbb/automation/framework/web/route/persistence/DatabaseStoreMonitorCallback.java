@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,10 +22,13 @@ import java.util.Map;
  * monitor.db.store.enabled=true
  *
  * # 数据库连接信息
- * monitor.db.type=MYSQL
+ * monitor.db.type=MYSQL   # 留空则按 monitor.db.url 自动探测（测试层加哪种驱动依赖就用哪种库）
+ * # URL 不要内嵌账号密码，凭据请走下面两个独立配置项
  * monitor.db.url=jdbc:mysql://localhost:3306/route_monitor
  * monitor.db.user=root
- * monitor.db.password=yourpassword
+ * # 密码：明文可直接写；或用 ConfigCipher 加密为 ENC(...)（AES-256-GCM，主密钥取自
+ * # CONFIG_MASTER_KEY / config.master.key / ~/.dbb_automation_master_key），运行时自动解密
+ * monitor.db.password=ENC(AAAAB3...base64...)
  * }</pre>
  *
  * <p>用户业务层只需在配置中开启即可，无需任何代码变更：
@@ -74,7 +78,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
         onResponse(url, status, body, null, responseHeaders, method);
     }
 
-    /** 框架内部入口：携带 requestHeaders，与文件 sink 一致补全请求头落库（修复 P2-24 同类缺口）。 */
+    /** 框架内部入口：携带 requestHeaders，与文件 sink 一致补全请求头落库（ 同类缺口）。 */
     public void onResponse(String url, int status, String body,
                            Map<String, String> requestHeaders, Map<String, String> responseHeaders,
                            String method) {
@@ -91,7 +95,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
                 testRunId = "run-" + System.currentTimeMillis();
             }
 
-            // ⭐ 修复 S2：DB 是数据出域路径（与落本地磁盘的 FileStoreMonitorCallback 同级），
+            //  修复 S2：DB 是数据出域路径（与落本地磁盘的 FileStoreMonitorCallback 同级），
             //    此前完全绕过脱敏 —— Authorization / Cookie / token / 密码 / PII 会明文入库。
             //    统一在此收口脱敏，与 FileStoreMonitorCallback.buildJson 保持同一标准，
             //    避免两个 sink 行为不一致导致「换个 sink 就泄露」。
@@ -134,8 +138,12 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
 
         String dbType = FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_TYPE);
         String dbUrl = FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_URL);
-        String dbUser = FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_USER);
-        String dbPassword = FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_PASSWORD);
+        // 透明解密：monitor.db.user / monitor.db.password 支持 ENC(...) 加密存储，
+        // 运行时经 SecretValue 解密；明文值原样返回，对既有配置零侵入。
+        String dbUser = SecretValue.decryptIfNeeded(
+                FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_USER));
+        String dbPassword = SecretValue.decryptIfNeeded(
+                FrameworkConfigManager.getString(FrameworkConfig.MONITOR_DB_PASSWORD));
         int poolMaxSize = FrameworkConfigManager.getInt(FrameworkConfig.MONITOR_DB_POOL_MAX_SIZE, 5);
 
         if (dbUrl == null || dbUrl.trim().isEmpty()) {
@@ -150,9 +158,9 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
 
         storeEnabled = ApiMonitoringRepository.isInitialized();
         if (!storeEnabled) {
-            LOGGER.warn("[DatabaseStoreMonitorCallback] DB initialization failed. "
-                    + "Monitor data will NOT be stored to database. "
-                    + "Check db connection config and ensure the database is running.");
+            LOGGER.error("[DatabaseStoreMonitorCallback] DB initialization FAILED — "
+                    + "monitor data will NOT be stored to database. "
+                    + "Check monitor.db.url/user/password/type and ensure the database is running.");
         } else {
             LOGGER.info("[DatabaseStoreMonitorCallback] DB store is ENABLED and ready.");
         }

@@ -100,7 +100,7 @@ public class ApiMonitorOrchestrator {
         }
 
         int registered = 0;
-        // ⭐ 为当前 context 注册一次关闭钩子：context 关闭时自动释放其下 pattern 的去重标记与 owner 映射，
+        //  为当前 context 注册一次关闭钩子：context 关闭时自动释放其下 pattern 的去重标记与 owner 映射，
         //    使进程级单例的 registeredPatterns 不会跨 context 无限累积（原实现仅依赖套件结束的 clear()，
         //    而 clear() 当前无人调用，存在状态残留隐患）。不影响「同一 context 内跨 case 去重」的设计意图。
         ensureCloseHook(page.context());
@@ -159,7 +159,7 @@ public class ApiMonitorOrchestrator {
     }
 
     /**
-     * ⭐ 为指定 context 幂等注册关闭钩子：context 关闭时自动释放其下所有已注册 pattern 的去重标记、
+     *  为指定 context 幂等注册关闭钩子：context 关闭时自动释放其下所有已注册 pattern 的去重标记、
      * owner 映射与 context 关联，避免进程级单例状态跨 context 残留。
      * <p>复用 Playwright 的 {@code onClose} 机制（与 ApiCaptureContext 的 context 清理同源），
      * 多个 onClose 监听可并存，互不干扰。

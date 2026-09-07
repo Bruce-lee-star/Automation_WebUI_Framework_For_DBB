@@ -104,7 +104,7 @@ public abstract class AbstractRestJob {
     // ==================== Rest*Job 模板方法（消除 5 份近拷贝） ====================
 
     /**
-     * ⭐ 修复 P2-24：RestGetJob / RestPostJob / RestPutJob / RestPatchJob / RestDeleteJob
+     *  RestGetJob / RestPostJob / RestPutJob / RestPatchJob / RestDeleteJob
      * 五个实现类原先<b>逐字相同</b>，唯一差异是调用哪个 HTTP 方法（get/post/put/patch/delete）。
      * 每处约 40 行重复代码意味着任何一处修复（如新增 header 处理、代理逻辑）都要同步改 5 遍，
      * 漏改即产生行为不一致。这里上提为模板方法，子类只负责提供 HTTP 动作。

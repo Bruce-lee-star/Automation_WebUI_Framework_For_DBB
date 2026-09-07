@@ -9,11 +9,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageElementActions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry;
+
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
@@ -30,6 +29,22 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
+/**
+ * 页面对象基类（框架核心门面）。
+ *
+ * <h3>API 边界（企业级约束）</h3>
+ * <ul>
+ *   <li><b>Tier-1 用户公开 API</b>：{@link #element(String)}/{@link #locator(String)}/{@link #elements(String)}
+ *       （返回框架原生 {@code PageElement}/{@code PageElementList}）、{@link #navigateTo(String)} 等页面生命周期、
+ *       frame/shadow 切换、Cookie、截图，以及 {@code @Element}/{@code @RoleElement} 注解字段。</li>
+ *   <li><b>Tier-2 框架内部 seam</b>：{@code activateFrame}/{@code deactivateFrame}/{@code pushShadow}/{@code popShadow}
+ *       等为包级私有方法，仅供同包协作者（{@code PageFrameShadow}/{@code PageLifecycleCoordinator}）委派调用。</li>
+ *   <li><b>{@code byRole/byText/byLabel/byAltText/byTitle/byTestId/byPlaceholder} 为 framework-internal 定位器工厂</b>，
+ *       仅供 {@code web.page.binding.RoleElementBinder} 与 NLS 内部路由使用；
+ *       业务 Page Object 应使用 {@code @RoleElement} 注解或 {@link #element(String)}/{@link #locator(String)}，
+ *       <b>勿直接持有 Playwright {@code Locator}</b>（禁止类型泄漏，由 ArchitectureTest 门禁固化）。</li>
+ * </ul>
+ */
 public abstract class BasePage {
     protected static final Logger logger = LoggerFactory.getLogger(BasePage.class);
 
@@ -238,53 +253,8 @@ public abstract class BasePage {
                 field.set(this, new PageElement(selector, this, frameSegs));
             }
         } catch (Exception e) {
-            throw new ElementException("Init field failed: " + field.getName());
+            throw new ElementException("Init field failed: " + field.getName(), e);
         }
-    }
-
-
-
-
-
-
-
-
-    /**
-     * 返回当前线程"当前活跃"的 BasePage 实例。
-     *
-     * @deprecated 自 2026-09 起废弃：{@code currentPage} 静态跟踪已被移除（全仓无读取方，属死状态），
-     * 故本方法始终返回 {@code null}。跨实例"当前页"语义将统一由 T3-1 {@code TestContext} 承接。
-     */
-    @Deprecated
-    public static BasePage getCurrentPage() {
-        return null;
-    }
-
-    /**
-     * @deprecated 自 2026-09 起废弃：{@code currentPage} 字段已移除，本方法现为空实现。
-     * 原意图（防止线程复用引用过期 Page 对象）已无意义——不再存在线程级共享的 Page 引用。
-     * 线程级清理将随 T3-1 {@code TestContext} 收拢。
-     */
-    @Deprecated
-    public static void clearCurrentPage() {
-        // 空实现：currentPage 字段已移除（死状态）。
-    }
-
-    /**
-     * 清理当前线程的静态上下文。
-     * <p>
-     * <b>企业级修正（C1）：</b>iframe/shadow 上下文已不再是 static ThreadLocal，而是各 BasePage 实例独立持有
-     * （见 {@link #currentFrame} / {@link #currentShadow}），因此不再存在"线程级全局"泄漏——线程池复用下一条用例
-     * 创建的新 BasePage 实例天然拿到干净的 iframe/shadow 上下文。
-     * <p>
-     * <b>2026-09 更新：</b>{@code currentPage} 静态引用亦已移除（全仓无读取方，属死状态），故本方法现为空实现，
-     * 仅保留签名以兼容 {@code PlaywrightManager} 的收尾清理调用。其职责将在 T3-1 {@code TestContext} 中统一承接。
-     *
-     * @deprecated 等待并入 T3-1 {@code TestContext}；当前为空实现。
-     */
-    @Deprecated
-    public static void clearAllThreadLocals() {
-        // 空实现：currentPage 字段已移除（死状态）。
     }
 
     public Page getPage() {
@@ -307,41 +277,6 @@ public abstract class BasePage {
         ensureContextValid();
         return context;
     }
-
-
-
-    public void waitForElementExists(String selector, int timeout) {
-        PageWaits.waitForElementExists(this, selector, timeout);
-    }
-
-    public void waitForElementNotExists(String selector, int timeout) {
-        PageWaits.waitForElementNotExists(this, selector, timeout);
-    }
-
-    public void waitForElementEditable(String selector, int timeout) {
-        PageWaits.waitForElementEditable(this, selector, timeout);
-    }
-
-    public void waitForElementEnabled(String selector, int timeout) {
-        PageWaits.waitForElementEnabled(this, selector, timeout);
-    }
-
-    public void waitForElementDisabled(String selector, int timeout) {
-        PageWaits.waitForElementDisabled(this, selector, timeout);
-    }
-
-    public void waitForElementChecked(String selector, int timeout) {
-        PageWaits.waitForElementChecked(this, selector, timeout);
-    }
-
-    public void waitForElementNotChecked(String selector, int timeout) {
-        PageWaits.waitForElementNotChecked(this, selector, timeout);
-    }
-
-
-
-
-
 
     public void waitForNetworkIdle(int timeout) {
         PageWaits.waitForNetworkIdle(this, timeout);
@@ -399,36 +334,18 @@ public abstract class BasePage {
         return PageWaits.retryWithValidation(this, operation, validation, maxRetries, retryIntervalMs, desc);
     }
 
-    /**
-     * 等待元素可见（已内置等待+超时机制，无需外层再包裹 retry）。
-     *
-     * @param selector 元素选择器
-     * @param timeout  超时秒数
-     */
-    public void waitForVisible(String selector, int timeout) {
-        element(selector).waitForVisible(timeout);
-    }
 
-    /**
-     * 等待元素隐藏（已内置等待+超时机制，无需外层再包裹 retry）。
-     *
-     * @param selector 元素选择器
-     * @param timeout  超时秒数
-     */
-    public void waitForHidden(String selector, int timeout) {
-        element(selector).waitForNotVisible(timeout);
-    }
 
     public void navigateToWithRetry(String url, int retries) {
         PageNavigation.navigateToWithRetry(this, url, retries);
     }
 
     /**
-     * 创建 Playwright Locator，自动适配 iframe 上下文。
-     * <p>若当前处于 iframe 内（{@link #currentFrame} != null），则在 iframe DOM 中定位元素；
-     * 否则在主页面 DOM 中定位。解决切到 iframe 后元素 "not found in DOM" 的问题。
+     * 内部定位解析（T3-5）：自动适配 iframe / shadow 上下文，返回真实 Playwright {@code Locator}。
+     * <p>仅供 BasePage 自身方法使用；业务代码请走 {@link #element(String)} / {@link #locator(String)} /
+     * {@link #elements(String)} 等返回框架原生类型的入口，不直接接触 Playwright 类型。
      */
-    public Locator locator(String selector) {
+    public Locator locatorInternal(String selector) {
         ensurePageValid();
         // shadow 上下文高于 iframe/DOM 层：用 >>> 穿透组合器把宿主前缀拼到选择器前。
         java.util.Deque<String> shadowStack = currentShadow.get();
@@ -444,6 +361,15 @@ public abstract class BasePage {
             return frame.locator(selector);
         }
         return page.locator(selector);
+    }
+
+    /**
+     * 按 CSS / XPath 选择器定位元素，返回框架原生的 {@link PageElement}。
+     * <p>与 {@link #element(String)} 等价，统一以非泄漏的框架类型作为元素定位入口；
+     * iframe / shadow 上下文的适配由内部 {@link #locatorInternal(String)} 负责（供 BasePage 自身方法使用）。
+     */
+    public PageElement locator(String selector) {
+        return element(selector);
     }
 
     /**
@@ -467,89 +393,29 @@ public abstract class BasePage {
         return new PageElement(selector, this);
     }
 
-    public void click(String selector) {
-        PageElementActions.click(this, selector);
-    }
-
-    public void jsClick(String selector) {
-        PageElementActions.jsClick(this, selector);
-    }
-
-    public void type(String selector, String text) {
-        PageElementActions.type(this, selector, text);
+    /**
+     * 基于选择器创建 {@link PageElementList}（多元素集合），返回框架原生的列表类型。
+     * <p>与 {@link #element(String)} 单元素入口互补：当选择器预期匹配多个元素时使用本方法。
+     *
+     * @param selector 元素 CSS/XPath 选择器
+     * @return PageElementList 实例
+     */
+    public PageElementList elements(String selector) {
+        return new PageElementList(selector, this);
     }
 
     public void append(String selector, String text) {
-        PageElementActions.append(this, selector, text);
-    }
-
-    public void clear(String selector) {
-        PageElementActions.clear(this, selector);
+        PageElement pe = element(selector);
+        pe.focus();
+        String current = pe.getValue();
+        if (current == null) current = "";
+        pe.fill(current + text);
     }
 
     // ===================== 读取文本 全部归一化 =====================
-    public String getText(String selector) {
-        return PageElementActions.getText(this, selector);
-    }
-
-    public String getInputValue(String selector) {
-        return PageElementActions.getInputValue(this, selector);
-    }
-
-    public String getAttribute(String selector, String attr) {
-        return PageElementActions.getAttribute(this, selector, attr);
-    }
-
     public String getAttributeValue(String selector, String attr, String defaultValue) {
-        return PageElementActions.getAttributeValue(this, selector, attr, defaultValue);
-    }
-
-    public void selectOption(String selector, int index) {
-        PageElementActions.selectOption(this, selector, index);
-    }
-
-    public void selectByVisibleText(String selector, String text) {
-        PageElementActions.selectByVisibleText(this, selector, text);
-    }
-
-    public void check(String selector) {
-        PageElementActions.check(this, selector);
-    }
-
-    public void uncheck(String selector) {
-        PageElementActions.uncheck(this, selector);
-    }
-
-    public boolean isChecked(String selector) {
-        return PageElementActions.isChecked(this, selector);
-    }
-
-    public boolean isEnabled(String selector) {
-        return PageElementActions.isEnabled(this, selector);
-    }
-
-    public boolean isDisabled(String selector) {
-        return PageElementActions.isDisabled(this, selector);
-    }
-
-    public boolean isVisible(String selector) {
-        return PageElementActions.isVisible(this, selector);
-    }
-
-    public boolean isHidden(String selector) {
-        return PageElementActions.isHidden(this, selector);
-    }
-
-    public int getElementCount(String selector) {
-        return PageElementActions.getElementCount(this, selector);
-    }
-
-    public void dblclick(String selector) {
-        PageElementActions.dblclick(this, selector);
-    }
-
-    public void dispatchEvent(String selector, String type) {
-        PageElementActions.dispatchEvent(this, selector, type);
+        String val = element(selector).getAttribute(attr);
+        return val == null ? defaultValue : normalizeText(val);
     }
 
     public PlaywrightConfigManager getConfig() {
@@ -974,40 +840,26 @@ public abstract class BasePage {
         PageFrameShadow.executeInFrame(this, frameName, action);
     }
 
-    public void scrollToElementCenter(String selector) {
-        locator(selector).scrollIntoViewIfNeeded();
-    }
-
     public void scrollTo(String selector, int x, int y) {
-        locator(selector).evaluate("el => el.scrollTo(" + x + "," + y + ")");
+        locatorInternal(selector).evaluate("el => el.scrollTo(" + x + "," + y + ")");
     }
 
     public void scrollBy(String selector, int x, int y) {
-        locator(selector).evaluate("el => el.scrollBy(" + x + "," + y + ")");
+        locatorInternal(selector).evaluate("el => el.scrollBy(" + x + "," + y + ")");
     }
 
     public void scrollToTopOf(String selector) {
-        locator(selector).evaluate("el => el.scrollTop = 0");
+        locatorInternal(selector).evaluate("el => el.scrollTop = 0");
     }
 
     public void scrollToBottomOf(String selector) {
-        locator(selector).evaluate("el => el.scrollTop = el.scrollHeight");
+        locatorInternal(selector).evaluate("el => el.scrollTop = el.scrollHeight");
     }
 
     public Object executeJavaScript(String script, Object... args) {
         ensurePageValid();
         Frame frame = currentFrame.get();
         return (frame != null) ? frame.evaluate(script, args) : page.evaluate(script, args);
-    }
-
-    public String innerHTML(String selector) {
-        Object result = locator(selector).evaluate("el => el.innerHTML");
-        return normalizeText(result != null ? result.toString() : "");
-    }
-
-    public String textContent(String selector) {
-        Object result = locator(selector).evaluate("el => el.textContent");
-        return normalizeText(result != null ? result.toString() : "");
     }
 
     public boolean getPageSourceContains(String text) {
@@ -1035,12 +887,8 @@ public abstract class BasePage {
         return context.pages().size();
     }
 
-    public void tap(String selector) {
-        locator(selector).tap();
-    }
-
     public BoundingBox getElementBoundingBox(String selector) {
-        return locator(selector).boundingBox();
+        return locatorInternal(selector).boundingBox();
     }
 
     public boolean isClosed() {
@@ -1059,19 +907,6 @@ public abstract class BasePage {
     public void setViewportSize(int width, int height) {
         ensurePageValid();
         page.setViewportSize(width, height);
-    }
-
-    public void setInputFiles(String selector, String... paths) {
-        if (paths == null || paths.length == 0) {
-            throw new IllegalArgumentException("Paths cannot be null or empty");
-        }
-        for (String path : paths) {
-            if (path == null) {
-                throw new IllegalArgumentException("Individual path cannot be null");
-            }
-        }
-        Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
-        locator(selector).setInputFiles(pathArray);
     }
 
     public Locator byAltText(String altText) {
@@ -1231,30 +1066,12 @@ public abstract class BasePage {
      */
     public void dumpAccessibilityRoles() {
         ensurePageValid();
-        List<RoleEntry> entries = RoleElementPageGenerator.collectFromPage(page);
-        if (entries.isEmpty()) {
-            logger.warn("[a11y] 未采集到可交互元素（页面可能尚未就绪或无匹配角色）");
-            return;
-        }
-        StringBuilder sb = new StringBuilder(
-                "\n========== Accessibility roles (role = name) ==========\n");
-        for (RoleEntry e : entries) {
-            sb.append(e.getRole()).append(" = ")
-              .append(e.getName() == null ? "" : e.getName()).append('\n');
-        }
-        logger.info(sb.toString());
-    }
-
-    public void dragAndDrop(String sourceSelector, String targetSelector) {
-        PageElementActions.dragAndDrop(this, sourceSelector, targetSelector);
-    }
-
-    public void focus(String selector) {
-        PageElementActions.focus(this, selector);
-    }
-
-    public void hover(String selector) {
-        PageElementActions.hover(this, selector);
+        // 经 codegen 桥接：codegen 模块在 classpath 时复刻原 a11y dump 行为；
+        // 不在时降级跳过（codegen 已成为可选模块，见架构整改计划 T2-2）。
+        RoleCodegenBridgeRegistry.getBridge().ifPresentOrElse(
+                b -> b.dumpAccessibilityRoles(page),
+                () -> logger.warn(
+                        "[a11y] codegen 模块（framework-codegen）未加载，跳过可访问性角色 dump"));
     }
 
     public Locator byTitle(String title) {
@@ -1410,17 +1227,17 @@ public abstract class BasePage {
 
 
     public void keyDown(String selector, String key) {
-        locator(selector).focus();
+        locatorInternal(selector).focus();
         page.keyboard().down(key);
     }
 
     public void keyUp(String selector, String key) {
-        locator(selector).focus();
+        locatorInternal(selector).focus();
         page.keyboard().up(key);
     }
 
     public void press(String selector, String key) {
-        locator(selector).press(key);
+        locatorInternal(selector).press(key);
     }
 
     public void waitForTimeout(int milliseconds) {
@@ -1478,7 +1295,7 @@ public abstract class BasePage {
     }
 
     public byte[] takeElementScreenshot(String selector) {
-        return locator(selector).screenshot();
+        return locatorInternal(selector).screenshot();
     }
 
     // ===================== Cookie 操作 =====================

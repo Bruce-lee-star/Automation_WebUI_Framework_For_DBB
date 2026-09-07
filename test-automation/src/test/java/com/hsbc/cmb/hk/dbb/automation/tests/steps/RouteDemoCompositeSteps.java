@@ -443,7 +443,7 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
                     .setRequestHeader("X-Demo-Trace", "TRACE-1")
                     .removeRequestHeader("X-Demo-Remove")
                     .modifyRequestBody("$.role", "FULL_MODIFY")
-                    // ⭐ 新增字段用服务端 User 模型忽略的标量：
+                    //  新增字段用服务端 User 模型忽略的标量：
                     //   若新增 orders 这类 List 字段并传 "[]" 字符串，服务端反序列化类型不匹配会返回 400
                     .addRequestBodyField("$.nickname", "NICK")
                     .removeRequestBodyField("$.email")
@@ -642,7 +642,7 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
                 ctx().getApiCallsByType("/demo/api/slow/endpoint", RouteHandleType.DELAY);
         assertFalse("DELAY 标记应可通过按类型查询获得", delays.isEmpty());
 
-        // ⭐ 关键：通用查询不应返回无响应体的 DELAY 占位
+        //  关键：通用查询不应返回无响应体的 DELAY 占位
         CapturedApiCall general = ctx().getLastApiCall("/demo/api/slow/endpoint");
         if (general != null) {
             assertFalse("通用查询不应返回 DELAY 标记（无响应体）", general.isDelayMarker());
@@ -688,7 +688,7 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
         assertTrue("清理后应恢复真实后端", after.contains("Alice"));
         assertFalse("清理后不应再命中 mock", after.contains("ToBeCleared"));
 
-        // ⭐ 线程资源：延迟调度 / body 读取重试均为<b>固定规模</b>的共享线程池，
+        //  线程资源：延迟调度 / body 读取重试均为<b>固定规模</b>的共享线程池，
         //   不应随 scenario 反复创建而无限增长（否则长套件会线程泄漏）。
         // 注：调度线程是<b>懒创建</b>的（任务提交时才起），因此「0 个」同样代表无残留 ——
         //     这里只校验上界，即线程数不随 scenario 累积。
@@ -736,7 +736,7 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
         openOrigin(page());
         get("/users");   // 触发请求 → monitor 捕获
 
-        // ⭐ 主线程直接读取已同步存储的响应体（替代原 onResponse + setShared/awaitShared 桥接）
+        //  主线程直接读取已同步存储的响应体（替代原 onResponse + setShared/awaitShared 桥接）
         List<String> bodies = ApiCaptureContext.getCurrent().getAllResponsesForUrl("/demo/api/users");
         assertNotNull("monitor 应已捕获 /demo/api/users 的响应体", bodies);
         assertFalse("monitor 捕获的响应体不应为空", bodies.isEmpty());

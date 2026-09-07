@@ -69,7 +69,7 @@ public final class ApiMatcher {
     private static final int PATTERN_CACHE_MAX = 200;
 
     // ═══════════════════════════════════════════════════════════════
-    // ⭐ S1: ReDoS 防护 — 正则表达式长度上限（拒绝指数回溯恶意正则）
+    //  S1: ReDoS 防护 — 正则表达式长度上限（拒绝指数回溯恶意正则）
     // ═══════════════════════════════════════════════════════════════
 
     private static final int MAX_REGEX_LENGTH = 1000;
@@ -334,13 +334,13 @@ public final class ApiMatcher {
     /**
      * Request Body Regex 匹配。
      * <p>使用预编译 Pattern 缓存，避免高并发下重复编译开销。
-     * <p>⭐ S1: ReDoS 防护 — 正则超长拒绝编译，body 过大拒绝匹配。
+     * <p> S1: ReDoS 防护 — 正则超长拒绝编译，body 过大拒绝匹配。
      */
     private boolean matchBodyRegex(Request req) {
         if (matchBodyRegex == null || matchBodyRegex.trim().isEmpty()) {
             return true;
         }
-        // ⭐ S1: ReDoS — 拒绝超长正则（指数回溯风险）
+        //  S1: ReDoS — 拒绝超长正则（指数回溯风险）
         if (matchBodyRegex.length() > MAX_REGEX_LENGTH) {
             LOGGER.warn("[ApiMatcher] Body regex too long ({} chars), rejected for ReDoS protection: pattern='{}'",
                     matchBodyRegex.length(), matchBodyRegex);
@@ -350,7 +350,7 @@ public final class ApiMatcher {
         if (postData == null || postData.length == 0) {
             return false;
         }
-        // ⭐ S1: ReDoS — body 过大时跳过正则匹配（防止 CPU 长时间占用）
+        //  S1: ReDoS — body 过大时跳过正则匹配（防止 CPU 长时间占用）
         if (postData.length > MAX_BODY_LENGTH_FOR_REGEX) {
             LOGGER.debug("[ApiMatcher] Body too large for regex matching ({} bytes), skipping", postData.length);
             return false;
@@ -442,7 +442,7 @@ public final class ApiMatcher {
      * <p>如果设置了 matchFrameUrl，则 Frame URL 必须包含该值。
      */
     private boolean matchFrame(Request req) {
-        // ⭐ P1: Cache req.frame() — Playwright frame() 是跨 JNI 桥调用，有显著开销
+        //  P1: Cache req.frame() — Playwright frame() 是跨 JNI 桥调用，有显著开销
         //   缓存后从最多 3 次 JNI 调用降为最多 1 次
         com.microsoft.playwright.Frame frame = null;
         boolean frameResolved = false;
@@ -507,7 +507,7 @@ public final class ApiMatcher {
      * @throws PatternSyntaxException 正则语法错误
      */
     private static Pattern getOrCompilePattern(String regex) {
-        // ⭐ P2: 伪 LRU 淘汰替代全量 clear()，避免缓存命中率瞬间归零
+        //  P2: 伪 LRU 淘汰替代全量 clear()，避免缓存命中率瞬间归零
         if (PATTERN_CACHE.size() >= PATTERN_CACHE_MAX) {
             LOGGER.debug("[ApiMatcher] Pattern cache reached max ({}), evicting oldest ~25%", PATTERN_CACHE_MAX);
             RouteUtil.evictOldestQuarter(PATTERN_CACHE);

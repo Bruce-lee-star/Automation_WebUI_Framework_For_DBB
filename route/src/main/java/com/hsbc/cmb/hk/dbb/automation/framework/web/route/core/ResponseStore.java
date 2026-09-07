@@ -25,7 +25,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
 /**
- * ⭐ Phase 5 抽离：响应存储域（原 {@code ApiCaptureContext} 的 ③ 响应存储域）。
+ *  Phase 5 抽离：响应存储域（原 {@code ApiCaptureContext} 的 ③ 响应存储域）。
  *
  * <p>职责：承载 per-context 的全部 API 调用快照存储与查询，包括
  * {@code apiCallsPerUrl} / {@code apiCallsByUrl} / {@code recentCalls} /
@@ -70,19 +70,19 @@ public class ResponseStore {
     private final java.util.ArrayDeque<CapturedApiCall> recentCalls = new java.util.ArrayDeque<>();
     private final ReentrantLock recentCallsLock = new ReentrantLock();
 
-    /** ⭐ DELAY 维度标记存储 —— 独立于 {@link #apiCallsPerUrl}（DELAY 只记录"被延迟过"这一事实，不含响应）。 */
+    /**  DELAY 维度标记存储 —— 独立于 {@link #apiCallsPerUrl}（DELAY 只记录"被延迟过"这一事实，不含响应）。 */
     private final Map<String, List<CapturedApiCall>> delayMarkersByEndpoint = new ConcurrentHashMap<>();
 
-    /** ⭐ 通配符模式索引：仅包含通配符的 urlPattern key，避免 fallback 时遍历全量。 */
+    /**  通配符模式索引：仅包含通配符的 urlPattern key，避免 fallback 时遍历全量。 */
     private final Set<String> wildcardPatternKeys = ConcurrentHashMap.newKeySet();
 
-    /** 当前已存储响应总字节数（原子操作，线程安全）。⭐ 本类内唯一权威计数。 */
+    /** 当前已存储响应总字节数（原子操作，线程安全）。 本类内唯一权威计数。 */
     private final AtomicLong totalResponseSize = new AtomicLong(0L);
 
-    /** ⭐ wait/notify 锁：存储写入（storeApiCall/storeDelayMarker/reset）持此锁，与重置严格串行。 */
+    /**  wait/notify 锁：存储写入（storeApiCall/storeDelayMarker/reset）持此锁，与重置严格串行。 */
     private final Object apiCallLock = new Object();
 
-    /** ⭐ 投递式等待器注册表（点对点投递，替代"广播 notifyAll + 调用方重扫"）。 */
+    /**  投递式等待器注册表（点对点投递，替代"广播 notifyAll + 调用方重扫"）。 */
     private final ApiCallAwaiter apiCallAwaiter = new ApiCallAwaiter();
 
     // ═══════════════════════════════════════════════════════════
@@ -92,7 +92,7 @@ public class ResponseStore {
     /**
      * 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。
      * <p>同时索引到 urlPattern 与 requestUrl 两个 Map，支持 O(1) 精确 URL 检索 + Ant 通配符 fallback。
-     * <p>⭐ {@code totalResponseSize} 仅在此处累加，并在超出 {@link #MAX_CALLS_PER_ENDPOINT} 淘汰最老调用时
+     * <p> {@code totalResponseSize} 仅在此处累加，并在超出 {@link #MAX_CALLS_PER_ENDPOINT} 淘汰最老调用时
      * 对称回减，确保计数器与真实存储字节一致，不会误触发 OOM 守门。
      */
     public void storeApiCall(CapturedApiCall call) {
@@ -325,7 +325,7 @@ public class ResponseStore {
     }
 
     /**
-     * ⭐ 按路由能力类型获取全部 API 调用快照（按时间升序）。
+     *  按路由能力类型获取全部 API 调用快照（按时间升序）。
      * <p>DELAY 是维度标记，存放在独立索引中（不污染主快照存储）。
      */
     public List<CapturedApiCall> getAllByType(RouteHandleType type) {
@@ -355,7 +355,7 @@ public class ResponseStore {
         return result;
     }
 
-    /** ⭐ 按「能力类型 + endpoint」获取指定端点的全部快照。 */
+    /**  按「能力类型 + endpoint」获取指定端点的全部快照。 */
     public List<CapturedApiCall> getApiCallsByType(String endpoint, RouteHandleType type) {
         if (type == null) return Collections.emptyList();
         if (type == RouteHandleType.DELAY) {
@@ -374,13 +374,13 @@ public class ResponseStore {
         return filtered;
     }
 
-    /** ⭐ 按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
+    /**  按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
     public CapturedApiCall getLastApiCallByType(String endpoint, RouteHandleType type) {
         List<CapturedApiCall> calls = getApiCallsByType(endpoint, type);
         return calls.isEmpty() ? null : calls.get(calls.size() - 1);
     }
 
-    /** ⭐ 按能力类型分组获取全部快照（四种 key 恒存在）。 */
+    /**  按能力类型分组获取全部快照（四种 key 恒存在）。 */
     public Map<RouteHandleType, List<CapturedApiCall>> getAllGroupedByType() {
         Map<RouteHandleType, List<CapturedApiCall>> grouped = new EnumMap<>(RouteHandleType.class);
         for (RouteHandleType t : RouteHandleType.values()) {

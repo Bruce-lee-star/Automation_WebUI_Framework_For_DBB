@@ -11,8 +11,9 @@ import net.thucydides.model.environment.SystemEnvironmentVariables;
  * （合并 serenity.conf / serenity.properties / 系统属性）并透明解密；
  * API 域走 Typesafe Config 自有解析，仅对字符串值调用 {@link #decrypt(String)} 复用同一解密能力。
  *
- * <p>解密严格限定为字符串值：凡 {@code ENC(...)} 形式经 {@link SecretValue#decryptIfNeeded(String)}
- * 解密，非 {@code ENC(...)} 原样返回；解密失败（主密钥缺失 / 密文损坏）保留原串，绝不中断配置加载。
+ * <p>解密严格限定为字符串值：凡 {@code ENC(<base64>)} 或裸 {@code <base64>} 密文经
+ * {@link SecretValue#decryptIfNeeded(String)} 透明解密，非密文原样返回；解密失败
+ * （主密钥缺失 / 密文损坏）保留原串，绝不中断配置加载。
  */
 public final class ConfigSource {
 
@@ -20,7 +21,7 @@ public final class ConfigSource {
     }
 
     /**
-     * Web/Serenity 域：按 key 从环境解析配置值，并对 {@code ENC(...)} 透明解密。
+     * Web/Serenity 域：按 key 从环境解析配置值，并对 {@code ENC(<base64>)} / 裸 base64 密文透明解密。
      *
      * @param key          配置键（如 {@code playwright.browser.type}）
      * @param defaultValue 键缺失时的兜底默认值
@@ -32,9 +33,9 @@ public final class ConfigSource {
     }
 
     /**
-     * 对任意原始配置值做 {@code ENC(...)} 透明解密；Web/API 两域通用。
+     * 对任意原始配置值做透明解密（{@code ENC(<base64>)} 或裸 base64 密文）；Web/API 两域通用。
      *
-     * @param raw 原始配置值（可能为 {@code ENC(...)} 密文）
+     * @param raw 原始配置值（可能为密文）
      * @return 解密后的值；非密文或解密失败时原样返回
      */
     public static String decrypt(String raw) {

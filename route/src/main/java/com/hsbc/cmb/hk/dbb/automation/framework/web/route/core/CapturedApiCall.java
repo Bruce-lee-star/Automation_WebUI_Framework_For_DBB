@@ -42,7 +42,7 @@ public class CapturedApiCall {
     private final boolean fromMock;       // 是否来自 Mock 拦截
     private final String captureSource;   // 采集来源：MOCK / MODIFY / DELAY / MONITOR
     /**
-     * ⭐ 产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR），
+     *  产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR），
      * 供 {@link ApiCaptureContext#getAllByType(RouteHandleType)} 按能力维度检索。
      *
      * <p>与 {@code captureSource} 的区别：{@code captureSource} 是自由字符串（历史字段），
@@ -59,7 +59,7 @@ public class CapturedApiCall {
     private long originalBodyBytes;
 
     // ═══════════════════════════════════════════════════════════════
-    // ⭐ 性能优化：懒缓存 JsonPath DocumentContext（避免重复解析 JSON）
+    //  性能优化：懒缓存 JsonPath DocumentContext（避免重复解析 JSON）
     // ═══════════════════════════════════════════════════════════════
     private transient volatile DocumentContext cachedDocContext;
 
@@ -119,7 +119,7 @@ public class CapturedApiCall {
     }
 
     /**
-     * ⭐ 指定能力类型的构造器。各 Handler 落库时<b>必须</b>显式传入自身类型
+     *  指定能力类型的构造器。各 Handler 落库时<b>必须</b>显式传入自身类型
      * （MOCK / MODIFY / DELAY / MONITOR），否则默认按 MONITOR 归类，
      * 会导致 {@code ApiCaptureContext.getAllByType(...)} 查不到 mock / delay 的调用。
      *
@@ -173,7 +173,7 @@ public class CapturedApiCall {
         this.endpoint = endpoint;
         this.requestUrl = SensitiveDataSanitizer.sanitizeUrl(requestUrl); // T0-1: 收口 requestUrl 脱敏（此前 query 中 token/sessionId 可经 getRequestUrl 出域）
         this.method = (method != null) ? method.toUpperCase() : "UNKNOWN";
-        // ⭐ 修复 R4：在构造期即对所有出站数据做脱敏，避免明文敏感 body/header 长期驻留内存，
+        //  修复 R4：在构造期即对所有出站数据做脱敏，避免明文敏感 body/header 长期驻留内存，
         // 即使后续 DTO 导出时才脱敏，内存快照（heap dump / 序列化）也不会暴露原始值。
         this.requestBody = sanitizeBody(requestBody);
         this.requestHeaders = sanitizeHeaders(requestHeaders);
@@ -187,13 +187,13 @@ public class CapturedApiCall {
         this.timestamp = timestamp;
     }
 
-    /** ⭐ 修复 R4：对单个 body 字符串按格式脱敏（JSON/XML/form/纯文本统一收口）。 */
+    /**  修复 R4：对单个 body 字符串按格式脱敏（JSON/XML/form/纯文本统一收口）。 */
     private static String sanitizeBody(String body) {
         if (body == null || body.isEmpty()) return body;
         return SensitiveDataSanitizer.sanitizeBody(body);
     }
 
-    /** ⭐ 修复 R4：对所有 header 值脱敏（Authorization/Cookie/Set-Cookie 等含凭据）。 */
+    /**  修复 R4：对所有 header 值脱敏（Authorization/Cookie/Set-Cookie 等含凭据）。 */
     private static Map<String, String> sanitizeHeaders(Map<String, String> headers) {
         if (headers == null || headers.isEmpty()) return Collections.emptyMap();
         Map<String, String> sanitized = new HashMap<>(headers.size());
@@ -251,7 +251,7 @@ public class CapturedApiCall {
     public String captureSource() { return captureSource; }
 
     /**
-     * ⭐ 产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR）。
+     *  产生本次快照的路由能力类型（MOCK / MODIFY / DELAY / MONITOR）。
      *
      * <p>用于 {@code ApiCaptureContext.getAllByType(type)} 按能力维度检索。
      * 同一 endpoint 可能同时产生多条不同类型的快照（如 MODIFY + MONITOR 叠加）。
@@ -536,7 +536,7 @@ public class CapturedApiCall {
         public Builder fromMock(boolean fromMock) { this.fromMock = fromMock; return this; }
         public Builder captureSource(String captureSource) { this.captureSource = captureSource; return this; }
 
-        /** ⭐ 指定能力类型（MOCK / MODIFY / DELAY / MONITOR）；未指定时由 captureSource 推导。 */
+        /**  指定能力类型（MOCK / MODIFY / DELAY / MONITOR）；未指定时由 captureSource 推导。 */
         public Builder handleType(RouteHandleType handleType) { this.handleType = handleType; return this; }
 
         public CapturedApiCall build() {

@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * Browser Override Manager - 管理测试用例级别的浏览器覆盖配置
@@ -38,14 +40,16 @@ public class BrowserOverrideManager {
     
     private static final Logger logger = LoggerFactory.getLogger(BrowserOverrideManager.class);
     
-    // 线程级别的浏览器覆盖配置
-    private static final ThreadLocal<String> overrideBrowserType = new ThreadLocal<>();
+    // 线程级别的浏览器覆盖配置（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
+    private static final ContextKey<String> OVERRIDE_BROWSER_TYPE_KEY =
+            ContextKey.of("browserOverride.overrideBrowserType", String.class);
     
     // 全局浏览器覆盖配置（用于并发测试）
     private static final Map<Long, String> globalOverrideMap = new ConcurrentHashMap<>();
     
-    // Scenario标签缓存（避免重复解析）
-    private static final ThreadLocal<String[]> scenarioTags = new ThreadLocal<>();
+    // Scenario标签缓存（避免重复解析）（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
+    private static final ContextKey<String[]> SCENARIO_TAGS_KEY =
+            ContextKey.of("browserOverride.scenarioTags", String[].class);
     
     // 标签到浏览器类型的映射
     private static final Map<String, String> TAG_TO_BROWSER_TYPE = new ConcurrentHashMap<>();
@@ -75,7 +79,7 @@ public class BrowserOverrideManager {
             return;
         }
         
-        overrideBrowserType.set(browserType);
+        TestContextHolder.get().set(OVERRIDE_BROWSER_TYPE_KEY, browserType);
         globalOverrideMap.put(threadId, browserType);
         
         logger.info("Browser override set for thread {}: {} -> {}", 
@@ -119,7 +123,7 @@ public class BrowserOverrideManager {
      */
     public static String getEffectiveBrowserType() {
         // 1. 检查线程级别的覆盖配置
-        String override = overrideBrowserType.get();
+        String override = TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY);
         if (override != null && !override.isEmpty()) {
             return override;
         }
@@ -149,9 +153,9 @@ public class BrowserOverrideManager {
      */
     public static void clearOverrideBrowser() {
         long threadId = Thread.currentThread().threadId();
-        String oldType = overrideBrowserType.get();
+        String oldType = TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY);
         
-        overrideBrowserType.remove();
+        TestContextHolder.get().remove(OVERRIDE_BROWSER_TYPE_KEY);
         globalOverrideMap.remove(threadId);
         
         if (oldType != null) {
@@ -166,7 +170,7 @@ public class BrowserOverrideManager {
      * @return true if override is active, false otherwise
      */
     public static boolean hasOverride() {
-        return overrideBrowserType.get() != null;
+        return TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY) != null;
     }
     
     /**
@@ -225,10 +229,10 @@ public class BrowserOverrideManager {
      */
     public static void setScenarioTags(String[] tags) {
         if (tags == null) {
-            scenarioTags.set(new String[0]);
+            TestContextHolder.get().set(SCENARIO_TAGS_KEY, new String[0]);
             return;
         }
-        scenarioTags.set(tags);
+        TestContextHolder.get().set(SCENARIO_TAGS_KEY, tags);
         
         // 自动从标签中提取浏览器类型
         String browserType = extractBrowserFromTags(tags);
@@ -245,14 +249,14 @@ public class BrowserOverrideManager {
      * @return 标签数组
      */
     public static String[] getScenarioTags() {
-        return scenarioTags.get();
+        return TestContextHolder.get().get(SCENARIO_TAGS_KEY);
     }
 
     /**
      * 清除当前Scenario的标签
      */
     public static void clearScenarioTags() {
-        scenarioTags.remove();
+        TestContextHolder.get().remove(SCENARIO_TAGS_KEY);
         logger.debug("Scenario tags cleared");
     }
 
@@ -265,7 +269,7 @@ public class BrowserOverrideManager {
      * @return true 如果需要切换浏览器
      */
     public static boolean needsBrowserSwitch() {
-        String[] tags = scenarioTags.get();
+        String[] tags = TestContextHolder.get().get(SCENARIO_TAGS_KEY);
         if (tags == null || tags.length == 0) {
             return false;
         }
@@ -276,7 +280,7 @@ public class BrowserOverrideManager {
         }
 
         // 获取期望的浏览器类型（从override或默认值）
-        String expectedBrowserType = overrideBrowserType.get();
+        String expectedBrowserType = TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY);
         if (expectedBrowserType == null) {
             expectedBrowserType = getDefaultBrowserType();
         }
@@ -358,7 +362,7 @@ public class BrowserOverrideManager {
      * 清除所有覆盖配置（用于测试清理）
      */
     public static void clearAll() {
-        overrideBrowserType.remove();
+        TestContextHolder.get().remove(OVERRIDE_BROWSER_TYPE_KEY);
         globalOverrideMap.clear();
         logger.info("All browser overrides cleared");
     }

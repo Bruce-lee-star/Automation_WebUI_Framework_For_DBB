@@ -62,7 +62,7 @@ public class ContextLifecycleHookManager {
         /**
          * 重新绑定到新的 Context。
          * <p>
-         * ⭐ 契约（修复问题1）：Playwright 的 Route 对象与旧 Context 生命周期绑定，旧 Context 关闭后全部失效，
+         *  契约（修复问题1）：Playwright 的 Route 对象与旧 Context 生命周期绑定，旧 Context 关闭后全部失效，
          * <b>不可跨 Context 复用</b>。实现类必须在 {@code newContext} 上重新调用 {@code newContext.route(url, handler)}
          * 注册相同的拦截规则，而不是持有/操作旧 Route 对象（否则 Firefox/WebKit 下会抛
          * {@code Object doesn't exist: route}）。
@@ -155,7 +155,7 @@ public class ContextLifecycleHookManager {
     // ==================== 内部存储 ====================
 
     /**
-     * ⭐ 修复 P0-1：按线程存储规则快照（替代原先的 identityHashCode(Context) 方案）。
+     *  按线程存储规则快照（替代原先的 identityHashCode(Context) 方案）。
      * 原方案用 Context 对象的内存哈希做 key，导致：(1) 并行/重建时快照串扰（Test B 误复用 Test A 规则）；
      * (2) 旧 Context 的哈希 key 永不移除，内存泄漏。改用线程 ID 作为 key，因为 Context 重建发生在
      * 同一 Serenity scenario 线程内，线程天然隔离，且 scenario 结束时可通过 clearSnapshotForCurrentThread() 精确清理。
@@ -184,7 +184,7 @@ public class ContextLifecycleHookManager {
 
         long threadKey = Thread.currentThread().threadId();
 
-        // ⭐ 修复 P0-1：按线程存快照，同一线程重建只更新一次（防止重复捕获）
+        //  按线程存快照，同一线程重建只更新一次（防止重复捕获）
         ContextRuleSnapshot existing = contextSnapshots.get(threadKey);
         if (existing != null) {
             logger.debug("[ContextLifecycle] Rules already captured for thread {}, reusing existing snapshot", threadKey);
@@ -219,7 +219,7 @@ public class ContextLifecycleHookManager {
 
         long threadKey = Thread.currentThread().threadId();
 
-        // ⭐ 修复 P0-1：按线程精确取快照，不再遍历复用其他线程/旧 Context 的快照，
+        //  按线程精确取快照，不再遍历复用其他线程/旧 Context 的快照，
         // 彻底消除并行测试下规则串扰（Test B 误复用 Test A 规则）。
         ContextRuleSnapshot snapshot = contextSnapshots.get(threadKey);
 
@@ -268,7 +268,7 @@ public class ContextLifecycleHookManager {
             return 0;
         }
 
-        // ⭐ 修复 P0-1：按线程取快照（与 rebindRules 一致）
+        //  按线程取快照（与 rebindRules 一致）
         ContextRuleSnapshot snapshot = contextSnapshots.get(Thread.currentThread().threadId());
 
         if (snapshot == null) {
@@ -312,7 +312,7 @@ public class ContextLifecycleHookManager {
     }
 
     /**
-     * ⭐ 修复 P0-1 + 五章缺失：Scenario 结束时清除当前线程的规则快照，防止内存泄漏。
+     *   + 五章缺失：Scenario 结束时清除当前线程的规则快照，防止内存泄漏。
      * 由 PlaywrightManager.cleanupForScenario() 调用。
      */
     public static void clearSnapshotForCurrentThread() {
@@ -325,7 +325,7 @@ public class ContextLifecycleHookManager {
     }
 
     // ==================== 与 PlaywrightManager 集成 ====================
-    // ⭐ 修复 P2-20：本节方法（onContextAboutToRebuild / onContextRebuilt / rebindRulesToPage）
+    //  本节方法（onContextAboutToRebuild / onContextRebuilt / rebindRulesToPage）
     //    经全仓库检索确认【当前均无调用点】。其原 Javadoc 声称
     //    "由 PlaywrightManager#scheduleContextRebuild() / getContext() 调用"，与事实不符，
     //    属<b>误导性注释</b>——会让维护者误以为"Context 重建时路由规则会自动保留"。

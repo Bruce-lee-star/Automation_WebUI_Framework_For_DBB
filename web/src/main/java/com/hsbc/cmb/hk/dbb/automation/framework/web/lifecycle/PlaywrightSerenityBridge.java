@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * Serenity BDD 生命周期桥接 — 负责 Scenario/Feature 级别的初始化与清理编排
@@ -82,23 +83,10 @@ class PlaywrightSerenityBridge {
      */
     static void cleanupThreadLocals(boolean clearContextAndPage) {
         if (clearContextAndPage) {
-            PlaywrightManager.pageThreadLocal.remove();
-            PlaywrightManager.contextThreadLocal.remove();
+            TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
+            TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
         }
-        CustomOptionsManager.customContextOptionsFlag.remove();
-        CustomOptionsManager.customStorageStatePath.remove();
-        CustomOptionsManager.customLocale.remove();
-        CustomOptionsManager.customTimezoneId.remove();
-        CustomOptionsManager.customUserAgent.remove();
-        CustomOptionsManager.customPermissions.remove();
-        CustomOptionsManager.customIsMobile.remove();
-        CustomOptionsManager.customHasTouch.remove();
-        CustomOptionsManager.customColorScheme.remove();
-        CustomOptionsManager.customGeolocation.remove();
-        CustomOptionsManager.customDeviceScaleFactor.remove();
-        CustomOptionsManager.customViewportWidth.remove();
-        CustomOptionsManager.customViewportHeight.remove();
-        CustomOptionsManager.customProxyEnabled.remove();
+        CustomOptionsManager.removeAllThreadLocals();
     }
 
     // ==================== 自定义配置重置 ====================
@@ -106,7 +94,7 @@ class PlaywrightSerenityBridge {
     /**
      * 重置所有自定义配置（核心：保证下一个场景默认不继承）。
      * <p>
-     * ⭐ 修复 P3-29：原实现先判断 {@code !browser().isConnected()} 并打印
+     *  原实现先判断 {@code !browser().isConnected()} 并打印
      * “Cannot reset custom options: Context is still in use. Clearing anyway.”，
      * 随后却<b>无条件</b>执行 {@code cleanupThreadLocals(true)} ——
      * 该告警分支形同虚设，且措辞自相矛盾（先说 Cannot reset，又说 Clearing anyway），
@@ -127,7 +115,7 @@ class PlaywrightSerenityBridge {
     static void resetCustomContextOptionsForScenarioMode() {
         VerboseLogging.logInfoIfVerbose(logger, "Resetting custom context options for Scenario mode (preserving Context)...");
         cleanupThreadLocals(false);
-        PlaywrightManager.pageThreadLocal.remove();
+        TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
         VerboseLogging.logInfoIfVerbose(logger, "Custom context options reset completed (Context preserved)");
     }
 
@@ -136,18 +124,26 @@ class PlaywrightSerenityBridge {
      */
     static void resetCustomContextOptionsForFeatureMode() {
         VerboseLogging.logInfoIfVerbose(logger, "Resetting custom context options for Feature mode (preserving session config)...");
-        Path preservedStorageStatePath = CustomOptionsManager.customStorageStatePath.get();
+        Path preservedStorageStatePath = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_STORAGE_STATE_PATH_KEY);
+        String preservedStorageState = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_STORAGE_STATE_KEY);
         cleanupThreadLocals(false);
         if (preservedStorageStatePath != null) {
-            CustomOptionsManager.customStorageStatePath.set(preservedStorageStatePath);
-            // ⭐ 修复问题3：先快照 context 存活状态，再据此设置 flag，避免"检查存活"与"设置 flag"
+            TestContextHolder.get().set(CustomOptionsManager.CUSTOM_STORAGE_STATE_PATH_KEY, preservedStorageStatePath);
+        }
+        //  同步保留内存 storageState 内容（Feature 模式跨 scenario 复用登录态所需）
+        if (preservedStorageState != null) {
+            TestContextHolder.get().set(CustomOptionsManager.CUSTOM_STORAGE_STATE_KEY, preservedStorageState);
+        }
+        // 只要保留了任一 session 配置（路径或内存内容），即按 context 存活状态决定是否触发重建以应用 storageState
+        if (preservedStorageStatePath != null || preservedStorageState != null) {
+            //  修复问题3：先快照 context 存活状态，再据此设置 flag，避免"检查存活"与"设置 flag"
             // 之间的竞态窗口（若浏览器在此期间断开，flag 被设为 true 但 context 已不可用）。
-            BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
+            BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
             boolean contextDead = (existingContext == null)
                     || (existingContext.browser() == null)
                     || !existingContext.browser().isConnected();
             if (contextDead) {
-                CustomOptionsManager.customContextOptionsFlag.set(true);
+                TestContextHolder.get().set(CustomOptionsManager.CUSTOM_CONTEXT_OPTIONS_FLAG_KEY, true);
                 VerboseLogging.logDebugIfVerbose(logger, "Feature mode: context null/closed, set flag to apply storage state");
             } else {
                 VerboseLogging.logDebugIfVerbose(logger, "Feature mode: context exists, not setting flag");
@@ -165,9 +161,9 @@ class PlaywrightSerenityBridge {
         PlaywrightManager.closePage();
         PlaywrightManager.closeContext();
         BrowserContext context = PlaywrightManager.getContext();
-        PlaywrightManager.contextThreadLocal.set(context);
+        TestContextHolder.get().set(PlaywrightManager.CONTEXT_KEY,context);
         Page page = PlaywrightContextManager.createPage(context);
-        PlaywrightManager.pageThreadLocal.set(page);
+        TestContextHolder.get().set(PlaywrightManager.PAGE_KEY,page);
         VerboseLogging.logDebugIfVerbose(logger, "New Context and Page created");
     }
 
@@ -182,8 +178,8 @@ class PlaywrightSerenityBridge {
      * - 关闭多余页面标签
      */
     static void cleanupPageState() {
-        Page page = PlaywrightManager.pageThreadLocal.get();
-        BrowserContext context = PlaywrightManager.contextThreadLocal.get();
+        Page page = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
+        BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
 
         try {
             VerboseLogging.logInfoIfVerbose(logger, "Cleaning up page state (preserving all cookies)...");
@@ -195,8 +191,8 @@ class PlaywrightSerenityBridge {
             if (context != null && !isContextAlive(context)) {
                 VerboseLogging.logInfoIfVerbose(logger,
                         "Cleanup skipped: BrowserContext already closed/expired (page/context will be rebuilt on next use)");
-                PlaywrightManager.pageThreadLocal.remove();
-                PlaywrightManager.contextThreadLocal.remove();
+                TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
+                TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
                 return;
             }
 
@@ -244,8 +240,8 @@ class PlaywrightSerenityBridge {
                     // context 在两次探测之间恰好失效：不打印 TargetClosedError 噪音，静默跳过并留空引用。
                     VerboseLogging.logWarnIfVerbose(logger,
                             "Cleanup page reference failed (context likely closed), will rebuild on next use: {}", e.getClass().getSimpleName());
-                    PlaywrightManager.pageThreadLocal.remove();
-                    PlaywrightManager.contextThreadLocal.remove();
+                    TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
+                    TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
                     return;
                 }
             }
@@ -311,7 +307,7 @@ class PlaywrightSerenityBridge {
         // ⚠️ 修复级联：scenario 级 cleanupForScenario 会移除 currentConfigId（见 PlaywrightManager），
         //   但 frameworkState 仍 initialized。此处懒重建 configId，避免 beforeTest 误报"环境未初始化"
         //   而级联抛 IllegalStateException（场景实际仍能靠 getPage() 懒初始化正常运行）。
-        if (PlaywrightManager.currentConfigId.get() == null) {
+        if (TestContextHolder.get().get(PlaywrightManager.CURRENT_CONFIG_ID_KEY) == null) {
             PlaywrightManager.ensureConfigId();
         }
 
@@ -319,7 +315,7 @@ class PlaywrightSerenityBridge {
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             PageObjectFactory.clearAll();
-            BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
+            BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
             if (existingContext != null && existingContext.browser() != null
                     && existingContext.browser().isConnected()
                     && SessionManager.isAnyFeatureSessionRestored()) {
@@ -333,8 +329,8 @@ class PlaywrightSerenityBridge {
                         "Scenario initialization completed (Context will rebuild on demand)");
             }
         } else {
-            BrowserContext existingContext = PlaywrightManager.contextThreadLocal.get();
-            Page existingPage = PlaywrightManager.pageThreadLocal.get();
+            BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+            Page existingPage = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
             if (existingContext != null && existingPage != null && !existingPage.isClosed()) {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Scenario initialization completed (reusing existing Context/Page within same feature)");
@@ -393,7 +389,7 @@ class PlaywrightSerenityBridge {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
         // ⚠️ 同 initializeForScenario：currentConfigId 被 scenario 级清理移除后懒重建，避免级联抛错
-        if (PlaywrightManager.currentConfigId.get() == null) {
+        if (TestContextHolder.get().get(PlaywrightManager.CURRENT_CONFIG_ID_KEY) == null) {
             PlaywrightManager.ensureConfigId();
         }
 
@@ -401,12 +397,12 @@ class PlaywrightSerenityBridge {
 
         String restartStrategy = PlaywrightManager.config().getRestartStrategy();
         if ("feature".equalsIgnoreCase(restartStrategy)) {
-            // ⭐ 修复 P3-35：原实现用 if/else 区分"context 为空或浏览器已断开"与"context 存在"，
+            //  原实现用 if/else 区分"context 为空或浏览器已断开"与"context 存在"，
             //   但两个分支<b>都只打印日志</b>，没有任何实际行为差异；且注释声称
             //   "pre-creating Context" 却并未真的创建 Context，属误导性代码。
             //   Context 的创建是懒加载的（首次 getContext() 时按需建立），此处不应预判，
             //   故合并为一条如实反映当前状态的日志。
-            BrowserContext context = PlaywrightManager.contextThreadLocal.get();
+            BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
             boolean reusable = context != null
                     && context.browser() != null
                     && context.browser().isConnected();

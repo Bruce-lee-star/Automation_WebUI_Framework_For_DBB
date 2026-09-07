@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * ⭐ API 采集管理器（常驻单例）。
+ *  API 采集管理器（常驻单例）。
  *
  * <p><b>定位</b>：独立于测试断言存储（{@link ApiCaptureContext}）的「非侵入采集」通道。
  * 框架启动即常驻开启（{@link #enabled} 默认 true，可经 {@link #setApiCaptureEnabled(boolean)} 关闭），
@@ -78,7 +78,7 @@ public final class ApiCaptureManager {
     public void record(CapturedApiCall call) {
         if (!enabled || call == null) return;
         ensureApiCaptureStore();
-        // ⭐ 捕获局部引用，避免与场景切换 swap currentStore 之间的 TOCTOU 竞态
+        //  捕获局部引用，避免与场景切换 swap currentStore 之间的 TOCTOU 竞态
         ApiCaptureStore store = currentStore;
         if (store != null) store.record(call);
     }
@@ -219,6 +219,7 @@ public final class ApiCaptureManager {
             }
             return "scenario-" + toSafeDirName(name);
         } catch (Exception e) {
+            // 反射读取 scenario 名失败返回 null，由调用方降级处理
             return null;
         }
     }

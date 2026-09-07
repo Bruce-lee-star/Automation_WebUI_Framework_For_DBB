@@ -41,7 +41,7 @@ public class ElementDiagnosticsCollector {
     private static final Logger logger = LoggerFactory.getLogger(ElementDiagnosticsCollector.class);
 
     /** 共享诊断线程池——daemon 线程，JVM 退出时自动回收 */
-    // ⭐ 修复 B-3：原 newCachedThreadPool 无界，失败路径高并发（成百上千元素诊断）会无限新建线程、
+    //  修复 B-3：原 newCachedThreadPool 无界，失败路径高并发（成百上千元素诊断）会无限新建线程、
     //   耗尽系统线程/内存。改为固定大小（失败诊断本就属低频兜底，8 线程足够）+ 调用者运行拒绝策略
     //   （诊断任务在调用线程同步执行，保证失败信息不丢，同时避免队列积压导致 OOM）。
     private static final int DIAGNOSTIC_MAX_THREADS = 8;

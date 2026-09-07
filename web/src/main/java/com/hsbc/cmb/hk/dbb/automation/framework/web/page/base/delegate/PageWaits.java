@@ -69,7 +69,7 @@ public final class PageWaits {
     }
 
     public static void shouldBeNotVisible(BasePage bp, String selector) {
-        if (!bp.locator(selector).isHidden()) {
+        if (!bp.locator(selector).isNotVisible()) {
             throw new ElementException("Element should be hidden: " + selector);
         }
     }

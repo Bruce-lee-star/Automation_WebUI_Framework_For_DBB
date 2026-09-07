@@ -5,7 +5,7 @@ import java.util.Comparator;
 /**
  * 路由处理类型枚举 —— 区分 Mock / 修改请求 / 高延迟 / 监控四种拦截能力。
  *
- * <p>⭐ 设计文档《企业级 API 拦截框架设计》<b>Phase 1</b>：
+ * <p> 设计文档《企业级 API 拦截框架设计》<b>Phase 1</b>：
  * <b>优先级与 Terminal 语义收敛到本枚举，作为全框架唯一来源</b>。
  *
  * <p>背景：历史上优先级被重复定义在多处 ——
@@ -16,7 +16,7 @@ import java.util.Comparator;
  * 且因"能力位与类型解耦"的演进，{@code priorityOf()} 已部分失去意义。
  * 收敛后由本枚举单一定义，其余各处一律引用。
  *
- * <p><b>⭐ 两套顺序必须区分开</b>（历史混淆的根源，此处彻底拆开）：
+ * <p><b> 两套顺序必须区分开</b>（历史混淆的根源，此处彻底拆开）：
  *
  * <table border="1" cellpadding="4">
  *   <caption>四类能力矩阵</caption>
@@ -70,7 +70,7 @@ public enum RouteHandleType {
      * 仅监控，不修改请求响应（观察者 Observer）。
      * 放行请求后读取真实响应做断言与落库。
      *
-     * <p>⭐ <b>MONITOR 是观察维度，不是动作分支</b>：它选择优先级最低（999），
+     * <p> <b>MONITOR 是观察维度，不是动作分支</b>：它选择优先级最低（999），
      * 但会<b>叠加</b>在被选中的动作之上一起生效 ——
      * <ul>
      *   <li>叠加 MODIFY：{@code ModifyHandler} 拿到真实响应后调 {@code assertAndRecord}；</li>
@@ -92,7 +92,7 @@ public enum RouteHandleType {
     }
 
     /**
-     * ⭐ ① <b>选择优先级</b>：数值越小越<b>先被选中</b>执行动作
+     *  ① <b>选择优先级</b>：数值越小越<b>先被选中</b>执行动作
      * （MOCK=100 最先，MONITOR=999 最后）。
      *
      * <p>这是 {@code InterceptorChain} 的排序依据，决定一次请求由哪个 Handler 执行。
@@ -105,7 +105,7 @@ public enum RouteHandleType {
     }
 
     /**
-     * ⭐ ② <b>执行时序</b>：一次请求内部各动作的<b>实际发生顺序</b>，数值越小越先发生。
+     *  ② <b>执行时序</b>：一次请求内部各动作的<b>实际发生顺序</b>，数值越小越先发生。
      *
      * <pre>
      * DELAY(1)  → 先计时并等待

@@ -43,7 +43,7 @@ public class ApiCaptureTypeQueryTest {
     }
 
     /**
-     * ⭐ DELAY 是「维度标记」而非完整调用快照（无响应体），
+     *  DELAY 是「维度标记」而非完整调用快照（无响应体），
      * 框架把它存放在<b>独立索引</b>中，与主快照存储隔离。
      */
     private static CapturedApiCall delayMarker(String endpoint, long ts) {
@@ -94,7 +94,7 @@ public class ApiCaptureTypeQueryTest {
     }
 
     /**
-     * ⭐ 核心契约：DELAY 标记<b>不得</b>污染按 endpoint 的通用查询。
+     *  核心契约：DELAY 标记<b>不得</b>污染按 endpoint 的通用查询。
      *
      * <p>DELAY 无响应体且在请求放行前落库，若混入主快照存储，
      * {@code getLastApiCall} / {@code waitForApi} 会先命中这条空记录，

@@ -76,7 +76,7 @@ public class FrameworkCore {
             logger.info("Initializing FrameworkCore...");
             VerboseLogging.logDebugIfVerbose(logger, "Starting framework initialization process");
 
-            // ⭐ 先初始化 Playwright 管理器（失败时 frameworkState 不会被标记为 initialized）
+            //  先初始化 Playwright 管理器（失败时 frameworkState 不会被标记为 initialized）
             PlaywrightManager.initialize();
             VerboseLogging.logDebugIfVerbose(logger, "Playwright manager initialized");
 
@@ -85,7 +85,7 @@ public class FrameworkCore {
             ListenerRegistry.initialize(basePackage);
             VerboseLogging.logDebugIfVerbose(logger, "Listener registry initialized for package: {}", basePackage);
 
-            // ⭐ 最后标记 frameworkState：仅在全部组件初始化成功后标记
+            //  最后标记 frameworkState：仅在全部组件初始化成功后标记
             frameworkState.initialize();
             VerboseLogging.logDebugIfVerbose(logger, "Framework state initialized");
 
@@ -108,7 +108,7 @@ public class FrameworkCore {
             logger.info("Initializing FrameworkCore with custom listener packages...");
             VerboseLogging.logDebugIfVerbose(logger, "Starting framework initialization with custom packages");
 
-            // ⭐ 先初始化 Playwright 管理器（失败时 frameworkState 不会被标记为 initialized）
+            //  先初始化 Playwright 管理器（失败时 frameworkState 不会被标记为 initialized）
             PlaywrightManager.initialize();
             VerboseLogging.logDebugIfVerbose(logger, "Playwright manager initialized");
 
@@ -118,7 +118,7 @@ public class FrameworkCore {
             ListenerRegistry.initialize(basePackage);
             VerboseLogging.logDebugIfVerbose(logger, "Listener registry initialized for package: {}", basePackage);
 
-            // ⭐ 最后标记 frameworkState：仅在全部组件初始化成功后标记
+            //  最后标记 frameworkState：仅在全部组件初始化成功后标记
             frameworkState.initialize();
             VerboseLogging.logDebugIfVerbose(logger, "Framework state initialized");
 
@@ -197,7 +197,7 @@ public class FrameworkCore {
                 VerboseLogging.logDebugIfVerbose(logger, "Framework stopped during cleanup");
             }
 
-            // ⭐ 清理路由引擎（停止调度器 + unroute 所有 Playwright 路由）
+            //  清理路由引擎（停止调度器 + unroute 所有 Playwright 路由）
             try {
                 RouteLifecycleRegistry.get().shutdownRouteEngine();
                 VerboseLogging.logDebugIfVerbose(logger, "RouteEngine shut down");
@@ -209,7 +209,7 @@ public class FrameworkCore {
             PlaywrightManager.cleanupAll();
             VerboseLogging.logDebugIfVerbose(logger, "Playwright resources cleaned up");
 
-            // ⭐ 清理监听器注册表
+            //  清理监听器注册表
             ListenerRegistry.cleanup();
             VerboseLogging.logDebugIfVerbose(logger, "Listener registry cleaned up");
 
@@ -219,7 +219,7 @@ public class FrameworkCore {
 
             logger.info("FrameworkCore cleaned up successfully");
         } catch (Exception e) {
-            // ⭐ 收尾清理：即使某步失败也只记录，不重新抛出——清理阶段的异常不应中断
+            //  收尾清理：即使某步失败也只记录，不重新抛出——清理阶段的异常不应中断
             //    已结束的测试流程（掩盖真实失败原因），仅保存供诊断。
             logger.error("Failed to cleanup FrameworkCore", e);
             frameworkState.setLastException(e);
@@ -297,7 +297,7 @@ public class FrameworkCore {
         logger.error("Exception occurred in FrameworkCore", e);
         frameworkState.setLastException(e);
 
-        // ⭐ 修复 P0-2：禁止在此调用 getInstance().cleanup()（其最终执行
+        //  禁止在此调用 getInstance().cleanup()（其最终执行
         //    PlaywrightManager.cleanupAll()）。cleanupAll() 会关闭【所有线程】的
         //    Browser/Playwright 实例——并行运行下，单个 scenario 的一次异常会关停其余
         //    所有并发场景的浏览器，导致整轮测试集体失败，且故障现象与根因完全脱节。

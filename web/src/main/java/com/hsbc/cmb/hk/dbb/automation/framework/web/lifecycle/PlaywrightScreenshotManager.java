@@ -321,7 +321,7 @@ class PlaywrightScreenshotManager {
             return null;
         } finally {
             // 全页模式下注入了高度裁切样式，截图完成后还原，避免影响后续操作。
-            // ⭐ 修复问题1（加固）：以实际传入的 fullPage 参数为准（与 stabilizeBeforeScreenshot 的注入条件一致），
+            //  修复问题1（加固）：以实际传入的 fullPage 参数为准（与 stabilizeBeforeScreenshot 的注入条件一致），
             // 而非 PlaywrightManager.config().isFullPageScreenshot()，避免参数与配置不一致时漏恢复导致页面被永久裁剪。
             if (page != null && !page.isClosed() && fullPage) {
                 restorePageHeightStyle(page);

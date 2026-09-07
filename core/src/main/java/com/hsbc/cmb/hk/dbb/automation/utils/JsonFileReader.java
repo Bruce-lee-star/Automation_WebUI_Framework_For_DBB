@@ -9,8 +9,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * JSON 文件读取工具
@@ -22,10 +22,10 @@ public class JsonFileReader {
     private static final Logger logger = LoggerFactory.getLogger(JsonFileReader.class);
     
     // 文件内容缓存
-    private static final Map<String, String> fileCache = new HashMap<>();
-    
-    // 是否启用缓存
-    private static boolean cacheEnabled = true;
+    private static final Map<String, String> fileCache = new ConcurrentHashMap<>();
+
+    // 是否启用缓存（volatile 保证并行场景下的可见性）
+    private static volatile boolean cacheEnabled = true;
     
     /**
      * 从文件读取 JSON 内容

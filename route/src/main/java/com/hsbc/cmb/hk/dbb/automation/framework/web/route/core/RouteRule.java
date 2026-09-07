@@ -30,7 +30,7 @@ public class RouteRule {
     private RouteHandleType type = RouteHandleType.MONITOR;
 
     /**
-     * ⭐ 监控能力位（基线）：true 表示此规则开启 API 健康监控（断言 expectedStatus / jsonPath）。
+     *  监控能力位（基线）：true 表示此规则开启 API 健康监控（断言 expectedStatus / jsonPath）。
      * <p>监控是<b>不可被覆盖的基线</b>：MODIFY / DELAY 只是挂在它上面的可叠加动作，
      * 无论是否叠加 modify/delay，监控始终在 resume 后对真实响应断言，失败即报错。
      * <p>仅当 {@code type == MOCK} 时此位被忽略（MOCK 返回假响应，无真实响应可监控）。
@@ -38,7 +38,7 @@ public class RouteRule {
     private boolean monitorEnabled = false;
 
     /**
-     * ⭐ 已显式停止的能力集合（按能力维度，而非整条 pattern）。
+     *  已显式停止的能力集合（按能力维度，而非整条 pattern）。
      * <p>由 RouteEngine.stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入，
      * 分发期注入到有效规则；对应能力在 selectCapability 及 handler 内被跳过，
      * 不影响同一 pattern 的其它能力。不参与 equals/hashCode 比较，仅做拷贝传递。
@@ -63,7 +63,7 @@ public class RouteRule {
     private Map<String, String> mockHeaders;
     /** Mock 响应批量字段替换：JSONPath → 替换值。
      *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换）
-     *  ⭐ value 改为 Object 类型，支持字符串、数字、布尔、null 等原始类型 */
+     *   value 改为 Object 类型，支持字符串、数字、布尔、null 等原始类型 */
     private Map<String, Object> mockReplaceFields;
 
     /**
@@ -124,7 +124,7 @@ public class RouteRule {
     private final AtomicInteger remainingTimes = new AtomicInteger(0);
 
     /**
-     * ⭐ 分发期合并的源规则引用（transient，不参与 equals/hashCode/copyForMerge）。
+     *  分发期合并的源规则引用（transient，不参与 equals/hashCode/copyForMerge）。
      * <p>B3 链式模型：dispatchRoute 对规则链执行「分发期合并」（copyForMerge + mergeFrom）
      * 生成有效规则，本字段指向链头（首个注册、session/times 归属）的原始规则，
      * 供会话查询、times 递减、跨层 identity 判断使用。
@@ -132,7 +132,7 @@ public class RouteRule {
     private transient RouteRule mergeSource = null;
 
     /**
-     * ⭐ 防御性：指向本规则所属 MonitorSession 的稳定引用（transient，不参与 equals/hashCode/copyForMerge）。
+     *  防御性：指向本规则所属 MonitorSession 的稳定引用（transient，不参与 equals/hashCode/copyForMerge）。
      * <p>由 RouteEngine.startMonitorSession 在创建/复用会话时写入「链头」原始规则。
      * 会话查询（sessionForRule/sessionForRoute）优先用 O(1) 引用定位，避免依赖
      * {@code session.rule == mergeSource} 的「身份相等」脆弱假设；多 context 复用同规则实例时由
@@ -141,7 +141,7 @@ public class RouteRule {
     private transient Object monitorSessionRef = null;
 
     /**
-     * ⭐ Phase 5 统一绑定模型：规则作用域标签。
+     *  Phase 5 统一绑定模型：规则作用域标签。
      * 默认 {@link RouteRuleScope#CONTEXT} 以保持向后兼容（旧代码仅走 context 绑定）。
      * 统一绑定落地后，page 级规则以 {@link #PAGE} + {@link #pageRef} 表达，
      * 不再依赖 {@code page.route}+{@code context.route} 双绑定与 URL 去重集。
@@ -149,7 +149,7 @@ public class RouteRule {
     private RouteRuleScope scope = RouteRuleScope.CONTEXT;
 
     /**
-     * ⭐ Phase 5：page 级规则归属的 Page 引用（逻辑标签，可为 null）。仅当 {@link #scope}=PAGE 时有意义。
+     *  Phase 5：page 级规则归属的 Page 引用（逻辑标签，可为 null）。仅当 {@link #scope}=PAGE 时有意义。
      * 仅作逻辑归属标记，不参与 Playwright 对象生命周期管理（规避 PageRef 弱引用 GC 不确定性）。
      */
     private Object pageRef;
@@ -161,7 +161,7 @@ public class RouteRule {
     /** 允许的资源类型，逗号分隔（如 "xhr,fetch"）。null/空 = 不限制。 */
     private String resourceTypes;
 
-    /** ⭐ 性能优化：懒缓存解析后的资源类型集合（避免每次请求重新解析） */
+    /**  性能优化：懒缓存解析后的资源类型集合（避免每次请求重新解析） */
     private transient volatile Set<String> cachedResourceTypeSet;
     private transient volatile String cachedResourceTypeRaw;
 
@@ -206,28 +206,28 @@ public class RouteRule {
     }
 
     /**
-     * ⭐ Phase 5：获取规则作用域（PAGE / CONTEXT）。默认 CONTEXT。
+     *  Phase 5：获取规则作用域（PAGE / CONTEXT）。默认 CONTEXT。
      */
     public RouteRuleScope getScope() {
         return scope;
     }
 
     /**
-     * ⭐ Phase 5：设置规则作用域。
+     *  Phase 5：设置规则作用域。
      */
     public void setScope(RouteRuleScope scope) {
         this.scope = scope;
     }
 
     /**
-     * ⭐ Phase 5：获取 page 级规则归属的 Page 引用（逻辑标签，可为 null）。
+     *  Phase 5：获取 page 级规则归属的 Page 引用（逻辑标签，可为 null）。
      */
     public Object getPageRef() {
         return pageRef;
     }
 
     /**
-     * ⭐ Phase 5：设置 page 级规则归属的 Page 引用（逻辑标签）。
+     *  Phase 5：设置 page 级规则归属的 Page 引用（逻辑标签）。
      */
     public void setPageRef(Object pageRef) {
         this.pageRef = pageRef;
@@ -259,7 +259,7 @@ public class RouteRule {
     /**
      * 获取 Mock 响应批量字段替换映射（JSONPath → 值）。
      * 支持通配符 [*] 批量替换 List 中所有元素的字段。
-     * ⭐ value 为 Object 类型，支持字符串、数字、布尔等。
+     *  value 为 Object 类型，支持字符串、数字、布尔等。
      */
     public Map<String, Object> getMockReplaceFields() {
         return mockReplaceFields;
@@ -363,7 +363,7 @@ public class RouteRule {
     }
 
     /**
-     * ⭐ 返回分发期合并的源规则；未被合并（独立规则）时返回自身。
+     *  返回分发期合并的源规则；未被合并（独立规则）时返回自身。
      * <p>会话查询 / times 递减 / 跨层 identity 判断应始终作用于源规则，
      * 而非 copyForMerge 生成的临时有效规则。
      */
@@ -393,7 +393,7 @@ public class RouteRule {
      * 避免热路径上每次请求都重新 split + LinkedHashSet 创建。
      */
     public Set<String> getResourceTypeSet() {
-        // ⭐ DCL 懒缓存：仅在 resourceTypes 字符串未变更时复用
+        //  DCL 懒缓存：仅在 resourceTypes 字符串未变更时复用
         String raw = this.resourceTypes;
         if (raw == null || raw.trim().isEmpty()) return null;
 
@@ -445,12 +445,12 @@ public class RouteRule {
             throw new IllegalArgumentException("urlPattern cannot be blank");
         }
         this.urlPattern = urlPattern;
-        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
     }
 
     public void setType(RouteHandleType type) {
         this.type = type;
-        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
     }
 
     /**
@@ -503,7 +503,7 @@ public class RouteRule {
      * 添加一个 Mock 响应字段替换（JSONPath → 值）。
      * 支持通配符 [*] 批量替换 List 中所有元素的字段，如 $.users[*].name。
      * <p>支持多次调用，添加到 Map 中。
-     * ⭐ value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等。
+     *  value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等。
      */
     public void addMockReplaceField(String jsonPath, Object value) {
         if (mockReplaceFields == null) {
@@ -625,7 +625,7 @@ public class RouteRule {
      */
     public void setModifyMethod(String method) {
         this.modifyMethod = method;
-        this.hashCodeCached = false;  // ⭐ 失效 hashCode 缓存
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
     }
 
     public void setRecord(boolean record) {
@@ -731,7 +731,7 @@ public class RouteRule {
      */
     public void setResourceTypes(String resourceTypes) {
         this.resourceTypes = resourceTypes;
-        // ⭐ 失效缓存，下次 getResourceTypeSet() 重新解析
+        //  失效缓存，下次 getResourceTypeSet() 重新解析
         this.cachedResourceTypeSet = null;
         this.cachedResourceTypeRaw = null;
     }
@@ -897,7 +897,7 @@ public class RouteRule {
         }
         if (other.modifyMethod != null) this.modifyMethod = other.modifyMethod;
 
-        // ⭐ DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
+        //  DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
         //    modify/delay 叠加」）注册时，DELAY 在 mergeFrom 内即合并，确保叠加生效
         //    （c21：monitor 基线 + overlayDelay 后，有效规则 delayMs 取 max）。
         //    注意：跨层合并时此值还会再与 context 层 delay 取 max（dispatchRoute 内）。
@@ -917,7 +917,7 @@ public class RouteRule {
     }
 
     /**
-     * ⭐ 返回当前规则的<b>深拷贝</b>（仅深拷贝用于能力位合并的集合字段）。
+     *  返回当前规则的<b>深拷贝</b>（仅深拷贝用于能力位合并的集合字段）。
      * <p>用于跨层合并：避免就地修改被 {@code ENGINE_RULE_STORE} 与闭包持有的原 rule，
      * 导致跨请求行为漂移与集合无限累积。
      *
@@ -958,7 +958,7 @@ public class RouteRule {
         copy.interceptRealResponse = this.interceptRealResponse;
         if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
 
-        // ⭐ 拷贝已停止能力集合（EnumSet 可变，逐元素拷贝避免与源规则共享同一集合）
+        //  拷贝已停止能力集合（EnumSet 可变，逐元素拷贝避免与源规则共享同一集合）
         copy.stoppedCapabilities.addAll(this.stoppedCapabilities);
 
         // 请求条件匹配
@@ -972,7 +972,7 @@ public class RouteRule {
     // equals / hashCode（RouteRule 作为 ConcurrentHashMap key）
     // ═══════════════════════════════════════════════════════════
 
-    /** ⭐ #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组 */
+    /**  #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组 */
     private transient int cachedHashCode;
     private transient boolean hashCodeCached;
 

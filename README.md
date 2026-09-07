@@ -8,16 +8,16 @@
 
 | 属性 | 说明 |
 |------|------|
-| **技术栈** | Java 21 + Playwright 1.58.0 + Serenity BDD 4.3.4 + Cucumber 7.14.0 |
+| **技术栈** | Java 21 + Playwright 1.58.0 + Serenity BDD 4.3.4 + Cucumber 7.31.0 |
 | **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model |
 | **构建工具** | Maven（surefire 3.2.5 / failsafe 3.2.5 / serenity-maven-plugin 4.3.4） |
 | **测试框架** | JUnit 4.13.2 + Serenity JUnit 集成 |
 | **浏览器驱动** | Playwright（Chromium / Firefox / WebKit） |
 | **云测试** | BrowserStack CDP 云浏览器 |
 | **报告** | Serenity HTML Report + SummaryReportGenerator（HTML / CSV / ZIP） |
-| **配置管理** | typesafe.config 1.4.2（HOCON 格式） |
-| **依赖注入** | Spring Context 6.1.6 |
-| **日志** | SLF4J + Logback Classic 1.5.6 |
+| **配置管理** | typesafe.config 1.4.5（HOCON 格式） |
+| **依赖注入** | 无（内置单例 / 静态工厂；Spring 仅用于 route-demo-* 演示服务） |
+| **日志** | SLF4J + Logback Classic 1.5.34 |
 
 ### 环境准备
 
@@ -849,9 +849,11 @@ public class LoginSteps {
 | `monitor.db.type` | MYSQL | 数据库类型（MYSQL / POSTGRESQL） |
 | `monitor.db.url` | (空) | 数据库 JDBC URL |
 | `monitor.db.user` | (空) | 数据库用户名 |
-| `monitor.db.password` | (空) | 数据库密码 |
+| `monitor.db.password` | (空) | 数据库密码（支持 `ENC(...)` 加密存储，运行时经 `SecretValue` 自动解密；明文亦可） |
 | `monitor.db.pool.max.size` | 5 | HikariCP 连接池最大连接数 |
 | `monitor.test.run.id` | (空) | 测试运行 ID（关联本次运行的所有记录） |
+
+> **安全提示**：`monitor.db.password` 支持 `ENC(...)` 加密存储（AES-256-GCM，主密钥取自 `CONFIG_MASTER_KEY` / `config.master.key` / `~/.dbb_automation_master_key`），运行时自动解密，**切勿明文入库**；JDBC URL **不要内嵌账号密码**（如 `jdbc:mysql://user:pass@host`），凭据请走 `monitor.db.user` / `monitor.db.password` 独立配置项。日志中 URL 与凭据均经脱敏（统一复用 `SensitiveDataSanitizer.sanitizeUrl`），不会明文出域（用 `ConfigCipher encrypt <明文>` 生成密文）。
 
 ### 视口与上下文
 
@@ -1054,15 +1056,14 @@ baseStep.verifyResponseJsonPath("name", "doggie");
 |------|---------|---------|------|
 | Serenity BDD | net.serenity-bdd | 4.3.4 | serenity-model / serenity-core / serenity-cucumber / serenity-junit |
 | Playwright | com.microsoft.playwright | 1.58.0 | 浏览器自动化驱动 |
-| Cucumber | io.cucumber | 7.14.0 | BDD 框架 |
+| Cucumber | io.cucumber | 7.31.0 | BDD 框架（Serenity 传递，已钉版本） |
 | JUnit | junit:junit | 4.13.2 | 测试框架 |
-| Spring Context | org.springframework | 6.1.6 | DI 容器 |
-| Logback | ch.qos.logback | 1.5.6 | SLF4J 日志实现 |
-| typesafe.config | com.typesafe | 1.4.2 | HOCON 配置解析 |
-| Gson | com.google.code.gson | 2.10.1 | JSON 序列化 |
+| Logback | ch.qos.logback | 1.5.34 | SLF4J 日志实现 |
+| typesafe.config | com.typesafe | 1.4.5 | HOCON 配置解析 |
+| Gson | com.google.code.gson | 2.13.2 | JSON 序列化 |
 | JsonPath | com.jayway.jsonpath | 2.9.0 | JSON 路径表达式 |
 | org.json | org.json | 20240303 | JSON 对象模型 |
-| Axe-core Playwright | com.deque.html.axe-core:playwright | 4.9.1 | 无障碍扫描 |
+| Axe-core Playwright | com.deque.html.axe-core:playwright | 1.58.0 | 无障碍扫描 |
 | Reflections | org.reflections | 0.10.2 | 类路径扫描 |
 | Hamcrest | org.hamcrest | 2.2 | 断言匹配器 |
 | Selenium Support | org.seleniumhq.selenium | 4.15.0 | Serenity 内部依赖 |

@@ -24,7 +24,7 @@ public class JsonUtils {
     private static final Logger LOGGER = LoggerFactory.getLogger(JsonUtils.class);
     private static final ObjectMapper OBJECT_MAPPER = createObjectMapper();
 
-    // 关键修复 P3-25：JsonPath.parse 的轻量 LRU 缓存 —— 同一 json 字符串多次解析时复用 DocumentContext，
+    // 关键JsonPath.parse 的轻量 LRU 缓存 —— 同一 json 字符串多次解析时复用 DocumentContext，
     // 减少重复 parse（特别在断言循环中常见）。最大 256 项，超过自动清理最早条目。
     private static final Map<String, DocumentContext> PARSE_CACHE = Collections.synchronizedMap(
             new LinkedHashMap<String, DocumentContext>(64, 0.75f, true) {

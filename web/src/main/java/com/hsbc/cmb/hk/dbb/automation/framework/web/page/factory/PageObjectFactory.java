@@ -12,6 +12,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * 企业级PageObject工厂类
@@ -174,9 +176,15 @@ public class PageObjectFactory {
     // 存储所有PageObject实例，使用类名作为key
     private static final ConcurrentMap<Class<?>, Object> singleInstances = new ConcurrentHashMap<>();
     
-    // 线程隔离实例存储
-    private static final ThreadLocal<Map<Class<?>, Object>> threadInstances =
-            ThreadLocal.withInitial(ConcurrentHashMap::new);
+    // 线程隔离实例存储（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
+    private static final ContextKey<Map> THREAD_INSTANCES_KEY = ContextKey.of("pof.threadInstances", Map.class);
+
+    /** 取当前线程的隔离实例 Map（惰性创建，等价原 withInitial(ConcurrentHashMap::new)）。 */
+    @SuppressWarnings("unchecked")
+    private static Map<Class<?>, Object> threadInstances() {
+        return (Map<Class<?>, Object>) TestContextHolder.get()
+                .computeIfAbsent(THREAD_INSTANCES_KEY, ConcurrentHashMap::new);
+    }
     
     // 请求作用域实例存储
     private static final ConcurrentMap<String, Map<Class<?>, Object>> requestScopedInstances =
@@ -301,7 +309,7 @@ public class PageObjectFactory {
                 return null;  // 原型模式每次都创建新实例
                 
             case THREAD_ISOLATED:
-                return threadInstances.get().get(pageClass);
+                return threadInstances().get(pageClass);
                 
             case REQUEST_SCOPED:
                 String requestId = getCurrentRequestId();
@@ -354,7 +362,7 @@ public class PageObjectFactory {
                 break;
                 
             case THREAD_ISOLATED:
-                threadInstances.get().put(pageClass, instance);
+                threadInstances().put(pageClass, instance);
                 break;
                 
             case REQUEST_SCOPED:
@@ -441,13 +449,13 @@ public class PageObjectFactory {
      */
     public static void clearAll() {
         int singletonCount = singleInstances.size();
-        int threadCount = threadInstances.get().size();
+        int threadCount = threadInstances().size();
         int requestCount = requestScopedInstances.size();
         
         singleInstances.clear();
-        // ⭐ 修复 Medium(#1)：clearAll 需释放 ThreadLocal 绑定（而非仅清空内部 map），
+        //  修复 Medium(#1)：clearAll 需释放 ThreadLocal 绑定（而非仅清空内部 map），
         // 否则 Serenity 复用 worker 线程时 ThreadLocalMap 长期持有该 map 及潜在过期 Page/Context 引用，造成滞留。
-        threadInstances.remove();
+        TestContextHolder.get().remove(THREAD_INSTANCES_KEY);
         requestScopedInstances.clear();
         
         VerboseLogging.logInfoIfVerbose(logger, "Cleared all PageObject instances: {} singletons, {} thread-isolated, {} request-scoped", 
@@ -462,7 +470,7 @@ public class PageObjectFactory {
     public static void clear(Class<?> pageClass) {
         int removed = 0;
         if (singleInstances.remove(pageClass) != null) removed++;
-        if (threadInstances.get().remove(pageClass) != null) removed++;
+        if (threadInstances().remove(pageClass) != null) removed++;
         
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
             if (requestMap.remove(pageClass) != null) removed++;
@@ -480,7 +488,7 @@ public class PageObjectFactory {
      */
     public static boolean hasInstance(Class<?> pageClass) {
         if (singleInstances.containsKey(pageClass)) return true;
-        if (threadInstances.get().containsKey(pageClass)) return true;
+        if (threadInstances().containsKey(pageClass)) return true;
         
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
             if (requestMap.containsKey(pageClass)) return true;
@@ -495,7 +503,7 @@ public class PageObjectFactory {
      * @return 实例数量
      */
     public static int getInstanceCount() {
-        int count = singleInstances.size() + threadInstances.get().size();
+        int count = singleInstances.size() + threadInstances().size();
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
             count += requestMap.size();
         }
@@ -513,7 +521,7 @@ public class PageObjectFactory {
         sb.append(String.format("Total Creations: %d\n", totalCreations.get()));
         sb.append(String.format("Total Access: %d\n", totalAccess.get()));
         sb.append(String.format("Singleton Instances: %d\n", singleInstances.size()));
-        sb.append(String.format("Thread-Isolated Instances: %d\n", threadInstances.get().size()));
+        sb.append(String.format("Thread-Isolated Instances: %d\n", threadInstances().size()));
         sb.append(String.format("Request-Scoped Instances: %d\n", requestScopedInstances.size()));
         sb.append("\nCreation Count by Class:\n");
         
@@ -538,7 +546,7 @@ public class PageObjectFactory {
     public static Set<Class<?>> getRegisteredPageClasses() {
         Set<Class<?>> classes = new HashSet<>();
         classes.addAll(singleInstances.keySet());
-        classes.addAll(threadInstances.get().keySet());
+        classes.addAll(threadInstances().keySet());
         
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
             classes.addAll(requestMap.keySet());

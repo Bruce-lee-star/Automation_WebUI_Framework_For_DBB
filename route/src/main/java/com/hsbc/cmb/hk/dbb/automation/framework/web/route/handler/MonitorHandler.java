@@ -61,7 +61,7 @@ public class MonitorHandler {
                 return t;
             });
 
-    // ⭐ 修复 P0-3：注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
+    //  注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
     // 避免异常路径下任务堆积导致线程永久挂起。守护线程本不会阻止 JVM 退出，但显式 shutdown 更稳妥。
     static {
         com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
@@ -97,12 +97,12 @@ public class MonitorHandler {
         return p.isEmpty() ? null : p;
     }
 
-    // ⭐ P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
+    //  P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
 
     /**
      * 处理单个 route 的监控逻辑（带断言）。
      *
-     * <p><b>⭐⭐⭐ 重要架构变更 — 同步断言 + Fail-Fast</b>：
+     * <p><b> 重要架构变更 — 同步断言 + Fail-Fast</b>：
      * <ul>
      *   <li>断言（状态码 / JSONPath）在 Playwright 事件线程上<b>同步执行</b>，
      *       不再提交到 AsyncPool 异步线程</li>
@@ -127,7 +127,7 @@ public class MonitorHandler {
         if (context == null) {
             LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
                     rule.getUrlPattern());
-            // ⭐ 必须放行请求，否则请求会永久挂起
+            //  必须放行请求，否则请求会永久挂起
             RouteUtil.safeResume(route);
             return;
         }
@@ -137,12 +137,12 @@ public class MonitorHandler {
                 rule.getUrlPattern(), rule.getExpectedStatus(),
                 rule.getJsonPathAssertions() != null ? rule.getJsonPathAssertions().size() : 0);
 
-        // ⭐⭐ DELAY 与 MONITOR 叠加时，本 Handler 仍由 {@code RouteEngine#scheduleDelay} 在事件线程
+        //  DELAY 与 MONITOR 叠加时，本 Handler 仍由 {@code RouteEngine#scheduleDelay} 在事件线程
         //    同步调用（见 RouteEngine.scheduleDelay 的 MONITOR 分支），并传入 delayMs；
         //    延迟由内部 page.waitForResponse 的 action 把 resume 调度到延迟线程实现（B 方案）。
         //    本方法统一用 waitForResponse 同步等待真实响应，不再使用 route.fetch。
         //
-        //    ⭐⭐ 用 page.waitForResponse 可靠获取真实响应（源码级确认见 Playwright RouteImpl/RequestImpl）：
+        //     用 page.waitForResponse 可靠获取真实响应（源码级确认见 Playwright RouteImpl/RequestImpl）：
         //    • route.request().response() 是「实时 channel 调用 + 依赖对象表」，异步延迟线程里
         //      Response 对象被 GC 后从对象表移除 → "Object doesn't exist: response@..."。
         //    • page.waitForResponse(predicate, code) 基于 Playwright 自身管道的 "response" 服务端推送事件，
@@ -154,12 +154,12 @@ public class MonitorHandler {
         if (frame != null) {
             com.microsoft.playwright.Page page = frame.page();
             if (page != null) {
-                // ⭐ 超时保护：绝不传 0（Playwright 源码 TimeoutSettings.createWaitable 中 timeout==0
+                //  超时保护：绝不传 0（Playwright 源码 TimeoutSettings.createWaitable 中 timeout==0
                 //   会返回 WaitableNever 无限等待 → 死等）。ROUTE_FETCH_TIMEOUT_MS 若被设成 0/负数，
                 //   强制回落到 20s 上限，保证最多阻塞 20s，绝不永久挂起。
                 double wfrTimeout = Math.min(20000, ROUTE_FETCH_TIMEOUT_MS);
                 if (wfrTimeout <= 0) wfrTimeout = 20000;
-                // ⭐ predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
+                //  predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
                 //    predicate 永不匹配 → 每个请求白等满 20s 超时（性能问题）。
                 final String lit = literalPathOf(rule.getUrlPattern());
                 try {
@@ -176,7 +176,7 @@ public class MonitorHandler {
                             () -> {
                                 // 放行：若 route 已失效（Firefox/WebKit 下 Object doesn't exist）
                                 // 则静默跳过，让 waitForResponse 自然结束，避免抛异常污染等待链路。
-                                // ⭐ B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程
+                                //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程
                                 //   （delayMs<=0 立即执行），避免阻塞事件线程、规避调度线程竞态。
                                 if (RouteUtil.isPageClosed(route)) return;
                                 RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
@@ -185,7 +185,7 @@ public class MonitorHandler {
                     VerboseLogging.logWarnIfVerbose(LOGGER,
                             "[MonitorHandler] waitForResponse failed/expired, falling back to request.response(): pattern='{}', url='{}', error='{}'",
                             rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()), e.getMessage());
-                    // ⭐ 兜底 A（master 实现的方式）：waitForResponse 超时/失败时，请求通常已被
+                    //  兜底 A（master 实现的方式）：waitForResponse 超时/失败时，请求通常已被
                     //    action 内的 resume 放行并完成了真实网络往返，此时 req.response()
                     //    【可能】已可用。尝试直读一次，避免整条 MONITOR 采集丢失。
                     //    兜底放行，避免请求永久挂起
@@ -201,12 +201,12 @@ public class MonitorHandler {
                     rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
             // 兜底放行
             RouteUtil.safeResume(route);
-            // ⭐ 兜底 B：同上，直读 request.response() 做最后一次尝试
+            //  兜底 B：同上，直读 request.response() 做最后一次尝试
             res = fallbackResponse(req);
             if (res == null) return;
         }
 
-        // ⭐ 生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
+        //  生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
         //    null（响应体尚未缓冲就绪），直接丢弃会导致该 call 丢失（getAllResponsesForUrl 少一条）。
         //    改为带短重试的读取（非阻塞：用 CompletableFuture.delayedExecutor 调度退避，
         //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
@@ -228,13 +228,13 @@ public class MonitorHandler {
         LOGGER.info("[MonitorHandler] Captured: url={}, status={}, bodyLength={}, pattern='{}'",
                 RouteUtil.sanitizeUrl(url), status, body.length(), urlPattern);
 
-        // ⭐ 复用统一的「断言 + 记录」逻辑（ModifyHandler 叠加监控时也调用此方法）
+        //  复用统一的「断言 + 记录」逻辑（ModifyHandler 叠加监控时也调用此方法）
         assertAndRecord(route, rule, context, url, status, body,
                 req.method(), req.postData(),                 snapshotHeadersSafely(req.headers()),
                 snapshotHeadersSafely(res.headers()));
     }
 
-    /** ⭐ 兜底采集：从 {@code request.response()} 读取并走统一的 assertAndRecord 链路。 */
+    /**  兜底采集：从 {@code request.response()} 读取并走统一的 assertAndRecord 链路。 */
     private static void collectFromFallback(Route route, RouteRule rule, ApiCaptureContext context, Request req) {
         try {
             Response res = fallbackResponse(req);
@@ -254,7 +254,7 @@ public class MonitorHandler {
     }
 
     /**
-     * ⭐ 兜底读取真实响应：直接取 {@code request.response()}（master 实现采用的方式）。
+     *  兜底读取真实响应：直接取 {@code request.response()}（master 实现采用的方式）。
      *
      * <p>适用场景：{@code page.waitForResponse} 超时/抛异常（如响应在监听器注册前已返回、
      * 或页面在等待期间被关闭）时，请求实际已完成真实网络往返，此时
@@ -303,7 +303,7 @@ public class MonitorHandler {
     private static byte[] readResponseBodyWithRetry(Response res, RouteRule rule, Request req) {
         final int BASE_ATTEMPTS = 3;
         final long RETRY_INTERVAL_MS = 50;
-        // ⭐ 需求2：当规则含 DELAY 时，DELAY 延后了响应返回，MONITOR 读取 body 的退避/等待
+        //  需求2：当规则含 DELAY 时，DELAY 延后了响应返回，MONITOR 读取 body 的退避/等待
         //   上限需相应 +delayMs（取 delayMs 与 delayMaxMs 的较大值，覆盖随机延迟范围），
         //   避免延迟响应尚未就绪就放弃读取导致 MONITOR 拿不到 body。
         long effectiveDelayMs = rule != null ? Math.max(rule.getDelayMs(), rule.getDelayMaxMs()) : 0;
@@ -317,7 +317,7 @@ public class MonitorHandler {
         CompletableFuture<byte[]> future = new CompletableFuture<>();
         retryBodyOnce(res, rule, req, 1, maxAttempts, RETRY_INTERVAL_MS, future);
         try {
-            // ⭐ 超时上限：绝不用无界 join()。
+            //  超时上限：绝不用无界 join()。
             //   重试链依赖 bodyReadScheduler 调度；若该调度器已被关闭（如 JVM 收尾、
             //   或极端异常路径），后续重试永不执行 → future 永不完成 → join() 会永久
             //   阻塞 Playwright 事件线程，进而拖死整个路由分发（"卡主程序"）。
@@ -340,7 +340,7 @@ public class MonitorHandler {
         try {
             byte[] body = res.body();
             if (body != null) {
-                // ⭐ 响应体上限防 OOM：超大响应体截断后再向上传递（监控存储/断言）
+                //  响应体上限防 OOM：超大响应体截断后再向上传递（监控存储/断言）
                 result.complete(RouteUtil.truncateBody(body));
                 return;
             }
@@ -354,7 +354,7 @@ public class MonitorHandler {
         }
         if (attempt < maxAttempts) {
             if (bodyReadScheduler.isShutdown()) {
-                // ⭐ 修复 Medium：调度器已关闭（JVM 收尾/异常路径）时不再重试，
+                //  修复 Medium：调度器已关闭（JVM 收尾/异常路径）时不再重试，
                 // 立即走兜底，避免向已停执行器提交触发 RejectedExecution + 浪费 join 超时窗口。
                 result.complete(null);
                 return;
@@ -368,7 +368,7 @@ public class MonitorHandler {
     }
 
     /**
-     * ⭐ 统一的「断言 + 记录」逻辑：供 {@link #handle(Route, RouteRule)}（纯监控）
+     *  统一的「断言 + 记录」逻辑：供 {@link #handle(Route, RouteRule)}（纯监控）
      * 与 {@link ModifyHandler}（修改请求后叠加监控）共同复用。
      *
      * <p>行为：
@@ -377,7 +377,7 @@ public class MonitorHandler {
      *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录走 {@link AsyncPool} 异步</li>
      * </ul>
      *
-     * <p>⭐ 监控是<b>不可被覆盖的基线</b>：无论是否叠加 Modify/Delay，真实响应拿回后都会在此断言健康，
+     * <p> 监控是<b>不可被覆盖的基线</b>：无论是否叠加 Modify/Delay，真实响应拿回后都会在此断言健康，
      * 断言失败即报错（对应「监控到 API 失败就报错」的诉求）。
      *
      * @param route        Playwright 路由对象（用于异常日志）
@@ -404,14 +404,14 @@ public class MonitorHandler {
                 body != null && body.length() > 500 ? body.substring(0, 500) + "..." : body);
 
         // ═══════════════════════════════════════════════════════════════
-        // ⭐⭐⭐ 同步断言：在 Playwright 事件线程上立即执行
+        //  同步断言：在 Playwright 事件线程上立即执行
         // ═══════════════════════════════════════════════════════════════
         boolean assertionsPassed = executeAssertions(rule, url, status, body, context);
         if (!assertionsPassed) {
             VerboseLogging.logErrorIfVerbose(LOGGER,
                     "[MonitorHandler] ═══ ASSERTIONS FAILED: pattern='{}', url='{}' ═══", urlPattern, url);
             if (context != null) {
-                // ⭐⭐⭐ Fail-Fast（非中断模式）：
+                //  Fail-Fast（非中断模式）：
                 //   仅置 hasAssertionFailures 标志 + notifyAll 唤醒 awaitCompletion，
                 //   并不调用 Thread.interrupt()——否则中断标志会泄漏到后续 Scenario 的
                 //   Playwright IO（page.waitForSelector 等）导致其抛异常。失败由
@@ -419,7 +419,7 @@ public class MonitorHandler {
                 //   仅影响当前 Scenario（标志在下一 Scenario 启动时重置）。
                 context.signalFailFast();
             }
-            // ⭐ 抛出 ApiAssertionException，dispatchRoute 捕获后记录
+            //  抛出 ApiAssertionException，dispatchRoute 捕获后记录
             throw new RouteException.ApiAssertionException(
                     urlPattern, "ASSERTION",
                     rule.getExpectedStatus() != null ? String.valueOf(rule.getExpectedStatus()) : "N/A",
@@ -427,21 +427,21 @@ public class MonitorHandler {
         }
 
         // ═══════════════════════════════════════════════════════════════
-        // ⭐ 同步存储本调用（单一来源，覆盖所有 Page）：
+        //  同步存储本调用（单一来源，覆盖所有 Page）：
         //   全局旁路采集已移除，本方法是 MONITOR 快照的<b>唯一</b>写入点。
         //   同步 storeApiCall（可靠、即时可查）而非异步投喂，避免测试
         //   在无 awaitCompletion 的情况下直接 getLastApiCall 时读到空。
         //   本方法其余部分仅负责：断言、匹配计数、回调、报告、持久化。
         // ═══════════════════════════════════════════════════════════════
         if (context == null) return;
-        // ⭐ 只构造一次 CapturedApiCall，同时用于 storeApiCall 与（断言失败时的）MonitorFailureCollector，
+        //  只构造一次 CapturedApiCall，同时用于 storeApiCall 与（断言失败时的）MonitorFailureCollector，
         //   消除重复构造（此前两处字段完全相同地 new 了一次）。
         //   handleType=MONITOR：无论本次调用是否叠加了 MODIFY / DELAY，落到本方法的快照
         //   都是「对真实响应的观察结果」，统一按 MONITOR 归类（MODIFY/DELAY 各自另有落库）。
         CapturedApiCall captured = new CapturedApiCall(
                 urlPattern, method, reqHeaders, status, resHeaders, body,
                 System.currentTimeMillis(), url, reqBody, RouteHandleType.MONITOR);
-        // ⭐ BUG 修复：先将「活动请求」发布信号（increment）置于 storeApiCall 之前，
+        //  BUG 修复：先将「活动请求」发布信号（increment）置于 storeApiCall 之前，
         // 避免主线程在 store 之后、increment 之前轮询到 activeRequests==0 而误判「无活动」提前返回；
         // 同时保证 finally 中 decrement 必然配对，防止计数只增不减导致 awaitCompletion 永久阻塞。
         context.incrementActiveRequests();
@@ -520,7 +520,7 @@ public class MonitorHandler {
         if (expectedStatus != null) {
             boolean statusMatch = (status == expectedStatus);
             if (!statusMatch) {
-                // ⭐ 修复 C-2：失败日志中的 url 可能含 token（?token=），统一脱敏后再记录
+                //  修复 C-2：失败日志中的 url 可能含 token（?token=），统一脱敏后再记录
                 LOGGER.warn("[MonitorHandler] Status assertion failed for {}: expected={}, actual={}",
                         RouteUtil.sanitizeUrl(url), expectedStatus, status);
                 if (context != null) {
@@ -542,7 +542,7 @@ public class MonitorHandler {
             for (Map.Entry<String, Object> entry : jsonPathAssertions.entrySet()) {
                 String jsonPathExpr = entry.getKey();
                 try {
-                    // ⭐ 从缓存获取或编译 JsonPath（避免每次重新编译）
+                    //  从缓存获取或编译 JsonPath（避免每次重新编译）
                     JsonPath compiled = getOrCompileJsonPath(jsonPathExpr);
                     Object actual = compiled.read(body);
                     boolean match = compareValues(actual, entry.getValue());
@@ -586,7 +586,7 @@ public class MonitorHandler {
      * 从缓存获取或编译 JsonPath 表达式（容量保护）。
      */
     private static JsonPath getOrCompileJsonPath(String expression) {
-        // ⭐ P2-15：委托 RouteUtil 共享缓存
+        //  P2-15：委托 RouteUtil 共享缓存
         return RouteUtil.compileJsonPathCached(expression);
     }
 
@@ -600,7 +600,7 @@ public class MonitorHandler {
         if (actual instanceof Number && expected instanceof Number) {
             double a = ((Number) actual).doubleValue();
             double e = ((Number) expected).doubleValue();
-            // ⭐ 使用 epsilon 比较，避免 0.1+0.2 != 0.3 等浮点精度问题
+            //  使用 epsilon 比较，避免 0.1+0.2 != 0.3 等浮点精度问题
             double epsilon = 1e-9;
             boolean match = Math.abs(a - e) < epsilon;
             VerboseLogging.logTraceIfVerbose(LOGGER,

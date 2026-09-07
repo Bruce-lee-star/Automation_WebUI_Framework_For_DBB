@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 /**
  * PUT 请求实现。
  *
- * <p>⭐ 修复 P2-24：公共流程已上提至
+ * <p> 公共流程已上提至
  * {@link AbstractRestJob#execute(Entity, java.util.function.Function)}，
  * 本类只保留 HTTP 方法这一唯一差异点，详细说明见 {@link RestGetJob}。
  */

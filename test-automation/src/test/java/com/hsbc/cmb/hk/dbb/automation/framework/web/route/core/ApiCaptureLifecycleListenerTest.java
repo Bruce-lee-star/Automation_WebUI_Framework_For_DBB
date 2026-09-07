@@ -54,7 +54,7 @@ public class ApiCaptureLifecycleListenerTest {
 
     @Test
     public void start_samePageRepeatedly_registersListenersOnlyOnce() {
-        // ⭐ 关键不变量：同一 Page 多次 start，Page 级 onResponse / onClose 仅注册一次（幂等）
+        //  关键不变量：同一 Page 多次 start，Page 级 onResponse / onClose 仅注册一次（幂等）
         ApiCaptureLifecycle.start(page);
         ApiCaptureLifecycle.start(page);
         ApiCaptureLifecycle.start(page);
@@ -71,14 +71,14 @@ public class ApiCaptureLifecycleListenerTest {
         ApiCaptureLifecycle.stop(page);    // 清理注册标记，允许重注册
         ApiCaptureLifecycle.start(page);   // re-attach：应再次挂上监听器
 
-        // ⭐ 关键不变量：stop 后 start 能重新注册，否则页面 re-attach 后采集静默失效
+        //  关键不变量：stop 后 start 能重新注册，否则页面 re-attach 后采集静默失效
         verify(page, times(2)).onResponse(any());
         verify(page, times(2)).onClose(any());
     }
 
     @Test
     public void recordPassthrough_storesSingleCallWithOnResponseSource() {
-        // ⭐ 锁住兜底通道确实落库 + captureSource 残留值已从 PASSIVE 改为 ON_RESPONSE
+        //  锁住兜底通道确实落库 + captureSource 残留值已从 PASSIVE 改为 ON_RESPONSE
         String url = "https://api.example.com/v1/accounts";
         ApiCaptureManager.getInstance().recordPassthrough(
                 url, 200, "GET", Collections.emptyMap(), Collections.emptyMap());

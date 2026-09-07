@@ -20,6 +20,8 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * Axe-core Accessibility Scanner
@@ -29,9 +31,16 @@ public class AxeCoreScanner {
 
     private static final Logger logger = LoggerFactory.getLogger(AxeCoreScanner.class);
 
-    private static final ThreadLocal<List<AxeScanResult>> results = new ThreadLocal<>();
-    private static final ThreadLocal<Boolean> initialized = new ThreadLocal<>();
-    private static final ThreadLocal<AxeScanConfig> config = new ThreadLocal<>();
+    //  T3-1 收拢：三处 static ThreadLocal 迁入 TestContext（三者原本均为默认 null 语义，迁移后等价）
+    private static final ContextKey<List> RESULTS_KEY = ContextKey.of("axeScanner.results", List.class);
+    private static final ContextKey<Boolean> INITIALIZED_KEY = ContextKey.of("axeScanner.initialized", Boolean.class);
+    private static final ContextKey<AxeScanConfig> CONFIG_KEY = ContextKey.of("axeScanner.config", AxeScanConfig.class);
+
+    /** 取当前线程的扫描结果 List（等价原 results()，未初始化时为 null）。 */
+    @SuppressWarnings("unchecked")
+    private static List<AxeScanResult> results() {
+        return (List<AxeScanResult>) TestContextHolder.get().get(RESULTS_KEY);
+    }
 
     /**
      * Configuration for Axe-core scanning
@@ -126,13 +135,13 @@ public class AxeCoreScanner {
      * Initialize the scanner with configuration
      */
     public static void initialize(AxeScanConfig scanConfig) {
-        if (initialized.get() != null && initialized.get()) {
+        if (TestContextHolder.get().get(INITIALIZED_KEY) != null && TestContextHolder.get().get(INITIALIZED_KEY)) {
             logger.info("AxeCoreScanner already initialized");
             return;
         }
-        results.set(new ArrayList<>());
-        config.set(scanConfig);
-        initialized.set(true);
+        TestContextHolder.get().set(RESULTS_KEY, new ArrayList<>());
+        TestContextHolder.get().set(CONFIG_KEY, scanConfig);
+        TestContextHolder.get().set(INITIALIZED_KEY, true);
         logger.info("AxeCoreScanner initialized with project: {}", scanConfig.getProjectName());
     }
 
@@ -140,21 +149,21 @@ public class AxeCoreScanner {
      * Check if scanner is initialized
      */
     public static boolean isInitialized() {
-        return initialized.get() != null && initialized.get();
+        return TestContextHolder.get().get(INITIALIZED_KEY) != null && TestContextHolder.get().get(INITIALIZED_KEY);
     }
 
     /**
      * Set configuration
      */
     public static void setConfig(AxeScanConfig scanConfig) {
-        config.set(scanConfig);
+        TestContextHolder.get().set(CONFIG_KEY, scanConfig);
     }
 
     /**
      * Get configuration
      */
     public static AxeScanConfig getConfig() {
-        return config.get();
+        return TestContextHolder.get().get(CONFIG_KEY);
     }
 
     /**
@@ -204,7 +213,7 @@ public class AxeCoreScanner {
             initialize();
         }
 
-        AxeScanConfig scanConfig = config.get();
+        AxeScanConfig scanConfig = TestContextHolder.get().get(CONFIG_KEY);
         AxeScanResult result = new AxeScanResult(pageName, page.url());
 
         try {
@@ -235,7 +244,7 @@ public class AxeCoreScanner {
             result.setPasses(axeResults.getPasses());
 
             // Store result
-            results.get().add(result);
+            results().add(result);
 
             logger.info("Axe-core scan completed for {}: {} violations, {} incomplete, {} passes",
                 pageName, result.getViolationCount(), result.getIncompleteCount(), result.getPassCount());
@@ -274,20 +283,20 @@ public class AxeCoreScanner {
      * Get all scan results
      */
     public static List<AxeScanResult> getResults() {
-        return results.get();
+        return results();
     }
 
     /**
      * Generate aggregated HTML report
      */
     public static String generateReport() {
-        if (!isInitialized() || results.get() == null || results.get().isEmpty()) {
+        if (!isInitialized() || results() == null || results().isEmpty()) {
             logger.warn("No results to generate report");
             return null;
         }
 
-        AxeScanConfig scanConfig = config.get();
-        List<AxeScanResult> allResults = results.get();
+        AxeScanConfig scanConfig = TestContextHolder.get().get(CONFIG_KEY);
+        List<AxeScanResult> allResults = results();
 
         String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
@@ -496,12 +505,12 @@ public class AxeCoreScanner {
      * Cleanup and reset scanner
      */
     public static void cleanup() {
-        // ⭐ 修复 B-6：原 initialized.set(false) 仅置标记、ThreadLocal entry 仍驻留线程，
+        //  修复 B-6：原 initialized.set(false) 仅置标记、ThreadLocal entry 仍驻留线程，
         //   线程池复用场景下 results/config/initialized 的 entry 长期不死（results 持 List 引用）。
         //   改为 .remove() 彻底清除 entry，下次 initialize 会重新 set，行为与 set(false) 等价但无泄漏。
-        results.remove();
-        config.remove();
-        initialized.remove();
+        TestContextHolder.get().remove(RESULTS_KEY);
+        TestContextHolder.get().remove(CONFIG_KEY);
+        TestContextHolder.get().remove(INITIALIZED_KEY);
         logger.info("AxeCoreScanner cleanup completed");
     }
 

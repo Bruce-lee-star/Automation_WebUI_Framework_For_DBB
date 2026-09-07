@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 /**
  * GET 请求实现。
  *
- * <p>⭐ 修复 P2-24：本类原先与 RestPostJob / RestPutJob / RestPatchJob / RestDeleteJob
+ * <p> 本类原先与 RestPostJob / RestPutJob / RestPatchJob / RestDeleteJob
  * <b>逐字重复</b>约 40 行（构建请求规格、body、代理、请求/响应日志、响应回写），
  * 唯一差异只是调用哪个 HTTP 方法。现仅保留该差异点，公共流程统一上提至
  * {@link AbstractRestJob#execute(Entity, java.util.function.Function)}。

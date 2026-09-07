@@ -21,7 +21,7 @@ public class FrameworkState {
     private final AtomicBoolean running = new AtomicBoolean(false);
     
     // 全局配置信息
-    // ⭐ 评审 A2 复核结论：框架内部（src/main + src/test）对 configuration 的
+    //  评审 A2 复核结论：框架内部（src/main + src/test）对 configuration 的
     //    getter/setter 【均无调用点】—— 全部 32 处 frameworkState.* 调用只涉及生命周期方法
     //    （isInitialized / initialize / start / stop / cleanup / setLastException）。
     //    因此"并行 scenario 经此处串扰"在当前代码并不成立，改为 ThreadLocal 属过度设计。
@@ -170,7 +170,7 @@ public class FrameworkState {
     /**
      * 获取所有配置信息。
      * <p>
-     * ⭐ 修复 P3-30：原实现直接把内部 Map 引用交出，调用方 {@code clear()/put()} 即可
+     *  原实现直接把内部 Map 引用交出，调用方 {@code clear()/put()} 即可
      * 绕过 {@link #setConfiguration} 改写全局状态（无同步、无校验，且是共享单例）。
      * 改为返回不可修改视图：读取行为不变，写入快速失败（UnsupportedOperationException）。
      */

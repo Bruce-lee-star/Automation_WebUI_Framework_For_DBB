@@ -43,7 +43,7 @@ class PlaywrightInitializer {
     private static final List<Process> downloadProcesses = new ArrayList<>();
     
     /**
-     * ⭐ 修复问题2：创建目录并显式限制为仅所有者可读写执行（等效 Unix 0700）。
+     *  修复问题2：创建目录并显式限制为仅所有者可读写执行（等效 Unix 0700）。
      * Files.createDirectories 依赖进程 umask，在共享/CI 环境下可能创建出 0755/0775，
      * 而 Playwright 缓存/临时目录可能含浏览器二进制或 Firefox profile（含 cookie），权限过宽有泄露风险。
      * 优先用 POSIX 精确权限；非 POSIX 系统回退到 ownerOnly 的 setReadable/Writable/Executable。

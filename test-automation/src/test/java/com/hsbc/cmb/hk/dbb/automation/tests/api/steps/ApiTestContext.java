@@ -2,6 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.tests.api.steps;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * API 测试步骤间的共享上下文（对应 CODE_REVIEW_REPORT.md P1-14）。
@@ -29,7 +31,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
  */
 public final class ApiTestContext {
 
-    private static final ThreadLocal<BaseStep> BASE_STEP = new ThreadLocal<>();
+    //  T3-1 收拢：由 static ThreadLocal 迁入 TestContext（per-thread 等价）
+    private static final ContextKey<BaseStep> BASE_STEP_KEY = ContextKey.of("api.baseStep", BaseStep.class);
 
     private ApiTestContext() {
     }
@@ -57,7 +60,7 @@ public final class ApiTestContext {
      *                               比 NPE 更利于定位。
      */
     public static BaseStep baseStep() {
-        BaseStep step = BASE_STEP.get();
+        BaseStep step = TestContextHolder.get().get(BASE_STEP_KEY);
         if (step == null) {
             throw new IllegalStateException(
                     "BaseStep has not been initialized for this scenario. "
@@ -68,11 +71,11 @@ public final class ApiTestContext {
 
     /** 摘除当前线程的 BaseStep（scenario 结束时调用，防止线程复用串扰）。 */
     public static void clear() {
-        BASE_STEP.remove();
+        TestContextHolder.get().remove(BASE_STEP_KEY);
     }
 
     private static BaseStep set(BaseStep step) {
-        BASE_STEP.set(step);
+        TestContextHolder.get().set(BASE_STEP_KEY, step);
         return step;
     }
 }

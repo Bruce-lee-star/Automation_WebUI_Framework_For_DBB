@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 /**
- * ⭐ Phase 5 抽离：投递式 API 调用等待器（原 {@code ApiCaptureContext} 的 {@code apiCallWaiters} 域）。
+ *  Phase 5 抽离：投递式 API 调用等待器（原 {@code ApiCaptureContext} 的 {@code apiCallWaiters} 域）。
  *
  * <p>点对点投递，替代「广播 notifyAll + 调用方重扫」模式：{@code storeApiCall} 入库时直接评估谓词，
  * 命中即完成对应 future；未命中则等待至超时/重置。本类仅负责等待器注册表的线程安全与投递逻辑，

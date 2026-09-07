@@ -67,6 +67,17 @@ public enum FrameworkConfig {
     ),
 
     /**
+     * 页面未捕获 JS 异常（page.onPageError）是否触发测试失败。
+     * 默认 false：仅记录 error 级日志；设为 true 时，未捕获异常会在步骤结束时经
+     * Serenity StepListener 标记测试失败并抛出，便于前端脚本错误即时暴露。
+     */
+    PLAYWRIGHT_PAGE_ERROR_FAIL(
+        "playwright.page.error.failOnError",
+        "false",
+        "页面未捕获 JS 异常是否触发测试失败"
+    ),
+
+    /**
      * 浏览器模式
      * true - 无头模式（后台运行）
      * false - 有头模式（显示浏览器窗口）
@@ -946,6 +957,16 @@ public enum FrameworkConfig {
         "No login session timeout (minutes)"),
 
     /**
+     * 同 user 登录单飞（single-flight）等待超时（毫秒）
+     * follower 线程等待 leader 完成登录/落盘的最大时长；超时则摘除失效守卫、本线程接替为 leader，
+     * 防止 leader 异常时 follower 永久阻塞。
+     */
+    PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS(
+        "playwright.no.login.single.flight.timeout.ms",
+        "60000",
+        "No login single-flight wait timeout (ms)"),
+
+    /**
      * 元素等待时间（毫秒）
      * 用于 isVisible, exists, isChecked, isEnabled, isDisabled, isElementClickable 等立即执行方法的重试超时
      * 这些方法会重试检查，直到超时，提高测试稳定性
@@ -1007,28 +1028,9 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * 元素操作最大重试次数
-     * 元素操作失败时的最大重试次数
-     */
-    PLAYWRIGHT_ELEMENT_RETRY_MAX(
-        "playwright.element.retry.max",
-        "2",
-        "元素操作最大重试次数"
-    ),
-
-    /**
-     * 元素操作重试间隔时间（毫秒）
-     * 两次重试之间的等待时间
-     */
-    PLAYWRIGHT_ELEMENT_RETRY_DELAY_MS(
-        "playwright.element.retry.delay.ms",
-        "300",
-        "元素操作重试间隔时间（毫秒）"
-    ),
-
-    /**
      * 元素操作总超时时间（毫秒）
-     * 元素操作的总时间预算（含重试）
+     * 元素操作（click / fill / check 等）的单次操作超时预算，
+     * 取代原「sleep + 轮询」重试循环的截止时间，交由 Playwright 原生 actionability 自动等待。
      */
     PLAYWRIGHT_ELEMENT_OPERATION_TIMEOUT(
         "playwright.element.operation.timeout",
@@ -1108,8 +1110,8 @@ public enum FrameworkConfig {
      */
     MONITOR_DB_TYPE(
         "monitor.db.type",
-        "MYSQL",
-        "数据库类型 (MYSQL, POSTGRESQL)"
+        "",
+        "数据库类型 (MYSQL, POSTGRESQL)；留空则按 monitor.db.url 自动探测（加哪种驱动依赖就适配哪种库）"
     ),
 
     /**
@@ -1131,12 +1133,12 @@ public enum FrameworkConfig {
     ),
 
     /**
-     * 数据库密码
+     * 数据库密码（支持加密存储：以 ENC(...) 形式写入，运行时经 SecretValue 透明解密；明文亦可）
      */
     MONITOR_DB_PASSWORD(
         "monitor.db.password",
         "",
-        "数据库密码"
+        "数据库密码（支持 ENC(...) 加密存储，运行时透明解密；明文亦可）"
     ),
 
     /**

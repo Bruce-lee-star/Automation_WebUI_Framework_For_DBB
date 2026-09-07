@@ -38,12 +38,16 @@ public class SummaryReportGenerator {
     private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("EEEE MMMM dd yyyy 'at' HH:mm:ss");
     private static final DateTimeFormatter TIMESTAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
 
-    // T2-8：Freemarker 渲染配置。模板置于 src/main/resources/templates/，.ftl 默认 plainText 输出（不自动转义），
-    // 与现有 escape() 语义一致，保证 golden 基线逐字节一致；后续如需用 auto-escape 补双引号缺口再切 .ftlh。
+    // T2-8：Freemarker 渲染配置。模板置于 src/main/resources/templates/，统一使用 .ftlh 扩展名
+    // （setRecognizeStandardFileExtensions(true) → HTMLOutputFormat → 自动转义 & < > " '），
+    // 彻底补上原 escape() 不转义双引号的缺口（T2-8 收尾项）。
+    // 约定：① Java 仅组装数据模型，文本值一律交给模板 auto-escape，不再手动 escape()；
+    //       ② 由 Java 预渲染的 HTML 片段（css / 6 个装配片段 / pieChart）在模板中以 ?no_esc 原样输出，避免二次转义。
     private static final Configuration FM_CFG = new Configuration(Configuration.VERSION_2_3_34);
     static {
         FM_CFG.setClassForTemplateLoading(SummaryReportGenerator.class, "/templates");
         FM_CFG.setDefaultEncoding("UTF-8");
+        FM_CFG.setRecognizeStandardFileExtensions(true);
         FM_CFG.setLogTemplateExceptions(false);
         FM_CFG.setWrapUncheckedExceptions(true);
     }
@@ -229,7 +233,7 @@ public class SummaryReportGenerator {
         Pattern pattern = Pattern.compile("\\$\\{([^}:]+)(?::([^}]*))?\\}");
         Matcher matcher = pattern.matcher(value);
         
-        StringBuffer sb = new StringBuffer();
+        StringBuilder sb = new StringBuilder();
         while (matcher.find()) {
             String envVarName = matcher.group(1);
             String defaultValue = matcher.group(2);
@@ -364,7 +368,7 @@ public class SummaryReportGenerator {
     }
 
     public void generateSummaryReport() {
-        // ⭐ 无产物保护（T2-8 报告自动化前置）：Serenity 未产出任何测试结果时不生成报告。
+        //  无产物保护（T2-8 报告自动化前置）：Serenity 未产出任何测试结果时不生成报告。
         // 背景：报告生成的触发已上移到父 pom，框架自身模块（core / web / route 等）在 verify
         // 阶段同样会被调用；若照常生成，将产出一份「0 用例」的 HTML / CSV / ZIP，
         // 被邮件订阅方或 CI 误读为「全部通过」——典型的假绿。故直接跳过。
@@ -405,7 +409,7 @@ public class SummaryReportGenerator {
             generateZipPackage(actualReportDir);
 
             // 生成 API 监控失败报告（按 owner 去重，供 Jenkins emailext 等循环发送）
-            // ⭐ T2-8：经 core 抽象接口 + SPI 解耦 route（不再直接 import route 类），
+            //  T2-8：经 core 抽象接口 + SPI 解耦 route（不再直接 import route 类），
             //    由 ServiceLoader 发现 route 提供的实现，打破 reporting ↔ route 循环依赖。
             writeMonitorFailureReports();
 
@@ -425,7 +429,7 @@ public class SummaryReportGenerator {
     /**
      * 写出 API 监控失败报告（按 owner 去重，供 Jenkins emailext 等循环发送）。
      *
-     * <p>⭐ T2-8：经 core 抽象接口 + SPI 解耦 route（不再直接 import route 类），
+     * <p> T2-8：经 core 抽象接口 + SPI 解耦 route（不再直接 import route 类），
      * 由 {@link ServiceLoader} 发现 route 提供的实现，打破 reporting ↔ route 循环依赖。
      *
      * <p>企业级健壮性约定：
@@ -569,7 +573,8 @@ public class SummaryReportGenerator {
     }
 
     private String buildFullNativeHtml() {
-        String title = escape(reportTitle);
+        // title 经模板 auto-escape；保留原 escape(null)→"" 的空安全语义
+        String title = reportTitle == null ? "" : reportTitle;
         String css = getFullCss();
 
         StringBuilder frag = new StringBuilder();
@@ -591,7 +596,7 @@ public class SummaryReportGenerator {
         model.put("failureAndResultList", failureAndResultList);
 
         try {
-            return renderSummaryTemplate("summary-report.ftl", model);
+            return renderSummaryTemplate("summary-report.ftlh", model);
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render summary report template", e);
         }
@@ -604,7 +609,7 @@ public class SummaryReportGenerator {
         tpl.process(model, out);
         // 统一归一为 LF：golden 基线以 LF 为准，模板文件在 Windows 工作区可能被写成 CRLF。
         // 注：模板自身的行尾风格会影响 Freemarker 对「文件末尾换行」的处理（CRLF 会被吞掉），
-        // 故 .gitattributes 已钉死 *.ftl 为 eol=lf，此处归一化仅作为防御性兜底。
+        // 故 .gitattributes 已钉死 *.ftlh 为 eol=lf，此处归一化仅作为防御性兜底。
         return out.toString().replace("\r\n", "\n").replace('\r', '\n');
     }
 
@@ -629,9 +634,9 @@ public class SummaryReportGenerator {
 
     private void appendAlertBar(StringBuilder sb) {
         Map<String, Object> model = new HashMap<>();
-        model.put("title", escape(reportTitle));
+        model.put("title", reportTitle == null ? "" : reportTitle);
         try {
-            sb.append(renderSummaryTemplate("summary/alert-bar.ftl", model));
+            sb.append(renderSummaryTemplate("summary/alert-bar.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render alert-bar fragment", e);
         }
@@ -680,7 +685,7 @@ public class SummaryReportGenerator {
         model.put("legendRows2", legendRows2);
         model.put("timings", timings);
         try {
-            sb.append(renderSummaryTemplate("summary/summary-section.ftl", model));
+            sb.append(renderSummaryTemplate("summary/summary-section.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render summary-section fragment", e);
         }
@@ -757,7 +762,7 @@ public class SummaryReportGenerator {
         model.put("fullReportLink", this.fullReportUrl);
         model.put("zipLink", buildDownloadUrl(zipFileName));
         try {
-            sb.append(renderSummaryTemplate("summary/view-full-report-button.ftl", model));
+            sb.append(renderSummaryTemplate("summary/view-full-report-button.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render view-full-report-button fragment", e);
         }
@@ -770,7 +775,7 @@ public class SummaryReportGenerator {
             FeatureStats stats = entry.getValue();
 
             Map<String, Object> f = new HashMap<>();
-            f.put("name", escape(feature));
+            f.put("name", feature);
             f.put("link", buildHtmlLink(featureToHtmlMap.getOrDefault(feature, "index.html")));
             f.put("total", stats.total);
             f.put("passPercent", stats.passPercent());
@@ -797,7 +802,7 @@ public class SummaryReportGenerator {
         Map<String, Object> model = new HashMap<>();
         model.put("features", features);
         try {
-            sb.append(renderSummaryTemplate("summary/coverage-section.ftl", model));
+            sb.append(renderSummaryTemplate("summary/coverage-section.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render coverage-section fragment", e);
         }
@@ -893,11 +898,11 @@ public class SummaryReportGenerator {
 
         List<Map<String, Object>> frequentFailures = new ArrayList<>();
         for (Map.Entry<String, Integer> entry : failureCounts.entrySet()) {
-            frequentFailures.add(failureRow(escape(entry.getKey()), entry.getValue()));
+            frequentFailures.add(failureRow(entry.getKey(), entry.getValue()));
         }
         List<Map<String, Object>> unstableFeatures = new ArrayList<>();
         for (Map.Entry<String, FeatureFailureStats> entry : featureFailures.entrySet()) {
-            unstableFeatures.add(failureRow(escape(entry.getKey()), entry.getValue().count));
+            unstableFeatures.add(failureRow(entry.getKey(), entry.getValue().count));
         }
 
         Map<String, Object> model = new HashMap<>();
@@ -906,7 +911,7 @@ public class SummaryReportGenerator {
         try {
             // 错误类型饼图（此处 failureCounts 已保证非空）
             model.put("pieChart", renderErrorTypePieChart(failureCounts));
-            sb.append(renderSummaryTemplate("summary/failure-overview.ftl", model));
+            sb.append(renderSummaryTemplate("summary/failure-overview.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render failure-overview fragment", e);
         }
@@ -960,7 +965,7 @@ public class SummaryReportGenerator {
 
                 Map<String, Object> leg = new HashMap<>();
                 leg.put("color", colors[colorIdx % colors.length]);
-                leg.put("name", escape(entry.getKey()));
+                leg.put("name", entry.getKey());
                 leg.put("pct", String.format("%.0f%%", pct));
                 legend.add(leg);
 
@@ -970,7 +975,7 @@ public class SummaryReportGenerator {
             model.put("gradient", gradient.toString());
             model.put("legend", legend);
         }
-        return renderSummaryTemplate("summary/error-type-pie-chart.ftl", model);
+        return renderSummaryTemplate("summary/error-type-pie-chart.ftlh", model);
     }
 
     private static class FeatureFailureStats {
@@ -1274,16 +1279,16 @@ public class SummaryReportGenerator {
                 for (FailureInfo f : entry.getValue()) {
                     Map<String, Object> s = new LinkedHashMap<>();
                     s.put("link", f.htmlLink);
-                    s.put("name", escape(f.scenario));
+                    s.put("name", f.scenario == null ? "" : f.scenario);
                     s.put("labelColor", resultColor(f.result));
                     s.put("labelText", f.result.name().toLowerCase());
                     s.put("color", resultColor(f.result));
                     s.put("hasError", f.error != null && !f.error.isEmpty());
-                    s.put("error", f.error == null ? "" : truncateError(escape(f.error)));
+                    s.put("error", f.error == null ? "" : truncateError(f.error));
                     scenarios.add(s);
                 }
                 Map<String, Object> group = new LinkedHashMap<>();
-                group.put("feature", escape(entry.getKey()));
+                group.put("feature", entry.getKey());
                 group.put("scenarios", scenarios);
                 failureGroups.add(group);
             }
@@ -1298,20 +1303,20 @@ public class SummaryReportGenerator {
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
             String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
             rowsByFeature.computeIfAbsent(normalizeFeatureName(getFeature(t)), k -> new ArrayList<>())
-                    .add(resultRow(html, escape(t.getName()), t.getResult(), error));
+                    .add(resultRow(html, t.getName() == null ? "" : t.getName(), t.getResult(), error));
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
             String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
             rowsByFeature.computeIfAbsent(normalizeFeatureName(t.featureName), k -> new ArrayList<>())
-                    .add(resultRow(html, escape(t.title), t.result, error));
+                    .add(resultRow(html, t.title == null ? "" : t.title, t.result, error));
         }
 
         List<Map<String, Object>> resultGroups = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry : rowsByFeature.entrySet()) {
             Map<String, Object> group = new LinkedHashMap<>();
-            group.put("feature", escape(entry.getKey()));
+            group.put("feature", entry.getKey());
             group.put("rows", entry.getValue());
             resultGroups.add(group);
         }
@@ -1322,7 +1327,7 @@ public class SummaryReportGenerator {
         model.put("csvLink", buildDownloadUrl(csvFileName));
         model.put("resultGroups", resultGroups);
         try {
-            sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftl", model));
+            sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftlh", model));
         } catch (TemplateException | IOException e) {
             throw new RuntimeException("Failed to render failure-and-result-list fragment", e);
         }
@@ -1342,7 +1347,7 @@ public class SummaryReportGenerator {
         m.put("hasError", result != TestResult.SUCCESS
                 && result != TestResult.IGNORED
                 && result != TestResult.SKIPPED);
-        m.put("error", error == null ? "" : truncateError(escape(error)));
+        m.put("error", error == null ? "" : truncateError(error));
         return m;
     }
 
@@ -1397,11 +1402,6 @@ public class SummaryReportGenerator {
         long minutes = seconds / 60;
         long secs = seconds % 60;
         return minutes + "m " + secs + "s";
-    }
-
-    private String escape(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /**

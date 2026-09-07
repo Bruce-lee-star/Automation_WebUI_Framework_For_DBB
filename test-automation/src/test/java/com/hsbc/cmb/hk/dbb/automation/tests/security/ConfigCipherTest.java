@@ -2,6 +2,10 @@ package com.hsbc.cmb.hk.dbb.automation.tests.security;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.ConfigCipher;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.Base64;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -61,6 +65,24 @@ public class ConfigCipherTest {
     }
 
     @Test
+    public void decryptIfNeededDecryptsBareCiphertext() {
+        String enc = ConfigCipher.encrypt("b4re-secret");
+        // 去掉 ENC(...) 包裹，模拟裸 base64 密文
+        String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
+        assertEquals("b4re-secret", SecretValue.decryptIfNeeded(bare));
+    }
+
+    @Test
+    public void decryptIfNeededReturnsNonCiphertextAsIs() {
+        // 普通明文（含非 base64 字符）原样返回，不抛异常
+        assertEquals("authorization,password", SecretValue.decryptIfNeeded("authorization,password"));
+        // 合法 base64 但非本框架密文应原样返回（解密尝试失败，保留原串）
+        String fakeBase64 = Base64.getEncoder()
+                .encodeToString("not-a-real-ciphertext".getBytes(StandardCharsets.UTF_8));
+        assertEquals(fakeBase64, SecretValue.decryptIfNeeded(fakeBase64));
+    }
+
+    @Test
     public void randomizedIvYieldsDifferentCiphertextEachTime() {
         String a = ConfigCipher.encrypt("alpha");
         String b = ConfigCipher.encrypt("alpha");
@@ -75,13 +97,46 @@ public class ConfigCipherTest {
     }
 
     @Test
-    public void missingMasterKeyThrows() {
+    public void missingMasterKeyThrows() throws Exception {
+        // 重定向 user.home 到空的临时目录，确保固定路径下无密钥文件，避免误读真实用户目录
+        String savedHome = System.getProperty("user.home");
+        File home = Files.createTempDirectory("dbb-test-home-empty").toFile();
+        home.deleteOnExit();
+        System.setProperty("user.home", home.getAbsolutePath());
         System.clearProperty("config.master.key");
         try {
             ConfigCipher.encrypt("x");
             fail("主密钥缺失时应抛 IllegalStateException");
         } catch (IllegalStateException expected) {
             assertTrue(expected.getMessage().contains("CONFIG_MASTER_KEY"));
+        } finally {
+            System.setProperty("user.home", savedHome);
+        }
+    }
+
+    @Test
+    public void masterKeyReadFromUserHomeFile() throws Exception {
+        // 重定向 user.home 到临时目录，验证固定路径 ~/.dbb_automation_master_key 被读取（不触碰真实用户目录）
+        String savedHome = System.getProperty("user.home");
+        File home = Files.createTempDirectory("dbb-test-home").toFile();
+        home.deleteOnExit();
+        File keyFile = new File(home, ".dbb_automation_master_key");
+        keyFile.deleteOnExit();
+        Files.write(keyFile.toPath(), TEST_MASTER_KEY.getBytes(StandardCharsets.UTF_8));
+        System.setProperty("user.home", home.getAbsolutePath());
+        String savedProp = System.getProperty("config.master.key");
+        try {
+            System.clearProperty("config.master.key");
+            String plain = "file-keyed-secret";
+            String enc = ConfigCipher.encrypt(plain);
+            assertEquals(plain, ConfigCipher.decrypt(enc));
+        } finally {
+            if (savedProp == null) {
+                System.clearProperty("config.master.key");
+            } else {
+                System.setProperty("config.master.key", savedProp);
+            }
+            System.setProperty("user.home", savedHome);
         }
     }
 }

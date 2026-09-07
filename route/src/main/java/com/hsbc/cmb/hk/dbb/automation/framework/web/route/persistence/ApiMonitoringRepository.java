@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence;
 
 import com.google.gson.Gson;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -82,7 +83,7 @@ public final class ApiMonitoringRepository {
     private static final int MAX_ATTEMPTS = 3;
 
     /**
-     * ⭐ 专属刷库执行器（审计 P0-0）：DB 写库是阻塞型 IO，必须独立于通用异步池（AsyncPool.POOL）。
+     *  专属刷库执行器（审计 P0-0）：DB 写库是阻塞型 IO，必须独立于通用异步池（AsyncPool.POOL）。
      * 若把 flush 塞进通用池，DB 慢/连接池满时会占满 2~6 个通用线程，拖垮路由回调、超时调度与事件记录。
      * 此处单线程串行刷库，天然串行化批量 INSERT，避免并发抢连接。
      */
@@ -92,7 +93,7 @@ public final class ApiMonitoringRepository {
     private static final ConcurrentLinkedQueue<PendingItem> PENDING = new ConcurrentLinkedQueue<>();
 
     /**
-     * ⭐ O(1) 队列计数（审计 P0-2）：{@code ConcurrentLinkedQueue.size()} 是 O(n) 全链表遍历，
+     *  O(1) 队列计数（审计 P0-2）：{@code ConcurrentLinkedQueue.size()} 是 O(n) 全链表遍历，
      * 在高频 save() 路径上调用会造成可观 CPU 浪费。改用 AtomicInteger 维护精确计数。
      */
     private static final AtomicInteger pendingCount = new AtomicInteger(0);
@@ -140,18 +141,23 @@ public final class ApiMonitoringRepository {
             return;
         }
 
+        // 动态方言解析：monitor.db.type 显式指定优先；留空则按 jdbcUrl 前缀自动探测，
+        // 实现「测试层加哪个驱动依赖，就适配哪种库」，框架不硬编码驱动类。
+        String dialect = resolveDialect(dbType, dbUrl);
+
         maxPoolSize = poolMaxSize;
 
         try {
-            LOGGER.info("[ApiMonitoringRepository] Initializing DB connection: type={}, url={}, user={}",
-                    dbType, maskUrl(dbUrl), dbUser);
+            LOGGER.info("[ApiMonitoringRepository] Initializing DB connection: dialect={}, url={}, user={}",
+                    dialect, maskUrl(dbUrl), dbUser);
 
             com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec spec =
                     new com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.Spec();
             spec.jdbcUrl = dbUrl;
             spec.username = dbUser;
             spec.password = dbPassword;
-            spec.driverClass = driverClass(dbType);
+            // driverClass 置 null：交由 Hikari 按 jdbcUrl 经 JDBC SPI 自动探测 classpath 上的驱动
+            spec.driverClass = null;
             spec.maxPoolSize = maxPoolSize;
             spec.minIdle = 1;
             spec.connectionTimeoutMs = 3000;
@@ -161,7 +167,7 @@ public final class ApiMonitoringRepository {
 
             HikariConfig config = com.hsbc.cmb.hk.dbb.automation.framework.web.utils.HikariConfigFactory.build(
                     spec, cfg -> {
-                        if ("MYSQL".equalsIgnoreCase(dbType)) {
+                        if ("MYSQL".equalsIgnoreCase(dialect)) {
                             cfg.addDataSourceProperty("cachePrepStmts", "true");
                             cfg.addDataSourceProperty("prepStmtCacheSize", "250");
                             cfg.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
@@ -175,8 +181,8 @@ public final class ApiMonitoringRepository {
             // 验证连接
             try (Connection conn = dataSource.getConnection()) {
                 LOGGER.info("[ApiMonitoringRepository] DB connection validated successfully");
-                // 自动建表
-                ensureTableExists(conn, dbType);
+                // 自动建表（按 dialect 选用对应 DDL）
+                ensureTableExists(conn, dialect);
             }
 
             // 先启动后台批量刷入器（定时 + 定量双触发），再标记 initialized，
@@ -195,9 +201,10 @@ public final class ApiMonitoringRepository {
                     maxPoolSize, BATCH_THRESHOLD, FLUSH_INTERVAL_MS);
 
         } catch (Exception e) {
-            LOGGER.warn("[ApiMonitoringRepository] Failed to initialize DB connection. "
+            LOGGER.error("[ApiMonitoringRepository] Failed to initialize DB connection — "
                     + "API monitor data will NOT be persisted to database. "
-                    + "Error: {}", e.getMessage());
+                    + "Check monitor.db.url/user/password/type and that the database is reachable. "
+                    + "Root cause: {}", e.getMessage(), e);
             initFailed = true;
             closeDataSource();
         }
@@ -222,7 +229,7 @@ public final class ApiMonitoringRepository {
         enqueuedCount.incrementAndGet();
         int count = pendingCount.incrementAndGet();   // O(1) 计数（审计 P0-2）
 
-        // ⭐ 修复（漏网之鱼 #4）：成功路径也设硬上限，防止 DB 刷库健康但滞后时
+        //  修复（漏网之鱼 #4）：成功路径也设硬上限，防止 DB 刷库健康但滞后时
         // 内存队列无限增长。超过上限则丢弃最旧记录，与失败路径限流策略一致。
         if (count > PENDING_HARD_CAP) {
             PendingItem dropped = PENDING.poll();
@@ -252,7 +259,7 @@ public final class ApiMonitoringRepository {
     // ═══════════════════════════════════════════════════════════════
 
     private static void startFlusher() {
-        // ⭐ 专属单线程刷库执行器（审计 P0-0）：DB IO 与路由通用异步池彻底隔离，
+        //  专属单线程刷库执行器（审计 P0-0）：DB IO 与路由通用异步池彻底隔离，
         // 防止 DB 慢/连接池满时占满通用池线程，拖垮路由回调与超时调度。
         ThreadFactory tf = r -> {
             Thread t = new Thread(r, "api-monitor-flusher");
@@ -320,7 +327,7 @@ public final class ApiMonitoringRepository {
 
     /**
      * 执行一批记录的批量 INSERT（addBatch + executeBatch）。
-     * <p>⭐ 事务包裹（审计 P0-3）：单批原子提交，失败整体回滚后再重试，
+     * <p> 事务包裹（审计 P0-3）：单批原子提交，失败整体回滚后再重试，
      * 避免部分成功导致重复记录。
      */
     private static void insertBatch(List<PendingItem> batch) throws Exception {
@@ -394,6 +401,23 @@ public final class ApiMonitoringRepository {
                     + "    created_at   TIMESTAMP DEFAULT NOW()\n"
                     + ")";
         }
+        if ("H2".equalsIgnoreCase(dbType)) {
+            return "CREATE TABLE IF NOT EXISTS route_monitor_record (\n"
+                    + "    id           BIGINT AUTO_INCREMENT PRIMARY KEY,\n"
+                    + "    endpoint     VARCHAR(500)  NOT NULL,\n"
+                    + "    request_url  VARCHAR(2000),\n"
+                    + "    method       VARCHAR(10)   NOT NULL,\n"
+                    + "    status_code  INT           NOT NULL,\n"
+                    + "    req_headers  VARCHAR(20000),\n"
+                    + "    res_headers  VARCHAR(20000),\n"
+                    + "    res_body     VARCHAR(200000),\n"
+                    + "    body_length  INT,\n"
+                    + "    captured_at  TIMESTAMP(3)  NOT NULL,\n"
+                    + "    test_run_id  VARCHAR(100),\n"
+                    + "    assertion_ok BOOLEAN,\n"
+                    + "    created_at   TIMESTAMP DEFAULT NOW()\n"
+                    + ")";
+        }
         // MySQL (default)
         return "CREATE TABLE IF NOT EXISTS route_monitor_record (\n"
                 + "    id           BIGINT AUTO_INCREMENT PRIMARY KEY,\n"
@@ -415,9 +439,26 @@ public final class ApiMonitoringRepository {
                 + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
     }
 
-    private static String driverClass(String dbType) {
-        if ("POSTGRESQL".equalsIgnoreCase(dbType)) return "org.postgresql.Driver";
-        return "com.mysql.cj.jdbc.Driver"; // MYSQL
+    /**
+     * 解析数据库方言（决定 DDL 与库特有连接属性）。
+     * monitor.db.type 显式指定（MYSQL/POSTGRESQL/...）且非空 → 优先；
+     * 否则按 jdbcUrl 前缀自动探测，实现「测试层加哪个驱动依赖就适配哪种库」。
+     */
+    private static String resolveDialect(String dbType, String dbUrl) {
+        if (dbType != null && !dbType.trim().isEmpty()) {
+            return dbType.trim().toUpperCase();
+        }
+        return detectDialectFromUrl(dbUrl);
+    }
+
+    private static String detectDialectFromUrl(String dbUrl) {
+        if (dbUrl == null) return "MYSQL";
+        String u = dbUrl.toLowerCase();
+        if (u.startsWith("jdbc:postgresql:") || u.startsWith("jdbc:pg:")) return "POSTGRESQL";
+        if (u.startsWith("jdbc:h2:")) return "H2";
+        if (u.startsWith("jdbc:oracle:")) return "ORACLE";
+        if (u.startsWith("jdbc:sqlserver:") || u.startsWith("jdbc:microsoft:")) return "SQLSERVER";
+        return "MYSQL"; // jdbc:mysql: 及其它默认
     }
 
     private static String toJson(Map<String, String> map) {
@@ -425,6 +466,7 @@ public final class ApiMonitoringRepository {
         try {
             return GSON.toJson(map);
         } catch (Exception e) {
+            // GSON 序列化失败返回 null，由调用方处理
             return null;
         }
     }
@@ -434,9 +476,16 @@ public final class ApiMonitoringRepository {
         return value.length() > maxLen ? value.substring(0, maxLen) : value;
     }
 
+    /**
+     * 脱敏 JDBC/HTTP URL 中的凭据，供日志使用，防止账号密码经日志出域。
+     * <p>统一复用框架公共脱敏工具 {@link SensitiveDataSanitizer#sanitizeUrl(String)}，
+     * 其已处理：① authority 中的 userinfo（{@code user:pass@}，含 JDBC URL 内嵌凭据）；
+     * ② query 中的敏感参数（password / token / apikey 等）。避免在多处维护重复逻辑。
+     * <p>注：URL 中<b>不应</b>放置凭据——推荐使用 {@code monitor.db.user} +
+     * {@code monitor.db.password=ENC(...)}；本方法仅作为日志出域的最后一道兜底。
+     */
     private static String maskUrl(String url) {
-        if (url == null) return null;
-        return url.replaceAll("password=[^&;]*", "password=******");
+        return SensitiveDataSanitizer.sanitizeUrl(url);
     }
 
     private static void closeDataSource() {
@@ -500,7 +549,7 @@ public final class ApiMonitoringRepository {
         try {
             flushPendingNow();
         } catch (Exception e) {
-            // 关键修复 P3-26：flush 失败是数据丢失，必须 error 记录并附堆栈，
+            // 关键flush 失败是数据丢失，必须 error 记录并附堆栈，
             // 便于事后追溯；监控数据丢失不应被静默吞掉。
             LOGGER.error("[ApiMonitoringRepository] Flush on shutdown failed — monitor data may be lost: {}",
                     e.getMessage(), e);
@@ -514,7 +563,7 @@ public final class ApiMonitoringRepository {
      */
     static synchronized void reset() {
         shutdown();
-        // ⭐ 修复低危：shutdown 后清空执行器引用，避免下次 init() 创建新执行器时旧引用残留
+        //  修复低危：shutdown 后清空执行器引用，避免下次 init() 创建新执行器时旧引用残留
         DB_FLUSH_EXECUTOR = null;
         initialized = false;
         initFailed = false;

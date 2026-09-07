@@ -18,6 +18,8 @@ import org.slf4j.LoggerFactory;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * Axe-core Accessibility Test Listener
@@ -27,8 +29,20 @@ public class AxeCoreListener implements StepListener {
 
     private static final Logger logger = LoggerFactory.getLogger(AxeCoreListener.class);
 
-    private static final ThreadLocal<Boolean> axeEnabled = ThreadLocal.withInitial(() -> false);
-    private static final ThreadLocal<Boolean> reportGenerated = ThreadLocal.withInitial(() -> false);
+    //  T3-1 收拢：由 static ThreadLocal 迁入 TestContext；原 withInitial(() -> false) 的默认 false
+    // 语义由布尔 helper（Boolean.TRUE.equals）等价保证，避免未设值时 null 自动拆箱 NPE。
+    private static final ContextKey<Boolean> AXE_ENABLED_KEY = ContextKey.of("axeCoreListener.axeEnabled", Boolean.class);
+    private static final ContextKey<Boolean> REPORT_GENERATED_KEY = ContextKey.of("axeCoreListener.reportGenerated", Boolean.class);
+
+    /** 等价原 axeEnabled.get()（默认 false）。 */
+    private static boolean isAxeEnabled() {
+        return Boolean.TRUE.equals(TestContextHolder.get().get(AXE_ENABLED_KEY));
+    }
+
+    /** 等价原 reportGenerated.get()（默认 false）。 */
+    private static boolean isReportGenerated() {
+        return Boolean.TRUE.equals(TestContextHolder.get().get(REPORT_GENERATED_KEY));
+    }
 
     /**
      * Initialize before test suite
@@ -44,10 +58,10 @@ public class AxeCoreListener implements StepListener {
                 String tags = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
                 String outputDir = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
 
-                axeEnabled.set(enabled);
-                reportGenerated.set(false);  // Reset report flag
+                TestContextHolder.get().set(AXE_ENABLED_KEY,enabled);
+                TestContextHolder.get().set(REPORT_GENERATED_KEY,false);  // Reset report flag
 
-                if (axeEnabled.get()) {
+                if (isAxeEnabled()) {
                     config.setProjectName(projectName);
                     config.setReportOutputDir(outputDir);
 
@@ -63,7 +77,7 @@ public class AxeCoreListener implements StepListener {
                 }
             } catch (Exception e) {
                 logger.error("Failed to initialize AxeCoreListener: {}", e.getMessage(), e);
-                axeEnabled.set(false);
+                TestContextHolder.get().set(AXE_ENABLED_KEY,false);
             }
         }
     }
@@ -74,7 +88,7 @@ public class AxeCoreListener implements StepListener {
     public static AxeCoreScanner.AxeScanResult scanCurrentPage(String pageName) {
         initializeIfNeeded();
 
-        if (!axeEnabled.get()) {
+        if (!isAxeEnabled()) {
             logger.debug("Axe-core scanning is disabled");
             return null;
         }
@@ -93,7 +107,7 @@ public class AxeCoreListener implements StepListener {
     public static AxeCoreScanner.AxeScanResult scanElement(String pageName, String contextSelector) {
         initializeIfNeeded();
 
-        if (!axeEnabled.get()) {
+        if (!isAxeEnabled()) {
             logger.debug("Axe-core scanning is disabled");
             return null;
         }
@@ -111,7 +125,7 @@ public class AxeCoreListener implements StepListener {
      */
     public static void generateFinalReport() {
         // Prevent duplicate report generation
-        if (reportGenerated.get()) {
+        if (isReportGenerated()) {
             logger.debug("Report already generated, skipping");
             return;
         }
@@ -119,7 +133,7 @@ public class AxeCoreListener implements StepListener {
         if (AxeCoreScanner.isInitialized()) {
             try {
                 AxeCoreScanner.generateReport();
-                reportGenerated.set(true);
+                TestContextHolder.get().set(REPORT_GENERATED_KEY,true);
             } catch (Exception e) {
                 logger.error("Failed to generate axe-core report: {}", e.getMessage(), e);
             }
@@ -138,8 +152,8 @@ public class AxeCoreListener implements StepListener {
             logger.error("Error during AxeCoreScanner cleanup: {}", e.getMessage(), e);
         } finally {
             // Always clean up ThreadLocals to prevent memory leaks
-            axeEnabled.remove();
-            reportGenerated.remove();
+            TestContextHolder.get().remove(AXE_ENABLED_KEY);
+            TestContextHolder.get().remove(REPORT_GENERATED_KEY);
         }
     }
 
@@ -147,7 +161,7 @@ public class AxeCoreListener implements StepListener {
      * Check if axe scanning is enabled
      */
     public static boolean isEnabled() {
-        return axeEnabled.get();
+        return isAxeEnabled();
     }
 
     // ==================== StepListener Implementation ====================
@@ -162,7 +176,7 @@ public class AxeCoreListener implements StepListener {
 
     @Override
     public void testSuiteFinished() {
-        if (axeEnabled.get()) { generateFinalReport(); cleanupResources(); }
+        if (isAxeEnabled()) { generateFinalReport(); cleanupResources(); }
     }
 
     @Override
@@ -249,7 +263,7 @@ public class AxeCoreListener implements StepListener {
     @Override
     public void testRunFinished() {
         // 兜底：确保即使 testSuiteFinished 未被调用也能清理资源
-        if (axeEnabled.get()) { logger.debug("testRunFinished fallback - performing final cleanup"); generateFinalReport(); cleanupResources(); }
+        if (isAxeEnabled()) { logger.debug("testRunFinished fallback - performing final cleanup"); generateFinalReport(); cleanupResources(); }
     }
 
     @Override

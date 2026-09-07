@@ -13,6 +13,8 @@ import java.io.File;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Set;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * AutoBrowser Processor - 框架层自动处理 @AutoBrowser 注解
@@ -36,8 +38,8 @@ public class AutoBrowserProcessor {
     
     private static final Logger logger = LoggerFactory.getLogger(AutoBrowserProcessor.class);
     
-    // 缓存已检查过的类，避免重复扫描
-    private static final ThreadLocal<Boolean> processedForCurrentScenario = new ThreadLocal<>();
+    // 缓存已检查过的类，避免重复扫描（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
+    private static final ContextKey<Boolean> PROCESSED_KEY = ContextKey.of("autobrowser.processed", Boolean.class);
     
     /**
      * 处理 @AutoBrowser 注解
@@ -47,7 +49,7 @@ public class AutoBrowserProcessor {
      */
     public static void processAutoBrowserAnnotation() {
         // 避免在同一个 Scenario 中重复处理
-        if (Boolean.TRUE.equals(processedForCurrentScenario.get())) {
+        if (Boolean.TRUE.equals(TestContextHolder.get().get(PROCESSED_KEY))) {
             VerboseLogging.logDebugIfVerbose(logger, "Already processed for current scenario, skipping");
             return;
         }
@@ -105,7 +107,7 @@ public class AutoBrowserProcessor {
             VerboseLogging.logInfoIfVerbose(logger, "Effective browser type set to: {}", effectiveBrowser);
 
             // 标记为已处理
-            processedForCurrentScenario.set(true);
+            TestContextHolder.get().set(PROCESSED_KEY, true);
 
         } catch (Exception e) {
             VerboseLogging.logErrorIfVerbose(logger, "ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
@@ -179,7 +181,7 @@ public class AutoBrowserProcessor {
      * 清除处理状态（在 Scenario 结束时调用）
      */
     public static void clearProcessingState() {
-        processedForCurrentScenario.remove();
+        TestContextHolder.get().remove(PROCESSED_KEY);
         
         // 同时清理 BrowserOverrideManager
         if (BrowserOverrideManager.hasOverride()) {
@@ -315,6 +317,6 @@ public class AutoBrowserProcessor {
      * @return true 如果有注解生效
      */
     public static boolean hasAutoBrowserActive() {
-        return Boolean.TRUE.equals(processedForCurrentScenario.get());
+        return Boolean.TRUE.equals(TestContextHolder.get().get(PROCESSED_KEY));
     }
 }

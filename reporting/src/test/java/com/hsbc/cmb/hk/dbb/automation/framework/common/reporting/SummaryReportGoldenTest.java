@@ -64,7 +64,7 @@ public class SummaryReportGoldenTest {
 
     /**
      * 单条 fixture：覆盖失败结果、HTML 元字符（&amp; &lt; &gt;）、失败原因、确定性 start/end 时间。
-     * 刻意不含双引号——{@code escape()} 不转义引号（T2-8 待改进项），避免基线表达未定义语义。
+     * 刻意不含双引号——双引号已由模板 auto-escape 统一转义（见安全契约用例），golden 基线不引双引号以保持字节稳定。
      */
     private static final String GOLDEN_JSON = "{\n"
             + "  \"name\": \"Checkout & Payment <special> chars\",\n"
@@ -177,15 +177,15 @@ public class SummaryReportGoldenTest {
     }
 
     /**
-     * 安全契约：固化 {@code escape()} 对 HTML 元字符的转义（&amp; &lt; &gt;）。
-     * 报告常含用例名/异常堆栈等外部数据，未转义即是可被打开的 HTML 注入口。
-     * 注：当前实现<b>不转义双引号</b>，属 T2-8 引入模板引擎 auto-escape 时应一并补齐的缺口。
+     * 安全契约：固化报告产物对外部数据（用例名/异常堆栈等）的 HTML 转义。
+     * Freemarker 模板（.ftlh）默认 HTML auto-escape，统一转义 &amp; &lt; &gt; &quot; &#39;，
+     * 彻底闭合 T2-8 收尾项「{@code escape()} 不转义双引号」的缺口。
      */
     @Test
     public void htmlEscapesHtmlMetacharactersFromOutcomeData() throws Exception {
         File dir = folder.newFolder("escape-report");
         writeOutcome(dir, "escape.json", "{\n"
-                + "  \"name\": \"<script>alert(1)</script> & more\",\n"
+                + "  \"name\": \"<script>alert(1)</script> & \\\"quoted\\\" more\",\n"
                 + "  \"result\": \"FAILURE\",\n"
                 + "  \"duration\": 100,\n"
                 + "  \"userStory\": { \"storyName\": \"<img src=x onerror=alert(1)>\" },\n"
@@ -201,6 +201,8 @@ public class SummaryReportGoldenTest {
         assertFalse("原始 <img onerror> 绝不可进入报告产物", html.contains("<img src=x onerror=alert(1)>"));
         assertTrue("必须转义为 &lt;script&gt;", html.contains("&lt;script&gt;"));
         assertTrue("必须转义为 &amp;", html.contains("&amp;"));
+        assertTrue("双引号必须转义为 &quot;（闭合 T2-8 收尾项）", html.contains("&quot;"));
+        assertFalse("原始 \"quoted\" 不得进入报告产物", html.contains("\"quoted\""));
     }
 
     /** 首个差异字符下标；若仅是长度不同，返回较短串长度。 */

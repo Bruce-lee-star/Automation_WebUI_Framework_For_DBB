@@ -11,7 +11,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.*;
@@ -26,6 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 
 /**
@@ -50,18 +52,31 @@ public class PlaywrightManager {
     // 共享 ConcurrentHashMap 仅作为跨线程安全的回收/清理容器（供 cleanupAll 统一关闭），
     // 不再像旧实现那样按 configId 跨线程复用同一个 Browser（评审 P0：单点故障 + 全局串行化）。
     //
-    // ⭐ 例外——共享 Browser 模式（serenity.playwright.shared.browser.enabled=true）：
+    //  例外——共享 Browser 模式（serenity.playwright.shared.browser.enabled=true）：
     // 此时 keyFor() 返回 "shared:configId"，所有线程【有意】复用同一个 Browser 实例，
     // 隔离性改由 per-thread 的 BrowserContext 保证（Playwright 官方并发模型）。
     // 该模式下的配套约束见 restartBrowser()：重启降级为「仅重建本线程 Context」，绝不关闭共享 Browser。
     private static final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
     private static final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
 
+    // 浏览器断开标记集合（onDisconnected 事件填充）：用于 getPage()/getContext() 快速失败，
+    // 避免浏览器进程崩溃/被杀后继续操作抛出晦涩的 Playwright 底层异常。
+    private static final java.util.Set<Browser> DISCONNECTED_BROWSERS =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     // 线程级锁（T3-2）：Browser 创建/关闭现已按 threadId 隔离，无需全局互斥。
     // 降级为 per-thread 锁可在放开并行创建的同时，仍保证单线程内创建/切换的原子性。
-    private static final ThreadLocal<Object> BROWSER_LOCK = ThreadLocal.withInitial(Object::new);
+    //  T3-1 收拢：原 withInitial(Object::new) 迁入 TestContext，经 perThreadBrowserLock() 惰性创建，
+    // 且创建后缓存在上下文中 → 同一线程内多次取到同一锁对象（与原 ThreadLocal 语义一致，锁语义不变）。
+    // ⚠️ 与下方既有的 browserLock()（无参，按共享模式派发）/ browserLock(boolean) 区分命名，避免同名冲突与递归。
+    private static final ContextKey<Object> BROWSER_LOCK_KEY = ContextKey.of("playwrightManager.browserLock", Object.class);
 
-    // ⭐ 共享 Browser 模式（一 Browser + 多 Context）下的【进程级】互斥锁。
+    /** 取本线程的锁对象（严格等价原 BROWSER_LOCK.get()，不随共享模式切换）。 */
+    private static Object perThreadBrowserLock() {
+        return TestContextHolder.get().computeIfAbsent(BROWSER_LOCK_KEY, Object::new);
+    }
+
+    //  共享 Browser 模式（一 Browser + 多 Context）下的【进程级】互斥锁。
     // 该模式下 Browser 被所有 worker 线程共享，必须用真正的静态锁保证并发只有一个 Browser 被创建；
     // per-thread 的 BROWSER_LOCK 在共享模式下无法提供跨线程互斥（每个线程拿到的都是各自的锁对象）。
     private static final Object SHARED_BROWSER_LOCK = new Object();
@@ -81,17 +96,18 @@ public class PlaywrightManager {
     // 框架状态引用
     static final FrameworkState frameworkState = FrameworkState.getInstance();
 
-    // ⭐ 修复 H6/H8：初始化幂等判据（static synchronized 已提供类级互斥，再补一道可见性判据）
+    //  修复 H6/H8：初始化幂等判据（static synchronized 已提供类级互斥，再补一道可见性判据）
     private static final AtomicBoolean FULL_INIT = new AtomicBoolean(false);
 
-    // ==================== ThreadLocal 变量（3个，集中管理） ====================
+    // ==================== per-thread 变量（ T3-1 收拢：原 3 个 static ThreadLocal 迁入 TestContext，
+    //  均为默认 null 语义，迁移后等价；包级可见性保持不变，供同包 PlaywrightSerenityBridge 等访问） ====================
 
     // ---- 核心 Page/Context ----
-    static final ThreadLocal<BrowserContext> contextThreadLocal = new ThreadLocal<>();
-    static final ThreadLocal<Page> pageThreadLocal = new ThreadLocal<>();
+    static final ContextKey<BrowserContext> CONTEXT_KEY = ContextKey.of("playwrightManager.context", BrowserContext.class);
+    static final ContextKey<Page> PAGE_KEY = ContextKey.of("playwrightManager.page", Page.class);
 
     // ---- 配置标识 ----
-    static final ThreadLocal<String> currentConfigId = new ThreadLocal<>();
+    static final ContextKey<String> CURRENT_CONFIG_ID_KEY = ContextKey.of("playwrightManager.currentConfigId", String.class);
 
     // ==================== 静态初始化块 ====================
 
@@ -124,10 +140,10 @@ public class PlaywrightManager {
      * 这样可以支持 @AutoBrowser 动态浏览器切换，避免启动多余的浏览器实例
      */
     public static synchronized void initialize() {
-        // ⭐ 修复 H6/H8：用 FULL_INIT 作幂等判据（frameworkState.isInitialized 在浏览器就绪前可能为 false，
+        //  修复 H6/H8：用 FULL_INIT 作幂等判据（frameworkState.isInitialized 在浏览器就绪前可能为 false，
         // 旧判据导致每次进入都重算 configId；static synchronized 已提供类级互斥，FULL_INIT 再补可见性判据）。
-        if (FULL_INIT.get() && currentConfigId.get() != null) {
-            VerboseLogging.logInfoIfVerbose(logger, "Playwright environment already initialized with config: {}", currentConfigId.get());
+        if (FULL_INIT.get() && TestContextHolder.get().get(CURRENT_CONFIG_ID_KEY) != null) {
+            VerboseLogging.logInfoIfVerbose(logger, "Playwright environment already initialized with config: {}", TestContextHolder.get().get(CURRENT_CONFIG_ID_KEY));
             return;
         }
 
@@ -136,7 +152,7 @@ public class PlaywrightManager {
         // ⚠ 不在此时创建 Playwright 实例（Node.js 子进程）
         // 原因：浏览器可能尚未安装，提前创建会导致初次 launch 时找不到二进制
         // Playwright 实例延迟到 initializeBrowser() 中、浏览器就绪后再创建
-        currentConfigId.set(configId);
+        TestContextHolder.get().set(CURRENT_CONFIG_ID_KEY,configId);
         FULL_INIT.set(true);
 
         VerboseLogging.logInfoIfVerbose(logger, "Playwright environment initialized (Playwright/Browser deferred to first access)");
@@ -313,6 +329,7 @@ public class PlaywrightManager {
                     attempt, maxRetries, browserType, config().getBrowserChannel(), headless);
                 
                 Browser browser = setupBrowser(playwright, browserType, launchOptions);
+                registerBrowserDisconnectGuard(browser);
                 browserInstances.put(keyFor(configId), browser);
 
                 long elapsed = System.currentTimeMillis() - initStart;
@@ -334,7 +351,7 @@ public class PlaywrightManager {
 
         VerboseLogging.logErrorIfVerbose(logger, "Failed to initialize Browser after {} attempts for config: {}", maxRetries, configId, lastException);
         browserInstances.remove(keyFor(configId));
-        // ⭐ 修复 Medium：启动失败路径必须释放 L292 已创建的 Playwright 节点子进程，
+        //  修复 Medium：启动失败路径必须释放 L292 已创建的 Playwright 节点子进程，
         // 否则仅 remove browserInstances 仍会泄漏 playwrightInstances 持有的进程。
         Playwright leakedPw = playwrightInstances.remove(keyFor(configId));
         if (leakedPw != null) {
@@ -345,6 +362,26 @@ public class PlaywrightManager {
             }
         }
         throw new BrowserException("Failed to initialize Browser for config: " + configId, lastException);
+    }
+
+    /**
+     * 注册浏览器断开守卫：浏览器进程意外断开（崩溃/被杀/连接丢失）时记录严重错误，
+     * 并标记该 Browser 已断开，使后续 getPage()/getContext() 快速失败并给出语义化异常，
+     * 而非抛出晦涩的 Playwright 底层 NPE/StateError。
+     */
+    private static void registerBrowserDisconnectGuard(Browser browser) {
+        browser.onDisconnected(disconnected -> {
+            logger.error("[browser-disconnected] Browser disconnected unexpectedly: type={}",
+                    disconnected.browserType() != null ? disconnected.browserType().name() : "unknown");
+            DISCONNECTED_BROWSERS.add(browser);
+        });
+    }
+
+    /** 当前测试线程关联的 Browser 是否已被标记为断开。 */
+    private static boolean isCurrentBrowserDisconnected() {
+        BrowserContext ctx = TestContextHolder.get().get(CONTEXT_KEY);
+        Browser b = ctx != null ? ctx.browser() : null;
+        return b != null && DISCONNECTED_BROWSERS.contains(b);
     }
 
     /**
@@ -454,13 +491,13 @@ public class PlaywrightManager {
      * 获取当前配置ID
      */
     private static String getCurrentConfigId() {
-        if (currentConfigId.get() == null) {
-            currentConfigId.set(generateConfigId());
+        if (TestContextHolder.get().get(CURRENT_CONFIG_ID_KEY) == null) {
+            TestContextHolder.get().set(CURRENT_CONFIG_ID_KEY,generateConfigId());
             // 修复 4.1：懒初始化 configId 时同步标记 frameworkState 为已初始化，
             // 避免 getContext()/getPage() 因 frameworkState 未初始化而抛 IllegalStateException。
             frameworkState.markInitialized();
         }
-        return currentConfigId.get();
+        return TestContextHolder.get().get(CURRENT_CONFIG_ID_KEY);
     }
 
     /**
@@ -561,7 +598,7 @@ public class PlaywrightManager {
      * 否则返回 per-thread {@link #BROWSER_LOCK}（T3-2：各线程创建互不阻塞）。</p>
      */
     static Object browserLock(boolean sharedMode) {
-        return sharedMode ? SHARED_BROWSER_LOCK : BROWSER_LOCK.get();
+        return sharedMode ? SHARED_BROWSER_LOCK : perThreadBrowserLock();
     }
 
     private static Object browserLock() {
@@ -618,7 +655,7 @@ public class PlaywrightManager {
         ensureBrowserInstalledForType();
         
         // 慢速路径：浏览器不存在或断开，加锁创建
-        synchronized (browserLock()) {
+        synchronized (perThreadBrowserLock()) {
             // 双重检查：另一个线程可能已在等待期间创建了浏览器
             currentBrowser = browserInstances.get(keyFor(currentConfig));
             if (currentBrowser != null && currentBrowser.isConnected()) {
@@ -636,7 +673,7 @@ public class PlaywrightManager {
                 String newConfigId = generateConfigId();
                 logger.info("[getBrowser] Updating configId from {} to {} for browser type: {}",
                     currentConfig, newConfigId, desiredBrowserType);
-                currentConfigId.set(newConfigId);
+                TestContextHolder.get().set(CURRENT_CONFIG_ID_KEY,newConfigId);
                 currentConfig = newConfigId;
             }
             
@@ -650,7 +687,7 @@ public class PlaywrightManager {
     /**
      * 处理浏览器类型切换逻辑
      *
-     * <p>⭐ 锁安全设计：closePage/closeContext 在 BROWSER_LOCK 之外执行，
+     * <p> 锁安全设计：closePage/closeContext 在 BROWSER_LOCK 之外执行，
      * 避免 BROWSER_LOCK → PAGE_LOCK → CONTEXT_LOCK 与 getPage() 的
      * PAGE_LOCK → CONTEXT_LOCK 形成死锁链。
      */
@@ -659,8 +696,8 @@ public class PlaywrightManager {
         logger.info("[getBrowser] Browser type changed: {} -> {}", currentBrowserType, desiredBrowserType);
         logger.info("[getBrowser] Switching browser...");
 
-        // ⭐ 1. 在 BROWSER_LOCK 之外关闭旧 Context 和 Page（避免死锁）
-        // ⭐ 修复 H7：先把当前 configId 标记为"已废弃"，再关闭旧 Context/Page。
+        //  1. 在 BROWSER_LOCK 之外关闭旧 Context 和 Page（避免死锁）
+        //  修复 H7：先把当前 configId 标记为"已废弃"，再关闭旧 Context/Page。
         // 顺序上移确保并发线程在 BROWSER_LOCK 外即可感知 retired 并重建立即生效（见 getContext 的 retired 预检），
         // 避免"标记前已取到旧 context"的竞态窗口。
         RETIRED_CONFIG_IDS.add(currentConfig);
@@ -668,9 +705,9 @@ public class PlaywrightManager {
         closePage();
         closeContext();
 
-        // ⭐ 2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
+        //  2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
         //      （共享模式下使用进程级锁：Browser 被所有线程共享，切换必须全局互斥）
-        synchronized (browserLock()) {
+        synchronized (perThreadBrowserLock()) {
             // 关闭旧浏览器
             Browser oldBrowser = browserInstances.get(keyFor(currentConfig));
             if (oldBrowser != null && oldBrowser.isConnected()) {
@@ -683,7 +720,7 @@ public class PlaywrightManager {
                 browserInstances.remove(keyFor(currentConfig));
             }
 
-            // ⭐ 修复 3.2：显式关闭旧 configId 对应的 Playwright 实例（Node 子进程），
+            //  修复 3.2：显式关闭旧 configId 对应的 Playwright 实例（Node 子进程），
             // 否则旧 Playwright 会一直留在 playwrightInstances Map 直到下次 initializeBrowser 才清理，造成泄漏。
             Playwright oldPlaywright = playwrightInstances.remove(keyFor(currentConfig));
             if (oldPlaywright != null) {
@@ -700,7 +737,7 @@ public class PlaywrightManager {
             logger.info("[getBrowser] New configId: {}", newConfigId);
 
             // 更新 currentConfigId
-            currentConfigId.set(newConfigId);
+            TestContextHolder.get().set(CURRENT_CONFIG_ID_KEY,newConfigId);
 
             // 初始化新浏览器
             initializeBrowser(newConfigId);
@@ -722,17 +759,17 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
-        // ⭐ 修复 1.2：若本线程的 configId 已被标记为废弃（其它线程正在切换浏览器类型），
+        //  修复 1.2：若本线程的 configId 已被标记为废弃（其它线程正在切换浏览器类型），
         // 强制清理本地 Context/Page，避免绑定到即将被关闭的旧 Browser。
         if (isCurrentConfigRetired()) {
             closePage();
             closeContext();
         }
 
-        BrowserContext context = contextThreadLocal.get();
+        BrowserContext context = TestContextHolder.get().get(CONTEXT_KEY);
         
         // 检测是否需要重建Context（因为设置了自定义配置）
-        Boolean customFlag = CustomOptionsManager.customContextOptionsFlag.get();
+        Boolean customFlag = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_CONTEXT_OPTIONS_FLAG_KEY);
         if (context != null && customFlag != null && customFlag) {
             VerboseLogging.logInfoIfVerbose(logger, "Custom context options detected, recreating context to apply them...");
             recreateContextIfCustomConfigNeeded();
@@ -743,7 +780,7 @@ public class PlaywrightManager {
         synchronized (CONTEXT_LOCK) {
             if (context == null || (context.browser() != null && !context.browser().isConnected())) {
                 context = createContext();
-                contextThreadLocal.set(context);
+                TestContextHolder.get().set(CONTEXT_KEY,context);
             }
         }
         return context;
@@ -758,7 +795,7 @@ public class PlaywrightManager {
      */
     static void scheduleContextRebuild() {
         // 先关闭 Page
-        Page existingPage = pageThreadLocal.get();
+        Page existingPage = TestContextHolder.get().get(PAGE_KEY);
         if (existingPage != null && !existingPage.isClosed()) {
             try {
                 VerboseLogging.logInfoIfVerbose(logger, "Closing existing page for context rebuild");
@@ -767,10 +804,10 @@ public class PlaywrightManager {
                 VerboseLogging.logWarnIfVerbose(logger, "Failed to close existing page: {}", e.getMessage());
             }
         }
-        pageThreadLocal.remove();
+        TestContextHolder.get().remove(PAGE_KEY);
 
         // 立即关闭 Context（如果有），确保新配置立即生效
-        BrowserContext existingContext = contextThreadLocal.get();
+        BrowserContext existingContext = TestContextHolder.get().get(CONTEXT_KEY);
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Closing existing context to apply new custom configurations...");
 
@@ -781,12 +818,24 @@ public class PlaywrightManager {
             } catch (Exception e) {
                 logger.warn("Failed to close existing context: {}", e.getMessage());
             } finally {
-                contextThreadLocal.remove();
+                TestContextHolder.get().remove(CONTEXT_KEY);
             }
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
         }
 
         // customContextOptionsFlag 已在 CustomOptionsManager.setXXX() 中设置
+    }
+
+    /**
+     * 丢弃当前线程的 Page/Context（仅关闭，不清除 custom options），
+     * 使下一次 getContext()/getPage() 在干净起点重建。
+     * <p>
+     * 用于 Feature 模式切换不同 env/user（不同 sessionKey）时，避免复用上一个 session 的
+     * Context（其 Cookie/Storage 残留会污染新用户）。调用方负责随后清理/重设自定义配置
+     * （例如清除过期 storageStatePath），本方法仅关闭 Page+Context。
+     */
+    public static void discardCurrentContext() {
+        scheduleContextRebuild();
     }
 
     /**
@@ -798,17 +847,17 @@ public class PlaywrightManager {
      * - 确保所有自定义配置（包括 storageState）都能正确应用
      */
     private static void recreateContextIfCustomConfigNeeded() {
-        BrowserContext existingContext = contextThreadLocal.get();
+        BrowserContext existingContext = TestContextHolder.get().get(CONTEXT_KEY);
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Context already exists, closing it to apply custom configurations...");
             
             try {
                 // 关闭 Page
-                Page existingPage = pageThreadLocal.get();
+                Page existingPage = TestContextHolder.get().get(PAGE_KEY);
                 if (existingPage != null && !existingPage.isClosed()) {
                     existingPage.close();
                 }
-                pageThreadLocal.remove();
+                TestContextHolder.get().remove(PAGE_KEY);
                 
                 // 关闭 Context（只有浏览器还连接着才关闭）
                 if (existingContext.browser() != null && existingContext.browser().isConnected()) {
@@ -817,7 +866,7 @@ public class PlaywrightManager {
             } catch (Exception e) {
                 logger.warn("Failed to close existing context: {}", e.getMessage());
             } finally {
-                contextThreadLocal.remove();
+                TestContextHolder.get().remove(CONTEXT_KEY);
             }
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, will create new one with custom configurations on next access");
         }
@@ -828,7 +877,7 @@ public class PlaywrightManager {
      */
     public static void setPage(Page page) {
         if (page != null && !page.isClosed()) {
-            pageThreadLocal.set(page);
+            TestContextHolder.get().set(PAGE_KEY,page);
         } else {
             logger.warn("[PlaywrightManager] setPage() ignored: page is {}",
                     page == null ? "null" : "closed");
@@ -849,25 +898,31 @@ public class PlaywrightManager {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
-        // ⭐ 修复 1.2：configId 已废弃则强制重建，见 getContext() 注释。
+        //  韧性：浏览器已断开则快速失败，给出语义化异常而非底层 NPE/StateError
+        if (isCurrentBrowserDisconnected()) {
+            throw new BrowserException("Browser has been disconnected; the current test session is no longer valid. "
+                    + "This usually indicates the browser process crashed or was terminated externally.");
+        }
+
+        //  修复 1.2：configId 已废弃则强制重建，见 getContext() 注释。
         if (isCurrentConfigRetired()) {
             closePage();
             closeContext();
         }
 
         // 先检查是否已有有效 Page（快速路径，避免不必要的锁竞争）
-        Page page = pageThreadLocal.get();
+        Page page = TestContextHolder.get().get(PAGE_KEY);
         if (page != null && !page.isClosed()) {
             return page;
         }
 
         // 【关键】统一在锁内创建 Page，避免锁外创建 + 锁内再创建导致资源泄漏
         synchronized (PAGE_LOCK) {
-            page = pageThreadLocal.get();
+            page = TestContextHolder.get().get(PAGE_KEY);
             if (page == null || page.isClosed()) {
                 BrowserContext context = getContext();
                 page = createPage(context);
-                pageThreadLocal.set(page);
+                TestContextHolder.get().set(PAGE_KEY,page);
             }
         }
         return page;
@@ -886,7 +941,7 @@ public class PlaywrightManager {
      * 用于修复 1.2 的竞态：让并发线程感知并强制重建本地 Context/Page。
      */
     private static boolean isCurrentConfigRetired() {
-        String mine = currentConfigId.get();
+        String mine = TestContextHolder.get().get(CURRENT_CONFIG_ID_KEY);
         if (mine == null) {
             return false;
         }
@@ -932,12 +987,12 @@ public class PlaywrightManager {
      */
     public static void closePage() {
         synchronized (PAGE_LOCK) {
-            Page page = pageThreadLocal.get();
+            Page page = TestContextHolder.get().get(PAGE_KEY);
             if (page != null) {
                 try {
                     PlaywrightContextManager.closePage(page);
                 } finally {
-                    pageThreadLocal.remove();
+                    TestContextHolder.get().remove(PAGE_KEY);
                 }
             }
         }
@@ -949,31 +1004,44 @@ public class PlaywrightManager {
      */
     public static void closeContext() {
         synchronized (CONTEXT_LOCK) {
-            BrowserContext context = contextThreadLocal.get();
+            BrowserContext context = TestContextHolder.get().get(CONTEXT_KEY);
+            // 与底层 BrowserContext 资源绑定的清理：仅当 context 真实存在时执行。
             if (context != null) {
-                // ⭐ 修复 R6：每条清理步骤独立 try-catch，避免任一失败中断整条清理链
-                // （例如 RoleElementPicker.cleanupContext 抛异常会导致 TestServices.clear / closeContext 被跳过）。
+                //  修复 R6：每条清理步骤独立 try-catch，避免任一失败中断整条清理链
+                // （例如 RoleElementPicker.cleanupContext 抛异常会导致后续清理被跳过）。
                 safeClean("RouteRegistry.clearContext", () -> RouteLifecycleRegistry.get().clearContext(context));
-                safeClean("RoleElementPicker.cleanupContext", () -> RoleElementPicker.cleanupContext(context));
-                safeClean("BasePage.clearAllThreadLocals", BasePage::clearAllThreadLocals);
-                // ⭐ 修复 3-4（C-1）：TestServices 自身的 ThreadLocal（currentTestService/entityName/env）
-                // 不在 BasePage.clearAllThreadLocals 的清理范围，必须显式清除，
-                // 否则同线程复用执行新场景时会继承旧 entity/env 配置。
-                safeClean("TestServices.clear", () -> {
-                    try {
-                        com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices.clear();
-                    } catch (Throwable ignored) {
-                        // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时），兜底静默
-                    }
+                safeClean("RoleCodegenBridge.cleanupContext", () -> {
+                    // 经 codegen 桥接（未注册=no-op，等价于默认关闭，零回归）。
+                    RoleCodegenBridgeRegistry.getBridge().ifPresent(b -> {
+                        if (b.isCodegenEnabled()) {
+                            b.cleanupContext(context);
+                        }
+                    });
                 });
                 safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
                 safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
-                contextThreadLocal.remove();
+                TestContextHolder.get().remove(CONTEXT_KEY);
             }
+            //  T3-3 修复：per-thread 状态清理必须【无条件】执行。
+            // 原实现把 TestServices.clear 等包在 if(context!=null) 内，
+            // 导致 context 为 null 的路径（feature 模式无 session 复用、未创建 context 的场景、
+            // 场景初始化重建路径）下这些 per-thread 状态跨 scenario 残留，污染下一个场景
+            // （继承旧 entity/env/自定义配置）。现移出 if 块，无论 context 是否存在都清理；
+            // 并补上此前遗漏的 CustomOptionsManager 全量清理（调用 closeContext 即视为场景结束）。
+            // 注：BasePage 的静态 ThreadLocal 清理（clearAllThreadLocals）已在架构整改中移除——
+            // 该静态引用本就是死状态，iframe/shadow 上下文已改为每实例独立持有（见 BasePage.currentFrame/currentShadow）。
+            safeClean("TestServices.clear", () -> {
+                try {
+                    com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices.clear();
+                } catch (Throwable ignored) {
+                    // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时），兜底静默
+                }
+            });
+            safeClean("CustomOptionsManager.removeAllThreadLocals", CustomOptionsManager::removeAllThreadLocals);
         }
     }
 
-    /** 清理步骤包装：单步失败记录 warn 但不阻断后续清理（⭐ 修复 R6）。 */
+    /** 清理步骤包装：单步失败记录 warn 但不阻断后续清理（ 修复 R6）。 */
     private static void safeClean(String step, Runnable action) {
         try {
             action.run();
@@ -991,7 +1059,7 @@ public class PlaywrightManager {
      * @return true 如果 ThreadLocal 中有存活的 Context
      */
     public static boolean hasContext() {
-        BrowserContext context = contextThreadLocal.get();
+        BrowserContext context = TestContextHolder.get().get(CONTEXT_KEY);
         return context != null && context.browser() != null && context.browser().isConnected();
     }
 
@@ -1007,7 +1075,7 @@ public class PlaywrightManager {
      * 防护：执行前仍会检测"本线程除自身 context 外是否仍有其它打开的 BrowserContext"，若有则
      * <b>拒绝执行并抛出 {@link BrowserException}</b>（fail-fast）。
      * <p>
-     * ⭐ 修复 1.1：不再使用 {@code synchronized (PlaywrightManager.class)} 类锁，改为仅在操作本线程实例时
+     *  修复 1.1：不再使用 {@code synchronized (PlaywrightManager.class)} 类锁，改为仅在操作本线程实例时
      * 持有 per-thread 的 BROWSER_LOCK（已降级为 ThreadLocal，见字段声明）。closePage()/closeContext()
      * 在锁外执行，保持与 getPage()/getContext() 一致的锁获取顺序（PAGE_LOCK → CONTEXT_LOCK），避免死锁。
      */
@@ -1018,7 +1086,7 @@ public class PlaywrightManager {
             return;
         }
 
-        // ⭐ 共享 Browser 模式：Browser 由所有线程共享，绝不能关闭——否则会连带杀掉其它并发 scenario
+        //  共享 Browser 模式：Browser 由所有线程共享，绝不能关闭——否则会连带杀掉其它并发 scenario
         //    的 Context（正是 T3-2 修复掉的 P0）。此模式下"重启"降级为【仅重建本线程的 Context/Page】，
         //    隔离语义由 BrowserContext 保证（cookie / storage 彼此独立），与 Browser 级隔离等价。
         if (isSharedBrowserMode()) {
@@ -1033,7 +1101,7 @@ public class PlaywrightManager {
             closePage();
             closeContext();
 
-            // ⭐ 修复 P1-6（T3-2 线程作用域化）：restartBrowser 现已收敛到【本线程】实例。
+            //  （T3-2 线程作用域化）：restartBrowser 现已收敛到【本线程】实例。
             //    fail-fast 仍保留：若本线程除自身 context 外仍有其它打开的 BrowserContext，
             //    说明本线程仍有未清理的 context，主动拒绝执行以避免半清理状态。
             //    注：browser.contexts() 仅返回【未关闭】的 context，故该判定是准确的；
@@ -1041,7 +1109,7 @@ public class PlaywrightManager {
             // T3-2 线程隔离：仅检视【本线程】拥有的实例（键以 threadId: 前缀），其余跳过。
             final long tid = Thread.currentThread().getId();
             final String prefix = tid + ":";
-            BrowserContext selfContext = contextThreadLocal.get();
+            BrowserContext selfContext = TestContextHolder.get().get(CONTEXT_KEY);
             List<String> foreignOwners = new ArrayList<>();
             for (Map.Entry<String, Browser> entry : browserInstances.entrySet()) {
                 if (!entry.getKey().startsWith(prefix)) {
@@ -1065,7 +1133,7 @@ public class PlaywrightManager {
             }
 
             // 仅对共享实例 Map 的遍历与重建加细粒度锁，缩小临界区，避免全局挂起
-            synchronized (BROWSER_LOCK.get()) {
+            synchronized (perThreadBrowserLock()) {
                 // T3-2 线程隔离：仅关闭【本线程】的浏览器实例（匹配前缀），按 key 精确移除，不动其它线程。
                 for (Map.Entry<String, Browser> entry : browserInstances.entrySet()) {
                     if (!entry.getKey().startsWith(prefix)) {
@@ -1100,20 +1168,20 @@ public class PlaywrightManager {
                     playwrightInstances.remove(entry.getKey());
                 }
 
-                // ⭐ 修复 H9：重启前清空路由层引用与废弃标记，避免旧 configId 的调度器/路由 handler 持有
+                //  修复 H9：重启前清空路由层引用与废弃标记，避免旧 configId 的调度器/路由 handler 持有
                 // 已销毁 context 造成内存泄漏与跨场景串扰（与 cleanupAll 一致的收口顺序）。
                 RETIRED_CONFIG_IDS.clear();
                 RouteLifecycleRegistry.get().stopAllContextEngines();
                 RouteLifecycleRegistry.get().clearAll();
 
-                // ⭐ 修复 L1/H9：newConfigId 生成 + 初始化必须在 BROWSER_LOCK 内原子完成；
+                //  修复 L1/H9：newConfigId 生成 + 初始化必须在 BROWSER_LOCK 内原子完成；
                 // 附加 nanoTime 后缀确保与旧 key 不碰撞（配置未变时 generateConfigId 可能复用旧值）。
                 String newConfigId = generateConfigId() + "_r" + System.nanoTime();
                 VerboseLogging.logInfoIfVerbose(logger, "Generating new configId: {} (old was: {})", newConfigId, oldConfigId);
 
                 initializePlaywright(newConfigId);
                 initializeBrowser(newConfigId);
-                currentConfigId.set(newConfigId);
+                TestContextHolder.get().set(CURRENT_CONFIG_ID_KEY,newConfigId);
 
                 VerboseLogging.logInfoIfVerbose(logger, " Browser restarted successfully for config: {}", newConfigId);
             }
@@ -1164,7 +1232,7 @@ public class PlaywrightManager {
         closePage();
         closeContext();
 
-        // 关键修复 P2-17：遍历每个 Browser 实例，先关闭其所有 BrowserContext，再关闭 Browser，
+        // 关键遍历每个 Browser 实例，先关闭其所有 BrowserContext，再关闭 Browser，
         // 否则 BrowserContext 可能被静默丢弃（即便本框架不鼓励多线程持有 context，长跑+并发场景
         // 下仍有其他线程创建的 context 残留）。
         for (Browser browser : new ArrayList<>(browserInstances.values())) {
@@ -1173,13 +1241,13 @@ public class PlaywrightManager {
                     for (BrowserContext bc : browser.contexts()) {
                         if (bc == null) continue;
                         try {
-                            // ⭐ 修复 L3：改走 PlaywrightContextManager.closeContext，其内部已包含
+                            //  修复 L3：改走 PlaywrightContextManager.closeContext，其内部已包含
                             //    ① 带 15s 超时的 tracing.stop（原 bc.close() 会跳过 trace 落盘，
                             //       留下不完整/残留 trace 文件）
                             //    ② RouteRegistry.clearContext（释放路由层对该 context 的引用，
                             //       否则调度器线程池会持有已销毁 context → 内存泄漏）
                             //    ③ 受保护的 context.close()
-                            // ⭐ 修复 L4：删除原死代码空 if 块，以及
+                            //  修复 L4：删除原死代码空 if 块，以及
                             //    bc.pages().removeIf(p -> !p.isClosed()) —— 该语句把【仍打开】的 page
                             //    从列表移除（与注释"已关闭的 page 跳过"语义相反），且 pages() 返回
                             //    不可变列表时 removeIf 会抛 UnsupportedOperationException，
@@ -1222,13 +1290,13 @@ public class PlaywrightManager {
 
         // 统一清理所有 ThreadLocal（防止线程复用/线程池场景下的内存泄漏）
         PlaywrightSerenityBridge.cleanupThreadLocals(true);
-        // ⭐ 最终清理：Browser 已关闭，currentConfigId 可以安全清除
-        currentConfigId.remove();
+        //  最终清理：Browser 已关闭，currentConfigId 可以安全清除
+        TestContextHolder.get().remove(CURRENT_CONFIG_ID_KEY);
 
-        // ⭐ 关闭 BrowserStack Local 隧道（由当前策略决定：本地策略内仍委托 BrowserStackManager.cleanup，非 Local 模式为 no-op）
+        //  关闭 BrowserStack Local 隧道（由当前策略决定：本地策略内仍委托 BrowserStackManager.cleanup，非 Local 模式为 no-op）
         resolveStrategy().cleanup();
 
-        // ⭐ 修复 R5/R7：Browser 实例已全部关闭后，统一清理全局 Route 注册表与异步调度器，
+        //  修复 R5/R7：Browser 实例已全部关闭后，统一清理全局 Route 注册表与异步调度器，
         // 防止直接 close browser（未逐 context 关闭）场景下 DISPATCHED_ROUTES / 原生 route handler /
         // ContextRouteEngineManager 调度任务残留导致的泄漏与跨场景路由串扰。
         safeClean("ContextRouteEngineManager.stopAll", () -> RouteLifecycleRegistry.get().stopAllContextEngines());
@@ -1245,18 +1313,18 @@ public class PlaywrightManager {
     }
 
     public static void cleanupForScenario() {
-        // ⭐ 修复 A-1：先调用桥做 scenario 级 Page/Context 关闭（桥内部 synchronized 取
-        //   contextThreadLocal.get()/pageThreadLocal.get() 执行真正的 close）。
+        //  修复 A-1：先调用桥做 scenario 级 Page/Context 关闭（桥内部 synchronized 取
+        //   TestContextHolder.get().get(CONTEXT_KEY)/TestContextHolder.get().get(PAGE_KEY) 执行真正的 close）。
         //   ⚠️ 禁止在桥前 remove page/context 引用，否则桥取到 null → scenario 级
         //   Context/Page 不被关闭（仅触发 onClose 钩子），造成真实浏览器资源泄漏。
         //
-        // ⭐ 修复 P2-15：CustomOptionsManager 的清理必须放到【桥之后】。
+        //  CustomOptionsManager 的清理必须放到【桥之后】。
         //   桥在 feature 模式（resetCustomContextOptionsForFeatureMode）会读取
         //   customStorageStatePath 来"跨 scenario 保留登录态"；原实现在桥之前调用
         //   removeAllThreadLocals() 将其清空，使该优化被静默绕过。
         //   currentConfigId 与钩子快照不参与桥的决策，可在桥前安全清理。
-        currentConfigId.remove();
-        // ⭐ 修复 P0-1 内存泄漏：Scenario 结束时清除当前线程的 Context 规则快照，避免旧 Context 哈希 key 残留
+        TestContextHolder.get().remove(CURRENT_CONFIG_ID_KEY);
+        //   内存泄漏：Scenario 结束时清除当前线程的 Context 规则快照，避免旧 Context 哈希 key 残留
         ContextLifecycleHookManager.clearSnapshotForCurrentThread();
 
         PlaywrightSerenityBridge.cleanupForScenario();
@@ -1264,8 +1332,8 @@ public class PlaywrightManager {
         // 桥已返回：Page/Context 已真正关闭，且桥已读完 customStorageStatePath，
         // 此时再清理当前线程的资源型与自定义选项 ThreadLocal 引用。
         CustomOptionsManager.removeAllThreadLocals();
-        pageThreadLocal.remove();
-        contextThreadLocal.remove();
+        TestContextHolder.get().remove(PAGE_KEY);
+        TestContextHolder.get().remove(CONTEXT_KEY);
     }
 
     /**
@@ -1303,7 +1371,7 @@ public class PlaywrightManager {
     // ==================== 包内访问器（供同包子类使用） ====================
 
     static Page getPageThreadLocal() {
-        return pageThreadLocal.get();
+        return TestContextHolder.get().get(PAGE_KEY);
     }
 
     static FrameworkState getFrameworkState() {

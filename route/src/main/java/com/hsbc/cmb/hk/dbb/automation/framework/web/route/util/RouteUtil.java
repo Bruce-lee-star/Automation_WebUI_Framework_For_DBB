@@ -54,7 +54,7 @@ public final class RouteUtil {
     public static final String RT_OTHER = "other";
 
     // ═══════════════════════════════════════════════════════════════
-    // JsonPath 编译缓存（⭐ P2-15：单一共享，替代 ModifyHandler / MonitorHandler
+    // JsonPath 编译缓存（ P2-15：单一共享，替代 ModifyHandler / MonitorHandler
     // 各自维护的缓存，提升命中率、消除重复编译）
     // ═══════════════════════════════════════════════════════════════
 
@@ -123,7 +123,7 @@ public final class RouteUtil {
     private RouteUtil() {}
 
     /**
-     * 全局统一 JsonPath 配置（⭐ 一致性修复：此前 ModifyHandler 使用自定义 Configuration，
+     * 全局统一 JsonPath 配置（ 一致性修复：此前 ModifyHandler 使用自定义 Configuration，
      * 而 MonitorHandler 直接用 {@code JsonPath.compile} 默认配置，
      * 两者在缺失字段处理、异常策略上存在语义差异，会导致同一表达式在不同 Handler 下行为不一致）。
      * <p>统一采用 Jackson 提供器 + {@code Option.SUPPRESS_EXCEPTIONS}（缺失路径返回 null/空，
@@ -149,7 +149,7 @@ public final class RouteUtil {
     /**
      * 检查请求是否匹配规则中定义的所有请求条件。
      *
-     * <p>⭐ Phase 2（enterprise-api-interception-design-final.md）：匹配逻辑已统一收敛到
+     * <p> Phase 2（enterprise-api-interception-design-final.md）：匹配逻辑已统一收敛到
      * {@link ApiMatcher}，本方法作为兼容入口委托给 {@link ApiMatcher#matchesRequest(Route)}，
      * 保证 MONITOR / MODIFY / MOCK / DELAY 四种能力共用同一套匹配实现。
      *
@@ -166,14 +166,14 @@ public final class RouteUtil {
     // ═══════════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════════
-    // ⭐ Phase 2: 请求匹配逻辑已统一收敛到 ApiMatcher（见 requestMatches 委托）。
+    //  Phase 2: 请求匹配逻辑已统一收敛到 ApiMatcher（见 requestMatches 委托）。
     //   原 matchResourceType / matchMethod / matchHeaders / matchQueryParams /
     //   matchContentType / matchBodyRegex / matchReferrer / matchOrigin /
     //   matchFrame / matchNavigation 十个私有方法已迁移至 ApiMatcher，此处删除避免死代码。
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * ⭐ 统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorHandler /
+     *  统一缓存淘汰：弱一致性批量移除约 1/4 条目（与 MonitorHandler /
      * ApiCaptureContext 同源策略）。避免 entrySet().iterator().remove() 在结构变更时抛
      * IllegalStateException，也避免简单 map.clear() 使缓存命中率瞬间归零。
      * 供 RouteEngine / ApiCaptureContext / 各 Handler 的 JSONPATH_CACHE 等复用。
@@ -191,7 +191,7 @@ public final class RouteUtil {
     }
 
     /**
-     * 从缓存获取或编译一个 JsonPath 表达式（⭐ P2-15：单一共享入口，供 ModifyHandler /
+     * 从缓存获取或编译一个 JsonPath 表达式（ P2-15：单一共享入口，供 ModifyHandler /
      * MonitorHandler 复用同一份 JSONPATH_CACHE）。
      *
      * @param expression JsonPath 表达式字符串（作为缓存 key）
@@ -248,11 +248,11 @@ public final class RouteUtil {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // ⭐ S2: URL 脱敏 — 日志中隐藏 query 参数中的敏感信息
+    //  S2: URL 脱敏 — 日志中隐藏 query 参数中的敏感信息
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * ⭐ S2: 对 URL 做脱敏处理（委托公共脱敏工具，隐藏 query 中的敏感参数）。
+     *  S2: 对 URL 做脱敏处理（委托公共脱敏工具，隐藏 query 中的敏感参数）。
      * <p>避免 access token / API key 等敏感信息泄漏到日志/Sereinity 报告中。
      * 实现已统一收口到 {@code common.security.SensitiveDataSanitizer}，
      * 此处仅作 web 层兼容入口（保持 RouteUtil 既有 API 不变）。
@@ -300,6 +300,7 @@ public final class RouteUtil {
         try {
             return page.isClosed();
         } catch (Exception e) {
+            // 任何读取异常都视为页面已不可用，安全放行
             return true;
         }
     }
@@ -319,7 +320,7 @@ public final class RouteUtil {
     /**
      * 安全 fallback：把请求交给【下一个】匹配的 route handler。
      *
-     * <p>⭐ 与 {@link #resumeIfOpen(Route)} 的关键差异：
+     * <p> 与 {@link #resumeIfOpen(Route)} 的关键差异：
      * <ul>
      *   <li>{@code resume()} —— <b>终结</b> Playwright 的 handler 链，请求直接放行到网络；
      *       后续注册的同 pattern handler <b>不会再被调用</b>。</li>
@@ -371,7 +372,7 @@ public final class RouteUtil {
             }
         }
         String m = msg.toLowerCase();
-        // ⭐ 修复 5.4：覆盖 Playwright 全部生命周期失效文案（Chromium / Firefox / WebKit 差异）
+        //  修复 5.4：覆盖 Playwright 全部生命周期失效文案（Chromium / Firefox / WebKit 差异）
         return m.contains("object doesn't exist")
                 || m.contains("route")
                 && (m.contains("doesn't exist") || m.contains("already handled")

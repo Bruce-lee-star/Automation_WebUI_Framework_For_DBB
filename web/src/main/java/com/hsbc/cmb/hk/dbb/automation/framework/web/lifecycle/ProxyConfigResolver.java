@@ -257,7 +257,7 @@ public final class ProxyConfigResolver {
         if (uri != null && uri.getRawUserInfo() != null) {
             String scheme = uri.getScheme() != null ? uri.getScheme() + "://" : "http://";
             String host = uri.getHost();
-            // ⭐ 修复问题5：畸形 URL（如 http:///path-only）host 为 null 时，
+            //  修复问题5：畸形 URL（如 http:///path-only）host 为 null 时，
             // 返回 scheme + localhost 占位，避免携带 userinfo 的原 url 被误用/泄露凭证
             if (host == null) host = "localhost";
             int port = uri.getPort();

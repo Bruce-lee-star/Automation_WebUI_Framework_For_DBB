@@ -51,7 +51,7 @@ public class EntityBuilder {
 
             // Build final entity (copy constructor + auto load headers etc.)
             Entity builtEntity = new Entity(entity);
-            // ⭐ 修复 P2-26：headers 可能含 Authorization / 会话 token，日志必须脱敏后再输出
+            //  headers 可能含 Authorization / 会话 token，日志必须脱敏后再输出
             LOGGER.info("Entity built successfully, headers: {}",
                     ApiLogSanitizer.toLogString(builtEntity.getRequestHeaders()));
             return builtEntity;
@@ -76,7 +76,7 @@ public class EntityBuilder {
      * @throws IllegalArgumentException if entityName is null or empty
      */
     public static Entity build(String entityName, String env) {
-        // ⭐ 修复 P2-21：原实现通过 System.setProperty(Constants.ENV, env) 写入【JVM 全局】属性，
+        //  原实现通过 System.setProperty(Constants.ENV, env) 写入【JVM 全局】属性，
         //    并行 scenario 下线程 A 设置的环境会被线程 B 读到，造成配置串扰且极难排查。
         //    改为把 env 作为显式参数传递，仅对本次构建生效，不再触碰任何全局状态。
         String normalizedEnv = (env == null || env.trim().isEmpty()) ? null : env.trim();

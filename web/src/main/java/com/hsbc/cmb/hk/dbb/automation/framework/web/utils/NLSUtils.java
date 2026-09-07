@@ -1,6 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.utils;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.JsonUtils;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.jayway.jsonpath.TypeRef;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,7 +43,7 @@ public final class NLSUtils {
     /**
      * 当前语言 — 进程级全局值（带写入序号，见 {@link LangValue}）。
      *
-     * <p>⭐ 跨线程修正（两轮）：
+     * <p> 跨线程修正（两轮）：
      *
      * <p><b>第一轮</b>：原实现纯 {@code ThreadLocal}，在 Monitor 的 onResponse 回调线程里
      * {@code setLanguage} 后，测试主线程读不到（线程副本隔离）。改为「全局 + 线程级覆盖」双轨。
@@ -63,8 +65,11 @@ public final class NLSUtils {
     private static final java.util.concurrent.atomic.AtomicReference<LangValue> globalLang =
             new java.util.concurrent.atomic.AtomicReference<>();
 
-    /** 线程级语言覆盖（用于并发多场景互不干扰的隔离场景），同样带写入序号。 */
-    private static final ThreadLocal<LangValue> threadLangOverride = new ThreadLocal<>();
+    /** 线程级语言覆盖（用于并发多场景互不干扰的隔离场景），同样带写入序号。
+     *   T3-1 收拢：原 {@code static ThreadLocal} 改走 {@link TestContextHolder}（per-thread 等价，
+     *  为后续 per-scenario 隔离与并行扫清全局静态状态）。 */
+    private static final ContextKey<LangValue> LANG_OVERRIDE_KEY =
+            ContextKey.of("nls.langOverride", LangValue.class);
 
     /** 全局单调写入序号：用于判定「哪个写入更新」。 */
     private static final java.util.concurrent.atomic.AtomicLong LANG_WRITE_SEQ =
@@ -97,22 +102,22 @@ public final class NLSUtils {
     public static void setLanguage(String lang) {
         if (lang == null) {
             // 传入 null 等价于清除：同样写入「空值标记」使其它线程的副本失效
-            threadLangOverride.remove();
+            TestContextHolder.get().remove(LANG_OVERRIDE_KEY);
             globalLang.set(clearedMarker());
         } else {
-            // ⭐ 同时写入全局值与当前线程副本，且两者共享同一个序号：
+            //  同时写入全局值与当前线程副本，且两者共享同一个序号：
             //   单线程场景行为不变；跨线程场景（Monitor 回调线程设置、主线程读取）
             //   由 getLanguage() 的「序号取新」判定保证可见。
             LangValue v = new LangValue(lang, LANG_WRITE_SEQ.incrementAndGet());
             globalLang.set(v);
-            threadLangOverride.set(v);
+            TestContextHolder.get().set(LANG_OVERRIDE_KEY, v);
         }
         log.info("[NLS] language switched to: {}", lang);
     }
 
     public static String getLanguage() {
-        // ⭐ 取「写入更新的那个」，而非无条件优先线程副本（否则陈旧副本会遮蔽跨线程新值）
-        LangValue override = threadLangOverride.get();
+        //  取「写入更新的那个」，而非无条件优先线程副本（否则陈旧副本会遮蔽跨线程新值）
+        LangValue override = TestContextHolder.get().get(LANG_OVERRIDE_KEY);
         LangValue global = globalLang.get();
         if (override == null) return global == null ? null : global.lang;
         if (global == null) return override.lang;
@@ -134,7 +139,7 @@ public final class NLSUtils {
      * 全局侧写入「空值标记」并占用更新的序号，使任何线程残留的陈旧副本均因序号更旧而失效。
      */
     public static void reset() {
-        threadLangOverride.remove();
+        TestContextHolder.get().remove(LANG_OVERRIDE_KEY);
         globalLang.set(clearedMarker());
     }
 

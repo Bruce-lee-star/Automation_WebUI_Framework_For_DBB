@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
-public class ScreenshotException extends RuntimeException {
+public class ScreenshotException extends FrameworkException {
 
     private static final long serialVersionUID = 1L;
 

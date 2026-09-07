@@ -5,7 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.route.util.RouteUtil;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * ⭐ Phase 5 死代码隔离载体。
+ *  Phase 5 死代码隔离载体。
  *
  * <p>原位于 {@code RouteEngine} 的带缓存版 {@code literalPathOf} + {@code LITERAL_PATH_CACHE}。
  * 经全仓搜索（route 与 test-automation 模块）：该缓存版方法<b>无任何调用点</b>
@@ -47,7 +47,7 @@ public final class RouteLiteralPathCache {
         if (star >= 0) p = p.substring(0, star);
 
         String result = p.isEmpty() ? "" : p;
-        // ⭐ 修复 P4：原实现在 size() 达到上限后【既不淘汰也不新增】，缓存从此彻底停止工作：
+        //  原实现在 size() 达到上限后【既不淘汰也不新增】，缓存从此彻底停止工作：
         //    新 urlPattern 永远进不了缓存，之后每次调用都重做字符串运算，而 size() 恒等于 MAX。
         //    命中率不是"缓慢下降"，而是"归零"——只在规则数增长超过上限时才暴露。
         //    改为复用 RouteUtil 的统一淘汰策略：满则先批量淘汰约 1/4 再写入，缓存持续有效。

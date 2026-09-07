@@ -157,10 +157,6 @@ public class LoginSteps {
 
         // Axe-core accessibility scan on login page
 //        AxeCoreScanner.scanPage("Login Page - Initial");
-//loginPage.pause();
-//        Page page = loginPage.getPage();
-//        RoleElementPicker.openPanel(page,
-//                "nls/NLS_footer.json", "nls/NLS_idv_logon.json");  // nls 文件（可变参数；page/steps 类名由 URL 派生）
         loginPage.userNameIpt.type(username);
         loginPage.nextBtn.click();
         loginPage.paswordIpt.type(BDDUtils.getCurrentPassword());
@@ -238,7 +234,7 @@ public class LoginSteps {
         }
 
 
-        // ⭐⭐⭐ API 断言由框架自动检查（PlaywrightListener.checkAndFailOnApiAssertions）
+        //  API 断言由框架自动检查（PlaywrightListener.checkAndFailOnApiAssertions）
         // 每个步骤结束时自动抛出 AssertionError，无需业务代码手动检查
 
         logger.info("Login completed and session saved");

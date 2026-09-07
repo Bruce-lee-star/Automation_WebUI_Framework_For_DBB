@@ -18,6 +18,7 @@
         <module>reporting</module>
         <module>api</module>
         <module>web</module>
+        <module>codegen</module>
         <module>route</module>
         <module>test-automation</module>
     </modules>
@@ -35,7 +36,18 @@
         <typesafe.config.version>1.4.5</typesafe.config.version>
         <gson.version>2.13.2</gson.version>
         <json.path.version>2.9.0</json.path.version>
+        <cucumber.version>7.31.0</cucumber.version>
         <json.version>20240303</json.version>
+        <!-- T2-8：报告模板引擎。2.3.34 与 Serenity 已传递进 classpath 的版本保持一致，
+             reporting 提升为 direct 依赖后不会触发 Enforcer 的 requireUpperBoundDeps。 -->
+        <freemarker.version>2.3.34</freemarker.version>
+        <!-- T2-8/方案A：汇总报告生成的绑定阶段。
+             由 test-automation 的 pom 内联 exec-maven-plugin 引用（绑定 verify），
+             生命周期上晚于 post-integration-test 的 serenity:aggregate，
+             由 Maven 阶段（而非同阶段插件声明顺序）保证「聚合完成后再生成」。
+             仅 test-automation（唯一含 framework-reporting 的业务测试模块）执行；
+             根聚合模块与框架模块无此 exec，天然不触发。 -->
+        <summary.report.phase>verify</summary.report.phase>
 
         <!-- 安全漏洞修复版本 -->
         <logback.version>1.5.34</logback.version>
@@ -54,6 +66,9 @@
         <!-- SpotBugs 门禁（T1-3）版本与排除过滤器 -->
         <spotbugs.plugin.version>4.9.8.5</spotbugs.plugin.version>
         <spotbugs.version>4.9.8</spotbugs.version>
+
+        <!-- CVE 门禁（T1-4）：OSV-Scanner 配置 -->
+        <cve.gate.skip>false</cve.gate.skip>
 
         <!-- 默认跑 @route；CI 可用 -Dtags=@api 覆盖（见 test-automation 的 failsafe 配置） -->
         <tags>@route</tags>
@@ -288,6 +303,12 @@
                 <artifactId>htmlunit</artifactId>
                 <version>4.18.0</version>
             </dependency>
+            <!-- T4-4：将 Serenity 传递的 Cucumber 版本钉为显式属性，作为 README 技术栈表的单一事实来源（doc-drift 校验据此比对） -->
+            <dependency>
+                <groupId>io.cucumber</groupId>
+                <artifactId>cucumber-core</artifactId>
+                <version>${cucumber.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -441,6 +462,57 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- CVE 门禁前置（T1-4）：在 package 阶段将各模块安装到本地 .m2，
+                 使后续 verify 阶段的 OSV-Scanner pom 扫描能解析 intra-project 兄弟模块 framework-*，
+                 避免“failed resolution”误判与漏检。对 mvn test 无影响（test 在 package 之前）。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>install-modules-for-sca</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>install</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- CVE 门禁（T1-4）—— 企业级免 key 方案：Google OSV-Scanner（OSV.dev，聚合 NVD/GHSA）。
+                 OWASP dependency-check 13.0.0 在 2026 下强制要求 NVD API Key 且不可绕过（无 key 连报告都出不了），
+                 故改用同源情报、免 key、Maven 可集成的 OSV-Scanner：递归扫描全部 pom.xml（依赖已在 package 阶段装入 .m2），
+                 osv-scanner.toml 冻结当前已知漏洞作为【基线】，任何【新增漏洞 ID】使构建失败（阻断回归）。
+                 运行：CI 先行 tools/install-osv-scanner.ps1 安装二进制并设 OSV_CVE_GATE_REQUIRED=true 强制；
+                       本地无二进制时仅告警跳过（不阻断 dev 构建）。仅根模块执行一次（inherited=false）。 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <executions>
+                    <execution>
+                        <id>osv-scanner-cve-gate</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <inherited>false</inherited>
+                        <configuration>
+                            <executable>powershell</executable>
+                            <arguments>
+                                <argument>-NoProfile</argument>
+                                <argument>-ExecutionPolicy</argument>
+                                <argument>Bypass</argument>
+                                <argument>-File</argument>
+                                <argument>${project.basedir}/tools/cve-gate.ps1</argument>
+                            </arguments>
+                            <skip>${cve.gate.skip}</skip>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
+
 </project>

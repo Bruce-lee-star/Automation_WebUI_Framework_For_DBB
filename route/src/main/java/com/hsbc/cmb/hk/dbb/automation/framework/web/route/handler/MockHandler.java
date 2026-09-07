@@ -128,14 +128,14 @@ public class MockHandler {
             opts.setHeaders(respHeaders);
         }
 
-        // ── 6. 同步存储 Mock 调用到 ApiCaptureContext（⭐ 必须在 fulfill 之前）────
-        //    ⭐ MOCK 的 route.fulfill() 不发真实网络请求，不会有真实响应到达，
+        // ── 6. 同步存储 Mock 调用到 ApiCaptureContext（ 必须在 fulfill 之前）────
+        //     MOCK 的 route.fulfill() 不发真实网络请求，不会有真实响应到达，
         //       因此必须由本 Handler 自行落库，否则该调用在 ApiCaptureContext 中完全不可见。
-        //    ⭐ 时序契约（与 ModifyHandler 一致，修复 c21 竞态）：
+        //     时序契约（与 ModifyHandler 一致，修复 c21 竞态）：
         //       fulfill 会立即 resolve 浏览器侧的 fetch Promise，测试代码随即被唤醒并查询
         //       getLastApiCall / waitForApi。若 store 在 fulfill 之后，查询线程完全可能
         //       先于 store 执行 —— 拿到 null 而误判"mock 未生效"。故先 store 再 fulfill。
-        //    ⭐ handleType 显式标记为 MOCK：MOCK 是 terminal（短路），
+        //     handleType 显式标记为 MOCK：MOCK 是 terminal（短路），
         //       不产生真实网络响应，也不叠加 MONITOR 断言（见 RouteHandleType）。
         storeMockCall(route, rule, url, status, body);
 
@@ -206,7 +206,7 @@ public class MockHandler {
      * @param url   请求 URL（已缓存，避免重复 JNI 调用）
      */
     private static void handleInterceptRealResponse(Route route, RouteRule rule, String url) {
-        // ⭐ 修复 C-2：url 可能含 token（?token=），统一脱敏后再记录
+        //  修复 C-2：url 可能含 token（?token=），统一脱敏后再记录
         LOGGER.info("[MockHandler] Intercepting real response: pattern='{}', url='{}'",
                 rule.getUrlPattern(), RouteUtil.sanitizeUrl(url));
 
@@ -219,11 +219,13 @@ public class MockHandler {
         if (isPageClosed(route)) {
             LOGGER.warn("[MockHandler] Page/context closed before fetch, resume to avoid blocking: pattern='{}', url='{}'",
                     rule.getUrlPattern(), url);
-            try { route.resume(); } catch (Exception ignored) {}
+            try { route.resume(); } catch (Exception ignored) {
+                // 页面已关闭，resume 失败即放弃（已提前 return，不挂起即可）
+            }
             return;
         }
 
-        // ⭐ route 生命周期契约守卫：任何异常路径（含非 PlaywrightException 的 RuntimeException）
+        //  route 生命周期契约守卫：任何异常路径（含非 PlaywrightException 的 RuntimeException）
         //    都由 finally 兜底终结，避免「已 fetch 但未终结」导致浏览器端请求永久 pending。
         boolean routeSettled = false;
         try {
@@ -281,13 +283,13 @@ public class MockHandler {
                 }
             }
 
-            // ── 3. 同步存储（⭐ 必须在 fulfill 之前，规避 c21 查询竞态）──────
-            //    ⭐ 拦截真实响应模式下，请求由 route.fetch() 在 route 内部发出，
+            // ── 3. 同步存储（ 必须在 fulfill 之前，规避 c21 查询竞态）──────
+            //     拦截真实响应模式下，请求由 route.fetch() 在 route 内部发出，
             //       浏览器侧不会为它生成独立的网络响应事件（响应由 fulfill 直接注入），
             //       因此没有任何其它通道会记录本次调用 —— 必须在此同步落库。
-            //    ⭐ handleType = MOCK：最终对外响应是 fulfill 注入的（已替换字段），
+            //     handleType = MOCK：最终对外响应是 fulfill 注入的（已替换字段），
             //       对前端与查询方而言这是一次 mock 响应，非真实网络响应。
-            //    ⭐ 时序同纯 Mock 分支：fulfill 会立即 resolve 浏览器侧 fetch，
+            //     时序同纯 Mock 分支：fulfill 会立即 resolve 浏览器侧 fetch，
             //       先 store 才能保证调用方唤醒后查得到。
             storeInterceptedCall(route, rule, url, status, body, realResp.headers());
 
@@ -343,12 +345,14 @@ public class MockHandler {
             }
             routeSettled = true;
         } finally {
-            // ⭐ 生命周期契约最终守卫：非 PlaywrightException（如字段替换逻辑抛出的
+            //  生命周期契约最终守卫：非 PlaywrightException（如字段替换逻辑抛出的
             //    RuntimeException）逃逸时 route 仍未终结，此处兜底放行。
             if (!routeSettled) {
                 LOGGER.warn("[MockHandler] Route not settled on exit (runtime exception escaped), "
                         + "resuming to honor route lifecycle contract: pattern='{}'", rule.getUrlPattern());
-                try { route.resume(); } catch (Exception ignored) { }
+                try { route.resume(); } catch (Exception ignored) {
+                    // finally 兜底 resume：失败即放弃，不挂起即可
+                }
             }
         }
     }

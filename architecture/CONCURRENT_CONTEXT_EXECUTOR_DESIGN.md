@@ -260,3 +260,137 @@ runAll(tasks, options)
 3. 风险 1 的「共享 Browser 单点」是否接受；是否需要「崩溃自动重建」兜底
 4. 风险 4 的浏览器类型切换：fail-fast 还是维持现状
 5. ~~是否需要同步修复 `SummaryReportGenerator` 的统计口径 bug~~ **已撤回**：实测为跨轮次结果在 `target/site/serenity` 累积所致，非代码缺陷
+
+---
+
+## 附录 A：SSO 感知并发（按身份分区互斥）
+
+> 状态：**仅存档设计，本轮不落地代码**（用户决策 2026-09-07）。待后续集成 JUnit 5（`cucumber-junit-platform-engine`）时与本方案 C2 一并实施。
+> 前置共识：方案 C2（第三节）已解决 *Browser / Context* 级隔离，但其假设"各并发任务的登录身份互不冲突"。本附录在更高一层补充**身份维度互斥**约束，与 C2 正交、可叠加。
+
+### A.1 背景与动机
+
+方案 C2 的并发隔离建立在"每个任务持有独立 BrowserContext"之上。但 SSO（单点登录）场景下，**身份**才是真正的共享资源：
+
+- 同一 `(环境, 用户名)` 的两个 scenario 若并发登录，IdP 通常会**拒绝第二次并发登录**或使两者**互相覆盖 SSO 会话**；
+- 即便登录被 `LoginGuard` 单飞收口（同 `sessionKey` 只登一次、复用会话），两 scenario 仍会**并发执行步骤、争用同一 SSO 会话** → 状态串扰。
+
+因此并发判据需升级为：**相同身份 → 串行；不同身份 → 并行**。这是比 Context 隔离更高一层的约束，无法仅靠 Context 隔离解决。
+
+### A.2 核心抽象
+
+```
+┌─ 同 (env,username) 的两 scenario ──┐  ConcurrencyGate 按 key 互斥（串行）
+│  scenario-A ── acquire(key)        │
+│  scenario-B ── acquire(key) 阻塞   │
+└────────────────────────────────────┘
+   不同 (env,username) 的 scenario ──→ 各自 key 独立 → 并行执行
+   无登录的只读/API scenario ──→ key==null → 直接放行（不参与互斥）
+```
+
+| 类 / 接口 | 职责 | 包归属 |
+|---|---|---|
+| `ConcurrencyPartitionKey` | 不可变值对象，指纹化身份维度 `{environment, username, tenant?, role?, locale?}`；`equals/hashCode` 基于规范化后的维度元组 | `framework-core`（并发域顶层或 `common.concurrent`） |
+| `ConcurrencyGate` | **runner 无关、串行安全**的互斥闸门：`ConcurrentHashMap<ConcurrencyPartitionKey, Semaphore> gates`；`acquire(key)` / `release(key)`；`key==null` 直接放行 | `framework-core` |
+| `ConcurrencyKeyResolver` | 接口：返回 `Optional<ConcurrencyPartitionKey>`，供不同身份来源策略实现 | `framework-core` |
+
+**`ConcurrencyGate` 语义要点（企业级约束）**：
+
+```java
+public final class ConcurrencyGate {
+    private static final ConcurrentHashMap<ConcurrencyPartitionKey, Semaphore> GATES
+            = new ConcurrentHashMap<>();
+
+    /** 进入 scenario 时调用；key==null 直接返回（无身份场景不参与互斥）。 */
+    public static void acquire(@Nullable ConcurrencyPartitionKey key) {
+        if (key == null) return;                       // 非 SSO / 只读场景：零约束
+        GATES.computeIfAbsent(key, k -> new Semaphore(perKeyPermits(k), true))
+             .acquireUninterruptibly();                // per-key permits 默认 1（互斥）
+    }
+
+    /** scenario 结束（含失败）时必须配对调用；key==null 直接返回。 */
+    public static void release(@Nullable ConcurrencyPartitionKey key) {
+        if (key == null) return;
+        Semaphore s = GATES.get(key);
+        if (s != null) s.release();
+    }
+}
+```
+
+- `ConcurrentHashMap` 不允许 null key —— 已用 `if (key == null) return` 规避（无身份场景根本不进 Map）；
+- `acquireUninterruptibly()` 避免 `InterruptedException` 被吞或打断测试线程的中断策略；release 必须放在框架既有清理收口的 `finally` 中，确保与 acquire 配对；
+- `perKeyPermits(key)` 默认 1（互斥），可配置为 N（某些环境允许同用户 N 个并发会话）。
+
+### A.3 身份来源（"如何告诉框架"）
+
+业务 scenario **无需逐个声明**——登录已收口在 `SessionManager` / `LoginGuard`，框架可自动推导：
+
+| 来源 | 机制 | 说明 |
+|---|---|---|
+| **自动推导（默认）** | `LoginIdentityKeyResolver` | 从当前 `FrameworkConfig` 解析出的 `environment` + 实际登录的 `username` 构成 key；基于 `LoginGuard`/`SessionManager` 的 `sessionKey` 归一化。业务零侵入 |
+| **显式覆盖** | `TagOverrideKeyResolver` | 特殊 scenario 打 tag `@sso=UAT:alice` 或 `@concurrencyKey=env:user:tenant` 覆盖自动推导 |
+
+- 解析器可**链式**：先跑 `TagOverrideKeyResolver`（命中即返回），未命中回退 `LoginIdentityKeyResolver`；
+- 维度集合（`environment/username/tenant/role/locale`）可配置，决定"什么叫同一个身份"。
+
+### A.4 与既有机制的分工（关键）
+
+| 维度 | 由谁负责 | 说明 |
+|---|---|---|
+| 登录单飞 | `LoginGuard`（**已有**） | 同 `sessionKey` 只登一次、复用会话 |
+| **整 scenario 按身份互斥** | `ConcurrencyGate`（本附录新增） | 把单飞升级为"整段执行互斥"，杜绝同身份并发抢 SSO 会话 |
+| 跨环境并行 | Serenity 跨 JVM `batch` | 每 worker = 一环境，天然按环境隔离（方案 C2 第二节已确认 Serenity 无 JVM 内并行） |
+| 同环境跨用户名并行 | `ConcurrencyGate`（JUnit 5 开通后） | 在 JVM 内按 key 各自独立 → 并行 |
+| 串行模式（当前） | 闸门恒为 no-op | 全部 scenario 顺序执行，行为零回归 |
+
+> 结论：`ConcurrencyGate` 与 `LoginGuard` 互补而非替代——前者约束"执行并发度"，后者约束"登录次数"。二者叠加完整覆盖 SSO 场景。
+
+### A.5 接入点（runner 无关）
+
+- **`acquire`**：在框架既有 `@Before`（建立登录的生命周期 hook，即 `LoginGuard` 单飞登录之后）调用，key 由 `ConcurrencyKeyResolver` 链解析；
+- **`release`**：在 `@After` / 框架清理收口（`PlaywrightManager.cleanupForScenario()` 同款 seam）的 `finally` 中调用，确保 scenario 成功/失败都释放；
+- 当前 key 经 `TestContext` seam 持有，使 `release` 与 `acquire` 严格配对（即使 scenario 抛异常也不泄漏信号量）。
+
+### A.6 配置（沿用 FrameworkConfig 三段式）
+
+| 常量 | key | 默认值 | 说明 |
+|---|---|---|---|
+| `CONCURRENCY_PARTITION_ENABLED` | `serenity.playwright.concurrent.partition.enabled` | `false`（JUnit 5 前恒 no-op） | 是否启用按身份互斥；未启用时 `acquire` 直接返回 |
+| `CONCURRENCY_PARTITION_PER_KEY_PERMITS` | `serenity.playwright.concurrent.partition.per.key.permits` | `1` | 每身份并发许可；>1 表示允许同身份 N 路并发 |
+| `CONCURRENCY_PARTITION_DIMENSIONS` | `serenity.playwright.concurrent.partition.dimensions` | `environment,username` | 参与分区键的维度集合 |
+
+### A.7 企业级约束对照
+
+| 约束 | 落实方式 |
+|---|---|
+| 线程安全 / 并发可见性 | `ConcurrentHashMap` 持有 per-key `Semaphore`；`acquireUninterruptibly`；release 在 `finally` 配对 |
+| 清晰 API 边界 | 闸门置于 `framework-core` 并发域；`ConcurrencyGate` 为 `public final` 静态门面，`ConcurrencyKeyResolver` 实现为可被业务安全扩展的 SPI 式接口；**不向业务 Page 泄漏** 内部结构 |
+| 可观测性 | acquire/release 记 `key` + 线程名 + 是否阻塞；汇总日志含"被互斥串行化的身份数" |
+| 健壮错误处理 | `key==null` 安全跳过；resolver 解析失败抛语义化异常（非空 NPE）；`finally` 保证释放不泄漏 |
+| 单测 / 全护盾 | `ConcurrencyGateTest` 固化（见 A.8）；实施后跑全护盾 |
+
+### A.8 测试策略
+
+| 层级 | 内容 |
+|---|---|
+| 单测 `ConcurrencyGateTest` | ① 同 key 两线程互斥（一持有时另一阻塞）；② release 后另一线程获得；③ `key==null` 直接放行、不进 Map；④ 不同 key 互不阻塞（独立并行）；⑤ key 等价性（`environment+username` 规范化后相等即同 key）；⑥ `TagOverrideKeyResolver` 覆盖自动推导；⑦ resolver 链回退语义；⑧ per-key permits=N 时允许 N 路并发 |
+| 全护盾 | `mvn -o -pl test-automation -am test`（闸门默认关闭，行为零回归） |
+| IT（随 JUnit 5） | 同 `(env,user)` 两 scenario 并发 → 断言其一阻塞至另一释放；不同身份 → 断言重叠执行 |
+
+### A.9 落地步骤（待启动，随 JUnit 5 迁移一并实施）
+
+1. `framework-core` 新增 `ConcurrencyPartitionKey` / `ConcurrencyGate` / `ConcurrencyKeyResolver` + `LoginIdentityKeyResolver` / `TagOverrideKeyResolver`；
+2. 生命周期 hook（`@Before`/`@After` 收口）接入 `acquire` / `release`（经 `TestContext` 持有 key）；
+3. `FrameworkConfig` 新增 3 个配置项（含纯函数解析）；
+4. `ConcurrencyGateTest`（≥ 8 例）；
+5. 全护盾 + 后续 JUnit 5 IT 验收。
+
+### A.10 风险与对策
+
+| # | 风险 | 对策 |
+|---|---|---|
+| 1 | 身份维度在 scenario 中途变更（env/username 运行期改写） | resolver 在 `@Before` 固定快照 key，禁止中途变更；变更需新开 scenario |
+| 2 | 忘记 release → 信号量泄漏、后续同身份 scenario 永阻塞 | release 置于框架既有清理 `finally` 收口，与 acquire 严格配对；per-key 仅 1 permit 不会自我死锁 |
+| 3 | 海量 key 导致 `GATES` Map 无界增长 | 加 size 上限 + LRU/弱引用淘汰；或按 key 维度上限仅缓存"活跃"信号量，空闲即清理 |
+| 4 | 与 JUnit 5 集成耦合 | 闸门 runner 无关，仅在 JUnit 5（JVM 内并行）生效；Serenity 跨 JVM `batch` 按环境天然隔离，无需闸门 |
+| 5 | `ConcurrentHashMap` 不允许 null key | 已用 `if (key == null) return` 规避（无身份场景根本不进 Map） |

@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -72,10 +74,10 @@ public class BrowserStackManager {
 
     // ==================== 会话状态 ====================
 
-    // ⭐ T4-2 去全局变态：会话态原为 static volatile，并行 scenario 会互相覆盖 session 元数据。
-    // 改为 ThreadLocal，使每个并行线程持有独立 session（与 AxeCoreListener 的 ThreadLocal 隔离范式一致）。
-    private static final ThreadLocal<String> currentSessionId = new ThreadLocal<>();
-    private static final ThreadLocal<String> currentSessionUrl = new ThreadLocal<>();
+    //  T4-2 去全局变态：会话态原为 static volatile，并行 scenario 会互相覆盖 session 元数据；
+    // 先改为 ThreadLocal（与 AxeCoreListener 范式一致），现 T3-1 进一步迁入 TestContext（per-thread 等价）。
+    private static final ContextKey<String> SESSION_ID_KEY = ContextKey.of("browserstack.sessionId", String.class);
+    private static final ContextKey<String> SESSION_URL_KEY = ContextKey.of("browserstack.sessionUrl", String.class);
 
     // ==================== 公共 API：开关检测 ====================
 
@@ -138,7 +140,7 @@ public class BrowserStackManager {
         boolean localEnabled = isLocalEnabled();
         String connectEndpoint = buildWsEndpoint();
 
-        // ⭐ 修复 3-2：tunnel 停止必须用单一 outer try-finally 包裹所有操作（含 logProxyStatus/buildWsEndpoint）。
+        //  修复 3-2：tunnel 停止必须用单一 outer try-finally 包裹所有操作（含 logProxyStatus/buildWsEndpoint）。
         // 原代码 finally 在 inner try 内（L175-185），若 L130/L134 在 try 之前抛异常，finally 永远不执行，
         // 导致 BrowserStackLocal 进程泄漏。
         boolean connected = false;
@@ -175,7 +177,7 @@ public class BrowserStackManager {
                         "[BrowserStack] Unsupported browser: " + browserName +
                         ". Supported: chrome, edge, firefox, webkit");
             }
-            // ⭐ 修复 H14：成功建立连接后才标记 connected；成功路径隧道须保持存活（调用方 session 关闭时 stopTunnel）
+            //  修复 H14：成功建立连接后才标记 connected；成功路径隧道须保持存活（调用方 session 关闭时 stopTunnel）
             connected = true;
             return browser;
         } catch (PlaywrightException e) {
@@ -215,7 +217,7 @@ public class BrowserStackManager {
             // IllegalArgumentException 等非 Playwright 异常也要触发 tunnel 清理
             throw e;
         } finally {
-            // ⭐ 修复 H14：仅当连接失败（connected=false）才在 finally 清理 Local 隧道；
+            //  修复 H14：仅当连接失败（connected=false）才在 finally 清理 Local 隧道；
             // 成功路径必须保留隧道（由调用方在 session 关闭时显式 stopTunnel），
             // 否则隧道在 Browser 会话仍需时即被拆除，导致后续 CDP/WS 流量失败。
             if (tunnelOk && isLocalEnabled() && !connected) {
@@ -254,24 +256,24 @@ public class BrowserStackManager {
      * 获取当前会话 ID（由 PlaywrightManager 或测试监听器设置）
      */
     public static String getCurrentSessionId() {
-        return currentSessionId.get();
+        return TestContextHolder.get().get(SESSION_ID_KEY);
     }
 
     /**
      * 设置当前会话 ID
      */
     public static void setCurrentSessionId(String sessionId) {
-        currentSessionId.set(sessionId);
-        currentSessionUrl.set(getSessionDashboardUrl(sessionId));
+        TestContextHolder.get().set(SESSION_ID_KEY, sessionId);
+        TestContextHolder.get().set(SESSION_URL_KEY, getSessionDashboardUrl(sessionId));
     }
 
     /**
      * 获取当前会话的 BrowserStack Dashboard URL
      */
     public static String getCurrentSessionUrl() {
-        String url = currentSessionUrl.get();
+        String url = TestContextHolder.get().get(SESSION_URL_KEY);
         if (url != null) return url;
-        String id = currentSessionId.get();
+        String id = TestContextHolder.get().get(SESSION_ID_KEY);
         return id != null ? getSessionDashboardUrl(id) : null;
     }
 
@@ -285,7 +287,7 @@ public class BrowserStackManager {
      * @return API 调用是否成功
      */
     public static boolean setTestStatus(String status, String reason) {
-        String sessionId = currentSessionId.get();
+        String sessionId = TestContextHolder.get().get(SESSION_ID_KEY);
         if (sessionId == null || sessionId.isEmpty()) {
             logger.warn("[BrowserStack] Cannot set status: no active session");
             return false;
@@ -654,10 +656,10 @@ public class BrowserStackManager {
 
     private static String maskCdpUrl(String url) {
         if (url == null) return null;
-        // ⭐ 修复 R8：统一委托 RouteUtil.sanitizeUrl（含 query 敏感 key 剥离 + 解析失败兜底掩码），
+        //  修复 R8：统一委托 RouteUtil.sanitizeUrl（含 query 敏感 key 剥离 + 解析失败兜底掩码），
         // 不再维护独立正则，避免与框架其它出域路径的脱敏策略漂移。
         String masked = RouteLifecycleRegistry.get().sanitizeUrl(url);
-        // ⭐ 修复 3-1 + R8：BrowserStack WS URL 特有形态——accessKey 嵌套在 URLEncode JSON 的 caps value 内
+        //  修复 3-1 + R8：BrowserStack WS URL 特有形态——accessKey 嵌套在 URLEncode JSON 的 caps value 内
         // （如 caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D），RouteUtil 的 query 正则匹配不到。
         // 此兜底仅针对该特有形态，保持公共脱敏类的职责单一。
         masked = maskNestedEncodedCredential(masked);
@@ -704,7 +706,7 @@ public class BrowserStackManager {
     /**
      * 脱敏异常/日志消息中的凭据（wss:// / https?:// 中的密码、accessKey）。
      * <p>用于防止 Playwright 内部异常消息（含完整 CDP URL）被日志打印出去。
-     * <p>⭐ 修复 R8：统一委托框架公共脱敏类 {@code SensitiveDataSanitizer.sanitizeFreeText}，
+     * <p> 修复 R8：统一委托框架公共脱敏类 {@code SensitiveDataSanitizer.sanitizeFreeText}，
      * 覆盖 {@code scheme://user:secret@}、query/JSON key=value、Bearer/JWT、超深嵌套 JSON，
      * 不再维护 BrowserStack 私有的双套正则，避免与全局脱敏策略漂移。
      */
@@ -763,10 +765,13 @@ public class BrowserStackManager {
 
     // ==================== 临时能力存储（用于自定义连接）====================
 
-    private static final ThreadLocal<Map<String, Object>> tempCaps = new ThreadLocal<>();
+    //  T3-1 收拢：临时能力存储由 static ThreadLocal 迁入 TestContext（per-thread 等价）。
+    @SuppressWarnings("unchecked")
+    private static final ContextKey<Map<String, Object>> TEMP_CAPS_KEY =
+            ContextKey.of("browserstack.tempCaps", (Class<Map<String, Object>>) (Class<?>) Map.class);
 
-    private static void setTempCapabilities(Map<String, Object> caps) { tempCaps.set(caps); }
-    private static void clearTempCapabilities() { tempCaps.remove(); }
+    private static void setTempCapabilities(Map<String, Object> caps) { TestContextHolder.get().set(TEMP_CAPS_KEY, caps); }
+    private static void clearTempCapabilities() { TestContextHolder.get().remove(TEMP_CAPS_KEY); }
 
     /**
      * 获取 BrowserStack 会话 URL（向后兼容）

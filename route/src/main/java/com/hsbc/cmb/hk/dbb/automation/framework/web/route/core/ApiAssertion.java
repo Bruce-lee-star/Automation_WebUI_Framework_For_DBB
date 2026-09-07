@@ -19,12 +19,14 @@ public class ApiAssertion {
 
     private final String urlPattern;
     private final Pattern regex;
-    /** ⭐ P1: 断言首次未命中时，等待采集管道在途请求闭合的超时上限 */
+    /**  P1: 断言首次未命中时，等待采集管道在途请求闭合的超时上限 */
     private static final long CAPTURE_AWAIT_TIMEOUT_MS = 1_500L;
 
     ApiAssertion(String urlPattern) {
         this.urlPattern = urlPattern;
-        this.regex = globToRegex(urlPattern);
+        // 复用 route 模块统一的 Ant-glob→正则实现（RoutePatternCache，带编译缓存；
+        // 原 ApiCaptureContext 静态域 Phase 5 抽离，ResponseStore 已同样委托，消除重复实现）
+        this.regex = RoutePatternCache.antGlobToRegex(urlPattern);
     }
 
     /**
@@ -145,10 +147,10 @@ public class ApiAssertion {
         CapturedApiCall call = fastExactMatch(ctx);
         if (call != null) return call;
 
-        // ⭐ P1: 竞态兜底 — 等待采集管道在途请求闭合后再重试。
+        //  P1: 竞态兜底 — 等待采集管道在途请求闭合后再重试。
         awaitCapturePipeline(ctx);
 
-        // ⭐ P1.2: 投递式等待 — awaitCompletion 可能在 captureInFlight==0
+        //  P1.2: 投递式等待 — awaitCompletion 可能在 captureInFlight==0
         //   （事件尚未到达 merger、REQUEST 还没计数）时立即返回；若此时只扫一次就放弃，
         //   调用会在随后几毫秒入库但断言已失败。先补扫一次已入库调用；仍未命中则
         //   注册一次性谓词，storeApiCall 入库时直接评估并精确完成 future。
@@ -183,7 +185,7 @@ public class ApiAssertion {
     }
 
     /**
-     * ⭐ P1.2: 投递式匹配谓词 — 与 fastExactMatch/wildcardScan 同源：
+     *  P1.2: 投递式匹配谓词 — 与 fastExactMatch/wildcardScan 同源：
      * endpoint key（path-only）与完整 URL 双通道 + 步骤窗口。
      */
     private boolean matchesPattern(CapturedApiCall c, long stepStart) {
@@ -196,13 +198,13 @@ public class ApiAssertion {
         return url != null && regex.matcher(url).matches();
     }
 
-    /** ⭐ 快路径精确匹配：endpoint key（path-only）+ 完整 URL 索引双通道（限定步骤窗口）。 */
+    /**  快路径精确匹配：endpoint key（path-only）+ 完整 URL 索引双通道（限定步骤窗口）。 */
     private CapturedApiCall fastExactMatch(ApiCaptureContext ctx) {
         // 1. 精确匹配（限定在当前步骤窗口内，R4）— 按 endpoint key（path-only）检索
         CapturedApiCall call = ctx.getLastApiCallSinceStepStart(urlPattern);
         if (call != null) return call;
 
-        // 1b. ⭐ P2: 完整 URL 精确索引（O(1)，apiCallsByUrl）——pattern 传完整 URL 时
+        // 1b.  P2: 完整 URL 精确索引（O(1)，apiCallsByUrl）——pattern 传完整 URL 时
         //     endpoint key 无法命中（存储键为 path-only），这里补一次 URL 索引查询。
         if (!containsGlobWildcard(urlPattern)) {
             CapturedApiCall byUrl = lastSinceStepStart(ctx.getCallsByUrl(urlPattern), ctx);
@@ -211,7 +213,7 @@ public class ApiAssertion {
         return null;
     }
 
-    /** ⭐ 步骤 2：通配符全量扫描（遍历每个 endpoint 的全部调用而非仅最后一条）。 */
+    /**  步骤 2：通配符全量扫描（遍历每个 endpoint 的全部调用而非仅最后一条）。 */
     private CapturedApiCall wildcardScan(ApiCaptureContext ctx) {
         Map<String, List<CapturedApiCall>> all = ctx.getAllApiCalls();
         CapturedApiCall best = null;
@@ -237,7 +239,7 @@ public class ApiAssertion {
         return best;
     }
 
-    /** ⭐ P2: 取列表内步骤窗口中的最近一条调用（列表按时间追加，倒序查找）。 */
+    /**  P2: 取列表内步骤窗口中的最近一条调用（列表按时间追加，倒序查找）。 */
     private CapturedApiCall lastSinceStepStart(List<CapturedApiCall> calls, ApiCaptureContext ctx) {
         if (calls == null || calls.isEmpty()) return null;
         long stepStart = ctx == null ? 0L : ctx.getStepStartTimestamp();
@@ -250,7 +252,7 @@ public class ApiAssertion {
         return null;
     }
 
-    /** ⭐ P1: 有限等待采集管道在途请求闭合，不抛出中断异常。 */
+    /**  P1: 有限等待采集管道在途请求闭合，不抛出中断异常。 */
     private void awaitCapturePipeline(ApiCaptureContext ctx) {
         if (ctx == null) return;
         try {
@@ -269,32 +271,4 @@ public class ApiAssertion {
                 urlPattern, "NO_MATCH", "ANY", "NONE", msg);
     }
 
-    /**
-     * 将 Ant glob 模式转换为正则。
-     */
-    private static Pattern globToRegex(String glob) {
-        StringBuilder sb = new StringBuilder("^");
-        int len = glob.length();
-        int i = 0;
-        while (i < len) {
-            char c = glob.charAt(i);
-            if (c == '*' && i + 1 < len && glob.charAt(i + 1) == '*') {
-                sb.append(".*");
-                i += 2;
-            } else if (c == '*') {
-                sb.append("[^/]*");
-                i++;
-            } else {
-                if (c == '.' || c == '+' || c == '?' || c == '(' || c == ')'
-                        || c == '[' || c == ']' || c == '{' || c == '}'
-                        || c == '\\' || c == '^' || c == '$' || c == '|') {
-                    sb.append('\\');
-                }
-                sb.append(c);
-                i++;
-            }
-        }
-        sb.append('$');
-        return Pattern.compile(sb.toString());
-    }
 }

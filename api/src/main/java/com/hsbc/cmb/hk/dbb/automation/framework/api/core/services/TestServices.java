@@ -4,13 +4,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStepFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * TestServices provides centralized management for API test initialization with chainable calls.
  * <p>
  * This is the ONLY way to create BaseStep instances. Direct instantiation of BaseStep is not allowed.
  * <p>
- * Instance state is held in a {@link ThreadLocal} so parallel tests (e.g. TestNG parallel suites)
+ * Instance state is held per-thread via {@link TestContextHolder} so parallel tests (e.g. TestNG parallel suites)
  * never overwrite each other's {@code entityName}/{@code env} selections.
  * <p>
  * Example usage:
@@ -22,10 +24,13 @@ import org.slf4j.LoggerFactory;
 public class TestServices {
     private static final Logger LOGGER = LoggerFactory.getLogger(TestServices.class);
 
-    private static final ThreadLocal<TestServices> THREAD_INSTANCE = ThreadLocal.withInitial(TestServices::new);
+    //  T3-1 收拢：① 静态 THREAD_INSTANCE 迁入 TestContext（per-thread 单例）；
+    // ② entityName/env 原为实例级 ThreadLocal，因实例已 per-thread，降级为普通实例字段
+    //    （避免冗余 ThreadLocal，语义完全等价：同一线程内 get/set 互不影响其他线程）。
+    private static final ContextKey<TestServices> INSTANCE_KEY = ContextKey.of("testservices.instance", TestServices.class);
 
-    private final ThreadLocal<String> entityName = ThreadLocal.withInitial(() -> null);
-    private final ThreadLocal<String> env = ThreadLocal.withInitial(() -> null);
+    private String entityName;
+    private String env;
 
     // Private constructor - thread-local singleton
     private TestServices() {}
@@ -35,7 +40,12 @@ public class TestServices {
      * @return TestServices instance for chainable calls
      */
     public static TestServices initialize() {
-        return THREAD_INSTANCE.get();
+        TestServices ts = TestContextHolder.get().get(INSTANCE_KEY);
+        if (ts == null) {
+            ts = new TestServices();
+            TestContextHolder.get().set(INSTANCE_KEY, ts);
+        }
+        return ts;
     }
 
     /**
@@ -45,7 +55,7 @@ public class TestServices {
      * @return this instance for chainable calls
      */
     public TestServices withEntity(String entityName) {
-        this.entityName.set(entityName);
+        this.entityName = entityName;
         return this;
     }
 
@@ -56,7 +66,7 @@ public class TestServices {
      * @return this instance for chainable calls
      */
     public TestServices withEnv(String env) {
-        this.env.set(env);
+        this.env = env;
         return this;
     }
 
@@ -71,8 +81,8 @@ public class TestServices {
      * @return BaseStep instance
      */
     public BaseStep baseStep() {
-        String entity = this.entityName.get();
-        String envVal = this.env.get();
+        String entity = this.entityName;
+        String envVal = this.env;
         BaseStep baseStep;
         if (entity != null && !entity.trim().isEmpty()) {
             // Create BaseStep with configured entity
@@ -92,11 +102,6 @@ public class TestServices {
      * to release ThreadLocal references and prevent leaks in long-lived pools.
      */
     public static void clear() {
-        TestServices ts = THREAD_INSTANCE.get();
-        if (ts != null) {
-            ts.entityName.remove();
-            ts.env.remove();
-        }
-        THREAD_INSTANCE.remove();
+        TestContextHolder.get().remove(INSTANCE_KEY);
     }
 }

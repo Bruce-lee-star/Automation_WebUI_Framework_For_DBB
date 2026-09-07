@@ -45,6 +45,11 @@
             <artifactId>framework-route</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-codegen</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- 纯单测：mock Playwright Page/BrowserContext，校验 start(page) 监听器幂等注册（不依赖浏览器运行时） -->
         <dependency>
@@ -63,6 +68,13 @@
             <groupId>org.objenesis</groupId>
             <artifactId>objenesis</artifactId>
             <version>3.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- T0-4 补全收尾：Monitor DB 持久化端到端验证（内存库，无需外部 DB） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -156,19 +168,23 @@
                 </executions>
             </plugin>
 
+            <!-- ⭐ 汇总报告生成（原 T2-8 自动化）：本模块内联 exec-maven-plugin 在 verify 阶段触发，
+                 生命周期上晚于上方 serenity:aggregate 所在的 post-integration-test，
+                 顺序由 Maven 阶段保证，不再依赖同阶段内的插件声明顺序。
+                 仅本模块（唯一含 framework-reporting 的业务测试模块）执行，根与框架模块不触发。 -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
-                <version>3.1.0</version>
+                <version>3.5.0</version>
                 <executions>
                     <execution>
                         <id>generate-summary-report</id>
-                        <phase>post-integration-test</phase>
+                        <phase>${summary.report.phase}</phase>
                         <goals>
                             <goal>java</goal>
                         </goals>
                         <configuration>
-                            <mainClass>com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator</mainClass>
+                            <mainClass>com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator</mainClass>
                             <arguments>
                                 <argument>${project.build.directory}/site/serenity</argument>
                             </arguments>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+        <artifactId>Automation_WebUI_Framework_BDD</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>framework-codegen</artifactId>
+    <name>Automation Framework - Codegen</name>
+    <description>Optional code-generator (role-element picker / page-object generator) extracted from
+        framework-web. Depends on framework-web; injected into web at runtime via
+        java.util.ServiceLoader (SPI). When absent from the classpath, web behaves exactly as before
+        (codegen disabled by default) — zero behavioural regression.</description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-web</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+    </dependencies>
+</project>

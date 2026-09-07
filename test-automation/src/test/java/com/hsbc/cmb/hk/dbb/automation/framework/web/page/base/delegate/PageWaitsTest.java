@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
 import org.junit.Test;
@@ -45,7 +45,7 @@ public class PageWaitsTest {
     @Test
     public void shouldBeVisible_throwsWhenLocatorNotVisible() {
         BasePage bp = mockBp();
-        Locator locator = mock(Locator.class);
+        PageElement locator = mock(PageElement.class);
         when(bp.locator("x")).thenReturn(locator);
         when(locator.isVisible()).thenReturn(false);
         try {
@@ -60,7 +60,7 @@ public class PageWaitsTest {
     @Test
     public void shouldBeVisible_passesWhenLocatorVisible() {
         BasePage bp = mockBp();
-        Locator locator = mock(Locator.class);
+        PageElement locator = mock(PageElement.class);
         when(bp.locator("x")).thenReturn(locator);
         when(locator.isVisible()).thenReturn(true);
         PageWaits.shouldBeVisible(bp, "x"); // 不应抛异常

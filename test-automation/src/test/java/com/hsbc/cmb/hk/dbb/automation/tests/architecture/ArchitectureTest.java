@@ -2,6 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.tests.architecture;
 
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaMethodCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import org.junit.Test;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
@@ -105,5 +108,28 @@ public class ArchitectureTest {
                 .check(new ClassFileImporter()
                         .withImportOption(new ImportOption.DoNotIncludeTests())
                         .importPackages(BASE_PACKAGE));
+    }
+
+    /**
+     * API 边界门禁（企业级）：业务代码（framework 包之外，即 test-automation 等上层）
+     * 不得直接调用 {@code BasePage} 的 {@code byRole/byText/byLabel/byAltText/byTitle/byTestId/byPlaceholder}
+     * 定位器工厂（返回裸 Playwright {@code Locator}，属类型泄漏）。
+     * 这些 factory 仅供 {@code web.page.binding.RoleElementBinder} 与 NLS 内部路由使用；
+     * 业务方应使用 {@code @RoleElement} 注解或 {@link #element(String)}/{@link #locator(String)} 返回的框架原生类型。
+     */
+    @Test
+    public void businessCodeMustNotUseInternalByLocators() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should().callMethodWhere(new DescribedPredicate<JavaMethodCall>("call BasePage.by* internal locator factory") {
+                    @Override
+                    public boolean test(JavaMethodCall call) {
+                        return call.getTarget().getOwner().isAssignableTo(BasePage.class)
+                                && call.getTarget().getName().startsWith("by");
+                    }
+                })
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
     }
 }

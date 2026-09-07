@@ -38,7 +38,7 @@ public class MonitorFailureCollector {
 
     /**
      * 指纹 → 去重后的失败记录。
-     * ⭐ 修复 C2：改用 LRU 有界 Map（access-order LinkedHashMap + removeEldestEntry），
+     *  修复 C2：改用 LRU 有界 Map（access-order LinkedHashMap + removeEldestEntry），
      * 超过 {@link #MAX_FAILURE_RECORDS} 时自动淘汰最久未访问记录，避免堆内存无界增长（原 OOM 路径）。
      */
     private final Map<String, FailedApiCall> dedupMap = Collections.synchronizedMap(
@@ -94,7 +94,7 @@ public class MonitorFailureCollector {
     public void record(CapturedApiCall call, String pattern, String owner, String reason) {
         String status = call.statusCode() == 0 ? "N/A" : String.valueOf(call.statusCode());
         String fingerprint = fingerprintFor(call, pattern);
-        // ⭐ P1-11：用 compute 原子合并，消除 get-then-put 竞态（同指纹并发只生成一条记录）
+        //  P1-11：用 compute 原子合并，消除 get-then-put 竞态（同指纹并发只生成一条记录）
         dedupMap.compute(fingerprint, (fp, existing) -> {
             if (existing != null) {
                 String scn = safeScenario();
@@ -111,7 +111,7 @@ public class MonitorFailureCollector {
             rec.setOwner(owner == null || owner.trim().isEmpty() ? UNASSIGNED : owner.trim());
             rec.setStatus(status);
             rec.setMethod(call.method());
-            // ⭐ P1-1：出域 sink（报告/邮件）统一脱敏收口，内存 CapturedApiCall 可保持原始供断言
+            //  P1-1：出域 sink（报告/邮件）统一脱敏收口，内存 CapturedApiCall 可保持原始供断言
             rec.setRequestUrl(SensitiveDataSanitizer.sanitizeUrl(call.requestUrl()));
             rec.setRequestHeaders(SensitiveDataSanitizer.sanitizeHeaders(call.requestHeaders()));
             rec.setRequestBody(cap(SensitiveDataSanitizer.sanitizeBody(call.requestBody())));
@@ -131,7 +131,7 @@ public class MonitorFailureCollector {
     /** 按 owner 分组（供 CI 邮件循环） */
     public Map<String, List<FailedApiCall>> getFailuresByOwner() {
         Map<String, List<FailedApiCall>> byOwner = new LinkedHashMap<>();
-        // ⭐ 修复 C2：synchronizedMap 的迭代必须手动加锁，避免与 record() 并发修改抛 CME。
+        //  修复 C2：synchronizedMap 的迭代必须手动加锁，避免与 record() 并发修改抛 CME。
         synchronized (dedupMap) {
             for (FailedApiCall call : dedupMap.values()) {
                 byOwner.computeIfAbsent(call.getOwner(), k -> new ArrayList<>()).add(call);
@@ -154,6 +154,7 @@ public class MonitorFailureCollector {
         try {
             return currentScenario.get();
         } catch (Exception e) {
+            // ThreadLocal.get() 异常则视为无上下文信息，返回 null
             return null;
         }
     }
@@ -173,12 +174,13 @@ public class MonitorFailureCollector {
         try {
             return currentFeature.get();
         } catch (Exception e) {
+            // ThreadLocal.get() 异常则视为无上下文信息，返回 null
             return null;
         }
     }
 
     /**
-     * 生成失败去重指纹（修复 P0-5）。
+     * 生成失败去重指纹（）。
      * ① 用 NUL(\u0000) 作分隔符，杜绝 pattern/status 含 '|' 时的分隔符碰撞误合并；
      * ② 拼接 body 前 256 字符（而非纯 hashCode），避免不同 body 哈希碰撞被错误合并，
      *    同时空 body 显式记为 "<empty>"，避免所有空 body 失败被误合并为一条；

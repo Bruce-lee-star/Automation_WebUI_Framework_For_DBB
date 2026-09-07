@@ -62,3 +62,10 @@ _verify_nls/node_modules/
 ROUTE_FRAMEWORK_GUIDE.md
 ROUTE_SCOPE_AND_PRIORITY.md
 ENTERPRISE_ARCHITECTURE_TASKS.md
+
+# OSV-Scanner CVE gate (T1-4) - binary and scratch artifacts are git-ignored
+tools/osv-scanner/
+osv-report.json
+osv-err.log
+help.txt
+scanhelp.txt

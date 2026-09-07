@@ -48,7 +48,7 @@ public class NlsUtilsCrossThreadTest {
     }
 
     /**
-     * ⭐ 核心场景：主线程先设初值，回调线程后改 → 主线程必须读到回调线程的值。
+     *  核心场景：主线程先设初值，回调线程后改 → 主线程必须读到回调线程的值。
      *
      * <p>修复前：主线程 override="en" 遮蔽了 global="zh"，返回 "en"（错误）。
      */

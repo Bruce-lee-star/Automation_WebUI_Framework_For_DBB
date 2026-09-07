@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * ⭐ API 采集存储（场景作用域）。
+ *  API 采集存储（场景作用域）。
  *
  * <p>承载「API 采集」捕获的全部 API 调用快照，独立于 {@link ApiCaptureContext} 的测试断言存储，
  * 因此与 Mock / Modify / Delay / Monitor 各 Handler <b>互不抢占资源</b>。
@@ -47,7 +47,7 @@ public class ApiCaptureStore {
         if (endpoint == null) return;
         String url = call.requestUrl();
 
-        // ⭐ 去重：onResponse 兜底（MONITOR）若遇到 Handler 已记录的「更丰富」调用则跳过，
+        //  去重：onResponse 兜底（MONITOR）若遇到 Handler 已记录的「更丰富」调用则跳过，
         //   避免 delay/mock/modify 信息被纯观测记录覆盖或重复。
         if (url != null && call.handleType() == RouteHandleType.MONITOR) {
             List<CapturedApiCall> existing = byUrl.get(url);

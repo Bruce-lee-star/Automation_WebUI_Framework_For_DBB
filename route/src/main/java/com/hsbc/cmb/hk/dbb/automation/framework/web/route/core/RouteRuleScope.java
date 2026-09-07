@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
 
 /**
- * ⭐ 路由规则作用域标签（Phase 5 统一绑定模型）。
+ *  路由规则作用域标签（Phase 5 统一绑定模型）。
  *
  * <p>用于把「page/context 两层原生绑定（{@code page.route}+{@code context.route}）」收敛为
  * 「单一 context 绑定 + 逻辑 scope 标签」，消除双绑定竞态与 {@code CROSS_LAYER_HANDLED_URLS}

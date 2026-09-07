@@ -46,7 +46,7 @@ public class ApiMonitorConfig {
         return f == null ? Collections.emptyMap() : f;
     }
 
-    /** ⭐ P2: 加锁保护，避免运行时并发 set 导致的不一致（volatile 仅保证可见性，不保证原子发布）。 */
+    /**  P2: 加锁保护，避免运行时并发 set 导致的不一致（volatile 仅保证可见性，不保证原子发布）。 */
     public synchronized void setFeatures(Map<String, Map<String, EndpointConfig>> features) {
         this.features = features;
     }
@@ -77,7 +77,7 @@ public class ApiMonitorConfig {
      */
     /**
      * 加载指定的 JSON 监控清单并设为单例实例。
-     * 修复 P1-9：必须与 {@link #getInstance()} 共用同一把类锁，否则 {@code volatile INSTANCE}
+     * 必须与 {@link #getInstance()} 共用同一把类锁，否则 {@code volatile INSTANCE}
      * 的"无锁覆盖"会破坏双检锁语义，导致并发线程拿到不一致（半初始化或旧）的 config 实例。
      */
     public static ApiMonitorConfig loadFrom(String configPath) {

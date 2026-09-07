@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
     <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="DLS_DEAD_LOCAL_STORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator$SimpleTestOutcome"/><Bug pattern="URF_UNREAD_FIELD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="DLS_DEAD_LOCAL_STORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator$SimpleTestOutcome"/><Bug pattern="URF_UNREAD_FIELD"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScriptsTest"/><Bug pattern="DMI_DOH"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteMonitorSessionTest"/><Bug pattern="SS_SHOULD_BE_STATIC"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="SF_SWITCH_NO_DEFAULT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.report.SummaryReportGenerator"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="SF_SWITCH_NO_DEFAULT"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
 </FindBugsFilter>

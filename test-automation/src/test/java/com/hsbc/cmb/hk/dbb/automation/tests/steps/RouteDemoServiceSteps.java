@@ -717,7 +717,7 @@ public class RouteDemoServiceSteps {
     }
 
     /**
-     * ⭐ 每个 Scenario 开头重置 demo service 的后端数据。
+     *  每个 Scenario 开头重置 demo service 的后端数据。
      *
      * <p>POST /api/users 等写操作会真实改动服务端 USERS 列表，若不重置，
      * 前一个 Scenario 写入的数据会泄漏到后续 Scenario（跨用例污染）。

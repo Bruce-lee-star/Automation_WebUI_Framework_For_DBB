@@ -6,7 +6,7 @@ import com.microsoft.playwright.Route;
 import java.util.List;
 
 /**
- * ⭐ Phase 5 拆分：跨层（Page + Context）统一解析的纯函数域。
+ *  Phase 5 拆分：跨层（Page + Context）统一解析的纯函数域。
  *
  * <p>本类<strong>无任何可变静态状态</strong>，仅依赖输入参数与同包类型
  * （{@link RouteRule} / {@link RouteRuleScope} / {@link RouteHandleType} / {@link RouteDelay}），可纯单测。
@@ -23,7 +23,7 @@ public final class RouteUnifiedResolution {
     }
 
     /**
-     * ⭐ B3 链式模型：将规则链合并为<b>一次性有效规则</b>（分发期合并，后注册优先覆盖）。
+     *  B3 链式模型：将规则链合并为<b>一次性有效规则</b>（分发期合并，后注册优先覆盖）。
      *
      * <p>对齐跨层合并的 copyForMerge 模式——<b>绝不就地修改</b>闭包/注册表持有的原始规则：
      * <ul>
@@ -57,7 +57,7 @@ public final class RouteUnifiedResolution {
     }
 
     /**
-     * ⭐ Phase 5 准备：跨层（Page + Context）合并纯函数 —— 无 Playwright 依赖，可纯单测。
+     *  Phase 5 准备：跨层（Page + Context）合并纯函数 —— 无 Playwright 依赖，可纯单测。
      *
      * <p>与 {@code dispatchRoute} 内联跨层合并严格等价，作为统一绑定模型的合并核心。
      * 输入已「同层合并」的 page 有效规则与 context 规则链，输出一次性有效规则 + 合并后 DELAY + 是否发生跨层合并。
@@ -84,10 +84,10 @@ public final class RouteUnifiedResolution {
         long pageDelay = ctxTerminates ? 0 : RouteDelay.clampDelay(RouteDelay.resolveDelay(pageEffective));
         long delayMs = Math.max(pageDelay, ctxDelay);
 
-        // ⭐ 关键：用 copyForMerge() 构造一次性有效规则，绝不就地修改 pageEffective / ctxEffective
+        //  关键：用 copyForMerge() 构造一次性有效规则，绝不就地修改 pageEffective / ctxEffective
         RouteRule effective = pageEffective.copyForMerge();
         effective.mergeFrom(ctxEffective);   // 仅叠加能力位（MODIFY/MONITOR/DELAY 共存）
-        // ⭐ 修复（统一绑定「page 特定 > context 全域」）：MOCK 响应体由 mock 提供方决定，
+        //  修复（统一绑定「page 特定 > context 全域」）：MOCK 响应体由 mock 提供方决定，
         //    page 为 MOCK → page 的 status/body 胜出；否则若 ctx 为 MOCK → ctx 的 status/body 胜出；
         //    其余类型无响应体，沿用 mergeFrom 的能力位 OR 结果。
         RouteRule mockProvider = (pageType == RouteHandleType.MOCK) ? pageEffective
@@ -105,7 +105,7 @@ public final class RouteUnifiedResolution {
     }
 
     /**
-     * ⭐ Phase 3 统一绑定模型：单 context handler 下的「按页筛选 + 跨层合并」纯函数（无 Playwright 依赖，可纯单测）。
+     *  Phase 3 统一绑定模型：单 context handler 下的「按页筛选 + 跨层合并」纯函数（无 Playwright 依赖，可纯单测）。
      *
      * <p>给定一个 pattern 对应的<b>混合 scope 规则链</b>（同一条链里既有 {@code scope=PAGE} 也有 {@code scope=CONTEXT} 的规则）
      * 与请求所属 Page，产出一次性有效规则：
@@ -131,7 +131,7 @@ public final class RouteUnifiedResolution {
             if (r == null) continue;
             if (r.getScope() == RouteRuleScope.PAGE) {
                 Object pr = r.getPageRef();
-                // ⭐ 身份匹配（==）：page 级规则只作用于其注册时所绑定的那个 Page；
+                //  身份匹配（==）：page 级规则只作用于其注册时所绑定的那个 Page；
                 //    reqPage 为 null 时一律不命中。
                 if (pr != null && pr == reqPage) {
                     pageChain.add(r);
@@ -155,7 +155,7 @@ public final class RouteUnifiedResolution {
     }
 
     /**
-     * ⭐ Phase 3：从 Route 反查请求所属 Page（统一绑定模型下 dispatch 按页筛选的关键）。
+     *  Phase 3：从 Route 反查请求所属 Page（统一绑定模型下 dispatch 按页筛选的关键）。
      * 任一环节不可达时返回 null（交由 resolveUnified 的降级语义处理）。
      */
     public static Page currentPageOf(Route route) {

@@ -36,7 +36,7 @@ public class RouteRegistry {
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteRegistry.class);
 
     // ═══ 路由类型优先级：用于判断是否允许新规则覆盖旧规则 ═══
-    // ⭐ Phase 1（设计文档《企业级 API 拦截框架设计》）：优先级定义已收敛至
+    //  Phase 1（设计文档《企业级 API 拦截框架设计》）：优先级定义已收敛至
     //    RouteHandleType 枚举（唯一来源，数值越小越先执行/优先级越高）。
     //    原先在此处的 switch 定义（MOCK=4>MODIFY=3>DELAY=2>MONITOR=1）与
     //    RouteEngine#dispatchRoute 的 if-else 分支（MOCK>MODIFY>MONITOR>DELAY）
@@ -46,7 +46,7 @@ public class RouteRegistry {
      * Key: ContextKey（WeakReference 包装的 Page/BrowserContext），
      * Value: 该上下文已注册的 pattern → RouteHandleType 映射。
      *
-     * <p>⭐ 修复（漏网之鱼 #1）：由 {@code ConcurrentHashMap} 改为
+     * <p> 修复（漏网之鱼 #1）：由 {@code ConcurrentHashMap} 改为
      * {@code Collections.synchronizedMap(new WeakHashMap<>())}。
      * <ul>
      *   <li>原实现把 WeakReference 包进 ConcurrentHashMap 的 key，属于「假弱键」反模式——
@@ -165,7 +165,7 @@ public class RouteRegistry {
                 "[RouteRegistry] clearContext() START for: {} (total contexts before: {})",
                 context.getClass().getSimpleName(), CONTEXT_PATTERNS.size());
 
-        // ⭐ 清理逻辑统一内聚到 RouteEngine.clearContext，RouteRegistry 只负责登记/反查
+        //  清理逻辑统一内聚到 RouteEngine.clearContext，RouteRegistry 只负责登记/反查
         //   （打破 RouteRegistry ↔ RouteEngine 双向依赖）
         RouteEngine.clearContext(context);
 
@@ -176,17 +176,17 @@ public class RouteRegistry {
      * 全局清理所有上下文的所有 pattern + JSONPath 缓存（测试套件结束时调用）。
      */
     public static void clearAll() {
-        // ⭐ 修复 R7：clearAll 阶段对仍存活的 context 调用原生 unrouteAll 兜底，
+        //  修复 R7：clearAll 阶段对仍存活的 context 调用原生 unrouteAll 兜底，
         // 防止后续 Playwright 原生 route handler 因只清静态 Map 而未解绑，
         // 在 Context 再次启用时残留旧 handler 造成请求被错误拦截。
-        // ⭐ 修复（漏网之鱼 #1）：synchronizedMap 的迭代必须手动加锁，避免与并发 register/clear 抛 CME。
+        //  修复（漏网之鱼 #1）：synchronizedMap 的迭代必须手动加锁，避免与并发 register/clear 抛 CME。
         synchronized (CONTEXT_PATTERNS) {
             for (Map.Entry<ContextKey, Map<String, RouteHandleType>> entry : CONTEXT_PATTERNS.entrySet()) {
                 Object ctx = entry.getKey().get();
             if (ctx != null && !entry.getValue().isEmpty()) {
                 try {
                     if (ctx instanceof Page) {
-                        // ⭐ Page 已关闭时 unrouteAll 会抛 "Cannot find object to call ..."：
+                        //  Page 已关闭时 unrouteAll 会抛 "Cannot find object to call ..."：
                         //   弱引用仍可达但底层对象已销毁，直接跳过（pattern 随后由 CONTEXT_PATTERNS.clear() 清除）
                         if (RouteUtil.isPageClosed((Page) ctx)) continue;
                         ((Page) ctx).unrouteAll();
@@ -194,7 +194,7 @@ public class RouteRegistry {
                         ((BrowserContext) ctx).unrouteAll();
                     }
                 } catch (Exception e) {
-                    // ⭐ 已销毁对象的 unrouteAll 失败属清理期正常竞态（Context 关闭顺序不确定），
+                    //  已销毁对象的 unrouteAll 失败属清理期正常竞态（Context 关闭顺序不确定），
                     //   降级为 debug，避免污染正常测试日志；其余异常仍以 WARN 暴露。
                     if (isDestroyedObjectError(e)) {
                         VerboseLogging.logDebugIfVerbose(LOGGER,

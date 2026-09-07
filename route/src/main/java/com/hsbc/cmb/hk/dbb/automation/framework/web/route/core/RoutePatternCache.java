@@ -23,7 +23,7 @@ final class RoutePatternCache {
         String regex = antGlobToRegexString(glob);
         Pattern compiled = Pattern.compile(regex);
 
-        // ⭐ #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空导致命中率归零）
+        //  #7 伪 LRU：超限时移除 ~25% 条目（避免全量清空导致命中率归零）
         if (PATTERN_CACHE.size() >= MAX_PATTERN_CACHE_SIZE) {
             RouteUtil.evictOldestQuarter(PATTERN_CACHE);
         }

@@ -154,7 +154,7 @@ public class Entity {
     /**
      * 返回请求头的<b>防御性副本</b>。
      * <p>
-     * ⭐ 修复 P2-23：原实现直接把内部 Map 引用交出去，调用方
+     *  原实现直接把内部 Map 引用交出去，调用方
      * {@code entity.getRequestHeaders().put(...)} 即可绕过 {@link #addRequestHeader}
      * 直接改写内部状态（无校验、无日志、跨线程共享时更危险）。
      * <p>
@@ -174,7 +174,7 @@ public class Entity {
 
     public void addRequestHeader(String name, Object value) {
         this.requestHeaders.put(name, value);
-        // ⭐ 修复 P2-26：header 值可能是 Authorization / 会话 token，日志须脱敏
+        //  header 值可能是 Authorization / 会话 token，日志须脱敏
         log.debug("Add request header: {} = {}", name, ApiLogSanitizer.valueForLog(name, value));
     }
 

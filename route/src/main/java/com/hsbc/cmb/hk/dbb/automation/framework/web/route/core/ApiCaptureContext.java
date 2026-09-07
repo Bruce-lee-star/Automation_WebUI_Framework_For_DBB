@@ -6,7 +6,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -40,7 +39,7 @@ import java.util.regex.Pattern;
  *   <li><b>Delay</b> — 延迟放行，记录「被延迟过」的事实标记</li>
  * </ul>
  *
- * <p>⭐ Phase 5 分层：本类 = 上下文实例存储 + 查询 API + 断言/生命周期转发壳；
+ * <p> Phase 5 分层：本类 = 上下文实例存储 + 查询 API + 断言/生命周期转发壳；
  * <b>响应存储域</b>（apiCallsPerUrl / apiCallsByUrl / recentCalls / delayMarkersByEndpoint /
  * totalResponseSize / 等待器 / 各类上限）已抽离至 {@link ResponseStore}，本类所有存储操作
  * 委托 {@link #responseStore}，公开 API 与行为<b>零变更</b>。冗余的 {@code responseStorage}
@@ -61,13 +60,13 @@ public class ApiCaptureContext implements CaptureContext {
     private static final Logger LOGGER = LoggerFactory.getLogger(ApiCaptureContext.class);
 
     /**
-     * ⭐ 全局共享的 API 捕获上下文实例（不再使用 ThreadLocal）。
+     *  全局共享的 API 捕获上下文实例（不再使用 ThreadLocal）。
      *
      * <p>Handler（Playwright 事件线程）和 PlaywrightListener（主测试线程）
      * 通过此单一实例共享断言状态，保证跨线程可见性。
      */
     private static final ApiCaptureContext SHARED = new ApiCaptureContext();
-    // ⭐ 修复 B-1：原 BY_CONTEXT 用 BrowserContext 强引用作 key，改为 WeakHashMap（弱 key），
+    //  修复 B-1：原 BY_CONTEXT 用 BrowserContext 强引用作 key，改为 WeakHashMap（弱 key），
     //   context 被 GC 后对应 entry 自动失效，避免泄漏。WeakHashMap 非并发安全，用 synchronizedMap 包装。
     private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -146,7 +145,7 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public static void resetCurrent() {
         SHARED.reset();
-        // ⭐ feature 模式下 BrowserContext 被多个 scenario 复用，getCurrent() 返回 BY_CONTEXT 中的
+        //  feature 模式下 BrowserContext 被多个 scenario 复用，getCurrent() 返回 BY_CONTEXT 中的
         //   per-context 实例；仅重置 SHARED 会把上一场景状态带入下一场景（跨场景串扰）。
         BrowserContext bound = ApiCaptureLifecycle.currentContextOrNull();
         if (bound != null) {
@@ -155,12 +154,12 @@ public class ApiCaptureContext implements CaptureContext {
                 perContext.reset();
             }
         }
-        // ⭐ 清理时机对齐：NLSUtils 全局值若不在 context 生命周期边界清理会跨用例串扰。
+        //  清理时机对齐：NLSUtils 全局值若不在 context 生命周期边界清理会跨用例串扰。
         com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils.reset();
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ⭐ R4: 步骤级时间窗口 — 隔离同一 Scenario 内跨 Step 的 API 调用串扰
+    //  R4: 步骤级时间窗口 — 隔离同一 Scenario 内跨 Step 的 API 调用串扰
     // ═══════════════════════════════════════════════════════════
 
     /** 当前步骤起始时间戳（毫秒），0 表示未限定（匹配全部） */
@@ -192,7 +191,7 @@ public class ApiCaptureContext implements CaptureContext {
     // ── 请求活动计数（与 completionLock 协作实现 awaitCompletion 门控）──
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     /**
-     * ⭐ 单调递增「曾观察到的请求数」：每次有请求进入拦截（activeRequests +1）即 +1，永不减。
+     *  单调递增「曾观察到的请求数」：每次有请求进入拦截（activeRequests +1）即 +1，永不减。
      * 用于 {@link #awaitCompletion(long)} 的首活动门控，吸收「触发请求→Route 拦截」之间的时序间隙。
      */
     private final AtomicLong observedRequests = new AtomicLong(0);
@@ -204,7 +203,7 @@ public class ApiCaptureContext implements CaptureContext {
     /** 当前测试线程（仅用于调试/诊断，防止跨线程串扰）。 */
     private volatile Thread testThread;
 
-    // ⭐ Phase 5：响应存储域已抽离至 ResponseStore；本类仅保留实例存储壳并委托转发。
+    //  Phase 5：响应存储域已抽离至 ResponseStore；本类仅保留实例存储壳并委托转发。
     private final ResponseStore responseStore = new ResponseStore();
 
     /** 断言失败详情列表（线程安全） */
@@ -306,7 +305,7 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     /**
-     * ⭐ 可观测性标志：waiter 线程已进入 completionLock.wait() 内部时为 true。
+     *  可观测性标志：waiter 线程已进入 completionLock.wait() 内部时为 true。
      */
     private volatile boolean inWaitState = false;
 
@@ -316,7 +315,7 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     /**
-     * ⭐ 断言失败快速信号：当任一断言失败时，标记 completionLock 以唤醒 awaitCompletion 的等待线程，
+     *  断言失败快速信号：当任一断言失败时，标记 completionLock 以唤醒 awaitCompletion 的等待线程，
      * 避免其在测试已失败时仍死等超时。
      */
     public void signalFailFast() {
@@ -398,7 +397,7 @@ public class ApiCaptureContext implements CaptureContext {
 
     /**
      * 重置 API 捕获上下文（测试开始/结束时统一调用，与线程解绑不再使用 ThreadLocal.remove）。
-     * <p>⭐ 存储域重置委托 {@link ResponseStore#reset()}（持其内 apiCallLock 与写入严格串行）。
+     * <p> 存储域重置委托 {@link ResponseStore#reset()}（持其内 apiCallLock 与写入严格串行）。
      */
     public void reset() {
         VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -409,7 +408,7 @@ public class ApiCaptureContext implements CaptureContext {
         hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStore.reset();
-        // ⭐ R4: 测试级重置时清除步骤窗口标记
+        //  R4: 测试级重置时清除步骤窗口标记
         stepStartTimestamp = 0L;
         testThread = null;
         synchronized (completionLock) {
@@ -418,20 +417,20 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ⭐ 响应存储域 — 全部委托 ResponseStore（零行为变更，公开 API 不变）
+    //  响应存储域 — 全部委托 ResponseStore（零行为变更，公开 API 不变）
     // ═══════════════════════════════════════════════════════════
 
     /** 存储一条 DELAY 维度标记（由 RouteEngine 的延迟分支调用）。 */
     public void storeDelayMarker(CapturedApiCall call) {
         responseStore.storeDelayMarker(call);
-        // ⭐ API 采集汇聚：DELAY 标记同步进入常驻采集存储（与各 Handler 零竞争）
+        //  API 采集汇聚：DELAY 标记同步进入常驻采集存储（与各 Handler 零竞争）
         ApiCaptureManager.getInstance().record(call);
     }
 
     /** 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。 */
     public void storeApiCall(CapturedApiCall call) {
         responseStore.storeApiCall(call);
-        // ⭐ API 采集汇聚：统一入口，自动携带 delay/mock/modify 的 handleType 进入常驻采集存储
+        //  API 采集汇聚：统一入口，自动携带 delay/mock/modify 的 handleType 进入常驻采集存储
         ApiCaptureManager.getInstance().record(call);
     }
 
@@ -494,25 +493,25 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     /**
-     * ⭐ 按路由能力类型获取全部 API 调用快照（按时间升序）。
+     *  按路由能力类型获取全部 API 调用快照（按时间升序）。
      */
     public List<CapturedApiCall> getAllByType(RouteHandleType type) {
         return responseStore.getAllByType(type);
     }
 
     /**
-     * ⭐ 按「能力类型 + endpoint」获取指定端点的全部快照。
+     *  按「能力类型 + endpoint」获取指定端点的全部快照。
      */
     public List<CapturedApiCall> getApiCallsByType(String endpoint, RouteHandleType type) {
         return responseStore.getApiCallsByType(endpoint, type);
     }
 
-    /** ⭐ 按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
+    /**  按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
     public CapturedApiCall getLastApiCallByType(String endpoint, RouteHandleType type) {
         return responseStore.getLastApiCallByType(endpoint, type);
     }
 
-    /** ⭐ 按能力类型分组获取全部快照。 */
+    /**  按能力类型分组获取全部快照。 */
     public Map<RouteHandleType, List<CapturedApiCall>> getAllGroupedByType() {
         return responseStore.getAllGroupedByType();
     }
@@ -538,18 +537,18 @@ public class ApiCaptureContext implements CaptureContext {
         return responseStore.waitForApi(predicate, timeoutMs);
     }
 
-    /** ⭐ 注册一次性投递式等待器：谓词将在后续每次入库时被直接评估。 */
+    /**  注册一次性投递式等待器：谓词将在后续每次入库时被直接评估。 */
     public CompletableFuture<CapturedApiCall> registerApiCallWaiter(Predicate<CapturedApiCall> predicate) {
         return responseStore.registerApiCallWaiter(predicate);
     }
 
-    /** ⭐ 注销投递式等待器（幂等）。 */
+    /**  注销投递式等待器（幂等）。 */
     public void unregisterApiCallWaiter(CompletableFuture<CapturedApiCall> waiter) {
         responseStore.unregisterApiCallWaiter(waiter);
     }
 
     /**
-     * ⭐ 伪 LRU 淘汰辅助：从 ConcurrentHashMap 中移除约 25% 的条目。
+     *  伪 LRU 淘汰辅助：从 ConcurrentHashMap 中移除约 25% 的条目。
      * <p>委托 {@link ResponseStore#evictOldestQuarter} 的统一实现；保留为 static 以兼容
      * {@code RouteCoreEvictionTest} 对框架内部淘汰逻辑的直接验证。
      */
@@ -722,7 +721,7 @@ public class ApiCaptureContext implements CaptureContext {
     /**
      * 获取所有已采集的 API 调用。
      *
-     * <p>⭐ P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，立即失败（fail-fast）
+     * <p> P0 防御：当存在多个活动 Page 时，全局上下文无法区分归属，立即失败（fail-fast）
      * 而非静默返回错误数据，强制调用方改用 {@link #getAll(BrowserContext)}。
      *
      * @return 所有 API 调用（按 endpoint 分组）
@@ -767,13 +766,13 @@ public class ApiCaptureContext implements CaptureContext {
         return ApiCaptureContext.forContext(context).getAllByType(type);
     }
 
-    /** ⭐ 按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
+    /**  按「能力类型 + endpoint」获取最近一次快照；无记录返回 null。 */
     public static CapturedApiCall getLastByType(String endpoint, RouteHandleType type) {
         return ApiCaptureContext.getCurrent().getLastApiCallByType(endpoint, type);
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ⭐ 场景级 API 采集（Captured）
+    //  场景级 API 采集（Captured）
     //    框架启动即常驻开启；与各 Handler 零干扰、零资源竞争；独立于测试断言存储，
     //    可在 scenario 内独立断言（含 delay / mock / modify 全部信息）。
     // ═══════════════════════════════════════════════════════════

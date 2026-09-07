@@ -49,7 +49,11 @@ public final class HikariConfigFactory {
         config.setJdbcUrl(spec.jdbcUrl);
         config.setUsername(spec.username);
         config.setPassword(spec.password);
-        config.setDriverClassName(spec.driverClass);
+        // driverClass 为 null/空时交由 Hikari 按 jdbcUrl 经 JDBC SPI 自动探测 classpath 上的驱动，
+        // 实现「测试层加哪个驱动依赖就用哪个」，框架不再硬编码/强制特定驱动。
+        if (spec.driverClass != null && !spec.driverClass.isEmpty()) {
+            config.setDriverClassName(spec.driverClass);
+        }
         config.setMaximumPoolSize(spec.maxPoolSize);
         config.setMinimumIdle(spec.minIdle);
         config.setConnectionTimeout(spec.connectionTimeoutMs);

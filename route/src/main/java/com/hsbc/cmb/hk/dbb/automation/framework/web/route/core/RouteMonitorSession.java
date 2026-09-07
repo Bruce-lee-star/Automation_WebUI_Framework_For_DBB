@@ -17,7 +17,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 
 /**
- * ⭐ Phase 5 拆分：Monitor 会话域（自包含）。
+ *  Phase 5 拆分：Monitor 会话域（自包含）。
  *
  * <p>持有 {@code SESSIONS} 注册表与 {@link MonitorSessionKey} / {@link MonitorSession} 类型，
  * 以及会话生命周期方法（start / refresh / onMatch / sessionFor* / stop / clear*）。
@@ -68,7 +68,7 @@ public final class RouteMonitorSession {
         final RouteRule rule;
         final AtomicInteger matchCount = new AtomicInteger(0);
         final AtomicBoolean stopped = new AtomicBoolean(false);
-        // ⭐ AtomicReference 持有超时任务：scheduleTimeout（SCHEDULER 线程写）与 stop（dispatch 线程读）跨线程，
+        //  AtomicReference 持有超时任务：scheduleTimeout（SCHEDULER 线程写）与 stop（dispatch 线程读）跨线程，
         //    普通字段存在可见性风险，AtomicReference 提供 happens-before 保证。
         final AtomicReference<ScheduledFuture<?>> timeoutFutureRef = new AtomicReference<>();
 
@@ -147,7 +147,7 @@ public final class RouteMonitorSession {
             installed.set(true);
             return session;
         });
-        // ⭐ 防御性：将实际生效的会话（新建或复用的活跃会话）引用挂到链头原始规则，
+        //  防御性：将实际生效的会话（新建或复用的活跃会话）引用挂到链头原始规则，
         //   供 sessionForRule/sessionForRoute 走 O(1) 定位，避免依赖 session.rule == mergeSource 的身份相等假设。
         rule.setMonitorSessionRef(SESSIONS.get(key));
         if (!installed.get()) {
@@ -169,7 +169,7 @@ public final class RouteMonitorSession {
     }
 
     /**
-     * ⭐ 合并后刷新 MonitorSession：链上任一规则叠加监控能力位后，
+     *  合并后刷新 MonitorSession：链上任一规则叠加监控能力位后，
      * 若当前无活跃 session（例如「先 modify 后追加 monitor」的逆向注册顺序），则启动一个。
      */
     static void refreshMonitorSession(Object ctx, String pattern, RouteRule sessionOwner, boolean needsSession) {
@@ -208,9 +208,9 @@ public final class RouteMonitorSession {
     /** 通过规则对象身份查找会话，避免 RouteRule 的可变 equals/hashCode 参与运行时定位。 */
     private static MonitorSession sessionForRule(RouteRule rule) {
         if (rule == null) return null;
-        // ⭐ 分发期合并拷贝经 getMergeSource() 解引用到链头（session.rule 绑定链头）
+        //  分发期合并拷贝经 getMergeSource() 解引用到链头（session.rule 绑定链头）
         RouteRule source = rule.getMergeSource();
-        // ⭐ 防御性快路径：链头已持有会话引用则 O(1) 返回，避免全表遍历与身份相等脆弱假设
+        //  防御性快路径：链头已持有会话引用则 O(1) 返回，避免全表遍历与身份相等脆弱假设
         MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
         if (ref != null) return ref;
         for (MonitorSession session : SESSIONS.values()) {
@@ -222,7 +222,7 @@ public final class RouteMonitorSession {
     /** 按 Route 所属 Page/Context 优先定位会话，防止跨作用域复用规则时误命中。 */
     static MonitorSession sessionForRoute(Route route, RouteRule rule) {
         if (route == null || rule == null) return sessionForRule(rule);
-        // ⭐ 分发期合并拷贝解引用到源规则（链头）
+        //  分发期合并拷贝解引用到源规则（链头）
         RouteRule source = rule.getMergeSource();
         Page page = null;
         try {
@@ -232,7 +232,7 @@ public final class RouteMonitorSession {
             MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
             return ref != null ? ref : sessionForRule(source);
         }
-        // ⭐ 防御性快路径：链头已持有会话引用且上下文一致 → O(1) 返回。
+        //  防御性快路径：链头已持有会话引用且上下文一致 → O(1) 返回。
         //   多 context 复用同一规则实例时，ref 可能指向最后注册的 session，故必须校验 context 一致，否则退回遍历。
         MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
         if (ref != null && ref.context == page.context()) return ref;

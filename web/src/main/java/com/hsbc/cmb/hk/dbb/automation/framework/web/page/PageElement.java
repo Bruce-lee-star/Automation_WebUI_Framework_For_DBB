@@ -920,7 +920,7 @@ public class PageElement {
         if (clean.isEmpty()) {
             throw new IllegalArgumentException("childSelector must not be blank");
         }
-        // 关键修复 P2-14：ChildPageElement 必须继承父级 iframe 路径，
+        // 关键ChildPageElement 必须继承父级 iframe 路径，
         // 否则位于 iframe 内的子元素会在父页面里找不到。
         List<String> inheritedFrames = (frameSegs == null) ? null : new ArrayList<>(frameSegs);
         return new ChildPageElement(selector, clean, page, inheritedFrames);
@@ -953,7 +953,7 @@ public class PageElement {
 
         @Override
         protected Locator locatorInternal() {
-            // 关键修复 P2-14：先解析父级 locator（含父级 frameLocator 链），
+            // 关键先解析父级 locator（含父级 frameLocator 链），
             // 再用 Locator.locator() 在父级作用域下钻到子元素，确保 iframe 内子元素可定位。
             Locator parentLocator = super.locatorInternal();
             return parentLocator.locator(childSelector);

@@ -6,6 +6,8 @@
 
 ---
 
+> **📌 当前进度快照（2026-09-07）**：本轮（会话 2026-09-07）收口项——① **SSO 感知并发（按身份分区互斥）**设计存档于 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` **附录 A**，随后续 JUnit 5 迁移一并实施（开关前为 no-op，行为零回归）；② **T2-8 报告生成改模板引擎** ✅（Freemarker 模板化 + `.ftlh` HTML auto-escape 闭合原 `escape()` 双引号缺口，Java 零 HTML 拼接；reporting 模块全护盾 8 例绿、BUILD SUCCESS，golden 基线逐字节一致）；③ 框架维持「**并行就绪**」状态（T3-1 TestContext 收拢 + T3-2 Browser per-thread + 全局可变 static 竞态加固，全护盾 373 例绿），T3-4 并行开关仍待 JUnit 5 决策（2026-09-04 决策后置）；④ **T4-1 审计标记迁出** ✅（`⭐`≈602 + `修复 P`≈14 共 ~616 处剥离，设计决策索引入 `architecture/adr/0001-inline-audit-marker-design-decisions.md`，全护盾 373 例绿）；⑤ **T4-2 脱敏规则可配置+值级识别** ✅（值级识别器 PAN/Luhn·IBAN·HKID·轨道数据 + SPI、定长掩码、字段名 profile 外置叠加、误报豁免名单，`SensitiveValueRecognizerTest` 49 例绿）。**下一阶段候选** = Phase 4 治理（T4-3 配置源收敛 / T4-4 文档防漂移）+ 后续 JUnit 5 迁移（打通 T3-4 并行开关 + 落地附录 A SSO 闸门）。
+
 ## 第一部分　方案总纲
 
 ### 1.1 目标与成功度量
@@ -813,7 +815,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 ---
 
-### T2-8　报告生成改模板引擎　【P2】
+### T2-8　报告生成改模板引擎　【P2 · ✅ 全绿收尾（Freemarker 模板化 + `.ftlh` auto-escape 闭合双引号缺口，2026-09-07）】
 
 | 项 | 内容 |
 |---|---|
@@ -853,6 +855,14 @@ noClasses().that().resideInPackage("..web.page.base..")
   - **可选增强（非 T2-8 范围，需单独确认）**：引入 CSS inliner 把 `<style>` 块中的类样式展开为内联 `style` 属性，可进一步提升老客户端（部分 Outlook / Gmail 版本不支持 `<style>`）兼容性；但该操作会改变产物字节，属行为变更，须先与邮件实际渲染效果比对确认。
 
 > 📌 **报告生成自动化（方案 A，构建配置层，2026-09-06 完成）**：**独立于本任务（T2-8 是代码层模板化）**。把报告生成从「各业务模块 Maven 配置调用 `SummaryReportGenerator.main()`」上移到框架——由 `test-automation` **内联** `exec-maven-plugin` 在 `verify` 阶段（生命周期上晚于 `post-integration-test` 的 `serenity:aggregate`）触发，顺序由阶段而非同阶段插件声明顺序保证。早期「根 pom `auto-summary-report` profile + `exists src/test/java` 激活」方案因 **Maven profile 不继承 + activation 在多项目 reactor 中行为不可控**（根聚合模块反而误触发并因 classpath 缺 `framework-reporting` 失败）已废弃。验收：单模块 `-pl test-automation verify` 与多模块 `-am verify` 两种构建均确认 report **仅**在 `test-automation` 触发、根/框架模块不触发、BUILD SUCCESS。`SummaryReportGenerator` 另含「无 Serenity 产物则跳过」保护（防假绿）。
+
+> **🔶 进展（2026-09-07｜代码层收尾）**：T2-8 核心交付（Freemarker 模板化）已在代码层完成；本任务此前停在 2026-09-05「阶段 1 下一步」属**文档滞后**，特此闭合：
+> - **模板化迁移完成**：`SummaryReportGenerator` 已引入 `freemarker.template.Configuration`（2.3.34，显式 direct 依赖，pom 已声明），`renderSummaryTemplate(tpl, model)` 统一渲染；原 `appendAlertBar` / `appendSummarySection` / `appendViewFullReportButton` / `appendCoverageSection` / `appendFailureOverview` / `appendErrorTypePieChart` / `appendFailureAndResultList` 共 7 个片段全部改为「数据模型组装 + `.ftl` 渲染」。
+> - **HTML/CSS 硬编码拼接清零（验收标准达成）**：Java 侧 0 处 HTML 标签字面量拼接（仅保留 1 处正则用于链接解析）；内联 `<style>`（118 处）抽为静态资源 `/templates/summary/report-styles.css`，经 `getFullCss()` 读取注入骨架 `${css}` 占位符；`.ftl` 自带 `<style>` 块，产物仍为自包含内联样式 HTML，**邮件兼容性不变**（由 golden 护盾逐字节校验）。
+> - **模板资产**：`templates/summary-report.ftl` + `templates/summary/` 下 7 个片段模板共 **8 个 `.ftl`**（classpath `templates/`）。
+> - **验收门禁已固化**：`SummaryReportGoldenTest`（逐字节基线 + CSV RFC 4180 + ZIP 条目 + `escape()` 安全契约）4 例；`ReportingRouteDecouplingArchTest`（ArchUnit 2 例）零依赖。
+> - **收尾项已闭环（2026-09-07）**：原「`escape()` 不转义双引号」缺口已彻底解决——`FM_CFG.setRecognizeStandardFileExtensions(true)` 使 8 个 `.ftlh` 模板走 HTML auto-escape（统一转义 `& < > " '`），`escape()` 方法删除，Java 不再手动转义；由 Java 预渲染的 HTML 片段（`css` / 6 个装配片段 / `pieChart`）在模板中以 `?no_esc` 原样输出，避免二次转义破坏 SVG/内联样式。验收由 `SummaryReportGoldenTest` 安全契约（④）固化：断言 `&lt;script&gt;` / `&amp;` / `&quot;` 均出现、原始 `"quoted"` 不进入产物。golden 基线因 fixture 无 `"`/`'` 仍逐字节一致，零回归。
+> - **结论**：T2-8 核心目标（Java 无 HTML 拼接、模板可独立改、产物逐字节一致）与收尾项（双引号/单引号转义）均已达成，任务全绿收尾；报告生成自动化（方案 A，构建配置层）已于 2026-09-06 完成，独立于本任务。
 
 ---
 
@@ -996,6 +1006,12 @@ noClasses().that().resideInPackage("..web.page.base..")
 - 保留串行开关，出问题可一键回退
 - 预留 2 周缓冲处理暴露出的并行缺陷
 
+> **🔶 2026-09-07 评估（状态层已并行安全，开关仍待拍板）**：
+> - **状态层已并行安全**：T3-1（TestContext 收拢，per-thread）+ T3-2（Browser per-thread 隔离）已完成；残留 `static ThreadLocal`（`FailureScreenshotHandler.TAKING_SCREENSHOT`、`PlaywrightListener.currentTestResult` 等）均为 per-thread 守卫，且已在 `try-finally`/`cleanupThreadLocals` 清理，本身并行安全。
+> - **T4-2 去全局可变状态**：唯一存在"读写竞态"的两处运行时可变 static 已加固——`JsonFileReader.fileCache`（`HashMap`→`ConcurrentHashMap`，多线程读文件不再 CME）、`SensitiveDataSanitizer.EXTRA_*_KEYS`（`HashSet`→`ConcurrentHashMap.newKeySet()`，消除脱敏读路径（锁外）与配置懒加载/程序化注册（锁内）的 CME）。其余全局可变 static（`ShutdownCoordinator.TASKS`、`PlaywrightInitializer.downloadProcesses` 等）已被 `synchronized` 保护，`NlsNameTranslator.UI_TERMS` 仅类加载期填充后只读，均无需改动。
+> - **⚠️ 打开并行的硬阻塞（与 2026-09-04 决策冲突）**：当前 `CucumberTestRunnerIT` 为 `@RunWith(CucumberWithSerenity)`（**JUnit 4**）；Serenity 无 JVM 内并行能力（`serenity.batch` 为跨 JVM 分片，`serenity.parallel.for.tests` 为历史空操作，详见 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md`）。故"打开 Cucumber 并行"= 迁移到 `cucumber-junit-platform-engine`（JUnit 5）+ `cucumber.execution.parallel.enabled`，属**结构性改动**，且 2026-09-04 已决策并行执行"后置/不紧急，短期内不实施"。**T3-4 实际开关仍待用户确认 JUnit 5 迁移后方可打开**；框架当前已"并行就绪"。
+> - **🔗 SSO 感知并发（按身份分区互斥）已存档设计**：用户 2026-09-07 决策——"启用 Cucumber 并行"需迁 JUnit 5，且 SSO 场景下框架应按 `(环境, 用户名)` 等身份维度决定并发/串行。该设计（核心抽象 `ConcurrencyPartitionKey` + `ConcurrencyGate` + `ConcurrencyKeyResolver`、自动推导与 `@sso` tag 覆盖、与 `LoginGuard` 单飞互补、runner 无关且串行 no-op）已写入 **`CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` 附录 A**，**仅存档、随 JUnit 5 迁移一并实施**，本轮不落地代码。
+
 ---
 
 ### T3-5　page public API 中立化（PageDriver 接口层已退役）　【P2】
@@ -1070,7 +1086,7 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 ---
 
-### T4-1　审计标记迁出代码　【P3 / 可读性】
+### T4-1　审计标记迁出代码　【P3 / 可读性 · ✅ 收尾（2026-09-07）】
 
 | 项 | 内容 |
 |---|---|
@@ -1092,9 +1108,15 @@ noClasses().that().resideInPackage("..web.page.base..")
 
 **风险与回退**：低。**注意**：清理前确保信息已迁移，否则丢失历史决策依据。
 
+> **🔶 进展（2026-09-07｜收尾）**：全量测绘发现标记量远超 2026-09-04 文档记载——`⭐` 约 **602 处** + `修复 P` 约 **14 处（唯一位置合计 ~616 处，跨 79 文件）**；根因是近期多次模块拆分/下沉重构重新写回了标记。处置：
+> - **分类**：纯状态/迁移标记（`T3-1 收拢` / `Phase N 拆分` / 横幅）直接删；解释"为什么"（bug 根因 / 并发陷阱 / workaround / 脱敏 / 性能取舍）的注释**保留并去前缀**改写为普通注释；非显而易见设计决策索引入 `architecture/adr/0001-inline-audit-marker-design-decisions.md`；显性 TODO/FIXME 计数 **0**。
+> - **执行**：编译安全脚本批量剥离 `⭐` 与 `修复 Pn-xx` 前缀（仅注释，UTF-8 无 BOM 写回，git diff 可逐文件审查）。
+> - **验收**：`grep -c "⭐" src/main/java` = **0**；`grep -c "修复 P" src/main/java` = **0**；全护盾 `mvn -o -pl test-automation -am test` **351 例零回归、BUILD SUCCESS**。
+> - **已知残留（可选深层清理，非 T4-1 阻塞）**：剥离后残留少量**裸阶段号标记**（如 `P2-15` / `（审计 P0-0）` / `P3-31` / `P4` / `Q1` / `B3`），它们既非 `⭐` 也非 `修复 Pn-xx`，属次要噪音；因可能夹带语义（如 `P0 合规`），未做盲删，留作后续可选清理。
+
 ---
 
-### T4-2　脱敏规则可配置 + 值级识别　【P0 / 合规】
+### T4-2　脱敏规则可配置 + 值级识别　【P0 / 合规 · ✅ 收尾（2026-09-07）】
 
 | 项 | 内容 |
 |---|---|
@@ -1117,6 +1139,14 @@ noClasses().that().resideInPackage("..web.page.base..")
 **验收标准**：新增字段无需改代码；Luhn/IBAN/HKID 样例 100% 识别；掩码不泄漏长度；测试覆盖 ≥90%。
 
 **风险与回退**：中。值级识别有误报风险（如订单号恰巧通过 Luhn）——需提供豁免名单机制。
+
+> **🔶 进展（2026-09-07｜收尾）**：四项全部落地（企业级合规脱敏）。
+> - **值级识别器（SPI）**：新增 `SensitiveValueRecognizer`（SPI 扩展点）+ `BuiltinValueRecognizers`，内置 **PAN/Luhn**（Luhn 校验、13-19 位、去分隔符、全同数字抑制误报）、**银联卡**（62 开头 BIN + Luhn，16-19 位）、**IBAN**（ISO 13616，mod-97 校验位）、**HKID**（加权 mod-11 校验位，单/双字母前缀，样例 `CA182361(1)`/`B111112(A)`/`B111117(0)` 通过）、**中国大陆身份证号**（GB 11643-1999，18 位加权 mod-11 校验位，样例 `11010519491231002X`）、**中国大陆手机号**（1[3-9] 开头 11 位，PII）、**中国大陆护照号**（E/G/D/S/P 前缀 + 8 位数字，PII）、**港澳通行证·回乡证**（C/H/M/W 前缀 + 8 位数字，PII）、**统一社会信用代码**（GB 32100-2015，18 位 mod-31 校验位，样例 `91440300708461153K`＝腾讯 USCC）、**信用卡轨道数据**（Track 1/2）。**银行卡 CVV** 无校验位，按<b>字段名</b>（cvv/cvc/cvn/cid/cvv2/cvc2/securityCode，含自由文本 `label: 123` 形态）识别，避免裸 3~4 位数字值级误报。业务方可经 `META-INF/services/...SensitiveValueRecognizer` 注册自定义识别器。
+> - **按值脱敏接入全链路**：JSON（`maskNode` 对象/数组标量节点）、XML（元素文本 + 属性）、form-urlencoded、HTTP 头、URL query、自由文本——字段名非敏感但值形如卡号/IBAN/HKID/轨道数据/国内身份证/手机号/护照/港澳通行证/统一社会信用代码的均按值遮蔽（自由文本路径亦覆盖国内身份证、手机号、护照、港澳通行证、统一社会信用代码；CVV 经字段名/相邻标签遮蔽）。
+> - **定长掩码**：`maskValue` 不再输出 `(len=N)`（移除长度泄漏），统一 `***[REDACTED]`。
+> - **字段名规则外置（profile 叠加）**：内置清单改为「硬编码兜底 + 配置 `sensitive.data.profile.<P>.{header,body,query}.keys` 叠加」，新增字段无需改代码；市场 profile 只增不减，避免误配致内置键（如 `password`）失效的合规倒退。值识别器可按 `sensitive.data.value.recognizers` 开关，`sensitive.data.value.excludes` 提供误报豁免名单。
+> - **验收**：`SensitiveValueRecognizerTest` **49 例全绿**（四类识别器正负样例 + 各链路值级接入 + 定长掩码 + 配置叠加 + 豁免 + SPI 注册，随识别器扩充持续增长）；全护盾 `mvn -o -pl test-automation -am test` **零回归、BUILD SUCCESS**（基线 351 例随识别器用例扩充上升）。
+> - **配置 schema**：详见 `SensitiveDataSanitizer` 类注释 / `architecture/adr/0001-inline-audit-marker-design-decisions.md`。
 
 ---
 
@@ -1291,6 +1321,7 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 **本轮新增交付（2026-09-06 续二｜P4 治理启动）**
 
 - **P4 侦察结论（重要更正）**：原看板 T4-2 标"⬜ 待办"、T4-1 称"⭐ 574→~15 文件"，经核查均过时。① `SensitiveDataSanitizer` 的**脱敏可配置早已实现**——内置键为合规基线（硬编码合理，不应被轻易关掉），另通过 `sensitive.data.extra.header/body/query.keys` 配置叠加用户键 + `registerExtraSensitiveKeys` 程序化注入 + `reloadExtraKeysFromConfig` 热更新，且已有值级正则（Bearer/JWT/URL 凭据）；缺的仅是"按值形态（卡号/手机号）识别"，属大改且有误伤风险，本次不做。② ⭐ 审计标记实际跨 **93 文件**仍有出现（grep `⭐`），远多于"~15"，且 `修复P[0-9]` 模式 0 命中（标记格式已变）——T4-1 清零前须先逐文件 triage，不可盲删。
+- **（已闭环，2026-09-07）**：上述 T4-1 / T4-2 侦察结论已过时——T4-1 审计标记已于 2026-09-07 全量剥离（`grep -c "⭐" src/main/java` = 0、`grep -c "修复 P" src/main/java` = 0，复核仍 0 命中），T4-2 值级识别器已落地（见 §T4-1 / §T4-2，状态矩阵 ✅），本侦察项不再适用。
 - **T4-3 配置源收敛（✅ 已完成）**：`SensitiveDataSanitizer.readExtraConfig` 原直读 `System.getProperty` + `SystemEnvironmentVariables`（绕开统一源），已收敛到 `core.ConfigSource.resolve(key, "")`——合并 `-D`/serenity.conf/环境变量，并补 `ENC(...)` 透明解密（修复"密文配置不被解密"的潜在安全缺口）；保留 `-D` 优先级以兼容现有 `System.setProperty` 注入与 18 个既有测试。【`SensitiveDataSanitizer.java:135-148`】续：① `VerboseLogging.serenityLoggingLevel` 直读也收敛到 `ConfigSource`；② 核查确认 web `FrameworkConfig.getValue()`（:1323）与 `ProxyConfigResolver` 早已走 `ConfigSource`，`ApiMonitorConfig`(JSON 清单)/`api`(Typesafe) 为刻意例外——属性配置体系已统一至 `core.ConfigSource`，T4-3 整体收官。
 
 | 阶段 | 任务 | 状态 | 备注 |
@@ -1298,7 +1329,7 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | P0 | T0-1 requestUrl 脱敏收口 | ✅ 已完成 | commit 6b47c99（含回归测试 3 用例）|
 | P0 | T0-2 SensitiveDataSanitizer 单测 | ✅ 已完成 | 合规件回归护盾，18 用例（header/body/url/freeText/规范化匹配/附加键注册/统一掩码）|
 | P0 | T0-3 删 7 个空目录 | ✅ 已完成 | 删 retry（6 子包+父包）+ page/assertion 共 7 个死包目录；全仓库零引用、git 历史从未实现 |
-| P0 | T0-4 persistence/Hikari 死代码 | 🔶 部分 | DatabaseUtil 已改；persistence+Hikari 删留待需求方拍板 |
+| P0 | T0-4 persistence 补全收尾 | ✅ 已完成 | 需求方选定**补全**（非删除）；`DatabaseUtil` 已先行删除，资源释放对称由 `ApiMonitoringRepository` 全程 try-with-resources 保证、背压由 `PENDING_HARD_CAP`（超上限丢最旧，O(1) `AtomicInteger` 计数）提供；`monitor.db.password` 支持 `ENC(...)` 透明解密（`SecretValue`），日志经 `SensitiveDataSanitizer.sanitizeUrl` 脱敏（已补强 JDBC `user:pass@` userinfo 剥离）；新增 `ApiMonitoringRepositoryE2ETest`（H2 内存库）端到端验证 `init→save→flush→落库`，确认非死代码（`MonitorHandler:486` 真调用回调） |
 | P0 | T0-5 E2E 移出 surefire | ⬜ 待办（可选）| 已建自包含 E2E 沙箱页（6 文件）用于真实浏览器验证；移出 surefire 待定 |
 | P0 | T0-6 仓库卫生 | ✅ 已完成 | git status 干净、无未跟踪源码；1.txt/cp.txt/_tbtest/_verify_nls 经核查已不存在 |
 | P0 | T0-7 死 import/失效 workaround | ✅ 已完成 | BasePage:17 死 import 已删（commit 6b47c99）|
@@ -1310,15 +1341,15 @@ T1-6 ArchUnit ──► T2-1 多模块 ──► T3-1 TestContext ──► T3-4
 | P2 | T2-5 ApiCaptureContext 拆分 | ✅ 已完成 | 拆分（Phase 5：CaptureStore/Lifecycle 等已抽离）；WeakReference 已移除；**Glob 匹配收敛为唯一实现**（`ApiAssertion` 私有 `globToRegex` 副本已删除，统一委托 `RoutePatternCache.antGlobToRegex`，算法一致 + 获编译缓存）；`System.out` 残留经核实为 CLI 契约（`ConfigCipher.main`）+ Javadoc 示例（`SessionManager`），非业务残留且 Checkstyle 未启用 System.out 禁令，豁免；全护盾 294 例零回归 |
 | P2 | T2-6 异常体系统一 | ✅ 已完成 | 10/10 异常继承 `FrameworkException` + `ExceptionHierarchyTest` 固化；`EmptyCatchBlock` hard-fail（severity=error + commentFormat=.*）；主代码 + route 全包 ~250 处 catch 经审计全合规（log 上报/精确捕获/InterruptedException 恢复/防挂起兜底/关键注释），补 20 处注释/cause；全护盾 298 例零回归。验收口径由「514→≤120 机械收窄」更正为「全部 catch 经审计合规、无静默假绿」；零散源（`SummaryReportGenerator`→T2-8、`RoleElementPicker`→T2-2 codegen）并入各自归属 |
 | P2 | T2-7 删自研 JSONPath | ✅ 已完成 | 依赖提升 direct（route/pom 显式 json-path 2.9.0）；解 modify/add 值字符串化；通配批量改 Jayway `ctx.map`/`ctx.set`；删自研死代码三件套（findFirstMatchingValue/applyWildcardWithType/applyWildcardRecursive）+ 已替代 applyWildcardWithRawType + 2.1 收尾删 `setNodeByPath`（写回归一为 Jayway `ctx.set`，唯一调用方 `modifyFieldOnTree` 消除）+ 2.4 删 `buildJsonFromFieldMap` 死代码（非公共 API、仅 unit 包内调用、Jayway 替代后无引用）；保留项（convertToMatchingType/evalCondition/parseWildcardPath/setJsonNode/addFieldOnTree 等 Jackson 点路径与条件 DSL）经审计非 JSONPath 引擎；`handle()` 生产路径修复（承接 `modifyFieldOnTree` 返回新树，否则 Mock body 字段替换失效）；契约 `ModifyHandlerContractTest` 固化 + 全护盾 **318 例零回归**。详见 `architecture/T2-7-jsonpath-remediation-design.md` §8 执行记录 |
-| P2 | T2-8 报告改模板引擎 | 🔶 进行中 | **阶段 0（golden 护盾）已完成**：新增 `SummaryReportGoldenTest`（4 例）把「输出逐字节一致」固化为可执行门禁（HTML 与 golden 基线比对，基线缺失时生成后**立即失败**防假绿）+ CSV / ZIP / 转义三契约；确定性设计（系统属性钉死项目名与 URL、fixture 提供 `startTime` 固定报告时间、单 JSON 规避 `listFiles` 顺序漂移、路径与 `yyyy-MM-dd_HH-mm-ss` 文件名规范化；踩坑：规范化正则曾误写为 `\d{8}-\d{6}` 致 ZIP 链接时间戳漂移，已修正）。配套 `ReportingRouteDecouplingArchTest`（2 例）固化 reporting→route 解环，reporting 脱离 route 独立运行已实证。全护盾 **326 例零回归**。**阶段 1（下一步）**：模板引擎选 **Freemarker** 整体模板化 —— 模板自带 `<style>` 块与内联样式，产物保持自包含以兼容邮件客户端（**已否决 CSS 外链方案**：报告用于发送邮件，外链样式表会被 Gmail / Outlook 丢弃）；附带发现 `escape()` 不转义双引号，待 auto-escape 时补齐 |
+| P2 | T2-8 报告改模板引擎 | ✅ 已完成 | Freemarker 模板化（Java 零 HTML 拼接）+ `.ftlh` HTML auto-escape 闭合原 `escape()` 不转义双引号缺口；`SummaryReportGoldenTest`（4 例：golden 逐字节门禁 + CSV/ZIP/转义契约）固化「输出逐字节一致」防假绿，`ReportingRouteDecouplingArchTest`（2 例）固化 reporting→route 解环；reporting 模块全护盾 **8 例绿、BUILD SUCCESS**；golden 基线逐字节一致零回归（2026-09-07）。报告生成自动化（方案 A，构建配置层）已于 2026-09-06 完成（见 §T2-8） |
 | P3 | T3-1 TestContext 收拢 ThreadLocal | ✅ 基本完成 | 全量 static ThreadLocal 已收拢（仅 BDDUtils 按指示豁免 + 3 处实例级 ThreadLocal 按设计保留）；grep 实测 static ThreadLocal 声明仅剩 1 处（BDDUtils）；全护盾零回归（含 CustomOptionsManagerConcurrencyTest）|
 | P3 | T3-6 SessionManager 并发缓存（Guava CacheBuilder） | ✅ 已完成 | 引入 Guava `LoadingCache`（concurrencyLevel(16)+maximumSize(1000) 分段锁）替代原生 `ConcurrentHashMap.computeIfAbsent`，满足多线程读盘 IO 并发；用单例哨兵 `ABSENT_META` 解决 Guava 值不可为 null 约束（等效不缓存负结果）；saveSession(clear→put)/clearSession(invalidate)/clearAllSessions(invalidateAll) 三处失效；新增 SessionManagerCacheTest（2 例）保缓存命中+失效；全护盾 352 例零回归。**（2026-09-06 续）** STORAGE_CONTENT_CACHE 过期由硬编码 30min 改为读 `SESSION_TIMEOUT_MINUTES` 配置、SESSION_IO_EXECUTOR 已移除（方案 B，规避单线程池毒化隐患）；SINGLE_FLIGHT_TIMEOUT_MS 已改读 `PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS` 配置（默认 60000ms） |
 | P3 | T3-2 Browser per-thread/池化 | ✅ 核心隔离已落地 | per-thread keying + restart 线程作用域 + BROWSER_LOCK 降级；**今日新增共享 Browser 模式（1 Browser + N Context）已验证**；CONTEXT/PAGE 锁粒度细化待续 |
 | P3 | T3-3 ThreadLocal 清理/RouteDsl unbind | ✅ 已完成 | closeContext 清理解耦（移出 if + 补 CustomOptionsManager 全量清理）；feature/session 路径清理已闭环；RouteDsl unbind/WeakReference 已于 T2-5 完成；新增 PlaywrightManagerCloseContextCleanupTest；全护盾 341 例零回归 |
 | P3 | T3-4 打开并行执行 | ⬜ 后置/不紧急 | **用户决策（2026-09-04）**：并行执行后置、不紧急；当前共享 Browser 模式（1 Browser + N Context）已满足需求，无需立即自建并发执行器。C2 方案 `CONCURRENT_CONTEXT_EXECUTOR_DESIGN.md` 存档备查 |
 | P3 | T3-5 public API 中立化（已完成） | ✅ 完成（2026-09-06） | driver 接口层（PageDriver/ElementDriver/Playwright*Driver）经复审判定冗余平行抽象后整体退役；`ElementRect` 迁至 `web.page`；`PageElement.elementHandle()`（返回 `ElementHandle`）删除（零内部调用方）；page 包 public/protected API 已无任何 `com.microsoft.playwright` 类型泄漏 |
-| P4 | T4-1 审计标记迁出 | 🔶 部分 | 需先 re-triage：⭐ 跨 **93 文件**（非此前"~15"），`修复P[0-9]` 模式 0 命中（标记格式已变）；随 T2 收尾的标记清零须逐文件判定后方可删，不可盲删 |
-| P4 | T4-2 脱敏可配置+值级识别 | 🔶 部分 | 可配置已落地（`sensitive.data.extra.*.keys` 配置叠加 + `registerExtraSensitiveKeys` 程序化注入 + 热更新；值级正则已覆盖 Bearer/JWT/URL 凭据）；"按值形态(卡号/手机号)识别"仍 ⬜，误伤风险大，本次未做 |
+| P4 | T4-1 审计标记迁出 | ✅ 已完成 | 全量剥离 `⭐`（约 602 处）+ `修复 P`（约 14 处，跨 79 文件）前缀（仅注释，UTF-8 无 BOM 写回）；非显而易见设计决策索引入 `architecture/adr/0001-inline-audit-marker-design-decisions.md`；验收 `grep -c "⭐" src/main/java` = 0、`grep -c "修复 P" src/main/java` = 0（**2026-09-07 复核当前代码仍 0 命中**）；全护盾 351 例零回归。残留少量裸阶段号标记（非 ⭐/修复P，可能夹带语义）为可选深层清理，非阻塞 |
+| P4 | T4-2 脱敏可配置+值级识别 | ✅ 已完成 | `SensitiveValueRecognizer`（SPI）+ `BuiltinValueRecognizers` 落地值级识别（PAN/Luhn·银联·IBAN·HKID·国内身份证·手机号·护照·港澳通行证·USCC·信用卡轨道数据·CVV 经字段名），按值脱敏接入 JSON/XML/form-urlencoded/HTTP 头/URL query/自由文本全链路；定长掩码 `***[REDACTED]` 去除长度泄漏；字段名规则外置（profile 叠加 + SPI 扩展 + 误报豁免名单）；`SensitiveValueRecognizerTest` **49 例绿**；全护盾零回归（2026-09-07） |
 | P4 | T4-3 配置源收敛 | ✅ 已完成 | 核查结论：属性配置体系**早已统一到 `core.ConfigSource`**——`framework.web.config.FrameworkConfig.getValue()` 本就 `return ConfigSource.resolve(...)`（:1323），`ProxyConfigResolver`/`PlaywrightConfigManager` 均经 `FrameworkConfigManager` 门面间接走 `ConfigSource`，`ENC(...)` 解密全覆盖。本阶段仅修两处真正旁路：① `SensitiveDataSanitizer.readExtraConfig` 收敛到 `ConfigSource`（补密文解密）；② `VerboseLogging.serenityLoggingLevel` 直读收敛到 `ConfigSource`。**刻意例外**（非 sprawl，不强行并入）：`PlaywrightListener`/`ScreenshotStrategy` 使用 Serenity `EnvironmentVariables` **对象 API**（非按 key 读，重写风险高且无 `ENC` 需求）；`api.ConfigProvider` 按设计用 Typesafe Config（见 `ConfigSource` 文档）。 |
 | P4 | T4-4 文档防漂移 | ⬜ 待办 | |
 

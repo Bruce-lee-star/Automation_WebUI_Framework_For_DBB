@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
-public class InitializationException extends RuntimeException {
+public class InitializationException extends FrameworkException {
 
     private static final long serialVersionUID = 1L;
 

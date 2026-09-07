@@ -236,38 +236,6 @@ public abstract class SerenityBasePage extends BasePage {
     // ==================== 有特殊异常处理逻辑的 Override（保留） ====================
 
     @Override
-    public void click(String selector) {
-        try {
-            SerenityReporter.flushPendingApiOperations();
-            if (isVerboseLogging()) logger.info("[Serenity] Clicking element: {}", selector);
-            addSerenityTestData("lastAction", "click");
-            addSerenityTestData("lastActionElement", selector);
-            super.click(selector);
-        } catch (ElementOperationException e) {
-            logger.debug("Failed to click element: {}", selector, e);
-            throw e;
-        } catch (Exception e) {
-            logger.debug("Failed to click element: {}", selector, e);
-            throw new ElementOperationException("click", selector, "Failed to click element: " + selector, e);
-        }
-    }
-
-    @Override
-    public void type(String selector, String text) {
-        try {
-            SerenityReporter.flushPendingApiOperations();
-            if (isVerboseLogging()) logger.info("[Serenity] Typing text '{}' into element: {}", text, selector);
-            addSerenityTestData("lastAction", "type");
-            addSerenityTestData("lastActionElement", selector);
-            addSerenityTestData("lastActionValue", text);
-            super.type(selector, text);
-        } catch (Exception e) {
-            logger.debug("Failed to type text '{}' into element: {}", text, selector, e);
-            throw new ElementException("Failed to type text '" + text + "' into element: " + selector, e);
-        }
-    }
-
-    @Override
     public void navigateTo(String url) {
         try {
             SerenityReporter.flushPendingApiOperations();
@@ -320,63 +288,33 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    public String getAttributeValue(String selector, String attributeName, String expectedValue) {
-        try {
-            SerenityReporter.flushPendingApiOperations();
-            String attributeValue = super.getAttributeValue(selector, attributeName, expectedValue);
-            recordVerification("attribute_" + selector + "_" + attributeName, true);
-            return attributeValue;
-        } catch (Exception e) {
-            logger.debug("Failed to verify attribute value for element: {}", selector, e);
-            throw new ElementException("Failed to verify attribute value for element: " + selector, e);
-        }
-    }
-
     // ==================== 通过 Interceptor 消除的冗余 Override（替换原 87 个方法） ====================
 
     // --- 简单操作（无返回值） ---
-    @Override public void jsClick(String selector) { record("jsClick", selector, () -> super.jsClick(selector)); }
-    @Override public void clear(String selector) { record("clear", selector, () -> super.clear(selector)); }
+
     @Override public void append(String selector, String text) { record("append", selector + "=" + text, () -> super.append(selector, text)); }
-    @Override public void selectByVisibleText(String selector, String text) { record("selectByText", selector + "=" + text, () -> super.selectByVisibleText(selector, text)); }
-    @Override public void check(String selector) { record("check", selector, () -> super.check(selector)); }
-    @Override public void uncheck(String selector) { record("uncheck", selector, () -> super.uncheck(selector)); }
     @Override public void refresh() { record("refresh", null, super::refresh); }
     @Override public void back() { record("back", null, super::back); }
     @Override public void forward() { record("forward", null, super::forward); }
-    @Override public void hover(String selector) { record("hover", selector, () -> super.hover(selector)); }
     @Override public void keyDown(String selector, String key) { record("keyDown", selector + ":" + key, () -> super.keyDown(selector, key)); }
     @Override public void keyUp(String selector, String key) { record("keyUp", selector + ":" + key, () -> super.keyUp(selector, key)); }
     @Override public void press(String selector, String key) { record("press", selector + ":" + key, () -> super.press(selector, key)); }
     @Override public void acceptAlert() { record("acceptAlert", null, super::acceptAlert); }
     @Override public void dismissAlert() { record("dismissAlert", null, super::dismissAlert); }
-    @Override public void tap(String selector) { record("tap", selector, () -> super.tap(selector)); }
-    @Override public void focus(String selector) { record("focus", selector, () -> super.focus(selector)); }
-    @Override public void scrollToElementCenter(String selector) { record("scrollToElementCenter", selector, () -> super.scrollToElementCenter(selector)); }
     @Override public void scrollTo(String selector, int x, int y) { record("scrollTo", selector + "->" + x + "," + y, () -> super.scrollTo(selector, x, y)); }
     @Override public void scrollBy(String selector, int x, int y) { record("scrollBy", selector + "->" + x + "," + y, () -> super.scrollBy(selector, x, y)); }
     @Override public void scrollToBottomOf(String selector) { record("scrollToBottom", selector, () -> super.scrollToBottomOf(selector)); }
     @Override public void scrollToTopOf(String selector) { record("scrollToTop", selector, () -> super.scrollToTopOf(selector)); }
-    @Override public void dragAndDrop(String src, String tgt) { record("dragAndDrop", src + "->" + tgt, () -> super.dragAndDrop(src, tgt)); }
     @Override public void switchToPage(int index) { record("switchToPage", index, () -> super.switchToPage(index)); }
     @Override public void closeCurrentPage() { record("closeCurrentPage", null, super::closeCurrentPage); }
     @Override public void bringToFront() { record("bringToFront", null, super::bringToFront); }
     @Override public void setContent(String html) { record("setContent", null, () -> super.setContent(html)); }
     @Override public void setViewportSize(int w, int h) { record("setViewportSize", w + "x" + h, () -> super.setViewportSize(w, h)); }
-    @Override public void setInputFiles(String selector, String... paths) { record("setInputFiles", selector, () -> super.setInputFiles(selector, paths)); }
     @Override public void pause() { record("pause", null, super::pause); }
 
     // --- 状态检查（有返回值） ---
-    @Override public boolean isChecked(String s) { return recordAndReturn("isChecked", s, () -> super.isChecked(s)); }
-    @Override public boolean isEnabled(String s) { return recordAndReturn("isEnabled", s, () -> super.isEnabled(s)); }
-    @Override public boolean isDisabled(String s) { return recordAndReturn("isDisabled", s, () -> super.isDisabled(s)); }
-    @Override public boolean isVisible(String s) { return recordAndReturn("isVisible", s, () -> super.isVisible(s)); }
-    @Override public boolean isHidden(String s) { return recordAndReturn("isHidden", s, () -> super.isHidden(s)); }
     @Override public boolean isClosed() { return recordAndReturn("isClosed", null, super::isClosed); }
-    @Override public int getElementCount(String s) { return recordAndReturn("elementCount", s, () -> super.getElementCount(s)); }
-    @Override public String getInputValue(String s) { return recordAndReturn("getInputValue", s, () -> super.getInputValue(s)); }
-    @Override public String innerHTML(String s) { return recordAndReturn("innerHTML", s, () -> super.innerHTML(s)); }
-    @Override public String textContent(String s) { return recordAndReturn("textContent", s, () -> super.textContent(s)); }
+
     @Override public byte[] takeScreenshot() { return recordAndReturn("screenshot", "fullPage", super::takeScreenshot); }
     @Override public byte[] takeElementScreenshot(String s) { return recordAndReturn("elementScreenshot", s, () -> super.takeElementScreenshot(s)); }
     @Override public BoundingBox getElementBoundingBox(String s) { return recordAndReturn("elementBoundingBox", s, () -> super.getElementBoundingBox(s)); }
@@ -401,13 +339,7 @@ public abstract class SerenityBasePage extends BasePage {
 
     // --- 等待操作 ---
     @Override public void waitForTimeout(int ms) { record("waitForTimeout", ms, () -> super.waitForTimeout(ms)); }
-    @Override public void waitForElementExists(String s, int t) { super.waitForElementExists(s, t); recordVerification("elementExists_" + s, true); }
-    @Override public void waitForElementNotExists(String s, int t) { super.waitForElementNotExists(s, t); recordVerification("elementNotExists_" + s, true); }
-    @Override public void waitForElementEditable(String s, int t) { super.waitForElementEditable(s, t); recordVerification("elementEditable_" + s, true); }
-    @Override public void waitForElementDisabled(String s, int t) { super.waitForElementDisabled(s, t); recordVerification("elementDisabled_" + s, true); }
-    @Override public void waitForElementEnabled(String s, int t) { super.waitForElementEnabled(s, t); recordVerification("elementEnabled_" + s, true); }
-    @Override public void waitForElementChecked(String s, int t) { super.waitForElementChecked(s, t); recordVerification("elementChecked_" + s, true); }
-    @Override public void waitForElementNotChecked(String s, int t) { super.waitForElementNotChecked(s, t); recordVerification("elementNotChecked_" + s, true); }
+
 
     @Override public void waitForNetworkIdle(int to) { super.waitForNetworkIdle(to); recordVerification("networkIdle", true); }
     @Override public void waitForPageFullyLoaded(int to) { super.waitForPageFullyLoaded(to); recordVerification("pageFullyLoaded", true); }
@@ -424,8 +356,7 @@ public abstract class SerenityBasePage extends BasePage {
     @Override public void clearCookies() { record("clearCookies", null, super::clearCookies); }
 
     // --- 可见/隐藏等待（不再含误导性的 retries 参数） ---
-    @Override public void waitForVisible(String s, int t) { SerenityReporter.flushPendingApiOperations(); super.waitForVisible(s, t); recordVerification("waitVisible_" + s, true); }
-    @Override public void waitForHidden(String s, int t) { SerenityReporter.flushPendingApiOperations(); super.waitForHidden(s, t); recordVerification("waitHidden_" + s, true); }
+
 
     @Override public void navigateToWithRetry(String url, int r) { SerenityReporter.flushPendingApiOperations(); super.navigateToWithRetry(url, r); addSerenityTestData("navigateToWithRetry", "completed"); }
     @Override public void retry(Runnable op, int maxR, int interval, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, maxR, interval, desc); addSerenityTestData("retry_" + desc, "completed"); }

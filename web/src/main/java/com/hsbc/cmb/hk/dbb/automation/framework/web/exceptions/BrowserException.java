@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
-public class BrowserException extends RuntimeException {
+public class BrowserException extends FrameworkException {
 
     private static final long serialVersionUID = 1L;
 

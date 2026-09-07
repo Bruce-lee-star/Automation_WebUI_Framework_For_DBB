@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 /**
  * 元素操作异常基类
  */
-public class ElementException extends RuntimeException {
+public class ElementException extends FrameworkException {
 
     private static final long serialVersionUID = 1L;
 

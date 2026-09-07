@@ -30,5 +30,13 @@
             <artifactId>framework-reporting</artifactId>
             <version>${project.version}</version>
         </dependency>
+
+        <!-- ⭐ SessionManager META 并发缓存：Guava LoadingCache（concurrencyLevel 分段锁，满足多线程读盘 IO 竞争）。
+             版本须对齐 classpath 既有上界 33.5.0-jre（serenity/selenium 传递引入），否则触发 RequireUpperBoundDeps 校验失败。 -->
+        <dependency>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
+            <version>33.5.0-jre</version>
+        </dependency>
     </dependencies>
 </project>

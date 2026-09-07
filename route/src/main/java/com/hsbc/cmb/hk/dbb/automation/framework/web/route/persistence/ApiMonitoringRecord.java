@@ -10,7 +10,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSan
  * <p>由 {@link DatabaseStoreMonitorCallback} 在捕获 API 响应后构建，
  * 交由 {@link ApiMonitoringRepository} 持久化到数据库。
  *
- * <p>⭐ 合规：{@link Builder#build()} 在唯一入口对 headers 与 responseBody 做敏感数据脱敏，
+ * <p> 合规：{@link Builder#build()} 在唯一入口对 headers 与 responseBody 做敏感数据脱敏，
  * 确保所有落库/落盘路径均不泄露 Authorization / Cookie / password / token 等凭证与 PII。
  */
 public class ApiMonitoringRecord {
@@ -29,12 +29,12 @@ public class ApiMonitoringRecord {
 
     private ApiMonitoringRecord(Builder builder) {
         this.endpoint = builder.endpoint;
-        // ⭐ P0 修复：requestUrl 此前未脱敏，导致 query 中的 access_token / id_token /
+        //  P0 修复：requestUrl 此前未脱敏，导致 query 中的 access_token / id_token /
         //    apikey / signature 等凭据以明文入库。URL 与 header/body 同等敏感，必须一并脱敏。
         this.requestUrl = SensitiveDataSanitizer.sanitizeUrl(builder.requestUrl);
         this.method = builder.method;
         this.statusCode = builder.statusCode;
-        // ⭐ 统一脱敏入口（审计 P0-合规 / P1-4）：Header 与 Body 在构建时即脱敏
+        //  统一脱敏入口（审计 P0-合规 / P1-4）：Header 与 Body 在构建时即脱敏
         this.requestHeaders = SensitiveDataSanitizer.sanitizeHeaders(builder.requestHeaders);
         this.responseHeaders = SensitiveDataSanitizer.sanitizeHeaders(builder.responseHeaders);
         this.responseBody = SensitiveDataSanitizer.sanitizeBody(builder.responseBody);

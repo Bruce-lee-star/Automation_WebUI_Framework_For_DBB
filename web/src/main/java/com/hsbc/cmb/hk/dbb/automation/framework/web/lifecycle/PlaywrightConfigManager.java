@@ -446,21 +446,9 @@ public class PlaywrightConfigManager {
     }
 
     /**
-     * 获取元素操作最大重试次数
-     */
-    public int getElementMaxRetry() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_RETRY_MAX);
-    }
-
-    /**
-     * 获取元素操作重试间隔时间（毫秒）
-     */
-    public int getElementRetryDelayMs() {
-        return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_RETRY_DELAY_MS);
-    }
-
-    /**
      * 获取元素操作总超时时间（毫秒）
+     * 作为 Playwright 动作类 API（click / fill / check 等）的单次操作超时，
+     * 取代原「sleep + 轮询」重试循环的截止时间。
      */
     public int getElementOperationTimeout() {
         return FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_ELEMENT_OPERATION_TIMEOUT);

@@ -10,7 +10,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
@@ -118,16 +117,40 @@ public final class ConcurrentContextExecutor {
     }
 
     private static <T> ContextTaskResult<T> executeOne(ContextTask<T> task) {
+        ContextTaskResult<T> r = runOnce(task);
+        if (r.isSuccess() || !shouldAttemptRecovery(r)) {
+            return r;
+        }
+        // 疑似浏览器崩溃：进程级单飞重建后重跑一次（严格有界，见 BrowserCrashGuard.maxReplay）。
+        LOGGER.warn("[concurrent] task '{}' failed with suspected browser crash ({}); replaying once after recovery",
+                task.name(), failureClass(r.getFailure()));
+        if (BrowserCrashGuard.recover()) {
+            r = runOnce(task);
+        }
+        return r;
+    }
+
+    private static <T> boolean shouldAttemptRecovery(ContextTaskResult<T> r) {
+        return BrowserCrashGuard.isEnabled()
+                && r.getFailure() != null
+                && BrowserCrashGuard.isCrash(r.getFailure());
+    }
+
+    private static String failureClass(Throwable t) {
+        return t == null ? "null" : t.getClass().getSimpleName();
+    }
+
+    private static <T> ContextTaskResult<T> runOnce(ContextTask<T> task) {
         long start = System.nanoTime();
         String threadName = Thread.currentThread().getName();
         List<String> pageErrors = new ArrayList<>();
         try {
             MDC.put("concurrentTask", task.name());
             T value = task.call();
-            pageErrors.addAll(safeDrainPageErrors());
+            pageErrors.addAll(TestContextBridge.drainPageErrors());
             return ContextTaskResult.success(task.name(), value, threadName, elapsed(start), pageErrors, Map.of());
         } catch (Throwable t) {
-            pageErrors.addAll(safeDrainPageErrors());
+            pageErrors.addAll(TestContextBridge.drainPageErrors());
             LOGGER.error("[concurrent] task '{}' failed on {}: {}", task.name(), threadName, t.getMessage());
             return ContextTaskResult.failure(task.name(), t, threadName, elapsed(start), pageErrors, Map.of());
         } finally {
@@ -138,14 +161,6 @@ public final class ConcurrentContextExecutor {
             } catch (Throwable ignore) {
                 LOGGER.debug("[concurrent] cleanupForScenario no-op on {}", threadName);
             }
-        }
-    }
-
-    private static List<String> safeDrainPageErrors() {
-        try {
-            return PageEventMonitor.drainPendingPageErrors();
-        } catch (Throwable t) {
-            return List.of();
         }
     }
 
@@ -165,22 +180,9 @@ public final class ConcurrentContextExecutor {
     }
 
     /**
-     * 编排线程回放：任一失败则抛出（带全部失败汇总），由 Serenity 既有通道标记（桥接 9.3）。
+     * 编排线程回放：任一失败则经 Serenity 既有通道标记并抛出（带全部失败汇总，桥接 9.3）。
      */
     public static <T> void assertAllSucceeded(List<ContextTaskResult<T>> results) {
-        List<String> failures = new ArrayList<>();
-        for (ContextTaskResult<T> r : results) {
-            if (!r.isSuccess()) {
-                try {
-                    r.valueOrThrow();
-                } catch (CompletionException ce) {
-                    failures.add(ce.getMessage());
-                }
-            }
-        }
-        if (!failures.isEmpty()) {
-            throw new CompletionException("ConcurrentContextExecutor: " + failures.size()
-                    + " task(s) failed -> " + failures, null);
-        }
+        SerenityBusBridge.replayFailures(results);
     }
 }

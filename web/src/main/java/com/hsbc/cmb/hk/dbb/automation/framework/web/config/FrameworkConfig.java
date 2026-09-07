@@ -461,6 +461,50 @@ public enum FrameworkConfig {
         "并发执行器单任务超时（秒）"
     ),
 
+    /**
+     * SSO 感知并发（按身份分区互斥）总开关。
+     * 开启后，相同并发分区键（默认 environment+username）的 scenario 互斥串行，不同身份并行；
+     * 关闭（默认）时 {@code ConcurrencyGate} 全为 no-op，行为零回归。
+     * 与 JUnit 5 JVM 内并行正交：仅在并行执行器真正并发运行时才有意义。
+     */
+    CONCURRENCY_PARTITION_ENABLED(
+        "serenity.playwright.concurrent.partition.enabled",
+        "false",
+        "SSO 感知并发：按身份分区互斥（相同身份串行、不同身份并行）"
+    ),
+
+    /**
+     * 每个并发分区键允许的并发许可数。
+     * 默认 1（严格互斥）；某些环境允许同身份 N 路并发时可调大。
+     */
+    CONCURRENCY_PARTITION_PER_KEY_PERMITS(
+        "serenity.playwright.concurrent.partition.per.key.permits",
+        "1",
+        "每个并发分区键的并发许可数（>1 表示允许同身份 N 路并发）"
+    ),
+
+    /**
+     * 参与并发分区键的维度集合（逗号分隔，小写）。
+     * 决定"什么叫同一个身份"。默认 environment,username。
+     */
+    CONCURRENCY_PARTITION_DIMENSIONS(
+        "serenity.playwright.concurrent.partition.dimensions",
+        "environment,username",
+        "参与并发分区键的身份维度集合（environment,username,tenant,role,locale）"
+    ),
+
+    /**
+     * 浏览器崩溃韧性守卫（BrowserCrashGuard）总开关。
+     * 开启后，并发任务因共享 Browser 进程崩溃而失败时，会自动经进程级单飞重建 Browser 并重跑该任务一次；
+     * 关闭（默认仍 true，属纯韧性增强）时退化为「失败直接随 {@link ContextTaskResult} 返回」，行为不变。
+     * 仅对崩溃型失败（见 {@code BrowserCrashGuard#isCrash}）触发，正常业务失败不重跑。
+     */
+    CONCURRENCY_BROWSER_CRASH_GUARD_ENABLED(
+        "serenity.playwright.concurrent.browser.crash.guard.enabled",
+        "true",
+        "浏览器崩溃韧性守卫：共享 Browser 崩溃时单飞重建并重跑失败任务"
+    ),
+
     // ==================== Playwright 上下文配置 ====================
 
     /**

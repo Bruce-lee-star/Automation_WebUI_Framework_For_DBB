@@ -207,7 +207,8 @@ final class ApiCaptureLifecycle {
                                     response.status(),
                                     response.request().method(),
                                     response.request().headers(),
-                                    response.headers());
+                                    response.headers(),
+                                    page.context());
                         } catch (Exception e) {
                             LOGGER.debug("[ApiCapture] onResponse skipped: {}", e.getMessage());
                         }

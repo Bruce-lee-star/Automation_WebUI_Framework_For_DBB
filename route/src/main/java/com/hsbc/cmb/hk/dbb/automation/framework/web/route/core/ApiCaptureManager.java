@@ -4,9 +4,13 @@ import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.microsoft.playwright.BrowserContext;
+
 import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.WeakHashMap;
 
 /**
  *  API 采集管理器（常驻单例）。
@@ -51,6 +55,16 @@ public final class ApiCaptureManager {
     /** scenario 探测结果缓存节流（反射有成本，限频至 ~5 次/秒）。 */
     private volatile long lastResolve = 0L;
 
+    /**
+     *  并发隔离采集存储：每个 {@link BrowserContext} 独立一份（弱 key，context GC 后自动回收；
+     *  {@code synchronizedMap} 保证迭代与 {@code computeIfAbsent} 原子）。
+     * <p>共享 Browser + 并发 Context 下，多个 worker 任务经各自 Context 路由到此 Map，
+     * 不再把调用快照写入同一全局 store，根除跨任务污染（G3）。无 Context 绑定的兜底路径仍走
+     * {@link #currentStore}（场景级默认存储）。
+     */
+    private final Map<BrowserContext, ApiCaptureStore> contextStores =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
     private ApiCaptureManager() {
     }
 
@@ -73,23 +87,45 @@ public final class ApiCaptureManager {
     // ═══════════════════════════════════════════════════════════
 
     /**
-     * 主写入入口（Handler 汇聚通道）。delay/mock/modify/monitor 全部经此进入采集存储。
+     * 主写入入口（Handler 汇聚通道，带 Context 归属）。delay/mock/modify/monitor 全部经此进入采集存储。
+     * <p>{@code context != null}（并发隔离路径）：路由到该 Context 独立存储，多任务不再写入同一全局 store（G3）。
      */
-    public void record(CapturedApiCall call) {
+    public void record(CapturedApiCall call, BrowserContext context) {
         if (!enabled || call == null) return;
+        if (context != null) {
+            ensureApiCaptureStoreForContext(context);
+            contextStores.computeIfAbsent(context, k -> new ApiCaptureStore()).record(call);
+            return;
+        }
         ensureApiCaptureStore();
         //  捕获局部引用，避免与场景切换 swap currentStore 之间的 TOCTOU 竞态
         ApiCaptureStore store = currentStore;
         if (store != null) store.record(call);
     }
 
+    /** 兼容无 Context 兜底入口（SHARED / onResponse 兜底通道）。 */
+    public void record(CapturedApiCall call) {
+        record(call, null);
+    }
+
     /**
      * 全局 onResponse 兜底通道：捕获未注册流量。
      * 仅记录元数据（不读取响应体），保持与 Handler 的非侵入、零竞争特性。
+     * <p>兼容旧签名：无 Context（兜底写入场景默认存储）。并发场景下应改用带 {@code context} 的重载以避免跨任务污染。
      */
     public void recordPassthrough(String url, int status, String method,
                                   Map<String, String> requestHeaders,
                                   Map<String, String> responseHeaders) {
+        recordPassthrough(url, status, method, requestHeaders, responseHeaders, null);
+    }
+
+    /**
+     * 带 Context 归属的 onResponse 兜底通道（并发隔离路径）：未注册流量按 Context 路由到独立存储（G3）。
+     */
+    public void recordPassthrough(String url, int status, String method,
+                                  Map<String, String> requestHeaders,
+                                  Map<String, String> responseHeaders,
+                                  BrowserContext context) {
         if (!enabled || url == null) return;
         String endpoint = toEndpoint(url);
         CapturedApiCall call = new CapturedApiCall.Builder()
@@ -105,7 +141,7 @@ public final class ApiCaptureManager {
                 .captureSource("ON_RESPONSE")
                 .handleType(RouteHandleType.MONITOR)
                 .build();
-        record(call);
+        record(call, context);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -117,8 +153,14 @@ public final class ApiCaptureManager {
      */
     public void beginApiCapture() {
         synchronized (swapLock) {
-            if (currentStore != null) currentStore.clear();
-            currentStore = new ApiCaptureStore();
+            BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
+            if (ctx != null) {
+                contextStores.remove(ctx);
+                contextStores.put(ctx, new ApiCaptureStore());
+            } else {
+                if (currentStore != null) currentStore.clear();
+                currentStore = new ApiCaptureStore();
+            }
             currentApiCaptureScenarioKey = null;
         }
     }
@@ -126,8 +168,36 @@ public final class ApiCaptureManager {
     /** 场景结束显式钩子：清空当前存储，即时释放内存。 */
     public void endApiCapture() {
         synchronized (swapLock) {
-            if (currentStore != null) currentStore.clear();
+            BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
+            if (ctx != null) {
+                ApiCaptureStore s = contextStores.get(ctx);
+                if (s != null) s.clear();
+            } else if (currentStore != null) {
+                currentStore.clear();
+            }
         }
+    }
+
+    /**
+     * 释放指定 BrowserContext 的采集存储（context 关闭 / 并发任务结束时调用，避免跨任务残留）。
+     */
+    public void clearContext(BrowserContext context) {
+        if (context != null) contextStores.remove(context);
+    }
+
+    /** 释放全部 Context 采集存储（套件级全量复位）。 */
+    public void clearAllContexts() {
+        contextStores.clear();
+    }
+
+    /** 解析当前查询应命中的存储：优先当前线程绑定 Context 的独立存储，否则回退场景默认存储。 */
+    private ApiCaptureStore resolveStore() {
+        BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
+        if (ctx != null) {
+            ApiCaptureStore s = contextStores.get(ctx);
+            if (s != null) return s;
+        }
+        return currentStore;
     }
 
     /** 懒检测 scenario 切换：节流反射解析，切换时先 clear 旧实例再换新，保证隔离且不累积。 */
@@ -142,8 +212,33 @@ public final class ApiCaptureManager {
                 if (!key.equals(currentApiCaptureScenarioKey)) {
                     if (currentStore != null) currentStore.clear();
                     currentStore = new ApiCaptureStore();
+                    BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
+                    if (ctx != null) contextStores.remove(ctx);
                     currentApiCaptureScenarioKey = key;
                     LOGGER.debug("[ApiCapture] scenario switched -> '{}', store reset", key);
+                }
+            }
+        }
+    }
+
+    /**
+     *  并发隔离路径的场景切换探测：逻辑同 {@link #ensureApiCaptureStore}，但切换时额外 drop 该 Context 的
+     *  独立存储（保持每 scenario 独立、不跨场景累积），避免 feature 模式共享 Context 下串扰。
+     */
+    private void ensureApiCaptureStoreForContext(BrowserContext context) {
+        long now = System.currentTimeMillis();
+        if (now - lastResolve < 200) return;
+        lastResolve = now;
+        String key = resolveScenarioKey();
+        if (key == null) return;
+        if (!key.equals(currentApiCaptureScenarioKey)) {
+            synchronized (swapLock) {
+                if (!key.equals(currentApiCaptureScenarioKey)) {
+                    if (currentStore != null) currentStore.clear();
+                    currentStore = new ApiCaptureStore();
+                    contextStores.remove(context);
+                    currentApiCaptureScenarioKey = key;
+                    LOGGER.debug("[ApiCapture] scenario switched -> '{}', context store reset", key);
                 }
             }
         }
@@ -154,27 +249,27 @@ public final class ApiCaptureManager {
     // ═══════════════════════════════════════════════════════════
 
     public ApiCaptureStore getStore() {
-        return currentStore;
+        return resolveStore();
     }
 
     public List<CapturedApiCall> getApiCalls(String endpoint) {
-        return currentStore.getApiCalls(endpoint);
+        return resolveStore().getApiCalls(endpoint);
     }
 
     public CapturedApiCall getLastApiCall(String endpoint) {
-        return currentStore.getLastApiCall(endpoint);
+        return resolveStore().getLastApiCall(endpoint);
     }
 
     public List<CapturedApiCall> getAllByType(RouteHandleType type) {
-        return currentStore.getAllByType(type);
+        return resolveStore().getAllByType(type);
     }
 
     public Map<RouteHandleType, List<CapturedApiCall>> getAllGroupedByType() {
-        return currentStore.getAllGroupedByType();
+        return resolveStore().getAllGroupedByType();
     }
 
     public int getTotalResponseCount() {
-        return currentStore.getTotalResponseCount();
+        return resolveStore().getTotalResponseCount();
     }
 
     // ═══════════════════════════════════════════════════════════

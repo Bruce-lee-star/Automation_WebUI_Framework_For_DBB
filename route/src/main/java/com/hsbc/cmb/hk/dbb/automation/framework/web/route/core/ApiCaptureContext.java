@@ -65,16 +65,34 @@ public class ApiCaptureContext implements CaptureContext {
      * <p>Handler（Playwright 事件线程）和 PlaywrightListener（主测试线程）
      * 通过此单一实例共享断言状态，保证跨线程可见性。
      */
-    private static final ApiCaptureContext SHARED = new ApiCaptureContext();
+    private static final ApiCaptureContext SHARED = new ApiCaptureContext(null);
+
+    /**
+     *  每个并发 BrowserContext 持有的独立捕获上下文实例的归属标识（弱 key 索引于 {@link #BY_CONTEXT}）。
+     * <p>用于把「场景级 API 采集」汇聚精确路由到各自 Context 的存储，避免共享 Browser + 并发 Context 下
+     * 多任务把调用快照写入同一全局 store 造成跨任务污染（G3）。{@code null} 表示共享/兜底实例。
+     */
+    private final BrowserContext ownerContext;
+
     //  修复 B-1：原 BY_CONTEXT 用 BrowserContext 强引用作 key，改为 WeakHashMap（弱 key），
     //   context 被 GC 后对应 entry 自动失效，避免泄漏。WeakHashMap 非并发安全，用 synchronizedMap 包装。
     private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT =
             Collections.synchronizedMap(new WeakHashMap<>());
 
+    /** 每个 Context 一个存储实例，携带归属标识供采集汇聚路由（G3 并发隔离）。 */
+    private ApiCaptureContext(BrowserContext ownerContext) {
+        this.ownerContext = ownerContext;
+    }
+
     /** 获取 BrowserContext 隔离的捕获上下文；旧 API 继续使用共享上下文。 */
     public static ApiCaptureContext forContext(BrowserContext context) {
         if (context == null) return SHARED;
-        return BY_CONTEXT.computeIfAbsent(context, ignored -> new ApiCaptureContext());
+        return BY_CONTEXT.computeIfAbsent(context, ignored -> new ApiCaptureContext(context));
+    }
+
+    /** 本实例归属的 BrowserContext（共享兜底实例返回 null）。供采集汇聚路由，包级可见。 */
+    BrowserContext getOwnerContext() {
+        return ownerContext;
     }
 
     /** 移除并重置指定 BrowserContext 的捕获上下文。 */
@@ -82,6 +100,8 @@ public class ApiCaptureContext implements CaptureContext {
         if (context == null) return;
         ApiCaptureContext removed = BY_CONTEXT.remove(context);
         if (removed != null) removed.reset();
+        //  G3：同步释放该 Context 的并发隔离采集存储，避免跨任务残留。
+        ApiCaptureManager.getInstance().clearContext(context);
         if (ApiCaptureLifecycle.isCurrentContext(context)) {
             ApiCaptureLifecycle.unbindCurrentContext();
         }
@@ -96,19 +116,26 @@ public class ApiCaptureContext implements CaptureContext {
      * 移除并重置<b>所有</b> BrowserContext 的捕获上下文（套件级全量复位专用）。
      */
     public static void removeAllContexts() {
-        int size = BY_CONTEXT.size();
-        for (Iterator<Map.Entry<BrowserContext, ApiCaptureContext>> it = BY_CONTEXT.entrySet().iterator();
-             it.hasNext(); ) {
-            Map.Entry<BrowserContext, ApiCaptureContext> entry = it.next();
-            try {
-                entry.getValue().reset();
-            } catch (Exception ignored) {
-                // 单个 context 重置失败不影响其余条目回收
+        int size;
+        //  G3：迭代删除须在 BY_CONTEXT 监视器内整体加锁（Collections.synchronizedMap 仅保证单方法原子，
+        //  不保证迭代原子），否则并发 removeContext 可能触发 ConcurrentModificationException。
+        synchronized (BY_CONTEXT) {
+            size = BY_CONTEXT.size();
+            for (Iterator<Map.Entry<BrowserContext, ApiCaptureContext>> it = BY_CONTEXT.entrySet().iterator();
+                 it.hasNext(); ) {
+                Map.Entry<BrowserContext, ApiCaptureContext> entry = it.next();
+                try {
+                    entry.getValue().reset();
+                } catch (Exception ignored) {
+                    // 单个 context 重置失败不影响其余条目回收
+                }
+                it.remove();
             }
-            it.remove();
         }
         ApiCaptureLifecycle.unbindCurrentContext();
         SHARED.reset();
+        //  G3：一并释放全部 Context 级采集存储。
+        ApiCaptureManager.getInstance().clearAllContexts();
         VerboseLogging.logDebugIfVerbose(LOGGER,
                 "[ApiCaptureContext] removeAllContexts() — released {} per-context instance(s)", size);
     }
@@ -423,15 +450,17 @@ public class ApiCaptureContext implements CaptureContext {
     /** 存储一条 DELAY 维度标记（由 RouteEngine 的延迟分支调用）。 */
     public void storeDelayMarker(CapturedApiCall call) {
         responseStore.storeDelayMarker(call);
-        //  API 采集汇聚：DELAY 标记同步进入常驻采集存储（与各 Handler 零竞争）
-        ApiCaptureManager.getInstance().record(call);
+        //  API 采集汇聚：DELAY 标记同步进入常驻采集存储（与各 Handler 零竞争）；
+        //  携带 ownerContext 使并发任务各自隔离到本 Context 的采集存储（G3）。
+        ApiCaptureManager.getInstance().record(call, ownerContext);
     }
 
     /** 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。 */
     public void storeApiCall(CapturedApiCall call) {
         responseStore.storeApiCall(call);
-        //  API 采集汇聚：统一入口，自动携带 delay/mock/modify 的 handleType 进入常驻采集存储
-        ApiCaptureManager.getInstance().record(call);
+        //  API 采集汇聚：统一入口，自动携带 delay/mock/modify 的 handleType 进入常驻采集存储；
+        //  携带 ownerContext 使并发任务各自隔离到本 Context 的采集存储（G3）。
+        ApiCaptureManager.getInstance().record(call, ownerContext);
     }
 
     /**

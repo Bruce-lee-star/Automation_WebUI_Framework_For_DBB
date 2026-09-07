@@ -1223,6 +1223,50 @@ public class PlaywrightManager {
 
 
     /**
+     * 共享 Browser 崩溃后的进程级单飞重建（由 {@code BrowserCrashGuard} 调用）。
+     *
+     * <p><b>仅共享 Browser 模式有效</b>：非共享模式下每个 worker 线程持有独立 Browser，
+     * 断开时 {@link #getBrowser()} 已会自动重建本线程实例，故此处直接返回 {@code true}（允许调用方重跑任务，
+     * 由 {@code getBrowser} 的常规路径完成重建），不执行任何进程级操作。</p>
+     *
+     * <p>共享模式下在 {@link #SHARED_BROWSER_LOCK} 内：若共享 Browser 已断开（{@link #DISCONNECTED_BROWSERS}
+     * 或 {@code browserInstances} 中实例 {@code isConnected()==false}），关闭残留引用并从头
+     * {@link #initializeBrowser} 重建；若仍连接则直接返回（幂等，可被并发崩溃的多个任务反复安全调用）。</p>
+     *
+     * @return {@code true} 表示可继续重跑（已重建或无需重建）；本方法不返回 {@code false}
+     * @throws BrowserException 共享模式重建失败时抛出（转换自底层 {@link #initializeBrowser} 异常）
+     */
+    static boolean rebuildSharedBrowserIfDisconnected() {
+        if (!SHARED_BROWSER_MODE) {
+            return true;
+        }
+        synchronized (SHARED_BROWSER_LOCK) {
+            String configId = getCurrentConfigId();
+            if (configId == null) {
+                return true;
+            }
+            Browser current = browserInstances.get(keyFor(configId));
+            if (current != null && current.isConnected()) {
+                return true; // 仍连接，无需重建（幂等）
+            }
+            // 清理断开残留：移除 Map 引用与断开标记，避免陈旧实例干扰后续 getBrowser 双重检查
+            if (current != null) {
+                DISCONNECTED_BROWSERS.remove(current);
+                browserInstances.remove(keyFor(configId));
+                try {
+                    current.close();
+                } catch (Exception ignored) {
+                    // 已断开，close 多数情况为 no-op；忽略底层异常
+                }
+            }
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "[shared-browser] Rebuilding disconnected shared browser for config: {}", configId);
+            initializeBrowser(configId);
+            return true;
+        }
+    }
+
+    /**
      * 清理所有资源
      */
     public static void cleanupAll() {

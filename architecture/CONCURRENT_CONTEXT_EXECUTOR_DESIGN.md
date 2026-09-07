@@ -265,7 +265,7 @@ runAll(tasks, options)
 
 ## 附录 A：SSO 感知并发（按身份分区互斥）
 
-> 状态：**仅存档设计，本轮不落地代码**（用户决策 2026-09-07）。待后续集成 JUnit 5（`cucumber-junit-platform-engine`）时与本方案 C2 一并实施。
+> 状态：**核心已落地（2026-09-07）**。已新增 `framework.web.concurrent` 并发域包（`ConcurrencyPartitionKey` / `ConcurrencyGate` / `ConcurrencyKeyResolver` + `LoginIdentityKeyResolver` / `TagOverrideKeyResolver` / `ConcurrencyKeyResolvers` / `ConcurrencyIdentity` / `ConcurrencyScope`）、`web.lifecycle` 的 `BrowserCrashGuard`（共享 Browser 崩溃单飞重建 + 失败任务 replay，落地第九节 9.6 / 风险 R7）、`FrameworkConfig` 四项配置、以及 `ConcurrencyGateTest`（9 例）/ `BrowserCrashGuardTest`（9 例）全绿。SSO 闸门默认关闭（`CONCURRENCY_PARTITION_ENABLED=false`）、崩溃守卫默认开启（`CONCURRENCY_BROWSER_CRASH_GUARD_ENABLED=true`，纯韧性增强）→ 行为零回归。**剩余**：① SSO 闸门的 JUnit 5 生命周期 hook 接入（在 scenario 建立登录后以 `ConcurrencyGate.enter(resolver)` 取 scope、scenario 结束 finally 释放）随 JUnit 5（`cucumber-junit-platform-engine`）JVM 内并行一并实施，因 Cucumber 当前为 JUnit 4 无 JVM 内并行；② 9.4 per-task 粘性总线（默认不采用，任务级可观测性备选）。
 > 前置共识：方案 C2（第三节）已解决 *Browser / Context* 级隔离，但其假设"各并发任务的登录身份互不冲突"。本附录在更高一层补充**身份维度互斥**约束，与 C2 正交、可叠加。
 
 ### A.1 背景与动机
@@ -395,6 +395,47 @@ public final class ConcurrencyGate {
 | 4 | 与 JUnit 5 集成耦合 | 闸门 runner 无关，仅在 JUnit 5（JVM 内并行）生效；Serenity 跨 JVM `batch` 按环境天然隔离，无需闸门 |
 | 5 | `ConcurrentHashMap` 不允许 null key | 已用 `if (key == null) return` 规避（无身份场景根本不进 Map） |
 
+### A.11 落地记录（2026-09-07）
+
+**模块落点调整**：设计原写"置于 `framework-core`"，但 `ConcurrencyKeyResolver` 的自动推导依赖 `SessionManager` / `FrameworkConfig`（均在 `web` 模块），而模块依赖方向为 `core <- web`，故实际落地于 **`web` 模块的 `framework.web.concurrent` 并发域包**，与 `ConcurrentContextExecutor`（`web.lifecycle`）同级，避免跨模块反向依赖。
+
+**新增类（`web/src/main/java/.../web/concurrent`）**：
+
+| 类 | 职责 |
+|---|---|
+| `ConcurrencyPartitionKey` | 不可变分区键；维度名小写、值保留大小写（兼容大小写敏感 IdP 用户名）；顺序/空白无关 |
+| `ConcurrencyGate` | 静态门面：`ConcurrentHashMap<Key,Semaphore>`；`acquire`/`release` 默认 no-op；`acquireUninterruptibly` + `release` 在 finally 配对；`enter(resolver)` 经 `ConcurrencyScope` 保证配对；含 `serializedIdentityCount` 观测与 `MAX_GATES` 空闲淘汰 |
+| `ConcurrencyScope` | `AutoCloseable`：严格配对 acquire/release，即使异常不泄漏信号量（runner 无关集成原语） |
+| `ConcurrencyKeyResolver` | 接口：`Optional<ConcurrencyPartitionKey> resolve()` |
+| `LoginIdentityKeyResolver` | 默认来源：维度取自 `CONCURRENCY_PARTITION_DIMENSIONS`，值取自 `ConcurrencyIdentity` |
+| `TagOverrideKeyResolver` | `@sso=ENV:user:tenant` 与 `@concurrencyKey=dim=val;...` 覆盖自动推导 |
+| `ConcurrencyKeyResolvers` | 解析器链（短路）+ 默认链（tag 优先、回退自动推导） |
+| `ConcurrencyIdentity` | 当前线程登录身份快照（经 `TestContextHolder` 持有，per-thread）；登录层单飞登录成功后 `publish`，供 `LoginIdentityKeyResolver` 读取 |
+
+**`FrameworkConfig` 新增**：`CONCURRENCY_PARTITION_ENABLED` / `CONCURRENCY_PARTITION_PER_KEY_PERMITS` / `CONCURRENCY_PARTITION_DIMENSIONS`（沿用三段式、`getBooleanValue`/`getIntValue`/`getValue`）。
+
+**验证**：`ConcurrencyGateTest` 9 例（同 key 互斥、release 后获取、null 放行、不同 key 并行、key 等价性、用户名大小写保留、TagOverride 两种格式、解析器链回退、per-key permits=N 并发）全绿；闸门默认关闭 → 全护盾零回归。
+
+**待办（随 JUnit 5）**：生命周期 hook 接入——在 scenario 建立登录后 `try (ConcurrencyScope s = ConcurrencyGate.enter(ConcurrencyKeyResolvers.defaultChain())) { ... }`，结束自动 release；同时由登录层在单飞登录成功后调用 `ConcurrencyIdentity.publish(...)` 发布身份维度。
+
+### A.12 BrowserCrashGuard 落地记录（2026-09-07）
+
+**解决风险 R7（共享 Browser 崩溃波及全部任务）**：共享模式下单个 Browser 进程是全部并发任务的单点，进程崩溃会让所有任务失败。落地 `BrowserCrashGuard`（与 `ConcurrentContextExecutor` 同包 `web.lifecycle`），实现 9.6 的"崩溃检测 + 进程级单飞重建 + 失败任务 replay"。
+
+**新增/改动**：
+- `web/.../web/lifecycle/BrowserCrashGuard.java`（包级私有测试注入 + 公开判定/恢复 API）：
+  - `isCrash(Throwable)`：遍历 cause 链，按异常类（`PlaywrightException`）与消息特征（"browser has been closed" / "connection closed" / "execution context was destroyed" / "browser disconnected" 等）判定崩溃型失败；正常业务失败（断言、超时）不误判。
+  - `recover()`：在进程级单飞锁 `REBUILD_LOCK` 内执行恢复动作（并发崩溃的多个任务仅首个真正重建，其余等待后也返回）；含 `rebuildCount()` 观测。
+  - `isEnabled()`：经 `FrameworkConfig` → `ConfigSource` 统一解析链（实时 `System.getProperty` → 环境变量 `SERENITY_PLAYWRIGHT_CONCURRENT_BROWSER_CRASH_GUARD_ENABLED` → Serenity(serenity.conf/properties) → 默认值），系统属性与环境变量均可覆盖，与框架其它配置一致（默认 `true`，纯韧性增强）。ENV/运行时覆盖能力已收口到中央 `ConfigSource.resolve`，无需每配置各加 `System.getenv`。
+  - `RecoveryAction`：可注入恢复动作（默认 `PlaywrightManager::rebuildSharedBrowserIfDisconnected`），便于单测。
+- `PlaywrightManager` 新增包级私有 `rebuildSharedBrowserIfDisconnected()`：共享模式下在 `SHARED_BROWSER_LOCK` 内关闭断开残留并 `initializeBrowser` 重建（幂等，可并发安全反复调用）；非共享模式返回 `true`（每线程 Browser 由 `getBrowser()` 自动重建，守卫放行重跑即可）。
+- `ConcurrentContextExecutor.executeOne` 抽取 `runOnce`，失败后若 `shouldAttemptRecovery`（启用 + `isCrash`）则 `recover()` 后重跑一次（严格有界 `MAX_REPLAY=1`，避免崩溃持续时无限循环）。
+- `FrameworkConfig` 新增 `CONCURRENCY_BROWSER_CRASH_GUARD_ENABLED`。
+
+**身份亲和**：replay 在<b>原 worker 线程</b>重跑，上下文 per-thread，重建后新建的 Context 自动继承该线程身份维度（`TestContext` 在线程上持续），同身份任务自然复用同一重建后 Context，无需额外亲和逻辑。
+
+**验证**：`BrowserCrashGuardTest`（同包，9 例）固化——崩溃检测（消息/类）、正常失败不误判、`isEnabled` 开关、单飞恢复计数、与 `ConcurrentContextExecutor` 集成（崩溃任务重跑一次后成功、业务失败不重跑、4 路并发崩溃全部恢复成功）。全护盾 **428 例 / 0 失败 / BUILD SUCCESS**，零回归。
+
 ---
 
 ## 九、企业级升级设计（结合 serenity-core 原语调研，2026-09-07）
@@ -487,7 +528,7 @@ StepEventBus.getEventBus().registerListener(/* ThucydidesStepsListenerAdapter �
 |---|---|---|
 | G1 | `StepEventBus` 串扰（worker 总线无监听器） | 报告/断言只在编排线程回放（9.3）；per-task 粘性总线仅作备选（9.4） |
 | G2 | `TestContextHolder` 串扰（页面错误滞留在 worker） | 并发任务内禁自动标红，错误随 `ContextTaskResult` 回传编排线程统一 drain（9.3） |
-| G3 | `ApiCaptureContext` 全局静态态并发不安全 | 收敛为 `ConcurrentHashMap` 或按任务快照隔离（9.3） |
+| G3 | `ApiCaptureContext` 全局静态态并发不安全 | ✅ 已加固：`ApiCaptureManager` 按 `BrowserContext` 隔离存储 + `removeAllContexts` 迭代加锁（9.3 + 9.10-④） |
 | R2 | 单 Browser 可承载并发 Context 数未验证 | 4→8→16 梯度压测校准硬上限 |
 | R6 | 虚拟线程 pinning（若采用 9.5 增强） | 先审计 `BasePage` 同步 API 与长持锁，再启用开关 |
 | R7 | 共享 Browser 崩溃波及全部任务 | `BrowserCrashGuard` 重建 + 失败任务 replay（9.6） |
@@ -496,7 +537,12 @@ StepEventBus.getEventBus().registerListener(/* ThucydidesStepsListenerAdapter �
 
 1. `FrameworkConfig` 新增配置项：`parallelism` / `task.timeout.seconds` / `virtual.thread.enabled` / `bridge.mode`（沿用三段式纯函数解析）。
 2. `lifecycle` 包：`ConcurrentContextExecutor` + `ContextTask` / `ContextTaskResult` / `ConcurrentContextOptions`（第三节）。
-3. 桥接协作类（包级私有）：`SerenityBusBridge`（编排线程→worker 结果回放）、`TestContextBridge`（worker→编排 页面错误汇聚）。
-4. `ApiCaptureContext` 并发安全审计与加固（`ConcurrentHashMap` / 同步）。
-5. 单测 ≥ 12 例 + Serenity 桥接单测（断言 test 线程 `StepEventBus` 被正确 `testFailed`、页面错误被汇聚）+ 多线程 IT（`api/core/web/route/reporting` 跨会话保行为）+ 全护盾 + E2E 沙箱回归。
-6. 补充 `README` / 配置示例（含 SSO 闸门 `CONCURRENCY_PARTITION_*`）。
+3. 桥接协作类（包级私有）：`SerenityBusBridge`（编排线程→worker 结果回放）、`TestContextBridge`（worker→编排 页面错误汇聚）。**✅ 已落地（2026-09-08）**：`ConcurrentContextExecutor.assertAllSucceeded` 委托 `SerenityBusBridge.replayFailures`（编排线程经 `StepEventBus.testFailed` 回放，异常安全降级）；`runOnce` 经 `TestContextBridge.drainPageErrors` 汇聚页面错误。护盾：`SerenityBusBridgeTest`（3 例，含离线 listener 异常不逃逸）+ `TestContextBridgeTest`（2 例，页面错误汇聚且不误判成功任务）。
+4. `ApiCaptureContext` 并发安全审计与加固（`ConcurrentHashMap` / 同步）。**✅ 已落地（2026-09-08）**：
+   - `ApiCaptureContext` 每个实例携带 `ownerContext`（归属 BrowserContext）；
+   - `ApiCaptureManager` 新增 `contextStores`（弱 key `synchronizedMap(WeakHashMap)`），`record(call, context)` 与 onResponse 兜底 `recordPassthrough(..., context)` 均按 Context 隔离路由，根除跨任务污染（G3）；
+   - `removeAllContexts` 迭代删除加 `synchronized(BY_CONTEXT)` 防 `ConcurrentModificationException`；
+   - 场景切换（feature 共享 Context）仍经 `ensureApiCaptureStoreForContext` 清本 Context 存储，保持每 scenario 独立；
+   - 新增 `ApiCaptureContextConcurrencyTest`（2 例），全护盾 433 例绿。
+5. 单测 ≥ 12 例 + Serenity 桥接单测（断言 test 线程 `StepEventBus` 被正确 `testFailed`、页面错误被汇聚）+ 多线程 IT（`api/core/web/route/reporting` 跨会话保行为）+ 全护盾 + E2E 沙箱回归。**✅ 桥接单测已落地（2026-09-08）**：`ConcurrentContextExecutorTest`（10 例，框架自带）+ `SerenityBusBridgeTest`（3 例）+ `TestContextBridgeTest`（2 例）已覆盖失败回放与页面错误汇聚断言；全护盾 438 例绿。⏳ 待补（需真实 Browser/Server，本环境无法运行）：`api/core/web/route/reporting` 跨会话多线程 IT、E2E 沙箱回归（R2 梯度压测硬上限校准、R7 共享 Browser 崩溃 replay）。
+6. 补充 `README` / 配置示例（含 SSO 闸门 `CONCURRENCY_PARTITION_*`）。**✅ 已落地（2026-09-08）**：新建 [`CONCURRENT_CONTEXT_EXECUTOR_README.md`](../CONCURRENT_CONTEXT_EXECUTOR_README.md)（项目根），覆盖快速上手、配置项全表 + `serenity.conf` 示例、SSO 闸门 `ConcurrencyGate` 接入（try-with-resources / 显式 acquire-release / stats）、崩溃韧性守卫、失败回放与页面错误汇聚桥接原则、线程安全/API 边界小结、待补项诚实说明与相关类索引。

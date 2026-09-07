@@ -441,6 +441,26 @@ public enum FrameworkConfig {
         "共享 Browser 模式：一个 Browser 实例 + 多 Context 并行"
     ),
 
+    /**
+     * 并发上下文执行器并行度（{@code ConcurrentContextExecutor}）。
+     * 控制同时运行的独立 BrowserContext 任务数；执行器内部再与任务数、硬上限（默认 16）取 min。
+     */
+    PLAYWRIGHT_CONCURRENT_PARALLELISM(
+        "serenity.playwright.concurrent.parallelism",
+        "4",
+        "并发上下文执行器并行度（同时运行的独立 BrowserContext 任务数）"
+    ),
+
+    /**
+     * 单任务超时（秒）。{@code ConcurrentContextExecutor} 对单个任务做 best-effort 超时兜底，
+     * 超时后 cancel(true) 中断任务线程；真实耗时上限仍依赖框架既有 navigation / element 超时。
+     */
+    PLAYWRIGHT_CONCURRENT_TASK_TIMEOUT_SECONDS(
+        "serenity.playwright.concurrent.task.timeout.seconds",
+        "60",
+        "并发执行器单任务超时（秒）"
+    ),
+
     // ==================== Playwright 上下文配置 ====================
 
     /**

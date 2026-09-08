@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PageEventMonitor;
@@ -38,7 +39,14 @@ final class StepFailureAggregator {
      * @param testName 当前测试名（用于报告归属）
      */
     static void checkAndMarkApiAssertionFailures(TestOutcome result, String testName) {
-        CaptureContext context = RouteLifecycleRegistry.get().getCurrentCapture();
+        // ROUTE-P0-1：用 resolveFailureCapture() 兜底解析失败上下文（优先 per-context，否则 SHARED），
+        // 避免 route 事件线程经 SHARED 记录的失败标志被漏检。
+        RouteLifecycle lifecycle = RouteLifecycleRegistry.get();
+        if (lifecycle == null) {
+            //  route 生命周期未注册（如非 route 场景 / 未引入 route 模块）：无失败上下文可解析，安全跳过。
+            return;
+        }
+        CaptureContext context = lifecycle.resolveFailureCapture();
         if (context == null) {
             return;
         }
@@ -91,7 +99,17 @@ final class StepFailureAggregator {
      * 通过 apiFailureAlreadyHandled 守卫防止同一 case 内回调链递归重入（死循环）。
      */
     static void checkAndFailOnApiAssertions() {
-        CaptureContext context = RouteLifecycleRegistry.get().getCurrentCapture();
+        // ROUTE-P0-1：用 resolveFailureCapture() 兜底解析失败上下文（优先 per-context，否则 SHARED），
+        // 避免 route 事件线程经 SHARED 记录的失败标志被漏检。
+        RouteLifecycle lifecycle = RouteLifecycleRegistry.get();
+        if (lifecycle == null) {
+            //  route 生命周期未注册（如非 route 场景 / 未引入 route 模块）：无失败上下文可解析，安全跳过。
+            return;
+        }
+        CaptureContext context = lifecycle.resolveFailureCapture();
+        if (context == null) {
+            return;
+        }
 
         if (!context.hasAssertionFailures()) {
             return;

@@ -27,6 +27,7 @@ public class TestContextBridgeTest {
         List<ContextTask<String>> tasks = new ArrayList<>();
         tasks.add(ContextTask.of("t1", () -> {
             //  模拟 PageEventMonitor 在工作线程累积的未捕获页面异常
+            @SuppressWarnings("unchecked")
             List<String> errs = (List<String>) TestContextHolder.get()
                     .computeIfAbsent(PENDING_PAGE_ERRORS_KEY, ArrayList::new);
             errs.add("uncaught page error: ReferenceError: x is not defined");
@@ -44,6 +45,7 @@ public class TestContextBridgeTest {
     public void pageErrorsDoNotFalseFailSuccessfulTask() {
         List<ContextTask<String>> tasks = new ArrayList<>();
         tasks.add(ContextTask.of("t2", () -> {
+            @SuppressWarnings("unchecked")
             List<String> errs = (List<String>) TestContextHolder.get()
                     .computeIfAbsent(PENDING_PAGE_ERRORS_KEY, ArrayList::new);
             errs.add("late page error on success path");

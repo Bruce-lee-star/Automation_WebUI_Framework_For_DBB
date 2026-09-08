@@ -51,6 +51,76 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- ENG-P0-2：test-automation 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明；均为测试期） -->
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-model</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-cucumber</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-screenplay</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- RestAssured POST 运行期需要 commons-logging(LogFactory)；serenity-* 已将其排除，此处显式补回 -->
+        <dependency>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition）；
+             测试源码用到 serenity 的 Wait/ExpectedCondition 签名，须显式声明否则 javac 符号补全会 CompletionFailure -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-support</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- 纯单测：mock Playwright Page/BrowserContext，校验 start(page) 监听器幂等注册（不依赖浏览器运行时） -->
         <dependency>
             <groupId>org.mockito</groupId>
@@ -159,10 +229,6 @@
                             <formats>
                                 <format>XML</format>
                             </formats>
-                            <!-- 聚焦刚完成的 BasePage 拆分包，避免报告被全量框架类淹没 -->
-                            <classfiles>
-                                <dir>${maven.multiModuleProjectDirectory}/web/target/classes/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base</dir>
-                            </classfiles>
                         </configuration>
                     </execution>
                 </executions>

@@ -28,8 +28,8 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <serenity.version>4.3.4</serenity.version>
-        <serenity.cucumber.version>4.3.4</serenity.cucumber.version>
+        <serenity.version>4.2.0</serenity.version>
+        <serenity.cucumber.version>4.2.0</serenity.cucumber.version>
         <playwright.version>1.58.0</playwright.version>
         <junit.version>4.13.2</junit.version>
 
@@ -38,9 +38,8 @@
         <json.path.version>2.9.0</json.path.version>
         <cucumber.version>7.31.0</cucumber.version>
         <json.version>20240303</json.version>
-        <!-- T2-8：报告模板引擎。2.3.34 与 Serenity 已传递进 classpath 的版本保持一致，
-             reporting 提升为 direct 依赖后不会触发 Enforcer 的 requireUpperBoundDeps。 -->
-        <freemarker.version>2.3.34</freemarker.version>
+        <!-- T2-8：报告模板引擎。serenity 4.2.0 的 serenity-model 直接依赖 freemarker 2.3.33，RequireUpperBoundDeps 上界即 2.3.33，故锁定 2.3.33；SummaryReportGenerator 同步改用 Configuration.VERSION_2_3_33 常量与之匹配。 -->
+        <freemarker.version>2.3.33</freemarker.version>
         <!-- T2-8/方案A：汇总报告生成的绑定阶段。
              由 test-automation 的 pom 内联 exec-maven-plugin 引用（绑定 verify），
              生命周期上晚于 post-integration-test 的 serenity:aggregate，
@@ -51,7 +50,7 @@
 
         <!-- 安全漏洞修复版本 -->
         <logback.version>1.5.34</logback.version>
-        <jackson.version>2.21.4</jackson.version>
+        <jackson.version>2.18.3</jackson.version>
         <json-smart.version>2.5.2</json-smart.version>
 
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
@@ -77,9 +76,11 @@
         <rerunFailingTestsCount>0</rerunFailingTestsCount>
     </properties>
 
-    <!-- 全部外部依赖集中在父 POM 声明，子模块继承（保证编译期 classpath 完整）；
-         子模块仅需声明模块间依赖。后续可逐步按需收敛各模块依赖，此为拆分首版。 -->
-    <dependencies>
+    <!-- ENG-P0-2：依赖下沉。全部外部依赖改在 <dependencyManagement> 统一钉版本，
+         各模块在自身 <dependencies> 中显式声明所真正用到的依赖（见各模块 pom），
+         不再由父 POM <dependencies> 全量继承，模块边界与依赖来源可在 pom 直接辨识。 -->
+    <dependencyManagement>
+        <dependencies>
         <!-- ==================== 离线中文→英文命名（代码生成器用，纯 Java、离线、无模型权重） ==================== -->
         <dependency>
             <groupId>com.huaban</groupId>
@@ -209,11 +210,11 @@
             <version>${json.version}</version>
         </dependency>
 
-        <!-- Selenium support 对齐到 Serenity 4.3.4 官方配套的 4.38.0（原 4.15.0 相隔 23 个 minor，运行时会 NoSuchMethodError）。 -->
+        <!-- Selenium support 跟随 Serenity 4.2.0 官方配套的 4.23.1（CORE-P0-1 降 serenity 以适配 jackson 2.18.3）。 -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-support</artifactId>
-            <version>4.38.0</version>
+            <version>4.23.1</version>
         </dependency>
 
         <!-- Playwright -->
@@ -266,10 +267,7 @@
             <artifactId>HikariCP</artifactId>
             <version>5.0.1</version>
         </dependency>
-    </dependencies>
 
-    <dependencyManagement>
-        <dependencies>
             <!-- 覆盖传递性依赖版本，修复安全漏洞 -->
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
@@ -281,17 +279,38 @@
                 <artifactId>json-smart</artifactId>
                 <version>${json-smart.version}</version>
             </dependency>
-            <!-- T1-5 依赖收敛：统一钉到 requireUpperBoundDeps 实测出的上限版本，消除版本回退。
-                 jackson-databind 实际解析为 2.20.1（要求 annotations 2.20）；aliyun 无 2.20.1，钉 2.20（等于上限）。 -->
+            <!-- T1-5 依赖收敛：jackson 三件套统一钉到 ${jackson.version}（与 jackson-core 一致），消除版本漂移。
+                 CORE-P0-1 / ENG-P0-2 修正：core 的 SensitiveDataSanitizer 直接使用 jackson-databind（脱敏 JSON 解析），
+                 原经继承的 serenity 传递引入，下沉后须显式钉版本。 -->
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-annotations</artifactId>
-                <version>2.20</version>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${jackson.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>2.0.17</version>
+            </dependency>
+            <!-- CORE-P0-1 / 降 serenity 到 4.2.0：serenity 父 POM 在 DM 钉 byte-buddy 1.14.18，
+                 但 selenium-support 4.38.0 传递 byte-buddy 1.17.8，requireUpperBoundDeps 要求统一上限。
+                 此处显式钉 1.17.8 覆盖 serenity 父的 1.14.18，消除版本漂移。 -->
+            <dependency>
+                <groupId>net.bytebuddy</groupId>
+                <artifactId>byte-buddy</artifactId>
+                <version>1.17.8</version>
+            </dependency>
+            <!-- CORE-P0-1 / 降 serenity 到 4.2.0：serenity 父 POM 在 DM 钉 guava 33.2.1-jre，
+                 但 web 显式使用 33.5.0-jre，requireUpperBoundDeps 要求统一上限。钉 33.5.0-jre 覆盖 serenity 父。 -->
+            <dependency>
+                <groupId>com.google.guava</groupId>
+                <artifactId>guava</artifactId>
+                <version>33.5.0-jre</version>
             </dependency>
             <dependency>
                 <groupId>com.google.errorprone</groupId>
@@ -301,7 +320,7 @@
             <dependency>
                 <groupId>org.htmlunit</groupId>
                 <artifactId>htmlunit</artifactId>
-                <version>4.18.0</version>
+                <version>4.4.0</version>
             </dependency>
             <!-- T4-4：将 Serenity 传递的 Cucumber 版本钉为显式属性，作为 README 技术栈表的单一事实来源（doc-drift 校验据此比对） -->
             <dependency>
@@ -469,6 +488,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-install-plugin</artifactId>
+                <version>3.1.1</version>
                 <executions>
                     <execution>
                         <id>install-modules-for-sca</id>

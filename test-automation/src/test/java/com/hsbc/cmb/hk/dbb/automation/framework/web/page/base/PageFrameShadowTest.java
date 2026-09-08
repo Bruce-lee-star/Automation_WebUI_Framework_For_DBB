@@ -151,7 +151,12 @@ public class PageFrameShadowTest {
         when(page.frames()).thenReturn(Collections.emptyList());
         Frame attached = mock(Frame.class);
         when(attached.name()).thenReturn("f");
-        doAnswer(inv -> { inv.getArgument(0, Consumer.class).accept(attached); return null; })
+        doAnswer(inv -> {
+            @SuppressWarnings("unchecked")
+            Consumer<Frame> consumer = inv.getArgument(0, Consumer.class);
+            consumer.accept(attached);
+            return null;
+        })
                 .when(page).onFrameAttached(any());
         assertSame(attached, PageFrameShadow.switchToFrameAndWait(bp, () -> { }, "f", 2));
         verify(bp).activateFrame(attached);
@@ -167,7 +172,12 @@ public class PageFrameShadowTest {
         Frame attached = mock(Frame.class);
         when(attached.name()).thenReturn("other");                       // name 不匹配
         when(attached.url()).thenReturn("https://x/foo/embedded/view");  // url 含 "embedded"
-        doAnswer(inv -> { inv.getArgument(0, Consumer.class).accept(attached); return null; })
+        doAnswer(inv -> {
+            @SuppressWarnings("unchecked")
+            Consumer<Frame> consumer = inv.getArgument(0, Consumer.class);
+            consumer.accept(attached);
+            return null;
+        })
                 .when(page).onFrameAttached(any());
         assertSame(attached, PageFrameShadow.switchToFrameAndWait(bp, () -> { }, "embedded", 2));
         verify(bp).activateFrame(attached);
@@ -181,7 +191,12 @@ public class PageFrameShadowTest {
         when(page.frames()).thenReturn(Collections.emptyList());
         Frame attached = mock(Frame.class);
         when(attached.name()).thenReturn("f");
-        doAnswer(inv -> { inv.getArgument(0, Consumer.class).accept(attached); return null; })
+        doAnswer(inv -> {
+            @SuppressWarnings("unchecked")
+            Consumer<Frame> consumer = inv.getArgument(0, Consumer.class);
+            consumer.accept(attached);
+            return null;
+        })
                 .when(page).onFrameAttached(any());
         Runnable trigger = mock(Runnable.class);
         PageFrameShadow.switchToFrameAndWait(bp, trigger, "f", 2);

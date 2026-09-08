@@ -5,6 +5,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.EnvironmentUtils;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import com.typesafe.config.ConfigObject;
@@ -47,18 +49,20 @@ public class ConfigProvider {
     private static volatile String payloadDir;
 
     /**
-     * 全局配置快照（进程级共享可变状态）。
+     * 配置快照（per-scenario 存储，经 core {@code TestContext}/{@code ContextKey<Config>} 收拢，T3-1 收口）。
      * <p>
-     *  原为非 volatile 静态可变字段，且 {@link #getConfig()} 以无锁的
-     * check-then-act 方式读写它——与 {@code synchronized} 的 {@link #config(Entity)}
-     * 之间没有 happens-before 关系，并发下会重复加载、互相覆盖，或读到过期值。
+     *  修复 API-P0-1：原实现为<b>进程级全局可变字段</b>，并行 scenario 下不同 entity 调用
+     *  {@code config(entity)} 会<b>互相覆盖</b>彼此的全局配置（跨 scenario 配置串扰，测试数据污染）。
+     *  改为 {@link ThreadLocal}：每个线程（scenario 线程）持有自己的配置快照，
+     *  {@code config(entity)} 仅写入本线程、{@link #getConfig()} 仅读取本线程快照，彻底消除串扰。
      * <p>
-     * ⚠️ <b>设计局限（超出本次改动范围，需架构级重构）</b>：本字段是进程级共享状态，
-     * 并行 scenario 下不同 entity 调用 {@code config(entity)} 会<b>互相覆盖</b>彼此的全局配置。
-     * 调用方应优先使用 {@code config(entity)} 的<b>返回值</b>，而非 {@link #getConfig()}，
-     * 以规避跨 scenario 配置串扰。
+     *  线程模型依据：{@code ConfigProvider} 的消费者（{@code Entity} 构造、
+     *  {@code AbstractRestJob}/{@code HeadersAssemblers}/{@code EndpointProvider} 等）均在调用
+     *  {@code config(entity)} 的<b>同线程</b>同步执行，route/连接读线程并不读取本类，故 per-thread 隔离安全；
+     *  对异步线程而言，至多取到本线程默认/自身配置，而非其他 entity 的配置（反而比全局字段更安全）。
+     *  现已收拢为 {@code ContextKey<Config>}：每个 scenario 线程（{@link TestContextHolder} 以 per-thread 持有 {@code TestContext}）持有独立快照，彻底 per-scenario 隔离。
      */
-    private static volatile Config config;
+    private static final ContextKey<Config> THREAD_CONFIG_KEY = ContextKey.of("configProvider.threadConfig", Config.class);
 
     // Static block: Load framework paths from application.conf
     static {
@@ -180,9 +184,9 @@ public class ConfigProvider {
             try {
                 // Load only default configuration
                 Config defaultConfig = loadConfigFile(DEFAULT_CONFIG_FILE_NAME, false);
-                config = decryptSecrets(defaultConfig.resolve());
+                TestContextHolder.get().set(THREAD_CONFIG_KEY, decryptSecrets(defaultConfig.resolve()));
                 LOGGER.info("Default configuration loaded successfully");
-                return config;
+                return TestContextHolder.get().get(THREAD_CONFIG_KEY);
             } catch (Exception e) {
                 LOGGER.warn("Failed to load default configuration, returning empty config", e);
                 return ConfigFactory.empty();
@@ -209,14 +213,14 @@ public class ConfigProvider {
             // 4. Merge environment-specific configuration (all nodes, not just headers)
             Config finalConfig = mergeEnvConfig(baseCombinedConfig, envOverride);
 
-            // 5. Assign to global config
-            config = finalConfig.resolve();
+            // 5. Assign to per-scenario config（修复 API-P0-1：仅写入本上下文，不再覆盖全局）
+            TestContextHolder.get().set(THREAD_CONFIG_KEY, finalConfig.resolve());
             //  root().unwrapped() 会展开全部 header 值（含 Authorization、
             //    Cookie、会话 token），原先直接以 INFO 打印即构成凭证泄露。改为输出脱敏结果。
-            LOGGER.info("[4/4] Global config assignment completed, final headers: {}",
-                    describeHeadersForLog(config));
+            LOGGER.info("[4/4] Per-scenario config assignment completed, final headers: {}",
+                    describeHeadersForLog(TestContextHolder.get().get(THREAD_CONFIG_KEY)));
 
-            return config;
+            return TestContextHolder.get().get(THREAD_CONFIG_KEY);
 
         } catch (Exception e) {
             LOGGER.error("Failed to load configuration for entity: {}", entityName, e);
@@ -387,7 +391,9 @@ public class ConfigProvider {
         }
         Object decrypted = decryptNode(cfg.root().unwrapped());
         if (decrypted instanceof Map) {
-            return ConfigFactory.parseMap((Map<String, Object>) decrypted);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> decryptedMap = (Map<String, Object>) decrypted;
+            return ConfigFactory.parseMap(decryptedMap);
         }
         return cfg;
     }
@@ -413,19 +419,17 @@ public class ConfigProvider {
     }
 
     public static Config getConfig() {
-        //  原实现是无锁的 check-then-act（判空后写全局字段），与 synchronized 的
-        //    config(Entity) 并发时会重复加载并互相覆盖，且非 volatile 读取可能拿到过期值。
-        //    改为 volatile + 双重检查锁定：已初始化时完全无锁（热路径），仅在缺失时进入同步块。
-        //    注：原实现在此处每次调用都打一条 debug 日志，本方法属热路径，故移除该日志。
-        Config snapshot = config;
+        // 修复 API-P0-1：读取本上下文配置快照（per-scenario 隔离，经 TestContext/ContextKey 收拢）。
+        // 本上下文尚未加载时回退到默认配置（仅写入本上下文），并发下不会互相覆盖。已初始化时完全无锁（热路径）。
+        Config snapshot = TestContextHolder.get().get(THREAD_CONFIG_KEY);
         if (snapshot == null || snapshot.isEmpty()) {
             synchronized (ConfigProvider.class) {
-                snapshot = config;
+                snapshot = TestContextHolder.get().get(THREAD_CONFIG_KEY);
                 if (snapshot == null || snapshot.isEmpty()) {
-                    LOGGER.warn("Global config not initialized, attempting to load from default config");
+                    LOGGER.warn("Context config not initialized, loading default config for current thread");
                     try {
                         snapshot = decryptSecrets(loadConfigFile(DEFAULT_CONFIG_FILE_NAME, false).resolve());
-                        config = snapshot;
+                        TestContextHolder.get().set(THREAD_CONFIG_KEY, snapshot);
                     } catch (Exception e) {
                         LOGGER.error("Failed to load default config as fallback", e);
                         return ConfigFactory.empty();

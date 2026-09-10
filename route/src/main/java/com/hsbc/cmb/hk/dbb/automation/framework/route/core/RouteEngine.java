@@ -250,7 +250,6 @@ public class RouteEngine {
                 RouteMonitorSession.sessionCount(), RouteContextState.DISPATCHED_ROUTES.size(), RuleRepository.contextRuleCount());
         RouteMonitorSession.clearAll();
         RouteContextState.DISPATCHED_ROUTES.clear();
-        RouteLiteralPathCache.clear();   //  补清 literalPath 缓存，防 case 间残留（urlPattern 极少，重建代价可忽略）
     }
 
     /**

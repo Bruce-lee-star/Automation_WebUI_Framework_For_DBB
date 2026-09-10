@@ -65,14 +65,6 @@ public class MonitorFailureCollector {
         return INSTANCE;
     }
 
-    /**
-     * ⚠️ 已废弃：运行期禁止调用。置空 INSTANCE 会使已通过 context.onClose 注册的关闭钩子指向旧实例，
-     * 导致新旧两个单例并存、isRegistered() 语义分裂。清理失败记录请改用 {@link #clear()}。
-     */
-    @Deprecated
-    public static void reset() {
-        INSTANCE = null;
-    }
 
     /** 设置当前 scenario 名（测试框架 hook 调用） */
     public void setCurrentScenario(String name) {

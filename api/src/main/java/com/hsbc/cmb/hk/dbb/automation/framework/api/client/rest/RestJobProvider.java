@@ -167,27 +167,6 @@ public class RestJobProvider extends AbstractApiJobHelper {
         this.getEntity().setRequestPayload(requestBody);
     }
 
-    /**
-     * @deprecated  命名与全框架不一致（其余各处均为 {@code setEndpoint}，
-     *             见 {@code Entity} / {@code AbstractApiJobHelper} / {@code BaseStep}）。
-     *             本类继承自 {@link AbstractApiJobHelper}，后者的 {@code setEndpoint(String)}
-     *             已提供同名字段的能力，两者重复；且经全仓库检索，本方法<b>无任何调用点</b>。
-     *             请改用 {@code setEndpoint(...)}。本方法仅为兼容保留，后续版本将移除。
-     *             （保留原有"自动补前导 /"的行为，避免兼容期语义变化。）
-     */
-    @Deprecated
-    public void setEndPoint(final String endPoint){
-        setEndpoint(endPoint != null && endPoint.startsWith("/") ? endPoint : "/" + endPoint);
-    }
-
-    /**
-     * @deprecated  命名不一致（应为 {@code getEndpoint}），且无调用点。
-     *             请改用继承自 {@link AbstractApiJobHelper#getEndpoint()} 的同名方法。
-     */
-    @Deprecated
-    public String getEndPoint(){
-        return getEndpoint();
-    }
 
     /**
      *  原实现查到配置值后<b>只打印一条 warn 就返回</b>，是彻底的 no-op ——

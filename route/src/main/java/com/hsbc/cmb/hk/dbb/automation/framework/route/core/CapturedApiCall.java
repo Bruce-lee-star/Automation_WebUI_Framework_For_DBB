@@ -279,50 +279,6 @@ public class CapturedApiCall {
      */
     public String modifyDetail() { return modifyDetail; }
 
-    /**
-     * 是否 XHR 类型请求。
-     *
-     * <p>⚠️ <b>恒为 false</b>：全局旁路采集（CDP {@code Network.requestWillBeSent}）移除后，
-     * Playwright {@code Route} 不暴露 {@code ResourceType}，框架已无资源类型数据源。
-     * 保留本方法仅为向后兼容，请勿依赖其返回值做断言。
-     *
-     * @deprecated 无数据源支撑，恒返回 false；资源类型过滤请用
-     *             {@code RouteDsl.resourceType(...)} / {@code onlyApi(...)} 在注册期完成。
-     */
-    @Deprecated
-    public boolean isXhr() {
-        return false;
-    }
-
-    /**
-     * 是否 Fetch 类型请求。
-     *
-     * @deprecated 同 {@link #isXhr()}，无数据源支撑，恒返回 false。
-     */
-    @Deprecated
-    public boolean isFetch() {
-        return false;
-    }
-
-    /**
-     * 是否 API 类请求（XHR / Fetch）。
-     *
-     * @deprecated 同 {@link #isXhr()}，无数据源支撑，恒返回 false。
-     */
-    @Deprecated
-    public boolean isApiType() {
-        return false;
-    }
-
-    /**
-     * 资源类型原始字符串。
-     *
-     * @deprecated 无数据源支撑，恒返回 {@code "OTHER"}。
-     */
-    @Deprecated
-    public String resourceTypeName() {
-        return "OTHER";
-    }
 
     // ═══════════════════════════════════════════════════════════
     // 便捷查询

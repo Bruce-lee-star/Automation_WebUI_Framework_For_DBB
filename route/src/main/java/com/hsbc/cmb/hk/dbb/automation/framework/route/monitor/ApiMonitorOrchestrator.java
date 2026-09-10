@@ -54,15 +54,6 @@ public class ApiMonitorOrchestrator {
         return INSTANCE;
     }
 
-    /**
-     * ⚠️ 已废弃：运行期禁止调用。
-     * 置空 INSTANCE 后，已通过 context.onClose 注册的关闭钩子 lambda 仍持有【旧实例】引用，
-     * 会导致新旧两个单例并存、isRegistered() 语义分裂。仅在 JVM 退出/完全重建时使用。
-     */
-    @Deprecated
-    public static void reset() {
-        INSTANCE = null;
-    }
 
     /**
      * 注册某功能下所有 endpoint 的监控规则（使用已加载的默认清单）。

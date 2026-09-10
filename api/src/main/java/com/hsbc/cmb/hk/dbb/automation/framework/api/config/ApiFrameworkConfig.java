@@ -95,11 +95,6 @@ public class ApiFrameworkConfig {
     public static final ConfigKey TEST_RETRY_DELAY =
             new ConfigKey("test.retry.delay", "1000", "测试重试延迟（毫秒）");
 
-    /** Serenity 截图策略（Selenium 遗留，已废弃）。 */
-    @Deprecated
-    public static final ConfigKey SERENITY_TAKE_SCREENSHOTS =
-            new ConfigKey("serenity.take.screenshots", "FOR_FAILURES", "Serenity 截图策略（已废弃）");
-
     /** Serenity 输出目录。 */
     public static final ConfigKey SERENITY_OUTPUT_DIRECTORY =
             new ConfigKey("serenity.output-directory", "target/site/serenity", "Serenity 输出目录");
@@ -107,16 +102,6 @@ public class ApiFrameworkConfig {
     /** Serenity 历史目录。 */
     public static final ConfigKey SERENITY_HISTORY_FOLDER =
             new ConfigKey("serenity.history.folder", "target/site/serenity/history", "Serenity 历史目录");
-
-    /** WebDriver 隐式等待（Selenium 遗留，已废弃）。 */
-    @Deprecated
-    public static final ConfigKey WEBDRIVER_IMPLICIT_WAIT =
-            new ConfigKey("webdriver.timeouts.implicitlywait", "15000", "WebDriver 隐式等待（已废弃）");
-
-    /** WebDriver 等待超时（Selenium 遗留，已废弃）。 */
-    @Deprecated
-    public static final ConfigKey WEBDRIVER_WAIT_FOR_TIMEOUT =
-            new ConfigKey("webdriver.timeouts.wait.for.timeout", "15000", "WebDriver 等待超时（已废弃）");
 
     /** API 请求/响应日志是否启用。 */
     public static final ConfigKey API_REQUEST_RESPONSE_LOGS_ENABLED =
@@ -363,19 +348,6 @@ public class ApiFrameworkConfig {
     // ========================================
 
     /**
-     * 获取 Serenity 截图策略。
-     * @return 截图策略（默认：FOR_FAILURES）
-     * @deprecated Selenium 遗留配置项，全项目（含 src/test）无调用点。
-     *             保留仅为兼容潜在外部引用，新代码请勿使用，后续大版本可安全移除。
-     */
-    @Deprecated
-    public static String getSerenityTakeScreenshots() {
-        return config().hasPath(SERENITY_TAKE_SCREENSHOTS.key())
-            ? config().getString(SERENITY_TAKE_SCREENSHOTS.key())
-            : SERENITY_TAKE_SCREENSHOTS.defaultValue();
-    }
-
-    /**
      * 获取 Serenity 输出目录。
      * @return 输出目录路径
      */
@@ -398,32 +370,6 @@ public class ApiFrameworkConfig {
     // ========================================
     // WebDriver Configuration
     // ========================================
-
-    /**
-     * 获取 WebDriver 隐式等待超时。
-     * @return 隐式等待（默认：15000）
-     * @deprecated Selenium 遗留配置项，全项目（含 src/test）无调用点。
-     *             保留仅为兼容潜在外部引用，新代码请勿使用，后续大版本可安全移除。
-     */
-    @Deprecated
-    public static int getWebDriverImplicitWait() {
-        return config().hasPath(WEBDRIVER_IMPLICIT_WAIT.key())
-            ? config().getInt(WEBDRIVER_IMPLICIT_WAIT.key())
-            : Integer.parseInt(WEBDRIVER_IMPLICIT_WAIT.defaultValue());
-    }
-
-    /**
-     * 获取 WebDriver wait-for 超时。
-     * @return 等待超时（默认：15000）
-     * @deprecated Selenium 遗留配置项，全项目（含 src/test）无调用点。
-     *             保留仅为兼容潜在外部引用，新代码请勿使用，后续大版本可安全移除。
-     */
-    @Deprecated
-    public static int getWebDriverWaitForTimeout() {
-        return config().hasPath(WEBDRIVER_WAIT_FOR_TIMEOUT.key())
-            ? config().getInt(WEBDRIVER_WAIT_FOR_TIMEOUT.key())
-            : Integer.parseInt(WEBDRIVER_WAIT_FOR_TIMEOUT.defaultValue());
-    }
 
     // ========================================
     // API Request/Response Logging

@@ -469,6 +469,18 @@ public enum WebFrameworkConfig {
     ),
 
     /**
+     * 并发执行器是否启用虚拟线程（JDK 21+）。
+     * 默认关闭：沿用平台线程池。启用前须先审计 {@code BasePage} 同步 API 与长持锁的
+     * carrier 线程 pinning 风险（并发方案 R6），确认无 {@code Object.wait} 长持锁；
+     * 另需保证运行环境为 JDK 21+，否则框架应安全降级为平台线程（见 {@code ConcurrentContextExecutor}）。
+     */
+    PLAYWRIGHT_CONCURRENT_USE_VIRTUAL_THREADS(
+        "serenity.playwright.concurrent.use.virtual.threads",
+        "false",
+        "并发执行器启用虚拟线程（JDK 21+，启用前审计 BasePage pinning）"
+    ),
+
+    /**
      * SSO 感知并发（按身份分区互斥）总开关。
      * 开启后，相同并发分区键（默认 environment+username）的 scenario 互斥串行，不同身份并行；
      * 关闭（默认）时 {@code ConcurrencyGate} 全为 no-op，行为零回归。

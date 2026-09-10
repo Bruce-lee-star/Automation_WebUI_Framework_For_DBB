@@ -330,7 +330,7 @@ long rebuilds = BrowserCrashGuard.rebuildCount();
 
 - **R2 梯度压测**：单 Browser 可承载并发 Context 数（4→8→16）的硬上限校准——当前硬上限固定 16。
 - **E2E 沙箱回归**：R7 共享 Browser 崩溃 replay 端到端验证、`api/core/web/route/reporting` 跨会话多线程 IT。
-- **9.5 虚拟线程**：`ConcurrentContextOptions.useVirtualThreads(true)` 已可用，但启用前需先审计 `BasePage` 同步 API 与长持锁的 carrier 线程 pinning 风险（R6），确认无 `Object.wait` 长持锁；目前**无对应 `FrameworkConfig` 开关**，需代码显式开启。
+- **9.5 虚拟线程**：`ConcurrentContextOptions.useVirtualThreads(true)` 已可用，且 `ConcurrentContextOptions.defaults()` 现已读取配置开关 `serenity.playwright.concurrent.use.virtual.threads`（默认 false，见 `WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_USE_VIRTUAL_THREADS`）驱动；启用前仍须先审计 `BasePage` 同步 API 与长持锁的 carrier 线程 pinning 风险（R6），确认无 `Object.wait` 长持锁，并确保运行环境为 JDK 21+（否则应安全降级为平台线程）。
 
 ---
 

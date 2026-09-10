@@ -28,6 +28,7 @@ public final class ConcurrentContextOptions {
         return builder()
                 .parallelism(WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_PARALLELISM.getIntValue())
                 .perTaskTimeoutMillis(WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_TASK_TIMEOUT_SECONDS.getLongValue() * 1000L)
+                .useVirtualThreads(WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_USE_VIRTUAL_THREADS.getBooleanValue())
                 .build();
     }
 

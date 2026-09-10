@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -145,7 +146,7 @@ public class BrowserOverrideManager {
      * @return 默认浏览器类型
      */
     public static String getDefaultBrowserType() {
-        return FrameworkConfigManager.getString(FrameworkConfig.PLAYWRIGHT_BROWSER_TYPE);
+        return FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_TYPE);
     }
     
     /**

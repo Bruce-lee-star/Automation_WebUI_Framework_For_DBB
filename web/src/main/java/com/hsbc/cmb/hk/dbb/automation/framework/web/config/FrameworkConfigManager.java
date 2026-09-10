@@ -24,7 +24,7 @@ public class FrameworkConfigManager {
     private static final Logger logger = LoggerFactory.getLogger(FrameworkConfigManager.class);
     
     // 配置缓存（并发安全。注意：ConcurrentHashMap 不接受 null 值，见 getValue/setValue 的 null 处理）
-    private static final Map<FrameworkConfig, Object> configCache = new ConcurrentHashMap<>();
+    private static final Map<WebFrameworkConfig, Object> configCache = new ConcurrentHashMap<>();
     
     // 是否启用缓存（volatile：保证 enableCache()/disableCache() 的写入对其他线程立即可见）
     private static volatile boolean cacheEnabled = true;
@@ -41,7 +41,7 @@ public class FrameworkConfigManager {
      * @return 配置值
      */
     @SuppressWarnings("unchecked")
-    public static <T> T getValue(FrameworkConfig config) {
+    public static <T> T getValue(WebFrameworkConfig config) {
         if (!cacheEnabled) {
             return (T) resolve(config);
         }
@@ -56,7 +56,7 @@ public class FrameworkConfigManager {
      * 解析配置的原始值（缓存未命中时调用）。解析失败返回 null。
      */
     @SuppressWarnings("unchecked")
-    private static Object resolve(FrameworkConfig config) {
+    private static Object resolve(WebFrameworkConfig config) {
         return config.mapValue(v -> {
             // 尝试按类型解析
             if (config.getKey().toLowerCase().contains("timeout") ||
@@ -81,7 +81,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @return 字符串值
      */
-    public static String getString(FrameworkConfig config) {
+    public static String getString(WebFrameworkConfig config) {
         Object value = getValue(config);
         if (value == null) {
             return config.getDefaultValue();
@@ -95,7 +95,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @return 整数值
      */
-    public static Integer getInt(FrameworkConfig config) {
+    public static Integer getInt(WebFrameworkConfig config) {
         Object value = getValue(config);
         if (value == null) {
             try {
@@ -132,7 +132,7 @@ public class FrameworkConfigManager {
      * @param defaultValue 默认值
      * @return 整数值
      */
-    public static Integer getInt(FrameworkConfig config, int defaultValue) {
+    public static Integer getInt(WebFrameworkConfig config, int defaultValue) {
         String value = getString(config);
         try {
             return Integer.parseInt(value);
@@ -148,7 +148,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @return 长整数值
      */
-    public static Long getLong(FrameworkConfig config) {
+    public static Long getLong(WebFrameworkConfig config) {
         String value = getString(config);
         try {
             return Long.parseLong(value);
@@ -164,7 +164,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @return 布尔值
      */
-    public static Boolean getBoolean(FrameworkConfig config) {
+    public static Boolean getBoolean(WebFrameworkConfig config) {
         String value = getString(config);
         return value != null && (value.equalsIgnoreCase("true") || 
             value.equalsIgnoreCase("yes") || 
@@ -176,7 +176,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @param value 新值
      */
-    public static void setValue(FrameworkConfig config, String value) {
+    public static void setValue(WebFrameworkConfig config, String value) {
         config.setValue(value);
         if (cacheEnabled) {
             // ConcurrentHashMap 不接受 null 值：null 表示"无可缓存值"，移除旧缓存条目，
@@ -195,7 +195,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @param value 新值
      */
-    public static void setInt(FrameworkConfig config, int value) {
+    public static void setInt(WebFrameworkConfig config, int value) {
         setValue(config, String.valueOf(value));
     }
 
@@ -204,7 +204,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @param value 新值
      */
-    public static void setBoolean(FrameworkConfig config, boolean value) {
+    public static void setBoolean(WebFrameworkConfig config, boolean value) {
         setValue(config, String.valueOf(value));
     }
 
@@ -236,7 +236,7 @@ public class FrameworkConfigManager {
      * @param config 配置项
      * @return 是否有效
      */
-    public static boolean isValid(FrameworkConfig config) {
+    public static boolean isValid(WebFrameworkConfig config) {
         try {
             String value = config.getValue();
             
@@ -264,7 +264,7 @@ public class FrameworkConfigManager {
      */
     public static void printAllConfigs() {
         logger.info("=== Framework Configuration ===");
-        for (FrameworkConfig config : FrameworkConfig.values()) {
+        for (WebFrameworkConfig config : WebFrameworkConfig.values()) {
             String value = config.getValue();
             String displayValue = value != null ? value : "null";
             logger.info("{} = {} ({})", config.getKey(), displayValue, config.getDescription());
@@ -280,7 +280,7 @@ public class FrameworkConfigManager {
         StringBuilder sb = new StringBuilder();
         sb.append("Framework Configuration Summary:\n");
         
-        for (FrameworkConfig config : FrameworkConfig.values()) {
+        for (WebFrameworkConfig config : WebFrameworkConfig.values()) {
             String value = config.getValue();
             sb.append(String.format("  %-40s = %s\n", config.getKey(), value));
         }

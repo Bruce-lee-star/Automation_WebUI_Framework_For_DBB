@@ -1,6 +1,7 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.microsoft.playwright.BrowserContext;
@@ -485,14 +486,14 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
-        // 获取浏览器重启策略（统一走 FrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
-        String restartBrowserForEach = FrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
+        // 获取浏览器重启策略（统一走 WebFrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
+        String restartBrowserForEach = WebFrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
 
         // 无论重启策略如何，都清理当前的上下文和页面，以便重试时使用新的上下文和页面
         VerboseLogging.logInfoIfVerbose(logger, "Last step failed - cleaning up context and page resources (strategy: {})", restartBrowserForEach);
         try {
-            PlaywrightManager.closePage();
-            PlaywrightManager.closeContext();
+            PlaywrightRuntime.instance().pageRegistry.closePage();
+            PlaywrightRuntime.instance().contextRegistry.closeContext();
             VerboseLogging.logInfoIfVerbose(logger, "Cleaned up page and context resources after last step failure");
         } catch (Exception e) {
             VerboseLogging.logInfoIfVerbose(logger, "Failed to clean up resources after last step failure: {}", e.getMessage());
@@ -749,10 +750,7 @@ public class PlaywrightListener implements StepListener {
         }
     }
 
-    @Override
-    public void recordScreenshot(String s, byte[] bytes) {
 
-    }
 
     @Override
     public void testSuiteStarted(Class<?> testClass) {
@@ -915,8 +913,8 @@ public class PlaywrightListener implements StepListener {
             //  新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
             cleanupRouteRegistryForCurrentThread();
 
-            // 获取浏览器重启策略（统一走 FrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
-            String restartBrowserForEach = FrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
+            // 获取浏览器重启策略（统一走 WebFrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
+            String restartBrowserForEach = WebFrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
 
             // 根据浏览器重启策略决定清理方式
             // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理

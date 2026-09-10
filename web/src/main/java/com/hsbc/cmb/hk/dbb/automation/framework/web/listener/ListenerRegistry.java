@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.lang.annotation.Annotation;
 import java.net.URL;
 import java.util.*;
+import java.util.ServiceLoader;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -24,7 +25,7 @@ public class ListenerRegistry {
     private static final Logger logger = LoggerFactory.getLogger(ListenerRegistry.class);
     private static final List<Object> registeredListeners = new CopyOnWriteArrayList<>();
     private static final Set<Class<?>> listenerClasses = new HashSet<>();
-    private static boolean initialized = false;
+    private static volatile boolean initialized = false;
 
     // 缓存反射查找的监听器相关注解类（避免每次 isListenerClass() 都执行 Class.forName）
     private static volatile List<Class<? extends Annotation>> cachedListenerAnnotations;
@@ -44,25 +45,58 @@ public class ListenerRegistry {
 
         VerboseLogging.logInfoIfVerbose(logger, "Initializing ListenerRegistry with base package: {}", basePackage);
         VerboseLogging.logDebugIfVerbose(logger, "Starting listener registry initialization");
-        
+
         try {
+            // 主发现路径：ServiceLoader 发现 FrameworkListener 实现（对齐 codegen SPI 做法，逐 provider 容错）
+            discoverViaServiceLoader();
+
             Set<Class<?>> classes = scanPackage(basePackage);
             VerboseLogging.logDebugIfVerbose(logger, "Scanned {} classes in package: {}", classes.size(), basePackage);
-            
+
             int listenerCount = 0;
             for (Class<?> clazz : classes) {
-                if (isListenerClass(clazz)) {
-                    registerListener(clazz);
-                    listenerCount++;
+                // SPI 契约类已由 discoverViaServiceLoader 统一发现，扫描路径跳过避免重复登记
+                if (FrameworkListener.class.isAssignableFrom(clazz)) {
+                    continue;
+                }
+                try {
+                    if (isListenerClass(clazz)) {
+                        registerListener(clazz);
+                        listenerCount++;
+                    }
+                } catch (Throwable t) {
+                    // 根治 W-16：单类注册失败仅跳过该类并告警，绝不中止整个注册表初始化
+                    logger.warn("Skipping listener class {} during registration (continuing): {}", clazz.getName(), t.getMessage());
                 }
             }
 
             initialized = true;
-            VerboseLogging.logInfoIfVerbose(logger, "ListenerRegistry initialized successfully. Scanned {} classes, registered {} listeners", classes.size(), listenerCount);
+            VerboseLogging.logInfoIfVerbose(logger, "ListenerRegistry initialized successfully. Scanned {} classes, registered {} scan listeners (SPI listeners logged separately)", classes.size(), listenerCount);
             VerboseLogging.logDebugIfVerbose(logger, "Listener registry initialization completed");
-        } catch (Exception e) {
-            logger.error("Failed to initialize ListenerRegistry", e);
+        } catch (Throwable e) {
+            // 仅基础包解析等致命配置错误才整体失败；单类失败已在上面逐类跳过（根治 W-16 单点失败全盘失败）
+            logger.error("Failed to initialize ListenerRegistry (base package: {})", basePackage, e);
             throw new InitializationException("Failed to initialize ListenerRegistry", e);
+        }
+    }
+
+    /**
+     * 经 JDK {@link ServiceLoader} 发现 {@link FrameworkListener} 实现（主发现路径）。
+     * 任一实现类加载 / 实例化失败仅跳过该类并记 WARN，不影响其它监听器（根治 W-16）。
+     */
+    private static void discoverViaServiceLoader() {
+        try {
+            ServiceLoader<FrameworkListener> loader = ServiceLoader.load(FrameworkListener.class);
+            for (FrameworkListener listener : loader) {
+                try {
+                    registerListener((Object) listener);
+                    VerboseLogging.logInfoIfVerbose(logger, "Registered SPI listener: {}", listener.getClass().getName());
+                } catch (Throwable t) {
+                    logger.warn("Skipping SPI listener {} (continuing): {}", listener.getClass().getName(), t.getMessage());
+                }
+            }
+        } catch (Throwable t) {
+            logger.warn("ServiceLoader discovery of FrameworkListener failed (continuing without SPI listeners): {}", t.getMessage());
         }
     }
 
@@ -125,7 +159,12 @@ public class ListenerRegistry {
             } else if (file.getName().endsWith(".class")) {
                 // 加载类
                 String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
-                classes.add(Class.forName(className));
+                try {
+                    classes.add(Class.forName(className));
+                } catch (Throwable t) {
+                    // 根治 W-16：单类不可加载仅跳过并告警，不中止整个包扫描
+                    logger.warn("Skipping unloadable class {} during listener scan (continuing): {}", className, t.toString());
+                }
             }
         }
 
@@ -153,7 +192,12 @@ public class ListenerRegistry {
                 if (entryName.startsWith(packagePath) && entryName.endsWith(".class")) {
                     // 加载类
                     String className = entryName.replace('/', '.').substring(0, entryName.length() - 6);
-                    classes.add(Class.forName(className));
+                    try {
+                        classes.add(Class.forName(className));
+                    } catch (Throwable t) {
+                        // 根治 W-16：单类不可加载仅跳过并告警，不中止整个 JAR 扫描
+                        logger.warn("Skipping unloadable class {} during listener jar scan (continuing): {}", className, t.toString());
+                    }
                 }
             }
         }
@@ -415,7 +459,11 @@ public class ListenerRegistry {
                 classes.addAll(scanDirectoryRecursive(file, packageName + "." + file.getName()));
             } else if (file.getName().endsWith(".class")) {
                 String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
-                classes.add(Class.forName(className));
+                try {
+                    classes.add(Class.forName(className));
+                } catch (Throwable t) {
+                    logger.warn("Skipping unloadable class {} during listener scan (continuing): {}", className, t.toString());
+                }
             }
         }
 
@@ -442,7 +490,11 @@ public class ListenerRegistry {
 
                 if (entryName.startsWith(packagePath) && entryName.endsWith(".class")) {
                     String className = entryName.replace('/', '.').substring(0, entryName.length() - 6);
-                    classes.add(Class.forName(className));
+                    try {
+                        classes.add(Class.forName(className));
+                    } catch (Throwable t) {
+                        logger.warn("Skipping unloadable class {} during listener jar scan (continuing): {}", className, t.toString());
+                    }
                 }
             }
         }

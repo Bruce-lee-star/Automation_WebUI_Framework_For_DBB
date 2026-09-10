@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,15 +49,15 @@ public final class ConcurrencyGate {
 
     /**
      * 实时解析启用开关：优先读 {@code System.getProperty}（命令行 {@code -D} 与单测即时切换均生效），
-     * 回退 {@link FrameworkConfig}（经 Serenity 配置体系，含 serenity.conf）。
+     * 回退 {@link WebFrameworkConfig}（经 Serenity 配置体系，含 serenity.conf）。
      * 双重读取规避 Serenity {@code SystemEnvironmentVariables} 单例缓存导致的运行期不可见问题。
      */
     private static boolean isEnabledLive() {
-        String override = System.getProperty(FrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey());
+        String override = System.getProperty(WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey());
         if (override != null) {
             return override.equalsIgnoreCase("true") || override.equalsIgnoreCase("yes") || override.equalsIgnoreCase("1");
         }
-        return FrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getBooleanValue();
+        return WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getBooleanValue();
     }
 
     private static int perKeyPermits() {
@@ -65,10 +65,10 @@ public final class ConcurrencyGate {
     }
 
     /**
-     * 实时解析每 key 许可数：优先 {@code System.getProperty}，回退 {@link FrameworkConfig}（默认 1）。
+     * 实时解析每 key 许可数：优先 {@code System.getProperty}，回退 {@link WebFrameworkConfig}（默认 1）。
      */
     private static int perKeyPermitsLive() {
-        String override = System.getProperty(FrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey());
+        String override = System.getProperty(WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey());
         if (override != null) {
             try {
                 return Math.max(1, Integer.parseInt(override.trim()));
@@ -76,7 +76,7 @@ public final class ConcurrencyGate {
                 // 非法值回落默认解析
             }
         }
-        int p = FrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getIntValue();
+        int p = WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getIntValue();
         return p < 1 ? 1 : p;
     }
 

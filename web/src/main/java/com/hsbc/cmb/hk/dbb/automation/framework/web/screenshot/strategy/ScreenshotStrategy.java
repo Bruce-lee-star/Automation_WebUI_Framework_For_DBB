@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import net.thucydides.model.util.EnvironmentVariables;
 import net.thucydides.model.domain.TestResult;
@@ -89,7 +89,7 @@ public enum ScreenshotStrategy {
             return AFTER_EACH_STEP; // 默认策略
         }
 
-        String screenshotStrategy = FrameworkConfigManager.getString(FrameworkConfig.SERENITY_SCREENSHOT_STRATEGY);
+        String screenshotStrategy = FrameworkConfigManager.getString(WebFrameworkConfig.SERENITY_SCREENSHOT_STRATEGY);
         try {
             return valueOf(screenshotStrategy.toUpperCase());
         } catch (IllegalArgumentException e) {

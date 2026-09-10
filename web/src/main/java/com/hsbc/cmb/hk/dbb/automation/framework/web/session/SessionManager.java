@@ -1,7 +1,8 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.session;import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+
 
 import com.microsoft.playwright.BrowserContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
@@ -44,9 +45,9 @@ public class SessionManager {
     // Session storage directory
     private static final String SESSION_DIR = "target/.sessions";
 
-    // Session timeout in minutes — read from FrameworkConfig (default: 5)
+    // Session timeout in minutes — read from WebFrameworkConfig (default: 5)
     private static final long SESSION_TIMEOUT_MINUTES =
-            FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
+            FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
 
     //  原 SESSION_IO_EXECUTOR（单线程 IO 超时守卫）已移除（2026-09-06，方案 B）：
     // META_CACHE 已缓存 .meta 的 homeUrl/lastAccessTime/exists，STORAGE_CONTENT_CACHE 已缓存
@@ -62,9 +63,9 @@ public class SessionManager {
     // 阻塞等待 leader 完成，成功后直接复用已落盘的 storageState，不再触发第二次登录。
     // 注意：仅 FileChannel 锁无法跨 JVM；本协调基于 JVM 内静态 Map，覆盖 Serenity 单 JVM 多线程并行
     // （forkCount=0）这一主场景。多 JVM（forkCount>0）需额外文件锁兜底。
-    // 单飞 follower 等待 leader 完成的兜底超时（毫秒）— 读自 FrameworkConfig（默认 60000）
+    // 单飞 follower 等待 leader 完成的兜底超时（毫秒）— 读自 WebFrameworkConfig（默认 60000）
     private static final long SINGLE_FLIGHT_TIMEOUT_MS =
-            FrameworkConfigManager.getInt(FrameworkConfig.PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS);
+            FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS);
     private static final ConcurrentHashMap<String, LoginGuard> loginGuards = new ConcurrentHashMap<>();
 
     /**
@@ -429,13 +430,13 @@ public class SessionManager {
             //  Feature 模式遇到不同 env/user（不同 sessionKey）：不能再复用上一个 session 的 Context。
             //    先丢弃当前 Context（保留 custom options），并清除过期 storageStatePath，使后续重建
             //    从干净起点开始；随后按"缓存是否有此 key"分流：【命中→加载缓存】或【未命中→走登录】。
-            if (PlaywrightManager.hasContext()
+            if (PlaywrightRuntime.instance().contextRegistry.hasContext()
                     && Boolean.TRUE.equals(TestContextHolder.get().get(FEATURE_SESSION_RESTORED))
                     && !sessionKey.equals(TestContextHolder.get().get(CURRENT_FEATURE_SESSION_KEY))) {
                 VerboseLogging.logInfoIfVerbose(LOGGER,
                         "Feature mode: sessionKey {} differs from restored — discarding current Context",
                         sessionKey);
-                PlaywrightManager.discardCurrentContext();
+                PlaywrightRuntime.instance().contextRegistry.discardCurrentContext();
                 // 清除上一个 user 的 storageState（路径 + 内存 JSON），避免重建/登录时误加载旧 session
                 PlaywrightManager.customOptions().setStorageStatePath(null);
                 PlaywrightManager.customOptions().setStorageState(null);

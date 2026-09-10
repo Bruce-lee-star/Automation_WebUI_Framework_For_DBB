@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -39,7 +39,7 @@ public final class LoginIdentityKeyResolver implements ConcurrencyKeyResolver {
 
     /** 默认来源：维度取自配置，值取自 {@link ConcurrencyIdentity}。 */
     public static LoginIdentityKeyResolver defaultSource() {
-        return new LoginIdentityKeyResolver(parseDimensions(FrameworkConfig.CONCURRENCY_PARTITION_DIMENSIONS.getValue()),
+        return new LoginIdentityKeyResolver(parseDimensions(WebFrameworkConfig.CONCURRENCY_PARTITION_DIMENSIONS.getValue()),
                 ConcurrencyIdentity::value);
     }
 

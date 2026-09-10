@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ProxyConfigResolver;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,7 +72,7 @@ public class BrowserStackLocalManager {
             return false;
         }
 
-        currentIdentifier = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_LOCAL_IDENTIFIER);
+        currentIdentifier = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_LOCAL_IDENTIFIER);
         if (currentIdentifier == null || currentIdentifier.trim().isEmpty()) {
             currentIdentifier = "automation_" + System.currentTimeMillis();
         }
@@ -88,7 +88,7 @@ public class BrowserStackLocalManager {
             command.add("--only-automate");     // 仅允许 Automate 请求，禁止交互式浏览器登录
 
             // 代理配置：只要配置了代理地址，自动传给 tunnel binary
-            String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+            String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
             if (httpProxy != null) {
                 String host = ProxyConfigResolver.extractHost(httpProxy);
                 String port = ProxyConfigResolver.extractPort(httpProxy);
@@ -132,7 +132,7 @@ public class BrowserStackLocalManager {
             tunnelProcess = pb.start();
 
             // 等待隧道就绪（读取 stdout 直到 "Press Ctrl-C to quit"）
-            int timeout = FrameworkConfigManager.getInt(FrameworkConfig.BROWSERSTACK_LOCAL_TIMEOUT);
+            int timeout = FrameworkConfigManager.getInt(WebFrameworkConfig.BROWSERSTACK_LOCAL_TIMEOUT);
             if (timeout <= 0) timeout = 30;
             boolean ready = waitForReady(tunnelProcess, timeout);
 
@@ -191,11 +191,11 @@ public class BrowserStackLocalManager {
     // ────────────────── private ──────────────────
 
     private static boolean isLocalEnabled() {
-        return FrameworkConfigManager.getBoolean(FrameworkConfig.BROWSERSTACK_LOCAL);
+        return FrameworkConfigManager.getBoolean(WebFrameworkConfig.BROWSERSTACK_LOCAL);
     }
 
     private static String resolveBinaryPath() {
-        String configured = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_LOCAL_PATH);
+        String configured = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_LOCAL_PATH);
         if (configured != null && !configured.trim().isEmpty()) {
             String trimmed = configured.trim();
             // 相对路径基于 JVM user.dir 解析（和 java.io.File 行为一致）

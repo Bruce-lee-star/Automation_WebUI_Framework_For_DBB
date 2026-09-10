@@ -1,9 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ProxyConfigResolver;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
@@ -86,7 +88,7 @@ public class BrowserStackManager {
      * 优先级：环境变量 > 系统属性 > 配置文件 > 默认值(false)
      */
     public static boolean isBrowserStackEnabled() {
-        return getBooleanEnv("BROWSERSTACK_ENABLED", FrameworkConfig.BROWSERSTACK_ENABLED, false);
+        return getBooleanEnv("BROWSERSTACK_ENABLED", WebFrameworkConfig.BROWSERSTACK_ENABLED, false);
     }
 
     /**
@@ -96,7 +98,7 @@ public class BrowserStackManager {
      * CDP/Playwright WebSocket 流量强制走 Local 隧道（官方原生方案，零额外组件）。
      */
     public static boolean isLocalEnabled() {
-        return getBooleanEnv("BROWSERSTACK_LOCAL", FrameworkConfig.BROWSERSTACK_LOCAL, false);
+        return getBooleanEnv("BROWSERSTACK_LOCAL", WebFrameworkConfig.BROWSERSTACK_LOCAL, false);
     }
 
     // ==================== 公共 API：创建浏览器连接 ====================
@@ -189,7 +191,7 @@ public class BrowserStackManager {
 
             String proxyHint = "";
             if (isLikelyDnsFailure(causeMsg)) {
-                String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+                String endpoint = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
                 if (endpoint == null || endpoint.trim().isEmpty()) {
                     endpoint = "cdp.browserstack.com";
                 }
@@ -326,7 +328,7 @@ public class BrowserStackManager {
      * <p>URL 格式：{@code wss://<endpoint>/playwright?caps=<json>}
      * <p>凭据不再嵌入 URL，统一通过 {@link #buildAuthHeader()} 的 Authorization Header 传递，
      * 避免凭据出现在日志、异常堆栈、heap dump 中。
-     * <p>端点域名通过 {@link FrameworkConfig#BROWSERSTACK_CDP_ENDPOINT} 配置，
+     * <p>端点域名通过 {@link WebFrameworkConfig#BROWSERSTACK_CDP_ENDPOINT} 配置，
      * 默认 {@code cdp.browserstack.com}。
      * <p>当 {@code browserstack.local=true} 时，caps 中包含 {@code browserstack.local.force.local=true}，
      * BrowserStack 云端会自动将 CDP/WebSocket 流量通过 Local 隧道转发到本地。
@@ -337,7 +339,7 @@ public class BrowserStackManager {
 
         // 统一使用云端端点。Local 模式下 caps 中已包含 force.local=true，
         // BrowserStack 云端自动将流量路由到本地隧道，无需修改 endpoint。
-        String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+        String endpoint = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
         if (endpoint == null || endpoint.trim().isEmpty()) {
             endpoint = "cdp.browserstack.com";
         }
@@ -363,23 +365,23 @@ public class BrowserStackManager {
 
         // 浏览器配置
         caps.put("browserName", resolveBrowserName());
-        caps.put("browserVersion", getStringValue(FrameworkConfig.BROWSERSTACK_BROWSER_VERSION, "latest"));
+        caps.put("browserVersion", getStringValue(WebFrameworkConfig.BROWSERSTACK_BROWSER_VERSION, "latest"));
 
         // 操作系统
-        caps.put("os", getStringValue(FrameworkConfig.BROWSERSTACK_OS, "Windows"));
-        caps.put("osVersion", getStringValue(FrameworkConfig.BROWSERSTACK_OS_VERSION, "11"));
+        caps.put("os", getStringValue(WebFrameworkConfig.BROWSERSTACK_OS, "Windows"));
+        caps.put("osVersion", getStringValue(WebFrameworkConfig.BROWSERSTACK_OS_VERSION, "11"));
 
         // 项目信息
-        caps.put("projectName", getStringValue(FrameworkConfig.SERENITY_PROJECT_NAME, "Automation Project"));
+        caps.put("projectName", getStringValue(WebFrameworkConfig.SERENITY_PROJECT_NAME, "Automation Project"));
         caps.put("buildName", "Build-" + System.currentTimeMillis());
 
         // 会话名称
-        caps.put("name", getStringValue(FrameworkConfig.BROWSERSTACK_SESSION_NAME, "Test Session"));
+        caps.put("name", getStringValue(WebFrameworkConfig.BROWSERSTACK_SESSION_NAME, "Test Session"));
 
         // 功能开关
-        caps.put("debug", getStringValue(FrameworkConfig.BROWSERSTACK_DEBUG, "false"));
-        caps.put("networkLogs", getStringValue(FrameworkConfig.BROWSERSTACK_NETWORK_LOGS, "false"));
-        caps.put("video", getStringValue(FrameworkConfig.BROWSERSTACK_VIDEO, "true"));
+        caps.put("debug", getStringValue(WebFrameworkConfig.BROWSERSTACK_DEBUG, "false"));
+        caps.put("networkLogs", getStringValue(WebFrameworkConfig.BROWSERSTACK_NETWORK_LOGS, "false"));
+        caps.put("video", getStringValue(WebFrameworkConfig.BROWSERSTACK_VIDEO, "true"));
 
         // Local Testing：访问内网应用，并解决公司代理环境下 CDP 域名无法解析的问题
         // 启用 local 后自动设置 force.local=true，CDP/Playwright WebSocket 流量走 Local 隧道
@@ -396,7 +398,7 @@ public class BrowserStackManager {
         }
 
         // 超时配置
-        int timeout = intValueOf(FrameworkConfig.BROWSERSTACK_TIMEOUT, 300);
+        int timeout = intValueOf(WebFrameworkConfig.BROWSERSTACK_TIMEOUT, 300);
         caps.put("timeout", String.valueOf(timeout));
 
         return caps;
@@ -407,7 +409,7 @@ public class BrowserStackManager {
      * <p>BrowserStack API 接受的 browserName: chrome / firefox / webkit / edge。
      */
     private static String resolveBrowserName() {
-        String raw = getStringValue(FrameworkConfig.BROWSERSTACK_BROWSER_NAME, "chrome");
+        String raw = getStringValue(WebFrameworkConfig.BROWSERSTACK_BROWSER_NAME, "chrome");
         if (raw == null || raw.trim().isEmpty()) return "chrome";
 
         String normalized = raw.trim().toLowerCase();
@@ -452,7 +454,7 @@ public class BrowserStackManager {
      */
     private static void logProxyStatus() {
         boolean localEnabled = isLocalEnabled();
-        String localProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackLocal();
+        String localProxy = ProxyConfigResolver.getHttpProxyUrl();
 
         if (localEnabled && localProxy != null) {
             logger.info("[BrowserStack] Local tunnel mode + proxy: "
@@ -464,7 +466,7 @@ public class BrowserStackManager {
                     + "tunnel connects directly (no proxy configured), "
                     + "Playwright wss:// connects to cloud endpoint (force.local=true routes traffic through tunnel).");
         } else if (localProxy != null) {
-            String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+            String endpoint = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
             if (endpoint == null || endpoint.trim().isEmpty()) {
                 endpoint = "cdp.browserstack.com";
             }
@@ -476,7 +478,7 @@ public class BrowserStackManager {
                     ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy),
                     endpoint);
         } else {
-            String endpoint = FrameworkConfigManager.getString(FrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
+            String endpoint = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
             if (endpoint == null || endpoint.trim().isEmpty()) {
                 endpoint = "cdp.browserstack.com";
             }
@@ -516,13 +518,13 @@ public class BrowserStackManager {
      */
     private static String buildProxyAuthHeader() {
         // 优先 HTTPS 代理凭据（wss:// 连接走 HTTPS_PROXY）
-        String httpsProxyUrl = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
+        String httpsProxyUrl = ProxyConfigResolver.getHttpsProxyUrl();
         String user = ProxyConfigResolver.extractUser(httpsProxyUrl);
         String pass = ProxyConfigResolver.extractPass(httpsProxyUrl);
 
         // 回退 HTTP 代理凭据
         if (user == null || pass == null) {
-            String httpProxyUrl = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
+            String httpProxyUrl = ProxyConfigResolver.getHttpProxyUrl();
             user = ProxyConfigResolver.extractUser(httpProxyUrl);
             pass = ProxyConfigResolver.extractPass(httpProxyUrl);
         }
@@ -583,11 +585,11 @@ public class BrowserStackManager {
     // ==================== 配置读取（优先级链）====================
 
     private static String getUsername() { 
-        return getConfigValue("BROWSERSTACK_USERNAME", FrameworkConfig.BROWSERSTACK_USERNAME); 
+        return getConfigValue("BROWSERSTACK_USERNAME", WebFrameworkConfig.BROWSERSTACK_USERNAME); 
     }
     
     private static String getAccessKey() { 
-        return getConfigValue("BROWSERSTACK_ACCESS_KEY", FrameworkConfig.BROWSERSTACK_ACCESS_KEY); 
+        return getConfigValue("BROWSERSTACK_ACCESS_KEY", WebFrameworkConfig.BROWSERSTACK_ACCESS_KEY); 
     }
 
     /**
@@ -607,7 +609,7 @@ public class BrowserStackManager {
         }
     }
 
-    private static String getConfigValue(String envVar, FrameworkConfig configKey) {
+    private static String getConfigValue(String envVar, WebFrameworkConfig configKey) {
         // 1. 环境变量
         String envVal = System.getenv(envVar);
         if (envVal != null && !envVal.isEmpty()) return envVal;
@@ -620,7 +622,7 @@ public class BrowserStackManager {
         return configKey != null ? FrameworkConfigManager.getString(configKey) : null;
     }
 
-    private static String getStringValue(FrameworkConfig key, String defaultValue) {
+    private static String getStringValue(WebFrameworkConfig key, String defaultValue) {
         try {
             String val = FrameworkConfigManager.getString(key);
             return val != null && !val.isEmpty() ? val : defaultValue;
@@ -629,7 +631,7 @@ public class BrowserStackManager {
         }
     }
 
-    private static int intValueOf(FrameworkConfig key, int defaultValue) {
+    private static int intValueOf(WebFrameworkConfig key, int defaultValue) {
         try {
             return FrameworkConfigManager.getInt(key);
         } catch (Exception e) {
@@ -637,7 +639,7 @@ public class BrowserStackManager {
         }
     }
 
-    private static boolean getBooleanEnv(String envVar, FrameworkConfig configKey, boolean defaultVal) {
+    private static boolean getBooleanEnv(String envVar, WebFrameworkConfig configKey, boolean defaultVal) {
         String envVal = System.getenv(envVar);
         if (envVal != null && !envVal.isEmpty()) return Boolean.parseBoolean(envVal);
         if (configKey != null) {
@@ -790,8 +792,8 @@ public class BrowserStackManager {
         boolean shouldInjectProxy = BrowserStackManager.isBrowserStackEnabled() && localOn;
 
         if (shouldInjectProxy) {
-            String httpProxy = ProxyConfigResolver.getHttpProxyUrlForBrowserStackCdp();
-            String httpsProxy = ProxyConfigResolver.getHttpsProxyUrlForBrowserStackCdp();
+            String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
+            String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
             if (httpProxy != null || httpsProxy != null) {
                 if (httpProxy != null) env.put("HTTP_PROXY", httpProxy);
                 if (httpsProxy != null) {

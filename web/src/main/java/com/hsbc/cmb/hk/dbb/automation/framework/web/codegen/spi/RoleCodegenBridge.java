@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;

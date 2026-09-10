@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import net.thucydides.model.domain.DataTable;
@@ -53,10 +53,10 @@ public class AxeCoreListener implements StepListener {
                 AxeCoreScanner.AxeScanConfig config = new AxeCoreScanner.AxeScanConfig();
 
                 // Read configuration using FrameworkConfigManager
-                boolean enabled = FrameworkConfigManager.getBoolean(FrameworkConfig.AXE_SCAN_ENABLED);
+                boolean enabled = FrameworkConfigManager.getBoolean(WebFrameworkConfig.AXE_SCAN_ENABLED);
                 String projectName = PlaywrightManager.config().getProjectName();
-                String tags = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_TAGS);
-                String outputDir = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
+                String tags = FrameworkConfigManager.getString(WebFrameworkConfig.AXE_SCAN_TAGS);
+                String outputDir = FrameworkConfigManager.getString(WebFrameworkConfig.AXE_SCAN_OUTPUT_DIR);
 
                 TestContextHolder.get().set(AXE_ENABLED_KEY,enabled);
                 TestContextHolder.get().set(REPORT_GENERATED_KEY,false);  // Reset report flag
@@ -272,6 +272,5 @@ public class AxeCoreListener implements StepListener {
     @Override
     public void takeScreenshots(TestResult result, List<ScreenshotAndHtmlSource> sources) { /* no-op */ }
 
-    @Override
-    public void recordScreenshot(String name, byte[] bytes) { /* no-op */ }
+
 }

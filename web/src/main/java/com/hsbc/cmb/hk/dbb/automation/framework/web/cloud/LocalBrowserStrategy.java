@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;

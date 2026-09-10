@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PageEventMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import net.serenitybdd.core.Serenity;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
@@ -51,7 +51,7 @@ final class StepFailureAggregator {
             return;
         }
 
-        long timeoutMs = FrameworkConfigManager.getLong(FrameworkConfig.API_ASSERTION_WAIT_TIMEOUT);
+        long timeoutMs = FrameworkConfigManager.getLong(WebFrameworkConfig.API_ASSERTION_WAIT_TIMEOUT);
         try {
             boolean completed = context.awaitCompletion(timeoutMs);
             if (!completed) {
@@ -160,7 +160,7 @@ final class StepFailureAggregator {
      * 经 Serenity 标记失败并抛出。默认关闭（仅记录日志）；drain 即清空，天然幂等。
      */
     static void checkAndFailOnPageErrors() {
-        if (!FrameworkConfig.PLAYWRIGHT_PAGE_ERROR_FAIL.getBooleanValue()) {
+        if (!WebFrameworkConfig.PLAYWRIGHT_PAGE_ERROR_FAIL.getBooleanValue()) {
             return;
         }
         List<String> errors = PageEventMonitor.drainPendingPageErrors();

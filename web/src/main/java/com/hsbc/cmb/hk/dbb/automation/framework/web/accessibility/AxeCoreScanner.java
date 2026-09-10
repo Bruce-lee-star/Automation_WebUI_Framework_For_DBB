@@ -4,7 +4,7 @@ import com.deque.html.axecore.playwright.AxeBuilder;
 import com.deque.html.axecore.results.AxeResults;
 import com.deque.html.axecore.results.CheckedNode;
 import com.deque.html.axecore.results.Rule;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.microsoft.playwright.Page;
@@ -53,7 +53,7 @@ public class AxeCoreScanner {
         private List<String> tags = new ArrayList<>();
         private List<String> rules = new ArrayList<>();
         private List<String> excludeRules = new ArrayList<>();
-        private String reportOutputDir = FrameworkConfigManager.getString(FrameworkConfig.AXE_SCAN_OUTPUT_DIR);
+        private String reportOutputDir = FrameworkConfigManager.getString(WebFrameworkConfig.AXE_SCAN_OUTPUT_DIR);
 
         public String getProjectName() { return projectName; }
         public void setProjectName(String projectName) { this.projectName = projectName; }

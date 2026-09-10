@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * 4. 线程安全的事件处理
  * 5. 优化的日志输出（减少重复实例的日志噪音）
  */
-public class ThucydidesStepsListenerAdapter implements StepListener {
+public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkListener {
 
     private static final Logger logger = LoggerFactory.getLogger(ThucydidesStepsListenerAdapter.class);
 
@@ -754,8 +754,5 @@ public class ThucydidesStepsListenerAdapter implements StepListener {
         }
     }
 
-    @Override
-    public void recordScreenshot(String s, byte[] bytes) {
 
-    }
 }

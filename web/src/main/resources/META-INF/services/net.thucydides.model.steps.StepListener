@@ -1,0 +1,4 @@
+# Serenity Step Listeners
+# ThucydidesStepsListenerAdapter - 监听器适配器，协调多个监听器
+# 此 SPI 注册由 CORE-P0-1 从 core 模块下沉至 web（core 不应持有指向 web 类的注册）
+com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter

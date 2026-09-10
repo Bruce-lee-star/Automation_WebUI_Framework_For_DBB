@@ -7,7 +7,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
  * 降低「Java 与面板 JS 契约键不一致」的风险：
  * <ul>
  *   <li>{@code CMD_*}   —— 面板 JS → Java 引擎命令名（{@code RolePickerCommandEngine#runPickerCommand} 的 cmd 取值）；</li>
- *   <li>{@code MODE_*}  —— 拾取模式枚举 {@link RoleElementPicker.PickMode} 对应的浏览器侧字符串
+ *   <li>{@code MODE_*}  —— 拾取模式枚举 {@link com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickMode} 对应的浏览器侧字符串
  *                          （等价于 {@code mode.name().toLowerCase()}，集中后改动一目了然）；</li>
  *   <li>{@code STATE_*} —— Java ↔ 面板 JS 通信的实参键，与对应脚本里的 {@code a.xxx} 字段严格对应；</li>
  *   <li>{@code TIMEOUT_*} —— 超时/去抖阈值（毫秒）；</li>

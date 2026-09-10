@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickMode;
 
 /**
  * 共享态宿主（T5-1 第二步 keystone）：收敛 {@link RoleElementPicker} 中全部按
@@ -29,7 +30,7 @@ final class RolePickerSessionState {
     static final Map<BrowserContext, LinkedHashMap<String, RoleEntry>> CTX_PICK_STATES =
             new ConcurrentHashMap<>();
     static final Set<BrowserContext> CTX_BRIDGED = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    static final Map<BrowserContext, RoleElementPicker.PickMode> CTX_PICK_MODES = new ConcurrentHashMap<>();
+    static final Map<BrowserContext, PickMode> CTX_PICK_MODES = new ConcurrentHashMap<>();
     static final Map<BrowserContext, java.util.Set<Page>> CTX_FRAMEWORK_CLOSED = new ConcurrentHashMap<>();
     static final Set<BrowserContext> CTX_PANEL_SCRIPTED = Collections.newSetFromMap(new ConcurrentHashMap<>());
     static final Map<BrowserContext, String> CTX_PICKER_NLS = new ConcurrentHashMap<>();

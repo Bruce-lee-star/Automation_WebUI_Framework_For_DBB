@@ -15,9 +15,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickSnapshot;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.StepRec;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PageOp;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickSnapshot;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.StepRec;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PageOp;
 
 /**
  * Code-generation assembler (T5-1 step 3): relocates RoleElementPicker's pure

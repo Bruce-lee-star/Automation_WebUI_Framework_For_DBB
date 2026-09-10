@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.*;
 
 // 快照解析簇（T5-1 拆分）：readPickSnapshot/stopAndRead/parsePickSnapshot/getPageOpsWithPage/getStepsWithPage
 // 已下沉至 RolePickerSnapshotParser，此处桥接保持 runPickerCommand / getSteps 的原调用形态（行为零回归）。
@@ -72,9 +73,6 @@ public final class RoleElementPicker {
      *  - SCAN_REGION：区域扫描（选区域后扫描，扫完自动回 IDLE）
      * 与浏览器侧 window.__roleMode 同步，由 Java 权威驱动。
      */
-    public enum PickMode { IDLE, MANUAL, SCAN_PAGE, SCAN_REGION }
-
-
     /** 在 BasePage.closeCurrentPage 调 page.close() 前调用：标记本页为"框架主动关闭"。 */
     public static void markFrameworkClose(Page page) {
         RolePickerSessionState.markFrameworkClose(page);
@@ -211,21 +209,7 @@ public final class RoleElementPicker {
     static final java.lang.reflect.Type MAP_STRING_OBJECT_TYPE =
             new TypeToken<java.util.Map<String, Object>>() {}.getType();
 
-    /** 拾取命令循环的统一返回：动作 + 按页生成的代码 + 状态文案 */
-    enum PickerAction { CONTINUE, ABORT, DONE }
-    static final class PickerResult {
-        final PickerAction action;
-        final LinkedHashMap<String, String> pageClassByPage;   // 页面类：pageClass → 源码
-        final LinkedHashMap<String, String> stepByPage;         // 步骤代码：pageClass → 源码视图
-        final String statusMsg;
-        PickerResult(PickerAction action, LinkedHashMap<String, String> pageClassByPage,
-                     LinkedHashMap<String, String> stepByPage, String statusMsg) {
-            this.action = action;
-            this.pageClassByPage = pageClassByPage;
-            this.stepByPage = stepByPage;
-            this.statusMsg = statusMsg;
-        }
-    }
+
 
     /**
      * 统一处理面板命令（start/stop/abort/done）：开始拾取、收集并生成代码、终止、关闭。
@@ -467,43 +451,16 @@ public final class RoleElementPicker {
         } catch (Exception ignore) {}
     }
 
-    /** 停止命令一次性读取的拾取态快照（合并多趟 evaluate 以降低延迟）。 */
-    static final class PickSnapshot {
-        final String pageClass;
-        final List<RoleEntry> entries;
-        final List<StepRec> steps;
-        final List<PageOp> ops;
-        PickSnapshot(String pageClass, List<RoleEntry> entries, List<StepRec> steps, List<PageOp> ops) {
-            this.pageClass = pageClass; this.entries = entries; this.steps = steps; this.ops = ops;
-        }
-    }
 
 
 
-    /** 单次 {@code page.evaluate} 即取回「已拾元素 + step 序列 + 页面级操作 + 当前页类名」，
-     *  把停止命令原本分散的多次浏览器往返合并为一次，降低点击"停止"的响应延迟。 */
-    @SuppressWarnings("unchecked")
 
 
-    /** 一次 step 记录：含所属页面类与本次拾取的元素列表（多页面归类用）。 */
-    static final class StepRec {
-        final String pageClass;
-        final List<RoleEntry> picks;
-        StepRec(String pageClass, List<RoleEntry> picks) {
-            this.pageClass = pageClass;
-            this.picks = picks;
-        }
-    }
 
-    /** 一次「页面级操作」记录：如关闭页面（op='close'）。区别于元素拾取 step，不产生元素字段。 */
-    static final class PageOp {
-        final String pageClass;
-        final String op;
-        PageOp(String pageClass, String op) {
-            this.pageClass = pageClass;
-            this.op = op;
-        }
-    }
+
+
+
+
 
 
 

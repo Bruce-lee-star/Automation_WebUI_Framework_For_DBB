@@ -15,11 +15,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry.CmdEvent;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerResult;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerAction;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickMode;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickerResult;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickerAction;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickMode;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickerAbortedException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.PickSnapshot;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickSnapshot;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScripts;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerSessionState;

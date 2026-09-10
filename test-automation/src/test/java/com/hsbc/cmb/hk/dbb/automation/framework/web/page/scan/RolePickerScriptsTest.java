@@ -21,12 +21,13 @@ import static org.junit.Assert.assertTrue;
  * which evaluate to {@code null} at class-init and silently broke script injection. This suite pins the
  * real (non-null) values so that regression cannot recur unnoticed.
  *
- * <p>T5-1 step 2 externalized the remaining inline {@code page.evaluate("...")} scripts into constants.
- * Those are pure string relocations, so the dominant risk is a <em>transcription</em> error: a dropped
- * {@code +} or an unbalanced brace would produce syntactically invalid JS that no unit test sees
- * (the picker's browser JS has no headless coverage). The tests below pin that risk by asserting
- * delimiter balance, the arg-passing arrow-function contract, and the {@code JSON.parse} equivalence
- * for arguments that were originally spliced in as object literals.
+ * <p>CG-P2-N12 externalized every picker script into {@code core/src/main/resources/scan/js/*.js}
+ * resources (loaded verbatim via {@link RolePickerScripts#loadScript}); no JS source remains inline in Java.
+ * The dominant regression risk is now a <em>syntax</em> error in a resource file — covered at build time by
+ * {@code core} module's {@code validate} phase ({@code tools/validate_picker_js.js}, V8 parse) and at test
+ * time by {@link RolePickerScriptsJsValidationTest} ({@code node --check} on every composed constant + the
+ * gate template). The assertions below pin behavioural contracts (non-null, arg arrow form, JSON.parse,
+ * merge-key shim, page-name variant distinction) that must survive the externalization.
  */
 public class RolePickerScriptsTest {
 
@@ -88,39 +89,6 @@ public class RolePickerScriptsTest {
             String v = (String) f.get(null);
             assertNotNull(f.getName() + " must not be null (self-referential stub?)", v);
             assertFalse(f.getName() + " must not be blank", v.trim().isEmpty());
-        }
-    }
-
-    /**
-     * The single most valuable guard for the extraction: a dropped {@code +} or a lost brace during the
-     * mechanical move produces JS that throws on injection. Balanced delimiters (outside string literals)
-     * catch that class of transcription error without needing a browser.
-     *
-     * <p>External scripts loaded via {@code loadScript(...)} (and their {@code concat} parts) are skipped
-     * here: they are read verbatim from .js resources, not produced by the extraction refactor, and the
-     * delimiter heuristic cannot model JS regex / template literals. Only inline constants are at risk of a
-     * dropped {@code +} or brace.
-     */
-    // File-loaded scripts (and their concat parts) are read verbatim from .js resources, not produced by
-    // the extraction refactor, so the delimiter-balance heuristic (which cannot model JS regex / template
-    // literals) must skip them. Inline constants that embed such scripts are skipped for the same reason:
-    // START_INJECT_JS and SET_NLS_AND_SESSION_JS both inline START_SCRIPT, which carries regex / template
-    // literals. Only the genuinely inline constants are at risk of a dropped '+' or brace.
-    private static final java.util.Set<String> EXTERNAL_OR_FRAGMENT = new java.util.HashSet<>(java.util.Arrays.asList(
-            "START_SCRIPT_A", "START_SCRIPT_B1", "START_SCRIPT_B2", "START_SCRIPT",
-            "STOP_SCRIPT", "SHOW_PANEL_SCRIPT",
-            "PANEL_SCRIPT_A", "PANEL_SCRIPT_B", "PANEL_SCRIPT", "SET_NLS_AND_SESSION_JS", "START_INJECT_JS"));
-
-    @Test
-    public void everyInlineScriptConstantHasBalancedJsDelimiters() throws Exception {
-        for (Field f : scriptConstantFields()) {
-            if (EXTERNAL_OR_FRAGMENT.contains(f.getName())) {
-                continue;
-            }
-            String v = (String) f.get(null);
-            assertTrue(f.getName() + " has unbalanced JS delimiters"
-                            + " (a '+' or brace was likely lost during extraction)",
-                    hasBalancedDelimitersOutsideStrings(v));
         }
     }
 
@@ -270,51 +238,5 @@ public class RolePickerScriptsTest {
             }
         }
         return out;
-    }
-
-    /**
-     * Counts {@code {} () []} only outside single/double-quoted string literals (honouring backslash
-     * escapes), so that delimiters appearing inside JS strings do not produce false failures.
-     */
-    private static boolean hasBalancedDelimitersOutsideStrings(String js) {
-        int curly = 0;
-        int paren = 0;
-        int square = 0;
-        char quote = 0;
-        boolean escaped = false;
-        for (int i = 0; i < js.length(); i++) {
-            char c = js.charAt(i);
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (c == '\\') {
-                escaped = true;
-                continue;
-            }
-            if (quote != 0) {
-                if (c == quote) {
-                    quote = 0;
-                }
-                continue;
-            }
-            if (c == '\'' || c == '"') {
-                quote = c;
-                continue;
-            }
-            switch (c) {
-                case '{': curly++; break;
-                case '}': curly--; break;
-                case '(': paren++; break;
-                case ')': paren--; break;
-                case '[': square++; break;
-                case ']': square--; break;
-                default: break;
-            }
-            if (curly < 0 || paren < 0 || square < 0) {
-                return false;
-            }
-        }
-        return curly == 0 && paren == 0 && square == 0 && quote == 0;
     }
 }

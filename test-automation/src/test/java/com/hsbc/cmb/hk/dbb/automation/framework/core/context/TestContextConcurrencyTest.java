@@ -77,4 +77,25 @@ public class TestContextConcurrencyTest {
         TestContextHolder.resetForCurrentThread();
         assertNull("resetForCurrentThread 后应清空状态", ctx.get(key));
     }
+
+    @Test
+    public void threadPoolReuseDoesNotLeakBetweenScenarios() throws Exception {
+        ContextKey<String> k = ContextKey.of("scenario", String.class);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        for (int round = 0; round < 3; round++) {
+            final String val = "scenario-" + round;
+            Future<Boolean> f = pool.submit(() -> {
+                TestContext ctx = TestContextHolder.get();
+                ctx.set(k, val);
+                Thread.yield();
+                // 本 scenario 读到自身值；reset 后本线程上下文应清空，避免被下一 scenario 复用读到
+                boolean isolated = val.equals(ctx.get(k));
+                TestContextHolder.resetForCurrentThread();
+                boolean cleared = ctx.get(k) == null;
+                return isolated && cleared;
+            });
+            assertTrue("scenario " + round + " 间不应串扰（线程池复用安全）", f.get(5, TimeUnit.SECONDS));
+        }
+        pool.shutdown();
+    }
 }

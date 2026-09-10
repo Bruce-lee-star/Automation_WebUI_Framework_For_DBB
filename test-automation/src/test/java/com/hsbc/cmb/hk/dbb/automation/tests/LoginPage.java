@@ -1,14 +1,17 @@
 package com.hsbc.cmb.hk.dbb.automation.tests;
 
-import com.microsoft.playwright.options.AriaRole;
-
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.microsoft.playwright.*;
+import com.microsoft.playwright.options.AriaRole;
+import com.microsoft.playwright.options.Cookie;
+
+import java.util.List;
 
 @RoleFile({"nls/NLS_footer.json", "nls/NLS_idv_logon.json"})
-public class LoginPage extends BasePage {
+public class LoginPage extends SerenityBasePage {
 
     @RoleElement(role = AriaRole.LINK, name = "Language:", exact = false)
     public PageElement languageLink;
@@ -111,5 +114,42 @@ public class LoginPage extends BasePage {
 
     @RoleElement(role = AriaRole.TEXTBOX, key = "security_code")
     public PageElement securityCodeInput;
+
+    public static void main(String[] args) {
+        Playwright playwright = Playwright.create();
+// 只启动一次浏览器，单Browser实例
+        Browser browser = playwright.chromium().launch(new BrowserType.LaunchOptions()
+                .setHeadless(false)
+        );
+
+// ========== 多个独立BrowserContext，共用同一个browser ==========
+        BrowserContext ctx1 = browser.newContext();
+        BrowserContext ctx2 = browser.newContext();
+
+// 每个context可以打开自己的page，ctx1的page和ctx2的page会话隔离
+        Page page1 = ctx1.newPage();
+        Page page2 = ctx2.newPage();
+
+        page1.navigate("https://www.baidu.com");
+        page2.navigate("https://www.baidu.com");
+
+// ctx1设置cookie，ctx2看不到
+        ctx1.addCookies(List.of(new Cookie("test", "123")
+                .setDomain(".baidu.com")
+                .setPath("/")
+        ));
+
+        System.out.println(ctx1.cookies().size()); // 有cookie
+        System.out.println(ctx2.cookies().size()); // 0，隔离
+
+// 关闭单个上下文，不会关闭浏览器进程
+        ctx1.close();
+        ctx2.close();
+
+// 最后关闭浏览器进程
+        browser.close();
+        playwright.close();
+
+    }
 
 }

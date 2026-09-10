@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import org.junit.Test;
@@ -118,7 +118,7 @@ public class PageFrameShadowTest {
     public void executeInFrame_runsActionWithFrame() {
         BasePage bp = mockBp();
         Frame f = mock(Frame.class);
-        when(bp.getFrame("n")).thenReturn(f);
+        when(bp.getPage().frame("n")).thenReturn(f);
         final Frame[] captured = {null};
         PageFrameShadow.executeInFrame(bp, "n", fr -> captured[0] = fr);
         assertSame(f, captured[0]);
@@ -127,7 +127,7 @@ public class PageFrameShadowTest {
     @Test(expected = RuntimeException.class)
     public void executeInFrame_throwsWhenFrameMissing() {
         BasePage bp = mockBp();
-        when(bp.getFrame("n")).thenReturn(null);
+        when(bp.getPage().frame("n")).thenReturn(null);
         PageFrameShadow.executeInFrame(bp, "n", fr -> { });
     }
 

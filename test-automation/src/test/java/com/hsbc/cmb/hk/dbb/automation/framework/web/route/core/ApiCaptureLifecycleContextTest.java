@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.route.core;
+package com.hsbc.cmb.hk.dbb.automation.framework.route.core;
 
 import com.microsoft.playwright.BrowserContext;
 import org.junit.Test;

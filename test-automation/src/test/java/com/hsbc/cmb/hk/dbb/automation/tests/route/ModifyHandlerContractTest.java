@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.ModifyHandler;
 import org.junit.Test;
 
 import java.util.LinkedHashMap;

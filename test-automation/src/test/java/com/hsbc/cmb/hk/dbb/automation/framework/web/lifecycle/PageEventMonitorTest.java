@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;

@@ -1,10 +1,11 @@
-package com.hsbc.cmb.hk.dbb.automation.tests.steps;
+package com.hsbc.cmb.hk.dbb.automation.tests.steps;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.HomePage;
@@ -264,5 +265,22 @@ public class LoginSteps {
      */
     private String generateSessionKey(String env, String username) {
         return env + "_" + username;
+    }
+
+    /**
+     * 并发登录入口（<b>非 {@code @Step}</b>）—— 供 {@code ConcurrentContextExecutor} 的 worker 线程调用，
+     * 不触碰 Serenity {@code StepEventBus}（桥接原则 9.3）。强制真实登录（不走 session restore），
+     * per-thread 浏览器初始化与并发闸门（{@code ConcurrencyGate}）由调用方负责。
+     *
+     * @param env      环境标识（如 O63_SIT1）
+     * @param username 用户名
+     */
+    public void concurrentLogin(String env, String username) {
+        BDDUtils logonDBBInfo = BDDUtils.getLogonDBBInfo(env, username);
+        BDDUtils.setCurrentLoginInfo(logonDBBInfo);
+        this.currentUrl = BDDUtils.getCurrentUrl();
+        this.sessionKey = generateSessionKey(env, username);
+        logger.info("[concurrent-login] forced login {} as {}", sessionKey, username);
+        performLogin();
     }
 }

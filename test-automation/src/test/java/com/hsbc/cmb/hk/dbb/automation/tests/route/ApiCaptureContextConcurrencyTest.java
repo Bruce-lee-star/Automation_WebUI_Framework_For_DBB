@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteHandleType;
 import com.microsoft.playwright.BrowserContext;
 import org.junit.Test;
 

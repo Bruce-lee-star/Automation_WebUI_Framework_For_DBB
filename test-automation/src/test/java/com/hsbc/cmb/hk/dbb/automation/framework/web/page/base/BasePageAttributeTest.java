@@ -4,7 +4,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;

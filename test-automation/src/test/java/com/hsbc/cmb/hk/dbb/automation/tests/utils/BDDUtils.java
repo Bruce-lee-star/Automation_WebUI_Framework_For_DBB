@@ -3,6 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.tests.utils;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.step.BaseStep;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import net.thucydides.model.environment.SystemEnvironmentVariables;
 import net.thucydides.model.util.EnvironmentVariables;
 import org.json.JSONObject;
@@ -19,8 +21,9 @@ public class BDDUtils {
     private static final Logger logger = LoggerFactory.getLogger(BDDUtils.class);
     private static final EnvironmentVariables environmentVariables = SystemEnvironmentVariables.createEnvironmentVariables();
     
-    // ThreadLocal to store current thread's login information
-    private static final ThreadLocal<BDDUtils> currentLoginInfo = new ThreadLocal<>();
+    // 当前线程登录信息：收拢为 core TestContext 的 ContextKey（T3-1），per-scenario 隔离。
+    private static final ContextKey<BDDUtils> CURRENT_LOGIN_INFO_KEY =
+            ContextKey.of("bddUtils.currentLoginInfo", BDDUtils.class);
 
     // Private fields to store login information
     private String env;
@@ -123,7 +126,7 @@ public class BDDUtils {
      * @param loginInfo BDDUtils object containing login information
      */
     public static void setCurrentLoginInfo(BDDUtils loginInfo) {
-        currentLoginInfo.set(loginInfo);
+        TestContextHolder.get().set(CURRENT_LOGIN_INFO_KEY, loginInfo);
         logger.debug("Set current login info for thread: {} - Username: {}", 
             Thread.currentThread().getId(), loginInfo.username);
     }
@@ -135,7 +138,7 @@ public class BDDUtils {
      * @return BDDUtils object containing current thread's login information
      */
     public static BDDUtils getCurrentLoginInfo() {
-        BDDUtils loginInfo = currentLoginInfo.get();
+        BDDUtils loginInfo = TestContextHolder.get().get(CURRENT_LOGIN_INFO_KEY);
         if (loginInfo == null) {
             logger.warn("No login info found for current thread: {}", Thread.currentThread().getId());
             throw new IllegalStateException("No login information set for current thread. " +
@@ -209,7 +212,7 @@ public class BDDUtils {
      * Should be called at the end of each scenario to prevent memory leaks
      */
     public static void clearCurrentLoginInfo() {
-        currentLoginInfo.remove();
+        TestContextHolder.get().remove(CURRENT_LOGIN_INFO_KEY);
         logger.debug("Cleared login info for thread: {}", Thread.currentThread().getId());
     }
 
@@ -219,7 +222,7 @@ public class BDDUtils {
      * @return true if login info is set, false otherwise
      */
     public static boolean hasCurrentLoginInfo() {
-        return currentLoginInfo.get() != null;
+        return TestContextHolder.get().get(CURRENT_LOGIN_INFO_KEY) != null;
     }
 
     /**

@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteHandleType;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteHandleType;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRule;
 import org.junit.Test;
 
 import java.util.Collections;

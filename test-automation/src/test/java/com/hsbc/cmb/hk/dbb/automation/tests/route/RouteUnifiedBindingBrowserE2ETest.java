@@ -5,7 +5,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 
 import org.junit.After;
 import org.junit.AfterClass;

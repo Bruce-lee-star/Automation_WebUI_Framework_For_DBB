@@ -227,11 +227,70 @@ ConcurrencyGate.ConcurrencyGateStats stats = ConcurrencyGate.stats();
 
 ---
 
+### 5.4 Serenity 并发 E2E 实战（单 Browser + 多 Context，3 环境 × 3 username）
+
+**并发驱动 = 框架自建**（设计文档 9.3），不依赖 Serenity 场景并行：`serenity.parallel.for.tests`
+在 `CucumberWithSerenity`（JUnit 4）中是历史空操作，多个 scenario 实际串行于 `main` 线程（仅做到
+「每 scenario 一个独立 Context」的隔离，并非并发）。
+
+真实并发路径（见用户 Playwright 并发说明 —— 单 Browser、多 Context）：
+
+1. `ConcurrentExecutionGlue`（包 `framework.web.concurrent`，**框架层随 web 分发**）在**编排线程**把 feature 中
+   N 个 `(env, username)` 行构建为 N 个 `ContextTask`，提交 `ConcurrentScenarioExecutor.runCases` →
+   框架 `ConcurrentContextExecutor.runAll` → **线程池真正并发**执行。业务层**零并发代码**，仅经 SPI 提供领域动作
+   `ConcurrentLogonAction`（实现 `ConcurrentCaseAction`）。
+2. 所有 worker 线程经 `PlaywrightManager.setConfigId(PlaywrightManager.sharedConfigId())` 设置**同一**
+   configId；运行时开启 `serenity.playwright.shared.browser.enabled=true` 后 `keyFor` 返回
+   `"shared:<configId>"`，**N 个并发登录复用同一个 Browser 实例**，各自持有隔离的 `BrowserContext`
+   （Playwright 官方「单 Browser + 多 Context」并发模型，Cookie/LocalStorage 按 Context 隔离）。
+3. 相同 `(env, username)` 在任务内 `ConcurrencyGate.acquire` 串行、不同身份并行（SSO 互踢防护 R7）。
+4. 失败经 `ConcurrentContextExecutor.assertAllSucceeded` 在编排线程经 Serenity 既有通道回放
+   （worker 线程不触碰 `StepEventBus`，桥接原则 G1）。
+
+> ⚠️ 必须携带 `-Dserenity.playwright.shared.browser.enabled=true`：否则每个 worker 线程会各自启动
+> **独立 Browser 进程**（多 Browser，资源开销高），退化为「多 Browser」而非「单 Browser 多 Context」。
+
+配套交付（test-automation 模块）：
+
+| 文件 | 作用 |
+|---|---|
+| `features/web/concurrent_logon_dbb.feature` | 单 scenario + DataTable：3 个不同身份（O63_SIT1/WP7UAT2_2、O38_SIT2/amhb2g0677_3、O88_SIT3/amhb2g0680_2）并发 + 3 个相同身份重复行 |
+| `tests/web/CucumberConcurrentLogonRunnerIT.java` | 运行器（`@concurrent-logon` 标签，仅匹配单 scenario；glue 含框架包） |
+| `framework/web/concurrent/ConcurrentExecutionGlue.java` | 框架层通用并发 glue（业务零并发代码，仅引用其步骤） |
+| `tests/glue/ConcurrentLogonAction.java` | 业务领域动作（实现 `ConcurrentCaseAction`，经 SPI 发现） |
+
+运行（推荐，单 Browser 多 Context；不同身份并行、相同身份也并行 → 仅验证跨环境隔离，闸门默认关闭）：
+
+```bash
+mvn -o -pl test-automation verify \
+  -Dit.test=CucumberConcurrentLogonRunnerIT \
+  -Dtags=@concurrent-logon \
+  -Dserenity.playwright.shared.browser.enabled=true
+```
+
+开启 SSO 互斥（相同身份串行、不同身份并行，验证 R7/SSO 互踢防护）：
+
+```bash
+mvn -o -pl test-automation verify \
+  -Dit.test=CucumberConcurrentLogonRunnerIT \
+  -Dtags=@concurrent-logon \
+  -Dserenity.playwright.shared.browser.enabled=true \
+  -Dserenity.playwright.concurrent.partition.enabled=true
+```
+
+开启 `partition.enabled=true` 后，feature 中 4 个相同 `(O63_SIT1, WP7UAT2_2)` 行被串行化，
+日志出现 `[concurrency-gate] identity ... serialized (blocked)`；其余不同身份仍并行。本验证依赖真实
+DBB 环境与凭证（`serenity.conf` 的 `environment.*` / `userinfo_*`），需在可访问内网的运行机执行。
+
+---
+
 ## 6. 浏览器崩溃韧性守卫（BrowserCrashGuard）
 
 共享 Browser 模式下，Browser 进程是全部并发任务的单点，崩溃会让所有任务失败。`BrowserCrashGuard` 收口「崩溃检测 + 单次重跑」：
 
 - 任务因崩溃失败时，在**进程级单飞锁**内重建共享 Browser（`PlaywrightManager.rebuildSharedBrowserIfDisconnected`），再于原 worker 线程重跑该任务一次（同身份经 per-thread `TestContext` 自然继承，无需额外亲和逻辑）。
+- **句柄损坏 → 强制重建（2026-09-08 E2E 实测加固）**：并发导航偶发 Chromium 内部句柄错误（`Cannot find object to call __adopt__` / `previewUpdated`）时，连接仍在但驱动侧对象注册表已坏——断开型重建因 `isConnected` 恒 true 而 no-op，replay 落空。`isHandleCorruption`（窄签名识别）命中后改走 `recoverForced()` → `PlaywrightManager.rebuildSharedBrowser()` **无条件**重建共享 Browser（即使仍连接）再重跑；普通崩溃仍走断开型 `recover()`。两条路径共享同一进程级单飞锁，重跑仍严格有界 1 次。
+- **事件监听器禁止同步 CDP 调用（2026-09-08 并发卡死根因修复）**：Playwright 事件（`onPage`/`onLoad`/`onDownload` 等）在<b>连接读线程</b>派发，监听器内若调用 `title()`/`evaluate()`/`saveAs()` 等同步传输方法会阻塞读线程自身，导致整条共享连接<b>自死锁</b>、所有并发导航挂起（页面停在 about:blank）。`createContext` 已移除 `onLoad→title()` 调试日志；`createPage` 的 `saveAs` 卸载到专属守护线程 `DOWNLOAD_EXECUTOR`。所有新增监听器须只做字段读取 / 日志，<b>禁止在监听器内发起同步 CDP 调用</b>。
 - **只重跑崩溃型失败**：`isCrash` 基于异常类 / 消息特征（如 `browser has been closed`、`browser disconnected`、`connection closed` 等）判定；正常业务失败（断言/超时）不重跑，不掩盖缺陷。
 - 重跑严格有界为 **1 次**（`MAX_REPLAY`），避免崩溃持续时无限循环。
 - 总开关 `serenity.playwright.concurrent.browser.crash.guard.enabled = true`（默认开启，纯韧性增强）；关闭时退化为「失败直接随 `ContextTaskResult` 返回」。

@@ -8,9 +8,9 @@
 
 | 属性 | 说明 |
 |------|------|
-| **技术栈** | Java 21 + Playwright 1.58.0 + Serenity BDD 4.3.4 + Cucumber 7.31.0 |
+| **技术栈** | Java 21 + Playwright 1.58.0 + Serenity BDD 4.2.0 + Cucumber 7.31.0 |
 | **架构模式** | BDD 行为驱动开发（Cucumber Gherkin）+ Page Object Model |
-| **构建工具** | Maven（surefire 3.2.5 / failsafe 3.2.5 / serenity-maven-plugin 4.3.4） |
+| **构建工具** | Maven（surefire 3.2.5 / failsafe 3.2.5 / serenity-maven-plugin 4.2.0） |
 | **测试框架** | JUnit 4.13.2 + Serenity JUnit 集成 |
 | **浏览器驱动** | Playwright（Chromium / Firefox / WebKit） |
 | **云测试** | BrowserStack CDP 云浏览器 |
@@ -428,8 +428,9 @@ PlaywrightManager.customOptions()
     .setGeolocation(22.3, 114.17)
     .setProxyEnabled(true);
 
-// 清除所有自定义选项，恢复默认
-PlaywrightManager.customOptions().clearAll();
+// 停止应用自定义选项（仅置标志位；要彻底释放请依赖 Scenario 结束的框架自动清理，无需手动 clearAll）
+PlaywrightManager.customOptions().disableCustomOptions();
+// 自定义选项按线程隔离，Scenario 结束时由框架自动清理（removeAllThreadLocals），恢复默认。
 ```
 
 支持的可选项：`StorageState`、`Locale`、`Timezone`、`UserAgent`、`Permissions`、`Geolocation`、`DeviceScaleFactor`、`IsMobile`、`HasTouch`、`ColorScheme`、`ViewportSize`、`ProxyEnabled`。
@@ -1054,7 +1055,7 @@ baseStep.verifyResponseJsonPath("name", "doggie");
 
 | 组件 | GroupId | Version | 说明 |
 |------|---------|---------|------|
-| Serenity BDD | net.serenity-bdd | 4.3.4 | serenity-model / serenity-core / serenity-cucumber / serenity-junit |
+| Serenity BDD | net.serenity-bdd | 4.2.0 | serenity-model / serenity-core / serenity-cucumber / serenity-junit |
 | Playwright | com.microsoft.playwright | 1.58.0 | 浏览器自动化驱动 |
 | Cucumber | io.cucumber | 7.31.0 | BDD 框架（Serenity 传递，已钉版本） |
 | JUnit | junit:junit | 4.13.2 | 测试框架 |

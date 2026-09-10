@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.options.AriaRole;
@@ -62,7 +63,7 @@ public class RoleElementBinder {
                     desc = a.description().isEmpty() ? "altText[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
                     supplier = () -> byNlsValue("altText", bundle.get(theKey), a.exact());
                 } else {
-                    supplier = () -> self.byAltText(v, a.exact());
+                    supplier = () -> LocatorFactory.byAltText(self, v, a.exact());
                 }
             } else if (a.title() != null && !a.title().isEmpty()) {
                 desc = a.description().isEmpty() ? "title=" + a.title() : a.description();
@@ -74,7 +75,7 @@ public class RoleElementBinder {
                     desc = a.description().isEmpty() ? "title[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
                     supplier = () -> byNlsValue("title", bundle.get(theKey), a.exact());
                 } else {
-                    supplier = () -> self.byTitle(v, a.exact());
+                    supplier = () -> LocatorFactory.byTitle(self, v, a.exact());
                 }
             } else if (a.placeholder() != null && !a.placeholder().isEmpty()) {
                 desc = a.description().isEmpty() ? "placeholder=" + a.placeholder() : a.description();
@@ -86,12 +87,12 @@ public class RoleElementBinder {
                     desc = a.description().isEmpty() ? "placeholder[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
                     supplier = () -> byNlsValue("placeholder", bundle.get(theKey), a.exact());
                 } else {
-                    supplier = () -> self.byPlaceholder(v, a.exact());
+                    supplier = () -> LocatorFactory.byPlaceholder(self, v, a.exact());
                 }
             } else if (a.testId() != null && !a.testId().isEmpty()) {
                 desc = a.description().isEmpty() ? "testId=" + a.testId() : a.description();
                 final String v = a.testId();
-                supplier = () -> self.byTestId(v);
+                supplier = () -> LocatorFactory.byTestId(self, v);
             } else if (a.label() != null && !a.label().isEmpty()) {
                 // label 语义定位（对齐 page.pause() 的 getByLabel）：按关联 label 文本定位对应控件。
                 // 与 role+name 是两条独立策略，但最终都定位到该 input 控件；label 文本本身用 text 定位。
@@ -104,7 +105,7 @@ public class RoleElementBinder {
                     desc = a.description().isEmpty() ? "label[nls:" + files.get(0) + "#" + theKey + "]" : a.description();
                     supplier = () -> byNlsValue("label", bundle.get(theKey), a.exact());
                 } else {
-                    supplier = () -> self.byLabel(v, a.exact());
+                    supplier = () -> LocatorFactory.byLabel(self, v, a.exact());
                 }
             } else if (a.text() != null && !a.text().isEmpty()) {
                 desc = a.description().isEmpty() ? "text=" + a.text() : a.description();
@@ -119,7 +120,7 @@ public class RoleElementBinder {
                             : a.description();
                     supplier = () -> byNlsValue("text", bundle.get(theKey), a.exact());
                 } else {
-                    supplier = () -> self.byText(v, a.exact());
+                    supplier = () -> LocatorFactory.byText(self, v, a.exact());
                 }
             } else {
                 // 无语义属性（text/altText/... 均未设）。此时优先按「角色定位」解析，
@@ -136,7 +137,7 @@ public class RoleElementBinder {
                                 ? "role=" + role + "[name:" + literalName + "]"
                                 : a.description();
                         final String nameVal = literalName;
-                        supplier = () -> self.byRole(role, nameVal, a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
+                        supplier = () -> LocatorFactory.byRole(self, role, nameVal, a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                     } else if (a.key() != null && !a.key().isEmpty()) {
                         // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
                         // 注意：必须用 resolveRoleFiles（复数）跨文件查找，与 text/altText/title 等语义路径一致；
@@ -155,11 +156,11 @@ public class RoleElementBinder {
                             // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
                             // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
                             if (NLSUtils.isTemplate(raw)) {
-                                return self.byRole(role, NLSUtils.templatePattern(raw), a.level(), a.disabled(), a.pressed(), a.expanded());
+                                return LocatorFactory.byRole(self, role, NLSUtils.templatePattern(raw), a.level(), a.disabled(), a.pressed(), a.expanded());
                             }
                             // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
                             // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
-                            return self.byRole(role, NLSUtils.visibleText(raw), a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
+                            return LocatorFactory.byRole(self, role, NLSUtils.visibleText(raw), a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                         };
                     } else {
                         // 纯 role 无 name（对齐 page.pause 的 roleWithoutName，score 510）：如
@@ -168,7 +169,7 @@ public class RoleElementBinder {
                         desc = a.description().isEmpty()
                                 ? "role=" + role + "[no-name]"
                                 : a.description();
-                        supplier = () -> self.byRole(role);
+                        supplier = () -> LocatorFactory.byRole(self, role);
                     }
                 } else if (a.key() != null && !a.key().isEmpty()) {
                     // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
@@ -225,24 +226,24 @@ public class RoleElementBinder {
         Pattern p = NLSUtils.isTemplate(resolvedValue) ? NLSUtils.templatePattern(resolvedValue) : null;
         if (p != null) {
             switch (attr) {
-                case "altText":     return self.byAltText(p);
-                case "title":       return self.byTitle(p);
-                case "placeholder": return self.byPlaceholder(p);
-                case "label":       return self.byLabel(p);
+                case "altText":     return LocatorFactory.byAltText(self, p);
+                case "title":       return LocatorFactory.byTitle(self, p);
+                case "placeholder": return LocatorFactory.byPlaceholder(self, p);
+                case "label":       return LocatorFactory.byLabel(self, p);
                 case "text":
-                default:            return self.byText(p);
+                default:            return LocatorFactory.byText(self, p);
             }
         }
         // 非模板值若内嵌 HTML/实体（<a>/<strong>/<img>/&nbsp; 等），必须按可见文本定位，
         // 与浏览器渲染后的实际文本对齐（否则如 tab_security_device 这类值会匹配失败）。
         String visible = NLSUtils.visibleText(resolvedValue);
         switch (attr) {
-            case "altText":     return self.byAltText(visible, exact);
-            case "title":       return self.byTitle(visible, exact);
-            case "placeholder": return self.byPlaceholder(visible, exact);
-            case "label":       return self.byLabel(visible, exact);
+            case "altText":     return LocatorFactory.byAltText(self, visible, exact);
+            case "title":       return LocatorFactory.byTitle(self, visible, exact);
+            case "placeholder": return LocatorFactory.byPlaceholder(self, visible, exact);
+            case "label":       return LocatorFactory.byLabel(self, visible, exact);
             case "text":
-            default:            return self.byText(visible, exact);
+            default:            return LocatorFactory.byText(self, visible, exact);
         }
     }
 

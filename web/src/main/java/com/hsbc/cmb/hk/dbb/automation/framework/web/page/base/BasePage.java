@@ -1,42 +1,38 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.Field;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Arrays;
 import java.util.List;
 import java.util.function.BooleanSupplier;
-import java.util.function.Consumer;
-import java.util.regex.Pattern;
 
 /**
  * 页面对象基类（框架核心门面）。
  *
- * <h3>API 边界（企业级约束）</h3>
+ * <h3>API 边界（企业级约束，WEB-P1-2 Phase 6 后）</h3>
+ * <p>本类仅保留页面对象的核心门面能力：元素定位（{@code element/locator/elements}）、
+ * 页面生命周期（{@code getPage/getContext/navigateTo/refresh/back/forward/switchToPage/
+ * waitForNewPage/waitForDownload/closeCurrentPage/closeOtherPages}）、文本归一化、
+ * 注解字段绑定与 iframe/shadow 上下文 seam。
+ * <p>所有"域能力"（frame/shadow 切换、Cookie、视口/截图/脚本/键盘交互、Locator 工厂、
+ * 等待/重试）已下沉到各自的委派类（{@code PageFrameShadow}/{@code CookieManager}/
+ * {@code PageViewport}/{@code PageInteractions}/{@code LocatorFactory}/{@code PageWaits}/
+ * {@code PageNavigation}），由 {@code SerenityBasePage} 经录制层统一委派调用。
+ * 故本类公开方法收敛至 ≤40，职责单一、便于测试与替换。
+ *
  * <ul>
  *   <li><b>Tier-1 用户公开 API</b>：{@link #element(String)}/{@link #locator(String)}/{@link #elements(String)}
- *       （返回框架原生 {@code PageElement}/{@code PageElementList}）、{@link #navigateTo(String)} 等页面生命周期、
- *       frame/shadow 切换、Cookie、截图，以及 {@code @Element}/{@code @RoleElement} 注解字段。</li>
+ *       （返回框架原生 {@code PageElement}/{@code PageElementList}）、{@link #navigateTo(String)} 等页面生命周期。</li>
  *   <li><b>Tier-2 框架内部 seam</b>：{@code activateFrame}/{@code deactivateFrame}/{@code pushShadow}/{@code popShadow}
  *       等为包级私有方法，仅供同包协作者（{@code PageFrameShadow}/{@code PageLifecycleCoordinator}）委派调用。</li>
  *   <li><b>{@code byRole/byText/byLabel/byAltText/byTitle/byTestId/byPlaceholder} 为 framework-internal 定位器工厂</b>，
@@ -52,44 +48,15 @@ public abstract class BasePage {
     protected volatile BrowserContext context;
 
     /**
-     * 当前 iframe 上下文（Playwright Frame），按 BasePage 实例隔离（非 ThreadLocal）。
-     * <p>null 表示当前在主页面 DOM 中操作。
-     * <p>设置后，所有通过 {@link #locator(String)} 创建的 Locator 将自动在 iframe 内查找元素，
-     * 从而解决"切到 iframe 后元素 not found in DOM"的经典问题。
-     * <p><b>企业级修正（C1 根因）：</b>原实现为 static ThreadLocal，导致同线程内任意 Page 实例切 iframe 都会
-     * 污染其它 Page 实例的上下文（A 切 frame 后 B 的 locator 误入该 iframe）。现改为每实例独立持有
-     * （{@link FrameSlot}），彻底消除跨实例状态泄漏与顺序相关竞态。
+     * 页面上下文状态机（WEB-P1-2 Phase 6 收口）。
+     * <p>原散落在 BasePage 的 iframe/shadow 上下文槽、per-context 页面切换锁、ensure 守卫、
+     * 注解字段初始化与内部 seam 全部下沉到 {@link PageContextState} 实例；本类仅持有其引用并
+     * 提供稳定的公开 / 包级门面委托，外部协作者与业务 Page 零改动。
      */
-    private final FrameSlot currentFrame = new FrameSlot();
-
-    /**
-     * 当前 open shadowRoot 上下文栈（自外向内，保存各层宿主的 CSS 选择器），按 BasePage 实例隔离（非 ThreadLocal）。
-     * <p>空栈表示当前在普通 DOM（主页面或已切到的 iframe）内操作。shadow 可嵌套，故用栈保存每一层宿主。
-     * <p>定位时把栈内宿主用 Playwright 官方的 {@code >>>} shadow 穿透组合器拼接成前缀，例如
-     * {@code #app-host >>> comp-menu#menu >>> #inner}，从而显式穿透 open shadowRoot（对标 page.pause() 的
-     * shadow piercing 录制）。{@code >>>} 是选择器引擎内置语法，可一次性穿透任意层 open shadow，无需
-     * 逐层调用 shadowRoot()（Playwright Java 的 ElementHandle 未暴露该便捷方法）。
-     * <p><b>企业级修正（C1 根因）：</b>同上，改为每实例独立持有（{@link ShadowSlot}），避免跨实例/跨 scenario
-     * 的 shadow 上下文泄漏。
-     */
-    private final ShadowSlot currentShadow = new ShadowSlot();
-
-    /** iframe 上下文槽：按实例隔离，提供与原 ThreadLocal 一致的方法签名，替代 static ThreadLocal（C1 根因修复）。 */
-    private static final class FrameSlot {
-        private volatile Frame value;
-        Frame get() { return value; }
-        void set(Frame f) { value = f; }
-        void remove() { value = null; }
-    }
-
-    /** open-shadow 上下文栈槽：按实例隔离，提供与原 ThreadLocal 一致的方法签名，替代 static ThreadLocal（C1 根因修复）。 */
-    private static final class ShadowSlot {
-        private final java.util.Deque<String> stack = new java.util.ArrayDeque<>();
-        java.util.Deque<String> get() { return stack; }
-        void remove() { stack.clear(); }
-    }
+    private final PageContextState pageContextState = new PageContextState(this);
 
     // ===================== 全局文本统一格式化工具 =====================
+
     /**
      * 文本标准化：委托给 {@link TextNormalizer#normalize(String)} 统一实现，
      * 避免 BasePage 和 PageElement 重复定义相同的 Pattern 常量和 normalize 逻辑。
@@ -99,162 +66,37 @@ public abstract class BasePage {
     }
 
     public BasePage() {
-        if (!FrameworkCore.getInstance().isInitialized()) {
-            FrameworkCore.getInstance().initialize();
-        }
-        initializeAnnotatedFields();
+        // WEB-P0-2：构造不再触发全局 FrameworkCore.initialize()——初始化由 Serenity listener
+        // (beforeTest → FrameworkCore.beforeTest) 保证；单测经 PlaywrightManager.setProvider(mock) 注入。
+        // 运行时若未初始化，getPage() 按原语义抛 IllegalStateException（行为等价改造前）。
+        pageContextState.initializeAnnotatedFields();
     }
 
-    // 页面切换锁：防止并发页面切换导致元素绑定错乱
-    private static final Object PAGE_SWITCH_LOCK = new Object();
-
-    /** 首次注解字段初始化标志——页面切换时复用已有对象而非重建 */
-    private volatile boolean annotatedFieldsInitialized = false;
-
-    private void ensurePageValid() {
-        if (page == null || isPageClosed(page)) {
-            synchronized (PAGE_SWITCH_LOCK) {
-                // 双重检查：锁内再次确认 page 仍无效
-                if (page == null || isPageClosed(page)) {
-                    page = PlaywrightManager.getPage();
-                    resetFrameAndShadowContext(); // 页面重建后重置 iframe/shadow 上下文
-                }
-            }
-        } else {
-            // 检测 PlaywrightManager 中的 page 是否已被其他实例切换（如 switchToPage/switchNewPage）
-            Page managerPage = PlaywrightManager.getPage();
-            if (managerPage != page) {
-                page = managerPage;
-                resetFrameAndShadowContext();
-            } else {
-                // 防御：页面内导航可能已使当前 iframe Frame detached，自动清理避免状态泄漏（C1/C5）
-                clearStaleFrameContextIfNeeded();
-            }
-        }
-    }
+    // ── 页面切换锁（per-context，WEB-P1-N9 修复）────────────────────────────
+    // 原实现为全局静态锁 PAGE_SWITCH_LOCK，导致并行场景下所有 scenario 的页面切换被串行化，
+    // 彻底抵消并发收益。改为按 BrowserContext 隔离：同一 Context 内（含同 Context 的多个
+    // BasePage 实例 / 多线程共享该 Context）仍串行，不同 Context 互不阻塞、可真并行。
+    // 页面切换锁（per-context，WEB-P1-N9 修复）已下沉至 PageContextState，本类不再持有锁状态。
 
     /**
-     * 重置当前线程的 iframe 与 open-shadow 上下文（同时清理，避免 shadow 宿主选择器跨页面泄漏）。
-     * 页面切换/重建后调用，确保后续 locator() 解析到新 Page 而非失效的旧 Frame/shadow。
+     * 确保当前 Page 有效（委托 {@link PageContextState}，语义逐字对齐改造前）。
+     * @apiNote Framework-internal — 仅供同包 PageWaits/PageInteractions/LocatorFactory 等委派调用。
      */
-    private void resetFrameAndShadowContext() {
-        currentFrame.remove();
-        currentShadow.get().clear();
-        initializeAnnotatedFields();
+    void ensurePageValid() {
+        pageContextState.ensurePageValid();
     }
 
     /**
-     * 防御性清理：若当前线程已切入 iframe，但其所属 Frame 已 detached 或指向其它 Page
-     * （页面内导航导致旧 Frame 失效的常见场景），则自动清掉 iframe/shadow 上下文，
-     * 防止"顺序相关"的跨用例/跨操作状态泄漏。
-     */
-    private void clearStaleFrameContextIfNeeded() {
-        Frame f = currentFrame.get();
-        if (f == null) return;
-        try {
-            Page fp = f.page();
-            if (fp == null || fp.isClosed() || fp != page) {
-                resetFrameAndShadowContext();
-            }
-        } catch (Exception e) {
-            // Frame 已 detached，访问其 page 会抛异常 —— 直接清理
-            resetFrameAndShadowContext();
-        }
-    }
-
-    /**
-     * 安全检查 Page 是否已关闭（避免 isClosed() 抛异常导致流程中断）。
+     * 安全检查 Page 是否已关闭（委托 {@link PageContextState}）。
      * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
     boolean isPageClosed(Page p) {
-        if (p == null) return true;
-        try {
-            return p.isClosed();
-        } catch (Exception e) {
-            VerboseLogging.logWarnIfVerbose(logger, "page.isClosed() threw exception, treating as closed: {}", e.getMessage());
-            return true;
-        }
+        return pageContextState.isPageClosed(p);
     }
 
+    /** 确保当前 BrowserContext 有效（委托 {@link PageContextState}）。 */
     public void ensureContextValid() {
-        if (context == null) {
-            context = PlaywrightManager.getContext();
-        }
-    }
-
-    /**
-     * 初始化/刷新注解字段。
-     * 首次调用：创建 PageElement/PageElementList 对象。
-     * 后续调用（页面切换）：复用已有对象（避免重建对象和反射赋值的开销），
-     * Locator 不再缓存，每次调用 locator() 自动绑定新 Page 实例。
-     */
-    private synchronized void initializeAnnotatedFields() {
-        Class<?> clazz = this.getClass();
-        while (clazz != null && clazz != BasePage.class) {
-            for (Field field : clazz.getDeclaredFields()) {
-                if (field.isAnnotationPresent(RoleElement.class)) {
-                    RoleElement a = field.getAnnotation(RoleElement.class);
-                    field.setAccessible(true);
-
-                    if (annotatedFieldsInitialized) {
-                        // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
-                        try {
-                            Object existing = field.get(this);
-                            if (existing == null || !(existing instanceof PageElement)) {
-                                new RoleElementBinder(this).bind(field, a);
-                            }
-                        } catch (IllegalAccessException e) {
-                            new RoleElementBinder(this).bind(field, a);
-                        }
-                        continue;
-                    }
-
-                    new RoleElementBinder(this).bind(field, a);
-                } else if (field.isAnnotationPresent(Element.class)) {
-                    Element elementAnnotation = field.getAnnotation(Element.class);
-                    String selector = elementAnnotation.value();
-                    // 对齐 page.pause() 的 frameLocator 录制：iframe 内元素用 frame() 逐层下钻。
-                    List<String> frameSegs = Arrays.asList(elementAnnotation.frame());
-                    field.setAccessible(true);
-
-                    if (annotatedFieldsInitialized) {
-                        // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
-                        try {
-                            Object existing = field.get(this);
-                            if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
-                                createField(field, selector, frameSegs);
-                            }
-                        } catch (IllegalAccessException e) {
-                            // get 失败，回退到重新创建
-                            createField(field, selector, frameSegs);
-                        }
-                        continue;
-                    }
-
-                    createField(field, selector, frameSegs);
-                }
-            }
-            clazz = clazz.getSuperclass();
-        }
-        annotatedFieldsInitialized = true;
-    }
-
-    /** 创建 PageElement 或 PageElementList 实例并赋值给字段 */
-    private void createField(Field field, String selector) {
-        createField(field, selector, null);
-    }
-
-    /** 创建 PageElement / PageElementList（含 iframe 嵌套路径 frameSegs，对齐 page.pause 的 frameLocator 录制） */
-    private void createField(Field field, String selector, List<String> frameSegs) {
-        try {
-            if (List.class.isAssignableFrom(field.getType())) {
-                field.set(this, new PageElementList(selector, this, frameSegs));
-            } else {
-                field.set(this, new PageElement(selector, this, frameSegs));
-            }
-        } catch (Exception e) {
-            throw new ElementException("Init field failed: " + field.getName(), e);
-        }
+        pageContextState.ensureContextValid();
     }
 
     public Page getPage() {
@@ -276,6 +118,14 @@ public abstract class BasePage {
     public BrowserContext getContext() {
         ensureContextValid();
         return context;
+    }
+
+    /**
+     * 返回指定 Context 的页面切换锁（稳定且 per-context 隔离）；ctx 为 null 时回退全局兜底锁。
+     * <p>委托 {@link PageContextState}，锁状态已收口到该实例（WEB-P1-2 Phase 6）。
+     */
+    static Object pageSwitchLockFor(BrowserContext ctx) {
+        return PageContextState.pageSwitchLockFor(ctx);
     }
 
     public void waitForNetworkIdle(int timeout) {
@@ -334,8 +184,6 @@ public abstract class BasePage {
         return PageWaits.retryWithValidation(this, operation, validation, maxRetries, retryIntervalMs, desc);
     }
 
-
-
     public void navigateToWithRetry(String url, int retries) {
         PageNavigation.navigateToWithRetry(this, url, retries);
     }
@@ -348,7 +196,7 @@ public abstract class BasePage {
     public Locator locatorInternal(String selector) {
         ensurePageValid();
         // shadow 上下文高于 iframe/DOM 层：用 >>> 穿透组合器把宿主前缀拼到选择器前。
-        java.util.Deque<String> shadowStack = currentShadow.get();
+        java.util.Deque<String> shadowStack = pageContextState.shadowStack();
         if (shadowStack != null && !shadowStack.isEmpty()) {
             StringBuilder prefix = new StringBuilder();
             for (String host : shadowStack) {
@@ -356,7 +204,7 @@ public abstract class BasePage {
             }
             selector = prefix.append(selector).toString();
         }
-        Frame frame = currentFrame.get();
+        Frame frame = pageContextState.currentFrame();
         if (frame != null) {
             return frame.locator(selector);
         }
@@ -434,7 +282,7 @@ public abstract class BasePage {
      */
     public void resetFrameContextAfterNavigation() {
         // 页面导航后 Frame 会 detached，iframe 与 open-shadow 上下文均失效，统一清理（C1/C5）
-        resetFrameAndShadowContext();
+        pageContextState.resetFrameAndShadowContext();
         logger.debug("Reset iframe/shadow context after page navigation");
     }
 
@@ -465,7 +313,7 @@ public abstract class BasePage {
      * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
     void onPageSwitched() {
-        resetFrameAndShadowContext();
+        pageContextState.onPageSwitched();
     }
 
     /**
@@ -473,9 +321,7 @@ public abstract class BasePage {
      * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
     void setPageReference(Page target) {
-        Page oldPage = this.page;
-        page = target;
-        PlaywrightManager.setPage(page);
+        pageContextState.setPageReference(target);
     }
 
     /**
@@ -483,96 +329,57 @@ public abstract class BasePage {
      * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。
      */
     void safeBringToFront() {
-        try {
-            page.bringToFront();
-        } catch (Exception e) {
-            VerboseLogging.logWarnIfVerbose(logger, "bringToFront() failed: {}", e.getMessage());
-        }
+        pageContextState.safeBringToFront();
     }
 
     // ===================== 页面切换方法（对标 Selenium switchTo().window()） =====================
 
     /**
      * 按索引切换到指定页面（Page），负数表示从末尾倒数（-1 = 最后一个）。
-     * <p>对标 Selenium {@code switchTo().window()}：
-     * <pre>{@code
-     * myPage.switchToPage(0);   // 切换到第一个页面
-     * myPage.switchToPage(-1);  // 切换到最后一个页面（替代 switchToLatestPage）
-     * }</pre>
-     *
-     * <p>内置 isClosed 守卫：负数索引若目标已关闭，自动向前回退到第一个未关闭的页面。
-     *
+     * 内置 isClosed 守卫：负数索引若目标已关闭，自动向前回退到第一个未关闭的页面。
      * @param index 页面索引，支持负数（-1 = 最后一个，-2 = 倒数第二个…）
+     * @see PageLifecycleCoordinator#switchToPage(BasePage, int)
      */
     public void switchToPage(int index) {
         PageLifecycleCoordinator.switchToPage(this, index);
     }
 
     /**
-     * 切换到指定的 Page 实例（用于 waitForPopup 等 Playwright API 捕获到的外部 Page）。
-     * <p>与 {@link #waitForNewPage(Runnable, int)} 不同，本方法跳过事件监听，直接使用调用方已捕获的 Page 引用。
-     *
-     * @param page 目标页面（Page 实例，不能为 null 或已关闭）
+     * 切换到指定的 Page 实例（用于 waitForPopup 等捕获到的外部 Page），跳过事件监听。
+     * @param page 目标页面（不能为 null 或已关闭）
+     * @see PageLifecycleCoordinator#switchToPage(BasePage, Page)
      */
     public Page switchToPage(Page page) {
         return PageLifecycleCoordinator.switchToPage(this, page);
     }
 
     /**
-     * 触发操作并等待新页面打开，对标 Selenium {@code switchTo().newWindow()}。
-     * <p>基于 Playwright 原生 {@code context.waitForPage(action)} 在浏览器事件级捕获新 Tab，
-     * 彻底消除轮询/计数方式的时序问题。
-     *
-     * <pre>{@code
-     * // 推荐：将触发操作传入方法，一步完成"点击 + 等待新页面 + 切换"
-     * myPage.waitForNewPage(() -> myPage.element("#link").click(), 15);
-     *
-     * // 也可以配合 waitForPopup（更适合精确捕获弹窗）
-     * Page popup = myPage.getPage().waitForPopup(() -> { ... });
-     * myPage.switchToPage(popup);
-     * }</pre>
-     *
+     * 触发操作并等待新页面打开（基于 Playwright {@code context.waitForPage(action)} 事件级捕获新 Tab）。
      * @param trigger     触发新页面打开的操作（如点击链接）
      * @param timeoutSecs 等待超时秒数
      * @return 新打开的 Page 实例
+     * @see PageLifecycleCoordinator#waitForNewPage(BasePage, Runnable, int)
      */
     public Page waitForNewPage(Runnable trigger, int timeoutSecs) {
         return PageLifecycleCoordinator.waitForNewPage(this, trigger, timeoutSecs);
     }
 
     /**
-     * 仅等待新页面（不触发操作），适用场景：前序步骤已触发新 Tab，本方法负责等待+切换。
-     * <p>先检查是否已有新页面（快速路径），若无则通过 {@code context.waitForPage()} 注册事件监听。
-     *
-     * <pre>{@code
-     * myPage.waitForNewPage(15);  // 等待最多 15 秒
-     * }</pre>
-     *
+     * 仅等待新页面（不触发操作），先查快速路径，否则经 {@code context.waitForPage()} 监听。
      * @param timeoutSecs 等待超时秒数
      * @return 新打开的 Page 实例
+     * @see PageLifecycleCoordinator#waitForNewPage(BasePage, int)
      */
     public Page waitForNewPage(int timeoutSecs) {
         return PageLifecycleCoordinator.waitForNewPage(this, timeoutSecs);
     }
 
     /**
-     * 等待下载：在 {@code trigger} 触发的一次下载完成前阻塞，对齐 {@code page.pause()} 录制出的
-     * {@code page.waitForDownload(() -> element.click())}。
-     * <p>典型用于点击“下载”链接 / 按钮：anchor 带 {@code download} 属性、href 指向文件 URL，
-     * 或 JS 触发的下载。框架已通过 {@code setAcceptDownloads(true)} 开启下载能力，
-     * 下载文件自动保存到配置的下载目录。
-     *
-     * <pre>{@code
-     * // 推荐：把触发操作传入，一步完成“点击 + 等待下载”
-     * myPage.waitForDownload(() -> myPage.element("#downloadLink").click(), 15);
-     *
-     * // 与弹窗配合（嵌套：先弹窗再下载）
-     * myPage.waitForDownload(() ->
-     *         myPage.waitForNewPage(() -> myPage.element("#link").click(), 15), 15);
-     * }</pre>
-     *
+     * 等待下载：在 {@code trigger} 触发的一次下载完成前阻塞，对齐 {@code page.waitForDownload(...)}。
+     * 框架已开启下载能力，文件自动保存到配置目录；可与弹窗/新页面嵌套。
      * @param trigger     触发下载的操作（如点击下载链接）
      * @param timeoutSecs 等待超时秒数
+     * @see PageLifecycleCoordinator#waitForDownload(BasePage, Runnable, int)
      */
     public void waitForDownload(Runnable trigger, int timeoutSecs) {
         PageLifecycleCoordinator.waitForDownload(this, trigger, timeoutSecs);
@@ -600,29 +407,15 @@ public abstract class BasePage {
     /** 从后往前找第一个未关闭的页面（兜底逻辑，供 switchToPage 负数索引使用）。
      * @apiNote Framework-internal — 仅供同包 PageLifecycleCoordinator 委派调用，页面对象请勿直接使用。 */
     Page findLastAvailablePage(List<Page> pages, int startFrom) {
-        for (int i = startFrom; i >= 0; i--) {
-            try {
-                if (!pages.get(i).isClosed()) {
-                    VerboseLogging.logWarnIfVerbose(logger,
-                            "Latest window was closed, falling back to window at index {}", i);
-                    return pages.get(i);
-                }
-            } catch (Exception ignored) { /* 页面状态探测：忽略探测过程中的异常，继续向前回退 */ }
-        }
-        return pages.get(startFrom); // 全部已关闭，返回原目标由调用方 isClosed 抛异常
-    }
-
-    public Frame getFrame(String name) {
-        ensurePageValid();
-        return page.frame(name);
+        return pageContextState.findLastAvailablePage(pages, startFrom);
     }
 
     /**
-     * 获取当前 iframe 上下文（ThreadLocal 共享，所有 Page 实例可见）。
+     * 获取当前 iframe 上下文（按 BasePage 实例隔离）。
      * @return 当前 iframe Frame，未切入 iframe 时返回 null
      */
     public Frame getCurrentFrame() {
-        return currentFrame.get();
+        return pageContextState.currentFrame();
     }
 
     // ===================== 框架内部上下文 seam（包级私有，仅供同包 PageFrameShadow 委派调用） =====================
@@ -634,799 +427,53 @@ public abstract class BasePage {
      * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
      */
     void activateFrame(Frame frame) {
-        currentFrame.set(frame);
-        initializeAnnotatedFields();
+        pageContextState.activateFrame(frame);
     }
 
-    /**
-     * 退出 iframe 回到主文档上下文（若当前处于 iframe 内）。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 退出 iframe 回到主文档上下文（若当前处于 iframe 内）。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     void deactivateFrame() {
-        if (currentFrame.get() != null) {
-            currentFrame.remove();
-            initializeAnnotatedFields();
-        }
+        pageContextState.deactivateFrame();
     }
 
-    /**
-     * 将宿主选择器压入 shadow 上下文栈。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 将宿主选择器压入 shadow 上下文栈。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     void pushShadow(String hostSelector) {
-        currentShadow.get().push(hostSelector);
+        pageContextState.pushShadow(hostSelector);
     }
 
-    /**
-     * 弹出最内层 shadow 宿主；栈空时返回 null。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 弹出最内层 shadow 宿主；栈空时返回 null。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     String popShadow() {
-        java.util.Deque<String> stack = currentShadow.get();
-        return stack.isEmpty() ? null : stack.pop();
+        return pageContextState.popShadow();
     }
 
-    /**
-     * 清空整个 shadow 上下文栈。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 清空整个 shadow 上下文栈。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     void clearShadows() {
-        currentShadow.get().clear();
+        pageContextState.clearShadows();
     }
 
-    /**
-     * 当前 shadow 嵌套深度。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 当前 shadow 嵌套深度。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     int getShadowDepth() {
-        return currentShadow.get().size();
+        return pageContextState.getShadowDepth();
     }
 
-    /**
-     * 当前最内层 shadow 宿主（栈顶），栈空时返回 null。
-     * @apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用，页面对象请勿直接使用。
-     */
+    /** 当前最内层 shadow 宿主（栈顶），栈空时返回 null。@apiNote Framework-internal — 仅供同包 PageFrameShadow 委派调用。 */
     String peekShadow() {
-        return currentShadow.get().peek();
-    }
-
-    // ===================== iframe 切换（对标 Selenium switchTo().frame() / defaultContent()） =====================
-
-    /**
-     * 按 name / id / CSS 选择器切换到 iframe，对标 Selenium {@code switchTo().frame(String)}。
-     * <p>查找策略（按顺序尝试）：
-     * <ol>
-     *   <li>作为 frame name/id 查找</li>
-     *   <li>作为 CSS 选择器查找</li>
-     * </ol>
-     * 一个方法替代了原 switchToFrame(name) + switchToFrameBySelector(selector)。
-     *
-     * <pre>{@code
-     * myPage.switchToFrame("myFrame");           // name/id
-     * myPage.switchToFrame("iframe.embedded-view"); // CSS selector
-     * }</pre>
-     *
-     * @param nameOrSelector iframe 的 name、id 或 CSS 选择器
-     * @return 切换后的 Playwright Frame（与 {@link #switchToFrame(int)} 返回类型一致）
-     */
-    public Frame switchToFrame(String nameOrSelector) {
-        return PageFrameShadow.switchToFrame(this, nameOrSelector);
-    }
-
-    // ===================== shadowRoot 切换（对齐 page.pause() 的 >>> shadow 穿透录制） =====================
-
-    /**
-     * 显式切换到指定 shadowRoot：把宿主选择器压入 shadow 上下文栈。
-     * 对标 page.pause() 录制的 {@code host >>> #inner} shadow 穿透。
-     * <p>之后通过 {@link #locator(String)} 创建的所有 Locator 都会以 {@code host >>>} 为前缀，
-     * 由 Playwright 选择器引擎一次性穿透该层 open shadowRoot。shadow 可嵌套调用
-     * （在 shadow 内再 switchToShadow 会叠加为 {@code host1 >>> host2 >>>}）。
-     *
-     * <pre>{@code
-     * myPage.switchToShadow("#app-host");         // 进入 app 的 shadow
-     * myPage.switchToShadow("comp-menu#menu");    // 再进入嵌套的 shadow
-     * myPage.element("#innerBtn").click();         // 在 shadow 内操作（自动 >>> 穿透）
-     * myPage.switchToDefaultShadow();             // 退出一层 shadow，回到外层
-     * }</pre>
-     *
-     * <p>注意：Playwright Java 的 {@code ElementHandle} 未暴露 {@code shadowRoot()}，故此处不调用该 API，
-     * 而是采用官方 {@code >>>} 穿透组合器实现，兼容任意层 open shadow。
-     *
-     * @param hostSelector 宿主元素的 CSS 选择器（在当前查找域内定位）
-     */
-    public void switchToShadow(String hostSelector) {
-        PageFrameShadow.switchToShadow(this, hostSelector);
+        return pageContextState.peekShadow();
     }
 
     /**
-     * 退出当前最内层 shadow，回到上一层 shadow（或无 shadow 的 DOM）。
-     * 对标 page.pause() 录制中离开 shadow 穿透后的查找域。
-     * <p>若当前不在任何 shadow 内，则无操作（不报错）。
-     *
-     * @return 弹出的宿主选择器，或 null（当前本就不在 shadow 内）
-     */
-    public String switchToDefaultShadow() {
-        return PageFrameShadow.switchToDefaultShadow(this);
-    }
-
-    /**
-     * 退出【所有】嵌套 shadow，回到最外层 DOM（主页面或当前 iframe）。
-     * 对应 iframe 的 {@link #switchToDefaultContent()}：switchToDefaultContent 回主文档，
-     * switchToDefaultShadowAll 回 DOM 顶层（仍可处于某 iframe 内）。
-     */
-    public void switchToDefaultShadowAll() {
-        PageFrameShadow.switchToDefaultShadowAll(this);
-    }
-
-    /**
-     * 【监听器范式】切换到指定的 iframe：在 {@code trigger} 触发动作执行期间，用
-     * {@link Page#onFrameAttached(Consumer)} 事件监听收集 frame 挂载，一旦命中目标 iframe
-     * 立即捕获并返回，不轮询、不 sleep。对标 {@code page.waitForPopup(() -> click())} 的范式——
-     * 触发动作包裹进回调，frame 由事件驱动捕获。
-     *
-     * <p>适用：iframe 是【动态出现 / 异步加载】的场景（点击按钮后注入、SPA 动态插入、延迟 {@code src}）。
-     * 对已存在（静态）的 iframe 直接用 {@link #switchToFrame(String)} 即可。
-     *
-     * <p>匹配优先级（与 {@link #switchToFrame(String)} 的语义保持兼容）：
-     * <ol>
-     *   <li>按 frame 的 {@code name} / {@code id} 精确匹配（step 生成默认用 {@code iframe[name="x"]}）；</li>
-     *   <li>按 frame 的 {@code url} 包含给定片段兜底（便于用 url 片段定位）。</li>
-     * </ol>
-     *
-     * @param trigger        触发 iframe 出现的动作（如点击打开 iframe 的按钮）；可为 null，此时等价于
-     *                       仅做一次静态查找 + 等待一次 attach 事件
-     * @param nameOrSelector iframe 的 name / id / url 片段
-     * @param timeoutSecs    等待超时秒数（<=0 时使用框架默认导航超时）
-     * @return 切换后的 Playwright Frame（已就绪）
-     */
-    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector, int timeoutSecs) {
-        return PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector, timeoutSecs);
-    }
-
-    /**
-     * {@link #switchToFrameAndWait(Runnable, String, int)} 的默认超时重载。
-     */
-    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector) {
-        return PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector);
-    }
-
-    /**
-     * 无触发动作的兼容重载：仅做一次静态查找，未找到则等待一次 attach 事件（事件驱动，无轮询）。
-     * 适用于"iframe 可能在监听注册前后才 attach"的非交互场景。
-     */
-    public Frame switchToFrameAndWait(String nameOrSelector, int timeoutSecs) {
-        return PageFrameShadow.switchToFrameAndWait(this, nameOrSelector, timeoutSecs);
-    }
-
-    /**
-     * {@link #switchToFrameAndWait(String, int)} 的默认超时重载。
-     */
-    public Frame switchToFrameAndWait(String nameOrSelector) {
-        return switchToFrameAndWait((Runnable) null, nameOrSelector, 0);
-    }
-
-    /**
-     * 按索引切换到 iframe，对标 Selenium {@code switchTo().frame(int)}。
-     *
-     * @param index iframe 索引（从 0 开始，0 通常是主页面）
-     * @return Playwright Frame
-     */
-    public Frame switchToFrame(int index) {
-        ensurePageValid();
-        List<Frame> frames = page.frames();
-        if (index < 0 || index >= frames.size()) {
-            throw new IndexOutOfBoundsException("Invalid frame index: " + index + " (total: " + frames.size() + ")");
-        }
-        Frame selectedFrame = frames.get(index);
-        currentFrame.set(selectedFrame);
-        initializeAnnotatedFields();
-        logger.info("Switched to iframe by index: {} (total: {})", index, frames.size());
-        return selectedFrame;
-    }
-
-    /**
-     * 切换回主页面 DOM（退出 iframe），对标 Selenium {@code switchTo().defaultContent()}。
-     */
-    public void switchToDefaultContent() {
-        PageFrameShadow.switchToDefaultContent(this);
-    }
-
-    /** 获取当前 Page 中所有 Frame 列表。 */
-    public List<Frame> getAllFrames() {
-        return PageFrameShadow.getAllFrames(this);
-    }
-
-    public void executeInFrame(String frameName, Consumer<Frame> action) {
-        PageFrameShadow.executeInFrame(this, frameName, action);
-    }
-
-    public void scrollTo(String selector, int x, int y) {
-        locatorInternal(selector).evaluate("el => el.scrollTo(" + x + "," + y + ")");
-    }
-
-    public void scrollBy(String selector, int x, int y) {
-        locatorInternal(selector).evaluate("el => el.scrollBy(" + x + "," + y + ")");
-    }
-
-    public void scrollToTopOf(String selector) {
-        locatorInternal(selector).evaluate("el => el.scrollTop = 0");
-    }
-
-    public void scrollToBottomOf(String selector) {
-        locatorInternal(selector).evaluate("el => el.scrollTop = el.scrollHeight");
-    }
-
-    public Object executeJavaScript(String script, Object... args) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.evaluate(script, args) : page.evaluate(script, args);
-    }
-
-    public boolean getPageSourceContains(String text) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        String content = (frame != null) ? frame.content() : page.content();
-        return normalizeText(content).contains(normalizeText(text));
-    }
-
-    /**
-     * 获取当前页面的完整 HTML 源码（自动适配 iframe 上下文）
-     */
-    public String getPageSource() {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.content() : page.content();
-    }
-
-    /**
-     * 获取当前打开的页面数量
-     * @return 当前浏览器上下文中打开的页面数
-     */
-    public int getPageSize() {
-        ensureContextValid();
-        return context.pages().size();
-    }
-
-    public BoundingBox getElementBoundingBox(String selector) {
-        return locatorInternal(selector).boundingBox();
-    }
-
-    public boolean isClosed() {
-        return page != null && page.isClosed();
-    }
-
-    public void bringToFront() {
-        ensurePageValid();
-        page.bringToFront();
-    }
-
-    public void setContent(String html) {
-        PageNavigation.setContent(this, html);
-    }
-
-    public void setViewportSize(int width, int height) {
-        ensurePageValid();
-        page.setViewportSize(width, height);
-    }
-
-    public Locator byAltText(String altText) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByAltText(altText) : page.getByAltText(altText);
-    }
-
-    public Locator byRole(AriaRole role) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByRole(role) : page.getByRole(role);
-    }
-
-    /**
-     * 按可访问性角色 + 名称定位元素（名称精确匹配，大小写敏感）。
-     * 经此定位可配合 {@code NLSUtils} 实现多语言 name 解析。
-     *
-     * @param role 可访问性角色，如 {@link AriaRole#TEXTBOX}、{@link AriaRole#BUTTON}
-     * @param name 可访问名称（由当前语言决定，通常来自 {@code NLSUtils.get(...)}）
-     * @return 对应的 Playwright Locator
-     */
-    public Locator byRole(AriaRole role, String name) {
-        // 显式 setExact(true) 与本方法 javadoc 对齐：Playwright 的 name 匹配默认
-        // exact=false（忽略大小写子串匹配，见官方 GetByRoleOptions javadoc），不显式设置会与文档描述相反。
-        return byRole(role, name, true);
-    }
-
-    /**
-     * 按可访问性角色 + 名称正则定位元素，等价于官方 {@code GetByRoleOptions.setName(Pattern)}。
-     * 用于 NLS 模板值（含 {@code {{var}}} 占位符）编译出的正则；正则模式下 exact 被 Playwright 忽略。
-     *
-     * @param role        可访问性角色
-     * @param namePattern 可访问名称正则（通常来自 {@code NLSUtils.templatePattern(...)}）
-     * @return 对应的 Playwright Locator
-     */
-    public Locator byRole(AriaRole role, Pattern namePattern) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(namePattern))
-                : page.getByRole(role, new Page.GetByRoleOptions().setName(namePattern));
-    }
-
-    /**
-     * 按可访问性角色 + 名称定位元素，可控制是否精确匹配。
-     *
-     * @param role   可访问性角色
-     * @param name   可访问名称
-     * @param exact  true=精确匹配（大小写敏感，默认行为）；false=子串/忽略大小写匹配
-     * @return 对应的 Playwright Locator
-     */
-    public Locator byRole(AriaRole role, String name, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByRole(role, new Frame.GetByRoleOptions().setName(name).setExact(exact))
-                : page.getByRole(role, new Page.GetByRoleOptions().setName(name).setExact(exact));
-    }
-
-    /**
-     * 按可访问性角色 + 名称定位元素，可控制是否精确匹配，并可指定标题层级（仅 heading 角色生效）。
-     * {@code level>0} 时等价于官方 {@code GetByRoleOptions.setLevel(level)}（对齐 {@code getByRole(HEADING).setLevel(n)}）；
-     * {@code level<=0} 表示不限定层级。
-     */
-    public Locator byRole(AriaRole role, String name, boolean exact, int level) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(name).setExact(exact);
-        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(name).setExact(exact);
-        if (level > 0) {
-            popts = popts.setLevel(level);
-            fopts = fopts.setLevel(level);
-        }
-        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
-    }
-
-    /**
-     * 按可访问性角色 + 名称正则定位元素，并可指定标题层级（仅 heading 角色生效）。
-     * 用于 NLS 模板值（含 {@code {{var}}} 占位符）编译出的正则；{@code level>0} 时附加层级过滤。
-     */
-    public Locator byRole(AriaRole role, Pattern namePattern, int level) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(namePattern);
-        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(namePattern);
-        if (level > 0) {
-            popts = popts.setLevel(level);
-            fopts = fopts.setLevel(level);
-        }
-        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
-    }
-
-    /**
-     * 按可访问性角色 + 名称定位元素，并可指定标题层级与可访问状态过滤（对齐 page.pause() 的 getByRole）。
-     * 状态过滤为三态（{@code RoleElement.State}）：{@code ANY}=不调用 setXxx（匹配任意）；
-     * {@code YES}=setXxx(true)（只匹配处于该状态）；{@code NO}=setXxx(false)（只匹配不处于该状态）。
-     *
-     * @param role     可访问性角色
-     * @param name     可访问名称
-     * @param exact    名称是否精确匹配（大小写敏感）
-     * @param level    标题层级，<=0 表示不限
-     * @param disabled 禁用状态过滤（{@link RoleElement.State}）
-     * @param pressed  按下状态过滤（toggle button，{@link RoleElement.State}）
-     * @param expanded 展开状态过滤（{@link RoleElement.State}）
-     */
-    public Locator byRole(AriaRole role, String name, boolean exact, int level,
-                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(name).setExact(exact);
-        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(name).setExact(exact);
-        if (level > 0) {
-            popts = popts.setLevel(level);
-            fopts = fopts.setLevel(level);
-        }
-        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
-        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
-        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
-    }
-
-    /**
-     * 按可访问性角色 + 名称正则定位元素，并可指定标题层级与可访问状态过滤（对齐 page.pause() 的 getByRole）。
-     * 状态过滤语义同 {@link #byRole(AriaRole, String, boolean, int, RoleElement.State, RoleElement.State, RoleElement.State)}。
-     * 用于 NLS 模板值（含 {@code {{var}}}）编译出的正则；此模式下 exact 被 Playwright 忽略。
-     */
-    public Locator byRole(AriaRole role, Pattern namePattern, int level,
-                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        Page.GetByRoleOptions popts = new Page.GetByRoleOptions().setName(namePattern);
-        Frame.GetByRoleOptions fopts = new Frame.GetByRoleOptions().setName(namePattern);
-        if (level > 0) {
-            popts = popts.setLevel(level);
-            fopts = fopts.setLevel(level);
-        }
-        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
-        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
-        return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
-    }
-
-    /**
-     * 打印当前页面中可交互元素的 {@code role = name}，
-     * 便于据此编写 {@code @RoleElement(role = ..., key = ...)} 注解。
-     * 用法：临时在测试里调用 {@code loginPage.dumpAccessibilityRoles();}，
-     * 查看控制台输出后，把每行 {@code role = name} 抄进注解即可。
-     * <p>注意：基于注入脚本遍历 DOM 的 computedRole/computedName（兼容无 Playwright
-     * accessibilitySnapshot API 的版本），仅覆盖主 frame；iframe 内元素请对对应 frame 调用。
-     */
-    public void dumpAccessibilityRoles() {
-        ensurePageValid();
-        // 经 codegen 桥接：codegen 模块在 classpath 时复刻原 a11y dump 行为；
-        // 不在时降级跳过（codegen 已成为可选模块，见架构整改计划 T2-2）。
-        RoleCodegenBridgeRegistry.getBridge().ifPresentOrElse(
-                b -> b.dumpAccessibilityRoles(page),
-                () -> logger.warn(
-                        "[a11y] codegen 模块（framework-codegen）未加载，跳过可访问性角色 dump"));
-    }
-
-    public Locator byTitle(String title) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByTitle(title) : page.getByTitle(title);
-    }
-
-    public Locator byTestId(String testId) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        // P1 兼容性：Playwright 的 getByTestId 仅认 data-testid，但拾取器会识别
-        // data-testid/data-test-id/data-test/data-qa 四种常见测试属性（对齐 page.pause 的 testId 族）。
-        // 为让生成的 @RoleElement(testId=...) 对任意一种属性都能定位，构造覆盖全部四种属性的
-        // CSS 选择器（同一值只会出现在其中一种属性上，不会误匹配多个）。
-        String sel = "[data-testid=\"" + testId + "\"],[data-test-id=\"" + testId
-                + "\"],[data-test=\"" + testId + "\"],[data-qa=\"" + testId + "\"]";
-        return (frame != null) ? frame.locator(sel) : page.locator(sel);
-    }
-
-    /**
-     * 按可见文本定位元素（精确匹配，大小写敏感），等价于 {@code page.getByText(text, {exact:true})}。
-     */
-    public Locator byText(String text) {
-        return byText(text, true);
-    }
-
-    /**
-     * 按可见文本定位元素，可控制是否精确匹配。
-     *
-     * @param text  可见文本
-     * @param exact true=精确匹配（大小写敏感）；false=子串/忽略大小写匹配
-     * @return 对应的 Playwright Locator
-     */
-    public Locator byText(String text, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByText(text, new Frame.GetByTextOptions().setExact(exact))
-                : page.getByText(text, new Page.GetByTextOptions().setExact(exact));
-    }
-
-    /**
-     * 按 alt 文本定位元素（精确匹配），等价于 {@code page.getByAltText(text, {exact:true})}。
-     */
-    public Locator byAltText(String altText, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByAltText(altText, new Frame.GetByAltTextOptions().setExact(exact))
-                : page.getByAltText(altText, new Page.GetByAltTextOptions().setExact(exact));
-    }
-
-    /**
-     * 按 title 属性定位元素（精确匹配），等价于 {@code page.getByTitle(title, {exact:true})}。
-     */
-    public Locator byTitle(String title, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByTitle(title, new Frame.GetByTitleOptions().setExact(exact))
-                : page.getByTitle(title, new Page.GetByTitleOptions().setExact(exact));
-    }
-
-    /**
-     * 按 placeholder 定位表单控件（精确匹配，大小写敏感），等价于 {@code page.getByPlaceholder(text, {exact:true})}。
-     */
-    public Locator byPlaceholder(String placeholder) {
-        return byPlaceholder(placeholder, true);
-    }
-
-    /**
-     * 按 placeholder 定位表单控件，可控制是否精确匹配。
-     *
-     * @param placeholder 占位文本
-     * @param exact       true=精确匹配（大小写敏感）；false=子串/忽略大小写匹配
-     * @return 对应的 Playwright Locator
-     */
-    public Locator byPlaceholder(String placeholder, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByPlaceholder(placeholder, new Frame.GetByPlaceholderOptions().setExact(exact))
-                : page.getByPlaceholder(placeholder, new Page.GetByPlaceholderOptions().setExact(exact));
-    }
-
-    /**
-     * 按关联 label 文本定位对应的表单控件（input/select/textarea 等），
-     * 等价于 Playwright 的 {@code page.getByLabel(text)}，与 page.pause() 生成的定位器对齐。
-     * <p>通过 &lt;label&gt; 可见文本 / {@code aria-labelledby} / {@code aria-label} 反查到控件；
-     * 与 {@link #byRole(AriaRole, String)}（按可访问名）是两条独立策略，但都定位到同一 input 控件。
-     * 需要单独定位 &lt;label&gt; 文本本身时，用 {@link #byText(String)}。
-     *
-     * @param label 关联 label 的可见文本
-     * @return 对应的 Playwright Locator（定位控件）
-     */
-    public Locator byLabel(String label) {
-        return byLabel(label, true);
-    }
-
-    /**
-     * 按关联 label 文本定位表单控件，可控制是否精确匹配，等价于 {@code page.getByLabel(text, {exact})}。
-     *
-     * @param label 关联 label 的可见文本
-     * @param exact true=精确匹配（大小写敏感）；false=子串 / 忽略大小写匹配
-     * @return 对应的 Playwright Locator（定位控件）
-     */
-    public Locator byLabel(String label, boolean exact) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.getByLabel(label, new Frame.GetByLabelOptions().setExact(exact))
-                : page.getByLabel(label, new Page.GetByLabelOptions().setExact(exact));
-    }
-
-    // ===== 模板变量（{{var}}）正则定位重载 =====
-    // 当 nls 值含模板变量时，用正则 Pattern 匹配“被页面注入真实值后的可见文本”。
-
-    public Locator byText(Pattern text) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByText(text) : page.getByText(text);
-    }
-
-    public Locator byAltText(Pattern altText) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByAltText(altText) : page.getByAltText(altText);
-    }
-
-    public Locator byTitle(Pattern title) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByTitle(title) : page.getByTitle(title);
-    }
-
-    public Locator byPlaceholder(Pattern placeholder) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByPlaceholder(placeholder) : page.getByPlaceholder(placeholder);
-    }
-
-    public Locator byLabel(Pattern label) {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null) ? frame.getByLabel(label) : page.getByLabel(label);
-    }
-
-    /**
-     * 按 nls 解析后的文本值定位：若值含模板变量（{{var}}），用正则 {@link Pattern} 匹配注入真实值后的可见文本；
-     * 否则走普通字面定位。供 {@code @RoleElement(key=...)} 的语义 / key-only 分支统一调用。
-     */
-
-
-    public void keyDown(String selector, String key) {
-        locatorInternal(selector).focus();
-        page.keyboard().down(key);
-    }
-
-    public void keyUp(String selector, String key) {
-        locatorInternal(selector).focus();
-        page.keyboard().up(key);
-    }
-
-    public void press(String selector, String key) {
-        locatorInternal(selector).press(key);
-    }
-
-    public void waitForTimeout(int milliseconds) {
-        ensurePageValid();
-        page.waitForTimeout((double) milliseconds);
-    }
-
-    public void acceptAlert() {
-        ensurePageValid();
-        page.onceDialog(Dialog::accept);
-    }
-
-    public void dismissAlert() {
-        ensurePageValid();
-        page.onceDialog(Dialog::dismiss);
-    }
-
-    /**
-     * 注册“接受弹窗”处理器后，立即执行触发动作并等待其完成。
-     * 避免 {@link #acceptAlert()} 仅挂载监听、却忘记执行触发操作的常见漏用。
-     *
-     * <pre>{@code
-     * page.acceptAlert(() -> page.click("button#delete"));
-     * }</pre>
-     *
-     * @param trigger 会触发 dialog 的动作（如点击某个按钮）
-     */
-    public void acceptAlert(Runnable trigger) {
-        ensurePageValid();
-        page.onceDialog(Dialog::accept);
-        if (trigger != null) {
-            trigger.run();
-        }
-    }
-
-    /**
-     * 注册“拒绝弹窗”处理器后，立即执行触发动作并等待其完成。
-     *
-     * @param trigger 会触发 dialog 的动作（如点击某个按钮）
-     */
-    public void dismissAlert(Runnable trigger) {
-        ensurePageValid();
-        page.onceDialog(Dialog::dismiss);
-        if (trigger != null) {
-            trigger.run();
-        }
-    }
-
-    public byte[] takeScreenshot() {
-        ensurePageValid();
-        Frame frame = currentFrame.get();
-        return (frame != null)
-                ? frame.frameElement().screenshot()
-                : page.screenshot();
-    }
-
-    public byte[] takeElementScreenshot(String selector) {
-        return locatorInternal(selector).screenshot();
-    }
-
-    // ===================== Cookie 操作 =====================
-
-    /**
-     * 获取当前 BrowserContext 中所有 Cookie
-     * @return Cookie 列表
-     */
-    public List<Cookie> getCookies() {
-        ensureContextValid();
-        return context.cookies();
-    }
-
-    /**
-     * 获取指定 URL 相关的 Cookie
-     * @param url 目标 URL
-     * @return Cookie 列表
-     */
-    public List<Cookie> getCookies(String url) {
-        ensureContextValid();
-        return context.cookies(url);
-    }
-
-    /**
-     * 获取多个 URL 相关的 Cookie
-     * @param urls 目标 URL 列表
-     * @return Cookie 列表
-     */
-    public List<Cookie> getCookies(List<String> urls) {
-        ensureContextValid();
-        return context.cookies(urls);
-    }
-
-    /**
-     * 根据名称获取指定 Cookie
-     * @param name Cookie 名称
-     * @return Cookie 对象，不存在时返回 null
-     */
-    public Cookie getCookie(String name) {
-        ensureContextValid();
-        return context.cookies().stream()
-                .filter(c -> c.name.equals(name))
-                .findFirst()
-                .orElse(null);
-    }
-
-    /**
-     * 检查指定名称的 Cookie 是否存在
-     * @param name Cookie 名称
-     * @return 存在返回 true
-     */
-    public boolean hasCookie(String name) {
-        return getCookie(name) != null;
-    }
-
-    /**
-     * 添加单个 Cookie
-     * @param cookie Playwright Cookie 对象
-     */
-    public void addCookie(Cookie cookie) {
-        ensureContextValid();
-        context.addCookies(List.of(cookie));
-    }
-
-    /**
-     * 批量添加 Cookie
-     * @param cookies Cookie 列表
-     */
-    public void addCookies(List<Cookie> cookies) {
-        ensureContextValid();
-        context.addCookies(cookies);
-    }
-
-    /**
-     * 根据名称删除指定 Cookie
-     * @param name Cookie 名称
-     */
-    public void deleteCookie(String name) {
-        ensureContextValid();
-        context.clearCookies(new BrowserContext.ClearCookiesOptions().setName(name));
-    }
-
-    /**
-     * 清除当前 BrowserContext 中的所有 Cookie
-     */
-    public void clearCookies() {
-        ensureContextValid();
-        context.clearCookies();
-    }
-
-    /**
-     * 获取当前页面 URL 关联的所有 Cookie
-     * @return Cookie 列表
-     */
-    public List<Cookie> getCookiesForCurrentPage() {
-        ensurePageValid();
-        ensureContextValid();
-        return context.cookies(page.url());
-    }
-
-    /**
-     * 判断当前是否为可调试本地环境
-     * @return true=本地允许pause  false=Jenkins/BrowserStack禁止暂停
+     * 判断当前是否为可调试本地环境。
+     * @return true=本地允许 pause；false=Jenkins/BrowserStack 禁止暂停
+     * @see PageDebugControl#isDebugEnvironment()
      */
     protected boolean isDebugEnvironment() {
-        // 1. 识别 BrowserStack 云端环境
-        boolean isBsEnv = System.getenv().containsKey("BROWSERSTACK_USERNAME")
-                || System.getenv().containsKey("BROWSERSTACK_ACCESS_KEY");
-
-        // 2. 识别 Jenkins CI 环境
-        boolean isJenkinsEnv = System.getenv().containsKey("JENKINS_HOME")
-                || System.getProperty("ci", "false").equalsIgnoreCase("true");
-
-        // 云端/CI 直接判定为非调试环境
-        return !isBsEnv && !isJenkinsEnv;
+        return PageDebugControl.isDebugEnvironment();
     }
 
     /**
-     * 安全暂停方法
-     * 本地IDE：正常pause调试
-     * Jenkins / BrowserStack：自动跳过，杜绝流程阻塞
+     * 安全暂停方法：本地 IDE 正常 pause 调试；Jenkins / BrowserStack 自动跳过，杜绝流程阻塞。
+     * @see PageDebugControl#pause(BasePage)
      */
     public void pause() {
-        if (isDebugEnvironment()) {
-            try {
-                getPage().pause();
-            } catch (Exception e) {
-                logger.warn("Page pause failed, skip debug pause", e);
-            }
-        } else {
-            logger.warn("[Security Control] Jenkins/BrowserStack environment, auto skip pause() to avoid block");
-        }
+        PageDebugControl.pause(this);
     }
 }

@@ -194,7 +194,7 @@ public final class PageFrameShadow {
 
     public static void executeInFrame(BasePage bp, String frameName, Consumer<Frame> action) {
         requireNonNullPage(bp);
-        Frame frame = bp.getFrame(frameName);
+        Frame frame = getFrame(bp, frameName);
         if (frame == null) throw new RuntimeException("Frame not found: " + frameName);
         action.accept(frame);
     }

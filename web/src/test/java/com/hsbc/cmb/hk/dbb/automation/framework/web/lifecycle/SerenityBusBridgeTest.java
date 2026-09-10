@@ -1,5 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityBusBridge;
 import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
@@ -8,7 +11,6 @@ import org.junit.Test;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeoutException;
 
@@ -64,9 +66,9 @@ public class SerenityBusBridgeTest {
         CapturingListener listener = bind();
         try {
             List<ContextTaskResult<?>> results = new ArrayList<>();
-            results.add(ContextTaskResult.success("ok", 1, "t1", 1L, List.of(), Map.of()));
-            results.add(ContextTaskResult.failure("bad1", new RuntimeException("boom1"), "t2", 2L, List.of(), Map.of()));
-            results.add(ContextTaskResult.failure("bad2", new TimeoutException("slow"), "t3", 3L, List.of(), Map.of()));
+            results.add(ContextTaskResult.success("ok", 1, "t1", 1L, List.of()));
+            results.add(ContextTaskResult.failure("bad1", new RuntimeException("boom1"), "t2", 2L, List.of()));
+            results.add(ContextTaskResult.failure("bad2", new TimeoutException("slow"), "t3", 3L, List.of()));
 
             try {
                 SerenityBusBridge.replayFailures(results);
@@ -93,8 +95,8 @@ public class SerenityBusBridgeTest {
         CapturingListener listener = bind();
         try {
             List<ContextTaskResult<?>> results = new ArrayList<>();
-            results.add(ContextTaskResult.success("ok1", 1, "t1", 1L, List.of(), Map.of()));
-            results.add(ContextTaskResult.success("ok2", 2, "t2", 1L, List.of(), Map.of()));
+            results.add(ContextTaskResult.success("ok1", 1, "t1", 1L, List.of()));
+            results.add(ContextTaskResult.success("ok2", 2, "t2", 1L, List.of()));
 
             SerenityBusBridge.replayFailures(results); // 不应抛
             assertTrue("no Serenity failures marked", listener.failures.isEmpty());
@@ -115,7 +117,7 @@ public class SerenityBusBridgeTest {
         StepEventBus.getEventBus().registerListener(explosive);
         try {
             List<ContextTaskResult<?>> results = new ArrayList<>();
-            results.add(ContextTaskResult.failure("bad", new RuntimeException("x"), "t1", 1L, List.of(), Map.of()));
+            results.add(ContextTaskResult.failure("bad", new RuntimeException("x"), "t1", 1L, List.of()));
             try {
                 SerenityBusBridge.replayFailures(results);
                 fail("expected CompletionException");

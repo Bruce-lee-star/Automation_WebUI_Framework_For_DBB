@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundEx
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageInteractions;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import java.util.ArrayList;
 import java.util.List;
@@ -213,7 +214,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locatorInternal().scrollIntoViewIfNeeded();
             locatorInternal().click(new Locator.ClickOptions().setDelay(100).setTimeout(opTimeout()));
-            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
+            PageInteractions.waitForTimeout(page, (int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "click", testName);
         return this;
@@ -237,7 +238,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locatorInternal().scrollIntoViewIfNeeded();
             locatorInternal().dblclick(new Locator.DblclickOptions().setTimeout(opTimeout()));
-            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
+            PageInteractions.waitForTimeout(page, (int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "doubleClick");
         return this;
@@ -247,7 +248,7 @@ public class PageElement {
         executeWithRetry(() -> {
             locatorInternal().scrollIntoViewIfNeeded();
             locatorInternal().click(new Locator.ClickOptions().setButton(MouseButton.RIGHT).setTimeout(opTimeout()));
-            page.waitForTimeout((int) PlaywrightManager.config().getElementActionPostDelay());
+            PageInteractions.waitForTimeout(page, (int) PlaywrightManager.config().getElementActionPostDelay());
             return true;
         }, "rightClick");
         return this;

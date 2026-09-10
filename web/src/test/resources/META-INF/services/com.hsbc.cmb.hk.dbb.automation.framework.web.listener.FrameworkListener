@@ -1,0 +1,2 @@
+com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg.GoodSpiListener
+com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg.BadLoadListener

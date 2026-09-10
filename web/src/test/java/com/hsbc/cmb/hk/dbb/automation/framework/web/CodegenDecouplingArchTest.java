@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web;
+package com.hsbc.cmb.hk.dbb.automation.framework.web;
 
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;

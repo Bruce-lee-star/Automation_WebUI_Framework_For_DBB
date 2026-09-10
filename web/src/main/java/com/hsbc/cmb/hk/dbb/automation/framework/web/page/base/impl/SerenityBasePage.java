@@ -3,15 +3,23 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.BoundingBox;
+import com.microsoft.playwright.options.Cookie;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.CookieManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageAccessibility;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageFrameShadow;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageInteractions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageViewport;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
-import com.microsoft.playwright.options.Cookie;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,17 +27,26 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
-import java.util.function.Supplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 /**
  * Serenity 基础页面类。
- * 继承自 BasePage，通过 Serenity 测试数据记录和验证标记做轻量增强。
+ * 继承自 {@link BasePage}，通过 Serenity 测试数据记录和验证标记做轻量增强。
  *
  * <h3>设计原则</h3>
- * 本类不复制父类方法——通过 {@link #record(String, Object, Runnable)} 和
+ * 本类不复制父类逻辑——通过 {@link #record(String, Object, Runnable)} 和
  * {@link #recordAndReturn(String, Object, Supplier)} 两个 reusable interceptor
  * 消除所有冗余 {@code @Override super.xxx() + addSerenityTestData(...)} 模式。
+ *
+ * <p><b>WEB-P1-2 Phase 6（废弃方法删除）</b>：{@code BasePage} 已将 frame / cookie / viewport /
+ * interactions / locator 工厂等域的实现下沉到各自的委派类（{@code PageFrameShadow} /
+ * {@code CookieManager} / {@code PageViewport} / {@code PageInteractions} /
+ * {@code LocatorFactory} / {@code PageWaits} / {@code PageNavigation}）。
+ * 本类不再 {@code @Override} 那些已从 {@code BasePage} 移除的壳方法，而是直接委派到对应委派类
+ * 并保留 {@code record} 录制，从而在不破坏 Serenity 报告录制的前提下，使 {@code BasePage}
+ * 收敛为精简门面（公开方法 ≤40）。
  *
  * @see BasePage
  */
@@ -124,7 +141,7 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    // ==================== 需要特殊异常处理的 Override（保留） ====================
+    // ==================== 需要特殊异常处理的 Override（保留，父类仍提供实现） ====================
 
     @Override
     public Page getPage() {
@@ -233,7 +250,7 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    // ==================== 有特殊异常处理逻辑的 Override（保留） ====================
+    // ==================== 有特殊异常处理逻辑的 Override（保留，父类仍提供实现） ====================
 
     @Override
     public void navigateTo(String url) {
@@ -251,6 +268,31 @@ public abstract class SerenityBasePage extends BasePage {
             throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
         }
     }
+
+    @Override
+    public void append(String selector, String text) {
+        record("append", selector + "=" + text, () -> super.append(selector, text));
+    }
+
+    @Override
+    public void refresh() { record("refresh", null, super::refresh); }
+
+    @Override
+    public void back() { record("back", null, super::back); }
+
+    @Override
+    public void forward() { record("forward", null, super::forward); }
+
+    @Override
+    public void switchToPage(int index) { record("switchToPage", index, () -> super.switchToPage(index)); }
+
+    @Override
+    public void closeCurrentPage() { record("closeCurrentPage", null, super::closeCurrentPage); }
+
+    @Override
+    public void pause() { record("pause", null, super::pause); }
+
+    // ==================== 页面可见性断言（父类仍提供实现，保留录制） ====================
 
     public void shouldBeVisible(String selector) {
         try {
@@ -274,12 +316,10 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-
-
     public boolean getPageSourceContains(String text) {
         try {
             SerenityReporter.flushPendingApiOperations();
-            boolean result = super.getPageSourceContains(text);
+            boolean result = PageInteractions.getPageSourceContains(this, text);
             recordVerification("pageSourceContains_" + text, result);
             return result;
         } catch (Exception e) {
@@ -288,83 +328,351 @@ public abstract class SerenityBasePage extends BasePage {
         }
     }
 
-    // ==================== 通过 Interceptor 消除的冗余 Override（替换原 87 个方法） ====================
+    // ==================== 委派到域类的录制方法（BasePage 已移除对应壳，此处自包含实现） ====================
 
     // --- 简单操作（无返回值） ---
 
-    @Override public void append(String selector, String text) { record("append", selector + "=" + text, () -> super.append(selector, text)); }
-    @Override public void refresh() { record("refresh", null, super::refresh); }
-    @Override public void back() { record("back", null, super::back); }
-    @Override public void forward() { record("forward", null, super::forward); }
-    @Override public void keyDown(String selector, String key) { record("keyDown", selector + ":" + key, () -> super.keyDown(selector, key)); }
-    @Override public void keyUp(String selector, String key) { record("keyUp", selector + ":" + key, () -> super.keyUp(selector, key)); }
-    @Override public void press(String selector, String key) { record("press", selector + ":" + key, () -> super.press(selector, key)); }
-    @Override public void acceptAlert() { record("acceptAlert", null, super::acceptAlert); }
-    @Override public void dismissAlert() { record("dismissAlert", null, super::dismissAlert); }
-    @Override public void scrollTo(String selector, int x, int y) { record("scrollTo", selector + "->" + x + "," + y, () -> super.scrollTo(selector, x, y)); }
-    @Override public void scrollBy(String selector, int x, int y) { record("scrollBy", selector + "->" + x + "," + y, () -> super.scrollBy(selector, x, y)); }
-    @Override public void scrollToBottomOf(String selector) { record("scrollToBottom", selector, () -> super.scrollToBottomOf(selector)); }
-    @Override public void scrollToTopOf(String selector) { record("scrollToTop", selector, () -> super.scrollToTopOf(selector)); }
-    @Override public void switchToPage(int index) { record("switchToPage", index, () -> super.switchToPage(index)); }
-    @Override public void closeCurrentPage() { record("closeCurrentPage", null, super::closeCurrentPage); }
-    @Override public void bringToFront() { record("bringToFront", null, super::bringToFront); }
-    @Override public void setContent(String html) { record("setContent", null, () -> super.setContent(html)); }
-    @Override public void setViewportSize(int w, int h) { record("setViewportSize", w + "x" + h, () -> super.setViewportSize(w, h)); }
-    @Override public void pause() { record("pause", null, super::pause); }
+    public void keyDown(String selector, String key) {
+        record("keyDown", selector + ":" + key, () -> PageInteractions.keyDown(this, selector, key));
+    }
+
+    public void keyUp(String selector, String key) {
+        record("keyUp", selector + ":" + key, () -> PageInteractions.keyUp(this, selector, key));
+    }
+
+    public void press(String selector, String key) {
+        record("press", selector + ":" + key, () -> PageInteractions.press(this, selector, key));
+    }
+
+    public void acceptAlert() {
+        record("acceptAlert", null, () -> PageInteractions.acceptAlert(this));
+    }
+
+    public void dismissAlert() {
+        record("dismissAlert", null, () -> PageInteractions.dismissAlert(this));
+    }
+
+    public void scrollTo(String selector, int x, int y) {
+        record("scrollTo", selector + "->" + x + "," + y, () -> PageViewport.scrollTo(this, selector, x, y));
+    }
+
+    public void scrollBy(String selector, int x, int y) {
+        record("scrollBy", selector + "->" + x + "," + y, () -> PageViewport.scrollBy(this, selector, x, y));
+    }
+
+    public void scrollToBottomOf(String selector) {
+        record("scrollToBottom", selector, () -> PageViewport.scrollToBottomOf(this, selector));
+    }
+
+    public void scrollToTopOf(String selector) {
+        record("scrollToTop", selector, () -> PageViewport.scrollToTopOf(this, selector));
+    }
+
+    public void bringToFront() {
+        record("bringToFront", null, () -> PageInteractions.bringToFront(this));
+    }
+
+    public void setContent(String html) {
+        record("setContent", null, () -> PageNavigation.setContent(this, html));
+    }
+
+    public void setViewportSize(int w, int h) {
+        record("setViewportSize", w + "x" + h, () -> PageViewport.setViewportSize(this, w, h));
+    }
+
+    public void executeInFrame(String frameName, Consumer<Frame> action) {
+        record("executeInFrame", frameName, () -> PageFrameShadow.executeInFrame(this, frameName, action));
+    }
 
     // --- 状态检查（有返回值） ---
-    @Override public boolean isClosed() { return recordAndReturn("isClosed", null, super::isClosed); }
 
-    @Override public byte[] takeScreenshot() { return recordAndReturn("screenshot", "fullPage", super::takeScreenshot); }
-    @Override public byte[] takeElementScreenshot(String s) { return recordAndReturn("elementScreenshot", s, () -> super.takeElementScreenshot(s)); }
-    @Override public BoundingBox getElementBoundingBox(String s) { return recordAndReturn("elementBoundingBox", s, () -> super.getElementBoundingBox(s)); }
+    public boolean isClosed() {
+        return recordAndReturn("isClosed", null, () -> PageInteractions.isClosed(this));
+    }
 
-    // --- Locator 构建 ---
-    @Override public Locator byAltText(String text) { return recordAndReturn("byAltText", text, () -> super.byAltText(text)); }
-    @Override public Locator byRole(AriaRole role) { return recordAndReturn("byRole", role, () -> super.byRole(role)); }
-    @Override public Locator byTitle(String title) { return recordAndReturn("byTitle", title, () -> super.byTitle(title)); }
-    @Override public Locator byTestId(String testId) { return recordAndReturn("byTestId", testId, () -> super.byTestId(testId)); }
-    @Override public Locator byText(String text) { return recordAndReturn("byText", text, () -> super.byText(text)); }
-    @Override public Locator byText(String text, boolean exact) { return recordAndReturn("byText", text, () -> super.byText(text, exact)); }
-    @Override public Locator byAltText(String text, boolean exact) { return recordAndReturn("byAltText", text, () -> super.byAltText(text, exact)); }
-    @Override public Locator byTitle(String title, boolean exact) { return recordAndReturn("byTitle", title, () -> super.byTitle(title, exact)); }
-    @Override public Locator byPlaceholder(String placeholder) { return recordAndReturn("byPlaceholder", placeholder, () -> super.byPlaceholder(placeholder)); }
-    @Override public Locator byPlaceholder(String placeholder, boolean exact) { return recordAndReturn("byPlaceholder", placeholder, () -> super.byPlaceholder(placeholder, exact)); }
-    @Override public Locator byLabel(String label) { return recordAndReturn("byLabel", label, () -> super.byLabel(label)); }
-    @Override public Locator byLabel(String label, boolean exact) { return recordAndReturn("byLabel", label, () -> super.byLabel(label, exact)); }
+    public byte[] takeScreenshot() {
+        return recordAndReturn("screenshot", "fullPage", () -> PageInteractions.takeScreenshot(this));
+    }
 
-    // --- Frame ---
-    @Override public Frame getFrame(String name) { return recordAndReturn("getFrame", name, () -> super.getFrame(name)); }
-    @Override public void executeInFrame(String fn, Consumer<Frame> action) { record("executeInFrame", fn, () -> super.executeInFrame(fn, action)); }
+    public byte[] takeElementScreenshot(String s) {
+        return recordAndReturn("elementScreenshot", s, () -> PageInteractions.takeElementScreenshot(this, s));
+    }
+
+    public BoundingBox getElementBoundingBox(String s) {
+        return recordAndReturn("elementBoundingBox", s, () -> PageInteractions.getElementBoundingBox(this, s));
+    }
+
+    // --- Frame / Shadow ---
+
+    public Frame getFrame(String name) {
+        return recordAndReturn("getFrame", name, () -> PageFrameShadow.getFrame(this, name));
+    }
+
+    public Frame switchToFrame(String nameOrSelector) {
+        return recordAndReturn("switchToFrame", nameOrSelector,
+                () -> PageFrameShadow.switchToFrame(this, nameOrSelector));
+    }
+
+    public Frame switchToFrame(int index) {
+        return recordAndReturn("switchToFrame", index, () -> PageFrameShadow.switchToFrame(this, index));
+    }
+
+    public void switchToShadow(String hostSelector) {
+        record("switchToShadow", hostSelector, () -> PageFrameShadow.switchToShadow(this, hostSelector));
+    }
+
+    public String switchToDefaultShadow() {
+        return recordAndReturn("switchToDefaultShadow", null, () -> PageFrameShadow.switchToDefaultShadow(this));
+    }
+
+    public void switchToDefaultShadowAll() {
+        record("switchToDefaultShadowAll", null, () -> PageFrameShadow.switchToDefaultShadowAll(this));
+    }
+
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector, int timeoutSecs) {
+        return recordAndReturn("switchToFrameAndWait", nameOrSelector,
+                () -> PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector, timeoutSecs));
+    }
+
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector) {
+        return recordAndReturn("switchToFrameAndWait", nameOrSelector,
+                () -> PageFrameShadow.switchToFrameAndWait(this, trigger, nameOrSelector));
+    }
+
+    public Frame switchToFrameAndWait(String nameOrSelector, int timeoutSecs) {
+        return recordAndReturn("switchToFrameAndWait", nameOrSelector,
+                () -> PageFrameShadow.switchToFrameAndWait(this, nameOrSelector, timeoutSecs));
+    }
+
+    public Frame switchToFrameAndWait(String nameOrSelector) {
+        return recordAndReturn("switchToFrameAndWait", nameOrSelector,
+                () -> PageFrameShadow.switchToFrameAndWait(this, nameOrSelector));
+    }
+
+    public void switchToDefaultContent() {
+        record("switchToDefaultContent", null, () -> PageFrameShadow.switchToDefaultContent(this));
+    }
+
+    public List<Frame> getAllFrames() {
+        return recordAndReturn("getAllFrames", null, () -> PageFrameShadow.getAllFrames(this));
+    }
+
+    // --- 交互 / 源码 / 脚本 ---
+
+    public Object executeJavaScript(String script, Object... args) {
+        return recordAndReturn("executeJavaScript", script, () -> PageInteractions.executeJavaScript(this, script, args));
+    }
+
+    public String getPageSource() {
+        return recordAndReturn("getPageSource", null, () -> PageInteractions.getPageSource(this));
+    }
+
+    public int getPageSize() {
+        return recordAndReturn("getPageSize", null, () -> PageInteractions.getPageSize(this));
+    }
+
+    public void waitForTimeout(int ms) {
+        record("waitForTimeout", ms, () -> PageInteractions.waitForTimeout(this, ms));
+    }
+
+    public void acceptAlert(Runnable trigger) {
+        record("acceptAlert", null, () -> PageInteractions.acceptAlert(this, trigger));
+    }
+
+    public void dismissAlert(Runnable trigger) {
+        record("dismissAlert", null, () -> PageInteractions.dismissAlert(this, trigger));
+    }
+
+    public void dumpAccessibilityRoles() {
+        record("dumpAccessibilityRoles", null, () -> PageAccessibility.dumpAccessibilityRoles(this));
+    }
 
     // --- 等待操作 ---
-    @Override public void waitForTimeout(int ms) { record("waitForTimeout", ms, () -> super.waitForTimeout(ms)); }
 
+    public void waitForNetworkIdle(int to) {
+        super.waitForNetworkIdle(to);
+        recordVerification("networkIdle", true);
+    }
 
-    @Override public void waitForNetworkIdle(int to) { super.waitForNetworkIdle(to); recordVerification("networkIdle", true); }
-    @Override public void waitForPageFullyLoaded(int to) { super.waitForPageFullyLoaded(to); recordVerification("pageFullyLoaded", true); }
-    @Override public void waitForDOMContentLoaded(int to) { super.waitForDOMContentLoaded(to); recordVerification("domContentLoaded", true); }
+    public void waitForPageFullyLoaded(int to) {
+        super.waitForPageFullyLoaded(to);
+        recordVerification("pageFullyLoaded", true);
+    }
 
+    public void waitForDOMContentLoaded(int to) {
+        super.waitForDOMContentLoaded(to);
+        recordVerification("domContentLoaded", true);
+    }
 
     // --- Cookie 操作 ---
-    @Override public List<Cookie> getCookies() { return recordAndReturn("getCookies", null, super::getCookies); }
-    @Override public Cookie getCookie(String name) { return recordAndReturn("getCookie", name, () -> super.getCookie(name)); }
-    @Override public boolean hasCookie(String name) { return recordAndReturn("hasCookie", name, () -> super.hasCookie(name)); }
-    @Override public void addCookie(Cookie cookie) { record("addCookie", cookie.name, () -> super.addCookie(cookie)); }
-    @Override public void addCookies(List<Cookie> cookies) { record("addCookies", "count=" + cookies.size(), () -> super.addCookies(cookies)); }
-    @Override public void deleteCookie(String name) { record("deleteCookie", name, () -> super.deleteCookie(name)); }
-    @Override public void clearCookies() { record("clearCookies", null, super::clearCookies); }
 
-    // --- 可见/隐藏等待（不再含误导性的 retries 参数） ---
+    public List<Cookie> getCookies() {
+        return recordAndReturn("getCookies", null, () -> CookieManager.getCookies(this));
+    }
 
+    public List<Cookie> getCookies(String url) {
+        return recordAndReturn("getCookies", url, () -> CookieManager.getCookies(this, url));
+    }
 
-    @Override public void navigateToWithRetry(String url, int r) { SerenityReporter.flushPendingApiOperations(); super.navigateToWithRetry(url, r); addSerenityTestData("navigateToWithRetry", "completed"); }
-    @Override public void retry(Runnable op, int maxR, int interval, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, maxR, interval, desc); addSerenityTestData("retry_" + desc, "completed"); }
-    @Override public void retry(Runnable op, String desc) { SerenityReporter.flushPendingApiOperations(); super.retry(op, desc); addSerenityTestData("retry_" + desc, "completed"); }
-    @Override public boolean retryWithValidation(Runnable op, BooleanSupplier v, int maxR, int interval, String desc) {
+    public List<Cookie> getCookies(List<String> urls) {
+        return recordAndReturn("getCookies", urls, () -> CookieManager.getCookies(this, urls));
+    }
+
+    public Cookie getCookie(String name) {
+        return recordAndReturn("getCookie", name, () -> CookieManager.getCookie(this, name));
+    }
+
+    public boolean hasCookie(String name) {
+        return recordAndReturn("hasCookie", name, () -> CookieManager.hasCookie(this, name));
+    }
+
+    public void addCookie(Cookie cookie) {
+        record("addCookie", cookie.name, () -> CookieManager.addCookie(this, cookie));
+    }
+
+    public void addCookies(List<Cookie> cookies) {
+        record("addCookies", "count=" + cookies.size(), () -> CookieManager.addCookies(this, cookies));
+    }
+
+    public void deleteCookie(String name) {
+        record("deleteCookie", name, () -> CookieManager.deleteCookie(this, name));
+    }
+
+    public void clearCookies() {
+        record("clearCookies", null, () -> CookieManager.clearCookies(this));
+    }
+
+    public List<Cookie> getCookiesForCurrentPage() {
+        return recordAndReturn("getCookiesForCurrentPage", null, () -> CookieManager.getCookiesForCurrentPage(this));
+    }
+
+    // --- 导航重试 / 重试 ---
+
+    public void navigateToWithRetry(String url, int r) {
         SerenityReporter.flushPendingApiOperations();
-        boolean result = super.retryWithValidation(op, v, maxR, interval, desc);
+        PageNavigation.navigateToWithRetry(this, url, r);
+        addSerenityTestData("navigateToWithRetry", "completed");
+    }
+
+    public void retry(Runnable op, int maxR, int interval, String desc) {
+        SerenityReporter.flushPendingApiOperations();
+        PageWaits.retry(this, op, maxR, interval, desc);
+        addSerenityTestData("retry_" + desc, "completed");
+    }
+
+    public void retry(Runnable op, String desc) {
+        SerenityReporter.flushPendingApiOperations();
+        PageWaits.retry(this, op, desc);
+        addSerenityTestData("retry_" + desc, "completed");
+    }
+
+    public boolean retryWithValidation(Runnable op, BooleanSupplier v, int maxR, int interval, String desc) {
+        SerenityReporter.flushPendingApiOperations();
+        boolean result = PageWaits.retryWithValidation(this, op, v, maxR, interval, desc);
         recordVerification("retryWithValidation_" + desc, result);
         return result;
+    }
+
+    // ==================== Locator 工厂（framework-internal，完整覆盖 BasePage 全部重载） ====================
+
+    public Locator byAltText(String altText) {
+        return recordAndReturn("byAltText", altText, () -> LocatorFactory.byAltText(this, altText));
+    }
+
+    public Locator byRole(AriaRole role) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role));
+    }
+
+    public Locator byRole(AriaRole role, String name) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role, name));
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role, namePattern));
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role, name, exact));
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact, int level) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role, name, exact, level));
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern, int level) {
+        return recordAndReturn("byRole", role, () -> LocatorFactory.byRole(this, role, namePattern, level));
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        return recordAndReturn("byRole", role,
+                () -> LocatorFactory.byRole(this, role, name, exact, level, disabled, pressed, expanded));
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        return recordAndReturn("byRole", role,
+                () -> LocatorFactory.byRole(this, role, namePattern, level, disabled, pressed, expanded));
+    }
+
+    public Locator byTitle(String title) {
+        return recordAndReturn("byTitle", title, () -> LocatorFactory.byTitle(this, title));
+    }
+
+    public Locator byTestId(String testId) {
+        return recordAndReturn("byTestId", testId, () -> LocatorFactory.byTestId(this, testId));
+    }
+
+    public Locator byText(String text) {
+        return recordAndReturn("byText", text, () -> LocatorFactory.byText(this, text));
+    }
+
+    public Locator byText(String text, boolean exact) {
+        return recordAndReturn("byText", text, () -> LocatorFactory.byText(this, text, exact));
+    }
+
+    public Locator byAltText(String altText, boolean exact) {
+        return recordAndReturn("byAltText", altText, () -> LocatorFactory.byAltText(this, altText, exact));
+    }
+
+    public Locator byTitle(String title, boolean exact) {
+        return recordAndReturn("byTitle", title, () -> LocatorFactory.byTitle(this, title, exact));
+    }
+
+    public Locator byPlaceholder(String placeholder) {
+        return recordAndReturn("byPlaceholder", placeholder, () -> LocatorFactory.byPlaceholder(this, placeholder));
+    }
+
+    public Locator byPlaceholder(String placeholder, boolean exact) {
+        return recordAndReturn("byPlaceholder", placeholder,
+                () -> LocatorFactory.byPlaceholder(this, placeholder, exact));
+    }
+
+    public Locator byLabel(String label) {
+        return recordAndReturn("byLabel", label, () -> LocatorFactory.byLabel(this, label));
+    }
+
+    public Locator byLabel(String label, boolean exact) {
+        return recordAndReturn("byLabel", label, () -> LocatorFactory.byLabel(this, label, exact));
+    }
+
+    public Locator byText(Pattern text) {
+        return recordAndReturn("byText", text, () -> LocatorFactory.byText(this, text));
+    }
+
+    public Locator byAltText(Pattern altText) {
+        return recordAndReturn("byAltText", altText, () -> LocatorFactory.byAltText(this, altText));
+    }
+
+    public Locator byTitle(Pattern title) {
+        return recordAndReturn("byTitle", title, () -> LocatorFactory.byTitle(this, title));
+    }
+
+    public Locator byPlaceholder(Pattern placeholder) {
+        return recordAndReturn("byPlaceholder", placeholder, () -> LocatorFactory.byPlaceholder(this, placeholder));
+    }
+
+    public Locator byLabel(Pattern label) {
+        return recordAndReturn("byLabel", label, () -> LocatorFactory.byLabel(this, label));
     }
 }

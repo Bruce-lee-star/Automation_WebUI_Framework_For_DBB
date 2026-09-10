@@ -12,8 +12,9 @@
 
     <artifactId>framework-route</artifactId>
     <name>Automation Framework - Route</name>
-    <description>API route/mock layer: framework.web.route. Depends on web (and core, reporting).
-        NOTE: web does NOT depend on route — the web→route edge was broken via the core RouteLifecycle SPI (T3-1).</description>
+    <description>API route/mock layer: framework.route. Depends on core (and reporting).
+        NOTE: web does NOT depend on route — the web→route edge was broken via the core RouteLifecycle SPI (T3-1).
+        NOTE: route no longer depends on web (ROUTE-P1-1): HikariConfigFactory / MonitorConfig / LanguageState 已下沉 core。</description>
 
     <dependencies>
         <dependency>
@@ -23,22 +24,37 @@
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-web</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>framework-reporting</artifactId>
             <version>${project.version}</version>
         </dependency>
 
-        <!-- T2-7 阶段0：将 JSONPath 引擎提升为 route 的 direct 依赖，
-             消除对 framework-web 传递依赖的隐式耦合（违反 T2-1 依赖隔离）。
-             版本钉死为当前传递树解析值 2.9.0，避免版本漂移。 -->
+        <!-- T2-7 阶段0：将 JSONPath 引擎提升为 route 的 direct 依赖（ENG-P0-2：版本改由根 dependencyManagement 统一钉） -->
         <dependency>
             <groupId>com.jayway.jsonpath</groupId>
             <artifactId>json-path</artifactId>
-            <version>2.9.0</version>
+        </dependency>
+
+        <!-- ROUTE-P1-N2：Flyway 管理 route_monitor_record schema，DDL 移出 Java。
+             flyway-core 内含 MySQL / PostgreSQL / H2 社区库迁移支持；Oracle/SQLServer 本就不支持
+             （已在 init 前置 fail-fast 拒绝），无需额外模块。Java 17+ 兼容 JDK 21。 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>9.22.3</version>
+        </dependency>
+
+        <!-- ENG-P0-2：route 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
         </dependency>
     </dependencies>
 </project>

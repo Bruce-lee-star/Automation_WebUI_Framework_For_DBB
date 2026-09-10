@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs 排除规则（基线）。根 POM 通过 ${project.basedir}/spotbugs-exclude.xml 引用本文件；
+  codegen 模块当前无必要抑制项。如后续扫描出误报，在此追加 <Match> 规则，与其它 6 个模块保持一致。
+-->
+<FindBugsFilter>
+</FindBugsFilter>

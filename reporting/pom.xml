@@ -20,16 +20,14 @@
             <artifactId>framework-core</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <!-- T2-8：迁移 SummaryReportGenerator 入本模块，需其依赖 -->
+        <!-- T2-8：迁移 SummaryReportGenerator 入本模块，需其依赖（ENG-P0-2：版本改由根 dependencyManagement 统一钉） -->
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
-            <version>${gson.version}</version>
         </dependency>
         <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-model</artifactId>
-            <version>${serenity.version}</version>
             <exclusions>
                 <!-- 与项目其余 serenity 构件一致：排除传递的 commons-logging，
                      统一收敛到项目上界 1.2（由 slf4j 桥接提供 LogFactory） -->
@@ -39,6 +37,28 @@
                 </exclusion>
             </exclusions>
         </dependency>
+        <!-- ENG-P0-2：reporting 实际用到的其余 serenity 构件 -->
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-cucumber</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-screenplay</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-rest-assured</artifactId>
+        </dependency>
+        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition） -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-support</artifactId>
+        </dependency>
         <!-- T2-8：报告模板引擎（把 2,184 行里的 HTML/CSS 硬编码拼接改为模板渲染）。
              Freemarker 2.3.34 本就随 Serenity 传递进入本模块 classpath（零新增依赖）；
              此处按「用到了就必须显式声明」提升为 direct —— 不把上游的传递依赖当作隐式契约，
@@ -47,6 +67,23 @@
             <groupId>org.freemarker</groupId>
             <artifactId>freemarker</artifactId>
             <version>${freemarker.version}</version>
+        </dependency>
+
+        <!-- 测试期依赖 -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

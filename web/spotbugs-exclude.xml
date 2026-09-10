@@ -43,7 +43,6 @@
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ContextLifecycleHookManager$ContextRuleSnapshot"/><Bug pattern="EI_EXPOSE_REP"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAssembler"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
@@ -75,5 +74,4 @@
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackLocalManager"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.ContextLifecycleHookManager$ContextRuleSnapshot"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
 </FindBugsFilter>

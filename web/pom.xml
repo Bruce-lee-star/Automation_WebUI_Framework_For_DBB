@@ -38,5 +38,79 @@
             <artifactId>guava</artifactId>
             <version>33.5.0-jre</version>
         </dependency>
+
+        <!-- ENG-P0-2：web 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
+        <dependency>
+            <groupId>com.huaban</groupId>
+            <artifactId>jieba-analysis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.belerweb</groupId>
+            <artifactId>pinyin4j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-model</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-cucumber</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-screenplay</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-rest-assured</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.deque.html.axe-core</groupId>
+            <artifactId>playwright</artifactId>
+        </dependency>
+        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition），
+             须随 serenity 一并显式声明，否则 javac 符号补全会 CompletionFailure（ENG-P0-2 下沉后原继承关系消失） -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-support</artifactId>
+        </dependency>
+
+        <!-- 测试期依赖 -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.serenity-bdd</groupId>
+            <artifactId>serenity-junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- WEB-P1-5：web 模块单测补充基础依赖（PageWaits/PageNavigation 等需 mock BasePage/Page）。
+             版本与 test-automation 保持一致（4.5.1），避免 RequireUpperBoundDeps 校验冲突。 -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>4.5.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

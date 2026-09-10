@@ -391,6 +391,11 @@
                         </goals>
                         <configuration>
                             <propertyName>jacocoArgLine</propertyName>
+                            <!-- 排除故意损坏的测试夹具（WEB-P1-3 坏类扫描用例），避免 JaCoCo 对其 instrumentation 报良性噪声。
+                                 JaCoCo excludes 用 * 通配（非 Ant 的 **），按内部类名（/ 分隔，无 .class 后缀）匹配 -->
+                            <excludes>
+                                <exclude>com/hsbc/cmb/hk/dbb/automation/framework/web/listener/resiliencypkg/*</exclude>
+                            </excludes>
                         </configuration>
                     </execution>
                 </executions>

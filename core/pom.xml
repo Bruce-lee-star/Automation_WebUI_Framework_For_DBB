@@ -13,4 +13,69 @@
     <artifactId>framework-core</artifactId>
     <name>Automation Framework - Core</name>
     <description>Base layer: framework.common (config / security / async / route-SPI), top-level utils &amp; retry. Depended on by all modules.</description>
+
+    <properties>
+        <!-- 构建期 JS 语法校验（CG-P2-N12）：默认开启；无 node 环境的 CI 可 -Dpicker.js.validate.skip=true 跳过 -->
+        <picker.js.validate.skip>false</picker.js.validate.skip>
+    </properties>
+
+    <dependencies>
+        <!-- ENG-P0-2：core 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明以固化边界） -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+        </dependency>
+        <!-- CORE-P0-1 / ENG-P0-2 修正：SensitiveDataSanitizer 直接使用 jackson-databind（脱敏 JSON 解析），
+             原经 serenity 传递引入，下沉后显式声明（版本由根 dependencyManagement 钉 2.20） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- CG-P2-N12：构建期校验 scan/js 资源脚本语法，越早在 validate 阶段失败越好 -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>validate-picker-js</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>node</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../tools/validate_picker_js.js</argument>
+                                <argument>${project.basedir}/src/main/resources/scan/js</argument>
+                            </arguments>
+                            <skip>${picker.js.validate.skip}</skip>
+                        </configuration>
+                    </execution>
+                    <!-- CG-P2-N12：核心合并/去重逻辑 Node 侧单测（加载真实资源并 shim 浏览器全局） -->
+                    <execution>
+                        <id>validate-picker-merge</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <executable>node</executable>
+                            <arguments>
+                                <argument>${project.basedir}/../tools/picker_merge_test.js</argument>
+                            </arguments>
+                            <skip>${picker.js.validate.skip}</skip>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

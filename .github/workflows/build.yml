@@ -1,0 +1,36 @@
+name: Build & Test
+
+# ENG-P0-1：建立 CI，触发四道门禁（编译 / Checkstyle / SpotBugs / 单测）。
+# 分两期：一期仅 `mvn -B test`（已含 compile + Checkstyle(validate) + 单测）；
+# 门禁基线稳定后，将下面的命令升级为 `mvn -B verify` 以纳入 SpotBugs/PMD(verify)。
+# 启用后请到仓库 Settings → Branches → 分支保护规则，将本 workflow 设为 required status check。
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test (gates: compile + Checkstyle + unit tests)
+        run: mvn -B test
+
+      - name: Upload Serenity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serenity-reports
+          path: '**/target/site/serenity/**'
+          if-no-files-found: ignore

@@ -261,4 +261,49 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+      ⭐ 共享 Browser 模式「Context 隔离」实浏览器 E2E（设计文档 §6 待办 ②）。
+      默认关闭：本 E2E 仅在 serenity.playwright.shared.browser.enabled=true 时经 Assume 真正执行；
+      普通 mvn test 该开关为 false → 类内 @BeforeClass 优雅跳过，零侵入默认每线程独立 Browser 模型。
+      激活本 profile 后，surefire 在【独立 fork】中以共享开关启动 JVM，使 PlaywrightManager 的类加载期
+      静态标志 SHARED_BROWSER_MODE 取 true，从而真实跑通单 Browser + 多 Context 的隔离验证（需浏览器环境）。
+    -->
+    <profiles>
+        <profile>
+            <id>shared-browser-e2e</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>shared-browser-context-isolation-e2e</id>
+                                <phase>test</phase>
+                                <goals>
+                                    <goal>test</goal>
+                                </goals>
+                                <configuration>
+                                    <includes>
+                                        <include>**/SharedBrowserContextIsolationE2E.java</include>
+                                    </includes>
+                                    <forkCount>1</forkCount>
+                                    <reuseForks>false</reuseForks>
+                                    <useModulePath>false</useModulePath>
+                                    <failIfNoTests>false</failIfNoTests>
+                                    <!-- JDK16+ 强封装：Playwright/Serenity 反射增强需要打开 java.base 内部包 -->
+                                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
+                                    <systemPropertyVariables>
+                                        <serenity.playwright.shared.browser.enabled>true</serenity.playwright.shared.browser.enabled>
+                                    </systemPropertyVariables>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

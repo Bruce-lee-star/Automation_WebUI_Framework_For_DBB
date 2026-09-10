@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.session;import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 
 
 import com.microsoft.playwright.BrowserContext;
@@ -379,7 +380,7 @@ public class SessionManager {
         if (meta == null || !meta.sessionFileExists) {
             return false;
         }
-        if (isSessionExpired(sessionKey)) {
+        if (isSessionExpired(meta)) {
             VerboseLogging.logInfoIfVerbose(LOGGER, "Session expired for: {}", sessionKey);
             // 清除过期的 session 并失效内存缓存
             try {
@@ -388,7 +389,13 @@ public class SessionManager {
             } catch (Exception e) {
                 LOGGER.warn("Failed to delete expired session: {}", sessionKey, e);
             }
-            META_CACHE.invalidate(sessionKey);
+            // 粘滞化"已驱逐/absent"态：用 ABSENT_META 覆盖而非 invalidate，
+            // 使并发同 key 后续读取直接命中内存（与重新读盘得到的 ABSENT_META 等价但零 IO），
+            // 从根上消除"invalidate→miss→重读盘"形成的读盘竞争风暴与高负载下的超时抖动。
+            // 并发安全性：首个驱逐线程 put ABSENT_META 后，其余线程仍以自身已加载的过期
+            // meta 判定 isSessionExpired(meta)=true → 重复 delete 被 catch 降级、put 幂等覆盖，
+            // 全程零未捕获异常；saveSession 落盘后会以新鲜值覆盖本条目，不掩盖真实写入。
+            META_CACHE.put(sessionKey, ABSENT_META);
             return true;
         }
         return false;
@@ -775,11 +782,7 @@ public class SessionManager {
     /**
      * 【新】检查 Session 是否过期
      */
-    private static boolean isSessionExpired(String sessionKey) {
-        SessionMeta meta = loadSessionMeta(sessionKey);
-        if (meta == null) {
-            return true;
-        }
+    private static boolean isSessionExpired(SessionMeta meta) {
         long currentTime = System.currentTimeMillis();
         long elapsedMinutes = (currentTime - meta.lastAccessTime) / (60 * 1000);
         return elapsedMinutes > SESSION_TIMEOUT_MINUTES;

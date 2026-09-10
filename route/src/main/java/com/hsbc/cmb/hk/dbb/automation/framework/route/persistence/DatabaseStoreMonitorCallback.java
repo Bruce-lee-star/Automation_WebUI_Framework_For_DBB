@@ -1,0 +1,179 @@
+package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Map;
+
+/**
+ * 框架内置的数据库存储 Monitor 响应回调。
+ *
+ * <p><b>用户无需手动注册此回调</b>。框架在 {@link MonitorHandler}
+ * 中自动调用，根据配置决定是否持久化到数据库。
+ *
+ * <p><b>配置控制</b>（serenity.properties）：
+ * <pre>{@code
+ * # 是否启用 DB 存储（默认 false，不存储）
+ * monitor.db.store.enabled=true
+ *
+ * # 数据库连接信息
+ * monitor.db.type=MYSQL   # 留空则按 monitor.db.url 自动探测（测试层加哪种驱动依赖就用哪种库）
+ * # URL 不要内嵌账号密码，凭据请走下面两个独立配置项
+ * monitor.db.url=jdbc:mysql://localhost:3306/route_monitor
+ * monitor.db.user=root
+ * # 密码：明文可直接写；或用 ConfigCipher 加密为 ENC(...)（AES-256-GCM，主密钥取自
+ * # CONFIG_MASTER_KEY / config.master.key / ~/.dbb_automation_master_key），运行时自动解密
+ * monitor.db.password=ENC(AAAAB3...base64...)
+ * }</pre>
+ *
+ * <p>用户业务层只需在配置中开启即可，无需任何代码变更：
+ * <pre>{@code
+ * // 业务代码中正常写 monitor 即可，无需额外配置回调
+ * RouteDsl.on(page)
+ *     .api("/api/users")
+ *     .monitor()
+ *     .expectStatus(200)
+ *     .done()
+ *     .start();
+ * }</pre>
+ *
+ * <p><b>安全降级</b>：
+ * <ul>
+ *   <li>配置 {@code monitor.db.store.enabled=false}（默认）→ 静默跳过，不存储</li>
+ *   <li>DB 连接失败 → 打 WARN 日志，不抛异常，不中断测试</li>
+ *   <li>单条写入失败 → 打 WARN 日志，不抛异常</li>
+ * </ul>
+ *
+ * <p><b>线程安全</b>：懒初始化使用 volatile + synchronized 双重检查锁定，
+ * 支持并发测试场景。
+ */
+public final class DatabaseStoreMonitorCallback implements MonitorCallback {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DatabaseStoreMonitorCallback.class);
+
+    /** 单例 */
+    public static final DatabaseStoreMonitorCallback INSTANCE = new DatabaseStoreMonitorCallback();
+
+    /** 是否已检查过配置（懒加载，仅检查一次） */
+    private volatile boolean configChecked = false;
+
+    /** 是否已启用（enabled=true 且 DB 初始化成功） */
+    private volatile boolean storeEnabled = false;
+
+    private DatabaseStoreMonitorCallback() {}
+
+    // ═══════════════════════════════════════════════════════════════
+    // MonitorCallback 实现
+    // ═══════════════════════════════════════════════════════════════
+
+    @Override
+    public void onResponse(String url, int status, String body,
+                           Map<String, String> responseHeaders, String method) {
+        // 业务侧注册时拿不到 requestHeaders，退化为 null（记录构建期脱敏为 Map.of）
+        onResponse(url, status, body, null, responseHeaders, method);
+    }
+
+    /** 框架内部入口：携带 requestHeaders，与文件 sink 一致补全请求头落库（ 同类缺口）。 */
+    public void onResponse(String url, int status, String body,
+                           Map<String, String> requestHeaders, Map<String, String> responseHeaders,
+                           String method) {
+        if (!configChecked) {
+            checkConfigAndInit();
+            configChecked = true;
+        }
+        if (!storeEnabled) return;
+
+        try {
+            // testRunId：优先用配置值；若为空（P1-5 默认缺失）则用时间戳兜底，便于区分不同测试运行
+            String testRunId = MonitorConfig.getString(MonitorConfig.MONITOR_TEST_RUN_ID);
+            if (testRunId == null || testRunId.trim().isEmpty()) {
+                testRunId = "run-" + System.currentTimeMillis();
+            }
+
+            //  修复 S2：DB 是数据出域路径（与落本地磁盘的 FileStoreMonitorCallback 同级），
+            //    此前完全绕过脱敏 —— Authorization / Cookie / token / 密码 / PII 会明文入库。
+            //    统一在此收口脱敏，与 FileStoreMonitorCallback.buildJson 保持同一标准，
+            //    避免两个 sink 行为不一致导致「换个 sink 就泄露」。
+            String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
+            String safeBody = SensitiveDataSanitizer.sanitizeBody(body);
+            Map<String, String> safeRequestHeaders = SensitiveDataSanitizer.sanitizeHeaders(requestHeaders);
+            Map<String, String> safeResponseHeaders = SensitiveDataSanitizer.sanitizeHeaders(responseHeaders);
+
+            ApiMonitoringRecord record = ApiMonitoringRecord.builder()
+                    .endpoint(safeUrl)
+                    .requestUrl(safeUrl)
+                    .method(method)
+                    .statusCode(status)
+                    .requestHeaders(safeRequestHeaders)
+                    .responseHeaders(safeResponseHeaders)
+                    .responseBody(safeBody)
+                    .capturedAt(System.currentTimeMillis())
+                    .testRunId(testRunId)
+                    .build();
+
+            ApiMonitoringRepository.save(record);
+
+        } catch (Exception e) {
+            LOGGER.warn("[DatabaseStoreMonitorCallback] Failed to build/save record: {}", e.getMessage());
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 配置检查 & DB 初始化
+    // ═══════════════════════════════════════════════════════════════
+
+    private void checkConfigAndInit() {
+        boolean enabled = MonitorConfig.getBoolean(MonitorConfig.MONITOR_DB_STORE_ENABLED);
+        if (!enabled) {
+            LOGGER.info("[DatabaseStoreMonitorCallback] DB store is DISABLED. "
+                    + "Set 'monitor.db.store.enabled=true' in serenity.properties to enable.");
+            storeEnabled = false;
+            return;
+        }
+
+        String dbType = MonitorConfig.getString(MonitorConfig.MONITOR_DB_TYPE);
+        String dbUrl = MonitorConfig.getString(MonitorConfig.MONITOR_DB_URL);
+        // 透明解密：monitor.db.user / monitor.db.password 支持 ENC(...) 加密存储，
+        // 运行时经 SecretValue 解密；明文值原样返回，对既有配置零侵入。
+        String dbUser = SecretValue.decryptIfNeeded(
+                MonitorConfig.getString(MonitorConfig.MONITOR_DB_USER));
+        String dbPassword = SecretValue.decryptIfNeeded(
+                MonitorConfig.getString(MonitorConfig.MONITOR_DB_PASSWORD));
+        int poolMaxSize = MonitorConfig.getInt(MonitorConfig.MONITOR_DB_POOL_MAX_SIZE, 5);
+
+        if (dbUrl == null || dbUrl.trim().isEmpty()) {
+            LOGGER.warn("[DatabaseStoreMonitorCallback] monitor.db.store.enabled=true, "
+                    + "but monitor.db.url is empty. DB store will be disabled.");
+            storeEnabled = false;
+            return;
+        }
+
+        // 委托 Repository 初始化
+        ApiMonitoringRepository.init(dbUrl, dbUser, dbPassword, dbType, poolMaxSize);
+
+        storeEnabled = ApiMonitoringRepository.isInitialized();
+        if (!storeEnabled) {
+            LOGGER.error("[DatabaseStoreMonitorCallback] DB initialization FAILED — "
+                    + "monitor data will NOT be stored to database. "
+                    + "Check monitor.db.url/user/password/type and ensure the database is running.");
+        } else {
+            LOGGER.info("[DatabaseStoreMonitorCallback] DB store is ENABLED and ready.");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 生命周期
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 重置回调状态（主要用于测试）。
+     */
+    void reset() {
+        configChecked = false;
+        storeEnabled = false;
+    }
+}

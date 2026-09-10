@@ -7,7 +7,7 @@ import java.util.UUID;
 
 /**
  * 随机字符串/数字生成工具类
- * 
+ *
  * 功能：
  * 1. 随机生成数字
  * 2. 随机生成字母字符串
@@ -44,7 +44,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成数字
-     * 
+     *
      * @param digitCount 数字位数
      * @return 指定位数的数字字符串
      * @throws IllegalArgumentException 如果digitCount小于等于0
@@ -58,7 +58,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成小写字母字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 指定长度的小写字母字符串
      */
@@ -68,7 +68,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成大写字母字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 指定长度的大写字母字符串
      */
@@ -78,7 +78,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成字母字符串（大小写混合）
-     * 
+     *
      * @param length 字符串长度
      * @return 指定长度的字母字符串
      */
@@ -88,7 +88,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成字母数字混合字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 指定长度的字母数字字符串
      */
@@ -98,7 +98,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成包含特殊字符的字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 包含字母、数字和特殊字符的随机字符串
      */
@@ -108,7 +108,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成指定数量的特殊字符
-     * 
+     *
      * @param count 特殊字符数量
      * @return 随机特殊字符字符串
      */
@@ -118,7 +118,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成指定范围内的整数
-     * 
+     *
      * @param min 最小值（包含）
      * @param max 最大值（不包含）
      * @return [min, max)范围内的随机整数
@@ -132,7 +132,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成指定范围内的整数（包含边界值）
-     * 
+     *
      * @param min 最小值（包含）
      * @param max 最大值（包含）
      * @return [min, max]范围内的随机整数
@@ -146,7 +146,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成指定范围内的长整数
-     * 
+     *
      * @param min 最小值（包含）
      * @param max 最大值（包含）
      * @return [min, max]范围内的随机长整数
@@ -166,7 +166,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成布尔值
-     * 
+     *
      * @return 随机true或false
      */
     public static boolean randomBoolean() {
@@ -175,7 +175,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成浮点数
-     * 
+     *
      * @param min 最小值（包含）
      * @param max 最大值（不包含）
      * @return [min, max)范围内的随机浮点数
@@ -189,7 +189,7 @@ public class RandomStringUtil {
 
     /**
      * 从列表中随机选择一个元素
-     * 
+     *
      * @param list 列表
      * @param <T> 泛型类型
      * @return 随机选择的元素
@@ -204,7 +204,7 @@ public class RandomStringUtil {
 
     /**
      * 从数组中随机选择一个元素
-     * 
+     *
      * @param array 数组
      * @param <T> 泛型类型
      * @return 随机选择的元素
@@ -219,7 +219,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成UUID（不含连字符）
-     * 
+     *
      * @return 32位的随机UUID字符串
      */
     public static String randomUUID() {
@@ -228,28 +228,28 @@ public class RandomStringUtil {
 
     /**
      * 随机生成手机号码（中国手机号格式）
-     * 
+     *
      * @param prefix 号码前缀，如"138"、"139"，null则随机选择
      * @return 11位手机号
      */
     public static String randomMobileNumber(String prefix) {
         // 中国移动、联通、电信的号段
-        String[] prefixes = {"134", "135", "136", "137", "138", "139", 
+        String[] prefixes = {"134", "135", "136", "137", "138", "139",
                          "150", "151", "152", "157", "158", "159",
                          "182", "183", "184", "187", "188", "178",
                          "130", "131", "132", "155", "156", "185", "186",
                          "133", "153", "180", "181", "189"};
-        
+
         if (prefix == null || prefix.isEmpty()) {
             prefix = randomElement(prefixes);
         }
-        
+
         return prefix + randomNumeric(8);
     }
 
     /**
      * 随机生成邮箱地址
-     * 
+     *
      * @return 随机邮箱地址
      */
     public static String randomEmail() {
@@ -261,7 +261,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成IPv4地址
-     * 
+     *
      * @return 随机IPv4地址
      */
     public static String randomIPv4() {
@@ -274,7 +274,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成MAC地址
-     * 
+     *
      * @return 随机MAC地址
      */
     public static String randomMacAddress() {
@@ -290,7 +290,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成十六进制字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 小写十六进制字符串
      */
@@ -301,7 +301,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成中文字符串
-     * 
+     *
      * @param length 字符串长度
      * @return 随机中文字符串
      */
@@ -317,7 +317,7 @@ public class RandomStringUtil {
 
     /**
      * 随机打乱列表
-     * 
+     *
      * @param list 要打乱的列表
      * @param <T> 泛型类型
      */
@@ -330,7 +330,7 @@ public class RandomStringUtil {
 
     /**
      * 随机生成指定模式的字符串
-     * 
+     *
      * @param pattern 模式字符串，如"XXX-XXX"（X代表随机字母，N代表随机数字）
      * @return 生成的字符串
      */
@@ -368,7 +368,7 @@ public class RandomStringUtil {
 
     /**
      * 从指定字符集中随机生成字符串
-     * 
+     *
      * @param charSet 字符集
      * @param length 生成长度
      * @return 随机字符串

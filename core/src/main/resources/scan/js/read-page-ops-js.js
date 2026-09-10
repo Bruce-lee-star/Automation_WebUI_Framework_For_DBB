@@ -1,0 +1,1 @@
+Array.from(window.__steps || []).filter(function(s){ return (s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){ return {pageClass:(s.pageClass||''), op:s.op}; })

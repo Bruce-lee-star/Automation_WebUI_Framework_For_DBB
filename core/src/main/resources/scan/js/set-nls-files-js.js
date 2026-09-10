@@ -1,0 +1,1 @@
+(a) => { window.__nlsFiles = a.files; }

@@ -3,8 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -31,7 +31,9 @@ public final class ShutdownCoordinator {
     public static final int ORDER_DIAGNOSTICS      = 600;
     public static final int ORDER_FRAMEWORK_CORE   = 900;
 
-    private static final List<Task> TASKS = new ArrayList<>();
+    // 修复 CORE-P0-3/N5：CopyOnWriteArrayList 支持 runAll 执行期间并发 register 而不抛 CME；
+    // 同时配合 reset() 支持"执行后重注册"的测试/重 init 场景。
+    private static final List<Task> TASKS = new CopyOnWriteArrayList<>();
     private static final AtomicBoolean hookRegistered = new AtomicBoolean(false);
     private static final AtomicBoolean running = new AtomicBoolean(false);
 
@@ -76,20 +78,36 @@ public final class ShutdownCoordinator {
         }
     }
 
-    /** 按 order 升序执行所有任务。幂等，可被显式调用（如测试或 FrameworkCore 清理）。 */
+    /** 按 order 升序执行所有任务。并发重入保护（running 闩）；执行结束后复位 running，
+     *  使 reset() 后能再次 runAll（修复 CORE-P0-3 一次性不可复位的限制）。 */
     public static void runAll() {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        LOGGER.info("[ShutdownCoordinator] Running {} shutdown task(s)", TASKS.size());
-        for (Task t : TASKS) {
-            try {
-                LOGGER.info("[ShutdownCoordinator] -> {}", t.name);
-                t.action.run();
-            } catch (Throwable e) {
-                LOGGER.error("[ShutdownCoordinator] Task '{}' failed: {}", t.name, e.getMessage(), e);
+        try {
+            LOGGER.info("[ShutdownCoordinator] Running {} shutdown task(s)", TASKS.size());
+            for (Task t : TASKS) {
+                try {
+                    LOGGER.info("[ShutdownCoordinator] -> {}", t.name);
+                    t.action.run();
+                } catch (Throwable e) {
+                    LOGGER.error("[ShutdownCoordinator] Task '{}' failed: {}", t.name, e.getMessage(), e);
+                }
             }
+            LOGGER.info("[ShutdownCoordinator] Shutdown complete");
+        } finally {
+            running.set(false);
         }
-        LOGGER.info("[ShutdownCoordinator] Shutdown complete");
+    }
+
+    /**
+     * 清空已注册任务并复位运行标记（修复 CORE-P0-3）。用于测试或 FrameworkCore 重 init：
+     * reset 后 {@link #register(int, String, Runnable)} 可再次注册，runAll 可再次执行。
+     * 注意：若 JVM 已进入 shutdown 阶段，重置后已注册的钩子不会再被触发，需显式调用 runAll。
+     */
+    public static synchronized void reset() {
+        TASKS.clear();
+        running.set(false);
+        hookRegistered.set(false);
     }
 }

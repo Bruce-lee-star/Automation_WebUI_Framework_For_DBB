@@ -1,0 +1,1 @@
+ } window.__rolePickRoot = __rootArg; try { console.log('[picker] 录制根容器 =', window.__rolePickRoot || '(整页)'); } catch(e){} })

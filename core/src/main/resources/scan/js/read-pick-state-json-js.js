@@ -1,0 +1,1 @@
+(function() { try {   return JSON.stringify({     picks: window.__rolePicks || [],     steps: window.__steps || [],     currentStep: window.__currentStep || [],     sigs: window.__rolePickSigs || {},     active: !!window.__rolePickActive }); } catch (e) {   return JSON.stringify({picks:[],steps:[],currentStep:[],sigs:{},active:false}); }})()

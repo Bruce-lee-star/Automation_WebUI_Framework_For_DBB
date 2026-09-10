@@ -1,0 +1,1 @@
+try{localStorage.removeItem('__rolePickState')}catch(e){}

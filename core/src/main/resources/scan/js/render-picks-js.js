@@ -1,0 +1,1 @@
+if(window.__renderPicks) window.__renderPicks();

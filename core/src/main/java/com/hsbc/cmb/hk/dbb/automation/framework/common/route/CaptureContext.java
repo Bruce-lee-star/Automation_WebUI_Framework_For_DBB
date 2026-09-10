@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 
 /**
  * 当前采集上下文的核心层视图（SPI 一部分）。
- * 避免 web 直接依赖 {@code framework.web.route.core.ApiCaptureContext}，
+ * 避免 web 直接依赖 {@code framework.route.core.ApiCaptureContext}，
  * 从而打破 {@code web ↔ route} 的循环依赖。
  *
  * <p>接口方法为 web（PlaywrightListener）实际所需的采集上下文操作；

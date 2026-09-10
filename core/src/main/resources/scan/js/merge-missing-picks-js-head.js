@@ -1,0 +1,1 @@
+(a) => { try {   var s = JSON.parse(a.stateJson);   window.__rolePicks = window.__rolePicks || [];   window.__rolePickSigs = window.__rolePickSigs || {};

@@ -1,0 +1,1 @@
+(a) => { try{ window.__roleMode = a.mode; if(window.__roleRefreshToggle) window.__roleRefreshToggle(); }catch(e){} }

@@ -1,0 +1,1 @@
+try{ window.__rolePickActive = true; if (window.__renderPicks) window.__renderPicks(); }catch(e){}

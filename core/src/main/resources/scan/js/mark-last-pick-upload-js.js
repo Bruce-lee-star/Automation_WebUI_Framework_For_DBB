@@ -1,0 +1,1 @@
+if(window.__rolePicks && window.__rolePicks.length){ var p = window.__rolePicks[window.__rolePicks.length-1]; if(p) p.upload = true; }

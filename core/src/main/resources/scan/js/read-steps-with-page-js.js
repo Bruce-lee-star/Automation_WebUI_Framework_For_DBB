@@ -1,0 +1,1 @@
+Array.from(window.__steps || []).filter(function(s){ return !(s && typeof s === 'object' && typeof s.op === 'string'); }).map(function(s){ var t = (s && typeof s === 'object') ? s : null; var pc = (t && typeof t.pageClass === 'string') ? t.pageClass : ''; var ps = (t && t.picks) ? t.picks : (Array.isArray(s) ? s : []); return {pageClass: pc, picks: ps}; })

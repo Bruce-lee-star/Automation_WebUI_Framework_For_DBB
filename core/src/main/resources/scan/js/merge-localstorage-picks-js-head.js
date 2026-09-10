@@ -1,0 +1,1 @@
+(function(){ try {   var raw = localStorage.getItem('__rolePickState'); if(!raw) return;   var s = JSON.parse(raw);   window.__rolePicks = window.__rolePicks || [];   window.__rolePickSigs = window.__rolePickSigs || {};

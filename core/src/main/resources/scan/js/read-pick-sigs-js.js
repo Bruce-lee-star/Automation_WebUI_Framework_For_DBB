@@ -1,0 +1,1 @@
+() => (window.__rolePicks||[]).map(function(p){ return p._sigKey||p._sig||''; })

@@ -1,0 +1,1 @@
+(a) => { var s = JSON.parse(a.closedState || '{}'); var closeMarker = {_closeOp:true, _pageClass:a.closedCls   , _sig:'__close_' + ((window.__roleCloseSeq=(window.__roleCloseSeq||0)+1)), tag:'close'};

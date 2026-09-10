@@ -182,6 +182,13 @@ public final class ConfigCipher {
             throw new IllegalArgumentException(
                     "Master key must be an even-length hex string (32 bytes = 64 hex chars)");
         }
+        // 修复 CORE-P1-N3：强制 32 字节 = 64 hex，杜绝"弱密钥静默降级 AES-128"（合规红线）。
+        if (hex.length() != 64) {
+            throw new IllegalArgumentException(
+                    "Master key must be exactly 64 hex chars (32 bytes) for AES-256-GCM; got "
+                            + hex.length() + " hex chars (" + (hex.length() / 2) + " bytes). "
+                            + "AES-128 is not allowed for compliance. Generate with `openssl rand -hex 32`.");
+        }
         byte[] out = new byte[hex.length() / 2];
         for (int i = 0; i < out.length; i++) {
             out[i] = (byte) Integer.parseUnsignedInt(hex.substring(2 * i, 2 * i + 2), 16);

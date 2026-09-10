@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 /**
  * 路由生命周期实现注册表（核心层）。
  *
- * <p>route 模块的实现类（{@code framework.web.route.core.RouteLifecycleImpl}）在类加载时
+ * <p>route 模块的实现类（{@code framework.route.core.RouteLifecycleImpl}）在类加载时
  * 通过 {@link #register(RouteLifecycle)} 自注册；web 侧只调用 {@link #get()} 获取实现，
  * 无需在编译期依赖 route 模块，从而打破 {@code web ↔ route} 循环依赖。
  *
@@ -28,7 +28,7 @@ public final class RouteLifecycleRegistry {
                     try {
                         // 延迟加载 route 模块实现（触发其静态注册块），失败则说明 route 未启用
                         Class.forName(
-                                "com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteLifecycleImpl");
+                                "com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteLifecycleImpl");
                     } catch (Exception | LinkageError ignored) {
                         // route 模块缺失或尚未初始化：保持 instance 为 null
                     }

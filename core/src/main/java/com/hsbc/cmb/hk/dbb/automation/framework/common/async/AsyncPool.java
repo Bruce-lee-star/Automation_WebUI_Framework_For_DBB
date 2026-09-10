@@ -1,6 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.async;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.CapturedContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -167,6 +170,8 @@ public final class AsyncPool {
 
     private static void submitTask(Runnable task, long timeoutMs) {
         if (task == null) return;
+        // N-10：捕获提交线程上下文，供工作线程恢复（执行后由 runWithContext 复位，隔离保留）
+        final CapturedContext captured = TestContextHolder.capture();
         checkThresholdsBeforeSubmit();
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[AsyncPool] submit: timeout={}ms, queue={}/{}, active={}",
@@ -174,7 +179,7 @@ public final class AsyncPool {
         try {
             Future<?> future = POOL.submit(() -> {
                 try {
-                    task.run();
+                    TestContextHolder.runWithContext(captured, task);
                 } catch (Throwable t) {
                     LOGGER.error("[AsyncPool] Task threw exception: {}", t.getMessage(), t);
                 } finally {
@@ -383,7 +388,9 @@ public final class AsyncPool {
     public static int getActiveCount() { return POOL.getActiveCount(); }
     public static int getPoolSize() { return POOL.getPoolSize(); }
     public static int getQueueSize() { return POOL.getQueue().size(); }
-    public static long getCompletedTaskCount() { return POOL.getCompletedTaskCount() + completedTaskCount.get(); }
+    // 修复 CORE-P2-N6：completedTaskCount 内部计数器与 POOL.getCompletedTaskCount() 统计同一批完成数，
+    // 叠加会翻倍；统一以 ThreadPoolExecutor 自身计数作为唯一来源。
+    public static long getCompletedTaskCount() { return POOL.getCompletedTaskCount(); }
     public static long getRejectedCount() { return rejectedCount.get(); }
     public static long getTimeoutCount() { return timeoutCount.get(); }
     public static long getPendingTimeoutCount() { return pendingTimeoutCount.get(); }
@@ -402,7 +409,7 @@ public final class AsyncPool {
                         + "completed=%d, rejected=%d, timeouts=%d, pendingTimeouts=%d/%d, pendingSched=%d, ctxSched=%d, monitorDropped=%d",
                 POOL.getActiveCount(), POOL.getPoolSize(), POOL.getMaximumPoolSize(),
                 POOL.getQueue().size(), QUEUE_CAPACITY, getQueueUsage() * 100, getThreadUsage() * 100,
-                POOL.getCompletedTaskCount() + completedTaskCount.get(), rejectedCount.get(),
+                POOL.getCompletedTaskCount(), rejectedCount.get(),
                 timeoutCount.get(), pendingTimeoutCount.get(), MAX_PENDING_TIMEOUTS, pendingScheduleCount.get(),
                 CONTEXT_SCHEDULERS.size(), monitorCallbackDroppedCount.get());
     }
@@ -448,8 +455,12 @@ public final class AsyncPool {
 
     // ─── 内部工具 ──────────────────────────────────────────────
 
+    // 修复 CORE-P1-N7：配置改走统一配置门面 ConfigSource（合并 -D 系统属性 / 环境变量 /
+    // serenity.properties 并透明解密），消除"直读 ASYNC_* 环境变量"这第三套割裂的配置体系，
+    // 使 ASYNC_* 可被 serenity.properties 与 -D 覆盖、并支持 ENC() 加密。env 名映射与历史一致
+    // （toEnvKey("ASYNC_CORE_THREADS") == "ASYNC_CORE_THREADS"），对现网零变更。
     private static int getEnvInt(String key, int defaultValue) {
-        String val = System.getenv(key);
+        String val = ConfigSource.resolve(key, null);
         if (val == null || val.trim().isEmpty()) return defaultValue;
         try {
             return Integer.parseInt(val.trim());
@@ -460,7 +471,7 @@ public final class AsyncPool {
     }
 
     private static long getEnvLong(String key, long defaultValue) {
-        String val = System.getenv(key);
+        String val = ConfigSource.resolve(key, null);
         if (val == null || val.trim().isEmpty()) return defaultValue;
         try {
             return Long.parseLong(val.trim());
@@ -471,7 +482,7 @@ public final class AsyncPool {
     }
 
     private static double getEnvDouble(String key, double defaultValue) {
-        String val = System.getenv(key);
+        String val = ConfigSource.resolve(key, null);
         if (val == null || val.trim().isEmpty()) return defaultValue;
         try {
             double parsed = Double.parseDouble(val.trim());

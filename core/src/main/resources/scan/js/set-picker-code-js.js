@@ -1,0 +1,1 @@
+(a) => { window.__pickerCode = a.code; }

@@ -1,0 +1,1 @@
+try{window.__rolePickStopped=true;}catch(e){}

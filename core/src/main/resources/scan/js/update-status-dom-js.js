@@ -1,0 +1,1 @@
+var st = document.getElementById('__roleStatus'); if (st) st.textContent = window.__roleStatusMsg;

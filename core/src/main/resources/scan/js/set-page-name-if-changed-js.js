@@ -1,0 +1,1 @@
+(a) => { try{ if(window.__rolePageName!==a.pageName){ window.__rolePageName=a.pageName; try{localStorage.setItem('__rolePageName',a.pageName);}catch(e){} } }catch(e){} }

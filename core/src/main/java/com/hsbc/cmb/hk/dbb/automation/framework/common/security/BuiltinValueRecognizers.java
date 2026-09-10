@@ -79,7 +79,7 @@ final class BuiltinValueRecognizers {
         int sum = 0, alt = 0;
         for (int i = digits.length() - 1; i >= 0; i--) {
             int d = digits.charAt(i) - '0';
-            if (alt % 2 == 1) {
+            if (alt % 2 != 0) {
                 d *= 2;
                 if (d > 9) d -= 9;
             }

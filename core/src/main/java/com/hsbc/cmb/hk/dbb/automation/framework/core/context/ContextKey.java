@@ -38,14 +38,16 @@ public final class ContextKey<T> {
         return value == null ? null : type.cast(value);
     }
 
+    // 修复 CORE-P1-N4：同名但不同类型的键必须区分，否则 TestContext 中
+    // ContextKey.of("x", String.class) 与 ContextKey.of("x", Integer.class) 会互相覆盖。
     @Override
     public boolean equals(Object o) {
-        return o instanceof ContextKey<?> k && name.equals(k.name);
+        return o instanceof ContextKey<?> k && name.equals(k.name) && type.equals(k.type);
     }
 
     @Override
     public int hashCode() {
-        return name.hashCode();
+        return 31 * name.hashCode() + type.hashCode();
     }
 
     @Override

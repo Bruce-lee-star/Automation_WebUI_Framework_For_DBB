@@ -1,0 +1,1 @@
+(a) => { window.__roleStatusMsg = a.msg; }

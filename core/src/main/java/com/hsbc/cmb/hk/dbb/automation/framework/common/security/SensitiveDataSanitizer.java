@@ -136,7 +136,7 @@ public final class SensitiveDataSanitizer {
      * </ul>
      * 键名同样走 {@link #normalizeKey(String)} 规范化（忽略大小写与 _ - . 空格），
      * 故 {@code access_token} / {@code accessToken} / {@code Access-Token} 均生效。
-     * 若希望在 {@code web.config.FrameworkConfig} 中集中登记，可使用同名配置键（本类直接读取同一配置源）。
+     * 若希望在 {@code web.config.WebFrameworkConfig} 中集中登记，可使用同名配置键（本类直接读取同一配置源）。
      */
     private static final String CFG_EXTRA_HEADER_KEYS = "sensitive.data.extra.header.keys";
     private static final String CFG_EXTRA_BODY_KEYS = "sensitive.data.extra.body.keys";

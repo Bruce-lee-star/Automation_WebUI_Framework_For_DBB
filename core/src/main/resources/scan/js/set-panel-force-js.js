@@ -1,0 +1,1 @@
+try{window.__rolePanelForce=true;}catch(e){}

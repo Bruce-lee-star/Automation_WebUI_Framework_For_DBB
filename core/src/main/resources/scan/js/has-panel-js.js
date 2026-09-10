@@ -1,0 +1,1 @@
+!!(document.getElementById('__rolePanel') && window.__renderPicks)

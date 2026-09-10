@@ -1,0 +1,1 @@
+try{localStorage.removeItem('__rolePickSessionOn');}catch(e){} try{window.__rolePickSessionOn=false;}catch(e){} try{window.__rolePickStopped=true;}catch(e){} try{window.__rolePickWanted=false;}catch(e){}

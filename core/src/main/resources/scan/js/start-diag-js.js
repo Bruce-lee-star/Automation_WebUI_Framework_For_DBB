@@ -1,0 +1,1 @@
+(function(){ return JSON.stringify({ origin: location.origin, winSwitch: !!window.__rolePickSessionOn, active: !!window.__rolePickActive, hasClick: typeof window.__rolePickClick==='function', hasMove: typeof window.__rolePickMove==='function', hasRecord: typeof window.__recordPick==='function'}); })()

@@ -1,0 +1,1 @@
+try{window.__rolePanelForce=true;}catch(e){} try{ localStorage.setItem('__rolePanelEnabled','1'); }catch(e){}

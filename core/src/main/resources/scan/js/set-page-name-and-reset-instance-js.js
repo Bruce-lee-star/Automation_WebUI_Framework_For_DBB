@@ -1,0 +1,1 @@
+(a) => { window.__rolePageName = a.pageName; window.__currentPageInstance = null; try{localStorage.setItem('__rolePageName', a.pageName);}catch(e){} }

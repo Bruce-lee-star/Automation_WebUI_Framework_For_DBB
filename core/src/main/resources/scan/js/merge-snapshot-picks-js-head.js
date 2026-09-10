@@ -1,0 +1,1 @@
+(a) => { var s = JSON.parse(a.stateJson); var picks = (s && s.picks) || []; window.__rolePicks = window.__rolePicks || []; window.__rolePickSigs = window.__rolePickSigs || {};

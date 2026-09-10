@@ -1,10 +1,12 @@
-package com.hsbc.cmb.hk.dbb.automation.tests.architecture;
+package com.hsbc.cmb.hk.dbb.automation.tests.architecture;
+
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.LifecycleState;
 
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaFieldAccess;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
@@ -200,6 +202,27 @@ public class ArchitectureTest {
                 .check(new ClassFileImporter()
                         .withImportOption(new ImportOption.DoNotIncludeTests())
                         .importPackages(BASE_PACKAGE));
+    }
+
+    /**
+     * DI seam 防绕过门禁（企业级，对齐 WEB-P0-2 验收②）：
+     * 非 lifecycle 包树的 framework 代码不得直接依赖 lifecycle 的 {@code *Impl} 协作者实现类，
+     * 否则会绕过「接口（角色）= 协作者契约、{@code *Impl}=内部无状态单例」的 DI 替换链路，
+     * 破坏可测试替身注入与多实现多态（WEB-P1-6）。
+     * <p>说明：{@code *Impl} 仅供 lifecycle 包树内部（含 {@code .serenity} 子包）组合根装配与委托，
+     * 故 subject 限制为 lifecycle 包树之外、dependOn 目标限制为 lifecycle 包树内的 {@code *Impl}。</p>
+     */
+    @Test
+    public void frameworkCodeMustNotDependOnLifecycleImpls() {
+        noClasses()
+                .that().resideInAPackage("..framework..")
+                .and().resideOutsideOfPackage("..framework.web.lifecycle..")
+                .should().dependOnClassesThat(
+                        JavaClass.Predicates.resideInAPackage("..framework.web.lifecycle..")
+                                .and(JavaClass.Predicates.simpleNameEndingWith("Impl")))
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
     }
 
     // ==================== L7：lifecycle 内部面门禁（跨子包封装治理 Phase 1） ====================

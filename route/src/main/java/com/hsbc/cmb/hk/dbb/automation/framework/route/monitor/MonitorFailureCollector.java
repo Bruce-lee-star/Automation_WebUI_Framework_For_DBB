@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 

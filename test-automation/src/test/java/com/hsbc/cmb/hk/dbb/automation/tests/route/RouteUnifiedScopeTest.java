@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteEngine;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteHandleType;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRule;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRuleScope;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRuleScope;
 import org.junit.Test;
 
 import java.util.Arrays;

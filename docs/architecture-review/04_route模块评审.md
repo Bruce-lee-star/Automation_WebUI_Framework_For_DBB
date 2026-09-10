@@ -25,6 +25,24 @@
 
 ---
 
+### §0 包结构重组（route.core → 5 子包）
+
+`route.core` 原扁平结构（~30 类同处 `framework.route.core`）已按职责物理拆分为 5 个子包，`handler` / `monitor` / `persistence` / `dsl` / `util` 维持原包不变：
+
+| 子包 | 职责 | 代表类 |
+|---|---|---|
+| `core.capture` | 流量抓取 / 存储 / 断言 / 等待 | `ApiCaptureContext` `ApiCaptureLifecycle` `ApiCaptureManager` `ApiCaptureStore` `ApiCaptureStart` `ApiAssertion` `ApiCallAwaiter` `ResponseStore` `CapturedApiCall` `AssertionFailureDetail` `RoutePatternCache` |
+| `core.rule` | 规则模型 / 注册表 | `RouteRule` `RouteRuleScope` `ConditionalFieldRule` `PriorityPolicy` `RouteHandleType` `RouteRegistry` `RouteHandlerRegistry` `RuleRepository` |
+| `core.engine` | 引擎执行 / 统一裁决 / 调度 | `RouteEngine` `Dispatcher` `HandlerExecutor` `RouteContextState` `RouteUnifiedResolution` `RouteDelay` `RouteHandler` `DelayScheduler` `RouteException` |
+| `core.lifecycle` | 生命周期编排 / 上下文状态 | `RouteLifecycleImpl` `RouteLifecycleOwner` `RouteMonitorSession` `StoppedCapabilityManager` `PerContextEngine` `EngineState` |
+| `core.spi` | 跨层 SPI | `MonitorCallback` |
+
+**架构门禁同步**：`ArchitectureTest.routeCoreMustNotDependOnRouteHandler`（C1）由单包 `framework.route.core..` 扩展为对 `capture` / `rule` / `engine` / `lifecycle` / `spi` 五子包同时生效，core 各子包仍不得反向依赖 `route.handler`，行为零回归（全护盾通过）。
+
+**说明**：子包拆分使 `package-private` 跨子包失效，个别为分层迁移提升为 `public` 的成员以 `@apiNote` 标注为 framework-internal（非公开 API），不破坏对外契约。
+
+---
+
 ## 二、八维度逐项分析
 
 ### D1 模块边界与依赖治理 —— 2.0 / 5 ❌ **本模块最主要短板**
@@ -78,7 +96,7 @@ slices().matching("..framework.(*)..")
 `RouteDsl` 按能力分子类（`MonitorApiDsl` / `MockApiDsl` / `InterceptMockDsl` …），`done()` 时校验配置完整性并自动切换 collect-only 模式（`RouteDsl.java:632-645`）。用户无法写出"配了 monitor 却忘记 enable"的非法状态——**这是 API 设计的成熟表现**。
 
 **优点 R-6：core/handler 解耦有门禁保障**
-`RouteEngine` 不 import 任何具体 Handler，通过 `RouteHandlerRegistry` 反向注册（`ArchitectureTest.java:72-79` 的 C1 规则固化）。
+`RouteEngine` 不 import 任何具体 Handler，通过 `RouteHandlerRegistry` 反向注册（`ArchitectureTest.routeCoreMustNotDependOnRouteHandler` 的 C1 规则固化；§0 包重组后该规则已覆盖 `core.capture`/`core.rule`/`core.engine`/`core.lifecycle`/`core.spi` 五子包）。
 
 **优点 R-7：模板方法消除重复**
 与 api 模块一致，`AbstractRestJob` 式的上提思路在此也有体现。

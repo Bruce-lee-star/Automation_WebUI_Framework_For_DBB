@@ -3,8 +3,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Concurr
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 

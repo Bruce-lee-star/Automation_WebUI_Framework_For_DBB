@@ -1,0 +1,998 @@
+package com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule;
+
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * 路由规则数据模型 — 统一承载 MONITOR / MODIFY / MOCK 三种类型的配置。
+ *
+ * <p>校验规则：
+ * <ul>
+ *   <li>{@code urlPattern} 不允许为 blank（空/纯空格字符串）</li>
+ *   <li>{@code mockStatus} 必须是合法 HTTP 状态码（100 ≤ status < 600）</li>
+ *   <li>{@code expectedStatus} 必须是合法 HTTP 状态码（100 ≤ status < 600）</li>
+ * </ul>
+ *
+ * <p>请求条件匹配（新增）：
+ * <ul>
+ *   <li>{@code resourceTypes} — 资源类型过滤（xhr/fetch/script/...）默认不限制</li>
+ *   <li>{@code matchHeaders} — 请求头精确匹配</li>
+ *   <li>{@code matchQuery} — Query 参数精确匹配</li>
+ *   <li>{@code matchBodyRegex} — 请求体正则匹配</li>
+ *   <li>{@code matchContentType} — Content-Type 包含匹配</li>
+ *   <li>{@code matchReferrer / matchOrigin} — 来源匹配</li>
+ *   <li>{@code matchFrameUrl / onlyMainFrame} — Frame 匹配</li>
+ * </ul>
+ */
+public class RouteRule {
+
+    private String urlPattern;
+    private RouteHandleType type = RouteHandleType.MONITOR;
+
+    /**
+     *  监控能力位（基线）：true 表示此规则开启 API 健康监控（断言 expectedStatus / jsonPath）。
+     * <p>监控是<b>不可被覆盖的基线</b>：MODIFY / DELAY 只是挂在它上面的可叠加动作，
+     * 无论是否叠加 modify/delay，监控始终在 resume 后对真实响应断言，失败即报错。
+     * <p>仅当 {@code type == MOCK} 时此位被忽略（MOCK 返回假响应，无真实响应可监控）。
+     */
+    private boolean monitorEnabled = false;
+
+    /**
+     *  已显式停止的能力集合（按能力维度，而非整条 pattern）。
+     * <p>由 RouteEngine.stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入，
+     * 分发期注入到有效规则；对应能力在 selectCapability 及 handler 内被跳过，
+     * 不影响同一 pattern 的其它能力。不参与 equals/hashCode 比较，仅做拷贝传递。
+     */
+    private final java.util.EnumSet<RouteHandleType> stoppedCapabilities =
+            java.util.EnumSet.noneOf(RouteHandleType.class);
+
+    /** 标记某能力被显式停止（生效后该能力在本次 pattern 后续请求中不再执行）。 */
+    public void stopCapability(RouteHandleType type) {
+        if (type != null) stoppedCapabilities.add(type);
+    }
+
+    /** 查询某能力是否已被显式停止。 */
+    public boolean isCapabilityStopped(RouteHandleType type) {
+        return type != null && stoppedCapabilities.contains(type);
+    }
+
+    // Mock
+    private String mockBody;
+    private byte[] mockBodyBytes;
+    private int mockStatus = 200;
+    private Map<String, String> mockHeaders;
+    /** Mock 响应批量字段替换：JSONPath → 替换值。
+     *  支持通配符 [*]（如 $.users[*].name → newName 将所有元素的 name 替换）
+     *   value 改为 Object 类型，支持字符串、数字、布尔、null 等原始类型 */
+    private Map<String, Object> mockReplaceFields;
+
+    /**
+     * 是否拦截真实 API 响应（通过 {@code route.fetch()} 获取真实服务器响应后再应用字段替换）。
+     * <p>默认 false：纯 Mock 模式，不访问真实服务器。
+     * <p>设为 true 后：先 fetch 真实响应 → 应用 {@code mockReplaceFields} → fulfill 修改后的响应。
+     * 此时 {@code mockBody} 不生效（以真实响应体为模板），状态码和响应头沿用真实响应。
+     */
+    private boolean interceptRealResponse = false;
+
+    /**
+     * 条件字段修改规则列表（仅 {@code interceptRealResponse=true} 模式生效）。
+     * <p>当响应里某 JSONPath 满足条件时才修改另一个字段，不满足条件则保留原值（不影响其它数据）。
+     * 在 {@code mockReplaceFields} 之后独立评估，多个规则可叠加。
+     */
+    private List<ConditionalFieldRule> conditionalFields;
+
+    // ModifyRequest — 增删改三个维度
+    /** 请求头：设置/新增 key → value（覆盖已有同名头） */
+    private Map<String, String> requestHeadersToSet;
+    /** 请求头：删除指定 key */
+    private Set<String> requestHeadersToRemove;
+    /** 请求体：修改已有字段（JSONPath → 值） */
+    private Map<String, String> requestBodyFieldsToModify;
+    /** 请求体：新增字段（JSONPath → 值，路径不存在则创建中间节点） */
+    private Map<String, String> requestBodyFieldsToAdd;
+    /** 请求体：删除指定字段（JSONPath 集合） */
+    private Set<String> requestBodyFieldsToRemove;
+    /** 修改请求 HTTP 方法 */
+    private String modifyMethod;
+
+    // Monitor + 断言
+    private boolean record = true;
+    private Integer expectedStatus;  // 期望的 HTTP 状态码
+    private Map<String, Object> jsonPathAssertions;  // JSONPath 断言
+
+
+    // Monitor 自动停止控制
+    private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
+    private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
+    private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 经 DSL monitor() 显式置 false → 默认不自动停；MOCK/MODIFY 由 DSL 覆盖为 false）
+
+    // DELAY 类型的高延迟模拟（毫秒），0 = 无延迟
+    private long delayMs = 0;
+
+    /** DELAY 类型随机延迟范围：最小值（毫秒），0 = 不使用随机范围 */
+    private long delayMinMs = 0;
+    /** DELAY 类型随机延迟范围：最大值（毫秒），0 = 不使用随机范围 */
+    private long delayMaxMs = 0;
+
+    /**
+     * 一次性拦截次数（对齐 Playwright Route.setTimes）。
+     * <p>0（默认）= 无限次拦截；N>0 = 仅处理前 N 次，之后请求直接放行（走真实网络）。
+     * <p>仅对独立注册的 MOCK / MODIFY / DELAY 规则生效；跨层合并场景安全降级为无限次。
+     */
+    private int times = 0;
+    /** 剩余可处理次数（times>0 时生效）；原子化以避免 Playwright 事件线程与 DELAY 调度线程并发递减竞态（P1-10） */
+    private final AtomicInteger remainingTimes = new AtomicInteger(0);
+
+    /**
+     *  分发期合并的源规则引用（transient，不参与 equals/hashCode/copyForMerge）。
+     * <p>B3 链式模型：dispatchRoute 对规则链执行「分发期合并」（copyForMerge + mergeFrom）
+     * 生成有效规则，本字段指向链头（首个注册、session/times 归属）的原始规则，
+     * 供会话查询、times 递减、跨层 identity 判断使用。
+     */
+    private transient RouteRule mergeSource = null;
+
+    /**
+     *  防御性：指向本规则所属 MonitorSession 的稳定引用（transient，不参与 equals/hashCode/copyForMerge）。
+     * <p>由 RouteEngine.startMonitorSession 在创建/复用会话时写入「链头」原始规则。
+     * 会话查询（sessionForRule/sessionForRoute）优先用 O(1) 引用定位，避免依赖
+     * {@code session.rule == mergeSource} 的「身份相等」脆弱假设；多 context 复用同规则实例时由
+     * sessionForRoute 的 context 一致性校验兜底，最坏退回全表遍历。
+     */
+    private transient Object monitorSessionRef = null;
+
+    /**
+     *  Phase 5 统一绑定模型：规则作用域标签。
+     * 默认 {@link RouteRuleScope#CONTEXT} 以保持向后兼容（旧代码仅走 context 绑定）。
+     * 统一绑定落地后，page 级规则以 {@link #PAGE} + {@link #pageRef} 表达，
+     * 不再依赖 {@code page.route}+{@code context.route} 双绑定与 URL 去重集。
+     */
+    private RouteRuleScope scope = RouteRuleScope.CONTEXT;
+
+    /**
+     *  Phase 5：page 级规则归属的 Page 引用（逻辑标签，可为 null）。仅当 {@link #scope}=PAGE 时有意义。
+     * 仅作逻辑归属标记，不参与 Playwright 对象生命周期管理（规避 PageRef 弱引用 GC 不确定性）。
+     */
+    private Object pageRef;
+
+    // ═══════════════════════════════════════════════════════════
+    // 请求条件匹配（新增）
+    // ═══════════════════════════════════════════════════════════
+
+    /** 允许的资源类型，逗号分隔（如 "xhr,fetch"）。null/空 = 不限制。 */
+    private String resourceTypes;
+
+    /**  性能优化：懒缓存解析后的资源类型集合（避免每次请求重新解析） */
+    private transient volatile Set<String> cachedResourceTypeSet;
+    private transient volatile String cachedResourceTypeRaw;
+
+    /** HTTP Method 匹配（如 "GET","POST"）。null = 不限制。 */
+    private String matchMethod;
+
+    /** 请求头精确匹配。所有 key-value 必须完全匹配。 */
+    private Map<String, String> matchHeaders;
+
+    /** Query 参数精确匹配。所有 key-value 必须完全匹配。 */
+    private Map<String, String> matchQuery;
+
+    /** 请求体正则匹配。null = 不检查。 */
+    private String matchBodyRegex;
+
+    /** Content-Type 包含匹配（如 "json" 匹配 "application/json"）。null = 不检查。 */
+    private String matchContentType;
+
+    /** Referrer 包含匹配。null = 不检查。 */
+    private String matchReferrer;
+
+    /** Origin 包含匹配。null = 不检查。 */
+    private String matchOrigin;
+
+    /** Frame URL 包含匹配。null = 不检查。 */
+    private String matchFrameUrl;
+
+    /** 是否只拦截主 Frame 请求（跳过 iframe/worker）。默认 true。 */
+    private boolean onlyMainFrame = true;
+
+    /** 是否仅拦截 API 调用（xhr/fetch + 跳过 navigation）。默认 false（匹配所有请求类型）。 */
+    private boolean onlyApiCall = false;
+
+    // ─── Getters ────────────────────────────────────────────────
+
+    public String getUrlPattern() {
+        return urlPattern;
+    }
+
+    public RouteHandleType getType() {
+        return type;
+    }
+
+    /**
+     *  Phase 5：获取规则作用域（PAGE / CONTEXT）。默认 CONTEXT。
+     */
+    public RouteRuleScope getScope() {
+        return scope;
+    }
+
+    /**
+     *  Phase 5：设置规则作用域。
+     */
+    public void setScope(RouteRuleScope scope) {
+        this.scope = scope;
+    }
+
+    /**
+     *  Phase 5：获取 page 级规则归属的 Page 引用（逻辑标签，可为 null）。
+     */
+    public Object getPageRef() {
+        return pageRef;
+    }
+
+    /**
+     *  Phase 5：设置 page 级规则归属的 Page 引用（逻辑标签）。
+     */
+    public void setPageRef(Object pageRef) {
+        this.pageRef = pageRef;
+    }
+
+    public String getMockBody() {
+        return mockBody;
+    }
+
+    /**
+     * 获取 Mock 响应体（字节数组形式）。
+     * 用于二进制数据（如图片、protobuf）的 Mock。
+     * 如果设置了此值，MockHandler 会优先使用 setBodyBytes 返回。
+     *
+     * @return Mock 响应体字节数组，未设置时返回 null
+     */
+    public byte[] getMockBodyBytes() {
+        return mockBodyBytes;
+    }
+
+    public int getMockStatus() {
+        return mockStatus;
+    }
+
+    public Map<String, String> getMockHeaders() {
+        return mockHeaders;
+    }
+
+    /**
+     * 获取 Mock 响应批量字段替换映射（JSONPath → 值）。
+     * 支持通配符 [*] 批量替换 List 中所有元素的字段。
+     *  value 为 Object 类型，支持字符串、数字、布尔等。
+     */
+    public Map<String, Object> getMockReplaceFields() {
+        return mockReplaceFields;
+    }
+
+    // ─── ModifyRequest Getters ────────────────────────────────────
+
+    public Map<String, String> getRequestHeadersToSet() {
+        return requestHeadersToSet;
+    }
+
+    public Set<String> getRequestHeadersToRemove() {
+        return requestHeadersToRemove;
+    }
+
+    public Map<String, String> getRequestBodyFieldsToModify() {
+        return requestBodyFieldsToModify;
+    }
+
+    public Map<String, String> getRequestBodyFieldsToAdd() {
+        return requestBodyFieldsToAdd;
+    }
+
+    public Set<String> getRequestBodyFieldsToRemove() {
+        return requestBodyFieldsToRemove;
+    }
+
+    public String getModifyMethod() {
+        return modifyMethod;
+    }
+
+    public boolean isRecord() {
+        return record;
+    }
+
+    public Integer getExpectedStatus() {
+        return expectedStatus;
+    }
+
+    public Map<String, Object> getJsonPathAssertions() {
+        return jsonPathAssertions;
+    }
+
+    public long getTimeoutMs() {
+        return timeoutMs;
+    }
+
+    public int getMinMatches() {
+        return minMatches;
+    }
+
+    public boolean isAutoStopOnMatch() {
+        return autoStopOnMatch;
+    }
+
+    public long getDelayMs() {
+        return delayMs;
+    }
+
+    public long getDelayMinMs() {
+        return delayMinMs;
+    }
+
+    public long getDelayMaxMs() {
+        return delayMaxMs;
+    }
+
+    /**
+     * @return 一次性拦截次数（0 = 无限次拦截）
+     */
+    public int getTimes() {
+        return times;
+    }
+
+    /**
+     * 设置一次性拦截次数（0 = 无限次拦截；N>0 = 仅处理前 N 次）。
+     * <p>设置后重置剩余计数。times 不参与 equals/hashCode（对齐 Playwright：
+     * 次数是生命周期配置，不影响规则身份匹配）。
+     *
+     * @param times 拦截次数，负数按 0 处理
+     */
+    public void setTimes(int times) {
+        this.times = Math.max(0, times);
+        this.remainingTimes.set(this.times);
+    }
+
+    /**
+     * @return true 表示已设置有限次数且剩余次数为 0（应停止拦截、直接放行）
+     */
+    public boolean isTimesExhausted() {
+        return times > 0 && remainingTimes.get() <= 0;
+    }
+
+    /** 成功处理一次后原子递减剩余计数；归零即视为耗尽（P1-10：AtomicInteger 防并发多拦）。 */
+    public void decrementTimes() {
+        if (times <= 0) {
+            return;
+        }
+        // getAndUpdate 保证「读取-递减-写回」原子，避免两个并发路径同时读到 1 各处理一次
+        remainingTimes.getAndUpdate(v -> v <= 0 ? 0 : v - 1);
+    }
+
+    /**
+     *  返回分发期合并的源规则；未被合并（独立规则）时返回自身。
+     * <p>会话查询 / times 递减 / 跨层 identity 判断应始终作用于源规则，
+     * 而非 copyForMerge 生成的临时有效规则。
+     */
+    public RouteRule getMergeSource() {
+        return mergeSource != null ? mergeSource : this;
+    }
+
+    /** 设置分发期合并的源规则（仅 dispatchRoute 合并时由引擎内部调用）。 */
+    public void setMergeSource(RouteRule mergeSource) {
+        this.mergeSource = mergeSource;
+    }
+
+    /** 设置本规则所属 MonitorSession 的稳定引用（仅由 RouteEngine 内部在会话创建/复用时调用）。 */
+    public void setMonitorSessionRef(Object ref) { this.monitorSessionRef = ref; }
+
+    /** 获取本规则所属 MonitorSession 的稳定引用（可能为 null）。 */
+    public Object getMonitorSessionRef() { return monitorSessionRef; }
+
+    // ─── 请求条件匹配 Getters ────────────────────────────────────
+
+    public String getResourceTypes() { return resourceTypes; }
+
+    /**
+     * 获取解析后的资源类型集合（不可变，带缓存）。
+     *
+     * <p><b>性能优化</b>：首次调用时解析并缓存，后续调用直接返回缓存，
+     * 避免热路径上每次请求都重新 split + LinkedHashSet 创建。
+     */
+    public Set<String> getResourceTypeSet() {
+        //  DCL 懒缓存：仅在 resourceTypes 字符串未变更时复用
+        String raw = this.resourceTypes;
+        if (raw == null || raw.trim().isEmpty()) return null;
+
+        Set<String> cached = cachedResourceTypeSet;
+        if (cached != null && raw.equals(cachedResourceTypeRaw)) {
+            return cached;
+        }
+
+        synchronized (this) {
+            if (cachedResourceTypeSet != null && raw.equals(cachedResourceTypeRaw)) {
+                return cachedResourceTypeSet;
+            }
+            String[] parts = raw.trim().toLowerCase().split("[,;\\s]+");
+            Set<String> set = new LinkedHashSet<>();
+            for (String p : parts) {
+                if (!p.isEmpty()) set.add(p);
+            }
+            Set<String> result = set.isEmpty() ? null : Collections.unmodifiableSet(set);
+            cachedResourceTypeSet = result;
+            cachedResourceTypeRaw = raw;
+            return result;
+        }
+    }
+
+    public String getMatchMethod() { return matchMethod; }
+    public Map<String, String> getMatchHeaders() { return matchHeaders; }
+    public Map<String, String> getMatchQuery() { return matchQuery; }
+    public String getMatchBodyRegex() { return matchBodyRegex; }
+    public String getMatchContentType() { return matchContentType; }
+    public String getMatchReferrer() { return matchReferrer; }
+    public String getMatchOrigin() { return matchOrigin; }
+    public String getMatchFrameUrl() { return matchFrameUrl; }
+    public boolean isOnlyMainFrame() { return onlyMainFrame; }
+    public boolean isOnlyApiCall() { return onlyApiCall; }
+
+    /** 是否拦截真实 API 响应（通过 route.fetch() 获取真实响应再修改返回）。 */
+    public boolean isInterceptRealResponse() { return interceptRealResponse; }
+
+    // ─── Setters（带参数校验）────────────────────────────────────
+
+    /**
+     * 设置 URL pattern。
+     *
+     * @param urlPattern URL pattern，不能为 blank
+     * @throws IllegalArgumentException 如果 urlPattern 为 blank
+     */
+    public void setUrlPattern(String urlPattern) {
+        if (urlPattern == null || urlPattern.trim().isEmpty()) {
+            throw new IllegalArgumentException("urlPattern cannot be blank");
+        }
+        this.urlPattern = urlPattern;
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
+    }
+
+    public void setType(RouteHandleType type) {
+        this.type = type;
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
+    }
+
+    /**
+     * 设置监控能力位（基线）。
+     *
+     * @param monitorEnabled true 表示开启 API 健康监控（断言响应），false 关闭
+     */
+    public void setMonitorEnabled(boolean monitorEnabled) {
+        this.monitorEnabled = monitorEnabled;
+        // monitorEnabled 不进入 equals/hashCode（同 pattern 的 monitor/modify 规则需能合并，而非互斥）
+    }
+
+    /** @return 是否开启 API 健康监控（基线能力位） */
+    public boolean isMonitorEnabled() {
+        return monitorEnabled;
+    }
+
+    public void setMockBody(String mockBody) {
+        this.mockBody = mockBody;
+    }
+
+    /**
+     * 设置 Mock 响应体（字节数组形式），用于二进制 Mock。
+     * 优先级高于 {@link #setMockBody(String)}：MockHandler 会先检查此字段。
+     *
+     * @param mockBodyBytes Mock 响应体字节数组
+     */
+    public void setMockBodyBytes(byte[] mockBodyBytes) {
+        this.mockBodyBytes = mockBodyBytes;
+    }
+
+    /**
+     * 设置 Mock HTTP 状态码。
+     *
+     * @param mockStatus HTTP 状态码，必须在 [100, 600) 范围内
+     * @throws IllegalArgumentException 如果状态码非法
+     */
+    public void setMockStatus(int mockStatus) {
+        if (mockStatus < 100 || mockStatus >= 600) {
+            throw new IllegalArgumentException("Invalid HTTP status: " + mockStatus + ". Must be in range [100, 600).");
+        }
+        this.mockStatus = mockStatus;
+    }
+
+    public void setMockHeaders(Map<String, String> mockHeaders) {
+        this.mockHeaders = mockHeaders;
+    }
+
+    /**
+     * 添加一个 Mock 响应字段替换（JSONPath → 值）。
+     * 支持通配符 [*] 批量替换 List 中所有元素的字段，如 $.users[*].name。
+     * <p>支持多次调用，添加到 Map 中。
+     *  value 为 Object 类型，支持 String、Integer、Double、Boolean、null 等。
+     */
+    public void addMockReplaceField(String jsonPath, Object value) {
+        if (mockReplaceFields == null) {
+            mockReplaceFields = new LinkedHashMap<>();
+        }
+        mockReplaceFields.put(jsonPath, value);
+    }
+
+    public void setMockReplaceFields(Map<String, Object> mockReplaceFields) {
+        this.mockReplaceFields = mockReplaceFields;
+    }
+
+    /**
+     * 追加一条条件字段修改规则（仅 interceptRealResponse 模式生效）。
+     * @see ConditionalFieldRule
+     */
+    public void addConditionalField(ConditionalFieldRule rule) {
+        if (conditionalFields == null) {
+            conditionalFields = new ArrayList<>();
+        }
+        conditionalFields.add(rule);
+    }
+
+    public List<ConditionalFieldRule> getConditionalFields() {
+        return conditionalFields;
+    }
+
+    public void setConditionalFields(List<ConditionalFieldRule> conditionalFields) {
+        this.conditionalFields = conditionalFields;
+    }
+
+    // ─── ModifyRequest Setters ─────────────────────────────────────
+
+    /**
+     * 设置请求头（覆盖已有同名头）。
+     * @param headers 请求头 Map
+     */
+    public void setRequestHeadersToSet(Map<String, String> headers) {
+        this.requestHeadersToSet = headers;
+    }
+
+    /**
+     * 添加单个请求头（覆盖已有同名头）。
+     * @param key   请求头名称
+     * @param value 请求头值
+     */
+    public void addRequestHeaderToSet(String key, String value) {
+        if (requestHeadersToSet == null) {
+            requestHeadersToSet = new HashMap<>();
+        }
+        requestHeadersToSet.put(key, value);
+    }
+
+    /**
+     * 批量添加请求头。
+     */
+    public void addRequestHeadersToSet(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) return;
+        if (requestHeadersToSet == null) {
+            requestHeadersToSet = new HashMap<>();
+        }
+        requestHeadersToSet.putAll(headers);
+    }
+
+    /**
+     * 添加需要删除的请求头 key。
+     * @param key 要删除的请求头名称
+     */
+    public void addRequestHeaderToRemove(String key) {
+        if (requestHeadersToRemove == null) {
+            requestHeadersToRemove = new LinkedHashSet<>();
+        }
+        requestHeadersToRemove.add(key);
+    }
+
+    /**
+     * 添加一个请求体字段修改（替换已有字段值）。
+     * <p>支持多次调用，添加到 Map 中。
+     * @param jsonPath JSONPath 路径
+     * @param value    替换值（字符串形式，自动保持原字段类型）
+     */
+    public void addRequestBodyFieldToModify(String jsonPath, String value) {
+        if (requestBodyFieldsToModify == null) {
+            requestBodyFieldsToModify = new LinkedHashMap<>();
+        }
+        requestBodyFieldsToModify.put(jsonPath, value);
+    }
+
+    public void setRequestBodyFieldsToModify(Map<String, String> fields) {
+        this.requestBodyFieldsToModify = fields;
+    }
+
+    /**
+     * 添加一个请求体新字段。
+     * @param jsonPath JSONPath 路径（路径不存在则创建中间节点）
+     * @param value    字段值（字符串形式，自动类型推断）
+     */
+    public void addRequestBodyFieldToAdd(String jsonPath, String value) {
+        if (requestBodyFieldsToAdd == null) {
+            requestBodyFieldsToAdd = new LinkedHashMap<>();
+        }
+        requestBodyFieldsToAdd.put(jsonPath, value);
+    }
+
+    /**
+     * 添加需要从请求体中删除的字段路径。
+     * @param jsonPath JSONPath 路径
+     */
+    public void addRequestBodyFieldToRemove(String jsonPath) {
+        if (requestBodyFieldsToRemove == null) {
+            requestBodyFieldsToRemove = new LinkedHashSet<>();
+        }
+        requestBodyFieldsToRemove.add(jsonPath);
+    }
+
+    /**
+     * 设置修改后的 HTTP 方法。
+     * @param method 如 "POST","PUT","PATCH","DELETE"
+     */
+    public void setModifyMethod(String method) {
+        this.modifyMethod = method;
+        this.hashCodeCached = false;  //  失效 hashCode 缓存
+    }
+
+    public void setRecord(boolean record) {
+        this.record = record;
+    }
+
+    /**
+     * 设置期望的 HTTP 状态码（用于断言）。
+     *
+     * @param expectedStatus HTTP 状态码，必须在 [100, 600) 范围内
+     * @throws IllegalArgumentException 如果状态码非法
+     */
+    public void setExpectedStatus(Integer expectedStatus) {
+        if (expectedStatus != null && (expectedStatus < 100 || expectedStatus >= 600)) {
+            throw new IllegalArgumentException("Invalid expected HTTP status: " + expectedStatus + ". Must be in range [100, 600).");
+        }
+        this.expectedStatus = expectedStatus;
+    }
+
+    public void setJsonPathAssertions(Map<String, Object> jsonPathAssertions) {
+        this.jsonPathAssertions = jsonPathAssertions;
+    }
+
+    /**
+     * 设置 Monitor 超时（毫秒）。0 表示永不超时。
+     *
+     * @param timeoutMs 超时毫秒数，必须 ≥ 0
+     * @throws IllegalArgumentException 如果 timeoutMs < 0
+     */
+    public void setTimeoutMs(long timeoutMs) {
+        if (timeoutMs < 0) {
+            throw new IllegalArgumentException("timeoutMs must be >= 0, got: " + timeoutMs);
+        }
+        this.timeoutMs = timeoutMs;
+    }
+
+    /**
+     * 设置最小匹配次数（达到后触发 auto-stop）。
+     *
+     * @param minMatches 最小匹配次数，必须 ≥ 1
+     * @throws IllegalArgumentException 如果 minMatches < 1
+     */
+    public void setMinMatches(int minMatches) {
+        if (minMatches < 1) {
+            throw new IllegalArgumentException("minMatches must be >= 1, got: " + minMatches);
+        }
+        this.minMatches = minMatches;
+    }
+
+    public void setAutoStopOnMatch(boolean autoStopOnMatch) {
+        this.autoStopOnMatch = autoStopOnMatch;
+    }
+
+    /**
+     * 设置高延迟模拟时长（毫秒），仅 DELAY 类型有效。
+     * <p>请求匹配后，先异步等待指定毫秒再放行请求。
+     *
+     * @param delayMs 延迟毫秒数，必须 ≥ 0。0 表示无延迟。
+     */
+    public void setDelayMs(long delayMs) {
+        if (delayMs < 0) {
+            throw new IllegalArgumentException("delayMs must be >= 0, got: " + delayMs);
+        }
+        this.delayMs = delayMs;
+    }
+
+    /**
+     * 设置随机延迟范围的最小值（毫秒），配合 {@link #setDelayMaxMs(long)} 使用。
+     * <p>当 delayMinMs > 0 且 delayMaxMs > delayMinMs 时，
+     * 每次请求的实际延迟在 [delayMinMs, delayMaxMs] 范围内随机取值。
+     * <p>仅 DELAY 类型有效。
+     *
+     * @param delayMinMs 最小延迟毫秒数，必须 ≥ 0
+     */
+    public void setDelayMinMs(long delayMinMs) {
+        if (delayMinMs < 0) {
+            throw new IllegalArgumentException("delayMinMs must be >= 0, got: " + delayMinMs);
+        }
+        this.delayMinMs = delayMinMs;
+    }
+
+    /**
+     * 设置随机延迟范围的最大值（毫秒），配合 {@link #setDelayMinMs(long)} 使用。
+     * <p>当 delayMaxMs > delayMinMs > 0 时，
+     * 每次请求的实际延迟在 [delayMinMs, delayMaxMs] 范围内随机取值。
+     * <p>仅 DELAY 类型有效。
+     *
+     * @param delayMaxMs 最大延迟毫秒数，必须 ≥ 0
+     */
+    public void setDelayMaxMs(long delayMaxMs) {
+        if (delayMaxMs < 0) {
+            throw new IllegalArgumentException("delayMaxMs must be >= 0, got: " + delayMaxMs);
+        }
+        this.delayMaxMs = delayMaxMs;
+    }
+
+    // ─── 请求条件匹配 Setters ──────────────────────────────────
+
+    /**
+     * 设置允许匹配的资源类型（逗号分隔）。
+     * <p>例如：{@code "xhr,fetch"} 只匹配 XHR 和 Fetch 请求。
+     * <p>设为 null 或空字符串 = 不限制（配合 onlyApiCall 使用）。
+     */
+    public void setResourceTypes(String resourceTypes) {
+        this.resourceTypes = resourceTypes;
+        //  失效缓存，下次 getResourceTypeSet() 重新解析
+        this.cachedResourceTypeSet = null;
+        this.cachedResourceTypeRaw = null;
+    }
+
+    /**
+     * 设置 HTTP Method 匹配条件。
+     * @param method 如 "GET","POST","PUT","DELETE"。null = 不限制。
+     */
+    public void setMatchMethod(String method) {
+        this.matchMethod = method;
+    }
+
+    /**
+     * 添加一个请求头匹配条件。
+     * @param key   请求头名称
+     * @param value 期望的值（精确匹配）
+     */
+    public void addMatchHeader(String key, String value) {
+        if (matchHeaders == null) matchHeaders = new HashMap<>();
+        matchHeaders.put(key, value);
+    }
+
+    /**
+     * 添加一个 Query 参数匹配条件。
+     * @param key   参数名
+     * @param value 期望的值（精确匹配）
+     */
+    public void addMatchQuery(String key, String value) {
+        if (matchQuery == null) matchQuery = new HashMap<>();
+        matchQuery.put(key, value);
+    }
+
+    public void setMatchHeaders(Map<String, String> matchHeaders) {
+        this.matchHeaders = matchHeaders;
+    }
+
+    public void setMatchQuery(Map<String, String> matchQuery) {
+        this.matchQuery = matchQuery;
+    }
+
+    /**
+     * 设置请求体正则表达式匹配。
+     * @param regex 正则表达式（Java Pattern 语法）
+     */
+    public void setMatchBodyRegex(String regex) {
+        this.matchBodyRegex = regex;
+    }
+
+    /**
+     * 设置 Content-Type 包含匹配。
+     * @param contentType 如 "json" 可匹配 "application/json;charset=UTF-8"
+     */
+    public void setMatchContentType(String contentType) {
+        this.matchContentType = contentType;
+    }
+
+    /**
+     * 设置 Referrer 包含匹配。
+     * @param referrer Referrer URL 中必须包含的字符串
+     */
+    public void setMatchReferrer(String referrer) {
+        this.matchReferrer = referrer;
+    }
+
+    /**
+     * 设置 Origin 包含匹配。
+     * @param origin Origin 中必须包含的字符串
+     */
+    public void setMatchOrigin(String origin) {
+        this.matchOrigin = origin;
+    }
+
+    /**
+     * 设置 Frame URL 包含匹配。
+     * @param frameUrl Frame URL 中必须包含的字符串
+     */
+    public void setMatchFrameUrl(String frameUrl) {
+        this.matchFrameUrl = frameUrl;
+    }
+
+    /**
+     * 是否只匹配主 Frame 请求（跳过 iframe/worker）。
+     * 默认 true。
+     */
+    public void setOnlyMainFrame(boolean onlyMainFrame) {
+        this.onlyMainFrame = onlyMainFrame;
+    }
+
+    /**
+     * 是否仅匹配 API 调用（遇到 navigation 请求自动跳过）。
+     * 默认 false（不限制请求类型）。
+     */
+    public void setOnlyApiCall(boolean onlyApiCall) {
+        this.onlyApiCall = onlyApiCall;
+    }
+
+    /**
+     * 设置是否拦截真实 API 响应（通过 {@code route.fetch()} 获取真实响应后再修改返回）。
+     * <p>设为 true 时，MockHandler 不构造虚假响应，而是先请求真实服务器，
+     * 拿到真实响应后再应用 {@code mockReplaceFields} 替换，最后 fulfill 返回前端。
+     *
+     * @param interceptRealResponse 是否拦截真实响应
+     */
+    public void setInterceptRealResponse(boolean interceptRealResponse) {
+        this.interceptRealResponse = interceptRealResponse;
+        this.hashCodeCached = false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 能力位合并（注册阶段，同 pattern 多条规则叠加）
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 将 {@code other} 的能力位合并进当前规则（用于同 pattern 的多次注册叠加）。
+     *
+     * <p>合并语义：
+     * <ul>
+     *   <li><b>MONITOR（基线）</b>：{@code other.monitorEnabled=true} 时开启（不可被关闭）；
+     *       监控专属字段（expectedStatus / jsonPath 断言 / callbacks 等）一并合并。
+     *   <li><b>MODIFY</b>：{@code other} 持有的 modify 字段（requestHeadersToSet / requestBodyToSet 等）putAll 合并。
+     *   <li><b>DELAY</b>：delayMs 取 max（与跨层合并一致）。
+     *   <li><b>MOCK（终结）</b>：仅当当前非 MOCK 且 other 为 MOCK 时，覆盖为 MOCK（由调用方保证）；
+     *       若当前已是 MOCK，则忽略非 MOCK 的 other（MOCK 不可被降级）。
+     * </ul>
+     *
+     * @param other 另一条同 pattern 规则（不修改它）
+     */
+    public void mergeFrom(RouteRule other) {
+        if (other == null) return;
+
+        // MONITOR 基线：开则保留
+        if (other.monitorEnabled) {
+            this.monitorEnabled = true;
+        }
+        // 监控专属字段合并（仅当 other 提供时才覆盖，避免清空已有）— 全部 null 安全
+        if (other.expectedStatus != null) this.expectedStatus = other.expectedStatus;
+        if (other.jsonPathAssertions != null && !other.jsonPathAssertions.isEmpty()) {
+            if (this.jsonPathAssertions == null) this.jsonPathAssertions = new LinkedHashMap<>();
+            this.jsonPathAssertions.putAll(other.jsonPathAssertions);
+        }
+
+        // MODIFY 字段合并 — 全部 null 安全
+        if (other.requestHeadersToSet != null && !other.requestHeadersToSet.isEmpty()) {
+            if (this.requestHeadersToSet == null) this.requestHeadersToSet = new HashMap<>();
+            this.requestHeadersToSet.putAll(other.requestHeadersToSet);
+        }
+        if (other.requestHeadersToRemove != null && !other.requestHeadersToRemove.isEmpty()) {
+            if (this.requestHeadersToRemove == null) this.requestHeadersToRemove = new LinkedHashSet<>();
+            this.requestHeadersToRemove.addAll(other.requestHeadersToRemove);
+        }
+        // 请求体：修改 / 新增 / 删除 三维度合并
+        if (other.requestBodyFieldsToModify != null && !other.requestBodyFieldsToModify.isEmpty()) {
+            if (this.requestBodyFieldsToModify == null) this.requestBodyFieldsToModify = new LinkedHashMap<>();
+            this.requestBodyFieldsToModify.putAll(other.requestBodyFieldsToModify);
+        }
+        if (other.requestBodyFieldsToAdd != null && !other.requestBodyFieldsToAdd.isEmpty()) {
+            if (this.requestBodyFieldsToAdd == null) this.requestBodyFieldsToAdd = new LinkedHashMap<>();
+            this.requestBodyFieldsToAdd.putAll(other.requestBodyFieldsToAdd);
+        }
+        if (other.requestBodyFieldsToRemove != null && !other.requestBodyFieldsToRemove.isEmpty()) {
+            if (this.requestBodyFieldsToRemove == null) this.requestBodyFieldsToRemove = new LinkedHashSet<>();
+            this.requestBodyFieldsToRemove.addAll(other.requestBodyFieldsToRemove);
+        }
+        if (other.modifyMethod != null) this.modifyMethod = other.modifyMethod;
+
+        //  DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
+        //    modify/delay 叠加」）注册时，DELAY 在 mergeFrom 内即合并，确保叠加生效
+        //    （c21：monitor 基线 + overlayDelay 后，有效规则 delayMs 取 max）。
+        //    注意：跨层合并时此值还会再与 context 层 delay 取 max（dispatchRoute 内）。
+        this.delayMs = Math.max(this.delayMs, other.delayMs);
+
+        // MOCK 终结：MOCK 是唯一终结者。能力位合并时，若 other 携带 MOCK 配置，
+        // 则其 mock 字段参与合并（由上层 RouteRegistry 决定 override 语义，
+        // 此处不强改 this.type，避免跨层合并时污染基线规则的类型）。
+        if (other.type == RouteHandleType.MOCK) {
+            if (other.mockBody != null) this.mockBody = other.mockBody;
+            if (other.mockBodyBytes != null) this.mockBodyBytes = other.mockBodyBytes;
+            if (other.mockStatus != 0) this.mockStatus = other.mockStatus;
+            if (other.mockHeaders != null) this.mockHeaders = other.mockHeaders;
+        }
+
+        this.hashCodeCached = false;  // merge 改变内容，失效缓存
+    }
+
+    /**
+     *  返回当前规则的<b>深拷贝</b>（仅深拷贝用于能力位合并的集合字段）。
+     * <p>用于跨层合并：避免就地修改被 {@code ENGINE_RULE_STORE} 与闭包持有的原 rule，
+     * 导致跨请求行为漂移与集合无限累积。
+     *
+     * @return 与当前规则内容相等但独立的拷贝
+     */
+    public RouteRule copyForMerge() {
+        RouteRule copy = new RouteRule();
+        copy.urlPattern = this.urlPattern;
+        copy.type = this.type;
+        copy.monitorEnabled = this.monitorEnabled;
+
+        // MONITOR 字段
+        copy.expectedStatus = this.expectedStatus;
+        copy.timeoutMs = this.timeoutMs;
+        copy.minMatches = this.minMatches;
+        copy.autoStopOnMatch = this.autoStopOnMatch;
+        copy.record = this.record;
+        if (this.jsonPathAssertions != null) copy.jsonPathAssertions = new LinkedHashMap<>(this.jsonPathAssertions);
+
+        // MODIFY 字段
+        if (this.requestHeadersToSet != null) copy.requestHeadersToSet = new HashMap<>(this.requestHeadersToSet);
+        if (this.requestHeadersToRemove != null) copy.requestHeadersToRemove = new LinkedHashSet<>(this.requestHeadersToRemove);
+        if (this.requestBodyFieldsToModify != null) copy.requestBodyFieldsToModify = new LinkedHashMap<>(this.requestBodyFieldsToModify);
+        if (this.requestBodyFieldsToAdd != null) copy.requestBodyFieldsToAdd = new LinkedHashMap<>(this.requestBodyFieldsToAdd);
+        if (this.requestBodyFieldsToRemove != null) copy.requestBodyFieldsToRemove = new LinkedHashSet<>(this.requestBodyFieldsToRemove);
+        copy.modifyMethod = this.modifyMethod;
+
+        // DELAY 字段
+        copy.delayMs = this.delayMs;
+        copy.delayMinMs = this.delayMinMs;
+        copy.delayMaxMs = this.delayMaxMs;
+
+        // MOCK 字段
+        copy.mockBody = this.mockBody;
+        copy.mockStatus = this.mockStatus;
+        if (this.mockHeaders != null) copy.mockHeaders = new HashMap<>(this.mockHeaders);
+        if (this.mockReplaceFields != null) copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);
+        copy.interceptRealResponse = this.interceptRealResponse;
+        if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
+
+        //  拷贝已停止能力集合（EnumSet 可变，逐元素拷贝避免与源规则共享同一集合）
+        copy.stoppedCapabilities.addAll(this.stoppedCapabilities);
+
+        // 请求条件匹配
+        copy.resourceTypes = this.resourceTypes;
+        copy.matchMethod = this.matchMethod;
+
+        return copy;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // equals / hashCode（RouteRule 作为 ConcurrentHashMap key）
+    // ═══════════════════════════════════════════════════════════
+
+    /**  #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组 */
+    private transient int cachedHashCode;
+    private transient boolean hashCodeCached;
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        RouteRule that = (RouteRule) o;
+        // 相等性仅以 urlPattern + modifyMethod 为准（同 pattern 的规则视为同一逻辑规则，
+        // 其能力位由 mergeFrom() 显式叠加，type 不参与去重）。
+        return Objects.equals(urlPattern, that.urlPattern)
+                && Objects.equals(modifyMethod, that.modifyMethod);
+    }
+
+    @Override
+    public int hashCode() {
+        if (!hashCodeCached) {
+            cachedHashCode = Objects.hash(urlPattern, modifyMethod);
+            hashCodeCached = true;
+        }
+        return cachedHashCode;
+    }
+}

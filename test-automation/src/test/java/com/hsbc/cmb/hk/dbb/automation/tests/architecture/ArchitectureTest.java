@@ -89,7 +89,11 @@ public class ArchitectureTest {
     @Test
     public void routeCoreMustNotDependOnRouteHandler() {
         noClasses()
-                .that().resideInAPackage("..framework.route.core..")
+                .that().resideInAPackage("..framework.route.core.capture..")
+                    .or().resideInAPackage("..framework.route.core.rule..")
+                    .or().resideInAPackage("..framework.route.core.engine..")
+                    .or().resideInAPackage("..framework.route.core.lifecycle..")
+                    .or().resideInAPackage("..framework.route.core.spi..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.route.handler..")
                 .check(new ClassFileImporter()
                         .withImportOption(new ImportOption.DoNotIncludeTests())

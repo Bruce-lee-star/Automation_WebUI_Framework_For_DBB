@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.spi.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import net.thucydides.core.steps.StepEventBus;
 import org.slf4j.Logger;

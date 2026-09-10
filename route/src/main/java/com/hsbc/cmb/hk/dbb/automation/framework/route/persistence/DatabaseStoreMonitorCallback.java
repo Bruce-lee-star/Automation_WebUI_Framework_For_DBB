@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.MonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.spi.MonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
 import org.slf4j.Logger;

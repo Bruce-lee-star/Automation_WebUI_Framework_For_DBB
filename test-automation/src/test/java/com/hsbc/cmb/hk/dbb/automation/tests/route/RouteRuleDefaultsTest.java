@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;

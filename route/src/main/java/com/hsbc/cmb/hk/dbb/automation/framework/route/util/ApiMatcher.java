@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.util;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.Frame;
@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  * <ul>
  *   <li><b>单一实现</b>：所有能力共用同一套匹配逻辑，保证行为一致，消除各 Handler 各自维护的重复匹配代码。</li>
  *   <li><b>AND 语义</b>：同一 matcher 内多条件是 AND（URL 且 Method 且 Header...）。</li>
- *   <li><b>布尔判断</b>：匹配成功与否是布尔判断，不影响执行优先级；优先级只由 {@link com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteHandleType} 决定。</li>
+ *   <li><b>布尔判断</b>：匹配成功与否是布尔判断，不影响执行优先级；优先级只由 {@link com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType} 决定。</li>
  * </ul>
  *
  * <p>支持的匹配维度：

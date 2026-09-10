@@ -2,8 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteLifecycleImpl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteLifecycleImpl;
 import com.microsoft.playwright.BrowserContext;
 import org.junit.Test;
 

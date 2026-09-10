@@ -1,11 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.util;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

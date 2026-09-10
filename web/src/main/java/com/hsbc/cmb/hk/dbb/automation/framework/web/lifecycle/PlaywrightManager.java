@@ -337,7 +337,20 @@ public class PlaywrightManager {
         PlaywrightRuntime.instance().browserRestart.restartBrowser();
     }
 
+    /**
+     * 清理所有 Playwright 资源（全局）。
+     *
+     * @apiNote <b>framework-internal</b>：仅限套件结束 / 非并发场景使用。并发执行期间调用会关停
+     * 所有线程的 Browser/Playwright 实例，导致并行整轮集体失败；并发场景请使用
+     * {@link #cleanupForScenario()}（按线程隔离）。现已加运行时断言：并发模式下调用直接抛
+     * {@link IllegalStateException}（致命缺陷3 修复，原仅靠注释约束）。
+     */
     public static void cleanupAll() {
+        if (ConcurrentContextExecutor.isConcurrentModeActive()) {
+            throw new IllegalStateException(
+                    "cleanupAll() must not be called while concurrent execution is active; "
+                            + "use cleanupForScenario() per-thread instead, or call cleanupAll() only at suite teardown.");
+        }
         PlaywrightRuntime.instance().browserCleanup.cleanupAll();
     }
 

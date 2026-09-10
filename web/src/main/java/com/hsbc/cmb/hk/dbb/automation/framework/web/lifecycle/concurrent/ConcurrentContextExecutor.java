@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -46,6 +47,18 @@ public final class ConcurrentContextExecutor {
     private ConcurrentContextExecutor() {
     }
 
+    /**
+     * 并发执行窗口标记：{@link #runAll} 提交任务后置 true，finally 复位 false。
+     * 供全局清理入口（如 {@code PlaywrightManager.cleanupAll}）做运行时断言，防止并发场景下
+     * 误关全部线程浏览器（致命缺陷3 修复）。
+     */
+    private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+
+    /** 当前是否处于并发执行窗口（runAll 提交任务至 finally 复位之间）。 */
+    public static boolean isConcurrentModeActive() {
+        return RUNNING.get();
+    }
+
     /** 使用 WebFrameworkConfig 默认选项运行。 */
     public static <T> List<ContextTaskResult<T>> runAll(List<ContextTask<T>> tasks) {
         return runAll(tasks, ConcurrentContextOptions.defaults());
@@ -58,6 +71,7 @@ public final class ConcurrentContextExecutor {
         if (tasks == null || tasks.isEmpty()) {
             return List.of();
         }
+        RUNNING.set(true);
         int parallelism = options.resolvedParallelism(tasks.size());
         boolean virtual = options.useVirtualThreads();
         ExecutorService pool = virtual
@@ -89,6 +103,7 @@ public final class ConcurrentContextExecutor {
                 }
             }
         } finally {
+            RUNNING.set(false);
             pool.shutdown();
             try {
                 if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {

@@ -8,11 +8,11 @@ import org.junit.Test;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
- * 架构门禁（T2-8）：固化 {@code framework-reporting} 对 route（{@code framework.web.route}）的零编译依赖。
+ * 架构门禁（T2-8）：固化 {@code framework-reporting} 对 route（{@code framework.route}）的零编译依赖。
  *
  * <p>reporting 仅经 core 抽象接口 {@code MonitorFailureReportSink} + SPI 与 route 解耦：
  * 监控失败报告的写出实现由 route 模块经 {@code META-INF/services} 在运行时注入，
- * reporting 编译期不得直接引用任何 {@code framework.web.route} 包下的类。
+ * reporting 编译期不得直接引用任何 {@code framework.route} 包下的类。
  * 任何回潮（reporting 重新 import route 实现）都会使本测试失败，从而把解环约束变成 CI 硬门禁。
  *
  * <p>采用纯 JUnit 4 + {@link ClassFileImporter} 程序化执行，仅依赖父 POM 已提供的
@@ -21,7 +21,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 public class ReportingRouteDecouplingArchTest {
 
     private static final String REPORTING_PKG = "com.hsbc.cmb.hk.dbb.automation.framework.common.reporting";
-    private static final String ROUTE_PKG = "..framework.web.route..";
+    private static final String ROUTE_PKG = "..framework.route..";
 
     @Test
     public void reportingMustNotDependOnRouteImplementation() {

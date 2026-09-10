@@ -43,7 +43,7 @@ public class SummaryReportGenerator {
     // 彻底补上原 escape() 不转义双引号的缺口（T2-8 收尾项）。
     // 约定：① Java 仅组装数据模型，文本值一律交给模板 auto-escape，不再手动 escape()；
     //       ② 由 Java 预渲染的 HTML 片段（css / 6 个装配片段 / pieChart）在模板中以 ?no_esc 原样输出，避免二次转义。
-    private static final Configuration FM_CFG = new Configuration(Configuration.VERSION_2_3_34);
+    private static final Configuration FM_CFG = new Configuration(Configuration.VERSION_2_3_33);
     static {
         FM_CFG.setClassForTemplateLoading(SummaryReportGenerator.class, "/templates");
         FM_CFG.setDefaultEncoding("UTF-8");

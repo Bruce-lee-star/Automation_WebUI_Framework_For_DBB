@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.assembler.headersImpl.HeadersAssemblers;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.APIResources;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.Constants;
@@ -38,7 +38,7 @@ public class Entity {
 
     public Entity() {
         // Initialize baseUri from configuration
-        this.baseUri = FrameworkConfig.getDefaultBaseUri();
+        this.baseUri = ApiFrameworkConfig.getDefaultBaseUri();
         // Initialize API request/response logging from configuration
         this.initializeApiRequestResponseLogging();
     }
@@ -120,7 +120,7 @@ public class Entity {
     }
 
     private void initializeApiRequestResponseLogging() {
-        this.setApiRequestResponseLogsEnabled(FrameworkConfig.isApiRequestResponseLogsEnabled());
+        this.setApiRequestResponseLogsEnabled(ApiFrameworkConfig.isApiRequestResponseLogsEnabled());
     }
 
     // ============ 原有getter/setter保持不变 ============

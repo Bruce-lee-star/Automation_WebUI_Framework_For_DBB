@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.utility;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,8 +20,8 @@ public class FileReader {
                 LOGGER.warn("Resource not found on classpath: {}", relativePathOfFile);
                 return null;
             }
-            // Use FrameworkConfig for encoding
-            String encoding = FrameworkConfig.getFileEncoding();
+            // Use ApiFrameworkConfig for encoding
+            String encoding = ApiFrameworkConfig.getFileEncoding();
             return new String(resourceAsStream.readAllBytes(), Charset.forName(encoding));
         } catch (IOException e) {
             LOGGER.error("Failed to read file {}: {}", relativePathOfFile, e.getMessage());

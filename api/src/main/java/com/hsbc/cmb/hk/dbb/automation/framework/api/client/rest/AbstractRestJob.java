@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.client.rest;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.ConfigKeys;
 import com.typesafe.config.Config;
@@ -42,13 +42,13 @@ public abstract class AbstractRestJob {
      * <p>
      * 原实现无条件调用 {@code SerenityRest.useRelaxedHTTPSValidation()}，对所有经
      * SerenityRest/RestAssured 发出的 API 调用永久关闭证书校验（MITM 风险），
-     * 并令 {@link FrameworkConfig#isSslRelaxValidation()}（默认 false）形同虚设。
+     * 并令 {@link ApiFrameworkConfig#isSslRelaxValidation()}（默认 false）形同虚设。
      * <p>
      * 说明：RestAssured 5.x 未提供 {@code useStrictHTTPSValidation()}，恢复严格校验的
      * 正确方式是显式装配一个默认 {@link SSLConfig} 并写回 Serenity 的 default config。
      */
     private static void applySslPolicy() {
-        boolean relax = FrameworkConfig.isSslRelaxValidation();
+        boolean relax = ApiFrameworkConfig.isSslRelaxValidation();
         SSLConfig sslConfig = relax
                 ? SSLConfig.sslConfig().relaxedHTTPSValidation()
                 : SSLConfig.sslConfig();
@@ -170,16 +170,16 @@ public abstract class AbstractRestJob {
         int httpConnectTimeout;
         int httpSocketTimeout;
 
-        // Priority: System Property > FrameworkConfig > Default value
+        // Priority: System Property > ApiFrameworkConfig > Default value
         Optional<String> opt = Optional.ofNullable(System.getProperty(ConfigKeys.HTTP_CONNECTION_TIMEOUT.toString()));
         httpConnectTimeout = opt
             .map(Integer::parseInt)
-            .orElse(FrameworkConfig.getConnectionTimeout());
+            .orElse(ApiFrameworkConfig.getConnectionTimeout());
 
         opt = Optional.ofNullable(System.getProperty(ConfigKeys.HTTP_SOCKET_TIMEOUT.toString()));
         httpSocketTimeout = opt
             .map(Integer::parseInt)
-            .orElse(FrameworkConfig.getSocketTimeout());
+            .orElse(ApiFrameworkConfig.getSocketTimeout());
 
         final RestAssuredConfig restAssuredConfig = RestAssuredConfig.config()
                 .httpClient(HttpClientConfig.httpClientConfig()

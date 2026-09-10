@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.utility;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,17 +55,17 @@ public class JsonUtils {
         ObjectMapper mapper = new ObjectMapper();
 
         // Configure JSON parsing behavior based on application.conf
-        if (FrameworkConfig.shouldFailOnUnknownProperties()) {
+        if (ApiFrameworkConfig.shouldFailOnUnknownProperties()) {
             mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true);
         } else {
             mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
         }
 
-        if (FrameworkConfig.acceptSingleValueAsArray()) {
+        if (ApiFrameworkConfig.acceptSingleValueAsArray()) {
             mapper.configure(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY, true);
         }
 
-        if (FrameworkConfig.ignoreNullForPrimitives()) {
+        if (ApiFrameworkConfig.ignoreNullForPrimitives()) {
             mapper.configure(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES, false);
         }
 

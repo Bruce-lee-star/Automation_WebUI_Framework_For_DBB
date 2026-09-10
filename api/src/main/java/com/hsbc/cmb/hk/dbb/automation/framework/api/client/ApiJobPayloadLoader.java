@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.client;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.api.config.FrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.DocumentContext;
@@ -75,7 +75,7 @@ final class ApiJobPayloadLoader {
         // 5. Safely read file content (catch all IO exceptions)
         try {
             // Read using Java NIO (avoid unclosed streams) with configured encoding
-            String encoding = FrameworkConfig.getPayloadEncoding();
+            String encoding = ApiFrameworkConfig.getPayloadEncoding();
             String content = new String(
                     Files.readAllBytes(payloadFile.toPath()),
                     Charset.forName(encoding)

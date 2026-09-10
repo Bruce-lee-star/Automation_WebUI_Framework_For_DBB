@@ -4,13 +4,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.core.enums;
  * HTTP Status codes enumeration for response assertion
  */
 public enum HttpStatus {
-    
+
     // 1xx Informational
     CONTINUE(100, "Continue"),
     SWITCHING_PROTOCOLS(101, "Switching Protocols"),
     PROCESSING(102, "Processing"),
     EARLY_HINTS(103, "Early Hints"),
-    
+
     // 2xx Success
     OK(200, "OK"),
     CREATED(201, "Created"),
@@ -22,7 +22,7 @@ public enum HttpStatus {
     MULTI_STATUS(207, "Multi-Status"),
     ALREADY_REPORTED(208, "Already Reported"),
     IM_USED(226, "IM Used"),
-    
+
     // 3xx Redirection
     MULTIPLE_CHOICES(300, "Multiple Choices"),
     MOVED_PERMANENTLY(301, "Moved Permanently"),
@@ -32,7 +32,7 @@ public enum HttpStatus {
     USE_PROXY(305, "Use Proxy"),
     TEMPORARY_REDIRECT(307, "Temporary Redirect"),
     PERMANENT_REDIRECT(308, "Permanent Redirect"),
-    
+
     // 4xx Client Error
     BAD_REQUEST(400, "Bad Request"),
     UNAUTHORIZED(401, "Unauthorized"),
@@ -62,7 +62,7 @@ public enum HttpStatus {
     TOO_MANY_REQUESTS(429, "Too Many Requests"),
     REQUEST_HEADER_FIELDS_TOO_LARGE(431, "Request Header Fields Too Large"),
     UNAVAILABLE_FOR_LEGAL_REASONS(451, "Unavailable For Legal Reasons"),
-    
+
     // 5xx Server Error
     INTERNAL_SERVER_ERROR(500, "Internal Server Error"),
     NOT_IMPLEMENTED(501, "Not Implemented"),
@@ -75,15 +75,15 @@ public enum HttpStatus {
     LOOP_DETECTED(508, "Loop Detected"),
     NOT_EXTENDED(510, "Not Extended"),
     NETWORK_AUTHENTICATION_REQUIRED(511, "Network Authentication Required");
-    
+
     private final int code;
     private final String reason;
-    
+
     HttpStatus(int code, String reason) {
         this.code = code;
         this.reason = reason;
     }
-    
+
     /**
      * Get the HTTP status code
      * @return HTTP status code
@@ -91,7 +91,7 @@ public enum HttpStatus {
     public int getCode() {
         return code;
     }
-    
+
     /**
      * Get the reason phrase
      * @return Reason phrase
@@ -99,7 +99,7 @@ public enum HttpStatus {
     public String getReason() {
         return reason;
     }
-    
+
     /**
      * Find HttpStatus by code
      * @param code HTTP status code
@@ -114,7 +114,7 @@ public enum HttpStatus {
         }
         throw new IllegalArgumentException("Unknown HTTP status code: " + code);
     }
-    
+
     /**
      * Check if the code matches this status
      * @param code HTTP status code to check
@@ -123,7 +123,7 @@ public enum HttpStatus {
     public boolean matches(int code) {
         return this.code == code;
     }
-    
+
     /**
      * Check if this is a 1xx informational status
      * @return true if informational
@@ -131,7 +131,7 @@ public enum HttpStatus {
     public boolean isInformational() {
         return code >= 100 && code < 200;
     }
-    
+
     /**
      * Check if this is a 2xx success status
      * @return true if successful
@@ -139,7 +139,7 @@ public enum HttpStatus {
     public boolean isSuccess() {
         return code >= 200 && code < 300;
     }
-    
+
     /**
      * Check if this is a 3xx redirection status
      * @return true if redirection
@@ -147,7 +147,7 @@ public enum HttpStatus {
     public boolean isRedirection() {
         return code >= 300 && code < 400;
     }
-    
+
     /**
      * Check if this is a 4xx client error status
      * @return true if client error
@@ -155,7 +155,7 @@ public enum HttpStatus {
     public boolean isClientError() {
         return code >= 400 && code < 500;
     }
-    
+
     /**
      * Check if this is a 5xx server error status
      * @return true if server error
@@ -163,7 +163,7 @@ public enum HttpStatus {
     public boolean isServerError() {
         return code >= 500 && code < 600;
     }
-    
+
     /**
      * Check if this is an error status (4xx or 5xx)
      * @return true if error
@@ -171,7 +171,7 @@ public enum HttpStatus {
     public boolean isError() {
         return isClientError() || isServerError();
     }
-    
+
     @Override
     public String toString() {
         return code + " " + reason;

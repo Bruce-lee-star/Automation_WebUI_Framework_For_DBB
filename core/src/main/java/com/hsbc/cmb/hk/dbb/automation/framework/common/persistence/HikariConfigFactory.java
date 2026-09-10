@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.persistence;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 
@@ -73,8 +74,35 @@ public final class HikariConfigFactory {
         return config;
     }
 
-    /** 便捷方法：build 后直接建池。 */
+    /**
+     * 便捷方法：build 后直接建池，并在返回前登记到 {@link ShutdownCoordinator}。
+     *
+     * <p><b>致命缺陷2 修复</b>：原实现直接 {@code new HikariDataSource} 返回，调用方忘记
+     * {@code close()} 即连接泄漏，JVM 退出亦无兜底；且 {@code ApiMonitoringRepository} 进程退出时
+     * 仍 flush 队列，可能向监控库写入非预期批次。登记后由统一关闭编排在 JVM 退出时关闭。</p>
+     *
+     * @param spec  通用配置（各字段由调用方保证有效）
+     * @param extra 追加库特有属性的回调（可为 null）
+     * @return 已建池的数据源（JVM 退出时由 {@link ShutdownCoordinator} 关闭）
+     */
     public static HikariDataSource createDataSource(Spec spec, Consumer<HikariConfig> extra) {
-        return new HikariDataSource(build(spec, extra));
+        HikariDataSource ds = new HikariDataSource(build(spec, extra));
+        registerShutdown(ds);
+        return ds;
+    }
+
+    /**
+     * 登记数据源关闭任务（致命缺陷2 修复）。
+     *
+     * <p>关闭顺序定为 {@code 800}：晚于 API 监控 flush（100）/ route 引擎（200）/ monitor（300）/
+     * session IO（500），早于框架核心（900）——确保监控 flush 完成后再关连接，避免"关闭后才 flush"
+     * 导致的意外写库或连接泄漏。名称按实例 {@code identityHashCode} 唯一，保证多数据源各自登记、
+     * 各自关闭；{@link HikariDataSource#close()} 幂等，调用方自行关闭亦无副作用。</p>
+     *
+     * @param ds 已建池的数据源
+     */
+    private static void registerShutdown(HikariDataSource ds) {
+        String name = "hikari-datasource:" + System.identityHashCode(ds);
+        ShutdownCoordinator.register(800, name, ds::close);
     }
 }

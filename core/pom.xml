@@ -35,6 +35,20 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
+
+        <!-- 整改 P1：core 单测从 0 到有（评审报告维度7 易用性）。junit 版本由根 dependencyManagement 钉。 -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 内存库，用于持久化工厂等需要真实 JDBC 驱动的隔离单测（版本与 test-automation 对齐）。 -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

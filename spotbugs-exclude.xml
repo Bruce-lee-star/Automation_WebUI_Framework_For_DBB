@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<FindBugsFilter>
-    <!-- T1-3 基线冻结：存量 SpotBugs 告警在此统一抑制，新代码不得新增抑制项（零容忍）。
-         逐条收敛时需附理由与 owner，并尽量改为根治（修复代码）而非抑制。 -->
-</FindBugsFilter>

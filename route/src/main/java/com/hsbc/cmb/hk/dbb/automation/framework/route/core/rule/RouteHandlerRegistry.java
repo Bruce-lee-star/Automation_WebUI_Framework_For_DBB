@@ -6,6 +6,9 @@ import java.util.List;
 import java.util.Map;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteHandler;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Handler 注册表 — 打破 {@code route.core ⇄ route.handler} 循环依赖（T1-4 轻量变体）。
  *
@@ -20,6 +23,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteHandler;
  * 映射关系（MOCK/MODIFY/MONITOR）与原 {@code resolveCapabilityHandler} 完全一致，行为不变。
  */
 public final class RouteHandlerRegistry {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RouteHandlerRegistry.class);
 
     private static final Map<RouteHandleType, RouteHandler> HANDLERS =
             new EnumMap<>(RouteHandleType.class);
@@ -53,8 +58,10 @@ public final class RouteHandlerRegistry {
         for (Runnable r : CACHE_CLEARERS) {
             try {
                 r.run();
-            } catch (Exception ignored) {
-                // 单个清理失败不影响其它
+            } catch (Exception e) {
+                // 单个清理失败不影响其它，但不得静默吞异常（D7-3）
+                LOGGER.warn("[RouteHandlerRegistry] clearCaches: one cache clearer failed, "
+                        + "continue with the rest: {}", e.toString());
             }
         }
     }
@@ -67,7 +74,10 @@ public final class RouteHandlerRegistry {
                 try {
                     Class.forName(fqn);
                 } catch (ClassNotFoundException e) {
-                    // Handler 缺失：对应能力 resolve 返回 null，由调用方降级处理
+                    // Handler 缺失：对应能力 resolve 返回 null，由调用方降级处理；
+                    // 但这是装配异常（classpath/模块缺失），必须告警而非静默（D7-3）
+                    LOGGER.warn("[RouteHandlerRegistry] Handler class not found, capability will degrade: {}",
+                            fqn);
                 }
             }
             loaded = true;

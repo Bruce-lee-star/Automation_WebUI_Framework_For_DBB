@@ -24,8 +24,14 @@ import com.microsoft.playwright.Response;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.body.BodyCodecRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.body.BodyFieldOps;
+import java.util.Arrays;
 
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -76,6 +82,26 @@ public class ModifyHandler {
      */
     public static void clearJsonPathCache() {
         RouteUtil.clearJsonPathCache();
+    }
+
+    /**
+     * 从请求头解析规范化的 Content-Type（小写、去除参数如 {@code ; charset} / {@code ; boundary}）。
+     * <p>用于请求体编码分发：JSON / urlencoded / multipart 各走对应 {@code BodyCodec}。
+     * @return 规范化后的 Content-Type；无 content-type 头返回 null
+     */
+    private static String resolveContentType(Request req) {
+        Map<String, String> headers = req.headers();
+        if (headers == null) {
+            return null;
+        }
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            if ("content-type".equalsIgnoreCase(e.getKey())) {
+                String ct = e.getValue();
+                int sep = ct.indexOf(';');
+                return (sep < 0 ? ct : ct.substring(0, sep)).trim().toLowerCase();
+            }
+        }
+        return null;
     }
 
     /**
@@ -140,19 +166,29 @@ public class ModifyHandler {
         }
 
         // ── 2. 修改请求体（增删改） ─────────────────────────────────
+        //  编码分发：JSON（树级/JSONPath）内联处理；表单类（urlencoded / multipart）走 BodyCodec 策略；
+        //  其余编码（raw / 未知）退化为字符串替换（仅 modify，add/remove 忽略）。详见 route.body 包。
         Map<String, String> fieldsToModify = rule.getRequestBodyFieldsToModify();
         Map<String, String> fieldsToAdd = rule.getRequestBodyFieldsToAdd();
         Set<String> fieldsToRemove = rule.getRequestBodyFieldsToRemove();
+        Map<String, String> formToModify = rule.getRequestFormFieldsToModify();
+        Map<String, String> formToAdd = rule.getRequestFormFieldsToAdd();
+        Set<String> formToRemove = rule.getRequestFormFieldsToRemove();
         boolean hasBodyModifications = (fieldsToModify != null && !fieldsToModify.isEmpty())
                 || (fieldsToAdd != null && !fieldsToAdd.isEmpty())
-                || (fieldsToRemove != null && !fieldsToRemove.isEmpty());
+                || (fieldsToRemove != null && !fieldsToRemove.isEmpty())
+                || (formToModify != null && !formToModify.isEmpty())
+                || (formToAdd != null && !formToAdd.isEmpty())
+                || (formToRemove != null && !formToRemove.isEmpty());
 
         if (hasBodyModifications) {
             byte[] postDataBuffer = req.postDataBuffer();
 
             if (postDataBuffer != null && postDataBuffer.length > 0) {
+                String contentType = resolveContentType(req);
                 String postData = new String(postDataBuffer, StandardCharsets.UTF_8);
-                boolean isJson = postData.trim().startsWith("{") || postData.trim().startsWith("[");
+                boolean isJson = (contentType != null && contentType.contains("json"))
+                        || (contentType == null && (postData.trim().startsWith("{") || postData.trim().startsWith("[")));
 
                 if (isJson) {
                     //  #3 性能优化：ParseOnce — 一次解析，树级修改，一次序列化
@@ -233,22 +269,41 @@ public class ModifyHandler {
                         bodyModified = true;
                     }  // end if (root != null)
                 } else {
-                    // 非 JSON：仅支持字符串替换
-                    if ((fieldsToAdd != null && !fieldsToAdd.isEmpty())
-                            || (fieldsToRemove != null && !fieldsToRemove.isEmpty())) {
-                        LOGGER.warn("[ModifyHandler] Body add/remove operations are ignored for non-JSON content. "
-                                + "Only field modifications (string replace) are supported.");
-                    }
-                    String newBody = postData;
-                    if (fieldsToModify != null) {
-                        for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
-                            newBody = newBody.replace(entry.getKey(), entry.getValue());
-                            LOGGER.debug("[ModifyHandler] Non-JSON text body modified: key='{}'", entry.getKey());
+                    // 非 JSON：表单类走 BodyCodec（urlencoded / multipart）；无 codec 支持则 raw 降级
+                    byte[] transformed = (contentType != null)
+                            ? BodyCodecRegistry.tryTransform(contentType, postDataBuffer,
+                                new BodyFieldOps(formToModify, formToAdd, formToRemove), allowFallbackStringReplace)
+                            : null;
+                    if (transformed != null && !Arrays.equals(transformed, postDataBuffer)) {
+                        //  二进制保真回写：经 setPostData(byte[]) 直接发原始字节，urlencoded / 文本 multipart
+                        //  零损耗；multipart 含二进制 file part 时 codec 已零拷贝透传，String 回写会损坏字节。
+                        opts.setPostData(transformed);
+                        //  finalBody 仅用于日志/捕获（modifyDetail.modifiedBody / requestBody），须文本安全：
+                        //  二进制体给出占位，避免把乱码/二进制刷进日志与捕获存储。
+                        finalBody = toSafeBodyString(transformed);
+                        bodyModified = true;
+                        LOGGER.debug("[ModifyHandler] Form body modified via BodyCodec (content-type='{}', bytes={})", contentType, transformed.length);
+                    } else if (transformed == null) {
+                        // 非表单 / 未知编码：保持原有 raw 字符串替换降级（仅 modify；add/remove 忽略）
+                        if ((formToAdd != null && !formToAdd.isEmpty())
+                                || (formToRemove != null && !formToRemove.isEmpty())
+                                || (fieldsToAdd != null && !fieldsToAdd.isEmpty())
+                                || (fieldsToRemove != null && !fieldsToRemove.isEmpty())) {
+                            LOGGER.warn("[ModifyHandler] Body add/remove operations are ignored for non-JSON/non-form content. "
+                                    + "Only field modifications (string replace) are supported.");
                         }
+                        String newBody = postData;
+                        if (fieldsToModify != null) {
+                            for (Map.Entry<String, String> entry : fieldsToModify.entrySet()) {
+                                newBody = newBody.replace(entry.getKey(), entry.getValue());
+                                LOGGER.debug("[ModifyHandler] Non-JSON text body modified: key='{}'", entry.getKey());
+                            }
+                        }
+                        opts.setPostData(newBody);
+                        finalBody = newBody;
+                        bodyModified = true;
                     }
-                    opts.setPostData(newBody);
-                    finalBody = newBody;
-                    bodyModified = true;
+                    // transformed != null 且内容未变：codec 已处理但无落点，保持原 body（不再进入 raw 降级）
                 }
             } else {
                 LOGGER.debug("[ModifyHandler] No post data or binary body, skipping body modifications");
@@ -343,6 +398,23 @@ public class ModifyHandler {
                 } else {
                     detailNode.putNull("bodyFieldsRemoved");
                 }
+                //  表单字段改写（扁平字段名，与 JSON 体路径语义区分）：确保 APICapture 能接收到
+                //  urlencoded / multipart 表单的增删改信息，供 json() 断言与监控报告回放。
+                if (formToModify != null) {
+                    detailNode.set("formFieldsModified", OBJECT_MAPPER.valueToTree(formToModify));
+                } else {
+                    detailNode.putNull("formFieldsModified");
+                }
+                if (formToAdd != null) {
+                    detailNode.set("formFieldsAdded", OBJECT_MAPPER.valueToTree(formToAdd));
+                } else {
+                    detailNode.putNull("formFieldsAdded");
+                }
+                if (formToRemove != null) {
+                    detailNode.set("formFieldsRemoved", OBJECT_MAPPER.valueToTree(formToRemove));
+                } else {
+                    detailNode.putNull("formFieldsRemoved");
+                }
                 if (finalBody != null) {
                     detailNode.put("modifiedBody", finalBody);
                 } else {
@@ -361,14 +433,19 @@ public class ModifyHandler {
             //       可能尚未存储（c21 时序竞态），故先存储再 fulfill。
 
             SerenityReporter.recordApiOperation("MODIFY", req.url(),
-                    String.format("Pattern: %s\nMethod: %s\nStatus: %d\nHeadersSet: %s\nHeadersRemoved: %s\nBodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s",
+                    String.format("Pattern: %s\nMethod: %s\nStatus: %d\nHeadersSet: %s\nHeadersRemoved: %s\n"
+                            + "BodyModified: %s\nBodyAdded: %s\nBodyRemoved: %s\n"
+                            + "FormModified: %s\nFormAdded: %s\nFormRemoved: %s",
                             rule.getUrlPattern(),
                             finalMethod, realStatus,
                             requestHeadersToSet != null ? requestHeadersToSet.toString() : "none",
                             requestHeadersToRemove != null ? requestHeadersToRemove.toString() : "none",
                             fieldsToModify != null ? fieldsToModify.toString() : "none",
                             fieldsToAdd != null ? fieldsToAdd.toString() : "none",
-                            fieldsToRemove != null ? fieldsToRemove.toString() : "none"));
+                            fieldsToRemove != null ? fieldsToRemove.toString() : "none",
+                            formToModify != null ? formToModify.toString() : "none",
+                            formToAdd != null ? formToAdd.toString() : "none",
+                            formToRemove != null ? formToRemove.toString() : "none"));
 
             // ── 8. 存储 Modify 调用到 ApiCaptureContext（含真实响应） ──────
             //     handleType=MODIFY：本快照记录的是「请求被改写后拿回的真实响应」，
@@ -384,8 +461,9 @@ public class ModifyHandler {
                         realBody,   //  真实响应体
                         System.currentTimeMillis(),
                         req.url(),
-                        null,           // requestBody
-                        modifyDetail   //  修改详情（headersSet / modifiedBody / bodyFieldsModified …），供 json() 回退断言
+                        finalBody != null ? finalBody : req.postData(),   //  requestBody：记录「有效发送体」
+                        //    （body 被改写则为改写后体，未改写则为原请求体），使表单/JSON 改写对 APICapture 可见
+                        modifyDetail   //  修改详情（headersSet / modifiedBody / bodyFieldsModified / formFieldsModified …），供 json() 回退断言
                 );
                 ApiCaptureContext ctx = RouteUtil.captureContext(route);
                 if (ctx != null) {
@@ -897,6 +975,33 @@ public class ModifyHandler {
             }
         }
         return value;
+    }
+
+    /**
+     * 将表单体字节转为「文本安全」字符串，仅用于日志与捕获（modifyDetail / requestBody）。
+     *
+     * <p>playwright route.resume 的 body 已改用 {@code byte[]} 回写以保真二进制 multipart，
+     * 但日志/捕获字段是字符串，需避免把二进制乱码刷入。规则：UTF-8 解码无错且不含 NUL /
+     * 不可打印控制字符（tab/换行/回车 除外）视为文本，原样返回；否则返回占位串（含字节数）。
+     */
+    private static String toSafeBodyString(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return bytes == null ? null : "";
+        }
+        try {
+            // 默认解码器对非法 UTF-8 序列抛 CharacterCodingException；合法序列中若出现替换符 / NUL /
+            // 不可打印控制字符（tab/换行/回车 除外）则判定为二进制，避免把乱码刷入日志与捕获存储。
+            CharBuffer cb = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes));
+            for (int i = 0; i < cb.length(); i++) {
+                char c = cb.charAt(i);
+                if (c == '\uFFFD' || c == '\u0000' || (c < 0x20 && c != '\t' && c != '\n' && c != '\r')) {
+                    return String.format("(binary body, %d bytes, not displayed)", bytes.length);
+                }
+            }
+            return cb.toString();
+        } catch (CharacterCodingException e) {
+            return String.format("(binary body, %d bytes, not displayed)", bytes.length);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

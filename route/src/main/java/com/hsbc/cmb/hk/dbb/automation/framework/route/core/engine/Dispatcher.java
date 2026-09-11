@@ -189,8 +189,10 @@ public final class Dispatcher {
             RouteEngine.LOGGER.debug("[RouteEngine] No capability on rule, resume: pattern='{}'", finalRule.getUrlPattern());
             try {
                 route.resume();
-            } catch (Exception ignored) {
-                // 已失效/已关闭：忽略
+            } catch (Exception e) {
+                // 已失效/已关闭：放行失败亦不挂起；仍须留痕，不得静默（D7-3）
+                RouteEngine.LOGGER.debug("[RouteEngine] no-capability resume skipped (route/page gone): {}",
+                        e.toString());
             }
             return;
         }
@@ -239,8 +241,10 @@ public final class Dispatcher {
                     rule.getUrlPattern(), e.getMessage());
             try {
                 route.resume();
-            } catch (Exception ignored) {
-                // route 已失效/页面已关闭，放行失败也无所谓（不挂起即可）
+            } catch (Exception resumeErr) {
+                // route 已失效/页面已关闭，放行失败亦不挂起；仍须留痕，不得静默（D7-3）
+                RouteEngine.LOGGER.debug("[RouteEngine] force-resume skipped (route/page gone): {}",
+                        resumeErr.toString());
             }
         } finally {
             //  防重门控释放：仅对同步路径在此释放。异步路径（MOCK/MODIFY/MONITOR 延迟、DELAY）
@@ -264,8 +268,10 @@ public final class Dispatcher {
                     && route.request().frame().page() != null) {
                 return route.request().frame().page().context();
             }
-        } catch (Exception ignored) {
-            // Page/Context 已关闭时无法反查，返回 null 走兜底
+        } catch (Exception e) {
+            // Page/Context 已关闭时无法反查，返回 null 走兜底（预期竞争，但不得静默，D7-3）
+            RouteEngine.LOGGER.debug("[RouteEngine] resolveContext: page/context closed, fallback to null: {}",
+                    e.toString());
         }
         return null;
     }

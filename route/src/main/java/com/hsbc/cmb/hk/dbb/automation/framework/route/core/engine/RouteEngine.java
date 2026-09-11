@@ -40,8 +40,8 @@ public class RouteEngine {
     //  注册 JVM 关闭钩子，确保进程退出时优雅关闭调度器（DELAY_SCHEDULER 等），
     // 避免并行测试或浏览器崩溃场景下线程池任务永久挂起。shutdown() 内部由 scheduledShutdown CAS 保护，重复调用安全。
     static {
-        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_ROUTE_ENGINE,
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_ROUTE_ENGINE,
                 "route-engine", RouteEngine::shutdown);
     }
 

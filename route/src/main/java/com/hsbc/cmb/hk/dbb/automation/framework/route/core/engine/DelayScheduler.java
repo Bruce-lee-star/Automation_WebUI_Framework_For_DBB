@@ -44,8 +44,10 @@ public final class DelayScheduler {
                 PerContextEngine contextEngine = RouteLifecycleOwner.getOrStartContextEngine(context);
                 if (contextEngine.state == EngineState.RUNNING) return contextEngine.delayScheduler();
             }
-        } catch (Exception ignored) {
-            // Page/Context 已销毁时回退兼容调度器。
+        } catch (Exception e) {
+            // Page/Context 已销毁时回退兼容调度器（生命周期收尾期预期竞争，但不得静默，D7-3）
+            RouteEngine.LOGGER.debug("[RouteEngine] delayScheduler: context engine unavailable, "
+                    + "fallback to global scheduler: {}", e.toString());
         }
         return delayScheduler();
     }

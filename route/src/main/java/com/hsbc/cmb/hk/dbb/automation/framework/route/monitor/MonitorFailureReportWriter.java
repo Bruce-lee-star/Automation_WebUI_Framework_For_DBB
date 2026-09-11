@@ -102,7 +102,9 @@ public class MonitorFailureReportWriter {
                     java.nio.file.attribute.PosixFilePermission.OWNER_READ,
                     java.nio.file.attribute.PosixFilePermission.OWNER_WRITE));
         } catch (UnsupportedOperationException e) {
-            // 非 POSIX 文件系统：不支持，忽略
+            // 非 POSIX 文件系统（如 Windows）：本就不支持该权限模型，属预期分支，但不得静默（D7-3）
+            LOGGER.debug("[ApiMonitor] POSIX permission model unsupported on this filesystem, "
+                    + "skip restrictToOwnerOnly: {}", e.toString());
         } catch (Exception e) {
             LOGGER.debug("[ApiMonitor] Could not restrict permissions on '{}': {}", path, e.getMessage());
         }

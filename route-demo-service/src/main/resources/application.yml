@@ -6,6 +6,10 @@ server:
 spring:
   application:
     name: route-demo-service
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 200MB
   jackson:
     serialization:
       write-dates-as-timestamps: false

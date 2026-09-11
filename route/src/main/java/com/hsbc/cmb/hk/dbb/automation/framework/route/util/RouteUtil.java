@@ -307,13 +307,14 @@ public final class RouteUtil {
 
     /**
      * 对已关闭页面的 route 做幂等放行，避免悬挂。
-     * 若 route 已处置，resume 可能抛异常，这里静默吞掉。
+     * 若 route 已处置，resume 可能抛异常，此处降级为 DEBUG 记录（D7-3：禁止静默吞异常）。
      */
     public static void resumeIfOpen(Route route) {
         try {
             route.resume();
-        } catch (Exception ignored) {
-            // route 可能已被处置或 page 已关闭，忽略。
+        } catch (Exception e) {
+            // route 可能已被处置或 page 已关闭：放行失败亦不挂起，但须留痕（D7-3）
+            LOGGER.debug("[RouteUtil] resumeIfOpen skipped (route/page gone): {}", e.toString());
         }
     }
 
@@ -341,8 +342,10 @@ public final class RouteUtil {
         } catch (Exception e) {
             try {
                 route.resume();
-            } catch (Exception ignored) {
-                // route 可能已被处置或 page 已关闭，忽略。
+            } catch (Exception resumeErr) {
+                // route 可能已被处置或 page 已关闭：放行失败亦不挂起，但须留痕（D7-3）
+                LOGGER.debug("[RouteUtil] fallbackIfOpen: resume after fallback failure skipped: {}",
+                        resumeErr.toString());
             }
         }
     }
@@ -464,8 +467,10 @@ public final class RouteUtil {
                         && route.request().frame().page() != null) {
                     return ApiCaptureContext.forContext(route.request().frame().page().context());
                 }
-            } catch (Exception ignored) {
-                // Page/Context 已销毁时回退共享上下文，保证异常路径仍可安全放行。
+            } catch (Exception e) {
+                // Page/Context 已销毁时回退共享上下文，保证异常路径仍可安全放行（预期竞争，但不得静默，D7-3）
+                LOGGER.debug("[RouteUtil] captureContext: page/context destroyed, fallback to current: {}",
+                        e.toString());
             }
         }
         return ApiCaptureContext.getCurrent();

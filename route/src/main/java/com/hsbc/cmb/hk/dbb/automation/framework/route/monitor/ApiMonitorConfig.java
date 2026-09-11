@@ -138,8 +138,10 @@ public class ApiMonitorConfig {
             if (in != null) {
                 try {
                     in.close();
-                } catch (IOException ignored) {
-                    // ignore
+                } catch (IOException e) {
+                    // 流关闭失败可能意味着句柄泄漏，必须告警而非静默（D7-3）
+                    LOGGER.warn("[ApiMonitorConfig] Failed to close config stream '{}': {}",
+                            configPath, e.toString());
                 }
             }
         }

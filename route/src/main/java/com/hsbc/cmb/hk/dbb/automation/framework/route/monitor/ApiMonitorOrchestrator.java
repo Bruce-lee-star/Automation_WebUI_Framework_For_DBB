@@ -160,8 +160,9 @@ public class ApiMonitorOrchestrator {
         if (closeHooks.add(context)) {
             try {
                 context.onClose(ignored -> deregisterContext(context));
-            } catch (RuntimeException ignored) {
-                // context 已不可用时忽略（如注册时 page 已关闭）
+            } catch (RuntimeException e) {
+                // context 已不可用时忽略（如注册时 page 已关闭）；预期竞争，但不得静默（D7-3）
+                LOGGER.debug("[ApiMonitor] ensureCloseHook: context unavailable, skip hook: {}", e.toString());
             }
         }
     }

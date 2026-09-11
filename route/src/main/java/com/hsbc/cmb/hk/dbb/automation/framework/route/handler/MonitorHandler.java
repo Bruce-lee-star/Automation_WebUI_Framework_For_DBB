@@ -64,8 +64,8 @@ public class MonitorHandler {
     //  注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
     // 避免异常路径下任务堆积导致线程永久挂起。守护线程本不会阻止 JVM 退出，但显式 shutdown 更稳妥。
     static {
-        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_MONITOR_HANDLER,
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_MONITOR_HANDLER,
                 "monitor-handler", MonitorHandler::shutdownScheduler);
     }
 

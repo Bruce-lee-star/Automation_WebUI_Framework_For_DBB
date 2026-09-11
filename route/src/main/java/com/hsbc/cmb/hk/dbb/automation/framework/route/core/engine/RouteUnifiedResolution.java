@@ -3,6 +3,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.List;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
@@ -20,6 +23,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRuleScope;
  * {@code Route*Test} 零改动。
  */
 public final class RouteUnifiedResolution {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RouteUnifiedResolution.class);
 
     private RouteUnifiedResolution() {
         // 纯工具类，禁止实例化
@@ -168,8 +173,10 @@ public final class RouteUnifiedResolution {
                     && route.request().frame().page() != null) {
                 return route.request().frame().page();
             }
-        } catch (Exception ignored) {
-            // Page/Context 已关闭时无法反查，返回 null 走兜底
+        } catch (Exception e) {
+            // Page/Context 已关闭时无法反查，返回 null 走兜底（预期竞争，但不得静默，D7-3）
+            LOGGER.debug("[RouteUnifiedResolution] resolvePage: page/context closed, fallback to null: {}",
+                    e.toString());
         }
         return null;
     }

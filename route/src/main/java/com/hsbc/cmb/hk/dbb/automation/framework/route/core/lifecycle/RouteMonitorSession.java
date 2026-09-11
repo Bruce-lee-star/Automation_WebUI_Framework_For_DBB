@@ -243,8 +243,10 @@ public final class RouteMonitorSession {
             if (session.context == page) return session;
             try {
                 if (session.context == page.context()) contextSession = session;
-            } catch (Exception ignored) {
-                // 页面关闭竞态下继续回退至规则身份查询。
+            } catch (Exception e) {
+                // 页面关闭竞态下继续回退至规则身份查询（预期竞争，但不得静默，D7-3）
+                LOGGER.debug("[RouteMonitorSession] sessionForPage: page.context() unavailable, "
+                        + "fallback to rule lookup: {}", e.toString());
             }
         }
         return contextSession != null ? contextSession : sessionForRule(source);

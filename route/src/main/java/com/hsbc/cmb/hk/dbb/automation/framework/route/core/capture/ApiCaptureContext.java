@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.apilog.ApiTrafficLogger;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.context.LanguageState;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
+import java.lang.ref.WeakReference;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -73,27 +75,36 @@ public class ApiCaptureContext implements CaptureContext {
      * <p>用于把「场景级 API 采集」汇聚精确路由到各自 Context 的存储，避免共享 Browser + 并发 Context 下
      * 多任务把调用快照写入同一全局 store 造成跨任务污染（G3）。{@code null} 表示共享/兜底实例。
      */
-    private final BrowserContext ownerContext;
+    private final WeakReference<BrowserContext> ownerContextRef;
 
-    //  修复 B-1：原 BY_CONTEXT 用 BrowserContext 强引用作 key，改为 WeakHashMap（弱 key），
-    //   context 被 GC 后对应 entry 自动失效，避免泄漏。WeakHashMap 非并发安全，用 synchronizedMap 包装。
+    //  修复 B-1：BY_CONTEXT 用 BrowserContext 弱 key 索引（WeakHashMap），context 被 GC 后对应 entry 自动失效，避免泄漏。
+    //  WeakHashMap 非并发安全，用 synchronizedMap 包装；且归属引用（见 ownerContextRef）必须为 WeakReference，
+    //  否则 value 强引用 key 会使弱 key 失效（自引用泄漏）。避免对 WeakHashMap 直接使用 computeIfAbsent（与
+    //  引用队列交互存在已知缺陷），forContext 改用 synchronized 的 get/put。
     private static final Map<BrowserContext, ApiCaptureContext> BY_CONTEXT =
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /** 每个 Context 一个存储实例，携带归属标识供采集汇聚路由（G3 并发隔离）。 */
     private ApiCaptureContext(BrowserContext ownerContext) {
-        this.ownerContext = ownerContext;
+        this.ownerContextRef = new WeakReference<>(ownerContext);
     }
 
     /** 获取 BrowserContext 隔离的捕获上下文；旧 API 继续使用共享上下文。 */
     public static ApiCaptureContext forContext(BrowserContext context) {
         if (context == null) return SHARED;
-        return BY_CONTEXT.computeIfAbsent(context, ignored -> new ApiCaptureContext(context));
+        //  WeakHashMap 直接用 computeIfAbsent 与引用队列交互存在已知缺陷，故改用 synchronized 的 get/put。
+        synchronized (BY_CONTEXT) {
+            ApiCaptureContext existing = BY_CONTEXT.get(context);
+            if (existing != null) return existing;
+            ApiCaptureContext created = new ApiCaptureContext(context);
+            BY_CONTEXT.put(context, created);
+            return created;
+        }
     }
 
-    /** 本实例归属的 BrowserContext（共享兜底实例返回 null）。供采集汇聚路由，包级可见。 */
+    /** 本实例归属的 BrowserContext（共享兜底实例返回 null；context 已被 GC 时亦返回 null）。供采集汇聚路由，包级可见。 */
     BrowserContext getOwnerContext() {
-        return ownerContext;
+        return ownerContextRef.get();
     }
 
     /** 移除并重置指定 BrowserContext 的捕获上下文。 */
@@ -127,8 +138,10 @@ public class ApiCaptureContext implements CaptureContext {
                 Map.Entry<BrowserContext, ApiCaptureContext> entry = it.next();
                 try {
                     entry.getValue().reset();
-                } catch (Exception ignored) {
-                    // 单个 context 重置失败不影响其余条目回收
+                } catch (Exception e) {
+                    // 单个 context 重置失败不影响其余条目回收；但不得静默吞异常（D7-3）
+                    LOGGER.warn("[ApiCaptureContext] removeAllContexts: reset failed for one context, "
+                            + "continue releasing the rest: {}", e.toString());
                 }
                 it.remove();
             }
@@ -464,7 +477,7 @@ public class ApiCaptureContext implements CaptureContext {
         responseStore.storeDelayMarker(call);
         //  API 采集汇聚：DELAY 标记同步进入常驻采集存储（与各 Handler 零竞争）；
         //  携带 ownerContext 使并发任务各自隔离到本 Context 的采集存储（G3）。
-        ApiCaptureManager.getInstance().record(call, ownerContext);
+        ApiCaptureManager.getInstance().record(call, getOwnerContext());
     }
 
     /** 存储一次完整的 API 调用快照（Monitor / Mock / Modify 均可使用）。 */
@@ -472,7 +485,17 @@ public class ApiCaptureContext implements CaptureContext {
         responseStore.storeApiCall(call);
         //  API 采集汇聚：统一入口，自动携带 delay/mock/modify 的 handleType 进入常驻采集存储；
         //  携带 ownerContext 使并发任务各自隔离到本 Context 的采集存储（G3）。
-        ApiCaptureManager.getInstance().record(call, ownerContext);
+        ApiCaptureManager.getInstance().record(call, getOwnerContext());
+        //  D3-3：HTTP 报文脱敏落盘（默认关闭，由 framework.api.traffic.log.enabled 开启）；
+        //  内部先同步脱敏、再异步写盘，绝不阻塞本调用线程，也绝不把原始敏感值带出。
+        if (call != null) {
+            ApiTrafficLogger.record(
+                    call.handleType() == null ? null : call.handleType().name(),
+                    call.method(), call.requestUrl(), call.statusCode(),
+                    call.requestHeaders(), call.requestBody(),
+                    call.responseHeaders(), call.responseBody(),
+                    call.timestamp());
+        }
     }
 
     /**

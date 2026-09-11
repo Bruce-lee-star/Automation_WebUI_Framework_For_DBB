@@ -92,6 +92,16 @@ public class RouteRule {
     private Map<String, String> requestBodyFieldsToAdd;
     /** 请求体：删除指定字段（JSONPath 集合） */
     private Set<String> requestBodyFieldsToRemove;
+    /**
+     * 请求表单（application/x-www-form-urlencoded / multipart/form-data）：修改字段（字段名 → 值）。
+     * <p>与 {@code requestBodyFieldsTo*} 区分：表单字段使用<b>扁平字段名</b>（非 JSONPath），
+     * 避免与 JSON 体路径语义冲突，且由 {@code BodyCodec} 按 Content-Type 分发改写。
+     */
+    private Map<String, String> requestFormFieldsToModify;
+    /** 请求表单：新增字段（字段名 → 值） */
+    private Map<String, String> requestFormFieldsToAdd;
+    /** 请求表单：删除字段（字段名集合） */
+    private Set<String> requestFormFieldsToRemove;
     /** 修改请求 HTTP 方法 */
     private String modifyMethod;
 
@@ -285,6 +295,18 @@ public class RouteRule {
 
     public Set<String> getRequestBodyFieldsToRemove() {
         return requestBodyFieldsToRemove;
+    }
+
+    public Map<String, String> getRequestFormFieldsToModify() {
+        return requestFormFieldsToModify;
+    }
+
+    public Map<String, String> getRequestFormFieldsToAdd() {
+        return requestFormFieldsToAdd;
+    }
+
+    public Set<String> getRequestFormFieldsToRemove() {
+        return requestFormFieldsToRemove;
     }
 
     public String getModifyMethod() {
@@ -620,6 +642,42 @@ public class RouteRule {
     }
 
     /**
+     * 添加一个表单字段修改（替换已有同名字段值）。
+     * <p>表单字段使用扁平字段名（非 JSONPath），由 {@code BodyCodec} 按 Content-Type 分发改写。
+     * @param field 表单字段名
+     * @param value 替换值
+     */
+    public void addRequestFormFieldToModify(String field, String value) {
+        if (requestFormFieldsToModify == null) {
+            requestFormFieldsToModify = new LinkedHashMap<>();
+        }
+        requestFormFieldsToModify.put(field, value);
+    }
+
+    /**
+     * 添加一个表单新字段（追加到表单末尾）。
+     * @param field 表单字段名
+     * @param value 字段值
+     */
+    public void addRequestFormFieldToAdd(String field, String value) {
+        if (requestFormFieldsToAdd == null) {
+            requestFormFieldsToAdd = new LinkedHashMap<>();
+        }
+        requestFormFieldsToAdd.put(field, value);
+    }
+
+    /**
+     * 添加需要从表单中删除的字段名。
+     * @param field 表单字段名
+     */
+    public void addRequestFormFieldToRemove(String field) {
+        if (requestFormFieldsToRemove == null) {
+            requestFormFieldsToRemove = new LinkedHashSet<>();
+        }
+        requestFormFieldsToRemove.add(field);
+    }
+
+    /**
      * 设置修改后的 HTTP 方法。
      * @param method 如 "POST","PUT","PATCH","DELETE"
      */
@@ -895,6 +953,19 @@ public class RouteRule {
             if (this.requestBodyFieldsToRemove == null) this.requestBodyFieldsToRemove = new LinkedHashSet<>();
             this.requestBodyFieldsToRemove.addAll(other.requestBodyFieldsToRemove);
         }
+        // 请求表单：修改 / 新增 / 删除 三维度合并（与请求体 JSON 同构）
+        if (other.requestFormFieldsToModify != null && !other.requestFormFieldsToModify.isEmpty()) {
+            if (this.requestFormFieldsToModify == null) this.requestFormFieldsToModify = new LinkedHashMap<>();
+            this.requestFormFieldsToModify.putAll(other.requestFormFieldsToModify);
+        }
+        if (other.requestFormFieldsToAdd != null && !other.requestFormFieldsToAdd.isEmpty()) {
+            if (this.requestFormFieldsToAdd == null) this.requestFormFieldsToAdd = new LinkedHashMap<>();
+            this.requestFormFieldsToAdd.putAll(other.requestFormFieldsToAdd);
+        }
+        if (other.requestFormFieldsToRemove != null && !other.requestFormFieldsToRemove.isEmpty()) {
+            if (this.requestFormFieldsToRemove == null) this.requestFormFieldsToRemove = new LinkedHashSet<>();
+            this.requestFormFieldsToRemove.addAll(other.requestFormFieldsToRemove);
+        }
         if (other.modifyMethod != null) this.modifyMethod = other.modifyMethod;
 
         //  DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
@@ -943,6 +1014,9 @@ public class RouteRule {
         if (this.requestBodyFieldsToModify != null) copy.requestBodyFieldsToModify = new LinkedHashMap<>(this.requestBodyFieldsToModify);
         if (this.requestBodyFieldsToAdd != null) copy.requestBodyFieldsToAdd = new LinkedHashMap<>(this.requestBodyFieldsToAdd);
         if (this.requestBodyFieldsToRemove != null) copy.requestBodyFieldsToRemove = new LinkedHashSet<>(this.requestBodyFieldsToRemove);
+        if (this.requestFormFieldsToModify != null) copy.requestFormFieldsToModify = new LinkedHashMap<>(this.requestFormFieldsToModify);
+        if (this.requestFormFieldsToAdd != null) copy.requestFormFieldsToAdd = new LinkedHashMap<>(this.requestFormFieldsToAdd);
+        if (this.requestFormFieldsToRemove != null) copy.requestFormFieldsToRemove = new LinkedHashSet<>(this.requestFormFieldsToRemove);
         copy.modifyMethod = this.modifyMethod;
 
         // DELAY 字段

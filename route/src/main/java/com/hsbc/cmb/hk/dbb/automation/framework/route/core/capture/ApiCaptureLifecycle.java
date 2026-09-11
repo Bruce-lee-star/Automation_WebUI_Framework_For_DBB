@@ -136,8 +136,9 @@ public final class ApiCaptureLifecycle {
     static void detach(Page page) {
         if (page == null) return;
         BrowserContext context = null;
-        try { context = page.context(); } catch (Exception ignored) {
-            // page 已失效，context 取不到则跳过清理
+        try { context = page.context(); } catch (Exception e) {
+            // page 已失效，context 取不到则跳过清理（生命周期收尾期的预期竞争，但不得静默，D7-3）
+            LOGGER.debug("[ApiCapture] detach: page.context() unavailable, skip cleanup: {}", e.toString());
         }
         if (context != null) {
             Set<Page> pages = CONTEXT_PAGES.get(context);
@@ -279,8 +280,9 @@ public final class ApiCaptureLifecycle {
             for (Page other : entry.getValue()) {
                 try {
                     if (other.context() == pageContext) return;
-                } catch (Exception ignored) {
-                    // 其它 Page 已关闭，忽略
+                } catch (Exception e) {
+                    // 其它 Page 已关闭（收尾期预期竞争），记录以便排查，但不得静默（D7-3）
+                    LOGGER.debug("[ApiCapture] releaseContextIfOrphaned: skip closed page: {}", e.toString());
                 }
             }
         }

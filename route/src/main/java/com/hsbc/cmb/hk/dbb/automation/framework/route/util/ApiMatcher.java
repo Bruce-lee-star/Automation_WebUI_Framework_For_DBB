@@ -403,8 +403,10 @@ public final class ApiMatcher {
                 if (f != null) {
                     actual = originOf(f.url());
                 }
-            } catch (Exception ignored) {
-                // 推导失败则保持空
+            } catch (Exception e) {
+                // 推导失败则保持空（预期兜底路径，但不得静默，D7-3）
+                LOGGER.debug("[ApiMatcher] resolveActualOrigin: failed to derive origin from frame, "
+                        + "keep empty: {}", e.toString());
             }
         }
         boolean match = actual.contains(matchOrigin);

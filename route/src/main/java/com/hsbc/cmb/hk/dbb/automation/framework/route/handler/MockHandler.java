@@ -219,8 +219,9 @@ public class MockHandler {
         if (isPageClosed(route)) {
             LOGGER.warn("[MockHandler] Page/context closed before fetch, resume to avoid blocking: pattern='{}', url='{}'",
                     rule.getUrlPattern(), url);
-            try { route.resume(); } catch (Exception ignored) {
-                // 页面已关闭，resume 失败即放弃（已提前 return，不挂起即可）
+            try { route.resume(); } catch (Exception e) {
+                // 页面已关闭，resume 失败即放弃（已提前 return，不挂起即可）；仍须留痕（D7-3）
+                LOGGER.debug("[MockHandler] resume skipped before fetch (page/route gone): {}", e.toString());
             }
             return;
         }
@@ -350,8 +351,9 @@ public class MockHandler {
             if (!routeSettled) {
                 LOGGER.warn("[MockHandler] Route not settled on exit (runtime exception escaped), "
                         + "resuming to honor route lifecycle contract: pattern='{}'", rule.getUrlPattern());
-                try { route.resume(); } catch (Exception ignored) {
-                    // finally 兜底 resume：失败即放弃，不挂起即可
+                try { route.resume(); } catch (Exception e) {
+                    // finally 兜底 resume：失败即放弃，不挂起即可；仍须留痕（D7-3）
+                    LOGGER.debug("[MockHandler] fallback resume skipped (route/page gone): {}", e.toString());
                 }
             }
         }

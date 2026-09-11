@@ -1132,6 +1132,9 @@ public class RouteDsl {
      *     .modifyRequestBody("$.role", "ADMIN")
      *     .addRequestBodyField("$.newField", "hello")
      *     .removeRequestBodyField("$.deprecated")
+     *     .modifyFormField("scope", "admin")   // 表单（urlencoded / multipart）字段改写
+     *     .addFormField("traceId", "xyz")
+     *     .removeFormField("legacy")
      *     .modifyMethod("PUT")
      *     .done()
      * }</pre>
@@ -1194,6 +1197,35 @@ public class RouteDsl {
          */
         public ModifyApiDsl removeRequestBodyField(String jsonPath) {
             rule.addRequestBodyFieldToRemove(jsonPath);
+            return this;
+        }
+
+        /**
+         * 修改表单（application/x-www-form-urlencoded / multipart/form-data）已有字段值。
+         * <p>使用<b>扁平字段名</b>（非 JSONPath），由 {@code BodyCodec} 按 Content-Type 分发改写。
+         * 同名多值字段全部被替换。
+         */
+        public ModifyApiDsl modifyFormField(String field, String value) {
+            rule.addRequestFormFieldToModify(field, value);
+            return this;
+        }
+
+        /**
+         * 新增表单字段（追加到表单末尾）。
+         * @param field 表单字段名
+         * @param value 字段值
+         */
+        public ModifyApiDsl addFormField(String field, String value) {
+            rule.addRequestFormFieldToAdd(field, value);
+            return this;
+        }
+
+        /**
+         * 删除表单指定字段（同名多值字段全部删除）。
+         * @param field 表单字段名
+         */
+        public ModifyApiDsl removeFormField(String field) {
+            rule.addRequestFormFieldToRemove(field);
             return this;
         }
 

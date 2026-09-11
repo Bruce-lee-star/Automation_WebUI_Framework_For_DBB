@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
 
 import com.google.gson.Gson;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.HikariConfigFactory;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -171,8 +172,7 @@ public final class ApiMonitoringRepository {
             LOGGER.info("[ApiMonitoringRepository] Initializing DB connection: dialect={}, url={}, user={}",
                     dialect, maskUrl(dbUrl), dbUser);
 
-            com.hsbc.cmb.hk.dbb.automation.framework.common.persistence.HikariConfigFactory.Spec spec =
-                    new com.hsbc.cmb.hk.dbb.automation.framework.common.persistence.HikariConfigFactory.Spec();
+            HikariConfigFactory.Spec spec = new HikariConfigFactory.Spec();
             spec.jdbcUrl = dbUrl;
             spec.username = dbUser;
             spec.password = dbPassword;
@@ -185,7 +185,7 @@ public final class ApiMonitoringRepository {
             spec.maxLifetimeMs = 1800000;
             spec.poolName = "ApiMonitorPool";
 
-            HikariConfig config = com.hsbc.cmb.hk.dbb.automation.framework.common.persistence.HikariConfigFactory.build(
+            HikariConfig config = HikariConfigFactory.build(
                     spec, cfg -> {
                         if ("MYSQL".equalsIgnoreCase(dialect)) {
                             cfg.addDataSourceProperty("cachePrepStmts", "true");
@@ -213,8 +213,8 @@ public final class ApiMonitoringRepository {
             initialized = true;
 
             // 注册到统一关闭编排器（早于连接池关闭），确保退出时 flush 剩余队列
-            com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                    com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_API_MONITOR_FLUSH,
+            com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                    com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_API_MONITOR_FLUSH,
                     "api-monitor-flush", ApiMonitoringRepository::shutdown);
 
             LOGGER.info("[ApiMonitoringRepository] Initialized successfully, pool max size={}, "
@@ -269,8 +269,10 @@ public final class ApiMonitoringRepository {
                 && !DB_FLUSH_EXECUTOR.isShutdown()) {
             try {
                 DB_FLUSH_EXECUTOR.submit(ApiMonitoringRepository::flushPendingNow);
-            } catch (Exception ignore) {
-                // 执行器已关闭，定时刷入仍会兜底
+            } catch (Exception e) {
+                // 执行器已关闭，定时刷入仍会兜底（预期路径，但不得静默，D7-3）
+                LOGGER.debug("[ApiMonitoringRepository] DB flush executor rejected task, "
+                        + "scheduled flush will retry: {}", e.toString());
             }
         }
     }
@@ -376,10 +378,17 @@ public final class ApiMonitoringRepository {
                 stmt.executeBatch();
                 conn.commit();   // 整体成功才提交
             } catch (Exception ex) {
-                try { conn.rollback(); } catch (Exception rb) { /* ignore */ }
+                try { conn.rollback(); } catch (Exception rb) {
+                    // 回滚失败意味着事务状态不确定，必须告警而非静默（D7-3）
+                    LOGGER.warn("[ApiMonitoringRepository] rollback failed after batch error: {}",
+                            rb.toString());
+                }
                 throw ex;
             } finally {
-                try { conn.setAutoCommit(true); } catch (Exception ignore) { /* ignore */ }
+                try { conn.setAutoCommit(true); } catch (Exception e) {
+                    // 连接复位失败可能影响后续复用，记录以便排查（D7-3：不得静默）
+                    LOGGER.debug("[ApiMonitoringRepository] failed to restore autoCommit: {}", e.toString());
+                }
             }
         }
     }

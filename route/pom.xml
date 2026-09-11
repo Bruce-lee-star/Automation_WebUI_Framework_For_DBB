@@ -56,5 +56,24 @@
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>
         </dependency>
+        <!-- D6-1：HikariConfigFactory 由 core 迁至 route（其唯一消费方），其隔离单测需真实 JDBC 驱动的内存库（版本与 core 对齐）。 -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- D6-1：HikariConfigFactory 隔离单测随类迁至 route，需 JUnit 5（Jupiter，2026-09-11 升级，替代 junit:junit 4.13.2）。
+             route 测试为纯 JUnit（不依赖 Serenity），故仅引入 junit-jupiter-*。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

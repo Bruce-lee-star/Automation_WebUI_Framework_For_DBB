@@ -87,15 +87,20 @@
             <artifactId>selenium-support</artifactId>
         </dependency>
 
-        <!-- 测试期依赖 -->
+        <!-- 测试期依赖（JUnit5 升级，2026-09-11） -->
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-junit</artifactId>
+            <artifactId>serenity-junit5</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

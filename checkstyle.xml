@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC
+        "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+        "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<!--
+  Framework Checkstyle 门禁配置。
+
+  D7-3：框架内禁止静默吞异常 —— catch 块不得为空，也不得仅含注释。
+    EmptyCatchBlock 默认 commentFormat=".*"，即"有注释就算非空"，这会让
+    `catch (Exception ignored) { // 忽略 }` 轻易绕过门禁。
+    这里把 commentFormat 设为"永不匹配"的正则（a^），使"仅注释"的 catch 同样判为违规。
+    注意：不能写成 commentFormat="" —— 空正则的 find() 恒为 true，
+    注释会永远"算数"，规则被静默绕过（实测 0 违规的假象即由此而来）。
+    合规写法必须至少含一条真实语句：计数器自增 / WARN(含)以上日志 / 重抛 / 恢复动作。
+
+  severity=error：配合 maven-checkstyle-plugin 的 failOnViolation=true 直接卡 verify。
+-->
+<module name="Checker">
+    <property name="severity" value="error"/>
+    <property name="charset" value="UTF-8"/>
+    <property name="fileExtensions" value="java"/>
+
+    <module name="TreeWalker">
+        <!-- D7-3：禁止空 catch（含"仅注释"的静默吞异常） -->
+        <module name="EmptyCatchBlock">
+            <property name="commentFormat" value="a^"/>
+        </module>
+    </module>
+</module>

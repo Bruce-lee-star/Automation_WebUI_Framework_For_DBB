@@ -1,9 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
+    <!--
+      D2-4：接管 msg 转换词 —— 所有 %msg / %m 输出前统一经 SensitiveDataSanitizer 脱敏，
+      调用方无法绕过（出口强制，而非调用方自觉）。conversionRule 必须声明在 appender 之前。
+    -->
+    <conversionRule conversionWord="msg"
+                    converterClass="com.hsbc.cmb.hk.dbb.automation.framework.common.logging.SanitizingMessageConverter"/>
+
+    <!--
+      D3-1：诊断上下文（MDC）由 framework.common.logging.LogContext 写入，
+      可在 pattern 中通过 %X{scenarioId} / %X{threadId} 引用；
+      `:-` 为 logback 的默认值语法，未绑定时输出 "-"，避免出现难看的 "null"。
+      （原 %X{env} 已移除：本框架无全局「环境」标量来源——真实环境是场景级登录维度，
+      该列恒为 unknown，属误导性死列。）
+    -->
+    <property name="LOG_PATTERN"
+              value="%d{HH:mm:ss.SSS} [%thread] [%X{scenarioId}] %-5level %logger{36} - %msg%n"/>
+    <property name="FILE_LOG_PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{threadId}] [%X{scenarioId}] %-5level %logger{36} - %msg%n"/>
+
     <!-- 控制台输出配置 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>${LOG_PATTERN}</pattern>
+            <encoding>UTF-8</encoding>
+        </encoder>
+    </appender>
+
+    <!--
+      滚动文件输出（D3-1）：日志按 scenario / 线程落盘，
+      并行执行后可回放单条链路；按天 + 按大小滚动，压缩归档并限制总量，防止磁盘被日志撑爆。
+    -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/framework.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/framework.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <encoding>UTF-8</encoding>
         </encoder>
     </appender>
 
@@ -15,5 +53,6 @@
     <!-- 项目代码日志级别：root 默认 INFO；VerboseLogging 会按 serenity.logging(VERBOSE→DEBUG / TRACE→TRACE) 在运行时提升至对应级别 -->
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
     </root>
 </configuration>

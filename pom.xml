@@ -28,10 +28,20 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!-- D6-3：serenity 升级路径见 docs/serenity-upgrade-path.md（摩擦点矩阵 + 回归清单 + SOP）。
+             历史：CORE-P0-1 为适配 jackson 2.18.3 上界曾被动降到 4.2.0；版本已集中此处，升级只改本属性 + 同步配套覆盖项。 -->
         <serenity.version>4.2.0</serenity.version>
         <serenity.cucumber.version>4.2.0</serenity.cucumber.version>
         <playwright.version>1.58.0</playwright.version>
-        <junit.version>4.13.2</junit.version>
+        <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5（设计见 docs/architecture-review/17_整改专项设计_JUnit5升级.md）。
+             保持 Serenity 4.2.0；junit-jupiter 版本须与 serenity-junit5:4.2.0 传递引入的 junit-jupiter 对齐
+             （在线 mvn dependency:tree 校准，requireUpperBoundDeps 门禁）。默认 5.11.4 与 cucumber-junit-platform-engine:7.31 的 junit-platform 上界兼容。 -->
+        <junit.jupiter.version>5.11.4</junit.jupiter.version>
+        <!-- 注意：junit-platform-* 在 JUnit 5 时代的版本线是 1.x（而非 5.x）。
+             必须 ≥ 1.14.0：cucumber-junit-platform-engine:7.31.0（junit-bom 5.14.0）的 CucumberTestEngine
+             引用 org.junit.platform.engine.support.discovery.DiscoveryIssueReporter（1.13+ 才引入），
+             1.11.4 缺失该类会导致运行期 NoClassDefFoundError / Cucumber 引擎无法发现用例。 -->
+        <junit.platform.version>1.14.0</junit.platform.version>
 
         <typesafe.config.version>1.4.5</typesafe.config.version>
         <gson.version>2.13.2</gson.version>
@@ -60,7 +70,8 @@
         <!-- 门禁（Phase 1 收尾）：JaCoCo 覆盖率 + Checkstyle 风格 -->
         <jacoco.version>0.8.12</jacoco.version>
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
-        <checkstyle.config.location>checkstyle.xml</checkstyle.config.location>
+        <!-- 多模块下子模块 basedir 不是根，需用 multiModuleProjectDirectory 定位根级配置 -->
+        <checkstyle.config.location>${maven.multiModuleProjectDirectory}/checkstyle.xml</checkstyle.config.location>
 
         <!-- SpotBugs 门禁（T1-3）版本与排除过滤器 -->
         <spotbugs.plugin.version>4.9.8.5</spotbugs.plugin.version>
@@ -150,11 +161,65 @@
             </exclusions>
         </dependency>
 
-        <!-- Serenity JUnit 4 -->
+        <!-- Serenity JUnit 5（JUnit4 的 serenity-junit 已弃用；2026-09-11 JUnit5 升级，保持 serenity 4.2.0） -->
         <dependency>
             <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-junit</artifactId>
+            <artifactId>serenity-junit5</artifactId>
             <version>${serenity.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5（Jupiter）：SerenityJUnit5Extension 与 @Suite(Cucumber) 运行基座。
+             版本统一 ${junit.jupiter.version}，与 cucumber-junit-platform-engine:${cucumber.version} 的 junit-platform 上界一致（requireUpperBoundDeps）。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.jupiter.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- @Suite 套件（Cucumber runner 迁移目标）：驱动 cucumber-junit-platform-engine -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-suite</artifactId>
+            <version>${junit.platform.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- 统一 junit-platform-launcher 版本：cucumber-junit-platform-engine 传递 1.11.0，junit-platform-suite 传递 1.11.4；
+             RequireUpperBoundDeps 要求同 artifact 版本一致，钉到 1.11.4（与 platform 线对齐）。 -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <version>${junit.platform.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- junit-platform-engine/commons 必须提升到 1.14.0：
+             cucumber-junit-platform-engine:7.31.0（junit-bom 5.14.0）的 CucumberTestEngine.discover 引用
+             org.junit.platform.engine.support.discovery.DiscoveryIssueReporter，该类在 platform 1.11.4 缺失
+             （1.13+ 才引入）→ 运行期 NoClassDefFoundError，Cucumber 引擎无法发现用例。
+             launcher/suite 维持 ${junit.platform.version}=1.11.4（离线仓库无 1.14.0），engine/commons 前向兼容。 -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-engine</artifactId>
+            <version>1.14.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-commons</artifactId>
+            <version>1.14.0</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Cucumber 7 JUnit Platform 引擎（替代 JUnit4 的 @RunWith(CucumberWithSerenity)） -->
+        <dependency>
+            <groupId>io.cucumber</groupId>
+            <artifactId>cucumber-junit-platform-engine</artifactId>
+            <version>${cucumber.version}</version>
             <scope>test</scope>
         </dependency>
 
@@ -224,12 +289,8 @@
             <version>${playwright.version}</version>
         </dependency>
 
-        <!-- Testing Frameworks -->
-        <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
-            <version>${junit.version}</version>
-        </dependency>
+        <!-- Testing Frameworks：JUnit 4（junit:junit）已弃用（JUnit5 升级），不再纳入 DM；
+             各模块改用 junit-jupiter-*。hamcrest-core 仍由 Cucumber/AssertJ 传递消费，版本钉于下方 DM。 -->
 
         <!-- ArchUnit：架构分层门禁（T0-1），仅测试期使用 -->
         <dependency>
@@ -367,7 +428,7 @@
                          java.lang.reflect 供 Mockito/Serenity 反射增强；java.util 供 RestAssured 的 Groovy 反射。 -->
                     <!-- @{jacocoArgLine} 由 jacoco prepare-agent 在 initialize 阶段注入（覆盖率探针），
                          未启用 jacoco 时该属性为空，不影响原 add-opens 强封装配置 -->
-                    <argLine>@{jacocoArgLine} -XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
+                    <argLine>@{jacocoArgLine} -Dfile.encoding=UTF-8 -XX:+EnableDynamicAgentLoading --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
                 </configuration>
             </plugin>
 
@@ -408,10 +469,11 @@
                 <version>${checkstyle.plugin.version}</version>
                 <configuration>
                     <configLocation>${checkstyle.config.location}</configLocation>
-                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                    <!-- D7-3 规范约束框架生产代码：测试源（负向用例刻意触发/忽略异常）不纳入本门禁 -->
+                    <includeTestSourceDirectory>false</includeTestSourceDirectory>
                     <violationSeverity>error</violationSeverity>
                     <failOnViolation>true</failOnViolation>
-                    <includes>**/framework/web/page/base/**,**/framework/web/page/ElementDiagnosticsCollector.java</includes>
+                    <includes>**/framework/**</includes>
                 </configuration>
                 <executions>
                     <execution>
@@ -454,8 +516,11 @@
                 </executions>
             </plugin>
 
-            <!-- SpotBugs：字节码静态缺陷门禁（T1-3）。先产出存量基线，用 excludeFilter 冻结已知/可接受项，
-                 新代码零容忍。基线收敛后再把 check 目标绑定到 verify 形成硬门禁。 -->
+            <!-- SpotBugs：字节码静态缺陷门禁（T1-3）。
+                 策略（D6-2）：① 存量基线按包拆分 + 限期消除（见各模块 spotbugs-exclude.xml 头注释，含 owner/SLA/方式）；
+                 ② 新增违规硬门禁已生效——spotbugs-check 绑 verify 阶段、failOnError=true，excludeFilter 仅冻结已知基线项，
+                    任何未列入基线的新 SpotBugs 违规（Medium+）将导致 verify 失败，即「新增违规必须为 0」；
+                 ③ 消除后对应 <Match> 从基线移除，禁止「冻结式」留存。 -->
             <plugin>
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>

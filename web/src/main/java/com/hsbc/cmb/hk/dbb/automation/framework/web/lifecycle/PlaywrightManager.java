@@ -43,6 +43,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManage
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.RuntimeProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
@@ -190,26 +191,63 @@ public class PlaywrightManager {
      * @return 线程隔离的存储键
      */
     /**
-     * JVM 级<b>不可变</b>开关：是否启用「共享 Browser」模式（一个 Browser 实例 + 多 Context 并发）。
+     * JVM 级<b>稳定</b>开关：是否启用「共享 Browser」模式（一个 Browser 实例 + 多 Context 并发）。
      *
-     * <p><b>为何在类加载时解析一次、而不是每次现读配置：</b>{@link #PlaywrightRuntime.instance().browserRegistry.keyFor(String)} 决定了 Browser 实例
-     * 在状态根（{@link PlaywrightRuntimeState}，经 {@link LifecycleState} 访问）Browser 实例表中的存储键。若该开关在 JVM 运行期间发生翻转，同一个 configId 会先后
-     * 映射到不同的键，使已创建的 Browser 变成<b>无法回收的孤儿实例</b>（既不在当前键上，
-     * 也只有 cleanupAll 能扫到）。因此并发隔离模型必须对 JVM 生命周期全局稳定。
+     * <p><b>为何惰性解析并缓存（修复 F5）：</b>旧实现于 {@code PlaywrightManager} 类加载期通过
+     * {@code public static final} 直接冻结取值，而彼时 {@code WebFrameworkConfig} 尚未就绪——
+     * Serenity 合并源、{@code -D} 覆盖等可能尚未注入，取值被<b>静默锁死</b>为默认值，
+     * 即使后续配置生效也无济于事。现改为<b>首次访问时惰性解析并缓存</b>（双重检查锁），
+     * 保证在配置真正就绪（{@code FrameworkCore.initialize()} 之后的首次浏览器访问）后才定下值，
+     * 且 JVM 内只解析一次、全程稳定——既满足并发隔离模型对「不可变」的要求，又消除类加载期固化缺陷。
+     *
+     * <p><b>解析失败 fail-fast（修复 F5）：</b>底层 {@link #parseSharedBrowserMode(String)} 对非空但
+     * 非 {@code true}/{@code false} 的非法值直接抛出 {@link ConfigurationException}，不再静默降级为 false，
+     * 避免「配置写错却以为已生效」的排查黑洞。空白 / 缺省仍按 false 处理（属未配置，非解析失败）。
+     *
      * <p>由 {@code serenity.playwright.shared.browser.enabled} 控制，默认 {@code false}
      * （保持 T3-2 每线程独立 Browser 的既有行为）。
      */
-    public static final boolean SHARED_BROWSER_MODE = PlaywrightRuntime.instance().browserRegistry.resolveSharedBrowserMode();
+    private static volatile Boolean sharedBrowserMode = null;
 
     /**
      * 当前 JVM 是否启用「共享 Browser」模式。
      *
+     * <p>首次调用时惰性解析并缓存（见类级 Javadoc）；解析结果在 JVM 生命周期内稳定。
+     *
      * @return true 表示共享单个 Browser，各线程通过独立 BrowserContext 隔离
+     * @throws ConfigurationException 当配置值非法（非空且非 true/false）时 fail-fast
      * @apiNote <b>框架内部能力（生命周期决策用）</b>，业务 Page / 业务步骤请勿依赖：
      *          该取值决定并发隔离模型，业务侧依赖它会导致与框架生命周期耦合。
      */
     public static boolean isSharedBrowserMode() {
-        return SHARED_BROWSER_MODE;
+        Boolean cached = sharedBrowserMode;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (PlaywrightManager.class) {
+            cached = sharedBrowserMode;
+            if (cached != null) {
+                return cached;
+            }
+            boolean resolved = PlaywrightRuntime.instance().browserRegistry.resolveSharedBrowserMode();
+            sharedBrowserMode = resolved;
+            return resolved;
+        }
+    }
+
+    /**
+     * 并发执行器专用：按 Playwright 官方推荐的并发模型，主动启用「共享 Browser（单 Browser + 多 Context）」。
+     *
+     * <p>Playwright 官方并发模型即复用单个 Browser 进程、以 per-thread 的 {@code BrowserContext} 做隔离。
+     * 因此 {@code ConcurrentScenarioExecutor.prepareSharedBrowser()} 在预热阶段显式开启本模式，
+     * <b>无需</b>操作员额外配置 {@code serenity.playwright.shared.browser.enabled}。
+     * 该取值在 JVM 生命周期内惰性缓存、全程稳定（见 {@link #isSharedBrowserMode()}），
+     * 且仅可在浏览器首次创建前置为 {@code true}。</p>
+     *
+     * @apiNote 仅并发执行器在预热期调用；普通 Serenity 串行运行仍走默认「每线程独立 Browser」（配置缺省为 false），不应调用本方法。
+     */
+    public static void enableSharedBrowserMode() {
+        sharedBrowserMode = Boolean.TRUE;
     }
 
     /**
@@ -232,10 +270,11 @@ public class PlaywrightManager {
         if ("false".equalsIgnoreCase(normalized)) {
             return false;
         }
-        logger.warn("[shared-browser] Unrecognized value '{}' for "
-                        + "serenity.playwright.shared.browser.enabled (expected true/false); falling back to false",
-                rawValue);
-        return false;
+        // 修复 F5：非法非空值 fail-fast，不再静默降级为 false。
+        throw new ConfigurationException(
+                "[shared-browser] Invalid value '" + rawValue + "' for "
+                        + "serenity.playwright.shared.browser.enabled (expected true/false); "
+                        + "refusing to start with an ambiguous shared-browser configuration");
     }
 
     /**

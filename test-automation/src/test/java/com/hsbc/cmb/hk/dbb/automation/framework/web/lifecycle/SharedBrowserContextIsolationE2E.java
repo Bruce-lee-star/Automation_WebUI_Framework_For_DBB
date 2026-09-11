@@ -5,10 +5,10 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.Cookie;
-import org.junit.AfterClass;
-import org.junit.Assume;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
@@ -18,10 +18,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 实浏览器 E2E：验证「共享 Browser 模式（单 Browser + 多 Context）」下的<b>上下文隔离</b>不变式。
@@ -48,16 +48,18 @@ public class SharedBrowserContextIsolationE2E {
     private static final String COOKIE_VALUE_CTX1 = "ctx1-only";
     private static final String COOKIE_VALUE_CTX2 = "ctx2-only";
 
-    @BeforeClass
+    @BeforeAll
     public static void setUpSharedBrowser() {
         // 自跳：默认每线程独立 Browser 模型下不跑真实浏览器验证，避免污染默认并发语义。
-        Assume.assumeTrue(
-                "Shared browser E2E requires serenity.playwright.shared.browser.enabled=true "
-                        + "(activate profile 'shared-browser-e2e' or pass "
-                        + "-Dserenity.playwright.shared.browser.enabled=true)",
-                PlaywrightManager.isSharedBrowserMode());
+        // 并发执行器已在 prepareSharedBrowser() 内按 Playwright 官方推荐主动启用共享模式，
+        // 故本 E2E 不再依赖全局 serenity.playwright.shared.browser.enabled，仅由专属开关激活。
+        Assumptions.assumeTrue(
+                Boolean.parseBoolean(System.getProperty("dbb.e2e.shared.browser", "false")),
+                "Shared browser E2E is opt-in: pass -Ddbb.e2e.shared.browser=true "
+                        + "(or activate profile 'shared-browser-e2e') to run it; "
+                        + "shared mode is enabled automatically by prepareSharedBrowser().");
 
-        // 编排线程预热：全局初始化 + 设共享 configId + 预热共享 Browser（单 Browser 多 Context 模型）。
+        // 编排线程预热：全局初始化 + 按 Playwright 推荐启用共享 Browser + 设共享 configId + 预热（单 Browser 多 Context）。
         ConcurrentScenarioExecutor.prepareSharedBrowser();
     }
 
@@ -75,13 +77,13 @@ public class SharedBrowserContextIsolationE2E {
             BrowserContext ctx2 = page2.context();
 
             // 不变式 ①：两线程拿到的是不同 BrowserContext 实例。
-            assertNotSame("共享 Browser 模式下各线程必须持有独立的 BrowserContext", ctx1, ctx2);
+            assertNotSame( ctx1,  ctx2, "共享 Browser 模式下各线程必须持有独立的 BrowserContext");
 
             // 不变式 ②：二者位于同一个共享 Browser 实例（单 Browser + 多 Context 模型）。
             Browser browser1 = ctx1.browser();
             Browser browser2 = ctx2.browser();
-            assertSame("两个 Context 必须位于同一个共享 Browser 实例上", browser1, browser2);
-            assertTrue("共享 Browser 必须处于连接状态", browser1.isConnected());
+            assertSame( browser1,  browser2, "两个 Context 必须位于同一个共享 Browser 实例上");
+            assertTrue( browser1.isConnected(), "共享 Browser 必须处于连接状态");
 
             // 不变式 ③：Cookie 隔离 —— 仅在 ctx1 写入探测 Cookie。
             ctx1.addCookies(Collections.singletonList(
@@ -94,8 +96,8 @@ public class SharedBrowserContextIsolationE2E {
             boolean ctx2HasProbe = cookies2.stream()
                     .anyMatch(c -> COOKIE_NAME.equals(c.name) && COOKIE_VALUE_CTX1.equals(c.value));
 
-            assertTrue("ctx1 应能看到自己写入的 Cookie", ctx1HasProbe);
-            assertFalse("ctx2 必须隔离 ctx1 的 Cookie（共享 Browser 模式核心不变式）", ctx2HasProbe);
+            assertTrue( ctx1HasProbe, "ctx1 应能看到自己写入的 Cookie");
+            assertFalse( ctx2HasProbe, "ctx2 必须隔离 ctx1 的 Cookie（共享 Browser 模式核心不变式）");
 
             // 不变式 ④：反向确认 —— ctx2 写入不影响 ctx1。
             ctx2.addCookies(Collections.singletonList(
@@ -103,7 +105,7 @@ public class SharedBrowserContextIsolationE2E {
             List<Cookie> cookies1Again = ctx1.cookies(ORIGIN);
             boolean ctx1SeesCtx2 = cookies1Again.stream()
                     .anyMatch(c -> COOKIE_NAME.equals(c.name) && COOKIE_VALUE_CTX2.equals(c.value));
-            assertFalse("ctx1 必须隔离 ctx2 的 Cookie", ctx1SeesCtx2);
+            assertFalse( ctx1SeesCtx2, "ctx1 必须隔离 ctx2 的 Cookie");
         } finally {
             pool.shutdownNow();
         }
@@ -121,7 +123,7 @@ public class SharedBrowserContextIsolationE2E {
         };
     }
 
-    @AfterClass
+    @AfterAll
     public static void tearDownSharedBrowser() {
         if (!PlaywrightManager.isSharedBrowserMode()) {
             return;

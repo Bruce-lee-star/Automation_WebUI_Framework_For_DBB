@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
@@ -44,13 +45,21 @@ public final class ConcurrentScenarioExecutor {
     /**
      * 编排线程预热共享 Browser（单 Browser 多 Context 模型）。
      *
-     * <p>幂等：框架全局初始化 + 设共享 configId + 预热共享 Browser。须由并发 feature 的预备步骤在
-     * <b>编排线程</b>（Cucumber runner 线程）调用一次，确保后续所有 worker 命中同一 Browser 实例。</p>
+     * <p>幂等：框架全局初始化 + 按 Playwright 官方并发模型启用共享 Browser + 设共享 configId + 预热。
+     * 须由并发 feature 的预备步骤在 <b>编排线程</b>（Cucumber runner 线程）调用一次，
+     * 确保后续所有 worker 命中同一 Browser 实例。</p>
      *
-     * @throws IllegalStateException 共享开关未开启且预热失败（语义化提示）
+     * <p><b>无需配置开关：</b>Playwright 官方并发模型即复用单个 Browser 进程、以 per-thread 的
+     * {@code BrowserContext} 做隔离；本方法在预热阶段主动 {@link PlaywrightManager#enableSharedBrowserMode()}，
+     * 操作员<b>不必</b>再设 {@code serenity.playwright.shared.browser.enabled}。
+     * 普通串行 Serenity 运行仍走默认「每线程独立 Browser」（该配置缺省为 false），不受影响。</p>
      */
     public static void prepareSharedBrowser() {
         FrameworkCore.getInstance().initialize();
+        // Playwright 官方并发模型推荐复用单个 Browser 进程 + 每线程独立 BrowserContext 做隔离。
+        // 按推荐默认启用共享模式（不再要求操作员配置 serenity.playwright.shared.browser.enabled），
+        // 各 worker 经 BrowserRegistry.keyFor() 返回 "shared:<configId>" 命中同一 Browser 实例。
+        PlaywrightManager.enableSharedBrowserMode();
         PlaywrightRuntime.instance().browserRegistry.setConfigId(PlaywrightRuntime.instance().browserRegistry.sharedConfigId());
         PlaywrightManager.getBrowser();
         LOGGER.info("[concurrent] shared browser prepared (single-browser multi-context model)");

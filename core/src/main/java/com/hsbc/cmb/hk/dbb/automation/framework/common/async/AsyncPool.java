@@ -142,8 +142,8 @@ public final class AsyncPool {
         });
         SCHEDULER.setRemoveOnCancelPolicy(true);
 
-        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_ASYNC_POOL,
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_ASYNC_POOL,
                 "async-pool", () -> {
                     LOGGER.info("[AsyncPool] JVM shutdown hook triggered.");
                     shutdownGracefully();
@@ -340,7 +340,10 @@ public final class AsyncPool {
             for (ScheduledExecutorService s : CONTEXT_SCHEDULERS.values()) {
                 try {
                     s.shutdown();
-                } catch (Exception ignore) { /* 单个池失败不影响其他池关闭 */ }
+                } catch (Exception e) {
+                    // 单个池失败不影响其他池关闭，但不得静默（D7-3）
+                    LOGGER.warn("[AsyncPool] failed to shutdown one per-context scheduler: {}", e.toString());
+                }
             }
         }
         try {

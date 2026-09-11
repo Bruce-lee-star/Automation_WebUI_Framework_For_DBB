@@ -21,6 +21,9 @@ import java.util.regex.Matcher;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.ServiceLoader;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.util.regex.Pattern;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
@@ -67,6 +70,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
  * </ul>
  */
 public final class SensitiveDataSanitizer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(SensitiveDataSanitizer.class);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -310,8 +315,10 @@ public final class SensitiveDataSanitizer {
         try {
             ServiceLoader<SensitiveValueRecognizer> sl = ServiceLoader.load(SensitiveValueRecognizer.class);
             for (SensitiveValueRecognizer r : sl) list.add(r);
-        } catch (Throwable ignored) {
-            // SPI 不可用不影响内置识别
+        } catch (Throwable e) {
+            // SPI 不可用不影响内置识别，但不得静默（D7-3）
+            LOGGER.debug("[SensitiveDataSanitizer] recognizer SPI unavailable, fallback to builtins: {}",
+                    e.toString());
         }
         return list;
     }
@@ -548,8 +555,10 @@ public final class SensitiveDataSanitizer {
                 String key = kv[0].toLowerCase();
                 try {
                     key = URLDecoder.decode(key, StandardCharsets.UTF_8.name()).toLowerCase();
-                } catch (Exception ignored) {
-                    // 解码失败则保留原始 key（不解码）继续敏感键判定，不中断脱敏流程
+                } catch (Exception e) {
+                    // 解码失败则保留原始 key（不解码）继续敏感键判定，不中断脱敏流程（D7-3：不得静默）
+                    LOGGER.debug("[SensitiveDataSanitizer] query key decode failed, keep raw key: {}",
+                            e.toString());
                 }
                 String nKey = normalizeKey(key);
                 String val = kv.length > 1 ? kv[1] : "";

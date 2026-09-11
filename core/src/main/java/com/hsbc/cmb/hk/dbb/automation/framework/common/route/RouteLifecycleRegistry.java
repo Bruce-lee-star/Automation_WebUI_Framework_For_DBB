@@ -1,5 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * 路由生命周期实现注册表（核心层）。
  *
@@ -11,6 +14,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
  * 调用方应做空判断或忽略（保持原有"route 未启用则跳过清理"的语义）。
  */
 public final class RouteLifecycleRegistry {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(RouteLifecycleRegistry.class);
 
     private static volatile RouteLifecycle instance;
     private static volatile boolean initialized;
@@ -29,8 +34,9 @@ public final class RouteLifecycleRegistry {
                         // 延迟加载 route 模块实现（触发其静态注册块），失败则说明 route 未启用
                         Class.forName(
                                 "com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteLifecycleImpl");
-                    } catch (Exception | LinkageError ignored) {
-                        // route 模块缺失或尚未初始化：保持 instance 为 null
+                    } catch (Exception | LinkageError e) {
+                        // route 模块缺失或尚未初始化：保持 instance 为 null（预期降级，但不得静默，D7-3）
+                        LOGGER.debug("[RouteLifecycleRegistry] route module not available: {}", e.toString());
                     }
                     initialized = true;
                 }

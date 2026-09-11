@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class VerboseLogging {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(VerboseLogging.class);
+
     private static final String SERENITY_LOGGING_KEY = "serenity.logging";
     private static final AtomicBoolean LOG_LEVEL_APPLIED = new AtomicBoolean(false);
 
@@ -75,8 +77,10 @@ public final class VerboseLogging {
                 } else if (isVerbose(level)) {
                     root.setLevel(Level.DEBUG);
                 }
-            } catch (Throwable ignored) {
-                // 日志级别调整失败不应影响业务；保持 logback.xml 的配置
+            } catch (Throwable e) {
+                // 日志级别调整失败不应影响业务；保持 logback.xml 的配置，但不得静默（D7-3）
+                LOGGER.debug("[VerboseLogging] failed to raise root log level, keep logback.xml config: {}",
+                        e.toString());
             }
         }
     }

@@ -2,6 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common.config;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +35,8 @@ import java.util.ServiceLoader;
  */
 public final class ConfigSource {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ConfigSource.class);
+
     private ConfigSource() {
     }
 
@@ -47,8 +52,10 @@ public final class ConfigSource {
                         for (ConfigResolver r : ServiceLoader.load(ConfigResolver.class)) {
                             list.add(r);
                         }
-                    } catch (Throwable ignored) {
-                        // SPI 不可用不影响内置解析（系统属性 / 环境变量 / 默认值）
+                    } catch (Throwable e) {
+                        // SPI 不可用不影响内置解析（系统属性 / 环境变量 / 默认值），但不得静默（D7-3）
+                        LOGGER.debug("[ConfigSource] ConfigResolver SPI unavailable, "
+                                + "fallback to builtin sources: {}", e.toString());
                     }
                     resolvers = list;
                 }

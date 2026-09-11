@@ -29,6 +29,15 @@ public interface TestContext {
     /** 是否含该键（含值为 {@code null} 的情况也返回 true）。 */
     <T> boolean contains(ContextKey<T> key);
 
-    /** 若不存在则按 supplier 计算并写入，返回最终值。 */
+    /**
+     * 若不存在则按 supplier 计算并写入，返回最终值。
+     *
+     * <p><b>原子性契约（D5-2）</b>：并发调用下 supplier <b>至多执行一次</b>，
+     * 且所有调用方拿到的是<b>同一个</b>实例（不存在 get-then-put 竞态导致的
+     * "重复创建 / 状态静默丢失"）。
+     *
+     * <p><b>调用方约束</b>：supplier 应为无副作用的纯构造，<b>不得</b>在计算过程中
+     * 再修改本上下文（底层依赖 {@code ConcurrentHashMap.computeIfAbsent}）。
+     */
     <T> T computeIfAbsent(ContextKey<T> key, Supplier<? extends T> supplier);
 }

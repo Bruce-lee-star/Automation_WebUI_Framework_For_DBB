@@ -14,7 +14,11 @@ import java.util.function.Supplier;
  */
 public class ThreadLocalTestContext implements TestContext {
 
-    private final ConcurrentMap<ContextKey<?>, Object> store = new ConcurrentHashMap<>();
+    /**
+     * 内部存储。类型显式声明为 {@link ConcurrentHashMap}（而非 {@link ConcurrentMap} 接口），
+     * 以保证 {@link #computeIfAbsent} 走的是 CHM 的<b>原子</b>实现（D5-2）。
+     */
+    private final ConcurrentHashMap<ContextKey<?>, Object> store = new ConcurrentHashMap<>();
 
     @Override
     public void clear() {
@@ -41,13 +45,26 @@ public class ThreadLocalTestContext implements TestContext {
         return store.containsKey(key);
     }
 
+    /**
+     * 原子版 {@code computeIfAbsent}（D5-2）。
+     *
+     * <p><b>修复前的竞态</b>：原实现是「get → 判空 → 计算 → put」四步非原子操作，
+     * 并发下多个线程会同时判定"不存在"并各自执行 supplier，产生两个后果：
+     * <ol>
+     *   <li>supplier 被重复执行 —— 惰性单例（如 {@code ListenerGuardState}、per-thread 锁对象）
+     *       被创建多份，违背"同一上下文内唯一"的语义；</li>
+     *   <li>后写覆盖先写，<b>先拿到实例的调用方其后续状态更新会静默丢失</b> ——
+     *       这类问题表现为偶发的"标记没生效 / 状态被重置"，极难定位。</li>
+     * </ol>
+     *
+     * <p><b>约束（CHM 语义）</b>：mapping function 内部<b>不得</b>再修改本 store
+     * （否则可能触发递归更新异常或死锁）。当前所有调用方的 supplier 均为纯构造
+     * （{@code ArrayList::new} / {@code ListenerGuardState::new} / {@code Object::new}），
+     * 满足该约束；新增调用方请保持 supplier 无副作用。
+     */
     @Override
     public <T> T computeIfAbsent(ContextKey<T> key, Supplier<? extends T> supplier) {
-        Object v = store.get(key);
-        if (v == null) {
-            v = supplier.get();
-            store.put(key, v);
-        }
+        Object v = store.computeIfAbsent(key, k -> supplier.get());
         return key.cast(v);
     }
 

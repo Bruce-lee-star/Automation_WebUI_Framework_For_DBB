@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.common;
+package com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,12 +17,29 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>用法：组件静态块（或一次性 init）中调用 {@link #register(int, String, Runnable)}
  * 替代直接 {@code addShutdownHook}。同名任务自动去重（应对 reset 后重 init 的测试场景）。
+ *
+ * <h3>D5-1：下沉到 {@code framework.core.lifecycle}</h3>
+ * <p>本类原位于 {@code framework.common}，导致 {@code core} 切片的组件
+ * （如 {@code ThreadContextRegistry}）要使用它就必须 core→common，
+ * 与既有的 common→core（{@code LanguageState} 依赖 {@code ContextKey}）形成循环，
+ * 破坏 G1「framework 切片无循环」门禁 —— 结果是 core 侧<b>被迫放弃登记资源</b>。
+ *
+ * <p>下沉到 {@code core.lifecycle} 后依赖方向收敛为单向：
+ * <ul>
+ *   <li>{@code core.*} → {@code core.lifecycle}：同切片内，无跨切片依赖；</li>
+ *   <li>{@code common.*} → {@code core.*}：与 {@code LanguageState} 同向，不新增循环。</li>
+ * </ul>
+ * 资源登记契约因此清晰：任何组件都能登记关闭任务，架构门禁不再被迫取舍。
  */
 public final class ShutdownCoordinator {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ShutdownCoordinator.class);
 
-    /** 预定义顺序：数字越小越先执行。先落库/停止接收新工作，后关闭线程池与框架状态。 */
+    /**
+     * 预定义顺序：数字越小越先执行。先落库/停止接收新工作，后关闭线程池与框架状态。
+     * <p>{@link #ORDER_TEST_CONTEXT} 放在最后：其它关闭任务执行期间仍可能读取线程上下文，
+     * 过早清空会破坏它们的收尾逻辑。
+     */
     public static final int ORDER_API_MONITOR_FLUSH = 100;
     public static final int ORDER_ROUTE_ENGINE     = 200;
     public static final int ORDER_MONITOR_HANDLER  = 300;
@@ -30,6 +47,8 @@ public final class ShutdownCoordinator {
     public static final int ORDER_SESSION_IO       = 500;
     public static final int ORDER_DIAGNOSTICS      = 600;
     public static final int ORDER_FRAMEWORK_CORE   = 900;
+    /** D5-1：线程上下文兜底清理（最后执行）。 */
+    public static final int ORDER_TEST_CONTEXT     = 950;
 
     // 修复 CORE-P0-3/N5：CopyOnWriteArrayList 支持 runAll 执行期间并发 register 而不抛 CME；
     // 同时配合 reset() 支持"执行后重注册"的测试/重 init 场景。

@@ -1,15 +1,15 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T0-1 回归测试：URL 脱敏收口。
@@ -25,10 +25,10 @@ public class SensitiveDataSanitizerUrlTest {
         String masked = SensitiveDataSanitizer.sanitizeUrl(url);
         assertNotNull(masked);
         // 含敏感参数时整个 query 被剥离，敏感值不得出域
-        assertFalse("token 明文不应出域", masked.contains("secretToken123"));
-        assertFalse("sessionId 明文不应出域", masked.contains("abc"));
-        assertFalse("非敏感 query 也应随敏感剥离一并移除", masked.contains("user=alice"));
-        assertTrue("路径应保留", masked.contains("/login"));
+        assertFalse( masked.contains("secretToken123"), "token 明文不应出域");
+        assertFalse( masked.contains("abc"), "sessionId 明文不应出域");
+        assertFalse( masked.contains("user=alice"), "非敏感 query 也应随敏感剥离一并移除");
+        assertTrue( masked.contains("/login"), "路径应保留");
     }
 
     @Test
@@ -36,7 +36,7 @@ public class SensitiveDataSanitizerUrlTest {
         String url = "https://api.example.com/users?page=2&size=10";
         String masked = SensitiveDataSanitizer.sanitizeUrl(url);
         assertNotNull(masked);
-        assertTrue("无非敏感参数时 URL 原样保留", masked.contains("page=2"));
+        assertTrue( masked.contains("page=2"), "无非敏感参数时 URL 原样保留");
         assertTrue(masked.contains("size=10"));
     }
 
@@ -51,14 +51,14 @@ public class SensitiveDataSanitizerUrlTest {
         String jdbc = "jdbc:mysql://root:secret@localhost:3306/route_monitor";
         String maskedJdbc = SensitiveDataSanitizer.sanitizeUrl(jdbc);
         assertNotNull(maskedJdbc);
-        assertFalse("JDBC URL 内嵌密码不应出域", maskedJdbc.contains("secret"));
-        assertFalse("JDBC URL 内嵌账号不应出域", maskedJdbc.contains("root"));
+        assertFalse( maskedJdbc.contains("secret"), "JDBC URL 内嵌密码不应出域");
+        assertFalse( maskedJdbc.contains("root"), "JDBC URL 内嵌账号不应出域");
         // HTTP URL 内嵌凭据
         String http = "https://admin:pwd123@api.example.com/login";
         String maskedHttp = SensitiveDataSanitizer.sanitizeUrl(http);
         assertNotNull(maskedHttp);
-        assertFalse("HTTP URL 内嵌密码不应出域", maskedHttp.contains("pwd123"));
-        assertFalse("HTTP URL 内嵌账号不应出域", maskedHttp.contains("admin"));
+        assertFalse( maskedHttp.contains("pwd123"), "HTTP URL 内嵌密码不应出域");
+        assertFalse( maskedHttp.contains("admin"), "HTTP URL 内嵌账号不应出域");
     }
 
     @Test
@@ -68,8 +68,8 @@ public class SensitiveDataSanitizerUrlTest {
         headers.put("X-Custom-Secret", "topsecret");
         headers.put("Content-Type", "application/json");
         Map<String, String> masked = SensitiveDataSanitizer.sanitizeHeaders(headers);
-        assertFalse("自定义头应被脱敏", masked.get("X-Custom-Secret").contains("topsecret"));
-        assertTrue("非敏感头应保留", "application/json".equals(masked.get("Content-Type")));
+        assertFalse( masked.get("X-Custom-Secret").contains("topsecret"), "自定义头应被脱敏");
+        assertTrue( "application/json".equals(masked.get("Content-Type")), "非敏感头应保留");
     }
 
     @Test
@@ -77,8 +77,8 @@ public class SensitiveDataSanitizerUrlTest {
         SensitiveDataSanitizer.registerExtraSensitiveKeys(null, "myInternalToken", null);
         String body = "{\"my_internal_token\":\"abc123\",\"user\":\"alice\"}";
         String masked = SensitiveDataSanitizer.sanitizeBody(body);
-        assertFalse("自定义体字段应被脱敏", masked.contains("abc123"));
-        assertTrue("非敏感字段应保留", masked.contains("alice"));
+        assertFalse( masked.contains("abc123"), "自定义体字段应被脱敏");
+        assertTrue( masked.contains("alice"), "非敏感字段应保留");
     }
 
     @Test
@@ -89,8 +89,8 @@ public class SensitiveDataSanitizerUrlTest {
             SensitiveDataSanitizer.reloadExtraKeysFromConfig();
             String url = "https://api.example.com/x?traceId=secretTrace&user=alice";
             String masked = SensitiveDataSanitizer.sanitizeUrl(url);
-            assertFalse("自定义 query 参数应被脱敏", masked.contains("secretTrace"));
-            assertFalse("敏感 query 存在时整 query 应移除", masked.contains("user=alice"));
+            assertFalse( masked.contains("secretTrace"), "自定义 query 参数应被脱敏");
+            assertFalse( masked.contains("user=alice"), "敏感 query 存在时整 query 应移除");
         } finally {
             System.clearProperty(prop);
             SensitiveDataSanitizer.reloadExtraKeysFromConfig();

@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.config;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * {@link ConfigSource#resolve(String, String)} 解析链固化（2026-09-07）：
@@ -16,7 +16,7 @@ public class ConfigSourceTest {
 
     private static final String KEY = "config.source.test.live.override";
 
-    @After
+    @AfterEach
     public void cleanup() {
         System.clearProperty(KEY);
     }

@@ -3,17 +3,17 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 固化跨层（Page + Context）合并纯函数 {@link RouteEngine#mergeCrossLayer} 的契约。
@@ -192,6 +192,6 @@ public class RouteCrossLayerMergeTest {
         assertSame(RouteHandleType.MONITOR, ctx.getType());
         assertTrue(ctx.isMonitorEnabled());
         // page 上的 ctx 能力位不应反向污染 ctx 规则
-        assertFalse("ctx 规则不应被写入 page 的 MODIFY 能力", ctx.isMonitorEnabled() && ctx.getType() == RouteHandleType.MODIFY);
+        assertFalse( ctx.isMonitorEnabled() && ctx.getType() == RouteHandleType.MODIFY, "ctx 规则不应被写入 page 的 MODIFY 能力");
     }
 }

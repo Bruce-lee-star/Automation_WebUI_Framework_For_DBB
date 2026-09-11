@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link ConcurrentCaseData} 纯逻辑护盾：不可变、列清洗、分区键提取、相等语义。
@@ -65,7 +65,7 @@ public class ConcurrentCaseDataTest {
         ConcurrentCaseData c = new ConcurrentCaseData(Map.of("env", "O63_SIT1", "username", "alice"));
         try {
             c.rawValues().put("extra", "x");
-            org.junit.Assert.fail("rawValues must be immutable");
+            org.junit.jupiter.api.Assertions.fail("rawValues must be immutable");
         } catch (UnsupportedOperationException expected) {
             // 预期：不可变视图
         }
@@ -85,13 +85,13 @@ public class ConcurrentCaseDataTest {
     public void rejectsEmptyRow() {
         try {
             new ConcurrentCaseData(Map.of());
-            org.junit.Assert.fail("empty row must be rejected");
+            org.junit.jupiter.api.Assertions.fail("empty row must be rejected");
         } catch (IllegalArgumentException expected) {
             // 预期
         }
         try {
             new ConcurrentCaseData(null);
-            org.junit.Assert.fail("null row must be rejected");
+            org.junit.jupiter.api.Assertions.fail("null row must be rejected");
         } catch (IllegalArgumentException expected) {
             // 预期
         }
@@ -103,7 +103,7 @@ public class ConcurrentCaseDataTest {
         row.put(null, "x");
         try {
             new ConcurrentCaseData(row);
-            org.junit.Assert.fail("row with only null column names must be rejected");
+            org.junit.jupiter.api.Assertions.fail("row with only null column names must be rejected");
         } catch (IllegalArgumentException expected) {
             // 预期
         }

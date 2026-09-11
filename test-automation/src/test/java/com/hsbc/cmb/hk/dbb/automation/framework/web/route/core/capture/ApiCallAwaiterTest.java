@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CompletableFuture;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCallAwaiter;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 
@@ -35,13 +35,13 @@ public class ApiCallAwaiterTest {
     public void register_returnsFuture_and_deliverCompletesMatchingWaiter() throws Exception {
         ApiCallAwaiter a = new ApiCallAwaiter();
         CompletableFuture<CapturedApiCall> f = a.register(c -> true);
-        assertFalse("注册后 future 不应立即完成", f.isDone());
+        assertFalse( f.isDone(), "注册后 future 不应立即完成");
 
         CapturedApiCall call = dummy();
         a.deliver(call);
 
-        assertTrue("谓词命中应完成 future", f.isDone());
-        assertSame("完成值应为入库的调用快照", call, f.get());
+        assertTrue( f.isDone(), "谓词命中应完成 future");
+        assertSame( call,  f.get(), "完成值应为入库的调用快照");
     }
 
     @Test
@@ -49,7 +49,7 @@ public class ApiCallAwaiterTest {
         ApiCallAwaiter a = new ApiCallAwaiter();
         CompletableFuture<CapturedApiCall> f = a.register(c -> false);
         a.deliver(dummy());
-        assertFalse("谓词未命中不应完成 future", f.isDone());
+        assertFalse( f.isDone(), "谓词未命中不应完成 future");
     }
 
     @Test
@@ -58,7 +58,7 @@ public class ApiCallAwaiterTest {
         CompletableFuture<CapturedApiCall> f = a.register(c -> true);
         a.unregister(f);
         a.deliver(dummy());
-        assertFalse("注销后不应再被投递", f.isDone());
+        assertFalse( f.isDone(), "注销后不应再被投递");
     }
 
     @Test
@@ -69,7 +69,7 @@ public class ApiCallAwaiterTest {
         a.reset();
         assertTrue(f1.isDone());
         assertTrue(f2.isDone());
-        assertNull("reset 应以 null 完成（调用方返回 null）", f1.get());
+        assertNull( f1.get(), "reset 应以 null 完成（调用方返回 null）");
         assertNull(f2.get());
     }
 

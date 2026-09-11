@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -10,10 +10,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
@@ -32,9 +32,9 @@ public class BrowserStackSessionContextTest {
             Future<String> otherSees = pool.submit(BrowserStackManager::getCurrentSessionId);
             String other = otherSees.get(5, TimeUnit.SECONDS);
 
-            assertNull("其他线程不应看到主线程设置的 session", other);
-            assertEquals("主线程仍读到自身 session", "main-session", BrowserStackManager.getCurrentSessionId());
-            assertNotNull("主线程的 dashboard URL 应已生成", BrowserStackManager.getCurrentSessionUrl());
+            assertNull( other, "其他线程不应看到主线程设置的 session");
+            assertEquals( "main-session",  BrowserStackManager.getCurrentSessionId(), "主线程仍读到自身 session");
+            assertNotNull( BrowserStackManager.getCurrentSessionUrl(), "主线程的 dashboard URL 应已生成");
         } finally {
             TestContextHolder.resetForCurrentThread();
             pool.shutdown();

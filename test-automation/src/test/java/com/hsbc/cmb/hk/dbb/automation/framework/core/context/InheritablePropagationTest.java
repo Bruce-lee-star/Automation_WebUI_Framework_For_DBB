@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.core.context;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * CORE-P0-2 验证：按需 {@link InheritableThreadLocal} 传播开关（默认关）。
@@ -16,7 +16,7 @@ import static org.junit.Assert.assertNull;
  */
 public class InheritablePropagationTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         TestContextHolder.setInheritMode(false);
         TestContextHolder.resetForCurrentThread();
@@ -37,7 +37,7 @@ public class InheritablePropagationTest {
         });
         child.start();
         done.await(5, TimeUnit.SECONDS);
-        assertEquals("派生线程应继承父上下文", "parent", seen[0]);
+        assertEquals( "parent",  seen[0], "派生线程应继承父上下文");
     }
 
     @Test
@@ -55,7 +55,7 @@ public class InheritablePropagationTest {
         });
         child.start();
         done.await(5, TimeUnit.SECONDS);
-        assertNull("模式关时派生线程不应继承父上下文", seen[0]);
+        assertNull( seen[0], "模式关时派生线程不应继承父上下文");
     }
 
     @Test
@@ -72,6 +72,6 @@ public class InheritablePropagationTest {
         });
         child.start();
         done.await(5, TimeUnit.SECONDS);
-        assertEquals("子线程写入不应回灌父线程（隔离保留）", "parent", TestContextHolder.get().get(k));
+        assertEquals( "parent",  TestContextHolder.get().get(k), "子线程写入不应回灌父线程（隔离保留）");
     }
 }

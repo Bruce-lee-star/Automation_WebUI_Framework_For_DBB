@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -8,10 +8,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Characterization tests for the picker-injected script constants in {@link RolePickerScripts}.
@@ -33,40 +33,40 @@ public class RolePickerScriptsTest {
 
     @Test
     public void allConstantsAreNonNull() {
-        assertNotNull("PANEL_BOOTSTRAP_SCRIPT must be a real script, not null",
-                RolePickerScripts.PANEL_BOOTSTRAP_SCRIPT);
-        assertNotNull("MERGE_KEY_SHIM must be a real script, not null",
-                RolePickerScripts.MERGE_KEY_SHIM);
-        assertNotNull("START_SCRIPT_A must be a real script, not null",
-                RolePickerScripts.START_SCRIPT_A);
-        assertNotNull("START_SCRIPT_B1 must be a real script, not null",
-                RolePickerScripts.START_SCRIPT_B1);
-        assertNotNull("START_SCRIPT_B2 must be a real script, not null",
-                RolePickerScripts.START_SCRIPT_B2);
-        assertNotNull("START_SCRIPT must be a real script, not null",
-                RolePickerScripts.START_SCRIPT);
-        assertNotNull("STOP_SCRIPT must be a real script, not null",
-                RolePickerScripts.STOP_SCRIPT);
-        assertNotNull("SHOW_PANEL_SCRIPT must be a real script, not null",
-                RolePickerScripts.SHOW_PANEL_SCRIPT);
-        assertNotNull("PANEL_SCRIPT_A must be a real script, not null",
-                RolePickerScripts.PANEL_SCRIPT_A);
-        assertNotNull("PANEL_SCRIPT_B must be a real script, not null",
-                RolePickerScripts.PANEL_SCRIPT_B);
-        assertNotNull("PANEL_SCRIPT must be a real script, not null",
-                RolePickerScripts.PANEL_SCRIPT);
-        assertNotNull("PICK_STATE_READER_JS must be a real script, not null",
-                RolePickerScripts.PICK_STATE_READER_JS);
+        assertNotNull(
+                RolePickerScripts.PANEL_BOOTSTRAP_SCRIPT, "PANEL_BOOTSTRAP_SCRIPT must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.MERGE_KEY_SHIM, "MERGE_KEY_SHIM must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.START_SCRIPT_A, "START_SCRIPT_A must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.START_SCRIPT_B1, "START_SCRIPT_B1 must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.START_SCRIPT_B2, "START_SCRIPT_B2 must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.START_SCRIPT, "START_SCRIPT must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.STOP_SCRIPT, "STOP_SCRIPT must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.SHOW_PANEL_SCRIPT, "SHOW_PANEL_SCRIPT must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.PANEL_SCRIPT_A, "PANEL_SCRIPT_A must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.PANEL_SCRIPT_B, "PANEL_SCRIPT_B must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.PANEL_SCRIPT, "PANEL_SCRIPT must be a real script, not null");
+        assertNotNull(
+                RolePickerScripts.PICK_STATE_READER_JS, "PICK_STATE_READER_JS must be a real script, not null");
     }
 
     @Test
     public void inlineScriptsContainExpectedMarkers() {
-        assertTrue("PANEL_BOOTSTRAP_SCRIPT should reference the role-panel enabled flag",
-                RolePickerScripts.PANEL_BOOTSTRAP_SCRIPT.contains("rolePanelEnabled"));
-        assertTrue("MERGE_KEY_SHIM should define window.__mergeKey",
-                RolePickerScripts.MERGE_KEY_SHIM.contains("__mergeKey"));
-        assertTrue("PICK_STATE_READER_JS should normalize pick state via window.__mergeKey",
-                RolePickerScripts.PICK_STATE_READER_JS.contains("window.__mergeKey"));
+        assertTrue(
+                RolePickerScripts.PANEL_BOOTSTRAP_SCRIPT.contains("rolePanelEnabled"), "PANEL_BOOTSTRAP_SCRIPT should reference the role-panel enabled flag");
+        assertTrue(
+                RolePickerScripts.MERGE_KEY_SHIM.contains("__mergeKey"), "MERGE_KEY_SHIM should define window.__mergeKey");
+        assertTrue(
+                RolePickerScripts.PICK_STATE_READER_JS.contains("window.__mergeKey"), "PICK_STATE_READER_JS should normalize pick state via window.__mergeKey");
     }
 
     @Test
@@ -84,11 +84,11 @@ public class RolePickerScriptsTest {
     @Test
     public void everyScriptConstantIsNonNullAndNonBlank() throws Exception {
         List<Field> fields = scriptConstantFields();
-        assertTrue("expected the extracted scripts to be numerous, found " + fields.size(), fields.size() >= 30);
+        assertTrue( fields.size() >= 30, "expected the extracted scripts to be numerous, found " + fields.size());
         for (Field f : fields) {
             String v = (String) f.get(null);
             assertNotNull(f.getName() + " must not be null (self-referential stub?)", v);
-            assertFalse(f.getName() + " must not be blank", v.trim().isEmpty());
+            assertFalse(v.trim().isEmpty(), f.getName() + " must not be blank");
         }
     }
 
@@ -118,8 +118,8 @@ public class RolePickerScriptsTest {
                 RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
         };
         for (String s : arrow) {
-            assertTrue("arg-taking script must be '(a) => ...' for Playwright to bind args, got: "
-                    + s.substring(0, Math.min(40, s.length())), s.trim().startsWith("(a) =>"));
+            assertTrue( s.trim().startsWith("(a) =>"), "arg-taking script must be '(a) => ...' for Playwright to bind args, got: "
+                    + s.substring(0, Math.min(40, s.length())));
         }
     }
 
@@ -130,20 +130,20 @@ public class RolePickerScriptsTest {
      */
     @Test
     public void jsonArgumentScriptsParseTheirArguments() {
-        assertTrue("APPLY_PICK_STATE_JS must parse stateJson",
-                RolePickerScripts.APPLY_PICK_STATE_JS.contains("JSON.parse(a.stateJson)"));
-        assertTrue("APPLY_PICK_STATE_JS must parse nlsReverseJson with an empty-object default",
-                RolePickerScripts.APPLY_PICK_STATE_JS.contains("JSON.parse(a.nlsReverseJson || '{}')"));
-        assertTrue("MERGE_SNAPSHOT_PICKS_JS must parse the snapshot",
-                RolePickerScripts.MERGE_SNAPSHOT_PICKS_JS.contains("JSON.parse(a.stateJson)"));
-        assertTrue("MERGE_MISSING_PICKS_JS must parse the snapshot",
-                RolePickerScripts.MERGE_MISSING_PICKS_JS.contains("JSON.parse(a.stateJson)"));
-        assertTrue("MERGE_CLOSED_PAGE_PICKS_JS must parse the closed page state",
-                RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS.contains("JSON.parse(a.closedState)"));
-        assertTrue("MERGE_CLOSE_OP_STEP_JS must parse the closed page state with a default",
-                RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("JSON.parse(a.closedState || '{}')"));
-        assertTrue("SET_NLS_AND_SESSION_JS must parse nls",
-                RolePickerScripts.SET_NLS_AND_SESSION_JS.contains("JSON.parse(a.nls)"));
+        assertTrue(
+                RolePickerScripts.APPLY_PICK_STATE_JS.contains("JSON.parse(a.stateJson)"), "APPLY_PICK_STATE_JS must parse stateJson");
+        assertTrue(
+                RolePickerScripts.APPLY_PICK_STATE_JS.contains("JSON.parse(a.nlsReverseJson || '{}')"), "APPLY_PICK_STATE_JS must parse nlsReverseJson with an empty-object default");
+        assertTrue(
+                RolePickerScripts.MERGE_SNAPSHOT_PICKS_JS.contains("JSON.parse(a.stateJson)"), "MERGE_SNAPSHOT_PICKS_JS must parse the snapshot");
+        assertTrue(
+                RolePickerScripts.MERGE_MISSING_PICKS_JS.contains("JSON.parse(a.stateJson)"), "MERGE_MISSING_PICKS_JS must parse the snapshot");
+        assertTrue(
+                RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS.contains("JSON.parse(a.closedState)"), "MERGE_CLOSED_PAGE_PICKS_JS must parse the closed page state");
+        assertTrue(
+                RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("JSON.parse(a.closedState || '{}')"), "MERGE_CLOSE_OP_STEP_JS must parse the closed page state with a default");
+        assertTrue(
+                RolePickerScripts.SET_NLS_AND_SESSION_JS.contains("JSON.parse(a.nls)"), "SET_NLS_AND_SESSION_JS must parse nls");
     }
 
     @Test
@@ -157,8 +157,8 @@ public class RolePickerScriptsTest {
                 RolePickerScripts.MERGE_CLOSE_OP_STEP_JS,
         };
         for (String s : withShim) {
-            assertTrue("merge script must inline MERGE_KEY_SHIM and define window.__mergeKey",
-                    s.contains("window.__mergeKey"));
+            assertTrue(
+                    s.contains("window.__mergeKey"), "merge script must inline MERGE_KEY_SHIM and define window.__mergeKey");
         }
     }
 
@@ -171,8 +171,8 @@ public class RolePickerScriptsTest {
                 RolePickerScripts.MERGE_CLOSED_PAGE_PICKS_JS,
         };
         for (String s : withLocId) {
-            assertTrue("merge script must dedupe locator-identity strategies by _sig (__LOCID)",
-                    s.contains("__LOCID"));
+            assertTrue(
+                    s.contains("__LOCID"), "merge script must dedupe locator-identity strategies by _sig (__LOCID)");
         }
     }
 
@@ -183,12 +183,12 @@ public class RolePickerScriptsTest {
      */
     @Test
     public void setPageNameVariantsKeepTheirDifference() {
-        assertTrue("session-start variant must clear __currentPageInstance",
-                RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS.contains("__currentPageInstance = null"));
-        assertFalse("navigation variant must NOT touch __currentPageInstance",
-                RolePickerScripts.SET_PAGE_NAME_JS.contains("__currentPageInstance"));
-        assertTrue("conditional variant must compare before writing",
-                RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS.contains("window.__rolePageName!==a.pageName"));
+        assertTrue(
+                RolePickerScripts.SET_PAGE_NAME_AND_RESET_INSTANCE_JS.contains("__currentPageInstance = null"), "session-start variant must clear __currentPageInstance");
+        assertFalse(
+                RolePickerScripts.SET_PAGE_NAME_JS.contains("__currentPageInstance"), "navigation variant must NOT touch __currentPageInstance");
+        assertTrue(
+                RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS.contains("window.__rolePageName!==a.pageName"), "conditional variant must compare before writing");
     }
 
     @Test
@@ -196,8 +196,8 @@ public class RolePickerScriptsTest {
         assertTrue(RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("_closeOp"));
         assertTrue(RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("__roleCloseSeq"));
         assertTrue(RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("op:'close'"));
-        assertTrue("close marker must be spliced in after the closed page's last element",
-                RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("arr.splice(__ins + 1, 0, closeMarker)"));
+        assertTrue(
+                RolePickerScripts.MERGE_CLOSE_OP_STEP_JS.contains("arr.splice(__ins + 1, 0, closeMarker)"), "close marker must be spliced in after the closed page's last element");
     }
 
     /**
@@ -207,9 +207,9 @@ public class RolePickerScriptsTest {
     @Test
     public void postNavCompactionUsesStableKeyNotLocation() {
         assertTrue(RolePickerScripts.POST_NAV_COMPACT_AND_RENDER_JS.contains("__stableKey"));
-        assertTrue("stable key must fall back to __rolePageName, never to location",
+        assertTrue(
                 RolePickerScripts.POST_NAV_COMPACT_AND_RENDER_JS
-                        .contains("pp._pageClass || (window.__rolePageName || '')"));
+                        .contains("pp._pageClass || (window.__rolePageName || '')"), "stable key must fall back to __rolePageName, never to location");
     }
 
     @Test
@@ -218,7 +218,7 @@ public class RolePickerScriptsTest {
         assertEquals(2, m.size());
         assertEquals(Integer.valueOf(1), m.get("a"));
         assertEquals("x", m.get("b"));
-        assertTrue("no args should yield an empty map", RolePickerScripts.args().isEmpty());
+        assertTrue( RolePickerScripts.args().isEmpty(), "no args should yield an empty map");
     }
 
     // ------------------------------------------------------------------

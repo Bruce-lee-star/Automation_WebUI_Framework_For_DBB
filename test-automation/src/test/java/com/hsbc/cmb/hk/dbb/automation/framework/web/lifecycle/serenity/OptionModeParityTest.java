@@ -6,12 +6,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOpti
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.scenario.ScenarioLifecycle;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -27,7 +27,7 @@ public class OptionModeParityTest {
 
     private final CustomOptionsManager customOptions = CustomOptionsManager.getInstance();
 
-    @After
+    @AfterEach
     public void tearDown() {
         TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
         TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
@@ -49,10 +49,10 @@ public class OptionModeParityTest {
 
         ScenarioLifecycle.cleanupForScenario();
 
-        assertNull("Scenario 模式不应保留 storageState", customOptions.getStorageState());
-        assertNull("Scenario 模式应清除 locale", customOptions.getLocale());
+        assertNull( customOptions.getStorageState(), "Scenario 模式不应保留 storageState");
+        assertNull( customOptions.getLocale(), "Scenario 模式应清除 locale");
         // cleanupForScenario → removeAllThreadLocals 清除 flag；消费者 customFlag!=null&&customFlag 安全处理 null
-        assertNull("Scenario 模式 flag 应被清除（返回 null）", customOptions.isCustomContextOptionsFlag());
+        assertNull( customOptions.isCustomContextOptionsFlag(), "Scenario 模式 flag 应被清除（返回 null）");
     }
 
     @Test
@@ -63,10 +63,10 @@ public class OptionModeParityTest {
 
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("Feature 模式应保留 storageState（跨 scenario 复用登录态）",
-                STORAGE_STATE_JSON, customOptions.getStorageState());
-        assertNull("Feature 模式应清除非 session 配置 locale", customOptions.getLocale());
+        assertEquals(
+                STORAGE_STATE_JSON,  customOptions.getStorageState(), "Feature 模式应保留 storageState（跨 scenario 复用登录态）");
+        assertNull( customOptions.getLocale(), "Feature 模式应清除非 session 配置 locale");
         // 存活 context 下 flag 为 null（非 false）；storageState 应用需待下次重建经 flag=true 触发
-        assertNull("存活 context 下 flag 应为 null", customOptions.isCustomContextOptionsFlag());
+        assertNull( customOptions.isCustomContextOptionsFlag(), "存活 context 下 flag 应为 null");
     }
 }

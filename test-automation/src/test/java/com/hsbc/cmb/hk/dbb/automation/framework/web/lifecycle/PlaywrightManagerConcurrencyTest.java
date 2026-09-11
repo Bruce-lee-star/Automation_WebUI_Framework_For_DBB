@@ -2,16 +2,16 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.Page;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -33,10 +33,10 @@ public class PlaywrightManagerConcurrencyTest {
         try {
             Page mockPage = mock(Page.class);
             TestContextHolder.get().set(PlaywrightManager.PAGE_KEY, mockPage);
-            assertSame("主线程应读到本线程绑定的 Page", mockPage, PlaywrightManager.getPageThreadLocal());
+            assertSame( mockPage,  PlaywrightManager.getPageThreadLocal(), "主线程应读到本线程绑定的 Page");
 
             Future<Page> other = pool.submit(PlaywrightManager::getPageThreadLocal);
-            assertNull("其他线程不应看到主线程绑定的 Page", other.get(5, TimeUnit.SECONDS));
+            assertNull( other.get(5, TimeUnit.SECONDS), "其他线程不应看到主线程绑定的 Page");
         } finally {
             TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
             pool.shutdown();
@@ -52,7 +52,7 @@ public class PlaywrightManagerConcurrencyTest {
 
             Future<String> other = pool.submit(() ->
                     TestContextHolder.get().get(PlaywrightManager.CURRENT_CONFIG_ID_KEY));
-            assertNull("其他线程不应看到主线程的 configId", other.get(5, TimeUnit.SECONDS));
+            assertNull( other.get(5, TimeUnit.SECONDS), "其他线程不应看到主线程的 configId");
         } finally {
             TestContextHolder.get().remove(PlaywrightManager.CURRENT_CONFIG_ID_KEY);
             pool.shutdown();

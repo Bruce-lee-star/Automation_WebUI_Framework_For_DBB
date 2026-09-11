@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
@@ -37,7 +37,7 @@ public class RouteUnifiedResolutionTest {
         RouteEngine.CrossLayerMergeResult r =
                 RouteUnifiedResolution.mergeCrossLayer(page, Collections.singletonList(ctx));
         assertEquals(RouteHandleType.MODIFY, r.rule.getType());
-        assertEquals("DELAY 取 max(100,500)", 500, r.delayMs);
+        assertEquals( 500,  r.delayMs, "DELAY 取 max(100,500)");
         assertEquals(true, r.delayMerged);
     }
 
@@ -68,7 +68,7 @@ public class RouteUnifiedResolutionTest {
         assertEquals(RouteHandleType.MOCK, r.rule.getType());
         assertEquals(200, r.rule.getMockStatus());
         assertEquals("page-mock", r.rule.getMockBody());
-        assertEquals("DELAY 仍取 max(100,500)", 500, r.delayMs);
+        assertEquals( 500,  r.delayMs, "DELAY 仍取 max(100,500)");
     }
 
     @Test

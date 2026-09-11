@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.AssertionFailureDetail;
 
 /**
@@ -19,11 +19,11 @@ public class AssertionFailureDetailTest {
     public void fieldsAssignedViaPackagePrivateCtor() {
         AssertionFailureDetail d = new AssertionFailureDetail(
                 "https://api.example.com/v1/users", "STATUS", "200", "500", "pattern=/api/**");
-        org.junit.Assert.assertEquals("https://api.example.com/v1/users", d.url);
-        org.junit.Assert.assertEquals("STATUS", d.assertionType);
-        org.junit.Assert.assertEquals("200", d.expectedValue);
-        org.junit.Assert.assertEquals("500", d.actualValue);
-        org.junit.Assert.assertEquals("pattern=/api/**", d.failMessage);
+        org.junit.jupiter.api.Assertions.assertEquals("https://api.example.com/v1/users", d.url);
+        org.junit.jupiter.api.Assertions.assertEquals("STATUS", d.assertionType);
+        org.junit.jupiter.api.Assertions.assertEquals("200", d.expectedValue);
+        org.junit.jupiter.api.Assertions.assertEquals("500", d.actualValue);
+        org.junit.jupiter.api.Assertions.assertEquals("pattern=/api/**", d.failMessage);
     }
 
     @Test
@@ -32,7 +32,7 @@ public class AssertionFailureDetailTest {
                 null, "JSONPATH", "x", "y", null);
         String s = d.toString();
         assertNotNull(s);
-        assertTrue("null URL 应降级为 N/A", s.contains("N/A"));
+        assertTrue( s.contains("N/A"), "null URL 应降级为 N/A");
     }
 
     @Test

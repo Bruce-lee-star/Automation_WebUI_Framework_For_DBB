@@ -2,9 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistryImpl;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * BrowserRegistry configId 形态校验（对齐 playwright-java 1.58.0 官方线程模型 / 共享 Browser 只读契约）。

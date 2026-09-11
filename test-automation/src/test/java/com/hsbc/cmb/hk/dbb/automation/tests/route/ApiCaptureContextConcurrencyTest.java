@@ -5,7 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureMan
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.microsoft.playwright.BrowserContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -13,9 +13,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -87,7 +87,7 @@ public class ApiCaptureContextConcurrencyTest {
         start.countDown();
         pool.shutdown();
         assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
-        assertNull("concurrent capture must not throw or leak: " + error.get(), error.get());
+        assertNull( error.get(), "concurrent capture must not throw or leak: " + error.get());
     }
 
     @Test
@@ -131,6 +131,6 @@ public class ApiCaptureContextConcurrencyTest {
         start.countDown();
         pool.shutdown();
         assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
-        assertNull("removeAllContexts under concurrent writes must not throw: " + error.get(), error.get());
+        assertNull( error.get(), "removeAllContexts under concurrent writes must not throw: " + error.get());
     }
 }

@@ -3,17 +3,17 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 验证「按能力类型查询」能力：{@code ApiCaptureContext.getAllByType(...)} 等。
@@ -28,7 +28,7 @@ public class ApiCaptureTypeQueryTest {
 
     private ApiCaptureContext ctx;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         ctx = ApiCaptureContext.getCurrent();
         ctx.reset();
@@ -60,7 +60,7 @@ public class ApiCaptureTypeQueryTest {
                 1L, "http://host/api/order", null, RouteHandleType.MOCK);
 
         assertEquals(RouteHandleType.MOCK, mockCall.handleType());
-        assertTrue("MOCK 快照必须标记 fromMock，否则 isMock() 断言永远失败", mockCall.fromMock());
+        assertTrue( mockCall.fromMock(), "MOCK 快照必须标记 fromMock，否则 isMock() 断言永远失败");
         assertEquals("MOCK", mockCall.captureSource());
     }
 
@@ -85,12 +85,12 @@ public class ApiCaptureTypeQueryTest {
         ctx.storeApiCall(call(ENDPOINT, RouteHandleType.MONITOR, 3L));
 
         // 主快照存储只含带响应的完整调用（MODIFY + MONITOR）
-        assertEquals("主快照存储应只含 2 条完整调用", 2, ctx.getApiCalls(ENDPOINT).size());
-        assertEquals("DELAY 标记应存在", 1, ctx.getApiCallsByType(ENDPOINT, RouteHandleType.DELAY).size());
-        assertEquals("MODIFY 记录应存在", 1, ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MODIFY).size());
-        assertEquals("MONITOR 记录应存在", 1, ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MONITOR).size());
-        assertEquals("未启用 MOCK，不应有 MOCK 记录",
-                0, ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MOCK).size());
+        assertEquals( 2,  ctx.getApiCalls(ENDPOINT).size(), "主快照存储应只含 2 条完整调用");
+        assertEquals( 1,  ctx.getApiCallsByType(ENDPOINT, RouteHandleType.DELAY).size(), "DELAY 标记应存在");
+        assertEquals( 1,  ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MODIFY).size(), "MODIFY 记录应存在");
+        assertEquals( 1,  ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MONITOR).size(), "MONITOR 记录应存在");
+        assertEquals(
+                0,  ctx.getApiCallsByType(ENDPOINT, RouteHandleType.MOCK).size(), "未启用 MOCK，不应有 MOCK 记录");
     }
 
     /**
@@ -107,9 +107,9 @@ public class ApiCaptureTypeQueryTest {
 
         CapturedApiCall last = ctx.getLastApiCall(ENDPOINT);
         assertNotNull(last);
-        assertEquals("通用查询应返回带响应的完整调用，而非 DELAY 占位",
-                RouteHandleType.MONITOR, last.handleType());
-        assertNotNull("通用查询拿到的记录必须有响应体", last.responseBody());
+        assertEquals(
+                RouteHandleType.MONITOR,  last.handleType(), "通用查询应返回带响应的完整调用，而非 DELAY 占位");
+        assertNotNull( last.responseBody(), "通用查询拿到的记录必须有响应体");
 
         // waitForApi 同样不应命中 DELAY 占位
         CapturedApiCall waited = ctx.waitForApi(c -> c.endpoint().equals(ENDPOINT), 500);
@@ -125,10 +125,10 @@ public class ApiCaptureTypeQueryTest {
         // 只有 DELAY 标记、尚无完整调用时，通用查询应返回空（而非返回空 body 的占位）
         ctx.storeDelayMarker(delayMarker(ENDPOINT, 1L));
 
-        assertNull("仅有 DELAY 标记时 getLastApiCall 应返回 null", ctx.getLastApiCall(ENDPOINT));
-        assertTrue("仅有 DELAY 标记时 getApiCalls 应为空", ctx.getApiCalls(ENDPOINT).isEmpty());
-        assertFalse("但 getAllByType(DELAY) 应能查到标记",
-                ctx.getAllByType(RouteHandleType.DELAY).isEmpty());
+        assertNull( ctx.getLastApiCall(ENDPOINT), "仅有 DELAY 标记时 getLastApiCall 应返回 null");
+        assertTrue( ctx.getApiCalls(ENDPOINT).isEmpty(), "仅有 DELAY 标记时 getApiCalls 应为空");
+        assertFalse(
+                ctx.getAllByType(RouteHandleType.DELAY).isEmpty(), "但 getAllByType(DELAY) 应能查到标记");
     }
 
     @Test
@@ -153,18 +153,18 @@ public class ApiCaptureTypeQueryTest {
         Map<RouteHandleType, List<CapturedApiCall>> grouped = ctx.getAllGroupedByType();
         assertEquals(4, grouped.size());
         for (RouteHandleType t : RouteHandleType.values()) {
-            assertNotNull("分组必须包含 " + t + " 键", grouped.get(t));
+            assertNotNull( grouped.get(t), "分组必须包含 " + t + " 键");
         }
         assertEquals(1, grouped.get(RouteHandleType.MONITOR).size());
-        assertTrue("未落库的其它类型应为空列表", grouped.get(RouteHandleType.MOCK).isEmpty());
+        assertTrue( grouped.get(RouteHandleType.MOCK).isEmpty(), "未落库的其它类型应为空列表");
     }
 
     @Test
     public void emptyAndNullSafeContracts() {
-        assertTrue("无记录时返回空列表而非 null", ctx.getAllByType(RouteHandleType.MOCK).isEmpty());
-        assertTrue("type 为 null 时返回空列表", ctx.getAllByType(null).isEmpty());
-        assertTrue("type 为 null 时返回空列表", ctx.getApiCallsByType(ENDPOINT, null).isEmpty());
-        assertNull("无记录时返回 null", ctx.getLastApiCallByType(ENDPOINT, RouteHandleType.MODIFY));
+        assertTrue( ctx.getAllByType(RouteHandleType.MOCK).isEmpty(), "无记录时返回空列表而非 null");
+        assertTrue( ctx.getAllByType(null).isEmpty(), "type 为 null 时返回空列表");
+        assertTrue( ctx.getApiCallsByType(ENDPOINT, null).isEmpty(), "type 为 null 时返回空列表");
+        assertNull( ctx.getLastApiCallByType(ENDPOINT, RouteHandleType.MODIFY), "无记录时返回 null");
     }
 
     @Test

@@ -5,13 +5,13 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegis
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteLifecycleImpl;
 import com.microsoft.playwright.BrowserContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -37,8 +37,8 @@ public class AssertionFailureSurfaceTest {
     @Test
     public void sharedContextFailureIsSurfacedByListener() throws Exception {
         // 确保 RouteLifecycleImpl 静态自注册已触发（route 模块未在测试中显式启动）
-        assertNotNull("RouteLifecycle 必须已自注册", RouteLifecycleImpl.class.getName());
-        assertNotNull("RouteLifecycleRegistry.get() 必须非空", RouteLifecycleRegistry.get());
+        assertNotNull( RouteLifecycleImpl.class.getName(), "RouteLifecycle 必须已自注册");
+        assertNotNull( RouteLifecycleRegistry.get(), "RouteLifecycleRegistry.get() 必须非空");
 
         BrowserContext ctx = mock(BrowserContext.class);
         // currentContextOrNull() 调用 pages() 探测关闭状态，返回空列表视为未关闭
@@ -56,14 +56,14 @@ public class AssertionFailureSurfaceTest {
 
             // 旧路径：测试线程已绑定 per-context， getCurrentCapture() 读不到 SHARED 上的失败 → 复现漏检
             CaptureContext viaCurrent = RouteLifecycleRegistry.get().getCurrentCapture();
-            assertFalse("复现 ROUTE-P0-1 旧 bug：getCurrentCapture() 漏检 SHARED 上的断言失败",
-                    viaCurrent.hasAssertionFailures());
+            assertFalse(
+                    viaCurrent.hasAssertionFailures(), "复现 ROUTE-P0-1 旧 bug：getCurrentCapture() 漏检 SHARED 上的断言失败");
 
             // 新路径：resolveFailureCapture() 兜底命中 SHARED 失败 → 修复验证
             CaptureContext resolved = RouteLifecycleRegistry.get().resolveFailureCapture();
-            assertNotNull("resolveFailureCapture() 不得返回 null", resolved);
-            assertTrue("ROUTE-P0-1 修复：resolveFailureCapture() 应兜底命中 SHARED 上的断言失败",
-                    resolved.hasAssertionFailures());
+            assertNotNull( resolved, "resolveFailureCapture() 不得返回 null");
+            assertTrue(
+                    resolved.hasAssertionFailures(), "ROUTE-P0-1 修复：resolveFailureCapture() 应兜底命中 SHARED 上的断言失败");
         } finally {
             ApiCaptureContext.resetCurrent();
             ApiCaptureContext.unbindCurrentContext();
@@ -78,8 +78,8 @@ public class AssertionFailureSurfaceTest {
         ApiCaptureContext.bindCurrentContext(ctx);
         try {
             CaptureContext resolved = RouteLifecycleRegistry.get().resolveFailureCapture();
-            assertNotNull("无失败时 resolveFailureCapture() 应返回非空当前上下文", resolved);
-            assertFalse("无失败时不应报告断言失败", resolved.hasAssertionFailures());
+            assertNotNull( resolved, "无失败时 resolveFailureCapture() 应返回非空当前上下文");
+            assertFalse( resolved.hasAssertionFailures(), "无失败时不应报告断言失败");
         } finally {
             ApiCaptureContext.resetCurrent();
             ApiCaptureContext.unbindCurrentContext();

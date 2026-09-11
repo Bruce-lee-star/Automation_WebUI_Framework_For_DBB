@@ -1,18 +1,18 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine;
 
 import com.microsoft.playwright.BrowserContext;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.PerContextEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextState;
 
@@ -28,7 +28,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextSt
  */
 public class RouteContextStateTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         // RouteContextState 持有 static 状态，测试间隔离
         RouteContextState.CONTEXT_RULES_BY_CONTEXT.clear();
@@ -39,17 +39,17 @@ public class RouteContextStateTest {
     @Test
     public void markDispatched_nullContext_returnsNullAndNoRecord() {
         // 提前返回 null，且从不以 null 为键触碰 ConcurrentHashMap（避免 NPE）
-        assertNull("null context 不应记录", RouteContextState.markDispatched(null));
+        assertNull( RouteContextState.markDispatched(null), "null context 不应记录");
     }
 
     @Test
     public void markDispatched_nonNull_recordsContextWithEmptyBucket() {
         BrowserContext ctx = org.mockito.Mockito.mock(BrowserContext.class);
         Set<?> bucket = RouteContextState.markDispatched(ctx);
-        assertNotNull("非 null context 应返回桶", bucket);
-        assertTrue("DISPATCHED_ROUTES 应含该 context 键",
-                RouteContextState.DISPATCHED_ROUTES.containsKey(ctx));
-        assertEquals("桶内容恒为空占位（仅标记 context 维度分发，不缓存 Route 引用）", 0, bucket.size());
+        assertNotNull( bucket, "非 null context 应返回桶");
+        assertTrue(
+                RouteContextState.DISPATCHED_ROUTES.containsKey(ctx), "DISPATCHED_ROUTES 应含该 context 键");
+        assertEquals( 0,  bucket.size(), "桶内容恒为空占位（仅标记 context 维度分发，不缓存 Route 引用）");
     }
 
     @Test
@@ -57,8 +57,8 @@ public class RouteContextStateTest {
         BrowserContext ctx = org.mockito.Mockito.mock(BrowserContext.class);
         Set<?> first = RouteContextState.markDispatched(ctx);
         Set<?> second = RouteContextState.markDispatched(ctx);
-        assertSame("同一 context 反复 mark 返回同一桶（computeIfAbsent 幂等）", first, second);
-        assertEquals("桶内容恒空", 0, first.size());
+        assertSame( first,  second, "同一 context 反复 mark 返回同一桶（computeIfAbsent 幂等）");
+        assertEquals( 0,  first.size(), "桶内容恒空");
     }
 
     @Test

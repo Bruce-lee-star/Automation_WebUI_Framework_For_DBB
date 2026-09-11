@@ -1,16 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Characterization tests for the pure (browser-free) logic of
@@ -23,12 +23,12 @@ import static org.junit.Assert.assertTrue;
  */
 public class RolePickerClassNameResolverTest {
 
-    @Before
+    @BeforeEach
     public void setUp() {
         RolePickerClassNameResolver.clear();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         RolePickerClassNameResolver.clear();
     }
@@ -162,8 +162,8 @@ public class RolePickerClassNameResolverTest {
         LinkedHashMap<String, String> urlToClass = new LinkedHashMap<>();
         RolePickerClassNameResolver.resolvePageClassForUrl(
                 "https://example.com/accounts", Collections.emptySet(), urlToClass);
-        assertTrue("global persistent mapping should remember the derived class",
-                RolePickerClassNameResolver.values().contains("AccountsPage"));
+        assertTrue(
+                RolePickerClassNameResolver.values().contains("AccountsPage"), "global persistent mapping should remember the derived class");
     }
 
     @Test

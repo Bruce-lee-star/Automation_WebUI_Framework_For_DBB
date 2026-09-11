@@ -5,13 +5,13 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -39,7 +39,7 @@ public class FeatureModeSessionPreservationTest {
 
     private final CustomOptionsManager customOptions = CustomOptionsManager.getInstance();
 
-    @After
+    @AfterEach
     public void tearDown() {
         // 隔离 per-thread 状态，避免串扰
         TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
@@ -64,10 +64,10 @@ public class FeatureModeSessionPreservationTest {
 
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("Feature 模式应保留 storageState", STORAGE_STATE_JSON, customOptions.getStorageState());
-        assertTrue("context 为 null 时应置位 flag 以应用 storageState",
-                Boolean.TRUE.equals(customOptions.isCustomContextOptionsFlag()));
-        assertNull("非 session 配置（locale）应被清除", customOptions.getLocale());
+        assertEquals( STORAGE_STATE_JSON,  customOptions.getStorageState(), "Feature 模式应保留 storageState");
+        assertTrue(
+                Boolean.TRUE.equals(customOptions.isCustomContextOptionsFlag()), "context 为 null 时应置位 flag 以应用 storageState");
+        assertNull( customOptions.getLocale(), "非 session 配置（locale）应被清除");
     }
 
     @Test
@@ -77,11 +77,11 @@ public class FeatureModeSessionPreservationTest {
 
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("Feature 模式应保留 storageState", STORAGE_STATE_JSON, customOptions.getStorageState());
+        assertEquals( STORAGE_STATE_JSON,  customOptions.getStorageState(), "Feature 模式应保留 storageState");
         // 存活 context：flag 被清除且未重新置位 → 返回 null（非 false）；消费者 customFlag!=null&&customFlag 安全处理
-        assertNull("存活 context 下 flag 应为 null（修复问题3：避免 flag 置位但 context 不可用；"
-                + "storageState 需待下次重建经 flag=true 才应用）", customOptions.isCustomContextOptionsFlag());
-        assertNull("非 session 配置（locale）应被清除", customOptions.getLocale());
+        assertNull( customOptions.isCustomContextOptionsFlag(), "存活 context 下 flag 应为 null（修复问题3：避免 flag 置位但 context 不可用；"
+                + "storageState 需待下次重建经 flag=true 才应用）");
+        assertNull( customOptions.getLocale(), "非 session 配置（locale）应被清除");
     }
 
     @Test
@@ -91,10 +91,10 @@ public class FeatureModeSessionPreservationTest {
 
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("Feature 模式应保留 storageState", STORAGE_STATE_JSON, customOptions.getStorageState());
-        assertTrue("已断开 context 应置位 flag 以应用 storageState",
-                Boolean.TRUE.equals(customOptions.isCustomContextOptionsFlag()));
-        assertNull("非 session 配置（locale）应被清除", customOptions.getLocale());
+        assertEquals( STORAGE_STATE_JSON,  customOptions.getStorageState(), "Feature 模式应保留 storageState");
+        assertTrue(
+                Boolean.TRUE.equals(customOptions.isCustomContextOptionsFlag()), "已断开 context 应置位 flag 以应用 storageState");
+        assertNull( customOptions.getLocale(), "非 session 配置（locale）应被清除");
     }
 
     @Test
@@ -106,10 +106,10 @@ public class FeatureModeSessionPreservationTest {
         installMockContext(true);
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("storageState 应保留", STORAGE_STATE_JSON, customOptions.getStorageState());
-        assertNull("locale 应清除", customOptions.getLocale());
-        assertNull("viewport 应清除", customOptions.getViewportWidth());
-        assertNull("存活 context 下 flag 应为 null", customOptions.isCustomContextOptionsFlag());
+        assertEquals( STORAGE_STATE_JSON,  customOptions.getStorageState(), "storageState 应保留");
+        assertNull( customOptions.getLocale(), "locale 应清除");
+        assertNull( customOptions.getViewportWidth(), "viewport 应清除");
+        assertNull( customOptions.isCustomContextOptionsFlag(), "存活 context 下 flag 应为 null");
 
         // 第二轮：再次设选项 + 重新安装存活 context（setStorageState 的 scheduleContextRebuild 会移除 CONTEXT_KEY）
         // + Feature 重置，storageState 不应丢失
@@ -118,8 +118,8 @@ public class FeatureModeSessionPreservationTest {
         installMockContext(true);
         PlaywrightSerenityBridge.resetCustomContextOptionsForFeatureMode();
 
-        assertEquals("跨多次设选项 + Feature 重置，storageState 仍应保留", STORAGE_STATE_JSON, customOptions.getStorageState());
-        assertNull("timezone 应清除", customOptions.getTimezoneId());
-        assertNull("存活 context 下 flag 应为 null", customOptions.isCustomContextOptionsFlag());
+        assertEquals( STORAGE_STATE_JSON,  customOptions.getStorageState(), "跨多次设选项 + Feature 重置，storageState 仍应保留");
+        assertNull( customOptions.getTimezoneId(), "timezone 应清除");
+        assertNull( customOptions.isCustomContextOptionsFlag(), "存活 context 下 flag 应为 null");
     }
 }

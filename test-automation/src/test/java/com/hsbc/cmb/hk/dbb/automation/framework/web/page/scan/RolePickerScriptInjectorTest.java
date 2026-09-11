@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Characterization tests for {@link RolePickerScriptInjector}: the frame/script injection
@@ -19,15 +19,15 @@ public class RolePickerScriptInjectorTest {
     public void gatedPickerInitScript_gatedModeContainsGateAndStartEntrypoints() {
         String script = RolePickerScriptInjector.gatedPickerInitScript("{}");
         assertNotNull(script);
-        assertTrue("script must define the gated start entrypoint", script.contains("window.__roleGatedStart"));
-        assertTrue("script must set the session-on flag", script.contains("__rolePickSessionOn"));
-        assertTrue("script must register load/pageshow self-heal", script.contains("__roleReenable"));
+        assertTrue( script.contains("window.__roleGatedStart"), "script must define the gated start entrypoint");
+        assertTrue( script.contains("__rolePickSessionOn"), "script must set the session-on flag");
+        assertTrue( script.contains("__roleReenable"), "script must register load/pageshow self-heal");
     }
 
     @Test
     public void gatedPickerInitScript_forceModeStillDefinesStartEntrypoint() {
         String script = RolePickerScriptInjector.gatedPickerInitScript("{}", true);
         assertNotNull(script);
-        assertTrue("force mode must still define the gated start entrypoint", script.contains("window.__roleGatedStart"));
+        assertTrue( script.contains("window.__roleGatedStart"), "force mode must still define the gated start entrypoint");
     }
 }

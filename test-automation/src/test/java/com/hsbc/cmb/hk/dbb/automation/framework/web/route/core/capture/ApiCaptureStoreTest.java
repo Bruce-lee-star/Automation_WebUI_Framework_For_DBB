@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureStore;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
@@ -58,7 +58,7 @@ public class ApiCaptureStoreTest {
         store.record(call("/api/login", "https://x/api/login", RouteHandleType.MONITOR));
 
         List<CapturedApiCall> calls = store.getApiCalls("/api/login");
-        assertEquals("passthrough must not duplicate the handler record", 1, calls.size());
+        assertEquals( 1,  calls.size(), "passthrough must not duplicate the handler record");
         assertEquals(RouteHandleType.MOCK, calls.get(0).handleType());
         assertEquals(RouteHandleType.MOCK, store.getLastApiCall("/api/login").handleType());
     }

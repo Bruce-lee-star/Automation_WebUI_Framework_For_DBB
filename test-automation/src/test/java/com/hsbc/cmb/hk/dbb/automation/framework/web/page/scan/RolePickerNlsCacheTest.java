@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.google.gson.Gson;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,9 +12,9 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Characterization tests for {@link RolePickerNlsCache}: the nls reverse-lookup JSON builder
@@ -35,7 +35,7 @@ public class RolePickerNlsCacheTest {
     private static final Gson GSON = new Gson();
     private Path fixture;
 
-    @Before
+    @BeforeEach
     public void setUp() throws IOException {
         RolePickerNlsCache.clear();
         // en/zh with: a plain entry, an HTML/entity entry, and a {{placeholder}} template entry.
@@ -54,7 +54,7 @@ public class RolePickerNlsCacheTest {
         Files.write(fixture, json.getBytes(StandardCharsets.UTF_8));
     }
 
-    @After
+    @AfterEach
     public void tearDown() throws IOException {
         RolePickerNlsCache.clear();
         if (fixture != null) {
@@ -72,7 +72,7 @@ public class RolePickerNlsCacheTest {
     @SuppressWarnings("unchecked")
     public void buildsExactAndTemplateSections() {
         String json = RolePickerNlsCache.buildNlsReverseJson(List.of(fixture.toString()));
-        assertFalse("result must not be the empty-fallback object", "{}".equals(json));
+        assertFalse( "{}".equals(json), "result must not be the empty-fallback object");
 
         Map<String, Object> out = parse(json);
         assertTrue(out.containsKey("exact"));
@@ -97,8 +97,8 @@ public class RolePickerNlsCacheTest {
         Map<String, Object> out = parse(json);
         @SuppressWarnings("unchecked")
         Map<String, String> exact = (Map<String, String>) out.get("exact");
-        assertFalse("exact keys must not contain raw HTML tags",
-                exact.keySet().stream().anyMatch(k -> k.contains("<")));
+        assertFalse(
+                exact.keySet().stream().anyMatch(k -> k.contains("<")), "exact keys must not contain raw HTML tags");
     }
 
     @Test
@@ -110,7 +110,7 @@ public class RolePickerNlsCacheTest {
             Files.write(b, "{\"en\":{\"b_key\":\"Banana\"}}".getBytes(StandardCharsets.UTF_8));
             String ab = RolePickerNlsCache.buildNlsReverseJson(List.of(a.toString(), b.toString()));
             String ba = RolePickerNlsCache.buildNlsReverseJson(List.of(b.toString(), a.toString()));
-            assertEquals("same file set (any order) must hit one cache key", ab, ba);
+            assertEquals( ab,  ba, "same file set (any order) must hit one cache key");
         } finally {
             Files.deleteIfExists(a);
             Files.deleteIfExists(b);

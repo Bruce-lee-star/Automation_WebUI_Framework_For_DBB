@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteMonitorSession;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
@@ -24,7 +24,7 @@ public class RouteMonitorSessionTest {
     private final Object ctx = new Object();
     private final String pattern = "/api/order";
 
-    @After
+    @AfterEach
     public void tearDown() {
         RouteMonitorSession.clearAll();
     }

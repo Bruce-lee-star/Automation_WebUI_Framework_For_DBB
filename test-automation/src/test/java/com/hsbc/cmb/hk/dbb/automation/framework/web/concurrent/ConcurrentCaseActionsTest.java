@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * {@link ConcurrentCaseActions} 注册中心护盾：显式注册覆盖、未提供时抛语义化异常。
@@ -14,7 +14,7 @@ import static org.junit.Assert.fail;
  */
 public class ConcurrentCaseActionsTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         ConcurrentCaseActions.reset();
     }

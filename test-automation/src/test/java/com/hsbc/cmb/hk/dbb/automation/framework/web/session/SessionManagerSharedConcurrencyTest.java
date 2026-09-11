@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -18,10 +18,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 专项 19（会话缓存并发治理）Phase 1 表征测试：锁定 {@link SessionManager} 的
@@ -90,7 +90,7 @@ public class SessionManagerSharedConcurrencyTest {
             }
         }
         void assertNone() {
-            assertTrue("并发执行中不应抛出任何异常，实际: " + faults, faults.isEmpty());
+            assertTrue( faults.isEmpty(), "并发执行中不应抛出任何异常，实际: " + faults);
         }
     }
 
@@ -114,12 +114,12 @@ public class SessionManagerSharedConcurrencyTest {
                     }
                     for (int i = 0; i < iterations; i++) {
                         // 同 key 并发读 → 全部应返回同一 homeUrl（META_CACHE 单飞 + 读盘一致）
-                        assertEquals("并发 loadHomeUrl 必须一致", homeUrl, SessionManager.loadHomeUrl(key));
+                        assertEquals( homeUrl,  SessionManager.loadHomeUrl(key), "并发 loadHomeUrl 必须一致");
                     }
                     done.countDown();
                 }));
             }
-            assertTrue("并发读应在超时内完成", done.await(30, TimeUnit.SECONDS));
+            assertTrue( done.await(30, TimeUnit.SECONDS), "并发读应在超时内完成");
         } finally {
             pool.shutdownNow();
         }
@@ -152,14 +152,14 @@ public class SessionManagerSharedConcurrencyTest {
                             String loaded = SessionManager.loadHomeUrl(key);
                             // 读取永远只能观测到两种合法态：cleared(null) 或精确 homeUrl；
                             // 绝不返回半写/损坏串（files 不被并发写破坏）
-                            assertTrue("loadHomeUrl 只能返回 null 或精确 homeUrl，实际: " + loaded,
-                                    loaded == null || homeUrl.equals(loaded));
+                            assertTrue(
+                                    loaded == null || homeUrl.equals(loaded), "loadHomeUrl 只能返回 null 或精确 homeUrl，实际: " + loaded);
                         }
                     }
                     done.countDown();
                 }));
             }
-            assertTrue("并发 clear/load 应在超时内完成", done.await(30, TimeUnit.SECONDS));
+            assertTrue( done.await(30, TimeUnit.SECONDS), "并发 clear/load 应在超时内完成");
         } finally {
             pool.shutdownNow();
         }
@@ -168,9 +168,9 @@ public class SessionManagerSharedConcurrencyTest {
         // 终态稳定性：竞争结束后，连续读取返回值恒定（不抖动），且为 null 或精确 homeUrl
         String terminal = SessionManager.loadHomeUrl(key);
         for (int i = 0; i < 10; i++) {
-            assertEquals("终态读取应稳定", terminal, SessionManager.loadHomeUrl(key));
+            assertEquals( terminal,  SessionManager.loadHomeUrl(key), "终态读取应稳定");
         }
-        assertTrue("终态只能为 null 或精确 homeUrl", terminal == null || homeUrl.equals(terminal));
+        assertTrue( terminal == null || homeUrl.equals(terminal), "终态只能为 null 或精确 homeUrl");
     }
 
     @Test
@@ -194,18 +194,18 @@ public class SessionManagerSharedConcurrencyTest {
                     for (int i = 0; i < iterations; i++) {
                         // 过期同 key 并发读 → 触发 evictIfExpired 删除；并发幂等：
                         // 重复删除被 catch 降级而非抛，所有线程应观测到 null
-                        assertNull("过期 session 并发读必须返回 null", SessionManager.loadHomeUrl(key));
+                        assertNull( SessionManager.loadHomeUrl(key), "过期 session 并发读必须返回 null");
                     }
                     done.countDown();
                 }));
             }
-            assertTrue("并发过期驱逐应在超时内完成", done.await(30, TimeUnit.SECONDS));
+            assertTrue( done.await(30, TimeUnit.SECONDS), "并发过期驱逐应在超时内完成");
         } finally {
             pool.shutdownNow();
         }
         faults.assertNone();
         // 过期文件应已被删除（且删除仅一次，不抛异常）
-        assertFalse("过期 .meta 应被删除", Files.exists(metaPath()));
-        assertFalse("过期 .json 应被删除", Files.exists(sessionPath()));
+        assertFalse( Files.exists(metaPath()), "过期 .meta 应被删除");
+        assertFalse( Files.exists(sessionPath()), "过期 .json 应被删除");
     }
 }

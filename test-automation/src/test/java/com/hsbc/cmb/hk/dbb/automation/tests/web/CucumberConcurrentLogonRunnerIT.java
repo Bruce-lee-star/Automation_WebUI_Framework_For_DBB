@@ -1,9 +1,9 @@
-package com.hsbc.cmb.hk.dbb.automation.tests.web;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTask;
+package com.hsbc.cmb.hk.dbb.automation.tests.web;
 
-import io.cucumber.junit.CucumberOptions;
-import net.serenitybdd.cucumber.CucumberWithSerenity;
-import org.junit.runner.RunWith;
+import org.junit.platform.suite.api.ConfigurationParameter;
+import org.junit.platform.suite.api.IncludeEngines;
+import org.junit.platform.suite.api.SelectClasspathResource;
+import org.junit.platform.suite.api.Suite;
 
 /**
  * 并发登录运行器 —— 验证 SSO 感知并发闸门（ConcurrencyGate）+ 框架自建并发执行器（单 Browser + 多 Context）。
@@ -42,22 +42,16 @@ import org.junit.runner.RunWith;
  * 关闭时退化为纯并行隔离验证。</p>
  *
  * <p>本运行器仅匹配 {@code @concurrent-logon} 标签，不干扰默认主流程。</p>
+ *
+ * <p>JUnit 5 迁移（原 JUnit4 {@code @RunWith(CucumberWithSerenity.class) + @CucumberOptions}）：
+ * 改用 JUnit Platform {@code @Suite} + {@code cucumber} 引擎。</p>
  */
-@RunWith(CucumberWithSerenity.class)
-@CucumberOptions(
-        features = "src/test/resources/features/web/concurrent_logon_dbb.feature",
-        glue = {
-                "com.hsbc.cmb.hk.dbb.automation.tests.glue",
-                "com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent"
-        },
-        plugin = {
-            "pretty",
-            "html:target/concurrent-logon-cucumber-report.html",
-            "json:target/concurrent-logon-cucumber-report.json"
-        },
-        tags = "@concurrent-logon",
-        dryRun = false
-)
-@SuppressWarnings("deprecation")
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("features/web/concurrent_logon_dbb.feature")
+@ConfigurationParameter(key = "cucumber.glue",
+        value = "com.hsbc.cmb.hk.dbb.automation.tests.glue,com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent")
+@ConfigurationParameter(key = "cucumber.filter.tags", value = "@concurrent-logon")
+@ConfigurationParameter(key = "cucumber.plugin", value = "io.cucumber.core.plugin.SerenityReporterParallel")
 public class CucumberConcurrentLogonRunnerIT {
 }

@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.core.context;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -11,8 +11,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T3-1 基础设施验证：{@link TestContextHolder} 以 per-thread 方式持有 {@link TestContext}，
@@ -47,8 +47,8 @@ public class TestContextConcurrencyTest {
             results.add(f.get(5, TimeUnit.SECONDS));
         }
         pool.shutdown();
-        assertTrue("每个线程应只读到自身写入的 per-thread 上下文，互不串扰: " + results,
-                results.stream().allMatch(Boolean::booleanValue));
+        assertTrue(
+                results.stream().allMatch(Boolean::booleanValue), "每个线程应只读到自身写入的 per-thread 上下文，互不串扰: " + results);
     }
 
     @Test
@@ -64,8 +64,8 @@ public class TestContextConcurrencyTest {
         }).get(5, TimeUnit.SECONDS);
         pool.shutdown();
 
-        assertNull("其他线程的 per-thread 上下文不应看到主线程写入的值", seenByOther);
-        assertTrue("主线程自身仍读到自己的值", "main".equals(ctx.get(k)));
+        assertNull( seenByOther, "其他线程的 per-thread 上下文不应看到主线程写入的值");
+        assertTrue( "main".equals(ctx.get(k)), "主线程自身仍读到自己的值");
         TestContextHolder.resetForCurrentThread();
     }
 
@@ -75,7 +75,7 @@ public class TestContextConcurrencyTest {
         TestContext ctx = TestContextHolder.get();
         ctx.set(key, "x");
         TestContextHolder.resetForCurrentThread();
-        assertNull("resetForCurrentThread 后应清空状态", ctx.get(key));
+        assertNull( ctx.get(key), "resetForCurrentThread 后应清空状态");
     }
 
     @Test
@@ -94,7 +94,7 @@ public class TestContextConcurrencyTest {
                 boolean cleared = ctx.get(k) == null;
                 return isolated && cleared;
             });
-            assertTrue("scenario " + round + " 间不应串扰（线程池复用安全）", f.get(5, TimeUnit.SECONDS));
+            assertTrue( f.get(5, TimeUnit.SECONDS), "scenario " + round + " 间不应串扰（线程池复用安全）");
         }
         pool.shutdown();
     }

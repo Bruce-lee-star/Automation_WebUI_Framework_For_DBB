@@ -1,11 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 固化 {@code ROUTE_FRAMEWORK_GUIDE.md} §3.3「公共匹配条件默认行为」的契约，
@@ -27,20 +27,20 @@ public class RouteRuleDefaultsTest {
     public void defaults_matchDocSection3_3() {
         RouteRule r = new RouteRule();
         // §3.3 onlyMainFrame 默认 true
-        assertTrue("onlyMainFrame should default true (iframe blocked by default)", r.isOnlyMainFrame());
+        assertTrue( r.isOnlyMainFrame(), "onlyMainFrame should default true (iframe blocked by default)");
         // §3.3 onlyApiCall 默认 false（匹配所有请求类型）
-        assertFalse("onlyApiCall should default false", r.isOnlyApiCall());
+        assertFalse( r.isOnlyApiCall(), "onlyApiCall should default false");
     }
 
     @Test
     public void defaults_lifecycleAndStop() {
         RouteRule r = new RouteRule();
         // §3.2 MONITOR autoStop 默认 true；§3.2/§3.3 minMatches 默认 1；§3.3 times 默认 0（无限）
-        assertTrue("autoStopOnMatch should default true", r.isAutoStopOnMatch());
+        assertTrue( r.isAutoStopOnMatch(), "autoStopOnMatch should default true");
         assertEquals(1, r.getMinMatches());
         assertEquals(0, r.getTimes());
         // 监控能力位默认关闭（须显式 monitor() 才开）
-        assertFalse("monitorEnabled should default false", r.isMonitorEnabled());
+        assertFalse( r.isMonitorEnabled(), "monitorEnabled should default false");
     }
 
     @Test
@@ -48,7 +48,7 @@ public class RouteRuleDefaultsTest {
         RouteRule r = new RouteRule();
         assertTrue(r.isOnlyMainFrame());
         r.setOnlyMainFrame(false);
-        assertFalse("allowAllFrames() equivalent: onlyMainFrame must be false", r.isOnlyMainFrame());
+        assertFalse( r.isOnlyMainFrame(), "allowAllFrames() equivalent: onlyMainFrame must be false");
     }
 
     @Test
@@ -63,7 +63,7 @@ public class RouteRuleDefaultsTest {
     public void times_zeroMeansUnlimited() {
         RouteRule r = new RouteRule();
         assertEquals(0, r.getTimes());
-        assertFalse("times=0 means unlimited, never exhausted", r.isTimesExhausted());
+        assertFalse( r.isTimesExhausted(), "times=0 means unlimited, never exhausted");
         r.setTimes(2);
         assertEquals(2, r.getTimes());
         assertFalse(r.isTimesExhausted());

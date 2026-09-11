@@ -8,10 +8,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Context
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCrashGuard;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -19,10 +19,10 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@link BrowserCrashGuard} 单测（固化设计文档 9.6 / R7）：
@@ -33,18 +33,18 @@ import static org.junit.Assert.assertTrue;
  */
 public class BrowserCrashGuardTest {
 
-    @BeforeClass
+    @BeforeAll
     public static void enableGuard() {
         System.setProperty("serenity.playwright.concurrent.browser.crash.guard.enabled", "true");
     }
 
-    @AfterClass
+    @AfterAll
     public static void restore() {
         System.clearProperty("serenity.playwright.concurrent.browser.crash.guard.enabled");
     }
 
     /** 每个用例后复位注入的恢复动作（含强制重建路径），避免静态状态串扰其它测试。 */
-    @After
+    @AfterEach
     public void resetAction() {
         BrowserCrashGuard.setRecoveryActionForTesting(null);
         BrowserCrashGuard.setForcedRecoveryActionForTesting(null);
@@ -67,10 +67,10 @@ public class BrowserCrashGuardTest {
     public void playwrightExceptionWithoutCrashSignatureIsNotCrash() {
         // WEB-P1-4：PlaywrightException 同时承载崩溃与超时 / 断言失败；移除类名模糊匹配后，
         // 无崩溃信号的 PlaywrightException（即使是 TimeoutError 子类）不再误判为崩溃，避免"重跑一次就好"掩盖真实缺陷。
-        assertFalse("普通 PlaywrightException（无崩溃信号）不应触发重跑",
-                BrowserCrashGuard.isCrash(new PlaywrightException("waiting for selector to be visible")));
-        assertFalse("元素超时（TimeoutError 子类）不应触发重跑",
-                BrowserCrashGuard.isCrash(new TimeoutError("Timeout 30000ms exceeded")));
+        assertFalse(
+                BrowserCrashGuard.isCrash(new PlaywrightException("waiting for selector to be visible")), "普通 PlaywrightException（无崩溃信号）不应触发重跑");
+        assertFalse(
+                BrowserCrashGuard.isCrash(new TimeoutError("Timeout 30000ms exceeded")), "元素超时（TimeoutError 子类）不应触发重跑");
     }
 
     @Test
@@ -111,7 +111,7 @@ public class BrowserCrashGuardTest {
 
     @Test
     public void enabledByDefaultAndViaSystemProperty() {
-        assertTrue("默认应启用", BrowserCrashGuard.isEnabled());
+        assertTrue( BrowserCrashGuard.isEnabled(), "默认应启用");
         System.setProperty("serenity.playwright.concurrent.browser.crash.guard.enabled", "false");
         try {
             assertFalse(BrowserCrashGuard.isEnabled());
@@ -211,13 +211,13 @@ public class BrowserCrashGuardTest {
 
         assertEquals(1, results.size());
         ContextTaskResult<String> r = results.get(0);
-        assertTrue("重跑后应成功", r.isSuccess());
-        assertEquals("value should be ok-2", "ok-2", r.valueOrThrow());
-        assertEquals("任务应被调用两次（首失败 + 重跑）", 2, task.attempts.get());
-        assertTrue("应触发至少一次恢复", rebuilds.get() >= 1);
+        assertTrue( r.isSuccess(), "重跑后应成功");
+        assertEquals( "ok-2",  r.valueOrThrow(), "value should be ok-2");
+        assertEquals( 2,  task.attempts.get(), "任务应被调用两次（首失败 + 重跑）");
+        assertTrue( rebuilds.get() >= 1, "应触发至少一次恢复");
         // WEB-P1-4 验收 ②：重跑事件必须可在结果中识别，供编排线程在 Serenity 报告显式标注。
-        assertTrue("重跑成功后仍应标注 replayed=true", r.isReplayed());
-        assertEquals("重跑类型应为 crash", "crash", r.getRecoveryType());
+        assertTrue( r.isReplayed(), "重跑成功后仍应标注 replayed=true");
+        assertEquals( "crash",  r.getRecoveryType(), "重跑类型应为 crash");
     }
 
     @Test
@@ -233,8 +233,8 @@ public class BrowserCrashGuardTest {
         List<ContextTaskResult<String>> results = ConcurrentContextExecutor.runAll(List.of(task));
 
         assertEquals(1, results.size());
-        assertFalse("业务失败不应被重跑", results.get(0).isSuccess());
-        assertEquals("业务失败不触发恢复", 0, recoverCalls.get());
+        assertFalse( results.get(0).isSuccess(), "业务失败不应被重跑");
+        assertEquals( 0,  recoverCalls.get(), "业务失败不触发恢复");
     }
 
     @Test
@@ -257,10 +257,10 @@ public class BrowserCrashGuardTest {
 
         assertEquals(n, results.size());
         for (int i = 0; i < n; i++) {
-            assertTrue("任务 " + i + " 重跑后应成功", results.get(i).isSuccess());
-            assertEquals("任务 " + i + " 应被调用两次", 2, spies.get(i).attempts.get());
+            assertTrue( results.get(i).isSuccess(), "任务 " + i + " 重跑后应成功");
+            assertEquals( 2,  spies.get(i).attempts.get(), "任务 " + i + " 应被调用两次");
         }
-        assertTrue("并发崩溃应触发至少一次恢复（单飞）", rebuilds.get() >= 1);
+        assertTrue( rebuilds.get() >= 1, "并发崩溃应触发至少一次恢复（单飞）");
     }
 
     // ==================== ⑤ 句柄损坏 → 强制恢复 + 重跑（E2E 实测缺口加固） ====================
@@ -296,10 +296,10 @@ public class BrowserCrashGuardTest {
 
         assertEquals(1, results.size());
         ContextTaskResult<String> r = results.get(0);
-        assertTrue("强制恢复重跑后应成功", r.isSuccess());
+        assertTrue( r.isSuccess(), "强制恢复重跑后应成功");
         assertEquals("ok-2", r.valueOrThrow());
-        assertEquals("任务应被调用两次（首失败 + 强制恢复重跑）", 2, task.attempts.get());
-        assertTrue("应触发强制恢复", forcedRebuilds.get() >= 1);
+        assertEquals( 2,  task.attempts.get(), "任务应被调用两次（首失败 + 强制恢复重跑）");
+        assertTrue( forcedRebuilds.get() >= 1, "应触发强制恢复");
     }
 
     @Test
@@ -319,9 +319,9 @@ public class BrowserCrashGuardTest {
                     new PlaywrightException("Cannot find object to call __adopt__: page@abc"));
         });
         List<ContextTaskResult<String>> results = ConcurrentContextExecutor.runAll(List.of(task));
-        assertFalse("句柄损坏经强制恢复后仍失败则如实返回失败（不掩盖缺陷）", results.get(0).isSuccess());
-        assertEquals("句柄损坏应走强制恢复而非普通恢复", 0, plainCalls.get());
-        assertEquals("强制恢复应被调用一次", 1, forcedCalls.get());
+        assertFalse( results.get(0).isSuccess(), "句柄损坏经强制恢复后仍失败则如实返回失败（不掩盖缺陷）");
+        assertEquals( 0,  plainCalls.get(), "句柄损坏应走强制恢复而非普通恢复");
+        assertEquals( 1,  forcedCalls.get(), "强制恢复应被调用一次");
     }
 
     @Test
@@ -340,8 +340,8 @@ public class BrowserCrashGuardTest {
             throw new RuntimeException("Browser has been closed unexpectedly");
         });
         List<ContextTaskResult<String>> results = ConcurrentContextExecutor.runAll(List.of(task));
-        assertFalse("普通崩溃（无句柄损坏签名）不掩盖失败", results.get(0).isSuccess());
-        assertEquals("普通崩溃应走断开型恢复", 1, plainCalls.get());
-        assertEquals("普通崩溃不应触发强制恢复", 0, forcedCalls.get());
+        assertFalse( results.get(0).isSuccess(), "普通崩溃（无句柄损坏签名）不掩盖失败");
+        assertEquals( 1,  plainCalls.get(), "普通崩溃应走断开型恢复");
+        assertEquals( 0,  forcedCalls.get(), "普通崩溃不应触发强制恢复");
     }
 }

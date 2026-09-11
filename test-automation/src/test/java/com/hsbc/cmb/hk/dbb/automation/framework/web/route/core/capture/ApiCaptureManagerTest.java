@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
@@ -32,7 +32,7 @@ public class ApiCaptureManagerTest {
                 .build();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         ApiCaptureManager.getInstance().setApiCaptureEnabled(true);
         ApiCaptureManager.getInstance().endApiCapture();

@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.lang.reflect.Field;
@@ -10,8 +10,8 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * CG-P2-N12 回归：拾取脚本外置为 {@code scan/js/*.js} 资源后，构建期/测试期校验其 JS 语法。
@@ -39,15 +39,15 @@ public class RolePickerScriptsJsValidationTest {
     }
 
     private void checkScript(String name, String js) throws Exception {
-        Assume.assumeTrue("node not available - skipping JS syntax validation", nodeAvailable());
-        assertTrue(name + " must be non-empty", js != null && !js.trim().isEmpty());
+        Assumptions.assumeTrue(nodeAvailable(), "node not available - skipping JS syntax validation");
+        assertTrue(js != null && !js.trim().isEmpty(), name + " must be non-empty");
         File tmp = Files.createTempFile("picker-js-", ".js").toFile();
         tmp.deleteOnExit();
         Files.write(tmp.toPath(), js.getBytes("UTF-8"));
         Process p = new ProcessBuilder(NODE, "--check", tmp.getAbsolutePath()).start();
         int exit = p.waitFor();
         String stderr = new String(p.getErrorStream().readAllBytes(), "UTF-8");
-        assertEquals(name + " failed node --check:\n" + stderr, 0, exit);
+        assertEquals(0, exit, name + " failed node --check:\n" + stderr);
     }
 
     /**
@@ -73,8 +73,8 @@ public class RolePickerScriptsJsValidationTest {
                 fields.add(f);
             }
         }
-        Assume.assumeTrue("node not available - skipping JS syntax validation", nodeAvailable());
-        assertTrue("expected numerous script constants", fields.size() >= 30);
+        Assumptions.assumeTrue(nodeAvailable(), "node not available - skipping JS syntax validation");
+        assertTrue( fields.size() >= 30, "expected numerous script constants");
         for (Field f : fields) {
             if (COMPOSED_PART_CONSTANTS.contains(f.getName())) {
                 continue; // see javadoc above: validated via the composed START_SCRIPT / PANEL_SCRIPT

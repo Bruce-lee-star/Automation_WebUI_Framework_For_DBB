@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -12,10 +12,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T0-4 补全收尾：Monitor DB 持久化端到端验证（确认非死代码）。
@@ -33,7 +33,7 @@ public class ApiMonitoringRepositoryE2ETest {
 
     private String dbUrl;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         // 每个用例独立内存库，避免串扰
         dbUrl = "jdbc:h2:mem:routemonitor_e2e_" + UUID.randomUUID().toString().replace("-", "")
@@ -41,7 +41,7 @@ public class ApiMonitoringRepositoryE2ETest {
         ApiMonitoringRepository.reset();
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         ApiMonitoringRepository.reset();
     }
@@ -49,7 +49,7 @@ public class ApiMonitoringRepositoryE2ETest {
     @Test
     public void shouldPersistMonitorRecordsEndToEnd() throws Exception {
         ApiMonitoringRepository.init(dbUrl, "sa", "", "H2", 2);
-        assertTrue("Repository 应成功初始化（连接 H2 验证通过）", ApiMonitoringRepository.isInitialized());
+        assertTrue( ApiMonitoringRepository.isInitialized(), "Repository 应成功初始化（连接 H2 验证通过）");
 
         int n = 5;
         for (int i = 0; i < n; i++) {
@@ -71,14 +71,14 @@ public class ApiMonitoringRepositoryE2ETest {
         ApiMonitoringRepository.shutdown();
 
         // 1) 诊断计数证明批量 INSERT 成功执行（非死代码）
-        assertEquals("应有 " + n + " 条记录成功落库", n, ApiMonitoringRepository.flushedCount());
+        assertEquals( n,  ApiMonitoringRepository.flushedCount(), "应有 " + n + " 条记录成功落库");
         assertEquals(0, ApiMonitoringRepository.failedCount());
 
         // 2) 直接查 H2 验证行真实落库
         try (Connection conn = DriverManager.getConnection(dbUrl, "sa", "");
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM route_monitor_record")) {
-            assertTrue("应能查到落库记录", rs.next());
+            assertTrue( rs.next(), "应能查到落库记录");
             assertEquals(n, rs.getInt(1));
         }
     }
@@ -86,14 +86,14 @@ public class ApiMonitoringRepositoryE2ETest {
     @Test
     public void shouldCreateFlywayHistoryTableOnInit() throws Exception {
         ApiMonitoringRepository.init(dbUrl, "sa", "", "H2", 2);
-        assertTrue("Repository 应成功初始化", ApiMonitoringRepository.isInitialized());
+        assertTrue( ApiMonitoringRepository.isInitialized(), "Repository 应成功初始化");
 
         // ROUTE-P1-N2：DDL 已移出 Java，改由 Flyway 管理 → flyway_schema_history 应被创建并记录 V1
         try (Connection conn = DriverManager.getConnection(dbUrl, "sa", "");
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
                      "SELECT COUNT(*) FROM \"flyway_schema_history\" WHERE \"version\" = '1'")) {
-            assertTrue("flyway_schema_history 应存在且含 V1 迁移记录", rs.next());
+            assertTrue( rs.next(), "flyway_schema_history 应存在且含 V1 迁移记录");
             assertEquals(1, rs.getInt(1));
         }
         ApiMonitoringRepository.shutdown();
@@ -113,19 +113,19 @@ public class ApiMonitoringRepositoryE2ETest {
         }
 
         ApiMonitoringRepository.init(dbUrl, "sa", "", "H2", 2);
-        assertTrue("旧库经 baselineOnMigrate 应成功接入", ApiMonitoringRepository.isInitialized());
+        assertTrue( ApiMonitoringRepository.isInitialized(), "旧库经 baselineOnMigrate 应成功接入");
 
         try (Connection conn = DriverManager.getConnection(dbUrl, "sa", "");
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM route_monitor_record")) {
             assertTrue(rs.next());
-            assertEquals("旧表数据应保留（零丢数据）", 1, rs.getInt(1));
+            assertEquals( 1,  rs.getInt(1), "旧表数据应保留（零丢数据）");
         }
         try (Connection conn = DriverManager.getConnection(dbUrl, "sa", "");
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
                      "SELECT COUNT(*) FROM \"flyway_schema_history\" WHERE \"version\" = '1'")) {
-            assertTrue("应写入 V1 基线历史", rs.next());
+            assertTrue( rs.next(), "应写入 V1 基线历史");
             assertEquals(1, rs.getInt(1));
         }
         ApiMonitoringRepository.shutdown();

@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.util.regex.Pattern;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiAssertion;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.RoutePatternCache;
 
@@ -35,22 +35,22 @@ public class ApiAssertionTest {
     @Test
     public void antGlobToRegex_singleStar_doesNotCrossSlash() {
         Pattern p = RoutePatternCache.antGlobToRegex("*.json");
-        assertTrue("单层 * 匹配同目录文件", p.matcher("foo.json").matches());
-        assertFalse("单层 * 不应跨越 /", p.matcher("a/b.json").matches());
+        assertTrue( p.matcher("foo.json").matches(), "单层 * 匹配同目录文件");
+        assertFalse( p.matcher("a/b.json").matches(), "单层 * 不应跨越 /");
     }
 
     @Test
     public void antGlobToRegex_doubleStar_crossesSlash() {
         Pattern p = RoutePatternCache.antGlobToRegex("/api/**");
-        assertTrue("** 应匹配任意深层路径", p.matcher("/api/x/y").matches());
-        assertFalse("** 不应匹配其他前缀", p.matcher("/other/x").matches());
+        assertTrue( p.matcher("/api/x/y").matches(), "** 应匹配任意深层路径");
+        assertFalse( p.matcher("/other/x").matches(), "** 不应匹配其他前缀");
     }
 
     @Test
     public void antGlobToRegex_escapesSpecialChars() {
         Pattern p = RoutePatternCache.antGlobToRegex("a.b");
-        assertTrue("字面点应匹配", p.matcher("a.b").matches());
-        assertFalse("未转义的点会错误匹配任意字符", p.matcher("axb").matches());
+        assertTrue( p.matcher("a.b").matches(), "字面点应匹配");
+        assertFalse( p.matcher("axb").matches(), "未转义的点会错误匹配任意字符");
     }
 
     @Test

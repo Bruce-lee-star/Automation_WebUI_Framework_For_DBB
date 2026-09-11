@@ -8,11 +8,11 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -28,11 +28,11 @@ import static org.mockito.Mockito.when;
  * {@code mock(BasePage.class)}（Objenesis 绕过构造），本类走<b>真实构造 + 真实
  * {@code getPage()}</b>链路，即验证 seam 对「构造不再启动浏览器 + 运行时对象可替换」的解锁。
  *
- * @apiNote 仅框架测试使用；必须在 {@code @After} 复位 provider，避免污染后续测试。
+ * @apiNote 仅框架测试使用；必须在 {@code @AfterEach} 复位 provider，避免污染后续测试。
  */
 public class BasePageSeamTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         PlaywrightManager.resetProvider();
     }

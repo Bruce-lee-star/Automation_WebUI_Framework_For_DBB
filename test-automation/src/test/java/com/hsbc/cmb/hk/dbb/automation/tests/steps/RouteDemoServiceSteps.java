@@ -17,11 +17,11 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Route Demo Service 集成测试步骤 —— 结合真实 SpringBoot demo service（route-demo-service，端口 8888，context-path /demo）。
@@ -181,11 +181,11 @@ public class RouteDemoServiceSteps {
         get("/users");
 
         CapturedApiCall call = waitForCaptured("/demo/api/users");
-        assertNotNull("monitor 应将 /demo/api/users 的响应记入采集上下文", call);
+        assertNotNull( call, "monitor 应将 /demo/api/users 的响应记入采集上下文");
         assertEquals(200, call.statusCode());
         String body = call.responseBody();
         assertNotNull(body);
-        assertTrue("采集到的响应应来自真实 demo service（含 Alice）", body.contains("Alice"));
+        assertTrue( body.contains("Alice"), "采集到的响应应来自真实 demo service（含 Alice）");
     }
 
     // ───────────────────────── B. MOCK 整体替换 ─────────────────────────
@@ -204,7 +204,7 @@ public class RouteDemoServiceSteps {
         String body = get("/users");
         JsonNode node = assertJson(body);
         assertEquals("MockedUser", node.at("/users/0/name").asText());
-        assertFalse("mock 响应不应包含真实数据 Alice", body.contains("Alice"));
+        assertFalse( body.contains("Alice"), "mock 响应不应包含真实数据 Alice");
     }
 
     // ───────────────────────── C. MOCK + 拦截真实响应改字段 ─────────────────────────
@@ -246,10 +246,10 @@ public class RouteDemoServiceSteps {
         String body = get("/users");
         JsonNode node = assertJson(body);
         // Bob(index1) 是 ADMIN → vip=true
-        assertTrue("ADMIN 用户(Bob)应被设置 vip=true", node.at("/1/vip").asBoolean());
+        assertTrue( node.at("/1/vip").asBoolean(), "ADMIN 用户(Bob)应被设置 vip=true");
         // Alice(index0)/Charlie(index2) 是 USER → 不产生 vip 或保持原值（不应为 true）
-        assertFalse("USER 用户(Alice)不应被设置 vip", node.at("/0/vip").asBoolean(false));
-        assertFalse("USER 用户(Charlie)不应被设置 vip", node.at("/2/vip").asBoolean(false));
+        assertFalse( node.at("/0/vip").asBoolean(false), "USER 用户(Alice)不应被设置 vip");
+        assertFalse( node.at("/2/vip").asBoolean(false), "USER 用户(Charlie)不应被设置 vip");
         // 其它字段不受影响
         assertEquals("Alice", node.at("/0/name").asText());
         assertEquals("Charlie", node.at("/2/name").asText());
@@ -271,9 +271,9 @@ public class RouteDemoServiceSteps {
 
         String body = get("/users");
         JsonNode node = assertJson(body);
-        assertFalse("id=1 不满足 >=2，不应被添加 flag", node.at("/0/flag").asBoolean(false));
-        assertTrue("id=2 满足 >=2，应被添加 flag=true", node.at("/1/flag").asBoolean());
-        assertTrue("id=3 满足 >=2，应被添加 flag=true", node.at("/2/flag").asBoolean());
+        assertFalse( node.at("/0/flag").asBoolean(false), "id=1 不满足 >=2，不应被添加 flag");
+        assertTrue( node.at("/1/flag").asBoolean(), "id=2 满足 >=2，应被添加 flag=true");
+        assertTrue( node.at("/2/flag").asBoolean(), "id=3 满足 >=2，应被添加 flag=true");
     }
 
     // ───────────── D3. 需求3 条件修改 — 补齐 ConditionOp 全部 11 个操作符覆盖 ─────────────
@@ -299,9 +299,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("Alice(USER)≠ADMIN，应设置 vip=true", node.at("/0/vip").asBoolean());
-        assertFalse("Bob 是 ADMIN，NOT_EQUALS 不应设置 vip", node.at("/1/vip").asBoolean(false));
-        assertTrue("Charlie(USER)≠ADMIN，应设置 vip=true", node.at("/2/vip").asBoolean());
+        assertTrue( node.at("/0/vip").asBoolean(), "Alice(USER)≠ADMIN，应设置 vip=true");
+        assertFalse( node.at("/1/vip").asBoolean(false), "Bob 是 ADMIN，NOT_EQUALS 不应设置 vip");
+        assertTrue( node.at("/2/vip").asBoolean(), "Charlie(USER)≠ADMIN，应设置 vip=true");
     }
 
     @Step
@@ -317,9 +317,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertFalse("id=1 不满足 >2", node.at("/0/flag").asBoolean(false));
-        assertFalse("id=2 边界：GT 为严格大于，2 不 > 2", node.at("/1/flag").asBoolean(false));
-        assertTrue("id=3 满足 >2", node.at("/2/flag").asBoolean());
+        assertFalse( node.at("/0/flag").asBoolean(false), "id=1 不满足 >2");
+        assertFalse( node.at("/1/flag").asBoolean(false), "id=2 边界：GT 为严格大于，2 不 > 2");
+        assertTrue( node.at("/2/flag").asBoolean(), "id=3 满足 >2");
     }
 
     @Step
@@ -335,9 +335,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("id=1 满足 <2", node.at("/0/flag").asBoolean());
-        assertFalse("id=2 边界：LT 为严格小于，2 不 < 2", node.at("/1/flag").asBoolean(false));
-        assertFalse("id=3 不满足 <2", node.at("/2/flag").asBoolean(false));
+        assertTrue( node.at("/0/flag").asBoolean(), "id=1 满足 <2");
+        assertFalse( node.at("/1/flag").asBoolean(false), "id=2 边界：LT 为严格小于，2 不 < 2");
+        assertFalse( node.at("/2/flag").asBoolean(false), "id=3 不满足 <2");
     }
 
     @Step
@@ -353,9 +353,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("id=1 满足 <=2", node.at("/0/flag").asBoolean());
-        assertTrue("id=2 边界：LTE 含等于，2<=2 应命中", node.at("/1/flag").asBoolean());
-        assertFalse("id=3 不满足 <=2", node.at("/2/flag").asBoolean(false));
+        assertTrue( node.at("/0/flag").asBoolean(), "id=1 满足 <=2");
+        assertTrue( node.at("/1/flag").asBoolean(), "id=2 边界：LTE 含等于，2<=2 应命中");
+        assertFalse( node.at("/2/flag").asBoolean(false), "id=3 不满足 <=2");
     }
 
     @Step
@@ -371,9 +371,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertFalse("alice@example.com 不含 'bob'", node.at("/0/matched").asBoolean(false));
-        assertTrue("bob@example.com 含 'bob'，应命中", node.at("/1/matched").asBoolean());
-        assertFalse("charlie@example.com 不含 'bob'", node.at("/2/matched").asBoolean(false));
+        assertFalse( node.at("/0/matched").asBoolean(false), "alice@example.com 不含 'bob'");
+        assertTrue( node.at("/1/matched").asBoolean(), "bob@example.com 含 'bob'，应命中");
+        assertFalse( node.at("/2/matched").asBoolean(false), "charlie@example.com 不含 'bob'");
     }
 
     @Step
@@ -389,9 +389,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("alice@example.com 不含 'bob'，应命中", node.at("/0/matched").asBoolean());
-        assertFalse("bob@example.com 含 'bob'，NOT_CONTAINS 不应命中", node.at("/1/matched").asBoolean(false));
-        assertTrue("charlie@example.com 不含 'bob'，应命中", node.at("/2/matched").asBoolean());
+        assertTrue( node.at("/0/matched").asBoolean(), "alice@example.com 不含 'bob'，应命中");
+        assertFalse( node.at("/1/matched").asBoolean(false), "bob@example.com 含 'bob'，NOT_CONTAINS 不应命中");
+        assertTrue( node.at("/2/matched").asBoolean(), "charlie@example.com 不含 'bob'，应命中");
     }
 
     @Step
@@ -410,9 +410,9 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("Alice 以 A 开头，应匹配 ^[AC].*", node.at("/0/initialGroup").asBoolean());
-        assertFalse("Bob 以 B 开头，不应匹配 ^[AC].*", node.at("/1/initialGroup").asBoolean(false));
-        assertTrue("Charlie 以 C 开头，应匹配 ^[AC].*", node.at("/2/initialGroup").asBoolean());
+        assertTrue( node.at("/0/initialGroup").asBoolean(), "Alice 以 A 开头，应匹配 ^[AC].*");
+        assertFalse( node.at("/1/initialGroup").asBoolean(false), "Bob 以 B 开头，不应匹配 ^[AC].*");
+        assertTrue( node.at("/2/initialGroup").asBoolean(), "Charlie 以 C 开头，应匹配 ^[AC].*");
     }
 
     /**
@@ -433,12 +433,12 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("role 存在，Alice 应被设置 hasRole", node.at("/0/hasRole").asBoolean());
-        assertTrue("role 存在，Bob 应被设置 hasRole", node.at("/1/hasRole").asBoolean());
-        assertTrue("role 存在，Charlie 应被设置 hasRole", node.at("/2/hasRole").asBoolean());
-        assertFalse("missingField 不存在，EXISTS 不应命中", node.at("/0/hasMissing").asBoolean(false));
-        assertFalse("missingField 不存在，EXISTS 不应命中", node.at("/1/hasMissing").asBoolean(false));
-        assertFalse("missingField 不存在，EXISTS 不应命中", node.at("/2/hasMissing").asBoolean(false));
+        assertTrue( node.at("/0/hasRole").asBoolean(), "role 存在，Alice 应被设置 hasRole");
+        assertTrue( node.at("/1/hasRole").asBoolean(), "role 存在，Bob 应被设置 hasRole");
+        assertTrue( node.at("/2/hasRole").asBoolean(), "role 存在，Charlie 应被设置 hasRole");
+        assertFalse( node.at("/0/hasMissing").asBoolean(false), "missingField 不存在，EXISTS 不应命中");
+        assertFalse( node.at("/1/hasMissing").asBoolean(false), "missingField 不存在，EXISTS 不应命中");
+        assertFalse( node.at("/2/hasMissing").asBoolean(false), "missingField 不存在，EXISTS 不应命中");
     }
 
     /**
@@ -458,12 +458,12 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode node = assertJson(get("/users"));
-        assertTrue("missingField 不存在，NOT_EXISTS 应命中", node.at("/0/missingOk").asBoolean());
-        assertTrue("missingField 不存在，NOT_EXISTS 应命中", node.at("/1/missingOk").asBoolean());
-        assertTrue("missingField 不存在，NOT_EXISTS 应命中", node.at("/2/missingOk").asBoolean());
-        assertFalse("role 存在，NOT_EXISTS 不应命中", node.at("/0/roleGone").asBoolean(false));
-        assertFalse("role 存在，NOT_EXISTS 不应命中", node.at("/1/roleGone").asBoolean(false));
-        assertFalse("role 存在，NOT_EXISTS 不应命中", node.at("/2/roleGone").asBoolean(false));
+        assertTrue( node.at("/0/missingOk").asBoolean(), "missingField 不存在，NOT_EXISTS 应命中");
+        assertTrue( node.at("/1/missingOk").asBoolean(), "missingField 不存在，NOT_EXISTS 应命中");
+        assertTrue( node.at("/2/missingOk").asBoolean(), "missingField 不存在，NOT_EXISTS 应命中");
+        assertFalse( node.at("/0/roleGone").asBoolean(false), "role 存在，NOT_EXISTS 不应命中");
+        assertFalse( node.at("/1/roleGone").asBoolean(false), "role 存在，NOT_EXISTS 不应命中");
+        assertFalse( node.at("/2/roleGone").asBoolean(false), "role 存在，NOT_EXISTS 不应命中");
     }
 
     // ───────────────────────── E. MODIFY 改写请求体 ─────────────────────────
@@ -503,7 +503,7 @@ public class RouteDemoServiceSteps {
         long elapsed = System.currentTimeMillis() - start;
 
         // /demo/api/slow/endpoint 的真实基线仅约 110ms；delay(1s) 生效则应约 1100ms+
-        assertTrue("delay(1s) 应使响应耗时 > 700ms（真实基线约 110ms），实际=" + elapsed, elapsed >= 700);
+        assertTrue( elapsed >= 700, "delay(1s) 应使响应耗时 > 700ms（真实基线约 110ms），实际=" + elapsed);
         assertTrue(body.contains("slow endpoint"));
     }
 
@@ -531,9 +531,9 @@ public class RouteDemoServiceSteps {
         get("/slow/endpoint");
 
         CapturedApiCall call = waitForCaptured("/demo/api/slow/endpoint");
-        assertNotNull("delay 场景下 monitor 经扩展重试仍应采集到响应（需求2）", call);
-        assertNotNull("delay 场景下 monitor 读 body 重试(+delayMs)应取到响应体", call.responseBody());
-        assertTrue("monitor 采集到的响应体应来自真实 slow endpoint", call.responseBody().contains("slow endpoint"));
+        assertNotNull( call, "delay 场景下 monitor 经扩展重试仍应采集到响应（需求2）");
+        assertNotNull( call.responseBody(), "delay 场景下 monitor 读 body 重试(+delayMs)应取到响应体");
+        assertTrue( call.responseBody().contains("slow endpoint"), "monitor 采集到的响应体应来自真实 slow endpoint");
     }
 
     // ───────────────────────── E2. 用户关注点：同 API 先 modify 后 monitor（分写）→ 两能力共存，monitor 不失联 ─────────────────────────
@@ -569,10 +569,10 @@ public class RouteDemoServiceSteps {
 
         // monitor 经分发期合并后仍在同 pattern 生效：采集到响应（且反映 modify 后的请求）
         CapturedApiCall call = waitForCaptured(api);
-        assertNotNull("同 API 先 modify 后 monitor：monitor 不应失联，应采集到响应", call);
+        assertNotNull( call, "同 API 先 modify 后 monitor：monitor 不应失联，应采集到响应");
         assertEquals(200, call.statusCode());
         assertNotNull(call.responseBody());
-        assertTrue("monitor 采集到的响应应反映 modify 后的请求（含 SUPER）", call.responseBody().contains("SUPER"));
+        assertTrue( call.responseBody().contains("SUPER"), "monitor 采集到的响应应反映 modify 后的请求（含 SUPER）");
     }
 
     @Step
@@ -604,10 +604,10 @@ public class RouteDemoServiceSteps {
         assertEquals("SUPER", node.at("/role").asText());
 
         CapturedApiCall call = waitForCaptured(api);
-        assertNotNull("同 API 先 monitor 后 modify：monitor 应共存并采集到响应", call);
+        assertNotNull( call, "同 API 先 monitor 后 modify：monitor 应共存并采集到响应");
         assertEquals(200, call.statusCode());
         assertNotNull(call.responseBody());
-        assertTrue("monitor 采集到的响应应反映 modify 后的请求（含 SUPER）", call.responseBody().contains("SUPER"));
+        assertTrue( call.responseBody().contains("SUPER"), "monitor 采集到的响应应反映 modify 后的请求（含 SUPER）");
     }
 
     // ───────────────────────── G. 优先级：mock + monitor 同 pattern ─────────────────────────
@@ -637,7 +637,7 @@ public class RouteDemoServiceSteps {
 
         CapturedApiCall call = waitForCaptured("/demo/api/users");
         assertNotNull(call);
-        assertTrue("monitor 在链尾应采集到 mock 后的响应", call.responseBody().contains("MockedUser"));
+        assertTrue( call.responseBody().contains("MockedUser"), "monitor 在链尾应采集到 mock 后的响应");
     }
 
     // ───────────────────────── H1. 资源清理：clear 后规则失效、恢复真实后端 ─────────────────────────
@@ -653,7 +653,7 @@ public class RouteDemoServiceSteps {
 
         openOrigin(page());
 
-        assertTrue("clear 前应命中 mock", get("/users").contains("MockedUser"));
+        assertTrue( get("/users").contains("MockedUser"), "clear 前应命中 mock");
 
         // 页面级规则须用 clear(Page) 移除，否则 mock 仍然命中
         RouteDsl.clear(page());
@@ -661,8 +661,8 @@ public class RouteDemoServiceSteps {
         openOrigin(page());
 
         String after = get("/users");
-        assertTrue("clear 后应恢复真实响应（含 Alice）", after.contains("Alice"));
-        assertFalse("clear 后不应再返回 mock 数据", after.contains("MockedUser"));
+        assertTrue( after.contains("Alice"), "clear 后应恢复真实响应（含 Alice）");
+        assertFalse( after.contains("MockedUser"), "clear 后不应再返回 mock 数据");
     }
 
     // ───────────────────────── H2. 资源清理：多 context 隔离，互不影响 ─────────────────────────
@@ -686,8 +686,8 @@ public class RouteDemoServiceSteps {
             openOrigin(page());
             openOrigin(page2);
 
-            assertTrue("context1 应命中其 mock", getVia(page(), "/users").contains("C1MOCK"));
-            assertTrue("context2 应命中其 mock", getVia(page2, "/users").contains("C2MOCK"));
+            assertTrue( getVia(page(), "/users").contains("C1MOCK"), "context1 应命中其 mock");
+            assertTrue( getVia(page2, "/users").contains("C2MOCK"), "context2 应命中其 mock");
 
             // 仅清理 context1，不应影响 context2
             // 主页面规则为页面级 → clear(Page)；ctx2 规则为 context 级 → clear(ctx2)
@@ -696,8 +696,8 @@ public class RouteDemoServiceSteps {
             openOrigin(page()); // 清理后刷新
 
             String c1after = getVia(page(), "/users");
-            assertTrue("context1 清理后应恢复真实响应", c1after.contains("Alice"));
-            assertTrue("context2 未被清理，仍应命中 mock", getVia(page2, "/users").contains("C2MOCK"));
+            assertTrue( c1after.contains("Alice"), "context1 清理后应恢复真实响应");
+            assertTrue( getVia(page2, "/users").contains("C2MOCK"), "context2 未被清理，仍应命中 mock");
         } finally {
             RouteDsl.clear(ctx2);
             ApiCaptureContext.removeContext(ctx2);

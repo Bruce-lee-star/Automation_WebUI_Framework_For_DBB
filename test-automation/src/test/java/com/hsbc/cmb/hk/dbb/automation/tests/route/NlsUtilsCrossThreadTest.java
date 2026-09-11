@@ -1,16 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * 验证 Monitor onResponse 回调线程设置语言后，主测试线程的可见性。
@@ -24,8 +24,8 @@ import static org.junit.Assert.assertNull;
  */
 public class NlsUtilsCrossThreadTest {
 
-    @Before
-    @After
+    @BeforeEach
+    @AfterEach
     public void clear() {
         NLSUtils.reset();
     }
@@ -59,7 +59,7 @@ public class NlsUtilsCrossThreadTest {
 
         runOnOtherThread(() -> NLSUtils.setLanguage("zh")); // 回调线程改为 zh
 
-        assertEquals("回调线程设置的语言必须对主线程可见", "zh", NLSUtils.getLanguage());
+        assertEquals( "zh",  NLSUtils.getLanguage(), "回调线程设置的语言必须对主线程可见");
     }
 
     /** 反向：回调线程先设、主线程后改 → 主线程应读到自己的新值（本线程后写优先）。 */
@@ -69,7 +69,7 @@ public class NlsUtilsCrossThreadTest {
 
         NLSUtils.setLanguage("en");
 
-        assertEquals("主线程后写应优先生效", "en", NLSUtils.getLanguage());
+        assertEquals( "en",  NLSUtils.getLanguage(), "主线程后写应优先生效");
     }
 
     /** 回调线程设置后，另一个从未设置过的线程也应能读到（回退到全局值）。 */
@@ -83,7 +83,7 @@ public class NlsUtilsCrossThreadTest {
         reader.start();
         reader.join(5000);
 
-        assertEquals("未设置过的线程应回退到全局最新值", "zh", seen.get());
+        assertEquals( "zh",  seen.get(), "未设置过的线程应回退到全局最新值");
     }
 
     /** 单一线程内的连续设置仍按最新值生效（回归保护）。 */
@@ -103,12 +103,12 @@ public class NlsUtilsCrossThreadTest {
         NLSUtils.setLanguage("zh");
         runOnOtherThread(NLSUtils::reset);   // 模拟 scenario 间在任意线程清理
 
-        assertNull("reset 后主线程不应再读到值", NLSUtils.getLanguage());
+        assertNull( NLSUtils.getLanguage(), "reset 后主线程不应再读到值");
 
         AtomicReference<String> seen = new AtomicReference<>("dirty");
         Thread reader = new Thread(() -> seen.set(NLSUtils.getLanguage()), "fresh-reader");
         reader.start();
         reader.join(5000);
-        assertNull("reset 后其它线程也不应读到残留值", seen.get());
+        assertNull( seen.get(), "reset 后其它线程也不应读到残留值");
     }
 }

@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.regex.Pattern;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.RoutePatternCache;
 
 /**
@@ -26,23 +26,23 @@ public class RoutePatternCacheTest {
     @Test
     public void singleStar_doesNotCrossSlash() {
         Pattern p = RoutePatternCache.antGlobToRegex("*.json");
-        assertTrue("单层 * 应匹配同目录文件", p.matcher("foo.json").matches());
-        assertFalse("单层 * 不应跨越 /", p.matcher("a/b.json").matches());
+        assertTrue( p.matcher("foo.json").matches(), "单层 * 应匹配同目录文件");
+        assertFalse( p.matcher("a/b.json").matches(), "单层 * 不应跨越 /");
     }
 
     @Test
     public void doubleStar_crossesSlash() {
         Pattern p = RoutePatternCache.antGlobToRegex("/api/**");
-        assertTrue("** 应匹配任意深层路径", p.matcher("/api/x/y/z").matches());
-        assertFalse("** 不应匹配其他前缀", p.matcher("/other/x").matches());
+        assertTrue( p.matcher("/api/x/y/z").matches(), "** 应匹配任意深层路径");
+        assertFalse( p.matcher("/other/x").matches(), "** 不应匹配其他前缀");
     }
 
     @Test
     public void specialChars_areEscaped() {
         // '.' 必须被转义为字面点，而非正则"任意字符"
         Pattern p = RoutePatternCache.antGlobToRegex("a.b");
-        assertTrue("字面点应匹配", p.matcher("a.b").matches());
-        assertFalse("未转义的点会错误匹配任意字符", p.matcher("axb").matches());
+        assertTrue( p.matcher("a.b").matches(), "字面点应匹配");
+        assertFalse( p.matcher("axb").matches(), "未转义的点会错误匹配任意字符");
     }
 
     @Test
@@ -57,13 +57,13 @@ public class RoutePatternCacheTest {
         // 第二次调用应命中 PATTERN_CACHE，返回同一 Pattern 实例（锁定缓存契约）
         Pattern first = RoutePatternCache.antGlobToRegex("/cached/glob.json");
         Pattern second = RoutePatternCache.antGlobToRegex("/cached/glob.json");
-        assertSame("重复 glob 应命中缓存返回同一实例", first, second);
+        assertSame( first,  second, "重复 glob 应命中缓存返回同一实例");
     }
 
     @Test
     public void distinctGlobs_produceDistinctPatterns() {
         Pattern a = RoutePatternCache.antGlobToRegex("a/**");
         Pattern b = RoutePatternCache.antGlobToRegex("b/**");
-        assertNotSame("不同 glob 不应共享同一 Pattern", a, b);
+        assertNotSame( a,  b, "不同 glob 不应共享同一 Pattern");
     }
 }

@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.api.core.services;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 
 /**
  * T3-1 收拢验证：{@link TestServices} 的 per-thread 单例（原静态 {@code ThreadLocal<TestServices> THREAD_INSTANCE}
@@ -24,7 +24,7 @@ public class TestServicesConcurrencyTest {
             TestServices main = TestServices.initialize().withEntity("entityA");
             Future<TestServices> other = pool.submit(TestServices::initialize);
             TestServices poolInst = other.get(5, TimeUnit.SECONDS);
-            assertNotSame("其他线程应拿到独立的 TestServices 实例", main, poolInst);
+            assertNotSame( main,  poolInst, "其他线程应拿到独立的 TestServices 实例");
         } finally {
             TestServices.clear();
             pool.shutdown();
@@ -36,6 +36,6 @@ public class TestServicesConcurrencyTest {
         TestServices a = TestServices.initialize();
         TestServices.clear();
         TestServices b = TestServices.initialize();
-        assertNotSame("clear 后 initialize 应返回新实例", a, b);
+        assertNotSame( a,  b, "clear 后 initialize 应返回新实例");
     }
 }

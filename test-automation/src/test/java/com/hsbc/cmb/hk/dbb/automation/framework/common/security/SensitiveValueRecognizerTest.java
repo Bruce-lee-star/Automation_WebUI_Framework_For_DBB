@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.security;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T4-2 值级识别 + 定长掩码 + 配置外置 专项护盾。
@@ -332,7 +332,7 @@ public class SensitiveValueRecognizerTest {
         headers.put("Authorization", "Bearer abc123");
         Map<String, String> out = SensitiveDataSanitizer.sanitizeHeaders(headers);
         assertTrue(out.get("Authorization").contains(mask()));
-        assertFalse("定长掩码不得泄露原值长度", out.get("Authorization").contains("(len="));
+        assertFalse( out.get("Authorization").contains("(len="), "定长掩码不得泄露原值长度");
         assertFalse(out.get("Authorization").contains("abc123"));
     }
 
@@ -344,9 +344,9 @@ public class SensitiveValueRecognizerTest {
         System.setProperty(prop, "myfield,otherfield");
         try {
             SensitiveDataSanitizer.reloadRules();
-            assertTrue("配置新增字段应生效", SensitiveDataSanitizer.isSensitiveBodyKey("myfield"));
+            assertTrue( SensitiveDataSanitizer.isSensitiveBodyKey("myfield"), "配置新增字段应生效");
             assertTrue(SensitiveDataSanitizer.isSensitiveBodyKey("otherfield"));
-            assertTrue("内置敏感键不得因配置叠加而失效", SensitiveDataSanitizer.isSensitiveBodyKey("password"));
+            assertTrue( SensitiveDataSanitizer.isSensitiveBodyKey("password"), "内置敏感键不得因配置叠加而失效");
         } finally {
             System.clearProperty(prop);
             SensitiveDataSanitizer.reloadRules();
@@ -361,8 +361,8 @@ public class SensitiveValueRecognizerTest {
         System.setProperty(prop, "4242424242424242");
         try {
             SensitiveDataSanitizer.reloadRules();
-            assertFalse("豁免名单命中的值不应脱敏", SensitiveDataSanitizer.looksSensitiveByValue("4242424242424242"));
-            assertTrue("未豁免的有效卡号仍应识别", SensitiveDataSanitizer.looksSensitiveByValue("5555555555554444"));
+            assertFalse( SensitiveDataSanitizer.looksSensitiveByValue("4242424242424242"), "豁免名单命中的值不应脱敏");
+            assertTrue( SensitiveDataSanitizer.looksSensitiveByValue("5555555555554444"), "未豁免的有效卡号仍应识别");
         } finally {
             System.clearProperty(prop);
             SensitiveDataSanitizer.reloadRules();

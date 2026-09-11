@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -9,9 +9,9 @@ import java.nio.file.Paths;
 import java.util.Properties;
 import java.util.UUID;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * SessionManager 内存缓存护盾：验证同 key 的 meta 在首次读盘后缓存、删除磁盘文件后仍可命中
@@ -82,7 +82,7 @@ public class SessionManagerCacheTest {
 
         // 读取触发过期驱逐：返回 null 且磁盘文件被删除（"失效即删除"）
         assertNull(SessionManager.loadHomeUrl(key));
-        assertFalse("expired .meta should be deleted", Files.exists(metaPath()));
-        assertFalse("expired .json should be deleted", Files.exists(sessionPath()));
+        assertFalse( Files.exists(metaPath()), "expired .meta should be deleted");
+        assertFalse( Files.exists(sessionPath()), "expired .json should be deleted");
     }
 }

@@ -1,8 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.web;
 
-import io.cucumber.junit.CucumberOptions;
-import net.serenitybdd.cucumber.CucumberWithSerenity;
-import org.junit.runner.RunWith;
+import org.junit.platform.suite.api.ConfigurationParameter;
+import org.junit.platform.suite.api.IncludeEngines;
+import org.junit.platform.suite.api.SelectClasspathResource;
+import org.junit.platform.suite.api.Suite;
 
 /**
  * E2E 真实浏览器沙箱运行器。
@@ -22,22 +23,16 @@ import org.junit.runner.RunWith;
  * </pre>
  *
  * <p>仅匹配 {@code @e2e-sandbox} 标签，不会干扰默认的 {@code @test1} 主流程。</p>
+ *
+ * <p>JUnit 5 迁移（原 JUnit4 {@code @RunWith(CucumberWithSerenity.class) + @CucumberOptions}）：
+ * 改用 JUnit Platform {@code @Suite} + {@code cucumber} 引擎。</p>
  */
-@RunWith(CucumberWithSerenity.class)
-@CucumberOptions(
-        features = "src/test/resources/features/web/e2e_sandbox.feature",
-        glue = {
-                "com.hsbc.cmb.hk.dbb.automation.tests.glue"
-        },
-        plugin = {
-                "pretty",
-                "html:target/e2e-sandbox-cucumber-report.html",
-                "json:target/e2e-sandbox-cucumber-report.json"
-        },
-        tags = "@e2e-sandbox",
-        dryRun = false
-)
-@SuppressWarnings("deprecation")
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("features/web/e2e_sandbox.feature")
+@ConfigurationParameter(key = "cucumber.glue", value = "com.hsbc.cmb.hk.dbb.automation.tests.glue")
+@ConfigurationParameter(key = "cucumber.filter.tags", value = "@e2e-sandbox")
+@ConfigurationParameter(key = "cucumber.plugin", value = "io.cucumber.core.plugin.SerenityReporterParallel")
 public class CucumberE2ESandboxRunnerIT {
 
 }

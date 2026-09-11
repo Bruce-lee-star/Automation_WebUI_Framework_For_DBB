@@ -1,11 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.microsoft.playwright.BrowserContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -27,24 +27,24 @@ public class BasePagePageSwitchLockConcurrencyTest {
     public void distinctContextsGetDistinctLocks() {
         BrowserContext a = mock(BrowserContext.class);
         BrowserContext b = mock(BrowserContext.class);
-        assertNotSame("不同 Context 必须映射不同锁实例（否则并行场景仍被串行化）",
-                BasePage.pageSwitchLockFor(a), BasePage.pageSwitchLockFor(b));
+        assertNotSame(
+                BasePage.pageSwitchLockFor(a),  BasePage.pageSwitchLockFor(b), "不同 Context 必须映射不同锁实例（否则并行场景仍被串行化）");
     }
 
     @Test
     public void sameContextReturnsStableLock() {
         BrowserContext a = mock(BrowserContext.class);
-        assertSame("同一 Context 必须始终映射同一锁实例（保证上下文内串行）",
-                BasePage.pageSwitchLockFor(a), BasePage.pageSwitchLockFor(a));
+        assertSame(
+                BasePage.pageSwitchLockFor(a),  BasePage.pageSwitchLockFor(a), "同一 Context 必须始终映射同一锁实例（保证上下文内串行）");
     }
 
     @Test
     public void nullContextFallsBackToSharedGlobalLock() {
         Object nullLock1 = BasePage.pageSwitchLockFor(null);
         Object nullLock2 = BasePage.pageSwitchLockFor(null);
-        assertSame("null Context 应稳定回退到同一全局兜底锁", nullLock1, nullLock2);
-        assertNotSame("全局兜底锁必须与任意 per-context 锁区分（证明 per-context 路径被采用）",
-                nullLock1, BasePage.pageSwitchLockFor(mock(BrowserContext.class)));
+        assertSame( nullLock1,  nullLock2, "null Context 应稳定回退到同一全局兜底锁");
+        assertNotSame(
+                nullLock1,  BasePage.pageSwitchLockFor(mock(BrowserContext.class)), "全局兜底锁必须与任意 per-context 锁区分（证明 per-context 路径被采用）");
     }
 
     @Test
@@ -72,7 +72,7 @@ public class BasePagePageSwitchLockConcurrencyTest {
         Thread tB = new Thread(() -> { synchronized (lockB) { acquired[0] = true; } });
         tB.start();
         tB.join(1000);
-        assertTrue("不同 Context 的页面切换锁应互不阻塞（并行不被串行化）", acquired[0]);
+        assertTrue( acquired[0], "不同 Context 的页面切换锁应互不阻塞（并行不被串行化）");
         tA.join();
     }
 
@@ -100,8 +100,8 @@ public class BasePagePageSwitchLockConcurrencyTest {
         t2.join(2000);
         long waited = System.currentTimeMillis() - start;
 
-        assertTrue("同一 Context 内页面切换仍应串行（t2 须等待 t1 释放）", acquired[0]);
-        assertTrue("同 Context 应被串行化（等待时长应接近持有时长）", waited >= 300);
+        assertTrue( acquired[0], "同一 Context 内页面切换仍应串行（t2 须等待 t1 释放）");
+        assertTrue( waited >= 300, "同 Context 应被串行化（等待时长应接近持有时长）");
         t1.join();
     }
 }

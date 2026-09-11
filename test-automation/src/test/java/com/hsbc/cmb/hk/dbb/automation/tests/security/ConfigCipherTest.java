@@ -6,16 +6,16 @@ import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Base64;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * {@link ConfigCipher} / {@link SecretValue} 加解密往返与透明解密回归测试。
@@ -29,13 +29,13 @@ public class ConfigCipherTest {
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     private String savedProp;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         savedProp = System.getProperty("config.master.key");
         System.setProperty("config.master.key", TEST_MASTER_KEY);
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         if (savedProp == null) {
             System.clearProperty("config.master.key");
@@ -48,7 +48,7 @@ public class ConfigCipherTest {
     public void encryptDecryptRoundTrip() {
         String plain = "b2g3ifd";
         String enc = ConfigCipher.encrypt(plain);
-        assertTrue("应为 ENC(...) 形态", ConfigCipher.isEncrypted(enc));
+        assertTrue( ConfigCipher.isEncrypted(enc), "应为 ENC(...) 形态");
         assertEquals(plain, ConfigCipher.decrypt(enc));
     }
 
@@ -66,10 +66,17 @@ public class ConfigCipherTest {
 
     @Test
     public void decryptIfNeededDecryptsBareCiphertext() {
-        String enc = ConfigCipher.encrypt("b4re-secret");
-        // 去掉 ENC(...) 包裹，模拟裸 base64 密文
-        String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
-        assertEquals("b4re-secret", SecretValue.decryptIfNeeded(bare));
+        // D2-2：裸 base64 默认不再当密文（避免普通配置值被误判并"解"坏）；
+        // 仅显式开启 opt-in 开关后才解密，故此处须显式启用。
+        System.setProperty(SecretValue.ALLOW_BARE_BASE64_KEY, "true");
+        try {
+            String enc = ConfigCipher.encrypt("b4re-secret");
+            // 去掉 ENC(...) 包裹，模拟裸 base64 密文
+            String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
+            assertEquals("b4re-secret", SecretValue.decryptIfNeeded(bare));
+        } finally {
+            System.clearProperty(SecretValue.ALLOW_BARE_BASE64_KEY);
+        }
     }
 
     @Test

@@ -1,8 +1,10 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.lock.LifecycleLockMediator;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistryImpl;
-import org.junit.Test;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -11,12 +13,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * 「共享 Browser 模式（一个 Browser + 多 Context）」专属单测。
@@ -56,14 +59,18 @@ public class PlaywrightManagerSharedBrowserTest {
     }
 
     /**
-     * 非法值必须降级为 false 而不是抛异常（避免配置笔误导致整个套件启动失败），
-     * 且实现会打 WARN 告警——此处只校验降级结果。
+     * 非法非空值必须 <b>fail-fast</b> 抛 {@link ConfigurationException}（F5 整改）——
+     * 静默降级为 false 会让「配置笔误」与「实际并发模型」不符，
+     * 产生按 threadId 创建、按 shared 键回收的孤儿 Browser 实例。
+     * 空 / 缺省仍按未配置回落 false（见上一用例）。
      */
     @Test
-    public void parseSharedBrowserMode_unrecognizedValueFallsBackToFalse() {
-        assertFalse(PlaywrightManager.parseSharedBrowserMode("yes"));
-        assertFalse(PlaywrightManager.parseSharedBrowserMode("1"));
-        assertFalse(PlaywrightManager.parseSharedBrowserMode("on"));
+    public void parseSharedBrowserMode_unrecognizedValueFailsFast() {
+        ConfigurationException e = assertThrows(ConfigurationException.class,
+                () -> PlaywrightManager.parseSharedBrowserMode("yes"));
+        assertTrue(e.getMessage().contains("yes"), "异常信息应包含非法值以便定位");
+        assertThrows(ConfigurationException.class, () -> PlaywrightManager.parseSharedBrowserMode("1"));
+        assertThrows(ConfigurationException.class, () -> PlaywrightManager.parseSharedBrowserMode("on"));
     }
 
     // ==================== 实例键（并发隔离模型的核心） ====================
@@ -74,7 +81,7 @@ public class PlaywrightManagerSharedBrowserTest {
         String fromOther = onNewThread(() -> BrowserRegistryImpl.INSTANCE.keyFor(CONFIG_ID, true));
 
         assertEquals("shared:" + CONFIG_ID, fromMain);
-        assertEquals("共享模式下所有线程必须命中同一个 Browser 实例键", fromMain, fromOther);
+        assertEquals( fromMain,  fromOther, "共享模式下所有线程必须命中同一个 Browser 实例键");
     }
 
     @Test
@@ -84,7 +91,7 @@ public class PlaywrightManagerSharedBrowserTest {
 
         assertTrue(fromMain.endsWith(":" + CONFIG_ID));
         assertTrue(fromOther.endsWith(":" + CONFIG_ID));
-        assertNotSame("非共享模式下每个线程必须有独立的实例键", fromMain, fromOther);
+        assertNotSame( fromMain,  fromOther, "非共享模式下每个线程必须有独立的实例键");
     }
 
     @Test
@@ -98,15 +105,15 @@ public class PlaywrightManagerSharedBrowserTest {
     @Test
     public void sharedBrowserLock_isMutuallyExclusiveAcrossThreads() throws Exception {
         // 共享模式：Browser 被所有线程共享，创建必须进程级互斥（否则并发创建多个 Browser + 旧实例泄漏）
-        assertFalse("共享模式必须用进程级锁：两个线程不得同时进入临界区",
-                twoThreadsCanEnterConcurrently(true));
+        assertFalse(
+                twoThreadsCanEnterConcurrently(true), "共享模式必须用进程级锁：两个线程不得同时进入临界区");
     }
 
     @Test
     public void perThreadBrowserLock_doesNotSerializeThreads() throws Exception {
         // 非共享模式：每线程独立 Browser（key 含 threadId），创建互不阻塞
-        assertTrue("非共享模式应保持 per-thread 锁：两个线程必须能同时进入临界区，避免无谓串行化",
-                twoThreadsCanEnterConcurrently(false));
+        assertTrue(
+                twoThreadsCanEnterConcurrently(false), "非共享模式应保持 per-thread 锁：两个线程必须能同时进入临界区，避免无谓串行化");
     }
 
     /**
@@ -142,7 +149,7 @@ public class PlaywrightManagerSharedBrowserTest {
         Thread second = new Thread(() -> LifecycleLockMediator.withBrowserLock(sharedMode, criticalSection));
         first.start();
         second.start();
-        assertTrue("临界区执行超时（可能出现死锁）", finished.await(15, TimeUnit.SECONDS));
+        assertTrue( finished.await(15, TimeUnit.SECONDS), "临界区执行超时（可能出现死锁）");
         first.join();
         second.join();
 
@@ -165,8 +172,9 @@ public class PlaywrightManagerSharedBrowserTest {
      */
     @Test
     public void sharedBrowserModeIsImmutableWithinJvm() {
-        assertEquals(PlaywrightManager.SHARED_BROWSER_MODE, PlaywrightManager.isSharedBrowserMode());
-        assertEquals(PlaywrightManager.SHARED_BROWSER_MODE, PlaywrightManager.isSharedBrowserMode());
+        boolean first = PlaywrightManager.isSharedBrowserMode();
+        boolean second = PlaywrightManager.isSharedBrowserMode();
+        assertEquals(first, second, "共享模式一旦在类加载期确定，必须对整个 JVM 生命周期稳定（不可中途翻转）");
     }
 
     // ==================== 辅助方法 ====================

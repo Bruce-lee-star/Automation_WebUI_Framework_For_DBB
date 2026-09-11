@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.utils;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Constructor;
 import java.util.concurrent.Callable;
@@ -9,7 +9,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * {@link BDDUtils} 登录信息收拢验证（T3-1）：原 {@code static ThreadLocal<BDDUtils>} 已收拢为

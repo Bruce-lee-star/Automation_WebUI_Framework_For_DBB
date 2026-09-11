@@ -6,10 +6,11 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRes
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserStartup;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistry;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -34,9 +35,10 @@ public class PlaywrightRuntimeTest {
         assertNotNull(rt.state);
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void injectionConstructorRejectsNullCollaborator() {
-        new PlaywrightRuntime(null, null, null, null, null, null, null);
+        assertThrows(NullPointerException.class,
+                () -> new PlaywrightRuntime(null, null, null, null, null, null, null));
     }
 
     /** 6 个协作者取替身、仅替换状态根，用于隔离验证 state 角色本身。 */
@@ -50,9 +52,9 @@ public class PlaywrightRuntimeTest {
                 state);
     }
 
-    @Test(expected = NullPointerException.class)
+    @Test
     public void injectionConstructorRejectsNullState() {
-        runtimeWithState(null);
+        assertThrows(NullPointerException.class, () -> runtimeWithState(null));
     }
 
     @Test

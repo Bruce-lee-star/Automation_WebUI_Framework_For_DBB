@@ -3,15 +3,16 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -64,11 +65,11 @@ public class PageFrameShadowTest {
         verify(bp).activateFrame(f1);
     }
 
-    @Test(expected = IndexOutOfBoundsException.class)
+    @Test
     public void switchToFrame_byIndex_throwsOnOutOfRange() {
         BasePage bp = mockBp();
         when(bp.getPage().frames()).thenReturn(Arrays.asList(mock(Frame.class)));
-        PageFrameShadow.switchToFrame(bp, 5);
+        assertThrows(IndexOutOfBoundsException.class, () -> PageFrameShadow.switchToFrame(bp, 5));
     }
 
     @Test
@@ -78,10 +79,10 @@ public class PageFrameShadowTest {
         verify(bp).pushShadow("#h");
     }
 
-    @Test(expected = RuntimeException.class)
+    @Test
     public void switchToShadow_rejectsBlank() {
         BasePage bp = mockBp();
-        PageFrameShadow.switchToShadow(bp, "   ");
+        assertThrows(RuntimeException.class, () -> PageFrameShadow.switchToShadow(bp, "   "));
     }
 
     @Test
@@ -124,11 +125,11 @@ public class PageFrameShadowTest {
         assertSame(f, captured[0]);
     }
 
-    @Test(expected = RuntimeException.class)
+    @Test
     public void executeInFrame_throwsWhenFrameMissing() {
         BasePage bp = mockBp();
         when(bp.getPage().frame("n")).thenReturn(null);
-        PageFrameShadow.executeInFrame(bp, "n", fr -> { });
+        assertThrows(RuntimeException.class, () -> PageFrameShadow.executeInFrame(bp, "n", fr -> { }));
     }
 
     // ---- switchToFrameAndWait：最复杂的并发/事件驱动路径，必须锁定行为 ----
@@ -203,12 +204,12 @@ public class PageFrameShadowTest {
         verify(trigger).run();
     }
 
-    @Test(expected = RuntimeException.class)
+    @Test
     public void switchToFrameAndWait_timeout_throwsWhenNeverAttached() {
         BasePage bp = mockBp();
         Page page = bp.getPage();
         when(page.frame("f")).thenReturn(null);
         when(page.frames()).thenReturn(Collections.emptyList());
-        PageFrameShadow.switchToFrameAndWait(bp, () -> { }, "f", 1); // 1s 超时，listener 永不触发
+        assertThrows(RuntimeException.class, () -> PageFrameShadow.switchToFrameAndWait(bp, () -> { }, "f", 1)); // 1s 超时，listener 永不触发
     }
 }

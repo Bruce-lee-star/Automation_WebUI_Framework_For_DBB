@@ -1,8 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.web;
 
-import io.cucumber.junit.CucumberOptions;
-import net.serenitybdd.cucumber.CucumberWithSerenity;
-import org.junit.runner.RunWith;
+import org.junit.platform.suite.api.ConfigurationParameter;
+import org.junit.platform.suite.api.IncludeEngines;
+import org.junit.platform.suite.api.SelectClasspathResource;
+import org.junit.platform.suite.api.Suite;
 
 /**
  * 并行浏览器隔离运行器 —— 参照 logon DBB，验证 T3-2「每线程独立 Browser」。
@@ -21,22 +22,16 @@ import org.junit.runner.RunWith;
  * {@code restart.browser.for.each=scenario} 确保每个 scenario 用全新浏览器，避免 feature 级复用与并行交错。</p>
  *
  * <p>本运行器仅匹配 {@code @parallel-logon} 标签，不会干扰默认的 {@code @test1} 主流程。</p>
+ *
+ * <p>JUnit 5 迁移（原 JUnit4 {@code @RunWith(CucumberWithSerenity.class) + @CucumberOptions}）：
+ * 改用 JUnit Platform {@code @Suite} + {@code cucumber} 引擎。</p>
  */
-@RunWith(CucumberWithSerenity.class)
-@CucumberOptions(
-        features = "src/test/resources/features/web/parallel_logon_dbb.feature",
-        glue = {
-                "com.hsbc.cmb.hk.dbb.automation.tests.glue"
-        },
-        plugin = {
-            "pretty",
-            "html:target/parallel-logon-cucumber-report.html",
-            "json:target/parallel-logon-cucumber-report.json"
-        },
-        tags = "@parallel-logon",
-        dryRun = false
-)
-@SuppressWarnings("deprecation")
+@Suite
+@IncludeEngines("cucumber")
+@SelectClasspathResource("features/web/parallel_logon_dbb.feature")
+@ConfigurationParameter(key = "cucumber.glue", value = "com.hsbc.cmb.hk.dbb.automation.tests.glue")
+@ConfigurationParameter(key = "cucumber.filter.tags", value = "@parallel-logon")
+@ConfigurationParameter(key = "cucumber.plugin", value = "io.cucumber.core.plugin.SerenityReporterParallel")
 public class CucumberParallelLogonRunnerIT {
 
 }

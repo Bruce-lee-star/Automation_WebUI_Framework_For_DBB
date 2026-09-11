@@ -3,13 +3,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.TimeoutException;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -57,18 +58,18 @@ public class PageLifecycleCoordinatorTest {
         verify(bp).onPageSwitched();
     }
 
-    @Test(expected = TimeoutException.class)
+    @Test
     public void switchToPage_byIndex_throwsWhenContextEmpty() {
         BasePage bp = mockBp();
         mockContext(bp, Collections.emptyList());
-        PageLifecycleCoordinator.switchToPage(bp, 0);
+        assertThrows(TimeoutException.class, () -> PageLifecycleCoordinator.switchToPage(bp, 0));
     }
 
-    @Test(expected = IndexOutOfBoundsException.class)
+    @Test
     public void switchToPage_byIndex_throwsWhenOutOfRange() {
         BasePage bp = mockBp();
         mockContext(bp, Arrays.asList(mock(Page.class)));
-        PageLifecycleCoordinator.switchToPage(bp, 5);
+        assertThrows(IndexOutOfBoundsException.class, () -> PageLifecycleCoordinator.switchToPage(bp, 5));
     }
 
     @Test
@@ -85,28 +86,28 @@ public class PageLifecycleCoordinatorTest {
         verify(bp).setPageReference(p0);
     }
 
-    @Test(expected = TimeoutException.class)
+    @Test
     public void switchToPage_byIndex_throwsWhenTargetClosedNoFallback() {
         BasePage bp = mockBp();
         Page p0 = mock(Page.class);
         mockContext(bp, Arrays.asList(p0));
         when(bp.isPageClosed(p0)).thenReturn(true);
-        PageLifecycleCoordinator.switchToPage(bp, 0);
+        assertThrows(TimeoutException.class, () -> PageLifecycleCoordinator.switchToPage(bp, 0));
     }
 
     // ===================== switchToPage(Page) =====================
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void switchToPage_byPage_rejectsNull() {
-        PageLifecycleCoordinator.switchToPage(mockBp(), null);
+        assertThrows(IllegalArgumentException.class, () -> PageLifecycleCoordinator.switchToPage(mockBp(), null));
     }
 
-    @Test(expected = TimeoutException.class)
+    @Test
     public void switchToPage_byPage_rejectsClosed() {
         BasePage bp = mockBp();
         Page p = mock(Page.class);
         when(p.isClosed()).thenReturn(true);
-        PageLifecycleCoordinator.switchToPage(bp, p);
+        assertThrows(TimeoutException.class, () -> PageLifecycleCoordinator.switchToPage(bp, p));
     }
 
     @Test
@@ -144,13 +145,13 @@ public class PageLifecycleCoordinatorTest {
         verify(bp).onPageSwitched();
     }
 
-    @Test(expected = TimeoutException.class)
+    @Test
     public void waitForNewPage_wrapsTimeoutAsTimeoutException() {
         BasePage bp = mockBp();
         Page current = bp.getPageRaw();
         mockContext(bp, Arrays.asList(current));   // 仅当前页且不算"新页面"，走慢路径
         when(bp.context.waitForPage(any())).thenThrow(new com.microsoft.playwright.PlaywrightException("to"));
-        PageLifecycleCoordinator.waitForNewPage(bp, 10);
+        assertThrows(TimeoutException.class, () -> PageLifecycleCoordinator.waitForNewPage(bp, 10));
     }
 
     // ===================== waitForDownload =====================

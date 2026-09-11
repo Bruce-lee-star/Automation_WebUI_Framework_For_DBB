@@ -4,7 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOpti
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -13,8 +13,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T3-1 收拢验证：{@link CustomOptionsManager} 的 14 个自定义配置状态
@@ -49,7 +49,7 @@ public class CustomOptionsManagerConcurrencyTest {
 
             // 主线程应能读到写入的值
             assertEquals("zh-CN", mgr.getLocale());
-            assertTrue("主线程 isMobile 应为 true", mgr.getIsMobile());
+            assertTrue( mgr.getIsMobile(), "主线程 isMobile 应为 true");
             assertEquals(Integer.valueOf(1920), mgr.getViewportWidth());
             assertEquals(Boolean.TRUE, mgr.isCustomContextOptionsFlag());
 
@@ -75,7 +75,7 @@ public class CustomOptionsManagerConcurrencyTest {
                     return sb.toString();
                 });
                 String res = mismatches.get(5, TimeUnit.SECONDS);
-                assertEquals("其他线程不应看到主线程的任何自定义配置: [" + res + "]", "", res);
+                assertEquals( "",  res, "其他线程不应看到主线程的任何自定义配置: [" + res + "]");
             } finally {
                 pool.shutdown();
             }

@@ -2,10 +2,10 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * T3-3 修复验证：{@link PlaywrightManager#closeContext()} 必须在【context 为 null】时
@@ -26,9 +26,9 @@ public class PlaywrightManagerCloseContextCleanupTest {
             PlaywrightManager.closeContext();
 
             // per-thread 状态必须被无条件清理，不能残留到下一 scenario
-            assertNull("closeContext 应无条件清理自定义 locale", mgr.getLocale());
-            assertNull("closeContext 应无条件清理自定义 isMobile", mgr.getIsMobile());
-            assertNull("closeContext 应无条件清理 customOptionsFlag", mgr.isCustomContextOptionsFlag());
+            assertNull( mgr.getLocale(), "closeContext 应无条件清理自定义 locale");
+            assertNull( mgr.getIsMobile(), "closeContext 应无条件清理自定义 isMobile");
+            assertNull( mgr.isCustomContextOptionsFlag(), "closeContext 应无条件清理 customOptionsFlag");
         } finally {
             mgr.removeAllThreadLocals();
             TestContextHolder.get().clear();

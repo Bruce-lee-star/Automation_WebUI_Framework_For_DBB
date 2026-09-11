@@ -2,13 +2,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.RuntimeProvider;
 import com.microsoft.playwright.Page;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * WEB-P0-2 seam 固化测试：验证 {@link PlaywrightManager} 的 Provider 注入点可替换、
@@ -16,7 +16,7 @@ import static org.junit.Assert.assertSame;
  */
 public class WebRuntimeSeamTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         PlaywrightManager.resetProvider();
     }
@@ -46,7 +46,7 @@ public class WebRuntimeSeamTest {
     public void setProvider_rejectsNull() {
         try {
             PlaywrightManager.setProvider(null);
-            org.junit.Assert.fail("expected IllegalArgumentException");
+            org.junit.jupiter.api.Assertions.fail("expected IllegalArgumentException");
         } catch (IllegalArgumentException expected) {
             // 语义化拒绝 null，防误用
         } finally {

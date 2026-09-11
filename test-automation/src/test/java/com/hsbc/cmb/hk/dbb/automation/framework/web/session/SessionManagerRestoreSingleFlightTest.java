@@ -6,8 +6,8 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.nio.charset.StandardCharsets;
@@ -26,9 +26,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -45,7 +45,7 @@ import static org.mockito.Mockito.when;
  * ② 已存在 session 同 key 并行 → 全部命中复用（返回 true），并发读盘经 Guava 单飞（无异常 / 不重复登录）。
  *
  * <p>手法同源 {@code BasePageSeamTest}/{@code WebRuntimeSeamTest}：{@code setProvider(mock)} 注入
- * mock Browser/BrowserContext，{@code @After} 统一 {@code resetProvider()} 防污染。
+ * mock Browser/BrowserContext，{@code @AfterEach} 统一 {@code resetProvider()} 防污染。
  */
 public class SessionManagerRestoreSingleFlightTest {
 
@@ -82,11 +82,11 @@ public class SessionManagerRestoreSingleFlightTest {
             }
         }
         void assertNone() {
-            assertTrue("并发执行不应抛出任何异常，实际: " + faults, faults.isEmpty());
+            assertTrue( faults.isEmpty(), "并发执行不应抛出任何异常，实际: " + faults);
         }
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         PlaywrightManager.resetProvider();
     }
@@ -136,7 +136,7 @@ public class SessionManagerRestoreSingleFlightTest {
                     done.countDown();
                 }));
             }
-            assertTrue("单飞应在超时内完成", done.await(30, TimeUnit.SECONDS));
+            assertTrue( done.await(30, TimeUnit.SECONDS), "单飞应在超时内完成");
         } finally {
             pool.shutdownNow();
         }
@@ -145,9 +145,9 @@ public class SessionManagerRestoreSingleFlightTest {
         long leaders = results.stream().filter(r -> !r).count();
         long reused = results.stream().filter(r -> r).count();
         // 单飞铁证：仅一个 leader 真实登录（返回 false 并触发 saveSession），其余 follower 复用返回 true
-        assertEquals("单飞：仅一个 leader 真实登录（返回 false）", 1, leaders);
-        assertEquals("单飞：其余 follower 复用落盘（返回 true）", threads - 1, reused);
-        assertEquals("saveSession 仅被 leader 调用一次", 1, loginInvocations.get());
+        assertEquals( 1,  leaders, "单飞：仅一个 leader 真实登录（返回 false）");
+        assertEquals( threads - 1,  reused, "单飞：其余 follower 复用落盘（返回 true）");
+        assertEquals( 1,  loginInvocations.get(), "saveSession 仅被 leader 调用一次");
         // 落盘恰好一次，session 可见（META_CACHE 已由 saveSession 刷新）
         assertEquals(homeUrl, SessionManager.loadHomeUrl(key));
     }
@@ -177,14 +177,14 @@ public class SessionManagerRestoreSingleFlightTest {
                     done.countDown();
                 }));
             }
-            assertTrue("命中复用应在超时内完成", done.await(30, TimeUnit.SECONDS));
+            assertTrue( done.await(30, TimeUnit.SECONDS), "命中复用应在超时内完成");
         } finally {
             pool.shutdownNow();
         }
         faults.assertNone();
         // 全部命中复用（STORAGE_CONTENT_CACHE 单飞读盘 + getContext 复用），无重复登录、无异常
-        assertEquals("所有线程应命中复用（返回 true）", (long) threads,
-                results.stream().filter(r -> r).count());
-        assertFalse("session 文件应仍存在", Files.notExists(sessionPath()));
+        assertEquals( (long) threads, 
+                results.stream().filter(r -> r).count(), "所有线程应命中复用（返回 true）");
+        assertFalse( Files.notExists(sessionPath()), "session 文件应仍存在");
     }
 }

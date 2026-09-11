@@ -7,13 +7,13 @@ import com.microsoft.playwright.Playwright;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * 真浏览器 E2E：验证统一绑定模型（Phase 3）在生产级 Playwright 下的核心保证：
@@ -34,26 +34,26 @@ public class RouteUnifiedBindingBrowserE2ETest {
     private BrowserContext context;
     private Page page;
 
-    @BeforeClass
+    @BeforeAll
     public static void launch() {
         pw = Playwright.create();
         browser = pw.chromium().launch();
     }
 
-    @AfterClass
+    @AfterAll
     public static void shutdown() {
         if (browser != null) browser.close();
         if (pw != null) pw.close();
     }
 
-    @Before
+    @BeforeEach
     public void setup() {
         context = browser.newContext();
         page = context.newPage();
         page.navigate("about:blank");
     }
 
-    @After
+    @AfterEach
     public void teardown() {
         try {
             if (context != null) RouteDsl.clear(context);

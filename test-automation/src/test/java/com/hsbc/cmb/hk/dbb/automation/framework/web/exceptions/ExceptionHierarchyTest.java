@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T2-6 exception hierarchy unification verification.
@@ -44,7 +44,7 @@ public class ExceptionHierarchyTest {
             assertEquals(ElementNotFoundException.class, e.getClass());
             assertEquals("Element not found with selector: #missing", e.getMessage());
         }
-        assertTrue("ElementNotFoundException should be caught as FrameworkException", caught);
+        assertTrue( caught, "ElementNotFoundException should be caught as FrameworkException");
     }
 
     @Test

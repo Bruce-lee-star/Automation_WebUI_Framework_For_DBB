@@ -2,9 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
 import com.microsoft.playwright.Page;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureStart;
 
 /**

@@ -2,14 +2,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -36,7 +36,7 @@ public class ApiCaptureLifecycleListenerTest {
     private Page page;
     private BrowserContext ctx;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         // 兜底采集默认开启，确保 onResponse 监听器会被注册
         ApiCaptureManager.setApiCaptureEnabled(true);
@@ -45,7 +45,7 @@ public class ApiCaptureLifecycleListenerTest {
         when(page.context()).thenReturn(ctx);
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         // 清理静态会话集合，避免污染同包其它单测（如 activePageCount_empty_returns0）
         if (page != null) {
@@ -87,10 +87,10 @@ public class ApiCaptureLifecycleListenerTest {
                 url, 200, "GET", Collections.emptyMap(), Collections.emptyMap());
 
         CapturedApiCall call = ApiCaptureManager.getInstance().getStore().getCallByUrl(url);
-        assertNotNull("兜底通道应记录该 URL 的调用", call);
-        assertEquals("兜底采集 captureSource 应为 ON_RESPONSE（去除 PASSIVE 残留）",
-                "ON_RESPONSE", call.captureSource());
-        assertEquals("兜底采集 handleType 应为 MONITOR",
-                RouteHandleType.MONITOR, call.handleType());
+        assertNotNull( call, "兜底通道应记录该 URL 的调用");
+        assertEquals(
+                "ON_RESPONSE",  call.captureSource(), "兜底采集 captureSource 应为 ON_RESPONSE（去除 PASSIVE 残留）");
+        assertEquals(
+                RouteHandleType.MONITOR,  call.handleType(), "兜底采集 handleType 应为 MONITOR");
     }
 }

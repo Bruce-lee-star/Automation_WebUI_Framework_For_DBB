@@ -1,16 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T3-1 收拢验证：{@link BrowserOverrideManager} 的 per-thread 浏览器覆盖与 Scenario 标签
@@ -27,9 +27,9 @@ public class BrowserOverrideManagerConcurrencyTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             BrowserOverrideManager.setOverrideBrowser("firefox");
-            assertTrue("主线程应设置浏览器覆盖", BrowserOverrideManager.hasOverride());
+            assertTrue( BrowserOverrideManager.hasOverride(), "主线程应设置浏览器覆盖");
             Future<Boolean> otherSees = pool.submit(BrowserOverrideManager::hasOverride);
-            assertFalse("其他线程不应看到主线程的浏览器覆盖", otherSees.get(5, TimeUnit.SECONDS));
+            assertFalse( otherSees.get(5, TimeUnit.SECONDS), "其他线程不应看到主线程的浏览器覆盖");
         } finally {
             BrowserOverrideManager.clearAll();
             pool.shutdown();
@@ -41,9 +41,9 @@ public class BrowserOverrideManagerConcurrencyTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             BrowserOverrideManager.setScenarioTags(new String[]{"@firefox"});
-            assertNotNull("主线程应读到 Scenario 标签", BrowserOverrideManager.getScenarioTags());
+            assertNotNull( BrowserOverrideManager.getScenarioTags(), "主线程应读到 Scenario 标签");
             Future<String[]> other = pool.submit(BrowserOverrideManager::getScenarioTags);
-            assertNull("其他线程不应看到主线程的 Scenario 标签", other.get(5, TimeUnit.SECONDS));
+            assertNull( other.get(5, TimeUnit.SECONDS), "其他线程不应看到主线程的 Scenario 标签");
         } finally {
             BrowserOverrideManager.clearAll();
             pool.shutdown();

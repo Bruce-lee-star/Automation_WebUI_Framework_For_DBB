@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.api.steps;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * T3-1 收拢验证：{@link ApiTestContext} 的共享 {@code BaseStep}（原 static ThreadLocal
@@ -31,8 +31,8 @@ public class ApiTestContextConcurrencyTest {
                     return true;
                 }
             });
-            assertTrue("其他线程不应看到主线程的 BaseStep（隔离）", otherSees.get(5, TimeUnit.SECONDS));
-            assertNotNull("主线程仍读到自身 BaseStep", ApiTestContext.baseStep());
+            assertTrue( otherSees.get(5, TimeUnit.SECONDS), "其他线程不应看到主线程的 BaseStep（隔离）");
+            assertNotNull( ApiTestContext.baseStep(), "主线程仍读到自身 BaseStep");
         } finally {
             ApiTestContext.clear();
             pool.shutdown();

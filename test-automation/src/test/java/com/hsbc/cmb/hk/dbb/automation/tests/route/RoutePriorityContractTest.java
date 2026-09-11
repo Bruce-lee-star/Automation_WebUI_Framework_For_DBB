@@ -3,15 +3,15 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 固化「四能力优先级与合并」契约（对齐 route-priority-and-context-design.md）。
@@ -53,7 +53,7 @@ public class RoutePriorityContractTest {
         assertTrue(RouteHandleType.MOCK.isTerminal());
         for (RouteHandleType t : new RouteHandleType[]{
                 RouteHandleType.MODIFY, RouteHandleType.DELAY, RouteHandleType.MONITOR}) {
-            assertFalse(t.name() + " 不应是 terminal", t.isTerminal());
+            assertFalse(t.isTerminal(), t.name() + " 不应是 terminal");
         }
     }
 
@@ -68,7 +68,7 @@ public class RoutePriorityContractTest {
         RouteHandleType selected = RouteEngine.selectCapability(r);
         assertNotNull(selected);
         assertEquals(RouteHandleType.MOCK, selected);
-        assertTrue("MOCK 必须短路", selected.isTerminal());
+        assertTrue( selected.isTerminal(), "MOCK 必须短路");
     }
 
     @Test
@@ -103,7 +103,7 @@ public class RoutePriorityContractTest {
     @Test
     public void noCapabilityYieldsNull() {
         RouteRule r = rule(RouteHandleType.MONITOR);
-        assertNull("无任何能力位时应返回 null，由调用方 resume 放行", RouteEngine.selectCapability(r));
+        assertNull( RouteEngine.selectCapability(r), "无任何能力位时应返回 null，由调用方 resume 放行");
     }
 
     // ───────────────────────── 跨层合并四条铁律 ─────────────────────────
@@ -117,11 +117,11 @@ public class RoutePriorityContractTest {
 
         RouteRule merged = page.copyForMerge();
         merged.mergeFrom(ctx);
-        assertEquals("跨层 DELAY 取 max，而非 sum", 5_000L, merged.getDelayMs());
+        assertEquals( 5_000L,  merged.getDelayMs(), "跨层 DELAY 取 max，而非 sum");
 
         RouteRule reversed = ctx.copyForMerge();
         reversed.mergeFrom(page);
-        assertEquals("反向合并同样取 max（Page=5s 仍胜出）", 5_000L, reversed.getDelayMs());
+        assertEquals( 5_000L,  reversed.getDelayMs(), "反向合并同样取 max（Page=5s 仍胜出）");
     }
 
     @Test
@@ -133,7 +133,7 @@ public class RoutePriorityContractTest {
 
         RouteRule merged = page.copyForMerge();
         merged.mergeFrom(ctx);
-        assertTrue("MONITOR 能力位 OR：基线不可被关", merged.isMonitorEnabled());
+        assertTrue( merged.isMonitorEnabled(), "MONITOR 能力位 OR：基线不可被关");
     }
 
     @Test
@@ -147,7 +147,7 @@ public class RoutePriorityContractTest {
         merged.mergeFrom(ctx);
 
         Map<String, String> headers = merged.getRequestHeadersToSet();
-        assertEquals("跨层 MODIFY 字段 putAll 累加", 2, headers.size());
+        assertEquals( 2,  headers.size(), "跨层 MODIFY 字段 putAll 累加");
         assertTrue(headers.containsKey("X-Page"));
         assertTrue(headers.containsKey("X-Context"));
     }

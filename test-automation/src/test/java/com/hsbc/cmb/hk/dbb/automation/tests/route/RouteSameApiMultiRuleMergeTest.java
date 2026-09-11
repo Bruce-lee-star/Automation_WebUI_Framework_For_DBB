@@ -3,13 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.tests.route;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 固化 {@code ROUTE_FRAMEWORK_GUIDE.md} 关于「同一 API 写多条独立规则」的合并语义。
@@ -64,7 +64,7 @@ public class RouteSameApiMultiRuleMergeTest {
         RouteRule effective = modify("X-Page", "1");
         effective.mergeFrom(monitor()); // 模拟「先写 modify，后写 monitor」
 
-        assertTrue("monitor 能力位应经 OR 合并保留（不分写顺序而丢失）", effective.isMonitorEnabled());
+        assertTrue( effective.isMonitorEnabled(), "monitor 能力位应经 OR 合并保留（不分写顺序而丢失）");
         assertEquals(RouteHandleType.MODIFY, RouteEngine.selectCapability(effective));
     }
 
@@ -116,10 +116,10 @@ public class RouteSameApiMultiRuleMergeTest {
         RouteRule effective = mock();
         effective.mergeFrom(monitor());
 
-        assertTrue("monitor 能力位仍被 OR 合并保留", effective.isMonitorEnabled());
+        assertTrue( effective.isMonitorEnabled(), "monitor 能力位仍被 OR 合并保留");
         assertEquals(RouteHandleType.MOCK, RouteEngine.selectCapability(effective));
-        assertFalse("MOCK 终结：monitor 无真实响应可观测，不应作为动作分支",
-                RouteEngine.selectCapability(effective) == RouteHandleType.MONITOR);
+        assertFalse(
+                RouteEngine.selectCapability(effective) == RouteHandleType.MONITOR, "MOCK 终结：monitor 无真实响应可观测，不应作为动作分支");
     }
 
     /** 三条分写（modify + delay + monitor，无 mock）：三能力共存，动作选 MODIFY，delay 生效。 */

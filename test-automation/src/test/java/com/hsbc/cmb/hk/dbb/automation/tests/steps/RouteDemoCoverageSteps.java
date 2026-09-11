@@ -15,12 +15,12 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Route DSL 方法 100% 覆盖步骤 —— 配合增强版 demo 服务 route-demo-web（端口 8899，context-path /web）。
@@ -222,8 +222,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long start = System.currentTimeMillis();
         RouteDemoCoverageApi.request(page(), BASE + "/echo", "GET", null, null, null);
         long elapsed = System.currentTimeMillis() - start;
-        assertTrue("randomDelay(1,2) 应 >= 900ms，实际=" + elapsed, elapsed >= 900);
-        assertTrue("randomDelay(1,2) 应 <= 3200ms，实际=" + elapsed, elapsed <= 3200);
+        assertTrue( elapsed >= 900, "randomDelay(1,2) 应 >= 900ms，实际=" + elapsed);
+        assertTrue( elapsed <= 3200, "randomDelay(1,2) 应 <= 3200ms，实际=" + elapsed);
     }
 
     // ───────────────────────── 一次性 times（集中覆盖） ─────────────────────────
@@ -235,7 +235,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         String first = RouteDemoCoverageApi.request(page(), BASE + "/echo", "GET", null, null, null);
         assertTrue(first.contains("ONCE"));
         String second = RouteDemoCoverageApi.request(page(), BASE + "/echo", "GET", null, null, null);
-        assertFalse("第 2 次应放行真实请求（不经过 mock）", second.contains("ONCE"));
+        assertFalse( second.contains("ONCE"), "第 2 次应放行真实请求（不经过 mock）");
     }
 
     // ───────────────────────── 条件匹配（全 16 个） ─────────────────────────
@@ -256,7 +256,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         RouteDsl.on(page()).api("/web/api/img").mock().mockBody("IMG_MOCK").resourceType("image").done().start();
         openOrigin(page());
         RouteDemoCoverageApi.loadImage(page(), IMG_URL);
-        assertNotNull("resourceType(image) 应拦截图片请求", waitForCapturedByType("/web/api/img", RouteHandleType.MOCK));
+        assertNotNull( waitForCapturedByType("/web/api/img", RouteHandleType.MOCK), "resourceType(image) 应拦截图片请求");
     }
 
     @Step
@@ -264,7 +264,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         RouteDsl.on(page()).api("/web/api/script.js").mock().mockBody("SCRIPT_MOCK").resourceType("script").done().start();
         openOrigin(page());
         RouteDemoCoverageApi.loadScript(page(), SCRIPT_URL);
-        assertNotNull("resourceType(script) 应拦截脚本请求", waitForCapturedByType("/web/api/script.js", RouteHandleType.MOCK));
+        assertNotNull( waitForCapturedByType("/web/api/script.js", RouteHandleType.MOCK), "resourceType(script) 应拦截脚本请求");
     }
 
     @Step
@@ -275,7 +275,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         String xhr = RouteDemoCoverageApi.xhr(page(), BASE + "/echo", "GET", null, null);
         assertEquals("XHR_OK", assertJson(xhr).get("body").asText());
         String fetch = RouteDemoCoverageApi.request(page(), BASE + "/echo", "GET", null, null, null);
-        assertFalse("onlyXhr 不应匹配 fetch", fetch.contains("XHR_OK"));
+        assertFalse( fetch.contains("XHR_OK"), "onlyXhr 不应匹配 fetch");
     }
 
     @Step
@@ -286,7 +286,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         assertTrue(fetch.contains("FETCH_OK"));
         String xhr = RouteDemoCoverageApi.xhr(page(), BASE + "/echo", "GET", null, null);
         // xhr 不应命中 onlyFetch → 走真实 echo，body 为 echo JSON，必不含 "FETCH_OK"
-        assertFalse("onlyFetch 不应匹配 xhr", assertJson(xhr).get("body").asText().contains("FETCH_OK"));
+        assertFalse( assertJson(xhr).get("body").asText().contains("FETCH_OK"), "onlyFetch 不应匹配 xhr");
     }
 
     @Step
@@ -378,8 +378,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         // allowAllFrames()：onlyMainFrame 默认 true 会先挡掉 iframe 请求，必须放开才能匹配 frame url
         RouteDsl.on(page()).api(IFRAME_ECHO).mock().mockBody("FRAME_OK").matchFrameUrl("frame.html").allowAllFrames().done().start();
         openOrigin(page());
-        assertNotNull("matchFrameUrl(frame.html) 应命中 iframe 内请求",
-                waitForCapturedByType(IFRAME_ECHO, RouteHandleType.MOCK));
+        assertNotNull(
+                waitForCapturedByType(IFRAME_ECHO, RouteHandleType.MOCK), "matchFrameUrl(frame.html) 应命中 iframe 内请求");
     }
 
     @Step
@@ -388,16 +388,16 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         openOrigin(page());
         // iframe 内的请求不是主 frame → 应被排除，不应产生 MOCK 记录
         sleep(2500);
-        assertEquals("onlyMainFrame 不应匹配 iframe 请求",
-                0, countByType(IFRAME_ECHO, RouteHandleType.MOCK));
+        assertEquals(
+                0,  countByType(IFRAME_ECHO, RouteHandleType.MOCK), "onlyMainFrame 不应匹配 iframe 请求");
     }
 
     @Step
     public void condAllowAllFrames() {
         RouteDsl.on(page()).api(IFRAME_ECHO).mock().mockBody("Y").allowAllFrames().done().start();
         openOrigin(page());
-        assertNotNull("allowAllFrames 应命中 iframe 内请求",
-                waitForCapturedByType(IFRAME_ECHO, RouteHandleType.MOCK));
+        assertNotNull(
+                waitForCapturedByType(IFRAME_ECHO, RouteHandleType.MOCK), "allowAllFrames 应命中 iframe 内请求");
     }
 
     @Step
@@ -413,8 +413,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         RouteDsl.on(page()).api("/web/api/img").mock().mockBody("ALL").allowAllRequests().done().start();
         openOrigin(page());
         RouteDemoCoverageApi.loadImage(page(), IMG_URL);
-        assertNotNull("allowAllRequests 应匹配 image 资源类型",
-                waitForCapturedByType("/web/api/img", RouteHandleType.MOCK));
+        assertNotNull(
+                waitForCapturedByType("/web/api/img", RouteHandleType.MOCK), "allowAllRequests 应匹配 image 资源类型");
     }
 
     // ───────────────────────── Monitor 响应体主线程可读（替代 onResponse 桥接） ─────────────────────────
@@ -426,12 +426,12 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
                 .done().start();
         openOrigin(page());
         RouteDemoCoverageApi.request(page(), BASE + "/echo", "GET", null, null, null);
-        assertNotNull("monitor 应采集到 /web/api/echo",
-                waitForCapturedByType("/web/api/echo", RouteHandleType.MONITOR));
+        assertNotNull(
+                waitForCapturedByType("/web/api/echo", RouteHandleType.MONITOR), "monitor 应采集到 /web/api/echo");
         // 主线程直接读取已同步存储的响应体（替代原 onResponse + setShared/awaitShared 桥接）
         List<String> bodies = ApiCaptureContext.getCurrent().getAllResponsesForUrl("/web/api/echo");
-        assertNotNull("monitor 应已捕获 /web/api/echo 的响应体", bodies);
-        assertFalse("monitor 捕获的响应体不应为空", bodies.isEmpty());
+        assertNotNull( bodies, "monitor 应已捕获 /web/api/echo 的响应体");
+        assertFalse( bodies.isEmpty(), "monitor 捕获的响应体不应为空");
     }
 
     // ───────────────────────── 按能力维度显式停止（monitor / modify / delay / mock / all）─────────────────────────
@@ -467,11 +467,11 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t1 = System.currentTimeMillis();
         JsonNode p1 = echoProbe();
         long e1 = System.currentTimeMillis() - t1;
-        assertEquals("首次请求 modify 应已改写请求头", "ALIVE", echoRequestHeader(p1, "x-cap"));
-        assertTrue("首次请求 delay(2) 应 >=1900ms，实际=" + e1, e1 >= 1900);
-        assertNotNull("首次请求 monitor 应已采集", waitForCapturedByType(CAP_API, RouteHandleType.MONITOR));
+        assertEquals( "ALIVE",  echoRequestHeader(p1, "x-cap"), "首次请求 modify 应已改写请求头");
+        assertTrue( e1 >= 1900, "首次请求 delay(2) 应 >=1900ms，实际=" + e1);
+        assertNotNull( waitForCapturedByType(CAP_API, RouteHandleType.MONITOR), "首次请求 monitor 应已采集");
         int monAfterFirst = echoMonitorCount();
-        assertTrue("首次请求 monitor 计数应 >=1", monAfterFirst >= 1);
+        assertTrue( monAfterFirst >= 1, "首次请求 monitor 计数应 >=1");
 
         // 仅停止 monitor
         RouteDsl.stopMonitor(page(), CAP_API);
@@ -480,9 +480,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t2 = System.currentTimeMillis();
         JsonNode p2 = echoProbe();
         long e2 = System.currentTimeMillis() - t2;
-        assertEquals("停止 monitor 后 modify 仍应生效", "ALIVE", echoRequestHeader(p2, "x-cap"));
-        assertTrue("停止 monitor 后 delay 仍应 >=1900ms，实际=" + e2, e2 >= 1900);
-        assertEquals("停止 monitor 后不应再产生新的 monitor 记录", monAfterFirst, echoMonitorCount());
+        assertEquals( "ALIVE",  echoRequestHeader(p2, "x-cap"), "停止 monitor 后 modify 仍应生效");
+        assertTrue( e2 >= 1900, "停止 monitor 后 delay 仍应 >=1900ms，实际=" + e2);
+        assertEquals( monAfterFirst,  echoMonitorCount(), "停止 monitor 后不应再产生新的 monitor 记录");
     }
 
     @Step
@@ -494,8 +494,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         openOrigin(page());
 
         JsonNode p1 = echoProbe();
-        assertEquals("首次请求 modify 应已改写请求头", "ALIVE", echoRequestHeader(p1, "x-cap"));
-        assertNotNull("首次请求 monitor 应已采集", waitForCapturedByType(CAP_API, RouteHandleType.MONITOR));
+        assertEquals( "ALIVE",  echoRequestHeader(p1, "x-cap"), "首次请求 modify 应已改写请求头");
+        assertNotNull( waitForCapturedByType(CAP_API, RouteHandleType.MONITOR), "首次请求 monitor 应已采集");
         int monBefore = echoMonitorCount();
 
         // 仅停止 modify
@@ -504,9 +504,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t2 = System.currentTimeMillis();
         JsonNode p2 = echoProbe();
         long e2 = System.currentTimeMillis() - t2;
-        assertNull("停止 modify 后请求头不应再带 X-Cap", echoRequestHeader(p2, "x-cap"));
-        assertTrue("停止 modify 后 delay 仍应 >=1900ms，实际=" + e2, e2 >= 1900);
-        assertTrue("停止 modify 后 monitor 仍应采集（计数增加）", echoMonitorCount() > monBefore);
+        assertNull( echoRequestHeader(p2, "x-cap"), "停止 modify 后请求头不应再带 X-Cap");
+        assertTrue( e2 >= 1900, "停止 modify 后 delay 仍应 >=1900ms，实际=" + e2);
+        assertTrue( echoMonitorCount() > monBefore, "停止 modify 后 monitor 仍应采集（计数增加）");
     }
 
     @Step
@@ -520,9 +520,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t1 = System.currentTimeMillis();
         JsonNode p1 = echoProbe();
         long e1 = System.currentTimeMillis() - t1;
-        assertTrue("首次请求 delay(2) 应 >=1900ms，实际=" + e1, e1 >= 1900);
-        assertEquals("首次请求 modify 应已改写请求头", "ALIVE", echoRequestHeader(p1, "x-cap"));
-        assertNotNull("首次请求 monitor 应已采集", waitForCapturedByType(CAP_API, RouteHandleType.MONITOR));
+        assertTrue( e1 >= 1900, "首次请求 delay(2) 应 >=1900ms，实际=" + e1);
+        assertEquals( "ALIVE",  echoRequestHeader(p1, "x-cap"), "首次请求 modify 应已改写请求头");
+        assertNotNull( waitForCapturedByType(CAP_API, RouteHandleType.MONITOR), "首次请求 monitor 应已采集");
         int monBefore = echoMonitorCount();
 
         // 仅停止 delay
@@ -531,9 +531,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t2 = System.currentTimeMillis();
         JsonNode p2 = echoProbe();
         long e2 = System.currentTimeMillis() - t2;
-        assertTrue("停止 delay 后应明显变快（<1000ms），实际=" + e2, e2 < 1000);
-        assertEquals("停止 delay 后 modify 仍应生效", "ALIVE", echoRequestHeader(p2, "x-cap"));
-        assertTrue("停止 delay 后 monitor 仍应采集（计数增加）", echoMonitorCount() > monBefore);
+        assertTrue( e2 < 1000, "停止 delay 后应明显变快（<1000ms），实际=" + e2);
+        assertEquals( "ALIVE",  echoRequestHeader(p2, "x-cap"), "停止 delay 后 modify 仍应生效");
+        assertTrue( echoMonitorCount() > monBefore, "停止 delay 后 monitor 仍应采集（计数增加）");
     }
 
     @Step
@@ -542,14 +542,14 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         openOrigin(page());
 
         String first = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
-        assertTrue("首次请求应命中 mock", first.contains("MOCKED_STOP"));
+        assertTrue( first.contains("MOCKED_STOP"), "首次请求应命中 mock");
 
         // 仅停止 mock
         RouteDsl.stopMock(page(), CAP_API);
 
         String second = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
-        assertFalse("停止 mock 后不应再返回 mock 内容", second.contains("MOCKED_STOP"));
-        assertTrue("停止 mock 后应走真实 echo（含 status 字段）", second.contains("\"status\""));
+        assertFalse( second.contains("MOCKED_STOP"), "停止 mock 后不应再返回 mock 内容");
+        assertTrue( second.contains("\"status\""), "停止 mock 后应走真实 echo（含 status 字段）");
     }
 
     @Step
@@ -564,9 +564,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t1 = System.currentTimeMillis();
         JsonNode p1 = echoProbe();
         long e1 = System.currentTimeMillis() - t1;
-        assertTrue("停止前 delay 应 >=1900ms，实际=" + e1, e1 >= 1900);
-        assertEquals("停止前 modify 应已改写请求头", "ALIVE", echoRequestHeader(p1, "x-cap"));
-        assertNotNull("停止前 monitor 应已采集", waitForCapturedByType(CAP_API, RouteHandleType.MONITOR));
+        assertTrue( e1 >= 1900, "停止前 delay 应 >=1900ms，实际=" + e1);
+        assertEquals( "ALIVE",  echoRequestHeader(p1, "x-cap"), "停止前 modify 应已改写请求头");
+        assertNotNull( waitForCapturedByType(CAP_API, RouteHandleType.MONITOR), "停止前 monitor 应已采集");
         int monBefore = echoMonitorCount();
 
         // 停止全部能力（路由仍注册）
@@ -575,9 +575,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long t2 = System.currentTimeMillis();
         String raw2 = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
         long e2 = System.currentTimeMillis() - t2;
-        assertTrue("stopApi 后不应再有 delay（<1000ms），实际=" + e2, e2 < 1000);
-        assertTrue("stopApi 后应为 passthrough 到真实 echo（含 status 字段）", raw2.contains("\"status\""));
-        assertNull("stopApi 后 modify 不应生效", echoRequestHeader(assertJson(raw2), "x-cap"));
-        assertEquals("stopApi 后 monitor 不应再采集", monBefore, echoMonitorCount());
+        assertTrue( e2 < 1000, "stopApi 后不应再有 delay（<1000ms），实际=" + e2);
+        assertTrue( raw2.contains("\"status\""), "stopApi 后应为 passthrough 到真实 echo（含 status 字段）");
+        assertNull( echoRequestHeader(assertJson(raw2), "x-cap"), "stopApi 后 modify 不应生效");
+        assertEquals( monBefore,  echoMonitorCount(), "stopApi 后 monitor 不应再采集");
     }
 }

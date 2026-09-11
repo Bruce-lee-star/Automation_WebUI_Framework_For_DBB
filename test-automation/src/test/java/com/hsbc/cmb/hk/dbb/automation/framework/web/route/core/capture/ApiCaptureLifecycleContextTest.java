@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
 import com.microsoft.playwright.BrowserContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.util.ArrayList;
@@ -12,9 +12,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureLifecycle;
 
@@ -34,8 +34,8 @@ public class ApiCaptureLifecycleContextTest {
             Future<BrowserContext> otherSees = pool.submit(ApiCaptureLifecycle::currentContextOrNull);
             BrowserContext other = otherSees.get(5, TimeUnit.SECONDS);
 
-            assertNull("其他线程不应看到主线程绑定的 Context", other);
-            assertSame("主线程仍读到自身 Context", ctxA, ApiCaptureLifecycle.currentContextOrNull());
+            assertNull( other, "其他线程不应看到主线程绑定的 Context");
+            assertSame( ctxA,  ApiCaptureLifecycle.currentContextOrNull(), "主线程仍读到自身 Context");
         } finally {
             ApiCaptureLifecycle.unbindCurrentContext();
             pool.shutdown();

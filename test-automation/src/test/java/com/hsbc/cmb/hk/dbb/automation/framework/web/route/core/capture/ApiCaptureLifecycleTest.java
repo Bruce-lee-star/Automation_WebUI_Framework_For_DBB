@@ -2,10 +2,11 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureLifecycle;
 
@@ -32,7 +33,7 @@ public class ApiCaptureLifecycleTest {
     @Test
     public void bindNull_unbindsCurrentContext() {
         ApiCaptureLifecycle.bindCurrentContext(null);
-        assertNull("bind(null) 应解绑当前线程", ApiCaptureLifecycle.currentContextOrNull());
+        assertNull(ApiCaptureLifecycle.currentContextOrNull(), "bind(null) 应解绑当前线程");
     }
 
     @Test
@@ -45,14 +46,13 @@ public class ApiCaptureLifecycleTest {
         assertEquals(0, ApiCaptureLifecycle.activeContextCount());
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void apiCaptureContext_start_nullContext_throws() {
-        // 转发壳应保持原签名与 null 校验语义
-        ApiCaptureContext.start((BrowserContext) null);
+        assertThrows(IllegalArgumentException.class, () -> ApiCaptureContext.start((BrowserContext) null));
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void apiCaptureContext_start_nullPage_throws() {
-        ApiCaptureContext.start((Page) null);
+        assertThrows(IllegalArgumentException.class, () -> ApiCaptureContext.start((Page) null));
     }
 }

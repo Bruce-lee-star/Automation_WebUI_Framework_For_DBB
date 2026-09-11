@@ -1682,7 +1682,10 @@ public class SummaryReportGenerator {
                     startTimes.add(start);
                     endTimes.add(start.plusNanos(dur * 1_000_000));
                 }
-            } catch (Exception e) { /* ignore */ }
+            } catch (Exception e) {
+                // 单条用例的时间解析失败不影响汇总，但不得静默（D7-3）
+                logger.debug("[SummaryReport] skip outcome in time-window stats: {}", e.toString());
+            }
         });
 
         for (SimpleTestOutcome s : simpleTestOutcomes) {

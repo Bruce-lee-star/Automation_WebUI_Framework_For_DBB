@@ -1,10 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.reporting;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -19,10 +18,10 @@ import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * T2-8 阶段 0：{@link SummaryReportGenerator} 输出基线（golden）护盾。
@@ -52,8 +51,8 @@ import static org.junit.Assert.fail;
  */
 public class SummaryReportGoldenTest {
 
-    @Rule
-    public TemporaryFolder folder = new TemporaryFolder();
+    @TempDir
+    File folder;
 
     private static final String PROJECT_NAME = "Golden Baseline Project";
     private static final String REPORT_URL = "https://reports.example.com/job/42/Serenity_20Summary_20Report/";
@@ -76,13 +75,13 @@ public class SummaryReportGoldenTest {
             + "  \"startTime\": \"2026-09-01T10:00:00.000000+08:00\"\n"
             + "}";
 
-    @Before
+    @BeforeEach
     public void pinEnvironment() {
         System.setProperty("serenity.project.name", PROJECT_NAME);
         System.setProperty("serenity.report.url", REPORT_URL);
     }
 
-    @After
+    @AfterEach
     public void restoreEnvironment() {
         System.clearProperty("serenity.project.name");
         System.clearProperty("serenity.report.url");
@@ -94,15 +93,16 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void htmlMatchesGoldenBaseline() throws Exception {
-        File dir = folder.newFolder("golden-report");
+        File dir = new File(folder, "golden-report");
+        dir.mkdirs();
         writeOutcome(dir, "golden.json", GOLDEN_JSON);
 
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
 
         Path html = dir.toPath().resolve("serenity-summary.html");
-        assertTrue("serenity-summary.html 必须生成", Files.exists(html));
+        assertTrue(Files.exists(html), "serenity-summary.html 必须生成");
         String actual = normalize(Files.readString(html, StandardCharsets.UTF_8), dir);
-        assertFalse("HTML 产物不应为空", actual.isEmpty());
+        assertFalse(actual.isEmpty(), "HTML 产物不应为空");
 
         if (!Files.exists(GOLDEN_HTML)) {
             Files.createDirectories(GOLDEN_HTML.getParent());
@@ -133,7 +133,8 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void csvQuotesFieldsContainingCommasAndQuotes() throws Exception {
-        File dir = folder.newFolder("csv-report");
+        File dir = new File(folder, "csv-report");
+        dir.mkdirs();
         writeOutcome(dir, "csv.json", "{\n"
                 + "  \"name\": \"Login, with \\\"quoted\\\" value\",\n"
                 + "  \"result\": \"SUCCESS\",\n"
@@ -146,20 +147,21 @@ public class SummaryReportGoldenTest {
 
         Path csv = findOne(dir, "test-results-", ".csv");
         List<String> lines = Files.readAllLines(csv, StandardCharsets.UTF_8);
-        assertEquals("表头契约", "Feature,Scenario,Result,Duration (ms),Error Message", lines.get(0));
-        assertEquals("表头 + 1 条数据行", 2, lines.size());
+        assertEquals("Feature,Scenario,Result,Duration (ms),Error Message", lines.get(0), "表头契约");
+        assertEquals(2, lines.size(), "表头 + 1 条数据行");
 
         String row = lines.get(1);
-        assertTrue("含逗号的 feature 必须加引号，实际：" + row, row.startsWith("\"Feature, One\","));
-        assertTrue("含逗号与双引号的 scenario 必须加引号且引号翻倍，实际：" + row,
-                row.contains("\"Login, with \"\"quoted\"\" value\""));
-        assertTrue("结果/耗时/错误信息列（成功时为空），实际：" + row, row.endsWith(",SUCCESS,900,"));
+        assertTrue(row.startsWith("\"Feature, One\","), "含逗号的 feature 必须加引号，实际：" + row);
+        assertTrue(row.contains("\"Login, with \"\"quoted\"\" value\""),
+                "含逗号与双引号的 scenario 必须加引号且引号翻倍，实际：" + row);
+        assertTrue(row.endsWith(",SUCCESS,900,"), "结果/耗时/错误信息列（成功时为空），实际：" + row);
     }
 
     /** ZIP 契约：必须打包汇总报告本体（条目名不含时间戳，可稳定断言）。 */
     @Test
     public void zipPackageContainsSummaryArtifacts() throws Exception {
-        File dir = folder.newFolder("zip-report");
+        File dir = new File(folder, "zip-report");
+        dir.mkdirs();
         writeOutcome(dir, "zip.json", GOLDEN_JSON);
 
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
@@ -172,8 +174,8 @@ public class SummaryReportGoldenTest {
                 entries.add(en.nextElement().getName());
             }
         }
-        assertTrue("ZIP 必须包含 serenity-summary.html，实际条目：" + entries,
-                entries.contains("serenity-summary.html"));
+        assertTrue(entries.contains("serenity-summary.html"),
+                "ZIP 必须包含 serenity-summary.html，实际条目：" + entries);
     }
 
     /**
@@ -183,7 +185,8 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void htmlEscapesHtmlMetacharactersFromOutcomeData() throws Exception {
-        File dir = folder.newFolder("escape-report");
+        File dir = new File(folder, "escape-report");
+        dir.mkdirs();
         writeOutcome(dir, "escape.json", "{\n"
                 + "  \"name\": \"<script>alert(1)</script> & \\\"quoted\\\" more\",\n"
                 + "  \"result\": \"FAILURE\",\n"
@@ -197,12 +200,12 @@ public class SummaryReportGoldenTest {
 
         String html = Files.readString(
                 dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
-        assertFalse("原始 <script> 绝不可进入报告产物", html.contains("<script>alert(1)"));
-        assertFalse("原始 <img onerror> 绝不可进入报告产物", html.contains("<img src=x onerror=alert(1)>"));
-        assertTrue("必须转义为 &lt;script&gt;", html.contains("&lt;script&gt;"));
-        assertTrue("必须转义为 &amp;", html.contains("&amp;"));
-        assertTrue("双引号必须转义为 &quot;（闭合 T2-8 收尾项）", html.contains("&quot;"));
-        assertFalse("原始 \"quoted\" 不得进入报告产物", html.contains("\"quoted\""));
+        assertFalse(html.contains("<script>alert(1)"), "原始 <script> 绝不可进入报告产物");
+        assertFalse(html.contains("<img src=x onerror=alert(1)>"), "原始 <img onerror> 绝不可进入报告产物");
+        assertTrue(html.contains("&lt;script&gt;"), "必须转义为 &lt;script&gt;");
+        assertTrue(html.contains("&amp;"), "必须转义为 &amp;");
+        assertTrue(html.contains("&quot;"), "双引号必须转义为 &quot;（闭合 T2-8 收尾项）");
+        assertFalse(html.contains("\"quoted\""), "原始 \"quoted\" 不得进入报告产物");
     }
 
     /** 首个差异字符下标；若仅是长度不同，返回较短串长度。 */

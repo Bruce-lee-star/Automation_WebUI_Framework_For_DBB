@@ -1,6 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.reporting;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.result.ResultReporter;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.result.ResultReporters;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.result.StepResult;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.result.TestResult;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import net.serenitybdd.core.Serenity;
 import net.thucydides.core.steps.StepEventBus;
@@ -30,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       拦截器在主线程上调用 {@link #flushPendingApiOperations()} 批量写入报告</li>
  * </ol>
  */
-public final class SerenityReporter {
+public final class SerenityReporter implements ResultReporter {
 
     private static final Logger logger = LoggerFactory.getLogger(SerenityReporter.class);
 
@@ -54,7 +58,56 @@ public final class SerenityReporter {
     private static final int MAX_PENDING_RECORDS = Integer.getInteger(
             "serenity.route.maxPendingRecords", 500);
 
+    /**
+     * 单例：本类是 {@link ResultReporter} 的 Serenity 实现，
+     * 需在类初始化时自我注册到 {@link ResultReporters}（框架侧只面向端口广播）。
+     */
+    private static final SerenityReporter INSTANCE = new SerenityReporter();
+
+    static {
+        ResultReporters.register(INSTANCE);
+        //  D4-2：装载基于结果端口的汇总报告生成器（同模块；core 不可反向依赖 reporting，故在此装载）
+        SummaryResultReporter.install();
+    }
+
     private SerenityReporter() {}
+
+    // ═══════════════════════════════════════════════════════════
+    // ResultReporter（D4-2：本类作为 Serenity 单向适配器）
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * 步骤结果：<b>不重复写入 Serenity</b>。
+     *
+     * <p>Serenity 原生已按步骤记录（报告、截图、耗时），此处若再逐步骤
+     * {@code recordReportData()} 会造成三重问题：
+     * <ol>
+     *   <li>报告被逐步骤片段撑爆，可读性下降；</li>
+     *   <li>每个步骤一次 Serenity 调用 + 异常兜底，显著抬高日志量
+     *       （实测单次全量运行日志从 ~6MB 涨到 ~25MB）；</li>
+     *   <li>日志 I/O 拥塞会拖慢依赖落盘的断言，诱发偶发失败。</li>
+     * </ol>
+     * 步骤数据仍会广播给其它 {@code ResultReporter}（如汇总报告生成器），
+     * 只是 Serenity 这一侧不需要 —— 这正是"端口与实现分离"的收益：
+     * 各引擎按需取用，不必全盘接收。
+     */
+    @Override
+    public void reportStep(StepResult step) {
+        //  intentional no-op：Serenity 原生已记录步骤，避免重复写入
+    }
+
+    /** 把框架场景结果单向推送到 Serenity 报告。 */
+    @Override
+    public void reportScenario(String scenarioName, TestResult result, long durationMs) {
+        try {
+            Serenity.recordReportData()
+                    .withTitle("SCENARIO: " + scenarioName)
+                    .andContents("result=" + result + "\ndurationMs=" + durationMs);
+        } catch (Exception e) {
+            logger.debug("[SerenityReporter] reportScenario skipped (non-Serenity env?): {}",
+                    e.toString());
+        }
+    }
 
     /**
      * 待报告 API 操作记录 DTO。

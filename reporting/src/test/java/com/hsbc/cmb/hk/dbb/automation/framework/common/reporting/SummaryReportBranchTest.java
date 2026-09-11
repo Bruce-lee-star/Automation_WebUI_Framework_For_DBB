@@ -1,17 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.reporting;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 覆盖 {@link SummaryReportGoldenTest} 的 golden 基线<b>触及不到</b>的分支。
@@ -27,19 +26,19 @@ import static org.junit.Assert.assertTrue;
  */
 public class SummaryReportBranchTest {
 
-    @Rule
-    public TemporaryFolder folder = new TemporaryFolder();
+    @TempDir
+    File folder;
 
     private static final String PROJECT_NAME = "Branch Coverage Project";
     private static final String REPORT_URL = "https://reports.example.com/job/43/Serenity_20Summary_20Report/";
 
-    @Before
+    @BeforeEach
     public void pinEnvironment() {
         System.setProperty("serenity.project.name", PROJECT_NAME);
         System.setProperty("serenity.report.url", REPORT_URL);
     }
 
-    @After
+    @AfterEach
     public void restoreEnvironment() {
         System.clearProperty("serenity.project.name");
         System.clearProperty("serenity.report.url");
@@ -51,7 +50,8 @@ public class SummaryReportBranchTest {
      */
     @Test
     public void pieChartUsesConicGradientAndLegendForMultipleErrorTypes() throws Exception {
-        File dir = folder.newFolder("multi-error-report");
+        File dir = new File(folder, "multi-error-report");
+        dir.mkdirs();
         writeOutcome(dir, "assert.json", "AssertionError: expected <ok> but was <bad>");
         writeOutcome(dir, "timeout.json", "TimeoutException: timed out after 30000ms");
 
@@ -59,20 +59,20 @@ public class SummaryReportBranchTest {
 
         String html = Files.readString(dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
 
-        assertTrue("多分类饼图必须渲染 conic-gradient，实际未出现",
-                html.contains("conic-gradient(from -90deg"));
-        assertTrue("图例须含 Assertion Failed 分类", html.contains("Assertion Failed"));
-        assertTrue("图例须含 Timeout Error 分类", html.contains("Timeout Error"));
-        assertTrue("须含 Failure Analysis 标题", html.contains("Failure Analysis"));
+        assertTrue(html.contains("conic-gradient(from -90deg"), "多分类饼图必须渲染 conic-gradient，实际未出现");
+        assertTrue(html.contains("Assertion Failed"), "图例须含 Assertion Failed 分类");
+        assertTrue(html.contains("Timeout Error"), "图例须含 Timeout Error 分类");
+        assertTrue(html.contains("Failure Analysis"), "须含 Failure Analysis 标题");
         // 模板指令不得泄漏进产物
-        assertFalse("Freemarker 指令泄漏进产物", html.contains("<#"));
-        assertFalse("模板占位符未解析", html.contains("${"));
+        assertFalse(html.contains("<#"), "Freemarker 指令泄漏进产物");
+        assertFalse(html.contains("${"), "模板占位符未解析");
     }
 
     /** 无失败用例：Full Failure List 整段缺席，Full Test Results 仍须渲染。 */
     @Test
     public void failureListSectionAbsentWhenNoFailures() throws Exception {
-        File dir = folder.newFolder("success-only-report");
+        File dir = new File(folder, "success-only-report");
+        dir.mkdirs();
         Files.writeString(new File(dir, "ok.json").toPath(), "{\n"
                 + "  \"name\": \"Happy path\",\n"
                 + "  \"result\": \"SUCCESS\",\n"
@@ -86,9 +86,9 @@ public class SummaryReportBranchTest {
 
         String html = Files.readString(dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
 
-        assertFalse("无失败时不得出现 Full Failure List", html.contains("Full Failure List"));
-        assertTrue("Full Test Results 始终渲染", html.contains("Full Test Results"));
-        assertFalse("无失败时不得出现 Test Failure Overview", html.contains("Test Failure Overview"));
+        assertFalse(html.contains("Full Failure List"), "无失败时不得出现 Full Failure List");
+        assertTrue(html.contains("Full Test Results"), "Full Test Results 始终渲染");
+        assertFalse(html.contains("Test Failure Overview"), "无失败时不得出现 Test Failure Overview");
     }
 
     private static void writeOutcome(File dir, String fileName, String failureMessage) throws Exception {

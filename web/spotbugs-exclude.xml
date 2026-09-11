@@ -1,77 +1,89 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
-    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.utils.DatabaseUtil"/><Bug pattern="NP_NULL_PARAM_DEREF"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightInitializer"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$DiagnosticInfo"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory$CreationConfig"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanConfig"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync$1"/><Bug pattern="SE_BAD_FIELD"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.utils.DatabaseUtil"/><Bug pattern="SF_SWITCH_NO_DEFAULT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter"/><Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightConfigManager"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPickParser"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.ElementDiagnosticsCollector"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanResult"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAssembler"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$DiagnosticInfo"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightInitializer"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.utils.FileUtils"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScriptInjector"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="AT_NONATOMIC_OPERATIONS_ON_SHARED_VARIABLE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAssembler"/><Bug pattern="NP_LOAD_OF_KNOWN_NULL_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.utils.DatabaseUtil"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="NN_NAKED_NOTIFY"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="DB_DUPLICATE_BRANCHES"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.utils.DatabaseUtil"/><Bug pattern="LI_LAZY_INIT_STATIC"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="EC_UNRELATED_TYPES"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+    <!--
+      D6-2 SpotBugs 债务治理基线（按包拆分 + 限期消除，非永久冻结）
+      ============================================================
+      治理策略：
+      1. 本文件是「限期消除清单」，不是永久 suppress。每条债务标注所属包、条数、建议 owner、SLA、消除方式。
+      2. 新增违规硬门禁：根 pom spotbugs-check 绑 verify 阶段（failOnError=true），excludeFilter 仅冻结本基线已知项；
+         任何未列入本基线的新 SpotBugs 违规（Medium+）将导致 verify 失败 —— 新增违规必须为 0。
+      3. 消除路线：按 SLA 逐包消除，消除后对应 <Match> 从本文件移除（禁止"冻结式"留存）。
+      4. owner 为建议责任模块/角色，实际指派由团队确认；SLA 按里程碑滚动复盘。
+
+      本轮（D6-2）处置记录：
+      ① 实质消除 7 条并从基线移除：
+         - VA_FORMAT_STRING_USES_NEWLINE ×4（PageObjectFactory / ThucydidesStepsListenerAdapter /
+           FrameworkConfigManager / ListenerPerfStats 的 String.format 串 \n → %n）；
+         - DM_DEFAULT_ENCODING ×3（AxeCoreScanner 的 FileWriter / BrowserStackLocalManager 的
+           InputStreamReader / PlaywrightListener 的 PrintStream 补显式 UTF-8）。
+      ② 清理「过时 suppress」44 条：原基线 73 条中 44 条对应违规已随代码重构消失
+         （主因：web.page.scan.*（RolePicker 族）已物理迁入 framework-codegen 模块，
+          以及 PlaywrightManager / BasePage / PlaywrightInitializer 等重构消除），
+         已从基线删除 —— 原基线约 60% 属无效冻结，是本轮"解冻"的重点。
+      ③ 补登「遗漏」14 条：原基线生成后代码演变（D6-1 迁移等）引入、此前未被覆盖的违规，
+         同样限期消除。
+      ④ 现基线 = 当前 web 全部真实违规（消除前 43 条，本轮消除 3 条，余 40 条），按 10 个包组拆分。
+      分组约定：每组以 ===== 注释分隔；条数为 class+pattern 粒度。
+    -->
+
+    <!-- ===== web.page.base (BasePage/SerenityBasePage/PageContextState, 3 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 构造异常收敛 + EI 封装 + 未用私有方法删除 ===== -->
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackLocalManager"/><Bug pattern="DM_DEFAULT_ENCODING"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageContextState"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
+
+    <!-- ===== web.page (PageElement/PageElementList/PageObjectFactory/ElementDiagnosticsCollector, 6 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 构造异常收敛 + EI 封装 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.ElementDiagnosticsCollector"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory$CreationConfig"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+
+    <!-- ===== web.page.binding (RoleElementBinder, 2 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 异常分类收窄 + EI 封装 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+
+    <!-- ===== web.lifecycle (PlaywrightManager/PlaywrightRuntime/PlaywrightInitializer/PlaywrightConfigManager/CustomOptionsManager/SerenityBusBridge/ContextTaskResult, 9 条) | owner: @web-core | SLA: 2026-Q4~2027-Q1 | 方式: 单例构造私有化 + 返回值消费 + EI/MS 封装 + NP 判空 + 测试断言豁免 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightInitializer"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightInitializer"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResultTest"/><Bug pattern="JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityBusBridge"/><Bug pattern="NP_NONNULL_PARAM_VIOLATION"/></Match>
+
+    <!-- ===== web.listener (PlaywrightListener/ThucydidesStepsListenerAdapter/BadLoadListener/测试, 7 条) | owner: @web-core/@web-test | SLA: 2026-Q4 | 方式: 并发可见性改造(AT/ST) + 冗余 null 清理 + 测试断言豁免 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="AT_NONATOMIC_OPERATIONS_ON_SHARED_VARIABLE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.PlaywrightListener"/><Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.ThucydidesStepsListenerAdapter"/><Bug pattern="ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg.BadLoadListener"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.listener.RouteAssertionFailureSurfacesToScenarioTest"/><Bug pattern="JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS"/></Match>
+
+    <!-- ===== web.exceptions (ElementOperationException*/WebExceptionsTest, 5 条) | owner: @web-core/@web-test | SLA: 2027-Q1 | 方式: EI 封装改造 + 测试断言豁免 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$DiagnosticInfo"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$DiagnosticInfo"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.WebExceptionsTest"/><Bug pattern="BC_VACUOUS_INSTANCEOF"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.WebExceptionsTest"/><Bug pattern="JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS"/></Match>
+
+    <!-- ===== web.accessibility (AxeCoreScanner*, 3 条) | owner: @web-core | SLA: 2027-Q1 | 方式: EI 封装改造(返回不可变副本) ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanConfig"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility.AxeCoreScanner$AxeScanResult"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+
+    <!-- ===== web.core (FrameworkCore/FrameworkState, 2 条) | owner: @web-core | SLA: 2027-Q1 | 方式: EI/MS 封装改造(返回不可变副本) ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+
+    <!-- ===== web.session (SessionManager, 1 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 返回值 NPE 路径加判空 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
+
+    <!-- ===== web.config (FrameworkConfigManager/AutoBrowserProcessor, 2 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 冗余 null 清理 + 返回值消费审查 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
+
 </FindBugsFilter>

@@ -490,7 +490,7 @@ public class AxeCoreScanner {
                 LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".html";
             Path filePath = dirPath.resolve(fileName);
 
-            try (FileWriter writer = new FileWriter(filePath.toFile())) {
+            try (FileWriter writer = new FileWriter(filePath.toFile(), java.nio.charset.StandardCharsets.UTF_8)) {
                 writer.write(html);
             }
             logger.info("Accessibility Report saved: {}", filePath.toString());

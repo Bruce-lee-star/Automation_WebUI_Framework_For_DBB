@@ -65,8 +65,9 @@ final class ElementOperationSupport {
                 operation, selector,
                 info.existsInDom(), info.isVisible(), info.isEnabled(), info.elementCount(),
                 screenshotPath != null ? screenshotPath : "N/A");
-        } catch (Exception ignored) {
-            // 诊断收集本身不应影响主异常抛出
+        } catch (Exception e) {
+            // 诊断收集本身不应影响主异常抛出（预期降级，但不得静默，D7-3）
+            logger.debug("[ElementOperationSupport] diagnostics collection failed: {}", e.toString());
         }
     }
 

@@ -1,15 +1,15 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：SSO 感知并发闸门（无浏览器，纯逻辑）。
@@ -22,7 +22,7 @@ public class ConcurrencyGateTest {
     private static final String ENABLED = WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey();
     private static final String PERMITS = WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey();
 
-    @After
+    @AfterEach
     public void tearDown() {
         System.clearProperty(ENABLED);
         System.clearProperty(PERMITS);
@@ -37,7 +37,7 @@ public class ConcurrencyGateTest {
         ConcurrencyGate.acquire(key);
         ConcurrencyGate.release(key);
         // 禁用时 acquire/release 为 no-op，不应向 GATES 写入任何闸门
-        assertEquals("禁用时不得创建闸门", baseline, ConcurrencyGate.stats().activeGates);
+        assertEquals( baseline,  ConcurrencyGate.stats().activeGates, "禁用时不得创建闸门");
     }
 
     @Test
@@ -47,7 +47,7 @@ public class ConcurrencyGateTest {
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyGate.acquire(null);
         ConcurrencyGate.release(null);
-        assertEquals("null key 不得创建闸门", baseline, ConcurrencyGate.stats().activeGates);
+        assertEquals( baseline,  ConcurrencyGate.stats().activeGates, "null key 不得创建闸门");
     }
 
     @Test
@@ -57,7 +57,7 @@ public class ConcurrencyGateTest {
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "alice-enabled"));
         ConcurrencyGate.acquire(key);
-        assertEquals("启用后应为该 key 创建一道闸门", baseline + 1, ConcurrencyGate.stats().activeGates);
+        assertEquals( baseline + 1,  ConcurrencyGate.stats().activeGates, "启用后应为该 key 创建一道闸门");
         ConcurrencyGate.release(key);
         // release 不移除条目（仅惰性淘汰），条目保留
         assertEquals(baseline + 1, ConcurrencyGate.stats().activeGates);
@@ -71,7 +71,7 @@ public class ConcurrencyGateTest {
         ConcurrencyPartitionKey bob = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "bob-distinct"));
         ConcurrencyGate.acquire(alice);
         ConcurrencyGate.acquire(bob);
-        assertEquals("不同身份应使用不同闸门", baseline + 2, ConcurrencyGate.stats().activeGates);
+        assertEquals( baseline + 2,  ConcurrencyGate.stats().activeGates, "不同身份应使用不同闸门");
         ConcurrencyGate.release(alice);
         ConcurrencyGate.release(bob);
     }

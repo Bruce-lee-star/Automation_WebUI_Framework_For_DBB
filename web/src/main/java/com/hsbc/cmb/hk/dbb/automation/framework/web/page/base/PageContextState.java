@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
@@ -105,14 +106,18 @@ final class PageContextState {
             if (owner.context != null) {
                 return owner.context;
             }
-        } catch (Exception ignored) {
-            //  context 尚未初始化：退化到从 page 推断
+        } catch (Exception e) {
+            //  context 尚未初始化：退化到从 page 推断（预期路径，但不得静默，D7-3）
+            logger.debug("[PageContextState] resolveSwitchLockContext: context not ready, infer from page: {}",
+                    e.toString());
         }
         if (owner.page != null) {
             try {
                 return owner.page.context();
-            } catch (Exception ignored) {
-                //  page 已失效：回退全局兜底锁
+            } catch (Exception e) {
+                //  page 已失效：回退全局兜底锁（预期路径，但不得静默，D7-3）
+                logger.debug("[PageContextState] resolveSwitchLockContext: page invalidated, fallback lock: {}",
+                        e.toString());
             }
         }
         return null;
@@ -333,7 +338,10 @@ final class PageContextState {
                             "Latest window was closed, falling back to window at index {}", i);
                     return pages.get(i);
                 }
-            } catch (Exception ignored) { /* 页面状态探测：忽略探测过程中的异常，继续向前回退 */ }
+            } catch (Exception e) {
+                // 页面状态探测：忽略探测过程中的异常，继续向前回退（D7-3：不得静默）
+                logger.debug("[PageContextState] page probe failed, continue fallback: {}", e.toString());
+            }
         }
         return pages.get(startFrom); // 全部已关闭，返回原目标由调用方 isClosed 抛异常
     }

@@ -330,11 +330,11 @@ public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkLi
     public String getAdapterStatus() {
         StringBuilder status = new StringBuilder();
         status.append(" Thucydides Steps Listener Adapter Status:\n");
-        status.append(String.format("Delegate Listeners: %d\n", delegateListeners.size()));
+        status.append(String.format("Delegate Listeners: %d%n", delegateListeners.size()));
         status.append("Registered Listeners:\n");
 
         for (StepListener listener : delegateListeners) {
-            status.append(String.format("  - %s\n", listener.getClass().getSimpleName()));
+            status.append(String.format("  - %s%n", listener.getClass().getSimpleName()));
         }
 
         return status.toString();

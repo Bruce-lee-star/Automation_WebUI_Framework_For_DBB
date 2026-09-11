@@ -40,8 +40,8 @@ public class FrameworkCore {
             VerboseLogging.logWarnIfVerbose(logger, "AWT toolkit pre-init skipped: {}", t.getMessage());
         }
 
-        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_FRAMEWORK_CORE,
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_FRAMEWORK_CORE,
                 "framework-core", () -> {
                     try {
                         VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: Cleaning up resources...");

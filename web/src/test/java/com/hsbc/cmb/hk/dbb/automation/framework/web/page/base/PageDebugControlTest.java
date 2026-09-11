@@ -1,10 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.microsoft.playwright.Page;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -20,7 +20,7 @@ public class PageDebugControlTest {
     private static final String CI_PROPERTY = "ci";
     private String originalCiProperty;
 
-    @After
+    @AfterEach
     public void restoreSystemProperty() {
         if (originalCiProperty == null) {
             System.clearProperty(CI_PROPERTY);
@@ -34,7 +34,7 @@ public class PageDebugControlTest {
         originalCiProperty = System.getProperty(CI_PROPERTY);
         System.setProperty(CI_PROPERTY, "true");
 
-        assertFalse("CI 环境（ci=true）应判定为非调试环境", PageDebugControl.isDebugEnvironment());
+        assertFalse( PageDebugControl.isDebugEnvironment(), "CI 环境（ci=true）应判定为非调试环境");
     }
 
     @Test

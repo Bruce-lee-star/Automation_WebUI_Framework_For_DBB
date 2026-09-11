@@ -223,7 +223,8 @@ public final class NlsNameTranslator {
                     }
                 }
             } catch (BadHanyuPinyinOutputFormatCombination e) {
-                // 忽略无法转拼音的字符
+                // 无法转拼音的字符：跳过该字符（预期降级，但不得静默，D7-3）
+                log.debug("[NlsNameTranslator] skip char without pinyin: {}", e.toString());
             }
         }
         return sb.toString();

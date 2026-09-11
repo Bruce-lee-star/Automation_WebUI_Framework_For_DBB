@@ -62,8 +62,8 @@ public class ElementDiagnosticsCollector {
                     new ThreadPoolExecutor.CallerRunsPolicy());
 
     static {
-        com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.common.ShutdownCoordinator.ORDER_DIAGNOSTICS,
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_DIAGNOSTICS,
                 "diagnostics", () -> {
                     DIAGNOSTIC_EXECUTOR.shutdown();
                     try {

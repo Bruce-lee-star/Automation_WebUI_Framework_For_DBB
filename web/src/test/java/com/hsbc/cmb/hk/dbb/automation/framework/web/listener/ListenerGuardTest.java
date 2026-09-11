@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：监听器 per-thread 守卫与失败日志去重（无浏览器）。
@@ -14,7 +14,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class ListenerGuardTest {
 
-    @After
+    @AfterEach
     public void clearThreadState() {
         ListenerGuard.clearForThread();
     }
@@ -22,7 +22,7 @@ public class ListenerGuardTest {
     @Test
     public void guards_isStableWithinThread() {
         ListenerGuard.ListenerGuardState first = ListenerGuard.guards();
-        assertSame("同一线程内守卫状态应惰性复用同一实例", first, ListenerGuard.guards());
+        assertSame( first,  ListenerGuard.guards(), "同一线程内守卫状态应惰性复用同一实例");
     }
 
     @Test
@@ -31,7 +31,7 @@ public class ListenerGuardTest {
 
         ListenerGuard.clearForThread();
 
-        assertNotSame("清空后应重建守卫状态，避免跨 scenario 残留", before, ListenerGuard.guards());
+        assertNotSame( before,  ListenerGuard.guards(), "清空后应重建守卫状态，避免跨 scenario 残留");
     }
 
     @Test
@@ -53,21 +53,21 @@ public class ListenerGuardTest {
     public void shouldReportFailure_reportsOnlyOncePerThrowableInstance() {
         Throwable t = new RuntimeException("boom");
 
-        assertTrue("首次失败应完整打印", ListenerGuard.shouldReportFailure(t, "summary"));
-        assertFalse("同一异常实例重复出现应去重", ListenerGuard.shouldReportFailure(t, "summary"));
+        assertTrue( ListenerGuard.shouldReportFailure(t, "summary"), "首次失败应完整打印");
+        assertFalse( ListenerGuard.shouldReportFailure(t, "summary"), "同一异常实例重复出现应去重");
     }
 
     @Test
     public void shouldReportFailure_distinguishesDifferentInstances() {
         assertTrue(ListenerGuard.shouldReportFailure(new RuntimeException("boom"), "summary"));
-        assertTrue("不同异常实例（identityHashCode 不同）应各自报告一次",
-                ListenerGuard.shouldReportFailure(new RuntimeException("boom"), "summary"));
+        assertTrue(
+                ListenerGuard.shouldReportFailure(new RuntimeException("boom"), "summary"), "不同异常实例（identityHashCode 不同）应各自报告一次");
     }
 
     @Test
     public void shouldReportFailure_handlesNullThrowable() {
         assertTrue(ListenerGuard.shouldReportFailure(null, "no-throwable"));
-        assertFalse("null 异常同样按摘要去重", ListenerGuard.shouldReportFailure(null, "no-throwable"));
+        assertFalse( ListenerGuard.shouldReportFailure(null, "no-throwable"), "null 异常同样按摘要去重");
     }
 
     @Test
@@ -77,7 +77,7 @@ public class ListenerGuardTest {
 
         ListenerGuard.clearForThread();
 
-        assertTrue("清空后同一异常可再次报告（新 scenario 归零）",
-                ListenerGuard.shouldReportFailure(t, "summary"));
+        assertTrue(
+                ListenerGuard.shouldReportFailure(t, "summary"), "清空后同一异常可再次报告（新 scenario 归零）");
     }
 }

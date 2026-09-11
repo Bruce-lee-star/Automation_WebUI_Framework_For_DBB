@@ -41,6 +41,40 @@ public final class LocatorFactory {
         return (frame != null) ? frame.getByAltText(altText) : page.getByAltText(altText);
     }
 
+    /**
+     * 按 <b>CSS / XPath 选择器</b>定位，返回原生 Playwright {@code Locator}。
+     *
+     * <p>补齐工厂的"选择器入口"：本类其余 {@code by*} 均为语义定位（{@code getByRole} /
+     * {@code getByText} / {@code getByLabel} …），不含 CSS/XPath 通道，导致需要选择器时只能
+     * 绕过工厂直取 {@code BasePage.locatorInternal}（跨层调用内部 seam）。补本方法后，
+     * <b>全部定位入口（语义 + 选择器）统一收敛于 {@code LocatorFactory}</b>。
+     *
+     * <p>实现委托 {@code bp.locatorInternal(selector)}，以保留其内部已处理的上下文适配：
+     * <ul>
+     *   <li><b>iframe</b>：当前 frame 非空时以 frame 为根定位；</li>
+     *   <li><b>shadow DOM</b>：把宿主栈以 {@code >>>} 穿透组合器拼到选择器前缀。</li>
+     * </ul>
+     * 这两点是 {@code page.locator(selector)} 直连无法提供的，故不可简化为直接取 page。
+     *
+     * @param bp       页面对象（不得为 null）
+     * @param selector CSS 或 XPath 选择器（不得为 null / 空白）
+     */
+    public static Locator bySelector(BasePage bp, String selector) {
+        requireNonNullPage(bp);
+        if (selector == null || selector.trim().isEmpty()) {
+            throw new IllegalArgumentException("selector must not be null or blank when building locators");
+        }
+        bp.ensurePageValid();
+        // shadow 上下文高于 iframe/DOM 层：用 >>> 穿透组合器把宿主前缀拼到选择器前。
+        String shadowPrefix = bp.shadowPrefix();
+        String resolved = shadowPrefix.isEmpty() ? selector : shadowPrefix + selector;
+        Frame frame = bp.getCurrentFrame();
+        if (frame != null) {
+            return frame.locator(resolved);
+        }
+        return bp.getPage().locator(resolved);
+    }
+
     public static Locator byRole(BasePage bp, AriaRole role) {
         requireNonNullPage(bp);
         bp.ensurePageValid();

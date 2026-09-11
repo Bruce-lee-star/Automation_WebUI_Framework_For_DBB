@@ -7,14 +7,14 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Context
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 页面错误汇聚单测（设计文档 9.10-⑤）：工作线程累积的未捕获页面异常，经 {@link TestContextBridge}
@@ -42,8 +42,8 @@ public class TestContextBridgeTest {
                 ConcurrentContextOptions.builder().parallelism(1).build());
 
         assertTrue(r.get(0).isSuccess());
-        assertTrue("page error drained into result",
-                r.get(0).getPageErrors().contains("uncaught page error: ReferenceError: x is not defined"));
+        assertTrue(
+                r.get(0).getPageErrors().contains("uncaught page error: ReferenceError: x is not defined"), "page error drained into result");
     }
 
     @Test

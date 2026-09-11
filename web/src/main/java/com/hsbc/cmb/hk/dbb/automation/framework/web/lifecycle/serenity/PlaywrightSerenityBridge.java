@@ -1,4 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
@@ -332,7 +333,7 @@ public class PlaywrightSerenityBridge {
     public static void initializeForScenario() {
         VerboseLogging.logDebugIfVerbose(logger, "Initializing for scenario...");
 
-        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
+        if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
         // ⚠️ 修复级联：scenario 级 cleanupForScenario 会移除 currentConfigId（见 PlaywrightManager），
@@ -416,7 +417,7 @@ public class PlaywrightSerenityBridge {
     static void initializeForFeature() {
         VerboseLogging.logInfoIfVerbose(logger, "Initializing for feature...");
 
-        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
+        if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
         // ⚠️ 同 initializeForScenario：currentConfigId 被 scenario 级清理移除后懒重建，避免级联抛错

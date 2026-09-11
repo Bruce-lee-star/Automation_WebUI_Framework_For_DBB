@@ -134,7 +134,11 @@ public final class PageFrameShadow {
                         + nameOrSelector + "'. Available frames: " + page.frames().size());
             }
         } finally {
-            try { page.offFrameAttached(listener); } catch (Exception ignore) { /* 解绑监听器失败可忽略：监听器已失效，框架关闭时统一清理 */ }
+            try { page.offFrameAttached(listener); } catch (Exception ignore) {
+                // 解绑监听器失败：监听器已失效，框架关闭时统一清理（D7-3：不得静默）
+                log.debug("[PageFrameShadow] offFrameAttached failed, listener already stale: {}",
+                        ignore.toString());
+            }
         }
         bp.activateFrame(matched.get());
         log.info("Switched to iframe (waited & ready via onFrameAttached): '{}'", nameOrSelector);

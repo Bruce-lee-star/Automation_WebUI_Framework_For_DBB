@@ -87,12 +87,12 @@ public final class LifecycleLockMediator {
      * @param block 临界区
      */
     public static void withBrowserLock(Runnable block) {
-        withBrowserLock(PlaywrightManager.SHARED_BROWSER_MODE, block);
+        withBrowserLock(PlaywrightManager.isSharedBrowserMode(), block);
     }
 
     /** {@link #withBrowserLock(Runnable)} 的带返回值版本。 */
     public static <T> T withBrowserLock(Supplier<T> block) {
-        return withBrowserLock(PlaywrightManager.SHARED_BROWSER_MODE, block);
+        return withBrowserLock(PlaywrightManager.isSharedBrowserMode(), block);
     }
 
     /**

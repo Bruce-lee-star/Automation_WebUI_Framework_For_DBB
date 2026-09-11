@@ -72,8 +72,10 @@ public final class ConcurrencyGate {
         if (override != null) {
             try {
                 return Math.max(1, Integer.parseInt(override.trim()));
-            } catch (NumberFormatException ignored) {
-                // 非法值回落默认解析
+            } catch (NumberFormatException e) {
+                // 非法值回落默认解析；配置错误必须可见，不得静默（D7-3）
+                LOGGER.warn("[ConcurrencyGate] invalid override '{}' = '{}', fallback to default",
+                        WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey(), override);
             }
         }
         int p = WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getIntValue();

@@ -1,10 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * WEB-P1-5 种子测试：并发执行器选项（不可变、Builder 构造，无浏览器）。
@@ -53,7 +53,7 @@ public class ConcurrentContextOptionsTest {
     public void resolvedParallelism_isBoundedByTaskCount() {
         ConcurrentContextOptions options = ConcurrentContextOptions.builder().parallelism(8).build();
 
-        assertEquals("任务数更少时以任务数为准", 3, options.resolvedParallelism(3));
+        assertEquals( 3,  options.resolvedParallelism(3), "任务数更少时以任务数为准");
     }
 
     @Test
@@ -67,6 +67,6 @@ public class ConcurrentContextOptionsTest {
     public void resolvedParallelism_isBoundedByHardCapOfSixteen() {
         ConcurrentContextOptions options = ConcurrentContextOptions.builder().parallelism(32).build();
 
-        assertEquals("硬上限 16，防止过度并发压垮浏览器", 16, options.resolvedParallelism(100));
+        assertEquals( 16,  options.resolvedParallelism(100), "硬上限 16，防止过度并发压垮浏览器");
     }
 }

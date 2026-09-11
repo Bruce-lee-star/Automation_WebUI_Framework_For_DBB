@@ -1,4 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.lock.LifecycleLockMediator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
@@ -62,7 +63,7 @@ public final class PageRegistryImpl implements PageRegistry {
         // 框架层自动处理 @AutoBrowser 注解（在真正需要操作页面时触发）
         AutoBrowserProcessor.processAutoBrowserAnnotation();
 
-        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
+        if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 

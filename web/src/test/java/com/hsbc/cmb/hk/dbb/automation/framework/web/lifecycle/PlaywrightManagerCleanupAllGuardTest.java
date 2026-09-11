@@ -3,12 +3,12 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTask;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 致命缺陷3 修复验证：并发执行窗口内调用 {@link PlaywrightManager#cleanupAll()} 必须被运行时断言拒绝，
@@ -32,7 +32,7 @@ public class PlaywrightManagerCleanupAllGuardTest {
 
         List<ContextTaskResult<String>> results = ConcurrentContextExecutor.runAll(tasks);
         assertEquals(1, results.size());
-        assertTrue("cleanupAll must reject concurrent-mode call with IllegalStateException",
-                results.get(0).valueOrThrow().startsWith("REJECTED:"));
+        assertTrue(
+                results.get(0).valueOrThrow().startsWith("REJECTED:"), "cleanupAll must reject concurrent-mode call with IllegalStateException");
     }
 }

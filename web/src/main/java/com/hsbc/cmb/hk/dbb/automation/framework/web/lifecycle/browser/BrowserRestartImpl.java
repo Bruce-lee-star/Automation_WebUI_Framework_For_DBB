@@ -242,7 +242,7 @@ public final class BrowserRestartImpl implements BrowserRestart {
      * @throws BrowserException 共享模式重建失败时抛出（转换自底层 {@link #initializeBrowser} 异常）
      */
     public boolean rebuildSharedBrowserIfDisconnected() {
-        if (!PlaywrightManager.SHARED_BROWSER_MODE) {
+        if (!PlaywrightManager.isSharedBrowserMode()) {
             return true;
         }
         return LifecycleLockMediator.withSharedBrowserLock(() -> {
@@ -260,8 +260,9 @@ public final class BrowserRestartImpl implements BrowserRestart {
                 PlaywrightRuntime.instance().state.removeBrowser(PlaywrightRuntime.instance().browserRegistry.keyFor(configId));
                 try {
                     current.close();
-                } catch (Exception ignored) {
-                    // 已断开，close 多数情况为 no-op；忽略底层异常
+                } catch (Exception e) {
+                    // 已断开，close 多数情况为 no-op；放行底层异常但须留痕（D7-3）
+                    logger.debug("[BrowserRestart] close of disconnected browser skipped: {}", e.toString());
                 }
             }
             VerboseLogging.logInfoIfVerbose(logger,
@@ -285,7 +286,7 @@ public final class BrowserRestartImpl implements BrowserRestart {
      * @return 始终返回 {@code true}（表示已执行重建）
      */
     public boolean rebuildSharedBrowser() {
-        if (!PlaywrightManager.SHARED_BROWSER_MODE) {
+        if (!PlaywrightManager.isSharedBrowserMode()) {
             return true;
         }
         return LifecycleLockMediator.withSharedBrowserLock(() -> {
@@ -299,8 +300,9 @@ public final class BrowserRestartImpl implements BrowserRestart {
                 PlaywrightRuntime.instance().state.removeBrowser(PlaywrightRuntime.instance().browserRegistry.keyFor(configId));
                 try {
                     current.close();
-                } catch (Exception ignored) {
-                    // 关闭失败不影响重建：旧实例已移出管理表，由 onDisconnected 标记快速失败
+                } catch (Exception e) {
+                    // 关闭失败不影响重建：旧实例已移出管理表，由 onDisconnected 标记快速失败（D7-3：不得静默）
+                    logger.debug("[BrowserRestart] old browser close failed during rebuild: {}", e.toString());
                 }
             }
             VerboseLogging.logInfoIfVerbose(logger,

@@ -40,6 +40,8 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
@@ -263,7 +265,7 @@ public final class BrowserStartupImpl implements BrowserStartup {
                         "[Browser Init] Launch attempt {} failed: {}. Retrying in {}ms...",
                         attempt, com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.sanitizeMessage(e.getMessage()), backoffMs);
                     // 退避等待：基于 LockSupport.parkNanos（不调用 Thread.sleep，也不依赖 ForkJoinPool）
-                    PlaywrightManager.parkMillis(backoffMs);
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(backoffMs));
                 }
             }
         }

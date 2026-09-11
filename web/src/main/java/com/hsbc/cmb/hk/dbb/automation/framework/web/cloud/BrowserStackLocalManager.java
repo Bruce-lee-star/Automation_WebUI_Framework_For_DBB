@@ -250,7 +250,7 @@ public class BrowserStackLocalManager {
 
         Thread readerThread = new Thread(() -> {
             try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
+                    new InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
                 String line;
                 while (!ready[0] && (line = reader.readLine()) != null) {
                     startupLog.append(line).append("\n");

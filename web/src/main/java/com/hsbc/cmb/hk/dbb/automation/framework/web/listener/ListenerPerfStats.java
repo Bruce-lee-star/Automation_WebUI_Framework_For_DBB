@@ -73,11 +73,11 @@ public final class ListenerPerfStats {
 
     static String getPerformanceStats() {
         return String.format(
-                "Performance Statistics:\n"
-                        + "Total Tests: %d\n"
-                        + "Passed: %d (%.1f%%)\n"
-                        + "Failed: %d (%.1f%%)\n"
-                        + "Skipped: %d (%.1f%%)\n"
+                "Performance Statistics:%n"
+                        + "Total Tests: %d%n"
+                        + "Passed: %d (%.1f%%)%n"
+                        + "Failed: %d (%.1f%%)%n"
+                        + "Skipped: %d (%.1f%%)%n"
                         + "Screenshots Taken: %d",
                 totalTests.get(),
                 passedTests.get(),

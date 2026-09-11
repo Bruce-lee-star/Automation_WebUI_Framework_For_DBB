@@ -95,7 +95,7 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
                 : Thread.currentThread().getId() + ":" + configId;
     }
     public String keyFor(String configId) {
-        return keyFor(configId, PlaywrightManager.SHARED_BROWSER_MODE);
+        return keyFor(configId, PlaywrightManager.isSharedBrowserMode());
     }
 
     /**
@@ -166,7 +166,7 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
         // 慢速路径：浏览器不存在或断开，加锁创建
         // 修复 WEB-P0-1：共享模式必须用进程级 PlaywrightManager.SHARED_BROWSER_LOCK（browserLock 按模式返回），
         // 否则双线程各自持 per-thread 锁 → 同时进入 PlaywrightRuntime.instance().browserStartup.initializeBrowser() → Browser 双发射 + 旧实例泄漏。
-        return LifecycleLockMediator.withBrowserLock(PlaywrightManager.SHARED_BROWSER_MODE, () -> {
+        return LifecycleLockMediator.withBrowserLock(PlaywrightManager.isSharedBrowserMode(), () -> {
             // 双重检查：另一个线程可能已在等待期间创建了浏览器
             Browser browser = PlaywrightRuntime.instance().state.getBrowser(keyFor(currentConfig));
             if (browser != null && browser.isConnected()) {
@@ -221,8 +221,8 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
         //  2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
         //      （共享模式下使用进程级锁：Browser 被所有线程共享，切换必须全局互斥）
         // 修复 WEB-P0-1：此处原来误用 PlaywrightManager.perThreadBrowserLock()，与上方 getBrowser 慢路径一致改为
-        // browserLock(PlaywrightManager.SHARED_BROWSER_MODE)，确保共享模式切换时全局互斥。
-        return LifecycleLockMediator.withBrowserLock(PlaywrightManager.SHARED_BROWSER_MODE, () -> {
+        // browserLock(PlaywrightManager.isSharedBrowserMode())，确保共享模式切换时全局互斥。
+        return LifecycleLockMediator.withBrowserLock(PlaywrightManager.isSharedBrowserMode(), () -> {
             // 关闭旧浏览器
             Browser oldBrowser = PlaywrightRuntime.instance().state.getBrowser(keyFor(currentConfig));
             if (oldBrowser != null && oldBrowser.isConnected()) {

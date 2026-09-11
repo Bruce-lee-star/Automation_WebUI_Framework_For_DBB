@@ -1,12 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /**
  * WEB-P1-5 种子测试：codegen SPI 桥接注册表（无浏览器）。
@@ -18,7 +18,7 @@ public class RoleCodegenBridgeRegistryTest {
     public void getBridge_neverThrowsAndReturnsNonNull() {
         Optional<RoleCodegenBridge> bridge = RoleCodegenBridgeRegistry.getBridge();
 
-        assertNotNull("getBridge 必须返回非 null Optional（无实现时为 empty，不得抛异常）", bridge);
+        assertNotNull( bridge, "getBridge 必须返回非 null Optional（无实现时为 empty，不得抛异常）");
     }
 
     @Test
@@ -26,7 +26,7 @@ public class RoleCodegenBridgeRegistryTest {
         Optional<RoleCodegenBridge> first = RoleCodegenBridgeRegistry.getBridge();
         Optional<RoleCodegenBridge> second = RoleCodegenBridgeRegistry.getBridge();
 
-        assertSame("解析结果应按 JVM 进程惰性缓存，重复调用返回同一 Optional 实例", first, second);
+        assertSame( first,  second, "解析结果应按 JVM 进程惰性缓存，重复调用返回同一 Optional 实例");
     }
 
     /**
@@ -42,6 +42,6 @@ public class RoleCodegenBridgeRegistryTest {
         Optional<RoleCodegenBridge> after = RoleCodegenBridgeRegistry.getBridge();
 
         assertNotNull(after);
-        assertEquals("reset 只清空惰性缓存，重新解析结果应与之前一致", before, after);
+        assertEquals( before,  after, "reset 只清空惰性缓存，重新解析结果应与之前一致");
     }
 }

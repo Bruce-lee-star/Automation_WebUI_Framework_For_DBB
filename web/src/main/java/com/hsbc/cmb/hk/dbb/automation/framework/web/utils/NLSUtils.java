@@ -4,6 +4,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.JsonUtils;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.context.LanguageState;
 import com.jayway.jsonpath.TypeRef;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -34,6 +37,8 @@ import java.util.regex.Pattern;
  * </ol>
  */
 public final class NLSUtils {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(NLSUtils.class);
 
     /**
      * 当前语言 — 进程级全局值（带写入序号，见 {@link LangValue}）。
@@ -342,8 +347,9 @@ public final class NLSUtils {
                     throw new IllegalStateException("[NLS] read failed: " + filePath, e);
                 }
             }
-        } catch (IOException ignored) {
-            // classpath 资源不存在，继续尝试文件系统
+        } catch (IOException e) {
+            // classpath 资源不存在属预期（会继续尝试文件系统），但不得静默（D7-3）
+            LOGGER.debug("[NLS] classpath resource not found, try filesystem next: {}", e.toString());
         }
         Path p = Paths.get(filePath);
         if (Files.exists(p)) {

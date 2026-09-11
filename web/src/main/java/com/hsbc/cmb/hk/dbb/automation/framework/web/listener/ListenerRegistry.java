@@ -280,7 +280,9 @@ public class ListenerRegistry {
                 try {
                     result.add(Class.forName(name).asSubclass(Annotation.class));
                 } catch (ClassNotFoundException e) {
-                    // 某些 Serenity 版本可能没有全部注解，忽略即可
+                    // 某些 Serenity 版本可能没有全部注解 → 预期降级，但不得静默（D7-3）
+                    logger.debug("[ListenerRegistry] annotation not present in this Serenity version: {}",
+                            e.toString());
                 }
             }
             cachedListenerAnnotations = result;

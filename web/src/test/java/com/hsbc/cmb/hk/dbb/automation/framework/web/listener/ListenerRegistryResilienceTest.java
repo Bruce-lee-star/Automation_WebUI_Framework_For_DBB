@@ -2,13 +2,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg.BadLoadListener;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg.GoodSpiListener;
-import org.junit.After;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-3 表征测试：监听器注册改 SPI（{@link ServiceLoader} 主发现 + {@code Class.forName} 容错回退）。
@@ -22,7 +22,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class ListenerRegistryResilienceTest {
 
-    @After
+    @AfterEach
     public void tearDown() {
         ListenerRegistry.cleanup();
     }
@@ -32,17 +32,17 @@ public class ListenerRegistryResilienceTest {
         ListenerRegistry.initialize("com.hsbc.cmb.hk.dbb.automation.framework.web.listener.resiliencypkg");
 
         // ① 单类失败绝不中止整个注册表初始化（根治 W-16）
-        assertTrue("initialize 不应因坏类而中止", ListenerRegistry.isInitialized());
+        assertTrue( ListenerRegistry.isInitialized(), "initialize 不应因坏类而中止");
 
         List<Object> listeners = ListenerRegistry.getRegisteredListeners();
 
         // ② SPI 主发现路径成功登记正常监听器
         boolean hasGood = listeners.stream().anyMatch(l -> l instanceof GoodSpiListener);
-        assertTrue("SPI 应发现并登记 GoodSpiListener", hasGood);
+        assertTrue( hasGood, "SPI 应发现并登记 GoodSpiListener");
 
         // ③ 坏类（静态初始化失败）应被逐类跳过，不得登记
         boolean hasBad = listeners.stream().anyMatch(l -> l instanceof BadLoadListener);
-        assertFalse("坏类应被跳过，不得登记", hasBad);
+        assertFalse( hasBad, "坏类应被跳过，不得登记");
     }
 
     @Test
@@ -51,6 +51,6 @@ public class ListenerRegistryResilienceTest {
         assertTrue(ListenerRegistry.isInitialized());
         ListenerRegistry.cleanup();
         assertFalse(ListenerRegistry.isInitialized());
-        assertTrue("cleanup 后监听器列表应清空", ListenerRegistry.getRegisteredListeners().isEmpty());
+        assertTrue( ListenerRegistry.getRegisteredListeners().isEmpty(), "cleanup 后监听器列表应清空");
     }
 }

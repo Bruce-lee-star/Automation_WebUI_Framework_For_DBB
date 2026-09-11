@@ -518,18 +518,18 @@ public class PageObjectFactory {
     public static String getStatistics() {
         StringBuilder sb = new StringBuilder();
         sb.append("\n=== PageObjectFactory Statistics ===\n");
-        sb.append(String.format("Total Creations: %d\n", totalCreations.get()));
-        sb.append(String.format("Total Access: %d\n", totalAccess.get()));
-        sb.append(String.format("Singleton Instances: %d\n", singleInstances.size()));
-        sb.append(String.format("Thread-Isolated Instances: %d\n", threadInstances().size()));
-        sb.append(String.format("Request-Scoped Instances: %d\n", requestScopedInstances.size()));
+        sb.append(String.format("Total Creations: %d%n", totalCreations.get()));
+        sb.append(String.format("Total Access: %d%n", totalAccess.get()));
+        sb.append(String.format("Singleton Instances: %d%n", singleInstances.size()));
+        sb.append(String.format("Thread-Isolated Instances: %d%n", threadInstances().size()));
+        sb.append(String.format("Request-Scoped Instances: %d%n", requestScopedInstances.size()));
         sb.append("\nCreation Count by Class:\n");
         
         creationCount.entrySet().stream()
                 .sorted(Map.Entry.<Class<?>, Long>comparingByValue().reversed())
                 .limit(10)
                 .forEach(entry -> {
-                    sb.append(String.format("  %s: %d creations, %d accesses\n",
+                    sb.append(String.format("  %s: %d creations, %d accesses%n",
                             entry.getKey().getSimpleName(),
                             entry.getValue(),
                             accessCount.getOrDefault(entry.getKey(), 0L)));

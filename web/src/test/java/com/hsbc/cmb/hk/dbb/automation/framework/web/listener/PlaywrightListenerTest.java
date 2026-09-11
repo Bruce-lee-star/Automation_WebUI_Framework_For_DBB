@@ -11,9 +11,9 @@ import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
 import net.thucydides.model.steps.ExecutedStepDescription;
 import net.thucydides.model.steps.StepFailure;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.time.ZonedDateTime;
@@ -21,8 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -40,7 +40,7 @@ public class PlaywrightListenerTest {
 
     private PlaywrightListener listener;
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         listener = new PlaywrightListener();
         ListenerPerfStats.resetStats();
@@ -61,7 +61,7 @@ public class PlaywrightListenerTest {
         RouteLifecycleRegistry.register(routeLifecycle);
     }
 
-    @After
+    @AfterEach
     public void tearDown() throws Exception {
         ListenerPerfStats.resetStats();
         // 复位路由注册表，避免 mock 实现泄漏到其它测试套件
@@ -79,16 +79,16 @@ public class PlaywrightListenerTest {
 
         // discovery 分支仍须完成轻量登记（唯一测试名含线程号，便于同名 scenario 区分）
         String uniqueName = TestContextHolder.get().get(ListenerGuard.CURRENT_TEST_NAME_KEY);
-        assertNotNull("testStarted 必须登记当前测试名", uniqueName);
-        assertTrue("唯一名应以原测试名为前缀：" + uniqueName, uniqueName.startsWith("myTest_"));
+        assertNotNull( uniqueName, "testStarted 必须登记当前测试名");
+        assertTrue( uniqueName.startsWith("myTest_"), "唯一名应以原测试名为前缀：" + uniqueName);
     }
 
     @Test
     public void testSkipped_recordsSkipStatistic() {
         listener.testSkipped();
 
-        assertTrue("跳过须计入统计：" + PlaywrightListener.getPerformanceStats(),
-                PlaywrightListener.getPerformanceStats().contains("Skipped: 1"));
+        assertTrue(
+                PlaywrightListener.getPerformanceStats().contains("Skipped: 1"), "跳过须计入统计：" + PlaywrightListener.getPerformanceStats());
     }
 
     @Test

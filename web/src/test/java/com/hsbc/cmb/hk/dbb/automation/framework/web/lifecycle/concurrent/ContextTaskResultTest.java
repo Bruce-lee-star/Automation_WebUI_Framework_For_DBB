@@ -1,16 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.CompletionException;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：单任务执行结果（结构化、无浏览器）。
@@ -26,7 +26,7 @@ public class ContextTaskResultTest {
 
         assertTrue(r.isSuccess());
         assertEquals("value", r.valueOrThrow());
-        assertNull("成功时不应有失败原因", r.getFailure());
+        assertNull( r.getFailure(), "成功时不应有失败原因");
         assertEquals("t1", r.getTaskName());
         assertEquals("worker-1", r.getThreadName());
         assertEquals(120L, r.getDurationMillis());
@@ -40,9 +40,9 @@ public class ContextTaskResultTest {
         assertSame(CAUSE, r.getFailure());
 
         CompletionException ex = assertThrows(CompletionException.class, r::valueOrThrow);
-        assertSame("cause 链必须保留，便于编排线程定位根因", CAUSE, ex.getCause());
-        assertTrue("异常消息须含任务名", ex.getMessage().contains("t2"));
-        assertTrue("异常消息须含线程名", ex.getMessage().contains("worker-2"));
+        assertSame( CAUSE,  ex.getCause(), "cause 链必须保留，便于编排线程定位根因");
+        assertTrue( ex.getMessage().contains("t2"), "异常消息须含任务名");
+        assertTrue( ex.getMessage().contains("worker-2"), "异常消息须含线程名");
     }
 
     @Test
@@ -51,7 +51,7 @@ public class ContextTaskResultTest {
                 List.of("Uncaught TypeError: x is not a function"));
 
         CompletionException ex = assertThrows(CompletionException.class, r::valueOrThrow);
-        assertTrue("页面错误须进入诊断消息", ex.getMessage().contains("Uncaught TypeError"));
+        assertTrue( ex.getMessage().contains("Uncaught TypeError"), "页面错误须进入诊断消息");
         assertEquals(1, r.getPageErrors().size());
     }
 

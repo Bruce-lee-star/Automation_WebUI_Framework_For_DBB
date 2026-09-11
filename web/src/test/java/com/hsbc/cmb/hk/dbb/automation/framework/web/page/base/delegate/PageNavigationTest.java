@@ -6,11 +6,11 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -78,7 +78,7 @@ public class PageNavigationTest {
         when(page.navigate(anyString(), any())).thenThrow(new TimeoutError("boom"));
 
         NavigationException ex = assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, "https://x.com"));
-        assertTrue("异常应携带目标 URL 便于定位", ex.getMessage().contains("https://x.com"));
+        assertTrue( ex.getMessage().contains("https://x.com"), "异常应携带目标 URL 便于定位");
     }
 
     @Test

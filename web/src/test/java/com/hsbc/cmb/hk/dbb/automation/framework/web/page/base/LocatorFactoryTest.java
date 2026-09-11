@@ -4,12 +4,12 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.regex.Pattern;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -91,9 +91,9 @@ public class LocatorFactoryTest {
         assertEquals(loc, LocatorFactory.byTestId(bp, "abc"));
         var captor = forClass(String.class);
         verify(page).locator(captor.capture());
-        assertEquals("data-testid selector should cover the four common test attributes",
-                "[data-testid=\"abc\"],[data-test-id=\"abc\"],[data-test=\"abc\"],[data-qa=\"abc\"]",
-                captor.getValue());
+        assertEquals(
+                "[data-testid=\"abc\"],[data-test-id=\"abc\"],[data-test=\"abc\"],[data-qa=\"abc\"]", 
+                captor.getValue(), "data-testid selector should cover the four common test attributes");
     }
 
     @Test

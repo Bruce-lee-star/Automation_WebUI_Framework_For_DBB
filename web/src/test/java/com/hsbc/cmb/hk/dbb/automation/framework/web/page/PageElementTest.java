@@ -3,13 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -76,7 +76,7 @@ public class PageElementTest {
         Locator loc = mock(Locator.class);
         PageElement el = new PageElement(() -> loc, "role=button", bp);
 
-        assertSame("动态 supplier 优先，保证语言/页面切换后自动重解析", loc, el.locatorInternal());
+        assertSame( loc,  el.locatorInternal(), "动态 supplier 优先，保证语言/页面切换后自动重解析");
         verify(bp).getPage();
     }
 
@@ -100,8 +100,8 @@ public class PageElementTest {
 
         PageElement second = el.nth(2);
 
-        assertNotSame("nth 应返回新元素，不原地修改", el, second);
-        assertTrue("新元素选择器须带索引便于诊断：" + second.getSelector(),
-                second.getSelector().contains("nth=2"));
+        assertNotSame( el,  second, "nth 应返回新元素，不原地修改");
+        assertTrue(
+                second.getSelector().contains("nth=2"), "新元素选择器须带索引便于诊断：" + second.getSelector());
     }
 }

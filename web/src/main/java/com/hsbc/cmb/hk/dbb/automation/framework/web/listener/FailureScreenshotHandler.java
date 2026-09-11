@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightScreenshotManager;
 import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,7 +48,7 @@ final class FailureScreenshotHandler {
         }
         try {
             TestContextHolder.get().set(TAKING_SCREENSHOT_KEY, Boolean.TRUE);
-            String screenshotPath = PlaywrightManager.takeScreenshot(screenshotName);
+            String screenshotPath = PlaywrightScreenshotManager.takeScreenshot(screenshotName);
             if (screenshotPath != null) {
                 File pngFile = new File(screenshotPath);
                 File htmlFile = new File(screenshotPath.replace(".png", ".html"));

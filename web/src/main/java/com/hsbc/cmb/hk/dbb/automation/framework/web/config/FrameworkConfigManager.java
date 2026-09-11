@@ -282,7 +282,7 @@ public class FrameworkConfigManager {
         
         for (WebFrameworkConfig config : WebFrameworkConfig.values()) {
             String value = config.getValue();
-            sb.append(String.format("  %-40s = %s\n", config.getKey(), value));
+            sb.append(String.format("  %-40s = %s%n", config.getKey(), value));
         }
         
         return sb.toString();

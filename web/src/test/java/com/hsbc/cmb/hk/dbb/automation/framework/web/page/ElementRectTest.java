@@ -1,10 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：框架中立矩形值类型（无浏览器）。
@@ -37,11 +37,11 @@ public class ElementRectTest {
         // API 边界守卫：ElementRect 的 public 成员不得出现 com.microsoft.playwright 类型
         for (java.lang.reflect.Method m : ElementRect.class.getDeclaredMethods()) {
             String typeName = m.getReturnType().getName();
-            assertFalse("public API 不得泄漏 Playwright 类型：" + typeName,
-                    typeName.startsWith("com.microsoft.playwright"));
+            assertFalse(
+                    typeName.startsWith("com.microsoft.playwright"), "public API 不得泄漏 Playwright 类型：" + typeName);
             for (Class<?> p : m.getParameterTypes()) {
-                assertFalse("public API 参数不得泄漏 Playwright 类型：" + p.getName(),
-                        p.getName().startsWith("com.microsoft.playwright"));
+                assertFalse(
+                        p.getName().startsWith("com.microsoft.playwright"), "public API 参数不得泄漏 Playwright 类型：" + p.getName());
             }
         }
     }

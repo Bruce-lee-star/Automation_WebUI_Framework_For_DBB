@@ -1,4 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.lock.LifecycleLockMediator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
@@ -67,7 +68,7 @@ public final class ContextRegistryImpl implements ContextRegistry {
     }
 
     public BrowserContext getContext() {
-        if (!PlaywrightManager.getFrameworkState().isInitialized()) {
+        if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
 
@@ -224,8 +225,10 @@ public final class ContextRegistryImpl implements ContextRegistry {
             PlaywrightRuntime.instance().browserCleanup.safeClean("TestServices.clear", () -> {
                 try {
                     com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices.clear();
-                } catch (Throwable ignored) {
-                    // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时），兜底静默
+                } catch (Throwable e) {
+                    // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时）→ 预期降级，但不得静默（D7-3）
+                    logger.debug("[ContextRegistry] TestServices.clear skipped (api module not visible): {}",
+                            e.toString());
                 }
             });
             PlaywrightRuntime.instance().browserCleanup.safeClean("CustomOptionsManager.removeAllThreadLocals", CustomOptionsManager::removeAllThreadLocals);

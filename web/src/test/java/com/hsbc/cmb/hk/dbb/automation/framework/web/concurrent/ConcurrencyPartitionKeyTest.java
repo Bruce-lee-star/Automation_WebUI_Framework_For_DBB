@@ -1,14 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertThrows;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：不可变并发分区键（无浏览器）。
@@ -59,14 +59,14 @@ public class ConcurrencyPartitionKeyTest {
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dims("  ENV  ", "  sit1  "));
 
         assertEquals("sit1", key.dimensions().get("env"));
-        assertTrue("维度名应规范化为小写", key.dimensions().containsKey("env"));
+        assertTrue( key.dimensions().containsKey("env"), "维度名应规范化为小写");
     }
 
     @Test
     public void of_skipsBlankValuedDimensions() {
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dims("env", "sit1", "tenant", "   "));
 
-        assertEquals("空值维度不参与指纹", 1, key.dimensions().size());
+        assertEquals( 1,  key.dimensions().size(), "空值维度不参与指纹");
         assertEquals("env=sit1", key.fingerprint());
     }
 
@@ -74,7 +74,7 @@ public class ConcurrencyPartitionKeyTest {
     public void valueCase_isPreservedForCaseSensitiveIdentity() {
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dims("username", "Alice"));
 
-        assertEquals("IdP 用户名大小写敏感，值不得被规范化", "Alice", key.dimensions().get("username"));
+        assertEquals( "Alice",  key.dimensions().get("username"), "IdP 用户名大小写敏感，值不得被规范化");
     }
 
     @Test
@@ -82,7 +82,7 @@ public class ConcurrencyPartitionKeyTest {
         ConcurrencyPartitionKey a = ConcurrencyPartitionKey.of(dims("env", "sit1", "username", "alice"));
         ConcurrencyPartitionKey b = ConcurrencyPartitionKey.of(dims("username", "alice", "env", "sit1"));
 
-        assertEquals("维度顺序无关：相同身份应映射到同一分区键", a, b);
+        assertEquals( a,  b, "维度顺序无关：相同身份应映射到同一分区键");
         assertEquals(a.hashCode(), b.hashCode());
     }
 

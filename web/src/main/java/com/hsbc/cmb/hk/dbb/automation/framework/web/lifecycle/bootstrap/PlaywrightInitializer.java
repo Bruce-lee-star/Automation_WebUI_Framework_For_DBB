@@ -52,6 +52,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Playwright 初始化器 - 负责初始化相关逻辑
@@ -518,22 +519,30 @@ public class PlaywrightInitializer {
         }
     }
 
+    /**
+     * 有界等待浏览器下载 CLI 进程退出（修复 F6）。
+     *
+     * <p>旧实现用 {@code Thread.sleep(1000)} 固定轮询：粒度粗（进程退出后最多仍空等 ~1s）、
+     * 不可被进程退出及时唤醒、且为魔法常量。现改为 {@link Process#waitFor(long, TimeUnit)}——
+     * 其底层基于 {@code LockSupport.parkNanos} 做<b>有界等待</b>，进程一退出即被精确唤醒，
+     * 超时或被中断均按边界返回，不再有任何固定间隔 / 无界的 {@code Thread.sleep}。</p>
+     *
+     * @param process     浏览器下载 CLI 子进程
+     * @param browserType 浏览器类型（仅用于日志）
+     * @return 进程退出码；超时 / 被中断返回 -1
+     */
     private static int waitForDownloadProcess(Process process, String browserType) {
-        int timeoutMinutes = WebFrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_TIMEOUT_MINUTES.mapValue(Integer::parseInt);
-        long timeoutMs = timeoutMinutes * 60 * 1000L;
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        while (System.currentTimeMillis() < deadline) {
-            try {
-                if (!process.isAlive()) {
-                    return process.exitValue();
-                }
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return -1;
+        long timeoutMs = WebFrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_TIMEOUT_MINUTES.mapValue(Integer::parseInt) * 60_000L;
+        try {
+            if (process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)) {
+                return process.exitValue();
             }
+        } catch (InterruptedException e) {
+            // 还原中断信号：交由上层在套件关闭路径统一处理
+            Thread.currentThread().interrupt();
         }
-        logger.warn("[Static Init] Playwright {} browser download timed out after {} minutes — forcibly terminating", browserType, timeoutMinutes);
+        logger.warn("[Static Init] Playwright {} browser download timed out after {} minutes — forcibly terminating",
+                browserType, timeoutMs / 60_000L);
         process.destroyForcibly();
         return -1;
     }

@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
@@ -91,6 +92,42 @@ final class StepFailureAggregator {
             if (result != null) {
                 result.setResult(TestResult.FAILURE);
             }
+        }
+    }
+
+    /**
+     * D3-2：场景末统一上报<b>软断言</b>失败（collect → assertAll 入 Serenity）。
+     *
+     * <p>与 {@link #checkAndMarkApiAssertionFailures} 走<b>同一 seam</b>：
+     * {@code StepEventBus.testFailed(AssertionError)} + Serenity 报告 + {@code result} 置 FAILURE。
+     *
+     * <p>设计取舍：此处<b>只标记不抛出</b> —— 本方法在 {@code testFinished} 收尾阶段执行，
+     * 抛异常会打断 Serenity 自身的收尾流程（资源清理 / 报告落盘），得不偿失；
+     * 而 {@code result.setResult(FAILURE)} 已足以让用例判红。
+     * 需要立即中断的场景请使用 {@link FrameworkAssertions} 硬断言。
+     */
+    static void checkAndMarkSoftAssertionFailures(TestOutcome result) {
+        if (!SoftAssertions.hasFailures()) {
+            return;
+        }
+        //  先渲染再清空：保证"报告里看到的"与"记录的"是同一份内容，且绝不把失败带到下一场景
+        String details = SoftAssertions.renderFailures();
+        SoftAssertions.clearForCurrentThread();
+
+        logger.error("Soft assertion failures detected at scenario end:\n{}", details);
+
+        try {
+            StepEventBus.getEventBus().testFailed(new AssertionError(details));
+            Serenity.recordReportData()
+                    .withTitle("Soft Assertion Failures")
+                    .andContents(details);
+        } catch (Exception e) {
+            logger.error("Failed to report soft assertion failures to Serenity", e);
+        }
+
+        //  无论如何都确保 result 被标记为 FAILURE（兜底安全网）
+        if (result != null) {
+            result.setResult(TestResult.FAILURE);
         }
     }
 

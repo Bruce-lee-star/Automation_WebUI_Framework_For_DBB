@@ -6,15 +6,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegis
 import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * F4 / R-18（P0）端到端印证：route 断言失败必须透出为<b>用例失败</b>，不可静默判 PASS（假绿）。
@@ -100,12 +100,12 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
             }
 
             // ① 必须抛出 AssertionError —— 异常沿 StepInterceptor → Cucumber → JUnit4 传播，IDE 正确标红
-            assertTrue("route 断言失败必须抛 AssertionError 使用例判 FAIL", thrown != null);
+            assertTrue( thrown != null, "route 断言失败必须抛 AssertionError 使用例判 FAIL");
             // ② 必须经 StepEventBus.testFailed 标记到 Serenity 报告模型
-            assertEquals("必须经 StepEventBus.testFailed 上报断言失败", 1, listener.failures.size());
+            assertEquals( 1,  listener.failures.size(), "必须经 StepEventBus.testFailed 上报断言失败");
             Throwable reported = listener.failures.get(0);
-            assertTrue("上报的失败应为 AssertionError", reported instanceof AssertionError);
-            assertFalse("失败明细不得为空", reported.getMessage() == null || reported.getMessage().isEmpty());
+            assertTrue( reported instanceof AssertionError, "上报的失败应为 AssertionError");
+            assertFalse( reported.getMessage() == null || reported.getMessage().isEmpty(), "失败明细不得为空");
         } finally {
             StepEventBus.getEventBus().dropListener(listener);
             RouteLifecycleRegistry.register(previous); // 还原，避免污染其它 web 测试

@@ -193,22 +193,33 @@ public abstract class BasePage {
      * <p>仅供 BasePage 自身方法使用；业务代码请走 {@link #element(String)} / {@link #locator(String)} /
      * {@link #elements(String)} 等返回框架原生类型的入口，不直接接触 Playwright 类型。
      */
-    public Locator locatorInternal(String selector) {
-        ensurePageValid();
-        // shadow 上下文高于 iframe/DOM 层：用 >>> 穿透组合器把宿主前缀拼到选择器前。
+    /**
+     * 当前 open-shadow 宿主栈拼成的 {@code >>>} 穿透前缀（含末尾空格），无 shadow 时返回空串。
+     * <p>选择器解析（含 iframe / shadow 穿透）已下沉至 {@link LocatorFactory#bySelector}，
+     * 本方法仅暴露状态视图供同包工厂读取。
+     *
+     * @apiNote Framework-internal — 仅供同包 {@link LocatorFactory} 委派调用，页面对象请勿直接使用。
+     */
+    String shadowPrefix() {
         java.util.Deque<String> shadowStack = pageContextState.shadowStack();
-        if (shadowStack != null && !shadowStack.isEmpty()) {
-            StringBuilder prefix = new StringBuilder();
-            for (String host : shadowStack) {
-                prefix.append(host).append(" >>> ");
-            }
-            selector = prefix.append(selector).toString();
+        if (shadowStack == null || shadowStack.isEmpty()) {
+            return "";
         }
-        Frame frame = pageContextState.currentFrame();
-        if (frame != null) {
-            return frame.locator(selector);
+        StringBuilder prefix = new StringBuilder();
+        for (String host : shadowStack) {
+            prefix.append(host).append(" >>> ");
         }
-        return page.locator(selector);
+        return prefix.toString();
+    }
+
+    /**
+     * 内部定位解析（T3-5）：自动适配 iframe / shadow 上下文，返回真实 Playwright {@code Locator}。
+     * <p>实现委托 {@link LocatorFactory#bySelector(BasePage, String)} —— 选择器解析（CSS / XPath +
+     * iframe / shadow 穿透）已下沉到工厂，本类退化为稳定门面；业务代码请走 {@link #element(String)} /
+     * {@link #locator(String)} / {@link #elements(String)} 等返回框架原生类型的入口。
+     */
+    public Locator locatorInternal(String selector) {
+        return LocatorFactory.bySelector(this, selector);
     }
 
     /**

@@ -6,7 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityB
 import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -14,10 +14,10 @@ import java.util.List;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeoutException;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Serenity 桥接单测（设计文档 9.10-⑤）：断言编排线程把并发任务失败经 {@link StepEventBus#testFailed} 正确标记，
@@ -83,8 +83,8 @@ public class SerenityBusBridgeTest {
                     .anyMatch(t -> t.getMessage() != null && t.getMessage().contains("boom1"));
             boolean sawSlow = listener.failures.stream()
                     .anyMatch(t -> t.getMessage() != null && t.getMessage().contains("slow"));
-            assertTrue("boom1 marked", sawBoom);
-            assertTrue("slow marked", sawSlow);
+            assertTrue( sawBoom, "boom1 marked");
+            assertTrue( sawSlow, "slow marked");
         } finally {
             unbind(listener);
         }
@@ -99,7 +99,7 @@ public class SerenityBusBridgeTest {
             results.add(ContextTaskResult.success("ok2", 2, "t2", 1L, List.of()));
 
             SerenityBusBridge.replayFailures(results); // 不应抛
-            assertTrue("no Serenity failures marked", listener.failures.isEmpty());
+            assertTrue( listener.failures.isEmpty(), "no Serenity failures marked");
         } finally {
             unbind(listener);
         }

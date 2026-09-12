@@ -1,11 +1,10 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event;
+
 import com.microsoft.playwright.ConsoleMessage;
 import com.microsoft.playwright.Request;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
 
 import com.microsoft.playwright.BrowserContext;
@@ -30,23 +29,16 @@ import java.util.List;
  * 注册点统一收敛在页面/上下文<b>创建接缝</b>（{@link PlaywrightContextManager}），与 {@code onDownload} /
  * {@code onPage} / {@code onLoad} 已有接线保持一致。
  *
- * <p><b>健壮性</b>：
- * <ul>
- *   <li>幂等：同一 {@link Page} 只会注册一次（{@link #REGISTERED} 并集去重），避免叠加监听器导致事件重复处理
- *       （历史上 {@code ApiCaptureLifecycle} 曾因重复注册 {@code onResponse} 引发计数漂移）；</li>
- *   <li>线程安全：{@code REGISTERED} 为并发安全集合；</li>
- *   <li>无泄漏：{@code page.onClose} 时从集合中移除，跨 scenario 不残留。</li>
- * </ul>
+ * <p><b>注册模型（Playwright 1.60+）</b>：经 {@link BrowserContext#onPage} 在上下文级注册一次，
+ * 自动覆盖该上下文下所有页面（含 {@code window.open} 弹窗与 {@link BrowserContext#newPage()} 创建的页），
+ * 1.60+ 保证每个页面仅触发一次；因此<b>无需</b>自研幂等去重与关闭清理（升级评估报 §3.2 已删除该逻辑）。
+ * 诊断监听仅在页面创建接缝处注册一次，不叠加、不跨 scenario 残留。
  *
  * @apiNote 内部基础设施能力，业务 Page 不应直接调用；仅由 {@link PlaywrightContextManager} 在创建接缝处调用。
  */
 public final class PageEventMonitor {
 
     private static final Logger logger = LoggerFactory.getLogger(PageEventMonitor.class);
-
-    /** 已注册页面的幂等去重集合（由 {@code page.onClose} 清理保证不泄漏）。 */
-    private static final Set<Page> REGISTERED =
-            Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     /** 当前测试线程待上报的未捕获页面异常集合（步骤结束时经 Serenity 检查消费并清空）。 */
     @SuppressWarnings("unchecked")
@@ -59,7 +51,7 @@ public final class PageEventMonitor {
     /**
      * 注册整个 BrowserContext 的页面级诊断监听。
      * 通过 {@code context.onPage} 覆盖所有新建页面（含 {@code window.open} 弹窗、{@code context.newPage()}），
-     * 每个页面仅注册一次（幂等）。
+     * 由 1.60+ {@code onPage} 保证每个页面仅触发一次。
      *
      * @param context 浏览器上下文（null 安全：直接忽略）
      */
@@ -76,15 +68,13 @@ public final class PageEventMonitor {
      * @param page 目标页面（null 安全：直接忽略）
      */
     public static void register(Page page) {
-        if (page == null || !REGISTERED.add(page)) {
+        if (page == null) {
             return;
         }
         page.onPageError(PageEventMonitor::handlePageError);
         page.onConsoleMessage(PageEventMonitor::handleConsoleMessage);
         page.onRequestFailed(PageEventMonitor::handleRequestFailed);
         page.onCrash(PageEventMonitor::handleCrash);
-        // 页面关闭时移出集合，避免跨 scenario 残留
-        page.onClose(REGISTERED::remove);
     }
 
     /** 未捕获 JS 异常：记录错误级日志；开启"页面异常即失败"开关时收集，待步骤结束上报 Serenity。 */

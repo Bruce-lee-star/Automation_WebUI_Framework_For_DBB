@@ -175,7 +175,7 @@ final class StepFailureAggregator {
 
         String report = context.buildFailureReport();
         String details = context.buildFailureDetails();
-        logger.error("API assertions failed during step — marking test as failed via StepEventBus:\n{}", report);
+        logger.error("API assertions failed during step - marking test as failed via StepEventBus:\n{}", report);
 
         try {
             StepEventBus.getEventBus().testFailed(new AssertionError(details));
@@ -205,7 +205,7 @@ final class StepFailureAggregator {
             return;
         }
         String details = String.join("\n", errors);
-        logger.error("Uncaught page errors detected during step — marking test as failed via StepEventBus:\n{}", details);
+        logger.error("Uncaught page errors detected during step - marking test as failed via StepEventBus:\n{}", details);
         try {
             StepEventBus.getEventBus().testFailed(new AssertionError(details));
             Serenity.recordReportData()

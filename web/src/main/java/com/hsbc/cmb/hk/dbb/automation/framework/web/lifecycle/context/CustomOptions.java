@@ -92,6 +92,18 @@ public interface CustomOptions {
 
     CustomOptions setStorageState(String storageState);
 
+    /**
+     * 仅写入 storageState（<b>不</b>触发重建、<b>不</b>置 flag）。
+     * 供「就地换会话」在已有 Context 上经 {@code BrowserContext.setStorageState} 直接应用后，
+     * 同步 customOptions 与当前 Context 一致，避免后续因其它自定义配置触发重建时丢失本次会话。
+     */
+    CustomOptions setStorageStateWithoutRebuild(String storageState);
+
+    /**
+     * 同 {@link #setStorageStateWithoutRebuild(String)}，接受 storageState 文件路径。
+     */
+    CustomOptions setStorageStatePathWithoutRebuild(Path storageStatePath);
+
     CustomOptions setLocale(String locale);
 
     CustomOptions setTimezone(String timezoneId);

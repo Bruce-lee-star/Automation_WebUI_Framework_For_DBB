@@ -55,6 +55,16 @@ final class FailureScreenshotHandler {
                 if (pngFile.exists()) {
                     ScreenshotAndHtmlSource result = new ScreenshotAndHtmlSource(
                             pngFile, htmlFile.exists() && htmlFile.length() > 0 ? htmlFile : null);
+                    // 额外落 WebP 到自建合规归档目录（不影响 Serenity 报告 PNG；失败静默）
+                    try {
+                        String webpPath = PlaywrightScreenshotManager.takeScreenshotWebp(screenshotName);
+                        if (webpPath != null) {
+                            VerboseLogging.logDebugIfVerbose(logger, "WebP compliance screenshot saved: {}", webpPath);
+                        }
+                    } catch (Exception webpErr) {
+                        VerboseLogging.logDebugIfVerbose(logger, "WebP compliance screenshot skipped: {}",
+                                webpErr.getMessage());
+                    }
                     VerboseLogging.logDebugIfVerbose(logger, "Screenshot captured: {} -> {}",
                             screenshotName, pngFile.getName());
                     ListenerPerfStats.incrementScreenshot();

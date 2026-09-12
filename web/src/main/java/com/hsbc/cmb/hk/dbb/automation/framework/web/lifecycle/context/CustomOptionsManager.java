@@ -207,12 +207,56 @@ public class CustomOptionsManager implements CustomOptions {
     // ========== 设置方法（直接操作 TestContext，支持链式调用）==========
 
     public CustomOptionsManager setStorageStatePath(Path storageStatePath) {
-        applyCustomOption(storageStatePath, "storageStatePath", () -> TestContextHolder.get().set(CUSTOM_STORAGE_STATE_PATH_KEY, storageStatePath));
+        applyCustomOption(storageStatePath, "storageStatePath", () -> {
+            if (storageStatePath == null) {
+                TestContextHolder.get().remove(CUSTOM_STORAGE_STATE_PATH_KEY);
+            } else {
+                TestContextHolder.get().set(CUSTOM_STORAGE_STATE_PATH_KEY, storageStatePath);
+            }
+        });
         return this;
     }
 
     public CustomOptionsManager setStorageState(String storageState) {
-        applyCustomOption(storageState, "storageState", () -> TestContextHolder.get().set(CUSTOM_STORAGE_STATE_KEY, storageState));
+        applyCustomOption(storageState, "storageState", () -> {
+            if (storageState == null) {
+                TestContextHolder.get().remove(CUSTOM_STORAGE_STATE_KEY);
+            } else {
+                TestContextHolder.get().set(CUSTOM_STORAGE_STATE_KEY, storageState);
+            }
+        });
+        return this;
+    }
+
+    /**
+     * 仅写入 storageState 到 TestContext（<b>不</b>触发 Context 重建、<b>不</b>置 customContextOptionsFlag）。
+     * <p>供 {@code PlaywrightManager.applyStorageState} 在已存在活跃 Context 时「就地换会话」：
+     * 此时会话已由 {@code BrowserContext.setStorageState} 直接应用，无需重建；但需保持 customOptions 与
+     * 当前 Context 一致，避免后续因其它自定义配置（如 locale/viewport）触发重建时丢失本次会话。
+     * <b>故意不置 flag</b>——否则「仅会话恢复」场景会误导 {@code getContext()} 误判需重建，抵消轻量化收益。</p>
+     *
+     * @param storageState storageState JSON 字符串（null 安全：直接写入，由应用侧判空）
+     */
+    public CustomOptionsManager setStorageStateWithoutRebuild(String storageState) {
+        if (storageState == null) {
+            TestContextHolder.get().remove(CUSTOM_STORAGE_STATE_KEY);
+        } else {
+            TestContextHolder.get().set(CUSTOM_STORAGE_STATE_KEY, storageState);
+        }
+        VerboseLogging.logInfoIfVerbose(logger, "Custom storageState set (no rebuild): {}", "storageState");
+        return this;
+    }
+
+    /**
+     * 同 {@link #setStorageStateWithoutRebuild(String)}，但接受 storageState 文件路径。
+     */
+    public CustomOptionsManager setStorageStatePathWithoutRebuild(Path storageStatePath) {
+        if (storageStatePath == null) {
+            TestContextHolder.get().remove(CUSTOM_STORAGE_STATE_PATH_KEY);
+        } else {
+            TestContextHolder.get().set(CUSTOM_STORAGE_STATE_PATH_KEY, storageStatePath);
+        }
+        VerboseLogging.logInfoIfVerbose(logger, "Custom storageStatePath set (no rebuild): {}", storageStatePath);
         return this;
     }
 

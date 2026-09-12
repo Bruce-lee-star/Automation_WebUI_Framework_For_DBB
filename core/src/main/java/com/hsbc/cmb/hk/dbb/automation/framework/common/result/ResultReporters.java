@@ -62,7 +62,7 @@ public final class ResultReporters {
             try {
                 reporter.reportStep(step);
             } catch (Throwable t) {
-                LOGGER.warn("[ResultReporters] reporter {} threw in reportStep() — ignored: {}",
+                LOGGER.warn("[ResultReporters] reporter {} threw in reportStep() - ignored: {}",
                         reporter.getClass().getName(), t.toString());
             }
         }
@@ -74,7 +74,7 @@ public final class ResultReporters {
             try {
                 reporter.reportScenario(scenarioName, result, durationMs);
             } catch (Throwable t) {
-                LOGGER.warn("[ResultReporters] reporter {} threw in reportScenario() — ignored: {}",
+                LOGGER.warn("[ResultReporters] reporter {} threw in reportScenario() - ignored: {}",
                         reporter.getClass().getName(), t.toString());
             }
         }

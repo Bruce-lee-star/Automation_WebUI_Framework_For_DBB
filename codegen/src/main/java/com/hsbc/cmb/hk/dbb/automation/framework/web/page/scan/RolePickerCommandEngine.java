@@ -62,7 +62,7 @@ public final class RolePickerCommandEngine {
                             for (RoleEntry e : javaPickBySig.values()) {
                                 if (mk.equals(e.getSigKey())) {
                                     e.setPickNos(nos);
-                                    log.info("[picker] repickNos 同步内存态：sigKey={} → nos={}", mk, nos);
+                                    log.info("[picker] repickNos 同步内存态：sigKey={} -> nos={}", mk, nos);
                                     break;
                                 }
                             }

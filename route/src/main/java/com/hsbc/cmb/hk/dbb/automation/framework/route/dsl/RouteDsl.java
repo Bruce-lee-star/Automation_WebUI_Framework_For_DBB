@@ -197,7 +197,7 @@ public class RouteDsl {
     public static void resetAll() {
         //  P2-19：全局清理会清空所有上下文状态，并行测试下会误杀其它 context 的防重门控 / 规则。
         // 保持全局语义（单线程套件收尾 / 调试契约），但显式告警，引导并行场景改用 clear(context) / clear(page)。
-        LOGGER.warn("[RouteDsl] resetAll() — GLOBAL cleanup: clears ALL contexts/rules/dispatched-routes. "
+        LOGGER.warn("[RouteDsl] resetAll() - GLOBAL cleanup: clears ALL contexts/rules/dispatched-routes. "
                 + "In PARALLEL test execution use clear(BrowserContext)/clear(Page) to avoid cross-context pollution.");
         resetAllInternal();
     }
@@ -238,7 +238,7 @@ public class RouteDsl {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[RouteDsl] ApiCaptureContext.removeAllContexts() during resetAll failed: {}", e.getMessage());
         }
-        LOGGER.info("[RouteDsl] resetAll() — full route & capture state reset completed");
+        LOGGER.info("[RouteDsl] resetAll() - full route & capture state reset completed");
     }
 
     /**
@@ -263,7 +263,7 @@ public class RouteDsl {
      * }</pre>
      */
     public static void clearAllRules() {
-        LOGGER.info("[RouteDsl] clearAllRules() — clearing all route rules globally");
+        LOGGER.info("[RouteDsl] clearAllRules() - clearing all route rules globally");
         RouteRegistry.clearAll();  // 内部已调用 clearAllMonitorSessions() → SESSIONS/DISPATCHED_ROUTES/CONTEXT_RULES + JSONPath cache
         RouteEngine.clearAllStoppedCapabilities();
         VerboseLogging.logDebugIfVerbose(LOGGER, "[RouteDsl] clearAllRules() completed");
@@ -638,7 +638,7 @@ public class RouteDsl {
             // 自动启用监控能力位（收取监控但无断言），避免静默空规则；同时给出 warn 提示显式调用 monitor()。
             if (rule.getType() == RouteHandleType.MONITOR && !rule.isMonitorEnabled()) {
                 rule.setMonitorEnabled(true);
-                RouteDsl.LOGGER.warn("[RouteDsl] done() — type=MONITOR but monitor() not called; "
+                RouteDsl.LOGGER.warn("[RouteDsl] done() - type=MONITOR but monitor() not called; "
                         + "auto-enabled monitor capability (collect-only). Pattern='{}'. "
                         + "Call .monitor() for assertions, or .mock()/.modifyRequest()/.delay() for other intents.",
                         rule.getUrlPattern());

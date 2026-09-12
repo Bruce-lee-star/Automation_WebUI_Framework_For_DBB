@@ -318,22 +318,13 @@
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
         </dependency>
-        <!-- Playwright 1.62.0 / axe-core 4.10.2 传递上界钉（ENG-P0-2 Enforcer RequireUpperBoundDeps）：
-             commons-io 由 axe-core 4.10.2 拉到 2.18.0；commons-compress 由 axe-core 4.10.2 拉到 1.27.1 -->
-        <dependency>
-            <groupId>commons-io</groupId>
-            <artifactId>commons-io</artifactId>
-            <version>2.18.0</version>
-        </dependency>
+        <!-- commons-compress 上界钉（ENG-P0-2 Enforcer RequireUpperBoundDeps）：
+             由 htmlunit 传递引入，统一钉到上界 1.27.1 防止版本漂移。
+             原 axe-core 包装器（4.10.2）已移除，axe-core 改为自带 axe.min.js 注入，版本与 Playwright 解耦。 -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
             <version>1.27.1</version>
-        </dependency>
-        <dependency>
-            <groupId>com.deque.html.axe-core</groupId>
-            <artifactId>playwright</artifactId>
-            <version>4.10.2</version>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>

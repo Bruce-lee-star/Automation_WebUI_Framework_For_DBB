@@ -249,6 +249,16 @@ public final class ContextRegistryImpl implements ContextRegistry {
     }
 
     /**
+     * 获取当前线程的活跃 Context（不创建、不重建）。
+     * 供 SessionManager「就地换会话」在已有 Context 上调用 {@code BrowserContext.setStorageState}。
+     */
+    @Override
+    public BrowserContext getCurrentContext() {
+        BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+        return (context != null && context.browser() != null && context.browser().isConnected()) ? context : null;
+    }
+
+    /**
      * 创建新的 Context 和 Page（委托给 PlaywrightSerenityBridge）
      */
     public void createNewContextAndPage() {

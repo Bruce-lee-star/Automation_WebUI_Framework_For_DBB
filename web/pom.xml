@@ -76,9 +76,11 @@
             <groupId>com.microsoft.playwright</groupId>
             <artifactId>playwright</artifactId>
         </dependency>
+        <!-- gson：AxeCoreScriptProvider 将 axe.run 结果 JSON 映射为框架自有结果模型（解耦 Deque axe-core 包装器后新增）。
+             版本由根 dependencyManagement 统一钉（${gson.version}），避免 RequireUpperBoundDeps 校验冲突。 -->
         <dependency>
-            <groupId>com.deque.html.axe-core</groupId>
-            <artifactId>playwright</artifactId>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
         </dependency>
         <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition），
              须随 serenity 一并显式声明，否则 javac 符号补全会 CompletionFailure（ENG-P0-2 下沉后原继承关系消失） -->

@@ -150,7 +150,7 @@ public class SessionManager {
         try {
             return STORAGE_CONTENT_CACHE.get(sessionKey);
         } catch (Exception e) {
-            LOGGER.warn("[SessionManager] Failed to load storageState content for {} → fall back to file path",
+            LOGGER.warn("[SessionManager] Failed to load storageState content for {} -> fall back to file path",
                     sessionKey, e);
             return null;
         }
@@ -182,7 +182,7 @@ public class SessionManager {
             SessionMeta meta = META_CACHE.get(sessionKey);
             return (meta == ABSENT_META) ? null : meta;
         } catch (ExecutionException e) {
-            LOGGER.warn("[SessionManager] Failed to load meta cache for {} → treating as no cache entry",
+            LOGGER.warn("[SessionManager] Failed to load meta cache for {} -> treating as no cache entry",
                     sessionKey, e);
             return null;
         }
@@ -200,7 +200,7 @@ public class SessionManager {
         try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
             props.load(reader);
         } catch (Exception e) {
-            LOGGER.warn("[SessionManager] Failed to load meta for {} → treating as no cache entry", sessionKey, e);
+            LOGGER.warn("[SessionManager] Failed to load meta for {} -> treating as no cache entry", sessionKey, e);
             return null;
         }
         String homeUrl = props.getProperty("homeUrl");
@@ -464,9 +464,11 @@ public class SessionManager {
                 //   （满足"立即应用到当前，而非等下次 getContext 重建"的诉求）。
                 String storageStateJson = getStorageStateContent(sessionKey);
                 if (storageStateJson != null) {
-                    PlaywrightManager.customOptions().setStorageState(storageStateJson);
+                    //  就地换会话（1.59+）：若当前已有活跃 Context，直接在 Context 上 setStorageState，
+                    //  免去「改会话即重建 Context」的绕路；无活跃 Context 时退化为设置 customOptions（待创建时应用）。
+                    PlaywrightManager.applyStorageState(storageStateJson);
                 } else {
-                    PlaywrightManager.customOptions().setStorageStatePath(getSessionPath(sessionKey));
+                    PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
                 }
                 PlaywrightManager.getContext();
 
@@ -503,9 +505,10 @@ public class SessionManager {
                     //  与命中路径一致：取内存内容缓存，直接传 JSON（立即应用，零文件 IO）；失败回退文件
                     String storageStateJson = getStorageStateContent(sessionKey);
                     if (storageStateJson != null) {
-                        PlaywrightManager.customOptions().setStorageState(storageStateJson);
+                        //  就地换会话（1.59+）：同命中路径，优先在活跃 Context 上 setStorageState 免重建
+                        PlaywrightManager.applyStorageState(storageStateJson);
                     } else {
-                        PlaywrightManager.customOptions().setStorageStatePath(getSessionPath(sessionKey));
+                        PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
                     }
                     PlaywrightManager.getContext();
                     if ("feature".equalsIgnoreCase(restartStrategy)) {

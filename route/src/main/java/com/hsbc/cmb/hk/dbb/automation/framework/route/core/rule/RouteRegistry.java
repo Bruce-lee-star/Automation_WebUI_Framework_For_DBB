@@ -124,7 +124,7 @@ public class RouteRegistry {
                 key, k -> new ConcurrentHashMap<>());
         RouteHandleType oldType = patterns.put(pattern, type);
         if (oldType != null) {
-            LOGGER.info("[RouteRegistry] Force-override registered pattern: {} -> {} ({} → {})",
+            LOGGER.info("[RouteRegistry] Force-override registered pattern: {} -> {} ({} -> {})",
                     context.getClass().getSimpleName(), pattern, oldType, type);
         }
         return true;

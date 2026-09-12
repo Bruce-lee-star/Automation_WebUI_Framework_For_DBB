@@ -222,7 +222,7 @@ public final class ApiMonitoringRepository {
                     maxPoolSize, BATCH_THRESHOLD, FLUSH_INTERVAL_MS);
 
         } catch (Exception e) {
-            LOGGER.error("[ApiMonitoringRepository] Failed to initialize DB connection — "
+            LOGGER.error("[ApiMonitoringRepository] Failed to initialize DB connection - "
                     + "API monitor data will NOT be persisted to database. "
                     + "Check monitor.db.url/user/password/type and that the database is reachable. "
                     + "Root cause: {}", e.getMessage(), e);
@@ -558,7 +558,7 @@ public final class ApiMonitoringRepository {
         } catch (Exception e) {
             // 关键flush 失败是数据丢失，必须 error 记录并附堆栈，
             // 便于事后追溯；监控数据丢失不应被静默吞掉。
-            LOGGER.error("[ApiMonitoringRepository] Flush on shutdown failed — monitor data may be lost: {}",
+            LOGGER.error("[ApiMonitoringRepository] Flush on shutdown failed - monitor data may be lost: {}",
                     e.getMessage(), e);
         }
         initialized = false;

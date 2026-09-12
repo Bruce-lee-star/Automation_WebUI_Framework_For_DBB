@@ -125,7 +125,7 @@ public final class AsyncPool {
                 },
                 (r, threadPoolExecutor) -> {
                     long count = rejectedCount.incrementAndGet();
-                    LOGGER.error("[AsyncPool] TASK REJECTED — discarding oldest. Rejected: {}, Active: {}, "
+                    LOGGER.error("[AsyncPool] TASK REJECTED - discarding oldest. Rejected: {}, Active: {}, "
                                     + "Pool: {}/{}, Queue: {}/{}",
                             count, threadPoolExecutor.getActiveCount(),
                             threadPoolExecutor.getPoolSize(), threadPoolExecutor.getMaximumPoolSize(),
@@ -319,7 +319,7 @@ public final class AsyncPool {
 
     private static void checkThresholdsAfterTimeout() {
         if (POOL.getQueue().size() > QUEUE_CAPACITY * 0.5) {
-            LOGGER.warn("[AsyncPool] After timeout — Queue still has {} pending. Consider raising ASYNC_QUEUE_CAPACITY/ASYNC_MAX_THREADS.",
+            LOGGER.warn("[AsyncPool] After timeout - Queue still has {} pending. Consider raising ASYNC_QUEUE_CAPACITY/ASYNC_MAX_THREADS.",
                     POOL.getQueue().size());
         }
     }

@@ -878,11 +878,11 @@ public class PlaywrightListener implements StepListener {
         // 仅在 execution 阶段执行清理，避免 discovery 阶段误关 Context
         if (discoveryPhaseCompleted) {
             VerboseLogging.logInfoIfVerbose(logger,
-                    "New story starting: {} — closing previous story's Context (cross-feature cleanup)", story.getStoryName());
+                    "New story starting: {} - closing previous story's Context (cross-feature cleanup)", story.getStoryName());
             try {
                 PlaywrightManager.cleanupForFeature();
             } catch (Exception e) {
-                logger.warn("Failed to cleanup context at feature boundary for new story: {} — {}",
+                logger.warn("Failed to cleanup context at feature boundary for new story: {} - {}",
                         story.getStoryName(), e.getMessage());
             }
         }
@@ -894,7 +894,7 @@ public class PlaywrightListener implements StepListener {
         if (currentRunNumber > 0 && !rerunStartedLogged) {
             rerunStartedLogged = true;
             logger.info("==========================================================================");
-            logger.info("  RERUN STARTING — Round {} (Maven Failsafe rerunFailingTestsCount)", currentRunNumber);
+            logger.info("  RERUN STARTING - Round {} (Maven Failsafe rerunFailingTestsCount)", currentRunNumber);
             logger.info("==========================================================================");
         }
     }

@@ -165,7 +165,7 @@ public final class RolePickerPanelController {
             followPage(pc, current.get(), p);
         });
 
-        log.info("[picker] 面板已打开（同窗口 docked 右侧，不另开窗口）：▶ 开始拾取 → 点击元素 → ⏹ 停止生成代码 → 📋 复制；✕ 关闭结束。");
+        log.info("[picker] 面板已打开（同窗口 docked 右侧，不另开窗口）：▶ 开始拾取 -> 点击元素 -> ⏹ 停止生成代码 -> 📋 复制；✕ 关闭结束。");
         try {
             while (true) {
                 // 当前跟随的页面（可能是弹窗）已关闭：先让 onClose 回调有机会把 current.get()

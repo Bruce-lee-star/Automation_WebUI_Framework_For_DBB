@@ -1875,7 +1875,7 @@ public class SummaryReportGenerator {
                 }
             }
             if (fixedCount > 0) {
-                logger.debug("       - Swiper fix applied to {} screenshots page(s) (fade → slide + autoHeight)", fixedCount);
+                logger.debug("       - Swiper fix applied to {} screenshots page(s) (fade -> slide + autoHeight)", fixedCount);
             }
         } catch (Exception e) {
             logger.warn("Swiper screenshots fix skipped (non-fatal): {}", e.getMessage());

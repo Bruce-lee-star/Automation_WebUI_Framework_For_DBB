@@ -810,6 +810,36 @@ public enum WebFrameworkConfig {
         "Serenity 截图目录"
     ),
 
+    /**
+     * WebP 合规截图开关（对应 Playwright 1.62 升级评估报 §3.1）。
+     * 默认 true：失败截图时<b>额外</b>落一张 WebP 到自建合规归档目录（不影响 Serenity 报告 PNG）。
+     * 注意：WebP 仅用于自建归档目录，<b>绝不</b>写入 {@code target/site/serenity}（Serenity 4.2.0 对截图
+     * 后缀/格式有内部假设，改用 WebP 会破坏报告渲染）。
+     */
+    PLAYWRIGHT_WEBP_SCREENSHOT_ENABLED(
+        "playwright.screenshot.webp.enabled",
+        "true",
+        "失败截图是否额外落 WebP 到合规归档目录（不影响 Serenity 报告 PNG）"
+    ),
+
+    /**
+     * WebP 合规截图质量（0-100，越高体积越大）。仅对 WEBP/JPEG 有损格式有效。
+     */
+    PLAYWRIGHT_WEBP_SCREENSHOT_QUALITY(
+        "playwright.screenshot.webp.quality",
+        "80",
+        "WebP 合规截图质量 0-100"
+    ),
+
+    /**
+     * WebP 合规截图落盘目录（与 Serenity 报告目录隔离的自建归档目录）。
+     */
+    PLAYWRIGHT_WEBP_SCREENSHOT_ARCHIVE_DIR(
+        "playwright.screenshot.webp.archiveDir",
+        "target/screenshots-webp",
+        "WebP 合规截图落盘目录（自建归档，与 Serenity 报告目录隔离）"
+    ),
+
     // ==================== 日志配置 ====================
 
     /**

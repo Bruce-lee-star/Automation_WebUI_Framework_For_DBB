@@ -157,7 +157,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
 
         storeEnabled = ApiMonitoringRepository.isInitialized();
         if (!storeEnabled) {
-            LOGGER.error("[DatabaseStoreMonitorCallback] DB initialization FAILED — "
+            LOGGER.error("[DatabaseStoreMonitorCallback] DB initialization FAILED - "
                     + "monitor data will NOT be stored to database. "
                     + "Check monitor.db.url/user/password/type and ensure the database is running.");
         } else {

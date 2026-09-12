@@ -1,10 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility;
 
-import com.deque.html.axecore.playwright.AxeBuilder;
-import com.deque.html.axecore.results.AxeResults;
-import com.deque.html.axecore.results.CheckedNode;
-import com.deque.html.axecore.results.Rule;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
+// 注：本类已彻底移除对 com.deque.html.axecore:playwright Java 包装器的依赖，
+//     扫描经 AxeCoreScriptProvider 注入自带 axe.min.js 实现，结果模型为自有 AxeRule/AxeNode。
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.microsoft.playwright.Page;
@@ -25,7 +23,13 @@ import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * Axe-core Accessibility Scanner
- * Integration with Deque's axe-core library for WCAG compliance testing
+ * <p>
+ * 集成 axe-core 做 WCAG 合规检测。底层不再依赖 Deque 的 {@code com.deque.html.axecore:playwright}
+ * Java 包装器，而是经 {@link AxeCoreScriptProvider} 注入框架自带的 {@code axe.min.js} 并调用
+ * {@code axe.run}，结果映射为框架自有 {@link AxeRule}/{@link AxeNode} 模型。从而使 axe-core 版本
+ * 与 Playwright 版本完全解耦、独立演进。
+ * <p>
+ * 本类为稳定公开门面（业务/监听器/AxeCoreListener 调用），对外 API 与结果字段模型保持零变更。
  */
 public class AxeCoreScanner {
 
@@ -84,9 +88,9 @@ public class AxeCoreScanner {
         private int passCount;
         private boolean scanError;
         private String scanErrorMessage;
-        private List<Rule> violations = new ArrayList<>();
-        private List<Rule> incomplete = new ArrayList<>();
-        private List<Rule> passes = new ArrayList<>();
+        private List<AxeRule> violations = new ArrayList<>();
+        private List<AxeRule> incomplete = new ArrayList<>();
+        private List<AxeRule> passes = new ArrayList<>();
 
         public AxeScanResult(String pageName, String pageUrl) {
             this.pageName = pageName;
@@ -98,17 +102,17 @@ public class AxeCoreScanner {
         public int getViolationCount() { return violationCount; }
         public int getIncompleteCount() { return incompleteCount; }
         public int getPassCount() { return passCount; }
-        public List<Rule> getViolations() { return violations; }
-        public void setViolations(List<Rule> violations) {
+        public List<AxeRule> getViolations() { return violations; }
+        public void setViolations(List<AxeRule> violations) {
             this.violations = violations != null ? violations : new ArrayList<>();
             this.violationCount = this.violations.size();
         }
-        public List<Rule> getIncomplete() { return incomplete; }
-        public void setIncomplete(List<Rule> incomplete) {
+        public List<AxeRule> getIncomplete() { return incomplete; }
+        public void setIncomplete(List<AxeRule> incomplete) {
             this.incomplete = incomplete != null ? incomplete : new ArrayList<>();
             this.incompleteCount = this.incomplete.size();
         }
-        public void setPasses(List<Rule> passes) {
+        public void setPasses(List<AxeRule> passes) {
             this.passes = passes != null ? passes : new ArrayList<>();
             this.passCount = this.passes.size();
         }
@@ -223,25 +227,20 @@ public class AxeCoreScanner {
             logger.debug("Page URL before scan: {}", page.url());
             logger.debug("Page count in context before scan: {}", page.context().pages().size());
 
-            // Build and configure axe scanner (extracted to avoid duplication)
-            AxeBuilder axeBuilder = configureAxeBuilder(page, scanConfig);
-            
-            // Add context selector if specified
+            // 经自带 axe.min.js 注入 + axe.run 执行扫描（解耦 Deque Java 包装器，参见 AxeCoreScriptProvider）
             if (hasContext) {
-                axeBuilder.include(contextSelector);
                 logger.debug("Axe-core context selector: {}", contextSelector);
             }
-
-            // Run axe-core analysis
-            logger.debug("Running axe-core analyze()...");
-            AxeResults axeResults = axeBuilder.analyze();
+            logger.debug("Running axe-core analyze() via injected script...");
+            AxeCoreScriptProvider.AxeRunResult axeResults =
+                    AxeCoreScriptProvider.runAxe(page, scanConfig, contextSelector);
             logger.debug("Axe-core analyze() completed");
             logger.debug("Page count in context after scan: {}", page.context().pages().size());
 
             // Process results
-            result.setViolations(axeResults.getViolations());
-            result.setIncomplete(axeResults.getIncomplete());
-            result.setPasses(axeResults.getPasses());
+            result.setViolations(axeResults.violations());
+            result.setIncomplete(axeResults.incomplete());
+            result.setPasses(axeResults.passes());
 
             // Store result
             results().add(result);
@@ -255,28 +254,6 @@ public class AxeCoreScanner {
         }
 
         return result;
-    }
-
-    /**
-     * 公共 AxeBuilder 配置方法 — 消除 scanPage 重载中的重复代码。
-     */
-    private static AxeBuilder configureAxeBuilder(Page page, AxeScanConfig scanConfig) {
-        AxeBuilder axeBuilder = new AxeBuilder(page);
-        
-        if (scanConfig.getTags() != null && !scanConfig.getTags().isEmpty()) {
-            axeBuilder.withTags(scanConfig.getTags());
-            logger.debug("Axe-core tags: {}", scanConfig.getTags());
-        }
-        if (scanConfig.getRules() != null && !scanConfig.getRules().isEmpty()) {
-            axeBuilder.withRules(scanConfig.getRules());
-            logger.debug("Axe-core rules: {}", scanConfig.getRules());
-        }
-        if (scanConfig.getExcludeRules() != null && !scanConfig.getExcludeRules().isEmpty()) {
-            axeBuilder.disableRules(scanConfig.getExcludeRules());
-            logger.debug("Axe-core excluded rules: {}", scanConfig.getExcludeRules());
-        }
-        
-        return axeBuilder;
     }
 
     /**
@@ -352,7 +329,7 @@ public class AxeCoreScanner {
             for (AxeScanResult result : allResults) {
                 if (!result.getViolations().isEmpty()) {
                     html.append("            <h3 style=\"color:#2c3e50;margin-top:20px;\">").append(escapeHtml(result.getPageName())).append("</h3>\n");
-                    for (Rule violation : result.getViolations()) {
+                    for (AxeRule violation : result.getViolations()) {
                         html.append(generateViolationDetail(violation, "violation"));
                     }
                 }
@@ -367,7 +344,7 @@ public class AxeCoreScanner {
             for (AxeScanResult result : allResults) {
                 if (!result.getIncomplete().isEmpty()) {
                     html.append("            <h3 style=\"color:#2c3e50;margin-top:20px;\">").append(escapeHtml(result.getPageName())).append("</h3>\n");
-                    for (Rule incomplete : result.getIncomplete()) {
+                    for (AxeRule incomplete : result.getIncomplete()) {
                         html.append(generateViolationDetail(incomplete, "incomplete"));
                     }
                 }
@@ -403,7 +380,7 @@ public class AxeCoreScanner {
         return html.toString();
     }
 
-    private static String generateViolationDetail(Rule rule, String type) {
+    private static String generateViolationDetail(AxeRule rule, String type) {
         String impactColor = getImpactColor(rule.getImpact());
         String cardClass = "incomplete".equals(type) ? "incomplete-card" : "violation-card";
 
@@ -420,7 +397,7 @@ public class AxeCoreScanner {
         html.append("                    <p><b>Affected Elements:</b> ").append(rule.getNodes().size()).append("</p>\n");
 
         int count = 0;
-        for (CheckedNode node : rule.getNodes()) {
+        for (AxeNode node : rule.getNodes()) {
             if (count++ >= 5) {
                 html.append("                    <p style=\"color:#666;\">... and ").append(rule.getNodes().size() - 5).append(" more</p>\n");
                 break;

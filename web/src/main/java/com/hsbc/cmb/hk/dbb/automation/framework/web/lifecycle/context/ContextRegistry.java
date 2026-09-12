@@ -59,6 +59,16 @@ public interface ContextRegistry {
 
     boolean hasContext();
 
+    /**
+     * 获取当前线程的活跃 Context（<b>不创建、不重建</b>）。
+     * <p>与 {@link #hasContext()} 区别：本方法返回 Context 引用（可能为 {@code null}）；
+     * {@code hasContext()} 仅返回布尔。供 {@code SessionManager}「就地换会话」在已存在 Context 上
+     * 调用 {@code BrowserContext.setStorageState} 使用，避免改会话即重建 Context 的绕路。</p>
+     *
+     * @return 当前活跃且已连接的 Context；无或已断开时返回 {@code null}
+     */
+    BrowserContext getCurrentContext();
+
     void createNewContextAndPage();
 
     void discardCurrentContext();

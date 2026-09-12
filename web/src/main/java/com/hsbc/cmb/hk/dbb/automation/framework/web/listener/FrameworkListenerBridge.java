@@ -101,7 +101,7 @@ public final class FrameworkListenerBridge {
     }
 
     private static void warn(FrameworkListener listener, String callback, Throwable t) {
-        logger.warn("[FrameworkListener] listener {} threw in {}() — ignored to protect the run: {}",
+        logger.warn("[FrameworkListener] listener {} threw in {}() - ignored to protect the run: {}",
                 listener.getClass().getName(), callback, t.toString());
     }
 }

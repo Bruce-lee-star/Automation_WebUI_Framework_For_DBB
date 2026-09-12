@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.provider.DefaultRuntimeProvider;
@@ -131,6 +132,11 @@ public class PlaywrightContextManager {
             // 经 context.onPage 覆盖所有新建页面（含 window.open 弹窗），与上方 onPage 日志互不冲突
             PageEventMonitor.register(context);
 
+            // 注册下载保存监听（§3.2：1.60+ 经 context.onDownload 一次注册即覆盖该 Context 下所有页面，
+            // 含 window.open 弹窗，无需逐页注册；原先在 createPage 逐页 page.onDownload 会让弹窗内下载漏捕获，
+            // 现由 Context 级注册彻底堵住该洞）
+            registerDownloadHandler(context);
+
             // 设置超时
             configureTimeouts(context);
 
@@ -155,19 +161,40 @@ public class PlaywrightContextManager {
         VerboseLogging.logInfoIfVerbose(logger, "Creating new Page...");
         Page page = context.newPage();
 
-        // 注册下载事件监听，自动保存下载文件到配置的下载目录
-        String downloadsPath = PlaywrightManager.config().getBrowserDownloadsPath();
-        page.onDownload(download -> {
+        // 下载保存监听已迁移至 createContext 经 context.onDownload 一次性注册（见报告 §3.2），
+        // 此处不再逐页注册，避免 window.open 弹窗内下载漏捕获。
+        stabilizePage(page);
+        VerboseLogging.logInfoIfVerbose(logger, "Page created successfully");
+        return page;
+    }
+
+    /**
+     * 注册 BrowserContext 级下载保存监听（报告 §3.2：1.60+ 经 {@code context.onDownload} 一次注册即覆盖
+     * 该上下文下所有页面，含 {@code window.open} 弹窗，无需逐页注册）。
+     * <p>
+     * 取代原先在 {@link #createPage} 逐页 {@code page.onDownload} 的做法，彻底堵住「弹窗内下载漏捕获」的洞；
+     * 关闭时序降级（WEB-P3-N14 ②）与真实失败告警的日志语义与原实现逐字一致。
+     *
+     * @param context 浏览器上下文（null 安全：直接忽略）
+     */
+    private static void registerDownloadHandler(BrowserContext context) {
+        if (context == null) {
+            return;
+        }
+        final String downloadsPath = PlaywrightManager.config().getBrowserDownloadsPath();
+        context.onDownload(download -> {
             try {
                 Path downloadDir = Paths.get(downloadsPath);
                 if (!Files.exists(downloadDir)) {
                     Files.createDirectories(downloadDir);
                 }
                 String suggestedFilename = download.suggestedFilename();
-                Path savePath = downloadDir.resolve(suggestedFilename);
+                Path savePath = resolveNonConflictingDownloadPath(downloadDir, suggestedFilename);
                 download.saveAs(savePath);
                 VerboseLogging.logInfoIfVerbose(logger,
                         "Download completed: {} -> {}", suggestedFilename, savePath.toAbsolutePath());
+                // 登记已落盘文件，供业务层经 PlaywrightManager.getLastDownloadPath() 等查询（报告 §3.2 收尾）
+                DownloadRegistry.instance().record(context, savePath);
             } catch (Exception e) {
                 //  关闭时序降级（WEB-P3-N14 ②）：Playwright 在 BrowserContext.close() 时会先清理
                 //   未完成的下载，导致 download.saveAs() 抛 TargetClosedError。这属于「预期噪音」，
@@ -181,13 +208,37 @@ public class PlaywrightContextManager {
                 }
             }
         });
+    }
 
-        stabilizePage(page);
-        // 注册页面级可观测性诊断监听（未捕获异常/控制台错误/网络失败/崩溃）
-        // 幂等：若 context.onPage 已先行注册，此处为 no-op
-        PageEventMonitor.register(page);
-        VerboseLogging.logInfoIfVerbose(logger, "Page created successfully");
-        return page;
+    /**
+     * 解析「不覆盖既有文件」的下载保存路径（同名去重）。
+     * <p>
+     * 若 {@code dir/name} 已存在，则在主文件名与扩展名之间插入序号后缀 {@code " (1)"} / {@code " (2)"} …，
+     * 直到找到一个空闲路径；隐藏文件（如 {@code .gitignore}，点号在首位）整体作为主名处理，不加序号到扩展名。
+     *
+     * @param dir               下载目录（已确保存在）
+     * @param suggestedFilename 服务器建议的文件名（来自 {@code Content-Disposition}）
+     * @return 不与目录内现有文件冲突的绝对路径
+     */
+    static Path resolveNonConflictingDownloadPath(Path dir, String suggestedFilename) {
+        Path candidate = dir.resolve(suggestedFilename);
+        if (!Files.exists(candidate)) {
+            return candidate;
+        }
+        String base = suggestedFilename;
+        String ext = "";
+        int dot = suggestedFilename.lastIndexOf('.');
+        if (dot > 0) { // dot == 0 视为隐藏文件主名（如 ".env"），不拆扩展名
+            base = suggestedFilename.substring(0, dot);
+            ext = suggestedFilename.substring(dot);
+        }
+        int seq = 1;
+        Path conflictFree;
+        do {
+            conflictFree = dir.resolve(base + " (" + seq + ")" + ext);
+            seq++;
+        } while (Files.exists(conflictFree));
+        return conflictFree;
     }
 
     /**
@@ -204,6 +255,8 @@ public class PlaywrightContextManager {
                 } catch (Exception re) {
                     VerboseLogging.logWarnIfVerbose(logger, "Failed to clear Route resources on context close: {}", re.getMessage());
                 }
+                // 清理下载登记簿中该上下文的记录（与路由资源同批释放，避免陈旧记录堆积）
+                DownloadRegistry.instance().clear(context);
                 // 停止 tracing（以框架配置为准，避免与系统环境变量不一致导致误判）
                 if (FrameworkConfigManager.getBoolean(WebFrameworkConfig.PLAYWRIGHT_CONTEXT_TRACE_ENABLED)) {
                     //  修复 A-2：tracing().stop() 会写磁盘 trace 文件，无超时且可能长时间阻塞

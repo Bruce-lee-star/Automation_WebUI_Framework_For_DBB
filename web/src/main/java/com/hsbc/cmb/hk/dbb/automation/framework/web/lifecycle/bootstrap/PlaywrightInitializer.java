@@ -541,7 +541,7 @@ public class PlaywrightInitializer {
             // 还原中断信号：交由上层在套件关闭路径统一处理
             Thread.currentThread().interrupt();
         }
-        logger.warn("[Static Init] Playwright {} browser download timed out after {} minutes — forcibly terminating",
+        logger.warn("[Static Init] Playwright {} browser download timed out after {} minutes - forcibly terminating",
                 browserType, timeoutMs / 60_000L);
         process.destroyForcibly();
         return -1;

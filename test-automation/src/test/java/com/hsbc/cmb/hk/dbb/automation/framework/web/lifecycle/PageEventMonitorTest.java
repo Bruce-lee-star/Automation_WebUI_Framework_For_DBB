@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 
 import com.microsoft.playwright.BrowserContext;
@@ -19,8 +20,8 @@ import static org.mockito.Mockito.verify;
  *
  * <p>覆盖：
  * <ul>
- *   <li>{@code register(BrowserContext)} 经 {@code context.onPage} 接线，并对新页面传播全部监听；</li>
- *   <li>{@code register(Page)} 对同一 Page 幂等（多次调用仅注册一次）；</li>
+ *   <li>{@code register(BrowserContext)} 经 {@code context.onPage} 接线，并对新页面传播全部诊断监听；</li>
+ *   <li>{@code register(Page)} 单次调用为该页面注册全部诊断监听（onPageError/console/requestFailed/crash）；</li>
  *   <li>null 安全（不抛异常、无交互）。</li>
  * </ul>
  *
@@ -45,21 +46,18 @@ public class PageEventMonitorTest {
         verify(newPage, times(1)).onConsoleMessage(any());
         verify(newPage, times(1)).onRequestFailed(any());
         verify(newPage, times(1)).onCrash(any());
-        verify(newPage, times(1)).onClose(any());
     }
 
     @Test
-    public void registerPageIsIdempotent() {
+    public void registerPageRegistersDiagnosticListenersOnce() {
         Page page = mock(Page.class);
 
-        PageEventMonitor.register(page);
         PageEventMonitor.register(page);
 
         verify(page, times(1)).onPageError(any());
         verify(page, times(1)).onConsoleMessage(any());
         verify(page, times(1)).onRequestFailed(any());
         verify(page, times(1)).onCrash(any());
-        verify(page, times(1)).onClose(any());
     }
 
     @Test

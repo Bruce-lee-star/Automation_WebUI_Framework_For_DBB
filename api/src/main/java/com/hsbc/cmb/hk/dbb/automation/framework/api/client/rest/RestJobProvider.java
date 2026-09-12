@@ -176,7 +176,7 @@ public class RestJobProvider extends AbstractApiJobHelper {
     public void switchBasePath(final String key){
         final String basePath = ConfigProvider.getConfig(ConfigKeys.API_BASE_PATH.toString()).getString(key);
         if (basePath == null || basePath.isEmpty()) {
-            LOGGER.warn("switchBasePath({}) — key not found under {}", key, ConfigKeys.API_BASE_PATH);
+            LOGGER.warn("switchBasePath({}) - key not found under {}", key, ConfigKeys.API_BASE_PATH);
             return;
         }
         this.getEntity().setBasePath(basePath);
@@ -189,7 +189,7 @@ public class RestJobProvider extends AbstractApiJobHelper {
     public void switchBaseUri(final String key){
         final String baseUri = ConfigProvider.getConfig(ConfigKeys.API_BASE_URI.toString()).getString(key);
         if (baseUri == null || baseUri.isEmpty()) {
-            LOGGER.warn("switchBaseUri({}) — key not found under {}", key, ConfigKeys.API_BASE_URI);
+            LOGGER.warn("switchBaseUri({}) - key not found under {}", key, ConfigKeys.API_BASE_URI);
             return;
         }
         this.getEntity().setBaseUri(baseUri);

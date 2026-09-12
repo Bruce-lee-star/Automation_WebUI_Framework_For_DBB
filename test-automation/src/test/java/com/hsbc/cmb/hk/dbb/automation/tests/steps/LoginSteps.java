@@ -136,7 +136,7 @@ public class LoginSteps {
                 return; // Session 有效，跳过登录
             } catch (Exception e) {
                 // 捕获 TargetClosedError / PlaywrightException 等 Page 异常
-                logger.warn("Session restore failed (page/context closed during navigation or validation): {} — falling back to full login", e.getMessage());
+                logger.warn("Session restore failed (page/context closed during navigation or validation): {} - falling back to full login", e.getMessage());
                 SessionManager.clearSession(sessionKey);
                 performLogin();
                 return;

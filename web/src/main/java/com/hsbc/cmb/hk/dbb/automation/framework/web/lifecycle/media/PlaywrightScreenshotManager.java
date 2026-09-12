@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Context
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistryImpl;
@@ -36,6 +37,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.ScreenshotAnimations;
+import com.microsoft.playwright.options.ScreenshotType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -188,18 +190,27 @@ public class PlaywrightScreenshotManager {
         }
     }
 
-    /** 构造标准截图选项（不含 fullPage 标记）。 */
-    private static Page.ScreenshotOptions buildOptions(Path screenshotPath, long timeoutMs) {
-        return new Page.ScreenshotOptions()
+    /** 构造标准截图选项。type/quality 为 null 时保持默认（PNG）。 */
+    private static Page.ScreenshotOptions buildOptions(Path screenshotPath, long timeoutMs,
+                                                        ScreenshotType type, Integer quality) {
+        Page.ScreenshotOptions options = new Page.ScreenshotOptions()
                 .setOmitBackground(false)
                 .setTimeout(timeoutMs)
                 .setAnimations(ScreenshotAnimations.DISABLED)
                 .setPath(screenshotPath);
+        if (type != null) {
+            options.setType(type);
+        }
+        if (quality != null) {
+            options.setQuality(quality);
+        }
+        return options;
     }
 
     /** 真正执行一次截图（不捕获异常，交由调用方决定降级策略）。 */
-    private static void doScreenshot(Page page, Path screenshotPath, boolean fullPage, long timeoutMs) {
-        Page.ScreenshotOptions options = buildOptions(screenshotPath, timeoutMs);
+    private static void doScreenshot(Page page, Path screenshotPath, boolean fullPage, long timeoutMs,
+                                     ScreenshotType type, Integer quality) {
+        Page.ScreenshotOptions options = buildOptions(screenshotPath, timeoutMs, type, quality);
         options.setFullPage(fullPage);
         page.screenshot(options);
     }
@@ -222,7 +233,7 @@ public class PlaywrightScreenshotManager {
     // ==================== 截图入口 ====================
 
     /**
-     * 截图并返回截图文件路径（核心实现）。
+     * 截图并返回截图文件路径（核心实现，<b>PNG，喂给 Serenity 报告</b>）。
      *
      * <p>全页/视口模式统一由全局配置 {@code config.isFullPageScreenshot()} 决定。
      * 截图具备以下健壮性保障：
@@ -233,130 +244,190 @@ public class PlaywrightScreenshotManager {
      *   <li>若全页截图失败（超时/页面半加载），自动降级为视口截图重试一次，仍失败则
      *       再用更短超时重试一次视口截图，尽量为失败场景保留一张图。</li>
      * </ul>
+     *
+     * @apiNote 落盘目录固定为 {@code target/site/serenity}（Serenity 报告目录），后缀 {@code .png}。
+     *          <b>切勿</b>在此链路改用 WebP——Serenity 4.2.0 对截图后缀/格式有内部假设，改用 WebP 会破坏
+     *          报告渲染。WebP 合规截图请走 {@link #takeScreenshotWebp(String)}（独立归档目录）。
      */
     public static String takeScreenshot(String title) {
-        Page page = null;
-        // fullPage 声明在 try 外，确保 finally 块（恢复高度样式）可访问，避免局部变量作用域问题
-        boolean fullPage = false;
-        try {
-            page = PlaywrightManager.getPageThreadLocal();
-            if (page == null || page.isClosed()) {
-                return null;
-            }
-
-            // 目录（Serenity 标准）
-            Path screenshotDir = Paths.get("target/site/serenity");
-            Files.createDirectories(screenshotDir);
-
-            // 唯一文件名
-            String uniqueId = getScenarioIdentifier();
-            String uniqueSource = title + "_" + uniqueId + "_" + System.currentTimeMillis();
-            String sha256 = generateHash(uniqueSource);
-            String screenshotName = sha256 + ".png";
-            Path screenshotPath = screenshotDir.resolve(screenshotName);
-
-            // 清理残留截图文件
-            try {
-                if (Files.exists(screenshotPath)) {
-                    Files.deleteIfExists(screenshotPath);
-                }
-            } catch (Exception e) {
-                VerboseLogging.logWarnIfVerbose(logger, "Failed to delete existing screenshot: {}", e.getMessage());
-            }
-
-            // 全页/视口模式统一由全局配置决定。
-            fullPage = PlaywrightManager.config().isFullPageScreenshot();
-            int baseTimeout = PlaywrightManager.config().getScreenshotTimeout();
-            long screenshotTimeout = (long) baseTimeout;
-            VerboseLogging.logDebugIfVerbose(logger,
-                    "Screenshot request: title={}, fullPage={}, timeout={}ms", title, fullPage, screenshotTimeout);
-
-            // 截图前稳定化（仅 fullPage 时滚动 + 高度上限保护；非全页不滚动）
-            stabilizeBeforeScreenshot(page, fullPage);
-
-            // 跳过字体加载等待（规避 document.fonts.ready 挂起导致截图超时）
-            bypassFontsReady(page);
-
-            // 页面加载状态等待（忽略超时，不阻塞截图）
-            try {
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED,
-                        new Page.WaitForLoadStateOptions().setTimeout(screenshotTimeout));
-            } catch (Exception e) {
-                VerboseLogging.logDebugIfVerbose(logger,
-                        "Screenshot wait timeout ({}ms) - continuing: {}", screenshotTimeout, e.getMessage());
-            }
-
-            // 主路径：按配置尝试全页或视口截图
-            try {
-                doScreenshot(page, screenshotPath, fullPage, screenshotTimeout);
-                VerboseLogging.logDebugIfVerbose(logger,
-                        "Screenshot saved (fullPage={}): {}", fullPage, screenshotPath);
-                return screenshotPath.toString();
-            } catch (Exception primaryFail) {
-                if (!fullPage) {
-                    // 视口截图失败：用更短超时再尝试一次，避免页面抖动/动画卡住。
-                    VerboseLogging.logWarnIfVerbose(logger,
-                            "Viewport screenshot failed, retrying with short timeout: {}", primaryFail.getMessage());
-                    try {
-                        long shortTimeout = Math.max(1000L, screenshotTimeout / 2);
-                        doScreenshot(page, screenshotPath, false, shortTimeout);
-                        VerboseLogging.logDebugIfVerbose(logger,
-                                "Short-timeout viewport screenshot saved: {}", screenshotPath);
-                        return screenshotPath.toString();
-                    } catch (Exception e) {
-                        logger.error("All screenshot attempts failed for title '{}'", title, e);
-                        return null;
-                    }
-                }
-
-                // fullPage=true 但主路径失败——不直接降级为视口（否则用户以为全页生效实则只截视口）。
-                // 常见原因：注入的高度裁切样式（max-height/overflow:hidden）干扰了 Playwright 全页拼图，
-                // 或页面半加载/懒加载导致超时。先还原裁切样式、再重试一次全页。
-                VerboseLogging.logWarnIfVerbose(logger,
-                        "Full-page screenshot (attempt 1) failed: {}. Retrying full-page without height cap...",
-                        primaryFail.getMessage());
-                try {
-                    restorePageHeightStyle(page);
-                    doScreenshot(page, screenshotPath, true, screenshotTimeout);
-                    VerboseLogging.logDebugIfVerbose(logger,
-                            "Full-page screenshot saved on retry (fullPage=true): {}", screenshotPath);
-                    return screenshotPath.toString();
-                } catch (Exception retryFail) {
-                    // 全页重试仍失败：降级为视口，但明确以 ERROR 记录，提醒 fullPage 未生效。
-                    logger.error("Full-page screenshot (fullPage=true) failed twice; downgrading to viewport. "
-                            + "Primary cause: {}, retry cause: {}", primaryFail.getMessage(), retryFail.getMessage());
-                    try {
-                        doScreenshot(page, screenshotPath, false, screenshotTimeout);
-                        VerboseLogging.logDebugIfVerbose(logger,
-                                "Viewport fallback screenshot saved: {}", screenshotPath);
-                        return screenshotPath.toString();
-                    } catch (Exception viewportFail) {
-                        // 视口兜底：更短超时再试一次。
-                        VerboseLogging.logWarnIfVerbose(logger,
-                                "Viewport fallback failed, retrying with short timeout: {}", viewportFail.getMessage());
-                        try {
-                            long shortTimeout = Math.max(1000L, screenshotTimeout / 2);
-                            doScreenshot(page, screenshotPath, false, shortTimeout);
-                            VerboseLogging.logDebugIfVerbose(logger,
-                                    "Short-timeout viewport fallback screenshot saved: {}", screenshotPath);
-                            return screenshotPath.toString();
-                        } catch (Exception e) {
-                            logger.error("All screenshot attempts failed for title '{}'", title, e);
-                            return null;
-                        }
-                    }
-                }
-            }
-
-        } catch (Exception e) {
-            logger.error("Failed to take screenshot", e);
+        Page page = PlaywrightManager.getPageThreadLocal();
+        if (page == null || page.isClosed()) {
             return null;
+        }
+        // 目录（Serenity 标准）
+        Path screenshotDir = Paths.get("target/site/serenity");
+        try {
+            Files.createDirectories(screenshotDir);
+        } catch (Exception e) {
+            VerboseLogging.logWarnIfVerbose(logger, "Failed to create screenshot dir {}: {}",
+                    screenshotDir, e.getMessage());
+            return null;
+        }
+        boolean fullPage = PlaywrightManager.config().isFullPageScreenshot();
+        long timeoutMs = (long) PlaywrightManager.config().getScreenshotTimeout();
+        VerboseLogging.logDebugIfVerbose(logger,
+                "Screenshot request: title={}, fullPage={}, timeout={}ms", title, fullPage, timeoutMs);
+        try {
+            return captureScreenshot(page, title, screenshotDir, ".png", null, null, fullPage, timeoutMs);
         } finally {
             // 全页模式下注入了高度裁切样式，截图完成后还原，避免影响后续操作。
             //  修复问题1（加固）：以实际传入的 fullPage 参数为准（与 stabilizeBeforeScreenshot 的注入条件一致），
             // 而非 PlaywrightManager.config().isFullPageScreenshot()，避免参数与配置不一致时漏恢复导致页面被永久裁剪。
             if (page != null && !page.isClosed() && fullPage) {
                 restorePageHeightStyle(page);
+            }
+        }
+    }
+
+    /**
+     * WebP 合规截图（仅落<b>自建归档目录</b>，绝不影响 Serenity 报告 PNG）。
+     *
+     * <p>对应 Playwright 1.62 升级评估报 §3.1：WebP 较 PNG 体积降 60–80%，用于 CI 制品与合规证据瘦身。
+     * <b>刻意不写入 {@code target/site/serenity}</b>（Serenity 4.2.0 对截图后缀/格式有内部假设），只落独立
+     * 归档目录（{@code playwright.screenshot.webp.archiveDir}），避免破坏 Serenity 报告渲染。
+     *
+     * <p>行为与主 PNG 截图完全一致（稳定化/字体绕过/全页上限/降级重试），仅格式与落盘目录不同；
+     * 由开关 {@code playwright.screenshot.webp.enabled} 控制，禁用或任何异常时静默返回 null。
+     *
+     * @param title 截图标题
+     * @return WebP 截图文件路径（字符串）；禁用或失败返回 null
+     */
+    public static String takeScreenshotWebp(String title) {
+        if (!WebFrameworkConfig.PLAYWRIGHT_WEBP_SCREENSHOT_ENABLED.getBooleanValue()) {
+            return null;
+        }
+        Page page = PlaywrightManager.getPageThreadLocal();
+        if (page == null || page.isClosed()) {
+            return null;
+        }
+        Path screenshotDir = Paths.get(WebFrameworkConfig.PLAYWRIGHT_WEBP_SCREENSHOT_ARCHIVE_DIR.getValue());
+        try {
+            Files.createDirectories(screenshotDir);
+        } catch (Exception e) {
+            VerboseLogging.logWarnIfVerbose(logger, "Failed to create WebP archive dir {}: {}",
+                    screenshotDir, e.getMessage());
+            return null;
+        }
+        boolean fullPage = PlaywrightManager.config().isFullPageScreenshot();
+        long timeoutMs = (long) PlaywrightManager.config().getScreenshotTimeout();
+        int quality = WebFrameworkConfig.PLAYWRIGHT_WEBP_SCREENSHOT_QUALITY.getIntValue();
+        VerboseLogging.logDebugIfVerbose(logger,
+                "WebP screenshot request: title={}, fullPage={}, quality={}", title, fullPage, quality);
+        try {
+            return captureScreenshot(page, title, screenshotDir, ".webp", ScreenshotType.WEBP, quality, fullPage, timeoutMs);
+        } finally {
+            if (page != null && !page.isClosed() && fullPage) {
+                restorePageHeightStyle(page);
+            }
+        }
+    }
+
+    /**
+     * 截图核心实现（格式无关）。复用稳定化/字体绕过/全页上限/降级重试逻辑，
+     * 仅截图格式（type/quality/extension）与落盘目录随调用方不同。
+     *
+     * @param page          目标页面
+     * @param title         截图标题
+     * @param screenshotDir 落盘目录（调用方已确保创建成功）
+     * @param extension     文件后缀（如 ".png" / ".webp"）
+     * @param type          截图类型（null 走默认 PNG；WEBP/JPEG 需配合 extension）
+     * @param quality       有损格式质量 0-100（仅 WEBP/JPEG 有效，null 表示不设置）
+     * @param fullPage      是否全页
+     * @param timeoutMs     超时
+     * @return 截图文件路径；全部尝试失败返回 null
+     */
+    private static String captureScreenshot(Page page, String title, Path screenshotDir, String extension,
+                                            ScreenshotType type, Integer quality, boolean fullPage, long timeoutMs) {
+        // 唯一文件名
+        String uniqueId = getScenarioIdentifier();
+        String uniqueSource = title + "_" + uniqueId + "_" + System.currentTimeMillis();
+        String sha256 = generateHash(uniqueSource);
+        String screenshotName = sha256 + extension;
+        Path screenshotPath = screenshotDir.resolve(screenshotName);
+
+        // 清理残留截图文件
+        try {
+            if (Files.exists(screenshotPath)) {
+                Files.deleteIfExists(screenshotPath);
+            }
+        } catch (Exception e) {
+            VerboseLogging.logWarnIfVerbose(logger, "Failed to delete existing screenshot: {}", e.getMessage());
+        }
+
+        // 截图前稳定化（仅 fullPage 时滚动 + 高度上限保护；非全页不滚动）
+        stabilizeBeforeScreenshot(page, fullPage);
+
+        // 跳过字体加载等待（规避 document.fonts.ready 挂起导致截图超时）
+        bypassFontsReady(page);
+
+        // 页面加载状态等待（忽略超时，不阻塞截图）
+        try {
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED,
+                    new Page.WaitForLoadStateOptions().setTimeout(timeoutMs));
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Screenshot wait timeout ({}ms) - continuing: {}", timeoutMs, e.getMessage());
+        }
+
+        // 主路径：按配置尝试全页或视口截图
+        try {
+            doScreenshot(page, screenshotPath, fullPage, timeoutMs, type, quality);
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Screenshot saved (fullPage={}, type={}): {}", fullPage, type, screenshotPath);
+            return screenshotPath.toString();
+        } catch (Exception primaryFail) {
+            if (!fullPage) {
+                // 视口截图失败：用更短超时再尝试一次，避免页面抖动/动画卡住。
+                VerboseLogging.logWarnIfVerbose(logger,
+                        "Viewport screenshot failed, retrying with short timeout: {}", primaryFail.getMessage());
+                try {
+                    long shortTimeout = Math.max(1000L, timeoutMs / 2);
+                    doScreenshot(page, screenshotPath, false, shortTimeout, type, quality);
+                    VerboseLogging.logDebugIfVerbose(logger,
+                            "Short-timeout viewport screenshot saved: {}", screenshotPath);
+                    return screenshotPath.toString();
+                } catch (Exception e) {
+                    logger.error("All screenshot attempts failed for title '{}'", title, e);
+                    return null;
+                }
+            }
+
+            // fullPage=true 但主路径失败——不直接降级为视口（否则用户以为全页生效实则只截视口）。
+            // 常见原因：注入的高度裁切样式（max-height/overflow:hidden）干扰了 Playwright 全页拼图，
+            // 或页面半加载/懒加载导致超时。先还原裁切样式、再重试一次全页。
+            VerboseLogging.logWarnIfVerbose(logger,
+                    "Full-page screenshot (attempt 1) failed: {}. Retrying full-page without height cap...",
+                    primaryFail.getMessage());
+            try {
+                restorePageHeightStyle(page);
+                doScreenshot(page, screenshotPath, true, timeoutMs, type, quality);
+                VerboseLogging.logDebugIfVerbose(logger,
+                        "Full-page screenshot saved on retry (fullPage=true): {}", screenshotPath);
+                return screenshotPath.toString();
+            } catch (Exception retryFail) {
+                // 全页重试仍失败：降级为视口，但明确以 ERROR 记录，提醒 fullPage 未生效。
+                logger.error("Full-page screenshot (fullPage=true) failed twice; downgrading to viewport. "
+                        + "Primary cause: {}, retry cause: {}", primaryFail.getMessage(), retryFail.getMessage());
+                try {
+                    doScreenshot(page, screenshotPath, false, timeoutMs, type, quality);
+                    VerboseLogging.logDebugIfVerbose(logger,
+                            "Viewport fallback screenshot saved: {}", screenshotPath);
+                    return screenshotPath.toString();
+                } catch (Exception viewportFail) {
+                    // 视口兜底：更短超时再试一次。
+                    VerboseLogging.logWarnIfVerbose(logger,
+                            "Viewport fallback failed, retrying with short timeout: {}", viewportFail.getMessage());
+                    try {
+                        long shortTimeout = Math.max(1000L, timeoutMs / 2);
+                        doScreenshot(page, screenshotPath, false, shortTimeout, type, quality);
+                        VerboseLogging.logDebugIfVerbose(logger,
+                                "Short-timeout viewport fallback screenshot saved: {}", screenshotPath);
+                        return screenshotPath.toString();
+                    } catch (Exception e) {
+                        logger.error("All screenshot attempts failed for title '{}'", title, e);
+                        return null;
+                    }
+                }
             }
         }
     }

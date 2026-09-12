@@ -54,6 +54,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Dimension;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -337,6 +341,42 @@ public class PlaywrightManager {
         return provider.getPage();
     }
 
+    // ==================== 下载查询（业务层获取自动保存的下载文件） ====================
+
+    /**
+     * 获取当前上下文最近一次下载文件的绝对路径。
+     * <p>
+     * 下载由框架在 {@code BrowserContext} 级自动保存至 {@code browser.downloads.path}（见 §3.2 收尾），
+     * 文件名取自响应 {@code Content-Disposition}（{@code Download.suggestedFilename()}）。
+     *
+     * @return 最近下载文件的绝对路径；当前上下文无下载记录时返回 {@code null}
+     * @apiNote 稳定公开契约。业务触发下载（点击导出等）后调用，需确保下载已完成再读取。
+     */
+    public static Path getLastDownloadPath() {
+        return DownloadRegistry.instance().last(getContext());
+    }
+
+    /**
+     * 获取当前上下文最近一次下载文件的文件名（不含目录）。
+     *
+     * @return 文件名；当前上下文无下载记录时返回 {@code null}
+     * @apiNote 稳定公开契约。业务触发下载后调用，需确保下载已完成再读取。
+     */
+    public static String getLastDownloadFileName() {
+        Path p = getLastDownloadPath();
+        return p == null ? null : p.getFileName().toString();
+    }
+
+    /**
+     * 获取当前上下文全部下载文件的绝对路径（按时间升序）。
+     *
+     * @return 下载路径列表；当前上下文无下载记录时返回空列表（非 {@code null}）
+     * @apiNote 稳定公开契约。业务触发下载后调用，需确保下载已完成再读取。
+     */
+    public static List<Path> getDownloadPaths() {
+        return DownloadRegistry.instance().all(getContext());
+    }
+
     // ==================== Context 和 Page 创建方法 ====================
 
     /**
@@ -370,6 +410,87 @@ public class PlaywrightManager {
 
     public static boolean hasContext() {
         return PlaywrightRuntime.instance().contextRegistry.hasContext();
+    }
+
+    // ==================== 就地换会话（1.59+ BrowserContext.setStorageState，免重建） ====================
+
+    /**
+     * 将 session storageState 应用到当前 Context（1.59+ <b>就地换会话，免重建</b>）。
+     * <p>
+     * 若当前线程已有活跃 {@link BrowserContext}：直接在其上调用 {@code BrowserContext.setStorageState}
+     * 切换会话，并关闭当前 Page（避免其携带旧会话），免去「改会话即重建 Context」的绕路
+     * （关闭 Page/Context 再重建、重注册监听、重跑 route 等），契合评估报告 §4 的轻量化诉求。
+     * 若无活跃 Context：退化为设置 customOptions，待下次 {@link #getContext()} 创建时应用（与既有行为一致）。
+     * <p>
+     * 无论哪种路径都会同步 customOptions 的 storageState（<b>不置重建 flag</b>），保证后续若因其它自定义配置
+     * 触发重建时仍带上本次会话；同时避免「仅会话恢复」误导 {@code getContext()} 误判需重建。
+     *
+     * @param storageStateJson storageState JSON 字符串（null/空安全：直接忽略）
+     * @apiNote 稳定公开契约；业务/框架经 {@code SessionManager} 间接触达，不建议直接调用。
+     */
+    public static void applyStorageState(String storageStateJson) {
+        if (storageStateJson == null || storageStateJson.isEmpty()) {
+            return;
+        }
+        BrowserContext ctx = PlaywrightRuntime.instance().contextRegistry.getCurrentContext();
+        if (ctx != null) {
+            closeCurrentPageIfAny();
+            // 1.59+ 的 BrowserContext.setStorageState 仅接受 Path：将内存 JSON 落临时文件后应用，用完即删，
+            // 避免为「就地换会话」重新引入磁盘存储（仍远轻于关闭 Page/Context 再重建整条生命周期）。
+            Path tmp = null;
+            try {
+                tmp = Files.createTempFile("pw-storage-", ".json");
+                Files.writeString(tmp, storageStateJson, StandardCharsets.UTF_8);
+                ctx.setStorageState(tmp);
+                VerboseLogging.logInfoIfVerbose(logger,
+                        "Applied storageState in-place to live context (no context rebuild)");
+            } catch (IOException e) {
+                throw new RuntimeException("[Session] Failed to apply storageState to live context", e);
+            } finally {
+                if (tmp != null) {
+                    try {
+                        Files.deleteIfExists(tmp);
+                    } catch (IOException ignore) {
+                        VerboseLogging.logDebugIfVerbose(logger, "Temp storageState file not deleted: {}", tmp);
+                    }
+                }
+            }
+        }
+        customOptions().setStorageStateWithoutRebuild(storageStateJson);
+    }
+
+    /**
+     * 同上，但接受 storageState 文件路径（回退路径：内存 JSON 缓存未命中时）。
+     */
+    public static void applyStorageStatePath(Path storageStatePath) {
+        if (storageStatePath == null) {
+            return;
+        }
+        BrowserContext ctx = PlaywrightRuntime.instance().contextRegistry.getCurrentContext();
+        if (ctx != null) {
+            closeCurrentPageIfAny();
+            ctx.setStorageState(storageStatePath);
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "Applied storageState (path) in-place to live context (no context rebuild): {}", storageStatePath);
+        }
+        customOptions().setStorageStatePathWithoutRebuild(storageStatePath);
+    }
+
+    /**
+     * 关闭当前线程的 Page（若有且未关闭），并从 TestContext 移除引用。
+     * 供「就地换会话」在 {@code BrowserContext.setStorageState} 前释放旧会话的页面，避免其携带过期 Cookie/Storage。
+     */
+    private static void closeCurrentPageIfAny() {
+        Page page = TestContextHolder.get().get(PAGE_KEY);
+        if (page != null && !page.isClosed()) {
+            try {
+                VerboseLogging.logInfoIfVerbose(logger, "Closing current page for in-place session switch");
+                page.close();
+            } catch (Exception e) {
+                VerboseLogging.logWarnIfVerbose(logger, "Failed to close page on session switch: {}", e.getMessage());
+            }
+        }
+        TestContextHolder.get().remove(PAGE_KEY);
     }
 
     public static void restartBrowser() {
@@ -434,6 +555,18 @@ public class PlaywrightManager {
 
     public static String takeScreenshot(String title) {
         return PlaywrightScreenshotManager.takeScreenshot(title);
+    }
+
+    /**
+     * WebP 合规截图（落自建归档目录 {@code playwright.screenshot.webp.archiveDir}，不影响 Serenity 报告）。
+     *
+     * @apiNote <b>稳定的公开方法</b>：业务与框架代码均可调用以获取瘦身后的合规证据截图；
+     *          Serenity 报告内的失败截图仍由 {@link #takeScreenshot(String)} 以 PNG 提供，二者互不干扰。
+     * @param title 截图标题
+     * @return WebP 截图路径；禁用或失败返回 null
+     */
+    public static String takeScreenshotWebp(String title) {
+        return PlaywrightScreenshotManager.takeScreenshotWebp(title);
     }
 
     // ==================== 配置访问（通过 config() 代理到 PlaywrightConfigManager） ====================

@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <ol>
  *   <li>Handler 调用 {@link #recordApiOperation(String, String, String)}
  *       将记录入队到线程安全的 {@code ConcurrentLinkedQueue}</li>
- *   <li>{@code SerenityBasePage} 的 {@code record()} / {@code recordAndReturn()}
+ *   <li>录制门面的 {@code record()} / {@code recordAndReturn()}
  *       拦截器在主线程上调用 {@link #flushPendingApiOperations()} 批量写入报告</li>
  * </ol>
  */
@@ -41,7 +41,7 @@ public final class SerenityReporter implements ResultReporter {
     /**
      * 线程安全的待报告 API 操作队列。
      * Handler（Playwright 事件线程 / AsyncPool worker 线程）入队，
-     * SerenityBasePage 拦截器（主线程）出队写入 Serenity 报告。
+     * 录制门面的拦截器（主线程）出队写入 Serenity 报告。
      */
     private static final Queue<PendingApiRecord> pendingQueue = new ConcurrentLinkedQueue<>();
 
@@ -163,12 +163,12 @@ public final class SerenityReporter implements ResultReporter {
     /**
      * 将待报告队列中的所有 API 操作刷入 Serenity 报告。
      *
-     * <p><b>必须在测试主线程上调用</b>（由 {@code SerenityBasePage} 的
+     * <p><b>必须在测试主线程上调用</b>（由录制门面的
      * {@code record()} / {@code recordAndReturn()} 拦截器触发）。
      *
      * <p>调用时机：
      * <ul>
-     *   <li>每个 {@code SerenityBasePage} 操作前（record / recordAndReturn 拦截）</li>
+     *   <li>每个录制门面操作前（record / recordAndReturn 拦截）</li>
      *   <li>测试步骤结束时（可选，兜底刷新）</li>
      * </ul>
      */

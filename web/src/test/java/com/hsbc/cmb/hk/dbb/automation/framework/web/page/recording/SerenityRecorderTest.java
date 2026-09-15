@@ -10,7 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Phase 0 专属 UT：验证 {@link SerenityRecorder} 从 {@code SerenityBasePage} 行为逐字迁移。
+ * Phase 0 专属 UT：验证 {@link SerenityRecorder} 从原 {@code SerenityBasePage} 旧类（已删除）行为逐字迁移。
  * 集成层（verbose 存储 + Serenity 报告写入）由全护盾（600+ 用例）覆盖。
  */
 class SerenityRecorderTest {

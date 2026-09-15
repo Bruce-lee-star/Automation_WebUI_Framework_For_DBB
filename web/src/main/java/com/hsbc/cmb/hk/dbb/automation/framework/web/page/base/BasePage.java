@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
  * <p>所有"域能力"（frame/shadow 切换、Cookie、视口/截图/脚本/键盘交互、Locator 工厂、
  * 等待/重试）已下沉到各自的委派类（{@code PageFrameShadow}/{@code CookieManager}/
  * {@code PageViewport}/{@code PageInteractions}/{@code LocatorFactory}/{@code PageWaits}/
- * {@code PageNavigation}），由 {@code SerenityBasePage} 经录制层统一委派调用。
+ * {@code PageNavigation}），由录制门面 {@link SerenityPageRecorder} 统一委派调用。
  * 故本类公开方法收敛至 ≤40，职责单一、便于测试与替换。
  *
  * <ul>
@@ -278,7 +278,7 @@ public abstract class BasePage {
     /**
      * 基于选择器创建 PageElement 实例，作为 BasePage 所有元素操作的统一入口。
      * <p>替代分散在各方法中的 {@code new PageElement(selector, this)} 模式，
-     * 减少重复代码，并允许子类（如 SerenityBasePage）通过覆盖此方法统一注入报告逻辑。
+     * 减少重复代码，并允许实现方（如录制门面 {@link SerenityPageRecorder}）通过覆写统一注入报告逻辑。
      *
      * <pre>{@code
      * // 推荐新风格（链式调用）

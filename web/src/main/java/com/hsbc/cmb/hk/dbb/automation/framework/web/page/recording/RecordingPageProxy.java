@@ -27,7 +27,7 @@ import org.slf4j.LoggerFactory;
  * <p>JDK 动态代理实现 {@link Page}（及递归包装的 {@link Locator}/{@link Frame}/{@link ElementHandle}/
  * {@link Response}/{@link Request}/{@link APIResponse}/{@link APIRequest}），对原生操作
  * （navigate / click / fill / getByRole / locator(...) 等）在委托真实受管 Page 前刷新待报告 API 数据并录制动作，
- * 使业务 Page 经持有的装饰 Page 透明获得 Serenity 录制，无需继承 {@code SerenityBasePage}。
+ * 使业务 Page 经持有的装饰 Page 透明获得 Serenity 录制，无需继承庞大的 {@code BasePage} 基类。
  *
  * <p><b>边界</b>（见设计 15）：
  * <ul>

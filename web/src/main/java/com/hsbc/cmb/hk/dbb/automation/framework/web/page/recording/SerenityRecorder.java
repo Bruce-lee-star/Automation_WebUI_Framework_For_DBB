@@ -13,10 +13,10 @@ import java.util.function.Supplier;
 /**
  * framework-internal Serenity 录制门面。
  *
- * <p>从 {@code SerenityBasePage} 提升而来，承载其原有 {@code record} / {@code recordAndReturn} /
+ * <p>从原 {@code SerenityBasePage} 旧类（已删除）提升而来，承载其原有 {@code record} / {@code recordAndReturn} /
  * {@code recordVerification} 三个 reusable interceptor 与 per-page 测试数据存储（{@code serenityTestData}）。
  * 行为逐字迁移，零回归。后续由 Page 录制装饰器（Layer A 原生操作）与框架自有方法调用处（Layer B）复用，
- * 使 {@code SerenityBasePage} 可退役、业务 Page 零继承。
+ * 使该旧类可退役、业务 Page 零继承。
  *
  * <p><b>注意</b>：本类为框架内部实现，业务代码不得直接调用（见 ArchUnit
  * {@code businessCodeMustNotUseSerenityRecorder}）。
@@ -105,7 +105,7 @@ public final class SerenityRecorder {
 
     /**
      * Layer A 原生操作录制：刷新 Route Handler 产生的待报告 API 数据 + verbose 日志；
-     * 不写入 per-page 测试数据（per-page 测试数据归属 {@code SerenityBasePage}，Phase 4 前保留）。
+     * 不写入 per-page 测试数据（per-page 测试数据归属 {@code BasePage}，Phase 4 前保留）。
      * 业务语义异常由调用方透传（本方法不捕获）。
      */
     public static void recordNative(String action, Object detail, Runnable operation) {

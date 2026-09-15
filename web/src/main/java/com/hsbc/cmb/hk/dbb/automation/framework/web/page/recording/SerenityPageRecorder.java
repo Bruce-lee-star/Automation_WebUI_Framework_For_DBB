@@ -32,18 +32,20 @@ import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
- * Layer B 录制门面（framework-internal）：把 {@code SerenityBasePage} 的约 40 个录制方法体收敛为可复用助手，
- * 使 {@code SerenityBasePage} 退化为薄委托壳（Phase 3 → Phase 4 可删类）。
+ * Layer B 录制门面（framework-internal）：把原 {@code SerenityBasePage} 旧类（已删除）的约 40 个录制方法体
+ * 收敛为可复用助手，使该旧类退化为薄委托壳并最终删除（Phase 3 → Phase 4）。
  *
  * <p>每个方法 = 「{@link SerenityRecorder} 录制（flushPendingApiOperations + verbose 日志 + per-page 测试数据）
  * + 委派到对应工具类（{@code LocatorFactory}/{@code PageWaits}/{@code PageInteractions}/{@code PageViewport}/
  * {@code PageFrameShadow}/{@code PageAccessibility}/{@code CookieManager}/{@code PageNavigation}）」。
- * 录制语义与逐字迁移版 {@code SerenityBasePage} 完全一致（数据键、异常转换、零开销开关均不变）。
+ * 录制语义与该旧类逐字迁移版完全一致（数据键、异常转换、零开销开关均不变）。
  *
- * <p>per-page 测试数据状态由持有的 {@link SerenityRecorder} 实例承载（与 {@code SerenityBasePage} 原 {@code serenityTestData}
- * 等价）；原生操作（Layer A）走 {@link RecordingPageProxy} 装饰，本门面只负责框架自有方法（Layer B）。
+ * <p>per-page 测试数据状态由持有的 {@link SerenityRecorder} 实例承载（与该旧类的 {@code serenityTestData} 等价）；
+ * 原生操作（Layer A）走 {@link RecordingPageProxy} 装饰，本门面只负责框架自有方法（Layer B）。
  *
  * @apiNote framework-internal：业务 Page 不得直接调用；录制经持有的装饰 Page / 本门面透明获得。
+ *      注意：本类注释中的 {@code SerenityBasePage} 均指<b>已删除的旧基类</b>；现行同名类型是
+ *      {@link com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.SerenityBasePage}（页面能力契约接口）。
  */
 public final class SerenityPageRecorder {
 
@@ -52,7 +54,7 @@ public final class SerenityPageRecorder {
     /** per-page 录制状态（serenityTestData 等），与逐字迁移版一致。 */
     private final SerenityRecorder recorder = new SerenityRecorder();
 
-    /** 暴露 per-page 录制状态，供页面对象（{@code SerenityBasePage}）读取/清理测试数据。 */
+    /** 暴露 per-page 录制状态，供页面对象（{@link BasePage}）读取/清理测试数据。 */
     public SerenityRecorder recorder() {
         return recorder;
     }

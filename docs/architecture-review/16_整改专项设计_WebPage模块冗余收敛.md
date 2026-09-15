@@ -2,7 +2,12 @@
 
 > 关联：WEB-P1-2 Phase 6 组合式 Page Object（G1）
 > 范围：`web/src/main/java/.../framework/web/page` 模块
-> 状态：设计稿（待评审通过后实施）
+> 状态：设计稿；F1 / F2 已实现（见文末"命名与包变更说明"）
+>
+> **命名与包变更说明（实现后生效）**：本设计稿中的 `PageApi` 已更名为 **`SerenityBasePage`**（页面能力契约接口），
+> `PageApiImpl` 已更名为 **`SerenityBasePageImpl`**（默认实现，委托 `BasePage` 并承载录制）；
+> 二者与 `AbstractManagedPage` 一并从 `web.page.api` 包迁入 **`web.page.base`** 包，`api` 包已不存在。
+> 下文"现状 / 目标设计 / 变更清单"代码块保留当时的原名，以还原设计演进过程，阅读时请按上述映射对照。
 
 ---
 

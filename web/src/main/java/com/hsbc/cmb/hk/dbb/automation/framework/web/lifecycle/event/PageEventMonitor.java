@@ -24,7 +24,7 @@ import java.util.List;
  * 提升运行时可观测性。本类<b>不</b>处理 API 抓包（{@code route} 模块的 {@code ApiCaptureLifecycle} 负责）
  * 与测试报告（{@code PlaywrightListener} / Serenity 负责），职责隔离清晰。
  *
- * <p><b>为何不放进 BasePage / SerenityBasePage</b>：页面对象是业务层，且多个 BasePage 实例共享同一底层
+ * <p><b>为何不放进 {@code BasePage} / 页面能力契约接口</b>：页面对象是业务层，且多个 BasePage 实例共享同一底层
  * {@code Page}；把横切的可观测性塞进 page-object 既违反单一职责，又会让本就超大的基类进一步膨胀。
  * 注册点统一收敛在页面/上下文<b>创建接缝</b>（{@link PlaywrightContextManager}），与 {@code onDownload} /
  * {@code onPage} / {@code onLoad} 已有接线保持一致。

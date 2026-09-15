@@ -590,6 +590,12 @@ public abstract class BasePage {
         serenity.dismissAlert(this, trigger);
     }
 
+    /**
+     * 把当前 Page 的标签页 / 窗口带到最前并激活（底层 {@code Page.bringToFront()}）。
+     *
+     * @apiNote Framework-internal — 不对业务开放（受 ArchUnit {@code businessCodeMustNotCallBringToFront} 守护）。
+     *       业务切页请用 {@code switchToPage} / {@code waitForNewPage}，其收尾已用 {@code safeBringToFront()} 自动激活目标页。
+     */
     public void bringToFront() {
         serenity.bringToFront(this);
     }

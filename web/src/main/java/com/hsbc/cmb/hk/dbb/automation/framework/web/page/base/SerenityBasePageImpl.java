@@ -260,11 +260,6 @@ public class SerenityBasePageImpl implements SerenityBasePage {
     }
 
     @Override
-    public void bringToFront() {
-        bp.bringToFront();
-    }
-
-    @Override
     public void setContent(String html) {
         bp.setContent(html);
     }

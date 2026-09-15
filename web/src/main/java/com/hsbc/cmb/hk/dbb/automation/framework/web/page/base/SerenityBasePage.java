@@ -146,7 +146,8 @@ public interface SerenityBasePage {
 
     void dismissAlert(Runnable trigger);
 
-    void bringToFront();
+    // 注：bringToFront（标签页/窗口激活）刻意不纳入本能力面——切页入口 switchToPage / waitForNewPage
+    // 的收尾已自动激活目标页；该 seam 保留在 BasePage 内部（受 ArchUnit businessCodeMustNotCallBringToFront 守护）。
 
     void setContent(String html);
 

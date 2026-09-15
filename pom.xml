@@ -80,8 +80,9 @@
         <!-- CVE 门禁（T1-4）：OSV-Scanner 配置 -->
         <cve.gate.skip>false</cve.gate.skip>
 
-        <!-- 默认跑 @route；CI 可用 -Dtags=@api 覆盖（见 test-automation 的 failsafe 配置） -->
-        <tags>@route</tags>
+        <!-- 默认回归套件跑所有未显式跳过的场景（单一事实来源，由 test-automation failsafe 的 -Dcucumber.filter.tags=${tags} 驱动）。
+             Runner 不再写死标签（B-2）；环境依赖型 feature 若需默认跳过，打 @skip 即可。 -->
+        <tags>not @skip</tags>
 
         <!-- 重试：默认 0（不重试），CI 可通过 -DrerunFailingTestsCount=N 覆盖 -->
         <rerunFailingTestsCount>0</rerunFailingTestsCount>
@@ -190,29 +191,29 @@
             <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- 统一 junit-platform-launcher 版本：cucumber-junit-platform-engine 传递 1.11.0，junit-platform-suite 传递 1.11.4；
-             RequireUpperBoundDeps 要求同 artifact 版本一致，钉到 1.11.4（与 platform 线对齐）。 -->
+        <!-- 统一 junit-platform-launcher 版本：cucumber-junit-platform-engine 传递 1.11.0、junit-platform-suite 传递 1.11.4，
+             RequireUpperBoundDeps 要求同 artifact 版本一致，故与 engine/commons 一并钉到 ${junit.platform.version}（=1.14.0，
+             满足 cucumber-junit-platform-engine:7.31.0 的 DiscoveryIssueReporter 需求，该类 1.13+ 才引入）。 -->
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-launcher</artifactId>
             <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- junit-platform-engine/commons 必须提升到 1.14.0：
+        <!-- junit-platform-engine/commons 与 launcher/suite 统一为 ${junit.platform.version}（=1.14.0）：
              cucumber-junit-platform-engine:7.31.0（junit-bom 5.14.0）的 CucumberTestEngine.discover 引用
-             org.junit.platform.engine.support.discovery.DiscoveryIssueReporter，该类在 platform 1.11.4 缺失
-             （1.13+ 才引入）→ 运行期 NoClassDefFoundError，Cucumber 引擎无法发现用例。
-             launcher/suite 维持 ${junit.platform.version}=1.11.4（离线仓库无 1.14.0），engine/commons 前向兼容。 -->
+             org.junit.platform.engine.support.discovery.DiscoveryIssueReporter，该类在 platform 1.13+ 才引入，
+             1.11.4 缺失会导致运行期 NoClassDefFoundError、Cucumber 引擎无法发现用例。四者统一 1.14.0 即消除版本漂移。 -->
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-engine</artifactId>
-            <version>1.14.0</version>
+            <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.junit.platform</groupId>
             <artifactId>junit-platform-commons</artifactId>
-            <version>1.14.0</version>
+            <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
         <!-- Cucumber 7 JUnit Platform 引擎（替代 JUnit4 的 @RunWith(CucumberWithSerenity)） -->
@@ -475,7 +476,15 @@
                     <!-- D7-3 规范约束框架生产代码：测试源（负向用例刻意触发/忽略异常）不纳入本门禁 -->
                     <includeTestSourceDirectory>false</includeTestSourceDirectory>
                     <violationSeverity>error</violationSeverity>
-                    <failOnViolation>true</failOnViolation>
+                    <!-- A-1 门禁机制说明：
+                         规则已扩充至 8 条（EmptyCatchBlock/NeedBraces/EqualsHashCode/MissingOverride/
+                         UpperEll/ArrayTypeStyle/FileLength/UnusedImports），存量 1325 条违规经根
+                         checkstyle-baseline.xml 祖父化。
+                         maven-checkstyle-plugin:3.6.0 的 check 目标不支持 <baseline> 参数（离线 verify 也不产生 skin），
+                         故"只减不增"由 CI 计数比对实现（build.yml 对比各模块 target/checkstyle-result.xml 的
+                         <error> 总数与基线；新增即失败）。本地 verify 仅报告不卡构建，避免离线环境误伤。 -->
+                    <failOnViolation>false</failOnViolation>
+                    <outputFile>${project.build.directory}/checkstyle-result.xml</outputFile>
                     <includes>**/framework/**</includes>
                 </configuration>
                 <executions>

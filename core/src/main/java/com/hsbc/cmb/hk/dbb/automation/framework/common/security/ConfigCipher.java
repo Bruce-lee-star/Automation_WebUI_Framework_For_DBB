@@ -107,8 +107,15 @@ public final class ConfigCipher {
     }
 
     /**
-     * 解密：接受 {@code ENC(...)} 或裸 base64 密文。主密钥缺失时抛 {@link IllegalStateException}
-     * 并给出配置指引。
+     * 解密：接受 {@code ENC(...)} 或裸 base64 密文。
+     *
+     * <p><b>异常分类（供上层区分"明显非密文"与"真实解密失败"）</b>：
+     * <ul>
+     *   <li>{@link IllegalArgumentException} —— <b>非密文形态</b>：非合法 base64，或长度不足以容纳
+     *       IV + GCM 标签。调用方可据此把该值当明文处理（回退原串），无需主密钥；</li>
+     *   <li>{@link IllegalStateException} —— <b>真实解密失败</b>：主密钥缺失 / 格式非法，或 GCM 认证失败
+     *       （key 与密文不匹配、密文被篡改）。属配置错误，调用方应失败快。</li>
+     * </ul>
      */
     public static String decrypt(String token) {
         if (token == null) {
@@ -117,16 +124,22 @@ public final class ConfigCipher {
         String inner = isEncrypted(token)
                 ? token.substring(ENC_PREFIX.length(), token.length() - ENC_SUFFIX.length())
                 : token;
-        byte[] key = resolveMasterKey();
+        // 先做形态校验（无需主密钥）：明显非密文的值不应因"缺 key"而报错，便于上层按明文回退。
+        byte[] data;
         try {
-            byte[] data = Base64.getDecoder().decode(inner);
-            if (data.length <= IV_BYTES) {
-                throw new IllegalArgumentException("ciphertext too short");
-            }
-            byte[] iv = new byte[IV_BYTES];
-            byte[] ct = new byte[data.length - IV_BYTES];
-            System.arraycopy(data, 0, iv, 0, IV_BYTES);
-            System.arraycopy(data, IV_BYTES, ct, 0, ct.length);
+            data = Base64.getDecoder().decode(inner);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("not a valid base64 ciphertext", e);
+        }
+        if (data.length <= IV_BYTES) {
+            throw new IllegalArgumentException("ciphertext too short to contain IV + GCM tag");
+        }
+        byte[] key = resolveMasterKey();
+        byte[] iv = new byte[IV_BYTES];
+        byte[] ct = new byte[data.length - IV_BYTES];
+        System.arraycopy(data, 0, iv, 0, IV_BYTES);
+        System.arraycopy(data, IV_BYTES, ct, 0, ct.length);
+        try {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, ALGORITHM), new GCMParameterSpec(TAG_BITS, iv));
             byte[] pt = cipher.doFinal(ct);
@@ -152,7 +165,13 @@ public final class ConfigCipher {
                             + "file " + resolveKeyFilePath() + " (content: 64 hex chars). Required to "
                             + "encrypt/decrypt config values.");
         }
-        return hexToBytes(hex.trim());
+        try {
+            return hexToBytes(hex.trim());
+        } catch (IllegalArgumentException e) {
+            // 主密钥格式非法（非 64 hex / 非偶数长度）属配置错误：统一为 IllegalStateException，
+            // 与"值本身非密文"的 IllegalArgumentException 区分，避免被上层误当明文回退。
+            throw new IllegalStateException("Invalid master key format: " + e.getMessage(), e);
+        }
     }
 
     /** 主密钥文件固定路径：{@code user.home}/.{@code MASTER_KEY_FILE_NAME}，跨操作系统由默认文件系统定位。 */

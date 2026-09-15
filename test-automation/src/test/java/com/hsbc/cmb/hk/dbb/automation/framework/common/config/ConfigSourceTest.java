@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.config;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.ConfigCipher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 public class ConfigSourceTest {
 
     private static final String KEY = "config.source.test.live.override";
+
+    private static final String TEST_MASTER_KEY =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     @AfterEach
     public void cleanup() {
@@ -39,5 +43,41 @@ public class ConfigSourceTest {
     @Test
     public void plainValuePassedThroughUnchanged() {
         assertEquals("plain", ConfigSource.resolve("config.source.test.plain", "plain"));
+    }
+
+    /** C-9：兜底默认值不参与裸密文启发式 —— 即便它形如合法密文，也原样返回（不解密）。 */
+    @Test
+    public void bareCiphertextDefaultIsNotDecrypted() {
+        String saved = System.getProperty("config.master.key");
+        System.setProperty("config.master.key", TEST_MASTER_KEY);
+        try {
+            String enc = ConfigCipher.encrypt("secret-default");
+            String bare = enc.substring("ENC(".length(), enc.length() - 1);
+            assertEquals(bare, ConfigSource.resolve("config.source.test.bare.default", bare),
+                    "C-9：兜底默认值应原样返回，不尝试裸密文解密");
+        } finally {
+            if (saved == null) {
+                System.clearProperty("config.master.key");
+            } else {
+                System.setProperty("config.master.key", saved);
+            }
+        }
+    }
+
+    /** C-9：显式 ENC(...) 标记的默认值仍解密。 */
+    @Test
+    public void encMarkedDefaultIsStillDecrypted() {
+        String saved = System.getProperty("config.master.key");
+        System.setProperty("config.master.key", TEST_MASTER_KEY);
+        try {
+            String enc = ConfigCipher.encrypt("secret-default");
+            assertEquals("secret-default", ConfigSource.resolve("config.source.test.enc.default", enc));
+        } finally {
+            if (saved == null) {
+                System.clearProperty("config.master.key");
+            } else {
+                System.setProperty("config.master.key", saved);
+            }
+        }
     }
 }

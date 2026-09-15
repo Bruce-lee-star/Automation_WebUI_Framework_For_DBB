@@ -1,6 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.ManagedPageAware;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording.RecordingPageProxy;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -335,7 +338,14 @@ public class PageObjectFactory {
         
         // 使用反射创建实例
         Object instance = pageClass.getDeclaredConstructor().newInstance();
-        
+
+        // 组合式 Page Object（新模型，G1 零继承）：注入受管 Page 惰性供应器，
+        // 使其取得录制装饰（enabled 时）的受管 Page，原生操作自动录制（Layer A）
+        if (instance instanceof ManagedPageAware) {
+            ((ManagedPageAware) instance).setManagedPage(
+                    () -> RecordingPageProxy.wrap(PlaywrightManager.getPage()));
+        }
+
         // 存储实例
         storeInstance(pageClass, instance, config);
         

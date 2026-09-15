@@ -108,7 +108,7 @@ final class RolePickerScriptInjector {
                 try {
                     frame.evaluate(gatedPickerInitScript(nlsReverseJson, true)); // 竞态重试一次
                     if (log.isDebugEnabled()) {
-                        log.debug("[frameInjectOnce][retry-ok] 首轮竞态后重试成功 frame={}", url);
+                        log.debug("[frameInjectOnce][retry-ok] retry succeeded after first-round race, frame={}", url);
                     }
                     return;
                 } catch (Exception ex2) {

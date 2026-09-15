@@ -57,7 +57,7 @@ public class MonitorFailureReportWriter {
             Files.createDirectories(path.getParent());
             Files.write(path, gson.toJson(byOwner).getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            LOGGER.warn("[ApiMonitor] 写出 {} 失败：{}", JSON_REPORT, e.getMessage());
+            LOGGER.warn("[ApiMonitor] Failed to write {}: {}", JSON_REPORT, e.getMessage());
         }
     }
 
@@ -91,7 +91,7 @@ public class MonitorFailureReportWriter {
             //    避免多用户 CI 节点上被同机其它账号读取。非 POSIX 文件系统静默跳过。
             restrictToOwnerOnly(path);
         } catch (IOException e) {
-            LOGGER.warn("[ApiMonitor] 写出 {} 失败：{}", MD_REPORT, e.getMessage());
+            LOGGER.warn("[ApiMonitor] Failed to write {}: {}", MD_REPORT, e.getMessage());
         }
     }
 

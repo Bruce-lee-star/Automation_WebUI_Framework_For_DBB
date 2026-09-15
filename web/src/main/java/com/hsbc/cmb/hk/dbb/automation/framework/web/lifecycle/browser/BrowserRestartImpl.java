@@ -92,14 +92,6 @@ public final class BrowserRestartImpl implements BrowserRestart {
             return;
         }
 
-        //  共享 Browser 模式：Browser 由所有线程共享，绝不能关闭——否则会连带杀掉其它并发 scenario
-        //    的 Context（正是 T3-2 修复掉的 P0）。此模式下"重启"降级为【仅重建本线程的 Context/Page】，
-        //    隔离语义由 BrowserContext 保证（cookie / storage 彼此独立），与 Browser 级隔离等价。
-        if (PlaywrightManager.isSharedBrowserMode()) {
-            restartContextOnly(oldConfigId);
-            return;
-        }
-
         VerboseLogging.logInfoIfVerbose(logger, "🔄 Restarting browser for config: {}", oldConfigId);
 
         try {
@@ -197,55 +189,20 @@ public final class BrowserRestartImpl implements BrowserRestart {
         }
     }
 
-    /**
-     * 共享 Browser 模式下的"重启"：<b>仅重建本线程的 Page/Context，不动共享 Browser</b>。
-     * <p>{@link #PlaywrightRuntime.instance().pageRegistry.closePage()} / {@link #PlaywrightRuntime.instance().contextRegistry.closeContext()} 只作用于 ThreadLocal（本线程），
-     * 不会影响其它并发 scenario。下次 {@code PlaywrightManager.getContext()} / {@code PlaywrightManager.getPage()} 访问时，
-     * 会从共享 Browser 上新建一个干净的 Context。</p>
-     *
-     * @param configId 当前线程的浏览器配置标识（仅用于日志与异常信息）
-     * @throws IllegalArgumentException configId 为 null 或空白时抛出
-     * @throws BrowserException        本线程 Page/Context 关闭失败时抛出
-     */
-    public void restartContextOnly(String configId) {
-        if (configId == null || configId.isBlank()) {
-            throw new IllegalArgumentException(
-                    "configId must not be null or blank when restarting context (shared browser mode)");
-        }
-        VerboseLogging.logInfoIfVerbose(logger,
-                "🔄 [shared-browser] Restarting CONTEXT only for config: {} (shared Browser preserved)", configId);
-        try {
-            PlaywrightRuntime.instance().pageRegistry.closePage();
-            PlaywrightRuntime.instance().contextRegistry.closeContext();
-        } catch (Exception e) {
-            logger.error("[shared-browser] Failed to restart context for config: {}", configId, e);
-            throw new BrowserException(
-                    "Failed to restart context (shared browser mode) for config: " + configId, e);
-        }
-        VerboseLogging.logInfoIfVerbose(logger,
-                "✅ [shared-browser] Context restarted for config: {}; a fresh context will be created on next access",
-                configId);
-    }
+
 
     /**
-     * 共享 Browser 崩溃后的进程级单飞重建（由 {@code BrowserCrashGuard} 调用）。
+     * 断开的 Browser 重建（由 {@code BrowserCrashGuard} 调用）。
      *
-     * <p><b>仅共享 Browser 模式有效</b>：非共享模式下每个 worker 线程持有独立 Browser，
-     * 断开时 {@link #PlaywrightManager.getBrowser()} 已会自动重建本线程实例，故此处直接返回 {@code true}（允许调用方重跑任务，
-     * 由 {@code getBrowser} 的常规路径完成重建），不执行任何进程级操作。</p>
-     *
-     * <p>共享模式下在 {@link #PlaywrightManager.SHARED_BROWSER_LOCK} 内：若共享 Browser 已断开（状态根的断开标记
-     * 或 Browser 实例表中实例 {@code isConnected()==false}），关闭残留引用并从头
-     * {@link #initializeBrowser} 重建；若仍连接则直接返回（幂等，可被并发崩溃的多个任务反复安全调用）。</p>
+     * <p>每线程独立 Browser 模型下，Browser 实例与作用域均绑定本线程。若本线程 Browser 已断开
+     * （状态根的断开标记或 Browser 实例表中 {@code isConnected()==false}），在 per-thread 锁内关闭残留引用
+     * 并从头 {@link #initializeBrowser} 重建；若仍连接则直接返回（幂等，可被并发崩溃的多个任务反复安全调用）。</p>
      *
      * @return {@code true} 表示可继续重跑（已重建或无需重建）；本方法不返回 {@code false}
-     * @throws BrowserException 共享模式重建失败时抛出（转换自底层 {@link #initializeBrowser} 异常）
+     * @throws BrowserException 重建失败时抛出（转换自底层 {@link #initializeBrowser} 异常）
      */
-    public boolean rebuildSharedBrowserIfDisconnected() {
-        if (!PlaywrightManager.isSharedBrowserMode()) {
-            return true;
-        }
-        return LifecycleLockMediator.withSharedBrowserLock(() -> {
+    public boolean rebuildBrowserIfDisconnected() {
+        return LifecycleLockMediator.withBrowserLock(() -> {
             String configId = PlaywrightManager.getCurrentConfigId();
             if (configId == null) {
                 return true;
@@ -266,17 +223,21 @@ public final class BrowserRestartImpl implements BrowserRestart {
                 }
             }
             VerboseLogging.logInfoIfVerbose(logger,
-                    "[shared-browser] Rebuilding disconnected shared browser for config: {}", configId);
+                    "Rebuilding disconnected browser for config: {}", configId);
             PlaywrightRuntime.instance().browserStartup.initializeBrowser(configId);
+            // W-4：重建后恢复登录态/storageState——置位 customContextOptionsFlag，使后续 getContext() 经既有
+            // configureCustomContextOptions 逻辑把本线程已保存的 storageState（per-thread TestContext 跨崩溃存活）
+            // 重新应用到新建 Context，避免重跑任务丢失登录态。
+            restoreStorageStateFlag();
             return true;
         });
     }
 
     /**
-     * 无条件重建共享 Browser（句柄损坏场景的强制恢复动作）。
+     * 无条件重建本线程 Browser（句柄损坏场景的强制恢复动作）。
      *
-     * <p>与 {@link #rebuildSharedBrowserIfDisconnected()} 的差异：后者在实例仍连接时 no-op（幂等），
-     * 本方法<b>无条件</b>关闭当前共享实例（含仍连接者）并从头重建——用于句柄损坏
+     * <p>与 {@link #rebuildBrowserIfDisconnected()} 的差异：后者在实例仍连接时 no-op（幂等），
+     * 本方法<b>无条件</b>关闭当前实例（含仍连接者）并从头重建——用于句柄损坏
      * （{@code cannot find object to call} 等）场景，此时 {@code isConnected()} 恒为 true，
      * 断开型重建会落空。
      *
@@ -285,11 +246,8 @@ public final class BrowserRestartImpl implements BrowserRestart {
      *
      * @return 始终返回 {@code true}（表示已执行重建）
      */
-    public boolean rebuildSharedBrowser() {
-        if (!PlaywrightManager.isSharedBrowserMode()) {
-            return true;
-        }
-        return LifecycleLockMediator.withSharedBrowserLock(() -> {
+    public boolean rebuildBrowser() {
+        return LifecycleLockMediator.withBrowserLock(() -> {
             String configId = PlaywrightManager.getCurrentConfigId();
             if (configId == null) {
                 return true;
@@ -308,8 +266,30 @@ public final class BrowserRestartImpl implements BrowserRestart {
             VerboseLogging.logInfoIfVerbose(logger,
                     "[shared-browser] Forcibly rebuilding shared browser for config: {}", configId);
             PlaywrightRuntime.instance().browserStartup.initializeBrowser(configId);
+            // W-4：同 rebuildBrowserIfDisconnected，重建后恢复登录态/storageState。
+            restoreStorageStateFlag();
             return true;
         });
+    }
+
+    /**
+     * W-4：若本线程已保存 storageState（内存 JSON 或文件路径），置位 customContextOptionsFlag，
+     * 使后续 {@code getContext()} 被动重建 Context 时经既有 {@code configureCustomContextOptions} 逻辑重应用登录态。
+     * <p>登录态数据位于 per-thread {@code TestContext}，跨 Browser 崩溃存活；仅补齐「应用 storageState」的前置条件，
+     * 不引入新代码路径、不改变无 storageState 时的行为（flag 维持原状）。</p>
+     */
+    private void restoreStorageStateFlag() {
+        try {
+            CustomOptionsManager custom = CustomOptionsManager.getInstance();
+            if (custom.getStorageState() != null || custom.getStorageStatePath() != null) {
+                custom.enableCustomOptions();
+                VerboseLogging.logInfoIfVerbose(logger,
+                        "[shared-browser] storageState flag restored after rebuild; recreated context will reapply login state");
+            }
+        } catch (Throwable ignore) {
+            // 恢复标志为韧性增强，任何异常不应阻断重建流程
+            logger.debug("[shared-browser] restoreStorageStateFlag skipped: {}", ignore.toString());
+        }
     }
 
 }

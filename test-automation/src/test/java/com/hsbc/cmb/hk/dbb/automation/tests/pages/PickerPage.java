@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScripts;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
 
 import java.net.URL;
 
@@ -10,7 +10,7 @@ import java.net.URL;
  * Drives the externalised picker scripts via page.evaluate exactly as
  * RoleElementPicker does, so the smoke runs the real extracted constants.
  */
-public class PickerPage extends SerenityBasePage {
+public class PickerPage extends AbstractManagedPage {
 
     // Resolved from the classpath (src/test/resources) so it works regardless of checkout location,
     // unlike a hardcoded file:// path that can miss the test-automation module directory.

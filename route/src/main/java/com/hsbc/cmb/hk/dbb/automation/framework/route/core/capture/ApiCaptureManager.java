@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 
 /**
@@ -53,8 +54,12 @@ public final class ApiCaptureManager {
     /** 场景切换锁。 */
     private final Object swapLock = new Object();
 
-    /** scenario 探测结果缓存节流（反射有成本，限频至 ~5 次/秒）。 */
+    /** scenario 探测结果缓存节流（反射有成本，限频至 ~5 次/秒）。无 context 兜底路径使用。 */
     private volatile long lastResolve = 0L;
+
+    /** scenario 切换探测节流（X-3 / R-3：per-context）。并行下各 context 独立节流，互不干扰，
+     *  不再用单一全局 {@code lastResolve} 造成跨 context 探测被互相限频。 */
+    private final Map<BrowserContext, Long> lastResolveByContext = new ConcurrentHashMap<>();
 
     /**
      *  并发隔离采集存储：每个 {@link BrowserContext} 独立一份（弱 key，context GC 后自动回收；
@@ -183,12 +188,16 @@ public final class ApiCaptureManager {
      * 释放指定 BrowserContext 的采集存储（context 关闭 / 并发任务结束时调用，避免跨任务残留）。
      */
     public void clearContext(BrowserContext context) {
-        if (context != null) contextStores.remove(context);
+        if (context != null) {
+            contextStores.remove(context);
+            lastResolveByContext.remove(context);
+        }
     }
 
     /** 释放全部 Context 采集存储（套件级全量复位）。 */
     public void clearAllContexts() {
         contextStores.clear();
+        lastResolveByContext.clear();
     }
 
     /** 解析当前查询应命中的存储：优先当前线程绑定 Context 的独立存储，否则回退场景默认存储。 */
@@ -228,8 +237,9 @@ public final class ApiCaptureManager {
      */
     private void ensureApiCaptureStoreForContext(BrowserContext context) {
         long now = System.currentTimeMillis();
-        if (now - lastResolve < 200) return;
-        lastResolve = now;
+        Long last = lastResolveByContext.get(context);
+        if (last != null && now - last < 200) return;
+        lastResolveByContext.put(context, now);
         String key = resolveScenarioKey();
         if (key == null) return;
         if (!key.equals(currentApiCaptureScenarioKey)) {

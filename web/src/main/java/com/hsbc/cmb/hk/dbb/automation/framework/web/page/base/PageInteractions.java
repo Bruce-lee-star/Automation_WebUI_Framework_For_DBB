@@ -6,8 +6,6 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * 页面交互与状态操作工厂（WEB-P1-2 Phase 4b）：从 {@link BasePage} 下沉交互动作
@@ -16,14 +14,11 @@ import org.slf4j.LoggerFactory;
  * <p>与 {@link LocatorFactory}/{@link CookieManager}/{@link PageFrameShadow}/{@link PageViewport}/
  * {@link PageAccessibility} 同源模式：静态工具类、接收 {@code BasePage bp}、经 bp 公开 API
  * （{@code getPage}/{@code getCurrentFrame}/{@code getContext}/{@code locatorInternal}/
- * {@code normalizeText}/{@code ensurePageValid}/{@code ensureContextValid}）访问状态，
- * 日志路由回 {@code BasePage.class} 保持生产溯源一致。
+ * {@code normalizeText}/{@code ensurePageValid}/{@code ensureContextValid}）访问状态。
  *
  * <p>全部方法均为 framework-internal。
  */
 public final class PageInteractions {
-
-    private static final Logger log = LoggerFactory.getLogger(BasePage.class);
 
     private PageInteractions() {
     }

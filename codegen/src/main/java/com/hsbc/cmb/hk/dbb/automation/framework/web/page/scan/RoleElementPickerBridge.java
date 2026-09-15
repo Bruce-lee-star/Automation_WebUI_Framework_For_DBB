@@ -40,7 +40,7 @@ public final class RoleElementPickerBridge implements RoleCodegenBridge {
     public void dumpAccessibilityRoles(Page page) {
         List<RoleEntry> entries = RoleElementPageGenerator.collectFromPage(page);
         if (entries.isEmpty()) {
-            log.warn("[a11y] 未采集到可交互元素（页面可能尚未就绪或无匹配角色）");
+            log.warn("[a11y] no interactive elements collected (page may not be ready or no matching role)");
             return;
         }
         StringBuilder sb = new StringBuilder(

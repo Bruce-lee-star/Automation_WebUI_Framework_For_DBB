@@ -215,9 +215,9 @@ final class PageContextState {
         }
         if (owner != current) {
             throw new IllegalStateException(
-                    "BasePage 实例归属线程 [" + owner.getName() + "]，禁止跨线程访问（当前线程 ["
-                            + current.getName() + "]）。Playwright 的 Page/Context/Locator 非线程安全，"
-                            + "请为每个线程/场景使用独立的 BasePage 实例。");
+                    "BasePage instance is bound to thread [" + owner.getName() + "]; cross-thread access denied "
+                            + "(current thread [" + current.getName() + "]). Playwright Page/Context/Locator are "
+                            + "not thread-safe; use a separate BasePage instance per thread/scenario.");
         }
     }
 
@@ -226,28 +226,49 @@ final class PageContextState {
      * 首次调用：创建 PageElement/PageElementList 对象。
      * 后续调用（页面切换）：复用已有对象，Locator 由 locator() 动态绑定新 Page。
      */
+    /**
+     * 传统路径：字段宿主与页面宿主都是 {@code BasePage} 自身。
+     */
     void initializeAnnotatedFields() {
-        Class<?> clazz = owner.getClass();
-        while (clazz != null && clazz != BasePage.class) {
+        bindAnnotatedFields(owner, owner, BasePage.class, annotatedFieldsInitialized);
+        annotatedFieldsInitialized = true;
+    }
+
+    /**
+     * G1 组合式路径：字段宿主是业务 POJO，页面宿主是其内部委托 {@code BasePage}。
+     * 扫描字段宿主类层级（直到 {@code Object}）收集 {@code @Element}/{@code @RoleElement}，
+     * 以页面宿主作为 {@link PageElement}/{@link PageElementList} 的页面上下文，写回字段宿主对应字段。
+     *
+     * @param fieldOwner 持有注解字段的对象（业务 POJO）
+     * @param pageOwner  页面上下文宿主（POJO 内部的委托 BasePage）
+     */
+    public static void bindAnnotatedFields(Object fieldOwner, BasePage pageOwner) {
+        bindAnnotatedFields(fieldOwner, pageOwner, Object.class, false);
+    }
+
+    private static void bindAnnotatedFields(Object fieldOwner, BasePage pageOwner,
+                                            Class<?> stopAt, boolean reuse) {
+        Class<?> clazz = fieldOwner.getClass();
+        while (clazz != null && clazz != stopAt) {
             for (Field field : clazz.getDeclaredFields()) {
                 if (field.isAnnotationPresent(RoleElement.class)) {
                     RoleElement a = field.getAnnotation(RoleElement.class);
                     field.setAccessible(true);
 
-                    if (annotatedFieldsInitialized) {
+                    if (reuse) {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
-                            Object existing = field.get(owner);
+                            Object existing = field.get(fieldOwner);
                             if (existing == null || !(existing instanceof PageElement)) {
-                                new RoleElementBinder(owner).bind(field, a);
+                                new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                             }
                         } catch (IllegalAccessException e) {
-                            new RoleElementBinder(owner).bind(field, a);
+                            new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                         }
                         continue;
                     }
 
-                    new RoleElementBinder(owner).bind(field, a);
+                    new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                 } else if (field.isAnnotationPresent(Element.class)) {
                     Element elementAnnotation = field.getAnnotation(Element.class);
                     String selector = elementAnnotation.value();
@@ -255,40 +276,35 @@ final class PageContextState {
                     List<String> frameSegs = Arrays.asList(elementAnnotation.frame());
                     field.setAccessible(true);
 
-                    if (annotatedFieldsInitialized) {
+                    if (reuse) {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
-                            Object existing = field.get(owner);
+                            Object existing = field.get(fieldOwner);
                             if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
-                                createField(field, selector, frameSegs);
+                                createField(field, fieldOwner, pageOwner, selector, frameSegs);
                             }
                         } catch (IllegalAccessException e) {
                             // get 失败，回退到重新创建
-                            createField(field, selector, frameSegs);
+                            createField(field, fieldOwner, pageOwner, selector, frameSegs);
                         }
                         continue;
                     }
 
-                    createField(field, selector, frameSegs);
+                    createField(field, fieldOwner, pageOwner, selector, frameSegs);
                 }
             }
             clazz = clazz.getSuperclass();
         }
-        annotatedFieldsInitialized = true;
-    }
-
-    /** 创建 PageElement 或 PageElementList 实例并赋值给字段 */
-    private void createField(Field field, String selector) {
-        createField(field, selector, null);
     }
 
     /** 创建 PageElement / PageElementList（含 iframe 嵌套路径 frameSegs，对齐 page.pause 的 frameLocator 录制） */
-    private void createField(Field field, String selector, List<String> frameSegs) {
+    private static void createField(Field field, Object fieldOwner, BasePage pageOwner,
+                                    String selector, List<String> frameSegs) {
         try {
             if (List.class.isAssignableFrom(field.getType())) {
-                field.set(owner, new PageElementList(selector, owner, frameSegs));
+                field.set(fieldOwner, new PageElementList(selector, pageOwner, frameSegs));
             } else {
-                field.set(owner, new PageElement(selector, owner, frameSegs));
+                field.set(fieldOwner, new PageElement(selector, pageOwner, frameSegs));
             }
         } catch (Exception e) {
             throw new ElementException("Init field failed: " + field.getName(), e);

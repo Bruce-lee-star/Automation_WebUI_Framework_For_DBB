@@ -71,8 +71,10 @@ public class BrowserStackManager {
     // ==================== 常量 ====================
 
     private static final String BROWSERSTACK_API_URL = "https://api.browserstack.com/automate/sessions";
-    private static final int CONNECT_TIMEOUT_SECONDS = 60;
-    private static final int REQUEST_TIMEOUT_MS = 30000;
+    private static final int CONNECT_TIMEOUT_SECONDS =
+            WebFrameworkConfig.PLAYWRIGHT_BROWSERSTACK_CONNECT_TIMEOUT_SECONDS.getIntValue();
+    private static final int REQUEST_TIMEOUT_MS =
+            WebFrameworkConfig.PLAYWRIGHT_BROWSERSTACK_REQUEST_TIMEOUT_MS.getIntValue();
 
     // ==================== 会话状态 ====================
 

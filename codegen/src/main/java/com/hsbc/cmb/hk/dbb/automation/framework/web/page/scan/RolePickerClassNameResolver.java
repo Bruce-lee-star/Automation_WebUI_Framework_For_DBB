@@ -63,7 +63,7 @@ final class RolePickerClassNameResolver {
         java.util.regex.Matcher lm = LOCALE_SEGMENT.matcher(raw);
         if (lm.find()) {
             raw = raw.substring(0, lm.start()) + raw.substring(lm.end());
-            log.debug("[picker][normalize] 剥离语言码，归一化键={}", raw);
+            log.debug("[picker][normalize] stripped language code, normalized key={}", raw);
         }
         while (raw.length() > 1 && raw.endsWith("/")) raw = raw.substring(0, raw.length() - 1);
         return raw;

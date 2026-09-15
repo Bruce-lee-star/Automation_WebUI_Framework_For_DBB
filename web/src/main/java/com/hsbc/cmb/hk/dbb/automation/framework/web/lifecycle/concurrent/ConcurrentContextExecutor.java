@@ -19,6 +19,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Context
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCrashGuard;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.TestContextBridge;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioContext;
+
 import org.slf4j.MDC;
 
 import java.util.ArrayList;
@@ -28,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 企业级并发上下文执行器（设计文档 C2 + 第九节）。
@@ -43,6 +46,12 @@ public final class ConcurrentContextExecutor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConcurrentContextExecutor.class);
     private static final int DEFAULT_HARD_CAP = 16;
+
+    /**
+     * 并发子用例的用例级 id 序号（C-1 隔离闭环）：每个 {@link #runOnce(ContextTask)} 调用领取一个全局唯一
+     * {@code ctx:<seq>}，作为 {@link ScenarioContext} 主键，避免不同子用例 {@code name()} 相同导致的上下文碰撞。
+     */
+    private static final AtomicLong TASK_SEQ = new AtomicLong(1);
 
     private ConcurrentContextExecutor() {
     }
@@ -106,7 +115,8 @@ public final class ConcurrentContextExecutor {
             RUNNING.set(false);
             pool.shutdown();
             try {
-                if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {
+                if (!pool.awaitTermination(
+                        WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_EXECUTOR_AWAIT_SECONDS.getIntValue(), TimeUnit.SECONDS)) {
                     pool.shutdownNow();
                 }
             } catch (InterruptedException ie) {
@@ -192,9 +202,12 @@ public final class ConcurrentContextExecutor {
     private static <T> ContextTaskResult<T> runOnce(ContextTask<T> task) {
         long start = System.nanoTime();
         String threadName = Thread.currentThread().getName();
+        // C-1 用例级隔离：每个子用例经全局唯一 ctx:<seq> 绑定用例级上下文（与 Cucumber 场景共用同一主键模型）。
+        String scenarioId = "ctx:" + TASK_SEQ.incrementAndGet();
         List<String> pageErrors = new ArrayList<>();
         try {
             MDC.put("concurrentTask", task.name());
+            ScenarioContext.begin(scenarioId);
             T value = task.call();
             pageErrors.addAll(TestContextBridge.drainPageErrors());
             return ContextTaskResult.success(task.name(), value, threadName, elapsed(start), pageErrors);
@@ -204,6 +217,8 @@ public final class ConcurrentContextExecutor {
             return ContextTaskResult.failure(task.name(), t, threadName, elapsed(start), pageErrors);
         } finally {
             MDC.remove("concurrentTask");
+            // C-1：解绑用例级上下文（幂等，与下方 cleanupForScenario 内的 resetForCurrentThread 协同）。
+            ScenarioContext.end(scenarioId);
             // 关闭本线程 Context/Page（不关闭共享 Browser）；非初始化环境下吞掉，便于无头单测。
             try {
                 PlaywrightManager.cleanupForScenario();
@@ -222,7 +237,7 @@ public final class ConcurrentContextExecutor {
 
         @Override
         public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, "dbb-ctx-" + seq.getAndIncrement());
+            Thread t = new Thread(r, "ctx-" + seq.getAndIncrement());
             t.setDaemon(true);
             return t;
         }

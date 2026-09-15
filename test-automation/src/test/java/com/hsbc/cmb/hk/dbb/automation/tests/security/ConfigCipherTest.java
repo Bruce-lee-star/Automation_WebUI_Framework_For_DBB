@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -27,12 +28,17 @@ public class ConfigCipherTest {
 
     private static final String TEST_MASTER_KEY =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /** 另一把不同的主密钥，用于验证「key 变则旧密文解不了」（GCM 认证失败）。 */
+    private static final String OTHER_MASTER_KEY =
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
     private String savedProp;
 
     @BeforeEach
     public void setUp() {
         savedProp = System.getProperty("config.master.key");
         System.setProperty("config.master.key", TEST_MASTER_KEY);
+        System.setProperty("security.secret.strict", "true"); // 确定性：默认严格失败快
     }
 
     @AfterEach
@@ -42,6 +48,7 @@ public class ConfigCipherTest {
         } else {
             System.setProperty("config.master.key", savedProp);
         }
+        System.clearProperty("security.secret.strict");
     }
 
     @Test
@@ -66,8 +73,7 @@ public class ConfigCipherTest {
 
     @Test
     public void decryptIfNeededDecryptsBareCiphertext() {
-        // D2-2：裸 base64 默认不再当密文（避免普通配置值被误判并"解"坏）；
-        // 仅显式开启 opt-in 开关后才解密，故此处须显式启用。
+        // 裸 base64 默认即解密（双格式支持）；此处显式设 true 仅作演示，默认已为 true。
         System.setProperty(SecretValue.ALLOW_BARE_BASE64_KEY, "true");
         try {
             String enc = ConfigCipher.encrypt("b4re-secret");
@@ -81,12 +87,42 @@ public class ConfigCipherTest {
 
     @Test
     public void decryptIfNeededReturnsNonCiphertextAsIs() {
-        // 普通明文（含非 base64 字符）原样返回，不抛异常
+        // 明显非密文形态：非 base64 / 长度不足以含 IV + GCM 标签 → 原样返回，不抛异常
         assertEquals("authorization,password", SecretValue.decryptIfNeeded("authorization,password"));
-        // 合法 base64 但非本框架密文应原样返回（解密尝试失败，保留原串）
-        String fakeBase64 = Base64.getEncoder()
-                .encodeToString("not-a-real-ciphertext".getBytes(StandardCharsets.UTF_8));
-        assertEquals(fakeBase64, SecretValue.decryptIfNeeded(fakeBase64));
+        assertEquals("open", SecretValue.decryptIfNeeded("open"));
+        // 合法 base64 但解码长度 ≤ IV（12B）→ 仍视为非密文形态，原样返回
+        String shortBase64 = Base64.getEncoder()
+                .encodeToString("short".getBytes(StandardCharsets.UTF_8));
+        assertFalse(ConfigCipher.looksLikeCiphertext(shortBase64));
+        assertEquals(shortBase64, SecretValue.decryptIfNeeded(shortBase64));
+    }
+
+    @Test
+    public void decryptRejectsNonCiphertextWithIllegalArgument() {
+        // 形态错误在解析主密钥之前抛出：非 base64、或长度不足
+        assertThrows(IllegalArgumentException.class, () -> ConfigCipher.decrypt("not base64!"));
+        assertThrows(IllegalArgumentException.class, () -> ConfigCipher.decrypt("YWJj")); // "abc" = 3B ≤ IV
+    }
+
+    @Test
+    public void ciphertextWithWrongKeyFailsFast() {
+        // 密文形态（ENC 与裸 base64）+ key 不匹配 → GCM 认证失败 → 一律失败快
+        String enc = ConfigCipher.encrypt("real-secret");
+        String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(enc),
+                "key 变更后 ENC 密文应失败快");
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
+                "key 变更后裸密文应失败快");
+    }
+
+    @Test
+    public void ciphertextWithWrongKeyKeepsOriginalWhenNotStrict() {
+        String enc = ConfigCipher.encrypt("real-secret");
+        String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        System.setProperty("security.secret.strict", "false");
+        assertEquals(bare, SecretValue.decryptIfNeeded(bare), "非严格模式应保留原串（排障用）");
     }
 
     @Test

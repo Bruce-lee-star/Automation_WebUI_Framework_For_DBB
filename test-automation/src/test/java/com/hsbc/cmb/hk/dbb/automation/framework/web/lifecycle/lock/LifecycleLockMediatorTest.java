@@ -23,13 +23,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * doc16 §9.4 / §11.2 偏差 A 收口：锁顺序 + 锁隐藏守护（纯并发单测，零浏览器依赖）。
  *
- * <p><b>背景</b>：doc16 Phase 3 把 {@code CONTEXT_LOCK}/{@code PAGE_LOCK}/{@code SHARED_BROWSER_LOCK}
+ * <p><b>背景</b>：doc16 Phase 3 把 {@code CONTEXT_LOCK}/{@code PAGE_LOCK}
  * 由 {@code public} 监视器收为 {@code private}（{@link LifecycleLockMediator} 内部），只暴露
  * 有序临界区执行器。本测试固化两条不变式：</p>
  * <ol>
  *   <li><b>锁顺序不 deadlock</b>：规范序（PAGE → CONTEXT）多线程竞争无 ABBA；逆规范序的单线程嵌套
  *       （CONTEXT 内再 PAGE）必然可完成（单线程持两把不同监视器不会自死锁）。</li>
- *   <li><b>锁隐藏（编译期不可达的运行期守护）</b>：三把锁 + per-thread 锁键字段保持 {@code private}；
+ *   <li><b>锁隐藏（编译期不可达的运行期守护）</b>：两把锁（CONTEXT/PAGE）+ per-thread 锁键字段保持 {@code private}；
  *       中介不对外暴露任何返回锁对象（{@code Object}）的公开方法 → 外部无法 {@code synchronized}
  *       引用锁对象（劫持 / 逆序死锁被根绝）。</li>
  * </ol>
@@ -100,36 +100,6 @@ public class LifecycleLockMediatorTest {
         });
     }
 
-    /**
-     * 进程级共享 Browser 锁与 per-thread Browser 锁各自在多线竞争下不 deadlock（互补交叉验证）。
-     */
-    @Test
-    public void browserLocksConcurrentNoDeadlock() throws InterruptedException {
-        assertTimeoutPreemptively(Duration.ofMillis(DEADLOCK_TIMEOUT_MS), () -> {
-            ExecutorService pool = Executors.newFixedThreadPool(THREADS);
-            CountDownLatch start = new CountDownLatch(1);
-            CountDownLatch done = new CountDownLatch(THREADS);
-            AtomicInteger counter = new AtomicInteger();
-            for (int i = 0; i < THREADS; i++) {
-                pool.submit(() -> {
-                    try {
-                        start.await();
-                        LifecycleLockMediator.withSharedBrowserLock(() ->
-                                LifecycleLockMediator.withPerThreadBrowserLock(counter::incrementAndGet));
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        done.countDown();
-                    }
-                });
-            }
-            start.countDown();
-            assertTrue(done.await(DEADLOCK_TIMEOUT_MS, TimeUnit.MILLISECONDS), "Browser 锁竞争发生死锁");
-            assertEquals(THREADS, counter.get());
-            pool.shutdownNow();
-        });
-    }
-
     // ==================== ② 锁隐藏（编译期不可达的运行期守护） ====================
 
     /**
@@ -139,7 +109,7 @@ public class LifecycleLockMediatorTest {
     @Test
     public void lockFieldsRemainPrivate() throws Exception {
         for (String name : new String[]{
-                "SHARED_BROWSER_LOCK", "CONTEXT_LOCK", "PAGE_LOCK", "BROWSER_LOCK_KEY"}) {
+                "CONTEXT_LOCK", "PAGE_LOCK", "BROWSER_LOCK_KEY"}) {
             Field f = LifecycleLockMediator.class.getDeclaredField(name);
             assertTrue(Modifier.isPrivate(f.getModifiers()),
                     name + " 必须为 private（否则外部可 synchronized 引用 → 锁劫持/逆序死锁）");

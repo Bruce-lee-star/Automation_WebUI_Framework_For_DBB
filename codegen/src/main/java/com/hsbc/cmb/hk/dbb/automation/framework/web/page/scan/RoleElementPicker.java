@@ -236,7 +236,7 @@ public final class RoleElementPicker {
     /** 开启拾取模式（手动控制起止时可单独调用，不预加载 nls 反向查表） */
     public static void start(Page page) {
         if (isCiRun()) {
-            log.info("[picker] 检测到 CI 运行环境，跳过拾取模式（start）。");
+            log.info("[picker] CI runtime detected, skipping picker mode (start).");
             return;
         }
         start(page, "{}");
@@ -267,7 +267,7 @@ public final class RoleElementPicker {
     public static void start(Page page, String nlsReverseJson, String rootSelector) {
         // CI 环境：拾取模式是本地开发工具，自动化测试里不应开启并等待人工拾取，直接跳过。
         if (isCiRun()) {
-            log.info("[picker] 检测到 CI 运行环境，跳过拾取模式（start）。");
+            log.info("[picker] CI runtime detected, skipping picker mode (start).");
             return;
         }
         // 关键修复：将门控拾取脚本注册到 context 级 addInitScript（仅注册一次），使【之后创建的所有文档/
@@ -300,9 +300,9 @@ public final class RoleElementPicker {
             startArgs.put("root", rootSelector);
             pickerEval(page, pickStartScript, startArgs);
         } catch (Exception e) {
-            log.warn("[picker] 拾取脚本注入失败（不影响主流程）：{}", e.getMessage());
+            log.warn("[picker] Failed to inject picker script (main flow unaffected): {}", e.getMessage());
         }
-        log.info("[picker] 拾取模式已开启：在浏览器点击元素即可拾取，按 ESC 结束。");
+        log.info("[picker] Picker mode enabled: click elements in the browser to pick, press ESC to finish.");
         // 关键修复：已加载的子 iframe（srcdoc/同域）在 start() 调用前就已触发过 load，
         // 彼时会话开关尚未置位，其门控 START 未挂拾取监听 → iframe 内点击无法被拾取、postMessage 也收不到。
         // 故 start() 置位开关后，主动把拾取监听重挂到当前所有已存在的子 frame（同源可 evaluate；
@@ -316,7 +316,7 @@ public final class RoleElementPicker {
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
             String d = pickerEval(page, RolePickerScripts.START_DIAG_JS).toString();
-            log.info("[picker][start] 注入后诊断 @ {} : {}", page.url(), d);
+            log.info("[picker][start] post-injection diagnostics @ {} : {}", page.url(), d);
             // 记录本次成功注入的 origin，供 onFrameNavigated 重激活区分同源（门控已注入，仅保活）/跨域（需强制重注入）。
             // 【修复"跳转到新页面拾取不到"】popup 在 onPopup 回调触发时文档还是 about:blank（origin 为空串），
             // 若在此处把 RolePickerSessionState.LAST_PICK_ORIGIN 更新为空串，会污染全局跨域判据：后续该 popup 导航到真实跨域页时，
@@ -328,7 +328,7 @@ public final class RoleElementPicker {
                 String __o = safeOrigin(page.url());
                 if (!__o.isEmpty()) RolePickerSessionState.LAST_PICK_ORIGIN.put(page, __o);
             } catch (Exception ignore) {}
-        } catch (Exception e) { log.warn("[picker][start] 诊断读取失败：{}", e.getMessage()); }
+        } catch (Exception e) { log.warn("[picker][start] failed to read diagnostics: {}", e.getMessage()); }
     }
 
     /**
@@ -347,7 +347,7 @@ public final class RoleElementPicker {
     public static void stop(Page page) {
         // CI 环境：拾取模式本就不会开启（start/openPanel 均跳过），此处不注入任何代码。
         if (isCiRun()) {
-            log.info("[picker] 检测到 CI 运行环境，跳过停止注入（stop）。");
+            log.info("[picker] CI runtime detected, skipping stop injection (stop).");
             return;
         }
         // 先清除会话开关（门控注入脚本据此在后续新文档不再自启拾取），再执行停止收尾。
@@ -533,7 +533,7 @@ public final class RoleElementPicker {
     public static List<RoleEntry> pick(Page page, String... nlsFiles) {
         // CI 环境：拾取是本地开发工具，不应开启/注入或阻塞等待人工拾取，直接返回空列表。
         if (isCiRun()) {
-            log.info("[picker] 检测到 CI 运行环境，跳过拾取（pick）。");
+            log.info("[picker] CI runtime detected, skipping pick.");
             return new ArrayList<>();
         }
         String reverse = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
@@ -542,11 +542,11 @@ public final class RoleElementPicker {
             page.waitForFunction(RolePickerScripts.WAIT_PICK_DONE_JS, null,
                     new Page.WaitForFunctionOptions().setTimeout(0));
         } catch (Exception e) {
-            log.warn("[picker] 拾取等待结束（超时或中断），将生成已拾取的部分。");
+            log.warn("[picker] Pick wait ended (timeout or interruption); generating the already-picked subset.");
         }
         List<RoleEntry> entries = getEntries(page);
         stop(page);
-        log.info("[picker] 已拾取 {} 个元素。", entries.size());
+        log.info("[picker] picked {} element(s).", entries.size());
         return entries;
     }
 
@@ -555,7 +555,7 @@ public final class RoleElementPicker {
                                          String pageClassName, String... nlsFiles) {
         List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
-            log.warn("[picker] 未拾取到任何元素，未生成代码。");
+            log.warn("[picker] no elements picked; no code generated.");
             return "";
         }
         return RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFiles);
@@ -566,7 +566,7 @@ public final class RoleElementPicker {
                                    String pageClassName, String... nlsFiles) {
         List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
-            log.warn("[picker] 未拾取到任何元素，未生成代码。");
+            log.warn("[picker] no elements picked; no code generated.");
             return;
         }
         RoleElementPageGenerator.dump(entries, packageName, pageClassName, nlsFiles);
@@ -577,7 +577,7 @@ public final class RoleElementPicker {
                                     String pageClassName, String... nlsFiles) {
         List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
-            log.warn("[picker] 未拾取到任何元素，未生成代码。");
+            log.warn("[picker] no elements picked; no code generated.");
             return;
         }
         RoleElementPageGenerator.write(entries, outputDir, packageName, pageClassName, nlsFiles);
@@ -593,17 +593,17 @@ public final class RoleElementPicker {
     public static void showCode(Page page, String code) {
         // CI 环境：不注入任何拾取/代码面板脚本。
         if (isCiRun()) {
-            log.info("[picker] 检测到 CI 运行环境，跳过代码面板（showCode）。");
+            log.info("[picker] CI runtime detected, skipping code panel (showCode).");
             return;
         }
         pickerEval(page, RolePickerScripts.SET_PICKER_CODE_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_CODE, code));
         pickerEval(page, RolePickerScripts.SHOW_PANEL_SCRIPT);
-        log.info("[picker] 代码面板已弹出：点『复制代码』复制，点『关闭』结束。");
+        log.info("[picker] Code panel opened: click 'Copy Code' to copy, click 'Close' to finish.");
         try {
             page.waitForFunction(RolePickerScripts.WAIT_CODE_PANEL_CLOSED_JS, null,
                     new Page.WaitForFunctionOptions().setTimeout(0));
         } catch (Exception e) {
-            log.warn("[picker] 代码面板等待结束（超时或页面跳转）。");
+            log.warn("[picker] code panel wait ended (timeout or page navigation).");
         }
     }
 
@@ -615,7 +615,7 @@ public final class RoleElementPicker {
                                    String pageClassName, String... nlsFiles) {
         List<RoleEntry> entries = pick(page, nlsFiles);
         if (entries.isEmpty()) {
-            log.warn("[picker] 未拾取到任何元素，未生成代码。");
+            log.warn("[picker] no elements picked; no code generated.");
             return;
         }
         String code = RoleElementPageGenerator.generate(entries, packageName, pageClassName, nlsFiles);
@@ -790,8 +790,8 @@ public final class RoleElementPicker {
         // 诊断：applyPickState 用快照恢复数据时会把 __rolePickActive 置 false，
         // 必须依赖 onFrameNavigated 末尾的 start() 重激活才能恢复拾取。若此步后无重激活，
         // 刷新后点击将彻底失效（监听存在但 active=false，__recordPick 直接 return）。
-        log.info("[picker][applyPickState] 用 Java 快照恢复数据（picks={} / steps={} / currentStep={}），"
-                        + "即将把 __rolePickActive 置 false，等待 onFrameNavigated 重激活；target={}",
+        log.info("[picker][applyPickState] restoring data from Java snapshot (picks={} / steps={} / currentStep={}); "
+                        + "__rolePickActive will be set to false, waiting for onFrameNavigated to reactivate; target={}",
                 pickCountOf(stateJson), stepCountOf(stateJson), currentStepCountOf(stateJson), target.url());
         pickerEval(target, RolePickerScripts.APPLY_PICK_STATE_JS, RolePickerScripts.args(
                 "nlsFiles", nlsFiles, "nlsReverseJson", nlsReverseJson, "stateJson", stateJson));

@@ -132,7 +132,7 @@ public class ApiMonitorConfig {
                     "[ApiMonitorConfig] 已加载 API 监控清单（{}），功能数={}", configPath, cfg.getFeatures().size());
             return cfg;
         } catch (IOException e) {
-            LOGGER.warn("[ApiMonitorConfig] 加载 {} 失败：{}", configPath, e.getMessage());
+            LOGGER.warn("[ApiMonitorConfig] Failed to load {}: {}", configPath, e.getMessage());
             return cfg;
         } finally {
             if (in != null) {

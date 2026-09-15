@@ -62,7 +62,7 @@ public final class RolePickerCommandEngine {
                             for (RoleEntry e : javaPickBySig.values()) {
                                 if (mk.equals(e.getSigKey())) {
                                     e.setPickNos(nos);
-                                    log.info("[picker] repickNos 同步内存态：sigKey={} -> nos={}", mk, nos);
+                                    log.info("[picker] repickNos synced to in-memory state: sigKey={} -> nos={}", mk, nos);
                                     break;
                                 }
                             }
@@ -90,13 +90,13 @@ public final class RolePickerCommandEngine {
                                 String sigKey = e.getSigKey();
                                 // 如果 Java 侧元素的 sigKey 不在浏览器侧 __rolePicks 中，则删除该元素
                                 if (sigKey != null && !browserSigs.contains(sigKey)) {
-                                    log.info("[picker] repickNos 同步删除：sigKey={}（浏览器侧已不存在）", sigKey);
+                                    log.info("[picker] repickNos synced as deleted: sigKey={} (no longer present browser-side)", sigKey);
                                     it.remove();
                                 }
                             }
                         }
                     } catch (Exception syncEx) {
-                        log.warn("[picker] repickNos 同步删除失败：{}", syncEx.getMessage());
+                        log.warn("[picker] failed to sync repickNos deletion: {}", syncEx.getMessage());
                     }
                     // 重编号后把最新内存态回灌浏览器面板，保证面板/快照/Java 三侧序号一致。
                     // 强制刷新 ETag：repickNos 只改序号、元素身份未变，若不清除 LAST_SYNC_SIG，
@@ -107,13 +107,13 @@ public final class RolePickerCommandEngine {
                     try {
                         @SuppressWarnings("unchecked")
                         List<?> rp = (List<?>) pickerEval(page, RolePickerScripts.READ_PICK_KEYS_JS);
-                        log.info("[picker][diag-repick] 回灌后浏览器侧 __rolePicks: {}", rp);
+                        log.info("[picker][diag-repick] browser-side __rolePicks after backfill: {}", rp);
                     } catch (Exception ignoreR) {}
                     return new PickerResult(PickerAction.CONTINUE, null, null,
                             "已删除拾取序号并重排（" + (nos == null ? 0 : nos.size()) + " 个序号）");
                 }
             } catch (Exception ex) {
-                log.warn("[picker] repickNos 命令解析失败：{}", ex.getMessage());
+                log.warn("[picker] failed to parse repickNos command: {}", ex.getMessage());
             }
         }
         return null;
@@ -140,7 +140,7 @@ public final class RolePickerCommandEngine {
         // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击"开始"的延迟。
         String startNls = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
         for (Page p : pageNames.keySet()) {
-            if (!p.isClosed()) { log.info("[picker][start] 对页面 {} 调用 start", p.url()); start(p, startNls); }
+            if (!p.isClosed()) { log.info("[picker][start] calling start for page {}", p.url()); start(p, startNls); }
         }
         // 注意：开始拾取不做自动避开导航——用户有时也需要拾取 leftmenu/topbar 等全局区域。
         // start(page, nls) 的 root 为 null（整页），点击拾取即整页可点；仅当用户主动用"区域扫描"
@@ -231,7 +231,7 @@ public final class RolePickerCommandEngine {
                             RolePickerScriptInjector.frameInjectOnce(f, scanNls);
                             r = pickerEval(f, RolePickerScripts.FRAME_SCAN_JS);
                         } catch (Exception reInjEx) {
-                            if (log.isDebugEnabled()) log.debug("[picker][scan] iframe 补注入失败（url={}）：{}", f.url(), reInjEx.getMessage());
+                            if (log.isDebugEnabled()) log.debug("[picker][scan] iframe re-injection failed (url={}): {}", f.url(), reInjEx.getMessage());
                         }
                     }
                     if (r instanceof Number) {
@@ -239,16 +239,16 @@ public final class RolePickerCommandEngine {
                         if (n > 0) added += n;
                     }
                 } catch (Exception fe) {
-                    log.warn("[picker][scan] frame 扫描失败（url={}）：{}", f.url(), fe.getMessage());
+                    log.warn("[picker][scan] frame scan failed (url={}): {}", f.url(), fe.getMessage());
                 }
             }
             // 主框架扫描已在上面 frame 循环中覆盖（page.mainFrame() 也在 page.frames() 内）。
             // 跨 frame 扫描结果经各自 console 兜底回传 Java；此处再触发一次 Java 内存态同步/快照
             // 合并，确保 iframe 内回传的 pick 也能进入权威内存态。
         } catch (Exception e) {
-            log.warn("[picker][scan] 整页扫描执行失败：{}", e.getMessage());
+            log.warn("[picker][scan] full-page scan failed: {}", e.getMessage());
         }
-        log.info("[picker][scan] 整页扫描完成：新增 {} 个语义角色元素", added);
+        log.info("[picker][scan] full-page scan completed: {} semantic role element(s) added", added);
         // 【关键修复"页面元素只有主框架元素"】
         // 扫描出的 iframe 元素 push 进各自 iframe 的 __rolePicks（面板渲染的是主框架 __rolePicks，
         // 看不到 iframe 的；postMessage 上送顶层又受 __rolePanelUI 门禁/监听时机影响不可靠）。
@@ -266,7 +266,7 @@ public final class RolePickerCommandEngine {
                 syncPanelToBrowser(page, null, javaPickBySig, true);
             }
         } catch (Exception syncE) {
-            log.warn("[picker][scan] 扫描后同步 iframe 元素到面板失败：{}", syncE.getMessage());
+            log.warn("[picker][scan] failed to sync iframe elements to the panel after scan: {}", syncE.getMessage());
         }
         // 扫描完成后【立即生成页面类代码】，无需等到点 ⏹ 停止：直接同步读取浏览器侧
         // window.__rolePicks（readPickSnapshot 走 page.evaluate，比依赖异步的 __roleOnPick 回传更可靠），
@@ -285,7 +285,7 @@ public final class RolePickerCommandEngine {
                 }
             }
         } catch (Exception e) {
-            log.warn("[picker][scan] 扫描后即时生成页面类失败：{}", e.getMessage());
+            log.warn("[picker][scan] failed to generate the page class right after scan: {}", e.getMessage());
         }
         // 扫描完成（无论是否生成页面类）自动回 IDLE。
         setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
@@ -319,7 +319,7 @@ public final class RolePickerCommandEngine {
         try {
             pickerEval(page, RolePickerScripts.START_REGION_SELECT_JS);
         } catch (Exception e) {
-            log.warn("[picker][scanRegion] 启动区域点选失败：{}", e.getMessage());
+            log.warn("[picker][scanRegion] failed to start region picking: {}", e.getMessage());
             return new PickerResult(PickerAction.CONTINUE, null, null,
                     "区域扫描启动失败（拾取库未就绪，请重试）");
         }
@@ -420,19 +420,19 @@ public final class RolePickerCommandEngine {
                                 pickerEval(f, RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
                             } catch (Exception reInjEx) {
                                 String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
-                                log.warn("[picker][regionScanned] 区域 iframe 补注入失败（url={}）：{}", fUrl, reInjEx.getMessage());
+                                log.warn("[picker][regionScanned] region iframe re-injection failed (url={}): {}", fUrl, reInjEx.getMessage());
                             }
                         }
                     } catch (Exception fe) {
                         String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
-                        log.warn("[picker][regionScanned] 区域 iframe 扫描失败（url={}）：{}", fUrl, fe.getMessage());
+                        log.warn("[picker][regionScanned] region iframe scan failed (url={}): {}", fUrl, fe.getMessage());
                     }
                 }
             }
             // 再把各 iframe 的 __rolePicks 合并进主框架（含本次 Java 侧补扫的 iframe 元素）
             mergeFramePicksToMain(page, javaPickBySig);
         } catch (Exception mE) {
-            log.warn("[picker][regionScanned] 合并 iframe 元素到主框架失败：{}", mE.getMessage());
+            log.warn("[picker][regionScanned] failed to merge iframe elements into the main frame: {}", mE.getMessage());
         }
         try {
             PickSnapshot snap = readPickSnapshot(page);
@@ -458,7 +458,7 @@ public final class RolePickerCommandEngine {
                 }
             }
         } catch (Exception e) {
-            log.warn("[picker][regionScanned] 生成页面类失败：{}", e.getMessage());
+            log.warn("[picker][regionScanned] failed to generate the page class: {}", e.getMessage());
         }
         // 区域扫描完成（无论是否拾取到元素）自动清理选区态并回 IDLE。
         try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
@@ -560,7 +560,7 @@ public final class RolePickerCommandEngine {
         ConcurrentHashMap<Page, String> snapshots = ctx.snapshots;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         active.set(false);
-        log.info("[picker][stop] 收到停止命令，对 {} 个被跟踪页面执行停止", pageNames.size());
+        log.info("[picker][stop] stop command received; stopping {} tracked page(s)", pageNames.size());
         // 多实例：停止作用于所有已打开页面，使各页面板同步回 ▶ 开始
         // （否则某页仍显示停止却已失活，造成"点了没反应"的错觉）。
         // 企业级优化：命令来源页用 stopAndRead 把"去激活 + 收尾当前 step + 读回全部拾取态"
@@ -593,7 +593,7 @@ public final class RolePickerCommandEngine {
                 // 销毁/重建，stopAndRead/stop 的 page.evaluate 会抛 "Execution context was destroyed"。
                 // 不向上冒泡撕裂主循环会话：标记已失活并降级为读内存态，保证"停止"在任何导航瞬间都生效，
                 // 不再出现"点了停止却卡住/没反应"的假死（active 已被 active.get()=false 复位）。
-                log.warn("[picker][stop] 停止页 {} 时 evaluate 失败（导航中可忽略）：{}",
+                log.warn("[picker][stop] evaluate failed while stopping page {} (ignorable during navigation): {}",
                         p.url(), stopEx.getMessage());
                 try { p.evaluate(RolePickerScripts.SET_PICK_STOPPED_JS); } catch (Exception ignore) {}
             }
@@ -620,7 +620,7 @@ public final class RolePickerCommandEngine {
                     snap = (!javaPickBySig.isEmpty()) ? snap : fb;
                 }
             } catch (Exception ff) {
-                log.warn("[picker][stop] 跨 frame 兜底读快照失败 @ {} : {}", page.url(), ff.getMessage());
+                log.warn("[picker][stop] cross-frame fallback snapshot read failed @ {} : {}", page.url(), ff.getMessage());
             }
         }
         // 状态外置（对齐 page.pause）：优先用 Java 侧内存态（javaPickBySig）作为已拾元素权威来源，
@@ -678,7 +678,7 @@ public final class RolePickerCommandEngine {
             int jsMem = javaPickBySig.size();
             int browserPicks = 0;
             try { browserPicks = ((List<?>) pickerEval(page, RolePickerScripts.READ_PICK_COUNT_JS)).size(); } catch (Exception ignoreB) {}
-            log.warn("[picker][stop] 未拾取到元素 @ {} : 内存态 javaPickBySig={}, 浏览器 __rolePicks={}, 当前页 origin={}",
+            log.warn("[picker][stop] no elements picked @ {} : in-memory javaPickBySig={}, browser __rolePicks={}, current page origin={}",
                     page.url(), jsMem, browserPicks, safeOrigin(page.url()));
             // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。
             // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。

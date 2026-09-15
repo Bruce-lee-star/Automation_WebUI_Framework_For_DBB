@@ -66,6 +66,11 @@ public final class TestLogCapture implements AutoCloseable {
         logger.info(message);
     }
 
+    /** 通过该 logger 输出一条带异常的 ERROR（用于验证 {@code %ex} 脱敏出口）。 */
+    public void error(String message, Throwable throwable) {
+        logger.error(message, throwable);
+    }
+
     /** 停止捕获并返回落盘内容（内存缓冲，已随 stop 强制 flush）。 */
     public String content() {
         if (appender.isStarted()) {

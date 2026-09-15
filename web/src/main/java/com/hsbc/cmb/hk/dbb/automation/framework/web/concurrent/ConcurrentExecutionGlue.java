@@ -26,17 +26,17 @@ import java.util.stream.Collectors;
  *     | O63_SIT1 | alice    |
  *   Then 全部并发执行成功
  * </pre>
- * 运行须携带 {@code -Dserenity.playwright.shared.browser.enabled=true} 开启单 Browser 多 Context 模型；
+ * 并发默认即<b>每线程独立 Browser</b> 模型（共享 Browser 模式已从框架移除），无需额外开关；
  * 开启 {@code -Dserenity.playwright.concurrent.partition.enabled=true} 后相同身份被 SSO 闸门串行化。</p>
  */
 public class ConcurrentExecutionGlue {
 
     private List<ContextTaskResult<String>> results;
 
-    /** 通用预备：幂等初始化框架 + 预热共享 Browser（单 Browser 多 Context）。 */
+    /** 通用预备：幂等初始化框架 + 预热并发运行环境（每线程独立 Browser）。 */
     @Given("准备并发批次")
     public void prepareBatch() {
-        ConcurrentScenarioExecutor.prepareSharedBrowser();
+        ConcurrentScenarioExecutor.prepareConcurrentEnvironment();
     }
 
     /** 通用驱动：把 DataTable 每行作为一个并发用例，经框架线程池并发执行。 */

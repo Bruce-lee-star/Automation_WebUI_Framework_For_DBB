@@ -80,9 +80,9 @@ final class RolePickerPanelSync {
                     String feMsg = fe.getMessage() == null ? "" : fe.getMessage();
                     if (feMsg.contains("closed") || feMsg.contains("detached")
                             || feMsg.contains("TargetClosed") || feMsg.contains("Target page")) {
-                        log.debug("[picker] 跳过已关闭/分离的 iframe（url={}）：{}", f.url(), feMsg);
+                        log.debug("[picker] skipping closed/detached iframe (url={}): {}", f.url(), feMsg);
                     } else {
-                        log.warn("[picker] 合并 iframe 拾取到主框架失败（url={}）：{}", f.url(), feMsg);
+                        log.warn("[picker] failed to merge iframe picks into the main frame (url={}): {}", f.url(), feMsg);
                     }
                 } catch (Exception ignore) {}
             }
@@ -150,7 +150,7 @@ final class RolePickerPanelSync {
             pickerEval(page, RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
                     java.util.Arrays.asList(syncJsonB64, syncDelB64, overwriteNos));
         } catch (Exception syncE) {
-            try { log.warn("[picker] 同步面板到浏览器失败：{}", syncE.getMessage()); } catch (Exception ignore) {}
+            try { log.warn("[picker] failed to sync the panel to the browser: {}", syncE.getMessage()); } catch (Exception ignore) {}
         }
     }
 

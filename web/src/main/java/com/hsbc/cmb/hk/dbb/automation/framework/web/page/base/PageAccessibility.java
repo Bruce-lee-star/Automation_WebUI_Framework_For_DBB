@@ -36,6 +36,6 @@ public final class PageAccessibility {
         RoleCodegenBridgeRegistry.getBridge().ifPresentOrElse(
                 b -> b.dumpAccessibilityRoles(bp.getPage()),
                 () -> log.warn(
-                        "[a11y] codegen 模块（framework-codegen）未加载，跳过可访问性角色 dump"));
+                        "[a11y] framework-codegen module not loaded, skipping accessibility role dump"));
     }
 }

@@ -103,9 +103,14 @@ public class ApiFrameworkConfig {
     public static final ConfigKey SERENITY_HISTORY_FOLDER =
             new ConfigKey("serenity.history.folder", "target/site/serenity/history", "Serenity 历史目录");
 
-    /** API 请求/响应日志是否启用。 */
+    /**
+     * API 请求/响应日志是否启用。
+     * <p>默认 {@code false}（关闭）：SEC-1 / P-1 安全基线 —— 请求/响应体可能含凭据、token、PII，
+     * 默认不应落日志以免明文泄露；确需排查时显式开启 {@code api.request.response.logging.enabled=true}
+     * （开启后输出经 {@code SanitizingPrintStream} 出口强制脱敏，不绕过 {@code SensitiveDataSanitizer}）。
+     */
     public static final ConfigKey API_REQUEST_RESPONSE_LOGS_ENABLED =
-            new ConfigKey("api.request.response.logging.enabled", "true", "API 请求/响应日志是否启用");
+            new ConfigKey("api.request.response.logging.enabled", "false", "API 请求/响应日志是否启用（默认关闭，避免明文泄露）");
 
     /**
      *  修复 A3：原实现在【类加载时】把配置缓存成静态快照
@@ -377,7 +382,7 @@ public class ApiFrameworkConfig {
 
     /**
      * API 请求/响应日志是否启用。
-     * @return true 表示启用（默认 true）
+     * @return true 表示启用（默认 false，SEC-1 安全基线）
      */
     public static boolean isApiRequestResponseLogsEnabled() {
         return config().hasPath(API_REQUEST_RESPONSE_LOGS_ENABLED.key())

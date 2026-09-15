@@ -260,7 +260,7 @@ public final class BrowserStartupImpl implements BrowserStartup {
             } catch (Exception e) {
                 lastException = e;
                 if (attempt < maxRetries) {
-                    long backoffMs = 2000L * attempt;
+                    long backoffMs = WebFrameworkConfig.PLAYWRIGHT_BROWSER_STARTUP_BACKOFF_MS.getLongValue() * attempt;
                     VerboseLogging.logWarnIfVerbose(logger,
                         "[Browser Init] Launch attempt {} failed: {}. Retrying in {}ms...",
                         attempt, com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager.sanitizeMessage(e.getMessage()), backoffMs);

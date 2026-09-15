@@ -7,8 +7,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.ConfigKeys;
 import com.typesafe.config.Config;
 import net.serenitybdd.rest.SerenityRest;
 import io.restassured.config.HttpClientConfig;
+import io.restassured.config.LogConfig;
 import io.restassured.config.RestAssuredConfig;
 import io.restassured.config.SSLConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.logging.SanitizingPrintStream;
 import io.restassured.http.Headers;
 import io.restassured.response.ValidatableResponse;
 import io.restassured.specification.RequestSpecification;
@@ -184,7 +186,9 @@ public abstract class AbstractRestJob {
         final RestAssuredConfig restAssuredConfig = RestAssuredConfig.config()
                 .httpClient(HttpClientConfig.httpClientConfig()
                         .setParam("http.connection.timeout", httpConnectTimeout)
-                        .setParam("http.socket.timeout", httpSocketTimeout));
+                        .setParam("http.socket.timeout", httpSocketTimeout))
+                .logConfig(new LogConfig(
+                        new SanitizingPrintStream(System.out), true));
         setRestAssuredConfig(restAssuredConfig);
     }
 }

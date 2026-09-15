@@ -43,15 +43,27 @@ public class FrameworkCore {
         com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
                 com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_FRAMEWORK_CORE,
                 "framework-core", () -> {
+                    //  W-1：JVM 退出期收口浏览器资源，避免硬杀留下孤儿浏览器进程（CI runner 堆积、内存耗尽）。
+                    //  cleanupAll 在并发执行模式下会主动抛 IllegalStateException 拒绝（防御性设计），
+                    //  此时不应刷异常栈（与文档 03 §5.1 一致）：仅 debug 记录，跳过浏览器清理即可。
+                    if (!frameworkState.isInitialized()) {
+                        return;
+                    }
                     try {
-                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: Cleaning up resources...");
-                        if (frameworkState.isInitialized()) {
-                            PlaywrightManager.cleanupAll();
-                            frameworkState.cleanup();
-                        }
-                        VerboseLogging.logInfoIfVerbose(logger,"JVM Shutdown Hook completed");
+                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: cleaning up browser resources...");
+                        PlaywrightManager.cleanupAll();
+                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: browser resources cleaned");
+                    } catch (IllegalStateException e) {
+                        VerboseLogging.logDebugIfVerbose(logger,
+                                "JVM shutdown skipped cleanupAll (concurrent mode active): {}", e.getMessage());
                     } catch (Exception e) {
-                        VerboseLogging.logErrorIfVerbose(logger,"Error during JVM shutdown cleanup", e);
+                        VerboseLogging.logErrorIfVerbose(logger, "Error during JVM shutdown browser cleanup", e);
+                    }
+                    try {
+                        frameworkState.cleanup();
+                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook completed");
+                    } catch (Exception e) {
+                        VerboseLogging.logErrorIfVerbose(logger, "Error during JVM shutdown state cleanup", e);
                     }
                 });
     }

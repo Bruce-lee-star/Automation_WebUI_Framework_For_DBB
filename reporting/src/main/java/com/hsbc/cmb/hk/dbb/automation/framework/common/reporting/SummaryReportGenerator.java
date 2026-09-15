@@ -452,8 +452,8 @@ public class SummaryReportGenerator {
             }
 
             if (sinks.isEmpty()) {
-                logger.warn("[ApiMonitor] 未通过 SPI 发现任何 MonitorFailureReportSink 实现，"
-                        + "监控失败报告未写出（请检查 route 模块 META-INF/services 注册）。");
+                logger.warn("[ApiMonitor] No MonitorFailureReportSink implementation discovered via SPI; "
+                        + "monitor failure report not written (check route module META-INF/services registration).");
                 return;
             }
 
@@ -462,14 +462,14 @@ public class SummaryReportGenerator {
                 try {
                     totalOwners += sink.write();
                 } catch (Exception ex) {
-                    logger.warn("[ApiMonitor] 某 MonitorFailureReportSink 写出失败（已隔离，不影响其余）：{}",
+                    logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to write (isolated, others unaffected): {}",
                             ex.getMessage());
                 }
             }
 
             if (totalOwners > 0) {
-                logger.info("[ApiMonitor] 已写出 API 监控失败报告（{} 个 owner），"
-                        + "见 target/monitor-failures-by-owner.json", totalOwners);
+                logger.info("[ApiMonitor] API monitor failure report written ({} owner(s)), "
+                        + "see target/monitor-failures-by-owner.json", totalOwners);
             }
 
             // 全部 write 完成后再清空（单个 sink 清空异常不影响其余）
@@ -477,12 +477,12 @@ public class SummaryReportGenerator {
                 try {
                     sink.clear();
                 } catch (Exception ex) {
-                    logger.warn("[ApiMonitor] 某 MonitorFailureReportSink 清空失败（已隔离）：{}",
+                    logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to clear (isolated): {}",
                             ex.getMessage());
                 }
             }
         } catch (Exception ex) {
-            logger.warn("[ApiMonitor] 写出监控失败报告异常（不影响主报告）：{}", ex.getMessage());
+            logger.warn("[ApiMonitor] Exception writing monitor failure report (main report unaffected): {}", ex.getMessage());
         }
     }
 

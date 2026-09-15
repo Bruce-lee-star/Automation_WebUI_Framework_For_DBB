@@ -806,6 +806,79 @@ public final class SensitiveDataSanitizer {
         return out.toString();
     }
 
+    /**
+     * 脱敏单行（异常栈 message / caused-by message）自由文本 —— C-2 / L-1 专用入口。
+     *
+     * <p>在 {@link #sanitizeFreeText(String)} 之上补充<b>行内任意位置</b>的敏感
+     * {@code key=value} 遮蔽：异常栈 message 常见形态为
+     * {@code "Caused by: java.lang.IllegalStateException: password=s3cr3t"}，
+     * 其中 {@code : } 出现在 {@code =} 之前，{@code sanitizeFreeText} 以首个
+     * {@code :/=} 之前为 key 会漏判该凭据。本方法先经 form-urlencoded 键值对规则
+     * （匹配行内任意位置的敏感键）兜底，再走自由文本（Bearer/JWT/URL 内嵌凭据）。
+     * 两级都<b>宁可过度遮蔽，不可漏出</b>。
+     *
+     * <p>含嵌入换行时按行分别处理，避免跨行误罩；caller 已保证入参非 null。
+     *
+     * @param line 单行（可为多行文本）
+     * @return 脱敏后的文本
+     */
+    public static String sanitizeLine(String line) {
+        if (line == null) return null;
+        String[] lines = line.split("\n", -1);
+        StringBuilder out = new StringBuilder(line.length());
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) out.append('\n');
+            // 仅做 key[:=]value 遮蔽（form 行内 + 逐词扫描），覆盖 "msg: password=x"（: 早于 =）形态。
+            // 刻意不跑 Bearer/JWT 等自由文本正则：其 JWT 规则会把异常栈里的包名
+            // （如 automation.framework.common——首两段均 ≥8 字符）误判为 JWT 而误罩，
+            // 既破坏栈可读性又无安全收益；Bearer/JWT 在 %msg 出口已由 SanitizingMessageConverter 覆盖。
+            out.append(maskSensitiveKeyValues(sanitizeForm(lines[i])));
+        }
+        return out.toString();
+    }
+
+    /**
+     * 行内任意位置的敏感 {@code key[:=]value} 遮蔽（C-2 / L-1 关键补充）。
+     *
+     * <p>{@link #sanitizeFreeText(String)} 以"行内首个 {@code :/=} 之前"为 key，对
+     * {@code "login failed: password=s3cr3t"} 这类 {@code : } 早于 {@code =} 的异常栈 message
+     * 会漏判（key 取成 {@code "login failed"}）。本方法按空白切词、逐词以<b>词内</b>首个
+     * {@code :/=} 之前为 key，命中敏感清单即遮蔽其值，故 {@code password=...} 即使不在行首也能被命中。
+     */
+    private static String maskSensitiveKeyValues(String text) {
+        if (text == null) return text;
+        String[] tokens = text.split("(\\s+)");
+        StringBuilder sb = new StringBuilder(text.length());
+        for (int i = 0; i < tokens.length; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(maskKeyValueToken(tokens[i]));
+        }
+        return sb.toString();
+    }
+
+    /** 仅对 {@code key[:=]value} 形态且 key 命中敏感清单的词做值遮蔽（不跑 Bearer/JWT 自由文本正则，避免误罩包名）。 */
+    private static String maskKeyValueToken(String token) {
+        int sep = -1;
+        for (int i = 0; i < token.length(); i++) {
+            char c = token.charAt(i);
+            if (c == ':' || c == '=') {
+                sep = i;
+                break;
+            }
+        }
+        if (sep <= 0 || sep >= token.length() - 1) {
+            return token;
+        }
+        String key = token.substring(0, sep).trim();
+        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
+            key = key.substring(1, key.length() - 1);
+        }
+        if (isSensitiveBodyKey(key) || isSensitiveHeaderKey(key)) {
+            return token.substring(0, sep + 1) + " " + MASK;
+        }
+        return token;
+    }
+
     /** 单行处理：找到 "敏感词 : = 值" 结构后遮蔽值。 */
     private static String maskFreeTextLine(String line) {
         if (line == null || line.isEmpty()) return line;

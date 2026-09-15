@@ -47,13 +47,9 @@ import com.microsoft.playwright.Playwright;
  */
 public interface BrowserRegistry {
 
-    String keyFor(String configId, boolean sharedMode);
-
     String keyFor(String configId);
 
     void validateConfigIdShape(String configId);
-
-    boolean resolveSharedBrowserMode();
 
     Playwright getPlaywright();
 
@@ -66,5 +62,5 @@ public interface BrowserRegistry {
 
     void setConfigId(String configId);
 
-    String sharedConfigId();
+    String workerConfigId();
 }

@@ -1,8 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * 视口与滚动操作工厂（WEB-P1-2 Phase 4）：从 {@link BasePage} 下沉 {@code setViewportSize}
@@ -10,14 +8,11 @@ import org.slf4j.LoggerFactory;
  *
  * <p>与 {@link LocatorFactory}/{@link CookieManager}/{@link PageFrameShadow} 同源模式：
  * 静态工具类、接收 {@code BasePage bp}、经 bp 的公开 API（{@code locatorInternal}/
- * {@code getPage}/{@code ensurePageValid}）访问状态，日志路由回 {@code BasePage.class}
- * 保持生产溯源一致。
+ * {@code getPage}/{@code ensurePageValid}）访问状态。
  *
  * <p>全部方法均为 framework-internal。
  */
 public final class PageViewport {
-
-    private static final Logger log = LoggerFactory.getLogger(BasePage.class);
 
     private PageViewport() {
     }

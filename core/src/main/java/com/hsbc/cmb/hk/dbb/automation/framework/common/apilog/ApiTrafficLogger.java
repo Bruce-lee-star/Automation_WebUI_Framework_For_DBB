@@ -18,6 +18,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * HTTP 请求 / 响应<b>脱敏落盘</b> —— D3-3。
@@ -65,6 +66,14 @@ public final class ApiTrafficLogger {
 
     /** 是否已达上限告警过（只告警一次，避免刷日志）。 */
     private static final AtomicBoolean SIZE_WARNED = new AtomicBoolean(false);
+
+    /** 落盘失败累计计数（C-10/L-6：debug → warn + 计数，供运维观测排障设施自身健康度）。 */
+    private static final AtomicLong FAILURE_COUNT = new AtomicLong(0);
+
+    /** 落盘失败累计次数（C-10/L-6，供运维 / 监控观测与单测断言）。 */
+    public static long failureCount() {
+        return FAILURE_COUNT.get();
+    }
 
     private static final DateTimeFormatter FILE_DATE =
             DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -152,7 +161,7 @@ public final class ApiTrafficLogger {
             AsyncPool.run(() -> writeBlock(block));
         } catch (Exception e) {
             //  落盘失败绝不能影响主流程（排障设施不得成为故障源）
-            LOGGER.debug("[ApiTrafficLogger] failed to enqueue traffic log: {}", e.toString());
+            logFailure("enqueue", e);
         }
     }
 
@@ -178,6 +187,23 @@ public final class ApiTrafficLogger {
         return sb.toString();
     }
 
+    /**
+     * 落盘失败统一记录（C-10/L-6）：debug → warn + 计数。
+     * 排障设施自身故障必须让运维可见（warn），但需避免磁盘异常时的日志风暴：
+     * 前 5 次与之后每 100 次打 warn，其余打 debug（均带累计计数，便于聚合观测）。
+     *
+     * @param stage 失败阶段（enqueue / write）
+     * @param t     异常
+     */
+    private static void logFailure(String stage, Throwable t) {
+        long n = FAILURE_COUNT.incrementAndGet();
+        if (n <= 5 || n % 100 == 0) {
+            LOGGER.warn("[ApiTrafficLogger] {} failed (total failures={}): {}", stage, n, t.toString());
+        } else {
+            LOGGER.debug("[ApiTrafficLogger] {} failed (total failures={}): {}", stage, n, t.toString());
+        }
+    }
+
     /** 追加写入（在异步线程执行）。 */
     private static void writeBlock(String block) {
         try {
@@ -196,7 +222,7 @@ public final class ApiTrafficLogger {
             Files.write(file, block.getBytes(StandardCharsets.UTF_8),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            LOGGER.debug("[ApiTrafficLogger] failed to write traffic log: {}", e.toString());
+            logFailure("write", e);
         }
     }
 }

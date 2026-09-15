@@ -25,8 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p><b>并发语义（迁移前后完全等价）</b>：所有字段均为 {@code final} 引用 + 线程安全容器
  * （{@code ConcurrentHashMap} / {@code newKeySet()} / 弱引用同步 Set / {@code AtomicBoolean}）；
- * 实例表的 VALUE（Browser/Playwright）默认不跨线程共享（key 含 threadId），共享 Browser 模式
- * 下由 per-thread 的 {@code BrowserContext} 保证隔离——该不变式迁移前后不变。
+ * 实例表的 VALUE（Browser/Playwright）默认不跨线程共享（key 含 threadId），隔离性由每线程各自的
+ * {@code BrowserContext} 保证——该不变式迁移前后不变（共享 Browser 模式已从框架移除）。
  *
  * <p><b>Phase 2 变更</b>：容器字段由「包级可见」收为 {@code private}，对外只暴露
  * {@link LifecycleState} 定义的受控操作与<b>只读视图</b>，从而在不改变并发语义的前提下实现真封装
@@ -41,7 +41,7 @@ public final class PlaywrightRuntimeState implements LifecycleState {
     public static final PlaywrightRuntimeState INSTANCE = new PlaywrightRuntimeState();
 
     /**
-     * Playwright 实例表：key = {@code threadId:configId}（共享 Browser 模式为 {@code shared:configId}）。
+     * Playwright 实例表：key = {@code threadId:configId}（每线程独立 Browser；共享 Browser 模式已从框架移除）。
      */
     private final ConcurrentMap<String, Playwright> playwrightInstances = new ConcurrentHashMap<>();
 
@@ -50,8 +50,8 @@ public final class PlaywrightRuntimeState implements LifecycleState {
      *
      * <p>默认不变式：VALUE 绝不跨线程共享（key 含 threadId，每个 worker 线程独立实例）；
      * 共享 ConcurrentHashMap 仅作为跨线程安全的回收/清理容器（供 cleanupAll 统一关闭）。
-     * 例外——共享 Browser 模式：key 退化为 {@code shared:configId}，所有线程有意复用同一 Browser，
-     * 隔离性改由 per-thread 的 BrowserContext 保证。
+     * 原「共享 Browser 模式」（`shared:configId`，所有线程复用同一 Browser）已从框架移除——Playwright for Java
+     * 非线程安全，共享单 Browser 跨线程并发会损坏客户端对象注册表。</p>
      */
     private final ConcurrentMap<String, Browser> browserInstances = new ConcurrentHashMap<>();
 

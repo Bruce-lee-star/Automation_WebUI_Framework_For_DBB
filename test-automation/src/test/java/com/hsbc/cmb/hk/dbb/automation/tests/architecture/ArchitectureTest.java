@@ -9,6 +9,9 @@ import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaFieldAccess;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
+import com.tngtech.archunit.lang.ArchCondition;
+import com.tngtech.archunit.lang.ConditionEvents;
+import com.tngtech.archunit.lang.SimpleConditionEvent;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import org.junit.jupiter.api.Test;
@@ -184,6 +187,64 @@ public class ArchitectureTest {
     }
 
     /**
+     * Phase 4 门禁（doc15 §8）：业务代码不得继承已删除的 {@code SerenityBasePage}。
+     * 该类全部 Layer B 录制方法已下沉为 {@code BasePage} 公开委托壳，业务 Page 应继承 {@code BasePage}
+     * （或后续逐步演进为组合式 POJO + {@code ManagedPageAware}）。此规则防止 SerenityBasePage 被重新引入。
+     */
+    @Test
+    public void businessCodeMustNotExtendSerenityBasePage() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should(new ArchCondition<JavaClass>("not extend the deleted SerenityBasePage") {
+                    @Override
+                    public void check(JavaClass item, ConditionEvents events) {
+                        item.getSuperclass()
+                                .filter(superClass -> superClass.getName().endsWith("SerenityBasePage"))
+                                .ifPresent(superClass -> events.add(SimpleConditionEvent.violated(item,
+                                        item.getFullName() + " extends SerenityBasePage (deleted; extend BasePage instead)")));
+                    }
+                })
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+    }
+
+    /**
+     * Phase 4 门禁（doc15 §8，G7）：业务代码不得直接依赖录制内部面
+     * {@code SerenityRecorder}/{@code SerenityPageRecorder}（录制属框架内部实现）。
+     * 业务 Page 经继承 {@code BasePage} 透明获得录制，不应触碰录制门面。
+     */
+    @Test
+    public void businessCodeMustNotExtendBasePage() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should(new ArchCondition<JavaClass>("not extend BasePage / SerenityBasePage") {
+                    @Override
+                    public void check(JavaClass item, ConditionEvents events) {
+                        item.getSuperclass()
+                                .filter(superClass -> superClass.getName().endsWith("BasePage"))
+                                .ifPresent(superClass -> events.add(SimpleConditionEvent.violated(item,
+                                        item.getFullName() + " extends " + superClass.getName()
+                                                + " (use compositional AbstractManagedPage + ManagedPageAware/SerenityBasePage instead)")));
+                    }
+                })
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+    }
+
+    @Test
+    public void businessCodeMustNotUseSerenityRecorder() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should().dependOnClassesThat().haveSimpleName("SerenityRecorder")
+                .orShould().dependOnClassesThat().haveSimpleName("SerenityPageRecorder")
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+    }
+
+    /**
      * DI seam 防绕过门禁（企业级，对齐 WEB-P0-2）：
      * 生产 framework 代码不得调用 {@code PlaywrightManager.setProvider}，否则会绕过 DI seam
      * 在运行时注入测试替身、破坏「门面 → provider → 协作者实现」的替换链路
@@ -244,8 +305,7 @@ public class ArchitectureTest {
 
     /** 受管状态根与锁对象：可变/敏感内部状态，仅生命周期协作者可触碰。 */
     private static final Set<String> LIFECYCLE_INTERNAL_STATE_FIELDS = new HashSet<>(Arrays.asList(
-            "STATE", "CONTEXT_LOCK", "PAGE_LOCK", "SHARED_BROWSER_LOCK",
-            "SHARED_KEY_PREFIX", "SHARED_BROWSER_MODE",
+            "STATE", "CONTEXT_LOCK", "PAGE_LOCK",
             "CONTEXT_KEY", "PAGE_KEY", "CURRENT_CONFIG_ID_KEY"));
 
     /** PlaywrightManager 上仅供内部协作的 seam 方法。 */
@@ -298,8 +358,8 @@ public class ArchitectureTest {
 
     /**
      * L7-a：lifecycle 包树之外不得<b>访问</b>生命周期内部状态字段
-     * （{@code PlaywrightManager.STATE}/三把锁/{@code CONTEXT_KEY}/{@code PAGE_KEY}/
-     * {@code CURRENT_CONFIG_ID_KEY}/{@code SHARED_KEY_PREFIX}/{@code SHARED_BROWSER_MODE}，
+     * （{@code PlaywrightManager.STATE}/两把锁/{@code CONTEXT_KEY}/{@code PAGE_KEY}/
+     * {@code CURRENT_CONFIG_ID_KEY}，
      * 以及 {@code CustomOptionsManager.CUSTOM_*_KEY}）。
      *
      * <p>这些字段承载「可变共享状态」与「锁监视器」：外部直接 {@code synchronized} 同一把锁

@@ -83,7 +83,7 @@ public class JsonUtils {
         try {
             return OBJECT_MAPPER.writeValueAsString(obj);
         } catch (JsonProcessingException e) {
-            LOGGER.error("对象转JSON失败: {}", e.getMessage(), e);
+            LOGGER.error("Failed to convert object to JSON: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -99,7 +99,7 @@ public class JsonUtils {
         try {
             return OBJECT_MAPPER.readValue(json, clazz);
         } catch (JsonProcessingException e) {
-            LOGGER.error("JSON转对象失败: {}", e.getMessage(), e);
+            LOGGER.error("Failed to convert JSON to object: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -116,7 +116,7 @@ public class JsonUtils {
             // JsonPath 默认的 JsonSmartMappingProvider 不支持 TypeRef，直接用 Jackson 反序列化
             return OBJECT_MAPPER.readValue(json, OBJECT_MAPPER.getTypeFactory().constructType(typeRef.getType()));
         } catch (Exception e) {
-            LOGGER.error("JSON转对象失败: {}", e.getMessage(), e);
+            LOGGER.error("Failed to convert JSON to object: {}", e.getMessage(), e);
             return null;
         }
     }
@@ -133,7 +133,7 @@ public class JsonUtils {
             DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath);
         } catch (Exception e) {
-            LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to get JSON path value: {}, path: {}", e.getMessage(), jsonPath);
             return null;
         }
     }
@@ -150,7 +150,7 @@ public class JsonUtils {
             DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath, type);
         } catch (Exception e) {
-            LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to get JSON path value: {}, path: {}", e.getMessage(), jsonPath);
             return null;
         }
     }
@@ -167,7 +167,7 @@ public class JsonUtils {
             DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath, typeRef);
         } catch (Exception e) {
-            LOGGER.error("获取JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to get JSON path value: {}, path: {}", e.getMessage(), jsonPath);
             return null;
         }
     }
@@ -185,7 +185,7 @@ public class JsonUtils {
             documentContext.set(jsonPath, value);
             return documentContext.jsonString();
         } catch (Exception e) {
-            LOGGER.error("设置JSON路径值失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to set JSON path value: {}, path: {}", e.getMessage(), jsonPath);
             return json; // 返回原始JSON
         }
     }
@@ -203,7 +203,7 @@ public class JsonUtils {
             documentContext.delete(jsonPath);
             return documentContext.jsonString();
         } catch (Exception e) {
-            LOGGER.error("删除JSON路径节点失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to delete JSON path node: {}, path: {}", e.getMessage(), jsonPath);
             return json; // 返回原始JSON
         }
     }
@@ -236,7 +236,7 @@ public class JsonUtils {
             Object jsonObject = OBJECT_MAPPER.readValue(json, Object.class);
             return OBJECT_MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(jsonObject);
         } catch (JsonProcessingException e) {
-            LOGGER.error("格式化JSON失败: {}", e.getMessage());
+            LOGGER.error("Failed to format JSON: {}", e.getMessage());
             return json; // 返回原始JSON
         }
     }
@@ -261,7 +261,7 @@ public class JsonUtils {
                 return toJson(map1);
             }
         } catch (Exception e) {
-            LOGGER.error("合并JSON失败: {}", e.getMessage());
+            LOGGER.error("Failed to merge JSON: {}", e.getMessage());
         }
 
         return json1; // 返回第一个JSON作为备选
@@ -283,7 +283,7 @@ public class JsonUtils {
             Object obj2 = OBJECT_MAPPER.readTree(json2);
             return obj1.equals(obj2);
         } catch (IOException e) {
-            LOGGER.error("比较JSON失败: {}", e.getMessage());
+            LOGGER.error("Failed to compare JSON: {}", e.getMessage());
             return false;
         }
     }
@@ -300,7 +300,7 @@ public class JsonUtils {
             DocumentContext documentContext = parseCached(json);
             return documentContext.read(jsonPath);
         } catch (Exception e) {
-            LOGGER.error("获取JSON路径值列表失败: {}, 路径: {}", e.getMessage(), jsonPath);
+            LOGGER.error("Failed to get JSON path value list: {}, path: {}", e.getMessage(), jsonPath);
             return Collections.emptyList();
         }
     }

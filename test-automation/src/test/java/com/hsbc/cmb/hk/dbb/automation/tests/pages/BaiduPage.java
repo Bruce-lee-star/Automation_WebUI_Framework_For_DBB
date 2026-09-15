@@ -3,13 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
 
 /**
  * 百度搜索 Page Object。
  * <p>选择器基于 https://www.baidu.com 实际 DOM 结构。
  */
-public class BaiduPage extends SerenityBasePage {
+public class BaiduPage extends AbstractManagedPage {
 
     @Element("#chat-textarea")
     public PageElement searchInput;

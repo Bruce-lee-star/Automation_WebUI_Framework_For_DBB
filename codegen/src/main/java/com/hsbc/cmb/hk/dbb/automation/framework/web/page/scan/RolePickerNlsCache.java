@@ -95,7 +95,7 @@ final class RolePickerNlsCache {
                 }
             }
             if (exact.isEmpty() && templates.isEmpty()) {
-                log.warn("[picker] nls 文件无可用条目，无法反查 key：{}", nlsFiles);
+                log.warn("[picker] nls file(s) have no usable entries; cannot reverse-lookup key: {}", nlsFiles);
                 return "{}";
             }
             Map<String, Object> out = new LinkedHashMap<>();
@@ -103,11 +103,11 @@ final class RolePickerNlsCache {
             out.put("templates", templates.entrySet().stream()
                     .map(e -> new String[]{e.getKey(), e.getValue()})
                     .toArray(String[][]::new));
-            log.info("[picker] 已加载 nls 反向查表（精确 {} 条 / 模板 {} 条），拾取时将自动匹配 key：{}",
+            log.info("[picker] loaded nls reverse lookup ({} exact / {} template entries); keys will be auto-matched while picking: {}",
                     exact.size(), templates.size(), nlsFiles);
             return GSON.toJson(out);
         } catch (Exception e) {
-            log.warn("[picker] 加载 nls 文件失败，拾取时无法反查 key，将回退到 name 派生 slug：{}", nlsFiles, e);
+            log.warn("[picker] failed to load nls file(s); cannot reverse-lookup key while picking, falling back to name-derived slug: {}", nlsFiles, e);
             return "{}";
         }
     }    static void clear() {

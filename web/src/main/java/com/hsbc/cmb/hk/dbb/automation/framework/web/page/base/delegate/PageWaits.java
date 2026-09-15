@@ -1,9 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
-import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
 
@@ -28,30 +27,27 @@ public final class PageWaits {
         // 纯静态工具类，禁止实例化
     }
 
-    public static void waitForElementExists(BasePage bp, String selector, int timeout) {
-        bp.element(selector).waitForExists(timeout);
-    }
-
-    public static void waitForElementNotExists(BasePage bp, String selector, int timeout) {
-        bp.element(selector).waitForNotExists(timeout);
-    }
-
+    /** 等待元素进入可编辑状态（超时毫秒）。 */
     public static void waitForElementEditable(BasePage bp, String selector, int timeout) {
         bp.element(selector).waitForEditable(timeout);
     }
 
+    /** 等待元素变为可用（enabled）。 */
     public static void waitForElementEnabled(BasePage bp, String selector, int timeout) {
         bp.element(selector).waitForEnabled(timeout);
     }
 
+    /** 等待元素变为不可用（disabled）。 */
     public static void waitForElementDisabled(BasePage bp, String selector, int timeout) {
         bp.element(selector).waitForDisabled(timeout);
     }
 
+    /** 等待元素变为已勾选（checked）。 */
     public static void waitForElementChecked(BasePage bp, String selector, int timeout) {
         bp.element(selector).waitForChecked(timeout);
     }
 
+    /** 等待元素变为未勾选。 */
     public static void waitForElementNotChecked(BasePage bp, String selector, int timeout) {
         bp.element(selector).waitForNotChecked(timeout);
     }
@@ -85,11 +81,14 @@ public final class PageWaits {
 
     public static boolean retryWithValidation(BasePage bp, Runnable operation, BooleanSupplier validation,
                                               int maxRetries, String desc) {
-        return retryWithValidation(bp, operation, validation, maxRetries, 500, desc);
+        return retryWithValidation(bp, operation, validation, maxRetries,
+                WebFrameworkConfig.PLAYWRIGHT_WAITS_RETRY_INTERVAL_DEFAULT_MS.getIntValue(), desc);
     }
 
     public static void retry(BasePage bp, Runnable runnable, String desc) {
-        retry(bp, runnable, 3, 1000, desc);
+        retry(bp, runnable,
+                WebFrameworkConfig.PLAYWRIGHT_WAITS_RETRY_COUNT.getIntValue(),
+                WebFrameworkConfig.PLAYWRIGHT_WAITS_RETRY_INTERVAL_MS.getIntValue(), desc);
     }
 
     /**
@@ -113,37 +112,6 @@ public final class PageWaits {
                 bp.getPage().waitForTimeout((double) intervalMs);
             }
         }
-    }
-
-    /**
-     * D1-1：<b>条件驱动</b>重试 —— 替代"盲等固定间隔"的旧模式。
-     *
-     * <p>每次执行操作前，先把等待<b>委托给 {@code Locator.waitFor}</b>：
-     * Playwright 内部按条件自动等待，元素一就绪立即返回，
-     * 而不是无论是否就绪都睡满固定间隔（旧实现的主要耗时来源，即"轮询"）。
-     *
-     * <p>失败时同样保留全部尝试的异常（最后一次为 cause，含首次在内的其余为 suppressed）。
-     *
-     * @param selector       目标元素选择器（等其就绪后再执行操作）
-     * @param waitTimeoutMs  单次就绪等待上限（毫秒）
-     */
-    public static void retryOnReady(BasePage bp, String selector, Runnable operation,
-                                    int retries, int waitTimeoutMs, String desc) {
-        List<Throwable> failures = new ArrayList<>();
-        for (int i = 0; i <= retries; i++) {
-            try {
-                //  经 LocatorFactory 统一取原生 Locator（保留 iframe / shadow 上下文适配）；
-                //  不要直接用 page.locator(selector)，那会丢掉当前 frame 与 shadow 穿透
-                LocatorFactory.bySelector(bp, selector)
-                        .waitFor(new Locator.WaitForOptions().setTimeout(waitTimeoutMs));
-                operation.run();
-                return;
-            } catch (Exception e) {
-                failures.add(e);
-                log.debug("[PageWaits] retryOnReady attempt failed, will retry: {}", e.toString());
-            }
-        }
-        throw buildRetryFailure(desc + " (selector=" + selector + ")", failures);
     }
 
     /**
@@ -190,7 +158,8 @@ public final class PageWaits {
             if (remaining <= 0) {
                 break;
             }
-            bp.getPage().waitForTimeout((double) Math.min(50L, remaining));
+            bp.getPage().waitForTimeout((double) Math.min(
+                    WebFrameworkConfig.PLAYWRIGHT_WAITS_POLL_STEP_MS.getLongValue(), remaining));
         }
     }
 
@@ -202,7 +171,7 @@ public final class PageWaits {
         if (failures.isEmpty()) {
             return new RuntimeException("Retry failed: " + desc);
         }
-        Throwable last = failures.get(failures.size() - 1);
+        Throwable last = failures.getLast();
         RuntimeException out = new RuntimeException(
                 "Retry failed: " + desc + " (attempts=" + failures.size() + ")", last);
         for (int i = 0; i < failures.size() - 1; i++) {

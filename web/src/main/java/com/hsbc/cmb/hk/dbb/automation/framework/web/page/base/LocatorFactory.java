@@ -5,8 +5,6 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.regex.Pattern;
 
@@ -15,14 +13,12 @@ import java.util.regex.Pattern;
  *
  * <p>与 {@link PageFrameShadow} 同源模式：静态工具类、接收 {@code BasePage bp}、经 bp 的
  * 公开 API（{@code getPage} / {@code getCurrentFrame}）与包级 seam（{@code ensurePageValid}）
- * 访问状态，日志路由回 {@code BasePage.class} 保持生产溯源一致。
+ * 访问状态。
  *
  * <p>所有 {@code by*} 均为 framework-internal（受 ArchUnit 规则
  * {@code businessCodeMustNotUseInternalByLocators} 约束），业务不得直接调用。
  */
 public final class LocatorFactory {
-
-    private static final Logger log = LoggerFactory.getLogger(BasePage.class);
 
     private LocatorFactory() {
     }

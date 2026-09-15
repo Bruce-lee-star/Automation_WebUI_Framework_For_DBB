@@ -58,6 +58,21 @@ jobs:
           fi
           echo "报告校验通过，准备部署到外部仓库 Pages。"
 
+      - name: Scan report for leaked secrets (gate)
+        shell: bash
+        run: |
+          echo "::group::凭据泄露扫描"
+          if grep -rEi "Bearer[ ]*:|password=[^ \"']+|Authorization:[ ]*Bearer|token=[A-Za-z0-9]" "report-src/${{ env.REPORT_SRC_DIR }}" 2>/dev/null; then
+            echo "::error::报告目录检出疑似明文凭据，禁止推送外部仓库"
+            exit 1
+          fi
+          if [ ! -f "report-src/${{ env.REPORT_SRC_DIR }}/.sanitized" ]; then
+            echo "::error::报告未标记为已脱敏（缺少 .sanitized 标记），禁止推送"
+            exit 1
+          fi
+          echo "凭据扫描通过"
+          echo "::endgroup::"
+
       - name: Deploy report to external repo Pages
         uses: peaceiris/actions-gh-pages@v4
         with:

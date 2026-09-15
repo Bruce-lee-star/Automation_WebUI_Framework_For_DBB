@@ -4,8 +4,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightC
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording.SerenityPageRecorder;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import com.microsoft.playwright.*;
@@ -14,7 +16,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Map;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * 页面对象基类（框架核心门面）。
@@ -55,6 +60,14 @@ public abstract class BasePage {
      */
     private final PageContextState pageContextState = new PageContextState(this);
 
+    /**
+     * Layer B 录制门面（每实例一份，承载 per-page 测试数据）。
+     * 原 {@code SerenityBasePage} 的全部录制方法已下沉为本类公开委托壳，业务 Page 改继承 BasePage 即可零改动获得同样的透明录制。
+     * 递归防护：本类录制方法委托本门面时，门面内部一律调用工具类/裸 getter（如 {@code getPageRaw()}），
+     * 绝不回调 BasePage 的录制方法，避免无限递归。
+     */
+    private final SerenityPageRecorder serenity = new SerenityPageRecorder();
+
     // ===================== 全局文本统一格式化工具 =====================
 
     /**
@@ -70,6 +83,30 @@ public abstract class BasePage {
         // (beforeTest → FrameworkCore.beforeTest) 保证；单测经 PlaywrightManager.setProvider(mock) 注入。
         // 运行时若未初始化，getPage() 按原语义抛 IllegalStateException（行为等价改造前）。
         pageContextState.initializeAnnotatedFields();
+    }
+
+    /**
+     * G1 组合式注入点：把框架管理的（已装饰录制）Page/Context 注入本委托实例。
+     * 业务 Page 经 {@code ManagedPageAware.setManagedPage} 拿到 {@code Supplier<Page>}，
+     * 解析出具体 Page 后通过本方法挂到内部委托 BasePage，从而复用全部页面上下文能力
+     * （element/locator/iframe/shadow/ensure/绑定等），无需继承本类。
+     *
+     * @apiNote 由组合式 Page Object（{@code AbstractManagedPage}）的 {@code setManagedPage} 调用。
+     */
+    public void attachManagedPage(Page managedPage) {
+        if (managedPage == null) {
+            throw new IllegalArgumentException("attachManagedPage: managedPage must not be null");
+        }
+        this.page = managedPage;
+        this.context = managedPage.context();
+    }
+
+    /**
+     * G1 组合式 {@code @Element}/{@code @RoleElement} 绑定入口：字段宿主是业务 POJO，
+     * 页面宿主是传入的委托 BasePage（详见 {@link PageContextState#bindAnnotatedFields(Object, BasePage)}）。
+     */
+    public static void bindAnnotatedFields(Object fieldOwner, BasePage pageOwner) {
+        PageContextState.bindAnnotatedFields(fieldOwner, pageOwner);
     }
 
     // ── 页面切换锁（per-context，WEB-P1-N9 修复）────────────────────────────
@@ -121,6 +158,13 @@ public abstract class BasePage {
     }
 
     /**
+     * 裸上下文读取（无 {@code ensureContextValid()} 副作用），供录制门面在跨包调用时读取状态，避免递归与包访问限制。
+     */
+    public BrowserContext getContextRaw() {
+        return context;
+    }
+
+    /**
      * 返回指定 Context 的页面切换锁（稳定且 per-context 隔离）；ctx 为 null 时回退全局兜底锁。
      * <p>委托 {@link PageContextState}，锁状态已收口到该实例（WEB-P1-2 Phase 6）。
      */
@@ -129,23 +173,23 @@ public abstract class BasePage {
     }
 
     public void waitForNetworkIdle(int timeout) {
-        PageWaits.waitForNetworkIdle(this, timeout);
+        serenity.waitForNetworkIdle(this, timeout);
     }
 
     public void waitForPageFullyLoaded(int timeout) {
-        PageWaits.waitForPageFullyLoaded(this, timeout);
+        serenity.waitForPageFullyLoaded(this, timeout);
     }
 
     public void waitForDOMContentLoaded(int timeout) {
-        PageWaits.waitForDOMContentLoaded(this, timeout);
+        serenity.waitForDOMContentLoaded(this, timeout);
     }
 
     public void shouldBeVisible(String selector) {
-        PageWaits.shouldBeVisible(this, selector);
+        serenity.shouldBeVisible(this, selector);
     }
 
     public void shouldBeNotVisible(String selector) {
-        PageWaits.shouldBeNotVisible(this, selector);
+        serenity.shouldBeNotVisible(this, selector);
     }
 
     /**
@@ -162,11 +206,11 @@ public abstract class BasePage {
     }
 
     public void retry(Runnable runnable, String desc) {
-        PageWaits.retry(this, runnable, desc);
+        serenity.retry(this, runnable, desc);
     }
 
     public void retry(Runnable runnable, int retries, int intervalMs, String desc) {
-        PageWaits.retry(this, runnable, retries, intervalMs, desc);
+        serenity.retry(this, runnable, retries, intervalMs, desc);
     }
 
     /**
@@ -181,11 +225,11 @@ public abstract class BasePage {
      */
     public boolean retryWithValidation(Runnable operation, BooleanSupplier validation,
                                        int maxRetries, int retryIntervalMs, String desc) {
-        return PageWaits.retryWithValidation(this, operation, validation, maxRetries, retryIntervalMs, desc);
+        return serenity.retryWithValidation(this, operation, validation, maxRetries, retryIntervalMs, desc);
     }
 
     public void navigateToWithRetry(String url, int retries) {
-        PageNavigation.navigateToWithRetry(this, url, retries);
+        serenity.navigateToWithRetry(this, url, retries);
     }
 
     /**
@@ -249,7 +293,7 @@ public abstract class BasePage {
      * @return PageElement 实例
      */
     public PageElement element(String selector) {
-        return new PageElement(selector, this);
+        return serenity.element(this, selector);
     }
 
     /**
@@ -282,7 +326,7 @@ public abstract class BasePage {
     }
 
     public void navigateTo(String url) {
-        PageNavigation.navigateTo(this, url);
+        serenity.navigateTo(this, url);
     }
 
     /**
@@ -306,15 +350,15 @@ public abstract class BasePage {
     }
 
     public void refresh() {
-        PageNavigation.refresh(this);
+        serenity.refresh(this);
     }
 
     public void back() {
-        PageNavigation.back(this);
+        serenity.back(this);
     }
 
     public void forward() {
-        PageNavigation.forward(this);
+        serenity.forward(this);
     }
 
     // ===================== 页面切换内部工具方法 =====================
@@ -486,5 +530,308 @@ public abstract class BasePage {
      */
     public void pause() {
         PageDebugControl.pause(this);
+    }
+
+    // ========================================================================
+    // Phase 4：原 SerenityBasePage 的 Layer B 录制方法已下沉为本类公开委托壳。
+    // 业务 Page 经 AbstractManagedPage（面向 SerenityBasePage 接口）组合获得同样的透明录制（经 SerenityPageRecorder）。
+    // 录制语义（flushPendingApiOperations + verbose 日志 + per-page 测试数据）与逐字迁移版完全一致。
+    // ========================================================================
+
+    // ==================== per-page 测试数据 ====================
+
+    /** 记录一条 per-page 测试数据（供报告 / 排障读取）。 */
+    protected void addSerenityTestData(String key, Object value) {
+        serenity.recorder().addSerenityTestData(key, value);
+    }
+
+    /** 读取一条 per-page 测试数据。 */
+    protected Object getSerenityTestData(String key) {
+        return serenity.recorder().getSerenityTestData(key);
+    }
+
+    /** 返回本页全部 per-page 测试数据快照。 */
+    public Map<String, Object> getSerenityTestDataMap() {
+        return serenity.recorder().getSerenityTestDataMap();
+    }
+
+    /** 清空本页 per-page 测试数据。 */
+    public void clearSerenityTestData() {
+        serenity.recorder().clearSerenityTestData();
+    }
+
+    // ==================== 交互 ====================
+
+    public void keyDown(String selector, String key) {
+        serenity.keyDown(this, selector, key);
+    }
+
+    public void keyUp(String selector, String key) {
+        serenity.keyUp(this, selector, key);
+    }
+
+    public void press(String selector, String key) {
+        serenity.press(this, selector, key);
+    }
+
+    public void acceptAlert() {
+        serenity.acceptAlert(this);
+    }
+
+    public void dismissAlert() {
+        serenity.dismissAlert(this);
+    }
+
+    public void acceptAlert(Runnable trigger) {
+        serenity.acceptAlert(this, trigger);
+    }
+
+    public void dismissAlert(Runnable trigger) {
+        serenity.dismissAlert(this, trigger);
+    }
+
+    public void bringToFront() {
+        serenity.bringToFront(this);
+    }
+
+    public void setContent(String html) {
+        serenity.setContent(this, html);
+    }
+
+    public void setViewportSize(int width, int height) {
+        serenity.setViewportSize(this, width, height);
+    }
+
+    public void executeInFrame(String frameName, Consumer<Frame> action) {
+        serenity.executeInFrame(this, frameName, action);
+    }
+
+    // ==================== 状态 ====================
+
+    public boolean isClosed() {
+        return serenity.isClosed(this);
+    }
+
+    public byte[] takeScreenshot() {
+        return serenity.takeScreenshot(this);
+    }
+
+    public byte[] takeElementScreenshot(String selector) {
+        return serenity.takeElementScreenshot(this, selector);
+    }
+
+    public BoundingBox getElementBoundingBox(String selector) {
+        return serenity.getElementBoundingBox(this, selector);
+    }
+
+    // ==================== frame / shadow ====================
+
+    public Frame getFrame(String name) {
+        return serenity.getFrame(this, name);
+    }
+
+    public Frame switchToFrame(String nameOrSelector) {
+        return serenity.switchToFrame(this, nameOrSelector);
+    }
+
+    public void switchToShadow(String hostSelector) {
+        serenity.switchToShadow(this, hostSelector);
+    }
+
+    public String switchToDefaultShadow() {
+        return serenity.switchToDefaultShadow(this);
+    }
+
+    public void switchToDefaultShadowAll() {
+        serenity.switchToDefaultShadowAll(this);
+    }
+
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector, int timeoutSecs) {
+        return serenity.switchToFrameAndWait(this, trigger, nameOrSelector, timeoutSecs);
+    }
+
+    public Frame switchToFrameAndWait(Runnable trigger, String nameOrSelector) {
+        return serenity.switchToFrameAndWait(this, trigger, nameOrSelector);
+    }
+
+    public Frame switchToFrameAndWait(String nameOrSelector, int timeoutSecs) {
+        return serenity.switchToFrameAndWait(this, nameOrSelector, timeoutSecs);
+    }
+
+    public Frame switchToFrameAndWait(String nameOrSelector) {
+        return serenity.switchToFrameAndWait(this, nameOrSelector);
+    }
+
+    public void switchToDefaultContent() {
+        serenity.switchToDefaultContent(this);
+    }
+
+    public List<Frame> getAllFrames() {
+        return serenity.getAllFrames(this);
+    }
+
+    public void dumpAccessibilityRoles() {
+        serenity.dumpAccessibilityRoles(this);
+    }
+
+    // ==================== 脚本 / 源码 ====================
+
+    public Object executeJavaScript(String script, Object... args) {
+        return serenity.executeJavaScript(this, script, args);
+    }
+
+    public String getPageSource() {
+        return serenity.getPageSource(this);
+    }
+
+    public int getPageSize() {
+        return serenity.getPageSize(this);
+    }
+
+    public void waitForTimeout(int milliseconds) {
+        serenity.waitForTimeout(this, milliseconds);
+    }
+
+    // ==================== Cookie ====================
+
+    public List<Cookie> getCookies() {
+        return serenity.getCookies(this);
+    }
+
+    public List<Cookie> getCookies(String url) {
+        return serenity.getCookies(this, url);
+    }
+
+    public List<Cookie> getCookies(List<String> urls) {
+        return serenity.getCookies(this, urls);
+    }
+
+    public Cookie getCookie(String name) {
+        return serenity.getCookie(this, name);
+    }
+
+    public boolean hasCookie(String name) {
+        return serenity.hasCookie(this, name);
+    }
+
+    public void addCookie(Cookie cookie) {
+        serenity.addCookie(this, cookie);
+    }
+
+    public void addCookies(List<Cookie> cookies) {
+        serenity.addCookies(this, cookies);
+    }
+
+    public void deleteCookie(String name) {
+        serenity.deleteCookie(this, name);
+    }
+
+    public void clearCookies() {
+        serenity.clearCookies(this);
+    }
+
+    public List<Cookie> getCookiesForCurrentPage() {
+        return serenity.getCookiesForCurrentPage(this);
+    }
+
+    // ==================== Locator 工厂（framework-internal，完整覆盖逐字迁移版重载） ====================
+    // @apiNote 业务代码请走 @RoleElement + element()/locator()，勿直接调用 by*（受 ArchUnit businessCodeMustNotUseInternalByLocators 约束）。
+
+    public Locator byAltText(String altText) {
+        return serenity.byAltText(this, altText);
+    }
+
+    public Locator byAltText(String altText, boolean exact) {
+        return serenity.byAltText(this, altText, exact);
+    }
+
+    public Locator byAltText(Pattern altText) {
+        return serenity.byAltText(this, altText);
+    }
+
+    public Locator byRole(AriaRole role) {
+        return serenity.byRole(this, role);
+    }
+
+    public Locator byRole(AriaRole role, String name) {
+        return serenity.byRole(this, role, name);
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern) {
+        return serenity.byRole(this, role, namePattern);
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact) {
+        return serenity.byRole(this, role, name, exact);
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact, int level) {
+        return serenity.byRole(this, role, name, exact, level);
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern, int level) {
+        return serenity.byRole(this, role, namePattern, level);
+    }
+
+    public Locator byRole(AriaRole role, String name, boolean exact, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        return serenity.byRole(this, role, name, exact, level, disabled, pressed, expanded);
+    }
+
+    public Locator byRole(AriaRole role, Pattern namePattern, int level,
+                          RoleElement.State disabled, RoleElement.State pressed, RoleElement.State expanded) {
+        return serenity.byRole(this, role, namePattern, level, disabled, pressed, expanded);
+    }
+
+    public Locator byTitle(String title) {
+        return serenity.byTitle(this, title);
+    }
+
+    public Locator byTitle(String title, boolean exact) {
+        return serenity.byTitle(this, title, exact);
+    }
+
+    public Locator byTitle(Pattern title) {
+        return serenity.byTitle(this, title);
+    }
+
+    public Locator byTestId(String testId) {
+        return serenity.byTestId(this, testId);
+    }
+
+    public Locator byText(String text) {
+        return serenity.byText(this, text);
+    }
+
+    public Locator byText(String text, boolean exact) {
+        return serenity.byText(this, text, exact);
+    }
+
+    public Locator byText(Pattern text) {
+        return serenity.byText(this, text);
+    }
+
+    public Locator byPlaceholder(String placeholder) {
+        return serenity.byPlaceholder(this, placeholder);
+    }
+
+    public Locator byPlaceholder(String placeholder, boolean exact) {
+        return serenity.byPlaceholder(this, placeholder, exact);
+    }
+
+    public Locator byPlaceholder(Pattern placeholder) {
+        return serenity.byPlaceholder(this, placeholder);
+    }
+
+    public Locator byLabel(String label) {
+        return serenity.byLabel(this, label);
+    }
+
+    public Locator byLabel(String label, boolean exact) {
+        return serenity.byLabel(this, label, exact);
+    }
+
+    public Locator byLabel(Pattern label) {
+        return serenity.byLabel(this, label);
     }
 }

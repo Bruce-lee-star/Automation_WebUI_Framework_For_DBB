@@ -55,7 +55,7 @@ public class ConcurrentContextExecutorTest {
                 ConcurrentContextOptions.builder().parallelism(2).build());
         for (ContextTaskResult<String> res : r) {
             assertTrue(res.isSuccess());
-            assertTrue(res.valueOrThrow().startsWith("dbb-ctx-"));
+            assertTrue(res.valueOrThrow().startsWith("ctx-"));
         }
     }
 

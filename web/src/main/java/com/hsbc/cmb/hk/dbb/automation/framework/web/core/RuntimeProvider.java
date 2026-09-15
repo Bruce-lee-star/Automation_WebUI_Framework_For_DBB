@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.core;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.core;
+
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -31,4 +32,12 @@ public interface RuntimeProvider extends BrowserProvider, ContextProvider, PageP
 
     @Override
     Page getPage();
+
+    /**
+     * 是否为测试替身（如单测经 {@code setProvider} 注入的 mock）。
+     * 框架录制装饰器据此跳过包装，避免污染测试（D6）。默认 false（生产路径非替身）。
+     */
+    default boolean isTestDouble() {
+        return false;
+    }
 }

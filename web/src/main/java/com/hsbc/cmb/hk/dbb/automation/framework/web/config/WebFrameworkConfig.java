@@ -433,20 +433,19 @@ public enum WebFrameworkConfig {
     ),
 
     /**
-     * 共享 Browser 模式（一个 Browser 实例 + 多 Context 并发）。
-     * <p>{@code true}：所有 worker 线程共享同一个 Browser 实例，每个线程/场景持有独立 BrowserContext。
-     * 这是 Playwright 官方推荐的并发模型——进程更少、启动更快，隔离性由 BrowserContext 保证
-     * （cookie / storage / 会话彼此独立）。</p>
-     * <p>{@code false}（默认）：每个线程持有独立 Browser 实例，即 T3-2 语义，
+     * 共享 Browser 模式（一个 Browser 实例 + 多 Context 并发）——<b>opt-in，默认关闭</b>。
+     * <p>{@code true}：所有 worker 线程共享同一个 Browser 实例，每个线程/场景持有独立 BrowserContext。</p>
+     * <p>{@code false}（默认，T3-2 语义）：每个线程持有独立 Browser / Playwright 实例，
      * 重启与故障的作用域完全收敛到本线程。</p>
-     * <p>⚠ 共享模式下 {@code restartBrowser()} 会降级为「仅重建本线程 Context」，
-     * <b>不会</b>关闭共享 Browser，否则会连带杀掉其它并发 scenario（即 T3-2 修复的 P0）。</p>
+     *
+     * <p><b>为何默认 false（W-7 结论纠正）：Playwright for Java 官方明确「Playwright 对象不是线程安全的」——
+     * {@code Playwright}/{@code Browser}/{@code BrowserContext}/{@code Page} 的方法必须在创建它们的同一线程调用；
+     * 跨线程须各自持独立 Browser 实例（每线程独立 Browser 模型，{@code keyFor} 含 threadId 维度），
+     * 不得跨线程共享同一 {@code Browser} 对象——Playwright for Java 官方 multithreading 文档明确
+     * <i>"Playwright Java is not thread safe"</i>：并发 mutate 共享 Browser 的单一连接会损坏客户端对象注册表，
+     * 随机抛出 {@code Cannot find object to call __adopt__} / {@code pausedStateChanged: debugger@} /
+     * {@code Object doesn't exist: ...}（与 playwright-java#1184 一致）。并发并行一律走每线程独立 Browser。</p>
      */
-    PLAYWRIGHT_SHARED_BROWSER_ENABLED(
-        "serenity.playwright.shared.browser.enabled",
-        "false",
-        "共享 Browser 模式：一个 Browser 实例 + 多 Context 并行"
-    ),
 
     /**
      * 并发上下文执行器并行度（{@code ConcurrentContextExecutor}）。
@@ -478,6 +477,19 @@ public enum WebFrameworkConfig {
         "serenity.playwright.concurrent.use.virtual.threads",
         "false",
         "并发执行器启用虚拟线程（JDK 21+，启用前审计 BasePage pinning）"
+    ),
+
+    /**
+     * 并发执行器硬上限（HARD CAP）。
+     * 与 {@link #PLAYWRIGHT_CONCURRENT_PARALLELISM} 同为并发度闸门：
+     * {@code ConcurrentContextOptions#resolvedParallelism} 取 min(taskCount, parallelism, max)。
+     * <p>默认按 CPU 核数自适应（核/2，下限 2、上限 32），可经 serenity.properties 或
+     * -Dserenity.playwright.concurrent.max 覆盖；CI 低核机应显式调小以防资源耗尽。
+     */
+    PLAYWRIGHT_CONCURRENT_MAX(
+        "serenity.playwright.concurrent.max",
+        adaptiveConcurrentMaxDefault(),
+        "并发执行器硬上限（HARD CAP）：同时运行任务数的绝对上限，按 CPU 核数自适应，可经 -D / serenity.properties 覆盖"
     ),
 
     /**
@@ -522,6 +534,130 @@ public enum WebFrameworkConfig {
         "serenity.playwright.concurrent.browser.crash.guard.enabled",
         "true",
         "浏览器崩溃韧性守卫：共享 Browser 崩溃时单飞重建并重跑失败任务"
+    ),
+
+    /**
+     * 崩溃型失败的消息特征白名单（{@code |} 分隔，大小写不敏感）。
+     * <p>仅列入<b>明确的浏览器/进程崩溃信号</b>，不含任何会被正常业务流程触发的内容
+     * （如 {@code "execution context was destroyed"} / {@code "browser process"} 已剔除，避免误判掩盖真实缺陷）。
+     * 经本键可运行时调窄/调宽签名集（W-10：签名可配置），默认与历史收窄白名单一致。</p>
+     */
+    PLAYWRIGHT_CONCURRENT_CRASH_SIGNATURES(
+        "serenity.playwright.concurrent.crash.signatures",
+        "target crashed|browser has been closed|browser is closed|target page, context or browser has been closed"
+            + "|target closed|connection closed|connection prematurely closed|playwright has been closed|browser disconnected|browser crashed",
+        "崩溃型失败消息特征白名单（| 分隔，大小写不敏感），用于崩溃识别"
+    ),
+
+    /**
+     * 崩溃识别是否启用「异常类型 + Playwright 事件」双重佐证（W-10 三重判定之一）。
+     * <p>开启时，若异常类型为 Playwright/超时类且当前线程 Browser 已被 {@code onDisconnected} 标记为断开，
+     * 即使异常消息未命中 {@link #PLAYWRIGHT_CONCURRENT_CRASH_SIGNATURES} 也判为崩溃（覆盖消息被包装吞掉的场景）。
+     * 关闭时退化为「仅消息签名匹配」（与 W-15 去类名模糊匹配一致，最保守）。</p>
+     */
+    PLAYWRIGHT_CONCURRENT_CRASH_CORROBORATION_ENABLED(
+        "serenity.playwright.concurrent.crash.corroboration.enabled",
+        "true",
+        "崩溃识别启用「异常类型 + Playwright 断开事件」双重佐证（消息签名仍为主信号）"
+    ),
+
+    /**
+     * 条件驱动重试的默认重试间隔（毫秒）。W-9：原散落字面量 {@code 500} 抽为可配置键。
+     */
+    PLAYWRIGHT_WAITS_RETRY_INTERVAL_DEFAULT_MS(
+        "playwright.waits.retry.interval.default.ms",
+        "500",
+        "条件驱动重试的默认重试间隔（毫秒）"
+    ),
+
+    /**
+     * {@code PageWaits.retry} 默认重试次数。W-9：原散落字面量 {@code 3} 抽为可配置键。
+     */
+    PLAYWRIGHT_WAITS_RETRY_COUNT(
+        "playwright.waits.retry.count",
+        "3",
+        "PageWaits.retry 默认重试次数"
+    ),
+
+    /**
+     * {@code PageWaits.retry} 默认重试间隔（毫秒）。W-9：原散落字面量 {@code 1000} 抽为可配置键。
+     */
+    PLAYWRIGHT_WAITS_RETRY_INTERVAL_MS(
+        "playwright.waits.retry.interval.ms",
+        "1000",
+        "PageWaits.retry 默认重试间隔（毫秒）"
+    ),
+
+    /**
+     * {@code PageWaits.waitUntil} 固定小步长轮询间隔（毫秒）。W-9：原散落字面量 {@code 50} 抽为可配置键。
+     */
+    PLAYWRIGHT_WAITS_POLL_STEP_MS(
+        "playwright.waits.poll.step.ms",
+        "50",
+        "PageWaits.waitUntil 固定小步长轮询间隔（毫秒）"
+    ),
+
+    /**
+     * 浏览器启动重试的退避基数（毫秒，随尝试次数线性放大）。W-9：原散落字面量 {@code 2000} 抽为可配置键。
+     */
+    PLAYWRIGHT_BROWSER_STARTUP_BACKOFF_MS(
+        "playwright.browser.startup.backoff.ms",
+        "2000",
+        "浏览器启动重试退避基数（毫秒，随尝试次数线性放大）"
+    ),
+
+    /**
+     * 并发上下文执行器线程池关闭等待超时（秒）。W-9：原散落字面量 {@code 30} 抽为可配置键。
+     */
+    PLAYWRIGHT_CONCURRENT_EXECUTOR_AWAIT_SECONDS(
+        "playwright.concurrent.executor.await.seconds",
+        "30",
+        "并发上下文执行器线程池关闭等待超时（秒）"
+    ),
+
+    /**
+     * BrowserStack 会话连接超时（秒）。W-9：原散落字面量 {@code 60} 抽为可配置键。
+     */
+    PLAYWRIGHT_BROWSERSTACK_CONNECT_TIMEOUT_SECONDS(
+        "playwright.browserstack.connect.timeout.seconds",
+        "60",
+        "BrowserStack 会话连接超时（秒）"
+    ),
+
+    /**
+     * BrowserStack API 连接/读取超时（毫秒）。W-9：原散落字面量 {@code 30000} 抽为可配置键。
+     */
+    PLAYWRIGHT_BROWSERSTACK_REQUEST_TIMEOUT_MS(
+        "playwright.browserstack.request.timeout.ms",
+        "30000",
+        "BrowserStack API 连接/读取超时（毫秒）"
+    ),
+
+    /**
+     * 崩溃重跑严格有界次数（防止崩溃持续时无限循环）。W-9：原散落字面量 {@code 1} 抽为可配置键。
+     */
+    PLAYWRIGHT_CRASH_GUARD_MAX_REPLAY(
+        "playwright.concurrent.crash.guard.max.replay",
+        "1",
+        "崩溃重跑严格有界次数"
+    ),
+
+    /**
+     * 关闭上下文时 tracing 写盘等待超时（秒）。W-9：原散落字面量 {@code 15} 抽为可配置键。
+     */
+    PLAYWRIGHT_CONTEXT_CLOSE_TRACE_TIMEOUT_SECONDS(
+        "playwright.context.close.trace.timeout.seconds",
+        "15",
+        "关闭上下文时 tracing 写盘等待超时（秒）"
+    ),
+
+    /**
+     * 页面稳定化补偿延迟（毫秒，窗口定位异步重排）。W-9：原散落字面量 {@code 300} 抽为可配置键。
+     */
+    PLAYWRIGHT_CONTEXT_STABILIZE_DELAY_MS(
+        "playwright.context.stabilize.delay.ms",
+        "300",
+        "页面稳定化补偿延迟（毫秒）"
     ),
 
     // ==================== Playwright 上下文配置 ====================
@@ -1427,6 +1563,16 @@ public enum WebFrameworkConfig {
         this.key = key;
         this.defaultValue = defaultValue;
         this.description = description;
+    }
+
+    /**
+     * 并发硬上限自适应默认值：核/2，下限 2、上限 32。
+     * 作为 {@link #PLAYWRIGHT_CONCURRENT_MAX} 的枚举默认值，使「零配置」时按运行机核数自适应，
+     * 同时保留经 -D / serenity.properties 显式覆盖的能力。
+     */
+    private static String adaptiveConcurrentMaxDefault() {
+        int cores = Runtime.getRuntime().availableProcessors();
+        return String.valueOf(Math.max(2, Math.min(32, cores / 2)));
     }
 
     /**

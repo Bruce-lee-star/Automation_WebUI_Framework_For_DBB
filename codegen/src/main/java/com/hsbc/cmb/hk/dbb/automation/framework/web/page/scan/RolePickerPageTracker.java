@@ -64,7 +64,7 @@ final class RolePickerPageTracker {
                     }
                     pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
                 } catch (Exception refreshEx) {
-                    log.warn("[picker] reconcile 刷新页面类名失败：{}", refreshEx.getMessage());
+                    log.warn("[picker] reconcile failed to refresh the page class name: {}", refreshEx.getMessage());
                 }
             }
         }
@@ -94,9 +94,9 @@ final class RolePickerPageTracker {
             pickerEval(p, RolePickerScripts.ENABLE_PANEL_JS + RolePickerScripts.SET_PANEL_FORCE_JS);
             pickerEval(p, RolePickerScripts.PANEL_SCRIPT);   // 立即重建当前已加载文档的面板
             snapshots.put(p, RoleElementPicker.readPickStateJson(p));
-            log.info("[picker][reconcile] 已补登漏跟踪页面并可被拾取：{} -> {}", p.url(), cls);
+            log.info("[picker][reconcile] back-registered a missed page, now pickable: {} -> {}", p.url(), cls);
         } catch (Exception e) {
-            log.warn("[picker][reconcile] 补登页面失败（该页本次 start 可能仍无法拾取）：{}", e.getMessage());
+            log.warn("[picker][reconcile] failed to back-register the page (it may still be unpickable in this start): {}", e.getMessage());
         }
     }
 
@@ -164,7 +164,7 @@ final class RolePickerPageTracker {
             // 故弹出瞬间即具备基础监听，导航完成后即被真实库接管，用户体感"立即能拾取、不卡"。
             if (sessionActive) {
                 try { RoleElementPicker.start(newPage, nlsReverseJson); } catch (Exception ex) {
-                    log.warn("[picker] 新页面同步注入失败（导航中可忽略，将由 onFrameNavigated 补注入）：{}", ex.getMessage());
+                    log.warn("[picker] failed to inject into the new page (ignorable during navigation; will be re-injected by onFrameNavigated): {}", ex.getMessage());
                 }
             }
             // 面板脚本：初始文档也先注入一次；若后续导航重建，onFrameNavigated/PANEL addInitScript 会兜底。
@@ -174,9 +174,9 @@ final class RolePickerPageTracker {
             snapshots.put(newPage, RoleElementPicker.readPickStateJson(newPage));
             // 新页面若再弹窗/再开页，继续跟随；把"是否处于拾取态"传下去，供其 onClose 回退父页时恢复。
             RoleElementPicker.registerPopupFollow(ctx, newPage, opener);
-            log.info("[picker] 已在新页面（{}）注入独立面板，默认页面板保留不消失。", cls);
+            log.info("[picker] injected an independent panel into the new page ({}); the default panel is retained.", cls);
         } catch (Exception e) {
-            log.warn("[picker] 页面跟随失败：{}", e.getMessage());
+            log.warn("[picker] page following failed: {}", e.getMessage());
         }
     }
 }

@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
 
 /**
  * 首页
@@ -14,7 +14,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBaseP
  * 如果需要获取选择器字符串：
  * homePage.quickLink.getSelector()
  */
-public class HomePage extends SerenityBasePage {
+public class HomePage extends AbstractManagedPage {
 
     @Element("#quick_link_section")
     public PageElement quickLink;

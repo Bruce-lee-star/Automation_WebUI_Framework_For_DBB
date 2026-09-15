@@ -30,9 +30,25 @@ import java.util.regex.Pattern;
 public class RoleElementBinder {
 
     private final BasePage self;
+    private final Class<?> roleFileClass;
 
+    /**
+     * 绑定字段宿主即页面宿主（{@code BasePage} 自身持有 @RoleElement 字段的传统路径）。
+     */
     public RoleElementBinder(BasePage self) {
+        this(self, self.getClass());
+    }
+
+    /**
+     * G1 组合式路径：字段宿主是业务 POJO（不含 NLS 信息），页面宿主是其内部委托
+     * {@code BasePage}。{@code @RoleFile} 注解声明在 POJO 类上，故需单独传入该类以解析 NLS 文件。
+     *
+     * @param self          页面上下文宿主（Provider 委托 BasePage），用于构建 Locator / 取 Page
+     * @param roleFileClass 携带类级 {@code @RoleFile} 的字段宿主类（POJO 自身）
+     */
+    public RoleElementBinder(BasePage self, Class<?> roleFileClass) {
         this.self = self;
+        this.roleFileClass = roleFileClass;
     }
 
     /**
@@ -257,11 +273,11 @@ public class RoleElementBinder {
         if (a.file() != null && !a.file().isBlank()) {
             return List.of(a.file());
         }
-        RoleFile classFile = self.getClass().getAnnotation(RoleFile.class);
+        RoleFile classFile = roleFileClass.getAnnotation(RoleFile.class);
         if (classFile == null || classFile.value().length == 0) {
             throw new ElementException("RoleElement field '" + a.key()
                     + "' needs either file() or a class-level @RoleFile on "
-                    + self.getClass().getSimpleName());
+                    + roleFileClass.getSimpleName());
         }
         List<String> ordered = new ArrayList<>(Arrays.asList(classFile.value()));
         String primary = classFile.primary();

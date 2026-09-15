@@ -32,6 +32,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityB
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.TestContextBridge;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightInitializer;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightScreenshotManager;
+import net.serenitybdd.core.Serenity;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
@@ -39,6 +40,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -263,12 +265,26 @@ public class PlaywrightContextManager {
                     //    （磁盘 IO 卡顿 / 大 trace）。外层 closeContext 在 PlaywrightManager.CONTEXT_LOCK
                     //    同步块内调用，阻塞会拖住所有线程的 context 关闭。
                     //    故改为带超时的异步执行：超时即放弃写 trace，保证 context.close() 不被拖累。
+                    //  修复 W-3：trace 必须与 scenario 关联并挂进 Serenity 报告，否则排障只能去
+                    //    target/traces 翻无意义的"时间戳"文件。文件名带 scenarioId（来自 LogContext MDC，
+                    //    即 PlaywrightListener 绑定的 uniqueTestName），对文件系统不安全字符 sanitize；
+                    //    落盘目录改 target/site/serenity/traces（Serenity 报告目录）。trace 写完
+                    //    （traceTask.get 在调用线程返回）后经 StepEventBus.addAttachmentToCurrentStep 挂当前步骤——
+                    //    挂接必须在调用线程执行（Serenity 步骤上下文所在线程），TRACE_EXECUTOR 异步线程无上下文，
+                    //    故不可在 runAsync 内挂接；任何失败均降级，绝不阻塞 context 关闭。
                     try {
-                        String tracePath = "target/traces/trace-" + System.currentTimeMillis() + ".zip";
+                        String scenarioId = LogContext.currentScenarioId();
+                        String safeId = sanitizeForFileName(scenarioId);
+                        Path traceDir = Paths.get("target", "site", "serenity", "traces");
+                        Files.createDirectories(traceDir);
+                        Path tracePath = traceDir.resolve("trace-" + safeId + "-" + System.currentTimeMillis() + ".zip");
                         java.util.concurrent.Future<Void> traceTask = java.util.concurrent.CompletableFuture.runAsync(() ->
-                                context.tracing().stop(new Tracing.StopOptions().setPath(Paths.get(tracePath))), TRACE_EXECUTOR);
+                                context.tracing().stop(new Tracing.StopOptions().setPath(tracePath)), TRACE_EXECUTOR);
                         try {
-                            traceTask.get(15, java.util.concurrent.TimeUnit.SECONDS);
+                            traceTask.get(WebFrameworkConfig.PLAYWRIGHT_CONTEXT_CLOSE_TRACE_TIMEOUT_SECONDS.getIntValue(),
+                                    java.util.concurrent.TimeUnit.SECONDS);
+                            //  仅 trace 文件确实落盘后挂接报告（超时/异常时放弃，不阻塞关闭）。
+                            attachTraceToReport(tracePath, scenarioId);
                         } catch (java.util.concurrent.TimeoutException toe) {
                             traceTask.cancel(true);
                             VerboseLogging.logWarnIfVerbose(logger,
@@ -293,6 +309,63 @@ public class PlaywrightContextManager {
                 throw new BrowserException("Failed to close BrowserContext", e);
             }
         }
+    }
+
+    // ==================== Trace 关联 scenario / 挂报告（W-3）====================
+
+    /**
+     * 把已落盘的 trace.zip 登记进当前 Serenity 报告，便于排障时定位用例。
+     *
+     * <p>文档 13（W-3）预设用 {@code StepEventBus.addAttachmentToCurrentStep}，但本仓库 Serenity 4.2.0 的
+     * {@code StepEventBus} 并无该方法；改用代码库既有的报告写入机制 {@link Serenity#recordReportData()}
+     * （与 {@code SerenityReporter} 同源），把 trace 位置写入当前 scenario 的「Additional Info」。
+     * trace 文件本身已落在 {@code target/site/serenity/traces}（与报告同目录），可直接下载。
+     *
+     * <p>登记须在调用线程（Serenity 步骤上下文所在线程）执行——本方法在 {@code closeContext} 内
+     * {@code traceTask.get()} 返回之后、仍处于调用线程时调用，满足条件；任何失败（非 Serenity 线程 /
+     * 步骤上下文已结束 / 文件不存在）均降级为 debug 日志，绝不阻塞关闭流程。
+     *
+     * @param tracePath  已落盘的 trace 文件路径
+     * @param scenarioId 关联的 scenario 标识（仅用于报告标题，可为 null）
+     */
+    private static void attachTraceToReport(Path tracePath, String scenarioId) {
+        try {
+            if (tracePath == null || !Files.exists(tracePath)) {
+                return;
+            }
+            String title = "TRACE" + (scenarioId != null ? ": " + scenarioId : "");
+            String contents = "trace=" + tracePath.getFileName() + "\npath=" + tracePath.toAbsolutePath();
+            Serenity.recordReportData()
+                    .withTitle(title)
+                    .andContents(contents);
+            VerboseLogging.logDebugIfVerbose(logger, "Recorded trace {} to Serenity report", tracePath);
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger, "Failed to record trace to report (ignored): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 将任意字符串转为文件系统安全文件名片段：非 {@code [A-Za-z0-9._-]} 字符统一替换为 {@code _}，
+     * 并截断至 {@code 120} 字符，避免 scenario 名含路径分隔符 / 冒号等导致非法文件名或过长。
+     *
+     * @param raw 原始字符串（如 scenario 名），允许 null
+     * @return 文件名安全片段，绝不为 null
+     */
+    private static String sanitizeForFileName(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "unknown";
+        }
+        StringBuilder sb = new StringBuilder(Math.min(raw.length(), 120));
+        for (int i = 0; i < raw.length() && sb.length() < 120; i++) {
+            char c = raw.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || c == '.' || c == '_' || c == '-') {
+                sb.append(c);
+            } else {
+                sb.append('_');
+            }
+        }
+        return sb.length() == 0 ? "unknown" : sb.toString();
     }
 
     /**
@@ -496,14 +569,14 @@ public class PlaywrightContextManager {
      */
     private static void stabilizePage(Page page) {
         try {
-            VerboseLogging.logDebugIfVerbose(logger, "页面稳定化：确保窗口大小正确...");
+            VerboseLogging.logDebugIfVerbose(logger, "Page stabilization: ensuring correct window size...");
 
             int stabilizeWaitTimeout = PlaywrightManager.config().getStabilizeTimeout();
             LoadState loadState = getConfiguredLoadState();
             try {
                 page.waitForLoadState(loadState, new Page.WaitForLoadStateOptions().setTimeout(stabilizeWaitTimeout));
             } catch (Exception e) {
-                VerboseLogging.logDebugIfVerbose(logger, "页面加载等待超时（LoadState: {}），继续稳定化: {}", loadState, e.getMessage());
+                VerboseLogging.logDebugIfVerbose(logger, "Page load wait timed out (LoadState: {}), continuing stabilization: {}", loadState, e.getMessage());
             }
 
             Dimension screenSize = PlaywrightManager.config().getAvailableScreenSize();
@@ -519,10 +592,11 @@ public class PlaywrightContextManager {
             // WebKit 不支持 --window-position launch arg，完全依赖此 JS 定位，延迟尤为关键
             page.evaluate(String.format(
                     "window.resizeTo(%d, %d);"
-                    + "setTimeout(function() { window.moveTo(%d, %d); }, 300);",
+                    + "setTimeout(function() { window.moveTo(%d, %d); }, "
+                    + WebFrameworkConfig.PLAYWRIGHT_CONTEXT_STABILIZE_DELAY_MS.getIntValue() + ");",
                     logicalWidth, logicalHeight, 0, 0
             ));
-            VerboseLogging.logDebugIfVerbose(logger, "窗口最大化: window.resizeTo({}, {}), moveTo(0,0) delayed 300ms", logicalWidth, logicalHeight);
+            VerboseLogging.logDebugIfVerbose(logger, "Window maximize: window.resizeTo({}, {}), moveTo(0,0) delayed 300ms", logicalWidth, logicalHeight);
 
             page.evaluate(
                     "document.body.style.zoom = '100%'; "
@@ -553,9 +627,9 @@ public class PlaywrightContextManager {
                 VerboseLogging.logDebugIfVerbose(logger, "No custom viewport, keeping viewport from context (window-adapted)");
             }
 
-            VerboseLogging.logDebugIfVerbose(logger, "页面稳定化完成");
+            VerboseLogging.logDebugIfVerbose(logger, "Page stabilization completed");
         } catch (Exception e) {
-            logger.warn("页面稳定化失败: {}", e.getMessage(), e);
+            logger.warn("Page stabilization failed: {}", e.getMessage(), e);
         }
     }
 

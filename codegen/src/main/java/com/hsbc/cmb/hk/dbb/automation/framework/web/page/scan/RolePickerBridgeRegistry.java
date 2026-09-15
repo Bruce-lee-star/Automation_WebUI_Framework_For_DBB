@@ -83,7 +83,7 @@ final class RolePickerBridgeRegistry {
         }
         RolePickerSessionState.CTX_PICK_STATES.put(ctx, javaPickBySig);
         boolean first = RolePickerSessionState.CTX_BRIDGED.add(ctx);
-        log.info("[picker] 上下文桥 registerContextBridges：firstReg={}（命令/拾取/控制台桥，context 级一次注册）", first);
+        log.info("[picker] context bridges registerContextBridges: firstReg={} (command/pick/console bridges, registered once per context)", first);
         if (!first) return;
         // 命令桥：BindingCallback 的 Source 自带来源 Page，天然区分命令来自哪个页面
         // （新页/默认页共享同一绑定，CmdEvent.page 记录来源）。绑定对 context 下所有页面、所有导航存活。
@@ -179,11 +179,11 @@ final class RolePickerBridgeRegistry {
                     log.info("[picker][diag-onpick][BIND] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
                     if (changed) {
                         List<String> fpLog = merged.getFramePath();
-                        log.info("[picker] __roleOnPick 回传写入内存态：key={} pageClass={} framePath={}（当前内存态大小={}）", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fpLog == null || fpLog.isEmpty() ? "" : fpLog.toString()), map.size());
+                        log.info("[picker] __roleOnPick callback written to in-memory state: key={} pageClass={} framePath={} (current in-memory size={})", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fpLog == null || fpLog.isEmpty() ? "" : fpLog.toString()), map.size());
                     }
                 }
             } catch (Exception ex) {
-                log.warn("[picker] __roleOnPick 回传解析失败：{}", ex.getMessage());
+                log.warn("[picker] failed to parse __roleOnPick callback: {}", ex.getMessage());
             }
             return null;
         });
@@ -293,7 +293,7 @@ final class RolePickerBridgeRegistry {
                 // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
                 // Java 侧只需精确移除目标元素即可，不再做全量清空。
             } catch (Exception ex) {
-                log.warn("[picker] __roleOnDelete 回传解析失败：{}", ex.getMessage());
+                log.warn("[picker] failed to parse __roleOnDelete callback: {}", ex.getMessage());
             }
             return null;
         });
@@ -366,7 +366,7 @@ final class RolePickerBridgeRegistry {
                         log.info("[picker][diag-onpick][CONSOLE] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
                         if (changed) {
                             List<String> fplog = merged.getFramePath();
-                            log.info("[picker] __roleOnPick(console) 回传写入内存态：key={} pageClass={} framePath={}（当前内存态大小={}）", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fplog == null || fplog.isEmpty() ? "" : fplog.toString()), map.size());
+                            log.info("[picker] __roleOnPick(console) callback written to in-memory state: key={} pageClass={} framePath={} (current in-memory size={})", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fplog == null || fplog.isEmpty() ? "" : fplog.toString()), map.size());
                         }
                     }
                 } catch (Exception ignore) {}

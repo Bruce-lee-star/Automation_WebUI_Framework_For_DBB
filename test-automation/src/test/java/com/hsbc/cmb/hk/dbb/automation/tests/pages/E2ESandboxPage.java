@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
 
 /**
  * E2E 真实浏览器验证沙箱页（Page Object）。
@@ -26,7 +26,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBaseP
  * sandbox.message.getText();
  * }</pre>
  */
-public class E2ESandboxPage extends SerenityBasePage {
+public class E2ESandboxPage extends AbstractManagedPage {
 
     /** 页面主标题（h1），同时用于判断页面是否渲染完成。 */
     @Element("#title")

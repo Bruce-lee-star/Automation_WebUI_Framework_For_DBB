@@ -9,7 +9,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
  */
 public final class ConcurrentContextOptions {
 
-    private static final int DEFAULT_HARD_CAP = 16;
+    /** 配置误配为非正数时的兜底硬上限（历史默认 16），避免并发度退化为 0 使执行器无线程。 */
+    private static final int FALLBACK_HARD_CAP = 16;
 
     private final int parallelism;
     private final boolean failFast;
@@ -52,9 +53,18 @@ public final class ConcurrentContextOptions {
         return useVirtualThreads;
     }
 
-    /** 解析实际并发度：min(任务数, 并行度, 硬上限)。 */
+    /**
+     * 解析实际并发度：min(任务数, 并行度, 硬上限)。
+     * <p>硬上限由 {@code WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_MAX} 配置，可经
+     * -Dserenity.playwright.concurrent.max / serenity.properties 覆盖，默认按 CPU 核数自适应
+     * （见 {@code WebFrameworkConfig#adaptiveConcurrentMaxDefault}）；配置误配为非正数时回退
+     * {@link #FALLBACK_HARD_CAP}，保证并发度恒为正。
+     */
     public int resolvedParallelism(int taskCount) {
-        int cap = DEFAULT_HARD_CAP;
+        int cap = WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_MAX.getIntValue();
+        if (cap <= 0) {
+            cap = FALLBACK_HARD_CAP;
+        }
         if (parallelism <= 0) {
             throw new IllegalArgumentException("parallelism must be > 0");
         }

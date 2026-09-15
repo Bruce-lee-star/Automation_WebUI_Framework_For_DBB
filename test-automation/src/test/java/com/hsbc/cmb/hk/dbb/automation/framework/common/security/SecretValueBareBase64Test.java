@@ -6,40 +6,47 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * D2-2 密文判定收紧契约测试。
+ * 双格式密文透明解密 + 「绑定本地主密钥」契约测试。
  *
  * <p>核心保证：
  * <ul>
- *   <li>{@code ENC(...)} 显式标记 —— <b>始终</b>解密（主加密写法，不受开关影响）；</li>
- *   <li>裸 base64 —— <b>默认不再当密文</b>，原样返回（避免普通配置值被误判并"解"坏）；</li>
- *   <li>裸 base64 —— 仅在显式开关 {@code framework.secret.allow-bare-base64=true} 下才解密。</li>
+ *   <li>{@code ENC(...)} 显式标记 —— <b>始终</b>解密（主加密写法，不受裸密文开关影响）；</li>
+ *   <li>裸 base64 —— <b>默认即解密</b>（用户需求：双格式都支持），经 {@link ConfigCipher#looksLikeCiphertext}
+ *       启发式识别；显式设 {@code framework.secret.allow-bare-base64=false} 可关闭；</li>
+ *   <li><b>key 敏感</b>：密文形态但主密钥不匹配（GCM 认证失败）→ 两种写法都<b>失败快</b>
+ *       （抛 {@link IllegalStateException}），绝不静默放行 —— 确保「key 变则旧密文解不了」立即暴露；</li>
+ *   <li><b>仅明显非密文形态</b>（非合法 base64 / 长度不足以含 IV + GCM 标签）才原样返回。</li>
  * </ul>
  *
- * <p>主密钥不可用时（无 {@code ~/.dbb_automation_master_key} 且无法创建），
- * 加解密断言整体跳过 —— 本类验证的是"是否尝试解密"的判定逻辑，不验证加解密算法本身。
+ * <p>主密钥通过系统属性 {@code config.master.key} 注入（测试用固定 32 字节密钥），
+ * 无需读写 {@code user.home} 下的真实密钥文件，测试零副作用、可重复。
  */
 public class SecretValueBareBase64Test {
 
     private static final String PLAIN = "plain-secret-123";
 
-    /**
-     * 测试专用主密钥（64 hex = 32 字节）。经系统属性 {@code config.master.key} 注入
-     * —— 这样无需读写 {@code user.home} 下的真实密钥文件，测试零副作用、可重复。
-     */
+    /** 测试主密钥（64 hex = 32 字节）。 */
     private static final String TEST_MASTER_KEY =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /** 另一把不同的主密钥，用于验证「key 变则旧密文解不了」。 */
+    private static final String OTHER_MASTER_KEY =
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
     @BeforeEach
     public void setUp() {
         System.setProperty("config.master.key", TEST_MASTER_KEY);
+        System.setProperty("security.secret.strict", "true"); // 确定性：默认严格失败快
     }
 
     @AfterEach
     public void tearDown() {
         System.clearProperty(SecretValue.ALLOW_BARE_BASE64_KEY);
         System.clearProperty("config.master.key");
+        System.clearProperty("security.secret.strict");
     }
 
     /** 显式 ENC(...) 标记：无论开关如何都解密。 */
@@ -49,19 +56,67 @@ public class SecretValueBareBase64Test {
         assertEquals(PLAIN, SecretValue.decryptIfNeeded(enc));
     }
 
-    /** 裸 base64：默认不当密文，原样返回（普通配置值不再被误判）。 */
+    /** 裸 base64：默认即解密（双格式支持），无需显式开关。 */
     @Test
-    public void bareBase64IsNotDecryptedByDefault() {
+    public void bareBase64IsDecryptedByDefault() {
         String bare = bareCiphertextOrSkip();
-        assertEquals(bare, SecretValue.decryptIfNeeded(bare), "裸 base64 默认应原样返回，不再尝试解密");
+        assertEquals(PLAIN, SecretValue.decryptIfNeeded(bare), "裸 base64 默认应透明解密");
     }
 
-    /** 裸 base64：显式开启开关后才解密。 */
+    /** 裸 base64：显式关闭开关（allow-bare-base64=false）后不再解密，原样返回。 */
     @Test
-    public void bareBase64DecryptedOnlyWhenOptInEnabled() {
+    public void bareBase64OptOutWhenDisabled() {
         String bare = bareCiphertextOrSkip();
-        System.setProperty(SecretValue.ALLOW_BARE_BASE64_KEY, "true");
-        assertEquals(PLAIN, SecretValue.decryptIfNeeded(bare));
+        System.setProperty(SecretValue.ALLOW_BARE_BASE64_KEY, "false");
+        assertEquals(bare, SecretValue.decryptIfNeeded(bare), "关闭开关后裸 base64 应原样返回");
+    }
+
+    /** key 不匹配：ENC(...) 密文解密失败 → 失败快（抛 IllegalStateException）。 */
+    @Test
+    public void encCiphertextWithWrongKeyFailsFast() {
+        String enc = encryptOrSkip();
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(enc),
+                "key 变更后 ENC 密文应失败快，而非静默放行");
+    }
+
+    /** key 不匹配：裸密文解密失败 → 同样失败快（核心需求：key 变则旧密文解不了）。 */
+    @Test
+    public void bareCiphertextWithWrongKeyFailsFast() {
+        String bare = bareCiphertextOrSkip();
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
+                "key 变更后裸密文应失败快，而非静默放行");
+    }
+
+    /**
+     * 不加任何 {@code security.secret.strict} 配置：默认即严格失败快、不降级。
+     * 直接验证框架默认值（而非显式置 true 的用例），确保"零配置 = 不降级"。
+     */
+    @Test
+    public void failsFastByDefaultWithoutStrictConfig() {
+        String bare = bareCiphertextOrSkip();
+        System.clearProperty("security.secret.strict"); // 模拟"未配置"
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
+                "不配置 security.secret.strict 时默认失败快、不降级");
+    }
+
+    /** 非严格模式（-Dsecurity.secret.strict=false）：解密失败降级为保留原串（排障用）。 */
+    @Test
+    public void wrongKeyDegradesToOriginalWhenNotStrict() {
+        String bare = bareCiphertextOrSkip();
+        System.setProperty("config.master.key", OTHER_MASTER_KEY);
+        System.setProperty("security.secret.strict", "false");
+        assertEquals(bare, SecretValue.decryptIfNeeded(bare), "非严格模式应保留原串");
+    }
+
+    /** 明显非密文形态：原样返回，不抛异常（非 base64 / 长度过短）。 */
+    @Test
+    public void nonCiphertextFormsPassThrough() {
+        assertEquals("authorization,password", SecretValue.decryptIfNeeded("authorization,password"));
+        assertEquals("open", SecretValue.decryptIfNeeded("open"));
+        assertEquals("YWJj", SecretValue.decryptIfNeeded("YWJj"), "合法 base64 但长度过短应按明文返回");
     }
 
     // ═══════════════════════════════════════════════════════════

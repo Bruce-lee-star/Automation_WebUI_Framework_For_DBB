@@ -75,7 +75,7 @@ public final class PageFrameShadow {
     public static void switchToShadow(BasePage bp, String hostSelector) {
         requireNonNullPage(bp);
         if (hostSelector == null || hostSelector.isBlank()) {
-            throw new RuntimeException("switchToShadow: hostSelector 不能为空");
+            throw new RuntimeException("switchToShadow: hostSelector must not be blank");
         }
         bp.pushShadow(hostSelector.trim());
         log.info("Switched into shadowRoot of '{}' (depth={})", hostSelector, bp.getShadowDepth());

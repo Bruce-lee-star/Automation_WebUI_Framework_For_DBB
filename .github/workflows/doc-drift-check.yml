@@ -21,5 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: microsoft/setup-powershell@v1
       - name: Verify README versions match pom
-        run: bash tools/check-doc-drift.sh
+        shell: pwsh
+        run: pwsh tools/check-doc-drift.ps1

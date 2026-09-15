@@ -36,7 +36,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightSc
  * Browser 重启与崩溃重建契约（WEB-P1-6 Phase 1 接口提取）。
  *
  * <p>默认实现 {@link BrowserRestartImpl}（WEB-P1-1 拆分成果的逻辑承载体，已实例化为单例）。
- * 该接口把「重启 / 仅重建 Context / 共享 Browser 崩溃重建」这组韧性职责收敛为可替换契约，
+ * 该接口把「重启 / 崩溃重建」这组韧性职责收敛为可替换契约，
  * 供 {@code PlaywrightRuntime} 实例门面与测试替身经此接口替换实现。</p>
  *
  * @see BrowserRestartImpl
@@ -45,9 +45,7 @@ public interface BrowserRestart {
 
     void restartBrowser();
 
-    void restartContextOnly(String configId);
+    boolean rebuildBrowserIfDisconnected();
 
-    boolean rebuildSharedBrowserIfDisconnected();
-
-    boolean rebuildSharedBrowser();
+    boolean rebuildBrowser();
 }

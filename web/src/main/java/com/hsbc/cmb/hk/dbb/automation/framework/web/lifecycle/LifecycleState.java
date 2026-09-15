@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
+
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.Playwright;
@@ -37,7 +38,7 @@ import java.util.Set;
 public interface LifecycleState {
 
     // ==================== Playwright 实例表 ====================
-    // key = threadId:configId（共享 Browser 模式为 shared:configId）
+    // key = threadId:configId（每线程独立 Browser；共享 Browser 模式已从框架移除）
 
     /** 取指定 key 的 Playwright 实例，不存在则返回 {@code null}。 */
     Playwright getPlaywright(String key);

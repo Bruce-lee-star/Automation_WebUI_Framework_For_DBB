@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,21 +34,36 @@ public class ThreadContextRegistryLeakTest {
 
     @Test
     public void threadPoolThreadsAreCounted() throws Exception {
+        // 基线：先清空跨用例残留，避免主线程既有登记污染计数。
+        TestContextHolder.resetForCurrentThread();
         int base = TestContextHolder.activeContextCount();
         int threads = 4;
+        // 用 latch 让工作线程在"已登记上下文"状态下挂起，确保计数观测时线程仍强可达：
+        // ThreadContextRegistry 为 WeakHashMap<Thread,?>，若直接 shutdown 后线程被 GC，弱键条目会消失 → 误判失败。
         ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch registered = new CountDownLatch(threads);
+        CountDownLatch hold = new CountDownLatch(1);
         for (int i = 0; i < threads; i++) {
             pool.submit(() -> {
                 TestContextHolder.get().set(
                         ContextKey.of("t" + Thread.currentThread().getId(), String.class), "v");
+                registered.countDown();
+                try {
+                    hold.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
                 return null;
             });
         }
-        pool.shutdown();
-        pool.awaitTermination(5, TimeUnit.SECONDS);
+        assertTrue(registered.await(5, TimeUnit.SECONDS), "线程池线程应全部完成上下文登记");
 
         int afterPool = TestContextHolder.activeContextCount();
         assertTrue(
                 afterPool >= base + threads, "线程池线程应已登记上下文（base=" + base + ", after=" + afterPool + "）");
+
+        hold.countDown();
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
     }
 }

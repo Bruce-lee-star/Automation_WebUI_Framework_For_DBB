@@ -15,8 +15,9 @@
     <description>Cucumber/Serenity test suite: features, step definitions, CucumberTestRunnerIT. Aggregates all framework modules.</description>
 
     <properties>
-        <!-- Cucumber 标签过滤：默认只跑 @test1；用 -Dtags=@其他 覆盖；-Dtags= （空串）跑全部 -->
-        <tags>@test1</tags>
+        <!-- Cucumber 标签过滤（B-1/B-2）：默认跑所有未显式跳过的场景（not @skip）；
+             用 -Dtags=@其他 覆盖；-Dtags= （空串）跑全部。Runner 不写死标签，本属性为单一事实来源。 -->
+        <tags>not @skip</tags>
     </properties>
 
     <dependencies>
@@ -279,44 +280,35 @@
         </plugins>
     </build>
 
-    <!--
-      ⭐ 共享 Browser 模式「Context 隔离」实浏览器 E2E（设计文档 §6 待办 ②）。
-      默认关闭：本 E2E 仅在 serenity.playwright.shared.browser.enabled=true 时经 Assume 真正执行；
-      普通 mvn test 该开关为 false → 类内 @BeforeClass 优雅跳过，零侵入默认每线程独立 Browser 模型。
-      激活本 profile 后，surefire 在【独立 fork】中以共享开关启动 JVM，使 PlaywrightManager 的类加载期
-      静态标志 SHARED_BROWSER_MODE 取 true，从而真实跑通单 Browser + 多 Context 的隔离验证（需浏览器环境）。
-    -->
     <profiles>
+        <!--
+          ⭐ 引擎级并行（评审08类-4 / X-1 / W-5）：需在隔离前置（C-1 用例级绑定）闭环后启用。
+          显式 -Pparallel 才开启 cucumber/junit 并行；默认 mvn test/verify 仍串行，安全。
+        -->
         <profile>
-            <id>shared-browser-e2e</id>
+            <id>parallel</id>
+            <properties>
+                <!-- CON-1 引擎级并行：并发度旋钮（CI 用 -Dparallelism=N -DmaxPoolSize=M 覆盖） -->
+                <parallelism>4</parallelism>
+                <maxPoolSize>8</maxPoolSize>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>shared-browser-context-isolation-e2e</id>
-                                <phase>test</phase>
-                                <goals>
-                                    <goal>test</goal>
-                                </goals>
-                                <configuration>
-                                    <includes>
-                                        <include>**/SharedBrowserContextIsolationE2E.java</include>
-                                    </includes>
-                                    <forkCount>1</forkCount>
-                                    <reuseForks>false</reuseForks>
-                                    <useModulePath>false</useModulePath>
-                                    <failIfNoTests>false</failIfNoTests>
-                                    <!-- JDK16+ 强封装：Playwright/Serenity 反射增强需要打开 java.base 内部包 -->
-                                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.lang.reflect=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED</argLine>
-                                    <systemPropertyVariables>
-                                        <serenity.playwright.shared.browser.enabled>true</serenity.playwright.shared.browser.enabled>
-                                    </systemPropertyVariables>
-                                </configuration>
-                            </execution>
-                        </executions>
+                        <artifactId>maven-failsafe-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <!-- 开启 Cucumber 引擎级并行（默认串行，仅 -Pparallel 生效） -->
+                                <cucumber.execution.parallel.enabled>true</cucumber.execution.parallel.enabled>
+                                <cucumber.execution.parallel.config.fixed.parallelism>${parallelism}</cucumber.execution.parallel.config.fixed.parallelism>
+                                <cucumber.execution.parallel.config.fixed.max-pool-size>${maxPoolSize}</cucumber.execution.parallel.config.fixed.max-pool-size>
+                                <!-- JUnit5 用例内并行（与 Cucumber 引擎并行互补，仅影响纯 JUnit 测试） -->
+                                <junit.jupiter.execution.parallel.enabled>true</junit.jupiter.execution.parallel.enabled>
+                                <junit.jupiter.execution.parallel.config.strategy>dynamic</junit.jupiter.execution.parallel.config.strategy>
+                                <junit.jupiter.execution.parallel.config.dynamic.factor>2</junit.jupiter.execution.parallel.config.dynamic.factor>
+                            </systemPropertyVariables>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>

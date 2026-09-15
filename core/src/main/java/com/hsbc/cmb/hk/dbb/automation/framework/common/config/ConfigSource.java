@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.config;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.ConfigCipher;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SecretValue;
 
 import org.slf4j.Logger;
@@ -29,8 +30,9 @@ import java.util.ServiceLoader;
  *
  * <p>API 域走 Typesafe Config 自有解析，仅对字符串值复用 {@link #decrypt(String)} 同一解密能力。</p>
  *
- * <p>解密严格限定为字符串值：凡 {@code ENC(<base64>)} 或裸 {@code <base64>} 密文经
- * {@link SecretValue#decryptIfNeeded(String)} 透明解密，非密文原样返回；解密失败
+ * <p>解密严格限定为字符串值：来自系统属性 / 环境变量 / SPI 配置源的值凡 {@code ENC(<base64>)}
+ * 或裸 {@code <base64>} 密文均经 {@link SecretValue#decryptIfNeeded(String)} 透明解密，非密文原样返回；
+ * 兜底 {@code defaultValue}（代码内字面量）仅显式 {@code ENC(...)} 才解密（C-9）。解密失败
  * （主密钥缺失 / 密文损坏）保留原串，绝不中断配置加载。</p>
  */
 public final class ConfigSource {
@@ -67,6 +69,9 @@ public final class ConfigSource {
     /**
      * 按 key 解析配置值，并对 {@code ENC(<base64>)} / 裸 base64 密文透明解密。
      *
+     * <p>C-9：兜底 {@code defaultValue} 为<b>代码内受信字面量</b>，不作为"用户配置的密文"参与
+     * 裸密文启发式解密；仅当其显式以 {@code ENC(...)} 标记时才解密，避免误伤形似 base64 的默认值。
+     *
      * @param key          配置键（如 {@code playwright.browser.type}）
      * @param defaultValue 键缺失时的兜底默认值
      * @return 解析并解密后的配置值
@@ -91,14 +96,16 @@ public final class ConfigSource {
                 return SecretValue.decryptIfNeeded(fromResolver);
             }
         }
-        // 4) 默认值。
-        return SecretValue.decryptIfNeeded(defaultValue);
+        // 4) 默认值：代码内受信字面量，跳过裸密文启发式；仅显式 ENC(...) 标记才解密（C-9）。
+        return ConfigCipher.isEncrypted(defaultValue)
+                ? SecretValue.decryptIfNeeded(defaultValue)
+                : defaultValue;
     }
 
     /**
      * 配置键 → 环境变量名：大写，并将 {@code .} 与 {@code -} 规范为 {@code _}
      * （与 Serenity 的 ENV 映射保持一致）。
-     * 例：{@code serenity.playwright.shared.browser.enabled} → {@code SERENITY_PLAYWRIGHT_SHARED_BROWSER_ENABLED}。
+     * 例：{@code serenity.playwright.headless} → {@code SERENITY_PLAYWRIGHT_HEADLESS}。
      */
     static String toEnvKey(String key) {
         return key.toUpperCase(Locale.ROOT).replace('.', '_').replace('-', '_');

@@ -184,7 +184,7 @@ final class RolePickerCodeAssembler {
                         // 打印其 strategy/name/lk 与 aliveKeys 中同类键，便于定位 index(#0) 错位或字段不一致根因。
                         if (RolePickerConstants.STRATEGY_I18N.equals(e.getStrategy()) || (e.getStrategy() != null
                                 && RoleElementPicker.LOCATOR_IDENTITY_STRATEGIES.contains(e.getStrategy()))) {
-                            log.info("[picker][drop-diag] 步骤元素被对账剔除：strategy={}, name={}, lk={}, count={}, index={}, aliveKeys(i18n类)={}",
+                            log.info("[picker][drop-diag] step element removed by reconciliation: strategy={}, name={}, lk={}, count={}, index={}, aliveKeys(i18n class)={}",
                                     e.getStrategy(), e.getName(), lk, e.getCount(), e.getIndex(),
                                     aliveKeys.stream().filter(k -> k != null && k.startsWith(e.getStrategy() + ":")).limit(10).collect(java.util.stream.Collectors.toList()));
                         }
@@ -201,7 +201,7 @@ final class RolePickerCodeAssembler {
             entriesByPage.computeIfAbsent(pc, k -> new ArrayList<>());
         }
         if (droppedPicks > 0 || droppedSteps > 0) {
-            log.info("[picker] 生成前对账：剔除已删元素引用 {} 处，丢弃空 step {} 条", droppedPicks, droppedSteps);
+            log.info("[picker] pre-generation reconciliation: dropped {} deleted element reference(s), discarded {} empty step(s)", droppedPicks, droppedSteps);
         }
         // 【关键修复"只点了 2 个元素却生成很多步骤"】
         // 旧逻辑曾在此"兜底"：把 javaPickBySig 中位于 iframe 内但未被任何 step 引用的元素补进最后一个 step，

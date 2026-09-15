@@ -3,8 +3,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.options.Cookie;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
@@ -13,14 +11,11 @@ import java.util.List;
  *
  * <p>与 {@link LocatorFactory}/{@link PageFrameShadow} 同源模式：静态工具类、接收
  * {@code BasePage bp}、经 bp 的公开 API（{@code getContext}/{@code getPage}）与包级
- * seam（{@code ensurePageValid}/{@code ensureContextValid}）访问状态，日志路由回
- * {@code BasePage.class} 保持生产溯源一致。
+ * seam（{@code ensurePageValid}/{@code ensureContextValid}）访问状态。
  *
  * <p>全部方法均为 framework-internal。
  */
 public final class CookieManager {
-
-    private static final Logger log = LoggerFactory.getLogger(BasePage.class);
 
     private CookieManager() {
     }

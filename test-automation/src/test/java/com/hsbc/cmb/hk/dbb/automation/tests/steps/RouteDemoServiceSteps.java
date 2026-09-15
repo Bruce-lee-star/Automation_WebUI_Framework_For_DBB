@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.steps;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioDataNamespace;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
@@ -722,6 +723,12 @@ public class RouteDemoServiceSteps {
      * <p>POST /api/users 等写操作会真实改动服务端 USERS 列表，若不重置，
      * 前一个 Scenario 写入的数据会泄漏到后续 Scenario（跨用例污染）。
      * 必须在<b>路由规则注册之前</b>调用：reset 路径本身不应被测试规则拦截。
+     *
+     * <p><b>D-6 / PAR-4 隔离前置</b>：除 {@code @Before} 重置外，额外把"用例结束再重置基线"登记为
+     * 框架机器强制的清理钩子（{@link ScenarioDataNamespace#registerCleanup}），由
+     * {@link com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioContext#end(String)}
+     * 在 {@code @After} / 并发任务结束时执行。reset 本身幂等（重播种固定基线），
+     * 故并行下任一用例结束时都恢复基线，避免脏数据泄漏到并行邻居。
      */
     @Step("route demo: 重置后端数据")
     public void resetDemoData() {
@@ -730,5 +737,13 @@ public class RouteDemoServiceSteps {
         } catch (Exception e) {
             logger.warn("[DIAG] reset demo data failed (ignored): {}", e.getMessage());
         }
+        // 登记用例级数据隔离清理（幂等 reset，框架机器强制于 @After 执行）
+        ScenarioDataNamespace.registerCleanup(() -> {
+            try {
+                post("/reset", "{}");
+            } catch (Exception ignored) {
+                // 后端不可达时静默：与 @Before reset 同策略，不阻断用例收尾
+            }
+        });
     }
 }

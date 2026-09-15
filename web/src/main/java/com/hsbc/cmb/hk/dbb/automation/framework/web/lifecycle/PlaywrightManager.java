@@ -113,19 +113,14 @@ public class PlaywrightManager {
     // 共享 ConcurrentHashMap 仅作为跨线程安全的回收/清理容器（供 cleanupAll 统一关闭），
     // 不再像旧实现那样按 configId 跨线程复用同一个 Browser（评审 P0：单点故障 + 全局串行化）。
     //
-    //  例外——共享 Browser 模式（serenity.playwright.shared.browser.enabled=true）：
-    // 此时 PlaywrightRuntime.instance().browserRegistry.keyFor() 返回 "shared:configId"，所有线程【有意】复用同一个 Browser 实例，
-    // 隔离性改由 per-thread 的 BrowserContext 保证（Playwright 官方并发模型）。
-    // 该模式下的配套约束见 restartBrowser()：重启降级为「仅重建本线程 Context」，绝不关闭共享 Browser。
 
-    // 【锁已收口】doc16 Phase 3：三把锁（per-thread Browser 锁 / SHARED_BROWSER_LOCK / CONTEXT_LOCK / PAGE_LOCK）
+
+    // 【锁已收口】doc16 Phase 3：三把锁（per-thread Browser 锁 / CONTEXT_LOCK / PAGE_LOCK）
     // 全部迁入 LifecycleLockMediator 并改为 private，本门面不再暴露任何锁对象。
     // 协作者一律经 LifecycleLockMediator.withXxxLock(...) 进入临界区，
     // 从而消除「外部按任意顺序 synchronized 同一锁 / 长期劫持锁对象」的风险（锁顺序由中介集中保证）。
 
-    // 共享模式下 Browser/Playwright 实例的存储键前缀（去掉 threadId 维度，使所有线程命中同一实例）
-    // 包级私有：供同包 BrowserRegistry 协作访问（WEB-P1-1 Step 3）。
-    public static final String SHARED_KEY_PREFIX = "shared:";
+
 
     // 框架状态引用
     static final FrameworkState frameworkState = FrameworkState.getInstance();
@@ -180,105 +175,15 @@ public class PlaywrightManager {
         PlaywrightRuntime.instance().browserRegistry.setConfigId(configId);
     }
 
-    public static String sharedConfigId() {
-        return PlaywrightRuntime.instance().browserRegistry.sharedConfigId();
-    }
-
     /**
-     * 构造「线程隔离」存储键（T3-2 企业级隔离）。
-     * <p>旧实现按 configId 在共享 Map 中跨线程复用同一 Browser 实例（评审 P0：单点故障 + 全局串行化）。
-     * 现以 {@code threadId:configId} 为键，使每个 worker 线程拥有独立 Browser/Playwright 实例——
-     * 并行场景下各 scenario 线程互不共享 Browser 对象，故障与 {@code restartBrowser} 作用域均收敛到本线程。
-     * 共享 {@code ConcurrentHashMap} 仅作为线程安全的回收容器，KEY 保证 VALUE 永不跨线程共享。</p>
+     * 并发 worker 使用的规范 configId（仅含浏览器类型 / headed 维度，如 {@code "chromium_headless_"}）。
      *
-     * @param configId 当前线程的浏览器配置标识
-     * @return 线程隔离的存储键
+     * <p>各 worker 线程设置同一规范 configId，但 {@code BrowserRegistry.keyFor} 仍含 {@code threadId} 维度，
+     * 故每个线程拿到<b>各自独立</b>的 Browser 实例（每线程独立 Browser + 每用例独立 Context）。
+     * 此值与「共享 Browser」无关——它只统一浏览器形态，不共享 Browser 对象。</p>
      */
-    /**
-     * JVM 级<b>稳定</b>开关：是否启用「共享 Browser」模式（一个 Browser 实例 + 多 Context 并发）。
-     *
-     * <p><b>为何惰性解析并缓存（修复 F5）：</b>旧实现于 {@code PlaywrightManager} 类加载期通过
-     * {@code public static final} 直接冻结取值，而彼时 {@code WebFrameworkConfig} 尚未就绪——
-     * Serenity 合并源、{@code -D} 覆盖等可能尚未注入，取值被<b>静默锁死</b>为默认值，
-     * 即使后续配置生效也无济于事。现改为<b>首次访问时惰性解析并缓存</b>（双重检查锁），
-     * 保证在配置真正就绪（{@code FrameworkCore.initialize()} 之后的首次浏览器访问）后才定下值，
-     * 且 JVM 内只解析一次、全程稳定——既满足并发隔离模型对「不可变」的要求，又消除类加载期固化缺陷。
-     *
-     * <p><b>解析失败 fail-fast（修复 F5）：</b>底层 {@link #parseSharedBrowserMode(String)} 对非空但
-     * 非 {@code true}/{@code false} 的非法值直接抛出 {@link ConfigurationException}，不再静默降级为 false，
-     * 避免「配置写错却以为已生效」的排查黑洞。空白 / 缺省仍按 false 处理（属未配置，非解析失败）。
-     *
-     * <p>由 {@code serenity.playwright.shared.browser.enabled} 控制，默认 {@code false}
-     * （保持 T3-2 每线程独立 Browser 的既有行为）。
-     */
-    private static volatile Boolean sharedBrowserMode = null;
-
-    /**
-     * 当前 JVM 是否启用「共享 Browser」模式。
-     *
-     * <p>首次调用时惰性解析并缓存（见类级 Javadoc）；解析结果在 JVM 生命周期内稳定。
-     *
-     * @return true 表示共享单个 Browser，各线程通过独立 BrowserContext 隔离
-     * @throws ConfigurationException 当配置值非法（非空且非 true/false）时 fail-fast
-     * @apiNote <b>框架内部能力（生命周期决策用）</b>，业务 Page / 业务步骤请勿依赖：
-     *          该取值决定并发隔离模型，业务侧依赖它会导致与框架生命周期耦合。
-     */
-    public static boolean isSharedBrowserMode() {
-        Boolean cached = sharedBrowserMode;
-        if (cached != null) {
-            return cached;
-        }
-        synchronized (PlaywrightManager.class) {
-            cached = sharedBrowserMode;
-            if (cached != null) {
-                return cached;
-            }
-            boolean resolved = PlaywrightRuntime.instance().browserRegistry.resolveSharedBrowserMode();
-            sharedBrowserMode = resolved;
-            return resolved;
-        }
-    }
-
-    /**
-     * 并发执行器专用：按 Playwright 官方推荐的并发模型，主动启用「共享 Browser（单 Browser + 多 Context）」。
-     *
-     * <p>Playwright 官方并发模型即复用单个 Browser 进程、以 per-thread 的 {@code BrowserContext} 做隔离。
-     * 因此 {@code ConcurrentScenarioExecutor.prepareSharedBrowser()} 在预热阶段显式开启本模式，
-     * <b>无需</b>操作员额外配置 {@code serenity.playwright.shared.browser.enabled}。
-     * 该取值在 JVM 生命周期内惰性缓存、全程稳定（见 {@link #isSharedBrowserMode()}），
-     * 且仅可在浏览器首次创建前置为 {@code true}。</p>
-     *
-     * @apiNote 仅并发执行器在预热期调用；普通 Serenity 串行运行仍走默认「每线程独立 Browser」（配置缺省为 false），不应调用本方法。
-     */
-    public static void enableSharedBrowserMode() {
-        sharedBrowserMode = Boolean.TRUE;
-    }
-
-    /**
-     * 解析共享 Browser 开关的原始配置值（<b>纯函数</b>，便于单测覆盖各种输入）。
-     *
-     * <p>容错策略：{@code null} / 空白 → false（默认值）；无法识别的非法值 → false 并<b>告警</b>，
-     * 避免静默降级后被误认为「已开启」而难以排查。</p>
-     *
-     * @param rawValue 原始配置值，可为 null
-     * @return 是否启用共享 Browser 模式
-     */
-    public static boolean parseSharedBrowserMode(String rawValue) {
-        if (rawValue == null || rawValue.isBlank()) {
-            return false;
-        }
-        String normalized = rawValue.trim();
-        if ("true".equalsIgnoreCase(normalized)) {
-            return true;
-        }
-        if ("false".equalsIgnoreCase(normalized)) {
-            return false;
-        }
-        // 修复 F5：非法非空值 fail-fast，不再静默降级为 false。
-        throw new ConfigurationException(
-                "[shared-browser] Invalid value '" + rawValue + "' for "
-                        + "serenity.playwright.shared.browser.enabled (expected true/false); "
-                        + "refusing to start with an ambiguous shared-browser configuration");
+    public static String workerConfigId() {
+        return PlaywrightRuntime.instance().browserRegistry.workerConfigId();
     }
 
     /**
@@ -521,23 +426,23 @@ public class PlaywrightManager {
     }
 
     /**
-     * 共享 Browser 崩溃后的进程级单飞重建（由 {@code BrowserCrashGuard} 调用）。
-     * 委托 {@link BrowserRestart}；仅共享模式有效，非共享模式直接返回 true（详见 {@code BrowserRestart}）。
+     * 断开的 Browser 重建（由 {@code BrowserCrashGuard} 调用）。
+     * 委托 {@link BrowserRestart}；每线程独立 Browser 模型下重建本线程 Browser（详见 {@code BrowserRestart}）。
      *
      * @return true 表示可继续重跑（已重建或无需重建）
      */
-    public static boolean rebuildSharedBrowserIfDisconnected() {
-        return PlaywrightRuntime.instance().browserRestart.rebuildSharedBrowserIfDisconnected();
+    public static boolean rebuildBrowserIfDisconnected() {
+        return PlaywrightRuntime.instance().browserRestart.rebuildBrowserIfDisconnected();
     }
 
     /**
-     * 无条件重建共享 Browser（句柄损坏场景的强制恢复动作，由 {@code BrowserCrashGuard#recoverForced()} 调用）。
-     * 委托 {@link BrowserRestart}；仅共享模式有效，非共享模式直接返回 true。
+     * 无条件重建本线程 Browser（句柄损坏场景的强制恢复动作，由 {@code BrowserCrashGuard#recoverForced()} 调用）。
+     * 委托 {@link BrowserRestart}；每线程独立 Browser 模型下重建本线程 Browser。
      *
      * @return 始终返回 true（表示已执行重建）
      */
-    public static boolean rebuildSharedBrowser() {
-        return PlaywrightRuntime.instance().browserRestart.rebuildSharedBrowser();
+    public static boolean rebuildBrowser() {
+        return PlaywrightRuntime.instance().browserRestart.rebuildBrowser();
     }
 
     public static void cleanupForScenario() {

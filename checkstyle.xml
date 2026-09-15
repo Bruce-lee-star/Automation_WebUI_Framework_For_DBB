@@ -3,7 +3,15 @@
         "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
         "https://checkstyle.org/dtds/configuration_1_3.dtd">
 <!--
-  Framework Checkstyle 门禁配置。
+  Framework Checkstyle 门禁配置（A-1 扩充：由 1 条规则提升到 8 条）。
+
+  设计原则：
+  1. severity=error；但 maven-checkstyle-plugin:3.6.0 的 check 目标不支持 <baseline> 且离线 verify 不产生 site skin，
+     故本地 verify 置 failOnViolation=false（仅报告），"只减不增"硬门禁由 build.yml 计数比对实现（见下）。
+  2. 存量违规经根 checkstyle-baseline.xml（相对路径，聚合各模块，共 1325 条）祖父化，
+     门禁只禁止"新增违规"（基线只减不增，见 build.yml / 13 文档 A-1）。
+  3. 仅校验框架主源码（plugin 侧 includes=**/framework/**，includeTestSourceDirectory=false），
+     测试源码（负向用例刻意触发/忽略异常）不纳入本门禁。
 
   D7-3：框架内禁止静默吞异常 —— catch 块不得为空，也不得仅含注释。
     EmptyCatchBlock 默认 commentFormat=".*"，即"有注释就算非空"，这会让
@@ -12,18 +20,41 @@
     注意：不能写成 commentFormat="" —— 空正则的 find() 恒为 true，
     注释会永远"算数"，规则被静默绕过（实测 0 违规的假象即由此而来）。
     合规写法必须至少含一条真实语句：计数器自增 / WARN(含)以上日志 / 重抛 / 恢复动作。
-
-  severity=error：配合 maven-checkstyle-plugin 的 failOnViolation=true 直接卡 verify。
 -->
 <module name="Checker">
     <property name="severity" value="error"/>
     <property name="charset" value="UTF-8"/>
     <property name="fileExtensions" value="java"/>
 
+    <!-- A-1：单文件体量上限 2000 行（对齐 route 包 <2k 标准，门禁只拦更严重膨胀）。
+         FileLength 为 Checker 级模块，不能置于 TreeWalker 内。 -->
+    <module name="FileLength">
+        <property name="max" value="2000"/>
+        <property name="fileExtensions" value="java"/>
+    </module>
+
     <module name="TreeWalker">
         <!-- D7-3：禁止空 catch（含"仅注释"的静默吞异常） -->
         <module name="EmptyCatchBlock">
             <property name="commentFormat" value="a^"/>
         </module>
+
+        <!-- A-1：控制流强制花括号，避免 dangling-else / 误删导致的语义漂移 -->
+        <module name="NeedBraces"/>
+
+        <!-- A-1：等价契约完整性，缺其一即数据模型哈希不一致隐患 -->
+        <module name="EqualsHashCode"/>
+
+        <!-- A-1：覆盖父类/接口方法必须显式 @Override，重构签名时编译器帮拦 -->
+        <module name="MissingOverride"/>
+
+        <!-- A-1：长整型字面量必须带 L 后缀，防止 1 vs l 视觉歧义 -->
+        <module name="UpperEll"/>
+
+        <!-- A-1：数组类型写在变量名前（Java 风格），避免 int[] a 与 int a[] 混用 -->
+        <module name="ArrayTypeStyle"/>
+
+        <!-- A-1：禁止未使用的 import（默认 processJavadoc=true，{@link} 引用不算未用） -->
+        <module name="UnusedImports"/>
     </module>
 </module>

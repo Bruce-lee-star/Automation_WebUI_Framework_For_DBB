@@ -5,7 +5,6 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Route;
 
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,14 +28,16 @@ public class ApiMonitorOrchestrator {
 
     private static final org.slf4j.Logger LOGGER = org.slf4j.LoggerFactory.getLogger(ApiMonitorOrchestrator.class);
 
-    /** 全局已注册的 pattern（去重核心：多个 case 监控同一 API 只注册一次） */
-    private final Set<String> registeredPatterns = ConcurrentHashMap.newKeySet();
+    /**
+     * 每 BrowserContext 已注册 pattern（去重核心）。
+     * <p>X-3 / R-2：从进程级单例改为 <b>context 级</b>——并行下不同 context 各自独立去重，
+     * 不再因全局去重导致后注册的 context 跳过自己的监控规则注册（缺口型跨 context 串扰）。
+     * 同一 context 内跨 case 去重语义保持不变。
+     */
+    private final Map<BrowserContext, Set<String>> registeredPatternsByContext = new ConcurrentHashMap<>();
 
-    /** pattern → apiOwner（供失败时反查通知对象，单人） */
+    /** pattern → apiOwner（供失败时反查通知对象，单人）。owner 与 pattern 绑定属配置元数据，全局共享无串扰风险。 */
     private final Map<String, String> patternToOwner = new ConcurrentHashMap<>();
-
-    /** pattern → 注册时所在的 BrowserContext（用于 context 关闭时精确释放去重标记，防跨 context 残留） */
-    private final Map<String, BrowserContext> patternToContext = new ConcurrentHashMap<>();
 
     /** 已注册 context 关闭钩子的 context 集合（幂等，防止重复注册 onClose 监听） */
     private final Set<BrowserContext> closeHooks = ConcurrentHashMap.newKeySet();
@@ -91,18 +92,19 @@ public class ApiMonitorOrchestrator {
         }
 
         int registered = 0;
-        //  为当前 context 注册一次关闭钩子：context 关闭时自动释放其下 pattern 的去重标记与 owner 映射，
-        //    使进程级单例的 registeredPatterns 不会跨 context 无限累积（原实现仅依赖套件结束的 clear()，
-        //    而 clear() 当前无人调用，存在状态残留隐患）。不影响「同一 context 内跨 case 去重」的设计意图。
-        ensureCloseHook(page.context());
+        BrowserContext ctx = page.context();
+        //  为当前 context 注册一次关闭钩子：context 关闭时自动释放其下 pattern 的去重标记，防跨 context 残留。
+        ensureCloseHook(ctx);
+        //  X-3 / R-2：去重按 context 隔离，避免并行下后注册 context 被全局去重跳过（缺口型串扰）。
+        Set<String> reg = registeredPatternsByContext.computeIfAbsent(ctx, k -> ConcurrentHashMap.newKeySet());
         for (Map.Entry<String, ApiMonitorConfig.EndpointConfig> e : endpoints.entrySet()) {
             String pattern = e.getKey();
             ApiMonitorConfig.EndpointConfig cfg = e.getValue();
 
-            // 去重：同一 pattern 只注册一次
-            if (!registeredPatterns.add(pattern)) {
+            // 去重：同一 context 内同一 pattern 只注册一次
+            if (!reg.add(pattern)) {
                 VerboseLogging.logDebugIfVerbose(LOGGER,
-                        "[ApiMonitor] pattern '{}' 已注册，跳过重复监控", pattern);
+                        "[ApiMonitor] pattern '{}' 已注册（context 内去重），跳过重复监控", pattern);
                 continue;
             }
 
@@ -117,23 +119,23 @@ public class ApiMonitorOrchestrator {
                         .start();
                 registered++;
                 patternToOwner.put(pattern, cfg.getApiOwner());
-                patternToContext.put(pattern, page.context());
                 VerboseLogging.logInfoIfVerbose(LOGGER,
                         "[ApiMonitor] 已注册监控：功能='{}' pattern='{}' owner='{}'",
                         featureKey, pattern, cfg.getApiOwner());
             } catch (RuntimeException ex) {
-                // 注册失败不影响主流程，但移除去重标记与 context 关联以便下次重试
-                registeredPatterns.remove(pattern);
-                patternToContext.remove(pattern);
-                LOGGER.warn("[ApiMonitor] 注册监控失败：pattern='{}' error={}", pattern, ex.getMessage());
+                // 注册失败不影响主流程，但移除去重标记以便同 context 下次重试
+                reg.remove(pattern);
+                LOGGER.warn("[ApiMonitor] Failed to register monitor: pattern='{}' error={}", pattern, ex.getMessage());
             }
         }
         return registered;
     }
 
-    /** 是否已为该 pattern 注册过监控（供外部判断是否跳过） */
-    public boolean isRegistered(String pattern) {
-        return registeredPatterns.contains(pattern);
+    /** 指定 context 是否已注册该 pattern（context 级去重查询；X-3 / R-2 后不再提供无 context 版本）。 */
+    public boolean isRegistered(String pattern, BrowserContext context) {
+        if (pattern == null || context == null) return false;
+        Set<String> reg = registeredPatternsByContext.get(context);
+        return reg != null && reg.contains(pattern);
     }
 
     /** 反查 pattern 对应的 apiOwner（失败通知用，单人） */
@@ -143,9 +145,8 @@ public class ApiMonitorOrchestrator {
 
     /** 清空去重记录（测试套件结束时调用；亦作为 {@link #deregisterContext(BrowserContext)} 的兜底） */
     public void clear() {
-        registeredPatterns.clear();
+        registeredPatternsByContext.clear();
         patternToOwner.clear();
-        patternToContext.clear();
         closeHooks.clear();
     }
 
@@ -179,16 +180,8 @@ public class ApiMonitorOrchestrator {
             return;
         }
         closeHooks.remove(context);
-        Set<String> toRemove = new HashSet<>();
-        for (Map.Entry<String, BrowserContext> entry : patternToContext.entrySet()) {
-            if (entry.getValue() == context) {
-                toRemove.add(entry.getKey());
-            }
-        }
-        for (String pattern : toRemove) {
-            registeredPatterns.remove(pattern);
-            patternToOwner.remove(pattern);
-            patternToContext.remove(pattern);
-        }
+        //  X-3 / R-2：仅释放该 context 的注册集合，其它 context 不受影响（消除跨 context 残留）
+        registeredPatternsByContext.remove(context);
+        // patternToOwner 为全局配置元数据（owner 与 pattern 绑定，跨 context 不变），套件结束由 clear() 统一清空
     }
 }

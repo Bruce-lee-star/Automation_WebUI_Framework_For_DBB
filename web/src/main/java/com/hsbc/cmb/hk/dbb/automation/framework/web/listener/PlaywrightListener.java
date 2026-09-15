@@ -49,8 +49,9 @@ public class PlaywrightListener implements StepListener {
 
     private final ScreenshotStrategy screenshotStrategy;
 
-    // 用于跟踪当前测试结果，用于 FOR_FAILURES 等略
-    private final ThreadLocal<TestResult> currentTestResult = new ThreadLocal<>();
+    //  W-8 收拢：原裸 ThreadLocal 迁入 TestContext（per-thread 等价，清理统一走 TestContextHolder.remove）
+    private static final ContextKey<TestResult> CURRENT_TEST_RESULT_KEY =
+            ContextKey.of("playwrightListener.currentTestResult", TestResult.class);
 
     //  T3-1 收拢：4 个 static ThreadLocal 迁入 TestContext（原均为默认 null 语义，迁移后等价）
     private static final ContextKey<Long> TEST_START_TIME_KEY = ContextKey.of("playwrightListener.testStartTime", Long.class);
@@ -130,15 +131,39 @@ public class PlaywrightListener implements StepListener {
     }
 
     // ── D4-1：FrameworkListener 桥接所需的 per-thread 状态 ──
-    //  TestContextHolder 会在 testFinished 的 cleanupThreadLocals() 中被清空，
-    //  而 afterScenario 需在那之后仍能拿到场景名，故此处独立持有并在收尾 remove()。
-    private static final ThreadLocal<String> CURRENT_SCENARIO_NAME = new ThreadLocal<>();
-    private static final ThreadLocal<String> CURRENT_STEP_TITLE = new ThreadLocal<>();
-    private static final ThreadLocal<java.util.concurrent.atomic.AtomicBoolean> AFTER_STEP_FIRED =
-            ThreadLocal.withInitial(java.util.concurrent.atomic.AtomicBoolean::new);
+    //  W-8 收拢：原裸 ThreadLocal 迁入 TestContext（per-thread 等价）。
+    //  核实 cleanupThreadLocals() 仅移除特定 ContextKey、不整上下文 reset（无 resetForCurrentThread 调用），
+    //  故此处键在 cleanupThreadLocals 之后仍可被 fireAfterScenario 读取；移除统一在 fireAfterScenario finally 进行。
+    private static final ContextKey<String> CURRENT_SCENARIO_NAME_KEY =
+            ContextKey.of("playwrightListener.currentScenarioName", String.class);
+    private static final ContextKey<String> CURRENT_STEP_TITLE_KEY =
+            ContextKey.of("playwrightListener.currentStepTitle", String.class);
+    private static final ContextKey<java.util.concurrent.atomic.AtomicBoolean> AFTER_STEP_FIRED_KEY =
+            ContextKey.of("playwrightListener.afterStepFired", java.util.concurrent.atomic.AtomicBoolean.class);
+
+    /** W-8：获取或创建当前线程的"步骤已触发"标志（等价原 ThreadLocal.withInitial(AtomicBoolean::new)）。 */
+    private static java.util.concurrent.atomic.AtomicBoolean afterStepFired() {
+        java.util.concurrent.atomic.AtomicBoolean b = TestContextHolder.get().get(AFTER_STEP_FIRED_KEY);
+        if (b == null) {
+            b = new java.util.concurrent.atomic.AtomicBoolean();
+            TestContextHolder.get().set(AFTER_STEP_FIRED_KEY, b);
+        }
+        return b;
+    }
     /** D4-2：本步骤是否发生过失败（用于产出步骤级结果）。 */
-    private static final ThreadLocal<java.util.concurrent.atomic.AtomicBoolean> STEP_FAILED =
-            ThreadLocal.withInitial(java.util.concurrent.atomic.AtomicBoolean::new);
+    //  W-8 收拢：原裸 ThreadLocal 迁入 TestContext（per-thread 等价，get-or-create 等价 withInitial）。
+    private static final ContextKey<java.util.concurrent.atomic.AtomicBoolean> STEP_FAILED_KEY =
+            ContextKey.of("playwrightListener.stepFailed", java.util.concurrent.atomic.AtomicBoolean.class);
+
+    /** W-8：获取或创建当前线程的"本步骤已失败"标志（等价原 ThreadLocal.withInitial(AtomicBoolean::new)）。 */
+    private static java.util.concurrent.atomic.AtomicBoolean stepFailed() {
+        java.util.concurrent.atomic.AtomicBoolean b = TestContextHolder.get().get(STEP_FAILED_KEY);
+        if (b == null) {
+            b = new java.util.concurrent.atomic.AtomicBoolean();
+            TestContextHolder.get().set(STEP_FAILED_KEY, b);
+        }
+        return b;
+    }
 
     @Override
     public void testStarted(String testName) {
@@ -150,11 +175,11 @@ public class PlaywrightListener implements StepListener {
         //  D3-1：把 scenario 标识写入 MDC，使控制台 / 落盘日志可按用例串联（并行执行排障关键）
         LogContext.beginScenario(uniqueTestName);
         //  D4-1：桥接业务监听器（业务只实现 FrameworkListener，不接触 Serenity 事件）
-        CURRENT_SCENARIO_NAME.set(uniqueTestName);
-        AFTER_STEP_FIRED.get().set(false);
+        TestContextHolder.get().set(CURRENT_SCENARIO_NAME_KEY, uniqueTestName);
+        afterStepFired().set(false);
         FrameworkListenerBridge.beforeScenario(uniqueTestName);
         TestContextHolder.get().set(TEST_START_TIME_KEY,System.currentTimeMillis());
-        currentTestResult.set(TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
+        TestContextHolder.get().set(CURRENT_TEST_RESULT_KEY, TestResult.PENDING); // 初始化为PENDING，避免默认为SUCCESS导致统计错误
 
         //  新增：重置 API 监控上下文（route 未启用时整体跳过）
         withRouteLifecycle(lc -> {
@@ -212,7 +237,7 @@ public class PlaywrightListener implements StepListener {
             String testName = TestContextHolder.get().get(CURRENT_TEST_NAME_KEY);
 
             // 根据策略和测试结果决定是否截图
-            TestResult result = currentTestResult.get();
+            TestResult result = TestContextHolder.get().get(CURRENT_TEST_RESULT_KEY);
             boolean shouldTakeScreenshot = screenshotStrategy.shouldTakeScreenshotFor(result);
 
             if (shouldTakeScreenshot && screenshotStrategy != ScreenshotStrategy.DISABLED) {
@@ -339,8 +364,8 @@ public class PlaywrightListener implements StepListener {
         }
 
         //  D4-1：桥接业务监听器的步骤开始回调
-        CURRENT_STEP_TITLE.set(step.getTitle());
-        AFTER_STEP_FIRED.get().set(false);
+        TestContextHolder.get().set(CURRENT_STEP_TITLE_KEY, step.getTitle());
+        afterStepFired().set(false);
         FrameworkListenerBridge.beforeStep(step.getTitle());
 
         recordTestData("stepStart_" + step.getTitle(), System.currentTimeMillis());
@@ -352,16 +377,16 @@ public class PlaywrightListener implements StepListener {
      * 故用 per-thread 标志幂等，避免业务监听器收到重复通知。
      */
     private static void fireAfterStep() {
-        if (!AFTER_STEP_FIRED.get().compareAndSet(false, true)) {
+        if (!afterStepFired().compareAndSet(false, true)) {
             return;
         }
-        FrameworkListenerBridge.afterStep(CURRENT_STEP_TITLE.get());
+        FrameworkListenerBridge.afterStep(TestContextHolder.get().get(CURRENT_STEP_TITLE_KEY));
 
         //  D4-2：产出步骤级结果（模型为框架自有类型，与报告引擎解耦）
         Long stepStart = TestContextHolder.get().get(STEP_START_TIME_KEY);
-        boolean failed = STEP_FAILED.get().getAndSet(false);
+        boolean failed = stepFailed().getAndSet(false);
         ResultReporters.reportStep(new StepResult(
-                CURRENT_STEP_TITLE.get(),
+                TestContextHolder.get().get(CURRENT_STEP_TITLE_KEY),
                 failed
                         ? com.hsbc.cmb.hk.dbb.automation.framework.common.result.TestResult.FAILURE
                         : com.hsbc.cmb.hk.dbb.automation.framework.common.result.TestResult.SUCCESS,
@@ -376,13 +401,13 @@ public class PlaywrightListener implements StepListener {
      * 且线程池复用前必须 remove，杜绝跨用例串扰。
      */
     private static void fireAfterScenario(boolean failed) {
-        String scenarioName = CURRENT_SCENARIO_NAME.get();
+        String scenarioName = TestContextHolder.get().get(CURRENT_SCENARIO_NAME_KEY);
         try {
             FrameworkListenerBridge.afterScenario(scenarioName, failed);
         } finally {
-            CURRENT_SCENARIO_NAME.remove();
-            CURRENT_STEP_TITLE.remove();
-            AFTER_STEP_FIRED.remove();
+            TestContextHolder.get().remove(CURRENT_SCENARIO_NAME_KEY);
+            TestContextHolder.get().remove(CURRENT_STEP_TITLE_KEY);
+            TestContextHolder.get().remove(AFTER_STEP_FIRED_KEY);
         }
     }
 
@@ -467,7 +492,7 @@ public class PlaywrightListener implements StepListener {
         if (failure == null) return;
 
         //  D4-2：标记本步骤失败，供步骤级结果使用（在防重入判断之前，确保一定被记录）
-        STEP_FAILED.get().set(true);
+        stepFailed().set(true);
 
         //  防重复：如果已经发送过失败截图（如 stepFailed param 版已处理），直接跳过
         if (ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
@@ -652,10 +677,11 @@ public class PlaywrightListener implements StepListener {
 
         TestContextHolder.get().remove(TEST_START_TIME_KEY);
         TestContextHolder.get().remove(CURRENT_TEST_NAME_KEY);
-        currentTestResult.remove();
+        TestContextHolder.get().remove(CURRENT_TEST_RESULT_KEY);
         TestContextHolder.get().remove(STEP_START_TIME_KEY);
         TestContextHolder.get().remove(CURRENT_STEP_NAME_KEY);
         TestContextHolder.get().remove(CURRENT_CUCUMBER_STEP_KEY);
+        TestContextHolder.get().remove(STEP_FAILED_KEY);
         //  清理收拢后的守卫标志与失败日志去重记录（防双重处理 / 重入 / API 失败），避免跨 scenario 残留
         ListenerGuard.clearForThread();
         //  清理 per-thread 截图重入标记
@@ -1013,7 +1039,7 @@ public class PlaywrightListener implements StepListener {
             StepFailureAggregator.checkAndMarkSoftAssertionFailures(result);
             // 更新当前测试结果
             if (result != null && result.getResult() != null) {
-                currentTestResult.set(result.getResult());
+                TestContextHolder.get().set(CURRENT_TEST_RESULT_KEY, result.getResult());
             }
             testFinishedInternal();
 
@@ -1213,7 +1239,7 @@ public class PlaywrightListener implements StepListener {
         // 简洁输出：仅显示测试名 + 异常消息第一行，不打印完整堆栈（由 Serenity 报告保留）
         String testTitle = result != null ? result.getTitle() : "unknown";
         //  D4-1：把真实异常桥接给业务监听器（换引擎时业务代码无需改动）
-        FrameworkListenerBridge.onFailure(CURRENT_SCENARIO_NAME.get(), throwable);
+        FrameworkListenerBridge.onFailure(TestContextHolder.get().get(CURRENT_SCENARIO_NAME_KEY), throwable);
         String errorMsg = throwable != null ? throwable.getMessage() : "Unknown error";
         if (errorMsg != null && errorMsg.contains("\n")) {
             errorMsg = errorMsg.substring(0, errorMsg.indexOf('\n')).trim();

@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.core.context.CapturedContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import java.util.Map;
 import java.util.concurrent.*;
@@ -172,18 +173,25 @@ public final class AsyncPool {
         if (task == null) return;
         // N-10：捕获提交线程上下文，供工作线程恢复（执行后由 runWithContext 复位，隔离保留）
         final CapturedContext captured = TestContextHolder.capture();
+        // C-5：捕获提交线程 MDC（日志诊断上下文：scenarioId / traceId / requestId 等），
+        // 供工作线程恢复，使异步任务日志关联到同一链路；worker finally 中 clear 复位，避免线程复用污染。
+        final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         checkThresholdsBeforeSubmit();
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[AsyncPool] submit: timeout={}ms, queue={}/{}, active={}",
                 timeoutMs, POOL.getQueue().size(), QUEUE_CAPACITY, POOL.getActiveCount());
         try {
             Future<?> future = POOL.submit(() -> {
+                if (mdcContext != null) {
+                    MDC.setContextMap(mdcContext);
+                }
                 try {
                     TestContextHolder.runWithContext(captured, task);
                 } catch (Throwable t) {
                     LOGGER.error("[AsyncPool] Task threw exception: {}", t.getMessage(), t);
                 } finally {
                     completedTaskCount.incrementAndGet();
+                    MDC.clear();
                 }
             });
             if (timeoutMs > 0) {
@@ -225,11 +233,17 @@ public final class AsyncPool {
     public static ScheduledFuture<?> schedule(Runnable task, long delayMs) {
         if (task == null) return null;
         long pending = pendingScheduleCount.incrementAndGet();
+        // C-5：捕获提交线程 MDC，调度线程执行时恢复，finally clear。
+        final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         ScheduledFuture<?> f = SCHEDULER.schedule(() -> {
+            if (mdcContext != null) {
+                MDC.setContextMap(mdcContext);
+            }
             try {
                 task.run();
             } finally {
                 pendingScheduleCount.decrementAndGet();
+                MDC.clear();
             }
         }, delayMs, TimeUnit.MILLISECONDS);
         return f;
@@ -427,6 +441,8 @@ public final class AsyncPool {
      */
     public static void runOnMonitorCallbackThread(Runnable task) {
         if (task == null) return;
+        // C-5：捕获提交线程 MDC，monitor 串行线程执行时恢复，finally clear。
+        final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         //  修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
         // （调用方多为 Playwright 事件线程，同步执行用户回调会阻塞路由拦截 → 整轮测试卡死）。
         // 统一策略：准入控制 + 计数丢弃（可观测），但绝不阻塞提交方。
@@ -439,12 +455,16 @@ public final class AsyncPool {
         }
         try {
             MONITOR_CALLBACK_EXECUTOR.execute(() -> {
+                if (mdcContext != null) {
+                    MDC.setContextMap(mdcContext);
+                }
                 try {
                     task.run();
                 } catch (Throwable t) {
                     LOGGER.error("[AsyncPool] Monitor callback task threw exception: {}", t.getMessage(), t);
                 } finally {
                     completedTaskCount.incrementAndGet();
+                    MDC.clear();
                 }
             });
         } catch (RejectedExecutionException e) {

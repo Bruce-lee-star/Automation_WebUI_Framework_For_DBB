@@ -272,9 +272,5 @@ public final class PageElementList extends AbstractList<PageElement> {
         protected Locator locatorInternal() {
             return super.locatorInternal().nth(index);
         }
-
-        private int getIndex() {
-            return index;
-        }
     }
 }

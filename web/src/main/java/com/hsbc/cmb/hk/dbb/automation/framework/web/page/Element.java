@@ -13,7 +13,7 @@ import java.lang.annotation.Target;
  *
  * <h3>使用示例</h3>
  * <pre>
- * public class LoginPage extends SerenityBasePage {
+ * public class LoginPage extends BasePage {
  *     // CSS 选择器
  *     &#64;Element("#userName")
  *     public PageElement USERNAME_INPUT;

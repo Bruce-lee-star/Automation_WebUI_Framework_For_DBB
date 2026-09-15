@@ -1,9 +1,10 @@
 name: Build & Test
 
-# ENG-P0-1：建立 CI，触发四道门禁（编译 / Checkstyle / SpotBugs / 单测）。
-# 分两期：一期仅 `mvn -B test`（已含 compile + Checkstyle(validate) + 单测）；
-# 门禁基线稳定后，将下面的命令升级为 `mvn -B verify` 以纳入 SpotBugs/PMD(verify)。
-# 启用后请到仓库 Settings → Branches → 分支保护规则，将本 workflow 设为 required status check。
+# ENG-P0-1 / 评审08类-1（CI 策略）：建立 CI，触发门禁链
+#   compile + Checkstyle(validate) + SpotBugs/PMD(verify) + 单测 + failsafe Cucumber IT + OSV CVE 门禁 + Serenity 汇总报告。
+# 二期升级：主门禁用 `mvn -B verify`（含 SpotBugs/CVE/汇总报告），Cucumber IT 默认 skip（CI 无 SIT 凭据），
+# 另起 `e2e` job（continue-on-error 灰度）跑真实浏览器 IT，凭据经 Repository Secrets 映射为环境变量。
+# 启用后请到仓库 Settings -> Branches -> 分支保护规则，将本 workflow 设为 required status check。
 on:
   push:
     branches: [ main, master ]
@@ -24,8 +25,35 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Build and test (gates: compile + Checkstyle + unit tests)
-        run: mvn -B test
+      - name: Install Playwright browsers (for e2e job cache & local)
+        run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
+
+      - name: Build and verify (gates: compile + Checkstyle + SpotBugs + unit + CVE + summary report)
+        # -DskipITs：主门禁不依赖 SIT 凭据/浏览器环境；真实 IT 见下方 e2e job。
+        run: mvn -B verify -DskipITs -Dtags='not @skip'
+
+      - name: Checkstyle baseline gate (只减不增, A-1)
+        # verify 已产出各模块 target/checkstyle-result.xml；当前 <error> 总数不得超过根 checkstyle-baseline.xml。
+        # maven-checkstyle-plugin:3.6.0 的 check 目标不支持 <baseline>，故以 CI 计数比对实现祖父化（存量 1325 条）。
+        run: |
+          BASE=$(grep -c '<error' checkstyle-baseline.xml)
+          CUR=0
+          while IFS= read -r f; do
+            n=$(grep -c '<error' "$f"); CUR=$((CUR + n))
+          done < <(find . -path '*/target/checkstyle-result.xml')
+          echo "Checkstyle violations: current=$CUR baseline=$BASE"
+          if [ "$CUR" -gt "$BASE" ]; then
+            echo "::error::Checkstyle 违规数增加（$CUR > $BASE），请修复新增违规或同步缩减基线（checkstyle-baseline.xml）"
+            exit 1
+          fi
+
+      - name: Install OSV-Scanner (CVE gate)
+        run: curl -sSfL https://raw.githubusercontent.com/google/osv-scanner/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: CVE gate (OSV)
+        env:
+          OSV_CVE_GATE_REQUIRED: "true"
+        run: pwsh tools/cve-gate.ps1
 
       - name: Upload Serenity reports
         if: always()
@@ -33,4 +61,33 @@ jobs:
         with:
           name: serenity-reports
           path: '**/target/site/serenity/**'
-          if-no-files-found: ignore
+          if-no-files-found: error
+
+  e2e:
+    # 灰度期：不阻塞合并；待稳定后移除 continue-on-error 并设为 required。
+    needs: build
+    if: ${{ github.event_name == 'push' }}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    env:
+      # 凭据经 Repository Secrets 注入（绝不入库）；本地用 export 同名变量。
+      DBB_TEST_PASSWORD: ${{ secrets.DBB_TEST_PASSWORD }}
+      DBB_OTP_URL_O63: ${{ secrets.DBB_OTP_URL_O63 }}
+      DBB_OTP_URL_O38: ${{ secrets.DBB_OTP_URL_O38 }}
+      DBB_OTP_URL_O88: ${{ secrets.DBB_OTP_URL_O88 }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Install Playwright browsers
+        run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
+
+      - name: Run Cucumber IT (real browser E2E)
+        run: mvn -B verify -Dtags='not @skip'

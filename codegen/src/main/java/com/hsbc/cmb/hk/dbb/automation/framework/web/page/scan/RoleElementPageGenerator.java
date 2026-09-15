@@ -380,7 +380,7 @@ public final class RoleElementPageGenerator {
             imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;\n");
             imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;\n");
         }
-        imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage;\n");
+        imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;\n");
 
         // 只有存在 @RoleElement 字段时才需要类级 @RoleFile（NLS 文件）。
         // 支持一页面对应多个 nls 文件：单文件生成 @RoleFile("x")，多文件生成 @RoleFile({"a","b"})。
@@ -403,7 +403,7 @@ public final class RoleElementPageGenerator {
                 + "package " + packageName + ";\n\n"
                 + imports + "\n"
                 + classAnnotation
-                + "public class " + pageClassName + " extends SerenityBasePage {\n\n"
+                + "public class " + pageClassName + " extends AbstractManagedPage {\n\n"
                 + fields
                 + "}\n";
     }

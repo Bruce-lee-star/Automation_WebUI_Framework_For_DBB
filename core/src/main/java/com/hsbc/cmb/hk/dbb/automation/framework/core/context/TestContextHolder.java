@@ -52,8 +52,20 @@ public final class TestContextHolder {
         INHERIT_MODE = on;
     }
 
-    /** 取当前线程上下文（惰性创建）。开启继承模式时优先返回继承到的父快照副本（仅一次）。 */
+    /**
+     * 取当前上下文（C-1 用例级隔离闭环）。
+     *
+     * <p>优先返回当前绑定<b>用例</b>的上下文（Cucumber 场景经 {@code FrameworkHooks} 的
+     * {@code @Before}/{@code @After}、并发子用例经 {@code ConcurrentContextExecutor.runOnce}
+     * 调 {@code ScenarioContext.begin/end} 绑定）——隔离从"线程级"升级为"用例级"，线程复用下不再串扰。
+     * 无用例绑定时回退线程键（异步工作线程 / {@code @BeforeClass} / 纯单测），保证既有 per-thread 语义不变。</p>
+     */
     public static TestContext get() {
+        // C-1：优先用例级上下文（场景 / 并发子用例均经 ScenarioContext.begin 绑定）。
+        TestContext scenarioCtx = ScenarioContext.current();
+        if (scenarioCtx != null) {
+            return scenarioCtx;
+        }
         if (INHERIT_MODE) {
             CapturedContext snap = INHERIT_SNAPSHOT.get();
             if (snap != null) {

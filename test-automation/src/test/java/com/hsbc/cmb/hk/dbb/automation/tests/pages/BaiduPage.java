@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.AbstractManagedPage;
 
 /**
  * 百度搜索 Page Object。

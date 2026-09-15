@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.tests;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.AbstractManagedPage;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.Cookie;

@@ -1,7 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.api;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.ManagedPageAware;
 import com.microsoft.playwright.Page;
 
 import java.util.function.Supplier;

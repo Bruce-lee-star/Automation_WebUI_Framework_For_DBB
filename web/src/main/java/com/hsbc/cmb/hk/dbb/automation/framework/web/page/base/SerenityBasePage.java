@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.api;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.options.BoundingBox;

@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScripts;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.api.AbstractManagedPage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.AbstractManagedPage;
 
 import java.net.URL;
 

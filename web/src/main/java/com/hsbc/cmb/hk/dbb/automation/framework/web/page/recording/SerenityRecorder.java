@@ -20,8 +20,6 @@ import java.util.function.Supplier;
  *
  * <p><b>注意</b>：本类为框架内部实现，业务代码不得直接调用（见 ArchUnit
  * {@code businessCodeMustNotUseSerenityRecorder}）。
- *
- * @see com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.impl.SerenityBasePage
  */
 public final class SerenityRecorder {
 

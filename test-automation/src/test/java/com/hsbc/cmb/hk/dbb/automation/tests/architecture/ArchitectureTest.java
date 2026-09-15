@@ -187,28 +187,6 @@ public class ArchitectureTest {
     }
 
     /**
-     * API 边界门禁（企业级）：业务代码（framework 包之外）不得调用页面对象的 {@code bringToFront()}。
-     * <p>标签页 / 窗口激活属框架内部编排：业务切页走 {@code switchToPage} / {@code waitForNewPage}，
-     * 其收尾已用 {@code safeBringToFront()} 自动激活目标页。该 seam 保留仅为框架内部使用，
-     * 故以构建期门禁固化「不对业务开放」，防止随后续新增调用点退化。</p>
-     */
-    @Test
-    public void businessCodeMustNotCallBringToFront() {
-        noClasses()
-                .that().resideOutsideOfPackage("..framework.web.page..")
-                .should().callMethodWhere(new DescribedPredicate<JavaMethodCall>("call BasePage.bringToFront internal seam") {
-                    @Override
-                    public boolean test(JavaMethodCall call) {
-                        return call.getTarget().getOwner().isAssignableTo(BasePage.class)
-                                && "bringToFront".equals(call.getTarget().getName());
-                    }
-                })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
-    }
-
-    /**
      * Phase 4 门禁（doc15 §8）：业务代码不得继承已删除的 {@code SerenityBasePage}。
      * 该类全部 Layer B 录制方法已下沉为 {@code BasePage} 公开委托壳，业务 Page 应继承 {@code BasePage}
      * （或后续逐步演进为组合式 POJO + {@code ManagedPageAware}）。此规则防止 SerenityBasePage 被重新引入。

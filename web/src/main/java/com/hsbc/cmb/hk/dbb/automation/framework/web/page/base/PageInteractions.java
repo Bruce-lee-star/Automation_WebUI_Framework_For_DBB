@@ -56,11 +56,6 @@ public final class PageInteractions {
         return page != null && page.isClosed();
     }
 
-    public static void bringToFront(BasePage bp) {
-        bp.ensurePageValid();
-        bp.getPage().bringToFront();
-    }
-
     public static void keyDown(BasePage bp, String selector, String key) {
         bp.locatorInternal(selector).focus();
         bp.getPage().keyboard().down(key);

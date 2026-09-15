@@ -183,10 +183,6 @@ public final class SerenityPageRecorder {
         recorder.record("dismissAlert", null, () -> PageInteractions.dismissAlert(bp));
     }
 
-    public void bringToFront(BasePage bp) {
-        recorder.record("bringToFront", null, () -> PageInteractions.bringToFront(bp));
-    }
-
     public void setContent(BasePage bp, String html) {
         recorder.record("setContent", null, () -> PageNavigation.setContent(bp, html));
     }

@@ -119,16 +119,6 @@ public class PageInteractionsTest {
     }
 
     @Test
-    public void bringToFront_delegatesToPage() {
-        Page page = mock(Page.class);
-        BasePage bp = bpWith(null, page);
-
-        PageInteractions.bringToFront(bp);
-
-        verify(page).bringToFront();
-    }
-
-    @Test
     public void keyDown_focusesElementThenPressesKeyDown() {
         Page page = mock(Page.class);
         Keyboard keyboard = mock(Keyboard.class);

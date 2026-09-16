@@ -4,7 +4,6 @@ import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.Dialog;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 
 /**
  * 页面交互与状态操作工厂（WEB-P1-2 Phase 4b）：从 {@link BasePage} 下沉交互动作
@@ -76,29 +75,16 @@ public final class PageInteractions {
 
     public static void acceptAlert(BasePage bp) {
         bp.ensurePageValid();
-        // 对话框自动处置启用时，把意图交给 PageInteractionMonitor.onDialog 处理器统一执行（避免双重处置/冲突）
-        if (PageInteractionMonitor.declareDialogAction(bp.getPage(), true)) {
-            return;
-        }
         bp.getPage().onceDialog(Dialog::accept);
     }
 
     public static void dismissAlert(BasePage bp) {
         bp.ensurePageValid();
-        if (PageInteractionMonitor.declareDialogAction(bp.getPage(), false)) {
-            return;
-        }
         bp.getPage().onceDialog(Dialog::dismiss);
     }
 
     public static void acceptAlert(BasePage bp, Runnable trigger) {
         bp.ensurePageValid();
-        if (PageInteractionMonitor.declareDialogAction(bp.getPage(), true)) {
-            if (trigger != null) {
-                trigger.run();
-            }
-            return;
-        }
         bp.getPage().onceDialog(Dialog::accept);
         if (trigger != null) {
             trigger.run();
@@ -107,12 +93,6 @@ public final class PageInteractions {
 
     public static void dismissAlert(BasePage bp, Runnable trigger) {
         bp.ensurePageValid();
-        if (PageInteractionMonitor.declareDialogAction(bp.getPage(), false)) {
-            if (trigger != null) {
-                trigger.run();
-            }
-            return;
-        }
         bp.getPage().onceDialog(Dialog::dismiss);
         if (trigger != null) {
             trigger.run();

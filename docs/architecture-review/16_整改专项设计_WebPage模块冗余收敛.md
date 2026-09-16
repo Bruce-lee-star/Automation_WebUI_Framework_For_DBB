@@ -279,31 +279,26 @@ getPageSourceContains` 除 `BasePage` 包装与 `SerenityPageRecorder` 自身外
 > 注册点在 `PlaywrightContextManager.createContext()` 经 `context.onPage` 一次接线，覆盖所有新建页面（含 `window.open` 弹窗）；
 > 业务层零感知、零改动。
 
-### 12.1 四项能力与默认零回归保证
+### 12.1 两类纯诊断能力与零配置保证
 
-| 项 | 事件 | 配置开关（默认） | 默认行为 | 启用后行为 |
-|----|------|------------------|----------|------------|
-| 1 导航轨迹 | `onFrameNavigated` | 始终记录（容量受 `playwright.page.navigation.trail.max`=30） | 主框架 INFO / 子框架 verbose | 失败时（`PlaywrightListener.stepFailed` → `StepFailureAggregator.logInteractionDiagnosticsOnFailure`）回放"失败前页面去过哪些地址" |
-| 4 未受管弹窗 | `onPopup` | 始终记录 | INFO 记录 app 弹出的新页 | 框架经 `switchToPage`/`waitForNewPage` 收尾认领时由 `PageContextState.setPageReference` → `markPopupClaimed` 剔除；残留者于失败时报"未受管弹窗" |
-| 6 对话框处置 | `onDialog` | `playwright.page.dialog.policy`=`dismiss` | 自动 dismiss（等价 Playwright 无监听时的原生默认自动 dismiss，**零回归**） | `accept`=自动接受；`ignore`=不注册监听，交回业务原生 `onceDialog` |
-| 7 自动上传 | `onFileChooser` | `playwright.page.fileChooser.enabled`=`false`（默认关闭、不注册监听） | 无监听，业务自理 | 从 `playwright.page.fileChooser.dir`（默认 `src/test/resources/uploads`）按 `playwright.page.fileChooser.glob` 解析候选自动 `setFiles` |
+| 项 | 事件 | 默认行为 | 失败时行为 |
+|----|------|----------|------------|
+| 1 导航轨迹 | `onFrameNavigated` | 始终记录（仅追加、无容量上限，无配置项、无硬编码常量）；主框架 INFO / 子框架 verbose；由 `drainNavigationTrail()` 失败时消费清空 | 失败时（`PlaywrightListener.stepFailed` → `StepFailureAggregator.logInteractionDiagnosticsOnFailure`）回放"失败前页面去过哪些地址" |
+| 4 未受管弹窗 | `onPopup` | 始终记录 INFO app 弹出的新页 | 框架经 `switchToPage`/`waitForNewPage` 收尾认领时由 `PageContextState.setPageReference` → `markPopupClaimed` 剔除；残留者于失败时报"未受管弹窗" |
 
 ### 12.2 关键取舍
 
+- **不自动处置交互事件（零配置、零回归）**：对话框（alert/confirm/prompt）与文件选择器（fileChooser）的处置一律交回业务层既有方法（`BasePage.acceptAlert/dismissAlert`、元素级 `setInputFiles`）。框架**不注册** `onDialog` / `onFileChooser` 监听，既保持 Playwright 默认语义（无监听时对话框默认自动 dismiss；文件选择器由业务用 `setInputFiles` 自行处理），也避免引入配置项或硬编码目录增加用户学习成本与耦合。早期曾设计 `playwright.page.dialog.policy` / `fileChooser.*` / `navigation.trail.max` 共 5 项配置 + 导航轨迹硬编码常量 `NAV_TRAIL_MAX = 30`，因用户反馈"配置过多、学习成本高 / 不要硬编码"已**全部移除**：5 个配置键删尽、导航轨迹改为无上限仅追加（由 `drain` 失败时消费清空）。
 - **iframe 上下文清理不在 onFrameNavigated 主动做**：失效 Frame 已由 `PageContextState.clearStaleFrameContextIfNeeded()` 在每次 `ensurePageValid()` 惰性清理；主动清理会破坏"iframe 在 SPA 路由变化后仍然存活"的合法场景，故只观测、不清理。
-- **对话框与业务显式意图不冲突**：业务 `acceptAlert/dismissAlert` 经 `PageInteractions` → `declareDialogAction(page, ...)` 声明意图，处理器优先按声明执行，避免与显式意图冲突或双重处置；仅当开关为 `ignore` 时走原生 `onceDialog`。声明按 `Page` 维度登记（弱引用，无泄漏）。
-- **自动上传防误传/防卡死**：目录不存在/为空、无 glob 且候选 >1（歧义）时安全取消（`setFiles(new Path[0])`）；有 glob 时按文件名匹配、确定性排序后全传（支持多文件上传）。
 - **导航轨迹 / 未受管弹窗均按测试线程存储、drain 即清空**：与 `PageEventMonitor` 的 `TestContextHolder` 模式一致，幂等、不跨步骤重复。
 
 ### 12.3 落点
 
-- 新增：`web/src/main/java/.../framework/web/lifecycle/event/PageInteractionMonitor.java`（注册接缝 + 4 处理器 + 纯逻辑 `resolveUploadCandidates`）。
+- 新增：`web/src/main/java/.../framework/web/lifecycle/event/PageInteractionMonitor.java`（注册接缝 + 2 处理器：导航轨迹 / 未受管弹窗）。
 - 接线：`PlaywrightContextManager.createContext()` 追加 `PageInteractionMonitor.register(context)`；
   `PageContextState.setPageReference` 追加 `markPopupClaimed(target)`；
-  `PageInteractions.acceptAlert/dismissAlert`（4 重载）在自动处置启用时改走 `declareDialogAction`；
   `PlaywrightListener.stepFailed` 追加 `StepFailureAggregator.logInteractionDiagnosticsOnFailure()`。
-- 配置：`WebFrameworkConfig` 新增 5 项（`PLAYWRIGHT_PAGE_DIALOG_POLICY` / `PLAYWRIGHT_PAGE_FILE_CHOOSER_ENABLED` /
-  `PLAYWRIGHT_PAGE_FILE_CHOOSER_DIR` / `PLAYWRIGHT_PAGE_FILE_CHOOSER_GLOB` / `PLAYWRIGHT_PAGE_NAV_TRAIL_MAX`）。
-- 护盾：`web/src/test/.../lifecycle/event/PageInteractionMonitorTest`（12 例，Mockito 隔离，全绿）。
+- 配置：无新增、无硬编码常量（原拟新增的 5 项配置键已移除；导航轨迹容量不再硬编码上限，改为无上限仅追加；文件选择器不注册监听，业务用 `setInputFiles`）。
+- 护盾：`web/src/test/.../lifecycle/event/PageInteractionMonitorTest`（5 例，Mockito 隔离，全绿：注册接缝 / 导航轨迹 / 未受管弹窗 / null 安全）。
 
 预期：所有步骤 BUILD SUCCESS、0 failure；`ArchitectureTest`(19) / `LayeringArchTest`(3) 零回归。

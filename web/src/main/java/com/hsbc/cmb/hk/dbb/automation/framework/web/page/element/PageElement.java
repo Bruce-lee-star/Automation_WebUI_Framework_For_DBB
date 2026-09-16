@@ -18,6 +18,11 @@ import com.microsoft.playwright.options.WaitForSelectorState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -843,13 +848,78 @@ public class PageElement {
     }
 
     // ==================== Upload / Screenshot / Drag ====================
+    /**
+     * 上传文件（支持多文件）。每个路径按<b>resources 首选、用户指定兜底</b>解析：
+     * 优先从 classpath（resources）查找，找到即用之；否则按用户指定的字面路径查找；
+     * 二者皆不存在则抛出 {@link ElementOperationException}（含两端候选路径，便于排查）。
+     * 解析后委托 Playwright {@code Locator.setInputFiles(Path[])} 完成（目标 input 需允许多选才能多传）。
+     *
+     * @param paths 每个文件：resources 名（如 {@code "test-data/a.pdf"}）或用户指定的真实路径
+     */
     public PageElement uploadFile(String... paths) {
-        Path[] pathArray = Arrays.stream(paths).map(Paths::get).toArray(Path[]::new);
+        Path[] pathArray = Arrays.stream(paths)
+                .map(this::resolveUploadPath)
+                .toArray(Path[]::new);
         executeWithRetry(() -> {
             locatorInternal().setInputFiles(pathArray, new Locator.SetInputFilesOptions().setTimeout(opTimeout()));
             return true;
         }, "uploadFile");
         return this;
+    }
+
+    /**
+     * 解析单个上传文件路径：resources（classpath）首选 → 用户指定路径兜底；都不存在抛明确异常。
+     *
+     * @param raw 原始路径（resources 名或用户指定路径）
+     * @return 解析后的真实文件路径
+     * @throws ElementOperationException 两端均未找到
+     */
+    private Path resolveUploadPath(String raw) {
+        // 1) resources 首选：从 classpath 解析（classpath 资源名恒用 '/'，先归一化分隔符与首部斜杠以跨系统）
+        String normalized = raw.replace('\\', '/');
+        String cp = normalized.startsWith("/") ? normalized.substring(1) : normalized;
+        URL res = Thread.currentThread().getContextClassLoader().getResource(cp);
+        if (res != null) {
+            if ("file".equals(res.getProtocol())) {
+                try {
+                    Path p = Paths.get(res.toURI());
+                    if (Files.exists(p)) {
+                        logger.debug("[upload] 命中 resources(classpath:/{}): {}", cp, p);
+                        return p;
+                    }
+                } catch (URISyntaxException e) {
+                    logger.debug("[upload] resources 路径转换失败，改走用户指定路径: {}", e.toString());
+                }
+            } else {
+                // jar 内资源无真实文件路径，无法交 Playwright；跳过，继续尝试用户指定路径
+                logger.debug("[upload] resources 命中但位于 jar(classpath:/{})，不可用，改走用户指定路径", cp);
+            }
+        }
+        // 2) 用户指定路径兜底（按当前系统分隔符归一化，跨系统兼容：Windows 下 '/'→'\'，其余系统保持原样）
+        Path userPath = Paths.get(normalizeOsSeparators(raw));
+        if (Files.exists(userPath)) {
+            logger.debug("[upload] 命中用户指定路径: {}", userPath.toAbsolutePath());
+            return userPath;
+        }
+        // 3) 两端皆不存在
+        throw new ElementOperationException("uploadFile", selector,
+                "上传文件不存在：既未在 resources(classpath:/" + cp + ") 找到，也未在用户指定路径["
+                        + userPath.toAbsolutePath() + "] 找到。请检查资源名或传入正确的绝对/相对路径。");
+    }
+
+    /**
+     * 按当前系统分隔符归一化路径字符串，跨系统兼容。
+     * Windows 下统一为反斜杠（'/'→'\'）；其余系统（'/' 即为本系统分隔符）保持原样，
+     * 避免把字面反斜杠误当作分隔符改坏路径。
+     *
+     * @param raw 原始路径
+     * @return 归一化后的路径字符串
+     */
+    private static String normalizeOsSeparators(String raw) {
+        if (File.separatorChar == '\\') {
+            return raw.replace('/', '\\');
+        }
+        return raw;
     }
 
     public byte[] screenshot() {

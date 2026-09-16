@@ -3,15 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleFile;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.LocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.options.AriaRole;
 
 import java.lang.reflect.Field;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Supplier;
@@ -144,48 +142,38 @@ public class RoleElementBinder {
                 // 主用场景，必须先判 role，否则 key 会被误当成 getByText 而永远走不到角色策略。
                 AriaRole role = a.role();
                 if (role != AriaRole.NONE) {
-                    // 角色定位（role + 字面 name 或 nls key）
+                    // 角色定位（role + 字面 name 或 nls key）：定位语义统一收敛于 RoleLocatorFactory，
+                    // 与运行期 API（SerenityBasePage#elementByRole*）共用同一份实现，避免两条路径行为分叉。
                     final String literalName = a.name();
                     if (literalName != null && !literalName.isEmpty()) {
                         // name 字面量覆盖：该元素名称不在 nls 中（页面上少数找不到 key 的元素），
                         // 直接用字面名称定位，跳过 nls，因此该字段本身无需 @RoleFile。
                         desc = a.description().isEmpty()
-                                ? "role=" + role + "[name:" + literalName + "]"
+                                ? RoleLocatorFactory.describeName(role, literalName)
                                 : a.description();
-                        final String nameVal = literalName;
-                        supplier = () -> LocatorFactory.byRole(self, role, nameVal, a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
+                        supplier = () -> RoleLocatorFactory.byName(self, role, literalName,
+                                a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                     } else if (a.key() != null && !a.key().isEmpty()) {
                         // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
-                        // 注意：必须用 resolveRoleFiles（复数）跨文件查找，与 text/altText/title 等语义路径一致；
-                        // 若用 resolveRoleFile（单数，仅取首位文件），当 key 不在首位文件时就会报 missing key。
+                        // 注意：resolveRoleFiles 跨文件查找（与 text/altText/title 等语义路径一致），
+                        // 若只取首位文件，当 key 不在首位文件时就会报 missing key。
                         List<String> files = resolveRoleFiles(a);
-                        final String theKey = a.key();
-                        String primaryFile = files.get(0);
+                        final Supplier<String> nlsValue = RoleLocatorFactory.nlsValueSupplier(files, a.key());
                         desc = a.description().isEmpty()
-                                ? "role=" + role + "[nls:" + primaryFile + "#" + theKey + "]"
+                                ? RoleLocatorFactory.describeKey(role, files.get(0), a.key())
                                 : a.description();
-                        final NLSUtils.NlsBundle bundle = NLSUtils.bind(files);
-                        // 懒解析（与语义路径 byNlsValue 一致）：bundle.get 放入 lambda，运行中
+                        // 懒解析（与语义路径 byNlsValue 一致）：nlsValue.get() 放入 lambda，运行中
                         // NLSUtils.setLanguage 切语言后再次定位可解析到新语言的可访问名。
-                        supplier = () -> {
-                            String raw = bundle.get(theKey);
-                            // 模板值（含 {{var}}）：编译为正则走 setName(Pattern)（官方原生支持，
-                            // 正则模式下 exact 被忽略），与语义路径 byNlsValue 的模板处理对齐。
-                            if (NLSUtils.isTemplate(raw)) {
-                                return LocatorFactory.byRole(self, role, NLSUtils.templatePattern(raw), a.level(), a.disabled(), a.pressed(), a.expanded());
-                            }
-                            // 角色名取「可见文本」：nls 值内嵌的 <img>/&nbsp; 等会被浏览器渲染掉，
-                            // 真实可访问名不含标签，故不能直接用原始字符串当 name（否则如 tab_security_device 匹配失败）。
-                            return LocatorFactory.byRole(self, role, NLSUtils.visibleText(raw), a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
-                        };
+                        supplier = () -> RoleLocatorFactory.byNlsValue(self, role, nlsValue.get(),
+                                a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
                     } else {
                         // 纯 role 无 name（对齐 page.pause 的 roleWithoutName，score 510）：如
                         // <div role="listitem"> 无文本、role="img" 无 alt 的纯结构/装饰元素。
-                        // 直接调用 getByRole(role) 不带 name（BasePage.byRole(AriaRole) 无 name 重载）。
+                        // 直接调用 getByRole(role) 不带 name。
                         desc = a.description().isEmpty()
-                                ? "role=" + role + "[no-name]"
+                                ? RoleLocatorFactory.describeRole(role)
                                 : a.description();
-                        supplier = () -> LocatorFactory.byRole(self, role);
+                        supplier = () -> RoleLocatorFactory.byRole(self, role);
                     }
                 } else if (a.key() != null && !a.key().isEmpty()) {
                     // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
@@ -270,24 +258,6 @@ public class RoleElementBinder {
      * 运行时按此顺序跨文件查找 key（命中即止）。
      */
     private List<String> resolveRoleFiles(RoleElement a) {
-        if (a.file() != null && !a.file().isBlank()) {
-            return List.of(a.file());
-        }
-        RoleFile classFile = roleFileClass.getAnnotation(RoleFile.class);
-        if (classFile == null || classFile.value().length == 0) {
-            throw new ElementException("RoleElement field '" + a.key()
-                    + "' needs either file() or a class-level @RoleFile on "
-                    + roleFileClass.getSimpleName());
-        }
-        List<String> ordered = new ArrayList<>(Arrays.asList(classFile.value()));
-        String primary = classFile.primary();
-        if (primary != null && !primary.isBlank()) {
-            int idx = ordered.indexOf(primary);
-            if (idx > 0) {
-                ordered.remove(idx);
-                ordered.add(0, primary);
-            }
-        }
-        return ordered;
+        return RoleLocatorFactory.resolveFiles(roleFileClass, a.file(), "RoleElement field '" + a.key() + "'");
     }
 }

@@ -4,14 +4,18 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
+import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.Cookie;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * 组合式 Page Object 的 Layer B 能力面（G1，doc15 §1 G1）。
@@ -51,6 +55,102 @@ public interface SerenityBasePage {
     PageElement locator(String selector);
 
     PageElementList elements(String selector);
+
+    // ===================== 角色定位（ARIA role，业务公开入口） =====================
+
+    /**
+     * 按 ARIA 角色定位元素，返回框架原生 {@link PageElement}（不泄漏裸 Playwright {@code Locator}）。
+     *
+     * <p><b>为何需要本组入口：</b>角色定位（role + 可访问名）是框架最有价值的自研能力，但此前只经
+     * {@code @RoleElement} 注解字段（声明式、静态字段）暴露；运行期按角色定位无合法入口——
+     * {@code BasePage.byRole*} 属 framework-internal 且返回裸 {@code Locator}（被 ArchUnit
+     * {@code businessCodeMustNotUseInternalByLocators} 禁止业务调用）。本组方法补齐该缺口。
+     *
+     * <p><b>语义与 {@code @RoleElement} 一致：</b>懒解析（每次定位重新构建，Page 重建 / iframe
+     * 上下文切换后自动生效）、iframe/shadow 适配、标题层级与可访问状态三态；
+     * {@link #elementByRoleKey(AriaRole, String)} 更是与注解共用同一份 NLS 解析实现
+     * （{@code RoleLocatorFactory}），故 {@code NLSUtils.setLanguage("xx")} 切语言后自动解析到新语言。
+     *
+     * <pre>{@code
+     * // 字面名
+     * page.elementByRole(AriaRole.BUTTON, "Sign in").click();
+     * // 模糊匹配 + 层级（标题）
+     * page.elementByRole(AriaRole.HEADING, "Business", false, 2).getText();
+     * // 状态三态（只取可用按钮）
+     * page.elementByRole(AriaRole.BUTTON, "Submit", true, 0,
+     *         RoleElement.State.NO, RoleElement.State.ANY, RoleElement.State.ANY).click();
+     * // NLS 多语言（key 来自类级 @RoleFile）
+     * page.elementByRoleKey(AriaRole.TEXTBOX, "username").fill("111");
+     * // 一组元素
+     * page.elementsByRole(AriaRole.LISTITEM).size();
+     * }</pre>
+     */
+    PageElement elementByRole(AriaRole role);
+
+    /** 角色 + 可访问名（精确匹配）。 */
+    PageElement elementByRole(AriaRole role, String name);
+
+    /** 角色 + 可访问名（可指定精确/模糊匹配）。 */
+    PageElement elementByRole(AriaRole role, String name, boolean exact);
+
+    /** 角色 + 可访问名 + 标题层级（仅 {@link AriaRole#HEADING} 有意义；0 表示不限定层级）。 */
+    PageElement elementByRole(AriaRole role, String name, boolean exact, int level);
+
+    /** 角色 + 正则可访问名（多语言模板值编译而来）+ 标题层级。 */
+    PageElement elementByRole(AriaRole role, Pattern namePattern, int level);
+
+    /**
+     * 角色 + 正则可访问名 + 匹配方式 + 标题层级。
+     *
+     * <p><b>exact 语义（框架显式实现）：</b>Playwright 对 {@code name} 传正则时忽略 {@code exact}，
+     * 故本框架把 {@code exact=true} 落地为「整串匹配」（正则锚定 {@code ^(?:…)$}），
+     * {@code false} 为 Playwright 原生子串匹配。
+     * 注意：{@code @RoleElement} 注解的模板值与该语义无关（保持 Playwright 原生，见 {@code RoleLocatorFactory}）。
+     */
+    PageElement elementByRole(AriaRole role, Pattern namePattern, boolean exact, int level);
+
+    /**
+     * 角色 + 可访问名 + 选项（层级 / 匹配方式 / 可访问状态三态）。
+     *
+     * <p><b>为什么用选项对象：</b>状态过滤若以三个同类型位置参数表达，调用点会退化为
+     * {@code (…, NO, ANY, YES)}——既看不出各值修饰哪个状态，也防不住同类型参数错位。
+     * {@link RoleOptions} 用具名方法表达（{@code enabledOnly()} / {@code pressed()} / {@code collapsed()} …），
+     * 调用点自解释：
+     * <pre>{@code
+     * page.elementByRole(AriaRole.BUTTON, "Submit", RoleOptions.defaults().enabledOnly());
+     * }</pre>
+     */
+    PageElement elementByRole(AriaRole role, String name, RoleOptions options);
+
+    /**
+     * 角色 + 正则可访问名 + 选项（层级 / 匹配方式 / 可访问状态三态）。
+     * {@code options.exact()} 时由框架把正则锚定为整串匹配（Playwright 原生对正则忽略 exact）。
+     */
+    PageElement elementByRole(AriaRole role, Pattern namePattern, RoleOptions options);
+
+    /**
+     * 角色 + NLS 键（多语言）：按本页面类上的类级 {@code @RoleFile} 在运行时把 key 解析为
+     * 当前语言的可访问名（{@code NLSUtils.setLanguage("xx")} 后自动生效，与 {@code @RoleElement} 一致）。
+     */
+    PageElement elementByRoleKey(AriaRole role, String nlsKey);
+
+    /** 角色 + NLS 键 + 标题层级（多语言标题，如 {@code h2} 文案随语言变化）。 */
+    PageElement elementByRoleKey(AriaRole role, String nlsKey, int level);
+
+    /**
+     * 角色 + NLS 键 + 选项（层级 / 匹配方式 / 可访问状态三态）。
+     * 多语言解析与 {@code @RoleElement} 共用同一份实现，故同一 key 的解析结果与注解路径一致。
+     * <pre>{@code
+     * page.elementByRoleKey(AriaRole.BUTTON, "favorite", RoleOptions.defaults().notPressed());
+     * }</pre>
+     */
+    PageElement elementByRoleKey(AriaRole role, String nlsKey, RoleOptions options);
+
+    /** 角色定位的多元素集合（不限名称），返回框架原生 {@link PageElementList}。 */
+    PageElementList elementsByRole(AriaRole role);
+
+    /** 角色定位的多元素集合（按可访问名精确匹配）。 */
+    PageElementList elementsByRole(AriaRole role, String name);
 
     // ===================== 文本 / 属性 =====================
 

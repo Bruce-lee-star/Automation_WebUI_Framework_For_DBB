@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Page;
 
 import java.util.function.Supplier;

@@ -2,12 +2,39 @@
 
 > 关联：WEB-P1-2 Phase 6 组合式 Page Object（G1）
 > 范围：`web/src/main/java/.../framework/web/page` 模块
-> 状态：设计稿；F1 / F2 已实现（见文末"命名与包变更说明"）
+> 状态：设计稿；F1 / F2 已实现，包层级已按"抽象 / 实现"分层收敛（见文末"命名与包变更说明"）
 >
 > **命名与包变更说明（实现后生效）**：本设计稿中的 `PageApi` 已更名为 **`SerenityBasePage`**（页面能力契约接口），
 > `PageApiImpl` 已更名为 **`SerenityBasePageImpl`**（默认实现，委托 `BasePage` 并承载录制）；
 > 二者与 `AbstractManagedPage` 一并从 `web.page.api` 包迁入 **`web.page.base`** 包，`api` 包已不存在。
 > 下文"现状 / 目标设计 / 变更清单"代码块保留当时的原名，以还原设计演进过程，阅读时请按上述映射对照。
+>
+> **包层级收敛（抽象 / 实现分层）**：`web.page.base` 原先混居"业务可见的抽象契约"与"框架内部引擎"共 16 个类，现已拆分：
+> **`web.page.base`** 只保留抽象层 4 类——`SerenityBasePage`（能力契约接口）、`SerenityBasePageImpl`（默认实现）、
+> `AbstractManagedPage`（业务基类）、`ManagedPageAware`（标记接口）；
+> **`web.page.engine`**（新增）承载实现层 12 类——`BasePage` 门面、`PageContextState` 状态，以及
+> `PageLifecycleCoordinator` / `PageFrameShadow` / `LocatorFactory` / `CookieManager` / `PageViewport` /
+> `PageInteractions` / `PageAccessibility` / `PageDebugControl` / `PageNavigation` / `PageWaits` 等委托类。
+> 关键约束：`BasePage` 与其全部委托**必须同包**（12 个包级 seam 只被这些委托调用），因此本次拆分**无需把 seam 升为 `public`、
+> 无需新增 ArchUnit 门禁**，封装零损失；业务代码仍只依赖 `web.page.base.*`（`codegen` 生成页面的 import 不变），
+> 契约与业务基类的继承链（`AbstractManagedPage` → `SerenityBasePageImpl` → `SerenityBasePage`）在 `base` 内闭合。
+> 受影响测试包同步迁移：`web` / `test-automation` 中原 `...web.page.base` 下的 18 个测试类 → `...web.page.engine`。
+>
+> **角色定位能力面补齐（运行期 API）**：此前「按 ARIA 角色 + 可访问名定位」只经 `@RoleElement` 注解字段暴露
+> （声明式、静态字段），运行期无合法入口——`BasePage.byRole*` 属 framework-internal 且返回裸 Playwright `Locator`
+> （被门禁禁止业务调用）。现补齐业务契约 `SerenityBasePage` 的 11 个入口：`elementByRole*`（7 个重载，覆盖
+> 字面名 / 正则 / 标题层级 / 状态三态）、`elementByRoleKey*`（NLS 多语言键）、`elementsByRole*`（多元素集合），
+> 一律返回框架原生 `PageElement` / `PageElementList`，杜绝类型泄漏；**状态三态与层级不用连续位置参数**，
+> 而以具名选项对象 `RoleOptions` 表达（`enabledOnly()` / `disabledOnly()` / `pressed()` / `notPressed()` /
+> `expanded()` / `collapsed()` / `level(n)` / `exact()` / `partial()`），调用点自解释且不可能错位；
+> 选项同时进入元素描述串（如 `role=BUTTON[name:Submit,enabled,expanded]`），报告与失败截图可区分同一角色下的不同定位器。其中 `Pattern` 重载另带 `exact`——
+> Playwright 原生对正则 `name` 忽略 `exact`，故框架将其显式落地为「整串匹配」（正则锚定 `^(?:…)$`，
+> 保留原 flags），`exact=false` 为 Playwright 原生子串匹配；注解模板值与 NLS 路径维持原生行为不变（零回归）。
+> 实现分层：契约 → `SerenityBasePageImpl`（转发）→ `BasePage`（引擎门面）→ `SerenityPageRecorder`（录制）→
+> **`RoleLocatorFactory`**（新增，角色定位原语；与 `@RoleElement` 注解路径共用同一份
+> 「NLS 键解析 → 模板正则 / 可见文本归一 → byRole」语义，避免两条路径行为分叉）；`PageElementList`
+> 新增动态定位器构造路径以承载角色集合。边界同步加固：新增 ArchUnit 门禁
+> `businessCodeMustNotUseInternalLocatorFactories`，禁止业务代码调用 `LocatorFactory` / `RoleLocatorFactory`。
 
 ---
 
@@ -243,3 +270,40 @@ getPageSourceContains` 除 `BasePage` 包装与 `SerenityPageRecorder` 自身外
 
 - **F3**：`PageApi.element` 与 `locator` 等价，长期合并或标注 `locator` 为别名。
 - **F4**：修订 `BasePage.java:36` "公开方法收敛至 ≤40" 注释（实际指业务页继承面，非 `BasePage` 自身）。
+
+---
+
+## 12. 页面交互事件可观测性（PageInteractionMonitor，呼应审计项 1/4/6/7）
+
+> 状态：已实现。与诊断类监听 `PageEventMonitor` 同族、同接缝，单一职责承载"交互类"事件；
+> 注册点在 `PlaywrightContextManager.createContext()` 经 `context.onPage` 一次接线，覆盖所有新建页面（含 `window.open` 弹窗）；
+> 业务层零感知、零改动。
+
+### 12.1 四项能力与默认零回归保证
+
+| 项 | 事件 | 配置开关（默认） | 默认行为 | 启用后行为 |
+|----|------|------------------|----------|------------|
+| 1 导航轨迹 | `onFrameNavigated` | 始终记录（容量受 `playwright.page.navigation.trail.max`=30） | 主框架 INFO / 子框架 verbose | 失败时（`PlaywrightListener.stepFailed` → `StepFailureAggregator.logInteractionDiagnosticsOnFailure`）回放"失败前页面去过哪些地址" |
+| 4 未受管弹窗 | `onPopup` | 始终记录 | INFO 记录 app 弹出的新页 | 框架经 `switchToPage`/`waitForNewPage` 收尾认领时由 `PageContextState.setPageReference` → `markPopupClaimed` 剔除；残留者于失败时报"未受管弹窗" |
+| 6 对话框处置 | `onDialog` | `playwright.page.dialog.policy`=`dismiss` | 自动 dismiss（等价 Playwright 无监听时的原生默认自动 dismiss，**零回归**） | `accept`=自动接受；`ignore`=不注册监听，交回业务原生 `onceDialog` |
+| 7 自动上传 | `onFileChooser` | `playwright.page.fileChooser.enabled`=`false`（默认关闭、不注册监听） | 无监听，业务自理 | 从 `playwright.page.fileChooser.dir`（默认 `src/test/resources/uploads`）按 `playwright.page.fileChooser.glob` 解析候选自动 `setFiles` |
+
+### 12.2 关键取舍
+
+- **iframe 上下文清理不在 onFrameNavigated 主动做**：失效 Frame 已由 `PageContextState.clearStaleFrameContextIfNeeded()` 在每次 `ensurePageValid()` 惰性清理；主动清理会破坏"iframe 在 SPA 路由变化后仍然存活"的合法场景，故只观测、不清理。
+- **对话框与业务显式意图不冲突**：业务 `acceptAlert/dismissAlert` 经 `PageInteractions` → `declareDialogAction(page, ...)` 声明意图，处理器优先按声明执行，避免与显式意图冲突或双重处置；仅当开关为 `ignore` 时走原生 `onceDialog`。声明按 `Page` 维度登记（弱引用，无泄漏）。
+- **自动上传防误传/防卡死**：目录不存在/为空、无 glob 且候选 >1（歧义）时安全取消（`setFiles(new Path[0])`）；有 glob 时按文件名匹配、确定性排序后全传（支持多文件上传）。
+- **导航轨迹 / 未受管弹窗均按测试线程存储、drain 即清空**：与 `PageEventMonitor` 的 `TestContextHolder` 模式一致，幂等、不跨步骤重复。
+
+### 12.3 落点
+
+- 新增：`web/src/main/java/.../framework/web/lifecycle/event/PageInteractionMonitor.java`（注册接缝 + 4 处理器 + 纯逻辑 `resolveUploadCandidates`）。
+- 接线：`PlaywrightContextManager.createContext()` 追加 `PageInteractionMonitor.register(context)`；
+  `PageContextState.setPageReference` 追加 `markPopupClaimed(target)`；
+  `PageInteractions.acceptAlert/dismissAlert`（4 重载）在自动处置启用时改走 `declareDialogAction`；
+  `PlaywrightListener.stepFailed` 追加 `StepFailureAggregator.logInteractionDiagnosticsOnFailure()`。
+- 配置：`WebFrameworkConfig` 新增 5 项（`PLAYWRIGHT_PAGE_DIALOG_POLICY` / `PLAYWRIGHT_PAGE_FILE_CHOOSER_ENABLED` /
+  `PLAYWRIGHT_PAGE_FILE_CHOOSER_DIR` / `PLAYWRIGHT_PAGE_FILE_CHOOSER_GLOB` / `PLAYWRIGHT_PAGE_NAV_TRAIL_MAX`）。
+- 护盾：`web/src/test/.../lifecycle/event/PageInteractionMonitorTest`（12 例，Mockito 隔离，全绿）。
+
+预期：所有步骤 BUILD SUCCESS、0 failure；`ArchitectureTest`(19) / `LayeringArchTest`(3) 零回归。

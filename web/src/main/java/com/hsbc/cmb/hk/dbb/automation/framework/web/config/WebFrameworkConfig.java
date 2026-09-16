@@ -881,6 +881,66 @@ public enum WebFrameworkConfig {
         "页面稳定化等待超时"
     ),
 
+    // ==================== Playwright 页面交互事件配置（PageInteractionMonitor） ====================
+
+    /**
+     * 对话框自动处置策略（onDialog）。
+     * <ul>
+     *   <li>{@code dismiss}（默认）：自动拒绝对话框，语义等价 Playwright 无监听时的默认自动 dismiss——零行为回归。</li>
+     *   <li>{@code accept}：自动接受对话框。</li>
+     *   <li>{@code ignore}：不注册 onDialog 监听，完全交回业务显式 acceptAlert/dismissAlert（框架历史默认行为）。</li>
+     * </ul>
+     * 业务显示调用 acceptAlert/dismissAlert 时，按声明优先处置，与显式意图不冲突。
+     */
+    PLAYWRIGHT_PAGE_DIALOG_POLICY(
+        "playwright.page.dialog.policy",
+        "dismiss",
+        "对话框自动处置策略（dismiss|accept|ignore），默认 dismiss（等价 Playwright 原生默认自动 dismiss）"
+    ),
+
+    /**
+     * 文件选择器自动上传开关（onFileChooser）。
+     * <p>默认 false（不注册监听，零行为回归）：业务需自行处理上传弹窗。
+     * 设为 true 后，从 {@link #PLAYWRIGHT_PAGE_FILE_CHOOSER_DIR} 自动 setFiles；
+     * 目录为空 / 候选不唯一（未设 glob）时安全取消，避免静默传错或卡死。</p>
+     */
+    PLAYWRIGHT_PAGE_FILE_CHOOSER_ENABLED(
+        "playwright.page.fileChooser.enabled",
+        "false",
+        "文件选择器自动上传开关（默认关闭，开启后按配置目录自动 setFiles）"
+    ),
+
+    /**
+     * 文件选择器自动上传目录（onFileChooser 启用时生效）。
+     * 业务需上传的文件放置于此；可经业务步骤在运行时写入。
+     */
+    PLAYWRIGHT_PAGE_FILE_CHOOSER_DIR(
+        "playwright.page.fileChooser.dir",
+        "src/test/resources/uploads",
+        "文件选择器自动上传目录（onFileChooser 启用时从此目录选文件）"
+    ),
+
+    /**
+     * 文件选择器自动上传文件名 glob（onFileChooser 启用时生效，可为空）。
+     * <p>为空：取目录下唯一常规文件；多文件判歧义取消。</p>
+     * <p>非空：按文件名匹配（可多匹配，确定性排序后全部上传），如 {@code *.pdf}。</p>
+     */
+    PLAYWRIGHT_PAGE_FILE_CHOOSER_GLOB(
+        "playwright.page.fileChooser.glob",
+        "",
+        "文件选择器自动上传文件名 glob（空=取目录唯一文件；非空=按名匹配可多传）"
+    ),
+
+    /**
+     * 导航轨迹环形缓冲容量（onFrameNavigated，W-9 收敛魔法数）。
+     * 仅在步骤失败时回放，用于还原"失败前页面去过哪些地址"。
+     */
+    PLAYWRIGHT_PAGE_NAV_TRAIL_MAX(
+        "playwright.page.navigation.trail.max",
+        "30",
+        "导航轨迹环形缓冲容量（onFrameNavigated，失败时回放用）"
+    ),
+
     // ==================== 截图配置 ====================
 
     /**

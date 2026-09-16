@@ -3,8 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageInteractions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageInteractions;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;
 import java.util.ArrayList;
 import java.util.List;
@@ -833,8 +833,8 @@ public class PageElement {
      * @param target true=勾选 / false=取消勾选
      */
     public PageElement setChecked(boolean target) {
-        Boolean current = isChecked();
-        if (current != null && current == target) return this; // 已满足，无需操作
+        boolean current = isChecked();
+        if (current == target) return this; // 已满足，无需操作
         executeWithRetry(() -> {
             locatorInternal().setChecked(target, new Locator.SetCheckedOptions().setTimeout(opTimeout()));
             return true;
@@ -870,13 +870,7 @@ public class PageElement {
     }
 
     // ==================== Utils ====================
-    /**
-     * 元素定位器健康度检查。
-     * 快速判断 Locator 是否仍然有效（定位符对应的 DOM 未发生结构性变化）。
-     * count() >= 0 表示定位符仍可正常解析（即使返回 0 个匹配也是"健康"的，只是元素不存在）。
-     *
-     * @return true 表示 Locator 健康可用，false 表示 Locator 已失效（如页面已关闭或选择器语法错误）
-     */
+
     /**
      * 仅校验 Locator 语法/可解析性（不表示元素存在，count=0 也算 true）。
      * 与 exists() 区分：exists() 关注“是否有匹配元素”，本方法关注“定位器是否合法可用”。

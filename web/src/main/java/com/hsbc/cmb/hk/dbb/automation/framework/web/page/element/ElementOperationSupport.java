@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;

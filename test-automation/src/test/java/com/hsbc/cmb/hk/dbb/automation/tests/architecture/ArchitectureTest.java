@@ -12,7 +12,7 @@ import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import org.junit.jupiter.api.Test;
 
@@ -179,6 +179,33 @@ public class ArchitectureTest {
                     public boolean test(JavaMethodCall call) {
                         return call.getTarget().getOwner().isAssignableTo(BasePage.class)
                                 && call.getTarget().getName().startsWith("by");
+                    }
+                })
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+    }
+
+    /**
+     * API 边界门禁（企业级）：业务代码（framework 包之外）不得调用页面定位<b>内部工厂</b>
+     * {@code LocatorFactory} / {@code RoleLocatorFactory}——它们返回裸 Playwright {@code Locator}，
+     * 属驱动类型泄漏，且会绕过框架的 iframe/shadow 适配、错误处理与录制。
+     *
+     * <p>业务应使用业务契约的定位入口：{@code SerenityBasePage#element/locator/elements(String)}（选择器）、
+     * {@code #elementByRole*}/{@code #elementsByRole*}（ARIA 角色，返回框架原生
+     * {@code PageElement}/{@code PageElementList}），或 {@code @RoleElement} 注解字段。
+     *
+     * <p>边界与 {@link #businessCodeMustNotUseInternalByLocators} 互补：后者拦 {@code BasePage.by*}</p>
+     * 实例方法，本规则拦全部 {@code *LocatorFactory} 静态工厂（含后续新增的同类工厂）。
+     */
+    @Test
+    public void businessCodeMustNotUseInternalLocatorFactories() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should().callMethodWhere(new DescribedPredicate<JavaMethodCall>("call an internal *LocatorFactory") {
+                    @Override
+                    public boolean test(JavaMethodCall call) {
+                        return call.getTarget().getOwner().getName().endsWith("LocatorFactory");
                     }
                 })
                 .check(new ClassFileImporter()

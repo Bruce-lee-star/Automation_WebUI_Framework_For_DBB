@@ -12,23 +12,27 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporte
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleLocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.CookieManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageAccessibility;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageFrameShadow;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageInteractions;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageNavigation;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageViewport;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageWaits;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.CookieManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.LocatorFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageAccessibility;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageFrameShadow;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageInteractions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageNavigation;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageViewport;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageWaits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -69,6 +73,145 @@ public final class SerenityPageRecorder {
         recorder.addSerenityTestData("lastActionElement", selector);
         // 直接构造 PageElement，避免回调 bp.element() 形成递归（BasePage.element 已委托本门面）
         return new PageElement(selector, bp);
+    }
+
+    // ==================== elementByRole / elementsByRole（角色定位，运行期 API） ====================
+
+    /**
+     * 元素创建的统一前置（与 {@link #element(BasePage, String)} 同语义）：
+     * 刷新待报告 API 数据 + verbose 日志 + 记录「最近操作元素」（报告/失败诊断据此定位元素）。
+     */
+    private void recordElementCreation(String desc) {
+        SerenityReporter.flushPendingApiOperations();
+        if (VerboseLogging.isVerboseEnabled()) {
+            VerboseLogging.logInfoIfVerbose(logger, "Creating role element: {}", desc);
+        }
+        recorder.addSerenityTestData("lastActionElement", desc);
+    }
+
+    /**
+     * 角色定位的<b>唯一构造路径</b>：名称片段 + 选项 → 描述串 → 懒定位器。
+     * 所有 {@code elementByRole*} 重载都汇聚到此，保证描述格式与录制语义只有一份实现。
+     */
+    private PageElement roleElement(BasePage bp, AriaRole role, String namePart, Supplier<Locator> locator,
+                                    RoleOptions options) {
+        String desc = RoleLocatorFactory.describe(role, namePart,
+                RoleLocatorFactory.describeOptionsSuffix(options));
+        recordElementCreation(desc);
+        return new PageElement(locator, desc, bp);
+    }
+
+    /** 由「匹配方式 + 层级」构造选项（供不带状态三态的简易重载内部使用）。 */
+    private static RoleOptions roleOptions(boolean exact, int level) {
+        RoleOptions options = RoleOptions.defaults().level(level);
+        return exact ? options.exact() : options.partial();
+    }
+
+    /** 纯角色定位（不限名称）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role) {
+        return roleElement(bp, role, RoleLocatorFactory.namePartRole(),
+                () -> RoleLocatorFactory.byRole(bp, role), RoleOptions.defaults());
+    }
+
+    /** 角色 + 可访问名（精确匹配）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role, String name) {
+        return elementByRole(bp, role, name, RoleOptions.defaults());
+    }
+
+    /** 角色 + 可访问名（可指定精确/模糊）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role, String name, boolean exact) {
+        return elementByRole(bp, role, name, roleOptions(exact, 0));
+    }
+
+    /** 角色 + 可访问名 + 标题层级（仅 HEADING 有意义）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role, String name, boolean exact, int level) {
+        return elementByRole(bp, role, name, roleOptions(exact, level));
+    }
+
+    /**
+     * 角色 + 可访问名 + 选项（层级 / 匹配方式 / 可访问状态三态，语义化）。
+     * <pre>{@code
+     * page.elementByRole(AriaRole.BUTTON, "Submit", RoleOptions.defaults().enabledOnly());
+     * }</pre>
+     */
+    public PageElement elementByRole(BasePage bp, AriaRole role, String name, RoleOptions options) {
+        final RoleOptions opts = options == null ? RoleOptions.defaults() : options;
+        return roleElement(bp, role, RoleLocatorFactory.namePartName(name),
+                () -> RoleLocatorFactory.byName(bp, role, name, opts.isExact(), opts.level(),
+                        opts.disabledState(), opts.pressedState(), opts.expandedState()),
+                opts);
+    }
+
+    /** 角色 + 正则可访问名（模板值/多语言正则）+ 标题层级（Playwright 原生正则语义，exact=false）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role, Pattern namePattern, int level) {
+        return elementByRole(bp, role, namePattern, roleOptions(false, level));
+    }
+
+    /**
+     * 角色 + 正则可访问名 + 匹配方式 + 标题层级。
+     * {@code exact=true} 时由框架把正则锚定为整串匹配（Playwright 原生对正则忽略 exact，
+     * 详见 {@link RoleLocatorFactory#resolvePattern}）。
+     */
+    public PageElement elementByRole(BasePage bp, AriaRole role, Pattern namePattern, boolean exact, int level) {
+        return elementByRole(bp, role, namePattern, roleOptions(exact, level));
+    }
+
+    /** 角色 + 正则可访问名 + 选项（层级 / 匹配方式 / 可访问状态三态，语义化）。 */
+    public PageElement elementByRole(BasePage bp, AriaRole role, Pattern namePattern, RoleOptions options) {
+        final RoleOptions opts = options == null ? RoleOptions.defaults() : options;
+        final Pattern effective = RoleLocatorFactory.resolvePattern(namePattern, opts.isExact());
+        return roleElement(bp, role, RoleLocatorFactory.namePartPattern(namePattern, opts.isExact()),
+                () -> RoleLocatorFactory.byPattern(bp, role, effective, opts.level(),
+                        opts.disabledState(), opts.pressedState(), opts.expandedState()),
+                opts);
+    }
+
+    /**
+     * 角色 + NLS 键（多语言）+ 标题层级：按 {@code roleFileClass} 上的类级 {@code @RoleFile}
+     * 在运行时解析当前语言的可访问名，{@code NLSUtils.setLanguage("xx")} 后再次定位自动生效。
+     *
+     * @param roleFileClass 声明 {@code @RoleFile} 的页面类（业务 POJO 自身）
+     * @param nlsKey        nls 键
+     * @param level         标题层级（仅 HEADING 有意义）
+     */
+    public PageElement elementByRoleKey(BasePage bp, Class<?> roleFileClass, AriaRole role, String nlsKey, int level) {
+        return elementByRoleKey(bp, roleFileClass, role, nlsKey, RoleOptions.defaults().level(level));
+    }
+
+    /**
+     * 角色 + NLS 键（多语言）+ 选项（层级 / 匹配方式 / 可访问状态三态，语义化）。
+     * <pre>{@code
+     * page.elementByRoleKey(AriaRole.BUTTON, "favorite", RoleOptions.defaults().notPressed());
+     * }</pre>
+     *
+     * @param roleFileClass 声明 {@code @RoleFile} 的页面类（业务 POJO 自身）
+     * @param nlsKey        nls 键
+     */
+    public PageElement elementByRoleKey(BasePage bp, Class<?> roleFileClass, AriaRole role, String nlsKey,
+                                        RoleOptions options) {
+        final RoleOptions opts = options == null ? RoleOptions.defaults() : options;
+        List<String> files = RoleLocatorFactory.resolveFiles(roleFileClass, "",
+                "elementByRoleKey(role=" + role + ", key=" + nlsKey + ")");
+        final Supplier<String> nlsValue = RoleLocatorFactory.nlsValueSupplier(files, nlsKey);
+        return roleElement(bp, role, RoleLocatorFactory.namePartKey(files.get(0), nlsKey),
+                () -> RoleLocatorFactory.byNlsValue(bp, role, nlsValue.get(), opts.isExact(), opts.level(),
+                        opts.disabledState(), opts.pressedState(), opts.expandedState()),
+                opts);
+    }
+
+    /** 角色定位的多元素集合（不限名称）。 */
+    public PageElementList elementsByRole(BasePage bp, AriaRole role) {
+        String desc = RoleLocatorFactory.describeRole(role);
+        recordElementCreation(desc);
+        return new PageElementList(() -> RoleLocatorFactory.byRole(bp, role), desc, bp);
+    }
+
+    /** 角色定位的多元素集合（按可访问名精确匹配）。 */
+    public PageElementList elementsByRole(BasePage bp, AriaRole role, String name) {
+        String desc = RoleLocatorFactory.describeName(role, name);
+        recordElementCreation(desc);
+        return new PageElementList(() -> RoleLocatorFactory.byName(bp, role, name, true, 0,
+                RoleElement.State.ANY, RoleElement.State.ANY, RoleElement.State.ANY), desc, bp);
     }
 
     // ==================== getPage / getContext ====================

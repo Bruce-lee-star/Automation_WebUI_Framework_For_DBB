@@ -8,6 +8,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import net.serenitybdd.core.Serenity;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
@@ -215,5 +216,37 @@ final class StepFailureAggregator {
             logger.error("Failed to call StepEventBus.testFailed() for page errors", e);
         }
         throw new AssertionError("Uncaught page errors detected — failing scenario:\n" + details);
+    }
+
+    /**
+     * 步骤失败时回放交互诊断（纯观测，不标记失败、不抛异常）。
+     * 经 {@link PageInteractionMonitor} 取出当前线程的导航轨迹与未受管弹窗清单，补充失败上下文，
+     * 便于还原"失败前页面去过哪些地址 / 是否漏捕获 app 弹窗"。幂等消费，不跨步骤重复。
+     */
+    static void logInteractionDiagnosticsOnFailure() {
+        String trail = PageInteractionMonitor.drainNavigationTrail();
+        String popups = PageInteractionMonitor.drainUnmanagedPopups();
+        if (trail.isEmpty() && popups.isEmpty()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        if (!trail.isEmpty()) {
+            sb.append("[导航轨迹 - 失败前页面去过]\n").append(trail);
+        }
+        if (!popups.isEmpty()) {
+            if (sb.length() > 0) {
+                sb.append("\n\n");
+            }
+            sb.append("[未受管弹窗 - 框架未认领]\n").append(popups);
+        }
+        String report = sb.toString();
+        logger.warn("[interaction-diagnostics] 步骤失败交互诊断:\n{}", report);
+        try {
+            Serenity.recordReportData()
+                    .withTitle("Interaction Diagnostics (Failure)")
+                    .andContents(report);
+        } catch (Exception e) {
+            logger.debug("Failed to record interaction diagnostics to Serenity report", e);
+        }
     }
 }

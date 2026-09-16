@@ -989,7 +989,7 @@
 <error line="47" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="48" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="49" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
-<error line="50" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
+<error line="50" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="56" column="8" severity="error" message="无用导入 - java.awt.Dimension 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="61" column="8" severity="error" message="无用导入 - java.nio.file.Paths 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="63" column="8" severity="error" message="无用导入 - java.util.concurrent.ConcurrentHashMap 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
@@ -1152,7 +1152,7 @@
 <error line="242" column="17" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
 <file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/listener/PlaywrightListener.java">
-<error line="13" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
+<error line="13" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="308" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="446" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="467" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>

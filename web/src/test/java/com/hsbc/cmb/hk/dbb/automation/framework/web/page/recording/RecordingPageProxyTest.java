@@ -162,7 +162,8 @@ class RecordingPageProxyTest {
         BrowserException ex = assertThrows(BrowserException.class, proxy::close,
                 "业务经装饰 Page 调用 close() 必须被语义化拒绝");
         assertFalse(rec.calls.contains("close"), "close() 绝不可委托到真实受管 Page");
-        assertTrue(ex.getMessage().contains("托管"), "异常信息应说明生命周期由框架托管");
+        assertTrue(ex.getMessage().contains("owned by the framework"),
+                "异常信息应说明生命周期由框架托管");
     }
 
     @Test

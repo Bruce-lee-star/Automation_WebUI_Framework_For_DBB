@@ -3,7 +3,11 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
@@ -12,6 +16,7 @@ import com.microsoft.playwright.options.Cookie;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * {@link SerenityBasePage} 的默认实现（G1，doc15 §1 G1）。
@@ -51,6 +56,78 @@ public class SerenityBasePageImpl implements SerenityBasePage {
     @Override
     public PageElementList elements(String selector) {
         return bp.elements(selector);
+    }
+
+    // ===================== 角色定位（ARIA role，业务公开入口） =====================
+    // 全部转发到引擎门面 BasePage：定位语义收敛于 RoleLocatorFactory，录制收敛于 SerenityPageRecorder。
+
+    @Override
+    public PageElement elementByRole(AriaRole role) {
+        return bp.elementByRole(role);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, String name) {
+        return bp.elementByRole(role, name);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, String name, boolean exact) {
+        return bp.elementByRole(role, name, exact);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, String name, boolean exact, int level) {
+        return bp.elementByRole(role, name, exact, level);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, Pattern namePattern, int level) {
+        return bp.elementByRole(role, namePattern, level);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, Pattern namePattern, boolean exact, int level) {
+        return bp.elementByRole(role, namePattern, exact, level);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, String name, RoleOptions options) {
+        return bp.elementByRole(role, name, options);
+    }
+
+    @Override
+    public PageElement elementByRole(AriaRole role, Pattern namePattern, RoleOptions options) {
+        return bp.elementByRole(role, namePattern, options);
+    }
+
+    /**
+     * 角色 + NLS 键：NLS 上下文取本页面对象的类（声明 {@code @RoleFile} 的业务 POJO），
+     * 与 {@code @RoleElement} 注解字段的绑定上下文一致，故多语言解析结果与注解路径完全一致。
+     */
+    @Override
+    public PageElement elementByRoleKey(AriaRole role, String nlsKey) {
+        return bp.elementByRoleKey(role, nlsKey, RoleOptions.defaults(), getClass());
+    }
+
+    @Override
+    public PageElement elementByRoleKey(AriaRole role, String nlsKey, int level) {
+        return bp.elementByRoleKey(role, nlsKey, RoleOptions.defaults().level(level), getClass());
+    }
+
+    @Override
+    public PageElement elementByRoleKey(AriaRole role, String nlsKey, RoleOptions options) {
+        return bp.elementByRoleKey(role, nlsKey, options, getClass());
+    }
+
+    @Override
+    public PageElementList elementsByRole(AriaRole role) {
+        return bp.elementsByRole(role);
+    }
+
+    @Override
+    public PageElementList elementsByRole(AriaRole role, String name) {
+        return bp.elementsByRole(role, name);
     }
 
     // ===================== 文本 / 属性 =====================

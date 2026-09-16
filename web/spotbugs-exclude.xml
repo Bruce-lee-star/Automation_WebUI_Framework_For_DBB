@@ -26,9 +26,9 @@
       分组约定：每组以 ===== 注释分隔；条数为 class+pattern 粒度。
     -->
 
-    <!-- ===== web.page.base (BasePage/PageContextState, 2 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 构造异常收敛 + EI 封装 + 未用私有方法删除 ===== -->
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageContextState"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
+    <!-- ===== web.page.engine (BasePage/PageContextState, 2 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 构造异常收敛 + EI 封装 + 未用私有方法删除 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.PageContextState"/><Bug pattern="UPM_UNCALLED_PRIVATE_METHOD"/></Match>
 
     <!-- ===== web.page (PageElement/PageElementList/PageObjectFactory/ElementDiagnosticsCollector, 6 条) | owner: @web-core | SLA: 2027-Q1 | 方式: 构造异常收敛 + EI 封装 ===== -->
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>

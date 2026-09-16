@@ -10,7 +10,7 @@ import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
@@ -523,6 +523,9 @@ public class PlaywrightListener implements StepListener {
         }
         recordTestData("stepFailure", fullMsg);
         recordTestData("stepFailureCause", failure.getException().getClass().getSimpleName());
+
+        // 失败交互诊断：回放导航轨迹 + 未受管弹窗，补充失败上下文（纯观测，不标记失败）
+        logInteractionDiagnosticsOnFailure();
 
         //  关键修复：无论什么策略，都在步骤失败瞬间截图
         // 这确保捕获的是失败时的真实页面状态（错误信息、弹窗等）
@@ -1379,6 +1382,10 @@ public class PlaywrightListener implements StepListener {
      */
     private void checkAndFailOnPageErrors() {
         StepFailureAggregator.checkAndFailOnPageErrors();
+    }
+
+    private void logInteractionDiagnosticsOnFailure() {
+        StepFailureAggregator.logInteractionDiagnosticsOnFailure();
     }
 
     private void checkAndFailOnApiAssertions() {

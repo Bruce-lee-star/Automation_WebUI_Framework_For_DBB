@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.WaitForSelectorState;
@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 public final class PageElementList extends AbstractList<PageElement> {
@@ -19,6 +20,12 @@ public final class PageElementList extends AbstractList<PageElement> {
     private final int defaultTimeoutMs = PlaywrightManager.config().getElementCheckTimeout();
     /** iframe 嵌套路径（自顶向下）；非空时在 locator() 中以 frameLocator 逐层下钻，对齐 page.pause 录制。 */
     private final List<String> frameSegs;
+    /**
+     * 动态定位器供应商（角色定位等运行期才能确定定位器的场景）。
+     * 与 {@link #selector} 二选一：非空时 {@link #locatorInternal()} 直接采用它，
+     * 不再经 {@code page.locatorInternal(selector)} 解析。
+     */
+    private final Supplier<Locator> locatorSupplier;
 
     // ========================== 构造（线程安全） ==========================
     public PageElementList(String selector, BasePage page) {
@@ -33,6 +40,30 @@ public final class PageElementList extends AbstractList<PageElement> {
         this.selector = selector;
         this.page = page;
         this.frameSegs = (frameSegs == null || frameSegs.isEmpty()) ? null : new ArrayList<>(frameSegs);
+        this.locatorSupplier = null;
+    }
+
+    /**
+     * 基于动态 Locator 供应商构造（用于角色定位等运行期才能确定定位器的场景），
+     * 与 {@link PageElement#PageElement(Supplier, String, BasePage)} 对称。
+     * supplier 每次调用都会重新解析定位器，因此语言切换（{@code NLSUtils.setLanguage}）
+     * 或 Page 重建后再次操作会自动生效。
+     *
+     * @param locatorSupplier 动态定位器供应商（如 {@code getByRole(role[, name])}）
+     * @param description     描述（用于日志、诊断与截图命名），不可为空
+     * @param page            所属页面
+     */
+    public PageElementList(Supplier<Locator> locatorSupplier, String description, BasePage page) {
+        if (locatorSupplier == null)
+            throw new IllegalArgumentException("Locator supplier cannot be null");
+        if (description == null || description.isBlank())
+            throw new IllegalArgumentException("Description cannot be null or blank");
+        if (page == null)
+            throw new IllegalArgumentException("BasePage cannot be null");
+        this.locatorSupplier = locatorSupplier;
+        this.selector = description;
+        this.page = page;
+        this.frameSegs = null;
     }
 
     /**
@@ -44,6 +75,10 @@ public final class PageElementList extends AbstractList<PageElement> {
     protected Locator locatorInternal() {
         // 触发 ensurePageValid() → 如 page 已关闭则重建 page
         page.getPage();
+        if (locatorSupplier != null) {
+            // 动态定位（角色/多语言）：每次重新解析，切语言与 Page 重建后自动生效
+            return locatorSupplier.get();
+        }
         Locator base = page.locatorInternal(selector);
         if (frameSegs != null) {
             for (String seg : frameSegs) {

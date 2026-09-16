@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.Concurr
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTask;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistry;
@@ -133,6 +134,10 @@ public class PlaywrightContextManager {
             // 注册页面级可观测性诊断监听（未捕获异常/控制台错误/网络失败/崩溃）
             // 经 context.onPage 覆盖所有新建页面（含 window.open 弹窗），与上方 onPage 日志互不冲突
             PageEventMonitor.register(context);
+
+            // 注册页面级交互事件监听（导航轨迹 / 未受管弹窗 / 对话框自动处置 / 文件选择器自动上传）
+            // 与 PageEventMonitor 同族、同接缝；各项均默认零行为回归，受独立配置开关控制
+            PageInteractionMonitor.register(context);
 
             // 注册下载保存监听（§3.2：1.60+ 经 context.onDownload 一次注册即覆盖该 Context 下所有页面，
             // 含 window.open 弹窗，无需逐页注册；原先在 createPage 逐页 page.onDownload 会让弹窗内下载漏捕获，

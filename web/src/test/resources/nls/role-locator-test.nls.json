@@ -1,0 +1,12 @@
+{
+	"en-US": {
+		"signIn": "Sign in",
+		"welcomeHeader": "Welcome to Business",
+		"templateItem": "Notification for {{deviceModel}}"
+	},
+	"zh-CN": {
+		"signIn": "登入",
+		"welcomeHeader": "欢迎使用商务理财",
+		"templateItem": "通知：{{deviceModel}}"
+	}
+}

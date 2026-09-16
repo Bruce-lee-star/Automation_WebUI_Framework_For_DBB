@@ -187,6 +187,34 @@ public class ArchitectureTest {
     }
 
     /**
+     * API 边界门禁（企业级，前向守护）：业务代码（framework 包之外）不得调用<b>页面对象</b>
+     * （{@code framework.web.page..}）上的任何 {@code bringToFront(...)} 方法。
+     *
+     * <p>背景：标签页 / 窗口激活属框架内部编排——业务切页走 {@code switchToPage} / {@code waitForNewPage}，
+     * 其收尾已由内部 {@code safeBringToFront()} 自动激活目标页。该能力既不在 {@code SerenityBasePage}
+     * 能力面上，也不保留任何公开 seam；本规则防止后续把它重新接线回业务代码。</p>
+     *
+     * <p>边界：仅约束<b>页面对象</b>上的同名方法。业务经 Layer A 直接对 Playwright {@code Page}
+     * 调用同名原生 API 不受限制（属原生操作，由装饰代理录制）。</p>
+     */
+    @Test
+    public void businessCodeMustNotCallPageBringToFront() {
+        noClasses()
+                .that().resideOutsideOfPackage("..framework.web.page..")
+                .should().callMethodWhere(new DescribedPredicate<JavaMethodCall>("call bringToFront on a page object") {
+                    @Override
+                    public boolean test(JavaMethodCall call) {
+                        return "bringToFront".equals(call.getTarget().getName())
+                                && call.getTarget().getOwner().getPackageName()
+                                        .startsWith("com.hsbc.cmb.hk.dbb.automation.framework.web.page");
+                    }
+                })
+                .check(new ClassFileImporter()
+                        .withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+    }
+
+    /**
      * Phase 4 门禁（doc15 §8）：业务代码不得继承已删除的 {@code SerenityBasePage}。
      * 该类全部 Layer B 录制方法已下沉为 {@code BasePage} 公开委托壳，业务 Page 应继承 {@code BasePage}
      * （或后续逐步演进为组合式 POJO + {@code ManagedPageAware}）。此规则防止 SerenityBasePage 被重新引入。

@@ -1172,12 +1172,6 @@
 <file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/delegate/PageWaits.java">
 <error line="161" column="17" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/impl/SerenityBasePage.java">
-<error line="80" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
-<error line="97" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
-<error line="183" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
-<error line="259" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
-</file>
 <file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/LocatorFactory.java">
 <error line="150" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="151" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>

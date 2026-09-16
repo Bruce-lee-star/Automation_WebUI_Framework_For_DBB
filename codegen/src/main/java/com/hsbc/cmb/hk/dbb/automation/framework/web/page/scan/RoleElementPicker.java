@@ -4,7 +4,7 @@ import com.google.gson.reflect.TypeToken;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

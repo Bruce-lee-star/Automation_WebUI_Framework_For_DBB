@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 /**
  * 框架中立的矩形描述，用于在 public API 中替代 Playwright {@code BoundingBox}。

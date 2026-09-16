@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

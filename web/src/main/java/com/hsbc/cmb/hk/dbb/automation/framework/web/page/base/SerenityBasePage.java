@@ -6,8 +6,8 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.Cookie;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
 
 import java.util.List;
 import java.util.function.BooleanSupplier;

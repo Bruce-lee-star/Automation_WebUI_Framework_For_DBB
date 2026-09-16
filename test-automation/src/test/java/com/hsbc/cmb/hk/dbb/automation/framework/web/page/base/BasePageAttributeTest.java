@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

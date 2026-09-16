@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Locator;

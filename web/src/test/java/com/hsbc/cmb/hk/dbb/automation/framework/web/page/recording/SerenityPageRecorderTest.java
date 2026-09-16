@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;

@@ -12,17 +12,17 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporte
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConfigurationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.CookieManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageAccessibility;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageFrameShadow;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageInteractions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageNavigation;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageViewport;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.PageWaits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

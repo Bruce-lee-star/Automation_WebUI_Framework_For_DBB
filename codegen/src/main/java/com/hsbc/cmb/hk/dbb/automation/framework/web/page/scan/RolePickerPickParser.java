@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 
 /**
  * Pick / state parsing &amp; merge helpers (T5-1 step 4, cluster 3): relocates

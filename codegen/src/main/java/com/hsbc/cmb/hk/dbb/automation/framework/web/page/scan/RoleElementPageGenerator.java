@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NlsNameTranslator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
@@ -372,13 +372,13 @@ public final class RoleElementPageGenerator {
         if (hasAriaRole) {
             imports.append("import com.microsoft.playwright.options.AriaRole;\n\n");
         }
-        imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;\n");
+        imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;\n");
         if (hasElement) {
-            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;\n");
+            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.Element;\n");
         }
         if (hasRole) {
-            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;\n");
-            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;\n");
+            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;\n");
+            imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleFile;\n");
         }
         imports.append("import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.AbstractManagedPage;\n");
 

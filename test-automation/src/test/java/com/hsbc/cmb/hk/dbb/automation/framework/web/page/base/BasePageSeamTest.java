@@ -2,8 +2,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.RuntimeProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;

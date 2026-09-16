@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.Frame;

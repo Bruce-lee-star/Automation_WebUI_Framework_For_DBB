@@ -1,6 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 
 /**
  * 一次拾取/解析出的元素定位信息。

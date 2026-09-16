@@ -5,10 +5,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.Element;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
@@ -222,11 +222,6 @@ final class PageContextState {
     }
 
     /**
-     * 初始化/刷新注解字段。
-     * 首次调用：创建 PageElement/PageElementList 对象。
-     * 后续调用（页面切换）：复用已有对象，Locator 由 locator() 动态绑定新 Page。
-     */
-    /**
      * 传统路径：字段宿主与页面宿主都是 {@code BasePage} 自身。
      */
     void initializeAnnotatedFields() {
@@ -259,7 +254,7 @@ final class PageContextState {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
                             Object existing = field.get(fieldOwner);
-                            if (existing == null || !(existing instanceof PageElement)) {
+                            if (!(existing instanceof PageElement)) {
                                 new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                             }
                         } catch (IllegalAccessException e) {
@@ -280,7 +275,7 @@ final class PageContextState {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
                             Object existing = field.get(fieldOwner);
-                            if (existing == null || !(existing instanceof PageElement || existing instanceof PageElementList)) {
+                            if (!(existing instanceof PageElement || existing instanceof PageElementList)) {
                                 createField(field, fieldOwner, pageOwner, selector, frameSegs);
                             }
                         } catch (IllegalAccessException e) {

@@ -1,8 +1,7 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.LoadState;
 import org.junit.jupiter.api.Test;

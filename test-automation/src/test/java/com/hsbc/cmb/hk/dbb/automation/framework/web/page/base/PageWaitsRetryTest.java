@@ -1,6 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Page;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

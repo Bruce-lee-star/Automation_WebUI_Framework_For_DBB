@@ -2,11 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageNavigation;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate.PageWaits;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording.SerenityPageRecorder;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.TextNormalizer;

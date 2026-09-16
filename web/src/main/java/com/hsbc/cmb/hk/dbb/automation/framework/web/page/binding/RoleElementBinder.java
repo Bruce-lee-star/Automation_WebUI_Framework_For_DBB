@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleFile;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleFile;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.LocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;

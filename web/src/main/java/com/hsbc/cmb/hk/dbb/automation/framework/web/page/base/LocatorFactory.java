@@ -4,7 +4,7 @@ import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.RoleElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 
 import java.util.regex.Pattern;
 

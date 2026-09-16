@@ -1,8 +1,7 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.delegate;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.BasePage;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;

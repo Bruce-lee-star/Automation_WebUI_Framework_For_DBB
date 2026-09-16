@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.pages;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.Element;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.PageElement;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.Element;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.AbstractManagedPage;
 
 /**

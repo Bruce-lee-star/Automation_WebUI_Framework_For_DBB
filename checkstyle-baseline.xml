@@ -1169,7 +1169,7 @@
 <file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/BasePage.java">
 <error line="270" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/delegate/PageWaits.java">
+<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/PageWaits.java">
 <error line="161" column="17" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
 <file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/base/LocatorFactory.java">
@@ -1205,10 +1205,10 @@
 <error line="245" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="274" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/ElementDiagnosticsCollector.java">
+<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/element/ElementDiagnosticsCollector.java">
 <error line="247" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/ElementOperationSupport.java">
+<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/element/ElementOperationSupport.java">
 <error line="120" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="121" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="122" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
@@ -1222,11 +1222,11 @@
 <error line="491" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="494" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/PageElement.java">
+<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/element/PageElement.java">
 <error line="14" column="8" severity="error" message="无用导入 - com.microsoft.playwright.options.BoundingBox 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="837" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/PageElementList.java">
+<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/element/PageElementList.java">
 <error line="29" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="31" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="168" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>

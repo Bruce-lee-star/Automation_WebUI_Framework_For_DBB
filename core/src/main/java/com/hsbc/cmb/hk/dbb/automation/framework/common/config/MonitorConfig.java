@@ -51,6 +51,15 @@ public final class MonitorConfig {
     public static final Key MONITOR_BODY_READ_MAX_WAIT_MS =
             new Key("monitor.body.read.max.wait.ms", "30000");
 
+    /**
+     * Monitor / Mock / Modify 超时上限（毫秒，默认 5min）：防御性 sanity cap。
+     * <p>{@code RouteRule.setTimeoutMs} 在设置超时时会钳制到此上限并打 WARN。
+     * 防止极端超时被长期挂在调度器上（持有 MonitorSession / context / rule 引用，延迟 GC；
+     * 且若 context 清理遗漏，future 会一直挂到超时时刻才触发）。正常监控时长远低于此值。
+     */
+    public static final Key MONITOR_TIMEOUT_MAX_MS =
+            new Key("monitor.timeout.max.ms", "300000");
+
     // ==================== API Monitor 文件存储配置 ====================
     public static final Key MONITOR_FILE_STORE_ENABLED = new Key("monitor.file.store.enabled", "false");
     public static final Key MONITOR_FILE_STORE_DIR = new Key("monitor.file.store.dir", "target/monitor-output");

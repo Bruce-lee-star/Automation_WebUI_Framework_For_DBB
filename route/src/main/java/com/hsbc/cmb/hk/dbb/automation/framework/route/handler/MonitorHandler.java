@@ -26,6 +26,9 @@ import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -336,7 +339,7 @@ public class MonitorHandler {
             return;
         }
 
-        String body = new String(read.bytes(), StandardCharsets.UTF_8);
+        String body = toSafeBodyString(read.bytes());
         String url = req.url();
         int status = res.status();
         String urlPattern = rule.getUrlPattern();
@@ -357,7 +360,7 @@ public class MonitorHandler {
             if (res == null) return;
             BodyRead read = readResponseBodyWithRetry(res, rule, req);
             if (read == null) return;
-            String body = new String(read.bytes(), StandardCharsets.UTF_8);
+            String body = toSafeBodyString(read.bytes());
             LOGGER.info("[MonitorHandler] Captured (fallback): url={}, status={}, bodyLength={}, pattern='{}'",
                     RouteUtil.sanitizeUrl(req.url()), res.status(), body.length(), rule.getUrlPattern());
             assertAndRecord(route, rule, context, req.url(), res.status(), body,
@@ -367,6 +370,32 @@ public class MonitorHandler {
         } catch (Exception e) {
             LOGGER.debug("[MonitorHandler] Fallback collection unavailable for {}: {}",
                     RouteUtil.sanitizeUrl(req.url()), e.getMessage());
+        }
+    }
+
+    /**
+     * 将响应体字节转为「文本安全」字符串，仅用于日志与捕获存储。
+     *
+     * <p>与 {@code ModifyHandler#toSafeBodyString} 对齐：UTF-8 解码无错且不含 NUL / 不可打印控制字符
+     * （tab/换行/回车 除外）视为文本原样返回；非法 UTF-8 或含上述字符判定为二进制，返回占位串，
+     * 避免把图片 / 压缩包 / protobuf 等二进制体刷成乱码写入日志与监控存储。
+     * 空体返回 {@code ""}，与原有 {@code new String(bytes, UTF_8)} 行为一致，不引入新行为差异。
+     */
+    private static String toSafeBodyString(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return bytes == null ? null : "";
+        }
+        try {
+            CharBuffer cb = StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes));
+            for (int i = 0; i < cb.length(); i++) {
+                char c = cb.charAt(i);
+                if (c == '\uFFFD' || c == '\u0000' || (c < 0x20 && c != '\t' && c != '\n' && c != '\r')) {
+                    return String.format("(binary body, %d bytes, not displayed)", bytes.length);
+                }
+            }
+            return cb.toString();
+        } catch (CharacterCodingException e) {
+            return String.format("(binary body, %d bytes, not displayed)", bytes.length);
         }
     }
 

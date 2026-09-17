@@ -101,6 +101,12 @@ public final class RouteMonitorSession {
          * <p><b>关键设计</b>：不调用 {@code page.unroute()} 注销路由，避免 auto-stop / 超时触发时的
          * Playwright 线程竞态。Route handler 保持注册，后续匹配请求检测到 {@code stopped == true}
          * 后直接 resume 放行。真正的 unroute 发生在 clearMonitorSessions / unrouteAllForContext 中。
+         *
+         * <p><b>与收尾的时序安全</b>：本方法被超时回调 {@link #onTimeout()} 与收尾链路
+         * （{@code clearContext} / context {@code onClose} 钩子）共同调用，且均经
+         * {@code stopped.compareAndSet(false,true)} 幂等保护。{@code onTimeout()} 仅翻转
+         * {@code stopped} 并取消自身 {@code ScheduledFuture}，<b>全程不触碰 Playwright 对象</b>，
+         * 故超时任务与收尾线程并发执行也不会争用 Playwright 状态 —— 不会引发时序竞态。
          */
         void stop() {
             if (!stopped.compareAndSet(false, true)) {
@@ -259,7 +265,15 @@ public final class RouteMonitorSession {
                 session.pattern, totalMatches);
     }
 
-    /** 清理指定上下文的全部 MonitorSession（RouteRegistry.clearContext 时同步调用）。 */
+    /**
+     * 清理指定上下文的全部 MonitorSession。
+     *
+     * <p><b>双保险（与 context onClose 钩子）</b>：本方法被两条收尾链路调用 ——
+     * {@link com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RuleRepository#clearContext}
+     * （场景/用例结束）与 {@code cleanupClosedContext}（BrowserContext 的 onClose 钩子）。
+     * 任一路径先到都会 {@code stop()}（CAS 幂等），确保即使某条链路遗漏，另一条仍会取消挂起的
+     * 超时 {@code ScheduledFuture}，避免 scenario 结束后 future 才触发。
+     */
     public static void clearMonitorSessions(Object context) {
         VerboseLogging.logDebugIfVerbose(LOGGER,
                 "[RouteMonitorSession] clearMonitorSessions for context: {} (total sessions before: {})",

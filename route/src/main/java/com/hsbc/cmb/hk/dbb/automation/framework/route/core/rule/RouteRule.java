@@ -3,6 +3,11 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
+
 /**
  * 路由规则数据模型 — 统一承载 MONITOR / MODIFY / MOCK 三种类型的配置。
  *
@@ -155,6 +160,8 @@ public class RouteRule {
 
 
     // Monitor 自动停止控制
+    private static final Logger LOGGER = LoggerFactory.getLogger(RouteRule.class);
+
     private long timeoutMs = 0;          // 超时（毫秒），0 = 永不超时
     private int minMatches = 1;          // 最小匹配次数，满足后触发 auto-stop
     private boolean autoStopOnMatch = true;   // 目标匹配后是否自动停止（MONITOR 经 DSL monitor() 显式置 false → 默认不自动停；MOCK/MODIFY 由 DSL 覆盖为 false）
@@ -765,6 +772,15 @@ public class RouteRule {
     public void setTimeoutMs(long timeoutMs) {
         if (timeoutMs < 0) {
             throw new IllegalArgumentException("timeoutMs must be >= 0, got: " + timeoutMs);
+        }
+        //  防御性 sanity cap：钳制极端超时被长期挂在调度器（持有 MonitorSession / context / rule 引用，
+        //  延迟 GC；若 context 清理遗漏，future 会一直挂到超时时刻）。上限由 monitor.timeout.max.ms 配置。
+        long cap = MonitorConfig.getLong(MonitorConfig.MONITOR_TIMEOUT_MAX_MS);
+        if (timeoutMs > cap) {
+            LOGGER.warn("[RouteRule] timeoutMs {} exceeds sanity cap {} (monitor.timeout.max.ms), clamped to cap",
+                    timeoutMs, cap);
+            this.timeoutMs = cap;
+            return;
         }
         this.timeoutMs = timeoutMs;
     }

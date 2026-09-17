@@ -31,7 +31,7 @@ public class ParallelLogonGlue {
      */
     @Then("the browser is isolated to this thread only")
     public void browserIsolatedToThisThreadOnly() {
-        long threadId = Thread.currentThread().getId();
+        long threadId = Thread.currentThread().threadId();
         String threadName = Thread.currentThread().getName();
 
         Browser browser = PlaywrightManager.getBrowser();

@@ -45,7 +45,7 @@ public final class ScenarioDataNamespace {
     /** 当前隔离域主键：用例绑定优先，否则线程标识兜底。 */
     private static String domainKey() {
         String scenarioId = ScenarioContext.currentScenarioId();
-        return scenarioId != null ? scenarioId : "thread:" + Thread.currentThread().getId();
+        return scenarioId != null ? scenarioId : "thread:" + Thread.currentThread().threadId();
     }
 
     /**

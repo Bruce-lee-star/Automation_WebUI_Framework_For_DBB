@@ -46,7 +46,7 @@ public class ThreadContextRegistryLeakTest {
         for (int i = 0; i < threads; i++) {
             pool.submit(() -> {
                 TestContextHolder.get().set(
-                        ContextKey.of("t" + Thread.currentThread().getId(), String.class), "v");
+                        ContextKey.of("t" + Thread.currentThread().threadId(), String.class), "v");
                 registered.countDown();
                 try {
                     hold.await(5, TimeUnit.SECONDS);

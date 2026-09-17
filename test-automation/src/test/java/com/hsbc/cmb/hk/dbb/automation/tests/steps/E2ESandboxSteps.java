@@ -133,7 +133,7 @@ public class E2ESandboxSteps {
         int openContexts = (browser != null && browser.isConnected()) ? browser.contexts().size() : -1;
 
         logger.info("[E2E isolation] threadId={}, threadName={}, browserIdentity={}, openContexts={}, url={}",
-                current.getId(),
+                current.threadId(),
                 current.getName(),
                 browser != null ? Integer.toHexString(System.identityHashCode(browser)) : "n/a",
                 openContexts,

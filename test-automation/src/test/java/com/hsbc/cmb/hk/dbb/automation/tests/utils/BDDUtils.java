@@ -128,7 +128,7 @@ public class BDDUtils {
     public static void setCurrentLoginInfo(BDDUtils loginInfo) {
         TestContextHolder.get().set(CURRENT_LOGIN_INFO_KEY, loginInfo);
         logger.debug("Set current login info for thread: {} - Username: {}", 
-            Thread.currentThread().getId(), loginInfo.username);
+            Thread.currentThread().threadId(), loginInfo.username);
     }
 
     /**
@@ -140,7 +140,7 @@ public class BDDUtils {
     public static BDDUtils getCurrentLoginInfo() {
         BDDUtils loginInfo = TestContextHolder.get().get(CURRENT_LOGIN_INFO_KEY);
         if (loginInfo == null) {
-            logger.warn("No login info found for current thread: {}", Thread.currentThread().getId());
+            logger.warn("No login info found for current thread: {}", Thread.currentThread().threadId());
             throw new IllegalStateException("No login information set for current thread. " +
                 "Please call setCurrentLoginInfo() in LoginSteps first.");
         }
@@ -213,7 +213,7 @@ public class BDDUtils {
      */
     public static void clearCurrentLoginInfo() {
         TestContextHolder.get().remove(CURRENT_LOGIN_INFO_KEY);
-        logger.debug("Cleared login info for thread: {}", Thread.currentThread().getId());
+        logger.debug("Cleared login info for thread: {}", Thread.currentThread().threadId());
     }
 
     /**

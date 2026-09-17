@@ -91,7 +91,7 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
             throw new IllegalArgumentException(
                     "configId must not be null or blank: it would produce an unusable Browser instance key");
         }
-        return Thread.currentThread().getId() + ":" + configId;
+        return Thread.currentThread().threadId() + ":" + configId;
     }
 
     /**

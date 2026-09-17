@@ -105,7 +105,7 @@ public final class BrowserRestartImpl implements BrowserRestart {
             //    注：browser.contexts() 仅返回【未关闭】的 context，故该判定是准确的；
             //    若探测本身抛出异常，同样不会走到后续关闭逻辑（失败即拒绝，方向安全）。
             // T3-2 线程隔离：仅检视【本线程】拥有的实例（键以 threadId: 前缀），其余跳过。
-            final long tid = Thread.currentThread().getId();
+            final long tid = Thread.currentThread().threadId();
             final String prefix = tid + ":";
             BrowserContext selfContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
             List<String> foreignOwners = new ArrayList<>();

@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
 import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import org.junit.jupiter.api.Test;
@@ -36,7 +36,7 @@ public class FailureScreenshotHandlerTest {
             for (int i = 0; i < 2; i++) {
                 pool.submit(() -> {
                     try {
-                        assertNull(FailureScreenshotHandler.capture("t" + Thread.currentThread().getId()));
+                        assertNull(FailureScreenshotHandler.capture("t" + Thread.currentThread().threadId()));
                     } catch (Throwable t) {
                         error.compareAndSet(null, t);
                     }

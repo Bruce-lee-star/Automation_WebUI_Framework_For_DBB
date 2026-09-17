@@ -1,4 +1,5 @@
 
+@regression @web @login
 Feature: RoleElement Login Page Object verification
 
   Verify the @RoleElement annotated LoginPage (tests.LoginPage) works end-to-end:

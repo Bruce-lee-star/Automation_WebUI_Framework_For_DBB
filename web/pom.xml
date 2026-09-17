@@ -41,14 +41,6 @@
 
         <!-- ENG-P0-2：web 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
         <dependency>
-            <groupId>com.huaban</groupId>
-            <artifactId>jieba-analysis</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.belerweb</groupId>
-            <artifactId>pinyin4j</artifactId>
-        </dependency>
-        <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-model</artifactId>
         </dependency>

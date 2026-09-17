@@ -1,14 +1,37 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
-    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="DLS_DEAD_LOCAL_STORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator$SimpleTestOutcome"/><Bug pattern="URF_UNREAD_FIELD"/></Match>
+    <!--
+      T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance.
+
+      ── 2026-09-17 清理与重新登记 ──────────────────────────────────────────────
+      ① 清理 8 条**陈旧条目**（对应违规已消失，属"无效冻结"）：
+         - 7 条 `SummaryReportGenerator` / `$SimpleTestOutcome`：该类属 framework-reporting 模块，
+           其违规已在 reporting 侧**真修**（防御性拷贝、构造收敛、catch 收窄、`%n`、未读字段删除等），
+           本模块扫描已不再报告 → 条目作废（这也说明原条目属"归属错模块"的迁移遗留）；
+         - 1 条 `framework.route.core.lifecycle.RouteMonitorSessionTest`：类已更名/迁移为
+           `framework.route.core.lifecycle.RouteMonitorSessionTest`，旧 FQCN 不再匹配
+           （其 `SS_SHOULD_BE_STATIC` 亦已真修：`pattern` 改 static 常量）。
+      ② 新登记 10 条**测试侧可接受模式** | owner: @web-test / @route-test | SLA: 2027-Q1
+         | 口径：由测试意图驱动的接受项，**不是**产品缺陷掩盖：
+         - NP_NONNULL_PARAM_VIOLATION ×2：断言库用例**故意**传 null 触发失败路径（被测行为本身）；
+         - DMI_EMPTY_DB_PASSWORD ×3：E2E 使用内存 H2，空口令是测试库约定（非生产数据源）；
+         - SWL_SLEEP_WITH_LOCK_HELD ×2：并发隔离用例**故意**在持锁时 sleep 以制造线程交错（测试技巧）；
+         - RV_RETURN_VALUE_IGNORED(/_BAD_PRACTICE) ×3：线程/上下文用例忽略 Future 与线程池返回值（断言点在别处）；
+         - REC_CATCH_EXCEPTION ×3：测试辅助方法的宽捕获（资源清理 / 探活路径）。
+    -->
+
+    <!-- ===== 测试侧可接受模式（2026-09-17 登记）===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.apilog.ApiTrafficLoggerTest"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.FrameworkAssertionsTest"/><Bug pattern="NP_NONNULL_PARAM_VIOLATION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertionsTest"/><Bug pattern="NP_NONNULL_PARAM_VIOLATION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.core.context.InheritablePropagationTest"/><Bug pattern="RV_RETURN_VALUE_IGNORED"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.core.context.ThreadContextRegistryLeakTest"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRepositoryE2ETest"/><Bug pattern="DMI_EMPTY_DB_PASSWORD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManagerDownloadPathTest"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePagePageSwitchLockConcurrencyTest"/><Bug pattern="SWL_SLEEP_WITH_LOCK_HELD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScriptsJsValidationTest"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.tests.route.RoutePerformanceStressTest"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+
+    <!-- ===== 存量（保留）：拾取器脚本断言辅助 ===== -->
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScriptsTest"/><Bug pattern="DMI_DOH"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteMonitorSessionTest"/><Bug pattern="SS_SHOULD_BE_STATIC"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="SF_SWITCH_NO_DEFAULT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SummaryReportGenerator"/><Bug pattern="CT_CONSTRUCTOR_THROW"/></Match>
 </FindBugsFilter>

@@ -183,7 +183,11 @@ public class PageElementTest {
 
         // 用户指定路径用正斜杠书写；框架按当前系统分隔符归一化后仍能命中（跨系统）
         Path userFile = tempDir.resolve("sub").resolve("user3.txt");
-        Files.createDirectories(userFile.getParent());
+        Path userDir = userFile.getParent();   // 无父目录时为 null（SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
+        if (userDir == null) {
+            throw new IllegalStateException("unexpected: no parent dir for " + userFile);
+        }
+        Files.createDirectories(userDir);
         Files.writeString(userFile, "x");
         String forwardSlashPath = userFile.toString().replace('\\', '/');
 

@@ -1,4 +1,5 @@
 @route-parallel-smoke
+@smoke @route
 Feature: Route Demo 本地并行冒烟（CON-1 引擎级并行 GREEN 验证，绕过内网）
 
   # 目的：在本机用真实浏览器指向本地 route-demo-service 后端，证明 CON-1 引擎级并行

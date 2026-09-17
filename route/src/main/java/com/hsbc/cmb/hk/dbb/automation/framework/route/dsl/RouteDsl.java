@@ -61,6 +61,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *     .done()
  *     .start();
  * }</pre>
+ *
+ * <h2>入口选择（R-6：本 DSL vs {@link RouteRegistry}）</h2>
+ * <ul>
+ *   <li><b>业务用例（推荐）</b>：用本 DSL —— 面向「一次注册一批规则并绑定 Page/Context」，流式、可读、
+ *       自带 {@code done()}/{@code start()} 生命周期；</li>
+ *   <li><b>框架 / 规则仓储层</b>：直接用 {@link RouteRegistry}（按 {@link RouteRule} 增删查改）—— 面向
+ *       按条件查询 / 覆盖 / 停止既有规则、或做跨层合并（Page 级 × Context 级）的框架内部场景；</li>
+ *   <li>两者写入同一注册表，故可混用；但同一场景内应避免对<b>同一 pattern</b> 同时经两条入口注册，
+ *       否则优先级 / 覆盖语义难以追踪。</li>
+ * </ul>
  */
 public class RouteDsl {
 

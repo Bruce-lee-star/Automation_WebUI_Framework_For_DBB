@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor;
+package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;

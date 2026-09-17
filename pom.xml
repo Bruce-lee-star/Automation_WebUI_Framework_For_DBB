@@ -84,8 +84,22 @@
              Runner 不再写死标签（B-2）；环境依赖型 feature 若需默认跳过，打 @skip 即可。 -->
         <tags>not @skip</tags>
 
-        <!-- 重试：默认 0（不重试），CI 可通过 -DrerunFailingTestsCount=N 覆盖 -->
-        <rerunFailingTestsCount>0</rerunFailingTestsCount>
+        <!-- 重试（X-8）：默认 1（给 flaky 留一次缓冲），CI 可 -DrerunFailingTestsCount=N 覆盖。
+             注意：failsafe 不支持“按失败原因重试”，故断言失败也会被重试一次；失败分类
+             （仅环境/浏览器崩溃重试、断言失败不重试）见 doc10 E-4 与 FrameworkHooks 自定义逻辑，属后续项。
+             报告会标记 flaky，避免盲目重试掩盖真实缺陷。 -->
+        <rerunFailingTestsCount>1</rerunFailingTestsCount>
+
+        <!-- X-9：failsafe 单 JVM 整体超时（秒）。原硬编码 600s 对长套件偏紧（并行/大 feature 可能被整体掐断）；
+             提为可配置属性（默认 1800s），CI 按套件规模/并行度覆盖：-DforkedProcessTimeoutInSeconds=N。 -->
+        <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+
+        <!-- 环境切换（D-4）：默认空，由 sit1/sit2/sit3 profile 覆盖；test-automation failsafe 注入为系统属性。
+             铁律：不得注入名为 environment 的**标量**系统属性——业务侧 BDDUtils 以 environment.<ENV> 读取
+             环境 URL（Typesafe/Serenity 为对象键），标量 environment 会整体覆盖该对象导致登录 URL 失配。 -->
+        <env/>
+        <env.code/>
+        <base.url/>
     </properties>
 
     <!-- ENG-P0-2：依赖下沉。全部外部依赖改在 <dependencyManagement> 统一钉版本，
@@ -123,9 +137,15 @@
             <artifactId>serenity-core</artifactId>
             <version>${serenity.version}</version>
             <exclusions>
+                <!-- A-9：原通配 `<artifactId>selenium-*</artifactId>` 是**非法写法**（Maven 不支持 artifactId 通配，
+                     该排除从未生效），导致 serenity-core → selenium-java（含 chrome/firefox/edge/ie/safari、
+                     devtools-v85/125/126/127、htmlunit3-driver、selenium-manager 全套 driver）全部泄漏。
+                     本框架以 Playwright 驱动，Selenium driver 栈完全无用，故改为**显式排除 selenium-java**
+                     （其 driver 作为传递依赖一并移除）；selenium-api / selenium-support 因被 serenity 公开 API
+                     （org.openqa.selenium.support.ui.*）引用而保留。 -->
                 <exclusion>
                     <groupId>org.seleniumhq.selenium</groupId>
-                    <artifactId>selenium-*</artifactId>
+                    <artifactId>selenium-java</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>org.seleniumhq.selenium</groupId>
@@ -134,6 +154,27 @@
                 <exclusion>
                     <groupId>org.seleniumhq.selenium</groupId>
                     <artifactId>selenium-support</artifactId>
+                </exclusion>
+                <!-- A-9：serenity-core 还**直接**依赖以下 driver（Playwright 框架无需），一并排除 -->
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>selenium-chrome-driver</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>selenium-firefox-driver</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>selenium-edge-driver</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>selenium-ie-driver</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>htmlunit3-driver</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>org.apache.httpcomponents</groupId>
@@ -151,9 +192,10 @@
             <artifactId>serenity-cucumber</artifactId>
             <version>${serenity.cucumber.version}</version>
             <exclusions>
+                <!-- A-9：同上，非法通配 → 显式排除 selenium-java -->
                 <exclusion>
                     <groupId>org.seleniumhq.selenium</groupId>
-                    <artifactId>selenium-*</artifactId>
+                    <artifactId>selenium-java</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>org.seleniumhq.selenium</groupId>
@@ -356,6 +398,14 @@
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
                 <version>${jackson.version}</version>
+            </dependency>
+            <!-- P-7：响应契约校验（JSON Schema，支持 draft-07 / 2019-09 / 2020-12）。
+                 仅 JSON 用途；api 模块声明时排除其 YAML schema 传递依赖 jackson-dataformat-yaml，
+                 避免 dataformat(2.17.1) 与项目钉定的 jackson-core/databind(2.18.3) 产生版本偏斜与冗余。 -->
+            <dependency>
+                <groupId>com.networknt</groupId>
+                <artifactId>json-schema-validator</artifactId>
+                <version>1.5.1</version>
             </dependency>
             <dependency>
                 <groupId>org.slf4j</groupId>
@@ -564,57 +614,94 @@
                 </executions>
             </plugin>
 
-            <!-- CVE 门禁前置（T1-4）：在 package 阶段将各模块安装到本地 .m2，
-                 使后续 verify 阶段的 OSV-Scanner pom 扫描能解析 intra-project 兄弟模块 framework-*，
-                 避免“failed resolution”误判与漏检。对 mvn test 无影响（test 在 package 之前）。 -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-install-plugin</artifactId>
-                <version>3.1.1</version>
-                <executions>
-                    <execution>
-                        <id>install-modules-for-sca</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>install</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-
-            <!-- CVE 门禁（T1-4）—— 企业级免 key 方案：Google OSV-Scanner（OSV.dev，聚合 NVD/GHSA）。
-                 OWASP dependency-check 13.0.0 在 2026 下强制要求 NVD API Key 且不可绕过（无 key 连报告都出不了），
-                 故改用同源情报、免 key、Maven 可集成的 OSV-Scanner：递归扫描全部 pom.xml（依赖已在 package 阶段装入 .m2），
-                 osv-scanner.toml 冻结当前已知漏洞作为【基线】，任何【新增漏洞 ID】使构建失败（阻断回归）。
-                 运行：CI 先行 tools/install-osv-scanner.ps1 安装二进制并设 OSV_CVE_GATE_REQUIRED=true 强制；
-                       本地无二进制时仅告警跳过（不阻断 dev 构建）。仅根模块执行一次（inherited=false）。 -->
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.5.0</version>
-                <executions>
-                    <execution>
-                        <id>osv-scanner-cve-gate</id>
-                        <phase>verify</phase>
-                        <goals>
-                            <goal>exec</goal>
-                        </goals>
-                        <inherited>false</inherited>
-                        <configuration>
-                            <executable>powershell</executable>
-                            <arguments>
-                                <argument>-NoProfile</argument>
-                                <argument>-ExecutionPolicy</argument>
-                                <argument>Bypass</argument>
-                                <argument>-File</argument>
-                                <argument>${project.basedir}/tools/cve-gate.ps1</argument>
-                            </arguments>
-                            <skip>${cve.gate.skip}</skip>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
+            <!-- A-2（maven-install 污染 .m2 治理）：原 maven-install-plugin 在 package 阶段无条件
+                 install 兄弟模块到 .m2，每次 mvn verify/package/install 都污染本地仓库。
+                 已整体移入下方 <profiles> 的 sca profile：仅显式 -Psca 时才 install（供 OSV-Scanner 解析
+                 intra-project 兄弟模块）+ 跑 CVE 门禁；普通构建（mvn verify/test/package）不再污染 .m2，
+                 本地开发无需 -Psca。CI 的 Build & verify step 已加 -Psca 以启用安全门禁。 -->
         </plugins>
     </build>
+
+    <!-- A-2：SCA 安全扫描 profile。仅显式 -Psca 激活时：
+         ① maven-install-plugin 在 package 阶段 install 各兄弟模块到 .m2（供 OSV-Scanner 解析 intra-project 兄弟模块）；
+         ② exec-maven-plugin 在 verify 阶段跑 OSV-Scanner CVE 门禁（tools/cve-gate.ps1），新增漏洞即构建失败。
+         普通构建不激活本 profile，故不会污染 .m2，也不会跑 CVE 扫描（本地开发用；CI 用 -Psca 启用）。
+         install 执行继承至所有模块（各模块 install 自身），osv-exec 仅根模块执行一次（inherited=false）。 -->
+    <profiles>
+        <profile>
+            <id>sca</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-install-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>install-modules-for-sca</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>install</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>osv-scanner-cve-gate</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <inherited>false</inherited>
+                                <configuration>
+                                    <executable>powershell</executable>
+                                    <arguments>
+                                        <argument>-NoProfile</argument>
+                                        <argument>-ExecutionPolicy</argument>
+                                        <argument>Bypass</argument>
+                                        <argument>-File</argument>
+                                        <argument>${project.basedir}/tools/cve-gate.ps1</argument>
+                                    </arguments>
+                                    <skip>${cve.gate.skip}</skip>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- D-4：环境 profile——提供明确的环境切换入口，CI 用法：mvn verify -Psit1 -Dtags="@smoke"。
+             仅注入 env/env.code/base.url 三个属性（经 test-automation failsafe 做为系统属性下发），
+             不触碰 environment.* 对象键（见根 <properties> 铁律注释）。 -->
+        <profile>
+            <id>sit1</id>
+            <properties>
+                <env>O63_SIT1</env>
+                <env.code>O63</env.code>
+                <base.url>https://www.qualityassurance-amh-gbb-sit.p2g.netd2.hsbc.com.hk</base.url>
+            </properties>
+        </profile>
+        <profile>
+            <id>sit2</id>
+            <properties>
+                <env>O38_SIT2</env>
+                <env.code>O38</env.code>
+                <base.url>https://qualityassurance-amh-gbb-sit2.p2g.netd2.hsbc.com.hk</base.url>
+            </properties>
+        </profile>
+        <profile>
+            <id>sit3</id>
+            <properties>
+                <env>O88_SIT3</env>
+                <env.code>O88</env.code>
+                <base.url>https://qualityassurance-amh-gbb-sit11.p2g.netd2.hsbc.com.hk</base.url>
+            </properties>
+        </profile>
+    </profiles>
 
 </project>

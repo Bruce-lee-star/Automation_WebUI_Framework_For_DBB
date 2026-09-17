@@ -85,4 +85,15 @@
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
 
+    <!-- ===== D6-2 增量（2026-09-17）：组合式页面能力的「设计内共享引用」3 条
+         | owner: @web-core | SLA: 2027-Q1 | 方式: 评估后保留（非"未处理"，而是架构决定的共享引用）
+         | 说明：这三条均属「框架受管对象/内部门面的引用按设计必须持有」，删除引用即破坏 G1 组合式 Page 设计：
+         |   ① BasePage.attachManagedPage(Page)：把框架受管的（已装饰录制）Page 注入组合式委托，是本设计的注入点本身；
+         |   ② SerenityBasePageImpl(BasePage)：同上，持有委托 BasePage 引用；
+         |   ③ SerenityPageRecorder.recorder()：框架内部录制门面向 BasePage 暴露 per-page 状态（测试亦依赖其"每页独立"语义）。
+         | 与该组既有 <BasePage,EI_EXPOSE_REP> 同族，故按同一 owner/SLA 登记。 -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.SerenityBasePageImpl"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording.SerenityPageRecorder"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+
 </FindBugsFilter>

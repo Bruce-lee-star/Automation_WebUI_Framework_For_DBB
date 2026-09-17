@@ -99,11 +99,11 @@ features/
 |---|---|---|---|---|
 | B-1 | **P0** | 默认标签 `@test1` 只覆盖 **1 个场景**，其余 15 个 feature 默认不执行 | 根 `pom.xml:19`、`login_dbb1.feature:12` | 回归套件名存实亡 |
 | B-2 | **P0** | 标签双源配置冲突（Runner `@ConfigurationParameter` vs failsafe `-Dcucumber.filter.tags`） | `CucumberTestRunnerIT:17` vs `pom.xml:195` | `-Dtags` 行为不确定，CI 编排不可靠 |
-| B-3 | **P1** | 两个同名 `LoginSteps`（`tests` 与 `tests.steps` 包） | `tests/steps/LoginSteps.java:52`、`tests/LoginSteps.java:24` | 重复步骤定义风险或死代码 |
-| B-4 | **P1** | 步骤内 `Thread.sleep` | `RouteDemoServiceSteps:147`、`RouteDemoCoverageSteps:116`、`RouteDemoCompositeSteps:93` | flaky + 执行变慢 |
-| B-5 | **P1** | 步骤内联断言 + 耗时下界断言 | `RouteDemoServiceSteps:185,506` | 业务语义被淹没；`elapsed>=700` 必 flaky |
-| B-6 | **P1** | 用例隔离靠**每个 glue 手写 `@Before` 重置**，非框架机制 | 各 `RouteDemo*Glue` | 新 glue 漏写即脏数据 |
-| B-7 | **P2** | 标签命名不成体系（`@test1` / `@route-composite` / 文档里的 `@0test`） | — | 无法做执行编排 |
+| B-3 | **P1** | 两个同名 `LoginSteps`（`tests` 与 `tests.steps` 包） **已修复**：`tests.LoginSteps` → `tests.RoleElementLoginSteps`（更新 `RoleElementLoginGlue` 引用、删旧类），消除同名同类隐患，行为零变更；**未强行合并**（两者实现不同、各被不同 Glue 引用，合并会改变 RoleElement 场景登录行为）| `tests/steps/LoginSteps.java:52`、`tests/LoginSteps.java:24` | 重复步骤定义风险或死代码 |
+| B-4 | **P1** | 步骤内 `Thread.sleep` **已修复**：新增 `tests.utils.AsyncWaits`（有界轮询：`awaitTrue`/`awaitResult`，超时上界 + 固定间隔 + 中断安全），`RouteDemoServiceSteps`/`RouteDemoCoverageSteps`/`RouteDemoCompositeSteps`/`RouteDemoParallelSmokeSteps` 4 个步骤类全部改用它；ArchUnit `LayeringArchTest#stepsMustNotCallThreadSleep` 禁 `*Steps` 调 `Thread.sleep` | `RouteDemoServiceSteps:147`、`RouteDemoCoverageSteps:116`、`RouteDemoCompositeSteps:93` | flaky + 执行变慢 |
+| B-5 | **P1** | 步骤内联断言 + 耗时下界断言 **已修复**：① 移除 `RouteDemoServiceSteps` 的 flaky 计时下界，改「观测日志 + 上界 SLA」（delay 能力由 `RouteDemoCompositeSteps` 的 DELAY 标记断言确定性覆盖）；② 新增 `tests.verify.RouteDemoVerifications` 步骤层断言收口，`RouteDemo*Steps` 不再直连 `org.junit.jupiter.api.Assertions`；③ ArchUnit `LayeringArchTest#stepsMustNotUseJunitAssertionsDirectly`（负向探针验证）| `RouteDemoServiceSteps:185,506` | 业务语义被淹没；`elapsed>=700` 必 flaky |
+| B-6 | **P1** | 用例隔离靠**每个 glue 手写 `@Before` 重置**，非框架机制 **已修复**：core 新增 `StateResolver`/`CleanStateRegistry`/`@RequiresCleanState`/`StateResidueException`；test-automation 新增 `CleanStateHooks`（`@Before` 统一复位 + `@After` 复位并**断言无残留**，残留即抛异常当场失败）；4 个 `RouteDemo*Glue` 移除手写 `@Before`/`@After`，改注册 `StateResolver`；`CleanStateRegistryTest` 6 例 | 各 `RouteDemo*Glue` | 新 glue 漏写即脏数据 |
+| B-7 | **P2** | 标签命名不成体系（`@test1` / `@route-composite` / 文档里的 `@0test`） **已修复**：建立三维标签体系（执行层/子系统/域/状态）并落为门禁 `FeatureTagTaxonomyTest`（未注册标签或 feature 级缺维度即失败，负向探针验证）；17 个 feature 补齐 feature 级标签，删除无语义 `@test1`/`@test`、`@baidu1`→`@baidu` | — | 无法做执行编排 |
 | B-8 | **P2** | 文档与实现不一致（`package-info.java:40` 称 `@0test`） | `api/package-info.java:40` | 误导维护者 |
 
 ---
@@ -174,6 +174,13 @@ Scenario: 待修复的用例
 </profiles>
 ```
 
+> **落地记录（B-7，2026-09-17）**：三维标签体系已落地，并由门禁**可执行校验**。
+> - **注册表**：执行层 `@smoke`/`@regression`；子系统 `@web`/`@api`/`@route`；域 `@login`/`@baidu`/`@scan`/`@scan-record`/`@picker`/`@e2e-sandbox`/`@parallel-logon`/`@concurrent-logon`/`@route-composite`/`@route-coverage`/`@route-capability-stop`/`@route-parallel-smoke`/`@delay`/`@click`/`@hover`/`@type`/`@check`/`@select`/`@popup`/`@download`/`@dialog`；状态 `@skip`/`@flaky`。
+> - **落地范围**：17 个 feature 全部在 **feature 级**声明「1 个执行层 + 1 个子系统」标签（scenario 级可自由叠加域标签，Cucumber 自动继承）；删除无语义 `@test1`/`@test`，`@baidu1` → `@baidu`。
+> - **编排示例**：`-Dtags="@smoke and not @skip"`（冒烟档）、`-Dtags="@api"`（接口层）、`-Dtags="@regression and @route-coverage"`（能力域）。
+> - **门禁**：`FeatureTagTaxonomyTest` —— ① 任何标签必须在注册表内；② 每个 feature 恰好 1 个执行层 + 1 个子系统标签。两条规则均经**负向探针**验证可命中（临时植入未注册标签 / 移除子系统标签 → 双双失败）。标签行识别要求「整行皆为标签」，故描述文本与注释里的 `@Xxx`（如 `@RoleElement`、`-Dtags=@route`）不会被误判。
+> - **兼容性**：不改名 Runner 已依赖的标签（`@route-parallel-smoke`/`@parallel-logon`/`@concurrent-logon`/`@e2e-sandbox`），既有过滤行为零变更；新增标签为纯叠加，默认 `not @skip` 执行集不变。
+
 CI 编排：`PR → smoke`，`nightly → regression`。
 
 ### 5.3 合并同名步骤类（P1）
@@ -201,6 +208,14 @@ static final ArchRule noJunitAssertInSteps =
         .should().dependOnClassesThat().haveFullyQualifiedName("org.junit.jupiter.api.Assertions")
         .because("断言应下沉到 Page/Service 层，步骤层只做业务语义编排");
 ```
+
+> **落地记录（B-4，2026-09-17）**：`Thread.sleep` 规则已实现于 `LayeringArchTest#stepsMustNotCallThreadSleep`，
+> 采用更精确的可达谓词 `resideInAPackage("..automation.tests..").and(simpleNameEndingWith("Steps"))`——
+> 仅禁**步骤类**硬等待，允许受控等待集中在 `tests.utils.AsyncWaits`（与主代码规则
+> `frameworkCodeMustNotCallThreadSleep` 的「测试代码可保留受控等待」原则一致）。
+> 注意：`callMethod(Thread.class,"sleep")` 省略参数类型会退化为匹配无参 `sleep()`（不存在）而**空转**，
+> 必须写全 `sleep(long)`；该 bug 亦存在于既有主代码规则，已一并修正（修正后暴露 `AbstractRestJob` 退避
+> 使用 `Thread.sleep`，已改用 `LockSupport.parkNanos`）。
 
 ### 5.5 断言下沉与耗时断言改造（P1）
 

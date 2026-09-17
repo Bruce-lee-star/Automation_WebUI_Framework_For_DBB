@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.persistence;
 import com.google.gson.Gson;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.HikariConfigFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.slf4j.Logger;
@@ -257,6 +258,7 @@ public final class ApiMonitoringRepository {
             if (dropped != null) {
                 pendingCount.decrementAndGet();
                 droppedCount.incrementAndGet();
+                MonitorDataLossReporter.instance().recordLoss("route_monitor_record", 1L);
                 LOGGER.warn("[ApiMonitoringRepository] Pending queue exceeded hard cap ({}), dropping oldest to apply backpressure.",
                         PENDING_HARD_CAP);
             }
@@ -329,6 +331,7 @@ public final class ApiMonitoringRepository {
                 int nextAttempts = item.attempts + 1;
                 if (nextAttempts > MAX_ATTEMPTS) {
                     droppedCount.incrementAndGet();
+                    MonitorDataLossReporter.instance().recordLoss("route_monitor_record", 1L);
                     LOGGER.error("[ApiMonitoringRepository] Dropped after {} failed attempts (endpoint={}, url={}): {}",
                             MAX_ATTEMPTS, item.record.endpoint(), item.record.requestUrl(), e.getMessage());
                 } else {
@@ -344,6 +347,7 @@ public final class ApiMonitoringRepository {
                 if (dropped == null) break;
                 pendingCount.decrementAndGet();
                 droppedCount.incrementAndGet();
+                MonitorDataLossReporter.instance().recordLoss("route_monitor_record", 1L);
             }
         }
     }
@@ -563,6 +567,19 @@ public final class ApiMonitoringRepository {
         }
         initialized = false;
         closeDataSource();
+
+        // R-4：shutdown 后若仍有未落库记录（或 flush 失败残留），视为数据丢失，
+        // 汇总进报告尾部红色提示，使监控数据丢失对测试运行可见。
+        long residual = pendingCount.get();
+        if (residual > 0) {
+            MonitorDataLossReporter.instance().recordLoss("route_monitor_record", residual);
+        }
+        if (failedCount.get() > 0 || droppedCount.get() > 0) {
+            LOGGER.error("[ApiMonitoringRepository] ⚠ 数据完整性告警：监控记录入库失败 {} 条 / 丢弃 {} 条"
+                            + "（含 shutdown 残留 {} 条），部分 API 监控数据未落库。"
+                            + "请检查 monitor.db.* 配置、数据库可用性与网络连接。",
+                    failedCount.get(), droppedCount.get(), residual);
+        }
     }
 
     /**

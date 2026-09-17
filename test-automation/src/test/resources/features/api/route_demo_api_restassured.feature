@@ -1,4 +1,4 @@
-@api
+@regression @api
 Feature: Route Demo Service API (RestAssured framework)
 
   # 每个场景前重置 demo 数据，保证用例相互独立

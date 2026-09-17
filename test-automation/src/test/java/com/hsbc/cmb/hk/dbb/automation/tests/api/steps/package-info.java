@@ -1,5 +1,5 @@
 /**
- * API 测试步骤定义（⚠️ 当前<b>不可用</b>，启用前必读 — 对应 CODE_REVIEW_REPORT.md P1-14）。
+ * API 测试步骤定义（⚠️ 启用前必读）。
  *
  * <h2>现状</h2>
  * 本包共 10 个 step 类（{@code BaseConfigurationSteps}、{@code EntitySteps}、
@@ -36,9 +36,10 @@
  *       {@code BaseStep}。改动可控且不再引入新依赖，推荐此方案。</li>
  * </ol>
  *
- * <h2>验证前提</h2>
- * 注意当前运行器（{@code CucumberTestRunnerIT}）的 {@code tags = "@0test"}，
- * 而仓库内没有任何 feature 带该标签 —— 意味着 {@code mvn verify} 实际执行
- * <b>0 个场景</b>。任何修复都必须在修正 tags 之后才能真正验证到。
+ * <h2>验证前提（B-8：本节已更新，原述过时）</h2>
+ * 运行器不再写死标签：默认标签经根 {@code <properties>} 的 {@code tags = "not @skip"}（单一事实来源，
+ * 由 failsafe 注入 {@code cucumber.filter.tags}）驱动，仓库内未显式打 {@code @skip} 的 feature 都会被执行，
+ * 不再存在"实际执行 0 个场景"的情况。本包步骤若仍未纳入 glue 扫描 / 无容器支撑，须按上文方案修复后
+ * 方能被 feature 真正调用。
  */
 package com.hsbc.cmb.hk.dbb.automation.tests.api.steps;

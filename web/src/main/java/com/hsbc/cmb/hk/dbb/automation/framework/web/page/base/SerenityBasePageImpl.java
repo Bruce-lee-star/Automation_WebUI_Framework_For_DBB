@@ -3,7 +3,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.base;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.BrowserContext;

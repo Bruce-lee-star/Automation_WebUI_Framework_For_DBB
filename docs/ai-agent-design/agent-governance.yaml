@@ -1,0 +1,105 @@
+# Agent 治理配置（机器可读的硬规则）
+# 由 Agent 工具层在运行时加载并强制校验；与 agent-constitution.md 一一对应。
+# 任何一条校验不通过，对应工具直接拒绝执行（物理拦截，而非提示）。
+
+version: 1
+constitution_ref: agent-constitution.md
+
+locators:
+  allowed:
+    - "com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement(key=)"
+    - "getByRole"
+    - "getByTestId"
+  forbidden_patterns:        # 生成物 lint 命中即拒绝
+    - "xpath=//*"             # 绝对 / 脆弱 XPath
+    - "Thread.sleep("         # 固定等待
+    - "@RoleElement(name="    # 写死文案；除非 nls 无 key 且人工确认
+  require_class_level_annotation: "@RoleFile"
+
+nls:
+  binding: key                # key 优先于 name/text
+  required_locales: [en-US, zh-HK]
+  gap_policy: fail            # 缺 key 即失败
+  forbid_literal_fallback: true
+
+tooltip:
+  # tooltip 默认不在 a11y 树，需 hover/focus 后二次 snapshot
+  require_hover_reveal: true
+  # 优先反查 tooltip 文本自身的 NLS key（而非触发器的字面 title）
+  bind_tooltip_node_key: true
+  # 触发器完全无名 → 禁止 XPath/索引，要求 testid 并标记 a11y 缺口
+  nameless_trigger_policy: require_testid_and_flag_a11y_gap
+  forbid_xpath_for_nameless: true
+edge_cases:
+  iframe_shadow:
+    strategy: consume_recorder_space   # 直接读 RoleEntry.space/framePath/shadowPath，不自推
+    forbid_css_piercing_shadow: true
+    frame_switch_must_match_recorded_space: true
+  upload:
+    use_controlled_test_resource: true
+    forbid_random_temp_path: true
+    multi_file_via_array: true
+  otp:
+    use_token_security_url_backdoor: true   # 复用 BDDUtils 后门，禁 OCR/短信/猜解
+    forbid_captcha_solving: true
+    captcha_no_backdoor_policy: flag_manual_blocked
+  dynamic_table:
+    forbid_absolute_row_index: true
+    anchor_by_stable_cell_value: true
+    column_by_nls_key_not_index: true
+    require_explicit_wait_for_lazy_rows: true
+page_model:
+  must_be_nls_resolved: true        # 模型元素须带 key→文本映射，不得基于 raw name 生成定位器
+  must_include_space: true          # 缺 frame/shadow space 的元素判为结构不完整→重试采集，禁降级 XPath
+  source_priority: roleentry_first  # 主模型以 RoleEntry 为准（带 key+space），MCP snapshot 仅作补充
+  no_persist_outside_report: true   # 页面结构不得落盘到报告/日志之外（最小数据）
+  # ── Common Chrome 排除（TopBar / Left Menu 作用域）──
+  region_scope:
+    default: feature          # 默认只采集 main 业务区（scanRegion 语义）
+    shell_scope_tool: scan_region   # 复用 RolePicker 区域点选；以 main landmark 为区域边界
+    landmark_filter:
+      include: [main]                 # 只为 main 生成定位器/步骤
+      exclude_as_common: [banner, navigation, contentinfo]  # TopBar/LeftMenu/页脚标 common:shell，不生成功能级 Locator
+    page_class_isolation: true        # 复用 window.__rolePageName：Shell 元素归 AppShellPage，Feature 归 FeatureXPage（方案B按页去重）
+  shell:
+    single_app_shell_page: true       # AppShellPage 全框架唯一，禁止在功能 Page 内重复声明 TopBar/LeftMenu
+    menu_model_as_data: true          # LeftMenu 项建模为 menuKey→featureHomeUrl，数据源自 permissionLeftMenuConfig，不逐个重拾链接
+    navigate_via_reusable_step: true  # 进入功能须走 Given I open menu "<menuKey>"，禁止功能 Scenario 内联点击链
+    forbid_brittle_css_on_shell: true # Shell 元素须 @RoleElement(key=)，禁 @Element("#id")/[id=...]
+    shell_change_is_shell_only: true  # 改 TopBar/LeftMenu 判定 SHELL 变更，impact_analyze 只标 AppShellPage+导航Step，不波及功能 Scenario
+
+change_discipline:
+  classify_required: true     # 任何需求先 requirement_classify
+  modify:
+    forbid_duplicate_file: true        # 拒绝 xxx1.feature 式复制
+    require_impact_analyze: true       # 改前必须反查影响面
+    require_regression_guard: true     # 改后未变断言必须仍绿
+  enhance:
+    preserve_existing_green: true      # 旧 case 不允许变红
+    append_only: true                  # 只追加，不入侵旧断言
+  human_confirm_impact: true           # 推断影响面须人工确认
+
+reuse:
+  map_existing_steps_required: true    # 生成前必查重
+
+environments:
+  allowed: [SIT1, SIT2, SIT3]
+  forbidden: [PROD]
+
+dry_run_gate:
+  enabled: true
+  required_locales: [en-US, zh-HK]
+  block_submit_unless_passed: true     # 未过 dry-run 拒绝 submit_pr
+
+human_in_loop:
+  pr_state: draft                      # 仅开草稿 PR
+  self_heal_scope: locator_only        # 自愈只改定位器
+
+credentials:
+  format: ENC
+  forbid_plaintext: true
+
+audit:
+  run_id_required: true
+  constitution_version_required: true
+  override_logged: true

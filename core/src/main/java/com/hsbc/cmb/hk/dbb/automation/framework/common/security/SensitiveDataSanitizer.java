@@ -80,25 +80,29 @@ public final class SensitiveDataSanitizer {
      * <p>匹配走 {@link #normalizeKey(String)} 规范化，故此处只需写规范化后的形态
      * （全小写、无分隔符）。
      */
-    private static final Set<String> SENSITIVE_HEADER_KEYS = new HashSet<>(Arrays.asList(
-            // 认证凭据
-            "authorization", "proxyauthorization", "wwwauthenticate", "proxyauthenticate",
-            "cookie", "setcookie",
-            // 各类自定义令牌头（通用 X- 令牌模式，平台无关）
-            "xauthtoken", "xcsrftoken", "xxsrftoken", "xapikey", "apikey",
-            "xaccesstoken", "xidtoken", "xrefreshtoken", "xsessiontoken",
-            "xsessionid", "xsecret", "xclientsecret", "xsignature"));
-
-    /** 内置默认敏感头清单快照（兜底，供配置覆盖时回退）。 */
+    /** 内置默认敏感头清单（不可变兜底；配置覆盖时作为基线，只增不减）。 */
     private static final Set<String> DEFAULT_HEADER_KEYS =
-            Collections.unmodifiableSet(new HashSet<>(SENSITIVE_HEADER_KEYS));
+            Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+                    // 认证凭据
+                    "authorization", "proxyauthorization", "wwwauthenticate", "proxyauthenticate",
+                    "cookie", "setcookie",
+                    // 各类自定义令牌头（通用 X- 令牌模式，平台无关）
+                    "xauthtoken", "xcsrftoken", "xxsrftoken", "xapikey", "apikey",
+                    "xaccesstoken", "xidtoken", "xrefreshtoken", "xsessiontoken",
+                    "xsessionid", "xsecret", "xclientsecret", "xsignature")));
 
     /**
-     * 请求/响应体中需脱敏的字段名。
+     * 生效中的敏感头清单：<b>不可变快照</b>，懒加载/重载时整体替换并经 {@code volatile} 原子发布，
+     * 故并发读取永不观察到 {@code clear+addAll} 造成的空/半填充中间态（C-7）。默认 = {@link #DEFAULT_HEADER_KEYS}。
+     */
+    private static volatile Set<String> SENSITIVE_HEADER_KEYS = DEFAULT_HEADER_KEYS;
+
+    /**
+     * 内置默认敏感体字段清单（不可变兜底；配置覆盖时作为基线，只增不减）。
      * <p>同样走规范化匹配，故 {@code access_token} / {@code accessToken} /
      * {@code Access-Token} 均由单条 {@code accesstoken} 覆盖。
      */
-    private static final Set<String> SENSITIVE_BODY_KEYS = new HashSet<>(Arrays.asList(
+    private static final Set<String> DEFAULT_BODY_KEYS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             // ── 口令类 ──
             "password", "passwd", "pwd", "passphrase", "oldpassword", "newpassword",
             "confirmpassword", "currentpassword",
@@ -122,11 +126,13 @@ public final class SensitiveDataSanitizer {
             // ── 联系方式与生物信息 PII ──
             "email", "emailaddress", "phone", "phonenumber", "mobile",
             "mobilenumber", "telephone", "dob", "dateofbirth", "birthdate",
-            "address", "postaladdress", "fullname"));
+            "address", "postaladdress", "fullname")));
 
-    /** 内置默认敏感体字段清单快照（兜底，供配置覆盖时回退）。 */
-    private static final Set<String> DEFAULT_BODY_KEYS =
-            Collections.unmodifiableSet(new HashSet<>(SENSITIVE_BODY_KEYS));
+    /**
+     * 生效中的敏感体字段清单：<b>不可变快照</b>，重载时整体替换并经 {@code volatile} 原子发布（C-7）。
+     * 默认 = {@link #DEFAULT_BODY_KEYS}。
+     */
+    private static volatile Set<String> SENSITIVE_BODY_KEYS = DEFAULT_BODY_KEYS;
 
     // ═══════════════════════════════════════════════════════════════
     // 用户可配置附加敏感关键字（叠加在内置清单之上，不改动内置默认）
@@ -251,13 +257,12 @@ public final class SensitiveDataSanitizer {
         if (rulesLoaded) return;
         synchronized (RULES_LOCK) {
             if (rulesLoaded) return;
-            // 内置键清单：配置覆盖则用之，否则回退 DEFAULT
-            SENSITIVE_HEADER_KEYS.clear();
-            SENSITIVE_HEADER_KEYS.addAll(loadBuiltinSet("header", DEFAULT_HEADER_KEYS));
-            SENSITIVE_BODY_KEYS.clear();
-            SENSITIVE_BODY_KEYS.addAll(loadBuiltinSet("body", DEFAULT_BODY_KEYS));
-            SENSITIVE_QUERY_KEYS.clear();
-            SENSITIVE_QUERY_KEYS.addAll(loadBuiltinSet("query", DEFAULT_QUERY_KEYS));
+            // 内置键清单：配置覆盖则用之，否则回退 DEFAULT。
+            // C-7：以「构造不可变快照 + volatile 赋值原子发布」替代 clear+addAll，
+            //      并发读取（sanitize*）永不观察到空/半填充中间态，根治 reload 竞态。
+            SENSITIVE_HEADER_KEYS = Collections.unmodifiableSet(loadBuiltinSet("header", DEFAULT_HEADER_KEYS));
+            SENSITIVE_BODY_KEYS = Collections.unmodifiableSet(loadBuiltinSet("body", DEFAULT_BODY_KEYS));
+            SENSITIVE_QUERY_KEYS = Collections.unmodifiableSet(loadBuiltinSet("query", DEFAULT_QUERY_KEYS));
             applyValueRecognizerConfig();
             rulesLoaded = true;
         }
@@ -523,8 +528,11 @@ public final class SensitiveDataSanitizer {
                     "secret", "password", "passwd", "credential", "auth",
                     "authorization", "sign", "signature", "key", "privatekey"
             )));
-    /** 生效中的敏感 query 参数清单（懒加载：默认=DEFAULT，配置覆盖时替换）。 */
-    private static final Set<String> SENSITIVE_QUERY_KEYS = new HashSet<>(DEFAULT_QUERY_KEYS);
+    /**
+     * 生效中的敏感 query 参数清单：<b>不可变快照</b>，重载时整体替换并经 {@code volatile} 原子发布（C-7）。
+     * 默认 = {@link #DEFAULT_QUERY_KEYS}。
+     */
+    private static volatile Set<String> SENSITIVE_QUERY_KEYS = DEFAULT_QUERY_KEYS;
 
     /**
      * 脱敏 URL 中的敏感 query 参数（自包含实现，不依赖 web 层）。

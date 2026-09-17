@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureCon
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.tests.utils.AsyncWaits;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.RouteDemoCoverageApi;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
@@ -15,12 +16,12 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertEquals;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertFalse;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertNotNull;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertNull;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.fail;
 
 /**
  * Route DSL 方法 100% 覆盖步骤 —— 配合增强版 demo 服务 route-demo-web（端口 8899，context-path /web）。
@@ -83,13 +84,17 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
     }
 
     private CapturedApiCall waitForCapturedByType(String urlContains, RouteHandleType type) {
-        long deadline = System.currentTimeMillis() + CAPTURE_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline) {
-            for (CapturedApiCall c : ctx().getAllByType(type)) {
-                String url = c.requestUrl() != null ? c.requestUrl() : "";
-                if (url.contains(urlContains)) return c;
+        return AsyncWaits.awaitResult(AsyncWaits.ms(CAPTURE_TIMEOUT_MS), AsyncWaits.ms(100),
+                () -> firstByType(urlContains, type));
+    }
+
+    /** 在指定类型下返回首个命中 URL 的记录（未命中返回 null）。 */
+    private CapturedApiCall firstByType(String urlContains, RouteHandleType type) {
+        for (CapturedApiCall c : ctx().getAllByType(type)) {
+            String url = c.requestUrl() != null ? c.requestUrl() : "";
+            if (url.contains(urlContains)) {
+                return c;
             }
-            sleep(100);
         }
         return null;
     }
@@ -103,19 +108,11 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         return n;
     }
 
-    private void assertNeverCaptured(String urlContains, RouteHandleType type, String reason) {
-        long deadline = System.currentTimeMillis() + 4000;
-        while (System.currentTimeMillis() < deadline) {
-            if (countByType(urlContains, type) > 0) fail(reason);
-            sleep(100);
-        }
-    }
-
-    private void sleep(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+    /** 在给定观测窗口内断言该类型「始终没有」命中记录；一旦出现即 fail（B-4：窗口经 AsyncWaits 有界观测）。 */
+    private void assertNeverCaptured(String urlContains, RouteHandleType type, String reason, long windowMs) {
+        if (AsyncWaits.awaitTrue(AsyncWaits.ms(windowMs), AsyncWaits.ms(100),
+                () -> countByType(urlContains, type) > 0)) {
+            fail(reason);
         }
     }
 
@@ -386,10 +383,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
     public void condOnlyMainFrame() {
         RouteDsl.on(page()).api(IFRAME_ECHO).mock().mockBody("X").onlyMainFrame(true).done().start();
         openOrigin(page());
-        // iframe 内的请求不是主 frame → 应被排除，不应产生 MOCK 记录
-        sleep(2500);
-        assertEquals(
-                0,  countByType(IFRAME_ECHO, RouteHandleType.MOCK), "onlyMainFrame 不应匹配 iframe 请求");
+        // iframe 内的请求不是主 frame → 应在观测窗口内始终被排除（不产生 MOCK 记录）
+        assertNeverCaptured(IFRAME_ECHO, RouteHandleType.MOCK, "onlyMainFrame 不应匹配 iframe 请求", 2500);
     }
 
     @Step

@@ -131,7 +131,7 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
         if (currentConfig == null) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
-        // 共享 Browser 只读契约：configId 形态必须含 '_' 分隔符，否则无法解析浏览器类型
+        // 实例键契约：configId 形态必须含 '_' 分隔符，否则无法解析浏览器类型
         validateConfigIdShape(currentConfig);
 
         // 获取期望的浏览器类型（可能来自 @AutoBrowser 标签）
@@ -211,7 +211,7 @@ public final class BrowserRegistryImpl implements BrowserRegistry {
         PlaywrightRuntime.instance().contextRegistry.closeContext();
 
         //  2. 在 BROWSER_LOCK 内关闭旧浏览器 + 初始化新浏览器
-        //      （共享模式下使用进程级锁：Browser 被所有线程共享，切换必须全局互斥）
+        //      （每线程独立 Browser：切换只需 per-thread 锁，各线程互不阻塞；共享 Browser 模式已移除）
         // 修复 WEB-P0-1：此处与 getBrowser 慢路径一致，统一在 per-thread 锁内完成 Browser 切换。
         return LifecycleLockMediator.withBrowserLock(() -> {
             // 关闭旧浏览器

@@ -1,3 +1,4 @@
+@smoke @web
 Feature: RoleElement 拾取器全场景录制回归验证
 
   本 feature 用「录制生成的 PageObject + Steps 等价物」驱动 scan-test-all.html，

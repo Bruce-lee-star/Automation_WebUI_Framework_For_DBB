@@ -1,8 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.CleanStateRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.RequiresCleanState;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.StateResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.tests.steps.RouteDemoServiceSteps;
-import io.cucumber.java.After;
 import io.cucumber.java.en.Given;
 import net.serenitybdd.annotations.Steps;
 
@@ -15,15 +17,19 @@ import net.serenitybdd.annotations.Steps;
  * 运行：mvn verify -Dcucumber.filter.tags=@route
  */
 @AutoBrowser(verbose = true)
+@RequiresCleanState({"route-service-route-rules"})
 public class RouteDemoServiceGlue {
+
+    // B-6：原手写 @After 清理改由框架 CleanStateHooks 统一驱动（复位 + 断言无残留）。
+    static {
+        CleanStateRegistry.register(new StateResolver() {
+            @Override public String name() { return "route-service-route-rules"; }
+            @Override public void reset() { new RouteDemoServiceSteps().cleanup(); }
+        });
+    }
 
     @Steps
     private RouteDemoServiceSteps steps;
-
-    @After
-    public void afterScenario() {
-        steps.cleanup();
-    }
 
     @Given("route demo: monitor collects real response")
     public void monitorCollectsRealResponse() {

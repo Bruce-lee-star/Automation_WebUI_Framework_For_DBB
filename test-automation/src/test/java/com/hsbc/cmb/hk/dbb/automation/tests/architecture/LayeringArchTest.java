@@ -31,6 +31,9 @@ public class LayeringArchTest {
 
     private static final String BASE_PACKAGE = "com.hsbc.cmb.hk.dbb.automation.framework";
 
+    /** 测试代码根包（步骤层门禁需扫描测试类，故不能加 {@code DoNotIncludeTests}）。 */
+    private static final String TEST_BASE_PACKAGE = "com.hsbc.cmb.hk.dbb.automation";
+
     /**
      * 地基不向上依赖（A-3）：{@code framework.common} 作为最底层地基，不得反向依赖任何上层模块
      * （web / route / api）。{@code framework.common.reporting} 属 common 自身子包，不算向上依赖，故不纳入目标。
@@ -81,9 +84,44 @@ public class LayeringArchTest {
     public void frameworkCodeMustNotCallThreadSleep() {
         noClasses()
                 .that().resideInAPackage("..framework..")
-                .should().callMethod(Thread.class, "sleep")
+                .should().callMethod(Thread.class, "sleep", long.class)
                 .check(new ClassFileImporter()
                         .withImportOption(new ImportOption.DoNotIncludeTests())
                         .importPackages(BASE_PACKAGE));
+    }
+
+    /**
+     * 步骤层不忙等（B-4）：{@code tests} 包下以 {@code Steps} 结尾的步骤类不得直接调用
+     * {@link Thread#sleep(long)}/{@link Thread#sleep(long, int)}。
+     * <p>步骤层应以业务语义表达等待——有界轮询走 {@code tests.utils.AsyncWaits}，页面等待走
+     * Playwright 自动等待；硬等待既不可观测（无超时语义）又易 flaky。
+     * 受控等待允许集中在 {@code AsyncWaits}（不以 {@code Steps} 结尾，不在本禁令范围），
+     * 与 {@link #frameworkCodeMustNotCallThreadSleep} 的「测试代码可保留受控等待」原则一致。</p>
+     * <p>本规则<b>必须扫描测试类</b>，故不加 {@code DoNotIncludeTests}，单独以测试根包导入。</p>
+     */
+    @Test
+    public void stepsMustNotCallThreadSleep() {
+        noClasses()
+                .that(JavaClass.Predicates.resideInAPackage("..automation.tests..")
+                        .and(JavaClass.Predicates.simpleNameEndingWith("Steps")))
+                .should().callMethod(Thread.class, "sleep", long.class)
+                .check(new ClassFileImporter()
+                        .importPackages(TEST_BASE_PACKAGE));
+    }
+
+    /**
+     * 步骤层不直连测试框架断言 API（B-5）：{@code tests} 包下以 {@code Steps} 结尾的步骤类不得依赖
+     * {@code org.junit.jupiter.api.Assertions}。
+     * <p>步骤层断言统一经 {@code tests.verify.RouteDemoVerifications} 收口——既能解耦测试框架 API，
+     * 又为「断言下沉到 Service / Verifier」提供唯一替换锚点。本规则必须扫描测试类，故单独以测试根包导入。</p>
+     */
+    @Test
+    public void stepsMustNotUseJunitAssertionsDirectly() {
+        noClasses()
+                .that(JavaClass.Predicates.resideInAPackage("..automation.tests..")
+                        .and(JavaClass.Predicates.simpleNameEndingWith("Steps")))
+                .should().dependOnClassesThat().haveFullyQualifiedName("org.junit.jupiter.api.Assertions")
+                .check(new ClassFileImporter()
+                        .importPackages(TEST_BASE_PACKAGE));
     }
 }

@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -42,6 +43,13 @@ public class MonitorFailureReportWriter {
 
         writeJson(byOwner);
         writeMarkdown(byOwner);
+
+        // R-4：写库失败/丢弃在报告尾部以红色提示呈现（数据丢失对测试运行可见）
+        MonitorDataLossReporter loss = MonitorDataLossReporter.instance();
+        if (loss.hasLoss()) {
+            LOGGER.error("[ApiMonitor] ⚠ 数据完整性告警：本轮监控记录入库失败/丢弃共 {} 条，详见汇总报告尾部。",
+                    loss.totalLoss());
+        }
 
         int ownerCount = byOwner.size();
         VerboseLogging.logInfoIfVerbose(LOGGER,
@@ -84,6 +92,20 @@ public class MonitorFailureReportWriter {
                     }
                 }
             }
+            // R-4：报告尾部红色提示——数据完整性告警（使监控数据丢失可见，比保证不丢失更现实）
+            MonitorDataLossReporter loss = MonitorDataLossReporter.instance();
+            if (loss.hasLoss()) {
+                sb.append("\n## ⚠ 数据完整性告警（API 监控数据丢失）\n\n");
+                sb.append("**本轮 API 监控记录入库失败 / 丢弃共 ").append(loss.totalLoss()).append(" 条**，")
+                        .append("部分监控数据未落库（数据完整性受损）。\n\n");
+                sb.append("按类别统计：\n");
+                for (Map.Entry<String, Long> entry : loss.lossByCategory().entrySet()) {
+                    sb.append("- `").append(entry.getKey()).append("`：").append(entry.getValue()).append(" 条\n");
+                }
+                sb.append("\n排查建议：检查 `monitor.db.*` 配置、数据库可用性、网络连接，")
+                        .append("以及 Hikari 连接池与批量刷入器日志。\n");
+            }
+
             Path path = Paths.get(MD_REPORT);
             Files.createDirectories(path.getParent());
             Files.write(path, sb.toString().getBytes(StandardCharsets.UTF_8));

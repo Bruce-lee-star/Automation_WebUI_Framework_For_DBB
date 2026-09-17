@@ -66,6 +66,15 @@ core 是整个框架的内核层，向上提供 6 类横切能力：
 
 `SensitiveDataSanitizer` 能力相当完整：字段名白名单 + 值级识别器（Luhn / IBAN / HKID / 中国身份证 / 手机号 / 护照 / USCC / 轨道数据，**且带校验位校验**），掩码 `***[REDACTED]` 不泄露长度，覆盖 JSON / XML / form / URL。这是整套框架里完成度最高的组件之一。
 
+> **测试约定（2026-09-17，验证期间发现并修复的偶发失败）**：PAN 候选正则 `\b\d(?:[ \-]?\d){12,18}\b`（13~19 位数字）
+> 命中后由 Luhn 裁定并**整体遮蔽**——这是**正确行为**；但日志端到端测试若以 `"e2e-" + System.nanoTime()` 作标记，
+> 长 uptime 的 JVM 中 `nanoTime()` 恰为 **19 位数字**，约 **1/10** 概率通过 Luhn 校验 → 标记被误罩为 `***[REDACTED]`
+> → 断言偶发「日志中找不到标记行」。已实测复现：`throwable-e2e-1758096000123456789` → `throwable-e2e-***[REDACTED]`；
+> 而 `...789z`（末尾补字母）原样通过。
+> **约定**：日志捕获标记统一用 `TestLogCapture.newMarker(prefix)`（末尾补字母破除 `\b\d{13,19}\b` 词边界，从根本上免疫），
+> 并由确定性回归用例 `SanitizingMessageConverterTest#markerIsImmuneToValueRecognizers`（含 Luhn 合法卡号样本 + 200 次采样）守住。
+> （受影响并已修正的三处：`SanitizingThrowableConverterTest`、`SanitizingMessageConverterTest`、`LogContextTest`。）
+
 两个问题：
 
 - `SecretValue.java`（C-3 已加固）：`ENC(...)` 显式标记默认走**严格失败快**（`-Dsecurity.secret.strict=true`），解密失败即抛 `IllegalStateException`，逼出"主密钥缺失/密文损坏"；裸 `base64` **同样失败快**（key 不匹配/密文被篡改即抛异常，密文均绑定本地主密钥），仅**明显非密文形态**（非 base64 或长度不足以含 IV+GCM 标签）才原样返回。原"静默降级把密文当值用"问题已消除。
@@ -106,9 +115,9 @@ core 是整个框架的内核层，向上提供 6 类横切能力：
 | C-3 | **P1** | `SecretValue` 解密失败静默降级为"密文当值用" | `SecretValue.java:65-72` | 凭据故障延迟暴露，排查成本高 |
 | C-4 | **P1** | `SoftAssertions` ThreadLocal 残留风险 | `SoftAssertions.java:38` | 上一个用例的失败污染下一个用例 |
 | C-5 | **P1** | 异步线程不传播 MDC | `AsyncPool` 未做 MDC 传递 | 异步日志无法归因到 scenario |
-| C-6 | **P1** | 配置解析路径分裂（`ConfigSource` vs `FrameworkFlags`），无配置键统一注册表 | `ConfigKey.java:17`、`FrameworkFlags.java:29-71` | 新配置无处可查，键名无静态校验 |
-| C-7 | **P1** | `SensitiveDataSanitizer` 936 行静态 god-class + 共享可变静态集合 | `:72-936`、`:255-262` | 无法扩展、并发下 reload 有竞态 |
-| C-8 | **P2** | `LanguageState.globalLang` 静态全局可变，不在清理范围 | `LanguageState.java:25-93` | 并行下语言态串扰 |
+| C-6 | **P1** | 配置解析路径分裂（`ConfigSource` vs `FrameworkFlags`），无配置键统一注册表 **已修复**：core `ConfigKeys` 注册表已加重复键 fail-fast 静态校验（新增 `ConfigKeysRegistryTest` 3/3），web/api/monitor 配置按设计保持模块分离，三枚举（`WebFrameworkConfig`/`MonitorConfig`/`FrameworkFlags`）保留；另新增**键唯一性**（`configKeysAreGloballyUnique`，Web×API）+ **镜像默认值一致性**（`mirrorConfigKeysMustAgreeOnDefaults`，`MonitorConfig`/`ConfigKeys` 与 Web/API 枚举逐条比对）两道守卫，实测抓到并修复 2 处注册表默认值漂移 | `ConfigKey.java:17`、`FrameworkFlags.java:29-71` | 新配置无处可查，键名无静态校验 |
+| C-7 | **P1** | `SensitiveDataSanitizer` 936 行静态 god-class + 共享可变静态集合 **已修复（核心）**：三个生效规则集（header/body/query）改为**不可变快照 + `volatile` 原子发布**，消除共享可变静态集与 reload 竞态；`SensitiveDataSanitizerReloadConcurrencyTest`（4 读 × 50 reload，0 违规）。整类策略链拆分待决策 | `:72-936`、`:255-262` | 无法扩展、并发下 reload 有竞态 |
+| C-8 | **P2** | `LanguageState.globalLang` 静态全局可变，不在清理范围 **已修复**：`FrameworkHooks` 在每个 scenario 前后调用 `clearScenarioScopedState()` 复位语言态（`LanguageState.reset()`），使进程级全局语言值不跨用例残留（双轨设计保留全局轨道——跨线程可见性所必需）；`FrameworkHooksLanguageIsolationTest` 2/2 | `LanguageState.java:25-93` | 并行下语言态串扰 |
 | C-9 | **P2** | ~~`ConfigSource` 对 defaultValue 也解密~~ **已修复**：默认值仅显式 `ENC(...)` 才解密 | `ConfigSource.java:95` | 形似 base64 的默认值不再被误解密 |
 | C-10 | **P2** | `ApiTrafficLogger.writeBlock` IOException 仅 debug | `ApiTrafficLogger.java:198-199` | 流量日志静默丢失 |
 | C-11 | **P2** | `CONTEXT_SCHEDULERS` 未清理即泄漏 | `AsyncPool.java:55` | 长跑场景调度器堆积 |

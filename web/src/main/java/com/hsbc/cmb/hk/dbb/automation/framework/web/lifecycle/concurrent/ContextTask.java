@@ -7,7 +7,8 @@ import java.util.concurrent.Callable;
  * 立线程并发上下文任务：在独 / 独立 BrowserContext 中执行的一段工作流。
  *
  * <p>业务实现 {@link #call()} 内部照常使用 {@code BasePage} / {@code PlaywrightManager}，框架保证
- * 每个任务在独立线程上获得独立 {@code BrowserContext}（共享 Browser 模式下由 per-thread Context 隔离）。
+ * 每个任务在独立线程上获得独立 {@code Browser} 与 {@code BrowserContext}（每线程独立 Browser 模型；
+ * 共享 Browser 模式已从框架移除——Playwright for Java 非线程安全）。
  * 任务抛出的异常被捕获进 {@link ContextTaskResult}，不会污染线程池。</p>
  *
  * <p>⚠️ 不要在任务内直接调用 {@code StepEventBus.getEventBus().testFailed(...)} 一类 Serenity 报告 API：

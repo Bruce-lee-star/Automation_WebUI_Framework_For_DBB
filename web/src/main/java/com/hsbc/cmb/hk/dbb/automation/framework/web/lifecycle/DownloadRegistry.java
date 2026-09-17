@@ -30,7 +30,17 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 public final class DownloadRegistry {
 
     private static final Logger logger = LoggerFactory.getLogger(DownloadRegistry.class);
-    private static final DownloadRegistry INSTANCE = new DownloadRegistry();
+
+    /**
+     * 单例持有者（lazy holder）。
+     *
+     * <p>把实例字段移入嵌套类，使 {@link #instance()} 不再「返回本类的 static 字段」——这是 SpotBugs
+     * {@code MS_EXPOSE_REP}（public static 方法暴露可变静态表示）的触发形态。本类是无状态协作对象
+     * （状态都在 {@link #byContext} 的并发容器里），懒加载不改变任何可观察行为。
+     */
+    private static final class InstanceHolder {
+        private static final DownloadRegistry INSTANCE = new DownloadRegistry();
+    }
 
     private final Map<BrowserContext, Deque<Path>> byContext = new ConcurrentHashMap<>();
 
@@ -41,7 +51,7 @@ public final class DownloadRegistry {
      * 获取单例（饿汉、无状态协作对象）。
      */
     public static DownloadRegistry instance() {
-        return INSTANCE;
+        return InstanceHolder.INSTANCE;
     }
 
     /**

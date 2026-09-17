@@ -18,5 +18,7 @@ public class MonitorFailureReportWriterSink implements MonitorFailureReportSink 
     @Override
     public void clear() {
         MonitorFailureCollector.getInstance().clear();
+        // R-4：报告写出后复位数据丢失汇总，避免同 JVM 多 runner 跨套件累积
+        MonitorDataLossReporter.instance().reset();
     }
 }

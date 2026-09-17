@@ -8,8 +8,14 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
 
 /**
- * 登录步骤。对齐框架 {@code tests.steps.LoginSteps#logonDBBEnvironmentAsUser(String, String)}
+ * 登录步骤（RoleElement 精简版）。对齐框架 {@code tests.steps.LoginSteps#logonDBBEnvironmentAsUser(String, String)}
  * 与 Gherkin：Given logon DBB "{env}" environment as user "{username}"。
+ *
+ * <p><b>B-3（消除同名同类隐患）</b>：本类原名为 {@code tests.LoginSteps}，与 {@code tests.steps.LoginSteps}
+ * 同名——两者实现不同（本类走 {@code @RoleElement} 页面对象 + SessionManager 免登录；后者走传统 locator +
+ * RouteDsl mock/monitor + profile 切换），且各被不同 Glue 引用，贸然合并会改变 RoleElement 场景的登录行为。
+ * 故 B-3 采取「重命名去重名」而非强行合并：本类更名 {@code RoleElementLoginSteps}，语义自明、无同名歧义，
+ * 行为零变更。真正的策略合并（统一到单一登录实现）需在具备 RoleElement 场景可运行环境时另行评估。
  *
  * <p>优化点（对比原硬编码 step1）：
  * <ol>
@@ -21,7 +27,7 @@ import com.hsbc.cmb.hk.dbb.automation.tests.utils.BDDUtils;
  * <p>如需完整能力（API mock/monitor、profile 切换、TargetClosed 降级重试），可直接复用框架
  * {@code tests.steps.LoginSteps}，本类为聚焦“去硬编码 + session”的精简对齐版。
  */
-public class LoginSteps {
+public class RoleElementLoginSteps {
 
     private final LoginPage loginPage = PageObjectFactory.getPage(LoginPage.class);
 

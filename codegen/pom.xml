@@ -67,5 +67,14 @@
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-support</artifactId>
         </dependency>
+        <!-- ENG-P0-2：NlsNameTranslator（中文→英文标识符）下沉至 codegen 后，jieba + pinyin4j 仅 codegen 依赖 -->
+        <dependency>
+            <groupId>com.huaban</groupId>
+            <artifactId>jieba-analysis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.belerweb</groupId>
+            <artifactId>pinyin4j</artifactId>
+        </dependency>
     </dependencies>
 </project>

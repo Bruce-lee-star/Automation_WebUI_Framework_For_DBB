@@ -21,7 +21,7 @@ import org.junit.platform.suite.api.Suite;
  * 各线程经 T3-2 的 {@code threadId:configId} 键持有独立 Browser；
  * {@code restart.browser.for.each=scenario} 确保每个 scenario 用全新浏览器，避免 feature 级复用与并行交错。</p>
  *
- * <p>本运行器仅匹配 {@code @parallel-logon} 标签，不会干扰默认的 {@code @test1} 主流程。</p>
+ * <p>本运行器仅匹配 {@code @parallel-logon} 标签，不会干扰默认主流程（{@code not @skip}）。</p>
  *
  * <p>JUnit 5 迁移（原 JUnit4 {@code @RunWith(CucumberWithSerenity.class) + @CucumberOptions}）：
  * 改用 JUnit Platform {@code @Suite} + {@code cucumber} 引擎。</p>

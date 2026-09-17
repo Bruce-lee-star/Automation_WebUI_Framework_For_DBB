@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DemoUser",
+  "type": "object",
+  "required": ["id", "name", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "status": { "type": "string", "enum": ["ACTIVE", "LOCKED"] },
+    "age": { "type": "integer", "minimum": 0 }
+  }
+}

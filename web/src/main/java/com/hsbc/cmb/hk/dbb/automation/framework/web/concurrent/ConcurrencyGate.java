@@ -4,7 +4,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,6 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *   <li>{@link #acquire} 用 {@link Semaphore#acquireUninterruptibly()} 避免吞掉 / 打断测试线程中断策略；
  *       {@link #release} 必须放在调用方清理收口的 finally 中，与 acquire 严格配对（见 {@link ConcurrencyScope}）。</li>
  *   <li>{@link ConcurrentHashMap} 不允许 null key —— 已用 {@code if (key == null) return} 规避。</li>
+ *   <li>条目随<b>最后一个持有者</b> {@link #release} 即移除 → Map 大小 == 在途身份数（天然有界，无需淘汰机制）。</li>
  * </ul>
  * </p>
  *
@@ -32,10 +32,41 @@ public final class ConcurrencyGate {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ConcurrencyGate.class);
 
-    /** 活跃闸门上限：超出时对"完全空闲"的闸门做 best-effort 淘汰，防止海量 key 下 Map 无界增长。 */
-    private static final int MAX_GATES = 4096;
+    /**
+     * 活跃闸门表：key → 闸门条目。
+     *
+     * <p><b>条目生命周期（2026-09-17 评审修复）</b>：条目在其<b>最后一个持有者释放时立即移除</b>，
+     * 故表大小 == 在途身份数（受并发度约束），天然有界 —— 原先的 {@code MAX_GATES=4096} + 空闲淘汰
+     * 机制随之删除：它只因"条目从不移除"才需要，且其判据（许可是否全空闲）有真实的正确性缺陷
+     * （见 {@link GateEntry}）。
+     */
+    private static final ConcurrentHashMap<ConcurrencyPartitionKey, GateEntry> GATES = new ConcurrentHashMap<>();
 
-    private static final ConcurrentHashMap<ConcurrencyPartitionKey, Semaphore> GATES = new ConcurrentHashMap<>();
+    /**
+     * 闸门条目：信号量 + 「在途持有计数」。
+     *
+     * <p><b>为什么必须计持有数（评审修复，对应本轮 web 待复核项 1）</b>：原实现直接存 {@link Semaphore}，
+     * 淘汰以「许可是否全空闲」为判据 —— 这在 {@code acquire} 的
+     * {@code computeIfAbsent(取到闸门) → acquireUninterruptibly(占用许可)} 之间存在窗口：闸门刚被取到、
+     * 许可尚未被占用时看起来"完全空闲"而被淘汰；随后另一线程对同一 key 会创建<b>新</b>闸门并立即取得许可，
+     * 而先前线程仍在旧闸门内 → <b>同一身份键被并发进入</b>（串行化保证破裂）。更糟的是
+     * {@code release(key)} 按 key 重新查表：条目被淘汰/替换时，释放会记到<b>别的</b>闸门上
+     * （许可虚增，进一步放宽互斥）。
+     *
+     * <p>修复方式：把「取用（lookup）+ 持有计数递增」放进同一次 {@code compute}（对同一 key 原子），
+     * 释放侧对称地放进 {@code computeIfPresent}（归还许可 + 递减，归零则移除）。于是
+     * ① <b>在途闸门不可能被误判为空闲</b>（判据是持有数，而非许可余量）；
+     * ② 释放永远作用于<b>自己那次取用所在的条目</b>，不存在错记。
+     * {@code holds} 仅在 Map 的 per-key 原子段内读写，故用普通 {@code int}。
+     */
+    private static final class GateEntry {
+        private final Semaphore semaphore;
+        private int holds;
+
+        GateEntry(int permits) {
+            this.semaphore = new Semaphore(permits, true);
+        }
+    }
     private static final AtomicLong ENTER_COUNT = new AtomicLong();
     private static final AtomicLong SERIALIZED_IDENTITY_COUNT = new AtomicLong();
 
@@ -90,15 +121,22 @@ public final class ConcurrencyGate {
         if (!isEnabled() || key == null) {
             return;
         }
-        Semaphore gate = GATES.computeIfAbsent(key, k -> new Semaphore(perKeyPermits(), true));
-        boolean wouldBlock = gate.availablePermits() == 0;
+        int permits = perKeyPermits();
+        //  取用与持有计数递增必须在同一次 compute 内（对该 key 原子）：否则"刚取到、尚未占许可"的闸门
+        //  会被并发淘汰误判为空闲（详见 GateEntry）。
+        GateEntry entry = GATES.compute(key, (k, existing) -> {
+            GateEntry e = (existing == null) ? new GateEntry(permits) : existing;
+            e.holds++;
+            return e;
+        });
+        boolean wouldBlock = entry.semaphore.availablePermits() == 0;
         if (wouldBlock) {
             SERIALIZED_IDENTITY_COUNT.incrementAndGet();
             LOGGER.info("[concurrency-gate] identity {} serialized (blocked) on {}", key, Thread.currentThread().getName());
         }
         LOGGER.debug("[concurrency-gate] acquire {} on {} (permits left={})",
-                key, Thread.currentThread().getName(), gate.availablePermits());
-        gate.acquireUninterruptibly();
+                key, Thread.currentThread().getName(), entry.semaphore.availablePermits());
+        entry.semaphore.acquireUninterruptibly();
         ENTER_COUNT.incrementAndGet();
     }
 
@@ -109,13 +147,14 @@ public final class ConcurrencyGate {
         if (!isEnabled() || key == null) {
             return;
         }
-        Semaphore gate = GATES.get(key);
-        if (gate != null) {
-            gate.release();
-        }
-        if (GATES.size() > MAX_GATES) {
-            evictIdleGates();
-        }
+        //  与 acquire 对称：在同一 per-key 原子段内「归还许可 + 递减持有数」，归零即移除条目
+        //  （最后一个持有者离开 → 无人持有 → 无需保留）。不再按 key 重新查表释放：旧实现会在条目被
+        //  淘汰/替换时把许可记到别的闸门上（许可虚增）。
+        GATES.computeIfPresent(key, (k, entry) -> {
+            entry.semaphore.release();
+            entry.holds--;
+            return entry.holds <= 0 ? null : entry;
+        });
     }
 
     /**
@@ -136,19 +175,7 @@ public final class ConcurrencyGate {
         return enter(key.orElse(null));
     }
 
-    /** best-effort：Map 超过上限时移除"完全空闲"（许可已全部归还）的闸门以收敛内存。 */
-    private static void evictIdleGates() {
-        for (Map.Entry<ConcurrencyPartitionKey, Semaphore> e : GATES.entrySet()) {
-            if (GATES.size() <= MAX_GATES) {
-                break;
-            }
-            if (e.getValue().availablePermits() == perKeyPermits()) {
-                GATES.remove(e.getKey(), e.getValue());
-            }
-        }
-    }
-
-    /** 观测快照：进入次数 / 被串行化的身份数 / 活跃闸门数（不同身份键数）。 */
+    /** 观测快照：进入次数 / 被串行化的身份数 / 活跃闸门数（= <b>在途</b>身份数，条目随最后一个持有者释放即移除）。 */
     public static ConcurrencyGateStats stats() {
         return new ConcurrencyGateStats(ENTER_COUNT.get(), SERIALIZED_IDENTITY_COUNT.get(), GATES.size());
     }

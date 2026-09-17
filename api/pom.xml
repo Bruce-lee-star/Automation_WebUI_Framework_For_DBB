@@ -55,6 +55,18 @@
             <groupId>com.jayway.jsonpath</groupId>
             <artifactId>json-path</artifactId>
         </dependency>
+        <!-- P-7：响应契约校验（JSON Schema）。仅用 JSON 校验，故排除 YAML schema 传递依赖
+             jackson-dataformat-yaml，避免其 2.17.1 与项目钉定的 jackson-core/databind 2.18.3 版本偏斜。 -->
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.fasterxml.jackson.dataformat</groupId>
+                    <artifactId>jackson-dataformat-yaml</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>com.typesafe</groupId>
             <artifactId>config</artifactId>
@@ -68,6 +80,12 @@
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-support</artifactId>
+        </dependency>
+        <!-- P-3：Apache HttpClient（连接池 PoolingHttpClientConnectionManager 由 RestAssured 传递，此处显式声明以便直接引用；版本与 RestAssured 5.x 一致） -->
+        <dependency>
+            <groupId>org.apache.httpcomponents</groupId>
+            <artifactId>httpclient</artifactId>
+            <version>4.5.13</version>
         </dependency>
 
         <!-- 评审08类-6 / A-4：api 模块首个单测基座 -->
@@ -87,5 +105,71 @@
             <version>3.25.3</version>
             <scope>test</scope>
         </dependency>
+        <!-- 评审08类-6 / A-4：api 模块单测基座（Mockito 驱动 executeWithRetry 重试内核，
+             绕开 SerenityRest 在纯 JUnit 下的 classloader 约束） -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>4.5.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
+
+    <properties>
+        <!--
+          PAR-7 JaCoCo 行覆盖率下限（2026-09-17）。
+          口径：doc05 §5.2 建议「先设低门槛并只允许上升」。
+          首次实测 api 模块 LINE 覆盖率 = 23.5%（427/1818，含本次新增 AbstractRestJobTest）。
+          下限设为实测基线向下取整（0.23），使门禁「只升不降」；目标位 0.40，随补测推进上调。
+          若某次提交将 api 行覆盖率拉到 0.23 以下，verify 即失败（提示删测试 / 退化）。
+        -->
+        <api.line.coverage.floor>0.23</api.line.coverage.floor>
+    </properties>
+
+    <build>
+        <plugins>
+            <!-- PAR-7：api 模块自身覆盖率报告 + 门禁（prepare-agent 由父 POM 为所有模块注入） -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <!-- 在 test 阶段产出 api 模块自身的 XML 报告（此前仅在 test-automation 出报告） -->
+                    <execution>
+                        <id>api-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                        <configuration>
+                            <formats>
+                                <format>XML</format>
+                            </formats>
+                        </configuration>
+                    </execution>
+                    <!-- 门禁：BUNDLE 行覆盖率不得低于下限，否则 verify 失败（仅升不降） -->
+                    <execution>
+                        <id>api-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${api.line.coverage.floor}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 </project>

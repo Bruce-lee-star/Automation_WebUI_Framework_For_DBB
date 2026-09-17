@@ -269,7 +269,11 @@ public class PlaywrightManager {
      */
     public static String getLastDownloadFileName() {
         Path p = getLastDownloadPath();
-        return p == null ? null : p.getFileName().toString();
+        if (p == null) {
+            return null;
+        }
+        Path fileName = p.getFileName();   // 根路径无文件名（防御，SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
+        return fileName == null ? null : fileName.toString();
     }
 
     /**

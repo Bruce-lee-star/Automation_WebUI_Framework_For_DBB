@@ -5,6 +5,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestr
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.AssertionFailureDetail;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextState;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
@@ -14,8 +15,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.DatabaseStoreM
 import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.FileStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.jayway.jsonpath.JsonPath;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
@@ -26,9 +29,9 @@ import org.slf4j.LoggerFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * API 监控 Handler — 在 Playwright 事件线程中同步读取响应 body，
@@ -50,16 +53,48 @@ public class MonitorHandler {
         RouteHandlerRegistry.register(RouteHandleType.MONITOR, MonitorHandler::handle);
     }
 
+    /** 预算余量（毫秒）：留给「尝试总时长」之外的调度抖动。 */
+    private static final long RETRY_BUDGET_MARGIN_MS = 5_000L;
+
     /**
      * body 读取重试调度器：用于 {@link #readResponseBodyWithRetry} 的异步退避，
      * 避免 Thread.sleep 阻塞 route 处理线程（线程契约）。
+     *
+     * <p><b>评审修复（2026-09-17）</b>：原为<b>单线程</b>（{@code newSingleThreadScheduledExecutor}）且被
+     * <b>所有</b> BrowserContext 共享 —— 并行场景下各 context 的退避重试被串行到同一线程，成为跨 context
+     * 的串行瓶颈。现改为线程数可配的调度池（{@code monitor.body.read.scheduler.threads}，默认 4，守护线程）。
      */
-    private static final ScheduledExecutorService bodyReadScheduler =
-            Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread t = new Thread(r, "monitor-body-retry");
-                t.setDaemon(true);
-                return t;
-            });
+    private static final ScheduledThreadPoolExecutor bodyReadScheduler = newBodyReadScheduler();
+
+    private static ScheduledThreadPoolExecutor newBodyReadScheduler() {
+        int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_READ_SCHEDULER_THREADS, 4));
+        AtomicInteger seq = new AtomicInteger(1);
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(threads, r -> {
+            Thread t = new Thread(r, "monitor-body-retry-" + seq.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+        // 取消（上下文关闭/超时放弃）时立即从队列移除，避免残留任务占用调度窗口
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
+    /**
+     * 已读取的响应体 + 截断前原始字节数（C-10）。
+     *
+     * <p>两者必须<b>同路返回</b>：截断发生在读取路径上，若只回传截断后的内容，
+     * 「数据被截断」这一事实就在框架内部丢失，断言失败/报告只能呈现残缺 body 而无法解释差异。
+     *
+     * @param bytes         实际内容（超过 {@code RouteUtil.MAX_BODY_BYTES} 时已截断）
+     * @param originalBytes 截断前原始字节数（未截断时等于 {@code bytes.length}）
+     */
+    private record BodyRead(byte[] bytes, long originalBytes) {
+    }
+
+    //  ── 在途 body 读取重试的登记 / 取消 ─────────────────────────────
+    //  登记表本身在 core（{@link RouteContextState} 的 per-context 在途任务表）：因为
+    //  route.core.* 依 ArchUnit 规则<b>不得</b>依赖 route.handler.*，故「上下文关闭即取消在途任务」的能力
+    //  必须由 core 提供，本类只负责登记 + 薄门面（cancelPendingBodyReadsFor）。
 
     //  注册 JVM 关闭钩子，确保进程退出时关闭 body 读取重试调度器，
     // 避免异常路径下任务堆积导致线程永久挂起。守护线程本不会阻止 JVM 退出，但显式 shutdown 更稳妥。
@@ -69,9 +104,14 @@ public class MonitorHandler {
                 "monitor-handler", MonitorHandler::shutdownScheduler);
     }
 
-    /** 关闭 body 读取重试调度器（幂等，等待进行中重试完成） */
+    /** 关闭 body 读取重试调度器（幂等，等待进行中重试完成）。 */
     private static void shutdownScheduler() {
         try {
+            //  先取消全部在途重试（让正阻塞在 future.get 的事件线程立即走兜底），再关池
+            int cancelled = RouteContextState.cancelAllPendingTasks();
+            if (cancelled > 0) {
+                LOGGER.info("[MonitorHandler] cancelled {} pending body read(s) on shutdown", cancelled);
+            }
             bodyReadScheduler.shutdownNow();
             if (!bodyReadScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 LOGGER.warn("[MonitorHandler] bodyReadScheduler did not terminate in time");
@@ -79,6 +119,82 @@ public class MonitorHandler {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /** 登记一条在途重试链（委托 core 的 per-context 在途任务表，完成时自动注销）。 */
+    private static void registerPendingBodyRead(BrowserContext context, CompletableFuture<byte[]> future) {
+        RouteContextState.registerPendingTask(context, future);
+    }
+
+    /**
+     * 取消指定上下文全部在途 body 读取重试（薄门面；实现在 {@link RouteContextState#cancelPendingTasksFor}）。
+     *
+     * <p>由 route 上下文生命周期收口调用：用例跑完后残链不再续投、等待方立即走兜底，
+     * 从而"不因 timeout 卡住"。
+     *
+     * @param context 目标 BrowserContext；{@code null} 时 no-op
+     * @return 实际被取消的重试链数量
+     */
+    public static int cancelPendingBodyReadsFor(BrowserContext context) {
+        int cancelled = RouteContextState.cancelPendingTasksFor(context);
+        if (cancelled > 0) {
+            VerboseLogging.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] cancelled {} pending body read(s) for a closed context", cancelled);
+        }
+        return cancelled;
+    }
+
+    /** 取请求所属 BrowserContext（不可解析时返回 null，交由预算超时兜底）。 */
+    private static BrowserContext contextOf(Request req) {
+        try {
+            if (req != null && req.frame() != null && req.frame().page() != null) {
+                return req.frame().page().context();
+            }
+        } catch (Exception e) {
+            // Page/Context 已销毁（收尾期预期竞争）：无归属，不登记也不取消
+            VerboseLogging.logTraceIfVerbose(LOGGER,
+                    "[MonitorHandler] contextOf(req) unavailable: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    // ── 重试策略（可配 + 纯函数，便于单测与调参）──────────────────────
+
+    /** 基础尝试次数（可配，默认 3）。 */
+    static int baseAttempts() {
+        return Math.max(1, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_READ_BASE_ATTEMPTS, 3));
+    }
+
+    /** 重试间隔毫秒（可配，默认 50）。 */
+    static long retryIntervalMs() {
+        return Math.max(1L, MonitorConfig.getLong(MonitorConfig.MONITOR_BODY_READ_RETRY_INTERVAL_MS));
+    }
+
+    /** 等待预算上限毫秒（可配，默认 30000；{@code <=0} 表示不设上限）。 */
+    static long maxWaitMs() {
+        return MonitorConfig.getLong(MonitorConfig.MONITOR_BODY_READ_MAX_WAIT_MS);
+    }
+
+    /** 纯函数：按 DELAY 推导总尝试次数（DELAY 越长，需要越多的重试窗口覆盖）。 */
+    static int computeMaxAttempts(long effectiveDelayMs, int baseAttempts, long intervalMs) {
+        long extra = effectiveDelayMs > 0 ? (effectiveDelayMs / intervalMs) + 1 : 0;
+        long total = baseAttempts + extra;
+        return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+    }
+
+    /**
+     * 纯函数：等待预算 = {@code min(尝试总时长 + 余量, 上限)}。
+     *
+     * <p>必须有上限：预算即「route 事件线程度过的最大时长」。无上限时，长 DELAY 会把预算放大到分钟级
+     * （例：DELAY 60s → 1200 次尝试 → 65s），一旦重试链中断/调度器异常，{@code future.get} 会把事件线程
+     * 长期占住，表现为"程序卡死"。上限可用 {@code monitor.body.read.max.wait.ms} 调整。
+     */
+    static long computeBudgetMs(int maxAttempts, long intervalMs, long maxWaitMs) {
+        long raw = (long) maxAttempts * intervalMs + RETRY_BUDGET_MARGIN_MS;
+        if (maxWaitMs <= 0) {
+            return raw;
+        }
+        return Math.min(raw, maxWaitMs);
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
@@ -210,8 +326,8 @@ public class MonitorHandler {
         //    null（响应体尚未缓冲就绪），直接丢弃会导致该 call 丢失（getAllResponsesForUrl 少一条）。
         //    改为带短重试的读取（非阻塞：用 CompletableFuture.delayedExecutor 调度退避，
         //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
-        byte[] bodyBytes = readResponseBodyWithRetry(res, rule, req);
-        if (bodyBytes == null) {
+        BodyRead read = readResponseBodyWithRetry(res, rule, req);
+        if (read == null) {
             LOGGER.debug("[MonitorHandler] Response body unavailable after retry for {}: pattern='{}'",
                     req.url(), rule.getUrlPattern());
             VerboseLogging.logWarnIfVerbose(LOGGER,
@@ -220,7 +336,7 @@ public class MonitorHandler {
             return;
         }
 
-        String body = new String(bodyBytes, StandardCharsets.UTF_8);
+        String body = new String(read.bytes(), StandardCharsets.UTF_8);
         String url = req.url();
         int status = res.status();
         String urlPattern = rule.getUrlPattern();
@@ -231,7 +347,7 @@ public class MonitorHandler {
         //  复用统一的「断言 + 记录」逻辑（ModifyHandler 叠加监控时也调用此方法）
         assertAndRecord(route, rule, context, url, status, body,
                 req.method(), req.postData(),                 snapshotHeadersSafely(req.headers()),
-                snapshotHeadersSafely(res.headers()));
+                snapshotHeadersSafely(res.headers()), read.originalBytes());
     }
 
     /**  兜底采集：从 {@code request.response()} 读取并走统一的 assertAndRecord 链路。 */
@@ -239,14 +355,15 @@ public class MonitorHandler {
         try {
             Response res = fallbackResponse(req);
             if (res == null) return;
-            byte[] bodyBytes = readResponseBodyWithRetry(res, rule, req);
-            if (bodyBytes == null) return;
-            String body = new String(bodyBytes, StandardCharsets.UTF_8);
+            BodyRead read = readResponseBodyWithRetry(res, rule, req);
+            if (read == null) return;
+            String body = new String(read.bytes(), StandardCharsets.UTF_8);
             LOGGER.info("[MonitorHandler] Captured (fallback): url={}, status={}, bodyLength={}, pattern='{}'",
                     RouteUtil.sanitizeUrl(req.url()), res.status(), body.length(), rule.getUrlPattern());
             assertAndRecord(route, rule, context, req.url(), res.status(), body,
                     req.method(), req.postData(),
-                    snapshotHeadersSafely(req.headers()), snapshotHeadersSafely(res.headers()));
+                    snapshotHeadersSafely(req.headers()), snapshotHeadersSafely(res.headers()),
+                    read.originalBytes());
         } catch (Exception e) {
             LOGGER.debug("[MonitorHandler] Fallback collection unavailable for {}: {}",
                     RouteUtil.sanitizeUrl(req.url()), e.getMessage());
@@ -298,50 +415,61 @@ public class MonitorHandler {
      * @param res  响应对象
      * @param rule 路由规则（仅用于日志）
      * @param req  请求对象（仅用于日志）
-     * @return 响应体字节；全部重试后仍不可用则返回 null
+     * @return 读取结果（含截断前原始长度）；全部重试后仍不可用则返回 {@code null}
      */
-    private static byte[] readResponseBodyWithRetry(Response res, RouteRule rule, Request req) {
-        final int BASE_ATTEMPTS = 3;
-        final long RETRY_INTERVAL_MS = 50;
+    private static BodyRead readResponseBodyWithRetry(Response res, RouteRule rule, Request req) {
+        final int baseAttempts = baseAttempts();
+        final long retryIntervalMs = retryIntervalMs();
         //  需求2：当规则含 DELAY 时，DELAY 延后了响应返回，MONITOR 读取 body 的退避/等待
         //   上限需相应 +delayMs（取 delayMs 与 delayMaxMs 的较大值，覆盖随机延迟范围），
         //   避免延迟响应尚未就绪就放弃读取导致 MONITOR 拿不到 body。
         long effectiveDelayMs = rule != null ? Math.max(rule.getDelayMs(), rule.getDelayMaxMs()) : 0;
-        int extraAttempts = effectiveDelayMs > 0
-                ? (int) (effectiveDelayMs / RETRY_INTERVAL_MS) + 1 : 0;
-        int maxAttempts = BASE_ATTEMPTS + extraAttempts;
+        int maxAttempts = computeMaxAttempts(effectiveDelayMs, baseAttempts, retryIntervalMs);
         if (effectiveDelayMs > 0) {
             LOGGER.info("[MonitorHandler] Rule has DELAY ({}ms), extended body-read retries to {} attempts",
                     effectiveDelayMs, maxAttempts);
         }
+        //  评审修复：预算 = min(尝试总时长 + 余量, monitor.body.read.max.wait.ms)。上限的意义是
+        //  「事件线程等待有界」——长 DELAY 会把尝试数放大到数百次（预算分钟级），一旦重试链中断或
+        //  调度器异常，无界等待就会拖死路由分发。任何放弃都走调用方兜底（返回 null）。
+        long budgetMs = computeBudgetMs(maxAttempts, retryIntervalMs, maxWaitMs());
+        long deadlineMs = System.currentTimeMillis() + budgetMs;
         CompletableFuture<byte[]> future = new CompletableFuture<>();
-        retryBodyOnce(res, rule, req, 1, maxAttempts, RETRY_INTERVAL_MS, future);
+        BrowserContext context = contextOf(req);
+        registerPendingBodyRead(context, future);
+        retryBodyOnce(res, rule, req, 1, maxAttempts, retryIntervalMs, deadlineMs, future);
         try {
             //  超时上限：绝不用无界 join()。
-            //   重试链依赖 bodyReadScheduler 调度；若该调度器已被关闭（如 JVM 收尾、
-            //   或极端异常路径），后续重试永不执行 → future 永不完成 → join() 会永久
-            //   阻塞 Playwright 事件线程，进而拖死整个路由分发（"卡主程序"）。
-            //   留出足够上界（重试总时长 + 5s 余量）后主动放弃，改由调用方走兜底路径。
-            long budgetMs = (long) maxAttempts * RETRY_INTERVAL_MS + 5_000L;
-            return future.get(budgetMs, TimeUnit.MILLISECONDS);
+            //   重试链依赖 bodyReadScheduler 调度；若该调度器已被关闭（JVM 收尾/异常路径）或
+            //   重试链因上下文关闭被取消，future 永不完成 → join() 会永久阻塞 Playwright 事件线程，
+            //   进而拖死整个路由分发（"卡主程序"）。故用有界 budget 主动放弃，改由调用方走兜底路径。
+            byte[] raw = future.get(budgetMs, TimeUnit.MILLISECONDS);
+            if (raw == null) {
+                return null;
+            }
+            //  C-10（截断元数据）：截断在此处执行而非重试链内部 —— 这样「原始长度」与「截断结果」
+            //  在同一栈帧内同时可得，截断事实才能随快照上报。原先在重试链内截断后原始长度即丢失，
+            //  报告/断言只能看到残缺 body，无法解释与期望的差异。
+            return new BodyRead(RouteUtil.truncateBody(raw), raw.length);
         } catch (Exception e) {
             future.cancel(true);
             VerboseLogging.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] Body read gave up (timeout/failure) after {} attempts: {}",
-                    maxAttempts, e.getMessage());
+                    "[MonitorHandler] Body read gave up (timeout/failure/cancelled) after up to {} attempts, "
+                            + "budget={}ms: {}", maxAttempts, budgetMs, e.getMessage());
             return null;
         }
     }
 
     /** 递归异步重试读取 body：每次失败/空 body 后按固定间隔提交下一次读取（非阻塞），不占用当前线程。 */
     private static void retryBodyOnce(Response res, RouteRule rule, Request req,
-                                       int attempt, int maxAttempts, long intervalMs,
+                                       int attempt, int maxAttempts, long intervalMs, long deadlineMs,
                                        CompletableFuture<byte[]> result) {
         try {
             byte[] body = res.body();
             if (body != null) {
-                //  响应体上限防 OOM：超大响应体截断后再向上传递（监控存储/断言）
-                result.complete(RouteUtil.truncateBody(body));
+                //  原始字节直接完成；截断统一由 readResponseBodyWithRetry 在拿到结果后执行
+                //  （C-10：需同时知道原始长度才能记录「被截断」这一事实）
+                result.complete(body);
                 return;
             }
         } catch (Exception e) {
@@ -352,7 +480,7 @@ public class MonitorHandler {
             result.complete(null);
             return;
         }
-        if (attempt < maxAttempts) {
+        if (attempt < maxAttempts && System.currentTimeMillis() < deadlineMs) {
             if (bodyReadScheduler.isShutdown()) {
                 //  修复 Medium：调度器已关闭（JVM 收尾/异常路径）时不再重试，
                 // 立即走兜底，避免向已停执行器提交触发 RejectedExecution + 浪费 join 超时窗口。
@@ -360,9 +488,10 @@ public class MonitorHandler {
                 return;
             }
             CompletableFuture.runAsync(
-                    () -> retryBodyOnce(res, rule, req, attempt + 1, maxAttempts, intervalMs, result),
+                    () -> retryBodyOnce(res, rule, req, attempt + 1, maxAttempts, intervalMs, deadlineMs, result),
                     CompletableFuture.delayedExecutor(intervalMs, TimeUnit.MILLISECONDS, bodyReadScheduler));
         } else {
+            // 超过尝试次数或已过截止时间（预算用尽）：停止续投，避免"用例已结束仍在空转"的残链
             result.complete(null);
         }
     }
@@ -395,6 +524,25 @@ public class MonitorHandler {
                                        String url, int status, String body,
                                        String method, String reqBody,
                                        Map<String, String> reqHeaders, Map<String, String> resHeaders) {
+        // 未携带截断信息的调用方（如 ModifyHandler 叠加监控）：按「未截断」处理
+        assertAndRecord(route, rule, context, url, status, body, method, reqBody,
+                reqHeaders, resHeaders, -1L);
+    }
+
+    /**
+     * 同上，但额外携带响应体<b>截断前的原始字节数</b>（C-10 截断元数据）。
+     *
+     * <p>当 {@code originalBodyBytes} 大于落库 body 长度时，快照会标记
+     * {@link CapturedApiCall#bodyTruncated()} 并保留 {@link CapturedApiCall#originalBodyBytes()}，
+     * 使断言失败信息与报告能显示「数据被截断」这一事实，避免与真实原因脱节。
+     *
+     * @param originalBodyBytes 截断前原始字节数；{@code -1} 表示调用方未提供（视为未截断）
+     */
+    public static void assertAndRecord(Route route, RouteRule rule, ApiCaptureContext context,
+                                       String url, int status, String body,
+                                       String method, String reqBody,
+                                       Map<String, String> reqHeaders, Map<String, String> resHeaders,
+                                       long originalBodyBytes) {
         String urlPattern = rule.getUrlPattern();
 
         VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -441,6 +589,8 @@ public class MonitorHandler {
         CapturedApiCall captured = new CapturedApiCall(
                 urlPattern, method, reqHeaders, status, resHeaders, body,
                 System.currentTimeMillis(), url, reqBody, RouteHandleType.MONITOR);
+        //  C-10：记录截断证据。未截断时 markBodyTruncated 自身为 no-op（防误标），故可无条件调用。
+        captured.markBodyTruncated(originalBodyBytes);
         //  BUG 修复：先将「活动请求」发布信号（increment）置于 storeApiCall 之前，
         // 避免主线程在 store 之后、increment 之前轮询到 activeRequests==0 而误判「无活动」提前返回；
         // 同时保证 finally 中 decrement 必然配对，防止计数只增不减导致 awaitCompletion 永久阻塞。

@@ -62,6 +62,12 @@ public class RouteEngine {
     /** 停止并关闭指定 context 的引擎，清理其规则索引与合并引用。 */
     public static void stopContextEngine(BrowserContext context) {
         if (context == null) return;
+        //  评审修复（2026-09-17）：上下文生命周期结束 → 立即取消该 context 的在途异步任务
+        //  （典型：Monitor 的 body 读取重试链）。否则残链会继续占用调度器并持有 Response 引用，
+        //  而等待方要耗尽整个预算才返回（表现为"用例已结束仍在等 timeout"）。
+        //  取消后 future.get 立即抛 CancellationException → 调用方走兜底路径。
+        //  注：登记表在 core（RouteContextState），handler 侧只登记——core 不得依赖 handler（ArchUnit 规则）。
+        RouteContextState.cancelPendingTasksFor(context);
         RouteLifecycleOwner.stopContextEngine(context);
         cleanupClosedContext(context);
     }

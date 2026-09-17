@@ -22,7 +22,7 @@ import org.junit.platform.suite.api.Suite;
  *   -Dserenity.parallel.for.tests=4 -Dserenity.playwright.restart.browser.for.each=scenario
  * </pre>
  *
- * <p>仅匹配 {@code @e2e-sandbox} 标签，不会干扰默认的 {@code @test1} 主流程。</p>
+ * <p>仅匹配 {@code @e2e-sandbox} 标签，不会干扰默认主流程（{@code not @skip}）。</p>
  *
  * <p>JUnit 5 迁移（原 JUnit4 {@code @RunWith(CucumberWithSerenity.class) + @CucumberOptions}）：
  * 改用 JUnit Platform {@code @Suite} + {@code cucumber} 引擎。</p>

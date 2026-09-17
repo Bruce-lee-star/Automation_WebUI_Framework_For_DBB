@@ -54,6 +54,15 @@ public class SummaryReportGoldenTest {
     @TempDir
     File folder;
 
+    /** 创建用例报告目录；mkdirs 失败即抛（不静默忽略返回值，SpotBugs RV_RETURN_VALUE_IGNORED_BAD_PRACTICE）。 */
+    private File newReportDir(String name) {
+        File dir = new File(folder, name);
+        if (!dir.mkdirs() && !dir.exists()) {
+            throw new IllegalStateException("Cannot create test report dir: " + dir);
+        }
+        return dir;
+    }
+
     private static final String PROJECT_NAME = "Golden Baseline Project";
     private static final String REPORT_URL = "https://reports.example.com/job/42/Serenity_20Summary_20Report/";
 
@@ -93,8 +102,7 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void htmlMatchesGoldenBaseline() throws Exception {
-        File dir = new File(folder, "golden-report");
-        dir.mkdirs();
+        File dir = newReportDir("golden-report");
         writeOutcome(dir, "golden.json", GOLDEN_JSON);
 
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
@@ -105,7 +113,10 @@ public class SummaryReportGoldenTest {
         assertFalse(actual.isEmpty(), "HTML 产物不应为空");
 
         if (!Files.exists(GOLDEN_HTML)) {
-            Files.createDirectories(GOLDEN_HTML.getParent());
+            Path goldenParent = GOLDEN_HTML.getParent();   // 无父目录时为 null（SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
+            if (goldenParent != null) {
+                Files.createDirectories(goldenParent);
+            }
             Files.writeString(GOLDEN_HTML, actual, StandardCharsets.UTF_8);
             fail("Golden 基线已生成于 " + GOLDEN_HTML.toAbsolutePath()
                     + " —— 请人工评审后提交，再重跑本用例（防「自动生成即通过」的假绿）。");
@@ -115,7 +126,10 @@ public class SummaryReportGoldenTest {
         if (!golden.equals(actual)) {
             // 失败必须可诊断：dump 实际产物 + 定位首个差异（assertEquals 会打印两份 35KB 全文，无法读）
             Path dump = Paths.get("target", "golden-actual.html");
-            Files.createDirectories(dump.getParent());
+            Path dumpParent = dump.getParent();            // 同上：null 安全
+            if (dumpParent != null) {
+                Files.createDirectories(dumpParent);
+            }
             Files.writeString(dump, actual, StandardCharsets.UTF_8);
             int at = firstDifference(golden, actual);
             fail("HTML 输出已从 golden 基线漂移，首个差异位置=" + at
@@ -133,8 +147,7 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void csvQuotesFieldsContainingCommasAndQuotes() throws Exception {
-        File dir = new File(folder, "csv-report");
-        dir.mkdirs();
+        File dir = newReportDir("csv-report");
         writeOutcome(dir, "csv.json", "{\n"
                 + "  \"name\": \"Login, with \\\"quoted\\\" value\",\n"
                 + "  \"result\": \"SUCCESS\",\n"
@@ -160,8 +173,7 @@ public class SummaryReportGoldenTest {
     /** ZIP 契约：必须打包汇总报告本体（条目名不含时间戳，可稳定断言）。 */
     @Test
     public void zipPackageContainsSummaryArtifacts() throws Exception {
-        File dir = new File(folder, "zip-report");
-        dir.mkdirs();
+        File dir = newReportDir("zip-report");
         writeOutcome(dir, "zip.json", GOLDEN_JSON);
 
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
@@ -185,8 +197,7 @@ public class SummaryReportGoldenTest {
      */
     @Test
     public void htmlEscapesHtmlMetacharactersFromOutcomeData() throws Exception {
-        File dir = new File(folder, "escape-report");
-        dir.mkdirs();
+        File dir = newReportDir("escape-report");
         writeOutcome(dir, "escape.json", "{\n"
                 + "  \"name\": \"<script>alert(1)</script> & \\\"quoted\\\" more\",\n"
                 + "  \"result\": \"FAILURE\",\n"

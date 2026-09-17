@@ -88,8 +88,11 @@ public final class RecordingPageProxy {
                 if (Proxy.getInvocationHandler(ret) instanceof RecordingHandler) {
                     return (T) ret; // 已是本代理，跳过（R2 防链过深）
                 }
-            } catch (IllegalArgumentException ignored) {
-                // 非 JDK 代理，继续按接口包装
+            } catch (IllegalArgumentException e) {
+                // 防御路径（理论上被 isProxyClass 前置守卫排除）：非 JDK 代理则继续按接口包装。
+                // 按 D7-3「禁止静默吞异常」记录 WARN —— 该分支不可达，故不会产生日志噪声。
+                LOGGER.warn("[RecordingPageProxy] Returning object is not a JDK proxy despite isProxyClass() check; "
+                        + "wrapping by interface instead: {}", e.toString());
             }
         }
         if (iface != null && RECORDABLE_INTERFACES.contains(iface) && iface.isInstance(ret)) {
@@ -154,9 +157,13 @@ public final class RecordingPageProxy {
             }
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < args.length; i++) {
-                if (i > 0) sb.append(", ");
+                if (i > 0) {
+                    sb.append(", ");
+                }
                 sb.append(args[i]);
-                if (sb.length() >= MAX_DETAIL_LEN) break;
+                if (sb.length() >= MAX_DETAIL_LEN) {
+                    break;
+                }
             }
             if (sb.length() > MAX_DETAIL_LEN) {
                 sb.setLength(MAX_DETAIL_LEN);

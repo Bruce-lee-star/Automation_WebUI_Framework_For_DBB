@@ -432,19 +432,16 @@ public enum WebFrameworkConfig {
         "窗口最大化参数"
     ),
 
-    /**
-     * 共享 Browser 模式（一个 Browser 实例 + 多 Context 并发）——<b>opt-in，默认关闭</b>。
-     * <p>{@code true}：所有 worker 线程共享同一个 Browser 实例，每个线程/场景持有独立 BrowserContext。</p>
-     * <p>{@code false}（默认，T3-2 语义）：每个线程持有独立 Browser / Playwright 实例，
-     * 重启与故障的作用域完全收敛到本线程。</p>
+    /*
+     *  （移除留痕，2026-09-17 评审）：此处原为「共享 Browser 模式（opt-in）」配置项的 javadoc ——
+     *  该配置项（PLAYWRIGHT_SHARED_BROWSER_ENABLED）已随 W-7/DEV-V3 从框架彻底移除，此处只剩**无主注释**，
+     *  却仍在文档层面暗示"该开关存在"，属误导性死文本，故删除（仅留此留痕）。
      *
-     * <p><b>为何默认 false（W-7 结论纠正）：Playwright for Java 官方明确「Playwright 对象不是线程安全的」——
-     * {@code Playwright}/{@code Browser}/{@code BrowserContext}/{@code Page} 的方法必须在创建它们的同一线程调用；
-     * 跨线程须各自持独立 Browser 实例（每线程独立 Browser 模型，{@code keyFor} 含 threadId 维度），
-     * 不得跨线程共享同一 {@code Browser} 对象——Playwright for Java 官方 multithreading 文档明确
-     * <i>"Playwright Java is not thread safe"</i>：并发 mutate 共享 Browser 的单一连接会损坏客户端对象注册表，
-     * 随机抛出 {@code Cannot find object to call __adopt__} / {@code pausedStateChanged: debugger@} /
-     * {@code Object doesn't exist: ...}（与 playwright-java#1184 一致）。并发并行一律走每线程独立 Browser。</p>
+     *  <p>权威结论：Playwright for Java 非线程安全（{@code Playwright}/{@code Browser}/{@code BrowserContext}/
+     *  {@code Page} 必须在创建线程调用），跨线程共享单 Browser 会损坏客户端对象注册表
+     *  （{@code __adopt__} / {@code pausedStateChanged}，见 playwright-java#1184）。因此框架<b>不提供</b>
+     *  共享 Browser 开关：{@code BrowserRegistry.keyFor} 恒为 {@code "<threadId>:<configId>"}，
+     *  并发统一为「N 并行 = N 线程 = N Browser」。详见 doc03 §2.2 与 doc10 §5.5。
      */
 
     /**
@@ -714,6 +711,59 @@ public enum WebFrameworkConfig {
         "playwright.context.trace.enabled",
         "true",
         "Trace 功能"
+    ),
+
+    /**
+     * trace 是否按 <b>scenario 分段</b>（每个用例一个 trace 文件）——默认 true（方案 A，2026-09-17）。
+     *
+     * <p>{@code true}：用 Playwright 原生 {@code startChunk()}/{@code stopChunk(path)} 在用例边界切段，
+     * 使「trace 的时间 == 用例执行时间」，文件名/报告带 scenarioId 与起止时间；feature 模式（context 复用）
+     * 下同样正确。{@code false}：回退为「一个 context 一个整段 trace」（旧行为，逃生开关）。
+     */
+    PLAYWRIGHT_CONTEXT_TRACE_CHUNK_PER_SCENARIO(
+        "playwright.context.trace.chunk.per.scenario",
+        "true",
+        "trace 按 scenario 分段（每用例一个文件）"
+    ),
+
+    // ==================== 产物保留治理（trace / 截图，企业级磁盘治理）====================
+
+    /** 是否启用产物保留治理（磁盘总上限 / 文件数上限 / 保留期）。 */
+    PLAYWRIGHT_ARTIFACTS_RETENTION_ENABLED(
+        "playwright.artifacts.retention.enabled",
+        "true",
+        "产物（trace/截图）保留治理开关"
+    ),
+
+    /** 目标目录总字节上限（MB）。 */
+    PLAYWRIGHT_ARTIFACTS_RETENTION_MAX_TOTAL_MB(
+        "playwright.artifacts.retention.max.total.mb",
+        "2048",
+        "产物目录总上限（MB）"
+    ),
+
+    /** 目标目录文件数上限。 */
+    PLAYWRIGHT_ARTIFACTS_RETENTION_MAX_FILES(
+        "playwright.artifacts.retention.max.files",
+        "500",
+        "产物目录文件数上限"
+    ),
+
+    /** 保留期（天）：超过此龄的文件在下次治理时删除。 */
+    PLAYWRIGHT_ARTIFACTS_RETENTION_MAX_AGE_DAYS(
+        "playwright.artifacts.retention.max.age.days",
+        "14",
+        "产物保留期（天）"
+    ),
+
+    /**
+     * 需治理的目录列表（逗号分隔）。注意：<b>本次 run 产出的文件永不删除</b>
+     * （只清理 mtime 早于本次 run 起点的遗留物），避免"证据凭空消失"。
+     */
+    PLAYWRIGHT_ARTIFACTS_RETENTION_DIRS(
+        "playwright.artifacts.retention.dirs",
+        "target/site/serenity/traces,target/screenshots,target/screenshots-webp",
+        "产物保留治理目录（逗号分隔）"
     ),
 
     /**

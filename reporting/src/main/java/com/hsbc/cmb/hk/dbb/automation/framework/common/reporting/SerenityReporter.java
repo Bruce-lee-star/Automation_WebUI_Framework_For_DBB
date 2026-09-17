@@ -90,6 +90,10 @@ public final class SerenityReporter implements ResultReporter {
      * 步骤数据仍会广播给其它 {@code ResultReporter}（如汇总报告生成器），
      * 只是 Serenity 这一侧不需要 —— 这正是"端口与实现分离"的收益：
      * 各引擎按需取用，不必全盘接收。
+     *
+     * @apiNote E-5：本 no-op 是**有意的设计决策**，非"未填充的接缝占位"（勿据此判为待办）。
+     *          Serenity 侧步骤由原生机制记录；若将来确需把框架特有步骤写入 Serenity，
+     *          应新增独立接入点，而非在此补写——否则会破坏上述三重收益。
      */
     @Override
     public void reportStep(StepResult step) {

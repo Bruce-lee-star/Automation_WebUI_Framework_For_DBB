@@ -1,3 +1,4 @@
+@regression @web
 Feature: Parallel logon DBB - T3-2 每线程独立浏览器隔离验证
 
   # 参照 login_dbb.feature：每个 scenario 复用既有的 "logon DBB <env> environment as user <user>" 步骤，

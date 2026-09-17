@@ -186,10 +186,25 @@ public final class LocatorFactory {
         bp.ensurePageValid();
         Frame frame = bp.getCurrentFrame();
         Page page = bp.getPage();
-        // P1 兼容性：覆盖 data-testid/data-test-id/data-test/data-qa 四种常见测试属性
-        String sel = "[data-testid=\"" + testId + "\"],[data-test-id=\"" + testId
-                + "\"],[data-test=\"" + testId + "\"],[data-qa=\"" + testId + "\"]";
-        return (frame != null) ? frame.locator(sel) : page.locator(sel);
+        // G-1 修复：原实现裸拼 testId 存在定位器注入面。主属性 data-testid 走 Playwright 内建
+        // getByTestId（自带转义语义，闭合注入面）；其余三种历史兼容属性（data-test-id/data-test/data-qa）
+        // 用转义后的 CSS 选择器补充，并经 .or() 合并，保留兼容匹配且不引入注入。
+        Locator primary = (frame != null) ? frame.getByTestId(testId) : page.getByTestId(testId);
+        String compat = cssAttrEquals("data-test-id", testId) + ","
+                + cssAttrEquals("data-test", testId) + ","
+                + cssAttrEquals("data-qa", testId);
+        Locator compatLoc = (frame != null) ? frame.locator(compat) : page.locator(compat);
+        return primary.or(compatLoc);
+    }
+
+    /**
+     * 构造 CSS「属性等于」选择器，并对属性值中的特殊字符（{@code \} 与 {@code "}）做转义，
+     * 避免 {@code testId} 含特殊字符时破坏 selector 而产生定位器注入面。
+     * 转义顺序须先转义反斜杠、再转义双引号（等价 Playwright 内建 {@code getByTestId} 的转义语义）。
+     */
+    private static String cssAttrEquals(String attr, String value) {
+        String escaped = value.replace("\\", "\\\\").replace("\"", "\\\"");
+        return "[" + attr + "=\"" + escaped + "\"]";
     }
 
     public static Locator byText(BasePage bp, String text) {

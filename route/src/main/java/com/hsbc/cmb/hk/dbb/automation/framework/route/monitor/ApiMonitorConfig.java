@@ -46,8 +46,16 @@ public class ApiMonitorConfig {
         return f == null ? Collections.emptyMap() : f;
     }
 
-    /**  P2: 加锁保护，避免运行时并发 set 导致的不一致（volatile 仅保证可见性，不保证原子发布）。 */
-    public synchronized void setFeatures(Map<String, Map<String, EndpointConfig>> features) {
+    /**
+     * 替换配置（评审：去掉 {@code synchronized}）。
+     *
+     * <p>原注释称「volatile 仅保证可见性，不保证原子发布」——对<b>单个引用字段</b>而言这一说法不成立：
+     * volatile 写本身就是原子的，且带安全发布语义（写前的一切对读方可见），读侧 {@link #getFeatures()}
+     * 又无需同步，因此「同步 setter + 非同步 getter」这一不对称只会触发 SpotBugs
+     * {@code UG_SYNC_SET_UNSYNC_GET}，并无实际保护作用（并发 set 无论如何都是「后写者胜」）。
+     * 故改为纯 volatile 赋值。
+     */
+    public void setFeatures(Map<String, Map<String, EndpointConfig>> features) {
         this.features = features;
     }
 

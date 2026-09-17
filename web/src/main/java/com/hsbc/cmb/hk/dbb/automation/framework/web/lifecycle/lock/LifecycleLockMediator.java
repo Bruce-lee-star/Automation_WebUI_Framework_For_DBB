@@ -18,7 +18,14 @@ import java.util.function.Supplier;
  * <ul>
  *   <li><b>Browser</b>：每线程独立 Browser 实例（{@code keyFor} 含 threadId），创建互不阻塞
  *       → 用 per-thread 锁（{@link #withBrowserLock}），<b>不可</b>退化进程级锁，否则全局串行化。</li>
- *   <li><b>Context / Page</b>：始终 per-thread，故 {@link #withContextLock} / {@link #withPageLock} 不随模式切换。</li>
+ *   <li><b>Context / Page</b>：<b>进程级锁</b>（{@code CONTEXT_LOCK}/{@code PAGE_LOCK} 为 {@code static final}
+ *       单例）。<b>此处曾文档与实现不符（2026-09-17 评审纠正）</b>：原文写作"始终 per-thread"，而实现是进程级。
+ *       核对结论：全部调用点（{@code ContextRegistryImpl} / {@code PageRegistryImpl}）操作的都是<b>本线程</b>的
+ *       Context/Page（自 {@code TestContextHolder} 读取），故进程级锁在正确性上<b>非必需</b>，代价是并行
+ *       （{@code -Pparallel}）下 Context/Page 的创建与关闭<b>全局串行</b> —— 属吞吐税，非正确性问题。
+ *       跨线程关闭路径（{@code BrowserCleanupImpl} 遍历 {@code browser.contexts()}）本就<b>不</b>经过本锁，
+ *       而是由 {@code ConcurrentContextExecutor.isConcurrentModeActive()} 断言拦在"并发窗口"之外；
+ *       因此是否改成 per-thread 属<b>待决策项</b>（可回收该吞吐税，但需先确认无其它跨线程依赖）。</li>
  * </ul>
  *
  * <h2>锁顺序纪律（不变式）</h2>

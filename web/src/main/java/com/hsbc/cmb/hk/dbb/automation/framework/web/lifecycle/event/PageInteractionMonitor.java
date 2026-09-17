@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
@@ -83,6 +84,26 @@ public final class PageInteractionMonitor {
         }
         page.onFrameNavigated(PageInteractionMonitor::handleFrameNavigated);
         page.onPopup(PageInteractionMonitor::handlePopup);
+    }
+
+    /**
+     * 清理当前线程（用例）的交互监控状态：导航轨迹与未受管弹窗清单。
+     *
+     * <p><b>用途</b>：scenario 结束时显式调用，防止 worker 线程被线程池复用、且 scenario 上下文未绑定/未解绑的
+     * 边缘场景下，导航轨迹与未受管弹窗跨用例堆积。C-1 用例级隔离已覆盖主路径（scenario 上下文随
+     * {@code TestContextHolder.resetForCurrentThread()} 解绑），本方法为<b>防御性兜底接缝</b>：
+     * 额外保证<b>成功路径</b>也即时归零，且不依赖 {@code drainNavigationTrail/drainUnmanagedPopups}
+     * （仅失败时由 {@code StepFailureAggregator} 触发）的回收时机。</p>
+     *
+     * <p>null 安全：当前无上下文时直接忽略，不抛异常。</p>
+     */
+    public static void resetForThread() {
+        TestContext ctx = TestContextHolder.get();
+        if (ctx == null) {
+            return;
+        }
+        ctx.remove(NAV_TRAIL_KEY);
+        ctx.remove(UNMANAGED_POPUPS_KEY);
     }
 
     // ===================== 1. 导航轨迹 =====================

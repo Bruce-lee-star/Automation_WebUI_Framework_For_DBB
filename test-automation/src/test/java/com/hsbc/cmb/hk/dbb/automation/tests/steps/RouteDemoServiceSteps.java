@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureCon
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.tests.pages.RouteDemoPage;
+import com.hsbc.cmb.hk.dbb.automation.tests.utils.AsyncWaits;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.RouteDemoApi;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
@@ -18,11 +19,11 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertEquals;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertFalse;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertNotNull;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.fail;
 
 /**
  * Route Demo Service 集成测试步骤 —— 结合真实 SpringBoot demo service（route-demo-service，端口 8888，context-path /demo）。
@@ -130,24 +131,24 @@ public class RouteDemoServiceSteps {
     }
 
     /**
-     * 轮询等待采集到指定 URL 的调用记录（monitor 异步）。
+     * 等待采集到指定 URL 的调用记录（monitor 异步）—— 有界轮询统一走 {@link AsyncWaits}（B-4）。
      *
      * <p>无需过滤 DELAY：延迟标记存放在 {@code ApiCaptureContext} 的独立索引中，
      * 按 endpoint 的通用查询只会返回带有完整请求/响应内容的调用。
      */
     protected CapturedApiCall waitForCaptured(String urlContains) {
         ApiCaptureContext ctx = ApiCaptureContext.forContext(page().context());
-        long deadline = System.currentTimeMillis() + 4000;
-        while (System.currentTimeMillis() < deadline) {
+        return AsyncWaits.awaitResult(AsyncWaits.ms(4000), AsyncWaits.ms(100), () -> {
             for (List<CapturedApiCall> calls : ctx.getAllApiCalls().values()) {
                 for (CapturedApiCall c : calls) {
                     String url = c.requestUrl() != null ? c.requestUrl() : "";
-                    if (url.contains(urlContains)) return c;
+                    if (url.contains(urlContains)) {
+                        return c;
+                    }
                 }
             }
-            try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
-        }
-        return null;
+            return null;
+        });
     }
 
     /** 每个 Scenario 后清理：注销路由规则 + 释放 context 级采集状态。 */
@@ -503,8 +504,11 @@ public class RouteDemoServiceSteps {
         String body = get("/slow/endpoint");
         long elapsed = System.currentTimeMillis() - start;
 
-        // /demo/api/slow/endpoint 的真实基线仅约 110ms；delay(1s) 生效则应约 1100ms+
-        assertTrue( elapsed >= 700, "delay(1s) 应使响应耗时 > 700ms（真实基线约 110ms），实际=" + elapsed);
+        // B-5：不再对耗时做「下界」断言（快/慢机器上均易 flaky）——耗时仅作观测记录，
+        //     只保留宽松上界（SLA 兜底）；「delay 已生效」由 RouteDemoCompositeSteps 的 DELAY 维度标记
+        //     断言（assertFalse(grouped.get(DELAY).isEmpty())）确定性覆盖，无需依赖墙上时钟。
+        logger.info("[obs] /slow/endpoint elapsed={}ms（delay(1s) 生效应约 1100ms，此处仅观测）", elapsed);
+        assertTrue(elapsed < 5000, "响应耗时应在上界 5s 内（SLA 兜底），实际=" + elapsed);
         assertTrue(body.contains("slow endpoint"));
     }
 

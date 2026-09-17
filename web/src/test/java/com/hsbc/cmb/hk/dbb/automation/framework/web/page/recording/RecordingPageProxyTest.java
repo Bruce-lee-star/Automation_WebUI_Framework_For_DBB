@@ -172,7 +172,7 @@ class RecordingPageProxyTest {
         Page real = fakePage(rec);
         Page proxy = RecordingPageProxy.wrap(real);
 
-        BrowserException ex = assertThrows(BrowserException.class,
+        assertThrows(BrowserException.class,
                 () -> proxy.close(new Page.CloseOptions()),
                 "close(CloseOptions) 重载也必须被拒绝");
         assertFalse(rec.calls.contains("close"), "close(CloseOptions) 绝不可委托到真实受管 Page");

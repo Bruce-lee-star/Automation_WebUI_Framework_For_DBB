@@ -23,6 +23,29 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>{@code matchReferrer / matchOrigin} — 来源匹配</li>
  *   <li>{@code matchFrameUrl / onlyMainFrame} — Frame 匹配</li>
  * </ul>
+ *
+ * <h3>并发契约（2026-09-17 专项复核 — C-5 结论）</h3>
+ * <p>本类是<b>可变配置模型</b>，但发布前后的可见性有明确分工：
+ * <ol>
+ *   <li><b>配置期（单线程写）</b>：{@code RouteDsl} / 各 setter 在注册前填充字段；</li>
+ *   <li><b>发布（happens-before 边界）</b>：规则经 {@code RouteRegistry#ENGINE_RULE_STORE}
+ *       （{@code ConcurrentHashMap}）登记 —— 该写入建立 happens-before，订阅方（Playwright 事件线程）
+ *       随后读取即看到配置期全部写入；</li>
+ *   <li><b>发布后按<b>只读</b>对待</b>：除下列三处「明确在发布后写入」的字段外，其余配置字段
+ *       （urlPattern / mock* / delayMs / monitorEnabled / times …）一律被视为只读。
+ *       故它们<b>未声明 volatile</b> 属刻意设计 —— 既非遗漏也非冻结债务；若未来出现「发布后修改配置字段」
+ *       的用法，应先重构为不可变 + copyForMerge，而非简单加 volatile。</li>
+ * </ol>
+ * <p><b>发布后仍可变（已真修，声明 volatile / 写时复制）</b>：
+ * <ul>
+ *   <li>{@code mergeSource} —— 派发期由事件线程写入（{@code RouteUnifiedResolution}），
+ *       会话查询路径跨线程读 → volatile；</li>
+ *   <li>{@code monitorSessionRef} —— 会话创建/复用线程写，测试主线程会话查询读 → volatile；</li>
+ *   <li>{@code stoppedCapabilities} —— 测试主线程 stop* 写，事件线程 selectCapability 读，
+ *       且写入可能发生在规则已发布并被读取之后 → volatile 快照 + 写时复制（{@link #stopCapability}）。</li>
+ * </ul>
+ * <p>上述契约亦见 {@code route/spotbugs-exclude.xml} 对 {@code AT_STALE_THREAD_WRITE_OF_PRIMITIVE} /
+ * {@code AT_NONATOMIC_64BIT_PRIMITIVE} 的「专项复核结论」注释。
  */
 public class RouteRule {
 
@@ -42,13 +65,33 @@ public class RouteRule {
      * <p>由 RouteEngine.stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入，
      * 分发期注入到有效规则；对应能力在 selectCapability 及 handler 内被跳过，
      * 不影响同一 pattern 的其它能力。不参与 equals/hashCode 比较，仅做拷贝传递。
+     *
+     * <p><b>并发契约（2026-09-17 专项复核）</b>：停止动作来自<b>测试主线程</b>
+     * （{@code stopApi/stopMonitor/stopModify/...}），读取方是 <b>Playwright 事件线程</b>
+     * （{@code selectCapability} / {@code isCapabilityStopped} / {@code copyForMerge} 拷贝），
+     * 且写入可能发生在规则<b>已被发布并被读取之后</b> —— 原先直接改 {@code EnumSet}
+     * 属「无同步的可变共享状态」，存在写丢失与读到半更新集合的风险。
+     * 现改为 <b>volatile 快照 + 写时复制</b>：读为一次 volatile 读；写持锁「复制-替换」。
+     * 停止操作极低频、集合极小（≤4 个枚举），写时复制成本可忽略。
      */
-    private final java.util.EnumSet<RouteHandleType> stoppedCapabilities =
+    private volatile java.util.EnumSet<RouteHandleType> stoppedCapabilities =
             java.util.EnumSet.noneOf(RouteHandleType.class);
 
-    /** 标记某能力被显式停止（生效后该能力在本次 pattern 后续请求中不再执行）。 */
+    /** 保护 {@link #stoppedCapabilities} 的「复制-替换」（仅写路径加锁，读路径无锁）。 */
+    private final transient Object stoppedCapabilitiesLock = new Object();
+
+    /** 标记某能力被显式停止（生效后该能力在本次 pattern 后续请求中不再执行）。幂等、线程安全。 */
     public void stopCapability(RouteHandleType type) {
-        if (type != null) stoppedCapabilities.add(type);
+        if (type == null) return;
+        synchronized (stoppedCapabilitiesLock) {
+            if (stoppedCapabilities.contains(type)) {
+                return;
+            }
+            java.util.EnumSet<RouteHandleType> next = stoppedCapabilities.clone();
+            next.add(type);
+            // 整体替换（volatile 写）：读方要么看到旧快照、要么看到新快照，绝不看到半更新集合
+            stoppedCapabilities = next;
+        }
     }
 
     /** 查询某能力是否已被显式停止。 */
@@ -138,8 +181,11 @@ public class RouteRule {
      * <p>B3 链式模型：dispatchRoute 对规则链执行「分发期合并」（copyForMerge + mergeFrom）
      * 生成有效规则，本字段指向链头（首个注册、session/times 归属）的原始规则，
      * 供会话查询、times 递减、跨层 identity 判断使用。
+     * <p><b>并发契约</b>：本字段在<b>派发期</b>由事件线程写入（{@code RouteUnifiedResolution#resolve}），
+     * 而 {@code getMergeSource()} 亦可能被会话查询路径读取 —— 属「发布后再写」→ 声明 volatile
+     * （2026-09-17 复核；与 {@code monitorSessionRef} 同类）。
      */
-    private transient RouteRule mergeSource = null;
+    private transient volatile RouteRule mergeSource = null;
 
     /**
      *  防御性：指向本规则所属 MonitorSession 的稳定引用（transient，不参与 equals/hashCode/copyForMerge）。
@@ -147,8 +193,11 @@ public class RouteRule {
      * 会话查询（sessionForRule/sessionForRoute）优先用 O(1) 引用定位，避免依赖
      * {@code session.rule == mergeSource} 的「身份相等」脆弱假设；多 context 复用同规则实例时由
      * sessionForRoute 的 context 一致性校验兜底，最坏退回全表遍历。
+     * <p><b>并发契约</b>：写入方是<b>创建/复用会话的线程</b>，读取方是<b>测试主线程</b>的会话查询
+     * （{@code sessionForRule/sessionForRoute}）—— 明确的「发布后再写 → 跨线程读」→ 声明 volatile
+     * （2026-09-17 复核）。
      */
-    private transient Object monitorSessionRef = null;
+    private transient volatile Object monitorSessionRef = null;
 
     /**
      *  Phase 5 统一绑定模型：规则作用域标签。
@@ -1032,8 +1081,11 @@ public class RouteRule {
         copy.interceptRealResponse = this.interceptRealResponse;
         if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
 
-        //  拷贝已停止能力集合（EnumSet 可变，逐元素拷贝避免与源规则共享同一集合）
-        copy.stoppedCapabilities.addAll(this.stoppedCapabilities);
+        //  拷贝已停止能力集合（生成独立快照，避免与源规则共享同一集合；C-5 后本字段为
+        //  volatile 快照 + 写时复制，故这里按「复制-替换」语义整体赋值，而不是就地 addAll）
+        copy.stoppedCapabilities = this.stoppedCapabilities.isEmpty()
+                ? java.util.EnumSet.noneOf(RouteHandleType.class)
+                : java.util.EnumSet.copyOf(this.stoppedCapabilities);
 
         // 请求条件匹配
         copy.resourceTypes = this.resourceTypes;
@@ -1046,9 +1098,17 @@ public class RouteRule {
     // equals / hashCode（RouteRule 作为 ConcurrentHashMap key）
     // ═══════════════════════════════════════════════════════════
 
-    /**  #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组 */
-    private transient int cachedHashCode;
-    private transient boolean hashCodeCached;
+    /**
+     * #8 性能优化：缓存 hashCode，避免每次 Map 查找时 Objects.hash() 创建临时数组。
+     *
+     * <p><b>为何 volatile</b>：RouteRule 是 {@code ConcurrentHashMap} 的 key，{@link #hashCode()}
+     * 可能在派发线程被调用、而 setter 失效缓存在配置线程执行 —— 非 volatile 时存在
+     * <b>可见性竞态</b>（可能读到"内容已变但 hashCodeCached 仍为 true"的陈旧组合，返回过期 hash，
+     * 进而导致 Map 查找错位）。这是 SpotBugs {@code AT_STALE_THREAD_WRITE_OF_PRIMITIVE} 指出的真实问题，
+     * 而非形式告警，故用 volatile 修正（写入频率极低，性能影响可忽略）。
+     */
+    private transient volatile int cachedHashCode;
+    private transient volatile boolean hashCodeCached;
 
     @Override
     public boolean equals(Object o) {

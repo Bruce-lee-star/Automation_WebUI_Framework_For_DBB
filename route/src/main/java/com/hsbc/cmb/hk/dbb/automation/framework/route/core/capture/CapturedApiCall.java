@@ -56,8 +56,14 @@ public class CapturedApiCall {
 
     // ── 时间信息 ──
     private final long timestamp;
-    private boolean bodyTruncated;
-    private long originalBodyBytes;
+
+    //  评审（跨线程可见性 + C-10 落地）：这两个字段在对象【发布之后】经 markBodyTruncated 修改
+    //  —— 调用方为 MonitorHandler：先 storeApiCall 发布快照，再回填「截断事实」。本对象会进入
+    //  跨线程共享的存储（route 事件线程写、主测试线程断言读），非 volatile 时读方可能看到陈旧值
+    //  （bodyTruncated=false / originalBodyBytes=0），导致断言与报告数据失真。
+    //  故声明 volatile：写后立即可见（SpotBugs AT_STALE_THREAD_WRITE_OF_PRIMITIVE / AT_NONATOMIC_64BIT_PRIMITIVE）。
+    private volatile boolean bodyTruncated;
+    private volatile long originalBodyBytes;
 
     // ═══════════════════════════════════════════════════════════════
     //  性能优化：懒缓存 JsonPath DocumentContext（避免重复解析 JSON）
@@ -230,13 +236,31 @@ public class CapturedApiCall {
     /** 响应体字符串 */
     public String responseBody() { return responseBody; }
 
+    /** 本次快照的响应体是否已被截断（截断阈值见 {@code RouteUtil.MAX_BODY_BYTES}）。 */
     public boolean bodyTruncated() { return bodyTruncated; }
 
+    /** 截断前的原始字节数；未截断时为 0。 */
     public long originalBodyBytes() { return originalBodyBytes; }
 
+    /**
+     * 记录「响应体被截断」这一事实（由 {@link MonitorHandler} 读取响应体后调用）。
+     *
+     * <p><b>为什么必须记录</b>：截断使 {@link #responseBody()} 短于真实响应。若快照不携带该事实，
+     * 断言失败时看到的是「残缺 body 与期望不符」—— 与真实原因（响应体超上限被截断）完全脱节；
+     * 报告读者也无法判断结论是否建立在完整数据上。
+     *
+     * <p><b>防误标（幂等）</b>：仅当 {@code originalBytes} <b>大于</b>已存 body 长度时才标记，
+     * 否则视为未截断（no-op）。因此调用方可以无条件调用，无需自行比较长度。
+     *
+     * @param originalBytes 截断前的原始字节数；≤ 已存 body 长度（或为负数）时不做任何标记
+     */
     public void markBodyTruncated(long originalBytes) {
+        long stored = responseBody == null ? 0L : responseBody.length();
+        if (originalBytes <= stored) {
+            return;
+        }
+        this.originalBodyBytes = originalBytes;
         this.bodyTruncated = true;
-        this.originalBodyBytes = Math.max(originalBytes, 0L);
     }
 
     /** 请求体字符串（POST/PUT 等），可能为 null */

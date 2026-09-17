@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.context.LanguageState;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioContext;
 
 import io.cucumber.java.After;
@@ -30,21 +31,37 @@ import io.cucumber.java.Scenario;
  */
 public class FrameworkHooks {
 
-    /** scenario 开始前：先校验本线程无残留用例绑定（防上一用例泄漏），再绑定本用例上下文。 */
+    /** scenario 开始前：先校验本线程无残留用例绑定（防上一用例泄漏），再绑定本用例上下文，并复位语言态。 */
     @Before(order = Integer.MIN_VALUE)
     public void beforeScenario(Scenario scenario) {
         ScenarioContext.assertUnbound();
         ScenarioContext.begin(scenario.getId());
+        clearScenarioScopedState();
     }
 
-    /** scenario 结束后：清理软断言收集器，解除本用例绑定并断言已释放（防脏上下文泄漏到下一用例）。 */
+    /** scenario 结束后：清理软断言收集器与语言态，解除本用例绑定并断言已释放（防脏上下文泄漏到下一用例）。 */
     @After(order = Integer.MAX_VALUE)
     public void afterScenario(Scenario scenario) {
         try {
-            SoftAssertions.clearForCurrentThread();
+            clearScenarioScopedState();
         } finally {
             ScenarioContext.end(scenario.getId());
             ScenarioContext.assertUnbound();
         }
+    }
+
+    /**
+     * 复位「scenario 级、且不受 {@code TestContextHolder} 托管」的共享状态：软断言收集器 + 语言态。
+     *
+     * <p><b>C-8</b>：{@code LanguageState.globalLang} 是进程级全局值（跨线程可见性所必需），不在
+     * {@code TestContextHolder} 清理范围内，会跨用例残留并在并行下造成语言态串扰；故在 scenario 前后
+     * 显式复位，保证「当前语言」从干净态开始、且不泄漏到下一用例。
+     *
+     * <p>抽为包可见静态方法以便单测直接校验复位行为（Cucumber 的 {@code io.cucumber.java.Scenario}
+     * 是 final 类，无法以桩对象驱动 {@code @Before}/{@code @After}）。
+     */
+    static void clearScenarioScopedState() {
+        SoftAssertions.clearForCurrentThread();
+        LanguageState.reset();
     }
 }

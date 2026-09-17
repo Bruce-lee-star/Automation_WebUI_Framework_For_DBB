@@ -148,13 +148,13 @@
 | 编号 | 级别 | 问题 | 证据 | 影响 |
 |---|---|---|---|---|
 | G-1 | **P1** | 定位器**字符串拼接**存在注入面（testId / iframe locator） | `LocatorFactory:194-196`、`RoleElementBinder:200-201` | 特殊字符导致定位失败或越权定位 |
-| G-2 | **P1** | `NlsNameTranslator`（jieba+pinyin4j）错放在 `web` 而非 `codegen` | `web/.../utils/NlsNameTranslator.java:3-4` | 运行时模块被生成期依赖污染 |
-| G-3 | **P2** | 历史：Page 经反射 `newInstance()` 且要求 `extends BasePage`，无编译期校验 | `PageObjectFactory:337`（遗留路径） | 演进为组合式 PageFactory 后该约束已缓解；遗留 `extends BasePage` 路径仍须有无参构造 |
+| G-2 | **P1** | `NlsNameTranslator`（jieba+pinyin4j）错放在 `web` 而非 `codegen` **已修复**：已下沉至 `codegen/.../web/page/scan/nls/NlsNameTranslator.java`，`web` 移除 jieba/pinyin4j 依赖（仅 codegen 声明），`RoleElementPageGenerator` 改引新包；web 运行期本无消费者，故未引入 SPI 桥接 | `web/.../utils/NlsNameTranslator.java:3-4` | 运行时模块被生成期依赖污染 |
+| G-3 | **P2** | 历史：Page 经反射 `newInstance()` 且要求 `extends BasePage`，无编译期校验 **已修复（G-3）**：`PageObjectFactory` 新增 `register(Class,Supplier)` 全局注册表为优先路径，反射回退缺无参构造抛清晰 `ConfigurationException` 引导显式登记 | `PageObjectFactory:337`（遗留路径） | 演进为组合式 PageFactory 后该约束已缓解；遗留 `extends BasePage` 路径仍须有无参构造 |
 | G-4 | **P1** | 四种 `LifecycleStrategy` 并存但无默认约定文档 | `PageObjectFactory:49-69` | 共享 Browser 模式下误用 SINGLETON 会串 Context |
-| G-5 | **P1** | `WebFrameworkConfig` 单文件 1544 行 / 132 键，与另外两个配置枚举平行 | `WebFrameworkConfig.java:30-1544` | 配置无统一注册表，新增键无校验 |
+| G-5 | **P1** | `WebFrameworkConfig` 单文件 1690 行 / 132 键，与另外两个配置枚举平行 **已决策：不拆分，改为补校验**。① **Java 枚举无法跨文件拆分**（常量必须与其 `enum` 同文件），拆分须先退化为 `class + static ConfigKey` 常量，将丢失 `values()` 遍历能力；② `WebFrameworkConfig.allConfigKeys()` 正依赖 `values()`，拆成多个子枚举后必须人工维护聚合清单——**恰好重新引入本条要消除的「忘记登记」失败模式**；③ 1690 行中约 1570 行是 **132 个声明式键**（21 个主题分区，每键约 11 行），仅约 110 行是行为（11 个访问器 + 1 个默认值解析），长度是数据量的映射而非职责混杂；④ 条目陈述的危害「新增键无校验」已由 `ConfigUnificationTest#configKeysAreGloballyUnique` 关闭（Web 枚举 × API 常量的**键全局唯一**校验 + 非空性断言防静默通过，经负向探针验证），`ConfigKeys` 骨架另有重复键 fail-fast（C-6）| `WebFrameworkConfig.java:30-1690` | ~~配置无统一注册表，新增键无校验~~ |
 | G-6 | **P2** | `PageWaits` 固定 500ms 轮询，无抖动 | `PageWaits.java:88,113` | 高并发下重试同步化，瞬时放大目标压力 |
 | G-7 | **P2** | codegen 生成产物入仓策略不明 | `RoleElementPageGenerator:467-507` | 生成物与手写代码混同，或每构建重扫 |
-| G-8 | **P2** | `RoleElementBinder` 反射 `setAccessible` 注入，与 JPMS 强封装存在张力 | `RoleElementBinder:51,213` | JDK 升级可能触发 InaccessibleObjectException |
+| G-8 | **P2** | `RoleElementBinder` 反射 `setAccessible` 注入，与 JPMS 强封装存在张力 **已修复（G-8）**：新增 `ReflectiveField`（`MethodHandles.privateLookupIn`+`VarHandle`，失败回退 `setAccessible`），`RoleElementBinder`/`PageContextState` 字段注入已改用 | `RoleElementBinder:51,213` | JDK 升级可能触发 InaccessibleObjectException |
 | G-9 | **P3** | 框架现已采用自有 `PageFactory`（组合式，不再要求业务 Page 继承 `BasePage`），`@RoleElement` 核心竞争力保留 | `PageObjectFactory` | 是否进一步对齐 Playwright **官方** `PageFactory` 仍按 12 任务清单"不做迁移"决策（官方方案不支持 `@RoleElement`） |
 
 ---
@@ -183,7 +183,7 @@ FrameLocator frame = page.frameLocator(FrameLocator.Options.byName(frameName));
 Locator el = frame.locator(roleSelector);
 ```
 
-并加一条单元测试：**包含引号、反斜杠、中文的 testId 必须能正确定位**。
+并加一条单元测试：**包含引号、反斜杠、中文的 testId 必须能正确定位**。（✅ 已于 2026-09-17 落地：`byTestId` 主属性改走 `page.getByTestId`（内建转义闭合注入面），其余三种历史兼容属性 `data-test-id`/`data-test`/`data-qa` 用转义后的 CSS 选择器经 `Locator.or()` 合并保留兼容匹配；单测见 `web/.../page/engine/LocatorFactoryTest.byTestId_escapesSpecialCharactersToCloseInjectionSurface`）
 
 ### 5.2 把 NlsNameTranslator 下沉到 codegen（P1）
 

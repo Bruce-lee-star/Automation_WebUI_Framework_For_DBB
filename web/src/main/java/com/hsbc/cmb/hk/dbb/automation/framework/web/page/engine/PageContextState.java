@@ -11,6 +11,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.binding.RoleElementBinder;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.ReflectiveField;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
@@ -249,16 +250,15 @@ final class PageContextState {
             for (Field field : clazz.getDeclaredFields()) {
                 if (field.isAnnotationPresent(RoleElement.class)) {
                     RoleElement a = field.getAnnotation(RoleElement.class);
-                    field.setAccessible(true);
 
                     if (reuse) {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
-                            Object existing = field.get(fieldOwner);
+                            Object existing = ReflectiveField.get(field, fieldOwner);
                             if (!(existing instanceof PageElement)) {
                                 new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                             }
-                        } catch (IllegalAccessException e) {
+                        } catch (Exception e) {
                             new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
                         }
                         continue;
@@ -270,16 +270,15 @@ final class PageContextState {
                     String selector = elementAnnotation.value();
                     // 对齐 page.pause() 的 frameLocator 录制：iframe 内元素用 frame() 逐层下钻。
                     List<String> frameSegs = Arrays.asList(elementAnnotation.frame());
-                    field.setAccessible(true);
 
                     if (reuse) {
                         // 页面切换后——复用已有对象，Locator 由 locator() 动态绑定新 Page
                         try {
-                            Object existing = field.get(fieldOwner);
+                            Object existing = ReflectiveField.get(field, fieldOwner);
                             if (!(existing instanceof PageElement || existing instanceof PageElementList)) {
                                 createField(field, fieldOwner, pageOwner, selector, frameSegs);
                             }
-                        } catch (IllegalAccessException e) {
+                        } catch (Exception e) {
                             // get 失败，回退到重新创建
                             createField(field, fieldOwner, pageOwner, selector, frameSegs);
                         }
@@ -298,9 +297,9 @@ final class PageContextState {
                                     String selector, List<String> frameSegs) {
         try {
             if (List.class.isAssignableFrom(field.getType())) {
-                field.set(fieldOwner, new PageElementList(selector, pageOwner, frameSegs));
+                ReflectiveField.set(field, fieldOwner, new PageElementList(selector, pageOwner, frameSegs));
             } else {
-                field.set(fieldOwner, new PageElement(selector, pageOwner, frameSegs));
+                ReflectiveField.set(field, fieldOwner, new PageElement(selector, pageOwner, frameSegs));
             }
         } catch (Exception e) {
             throw new ElementException("Init field failed: " + field.getName(), e);

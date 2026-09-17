@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
+
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 
 import org.slf4j.Logger;
@@ -45,8 +46,15 @@ public class BrowserOverrideManager {
     private static final ContextKey<String> OVERRIDE_BROWSER_TYPE_KEY =
             ContextKey.of("browserOverride.overrideBrowserType", String.class);
     
-    // 全局浏览器覆盖配置（用于并发测试）
-    private static final Map<Long, String> globalOverrideMap = new ConcurrentHashMap<>();
+    //  评审移除（2026-09-17）：原 `globalOverrideMap`（threadId → browserType）与下面的 TestContext 键
+    //  【双轨重复】，且是一条会造成跨用例污染的"复活轨道"：
+    //  ① 查找始终以「当前线程 id」为键（getEffectiveBrowserType），因此永远读不到别的线程的条目 ——
+    //     "用于并发测试"的初衷并未实现（跨线程可见性根本没建立）；
+    //  ② per-thread 清理（ScenarioLifecycle / TestContextHolder.resetForCurrentThread）只清 TestContext，
+    //     不碰本 Map；而 AutoBrowserProcessor 的清理入口以 hasOverride()（仅读 TestContext）为前置条件，
+    //     一旦 TestContext 键已被清，Map 条目就被"跳过清理"而残留 —— 之后同一 worker 线程执行下一个
+    //     scenario 时，getEffectiveBrowserType() 会把上一个 scenario 的浏览器覆盖【复活】回来（串扰）。
+    //  收敛为单轨（TestContext）后，无覆盖时一律回落默认浏览器，语义更正确且不再有残留。
     
     // Scenario标签缓存（避免重复解析）（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
     private static final ContextKey<String[]> SCENARIO_TAGS_KEY =
@@ -81,7 +89,6 @@ public class BrowserOverrideManager {
         }
         
         TestContextHolder.get().set(OVERRIDE_BROWSER_TYPE_KEY, browserType);
-        globalOverrideMap.put(threadId, browserType);
         
         logger.info("Browser override set for thread {}: {} -> {}", 
             threadId, getDefaultBrowserType(), browserType);
@@ -116,10 +123,9 @@ public class BrowserOverrideManager {
      * 获取当前的浏览器类型（考虑覆盖配置）
      * 
      * 优先级：
-     * 1. 线程级别的覆盖配置
-     * 2. 全局覆盖配置
-     * 3. 配置文件中的默认值
-     * 
+     * 1. 线程级别的覆盖配置（TestContext，per-thread）
+     * 2. 配置文件中的默认值
+     *
      * @return 浏览器类型
      */
     public static String getEffectiveBrowserType() {
@@ -128,15 +134,8 @@ public class BrowserOverrideManager {
         if (override != null && !override.isEmpty()) {
             return override;
         }
-        
-        // 2. 检查全局覆盖配置
-        long threadId = Thread.currentThread().threadId();
-        override = globalOverrideMap.get(threadId);
-        if (override != null && !override.isEmpty()) {
-            return override;
-        }
-        
-        // 3. 返回配置文件中的默认值
+
+        // 2. 返回配置文件中的默认值（原"全局覆盖 Map"已随双轨收敛移除）
         return getDefaultBrowserType();
     }
     
@@ -157,7 +156,6 @@ public class BrowserOverrideManager {
         String oldType = TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY);
         
         TestContextHolder.get().remove(OVERRIDE_BROWSER_TYPE_KEY);
-        globalOverrideMap.remove(threadId);
         
         if (oldType != null) {
             logger.info("Browser override cleared for thread {}, reverting to: {}", 
@@ -364,7 +362,6 @@ public class BrowserOverrideManager {
      */
     public static void clearAll() {
         TestContextHolder.get().remove(OVERRIDE_BROWSER_TYPE_KEY);
-        globalOverrideMap.clear();
         logger.info("All browser overrides cleared");
     }
 }

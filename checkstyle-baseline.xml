@@ -1232,7 +1232,7 @@
 <error line="168" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="180" column="17" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="web/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/utils/NlsNameTranslator.java">
+<file name="codegen/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/scan/nls/NlsNameTranslator.java">
 <error line="137" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="144" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 <error line="177" column="13" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>

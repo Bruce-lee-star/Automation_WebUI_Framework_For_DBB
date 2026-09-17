@@ -15,6 +15,7 @@ import freemarker.template.*;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -29,7 +30,14 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-public class SummaryReportGenerator {
+/**
+ * 汇总报告生成器（T2-8：HTML 由 Freemarker 模板渲染）。
+ *
+ * <p><b>为何是 {@code final}</b>：构造函数在目录校验失败时会抛异常，而非 final 类在构造期抛异常会留下
+ * 「部分初始化」的实例，可被 finalizer 攻击利用（SpotBugs {@code CT_CONSTRUCTOR_THROW}）。本类本就无继承
+ * 设计（全仓无子类），声明 {@code final} 即消除该风险面，且不改变任何行为。
+ */
+public final class SummaryReportGenerator {
     private static final Logger logger = LoggerFactory.getLogger(SummaryReportGenerator.class);
     private static final String DEFAULT_REPORT_DIR = "target/site/serenity";
     private static final String SUMMARY_FILE = "serenity-summary.html";
@@ -68,6 +76,13 @@ public class SummaryReportGenerator {
     private final Map<TestResult, Long> resultCounts = new EnumMap<>(TestResult.class);
     private final Map<String, String> featureToHtmlMap = new LinkedHashMap<>();
     private final Map<String, String> scenarioToHtmlMap = new LinkedHashMap<>();
+
+    /** E-3：trace 文件索引（trace-&lt;scenarioId&gt;-&lt;ts&gt;.zip），无 traces 目录时为空。 */
+    private final List<TraceFile> traceFiles = new ArrayList<>();
+
+    /** E-2：上一场运行快照（无历史为 null）；跨场 flaky 场景集（近 5 场失败 ≥3 次）。 */
+    private RunSummary previousRun;
+    private Set<String> flakyScenarios = Set.of();
 
     // 自定义错误分类规则：label → pattern（正则），按配置顺序排列
     private final List<ErrorTypeRule> errorTypeRules = new ArrayList<>();
@@ -115,7 +130,9 @@ public class SummaryReportGenerator {
     private static String validateAndNormalizeDirectory(String dir) {
         Path path = Paths.get(dir).normalize().toAbsolutePath();
         for (Path component : path) {
-            if ("..".equals(component.getFileName().toString())) {
+            // 根组件（如 "/" 或 "C:\"）的 getFileName() 为 null，须先判空（SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
+            Path fileName = component.getFileName();
+            if (fileName != null && "..".equals(fileName.toString())) {
                 throw new IllegalArgumentException("Path traversal rejected: " + dir);
             }
         }
@@ -325,6 +342,8 @@ public class SummaryReportGenerator {
         this.testExecutionTime = resolveTestExecutionTime();
         loadFeatureHtmlMapping(actualReportDir);
         loadScenarioHtmlMapping(actualReportDir);
+        loadTraceMapping(actualReportDir);
+        loadTrend(actualReportDir);
         calculateResultCounts();
         loadDurationsFromIndexHtml(actualReportDir);  // 从 index.html 解析时间（与 Serenity 原生报告保持一致）
         calculateDurations();
@@ -501,16 +520,18 @@ public class SummaryReportGenerator {
                 long duration = t.getDuration();
                 String error = t.getTestFailureMessage() != null ?
                     escapeCsv(t.getTestFailureMessage()) : "";
-                csv.append(String.format("%s,%s,%s,%d,%s\n",
-                    escapeCsv(feature), escapeCsv(t.getName()), result, duration, error));
+                // 换行移出 format 串（SpotBugs VA_FORMAT_STRING_USES_NEWLINE 要求 format 内用 %n）：
+                // CSV 统一用 LF 且需与既有 golden 基线逐字节一致，故不改 %n（平台相关），只把 '\n' 挪到 append 外。
+                csv.append(String.format("%s,%s,%s,%d,%s",
+                    escapeCsv(feature), escapeCsv(t.getName()), result, duration, error)).append('\n');
             }
 
             for (SimpleTestOutcome t : simpleTestOutcomes) {
                 String result = t.result.name();
                 long duration = t.duration;
                 String error = t.result != TestResult.SUCCESS ? "Test failed" : "";
-                csv.append(String.format("%s,%s,%s,%d,%s\n",
-                    escapeCsv(normalizeFeatureName(t.featureName)), escapeCsv(t.title), result, duration, error));
+                csv.append(String.format("%s,%s,%s,%d,%s",
+                    escapeCsv(normalizeFeatureName(t.featureName)), escapeCsv(t.title), result, duration, error)).append('\n');
             }
 
             Files.write(csvPath, csv.toString().getBytes(StandardCharsets.UTF_8));
@@ -528,6 +549,13 @@ public class SummaryReportGenerator {
         return value;
     }
 
+    /**
+     * 生成报告 ZIP 包（E-7：打包内容为「报告白名单」——整目录递归，但排除中间/临时产物）。
+     *
+     * <p><b>包含</b>：汇总 HTML、Serenity 报告 HTML/CSS/JS/图片、各 scenario JSON、{@code traces/*.zip}、
+     * {@code trend-history/*.json} 等报告内容（保持报告自包含、可离线查看）。
+     * <b>排除</b>：ZIP 本体（防自嵌套）、CSV（单独下载，见 Download CSV 按钮）、{@code .tmp} 临时产物。
+     */
     private void generateZipPackage(String actualReportDir) {
         try {
             Path zipPath = safeResolve(actualReportDir, zipFileName);
@@ -547,9 +575,11 @@ public class SummaryReportGenerator {
         if (files == null) return;
         
         for (File file : files) {
-            // 跳过所有 ZIP 文件和 CSV 文件
-            if ((file.getName().startsWith(ZIP_FILE_PREFIX) && file.getName().endsWith(".zip")) ||
-                (file.getName().startsWith(CSV_FILE_PREFIX) && file.getName().endsWith(".csv"))) continue;
+            // E-7 白名单：跳过 ZIP 本体（防自嵌套）、CSV（单独下载）、临时产物（.tmp）
+            String name = file.getName();
+            if ((name.startsWith(ZIP_FILE_PREFIX) && name.endsWith(".zip")) ||
+                (name.startsWith(CSV_FILE_PREFIX) && name.endsWith(".csv")) ||
+                name.endsWith(".tmp")) continue;
             
             if (file.isDirectory()) {
                 // 递归处理子目录
@@ -925,6 +955,80 @@ public class SummaryReportGenerator {
         return m;
     }
 
+    // =============================================================
+    // E-3：Trace 挂进汇总报告（失败清单增列）
+    // =============================================================
+
+    /**
+     * 扫描报告目录下的 {@code traces/}，建立 {@code trace-<scenarioId>-<ts>.zip} 索引。
+     * 无 traces 目录（如单测 / golden 场景）时静默跳过，报告输出与既有基线保持逐字节一致。
+     */
+    private void loadTraceMapping(String actualReportDir) {
+        Path tracesDir = safeResolve(actualReportDir, "traces");
+        if (!Files.isDirectory(tracesDir)) {
+            return;
+        }
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(tracesDir, "trace-*.zip")) {
+            for (Path p : ds) {
+                Path fileNamePath = p.getFileName();
+                if (fileNamePath == null) {
+                    continue;   // 根路径无文件名（防御，SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
+                }
+                String fileName = fileNamePath.toString();
+                String core = fileName.substring("trace-".length(), fileName.length() - ".zip".length());
+                long ts = 0L;
+                int dash = core.lastIndexOf('-');
+                if (dash > 0) {
+                    String tail = core.substring(dash + 1);
+                    if (!tail.isEmpty() && tail.chars().allMatch(Character::isDigit)) {
+                        ts = Long.parseLong(tail);
+                        core = core.substring(0, dash);
+                    }
+                }
+                traceFiles.add(new TraceFile(normalizeForTraceMatch(core), ts, "traces/" + fileName));
+            }
+            VerboseLogging.logInfoIfVerbose(logger, "Loaded {} trace file(s) from {}", traceFiles.size(), tracesDir);
+        } catch (IOException e) {
+            VerboseLogging.logDebugIfVerbose(logger, "Failed to scan traces dir {}: {}", tracesDir, e.getMessage());
+        }
+    }
+
+    /**
+     * 归一化为「仅小写字母数字」，消除 trace 文件名 sanitize（非字母数字 → {@code _}）与报告场景名的差异，
+     * 使 {@code trace-<scenarioId>-<ts>.zip} 可与场景名比较。
+     */
+    private static String normalizeForTraceMatch(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "";
+        }
+        return raw.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /**
+     * 按「归一化场景名 + 其后尽为数字（线程号 / 序号）」前缀匹配 trace 文件，取时间戳最新者。
+     * 匹配不到返回空串（模板据此不渲染该列，降级安全，绝不产生悬空链接）。
+     */
+    private String traceLinkFor(String scenarioName) {
+        String key = normalizeForTraceMatch(scenarioName);
+        if (key.isEmpty() || traceFiles.isEmpty()) {
+            return "";
+        }
+        TraceFile best = null;
+        for (TraceFile t : traceFiles) {
+            if (!t.normalizedId.startsWith(key)) {
+                continue;
+            }
+            String rest = t.normalizedId.substring(key.length());
+            if (!rest.isEmpty() && !rest.chars().allMatch(Character::isDigit)) {
+                continue; // 尾部非数字 → 前缀误配（如 "Login" 命中 "Login2…"）
+            }
+            if (best == null || t.timestamp > best.timestamp) {
+                best = t;
+            }
+        }
+        return best == null ? "" : best.link;
+    }
+
     /**
      * 生成错误类型分布饼图（纯 CSS conic-gradient）
      * 兼容 Outlook / Gmail / Apple Mail 等主流邮件客户端
@@ -1245,6 +1349,80 @@ public class SummaryReportGenerator {
         }
     }
 
+    /**
+     * E-2：加载历史趋势（上一场快照 + 跨场 flaky 判定），并落本场快照。
+     * 无历史时 {@code previousRun==null}，模板据 {@code hasTrend} 不渲染对比列（golden 基线不受影响）。
+     */
+    private void loadTrend(String actualReportDir) {
+        TrendStore store = new TrendStore(safeResolve(actualReportDir));
+        this.previousRun = store.previous();
+
+        Map<String, Integer> failureCounts = new HashMap<>();
+        for (RunSummary s : store.recent(5)) {
+            if (s.failedScenarios() == null) {
+                continue;
+            }
+            for (String name : s.failedScenarios()) {
+                failureCounts.merge(name, 1, Integer::sum);
+            }
+        }
+        Set<String> flaky = new HashSet<>();
+        failureCounts.forEach((name, n) -> {
+            if (n >= 3) {
+                flaky.add(name);
+            }
+        });
+        this.flakyScenarios = flaky;
+
+        store.save(buildCurrentRunSummary());
+    }
+
+    /** 由本场结果构造运行快照（供下一场对比 / flaky 判定）。 */
+    private RunSummary buildCurrentRunSummary() {
+        Map<String, Long> durations = new LinkedHashMap<>();
+        List<String> failed = new ArrayList<>();
+        for (TestOutcome t : testOutcomes) {
+            if (t.getName() != null) {
+                durations.put(t.getName(), t.getDuration());
+            }
+            if (t.getResult() == TestResult.FAILURE || t.getResult() == TestResult.ERROR) {
+                if (t.getName() != null) {
+                    failed.add(t.getName());
+                }
+            }
+        }
+        for (SimpleTestOutcome t : simpleTestOutcomes) {
+            if (t.title != null) {
+                durations.put(t.title, t.duration);
+            }
+            if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
+                if (t.title != null) {
+                    failed.add(t.title);
+                }
+            }
+        }
+        return new RunSummary(
+                TIMESTAMP_FORMATTER.format(reportTime),
+                reportTime.toString(),
+                (int) getTotalTests(),
+                (int) count(TestResult.SUCCESS),
+                failed.size(),
+                durations,
+                failed);
+    }
+
+    /** E-2：耗时变化率文案（无上期数据返回 {@code —}）。 */
+    private static String formatDelta(long current, Long previous) {
+        if (previous == null || previous <= 0) {
+            return "—";
+        }
+        long delta = Math.round((current - previous) * 100.0 / previous);
+        if (delta == 0) {
+            return "0%";
+        }
+        return (delta > 0 ? "+" : "") + delta + "%";
+    }
+
     private void appendFailureAndResultList(StringBuilder sb) {
         List<FailureInfo> failures = new ArrayList<>();
 
@@ -1269,6 +1447,7 @@ public class SummaryReportGenerator {
 
         // Full Failure List：先按 feature 分组，保证同一 feature 只显示一次标题并聚合其下全部 scenario
         List<Map<String, Object>> failureGroups = new ArrayList<>();
+        boolean hasTraces = false;
         if (!failures.isEmpty()) {
             Map<String, List<FailureInfo>> failuresByFeature = new LinkedHashMap<>();
             for (FailureInfo f : failures) {
@@ -1285,6 +1464,10 @@ public class SummaryReportGenerator {
                     s.put("color", resultColor(f.result));
                     s.put("hasError", f.error != null && !f.error.isEmpty());
                     s.put("error", f.error == null ? "" : truncateError(f.error));
+                    // E-3：关联 trace（有则渲染下载链接，无则空）
+                    String traceLink = traceLinkFor(f.scenario);
+                    s.put("traceLink", traceLink);
+                    hasTraces |= !traceLink.isEmpty();
                     scenarios.add(s);
                 }
                 Map<String, Object> group = new LinkedHashMap<>();
@@ -1303,14 +1486,14 @@ public class SummaryReportGenerator {
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
             String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
             rowsByFeature.computeIfAbsent(normalizeFeatureName(getFeature(t)), k -> new ArrayList<>())
-                    .add(resultRow(html, t.getName() == null ? "" : t.getName(), t.getResult(), error));
+                    .add(resultRow(html, t.getName() == null ? "" : t.getName(), t.getResult(), error, t.getDuration()));
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
             String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
             String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
             String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
             rowsByFeature.computeIfAbsent(normalizeFeatureName(t.featureName), k -> new ArrayList<>())
-                    .add(resultRow(html, t.title == null ? "" : t.title, t.result, error));
+                    .add(resultRow(html, t.title == null ? "" : t.title, t.result, error, t.duration));
         }
 
         List<Map<String, Object>> resultGroups = new ArrayList<>();
@@ -1326,6 +1509,8 @@ public class SummaryReportGenerator {
         model.put("failureGroups", failureGroups);
         model.put("csvLink", buildDownloadUrl(csvFileName));
         model.put("resultGroups", resultGroups);
+        model.put("hasTraces", hasTraces);
+        model.put("hasTrend", previousRun != null);
         try {
             sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftlh", model));
         } catch (TemplateException | IOException e) {
@@ -1337,10 +1522,17 @@ public class SummaryReportGenerator {
      * Full Test Results 的单行视图模型。
      * 错误块仅对失败/错误类结果渲染（SUCCESS / IGNORED / SKIPPED 不展示），与原实现完全一致。
      */
-    private Map<String, Object> resultRow(String link, String name, TestResult result, String error) {
+    private Map<String, Object> resultRow(String link, String name, TestResult result, String error, long durationMs) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("link", link);
         m.put("name", name);
+        // E-2：历史趋势（本次/上次耗时 + 变化率）与跨场 flaky 标记
+        Long previousMs = (previousRun != null && previousRun.scenarioDurationMs() != null)
+                ? previousRun.scenarioDurationMs().get(name) : null;
+        m.put("currentMs", durationMs);
+        m.put("previousMs", previousMs == null ? "—" : previousMs.toString());
+        m.put("deltaPct", formatDelta(durationMs, previousMs));
+        m.put("flaky", flakyScenarios.contains(name));
         m.put("labelColor", resultColor(result));
         m.put("labelText", result.name().toLowerCase());
         m.put("color", resultColor(result));
@@ -1364,6 +1556,19 @@ public class SummaryReportGenerator {
             this.error = error;
             this.htmlLink = htmlLink;
             this.result = result;
+        }
+    }
+
+    /** E-3：单个 trace 文件索引项。 */
+    private static class TraceFile {
+        final String normalizedId;
+        final long timestamp;
+        final String link;
+
+        TraceFile(String normalizedId, long timestamp, String link) {
+            this.normalizedId = normalizedId;
+            this.timestamp = timestamp;
+            this.link = link;
         }
     }
 
@@ -1454,8 +1659,8 @@ public class SummaryReportGenerator {
                     }
                 }
 
-                // 提取场景 ID
-                String scenarioId = jo.has("scenarioId") ? jo.get("scenarioId").getAsString() : name;
+                // 注：Serenity JSON 的 scenarioId 当前无处消费（trace 匹配走归一化场景名），
+                //     故不再保存到 SimpleTestOutcome（SpotBugs URF_UNREAD_FIELD：字段只写不读）。
 
                 // 提取错误信息
                 String errorMessage = "";
@@ -1471,7 +1676,6 @@ public class SummaryReportGenerator {
                 }
 
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
-                outcome.scenarioId = scenarioId;
                 outcome.errorMessage = errorMessage;
 
                 // 解析 startTime (ZonedDateTime 格式，如 2026-04-30T16:48:27.302528+08:00)
@@ -1511,7 +1715,9 @@ public class SummaryReportGenerator {
                 }
 
                 simpleTestOutcomes.add(outcome);
-            } catch (Exception e) {
+            } catch (IOException | RuntimeException e) {
+                // 收窄到实际可抛类型（SpotBugs REC_CATCH_EXCEPTION）：文件 IO 为 IOException、JSON 解析失败为
+                // RuntimeException；与 catch(Exception) 行为等价，但不再掩盖「受检异常语义」。
                 VerboseLogging.logWarnIfVerbose(logger, "Failed to parse JSON file: {} - {}", f.getName(), e.getMessage());
             }
         }
@@ -1577,6 +1783,7 @@ public class SummaryReportGenerator {
                                 case "m": totalMs += val * 60_000L; break;
                                 case "s": totalMs += val * 1_000L; break;
                                 case "ms": totalMs += val; break;
+                                default: break;   // 未知单位不计入；显式 default（SpotBugs SF_SWITCH_NO_DEFAULT：隐式落空易掩盖漏处理）
                             }
                         }
                     }
@@ -1753,9 +1960,13 @@ public class SummaryReportGenerator {
                         link = m.group(2).trim();
                     } else if (m.groupCount() >= 1) {
                         link = m.group(1).trim();
-                        // 从 link 路径提取标题
+                        // 从 link 路径提取标题；getFileName() 对根路径（如 "/"）返回 null，须判空
+                        // （SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）——判空后 title 维持 null，
+                        // 由下方 "title != null" 统一跳过，语义与原实现一致。
                         Path lp = Paths.get(link).getFileName();
-                        title = lp.toString().replaceAll("-", " ");
+                        if (lp != null) {
+                            title = lp.toString().replaceAll("-", " ");
+                        }
                     }
 
                     if (title != null && link != null && !title.isEmpty() && !link.isEmpty()) {
@@ -1788,7 +1999,8 @@ public class SummaryReportGenerator {
                 if (name != null) {
                     scenarioToHtmlMap.put(name, htmlLink);
                 }
-            } catch (Exception e) {
+            } catch (IOException | RuntimeException e) {
+                // 收窄到实际可抛类型（SpotBugs REC_CATCH_EXCEPTION），行为与 catch(Exception) 等价
                 VerboseLogging.logWarnIfVerbose(logger, "Failed to load scenario mapping: {}", f.getName());
             }
         }
@@ -1799,7 +2011,6 @@ public class SummaryReportGenerator {
         TestResult result;
         long duration;
         String featureName;
-        String scenarioId;
         String errorMessage;
         ZonedDateTime startTime;
 
@@ -1807,7 +2018,6 @@ public class SummaryReportGenerator {
             this.title = title;
             this.duration = duration;
             this.featureName = featureName;
-            this.scenarioId = title;
             this.errorMessage = "";
             this.startTime = null;
             try { this.result = TestResult.valueOf(rStr.toUpperCase()); }

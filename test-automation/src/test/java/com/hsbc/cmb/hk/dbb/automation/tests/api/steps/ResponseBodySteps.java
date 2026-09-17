@@ -21,6 +21,21 @@ public class ResponseBodySteps extends UIInteractionSteps {
         baseStep().verifyResponseBodyContains(expectedContent);
     }
 
+    /**
+     * P-7：整份响应体符合 JSON Schema（契约守护）。schema 文件放在用例模块
+     * {@code src/test/resources/schemas/} 下，以 classpath 相对路径引用。
+     */
+    @Then("the response body should match JSON schema {string}")
+    public void responseBodyShouldMatchJsonSchema(String schemaResource) {
+        baseStep().verifyResponseMatchesSchema(schemaResource);
+    }
+
+    /** P-7：响应体中 JSONPath 定位到的子文档符合 JSON Schema（数组元素/子对象契约）。 */
+    @Then("the response body at JSON path {string} should match JSON schema {string}")
+    public void responseBodyAtPathShouldMatchJsonSchema(String jsonPath, String schemaResource) {
+        baseStep().verifyResponseJsonPathMatchesSchema(jsonPath, schemaResource);
+    }
+
     @Then("response field {string} should be {int}")
     public void responseFieldShouldBeInt(String fieldPath, int expectedValue) {
         baseStep().verifyResponseJsonPath(fieldPath, expectedValue);

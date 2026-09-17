@@ -287,6 +287,10 @@ public final class RuleRepository {
             //  即使 scoped 为空 Map 也要走 removeContextRules：该方法无条件移除 context 条目。
             removeContextRules(context, new HashSet<>(scoped.keySet()));
         }
+        //  C-11 强键注册表归零守卫：以上各步已分别清理 route 层强键表，此处统一兜底清零所有强键表
+        //  （含引擎层 CONTEXT_ENGINES 与在途任务 PENDING_TASKS），确保 context 关闭后强键表对该 context
+        //  零残留（防已关闭 context 被长期持有导致泄漏）。幂等，重复调用安全。
+        RouteContextState.removeContextFromAllRegistries(context);
     }
 
     /**  全局清理统一路由规则存储（测试套件结束时调用，必须逐链 clear，见 detachChains 注释）。 */

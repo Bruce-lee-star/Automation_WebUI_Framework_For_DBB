@@ -17,7 +17,7 @@ public final class RouteLifecycleOwner {
     public static PerContextEngine startContextEngine(BrowserContext context) {
         if (context == null) throw new IllegalArgumentException("BrowserContext must not be null");
         return RouteContextState.CONTEXT_ENGINES.compute(context, (ignored, existing) ->
-                existing == null || existing.state == EngineState.CLOSED
+                existing == null || existing.state() == EngineState.CLOSED
                         ? new PerContextEngine(context) : existing);
     }
 
@@ -27,7 +27,7 @@ public final class RouteLifecycleOwner {
 
     public static PerContextEngine getOrStartContextEngine(BrowserContext context) {
         PerContextEngine engine = getContextEngine(context);
-        return engine != null && engine.state == EngineState.RUNNING ? engine : startContextEngine(context);
+        return engine != null && engine.state() == EngineState.RUNNING ? engine : startContextEngine(context);
     }
 
     /** 停止并关闭指定 context 的引擎（仅移除注册 + 优雅关闭，规则/会话清理由调用方负责）。 */

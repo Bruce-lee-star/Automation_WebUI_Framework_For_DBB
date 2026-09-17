@@ -58,8 +58,13 @@ public final class PlaywrightRuntimeState implements LifecycleState {
     /**
      * 浏览器断开标记（{@code onDisconnected} 事件填充）：用于 {@code getPage()}/{@code getContext()}
      * 快速失败，避免浏览器进程崩溃/被杀后继续操作抛出晦涩的 Playwright 底层异常。
+     *
+     * <p>弱引用 Set：与 {@link #closingBrowsers} 一致——Browser 被 GC 后条目自动失效，不延长其生命周期、
+     * 无引用泄漏；不主动移除条目，以覆盖 {@code onDisconnected} 异步回调晚于 {@code close()} 返回的情况。
+     * （core 专项评审 2026-09-17：原实现为强引用 {@code newKeySet()}，崩溃 Browser 会长期滞留强引用。）
      */
-    private final Set<Browser> disconnectedBrowsers = ConcurrentHashMap.newKeySet();
+    private final Set<Browser> disconnectedBrowsers =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     /**
      * 框架主动关闭中的 Browser：各 close 路径经 {@code closeBrowserInstance()} 先登记再关闭，

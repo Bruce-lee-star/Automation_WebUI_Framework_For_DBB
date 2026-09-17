@@ -6,10 +6,13 @@
                                 <tr>
                                     <th style="text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
                                     <th style="text-align:left;width:50%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Failure</th>
+<#if hasTraces>
+                                    <th style="text-align:left;width:10%;padding:10px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Trace</th>
+</#if>
                                 </tr>
 <#list failureGroups as g>
                                 <tr>
-                                    <td colspan="2" class="feature" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature}</td>
+                                    <td colspan="${hasTraces?then('3', '2')}" class="feature" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature}</td>
                                 </tr>
 <#list g.scenarios as s>
                                 <tr>
@@ -19,6 +22,9 @@
                                     <td class="scenarioResult" style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
 <span style="color:${s.labelColor};font-size:12px;font-weight:bold;text-transform:uppercase;">${s.labelText}</span><#if s.hasError><div style="margin-top:4px;padding-left:1em;color:${s.color};font-size:11px;line-height:1.3;word-break:break-all;">${s.error}</div>
 </#if>                                    </td>
+<#if hasTraces>
+                                    <td class="scenarioTrace" style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:10%;border-bottom:1px solid #eee;"><#if s.traceLink?has_content><a href="${s.traceLink}" target="_blank" style="color:#0066cc;text-decoration:none;">Trace</a><#else>&ndash;</#if></td>
+</#if>
                                 </tr>
 </#list>
 </#list>
@@ -36,10 +42,15 @@
                                 <tr>
                                     <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
                                     <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Result</th>
+<#if hasTrend>
+                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">This run (ms)</th>
+                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Last run (ms)</th>
+                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">&#916;</th>
+</#if>
                                 </tr>
 <#list resultGroups as g>
                                 <tr>
-                                    <td colspan="2" class="feature feature-title" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature}</td>
+                                    <td colspan="${hasTrend?then('5', '2')}" class="feature feature-title" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature}</td>
                                 </tr>
 <#list g.rows as s>
                                 <tr>
@@ -47,8 +58,13 @@
                                         <a href="${s.link}" target="_blank" style="color:#0066cc;text-decoration:none;">${s.name}</a>
                                     </td>
                                     <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
-<span style="color:${s.labelColor};font-size:12px;font-weight:bold;text-transform:uppercase;">${s.labelText}</span><#if s.hasError><div style="margin-top:4px;padding-left:1em;color:${s.color};font-size:11px;line-height:1.3;word-break:break-all;">${s.error}</div>
+<span style="color:${s.labelColor};font-size:12px;font-weight:bold;text-transform:uppercase;">${s.labelText}</span><#if s.flaky><span style="margin-left:6px;padding:1px 6px;border-radius:8px;background:#fff3cd;color:#8a6d3b;font-size:10px;font-weight:bold;">FLAKY</span></#if><#if s.hasError><div style="margin-top:4px;padding-left:1em;color:${s.color};font-size:11px;line-height:1.3;word-break:break-all;">${s.error}</div>
 </#if>                                    </td>
+<#if hasTrend>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.currentMs}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.previousMs}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.deltaPct}</td>
+</#if>
                                 </tr>
 </#list>
 </#list>

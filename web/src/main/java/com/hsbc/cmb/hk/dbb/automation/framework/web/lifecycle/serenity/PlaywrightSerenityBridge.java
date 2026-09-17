@@ -37,6 +37,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
@@ -382,8 +384,17 @@ public class PlaywrightSerenityBridge {
     public static void cleanupForScenario() {
         VerboseLogging.logDebugIfVerbose(logger, "Cleaning up for scenario...");
 
+        //  方案 A（2026-09-17）：先把本用例的 trace chunk 导出（此刻 context 仍存活），再做清理/关闭。
+        //  这是 scenario 收尾的**唯一共同出口**（scenario 模式关 context / feature 模式保留 context 都经此），
+        //  故在此收口可同时覆盖两条路径；与 PlaywrightListener 中带结果的调用互为幂等兜底（先到者生效）。
+        //  MDC 此刻仍绑定（LogContext.endScenario 在监听器 finally 中），故 scenarioId 可稳定取得。
+        ScenarioTraceRecorder.onScenarioEnd(LogContext.currentScenarioId(), null);
+
         cleanupTempDownloads();
         AutoBrowserProcessor.clearProcessingState();
+        //  评审修复（2026-09-17）：请求作用域的 PageObject 现在以「用例」为键（不再是线程名），
+        //  故必须在用例收尾处回收，否则实例会随用例数累积（且它们持有 Page/Context 引用）。
+        PageObjectFactory.endRequestScope();
 
         String restartStrategy = PlaywrightManager.config().getRestartStrategy();
 

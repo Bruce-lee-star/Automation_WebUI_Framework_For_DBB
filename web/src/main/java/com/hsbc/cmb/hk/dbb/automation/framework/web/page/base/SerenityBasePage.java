@@ -9,7 +9,6 @@ import com.microsoft.playwright.options.Cookie;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.PageElementList;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
 
 import java.util.List;

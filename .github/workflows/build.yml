@@ -30,7 +30,9 @@ jobs:
 
       - name: Build and verify (gates: compile + Checkstyle + SpotBugs + unit + CVE + summary report)
         # -DskipITs：主门禁不依赖 SIT 凭据/浏览器环境；真实 IT 见下方 e2e job。
-        run: mvn -B verify -DskipITs -Dtags='not @skip'
+        # -Psca：A-2 治理——激活 SCA profile，在 package 阶段 install 兄弟模块到 .m2（供 OSV-Scanner
+        #        解析 intra-project 兄弟模块），并在 verify 阶段跑 CVE 门禁；普通本地构建不加 -Psca 则不污染 .m2。
+        run: mvn -B verify -Psca -DskipITs -Dtags='not @skip'
 
       - name: Checkstyle baseline gate (只减不增, A-1)
         # verify 已产出各模块 target/checkstyle-result.xml；当前 <error> 总数不得超过根 checkstyle-baseline.xml。

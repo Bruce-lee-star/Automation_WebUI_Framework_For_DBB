@@ -1,4 +1,4 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.utils;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.nls;
 
 import com.huaban.analysis.jieba.JiebaSegmenter;
 import net.sourceforge.pinyin4j.PinyinHelper;
@@ -28,6 +28,10 @@ import java.util.regex.Pattern;
  *   <li>输出保证是合法 Java 标识符片段（去除空白/标点、首字符非数字），驼峰拼接；
  *       是否首字母大写由调用方通过 {@link #toIdentifier(String, boolean)} 决定。</li>
  * </ol>
+ *
+ * <p>模块归属：本类仅服务于代码生成期（被 {@code RoleElementPageGenerator} 使用），运行期 web 模块
+ * 并不消费它。故按 G-2 修复从 {@code web} 下沉到 {@code codegen}，jieba / pinyin4j 也仅成为
+ * codegen 的依赖，web 运行时依赖得以瘦身（ENG-P0-2 依赖下沉）。
  */
 public final class NlsNameTranslator {
 

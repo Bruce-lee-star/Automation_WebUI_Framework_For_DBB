@@ -277,7 +277,15 @@ public final class AsyncPool {
                     return t;
                 });
         ex.setRemoveOnCancelPolicy(true);
-        CONTEXT_SCHEDULERS.put(contextId, ex);
+        ScheduledThreadPoolExecutor previous = CONTEXT_SCHEDULERS.put(contextId, ex);
+        if (previous != null) {
+            //  评审：key 碰撞会让「旧池失去跟踪」且「按 key remove 会误删新池条目」，使
+            //  getActiveContextSchedulerCount() 这一泄漏判据失真。PerContextEngine 已改为
+            //  「自增序号 + identityHashCode」保证唯一；此处保留检测，任何未来回归都会显式告警，
+            //  而不是静默计数失真。
+            LOGGER.warn("[AsyncPool] context scheduler id collision on '{}' — previous pool lost tracking; "
+                    + "context ids must be unique", contextId);
+        }
         VerboseLogging.logInfoIfVerbose(LOGGER, "[AsyncPool] Created context scheduler '{}' (active ctx schedulers: {})",
                 contextId, CONTEXT_SCHEDULERS.size());
         return ex;

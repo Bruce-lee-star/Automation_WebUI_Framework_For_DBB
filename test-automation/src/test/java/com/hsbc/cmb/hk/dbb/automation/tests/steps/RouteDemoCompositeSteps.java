@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCa
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.tests.utils.AsyncWaits;
 import com.microsoft.playwright.BrowserContext;
 import net.serenitybdd.annotations.Step;
 import org.slf4j.Logger;
@@ -14,11 +15,11 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertEquals;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertFalse;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertNotNull;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.fail;
 
 /**
  * Route 复合场景集成测试步骤 —— 覆盖四种能力在同一 API 上的<b>叠加与优先级</b>，
@@ -54,15 +55,19 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
         return ApiCaptureContext.forContext(page().context());
     }
 
-    /** 轮询等待「指定类型」的采集记录出现（四种能力各自落库，按类型精确等待）。 */
+    /** 等待「指定类型」的采集记录出现（四种能力各自落库，按类型精确等待；B-4：统一走 AsyncWaits）。 */
     private CapturedApiCall waitForCapturedByType(String urlContains, RouteHandleType type) {
-        long deadline = System.currentTimeMillis() + CAPTURE_TIMEOUT_MS;
-        while (System.currentTimeMillis() < deadline) {
-            for (CapturedApiCall c : ctx().getAllByType(type)) {
-                String url = c.requestUrl() != null ? c.requestUrl() : "";
-                if (url.contains(urlContains)) return c;
+        return AsyncWaits.awaitResult(AsyncWaits.ms(CAPTURE_TIMEOUT_MS), AsyncWaits.ms(100),
+                () -> firstByType(urlContains, type));
+    }
+
+    /** 在指定类型下返回首个命中 URL 的记录（未命中返回 null）。 */
+    private CapturedApiCall firstByType(String urlContains, RouteHandleType type) {
+        for (CapturedApiCall c : ctx().getAllByType(type)) {
+            String url = c.requestUrl() != null ? c.requestUrl() : "";
+            if (url.contains(urlContains)) {
+                return c;
             }
-            sleepQuietly(100);
         }
         return null;
     }
@@ -77,22 +82,11 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
         return n;
     }
 
-    /** 断言某类型在等待窗口内<b>始终没有</b>记录（MOCK 短路等"不应发生"的语义）。 */
+    /** 断言某类型在等待窗口内<b>始终没有</b>记录（MOCK 短路等"不应发生"的语义；B-4：窗口经 AsyncWaits 有界观测）。 */
     private void assertNeverCaptured(String urlContains, RouteHandleType type, String reason) {
-        long deadline = System.currentTimeMillis() + 1200;
-        while (System.currentTimeMillis() < deadline) {
-            if (countByType(urlContains, type) > 0) {
-                fail(reason + " —— 但采集到 " + type + " 记录: " + urlContains);
-            }
-            sleepQuietly(100);
-        }
-    }
-
-    private void sleepQuietly(long ms) {
-        try {
-            Thread.sleep(ms);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (AsyncWaits.awaitTrue(AsyncWaits.ms(1200), AsyncWaits.ms(100),
+                () -> countByType(urlContains, type) > 0)) {
+            fail(reason + " —— 但采集到 " + type + " 记录: " + urlContains);
         }
     }
 

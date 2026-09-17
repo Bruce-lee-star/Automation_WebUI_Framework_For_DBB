@@ -1,11 +1,11 @@
+@smoke @route @picker
 Feature: Role Element Picker - smoke of externalised evaluate scripts
 
   Guards the T5-1 step-2 extraction: the scripts moved out of RoleElementPicker
   into RolePickerScripts must still run in a real browser against the local
   scan-test-all.html, and must honour the "(a) => {...} + args()" contract that
-  Playwright relies on to pass arguments. The runner only executes @route.
+  Playwright relies on to pass arguments. 标签见下方三维体系（@smoke @route @picker）。
 
-  @route @picker
   Scenario: externalised picker scripts evaluate without throwing
     Given the local scan test page is open
     When the panel bootstrap script is injected

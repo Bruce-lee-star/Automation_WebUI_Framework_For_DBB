@@ -1,3 +1,4 @@
+@smoke @web
 Feature: RoleElement 拾取器录制验证（端到端录制脚本）
 
   本 feature 不止于“回放录制产物”，而是真正启动框架拾取器（RoleElementPicker.start）

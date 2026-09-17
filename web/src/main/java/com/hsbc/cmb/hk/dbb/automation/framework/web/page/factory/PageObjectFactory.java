@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
@@ -195,6 +196,9 @@ public class PageObjectFactory {
     
     // 当前配置
     private static volatile CreationConfig currentConfig = DEFAULT_CONFIG;
+
+    // G-3：全局显式构造器注册表（编译期安全创建路径，优先于反射回退）
+    private static final ConcurrentMap<Class<?>, Supplier<Object>> GLOBAL_SUPPLIERS = new ConcurrentHashMap<>();
     
     // 统计信息
     private static final ConcurrentMap<Class<?>, Long> creationCount = new ConcurrentHashMap<>();
@@ -229,6 +233,24 @@ public class PageObjectFactory {
     public static void resetConfig() {
         currentConfig = DEFAULT_CONFIG;
         VerboseLogging.logInfoIfVerbose(logger, "PageObjectFactory configuration reset to default");
+    }
+
+    /**
+     * G-3 修复：显式登记 PageObject 的构造 Supplier，提供<b>编译期安全</b>的创建路径，
+     * 优先于反射 {@code newInstance()}。适合无公共无参构造、或构造需注入依赖的 Page。
+     *
+     * @param pageClass 页类型
+     * @param supplier  构造器（可捕获所需依赖）
+     */
+    public static <T> void register(Class<T> pageClass, Supplier<? extends T> supplier) {
+        @SuppressWarnings("unchecked")
+        Supplier<Object> objectSupplier = (Supplier<Object>) (Supplier<?>) supplier;
+        GLOBAL_SUPPLIERS.put(pageClass, objectSupplier);
+    }
+
+    /** 撤销 {@link #register} 登记的构造器。 */
+    public static void unregister(Class<?> pageClass) {
+        GLOBAL_SUPPLIERS.remove(pageClass);
     }
     
     /**
@@ -273,115 +295,133 @@ public class PageObjectFactory {
             // 统计访问次数
             accessCount.merge(pageClass, 1L, Long::sum);
             totalAccess.incrementAndGet();
-            
-            // 根据生命周期策略获取实例
-            Object instance = getInstanceByStrategy(pageClass, config);
-            
-            if (instance == null) {
-                // 创建新实例
-                instance = createInstance(pageClass, config);
-                
-                // 执行创建后钩子
-                executePostCreateHooks(instance, config);
-                
-                logger.debug("Created and cached PageObject instance for: {} (strategy: {})", 
-                        pageClass.getSimpleName(), config.getLifecycleStrategy());
-            } else {
-                logger.debug("Reusing cached PageObject instance for: {} (strategy: {})", 
-                        pageClass.getSimpleName(), config.getLifecycleStrategy());
-            }
-            
-            return (T) instance;
+
+            //  评审修复（2026-09-17）：按策略<b>原子</b>「取或建」。
+            //  原实现是「读取 → 为 null 则创建 → 存回」的检查-创建序列：并发首调用会各自创建并
+            //  顺序覆盖 —— 同一时刻不同调用方拿到<b>不同实例</b>（身份不一致；对持有 Page/Context
+            //  引用的对象尤其危险），且后来者会静默覆盖前者。现改为「读 → 创建 → putIfAbsent 竞争发布
+            //  → 落败者丢弃自己的实例并返回已发布者」，使「同一 (策略, key) 的全部调用方看到同一实例」
+            //  成为保证。
+            return (T) resolveInstance(pageClass, config);
         } catch (Exception e) {
             logger.error("Failed to create PageObject instance for: {}", pageClass.getSimpleName(), e);
             throw new ConfigurationException("Failed to create PageObject: " + pageClass.getSimpleName(), e);
         }
     }
-    
+
     /**
-     * 根据生命周期策略获取实例
+     * 按生命周期策略原子获取（或创建）实例。
+     *
+     * @param pageClass PageObject 类型
+     * @param config    创建配置
+     * @return 该策略作用域下的实例
      */
-    private static Object getInstanceByStrategy(Class<?> pageClass, CreationConfig config) {
-        LifecycleStrategy strategy = config.getLifecycleStrategy();
-        
-        switch (strategy) {
-            case SINGLETON:
-                return singleInstances.get(pageClass);
-                
+    private static Object resolveInstance(Class<?> pageClass, CreationConfig config) {
+        switch (config.getLifecycleStrategy()) {
             case PROTOTYPE:
-                return null;  // 原型模式每次都创建新实例
-                
+                // 原型：每次都新建，不缓存、不参与发布竞争
+                return newInstance(pageClass, config);
             case THREAD_ISOLATED:
-                return threadInstances().get(pageClass);
-                
+                return getOrCreate(threadInstances(), pageClass, config);
             case REQUEST_SCOPED:
-                String requestId = getCurrentRequestId();
-                Map<Class<?>, Object> requestMap = requestScopedInstances.get(requestId);
-                return requestMap != null ? requestMap.get(pageClass) : null;
-                
+                Map<Class<?>, Object> requestMap = requestScopedInstances
+                        .computeIfAbsent(getCurrentRequestId(), k -> new ConcurrentHashMap<>());
+                return getOrCreate(requestMap, pageClass, config);
+            case SINGLETON:
             default:
-                return singleInstances.get(pageClass);
+                return getOrCreate(singleInstances, pageClass, config);
         }
+    }
+
+    /**
+     * 原子「取或建」：命中直接返回；未命中则<b>在 map 操作之外</b>创建，再以 {@link Map#putIfAbsent}
+     * 竞争发布。
+     *
+     * <p><b>为何不用 {@code computeIfAbsent}</b>：创建过程包含「执行创建后钩子」与「注入受管 Page
+     * 供应器」，属用户可扩展代码；放进 {@code ConcurrentHashMap} 的映射函数会在持桶锁时回调外部代码，
+     * 一旦钩子再次调用本工厂（同 key）即触发递归更新（CHM 抛 {@code IllegalStateException}／死锁）。
+     * {@code putIfAbsent} 同样保证「只有一个发布者」，且并发落败者丢弃自己的实例并返回已发布者 ——
+     * 语义满足需要而更安全。
+     *
+     * @param store     目标存储（单例 / 线程隔离 / 请求作用域各自的 map）
+     * @param pageClass PageObject 类型
+     * @param config    创建配置
+     * @return 已发布的实例（并发竞争时可能不是本次创建的那个）
+     */
+    private static Object getOrCreate(Map<Class<?>, Object> store, Class<?> pageClass, CreationConfig config) {
+        Object existing = store.get(pageClass);
+        if (existing != null) {
+            logger.debug("Reusing cached PageObject instance for: {} (strategy: {})",
+                    pageClass.getSimpleName(), config.getLifecycleStrategy());
+            return existing;
+        }
+        Object created = newInstance(pageClass, config);
+        Object winner = store.putIfAbsent(pageClass, created);
+        if (winner != null) {
+            logger.debug("Concurrent creation detected for: {} (strategy: {}) — discarding local instance, "
+                    + "reusing the published one", pageClass.getSimpleName(), config.getLifecycleStrategy());
+            return winner;
+        }
+        logger.debug("Created and published PageObject instance for: {} (strategy: {})",
+                pageClass.getSimpleName(), config.getLifecycleStrategy());
+        return created;
     }
     
     /**
-     * 创建新实例
+     * 创建新实例（<b>不写入任何缓存</b>）：显式 Supplier 优先 → 反射回退；执行创建后钩子；统计创建次数。
+     *
+     * <p>缓存的写入由调用方 {@link #getOrCreate} 以 {@code putIfAbsent} 竞争发布完成 —— 创建与发布分离，
+     * 使创建过程（含用户钩子）不持有 map 的桶锁。
      */
-    private static Object createInstance(Class<?> pageClass, CreationConfig config) throws Exception {
-        // 检查是否有自定义供应商
-        Supplier<Object> customSupplier = config.getCustomSuppliers().get(pageClass);
-        if (customSupplier != null) {
-            Object instance = customSupplier.get();
-            storeInstance(pageClass, instance, config);
-            return instance;
+    private static Object newInstance(Class<?> pageClass, CreationConfig config) {
+        // 1) 全局显式注册（编译期安全，推荐路径，G-3）
+        Supplier<Object> supplier = GLOBAL_SUPPLIERS.get(pageClass);
+        // 2) 本次配置传入的自定义供应商
+        if (supplier == null) {
+            supplier = config.getCustomSuppliers().get(pageClass);
         }
-        
-        // 使用反射创建实例
-        Object instance = pageClass.getDeclaredConstructor().newInstance();
+        Object instance;
+        if (supplier != null) {
+            instance = supplier.get();
+        } else {
+            // 3) 反射回退：仅适用于有无参构造的 Page；缺构造器时给出可操作的清晰报错（G-3）
+            try {
+                instance = pageClass.getDeclaredConstructor().newInstance();
+            } catch (NoSuchMethodException e) {
+                throw new ConfigurationException(
+                        "无法创建 PageObject: " + pageClass.getName() + " —— 缺少可访问的无参构造器。"
+                        + "请为其添加 public 无参构造，或通过 PageObjectFactory.register("
+                        + pageClass.getSimpleName() + ".class, () -> new " + pageClass.getSimpleName()
+                        + "(...)) 显式登记 Supplier（编译期安全）。", e);
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new ConfigurationException(
+                        "无法创建 PageObject: " + pageClass.getName() + " —— 构造器不可访问。"
+                        + "请通过 PageObjectFactory.register(...) 显式登记 Supplier。", e);
+            } catch (java.lang.reflect.InvocationTargetException e) {
+                //  评审：原实现的 throws Exception 会把「构造器内部抛错」原样上抛，最终只看到
+                //  "Failed to create PageObject" 而看不到真实根因 —— 此处显式带上 cause（含类名+消息）。
+                Throwable cause = e.getCause() == null ? e : e.getCause();
+                throw new ConfigurationException(
+                        "无法创建 PageObject: " + pageClass.getName() + " —— 构造器执行抛异常："
+                        + cause.getClass().getSimpleName() + ": " + cause.getMessage(), cause);
+            }
 
-        // 组合式 Page Object（新模型，G1 零继承）：注入受管 Page 惰性供应器，
-        // 使其取得录制装饰（enabled 时）的受管 Page，原生操作自动录制（Layer A）
-        if (instance instanceof ManagedPageAware) {
-            ((ManagedPageAware) instance).setManagedPage(
-                    () -> RecordingPageProxy.wrap(PlaywrightManager.getPage()));
+            // 组合式 Page Object（新模型，G1 零继承）：注入受管 Page 惰性供应器，
+            // 使其取得录制装饰（enabled 时）的受管 Page，原生操作自动录制（Layer A）
+            if (instance instanceof ManagedPageAware) {
+                ((ManagedPageAware) instance).setManagedPage(
+                        () -> RecordingPageProxy.wrap(PlaywrightManager.getPage()));
+            }
         }
 
-        // 存储实例
-        storeInstance(pageClass, instance, config);
-        
-        // 统计创建次数
+        // 执行创建后钩子（仅创建路径执行一次）
+        executePostCreateHooks(instance, config);
+
+        // 统计创建次数（评审：原供应商路径漏计 —— 两条创建路径统一在此计数，统计才可信）
         creationCount.merge(pageClass, 1L, Long::sum);
         totalCreations.incrementAndGet();
-        
+
         return instance;
-    }
-    
-    /**
-     * 存储实例到对应的存储中
-     */
-    private static void storeInstance(Class<?> pageClass, Object instance, CreationConfig config) {
-        LifecycleStrategy strategy = config.getLifecycleStrategy();
-        
-        switch (strategy) {
-            case SINGLETON:
-                singleInstances.put(pageClass, instance);
-                break;
-                
-            case PROTOTYPE:
-                // 原型模式不缓存
-                break;
-                
-            case THREAD_ISOLATED:
-                threadInstances().put(pageClass, instance);
-                break;
-                
-            case REQUEST_SCOPED:
-                String requestId = getCurrentRequestId();
-                Map<Class<?>, Object> requestMap = requestScopedInstances
-                        .computeIfAbsent(requestId, k -> new ConcurrentHashMap<>());
-                requestMap.put(pageClass, instance);
-                break;
-        }
     }
     
     /**
@@ -398,10 +438,24 @@ public class PageObjectFactory {
     }
     
     /**
-     * 获取当前请求ID（简化实现）
+     * 取当前「请求作用域」标识（评审修复 2026-09-17）。
+     *
+     * <p><b>原实现</b>返回 {@code Thread.currentThread().getName()}：线程池复用下「请求作用域」退化为
+     * 「线程作用域」（同一线程上的多个用例共用同一批实例 → 跨用例串扰），且线程改名即等于换作用域。
+     *
+     * <p><b>现实现</b>优先取用例级身份（{@link ScenarioContext#currentScenarioId()}，由框架在用例开始时绑定），
+     * 无绑定（如纯逻辑单测）时才回退到线程身份。作用域因此与<b>用例</b>对齐，并由
+     * {@link #endRequestScope()}（用例收尾调用，见 {@code PlaywrightSerenityBridge.cleanupForScenario}）
+     * 回收，避免实例随用例数累积。
+     *
+     * @return 请求作用域键（{@code scenario:<id>} 或 {@code thread:<tid>}）
      */
     private static String getCurrentRequestId() {
-        return Thread.currentThread().getName();
+        String scenarioId = ScenarioContext.currentScenarioId();
+        if (scenarioId != null && !scenarioId.trim().isEmpty()) {
+            return "scenario:" + scenarioId;
+        }
+        return "thread:" + Thread.currentThread().threadId();
     }
     
     /**

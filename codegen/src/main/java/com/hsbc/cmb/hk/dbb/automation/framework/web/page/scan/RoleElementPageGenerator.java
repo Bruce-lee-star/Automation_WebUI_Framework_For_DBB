@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NlsNameTranslator;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.nls.NlsNameTranslator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.AriaRole;
 import org.slf4j.Logger;
@@ -26,6 +26,17 @@ import java.util.stream.Stream;
  *
  * <p>与 {@code BasePage} 解耦：仅接收 Playwright 的 {@link Page} 或一组 {@link RoleEntry}，
  * 不依赖框架页面基类，因此可作为独立脚手架在任意上下文（测试、main、CI 工具）中调用。
+ *
+ * <h2>产物策略（G-7：入仓约定）</h2>
+ * <ul>
+ *   <li><b>入仓</b>：生成物建议入仓便于评审 / diff，但必须落在<b>独立目录</b>（与手写 Page 分开），
+ *       避免"生成物与手写代码混同"；</li>
+ *   <li><b>marker</b>：每个生成文件首行含 {@link #GENERATED_MARKER}，工具据此判定"可安全再生成"；
+ *       无该标记的文件视为手写，拒绝静默覆盖（除 {@code -Dcodegen.overwrite.force=true}）；</li>
+ *   <li><b>原子写</b>：先写 {@code .java.tmp} 再 move，避免生成失败留下半写文件；</li>
+ *   <li><b>CI 校验</b>：CI 可对生成目录做漂移校验（重新生成后比对无 diff；有 diff 即说明手改了生成物，
+ *       应改模板 / 生成器而非直接编辑产物）。</li>
+ * </ul>
  * 产物为草稿，人工 review 后再合入主干（对齐 PAGEOBJECT_GENERATOR_DESIGN.md §7，注解风格）。
  *
  * <h3>用法</h3>

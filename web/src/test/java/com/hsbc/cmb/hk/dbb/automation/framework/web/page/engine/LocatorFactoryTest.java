@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -82,18 +84,51 @@ public class LocatorFactoryTest {
     }
 
     @Test
-    public void byTestId_buildsMultiAttributeSelector() {
+    public void byTestId_primaryUsesGetByTestIdAndKeepsCompatAttributes() {
         Page page = mock(Page.class);
-        Locator loc = mock(Locator.class);
-        when(page.locator(anyString())).thenReturn(loc);
+        Locator primary = mock(Locator.class);
+        Locator compat = mock(Locator.class);
+        Locator merged = mock(Locator.class);
+        when(page.getByTestId("abc")).thenReturn(primary);
+        when(page.locator(anyString())).thenReturn(compat);
+        when(primary.or(compat)).thenReturn(merged);
         BasePage bp = bpWith(null, page);
 
-        assertEquals(loc, LocatorFactory.byTestId(bp, "abc"));
+        assertEquals(merged, LocatorFactory.byTestId(bp, "abc"));
+        verify(page).getByTestId("abc");
         var captor = forClass(String.class);
         verify(page).locator(captor.capture());
-        assertEquals(
-                "[data-testid=\"abc\"],[data-test-id=\"abc\"],[data-test=\"abc\"],[data-qa=\"abc\"]", 
-                captor.getValue(), "data-testid selector should cover the four common test attributes");
+        assertEquals("[data-test-id=\"abc\"],[data-test=\"abc\"],[data-qa=\"abc\"]",
+                captor.getValue(), "兼容属性应为转义后的 CSS 选择器");
+    }
+
+    @Test
+    public void byTestId_escapesSpecialCharactersToCloseInjectionSurface() {
+        Page page = mock(Page.class);
+        Locator primary = mock(Locator.class);
+        Locator compat = mock(Locator.class);
+        Locator merged = mock(Locator.class);
+        when(page.getByTestId(anyString())).thenReturn(primary);
+        when(page.locator(anyString())).thenReturn(compat);
+        when(primary.or(compat)).thenReturn(merged);
+        BasePage bp = bpWith(null, page);
+
+        // 含双引号与反斜杠的 testId：原裸拼写法会破坏 selector（定位器注入面）
+        String malicious = "a\"b\\c";
+        assertEquals(merged, LocatorFactory.byTestId(bp, malicious));
+        var captor = forClass(String.class);
+        verify(page).locator(captor.capture());
+        String sel = captor.getValue();
+        // 注入面闭合：裸属性值（含未转义引号）不应出现
+        assertFalse(sel.contains("[data-test-id=\"" + malicious + "\"]"),
+                "testId 含特殊字符时不应出现裸属性值（定位器注入面未闭合）");
+        // 转义已发生：双引号 → \"，反斜杠 → \\
+        // （修正原写法：原先两侧是同一表达式，等于只校验了引号，反斜杠从未被断言 —— SpotBugs RpC_REPEATED_CONDITIONAL_TEST）
+        assertTrue(sel.contains("\\\""), "testId 中的双引号应被转义为 \\\"");
+        assertTrue(sel.contains("\\\\"), "testId 中的反斜杠应被转义为 \\\\");
+        // 兼容性：三种历史兼容属性仍被匹配
+        assertTrue(sel.contains("data-test-id") && sel.contains("data-test") && sel.contains("data-qa"),
+                "应保留三种历史兼容测试属性的匹配");
     }
 
     @Test

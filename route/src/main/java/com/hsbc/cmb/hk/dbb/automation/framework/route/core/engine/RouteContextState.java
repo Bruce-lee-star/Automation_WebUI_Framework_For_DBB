@@ -51,6 +51,90 @@ public final class RouteContextState {
     /** 每 context 的引擎实例（值类型 PerContextEngine 已提取为顶层类，故本 Map 可由本类集中持有）。 */
     public static final Map<BrowserContext, PerContextEngine> CONTEXT_ENGINES = new ConcurrentHashMap<>();
 
+    /**
+     * per-context 在途异步任务登记表（2026-09-17 评审新增）。
+     *
+     * <p><b>为什么放在 core</b>：上下文关闭时需要即时取消「属于该 context 的在途任务」（典型场景：
+     * Monitor 的 body 读取重试链 —— 用例跑完后残链仍在续投并让等待方耗尽预算，表现为"卡 timeout"）。
+     * 但 {@code route.core.*} 依 ArchUnit 规则<b>不得</b>依赖 {@code route.handler.*}，故登记表下沉到本类
+     * （core 的跨 Context 状态收口点），由 handler 侧登记、由 {@link RouteEngine#stopContextEngine} 统一取消。
+     *
+     * <p>条目在任务完成（正常/异常/取消）时自动注销；集合空即移除 context 键，避免长期占用。
+     */
+    private static final Map<BrowserContext, Set<java.util.concurrent.CompletableFuture<?>>> PENDING_TASKS =
+            new ConcurrentHashMap<>();
+
+    /**
+     * 登记一条「属于某 context 的在途异步任务」；任务完成（正常/异常/取消）时自动注销。
+     *
+     * @param context 任务所属上下文；{@code null} 表示无归属（不登记）
+     * @param task    可取消的异步任务（如 {@code CompletableFuture}）
+     */
+    public static void registerPendingTask(BrowserContext context, java.util.concurrent.CompletableFuture<?> task) {
+        if (context == null || task == null) {
+            return;
+        }
+        PENDING_TASKS.computeIfAbsent(context, k -> ConcurrentHashMap.newKeySet()).add(task);
+        task.whenComplete((value, error) -> PENDING_TASKS.computeIfPresent(context, (k, set) -> {
+            set.remove(task);
+            return set.isEmpty() ? null : set;
+        }));
+    }
+
+    /**
+     * 取消指定上下文的全部在途异步任务（上下文生命周期收口时调用）。
+     *
+     * @param context 目标上下文；{@code null} 时 no-op
+     * @return 实际被取消的任务数
+     */
+    public static int cancelPendingTasksFor(BrowserContext context) {
+        if (context == null) {
+            return 0;
+        }
+        Set<java.util.concurrent.CompletableFuture<?>> pending = PENDING_TASKS.remove(context);
+        if (pending == null || pending.isEmpty()) {
+            return 0;
+        }
+        int cancelled = 0;
+        for (java.util.concurrent.CompletableFuture<?> task : pending) {
+            if (task.cancel(true)) {
+                cancelled++;
+            }
+        }
+        return cancelled;
+    }
+
+    /** 取消全部上下文在途任务（JVM 收尾用）。 */
+    public static int cancelAllPendingTasks() {
+        int total = 0;
+        for (BrowserContext context : new java.util.ArrayList<>(PENDING_TASKS.keySet())) {
+            total += cancelPendingTasksFor(context);
+        }
+        return total;
+    }
+
+    /**
+     * 强键注册表归零守卫（C-11）：将指定 context 从所有以 {@code BrowserContext} 为强引用键的状态表中移除，
+     * 并取消其全部在途异步任务，确保上下文关闭后强键表不残留该 context 的强引用
+     * （防已关闭 context 被长期持有导致内存泄漏与跨用例串扰）。
+     *
+     * <p>幂等（重复调用无副作用），供 {@link #cleanupClosedContext(BrowserContext)} 在上下文收口末段调用，
+     * 作为「强键表归零」的权威兜底：无论各子清理路径（路由层 / 引擎层 / MonitorSession）是否各自执行，
+     * 此处统一清零，杜绝新增强键表时遗漏清理导致泄漏的回归。
+     *
+     * @param context 目标上下文；{@code null} 时 no-op
+     */
+    public static void removeContextFromAllRegistries(BrowserContext context) {
+        if (context == null) {
+            return;
+        }
+        CONTEXT_RULES_BY_CONTEXT.remove(context);
+        DISPATCHED_ROUTES.remove(context);
+        STOPPED_CAPS.remove(context);
+        CONTEXT_ENGINES.remove(context);
+        cancelPendingTasksFor(context);
+    }
+
     private RouteContextState() {
     }
 

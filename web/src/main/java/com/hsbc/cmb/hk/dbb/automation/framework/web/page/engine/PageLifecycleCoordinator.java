@@ -19,8 +19,8 @@ import java.util.List;
  * 编译期即无法访问这些 seam，杜绝误用。其余逻辑仅依赖 {@link BasePage} 公开 API
  * （{@code getContext} / {@code getPage} / {@code getPageRaw} / {@code ensureContextValid} 等），
  * 行为零回归；公开 API 不变（所有编排入口均为 additive 的静态委派）。
- * <p>与既有共享 Browser 模式（T3-2 扩展）兼容：本编排逻辑只切换/关闭 Page，不关闭共享 Browser
- * （由 {@code cleanupAll()} 收口），避免在共享 Browser 场景下误杀整个会话。
+ * <p>本编排逻辑只切换/关闭 Page，<b>不关闭 Browser</b>（Browser 的关闭统一由 {@code cleanupAll()} 收口），
+ * 避免误杀本线程的整个会话。
  */
 public final class PageLifecycleCoordinator {
 

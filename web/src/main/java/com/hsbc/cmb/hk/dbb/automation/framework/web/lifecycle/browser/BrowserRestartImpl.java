@@ -264,7 +264,7 @@ public final class BrowserRestartImpl implements BrowserRestart {
                 }
             }
             VerboseLogging.logInfoIfVerbose(logger,
-                    "[shared-browser] Forcibly rebuilding shared browser for config: {}", configId);
+                    "[browser-rebuild] Forcibly rebuilding this thread's browser for config: {}", configId);
             PlaywrightRuntime.instance().browserStartup.initializeBrowser(configId);
             // W-4：同 rebuildBrowserIfDisconnected，重建后恢复登录态/storageState。
             restoreStorageStateFlag();
@@ -284,11 +284,11 @@ public final class BrowserRestartImpl implements BrowserRestart {
             if (custom.getStorageState() != null || custom.getStorageStatePath() != null) {
                 custom.enableCustomOptions();
                 VerboseLogging.logInfoIfVerbose(logger,
-                        "[shared-browser] storageState flag restored after rebuild; recreated context will reapply login state");
+                        "[browser-rebuild] storageState flag restored after rebuild; recreated context will reapply login state");
             }
         } catch (Throwable ignore) {
             // 恢复标志为韧性增强，任何异常不应阻断重建流程
-            logger.debug("[shared-browser] restoreStorageStateFlag skipped: {}", ignore.toString());
+            logger.debug("[browser-rebuild] restoreStorageStateFlag skipped: {}", ignore.toString());
         }
     }
 

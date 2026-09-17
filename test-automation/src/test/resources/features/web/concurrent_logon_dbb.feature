@@ -1,4 +1,4 @@
-@concurrent-logon
+@regression @web @concurrent-logon
 Feature: Concurrent logon DBB - SSO 感知并发（框架自建并发，非 Serenity 并行）
 
   # 并发由框架层 ConcurrentScenarioExecutor（web 框架）在线程池真正并发驱动，业务层零并发代码。

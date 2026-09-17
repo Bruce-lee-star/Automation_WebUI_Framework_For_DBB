@@ -19,4 +19,4 @@ spring:
 logging:
   level:
     com.example.demo: DEBUG
-    com.hsbc.cmb.hk.dbb.automation.framework.web.route: TRACE
+    com.hsbc.cmb.hk.dbb.automation.framework.route: TRACE

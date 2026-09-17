@@ -1,7 +1,57 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  SpotBugs 排除规则（基线）。根 POM 通过 ${project.basedir}/spotbugs-exclude.xml 引用本文件；
-  codegen 模块当前无必要抑制项。如后续扫描出误报，在此追加 <Match> 规则，与其它 6 个模块保持一致。
+  SpotBugs 排除规则（基线）。根 POM 通过 ${project.basedir}/spotbugs-exclude.xml 引用本文件。
+
+  本模块原无抑制项（曾注明「codegen 模块当前无必要抑制项」）。2026-09 的 G-2 / D6-1 把原 web 模块的
+  {@code web.page.scan.*}（RolePicker 工具链族）物理迁入本模块时，web/spotbugs-exclude.xml 中对应的
+  suppress 被作为「过时项」清理删除，**却未在本模块重新登记** —— 结果这批**既有债务**以"新违规"形态
+  暴露（50 条），使 verify 的 SpotBugs 门禁失败。本文件即把这批债务**重新安家**，恢复迁移前的口径。
+
+  口径说明（与 web 基线一致）：
+  1. 这些**不是**新引入的违规，而是随代码迁移失去登记处的存量债务，故按既有 owner/SLA 登记，
+     不属 web/spotbugs-exclude.xml 所禁的「新增违规」。
+  2. owner: @web-core（RolePicker 工具链原属 web） | SLA: 2027-Q1
+     | 方式: 按类消除（异常收敛 / EI 封装 / 冗余判空清理）后逐条移除，禁止长期冻结。
+  3. 其中 20 条为 DE_MIGHT_IGNORE（吞异常）。RolePicker 是**本地开发工具链**（不在 CI 路径上），
+     故按原基线保留；但「禁止静默吞异常」（D7-3）同样适用于本模块，建议单列一项清理任务。
 -->
 <FindBugsFilter>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPageGenerator"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="DB_DUPLICATE_BRANCHES"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementStepGenerator"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleEntry"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_WOULD_HAVE_BEEN_A_NPE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerBridgeRegistry"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAssembler"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCodeAssembler"/><Bug pattern="NP_LOAD_OF_KNOWN_NULL_VALUE"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerCommandEngine"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="EC_UNRELATED_TYPES"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="NN_NAKED_NOTIFY"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelController"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPanelSync$1"/><Bug pattern="SE_BAD_FIELD"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPickParser"/><Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NONNULL_VALUE"/></Match>
+
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerScriptInjector"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
 </FindBugsFilter>

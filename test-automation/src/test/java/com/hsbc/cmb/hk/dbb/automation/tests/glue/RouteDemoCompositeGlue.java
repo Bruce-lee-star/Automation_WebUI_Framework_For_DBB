@@ -1,9 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.CleanStateRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.RequiresCleanState;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.StateResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.tests.steps.RouteDemoCompositeSteps;
-import io.cucumber.java.After;
-import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import net.serenitybdd.annotations.Steps;
 
@@ -21,22 +22,24 @@ import net.serenitybdd.annotations.Steps;
  * 运行：mvn verify -Dcucumber.filter.tags=@route-composite
  */
 @AutoBrowser(verbose = true)
+@RequiresCleanState({"route-composite-demo-data", "route-composite-route-rules"})
 public class RouteDemoCompositeGlue {
+
+    // B-6：原手写 @Before 重置 / @After 清理改由框架 CleanStateHooks 统一驱动
+    //      （@Before 复位 + @After 复位并断言无残留）；复位逻辑集中于 StateResolver，不再散落 glue 方法体。
+    static {
+        CleanStateRegistry.register(new StateResolver() {
+            @Override public String name() { return "route-composite-demo-data"; }
+            @Override public void reset() { new RouteDemoCompositeSteps().resetDemoData(); }
+        });
+        CleanStateRegistry.register(new StateResolver() {
+            @Override public String name() { return "route-composite-route-rules"; }
+            @Override public void reset() { new RouteDemoCompositeSteps().cleanup(); }
+        });
+    }
 
     @Steps
     private RouteDemoCompositeSteps steps;
-
-    /** 每个 Scenario 前重置后端数据，避免上个 Scenario 的写操作泄漏。 */
-    @Before
-    public void beforeScenario() {
-        steps.resetDemoData();
-    }
-
-    /** 每个 Scenario 后注销规则并释放采集上下文，保证资源 / 线程 / 状态不残留。 */
-    @After
-    public void afterScenario() {
-        steps.cleanup();
-    }
 
     // ── A. 单层复合 ──
 

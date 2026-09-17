@@ -112,13 +112,13 @@ public class SanitizingThrowableConverterTest {
      */
     @Test
     public void endToEndExOutputContainsNoPlaintextSecret() {
-        String marker = "throwable-e2e-" + System.nanoTime();
+        String marker = TestLogCapture.newMarker("throwable-e2e-");
         try (TestLogCapture capture =
                      TestLogCapture.of(SanitizingThrowableConverterTest.class, "%msg | %ex%n")) {
             capture.error(marker, new RuntimeException("auth failed: password=" + SECRET));
             String content = capture.content();
 
-            assertTrue(content.contains(marker), "落盘日志中应能找到标记行");
+            assertTrue(content.contains(marker), "落盘日志中应能找到标记行；实际内容=" + content);
             assertFalse(content.contains(SECRET), "落盘异常栈绝不能出现明文密钥（%ex 出口强制脱敏）");
         }
     }

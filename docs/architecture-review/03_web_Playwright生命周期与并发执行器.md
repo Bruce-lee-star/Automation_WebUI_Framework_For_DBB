@@ -118,6 +118,19 @@ TestContextHolder (per-thread)
 | `PlaywrightContextManager.java:226-232` | Firefox 超时 45000 / 1.5x |
 | `PlaywrightContextManager.java:268` | 退避 2000ms |
 
+### 2.10 监听可观测性 / 上传解析（设计收敛，已闭环）
+
+> 本轮（2026-09-16）对「页面交互事件可观测性」与「文件上传解析」两项做的框架设计加固，与本文 §2.8 监听器注册同源；
+> 全部已随代码入库并补测试，**不引入新配置键、无硬编码默认目录**，呼应审计项 1/4/6/7。原拟 5 项配置键
+> （`playwright.page.dialog.policy` / `fileChooser.*` / `navigation.trail.max`）+ 导航轨迹硬编码常量 `NAV_TRAIL_MAX=30`
+> 已按用户反馈「配置过多 / 不要硬编码」全部移除。
+
+| 编号 | 条目 | 状态 | 说明 |
+|---|---|---|---|
+| LO-1 | 页面交互事件可观测性 `PageInteractionMonitor`：导航轨迹（`onFrameNavigated`）+ 未受管弹窗（`onPopup`）两类纯诊断监听 | 已闭环 | 与诊断类 `PageEventMonitor` 同族同接缝（`context.onPage`）；不注册 `onDialog`/`onFileChooser`，交互处置交回业务既有方法（`BasePage.acceptAlert/dismissAlert`、元素级 `setInputFiles`） |
+| LO-2 | 文件上传解析 `PageElement.uploadFile`：resources（classpath）首选 → 用户指定路径兜底 → 都不存在抛 `ElementOperationException` | 已闭环 | 逐文件 `Files.exists` 校验；跨系统分隔符归一化；多文件 varargs → `Locator.setInputFiles(Path[])` |
+| LO-3 | `PageInteractionMonitor.resetForThread()`：scenario 结束显式清导航轨迹/未受管弹窗，防 worker 线程复用跨用例堆积 | 已闭环 | 接缝落在 `PlaywrightListener.fireAfterScenario` finally；C-1 用例级隔离覆盖主路径，本方法为防御性兜底 |
+
 ---
 
 ## 三、优势
@@ -278,6 +291,63 @@ playwright.crash.signatures = [
 ```
 
 ---
+
+### 5.7 并发 / 线程 / 资源清理专项评审（首轮，2026-09-17）
+
+沿用 route 模块的评审方法（并发原语 → 线程池 → 注册表键强度 → 关闭链路 → 加守卫），对 web 的并发/资源面做首轮核对。
+
+#### 已核对通过（无需改动）
+
+| 域 | 结论 |
+|---|---|
+| 线程池 | 3 处静态/半静态池全部为守护线程并受管：`ElementDiagnosticsCollector.DIAGNOSTIC_EXECUTOR`（8 线程 + **有界**队列 16 + `CallerRunsPolicy`，已登记 `ShutdownCoordinator`）、`PlaywrightContextManager.TRACE_EXECUTOR`（单线程，已登记）、`ConcurrentContextExecutor` 的 per-run 池（`finally` 中 `shutdown` → `awaitTermination` → `shutdownNow`）✓ |
+| ThreadLocal 收口 | 大规模迁移已完成（T3-1）：`BrowserOverrideManager`/`SessionManager`/`BrowserStackManager`/`AxeCoreScanner`/`PageObjectFactory` 的 static ThreadLocal 均改为 `TestContextHolder` 的 `ContextKey`，清理用 `.remove()` 而非仅置空 → 线程池复用不残留 ✓；`FrameworkState.lastException` 亦在 `initialize/stop/cleanup` 中 `remove()` ✓ |
+| 单飞登录协调 | `SessionManager.loginGuards`：`putIfAbsent` 竞争 + follower 有界等待；leader 成功/失败/超时/`clearSession` **四条**路径均释放守卫（`completeLoginGuard`），`resetFeatureSession` 再兜底清理 → Map 条目有界、无悬空等待 ✓ |
+| 外部进程 | `BrowserStackLocalManager`：隧道进程 `destroy()` → `waitFor(5s)` → `destroyForcibly()`，reader 线程 daemon + `join(500)`/中断收尾 ✓；`BrowserStartupImpl` 启动失败路径显式关闭已创建的 Playwright 实例（避免子进程泄漏）✓ |
+| 弱键/上限 | `PageContextState.PAGE_SWITCH_LOCKS` 以 `WeakHashMap` 按 context 隔离锁 ✓；`ConcurrencyGate.GATES` 有 `MAX_GATES=4096` + 空闲闸门 best-effort 淘汰 ✓ |
+
+#### 发现并修复（3 处真缺陷）
+
+| # | 发现 | 后果 | 处置 |
+|---|---|---|---|
+| 1 | `ConcurrentContextExecutor.runAll` 的 `RUNNING.set(true)` 位于 **try 之外、池构造之前** | 池构造抛异常（如并发度配置为负 → `ThreadPoolExecutor` 构造失败）时 `RUNNING` **永久停在 true** → `PlaywrightManager.cleanupAll` 永远拒绝清理（清理门控卡死）→ **孤儿浏览器进程残留**，且后续所有清理被误判为"并发中" | 池创建与窗口标记一并移入 `try`，`finally` 中**判空**关闭 → 异常路径同样复位标记并归还线程 |
+| 3 | `ConcurrencyGate` 闸门淘汰的**串行化缺口**（原"仍待复核项 1"，第二轮已修） | 淘汰判据「许可是否全空闲」无法区分"刚取到、尚未占许可"的闸门：该窗口内被淘汰后，另一线程会对同一 key **新建**闸门并立即进入 → **同一身份键并发进入**（SSO 分区串行化破裂）；且 `release(key)` 按 key 重新查表，条目被替换后会把许可**错记**到新闸门上（许可虚增，进一步放宽互斥） | 引入「在途持有计数」（`GateEntry`）：取用+计数递增在**同一次 `compute`** 内完成，释放在 `computeIfPresent` 内「归还 + 递减，归零即移除条目」→ 在途闸门不可能被误判为空闲、释放永不错记；条目随最后一个持有者释放即移除，`MAX_GATES=4096` 与淘汰机制**整体删除**（Map 大小 == 在途身份数，天然有界）。新增 3 例守卫（条目仅在持有期存在 / 5000 身份不残留 / 持有期 churn 下仍串行化） |
+
+> 另修正：`LifecycleLockMediator` 的类文档原称 `CONTEXT_LOCK`/`PAGE_LOCK`"**始终 per-thread**"，而实现是**进程级** `static final` 单例（文档与实现不符，已按实纠正并写入该类 javadoc）。核对：全部调用点操作的都是本线程的 Context/Page（自 `TestContextHolder` 读），故进程级锁在正确性上**非必需**，代价是并行下 Context/Page 创建/关闭**全局串行**（吞吐税）；跨线程关闭路径（`BrowserCleanupImpl` 遍历 `browser.contexts()`）本就**不**经过该锁，而是由 `ConcurrentContextExecutor.isConcurrentModeActive()` 断言拦在并发窗口之外 —— 因此"改 per-thread"属**待决策项**（可回收吞吐税，但需先确认无其它跨线程依赖）。
+>
+> **共享 Browser 收口（2026-09-17，用户指示 #1）**：先确认「共享 Browser 模式」**已彻底移除**（`PLAYWRIGHT_SHARED_BROWSER_ENABLED`、`enableSharedBrowserMode`/`isSharedBrowserMode`、`keyFor` 的 `shared:` 分支均已不存在；`keyFor` 恒为 `"<threadId>:<configId>"`），根因即 Playwright for Java 非线程安全。但残留三处**会误导**的痕迹，已清理：① `WebFrameworkConfig` 中该配置项的**无主 javadoc 块**（仍在文档层面暗示"开关存在"）；② `BrowserRestartImpl` 的 `[shared-browser]` 日志前缀 → `[browser-rebuild]`，并把措辞改为"本线程 Browser"（否则排障者会去找一个不存在的共享实例）；③ `ContextTask`/`PageLifecycleCoordinator`/`ConcurrentContextExecutor`/`ConcurrentCaseAction`/`BrowserRegistryImpl` 共 6 处"不关闭共享 Browser""共享模式下…"过期注释。
+> **新增守卫** `BrowserInstanceKeyInvariantTest`（3 例）：键必须以本线程 `threadId` 为前缀且**不含** `shared`、不同线程的键必须不同（即不可能共享同一 Browser）、空白/畸形 configId fail-fast —— 把「每线程独立 Browser」从口头约定变成可执行断言，防止后人以"省内存"为由让共享模式回归。
+>
+> **方案 A 落地：trace 按 scenario 分段（2026-09-17，用户指示 #3 前半）**。先核实 trace 的真实区间 = **Context 存活期**（起点在 `createContext`、终点在 `closeContext`），而 context 存活期由 `serenity.playwright.restart.browser.for.each` 决定 —— **`feature` 模式下 context 跨用例复用 ⇒ 一个 trace 覆盖多个 case**，而文件名/报告标注取的是"关闭时刻"的 scenario（该 feature 最后一个用例）→ **名实不符**；且文件名只带**结束**时间戳、scenarioId 取自 MDC（收尾/异常路径可能已解绑 → 退化为 `unknown` 或错挂他例）。改用 Playwright **原生分段录制** `startChunk()/stopChunk(path)`（本仓 1.62.0 支持，协议以官方 javadoc 为准）在**用例边界**切段：
+> - 新增 `ScenarioTraceRecorder`：`onContextCreated`（`start` → chunk #0）/ `onScenarioStart`（续段 `startChunk`）/ `onScenarioEnd`（导出 `trace-<id>-<start>-<end>-PASS|FAIL.zip` + 挂报告，报告内容含**覆盖时间窗**）/ `onContextClosing`（未导出 chunk 兜底为 `ONCLOSE` 后再 `stop`）；**scenarioId 显式传参**（不依赖 MDC）；导出走专属受管线程池 + 超时，**超时/失败一律删除残缺文件**（坏 zip 不挂进报告）。
+> - 接线：`PlaywrightContextManager`（create/close 委托给录制器）+ `PlaywrightSerenityBridge.cleanupForScenario`（scenario 共同收口，覆盖 scenario/feature 两条路径）+ `PlaywrightListener`（`testStarted` 开段、`testFinished` 带真实 pass/fail 收段）；两处收段**幂等**，先到者生效。逃生开关 `playwright.context.trace.chunk.per.scenario=false` 可回退整段录制。
+>
+> **产物落盘治理（#3 后半，企业级）**：新增 `ArtifactRetention`（磁盘总上限 / 文件数上限 / 保留期，配置 `playwright.artifacts.retention.*`，默认覆盖 `traces` + 两类截图目录）。**铁律：只清理 mtime 早于本次 run 起点的遗留产物** —— trace 已按用例切分，误删即删掉用例证据；候选耗尽仍超限时**只 WARN 不越界删**（宁可超限也不删当前证据）。接入点：每次 trace 导出后（60s 节流）+ 提供 `pruneNow()` 供收尾调用。
+>
+> **新增守卫**：`ArtifactRetentionTest`（6 例：本次 run 永不删 / 最旧优先 / 容量上限 / 保留期 / 目录缺失 no-op / 关闭上限不删）+ `ScenarioTraceNamingTest`（5 例：命名含 id+起止+结果 / `ONCLOSE` 可区分 / `UNKNOWN` / sanitize / 截断）。
+
+#### 仍待复核（按优先级）
+
+1. **浏览器生命周期纵深复核（未覆盖）**：`PlaywrightManager`（per-thread Page/Context 与共享 Browser 的边界）、`BrowserRestartImpl`/`BrowserStartupImpl`/`BrowserCleanupImpl` 三者的 `BROWSER_LOCK` 锁序与调用顺序、`PlaywrightRuntime.state` 注册表（键强度与退役清理）。
+2. **静态实例表的复合操作**：`PageObjectFactory.singleInstances` 等虽在 `clearAll` 清理，但并行下"检查-创建"复合语义未加锁，尚未逐条核对。
+3. **Trace / 截图落盘**：`TRACE_EXECUTOR` 已受管，但异常路径下 trace 文件完整性（`context.close()` 与 `tracing().stop()` 时序）与磁盘占用上限未核对。
+4. **待决策：Context/Page 锁是否改 per-thread**（见上方"另修正"）——进程级锁在并行下是吞吐税，改造成本与跨线程依赖需先确认。
+5. **跨模块**：`MonitorHandler` 单线程 `bodyReadScheduler` 被所有 context 共享（route 侧发现），事件线程 `future.get(timeout)` 等待重试链，并行下为潜在串行瓶颈（有超时上限，非缺陷）。
+
+**两轮总评**：web 的基础设施**明显强于预期** —— 线程池全部守护+受管+有界、ThreadLocal 已系统性收口到 `TestContextHolder` 且清理彻底、单飞协调四路径释放、外部进程有 destroy 链、多处弱键与上限。已修的 3 处都是**边界路径**（异常退路把清理门控卡死 / 双轨残留复活 / 淘汰判据在窗口内失效），与 route 专项评审的结论同型：**问题集中在"异常、窗口与收尾路径"，而非正常路径**。第二轮另纠正了一处**文档与实现不符**（Context/Page 锁自称 per-thread、实为进程级），并把结论固化到该类 javadoc，避免后续基于错误前提做优化。
+
+### 5.8 PageObjectFactory 作用域与发布语义专项评审（2026-09-17，用户指示 #2）
+
+**先回答"能否适配 Playwright 官方 PageFactory"：不适配 —— 它不存在。** Playwright for Java 是命令式 `Page`/`Locator` 模型，无注解驱动的页面工厂；Selenium 的 `PageFactory`（在 `selenium-support`，A-9 刻意保留）属 WebDriver 体系，连驱动对象类型都不匹配，适配等于引入第二套 driver 语义。故按既定路线**优化现有 `PageObjectFactory`**，修掉 4 个真实问题：
+
+| # | 问题 | 后果 | 处置 |
+|---|---|---|---|
+| 1 | `getPage` 是「读取 → 为 null 则创建 → 存回」的**检查-创建竞态** | 并发首调用各自创建并顺序覆盖 → 同一时刻**不同调用方拿到不同实例**（身份不一致；对持有 Page/Context 引用的对象尤其危险），且后来者静默覆盖前者 | 改为「读 → 创建 → `putIfAbsent` 竞争发布 → 落败者丢弃本地实例并返回已发布者」；刻意**不用 `computeIfAbsent`**（创建含用户钩子，置于桶锁内会触发 CHM 递归更新／死锁）。创建与发布分离后，钩子只在发布者路径执行一次 |
+| 2 | 请求作用域键 = `Thread.currentThread().getName()` | 线程池复用下「请求作用域」退化为「线程作用域」→ **跨用例复用同一批实例**；线程改名即换作用域 | 改用例级身份 `ScenarioContext.currentScenarioId()`（无绑定回退 `thread:<tid>`）；并在用例收尾（`PlaywrightSerenityBridge.cleanupForScenario`）调用 `endRequestScope()` 回收 —— 否则实例随用例数累积（它们持有 Page/Context 引用） |
+| 3 | 供应商路径**漏计创建次数**（仅反射路径计数） | `getStatistics()` 的 Total Creations 失真，排障时误判"未创建" | 两条创建路径统一在 `newInstance` 计数 |
+| 4 | 构造器内部抛错经原 `throws Exception` 原样上抛 | 只看到 "Failed to create PageObject"，**丢失根因** | 显式捕获 `InvocationTargetException`，报错带 cause 类型+消息（G-3 可操作报错风格） |
+
+**新增守卫** `PageObjectFactoryScopeTest`（5 例）：8 线程并发首调用必须发布**同一**实例；请求作用域**随用例变化**（旧实现按线程名会错误复用上一用例实例）；`endRequestScope()` 后实例计数必须回落；原型每次新建；线程隔离在并发下仍保持隔离。
 
 ## 六、结论
 

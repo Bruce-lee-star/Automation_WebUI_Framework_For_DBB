@@ -66,14 +66,43 @@ public class SanitizingMessageConverterTest {
      */
     @Test
     public void endToEndLogFileContainsNoPlaintextSecret() throws Exception {
-        String marker = "sanitize-e2e-" + System.nanoTime();
+        String marker = TestLogCapture.newMarker("sanitize-e2e-");
         try (TestLogCapture capture =
                      TestLogCapture.of(SanitizingMessageConverterTest.class, "%msg%n")) {
             capture.info(marker + "\npassword=" + SECRET);
             String content = capture.content();
 
-            assertTrue(content.contains(marker), "落盘日志中应能找到标记行");
+            assertTrue(content.contains(marker), "落盘日志中应能找到标记行；实际内容=" + content);
             assertFalse(content.contains(SECRET), "落盘日志绝不能出现明文密钥（出口强制脱敏）");
+        }
+    }
+
+    /**
+     * 回归：{@link TestLogCapture#newMarker} 生成的标记必须对出口脱敏<b>免疫</b>。
+     *
+     * <p>背景（实测根因）：早期端到端标记用 {@code "e2e-" + System.nanoTime()}，而 PAN 值级识别器候选
+     * 正则为 {@code \b\d(?:[ \-]?\d){12,18}\b}（13~19 位数字），命中后由 Luhn 校验裁定。长 uptime 的 JVM 中
+     * {@code nanoTime()} 恰为 19 位数字，约 1/10 概率通过 Luhn → 标记被整体遮蔽为 {@code ***[REDACTED]}
+     * → 端到端断言偶发「日志中找不到标记行」。{@code newMarker} 末尾补字母破除词边界，从根本上免疫。
+     */
+    @Test
+    public void markerIsImmuneToValueRecognizers() {
+        assertEquals("e2e-1758096000123456789z",
+                SensitiveDataSanitizer.sanitizeFreeText("e2e-1758096000123456789z"),
+                "末尾字母应破除 \\b\\d{13,19}\\b 边界，标记不得被 PAN 识别器整体遮蔽");
+        assertEquals("e2e-4111111111111111z",
+                SensitiveDataSanitizer.sanitizeFreeText("e2e-4111111111111111z"),
+                "即便数字串本身 Luhn 合法，末尾字母也应使其不被整体遮蔽");
+
+        String marker = TestLogCapture.newMarker("e2e-");
+        assertEquals(marker, SensitiveDataSanitizer.sanitizeFreeText(marker),
+                "newMarker 生成的标记必须原样通过出口脱敏");
+
+        // 多样本：nanoTime 数字串各不相同，等价于覆盖「Luhn 恰好通过」的运气空间（原缺陷约 1/10 命中率）
+        for (int i = 0; i < 200; i++) {
+            String sample = TestLogCapture.newMarker("loop-" + i + "-");
+            assertEquals(sample, SensitiveDataSanitizer.sanitizeFreeText(sample),
+                    "newMarker 标记必须始终免疫出口脱敏（样本 " + i + "）");
         }
     }
 

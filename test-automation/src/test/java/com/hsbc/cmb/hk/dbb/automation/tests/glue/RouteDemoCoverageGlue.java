@@ -1,9 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.CleanStateRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.RequiresCleanState;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.StateResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.tests.steps.RouteDemoCoverageSteps;
-import io.cucumber.java.After;
-import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import net.serenitybdd.annotations.Steps;
 
@@ -16,24 +17,20 @@ import net.serenitybdd.annotations.Steps;
  * 运行：mvn verify -Dcucumber.filter.tags=@route-coverage
  */
 @AutoBrowser(verbose = true)
+@RequiresCleanState({"route-coverage-route-rules"})
 public class RouteDemoCoverageGlue {
+
+    // B-6：原手写 @Before 预清理 / @After 清理改由框架 CleanStateHooks 统一驱动
+    //      （复位前后各一次、幂等，保证即便上一 Scenario 收尾异常也不继承残留路由 / 采集状态）。
+    static {
+        CleanStateRegistry.register(new StateResolver() {
+            @Override public String name() { return "route-coverage-route-rules"; }
+            @Override public void reset() { new RouteDemoCoverageSteps().cleanup(); }
+        });
+    }
 
     @Steps
     private RouteDemoCoverageSteps steps;
-
-    /**
-     * feature 模式下 context 不重建 —— Scenario 开始前先预清理一次，保证即便上一个 Scenario 的 @After
-     * 因异常未执行，本 Scenario 也不会继承到残留路由 / 采集状态。
-     */
-    @Before
-    public void beforeScenario() {
-        steps.cleanup();
-    }
-
-    @After
-    public void afterScenario() {
-        steps.cleanup();
-    }
 
     // ── Modify ──
     @Given("route coverage: modify setRequestHeaders map")

@@ -177,8 +177,9 @@
                     <useFile>false</useFile>
                     <rerunFailingTestsCount>${rerunFailingTestsCount}</rerunFailingTestsCount>
                     <forkCount>1</forkCount>
-                    <!-- Cucumber 主流程整体超时兜底（防 Playwright 导航/采集阻塞拖垮整轮） -->
-                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
+                    <!-- Cucumber 主流程整体超时兜底（防 Playwright 导航/采集阻塞拖垮整轮）
+                         X-9：提为可配置属性（默认 1800s），CI 可 -DforkedProcessTimeoutInSeconds=N 覆盖 -->
+                    <forkedProcessTimeoutInSeconds>${forkedProcessTimeoutInSeconds}</forkedProcessTimeoutInSeconds>
                     <includes>
                         <include>**/*IT.java</include>
                         <include>**/integration/**/*Test.java</include>
@@ -194,6 +195,10 @@
                     <systemPropertyVariables>
                         <serenity.outputDirectory>${project.build.directory}/site/serenity</serenity.outputDirectory>
                         <cucumber.filter.tags>${tags}</cucumber.filter.tags>
+                        <!-- D-4：环境切换经 -Psit1/sit2/sit3 profile 下发（默认空，不注入 environment 标量键） -->
+                        <env>${env}</env>
+                        <env.code>${env.code}</env.code>
+                        <base.url>${base.url}</base.url>
                     </systemPropertyVariables>
                     <failIfNoTests>false</failIfNoTests>
                     <reportsDirectory>${project.build.directory}/failsafe-reports</reportsDirectory>
@@ -272,7 +277,11 @@
                             <arguments>
                                 <argument>${project.build.directory}/site/serenity</argument>
                             </arguments>
-                            <classpathScope>compile</classpathScope>
+                            <!-- 必须用 test 作用域：SummaryReportGenerator 依赖 net.thucydides.model.*（serenity-model），
+                                 而本模块把 serenity-model 显式声明为 <scope>test</scope>（ENG-P0-2）——Maven 的「最近声明优先」
+                                 会让它不再以 compile 作用域传递，故 classpathScope=compile 时运行期 NoClassDefFoundError
+                                 （SystemEnvironmentVariables），导致 mvn verify（CI/E-6）在汇总报告处必然失败。 -->
+                            <classpathScope>test</classpathScope>
                         </configuration>
                     </execution>
                 </executions>

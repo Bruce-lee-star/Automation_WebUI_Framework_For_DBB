@@ -41,6 +41,14 @@ public class ApiFrameworkConfig {
     public static final ConfigKey HTTP_SOCKET_TIMEOUT =
             new ConfigKey("http.socket.timeout", "30000", "HTTP socket 超时（毫秒）");
 
+    /** HTTP 连接池最大总连接数（P-3：连接池治理，RestAssured 默认每路由仅 2 连接）。 */
+    public static final ConfigKey HTTP_MAX_CONNECTIONS_TOTAL =
+            new ConfigKey("http.connection.pool.max-total", "200", "HTTP 连接池最大总连接数");
+
+    /** HTTP 连接池每路由（目标 host:port）最大连接数（P-3：连接池治理）。 */
+    public static final ConfigKey HTTP_MAX_CONNECTIONS_PER_ROUTE =
+            new ConfigKey("http.connection.pool.max-per-route", "20", "HTTP 连接池每路由最大连接数");
+
     /** 是否放宽 SSL 校验（默认 false，安全优先）。 */
     public static final ConfigKey HTTP_SSL_RELAX_VALIDATION =
             new ConfigKey("http.ssl.relax-validation", "false", "是否放宽 SSL 校验（默认 false，安全优先）");
@@ -166,6 +174,26 @@ public class ApiFrameworkConfig {
             return config().getInt(HTTP_SOCKET_TIMEOUT_FALLBACK.key());
         }
         return Integer.parseInt(HTTP_SOCKET_TIMEOUT.defaultValue());
+    }
+
+    /**
+     * 获取 HTTP 连接池最大总连接数（P-3）。
+     * @return 最大总连接数（默认：200）
+     */
+    public static int getMaxConnectionsTotal() {
+        return config().hasPath(HTTP_MAX_CONNECTIONS_TOTAL.key())
+                ? config().getInt(HTTP_MAX_CONNECTIONS_TOTAL.key())
+                : Integer.parseInt(HTTP_MAX_CONNECTIONS_TOTAL.defaultValue());
+    }
+
+    /**
+     * 获取 HTTP 连接池每路由最大连接数（P-3）。
+     * @return 每路由最大连接数（默认：20）
+     */
+    public static int getMaxConnectionsPerRoute() {
+        return config().hasPath(HTTP_MAX_CONNECTIONS_PER_ROUTE.key())
+                ? config().getInt(HTTP_MAX_CONNECTIONS_PER_ROUTE.key())
+                : Integer.parseInt(HTTP_MAX_CONNECTIONS_PER_ROUTE.defaultValue());
     }
 
     /**

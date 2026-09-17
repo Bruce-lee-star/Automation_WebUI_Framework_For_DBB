@@ -1,4 +1,4 @@
-@e2e-sandbox
+@smoke @web @e2e-sandbox
 Feature: E2E real browser sandbox
   自包含的 E2E 真实浏览器验证流程。
   页面由框架 setContent 注入本地静态 HTML，不依赖外网 / DBB 环境 / REST 接口，

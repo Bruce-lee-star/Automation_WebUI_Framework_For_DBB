@@ -18,6 +18,6 @@ public class RestPutJob extends AbstractRestJob {
 
     @Override
     public void perform(final Entity entity) {
-        execute(entity, spec -> spec.when().put(entity.getEndpoint()).then());
+        execute(entity, spec -> spec.when().put(entity.getEndpoint()).then(), true);
     }
 }

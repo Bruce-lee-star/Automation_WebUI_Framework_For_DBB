@@ -22,7 +22,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 public class RouteMonitorSessionTest {
 
     private final Object ctx = new Object();
-    private final String pattern = "/api/order";
+    /** 固定 pattern 常量（SpotBugs SS_SHOULD_BE_STATIC：每个实例持有一份相同常量无意义）。 */
+    private static final String pattern = "/api/order";
 
     @AfterEach
     public void tearDown() {

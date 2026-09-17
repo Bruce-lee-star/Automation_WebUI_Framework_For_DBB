@@ -2,6 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.client.rest;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.security.SecurityAudit;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.EnvironmentUtils;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.ConfigKeys;
 import com.typesafe.config.Config;
@@ -10,6 +12,8 @@ import io.restassured.config.HttpClientConfig;
 import io.restassured.config.LogConfig;
 import io.restassured.config.RestAssuredConfig;
 import io.restassured.config.SSLConfig;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.logging.SanitizingPrintStream;
 import io.restassured.http.Headers;
 import io.restassured.response.ValidatableResponse;
@@ -21,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
 public abstract class AbstractRestJob {
@@ -48,6 +53,10 @@ public abstract class AbstractRestJob {
      * <p>
      * 说明：RestAssured 5.x 未提供 {@code useStrictHTTPSValidation()}，恢复严格校验的
      * 正确方式是显式装配一个默认 {@link SSLConfig} 并写回 Serenity 的 default config。
+     * <p>
+     * 安全审计：放宽时登记 {@link SecurityAudit#recordRelaxedTls(String, String)}（可观测、
+     * 可被测试断言）；若检测到生产（prod）环境仍放宽，则 fail-fast 拒绝启动，防止生产
+     * 流量暴露于中间人攻击。
      */
     private static void applySslPolicy() {
         boolean relax = ApiFrameworkConfig.isSslRelaxValidation();
@@ -57,9 +66,14 @@ public abstract class AbstractRestJob {
         SerenityRest.setDefaultConfig(SerenityRest.getDefaultConfig().sslConfig(sslConfig));
 
         if (relax) {
-            logger.warn("SSL/TLS certificate validation is RELAXED (http.ssl.relax-validation=true). "
-                    + "Certificate verification is disabled and API traffic is exposed to MITM. "
-                    + "Intended for test environments only - never enable for production-like runs.");
+            String environment = EnvironmentUtils.currentEnvironment().getEnvironmentName();
+            SecurityAudit.recordRelaxedTls(environment, ApiFrameworkConfig.HTTP_SSL_RELAX_VALIDATION.key());
+            if (SecurityAudit.isProductionEnvironment(environment)) {
+                throw new IllegalStateException(
+                        "Refusing to start: TLS certificate validation is RELAXED in a PRODUCTION-like "
+                                + "environment (env=" + environment + "). Never enable http.ssl.relax-validation "
+                                + "for production-like runs - this exposes API traffic to MITM.");
+            }
         }
     }
 
@@ -114,16 +128,92 @@ public abstract class AbstractRestJob {
      * @param entity  请求实体
      * @param invoker 具体 HTTP 动作，如 {@code spec -> spec.when().get(endpoint).then()}
      */
+    /**
+     * 执行请求（默认非幂等，不重试 —— 与历史行为一致，避免对非幂等写操作误重试）。
+     * 幂等请求（GET/PUT/DELETE）请改用 {@link #execute(Entity, Function, boolean)} 并传 {@code true}。
+     */
     protected void execute(Entity entity,
                            Function<RequestSpecification, ValidatableResponse> invoker) {
-        RequestSpecification requestSpecification = buildRequestSpecification(entity);
-        ValidatableResponse response = invoker.apply(requestSpecification);
+        execute(entity, invoker, false);
+    }
 
+    /**
+     * 执行请求（P-3：幂等 + 网络类错误 + 5xx 重试，绝不重试 4xx）。
+     *
+     * @param entity     请求实体
+     * @param invoker    具体 HTTP 动作
+     * @param idempotent 是否幂等（GET/PUT/DELETE=true；POST/PATCH=false）。仅当幂等时才对
+     *                   连接超时 / 网络异常 / 5xx 重试，防止对非幂等写操作重复提交。
+     */
+    protected void execute(Entity entity,
+                           Function<RequestSpecification, ValidatableResponse> invoker,
+                           boolean idempotent) {
+        ValidatableResponse response = executeWithRetry(entity, invoker, idempotent);
         if (entity.isApiRequestResponseLogsEnabled()) {
             response.log().all();
         }
-
         applyResponse(entity, response);
+    }
+
+    /**
+     * P-3 重试内核：仅在幂等且发生「连接超时 / 网络异常 / 5xx」时重试，
+     * 4xx（客户端错误）立即返回不重试。重试次数 / 退避间隔取自
+     * {@link ApiFrameworkConfig#getRetryCount()} / {@link ApiFrameworkConfig#getRetryDelay()}。
+     */
+    ValidatableResponse executeWithRetry(Entity entity,
+                                          Function<RequestSpecification, ValidatableResponse> invoker,
+                                          boolean idempotent) {
+        int maxAttempts = ApiFrameworkConfig.getRetryCount();
+        long delayMs = ApiFrameworkConfig.getRetryDelay();
+        ValidatableResponse last = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                ValidatableResponse response = invoker.apply(buildRequestSpecification(entity));
+                int status = response.extract().statusCode();
+                if (shouldRetry(status, idempotent, attempt, maxAttempts)) {
+                    logger.warn("API 请求返回 5xx（{}），幂等方法第 {}/{} 次将重试（退避 {}ms）: {}",
+                            status, attempt, maxAttempts, delayMs, entity.getBaseUri());
+                    sleepQuietly(delayMs);
+                    last = response;
+                    continue;
+                }
+                return response;
+            } catch (Exception e) {
+                if (idempotent && attempt < maxAttempts) {
+                    logger.warn("API 请求失败（{}），幂等方法第 {}/{} 次将重试（退避 {}ms）: {}",
+                            e.getMessage(), attempt, maxAttempts, delayMs, entity.getBaseUri());
+                    sleepQuietly(delayMs);
+                    last = null;
+                    continue;
+                }
+                throw e;
+            }
+        }
+        return last;
+    }
+
+    /**
+     * 重试退避等待：框架主代码禁用 {@code Thread.sleep}（ArchUnit {@code frameworkCodeMustNotCallThreadSleep}），
+     * 退避需「可中断且不抛受检异常」，故改用 {@link LockSupport#parkNanos(long)}。
+     * park 在中断时立即返回且<b>保留中断标志</b>（语义等价于 {@code Thread.sleep} + 恢复中断）。
+     */
+    private static void sleepQuietly(long millis) {
+        if (millis <= 0) {
+            return;
+        }
+        LockSupport.parkNanos(millis * 1_000_000L);
+        if (Thread.currentThread().isInterrupted()) {
+            logger.debug("API 重试退避被中断（parkNanos 提前返回，中断标志保留）");
+        }
+    }
+
+    /**
+     * 重试判定（P-3 内核规则，包可见便于单测）：
+     * 仅当<b>幂等</b>且响应为 <b>5xx</b> 且<b>未达最大尝试次数</b>时重试；
+     * 4xx（客户端错误）与非幂等写操作（POST/PATCH）一律不重试，避免重复提交或无效重试。
+     */
+    boolean shouldRetry(int statusCode, boolean idempotent, int attempt, int maxAttempts) {
+        return idempotent && statusCode >= 500 && statusCode <= 599 && attempt < maxAttempts;
     }
 
     /** 构建请求规格（base 信息 → 参数 → body → 代理 → 请求日志）。 */
@@ -183,8 +273,17 @@ public abstract class AbstractRestJob {
             .map(Integer::parseInt)
             .orElse(ApiFrameworkConfig.getSocketTimeout());
 
+        // P-3：显式配置连接池（RestAssured 默认每路由仅 2 连接，串行大量接口调用握手开销大）。
+        // 经由 httpClientFactory 注入携带 PoolingHttpClientConnectionManager 的 HttpClient，
+        // 由 RestAssured 复用同一实例（默认 reuseHttpClientInstance），连接池在请求间共享。
+        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+        connectionManager.setMaxTotal(ApiFrameworkConfig.getMaxConnectionsTotal());
+        connectionManager.setDefaultMaxPerRoute(ApiFrameworkConfig.getMaxConnectionsPerRoute());
+        connectionManager.setValidateAfterInactivity(1000);
+
         final RestAssuredConfig restAssuredConfig = RestAssuredConfig.config()
                 .httpClient(HttpClientConfig.httpClientConfig()
+                        .httpClientFactory(() -> HttpClients.custom().setConnectionManager(connectionManager).build())
                         .setParam("http.connection.timeout", httpConnectTimeout)
                         .setParam("http.socket.timeout", httpSocketTimeout))
                 .logConfig(new LogConfig(

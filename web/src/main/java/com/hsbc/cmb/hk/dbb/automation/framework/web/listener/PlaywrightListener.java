@@ -1,23 +1,26 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 
-
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.microsoft.playwright.BrowserContext;
-import com.microsoft.playwright.Page;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityResultAdapter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.result.ResultReporters;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.result.StepResult;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.DataTable;
 import net.thucydides.model.domain.Story;
@@ -31,16 +34,10 @@ import net.thucydides.model.steps.StepListener;
 import net.thucydides.model.util.EnvironmentVariables;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 import java.io.ByteArrayOutputStream;
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Consumer;
 
 public class PlaywrightListener implements StepListener {
@@ -174,6 +171,9 @@ public class PlaywrightListener implements StepListener {
         TestContextHolder.get().set(CURRENT_TEST_NAME_KEY,uniqueTestName);  //  修复：确保 currentTestName 被设置（与双参数版本一致）
         //  D3-1：把 scenario 标识写入 MDC，使控制台 / 落盘日志可按用例串联（并行执行排障关键）
         LogContext.beginScenario(uniqueTestName);
+        //  方案 A（2026-09-17）：trace 按 scenario 分段 —— 用例开始即开启（或续开）chunk，
+        //  使每个用例得到一个独立 trace 文件（时间区间 == 用例执行区间）。
+        ScenarioTraceRecorder.onScenarioStart(uniqueTestName);
         //  D4-1：桥接业务监听器（业务只实现 FrameworkListener，不接触 Serenity 事件）
         TestContextHolder.get().set(CURRENT_SCENARIO_NAME_KEY, uniqueTestName);
         afterStepFired().set(false);
@@ -408,6 +408,8 @@ public class PlaywrightListener implements StepListener {
             TestContextHolder.get().remove(CURRENT_SCENARIO_NAME_KEY);
             TestContextHolder.get().remove(CURRENT_STEP_TITLE_KEY);
             TestContextHolder.get().remove(AFTER_STEP_FIRED_KEY);
+            // 防御性兜底：scenario 结束显式清交互监控状态，防 worker 线程复用跨用例堆积导航轨迹/未受管弹窗
+            PageInteractionMonitor.resetForThread();
         }
     }
 
@@ -1063,6 +1065,11 @@ public class PlaywrightListener implements StepListener {
             } else {
                 logger.debug("Feature mode - resetting custom options and cleaning page state while keeping Context/Page");
             }
+            //  方案 A（2026-09-17）：先导出本用例 trace chunk（含真实 pass/fail 标注），再清理/关闭 context。
+            //  必须在 cleanupForScenario()（会关闭 context）之前；与桥内的兜底调用幂等，先到者生效。
+            ScenarioTraceRecorder.onScenarioEnd(LogContext.currentScenarioId(),
+                    result != null && result.getResult() != null
+                            && (result.getResult() == TestResult.FAILURE || result.getResult() == TestResult.ERROR));
             PlaywrightManager.cleanupForScenario();
 
             //  采集管道清理：确保 scenario 结束时采集引擎释放（route 未启用时跳过）

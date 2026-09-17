@@ -60,9 +60,11 @@ public final class AxeCoreScriptProvider {
         private final List<AxeRule> passes;
 
         AxeRunResult(List<AxeRule> violations, List<AxeRule> incomplete, List<AxeRule> passes) {
-            this.violations = violations;
-            this.incomplete = incomplete;
-            this.passes = passes;
+            // 防御性拷贝（SpotBugs EI_EXPOSE_REP×3）：扫描结果是交给报告消费的快照，
+            // 不得与调用方的可变列表共享，否则调用方后续改动会篡改已产出的扫描结论。
+            this.violations = List.copyOf(violations);
+            this.incomplete = List.copyOf(incomplete);
+            this.passes = List.copyOf(passes);
         }
 
         public List<AxeRule> violations() { return violations; }

@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureCon
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.tests.utils.AsyncWaits;
 import com.hsbc.cmb.hk.dbb.automation.tests.utils.RouteDemoApi;
 import com.microsoft.playwright.Page;
 import net.serenitybdd.annotations.Step;
@@ -12,10 +13,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertEquals;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertFalse;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertNotNull;
+import static com.hsbc.cmb.hk.dbb.automation.tests.verify.RouteDemoVerifications.assertTrue;
 
 /**
  * Route Demo 本地并行冒烟步骤 —— 验证 CON-1 引擎级并行真正并发 GREEN（绕过内网）。
@@ -60,8 +61,7 @@ public class RouteDemoParallelSmokeSteps {
 
     private CapturedApiCall waitForCaptured(String urlContains) {
         ApiCaptureContext ctx = ApiCaptureContext.forContext(page().context());
-        long deadline = System.currentTimeMillis() + 4000;
-        while (System.currentTimeMillis() < deadline) {
+        return AsyncWaits.awaitResult(AsyncWaits.ms(4000), AsyncWaits.ms(100), () -> {
             for (List<CapturedApiCall> calls : ctx.getAllApiCalls().values()) {
                 for (CapturedApiCall c : calls) {
                     String url = c.requestUrl() != null ? c.requestUrl() : "";
@@ -70,14 +70,8 @@ public class RouteDemoParallelSmokeSteps {
                     }
                 }
             }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        return null;
+            return null;
+        });
     }
 
     @Step

@@ -5,10 +5,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointConfig
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.EntityBuilder;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.core.schema.JsonSchemaValidator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.DocumentContext;
+import com.jayway.jsonpath.InvalidPathException;
 import com.jayway.jsonpath.JsonPath;
+import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
+import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,7 +91,8 @@ public class BaseStep extends RestJobProvider {
 
 
     /**
-     * Verify JSON path field value (PURE JACKSON - no Rest Assured JsonPath)
+     * Verify JSON path field value (P-5：统一使用 Jayway JsonPath 引擎，与 {@link #verifyJsonArrayLength} 一致，
+     * 消除自写 Jackson 解析器与 Jayway 两套 JSONPath 引擎并存的维护风险)。
      */
     public void verifyResponseJsonPath(String fieldPath, Object expectedValue) {
         String responseBody = apiEntity.getResponsePayload();
@@ -96,12 +102,8 @@ public class BaseStep extends RestJobProvider {
         }
 
         try {
-            // ✅ Parse JSON with Jackson (Serenity 2.0.84 includes Jackson by default)
-            JsonNode rootNode = OBJECT_MAPPER.readTree(responseBody);
-            // ✅ Resolve JSON path (convert Rest Assured path to Jackson path)
-            JsonNode fieldNode = resolveJsonPath(rootNode, fieldPath);
-
-            if (fieldNode == null) {
+            JsonNode fieldNode = readJsonPathAsNode(responseBody, fieldPath);
+            if (fieldNode == null || fieldNode.isMissingNode()) {
                 throw new AssertionError("JSON path not found: " + fieldPath);
             }
 
@@ -128,7 +130,7 @@ public class BaseStep extends RestJobProvider {
         assertThat("Response body is empty", responseBody, notNullValue());
         
         try {
-            DocumentContext documentContext = JsonPath.parse(responseBody);
+            DocumentContext documentContext = JsonPath.using(JAYWAY_CONFIG).parse(responseBody);
             int actualLength = documentContext.read(arrayPath + ".size()");
             
             // Using Hamcrest comparison matcher
@@ -139,6 +141,44 @@ public class BaseStep extends RestJobProvider {
         }
     }
 
+
+    /**
+     * P-7：校验<b>整份响应体</b>符合指定 JSON Schema（响应契约守护）。
+     *
+     * <p>schema 为 classpath 资源路径（如 {@code schemas/demo-user.json}），支持 JSON Schema
+     * draft-07 / 2019-09 / 2020-12。schema 资源缺失或不可解析属<b>配置错误</b>，会失败快
+     * （{@link IllegalStateException}），不会静默通过。
+     *
+     * @param schemaResource schema 的 classpath 资源路径
+     */
+    public void verifyResponseMatchesSchema(String schemaResource) {
+        JsonSchemaValidator.assertMatches(apiEntity.getResponsePayload(), schemaResource);
+        LOGGER.info("Response schema verification passed: {}", schemaResource);
+    }
+
+    /**
+     * P-7：校验响应体中「JSONPath 定位到的<b>子文档</b>」符合指定 JSON Schema。
+     *
+     * <p>典型场景：对 {@code $.data} 校验子对象契约、对 {@code $.items[0]} 校验数组元素契约。
+     * 路径不存在时失败并指明路径；schema 资源缺失时失败快（配置错误）。
+     *
+     * @param jsonPath       子文档的 JSONPath（支持 {@code $.data.items[0]} 与 {@code data.items[0]}）
+     * @param schemaResource schema 的 classpath 资源路径
+     */
+    public void verifyResponseJsonPathMatchesSchema(String jsonPath, String schemaResource) {
+        String responseBody = apiEntity.getResponsePayload();
+        if (responseBody == null || responseBody.trim().isEmpty()) {
+            throw new AssertionError("Response body is null or empty - cannot validate path '"
+                    + jsonPath + "' against schema: " + schemaResource);
+        }
+        JsonNode subNode = readJsonPathAsNode(responseBody, jsonPath);
+        if (subNode == null || subNode.isMissingNode()) {
+            throw new AssertionError("JSON path not found: " + jsonPath);
+        }
+        JsonSchemaValidator.assertNodeMatches(subNode, schemaResource);
+        LOGGER.info("Response sub-document schema verification passed: path '{}' vs schema '{}'",
+                jsonPath, schemaResource);
+    }
 
     /**
      * Verify response contains specified header using Hamcrest composite matcher
@@ -179,45 +219,24 @@ public class BaseStep extends RestJobProvider {
         }
     }
 
-    // ✅ Helper: Resolve JSON path (supports Rest Assured-style paths like "data.id" or "data.items[0].name")
-    private JsonNode resolveJsonPath(JsonNode rootNode, String path) {
-        String[] pathSegments = path.split("\\.");
-        JsonNode currentNode = rootNode;
+    // ✅ P-5 Helper: 统一 JSONPath 引擎（Jayway）+ Jackson 数据结构（JacksonJsonProvider/JacksonMappingProvider），
+    //    供 verifyResponseJsonPath / verifyJsonArrayLength 共用，避免自写解析器与 Jayway 两套并存。
+    private static final Configuration JAYWAY_CONFIG = Configuration.builder()
+            .jsonProvider(new JacksonJsonProvider())
+            .mappingProvider(new JacksonMappingProvider())
+            .build();
 
-        for (String segment : pathSegments) {
-            // 跳过 JSONPath 根前缀 "$" 和空段
-            if ("$".equals(segment) || segment.isEmpty()) {
-                continue;
-            }
-            // Handle array indices (e.g., "items[0]" → "items" + index 0)
-            if (segment.contains("[")) {
-                int openIdx = segment.indexOf("[");
-                int closeIdx = segment.indexOf("]");
-                String arrayName = segment.substring(0, openIdx);
-                int index = Integer.parseInt(segment.substring(openIdx + 1, closeIdx));
-                if (arrayName.isEmpty()) {
-                    // 数组根节点直接带下标，如 "[0].name" —— 当前节点本身就是数组
-                    if (!currentNode.isArray()) {
-                        return null;
-                    }
-                    currentNode = currentNode.get(index);
-                } else {
-                    currentNode = currentNode.path(arrayName);
-                    if (currentNode.isMissingNode() || !currentNode.isArray()) {
-                        return null;
-                    }
-                    currentNode = currentNode.get(index);
-                }
-            } else {
-                currentNode = currentNode.path(segment);
-            }
-
-            // get(index) 越界或节点缺失会返回 null，需判空（避免 NPE）
-            if (currentNode == null || currentNode.isMissingNode()) {
-                return null;
-            }
+    /**
+     * 使用统一的 Jayway JsonPath 引擎按路径读取节点（支持 {@code $.data.id}、{@code data.items[0].name} 等）。
+     * 路径不存在或非法时返回 {@code null}，由调用方抛出语义化断言失败。
+     */
+    private static JsonNode readJsonPathAsNode(String json, String path) {
+        try {
+            return JsonPath.using(JAYWAY_CONFIG).parse(json).read(path, JsonNode.class);
+        } catch (InvalidPathException e) {
+            // PathNotFoundException 继承自 InvalidPathException，二者一并覆盖
+            return null;
         }
-        return currentNode;
     }
 
     // ✅ Helper: Convert Jackson JsonNode to expected Java type

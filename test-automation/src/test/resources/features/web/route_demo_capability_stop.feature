@@ -1,4 +1,4 @@
-@route-capability-stop
+@regression @route @route-capability-stop
 Feature: Route 按能力维度显式停止（monitor / modify / delay / mock / all）
 
   目标：验证 RouteDsl.stopMonitor / stopModify / stopDelay / stopMock / stopApi

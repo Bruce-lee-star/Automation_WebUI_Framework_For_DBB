@@ -36,8 +36,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * 企业级并发上下文执行器（设计文档 C2 + 第九节）。
  *
  * <p>以有界线程池（或 JDK21 虚拟线程）并发运行多个独立 {@link ContextTask}，每个任务在独立线程上获得
- * 独立 {@code BrowserContext}（由 {@link PlaywrightManager} 的 per-thread 隔离保证），任务结束后清理本线程
- * Context（不关闭共享 Browser）。失败 / 页面错误经结构化 {@link ContextTaskResult} 返回，<b>不在工作线程触碰
+ * 独立 {@code Browser} + {@code BrowserContext}（由 {@link PlaywrightManager} 的 per-thread 隔离保证）；
+ * 任务结束后清理本线程 Context（<b>不</b>关闭本线程 Browser——Browser 生命周期由 {@code cleanupAll()} 收口）。
+ * 失败 / 页面错误经结构化 {@link ContextTaskResult} 返回，<b>不在工作线程触碰
  * Serenity 事件总线</b>（桥接原则 9.3）。</p>
  *
  * @apiNote <b>框架内部能力</b>：仅供 {@code framework.web.lifecycle} 包树协作者与并发桥接使用；业务代码不得直接依赖。
@@ -80,19 +81,24 @@ public final class ConcurrentContextExecutor {
         if (tasks == null || tasks.isEmpty()) {
             return List.of();
         }
-        RUNNING.set(true);
         int parallelism = options.resolvedParallelism(tasks.size());
         boolean virtual = options.useVirtualThreads();
-        ExecutorService pool = virtual
-                ? Executors.newVirtualThreadPerTaskExecutor()
-                : new ThreadPoolExecutor(parallelism, parallelism, 0L, TimeUnit.MILLISECONDS,
-                        new LinkedBlockingQueue<>(), new ContextThreadFactory());
-
         int n = tasks.size();
         List<Future<ContextTaskResult<T>>> futures = new ArrayList<>(n);
         List<ContextTaskResult<T>> results = new ArrayList<>(Collections.nCopies(n, null));
+        ExecutorService pool = null;
 
         try {
+            //  评审修复（2026-09-17）：执行窗口标记与池创建都必须在 try 内 ——
+            //  原实现把 RUNNING.set(true) 放在池构造【之前】，一旦构造抛异常
+            //  （例如并发度配置为负 → ThreadPoolExecutor 构造失败），RUNNING 会永久停在 true：
+            //  PlaywrightManager.cleanupAll 将永远拒绝清理（清理门控被卡死），
+            //  后果是孤儿浏览器进程残留 + 所有后续清理被误判为"并发中"。
+            RUNNING.set(true);
+            pool = virtual
+                    ? Executors.newVirtualThreadPerTaskExecutor()
+                    : new ThreadPoolExecutor(parallelism, parallelism, 0L, TimeUnit.MILLISECONDS,
+                            new LinkedBlockingQueue<>(), new ContextThreadFactory());
             for (int i = 0; i < n; i++) {
                 final ContextTask<T> task = tasks.get(i);
                 futures.add(pool.submit(() -> executeOne(task)));
@@ -113,15 +119,17 @@ public final class ConcurrentContextExecutor {
             }
         } finally {
             RUNNING.set(false);
-            pool.shutdown();
-            try {
-                if (!pool.awaitTermination(
-                        WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_EXECUTOR_AWAIT_SECONDS.getIntValue(), TimeUnit.SECONDS)) {
+            if (pool != null) {
+                pool.shutdown();
+                try {
+                    if (!pool.awaitTermination(
+                            WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_EXECUTOR_AWAIT_SECONDS.getIntValue(), TimeUnit.SECONDS)) {
+                        pool.shutdownNow();
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
                     pool.shutdownNow();
                 }
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                pool.shutdownNow();
             }
         }
         // 在编排线程（runAll 调用方）将"崩溃恢复重跑"事件显式标注到 Serenity 报告（WEB-P1-4 验收 ②）。
@@ -159,7 +167,7 @@ public final class ConcurrentContextExecutor {
             return r;
         }
         // 疑似浏览器故障：按类型走进程级单飞恢复后重跑一次（严格有界，见 BrowserCrashGuard.maxReplay）。
-        //  - 句柄注册表损坏（__adopt__/previewUpdated，isConnected 仍为 true）→ 强制重建共享 Browser
+        //  - 句柄注册表损坏（__adopt__/previewUpdated，isConnected 仍为 true）→ 强制重建本线程 Browser
         //    （否则在损坏 Browser 上重跑必再败，E2E 实测 2026-09-08 全批次级联失败即因此）；
         //  - 其余崩溃（断开/进程被杀）→ 断开型重建（连接仍在时 no-op，仅重跑）。
         boolean handleCorruption = BrowserCrashGuard.isHandleCorruption(r.getFailure());
@@ -219,7 +227,7 @@ public final class ConcurrentContextExecutor {
             MDC.remove("concurrentTask");
             // C-1：解绑用例级上下文（幂等，与下方 cleanupForScenario 内的 resetForCurrentThread 协同）。
             ScenarioContext.end(scenarioId);
-            // 关闭本线程 Context/Page（不关闭共享 Browser）；非初始化环境下吞掉，便于无头单测。
+            // 关闭本线程 Context/Page（不关闭本线程 Browser）；非初始化环境下吞掉，便于无头单测。
             try {
                 PlaywrightManager.cleanupForScenario();
             } catch (Throwable ignore) {

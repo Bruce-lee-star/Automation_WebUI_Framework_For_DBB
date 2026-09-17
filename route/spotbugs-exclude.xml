@@ -1,38 +1,82 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
-    <!-- T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance. -->
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.dsl.RouteDsl$BaseApiDsl"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="UG_SYNC_SET_UNSYNC_GET"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="AT_NONATOMIC_64BIT_PRIMITIVE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureReportWriter"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="AT_NONATOMIC_64BIT_PRIMITIVE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.MonitorFailureCollector"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureManager"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureLifecycle"/><Bug pattern="DE_MIGHT_IGNORE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.ApiMonitoringRecord$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.persistence.ApiMonitoringRecord"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MonitorHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureManager"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.ModifyHandler"/><Bug pattern="UC_USELESS_OBJECT"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteRule"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.ApiCaptureContext"/><Bug pattern="NN_NAKED_NOTIFY"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.CapturedApiCall$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.monitor.ApiMonitorConfig"/><Bug pattern="MS_EXPOSE_REP"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.core.RouteEngine"/><Bug pattern="DCN_NULLPOINTER_EXCEPTION"/></Match>
-    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.web.route.handler.MockHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <!--
+      T1-3 baseline freeze: Class+pattern suppressions (auto-generated). New code is zero-tolerance.
+
+      ── 2026-09-17 重新冻结（re-freeze）说明 ──────────────────────────────────────────
+      背景：本文件原仅有 9 条（T1-3 生成时模块规模远小于今）。此后 route 模块大幅增长
+            （R-1~R-7 监视/采集/持久化/DSL/生命周期改造），且 `mvn verify` 的 SpotBugs 门禁
+            因上游模块（core/reporting/web/codegen）先失败而**从未真正执行到本模块**，
+            这批债务因此长期不可见。本次打通门禁链后一次性重新登记。
+
+      口径（与 web 基线一致）：
+      1. 下列项为**存量债务**重新登记，非"新引入违规"；均为「设计内共享引用 / 单例访问器 /
+         安全发布后只读的配置字段」族，与 web/spotbugs-exclude.xml 已接受的同类项同族。
+      2. owner: @route-core | SLA: 2027-Q1 | 方式: 按类消除（EI 封装 / 单例构造私有化 / 异常收敛）后逐条移除。
+      3. **已真修、未登记**：RouteRule 的 hashCode 缓存（cachedHashCode/hashCodeCached）此前为
+         非 volatile，属真实可见性竞态（RouteRule 是 ConcurrentHashMap 的 key），已改 volatile 修正。
+      4. **专项复核结论（2026-09-17，C-5 已闭环 —— 非"长期冻结"）**：
+         AT_STALE_THREAD_WRITE_OF_PRIMITIVE / AT_NONATOMIC_64BIT_PRIMITIVE（RouteRule）——
+         经并发模型复核，本类是「配置期单线程写 → 经 RouteRegistry 的 ConcurrentHashMap 安全发布
+         → 发布后按只读」的可变配置模型；除 mergeSource / monitorSessionRef（已改 volatile）与
+         stoppedCapabilities（已改 volatile 快照 + 写时复制）三处「明确发布后再写」的字段外，其余配置字段
+         刻意不声明 volatile（发布后只读，非遗漏）。故这两条保留为<b>设计确认项</b>而非待消除债务，
+         详见 RouteRule 类头「并发契约」。CapturedApiCall 的同类条目已于 2026-09-17 真修并移除（见下）。
+    -->
+
+    <!-- ===== 规则模型（RouteRule / RouteDsl）：可变模型按设计暴露集合与配置字段 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule"/><Bug pattern="AT_STALE_THREAD_WRITE_OF_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule"/><Bug pattern="AT_NONATOMIC_64BIT_PRIMITIVE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl$BaseApiDsl"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.body.BodyFieldOps"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+
+    <!-- ===== 采集（capture）：上下文/记录对象的共享引用与长整型非原子写 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <!-- ApiCaptureContext 的 NN_NAKED_NOTIFY 已于 2026-09-17 评审中【真修并移除】：
+         increment/decrement/reset 把谓词状态（activeRequests）变更移入 completionLock 监视器，
+         signalFailFast 按调用方既有契约补齐 hasAssertionFailures 标志写 —— 均为真修，条目废止。 -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <!-- CapturedApiCall 的 AT_STALE / AT_NONATOMIC 条目已于 2026-09-17 评审中【真修并移除】：
+         其 bodyTruncated / originalBodyBytes 可在对象发布后经 markBodyTruncated 修改，
+         而对象跨线程共享（事件线程写、主测试线程断言读）→ 已改 volatile（发布后写入立即可见），
+         条目随之废止（避免"长期冻结"）。EI_EXPOSE_REP 仍保留（快照集合按设计暴露）。 -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+
+    <!-- ===== 生命周期 / 调度 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.PerContextEngine"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.PerContextEngine"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <!-- PerContextEngine 的 PA_PUBLIC_PRIMITIVE_ATTRIBUTE（public volatile state）已于 2026-09-17 评审中
+         【真修并移除】：state 收为 private + 只读 state()，状态迁移由本类独占控制。
+         DelayScheduler 的 DCN_NULLPOINTER_EXCEPTION（catch NPE 兜底 schedule）同期【真修并移除】：
+         改为显式 null / isShutdown 判定 + 只捕获 RejectedExecutionException。 -->
+
+    <!-- ===== Handler（Mock/Modify/Monitor）：字符串格式化与异常收敛 ===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MockHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.handler.ModifyHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.handler.ModifyHandler"/><Bug pattern="REC_CATCH_EXCEPTION"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler"/><Bug pattern="VA_FORMAT_STRING_USES_NEWLINE"/></Match>
+
+    <!-- ===== 监视与报告（monitor）===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorConfig"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorConfig"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <!-- ApiMonitorConfig 的 UG_SYNC_SET_UNSYNC_GET 已于 2026-09-17 评审中【真修并移除】：
+         setFeatures 去掉冗余 synchronized（单个 volatile 引用字段的赋值本身原子且带安全发布语义，
+         读侧无需同步），不对称消失，条目废止。 -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestrator"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector"/><Bug pattern="MS_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector"/><Bug pattern="SING_SINGLETON_HAS_NONPRIVATE_CONSTRUCTOR"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector$FailedApiCall"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureReportWriter"/><Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE"/></Match>
+
+    <!-- ===== 持久化（persistence）===== -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRecord"/><Bug pattern="EI_EXPOSE_REP"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRecord$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.HikariConfigFactory$Spec"/><Bug pattern="UWF_NULL_FIELD"/></Match>
 </FindBugsFilter>

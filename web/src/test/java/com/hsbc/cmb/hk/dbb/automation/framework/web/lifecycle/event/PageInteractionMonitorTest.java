@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.ArgumentMatchers.any;
@@ -26,6 +27,7 @@ import static org.mockito.Mockito.when;
  *       不注册 onDialog / onFileChooser（交互处置交回业务层既有方法）；</li>
  *   <li>onFrameNavigated 记录主框架导航轨迹，drain 可回放；</li>
  *   <li>onPopup 记录未受管弹窗，markPopupClaimed 后 drain 清空；</li>
+ *   <li>{@code resetForThread()} 在 scenario 结束清空导航轨迹与未受管弹窗，防线程池复用跨用例堆积；幂等且 null 安全；</li>
  *   <li>null 安全（注册与处理器均不抛异常）。</li>
  * </ul>
  *
@@ -110,6 +112,51 @@ public class PageInteractionMonitorTest {
 
         // 框架认领后再次 drain 应为空（已在 markPopupClaimed 中剔除）
         PageInteractionMonitor.markPopupClaimed(popup);
+        assertEquals("", PageInteractionMonitor.drainUnmanagedPopups());
+    }
+
+    // ===================== 3. resetForThread 生命周期清理 =====================
+
+    @Test
+    public void resetForThreadClearsTrailAndPopupsBetweenScenarios() {
+        Page page = mock(Page.class);
+        PageInteractionMonitor.register(page);
+
+        // 导航轨迹
+        org.mockito.ArgumentCaptor<Consumer<Frame>> navCaptor = forClass(Consumer.class);
+        verify(page).onFrameNavigated(navCaptor.capture());
+        Frame frame = mock(Frame.class);
+        when(frame.page()).thenReturn(page);
+        when(page.mainFrame()).thenReturn(frame);
+        when(frame.url()).thenReturn("https://example.com/step");
+        PageInteractionMonitor.drainNavigationTrail(); // 清残留
+        navCaptor.getValue().accept(frame);
+
+        // 未受管弹窗
+        org.mockito.ArgumentCaptor<Consumer<Page>> popupCaptor = forClass(Consumer.class);
+        verify(page).onPopup(popupCaptor.capture());
+        Page popup = mock(Page.class);
+        when(popup.url()).thenReturn("https://example.com/popup");
+        when(popup.title()).thenReturn("Report");
+        PageInteractionMonitor.drainUnmanagedPopups(); // 清残留
+        popupCaptor.getValue().accept(popup);
+
+        // 重置前应有数据
+        assertFalse(PageInteractionMonitor.drainNavigationTrail().isEmpty(), "重置前导航轨迹不应为空");
+
+        // scenario 结束显式清理
+        PageInteractionMonitor.resetForThread();
+
+        assertEquals("", PageInteractionMonitor.drainNavigationTrail(), "reset 后导航轨迹应清空（防跨用例堆积）");
+        assertEquals("", PageInteractionMonitor.drainUnmanagedPopups(), "reset 后未受管弹窗应清空");
+    }
+
+    @Test
+    public void resetForThreadIsIdempotentAndNullSafe() {
+        // 多次调用、无数据时调用均不抛异常，drain 始终为空
+        PageInteractionMonitor.resetForThread();
+        PageInteractionMonitor.resetForThread();
+        assertEquals("", PageInteractionMonitor.drainNavigationTrail());
         assertEquals("", PageInteractionMonitor.drainUnmanagedPopups());
     }
 

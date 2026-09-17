@@ -1,4 +1,4 @@
-@route @route-composite
+@regression @route @route-composite
 Feature: Route 复合场景集成测试（四能力叠加 / 跨层优先级 / 清理隔离）
 
   # 前置：route-demo-service 已启动（端口 8888，context-path /demo）

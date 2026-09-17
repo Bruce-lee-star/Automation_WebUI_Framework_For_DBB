@@ -1,9 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.tests.glue;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.CleanStateRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.RequiresCleanState;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.cleanstate.StateResolver;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.tests.steps.RouteDemoCoverageSteps;
-import io.cucumber.java.After;
-import io.cucumber.java.Before;
 import io.cucumber.java.en.Given;
 import net.serenitybdd.annotations.Steps;
 
@@ -17,24 +18,20 @@ import net.serenitybdd.annotations.Steps;
  * 运行：mvn verify -Dcucumber.filter.tags=@route-capability-stop
  */
 @AutoBrowser(verbose = true)
+@RequiresCleanState({"route-capability-stop-route-rules"})
 public class RouteDemoCapabilityStopGlue {
+
+    // B-6：原手写 @Before 预清理 / @After 清理改由框架 CleanStateHooks 统一驱动
+    //      （复位前后各一次、幂等，清掉 STOPPED_CAPS 等残留，保证每个 Scenario 从干净状态开始）。
+    static {
+        CleanStateRegistry.register(new StateResolver() {
+            @Override public String name() { return "route-capability-stop-route-rules"; }
+            @Override public void reset() { new RouteDemoCoverageSteps().cleanup(); }
+        });
+    }
 
     @Steps
     private RouteDemoCoverageSteps steps;
-
-    /**
-     * feature 模式下 context 不重建 —— Scenario 开始前先预清理一次，同步清掉 STOPPED_CAPS 残留，
-     * 保证每个 Scenario 从干净状态开始（避免上一 Scenario 的停止标记污染本 Scenario）。
-     */
-    @Before
-    public void beforeScenario() {
-        steps.cleanup();
-    }
-
-    @After
-    public void afterScenario() {
-        steps.cleanup();
-    }
 
     @Given("route capability-stop: monitor 停止后 modify 与 delay 仍生效")
     public void monitorStop() {

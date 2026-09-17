@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,7 +57,15 @@ public final class ShutdownCoordinator {
     private static final AtomicBoolean hookRegistered = new AtomicBoolean(false);
     private static final AtomicBoolean running = new AtomicBoolean(false);
 
-    private static final class Task implements Comparable<Task> {
+    /**
+     * 关闭任务。
+     *
+     * <p><b>不实现 {@link Comparable}</b>：任务间的顺序只由 {@code order} 决定，而身份语义仍是
+     * 「对象同一性」（同名去重走 {@code name}），二者并不一致 —— 让 {@code Task} 扮演 {@code Comparable}
+     * 会隐含「order 相同即相等」的错误语义（SpotBugs {@code EQ_COMPARETO_USE_OBJECT_EQUALS}）。
+     * 排序因此改为注册处显式传入 {@link #BY_ORDER}，语义只在真正需要排序的地方表达。
+     */
+    private static final class Task {
         final int order;
         final String name;
         final Runnable action;
@@ -65,11 +74,10 @@ public final class ShutdownCoordinator {
             this.name = name;
             this.action = action;
         }
-        @Override
-        public int compareTo(Task o) {
-            return Integer.compare(order, o.order);
-        }
     }
+
+    /** 执行顺序：{@code order} 升序；{@code order} 相同则保持注册先后（{@link List#sort} 稳定排序）。 */
+    private static final Comparator<Task> BY_ORDER = Comparator.comparingInt(t -> t.order);
 
     private ShutdownCoordinator() {}
 
@@ -81,7 +89,7 @@ public final class ShutdownCoordinator {
             }
         }
         TASKS.add(new Task(order, name, action));
-        TASKS.sort(null);
+        TASKS.sort(BY_ORDER);
         ensureHookRegistered();
     }
 

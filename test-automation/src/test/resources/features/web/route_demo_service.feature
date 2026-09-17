@@ -1,4 +1,4 @@
-@route
+@regression @route
 Feature: Route Demo Service 集成测试（结合框架 @AutoBrowser 浏览器实例化）
 
   # 前置：route-demo-service 已启动（端口 8888，context-path /demo）
@@ -50,7 +50,7 @@ Feature: Route Demo Service 集成测试（结合框架 @AutoBrowser 浏览器�
   Scenario: MODIFY 改写请求体后转发
     Given route demo: modify request body forwarded to server
 
-    @test
+    @delay
   Scenario: DELAY 高延迟生效
     Given route demo: delay applies latency
 

@@ -29,6 +29,15 @@ public class SummaryReportBranchTest {
     @TempDir
     File folder;
 
+    /** 创建用例报告目录；mkdirs 失败即抛（不静默忽略返回值，SpotBugs RV_RETURN_VALUE_IGNORED_BAD_PRACTICE）。 */
+    private File newReportDir(String name) {
+        File dir = new File(folder, name);
+        if (!dir.mkdirs() && !dir.exists()) {
+            throw new IllegalStateException("Cannot create test report dir: " + dir);
+        }
+        return dir;
+    }
+
     private static final String PROJECT_NAME = "Branch Coverage Project";
     private static final String REPORT_URL = "https://reports.example.com/job/43/Serenity_20Summary_20Report/";
 
@@ -50,8 +59,7 @@ public class SummaryReportBranchTest {
      */
     @Test
     public void pieChartUsesConicGradientAndLegendForMultipleErrorTypes() throws Exception {
-        File dir = new File(folder, "multi-error-report");
-        dir.mkdirs();
+        File dir = newReportDir("multi-error-report");
         writeOutcome(dir, "assert.json", "AssertionError: expected <ok> but was <bad>");
         writeOutcome(dir, "timeout.json", "TimeoutException: timed out after 30000ms");
 
@@ -71,8 +79,7 @@ public class SummaryReportBranchTest {
     /** 无失败用例：Full Failure List 整段缺席，Full Test Results 仍须渲染。 */
     @Test
     public void failureListSectionAbsentWhenNoFailures() throws Exception {
-        File dir = new File(folder, "success-only-report");
-        dir.mkdirs();
+        File dir = newReportDir("success-only-report");
         Files.writeString(new File(dir, "ok.json").toPath(), "{\n"
                 + "  \"name\": \"Happy path\",\n"
                 + "  \"result\": \"SUCCESS\",\n"

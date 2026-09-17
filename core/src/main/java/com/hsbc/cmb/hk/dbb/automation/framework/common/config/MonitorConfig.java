@@ -33,6 +33,24 @@ public final class MonitorConfig {
     // ==================== Monitor 测试运行 ID ====================
     public static final Key MONITOR_TEST_RUN_ID = new Key("monitor.test.run.id", "");
 
+    // ==================== Monitor body 读取重试（route MonitorHandler，2026-09-17 评审）====================
+    /** 重试调度线程数：原为单线程且被所有 context 共享（并行下跨 context 串行瓶颈），现可配。 */
+    public static final Key MONITOR_BODY_READ_SCHEDULER_THREADS =
+            new Key("monitor.body.read.scheduler.threads", "4");
+    /** 基础尝试次数（不含按 DELAY 推导的额外次数）。 */
+    public static final Key MONITOR_BODY_READ_BASE_ATTEMPTS =
+            new Key("monitor.body.read.base.attempts", "3");
+    /** 重试间隔（毫秒）。 */
+    public static final Key MONITOR_BODY_READ_RETRY_INTERVAL_MS =
+            new Key("monitor.body.read.retry.interval.ms", "50");
+    /**
+     * 等待预算上限（毫秒，默认 30s）：即 route 事件线程等待 body 的<b>最大</b>时长。
+     * 必须有上限——长 DELAY 会把尝试次数放大到数百次（预算分钟级），一旦链断/调度器异常，
+     * {@code future.get} 会把事件线程长期占住（"卡程序"）。{@code <=0} 表示不设上限（仅用尝试总时长）。
+     */
+    public static final Key MONITOR_BODY_READ_MAX_WAIT_MS =
+            new Key("monitor.body.read.max.wait.ms", "30000");
+
     // ==================== API Monitor 文件存储配置 ====================
     public static final Key MONITOR_FILE_STORE_ENABLED = new Key("monitor.file.store.enabled", "false");
     public static final Key MONITOR_FILE_STORE_DIR = new Key("monitor.file.store.dir", "target/monitor-output");

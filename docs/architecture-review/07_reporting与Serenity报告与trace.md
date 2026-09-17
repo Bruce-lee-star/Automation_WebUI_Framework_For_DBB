@@ -68,8 +68,8 @@ failsafe 执行 IT
 | 编号 | 级别 | 问题 | 证据 | 影响 |
 |---|---|---|---|---|
 | E-1 | **P0** | 报告（含未脱敏截图）被推送到**外部仓库** gh-pages | `serenity-report-push.yml:37,62-71` + 03-W-2 | 敏感数据外泄 |
-| E-2 | **P1** | **无趋势/历史对比**，每场报告孤立 | grep `trend\|history` 无命中 | 无法识别性能退化与常失败用例 |
-| E-3 | **P1** | **Trace 未挂进报告**，仅时间戳命名 | 03-W-3 | 最强排障手段实际不可用 |
+| E-2 | **P1** | **无趋势/历史对比**，每场报告孤立 **已修复**：`RunSummary` + `TrendStore`（`<reportDir>/trend-history/*.json` 快照）；汇总报告 Full Test Results 增加「本次/上次耗时 + 变化率」列，近 5 场失败 ≥3 次打 `FLAKY`；无历史时不渲染（golden 不变）| grep `trend\|history` 无命中 | 无法识别性能退化与常失败用例 |
+| E-3 | **P1** | **Trace 未挂进报告**，仅时间戳命名 **已修复**：trace 命名（scenarioId）与挂 Serenity 报告由 W-3 落地；本次补二次汇总报告 `SummaryReportGenerator` 失败清单 Trace 下载列（按归一化场景名前缀匹配 `traces/trace-*.zip`，仅存在匹配时渲染，不破坏 golden 基线）| 03-W-3 | 最强排障手段实际不可用 |
 | E-4 | **P1** | 无失败自动分类归因（元素未找到 / 超时 / 断言 / 环境 / 崩溃） | `error-type-pie-chart.ftlh` 存在但分类来源不明 | 失败分析仍靠人眼 |
 | E-5 | **P2** | `SerenityReporter.reportStep` 空实现 | `SerenityReporter.java:94` | 接缝占位未填充，易误导 |
 | E-6 | **P2** | 汇总报告绑定 `verify`，而 CI 只跑 `mvn test` | 11 号文档 | 汇总报告在 CI 上从未生成 |

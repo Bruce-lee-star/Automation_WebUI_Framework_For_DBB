@@ -1,4 +1,4 @@
-@route-coverage
+@regression @route @route-coverage
 Feature: Route DSL 方法 100% 覆盖（route-demo-web :8899）
 
   目标：覆盖 route-demo-service(:8888) 无法覆盖的全部 DSL 方法。

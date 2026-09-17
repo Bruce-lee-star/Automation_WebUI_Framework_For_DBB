@@ -40,7 +40,9 @@ public final class SerenityRecorder {
      */
     public void record(String action, Object detail, Runnable operation) {
         SerenityReporter.flushPendingApiOperations();
-        if (isVerboseLogging()) logger.info("[Serenity] {}", action);
+        if (isVerboseLogging()) {
+            logger.info("[Serenity] {}", action);
+        }
         addSerenityTestData(action, detail != null ? detail : "executed");
         operation.run();
     }
@@ -71,7 +73,9 @@ public final class SerenityRecorder {
      * 添加测试数据到本地存储。仅在详细日志开启时才写入 HashMap，成功路径零开销。
      */
     public void addSerenityTestData(String key, Object value) {
-        if (!isVerboseLogging()) return;
+        if (!isVerboseLogging()) {
+            return;
+        }
         try {
             serenityTestData.put(key, value);
             VerboseLogging.logDebugIfVerbose(logger, "Added Serenity test data: {} = {}", key, value);
@@ -110,7 +114,11 @@ public final class SerenityRecorder {
      */
     public static void recordNative(String action, Object detail, Runnable operation) {
         SerenityReporter.flushPendingApiOperations();
-        if (isVerboseLogging()) logger.info("[Serenity][native] {}", action);
-        if (operation != null) operation.run();
+        if (isVerboseLogging()) {
+            logger.info("[Serenity][native] {}", action);
+        }
+        if (operation != null) {
+            operation.run();
+        }
     }
 }

@@ -21,7 +21,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
@@ -247,7 +246,9 @@ public class ApiCaptureContext implements CaptureContext {
      * 用于 {@link #awaitCompletion(long)} 的首活动门控，吸收「触发请求→Route 拦截」之间的时序间隙。
      */
     private final AtomicLong observedRequests = new AtomicLong(0);
-    private final AtomicBoolean hasAssertionFailures = new AtomicBoolean(false);
+    //  评审：原为 AtomicBoolean，但仅做「置 true / 置 false / 读」而无 CAS —— 单写者布尔量用
+    //  volatile boolean 更贴语义，并让 signalFailFast 能在监视器内做真正的字段写（消除 NN_NAKED_NOTIFY）。
+    private volatile boolean hasAssertionFailures = false;
 
     /** 等待锁：decrement → 0 时通知 awaitCompletion 的调用方 */
     private final Object completionLock = new Object();
@@ -264,9 +265,14 @@ public class ApiCaptureContext implements CaptureContext {
 
     public void incrementActiveRequests() {
         observedRequests.incrementAndGet();
-        int count = activeRequests.incrementAndGet();
-        if (count == 1) {
-            synchronized (completionLock) {
+        int count;
+        //  评审（wait/notify 协议对齐，2026-09-17）：谓词状态（activeRequests）的变更必须与 notify
+        //  同处 completionLock 监视器内 —— 等待方同样在該监视器内「检查谓词 + wait」，如此才构成
+        //  教科书式无丢唤醒协议；原实现把变更留在监视器外（被 SpotBugs 判为 NN_NAKED_NOTIFY）。
+        //  日志移到监视器外：monitor 内不做 IO/日志，避免锁持有期被拉长。
+        synchronized (completionLock) {
+            count = activeRequests.incrementAndGet();
+            if (count == 1) {
                 completionLock.notifyAll();
             }
         }
@@ -278,14 +284,15 @@ public class ApiCaptureContext implements CaptureContext {
      * 递减活动请求计数。当计数归零时通知所有等待 {@link #awaitCompletion} 的线程。
      */
     public void decrementActiveRequests() {
-        int remaining = activeRequests.updateAndGet(current -> Math.max(0, current - 1));
-        VerboseLogging.logTraceIfVerbose(LOGGER,
-                "[ApiCaptureContext] decrementActiveRequests -> {}", remaining);
-        if (remaining == 0) {
-            synchronized (completionLock) {
+        int remaining;
+        synchronized (completionLock) {
+            remaining = activeRequests.updateAndGet(current -> Math.max(0, current - 1));
+            if (remaining == 0) {
                 completionLock.notifyAll();
             }
         }
+        VerboseLogging.logTraceIfVerbose(LOGGER,
+                "[ApiCaptureContext] decrementActiveRequests -> {}", remaining);
     }
 
     public int getActiveRequests() {
@@ -367,11 +374,20 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     /**
-     *  断言失败快速信号：当任一断言失败时，标记 completionLock 以唤醒 awaitCompletion 的等待线程，
-     * 避免其在测试已失败时仍死等超时。
+     * 断言失败快速信号：置「断言失败」标志并唤醒 {@link #awaitCompletion} 的等待线程。
+     *
+     * <p><b>与调用方契约一致（评审修正）</b>：{@code MonitorHandler} 调用点注释明确本方法语义为
+     * 「置 {@code hasAssertionFailures} 标志 + notifyAll 唤醒等待者」，但原实现<b>只唤醒、未置标志</b>
+     * （且纯 notify 无状态变更 → SpotBugs {@code NN_NAKED_NOTIFY}）。现按既有契约补齐，标志写与
+     * notify 同处 {@code completionLock} 监视器内。
+     *
+     * <p><b>边界（如实说明）</b>：唤醒只是让等待者重新评估谓词；{@link #awaitCompletion(long)} 的等待
+     * 条件仍是「在途请求排空」，故本方法<b>不改变</b>其等待时长语义。调用方 {@code StepFailureAggregator}
+     * 仅据此打 WARN，失败最终由 {@code PlaywrightListener#checkAndFailOnApiAssertions()} 在步骤结束时抛出。
      */
     public void signalFailFast() {
         synchronized (completionLock) {
+            hasAssertionFailures = true;
             completionLock.notifyAll();
         }
     }
@@ -388,7 +404,7 @@ public class ApiCaptureContext implements CaptureContext {
 
     /** 标记断言失败（兼容旧调用） */
     public void setAssertionFailure() {
-        hasAssertionFailures.set(true);
+        hasAssertionFailures = true;
     }
 
     /**
@@ -396,7 +412,7 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public void recordAssertionFailure(String url, String assertionType,
                                        String expectedValue, String actualValue, String failMessage) {
-        hasAssertionFailures.set(true);
+        hasAssertionFailures = true;
         failureDetails.add(new AssertionFailureDetail(
                 url, assertionType, expectedValue, actualValue, failMessage));
         VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -405,7 +421,7 @@ public class ApiCaptureContext implements CaptureContext {
     }
 
     public boolean hasAssertionFailures() {
-        return hasAssertionFailures.get();
+        return hasAssertionFailures;
     }
 
     /**
@@ -455,15 +471,17 @@ public class ApiCaptureContext implements CaptureContext {
         VerboseLogging.logDebugIfVerbose(LOGGER,
                 "[ApiCaptureContext] reset() — clearing activeRequests={}, failures={}, responses={}",
                 activeRequests.get(), failureDetails.size(), responseStore.getTotalResponseCount());
-        activeRequests.set(0);
         observedRequests.set(0);
-        hasAssertionFailures.set(false);
         failureDetails.clear();
         responseStore.reset();
         //  R4: 测试级重置时清除步骤窗口标记
         stepStartTimestamp = 0L;
         testThread = null;
+        //  评审：谓词状态（activeRequests / hasAssertionFailures）的变更与 notify 同处监视器内，
+        //  与 awaitCompletion 的「检查谓词 + wait」构成同一临界区（消除 NN_NAKED_NOTIFY）。
         synchronized (completionLock) {
+            activeRequests.set(0);
+            hasAssertionFailures = false;
             completionLock.notifyAll();
         }
     }

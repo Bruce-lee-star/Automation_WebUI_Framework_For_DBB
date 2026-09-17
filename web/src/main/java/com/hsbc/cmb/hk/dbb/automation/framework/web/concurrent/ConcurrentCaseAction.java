@@ -3,7 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 /**
  * 并发用例的领域动作（业务提供，框架驱动）。
  *
- * <p><b>分层契约</b>：并发调度的全部机制（线程池、单 Browser 多 Context、共享 Browser、SSO 闸门、
+ * <p><b>分层契约</b>：并发调度的全部机制（线程池、每线程独立 Browser + 每用例独立 Context、SSO 闸门、
  * {@code runAll}、失败回放）由框架 {@link ConcurrentScenarioExecutor} 拥有；业务<b>只提供"做什么"</b>
  * （即一个用例要执行的领域逻辑），绝不包含任何并发代码。本接口即业务向框架注入领域动作的唯一边界。</p>
  *

@@ -106,7 +106,7 @@ public class LogContextTest {
      */
     @Test
     public void loggedLineCarriesScenarioContext() throws Exception {
-        String marker = "logctx-e2e-" + System.nanoTime();
+        String marker = TestLogCapture.newMarker("logctx-e2e-");
         try (TestLogCapture capture =
                      TestLogCapture.of(LogContextTest.class, "%X{scenarioId} | %msg%n")) {
             LogContext.beginScenario("e2e-scenario");

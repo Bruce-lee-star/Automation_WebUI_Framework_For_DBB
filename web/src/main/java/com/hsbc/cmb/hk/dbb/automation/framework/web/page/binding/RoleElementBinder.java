@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.LocatorFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.ReflectiveField;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.options.AriaRole;
 
@@ -62,7 +63,6 @@ public class RoleElementBinder {
      */
     public void bind(Field field, RoleElement a) {
         try {
-            field.setAccessible(true);
             Supplier<Locator> supplier;
             String desc;
 
@@ -214,7 +214,7 @@ public class RoleElementBinder {
                 };
             }
 
-            field.set(self, new PageElement(supplier, desc, self));
+            ReflectiveField.set(field, self, new PageElement(supplier, desc, self));
         } catch (Exception e) {
             // 关键保留原始 cause 便于调试 —— ElementException 应传入原异常
             throw new ElementException("Init RoleElement field failed: " + field.getName(), e);

@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * {@link ConcurrentCaseActions} 注册中心护盾：显式注册覆盖、未提供时抛语义化异常。
@@ -44,11 +44,9 @@ public class ConcurrentCaseActionsTest {
 
     @Test
     public void registerRejectsNull() {
-        try {
-            ConcurrentCaseActions.register(null);
-            fail("register(null) must throw");
-        } catch (NullPointerException expected) {
-            // 预期
-        }
+        // 用 assertThrows 而非「try + catch NPE」：后者被判为 DCN_NULLPOINTER_EXCEPTION（异常控制流），
+        // 且一旦 register 未抛异常，fail(...) 抛出的 AssertionError 也不会被误当成"预期"。
+        assertThrows(NullPointerException.class, () -> ConcurrentCaseActions.register(null),
+                "register(null) must throw");
     }
 }

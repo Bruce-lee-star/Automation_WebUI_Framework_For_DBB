@@ -12,8 +12,6 @@ import io.restassured.config.HttpClientConfig;
 import io.restassured.config.LogConfig;
 import io.restassured.config.RestAssuredConfig;
 import io.restassured.config.SSLConfig;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.impl.conn.PoolingHttpClientConnectionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.logging.SanitizingPrintStream;
 import io.restassured.http.Headers;
 import io.restassured.response.ValidatableResponse;
@@ -273,17 +271,26 @@ public abstract class AbstractRestJob {
             .map(Integer::parseInt)
             .orElse(ApiFrameworkConfig.getSocketTimeout());
 
-        // P-3：显式配置连接池（RestAssured 默认每路由仅 2 连接，串行大量接口调用握手开销大）。
-        // 经由 httpClientFactory 注入携带 PoolingHttpClientConnectionManager 的 HttpClient，
-        // 由 RestAssured 复用同一实例（默认 reuseHttpClientInstance），连接池在请求间共享。
-        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
-        connectionManager.setMaxTotal(ApiFrameworkConfig.getMaxConnectionsTotal());
-        connectionManager.setDefaultMaxPerRoute(ApiFrameworkConfig.getMaxConnectionsPerRoute());
-        connectionManager.setValidateAfterInactivity(1000);
-
+        // P-3：连接复用（RestAssured 默认每请求新建客户端，握手开销大）。
+        //
+        //  ⚠️【重要】不可再经 httpClientFactory 注入自建 HttpClient：
+        //    rest-assured 的 Groovy 实现（RequestSpecificationImpl.applyPathParamsAndSendRequest
+        //    → DefaultTypeTransformation.castToType）会把该实例强转为
+        //    org.apache.http.impl.client.AbstractHttpClient（HttpClient 4.3 之前的抽象类），
+        //    而 4.3+ 交由 HttpClients.custom().build() 产出的是 InternalHttpClient（并非其子类）
+        //    → 每个请求抛 GroovyCastException: Cannot cast ... InternalHttpClient ... to ... AbstractHttpClient，
+        //      整批 API 用例全红（实测 134 次）。
+        //
+        //  改用「由 rest-assured 自身创建客户端」：不设置 httpClientFactory、也不强制单实例复用，
+        //    只配置超时与脱敏日志。客户端构造路径完全交给 rest-assured，既避开上述 Groovy 强转，
+        //    也避开 reuseHttpClientInstance() 的另一个坑（单连接被响应占用未释放时，后续请求抛
+        //    "Invalid use of BasicClientConnManager: connection still allocated" —— 实测 9/12 用例因此失败）。
+        //
+        //  P-3 权衡：放弃了"显式连接池（max-total/per-route）"的调优；连接复用改由 rest-assured
+        //    默认行为提供。连接池调优与 rest-assured 的 Groovy 客户端强转在本依赖版本组合下互斥，
+        //    以「API 用例可用」优先（原先 134 次强转导致整批用例全红，属功能性缺陷，优先级高于吞吐调优）。
         final RestAssuredConfig restAssuredConfig = RestAssuredConfig.config()
                 .httpClient(HttpClientConfig.httpClientConfig()
-                        .httpClientFactory(() -> HttpClients.custom().setConnectionManager(connectionManager).build())
                         .setParam("http.connection.timeout", httpConnectTimeout)
                         .setParam("http.socket.timeout", httpSocketTimeout))
                 .logConfig(new LogConfig(

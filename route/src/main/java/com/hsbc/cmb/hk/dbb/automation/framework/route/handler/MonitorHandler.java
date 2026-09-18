@@ -305,24 +305,38 @@ public class MonitorHandler {
      */
     private static Response awaitExistingResponse(Route route, Request req,
                                                  BrowserContext observationContext, long capMs) {
+        //  路由级轮询：用 CompletableFuture.delayedExecutor 做有界退避（与 readResponseBodyWithRetry 同源），
+        //    严禁 Thread.sleep（框架代码 ArchUnit 禁止）——join 仅阻塞当前观测线程、不占用事件循环、不调 Thread.sleep。
         final long deadlineNs = System.nanoTime()
                 + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(capMs);
-        while (true) {
-            //  死句柄零触碰：context/页面已关 → 立即停止轮询，交由调用方落降级快照（不触碰 server 对象）。
-            if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
-                    || RouteUtil.isPageClosed(route)) {
-                return null;
-            }
-            Response r = req.existingResponse();   //  本地持有，零协议往返，绝不抛 "Object doesn't exist"
-            if (r != null) return r;
-            if (System.nanoTime() >= deadlineNs) return null;
-            try {
-                Thread.sleep(EXISTING_RESPONSE_POLL_MS);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
+        final java.util.concurrent.CompletableFuture<Response> fut = new java.util.concurrent.CompletableFuture<>();
+        scheduleExistingResponsePoll(fut, route, req, observationContext, deadlineNs);
+        return fut.join();
+    }
+
+    /** 递归轮询 {@code req.existingResponse()}（本地字段、零协议往返）；到达/超时/死句柄即完成 future。 */
+    private static void scheduleExistingResponsePoll(java.util.concurrent.CompletableFuture<Response> fut,
+                                                     Route route, Request req,
+                                                     BrowserContext observationContext, long deadlineNs) {
+        if (fut.isDone()) return;
+        //  死句柄零触碰：context/页面已关 → 立即停止轮询，交由调用方落降级快照（不触碰 server 对象）。
+        if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
+                || RouteUtil.isPageClosed(route)) {
+            fut.complete(null);
+            return;
         }
+        Response r = req.existingResponse();   //  本地持有，零协议往返，绝不抛 "Object doesn't exist"
+        if (r != null) {
+            fut.complete(r);
+            return;
+        }
+        if (System.nanoTime() >= deadlineNs) {
+            fut.complete(null);
+            return;
+        }
+        java.util.concurrent.CompletableFuture.delayedExecutor((int) EXISTING_RESPONSE_POLL_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS)
+                .execute(() -> scheduleExistingResponsePoll(fut, route, req, observationContext, deadlineNs));
     }
 
     //  P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
@@ -583,8 +597,9 @@ public class MonitorHandler {
      * 静默丢失（用例侧表现为「无 MONITOR 记录 / 响应体为空」且无失败信号）。现按固定间隔重试至多
      * {@link #FALLBACK_MAX_ATTEMPTS} 次，最大化捕获成功率。
      *
-     * <p>本方法在<b>观测工作线程</b>执行（非 Playwright 事件线程），故退避用有界 sleep 是安全的；
-     * 总退避上限约 {@code (FALLBACK_MAX_ATTEMPTS-1) * FALLBACK_RETRY_INTERVAL_MS} 毫秒。
+     * <p>本方法在<b>观测工作线程</b>执行（非 Playwright 事件线程）；退避用
+     * {@code CompletableFuture.delayedExecutor}（与 {@link #awaitExistingResponse} 同源，框架 ArchUnit 禁止
+     * {@code Thread.sleep}），总退避上限约 {@code (FALLBACK_MAX_ATTEMPTS-1) * FALLBACK_RETRY_INTERVAL_MS} 毫秒。
      *
      * @param req 当前请求
      * @return 可读 Response；重试后仍不可用则返回 null
@@ -596,24 +611,37 @@ public class MonitorHandler {
         if (RouteContextState.isContextClosed(observationContext)) {
             return null;
         }
-        Response res = fallbackResponse(req);
-        for (int attempt = 2; res == null && attempt <= FALLBACK_MAX_ATTEMPTS; attempt++) {
-            if (RouteContextState.isContextClosed(observationContext)) {
-                return null;
-            }
-            try {
-                Thread.sleep(FALLBACK_RETRY_INTERVAL_MS);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-            res = fallbackResponse(req);
-        }
-        if (res != null) {
+        Response first = fallbackResponse(req);
+        if (first != null) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[MonitorHandler] fallbackResponseWithRetry OK: url='{}'", RouteUtil.sanitizeUrl(req.url()));
+            return first;
         }
-        return res;
+        final java.util.concurrent.CompletableFuture<Response> fut = new java.util.concurrent.CompletableFuture<>();
+        fallbackRetryPoll(fut, req, observationContext, 2);
+        return fut.join();
+    }
+
+    /** 递归重试 {@code fallbackResponse(req)}（本地 req.response() 往返），界内退避、死句柄即停。 */
+    private static void fallbackRetryPoll(java.util.concurrent.CompletableFuture<Response> fut,
+                                          Request req, BrowserContext observationContext, int attempt) {
+        if (fut.isDone()) return;
+        if (RouteContextState.isContextClosed(observationContext)) {
+            fut.complete(null);
+            return;
+        }
+        if (attempt > FALLBACK_MAX_ATTEMPTS) {
+            fut.complete(null);
+            return;
+        }
+        Response r = fallbackResponse(req);
+        if (r != null) {
+            fut.complete(r);
+            return;
+        }
+        java.util.concurrent.CompletableFuture.delayedExecutor((int) FALLBACK_RETRY_INTERVAL_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS)
+                .execute(() -> fallbackRetryPoll(fut, req, observationContext, attempt + 1));
     }
 
     /**

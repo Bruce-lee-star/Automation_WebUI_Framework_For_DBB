@@ -36,6 +36,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightSc
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
@@ -214,6 +215,14 @@ public class PlaywrightSerenityBridge {
     static void cleanupPageState() {
         Page page = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
         BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+        //  复用模式（reuse.context.within.feature）下，用例级键可能已被 @After 清空 →
+        //  回退线程级记录，确保「关闭多余 tab / 复位主页面引用」在复用路径上依然生效。
+        if (page == null) {
+            page = PlaywrightManager.currentPageForThread();
+        }
+        if (context == null) {
+            context = PlaywrightManager.currentContextForThread();
+        }
 
         try {
             VerboseLogging.logInfoIfVerbose(logger, "Cleaning up page state (preserving all cookies)...");
@@ -447,7 +456,9 @@ public class PlaywrightSerenityBridge {
             resetCustomContextOptionsForScenarioMode();
             SessionManager.resetFeatureSession();
         } else {
-            if (!SessionManager.isAnyFeatureSessionRestored()) {
+            boolean reuseWithinFeature =
+                    WebFrameworkConfig.SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE.getBooleanValue();
+            if (!SessionManager.isAnyFeatureSessionRestored() && !reuseWithinFeature) {
                 VerboseLogging.logInfoIfVerbose(logger,
                         "Feature mode: No session restored — closing Context to avoid cookie contamination");
                 PlaywrightManager.closePage();
@@ -456,7 +467,8 @@ public class PlaywrightSerenityBridge {
                 PlaywrightManager.reapOrphanContexts();
             } else {
                 VerboseLogging.logDebugIfVerbose(logger,
-                        "Restart strategy is 'feature' - keeping Context and Page for reuse");
+                        "Restart strategy is 'feature' - keeping Context and Page for reuse"
+                                + (SessionManager.isAnyFeatureSessionRestored() ? "" : " (reuse-context-within-feature)"));
                 resetCustomContextOptionsForFeatureMode();
                 cleanupPageState();
             }

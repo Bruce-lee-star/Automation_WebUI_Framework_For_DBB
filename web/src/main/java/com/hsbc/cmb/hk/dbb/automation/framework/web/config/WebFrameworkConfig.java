@@ -1119,6 +1119,27 @@ public enum WebFrameworkConfig {
         "浏览器重启策略"
     ),
 
+    /**
+     * 同一 feature 内是否复用同一 Context/Page（默认 false）。
+     *
+     * <p><b>false（默认，保守）</b>：未使用 {@code SessionManager} 的场景在用例收尾即关闭 Context，
+     * 杜绝同 feature 内场景间 Cookie / LocalStorage / 页面状态互相污染；代价是每用例各建 1 个
+     * Context+Page（headed 下即每个用例开/关一次窗口）。
+     *
+     * <p><b>true</b>：同一 feature 内所有场景复用<b>同一个</b> Context+Page —— 配合
+     * {@code serenity.playwright.restart.browser.for.each=feature} 即实现「1 个窗口 / 一个 feature」。
+     * 适用于无状态场景（路由拦截 / 接口 / 只读页面）；<b>有登录态或页面状态依赖的场景请勿开启</b>，
+     * 否则会引入跨场景串扰（正是本项默认关闭的原因）。
+     *
+     * <p>本项与 {@code restart.browser.for.each} 正交：后者决定「Context 何时关闭」（scenario/feature），
+     * 本项决定「无 session 场景是否也保留 Context」。
+     */
+    SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE(
+        "serenity.playwright.reuse.context.within.feature",
+        "false",
+        "同一 feature 内复用同一 Context/Page（默认关；开启=1 窗口/feature，需场景间无状态依赖）"
+    ),
+
 
 
     // ==================== 重试配置 ====================

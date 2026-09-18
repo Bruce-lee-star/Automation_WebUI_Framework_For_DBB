@@ -57,6 +57,18 @@ public final class RecordingPageProxy {
     }
 
     /**
+     * 解开本装饰代理，返回底层真实 {@link Page}（非本代理时原样返回）。
+     *
+     * <p>供「按页面身份比较」的场景使用（路由 PAGE 级规则筛选、采集归属判定等）：
+     * 装饰代理与原生 Page 指向同一页面，必须能被判定为同一页。
+     */
+    public static Page unwrap(Page page) {
+        Object unwrapped =
+                com.hsbc.cmb.hk.dbb.automation.framework.common.route.PageRefs.unwrap(page);
+        return unwrapped instanceof Page real ? real : page;
+    }
+
+    /**
      * 包装受管 Page。录制关闭或入参为空时返回裸 Page（零开销，D4）。
      */
     public static Page wrap(Page real) {
@@ -111,6 +123,16 @@ public final class RecordingPageProxy {
 
         RecordingHandler(Object target) {
             this.target = target;
+        }
+
+        /**
+         * 被委托的真实对象（访问器约定，见核心层 {@code PageRefs}）。
+         *
+         * <p><b>必须保留</b>：路由 PAGE 级规则按对象同一性筛选适用页面，若无法从本代理取回真实
+         * Page，则「同一页面的代理」会被判为不适用 → MOCK / MODIFY / DELAY 静默失效。
+         */
+        public Object target() {
+            return target;
         }
 
         @Override

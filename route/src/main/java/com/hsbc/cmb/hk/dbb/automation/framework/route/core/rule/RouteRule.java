@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.PageRefs;
 
 /**
  * 路由规则数据模型 — 统一承载 MONITOR / MODIFY / MOCK 三种类型的配置。
@@ -294,9 +295,15 @@ public class RouteRule {
 
     /**
      *  Phase 5：设置 page 级规则归属的 Page 引用（逻辑标签）。
+     *
+     * <p><b>身份归一（关键）</b>：入参可能来自业务取页路径的<b>装饰代理</b>
+     * （典型：web 的 {@code RecordingPageProxy}），而 dispatch 侧 {@code reqPage} 取自
+     * {@code route.request().frame().page()}（原生 Page）。若原样存代理，则 PAGE 级规则的
+     * 对象同一性筛选必然失败 → 规则被判「不适用本页」→ 请求放行到真实后端
+     * （表现为 MOCK / MODIFY / DELAY 静默失效）。故此处统一存<b>解装饰后的真实 Page</b>。
      */
     public void setPageRef(Object pageRef) {
-        this.pageRef = pageRef;
+        this.pageRef = PageRefs.unwrap(pageRef);
     }
 
     public String getMockBody() {

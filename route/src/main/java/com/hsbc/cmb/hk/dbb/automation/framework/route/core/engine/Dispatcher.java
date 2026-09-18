@@ -157,6 +157,12 @@ public final class Dispatcher {
             VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
                     "[RouteEngine] ═══ dispatchRoute SKIP (unified: no applicable rule for this page): pattern='{}' ═══",
                     rule.getUrlPattern());
+            if (RouteEngine.LOGGER.isDebugEnabled()) {
+                RouteEngine.LOGGER.debug("[RouteEngine]   SKIP diag: reqPage=#{} reqPageCtx=#{} chain={}",
+                        System.identityHashCode(reqPage),
+                        reqPage == null ? "null" : System.identityHashCode(reqPage.context()),
+                        describeChainForDiag(chain, reqPage));
+            }
             RouteUtil.fallbackIfOpen(route);
             return;
         }
@@ -291,5 +297,39 @@ public final class Dispatcher {
                 }
             }
         }
+    }
+
+    /**
+     * 诊断辅助（仅 debug 日志）：逐条打印规则 scope / pageRef 身份 / 是否同 Page / 是否同 Context。
+     *
+     * <p>用于定位「规则已触发但被判不适用本页」的绑定错配 —— PAGE 级规则按<b>对象同一性</b>筛选
+     * （{@code pageRef == reqPage}），一旦同一场景内出现多个 Page 实例即被误判为不适用。
+     */
+    private static String describeChainForDiag(List<RouteRule> chain, Page reqPage) {
+        StringBuilder sb = new StringBuilder();
+        for (RouteRule r : chain) {
+            if (r == null) {
+                continue;
+            }
+            Object pageRef = r.getPageRef();
+            sb.append("{scope=").append(r.getScope())
+                    .append(", pageRef=#").append(pageRef == null ? "null" : System.identityHashCode(pageRef))
+                    .append(", samePage=").append(pageRef == reqPage)
+                    .append(", sameCtx=").append(isSameContext(pageRef, reqPage))
+                    .append("} ");
+        }
+        return sb.toString();
+    }
+
+    /** pageRef 与请求页是否属于同一 BrowserContext（已关闭的 page 反查会抛异常 → 视为不同）。 */
+    private static boolean isSameContext(Object pageRef, Page reqPage) {
+        try {
+            if (pageRef instanceof Page pr && reqPage != null) {
+                return pr.context() != null && pr.context() == reqPage.context();
+            }
+        } catch (Exception ignored) {
+            // 页面/上下文已关闭：无法反查 → 视为不同
+        }
+        return false;
     }
 }

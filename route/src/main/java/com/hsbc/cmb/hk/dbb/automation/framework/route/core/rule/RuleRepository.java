@@ -173,8 +173,9 @@ public final class RuleRepository {
         RouteEngine.LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
                 rule.getType(), pattern);
         RouteMonitorSession.startMonitorSession(context, rule, pattern);
-        RouteEngine.LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext",
-                rule.getType(), pattern);
+        RouteEngine.LOGGER.info("[RouteEngine] Route registered: type={}, pattern='{}', context=BrowserContext, scope={}, pageRef=#{}",
+                rule.getType(), pattern, rule.getScope(),
+                rule.getPageRef() == null ? "null" : String.valueOf(System.identityHashCode(rule.getPageRef())));
         VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
                 "[RouteEngine]    rule detail: urlPattern='{}', type={}, delay={}ms, mockStatus={}, record={}, autoStop={}",
                 rule.getUrlPattern(), rule.getType(), rule.getDelayMs(), rule.getMockStatus(),

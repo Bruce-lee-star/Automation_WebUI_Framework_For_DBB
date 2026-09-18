@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.PageRefs;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRuleScope;
@@ -139,9 +140,10 @@ public final class RouteUnifiedResolution {
             if (r == null) continue;
             if (r.getScope() == RouteRuleScope.PAGE) {
                 Object pr = r.getPageRef();
-                //  身份匹配（==）：page 级规则只作用于其注册时所绑定的那个 Page；
-                //    reqPage 为 null 时一律不命中。
-                if (pr != null && pr == reqPage) {
+                //  身份匹配：page 级规则只作用于其注册时所绑定的那个 Page；reqPage 为 null 时一律不命中。
+                //    PageRefs.isSamePage 先按 == 快判，不等时解开装饰代理再比 —— 业务侧取到的可能是
+                //    装饰 Page（RecordingPageProxy），与本处原生 reqPage 非同一对象但属同一页面。
+                if (pr != null && PageRefs.isSamePage(pr, reqPage)) {
                     pageChain.add(r);
                 }
             } else {

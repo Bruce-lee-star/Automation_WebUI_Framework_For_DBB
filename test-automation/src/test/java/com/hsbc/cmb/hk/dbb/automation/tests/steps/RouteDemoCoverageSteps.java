@@ -432,11 +432,24 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
     // ───────────────────────── 按能力维度显式停止（monitor / modify / delay / mock / all）─────────────────────────
     // 验证「停止某能力只影响该能力，同 API 的其余能力不受影响」；stopApi 则停止全部能力（路由仍注册，走真实后端）。
 
+    /**
+     * 规则匹配用的<b>完整路径</b>（pattern）—— 用于 {@code RouteDsl.on(page()).api(...)} /
+     * {@code stopX(page(), ...)} / 采集计数过滤。
+     */
     private static final String CAP_API = "/web/api/echo";
 
-    /** 向 /web/api/echo 发 GET，返回包装 JSON {status, body, headers}。 */
+    /**
+     * 探测请求用的<b>相对路径</b>（相对 {@link #BASE}）。
+     *
+     * <p>⚠️ 不能写成 {@code BASE + CAP_API}：BASE 已含 {@code /web/api}，再拼完整路径会得到
+     * {@code /web/api/web/api/echo} → 必然 404（实测：ModifyHandler 已生效但响应 status=404，
+     * 响应体无 headers → 断言 {@code x-cap=ALIVE} 失败）。此前 4 条 capability-stop 用例即因此全红。
+     */
+    private static final String ECHO_PATH = "/echo";
+
+    /** 向 {@code /web/api/echo} 发 GET，返回包装 JSON {status, body, headers}。 */
     private JsonNode echoProbe() {
-        String raw = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
+        String raw = RouteDemoCoverageApi.request(page(), BASE + ECHO_PATH, "GET", null, null, null);
         return assertJson(raw);
     }
 
@@ -536,13 +549,13 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         RouteDsl.on(page()).api(CAP_API).mock().mockBody("MOCKED_STOP").done().start();
         openOrigin(page());
 
-        String first = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
+        String first = RouteDemoCoverageApi.request(page(), BASE + ECHO_PATH, "GET", null, null, null);
         assertTrue( first.contains("MOCKED_STOP"), "首次请求应命中 mock");
 
         // 仅停止 mock
         RouteDsl.stopMock(page(), CAP_API);
 
-        String second = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
+        String second = RouteDemoCoverageApi.request(page(), BASE + ECHO_PATH, "GET", null, null, null);
         assertFalse( second.contains("MOCKED_STOP"), "停止 mock 后不应再返回 mock 内容");
         assertTrue( second.contains("\"status\""), "停止 mock 后应走真实 echo（含 status 字段）");
     }
@@ -568,7 +581,7 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         RouteDsl.stopApi(page(), CAP_API);
 
         long t2 = System.currentTimeMillis();
-        String raw2 = RouteDemoCoverageApi.request(page(), BASE + CAP_API, "GET", null, null, null);
+        String raw2 = RouteDemoCoverageApi.request(page(), BASE + ECHO_PATH, "GET", null, null, null);
         long e2 = System.currentTimeMillis() - t2;
         assertTrue( e2 < 1000, "stopApi 后不应再有 delay（<1000ms），实际=" + e2);
         assertTrue( raw2.contains("\"status\""), "stopApi 后应为 passthrough 到真实 echo（含 status 字段）");

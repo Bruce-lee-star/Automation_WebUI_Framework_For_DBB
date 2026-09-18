@@ -465,7 +465,8 @@ public class ModifyHandler {
                         //    （body 被改写则为改写后体，未改写则为原请求体），使表单/JSON 改写对 APICapture 可见
                         modifyDetail   //  修改详情（headersSet / modifiedBody / bodyFieldsModified / formFieldsModified …），供 json() 回退断言
                 );
-                ApiCaptureContext ctx = RouteUtil.captureContext(route);
+                //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃（避免跨场景污染）
+                ApiCaptureContext ctx = RouteUtil.captureContextForRecord(route);
                 if (ctx != null) {
                     ctx.storeApiCall(call);
                     LOGGER.info("[ModifyHandler] Stored to ApiCaptureContext: endpoint='{}', method={}, status={}, totalCalls={}",

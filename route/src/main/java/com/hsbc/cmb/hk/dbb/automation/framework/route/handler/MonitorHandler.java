@@ -705,7 +705,8 @@ public class MonitorHandler {
      * @param req   当前请求
      */
     private static void recordUnavailable(Route route, RouteRule rule, Request req) {
-        ApiCaptureContext captureContext = RouteUtil.captureContext(route);
+        //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃该记录，绝不写进当前场景的采集存储（跨场景污染）
+        ApiCaptureContext captureContext = RouteUtil.captureContextForRecord(route);
         if (captureContext == null) {
             return;
         }
@@ -927,8 +928,17 @@ public class MonitorHandler {
         // 避免主线程在 store 之后、increment 之前轮询到 activeRequests==0 而误判「无活动」提前返回；
         // 同时保证 finally 中 decrement 必然配对，防止计数只增不减导致 awaitCompletion 永久阻塞。
         context.incrementActiveRequests();
+        //  落库改用「无回退」查询：owner 已销毁 ⇒ 丢弃本条记录（不回退到"当前"上下文，避免跨场景污染）；
+        //    上方计数与下方失败上报仍走带回退的 context，保证断言失败可见性（D7-3）不受影响。
+        ApiCaptureContext storeTarget = RouteUtil.captureContextForRecord(route);
         try {
-            context.storeApiCall(captured);
+            if (storeTarget != null) {
+                storeTarget.storeApiCall(captured);
+            } else {
+                VerboseLogging.logDebugIfVerbose(LOGGER,
+                        "[MonitorHandler] Observation owner context gone → record dropped "
+                                + "(not stored into current context): pattern='{}'", rule.getUrlPattern());
+            }
         } catch (Exception e) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[MonitorHandler] Failed to store monitor call: {}", e.getMessage());

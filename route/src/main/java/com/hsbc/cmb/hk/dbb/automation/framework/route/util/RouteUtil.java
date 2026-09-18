@@ -475,4 +475,41 @@ public final class RouteUtil {
         }
         return ApiCaptureContext.getCurrent();
     }
+
+    /**
+     * <b>记录专用</b>查询：绑定到 route 所属 BrowserContext 的捕获上下文，<b>无回退</b>。
+     *
+     * <p><b>为什么需要它（跨场景污染）</b>：{@link #captureContext(Route)} 在 Page/Context 已销毁时会
+     * 回退到 {@code ApiCaptureContext.getCurrent()} —— 该回退为「断言失败可见性」而存在（D7-3，且有
+     * 契约测试依赖），必须保留。但若把<b>落库</b>也走该回退，则「上一场景已结束、Context 已关闭」时
+     * 仍在途的观测任务，会把记录写进<b>当前</b>场景的采集存储 —— 表现为：
+     * <ul>
+     *   <li>当前场景的计数/存在性断言被"别人的记录"污染（如 "不应再采集" 断言反而失败）；</li>
+     *   <li>真正该丢失的记录被伪装成"已采集"，掩盖观测失败。</li>
+     * </ul>
+     *
+     * <p>因此<b>落库路径</b>统一改用本方法：owner 已销毁 ⇒ 返回 {@code null} ⇒ 调用方<b>丢弃该记录</b>
+     * （记录本就属于已结束的场景，丢弃才正确）；而断言失败上报等仍走 {@code captureContext} 的回退路径，
+     * 保证失败可见性不受影响。
+     *
+     * @param route Playwright 路由对象
+     * @return 绑定到该 route 所属上下文的捕获上下文；Page/Context 已销毁或无法解析时返回 {@code null}
+     */
+    public static ApiCaptureContext captureContextForRecord(Route route) {
+        if (route == null) {
+            return null;
+        }
+        try {
+            if (route.request() != null && route.request().frame() != null
+                    && route.request().frame().page() != null) {
+                return ApiCaptureContext.forContext(route.request().frame().page().context());
+            }
+        } catch (Exception e) {
+            // owner 已销毁：落库放弃（不回退到"当前"上下文，避免跨场景污染）
+            LOGGER.debug("[RouteUtil] captureContextForRecord: page/context destroyed → record dropped: {}",
+                    e.toString());
+            return null;
+        }
+        return null;
+    }
 }

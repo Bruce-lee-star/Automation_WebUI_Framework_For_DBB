@@ -167,7 +167,8 @@ public class MockHandler {
      */
     private static void storeMockCall(Route route, RouteRule rule, String url, int status, String body) {
         try {
-            ApiCaptureContext ctx = RouteUtil.captureContext(route);
+            //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃（避免跨场景污染）
+            ApiCaptureContext ctx = RouteUtil.captureContextForRecord(route);
             if (ctx == null) return;
             CapturedApiCall call = new CapturedApiCall(
                     rule.getUrlPattern(),
@@ -369,7 +370,8 @@ public class MockHandler {
                                              int status, String body,
                                              Map<String, String> realRespHeaders) {
         try {
-            ApiCaptureContext ctx = RouteUtil.captureContext(route);
+            //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃（避免跨场景污染）
+            ApiCaptureContext ctx = RouteUtil.captureContextForRecord(route);
             if (ctx == null) return;
             CapturedApiCall call = new CapturedApiCall(
                     rule.getUrlPattern(),

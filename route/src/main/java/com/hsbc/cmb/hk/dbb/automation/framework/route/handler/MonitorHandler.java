@@ -31,19 +31,25 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * API 监控 Handler — 在 Playwright 事件线程中同步读取响应 body，
- * 拷贝 byte[] 后交给 AsyncPool 异步执行断言和报告记录。
+ * API 监控 Handler — <b>Playwright 事件线程零阻塞</b>（P0-3 / RT-F1）。
+ *
+ * <p>入口 {@link #handle} 仅做轻量登记，随后立即把「{@code waitForResponse} + body 读 +
+ * 断言 + 记录」提交到 {@link #observationExecutor} 工作线程并返回，避免长阻塞把该 context
+ * 下所有路由分发串行化（级联超时）。实际链路见 {@link #observeAndRecord}。
  *
  * <p>关键设计原则：
  * <ul>
- *   <li>response.body() 在 Playwright 事件线程同步调用（线程安全）</li>
- *   <li>byte[] 拷贝后传给异步线程，避免跨线程访问 Response 对象</li>
+ *   <li>事件线程只做页面关闭 / 上下文检查后即返回，<b>不在其上等待响应或读 body</b></li>
+ *   <li>观测链路整体在受管工作线程执行（含 body 带重试读取）</li>
  *   <li>断言结果通过 {@link ApiCaptureContext} 通知测试生命周期</li>
  *   <li>失败详情（URL、类型、预期值、实际值）记录到上下文供测试结束报告</li>
  *   <li>Serenity 报告写入通过 {@link SerenityReporter} 统一处理</li>
@@ -83,6 +89,32 @@ public class MonitorHandler {
     }
 
     /**
+     * 观测执行器（P0-3 / RT-F1）：承载「waitForResponse + body 读 + 断言 + 记录」这条<b>阻塞</b>链路，
+     * 使 Playwright 事件线程在 {@link #handle} 中做完轻量登记后立即返回，不再被 20s+30s 的等待占住，
+     * 从而消除「单 context 高 API 密度下路由分发被串行化 → 级联超时」。
+     *
+     * <p>有界队列 + 拒绝即放行：队列满时拒绝新任务并立即 {@code safeResume} 放行请求
+     * （绝不反压事件线程，也不让请求永久挂起）。线程数与队列容量分别由
+     * {@code monitor.observe.threads} / {@code monitor.observe.queue.capacity} 配置。
+     */
+    private static final ThreadPoolExecutor observationExecutor = newObservationExecutor();
+
+    private static ThreadPoolExecutor newObservationExecutor() {
+        int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MONITOR_OBSERVE_THREADS, 8));
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MONITOR_OBSERVE_QUEUE_CAPACITY, 4096));
+        AtomicInteger seq = new AtomicInteger(1);
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queue),
+                r -> {
+                    Thread t = new Thread(r, "monitor-observe-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /**
      * 已读取的响应体 + 截断前原始字节数（C-10）。
      *
      * <p>两者必须<b>同路返回</b>：截断发生在读取路径上，若只回传截断后的内容，
@@ -118,6 +150,11 @@ public class MonitorHandler {
             bodyReadScheduler.shutdownNow();
             if (!bodyReadScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 LOGGER.warn("[MonitorHandler] bodyReadScheduler did not terminate in time");
+            }
+            // P0-3：一并关闭观测执行器（其任务同样持有 context/rule 引用，不应在收尾后残留）
+            observationExecutor.shutdownNow();
+            if (!observationExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[MonitorHandler] observationExecutor did not terminate in time");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -219,19 +256,55 @@ public class MonitorHandler {
     //  P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
 
     /**
-     * 处理单个 route 的监控逻辑（带断言）。
+     * 处理单个 route 的监控逻辑（带断言）—— <b>Playwright 事件线程入口</b>。
      *
-     * <p><b> 重要架构变更 — 同步断言 + Fail-Fast</b>：
-     * <ul>
-     *   <li>断言（状态码 / JSONPath）在 Playwright 事件线程上<b>同步执行</b>，
-     *       不再提交到 AsyncPool 异步线程</li>
-     *   <li>断言失败 → 调用 {@code context.signalFailFast()} 置失败标志（<b>不中断</b>主测试线程），
-     *       由 PlaywrightListener 在步骤结束时经 {@code checkAndFailOnApiAssertions()} 抛 AssertionError，仅当前 Step 失败</li>
-     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录仍提交到
-     *       AsyncPool 异步执行（繁重操作不阻塞事件线程）</li>
-     * </ul>
+     * <p><b>P0-3（RT-F1）：事件线程不再阻塞。</b>本方法只做轻量登记（页面关闭 / 上下文检查），
+     * 随后立即把「{@code waitForResponse} + body 读 + 断言 + 记录」提交到 {@link #observationExecutor}
+     * 并<b>立即返回</b>；避免 20s+30s 的长阻塞把该 context 下所有路由分发串行化（级联超时）。
+     * 实际观测与记录见 {@link #observeAndRecord}。
      */
     public static void handle(Route route, RouteRule rule, long delayMs) {
+        // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
+        if (RouteUtil.isPageClosed(route)) {
+            VerboseLogging.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] Page/Context already closed, resume & skip for pattern='{}'",
+                    rule.getUrlPattern());
+            RouteUtil.safeResume(route);
+            return;
+        }
+        // 快速失败面：无 ApiCaptureContext 时直接放行（绝不让请求永久挂起）
+        if (RouteUtil.captureContext(route) == null) {
+            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
+                    rule.getUrlPattern());
+            RouteUtil.safeResume(route);
+            return;
+        }
+        try {
+            observationExecutor.execute(() -> observeAndRecord(route, rule, delayMs));
+        } catch (RejectedExecutionException rex) {
+            // 队列饱和（极端负载）：拒绝即放行，绝不反压事件线程、也不让请求永久挂起
+            LOGGER.error("[MonitorHandler] Observation queue saturated, resuming & skipping for pattern='{}': {}",
+                    rule.getUrlPattern(), rex.getMessage());
+            RouteUtil.safeResume(route);
+        }
+    }
+
+    /**
+     * 实际观测与记录（在 {@link #observationExecutor} 工作线程执行）—— P0-3 / RT-F1。
+     *
+     * <p>承载原「事件线程内同步」的全部阻塞链路：{@code page.waitForResponse}（≤20s）、
+     * body 带重试读取（{@code future.get} ≤30s）、同步断言（Fail-Fast 置标志）与记录。
+     * 因运行在工作线程，这些阻塞不再影响 Playwright 事件线程的路由分发。
+     *
+     * <p><b> 重要架构约束 — 同步断言 + Fail-Fast</b>：
+     * <ul>
+     *   <li>断言（状态码 / JSONPath）<b>同步执行</b>（现位于本工作线程），不提交到 AsyncPool</li>
+     *   <li>断言失败 → 调用 {@code context.signalFailFast()} 置失败标志（<b>不中断</b>主测试线程），
+     *       由 PlaywrightListener 在步骤结束时经 {@code checkAndFailOnApiAssertions()} 抛 AssertionError，仅当前 Step 失败</li>
+     *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录在本工作线程内完成</li>
+     * </ul>
+     */
+    private static void observeAndRecord(Route route, RouteRule rule, long delayMs) {
         // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
         if (RouteUtil.isPageClosed(route)) {
             VerboseLogging.logDebugIfVerbose(LOGGER,

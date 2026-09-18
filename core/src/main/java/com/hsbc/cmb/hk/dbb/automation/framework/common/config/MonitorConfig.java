@@ -60,10 +60,31 @@ public final class MonitorConfig {
     public static final Key MONITOR_TIMEOUT_MAX_MS =
             new Key("monitor.timeout.max.ms", "300000");
 
+    // ==================== MonitorHandler 观测线程池（P0-3 / RT-F1） ====================
+    /**
+     * MonitorHandler 观测执行器线程数（默认 8）。
+     * <p>把 {@code page.waitForResponse} + body 读 + 断言整体移出 Playwright 事件线程后，
+     * 由本池承载阻塞等待。线程数应 ≈ 期望的单 context 并发监控请求数上限。
+     */
+    public static final Key MONITOR_OBSERVE_THREADS =
+            new Key("monitor.observe.threads", "8");
+
+    /**
+     * MonitorHandler 观测执行器有界队列容量（默认 4096）。队列满即拒绝并放行请求（绝不反压事件线程）。
+     */
+    public static final Key MONITOR_OBSERVE_QUEUE_CAPACITY =
+            new Key("monitor.observe.queue.capacity", "4096");
+
     // ==================== API Monitor 文件存储配置 ====================
     public static final Key MONITOR_FILE_STORE_ENABLED = new Key("monitor.file.store.enabled", "false");
     public static final Key MONITOR_FILE_STORE_DIR = new Key("monitor.file.store.dir", "target/monitor-output");
     public static final Key MONITOR_FILE_STORE_PRETTY = new Key("monitor.file.store.pretty", "true");
+    /**
+     * 文件存储异步写盘队列容量（默认 4096，P0-4 / RT-F2）。队列满即丢弃并计数告警，绝不阻塞事件线程。
+     */
+    public static final Key MONITOR_FILE_STORE_WRITE_QUEUE_CAPACITY =
+            new Key("monitor.file.store.write.queue.capacity", "4096");
+
     public static final Key MONITOR_FILE_STORE_GROUP_BY_SCENARIO =
             new Key("monitor.file.store.group.by.scenario", "true");
 

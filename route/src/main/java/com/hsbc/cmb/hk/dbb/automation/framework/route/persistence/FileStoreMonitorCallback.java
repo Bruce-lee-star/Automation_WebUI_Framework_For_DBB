@@ -15,7 +15,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -66,7 +70,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p><b>线程安全</b>：每个 endpoint 的文件名序号使用 {@code ConcurrentHashMap<String, AtomicInteger>}
  * 保证并发安全；scenario 切换时的重置在同步块内完成，避免多线程竞态导致序号错乱。
- * 文件写入在调用方（AsyncPool 异步线程）中同步完成。
+ * <b>落盘（mkdirs + {@code Files.write} + 权限收紧）在专用单线程 executor 中异步执行</b>（P0-4 / RT-F2），
+ * 调用方（Playwright 事件线程）不再做同步磁盘 IO；队列饱和时计数丢弃并告警。
  */
 public final class FileStoreMonitorCallback implements MonitorCallback {
 
@@ -99,6 +104,50 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
     /** scenario 切换重置的同步锁 */
     private final Object resetLock = new Object();
+
+    // ═══════════════════════════════════════════════════════════════
+    // 异步写盘执行器（P0-4 / RT-F2）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 异步写盘执行器：把 {@code Files.write} 移出调用方线程（原实现在 Playwright 事件线程同步写盘，
+     * 叠加 MonitorHandler 的阻塞进一步拖垮吞吐）。
+     *
+     * <p>单线程：保证同一 endpoint 的落盘顺序与提交顺序一致（文件名已在提交侧按序分配）。
+     * 有界队列 + 拒绝即计数丢弃：绝不反压调用方（事件线程），与 RT-C2 的「丢弃可观测」策略一致。
+     */
+    private static final ThreadPoolExecutor WRITE_EXECUTOR = newWriteExecutor();
+
+    /** 队列饱和被丢弃的写次数（观测用）。 */
+    private static final java.util.concurrent.atomic.AtomicLong droppedWrites =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    private static ThreadPoolExecutor newWriteExecutor() {
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MONITOR_FILE_STORE_WRITE_QUEUE_CAPACITY, 4096));
+        ThreadPoolExecutor ex = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queue),
+                r -> {
+                    Thread t = new Thread(r, "monitor-file-write");
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_MONITOR_HANDLER,
+                "monitor-file-write", () -> {
+                    ex.shutdown();
+                    try {
+                        if (!ex.awaitTermination(5, TimeUnit.SECONDS)) {
+                            ex.shutdownNow();
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        ex.shutdownNow();
+                    }
+                });
+        return ex;
+    }
 
     /** 当前 scenario 的标识（已清洗），用于检测 scenario 切换；null 表示尚无 scenario 上下文 */
     private volatile String currentScenarioKey = null;
@@ -167,26 +216,46 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
             String content = (pretty ? GSON_PRETTY : GSON_COMPACT).toJson(json);
 
+            File target = new File(targetDir, fileName);
+            byte[] payload = content.getBytes(StandardCharsets.UTF_8);
+            //  P0-4：真正落盘（mkdirs + Files.write + 权限收紧）移出调用方线程。
+            //    队列饱和（极端负载）→ 计数丢弃并告警，绝不反压调用方（Playwright 事件线程）。
+            try {
+                WRITE_EXECUTOR.execute(() -> writeFile(targetDir, target, payload));
+            } catch (RejectedExecutionException rex) {
+                long dropped = droppedWrites.incrementAndGet();
+                LOGGER.error("[FileStoreMonitorCallback] Write queue saturated, dropping '{}' "
+                                + "(dropped total: {}): {}",
+                        target.getAbsolutePath(), dropped, rex.getMessage());
+            }
+
+        } catch (Exception e) {
+            LOGGER.warn("[FileStoreMonitorCallback] Failed to build monitor file for '{}': {}",
+                    url, e.getMessage());
+        }
+    }
+
+    /**
+     * 真正落盘（在 {@link #WRITE_EXECUTOR} 工作线程执行）：建目录 + 写文件 + 收紧权限。
+     *
+     * <p>失败仅 WARN，不抛异常（安全降级），不影响测试。
+     */
+    private static void writeFile(File targetDir, File target, byte[] payload) {
+        try {
             if (!targetDir.exists() && !targetDir.mkdirs()) {
                 LOGGER.warn("[FileStoreMonitorCallback] Cannot create dir '{}', skip write.",
                         targetDir.getAbsolutePath());
                 return;
             }
-
-            File target = new File(targetDir, fileName);
-            Files.write(target.toPath(), content.getBytes(StandardCharsets.UTF_8));
+            Files.write(target.toPath(), payload);
             //  修复 S4：落盘内容虽已脱敏，仍可能含业务数据（URL、响应结构、账号片段）。
             //    target/ 下文件按 umask 创建（常见 002 → 664），在多用户 CI 节点上
             //    同机其它账号可读。尽力收紧为 600（仅属主读写）；非 POSIX 文件系统静默跳过。
             restrictToOwnerOnly(target.toPath());
-            LOGGER.debug("[FileStoreMonitorCallback] Wrote monitor data -> {} (endpoint='{}', scenario='{}')",
-                    target.getAbsolutePath(),
-                    urlPattern != null ? urlPattern : url,
-                    currentScenarioKey);
-
+            LOGGER.debug("[FileStoreMonitorCallback] Wrote monitor data -> {}", target.getAbsolutePath());
         } catch (Exception e) {
-            LOGGER.warn("[FileStoreMonitorCallback] Failed to write monitor file for '{}': {}",
-                    url, e.getMessage());
+            LOGGER.warn("[FileStoreMonitorCallback] Failed to write monitor file '{}': {}",
+                    target.getAbsolutePath(), e.getMessage());
         }
     }
 

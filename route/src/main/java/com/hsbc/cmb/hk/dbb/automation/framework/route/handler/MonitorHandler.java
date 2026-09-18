@@ -418,6 +418,9 @@ public class MonitorHandler {
         Request req = route.request();
         com.microsoft.playwright.Frame frame = req.frame();
         Response res = null;
+        //  放行幂等标记：本请求只允许 resume 一次。二次 resume 会让 Playwright 侧请求/响应对象失效，
+        //  调用方（测试主线程读取响应）随后会抛 "Object doesn't exist: response@..."。
+        final java.util.concurrent.atomic.AtomicBoolean resumed = new java.util.concurrent.atomic.AtomicBoolean(false);
         if (frame != null) {
             com.microsoft.playwright.Page page = frame.page();
             if (page != null) {
@@ -446,6 +449,7 @@ public class MonitorHandler {
                                 //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程
                                 //   （delayMs<=0 立即执行），避免阻塞事件线程、规避调度线程竞态。
                                 if (RouteUtil.isPageClosed(route)) return;
+                                resumed.set(true);
                                 RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
                             });
                 } catch (PlaywrightException e) {
@@ -456,7 +460,11 @@ public class MonitorHandler {
                     //    action 内的 resume 放行并完成了真实网络往返，此时 req.response()
                     //    【可能】已可用。尝试直读一次，避免整条 MONITOR 采集丢失。
                     //    兜底放行，避免请求永久挂起
-                    RouteUtil.safeResume(route);
+                    //  防重复 resume：action 已放行时不再二次放行（二次 resume 会失效 Playwright 侧对象，
+                    //  主线程读取响应时抛 "Object doesn't exist: response@..."）。
+                    if (resumed.compareAndSet(false, true)) {
+                        RouteUtil.safeResume(route);
+                    }
                     res = fallbackResponseWithRetry(req);
                     if (res == null) {
                         //  「不静默丢弃」（ROUTE-P0-1 宁可错报不可漏测）：观测无法完成也必须留下 MONITOR 记录，
@@ -474,8 +482,10 @@ public class MonitorHandler {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[MonitorHandler] No response available (waitForResponse) for pattern='{}', url='{}'",
                     rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-            // 兜底放行
-            RouteUtil.safeResume(route);
+            // 兜底放行（防重复 resume：二次放行会失效 Playwright 侧对象）
+            if (resumed.compareAndSet(false, true)) {
+                RouteUtil.safeResume(route);
+            }
             //  兜底 B：直读 request.response()（带界内重试——放行后响应可能仍在途）
             res = fallbackResponseWithRetry(req);
             if (res == null) {

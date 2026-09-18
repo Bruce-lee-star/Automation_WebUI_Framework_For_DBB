@@ -48,11 +48,16 @@ public class PageObjectFactory {
     private static final Logger logger = LoggerFactory.getLogger(PageObjectFactory.class);
     
     /**
-     * 实例生命周期策略
+     * 实例生命周期策略。
+     * <p><b>默认 {@link LifecycleStrategy#THREAD_ISOLATED}</b>：每线程独立实例，与并行执行
+     * （每线程独立 Browser/Context/Page）一致，避免共享实例被 {@code ownerThread} 守卫拒绝。
      */
     public enum LifecycleStrategy {
         /**
-         * 单例模式（默认）：整个应用运行期间只创建一个实例
+         * 单例模式：整个应用运行期间只创建一个实例（跨线程共享）。
+         * <p>注意：跨线程共享与 {@code BasePage} 的 per-instance {@code ownerThread} 守卫冲突
+         * （并行下他线程访问必抛 {@code cross-thread access denied}），故<b>不再是默认</b>；
+         * 仅明确单线程复用时显式指定。
          */
         SINGLETON,
         
@@ -118,7 +123,7 @@ public class PageObjectFactory {
      * Builder模式 - 灵活配置PageObjectFactory
      */
     public static class Builder {
-        private LifecycleStrategy lifecycleStrategy = LifecycleStrategy.SINGLETON;
+        private LifecycleStrategy lifecycleStrategy = LifecycleStrategy.THREAD_ISOLATED;
         private boolean lazy = false;
         private final Map<Class<?>, Supplier<Object>> customSuppliers = new HashMap<>();
         private final List<Consumer<Object>> postCreateHooks = new CopyOnWriteArrayList<>();

@@ -37,4 +37,20 @@ public class PageObjectFactoryConcurrencyTest {
             pool.shutdown();
         }
     }
+
+    /** WEB-F1 回归：默认策略（不传 strategy）下，并行线程拿到互不相同的实例，不再跨线程共享。 */
+    @Test
+    public void defaultStrategyIsThreadIsolated() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Object mainInst = PageObjectFactory.getPage(DummyPage.class); // 默认配置
+            Future<Object> other = pool.submit(() -> PageObjectFactory.getPage(DummyPage.class));
+            Object poolInst = other.get(5, TimeUnit.SECONDS);
+            assertNotNull(poolInst);
+            assertNotSame(mainInst, poolInst, "默认策略应为 THREAD_ISOLATED：不同线程不得共享同一实例");
+        } finally {
+            PageObjectFactory.clearAll();
+            pool.shutdown();
+        }
+    }
 }

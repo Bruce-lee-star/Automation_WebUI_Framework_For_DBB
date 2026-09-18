@@ -347,6 +347,11 @@ public class PlaywrightSerenityBridge {
 
         String restartBrowserForEach = PlaywrightManager.config().getRestartStrategy();
 
+        //  诊断（tab 堆积排查）：同一 Context 内出现多个 Page 时告警 —— 正常语义为「1 Context = 1 受管 Page」。
+        //   多出的通常是 ①window.open 合法弹窗 ②"页被关闭后重建、旧页未关"的泄漏。
+        //   仅告警不自动关闭（弹窗可能正被业务使用，框架不得越权处置）。
+        warnOnMultiplePagesPerContext();
+
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             PageObjectFactory.clearAll();
             //  线程级记录（不受用例边界影响）：用例级 CONTEXT_KEY 在收尾/跨用例时已被清空，
@@ -378,6 +383,37 @@ public class PlaywrightSerenityBridge {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Scenario initialization completed (Context closed, will rebuild on demand)");
             }
+        }
+    }
+
+    /**
+     * 诊断（tab 堆积排查）：本线程当前 Context 内若存在多个 Page（正常语义为 1），打印告警并逐个标注
+     * 是否为受管页 —— 便于现场判定「多 tab」来自合法弹窗还是「页被关闭后重建、旧页未关」的泄漏。
+     */
+    private static void warnOnMultiplePagesPerContext() {
+        try {
+            BrowserContext context = PlaywrightManager.currentContextForThread();
+            if (context == null) {
+                return;
+            }
+            java.util.List<Page> pages = context.pages();
+            if (pages == null || pages.size() <= 1) {
+                return;
+            }
+            Page managed = PlaywrightManager.currentPageForThread();
+            StringBuilder detail = new StringBuilder();
+            for (Page p : pages) {
+                if (detail.length() > 0) {
+                    detail.append(" || ");
+                }
+                detail.append(p == managed ? "[managed] " : "[extra] ");
+                detail.append(p.isClosed() ? "(closed) " : "");
+                detail.append(p.url());
+            }
+            logger.warn("[PlaywrightBridge] Context has {} pages (expected 1) — popup or leaked page: {}",
+                    pages.size(), detail);
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger, "[PlaywrightBridge] multi-page check skipped: {}", e.toString());
         }
     }
 

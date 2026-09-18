@@ -136,7 +136,10 @@ final class PageContextState {
             synchronized (pageSwitchLockFor(resolveSwitchLockContext())) {
                 // 双重检查：锁内再次确认 page 仍无效
                 if (owner.page == null || isPageClosed(owner.page)) {
-                    owner.page = PlaywrightManager.getPage();
+                    //  优先经「惰性受管页供应商」解析（保持 RecordingPageProxy 装饰），
+                    //  仅在无供应商时回退到全局 getPage()。
+                    Page resolved = owner.resolveManagedPage();
+                    owner.page = (resolved != null) ? resolved : PlaywrightManager.getPage();
                     resetFrameAndShadowContext(); // 页面重建后重置 iframe/shadow 上下文
                 }
             }

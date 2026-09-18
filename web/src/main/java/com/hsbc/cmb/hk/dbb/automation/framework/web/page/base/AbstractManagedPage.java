@@ -51,7 +51,11 @@ public abstract class AbstractManagedPage extends SerenityBasePageImpl
     @Override
     public void setManagedPage(Supplier<Page> managedPage) {
         this.managedPage = managedPage;
-        page.attachManagedPage(managedPage.get());
+        //  惰性注入：此处【不得】调用 managedPage.get() —— 否则"构造页面对象"（在步骤类构造期发生）
+        //  就等于"创建 Browser/Context/Page"，实测每个用例多建一个 Context+Page（about:blank 新 tab），
+        //  并使建页早于会话闸门获取（同 sessionKey 场景会先开浏览器）。
+        //  解析推迟到首次真正使用页面时（PageContextState.ensurePageValid → BasePage.resolveManagedPage）。
+        page.attachManagedPage(managedPage);
         BasePage.bindAnnotatedFields(this, page);
     }
 

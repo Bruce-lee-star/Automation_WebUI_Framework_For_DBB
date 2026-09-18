@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -98,6 +99,48 @@ public abstract class BasePage {
         }
         this.page = managedPage;
         this.context = managedPage.context();
+    }
+
+    /** 受管（装饰）页的惰性来源：非 null 时，页面在首次真正使用时才被解析/创建。 */
+    private volatile Supplier<Page> managedPageSupplier;
+
+    /**
+     * G1 组合式注入点（<b>惰性</b>）：仅登记供应商，<b>不立即解析</b>。
+     *
+     * <p><b>为什么必须惰性</b>：{@code PageObjectFactory} 在<b>步骤类构造期</b>创建页面对象并注入
+     * 供应商；若此处立即 {@code supplier.get()}，则"构造页面对象"就等于"创建 Browser/Context/Page"
+     * —— 实测导致每个用例多建 Context+Page（`about:blank` 新 tab 的来源），并使页面创建发生在
+     * 会话闸门获取<b>之前</b>（同 sessionKey 场景因此会先开浏览器，违背并行语义）。
+     *
+     * <p>解析点收敛到 {@link #resolveManagedPage()}，由页面上下文状态机在需要页面时调用；
+     * 仍走原始供应商 ⇒ 保留 {@code RecordingPageProxy} 装饰与页面切换后的自动指向。
+     */
+    public void attachManagedPage(Supplier<Page> managedPageSupplier) {
+        this.managedPageSupplier = managedPageSupplier;
+    }
+
+    /**
+     * 惰性解析受管页（包级：供 {@link PageContextState} 在需要页面时调用）。
+     *
+     * <p>已有存活受管页 → 直接返回；否则经供应商解析并同步 {@link #context}。
+     * 无供应商时返回 {@code null}（调用方自行决定回退策略）。
+     * <b>注意</b>：{@link #getPageRaw()} 保持纯 getter 语义（不触发解析），供失败路径安全使用。
+     */
+    Page resolveManagedPage() {
+        Page current = this.page;
+        if (current != null && !current.isClosed()) {
+            return current;
+        }
+        Supplier<Page> supplier = this.managedPageSupplier;
+        if (supplier == null) {
+            return null;
+        }
+        Page resolved = supplier.get();
+        if (resolved != null) {
+            this.page = resolved;
+            this.context = resolved.context();
+        }
+        return resolved;
     }
 
     /**

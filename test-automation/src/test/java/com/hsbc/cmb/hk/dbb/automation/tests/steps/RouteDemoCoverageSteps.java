@@ -108,6 +108,22 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         return n;
     }
 
+    /**
+     * 有界等待「指定类型记录数增加」。
+     *
+     * <p><b>为什么必须等待</b>：MONITOR 观测与落库在<b>受管工作线程异步</b>执行（框架契约：
+     * 事件线程只做页面/上下文检查后立即返回，<b>不等待响应、不读 body</b>）。
+     * 因此探测请求返回后立即读计数会与落库赛跑 —— 表现为断言偶发失败 / Flakes。
+     * 与 {@link #waitForCapturedByType} 同一口径，统一经 {@code AsyncWaits} 有界观测。
+     *
+     * @param before   变动前的计数（由 {@link #countByType} 取得）
+     * @param windowMs 观测窗口；期望「不应增加」时传较小值即可
+     */
+    private boolean awaitCountIncrease(String urlContains, RouteHandleType type, int before, long windowMs) {
+        return AsyncWaits.awaitTrue(AsyncWaits.ms(windowMs), AsyncWaits.ms(100),
+                () -> countByType(urlContains, type) > before);
+    }
+
     /** 在给定观测窗口内断言该类型「始终没有」命中记录；一旦出现即 fail（B-4：窗口经 AsyncWaits 有界观测）。 */
     private void assertNeverCaptured(String urlContains, RouteHandleType type, String reason, long windowMs) {
         if (AsyncWaits.awaitTrue(AsyncWaits.ms(windowMs), AsyncWaits.ms(100),
@@ -490,7 +506,9 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long e2 = System.currentTimeMillis() - t2;
         assertEquals( "ALIVE",  echoRequestHeader(p2, "x-cap"), "停止 monitor 后 modify 仍应生效");
         assertTrue( e2 >= 1900, "停止 monitor 后 delay 仍应 >=1900ms，实际=" + e2);
-        assertEquals( monAfterFirst,  echoMonitorCount(), "停止 monitor 后不应再产生新的 monitor 记录");
+        //  MONITOR 落库为异步：以「有界窗口内无增加」替代即时相等（后者是弱断言，迟到的记录会溜过检查）
+        assertFalse( awaitCountIncrease(CAP_API, RouteHandleType.MONITOR, monAfterFirst, 1200L),
+                "停止 monitor 后不应再产生新的 monitor 记录");
     }
 
     @Step
@@ -514,7 +532,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long e2 = System.currentTimeMillis() - t2;
         assertNull( echoRequestHeader(p2, "x-cap"), "停止 modify 后请求头不应再带 X-Cap");
         assertTrue( e2 >= 1900, "停止 modify 后 delay 仍应 >=1900ms，实际=" + e2);
-        assertTrue( echoMonitorCount() > monBefore, "停止 modify 后 monitor 仍应采集（计数增加）");
+        assertTrue( awaitCountIncrease(CAP_API, RouteHandleType.MONITOR, monBefore, CAPTURE_TIMEOUT_MS),
+                "停止 modify 后 monitor 仍应采集（计数增加）");
     }
 
     @Step
@@ -541,7 +560,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         long e2 = System.currentTimeMillis() - t2;
         assertTrue( e2 < 1000, "停止 delay 后应明显变快（<1000ms），实际=" + e2);
         assertEquals( "ALIVE",  echoRequestHeader(p2, "x-cap"), "停止 delay 后 modify 仍应生效");
-        assertTrue( echoMonitorCount() > monBefore, "停止 delay 后 monitor 仍应采集（计数增加）");
+        assertTrue( awaitCountIncrease(CAP_API, RouteHandleType.MONITOR, monBefore, CAPTURE_TIMEOUT_MS),
+                "停止 delay 后 monitor 仍应采集（计数增加）");
     }
 
     @Step
@@ -586,6 +606,8 @@ public class RouteDemoCoverageSteps extends RouteDemoServiceSteps {
         assertTrue( e2 < 1000, "stopApi 后不应再有 delay（<1000ms），实际=" + e2);
         assertTrue( raw2.contains("\"status\""), "stopApi 后应为 passthrough 到真实 echo（含 status 字段）");
         assertNull( echoRequestHeader(assertJson(raw2), "x-cap"), "stopApi 后 modify 不应生效");
-        assertEquals( monBefore,  echoMonitorCount(), "stopApi 后 monitor 不应再采集");
+        //  同 stopMonitor：以「有界窗口内无增加」替代即时相等（即时相等会在迟到记录出现时误判通过）
+        assertFalse( awaitCountIncrease(CAP_API, RouteHandleType.MONITOR, monBefore, 1200L),
+                "stopApi 后 monitor 不应再采集");
     }
 }

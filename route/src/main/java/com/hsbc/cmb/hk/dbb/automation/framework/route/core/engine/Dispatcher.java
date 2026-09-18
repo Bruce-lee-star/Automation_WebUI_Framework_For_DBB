@@ -117,17 +117,21 @@ public final class Dispatcher {
             return;
         }
 
-        // ═══ 检查 MonitorSession 是否已停止（auto-stop / 超时），停止则跳过 handler ═══
-        // 不在此处调用 unroute()，避免 Playwright 线程竞态导致 "Object doesn't exist" 或 "Cannot find command to respond" 错误。
-        // route handler 保持注册，但已停止的 session 仅放行请求，不处理。
+        // ═══ MonitorSession 是否已停止（auto-stop / 超时 / 显式 stopMonitor）═══
+        //  语义修正（能力隔离，实测缺陷）：会话停止只应停止【MONITOR 能力】。旧实现直接
+        //    safeResume 并 return —— 把同 pattern 链合并后的 MODIFY / DELAY 一并丢弃，
+        //    表现为「stopMonitor 之后 modify 静默失效」（@route-capability-stop 的 stopMonitor 用例：
+        //    req2 被整链放行、无任何 ModifyHandler 执行）。
+        //  现改为：仅登记标记，待有效规则合并完成后注入 MONITOR 停止位，由 selectCapability 统一裁决 ——
+        //    纯 monitor 链结果不变（无能力可选 → 放行）；monitor+modify/delay 链的其它能力得以保留。
+        //  不在此处调用 unroute()，避免 Playwright 线程竞态导致 "Object doesn't exist" 或
+        //    "Cannot find command to respond" 错误：route handler 保持注册。
         RouteMonitorSession.MonitorSession session = RouteMonitorSession.sessionForRoute(route, rule);
-        if (session != null && session.stopped.get()) {
+        final boolean monitorSessionStopped = session != null && session.stopped.get();
+        if (monitorSessionStopped) {
             VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
-                    "[RouteEngine] ═══ dispatchRoute SKIP (session stopped): pattern='{}', url='{}' ═══",
+                    "[RouteEngine] ═══ MonitorSession stopped → MONITOR capability disabled only: pattern='{}', url='{}' ═══",
                     rule.getUrlPattern(), reqUrl);
-            RouteUtil.safeResume(route);
-            unmarkDispatched(route);
-            return;
         }
 
         // ═══ times 一次性拦截已耗尽（对齐 Playwright setTimes）：仅放行，不处理 ═══
@@ -185,6 +189,11 @@ public final class Dispatcher {
         //    stopMonitor/stopModify/stopDelay/stopMock/stopAll 写入的停止标记在此注入有效规则，
         //    由 selectCapability 及各 handler 守卫跳过对应能力。
         StoppedCapabilityManager.applyStoppedCapabilities(rule, route);
+        //  MonitorSession 已停止（auto-stop / 超时 / 显式 stopMonitor）→ 仅对【MONITOR 能力】置停止位，
+        //    同链 MODIFY / DELAY 继续生效（能力隔离；理由见上方 session 检查处注释）。
+        if (monitorSessionStopped) {
+            rule.stopCapability(RouteHandleType.MONITOR);
+        }
         if (rule.isCapabilityStopped(RouteHandleType.DELAY)) {
             delayMs = 0;  // 停止 DELAY：清零延迟，避免后续 handler 仍按原延迟等待
         }

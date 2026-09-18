@@ -423,6 +423,19 @@ public class PlaywrightManager {
         PlaywrightRuntime.instance().browserCleanup.cleanupAll();
     }
 
+    /**
+     * 兜底回收本线程 Browser 上仍打开的 BrowserContext（<b>窗口堆积修复</b>）。
+     *
+     * <p>收尾链路关闭 Context 依赖 {@code CONTEXT_KEY}；该键因用例级上下文已解绑而取不到时，
+     * {@link #closeContext()} 会被静默跳过，导致 headed 模式下窗口跨用例堆积。
+     * 本方法从 Browser 层确定性回收，作为兜底；正常路径下无残留时为零开销（返回 0）。
+     *
+     * @return 实际关闭的 Context 数
+     */
+    public static int reapOrphanContexts() {
+        return PlaywrightRuntime.instance().browserCleanup.closeOrphanContextsForCurrentThread();
+    }
+
     // ==================== Serenity BDD 集成方法（委托给 PlaywrightSerenityBridge） ====================
 
     public static void initializeForScenario() {

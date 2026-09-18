@@ -403,6 +403,8 @@ public class PlaywrightSerenityBridge {
                     "Restart strategy is 'scenario' - closing Context for fresh rebuild");
             PlaywrightManager.closePage();
             PlaywrightManager.closeContext();
+            //  窗口堆积修复：兜底回收本线程 Browser 上仍残留的 Context（closeContext 可能因 CONTEXT_KEY 丢失被跳过）
+            PlaywrightManager.reapOrphanContexts();
             resetCustomContextOptionsForScenarioMode();
             SessionManager.resetFeatureSession();
         } else {
@@ -411,6 +413,8 @@ public class PlaywrightSerenityBridge {
                         "Feature mode: No session restored — closing Context to avoid cookie contamination");
                 PlaywrightManager.closePage();
                 PlaywrightManager.closeContext();
+                //  窗口堆积修复：兜底回收残留 Context
+                PlaywrightManager.reapOrphanContexts();
             } else {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Restart strategy is 'feature' - keeping Context and Page for reuse");
@@ -465,6 +469,8 @@ public class PlaywrightSerenityBridge {
                 "Cleaning up for feature - closing Context (different feature requires fresh Context)...");
         PlaywrightManager.closePage();
         PlaywrightManager.closeContext();
+        //  窗口堆积修复：兜底回收残留 Context
+        PlaywrightManager.reapOrphanContexts();
         SessionManager.resetFeatureSession();
         VerboseLogging.logInfoIfVerbose(logger,
                 "Feature cleanup completed — Browser persists, Context+Page+Session cleared for next feature rebuild");

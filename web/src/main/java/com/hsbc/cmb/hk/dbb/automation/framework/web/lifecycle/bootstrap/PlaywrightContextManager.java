@@ -260,9 +260,15 @@ public class PlaywrightContextManager {
                 //  独立的 close try：即使上面任何步骤抛异常，也要保证 context.close() 被执行，
                 //    否则已关闭失败会导致 context 资源泄漏。
                 //    注意：BrowserContext 无 isClosed() 方法，用 browser 连接状态判断其是否仍活跃。
-                if (context.browser() != null && context.browser().isConnected()) {
+                //  窗口堆积修复：原实现仅在 browser() 可用且已连接时才 close —— 浏览器已断开/对象失效时
+                //    静默跳过，Context 及其窗口残留（直到套件级 cleanupAll 才释放）。改为无条件尝试 close，
+                //    已关闭/失效（TargetClosedError 等）按预期降级为 debug 日志。
+                try {
                     context.close();
                     VerboseLogging.logInfoIfVerbose(logger, "BrowserContext closed");
+                } catch (Exception closeEx) {
+                    VerboseLogging.logDebugIfVerbose(logger,
+                            "BrowserContext close skipped (already closed or browser gone): {}", closeEx.getMessage());
                 }
             } catch (Exception e) {
                 logger.error("Failed to close BrowserContext: {}", e.getMessage(), e);

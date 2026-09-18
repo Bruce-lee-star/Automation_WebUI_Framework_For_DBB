@@ -205,4 +205,54 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
         return b != null && PlaywrightRuntime.instance().state.isDisconnected(b);
     }
 
+    /**
+     * 兜底回收：关闭<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（headed 模式即 OS 窗口）。
+     *
+     * <p><b>要解决的问题（窗口堆积）</b>：收尾链路 {@code cleanupForScenario}/{@code cleanupForFeature}
+     * 关闭 Context 依赖 {@code TestContextHolder} 的 {@code CONTEXT_KEY}；当用例级上下文已解绑
+     * （Cucumber {@code @After} 早于 Serenity {@code testFinished}）时该键取不到，{@code closeContext()}
+     * 整段被静默跳过 —— Context/窗口既不关闭也不报错，跨用例持续堆积，直到套件级
+     * {@link #cleanupAll()} 才随 Browser 释放（表现为"跑几十个用例后满屏浏览器窗口"）。
+     *
+     * <p>本方法<b>不依赖 {@code CONTEXT_KEY}</b>：直接从本线程的 Browser 枚举 contexts 逐个关闭；
+     * 仅作用于 {@code "<threadId>:"} 前缀的实例，不触碰并发邻居线程的 Browser/Context。
+     *
+     * @return 实际关闭的 Context 数（供日志/单测观测）
+     */
+    public int closeOrphanContextsForCurrentThread() {
+        String prefix = Thread.currentThread().threadId() + ":";
+        int closed = 0;
+        for (Map.Entry<String, Browser> entry
+                : new ArrayList<>(PlaywrightRuntime.instance().state.browserEntries())) {
+            if (entry.getKey() == null || !entry.getKey().startsWith(prefix)) {
+                continue;
+            }
+            Browser browser = entry.getValue();
+            if (browser == null || !browser.isConnected()) {
+                continue;
+            }
+            try {
+                for (BrowserContext bc : browser.contexts()) {
+                    if (bc == null) {
+                        continue;
+                    }
+                    try {
+                        // 复用统一收口：含 tracing 落盘、RouteRegistry.clearContext、受保护 close
+                        PlaywrightContextManager.closeContext(bc);
+                        closed++;
+                    } catch (Exception ex) {
+                        logger.warn("[closeOrphanContexts] Failed to close a context: {}", ex.getMessage());
+                    }
+                }
+            } catch (Exception ex) {
+                logger.warn("[closeOrphanContexts] Failed to iterate browser contexts: {}", ex.getMessage());
+            }
+        }
+        if (closed > 0) {
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "[closeOrphanContextsForCurrentThread] reaped {} leaked BrowserContext(s)", closed);
+        }
+        return closed;
+    }
+
 }

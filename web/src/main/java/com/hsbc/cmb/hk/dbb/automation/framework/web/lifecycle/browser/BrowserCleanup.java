@@ -54,4 +54,16 @@ public interface BrowserCleanup {
     void closeBrowserInstance(Browser browser);
 
     boolean isCurrentBrowserDisconnected();
+
+    /**
+     * 兜底回收<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（headed 模式即 OS 窗口），
+     * <b>不依赖</b> {@code TestContextHolder} 中的 {@code CONTEXT_KEY}。
+     *
+     * <p>用于修复「窗口堆积」：收尾链路关闭 Context 依赖 {@code CONTEXT_KEY}，若用例级上下文已解绑
+     * （Cucumber {@code @After} 早于 Serenity {@code testFinished}）则该步被静默跳过，
+     * Context/窗口持续堆积，直到套件级 {@link #cleanupAll()} 才随 Browser 释放。
+     *
+     * @return 实际关闭的 Context 数
+     */
+    int closeOrphanContextsForCurrentThread();
 }

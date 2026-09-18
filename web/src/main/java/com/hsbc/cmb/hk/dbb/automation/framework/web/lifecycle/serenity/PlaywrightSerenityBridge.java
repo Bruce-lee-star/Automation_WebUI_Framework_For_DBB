@@ -39,6 +39,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
+import com.microsoft.playwright.BrowserContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
@@ -449,8 +450,12 @@ public class PlaywrightSerenityBridge {
         if ("scenario".equalsIgnoreCase(restartStrategy)) {
             VerboseLogging.logDebugIfVerbose(logger,
                     "Restart strategy is 'scenario' - closing Context for fresh rebuild");
+            //  关闭前吸收迟到事件（见 absorbPendingEventsBeforeClose 说明）：必须在 Context 仍存活时执行
+            absorbPendingEventsBeforeClose();
             PlaywrightManager.closePage();
             PlaywrightManager.closeContext();
+            //  关闭后吸收迟到事件（关闭瞬间仍在途的响应，其事件只会在关闭后到达）
+            absorbLateEventsAfterClose();
             //  窗口堆积修复：兜底回收本线程 Browser 上仍残留的 Context（closeContext 可能因 CONTEXT_KEY 丢失被跳过）
             PlaywrightManager.reapOrphanContexts();
             resetCustomContextOptionsForScenarioMode();
@@ -461,6 +466,8 @@ public class PlaywrightSerenityBridge {
             if (!SessionManager.isAnyFeatureSessionRestored() && !reuseWithinFeature) {
                 VerboseLogging.logInfoIfVerbose(logger,
                         "Feature mode: No session restored — closing Context to avoid cookie contamination");
+                //  关闭前吸收迟到事件（同上）：本分支同样会关 Context，故一并覆盖
+                absorbPendingEventsBeforeClose();
                 PlaywrightManager.closePage();
                 PlaywrightManager.closeContext();
                 //  窗口堆积修复：兜底回收残留 Context
@@ -472,6 +479,96 @@ public class PlaywrightSerenityBridge {
                 resetCustomContextOptionsForFeatureMode();
                 cleanupPageState();
             }
+        }
+    }
+
+    /**
+     * 关闭 Context 前的「迟到事件吸收」静默窗口（毫秒）。
+     *
+     * <p>可通过 {@code -Dplaywright.teardown.eventAbsorbMs=N} 调整（设为 0 即关闭该机制）。
+     */
+    private static final int EVENT_ABSORB_SETTLE_MS =
+            Integer.getInteger("playwright.teardown.eventAbsorbMs", 150);
+
+    /**
+     * 关闭 Context 前「吸收迟到事件」—— 实测 Flake（随机用例报
+     * {@code Object doesn't exist: response@…}）的根治方向。
+     *
+     * <p><b>为什么需要</b>：Playwright Java <b>只在有命令等待返回时</b>才处理连接上的 incoming 消息。
+     * 本场景 Context 关闭后，其上在途响应的 {@code response} 事件仍会到达；当下个命令（常见为
+     * <b>下一场景</b>的首次 {@code page.evaluate}）的等待线程处理到它时，若事件引用的对象已随
+     * Context 关闭被移除，客户端 {@code Connection.getExistingObject} 会抛
+     * {@code Object doesn't exist}，并<b>顺着那条命令抛出</b> —— 失败被算到无关场景头上
+     * （表现为随机用例挂、重试即过）。上游同名问题见 playwright-java#1439，无官方修复版本。
+     *
+     * <p><b>做法</b>：先给一个短静默窗口让在途响应抵达，再用一条<b>轻量服务端往返</b>命令
+     * （{@code context.cookies()}）在本线程把已入队事件消化掉 —— 于是迟到事件大概率在
+     * <b>收尾期</b>被吸收（异常隔离，仅记日志），而不是抛到下个场景。
+     *
+     * <p><b>耗时</b>：默认每场景约 {@value #EVENT_ABSORB_SETTLE_MS}ms（可用系统属性调整/关闭）。
+     */
+    private static void absorbPendingEventsBeforeClose() {
+        if (EVENT_ABSORB_SETTLE_MS <= 0) {
+            return;
+        }
+        BrowserContext context;
+        try {
+            context = PlaywrightManager.currentContextForThread();
+        } catch (Exception e) {
+            return;   // 无法解析上下文（已关闭/无上下文）⇒ 无需吸收
+        }
+        if (context == null) {
+            return;
+        }
+        try {
+            Thread.sleep(EVENT_ABSORB_SETTLE_MS);
+            //  轻量往返：驱动客户端在本线程处理已入队的 incoming 事件
+            context.cookies();
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Absorbed pending Playwright events before closing Context (settle={}ms)",
+                    EVENT_ABSORB_SETTLE_MS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            //  吸收失败绝不影响收尾（上下文已关闭/浏览器断开等）
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Event absorb skipped (context/browser gone): {}", e.toString());
+        }
+    }
+
+    /**
+     * 关闭 Context <b>之后</b>的「迟到事件吸收」。
+     *
+     * <p><b>为什么关闭前吸收还不够</b>：{@code closeContext()} 本身是一次服务端往返，
+     * 关闭<b>瞬间仍在途</b>的响应，其 {@code response} 事件会在关闭<b>之后</b>才到达连接 ——
+     * 此时若下一条命令（常为下一场景首次 {@code page.evaluate}）的等待线程处理到它，
+     * 就会因对象已随 Context 移除而抛 {@code Object doesn't exist}，把失败算到无关场景上。
+     *
+     * <p><b>做法</b>：短静默窗口后用<b>仍存活的 Browser</b> 发一条轻量往返命令
+     * （新建-关闭一个临时 Context，约数十毫秒），把这段时间窗内的迟到事件消化在<b>收尾线程</b>；
+     * 即便事件本身抛错，也只会落在本方法（异常隔离、仅记日志），不再影响后续场景。
+     */
+    private static void absorbLateEventsAfterClose() {
+        if (EVENT_ABSORB_SETTLE_MS <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(Math.min(EVENT_ABSORB_SETTLE_MS, 120));
+            var browser = PlaywrightManager.getBrowser();
+            if (browser == null || !browser.isConnected()) {
+                return;
+            }
+            BrowserContext probe = browser.newContext();
+            probe.close();
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Absorbed late Playwright events after Context close");
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            //  吸收失败绝不影响收尾（例如迟到事件恰好在此抛出，被隔离在这里正是预期效果）
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "Late-event absorb skipped (browser gone or stale event surfaced here, isolated): {}",
+                    e.toString());
         }
     }
 

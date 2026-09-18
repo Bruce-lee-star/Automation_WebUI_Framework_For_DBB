@@ -274,14 +274,23 @@ public class MonitorHandler {
     /**
      * {@code waitForResponse} 超时<b>上限</b>（毫秒）。
      *
-     * <p><b>为何压到 3s（实测 Flake 根因）</b>：{@code waitForResponse} 仅用于捕获【在途】响应；
+     * <p><b>为何压到 5s（实测 Flake 根因 + 兼顾慢 API）</b>：{@code waitForResponse} 仅用于捕获【在途】响应；
      * 若响应在监听器注册前已返回（路由处理的已知竞态），它会<b>白等满超时</b>。原上限 20s 使观测延迟远超
      * 测试断言窗口（{@code CAPTURE_TIMEOUT_MS=8s}），导致 MONITOR 记录"偶发缺失" Flake——
      * 观测往往在断言超时（8s）之后才落库，重试时负载较低、响应在途被即时捕获才通过。
-     * 压到 3s：在途响应通常 &lt;1s 即被捕获；已返回的竞态在 3s 后快速进入兜底 {@code req.response()}，
-     * 使观测整体落在断言窗口内。可用环境变量 {@code ROUTE_FETCH_TIMEOUT_MS} 进一步调小，但不超过此上限。
+     *
+     * <p><b>账期约束</b>：观测总耗时 ≈ 本上限 + 兜底重试(1s) + body 读取(~1s)，须 &lt; 8s 断言窗口才能根除 Flake，
+     * 故上限必须 &lt; 6s。取 5s：① 在途响应（含较慢 API）在 5s 内被可靠强引用捕获（避开 {@code req.response()} 的失效对象风险）；
+     * ② 即便响应在注册前已返回（竞态），也会在 5s 后快速进入兜底 {@code req.response()}，观测整体落在窗口内。
+     *
+     * <p><b>慢 API 覆盖</b>：对响应耗时 5s~7s 的慢接口，{@code waitForResponse} 超时后由兜底 {@code req.response()}
+     * （{@code FALLBACK_MAX_ATTEMPTS×FALLBACK_RETRY_INTERVAL_MS=1s} 重试）继续捕获，仍能在 8s 窗口内落库；
+     * 仅当响应耗时 &gt;7s 才会降级为不可用快照——而那本就超出 8s 断言窗口、无法被测试断言，不属于 Flake。
+     *
+     * <p>可用环境变量 {@code ROUTE_FETCH_TIMEOUT_MS} 进一步<b>调小</b>（min 取较小值），但本常数即其上界，不允许调大
+     * （调大则竞态白等拖垮观测、Flake 复发）。绝不传 0（Playwright TimeoutSettings 会返回 WaitableNever 死等），&lt;=0 时回落到本上限。
      */
-    private static final long WAIT_FOR_RESPONSE_CAP_MS = 3000L;
+    private static final long WAIT_FOR_RESPONSE_CAP_MS = 5000L;
 
     /** 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。 */
     private static String literalPathOf(String urlPattern) {
@@ -444,13 +453,13 @@ public class MonitorHandler {
             if (page != null) {
                 //  超时保护：waitForResponse 仅用于捕获【在途】响应；若响应在监听器注册前已返回（已知竞态），
                 //    它会白等满超时 → 观测延迟远超测试断言窗口（CAPTURE_TIMEOUT_MS=8s）→ 偶发"记录缺失" Flake。
-                //    故上限压到 3s（见 WAIT_FOR_RESPONSE_CAP_MS 注释）：在途响应通常 <1s 即被捕获；
-                //    已返回的竞态在 3s 后快速进入兜底 req.response()，使观测整体落在断言窗口内。
+                //    故上限压到 5s（见 WAIT_FOR_RESPONSE_CAP_MS 注释）：在途响应（含较慢 API）在 5s 内被可靠捕获；
+                //    已返回的竞态在 5s 后快速进入兜底 req.response()，使观测整体落在断言窗口内。
                 //  绝不传 0（Playwright TimeoutSettings 会返回 WaitableNever 死等），<=0 时强制回落到上限。
                 double wfrTimeout = Math.min((double) WAIT_FOR_RESPONSE_CAP_MS, ROUTE_FETCH_TIMEOUT_MS);
                 if (wfrTimeout <= 0) wfrTimeout = WAIT_FOR_RESPONSE_CAP_MS;
                 //  predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
-                //    predicate 永不匹配 → 每个请求白等满 20s 超时（性能问题）。
+                //    predicate 永不匹配 → 每个请求白等满本上限超时（性能问题）。
                 final String lit = literalPathOf(rule.getUrlPattern());
                 try {
                     com.microsoft.playwright.Page.WaitForResponseOptions wfrOpts =

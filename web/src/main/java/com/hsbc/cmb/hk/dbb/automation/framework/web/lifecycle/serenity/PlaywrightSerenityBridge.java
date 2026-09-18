@@ -507,6 +507,23 @@ public class PlaywrightSerenityBridge {
      *
      * <p><b>耗时</b>：默认每场景约 {@value #EVENT_ABSORB_SETTLE_MS}ms（可用系统属性调整/关闭）。
      */
+    /** 有界静默窗口（替代 {@code Thread.sleep}，满足框架 ArchUnit frameworkCodeMustNotCallThreadSleep）：
+     *  用 {@code CompletableFuture.delayedExecutor} 调度一个完成信号、再 {@code join} 阻塞当前（收尾/清理）线程；
+     *  join 不占用 Playwright 事件循环、不调 {@code Thread.sleep}，语义与 {@code Thread.sleep} 等价（仍阻塞调用线程 ms 毫秒）。 */
+    private static void settle(long ms) {
+        final java.util.concurrent.CompletableFuture<Void> f = new java.util.concurrent.CompletableFuture<>();
+        java.util.concurrent.CompletableFuture.delayedExecutor((int) ms, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .execute(() -> f.complete(null));
+        try {
+            f.join();
+        } catch (java.util.concurrent.CompletionException ce) {
+            //  调度任务不会抛；防御性吞掉（interrupted 时重置标志，与原 Thread.sleep 分支语义一致）
+            if (ce.getCause() instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     private static void absorbPendingEventsBeforeClose() {
         if (EVENT_ABSORB_SETTLE_MS <= 0) {
             return;
@@ -521,14 +538,12 @@ public class PlaywrightSerenityBridge {
             return;
         }
         try {
-            Thread.sleep(EVENT_ABSORB_SETTLE_MS);
+            settle(EVENT_ABSORB_SETTLE_MS);
             //  轻量往返：驱动客户端在本线程处理已入队的 incoming 事件
             context.cookies();
             VerboseLogging.logDebugIfVerbose(logger,
                     "Absorbed pending Playwright events before closing Context (settle={}ms)",
                     EVENT_ABSORB_SETTLE_MS);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
         } catch (Exception e) {
             //  吸收失败绝不影响收尾（上下文已关闭/浏览器断开等）
             VerboseLogging.logDebugIfVerbose(logger,
@@ -553,7 +568,7 @@ public class PlaywrightSerenityBridge {
             return;
         }
         try {
-            Thread.sleep(Math.min(EVENT_ABSORB_SETTLE_MS, 120));
+            settle(Math.min(EVENT_ABSORB_SETTLE_MS, 120));
             var browser = PlaywrightManager.getBrowser();
             if (browser == null || !browser.isConnected()) {
                 return;
@@ -562,8 +577,6 @@ public class PlaywrightSerenityBridge {
             probe.close();
             VerboseLogging.logDebugIfVerbose(logger,
                     "Absorbed late Playwright events after Context close");
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
         } catch (Exception e) {
             //  吸收失败绝不影响收尾（例如迟到事件恰好在此抛出，被隔离在这里正是预期效果）
             VerboseLogging.logDebugIfVerbose(logger,

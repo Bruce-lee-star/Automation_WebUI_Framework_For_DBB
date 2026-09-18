@@ -14,6 +14,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.PriorityPolicy;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteMonitorSession;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRuleScope;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.StoppedCapabilityManager;
 
 /**
@@ -162,6 +163,18 @@ public final class Dispatcher {
                         System.identityHashCode(reqPage),
                         reqPage == null ? "null" : System.identityHashCode(reqPage.context()),
                         describeChainForDiag(chain, reqPage));
+            }
+            //  异常可见性（默认级别，非 verbose）：链上确有【PAGE 级】规则却全部因「页面身份不匹配」被过滤
+            //    —— 这是 MOCK / MODIFY / MONITOR / DELAY 静默失效的典型信号（请求被原样放行到真实后端，
+            //    用例表现为「规则像没生效」）。旧实现只在 debug 级留痕，非 verbose 运行下完全不可见，
+            //    曾使该缺陷长期难以定位。故此处以 WARN 显式暴露身份与规则数。
+            int pageScoped = countPageScopedRules(chain);
+            if (pageScoped > 0) {
+                RouteEngine.LOGGER.warn("[RouteEngine] dispatchRoute SKIP: {} PAGE-scoped rule(s) on pattern='{}' do not "
+                                + "apply to the requesting page (reqPage=#{}) — request passed through WITHOUT "
+                                + "mock/modify/monitor/delay (likely page-identity mismatch)",
+                        pageScoped, rule.getUrlPattern(),
+                        reqPage == null ? "null" : System.identityHashCode(reqPage));
             }
             RouteUtil.fallbackIfOpen(route);
             return;
@@ -319,6 +332,20 @@ public final class Dispatcher {
                     .append("} ");
         }
         return sb.toString();
+    }
+
+    /** 统计链上 PAGE 级规则数（用于「本该生效却全部被页面身份过滤掉」的异常告警）。 */
+    private static int countPageScopedRules(List<RouteRule> chain) {
+        if (chain == null || chain.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (RouteRule r : chain) {
+            if (r != null && r.getScope() == RouteRuleScope.PAGE) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** pageRef 与请求页是否属于同一 BrowserContext（已关闭的 page 反查会抛异常 → 视为不同）。 */

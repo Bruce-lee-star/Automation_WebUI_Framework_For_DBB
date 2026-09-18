@@ -31,13 +31,17 @@ public final class PriorityPolicy {
                 && !rule.isCapabilityStopped(RouteHandleType.MODIFY)) {
             return RouteHandleType.MODIFY;
         }
-        if ((rule.getType() == RouteHandleType.DELAY || rule.getDelayMs() > 0)
-                && !rule.isCapabilityStopped(RouteHandleType.DELAY)) {
-            return RouteHandleType.DELAY;
-        }
+        //  MONITOR 先于 DELAY（能力叠加契约）：MONITOR 是「不可被覆盖的基线」——只要它启用且未被显式
+        //  停止，就必须由能「监控真实响应」的 handler 执行（MonitorHandler 自身也支持 delay）。
+        //  若把 DELAY 排在前面，纯 DELAY 分支（HandlerExecutor.scheduleDelay）只做延迟放行、不监控，
+        //  会导致「叠加 monitor+delay 且 modify 被停止」的场景静默丢失监控记录（实测缺陷）。
         if (rule.isMonitorEnabled()
                 && !rule.isCapabilityStopped(RouteHandleType.MONITOR)) {
             return RouteHandleType.MONITOR;
+        }
+        if ((rule.getType() == RouteHandleType.DELAY || rule.getDelayMs() > 0)
+                && !rule.isCapabilityStopped(RouteHandleType.DELAY)) {
+            return RouteHandleType.DELAY;
         }
         return null;
     }

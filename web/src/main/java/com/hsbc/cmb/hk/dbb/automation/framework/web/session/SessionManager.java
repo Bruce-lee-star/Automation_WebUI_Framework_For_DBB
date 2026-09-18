@@ -25,6 +25,8 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyPartitionKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import java.util.concurrent.ExecutionException;
 
@@ -253,6 +255,70 @@ public class SessionManager {
         return session == null ? null : session.sessionKey();
     }
 
+    // ==================== 同一 sessionKey 并发互斥（并行语义）====================
+
+    /**
+     * 本线程本 scenario 持有的会话闸门键（线程级持有；场景末由框架收口释放）。
+     *
+     * <p><b>并行语义（企业级期望）</b>：<b>不同 sessionKey 并行、同一 sessionKey 严格串行</b>。
+     * 同一会话被两个 scenario 并发使用会互相踩踏 —— SSO 服务端单会话策略互踢、storageState 覆写、
+     * 首页/权限态交错，表现为随机 401 / 重登录失败 / 断言漂移，且极难定位。
+     *
+     * <p>闸门键取 {@code sessionKey} 单一维度，与业务/测试侧「同一个 session」的直觉完全一致；
+     * 不同 sessionKey 各自独立闸门 → 真并行；串行运行时闸门永不阻塞（无竞争）→ 零副作用。
+     *
+     * <p>闸门开关默认 {@code auto}：引擎级并行开启时自动生效（见
+     * {@link com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig#CONCURRENCY_PARTITION_ENABLED}）。
+     */
+    private static final ThreadLocal<ConcurrencyPartitionKey> SESSION_GATE = new ThreadLocal<>();
+
+    /**
+     * 获取本 sessionKey 的并发闸门：本 scenario 首次调用时<b>阻塞</b>，直至该 sessionKey 的前序场景
+     * 完全结束（{@link #releaseSessionGate()}）；同 scenario 内同 key 重复调用为 no-op。
+     *
+     * <p>同 scenario 内<b>换 key</b>（feature 模式切 user）时先释放旧闸门再取新闸门，避免长期占用
+     * 已不再使用的旧身份（release→acquire 顺序不会与其他场景形成环路等待）。
+     *
+     * @param sessionKey 会话标识；{@code null}/空白 时不参与互斥
+     */
+    /* package-private：暴露给同包单测直接验证「同 key 串行 / 异 key 并行」语义（零网络依赖）。 */
+    static void acquireSessionGate(String sessionKey) {
+        if (sessionKey == null || sessionKey.trim().isEmpty()) {
+            return;
+        }
+        ConcurrencyPartitionKey key;
+        try {
+            key = ConcurrencyPartitionKey.of(java.util.Map.of("sessionkey", sessionKey));
+        } catch (IllegalArgumentException e) {
+            // 非法维度（理论不可达：已判空）→ 不参与互斥，但不得静默（D7-3）
+            LOGGER.warn("[SessionManager] sessionKey '{}' cannot form a partition key, skipping gate: {}",
+                    sessionKey, e.getMessage());
+            return;
+        }
+        ConcurrencyPartitionKey held = SESSION_GATE.get();
+        if (held != null) {
+            if (held.equals(key)) {
+                return;
+            }
+            releaseSessionGate();
+        }
+        ConcurrencyGate.acquire(key);
+        SESSION_GATE.set(key);
+    }
+
+    /**
+     * 释放本线程持有的会话闸门（scenario 末由框架收口调用；未持有则 no-op）。
+     *
+     * <p>必须保证配对释放，否则同 sessionKey 的后续 scenario 将永久阻塞。
+     */
+    public static void releaseSessionGate() {
+        ConcurrencyPartitionKey key = SESSION_GATE.get();
+        SESSION_GATE.remove();
+        if (key != null) {
+            ConcurrencyGate.release(key);
+        }
+    }
+
     /**
      * 标记 Feature 级别 Session 已恢复
      * <p>
@@ -429,6 +495,9 @@ public class SessionManager {
      * @return true 表示 session 已准备好，false 表示需要登录
      */
     public static boolean restoreSession(String sessionKey) {
+        //  并行语义前置：同一 sessionKey 的 scenario 互斥（不同 sessionKey 并行）。
+        //   阻塞点位于场景早期（首个会话步骤），直到前序同 key 场景完全结束才继续。
+        acquireSessionGate(sessionKey);
         String restartStrategy = PlaywrightManager.config().getRestartStrategy();
         
         if ("feature".equalsIgnoreCase(restartStrategy)) {
@@ -595,6 +664,8 @@ public class SessionManager {
      * @param homeUrl 登录成功后的首页 URL
      */
     public static void saveSession(String sessionKey, String homeUrl) {
+        //  并行语义：登录落盘同样纳入同 sessionKey 互斥（覆盖「未走 restoreSession 直接登录」的路径）
+        acquireSessionGate(sessionKey);
         try {
             Path sessionPath = getSessionPath(sessionKey);
 

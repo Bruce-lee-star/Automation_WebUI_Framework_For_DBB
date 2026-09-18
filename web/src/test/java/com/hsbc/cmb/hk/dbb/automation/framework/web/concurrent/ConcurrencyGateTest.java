@@ -37,6 +37,36 @@ public class ConcurrencyGateTest {
     public void tearDown() {
         System.clearProperty(ENABLED);
         System.clearProperty(PERMITS);
+        System.clearProperty(CUCUMBER_PARALLEL);
+        System.clearProperty(JUNIT_PARALLEL);
+    }
+
+    /** 引擎级并行开关（auto 判据）。 */
+    private static final String CUCUMBER_PARALLEL = "cucumber.execution.parallel.enabled";
+    private static final String JUNIT_PARALLEL = "junit.jupiter.execution.parallel.enabled";
+
+    /**
+     * {@code auto}（默认三态）：<b>并行开启即自动启用、串行时 no-op、显式 false 为逃生舱</b>。
+     *
+     * <p>这是「同一 sessionKey 串行、不同 sessionKey 并行」成为<b>并行默认语义</b>的基础：
+     * 若默认恒 off，并行下同身份会并发共用会话（SSO 互踢）——即用户反馈的缺陷。
+     */
+    @Test
+    public void auto_enabledIffEngineParallelEnabled_explicitFalseWins() {
+        System.clearProperty(ENABLED);
+        assertFalse(ConcurrencyGate.isEnabled(), "串行运行（auto）不应启用闸门");
+
+        System.setProperty(CUCUMBER_PARALLEL, "true");
+        assertTrue(ConcurrencyGate.isEnabled(), "引擎级并行开启时 auto 应自动启用");
+        System.clearProperty(CUCUMBER_PARALLEL);
+
+        System.setProperty(JUNIT_PARALLEL, "true");
+        assertTrue(ConcurrencyGate.isEnabled(), "JUnit5 并行开启时 auto 也应自动启用");
+        System.clearProperty(JUNIT_PARALLEL);
+
+        System.setProperty(ENABLED, "false");
+        System.setProperty(CUCUMBER_PARALLEL, "true");
+        assertFalse(ConcurrencyGate.isEnabled(), "显式 false 必须压过 auto（逃生舱）");
     }
 
     @Test

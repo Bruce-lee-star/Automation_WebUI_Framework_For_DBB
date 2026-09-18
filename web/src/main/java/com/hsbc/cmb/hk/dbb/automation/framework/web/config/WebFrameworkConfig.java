@@ -491,14 +491,22 @@ public enum WebFrameworkConfig {
 
     /**
      * SSO 感知并发（按身份分区互斥）总开关。
-     * 开启后，相同并发分区键（默认 environment+username）的 scenario 互斥串行，不同身份并行；
-     * 关闭（默认）时 {@code ConcurrencyGate} 全为 no-op，行为零回归。
-     * 与 JUnit 5 JVM 内并行正交：仅在并行执行器真正并发运行时才有意义。
+     *
+     * <p><b>三态</b>：
+     * <ul>
+     *   <li>{@code auto}（默认）：当引擎级并行开启（{@code cucumber.execution.parallel.enabled}
+     *       或 {@code junit.jupiter.execution.parallel.enabled} 为 true）时自动启用；串行运行时为 no-op；</li>
+     *   <li>{@code true} / {@code false}：显式强制开 / 关（{@code false} 为逃生舱）。</li>
+     * </ul>
+     *
+     * <p><b>为什么默认 auto</b>：并行下「同一身份（sessionKey）被两个 scenario 同时使用」会互相踩踏
+     * （SSO 单会话互踢、storageState 覆写），且现象随机难查。默认在并行时启用，使
+     * <b>「同一 sessionKey 串行、不同 sessionKey 并行」成为并行的默认语义</b>；串行下恒为 no-op、零回归。
      */
     CONCURRENCY_PARTITION_ENABLED(
         "serenity.playwright.concurrent.partition.enabled",
-        "false",
-        "SSO 感知并发：按身份分区互斥（相同身份串行、不同身份并行）"
+        "auto",
+        "SSO 感知并发：按身份分区互斥（相同身份串行、不同身份并行）。auto=引擎级并行为真时自动启用"
     ),
 
     /**

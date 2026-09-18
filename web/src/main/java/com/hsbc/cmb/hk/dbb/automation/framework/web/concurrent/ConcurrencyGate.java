@@ -85,10 +85,34 @@ public final class ConcurrencyGate {
      */
     private static boolean isEnabledLive() {
         String override = System.getProperty(WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey());
-        if (override != null) {
-            return override.equalsIgnoreCase("true") || override.equalsIgnoreCase("yes") || override.equalsIgnoreCase("1");
+        if (override != null && !override.trim().isEmpty()) {
+            return parseTriState(override);
         }
-        return WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getBooleanValue();
+        return parseTriState(WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getValue());
+    }
+
+    /**
+     * 三态解析：{@code auto}（含空值，默认）→ 引擎级并行为真时启用；其它按 truthy 解析。
+     *
+     * <p>语义：<b>并行下同身份必须串行</b>，否则同一 sessionKey 被并发使用会互踩（SSO 互踢、
+     * storageState 覆写）且现象随机；串行下闸门恒不阻塞（单线程不会自锁），故 auto 无副作用。
+     */
+    private static boolean parseTriState(String raw) {
+        if (raw == null || raw.trim().isEmpty() || "auto".equalsIgnoreCase(raw.trim())) {
+            return parallelExecutionEnabled();
+        }
+        String v = raw.trim();
+        return v.equalsIgnoreCase("true") || v.equalsIgnoreCase("yes") || v.equalsIgnoreCase("1");
+    }
+
+    /** 引擎级并行是否开启（Cucumber / JUnit5）；用于 {@code auto} 判定。 */
+    private static boolean parallelExecutionEnabled() {
+        return truthy(System.getProperty("cucumber.execution.parallel.enabled"))
+                || truthy(System.getProperty("junit.jupiter.execution.parallel.enabled"));
+    }
+
+    private static boolean truthy(String raw) {
+        return raw != null && (raw.equalsIgnoreCase("true") || raw.equalsIgnoreCase("yes") || raw.equalsIgnoreCase("1"));
     }
 
     private static int perKeyPermits() {

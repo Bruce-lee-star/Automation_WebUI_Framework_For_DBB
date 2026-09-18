@@ -16,6 +16,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
@@ -688,6 +689,9 @@ public class PlaywrightListener implements StepListener {
         TestContextHolder.get().remove(CURRENT_STEP_NAME_KEY);
         TestContextHolder.get().remove(CURRENT_CUCUMBER_STEP_KEY);
         TestContextHolder.get().remove(STEP_FAILED_KEY);
+        //  并行语义收口：释放本 scenario 持有的「同 sessionKey 互斥」闸门（未持有则 no-op）。
+        //   必须在测试结束路径无条件执行——否则同 sessionKey 的后续场景将永久阻塞。
+        SessionManager.releaseSessionGate();
         //  清理收拢后的守卫标志与失败日志去重记录（防双重处理 / 重入 / API 失败），避免跨 scenario 残留
         ListenerGuard.clearForThread();
         //  清理 per-thread 截图重入标记

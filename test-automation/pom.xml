@@ -63,6 +63,36 @@
             <artifactId>serenity-core</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- 运行 IT 所需（本框架用 Playwright，不真正使用这些 driver）：Serenity 4.2.0 的
+             SupportedWebDriver 静态初始化会对 FirefoxDriver/ChromeDriver/InternetExplorerDriver/
+             EdgeDriver/SafariDriver/HtmlUnitDriver/AppiumDriver 做 ldc，类缺失即 NoClassDefFoundError
+             导致全部 IT 在 Serenity 初始化阶段失败。此处补 test 作用域类路径，使类可加载。 -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-java</artifactId>
+            <version>4.23.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>htmlunit3-driver</artifactId>
+            <version>4.23.0</version>
+            <scope>test</scope>
+            <exclusions>
+                <!-- 统一到 selenium 4.23.1，避免版本分裂 -->
+                <exclusion>
+                    <groupId>org.seleniumhq.selenium</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>io.appium</groupId>
+            <artifactId>java-client</artifactId>
+            <version>9.3.0</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-cucumber</artifactId>

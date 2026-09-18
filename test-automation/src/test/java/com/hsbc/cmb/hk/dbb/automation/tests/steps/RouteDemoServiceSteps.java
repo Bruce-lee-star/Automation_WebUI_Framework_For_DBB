@@ -217,7 +217,7 @@ public class RouteDemoServiceSteps {
                 .api("/demo/api/users")
                 .mock()
                     .interceptResponse()
-                    .mockReplaceField("$.users[0].name", "RENAMED")
+                    .mockReplaceField("$[0].name", "RENAMED")
                 .done()
                 .start();
 

@@ -66,6 +66,17 @@ public class MonitorHandler {
     private static final long RETRY_BUDGET_MARGIN_MS = 5_000L;
 
     /**
+     * 兜底读取真实响应的最大尝试次数（含首次）。
+     *
+     * <p>{@code waitForResponse} 失败多发生在「请求已被 resume、真实往返仍在途」的窗口，
+     * 此时 {@code req.response()} 首次调用常为 null；只试一次即放弃会导致 MONITOR 记录静默丢失。
+     */
+    private static final int FALLBACK_MAX_ATTEMPTS = 5;
+
+    /** 兜底读取真实响应的重试间隔（毫秒）。 */
+    private static final long FALLBACK_RETRY_INTERVAL_MS = 200L;
+
+    /**
      * body 读取重试调度器：用于 {@link #readResponseBodyWithRetry} 的异步退避，
      * 避免 Thread.sleep 阻塞 route 处理线程（线程契约）。
      *
@@ -446,8 +457,16 @@ public class MonitorHandler {
                     //    【可能】已可用。尝试直读一次，避免整条 MONITOR 采集丢失。
                     //    兜底放行，避免请求永久挂起
                     RouteUtil.safeResume(route);
-                    res = fallbackResponse(req);
-                    if (res == null) return;
+                    res = fallbackResponseWithRetry(req);
+                    if (res == null) {
+                        //  「不静默丢弃」（ROUTE-P0-1 宁可错报不可漏测）：观测无法完成也必须留下 MONITOR 记录，
+                        //  否则用例侧只会看到「无记录 / 响应体为空」而没有任何失败信号，难以定位。
+                        LOGGER.warn("[MonitorHandler] No real response after fallback retries; recording degraded "
+                                + "snapshot: pattern='{}', url='{}'",
+                                rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
+                        recordUnavailable(route, rule, req);
+                        return;
+                    }
                 }
             }
         }
@@ -457,9 +476,14 @@ public class MonitorHandler {
                     rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
             // 兜底放行
             RouteUtil.safeResume(route);
-            //  兜底 B：同上，直读 request.response() 做最后一次尝试
-            res = fallbackResponse(req);
-            if (res == null) return;
+            //  兜底 B：直读 request.response()（带界内重试——放行后响应可能仍在途）
+            res = fallbackResponseWithRetry(req);
+            if (res == null) {
+                LOGGER.warn("[MonitorHandler] No real response after fallback retries; recording degraded snapshot: "
+                        + "pattern='{}', url='{}'", rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
+                recordUnavailable(route, rule, req);
+                return;
+            }
         }
 
         //  生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
@@ -468,11 +492,10 @@ public class MonitorHandler {
         //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
         BodyRead read = readResponseBodyWithRetry(res, rule, req, observationContext);
         if (read == null) {
-            LOGGER.debug("[MonitorHandler] Response body unavailable after retry for {}: pattern='{}'",
-                    req.url(), rule.getUrlPattern());
-            VerboseLogging.logWarnIfVerbose(LOGGER,
-                    "[MonitorHandler] Cannot read response body after retry: pattern='{}', url='{}'",
-                    rule.getUrlPattern(), req.url());
+            //  「不静默丢弃」：body 读不到也必须留下 MONITOR 记录（否则该调用对用例完全不可见）
+            LOGGER.warn("[MonitorHandler] Response body unavailable after retry; recording degraded snapshot: "
+                    + "pattern='{}', url='{}'", rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
+            recordUnavailable(route, rule, req);
             return;
         }
 
@@ -563,6 +586,66 @@ public class MonitorHandler {
                     "[MonitorHandler] fallbackResponse unavailable: url='{}', error='{}'",
                     RouteUtil.sanitizeUrl(req.url()), e.getMessage());
             return null;
+        }
+    }
+
+    /**
+     * 兜底读取真实响应（<b>界内重试</b>）。
+     *
+     * <p>{@code waitForResponse} 超时/异常通常发生在「请求已被 resume 放行、真实网络往返仍在途」的窗口，
+     * 此时 {@code req.response()} 首次调用常返回 null。原实现只尝试<b>一次</b>即放弃，导致 MONITOR 记录
+     * 静默丢失（用例侧表现为「无 MONITOR 记录 / 响应体为空」且无失败信号）。现按固定间隔重试至多
+     * {@link #FALLBACK_MAX_ATTEMPTS} 次，最大化捕获成功率。
+     *
+     * <p>本方法在<b>观测工作线程</b>执行（非 Playwright 事件线程），故退避用有界 sleep 是安全的；
+     * 总退避上限约 {@code (FALLBACK_MAX_ATTEMPTS-1) * FALLBACK_RETRY_INTERVAL_MS} 毫秒。
+     *
+     * @param req 当前请求
+     * @return 可读 Response；重试后仍不可用则返回 null
+     */
+    private static Response fallbackResponseWithRetry(Request req) {
+        Response res = fallbackResponse(req);
+        for (int attempt = 2; res == null && attempt <= FALLBACK_MAX_ATTEMPTS; attempt++) {
+            try {
+                Thread.sleep(FALLBACK_RETRY_INTERVAL_MS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            res = fallbackResponse(req);
+        }
+        if (res != null) {
+            VerboseLogging.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] fallbackResponseWithRetry OK: url='{}'", RouteUtil.sanitizeUrl(req.url()));
+        }
+        return res;
+    }
+
+    /**
+     *  记录一条「观测不可用」的降级快照（status=0、无响应体）。
+     *
+     * <p><b>为什么不静默 return</b>：MONITOR 是「对真实响应的观察结果」的唯一写入点，一旦观测链在
+     * response/body 阶段放弃就整条记录消失，用例只能看到「无记录」这一现象，既无法区分「规则没生效」
+     * 与「观测未完成」，也违背框架自身的 ROUTE-P0-1 原则（宁可错报不可漏测）。故此处落一条显式
+     * 降级记录：status=0 且 body=null，让调用方/报告能明确判定「观测不可用」而非「无数据」。
+     *
+     * @param route Playwright 路由对象（用于解析采集上下文）
+     * @param rule  命中的规则
+     * @param req   当前请求
+     */
+    private static void recordUnavailable(Route route, RouteRule rule, Request req) {
+        ApiCaptureContext captureContext = RouteUtil.captureContext(route);
+        if (captureContext == null) {
+            return;
+        }
+        try {
+            CapturedApiCall degraded = new CapturedApiCall(
+                    rule.getUrlPattern(), req.method(), snapshotHeadersSafely(req.headers()), 0, Map.of(), null,
+                    System.currentTimeMillis(), req.url(), req.postData(), RouteHandleType.MONITOR);
+            captureContext.storeApiCall(degraded);
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] recordUnavailable degraded snapshot failed: {}", e.getMessage());
         }
     }
 

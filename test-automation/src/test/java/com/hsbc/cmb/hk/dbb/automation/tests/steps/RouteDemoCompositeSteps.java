@@ -552,7 +552,7 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
                 .api("/demo/api/users")
                 .mock()
                     .interceptResponse()
-                    .mockReplaceField("$.users[0].name", "CONTRACT_RENAMED")
+                    .mockReplaceField("$[0].name", "CONTRACT_RENAMED")
                 .done()
                 .start();
 
@@ -730,8 +730,17 @@ public class RouteDemoCompositeSteps extends RouteDemoServiceSteps {
         openOrigin(page());
         get("/users");   // 触发请求 → monitor 捕获
 
-        //  主线程直接读取已同步存储的响应体（替代原 onResponse + setShared/awaitShared 桥接）
-        List<String> bodies = ApiCaptureContext.getCurrent().getAllResponsesForUrl("/demo/api/users");
+        //  主线程直接读取已存储的响应体（替代原 onResponse + setShared/awaitShared 桥接）。
+        //  两处必须与其余用例一致：
+        //    ① 按<b>页面所属 Context</b> 取采集上下文（ctx()）：MONITOR 快照由 handler 经
+        //       RouteUtil.captureContext(route)=forContext(page.context()) 写入 per-context 存储；
+        //       用 getCurrent()（线程绑定/SHARED）读会得到空集合。
+        //    ② 观测在独立工作线程异步落库 → 需有界等待，不能立即读（否则时序竞态）。
+        List<String> bodies = AsyncWaits.awaitResult(AsyncWaits.ms(CAPTURE_TIMEOUT_MS), AsyncWaits.ms(100),
+                () -> {
+                    List<String> captured = ctx().getAllResponsesForUrl("/demo/api/users");
+                    return captured != null && !captured.isEmpty() ? captured : null;
+                });
         assertNotNull( bodies, "monitor 应已捕获 /demo/api/users 的响应体");
         assertFalse( bodies.isEmpty(), "monitor 捕获的响应体不应为空");
         assertTrue( bodies.get(bodies.size() - 1).contains("Alice"), "响应体应包含业务字段 Alice");

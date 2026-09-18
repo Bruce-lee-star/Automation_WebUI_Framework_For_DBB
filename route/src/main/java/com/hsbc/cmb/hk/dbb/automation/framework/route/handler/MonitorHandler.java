@@ -348,6 +348,12 @@ public class MonitorHandler {
                 return;
             }
             observeAndRecordInternal(route, rule, delayMs, context);
+        } catch (Throwable observationError) {
+            //  观测链任何未预期异常都不得让请求挂起（否则浏览器转圈、测试 block）：
+            //  强制放行兜底（resume 幂等，已放行时被 Playwright 忽略）。异常在此收口，绝不外抛。
+            LOGGER.error("[MonitorHandler] Observation aborted unexpectedly, forcing resume: pattern='{}'",
+                    rule.getUrlPattern(), observationError);
+            RouteUtil.safeResume(route);
         } finally {
             ticket.complete(null);
         }
@@ -438,19 +444,38 @@ public class MonitorHandler {
                                     .setTimeout(wfrTimeout);
                     res = page.waitForResponse(
                             r -> {
-                                if (r == null || r.request() == null) return false;
-                                String ru = r.request().url();
-                                return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                                //  Playwright 回调没有异常出口：谓词内任何异常（典型 "Object doesn't exist:
+                                //  response@..." 的失效对象访问）一旦逃逸，会被 Playwright 传播到页面/请求层，
+                                //  直接让调用方的 fetch 失败（实测即此路径：测试步骤报该异常）。
+                                //  故此处一律降级为 false（= 不匹配），绝不抛出。
+                                try {
+                                    if (r == null || r.request() == null) return false;
+                                    String ru = r.request().url();
+                                    return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                                } catch (Exception predicateError) {
+                                    VerboseLogging.logDebugIfVerbose(LOGGER,
+                                            "[MonitorHandler] waitForResponse predicate degraded (stale object): {}",
+                                            predicateError.toString());
+                                    return false;
+                                }
                             },
                             wfrOpts,
                             () -> {
-                                // 放行：若 route 已失效（Firefox/WebKit 下 Object doesn't exist）
-                                // 则静默跳过，让 waitForResponse 自然结束，避免抛异常污染等待链路。
+                                //  同上：action 亦在 Playwright 事件循环内执行，异常同样不得逃逸。
                                 //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程
                                 //   （delayMs<=0 立即执行），避免阻塞事件线程、规避调度线程竞态。
-                                if (RouteUtil.isPageClosed(route)) return;
-                                resumed.set(true);
-                                RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
+                                try {
+                                    if (RouteUtil.isPageClosed(route)) return;
+                                    resumed.set(true);
+                                    RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
+                                } catch (Exception actionError) {
+                                    VerboseLogging.logDebugIfVerbose(LOGGER,
+                                            "[MonitorHandler] waitForResponse action degraded, forcing resume: {}",
+                                            actionError.toString());
+                                    if (resumed.compareAndSet(false, true)) {
+                                        RouteUtil.safeResume(route);
+                                    }
+                                }
                             });
                 } catch (PlaywrightException e) {
                     VerboseLogging.logWarnIfVerbose(LOGGER,

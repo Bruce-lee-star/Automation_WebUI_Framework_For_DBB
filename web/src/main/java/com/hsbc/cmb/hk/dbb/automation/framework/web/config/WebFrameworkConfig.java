@@ -514,7 +514,10 @@ public enum WebFrameworkConfig {
      * 默认 1（严格互斥）；某些环境允许同身份 N 路并发时可调大。
      */
     /**
-     * 单次进入闸门的<b>最大等待</b>（毫秒，默认 10 分钟；{@code 0} = 无限等待/旧行为）。
+     * 单次进入闸门的<b>最大等待</b>（毫秒，默认 3 分钟；{@code 0} = 无限等待/旧行为）。
+     *
+     * <p>取 3 分钟：正常环境登录远低于此值；而对「上游长时间无响应」的持有者，等待方最迟 3 分钟即
+     * 降级放行，避免整套被一个卡住的身份拖到几十分钟（实测 10 分钟上限会让全量运行长达 8~9 分钟以上）。
      *
      * <p><b>为什么必须有界</b>：若某场景获取许可后未配对释放（许可泄漏），同身份的后续场景会
      * <b>永久</b> park 在该信号量上 —— 实测 4 个 worker 全部 park 在同一 {@code Semaphore$FairSync}
@@ -524,7 +527,7 @@ public enum WebFrameworkConfig {
      */
     CONCURRENCY_PARTITION_MAX_WAIT_MS(
         "serenity.playwright.concurrent.partition.max.wait.ms",
-        "600000",
+        "180000",
         "进入并发闸门的最大等待（毫秒）；0 表示无限等待（旧行为，不推荐）"
     ),
 

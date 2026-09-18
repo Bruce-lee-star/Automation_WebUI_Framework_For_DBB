@@ -564,14 +564,31 @@ public class ModifyHandler {
                     new com.microsoft.playwright.Page.WaitForResponseOptions().setTimeout(wfrTimeout);
             return page.waitForResponse(
                     r -> {
-                        if (r == null || r.request() == null) return false;
-                        String ru = r.request().url();
-                        return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                        //  Playwright 回调无异常出口：谓词内失效对象访问（"Object doesn't exist: response@..."）
+                        //  若逃逸会被传播到页面/请求层，直接让调用方 fetch 失败。故一律降级为 false。
+                        try {
+                            if (r == null || r.request() == null) return false;
+                            String ru = r.request().url();
+                            return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
+                        } catch (Exception predicateError) {
+                            VerboseLogging.logDebugIfVerbose(LOGGER,
+                                    "[ModifyHandler] waitForResponse predicate degraded (stale object): {}",
+                                    predicateError.toString());
+                            return false;
+                        }
                     },
                     wfrOpts,
                     () -> {
-                        if (RouteUtil.isPageClosed(route)) return;
-                        RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
+                        //  同上：action 亦在 Playwright 事件循环内，异常不得逃逸；失败即安全放行。
+                        try {
+                            if (RouteUtil.isPageClosed(route)) return;
+                            RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
+                        } catch (Exception actionError) {
+                            VerboseLogging.logDebugIfVerbose(LOGGER,
+                                    "[ModifyHandler] waitForResponse action degraded, forcing resume: {}",
+                                    actionError.toString());
+                            RouteUtil.safeResume(route, opts);
+                        }
                     });
         } catch (PlaywrightException e) {
             VerboseLogging.logWarnIfVerbose(LOGGER,

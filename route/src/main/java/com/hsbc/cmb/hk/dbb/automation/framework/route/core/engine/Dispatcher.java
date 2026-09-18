@@ -7,6 +7,7 @@ import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -30,7 +31,11 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.StoppedCapa
  *       使后续重新注册的同 pattern handler 永不执行（g06 规则静默失效故障根因）；</li>
  *   <li>防重门控重复 → <b>直接 return 且不 resume</b>：把请求交给下一个 handler；</li>
  *   <li>条件不匹配 → {@code unmarkDispatched} + {@code resume}：放弃本次拦截，让 Playwright 继续匹配；</li>
- *   <li>session 已停止 / times 耗尽 → {@code safeResume} + {@code unmarkDispatched}：保持 handler 注册仅放行。</li>
+ *   <li><b>能力隔离（本类两条分支的共同原则）</b>：session 已停止 → 仅停止 MONITOR 能力（同链
+ *       MODIFY / DELAY 照常生效）；times 耗尽 → 仅把该规则从本次合并中剔除（链上其余规则照常生效）；
+ *       两者<b>都不</b>整链放行；</li>
+ *   <li>仅当「停止/剔除后已无可执行规则与能力」时 → {@code safeResume} + {@code unmarkDispatched}：
+ *       保持 handler 注册、仅放行请求走真实网络。</li>
  * </ul>
  *
  * <p>防重门控释放时机：仅<b>同步路径</b>在 finally 释放；异步路径（MOCK+DELAY、纯 DELAY）的 route 仍在 pending，
@@ -134,16 +139,28 @@ public final class Dispatcher {
                     rule.getUrlPattern(), reqUrl);
         }
 
-        // ═══ times 一次性拦截已耗尽（对齐 Playwright setTimes）：仅放行，不处理 ═══
-        // 与 session stopped 语义一致：route handler 保持注册，但耗尽后仅放行请求走真实网络。
-        // 不调用 unroute()，避免 Playwright 线程竞态（同 session stopped 的注释）。
-        if (rule.getTimes() > 0 && rule.isTimesExhausted()) {
+        // ═══ times 一次性拦截（对齐 Playwright setTimes）：仅剔除【已耗尽】的规则，不放弃整链 ═══
+        //  语义修正（能力隔离，与上方 session 分支同一形态）：旧实现只要【链头】times 耗尽就
+        //    safeResume 整链放行 —— 同 pattern 链上其它规则的能力（MONITOR 基线 / MODIFY / DELAY）
+        //    被静默丢弃。现改为：把已耗尽的规则从本次合并中剔除，链上其余规则照常生效
+        //    （例：[MOCK times=2] + [MONITOR] → 前 2 次 mock，之后不再 mock 但监控继续）。
+        //  剔除后若无可选规则 → 与单规则链的既有行为完全一致（放行 + 解除防重标记供其它 pattern 处理）。
+        //  注意：chain 被原生 route 闭包直接持有，故必须新建列表，不得就地修改（否则跨请求污染）。
+        //  不调用 unroute()，避免 Playwright 线程竞态（同 session stopped 的注释）。
+        List<RouteRule> dispatchChain = chain;
+        if (hasExhaustedTimesRule(chain)) {
+            dispatchChain = excludeExhaustedTimesRules(chain);
             VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
-                    "[RouteEngine] ═══ dispatchRoute SKIP (times exhausted): pattern='{}', url='{}' ═══",
-                    rule.getUrlPattern(), reqUrl);
-            RouteUtil.safeResume(route);
-            unmarkDispatched(route);
-            return;
+                    "[RouteEngine] ═══ dispatchRoute times exhausted: excluded {} rule(s), {} remain ═══",
+                    chain.size() - dispatchChain.size(), dispatchChain.size());
+            if (dispatchChain.isEmpty()) {
+                VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
+                        "[RouteEngine] ═══ dispatchRoute SKIP (all rules' times exhausted): pattern='{}', url='{}' ═══",
+                        rule.getUrlPattern(), reqUrl);
+                RouteUtil.safeResume(route);
+                unmarkDispatched(route);
+                return;
+            }
         }
 
         // ═══ 同 pattern 规则链解析（统一绑定模型）═══
@@ -157,7 +174,8 @@ public final class Dispatcher {
         //    同 pattern 链混合 PAGE/CONTEXT scope 规则，按请求所属 Page 精确筛选后一次性合并执行：
         //    page 特定 > context 全域、能力位 OR、MOCK 终结、DELAY 取 max（全部由 resolveUnified → mergeCrossLayer 承载）。
         Page reqPage = RouteUnifiedResolution.currentPageOf(route);
-        RouteEngine.ResolvedUnified resolved = RouteUnifiedResolution.resolveUnified(chain, reqPage);
+        //  用【剔除已耗尽规则后的链】做统一合并：times 耗尽只影响其自身规则，不影响同链其它能力
+        RouteEngine.ResolvedUnified resolved = RouteUnifiedResolution.resolveUnified(dispatchChain, reqPage);
         if (resolved == null) {
             VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
                     "[RouteEngine] ═══ dispatchRoute SKIP (unified: no applicable rule for this page): pattern='{}' ═══",
@@ -166,13 +184,13 @@ public final class Dispatcher {
                 RouteEngine.LOGGER.debug("[RouteEngine]   SKIP diag: reqPage=#{} reqPageCtx=#{} chain={}",
                         System.identityHashCode(reqPage),
                         reqPage == null ? "null" : System.identityHashCode(reqPage.context()),
-                        describeChainForDiag(chain, reqPage));
+                        describeChainForDiag(dispatchChain, reqPage));
             }
             //  异常可见性（默认级别，非 verbose）：链上确有【PAGE 级】规则却全部因「页面身份不匹配」被过滤
             //    —— 这是 MOCK / MODIFY / MONITOR / DELAY 静默失效的典型信号（请求被原样放行到真实后端，
             //    用例表现为「规则像没生效」）。旧实现只在 debug 级留痕，非 verbose 运行下完全不可见，
             //    曾使该缺陷长期难以定位。故此处以 WARN 显式暴露身份与规则数。
-            int pageScoped = countPageScopedRules(chain);
+            int pageScoped = countPageScopedRules(dispatchChain);
             if (pageScoped > 0) {
                 RouteEngine.LOGGER.warn("[RouteEngine] dispatchRoute SKIP: {} PAGE-scoped rule(s) on pattern='{}' do not "
                                 + "apply to the requesting page (reqPage=#{}) — request passed through WITHOUT "
@@ -341,6 +359,49 @@ public final class Dispatcher {
                     .append("} ");
         }
         return sb.toString();
+    }
+
+    /**
+     * 链上是否存在「设置了有限次数（{@code times>0}）且已耗尽」的规则。
+     *
+     * <p>包级可见：分发期剔除逻辑与契约测试（{@code RouteTimesExhaustionTest}）共用同一判定，
+     * 避免测试自造口径。
+     */
+    static boolean hasExhaustedTimesRule(List<RouteRule> chain) {
+        if (chain == null || chain.isEmpty()) {
+            return false;
+        }
+        for (RouteRule r : chain) {
+            if (r != null && r.getTimes() > 0 && r.isTimesExhausted()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 剔除「已耗尽」的一次性规则，返回<b>新列表</b>（保留未设次数、或仍有余量的规则）。
+     *
+     * <p><b>必须新建列表</b>：{@code chain} 被 Playwright 原生 route 闭包直接持有
+     * （{@code context.route(pattern, route -> dispatchRoute(route, chain))}），
+     * 就地修改会造成跨请求污染，并影响后续重新注册的同 pattern handler。
+     */
+    static List<RouteRule> excludeExhaustedTimesRules(List<RouteRule> chain) {
+        List<RouteRule> kept = new ArrayList<>(chain == null ? 0 : chain.size());
+        if (chain == null) {
+            return kept;
+        }
+        for (RouteRule r : chain) {
+            if (r == null) {
+                continue;
+            }
+            // times==0 表示无限次；仅剔除「有限次数且已用尽」的规则
+            if (r.getTimes() > 0 && r.isTimesExhausted()) {
+                continue;
+            }
+            kept.add(r);
+        }
+        return kept;
     }
 
     /** 统计链上 PAGE 级规则数（用于「本该生效却全部被页面身份过滤掉」的异常告警）。 */

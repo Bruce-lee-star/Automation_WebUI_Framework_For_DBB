@@ -659,20 +659,33 @@ public class PlaywrightListener implements StepListener {
     /**
      *  自动清理当前线程的 RouteRegistry 条目（防内存泄漏 + 跨用例路由污染）。
      *
-     * <p>在 testFinished 中调用，从 PlaywrightManager 获取当前线程的 Page / Context，
-     * 清理 RouteRegistry 中对应的 pattern 记录，释放 RouteEngine 防重门控集合。
+     * <p>在 testFinished 中调用，清理当前线程 Page / Context 对应的路由层资源
+     * （停止 MonitorSession、unroute、清理注册表与防重门控）。
      *
-     * <p>异常安全：PlaywrightManager.getPage()/getContext() 在某些异常路径下可能抛异常，
-     * 逐个 try-catch 保证一个失败不影响另一个。
+     * <p><b>⚠️ 必须使用「不创建」的访问器</b>：本方法在 {@code testFinished} 中执行，此时
+     * {@code cleanupForScenario()} 往往已关闭 Context/Page。若用创建型
+     * {@code PlaywrightManager.getPage()/getContext()}，会<b>重新建出</b>一个 Context +
+     * {@code about:blank} Page —— 这正是实测「测试过程中不断冒出 about:blank 新 tab」的根因
+     * （每次 testFinished 都多建一个 Context+Page，@route 组 24 个场景实测建了 171 个 Context）。
+     *
+     * <p>Context 已被关闭时无需再清：其路由/防重门控随 {@code closeContext} 一并清理。
      */
     private void cleanupRouteRegistryForCurrentThread() {
         try {
-            Page page = PlaywrightManager.getPage();
-            BrowserContext context = PlaywrightManager.getContext();
+            Page page = PlaywrightManager.currentPageForThread();
+            BrowserContext context = PlaywrightManager.currentContextForThread();
+            if (page == null && context == null) {
+                // 无存活 Page/Context → 无路由层资源可清，且绝不能为清理而创建
+                return;
+            }
             //  统一走 RouteRegistry 释放路由层资源（停止 MonitorSession、unroute、清理注册表与防重门控）
             withRouteLifecycle(lc -> {
-                lc.clearContext(page);
-                lc.clearContext(context);
+                if (page != null) {
+                    lc.clearContext(page);
+                }
+                if (context != null) {
+                    lc.clearContext(context);
+                }
             });
         } catch (Exception e) {
             logger.debug("RouteRegistry cleanup for current thread skipped: {}", e.getMessage());

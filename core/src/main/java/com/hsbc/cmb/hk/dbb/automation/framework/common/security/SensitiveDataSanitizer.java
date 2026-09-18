@@ -846,6 +846,24 @@ public final class SensitiveDataSanitizer {
     }
 
     /**
+     * 日志消息出口（{@code %msg}）专用脱敏入口 —— 修复 CORE-C1。
+     *
+     * <p>{@link #sanitizeFreeText(String)} 以"行内首个 {@code :/=} 之前"为 key，
+     * 对 {@code "Login failed: password=s3cr3t"} 这类 {@code : } 早于 {@code =} 的消息会漏判；
+     * 而 {@link #sanitizeLine(String)} 只做 {@code key[:=]value} 遮蔽、<b>不含</b> Bearer/JWT 等自由文本规则。
+     * 二者盲区互补，故本入口<b>两级都跑</b>：先 {@code key[:=]value}（行内任意位置），再自由文本 token 兜底，
+     * 保证 {@code %msg} 出口既不漏 {@code password=} / {@code token=}，也不漏 {@code Authorization: Bearer ...}。
+     *
+     * @param text 日志消息（可含换行）
+     * @return 脱敏后文本
+     */
+    public static String sanitizeLogMessage(String text) {
+        if (text == null) return null;
+        // 先做行内任意位置 key[:=]value 遮蔽，再跑 Bearer/JWT/URL 等自由文本兜底。
+        return sanitizeFreeText(sanitizeLine(text));
+    }
+
+    /**
      * 行内任意位置的敏感 {@code key[:=]value} 遮蔽（C-2 / L-1 关键补充）。
      *
      * <p>{@link #sanitizeFreeText(String)} 以"行内首个 {@code :/=} 之前"为 key，对

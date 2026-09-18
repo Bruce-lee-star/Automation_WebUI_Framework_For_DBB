@@ -16,7 +16,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSan
  * <p><b>本类的做法</b>：接管 logback 的 {@code msg} 转换词（在 {@code logback.xml} 中
  * {@code <conversionRule conversionWord="msg" converterClass="..."/>}），
  * 使<b>所有</b>经 {@code %msg} / {@code %m} 输出的日志消息在写出前统一经
- * {@link SensitiveDataSanitizer#sanitizeFreeText(String)} —— 调用方<b>无法绕过</b>。
+ * {@link SensitiveDataSanitizer#sanitizeLogMessage(String)}（行内 {@code key[:=]value} + Bearer/JWT 自由文本两级）—— 调用方<b>无法绕过</b>。
  *
  * <p><b>与"调用方自觉"的区别 vs 运维总开关</b>：
  * <ul>
@@ -25,8 +25,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSan
  *       性能应急时由运维统一关闭 —— 它不属于"调用方自觉"，关闭需显式动作且影响全进程。</li>
  * </ul>
  *
- * <p><b>健壮性</b>：脱敏本身就是正则处理，若其抛异常，本类<b>回退为原始消息</b>并继续输出 ——
- * 脱敏设施绝不能反过来让日志丢失（排障时日志丢失比泄露更致命）。
+ * <p><b>健壮性（CORE-C2，与异常栈出口对齐）</b>：脱敏本身是正则处理，若其抛异常，本类<b>不回退原文</b>，
+ * 而输出 {@code [LOG SUPPRESSED: sanitizer failure]} —— 与 {@link SanitizingThrowableConverter} 方向一致：
+ * 日志出口与异常栈出口同为"失败即抑制"，宁可丢失该条消息细节，也不让明文凭据落盘。
  *
  * <p><b>注意（防递归）</b>：本 Converter 内部及其调用的脱敏逻辑<b>不得打印日志</b>，
  * 否则会形成"打印 → 脱敏 → 再打印"的递归。当前 {@code sanitizeFreeText} 为纯函数、无日志。
@@ -51,10 +52,17 @@ public class SanitizingMessageConverter extends MessageConverter {
             return message;
         }
         try {
-            return SensitiveDataSanitizer.sanitizeFreeText(message);
+            return sanitize(message);
         } catch (Exception e) {
-            //  脱敏失败也必须把日志打出来：丢失日志比泄露更妨碍排障（且不因脱敏引入新故障）
-            return message;
+            //  CORE-C2：与异常栈出口一致——失败即抑制，绝不回退明文（回退原文 = 明文凭据落盘）
+            return SanitizingThrowableConverter.suppressedMarker();
         }
+    }
+
+    /**
+     * 实际脱敏入口（protected，可被测试子类覆写以模拟脱敏失败，验证 CORE-C2 抑制路径）。
+     */
+    protected String sanitize(String message) {
+        return SensitiveDataSanitizer.sanitizeLogMessage(message);
     }
 }

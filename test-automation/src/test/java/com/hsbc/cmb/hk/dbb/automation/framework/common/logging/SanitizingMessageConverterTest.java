@@ -32,10 +32,43 @@ public class SanitizingMessageConverterTest {
     @Test
     public void sanitizesSecretKeyValueInMessage() {
         //  注意：sanitizeFreeText 以"行内第一个 : 或 ="之前作为 key，
-        //  故敏感键需位于行首（真实日志中 password=xxx 通常独立成段）
+        //  注：%msg 出口现走 sanitizeLogMessage（行内 key[:=]value + 自由文本两级），行首/行内敏感键均被遮蔽
         String out = convert("api call failed\npassword=" + SECRET + "\nretrying");
         assertFalse(out.contains(SECRET), "日志消息不得残留明文密钥");
         assertTrue(out.contains(SensitiveDataSanitizer.maskToken()), "应出现掩码");
+    }
+
+    /** CORE-C1 回归：{@code : } 早于 {@code =} 的行内凭据（旧实现漏判）也必须被遮蔽。 */
+    @Test
+    public void sanitizesInlineSecretAfterColon() {
+        String out = convert("Login failed: password=" + SECRET);
+        assertFalse(out.contains(SECRET), "行内 key=value（: 早于 =）不得残留明文");
+        assertTrue(out.contains(SensitiveDataSanitizer.maskToken()), "应出现掩码");
+    }
+
+    /**
+     * CORE-C1 回归：改造后 {@code %msg} 出口仍保留 Bearer/JWT 自由文本覆盖
+     * （不能因改走 sanitizeLine 而丢失）。
+     */
+    @Test
+    public void stillMasksBearerToken() {
+        String out = convert("Authorization: Bearer " + SECRET);
+        assertFalse(out.contains(SECRET), "Bearer 凭据不得残留明文");
+    }
+
+    /** CORE-C2 回归：脱敏器抛异常时必须抑制（不回退明文）。 */
+    @Test
+    public void sanitizerFailureSuppressesMessageInsteadOfLeaking() {
+        SanitizingMessageConverter failing = new SanitizingMessageConverter() {
+            @Override
+            protected String sanitize(String message) {
+                throw new IllegalStateException("boom");
+            }
+        };
+        String out = convertWith(failing, "password=" + SECRET);
+        assertFalse(out.contains(SECRET), "脱敏失败不得回退明文");
+        assertEquals(SanitizingThrowableConverter.suppressedMarker(), out,
+                "脱敏失败应输出抑制标记，与异常栈出口一致");
     }
 
     /** 普通消息原样通过（脱敏不得破坏可读性）。 */
@@ -111,7 +144,10 @@ public class SanitizingMessageConverterTest {
     // ═══════════════════════════════════════════════════════════
 
     private static String convert(String message) {
-        SanitizingMessageConverter converter = new SanitizingMessageConverter();
+        return convertWith(new SanitizingMessageConverter(), message);
+    }
+
+    private static String convertWith(SanitizingMessageConverter converter, String message) {
         ch.qos.logback.classic.spi.LoggingEvent event =
                 new ch.qos.logback.classic.spi.LoggingEvent();
         event.setMessage(message);

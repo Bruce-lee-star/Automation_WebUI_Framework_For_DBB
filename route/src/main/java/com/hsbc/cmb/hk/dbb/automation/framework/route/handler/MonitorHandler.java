@@ -271,6 +271,18 @@ public class MonitorHandler {
     /** 等待真实响应 / 兜底请求的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS = RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
+    /**
+     * {@code waitForResponse} 超时<b>上限</b>（毫秒）。
+     *
+     * <p><b>为何压到 3s（实测 Flake 根因）</b>：{@code waitForResponse} 仅用于捕获【在途】响应；
+     * 若响应在监听器注册前已返回（路由处理的已知竞态），它会<b>白等满超时</b>。原上限 20s 使观测延迟远超
+     * 测试断言窗口（{@code CAPTURE_TIMEOUT_MS=8s}），导致 MONITOR 记录"偶发缺失" Flake——
+     * 观测往往在断言超时（8s）之后才落库，重试时负载较低、响应在途被即时捕获才通过。
+     * 压到 3s：在途响应通常 &lt;1s 即被捕获；已返回的竞态在 3s 后快速进入兜底 {@code req.response()}，
+     * 使观测整体落在断言窗口内。可用环境变量 {@code ROUTE_FETCH_TIMEOUT_MS} 进一步调小，但不超过此上限。
+     */
+    private static final long WAIT_FOR_RESPONSE_CAP_MS = 3000L;
+
     /** 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。 */
     private static String literalPathOf(String urlPattern) {
         if (urlPattern == null || urlPattern.isEmpty()) return null;
@@ -430,11 +442,13 @@ public class MonitorHandler {
         if (frame != null) {
             com.microsoft.playwright.Page page = frame.page();
             if (page != null) {
-                //  超时保护：绝不传 0（Playwright 源码 TimeoutSettings.createWaitable 中 timeout==0
-                //   会返回 WaitableNever 无限等待 → 死等）。ROUTE_FETCH_TIMEOUT_MS 若被设成 0/负数，
-                //   强制回落到 20s 上限，保证最多阻塞 20s，绝不永久挂起。
-                double wfrTimeout = Math.min(20000, ROUTE_FETCH_TIMEOUT_MS);
-                if (wfrTimeout <= 0) wfrTimeout = 20000;
+                //  超时保护：waitForResponse 仅用于捕获【在途】响应；若响应在监听器注册前已返回（已知竞态），
+                //    它会白等满超时 → 观测延迟远超测试断言窗口（CAPTURE_TIMEOUT_MS=8s）→ 偶发"记录缺失" Flake。
+                //    故上限压到 3s（见 WAIT_FOR_RESPONSE_CAP_MS 注释）：在途响应通常 <1s 即被捕获；
+                //    已返回的竞态在 3s 后快速进入兜底 req.response()，使观测整体落在断言窗口内。
+                //  绝不传 0（Playwright TimeoutSettings 会返回 WaitableNever 死等），<=0 时强制回落到上限。
+                double wfrTimeout = Math.min((double) WAIT_FOR_RESPONSE_CAP_MS, ROUTE_FETCH_TIMEOUT_MS);
+                if (wfrTimeout <= 0) wfrTimeout = WAIT_FOR_RESPONSE_CAP_MS;
                 //  predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
                 //    predicate 永不匹配 → 每个请求白等满 20s 超时（性能问题）。
                 final String lit = literalPathOf(rule.getUrlPattern());

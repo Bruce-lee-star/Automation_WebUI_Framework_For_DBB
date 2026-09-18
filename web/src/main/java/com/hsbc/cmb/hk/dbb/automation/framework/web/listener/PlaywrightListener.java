@@ -294,13 +294,14 @@ public class PlaywrightListener implements StepListener {
      * 一定随后触发完整的 testFinished，因此这些入口必须主动释放路由、采集和线程状态。
      */
     private void cleanupAfterAbnormalTermination(String reason) {
-        //  异常终止路径：scenario 已被中断（断言失败/超时/跳过），
-        //    此时做全局全量复位（resetAll 内部已异常隔离），确保路由/采集状态不残留到下个 case。
-        //    resetAll 包含：停止采集引擎 + 清空 RouteRegistry 全量 + 兜底清空防重门控。
+        //  异常终止路径：scenario 已被中断（断言失败/超时/跳过）。
+        //  G4 修复：原实现调全局 resetAll()（清全部 context 的规则/采集）——并行下会误清其它 worker
+        //    线程正在使用的状态。现改为线程级彻底清理：只清本线程的 Route/采集状态与本线程
+        //    Context（含孤儿）/Page，绝不触碰其它线程。
         try {
-            withRouteLifecycle(RouteLifecycle::resetAll);
+            PlaywrightManager.clearCurrentThreadResources();
         } catch (Exception e) {
-            logger.debug("RouteLifecycleRegistry.get().resetAll() on abnormal termination ({}) failed: {}", reason, e.getMessage());
+            logger.debug("clearCurrentThreadResources() on abnormal termination ({}) failed: {}", reason, e.getMessage());
         }
         cleanupThreadLocals();
     }
@@ -1072,14 +1073,15 @@ public class PlaywrightListener implements StepListener {
                             && (result.getResult() == TestResult.FAILURE || result.getResult() == TestResult.ERROR));
             PlaywrightManager.cleanupForScenario();
 
-            //  采集管道清理：确保 scenario 结束时采集引擎释放（route 未启用时跳过）
-            withRouteLifecycle(RouteLifecycle::stopCapture);
+            //  采集管道清理（G4 修复）：只停本线程各 context 的采集，不再全局 stopCapture()，
+            //    避免并行下误清其它 worker 线程的采集状态。
+            PlaywrightManager.stopCaptureForCurrentThread();
         } catch (Exception e) {
             //  testFinished 属收尾回调：清理阶段异常不应上抛中断 Serenity 收尾流程。
             // 仅记录日志 + 兜底清空防重门控，ThreadLocal 与 API 上下文清理交由 finally 保证。
             logger.error("Error in testFinished, forcing cleanup", e);
             try {
-                withRouteLifecycle(RouteLifecycle::clearDispatchedRoutes);
+                PlaywrightManager.clearCurrentThreadRouteState();
             } catch (Exception re) {
                 logger.debug("clearDispatchedRoutes on error path failed: {}", re.getMessage());
             }
@@ -1170,7 +1172,7 @@ public class PlaywrightListener implements StepListener {
             //  收尾回调异常不向上抛出，避免中断 Serenity 收尾流程；防重门控清空交由 finally 兜底。
             logger.error("Error in testFinished with time, forcing cleanup", e);
             try {
-                withRouteLifecycle(RouteLifecycle::clearDispatchedRoutes);
+                PlaywrightManager.clearCurrentThreadRouteState();
             } catch (Exception re) {
                 logger.debug("clearDispatchedRoutes on error path failed: {}", re.getMessage());
             }

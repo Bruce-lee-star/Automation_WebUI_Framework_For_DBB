@@ -147,6 +147,8 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
         // 防止直接 close browser（未逐 context 关闭）场景下 DISPATCHED_ROUTES / 原生 route handler /
         // ContextRouteEngineManager 调度任务残留导致的泄漏与跨场景路由串扰。
         safeClean("ContextRouteEngineManager.stopAll", () -> RouteLifecycleRegistry.get().stopAllContextEngines());
+        //  套件收尾：排空 route 侧在途工作（在途观测/body 读重试链）并让文件 sink 落盘
+        safeClean("RouteLifecycle.drainForSuiteTeardown", () -> RouteLifecycleRegistry.get().drainForSuiteTeardown());
         safeClean("RouteRegistry.clearAll", () -> RouteLifecycleRegistry.get().clearAll());
         safeClean("AsyncPool.shutdown", () -> com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool.shutdown());
 
@@ -242,6 +244,12 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
                     if (bc == protectedCtx) {
                         continue;
                     }
+                    //  「context 关闭 → 所有活动立即停止」：先停该 context 引擎（置关闭标记 + 取消在途任务
+                    //  + 关 per-context 调度器），再关采集，最后关 Context 本身。
+                    PlaywrightRuntime.instance().browserCleanup.safeClean(
+                            "RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(bc));
+                    PlaywrightRuntime.instance().browserCleanup.safeClean(
+                            "ApiCaptureContext.stop", () -> RouteLifecycleRegistry.get().stopCaptureFor(bc));
                     try {
                         // 复用统一收口：含 tracing 落盘、RouteRegistry.clearContext、受保护 close
                         PlaywrightContextManager.closeContext(bc);
@@ -259,6 +267,37 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
                     "[closeOrphanContextsForCurrentThread] reaped {} leaked BrowserContext(s)", closed);
         }
         return closed;
+    }
+
+    /**
+     * 枚举<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（不关闭、不清理，仅返回引用）。
+     *
+     * <p>仅遍历 {@code "<threadId>:"} 前缀的 Browser —— <b>不触碰</b>并发邻居线程，
+     * 供线程级资源清理（清路由/停引擎/停采集）使用。
+     */
+    public java.util.List<BrowserContext> contextsForCurrentThread() {
+        String prefix = Thread.currentThread().threadId() + ":";
+        java.util.List<BrowserContext> contexts = new ArrayList<>();
+        for (Map.Entry<String, Browser> entry
+                : new ArrayList<>(PlaywrightRuntime.instance().state.browserEntries())) {
+            if (entry.getKey() == null || !entry.getKey().startsWith(prefix)) {
+                continue;
+            }
+            Browser browser = entry.getValue();
+            if (browser == null || !browser.isConnected()) {
+                continue;
+            }
+            try {
+                for (BrowserContext bc : browser.contexts()) {
+                    if (bc != null) {
+                        contexts.add(bc);
+                    }
+                }
+            } catch (Exception ex) {
+                logger.warn("[contextsForCurrentThread] Failed to iterate browser contexts: {}", ex.getMessage());
+            }
+        }
+        return contexts;
     }
 
 }

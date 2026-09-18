@@ -1,4 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
+package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
+
 
 /**
  * 路由生命周期钩子（核心层 SPI）。
@@ -37,4 +38,27 @@ public interface RouteLifecycle extends CaptureControl, RegistryControl, EngineC
      * @return 非空采集上下文
      */
     CaptureContext resolveFailureCapture();
+
+    /**
+     * 仅停止/清理<b>指定 context</b> 的采集会话（<b>不触碰</b>其它线程 / 其它 context）。
+     *
+     * <p>供线程级收尾使用：替代全局 {@code stopCapture()}，避免并行下误清其它 worker 线程
+     * 正在使用的采集状态（G4「误清理其他线程」）。
+     *
+     * @param context 目标 BrowserContext
+     */
+    default void stopCaptureFor(Object context) {
+        // 未实现时 no-op（兼容既有实现与测试替身）
+    }
+
+    /**
+     * 套件收尾：排空 route 侧在途工作（在途观测 / body 读重试链）并让文件 sink 落盘。
+     *
+     * <p>避免「套件已结束，执行器队列里仍残留持有已关闭 context/rule 的任务」。
+     * <b>不关闭线程池本体</b>（同 JVM 内可再次运行）；线程池终态关闭仍由 JVM
+     * {@code ShutdownCoordinator} 负责。
+     */
+    default void drainForSuiteTeardown() {
+        // 未实现时 no-op
+    }
 }

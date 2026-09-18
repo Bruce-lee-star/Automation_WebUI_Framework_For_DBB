@@ -135,6 +135,36 @@ public final class RouteContextState {
         cancelPendingTasksFor(context);
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // 「context 已关闭」标记（弱键，随 context GC 自动失效）
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * 已关闭的 Context 集合。
+     *
+     * <p><b>用途（「context 关闭 → 所有活动立即停止」）</b>：{@code MonitorHandler} 的在途观测/重试链会
+     * 阻塞在 {@code page.waitForResponse}（≤20s）与 body 读（≤30s）上；仅 {@link #cancelPendingTasksFor}
+     * 取消 future <b>不足以</b>让已进入阻塞的任务立即退出。故在 context 收口时登记本标记，使观测/重试链在
+     * <b>每个可中断点</b>（进入前 / 每次重试前 / 读 body 前）检查并立即放弃，而不是空跑至超时。
+     *
+     * <p>弱键：context 被 GC 后条目自动失效，无需显式清理。
+     */
+    private static final Set<BrowserContext> CLOSED_CONTEXTS =
+            java.util.Collections.synchronizedSet(
+                    java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>()));
+
+    /** 标记指定 context 已关闭（幂等；由 {@link RouteEngine#stopContextEngine} 收口调用）。 */
+    public static void markContextClosed(BrowserContext context) {
+        if (context != null) {
+            CLOSED_CONTEXTS.add(context);
+        }
+    }
+
+    /** 该 context 是否已关闭（关闭后其全部在途活动应尽快停止）。 */
+    public static boolean isContextClosed(BrowserContext context) {
+        return context != null && CLOSED_CONTEXTS.contains(context);
+    }
+
     private RouteContextState() {
     }
 

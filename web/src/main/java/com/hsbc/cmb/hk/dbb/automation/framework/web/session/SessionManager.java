@@ -220,19 +220,23 @@ public class SessionManager {
     // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
     // 确保同一个 Feature 中只恢复一次 Session，避免重复重建 Context
 
-    // 记录当前 Feature 已恢复的 Session Key（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
-    private static final ContextKey<String> CURRENT_FEATURE_SESSION_KEY =
-            ContextKey.of("sessionManager.currentFeatureSessionKey", String.class);
+    /**
+     * Feature 级会话状态 —— <b>线程级持有</b>（一个 Feature 固定跑在同一 worker 线程）。
+     *
+     * <p><b>为什么不用 {@code TestContextHolder}（用例级）</b>：Cucumber 下
+     * {@code TestContextHolder.get()} 解析为<b>用例级</b>，而 {@code @After}（{@code ScenarioContext.end}
+     * → {@code ctx.clear()}）会清空整张用例级存储，且早于 Serenity {@code testFinished}。
+     * 若把 feature 标记放用例级，则「下一个用例读到未恢复」→ 每用例都重建 Context，
+     * feature 模式的<b>「同 sessionKey 复用同一 Context」永远不可达</b>（实测缺陷，见 CD-1）。
+     *
+     * <p>语义：同一 Feature 内<b>跨用例存活</b>；Feature 结束（{@code resetFeatureSession()}）或
+     * 换 user（不同 sessionKey）时重置。
+     */
+    private static final ThreadLocal<FeatureSession> FEATURE_SESSION = new ThreadLocal<>();
 
-    // 标记当前 Feature 是否已经恢复了 Session
-    // （ T3-1 收拢：原 withInitial(() -> false) 的默认 false 语义由读取侧 Boolean.TRUE.equals /
-    //  restored != null 双重 null 守卫等价保证，未设值时返回 null 与 false 行为一致）
-    private static final ContextKey<Boolean> FEATURE_SESSION_RESTORED =
-            ContextKey.of("sessionManager.featureSessionRestored", Boolean.class);
-
-    // 记录当前 Feature 已恢复的 Session 的 homeUrl（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext）
-    private static final ContextKey<String> CURRENT_FEATURE_HOME_URL =
-            ContextKey.of("sessionManager.currentFeatureHomeUrl", String.class);
+    /** Feature 级会话状态快照（不可变；写入即整体替换，天然线程安全）。 */
+    private record FeatureSession(String sessionKey, String homeUrl) {
+    }
 
     /**
      * 检查当前 Feature 是否有任何 Session 被恢复/保存过。
@@ -240,7 +244,13 @@ public class SessionManager {
      * 若未曾使用，cleanupForScenario 应销毁 Context 而非保留 Cookie。
      */
     public static boolean isAnyFeatureSessionRestored() {
-        return Boolean.TRUE.equals(TestContextHolder.get().get(FEATURE_SESSION_RESTORED));
+        return FEATURE_SESSION.get() != null;
+    }
+
+    /** 当前 Feature 已恢复的 sessionKey（未恢复时 {@code null}）。 */
+    public static String currentFeatureSessionKey() {
+        FeatureSession session = FEATURE_SESSION.get();
+        return session == null ? null : session.sessionKey();
     }
 
     /**
@@ -253,9 +263,7 @@ public class SessionManager {
      * @param homeUrl 首页 URL
      */
     public static void markFeatureSessionRestored(String sessionKey, String homeUrl) {
-        TestContextHolder.get().set(CURRENT_FEATURE_SESSION_KEY, sessionKey);
-        TestContextHolder.get().set(FEATURE_SESSION_RESTORED, true);
-        TestContextHolder.get().set(CURRENT_FEATURE_HOME_URL, homeUrl);
+        FEATURE_SESSION.set(new FeatureSession(sessionKey, homeUrl));
         VerboseLogging.logInfoIfVerbose(LOGGER,
             "Feature-level session marked as restored: {} (homeUrl: {})", sessionKey, homeUrl);
     }
@@ -269,10 +277,8 @@ public class SessionManager {
      * @return true 表示当前 Feature 已恢复该 Session，可以直接复用
      */
     public static boolean isFeatureSessionRestored(String sessionKey) {
-        Boolean restored = TestContextHolder.get().get(FEATURE_SESSION_RESTORED);
-        String currentKey = TestContextHolder.get().get(CURRENT_FEATURE_SESSION_KEY);
-
-        if (restored != null && restored && sessionKey.equals(currentKey)) {
+        FeatureSession session = FEATURE_SESSION.get();
+        if (session != null && sessionKey != null && sessionKey.equals(session.sessionKey())) {
             VerboseLogging.logInfoIfVerbose(LOGGER,
                 "Feature-level session already restored for: {}, skipping restore", sessionKey);
             return true;
@@ -286,7 +292,8 @@ public class SessionManager {
      * @return homeUrl，如果未恢复则返回 null
      */
     public static String getFeatureHomeUrl() {
-        return TestContextHolder.get().get(CURRENT_FEATURE_HOME_URL);
+        FeatureSession session = FEATURE_SESSION.get();
+        return session == null ? null : session.homeUrl();
     }
 
     /**
@@ -327,15 +334,13 @@ public class SessionManager {
      */
     public static void resetFeatureSession() {
         VerboseLogging.logInfoIfVerbose(LOGGER, "Resetting feature-level session state");
-        String featureKey = TestContextHolder.get().get(CURRENT_FEATURE_SESSION_KEY);
-        TestContextHolder.get().remove(CURRENT_FEATURE_SESSION_KEY);
+        FeatureSession session = FEATURE_SESSION.get();
+        FEATURE_SESSION.remove();
         //  修复 H11（防御）：Feature 结束时清理可能残留的单飞守卫，避免跨 Feature 的静态 Map 条目堆积
         // （正常成功路径已由 completeLoginGuard 在 saveSession 内移除，此处为异常/未落盘路径兜底）。
-        if (featureKey != null) {
-            loginGuards.remove(featureKey);
+        if (session != null) {
+            loginGuards.remove(session.sessionKey());
         }
-        TestContextHolder.get().remove(FEATURE_SESSION_RESTORED);
-        TestContextHolder.get().remove(CURRENT_FEATURE_HOME_URL);
     }
 
     /**
@@ -438,8 +443,8 @@ public class SessionManager {
             //    先丢弃当前 Context（保留 custom options），并清除过期 storageStatePath，使后续重建
             //    从干净起点开始；随后按"缓存是否有此 key"分流：【命中→加载缓存】或【未命中→走登录】。
             if (PlaywrightRuntime.instance().contextRegistry.hasContext()
-                    && Boolean.TRUE.equals(TestContextHolder.get().get(FEATURE_SESSION_RESTORED))
-                    && !sessionKey.equals(TestContextHolder.get().get(CURRENT_FEATURE_SESSION_KEY))) {
+                    && isAnyFeatureSessionRestored()
+                    && !sessionKey.equals(currentFeatureSessionKey())) {
                 VerboseLogging.logInfoIfVerbose(LOGGER,
                         "Feature mode: sessionKey {} differs from restored — discarding current Context",
                         sessionKey);

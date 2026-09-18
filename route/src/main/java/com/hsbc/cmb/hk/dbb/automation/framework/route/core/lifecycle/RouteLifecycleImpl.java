@@ -69,6 +69,23 @@ public class RouteLifecycleImpl implements RouteLifecycle {
     }
 
     @Override
+    public void drainForSuiteTeardown() {
+        //  套件收尾：取消在途观测/body 读并清队列 + 文件 sink 落盘（不关线程池，JVM 收尾再关）
+        com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler.drainForSuiteTeardown();
+        com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.FileStoreMonitorCallback
+                .flushForSuiteTeardown();
+    }
+
+    @Override
+    public void stopCaptureFor(Object context) {
+        if (context instanceof BrowserContext bc) {
+            //  ApiCaptureLifecycle.stop(context)：停止该 context 下全部 Page 采集并移除其采集会话，
+            //  只影响该 context —— 并行安全（替代全局 stopCapture 的 G4 误清）。
+            ApiCaptureContext.stop(bc);
+        }
+    }
+
+    @Override
     public void clearContext(Object ctx) {
         RouteRegistry.clearContext(ctx);
     }

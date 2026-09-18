@@ -349,7 +349,9 @@ public class PlaywrightSerenityBridge {
 
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             PageObjectFactory.clearAll();
-            BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+            //  线程级记录（不受用例边界影响）：用例级 CONTEXT_KEY 在收尾/跨用例时已被清空，
+            //    用它判断会导致「明明有可复用 Context 却判为无」→ 每用例重建（重复开窗 + 丢登录态）。
+            BrowserContext existingContext = PlaywrightManager.currentContextForThread();
             if (existingContext != null && existingContext.browser() != null
                     && existingContext.browser().isConnected()
                     && SessionManager.isAnyFeatureSessionRestored()) {
@@ -363,8 +365,9 @@ public class PlaywrightSerenityBridge {
                         "Scenario initialization completed (Context will rebuild on demand)");
             }
         } else {
-            BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
-            Page existingPage = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
+            //  Feature 模式：同一 feature 内复用<b>同一个</b> Context/Page（同 sessionKey 不再重建）。
+            BrowserContext existingContext = PlaywrightManager.currentContextForThread();
+            Page existingPage = PlaywrightManager.currentPageForThread();
             if (existingContext != null && existingPage != null && !existingPage.isClosed()) {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Scenario initialization completed (reusing existing Context/Page within same feature)");

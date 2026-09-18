@@ -232,6 +232,62 @@ public class PlaywrightManager {
         PlaywrightRuntime.instance().contextRegistry.discardCurrentContext();
     }
 
+    /**
+     * 本线程当前 Context（<b>线程级</b>记录，不受用例边界影响）。
+     * <p>用于收尾可靠关闭、feature 模式跨用例复用判定、以及孤儿回收保护。
+     */
+    public static BrowserContext currentContextForThread() {
+        return PlaywrightRuntime.instance().contextRegistry.currentContextForThread();
+    }
+
+    /** 本线程当前 Page（<b>线程级</b>记录，不受用例边界影响）。 */
+    public static Page currentPageForThread() {
+        return PlaywrightRuntime.instance().pageRegistry.currentPageForThread();
+    }
+
+    /**
+     * 清理<b>本线程</b>的 Route / 采集状态（路由规则、防重门控、MonitorSession、per-context 引擎、
+     * 采集会话），<b>不关闭</b> Context/Page，也<b>绝不触碰</b>其它线程。
+     *
+     * <p>用途：替代原异常/错误路径的全局 {@code resetAll()} / {@code clearDispatchedRoutes()} /
+     * {@code stopCapture()} —— 后三者在并行下会清掉其它 worker 线程正在使用的规则与采集记录
+     * （G4「误清理其他线程」）。
+     */
+    public static void clearCurrentThreadRouteState() {
+        for (BrowserContext ctx : PlaywrightRuntime.instance().browserCleanup.contextsForCurrentThread()) {
+            PlaywrightRuntime.instance().browserCleanup.safeClean(
+                    "RouteRegistry.clearContext", () -> RouteLifecycleRegistry.get().clearContext(ctx));
+            PlaywrightRuntime.instance().browserCleanup.safeClean(
+                    "RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(ctx));
+            PlaywrightRuntime.instance().browserCleanup.safeClean(
+                    "ApiCaptureContext.stop", () -> RouteLifecycleRegistry.get().stopCaptureFor(ctx));
+        }
+    }
+
+    /**
+     * 停止<b>本线程</b>各 context 的采集（不触碰其它线程）。
+     * <p>用于 scenario 正常收尾，替代全局 {@code stopCapture()}（G4）。
+     */
+    public static void stopCaptureForCurrentThread() {
+        for (BrowserContext ctx : PlaywrightRuntime.instance().browserCleanup.contextsForCurrentThread()) {
+            PlaywrightRuntime.instance().browserCleanup.safeClean(
+                    "ApiCaptureContext.stop", () -> RouteLifecycleRegistry.get().stopCaptureFor(ctx));
+        }
+    }
+
+    /**
+     * 清理<b>本线程</b>的全部资源：Route/采集状态 + 本线程 Context（含孤儿）+ Page。
+     *
+     * <p>「清理当前线程的所有资源，不清理其它线程」：全部入口都以 {@code threadId} 前缀限定，
+     * 并行安全。用于异常终止（skipped / step error）等需要彻底复位本线程的场景。
+     */
+    public static void clearCurrentThreadResources() {
+        clearCurrentThreadRouteState();
+        PlaywrightRuntime.instance().contextRegistry.closeContext();
+        PlaywrightRuntime.instance().browserCleanup.closeOrphanContextsForCurrentThread();
+        PlaywrightRuntime.instance().pageRegistry.closePage();
+    }
+
     public static void setPage(Page page) {
         PlaywrightRuntime.instance().pageRegistry.setPage(page);
     }

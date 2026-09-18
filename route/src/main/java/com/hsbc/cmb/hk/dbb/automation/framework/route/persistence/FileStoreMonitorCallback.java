@@ -149,6 +149,30 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         return ex;
     }
 
+    /**
+     * 套件收尾：等待在途写盘完成（最多 5s），避免套件结束后仍有写盘任务持有文件句柄/队列。
+     *
+     * <p>实现：单线程 FIFO 队列中投一个哨兵任务，其执行即代表此前所有写任务已完成（不丢数据）。
+     * <b>不关闭</b>线程池本体（同 JVM 内可再次运行；JVM 退出由 {@code ShutdownCoordinator} 关闭）。
+     */
+    public static void flushForSuiteTeardown() {
+        try {
+            int pending = WRITE_EXECUTOR.getQueue().size();
+            if (pending == 0) {
+                return;
+            }
+            LOGGER.info("[FileStoreMonitorCallback] suite teardown: awaiting {} pending write(s)", pending);
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            WRITE_EXECUTOR.execute(latch::countDown);
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[FileStoreMonitorCallback] suite teardown flush timed out (pending={})",
+                        WRITE_EXECUTOR.getQueue().size());
+            }
+        } catch (Exception e) {
+            LOGGER.warn("[FileStoreMonitorCallback] suite teardown flush failed: {}", e.getMessage());
+        }
+    }
+
     /** 当前 scenario 的标识（已清洗），用于检测 scenario 切换；null 表示尚无 scenario 上下文 */
     private volatile String currentScenarioKey = null;
 

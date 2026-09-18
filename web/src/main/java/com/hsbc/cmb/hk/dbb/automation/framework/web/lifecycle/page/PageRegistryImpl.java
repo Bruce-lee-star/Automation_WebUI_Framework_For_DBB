@@ -56,6 +56,14 @@ public final class PageRegistryImpl implements PageRegistry {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightManager.class);
 
+    /**
+     * 本线程当前 Page —— <b>线程级</b>持有，独立于用例级的 {@link PlaywrightManager#PAGE_KEY}。
+     *
+     * <p>与 Context 同因（Cucumber {@code @After} 清用例级存储早于 Serenity {@code testFinished}）：
+     * 使 feature 模式「同 sessionKey 复用 Context/Page」可达，并让收尾可靠关闭本线程 Page。
+     */
+    private static final ThreadLocal<Page> CURRENT_PAGE_BY_THREAD = new ThreadLocal<>();
+
     private PageRegistryImpl() {
     }
 
@@ -82,17 +90,30 @@ public final class PageRegistryImpl implements PageRegistry {
         // 先检查是否已有有效 Page（快速路径，避免不必要的锁竞争）
         Page page = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
         if (page != null && !page.isClosed()) {
+            //  线程级记录同步（供收尾可靠关闭 + feature 模式跨用例复用判定）
+            CURRENT_PAGE_BY_THREAD.set(page);
             return page;
+        }
+        //  用例级 PAGE_KEY 可能暂时取不到（@After 之后 / 异步回调路径 / feature 模式跨用例）：
+        //    回退线程级记录复用，避免同一线程重复建页。feature 模式「复用 Context/Page」正依赖此路径。
+        Page threaded = CURRENT_PAGE_BY_THREAD.get();
+        if (threaded != null && !threaded.isClosed()) {
+            TestContextHolder.get().set(PlaywrightManager.PAGE_KEY, threaded);
+            return threaded;
         }
 
         // 【关键】统一在锁内创建 Page，避免锁外创建 + 锁内再创建导致资源泄漏
         return LifecycleLockMediator.withPageLock(() -> {
             Page current = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
             if (current == null || current.isClosed()) {
+                current = CURRENT_PAGE_BY_THREAD.get();
+            }
+            if (current == null || current.isClosed()) {
                 BrowserContext context = PlaywrightManager.getContext();
                 current = createPage(context);
                 TestContextHolder.get().set(PlaywrightManager.PAGE_KEY, current);
             }
+            CURRENT_PAGE_BY_THREAD.set(current);
             return current;
         });
     }
@@ -110,11 +131,16 @@ public final class PageRegistryImpl implements PageRegistry {
     public void closePage() {
         LifecycleLockMediator.withPageLock(() -> {
             Page page = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
+            if (page == null) {
+                //  窗口/资源泄漏修复：用例级 PAGE_KEY 在收尾时可能已被 @After 清空，回退线程级记录
+                page = CURRENT_PAGE_BY_THREAD.get();
+            }
             if (page != null) {
                 try {
                     PlaywrightContextManager.closePage(page);
                 } finally {
                     TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
+                    CURRENT_PAGE_BY_THREAD.remove();
                 }
             }
         });
@@ -126,10 +152,16 @@ public final class PageRegistryImpl implements PageRegistry {
     public void setPage(Page page) {
         if (page != null && !page.isClosed()) {
             TestContextHolder.get().set(PlaywrightManager.PAGE_KEY,page);
+            CURRENT_PAGE_BY_THREAD.set(page);
         } else {
             logger.warn("[PlaywrightManager] setPage() ignored: page is {}",
                     page == null ? "null" : "closed");
         }
+    }
+
+    /** 本线程当前 Page（线程级记录；供收尾可靠关闭与 feature 复用判定使用）。 */
+    public Page currentPageForThread() {
+        return CURRENT_PAGE_BY_THREAD.get();
     }
 
 }

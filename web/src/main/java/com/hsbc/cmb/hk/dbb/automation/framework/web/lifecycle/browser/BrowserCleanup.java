@@ -66,4 +66,14 @@ public interface BrowserCleanup {
      * @return 实际关闭的 Context 数
      */
     int closeOrphanContextsForCurrentThread();
+
+    /**
+     * 枚举<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（<b>不关闭</b>）。
+     *
+     * <p>供线程级资源清理使用：只返回 {@code "<threadId>:"} 前缀的 Browser 下的 context，
+     * <b>绝不触碰</b>并发邻居线程（G4）。
+     *
+     * @return 本线程的 Context 列表（可能为空）
+     */
+    java.util.List<com.microsoft.playwright.BrowserContext> contextsForCurrentThread();
 }

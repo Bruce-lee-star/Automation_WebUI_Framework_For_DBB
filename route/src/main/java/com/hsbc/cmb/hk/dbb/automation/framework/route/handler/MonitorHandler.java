@@ -161,6 +161,24 @@ public class MonitorHandler {
         }
     }
 
+    /**
+     * 套件收尾：取消全部在途观测/body 读任务并清空执行器队列（<b>不关闭</b>线程池本体）。
+     *
+     * <p>「需要收尾」：避免套件结束后，执行器队列里仍残留持有已关闭 context/rule 引用的任务；
+     * 线程池终态关闭仍由 JVM {@code ShutdownCoordinator} 负责，故同 JVM 内可再次运行。
+     */
+    public static void drainForSuiteTeardown() {
+        int cancelled = RouteContextState.cancelAllPendingTasks();
+        int queued = observationExecutor.getQueue().size() + bodyReadScheduler.getQueue().size();
+        observationExecutor.getQueue().clear();
+        //  bodyReadScheduler 队列中的重试链对应的 future 已被上方取消（等待方立即走兜底），清队列安全
+        bodyReadScheduler.getQueue().clear();
+        if (cancelled > 0 || queued > 0) {
+            LOGGER.info("[MonitorHandler] suite teardown: cancelled {} pending task(s), drained {} queued task(s)",
+                    cancelled, queued);
+        }
+    }
+
     /** 登记一条在途重试链（委托 core 的 per-context 在途任务表，完成时自动注销）。 */
     private static void registerPendingBodyRead(BrowserContext context, CompletableFuture<byte[]> future) {
         RouteContextState.registerPendingTask(context, future);
@@ -279,12 +297,21 @@ public class MonitorHandler {
             RouteUtil.safeResume(route);
             return;
         }
+        //  「context 关闭 → 所有活动立即停止」：已关闭的 context 直接放行，不登记也不提交观测。
+        BrowserContext observationContext = contextOf(route.request());
+        if (RouteContextState.isContextClosed(observationContext)) {
+            VerboseLogging.logDebugIfVerbose(LOGGER,
+                    "[MonitorHandler] Context already closed, resume & skip: pattern='{}'", rule.getUrlPattern());
+            RouteUtil.safeResume(route);
+            return;
+        }
         //  G1：观测任务登记进 per-context 在途表 —— context 关闭时 cancelPendingTasksFor(context)
         //    会取消它，使"尚未开始"的观测立即放弃，不再空跑到 waitForResponse/body 读超时。
         final CompletableFuture<Void> observationTicket = new CompletableFuture<>();
-        registerPendingObservation(contextOf(route.request()), observationTicket);
+        registerPendingObservation(observationContext, observationTicket);
         try {
-            observationExecutor.execute(() -> observeAndRecord(route, rule, delayMs, observationTicket));
+            observationExecutor.execute(
+                    () -> observeAndRecord(route, rule, delayMs, observationContext, observationTicket));
         } catch (RejectedExecutionException rex) {
             observationTicket.cancel(false);
             // 队列饱和（极端负载）：拒绝即放行，绝不反压事件线程、也不让请求永久挂起
@@ -301,15 +328,15 @@ public class MonitorHandler {
      * 排队/未开始的观测立即放弃，避免其继续持有 context/rule 并空跑至超时。
      */
     private static void observeAndRecord(Route route, RouteRule rule, long delayMs,
-                                         CompletableFuture<Void> ticket) {
+                                         BrowserContext context, CompletableFuture<Void> ticket) {
         try {
-            if (ticket.isCancelled()) {
+            if (ticket.isCancelled() || RouteContextState.isContextClosed(context)) {
                 VerboseLogging.logDebugIfVerbose(LOGGER,
                         "[MonitorHandler] Observation cancelled before start (context closed): pattern='{}'",
                         rule.getUrlPattern());
                 return;
             }
-            observeAndRecordInternal(route, rule, delayMs);
+            observeAndRecordInternal(route, rule, delayMs, context);
         } finally {
             ticket.complete(null);
         }
@@ -335,7 +362,13 @@ public class MonitorHandler {
      *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录在本工作线程内完成</li>
      * </ul>
      */
-    private static void observeAndRecordInternal(Route route, RouteRule rule, long delayMs) {
+    private static void observeAndRecordInternal(Route route, RouteRule rule, long delayMs,
+                                                 BrowserContext observationContext) {
+        //  「context 关闭 → 所有活动立即停止」：进入即检查，已关闭则直接放行退出（不读 body、不断言、不记录）。
+        if (RouteContextState.isContextClosed(observationContext)) {
+            RouteUtil.safeResume(route);
+            return;
+        }
         // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
         if (RouteUtil.isPageClosed(route)) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -433,7 +466,7 @@ public class MonitorHandler {
         //    null（响应体尚未缓冲就绪），直接丢弃会导致该 call 丢失（getAllResponsesForUrl 少一条）。
         //    改为带短重试的读取（非阻塞：用 CompletableFuture.delayedExecutor 调度退避，
         //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
-        BodyRead read = readResponseBodyWithRetry(res, rule, req);
+        BodyRead read = readResponseBodyWithRetry(res, rule, req, observationContext);
         if (read == null) {
             LOGGER.debug("[MonitorHandler] Response body unavailable after retry for {}: pattern='{}'",
                     req.url(), rule.getUrlPattern());
@@ -462,7 +495,7 @@ public class MonitorHandler {
         try {
             Response res = fallbackResponse(req);
             if (res == null) return;
-            BodyRead read = readResponseBodyWithRetry(res, rule, req);
+            BodyRead read = readResponseBodyWithRetry(res, rule, req, null);
             if (read == null) return;
             String body = toSafeBodyString(read.bytes());
             LOGGER.info("[MonitorHandler] Captured (fallback): url={}, status={}, bodyLength={}, pattern='{}'",
@@ -550,7 +583,12 @@ public class MonitorHandler {
      * @param req  请求对象（仅用于日志）
      * @return 读取结果（含截断前原始长度）；全部重试后仍不可用则返回 {@code null}
      */
-    private static BodyRead readResponseBodyWithRetry(Response res, RouteRule rule, Request req) {
+    private static BodyRead readResponseBodyWithRetry(Response res, RouteRule rule, Request req,
+                                                      BrowserContext observationContext) {
+        //  「context 关闭 → 所有活动立即停止」：context 已关闭则不再读取（避免 ~30s 预算空转）。
+        if (RouteContextState.isContextClosed(observationContext)) {
+            return null;
+        }
         final int baseAttempts = baseAttempts();
         final long retryIntervalMs = retryIntervalMs();
         //  需求2：当规则含 DELAY 时，DELAY 延后了响应返回，MONITOR 读取 body 的退避/等待
@@ -570,7 +608,7 @@ public class MonitorHandler {
         CompletableFuture<byte[]> future = new CompletableFuture<>();
         BrowserContext context = contextOf(req);
         registerPendingBodyRead(context, future);
-        retryBodyOnce(res, rule, req, 1, maxAttempts, retryIntervalMs, deadlineMs, future);
+        retryBodyOnce(res, rule, req, observationContext, 1, maxAttempts, retryIntervalMs, deadlineMs, future);
         try {
             //  超时上限：绝不用无界 join()。
             //   重试链依赖 bodyReadScheduler 调度；若该调度器已被关闭（JVM 收尾/异常路径）或
@@ -595,8 +633,14 @@ public class MonitorHandler {
 
     /** 递归异步重试读取 body：每次失败/空 body 后按固定间隔提交下一次读取（非阻塞），不占用当前线程。 */
     private static void retryBodyOnce(Response res, RouteRule rule, Request req,
+                                       BrowserContext observationContext,
                                        int attempt, int maxAttempts, long intervalMs, long deadlineMs,
                                        CompletableFuture<byte[]> result) {
+        //  「context 关闭 → 所有活动立即停止」：每轮重试前检查，关闭即停止续投（等待方立即走兜底）。
+        if (RouteContextState.isContextClosed(observationContext)) {
+            result.complete(null);
+            return;
+        }
         try {
             byte[] body = res.body();
             if (body != null) {
@@ -621,7 +665,8 @@ public class MonitorHandler {
                 return;
             }
             CompletableFuture.runAsync(
-                    () -> retryBodyOnce(res, rule, req, attempt + 1, maxAttempts, intervalMs, deadlineMs, result),
+                    () -> retryBodyOnce(res, rule, req, observationContext, attempt + 1, maxAttempts,
+                            intervalMs, deadlineMs, result),
                     CompletableFuture.delayedExecutor(intervalMs, TimeUnit.MILLISECONDS, bodyReadScheduler));
         } else {
             // 超过尝试次数或已过截止时间（预算用尽）：停止续投，避免"用例已结束仍在空转"的残链

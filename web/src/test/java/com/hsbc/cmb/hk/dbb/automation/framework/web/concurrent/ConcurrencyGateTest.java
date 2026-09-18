@@ -6,11 +6,15 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -32,11 +36,13 @@ public class ConcurrencyGateTest {
 
     private static final String ENABLED = WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey();
     private static final String PERMITS = WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey();
+    private static final String MAX_WAIT = WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS.getKey();
 
     @AfterEach
     public void tearDown() {
         System.clearProperty(ENABLED);
         System.clearProperty(PERMITS);
+        System.clearProperty(MAX_WAIT);
         System.clearProperty(CUCUMBER_PARALLEL);
         System.clearProperty(JUNIT_PARALLEL);
     }
@@ -44,6 +50,87 @@ public class ConcurrencyGateTest {
     /** 引擎级并行开关（auto 判据）。 */
     private static final String CUCUMBER_PARALLEL = "cucumber.execution.parallel.enabled";
     private static final String JUNIT_PARALLEL = "junit.jupiter.execution.parallel.enabled";
+
+    /**
+     * <b>死锁回归守卫（实测复现）</b>：许可被泄漏时，等待方必须<b>有界超时后 fail-open 放行</b>，
+     * 绝不永久 park；且未真正持有者的 {@code release} 必须 no-op（不得虚增许可破坏互斥）。
+     */
+    @Test
+    public void leakedPermit_failsOpenInsteadOfHangingForever() throws Exception {
+        System.setProperty(ENABLED, "true");
+        System.setProperty(MAX_WAIT, "300");
+        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "LEAK-REGRESSION"));
+
+        CountDownLatch holderIn = new CountDownLatch(1);
+        AtomicBoolean holderDone = new AtomicBoolean(false);
+        Thread holder = new Thread(() -> {
+            ConcurrencyGate.acquire(key);
+            holderIn.countDown();
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            ConcurrencyGate.release(key);
+            holderDone.set(true);
+        }, "leak-holder");
+        holder.start();
+        assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应取得许可");
+
+        AtomicLong waitedMs = new AtomicLong(-1);
+        Thread waiter = new Thread(() -> {
+            long t0 = System.currentTimeMillis();
+            ConcurrencyGate.acquire(key);   // 必须超时 fail-open 返回，而非永久阻塞
+            waitedMs.set(System.currentTimeMillis() - t0);
+            ConcurrencyGate.release(key);   // 未真正持有 → no-op
+        }, "leak-waiter");
+        waiter.start();
+        waiter.join(5000);
+
+        assertFalse(waiter.isAlive(), "等待方必须已返回：闸门不得永久 park（旧实现 acquireUninterruptibly 会卡死整个套件）");
+        assertTrue(waitedMs.get() >= 250, "等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）");
+
+        holder.join(5000);
+        assertTrue(holderDone.get(), "持有者应完成其正常释放");
+
+        //  许可未虚增：持有者释放后该 key 应可被正常获取/释放
+        ConcurrencyGate.acquire(key);
+        ConcurrencyGate.release(key);
+    }
+
+    /**
+     * 场景收口兜底：{@link ConcurrencyGate#releaseAllForCurrentThread()} 应归还本线程持有的全部许可
+     * （覆盖调用方漏 release 的情形），归还后其它线程可正常进入。
+     */
+    @Test
+    public void releaseAllForCurrentThread_recoversLeakedPermit() throws Exception {
+        System.setProperty(ENABLED, "true");
+        System.setProperty(MAX_WAIT, "400");
+        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "RECOVER-ME"));
+
+        AtomicInteger released = new AtomicInteger();
+        Thread leaky = new Thread(() -> {
+            ConcurrencyGate.acquire(key);
+            released.set(ConcurrencyGate.releaseAllForCurrentThread());   // 模拟场景收口兜底
+        }, "leaky-scenario");
+        leaky.start();
+        leaky.join(3000);
+
+        assertEquals(1, released.get(), "应归还 1 个泄漏持有的闸门");
+
+        //  归还后：其它线程应立即（远小于 MAX_WAIT）进入
+        AtomicLong waitedMs = new AtomicLong(-1);
+        Thread next = new Thread(() -> {
+            long t0 = System.currentTimeMillis();
+            ConcurrencyGate.acquire(key);
+            waitedMs.set(System.currentTimeMillis() - t0);
+            ConcurrencyGate.release(key);
+        }, "next-scenario");
+        next.start();
+        next.join(3000);
+        assertTrue(waitedMs.get() >= 0 && waitedMs.get() < 300,
+                "兜底归还后应立即可进入（实测 " + waitedMs.get() + "ms）");
+    }
 
     /**
      * {@code auto}（默认三态）：<b>并行开启即自动启用、串行时 no-op、显式 false 为逃生舱</b>。

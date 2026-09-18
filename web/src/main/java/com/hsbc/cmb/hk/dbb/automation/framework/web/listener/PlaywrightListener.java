@@ -17,6 +17,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.screenshot.strategy.ScreenshotStrategy;
@@ -692,6 +693,10 @@ public class PlaywrightListener implements StepListener {
         //  并行语义收口：释放本 scenario 持有的「同 sessionKey 互斥」闸门（未持有则 no-op）。
         //   必须在测试结束路径无条件执行——否则同 sessionKey 的后续场景将永久阻塞。
         SessionManager.releaseSessionGate();
+        //  兜底（实测死锁根治）：无条件归还<b>本线程</b>持有的全部闸门许可。
+        //   覆盖调用方（框架会话路径 / 测试侧 Glue 的 @After）因异常/中断而未配对释放的情况 ——
+        //   许可一旦泄漏，同身份后续场景会永久 park，整套无进展。
+        ConcurrencyGate.releaseAllForCurrentThread();
         //  清理收拢后的守卫标志与失败日志去重记录（防双重处理 / 重入 / API 失败），避免跨 scenario 残留
         ListenerGuard.clearForThread();
         //  清理 per-thread 截图重入标记

@@ -4,10 +4,13 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -69,6 +72,48 @@ public final class ConcurrencyGate {
     }
     private static final AtomicLong ENTER_COUNT = new AtomicLong();
     private static final AtomicLong SERIALIZED_IDENTITY_COUNT = new AtomicLong();
+
+    /**
+     * 本线程已获取且<b>尚未释放</b>的闸门键（FIFO）。
+     *
+     * <p><b>为什么必须有（实测死锁的根治）</b>：许可一旦泄漏（持有者未配对 release），同身份的所有后续
+     * 场景会<b>永久</b> park 在该信号量上 —— 实测 4 个 worker 全部 park 在同一 {@code Semaphore$FairSync}
+     * （栈 {@code ConcurrencyGate.acquire ← LogonGlue}），整个套件卡死无进展。
+     * 本注册表让框架能在<b>场景收口</b>无条件释放本线程持有的全部闸门，与调用方是否记得 release 解耦；
+     * 同时使 {@link #release} 能识别「未真正持有」（超时 fail-open / 重复释放）而拒绝虚增许可。
+     */
+    private static final ThreadLocal<Deque<ConcurrencyPartitionKey>> HELD_BY_THREAD = new ThreadLocal<>();
+
+    private static void recordHeld(ConcurrencyPartitionKey key) {
+        Deque<ConcurrencyPartitionKey> held = HELD_BY_THREAD.get();
+        if (held == null) {
+            held = new ArrayDeque<>();
+            HELD_BY_THREAD.set(held);
+        }
+        held.addLast(key);
+    }
+
+    /** 移除本线程对该键的持有记录；返回是否确有记录（false = 本线程并未持有）。 */
+    private static boolean forgetHeld(ConcurrencyPartitionKey key) {
+        Deque<ConcurrencyPartitionKey> held = HELD_BY_THREAD.get();
+        if (held == null) {
+            return false;
+        }
+        boolean removed = held.removeLastOccurrence(key);
+        if (held.isEmpty()) {
+            HELD_BY_THREAD.remove();
+        }
+        return removed;
+    }
+
+    /** 归还许可 + 递减持有数（归零即移除条目）；不做持有校验，调用方负责语义。 */
+    private static void doRelease(ConcurrencyPartitionKey key) {
+        GATES.computeIfPresent(key, (k, entry) -> {
+            entry.semaphore.release();
+            entry.holds--;
+            return entry.holds <= 0 ? null : entry;
+        });
+    }
 
     private ConcurrencyGate() {
     }
@@ -160,25 +205,96 @@ public final class ConcurrencyGate {
         }
         LOGGER.debug("[concurrency-gate] acquire {} on {} (permits left={})",
                 key, Thread.currentThread().getName(), entry.semaphore.availablePermits());
-        entry.semaphore.acquireUninterruptibly();
+
+        //  有界等待（防整套卡死）：许可被泄漏时旧实现 acquireUninterruptibly 会让同身份的后续场景
+        //  永久 park（实测 4 个 worker 全 park 在同一 Semaphore$FairSync → 套件无任何进展）。
+        //  超时即 fail-open 放行并打 ERROR —— 保证「闸门问题绝不使套件卡死」；代价是该场景串行化失效。
+        long maxWait = maxWaitMs();
+        boolean acquired;
+        if (maxWait <= 0) {
+            entry.semaphore.acquireUninterruptibly();
+            acquired = true;
+        } else {
+            try {
+                acquired = entry.semaphore.tryAcquire(maxWait, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                acquired = false;
+            }
+        }
+        if (!acquired) {
+            //  本次未真正持有 → 回滚前面对 holds 的递增，避免条目永不移除（否则后续 release 语义被破坏）
+            GATES.computeIfPresent(key, (k, e) -> {
+                e.holds--;
+                return e.holds <= 0 ? null : e;
+            });
+            LOGGER.error("[concurrency-gate] identity {} NOT acquired within {}ms on {} — proceeding WITHOUT gate "
+                            + "(本场景串行化失效；通常为前序同身份场景未释放许可，请检查其收口)",
+                    key, maxWait, Thread.currentThread().getName());
+            return;
+        }
+        recordHeld(key);
         ENTER_COUNT.incrementAndGet();
+    }
+
+    /** 进入闸门的最大等待（毫秒）：优先系统属性，回退配置；{@code <=0} 表示无限等待。 */
+    private static long maxWaitMs() {
+        String key = WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS.getKey();
+        String override = System.getProperty(key);
+        String raw = (override != null && !override.trim().isEmpty())
+                ? override
+                : WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS.getValue();
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (Exception e) {
+            LOGGER.warn("[concurrency-gate] invalid '{}' = '{}', fallback to 600000ms", key, raw);
+            return 600_000L;
+        }
+    }
+
+    /**
+     * 释放<b>本线程</b>持有的全部闸门（场景收口兜底；幂等，返回实际释放数）。
+     *
+     * <p><b>这是「许可泄漏 → 整套卡死」的根治点</b>：由框架在场景收尾<b>无条件</b>调用，
+     * 与调用方（框架会话路径 / 测试侧 Glue）是否记得 release 完全解耦。
+     * 例如测试侧 {@code @After} 因故未执行时，本方法仍会归还其持有的许可。
+     */
+    public static int releaseAllForCurrentThread() {
+        Deque<ConcurrencyPartitionKey> held = HELD_BY_THREAD.get();
+        if (held == null) {
+            return 0;
+        }
+        int released = 0;
+        ConcurrencyPartitionKey key;
+        while ((key = held.pollLast()) != null) {
+            doRelease(key);
+            released++;
+        }
+        HELD_BY_THREAD.remove();
+        if (released > 0) {
+            LOGGER.info("[concurrency-gate] released {} leaked-held gate(s) for thread {} at scenario end",
+                    released, Thread.currentThread().getName());
+        }
+        return released;
     }
 
     /**
      * scenario 结束（含失败）时配对调用；key==null 直接返回。必须放在 finally 中确保释放不泄漏。
      */
     public static void release(ConcurrencyPartitionKey key) {
-        if (!isEnabled() || key == null) {
+        if (key == null) {
+            return;
+        }
+        //  仅释放「本线程确实持有」的键：acquire 因超时 fail-open、或重复释放时必须 no-op ——
+        //  否则许可虚增会直接破坏互斥（比卡死更隐蔽）。此处不判 isEnabled()：运行期开关翻转
+        //  不应导致已获取的许可无法归还（泄漏 → 卡死）。
+        if (!forgetHeld(key)) {
             return;
         }
         //  与 acquire 对称：在同一 per-key 原子段内「归还许可 + 递减持有数」，归零即移除条目
         //  （最后一个持有者离开 → 无人持有 → 无需保留）。不再按 key 重新查表释放：旧实现会在条目被
         //  淘汰/替换时把许可记到别的闸门上（许可虚增）。
-        GATES.computeIfPresent(key, (k, entry) -> {
-            entry.semaphore.release();
-            entry.holds--;
-            return entry.holds <= 0 ? null : entry;
-        });
+        doRelease(key);
     }
 
     /**

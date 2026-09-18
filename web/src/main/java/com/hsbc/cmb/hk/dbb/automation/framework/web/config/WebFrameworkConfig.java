@@ -513,6 +513,21 @@ public enum WebFrameworkConfig {
      * 每个并发分区键允许的并发许可数。
      * 默认 1（严格互斥）；某些环境允许同身份 N 路并发时可调大。
      */
+    /**
+     * 单次进入闸门的<b>最大等待</b>（毫秒，默认 10 分钟；{@code 0} = 无限等待/旧行为）。
+     *
+     * <p><b>为什么必须有界</b>：若某场景获取许可后未配对释放（许可泄漏），同身份的后续场景会
+     * <b>永久</b> park 在该信号量上 —— 实测 4 个 worker 全部 park 在同一 {@code Semaphore$FairSync}
+     * （栈：{@code ConcurrencyGate.acquire ← LogonGlue}），整个套件无任何进展。有界等待 + 超时
+     * <b>fail-open</b>（放行并打 ERROR）保证「闸门问题绝不使套件卡死」，代价是该场景串行化失效，
+     * 属可接受降级（宁可偶发并发，不可永久挂起）。
+     */
+    CONCURRENCY_PARTITION_MAX_WAIT_MS(
+        "serenity.playwright.concurrent.partition.max.wait.ms",
+        "600000",
+        "进入并发闸门的最大等待（毫秒）；0 表示无限等待（旧行为，不推荐）"
+    ),
+
     CONCURRENCY_PARTITION_PER_KEY_PERMITS(
         "serenity.playwright.concurrent.partition.per.key.permits",
         "1",

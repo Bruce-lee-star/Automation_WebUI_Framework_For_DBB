@@ -16,9 +16,11 @@ import org.slf4j.LoggerFactory;
  * <p><b>行为边界（两种写法都绑定本地主密钥）</b>：{@code ENC(...)} 与裸 {@code <base64>} 密文均用
  * 本地主密钥做 GCM 认证解密，<b>key 变则旧密文一律解不开</b>：
  * <ul>
- *   <li><b>失败快（默认）</b>：只要值是密文形态，解密失败（主密钥缺失 / key 与密文不匹配 / 密文被篡改）
- *       就抛 {@link IllegalStateException}，启动即失败，逼出配置错误（C-3，默认
+ *   <li><b>{@code ENC(...)} 显式标记 —— 失败快（默认）</b>：解密失败（主密钥缺失 / key 与密文不匹配 /
+ *       密文被篡改）就抛 {@link IllegalStateException}，启动即失败，逼出配置错误（C-3，默认
  *       {@code -Dsecurity.secret.strict=true}）；</li>
+ *   <li><b>裸 {@code <base64>} —— 启发式，失败降级</b>：裸密文无标记，无法与"恰好合法 base64 的普通值"
+ *       区分，故解密失败时<b>告警并保留原串</b>，绝不因此让框架启动崩溃（CORE-C5）；</li>
  *   <li><b>仅非密文形态回退</b>：值<b>明显不是密文</b>（非合法 base64，或长度不足以含 IV + GCM 标签）
  *       时按明文原样返回，不影响普通配置值。</li>
  * </ul>
@@ -54,9 +56,10 @@ public final class SecretValue {
      *   <li>其余（明显非密文形态）—— 原样返回。</li>
      * </ul>
      *
-     * <p>解密失败处理：<b>主密钥缺失 / GCM 认证失败（key 不匹配或密文被篡改）</b>视为配置错误，
-     * 默认抛 {@link IllegalStateException}（失败快，C-3）；仅 {@code -Dsecurity.secret.strict=false}
-     * 时降级为告警并保留原串（排障用）。<b>仅非密文形态</b>（base64 解码失败 / 长度过短）才原样返回。
+     * <p>解密失败处理：{@code ENC(...)} 路径下，<b>主密钥缺失 / GCM 认证失败（key 不匹配或密文被篡改）</b>
+     * 视为配置错误，默认抛 {@link IllegalStateException}（失败快，C-3），仅 {@code -Dsecurity.secret.strict=false}
+     * 时降级为告警并保留原串；裸 base64 路径（启发式）下，解密失败一律降级为告警并保留原串（CORE-C5）。
+     * <b>仅非密文形态</b>（base64 解码失败 / 长度过短）才原样返回。
      *
      * @param raw 原始配置值（可能为 {@code null}）
      * @return 解密后的值；明显非密文形态时返回原值
@@ -80,10 +83,9 @@ public final class SecretValue {
     /**
      * 调用 {@link ConfigCipher#decrypt} 解密，按异常类别决定"回退原串"还是"失败快"。
      *
-     * @param bareForm 是否为裸 base64 路径。为 {@code true} 且值被判定为<b>非密文形态</b>
-     *                 （{@link IllegalArgumentException}）时按明文回退原串；其余解密失败
-     *                 （{@link IllegalStateException}：主密钥缺失 / key 不匹配 / 密文被篡改）
-     *                 两种路径一律失败快。
+     * @param bareForm 是否为裸 base64 路径（启发式）。为 {@code true} 时，任何解密失败
+     *                 （非密文形态 / 主密钥缺失 / key 不匹配 / 密文被篡改）都按明文回退原串（CORE-C5）；
+     *                 为 {@code false}（显式 {@code ENC(...)}）时，仅非密文形态回退，其余失败快（C-3）。
      */
     private static String tryDecrypt(String raw, boolean bareForm) {
         try {
@@ -96,7 +98,14 @@ public final class SecretValue {
             }
             return onDecryptFailure(raw, "配置值标记为 ENC(...) 但并非合法密文", e);
         } catch (IllegalStateException e) {
-            // 主密钥缺失 / GCM 认证失败（key 与密文不匹配或密文被篡改）——一律失败快（严格模式）。
+            // CORE-C5：裸 base64 是启发式识别，普通配置值"恰好合法 base64"会误命中，解密失败属预期，
+            // 绝不能因此让框架启动崩溃 —— 告警并保留原串。显式 ENC(...) 才是配置声明，失败仍失败快（C-3）。
+            if (bareForm) {
+                LOGGER.warn("Bare-base64 value failed to decrypt (heuristic false positive, or master key "
+                        + "missing/mismatched); keeping original value. Use ENC(...) if it is a real ciphertext: {}",
+                        e.getMessage());
+                return raw;
+            }
             return onDecryptFailure(raw, "配置值解密失败（主密钥缺失或与密文不匹配）", e);
         }
     }

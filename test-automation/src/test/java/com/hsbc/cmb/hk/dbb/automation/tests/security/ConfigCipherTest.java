@@ -106,14 +106,15 @@ public class ConfigCipherTest {
 
     @Test
     public void ciphertextWithWrongKeyFailsFast() {
-        // 密文形态（ENC 与裸 base64）+ key 不匹配 → GCM 认证失败 → 一律失败快
+        // ENC 显式标记 + key 不匹配 → GCM 认证失败 → 失败快（C-3）
         String enc = ConfigCipher.encrypt("real-secret");
         String bare = enc.substring("ENC(".length(), enc.length() - ")".length());
         System.setProperty("config.master.key", OTHER_MASTER_KEY);
         assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(enc),
                 "key 变更后 ENC 密文应失败快");
-        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
-                "key 变更后裸密文应失败快");
+        // CORE-C5：裸 base64 为启发式，无法与普通值区分，失败即降级保留原串（不再失败快）
+        assertEquals(bare, SecretValue.decryptIfNeeded(bare),
+                "key 变更后裸密文应降级保留原串，而非崩溃");
     }
 
     @Test

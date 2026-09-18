@@ -16,8 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  *   <li>{@code ENC(...)} 显式标记 —— <b>始终</b>解密（主加密写法，不受裸密文开关影响）；</li>
  *   <li>裸 base64 —— <b>默认即解密</b>（用户需求：双格式都支持），经 {@link ConfigCipher#looksLikeCiphertext}
  *       启发式识别；显式设 {@code framework.secret.allow-bare-base64=false} 可关闭；</li>
- *   <li><b>key 敏感</b>：密文形态但主密钥不匹配（GCM 认证失败）→ 两种写法都<b>失败快</b>
- *       （抛 {@link IllegalStateException}），绝不静默放行 —— 确保「key 变则旧密文解不了」立即暴露；</li>
+ *   <li><b>key 敏感</b>：{@code ENC(...)} 显式标记在主密钥不匹配（GCM 认证失败）时<b>失败快</b>
+ *       （抛 {@link IllegalStateException}），确保「key 变则旧密文解不了」立即暴露；裸 base64 为启发式，
+ *       失败降级保留原串（CORE-C5）；</li>
  *   <li><b>仅明显非密文形态</b>（非合法 base64 / 长度不足以含 IV + GCM 标签）才原样返回。</li>
  * </ul>
  *
@@ -80,26 +81,30 @@ public class SecretValueBareBase64Test {
                 "key 变更后 ENC 密文应失败快，而非静默放行");
     }
 
-    /** key 不匹配：裸密文解密失败 → 同样失败快（核心需求：key 变则旧密文解不了）。 */
+    /**
+     * CORE-C5：裸密文 key 不匹配 → <b>降级保留原串</b>（裸 base64 为启发式，无法与"恰好合法 base64 的
+     * 普通值"区分，故解密失败不得让启动崩溃）。显式 {@code ENC(...)} 仍失败快（见
+     * {@link #encCiphertextWithWrongKeyFailsFast}）。
+     */
     @Test
-    public void bareCiphertextWithWrongKeyFailsFast() {
+    public void bareCiphertextWithWrongKeyDegradesToOriginal() {
         String bare = bareCiphertextOrSkip();
         System.setProperty("config.master.key", OTHER_MASTER_KEY);
-        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
-                "key 变更后裸密文应失败快，而非静默放行");
+        assertEquals(bare, SecretValue.decryptIfNeeded(bare),
+                "裸密文解密失败应降级保留原串，而非崩溃");
     }
 
     /**
-     * 不加任何 {@code security.secret.strict} 配置：默认即严格失败快、不降级。
+     * 不加任何 {@code security.secret.strict} 配置：{@code ENC(...)} 默认即严格失败快、不降级。
      * 直接验证框架默认值（而非显式置 true 的用例），确保"零配置 = 不降级"。
      */
     @Test
-    public void failsFastByDefaultWithoutStrictConfig() {
-        String bare = bareCiphertextOrSkip();
+    public void encFailsFastByDefaultWithoutStrictConfig() {
+        String enc = encryptOrSkip();
         System.clearProperty("security.secret.strict"); // 模拟"未配置"
         System.setProperty("config.master.key", OTHER_MASTER_KEY);
-        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(bare),
-                "不配置 security.secret.strict 时默认失败快、不降级");
+        assertThrows(IllegalStateException.class, () -> SecretValue.decryptIfNeeded(enc),
+                "不配置 security.secret.strict 时 ENC 密文默认失败快、不降级");
     }
 
     /** 非严格模式（-Dsecurity.secret.strict=false）：解密失败降级为保留原串（排障用）。 */
@@ -117,6 +122,17 @@ public class SecretValueBareBase64Test {
         assertEquals("authorization,password", SecretValue.decryptIfNeeded("authorization,password"));
         assertEquals("open", SecretValue.decryptIfNeeded("open"));
         assertEquals("YWJj", SecretValue.decryptIfNeeded("YWJj"), "合法 base64 但长度过短应按明文返回");
+    }
+
+    /**
+     * CORE-C5 验收：普通配置值"恰好是合法 base64 且超长"（如 32 位十六进制串）不再导致启动崩溃
+     * —— 裸路径启发式误命中后解密失败，降级保留原串。
+     */
+    @Test
+    public void plainLongBase64LookingValueDoesNotCrash() {
+        String plainHex = "0123456789abcdef0123456789abcdef"; // 32 hex：合法 base64、解码 24B > IV
+        assertEquals(plainHex, SecretValue.decryptIfNeeded(plainHex),
+                "普通长 base64 值应原样返回，绝不因启发式误命中而抛异常");
     }
 
     // ═══════════════════════════════════════════════════════════

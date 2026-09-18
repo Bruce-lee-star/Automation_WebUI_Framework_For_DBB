@@ -490,7 +490,22 @@ public class MonitorHandler {
                     if (resumed.compareAndSet(false, true)) {
                         RouteUtil.safeResume(route);
                     }
-                    res = fallbackResponseWithRetry(req);
+                    //  「死句柄零触碰」（实测 Flake 根因）：观测所属 context 已关闭 / 页面已关闭时，
+                    //    绝不再去读 req.response() —— 对已释放句柄的操作会让 Playwright 报
+                    //    "Cannot find parent object request@…"，该错误还会污染连接，使随后的
+                    //    无关命令（如 page.evaluate）也失败（表现为其它用例随机报 Object doesn't exist）。
+                    //    此时直接落降级快照：既不再触碰 Playwright，又保留一条 MONITOR 记录。
+                    if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
+                            || RouteUtil.isPageClosed(route)) {
+                        //  注意：此分支内【不得】调用 req.url()/headers() 等任何 Playwright 访问器
+                        //    （打印 URL 也是"触碰死句柄"，同样会触发 "Object doesn't exist"）——只用规则 pattern 定位。
+                        LOGGER.warn("[MonitorHandler] Observation context/page closed → degraded snapshot without "
+                                        + "touching request handle: pattern='{}'",
+                                rule.getUrlPattern());
+                        recordUnavailable(route, rule, req);
+                        return;
+                    }
+                    res = fallbackResponseWithRetry(req, observationContext);
                     if (res == null) {
                         //  「不静默丢弃」（ROUTE-P0-1 宁可错报不可漏测）：观测无法完成也必须留下 MONITOR 记录，
                         //  否则用例侧只会看到「无记录 / 响应体为空」而没有任何失败信号，难以定位。
@@ -511,8 +526,19 @@ public class MonitorHandler {
             if (resumed.compareAndSet(false, true)) {
                 RouteUtil.safeResume(route);
             }
+            //  「死句柄零触碰」（同上方 catch 分支）：context/页面已关闭 → 直接降级落快照，
+            //    不再触碰 req.response()（避免 "Cannot find parent object request@…" 污染连接）。
+            if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
+                    || RouteUtil.isPageClosed(route)) {
+                //  同上：不得触碰 req 的任何访问器（打印 URL 也算触碰）
+                LOGGER.warn("[MonitorHandler] Observation context/page closed → degraded snapshot without touching "
+                                + "request handle: pattern='{}'",
+                        rule.getUrlPattern());
+                recordUnavailable(route, rule, req);
+                return;
+            }
             //  兜底 B：直读 request.response()（带界内重试——放行后响应可能仍在途）
-            res = fallbackResponseWithRetry(req);
+            res = fallbackResponseWithRetry(req, observationContext);
             if (res == null) {
                 LOGGER.warn("[MonitorHandler] No real response after fallback retries; recording degraded snapshot: "
                         + "pattern='{}', url='{}'", rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
@@ -617,9 +643,10 @@ public class MonitorHandler {
                     "[MonitorHandler] fallbackResponse OK: url='{}'", RouteUtil.sanitizeUrl(req.url()));
             return r;
         } catch (Exception e) {
+            //  「零触碰死句柄」：此处【不得】再调用 req.url() —— 句柄已失效时它同样会抛，
+            //    等于对死句柄二次触碰（并进一步污染 Playwright 连接）。仅记录错误本身。
             VerboseLogging.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] fallbackResponse unavailable: url='{}', error='{}'",
-                    RouteUtil.sanitizeUrl(req.url()), e.getMessage());
+                    "[MonitorHandler] fallbackResponse unavailable: error='{}'", e.getMessage());
             return null;
         }
     }
@@ -638,9 +665,18 @@ public class MonitorHandler {
      * @param req 当前请求
      * @return 可读 Response；重试后仍不可用则返回 null
      */
-    private static Response fallbackResponseWithRetry(Request req) {
+    static Response fallbackResponseWithRetry(Request req, BrowserContext observationContext) {
+        //  「死句柄零触碰」：每轮尝试前确认观测 context 仍存活，已关闭则立即放弃 ——
+        //    不再调用 req.response()（对已释放句柄的操作会报 "Cannot find parent object request@…"，
+        //    并污染 Playwright 连接，使随后的无关命令（如 page.evaluate）也失败）。
+        if (RouteContextState.isContextClosed(observationContext)) {
+            return null;
+        }
         Response res = fallbackResponse(req);
         for (int attempt = 2; res == null && attempt <= FALLBACK_MAX_ATTEMPTS; attempt++) {
+            if (RouteContextState.isContextClosed(observationContext)) {
+                return null;
+            }
             try {
                 Thread.sleep(FALLBACK_RETRY_INTERVAL_MS);
             } catch (InterruptedException ie) {

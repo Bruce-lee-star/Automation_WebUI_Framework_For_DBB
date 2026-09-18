@@ -19,7 +19,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.BrowserContext;
-import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
 import com.microsoft.playwright.Route;
@@ -272,35 +271,58 @@ public class MonitorHandler {
     private static final double ROUTE_FETCH_TIMEOUT_MS = RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
 
     /**
-     * {@code waitForResponse} 超时<b>上限</b>（毫秒）。
+     * 响应捕获预算上限（毫秒）—— 约束「路由级轮询 {@code Request#existingResponse()} 等待响应抵达」的最大时长。
      *
-     * <p><b>为何压到 5s（实测 Flake 根因 + 兼顾慢 API）</b>：{@code waitForResponse} 仅用于捕获【在途】响应；
-     * 若响应在监听器注册前已返回（路由处理的已知竞态），它会<b>白等满超时</b>。原上限 20s 使观测延迟远超
-     * 测试断言窗口（{@code CAPTURE_TIMEOUT_MS=8s}），导致 MONITOR 记录"偶发缺失" Flake——
-     * 观测往往在断言超时（8s）之后才落库，重试时负载较低、响应在途被即时捕获才通过。
+     * <p><b>语义（playwright-java @since 1.59 起可用 {@code existingResponse()}）</b>：本上限不再约束 page.waitForResponse，
+     * 而是约束对本地持有的 Response 的轮询等待。{@code existingResponse()} 对「响应在途」与「响应已在监听器注册前返回
+     * （竞态）」两种情形<b>一致处理</b>：已到达立即返回，未到达则短休眠轮询至本上限——彻底消除 waitForResponse 的
+     * "竞态白等满超时"病理（历史 MONITOR Flake 根因：原 20s 白等使观测延迟远超 8s 断言窗口）。
      *
-     * <p><b>账期约束</b>：观测总耗时 ≈ 本上限 + 兜底重试(1s) + body 读取(~1s)，须 &lt; 8s 断言窗口才能根除 Flake，
-     * 故上限必须 &lt; 6s。取 5s：① 在途响应（含较慢 API）在 5s 内被可靠强引用捕获（避开 {@code req.response()} 的失效对象风险）；
-     * ② 即便响应在注册前已返回（竞态），也会在 5s 后快速进入兜底 {@code req.response()}，观测整体落在窗口内。
-     *
-     * <p><b>慢 API 覆盖</b>：对响应耗时 5s~7s 的慢接口，{@code waitForResponse} 超时后由兜底 {@code req.response()}
-     * （{@code FALLBACK_MAX_ATTEMPTS×FALLBACK_RETRY_INTERVAL_MS=1s} 重试）继续捕获，仍能在 8s 窗口内落库；
-     * 仅当响应耗时 &gt;7s 才会降级为不可用快照——而那本就超出 8s 断言窗口、无法被测试断言，不属于 Flake。
+     * <p><b>账期约束</b>：观测总耗时 ≈ 本上限 + body 读取(~1s)，须 &lt; 8s 断言窗口；故上限必须 &lt; 7s。取 5s：
+     * ① 在途/慢 API（&lt;5s）在真实抵达时即被捕获；② 稍慢（5s~6s）仍能在上限内拿到；③ 仅响应耗时 &gt;7s 才降级为
+     * 不可用快照——而那本就超出 8s 断言窗口、无法被测试断言，不属于 Flake。
      *
      * <p>可用环境变量 {@code ROUTE_FETCH_TIMEOUT_MS} 进一步<b>调小</b>（min 取较小值），但本常数即其上界，不允许调大
-     * （调大则竞态白等拖垮观测、Flake 复发）。绝不传 0（Playwright TimeoutSettings 会返回 WaitableNever 死等），&lt;=0 时回落到本上限。
+     * （调大则竞态白等拖垮观测、Flake 复发）。
      */
-    private static final long WAIT_FOR_RESPONSE_CAP_MS = 5000L;
+    private static final long RESPONSE_AWAIT_CAP_MS = 5000L;
 
-    /** 从 urlPattern 提取字面前缀（去除通配符），用于宽松匹配响应 URL。 */
-    private static String literalPathOf(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return null;
-        String p = urlPattern;
-        while (p.startsWith("**")) p = p.substring(2);
-        while (p.endsWith("**")) p = p.substring(0, p.length() - 2);
-        int star = p.indexOf('*');
-        if (star >= 0) p = p.substring(0, star);
-        return p.isEmpty() ? null : p;
+    /** 轮询 {@code existingResponse()} 的间隔（毫秒）：细粒度轮询，使已到达响应被近乎即时捕获，且不空转。 */
+    private static final long EXISTING_RESPONSE_POLL_MS = 25L;
+
+    /**
+     * 路由级响应捕获：resume 后轮询 {@link com.microsoft.playwright.Request#existingResponse()}
+     * （请求本地持有的 Response 字段，零协议往返）。
+     *
+     * <p>取代 page.waitForResponse：后者是 page 级事件监听器 + predicate，仅能在「响应在途」时捕获，
+     * 响应已在监听器注册前返回（竞态）时只能白等满超时（历史 Flake 根因）；且 {@code req.response()} 的协议往返
+     * 会在 server 端响应对象出表时抛 "Object doesn't exist"，污染连接。{@code existingResponse()} 对两种情形一致：
+     * 已到达立即返回，未到达则短休眠轮询至 capMs，绝不做协议往返。
+     *
+     * <p>死句柄零触碰：轮询期 context/页面已关立即返回 null，交由调用方落降级快照（只消费 req 本地字段）。
+     *
+     * @return 本地持有的 Response；超时或 context/页面已关时返回 null
+     */
+    private static Response awaitExistingResponse(Route route, Request req,
+                                                 BrowserContext observationContext, long capMs) {
+        final long deadlineNs = System.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(capMs);
+        while (true) {
+            //  死句柄零触碰：context/页面已关 → 立即停止轮询，交由调用方落降级快照（不触碰 server 对象）。
+            if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
+                    || RouteUtil.isPageClosed(route)) {
+                return null;
+            }
+            Response r = req.existingResponse();   //  本地持有，零协议往返，绝不抛 "Object doesn't exist"
+            if (r != null) return r;
+            if (System.nanoTime() >= deadlineNs) return null;
+            try {
+                Thread.sleep(EXISTING_RESPONSE_POLL_MS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
     }
 
     //  P2-15：JsonPath 编译缓存已收敛至 RouteUtil.compileJsonPathCached（单一共享）
@@ -433,141 +455,39 @@ public class MonitorHandler {
 
         //  DELAY 与 MONITOR 叠加时，本 Handler 仍由 {@code RouteEngine#scheduleDelay} 在事件线程
         //    同步调用（见 RouteEngine.scheduleDelay 的 MONITOR 分支），并传入 delayMs；
-        //    延迟由内部 page.waitForResponse 的 action 把 resume 调度到延迟线程实现（B 方案）。
-        //    本方法统一用 waitForResponse 同步等待真实响应，不再使用 route.fetch。
+        //    延迟由内部 resume 调度到延迟线程实现（B 方案）。
         //
-        //     用 page.waitForResponse 可靠获取真实响应（源码级确认见 Playwright RouteImpl/RequestImpl）：
-        //    • route.request().response() 是「实时 channel 调用 + 依赖对象表」，异步延迟线程里
-        //      Response 对象被 GC 后从对象表移除 → "Object doesn't exist: response@..."。
-        //    • page.waitForResponse(predicate, code) 基于 Playwright 自身管道的 "response" 服务端推送事件，
-        //      DELAY 放行（resume）后请求继续完成必然触发该事件；返回的 Response 被 waitForResponse 强引用持有，
-        //      不被 GC → 可安全读 body/status/headers。这是不依赖失效对象、不依赖 CDP 的可靠方式。
+        //  响应捕获改用「路由级轮询 {@code Request#existingResponse()}（playwright-java @since 1.59）」，
+        //    取代 page.waitForResponse —— 源码级依据（playwright-java-1.62.0 Request.java / network.ts）：
+        //    • {@code req.response()} 向 server 发起协议往返（{@code _channel.response}），当 server 端 Response
+        //      对象已出对象表 → 抛 "Object doesn't exist"，并污染连接使后续无关命令也失败（跨场景 Flake 根因）。
+        //    • {@code existingResponse()} 直接返回请求本地持有的 Response（响应事件到达时由 Playwright 赋值、
+        //      不再做协议往返），绝不会触发该错；且对「响应在途」与「响应已在监听器注册前返回（竞态）」两种情形
+        //      一致处理：已到达立即返回，未到达则短休眠轮询至上限，彻底消除 waitForResponse 的"竞态白等满超时"病理。
         Request req = route.request();
-        com.microsoft.playwright.Frame frame = req.frame();
         Response res = null;
         //  放行幂等标记：本请求只允许 resume 一次。二次 resume 会让 Playwright 侧请求/响应对象失效，
         //  调用方（测试主线程读取响应）随后会抛 "Object doesn't exist: response@..."。
         final java.util.concurrent.atomic.AtomicBoolean resumed = new java.util.concurrent.atomic.AtomicBoolean(false);
-        if (frame != null) {
-            com.microsoft.playwright.Page page = frame.page();
-            if (page != null) {
-                //  超时保护：waitForResponse 仅用于捕获【在途】响应；若响应在监听器注册前已返回（已知竞态），
-                //    它会白等满超时 → 观测延迟远超测试断言窗口（CAPTURE_TIMEOUT_MS=8s）→ 偶发"记录缺失" Flake。
-                //    故上限压到 5s（见 WAIT_FOR_RESPONSE_CAP_MS 注释）：在途响应（含较慢 API）在 5s 内被可靠捕获；
-                //    已返回的竞态在 5s 后快速进入兜底 req.response()，使观测整体落在断言窗口内。
-                //  绝不传 0（Playwright TimeoutSettings 会返回 WaitableNever 死等），<=0 时强制回落到上限。
-                double wfrTimeout = Math.min((double) WAIT_FOR_RESPONSE_CAP_MS, ROUTE_FETCH_TIMEOUT_MS);
-                if (wfrTimeout <= 0) wfrTimeout = WAIT_FOR_RESPONSE_CAP_MS;
-                //  predicate 用「URL 包含字面路径」而非精确 equals：避免响应重定向/参数规范化后
-                //    predicate 永不匹配 → 每个请求白等满本上限超时（性能问题）。
-                final String lit = literalPathOf(rule.getUrlPattern());
-                try {
-                    com.microsoft.playwright.Page.WaitForResponseOptions wfrOpts =
-                            new com.microsoft.playwright.Page.WaitForResponseOptions()
-                                    .setTimeout(wfrTimeout);
-                    res = page.waitForResponse(
-                            r -> {
-                                //  Playwright 回调没有异常出口：谓词内任何异常（典型 "Object doesn't exist:
-                                //  response@..." 的失效对象访问）一旦逃逸，会被 Playwright 传播到页面/请求层，
-                                //  直接让调用方的 fetch 失败（实测即此路径：测试步骤报该异常）。
-                                //  故此处一律降级为 false（= 不匹配），绝不抛出。
-                                try {
-                                    if (r == null || r.request() == null) return false;
-                                    String ru = r.request().url();
-                                    return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
-                                } catch (Exception predicateError) {
-                                    VerboseLogging.logDebugIfVerbose(LOGGER,
-                                            "[MonitorHandler] waitForResponse predicate degraded (stale object): {}",
-                                            predicateError.toString());
-                                    return false;
-                                }
-                            },
-                            wfrOpts,
-                            () -> {
-                                //  同上：action 亦在 Playwright 事件循环内执行，异常同样不得逃逸。
-                                //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程
-                                //   （delayMs<=0 立即执行），避免阻塞事件线程、规避调度线程竞态。
-                                try {
-                                    if (RouteUtil.isPageClosed(route)) return;
-                                    resumed.set(true);
-                                    RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
-                                } catch (Exception actionError) {
-                                    VerboseLogging.logDebugIfVerbose(LOGGER,
-                                            "[MonitorHandler] waitForResponse action degraded, forcing resume: {}",
-                                            actionError.toString());
-                                    if (resumed.compareAndSet(false, true)) {
-                                        RouteUtil.safeResume(route);
-                                    }
-                                }
-                            });
-                } catch (PlaywrightException e) {
-                    VerboseLogging.logWarnIfVerbose(LOGGER,
-                            "[MonitorHandler] waitForResponse failed/expired, falling back to request.response(): pattern='{}', url='{}', error='{}'",
-                            rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()), e.getMessage());
-                    //  兜底 A（master 实现的方式）：waitForResponse 超时/失败时，请求通常已被
-                    //    action 内的 resume 放行并完成了真实网络往返，此时 req.response()
-                    //    【可能】已可用。尝试直读一次，避免整条 MONITOR 采集丢失。
-                    //    兜底放行，避免请求永久挂起
-                    //  防重复 resume：action 已放行时不再二次放行（二次 resume 会失效 Playwright 侧对象，
-                    //  主线程读取响应时抛 "Object doesn't exist: response@..."）。
-                    if (resumed.compareAndSet(false, true)) {
-                        RouteUtil.safeResume(route);
-                    }
-                    //  「死句柄零触碰」（实测 Flake 根因）：观测所属 context 已关闭 / 页面已关闭时，
-                    //    绝不再去读 req.response() —— 对已释放句柄的操作会让 Playwright 报
-                    //    "Cannot find parent object request@…"，该错误还会污染连接，使随后的
-                    //    无关命令（如 page.evaluate）也失败（表现为其它用例随机报 Object doesn't exist）。
-                    //    此时直接落降级快照：既不再触碰 Playwright，又保留一条 MONITOR 记录。
-                    if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
-                            || RouteUtil.isPageClosed(route)) {
-                        //  注意：此分支内【不得】调用 req.url()/headers() 等任何 Playwright 访问器
-                        //    （打印 URL 也是"触碰死句柄"，同样会触发 "Object doesn't exist"）——只用规则 pattern 定位。
-                        LOGGER.warn("[MonitorHandler] Observation context/page closed → degraded snapshot without "
-                                        + "touching request handle: pattern='{}'",
-                                rule.getUrlPattern());
-                        recordUnavailable(route, rule, req);
-                        return;
-                    }
-                    res = fallbackResponseWithRetry(req, observationContext);
-                    if (res == null) {
-                        //  「不静默丢弃」（ROUTE-P0-1 宁可错报不可漏测）：观测无法完成也必须留下 MONITOR 记录，
-                        //  否则用例侧只会看到「无记录 / 响应体为空」而没有任何失败信号，难以定位。
-                        LOGGER.warn("[MonitorHandler] No real response after fallback retries; recording degraded "
-                                + "snapshot: pattern='{}', url='{}'",
-                                rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-                        recordUnavailable(route, rule, req);
-                        return;
-                    }
-                }
-            }
+        if (!RouteUtil.isPageClosed(route)) {
+            resumed.set(true);
+            //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程（delayMs<=0 立即执行），
+            //    避免阻塞事件线程、规避调度线程竞态。放行后请求继续完成，响应事件到达即填充 req 本地 _response。
+            RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
         }
+        //  捕获预算：min(上限, ROUTE_FETCH_TIMEOUT_MS)；<=0 时回落到上限（绝不 0：deadline=now 首轮即超时）。
+        long capMs = Math.min(RESPONSE_AWAIT_CAP_MS, (long) ROUTE_FETCH_TIMEOUT_MS);
+        if (capMs <= 0) capMs = RESPONSE_AWAIT_CAP_MS;
+        res = awaitExistingResponse(route, req, observationContext, capMs);
         if (res == null) {
-            VerboseLogging.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] No response available (waitForResponse) for pattern='{}', url='{}'",
-                    rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-            // 兜底放行（防重复 resume：二次放行会失效 Playwright 侧对象）
+            //  轮询期 context/页面已关（死句柄）或超时未抵达 → 放行保证请求不挂起，并落降级快照（不静默丢弃）。
+            //  死句柄零触碰：recordUnavailable 仅消费 req 的【本地】字段（method/headers/url/postData），
+            //    绝不调用 req.response()/res.body() 等会触碰 server 对象的访问器。
             if (resumed.compareAndSet(false, true)) {
                 RouteUtil.safeResume(route);
             }
-            //  「死句柄零触碰」（同上方 catch 分支）：context/页面已关闭 → 直接降级落快照，
-            //    不再触碰 req.response()（避免 "Cannot find parent object request@…" 污染连接）。
-            if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
-                    || RouteUtil.isPageClosed(route)) {
-                //  同上：不得触碰 req 的任何访问器（打印 URL 也算触碰）
-                LOGGER.warn("[MonitorHandler] Observation context/page closed → degraded snapshot without touching "
-                                + "request handle: pattern='{}'",
-                        rule.getUrlPattern());
-                recordUnavailable(route, rule, req);
-                return;
-            }
-            //  兜底 B：直读 request.response()（带界内重试——放行后响应可能仍在途）
-            res = fallbackResponseWithRetry(req, observationContext);
-            if (res == null) {
-                LOGGER.warn("[MonitorHandler] No real response after fallback retries; recording degraded snapshot: "
-                        + "pattern='{}', url='{}'", rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-                recordUnavailable(route, rule, req);
-                return;
-            }
+            recordUnavailable(route, rule, req);
+            return;
         }
 
         //  生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
@@ -597,25 +517,6 @@ public class MonitorHandler {
                 snapshotHeadersSafely(res.headers()), read.originalBytes());
     }
 
-    /**  兜底采集：从 {@code request.response()} 读取并走统一的 assertAndRecord 链路。 */
-    private static void collectFromFallback(Route route, RouteRule rule, ApiCaptureContext context, Request req) {
-        try {
-            Response res = fallbackResponse(req);
-            if (res == null) return;
-            BodyRead read = readResponseBodyWithRetry(res, rule, req, null);
-            if (read == null) return;
-            String body = toSafeBodyString(read.bytes());
-            LOGGER.info("[MonitorHandler] Captured (fallback): url={}, status={}, bodyLength={}, pattern='{}'",
-                    RouteUtil.sanitizeUrl(req.url()), res.status(), body.length(), rule.getUrlPattern());
-            assertAndRecord(route, rule, context, req.url(), res.status(), body,
-                    req.method(), req.postData(),
-                    snapshotHeadersSafely(req.headers()), snapshotHeadersSafely(res.headers()),
-                    read.originalBytes());
-        } catch (Exception e) {
-            LOGGER.debug("[MonitorHandler] Fallback collection unavailable for {}: {}",
-                    RouteUtil.sanitizeUrl(req.url()), e.getMessage());
-        }
-    }
 
     /**
      * 将响应体字节转为「文本安全」字符串，仅用于日志与捕获存储。

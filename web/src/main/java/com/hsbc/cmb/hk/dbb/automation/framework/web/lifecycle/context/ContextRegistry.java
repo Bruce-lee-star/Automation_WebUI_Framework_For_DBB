@@ -72,4 +72,14 @@ public interface ContextRegistry {
     void createNewContextAndPage();
 
     void discardCurrentContext();
+
+    /**
+     * 本线程当前持有的 Context（<b>线程级</b>记录，独立于用例级的 {@code CONTEXT_KEY}）。
+     *
+     * <p>用途：① 收尾（Serenity {@code testFinished}，此时用例级 {@code CONTEXT_KEY} 已被 Cucumber
+     * {@code @After} 清空）时仍能可靠关闭本线程 Context；② 孤儿回收时<b>保护</b>在用/复用的 Context 不被误关。
+     *
+     * @return 本线程当前 Context；无则 {@code null}
+     */
+    BrowserContext currentContextForThread();
 }

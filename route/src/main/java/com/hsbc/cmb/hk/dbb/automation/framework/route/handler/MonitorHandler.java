@@ -279,14 +279,45 @@ public class MonitorHandler {
             RouteUtil.safeResume(route);
             return;
         }
+        //  G1：观测任务登记进 per-context 在途表 —— context 关闭时 cancelPendingTasksFor(context)
+        //    会取消它，使"尚未开始"的观测立即放弃，不再空跑到 waitForResponse/body 读超时。
+        final CompletableFuture<Void> observationTicket = new CompletableFuture<>();
+        registerPendingObservation(contextOf(route.request()), observationTicket);
         try {
-            observationExecutor.execute(() -> observeAndRecord(route, rule, delayMs));
+            observationExecutor.execute(() -> observeAndRecord(route, rule, delayMs, observationTicket));
         } catch (RejectedExecutionException rex) {
+            observationTicket.cancel(false);
             // 队列饱和（极端负载）：拒绝即放行，绝不反压事件线程、也不让请求永久挂起
             LOGGER.error("[MonitorHandler] Observation queue saturated, resuming & skipping for pattern='{}': {}",
                     rule.getUrlPattern(), rex.getMessage());
             RouteUtil.safeResume(route);
         }
+    }
+
+    /**
+     * 观测任务包装（G1）：<b>仅在未被取消时</b>执行实际观测，结束时完成票据（从 per-context 在途表自动注销）。
+     *
+     * <p>上下文关闭 → {@code RouteContextState.cancelPendingTasksFor(context)} 取消票据 →
+     * 排队/未开始的观测立即放弃，避免其继续持有 context/rule 并空跑至超时。
+     */
+    private static void observeAndRecord(Route route, RouteRule rule, long delayMs,
+                                         CompletableFuture<Void> ticket) {
+        try {
+            if (ticket.isCancelled()) {
+                VerboseLogging.logDebugIfVerbose(LOGGER,
+                        "[MonitorHandler] Observation cancelled before start (context closed): pattern='{}'",
+                        rule.getUrlPattern());
+                return;
+            }
+            observeAndRecordInternal(route, rule, delayMs);
+        } finally {
+            ticket.complete(null);
+        }
+    }
+
+    /** 登记一条在途观测任务（与 body 读取共用同一 per-context 在途表，便于 context 关闭时统一取消）。 */
+    private static void registerPendingObservation(BrowserContext context, CompletableFuture<?> future) {
+        RouteContextState.registerPendingTask(context, future);
     }
 
     /**
@@ -304,7 +335,7 @@ public class MonitorHandler {
      *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录在本工作线程内完成</li>
      * </ul>
      */
-    private static void observeAndRecord(Route route, RouteRule rule, long delayMs) {
+    private static void observeAndRecordInternal(Route route, RouteRule rule, long delayMs) {
         // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
         if (RouteUtil.isPageClosed(route)) {
             VerboseLogging.logDebugIfVerbose(LOGGER,

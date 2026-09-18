@@ -64,6 +64,18 @@ public final class ContextRegistryImpl implements ContextRegistry {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightManager.class);
 
+    /**
+     * 本线程最近创建/持有的 Context —— <b>线程级</b>持有，独立于用例级的
+     * {@link PlaywrightManager#CONTEXT_KEY}。
+     *
+     * <p><b>为什么需要它（窗口堆积根因）</b>：Cucumber 下 {@code TestContextHolder} 解析为<b>用例级</b>，
+     * 而 Cucumber {@code @After}（{@code ScenarioContext.end} → {@code ctx.clear()}）早于 Serenity
+     * {@code testFinished}，故收尾时 {@code CONTEXT_KEY} 已不存在 → 原 {@code closeContext()} 整段被
+     * 静默跳过，BrowserContext（headed 下即 OS 窗口）泄漏并跨用例堆积。本线程级记录不受用例边界影响，
+     * 使收尾能可靠拿到并关闭本线程 Context；同时供孤儿回收<b>保护在用 Context</b>。
+     */
+    private static final ThreadLocal<BrowserContext> CURRENT_CONTEXT_BY_THREAD = new ThreadLocal<>();
+
     private ContextRegistryImpl() {
     }
 
@@ -80,6 +92,16 @@ public final class ContextRegistryImpl implements ContextRegistry {
         }
 
         BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+        //  窗口堆积修复（复用优先）：用例级 CONTEXT_KEY 可能暂时取不到（如 @After 之后、
+        //    或异步/事件回调路径），此时回退到线程级记录复用，避免对同一线程重复 newContext
+        //    （headed 下即重复开窗，是窗口堆积的主因）。
+        if (context == null) {
+            BrowserContext threaded = CURRENT_CONTEXT_BY_THREAD.get();
+            if (threaded != null && threaded.browser() != null && threaded.browser().isConnected()) {
+                context = threaded;
+                TestContextHolder.get().set(PlaywrightManager.CONTEXT_KEY, threaded);
+            }
+        }
         
         // 检测是否需要重建Context（因为设置了自定义配置）
         Boolean customFlag = TestContextHolder.get().get(CustomOptionsManager.CUSTOM_CONTEXT_OPTIONS_FLAG_KEY);
@@ -97,6 +119,8 @@ public final class ContextRegistryImpl implements ContextRegistry {
                 result = createContext();
                 TestContextHolder.get().set(PlaywrightManager.CONTEXT_KEY, result);
             }
+            //  线程级记录：使收尾（用例级 CONTEXT_KEY 已被 @After 清空）仍能可靠关闭本线程 Context
+            CURRENT_CONTEXT_BY_THREAD.set(result);
             return result;
         });
     }
@@ -121,7 +145,11 @@ public final class ContextRegistryImpl implements ContextRegistry {
         TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
 
         // 立即关闭 Context（如果有），确保新配置立即生效
+        //  窗口堆积修复：用例级 CONTEXT_KEY 可能已被 @After 清空，回退到线程级记录以免泄漏
         BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+        if (existingContext == null) {
+            existingContext = CURRENT_CONTEXT_BY_THREAD.get();
+        }
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Closing existing context to apply new custom configurations...");
 
@@ -133,6 +161,7 @@ public final class ContextRegistryImpl implements ContextRegistry {
                 logger.warn("Failed to close existing context: {}", e.getMessage());
             } finally {
                 TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
+                CURRENT_CONTEXT_BY_THREAD.remove();
             }
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
         }
@@ -149,6 +178,9 @@ public final class ContextRegistryImpl implements ContextRegistry {
      */
     public void recreateContextIfCustomConfigNeeded() {
         BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+        if (existingContext == null) {
+            existingContext = CURRENT_CONTEXT_BY_THREAD.get();
+        }
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Context already exists, closing it to apply custom configurations...");
             
@@ -168,6 +200,7 @@ public final class ContextRegistryImpl implements ContextRegistry {
                 logger.warn("Failed to close existing context: {}", e.getMessage());
             } finally {
                 TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
+                CURRENT_CONTEXT_BY_THREAD.remove();
             }
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, will create new one with custom configurations on next access");
         }
@@ -196,7 +229,14 @@ public final class ContextRegistryImpl implements ContextRegistry {
      */
     public void closeContext() {
         LifecycleLockMediator.withContextLock(() -> {
-            BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+            //  窗口堆积修复（可靠关闭）：用例级 CONTEXT_KEY 在收尾时可能已被 Cucumber @After 清空，
+            //    此时回退到线程级记录，避免"context==null → 整段静默跳过 → Context/窗口泄漏"。
+            BrowserContext resolved = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
+            if (resolved == null) {
+                resolved = CURRENT_CONTEXT_BY_THREAD.get();
+            }
+            //  lambda 捕获要求 effectively-final：此处定稿
+            final BrowserContext context = resolved;
             // 与底层 BrowserContext 资源绑定的清理：仅当 context 真实存在时执行。
             if (context != null) {
                 //  修复 R6：每条清理步骤独立 try-catch，避免任一失败中断整条清理链
@@ -213,6 +253,8 @@ public final class ContextRegistryImpl implements ContextRegistry {
                 PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
                 PlaywrightRuntime.instance().browserCleanup.safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
                 TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
+                //  线程级记录同步清除，避免持有已关闭 Context 引用
+                CURRENT_CONTEXT_BY_THREAD.remove();
             }
             //  T3-3 修复：per-thread 状态清理必须【无条件】执行。
             // 原实现把 TestServices.clear 等包在 if(context!=null) 内，
@@ -275,6 +317,11 @@ public final class ContextRegistryImpl implements ContextRegistry {
      */
     public void discardCurrentContext() {
         scheduleContextRebuild();
+    }
+
+    /** 本线程当前 Context（线程级记录；供收尾可靠关闭与孤儿回收保护使用）。 */
+    public BrowserContext currentContextForThread() {
+        return CURRENT_CONTEXT_BY_THREAD.get();
     }
 
 }

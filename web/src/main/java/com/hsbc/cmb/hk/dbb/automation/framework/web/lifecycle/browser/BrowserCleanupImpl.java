@@ -222,6 +222,9 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
     public int closeOrphanContextsForCurrentThread() {
         String prefix = Thread.currentThread().threadId() + ":";
         int closed = 0;
+        //  保护「本线程在用/复用的 Context」：绝不被兜底回收误关
+        //  （例如 feature 模式复用同一 Context 时，即便本方法被触达也不动它）。
+        BrowserContext protectedCtx = PlaywrightRuntime.instance().contextRegistry.currentContextForThread();
         for (Map.Entry<String, Browser> entry
                 : new ArrayList<>(PlaywrightRuntime.instance().state.browserEntries())) {
             if (entry.getKey() == null || !entry.getKey().startsWith(prefix)) {
@@ -234,6 +237,9 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
             try {
                 for (BrowserContext bc : browser.contexts()) {
                     if (bc == null) {
+                        continue;
+                    }
+                    if (bc == protectedCtx) {
                         continue;
                     }
                     try {

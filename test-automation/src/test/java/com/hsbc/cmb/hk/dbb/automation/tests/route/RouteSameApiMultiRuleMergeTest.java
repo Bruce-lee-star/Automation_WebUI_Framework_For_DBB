@@ -81,9 +81,10 @@ public class RouteSameApiMultiRuleMergeTest {
 
     /**
      * 分写：先 delay 后 monitor。
-     * ⚠️ 注意能力裁决优先级 MOCK > MODIFY > DELAY > MONITOR：当规则同时带 DELAY 与 MONITOR（无 modify/mock）时，
-     * {@link RouteEngine#selectCapability} 返回 DELAY（动作类别），但 monitor 能力位仍被 OR 保留；
-     * 分发期 scheduleDelay 会按 {@code isMonitorEnabled()} 走 MonitorHandler，断言与记录照常执行（不会因顺序失联）。
+     * ⚠️ 能力裁决优先级 MOCK > MODIFY > MONITOR > DELAY：当规则同时带 DELAY 与 MONITOR（无 modify/mock）时，
+     * {@link RouteEngine#selectCapability} 返回 <b>MONITOR</b>——由 MonitorHandler 统一执行 delay+monitor，
+     * 既经 {@code Dispatcher} 分发期无条件 {@code storeDelayCall} 落下 DELAY 维度标记，又完成监控；
+     * 若返回 DELAY 则走纯 {@code scheduleDelay} 分支会静默丢失监控记录（实测缺陷），故 MONITOR 须先于 DELAY。
      */
     @Test
     public void separate_delayThenMonitor_delayApplied_monitorActive() {
@@ -92,10 +93,10 @@ public class RouteSameApiMultiRuleMergeTest {
 
         assertEquals(2000, effective.getDelayMs());
         assertTrue(effective.isMonitorEnabled());
-        assertEquals(RouteHandleType.DELAY, RouteEngine.selectCapability(effective));
+        assertEquals(RouteHandleType.MONITOR, RouteEngine.selectCapability(effective));
     }
 
-    /** 分写：先 monitor 后 delay（顺序反转），结果一致：动作类别 DELAY，monitor 能力保留。 */
+    /** 分写：先 monitor 后 delay（顺序反转），结果一致：动作类别 MONITOR（MonitorHandler 统一 delay+monitor），monitor 能力保留。 */
     @Test
     public void separate_monitorThenDelay_sameResult() {
         RouteRule effective = monitor();
@@ -103,7 +104,7 @@ public class RouteSameApiMultiRuleMergeTest {
 
         assertEquals(2000, effective.getDelayMs());
         assertTrue(effective.isMonitorEnabled());
-        assertEquals(RouteHandleType.DELAY, RouteEngine.selectCapability(effective));
+        assertEquals(RouteHandleType.MONITOR, RouteEngine.selectCapability(effective));
     }
 
     /**

@@ -4,7 +4,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule;
  * 优先级裁决（T2-4 拆分，自 {@code RouteEngine} 提取；对应 ARP 验收项「优先级裁决仅一处实现」）。
  *
  * <p>承载能力位 → 优先级裁决的<b>唯一</b>实现：按 {@link RouteHandleType#getPriority()} 顺序
- * 选出首个命中的能力位，等价语义 <b>MOCK 终结短路 → MODIFY → DELAY → MONITOR</b>。
+ * 选出首个命中的能力位，等价语义 <b>MOCK 终结短路 → MODIFY → MONITOR → DELAY</b>
+ * （MONITOR 先于 DELAY：叠加 monitor+delay 时由 MonitorHandler 统一执行 delay+monitor，避免纯 DELAY 分支静默丢失监控记录）。
  * 各能力位可被显式停止（stopMonitor/stopModify/stopDelay/stopMock）独立跳过，不影响同 pattern 其它能力。
  *
  * <p>此前该裁决散落在 {@code RouteEngine.selectCapability}（唯一入口但归属不清）；

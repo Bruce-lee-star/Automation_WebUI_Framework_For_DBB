@@ -130,9 +130,11 @@ public final class RolePickerCommandEngine {
         // 【关键修复】清空 Java 侧内存态中元素的序号（保留元素本身），使第二轮拾取序号从 1 开始
         // 用户需求：重新拾取时保留已在页面元素列表中的元素，但序号从 1 重新开始
         // 浏览器侧 start 脚本也会同步清空 __rolePicks 中每个元素的 _pickNos，保持 Java/浏览器状态一致
-        for (RoleEntry e : javaPickBySig.values()) {
-            if (e != null) {
-                e.setPickNos(new java.util.ArrayList<>());  // 清空序号为 []（保留元素，语义与面板删除一致）
+        synchronized (javaPickBySig) {
+            for (RoleEntry e : javaPickBySig.values()) {
+                if (e != null) {
+                    e.setPickNos(new java.util.ArrayList<>());  // 清空序号为 []（保留元素，语义与面板删除一致）
+                }
             }
         }
         // 进入手动拾取模式（互斥：此时整页/区域扫描按钮禁用，点击页面只拾取被点元素）。
@@ -192,8 +194,10 @@ public final class RolePickerCommandEngine {
         // 结果：全页扫描后旧元素仍持有旧序号，点加号时新序号从旧最大值+1 开始而非从 1 开始。
         // 修复：在全页扫描前清空 Java 内存态中所有元素的序号，使扫描结果从空开始。
         // 注意：只清空序号（保留元素本身），与 start 命令处理器的行为一致。
-        for (RoleEntry e : javaPickBySig.values()) {
-            if (e != null) e.setPickNos(new java.util.ArrayList<>());
+        synchronized (javaPickBySig) {
+            for (RoleEntry e : javaPickBySig.values()) {
+                if (e != null) e.setPickNos(new java.util.ArrayList<>());
+            }
         }
         // 【关键修复"重新扫描后点加号序号不重置"】
         // 旧实现：start() 的 JS 注入只清空 _pickNos 但保留 __rolePicks 元素列表，
@@ -480,7 +484,11 @@ public final class RolePickerCommandEngine {
         if (snap == null) snap = new PickSnapshot("", new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         // 状态外置：优先用 Java 侧内存态（javaPickBySig）覆盖（对导航/关闭导致的浏览器端状态清空免疫）。
         if (!javaPickBySig.isEmpty()) {
-            snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), snap.steps, snap.ops);
+            List<RoleEntry> snapshotEntries;
+            synchronized (javaPickBySig) {
+                snapshotEntries = new ArrayList<>(javaPickBySig.values());
+            }
+            snap = new PickSnapshot(snap.pageClass, snapshotEntries, snap.steps, snap.ops);
         }
         // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);
@@ -522,7 +530,11 @@ public final class RolePickerCommandEngine {
         //     step 数量与括号序号随删除实时变化。
         // 注：手动模式主流程按点击序号拆 step，删除后重拆符合预期；若用户曾手动"封装为步骤"分组，删除后分组会被重置为按序号。
         if (!javaPickBySig.isEmpty()) {
-            snap = new PickSnapshot(snap.pageClass, new ArrayList<>(javaPickBySig.values()), new ArrayList<>(), snap.ops);
+            List<RoleEntry> snapshotEntries;
+            synchronized (javaPickBySig) {
+                snapshotEntries = new ArrayList<>(javaPickBySig.values());
+            }
+            snap = new PickSnapshot(snap.pageClass, snapshotEntries, new ArrayList<>(), snap.ops);
         } else {
             snap = new PickSnapshot(snap.pageClass, new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         }
@@ -627,7 +639,10 @@ public final class RolePickerCommandEngine {
         // O(1) 取回、且对导航/关闭导致的浏览器端状态清空免疫；内存为空（回传桥未触发等异常）时
         // 退回浏览器读快照兜底。steps/ops 仍来自浏览器单次往返（stopAndRead 已合并），保证多页 step 序列正确。
         if (!javaPickBySig.isEmpty()) {
-            List<RoleEntry> memEntries = new ArrayList<>(javaPickBySig.values());
+            List<RoleEntry> memEntries;
+            synchronized (javaPickBySig) {
+                memEntries = new ArrayList<>(javaPickBySig.values());
+            }
             snap = new PickSnapshot(snap.pageClass, memEntries, snap.steps, snap.ops);
         }
         // manual-mode (not packaged) fallback: start->stop whole session = one step.
@@ -699,7 +714,9 @@ public final class RolePickerCommandEngine {
         // 停止拾取后重置（必须在 buildStepCode 之后，生成已基于累积 pickNos 完成）：
         // 清空 Java 权威内存态每个 entry 的 pickNos，并让浏览器侧 window.__rolePicks 的
         // _pickNos/_pickSeq 归零，使面板干净回退到 [-]，且下一次 start 时全局动作序号从 1 重新计数。
-        for (RoleEntry e : javaPickBySig.values()) e.setPickNos(new java.util.ArrayList<>());
+        synchronized (javaPickBySig) {
+            for (RoleEntry e : javaPickBySig.values()) e.setPickNos(new java.util.ArrayList<>());
+        }
         try {
             // 【修复"stop→start 第二轮序号错乱（如 user_name 拿到旧号而非从续接点递增）】
             // 原逻辑只 delete p._pickNos + p._pickSeq=0，但 __rolePicks 数组、__rolePickSigs（key 去重表）、

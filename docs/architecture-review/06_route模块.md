@@ -303,6 +303,25 @@ public final class ApiCaptureStore {
 
 **本轮评审总评**：route 收尾期强键表现由 `removeContextFromAllRegistries` 单一守卫兜底清零（覆盖路由层 + 引擎层 + 在途任务），新增强键表无法再「遗漏清理」；web 侧崩溃 Browser 强引用滞留债已对齐弱键收口；test-automation 包路径与包声明彻底一致。
 
+#### 5.6.3 第四轮：MonitorHandler 事件线程即时放行 + 二次 resume 幂等收敛（2026-09-19，P0-3 / RT-F1 收口）
+
+P0-3 目标（RT-F1：事件线程同步阻塞）本轮收口，三处协同修复：
+
+| # | 问题 | 处置 |
+|---|---|---|
+| 1 | `handle()` 对 `delayMs<=0` 把 resume 推迟到 `observationExecutor` 线程，高并发下大量被拦截请求同时挂起等待线程调度 → route@/request@ 竞态与连接失稳 | 像 `ModifyHandler` 一样在**事件线程**立即 `safeResume`（即时释放 route 对象）；观测/断言/记录异步后置，与 DELAY 分支共用 `observeAndRecord` |
+| 2 | 观测任务（`observeAndRecordInternal`）在 `handle()` 已放行后**二次 resume** 同一 route → 对已处理 route 再发 CDP 命令，浏览器侧抛 `Cannot find parent object request@... to create route@`，并级联污染同 CDP 连接上的在途命令（`Cannot find command to respond`） | 引入 `resumed`（`AtomicBoolean`）幂等标记，每个 route 严格放行一次；`observeAndRecord` 各兜底路径（页面/context 关闭、无 context、读体降级、观测异常）全部移除二次 resume，改为直接 return；`delayMs>0` 延迟放行经 `RouteEngine.scheduleDeferred` 统一调度（B 方案），与队列饱和兜底共享 `compareAndSet` 保证至多放行一次 |
+| 3 | 读体池 `newBodyReadExecutor` 兜底默认 2（与配置默认 `MONITOR_BODY_READ_CONCURRENCY=16` 不一致）→ 高并发下读体串行化打爆单 CDP 连接 | 兜底默认值由 2 对齐为 16；新增 `PlaywrightSafeOps` 工具类（route 包，承载死句柄零触碰 / 安全响应读取等复用逻辑） |
+
+**配套不改行为**：即时读体协调任务（`captureBodyPromptly`）仍由 `handle()` 在响应到达时立即提交，把读取时机前移以规避响应体被浏览器回收（CDP `Object doesn't exist`），观测任务只 `get()` 该 future，与"放行"解耦。
+
+**验证数据**：
+- route 模块单测 **53 例**全绿（0 失败 / 0 错误 / 0 跳过，BUILD SUCCESS）
+- `ApiCaptureLifecycleListenerTest` **3 例**全绿（listener 幂等注册护盾）
+- 真浏览器压测 `RoutePerformanceStressTest` **4 例**全绿（50 并发 × 256KB / 4.5MB 大报文 + 守门场景，断言 `allPassed=true`、响应 `ok=14/nonOk=0`）—— 证明二次 resume 级联污染已根除；残余 `res.body()` attempt 1 偶发 `Object doesn't exist` 由既有 `readResponseBodyWithRetry` 重试 / 降级快照兜底（属预期降级，**非回归**）
+
+**关联**：P0-3、P1-7 已完成（P1-7：`recordUnavailable` 落降级快照后 `signalFailFast`，杜绝 fail-open 假绿，新增 `MonitorHandlerFailOpenTest` 固化）；**P0-4（RT-F2）经核查已在代码中落地**（`FileStoreMonitorCallback` 的 `WRITE_EXECUTOR` 单线程异步写盘，事件线程零同步磁盘 IO）。Wave 3 剩余项：P0-5（CG-F1 录制器 CME）、P1-8（RT-C2 落库丢失→失败信号）、P1-9（RT-C3 FileStore 跨场景串扰）、P1-10（RT-C4 共享 Context reset 污染）、P1-11~13（CG）。详见 `13_致命缺陷评审` §2 / §4。
+
 ---
 
 ## 六、结论

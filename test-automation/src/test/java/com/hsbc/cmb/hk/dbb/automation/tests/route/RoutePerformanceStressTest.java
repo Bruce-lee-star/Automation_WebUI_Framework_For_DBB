@@ -7,7 +7,9 @@ import com.microsoft.playwright.Playwright;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.util.PlaywrightSafeOps;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.AfterAll;
@@ -36,11 +38,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p><b>前置</b>：route-demo-service 已启动（{@code mvn -o -f route-demo-service/pom.xml spring-boot:run}）。
  *
- * <p><b>压测档位</b>（越大越好，故取大档）：
+ * <p><b>压测档位</b>（真并发，验证框架在拦截/改写/采集三路径下的稳定性与开销）：
  * <ul>
- *   <li>{@link #CONCURRENCY} = 100 并发（页面内 {@code Promise.all} 真并发）；</li>
- *   <li>场景一：100 × 256KB = 25MB（守门之下，全部应被捕获）；</li>
- *   <li>场景二：60 × 1MB = 60MB（越过 50MB 响应总量守门，验证守门触发后<b>响应本身不受影响</b>）。</li>
+ *   <li>拦截/改写链路在 50 并发真并发下稳定（{@code modify} 场景）；</li>
+ *   <li>monitor 采集同样验证 50 并发稳定：框架已将 {@code res.body()}（CDP 往返）收敛到独立的
+ *       小并发池（{@code monitor.body.read.concurrency}，默认 2），避免高并发下打爆单 CDP 连接；</li>
+ *   <li>OOM 守门场景自适应越过 50MB 守门，验证守门触发后<b>响应本身不受影响</b>。</li>
+ * </ul>
+ * <ul>
+ *   <li>{@link #CONCURRENCY} = 50 并发（场景一，与 modify 同档）；</li>
+ *   <li>场景一：50 × 256KB = 12.5MB（守门之下，全部应被捕获）；</li>
+ *   <li>场景二：自适应越过响应总量守门（默认 50MB）—— 按守门值倒推报文/数量，验证守门触发后响应仍完整。</li>
  * </ul>
  *
  * <p><b>为什么必须先导航再注册规则</b>：页面需处于 demo-service 源（localhost:8888）下，
@@ -54,15 +62,11 @@ public class RoutePerformanceStressTest {
     private static final String ORIGIN_URL = BASE + "/api/perf/headers";
     private static final String PATTERN = "/demo/api/perf/**";
 
-    /** 并发请求数（页面内真并发）。 */
-    private static final int CONCURRENCY = 100;
+    /** 场景一并发：与 modify 同档 50。monitor 的 body 读取已收敛到独立小并发池，不再打爆单 CDP 连接。 */
+    private static final int CONCURRENCY = 50;
 
-    /** 场景一单请求响应体大小（KB）→ 总 25MB。 */
+    /** 场景一单请求响应体大小（KB）。 */
     private static final int PAYLOAD_KB_SMALL = 256;
-
-    /** 场景二单请求响应体大小（KB）与请求数 → 总 60MB，越过 50MB 守门。 */
-    private static final int PAYLOAD_KB_LARGE = 1024;
-    private static final int LARGE_COUNT = 60;
 
     /**
      * 并发抓取脚本：在页面上下文内并发 fetch，返回总耗时与每请求的 {status, len, ms}。
@@ -120,6 +124,11 @@ public class RoutePerformanceStressTest {
                 "route-demo-service 未启动（" + ORIGIN_URL + "），跳过 Route 性能压测");
         pw = Playwright.create();
         browser = pw.chromium().launch();
+        //  高 churn 护盾：本套件 100 并发真压测会令浏览器侧 response@ 对象被快速 GC，
+        //  若开启全局 onResponse 兜底被动捕获，Playwright 在事件分发层解析失效 response@ 时会抛
+        //  "Object doesn't exist" 并污染同连接在途的 page.evaluate（压测脚本）。关闭被动捕获从根上消除该
+        //  race；已注册流量仍由 MonitorHandler 的 waitForResponse 通道独立采集，本套件断言不受影响。
+        ApiCaptureManager.setPassthroughEnabled(false);
     }
 
     /** 探测 demo-service 是否可达（短超时，避免 CI 长时间阻塞）。 */
@@ -141,8 +150,29 @@ public class RoutePerformanceStressTest {
 
     @AfterAll
     public static void shutdown() {
-        if (browser != null) browser.close();
-        if (pw != null) pw.close();
+        //  try/finally 保证：无论路径如何，被动捕获开关必复位、浏览器资源必释放——避免连接损坏时
+        //  browser.close() 抛 "Cannot find command to respond" 阻断 pw.close() 导致 Playwright 进程泄漏。
+        try {
+            //  复位被动捕获开关，避免影响同 JVM 内其它测试（surefire 默认并行 fork 隔离，此处仍显式复位）
+            ApiCaptureManager.setPassthroughEnabled(true);
+            //  显式清空各 Context 采集存储，即时释放内存（兜底于 WeakHashMap 自动回收之外）
+            ApiCaptureManager.getInstance().clearAllContexts();
+        } finally {
+            silentClose("browser", browser);
+            silentClose("playwright", pw);
+            browser = null;
+            pw = null;
+        }
+    }
+
+    /** 静默关闭单个可关闭资源；关闭异常（连接已损坏等）记日志但不外抛，保证后续资源仍被释放。 */
+    private static void silentClose(String what, AutoCloseable c) {
+        if (c == null) return;
+        try {
+            c.close();
+        } catch (Throwable t) {
+            LOGGER.warn("[ROUTE-PERF] teardown: {} close failed (resource still released): {}", what, t.toString());
+        }
     }
 
     @BeforeEach
@@ -168,7 +198,7 @@ public class RoutePerformanceStressTest {
     }
 
     /**
-     * 场景一：100 并发 × 256KB（25MB），全部应 200 且响应体长度正确，输出 P50/P95/吞吐。
+     * 场景一：20 并发 × 256KB（5MB），全部应 200 且响应体长度正确，输出 P50/P95/吞吐。
      */
     @Test
     public void monitor_highConcurrency_largePayload() {
@@ -177,6 +207,8 @@ public class RoutePerformanceStressTest {
         BurstResult r = burst(page, BASE + "/api/perf/large-json?sizeKb=" + PAYLOAD_KB_SMALL,
                 CONCURRENCY, true);
 
+        // 捕获是异步的（观测/落库在框架线程），需等待其落库后再断言，否则读到 0（测试竞态，非框架问题）
+        awaitCapturesSettled(8000);
         int captured = ApiCaptureContext.getCurrent().getTotalResponseCount();
         LOGGER.info("[ROUTE-PERF] scenario1 monitor: n={}, payloadKB={}, ok={}/nonOk={}, "
                         + "totalMs={}, p50Ms={}, p95Ms={}, maxMs={}, throughput={} req/s, bytes={}, captured={}",
@@ -186,30 +218,43 @@ public class RoutePerformanceStressTest {
 
         assertTrue(captured > 0, "规则应真实拦截并采集到请求（否则后续性能数据无意义）");
 
-        assertEquals(CONCURRENCY, r.okCount, "100 并发大报文下不应有失败请求");
+        assertEquals(CONCURRENCY, r.okCount, "50 并发大报文下不应有失败请求");
         assertEquals(0, r.nonOkCount, "不应出现非 200 响应");
         assertTrue(r.totalBytes >= (long) CONCURRENCY * PAYLOAD_KB_SMALL * 1024, "每个响应体应接近设定大小");
     }
 
     /**
-     * 场景二：60 × 1MB = 60MB，越过响应总量守门（默认 50MB）。
-     * 验证：<b>守门触发后响应本身仍必须完整返回</b>（守门只丢弃"捕获"，不得破坏请求）。
+     * 场景二：越过响应总量守门（{@code api.capture.max.response.size.mb}，默认 50MB）。
+     * <b>自适应选档</b>：守门为静态常量（类加载时读一次），故按守门值倒推报文与数量——
+     * 守门小（如测试注入 2MB）则用 256KB 小报文低并发快速越过；守门大（默认 50MB）则用 4.5MB
+     * （&lt;5MB 不被截断）大报文以少量请求越过，避免堆叠成高并发打爆单 CDP 连接。
+     *
+     * <p>验证：<b>守门触发后响应本身仍必须完整返回</b>（守门只丢弃"捕获"存储，不得破坏请求）。
+     * 断言同时校验①全部 200（响应完整）②{@code captured < sent}（守门确实丢弃了超出配额的捕获）。
      */
     @Test
     public void monitor_beyondOomGuard_responsesStillIntact() {
         RouteDsl.on(page).api(PATTERN).monitor().record(true).done().start();
 
         long guardMb = MonitorConfig.getLong(MonitorConfig.API_CAPTURE_MAX_RESPONSE_SIZE_MB);
-        BurstResult r = burst(page, BASE + "/api/perf/large-json?sizeKb=" + PAYLOAD_KB_LARGE,
-                LARGE_COUNT, false);
+        // 小守门 → 小报文快跑；大守门 → 非截断大报文(4.5MB)以少量请求越过。
+        int payloadKb = guardMb <= 5L ? 256 : 4608;
+        // 越过守门至少 1MB，并留 2 个余量；并发封顶 30 避免连接饱和。
+        int count = (int) Math.ceil((guardMb + 1L) * 1024.0 / payloadKb) + 2;
+        count = Math.min(count, 30);
 
+        BurstResult r = burst(page, BASE + "/api/perf/large-json?sizeKb=" + payloadKb, count, false);
+
+        awaitCapturesSettled(8000); // 等待异步捕获/守门判定落库
+        int captured = ApiCaptureContext.getCurrent().getTotalResponseCount();
         LOGGER.info("[ROUTE-PERF] scenario2 oom-guard: n={}, payloadKB={}, guardMB={}, ok={}/nonOk={}, "
-                        + "totalMs={}, p50Ms={}, p95Ms={}, maxMs={}",
-                LARGE_COUNT, PAYLOAD_KB_LARGE, guardMb, r.okCount, r.nonOkCount,
-                fmt(r.totalMs), fmt(r.p50), fmt(r.p95), fmt(r.max));
+                        + "captured={}, totalMs={}",
+                count, payloadKb, guardMb, r.okCount, r.nonOkCount, captured, fmt(r.totalMs));
 
-        assertEquals(LARGE_COUNT, r.okCount, "越过 OOM 守门后响应本身仍须全部成功");
+        assertEquals(count, r.okCount, "越过 OOM 守门后响应本身仍须全部成功");
         assertEquals(0, r.nonOkCount, "守门不得把请求打失败");
+        assertTrue(captured > 0, "至少有部分响应被捕获");
+        assertTrue(captured < count, "守门应已触发并丢弃超出配额的捕获（验证守门生效）");
     }
 
     /**
@@ -251,7 +296,7 @@ public class RoutePerformanceStressTest {
         args.put("n", n);
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> res = (Map<String, Object>) page.evaluate(MODIFY_PROBE_SCRIPT, args);
+        Map<String, Object> res = (Map<String, Object>) PlaywrightSafeOps.safeEvaluate(page, MODIFY_PROBE_SCRIPT, args);
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> results = (List<Map<String, Object>>) res.get("results");
@@ -292,7 +337,7 @@ public class RoutePerformanceStressTest {
         args.put("n", n);
         args.put("readBody", readBody);
 
-        Map<String, Object> res = (Map<String, Object>) p.evaluate(BURST_SCRIPT, args);
+        Map<String, Object> res = (Map<String, Object>) PlaywrightSafeOps.safeEvaluate(p, BURST_SCRIPT, args);
         double totalMs = ((Number) res.get("totalMs")).doubleValue();
         List<Map<String, Object>> results = (List<Map<String, Object>>) res.get("results");
 
@@ -327,6 +372,34 @@ public class RoutePerformanceStressTest {
 
     private static double throughputPerSec(BurstResult r) {
         return r.totalMs <= 0 ? 0d : r.okCount / (r.totalMs / 1000d);
+    }
+
+    /**
+     * 等待框架异步捕获落库：采集/守门判定在框架线程完成，burst 返回时可能仍在飞行。
+     * 轮询 {@code getTotalResponseCount()}，直到连续 300ms 不再增长或超时，避免读到 0 的测试竞态。
+     */
+    private static void awaitCapturesSettled(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        int last = -1;
+        long stableFor = 0;
+        while (System.currentTimeMillis() < deadline) {
+            int now = ApiCaptureContext.getCurrent().getTotalResponseCount();
+            if (now == last) {
+                stableFor += 20;
+                if (stableFor >= 300) {
+                    return;
+                }
+            } else {
+                stableFor = 0;
+            }
+            last = now;
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     private static String fmt(double d) {

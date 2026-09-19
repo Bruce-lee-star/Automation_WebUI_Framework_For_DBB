@@ -45,6 +45,22 @@ public final class ApiCaptureManager {
     /** 框架启动即常驻 API 采集；设为 false 可整体关闭。 */
     private volatile boolean enabled = true;
 
+    /**
+     * 全局 {@code page.onResponse} 兜底被动捕获开关（默认开启）。
+     *
+     * <p><b>为何需要</b>：被动捕获依赖 Playwright 原生 {@code page.onResponse} 监听器。极端并发 /
+     * 压测下，浏览器侧响应对象（{@code response@}）会被快速 GC，而 {@code response} 事件仍在事件队列中排队；
+     * Playwright 在事件分发层（{@code BrowserContextImpl.handleEvent}）解析该已失效的 {@code response@} 时
+     * 抛 {@code PlaywrightException: Object doesn't exist} —— 且该异常发生在调用我们的监听 lambda <b>之前</b>，
+     * lambda 内 {@code try/catch} 无法拦截，会沿连接等待回灌、污染<b>同一连接上任何在途的 {@code page.evaluate}</b>
+     * （a11y 扫描、截图、诊断、压测脚本等），表现为瞬时但致命的连接错误。
+     *
+     * <p><b>缓解策略</b>：保留被动捕获作为默认 ON 的特性（未注册流量可见性），但提供本开关供
+     * 高 churn 场景（如 {@code RoutePerformanceStressTest}）显式关闭——关闭后不再订阅 {@code page.onResponse}，
+     * 从根本上消除该 race；已注册流量的采集由 MonitorHandler（{@code waitForResponse} 通道）独立承担，不受影响。
+     */
+    private volatile boolean passthroughEnabled = true;
+
     /** 当前 scenario 的采集存储（场景切换时整体替换）。 */
     private volatile ApiCaptureStore currentStore = new ApiCaptureStore();
 
@@ -86,6 +102,16 @@ public final class ApiCaptureManager {
 
     public static boolean isEnabled() {
         return INSTANCE.enabled;
+    }
+
+    /** 全局 onResponse 兜底被动捕获开 / 关（默认开启；高 churn 场景可关闭以规避连接污染）。 */
+    public static void setPassthroughEnabled(boolean on) {
+        INSTANCE.passthroughEnabled = on;
+        LOGGER.info("[ApiCapture] passthrough capture {}", on ? "ENABLED" : "DISABLED");
+    }
+
+    public static boolean isPassthroughEnabled() {
+        return INSTANCE.passthroughEnabled;
     }
 
     // ═══════════════════════════════════════════════════════════

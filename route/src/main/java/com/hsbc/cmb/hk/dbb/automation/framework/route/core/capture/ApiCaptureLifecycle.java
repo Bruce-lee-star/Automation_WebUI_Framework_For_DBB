@@ -204,7 +204,14 @@ public final class ApiCaptureLifecycle {
                 page.onClose(ignored -> detach(page));
                 //  挂接全局 onResponse 兜底监听器（Playwright 原生非侵入事件流）：
                 //   捕获未注册流量，与各 Route Handler 零竞争；监听器随 Page 关闭自动解绑，无泄漏。
-                if (ApiCaptureManager.isEnabled()) {
+                //  全局 onResponse 兜底被动捕获：受 isPassthroughEnabled() 门控。
+                //  极端并发 / 压测下，浏览器侧 response@ 对象会被快速 GC，Playwright 在事件分发层
+                //  （BrowserContextImpl.handleEvent）解析已失效 response@ 时抛 "Object doesn't exist"，
+                //  且该异常发生在调用本 lambda【之前】，本 try/catch 无法拦截，会污染同一连接在途的
+                //  page.evaluate。高 churn 场景（如 RoutePerformanceStressTest）经
+                //  ApiCaptureManager.setPassthroughEnabled(false) 关闭订阅，从根上消除该 race；
+                //  已注册流量仍由 MonitorHandler 的 waitForResponse 通道独立采集，不受影响。
+                if (ApiCaptureManager.isEnabled() && ApiCaptureManager.isPassthroughEnabled()) {
                     page.onResponse(response -> {
                         try {
                             ApiCaptureManager.getInstance().recordPassthrough(
@@ -214,8 +221,11 @@ public final class ApiCaptureLifecycle {
                                     response.request().headers(),
                                     response.headers(),
                                     page.context());
-                        } catch (Exception e) {
-                            LOGGER.debug("[ApiCapture] onResponse skipped: {}", e.getMessage());
+                        } catch (Throwable e) {
+                            //  兜底：lambda 内任何异常（含 PlaywrightException）都不得外溢到事件分发线程，
+                            //    否则会污染 Playwright 连接。注意：本 catch 无法拦截 handleEvent 在
+                            //    解析 response@ 对象阶段抛出的 "Object doesn't exist"（见上方开关说明）。
+                            LOGGER.debug("[ApiCapture] onResponse skipped: {}", e.toString());
                         }
                     });
                 }

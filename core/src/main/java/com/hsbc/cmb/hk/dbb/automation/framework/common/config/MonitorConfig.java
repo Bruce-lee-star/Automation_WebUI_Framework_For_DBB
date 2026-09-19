@@ -37,6 +37,41 @@ public final class MonitorConfig {
     /** 重试调度线程数：原为单线程且被所有 context 共享（并行下跨 context 串行瓶颈），现可配。 */
     public static final Key MONITOR_BODY_READ_SCHEDULER_THREADS =
             new Key("monitor.body.read.scheduler.threads", "4");
+
+    /**
+     * Body 读取并发上限（默认 16）：{@code res.body()} 是 CDP 协议往返（Network.getResponseBody）。
+     *
+     * <p><b>为什么是 16 而非 2（历史教训）</b>：早期实现把 {@code res.body()} 收敛到 2 线程的读体池，意图
+     * 「限制并发 CDP 读取、避免单连接饱和」。但在「即时读体」架构（{@link #MONITOR_BODY_CAPTURE_THREADS}
+     * 协调池在 {@code handle()} 中<b>立即</b>提交读体任务）下，2 线程成为致命瓶颈——50 并发时 16 个协调线程
+     * 全部排队等这 2 个读线程，读体延迟超出 Chromium 的响应对象回收窗口（约 300~400ms），后期读取时
+     * {@code response@} 已被浏览器 GC 回收，抛 {@code Object doesn't exist} → 捕获全部降级（实测 monitor@50 捕获为 0）。
+     *
+     * <p><b>为什么 16 不会重新饱和连接</b>：原「8 并发打爆 CDP」的结论建立在<b>旧的延迟协调</b>架构上——
+     * 观测线程被排队后<b>同时</b>空出、形成雷鸣式群发（thundering herd），且大量读体已超出回收窗口而抛错、
+     * 触发<b>重试风暴</b>进一步放大负载。现改为<b>即时协调</b>后，每个协调线程趁<b>各自响应刚到达</b>时读取，
+     * 读体时机被<b>摊平</b>到响应到达时刻（而非同时爆发），几乎不触发重试；并发上限同时由协调池（默认 16）
+     * 严格收敛，故 16 并发稳态读取既能在回收窗口内完成、又不引入无界群发。
+     *
+     * <p>16 与 {@link #MONITOR_BODY_CAPTURE_THREADS}（协调池）同值：协调线程提交读体后，读体池总有空闲线程
+     * 立即承接，读体任务零排队 → 读体时机完全由「响应到达」决定，不受读体池自身排队拖累。
+     */
+    public static final Key MONITOR_BODY_READ_CONCURRENCY =
+            new Key("monitor.body.read.concurrency", "16");
+
+    /**
+     * 即时读体协调池线程数（默认 16）：承载「响应到达即读 body」的协调任务
+     * （{@code awaitExistingResponse} 轮询 + 等待 {@link #MONITOR_BODY_READ_CONCURRENCY} 池完成 CDP 读取）。
+     *
+     * <p><b>为什么需要独立池</b>：根因是高并发下 body 读取被推迟到<b>排队的观测任务</b>里执行，
+     * 等观测线程空出时响应体已被浏览器回收（CDP {@code Object doesn't exist}），导致捕获全部降级。
+     * 本池的任务在 {@code handle()} 中<b>立即</b>提交（不经观测队列），趁响应刚到达即刻发起
+     * {@code res.body()}，把读取时机从「观测调度后」前移到「响应到达时」。这些线程绝大部分时间在
+     * 阻塞等待（等响应到达 / 等 CDP 读取完成），故线程数可高于实际并发；真正的 CDP 读取并发仍由
+     * {@link #MONITOR_BODY_READ_CONCURRENCY}（默认 2）严格收敛，本池只负责协调，不放大 CDP 压力。
+     */
+    public static final Key MONITOR_BODY_CAPTURE_THREADS =
+            new Key("monitor.body.capture.threads", "16");
     /** 基础尝试次数（不含按 DELAY 推导的额外次数）。 */
     public static final Key MONITOR_BODY_READ_BASE_ATTEMPTS =
             new Key("monitor.body.read.base.attempts", "3");

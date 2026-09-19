@@ -32,9 +32,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -63,6 +66,10 @@ public class MonitorHandler {
 
     /** 预算余量（毫秒）：留给「尝试总时长」之外的调度抖动。 */
     private static final long RETRY_BUDGET_MARGIN_MS = 5_000L;
+
+    /** 无延迟 body 读取预算下限（毫秒）：body 读取收敛到独立小并发池后会排队等待，下限保证被节流的
+     *  读取仍有充足时间完成，避免全部超时降级；平时低并发下 {@code res.body()} 几十毫秒即返回，不引入额外延时。 */
+    private static final long NO_DELAY_BUDGET_FLOOR_MS = 3_000L;
 
     /**
      * 兜底读取真实响应的最大尝试次数（含首次）。
@@ -125,7 +132,100 @@ public class MonitorHandler {
     }
 
     /**
-     * 已读取的响应体 + 截断前原始字节数（C-10）。
+     * Body 读取专用并发池（稳定性修复）：{@code res.body()} 是 CDP 协议往返（Network.getResponseBody），
+     * 单浏览器 CDP 连接吞吐有限。原实现在 {@link #observationExecutor}（默认 8 线程）上并发执行
+     * {@code res.body()}，高并发下多个 body 读取并发打 CDP，令单连接饱和 → body 读取超时/失败 → 捕获全部降级
+     * （实测：modify@50 稳过，monitor@50 因额外 8 并发 body 读取饱和而捕获为 0）。
+     *
+     * <p>故将 body 读取收敛到本<b>独立</b>并发池（默认 16 线程，无界队列 + 调用方阻塞等待），
+     * 由 {@code monitor.body.read.concurrency} 配置。并发上限须足以在 Chromium 的<b>响应对象回收窗口</b>
+     * （约 300~400ms）内完成全部读体——早期误设为 2 线程，50 并发时协调线程全排队等 2 读线程，
+     * 读体延迟超出回收窗口、{@code response@} 被回收 → 捕获全部降级（monitor@50 捕获为 0，见
+     * {@code MonitorConfig#MONITOR_BODY_READ_CONCURRENCY} 注释）。现默认 16 与协调池同值：协调线程提交读体后
+     * 读体池总有空闲线程<b>零排队</b>承接，读体时机完全由「响应到达」决定；且「即时协调」已将读体摊平到各自响应
+     * 到达时刻、几乎不触发重试风暴，故 16 并发稳态读取既能压回收窗口、又不重新饱和连接。
+     */
+    private static final ThreadPoolExecutor bodyReadExecutor = newBodyReadExecutor();
+
+    private static ThreadPoolExecutor newBodyReadExecutor() {
+        int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_READ_CONCURRENCY, 16));
+        AtomicInteger seq = new AtomicInteger(1);
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(),
+                r -> {
+                    Thread t = new Thread(r, "monitor-body-read-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    return t;
+                });
+    }
+
+    /**
+     * 即时读体协调池（并发修复核心）：承载「响应到达即读 body」的协调任务。
+     *
+     * <p><b>根因</b>：原实现把 {@code awaitExistingResponse}（等响应）+ {@code res.body()}（CDP 读体）整条链路
+     * 推迟到<b>排队的观测任务</b>里执行（观测执行器默认 8 线程、压测 50 并发下排队），等观测线程空出时响应体已被
+     * 浏览器回收（CDP {@code Object doesn't exist}）→ 捕获全部降级。
+     *
+     * <p><b>修复</b>：本池的任务在 {@link #handle(Route, RouteRule, long)} 中<b>立即</b>提交（不经观测队列），
+     * 趁响应刚到达即刻发起 {@code res.body()}，把读取时机前移到「响应到达时」。本池线程绝大部分时间在阻塞等待
+     * （等响应到达 / 等 {@link #bodyReadExecutor} 完成 CDP 读取），故线程数可高于实际并发；真正的 CDP 读取并发
+     * 仍由 {@link #bodyReadExecutor}（默认 16，须 ≥ 本池以避免读体排队）收敛，本池只负责<b>协调</b>，不放大 CDP 压力。
+     *
+     * <p>观测任务（断言 / 记录）在 {@link #observationExecutor} 上并行，只 {@code get()} 本池已在进行中的
+     * body 读取结果——不再因观测调度延迟而错过响应体存活窗口。无界队列 + 调用方阻塞等待（非事件线程，安全）。
+     */
+    private static final ThreadPoolExecutor bodyCaptureExecutor = newBodyCaptureExecutor();
+
+    private static ThreadPoolExecutor newBodyCaptureExecutor() {
+        int threads = Math.max(2, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_CAPTURE_THREADS, 16));
+        AtomicInteger seq = new AtomicInteger(1);
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(),
+                r -> {
+                    Thread t = new Thread(r, "monitor-body-capture-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /** body 读取失败（{@code res.body()} 抛异常，响应已失效，重试无意义）。 */
+    private static final class BodyReadFailed extends RuntimeException {
+        BodyReadFailed(Throwable cause) {
+            super(cause);
+        }
+    }
+
+    /**
+     * 经 {@link #bodyReadExecutor} 有界并发地执行 {@code res.body()}（CDP 协议往返）。
+     * 调用方线程阻塞等待结果（非 Playwright 事件线程，可安全阻塞）；超时/调度异常返回 null 交由重试逻辑，
+     * {@code res.body()} 真正抛异常则抛出 {@link BodyReadFailed}（响应失效，不重试）。
+     */
+    private static byte[] fetchBodyBounded(Response res, long timeoutMs) {
+        if (bodyReadExecutor.isShutdown()) {
+            throw new BodyReadFailed(new IllegalStateException("bodyReadExecutor already shutdown"));
+        }
+        long waitMs = Math.max(50, timeoutMs);
+        try {
+            Future<byte[]> f = bodyReadExecutor.submit(() -> res.body());
+            return f.get(waitMs, TimeUnit.MILLISECONDS);
+        } catch (ExecutionException e) {
+            throw new BodyReadFailed(e.getCause() != null ? e.getCause() : e);
+        } catch (TimeoutException e) {
+            return null; // 超时：视作未就绪，交由重试逻辑
+        } catch (RejectedExecutionException e) {
+            // 无界队列理论不会触发；兜底直接在调用线程读取，避免丢失捕获
+            try {
+                return res.body();
+            } catch (Exception ex) {
+                throw new BodyReadFailed(ex);
+            }
+        } catch (Exception e) {
+            return null; // 其他（含 InterruptedException）：视作未就绪
+        }
+    }
+    /**
+     * 截断前的原始字节数（C-10）：body 读取完成后统一在此计算，确保「是否被截断」这一事实不被丢失。
      *
      * <p>两者必须<b>同路返回</b>：截断发生在读取路径上，若只回传截断后的内容，
      * 「数据被截断」这一事实就在框架内部丢失，断言失败/报告只能呈现残缺 body 而无法解释差异。
@@ -134,6 +234,15 @@ public class MonitorHandler {
      * @param originalBytes 截断前原始字节数（未截断时等于 {@code bytes.length}）
      */
     private record BodyRead(byte[] bytes, long originalBytes) {
+    }
+
+    /**
+     * 即时读体结果：响应对象（存活，用于 status / headers 本地访问，无协议往返）+ 已读取并截断的 body。
+     *
+     * <p>由 {@link #captureBodyPromptly} 在响应刚到达时填充，经 {@link #bodyCaptureExecutor} 协调、
+     * 实际 CDP 读取收敛在 {@link #bodyReadExecutor}。观测任务只消费本结果，不再自行延迟读体。
+     */
+    private record CapturedResponse(Response res, BodyRead bodyRead) {
     }
 
     //  ── 在途 body 读取重试的登记 / 取消 ─────────────────────────────
@@ -165,6 +274,16 @@ public class MonitorHandler {
             observationExecutor.shutdownNow();
             if (!observationExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                 LOGGER.warn("[MonitorHandler] observationExecutor did not terminate in time");
+            }
+            //  关闭 body 读取专用池（限制并发 CDP body 读取，避免连接饱和）
+            bodyReadExecutor.shutdownNow();
+            if (!bodyReadExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[MonitorHandler] bodyReadExecutor did not terminate in time");
+            }
+            //  关闭即时读体协调池（仅协调等待，无在途 body 读取，快速关闭即可）
+            bodyCaptureExecutor.shutdownNow();
+            if (!bodyCaptureExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[MonitorHandler] bodyCaptureExecutor did not terminate in time");
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -251,7 +370,12 @@ public class MonitorHandler {
     }
 
     /**
-     * 纯函数：等待预算 = {@code min(尝试总时长 + 余量, 上限)}。
+     * 纯函数：等待预算 = {@code min(max(尝试总时长 + 余量, 无延迟下限), 上限)}。
+     *
+     * <p><b>无延迟下限</b>：body 读取现已收敛到独立小并发池（{@code monitor.body.read.concurrency}，默认 2），
+     * 高并发下读取会排队等待。若无下限，无延迟场景的预算仅 {@code 尝试数×间隔+余量≈200ms}，不足以让排队的
+     * body 读取完成 → 全部超时降级。下限保证被节流的读取有充足时间落库，同时平时低并发下 {@code res.body()}
+     * 几十毫秒即返回，不引入额外延时。
      *
      * <p>必须有上限：预算即「route 事件线程度过的最大时长」。无上限时，长 DELAY 会把预算放大到分钟级
      * （例：DELAY 60s → 1200 次尝试 → 65s），一旦重试链中断/调度器异常，{@code future.get} 会把事件线程
@@ -259,10 +383,11 @@ public class MonitorHandler {
      */
     static long computeBudgetMs(int maxAttempts, long intervalMs, long maxWaitMs) {
         long raw = (long) maxAttempts * intervalMs + RETRY_BUDGET_MARGIN_MS;
+        long withFloor = Math.max(raw, NO_DELAY_BUDGET_FLOOR_MS);
         if (maxWaitMs <= 0) {
-            return raw;
+            return withFloor;
         }
-        return Math.min(raw, maxWaitMs);
+        return Math.min(withFloor, maxWaitMs);
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorHandler.class);
@@ -366,7 +491,8 @@ public class MonitorHandler {
             return;
         }
         //  「context 关闭 → 所有活动立即停止」：已关闭的 context 直接放行，不登记也不提交观测。
-        BrowserContext observationContext = contextOf(route.request());
+        final Request req = route.request();
+        BrowserContext observationContext = contextOf(req);
         if (RouteContextState.isContextClosed(observationContext)) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
                     "[MonitorHandler] Context already closed, resume & skip: pattern='{}'", rule.getUrlPattern());
@@ -377,15 +503,55 @@ public class MonitorHandler {
         //    会取消它，使"尚未开始"的观测立即放弃，不再空跑到 waitForResponse/body 读超时。
         final CompletableFuture<Void> observationTicket = new CompletableFuture<>();
         registerPendingObservation(observationContext, observationTicket);
+
+        //  放行幂等标记：本请求只放行一次。二次 resume 会让 Playwright 侧 request@/response@ 对象失效，
+        //  浏览器侧抛 "Cannot find parent object request@... to create route@"，并级联污染同 CDP 连接上的在途命令
+        //  （→ "Cannot find command to respond"）。故 resume 严格收敛到本方法一次性执行，观测任务不再二次放行。
+        final java.util.concurrent.atomic.AtomicBoolean resumed =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        //  并发修复核心：在 handle() 中【立即】提交「即时读体」协调任务（不经观测队列），趁响应刚到达即刻
+        //    发起 res.body()，把读取时机前移到「响应到达时」，避免排队的观测任务延迟读体导致响应体被浏览器回收
+        //    （CDP Object doesn't exist）。观测任务只 get() 本 future，不再因自身调度延迟而错过响应体存活窗口。
+        final CompletableFuture<CapturedResponse> bodyFuture = new CompletableFuture<>();
+        final long bodyBudgetMs = computeBudgetMs(baseAttempts(), retryIntervalMs(), maxWaitMs());
+        final long observationWaitMs = RESPONSE_AWAIT_CAP_MS + bodyBudgetMs + 2_000L;
         try {
+            bodyCaptureExecutor.execute(
+                    () -> captureBodyPromptly(route, req, rule, observationContext, bodyFuture));
+        } catch (RejectedExecutionException rex) {
+            //  协调池饱和（极端负载）：放弃即时读体，bodyFuture 置 null，观测任务将落降级快照。
+            //    放行仍由下方 resume 逻辑统一处理（绝不在本分支单独 resume，避免破坏幂等）。
+            LOGGER.warn("[MonitorHandler] body-capture pool saturated, falling back to degraded snapshot: {}",
+                    rule.getUrlPattern());
+            bodyFuture.complete(null);
+        }
+        try {
+            if (delayMs <= 0) {
+                //  P0-3 / 稳定性修复：无延迟时，像 ModifyHandler 一样在<b>事件线程</b>立即放行，即时释放 route 对象。
+                RouteUtil.safeResume(route);
+                resumed.set(true);
+            } else {
+                //  DELAY 分支：放行经延迟线程实现（B 方案），避免阻塞事件线程、规避调度线程竞态；
+                //    经 resumed 标记保证「延迟回调」与「观测兜底 / 队列饱和兜底」二者至多放行一次。
+                RouteEngine.scheduleDeferred(route, delayMs, () -> {
+                    if (resumed.compareAndSet(false, true)) {
+                        RouteUtil.safeResume(route);
+                    }
+                });
+            }
             observationExecutor.execute(
-                    () -> observeAndRecord(route, rule, delayMs, observationContext, observationTicket));
+                    () -> observeAndRecord(route, rule, observationContext, observationTicket,
+                            bodyFuture, observationWaitMs));
         } catch (RejectedExecutionException rex) {
             observationTicket.cancel(false);
-            // 队列饱和（极端负载）：拒绝即放行，绝不反压事件线程、也不让请求永久挂起
+            bodyFuture.complete(null);
+            // 队列饱和（极端负载）：拒绝即放行（幂等），绝不反压事件线程、也不让请求永久挂起
+            if (resumed.compareAndSet(false, true)) {
+                RouteUtil.safeResume(route);
+            }
             LOGGER.error("[MonitorHandler] Observation queue saturated, resuming & skipping for pattern='{}': {}",
                     rule.getUrlPattern(), rex.getMessage());
-            RouteUtil.safeResume(route);
         }
     }
 
@@ -395,22 +561,25 @@ public class MonitorHandler {
      * <p>上下文关闭 → {@code RouteContextState.cancelPendingTasksFor(context)} 取消票据 →
      * 排队/未开始的观测立即放弃，避免其继续持有 context/rule 并空跑至超时。
      */
-    private static void observeAndRecord(Route route, RouteRule rule, long delayMs,
-                                         BrowserContext context, CompletableFuture<Void> ticket) {
+    private static void observeAndRecord(Route route, RouteRule rule,
+                                         BrowserContext context, CompletableFuture<Void> ticket,
+                                         CompletableFuture<CapturedResponse> bodyFuture, long observationWaitMs) {
         try {
             if (ticket.isCancelled() || RouteContextState.isContextClosed(context)) {
+                //  context 关闭 → 放弃观测：即时读体协调任务可能仍在运行，置空使其结果被忽略（CompletableFuture 一次性完成）
+                bodyFuture.complete(null);
                 VerboseLogging.logDebugIfVerbose(LOGGER,
                         "[MonitorHandler] Observation cancelled before start (context closed): pattern='{}'",
                         rule.getUrlPattern());
                 return;
             }
-            observeAndRecordInternal(route, rule, delayMs, context);
+            observeAndRecordInternal(route, rule, context, bodyFuture, observationWaitMs);
         } catch (Throwable observationError) {
-            //  观测链任何未预期异常都不得让请求挂起（否则浏览器转圈、测试 block）：
-            //  强制放行兜底（resume 幂等，已放行时被 Playwright 忽略）。异常在此收口，绝不外抛。
-            LOGGER.error("[MonitorHandler] Observation aborted unexpectedly, forcing resume: pattern='{}'",
+            //  观测链任何未预期异常都在此收口，绝不外抛（避免污染 Playwright 事件线程）。
+            //  注意：放行已由 handle() 幂等完成（delayMs<=0 即时 / >0 经 scheduleDeferred），本处<b>不再</b> resume，
+            //  否则二次 resume 会让已处理的 route 失效并级联污染 CDP 连接。
+            LOGGER.error("[MonitorHandler] Observation aborted unexpectedly (request already released by handle): pattern='{}'",
                     rule.getUrlPattern(), observationError);
-            RouteUtil.safeResume(route);
         } finally {
             ticket.complete(null);
         }
@@ -436,29 +605,29 @@ public class MonitorHandler {
      *   <li>响应体存储、CapturedApiCall 快照、Serenity 报告记录在本工作线程内完成</li>
      * </ul>
      */
-    private static void observeAndRecordInternal(Route route, RouteRule rule, long delayMs,
-                                                 BrowserContext observationContext) {
-        //  「context 关闭 → 所有活动立即停止」：进入即检查，已关闭则直接放行退出（不读 body、不断言、不记录）。
+    private static void observeAndRecordInternal(Route route, RouteRule rule,
+                                                 BrowserContext observationContext,
+                                                 CompletableFuture<CapturedResponse> bodyFuture,
+                                                 long observationWaitMs) {
+        //  「context 关闭 → 所有活动立即停止」：进入即检查，已关闭则直接退出（不读 body、不断言、不记录）。
+        //  放行已由 handle() 幂等完成，本处不再 resume（二次 resume 会让已处理 route 失效）。
         if (RouteContextState.isContextClosed(observationContext)) {
-            RouteUtil.safeResume(route);
             return;
         }
-        // ═══ 页面关闭检查：页面已关闭时直接放行，避免对已销毁页面操作报错 ═══
+        // ═══ 页面关闭检查：页面已关闭时直接退出（放行已由 handle() 幂等完成，本处不再 resume）═══
         if (RouteUtil.isPageClosed(route)) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] Page/Context already closed, resume & skip for pattern='{}'",
+                    "[MonitorHandler] Page/Context already closed, skip (already released by handle): pattern='{}'",
                     rule.getUrlPattern());
-            RouteUtil.safeResume(route);
             return;
         }
 
         // 获取 API 监控上下文并增加活动请求计数
         ApiCaptureContext context = RouteUtil.captureContext(route);
         if (context == null) {
-            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, resuming & skipping assertion for pattern='{}'",
+            LOGGER.warn("[MonitorHandler] ApiCaptureContext is null, skipping assertion for pattern='{}'",
                     rule.getUrlPattern());
-            //  必须放行请求，否则请求会永久挂起
-            RouteUtil.safeResume(route);
+            //  放行已由 handle() 幂等完成（本处不再 resume，避免二次 resume 令 route 失效）
             return;
         }
 
@@ -479,44 +648,23 @@ public class MonitorHandler {
         //      不再做协议往返），绝不会触发该错；且对「响应在途」与「响应已在监听器注册前返回（竞态）」两种情形
         //      一致处理：已到达立即返回，未到达则短休眠轮询至上限，彻底消除 waitForResponse 的"竞态白等满超时"病理。
         Request req = route.request();
-        Response res = null;
-        //  放行幂等标记：本请求只允许 resume 一次。二次 resume 会让 Playwright 侧请求/响应对象失效，
-        //  调用方（测试主线程读取响应）随后会抛 "Object doesn't exist: response@..."。
-        final java.util.concurrent.atomic.AtomicBoolean resumed = new java.util.concurrent.atomic.AtomicBoolean(false);
-        if (!RouteUtil.isPageClosed(route)) {
-            resumed.set(true);
-            //  B 方案：resume 经 RouteEngine.scheduleDeferred 调度到延迟线程（delayMs<=0 立即执行），
-            //    避免阻塞事件线程、规避调度线程竞态。放行后请求继续完成，响应事件到达即填充 req 本地 _response。
-            RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route));
-        }
-        //  捕获预算：min(上限, ROUTE_FETCH_TIMEOUT_MS)；<=0 时回落到上限（绝不 0：deadline=now 首轮即超时）。
-        long capMs = Math.min(RESPONSE_AWAIT_CAP_MS, (long) ROUTE_FETCH_TIMEOUT_MS);
-        if (capMs <= 0) capMs = RESPONSE_AWAIT_CAP_MS;
-        res = awaitExistingResponse(route, req, observationContext, capMs);
-        if (res == null) {
-            //  轮询期 context/页面已关（死句柄）或超时未抵达 → 放行保证请求不挂起，并落降级快照（不静默丢弃）。
+        //  放行已在 handle() 中幂等完成（delayMs<=0 即时 / >0 经 scheduleDeferred），本方法<b>不再</b> resume，
+        //  避免二次 resume 令已处理的 route/request 失效（CDP "Cannot find parent object ... to create route@"）。
+        //  读体时机由 handle() 立即提交的 captureBodyPromptly 决定，与「放行」解耦。
+        //  并发修复：优先消费 handle() 立即提交的「即时读体」结果（趁响应刚到达已读取，最可靠，规避浏览器回收）；
+        //    若为 null / 超时 / 异常，再落降级快照（含 DELAY 延长 capMs，与历史行为一致）。
+        CapturedResponse captured = consumeBody(bodyFuture, observationWaitMs);
+        if (captured == null || captured.bodyRead() == null) {
+            //  读体失败（响应未在窗口内抵达 / 已失效 / body 被回收）→ 落降级快照（不静默丢弃）。
+            //  放行已由 handle() 幂等完成，本处不再 resume。
             //  死句柄零触碰：recordUnavailable 仅消费 req 的【本地】字段（method/headers/url/postData），
             //    绝不调用 req.response()/res.body() 等会触碰 server 对象的访问器。
-            if (resumed.compareAndSet(false, true)) {
-                RouteUtil.safeResume(route);
-            }
             recordUnavailable(route, rule, req);
             return;
         }
 
-        //  生命周期契约容错：route 回调中 res.body() 在并发/连续导航场景下可能偶发返回
-        //    null（响应体尚未缓冲就绪），直接丢弃会导致该 call 丢失（getAllResponsesForUrl 少一条）。
-        //    改为带短重试的读取（非阻塞：用 CompletableFuture.delayedExecutor 调度退避，
-        //    绝不 Thread.sleep 阻塞线程），应对 body 未就绪的瞬时竞态，避免捕获计数漂移。
-        BodyRead read = readResponseBodyWithRetry(res, rule, req, observationContext);
-        if (read == null) {
-            //  「不静默丢弃」：body 读不到也必须留下 MONITOR 记录（否则该调用对用例完全不可见）
-            LOGGER.warn("[MonitorHandler] Response body unavailable after retry; recording degraded snapshot: "
-                    + "pattern='{}', url='{}'", rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
-            recordUnavailable(route, rule, req);
-            return;
-        }
-
+        Response res = captured.res();
+        BodyRead read = captured.bodyRead();
         String body = toSafeBodyString(read.bytes());
         String url = req.url();
         int status = res.status();
@@ -667,9 +815,19 @@ public class MonitorHandler {
                     rule.getUrlPattern(), req.method(), snapshotHeadersSafely(req.headers()), 0, Map.of(), null,
                     System.currentTimeMillis(), req.url(), req.postData(), RouteHandleType.MONITOR);
             captureContext.storeApiCall(degraded);
+            //  RT-C1（P1-7）收口：观测不可用（fallbackResponse 返回 null / 响应体在窗口内未抵达或已失效）
+            //    属「未断言」——若仅落降级快照而用例仍 PASS，则监控失败被掩盖（fail-open 假绿），
+            //    即便后端 5xx 也通过。框架 ROUTE-P0-1 原则「宁可错报不可漏测」：此处 signalFailFast
+            //    置失败标志，由 PlaywrightListener 在步骤结束统一抛 AssertionError，使该 API 必产生失败信号，
+            //    杜绝「后端异常却测试绿」。ERROR 明确标注「未断言」以与断言失败（status 不符）区分。
+            LOGGER.error("[MonitorHandler] Observation UNAVAILABLE for pattern='{}' (response/body not captured) "
+                    + "→ signalFailFast to prevent fail-open: url='{}'",
+                    rule.getUrlPattern(), RouteUtil.sanitizeUrl(req.url()));
+            captureContext.signalFailFast();
         } catch (Exception e) {
             VerboseLogging.logDebugIfVerbose(LOGGER,
-                    "[MonitorHandler] recordUnavailable degraded snapshot failed: {}", e.getMessage());
+                    "[MonitorHandler] recordUnavailable degraded snapshot / signalFailFast failed: {}",
+                    e.getMessage());
         }
     }
 
@@ -738,6 +896,57 @@ public class MonitorHandler {
         }
     }
 
+    /**
+     * 即时读体协调任务（并发修复核心）：在 {@link #handle(Route, RouteRule, long)} 中<b>立即</b>提交至
+     * {@link #bodyCaptureExecutor}（不经观测队列），趁响应刚到达即刻读取 body，规避「观测任务延迟读体 →
+     * 响应体被浏览器回收（CDP {@code Object doesn't exist}）」这一根因。
+     *
+     * <p>流程：等响应到达（{@link #awaitExistingResponse}，本地无协议往返）→ 经 {@link #readResponseBodyWithRetry}
+     * 读取（实际 CDP {@code res.body()} 收敛在 {@link #bodyReadExecutor}，默认 16 线程，须在回收窗口内完成）→
+     * 完成 {@code bodyFuture}。任何失败均 {@code complete(null)}，交由观测任务落降级快照（不静默丢弃）。
+     */
+    private static void captureBodyPromptly(Route route, Request req, RouteRule rule, BrowserContext observationContext,
+                                            CompletableFuture<CapturedResponse> bodyFuture) {
+        try {
+            if (RouteContextState.isContextClosed(observationContext) || RouteUtil.isPageClosed(route)) {
+                bodyFuture.complete(null);
+                return;
+            }
+            long effectiveDelay = rule != null ? Math.max(rule.getDelayMs(), rule.getDelayMaxMs()) : 0;
+            long capMs = Math.min(RESPONSE_AWAIT_CAP_MS, (long) ROUTE_FETCH_TIMEOUT_MS);
+            if (capMs <= 0) capMs = RESPONSE_AWAIT_CAP_MS;
+            capMs += effectiveDelay;
+            Response res = awaitExistingResponse(route, req, observationContext, capMs);
+            if (res == null) {
+                bodyFuture.complete(null);
+                return;
+            }
+            BodyRead bodyRead = readResponseBodyWithRetry(res, rule, req, observationContext);
+            bodyFuture.complete(new CapturedResponse(res, bodyRead));
+        } catch (Exception e) {
+            LOGGER.warn("[MonitorHandler] prompt body capture failed for {}: {}", req.url(), e.getMessage());
+            bodyFuture.complete(null);
+        }
+    }
+
+    /**
+     * 观测任务消费即时读体结果：直接取 {@code bodyFuture}（handle() 中立即提交、趁响应到达已读取，最可靠）。
+     * 不再内联重新读体兜底——{@link #captureBodyPromptly} 已完整执行「等响应 + 带重试读取」，
+     * 二次读体只会放大 CDP {@code getResponseBody} 负载、在关闭的 context 上叠加请求、污染单 CDP 连接
+     * （表现为 {@code Cannot find command to respond}）。任何失败（null / 超时 / 异常）即视为读体失败，
+     * 交由调用方落降级快照（不静默丢弃）。
+     */
+    private static CapturedResponse consumeBody(CompletableFuture<CapturedResponse> bodyFuture, long observationWaitMs) {
+        try {
+            return bodyFuture.get(observationWaitMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            LOGGER.debug("[MonitorHandler] prompt body capture timed out (response not delivered within window)");
+        } catch (Exception e) {
+            LOGGER.debug("[MonitorHandler] prompt body capture failed: {}", e.getMessage());
+        }
+        return null;
+    }
+
     /** 递归异步重试读取 body：每次失败/空 body 后按固定间隔提交下一次读取（非阻塞），不占用当前线程。 */
     private static void retryBodyOnce(Response res, RouteRule rule, Request req,
                                        BrowserContext observationContext,
@@ -749,18 +958,18 @@ public class MonitorHandler {
             return;
         }
         try {
-            byte[] body = res.body();
+            long remainingMs = Math.max(50, deadlineMs - System.currentTimeMillis());
+            byte[] body = fetchBodyBounded(res, remainingMs);
             if (body != null) {
                 //  原始字节直接完成；截断统一由 readResponseBodyWithRetry 在拿到结果后执行
                 //  （C-10：需同时知道原始长度才能记录「被截断」这一事实）
                 result.complete(body);
                 return;
             }
-        } catch (Exception e) {
+        } catch (BodyReadFailed e) {
             // Response 已失效：重试无意义，直接完成 null 由调用方决定降级
-            VerboseLogging.logTraceIfVerbose(LOGGER,
-                    "[MonitorHandler] res.body() threw on attempt {}/{} for {}: {}",
-                    attempt, maxAttempts, req.url(), e.getMessage());
+            LOGGER.warn("[MonitorHandler] res.body() threw on attempt {}/{} for {}: {}",
+                    attempt, maxAttempts, req.url(), e.getMessage(), e);
             result.complete(null);
             return;
         }

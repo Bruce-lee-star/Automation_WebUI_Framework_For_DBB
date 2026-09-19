@@ -40,6 +40,8 @@ public class ApiCaptureLifecycleListenerTest {
     public void setUp() {
         // 兜底采集默认开启，确保 onResponse 监听器会被注册
         ApiCaptureManager.setApiCaptureEnabled(true);
+        // 被动捕获（onResponse 兜底通道）默认开启，确保幂等注册护盾断言 onResponse 注册 1 次
+        ApiCaptureManager.setPassthroughEnabled(true);
         page = mock(Page.class);
         ctx = mock(BrowserContext.class);
         when(page.context()).thenReturn(ctx);

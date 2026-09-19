@@ -99,11 +99,27 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     /** 是否按 scenario 分组（默认 true） */
     private volatile boolean groupByScenario = true;
 
-    /** 每个 endpoint 已写入的文件序号（用于 _1、_2 命名），跨整个测试运行 / 当前 scenario 共享 */
-    private final ConcurrentHashMap<String, AtomicInteger> counters = new ConcurrentHashMap<>();
+    /**
+     * 平铺模式（未按 scenario 分组 / 取不到 scenario 上下文）下的 JVM 内累计序号计数器。
+     * 仅此模式使用；按 scenario 分组时走 {@link #scenarioStates} 内各自的计数器，互不串号（RT-C3 / P1-9）。
+     */
+    private final ConcurrentHashMap<String, AtomicInteger> flatCounters = new ConcurrentHashMap<>();
 
-    /** scenario 切换重置的同步锁 */
-    private final Object resetLock = new Object();
+    /**
+     * 按 scenario 隔离的写入状态（RT-C3 / P1-9 收口）：去掉全局 {@code currentScenarioKey} 与全局共享
+     * {@code counters} —— 原实现在 scenario 切换时 {@code counters.clear()} 会清空<b>正在运行</b>的其它
+     * scenario 的序号，导致跨场景串号 / 串目录。现每个 scenario 持有独立计数器与独立子目录。
+     */
+    private final ConcurrentHashMap<String, ScenarioState> scenarioStates = new ConcurrentHashMap<>();
+
+    /** 单 scenario 的写入状态（目录 + 序号计数器）。 */
+    private static final class ScenarioState {
+        final File dir;
+        final ConcurrentHashMap<String, AtomicInteger> counters = new ConcurrentHashMap<>();
+        ScenarioState(File dir) {
+            this.dir = dir;
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════
     // 异步写盘执行器（P0-4 / RT-F2）
@@ -173,12 +189,6 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         }
     }
 
-    /** 当前 scenario 的标识（已清洗），用于检测 scenario 切换；null 表示尚无 scenario 上下文 */
-    private volatile String currentScenarioKey = null;
-
-    /** 当前 scenario 对应的输出子目录 */
-    private volatile File currentScenarioDir = null;
-
     /** 运行所在操作系统（小写），用于按需应用平台相关规则，而非一刀切。 */
     private static final String OS_NAME =
             System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
@@ -224,19 +234,46 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
             configChecked = true;
         }
         if (!storeEnabled) return;
+        String scenarioKey = groupByScenario ? resolveScenarioKey() : null;
+        writeForScenario(scenarioKey, url, urlPattern, status, body, requestHeaders, responseHeaders, method);
+    }
 
+    /**
+     * 按 scenario 隔离写入（RT-C3 / P1-9 收口）：目录与序号计数器均按 {@code scenarioKey} 隔离，
+     * 不再持有全局 {@code currentScenarioKey} 与全局共享 {@code counters}，杜绝并行 scenario 串号 / 串目录。
+     *
+     * <p><b>package-private 测试 seam</b>：允许单测直接注入 {@code scenarioKey} 验证场景隔离，
+     * 无需依赖 Serenity 上下文（生产路径由 {@link #onResponse} 经 {@link #resolveScenarioKey()} 解析）。
+     *
+     * @param scenarioKey 已解析的 scenario 标识；{@code null} 退化为平铺根目录 + JVM 内累计序号（旧行为）
+     */
+    void writeForScenario(String scenarioKey, String url, String urlPattern, int status, String body,
+                           Map<String, String> requestHeaders, Map<String, String> responseHeaders,
+                           String method) {
+        if (!storeEnabled) return;
         try {
             String baseName = sanitizeBaseName(urlPattern != null ? urlPattern : url);
 
-            // 确定本次写入的目标目录：按 scenario 分组时每个 scenario 一个子目录
-            File targetDir = resolveTargetDir();
+            File targetDir;
+            ConcurrentHashMap<String, AtomicInteger> counterMap;
+            if (scenarioKey == null) {
+                //  平铺模式（未分组 / 取不到 scenario 上下文）：沿用 JVM 内累计序号（旧行为）。
+                targetDir = outputDir;
+                counterMap = flatCounters;
+            } else {
+                //  每个 scenario 独立子目录 + 独立计数器 → 并行 scenario 互不串号、互不串目录。
+                ScenarioState st = scenarioStates.computeIfAbsent(
+                        scenarioKey, k -> new ScenarioState(new File(outputDir, k)));
+                targetDir = st.dir;
+                counterMap = st.counters;
+            }
 
-            int index = counters.computeIfAbsent(baseName, k -> new AtomicInteger(0))
+            int index = counterMap.computeIfAbsent(baseName, k -> new AtomicInteger(0))
                     .getAndIncrement();
             String fileName = baseName + (index == 0 ? "" : "_" + index) + ".json";
 
             Map<String, Object> json = buildJson(urlPattern, url, status, body,
-                    requestHeaders, responseHeaders, method);
+                    requestHeaders, responseHeaders, method, scenarioKey);
 
             String content = (pretty ? GSON_PRETTY : GSON_COMPACT).toJson(json);
 
@@ -308,42 +345,8 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     // scenario 感知：解析当前 scenario，并在切换时重置序号 + 切换目录
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * 解析当前应写入的目录：
-     * <ul>
-     *   <li>未启用分组 / 取不到 scenario → 返回输出根目录（平铺，序号 JVM 内累计）</li>
-     *   <li>启用分组且取到 scenario：
-     *       <ul>
-     *         <li>scenario 与上次相同 → 复用之前的子目录</li>
-     *         <li>scenario 发生切换 → <b>重置序号计数器</b> 并切换到新子目录（需要重置时即重置）</li>
-     *       </ul>
-     *   </li>
-     * </ul>
-     */
-    private File resolveTargetDir() {
-        if (!groupByScenario) {
-            return outputDir;
-        }
-        String scenarioKey = resolveScenarioKey();
-        if (scenarioKey == null) {
-            // 取不到 scenario 上下文（例如非 Serenity 环境），退化为平铺根目录
-            return outputDir;
-        }
-        if (!scenarioKey.equals(currentScenarioKey)) {
-            synchronized (resetLock) {
-                if (!scenarioKey.equals(currentScenarioKey)) {
-                    // 需要重置的时候，就重置：新 scenario 序号从 0 开始，并写入独立子目录
-                    counters.clear();
-                    currentScenarioDir = new File(outputDir, scenarioKey);
-                    currentScenarioKey = scenarioKey;
-                    LOGGER.debug("[FileStoreMonitorCallback] Scenario switched -> '{}', "
-                            + "counters reset, output subdir: {}",
-                            scenarioKey, currentScenarioDir.getAbsolutePath());
-                }
-            }
-        }
-        return currentScenarioDir != null ? currentScenarioDir : outputDir;
-    }
+    //  resolveTargetDir() 已内联到 writeForScenario：目录与序号均按 scenarioKey 隔离（RT-C3 / P1-9），
+    //  不再持有全局 scenario 状态，scenario 切换不再 clear 其它正在运行的 scenario 的计数器。
 
     /**
      * 通过 Serenity 的 StepEventBus 反射获取当前 scenario 的标识。
@@ -388,7 +391,8 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
 
     private Map<String, Object> buildJson(String urlPattern, String url, int status,
                                           String body, Map<String, String> requestHeaders,
-                                          Map<String, String> responseHeaders, String method) {
+                                          Map<String, String> responseHeaders, String method,
+                                          String scenarioKey) {
         //  P0 安全修复：本文件是「落本地磁盘」这条数据出域路径，此前完全绕过脱敏，
         //    Cookie / Authorization / 令牌 / 账号等明文写入 JSON 文件，是系统性泄露点。
         //    脱敏是数据出域的强制收口 —— 与 ApiMonitoringRecord（落库）保持同一标准。
@@ -411,7 +415,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         json.put("capturedAt", System.currentTimeMillis());
         json.put("testRunId",
                 MonitorConfig.getString(MonitorConfig.MONITOR_TEST_RUN_ID));
-        json.put("scenario", currentScenarioKey);
+        json.put("scenario", scenarioKey);
         json.put("assertionOk", status >= 200 && status < 300);
         return json;
     }
@@ -589,8 +593,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
         storeEnabled = false;
         outputDir = null;
         groupByScenario = true;
-        counters.clear();
-        currentScenarioKey = null;
-        currentScenarioDir = null;
+        flatCounters.clear();
+        scenarioStates.clear();
     }
 }

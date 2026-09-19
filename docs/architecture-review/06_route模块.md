@@ -320,7 +320,21 @@ P0-3 目标（RT-F1：事件线程同步阻塞）本轮收口，三处协同修�
 - `ApiCaptureLifecycleListenerTest` **3 例**全绿（listener 幂等注册护盾）
 - 真浏览器压测 `RoutePerformanceStressTest` **4 例**全绿（50 并发 × 256KB / 4.5MB 大报文 + 守门场景，断言 `allPassed=true`、响应 `ok=14/nonOk=0`）—— 证明二次 resume 级联污染已根除；残余 `res.body()` attempt 1 偶发 `Object doesn't exist` 由既有 `readResponseBodyWithRetry` 重试 / 降级快照兜底（属预期降级，**非回归**）
 
-**关联**：P0-3、P1-7 已完成（P1-7：`recordUnavailable` 落降级快照后 `signalFailFast`，杜绝 fail-open 假绿，新增 `MonitorHandlerFailOpenTest` 固化）；**P0-4（RT-F2）经核查已在代码中落地**（`FileStoreMonitorCallback` 的 `WRITE_EXECUTOR` 单线程异步写盘，事件线程零同步磁盘 IO）。Wave 3 剩余项：P0-5（CG-F1 录制器 CME）、P1-8（RT-C2 落库丢失→失败信号）、P1-9（RT-C3 FileStore 跨场景串扰）、P1-10（RT-C4 共享 Context reset 污染）、P1-11~13（CG）。详见 `13_致命缺陷评审` §2 / §4。
+#### 5.6.4 第五轮：FileStore 落盘按 scenario 隔离（2026-09-19，P1-9 / RT-C3 收口）
+
+P1-9 目标（RT-C3：FileStore 跨场景串扰）本轮收口。原 `FileStoreMonitorCallback` 持有全局 `counters`（`ConcurrentHashMap<String,AtomicInteger>`）与全局 `currentScenarioKey`/`currentScenarioDir`（单例实例字段），在 Serenity 并行（`threadCount>1`）下：B 场景切换时 `resolveTargetDir()` 内的 `counters.clear()` 会清空<b>正在运行</b>的 A 场景序号，导致跨场景串号 / 串目录（A 的后续捕获被重置为 `endpoint_0` 覆盖自身、或与 B 共享序号）。
+
+修复：去掉全局 scenario 状态，改为按 `scenarioKey` 隔离——
+- 新增 `scenarioStates`（`ConcurrentHashMap<String, ScenarioState>`），`ScenarioState` 持有独立子目录与独立计数器；`computeIfAbsent` 保证每 scenario 唯一、不同 scenario 完全隔离。
+- `onResponse` 解析 `scenarioKey` 后委托新增的 `writeForScenario`（package-private 测试 seam，允许单测直接注入 `scenarioKey` 验证隔离，无需 Serenity 上下文）；目录与序号均按 `scenarioKey` 分支，不再有全局 `counters.clear()`。
+- 平铺模式（未分组 / 取不到 scenario 上下文）退化为 `flatCounters`（JVM 内累计），保留旧行为。
+- `buildJson` 的 `scenario` 字段改用传入的 `scenarioKey` 参数，`reset()` 改为清理 `flatCounters` + `scenarioStates`。
+
+**验证数据**：
+- route 模块单测 **57 例**全绿（0 失败 / 0 错误 / 0 跳过，BUILD SUCCESS）
+- 新增 `FileStoreMonitorCallbackScenarioIsolationTest` **3 例**：① 不同 scenario 写入独立目录、同一 endpoint 序号不跨场景串扰；② 晚到的 scenario 切换不再重置正在运行的 scenario 计数（第三条仍为 `_2`）；③ 平铺模式仍累计序号（旧行为兼容）
+
+**关联**：P0-3、P1-7、P1-9 已完成（P1-7：`recordUnavailable` 落降级快照后 `signalFailFast`，杜绝 fail-open 假绿；P1-9：FileStore 落盘按 `scenarioKey` 隔离，去掉全局计数器与 scenario 切换 `counters.clear()`，根除并行 scenario 串号/串目录，新增 `FileStoreMonitorCallbackScenarioIsolationTest`）；**P0-4（RT-F2）经核查已在代码中落地**（`FileStoreMonitorCallback` 的 `WRITE_EXECUTOR` 单线程异步写盘，事件线程零同步磁盘 IO）。Wave 3 剩余项：P0-5（CG-F1 录制器 CME）、P1-8（RT-C2 落库丢失→失败信号，用户本地有 MySQL 可端到端验证）、P1-10（RT-C4 共享 Context reset 污染）、P1-11~13（CG）。详见 `13_致命缺陷评审` §2 / §4。
 
 ---
 

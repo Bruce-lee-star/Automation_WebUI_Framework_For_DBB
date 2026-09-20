@@ -1413,19 +1413,7 @@ public enum WebFrameworkConfig {
         "失败截图保存路径"
     ),
 
-    // ==================== Route Engine / API 捕获配置 ====================
-
-    /**
-     * API 捕获响应体总字节数上限（MB）
-     * 防止大响应（如文件下载）导致 OOM。
-     * 可通过 serenity.properties 或 JVM 参数覆盖：
-     * {@code -Dapi.capture.max.response.size.mb=100}
-     */
-    API_CAPTURE_MAX_RESPONSE_SIZE_MB(
-        "api.capture.max.response.size.mb",
-        "50",
-        "API 捕获响应体总字节数上限（MB）"
-    ),
+    // ==================== API 断言配置 ====================
 
     /**
      * API 断言等待超时时间（毫秒）
@@ -1437,115 +1425,15 @@ public enum WebFrameworkConfig {
         "API 断言等待超时（毫秒）"
     ),
 
-    // ==================== API Monitor 数据库存储配置 ====================
-
-    /**
-     * 是否启用 Monitor 数据库持久化存储
-     * true=每次捕获 API 响应后自动写入数据库
-     * false=不存储（默认）
-     */
-    MONITOR_DB_STORE_ENABLED(
-        "monitor.db.store.enabled",
-        "false",
-        "是否启用 Monitor 数据库持久化存储"
-    ),
-
-    /**
-     * 数据库类型
-     * 支持: MYSQL, POSTGRESQL
-     */
-    MONITOR_DB_TYPE(
-        "monitor.db.type",
-        "",
-        "数据库类型 (MYSQL, POSTGRESQL)；留空则按 monitor.db.url 自动探测（加哪种驱动依赖就适配哪种库）"
-    ),
-
-    /**
-     * 数据库连接 URL
-     */
-    MONITOR_DB_URL(
-        "monitor.db.url",
-        "",
-        "数据库连接 URL"
-    ),
-
-    /**
-     * 数据库用户名
-     */
-    MONITOR_DB_USER(
-        "monitor.db.user",
-        "",
-        "数据库用户名"
-    ),
-
-    /**
-     * 数据库密码（支持加密存储：以 ENC(...) 形式写入，运行时经 SecretValue 透明解密；明文亦可）
-     */
-    MONITOR_DB_PASSWORD(
-        "monitor.db.password",
-        "",
-        "数据库密码（支持 ENC(...) 加密存储，运行时透明解密；明文亦可）"
-    ),
-
-    /**
-     * 数据库连接池最大连接数
-     */
-    MONITOR_DB_POOL_MAX_SIZE(
-        "monitor.db.pool.max.size",
-        "5",
-        "数据库连接池最大连接数"
-    ),
-
-    /**
-     * Monitor 测试运行 ID
-     * 用于标记一次测试运行中的监控数据
-     */
-    MONITOR_TEST_RUN_ID(
-        "monitor.test.run.id",
-        "",
-        "Monitor 测试运行 ID"
-    ),
-
-    /**
-     * 是否启用 Monitor 文件持久化存储
-     * true=每次捕获 API 响应后按 endpoint 命名写入 JSON 文件
-     * false=不存储（默认）
-     */
-    MONITOR_FILE_STORE_ENABLED(
-        "monitor.file.store.enabled",
-        "false",
-        "是否启用 Monitor 文件持久化存储"
-    ),
-
-    /**
-     * 文件存储输出目录（相对路径基于工作目录，也可填绝对路径）
-     */
-    MONITOR_FILE_STORE_DIR(
-        "monitor.file.store.dir",
-        "target/monitor-output",
-        "Monitor 文件存储输出目录"
-    ),
-
-    /**
-     * 是否美化 JSON 输出
-     */
-    MONITOR_FILE_STORE_PRETTY(
-        "monitor.file.store.pretty",
-        "true",
-        "是否美化 Monitor JSON 文件输出"
-    ),
-
-    /**
-     * 是否按 Serenity scenario（用例）分组存储
-     * true=每个 scenario 写入独立子目录，且文件序号在 scenario 开始时自动重置
-     *       （同一 endpoint 在不同 case 互不干扰，不会出现跨 case 串号 / 覆盖）
-     * false=所有文件平铺在输出目录，序号在整个 JVM 运行内累计（旧行为）
-     */
-    MONITOR_FILE_STORE_GROUP_BY_SCENARIO(
-        "monitor.file.store.group.by.scenario",
-        "true",
-        "是否按 scenario 分组存储 Monitor 文件"
-    ),
+    // ==================== API Monitor / 持久化配置（唯一事实来源已收敛至 core MonitorConfig）====================
+    // 监控 / 持久化域配置键的单一事实来源为 core 的 MonitorConfig：
+    //   api.capture.max.response.size.mb、monitor.db.store.enabled、monitor.db.type、monitor.db.url、
+    //   monitor.db.user、monitor.db.password、monitor.db.pool.max.size、monitor.test.run.id、
+    //   monitor.file.store.enabled、monitor.file.store.dir、monitor.file.store.pretty、
+    //   monitor.file.store.group.by.scenario
+    // 原因：route 需读取这些键，但不依赖 web（ArchUnit L6），故统一收敛至 core；此处不再重复定义。
+    // 键名 / 默认值与 core 完全一致，经 ConfigSource 统一解析，对既有 serenity.properties 配置零影响；
+    // 运行时读取入口：{@code com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig}。
 
     // ==================== 统一代理配置 ====================
     //

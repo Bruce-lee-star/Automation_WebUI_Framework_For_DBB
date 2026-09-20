@@ -121,14 +121,15 @@ public class ConfigUnificationTest {
     }
 
     /**
-     * 镜像一致性（G-5 / C-6 收口）：{@code MonitorConfig} 与 {@code ConfigKeys} 是 Web/API 侧配置的
-     * <b>镜像</b>——{@code MonitorConfig} 的类注释明言「配置键名与默认值与 FrameworkConfig 中对应枚举
-     * <b>逐字一致</b>」，{@code ConfigKeys} 则自述为汇总元数据的注册表骨架。
+     * 镜像一致性（G-5 / C-6 收口）：{@code ConfigKeys} 是汇总 Web/API 配置键元数据的<b>注册表骨架</b>，
+     * 属"镜像"角色；而 {@code MonitorConfig} 是监控 / 持久化域的<b>唯一事实来源</b>
+     * （2026-09-20 收敛：{@code WebFrameworkConfig} 已不再重复定义该域键，故它不再是 Web 的镜像）。
      *
      * <p>镜像<b>允许</b>同键重复（这是设计意图，故 {@link #configKeysAreGloballyUnique} 只校验 Web×API），
-     * 但默认值<b>必须逐字一致</b>：否则同一配置键会存在两个默认值，查审计/生成文档的人被误导，
-     * 而实际生效值取决于读取路径。本条正是实测缺陷的固化——`serenity.screenshot.strategy` 在
-     * 注册表里写的是 {@code AFTER_FAILING_STEP}，而真实枚举是 {@code AFTER_EACH_STEP}。
+     * 但若某键同时存在于真实枚举中，其默认值<b>必须逐字一致</b>：否则同一配置键会存在两个默认值，
+     * 查审计/生成文档的人被误导，而实际生效值取决于读取路径。本条正是实测缺陷的固化——
+     * `serenity.screenshot.strategy` 在注册表里写的是 {@code AFTER_FAILING_STEP}，而真实枚举是
+     * {@code AFTER_EACH_STEP}。
      */
     @Test
     public void mirrorConfigKeysMustAgreeOnDefaults() throws Exception {

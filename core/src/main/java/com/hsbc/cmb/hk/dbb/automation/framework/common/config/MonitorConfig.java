@@ -1,11 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.config;
 
 /**
- * 监控 / 持久化配置键集中定义 —— 从 web 的 {@code WebFrameworkConfig} 下沉，用于解耦 {@code route → web} 依赖。
+ * 监控 / 持久化配置键集中定义 —— 该域的<b>唯一事实来源</b>。
  *
- * <p>解析统一走 {@link ConfigSource#resolve(String, String)}（与 {@code FrameworkConfig} 同一解析器，
- * 支持 serenity.properties / 系统属性 / 环境变量 / {@code ENC()} 透明解密），行为零变更；
- * 配置键名与默认值与 {@code FrameworkConfig} 中对应枚举逐字一致，对既有配置零侵入。
+ * <p>原从 web 的 {@code WebFrameworkConfig} 下沉，用于解耦 {@code route → web} 依赖；2026-09-20 进一步<b>收敛</b>：
+ * {@code WebFrameworkConfig} 不再重复定义这些键（消除"同键两处定义 / 默认值漂移"风险）。
+ *
+ * <p>解析统一走 {@link ConfigSource#resolve(String, String)}（支持 serenity.properties / 系统属性 /
+ * 环境变量 / {@code ENC()} 透明解密）；键名与默认值与原 {@code WebFrameworkConfig} 中对应枚举逐字一致，
+ * 对既有配置零侵入（配置仅按 key 字符串解析，与定义位置无关）。
  *
  * @apiNote 仅框架内部 persistence / monitor 域使用；业务代码不应直接依赖。
  */

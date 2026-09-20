@@ -4,9 +4,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.TypeRef;
+import com.jayway.jsonpath.spi.json.JacksonJsonProvider;
+import com.jayway.jsonpath.spi.mapper.JacksonMappingProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,8 +38,26 @@ public class JsonUtils {
             });
 
     /**
+     * 支持 {@link TypeRef} 类型化读取的 JsonPath 配置。
+     *
+     * <p>Jayway 默认的 {@code JsonSmartMappingProvider} <b>不支持</b> {@code TypeRef} 映射
+     * （{@code read(path, typeRef)} 会抛异常，被调用方 catch 后返回 null —— 使该重载形同虚设）。
+     * 故此处显式改用 Jackson 的 json/mapping provider，与 {@code fromJson(json, TypeRef)} 走同一套类型系统，
+     * 保证「泛型读取」在两条 API 上口径一致。
+     */
+    private static final Configuration TYPE_REF_CONFIG = Configuration.builder()
+            .jsonProvider(new JacksonJsonProvider())
+            .mappingProvider(new JacksonMappingProvider())
+            .build();
+
+    /**
      * 带缓存的 JsonPath.parse —— 同一 json 串多次解析时复用 DocumentContext，
      * 减少 JsonPath.parse 的重复解析开销（P3-25 性能优化）。
+     *
+     * <p><b>只读契约</b>：缓存实例是共享的，任何<b>会改写</b>文档的操作
+     * （{@link #setValue}/{@link #deleteValue}）<b>不得</b>使用本方法取上下文，
+     * 否则会把改写结果泄漏给后续读取同一 json 串的调用方（缓存污染）。变更类操作一律走
+     * {@code JsonPath.parse(json)} 得到独占实例。
      */
     private static DocumentContext parseCached(String json) {
         DocumentContext ctx = PARSE_CACHE.get(json);
@@ -164,8 +185,8 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = parseCached(json);
-            return documentContext.read(jsonPath, typeRef);
+            // TypeRef 必须走 Jackson 映射 provider（见 TYPE_REF_CONFIG）：Jayway 默认 JsonSmart 不支持类型化映射
+            return JsonPath.using(TYPE_REF_CONFIG).parse(json).read(jsonPath, typeRef);
         } catch (Exception e) {
             LOGGER.error("Failed to get JSON path value: {}, path: {}", e.getMessage(), jsonPath);
             return null;
@@ -181,7 +202,8 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = parseCached(json);
+            // 变更类操作使用独占实例（勿走 parseCached，否则会把改写结果污染给后续读取同一 json 串的调用方）
+            DocumentContext documentContext = JsonPath.parse(json);
             documentContext.set(jsonPath, value);
             return documentContext.jsonString();
         } catch (Exception e) {
@@ -199,7 +221,8 @@ public class JsonUtils {
         }
 
         try {
-            DocumentContext documentContext = parseCached(json);
+            // 变更类操作使用独占实例（勿走 parseCached，同上：避免污染共享缓存实例）
+            DocumentContext documentContext = JsonPath.parse(json);
             documentContext.delete(jsonPath);
             return documentContext.jsonString();
         } catch (Exception e) {

@@ -3,8 +3,12 @@ name: Build & Test
 # ENG-P0-1 / 评审08类-1（CI 策略）：建立 CI，触发门禁链
 #   compile + Checkstyle(validate) + SpotBugs/PMD(verify) + 单测 + failsafe Cucumber IT + OSV CVE 门禁 + Serenity 汇总报告。
 # 二期升级：主门禁用 `mvn -B verify`（含 SpotBugs/CVE/汇总报告），Cucumber IT 默认 skip（CI 无 SIT 凭据），
-# 另起 `e2e` job（continue-on-error 灰度）跑真实浏览器 IT，凭据经 Repository Secrets 映射为环境变量。
-# 启用后请到仓库 Settings -> Branches -> 分支保护规则，将本 workflow 设为 required status check。
+# 另起 `e2e` job 跑真实浏览器 IT，凭据经 Repository Secrets 映射为环境变量。
+# 三期升级（2026-09-20）：`e2e` job 已**转正**——移除 continue-on-error，真实浏览器 IT 失败即视为失败。
+# 仍需人工完成的一步（属仓库设置，代码改不了）：Settings -> Branches -> 分支保护规则，把本 workflow 设为 required status check。
+# ⚠️ 注意：`e2e` 现为 push-only（见 job 内 if）；若直接设为 required，PR 会因该状态下永不回报而卡在
+#    "Expected — Waiting for status to be reported"。要让它对合并真正生效，需同时把 `if` 放开到 pull_request
+#    （前提：PII/SIT 凭据以 Secrets 形式对 PR 可用，且接受每个 PR 都跑真实浏览器 IT 的时长成本）。
 on:
   push:
     branches: [ main, master ]
@@ -66,10 +70,11 @@ jobs:
           if-no-files-found: error
 
   e2e:
-    # 灰度期：不阻塞合并；待稳定后移除 continue-on-error 并设为 required。
+    # 已转正（2026-09-20）：移除 continue-on-error —— 真实浏览器 IT 失败不再被自我豁免，会如实报红。
+    # 若要让它在"合并"上真正生效（required status check），除仓库分支保护设置外，还需把下面这行 `if`
+    # 放开到 pull_request；否则 PR 上该状态永不回报，分支保护会一直等待（详见文件头说明）。
     needs: build
     if: ${{ github.event_name == 'push' }}
-    continue-on-error: true
     runs-on: ubuntu-latest
     env:
       # 凭据经 Repository Secrets 注入（绝不入库）；本地用 export 同名变量。

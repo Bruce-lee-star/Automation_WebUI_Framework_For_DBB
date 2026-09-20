@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * {@link JsonUtils} 单测（评审 P-2 补测）。
@@ -85,16 +84,17 @@ class JsonUtilsTest {
     }
 
     /**
-     * {@code getValue(String, String, TypeRef)} 在默认 Jayway provider 下<b>无法完成类型化映射</b>
-     * （实测命中路径也返回 null，即走 catch 兜底）——该重载目前无生产调用方。
-     * 此处只固化其「<b>不抛异常、失败返回 null</b>」的降级契约（不固化"永远失败"这一现状），
-     * 以便后续若修复为支持 TypeRef，本用例无需反向修改。
+     * {@code getValue(String, String, TypeRef)}：原实现走 Jayway 默认 JsonSmart provider，
+     * <b>不支持 TypeRef 映射</b> → 命中路径也返回 null（该重载形同虚设）。现改用 Jackson 映射 provider
+     * （与 {@code fromJson(json, TypeRef)} 同一套类型系统）。本用例钉住「类型化读取真正可用」，
+     * 不存在的路径仍按契约返回 null。
      */
     @Test
-    void getValueWithTypeRefDegradesToNullInsteadOfThrowing() {
-        assertThatCode(() -> JsonUtils.getValue(BASE, "$.tags", new TypeRef<List<Object>>() { }))
-                .doesNotThrowAnyException();
-        assertThat(JsonUtils.getValue(BASE, "$.missing", new TypeRef<List<Object>>() { })).isNull();
+    void getValueWithTypeRefPerformsTypedRead() {
+        List<String> tags = JsonUtils.getValue(BASE, "$.tags", new TypeRef<List<String>>() { });
+        assertThat(tags).containsExactly("a", "b");
+
+        assertThat(JsonUtils.getValue(BASE, "$.missing", new TypeRef<List<String>>() { })).isNull();
     }
 
     @Test
@@ -121,6 +121,23 @@ class JsonUtilsTest {
         assertThat(JsonUtils.setValue("   ", "$.a", 1)).isNull();
         String json = "{\"setValueFail\":1}";
         assertThat(JsonUtils.setValue(json, "$.not.here.deep", 1)).isEqualTo(json);
+    }
+
+    /**
+     * 缓存隔离回归：{@code setValue}/{@code deleteValue} 是<b>原地改写</b>文档的操作，
+     * 早期实现复用「按 json 串缓存」的共享 {@code DocumentContext} —— 改写结果会泄漏给此后读取
+     * <b>同一 json 串</b>的调用方（缓存污染：读到什么取决于此前谁改过它，且随调用顺序变化）。
+     * 现变更类操作改用独占 {@code JsonPath.parse} 实例，本用例钉住该性质（修复前必然失败）。
+     */
+    @Test
+    void mutationDoesNotPoisonParseCacheForSameJsonString() {
+        String json = "{\"cacheIsolationProbe\":{\"n\":1}}";
+
+        assertThat(JsonUtils.getValue(json, "$.cacheIsolationProbe.n")).isEqualTo(1); // 先读一次 → 该串进入解析缓存
+
+        JsonUtils.setValue(json, "$.cacheIsolationProbe.n", 2);                       // 再改写（不得污染缓存）
+
+        assertThat(JsonUtils.getValue(json, "$.cacheIsolationProbe.n")).isEqualTo(1);
     }
 
     @Test

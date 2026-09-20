@@ -12,6 +12,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
 import com.microsoft.playwright.BrowserContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
@@ -328,11 +329,6 @@ public class PlaywrightSerenityBridge {
 
         String restartBrowserForEach = PlaywrightManager.config().getRestartStrategy();
 
-        //  诊断（tab 堆积排查）：同一 Context 内出现多个 Page 时告警 —— 正常语义为「1 Context = 1 受管 Page」。
-        //   多出的通常是 ①window.open 合法弹窗 ②"页被关闭后重建、旧页未关"的泄漏。
-        //   仅告警不自动关闭（弹窗可能正被业务使用，框架不得越权处置）。
-        warnOnMultiplePagesPerContext();
-
         if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
             PageObjectFactory.clearAll();
             //  线程级记录（不受用例边界影响）：用例级 CONTEXT_KEY 在收尾/跨用例时已被清空，
@@ -368,37 +364,6 @@ public class PlaywrightSerenityBridge {
     }
 
     /**
-     * 诊断（tab 堆积排查）：本线程当前 Context 内若存在多个 Page（正常语义为 1），打印告警并逐个标注
-     * 是否为受管页 —— 便于现场判定「多 tab」来自合法弹窗还是「页被关闭后重建、旧页未关」的泄漏。
-     */
-    private static void warnOnMultiplePagesPerContext() {
-        try {
-            BrowserContext context = PlaywrightManager.currentContextForThread();
-            if (context == null) {
-                return;
-            }
-            java.util.List<Page> pages = context.pages();
-            if (pages == null || pages.size() <= 1) {
-                return;
-            }
-            Page managed = PlaywrightManager.currentPageForThread();
-            StringBuilder detail = new StringBuilder();
-            for (Page p : pages) {
-                if (detail.length() > 0) {
-                    detail.append(" || ");
-                }
-                detail.append(p == managed ? "[managed] " : "[extra] ");
-                detail.append(p.isClosed() ? "(closed) " : "");
-                detail.append(p.url());
-            }
-            logger.warn("[PlaywrightBridge] Context has {} pages (expected 1) — popup or leaked page: {}",
-                    pages.size(), detail);
-        } catch (Exception e) {
-            VerboseLogging.logDebugIfVerbose(logger, "[PlaywrightBridge] multi-page check skipped: {}", e.toString());
-        }
-    }
-
-    /**
      * Scenario 级别的清理
      */
     public static void cleanupForScenario() {
@@ -417,6 +382,8 @@ public class PlaywrightSerenityBridge {
         PageObjectFactory.endRequestScope();
 
         String restartStrategy = PlaywrightManager.config().getRestartStrategy();
+        //  标记本 scenario 是否真正关闭了 Context —— Browser 跟随 Context 边界，仅此时才关闭本线程 Browser。
+        boolean scenarioClosedContext = false;
 
         if ("scenario".equalsIgnoreCase(restartStrategy)) {
             VerboseLogging.logDebugIfVerbose(logger,
@@ -431,6 +398,7 @@ public class PlaywrightSerenityBridge {
             PlaywrightManager.reapOrphanContexts();
             resetCustomContextOptionsForScenarioMode();
             SessionManager.resetFeatureSession();
+            scenarioClosedContext = true;
         } else {
             boolean reuseWithinFeature =
                     WebFrameworkConfig.SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE.getBooleanValue();
@@ -443,6 +411,7 @@ public class PlaywrightSerenityBridge {
                 PlaywrightManager.closeContext();
                 //  窗口堆积修复：兜底回收残留 Context
                 PlaywrightManager.reapOrphanContexts();
+                scenarioClosedContext = true;
             } else {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Restart strategy is 'feature' - keeping Context and Page for reuse"
@@ -450,6 +419,14 @@ public class PlaywrightSerenityBridge {
                 resetCustomContextOptionsForFeatureMode();
                 cleanupPageState();
             }
+        }
+
+        // Browser 关闭时机（零配置默认行为）：Browser 跟随 Context 边界（per-scenario）。
+        // 仅当本 scenario 实际关闭了 Context 才关闭本线程 Browser，下一 scenario 首次 getBrowser() 懒重建；
+        // feature 模式跨场景复用同一 Context 时（session 恢复 / reuse-within-feature）不关 Browser，避免 Context 失活。
+        // 自定义并发执行器分区模式跳过（跨线程键错配防护）。
+        if (scenarioClosedContext) {
+            closeBrowserForCurrentThreadIfApplicable();
         }
     }
 
@@ -604,7 +581,27 @@ public class PlaywrightSerenityBridge {
         //  窗口堆积修复：兜底回收残留 Context
         PlaywrightManager.reapOrphanContexts();
         SessionManager.resetFeatureSession();
+        // Browser 关闭时机（零配置默认行为）：feature 收尾关本线程 Browser（下一 feature 懒重建）；
+        // 自定义并发执行器分区模式跳过（跨线程键错配防护）。
+        closeBrowserForCurrentThreadIfApplicable();
         VerboseLogging.logInfoIfVerbose(logger,
-                "Feature cleanup completed — Browser persists, Context+Page+Session cleared for next feature rebuild");
+                "Feature cleanup completed — Context+Page+Session cleared for next feature rebuild");
+    }
+
+    /**
+     * 收尾时关闭<b>本线程</b>当前 Browser（零配置、默认行为）。
+     *
+     * <p><b>设计铁律：Browser 跟随其服务 Context 的边界（per-scenario）</b>——即「Browser 跟随 Context 走」。
+     * scenario 收尾在 context 关闭后顺手关闭本线程 Browser，下一 scenario 首次 {@code getBrowser()} 懒重建，
+     * 对外行为零回归。并行下因 Browser 键为 {@code <threadId>:<configId>}，天然线程隔离，绝不误伤邻居线程。</p>
+     *
+     * <p><b>护栏</b>：自定义并发执行器（{@link ConcurrentContextExecutor}）分区模式走「每线程独立 Browser 复用」语义，
+     * 不适用按 scenario 关闭，故该模式跳过（避免线程池复用下的跨线程键错配）；其余情况一律执行。</p>
+     */
+    private static void closeBrowserForCurrentThreadIfApplicable() {
+        if (ConcurrentContextExecutor.isConcurrentModeActive()) {
+            return;
+        }
+        PlaywrightManager.closeBrowserForCurrentThread();
     }
 }

@@ -13,6 +13,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
@@ -42,6 +43,21 @@ import java.util.Set;
 public class PlaywrightContextManager {
     
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightContextManager.class);
+
+    /**
+     * 本线程「框架受管页创建中」标记（见 {@link #createPage}）。
+     *
+     * <p><b>用途</b>：Playwright 的 {@code BrowserContext.onPage} 对 Context 内<b>任何</b>新页触发 ——
+     * 既含框架自身 {@code createPage()} 的 {@code context.newPage()}（此刻尚未导航，url 恒为
+     * {@code about:blank}），也含业务 {@code window.open}/{@code target=_blank} 弹窗或泄漏页。
+     * 仅凭该回调无法区分二者，故在框架唯一建页入口 {@link #createPage} 内置位本标记，
+     * 使回调能精确判定「受管页 vs 额外页」，避免把框架自己的 about:blank 受管页误报成弹窗。</p>
+     *
+     * <p><b>为何用 {@code ThreadLocal}</b>：Playwright Java 在<b>等待命令返回的线程</b>上派发事件，
+     * 故 {@code context.newPage()} 触发的 onPage 回调与本次 {@code createPage} 调用同线程
+     * （实测 onPage 与 createPage 同 worker 线程、时间窗重合），标记对该回调可见。</p>
+     */
+    private static final ThreadLocal<Boolean> MANAGED_PAGE_CREATION_IN_FLIGHT = new ThreadLocal<>();
 
     //  trace 的启停 / 分段 / 导出 / 报告挂载已收口到
     //  {@link com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder}
@@ -74,10 +90,15 @@ public class PlaywrightContextManager {
             // 初始化 Context
             context = currentBrowser.newContext(contextOptions);
 
-            //  监听 window.open() 等产生的新 Page，记录日志供 switchNewPage 调试
+            //  页面创建监听（判定「框架受管页」vs「额外页」）：
+            //   context.onPage 对「任何」新页触发，不能笼统记成 "detected via window.open()" ——
+            //   框架自身 createPage() 的 context.newPage() 也会触发（此刻尚未导航，url 为 about:blank），
+            //   在并行逐 scenario 重建下会被误读为"同一窗口多开了一个 about:blank 页"。
+            //   故经 MANAGED_PAGE_CREATION_IN_FLIGHT 精确判定归属，并打出 Context 内页数供判定。
             context.onPage(newPage -> {
-                VerboseLogging.logInfoIfVerbose(logger,
-                        "New page detected via window.open(): url={}", newPage.url());
+                logNewPageEvent(context, newPage,
+                        classifyNewPageEvent(context, newPage,
+                                Boolean.TRUE.equals(MANAGED_PAGE_CREATION_IN_FLIGHT.get())));
                 newPage.onLoad(pageLoad -> {
                     VerboseLogging.logDebugIfVerbose(logger,
                             "New page loaded: url={}, title={}", newPage.url(), newPage.title());
@@ -119,7 +140,16 @@ public class PlaywrightContextManager {
      */
     public static Page createPage(BrowserContext context) {
         VerboseLogging.logInfoIfVerbose(logger, "Creating new Page...");
-        Page page = context.newPage();
+        //  置位「框架受管页创建中」标记：createPage 是框架唯一调用 context.newPage() 的入口，
+        //  其执行期间触发的 onPage 回调必属受管页；标记之外触发的 onPage 即业务弹窗 / 泄漏页。
+        //  必须在 newPage() 之前置位、之后清除（含异常路径），否则归属判定失真。
+        MANAGED_PAGE_CREATION_IN_FLIGHT.set(Boolean.TRUE);
+        Page page;
+        try {
+            page = context.newPage();
+        } finally {
+            MANAGED_PAGE_CREATION_IN_FLIGHT.remove();
+        }
 
         // 下载保存监听已迁移至 createContext 经 context.onDownload 一次性注册（见报告 §3.2），
         // 此处不再逐页注册，避免 window.open 弹窗内下载漏捕获。
@@ -524,6 +554,133 @@ public class PlaywrightContextManager {
             VerboseLogging.logWarnIfVerbose(logger, "Invalid LoadState configuration: {}, using default: DOMCONTENTLOADED", loadStateConfig);
             return LoadState.DOMCONTENTLOADED;
         }
+    }
+
+    /**
+     * onPage 事件的新页归属判定结果（不可变；无副作用，供日志与同包单测断言）。
+     *
+     * @apiNote 框架内部能力（包级私有）：仅供 {@link #createContext()} 接线与同包单测使用。
+     */
+    static final class NewPageEvent {
+        final boolean frameworkManaged;
+        final int pageCount;
+        final String url;
+        final boolean aboutBlank;
+
+        NewPageEvent(boolean frameworkManaged, int pageCount, String url) {
+            this.frameworkManaged = frameworkManaged;
+            this.pageCount = pageCount;
+            this.url = url;
+            this.aboutBlank = isAboutBlank(url);
+        }
+    }
+
+    /**
+     * 判定 onPage 事件中新页的归属：<b>框架受管页</b> vs <b>额外页</b>（业务 {@code window.open} 弹窗 /
+     * 测试直接 {@code context.newPage()} / 泄漏页）。
+     *
+     * <p><b>纯函数</b>：无副作用、不读 verbose 配置，故可被同包单测确定性驱动并固化判据
+     * （见 {@code PlaywrightContextManagerNewPageClassificationTest}）。</p>
+     *
+     * @param context          事件所属 Context
+     * @param newPage          事件对应的新页
+     * @param frameworkManaged {@link #createPage} 是否正在创建该页（由
+     *                         {@link #MANAGED_PAGE_CREATION_IN_FLIGHT} 判定）
+     * @return 判定结果（含 Context 内页数与 about:blank 标记）
+     * @apiNote 框架内部能力（包级私有）。
+     */
+    static NewPageEvent classifyNewPageEvent(BrowserContext context, Page newPage, boolean frameworkManaged) {
+        return new NewPageEvent(frameworkManaged, countPagesSafely(context), urlSafely(newPage));
+    }
+
+    /**
+     * 记录 onPage 事件的归属判定日志。
+     *
+     * <p><b>受管页</b>：about:blank 是 {@code newPage()} 后、首次 {@code navigate()} 前的正常状态，
+     * 非异常，故仅 verbose 记录并显式标注 {@code expected}。</p>
+     *
+     * <p><b>额外页</b>：恒记 INFO（含 aboutBlank 标记）；当 Context 内页数 &gt;1 时追加 WARN 与归属清单，
+     * 便于现场判定是合法弹窗、测试造页还是泄漏。</p>
+     *
+     * @param context 事件所属 Context
+     * @param newPage 事件对应的新页（用于清单中标 {@code (new)}）
+     * @param event   {@link #classifyNewPageEvent} 的判定结果
+     * @apiNote 框架内部能力（包级私有）。
+     */
+    static void logNewPageEvent(BrowserContext context, Page newPage, NewPageEvent event) {
+        if (event.frameworkManaged) {
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "New page created by framework (managed): ctx=#{} pages={} url={}{}",
+                    System.identityHashCode(context), event.pageCount, event.url,
+                    event.aboutBlank ? " [about:blank until first navigate — expected]" : "");
+            return;
+        }
+        //  非框架创建 ⇒ 业务 window.open / target=_blank 弹窗，或某路径泄漏出的额外页。
+        logger.info("[multi-page] Extra page (not framework-managed): ctx=#{} pages={} url={} aboutBlank={}",
+                System.identityHashCode(context), event.pageCount, event.url, event.aboutBlank);
+        if (event.pageCount > 1) {
+            logger.warn("[multi-page] Context=#{} now holds {} pages (expected 1 managed): {}"
+                            + " ([managed]=框架登记的当前受管页；[extra]=非登记页：业务 window.open 弹窗 / 测试直接 newPage / 泄漏)",
+                    System.identityHashCode(context), event.pageCount,
+                    describeContextPages(context, newPage));
+        }
+    }
+
+    /** 安全读取 Context 内页数（Context 已关闭/失效时返回 0，不抛异常）。 */
+    private static int countPagesSafely(BrowserContext context) {
+        try {
+            List<Page> pages = context.pages();
+            return pages == null ? 0 : pages.size();
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger, "pages() unavailable while logging new page: {}", e.toString());
+            return 0;
+        }
+    }
+
+    /** 安全读取 Page 的 URL（页面/连接已失效时返回占位符，不抛异常）。 */
+    private static String urlSafely(Page page) {
+        try {
+            return page.url();
+        } catch (Exception e) {
+            return "<unavailable>";
+        }
+    }
+
+    /** 是否为「尚未导航」的初始地址（框架受管页在首次 {@code navigate()} 前的正常状态）。 */
+    private static boolean isAboutBlank(String url) {
+        return url == null || url.isEmpty() || "about:blank".equals(url);
+    }
+
+    /**
+     * 渲染 Context 内所有页面的归属清单（{@code [managed]} / {@code [extra]}，本次新出现的页标 {@code (new)}），
+     * 用于「同 Context 多页」告警时现场判定是合法弹窗还是泄漏页。
+     *
+     * <p>归属判据：与 {@link PlaywrightManager#currentPageForThread()}（框架本线程受管页）或
+     * 用例级 {@code PAGE_KEY}（{@code createNewContextAndPage} 路径）同一实例者为 {@code [managed]}，
+     * 其余为 {@code [extra]}（业务弹窗 / 测试直接 {@code context.newPage()} / 泄漏页）。</p>
+     *
+     * @param context  目标 Context
+     * @param appeared 本次 onPage 回调对应的新页（标 {@code (new)}）
+     * @return 可读清单；{@code pages()} 不可用时返回降级说明（不抛异常）
+     */
+    private static String describeContextPages(BrowserContext context, Page appeared) {
+        StringBuilder sb = new StringBuilder();
+        Page managed = PlaywrightManager.currentPageForThread();
+        Page registered = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
+        try {
+            for (Page p : context.pages()) {
+                if (sb.length() > 0) {
+                    sb.append(" || ");
+                }
+                sb.append((p == managed || p == registered) ? "[managed] " : "[extra] ");
+                sb.append(p == appeared ? "(new) " : "");
+                sb.append(p.isClosed() ? "(closed) " : "");
+                sb.append(urlSafely(p));
+            }
+        } catch (Exception e) {
+            sb.append("<pages() unavailable: ").append(e.getClass().getSimpleName()).append('>');
+        }
+        return sb.toString();
     }
 
     /**

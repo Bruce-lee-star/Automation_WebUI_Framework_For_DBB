@@ -170,6 +170,35 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
     }
 
     /**
+     * 关闭<b>本线程</b>当前持有的 Browser（{@code "<threadId>:<configId>"} 键）并从状态根移除。
+     *
+     * <p>仅作用于当前线程的 Browser，不触碰并发邻居线程；经 {@link #closeBrowserInstance} 收口关闭，
+     * 使 {@code onDisconnected} 识别为预期关闭。保留同键 Playwright 实例以便下一场景廉价重建 Browser。</p>
+     *
+     * @return 实际关闭的 Browser 数（当前线程无存活 Browser 时为 0）
+     */
+    public int closeBrowserForCurrentThread() {
+        String configId = PlaywrightManager.getCurrentConfigId();
+        if (configId == null) {
+            return 0;
+        }
+        String key = PlaywrightRuntime.instance().browserRegistry.keyFor(configId);
+        Browser browser = PlaywrightRuntime.instance().state.getBrowser(key);
+        if (browser != null && browser.isConnected()) {
+            try {
+                closeBrowserInstance(browser);
+            } catch (Exception e) {
+                logger.warn("[closeBrowserForCurrentThread] Error closing browser: {}", e.getMessage());
+            }
+            PlaywrightRuntime.instance().state.removeBrowser(key);
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "[closeBrowserForCurrentThread] closed browser for key={}", key);
+            return 1;
+        }
+        return 0;
+    }
+
+    /**
      * 兜底回收：关闭<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（headed 模式即 OS 窗口）。
      *
      * <p><b>要解决的问题（窗口堆积）</b>：收尾链路 {@code cleanupForScenario}/{@code cleanupForFeature}

@@ -78,18 +78,8 @@ public final class PageRegistryImpl implements PageRegistry {
             }
             if (current == null || current.isClosed()) {
                 BrowserContext context = PlaywrightManager.getContext();
-                Page beforeKey = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
-                Page beforeThread = CURRENT_PAGE_BY_THREAD.get();
                 current = createPage(context);
                 TestContextHolder.get().set(PlaywrightManager.PAGE_KEY, current);
-                //  诊断（PAGE 唯一性，debug）：同一 Context 内出现第二个 Page 会让 PAGE 级路由规则的
-                //  对象同一性筛选失败（规则绑 P_a、请求来自 P_b → 判定不适用 → 放行真实请求）。
-                VerboseLogging.logDebugIfVerbose(logger,
-                        "[PageRegistry] created new Page: page=#{} ctx=#{} (PAGE_KEY={}, threadPage={}, closedKey={}, closedThread={})",
-                        System.identityHashCode(current), System.identityHashCode(context),
-                        beforeKey == null ? "null" : "#" + System.identityHashCode(beforeKey),
-                        beforeThread == null ? "null" : "#" + System.identityHashCode(beforeThread),
-                        beforeKey != null && beforeKey.isClosed(), beforeThread != null && beforeThread.isClosed());
             }
             CURRENT_PAGE_BY_THREAD.set(current);
             return current;

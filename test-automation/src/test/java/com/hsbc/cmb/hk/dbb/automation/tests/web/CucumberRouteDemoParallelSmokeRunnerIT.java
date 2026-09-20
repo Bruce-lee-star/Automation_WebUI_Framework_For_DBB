@@ -20,6 +20,11 @@ import org.junit.platform.suite.api.Suite;
  *   "-Dcve.gate.skip=true" "-Dcheckstyle.skip=true" "-Dspotbugs.skip=true"
  * </pre>
  *
+ * <p><b>浏览器关闭时机（零配置默认行为）</b>：框架自 WEB-F1 起，Browser 跟随 Context 边界，
+ * 每个 scenario 收尾即关闭本线程 Browser（下一 scenario 首次 {@code getBrowser()} 懒重建），
+ * 不再保留到套件级 {@code cleanupAll()} 才统一关闭——避免 headed 长跑时浏览器窗口堆积。
+ * 无需任何开关；自定义并发执行器（SSO 分区）模式自动跳过此关闭。</p>
+ *
  * <p>本运行器仅匹配 {@code @route-parallel-smoke} 标签，复用 {@code RouteDemoServiceGlue}
  * 的 monitor / mock 步骤（均只读后端 / 拦截式 MOCK，per-Context 隔离），不写后端数据，
  * 故可安全并发，作为 nightly/CI 梯度压测（4→8→16）的本地代理验证，绕过内网限制。</p>

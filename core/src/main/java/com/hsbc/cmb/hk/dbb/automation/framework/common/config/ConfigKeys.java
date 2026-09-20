@@ -540,6 +540,7 @@ public enum ConfigKeys {
         "false",
         "同一 feature 内复用同一 Context/Page（默认关；开启=1 窗口/feature，需场景间无状态依赖）"
     ),
+
     WEB_SERENITY_RERUN_FAILURES_WAIT_TIME(
         "serenity.rerun.failures.wait.time",
         "1000",

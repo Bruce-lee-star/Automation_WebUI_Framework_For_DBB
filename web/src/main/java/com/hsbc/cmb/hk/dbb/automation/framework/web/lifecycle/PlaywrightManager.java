@@ -454,6 +454,19 @@ public class PlaywrightManager {
         return PlaywrightRuntime.instance().browserCleanup.closeOrphanContextsForCurrentThread();
     }
 
+    /**
+     * 关闭<b>本线程</b>当前持有的 Browser（{@code <threadId>:<configId>} 键）并从状态根移除。
+     *
+     * <p>默认行为：随 scenario 收尾触发（Browser 跟随 Context 边界），下一场景首次 {@code getBrowser()} 懒重建；
+     * 由 {@code PlaywrightSerenityBridge.cleanupForScenario} 经 {@link BrowserCleanup#closeBrowserForCurrentThread} 执行，
+     * 对外行为零回归。当前线程无存活 Browser 时为 no-op。</p>
+     *
+     * @return 实际关闭的 Browser 数
+     */
+    public static int closeBrowserForCurrentThread() {
+        return PlaywrightRuntime.instance().browserCleanup.closeBrowserForCurrentThread();
+    }
+
     // ==================== Serenity BDD 集成方法（委托给 PlaywrightSerenityBridge） ====================
 
     public static void initializeForScenario() {

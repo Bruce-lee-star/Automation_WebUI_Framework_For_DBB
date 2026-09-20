@@ -25,6 +25,18 @@ public interface BrowserCleanup {
     boolean isCurrentBrowserDisconnected();
 
     /**
+     * 关闭<b>本线程</b>当前持有（{@code "<threadId>:<configId>"} 键）的 Browser 并从状态根移除，
+     * 使下一场景/feature 首次 {@code getBrowser()} 懒重建。
+     *
+     * <p>仅作用于当前线程的 Browser，<b>绝不触碰</b>并发邻居线程（G4）；经 {@link #closeBrowserInstance}
+     * 收口关闭（先置 {@code closingBrowsers} 标记，使 {@code onDisconnected} 识别为预期关闭而非崩溃）。
+     * 不关闭同键的 Playwright 实例（保留 Node 驱动进程，下一场景重建 Browser 更廉价）。</p>
+     *
+     * @return 实际关闭的 Browser 数（当前线程无存活 Browser 时为 0）
+     */
+    int closeBrowserForCurrentThread();
+
+    /**
      * 兜底回收<b>本线程</b>所有 Browser 上仍打开的 BrowserContext（headed 模式即 OS 窗口），
      * <b>不依赖</b> {@code TestContextHolder} 中的 {@code CONTEXT_KEY}。
      *

@@ -18,7 +18,10 @@ $MAP = @(
   @('Serenity', 'serenity.version'),
   @('serenity-maven-plugin', 'serenity.version'),
   @('Cucumber', 'cucumber.version'),
-  @('JUnit', 'junit.version'),
+  # 修正：根 pom 从未定义 junit.version（实为 junit.jupiter.version / junit.platform.version），
+  # 原条目使 JUnit 一行被静默跳过（只有 WARNING、不参与校验）。
+  @('JUnit', 'junit.jupiter.version'),
+  @('Platform', 'junit.platform.version'),
   @('Logback', 'logback.version'),
   @('typesafe.config', 'typesafe.config.version'),
   @('Gson', 'gson.version'),

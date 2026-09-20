@@ -895,14 +895,29 @@ public final class SensitiveDataSanitizer {
         if (sep <= 0 || sep >= token.length() - 1) {
             return token;
         }
-        String key = token.substring(0, sep).trim();
-        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
-            key = key.substring(1, key.length() - 1);
-        }
+        String key = stripKeyDecoration(token.substring(0, sep).trim());
         if (isSensitiveBodyKey(key) || isSensitiveHeaderKey(key)) {
             return token.substring(0, sep + 1) + " " + MASK;
         }
         return token;
+    }
+
+    /**
+     * 剥离 key 上的装饰字符（首部 {@code { [ " '} 与尾部 {@code " '}）后再做规范化匹配。
+     *
+     * <p><b>为什么必须有</b>：截断/非法的 JSON 体会降级到文本兜底链，此时键形如
+     * {@code {"password"}（前导 {@code {} 与引号）；若按原文送 {@link #normalizeKey(String)}，
+     * 规范化结果是 {@code {"password"} 而非 {@code password}，匹配不上敏感清单 ——
+     * 「非法 JSON 绝不原样放行」的承诺就被击穿（本类行为基线测试实测抓到该泄漏）。
+     * 剥离装饰后两条链（结构化 / 兜底）判定口径一致。
+     */
+    private static String stripKeyDecoration(String key) {
+        if (key == null) return null;
+        int start = 0;
+        int end = key.length();
+        while (start < end && "{[ \"'".indexOf(key.charAt(start)) >= 0) start++;
+        while (end > start && ("\"'".indexOf(key.charAt(end - 1)) >= 0)) end--;
+        return key.substring(start, end);
     }
 
     /** 单行处理：找到 "敏感词 : = 值" 结构后遮蔽值。 */
@@ -917,11 +932,7 @@ public final class SensitiveDataSanitizer {
             //  修复 R2：无 key=value 结构时仍可能含 Bearer/JWT/URL token，走正则兜底
             return maskFreeTextTokens(line);
         }
-        String key = line.substring(0, sep).trim();
-        // 去掉可能包裹的引号
-        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
-            key = key.substring(1, key.length() - 1);
-        }
+        String key = stripKeyDecoration(line.substring(0, sep).trim());
         if (isSensitiveBodyKey(key)) {
             return line.substring(0, sep + 1) + " " + MASK;
         }

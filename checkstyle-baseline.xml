@@ -1441,7 +1441,7 @@
 <error line="9" column="8" severity="error" message="无用导入 - com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.DelayScheduler 。" source="com.puppycrawl.tools.checkstyle.checks.imports.UnusedImportsCheck"/>
 <error line="41" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>
 </file>
-<file name="route/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/route/core/lifecycle/RouteLifecycleImpl.java">
+<file name="route/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/route/lifecycle/RouteLifecycleImpl.java">
 </file>
 <file name="route/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/route/core/lifecycle/RouteLifecycleOwner.java">
 <error line="18" column="9" severity="error" message="&apos;if&apos; 结构必须使用大括号 &apos;{}&apos;。" source="com.puppycrawl.tools.checkstyle.checks.blocks.NeedBracesCheck"/>

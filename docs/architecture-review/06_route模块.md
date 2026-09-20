@@ -16,8 +16,9 @@
 | `core/engine` | `RouteEngine` 注册 + `Dispatcher` 分发（防重门控、能力选择） |
 | `core/rule` | `RouteRule` / `RuleRepository` / `PriorityPolicy`，pattern 匹配 |
 | `core/capture` | `ApiCaptureManager` / `ApiCaptureLifecycle` / `ApiCaptureStore` 流量采集 |
-| `core/lifecycle` | `RouteLifecycleImpl`，SPI 自注册 |
+| `core/lifecycle` | 引擎生命周期助手（`PerContextEngine` / `EngineState` / `RouteMonitorSession` / `StoppedCapabilityManager` / `RouteLifecycleOwner`） |
 | `core/spi` | 回调倒置契约 |
+| `lifecycle` | `RouteLifecycleImpl`（route 侧 `RouteLifecycle` SPI 适配/编排层，SPI 自注册；非 `core.*` 包——需编排 handler/persistence，故不受 C1「core 不得依赖 handler」约束） |
 | `dsl` | `RouteDsl` 流式 Java DSL（monitor / mock / modify / delay 四个分支） |
 | `handler` | `MockHandler` / `ModifyHandler` / `MonitorHandler` / `DelayHandler` |
 | `monitor` | `ApiMonitorOrchestrator` / `MonitorFailureCollector` |
@@ -30,7 +31,7 @@
 
 ### 2.1 架构纯度（最好的部分）
 
-`route` 模块**完全不依赖 `web`**（全量 grep `framework.web` 零命中），只依赖 `core/common`。`web` 与 `route` 都依赖 `common.route.RouteLifecycle` 接口，`route` 通过 `RouteLifecycleImpl:18-22` 自注册实现 **SPI 依赖倒置**。
+`route` 模块**完全不依赖 `web`**（全量 grep `framework.web` 零命中），只依赖 `core/common`。`web` 与 `route` 都依赖 `common.route.RouteLifecycle` 接口，`route` 通过 `lifecycle/RouteLifecycleImpl`（静态块）自注册实现 **SPI 依赖倒置**（该类位于非 `core.*` 的 `route.lifecycle` 包，属 SPI 适配/编排层）。
 
 **没有循环依赖，方向干净。** 这是依赖倒置原则的教科书级应用——route 需要感知 web 的生命周期，但通过 core 里的接口完成，物理依赖不反向。
 
@@ -343,3 +344,19 @@ P1-9 目标（RT-C3：FileStore 跨场景串扰）本轮收口。原 `FileStoreM
 route 模块在**架构纯度上是最优秀的**：零循环依赖、SPI 倒置干净、持久化实现（连接池/异步/参数化/统一关闭）三点全对、自建 DSL 而非引入 Groovy。
 
 唯一必须立刻修的是 **R-1：监控断言异常被吞**。一个接口监控框架，如果监控失败不影响测试结果，那它就只是一个日志打印机。这个修复是语义级的一行改动（`throw` 代替 `LOGGER.error`），但决定了这个模块是否真的有价值。
+
+---
+
+## 附录 A：2026-09-20 变更（C1 收口 + MySQL 方言 + 门禁提速）
+
+| 项 | 变更 | 说明 |
+|---|---|---|
+| **C1 收口** | `RouteLifecycleImpl` 由 `route.core.lifecycle` → **`route.lifecycle`** | 该类是 route 侧 `RouteLifecycle` **SPI 适配 / 编排层**（需编排 `core`/`handler`/`persistence`/`monitor`/`dsl`），并非「core 引擎逻辑」，不宜受 C1「`core.*` 不得依赖 `handler`」约束。移出后 `drainForSuiteTeardown()` 直接编排 `MonitorHandler` + `FileStoreMonitorCallback`，**不再需要依赖倒置注册表**（其间试用的 `SuiteTeardownHooks` 已移除）。`route.core.lifecycle` 保留的 5 个引擎助手（`PerContextEngine` / `EngineState` / `RouteMonitorSession` / `StoppedCapabilityManager` / `RouteLifecycleOwner`）**仍由 C1 守护**。 |
+| **SPI FQN 同步** | core `RouteLifecycleRegistry` 的 `Class.forName(…)` 字符串更新为 `…route.lifecycle.RouteLifecycleImpl` | core 仍**不编译期依赖** route（字符串引用 + `RouteLifecycleRegistry` 注册），`web ↔ route` 循环依赖依旧被打破。 |
+| **MySQL 开箱可用** | `route/pom.xml` 增加 `org.flywaydb:flyway-mysql:9.22.3` | 修正原注释误区：Flyway 8+ 起 MySQL 支持**已从 flyway-core 拆出**为独立模块——仅 `flyway-core` 时建迁移会抛 `Unsupported Database: MySQL x.y`（`flyway-core` 内置 H2/PostgreSQL/SQLite 等，**唯独 MySQL（及 SQL Server）被拆出**）。 |
+| **架构门禁提速** | `ArchitectureTest` 由「19 个 `@Test` 各自全量 `new ClassFileImporter().importPackages(…)`」改为 **3 个共享 `JavaClasses` 快照复用** | 单类耗时 **729.7s → ~19.5s（约 37×）**；`JavaClasses` 是只读快照，规则语义逐字不变。修此债的直接动因：门禁慢到没人愿意跑，才让 C1 违规悄然进主干。 |
+| **瞬时竞态容错** | `PlaywrightSafeOps.isObjectGone` 增补 `"Cannot find parent object"` 变体；`MAX_ATTEMPTS` 2 → 3 | 高 churn 下浏览器侧 `response@`/`route@` 对象被 GC 的两类措辞（`Object doesn't exist` / `Cannot find parent object request@ … to create route@`）同属瞬时；**仅拓宽瞬时判定**，真实故障仍原样上抛。 |
+| **压测门禁** | `RoutePerformanceStressTest` 改为**显式 opt-in**（默认跳过，`-Droute.perf.enabled=true` 且 demo 服务在线才跑） | 50~100 并发真压测结果只在线性受控环境（专用 CI）才有意义，不应门禁日常护盾（其 Playwright 驱动层竞态/挂起属环境敏感）。 |
+
+**验证**：全护盾 `Tests run: 692, Failures: 0, Errors: 0`、全模块 `BUILD SUCCESS`；`ArchitectureTest` 19/19 通过（C1 在无注册表的更干净设计下依然成立）。
+

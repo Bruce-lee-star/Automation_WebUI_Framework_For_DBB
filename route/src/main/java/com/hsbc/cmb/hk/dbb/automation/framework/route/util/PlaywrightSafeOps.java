@@ -29,11 +29,11 @@ public final class PlaywrightSafeOps {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PlaywrightSafeOps.class);
 
-    /** 最大重试次数（含首次共 2 次）。
+    /** 最大重试次数（含首次共 3 次）。
      *  <p>克制上限：被保护的 {@code page.evaluate} 多为重负载压测脚本（百并发 fetch），重试会重跑整段脚本、
      *  放大连接 churn 与负载；过高重试次数反而可能把浏览器连接拖死（{@code Cannot find command to respond}）。
-     *  2 次足以让随机 churn（gc 时序）错位后恢复，又不致过载。 */
-    private static final int MAX_ATTEMPTS = 2;
+     *  3 次用于容忍高负载下连续两次仍撞上 churn 的情况（实测 2 次偶发不足），仍属克制。 */
+    private static final int MAX_ATTEMPTS = 3;
 
     private PlaywrightSafeOps() {
     }
@@ -57,7 +57,7 @@ public final class PlaywrightSafeOps {
             } catch (PlaywrightException e) {
                 if (isObjectGone(e)) {
                     last = e;
-                    LOGGER.debug("[PlaywrightSafeOps] safeEvaluate attempt {}/{} hit transient 'Object doesn't exist', retrying",
+                    LOGGER.debug("[PlaywrightSafeOps] safeEvaluate attempt {}/{} hit transient object-gone churn, retrying",
                             attempt, MAX_ATTEMPTS);
                     //  无退避：瞬时 churn 为 GC 时序竞争，立即重跑即重新错位时序、通常下一次成功；
                     //  绝不使用 Thread.sleep（企业级约束：禁止阻塞线程），重试本身即提供时序偏移。
@@ -72,9 +72,11 @@ public final class PlaywrightSafeOps {
     /** 判定是否为「对象已失效」类瞬时错误（连接 churn 产物，可重试恢复）。 */
     private static boolean isObjectGone(PlaywrightException e) {
         String msg = e.getMessage();
-        if (msg != null && msg.contains("Object doesn't exist")) {
-            return true;
+        if (msg == null) {
+            return false;
         }
-        return false;
+        // 同一类瞬时 churn 的不同措辞：对象/父子关联在浏览器侧被 GC 后，Playwright 事件分发层解析失效引用时
+        // 会抛 "Object doesn't exist: response@…" 或 "Cannot find parent object request@… to create route@…"。
+        return msg.contains("Object doesn't exist") || msg.contains("Cannot find parent object");
     }
 }

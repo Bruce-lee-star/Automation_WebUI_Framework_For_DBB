@@ -7,6 +7,7 @@ import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaFieldAccess;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.lang.ArchCondition;
@@ -58,15 +59,33 @@ public class ArchitectureTest {
 
     private static final String BASE_PACKAGE = "com.hsbc.cmb.hk.dbb.automation.framework";
 
+    /** 业务/测试代码包（部分规则需覆盖 test-automation 的 target/test-classes）。 */
+    private static final String TESTS_PACKAGE = "com.hsbc.cmb.hk.dbb.automation.tests";
+
+    /**
+     * 共享类导入快照（性能关键）：原实现 19 个 {@code @Test} 各自 {@code new ClassFileImporter()...importPackages(...)}
+     * 全量扫描 classpath，单类约 12 分钟——慢到没人愿意本地跑，架构门禁形同虚设。
+     * 改为按「导入配置」各导入一次、全部规则复用：{@link JavaClasses} 是只读快照，规则语义与逐条导入完全一致，
+     * 仅消除重复扫描（19 次 → 3 次）。
+     */
+    private static final JavaClasses CLASSES_NO_TESTS = new ClassFileImporter()
+            .withImportOption(new ImportOption.DoNotIncludeTests())
+            .importPackages(BASE_PACKAGE);
+
+    private static final JavaClasses CLASSES_NO_TESTS_WITH_TESTS_PKG = new ClassFileImporter()
+            .withImportOption(new ImportOption.DoNotIncludeTests())
+            .importPackages(BASE_PACKAGE, TESTS_PACKAGE);
+
+    private static final JavaClasses CLASSES_WITH_TESTS = new ClassFileImporter()
+            .importPackages(BASE_PACKAGE, TESTS_PACKAGE);
+
     /** L2：地基包 common 不得反向依赖 web。 */
     @Test
     public void commonMustNotDependOnWeb() {
         noClasses()
                 .that().resideInAPackage("..framework.common..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.web..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     @Test
@@ -74,9 +93,7 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.api..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.web..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     @Test
@@ -84,9 +101,7 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.web.page..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.route..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     @Test
@@ -98,9 +113,7 @@ public class ArchitectureTest {
                     .or().resideInAPackage("..framework.route.core.lifecycle..")
                     .or().resideInAPackage("..framework.route.core.spi..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.route.handler..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /** L4：地基包 common 不得反向依赖 api（保持 common 为最底层、零上层依赖）。 */
@@ -109,9 +122,7 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.common..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.api..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /** L5：web.route 不得依赖 web.page（与 L3 共同保证 page 与 route 双向解耦）。 */
@@ -120,9 +131,7 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.route..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.web.page..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /** L6（ROUTE-P1-3）：route 模块不得依赖 web 模块（解除 route→web 越层；
@@ -132,9 +141,7 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.route..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.web..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /** G1：framework 顶层切片（common/api/web/...）之间不得存在循环依赖（通用回归防护）。 */
@@ -142,9 +149,7 @@ public class ArchitectureTest {
     public void frameworkSlicesMustBeFreeOfCycles() {
         slices().matching("..framework.(*)..")
                 .should().beFreeOfCycles()
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /**
@@ -165,9 +170,7 @@ public class ArchitectureTest {
     public void mustNotDependOnPlaywrightImpl() {
         noClasses()
                 .should().dependOnClassesThat().resideInAPackage("..playwright.impl..")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     @Test
@@ -181,9 +184,7 @@ public class ArchitectureTest {
                                 && call.getTarget().getName().startsWith("by");
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     /**
@@ -208,9 +209,7 @@ public class ArchitectureTest {
                         return call.getTarget().getOwner().getName().endsWith("LocatorFactory");
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     /**
@@ -236,9 +235,7 @@ public class ArchitectureTest {
                                         .startsWith("com.hsbc.cmb.hk.dbb.automation.framework.web.page");
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     /**
@@ -259,9 +256,7 @@ public class ArchitectureTest {
                                         item.getFullName() + " extends SerenityBasePage (deleted; extend BasePage instead)")));
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     /**
@@ -283,9 +278,7 @@ public class ArchitectureTest {
                                                 + " (use compositional AbstractManagedPage + ManagedPageAware/SerenityBasePage instead)")));
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     @Test
@@ -294,9 +287,7 @@ public class ArchitectureTest {
                 .that().resideOutsideOfPackage("..framework.web.page..")
                 .should().dependOnClassesThat().haveSimpleName("SerenityRecorder")
                 .orShould().dependOnClassesThat().haveSimpleName("SerenityPageRecorder")
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     /**
@@ -319,9 +310,7 @@ public class ArchitectureTest {
                                 && "setProvider".equals(call.getTarget().getName());
                     }
                 })
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE));
+                .check(CLASSES_NO_TESTS);
     }
 
     /**
@@ -340,9 +329,7 @@ public class ArchitectureTest {
                 .should().dependOnClassesThat(
                         JavaClass.Predicates.resideInAPackage("..framework.web.lifecycle..")
                                 .and(JavaClass.Predicates.simpleNameEndingWith("Impl")))
-                .check(new ClassFileImporter()
-                        .withImportOption(new ImportOption.DoNotIncludeTests())
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_NO_TESTS_WITH_TESTS_PKG);
     }
 
     // ==================== L7：lifecycle 内部面门禁（跨子包封装治理 Phase 1） ====================
@@ -434,8 +421,7 @@ public class ArchitectureTest {
                 })
                 // 刻意不加 DoNotIncludeTests：业务 Page Object / Step 位于 test-automation 的
                 // target/test-classes 下，若沿用 DoNotIncludeTests 会被整片排除，守护将只剩 framework 主代码。
-                .check(new ClassFileImporter()
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_WITH_TESTS);
     }
 
     /**
@@ -461,7 +447,6 @@ public class ArchitectureTest {
                     }
                 })
                 // 同上：必须覆盖 test-classes，否则业务侧违规无法被拦截。
-                .check(new ClassFileImporter()
-                        .importPackages(BASE_PACKAGE, "com.hsbc.cmb.hk.dbb.automation.tests"));
+                .check(CLASSES_WITH_TESTS);
     }
 }

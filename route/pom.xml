@@ -35,11 +35,20 @@
         </dependency>
 
         <!-- ROUTE-P1-N2：Flyway 管理 route_monitor_record schema，DDL 移出 Java。
-             flyway-core 内含 MySQL / PostgreSQL / H2 社区库迁移支持；Oracle/SQLServer 本就不支持
-             （已在 init 前置 fail-fast 拒绝），无需额外模块。Java 17+ 兼容 JDK 21。 -->
+             重要：Flyway 8+ 起部分数据库方言从 flyway-core 拆分为独立模块。实测 flyway-core 内置
+             方言含 H2 / PostgreSQL / SQLite / HSQLDB / Derby 等；而 MySQL（与 SQL Server）已被拆出，
+             必须显式引入 flyway-mysql —— 否则运行时迁移会抛 "Unsupported Database: MySQL x.y"
+             （DatabaseTypeRegister 在 classpath 上找不到 MySQL 的 DatabaseType）。
+             Oracle / SQL Server 社区版无对应模块（属 Teams/Enterprise），由使用方按需提供；
+             init 侧对未知方言已前置 fail-fast 拒绝。方言模块版本须与 flyway-core 严格一致。Java 17+ 兼容 JDK 21。 -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
+            <version>9.22.3</version>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-mysql</artifactId>
             <version>9.22.3</version>
         </dependency>
 

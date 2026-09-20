@@ -1,19 +1,26 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle;
+package com.hsbc.cmb.hk.dbb.automation.framework.route.lifecycle;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
-import com.microsoft.playwright.BrowserContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.FileStoreMonitorCallback;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
+import com.microsoft.playwright.BrowserContext;
 
 /**
  * {@link RouteLifecycle} 的 route 模块实现，在类加载时自注册到 {@link RouteLifecycleRegistry}。
  * 所有方法 1:1 委托给 route 核心类，行为与原 web 直接调用完全一致。
+ *
+ * <p><b>包位置说明（ArchUnit C1）</b>：本类是 route 侧的 <b>SPI 适配 / 编排层</b>，需跨域编排
+ * {@code core}（capture/engine/rule）、{@code handler}、{@code persistence}、{@code monitor}、{@code dsl}
+ * 等多个子域——本质不是"core 引擎逻辑"。故刻意置于非 {@code route.core.*} 包，使其可合法直接编排
+ * handler 收尾，无需额外反转注册表；{@code route.core.*} 仍由 C1 规则守护"不得依赖 handler"。
  */
 public class RouteLifecycleImpl implements RouteLifecycle {
 
@@ -70,10 +77,10 @@ public class RouteLifecycleImpl implements RouteLifecycle {
 
     @Override
     public void drainForSuiteTeardown() {
-        //  套件收尾：取消在途观测/body 读并清队列 + 文件 sink 落盘（不关线程池，JVM 收尾再关）
-        com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler.drainForSuiteTeardown();
-        com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.FileStoreMonitorCallback
-                .flushForSuiteTeardown();
+        //  套件收尾：取消在途观测/body 读并清队列 + 文件 sink 落盘（不关线程池，JVM 收尾再关）。
+        //  本类为 route 侧编排层（非 core 包），可合法编排 handler / persistence 收尾。
+        MonitorHandler.drainForSuiteTeardown();
+        FileStoreMonitorCallback.flushForSuiteTeardown();
     }
 
     @Override

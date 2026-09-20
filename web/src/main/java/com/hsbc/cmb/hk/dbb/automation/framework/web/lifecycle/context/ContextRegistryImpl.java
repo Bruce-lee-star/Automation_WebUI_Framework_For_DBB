@@ -231,15 +231,7 @@ public final class ContextRegistryImpl implements ContextRegistry {
             // 并补上此前遗漏的 CustomOptionsManager 全量清理（调用 closeContext 即视为场景结束）。
             // 注：BasePage 的静态 ThreadLocal 清理（clearAllThreadLocals）已在架构整改中移除——
             // 该静态引用本就是死状态，iframe/shadow 上下文已改为每实例独立持有（见 BasePage.currentFrame/currentShadow）。
-            PlaywrightRuntime.instance().browserCleanup.safeClean("TestServices.clear", () -> {
-                try {
-                    com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices.clear();
-                } catch (Throwable e) {
-                    // API 模块不一定被 classloader 看到（仅 UI 框架独立运行时）→ 预期降级，但不得静默（D7-3）
-                    logger.debug("[ContextRegistry] TestServices.clear skipped (api module not visible): {}",
-                            e.toString());
-                }
-            });
+            PlaywrightRuntime.instance().browserCleanup.safeClean("TestServices.clear", ContextRegistryImpl::clearApiTestServices);
             PlaywrightRuntime.instance().browserCleanup.safeClean("CustomOptionsManager.removeAllThreadLocals", CustomOptionsManager::removeAllThreadLocals);
         });
     }
@@ -255,6 +247,22 @@ public final class ContextRegistryImpl implements ContextRegistry {
     public boolean hasContext() {
         BrowserContext context = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
         return context != null && context.browser() != null && context.browser().isConnected();
+    }
+
+    /**
+     * ARCH-1（2026-09-20）：反射调用 api 模块的 {@code TestServices.clear()}，清除 API 侧 per-thread 状态。
+     * <p>采用反射（而非编译期引用）是为了让 web 在<b>不依赖 api 模块</b>的前提下仍能在 api 在场时联动清理：
+     * 纯 UI 框架独立运行（api 未加载）时 {@code ClassNotFound} → 降级跳过，与原"API 模块不一定被 classloader 看到"语义一致。
+     */
+    private static void clearApiTestServices() {
+        try {
+            Class.forName("com.hsbc.cmb.hk.dbb.automation.framework.api.core.services.TestServices")
+                    .getMethod("clear")
+                    .invoke(null);
+        } catch (Throwable e) {
+            // api 模块未加载：预期降级，不静默（仍记 debug 便于排查）
+            logger.debug("[ContextRegistry] TestServices.clear skipped (api module not visible): {}", e.toString());
+        }
     }
 
     /**

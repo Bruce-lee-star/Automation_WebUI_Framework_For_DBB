@@ -114,8 +114,8 @@ public class ApiMonitoringRepositoryConcurrencyTest {
 
         // 把上限压到批量阈值（50）之下 → 「超限」必然发生在按量刷库被提交之前，
         // 丢弃不再取决于「16 个生产者 vs 单线程刷库器」的调度竞速（该竞速曾使本用例偶发失败）。
-        ApiMonitoringRepository.overridePendingHardCapForTest(16);
-
+        int prevCap = ApiMonitoringRepository.overridePendingHardCapForTest(16);
+        try {
         int flushed = runConcurrentSaves(threadCount, perThread, total);
 
         long loss = MonitorDataLossReporter.instance().lossByCategory()
@@ -127,6 +127,9 @@ public class ApiMonitoringRepositoryConcurrencyTest {
 
         long rows = countRows();
         assertEquals(flushed, rows, "H2 行数应等于实际落库数");
+        } finally {
+            ApiMonitoringRepository.restorePendingHardCapForTest(prevCap);
+        }
     }
 
     /**
@@ -195,7 +198,8 @@ public class ApiMonitoringRepositoryConcurrencyTest {
     public void backpressureDropsOldestAndRecordsExactLoss() throws Exception {
         final int cap = 8;
         final int total = 100;
-        ApiMonitoringRepository.overridePendingHardCapForTest(cap);
+        int prevCap = ApiMonitoringRepository.overridePendingHardCapForTest(cap);
+        try {
 
         for (int idx = 0; idx < total; idx++) {
             ApiMonitoringRepository.save(record(idx));
@@ -216,6 +220,9 @@ public class ApiMonitoringRepositoryConcurrencyTest {
             int idx = Integer.parseInt(url.substring(url.lastIndexOf('/') + 1));
             assertTrue(idx >= total - cap,
                     "存活记录必须是最后 " + cap + " 条（丢弃最旧语义），实际存活 index=" + idx);
+        }
+        } finally {
+            ApiMonitoringRepository.restorePendingHardCapForTest(prevCap);
         }
     }
 

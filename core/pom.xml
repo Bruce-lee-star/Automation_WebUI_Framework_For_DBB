@@ -31,6 +31,13 @@
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
         </dependency>
+        <!-- ARCH-1（2026-09-20）：core 新增 common.utils.JsonUtils，依赖 jackson-core 的
+             {@code com.fasterxml.jackson.core.type.TypeRef}；jackson-databind 的传递 jackson-core
+             未稳定进入本模块编译路径，故显式声明（版本由根 dependencyManagement 钉 ${jackson.version}）。 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+        </dependency>
 
     </dependencies>
 

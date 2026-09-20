@@ -98,6 +98,12 @@ public final class ApiMonitoringRepository {
         return previous;
     }
 
+    /** RT-SEAM（2026-09-20）：与 {@link #overridePendingHardCapForTest(int)} 配对，将背压上限
+     *  复位为调用前的值，避免白盒测试缝污染同 JVM 内的其它用例。测试须以 try/finally 调用。 */
+    static void restorePendingHardCapForTest(int previous) {
+        pendingHardCap = previous;
+    }
+
     private static volatile HikariDataSource dataSource;
     private static volatile boolean initialized = false;
     private static volatile boolean initFailed = false;

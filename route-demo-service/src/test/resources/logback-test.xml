@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- 仅用于 route-demo-service 集成测试：覆盖 framework-core 自带的 logback.xml，
-     避免 Spring Boot 日志初始化与框架日志配置冲突（Logback configuration error）。 -->
+     避免 Spring Boot 日志初始化与框架日志配置冲突（Logback configuration error）。
+     D2-4 / SEC-PRINT 一致性（2026-09-20）：注册 SanitizingMessageConverter / SanitizingThrowableConverter，
+     使 %msg / %ex 出口强制脱敏（与 test-automation 的 logback-test.xml 对齐），避免 demo 服务打印凭据明文出域。 -->
 <configuration>
+    <!-- D2-4：接管 msg 转换词 —— 所有 %msg / %m 输出前统一脱敏（出口强制）。 -->
+    <conversionRule conversionWord="msg"
+                    converterClass="com.hsbc.cmb.hk.dbb.automation.framework.common.logging.SanitizingMessageConverter"/>
+
+    <!-- D2-4：接管 ex 转换词 —— 异常栈（%ex）写出前统一脱敏；脱敏失败输出 [LOG SUPPRESSED] 而非原文。 -->
+    <conversionRule conversionWord="ex"
+                    converterClass="com.hsbc.cmb.hk.dbb.automation.framework.common.logging.SanitizingThrowableConverter"/>
+
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>

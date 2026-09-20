@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.handler;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestrator;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.AssertionFailureDetail;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCall;
@@ -544,14 +545,14 @@ public class MonitorHandler {
                     () -> observeAndRecord(route, rule, observationContext, observationTicket,
                             bodyFuture, observationWaitMs));
         } catch (RejectedExecutionException rex) {
-            observationTicket.cancel(false);
-            bodyFuture.complete(null);
-            // 队列饱和（极端负载）：拒绝即放行（幂等），绝不反压事件线程、也不让请求永久挂起
+            //  RT-OBS 修复（2026-09-20）：队列饱和拒绝观测任务时，绝不能让其中「应判红」的监控断言被静默丢弃
+            //    （fail-open 假绿）。拒绝即放行（幂等）仍须保留 —— 绝不反压事件线程、也不让请求永久挂起；
+            //    但被拒观测的失败判定由 onObservationRejected 以 signalFailFast 收口（类比 recordUnavailable），
+            //    并登记「队列饱和丢弃」数据损失供汇总报告红色提示，使监控断言失败仍能正确判红。
+            onObservationRejected(route, rule, observationTicket, bodyFuture);
             if (resumed.compareAndSet(false, true)) {
                 RouteUtil.safeResume(route);
             }
-            LOGGER.error("[MonitorHandler] Observation queue saturated, resuming & skipping for pattern='{}': {}",
-                    rule.getUrlPattern(), rex.getMessage());
         }
     }
 
@@ -583,6 +584,37 @@ public class MonitorHandler {
         } finally {
             ticket.complete(null);
         }
+    }
+
+    /**
+     * 观测任务被观测执行器拒绝（队列饱和）时的 fail-closed 补偿 —— RT-OBS 修复（2026-09-20）。
+     *
+     * <p><b>背景</b>：{@link #handle} 把「waitForResponse + body 读 + 同步断言」提交到 {@code observationExecutor}
+     * （有界队列 + {@code AbortPolicy}）；队列满时 {@code AbortPolicy} 直接拒任务。该任务内含「应判红」的监控断言，
+     * 若被拒即整体丢弃，则监控断言永不执行 → 用例假绿（fail-open）。</p>
+     *
+     * <p><b>补偿语义（与 {@code recordUnavailable} 对齐，遵循 ROUTE-P0-1「宁可错报不可漏测」）</b>：
+     * 拒绝即放行（请求不挂起、不反压事件线程）由调用方 {@link #handle} 负责；本方法仅保证被拒观测
+     * 「不再静默丢弃」——置失败标志（{@link ApiCaptureContext#signalFailFast}）使该 API 必产生失败信号，
+     * 并登记「队列饱和丢弃」数据损失，于汇总报告红色提示（与「响应未捕获」区分）。</p>
+     *
+     * @param route      当前路由（用于定位 per-context 捕获上下文）
+     * @param rule       命中的监控规则（用于日志）
+     * @param ticket     在途观测票据（取消以移出 per-context 在途表）
+     * @param bodyFuture 即时读体 future（置 null，使其结果被忽略）
+     */
+    private static void onObservationRejected(Route route, RouteRule rule,
+                                              CompletableFuture<Void> ticket, CompletableFuture<?> bodyFuture) {
+        ticket.cancel(false);
+        bodyFuture.complete(null);
+        ApiCaptureContext droppedCtx = RouteUtil.captureContext(route);
+        if (droppedCtx != null) {
+            droppedCtx.signalFailFast();
+        }
+        MonitorDataLossReporter.instance().recordLoss("monitor_observation_dropped_queue_saturated", 1);
+        LOGGER.error("[MonitorHandler] Observation queue SATURATED, observation DROPPED for pattern='{}' "
+                + "→ signalFailFast + data-loss recorded (fail-closed, not silently skipped)",
+                rule.getUrlPattern());
     }
 
     /** 登记一条在途观测任务（与 body 读取共用同一 per-context 在途表，便于 context 关闭时统一取消）。 */

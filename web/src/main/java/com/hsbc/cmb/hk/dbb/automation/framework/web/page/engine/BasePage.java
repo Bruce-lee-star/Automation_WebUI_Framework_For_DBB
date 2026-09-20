@@ -52,6 +52,12 @@ public abstract class BasePage {
     protected volatile Page page;
     protected volatile BrowserContext context;
 
+    /** WEB-F1（2026-09-20）：保护单实例内 page/context 惰性缓存与赋值的原子性。
+     *  默认 {@code THREAD_ISOLATED} 下每线程独立实例，无需此锁；仅 SINGLETON 复用实例
+     *  或未来并行场景共享同一 BasePage 时，保证 {@code resolveManagedPage} / {@code attachManagedPage}
+     *  对 this.page/this.context 的读写原子，消除"无锁惰性缓存"竞态（与 ownerThread 守护互补）。 */
+    private final Object pageStateLock = new Object();
+
     /**
      * 页面上下文状态机（WEB-P1-2 Phase 6 收口）。
      * <p>原散落在 BasePage 的 iframe/shadow 上下文槽、per-context 页面切换锁、ensure 守卫、
@@ -97,8 +103,10 @@ public abstract class BasePage {
         if (managedPage == null) {
             throw new IllegalArgumentException("attachManagedPage: managedPage must not be null");
         }
-        this.page = managedPage;
-        this.context = managedPage.context();
+        synchronized (pageStateLock) {
+            this.page = managedPage;
+            this.context = managedPage.context();
+        }
     }
 
     /** 受管（装饰）页的惰性来源：非 null 时，页面在首次真正使用时才被解析/创建。 */
@@ -116,7 +124,9 @@ public abstract class BasePage {
      * 仍走原始供应商 ⇒ 保留 {@code RecordingPageProxy} 装饰与页面切换后的自动指向。
      */
     public void attachManagedPage(Supplier<Page> managedPageSupplier) {
-        this.managedPageSupplier = managedPageSupplier;
+        synchronized (pageStateLock) {
+            this.managedPageSupplier = managedPageSupplier;
+        }
     }
 
     /**
@@ -127,20 +137,22 @@ public abstract class BasePage {
      * <b>注意</b>：{@link #getPageRaw()} 保持纯 getter 语义（不触发解析），供失败路径安全使用。
      */
     Page resolveManagedPage() {
-        Page current = this.page;
-        if (current != null && !current.isClosed()) {
-            return current;
+        synchronized (pageStateLock) {
+            Page current = this.page;
+            if (current != null && !current.isClosed()) {
+                return current;
+            }
+            Supplier<Page> supplier = this.managedPageSupplier;
+            if (supplier == null) {
+                return null;
+            }
+            Page resolved = supplier.get();
+            if (resolved != null) {
+                this.page = resolved;
+                this.context = resolved.context();
+            }
+            return resolved;
         }
-        Supplier<Page> supplier = this.managedPageSupplier;
-        if (supplier == null) {
-            return null;
-        }
-        Page resolved = supplier.get();
-        if (resolved != null) {
-            this.page = resolved;
-            this.context = resolved.context();
-        }
-        return resolved;
     }
 
     /**

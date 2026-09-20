@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
@@ -16,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -661,7 +663,8 @@ public class BrowserStackManager {
         if (url == null)  {return null;} 
         //  修复 R8：统一委托 RouteUtil.sanitizeUrl（含 query 敏感 key 剥离 + 解析失败兜底掩码），
         // 不再维护独立正则，避免与框架其它出域路径的脱敏策略漂移。
-        String masked = RouteLifecycleRegistry.get().sanitizeUrl(url);
+        RouteLifecycle rlc = RouteLifecycleRegistry.get();
+        String masked = (rlc != null) ? rlc.sanitizeUrl(url) : SensitiveDataSanitizer.sanitizeUrl(url);
         //  修复 3-1 + R8：BrowserStack WS URL 特有形态——accessKey 嵌套在 URLEncode JSON 的 caps value 内
         // （如 caps=%7B%22browserstack.accessKey%22%3A%22SECRET%22%7D），RouteUtil 的 query 正则匹配不到。
         // 此兜底仅针对该特有形态，保持公共脱敏类的职责单一。

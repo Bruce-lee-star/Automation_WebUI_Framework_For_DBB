@@ -68,6 +68,22 @@ page_model:
     forbid_brittle_css_on_shell: true # Shell 元素须 @RoleElement(key=)，禁 @Element("#id")/[id=...]
     shell_change_is_shell_only: true  # 改 TopBar/LeftMenu 判定 SHELL 变更，impact_analyze 只标 AppShellPage+导航Step，不波及功能 Scenario
 
+dependency_analysis:
+  # NEW-1（2026-09-20 独立评审）：依赖/影响面分析证据等级约束。
+  # 关键词/文本检索（grep / ripgrep）仅作线索、不得作结论——同词异域包
+  # （framework.route vs framework.common.route）会让 grep 系统性漏边（见 04/08 期）。
+  required_evidence:
+    - "pom.xml <dependencies>"
+    - "编译产物 / ArchUnit 构建期门禁"
+    - "maven 依赖树（-Dverbose）"
+    - "字节码 / 编译期符号解析"
+  forbidden_as_conclusion:
+    - "grep / ripgrep 命中即判定无依赖"
+  impact_analyze_must_use:
+    - "maven 依赖树"
+    - "ArchUnit 规则结果"
+    - "字节码 / 编译期符号解析"
+
 change_discipline:
   classify_required: true     # 任何需求先 requirement_classify
   modify:

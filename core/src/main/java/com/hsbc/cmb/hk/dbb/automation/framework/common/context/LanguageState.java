@@ -1,24 +1,20 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.context;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-
 /**
- * 多语言（NLS）「当前语言」全局/线程级状态收口 —— 从 web 的 {@code NLSUtils} 下沉，
- * 用于解耦 {@code route → web} 依赖（route 的 {@code ApiCaptureContext.resetCurrent()} 需重置语言状态，
- * 不应牵动 web）。
+ * 多语言（NLS）「当前语言」状态收口 —— 从 web 的 {@code NLSUtils} 下沉，解耦 {@code route → web} 依赖。
  *
- * <p>本类<b>只</b>承载语言状态与 {@code reset}，不含 nls 文件加载/绑定（那些是 web/UI 可访问名解析范畴，
- * 仍留在 {@code framework.web.utils.NLSUtils}，后者经本类委托）。二者语义逐字一致，行为零变更。
+ * <p><b>作用域（CORE-LANG 修复，2026-09-20）</b>：语言状态为<b>纯线程级（{@link ThreadLocal}）</b>，
+ * 无进程级全局值。这样并行（多场景多线程）下，各场景/线程的语言状态天然隔离，互不串语言；
+ * 同一线程内最新写入优先生效（与历史单线程行为一致）。{@code reset} 清当前线程。
  *
- * <p><b>双轨 + 全局单调序号</b>：原 {@code NLSUtils} 纯 {@code ThreadLocal} 会在 onResponse 回调线程设置后
- * 主线程读不到；改为「全局 + 线程级覆盖」双轨，并以全局单调序号取较新写入，既保留并发隔离，
- * 又保证跨线程最新设置不被陈旧线程副本遮蔽（详见原 {@code NLSUtils} 注释）。
+ * <p><b>为何不用进程级全局桥</b>：旧实现用 {@code globalLang + 单调序号} 让「异步回调线程设置的语言对主线程可见」，
+ * 但该桥在并行下会被<b>跨场景</b>读取（场景 A 读到场景 B 的语言）→ 串语言。经核查，生产代码并无在异步回调线程
+ * 调 {@code setLanguage} 的路径（{@code route} 仅调 {@link #reset()}）；而跨线程共享可变语言状态本身即与并行
+ * 隔离目标冲突。故改为线程级隔离。同一线程串行多场景时，由每场景的业务步骤重新 {@link #setLanguage} 或
+ * {@link #reset()} 保证不串（与旧实现一致）。
  *
  * @apiNote 框架内部使用；业务代码不应直接依赖。
  */
@@ -26,18 +22,8 @@ public final class LanguageState {
 
     private static final Logger log = LoggerFactory.getLogger(LanguageState.class);
 
-    /** 当前语言 — 进程级全局值（带写入序号）。 */
-    private static final AtomicReference<LangValue> globalLang = new AtomicReference<>();
-
-    /** 线程级语言覆盖（并发多场景隔离），走 {@link TestContextHolder}（per-thread 等价）。 */
-    private static final ContextKey<LangValue> LANG_OVERRIDE_KEY =
-            ContextKey.of("nls.langOverride", LangValue.class);
-
-    /** 全局单调写入序号：判定「哪个写入更新」。 */
-    private static final AtomicLong LANG_WRITE_SEQ = new AtomicLong();
-
-    /** 带写入序号的语言值。 */
-    private record LangValue(String lang, long seq) {}
+    /** 当前语言 — 纯线程级，无进程级全局值（CORE-LANG 修复）。 */
+    private static final ThreadLocal<String> LANG = new ThreadLocal<>();
 
     private LanguageState() {
     }
@@ -49,45 +35,26 @@ public final class LanguageState {
      */
     public static void setLanguage(String lang) {
         if (lang == null) {
-            // 传入 null 等价于清除：同样写入「空值标记」使其它线程的副本失效
-            TestContextHolder.get().remove(LANG_OVERRIDE_KEY);
-            globalLang.set(clearedMarker());
+            LANG.remove();
         } else {
-            //  同时写入全局值与当前线程副本，且两者共享同一个序号：
-            //   单线程场景行为不变；跨线程场景（Monitor 回调线程设置、主线程读取）
-            //   由 getLanguage() 的「序号取新」判定保证可见。
-            LangValue v = new LangValue(lang, LANG_WRITE_SEQ.incrementAndGet());
-            globalLang.set(v);
-            TestContextHolder.get().set(LANG_OVERRIDE_KEY, v);
+            LANG.set(lang);
         }
         log.info("[NLS] language switched to: {}", lang);
     }
 
     /**
-     * 取当前语言（取「写入更新的那个」，而非无条件优先线程副本，避免陈旧副本遮蔽跨线程新值）。
+     * 取当前语言（仅读当前线程，无跨线程/跨用例泄漏）。
      *
      * @return 当前语言标识；未设置返回 {@code null}
      */
     public static String getLanguage() {
-        LangValue override = TestContextHolder.get().get(LANG_OVERRIDE_KEY);
-        LangValue global = globalLang.get();
-        if (override == null)  {return global == null ? null : global.lang;} 
-        if (global == null)  {return override.lang;} 
-        return global.seq() >= override.seq() ? global.lang() : override.lang();
+        return LANG.get();
     }
 
     /**
-     * 清理语言状态，避免污染后续用例。
-     * <p>同时清线程副本与全局值（仅清线程副本不够：全局值会继续被其它线程读到）。
-     * 全局侧写入「空值标记」并占用更新的序号，使任何线程残留的陈旧副本均因序号更旧而失效。
+     * 清理语言状态，避免污染后续用例。仅清当前线程。
      */
     public static void reset() {
-        TestContextHolder.get().remove(LANG_OVERRIDE_KEY);
-        globalLang.set(clearedMarker());
-    }
-
-    /** 构造「较新序号的空值标记」：用于清除/重置场景，使其它线程的陈旧线程副本因序号更旧而被忽略。 */
-    private static LangValue clearedMarker() {
-        return new LangValue(null, LANG_WRITE_SEQ.incrementAndGet());
+        LANG.remove();
     }
 }

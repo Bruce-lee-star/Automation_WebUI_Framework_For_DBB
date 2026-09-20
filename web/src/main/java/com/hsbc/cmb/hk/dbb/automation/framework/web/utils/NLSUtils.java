@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.utils;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.JsonUtils;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.utils.JsonUtils;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.context.LanguageState;
-import com.jayway.jsonpath.TypeRef;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,8 +70,8 @@ public final class NLSUtils {
     private static final Map<String, Map<String, Map<String, String>>> CACHE =
             new ConcurrentHashMap<>();
 
-    private static final TypeRef<Map<String, Map<String, String>>> LANG_TABLE_TYPE =
-            new TypeRef<Map<String, Map<String, String>>>() {};
+    private static final TypeReference<Map<String, Map<String, String>>> LANG_TABLE_TYPE =
+            new TypeReference<Map<String, Map<String, String>>>() {};
 
     private NLSUtils() {
     }

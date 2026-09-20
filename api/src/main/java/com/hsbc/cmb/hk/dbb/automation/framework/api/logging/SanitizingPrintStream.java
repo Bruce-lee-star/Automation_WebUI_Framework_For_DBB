@@ -17,7 +17,9 @@ import java.nio.charset.StandardCharsets;
  * <p>用法（AbstractRestJob）：{@code RestAssured.config = RestAssured.config().logConfig(
  * new LogConfig(new SanitizingPrintStream(System.out), true));}
  *
- * <p>健壮性：脱敏异常不丢日志（回退原文），与 {@code SanitizingMessageConverter} 一致。
+ * <p>健壮性（SEC-PRINT 修复，2026-09-20）：脱敏异常时<b>不回退原文</b>，输出占位符
+ * {@code [SUPPRESSED]}，与 {@code SanitizingMessageConverter} 的 fail-closed 策略一致——
+ * 宁可丢失该条 REST 流量日志细节，也不让明文凭据经 {@code log().all()} 出域。
  */
 public class SanitizingPrintStream extends java.io.PrintStream {
 
@@ -63,7 +65,8 @@ public class SanitizingPrintStream extends java.io.PrintStream {
         try {
             return SensitiveDataSanitizer.sanitizeFreeText(s);
         } catch (Exception e) {
-            return s;
+            // SEC-PRINT（fail-closed）：脱敏失败即抑制，绝不回退明文（回退原文 = 明文凭据出域）
+            return "[SUPPRESSED]";
         }
     }
 

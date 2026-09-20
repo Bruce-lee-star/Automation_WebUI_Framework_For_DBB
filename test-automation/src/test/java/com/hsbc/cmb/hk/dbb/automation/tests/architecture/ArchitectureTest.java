@@ -53,6 +53,9 @@ import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.sli
  *       {@code CustomOptionsManager.CUSTOM_*_KEY}、内部 seam 方法）。
  *       对应 doc16《lifecycle 跨子包封装治理》Phase 1：子包拆分使 {@code package-private} 失效，
  *       这些成员被迫升为 {@code public}，故以 ArchUnit 把「跨子包可见但不对外」固化为构建期门禁。</li>
+ *   <li><b>L-API</b>：{@code framework.web} 不得依赖 {@code framework.api}
+ *       （ARCH-1 已将 {@code JsonUtils} 下沉 {@code common.utils}，web 改依赖 core 版，
+ *       断开 web→api 唯一编译边，使 api 与 web 真正同级）。</li>
  * </ul>
  */
 public class ArchitectureTest {
@@ -93,6 +96,17 @@ public class ArchitectureTest {
         noClasses()
                 .that().resideInAPackage("..framework.api..")
                 .should().dependOnClassesThat().resideInAPackage("..framework.web..")
+                .check(CLASSES_NO_TESTS);
+    }
+
+    /** L-API（ARCH-1，2026-09-20）：web 不得依赖 api —— web 仅经 core 的
+     *  {@code common.utils.JsonUtils} 满足 JSON 需求，断开 web→api 的唯一编译边，
+     *  使 api 与 web 真正同级（都只依赖 core）。与 L1（api↛web）对称。 */
+    @Test
+    public void webMustNotDependOnApi() {
+        noClasses()
+                .that().resideInAPackage("..framework.web..")
+                .should().dependOnClassesThat().resideInAPackage("..framework.api..")
                 .check(CLASSES_NO_TESTS);
     }
 

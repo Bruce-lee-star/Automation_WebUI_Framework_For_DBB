@@ -266,8 +266,14 @@ public final class RolePickerCommandEngine {
             // 【关键修复"重新扫描后旧序号残留"】overwriteNos=true 强制用 Java 侧 pickNos（已被上方
             // setPickNos(null) 清空）覆盖浏览器侧，绕过 __oldNos 保护逻辑（该逻辑会保留浏览器侧
             // 旧 pickNos，如果 start() 注入失败则旧序号不被清除，导致"重新扫描后点加号序号不重置"）。
-            if (!page.isClosed() && !javaPickBySig.isEmpty()) {
-                syncPanelToBrowser(page, null, javaPickBySig, true);
+            if (!page.isClosed()) {
+                boolean hasPicks;
+                synchronized (javaPickBySig) {
+                    hasPicks = !javaPickBySig.isEmpty();
+                }
+                if (hasPicks) {
+                    syncPanelToBrowser(page, null, javaPickBySig, true);
+                }
             }
         } catch (Exception syncE) {
             log.warn("[picker][scan] failed to sync iframe elements to the panel after scan: {}", syncE.getMessage());
@@ -483,12 +489,11 @@ public final class RolePickerCommandEngine {
         try { snap = readPickSnapshot(page); } catch (Exception ignore) {}
         if (snap == null) snap = new PickSnapshot("", new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         // 状态外置：优先用 Java 侧内存态（javaPickBySig）覆盖（对导航/关闭导致的浏览器端状态清空免疫）。
-        if (!javaPickBySig.isEmpty()) {
-            List<RoleEntry> snapshotEntries;
-            synchronized (javaPickBySig) {
-                snapshotEntries = new ArrayList<>(javaPickBySig.values());
+        synchronized (javaPickBySig) {
+            if (!javaPickBySig.isEmpty()) {
+                List<RoleEntry> snapshotEntries = new ArrayList<>(javaPickBySig.values());
+                snap = new PickSnapshot(snap.pageClass, snapshotEntries, snap.steps, snap.ops);
             }
-            snap = new PickSnapshot(snap.pageClass, snapshotEntries, snap.steps, snap.ops);
         }
         // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);
@@ -529,14 +534,13 @@ public final class RolePickerCommandEngine {
         //   - 删部分时 javaPickBySig 含剩余元素 → snap.steps 置空 → snapWithAutoStep 按剩余元素序号重新拆 step，
         //     step 数量与括号序号随删除实时变化。
         // 注：手动模式主流程按点击序号拆 step，删除后重拆符合预期；若用户曾手动"封装为步骤"分组，删除后分组会被重置为按序号。
-        if (!javaPickBySig.isEmpty()) {
-            List<RoleEntry> snapshotEntries;
-            synchronized (javaPickBySig) {
-                snapshotEntries = new ArrayList<>(javaPickBySig.values());
+        synchronized (javaPickBySig) {
+            if (!javaPickBySig.isEmpty()) {
+                List<RoleEntry> snapshotEntries = new ArrayList<>(javaPickBySig.values());
+                snap = new PickSnapshot(snap.pageClass, snapshotEntries, new ArrayList<>(), snap.ops);
+            } else {
+                snap = new PickSnapshot(snap.pageClass, new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
             }
-            snap = new PickSnapshot(snap.pageClass, snapshotEntries, new ArrayList<>(), snap.ops);
-        } else {
-            snap = new PickSnapshot(snap.pageClass, new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         }
         // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);
@@ -629,7 +633,9 @@ public final class RolePickerCommandEngine {
                 if (!fEntries.isEmpty()) {
                     PickSnapshot fb = new PickSnapshot(snap == null ? "" : snap.pageClass, fEntries, fSteps, fOps);
                     // 内存态(javaPickBySig)优先；仅当内存态也为空时才用跨 frame 浏览器兜底态。
-                    snap = (!javaPickBySig.isEmpty()) ? snap : fb;
+                    boolean javaEmpty;
+                    synchronized (javaPickBySig) { javaEmpty = javaPickBySig.isEmpty(); }
+                    snap = javaEmpty ? fb : snap;
                 }
             } catch (Exception ff) {
                 log.warn("[picker][stop] cross-frame fallback snapshot read failed @ {} : {}", page.url(), ff.getMessage());
@@ -638,12 +644,11 @@ public final class RolePickerCommandEngine {
         // 状态外置（对齐 page.pause）：优先用 Java 侧内存态（javaPickBySig）作为已拾元素权威来源，
         // O(1) 取回、且对导航/关闭导致的浏览器端状态清空免疫；内存为空（回传桥未触发等异常）时
         // 退回浏览器读快照兜底。steps/ops 仍来自浏览器单次往返（stopAndRead 已合并），保证多页 step 序列正确。
-        if (!javaPickBySig.isEmpty()) {
-            List<RoleEntry> memEntries;
-            synchronized (javaPickBySig) {
-                memEntries = new ArrayList<>(javaPickBySig.values());
+        synchronized (javaPickBySig) {
+            if (!javaPickBySig.isEmpty()) {
+                List<RoleEntry> memEntries = new ArrayList<>(javaPickBySig.values());
+                snap = new PickSnapshot(snap.pageClass, memEntries, snap.steps, snap.ops);
             }
-            snap = new PickSnapshot(snap.pageClass, memEntries, snap.steps, snap.ops);
         }
         // manual-mode (not packaged) fallback: start->stop whole session = one step.
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);

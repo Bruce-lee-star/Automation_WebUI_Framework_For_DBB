@@ -47,9 +47,20 @@ final class FreeTextScanner {
     private static final Pattern FREE_TEXT_AUTH_SCHEME =
             Pattern.compile("(?i)(\\b(?:Bearer|Basic|Digest|APIKey|Token)\\s+)([A-Za-z0-9._~+/-]+=*)");
 
-    /** 修复 R2：独立 JWT（三段式 base64url，header.payload.signature）。 */
+    /**
+     * 修复 R2：独立 JWT（三段式 base64url，header.payload.signature）。
+     *
+     * <p><b>评审 F-10 修复</b>：header 段必须以 {@code eyJ} 起头（JWT header 的 base64url 前缀，
+     * 对应明文 JSON 的 <code>{"</code>）。原正则只要求「前两段各 ≥8 字符」，于是异常栈里的包名
+     * （如 {@code automation.framework.common}）被判为 JWT 而遮蔽 —— 破坏栈可读性且无安全收益
+     * （本类 Javadoc 早已说明该风险，但 {@code %msg} 出口经 {@link #sanitizeLogMessage(String)}
+     * 两级都跑时又把风险引了回来）。</p>
+     */
     private static final Pattern FREE_TEXT_JWT =
-            Pattern.compile("(?i)([A-Za-z0-9_=-]{8,}\\.[A-Za-z0-9_=-]{8,}\\.)([A-Za-z0-9_=-]+)");
+            Pattern.compile("(?i)(eyJ[A-Za-z0-9_=-]*\\.[A-Za-z0-9_=-]{8,}\\.)([A-Za-z0-9_=-]+)");
+
+    /** 非空白连续段（用于 Ⓐ 原地保留分隔符的逐词遮蔽）。 */
+    private static final Pattern NON_SPACE_RUN = Pattern.compile("\\S+");
 
     /** 修复 R2：URL 中的 {@code ?token=xxx} 形态凭据。 */
     private static final Pattern FREE_TEXT_URL_CREDENTIAL =
@@ -134,14 +145,18 @@ final class FreeTextScanner {
         if (text == null) {
             return text;
         }
-        String[] tokens = text.split("(\\s+)");
+        //  评审 F-10 修复：原实现 split("(\\s+)") 后一律以单个空格重组 —— 日志的缩进 / tab / 连续空白
+        //  被整体抹平（多行日志与异常栈可读性受损，且无任何安全收益）。改为「按原分隔符原地重建」：
+        //  仅替换命中的 key/value 词，空白分隔符逐字原样保留。
+        Matcher m = NON_SPACE_RUN.matcher(text);
         StringBuilder sb = new StringBuilder(text.length());
-        for (int i = 0; i < tokens.length; i++) {
-            if (i > 0) {
-                sb.append(' ');
-            }
-            sb.append(maskKeyValueToken(tokens[i]));
+        int last = 0;
+        while (m.find()) {
+            sb.append(text, last, m.start());
+            sb.append(maskKeyValueToken(m.group()));
+            last = m.end();
         }
+        sb.append(text, last, text.length());
         return sb.toString();
     }
 

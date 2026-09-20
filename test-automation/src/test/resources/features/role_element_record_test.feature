@@ -1,4 +1,6 @@
-@smoke @web
+@skip @smoke @web
+# 评审 F-04：本 feature 的中文步骤在 test-automation 下「零实现」，默认标签 not @skip 下必然报 errors。
+# 待补齐步骤实现后移除 @skip（拾取器属本地开发工具，CI 环境本就跳过其 start）。
 Feature: RoleElement 拾取器录制验证（端到端录制脚本）
 
   本 feature 不止于“回放录制产物”，而是真正启动框架拾取器（RoleElementPicker.start）

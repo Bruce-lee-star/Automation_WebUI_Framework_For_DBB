@@ -28,25 +28,39 @@ import java.util.regex.Pattern;
  */
 public class RoleElementBinder {
 
+    /** 页面上下文宿主：用于构建 Locator / 取 Page（组合式下为 POJO 内部的委托 BasePage）。 */
     private final BasePage self;
+
+    /** 注解字段的宿主对象：{@link #bind} 的写回目标（组合式下为业务 POJO，传统路径下即 BasePage 自身）。 */
+    private final Object fieldOwner;
+
     private final Class<?> roleFileClass;
 
     /**
-     * 绑定字段宿主即页面宿主（{@code BasePage} 自身持有 @RoleElement 字段的传统路径）。
+     * 传统路径：注解字段宿主与页面宿主都是 {@code BasePage} 自身。
      */
     public RoleElementBinder(BasePage self) {
-        this(self, self.getClass());
+        this(self, self, self.getClass());
     }
 
     /**
-     * G1 组合式路径：字段宿主是业务 POJO（不含 NLS 信息），页面宿主是其内部委托
-     * {@code BasePage}。{@code @RoleFile} 注解声明在 POJO 类上，故需单独传入该类以解析 NLS 文件。
+     * G1 组合式路径：字段宿主是业务 POJO，页面宿主是其内部委托 {@code BasePage}。
      *
-     * @param self          页面上下文宿主（Provider 委托 BasePage），用于构建 Locator / 取 Page
-     * @param roleFileClass 携带类级 {@code @RoleFile} 的字段宿主类（POJO 自身）
+     * <p>{@code @RoleFile} 声明在字段宿主类上，故 NLS 文件经 {@code fieldOwner.getClass()} 解析；
+     * 而字段<b>写回必须落在 {@code fieldOwner} 上</b>（修复评审 F-01：原实现恒写回 {@code self}，
+     * 导致组合式页面对象的 {@code @RoleElement} 字段永不绑定，并在运行期抛
+     * {@code ClassCastException: Cannot cast AbstractManagedPage$1 to <业务Page>}）。</p>
+     *
+     * @param self       页面上下文宿主（Provider 委托 BasePage），用于构建 Locator / 取 Page
+     * @param fieldOwner 持有 {@code @RoleElement} 字段的对象（业务 POJO）
      */
-    public RoleElementBinder(BasePage self, Class<?> roleFileClass) {
+    public RoleElementBinder(BasePage self, Object fieldOwner) {
+        this(self, fieldOwner, fieldOwner.getClass());
+    }
+
+    private RoleElementBinder(BasePage self, Object fieldOwner, Class<?> roleFileClass) {
         this.self = self;
+        this.fieldOwner = fieldOwner;
         this.roleFileClass = roleFileClass;
     }
 
@@ -214,7 +228,9 @@ public class RoleElementBinder {
                 };
             }
 
-            ReflectiveField.set(field, self, new PageElement(supplier, desc, self));
+            // 写回「字段宿主」而非页面宿主：组合式路径下两者不同（POJO vs 委托 BasePage），
+            // 写错宿主会导致字段永不绑定 + ClassCastException（评审 F-01）。
+            ReflectiveField.set(field, fieldOwner, new PageElement(supplier, desc, self));
         } catch (Exception e) {
             // 关键保留原始 cause 便于调试 —— ElementException 应传入原异常
             throw new ElementException("Init RoleElement field failed: " + field.getName(), e);

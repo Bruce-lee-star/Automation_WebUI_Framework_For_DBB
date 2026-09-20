@@ -1,4 +1,8 @@
-@smoke @web
+@skip @smoke @web
+# 评审 F-04：本 feature 的中文步骤在 test-automation 下「零实现」（Grep 全部零命中），
+# 且 Background 路径指向仓库根 src/test/resources（实际文件在 test-automation/src/test/resources），
+# 在默认标签 not @skip 下必然报 errors 而非 failures → 让整个红灯失去可信度。
+# 待补齐步骤实现（或改用 PickerPage 的 classpath 取页方式）+ 修正路径后，移除 @skip。
 Feature: RoleElement 拾取器全场景录制回归验证
 
   本 feature 用「录制生成的 PageObject + Steps 等价物」驱动 scan-test-all.html，

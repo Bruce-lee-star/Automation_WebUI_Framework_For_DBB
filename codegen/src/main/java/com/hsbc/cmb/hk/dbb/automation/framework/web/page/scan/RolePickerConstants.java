@@ -33,10 +33,15 @@ final class RolePickerConstants {
     static final String CMD_DONE = "done";
 
     // ───────────────────────── MODE_* : PickMode → 浏览器侧字符串 ─────────────────────────
+    //  取值必须与面板 JS 的比对字面量严格一致（同一 Java↔JS 契约）：
+    //  panel-core-a.js / picker-core-b2.js 全程比对 'idle' / 'manual' / 'scanPage' / 'scanRegion'。
+    //  修复评审 F-06：原 scan_page / scan_region（下划线）与 JS 的 scanPage / scanRegion（驼峰）错位，
+    //  导致窗口模式判定恒不成立 —— 扫描态按钮禁用/提示失效、focusin 键盘可达拾取入口永久 early-return（静默失效）。
+    //  契约由 RolePickerModeContractTest 以「JS 实读字面量」方式守护。
     static final String MODE_IDLE = "idle";
     static final String MODE_MANUAL = "manual";
-    static final String MODE_SCAN_PAGE = "scan_page";
-    static final String MODE_SCAN_REGION = "scan_region";
+    static final String MODE_SCAN_PAGE = "scanPage";
+    static final String MODE_SCAN_REGION = "scanRegion";
 
     // ───────────────────────── STATE_* : Java↔JS 通信实参键（对应脚本 a.xxx） ─────────────────────────
     static final String STATE_KEY_MODE = "mode";

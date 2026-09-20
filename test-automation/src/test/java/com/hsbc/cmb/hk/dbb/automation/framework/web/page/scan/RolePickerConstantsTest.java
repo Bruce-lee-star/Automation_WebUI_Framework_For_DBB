@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.PickMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -16,12 +15,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class RolePickerConstantsTest {
 
+    /**
+     * {@code MODE_*} 是「浏览器侧模式字符串」（Java 权威下发 {@code window.__roleMode}），取值由面板 JS 的
+     * 比对字面量决定，<b>不是</b> {@link PickMode} 枚举名的小写镜像。
+     *
+     * <p>原断言写死「= 枚举名小写」，等于把评审 F-06 的错位（Java {@code scan_page} vs JS
+     * {@code scanPage}）当成契约固化下来，使「扫描/键盘拾取静默失效」长期保持绿灯。
+     * 现按浏览侧真实契约断言；与 JS 脚本字面量的一致性由 {@link RolePickerModeContractTest} 实读脚本守护。</p>
+     */
     @Test
-    void modeConstants_matchPickModeEnumLowercased() {
-        assertEquals(PickMode.IDLE.name().toLowerCase(), RolePickerConstants.MODE_IDLE);
-        assertEquals(PickMode.MANUAL.name().toLowerCase(), RolePickerConstants.MODE_MANUAL);
-        assertEquals(PickMode.SCAN_PAGE.name().toLowerCase(), RolePickerConstants.MODE_SCAN_PAGE);
-        assertEquals(PickMode.SCAN_REGION.name().toLowerCase(), RolePickerConstants.MODE_SCAN_REGION);
+    void modeConstants_followBrowserSideContractValues() {
+        assertEquals("idle", RolePickerConstants.MODE_IDLE);
+        assertEquals("manual", RolePickerConstants.MODE_MANUAL);
+        assertEquals("scanPage", RolePickerConstants.MODE_SCAN_PAGE);
+        assertEquals("scanRegion", RolePickerConstants.MODE_SCAN_REGION);
     }
 
     @Test

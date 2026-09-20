@@ -50,7 +50,9 @@ public class EntityBuilder {
             }
 
             // Build final entity (copy constructor + auto load headers etc.)
-            Entity builtEntity = new Entity(entity);
+            //  评审 F-03 修复：拷贝构造必须带上显式 env —— 否则其内部的二次配置加载（env=null）
+            //  会把上面按 env 加载的覆盖结果静默抹除，导致 withEnv(...) 落到默认环境。
+            Entity builtEntity = new Entity(entity, env);
             //  headers 可能含 Authorization / 会话 token，日志必须脱敏后再输出
             LOGGER.info("Entity built successfully, headers: {}",
                     ApiLogSanitizer.toLogString(builtEntity.getRequestHeaders()));

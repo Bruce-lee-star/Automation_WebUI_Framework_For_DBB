@@ -413,10 +413,15 @@ public class PageObjectFactory {
 
             // 组合式 Page Object（新模型，G1 零继承）：注入受管 Page 惰性供应器，
             // 使其取得录制装饰（enabled 时）的受管 Page，原生操作自动录制（Layer A）
-            if (instance instanceof ManagedPageAware) {
-                ((ManagedPageAware) instance).setManagedPage(
-                        () -> RecordingPageProxy.wrap(PlaywrightManager.getPage()));
-            }
+        }
+
+        // 组合式 Page Object（新模型，G1 零继承）：注入受管 Page 惰性供应器，使其取得录制装饰
+        // （enabled 时）的受管 Page，原生操作自动录制（Layer A）。
+        //  修复（评审 F-02）：注入必须对「两条创建路径」统一执行 —— 原实现误置于上方反射 else 分支内，
+        //  导致文档推荐的 register()/customSupplier() 路径反而漏注入（AbstractManagedPage.getPage() 直接 NPE）。
+        if (instance instanceof ManagedPageAware) {
+            ((ManagedPageAware) instance).setManagedPage(
+                    () -> RecordingPageProxy.wrap(PlaywrightManager.getPage()));
         }
 
         // 执行创建后钩子（仅创建路径执行一次）

@@ -259,15 +259,15 @@ final class PageContextState {
                         try {
                             Object existing = ReflectiveField.get(field, fieldOwner);
                             if (!(existing instanceof PageElement)) {
-                                new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
+                                new RoleElementBinder(pageOwner, fieldOwner).bind(field, a);
                             }
                         } catch (Exception e) {
-                            new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
+                            new RoleElementBinder(pageOwner, fieldOwner).bind(field, a);
                         }
                         continue;
                     }
 
-                    new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
+                    new RoleElementBinder(pageOwner, fieldOwner).bind(field, a);
                 } else  {if (field.isAnnotationPresent(Element.class)) {
                     Element elementAnnotation = field.getAnnotation(Element.class);
                     String selector = elementAnnotation.value();

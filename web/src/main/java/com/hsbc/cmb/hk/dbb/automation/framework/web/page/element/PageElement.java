@@ -343,7 +343,7 @@ public class PageElement {
      * 元素被永久隐藏（如 {@code display:none}）时，会等待至超时后返回 {@code false}。</p>
      */
     public boolean isVisible() {
-        return isVisible(getDefaultTimeoutMs() / 1000);
+        return isVisible(defaultTimeoutSec());
     }
 
     /**
@@ -360,7 +360,7 @@ public class PageElement {
 
     /** 判断元素是否不可见，带框架默认超时（页面加载友好）。 */
     public boolean isNotVisible() {
-        return isNotVisible(getDefaultTimeoutMs() / 1000);
+        return isNotVisible(defaultTimeoutSec());
     }
 
     public boolean isNotVisible(int timeoutSec) {
@@ -379,7 +379,7 @@ public class PageElement {
      * 页面加载中元素可能尚未解析到 DOM，等待语义可避免误判为不存在。</p>
      */
     public boolean exists() {
-        return exists(getDefaultTimeoutMs() / 1000);
+        return exists(defaultTimeoutSec());
     }
 
     /**
@@ -401,7 +401,7 @@ public class PageElement {
      * 页面加载中元素可能尚未 enable，等待语义可避免误判。</p>
      */
     public boolean isEnabled() {
-        return isEnabled(getDefaultTimeoutMs() / 1000);
+        return isEnabled(defaultTimeoutSec());
     }
 
     /**
@@ -431,7 +431,7 @@ public class PageElement {
      * <p>在 {@code getElementCheckTimeout()} 时间内等待元素变为可编辑；超时仍未可编辑返回 {@code false}。</p>
      */
     public boolean isEditable() {
-        return isEditable(getDefaultTimeoutMs() / 1000);
+        return isEditable(defaultTimeoutSec());
     }
 
     /**
@@ -452,7 +452,7 @@ public class PageElement {
      * <p>在 {@code getElementCheckTimeout()} 时间内等待元素被选中；超时仍未选中返回 {@code false}。</p>
      */
     public boolean isChecked() {
-        return isChecked(getDefaultTimeoutMs() / 1000);
+        return isChecked(defaultTimeoutSec());
     }
 
     /**
@@ -535,13 +535,26 @@ public class PageElement {
         return PlaywrightManager.config().getElementCheckTimeout();
     }
 
+    /**
+     * 默认等待超时的「秒」值：<b>向上取整，且下限 1 秒</b>。
+     *
+     * <p><b>为什么需要它</b>：原实现直接以毫秒整除 1000（整数除法）。当
+     * {@code playwright.element.check.timeout} 配置小于 1000ms 时得到 {@code 0}，
+     * 而 Playwright 对 {@code setTimeout(0)} 的语义是<b>无限等待</b> —— 形成
+     * 「配置越小反而越挂」的反直觉陷阱。此处收敛为唯一换算入口：任何不足 1 秒
+     * （含 0 / 负值，配置层已做下限保护）的取值都退化为 1 秒有限等待。</p>
+     */
+    private int defaultTimeoutSec() {
+        return Math.max(1, (int) Math.ceil(getDefaultTimeoutMs() / 1000.0));
+    }
+
     /** 元素动作单次操作超时（毫秒），由 {@code playwright.element.operation.timeout} 驱动，注入 Playwright 原生 actionability 等待窗口。 */
     private double opTimeout() {
         return PlaywrightManager.config().getElementOperationTimeout();
     }
 
     public PageElement waitForVisible() {
-        return waitForVisible(getDefaultTimeoutMs() / 1000);
+        return waitForVisible(defaultTimeoutSec());
     }
 
     public PageElement waitForVisible(int timeoutSec) {
@@ -553,7 +566,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotVisible() {
-        return waitForNotVisible(getDefaultTimeoutMs() / 1000);
+        return waitForNotVisible(defaultTimeoutSec());
     }
 
     public PageElement waitForNotVisible(int timeoutSec) {
@@ -565,7 +578,7 @@ public class PageElement {
     }
 
     public PageElement waitForExists() {
-        return waitForExists(getDefaultTimeoutMs() / 1000);
+        return waitForExists(defaultTimeoutSec());
     }
 
     public PageElement waitForExists(int timeoutSec) {
@@ -577,7 +590,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotExists() {
-        return waitForNotExists(getDefaultTimeoutMs() / 1000);
+        return waitForNotExists(defaultTimeoutSec());
     }
 
     public PageElement waitForNotExists(int timeoutSec) {
@@ -589,7 +602,7 @@ public class PageElement {
     }
 
     public PageElement waitForClickable() {
-        return waitForClickable(getDefaultTimeoutMs() / 1000);
+        return waitForClickable(defaultTimeoutSec());
     }
 
     public PageElement waitForClickable(int timeoutSec) {
@@ -603,7 +616,7 @@ public class PageElement {
     }
 
     public PageElement waitForEditable() {
-        return waitForEditable(getDefaultTimeoutMs() / 1000);
+        return waitForEditable(defaultTimeoutSec());
     }
 
     public PageElement waitForEditable(int timeoutSec) {
@@ -614,7 +627,7 @@ public class PageElement {
     }
 
     public PageElement waitForEnabled() {
-        return waitForEnabled(getDefaultTimeoutMs() / 1000);
+        return waitForEnabled(defaultTimeoutSec());
     }
 
     public PageElement waitForEnabled(int timeoutSec) {
@@ -625,7 +638,7 @@ public class PageElement {
     }
 
     public PageElement waitForDisabled() {
-        return waitForDisabled(getDefaultTimeoutMs() / 1000);
+        return waitForDisabled(defaultTimeoutSec());
     }
 
     public PageElement waitForDisabled(int timeoutSec) {
@@ -636,7 +649,7 @@ public class PageElement {
     }
 
     public PageElement waitForChecked() {
-        return waitForChecked(getDefaultTimeoutMs() / 1000);
+        return waitForChecked(defaultTimeoutSec());
     }
 
     public PageElement waitForChecked(int timeoutSec) {
@@ -647,7 +660,7 @@ public class PageElement {
     }
 
     public PageElement waitForNotChecked() {
-        return waitForNotChecked(getDefaultTimeoutMs() / 1000);
+        return waitForNotChecked(defaultTimeoutSec());
     }
 
     public PageElement waitForNotChecked(int timeoutSec) {
@@ -983,10 +996,9 @@ public class PageElement {
         if (clean.isEmpty()) {
             throw new IllegalArgumentException("childSelector must not be blank");
         }
-        // 关键ChildPageElement 必须继承父级 iframe 路径，
-        // 否则位于 iframe 内的子元素会在父页面里找不到。
-        List<String> inheritedFrames = (frameSegs == null) ? null : new ArrayList<>(frameSegs);
-        return new ChildPageElement(selector, clean, page, inheritedFrames);
+        // 以「父级 PageElement」为定位基准：子元素经父级真实 Locator.locator() 下钻；
+        // 父级 Locator 已包含 iframe/shadow 解析结果，故其上下文天然被继承。
+        return new ChildPageElement(this, clean);
     }
 
     public PageElement child(String childSelector, int index) {
@@ -998,28 +1010,30 @@ public class PageElement {
      * 内部类：通过 Locator.locator() 实现嵌套定位，避免选择器字符串无限拼接。
      */
     private static final class ChildPageElement extends PageElement {
-        private final String parentSelector;
+        /** 父级元素：定位唯一事实来源（其 locatorInternal 已含 iframe/shadow 解析）。 */
+        private final PageElement parent;
         private final String childSelector;
 
-        ChildPageElement(String parentSelector, String childSelector, BasePage page, List<String> frameSegs) {
-            // 父类 selector 仅作为标识符使用，实际定位通过 locator() 的嵌套 Locator 实现
-            super("parent[" + parentSelector + "] >> child[" + childSelector + "]", page, frameSegs);
-            this.parentSelector = parentSelector;
+        ChildPageElement(PageElement parent, String childSelector) {
+            // 父类 selector 仅作标识/日志用途：真实定位由 locatorInternal() 覆写（父级 Locator 链式下钻）。
+            super("parent[" + parent.getSelector() + "] >> child[" + childSelector + "]",
+                    parent.getPage(), parent.frameSegs);
+            this.parent = parent;
             this.childSelector = childSelector;
         }
 
         @Override
         public String getSelector() {
-            // 返回描述性字符串，与 locator() 行为一致（Locator.locator() 嵌套定位）
-            return "parent[" + parentSelector + "] >> child[" + childSelector + "]";
+            // 返回描述性字符串（与 locatorInternal 的嵌套定位行为一致）
+            return "parent[" + parent.getSelector() + "] >> child[" + childSelector + "]";
         }
 
         @Override
         protected Locator locatorInternal() {
-            // 关键先解析父级 locator（含父级 frameLocator 链），
-            // 再用 Locator.locator() 在父级作用域下钻到子元素，确保 iframe 内子元素可定位。
-            Locator parentLocator = super.locatorInternal();
-            return parentLocator.locator(childSelector);
+            // 关键：取「父级真实 Locator」（由父级自行解析 shadow/iframe/动态供应商），
+            // 再在父级作用域内用 Locator.locator() 下钻到子元素。
+            // 旧实现把展示串 "parent[X] >> child[Y]" 当选择器解析（X/Y 并非真实选择器）→ 恒 0 元素（静默空）。
+            return parent.locatorInternal().locator(childSelector);
         }
     }
 

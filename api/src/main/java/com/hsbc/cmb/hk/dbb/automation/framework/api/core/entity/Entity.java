@@ -52,6 +52,23 @@ public class Entity {
      * @param entity source entity (can be null for null entity)
      */
     public Entity(final Entity entity) {
+        this(entity, null);
+    }
+
+    /**
+     * 拷贝构造 + <b>显式环境覆盖</b>（评审 F-03 修复）。
+     *
+     * <p>原实现只有单参拷贝构造，其内部恒以 {@code ConfigProvider.config(entity)}（env=null）二次加载配置。
+     * 于是 {@code EntityBuilder.build(name, env)} 先按显式 env 加载的覆盖结果，会在随后的拷贝构造里
+     * 被<b>无 env 的二次加载静默抹除</b> → {@code withEnv("prod")} 之类覆盖失效、用例落到默认环境，
+     * 属"打到错环境"级静默错误（比报错危险得多）。</p>
+     *
+     * <p>现将 env 一路带入拷贝构造，使配置<b>只按正确的 env 加载一次</b>，不引入任何全局状态。</p>
+     *
+     * @param entity 源实体（可为 null，表示动态配置的空实体）
+     * @param env    显式环境名（null/空 = 不做环境覆盖）
+     */
+    public Entity(final Entity entity, final String env) {
         if (entity == null) {
             log.info("Source entity is null, creating empty entity for dynamic configuration");
             this.initializeApiRequestResponseLogging();
@@ -64,7 +81,7 @@ public class Entity {
         // 2. Load configuration (if entity has a name, load specific config; otherwise load default config)
         try {
             // Load configuration - ConfigProvider now handles null entity gracefully
-            ConfigProvider.config(entity);
+            ConfigProvider.config(entity, env);
 
             // Set baseUri and basePath from loaded config
             this.setBaseUri(APIResources.BASE_URI.toString());

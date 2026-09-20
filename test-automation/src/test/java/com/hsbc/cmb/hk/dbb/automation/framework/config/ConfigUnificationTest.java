@@ -29,6 +29,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       Web 侧经枚举 {@link WebFrameworkConfig#configKey()} 暴露，
  *       API 侧经 {@link ApiFrameworkConfig} 的 {@link ConfigKey} 静态常量暴露。</li>
  * </ul>
+ *
+ * <p><b>2026-09-20 收敛后模型变更</b>：{@link ConfigKeys} 由「镜像注册表骨架」升级为
+ * <b>唯一事实来源（SSoT）</b>——Web 枚举 / API 常量 / Monitor 常量均已退化为引用注册表的<b>门面</b>，
+ * 同一配置键在全框架只有一处定义。因此：
+ * <ul>
+ *   <li>删除了原「镜像默认值一致性」校验（镜像已不存在，该模型下该风险在结构上被消除）；
+ *       默认值不漂移改由 {@code ConfigKeysGoldenTest} 的 golden 快照守卫；</li>
+ *   <li>新增「门面必须逐字委托注册表」校验（{@link #facadesMustDelegateToRegistry()}），
+ *       确保门面不会重新长出本地字面量定义。</li>
+ * </ul>
  */
 public class ConfigUnificationTest {
 
@@ -70,22 +80,11 @@ public class ConfigUnificationTest {
     }
 
     /**
-     * G-5 的**替代落地（不拆分文件）**：把该条目陈述的真实危害——「新增配置键无校验、键名冲突被静默吞掉」——
-     * 变成可执行校验：Web 侧枚举与 API 侧常量之间、以及各自内部，**配置键必须全局唯一**。
+     * 配置键必须全局唯一（G-5：跨枚举/枚举内重复键会被静默吞掉——同一键出现两个默认值时，
+     * 实际生效值取决于读取路径，属难以定位的配置缺陷）。
      *
-     * <p>为什么「不拆分」是正确决策：
-     * <ol>
-     *   <li><b>Java 枚举无法跨文件拆分</b>——常量必须与其 {@code enum} 同文件。拆分意味着先退化为
-     *       {@code class + static ConfigKey} 常量，将失去 {@code values()} 遍历能力；</li>
-     *   <li>而 {@code WebFrameworkConfig.allConfigKeys()} 正依赖 {@code values()}，是「web 侧唯一枚举点」的
-     *       现状价值所在。拆成多个子枚举后必须人工维护一个聚合清单——<b>恰好重新引入本条目要消除的
-     *       「忘记登记」失败模式</b>；</li>
-     *   <li>1690 行中约 1570 行是 <b>132 个声明式键</b>（21 个主题分区，每键约 11 行），仅约 110 行是行为
-     *       （11 个访问器 + 1 个默认值解析）。长度是数据量的映射，不是职责混杂；换哪个文件都是这么多行。</li>
-     * </ol>
-     *
-     * <p><b>不在本校验范围内的</b>：{@code ConfigKeys} 是「注册表骨架」，其键<b>刻意</b>与 Web/API 侧镜像
-     * （用于审计与文档聚合，见其类注释），故重复是设计意图；跨枚举冲突才是真实风险。
+     * <p>收敛后 Web/API 侧不再持有字面量（键定义集中在 {@code ConfigKeys}），但两侧仍是
+     * 独立模块的公开配置门面，其携带的键集合仍需唯一——故本校验保留。
      */
     @Test
     public void configKeysAreGloballyUnique() throws Exception {
@@ -121,54 +120,82 @@ public class ConfigUnificationTest {
     }
 
     /**
-     * 镜像一致性（G-5 / C-6 收口）：{@code ConfigKeys} 是汇总 Web/API 配置键元数据的<b>注册表骨架</b>，
-     * 属"镜像"角色；而 {@code MonitorConfig} 是监控 / 持久化域的<b>唯一事实来源</b>
-     * （2026-09-20 收敛：{@code WebFrameworkConfig} 已不再重复定义该域键，故它不再是 Web 的镜像）。
+     * 门面一致性（收敛后取代原「镜像默认值一致性」）：{@link ConfigKeys} 是配置键的<b>唯一事实来源</b>，
+     * {@code WebFrameworkConfig} / {@code ApiFrameworkConfig} / {@code MonitorConfig} 是<b>门面</b>。
      *
-     * <p>镜像<b>允许</b>同键重复（这是设计意图，故 {@link #configKeysAreGloballyUnique} 只校验 Web×API），
-     * 但若某键同时存在于真实枚举中，其默认值<b>必须逐字一致</b>：否则同一配置键会存在两个默认值，
-     * 查审计/生成文档的人被误导，而实际生效值取决于读取路径。本条正是实测缺陷的固化——
-     * `serenity.screenshot.strategy` 在注册表里写的是 {@code AFTER_FAILING_STEP}，而真实枚举是
-     * {@code AFTER_EACH_STEP}。
+     * <p>本测试按命名约定把每个门面常量映射回其注册表条目（Web → {@code WEB_<枚举名>}，
+     * API → {@code API_<字段名>}，Monitor → {@code <字段名>}），并断言三元组<b>逐字一致</b>。
+     * 若有人重新在门面里写回字面量（或改错 key / 默认值 / 描述），本测试立即失败——
+     * 这正是收敛要长期守住的性质。
      */
     @Test
-    public void mirrorConfigKeysMustAgreeOnDefaults() throws Exception {
-        Map<String, String> owners = new LinkedHashMap<>();
+    public void facadesMustDelegateToRegistry() throws Exception {
+        List<String> problems = new ArrayList<>();
+
         for (WebFrameworkConfig c : WebFrameworkConfig.values()) {
-            owners.putIfAbsent(c.configKey().key(), c.configKey().defaultValue());
+            ConfigKeys expected = lookup("WEB_" + c.name(), problems);
+            if (expected == null) {
+                continue;
+            }
+            assertTripleMatches(problems, "WebFrameworkConfig." + c.name(), expected, c.configKey());
         }
+
         for (Field f : ApiFrameworkConfig.class.getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers()) && f.getType() == ConfigKey.class) {
                 f.setAccessible(true);
-                ConfigKey k = (ConfigKey) f.get(null);
-                owners.putIfAbsent(k.key(), k.defaultValue());
+                ConfigKeys expected = lookup("API_" + f.getName(), problems);
+                if (expected == null) {
+                    continue;
+                }
+                assertTripleMatches(problems, "ApiFrameworkConfig." + f.getName(), expected, (ConfigKey) f.get(null));
             }
         }
 
-        List<String> mismatches = new ArrayList<>();
         for (Field f : MonitorConfig.class.getDeclaredFields()) {
             if (Modifier.isStatic(f.getModifiers()) && f.getType() == MonitorConfig.Key.class) {
                 f.setAccessible(true);
+                ConfigKeys expected = lookup(f.getName(), problems);
+                if (expected == null) {
+                    continue;
+                }
                 MonitorConfig.Key k = (MonitorConfig.Key) f.get(null);
-                checkMirrorDefault(owners, "MonitorConfig." + f.getName(), k.key(), k.defaultValue(), mismatches);
+                if (!expected.key().equals(k.key())) {
+                    problems.add("  - MonitorConfig." + f.getName() + "：key 应为 '" + expected.key()
+                            + "'，实际 '" + k.key() + "'");
+                }
+                if (!expected.defaultValue().equals(k.defaultValue())) {
+                    problems.add("  - MonitorConfig." + f.getName() + "：默认值应为 '" + expected.defaultValue()
+                            + "'，实际 '" + k.defaultValue() + "'");
+                }
             }
         }
-        for (ConfigKeys c : ConfigKeys.values()) {
-            checkMirrorDefault(owners, "ConfigKeys." + c.name(), c.key(), c.defaultValue(), mismatches);
-        }
 
-        assertTrue(mismatches.isEmpty(),
-                "镜像注册表的默认值必须与真实配置枚举逐字一致（否则同一键存在两个默认值，"
-                        + "实际生效值取决于读取路径）：\n" + String.join("\n", mismatches));
+        assertTrue(problems.isEmpty(),
+                "门面必须逐字委托注册表（不得重新持有本地定义；否则同一键再次出现两处定义）：\n"
+                        + String.join("\n", problems));
     }
 
-    /** 若该键在真实枚举中存在，则默认值必须一致；键不存在于真实枚举时不做判断（键可能属其他域）。 */
-    private static void checkMirrorDefault(Map<String, String> owners, String mirrorOwner, String key,
-                                          String mirrorDefault, List<String> mismatches) {
-        String actual = owners.get(key);
-        if (actual != null && !actual.equals(mirrorDefault)) {
-            mismatches.add("  - '" + key + "'：" + mirrorOwner + " 默认=" + mirrorDefault
-                    + "，真实枚举默认=" + actual);
+    /** 按名查找注册表条目；找不到则记入 problems 并返回 null。 */
+    private static ConfigKeys lookup(String name, List<String> problems) {
+        try {
+            return ConfigKeys.valueOf(name);
+        } catch (IllegalArgumentException e) {
+            problems.add("  - 注册表缺少门面对应的条目: ConfigKeys." + name);
+            return null;
+        }
+    }
+
+    /** 断言注册表条目与门面三元组逐字一致。 */
+    private static void assertTripleMatches(List<String> problems, String owner, ConfigKeys expected, ConfigKey actual) {
+        if (!expected.key().equals(actual.key())) {
+            problems.add("  - " + owner + "：key 应为 '" + expected.key() + "'，实际 '" + actual.key() + "'");
+        }
+        if (!expected.defaultValue().equals(actual.defaultValue())) {
+            problems.add("  - " + owner + "：默认值应为 '" + expected.defaultValue()
+                    + "'，实际 '" + actual.defaultValue() + "'");
+        }
+        if (!expected.description().equals(actual.description())) {
+            problems.add("  - " + owner + "：描述应与注册表逐字一致");
         }
     }
 }

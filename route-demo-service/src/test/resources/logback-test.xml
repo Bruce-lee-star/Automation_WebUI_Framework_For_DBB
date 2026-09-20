@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 仅用于 route-demo-service 集成测试：覆盖 framework-core 自带的 logback.xml，
+     避免 Spring Boot 日志初始化与框架日志配置冲突（Logback configuration error）。 -->
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="com.hsbc.cmb.hk.dbb.automation" level="INFO"/>
+    <logger name="com.example.demo" level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

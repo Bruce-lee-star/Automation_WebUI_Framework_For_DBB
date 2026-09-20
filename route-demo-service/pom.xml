@@ -59,6 +59,48 @@
             <artifactId>spring-boot-starter-tomcat</artifactId>
             <version>2.7.18</version>
         </dependency>
+
+        <!-- 测试期：框架 route 模块（提供真实 ApiMonitoringRepository / MonitorFailureCollector /
+             MonitorFailureReportWriterSink 等；同时传递引入 core / reporting / gson / HikariCP / flyway）。
+             版本与工程一致（1.0.0，已 install 至本地仓库）。 -->
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>framework-route</artifactId>
+            <version>1.0.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- 测试期：真实 H2 内存库，驱动并发写库验证（与 route 模块同版本） -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- 测试期：真实 MySQL 驱动，驱动「配置开启 DB 写库 → 落 MySQL」端到端验证。
+             路由模块不在 compile 期捆绑 JDBC 驱动，由测试层按目标库提供（driver 经 JDBC SPI 自动探测）。
+             Flyway 的 MySQL 方言模块（flyway-mysql）已由框架 framework-route 在 compile 期引入，此处无需重复声明。 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>8.0.33</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- 测试期：JUnit 5（api + engine，与框架模块同源版本，离线仓库已存在） -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>5.11.4</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -79,6 +121,20 @@
                 <version>2.7.18</version>
                 <configuration>
                     <mainClass>com.example.demo.DemoApplication</mainClass>
+                </configuration>
+            </plugin>
+
+            <!-- 支持 JUnit 5 测试执行（默认 superpom 的 surefire 2.x 不识别 JUnit Platform） -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+                <configuration>
+                    <!-- 框架 ApiMonitoringRepository / DatabaseStoreMonitorCallback 为 JVM 级单例，
+                         其累计计数器（flushedCount 等）与懒初始化状态会跨测试类残留（例如浏览器 E2E
+                         用例 flush 的条数会污染 H2 并发用例的 flushedCount 断言）。按测试类 fork 独立
+                         JVM，隔离静态状态，保证各测试类互不污染、与执行顺序无关。 -->
+                    <reuseForks>false</reuseForks>
                 </configuration>
             </plugin>
         </plugins>

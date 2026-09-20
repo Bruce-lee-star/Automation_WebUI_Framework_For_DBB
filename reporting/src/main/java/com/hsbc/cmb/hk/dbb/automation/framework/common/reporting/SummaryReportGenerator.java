@@ -4,7 +4,9 @@ import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorFailureReportData;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorFailureReportSink;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorOwnerBlock;
 import net.thucydides.model.domain.Story;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
@@ -96,6 +98,9 @@ public final class SummaryReportGenerator {
     private LocalDateTime testExecutionTime;  // 测试实际执行时间（取最早 startTime）
     private String csvFileName;
     private String zipFileName;
+
+    /** API 监控失败 / 数据丢失汇总（供 HTML 报告显示区域；无 SPI 实现或空时为 empty）。 */
+    private MonitorFailureReportData monitorFailureData = MonitorFailureReportData.empty();
 
     public SummaryReportGenerator() {
         this(DEFAULT_REPORT_DIR);
@@ -409,6 +414,9 @@ public final class SummaryReportGenerator {
             VerboseLogging.logInfoIfVerbose(logger,
                 "Generating summary report: {} total tests, dir: {}", total, actualReportDir);
 
+            //  先于 HTML 装配收集监控失败 / 数据丢失汇总（须在 writeMonitorFailureReports 的 clear 之前）
+            collectMonitorFailureData();
+
             // 生成 HTML 报告
             String html = buildFullNativeHtml();
             Path output = safeResolve(actualReportDir, SUMMARY_FILE);
@@ -502,6 +510,69 @@ public final class SummaryReportGenerator {
             }
         } catch (Exception ex) {
             logger.warn("[ApiMonitor] Exception writing monitor failure report (main report unaffected): {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * 经 SPI 收集监控失败 / 数据丢失汇总数据，供 HTML 报告显示区域渲染。
+     *
+     * <p>须在 {@link #writeMonitorFailureReports()}（含 clear）之前调用，避免归集器被复位后数据丢失。
+     * 多个 sink 的数据做合并（通常仅 route 一个实现）；单个 sink 故障不影响其余与主报告。
+     */
+    private void collectMonitorFailureData() {
+        List<MonitorFailureReportSink> sinks = loadMonitorFailureSinks();
+        if (sinks.isEmpty()) {
+            monitorFailureData = MonitorFailureReportData.empty();
+            return;
+        }
+        List<MonitorOwnerBlock> allOwners = new ArrayList<>();
+        Map<String, Long> allLoss = new LinkedHashMap<>();
+        long totalLoss = 0;
+        int ownerCount = 0;
+        int failureCount = 0;
+        for (MonitorFailureReportSink sink : sinks) {
+            try {
+                MonitorFailureReportData d = sink.collectData();
+                if (d == null) {
+                    continue;
+                }
+                allOwners.addAll(d.getOwners());
+                for (Map.Entry<String, Long> e : d.getDataLossByCategory().entrySet()) {
+                    allLoss.merge(e.getKey(), e.getValue(), Long::sum);
+                }
+                totalLoss += d.getTotalDataLoss();
+                ownerCount += d.getOwnerCount();
+                failureCount += d.getFailureCount();
+            } catch (Exception ex) {
+                logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to collectData (isolated): {}", ex.getMessage());
+            }
+        }
+        monitorFailureData = new MonitorFailureReportData(
+                allOwners, allLoss, totalLoss, ownerCount, failureCount);
+    }
+
+    /** 缓冲 SPI 实现实例（避免 ServiceLoader 多次遍历重复实例化）。 */
+    private static List<MonitorFailureReportSink> loadMonitorFailureSinks() {
+        List<MonitorFailureReportSink> sinks = new ArrayList<>();
+        for (MonitorFailureReportSink sink : ServiceLoader.load(MonitorFailureReportSink.class)) {
+            sinks.add(sink);
+        }
+        return sinks;
+    }
+
+    /**
+     * 渲染「API 监控失败与数据丢失」显示区域（无内容则不渲染，避免污染报告）。
+     */
+    private void appendMonitorFailureSection(StringBuilder sb) {
+        if (!monitorFailureData.hasContent()) {
+            return;
+        }
+        Map<String, Object> model = new HashMap<>();
+        model.put("report", monitorFailureData);
+        try {
+            sb.append(renderSummaryTemplate("summary/monitor-failure-section.ftlh", model));
+        } catch (TemplateException | IOException e) {
+            throw new RuntimeException("Failed to render monitor-failure-section fragment", e);
         }
     }
 
@@ -613,7 +684,8 @@ public final class SummaryReportGenerator {
         appendViewFullReportButton(frag);    String viewFullReportButton = frag.toString();  frag.setLength(0);
         appendCoverageSection(frag);         String coverageSection = frag.toString();       frag.setLength(0);
         appendFailureOverview(frag);         String failureOverview = frag.toString();       frag.setLength(0);
-        appendFailureAndResultList(frag);    String failureAndResultList = frag.toString();
+        appendFailureAndResultList(frag);    String failureAndResultList = frag.toString();   frag.setLength(0);
+        appendMonitorFailureSection(frag);    String monitorFailureSection = frag.toString();  frag.setLength(0);
 
         Map<String, Object> model = new HashMap<>();
         model.put("title", title);
@@ -624,6 +696,7 @@ public final class SummaryReportGenerator {
         model.put("coverageSection", coverageSection);
         model.put("failureOverview", failureOverview);
         model.put("failureAndResultList", failureAndResultList);
+        model.put("monitorFailureSection", monitorFailureSection);
 
         try {
             return renderSummaryTemplate("summary-report.ftlh", model);

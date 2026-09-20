@@ -26,4 +26,17 @@ public interface MonitorFailureReportSink {
      * 清空内部归集状态（测试套件结束时调用）。
      */
     void clear();
+
+    /**
+     * 收集供 HTML 报告展示的监控失败 / 数据丢失汇总数据。
+     *
+     * <p>默认返回 {@link MonitorFailureReportData#empty()}；route 侧实现返回真实聚合。
+     * 本方法<b>仅读取</b>、不写出文件、也不复位归集器（复位由 {@link #clear()} 负责），
+     * 须先于 {@link #clear()} 调用，以免数据被复位后丢失。
+     *
+     * @return HTML 报告展示所需的汇总数据（非 {@code null}）
+     */
+    default MonitorFailureReportData collectData() {
+        return MonitorFailureReportData.empty();
+    }
 }

@@ -123,11 +123,11 @@ public class ListenerRegistry {
                 // 从文件系统加载
                 String filePath = resource.getFile().replaceAll("%20", " ");
                 classes.addAll(scanDirectory(new File(filePath), basePackage));
-            } else if ("jar".equals(protocol)) {
+            } else  {if ("jar".equals(protocol)) {
                 // 从JAR文件加载
                 String jarPath = resource.getPath().substring(5, resource.getPath().indexOf("!"));
                 classes.addAll(scanJar(new File(jarPath), basePackage));
-            }
+            }} 
         }
 
         return classes;
@@ -156,7 +156,7 @@ public class ListenerRegistry {
             if (file.isDirectory()) {
                 // 递归扫描子目录
                 classes.addAll(scanDirectory(file, packageName + "." + file.getName()));
-            } else if (file.getName().endsWith(".class")) {
+            } else  {if (file.getName().endsWith(".class")) {
                 // 加载类
                 String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
                 try {
@@ -165,7 +165,7 @@ public class ListenerRegistry {
                     // 根治 W-16：单类不可加载仅跳过并告警，不中止整个包扫描
                     logger.warn("Skipping unloadable class {} during listener scan (continuing): {}", className, t.toString());
                 }
-            }
+            }} 
         }
 
         return classes;
@@ -239,7 +239,7 @@ public class ListenerRegistry {
         for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
             for (Class<? extends Annotation> annotation : annotations) {
                 // 跳过已检查过的 @Listen 注解
-                if ("net.thucydides.core.annotations.Listen".equals(annotation.getName())) continue;
+                if ("net.thucydides.core.annotations.Listen".equals(annotation.getName()))  {continue;} 
                 try {
                     if (method.isAnnotationPresent(annotation)) {
                         VerboseLogging.logDebugIfVerbose(logger, "{} is a listener (has {} on method)", clazz.getName(), annotation.getName());
@@ -418,10 +418,10 @@ public class ListenerRegistry {
             if ("file".equals(protocol)) {
                 String filePath = resource.getFile().replaceAll("%20", " ");
                 allClasses.addAll(scanDirectoryRecursive(new File(filePath), packagePrefix));
-            } else if ("jar".equals(protocol)) {
+            } else  {if ("jar".equals(protocol)) {
                 String jarPath = resource.getPath().substring(5, resource.getPath().indexOf("!"));
                 allClasses.addAll(scanJarRecursive(new File(jarPath), packagePrefix));
-            }
+            }} 
         }
 
         // 过滤出包含监听器接口的类
@@ -459,14 +459,14 @@ public class ListenerRegistry {
         for (File file : files) {
             if (file.isDirectory()) {
                 classes.addAll(scanDirectoryRecursive(file, packageName + "." + file.getName()));
-            } else if (file.getName().endsWith(".class")) {
+            } else  {if (file.getName().endsWith(".class")) {
                 String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
                 try {
                     classes.add(Class.forName(className));
                 } catch (Throwable t) {
                     logger.warn("Skipping unloadable class {} during listener scan (continuing): {}", className, t.toString());
                 }
-            }
+            }} 
         }
 
         return classes;
@@ -529,10 +529,10 @@ public class ListenerRegistry {
             if ("file".equals(protocol)) {
                 String filePath = resource.getFile().replaceAll("%20", " ");
                 packages.addAll(findPackagesContaining(new File(filePath), packagePrefix, packageContains));
-            } else if ("jar".equals(protocol)) {
+            } else  {if ("jar".equals(protocol)) {
                 String jarPath = resource.getPath().substring(5, resource.getPath().indexOf("!"));
                 packages.addAll(findPackagesInJarContaining(new File(jarPath), packagePrefix, packageContains));
-            }
+            }} 
         }
 
         VerboseLogging.logDebugIfVerbose(logger, "Found {} packages containing '{}' under '{}'", packages.size(), packageContains, packagePrefix);

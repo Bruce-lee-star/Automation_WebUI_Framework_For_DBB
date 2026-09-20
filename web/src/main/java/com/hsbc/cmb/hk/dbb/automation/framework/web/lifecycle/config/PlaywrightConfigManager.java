@@ -353,11 +353,11 @@ public class PlaywrightConfigManager {
             case "edge":
                 if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
                     configArgs = FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_ARGS);
-                } else if ("chrome".equalsIgnoreCase(channel)) {
+                } else  {if ("chrome".equalsIgnoreCase(channel)) {
                     configArgs = FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_ARGS);
                 } else {
                     configArgs = FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_CHROMIUM_ARGS);
-                }
+                }} 
                 // 硬编码追加反节流 flags，确保配置文件无法遗漏
                 return mergeArgs(configArgs, HARD_CODED_THROTTLING_ARGS);
             default:
@@ -399,11 +399,11 @@ public class PlaywrightConfigManager {
             case "chromium":
                 if ("msedge".equalsIgnoreCase(channel) || "edge".equalsIgnoreCase(channel)) {
                     return FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_EDGE_EXECUTABLE_PATH);
-                } else if ("chrome".equalsIgnoreCase(channel)) {
+                } else  {if ("chrome".equalsIgnoreCase(channel)) {
                     return FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_BROWSER_CHROME_EXECUTABLE_PATH);
                 } else {
                     return null;
-                }
+                }} 
             default:
                 return null;
         }

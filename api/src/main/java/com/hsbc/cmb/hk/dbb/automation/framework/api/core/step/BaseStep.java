@@ -247,18 +247,18 @@ public class BaseStep extends RestJobProvider {
 
         if (expectedValue instanceof String) {
             return node.asText();
-        } else if (expectedValue instanceof Integer) {
+        } else  {if (expectedValue instanceof Integer) {
             return node.asInt();
-        } else if (expectedValue instanceof Boolean) {
+        } else  {if (expectedValue instanceof Boolean) {
             return node.asBoolean();
-        } else if (expectedValue instanceof Long) {
+        } else  {if (expectedValue instanceof Long) {
             return node.asLong();
-        } else if (expectedValue instanceof Double) {
+        } else  {if (expectedValue instanceof Double) {
             return node.asDouble();
         } else {
             // For complex objects (e.g., Maps), convert to Java object
             return OBJECT_MAPPER.convertValue(node, expectedValue.getClass());
-        }
+        }} } } } 
     }
 
     /**

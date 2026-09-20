@@ -79,7 +79,7 @@ public class RoleElementBinder {
                 } else {
                     supplier = () -> LocatorFactory.byAltText(self, v, a.exact());
                 }
-            } else if (a.title() != null && !a.title().isEmpty()) {
+            } else  {if (a.title() != null && !a.title().isEmpty()) {
                 desc = a.description().isEmpty() ? "title=" + a.title() : a.description();
                 final String v = a.title();
                 if (a.key() != null && !a.key().isEmpty()) {
@@ -91,7 +91,7 @@ public class RoleElementBinder {
                 } else {
                     supplier = () -> LocatorFactory.byTitle(self, v, a.exact());
                 }
-            } else if (a.placeholder() != null && !a.placeholder().isEmpty()) {
+            } else  {if (a.placeholder() != null && !a.placeholder().isEmpty()) {
                 desc = a.description().isEmpty() ? "placeholder=" + a.placeholder() : a.description();
                 final String v = a.placeholder();
                 if (a.key() != null && !a.key().isEmpty()) {
@@ -103,11 +103,11 @@ public class RoleElementBinder {
                 } else {
                     supplier = () -> LocatorFactory.byPlaceholder(self, v, a.exact());
                 }
-            } else if (a.testId() != null && !a.testId().isEmpty()) {
+            } else  {if (a.testId() != null && !a.testId().isEmpty()) {
                 desc = a.description().isEmpty() ? "testId=" + a.testId() : a.description();
                 final String v = a.testId();
                 supplier = () -> LocatorFactory.byTestId(self, v);
-            } else if (a.label() != null && !a.label().isEmpty()) {
+            } else  {if (a.label() != null && !a.label().isEmpty()) {
                 // label 语义定位（对齐 page.pause() 的 getByLabel）：按关联 label 文本定位对应控件。
                 // 与 role+name 是两条独立策略，但最终都定位到该 input 控件；label 文本本身用 text 定位。
                 desc = a.description().isEmpty() ? "label=" + a.label() : a.description();
@@ -121,7 +121,7 @@ public class RoleElementBinder {
                 } else {
                     supplier = () -> LocatorFactory.byLabel(self, v, a.exact());
                 }
-            } else if (a.text() != null && !a.text().isEmpty()) {
+            } else  {if (a.text() != null && !a.text().isEmpty()) {
                 desc = a.description().isEmpty() ? "text=" + a.text() : a.description();
                 final String v = a.text();
                 if (a.key() != null && !a.key().isEmpty()) {
@@ -153,7 +153,7 @@ public class RoleElementBinder {
                                 : a.description();
                         supplier = () -> RoleLocatorFactory.byName(self, role, literalName,
                                 a.exact(), a.level(), a.disabled(), a.pressed(), a.expanded());
-                    } else if (a.key() != null && !a.key().isEmpty()) {
+                    } else  {if (a.key() != null && !a.key().isEmpty()) {
                         // role + key：走 nls 多语言解析。页面其余元素大多走这里，故类级 @RoleFile 仍需声明。
                         // 注意：resolveRoleFiles 跨文件查找（与 text/altText/title 等语义路径一致），
                         // 若只取首位文件，当 key 不在首位文件时就会报 missing key。
@@ -174,8 +174,8 @@ public class RoleElementBinder {
                                 ? RoleLocatorFactory.describeRole(role)
                                 : a.description();
                         supplier = () -> RoleLocatorFactory.byRole(self, role);
-                    }
-                } else if (a.key() != null && !a.key().isEmpty()) {
+                    }} 
+                } else  {if (a.key() != null && !a.key().isEmpty()) {
                     // 仅声明 key（无 role、无语义属性）：视作 NLS 文本定位器，解析 key 为对应语言可见文本后
                     // 按 getByText 定位（与 text + key 等价，但注解更简洁）。
                     List<String> files = resolveRoleFiles(a);
@@ -189,8 +189,8 @@ public class RoleElementBinder {
                 } else {
                     throw new ElementException("RoleElement requires a role or a semantic attribute "
                             + "(altText/title/placeholder/testId/label/text): " + field.getName());
-                }
-            }
+                }} 
+            }} } } } } 
 
             // 对齐 page.pause() 的 frameLocator 录制：元素位于 iframe 内时，把底层 Locator 依次用
             // page.frameLocator(seg).locator(...) 包裹（自顶向下逐层下钻），否则在主框架上执行会找不到元素。

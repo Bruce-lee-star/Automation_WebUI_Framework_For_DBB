@@ -38,7 +38,7 @@ public class ConfigProvider {
     private static final String DEFAULT_PAYLOAD_DIR = "payload/";
     private static final String DEFAULT_CONFIG_FILE_NAME = "application.conf";
     private static final String DEFAULT_PROPERTIES_FILE_NAME = "application.properties";
-    private static final String CONFIG_FILE_EXTENSIONS[] = {".conf", ".properties"};
+    private static final String[] CONFIG_FILE_EXTENSIONS = {".conf", ".properties"};
     private static final String HEADERS_NODE = "headers";
 
     // Configurable paths (loaded from application.conf)

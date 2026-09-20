@@ -74,7 +74,7 @@ public final class RouteUtil {
      * @return 不超过 {@link #MAX_BODY_BYTES} 的字节数组；未超限则原样返回
      */
     public static byte[] truncateBody(byte[] body) {
-        if (body == null || body.length <= MAX_BODY_BYTES) return body;
+        if (body == null || body.length <= MAX_BODY_BYTES)  {return body;} 
         byte[] truncated = Arrays.copyOf(body, (int) Math.min(MAX_BODY_BYTES, Integer.MAX_VALUE));
         LOGGER.debug("[RouteUtil] Response body truncated from {} to {} bytes (ROUTE_MAX_BODY_BYTES)",
                 body.length, truncated.length);
@@ -85,7 +85,7 @@ public final class RouteUtil {
      * 截断响应体字符串（与 {@link #truncateBody(byte[])} 同源，供字符串路径复用）。
      */
     public static String truncateBody(String body) {
-        if (body == null || body.length() <= MAX_BODY_BYTES) return body;
+        if (body == null || body.length() <= MAX_BODY_BYTES)  {return body;} 
         String truncated = body.substring(0, (int) Math.min(MAX_BODY_BYTES, Integer.MAX_VALUE));
         LOGGER.debug("[RouteUtil] Response body truncated from {} to {} chars (ROUTE_MAX_BODY_BYTES)",
                 body.length(), truncated.length());
@@ -95,7 +95,7 @@ public final class RouteUtil {
     /** 从环境变量读取 long（解析失败/缺失时返回默认值）。 */
     public static long getEnvLong(String key, long defaultValue) {
         String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Long.parseLong(val.trim());
         } catch (NumberFormatException e) {
@@ -106,7 +106,7 @@ public final class RouteUtil {
     /** 从环境变量读取 double（解析失败/缺失时返回默认值）。集中实现，消除各 Handler 的重复副本。 */
     public static double getEnvDouble(String key, double defaultValue) {
         String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             double parsed = Double.parseDouble(val.trim());
             // 防御：拒绝 NaN / ±Infinity（如误配 "NaN"/"Infinity"），回退默认值，
@@ -179,7 +179,7 @@ public final class RouteUtil {
      * 供 RouteEngine / ApiCaptureContext / 各 Handler 的 JSONPATH_CACHE 等复用。
      */
     public static void evictOldestQuarter(Map<?, ?> map) {
-        if (map == null || map.isEmpty()) return;
+        if (map == null || map.isEmpty())  {return;} 
         int target = Math.max(1, map.size() / 4);
         int removed = 0;
         Iterator<?> it = map.keySet().iterator();
@@ -226,20 +226,20 @@ public final class RouteUtil {
      */
     public static Map<String, String> parseQueryParams(String url) {
         Map<String, String> query = new LinkedHashMap<>();
-        if (url == null) return query;
+        if (url == null)  {return query;} 
         try {
             URI uri = new URI(url);
             String queryStr = uri.getRawQuery();
-            if (queryStr == null || queryStr.isEmpty()) return query;
+            if (queryStr == null || queryStr.isEmpty())  {return query;} 
             for (String pair : queryStr.split("&")) {
                 String[] kv = pair.split("=", 2);
                 if (kv.length == 2) {
                     String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8.name());
                     String value = URLDecoder.decode(kv[1], StandardCharsets.UTF_8.name());
                     query.put(key, value);
-                } else if (kv.length == 1 && !kv[0].isEmpty()) {
+                } else  {if (kv.length == 1 && !kv[0].isEmpty()) {
                     query.put(URLDecoder.decode(kv[0], StandardCharsets.UTF_8.name()), "");
-                }
+                }} 
             }
         } catch (Exception e) {
             LOGGER.debug("[RouteUtil] Failed to parse query params from URL: {}", url);
@@ -296,7 +296,7 @@ public final class RouteUtil {
      * <p>用于在响应体读取前检查页面状态，避免对已关闭页面执行耗时操作。
      */
     public static boolean isPageClosed(Page page) {
-        if (page == null) return true;
+        if (page == null)  {return true;} 
         try {
             return page.isClosed();
         } catch (Exception e) {
@@ -336,7 +336,7 @@ public final class RouteUtil {
      * 此时退化为 resume，<b>保证请求绝不被挂起</b>。
      */
     public static void fallbackIfOpen(Route route) {
-        if (route == null) return;
+        if (route == null)  {return;} 
         try {
             route.fallback();
         } catch (Exception e) {
@@ -363,7 +363,7 @@ public final class RouteUtil {
      * @return true 表示 route 已失效，应静默 no-op 而非再次尝试
      */
     public static boolean isRouteDeadException(Throwable e) {
-        if (e == null) return false;
+        if (e == null)  {return false;} 
         String msg = e.getMessage();
         if (msg == null) {
             // 无 message 时向上回溯（Playwright 常包装一层）
@@ -392,7 +392,7 @@ public final class RouteUtil {
      * route 不会被反复操作而污染日志、计数与延迟路径的落库逻辑。
      */
     public static void safeResume(Route route) {
-        if (route == null) return;
+        if (route == null)  {return;} 
         try {
             route.resume();
         } catch (Exception e) {
@@ -408,7 +408,7 @@ public final class RouteUtil {
      * B 方案 MODIFY 用其下发改写后的请求（method/headers/postData），由浏览器发真实请求。
      */
     public static void safeResume(Route route, Route.ResumeOptions options) {
-        if (route == null || options == null) return;
+        if (route == null || options == null)  {return;} 
         try {
             route.resume(options);
         } catch (Exception e) {
@@ -424,18 +424,18 @@ public final class RouteUtil {
      * 与 MonitorHandler.literalPathOf 等价，提取至此便于 Handler 间复用。
      */
     public static String literalPathOf(String urlPattern) {
-        if (urlPattern == null || urlPattern.isEmpty()) return null;
+        if (urlPattern == null || urlPattern.isEmpty())  {return null;} 
         String p = urlPattern;
-        while (p.startsWith("**")) p = p.substring(2);
-        while (p.endsWith("**")) p = p.substring(0, p.length() - 2);
+        while (p.startsWith("**"))  {p = p.substring(2);} 
+        while (p.endsWith("**"))  {p = p.substring(0, p.length() - 2);} 
         int star = p.indexOf('*');
-        if (star >= 0) p = p.substring(0, star);
+        if (star >= 0)  {p = p.substring(0, star);} 
         return p.isEmpty() ? null : p;
     }
 
     /** 安全 fulfill：route 已死则静默跳过。 */
     public static void safeFulfill(Route route, Route.FulfillOptions options) {
-        if (route == null) return;
+        if (route == null)  {return;} 
         try {
             route.fulfill(options);
         } catch (Exception e) {
@@ -448,7 +448,7 @@ public final class RouteUtil {
 
     /** 安全 abort：route 已死则静默跳过。 */
     public static void safeAbort(Route route) {
-        if (route == null) return;
+        if (route == null)  {return;} 
         try {
             route.abort();
         } catch (Exception e) {

@@ -261,7 +261,7 @@ public final class SerenityReporter implements ResultReporter {
      * @return 脱敏后的显示用 URL
      */
     private static String maskUrl(String url) {
-        if (url == null || url.isEmpty()) return url;
+        if (url == null || url.isEmpty())  {return url;} 
 
         // 找到协议后的 authority 部分（scheme://authority/path?query）
         int pathStart = url.indexOf("://");
@@ -322,7 +322,7 @@ public final class SerenityReporter implements ResultReporter {
         // 保留最后 3 个标签
         StringBuilder sb = new StringBuilder();
         for (int i = Math.max(0, parts.length - 3); i < parts.length; i++) {
-            if (sb.length() > 0) sb.append('.');
+            if (sb.length() > 0)  {sb.append('.');} 
             sb.append(parts[i]);
         }
         sb.append(port);

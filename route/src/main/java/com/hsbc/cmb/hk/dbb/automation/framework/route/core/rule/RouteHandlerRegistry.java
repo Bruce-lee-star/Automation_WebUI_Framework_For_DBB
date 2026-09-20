@@ -67,9 +67,9 @@ public final class RouteHandlerRegistry {
     }
 
     private static void ensureLoaded() {
-        if (loaded) return;
+        if (loaded)  {return;} 
         synchronized (RouteHandlerRegistry.class) {
-            if (loaded) return;
+            if (loaded)  {return;} 
             for (String fqn : HANDLER_CLASS_NAMES) {
                 try {
                     Class.forName(fqn);

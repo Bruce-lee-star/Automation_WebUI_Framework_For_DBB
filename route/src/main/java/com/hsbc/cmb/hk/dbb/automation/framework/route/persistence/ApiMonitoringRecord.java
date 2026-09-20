@@ -61,7 +61,7 @@ public class ApiMonitoringRecord {
 
     /** 安全截断响应体（限制最大存储长度） */
     public String safeResponseBody(int maxChars) {
-        if (responseBody == null) return null;
+        if (responseBody == null)  {return null;} 
         return responseBody.length() > maxChars ? responseBody.substring(0, maxChars) : responseBody;
     }
 

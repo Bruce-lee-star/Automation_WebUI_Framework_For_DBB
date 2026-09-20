@@ -15,7 +15,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextSt
 public final class RouteLifecycleOwner {
 
     public static PerContextEngine startContextEngine(BrowserContext context) {
-        if (context == null) throw new IllegalArgumentException("BrowserContext must not be null");
+        if (context == null)  {throw new IllegalArgumentException("BrowserContext must not be null");} 
         return RouteContextState.CONTEXT_ENGINES.compute(context, (ignored, existing) ->
                 existing == null || existing.state() == EngineState.CLOSED
                         ? new PerContextEngine(context) : existing);
@@ -32,7 +32,7 @@ public final class RouteLifecycleOwner {
 
     /** 停止并关闭指定 context 的引擎（仅移除注册 + 优雅关闭，规则/会话清理由调用方负责）。 */
     public static void stopContextEngine(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         PerContextEngine engine = RouteContextState.CONTEXT_ENGINES.remove(context);
         if (engine != null) {
             engine.close();

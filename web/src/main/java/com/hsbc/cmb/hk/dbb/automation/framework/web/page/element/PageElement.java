@@ -11,7 +11,6 @@ import java.util.List;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
-import com.microsoft.playwright.options.BoundingBox;
 import com.microsoft.playwright.options.MouseButton;
 import com.microsoft.playwright.options.SelectOption;
 import com.microsoft.playwright.options.WaitForSelectorState;
@@ -19,7 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Files;
@@ -839,7 +837,7 @@ public class PageElement {
      */
     public PageElement setChecked(boolean target) {
         boolean current = isChecked();
-        if (current == target) return this; // 已满足，无需操作
+        if (current == target)  {return this;}  // 已满足，无需操作
         executeWithRetry(() -> {
             locatorInternal().setChecked(target, new Locator.SetCheckedOptions().setTimeout(opTimeout()));
             return true;

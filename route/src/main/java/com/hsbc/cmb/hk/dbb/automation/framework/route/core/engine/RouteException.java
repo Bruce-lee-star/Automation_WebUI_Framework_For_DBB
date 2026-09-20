@@ -50,8 +50,8 @@ public class RouteException extends RuntimeException {
 
     private static String buildDetail(String message, String urlPattern, String contextId) {
         StringBuilder sb = new StringBuilder(message);
-        if (urlPattern != null) sb.append(" [url=").append(urlPattern).append("]");
-        if (contextId != null) sb.append(" [context=").append(contextId).append("]");
+        if (urlPattern != null)  {sb.append(" [url=").append(urlPattern).append("]");} 
+        if (contextId != null)  {sb.append(" [context=").append(contextId).append("]");} 
         return sb.toString();
     }
 

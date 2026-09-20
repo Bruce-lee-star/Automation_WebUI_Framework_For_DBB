@@ -34,9 +34,9 @@ public final class PageElementList extends AbstractList<PageElement> {
 
     public PageElementList(String selector, BasePage page, List<String> frameSegs) {
         if (selector == null || selector.isBlank())
-            throw new IllegalArgumentException("Selector cannot be null or blank");
+             {throw new IllegalArgumentException("Selector cannot be null or blank");} 
         if (page == null)
-            throw new IllegalArgumentException("BasePage cannot be null");
+             {throw new IllegalArgumentException("BasePage cannot be null");} 
         this.selector = selector;
         this.page = page;
         this.frameSegs = (frameSegs == null || frameSegs.isEmpty()) ? null : new ArrayList<>(frameSegs);
@@ -55,11 +55,11 @@ public final class PageElementList extends AbstractList<PageElement> {
      */
     public PageElementList(Supplier<Locator> locatorSupplier, String description, BasePage page) {
         if (locatorSupplier == null)
-            throw new IllegalArgumentException("Locator supplier cannot be null");
+             {throw new IllegalArgumentException("Locator supplier cannot be null");} 
         if (description == null || description.isBlank())
-            throw new IllegalArgumentException("Description cannot be null or blank");
+             {throw new IllegalArgumentException("Description cannot be null or blank");} 
         if (page == null)
-            throw new IllegalArgumentException("BasePage cannot be null");
+             {throw new IllegalArgumentException("BasePage cannot be null");} 
         this.locatorSupplier = locatorSupplier;
         this.selector = description;
         this.page = page;
@@ -200,7 +200,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     @Override
     public Iterator<PageElement> iterator() {
         int count = size();
-        if (count == 0) return Collections.emptyIterator();
+        if (count == 0)  {return Collections.emptyIterator();} 
 
         return new Iterator<>() {
             private int idx = 0;
@@ -212,7 +212,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
             @Override
             public PageElement next() {
-                if (!hasNext()) throw new NoSuchElementException();
+                if (!hasNext())  {throw new NoSuchElementException();} 
                 return get(idx++);
             }
         };

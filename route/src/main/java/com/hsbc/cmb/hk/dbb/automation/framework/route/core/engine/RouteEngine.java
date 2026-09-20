@@ -1,13 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.regex.Pattern;
@@ -61,7 +59,7 @@ public class RouteEngine {
 
     /** 停止并关闭指定 context 的引擎，清理其规则索引与合并引用。 */
     public static void stopContextEngine(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         //  「context 关闭 → 所有活动立即停止」：先置关闭标记（在途观测/重试链在每个可中断点检查它，
         //  立即放弃而不是空跑至 waitForResponse/body 读超时），再取消在途任务、停引擎、清注册表。
         RouteContextState.markContextClosed(context);
@@ -231,13 +229,13 @@ public class RouteEngine {
                 return null;
             }
         }
-        if (context instanceof BrowserContext) return context;
+        if (context instanceof BrowserContext)  {return context;} 
         return null;
     }
 
     /** 与 registerInternal 一致的 pattern 归一化（补齐 ** 前缀 / 后缀）。 */
     public static String normalizePattern(String urlPattern) {
-        if (urlPattern == null) return null;
+        if (urlPattern == null)  {return null;} 
         String normalized = urlPattern;
         if (!normalized.startsWith("**")) {
             normalized = normalized.startsWith("/") ? "**" + normalized : "**/" + normalized;
@@ -274,7 +272,7 @@ public class RouteEngine {
      * 仅移除该 context 桶，避免并行测试下全局清空误杀其它 Context。
      */
     public static void clearDispatchedRoutes(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         RouteContextState.DISPATCHED_ROUTES.remove(context);
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[RouteEngine] clearDispatchedRoutes(context): cleared bucket for context {}",

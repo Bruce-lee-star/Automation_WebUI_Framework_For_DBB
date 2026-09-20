@@ -187,7 +187,7 @@ public class MonitorFailureCollector {
 
     /** 截断过长的报文，避免单条失败记录占用过多内存（防御性上限，配合 LRU 双重防护）。 */
     private static String cap(String s) {
-        if (s == null) return null;
+        if (s == null)  {return null;} 
         return s.length() > MAX_BODY_LEN ? s.substring(0, MAX_BODY_LEN) + "...[truncated]" : s;
     }
 

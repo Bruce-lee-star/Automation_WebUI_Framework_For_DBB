@@ -59,7 +59,7 @@ public final class ApiCaptureLifecycle {
     /** 解引用当前线程绑定的 BrowserContext；探测到 Context 已关闭时顺手移除 ThreadLocal 条目。 */
     static BrowserContext currentContextOrNull() {
         BrowserContext context = TestContextHolder.get().get(CURRENT_CONTEXT_KEY);
-        if (context == null) return null;
+        if (context == null)  {return null;} 
         if (isContextClosed(context)) {
             TestContextHolder.get().remove(CURRENT_CONTEXT_KEY);
             return null;
@@ -81,7 +81,7 @@ public final class ApiCaptureLifecycle {
 
     /** 将当前测试线程绑定到指定 BrowserContext，供旧兼容 API 正确隔离。 */
     static void bindCurrentContext(BrowserContext context) {
-        if (context == null) TestContextHolder.get().remove(CURRENT_CONTEXT_KEY);
+        if (context == null)  {TestContextHolder.get().remove(CURRENT_CONTEXT_KEY);} 
         else {
             TestContextHolder.get().set(CURRENT_CONTEXT_KEY, context);
             ApiCaptureContext.forContext(context);
@@ -104,7 +104,7 @@ public final class ApiCaptureLifecycle {
 
     /** 启动 BrowserContext 级采集；已有 Page 需随后 attach。 */
     static void start(BrowserContext context) {
-        if (context == null) throw new IllegalArgumentException("BrowserContext must not be null");
+        if (context == null)  {throw new IllegalArgumentException("BrowserContext must not be null");} 
         RouteEngine.startContextEngine(context);
         CONTEXT_PAGES.computeIfAbsent(context, ignored -> ConcurrentHashMap.newKeySet());
         bindCurrentContext(context);
@@ -117,7 +117,7 @@ public final class ApiCaptureLifecycle {
      * 无论从 {@link #start(BrowserContext)} 还是 {@link #start(Page)} 进入都只注册一次。
      */
     private static void registerContextCloseHook(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         if (CONTEXT_CLOSE_REGISTERED.putIfAbsent(context, Boolean.TRUE) == null) {
             context.onClose(ignored -> stop(context));
         }
@@ -125,7 +125,7 @@ public final class ApiCaptureLifecycle {
 
     /** 将 Page 加入所属 BrowserContext 的采集会话。 */
     static void attach(Page page) {
-        if (page == null) throw new IllegalArgumentException("Page must not be null");
+        if (page == null)  {throw new IllegalArgumentException("Page must not be null");} 
         BrowserContext context = page.context();
         start(context);
         start(page);
@@ -134,7 +134,7 @@ public final class ApiCaptureLifecycle {
 
     /** 从 Context 会话中移除 Page，不影响其它 Page。 */
     static void detach(Page page) {
-        if (page == null) return;
+        if (page == null)  {return;} 
         BrowserContext context = null;
         try { context = page.context(); } catch (Exception e) {
             // page 已失效，context 取不到则跳过清理（生命周期收尾期的预期竞争，但不得静默，D7-3）
@@ -144,7 +144,7 @@ public final class ApiCaptureLifecycle {
             Set<Page> pages = CONTEXT_PAGES.get(context);
             if (pages != null) {
                 pages.remove(page);
-                if (pages.isEmpty()) CONTEXT_PAGES.remove(context, pages);
+                if (pages.isEmpty())  {CONTEXT_PAGES.remove(context, pages);} 
             }
         }
         stop(page);
@@ -152,12 +152,12 @@ public final class ApiCaptureLifecycle {
 
     /** 停止 Context 下全部 Page 采集。 */
     static void stop(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         //  与 start(Page)/stop(Page)/stop() 共用 ApiCaptureContext.class 锁，防止并发修改 CONTEXT_PAGES
         synchronized (ApiCaptureContext.class) {
             Set<Page> pages = CONTEXT_PAGES.remove(context);
             if (pages != null) {
-                for (Page page : new ArrayList<>(pages)) stop(page);
+                for (Page page : new ArrayList<>(pages))  {stop(page);} 
             }
             ApiCaptureContext.removeContext(context);
             RouteEngine.stopContextEngine(context);
@@ -262,7 +262,7 @@ public final class ApiCaptureLifecycle {
 
     /** 停止并移除指定 Page 的采集会话，不影响同一 Context 的其它 Page。 */
     static void stop(Page page) {
-        if (page == null) return;
+        if (page == null)  {return;} 
         synchronized (ApiCaptureContext.class) {
             //  清理 Page 级监听器注册标记，允许页面后续被重新 attach 时再次注册 onClose/onResponse
             PAGE_LISTENER_REGISTERED.remove(page);
@@ -283,13 +283,13 @@ public final class ApiCaptureLifecycle {
             // page 已失效，跳过释放避免异常
             return;
         }
-        if (pageContext == null) return;
+        if (pageContext == null)  {return;} 
         // 仍存在同 Context 的活动采集会话 → 保留 Context 级绑定
         for (Map.Entry<BrowserContext, Set<Page>> entry : CONTEXT_PAGES.entrySet()) {
-            if (entry.getKey() == pageContext) continue;
+            if (entry.getKey() == pageContext)  {continue;} 
             for (Page other : entry.getValue()) {
                 try {
-                    if (other.context() == pageContext) return;
+                    if (other.context() == pageContext)  {return;} 
                 } catch (Exception e) {
                     // 其它 Page 已关闭（收尾期预期竞争），记录以便排查，但不得静默（D7-3）
                     LOGGER.debug("[ApiCapture] releaseContextIfOrphaned: skip closed page: {}", e.toString());

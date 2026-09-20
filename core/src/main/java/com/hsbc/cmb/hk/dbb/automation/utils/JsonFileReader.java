@@ -219,24 +219,24 @@ public class JsonFileReader {
         // 文件名已含路径（用户显式指定目录）：classpath 资源优先，文件系统兼容
         if (fileName.contains("/") || fileName.contains("\\")) {
             String fromResources = readFromClasspath(fileName);
-            if (fromResources != null) return fromResources;
+            if (fromResources != null)  {return fromResources;} 
             String fromFs = readFromFilesystem(fileName);
-            if (fromFs != null) return fromFs;
+            if (fromFs != null)  {return fromFs;} 
             logger.error("Mock data file not found: {}", fileName);
             return null;
         }
 
         // classpath 优先；不含路径时额外尝试 .json 后缀（这是两种输入形态的唯一差异）
         String fromResources = readFromClasspath(fileName);
-        if (fromResources != null) return fromResources;
+        if (fromResources != null)  {return fromResources;} 
         fromResources = readFromClasspath(fileName + ".json");
-        if (fromResources != null) return fromResources;
+        if (fromResources != null)  {return fromResources;} 
 
         // 兼容：项目根路径文件系统（按文件名）
         String fromFs = readFromFilesystem(fileName);
-        if (fromFs != null) return fromFs;
+        if (fromFs != null)  {return fromFs;} 
         fromFs = readFromFilesystem(fileName + ".json");
-        if (fromFs != null) return fromFs;
+        if (fromFs != null)  {return fromFs;} 
 
         logger.error("Mock data file not found: {}. Expected in classpath or project-root (with optional .json).", fileName);
         return null;

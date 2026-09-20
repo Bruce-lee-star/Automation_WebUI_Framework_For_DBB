@@ -123,7 +123,7 @@ public final class ApiCaptureManager {
      * <p>{@code context != null}（并发隔离路径）：路由到该 Context 独立存储，多任务不再写入同一全局 store（G3）。
      */
     public void record(CapturedApiCall call, BrowserContext context) {
-        if (!enabled || call == null) return;
+        if (!enabled || call == null)  {return;} 
         if (context != null) {
             ensureApiCaptureStoreForContext(context);
             contextStores.computeIfAbsent(context, k -> new ApiCaptureStore()).record(call);
@@ -132,7 +132,7 @@ public final class ApiCaptureManager {
         ensureApiCaptureStore();
         //  捕获局部引用，避免与场景切换 swap currentStore 之间的 TOCTOU 竞态
         ApiCaptureStore store = currentStore;
-        if (store != null) store.record(call);
+        if (store != null)  {store.record(call);} 
     }
 
     /** 兼容无 Context 兜底入口（SHARED / onResponse 兜底通道）。 */
@@ -158,7 +158,7 @@ public final class ApiCaptureManager {
                                   Map<String, String> requestHeaders,
                                   Map<String, String> responseHeaders,
                                   BrowserContext context) {
-        if (!enabled || url == null) return;
+        if (!enabled || url == null)  {return;} 
         String endpoint = toEndpoint(url);
         CapturedApiCall call = new CapturedApiCall.Builder()
                 .endpoint(endpoint)
@@ -190,7 +190,7 @@ public final class ApiCaptureManager {
                 contextStores.remove(ctx);
                 contextStores.put(ctx, new ApiCaptureStore());
             } else {
-                if (currentStore != null) currentStore.clear();
+                if (currentStore != null)  {currentStore.clear();} 
                 currentStore = new ApiCaptureStore();
             }
             currentApiCaptureScenarioKey = null;
@@ -203,10 +203,10 @@ public final class ApiCaptureManager {
             BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
             if (ctx != null) {
                 ApiCaptureStore s = contextStores.get(ctx);
-                if (s != null) s.clear();
-            } else if (currentStore != null) {
+                if (s != null)  {s.clear();} 
+            } else  {if (currentStore != null) {
                 currentStore.clear();
-            }
+            }} 
         }
     }
 
@@ -231,7 +231,7 @@ public final class ApiCaptureManager {
         BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
         if (ctx != null) {
             ApiCaptureStore s = contextStores.get(ctx);
-            if (s != null) return s;
+            if (s != null)  {return s;} 
         }
         return currentStore;
     }
@@ -239,17 +239,17 @@ public final class ApiCaptureManager {
     /** 懒检测 scenario 切换：节流反射解析，切换时先 clear 旧实例再换新，保证隔离且不累积。 */
     private void ensureApiCaptureStore() {
         long now = System.currentTimeMillis();
-        if (now - lastResolve < 200) return;
+        if (now - lastResolve < 200)  {return;} 
         lastResolve = now;
         String key = resolveScenarioKey();
-        if (key == null) return;
+        if (key == null)  {return;} 
         if (!key.equals(currentApiCaptureScenarioKey)) {
             synchronized (swapLock) {
                 if (!key.equals(currentApiCaptureScenarioKey)) {
-                    if (currentStore != null) currentStore.clear();
+                    if (currentStore != null)  {currentStore.clear();} 
                     currentStore = new ApiCaptureStore();
                     BrowserContext ctx = ApiCaptureLifecycle.currentContextOrNull();
-                    if (ctx != null) contextStores.remove(ctx);
+                    if (ctx != null)  {contextStores.remove(ctx);} 
                     currentApiCaptureScenarioKey = key;
                     LOGGER.debug("[ApiCapture] scenario switched -> '{}', store reset", key);
                 }
@@ -264,14 +264,14 @@ public final class ApiCaptureManager {
     private void ensureApiCaptureStoreForContext(BrowserContext context) {
         long now = System.currentTimeMillis();
         Long last = lastResolveByContext.get(context);
-        if (last != null && now - last < 200) return;
+        if (last != null && now - last < 200)  {return;} 
         lastResolveByContext.put(context, now);
         String key = resolveScenarioKey();
-        if (key == null) return;
+        if (key == null)  {return;} 
         if (!key.equals(currentApiCaptureScenarioKey)) {
             synchronized (swapLock) {
                 if (!key.equals(currentApiCaptureScenarioKey)) {
-                    if (currentStore != null) currentStore.clear();
+                    if (currentStore != null)  {currentStore.clear();} 
                     currentStore = new ApiCaptureStore();
                     contextStores.remove(context);
                     currentApiCaptureScenarioKey = key;
@@ -315,7 +315,7 @@ public final class ApiCaptureManager {
 
     /** 从完整 URL 提取端点（路径+查询，不含 host）。 */
     private static String toEndpoint(String url) {
-        if (url == null) return null;
+        if (url == null)  {return null;} 
         int idx = url.indexOf("://");
         String rest = idx >= 0 ? url.substring(idx + 3) : url;
         int slash = rest.indexOf('/');

@@ -1,5 +1,4 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.provider;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;

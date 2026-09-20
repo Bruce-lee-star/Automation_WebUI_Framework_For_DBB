@@ -196,13 +196,13 @@ public class CapturedApiCall {
 
     /**  修复 R4：对单个 body 字符串按格式脱敏（JSON/XML/form/纯文本统一收口）。 */
     private static String sanitizeBody(String body) {
-        if (body == null || body.isEmpty()) return body;
+        if (body == null || body.isEmpty())  {return body;} 
         return SensitiveDataSanitizer.sanitizeBody(body);
     }
 
     /**  修复 R4：对所有 header 值脱敏（Authorization/Cookie/Set-Cookie 等含凭据）。 */
     private static Map<String, String> sanitizeHeaders(Map<String, String> headers) {
-        if (headers == null || headers.isEmpty()) return Collections.emptyMap();
+        if (headers == null || headers.isEmpty())  {return Collections.emptyMap();} 
         Map<String, String> sanitized = new HashMap<>(headers.size());
         for (Map.Entry<String, String> e : headers.entrySet()) {
             String v = e.getValue();
@@ -342,7 +342,7 @@ public class CapturedApiCall {
      * @return 提取的字段值，路径无效返回 null
      */
     public Object json(String jsonPath) {
-        if (jsonPath == null) return null;
+        if (jsonPath == null)  {return null;} 
         // 优先从响应体解析
         if (responseBody != null) {
             try {
@@ -373,7 +373,7 @@ public class CapturedApiCall {
      * @return 提取的字段值，无修改详情或不匹配时返回 null
      */
     public Object modifyDetailJson(String jsonPath) {
-        if (jsonPath == null || modifyDetail == null) return null;
+        if (jsonPath == null || modifyDetail == null)  {return null;} 
         try {
             return JsonPath.parse(modifyDetail).read(jsonPath);
         } catch (Exception e) {
@@ -395,7 +395,7 @@ public class CapturedApiCall {
      */
     @SuppressWarnings("unchecked")
     public <T> T json(String jsonPath, Class<T> type) {
-        if (jsonPath == null) return null;
+        if (jsonPath == null)  {return null;} 
         if (responseBody != null) {
             try {
                 return getOrParseDocument().read(jsonPath, type);
@@ -468,10 +468,10 @@ public class CapturedApiCall {
     // ═══════════════════════════════════════════════════════════
 
     private static String findHeader(Map<String, String> headers, String name) {
-        if (name == null || headers == null) return null;
+        if (name == null || headers == null)  {return null;} 
         // 精确匹配
         String value = headers.get(name);
-        if (value != null) return value;
+        if (value != null)  {return value;} 
         // 大小写不敏感匹配
         for (Map.Entry<String, String> e : headers.entrySet()) {
             if (e.getKey().equalsIgnoreCase(name)) {

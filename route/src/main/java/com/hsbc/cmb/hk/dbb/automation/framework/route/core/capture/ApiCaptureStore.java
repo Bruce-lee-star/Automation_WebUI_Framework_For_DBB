@@ -43,9 +43,9 @@ public class ApiCaptureStore {
      * @param call 调用快照（已携带正确的 {@code handleType}）
      */
     public void record(CapturedApiCall call) {
-        if (call == null) return;
+        if (call == null)  {return;} 
         String endpoint = call.endpoint();
-        if (endpoint == null) return;
+        if (endpoint == null)  {return;} 
         String url = call.requestUrl();
 
         //  去重：onResponse 兜底（MONITOR）若遇到 Handler 已记录的「更丰富」调用则跳过，
@@ -91,25 +91,25 @@ public class ApiCaptureStore {
 
     /** 按请求 URL 精确获取最近一次调用。 */
     public CapturedApiCall getCallByUrl(String url) {
-        if (url == null) return null;
+        if (url == null)  {return null;} 
         List<CapturedApiCall> list = byUrl.get(url);
         return (list != null && !list.isEmpty()) ? list.get(list.size() - 1) : null;
     }
 
     /** 按请求 URL 获取全部历史。 */
     public List<CapturedApiCall> getCallsByUrl(String url) {
-        if (url == null) return Collections.emptyList();
+        if (url == null)  {return Collections.emptyList();} 
         List<CapturedApiCall> list = byUrl.get(url);
         return list != null ? new ArrayList<>(list) : Collections.emptyList();
     }
 
     /** 按能力类型（MOCK / MODIFY / DELAY / MONITOR）获取全部快照（按时间升序）。 */
     public List<CapturedApiCall> getAllByType(RouteHandleType type) {
-        if (type == null) return Collections.emptyList();
+        if (type == null)  {return Collections.emptyList();} 
         List<CapturedApiCall> result = new ArrayList<>();
         for (List<CapturedApiCall> list : byEndpoint.values()) {
             for (CapturedApiCall c : list) {
-                if (c != null && c.handleType() == type) result.add(c);
+                if (c != null && c.handleType() == type)  {result.add(c);} 
             }
         }
         result.sort(Comparator.comparingLong(CapturedApiCall::timestamp));
@@ -124,7 +124,7 @@ public class ApiCaptureStore {
         }
         for (List<CapturedApiCall> list : byEndpoint.values()) {
             for (CapturedApiCall c : list) {
-                if (c != null) grouped.get(c.handleType()).add(c);
+                if (c != null)  {grouped.get(c.handleType()).add(c);} 
             }
         }
         for (List<CapturedApiCall> l : grouped.values()) {
@@ -147,7 +147,7 @@ public class ApiCaptureStore {
         int total = 0;
         for (List<CapturedApiCall> list : byEndpoint.values()) {
             for (CapturedApiCall c : list) {
-                if (c != null && c.responseBody() != null) total++;
+                if (c != null && c.responseBody() != null)  {total++;} 
             }
         }
         return total;

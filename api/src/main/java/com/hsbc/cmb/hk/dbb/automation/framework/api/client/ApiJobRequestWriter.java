@@ -169,45 +169,45 @@ final class ApiJobRequestWriter {
 
     public void clearHeader() {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("clear headers")) return;
+        if (!entityAvailable("clear headers"))  {return;} 
         clearMapField(entity::setRequestHeaders, "request headers");
     }
 
     public void clearQueryParams() {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("clear query params")) return;
+        if (!entityAvailable("clear query params"))  {return;} 
         clearMapField(entity::setQueryParams, "query parameters");
     }
 
     public void clearFormParams() {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("clear form params")) return;
+        if (!entityAvailable("clear form params"))  {return;} 
         clearMapField(entity::setFormParams, "form parameters");
     }
 
     public void clearCookies() {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("clear cookies")) return;
+        if (!entityAvailable("clear cookies"))  {return;} 
         clearMapField(entity::setCookies, "cookies");
     }
 
     public void removeHeader(final String headerName) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove header")) return;
+        if (!entityAvailable("remove header"))  {return;} 
         modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
                 m -> m.remove(headerName), "Removed", "header: " + headerName);
     }
 
     public void removeHeaders(final List<String> headerNames) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove headers")) return;
+        if (!entityAvailable("remove headers"))  {return;} 
         modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
                 m -> headerNames.forEach(m::remove), "Removed", "headers: " + headerNames);
     }
 
     public void updateHeader(final String headerName, final String headerValue) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update header")) return;
+        if (!entityAvailable("update header"))  {return;} 
         modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
                 m -> m.put(headerName, headerValue), "Updated",
                 String.format("header '%s'='%s'", headerName, headerValue));
@@ -215,28 +215,28 @@ final class ApiJobRequestWriter {
 
     public void updateHeaders(final Map<String, String> headers) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update headers")) return;
+        if (!entityAvailable("update headers"))  {return;} 
         modifyMapField(entity::getRequestHeaders, entity::setRequestHeaders,
                 m -> m.putAll(headers), "Updated", "headers batch");
     }
 
     public void removePathParam(final String paramName) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove path param")) return;
+        if (!entityAvailable("remove path param"))  {return;} 
         modifyMapField(entity::getPathParams, entity::setPathParams,
                 m -> m.remove(paramName), "Removed", "path param: " + paramName);
     }
 
     public void removePathParams(final List<String> paramNames) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove path params")) return;
+        if (!entityAvailable("remove path params"))  {return;} 
         modifyMapField(entity::getPathParams, entity::setPathParams,
                 m -> paramNames.forEach(m::remove), "Removed", "path params: " + paramNames);
     }
 
     public void updatePathParam(final String paramName, final String paramValue) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update path param")) return;
+        if (!entityAvailable("update path param"))  {return;} 
         modifyMapField(entity::getPathParams, entity::setPathParams,
                 m -> m.put(paramName, paramValue), "Updated",
                 String.format("path param '%s'='%s'", paramName, paramValue));
@@ -244,34 +244,34 @@ final class ApiJobRequestWriter {
 
     public void updatePathParams(final Map<String, String> params) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update path params")) return;
+        if (!entityAvailable("update path params"))  {return;} 
         modifyMapField(entity::getPathParams, entity::setPathParams,
                 m -> m.putAll(params), "Updated", "path params batch");
     }
 
     public void clearPathParams() {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("clear path params")) return;
+        if (!entityAvailable("clear path params"))  {return;} 
         clearMapField(entity::setPathParams, "path parameters");
     }
 
     public void removeQueryParam(final String paramName) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove query param")) return;
+        if (!entityAvailable("remove query param"))  {return;} 
         modifyMapField(entity::getQueryParams, entity::setQueryParams,
                 m -> m.remove(paramName), "Removed", "query param: " + paramName);
     }
 
     public void removeQueryParams(final List<String> paramNames) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove query params")) return;
+        if (!entityAvailable("remove query params"))  {return;} 
         modifyMapField(entity::getQueryParams, entity::setQueryParams,
                 m -> paramNames.forEach(m::remove), "Removed", "query params: " + paramNames);
     }
 
     public void updateQueryParam(final String paramName, final String paramValue) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update query param")) return;
+        if (!entityAvailable("update query param"))  {return;} 
         modifyMapField(entity::getQueryParams, entity::setQueryParams,
                 m -> m.put(paramName, paramValue), "Updated",
                 String.format("query param '%s'='%s'", paramName, paramValue));
@@ -279,28 +279,28 @@ final class ApiJobRequestWriter {
 
     public void updateQueryParams(final Map<String, String> params) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update query params")) return;
+        if (!entityAvailable("update query params"))  {return;} 
         modifyMapField(entity::getQueryParams, entity::setQueryParams,
                 m -> m.putAll(params), "Updated", "query params batch");
     }
 
     public void removeFormParam(final String paramName) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove form param")) return;
+        if (!entityAvailable("remove form param"))  {return;} 
         modifyMapField(entity::getFormParams, entity::setFormParams,
                 m -> m.remove(paramName), "Removed", "form param: " + paramName);
     }
 
     public void removeFormParams(final List<String> paramNames) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove form params")) return;
+        if (!entityAvailable("remove form params"))  {return;} 
         modifyMapField(entity::getFormParams, entity::setFormParams,
                 m -> paramNames.forEach(m::remove), "Removed", "form params: " + paramNames);
     }
 
     public void updateFormParam(final String paramName, final String paramValue) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update form param")) return;
+        if (!entityAvailable("update form param"))  {return;} 
         modifyMapField(entity::getFormParams, entity::setFormParams,
                 m -> m.put(paramName, paramValue), "Updated",
                 String.format("form param '%s'='%s'", paramName, paramValue));
@@ -308,28 +308,28 @@ final class ApiJobRequestWriter {
 
     public void updateFormParams(final Map<String, String> params) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update form params")) return;
+        if (!entityAvailable("update form params"))  {return;} 
         modifyMapField(entity::getFormParams, entity::setFormParams,
                 m -> m.putAll(params), "Updated", "form params batch");
     }
 
     public void removeCookieParam(final String paramName) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove cookie param")) return;
+        if (!entityAvailable("remove cookie param"))  {return;} 
         modifyMapField(entity::getCookies, entity::setCookies,
                 m -> m.remove(paramName), "Removed", "cookie: " + paramName);
     }
 
     public void removeCookieParams(final List<String> paramNames) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("remove cookie params")) return;
+        if (!entityAvailable("remove cookie params"))  {return;} 
         modifyMapField(entity::getCookies, entity::setCookies,
                 m -> paramNames.forEach(m::remove), "Removed", "cookies: " + paramNames);
     }
 
     public void updateCookieParam(final String paramName, final String paramValue) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update cookie param")) return;
+        if (!entityAvailable("update cookie param"))  {return;} 
         modifyMapField(entity::getCookies, entity::setCookies,
                 m -> m.put(paramName, paramValue), "Updated",
                 String.format("cookie '%s'='%s'", paramName, paramValue));
@@ -337,7 +337,7 @@ final class ApiJobRequestWriter {
 
     public void updateCookieParams(final Map<String, String> params) {
         Entity entity = owner.getEntity();
-        if (!entityAvailable("update cookie params")) return;
+        if (!entityAvailable("update cookie params"))  {return;} 
         modifyMapField(entity::getCookies, entity::setCookies,
                 m -> m.putAll(params), "Updated", "cookies batch");
     }

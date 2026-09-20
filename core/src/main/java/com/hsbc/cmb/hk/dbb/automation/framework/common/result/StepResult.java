@@ -60,8 +60,8 @@ public final class StepResult {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof StepResult)) return false;
+        if (this == o)  {return true;} 
+        if (!(o instanceof StepResult))  {return false;} 
         StepResult that = (StepResult) o;
         return startTimeMs == that.startTimeMs
                 && durationMs == that.durationMs

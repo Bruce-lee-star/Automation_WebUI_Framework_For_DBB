@@ -436,7 +436,7 @@ public abstract class BasePage {
         PageElement pe = element(selector);
         pe.focus();
         String current = pe.getValue();
-        if (current == null) current = "";
+        if (current == null)  {current = "";} 
         pe.fill(current + text);
     }
 

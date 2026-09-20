@@ -1,5 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.core;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.core;
+
 
 import com.microsoft.playwright.BrowserContext;
 

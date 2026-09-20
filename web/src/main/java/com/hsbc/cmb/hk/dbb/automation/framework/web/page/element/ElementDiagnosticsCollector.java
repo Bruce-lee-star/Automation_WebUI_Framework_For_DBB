@@ -244,7 +244,7 @@ public class ElementDiagnosticsCollector {
 
     private static int getInt(Map<String, Object> map, String key) {
         Object v = map.get(key);
-        if (v instanceof Number) return ((Number) v).intValue();
+        if (v instanceof Number)  {return ((Number) v).intValue();} 
         return 0;
     }
 

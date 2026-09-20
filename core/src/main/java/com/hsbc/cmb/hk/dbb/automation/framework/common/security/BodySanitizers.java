@@ -146,7 +146,7 @@ final class BodySanitizers {
                 if (SanitizerRules.INSTANCE.isBodyKey(field)) {
                     // 命中：整棵子树替换为掩码（对象/数组/标量一律）
                     obj.put(field, SanitizerRules.MASK);
-                } else if (obj.get(field).isValueNode()
+                } else  {if (obj.get(field).isValueNode()
                         && SanitizerRules.INSTANCE.isValueSensitive(obj.get(field).asText())) {
                     // 字段名非敏感但值本身形如 PAN/IBAN/HKID/轨道数据 → 按值脱敏
                     obj.put(field, SanitizerRules.MASK);
@@ -157,9 +157,9 @@ final class BodySanitizers {
                         // 修复 R3：超深子节点整体删除，避免深嵌套敏感值出域
                         obj.remove(field);
                     }
-                }
+                }} 
             }
-        } else if (node.isArray()) {
+        } else  {if (node.isArray()) {
             ArrayNode arr = (ArrayNode) node;
             for (int i = 0; i < arr.size(); i++) {
                 JsonNode child = arr.get(i);
@@ -173,7 +173,7 @@ final class BodySanitizers {
                     }
                 }
             }
-        }
+        }} 
         // 标量节点：无 key 上下文，由父层决定是否遮蔽
     }
 
@@ -197,7 +197,7 @@ final class BodySanitizers {
                     maskNodeDeep(child);
                 }
             }
-        } else if (node.isArray()) {
+        } else  {if (node.isArray()) {
             ArrayNode arr = (ArrayNode) node;
             for (int i = 0; i < arr.size(); i++) {
                 JsonNode child = arr.get(i);
@@ -207,7 +207,7 @@ final class BodySanitizers {
                     maskNodeDeep(child);
                 }
             }
-        }
+        }} 
     }
 
     /** 超深中断信号：仅用于 unwind 调用栈，不对外抛出。 */

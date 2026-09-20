@@ -87,7 +87,7 @@ public final class PerContextEngine {
      * 请求必被放行，线程即时归还。
      */
     public void close() {
-        if (state != EngineState.RUNNING) return;
+        if (state != EngineState.RUNNING)  {return;} 
         state = EngineState.CLOSING;
 
         //  顺序很关键：必须在池【仍处于 RUNNING】时取出并执行待发的 DELAY 任务。

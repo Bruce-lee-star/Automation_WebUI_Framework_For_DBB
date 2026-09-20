@@ -24,10 +24,8 @@ import java.util.concurrent.ExecutionException;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyPartitionKey;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import java.util.concurrent.ExecutionException;
 
 /**
@@ -925,4 +923,3 @@ public class SessionManager {
         }
     }
 }
-

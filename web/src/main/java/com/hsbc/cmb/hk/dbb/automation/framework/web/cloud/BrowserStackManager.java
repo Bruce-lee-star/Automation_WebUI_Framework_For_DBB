@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.cloud;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
@@ -276,7 +275,7 @@ public class BrowserStackManager {
      */
     public static String getCurrentSessionUrl() {
         String url = TestContextHolder.get().get(SESSION_URL_KEY);
-        if (url != null) return url;
+        if (url != null)  {return url;} 
         String id = TestContextHolder.get().get(SESSION_ID_KEY);
         return id != null ? getSessionDashboardUrl(id) : null;
     }
@@ -412,7 +411,7 @@ public class BrowserStackManager {
      */
     private static String resolveBrowserName() {
         String raw = getStringValue(WebFrameworkConfig.BROWSERSTACK_BROWSER_NAME, "chrome");
-        if (raw == null || raw.trim().isEmpty()) return "chrome";
+        if (raw == null || raw.trim().isEmpty())  {return "chrome";} 
 
         String normalized = raw.trim().toLowerCase();
         // 别名映射
@@ -431,7 +430,7 @@ public class BrowserStackManager {
      * 判断是否为 Chromium 系浏览器（使用 CDP 协议连接）。
      */
     private static boolean isChromiumBrowser(String browserName) {
-        if (browserName == null) return true;
+        if (browserName == null)  {return true;} 
         switch (browserName.toLowerCase()) {
             case "chrome":
             case "chromium":
@@ -463,11 +462,11 @@ public class BrowserStackManager {
                     + "tunnel connects via proxy ({}), "
                     + "Playwright wss:// connects to cloud endpoint (force.local=true routes traffic through tunnel).",
                     ProxyConfigResolver.sanitizeProxyUrlForLog(localProxy));
-        } else if (localEnabled) {
+        } else  {if (localEnabled) {
             logger.info("[BrowserStack] Local tunnel mode: "
                     + "tunnel connects directly (no proxy configured), "
                     + "Playwright wss:// connects to cloud endpoint (force.local=true routes traffic through tunnel).");
-        } else if (localProxy != null) {
+        } else  {if (localProxy != null) {
             String endpoint = FrameworkConfigManager.getString(WebFrameworkConfig.BROWSERSTACK_CDP_ENDPOINT);
             if (endpoint == null || endpoint.trim().isEmpty()) {
                 endpoint = "cdp.browserstack.com";
@@ -488,7 +487,7 @@ public class BrowserStackManager {
                     + "wss:// connection to {} may fail in corporate networks. "
                     + "Recommend enabling browserstack.local=true.",
                     endpoint);
-        }
+        }} } 
     }
 
     /** 构建 Basic Auth Header（BrowserStack 鉴权 + 代理鉴权） */
@@ -614,11 +613,11 @@ public class BrowserStackManager {
     private static String getConfigValue(String envVar, WebFrameworkConfig configKey) {
         // 1. 环境变量
         String envVal = System.getenv(envVar);
-        if (envVal != null && !envVal.isEmpty()) return envVal;
+        if (envVal != null && !envVal.isEmpty())  {return envVal;} 
         
         // 2. 系统属性 (-D参数)
         String sysProp = System.getProperty(envVar.toLowerCase().replace("_", "."));
-        if (sysProp != null && !sysProp.isEmpty()) return sysProp;
+        if (sysProp != null && !sysProp.isEmpty())  {return sysProp;} 
         
         // 3. 配置文件
         return configKey != null ? FrameworkConfigManager.getString(configKey) : null;
@@ -643,7 +642,7 @@ public class BrowserStackManager {
 
     private static boolean getBooleanEnv(String envVar, WebFrameworkConfig configKey, boolean defaultVal) {
         String envVal = System.getenv(envVar);
-        if (envVal != null && !envVal.isEmpty()) return Boolean.parseBoolean(envVal);
+        if (envVal != null && !envVal.isEmpty())  {return Boolean.parseBoolean(envVal);} 
         if (configKey != null) {
             try { return FrameworkConfigManager.getBoolean(configKey); } catch (Exception e) {
                 logger.debug("[BrowserStack] Failed to read boolean config: {}", configKey.name());
@@ -659,7 +658,7 @@ public class BrowserStackManager {
     }
 
     private static String maskCdpUrl(String url) {
-        if (url == null) return null;
+        if (url == null)  {return null;} 
         //  修复 R8：统一委托 RouteUtil.sanitizeUrl（含 query 敏感 key 剥离 + 解析失败兜底掩码），
         // 不再维护独立正则，避免与框架其它出域路径的脱敏策略漂移。
         String masked = RouteLifecycleRegistry.get().sanitizeUrl(url);
@@ -698,7 +697,7 @@ public class BrowserStackManager {
                 m.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(m.group(1) + reencoded));
                 lastEnd = m.end();
             }
-            if (lastEnd == 0) return url;
+            if (lastEnd == 0)  {return url;} 
             m.appendTail(sb);
             return sb.toString();
         } catch (Exception e) {
@@ -715,7 +714,7 @@ public class BrowserStackManager {
      * 不再维护 BrowserStack 私有的双套正则，避免与全局脱敏策略漂移。
      */
     public static String sanitizeMessage(String message) {
-        if (message == null || message.isEmpty()) return message;
+        if (message == null || message.isEmpty())  {return message;} 
         return com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer
                 .sanitizeFreeText(message);
     }
@@ -725,7 +724,7 @@ public class BrowserStackManager {
      * <p>匹配常见 DNS 相关错误关键词，用于给出代理配置建议。
      */
     private static boolean isLikelyDnsFailure(String message) {
-        if (message == null) return false;
+        if (message == null)  {return false;} 
         String lower = message.toLowerCase();
         return lower.contains("unknownhostexception")
                 || lower.contains("namenotfound")
@@ -747,13 +746,13 @@ public class BrowserStackManager {
     }
 
     private static String sanitizeStatus(String status) {
-        if ("passed".equalsIgnoreCase(status)) return "passed";
-        if ("failed".equalsIgnoreCase(status) || "error".equalsIgnoreCase(status)) return "failed";
+        if ("passed".equalsIgnoreCase(status))  {return "passed";} 
+        if ("failed".equalsIgnoreCase(status) || "error".equalsIgnoreCase(status))  {return "failed";} 
         return "passed"; // 默认
     }
 
     private static String truncate(String str, int maxLen) {
-        if (str == null) return "";
+        if (str == null)  {return "";} 
         return str.length() > maxLen ? str.substring(0, maxLen) + "..." : str;
     }
 
@@ -797,7 +796,7 @@ public class BrowserStackManager {
             String httpProxy = ProxyConfigResolver.getHttpProxyUrl();
             String httpsProxy = ProxyConfigResolver.getHttpsProxyUrl();
             if (httpProxy != null || httpsProxy != null) {
-                if (httpProxy != null) env.put("HTTP_PROXY", httpProxy);
+                if (httpProxy != null)  {env.put("HTTP_PROXY", httpProxy);} 
                 if (httpsProxy != null) {
                     env.put("HTTPS_PROXY", httpsProxy);
                 } else {

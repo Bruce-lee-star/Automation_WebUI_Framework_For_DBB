@@ -35,7 +35,7 @@ public final class ApiCallAwaiter {
 
     /** 注销等待器（幂等）。 */
     void unregister(CompletableFuture<CapturedApiCall> waiter) {
-        if (waiter == null) return;
+        if (waiter == null)  {return;} 
         synchronized (lock) {
             waiters.remove(waiter);
         }
@@ -47,7 +47,7 @@ public final class ApiCallAwaiter {
      */
     void deliver(CapturedApiCall call) {
         synchronized (lock) {
-            if (waiters.isEmpty()) return;
+            if (waiters.isEmpty())  {return;} 
             Iterator<Map.Entry<CompletableFuture<CapturedApiCall>, Predicate<CapturedApiCall>>> it =
                     waiters.entrySet().iterator();
             while (it.hasNext()) {
@@ -64,7 +64,7 @@ public final class ApiCallAwaiter {
     /** 重置：所有等待器立即以 null 完成（调用方返回 null），避免空等至超时；随后清空注册表。 */
     void reset() {
         synchronized (lock) {
-            if (waiters.isEmpty()) return;
+            if (waiters.isEmpty())  {return;} 
             for (CompletableFuture<CapturedApiCall> f : waiters.keySet()) {
                 f.complete(null);
             }

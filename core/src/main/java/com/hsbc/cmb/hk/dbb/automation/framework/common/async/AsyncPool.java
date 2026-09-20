@@ -170,7 +170,7 @@ public final class AsyncPool {
     }
 
     private static void submitTask(Runnable task, long timeoutMs) {
-        if (task == null) return;
+        if (task == null)  {return;} 
         // N-10：捕获提交线程上下文，供工作线程恢复（执行后由 runWithContext 复位，隔离保留）
         final CapturedContext captured = TestContextHolder.capture();
         // C-5：捕获提交线程 MDC（日志诊断上下文：scenarioId / traceId / requestId 等），
@@ -231,7 +231,7 @@ public final class AsyncPool {
 
     /** 延迟 delayMs 毫秒后执行（单次）。 */
     public static ScheduledFuture<?> schedule(Runnable task, long delayMs) {
-        if (task == null) return null;
+        if (task == null)  {return null;} 
         long pending = pendingScheduleCount.incrementAndGet();
         // C-5：捕获提交线程 MDC，调度线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
@@ -251,7 +251,7 @@ public final class AsyncPool {
 
     /** 固定延迟周期执行（initialDelay 后首次，之后每 delayMs 一次）。 */
     public static ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, long initialDelayMs, long delayMs) {
-        if (task == null) return null;
+        if (task == null)  {return null;} 
         return SCHEDULER.scheduleWithFixedDelay(task, initialDelayMs, delayMs, TimeUnit.MILLISECONDS);
     }
 
@@ -319,10 +319,10 @@ public final class AsyncPool {
                     String.format("%.1f%%", queueUsage * 100),
                     String.format("%.1f%%", QUEUE_USAGE_ALERT_THRESHOLD * 100),
                     queueSize, QUEUE_CAPACITY, activeCount, poolSize, MAX_THREADS);
-        } else if (queueUsage >= QUEUE_USAGE_ALERT_THRESHOLD * 0.7) {
+        } else  {if (queueUsage >= QUEUE_USAGE_ALERT_THRESHOLD * 0.7) {
             LOGGER.warn("[AsyncPool] WARNING: Queue usage {} approaching threshold. Queue: {}/{}, Active: {}",
                     String.format("%.1f%%", queueUsage * 100), queueSize, QUEUE_CAPACITY, activeCount);
-        }
+        }} 
         if (threadUsage >= THREAD_USAGE_ALERT_THRESHOLD) {
             LOGGER.error("[AsyncPool] ALERT: Thread usage {} exceeds threshold {}. Active: {}, Pool: {}/{}",
                     String.format("%.1f%%", threadUsage * 100),
@@ -333,10 +333,10 @@ public final class AsyncPool {
         if (pending >= MAX_PENDING_TIMEOUTS) {
             LOGGER.error("[AsyncPool] ALERT: Pending timeouts ({}) exceeded max ({}). Completed: {}, Timeouts: {}",
                     pending, MAX_PENDING_TIMEOUTS, completedTaskCount.get(), timeoutCount.get());
-        } else if (pending >= MAX_PENDING_TIMEOUTS * 0.7) {
+        } else  {if (pending >= MAX_PENDING_TIMEOUTS * 0.7) {
             LOGGER.warn("[AsyncPool] WARNING: Pending timeouts ({}) approaching max ({}). Completed: {}, Timeouts: {}",
                     pending, MAX_PENDING_TIMEOUTS, completedTaskCount.get(), timeoutCount.get());
-        }
+        }} 
     }
 
     private static void checkThresholdsAfterTimeout() {
@@ -349,7 +349,7 @@ public final class AsyncPool {
     // ─── 优雅关闭 ──────────────────────────────────────────────
 
     private static void shutdownGracefully() {
-        if (POOL.isShutdown()) return;
+        if (POOL.isShutdown())  {return;} 
         LOGGER.info("[AsyncPool] Shutting down (active: {}, queue: {}, completed: {}, timeouts: {}, pendingTimeouts: {}, pendingSched: {})...",
                 POOL.getActiveCount(), POOL.getQueue().size(), completedTaskCount.get(),
                 timeoutCount.get(), pendingTimeoutCount.get(), pendingScheduleCount.get());
@@ -448,7 +448,7 @@ public final class AsyncPool {
      * task 为 null 静默跳过。
      */
     public static void runOnMonitorCallbackThread(Runnable task) {
-        if (task == null) return;
+        if (task == null)  {return;} 
         // C-5：捕获提交线程 MDC，monitor 串行线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         //  修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
@@ -492,7 +492,7 @@ public final class AsyncPool {
     // （toEnvKey("ASYNC_CORE_THREADS") == "ASYNC_CORE_THREADS"），对现网零变更。
     private static int getEnvInt(String key, int defaultValue) {
         String val = ConfigSource.resolve(key, null);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Integer.parseInt(val.trim());
         } catch (NumberFormatException e) {
@@ -503,7 +503,7 @@ public final class AsyncPool {
 
     private static long getEnvLong(String key, long defaultValue) {
         String val = ConfigSource.resolve(key, null);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Long.parseLong(val.trim());
         } catch (NumberFormatException e) {
@@ -514,7 +514,7 @@ public final class AsyncPool {
 
     private static double getEnvDouble(String key, double defaultValue) {
         String val = ConfigSource.resolve(key, null);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             double parsed = Double.parseDouble(val.trim());
             // 防御：拒绝 NaN / ±Infinity（如误配 "NaN"/"Infinity"），回退默认值（修复 L3）

@@ -2,6 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.core.context;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 用例级上下文绑定（CORE-P0-2 演进 / 评审08类-5 / C-1 / X-2）。
@@ -21,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 线程键保留为无用例绑定的兜底（异步线程 / {@code @BeforeClass} / 纯单测）。
  */
 public final class ScenarioContext {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ScenarioContext.class);
 
     private static final Map<String, TestContext> SCENARIO_CONTEXTS = new ConcurrentHashMap<>();
     private static final ThreadLocal<String> CURRENT = new ThreadLocal<>();
@@ -92,7 +96,9 @@ public final class ScenarioContext {
             try {
                 ctx.clear();
             } catch (Throwable ignored) {
-                // 单个清理异常不影响整体兜底
+                // 单个清理异常不影响整体兜底（留痕，不得静默，D7-3）
+                LOGGER.debug("[ScenarioContext] clear failed for one context, continue: {}",
+                        ignored.toString());
             }
         });
         SCENARIO_CONTEXTS.clear();

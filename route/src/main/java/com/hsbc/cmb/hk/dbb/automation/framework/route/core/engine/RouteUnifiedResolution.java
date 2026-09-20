@@ -48,13 +48,13 @@ public final class RouteUnifiedResolution {
      * @return 有效规则；链为空返回 null
      */
     private static RouteRule resolveChain(List<RouteRule> chain) {
-        if (chain == null || chain.isEmpty()) return null;
+        if (chain == null || chain.isEmpty())  {return null;} 
         RouteRule head = chain.get(0);
-        if (chain.size() == 1) return head;
+        if (chain.size() == 1)  {return head;} 
         RouteRule effective = head.copyForMerge();
         for (int i = 1; i < chain.size(); i++) {
             RouteRule r = chain.get(i);
-            if (r == null) continue;
+            if (r == null)  {continue;} 
             effective.mergeFrom(r);
             // MOCK 终结提升（对齐跨层规则）：链上任一规则为 MOCK → 有效规则 type=MOCK
             if (r.getType() == RouteHandleType.MOCK) {
@@ -133,11 +133,11 @@ public final class RouteUnifiedResolution {
      * @return 统一解析结果；无任何适用规则时返回 null
      */
     public static RouteEngine.ResolvedUnified resolveUnified(List<RouteRule> chain, Object reqPage) {
-        if (chain == null || chain.isEmpty()) return null;
+        if (chain == null || chain.isEmpty())  {return null;} 
         List<RouteRule> pageChain = new java.util.ArrayList<>();
         List<RouteRule> ctxChain = new java.util.ArrayList<>();
         for (RouteRule r : chain) {
-            if (r == null) continue;
+            if (r == null)  {continue;} 
             if (r.getScope() == RouteRuleScope.PAGE) {
                 Object pr = r.getPageRef();
                 //  身份匹配：page 级规则只作用于其注册时所绑定的那个 Page；reqPage 为 null 时一律不命中。
@@ -150,18 +150,18 @@ public final class RouteUnifiedResolution {
                 ctxChain.add(r);
             }
         }
-        if (pageChain.isEmpty() && ctxChain.isEmpty()) return null;
+        if (pageChain.isEmpty() && ctxChain.isEmpty())  {return null;} 
 
         if (!pageChain.isEmpty() && !ctxChain.isEmpty()) {
             RouteEngine.CrossLayerMergeResult m = mergeCrossLayer(resolveChain(pageChain), ctxChain);
             return new RouteEngine.ResolvedUnified(m.rule, m.delayMs);
-        } else if (!pageChain.isEmpty()) {
+        } else  {if (!pageChain.isEmpty()) {
             RouteRule eff = resolveChain(pageChain);
             return new RouteEngine.ResolvedUnified(eff, eff.getDelayMs());
         } else {
             RouteRule eff = resolveChain(ctxChain);
             return new RouteEngine.ResolvedUnified(eff, eff.getDelayMs());
-        }
+        }} 
     }
 
     /**

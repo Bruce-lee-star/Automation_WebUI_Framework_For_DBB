@@ -80,7 +80,7 @@ public final class ProxyConfigResolver {
      * <p>返回 null 时表示未配置代理。
      */
     public static String sanitizeProxyUrlForLog(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         // 匹配 scheme://user:secret@host — secret 可含 %-encoded 字符
         return proxyUrl.replaceAll("(https?://)([^:]+):([^@]+)@", "$1$2:****@");
     }
@@ -93,7 +93,7 @@ public final class ProxyConfigResolver {
      * <p>内部使用 {@link URI} 解析，正确处置编码凭证、IPv6 等边界。
      */
     public static String extractHost(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         URI uri = parseLenient(proxyUrl);
         return uri != null ? uri.getHost() : extractHostFallback(proxyUrl);
     }
@@ -102,9 +102,9 @@ public final class ProxyConfigResolver {
      * 从代理 URL 提取端口号。
      */
     public static String extractPort(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         URI uri = parseLenient(proxyUrl);
-        if (uri == null) return extractPortFallback(proxyUrl);
+        if (uri == null)  {return extractPortFallback(proxyUrl);} 
         int port = uri.getPort();
         return port >= 0 ? String.valueOf(port) : null;
     }
@@ -115,11 +115,11 @@ public final class ProxyConfigResolver {
      * 按第一个字面 {@code :} 切分后再分别解码，因此避开了密码中编码 {@code :} 的歧义。
      */
     public static String extractUser(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         URI uri = parseLenient(proxyUrl);
-        if (uri == null) return extractUserFallback(proxyUrl);
+        if (uri == null)  {return extractUserFallback(proxyUrl);} 
         String rawInfo = uri.getRawUserInfo();
-        if (rawInfo == null) return null;
+        if (rawInfo == null)  {return null;} 
         int colon = rawInfo.indexOf(':');
         return colon >= 0 ? urlDecode(rawInfo.substring(0, colon)) : urlDecode(rawInfo);
     }
@@ -128,11 +128,11 @@ public final class ProxyConfigResolver {
      * 从代理 URL 提取密码（已 URL 解码，含特殊字符的原始值）。
      */
     public static String extractPass(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         URI uri = parseLenient(proxyUrl);
-        if (uri == null) return extractPassFallback(proxyUrl);
+        if (uri == null)  {return extractPassFallback(proxyUrl);} 
         String rawInfo = uri.getRawUserInfo();
-        if (rawInfo == null) return null;
+        if (rawInfo == null)  {return null;} 
         int colon = rawInfo.indexOf(':');
         return colon >= 0 ? urlDecode(rawInfo.substring(colon + 1)) : null;
     }
@@ -141,7 +141,7 @@ public final class ProxyConfigResolver {
 
     private static String getHttpProxyUrlInternal() {
         String proxy = nonBlank(FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_PROXY_HTTP));
-        if (proxy == null) return null;
+        if (proxy == null)  {return null;} 
         String user = nonBlank(FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_PROXY_HTTP_USERNAME));
         String pass = nonBlank(FrameworkConfigManager.getString(WebFrameworkConfig.PLAYWRIGHT_PROXY_HTTP_PASSWORD));
         return buildUrl(proxy, user, pass);
@@ -160,7 +160,7 @@ public final class ProxyConfigResolver {
             usingHttpFallback = (proxy != null);
         }
 
-        if (proxy == null) return null;
+        if (proxy == null)  {return null;} 
 
         // 凭据：优先用 HTTPS 专属 key，如果地址来自 HTTP fallback 则用 HTTP 凭据
         String user, pass;
@@ -199,7 +199,7 @@ public final class ProxyConfigResolver {
      * <p>例如 {@code http://oldUser:oldPass@proxy.com:8080 → http://proxy.com:8080}
      */
     static String stripUserInfo(String url) {
-        if (url == null) return null;
+        if (url == null)  {return null;} 
         // 用 URI 解析，无副作用的剥离
         URI uri = parseLenient(url);
         if (uri != null && uri.getRawUserInfo() != null) {
@@ -207,10 +207,10 @@ public final class ProxyConfigResolver {
             String host = uri.getHost();
             //  修复问题5：畸形 URL（如 http:///path-only）host 为 null 时，
             // 返回 scheme + localhost 占位，避免携带 userinfo 的原 url 被误用/泄露凭证
-            if (host == null) host = "localhost";
+            if (host == null)  {host = "localhost";} 
             int port = uri.getPort();
             String path = uri.getRawPath();
-            if (path == null || path.isEmpty() || "/".equals(path)) path = "";
+            if (path == null || path.isEmpty() || "/".equals(path))  {path = "";} 
             return port >= 0
                     ? scheme + host + ":" + port + path
                     : scheme + host + path;
@@ -222,7 +222,7 @@ public final class ProxyConfigResolver {
      * 确保 URL 有 scheme 前缀。{@code proxy:8080 → http://proxy:8080}
      */
     static String ensureScheme(String url) {
-        if (url.matches("^https?://.*")) return url;
+        if (url.matches("^https?://.*"))  {return url;} 
         return "http://" + url;
     }
 
@@ -239,7 +239,7 @@ public final class ProxyConfigResolver {
      * </ul>
      */
     static String urlEncode(String value) {
-        if (value == null || value.isEmpty()) return value;
+        if (value == null || value.isEmpty())  {return value;} 
         try {
             String encoded = URLEncoder.encode(value, StandardCharsets.UTF_8.name());
             // URLEncoder 把空格编码成 +，但 userinfo 中空格应为 %20
@@ -265,7 +265,7 @@ public final class ProxyConfigResolver {
     }
 
     private static String urlDecode(String value) {
-        if (value == null) return null;
+        if (value == null)  {return null;} 
         try {
             return java.net.URLDecoder.decode(value, StandardCharsets.UTF_8.name());
         } catch (Exception e) {
@@ -280,7 +280,7 @@ public final class ProxyConfigResolver {
      * @return 解析成功返回 {@link URI}，否则返回 {@code null}
      */
     private static URI parseLenient(String proxyUrl) {
-        if (proxyUrl == null) return null;
+        if (proxyUrl == null)  {return null;} 
         try {
             return new URI(proxyUrl);
         } catch (URISyntaxException e) {
@@ -293,7 +293,7 @@ public final class ProxyConfigResolver {
     private static String extractHostFallback(String proxyUrl) {
         String url = proxyUrl.replaceFirst("(?i)^https?://", "");
         int atIdx = url.lastIndexOf('@');
-        if (atIdx >= 0) url = url.substring(atIdx + 1);
+        if (atIdx >= 0)  {url = url.substring(atIdx + 1);} 
         int colonIdx = url.lastIndexOf(':');
         return colonIdx >= 0 ? url.substring(0, colonIdx) : url;
     }
@@ -301,7 +301,7 @@ public final class ProxyConfigResolver {
     private static String extractPortFallback(String proxyUrl) {
         String url = proxyUrl.replaceFirst("(?i)^https?://", "");
         int atIdx = url.lastIndexOf('@');
-        if (atIdx >= 0) url = url.substring(atIdx + 1);
+        if (atIdx >= 0)  {url = url.substring(atIdx + 1);} 
         int colonIdx = url.lastIndexOf(':');
         return colonIdx >= 0 ? url.substring(colonIdx + 1).replaceAll("/.*", "") : null;
     }
@@ -309,7 +309,7 @@ public final class ProxyConfigResolver {
     private static String extractUserFallback(String proxyUrl) {
         String url = proxyUrl.replaceFirst("(?i)^https?://", "");
         int atIdx = url.indexOf('@');
-        if (atIdx <= 0) return null;
+        if (atIdx <= 0)  {return null;} 
         String auth = url.substring(0, atIdx);
         int colonIdx = auth.indexOf(':');
         return colonIdx >= 0 ? urlDecode(auth.substring(0, colonIdx)) : urlDecode(auth);
@@ -318,14 +318,14 @@ public final class ProxyConfigResolver {
     private static String extractPassFallback(String proxyUrl) {
         String url = proxyUrl.replaceFirst("(?i)^https?://", "");
         int atIdx = url.indexOf('@');
-        if (atIdx <= 0) return null;
+        if (atIdx <= 0)  {return null;} 
         String auth = url.substring(0, atIdx);
         int colonIdx = auth.indexOf(':');
         return colonIdx >= 0 ? urlDecode(auth.substring(colonIdx + 1)) : null;
     }
 
     private static String nonBlank(String value) {
-        if (value == null) return null;
+        if (value == null)  {return null;} 
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
     }

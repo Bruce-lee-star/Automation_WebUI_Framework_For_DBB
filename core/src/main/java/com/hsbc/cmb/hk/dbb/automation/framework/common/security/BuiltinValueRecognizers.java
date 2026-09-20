@@ -61,16 +61,16 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim();
-            if (v.isEmpty()) return false;
+            if (v.isEmpty())  {return false;} 
             // 去掉常见分隔符（空格、连字符、点）
             String digits = v.replaceAll("[ \\-.]", "");
             int n = digits.length();
-            if (n < 13 || n > 19) return false;
-            if (!digits.chars().allMatch(Character::isDigit)) return false;
+            if (n < 13 || n > 19)  {return false;} 
+            if (!digits.chars().allMatch(Character::isDigit))  {return false;} 
             // 全同数字（如 0000…0000）几乎不可能是真实卡号，抑制误报
-            if (digits.chars().distinct().count() == 1) return false;
+            if (digits.chars().distinct().count() == 1)  {return false;} 
             return luhnValid(digits);
         }
     }
@@ -81,7 +81,7 @@ final class BuiltinValueRecognizers {
             int d = digits.charAt(i) - '0';
             if (alt % 2 != 0) {
                 d *= 2;
-                if (d > 9) d -= 9;
+                if (d > 9)  {d -= 9;} 
             }
             sum += d;
             alt++;
@@ -101,11 +101,11 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim().replaceAll("\\s+", "").toUpperCase();
             int n = v.length();
-            if (n < 15 || n > 34) return false;
-            if (!v.matches("[A-Z]{2}\\d{2}[A-Z0-9]+")) return false;
+            if (n < 15 || n > 34)  {return false;} 
+            if (!v.matches("[A-Z]{2}\\d{2}[A-Z0-9]+"))  {return false;} 
             // 校验位：前 4 位移至末尾，字母 A=10…Z=35（两位数字串），整体 mod 97 == 1
             String rearranged = v.substring(4) + v.substring(0, 4);
             StringBuilder sb = new StringBuilder(rearranged.length() * 2);
@@ -133,10 +133,10 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             // 去括号与空白：CA182361(1) / CA1823611 均接受
             String v = value.trim().replaceAll("[()\\s]", "").toUpperCase();
-            if (!v.matches("[A-Z]{1,2}\\d{6}[0-9A]")) return false;
+            if (!v.matches("[A-Z]{1,2}\\d{6}[0-9A]"))  {return false;} 
             int part1;
             int start;
             if (v.length() == 8) {
@@ -159,9 +159,9 @@ final class BuiltinValueRecognizers {
             int total = part1 + part2;
             int remainder = 11 - (total % 11);
             char expected;
-            if (remainder == 11) expected = '0';
-            else if (remainder == 10) expected = 'A';
-            else expected = (char) ('0' + remainder);
+            if (remainder == 11)  {expected = '0';} 
+            else  {if (remainder == 10)  {expected = 'A';} 
+            else  {expected = (char) ('0' + remainder);} } 
             return v.charAt(v.length() - 1) == expected;
         }
     }
@@ -178,9 +178,9 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim();
-            if (v.isEmpty()) return false;
+            if (v.isEmpty())  {return false;} 
             // Track 1: %B<pan>^…^?   Track 2: ;<pan>=…?
             return v.matches("(?i)%B[0-9]{1,19}\\^.*") || v.matches("(?i);[0-9]{1,19}=.*");
         }
@@ -198,11 +198,11 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim().replaceAll("[ \\-.]", "");
             int n = v.length();
-            if (n < 16 || n > 19) return false;
-            if (!v.matches("62\\d+")) return false; // 银联 BIN 以 62 开头
+            if (n < 16 || n > 19)  {return false;} 
+            if (!v.matches("62\\d+"))  {return false;}  // 银联 BIN 以 62 开头
             return luhnValid(v);
         }
     }
@@ -222,7 +222,7 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim().toUpperCase();
             // 6 位地址 + 8 位出生日期(YYYYMMDD) + 3 位顺序 + 1 位校验(0-9/X)
             if (!v.matches("\\d{6}(18|19|20)\\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\\d|3[01])\\d{3}[0-9X]")) {
@@ -248,7 +248,7 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             return value.trim().matches("1[3-9]\\d{9}");
         }
     }
@@ -268,7 +268,7 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             return PASSPORT.matcher(value.trim().toUpperCase()).matches();
         }
     }
@@ -289,7 +289,7 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             return PERMIT.matcher(value.trim().toUpperCase()).matches();
         }
     }
@@ -311,18 +311,18 @@ final class BuiltinValueRecognizers {
 
         @Override
         public boolean recognizes(String value) {
-            if (value == null) return false;
+            if (value == null)  {return false;} 
             String v = value.trim().toUpperCase();
-            if (v.length() != 18) return false;
-            if (!v.matches("[" + USCC_CHARS + "]{18}")) return false;
+            if (v.length() != 18)  {return false;} 
+            if (!v.matches("[" + USCC_CHARS + "]{18}"))  {return false;} 
             int sum = 0;
             for (int i = 0; i < 17; i++) {
                 int idx = USCC_CHARS.indexOf(v.charAt(i));
-                if (idx < 0) return false;
+                if (idx < 0)  {return false;} 
                 sum += idx * USCC_WEIGHTS[i];
             }
             int check = 31 - (sum % 31);
-            if (check == 31) check = 0;
+            if (check == 31)  {check = 0;} 
             int checkIdx = USCC_CHARS.indexOf(v.charAt(17));
             return checkIdx == check;
         }

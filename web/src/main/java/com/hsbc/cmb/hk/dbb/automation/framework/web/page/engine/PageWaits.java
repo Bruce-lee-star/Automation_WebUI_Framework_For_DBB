@@ -125,7 +125,7 @@ public final class PageWaits {
         for (int i = 0; i <= maxRetries; i++) {
             try {
                 operation.run();
-                if (validation.getAsBoolean()) return true;
+                if (validation.getAsBoolean())  {return true;} 
             } catch (Exception e) {
                 // 验证失败或操作抛异常：等待后重试（重试路径属预期，但不得静默，D7-3）
                 log.debug("[PageWaits] retry attempt failed, will retry: {}", e.toString());

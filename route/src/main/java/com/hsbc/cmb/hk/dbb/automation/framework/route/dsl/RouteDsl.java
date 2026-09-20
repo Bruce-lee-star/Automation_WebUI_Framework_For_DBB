@@ -166,7 +166,7 @@ public class RouteDsl {
 
     /** 只清理指定 BrowserContext，适用于并行测试。 */
     public static void clear(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         RouteRegistry.clearContext(context);
         ApiCaptureContext.removeContext(context);
         RouteEngine.clearStoppedCapabilities(context);
@@ -182,7 +182,7 @@ public class RouteDsl {
      * 否则在 context 复用（feature 不重建 context）的场景下，路由闭包会残留在原 context 上、跨 Scenario 污染。
      */
     public static void clear(Page page) {
-        if (page == null) return;
+        if (page == null)  {return;} 
         RouteRegistry.clearContext(page.context());
         RouteEngine.removePageRules(page);
         ApiCaptureContext.stop(page);
@@ -793,13 +793,13 @@ public class RouteDsl {
         public MockApiDsl mockBody(Object obj) {
             if (obj == null) {
                 rule.setMockBody("");
-            } else if (obj instanceof byte[]) {
+            } else  {if (obj instanceof byte[]) {
                 rule.setMockBodyBytes((byte[]) obj);
-            } else if (obj instanceof String) {
+            } else  {if (obj instanceof String) {
                 rule.setMockBody((String) obj);
             } else {
                 rule.setMockBody(new com.google.gson.Gson().toJson(obj));
-            }
+            }} } 
             return this;
         }
 

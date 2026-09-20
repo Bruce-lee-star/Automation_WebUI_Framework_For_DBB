@@ -125,7 +125,7 @@ public final class PageFrameShadow {
         };
         page.onFrameAttached(listener);
         try {
-            if (trigger != null) trigger.run();   // 执行触发动作，期间监听捕获目标 frame
+            if (trigger != null)  {trigger.run();}    // 执行触发动作，期间监听捕获目标 frame
             boolean got = false;
             try { got = latch.await(timeoutMs, TimeUnit.MILLISECONDS); }
             catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
@@ -161,16 +161,16 @@ public final class PageFrameShadow {
         requireNonNullPage(bp);
         Page page = bp.getPage();
         Frame f = page.frame(nameOrSelector);
-        if (f != null) return f;
+        if (f != null)  {return f;} 
         for (Frame fr : page.frames()) {
-            if (frameMatches(fr, nameOrSelector)) return fr;
+            if (frameMatches(fr, nameOrSelector))  {return fr;} 
         }
         return null;
     }
 
     private static boolean frameMatches(Frame f, String nameOrSelector) {
-        if (f == null || nameOrSelector == null) return false;
-        if (nameOrSelector.equals(f.name())) return true;          // name/id 精确匹配
+        if (f == null || nameOrSelector == null)  {return false;} 
+        if (nameOrSelector.equals(f.name()))  {return true;}           // name/id 精确匹配
         String url = f.url();
         return url != null && url.contains(nameOrSelector);          // url 片段兜底
     }
@@ -199,7 +199,7 @@ public final class PageFrameShadow {
     public static void executeInFrame(BasePage bp, String frameName, Consumer<Frame> action) {
         requireNonNullPage(bp);
         Frame frame = getFrame(bp, frameName);
-        if (frame == null) throw new RuntimeException("Frame not found: " + frameName);
+        if (frame == null)  {throw new RuntimeException("Frame not found: " + frameName);} 
         action.accept(frame);
     }
 }

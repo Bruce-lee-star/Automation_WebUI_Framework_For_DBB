@@ -85,7 +85,7 @@ public final class DatabaseStoreMonitorCallback implements MonitorCallback {
             checkConfigAndInit();
             configChecked = true;
         }
-        if (!storeEnabled) return;
+        if (!storeEnabled)  {return;} 
 
         try {
             // testRunId：优先用配置值；若为空（P1-5 默认缺失）则用时间戳兜底，便于区分不同测试运行

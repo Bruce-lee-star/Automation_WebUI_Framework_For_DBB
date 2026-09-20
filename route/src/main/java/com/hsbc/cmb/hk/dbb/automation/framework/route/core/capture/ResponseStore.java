@@ -97,7 +97,7 @@ public class ResponseStore {
      * 对称回减，确保计数器与真实存储字节一致，不会误触发 OOM 守门。
      */
     public void storeApiCall(CapturedApiCall call) {
-        if (call == null || call.endpoint() == null) return;
+        if (call == null || call.endpoint() == null)  {return;} 
 
         String endpoint = call.endpoint();
         String url = call.requestUrl();
@@ -162,7 +162,7 @@ public class ResponseStore {
      * 仅通过 {@code getAllByType(RouteHandleType.DELAY)} 检索，用于回答"哪些请求被延迟过"。
      */
     public void storeDelayMarker(CapturedApiCall call) {
-        if (call == null || call.endpoint() == null) return;
+        if (call == null || call.endpoint() == null)  {return;} 
         String endpoint = call.endpoint();
         synchronized (apiCallLock) {
             List<CapturedApiCall> markers = delayMarkersByEndpoint.computeIfAbsent(endpoint, k ->
@@ -184,10 +184,10 @@ public class ResponseStore {
      * @return true=更新成功，false=未找到匹配的调用或 body 已存在
      */
     public boolean updateResponseBody(String requestUrl, String body) {
-        if (requestUrl == null || body == null) return false;
+        if (requestUrl == null || body == null)  {return false;} 
 
         List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
-        if (list == null || list.isEmpty()) return false;
+        if (list == null || list.isEmpty())  {return false;} 
 
         synchronized (list) {
             for (int i = list.size() - 1; i >= 0; i--) {
@@ -330,11 +330,11 @@ public class ResponseStore {
      * <p>DELAY 是维度标记，存放在独立索引中（不污染主快照存储）。
      */
     public List<CapturedApiCall> getAllByType(RouteHandleType type) {
-        if (type == null) return Collections.emptyList();
+        if (type == null)  {return Collections.emptyList();} 
         if (type == RouteHandleType.DELAY) {
             List<CapturedApiCall> result = new ArrayList<>();
             for (List<CapturedApiCall> list : delayMarkersByEndpoint.values()) {
-                if (list == null || list.isEmpty()) continue;
+                if (list == null || list.isEmpty())  {continue;} 
                 synchronized (list) {
                     result.addAll(list);
                 }
@@ -345,10 +345,10 @@ public class ResponseStore {
         List<CapturedApiCall> result = new ArrayList<>();
         for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
             List<CapturedApiCall> list = e.getValue();
-            if (list == null || list.isEmpty()) continue;
+            if (list == null || list.isEmpty())  {continue;} 
             synchronized (list) {
                 for (CapturedApiCall c : list) {
-                    if (c != null && c.handleType() == type) result.add(c);
+                    if (c != null && c.handleType() == type)  {result.add(c);} 
                 }
             }
         }
@@ -358,19 +358,19 @@ public class ResponseStore {
 
     /**  按「能力类型 + endpoint」获取指定端点的全部快照。 */
     public List<CapturedApiCall> getApiCallsByType(String endpoint, RouteHandleType type) {
-        if (type == null) return Collections.emptyList();
+        if (type == null)  {return Collections.emptyList();} 
         if (type == RouteHandleType.DELAY) {
             List<CapturedApiCall> markers = delayMarkersByEndpoint.get(endpoint);
-            if (markers == null || markers.isEmpty()) return Collections.emptyList();
+            if (markers == null || markers.isEmpty())  {return Collections.emptyList();} 
             synchronized (markers) {
                 return new ArrayList<>(markers);
             }
         }
         List<CapturedApiCall> all = getApiCalls(endpoint);
-        if (all.isEmpty()) return Collections.emptyList();
+        if (all.isEmpty())  {return Collections.emptyList();} 
         List<CapturedApiCall> filtered = new ArrayList<>();
         for (CapturedApiCall c : all) {
-            if (c != null && c.handleType() == type) filtered.add(c);
+            if (c != null && c.handleType() == type)  {filtered.add(c);} 
         }
         return filtered;
     }
@@ -389,16 +389,16 @@ public class ResponseStore {
         }
         for (Map.Entry<String, List<CapturedApiCall>> e : apiCallsPerUrl.entrySet()) {
             List<CapturedApiCall> list = e.getValue();
-            if (list == null || list.isEmpty()) continue;
+            if (list == null || list.isEmpty())  {continue;} 
             synchronized (list) {
                 for (CapturedApiCall c : list) {
-                    if (c != null) grouped.get(c.handleType()).add(c);
+                    if (c != null)  {grouped.get(c.handleType()).add(c);} 
                 }
             }
         }
         List<CapturedApiCall> delayBucket = grouped.get(RouteHandleType.DELAY);
         for (List<CapturedApiCall> list : delayMarkersByEndpoint.values()) {
-            if (list == null || list.isEmpty()) continue;
+            if (list == null || list.isEmpty())  {continue;} 
             synchronized (list) {
                 delayBucket.addAll(list);
             }
@@ -411,7 +411,7 @@ public class ResponseStore {
 
     /** 按实际请求 URL 精确获取 API 调用 — O(1) 毫秒级检索。 */
     public CapturedApiCall getCallByUrl(String requestUrl) {
-        if (requestUrl == null) return null;
+        if (requestUrl == null)  {return null;} 
         List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
         if (list != null && !list.isEmpty()) {
             synchronized (list) {
@@ -423,7 +423,7 @@ public class ResponseStore {
 
     /** 按请求 URL 获取该 URL 的所有 API 调用历史。 */
     public List<CapturedApiCall> getCallsByUrl(String requestUrl) {
-        if (requestUrl == null) return Collections.emptyList();
+        if (requestUrl == null)  {return Collections.emptyList();} 
         List<CapturedApiCall> list = apiCallsByUrl.get(requestUrl);
         if (list != null && !list.isEmpty()) {
             synchronized (list) {
@@ -441,10 +441,10 @@ public class ResponseStore {
      * 条件等待 — 阻塞直到匹配 predicate 的 API 调用出现（毫秒级响应）。
      */
     public CapturedApiCall waitForApi(Predicate<CapturedApiCall> predicate, long timeoutMs) {
-        if (predicate == null) return null;
+        if (predicate == null)  {return null;} 
 
         CapturedApiCall found = scanForMatching(predicate);
-        if (found != null) return found;
+        if (found != null)  {return found;} 
 
         CompletableFuture<CapturedApiCall> waiter = registerApiCallWaiter(predicate);
         found = scanForMatching(predicate);
@@ -481,7 +481,7 @@ public class ResponseStore {
             Iterator<CapturedApiCall> it = recentCalls.descendingIterator();
             while (it.hasNext()) {
                 CapturedApiCall c = it.next();
-                if (predicate.test(c)) return c;
+                if (predicate.test(c))  {return c;} 
             }
         } finally {
             recentCallsLock.unlock();
@@ -491,7 +491,7 @@ public class ResponseStore {
                 synchronized (calls) {
                     for (int i = calls.size() - 1; i >= 0; i--) {
                         CapturedApiCall c = calls.get(i);
-                        if (predicate.test(c)) return c;
+                        if (predicate.test(c))  {return c;} 
                     }
                 }
             }
@@ -507,10 +507,10 @@ public class ResponseStore {
     public int getTotalResponseCount() {
         int total = 0;
         for (List<CapturedApiCall> calls : apiCallsPerUrl.values()) {
-            if (calls == null) continue;
+            if (calls == null)  {continue;} 
             synchronized (calls) {
                 for (CapturedApiCall c : calls) {
-                    if (c != null && c.responseBody() != null) total++;
+                    if (c != null && c.responseBody() != null)  {total++;} 
                 }
             }
         }
@@ -557,8 +557,8 @@ public class ResponseStore {
 
     /** 格式化字节数为易读字符串（KB/MB）。 */
     private static String formatBytes(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f KB", bytes / 1024.0);
+        if (bytes < 1024)  {return bytes + " B";} 
+        if (bytes < 1024 * 1024)  {return String.format("%.1f KB", bytes / 1024.0);} 
         return String.format("%.1f MB", bytes / (1024.0 * 1024.0));
     }
 }

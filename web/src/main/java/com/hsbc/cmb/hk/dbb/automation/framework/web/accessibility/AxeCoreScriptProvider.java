@@ -1,7 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.accessibility;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.microsoft.playwright.Page;
@@ -142,9 +141,9 @@ public final class AxeCoreScriptProvider {
         List<String> exclude = config.getExcludeRules();
         if (tags != null && !tags.isEmpty()) {
             options.put("runOnly", Map.of("type", "tag", "values", new ArrayList<>(tags)));
-        } else if (rules != null && !rules.isEmpty()) {
+        } else  {if (rules != null && !rules.isEmpty()) {
             options.put("runOnly", Map.of("type", "rule", "values", new ArrayList<>(rules)));
-        }
+        }} 
         if (exclude != null && !exclude.isEmpty()) {
             options.put("rules", Map.of("disable", new ArrayList<>(exclude)));
         }

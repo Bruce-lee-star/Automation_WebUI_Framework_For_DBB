@@ -3,7 +3,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import com.microsoft.playwright.Route;
 
 import java.util.HashSet;
 import java.util.List;
@@ -130,13 +129,13 @@ public final class RuleRepository {
     public static void register(Object context, List<RouteRule> rules) {
         if (context instanceof Page) {
             register((Page) context, rules);
-        } else if (context instanceof BrowserContext) {
+        } else  {if (context instanceof BrowserContext) {
             register((BrowserContext) context, rules);
         } else {
             throw new IllegalArgumentException(
                     "Unsupported context type: " + context.getClass().getName()
                             + ". Expected Page or BrowserContext.");
-        }
+        }} 
     }
 
     /**
@@ -193,9 +192,9 @@ public final class RuleRepository {
             try {
                 if (context instanceof Page) {
                     ((Page) context).unroute(pattern);
-                } else if (context instanceof BrowserContext) {
+                } else  {if (context instanceof BrowserContext) {
                     ((BrowserContext) context).unroute(pattern);
-                }
+                }} 
                 RouteEngine.LOGGER.debug("[RouteEngine] Unrouted pattern '{}' from context: {}",
                         pattern, context.getClass().getSimpleName());
             } catch (Exception e) {
@@ -207,12 +206,12 @@ public final class RuleRepository {
 
     /**  移除指定页面的规则缓存（按 pageRef 精确移除，保留同 context 的其它页 / 全局规则）。 */
     public static void removePageRules(Page page) {
-        if (page == null) return;
+        if (page == null)  {return;} 
         //  Phase 3 统一绑定：page 规则存于 context 存储，按 pageRef 精确移除。
         Map<String, List<RouteRule>> scoped = RouteContextState.CONTEXT_RULES_BY_CONTEXT.get(page.context());
         if (scoped != null) {
             for (List<RouteRule> chain : scoped.values()) {
-                if (chain == null) continue;
+                if (chain == null)  {continue;} 
                 chain.removeIf(r -> r != null && r.getScope() == RouteRuleScope.PAGE && r.getPageRef() == page);
             }
             // 自然清理空链（handler 命中 empty chain 分支自动 fallback 放行，与 detachChains 不 unroute 策略一致）
@@ -231,11 +230,11 @@ public final class RuleRepository {
 
     /**  移除指定 pattern 集合中的所有 context 级规则（由 {@link RouteRegistry#clearContext(Object)} 委托）。 */
     public static void removeContextRules(Object context, Set<String> patterns) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         //  必须先移除 context 条目：原实现在 patterns 为空时直接 return，导致「空 Map 残留」
         //    强引用已关闭的 BrowserContext，造成泄漏（见 cleanupClosedContext 注释）。
         Map<String, List<RouteRule>> scoped = RouteContextState.CONTEXT_RULES_BY_CONTEXT.remove(context);
-        if (scoped == null) return;
+        if (scoped == null)  {return;} 
         // patterns 为 null/空时视为「清理该 context 全部规则」（如 context 关闭时的整体清理）：
         // 复制 keySet 后再遍历，避免并发修改异常（scoped.keySet() 是视图，遍历中 remove 会 CME）。
         Set<String> toRemove = (patterns == null || patterns.isEmpty())
@@ -276,7 +275,7 @@ public final class RuleRepository {
 
     /**  Context 生命周期结束（onClose）时清理规则索引与引擎合并引用。 */
     public static void cleanupClosedContext(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         //  防重门控 + MonitorSession 必须【无条件】清理，且都早于下方的 scoped 判空分支：
         //    「注册过防重门控 / 纯 monitor 但没有路由规则」的 context 关闭后条目否则会永久残留（空 Map 泄漏）。
         RouteEngine.clearDispatchedRoutes(context);
@@ -304,9 +303,9 @@ public final class RuleRepository {
 
     /**  断开「已注册的 Playwright 路由闭包」与规则链的关联 —— 就地清空链内容。 */
     private static void detachChains(Map<String, List<RouteRule>> store) {
-        if (store == null || store.isEmpty()) return;
+        if (store == null || store.isEmpty())  {return;} 
         for (List<RouteRule> chain : store.values()) {
-            if (chain == null) continue;
+            if (chain == null)  {continue;} 
             try {
                 chain.clear();
             } catch (UnsupportedOperationException e) {

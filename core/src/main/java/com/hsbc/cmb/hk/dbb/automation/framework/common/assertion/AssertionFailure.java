@@ -44,8 +44,8 @@ public final class AssertionFailure {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof AssertionFailure)) return false;
+        if (this == o)  {return true;} 
+        if (!(o instanceof AssertionFailure))  {return false;} 
         AssertionFailure that = (AssertionFailure) o;
         return Objects.equals(message, that.message)
                 && Objects.equals(expected, that.expected)

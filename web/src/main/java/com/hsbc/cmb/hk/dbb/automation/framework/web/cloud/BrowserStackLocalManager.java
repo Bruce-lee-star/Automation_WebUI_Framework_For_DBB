@@ -133,7 +133,7 @@ public class BrowserStackLocalManager {
 
             // 等待隧道就绪（读取 stdout 直到 "Press Ctrl-C to quit"）
             int timeout = FrameworkConfigManager.getInt(WebFrameworkConfig.BROWSERSTACK_LOCAL_TIMEOUT);
-            if (timeout <= 0) timeout = 30;
+            if (timeout <= 0)  {timeout = 30;} 
             boolean ready = waitForReady(tunnelProcess, timeout);
 
             if (ready) {

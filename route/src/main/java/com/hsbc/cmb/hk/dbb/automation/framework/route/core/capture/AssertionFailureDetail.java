@@ -29,7 +29,7 @@ public class AssertionFailureDetail {
     }
 
     private static String extractEndpoint(String url) {
-        if (url == null || url.isEmpty()) return "N/A";
+        if (url == null || url.isEmpty())  {return "N/A";} 
         try {
             java.net.URI uri = java.net.URI.create(url);
             String host = uri.getHost();
@@ -53,24 +53,24 @@ public class AssertionFailureDetail {
 
     /** 保留字符串首部 N 个字符 + ... + 尾部 M 个字符 */
     private static String abbreviateMiddle(String s, int headLen, int tailLen) {
-        if (s == null || s.isEmpty()) return "";
-        if (s.length() <= headLen + tailLen + 3) return s;
+        if (s == null || s.isEmpty())  {return "";} 
+        if (s.length() <= headLen + tailLen + 3)  {return s;} 
         return s.substring(0, headLen) + "..." + s.substring(s.length() - tailLen);
     }
 
     /** 路径保留首段/.../末段，且末段（endpoint 名）始终完整显示 */
     private static String abbreviatePath(String path) {
-        if (path == null || path.isEmpty()) return "";
-        if (path.length() <= 50) return path;
+        if (path == null || path.isEmpty())  {return "";} 
+        if (path.length() <= 50)  {return path;} 
 
         int lastSlash = path.lastIndexOf('/');
-        if (lastSlash < 0) return abbreviateMiddle(path, 25, 18);
+        if (lastSlash < 0)  {return abbreviateMiddle(path, 25, 18);} 
 
         String endpoint = path.substring(lastSlash);       // /permissionLeftMenuConfig（完整保留）
         String prefix = path.substring(0, lastSlash);      // /portalserver/.../leftmenu
 
         // prefix 够短则不动
-        if (prefix.length() <= 30) return prefix + endpoint;
+        if (prefix.length() <= 30)  {return prefix + endpoint;} 
 
         // 只缩写 prefix 中间部分，endpoint 原样输出
         int firstSlash = prefix.indexOf('/', 1);

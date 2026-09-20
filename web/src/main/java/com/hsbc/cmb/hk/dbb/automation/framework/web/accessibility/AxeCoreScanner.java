@@ -293,7 +293,7 @@ public class AxeCoreScanner {
         if (scanConfig.getTags() != null && !scanConfig.getTags().isEmpty()) {
             html.append("        <p class=\"subtitle\">WCAG Standards: ");
             for (int i = 0; i < scanConfig.getTags().size(); i++) {
-                if (i > 0) html.append(", ");
+                if (i > 0)  {html.append(", ");} 
                 html.append(escapeHtml(scanConfig.getTags().get(i)));
             }
             html.append("</p>\n");
@@ -415,7 +415,7 @@ public class AxeCoreScanner {
     }
 
     private static String getImpactColor(String impact) {
-        if (impact == null) return "#6c757d";
+        if (impact == null)  {return "#6c757d";} 
         switch (impact.toLowerCase()) {
             case "critical": return "#dc3545";
             case "serious": return "#fd7e14";
@@ -492,7 +492,7 @@ public class AxeCoreScanner {
     }
 
     private static String escapeHtml(String str) {
-        if (str == null) return "";
+        if (str == null)  {return "";} 
         return str.replace("&", "&amp;")
                   .replace("<", "&lt;")
                   .replace(">", "&gt;")

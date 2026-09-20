@@ -117,10 +117,10 @@ final class ElementOperationSupport {
     }
 
     private static String determineElementState(ElementOperationException.DiagnosticInfo diag) {
-        if (!diag.existsInDom()) return "NOT_FOUND_IN_DOM";
-        if (!diag.isVisible()) return "NOT_VISIBLE";
-        if (!diag.isEnabled()) return "NOT_ENABLED";
-        if (!diag.isEditable()) return "NOT_EDITABLE";
+        if (!diag.existsInDom())  {return "NOT_FOUND_IN_DOM";} 
+        if (!diag.isVisible())  {return "NOT_VISIBLE";} 
+        if (!diag.isEnabled())  {return "NOT_ENABLED";} 
+        if (!diag.isEditable())  {return "NOT_EDITABLE";} 
         return "INTERACTABLE_BUT_FAILED";
     }
 

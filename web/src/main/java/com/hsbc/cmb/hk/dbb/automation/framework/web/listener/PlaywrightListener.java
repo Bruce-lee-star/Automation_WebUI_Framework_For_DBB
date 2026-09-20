@@ -253,16 +253,16 @@ public class PlaywrightListener implements StepListener {
             recordTestData("testResult", result);
             if (result == TestResult.SUCCESS) {
                 ListenerPerfStats.markPassed();
-            } else if (result == TestResult.PENDING) {
+            } else  {if (result == TestResult.PENDING) {
                 // PENDING表示测试结果未知，可能是测试中途失败或超时
                 // 将其计为失败，以确保准确统计
                 logger.warn("Test result is PENDING, counting as failed: {}", testName);
                 ListenerPerfStats.markFailed();
-            } else if (result == TestResult.FAILURE || result == TestResult.ERROR) {
+            } else  {if (result == TestResult.FAILURE || result == TestResult.ERROR) {
                 ListenerPerfStats.markFailed();
-            } else if (result == TestResult.SKIPPED) {
+            } else  {if (result == TestResult.SKIPPED) {
                 ListenerPerfStats.markSkipped();
-            }
+            }} } } 
         } else {
             // result为null，说明测试没有正常完成，计为失败
             logger.warn("Test result is null, counting as failed: {}", testName);
@@ -333,7 +333,7 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void stepStarted(ExecutedStepDescription step) {
-        if (step == null) return;
+        if (step == null)  {return;} 
 
         //  第一步（最关键）：强制清空上一步骤残留的所有截图，根治脏数据
         clearStepScreenshotsImmediately();
@@ -449,9 +449,9 @@ public class PlaywrightListener implements StepListener {
         if (stepName != null && !stepName.isEmpty() && stepName.equals(cucumberStep)) {
             if (screenshotStrategy == ScreenshotStrategy.AFTER_EACH_STEP) {
                 takeScreenshotAndRegister("STEP_" + FailureScreenshotHandler.sanitizeName(stepName));
-            } else if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
+            } else  {if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
                 takeScreenshotAndRegister("STEP_AFTER_" + FailureScreenshotHandler.sanitizeName(stepName));
-            }
+            }} 
             // 清除 Cucumber 步骤记录
             TestContextHolder.get().remove(CURRENT_CUCUMBER_STEP_KEY);
         }
@@ -471,13 +471,13 @@ public class PlaywrightListener implements StepListener {
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
-        } else if (ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
+        } else  {if (ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
             VerboseLogging.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() - already sent by stepFailed");
-            if (stepScreenshots != null) stepScreenshots.clear();
+            if (stepScreenshots != null)  {stepScreenshots.clear();} 
             ListenerGuard.guards().setStepFinishProcessed(true);
         } else {
             VerboseLogging.logDebugIfVerbose(logger, "No screenshots to pass to StepEventBus.stepFinished()");
-        }
+        }} 
 
         // 重置标志供下一个步骤使用
         //  不再 remove stepFinishProcessed 和 failureScreenshotsAlreadySent
@@ -494,7 +494,7 @@ public class PlaywrightListener implements StepListener {
 
     @Override
     public void stepFailed(StepFailure failure) {
-        if (failure == null) return;
+        if (failure == null)  {return;} 
 
         //  D4-2：标记本步骤失败，供步骤级结果使用（在防重入判断之前，确保一定被记录）
         stepFailed().set(true);
@@ -794,9 +794,9 @@ public class PlaywrightListener implements StepListener {
         if (!alreadyProcessed && stepName != null && !stepName.isEmpty() && stepName.equals(cucumberStep)) {
             if (screenshotStrategy == ScreenshotStrategy.AFTER_EACH_STEP) {
                 takeScreenshotAndRegister("STEP_" + FailureScreenshotHandler.sanitizeName(stepName));
-            } else if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
+            } else  {if (screenshotStrategy == ScreenshotStrategy.BEFORE_AND_AFTER_EACH_STEP) {
                 takeScreenshotAndRegister("STEP_AFTER_" + FailureScreenshotHandler.sanitizeName(stepName));
-            }
+            }} 
             // 清除 Cucumber 步骤记录
             TestContextHolder.get().remove(CURRENT_CUCUMBER_STEP_KEY);
         }
@@ -827,13 +827,13 @@ public class PlaywrightListener implements StepListener {
             stepScreenshots.clear();
             VerboseLogging.logDebugIfVerbose(
                     logger, "Cleared stepScreenshots after merging");
-        } else if (screenshots != null && !screenshots.isEmpty()) {
+        } else  {if (screenshots != null && !screenshots.isEmpty()) {
             // 当前步骤没有截图，但 Serenity 有 → 也用新 list 封装（避免直接传递 Serenity 的可变 list）
             mergedScreenshots = new ArrayList<>(screenshots);
         } else {
             VerboseLogging.logDebugIfVerbose(
                     logger, "No step screenshots to merge (list is empty or null)");
-        }
+        }} 
 
         //  防双重发送：仅当无参版 stepFinished() 未处理时才发送 StepEventBus
         if (!alreadyProcessed && mergedScreenshots != null && !mergedScreenshots.isEmpty() && !ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
@@ -850,14 +850,14 @@ public class PlaywrightListener implements StepListener {
             } catch (Exception e) {
                 logger.error("Failed to call StepEventBus.stepFinished() with screenshots", e);
             }
-        } else if (ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
+        } else  {if (ListenerGuard.guards().isFailureScreenshotsAlreadySent()) {
             VerboseLogging.logDebugIfVerbose(logger, "Skipping StepEventBus.stepFinished() in stepFinishedInternal - already sent by stepFailed");
             //  防残留：清空 Serenity 传入的 list
-            if (screenshots != null) screenshots.clear();
+            if (screenshots != null)  {screenshots.clear();} 
         } else {
             VerboseLogging.logDebugIfVerbose(
                     logger, "Serenity screenshot list is empty or null");
-        }
+        }} 
 
         // 重置标志供下一个步骤使用
         //  不再 remove stepFinishProcessed 和 failureScreenshotsAlreadySent
@@ -1243,7 +1243,7 @@ public class PlaywrightListener implements StepListener {
                            boolean takeScreenshotOnFailure, ZonedDateTime timestamp) {
         //  防重复 + 委托：统一交给无参 stepFailed(StepFailure) 处理截图和报告发送
         // 避免两个方法维护几乎相同逻辑导致的 drift 风险
-        if (failure == null || ListenerGuard.guards().isFailureScreenshotsAlreadySent()) return;
+        if (failure == null || ListenerGuard.guards().isFailureScreenshotsAlreadySent())  {return;} 
 
         if (timestamp != null) {
             recordTestData("stepFailureTimestamp", timestamp.toInstant().toEpochMilli());

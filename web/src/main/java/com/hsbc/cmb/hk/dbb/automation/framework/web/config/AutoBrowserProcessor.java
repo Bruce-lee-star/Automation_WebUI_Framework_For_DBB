@@ -1,5 +1,5 @@
-package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
+
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;

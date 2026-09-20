@@ -163,8 +163,8 @@ public final class ApiMonitoringRepository {
 
     public static synchronized void init(String dbUrl, String dbUser, String dbPassword,
                                           String dbType, int poolMaxSize) {
-        if (initialized) return;
-        if (initFailed) return; // 已失败过，不再重试
+        if (initialized)  {return;} 
+        if (initFailed)  {return;}  // 已失败过，不再重试
         if (dbUrl == null || dbUrl.trim().isEmpty()) {
             LOGGER.warn("[ApiMonitoringRepository] DB URL is empty, cannot initialize. "
                     + "Set monitor.db.url in serenity.properties.");
@@ -266,8 +266,8 @@ public final class ApiMonitoringRepository {
      * @param record 监控记录
      */
     public static void save(ApiMonitoringRecord record) {
-        if (!initialized || dataSource == null) return;
-        if (record == null) return;
+        if (!initialized || dataSource == null)  {return;} 
+        if (record == null)  {return;} 
 
         PENDING.offer(new PendingItem(record, 0));
         enqueuedCount.incrementAndGet();
@@ -323,19 +323,19 @@ public final class ApiMonitoringRepository {
      * 立即把当前队列中的记录批量落库（定时 + 定量 + shutdown 共用入口）。
      */
     private static void flushPendingNow() {
-        if (!initialized || dataSource == null) return;
-        if (PENDING.isEmpty()) return;
+        if (!initialized || dataSource == null)  {return;} 
+        if (PENDING.isEmpty())  {return;} 
 
         // 从队列取出一批（不阻塞、不超过单批上限），一次性批量 INSERT
         List<PendingItem> batch = new ArrayList<>(Math.min(pendingCount.get(), MAX_BATCH_PER_FLUSH));
         int taken = 0;
         while (taken < MAX_BATCH_PER_FLUSH) {
             PendingItem item = PENDING.poll();
-            if (item == null) break;
+            if (item == null)  {break;} 
             batch.add(item);
             taken++;
         }
-        if (batch.isEmpty()) return;
+        if (batch.isEmpty())  {return;} 
         pendingCount.addAndGet(-taken);   // 取出即出队，O(1) 减计数（审计 P0-2）
 
         try {
@@ -366,7 +366,7 @@ public final class ApiMonitoringRepository {
             int cap = pendingHardCap;
             while (pendingCount.get() > cap) {
                 PendingItem dropped = PENDING.poll();
-                if (dropped == null) break;
+                if (dropped == null)  {break;} 
                 pendingCount.decrementAndGet();
                 droppedCount.incrementAndGet();
                 MonitorDataLossReporter.instance().recordLoss("route_monitor_record", 1L);
@@ -478,24 +478,24 @@ public final class ApiMonitoringRepository {
     static String resolveDialect(String dbType, String dbUrl) {
         if (dbType != null && !dbType.trim().isEmpty()) {
             String t = dbType.trim().toUpperCase();
-            if ("MSSQL".equals(t)) return "SQLSERVER"; // 别名归一
+            if ("MSSQL".equals(t))  {return "SQLSERVER";}  // 别名归一
             return t;
         }
         return detectDialectFromUrl(dbUrl);
     }
 
     private static String detectDialectFromUrl(String dbUrl) {
-        if (dbUrl == null) return "MYSQL";
+        if (dbUrl == null)  {return "MYSQL";} 
         String u = dbUrl.toLowerCase();
-        if (u.startsWith("jdbc:postgresql:") || u.startsWith("jdbc:pg:")) return "POSTGRESQL";
-        if (u.startsWith("jdbc:h2:")) return "H2";
-        if (u.startsWith("jdbc:oracle:")) return "ORACLE";
-        if (u.startsWith("jdbc:sqlserver:") || u.startsWith("jdbc:microsoft:")) return "SQLSERVER";
+        if (u.startsWith("jdbc:postgresql:") || u.startsWith("jdbc:pg:"))  {return "POSTGRESQL";} 
+        if (u.startsWith("jdbc:h2:"))  {return "H2";} 
+        if (u.startsWith("jdbc:oracle:"))  {return "ORACLE";} 
+        if (u.startsWith("jdbc:sqlserver:") || u.startsWith("jdbc:microsoft:"))  {return "SQLSERVER";} 
         return "MYSQL"; // jdbc:mysql: 及其它默认
     }
 
     private static String toJson(Map<String, String> map) {
-        if (map == null || map.isEmpty()) return null;
+        if (map == null || map.isEmpty())  {return null;} 
         try {
             return GSON.toJson(map);
         } catch (Exception e) {
@@ -505,7 +505,7 @@ public final class ApiMonitoringRepository {
     }
 
     private static String truncate(String value, int maxLen) {
-        if (value == null) return null;
+        if (value == null)  {return null;} 
         return value.length() > maxLen ? value.substring(0, maxLen) : value;
     }
 
@@ -627,7 +627,7 @@ public final class ApiMonitoringRepository {
 
     private static int getEnvInt(String key, int defaultValue) {
         String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Integer.parseInt(val.trim());
         } catch (NumberFormatException e) {
@@ -637,7 +637,7 @@ public final class ApiMonitoringRepository {
 
     private static long getEnvLong(String key, long defaultValue) {
         String val = System.getenv(key);
-        if (val == null || val.trim().isEmpty()) return defaultValue;
+        if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Long.parseLong(val.trim());
         } catch (NumberFormatException e) {

@@ -77,7 +77,7 @@ public final class StoppedCapabilityManager {
     /** 清理指定上下文的全部「已停止能力」标记（clear/clearAll 时同步调用，防跨用例残留）。 */
     public static void clearStoppedCapabilities(Object context) {
         Object ctx = RouteEngine.resolveContext(context);
-        if (ctx == null) return;
+        if (ctx == null)  {return;} 
         RouteContextState.STOPPED_CAPS.remove(ctx);
     }
 
@@ -89,11 +89,11 @@ public final class StoppedCapabilityManager {
     /** 将全局已停止能力注入当前请求的有效规则（按 context + pattern 匹配）。 */
     public static void applyStoppedCapabilities(RouteRule rule, Route route) {
         Object ctx = contextOf(route);
-        if (ctx == null) return;
+        if (ctx == null)  {return;} 
         Map<String, Set<RouteHandleType>> byPattern = RouteContextState.STOPPED_CAPS.get(ctx);
-        if (byPattern == null) return;
+        if (byPattern == null)  {return;} 
         Set<RouteHandleType> stopped = byPattern.get(RouteEngine.normalizePattern(rule.getUrlPattern()));
-        if (stopped == null || stopped.isEmpty()) return;
+        if (stopped == null || stopped.isEmpty())  {return;} 
         for (RouteHandleType t : stopped) {
             rule.stopCapability(t);
         }
@@ -101,7 +101,7 @@ public final class StoppedCapabilityManager {
 
     /** 取 route 所属上下文对象（与 RouteEngine.contextOf 一致的轻量解析）。 */
     private static Object contextOf(Route route) {
-        if (route == null || route.request() == null) return null;
+        if (route == null || route.request() == null)  {return null;} 
         try {
             return route.request().frame().page().context();
         } catch (Exception ignored) {

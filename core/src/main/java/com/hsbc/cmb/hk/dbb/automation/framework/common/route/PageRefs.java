@@ -3,6 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Page 引用的「身份归一」工具（核心层，零 Playwright / web 依赖）。
@@ -24,6 +26,8 @@ import java.lang.reflect.Proxy;
  * @apiNote framework-internal：框架内部类型，非公开 API。
  */
 public final class PageRefs {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(PageRefs.class);
 
     /** 装饰器暴露真实对象的方法名约定（按序尝试）。 */
     private static final String[] TARGET_ACCESSORS = {
@@ -94,6 +98,8 @@ public final class PageRefs {
                 }
             } catch (ReflectiveOperationException | RuntimeException ignored) {
                 // 该访问器不存在、不可访问或调用失败 → 尝试下一个（保守降级，不影响业务）
+                LOGGER.debug("[PageRefs] accessor {} failed, trying next: {}",
+                        accessor, ignored.toString());
             }
         }
         return null;

@@ -88,7 +88,7 @@ public class RouteRule {
 
     /** 标记某能力被显式停止（生效后该能力在本次 pattern 后续请求中不再执行）。幂等、线程安全。 */
     public void stopCapability(RouteHandleType type) {
-        if (type == null) return;
+        if (type == null)  {return;} 
         synchronized (stoppedCapabilitiesLock) {
             if (stoppedCapabilities.contains(type)) {
                 return;
@@ -480,7 +480,7 @@ public class RouteRule {
     public Set<String> getResourceTypeSet() {
         //  DCL 懒缓存：仅在 resourceTypes 字符串未变更时复用
         String raw = this.resourceTypes;
-        if (raw == null || raw.trim().isEmpty()) return null;
+        if (raw == null || raw.trim().isEmpty())  {return null;} 
 
         Set<String> cached = cachedResourceTypeSet;
         if (cached != null && raw.equals(cachedResourceTypeRaw)) {
@@ -494,7 +494,7 @@ public class RouteRule {
             String[] parts = raw.trim().toLowerCase().split("[,;\\s]+");
             Set<String> set = new LinkedHashSet<>();
             for (String p : parts) {
-                if (!p.isEmpty()) set.add(p);
+                if (!p.isEmpty())  {set.add(p);} 
             }
             Set<String> result = set.isEmpty() ? null : Collections.unmodifiableSet(set);
             cachedResourceTypeSet = result;
@@ -646,7 +646,7 @@ public class RouteRule {
      * 批量添加请求头。
      */
     public void addRequestHeadersToSet(Map<String, String> headers) {
-        if (headers == null || headers.isEmpty()) return;
+        if (headers == null || headers.isEmpty())  {return;} 
         if (requestHeadersToSet == null) {
             requestHeadersToSet = new HashMap<>();
         }
@@ -880,7 +880,7 @@ public class RouteRule {
      * @param value 期望的值（精确匹配）
      */
     public void addMatchHeader(String key, String value) {
-        if (matchHeaders == null) matchHeaders = new HashMap<>();
+        if (matchHeaders == null)  {matchHeaders = new HashMap<>();} 
         matchHeaders.put(key, value);
     }
 
@@ -890,7 +890,7 @@ public class RouteRule {
      * @param value 期望的值（精确匹配）
      */
     public void addMatchQuery(String key, String value) {
-        if (matchQuery == null) matchQuery = new HashMap<>();
+        if (matchQuery == null)  {matchQuery = new HashMap<>();} 
         matchQuery.put(key, value);
     }
 
@@ -990,55 +990,55 @@ public class RouteRule {
      * @param other 另一条同 pattern 规则（不修改它）
      */
     public void mergeFrom(RouteRule other) {
-        if (other == null) return;
+        if (other == null)  {return;} 
 
         // MONITOR 基线：开则保留
         if (other.monitorEnabled) {
             this.monitorEnabled = true;
         }
         // 监控专属字段合并（仅当 other 提供时才覆盖，避免清空已有）— 全部 null 安全
-        if (other.expectedStatus != null) this.expectedStatus = other.expectedStatus;
+        if (other.expectedStatus != null)  {this.expectedStatus = other.expectedStatus;} 
         if (other.jsonPathAssertions != null && !other.jsonPathAssertions.isEmpty()) {
-            if (this.jsonPathAssertions == null) this.jsonPathAssertions = new LinkedHashMap<>();
+            if (this.jsonPathAssertions == null)  {this.jsonPathAssertions = new LinkedHashMap<>();} 
             this.jsonPathAssertions.putAll(other.jsonPathAssertions);
         }
 
         // MODIFY 字段合并 — 全部 null 安全
         if (other.requestHeadersToSet != null && !other.requestHeadersToSet.isEmpty()) {
-            if (this.requestHeadersToSet == null) this.requestHeadersToSet = new HashMap<>();
+            if (this.requestHeadersToSet == null)  {this.requestHeadersToSet = new HashMap<>();} 
             this.requestHeadersToSet.putAll(other.requestHeadersToSet);
         }
         if (other.requestHeadersToRemove != null && !other.requestHeadersToRemove.isEmpty()) {
-            if (this.requestHeadersToRemove == null) this.requestHeadersToRemove = new LinkedHashSet<>();
+            if (this.requestHeadersToRemove == null)  {this.requestHeadersToRemove = new LinkedHashSet<>();} 
             this.requestHeadersToRemove.addAll(other.requestHeadersToRemove);
         }
         // 请求体：修改 / 新增 / 删除 三维度合并
         if (other.requestBodyFieldsToModify != null && !other.requestBodyFieldsToModify.isEmpty()) {
-            if (this.requestBodyFieldsToModify == null) this.requestBodyFieldsToModify = new LinkedHashMap<>();
+            if (this.requestBodyFieldsToModify == null)  {this.requestBodyFieldsToModify = new LinkedHashMap<>();} 
             this.requestBodyFieldsToModify.putAll(other.requestBodyFieldsToModify);
         }
         if (other.requestBodyFieldsToAdd != null && !other.requestBodyFieldsToAdd.isEmpty()) {
-            if (this.requestBodyFieldsToAdd == null) this.requestBodyFieldsToAdd = new LinkedHashMap<>();
+            if (this.requestBodyFieldsToAdd == null)  {this.requestBodyFieldsToAdd = new LinkedHashMap<>();} 
             this.requestBodyFieldsToAdd.putAll(other.requestBodyFieldsToAdd);
         }
         if (other.requestBodyFieldsToRemove != null && !other.requestBodyFieldsToRemove.isEmpty()) {
-            if (this.requestBodyFieldsToRemove == null) this.requestBodyFieldsToRemove = new LinkedHashSet<>();
+            if (this.requestBodyFieldsToRemove == null)  {this.requestBodyFieldsToRemove = new LinkedHashSet<>();} 
             this.requestBodyFieldsToRemove.addAll(other.requestBodyFieldsToRemove);
         }
         // 请求表单：修改 / 新增 / 删除 三维度合并（与请求体 JSON 同构）
         if (other.requestFormFieldsToModify != null && !other.requestFormFieldsToModify.isEmpty()) {
-            if (this.requestFormFieldsToModify == null) this.requestFormFieldsToModify = new LinkedHashMap<>();
+            if (this.requestFormFieldsToModify == null)  {this.requestFormFieldsToModify = new LinkedHashMap<>();} 
             this.requestFormFieldsToModify.putAll(other.requestFormFieldsToModify);
         }
         if (other.requestFormFieldsToAdd != null && !other.requestFormFieldsToAdd.isEmpty()) {
-            if (this.requestFormFieldsToAdd == null) this.requestFormFieldsToAdd = new LinkedHashMap<>();
+            if (this.requestFormFieldsToAdd == null)  {this.requestFormFieldsToAdd = new LinkedHashMap<>();} 
             this.requestFormFieldsToAdd.putAll(other.requestFormFieldsToAdd);
         }
         if (other.requestFormFieldsToRemove != null && !other.requestFormFieldsToRemove.isEmpty()) {
-            if (this.requestFormFieldsToRemove == null) this.requestFormFieldsToRemove = new LinkedHashSet<>();
+            if (this.requestFormFieldsToRemove == null)  {this.requestFormFieldsToRemove = new LinkedHashSet<>();} 
             this.requestFormFieldsToRemove.addAll(other.requestFormFieldsToRemove);
         }
-        if (other.modifyMethod != null) this.modifyMethod = other.modifyMethod;
+        if (other.modifyMethod != null)  {this.modifyMethod = other.modifyMethod;} 
 
         //  DELAY 合并：取 max（与跨层合并一致）。同 pattern 多规则（如「monitor 基线 + 后续
         //    modify/delay 叠加」）注册时，DELAY 在 mergeFrom 内即合并，确保叠加生效
@@ -1050,10 +1050,10 @@ public class RouteRule {
         // 则其 mock 字段参与合并（由上层 RouteRegistry 决定 override 语义，
         // 此处不强改 this.type，避免跨层合并时污染基线规则的类型）。
         if (other.type == RouteHandleType.MOCK) {
-            if (other.mockBody != null) this.mockBody = other.mockBody;
-            if (other.mockBodyBytes != null) this.mockBodyBytes = other.mockBodyBytes;
-            if (other.mockStatus != 0) this.mockStatus = other.mockStatus;
-            if (other.mockHeaders != null) this.mockHeaders = other.mockHeaders;
+            if (other.mockBody != null)  {this.mockBody = other.mockBody;} 
+            if (other.mockBodyBytes != null)  {this.mockBodyBytes = other.mockBodyBytes;} 
+            if (other.mockStatus != 0)  {this.mockStatus = other.mockStatus;} 
+            if (other.mockHeaders != null)  {this.mockHeaders = other.mockHeaders;} 
         }
 
         this.hashCodeCached = false;  // merge 改变内容，失效缓存
@@ -1078,17 +1078,17 @@ public class RouteRule {
         copy.minMatches = this.minMatches;
         copy.autoStopOnMatch = this.autoStopOnMatch;
         copy.record = this.record;
-        if (this.jsonPathAssertions != null) copy.jsonPathAssertions = new LinkedHashMap<>(this.jsonPathAssertions);
+        if (this.jsonPathAssertions != null)  {copy.jsonPathAssertions = new LinkedHashMap<>(this.jsonPathAssertions);} 
 
         // MODIFY 字段
-        if (this.requestHeadersToSet != null) copy.requestHeadersToSet = new HashMap<>(this.requestHeadersToSet);
-        if (this.requestHeadersToRemove != null) copy.requestHeadersToRemove = new LinkedHashSet<>(this.requestHeadersToRemove);
-        if (this.requestBodyFieldsToModify != null) copy.requestBodyFieldsToModify = new LinkedHashMap<>(this.requestBodyFieldsToModify);
-        if (this.requestBodyFieldsToAdd != null) copy.requestBodyFieldsToAdd = new LinkedHashMap<>(this.requestBodyFieldsToAdd);
-        if (this.requestBodyFieldsToRemove != null) copy.requestBodyFieldsToRemove = new LinkedHashSet<>(this.requestBodyFieldsToRemove);
-        if (this.requestFormFieldsToModify != null) copy.requestFormFieldsToModify = new LinkedHashMap<>(this.requestFormFieldsToModify);
-        if (this.requestFormFieldsToAdd != null) copy.requestFormFieldsToAdd = new LinkedHashMap<>(this.requestFormFieldsToAdd);
-        if (this.requestFormFieldsToRemove != null) copy.requestFormFieldsToRemove = new LinkedHashSet<>(this.requestFormFieldsToRemove);
+        if (this.requestHeadersToSet != null)  {copy.requestHeadersToSet = new HashMap<>(this.requestHeadersToSet);} 
+        if (this.requestHeadersToRemove != null)  {copy.requestHeadersToRemove = new LinkedHashSet<>(this.requestHeadersToRemove);} 
+        if (this.requestBodyFieldsToModify != null)  {copy.requestBodyFieldsToModify = new LinkedHashMap<>(this.requestBodyFieldsToModify);} 
+        if (this.requestBodyFieldsToAdd != null)  {copy.requestBodyFieldsToAdd = new LinkedHashMap<>(this.requestBodyFieldsToAdd);} 
+        if (this.requestBodyFieldsToRemove != null)  {copy.requestBodyFieldsToRemove = new LinkedHashSet<>(this.requestBodyFieldsToRemove);} 
+        if (this.requestFormFieldsToModify != null)  {copy.requestFormFieldsToModify = new LinkedHashMap<>(this.requestFormFieldsToModify);} 
+        if (this.requestFormFieldsToAdd != null)  {copy.requestFormFieldsToAdd = new LinkedHashMap<>(this.requestFormFieldsToAdd);} 
+        if (this.requestFormFieldsToRemove != null)  {copy.requestFormFieldsToRemove = new LinkedHashSet<>(this.requestFormFieldsToRemove);} 
         copy.modifyMethod = this.modifyMethod;
 
         // DELAY 字段
@@ -1099,10 +1099,10 @@ public class RouteRule {
         // MOCK 字段
         copy.mockBody = this.mockBody;
         copy.mockStatus = this.mockStatus;
-        if (this.mockHeaders != null) copy.mockHeaders = new HashMap<>(this.mockHeaders);
-        if (this.mockReplaceFields != null) copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);
+        if (this.mockHeaders != null)  {copy.mockHeaders = new HashMap<>(this.mockHeaders);} 
+        if (this.mockReplaceFields != null)  {copy.mockReplaceFields = new HashMap<>(this.mockReplaceFields);} 
         copy.interceptRealResponse = this.interceptRealResponse;
-        if (this.conditionalFields != null) copy.conditionalFields = new ArrayList<>(this.conditionalFields);
+        if (this.conditionalFields != null)  {copy.conditionalFields = new ArrayList<>(this.conditionalFields);} 
 
         //  拷贝已停止能力集合（生成独立快照，避免与源规则共享同一集合；C-5 后本字段为
         //  volatile 快照 + 写时复制，故这里按「复制-替换」语义整体赋值，而不是就地 addAll）
@@ -1135,8 +1135,8 @@ public class RouteRule {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (this == o)  {return true;} 
+        if (o == null || getClass() != o.getClass())  {return false;} 
         RouteRule that = (RouteRule) o;
         // 相等性仅以 urlPattern + modifyMethod 为准（同 pattern 的规则视为同一逻辑规则，
         // 其能力位由 mergeFrom() 显式叠加，type 不参与去重）。

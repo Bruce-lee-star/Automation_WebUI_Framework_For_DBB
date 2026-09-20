@@ -189,11 +189,11 @@ public class RouteRegistry {
                     if (ctx instanceof Page) {
                         //  Page 已关闭时 unrouteAll 会抛 "Cannot find object to call ..."：
                         //   弱引用仍可达但底层对象已销毁，直接跳过（pattern 随后由 CONTEXT_PATTERNS.clear() 清除）
-                        if (RouteUtil.isPageClosed((Page) ctx)) continue;
+                        if (RouteUtil.isPageClosed((Page) ctx))  {continue;} 
                         ((Page) ctx).unrouteAll();
-                    } else if (ctx instanceof BrowserContext) {
+                    } else  {if (ctx instanceof BrowserContext) {
                         ((BrowserContext) ctx).unrouteAll();
-                    }
+                    }} 
                 } catch (Exception e) {
                     //  已销毁对象的 unrouteAll 失败属清理期正常竞态（Context 关闭顺序不确定），
                     //   降级为 debug，避免污染正常测试日志；其余异常仍以 WARN 暴露。
@@ -224,7 +224,7 @@ public class RouteRegistry {
      */
     private static boolean isDestroyedObjectError(Exception e) {
         String msg = e.getMessage();
-        if (msg == null) return false;
+        if (msg == null)  {return false;} 
         String m = msg.toLowerCase(java.util.Locale.ROOT);
         return m.contains("object doesn't exist")
                 || m.contains("cannot find object")
@@ -284,8 +284,8 @@ public class RouteRegistry {
          */
         @Override
         public boolean equals(Object o) {
-            if (o == this) return true;
-            if (!(o instanceof ContextKey)) return false;
+            if (o == this)  {return true;} 
+            if (!(o instanceof ContextKey))  {return false;} 
             ContextKey that = (ContextKey) o;
             Object a = this.ref.get();
             Object b = that.ref.get();

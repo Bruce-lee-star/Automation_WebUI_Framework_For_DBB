@@ -1,36 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.provider.DefaultRuntimeProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextOptions;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTask;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistryImpl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserStartup;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRestart;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRestartImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCleanup;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCleanupImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCrashGuard;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistryImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptions;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistryImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.scenario.ScenarioLifecycle;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.PlaywrightSerenityBridge;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityBusBridge;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.TestContextBridge;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightInitializer;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightScreenshotManager;
 
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.*;
@@ -53,8 +25,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import java.nio.file.Paths;
 import java.awt.Dimension;
 
@@ -226,7 +196,7 @@ public final class BrowserStartupImpl implements BrowserStartup {
         if ("firefox".equalsIgnoreCase(browserType) && timeout < 45000) {
             int originalTimeout = timeout;
             timeout = Math.max(timeout, 30000);  // 最小 30s
-            if (timeout < 45000) timeout = (int)(originalTimeout * 1.5);
+            if (timeout < 45000)  {timeout = (int)(originalTimeout * 1.5);} 
             VerboseLogging.logInfoIfVerbose(logger,
                 "[Browser Init] Firefox detected: auto-adjusting launch timeout {}ms → {}ms", originalTimeout, timeout);
         }
@@ -336,11 +306,11 @@ public final class BrowserStartupImpl implements BrowserStartup {
         if (channel != null && !channel.isEmpty() && isChromium) {
             launchOptions.setChannel(channel);
             logger.info("Browser channel: {}", channel);
-        } else if (channel != null && !channel.isEmpty() && !isChromium) {
+        } else  {if (channel != null && !channel.isEmpty() && !isChromium) {
             VerboseLogging.logDebugIfVerbose(logger,
                 "Ignoring browser channel '{}' for browser type '{}' (channel only applies to Chromium-based browsers)",
                 channel, browserType);
-        }
+        }} 
 
         // 设置浏览器可执行文件路径（用于启动本地安装的浏览器）
         String executablePath = PlaywrightManager.config().getBrowserExecutablePath();

@@ -425,7 +425,9 @@ public final class Dispatcher {
                 return pr.context() != null && pr.context() == reqPage.context();
             }
         } catch (Exception ignored) {
-            // 页面/上下文已关闭：无法反查 → 视为不同
+            // 页面/上下文已关闭：无法反查 → 视为不同（不得静默，D7-3）
+            RouteEngine.LOGGER.debug("[RouteEngine] isSameContext: page/context closed, treat as different: {}",
+                    ignored.toString());
         }
         return false;
     }

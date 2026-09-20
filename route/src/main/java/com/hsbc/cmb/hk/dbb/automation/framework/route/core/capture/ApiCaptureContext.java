@@ -12,22 +12,15 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.WeakHashMap;
 import java.lang.ref.WeakReference;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
-import java.util.regex.Pattern;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 
 /**
@@ -90,11 +83,11 @@ public class ApiCaptureContext implements CaptureContext {
 
     /** 获取 BrowserContext 隔离的捕获上下文；旧 API 继续使用共享上下文。 */
     public static ApiCaptureContext forContext(BrowserContext context) {
-        if (context == null) return SHARED;
+        if (context == null)  {return SHARED;} 
         //  WeakHashMap 直接用 computeIfAbsent 与引用队列交互存在已知缺陷，故改用 synchronized 的 get/put。
         synchronized (BY_CONTEXT) {
             ApiCaptureContext existing = BY_CONTEXT.get(context);
-            if (existing != null) return existing;
+            if (existing != null)  {return existing;} 
             ApiCaptureContext created = new ApiCaptureContext(context);
             BY_CONTEXT.put(context, created);
             return created;
@@ -108,9 +101,9 @@ public class ApiCaptureContext implements CaptureContext {
 
     /** 移除并重置指定 BrowserContext 的捕获上下文。 */
     public static void removeContext(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         ApiCaptureContext removed = BY_CONTEXT.remove(context);
-        if (removed != null) removed.reset();
+        if (removed != null)  {removed.reset();} 
         //  G3：同步释放该 Context 的并发隔离采集存储，避免跨任务残留。
         ApiCaptureManager.getInstance().clearContext(context);
         if (ApiCaptureLifecycle.isCurrentContext(context)) {
@@ -158,9 +151,9 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public static ApiCaptureContext getCurrent() {
         BrowserContext context = ApiCaptureLifecycle.currentContextOrNull();
-        if (context == null) return SHARED;
+        if (context == null)  {return SHARED;} 
         ApiCaptureContext existing = BY_CONTEXT.get(context);
-        if (existing != null) return existing;
+        if (existing != null)  {return existing;} 
         ApiCaptureLifecycle.unbindCurrentContext();
         return SHARED;
     }
@@ -438,7 +431,7 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public String buildFailureReport() {
         List<AssertionFailureDetail> details = getFailureDetails();
-        if (details.isEmpty()) return "No assertion failures recorded.";
+        if (details.isEmpty())  {return "No assertion failures recorded.";} 
         StringBuilder sb = new StringBuilder();
         sb.append("API Assertion Failures (").append(details.size()).append(")\n");
         for (AssertionFailureDetail d : details) {
@@ -452,7 +445,7 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public String buildFailureDetails() {
         List<AssertionFailureDetail> details = getFailureDetails();
-        if (details.isEmpty()) return "";
+        if (details.isEmpty())  {return "";} 
         StringBuilder sb = new StringBuilder();
         for (AssertionFailureDetail d : details) {
             sb.append(d.toString()).append("\n");
@@ -548,10 +541,10 @@ public class ApiCaptureContext implements CaptureContext {
      */
     public List<CapturedApiCall> getApiCallsSinceStepStart(String endpoint) {
         List<CapturedApiCall> all = getApiCalls(endpoint);
-        if (all.isEmpty() || stepStartTimestamp == 0L) return all;
+        if (all.isEmpty() || stepStartTimestamp == 0L)  {return all;} 
         List<CapturedApiCall> filtered = new ArrayList<>();
         for (CapturedApiCall c : all) {
-            if (c.timestamp() >= stepStartTimestamp) filtered.add(c);
+            if (c.timestamp() >= stepStartTimestamp)  {filtered.add(c);} 
         }
         return filtered;
     }
@@ -660,7 +653,7 @@ public class ApiCaptureContext implements CaptureContext {
         List<CapturedApiCall> calls = getApiCalls(endpoint);
         List<String> result = new ArrayList<>();
         for (CapturedApiCall c : calls) {
-            if (c.responseBody() != null) result.add(c.responseBody());
+            if (c.responseBody() != null)  {result.add(c.responseBody());} 
         }
         return result;
     }
@@ -686,7 +679,7 @@ public class ApiCaptureContext implements CaptureContext {
         for (Map.Entry<String, List<CapturedApiCall>> e : getAllApiCalls().entrySet()) {
             List<String> bodies = new ArrayList<>();
             for (CapturedApiCall c : e.getValue()) {
-                if (c.responseBody() != null) bodies.add(c.responseBody());
+                if (c.responseBody() != null)  {bodies.add(c.responseBody());} 
             }
             if (!bodies.isEmpty()) {
                 result.put(e.getKey(), bodies);

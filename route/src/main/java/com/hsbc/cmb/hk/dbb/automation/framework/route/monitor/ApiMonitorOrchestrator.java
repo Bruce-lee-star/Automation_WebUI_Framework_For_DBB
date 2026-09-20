@@ -3,7 +3,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import com.microsoft.playwright.Route;
 
 import java.util.Map;
 import java.util.Set;
@@ -133,7 +132,7 @@ public class ApiMonitorOrchestrator {
 
     /** 指定 context 是否已注册该 pattern（context 级去重查询；X-3 / R-2 后不再提供无 context 版本）。 */
     public boolean isRegistered(String pattern, BrowserContext context) {
-        if (pattern == null || context == null) return false;
+        if (pattern == null || context == null)  {return false;} 
         Set<String> reg = registeredPatternsByContext.get(context);
         return reg != null && reg.contains(pattern);
     }
@@ -157,7 +156,7 @@ public class ApiMonitorOrchestrator {
      * 多个 onClose 监听可并存，互不干扰。
      */
     private void ensureCloseHook(BrowserContext context) {
-        if (context == null) return;
+        if (context == null)  {return;} 
         if (closeHooks.add(context)) {
             try {
                 context.onClose(ignored -> deregisterContext(context));

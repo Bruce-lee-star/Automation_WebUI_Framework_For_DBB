@@ -172,7 +172,7 @@ final class PageContextState {
      */
     private void clearStaleFrameContextIfNeeded() {
         Frame f = currentFrame.get();
-        if (f == null) return;
+        if (f == null)  {return;} 
         try {
             Page fp = f.page();
             if (fp == null || fp.isClosed() || fp != owner.page) {
@@ -189,7 +189,7 @@ final class PageContextState {
      * @apiNote Framework-internal — 仅供同包 BasePage / PageLifecycleCoordinator 委派调用。
      */
     boolean isPageClosed(Page p) {
-        if (p == null) return true;
+        if (p == null)  {return true;} 
         try {
             return p.isClosed();
         } catch (Exception e) {
@@ -268,7 +268,7 @@ final class PageContextState {
                     }
 
                     new RoleElementBinder(pageOwner, fieldOwner.getClass()).bind(field, a);
-                } else if (field.isAnnotationPresent(Element.class)) {
+                } else  {if (field.isAnnotationPresent(Element.class)) {
                     Element elementAnnotation = field.getAnnotation(Element.class);
                     String selector = elementAnnotation.value();
                     // 对齐 page.pause() 的 frameLocator 录制：iframe 内元素用 frame() 逐层下钻。
@@ -289,7 +289,7 @@ final class PageContextState {
                     }
 
                     createField(field, fieldOwner, pageOwner, selector, frameSegs);
-                }
+                }} 
             }
             clazz = clazz.getSuperclass();
         }

@@ -179,7 +179,7 @@ public final class RouteContextState {
      * @return 该 context 的桶，或 null（ctx 为 null）
      */
     static Set<Route> markDispatched(BrowserContext ctx) {
-        if (ctx == null) return null;
+        if (ctx == null)  {return null;} 
         Set<Route> bucket = DISPATCHED_ROUTES.computeIfAbsent(ctx, k -> ConcurrentHashMap.newKeySet());
         // ═══ 防御性清理：单 context 桶超过上限时清空（防止异常情况下无限增长）═══
         if (bucket.size() >= MAX_DISPATCHED_ROUTES_PER_CONTEXT) {

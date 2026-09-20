@@ -112,9 +112,9 @@ public final class PageEventMonitor {
         String type = message.type();
         if ("error".equals(type)) {
             logger.error("[console-error] {}", message.text());
-        } else if ("warning".equals(type)) {
+        } else  {if ("warning".equals(type)) {
             logger.warn("[console-warning] {}", message.text());
-        }
+        }} 
     }
 
     /** 网络请求失败（超时/断网）：记录警告级日志。 */

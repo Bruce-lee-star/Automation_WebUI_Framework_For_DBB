@@ -143,12 +143,12 @@ public final class LocatorFactory {
             popts = popts.setLevel(level);
             fopts = fopts.setLevel(level);
         }
-        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
-        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
+        if (disabled != null && disabled != RoleElement.State.ANY)  {popts = popts.setDisabled(disabled == RoleElement.State.YES);} 
+        if (pressed != null && pressed != RoleElement.State.ANY)  {popts = popts.setPressed(pressed == RoleElement.State.YES);} 
+        if (expanded != null && expanded != RoleElement.State.ANY)  {popts = popts.setExpanded(expanded == RoleElement.State.YES);} 
+        if (disabled != null && disabled != RoleElement.State.ANY)  {fopts = fopts.setDisabled(disabled == RoleElement.State.YES);} 
+        if (pressed != null && pressed != RoleElement.State.ANY)  {fopts = fopts.setPressed(pressed == RoleElement.State.YES);} 
+        if (expanded != null && expanded != RoleElement.State.ANY)  {fopts = fopts.setExpanded(expanded == RoleElement.State.YES);} 
         return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
     }
 
@@ -164,12 +164,12 @@ public final class LocatorFactory {
             popts = popts.setLevel(level);
             fopts = fopts.setLevel(level);
         }
-        if (disabled != null && disabled != RoleElement.State.ANY) popts = popts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) popts = popts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) popts = popts.setExpanded(expanded == RoleElement.State.YES);
-        if (disabled != null && disabled != RoleElement.State.ANY) fopts = fopts.setDisabled(disabled == RoleElement.State.YES);
-        if (pressed != null && pressed != RoleElement.State.ANY) fopts = fopts.setPressed(pressed == RoleElement.State.YES);
-        if (expanded != null && expanded != RoleElement.State.ANY) fopts = fopts.setExpanded(expanded == RoleElement.State.YES);
+        if (disabled != null && disabled != RoleElement.State.ANY)  {popts = popts.setDisabled(disabled == RoleElement.State.YES);} 
+        if (pressed != null && pressed != RoleElement.State.ANY)  {popts = popts.setPressed(pressed == RoleElement.State.YES);} 
+        if (expanded != null && expanded != RoleElement.State.ANY)  {popts = popts.setExpanded(expanded == RoleElement.State.YES);} 
+        if (disabled != null && disabled != RoleElement.State.ANY)  {fopts = fopts.setDisabled(disabled == RoleElement.State.YES);} 
+        if (pressed != null && pressed != RoleElement.State.ANY)  {fopts = fopts.setPressed(pressed == RoleElement.State.YES);} 
+        if (expanded != null && expanded != RoleElement.State.ANY)  {fopts = fopts.setExpanded(expanded == RoleElement.State.YES);} 
         return (frame != null) ? frame.getByRole(role, fopts) : page.getByRole(role, popts);
     }
 

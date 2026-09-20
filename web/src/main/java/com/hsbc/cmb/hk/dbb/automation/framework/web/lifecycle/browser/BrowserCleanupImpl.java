@@ -1,36 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.provider.DefaultRuntimeProvider;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextOptions;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTask;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ContextTaskResult;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.ProxyConfigResolver;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRegistryImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserStartup;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserStartupImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRestart;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserRestartImpl;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCleanup;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserCrashGuard;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistryImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptions;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistryImpl;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.scenario.ScenarioLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.PlaywrightSerenityBridge;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.SerenityBusBridge;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.TestContextBridge;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightInitializer;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.media.PlaywrightScreenshotManager;
 
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.*;
@@ -43,18 +16,7 @@ import java.util.concurrent.atomic.*;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStackManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.BrowserStrategy;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.CloudBrowserStrategy;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.cloud.LocalBrowserStrategy;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.InitializationException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import java.nio.file.Paths;
-import java.awt.Dimension;
 
 /** 
 Browser cleanup and disconnect guard (WEB-P1-1 Step 5).
@@ -86,7 +48,7 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
             if (browser != null && browser.isConnected()) {
                 try {
                     for (BrowserContext bc : browser.contexts()) {
-                        if (bc == null) continue;
+                        if (bc == null)  {continue;} 
                         try {
                             //  修复 L3：改走 PlaywrightContextManager.closeContext，其内部已包含
                             //    ① 带 15s 超时的 tracing.stop（原 bc.close() 会跳过 trace 落盘，

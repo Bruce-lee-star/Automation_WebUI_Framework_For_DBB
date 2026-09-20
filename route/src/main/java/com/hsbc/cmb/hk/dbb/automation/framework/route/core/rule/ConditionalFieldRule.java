@@ -83,8 +83,8 @@ public class ConditionalFieldRule {
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof ConditionalFieldRule)) return false;
+        if (this == o)  {return true;} 
+        if (!(o instanceof ConditionalFieldRule))  {return false;} 
         ConditionalFieldRule r = (ConditionalFieldRule) o;
         return Objects.equals(whenJsonPath, r.whenJsonPath)
                 && op == r.op

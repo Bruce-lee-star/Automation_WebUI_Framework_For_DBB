@@ -233,7 +233,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
             checkConfigAndInit();
             configChecked = true;
         }
-        if (!storeEnabled) return;
+        if (!storeEnabled)  {return;} 
         String scenarioKey = groupByScenario ? resolveScenarioKey() : null;
         writeForScenario(scenarioKey, url, urlPattern, status, body, requestHeaders, responseHeaders, method);
     }
@@ -250,7 +250,7 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
     void writeForScenario(String scenarioKey, String url, String urlPattern, int status, String body,
                            Map<String, String> requestHeaders, Map<String, String> responseHeaders,
                            String method) {
-        if (!storeEnabled) return;
+        if (!storeEnabled)  {return;} 
         try {
             String baseName = sanitizeBaseName(urlPattern != null ? urlPattern : url);
 

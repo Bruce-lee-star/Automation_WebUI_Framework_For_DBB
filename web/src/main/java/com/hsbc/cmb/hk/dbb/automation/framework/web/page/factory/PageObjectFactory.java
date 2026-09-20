@@ -538,11 +538,11 @@ public class PageObjectFactory {
      */
     public static void clear(Class<?> pageClass) {
         int removed = 0;
-        if (singleInstances.remove(pageClass) != null) removed++;
-        if (threadInstances().remove(pageClass) != null) removed++;
+        if (singleInstances.remove(pageClass) != null)  {removed++;} 
+        if (threadInstances().remove(pageClass) != null)  {removed++;} 
         
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
-            if (requestMap.remove(pageClass) != null) removed++;
+            if (requestMap.remove(pageClass) != null)  {removed++;} 
         }
         
         logger.debug("Cleared PageObject instance for: {} (removed {} instances)", 
@@ -556,11 +556,11 @@ public class PageObjectFactory {
      * @return 如果实例存在返回true，否则返回false
      */
     public static boolean hasInstance(Class<?> pageClass) {
-        if (singleInstances.containsKey(pageClass)) return true;
-        if (threadInstances().containsKey(pageClass)) return true;
+        if (singleInstances.containsKey(pageClass))  {return true;} 
+        if (threadInstances().containsKey(pageClass))  {return true;} 
         
         for (Map<Class<?>, Object> requestMap : requestScopedInstances.values()) {
-            if (requestMap.containsKey(pageClass)) return true;
+            if (requestMap.containsKey(pageClass))  {return true;} 
         }
         
         return false;

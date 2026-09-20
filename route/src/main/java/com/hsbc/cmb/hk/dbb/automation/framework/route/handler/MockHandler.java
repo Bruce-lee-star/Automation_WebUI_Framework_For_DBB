@@ -169,7 +169,7 @@ public class MockHandler {
         try {
             //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃（避免跨场景污染）
             ApiCaptureContext ctx = RouteUtil.captureContextForRecord(route);
-            if (ctx == null) return;
+            if (ctx == null)  {return;} 
             CapturedApiCall call = new CapturedApiCall(
                     rule.getUrlPattern(),
                     route.request().method(),
@@ -372,7 +372,7 @@ public class MockHandler {
         try {
             //  落库走「无回退」查询：owner 已销毁 ⇒ 丢弃（避免跨场景污染）
             ApiCaptureContext ctx = RouteUtil.captureContextForRecord(route);
-            if (ctx == null) return;
+            if (ctx == null)  {return;} 
             CapturedApiCall call = new CapturedApiCall(
                     rule.getUrlPattern(),
                     route.request().method(),

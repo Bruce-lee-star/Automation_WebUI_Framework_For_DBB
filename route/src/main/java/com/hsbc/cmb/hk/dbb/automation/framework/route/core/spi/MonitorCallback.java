@@ -50,10 +50,10 @@ public interface MonitorCallback {
      * @return Header 值，未找到或 headers 为 null 时返回 null
      */
     static String headerValue(Map<String, String> headers, String headerName) {
-        if (headers == null || headerName == null) return null;
+        if (headers == null || headerName == null)  {return null;} 
         // 先精确匹配（Playwright 规范化为小写，精确匹配即命中）
         String value = headers.get(headerName);
-        if (value != null) return value;
+        if (value != null)  {return value;} 
         // 大小写不敏感回退
         for (Map.Entry<String, String> e : headers.entrySet()) {
             if (e.getKey().equalsIgnoreCase(headerName)) {

@@ -283,7 +283,7 @@ public class ModifyHandler {
                         finalBody = toSafeBodyString(transformed);
                         bodyModified = true;
                         LOGGER.debug("[ModifyHandler] Form body modified via BodyCodec (content-type='{}', bytes={})", contentType, transformed.length);
-                    } else if (transformed == null) {
+                    } else  {if (transformed == null) {
                         // 非表单 / 未知编码：保持原有 raw 字符串替换降级（仅 modify；add/remove 忽略）
                         if ((formToAdd != null && !formToAdd.isEmpty())
                                 || (formToRemove != null && !formToRemove.isEmpty())
@@ -302,7 +302,7 @@ public class ModifyHandler {
                         opts.setPostData(newBody);
                         finalBody = newBody;
                         bodyModified = true;
-                    }
+                    }} 
                     // transformed != null 且内容未变：codec 已处理但无落点，保持原 body（不再进入 raw 降级）
                 }
             } else {
@@ -557,7 +557,7 @@ public class ModifyHandler {
         }
         //  超时保护：绝不传 0（timeout==0 → WaitableNever 死等）。ROUTE_FETCH_TIMEOUT_MS 为 0/负时回落 30s（对齐 Playwright 默认）。
         double wfrTimeout = Math.min(30000, ROUTE_FETCH_TIMEOUT_MS);
-        if (wfrTimeout <= 0) wfrTimeout = 30000;
+        if (wfrTimeout <= 0)  {wfrTimeout = 30000;} 
         //  predicate 用「URL 包含字面路径」：避免响应重定向/参数规范化后 predicate 永不匹配 → 白等满超时。
         final String lit = RouteUtil.literalPathOf(rule.getUrlPattern());
         try {
@@ -568,7 +568,7 @@ public class ModifyHandler {
                         //  Playwright 回调无异常出口：谓词内失效对象访问（"Object doesn't exist: response@..."）
                         //  若逃逸会被传播到页面/请求层，直接让调用方 fetch 失败。故一律降级为 false。
                         try {
-                            if (r == null || r.request() == null) return false;
+                            if (r == null || r.request() == null)  {return false;} 
                             String ru = r.request().url();
                             return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
                         } catch (Exception predicateError) {
@@ -582,7 +582,7 @@ public class ModifyHandler {
                     () -> {
                         //  同上：action 亦在 Playwright 事件循环内，异常不得逃逸；失败即安全放行。
                         try {
-                            if (RouteUtil.isPageClosed(route)) return;
+                            if (RouteUtil.isPageClosed(route))  {return;} 
                             RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
                         } catch (Exception actionError) {
                             VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -647,7 +647,7 @@ public class ModifyHandler {
 
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];
-            if ("$".equals(segment) || segment.isEmpty()) continue;
+            if ("$".equals(segment) || segment.isEmpty())  {continue;} 
 
             boolean isLast = (i == segments.length - 1);
             int bracketIdx = segment.indexOf('[');
@@ -657,7 +657,7 @@ public class ModifyHandler {
             } else {
                 fieldName = segment;
             }
-            if (fieldName.isEmpty()) continue;
+            if (fieldName.isEmpty())  {continue;} 
 
             if (current instanceof ObjectNode) {
                 ObjectNode obj = (ObjectNode) current;
@@ -703,7 +703,7 @@ public class ModifyHandler {
 
         for (int i = 0; i < segments.length; i++) {
             String segment = segments[i];
-            if ("$".equals(segment) || segment.isEmpty()) continue;
+            if ("$".equals(segment) || segment.isEmpty())  {continue;} 
 
             boolean isLast = (i == segments.length - 1);
             int bracketIdx = segment.indexOf('[');
@@ -713,7 +713,7 @@ public class ModifyHandler {
             } else {
                 fieldName = segment;
             }
-            if (fieldName.isEmpty()) continue;
+            if (fieldName.isEmpty())  {continue;} 
 
             if (current instanceof ObjectNode) {
                 ObjectNode obj = (ObjectNode) current;
@@ -721,7 +721,7 @@ public class ModifyHandler {
                     obj.remove(fieldName);
                 } else {
                     JsonNode child = obj.get(fieldName);
-                    if (child == null) return;
+                    if (child == null)  {return;} 
                     current = child;
                 }
             }
@@ -953,27 +953,27 @@ public class ModifyHandler {
     private static void setJsonNode(ObjectNode obj, String fieldName, Object value) {
         if (value instanceof NullNode || value == null) {
             obj.putNull(fieldName);
-        } else if (value instanceof BooleanNode) {
+        } else  {if (value instanceof BooleanNode) {
             obj.put(fieldName, ((BooleanNode) value).booleanValue());
-        } else if (value instanceof IntNode) {
+        } else  {if (value instanceof IntNode) {
             obj.put(fieldName, ((IntNode) value).intValue());
-        } else if (value instanceof LongNode) {
+        } else  {if (value instanceof LongNode) {
             obj.put(fieldName, ((LongNode) value).longValue());
-        } else if (value instanceof FloatNode) {
+        } else  {if (value instanceof FloatNode) {
             obj.put(fieldName, ((FloatNode) value).floatValue());
-        } else if (value instanceof DoubleNode) {
+        } else  {if (value instanceof DoubleNode) {
             obj.put(fieldName, ((DoubleNode) value).doubleValue());
-        } else if (value instanceof DecimalNode) {
+        } else  {if (value instanceof DecimalNode) {
             obj.put(fieldName, ((DecimalNode) value).decimalValue());
-        } else if (value instanceof BigIntegerNode) {
+        } else  {if (value instanceof BigIntegerNode) {
             obj.put(fieldName, ((BigIntegerNode) value).bigIntegerValue());
-        } else if (value instanceof TextNode) {
+        } else  {if (value instanceof TextNode) {
             obj.put(fieldName, ((TextNode) value).textValue());
-        } else if (value instanceof JsonNode) {
+        } else  {if (value instanceof JsonNode) {
             obj.set(fieldName, (JsonNode) value);
         } else {
             obj.put(fieldName, value.toString());
-        }
+        }} } } } } } } } } 
     }
 
     /**
@@ -984,10 +984,10 @@ public class ModifyHandler {
         if (value instanceof TextNode && sample != null && !sample.isTextual() && !sample.isNull()) {
             String s = ((TextNode) value).textValue();
             try {
-                if (sample.isInt()) return IntNode.valueOf(Integer.parseInt(s));
-                if (sample.isLong()) return LongNode.valueOf(Long.parseLong(s));
-                if (sample.isDouble() || sample.isFloat()) return DoubleNode.valueOf(Double.parseDouble(s));
-                if (sample.isBoolean()) return BooleanNode.valueOf(Boolean.parseBoolean(s));
+                if (sample.isInt())  {return IntNode.valueOf(Integer.parseInt(s));} 
+                if (sample.isLong())  {return LongNode.valueOf(Long.parseLong(s));} 
+                if (sample.isDouble() || sample.isFloat())  {return DoubleNode.valueOf(Double.parseDouble(s));} 
+                if (sample.isBoolean())  {return BooleanNode.valueOf(Boolean.parseBoolean(s));} 
             } catch (NumberFormatException e) {
                 return value;
             }
@@ -1143,7 +1143,7 @@ public class ModifyHandler {
                                             List<PathSegment> thenSegs, int thenIdx,
                                             ConditionalFieldRule.ConditionOp op, Object expected,
                                             JsonNode setValue, boolean aligned) {
-        if (whenNode == null || thenNode == null) return;
+        if (whenNode == null || thenNode == null)  {return;} 
         boolean whenLast = (whenIdx == whenSegs.size() - 1);
         boolean thenLast = (thenIdx == thenSegs.size() - 1);
         PathSegment ws = whenSegs.get(whenIdx);
@@ -1188,7 +1188,7 @@ public class ModifyHandler {
         // 精确导航
         JsonNode wChild = navigate(whenNode, ws);
         JsonNode tChild = navigate(thenNode, ts);
-        if (wChild == null || tChild == null) return;
+        if (wChild == null || tChild == null)  {return;} 
         applyConditionalRec(wChild, tChild, null, null,
                 whenSegs, whenIdx + 1, thenSegs, thenIdx + 1, op, expected, setValue, aligned);
     }
@@ -1201,23 +1201,23 @@ public class ModifyHandler {
             if (thenNode instanceof ObjectNode && ts.fieldName != null && !ts.isWildcard()) {
                 setJsonNode((ObjectNode) thenNode, ts.fieldName,
                         coerceToType(setValue, thenNode.get(ts.fieldName)));
-            } else if (ts.isWildcard() && thenNode instanceof ArrayNode) {
+            } else  {if (ts.isWildcard() && thenNode instanceof ArrayNode) {
                 ArrayNode arr = (ArrayNode) thenNode;
                 for (int i = 0; i < arr.size(); i++) {
                     arr.set(i, coerceToType(setValue, arr.get(i)));
                 }
-            }
+            }} 
             return;
         }
         JsonNode child = navigate(thenNode, ts);
-        if (child != null) writeThenWhole(child, thenSegs, thenIdx + 1, setValue);
+        if (child != null)  {writeThenWhole(child, thenSegs, thenIdx + 1, setValue);} 
     }
 
     /** 解析末段叶节点：通配符则取首个元素，否则精确取字段 */
     private static JsonNode resolveLeaf(JsonNode node, PathSegment seg) {
         if (seg.isWildcard()) {
             JsonNode arr = seg.isRootWildcard() ? node : node.get(seg.fieldName);
-            if (arr instanceof ArrayNode && arr.size() > 0) return arr.get(0);
+            if (arr instanceof ArrayNode && arr.size() > 0)  {return arr.get(0);} 
             return arr;
         }
         return node.get(seg.fieldName);
@@ -1231,7 +1231,7 @@ public class ModifyHandler {
         JsonNode child = node.get(seg.fieldName);
         if (child instanceof ArrayNode && seg.arrayIndex != null) {
             ArrayNode arr = (ArrayNode) child;
-            if (seg.arrayIndex >= 0 && seg.arrayIndex < arr.size()) return arr.get(seg.arrayIndex);
+            if (seg.arrayIndex >= 0 && seg.arrayIndex < arr.size())  {return arr.get(seg.arrayIndex);} 
             return null;
         }
         return child;
@@ -1275,8 +1275,8 @@ public class ModifyHandler {
 
     /** 类型感知相等比较：数字按数值、布尔按布尔、其余按文本 */
     private static boolean compareEquals(JsonNode actual, Object expected) {
-        if (actual == null || actual.isMissingNode()) return expected == null;
-        if (expected == null) return actual.isNull();
+        if (actual == null || actual.isMissingNode())  {return expected == null;} 
+        if (expected == null)  {return actual.isNull();} 
         if (actual.isNumber() && expected instanceof Number) {
             return actual.doubleValue() == ((Number) expected).doubleValue();
         }
@@ -1288,7 +1288,7 @@ public class ModifyHandler {
 
     /** 数值比较：actual(JsonNode) 与 expected(Object)；不可比返回 0 */
     private static int compareNumeric(JsonNode actual, Object expected) {
-        if (actual == null || !actual.isNumber() || !(expected instanceof Number)) return 0;
+        if (actual == null || !actual.isNumber() || !(expected instanceof Number))  {return 0;} 
         return Double.compare(actual.doubleValue(), ((Number) expected).doubleValue());
     }
 
@@ -1301,12 +1301,12 @@ public class ModifyHandler {
      * {@code Collections.emptyMap()} → {@code {}}。
      */
     private static JsonNode rawValueToJsonNode(Object value) {
-        if (value == null) return NullNode.getInstance();
-        if (value instanceof JsonNode) return (JsonNode) value;
-        if (value instanceof String) return new TextNode((String) value);
-        if (value instanceof Boolean) return BooleanNode.valueOf((Boolean) value);
-        if (value instanceof Integer) return new IntNode((Integer) value);
-        if (value instanceof Long) return new LongNode((Long) value);
+        if (value == null)  {return NullNode.getInstance();} 
+        if (value instanceof JsonNode)  {return (JsonNode) value;} 
+        if (value instanceof String)  {return new TextNode((String) value);} 
+        if (value instanceof Boolean)  {return BooleanNode.valueOf((Boolean) value);} 
+        if (value instanceof Integer)  {return new IntNode((Integer) value);} 
+        if (value instanceof Long)  {return new LongNode((Long) value);} 
         if (value instanceof Float || value instanceof Double) {
             return new DecimalNode(new BigDecimal(value.toString()));
         }
@@ -1365,9 +1365,9 @@ public class ModifyHandler {
 
         @Override
         public String toString() {
-            if (fieldName == null && wildcard) return "[*]";
-            if (wildcard) return fieldName + "[*]";
-            if (arrayIndex != null) return fieldName + "[" + arrayIndex + "]";
+            if (fieldName == null && wildcard)  {return "[*]";} 
+            if (wildcard)  {return fieldName + "[*]";} 
+            if (arrayIndex != null)  {return fieldName + "[" + arrayIndex + "]";} 
             return fieldName != null ? fieldName : "";
         }
     }
@@ -1390,15 +1390,15 @@ public class ModifyHandler {
         String trimmed = path;
         if (trimmed.startsWith("$.")) {
             trimmed = trimmed.substring(2);
-        } else if (trimmed.startsWith("$")) {
+        } else  {if (trimmed.startsWith("$")) {
             trimmed = trimmed.substring(1);
-        }
+        }} 
 
-        if (trimmed.isEmpty()) return segments;
+        if (trimmed.isEmpty())  {return segments;} 
 
         String[] parts = trimmed.split("\\.");
         for (String part : parts) {
-            if (part.isEmpty()) continue;
+            if (part.isEmpty())  {continue;} 
 
             int bracketIdx = part.indexOf('[');
             if (bracketIdx < 0) {

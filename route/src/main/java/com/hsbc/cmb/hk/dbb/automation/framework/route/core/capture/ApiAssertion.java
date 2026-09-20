@@ -145,7 +145,7 @@ public class ApiAssertion {
 
         // 1/1b. 快路径：endpoint key + 完整 URL 索引双通道精确匹配
         CapturedApiCall call = fastExactMatch(ctx);
-        if (call != null) return call;
+        if (call != null)  {return call;} 
 
         //  P1: 竞态兜底 — 等待采集管道在途请求闭合后再重试。
         awaitCapturePipeline(ctx);
@@ -155,11 +155,11 @@ public class ApiAssertion {
         //   调用会在随后几毫秒入库但断言已失败。先补扫一次已入库调用；仍未命中则
         //   注册一次性谓词，storeApiCall 入库时直接评估并精确完成 future。
         call = fastExactMatch(ctx);
-        if (call != null) return call;
+        if (call != null)  {return call;} 
 
         // 2. 通配符匹配：仅遍历当前步骤窗口内的调用
         CapturedApiCall best = wildcardScan(ctx);
-        if (best != null) return best;
+        if (best != null)  {return best;} 
 
         long stepStart = ctx.getStepStartTimestamp();
         CompletableFuture<CapturedApiCall> waiter =
@@ -167,7 +167,7 @@ public class ApiAssertion {
         // 关闭"注册前入库 → 投递丢失"竞态：调用可能在注册与评估之间已入库，
         // 注册后立即补扫一次（单次检查，非轮询），命中即返回。
         CapturedApiCall late = fastExactMatch(ctx);
-        if (late == null) late = wildcardScan(ctx);
+        if (late == null)  {late = wildcardScan(ctx);} 
         if (late != null) {
             ctx.unregisterApiCallWaiter(waiter);
             return late;
@@ -189,12 +189,12 @@ public class ApiAssertion {
      * endpoint key（path-only）与完整 URL 双通道 + 步骤窗口。
      */
     private boolean matchesPattern(CapturedApiCall c, long stepStart) {
-        if (c == null) return false;
-        if (stepStart != 0L && c.timestamp() < stepStart) return false;
+        if (c == null)  {return false;} 
+        if (stepStart != 0L && c.timestamp() < stepStart)  {return false;} 
         String endpoint = c.endpoint();
         String url = c.requestUrl();
-        if (urlPattern.equals(endpoint) || urlPattern.equals(url)) return true;
-        if (endpoint != null && regex.matcher(endpoint).matches()) return true;
+        if (urlPattern.equals(endpoint) || urlPattern.equals(url))  {return true;} 
+        if (endpoint != null && regex.matcher(endpoint).matches())  {return true;} 
         return url != null && regex.matcher(url).matches();
     }
 
@@ -202,13 +202,13 @@ public class ApiAssertion {
     private CapturedApiCall fastExactMatch(ApiCaptureContext ctx) {
         // 1. 精确匹配（限定在当前步骤窗口内，R4）— 按 endpoint key（path-only）检索
         CapturedApiCall call = ctx.getLastApiCallSinceStepStart(urlPattern);
-        if (call != null) return call;
+        if (call != null)  {return call;} 
 
         // 1b.  P2: 完整 URL 精确索引（O(1)，apiCallsByUrl）——pattern 传完整 URL 时
         //     endpoint key 无法命中（存储键为 path-only），这里补一次 URL 索引查询。
         if (!containsGlobWildcard(urlPattern)) {
             CapturedApiCall byUrl = lastSinceStepStart(ctx.getCallsByUrl(urlPattern), ctx);
-            if (byUrl != null) return byUrl;
+            if (byUrl != null)  {return byUrl;} 
         }
         return null;
     }
@@ -221,11 +221,11 @@ public class ApiAssertion {
         long stepStart = ctx.getStepStartTimestamp();
         for (Map.Entry<String, List<CapturedApiCall>> e : all.entrySet()) {
             List<CapturedApiCall> calls = e.getValue();
-            if (calls == null || calls.isEmpty()) continue;
+            if (calls == null || calls.isEmpty())  {continue;} 
             for (CapturedApiCall c : calls) {
-                if (c == null) continue;
+                if (c == null)  {continue;} 
                 // 仅考虑本步骤窗口内的调用
-                if (stepStart != 0L && c.timestamp() < stepStart) continue;
+                if (stepStart != 0L && c.timestamp() < stepStart)  {continue;} 
                 if (!regex.matcher(e.getKey()).matches()
                         && !regex.matcher(c.requestUrl()).matches()) {
                     continue;
@@ -241,12 +241,12 @@ public class ApiAssertion {
 
     /**  P2: 取列表内步骤窗口中的最近一条调用（列表按时间追加，倒序查找）。 */
     private CapturedApiCall lastSinceStepStart(List<CapturedApiCall> calls, ApiCaptureContext ctx) {
-        if (calls == null || calls.isEmpty()) return null;
+        if (calls == null || calls.isEmpty())  {return null;} 
         long stepStart = ctx == null ? 0L : ctx.getStepStartTimestamp();
         for (int i = calls.size() - 1; i >= 0; i--) {
             CapturedApiCall c = calls.get(i);
-            if (c == null) continue;
-            if (stepStart != 0L && c.timestamp() < stepStart) continue;
+            if (c == null)  {continue;} 
+            if (stepStart != 0L && c.timestamp() < stepStart)  {continue;} 
             return c;
         }
         return null;
@@ -254,7 +254,7 @@ public class ApiAssertion {
 
     /**  P1: 有限等待采集管道在途请求闭合，不抛出中断异常。 */
     private void awaitCapturePipeline(ApiCaptureContext ctx) {
-        if (ctx == null) return;
+        if (ctx == null)  {return;} 
         try {
             ctx.awaitCompletion(CAPTURE_AWAIT_TIMEOUT_MS);
         } catch (InterruptedException e) {

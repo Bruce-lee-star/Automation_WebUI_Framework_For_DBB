@@ -168,7 +168,7 @@ public final class SummaryReportGenerator {
 
     private String loadProjectName() {
         String name = System.getProperty("serenity.project.name");
-        if (name != null && !name.isEmpty()) return name;
+        if (name != null && !name.isEmpty())  {return name;} 
 
         try {
             Path propFile = Paths.get("serenity.properties");
@@ -263,14 +263,14 @@ public final class SummaryReportGenerator {
             String envValue = System.getenv(envVarName);
             if (envValue != null && !envValue.isEmpty()) {
                 matcher.appendReplacement(sb, envValue.replace("\\", "\\\\").replace("$", "\\$"));
-            } else if (defaultValue != null) {
+            } else  {if (defaultValue != null) {
                 // 使用默认值，并递归解析（默认值中可能包含其他环境变量）
                 String resolvedDefault = resolveEnvironmentVariables(defaultValue);
                 matcher.appendReplacement(sb, resolvedDefault.replace("\\", "\\\\").replace("$", "\\$"));
             } else {
                 // 环境变量不存在且无默认值，保留原始文本
                 matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group(0)));
-            }
+            }} 
         }
         matcher.appendTail(sb);
 
@@ -443,11 +443,11 @@ public final class SummaryReportGenerator {
             long pass = count(TestResult.SUCCESS);
             if (total > 0 && pass == total) {
                 logger.info("All {} tests passed! Summary report generated at: {}", total, output.toAbsolutePath());
-            } else if (total > 0) {
+            } else  {if (total > 0) {
                 long fail = count(TestResult.FAILURE) + count(TestResult.ERROR);
                 logger.info("Summary report generated: {} passed, {} failed out of {}", 
                     pass, fail, total);
-            }
+            }} 
         } catch (Exception e) {
             logger.error("Failed to generate summary report", e);
         }
@@ -612,7 +612,7 @@ public final class SummaryReportGenerator {
     }
 
     private String escapeCsv(String value) {
-        if (value == null) return "";
+        if (value == null)  {return "";} 
         // 如果包含逗号、引号、换行或回车，需要用引号包裹并转义引号
         if (value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r")) {
             return "\"" + value.replace("\"", "\"\"") + "\"";
@@ -643,14 +643,14 @@ public final class SummaryReportGenerator {
     
     private void zipDirectory(File folder, String parentFolder, ZipOutputStream zos) throws IOException {
         File[] files = folder.listFiles();
-        if (files == null) return;
+        if (files == null)  {return;} 
         
         for (File file : files) {
             // E-7 白名单：跳过 ZIP 本体（防自嵌套）、CSV（单独下载）、临时产物（.tmp）
             String name = file.getName();
             if ((name.startsWith(ZIP_FILE_PREFIX) && name.endsWith(".zip")) ||
                 (name.startsWith(CSV_FILE_PREFIX) && name.endsWith(".csv")) ||
-                name.endsWith(".tmp")) continue;
+                name.endsWith(".tmp"))  {continue;} 
             
             if (file.isDirectory()) {
                 // 递归处理子目录
@@ -665,7 +665,7 @@ public final class SummaryReportGenerator {
     }
     
     private void addToZip(ZipOutputStream zos, Path file, String entryName) throws IOException {
-        if (!Files.exists(file)) return;
+        if (!Files.exists(file))  {return;} 
         
         ZipEntry entry = new ZipEntry(entryName);
         zos.putNextEntry(entry);
@@ -796,7 +796,7 @@ public final class SummaryReportGenerator {
 
     private int[] calculateBarWidths(long total, long... counts) {
         int[] widths = new int[counts.length];
-        if (total == 0) return widths;
+        if (total == 0)  {return widths;} 
 
         int used = 0;
         for (int i = 0; i < counts.length; i++) {
@@ -936,7 +936,7 @@ public final class SummaryReportGenerator {
      * </ol>
      */
     private String normalizeFeatureName(String name) {
-        if (name == null || name.isEmpty()) return "No Feature";
+        if (name == null || name.isEmpty())  {return "No Feature";} 
         String normalized = name.trim();
 
         // 1. 去掉 .feature 扩展名
@@ -965,9 +965,9 @@ public final class SummaryReportGenerator {
         int total = 0, passed = 0, failed = 0, error = 0;
         void add(TestResult r) {
             total++;
-            if (r == TestResult.SUCCESS) passed++;
-            else if (r == TestResult.FAILURE) failed++;
-            else if (r == TestResult.ERROR) error++;
+            if (r == TestResult.SUCCESS)  {passed++;} 
+            else  {if (r == TestResult.FAILURE)  {failed++;} 
+            else  {if (r == TestResult.ERROR)  {error++;} } } 
         }
         int passPercent() { return total == 0 ? 0 : (passed * 100) / total; }
     }
@@ -1135,7 +1135,7 @@ public final class SummaryReportGenerator {
                 double pct = (double) entry.getValue() / total * 100;
 
                 // conic-gradient: color start% end% (百分比直接是 0-100)
-                if (gradient.length() > 0) gradient.append(", ");
+                if (gradient.length() > 0)  {gradient.append(", ");} 
                 gradient.append(colors[colorIdx % colors.length])
                         .append(" ").append(String.format("%.2f", currentPct)).append("%")
                         .append(" ").append(String.format("%.2f", currentPct + pct)).append("%");
@@ -1161,7 +1161,7 @@ public final class SummaryReportGenerator {
     }
 
     private String extractErrorType(String errorMessage) {
-        if (errorMessage == null) return "Unknown error";
+        if (errorMessage == null)  {return "Unknown error";} 
 
         for (ErrorTypeRule rule : errorTypeRules) {
             if (rule.matches(errorMessage)) {
@@ -1406,7 +1406,7 @@ public final class SummaryReportGenerator {
         }
 
         boolean matches(String errorMessage) {
-            if (errorMessage == null || keywords == null) return false;
+            if (errorMessage == null || keywords == null)  {return false;} 
             String lower = errorMessage.toLowerCase();
             for (String kw : keywords) {
                 if (kw != null && lower.contains(kw.toLowerCase())) {
@@ -1651,12 +1651,12 @@ public final class SummaryReportGenerator {
 
     /** Get font color for a test result type (no background, text-only). */
     private String resultColor(TestResult r) {
-        if (r == TestResult.SUCCESS) return "#52B255";
-        if (r == TestResult.FAILURE) return "#f44336";
-        if (r == TestResult.ERROR) return "#ECA43A";
-        if (r == TestResult.PENDING) return "#5FB0E0";
-        if (r == TestResult.IGNORED || r == TestResult.SKIPPED) return "#9e9e9e";
-        if (r == TestResult.COMPROMISED) return "#9C77AD";
+        if (r == TestResult.SUCCESS)  {return "#52B255";} 
+        if (r == TestResult.FAILURE)  {return "#f44336";} 
+        if (r == TestResult.ERROR)  {return "#ECA43A";} 
+        if (r == TestResult.PENDING)  {return "#5FB0E0";} 
+        if (r == TestResult.IGNORED || r == TestResult.SKIPPED)  {return "#9e9e9e";} 
+        if (r == TestResult.COMPROMISED)  {return "#9C77AD";} 
         return "#666666";
     }
 
@@ -1674,9 +1674,9 @@ public final class SummaryReportGenerator {
     }
 
     private String format(long ms) {
-        if (ms < 1000) return ms + "ms";
+        if (ms < 1000)  {return ms + "ms";} 
         long seconds = Duration.ofMillis(ms).getSeconds();
-        if (seconds < 60) return seconds + "s";
+        if (seconds < 60)  {return seconds + "s";} 
         long minutes = seconds / 60;
         long secs = seconds % 60;
         return minutes + "m " + secs + "s";
@@ -1686,7 +1686,7 @@ public final class SummaryReportGenerator {
      * 截断错误信息，超过150字符用省略号代替
      */
     private String truncateError(String error) {
-        if (error == null || error.isEmpty()) return "";
+        if (error == null || error.isEmpty())  {return "";} 
         if (error.length() > 300) {
             return error.substring(0, 300) + "...";
         }
@@ -1699,7 +1699,7 @@ public final class SummaryReportGenerator {
     private void loadTestOutcomes(String actualReportDir) {
         File dir = safeResolve(actualReportDir).toFile();
         File[] files = dir.listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
-        if (files == null || files.length == 0) return;
+        if (files == null || files.length == 0)  {return;} 
 
         VerboseLogging.logDebugIfVerbose(logger, "Found {} json report files in {}", files.length, dir.getAbsolutePath());
 
@@ -1727,9 +1727,9 @@ public final class SummaryReportGenerator {
                     JsonObject userStory = jo.getAsJsonObject("userStory");
                     if (userStory.has("storyName")) {
                         feature = userStory.get("storyName").getAsString();
-                    } else if (userStory.has("displayName")) {
+                    } else  {if (userStory.has("displayName")) {
                         feature = userStory.get("displayName").getAsString();
-                    }
+                    }} 
                 }
 
                 // 注：Serenity JSON 的 scenarioId 当前无处消费（trace 匹配走归一化场景名），
@@ -1741,12 +1741,12 @@ public final class SummaryReportGenerator {
                     JsonObject failureCause = jo.getAsJsonObject("testFailureCause");
                     if (failureCause.has("message")) {
                         errorMessage = failureCause.get("message").getAsString();
-                    } else if (failureCause.has("errorType")) {
+                    } else  {if (failureCause.has("errorType")) {
                         errorMessage = failureCause.get("errorType").getAsString();
-                    }
-                } else if (jo.has("errorMessage")) {
+                    }} 
+                } else  {if (jo.has("errorMessage")) {
                     errorMessage = jo.get("errorMessage").getAsString();
-                }
+                }} 
 
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
                 outcome.errorMessage = errorMessage;
@@ -1775,9 +1775,9 @@ public final class SummaryReportGenerator {
                                 // 补齐或截断到9位纳秒
                                 if (nanos.length() < 9) {
                                     nanos = String.format("%-9s", nanos).replace(' ', '0');
-                                } else if (nanos.length() > 9) {
+                                } else  {if (nanos.length() > 9) {
                                     nanos = nanos.substring(0, 9);
-                                }
+                                }} 
                                 startTimeStr = parts[0] + "." + nanos + tz;
                             }
                         }
@@ -1814,7 +1814,7 @@ public final class SummaryReportGenerator {
     }
 
     private void calculateResultCounts() {
-        for (TestResult r : TestResult.values()) resultCounts.put(r, 0L);
+        for (TestResult r : TestResult.values())  {resultCounts.put(r, 0L);} 
         testOutcomes.forEach(t -> resultCounts.put(t.getResult(), resultCounts.get(t.getResult()) + 1));
         simpleTestOutcomes.forEach(t -> resultCounts.put(t.result, resultCounts.get(t.result) + 1));
     }
@@ -1838,7 +1838,7 @@ public final class SummaryReportGenerator {
 
             // 解析时间字符串为毫秒的辅助方法
             java.util.function.Function<String, Long> parseDuration = (str) -> {
-                if (str == null || str.trim().isEmpty()) return 0L;
+                if (str == null || str.trim().isEmpty())  {return 0L;} 
                 String s = str.trim();
                 try {
                     long totalMs = 0;
@@ -2031,7 +2031,7 @@ public final class SummaryReportGenerator {
                     if (m.groupCount() >= 2) {
                         title = m.group(1).trim();
                         link = m.group(2).trim();
-                    } else if (m.groupCount() >= 1) {
+                    } else  {if (m.groupCount() >= 1) {
                         link = m.group(1).trim();
                         // 从 link 路径提取标题；getFileName() 对根路径（如 "/"）返回 null，须判空
                         // （SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）——判空后 title 维持 null，
@@ -2040,7 +2040,7 @@ public final class SummaryReportGenerator {
                         if (lp != null) {
                             title = lp.toString().replaceAll("-", " ");
                         }
-                    }
+                    }} 
 
                     if (title != null && link != null && !title.isEmpty() && !link.isEmpty()) {
                         featureToHtmlMap.putIfAbsent(normalizeFeatureName(title), link);
@@ -2057,7 +2057,7 @@ public final class SummaryReportGenerator {
     private void loadScenarioHtmlMapping(String actualReportDir) {
         // JSON 文件和 HTML 文件同名，直接映射
         File[] jsonFiles = safeResolve(actualReportDir).toFile().listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
-        if (jsonFiles == null) return;
+        if (jsonFiles == null)  {return;} 
 
         for (File f : jsonFiles) {
             try {
@@ -2144,7 +2144,7 @@ public final class SummaryReportGenerator {
     private static void fixSwiperScreenshotsHtml(String reportDir) {
         try {
             Path dir = safeResolve(reportDir);
-            if (!Files.isDirectory(dir)) return;
+            if (!Files.isDirectory(dir))  {return;} 
 
             int fixedCount = 0;
             try (var stream = Files.newDirectoryStream(dir, "*_screenshots.html")) {

@@ -225,12 +225,12 @@ public final class ConfigCipher {
         try {
             if ("encrypt".equalsIgnoreCase(args[0])) {
                 System.out.println(encrypt(args[1]));
-            } else if ("decrypt".equalsIgnoreCase(args[0])) {
+            } else  {if ("decrypt".equalsIgnoreCase(args[0])) {
                 System.out.println(decrypt(args[1]));
             } else {
                 System.err.println("Unknown op: " + args[0]);
                 System.exit(2);
-            }
+            }} 
         } catch (Exception e) {
             System.err.println("ERROR: " + e.getMessage());
             System.exit(1);

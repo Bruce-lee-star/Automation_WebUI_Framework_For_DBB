@@ -150,7 +150,7 @@ public final class RouteMonitorSession {
         // scope+pattern 相同且会话活跃时复用；已停止会话原子替换，避免重注册永久复用 stopped session。
         AtomicBoolean installed = new AtomicBoolean();
         SESSIONS.compute(key, (ignored, existing) -> {
-            if (existing != null && !existing.stopped.get()) return existing;
+            if (existing != null && !existing.stopped.get())  {return existing;} 
             installed.set(true);
             return session;
         });
@@ -180,7 +180,7 @@ public final class RouteMonitorSession {
      * 若当前无活跃 session（例如「先 modify 后追加 monitor」的逆向注册顺序），则启动一个。
      */
     public static void refreshMonitorSession(Object ctx, String pattern, RouteRule sessionOwner, boolean needsSession) {
-        if (!needsSession) return;
+        if (!needsSession)  {return;} 
         MonitorSession session = SESSIONS.get(new MonitorSessionKey(ctx, pattern));
         if (session == null || session.stopped.get()) {
             startMonitorSession(ctx, sessionOwner, pattern);
@@ -214,21 +214,21 @@ public final class RouteMonitorSession {
 
     /** 通过规则对象身份查找会话，避免 RouteRule 的可变 equals/hashCode 参与运行时定位。 */
     private static MonitorSession sessionForRule(RouteRule rule) {
-        if (rule == null) return null;
+        if (rule == null)  {return null;} 
         //  分发期合并拷贝经 getMergeSource() 解引用到链头（session.rule 绑定链头）
         RouteRule source = rule.getMergeSource();
         //  防御性快路径：链头已持有会话引用则 O(1) 返回，避免全表遍历与身份相等脆弱假设
         MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
-        if (ref != null) return ref;
+        if (ref != null)  {return ref;} 
         for (MonitorSession session : SESSIONS.values()) {
-            if (session.rule == source) return session;
+            if (session.rule == source)  {return session;} 
         }
         return null;
     }
 
     /** 按 Route 所属 Page/Context 优先定位会话，防止跨作用域复用规则时误命中。 */
     public static MonitorSession sessionForRoute(Route route, RouteRule rule) {
-        if (route == null || rule == null) return sessionForRule(rule);
+        if (route == null || rule == null)  {return sessionForRule(rule);} 
         //  分发期合并拷贝解引用到源规则（链头）
         RouteRule source = rule.getMergeSource();
         Page page = null;
@@ -242,13 +242,13 @@ public final class RouteMonitorSession {
         //  防御性快路径：链头已持有会话引用且上下文一致 → O(1) 返回。
         //   多 context 复用同一规则实例时，ref 可能指向最后注册的 session，故必须校验 context 一致，否则退回遍历。
         MonitorSession ref = (MonitorSession) source.getMonitorSessionRef();
-        if (ref != null && ref.context == page.context()) return ref;
+        if (ref != null && ref.context == page.context())  {return ref;} 
         MonitorSession contextSession = null;
         for (MonitorSession session : SESSIONS.values()) {
-            if (session.rule != source) continue;
-            if (session.context == page) return session;
+            if (session.rule != source)  {continue;} 
+            if (session.context == page)  {return session;} 
             try {
-                if (session.context == page.context()) contextSession = session;
+                if (session.context == page.context())  {contextSession = session;} 
             } catch (Exception e) {
                 // 页面关闭竞态下继续回退至规则身份查询（预期竞争，但不得静默，D7-3）
                 LOGGER.debug("[RouteMonitorSession] sessionForPage: page.context() unavailable, "

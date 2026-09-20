@@ -126,7 +126,7 @@ public final class HandlerExecutor {
                 final long d = delayMs;
                 DelayScheduler.delayScheduler(route).schedule(() -> {
                     try {
-                        if (!RouteUtil.isPageClosed(route)) RouteUtil.safeResume(route);
+                        if (!RouteUtil.isPageClosed(route))  {RouteUtil.safeResume(route);} 
                     } finally {
                         RouteMonitorSession.onMonitorMatch(rule);
                         decrementTimes(rule);

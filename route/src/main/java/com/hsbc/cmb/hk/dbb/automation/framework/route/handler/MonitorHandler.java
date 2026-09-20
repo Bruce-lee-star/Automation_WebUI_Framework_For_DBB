@@ -443,7 +443,7 @@ public class MonitorHandler {
     private static void scheduleExistingResponsePoll(java.util.concurrent.CompletableFuture<Response> fut,
                                                      Route route, Request req,
                                                      BrowserContext observationContext, long deadlineNs) {
-        if (fut.isDone()) return;
+        if (fut.isDone())  {return;} 
         //  死句柄零触碰：context/页面已关 → 立即停止轮询，交由调用方落降级快照（不触碰 server 对象）。
         if ((observationContext != null && RouteContextState.isContextClosed(observationContext))
                 || RouteUtil.isPageClosed(route)) {
@@ -722,7 +722,7 @@ public class MonitorHandler {
     private static Response fallbackResponse(Request req) {
         try {
             Response r = req.response();
-            if (r == null) return null;
+            if (r == null)  {return null;} 
             // 预热一次 status()，尽早暴露 "Object doesn't exist" 等已失效信号
             r.status();
             VerboseLogging.logDebugIfVerbose(LOGGER,
@@ -773,7 +773,7 @@ public class MonitorHandler {
     /** 递归重试 {@code fallbackResponse(req)}（本地 req.response() 往返），界内退避、死句柄即停。 */
     private static void fallbackRetryPoll(java.util.concurrent.CompletableFuture<Response> fut,
                                           Request req, BrowserContext observationContext, int attempt) {
-        if (fut.isDone()) return;
+        if (fut.isDone())  {return;} 
         if (RouteContextState.isContextClosed(observationContext)) {
             fut.complete(null);
             return;
@@ -914,7 +914,7 @@ public class MonitorHandler {
             }
             long effectiveDelay = rule != null ? Math.max(rule.getDelayMs(), rule.getDelayMaxMs()) : 0;
             long capMs = Math.min(RESPONSE_AWAIT_CAP_MS, (long) ROUTE_FETCH_TIMEOUT_MS);
-            if (capMs <= 0) capMs = RESPONSE_AWAIT_CAP_MS;
+            if (capMs <= 0)  {capMs = RESPONSE_AWAIT_CAP_MS;} 
             capMs += effectiveDelay;
             Response res = awaitExistingResponse(route, req, observationContext, capMs);
             if (res == null) {
@@ -1075,7 +1075,7 @@ public class MonitorHandler {
         //   在无 awaitCompletion 的情况下直接 getLastApiCall 时读到空。
         //   本方法其余部分仅负责：断言、匹配计数、回调、报告、持久化。
         // ═══════════════════════════════════════════════════════════════
-        if (context == null) return;
+        if (context == null)  {return;} 
         //  只构造一次 CapturedApiCall，同时用于 storeApiCall 与（断言失败时的）MonitorFailureCollector，
         //   消除重复构造（此前两处字段完全相同地 new 了一次）。
         //   handleType=MONITOR：无论本次调用是否叠加了 MODIFY / DELAY，落到本方法的快照
@@ -1247,8 +1247,8 @@ public class MonitorHandler {
      * 值比较（支持 Number 类型的松散比较，使用 epsilon 避免浮点精度问题）。
      */
     private static boolean compareValues(Object actual, Object expected) {
-        if (actual == null && expected == null) return true;
-        if (actual == null || expected == null) return false;
+        if (actual == null && expected == null)  {return true;} 
+        if (actual == null || expected == null)  {return false;} 
 
         if (actual instanceof Number && expected instanceof Number) {
             double a = ((Number) actual).doubleValue();
@@ -1274,7 +1274,7 @@ public class MonitorHandler {
      * 复制为普通 HashMap，与 Playwright 事件线程解耦。
      */
     private static Map<String, String> snapshotHeadersSafely(Map<String, String> headers) {
-        if (headers == null) return null;
+        if (headers == null)  {return null;} 
         try {
             return new java.util.HashMap<>(headers);
         } catch (Exception e) {

@@ -142,7 +142,7 @@ public final class NLSUtils {
                 try {
                     return NLSUtils.get(f, key);
                 } catch (IllegalStateException e) {
-                    if (errors.length() > 0) errors.append("; ");
+                    if (errors.length() > 0)  {errors.append("; ");} 
                     errors.append('[').append(f).append("] ").append(e.getMessage());
                 }
             }
@@ -242,7 +242,7 @@ public final class NLSUtils {
      * 故拾取反查 / 运行时定位都应基于可见文本，而非原始字符串，否则必然匹配不上。
      */
     public static String visibleText(String value) {
-        if (value == null) return "";
+        if (value == null)  {return "";} 
         return stripHtmlAndNormalize(value).trim();
     }
 
@@ -272,7 +272,7 @@ public final class NLSUtils {
      * 占位符名在各国语言里保持一致（如 {{deviceModel}}），故任意语言编译出的正则源都能还原匹配。
      */
     public static String templateRegexSource(String value) {
-        if (value == null) return "";
+        if (value == null)  {return "";} 
         String t = stripHtmlAndNormalize(value);
         return escapeRegexKeepingPlaceholders(t);
     }
@@ -308,7 +308,7 @@ public final class NLSUtils {
                 i = end + 2;
             } else {
                 int next = t.indexOf("{{", i);
-                if (next < 0) next = n;
+                if (next < 0)  {next = n;} 
                 sb.append(escapeRegexLiteral(t.substring(i, next)));
                 i = next;
             }

@@ -54,7 +54,7 @@ public final class DelayScheduler {
                     && route.request().frame().page() != null) {
                 BrowserContext context = route.request().frame().page().context();
                 PerContextEngine contextEngine = RouteLifecycleOwner.getOrStartContextEngine(context);
-                if (contextEngine.state() == EngineState.RUNNING) return contextEngine.delayScheduler();
+                if (contextEngine.state() == EngineState.RUNNING)  {return contextEngine.delayScheduler();} 
             }
         } catch (Exception e) {
             // Page/Context 已销毁时回退兼容调度器（生命周期收尾期预期竞争，但不得静默，D7-3）
@@ -70,7 +70,7 @@ public final class DelayScheduler {
      * 避免事件线程被长时间阻塞、也避免调度线程直接驱动 waitForResponse 的竞态。
      */
     static void scheduleDeferred(Route route, long delayMs, Runnable action) {
-        if (action == null) return;
+        if (action == null)  {return;} 
         if (delayMs <= 0) {
             action.run();
             return;
@@ -96,7 +96,7 @@ public final class DelayScheduler {
 
     /**  优雅关闭调度器线程池（JVM 退出前 / 显式 shutdown 调用）。 */
     static void shutdown() {
-        if (!scheduledShutdown.compareAndSet(false, true)) return;
+        if (!scheduledShutdown.compareAndSet(false, true))  {return;} 
 
         RouteEngine.LOGGER.info("[RouteEngine] Shutting down schedulers...");
 

@@ -74,9 +74,9 @@ public final class VerboseLogging {
                         (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
                 if (isTrace(level)) {
                     root.setLevel(Level.TRACE);
-                } else if (isVerbose(level)) {
+                } else  {if (isVerbose(level)) {
                     root.setLevel(Level.DEBUG);
-                }
+                }} 
             } catch (Throwable e) {
                 // 日志级别调整失败不应影响业务；保持 logback.xml 的配置，但不得静默（D7-3）
                 LOGGER.debug("[VerboseLogging] failed to raise root log level, keep logback.xml config: {}",

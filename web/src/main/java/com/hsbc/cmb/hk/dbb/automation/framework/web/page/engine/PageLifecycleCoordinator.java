@@ -54,11 +54,11 @@ public final class PageLifecycleCoordinator {
         requireNonNullPage(bp);
         bp.ensureContextValid();
         List<Page> pages = bp.context.pages();
-        if (pages.isEmpty()) throw new TimeoutException("No pages available in context");
+        if (pages.isEmpty())  {throw new TimeoutException("No pages available in context");} 
 
         int resolved = index >= 0 ? index : pages.size() + index;
         if (resolved < 0 || resolved >= pages.size())
-            throw new IndexOutOfBoundsException("Invalid page index: " + index);
+             {throw new IndexOutOfBoundsException("Invalid page index: " + index);} 
 
         Page target = pages.get(resolved);
 
@@ -67,7 +67,7 @@ public final class PageLifecycleCoordinator {
             target = bp.findLastAvailablePage(pages, resolved);
         }
         if (bp.isPageClosed(target))
-            throw new TimeoutException("Target page at index " + index + " is closed");
+             {throw new TimeoutException("Target page at index " + index + " is closed");} 
 
         bp.setPageReference(target);
         bp.safeBringToFront();
@@ -242,7 +242,7 @@ public final class PageLifecycleCoordinator {
         }
 
         for (Page p : pages) {
-            if (p == bp.page) continue;
+            if (p == bp.page)  {continue;} 
             try {
                 if (!p.isClosed()) {
                     // 标记为"框架主动关闭"，onClose 不再补登记 closeCurrentPage 步骤。
@@ -271,7 +271,7 @@ public final class PageLifecycleCoordinator {
                 throw new TimeoutException("New page was created but already closed");
             }
         } catch (Exception e) {
-            if (e instanceof TimeoutException) throw (TimeoutException) e;
+            if (e instanceof TimeoutException)  {throw (TimeoutException) e;} 
             VerboseLogging.logWarnIfVerbose(log,
                     "isClosed() check failed, page may already be gone: {}", e.getMessage());
             throw new TimeoutException("New page is no longer available (closed/destroyed)");

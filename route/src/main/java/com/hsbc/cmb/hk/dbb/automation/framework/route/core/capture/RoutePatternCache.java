@@ -20,7 +20,7 @@ public final class RoutePatternCache {
 
     static Pattern antGlobToRegex(String glob) {
         Pattern cached = PATTERN_CACHE.get(glob);
-        if (cached != null) return cached;
+        if (cached != null)  {return cached;} 
 
         String regex = antGlobToRegexString(glob);
         Pattern compiled = Pattern.compile(regex);
@@ -43,7 +43,7 @@ public final class RoutePatternCache {
             if (c == '*' && i + 1 < len && glob.charAt(i + 1) == '*') {
                 sb.append(".*");
                 i += 2;
-            } else if (c == '*') {
+            } else  {if (c == '*') {
                 sb.append("[^/]*");
                 i++;
             } else {
@@ -54,7 +54,7 @@ public final class RoutePatternCache {
                 }
                 sb.append(c);
                 i++;
-            }
+            }} 
         }
         sb.append('$');
         return sb.toString();

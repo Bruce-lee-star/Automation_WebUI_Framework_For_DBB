@@ -71,8 +71,8 @@ public final class LanguageState {
     public static String getLanguage() {
         LangValue override = TestContextHolder.get().get(LANG_OVERRIDE_KEY);
         LangValue global = globalLang.get();
-        if (override == null) return global == null ? null : global.lang;
-        if (global == null) return override.lang;
+        if (override == null)  {return global == null ? null : global.lang;} 
+        if (global == null)  {return override.lang;} 
         return global.seq() >= override.seq() ? global.lang() : override.lang();
     }
 

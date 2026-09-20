@@ -133,7 +133,9 @@ public final class SensitiveDataSanitizer {
      * <p>命中敏感 key（或值本身按内容敏感）时，值<b>整体</b>替换为掩码（不再保留前缀明文）。
      */
     public static Map<String, String> sanitizeHeaders(Map<String, String> headers) {
-        if (headers == null) return null;
+        if (headers == null) {
+            return null;
+        }
         Map<String, String> sanitized = new HashMap<>(headers.size());
         for (Map.Entry<String, String> e : headers.entrySet()) {
             String key = e.getKey();
@@ -173,7 +175,9 @@ public final class SensitiveDataSanitizer {
      * @return 脱敏后的 URL；null 入参返回 null
      */
     public static String sanitizeUrl(String url) {
-        if (url == null) return null;
+        if (url == null) {
+            return null;
+        }
         // 先剥离 authority 中的 userinfo，避免明文账号密码经日志/报告出域
         String sanitized = stripUrlUserinfo(url);
         try {

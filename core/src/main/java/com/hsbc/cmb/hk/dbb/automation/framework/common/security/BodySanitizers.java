@@ -78,11 +78,15 @@ final class BodySanitizers {
      * @return 脱敏后的体
      */
     static String sanitizeBody(String body) {
-        if (body == null || body.isEmpty()) return body;
+        if (body == null || body.isEmpty()) {
+            return body;
+        }
         String trimmed = body.trim();
         for (BodyStrategy strategy : STRATEGIES) {
             String sanitized = strategy.sanitize(body, trimmed);
-            if (sanitized != null) return sanitized;
+            if (sanitized != null) {
+                return sanitized;
+            }
         }
         // 纯文本兜底：宁可过度遮蔽，不可漏出
         return FreeTextScanner.sanitizeFreeText(body);
@@ -121,7 +125,9 @@ final class BodySanitizers {
      * 而是整体掩码：标量直接替换；容器节点由调用方（持有父节点引用）删除该字段。
      */
     private static void maskNode(JsonNode node, int depth) {
-        if (node == null) return;
+        if (node == null) {
+            return;
+        }
         if (depth > MAX_DEPTH) {
             maskNodeDeep(node);
             throw new MaxDepthExceededException();
@@ -132,7 +138,9 @@ final class BodySanitizers {
             // 先收集字段名，避免遍历中修改导致 ConcurrentModificationException
             Iterator<String> names = obj.fieldNames();
             List<String> fields = new ArrayList<>();
-            while (names.hasNext()) fields.add(names.next());
+            while (names.hasNext()) {
+                fields.add(names.next());
+            }
 
             for (String field : fields) {
                 if (SanitizerRules.INSTANCE.isBodyKey(field)) {
@@ -171,12 +179,16 @@ final class BodySanitizers {
 
     /** 超深子树兜底：递归把每个标量替换为掩码（容器保留结构但内容已掩码）。 */
     private static void maskNodeDeep(JsonNode node) {
-        if (node == null) return;
+        if (node == null) {
+            return;
+        }
         if (node.isObject()) {
             ObjectNode obj = (ObjectNode) node;
             Iterator<String> names = obj.fieldNames();
             List<String> fields = new ArrayList<>();
-            while (names.hasNext()) fields.add(names.next());
+            while (names.hasNext()) {
+                fields.add(names.next());
+            }
             for (String field : fields) {
                 JsonNode child = obj.get(field);
                 if (child.isValueNode()) {
@@ -251,7 +263,9 @@ final class BodySanitizers {
 
     /** 去掉 XML 命名空间前缀（{@code ns:Password} → {@code Password}）。 */
     private static String stripNamespace(String name) {
-        if (name == null) return null;
+        if (name == null) {
+            return null;
+        }
         int colon = name.lastIndexOf(':');
         return colon >= 0 && colon < name.length() - 1 ? name.substring(colon + 1) : name;
     }

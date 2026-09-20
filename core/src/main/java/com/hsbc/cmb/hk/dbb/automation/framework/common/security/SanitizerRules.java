@@ -32,9 +32,6 @@ final class SanitizerRules {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SanitizerRules.class);
 
-    /** 全局唯一规则注册表实例（原为类静态状态，语义不变）。 */
-    static final SanitizerRules INSTANCE = new SanitizerRules();
-
     /** 统一定长掩码：不泄露原值，也不泄露长度（合规要求）。 */
     static final String MASK = "***[REDACTED]";
 
@@ -50,11 +47,15 @@ final class SanitizerRules {
      * {@code Access-Token}（HTTP 头风格）、{@code ACCESS_TOKEN}（常量风格）。
      */
     static String normalizeKey(String key) {
-        if (key == null) return "";
+        if (key == null) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder(key.length());
         for (int i = 0; i < key.length(); i++) {
             char c = key.charAt(i);
-            if (c == '_' || c == '-' || c == '.' || c == ' ') continue;
+            if (c == '_' || c == '-' || c == '.' || c == ' ') {
+                continue;
+            }
             sb.append(Character.toLowerCase(c));
         }
         return sb.toString();
@@ -68,17 +69,25 @@ final class SanitizerRules {
      * 「非法 JSON 绝不原样放行」的承诺就被击穿。剥离装饰后结构化链与兜底链判定口径一致。
      */
     static String stripKeyDecoration(String key) {
-        if (key == null) return null;
+        if (key == null) {
+            return null;
+        }
         int start = 0;
         int end = key.length();
-        while (start < end && "{[ \"'".indexOf(key.charAt(start)) >= 0) start++;
-        while (end > start && ("\"'".indexOf(key.charAt(end - 1)) >= 0)) end--;
+        while (start < end && "{[ \"'".indexOf(key.charAt(start)) >= 0) {
+            start++;
+        }
+        while (end > start && ("\"'".indexOf(key.charAt(end - 1)) >= 0)) {
+            end--;
+        }
         return key.substring(start, end);
     }
 
     /** URL 解码，失败时原样返回（脱敏链绝不因解码失败中断）。 */
     static String urlDecodeQuiet(String s) {
-        if (s == null) return null;
+        if (s == null) {
+            return null;
+        }
         try {
             return java.net.URLDecoder.decode(s, java.nio.charset.StandardCharsets.UTF_8.name());
         } catch (Exception e) {
@@ -161,6 +170,17 @@ final class SanitizerRules {
     private static final String CFG_EXTRA_BODY_KEYS = "sensitive.data.extra.body.keys";
     private static final String CFG_EXTRA_QUERY_KEYS = "sensitive.data.extra.query.keys";
 
+    /**
+     * 全局唯一规则注册表实例（原为类静态状态，语义不变）。
+     *
+     * <p><b>声明位置是契约，不可上移</b>：本类实例字段以静态兜底清单（{@code DEFAULT_*_KEYS}）为初值，
+     * 而静态初始化按<b>文本顺序</b>执行。若在本类全部 {@code static final} 赋值完成前构造实例，
+     * 实例字段会拿到 {@code null} 兜底快照 —— 这正是 SpotBugs
+     * {@code SI_INSTANCE_BEFORE_FINALS_ASSIGNED} 抓到的问题（首次实现把本字段放在文件前部，被判 3 项缺陷、
+     * 直接使 `SpotBugs` 门禁失败）。故 {@code INSTANCE} 必须位于所有静态常量之后。
+     */
+    static final SanitizerRules INSTANCE = new SanitizerRules();
+
     private final Set<String> extraHeaderKeys = ConcurrentHashMap.newKeySet();
     private final Set<String> extraBodyKeys = ConcurrentHashMap.newKeySet();
     private final Set<String> extraQueryKeys = ConcurrentHashMap.newKeySet();
@@ -185,7 +205,9 @@ final class SanitizerRules {
      * <p>头也可能用体字段名（如自定义头 {@code X-Password}），故两个集合都查；附加键同理。
      */
     boolean isHeaderKey(String key) {
-        if (key == null) return false;
+        if (key == null) {
+            return false;
+        }
         loadRulesIfNeeded();
         loadExtraIfNeeded();
         String n = normalizeKey(key);
@@ -198,7 +220,9 @@ final class SanitizerRules {
      * <p>供 {@code ApiMonitoringRecord} 等调用方复用，保证全框架判定一致。
      */
     boolean isBodyKey(String key) {
-        if (key == null) return false;
+        if (key == null) {
+            return false;
+        }
         loadRulesIfNeeded();
         loadExtraIfNeeded();
         String n = normalizeKey(key);
@@ -207,7 +231,9 @@ final class SanitizerRules {
 
     /** 是否为敏感 URL query 参数名（规范化匹配，含附加键）。 */
     boolean isQueryKey(String key) {
-        if (key == null) return false;
+        if (key == null) {
+            return false;
+        }
         loadRulesIfNeeded();
         loadExtraIfNeeded();
         String n = normalizeKey(key);
@@ -220,15 +246,23 @@ final class SanitizerRules {
      * 豁免名单命中时返回 false（抑制误报）。
      */
     boolean isValueSensitive(String value) {
-        if (value == null) return false;
+        if (value == null) {
+            return false;
+        }
         String v = value.trim();
-        if (v.isEmpty()) return false;
+        if (v.isEmpty()) {
+            return false;
+        }
         for (String ex : valueRecognizerExcludes) {
-            if (v.equalsIgnoreCase(ex) || v.contains(ex)) return false;
+            if (v.equalsIgnoreCase(ex) || v.contains(ex)) {
+                return false;
+            }
         }
         loadRulesIfNeeded();
         for (SensitiveValueRecognizer r : activeValueRecognizers) {
-            if (r.recognizes(v)) return true;
+            if (r.recognizes(v)) {
+                return true;
+            }
         }
         return false;
     }
@@ -239,9 +273,13 @@ final class SanitizerRules {
 
     /** 懒加载附加敏感键：仅首次判定时从配置读取一次；已程序化注册则跳过配置读取。 */
     private void loadExtraIfNeeded() {
-        if (extraLoaded) return;
+        if (extraLoaded) {
+            return;
+        }
         synchronized (extraLoadLock) {
-            if (extraLoaded) return;
+            if (extraLoaded) {
+                return;
+            }
             reloadExtraKeysFromConfig();
         }
     }
@@ -273,7 +311,9 @@ final class SanitizerRules {
 
     /** 运行时注册自定义值级识别器（与 SPI 机制互补）。 */
     synchronized void registerValueRecognizer(SensitiveValueRecognizer recognizer) {
-        if (recognizer == null) return;
+        if (recognizer == null) {
+            return;
+        }
         List<SensitiveValueRecognizer> list = new ArrayList<>(activeValueRecognizers);
         list.add(recognizer);
         activeValueRecognizers = list;
@@ -307,24 +347,34 @@ final class SanitizerRules {
     /** 统一配置读取：优先系统属性（便于运行时注入/测试），回退 core 配置源。 */
     private static String resolveConfig(String key, String def) {
         String raw = System.getProperty(key);
-        if (raw == null || raw.trim().isEmpty()) raw = ConfigSource.resolve(key, def);
+        if (raw == null || raw.trim().isEmpty()) {
+            raw = ConfigSource.resolve(key, def);
+        }
         return raw == null ? def : raw;
     }
 
     /** 把逗号分隔的键解析为规范化形态并加入目标集合（容忍空白/空）。 */
     private static void parseKeys(String csv, Set<String> target) {
-        if (csv == null || csv.trim().isEmpty()) return;
+        if (csv == null || csv.trim().isEmpty()) {
+            return;
+        }
         for (String token : csv.split(",")) {
             String k = token.trim();
-            if (!k.isEmpty()) target.add(normalizeKey(k));
+            if (!k.isEmpty()) {
+                target.add(normalizeKey(k));
+            }
         }
     }
 
     /** 懒加载全部规则：内置键清单（可按 profile 覆盖）+ 值识别器过滤 + 豁免名单。 */
     private void loadRulesIfNeeded() {
-        if (rulesLoaded) return;
+        if (rulesLoaded) {
+            return;
+        }
         synchronized (rulesLock) {
-            if (rulesLoaded) return;
+            if (rulesLoaded) {
+                return;
+            }
             // C-7：以「构造不可变快照 + volatile 赋值原子发布」替代 clear+addAll，
             //      并发读取（sanitize*）永不观察到空/半填充中间态，根治 reload 竞态。
             headerKeys = Collections.unmodifiableSet(loadBuiltinSet("header", DEFAULT_HEADER_KEYS));
@@ -347,7 +397,9 @@ final class SanitizerRules {
         if (csv != null && !csv.trim().isEmpty()) {
             for (String t : csv.split(",")) {
                 String k = t.trim();
-                if (!k.isEmpty()) set.add(normalizeKey(k));
+                if (!k.isEmpty()) {
+                    set.add(normalizeKey(k));
+                }
             }
         }
         return set;
@@ -363,11 +415,15 @@ final class SanitizerRules {
             Set<String> en = new HashSet<>();
             for (String t : enabled.split(",")) {
                 String k = t.trim().toUpperCase();
-                if (!k.isEmpty()) en.add(k);
+                if (!k.isEmpty()) {
+                    en.add(k);
+                }
             }
             List<SensitiveValueRecognizer> filtered = new ArrayList<>();
             for (SensitiveValueRecognizer r : all) {
-                if (en.contains(r.name().toUpperCase())) filtered.add(r);
+                if (en.contains(r.name().toUpperCase())) {
+                    filtered.add(r);
+                }
             }
             activeValueRecognizers = filtered;
         }
@@ -376,7 +432,9 @@ final class SanitizerRules {
         if (ex != null && !ex.trim().isEmpty()) {
             for (String t : ex.split(",")) {
                 String k = t.trim();
-                if (!k.isEmpty()) valueRecognizerExcludes.add(k);
+                if (!k.isEmpty()) {
+                    valueRecognizerExcludes.add(k);
+                }
             }
         }
     }
@@ -386,7 +444,9 @@ final class SanitizerRules {
         List<SensitiveValueRecognizer> list = new ArrayList<>(BuiltinValueRecognizers.builtins());
         try {
             ServiceLoader<SensitiveValueRecognizer> sl = ServiceLoader.load(SensitiveValueRecognizer.class);
-            for (SensitiveValueRecognizer r : sl) list.add(r);
+            for (SensitiveValueRecognizer r : sl) {
+                list.add(r);
+            }
         } catch (Throwable e) {
             // SPI 不可用不影响内置识别，但不得静默（D7-3）
             LOGGER.debug("[SanitizerRules] recognizer SPI unavailable, fallback to builtins: {}", e.toString());

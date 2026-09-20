@@ -78,7 +78,9 @@ final class FreeTextScanner {
         String[] lines = text.split("\n", -1);
         StringBuilder out = new StringBuilder(text.length());
         for (int i = 0; i < lines.length; i++) {
-            if (i > 0) out.append('\n');
+            if (i > 0) {
+                out.append('\n');
+            }
             out.append(maskFreeTextLine(lines[i]));
         }
         return out.toString();
@@ -92,11 +94,15 @@ final class FreeTextScanner {
      * 含嵌入换行时按行分别处理，避免跨行误罩。
      */
     static String sanitizeLine(String line) {
-        if (line == null) return null;
+        if (line == null) {
+            return null;
+        }
         String[] lines = line.split("\n", -1);
         StringBuilder out = new StringBuilder(line.length());
         for (int i = 0; i < lines.length; i++) {
-            if (i > 0) out.append('\n');
+            if (i > 0) {
+                out.append('\n');
+            }
             out.append(maskSensitiveKeyValues(sanitizeFormLike(lines[i])));
         }
         return out.toString();
@@ -109,7 +115,9 @@ final class FreeTextScanner {
      * {@code password=} / {@code token=}，也不漏 {@code Authorization: Bearer ...}。
      */
     static String sanitizeLogMessage(String text) {
-        if (text == null) return null;
+        if (text == null) {
+            return null;
+        }
         return sanitizeFreeText(sanitizeLine(text));
     }
 
@@ -123,11 +131,15 @@ final class FreeTextScanner {
      * 故 {@code password=...} 即使不在行首也能被命中。
      */
     private static String maskSensitiveKeyValues(String text) {
-        if (text == null) return text;
+        if (text == null) {
+            return text;
+        }
         String[] tokens = text.split("(\\s+)");
         StringBuilder sb = new StringBuilder(text.length());
         for (int i = 0; i < tokens.length; i++) {
-            if (i > 0) sb.append(' ');
+            if (i > 0) {
+                sb.append(' ');
+            }
             sb.append(maskKeyValueToken(tokens[i]));
         }
         return sb.toString();
@@ -158,7 +170,9 @@ final class FreeTextScanner {
      * （修复 R2：行内可能含 Bearer/JWT/URL token）。
      */
     private static String maskFreeTextLine(String line) {
-        if (line == null || line.isEmpty()) return line;
+        if (line == null || line.isEmpty()) {
+            return line;
+        }
         int sep = -1;
         for (int i = 0; i < line.length(); i++) {
             char c = line.charAt(i);
@@ -180,7 +194,9 @@ final class FreeTextScanner {
 
     /** 修复 R2 / S1：覆盖自由文本中的 Bearer token、独立 JWT、URL 内嵌凭据、URLEncode 内层凭据、CVV、值级识别。 */
     private static String maskFreeTextTokens(String text) {
-        if (text == null) return null;
+        if (text == null) {
+            return null;
+        }
         // Bearer / Basic / Digest 等认证方案后的凭证（保留方案名）
         text = FREE_TEXT_AUTH_SCHEME.matcher(text)
                 .replaceAll(m -> m.group(1) + " " + SanitizerRules.MASK);
@@ -203,7 +219,9 @@ final class FreeTextScanner {
      * <p>仅当 key 解码后命中敏感词表才遮蔽，避免误伤普通 URL 参数。
      */
     private static String maskUrlEncodedSecrets(String text) {
-        if (text == null || text.isEmpty()) return text;
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
         Matcher m = FREE_TEXT_URL_ENCODED_SECRET.matcher(text);
         StringBuffer sb = new StringBuffer();
         while (m.find()) {
@@ -223,7 +241,9 @@ final class FreeTextScanner {
 
     /** 自由文本中按值级识别器遮蔽候选串（PAN/IBAN/HKID/轨道数据/国内身份证/手机号/护照/港澳通行证/统一社会信用代码）。 */
     private static String maskValueRecognizersInFreeText(String text) {
-        if (text == null) return text;
+        if (text == null) {
+            return text;
+        }
         Pattern[] patterns = {FREE_TEXT_PAN, FREE_TEXT_IBAN, FREE_TEXT_HKID, FREE_TEXT_TRACK,
                 FREE_TEXT_CHINA_ID, FREE_TEXT_CHINA_MOBILE,
                 FREE_TEXT_CHINA_PASSPORT, FREE_TEXT_CHINA_HKMO, FREE_TEXT_CHINA_USCC};

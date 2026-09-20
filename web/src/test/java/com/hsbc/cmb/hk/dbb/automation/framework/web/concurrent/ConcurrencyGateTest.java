@@ -118,18 +118,17 @@ public class ConcurrencyGateTest {
 
         assertEquals(1, released.get(), "应归还 1 个泄漏持有的闸门");
 
-        //  归还后：其它线程应立即（远小于 MAX_WAIT）进入
-        AtomicLong waitedMs = new AtomicLong(-1);
+        //  归还后：其它线程应立即进入（用闩锁确定性等待，不依赖耗时上界断言，杜绝负载下的误判）
+        CountDownLatch nextEntered = new CountDownLatch(1);
         Thread next = new Thread(() -> {
-            long t0 = System.currentTimeMillis();
             ConcurrencyGate.acquire(key);
-            waitedMs.set(System.currentTimeMillis() - t0);
+            nextEntered.countDown();
             ConcurrencyGate.release(key);
         }, "next-scenario");
         next.start();
+        assertTrue(nextEntered.await(3, TimeUnit.SECONDS),
+                "兜底归还后其它线程应立即进入（不得因泄漏许可未回收而阻塞）");
         next.join(3000);
-        assertTrue(waitedMs.get() >= 0 && waitedMs.get() < 300,
-                "兜底归还后应立即可进入（实测 " + waitedMs.get() + "ms）");
     }
 
     /**

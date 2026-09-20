@@ -48,6 +48,21 @@ public class ConcurrencyGateTest {
         }
     }
 
+    /** 「不可进入」的观测窗口：在等待方已就绪后，持续观察其是否违规进入临界区。 */
+    private static final long NON_ENTRY_OBSERVE_MS = 300L;
+
+    /** 有界轮询等待标志变真（超时返回当前值；上界仅防挂死，不作为通过判据）。 */
+    private static boolean awaitTrue(AtomicBoolean flag, long timeoutMs) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (!flag.get()) {
+            if (System.nanoTime() - deadline >= 0) {
+                return flag.get();
+            }
+            Thread.sleep(5);
+        }
+        return true;
+    }
+
     @Test
     public void nullKeyIsNoOpAndDoesNotThrow() {
         assertTrue( ConcurrencyGate.isEnabled(), "闸门应经 @BeforeAll 启用");
@@ -60,6 +75,7 @@ public class ConcurrencyGateTest {
         ConcurrencyPartitionKey k = key("SIT1", "alice");
         CountDownLatch held = new CountDownLatch(1);
         CountDownLatch proceed = new CountDownLatch(1);
+        CountDownLatch t2Ready = new CountDownLatch(1);
         AtomicBoolean secondAcquired = new AtomicBoolean(false);
 
         Thread t1 = new Thread(() -> {
@@ -78,15 +94,17 @@ public class ConcurrencyGateTest {
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();
             }
-            ConcurrencyGate.acquire(k); // 应阻塞直到 t1 释放
+            t2Ready.countDown();            // 即将尝试进入临界区（使观测窗口有意义）
+            ConcurrencyGate.acquire(k);     // 应阻塞直到 t1 释放
             secondAcquired.set(true);
             ConcurrencyGate.release(k);
         });
         t1.start();
         t2.start();
         assertTrue( held.await(3, TimeUnit.SECONDS), "t1 应已持锁");
-        sleep(300); // 给 t2 机会去 acquire 并阻塞
-        assertFalse( secondAcquired.get(), "t2 在 t1 释放前应被阻塞");
+        assertTrue( t2Ready.await(3, TimeUnit.SECONDS), "t2 应在超时前就绪");
+        assertFalse( awaitTrue(secondAcquired, NON_ENTRY_OBSERVE_MS),
+                "t2 在 t1 释放前应被阻塞（不得违规进入）");
         proceed.countDown();
         t1.join(3_000);
         t2.join(3_000);

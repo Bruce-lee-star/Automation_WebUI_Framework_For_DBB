@@ -117,13 +117,15 @@
 
     <properties>
         <!--
-          PAR-7 JaCoCo 行覆盖率下限（2026-09-17）。
+          PAR-7 JaCoCo 行覆盖率下限（2026-09-17 首次落地，2026-09-20 上调至目标位）。
           口径：doc05 §5.2 建议「先设低门槛并只允许上升」。
-          首次实测 api 模块 LINE 覆盖率 = 23.5%（427/1818，含本次新增 AbstractRestJobTest）。
-          下限设为实测基线向下取整（0.23），使门禁「只升不降」；目标位 0.40，随补测推进上调。
-          若某次提交将 api 行覆盖率拉到 0.23 以下，verify 即失败（提示删测试 / 退化）。
+          首版实测 = 23.5%（427/1818），下限取 0.23 以启动「只升不降」门禁。
+          2026-09-20 补测：新增 HttpStatusTest / JsonUtilsTest / ApiLogSanitizerTest / FileReaderTest /
+          EnvironmentUtilsTest / ConfigProviderTest（+2 测试资材），实测 LINE 覆盖率 = 43.1%（792/1836），
+          故下限上调至 **0.40**（doc 中既定目标位），仍保留约 3pp 余量以防环境差异。
+          若某次提交将 api 行覆盖率拉到 0.40 以下，verify 即失败（提示删测试 / 退化）。
         -->
-        <api.line.coverage.floor>0.23</api.line.coverage.floor>
+        <api.line.coverage.floor>0.40</api.line.coverage.floor>
     </properties>
 
     <build>

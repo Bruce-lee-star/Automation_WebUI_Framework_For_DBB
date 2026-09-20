@@ -190,7 +190,7 @@ class AbstractRestJobTest {
 
 配套：在父 POM 给 api 模块加 JaCoCo `check`，先设一个低门槛（如 line 40%）并只允许上升。
 
-> **2026-09-17 落地（PAR-7）**：`AbstractRestJobTest`（6 例）已补齐，覆盖 `stripHtmlWrapper`（JSON/数组直通、HTML 包裹提取、空白回退、null/empty）、`applyResponse`（状态/头/体/cookie 回写 Entity）、`get/setValidatableResponse` 回环、`getRestAssuredConfig` 静态装配；重试内核仍由 `AbstractRestJobRetryTest`/`AbstractRestJobRetryLoopTest` 覆盖。api 模块 `JaCoCo check` 已落地：BUNDLE LINE `COVEREDRATIO` 下限 `${api.line.coverage.floor}=0.23`（首次实测 23.5% = 427/1818），门禁「只升不降」；本建议原提的 0.40 作为**目标位**，随补测推进上调。任意提交把 api 行覆盖率拉到 0.23 以下即 `verify` 失败。
+> **2026-09-17 落地（PAR-7）**：`AbstractRestJobTest`（6 例）已补齐，覆盖 `stripHtmlWrapper`（JSON/数组直通、HTML 包裹提取、空白回退、null/empty）、`applyResponse`（状态/头/体/cookie 回写 Entity）、`get/setValidatableResponse` 回环、`getRestAssuredConfig` 静态装配；重试内核仍由 `AbstractRestJobRetryTest`/`AbstractRestJobRetryLoopTest` 覆盖。api 模块 `JaCoCo check` 已落地：BUNDLE LINE `COVEREDRATIO` 下限 `${api.line.coverage.floor}`（首次 0.23 / 实测 23.5% = 427/1818），门禁「只升不降」。**2026-09-20 达标**：新增 6 个测试类共 46 例（`HttpStatusTest` 全量覆盖 80/80、`JsonUtilsTest` 113/123、`ApiLogSanitizerTest`、`FileReaderTest`、`EnvironmentUtilsTest`、`ConfigProviderTest`）+ 2 个测试资材，实测 **43.1%（792/1836）**，下限上调至 **0.40**（本建议原提的目标位）。任意提交把 api 行覆盖率拉到 0.40 以下即 `verify` 失败。
 
 ### 5.3 增加连接池与重试（P1）
 

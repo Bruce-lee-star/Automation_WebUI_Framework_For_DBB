@@ -51,6 +51,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>全部档位结束后断言活跃（非 Sleep）连接为 0，且 {@code shutdown()} 后连接回落到基线。</li>
  * </ul>
  *
+ * <p><b>关于"活跃连接 = 0"的判定口径（首跑即踩到的坑）</b>：活跃连接数是<b>瞬时状态</b> —— 批量刷库器在途
+ * INSERT 期间该连接必然非 Sleep。若对 0 做<b>点采样</b>，就会把"正在干活"误判为"泄漏"（本护栏首次实跑
+ * 即因此失败：{@code 实际活跃 1}）。故改为<b>有界等待归零</b>：容忍在途写，但不放过真泄漏（真泄漏永不归零，
+ * 逾时即失败，并 dump processlist 便于直接看到卡住的那条语句）。
+ * </ul>
+ *
  * <p><b>可调旋钮</b>：{@code -Dguardrail.parallelisms=4,8,16}（默认）与
  * {@code -Dguardrail.requestsPerPage=3}（默认；P=16 时合计 48 次，贴近历史失败的 50 并发档位）。
  *
@@ -171,10 +177,15 @@ public class RouteDemoConcurrencyGuardrailTest {
             }
 
             // ── 资源释放断言 ──
+            // 不能对「活跃连接 == 0」做<b>瞬时采样</b>：批量刷库器此刻可能正在执行 INSERT（连接处于非 Sleep
+            // 状态），那是正常在途写、不是泄漏 —— 瞬时采样会把"正在干活"误判为"泄漏"（本护栏首次实跑即如此失败）。
+            // 故与后面的 shutdown 断言同口径：有界等待其归零；真泄漏会一直不归零，仍会被抓住（且失败时 dump
+            // processlist 可直接看到卡住的那条语句）。
             dumpProcessList("guardrail-pre-release");
-            int active = activeAppConnectionCount();
+            int active = awaitActiveAppConnectionCount(0, 15, TimeUnit.SECONDS);
+            dumpProcessList("guardrail-pre-release-settled");
             assertEquals(0, active,
-                    "并发落库后不应有活跃(泄漏)连接 —— 框架应及时归还连接，实际活跃 " + active);
+                    "并发落库后不应有残留活跃(泄漏)连接 —— 框架应及时归还连接，实际活跃 " + active);
             System.out.println("[GUARDRAIL] 并发落库后活跃(泄漏)连接=" + active + "（全部已归还）");
 
             ApiMonitoringRepository.shutdown();
@@ -310,6 +321,21 @@ public class RouteDemoConcurrencyGuardrailTest {
                              + "AND COMMAND NOT IN ('Sleep','Daemon')")) {
             return rs.next() ? rs.getInt(1) : 0;
         }
+    }
+
+    /**
+     * 轮询等待「活跃（非 Sleep）连接数」达到期望值。
+     * <p>存在理由：活跃连接数是<b>瞬时状态</b>——刷库器在途 INSERT 期间该连接必然非 Sleep。
+     * 直接点采样会把"正在干活"判成"泄漏"；有界等待既容忍在途写，又不放过真泄漏（真泄漏永不归零）。
+     */
+    private static int awaitActiveAppConnectionCount(int expected, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        int last = activeAppConnectionCount();
+        while (last != expected && System.nanoTime() < deadline) {
+            Thread.sleep(150);
+            last = activeAppConnectionCount();
+        }
+        return last;
     }
 
     private static int awaitAppConnectionCount(int expected, long timeout, TimeUnit unit) throws Exception {

@@ -73,8 +73,30 @@ public final class ApiMonitoringRepository {
     /** 单批最多插入条数（防止一次 executeBatch 过大占内存） */
     private static final int MAX_BATCH_PER_FLUSH = 500;
 
-    /** 待写库队列硬上限（成功路径也限流，防止 DB 刷库健康但滞后时内存无限增长）；默认 BATCH_THRESHOLD*20 */
-    private static final int PENDING_HARD_CAP = getEnvInt("ROUTE_MONITOR_PENDING_CAP", BATCH_THRESHOLD * 20);
+    /** 待写库队列硬上限默认值（成功路径也限流，防止 DB 刷库健康但滞后时内存无限增长）；默认 BATCH_THRESHOLD*20 */
+    private static final int PENDING_HARD_CAP_DEFAULT =
+            getEnvInt("ROUTE_MONITOR_PENDING_CAP", BATCH_THRESHOLD * 20);
+
+    /**
+     * 生效中的待写库队列硬上限。非 {@code final} 仅为提供白盒测试缝
+     * {@link #overridePendingHardCapForTest(int)}；生产路径不修改本值（{@link #reset()} 会复位为默认）。
+     */
+    private static volatile int pendingHardCap = PENDING_HARD_CAP_DEFAULT;
+
+    /**
+     * <b>白盒测试缝（仅测试使用，生产路径不得调用）</b>：把背压上限临时改为 {@code cap}，返回原值。
+     *
+     * <p><b>为什么必须有</b>：背压丢弃只在「内存队列超过上限」时发生，而默认上限（{@code BATCH_THRESHOLD*20}
+     * = 1000）远高于单次批量刷库量（500），要在测试里触发它就得让 16 个生产者线程跑赢单线程刷库器 ——
+     * 那是<b>调度竞速结果</b>，写成断言必然 flaky（实测：全护盾中偶发 1 次失败、单独复跑 3/3 通过）。
+     * 把上限压到 {@code BATCH_THRESHOLD} 之下后，「超限」发生在按量刷库被提交之前（其提交条件是
+     * {@code count >= BATCH_THRESHOLD}），丢弃因此<b>可证明</b>，测试不再依赖时序。
+     */
+    static int overridePendingHardCapForTest(int cap) {
+        int previous = pendingHardCap;
+        pendingHardCap = cap;
+        return previous;
+    }
 
     private static volatile HikariDataSource dataSource;
     private static volatile boolean initialized = false;
@@ -253,14 +275,14 @@ public final class ApiMonitoringRepository {
 
         //  修复（漏网之鱼 #4）：成功路径也设硬上限，防止 DB 刷库健康但滞后时
         // 内存队列无限增长。超过上限则丢弃最旧记录，与失败路径限流策略一致。
-        if (count > PENDING_HARD_CAP) {
+        if (count > pendingHardCap) {
             PendingItem dropped = PENDING.poll();
             if (dropped != null) {
                 pendingCount.decrementAndGet();
                 droppedCount.incrementAndGet();
                 MonitorDataLossReporter.instance().recordLoss("route_monitor_record", 1L);
                 LOGGER.warn("[ApiMonitoringRepository] Pending queue exceeded hard cap ({}), dropping oldest to apply backpressure.",
-                        PENDING_HARD_CAP);
+                        pendingHardCap);
             }
         }
 
@@ -341,7 +363,7 @@ public final class ApiMonitoringRepository {
             }
             pendingCount.addAndGet(requeued);   // 重新入队，计数同步回加
             // 保护：若队列因反复失败持续膨胀，丢弃最旧以限流（防止内存无限增长）
-            int cap = PENDING_HARD_CAP;
+            int cap = pendingHardCap;
             while (pendingCount.get() > cap) {
                 PendingItem dropped = PENDING.poll();
                 if (dropped == null) break;
@@ -591,6 +613,8 @@ public final class ApiMonitoringRepository {
         DB_FLUSH_EXECUTOR = null;
         initialized = false;
         initFailed = false;
+        // 复位背压上限：白盒测试缝可能临时改小它，复位可自愈（避免污染同 JVM 内的其它用例）
+        pendingHardCap = PENDING_HARD_CAP_DEFAULT;
         PENDING.clear();
         pendingCount.set(0);
         enqueuedCount.set(0);

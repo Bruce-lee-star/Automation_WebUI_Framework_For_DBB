@@ -79,4 +79,16 @@
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRecord"/><Bug pattern="EI_EXPOSE_REP"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRecord$Builder"/><Bug pattern="EI_EXPOSE_REP2"/></Match>
     <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.HikariConfigFactory$Spec"/><Bug pattern="UWF_NULL_FIELD"/></Match>
+
+    <!-- ===== 测试支撑（test-only）===== -->
+    <!-- 登记理由：该测试访问的是<b>测试专属 H2 内存库</b>（随 JVM 消亡、无凭据语义），
+         而 DMI_EMPTY_DB_PASSWORD / DMI_CONSTANT_DB_PASSWORD 针对的是"生产代码携带空口令 / 硬编码口令"
+         （两个姐妹探测器：改成常量非空口令只会从前者落到后者）。故按「类+模式」登记，而非用
+         System.getProperty 之类手法绕过探测器。
+         为什么此前未登记：该类原有 2 处同类告警，只因 SpotBugs 门禁「因上游模块（core/reporting/web/codegen）
+         先失败而从未真正执行到本模块」（见本文件顶部 re-freeze 说明）而长期不可见；上游打通后即暴露
+         —— 与 doc-drift 门禁同理，属于"门禁链路本身的缺陷掩盖了真实告警"。
+         同时把测试侧连接获取收敛为单一 openConnection()，使登记面收敛为 1 处。 -->
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRepositoryConcurrencyTest"/><Bug pattern="DMI_EMPTY_DB_PASSWORD"/></Match>
+    <Match><Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRepositoryConcurrencyTest"/><Bug pattern="DMI_CONSTANT_DB_PASSWORD"/></Match>
 </FindBugsFilter>

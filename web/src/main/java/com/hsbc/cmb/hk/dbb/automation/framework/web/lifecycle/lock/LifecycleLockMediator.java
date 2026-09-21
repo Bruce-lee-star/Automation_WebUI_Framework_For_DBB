@@ -14,18 +14,23 @@ import java.util.function.Supplier;
  * （外部长期持锁即可阻塞框架）。本中介把锁收为 {@code private}，只暴露<b>有序临界区执行器</b>：
  * 调用方无法拿到锁对象，也就无法逆序加锁或劫持。</p>
  *
- * <h2>并发模型（每线程独立 Browser）</h2>
+ * <h2>并发模型（每线程独立 Browser / Context / Page —— 三类锁<b>全部 per-thread</b>）</h2>
  * <ul>
- *   <li><b>Browser</b>：每线程独立 Browser 实例（{@code keyFor} 含 threadId），创建互不阻塞
- *       → 用 per-thread 锁（{@link #withBrowserLock}），<b>不可</b>退化进程级锁，否则全局串行化。</li>
- *   <li><b>Context / Page</b>：<b>进程级锁</b>（{@code CONTEXT_LOCK}/{@code PAGE_LOCK} 为 {@code static final}
- *       单例）。<b>此处曾文档与实现不符（2026-09-17 评审纠正）</b>：原文写作"始终 per-thread"，而实现是进程级。
- *       核对结论：全部调用点（{@code ContextRegistryImpl} / {@code PageRegistryImpl}）操作的都是<b>本线程</b>的
- *       Context/Page（自 {@code TestContextHolder} 读取），故进程级锁在正确性上<b>非必需</b>，代价是并行
- *       （{@code -Pparallel}）下 Context/Page 的创建与关闭<b>全局串行</b> —— 属吞吐税，非正确性问题。
- *       跨线程关闭路径（{@code BrowserCleanupImpl} 遍历 {@code browser.contexts()}）本就<b>不</b>经过本锁，
- *       而是由 {@code ConcurrentContextExecutor.isConcurrentModeActive()} 断言拦在"并发窗口"之外；
- *       因此是否改成 per-thread 属<b>待决策项</b>（可回收该吞吐税，但需先确认无其它跨线程依赖）。</li>
+ *   <li><b>三类资源均为每线程独立</b>：Browser 键含 threadId；Context/Page 存于 {@code TestContextHolder}
+ *       与线程级记录。故三类锁一律 <b>per-thread</b>（{@link #withBrowserLock}/{@link #withPageLock}/
+ *       {@link #withContextLock}），创建与关闭互不阻塞，<b>不可</b>退化进程级锁。</li>
+ *   <li><b>2026-09-21 决策：CONTEXT/PAGE 由进程级单例改为 per-thread</b>（回收原 javadoc 所记的"待决策项"）。
+ *       <b>决策依据（实测，非推断）</b>：{@code -Pparallel -Dparallelism=8} 下 ——<br>
+ *       ① {@code jstack} 显示 <b>7 个 worker 同时 {@code waiting to lock <同一个 java.lang.Object>}</b>
+ *       （即进程级 {@code PAGE_LOCK}），持锁者临界区内在执行
+ *       {@code getContext → createContext → getBrowser → initializeBrowser}（Chrome 启动，1~10s）；<br>
+ *       ② 日志时间线显示 launch 严格串行（下一个 scenario 要等前一个 cleanup 完才 launch），
+ *       且 8 个 Context 关闭挤在末尾 0.3s 内爆发 —— 「先跑完的用例关不了窗，最后一起关」。<br>
+ *       即：进程级锁把这些慢 I/O 变成<b>全局串行</b>（引擎级并行形同虚设），收尾关窗又被同锁排队。
+ *       而全部调用点（{@code ContextRegistryImpl} / {@code PageRegistryImpl}）操作的都是<b>本线程</b>状态，
+ *       跨线程关闭路径（{@code BrowserCleanupImpl} 遍历 {@code browser.contexts()}）本就<b>不</b>经本锁，
+ *       故进程级锁在正确性上<b>非必需</b>。改为 per-thread 后仍保留「锁对象不可外泄」纪律与
+ *       「同线程临界区」语义，仅不再跨线程互斥 —— 与"哪个线程做完就关它自己的"这一生命周期契约一致。</li>
  * </ul>
  *
  * <h2>锁顺序纪律（不变式）</h2>
@@ -46,11 +51,18 @@ public final class LifecycleLockMediator {
     /** 进程内唯一中介（无状态，饿汉单例）。 */
     static final LifecycleLockMediator INSTANCE = new LifecycleLockMediator();
 
-    /** Context 细粒度锁：保护 Context 创建/销毁。 */
-    private static final Object CONTEXT_LOCK = new Object();
+    /**
+     * per-thread Context 锁的上下文键（2026-09-21：由进程级单例改为 per-thread，见类注释决策依据）。
+     *
+     * <p>与 {@link #BROWSER_LOCK_KEY} 同款机制：惰性创建并缓存在用例级上下文中 → 同一线程内多次取到
+     * <b>同一锁对象</b>（保持原语义），不同线程各自独立 → 一个线程的 Context 创建/关闭不再阻塞邻居线程。</p>
+     */
+    private static final ContextKey<Object> CONTEXT_LOCK_KEY =
+            ContextKey.of("playwrightManager.contextLock", Object.class);
 
-    /** Page 细粒度锁：保护 Page 创建/销毁。 */
-    private static final Object PAGE_LOCK = new Object();
+    /** per-thread Page 锁的上下文键（同 {@link #CONTEXT_LOCK_KEY}）。 */
+    private static final ContextKey<Object> PAGE_LOCK_KEY =
+            ContextKey.of("playwrightManager.pageLock", Object.class);
 
     /**
      * per-thread Browser 锁的上下文键（T3-1 收拢：原 {@code ThreadLocal withInitial(Object::new)} 迁入 TestContext）。
@@ -67,6 +79,16 @@ public final class LifecycleLockMediator {
     /** 取本线程的锁对象（严格等价原 {@code BROWSER_LOCK.get()}）。 */
     private static Object perThreadBrowserLock() {
         return TestContextHolder.get().computeIfAbsent(BROWSER_LOCK_KEY, Object::new);
+    }
+
+    /** 取本线程的 Context 锁对象（per-thread，2026-09-21 起）。 */
+    private static Object perThreadContextLock() {
+        return TestContextHolder.get().computeIfAbsent(CONTEXT_LOCK_KEY, Object::new);
+    }
+
+    /** 取本线程的 Page 锁对象（per-thread，2026-09-21 起）。 */
+    private static Object perThreadPageLock() {
+        return TestContextHolder.get().computeIfAbsent(PAGE_LOCK_KEY, Object::new);
     }
 
     // ==================== Browser 锁（per-thread，每线程独立 Browser 模型） ====================
@@ -106,32 +128,42 @@ public final class LifecycleLockMediator {
         }
     }
 
-    // ==================== Context / Page 锁 ====================
+    // ==================== Context / Page 锁（均为 per-thread，2026-09-21 起） ====================
 
-    /** 在 Context 锁保护下执行。 */
+    /**
+     * 在 Context 锁（per-thread）保护下执行。
+     *
+     * <p>保护的是<b>本线程</b>的 Context 创建/销毁；邻居线程的同类操作互不阻塞（曾为进程级单例，
+     * 导致引擎级并行被全局串行化 + 收尾关窗排队，见类注释决策依据）。</p>
+     */
     public static void withContextLock(Runnable block) {
-        synchronized (CONTEXT_LOCK) {
+        synchronized (perThreadContextLock()) {
             block.run();
         }
     }
 
     /** {@link #withContextLock(Runnable)} 的带返回值版本。 */
     public static <T> T withContextLock(Supplier<T> block) {
-        synchronized (CONTEXT_LOCK) {
+        synchronized (perThreadContextLock()) {
             return block.get();
         }
     }
 
-    /** 在 Page 锁保护下执行。 */
+    /**
+     * 在 Page 锁（per-thread）保护下执行。
+     *
+     * <p>与 {@link #withContextLock} 同理：本线程 Page 的创建/关闭不再阻塞邻居线程 ——
+     * 「哪个线程执行完毕就关闭它自己的 Page/Context/Browser」由此得以即时生效，而非排在队尾统一发生。</p>
+     */
     public static void withPageLock(Runnable block) {
-        synchronized (PAGE_LOCK) {
+        synchronized (perThreadPageLock()) {
             block.run();
         }
     }
 
     /** {@link #withPageLock(Runnable)} 的带返回值版本。 */
     public static <T> T withPageLock(Supplier<T> block) {
-        synchronized (PAGE_LOCK) {
+        synchronized (perThreadPageLock()) {
             return block.get();
         }
     }

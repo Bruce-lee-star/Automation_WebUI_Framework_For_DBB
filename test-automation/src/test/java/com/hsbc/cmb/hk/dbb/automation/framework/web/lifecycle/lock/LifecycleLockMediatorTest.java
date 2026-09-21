@@ -14,6 +14,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -103,13 +104,13 @@ public class LifecycleLockMediatorTest {
     // ==================== ② 锁隐藏（编译期不可达的运行期守护） ====================
 
     /**
-     * 三把锁字段 + per-thread 锁键保持 {@code private}：一旦被误升为包级/公开，外部即可
-     * {@code synchronized} 引用 → 锁劫持与逆序死锁风险回归，本测试即失败。
+     * 三把锁（全部 per-thread，2026-09-21 起）的锁键字段保持 {@code private}：一旦被误升为包级/公开，
+     * 外部即可 {@code synchronized} 引用 → 锁劫持与逆序死锁风险回归，本测试即失败。
      */
     @Test
     public void lockFieldsRemainPrivate() throws Exception {
         for (String name : new String[]{
-                "CONTEXT_LOCK", "PAGE_LOCK", "BROWSER_LOCK_KEY"}) {
+                "CONTEXT_LOCK_KEY", "PAGE_LOCK_KEY", "BROWSER_LOCK_KEY"}) {
             Field f = LifecycleLockMediator.class.getDeclaredField(name);
             assertTrue(Modifier.isPrivate(f.getModifiers()),
                     name + " 必须为 private（否则外部可 synchronized 引用 → 锁劫持/逆序死锁）");
@@ -129,6 +130,73 @@ public class LifecycleLockMediatorTest {
             }
             assertFalse(
                     m.getReturnType() == Object.class, "公开 API 不得返回锁对象（" + m.getName() + "）");
+        }
+    }
+
+    // ==================== ③ per-thread 隔离（2026-09-21 修复守护） ====================
+
+    /** 持锁线程在临界区内停留的时长（模拟"建 Context / 启动 Chrome"慢 I/O，远大于邻居允许的等待）。 */
+    private static final long HOLD_MS = 1000;
+
+    /** 邻居线程进入同一执行器允许的最大等待；若锁退化为进程级，实测将≈{@link #HOLD_MS}。 */
+    private static final long NEIGHBOR_MAX_WAIT_MS = 400;
+
+    /**
+     * PAGE 锁必须 per-thread：一个线程在临界区内长时间停留（建 Context / 启动 Chrome），
+     * <b>不得</b>阻塞另一个线程（另一个 scenario 的取页/收尾关窗）。
+     *
+     * <p><b>回归背景（2026-09-21）</b>：{@code PAGE_LOCK} 原为进程级单例。实测 {@code -Pparallel -Dparallelism=8}
+     * 下 {@code jstack} 显示 <b>7 个 worker 同时 {@code waiting to lock <同一个 Object>}</b>，持锁者临界区内
+     * 在执行 {@code getContext → createContext → getBrowser → initializeBrowser}；后果是引擎级并行被完全
+     * 串行化，且先跑完的用例关不了窗（8 个 Context 关闭挤在末尾 0.3s 内爆发）。本测试固化修复：锁 per-thread。</p>
+     */
+    @Test
+    public void pageLockIsPerThreadNeighborNotBlocked() throws Exception {
+        assertNeighborNotBlocked(LifecycleLockMediator::withPageLock, "PAGE");
+    }
+
+    /** CONTEXT 锁同样必须 per-thread（同类回归防护）。 */
+    @Test
+    public void contextLockIsPerThreadNeighborNotBlocked() throws Exception {
+        assertNeighborNotBlocked(LifecycleLockMediator::withContextLock, "CONTEXT");
+    }
+
+    /** BROWSER 锁同样必须 per-thread（每线程独立 Browser 模型的既有契约）。 */
+    @Test
+    public void browserLockIsPerThreadNeighborNotBlocked() throws Exception {
+        assertNeighborNotBlocked(LifecycleLockMediator::withBrowserLock, "BROWSER");
+    }
+
+    /**
+     * 通用断言：holder 线程进入临界区后停留 {@link #HOLD_MS}，邻居线程必须能在
+     * {@link #NEIGHBOR_MAX_WAIT_MS} 内进入同一执行器（进程级锁会让它等到 holder 释放）。
+     */
+    private void assertNeighborNotBlocked(Consumer<Runnable> executor, String label) throws Exception {
+        CountDownLatch holding = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread holder = new Thread(() -> executor.accept(() -> {
+            holding.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }), "holder-" + label);
+        holder.setDaemon(true);
+        holder.start();
+        try {
+            assertTrue(holding.await(5, TimeUnit.SECONDS), label + " 锁持有线程未按时进入临界区");
+
+            long start = System.nanoTime();
+            executor.accept(() -> { });
+            long waitedMs = (System.nanoTime() - start) / 1_000_000;
+
+            assertTrue(waitedMs < NEIGHBOR_MAX_WAIT_MS,
+                    label + " 锁必须 per-thread：邻居线程不应被持锁线程阻塞，实测等待 " + waitedMs
+                            + "ms（阈值 " + NEIGHBOR_MAX_WAIT_MS + "ms，持锁 " + HOLD_MS + "ms）");
+        } finally {
+            release.countDown();
+            holder.join(5000);
         }
     }
 }

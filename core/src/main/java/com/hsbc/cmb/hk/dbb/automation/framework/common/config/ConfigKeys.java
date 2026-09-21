@@ -245,10 +245,10 @@ public enum ConfigKeys {
         "1",
         "每个并发分区键的并发许可数（>1 表示允许同身份 N 路并发）"
     ),
-    WEB_CONCURRENCY_PARTITION_DIMENSIONS(
-        "serenity.playwright.concurrent.partition.dimensions",
-        "environment,username",
-        "参与并发分区键的身份维度集合（environment,username,tenant,role,locale）"
+    WEB_CONCURRENCY_PARTITION_FAIL_CLOSED(
+        "serenity.playwright.concurrent.partition.fail.closed",
+        "true",
+        "闸门等待超时后的行为：true=失败快（该场景判失败，默认；避免串行化静默失效导致随机 401）；false=放行但失效（逃生舱）"
     ),
     WEB_CONCURRENCY_BROWSER_CRASH_GUARD_ENABLED(
         "serenity.playwright.concurrent.browser.crash.guard.enabled",

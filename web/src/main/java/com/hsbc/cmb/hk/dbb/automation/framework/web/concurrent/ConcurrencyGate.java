@@ -1,13 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConcurrencyGateTimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -28,8 +27,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * </ul>
  * </p>
  *
- * <p>接入点（runner 无关）：在 scenario 建立登录后的生命周期 hook 调用 {@link #enter(ConcurrencyKeyResolver)}
- * （经解析器链取 key），返回的 {@link ConcurrencyScope} 在 try-with-resources 中配对 release；未启用时恒为 no-op。</p>
+ * <p>接入点（runner 无关）：调用方<b>显式构造</b> {@link ConcurrencyPartitionKey} 后调 {@link #acquire}
+ * （生产上：登录/会话边界的 {@code sessionkey} 键、并发用例执行器的「用例行身份」键），并在收口 finally 中
+ * 配对 {@link #release}；需要 RAII 时用 {@link #enter(ConcurrencyPartitionKey)} + try-with-resources。
+ * 未启用时恒为 no-op。</p>
+ *
+ * <p><b>身份模型（2026-09-21 收口，评审 F-11）</b>：<b>不存在</b>「自动推导身份」的隐式通道 ——
+ * 键一律由调用方显式构造。原先那条「登录后自动推导 environment/username」的解析链因无生产接入点而
+ * 恒空转，容易让人误判闸门已生效，故整体删除。</p>
  */
 public final class ConcurrencyGate {
 
@@ -183,6 +188,21 @@ public final class ConcurrencyGate {
     }
 
     /**
+     * 实时解析「闸门等待超时后是否失败快」：优先 {@code System.getProperty}，回退
+     * {@link WebFrameworkConfig}（默认 {@code true}）。
+     *
+     * <p>默认 fail-closed：把「未能取得闸门」如实判为该场景失败；设
+     * {@code serenity.playwright.concurrent.partition.fail.closed=false} 可退回 fail-open 放行。</p>
+     */
+    private static boolean failClosedLive() {
+        String override = System.getProperty(WebFrameworkConfig.CONCURRENCY_PARTITION_FAIL_CLOSED.getKey());
+        if (override != null && !override.trim().isEmpty()) {
+            return truthy(override);
+        }
+        return WebFrameworkConfig.CONCURRENCY_PARTITION_FAIL_CLOSED.getBooleanValue();
+    }
+
+    /**
      * 进入 scenario 时调用；key==null 直接返回（无身份场景不参与互斥）。
      * 会阻塞直至获得该身份许可（相同身份被串行化）。
      */
@@ -208,7 +228,8 @@ public final class ConcurrencyGate {
 
         //  有界等待（防整套卡死）：许可被泄漏时旧实现 acquireUninterruptibly 会让同身份的后续场景
         //  永久 park（实测 4 个 worker 全 park 在同一 Semaphore$FairSync → 套件无任何进展）。
-        //  超时即 fail-open 放行并打 ERROR —— 保证「闸门问题绝不使套件卡死」；代价是该场景串行化失效。
+        //  超时后的行为由 CONCURRENCY_PARTITION_FAIL_CLOSED 决定：默认 fail-closed（如实判失败），
+        //  设 false 可退回 fail-open 放行（逃生舱）。
         long maxWait = maxWaitMs();
         boolean acquired;
         if (maxWait <= 0) {
@@ -228,9 +249,18 @@ public final class ConcurrencyGate {
                 e.holds--;
                 return e.holds <= 0 ? null : e;
             });
-            LOGGER.error("[concurrency-gate] identity {} NOT acquired within {}ms on {} — proceeding WITHOUT gate "
-                            + "(本场景串行化失效；通常为前序同身份场景未释放许可，请检查其收口)",
+            String detail = String.format(
+                    "identity %s waited %dms but did NOT acquire the gate on thread %s "
+                            + "(通常为前序同身份场景未释放许可，请检查其收口)",
                     key, maxWait, Thread.currentThread().getName());
+            if (failClosedLive()) {
+                //  fail-closed（默认）：如实判失败 —— 避免"串行化静默失效 → SSO 互踢/随机 401 却仍可能绿"（F-11）
+                LOGGER.error("[concurrency-gate] {}", detail);
+                throw new ConcurrencyGateTimeoutException("[concurrency-gate] " + detail);
+            }
+            //  逃生舱（partition.fail.closed=false）：放行并打 ERROR，代价是本场景串行化失效
+            LOGGER.error("[concurrency-gate] {} — proceeding WITHOUT gate "
+                    + "(逃生舱已开启：本场景串行化失效，请确认无会话破坏风险)", detail);
             return;
         }
         recordHeld(key);
@@ -304,15 +334,6 @@ public final class ConcurrencyGate {
     public static ConcurrencyScope enter(ConcurrencyPartitionKey key) {
         acquire(key);
         return new ConcurrencyScope(key);
-    }
-
-    /**
-     * 经解析器链解析 key 并进入；解析为空（无身份）时返回 no-op scope。
-     */
-    public static ConcurrencyScope enter(ConcurrencyKeyResolver resolver) {
-        Objects.requireNonNull(resolver, "resolver must not be null");
-        Optional<ConcurrencyPartitionKey> key = resolver.resolve();
-        return enter(key.orElse(null));
     }
 
     /** 观测快照：进入次数 / 被串行化的身份数 / 活跃闸门数（= <b>在途</b>身份数，条目随最后一个持有者释放即移除）。 */

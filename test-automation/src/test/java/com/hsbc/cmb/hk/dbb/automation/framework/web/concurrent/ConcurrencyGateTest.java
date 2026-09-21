@@ -5,7 +5,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -18,8 +17,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * {@link ConcurrencyGate} 单测（固化设计文档附录 A.8）：
  * ① 同 key 两线程互斥；② release 后另一线程获得；③ key==null 直接放行、不进 Map；
- * ④ 不同 key 互不阻塞（并行）；⑤ key 等价性（顺序 / 空白无关）；⑥ TagOverride 覆盖自动推导；
- * ⑦ 解析器链回退语义；⑧ per-key permits=N 时允许 N 路并发。
+ * ④ 不同 key 互不阻塞（并行）；⑤ key 等价性（顺序 / 空白无关）；⑥ per-key permits=N 时允许 N 路并发。
+ *
+ * <p><b>2026-09-21 收口（评审 F-11）</b>：原「TagOverride 覆盖 + 登录身份自动推导」解析链无任何生产
+ * 接入点（{@code ConcurrencyIdentity} 从未被 publish → 恒空转），属"看似生效、实则空转"的误导性 seam，
+ * 已整体删除：身份键一律由调用方<b>显式构造</b> {@link ConcurrencyPartitionKey}。</p>
  *
  * <p>经系统属性临时启用闸门（默认关闭，生产行为零回归）。</p>
  */
@@ -138,41 +140,6 @@ public class ConcurrencyGateTest {
         ConcurrencyPartitionKey k1 = ConcurrencyPartitionKey.of(Map.of("environment", "SIT1", "username", "Alice"));
         ConcurrencyPartitionKey k2 = ConcurrencyPartitionKey.of(Map.of("environment", "SIT1", "username", "alice"));
         assertNotEquals(k1, k2);
-    }
-
-    @Test
-    public void tagOverrideResolverParsesSso() {
-        TagOverrideKeyResolver r = TagOverrideKeyResolver.fromTags(Map.of("sso", "UAT:bob"));
-        Optional<ConcurrencyPartitionKey> k = r.resolve();
-        assertTrue(k.isPresent());
-        assertEquals("UAT", k.get().dimensions().get("environment"));
-        assertEquals("bob", k.get().dimensions().get("username"));
-    }
-
-    @Test
-    public void tagOverrideResolverParsesConcurrencyKey() {
-        TagOverrideKeyResolver r = TagOverrideKeyResolver.fromTags(
-                Map.of("concurrencyKey", "environment=SIT1;username=alice;tenant=t1"));
-        Optional<ConcurrencyPartitionKey> k = r.resolve();
-        assertTrue(k.isPresent());
-        assertEquals("SIT1", k.get().dimensions().get("environment"));
-        assertEquals("alice", k.get().dimensions().get("username"));
-        assertEquals("t1", k.get().dimensions().get("tenant"));
-    }
-
-    @Test
-    public void resolverChainFallsBackToLoginIdentity() {
-        ConcurrencyIdentity.publish(Map.of("environment", "SIT1", "username", "alice"));
-        try {
-            ConcurrencyKeyResolver chain = ConcurrencyKeyResolvers.chain(
-                    TagOverrideKeyResolver.defaultSource(),  // 无 tag → empty
-                    LoginIdentityKeyResolver.defaultSource());
-            Optional<ConcurrencyPartitionKey> k = chain.resolve();
-            assertTrue(k.isPresent());
-            assertEquals("alice", k.get().dimensions().get("username"));
-        } finally {
-            ConcurrencyIdentity.clear();
-        }
     }
 
     @Test

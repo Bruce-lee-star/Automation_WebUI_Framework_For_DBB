@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConcurrencyGateTimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -15,9 +16,11 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,12 +40,14 @@ public class ConcurrencyGateTest {
     private static final String ENABLED = WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey();
     private static final String PERMITS = WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS.getKey();
     private static final String MAX_WAIT = WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS.getKey();
+    private static final String FAIL_CLOSED = WebFrameworkConfig.CONCURRENCY_PARTITION_FAIL_CLOSED.getKey();
 
     @AfterEach
     public void tearDown() {
         System.clearProperty(ENABLED);
         System.clearProperty(PERMITS);
         System.clearProperty(MAX_WAIT);
+        System.clearProperty(FAIL_CLOSED);
         System.clearProperty(CUCUMBER_PARALLEL);
         System.clearProperty(JUNIT_PARALLEL);
     }
@@ -52,14 +57,18 @@ public class ConcurrencyGateTest {
     private static final String JUNIT_PARALLEL = "junit.jupiter.execution.parallel.enabled";
 
     /**
-     * <b>死锁回归守卫（实测复现）</b>：许可被泄漏时，等待方必须<b>有界超时后 fail-open 放行</b>，
-     * 绝不永久 park；且未真正持有者的 {@code release} 必须 no-op（不得虚增许可破坏互斥）。
+     * <b>死锁回归守卫 + 默认 fail-closed（评审 F-11）</b>：许可被泄漏时，等待方必须<b>有界超时</b>
+     * 而非永久 park（旧实现 {@code acquireUninterruptibly} 会让整套件卡死）；且超时后默认
+     * <b>如实判失败</b>（抛 {@link ConcurrencyGateTimeoutException}）—— 原实现静默放行会让同身份
+     * 串行化失效（SSO 互踢 / 随机 401），而用例仍<b>可能通过</b>，属最危险的静默降级。
+     * 未真正持有者的 {@code release} 仍须 no-op（不得虚增许可破坏互斥）。
      */
     @Test
-    public void leakedPermit_failsOpenInsteadOfHangingForever() throws Exception {
+    public void leakedPermit_failsClosedByDefaultInsteadOfSilentlyProceeding() throws Exception {
         System.setProperty(ENABLED, "true");
         System.setProperty(MAX_WAIT, "300");
-        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "LEAK-REGRESSION"));
+        System.setProperty(FAIL_CLOSED, "true");
+        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "LEAK-FAILCLOSED"));
 
         CountDownLatch holderIn = new CountDownLatch(1);
         AtomicBoolean holderDone = new AtomicBoolean(false);
@@ -67,33 +76,89 @@ public class ConcurrencyGateTest {
             ConcurrencyGate.acquire(key);
             holderIn.countDown();
             try {
-                Thread.sleep(1500);
+                Thread.sleep(1200);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
             ConcurrencyGate.release(key);
             holderDone.set(true);
-        }, "leak-holder");
+        }, "failclosed-holder");
         holder.start();
         assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应取得许可");
 
         AtomicLong waitedMs = new AtomicLong(-1);
+        AtomicReference<Throwable> waiterError = new AtomicReference<>();
         Thread waiter = new Thread(() -> {
             long t0 = System.currentTimeMillis();
-            ConcurrencyGate.acquire(key);   // 必须超时 fail-open 返回，而非永久阻塞
+            try {
+                ConcurrencyGate.acquire(key);
+            } catch (Throwable t) {
+                waiterError.set(t);
+            }
             waitedMs.set(System.currentTimeMillis() - t0);
             ConcurrencyGate.release(key);   // 未真正持有 → no-op
-        }, "leak-waiter");
+        }, "failclosed-waiter");
         waiter.start();
         waiter.join(5000);
 
-        assertFalse(waiter.isAlive(), "等待方必须已返回：闸门不得永久 park（旧实现 acquireUninterruptibly 会卡死整个套件）");
+        assertFalse(waiter.isAlive(), "等待方必须已返回：闸门不得永久 park");
         assertTrue(waitedMs.get() >= 250, "等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）");
+        assertTrue(waiterError.get() instanceof ConcurrencyGateTimeoutException,
+                "默认 fail-closed：超时须抛 ConcurrencyGateTimeoutException，实际=" + waiterError.get());
 
         holder.join(5000);
         assertTrue(holderDone.get(), "持有者应完成其正常释放");
 
         //  许可未虚增：持有者释放后该 key 应可被正常获取/释放
+        ConcurrencyGate.acquire(key);
+        ConcurrencyGate.release(key);
+    }
+
+    /**
+     * <b>逃生舱</b>：显式 {@code partition.fail.closed=false} 时退回「放行 + ERROR 日志」的旧行为
+     * （不再抛异常），供确认「串行化失效不会造成会话破坏」的场景使用。
+     */
+    @Test
+    public void leakedPermit_failsOpenWhenEscapeHatchEnabled() throws Exception {
+        System.setProperty(ENABLED, "true");
+        System.setProperty(MAX_WAIT, "300");
+        System.setProperty(FAIL_CLOSED, "false");
+        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "LEAK-FAILOPEN"));
+
+        CountDownLatch holderIn = new CountDownLatch(1);
+        Thread holder = new Thread(() -> {
+            ConcurrencyGate.acquire(key);
+            holderIn.countDown();
+            try {
+                Thread.sleep(1200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            ConcurrencyGate.release(key);
+        }, "failopen-holder");
+        holder.start();
+        assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应取得许可");
+
+        AtomicReference<Throwable> waiterError = new AtomicReference<>();
+        AtomicLong waitedMs = new AtomicLong(-1);
+        Thread waiter = new Thread(() -> {
+            long t0 = System.currentTimeMillis();
+            try {
+                ConcurrencyGate.acquire(key);
+            } catch (Throwable t) {
+                waiterError.set(t);
+            }
+            waitedMs.set(System.currentTimeMillis() - t0);
+            ConcurrencyGate.release(key);
+        }, "failopen-waiter");
+        waiter.start();
+        waiter.join(5000);
+
+        assertFalse(waiter.isAlive(), "等待方必须已返回（不得永久 park）");
+        assertTrue(waitedMs.get() >= 250, "等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）");
+        assertNull(waiterError.get(), "逃生舱开启时不应抛异常（回到旧 fail-open 行为）");
+
+        holder.join(5000);
         ConcurrencyGate.acquire(key);
         ConcurrencyGate.release(key);
     }

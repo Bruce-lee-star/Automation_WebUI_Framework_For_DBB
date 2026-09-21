@@ -356,19 +356,27 @@ public enum WebFrameworkConfig {
      *
      * <p><b>为什么必须有界</b>：若某场景获取许可后未配对释放（许可泄漏），同身份的后续场景会
      * <b>永久</b> park 在该信号量上 —— 实测 4 个 worker 全部 park 在同一 {@code Semaphore$FairSync}
-     * （栈：{@code ConcurrencyGate.acquire ← LogonGlue}），整个套件无任何进展。有界等待 + 超时
-     * <b>fail-open</b>（放行并打 ERROR）保证「闸门问题绝不使套件卡死」，代价是该场景串行化失效，
-     * 属可接受降级（宁可偶发并发，不可永久挂起）。
+     * （栈：{@code ConcurrencyGate.acquire ← LogonGlue}），整个套件无任何进展。有界等待保证
+     * 「闸门问题绝不使套件永久卡死」。</p>
+     *
+     * <p><b>超时后的行为</b>见 {@link #CONCURRENCY_PARTITION_FAIL_CLOSED}：默认<b>失败快</b>
+     * （该场景判失败），可显式降级为 fail-open 放行。</p>
      */
     CONCURRENCY_PARTITION_MAX_WAIT_MS(ConfigKeys.WEB_CONCURRENCY_PARTITION_MAX_WAIT_MS),
 
     CONCURRENCY_PARTITION_PER_KEY_PERMITS(ConfigKeys.WEB_CONCURRENCY_PARTITION_PER_KEY_PERMITS),
 
     /**
-     * 参与并发分区键的维度集合（逗号分隔，小写）。
-     * 决定"什么叫同一个身份"。默认 environment,username。
+     * 闸门等待超时后是否「失败快」（fail-closed）。默认 {@code true}。
+     *
+     * <p><b>为什么默认 fail-closed</b>：原实现超时即放行并仅打 ERROR —— 同一身份（sessionKey）的
+     * 串行化<b>静默失效</b>，表现为 SSO 互踢 / 随机 401 / 断言漂移，而用例仍<b>可能通过</b>；
+     * 这比「如实报红」危险得多（评审 F-11）。故默认把「闸门未能取得」如实判为该场景失败。</p>
+     *
+     * <p><b>逃生舱</b>：设 {@code false} 可退回「放行 + ERROR 日志」的旧行为 ——
+     * 仅建议在确认串行化失败不会造成数据/会话破坏的场景下使用。</p>
      */
-    CONCURRENCY_PARTITION_DIMENSIONS(ConfigKeys.WEB_CONCURRENCY_PARTITION_DIMENSIONS),
+    CONCURRENCY_PARTITION_FAIL_CLOSED(ConfigKeys.WEB_CONCURRENCY_PARTITION_FAIL_CLOSED),
 
     /**
      * 浏览器崩溃韧性守卫（BrowserCrashGuard）总开关。

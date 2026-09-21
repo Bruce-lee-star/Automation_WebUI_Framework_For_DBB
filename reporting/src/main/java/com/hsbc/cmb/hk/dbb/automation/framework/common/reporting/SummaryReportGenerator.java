@@ -1536,7 +1536,7 @@ public final class SummaryReportGenerator {
                     s.put("labelText", f.result.name().toLowerCase());
                     s.put("color", resultColor(f.result));
                     s.put("hasError", f.error != null && !f.error.isEmpty());
-                    s.put("error", f.error == null ? "" : truncateError(f.error));
+                    s.put("error", errorForReport(f.error));
                     // E-3：关联 trace（有则渲染下载链接，无则空）
                     String traceLink = traceLinkFor(f.scenario);
                     s.put("traceLink", traceLink);
@@ -1612,7 +1612,7 @@ public final class SummaryReportGenerator {
         m.put("hasError", result != TestResult.SUCCESS
                 && result != TestResult.IGNORED
                 && result != TestResult.SKIPPED);
-        m.put("error", error == null ? "" : truncateError(error));
+        m.put("error", errorForReport(error));
         return m;
     }
 
@@ -1683,14 +1683,19 @@ public final class SummaryReportGenerator {
     }
 
     /**
-     * 截断错误信息，超过150字符用省略号代替
+     * 报告用错误文本：<b>不截断</b>（2026-09-21 决策；原实现截断至 300 字符，且 Javadoc 写的是 150，自相矛盾）。
+     *
+     * <p><b>为什么去掉截断</b>：失败信息里常内嵌完整响应体（如
+     * {@code BaseStep.verifyResponseBodyContains} 的 {@code Response body ...} 断言消息）。
+     * 报告层再截断一次，会让「差异落在 300 字符之后」的失败在报告中无法定位 —— 排障只能凭猜，
+     * 而这正是 API 用例最常见的一类失败。</p>
+     *
+     * <p><b>职责边界</b>：安全由出口脱敏负责（{@code BaseStep} → {@code ApiLogSanitizer.bodyForLog}、
+     * 日志出口 {@code %msg} 脱敏），完整性由本方法负责，二者<b>不可互相替代</b>。
+     * 若将来确需限制报告体积，应引入可配置上限，而非恢复硬编码截断。</p>
      */
-    private String truncateError(String error) {
-        if (error == null || error.isEmpty())  {return "";} 
-        if (error.length() > 300) {
-            return error.substring(0, 300) + "...";
-        }
-        return error;
+    private static String errorForReport(String error) {
+        return error == null ? "" : error;
     }
 
     // =============================================================

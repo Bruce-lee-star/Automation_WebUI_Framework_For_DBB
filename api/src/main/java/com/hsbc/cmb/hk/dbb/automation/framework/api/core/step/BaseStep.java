@@ -213,13 +213,12 @@ public class BaseStep extends RestJobProvider {
                     responseBody, containsString(expectedContent));
             LOGGER.info("Response body content verification passed: contains '{}'", expectedContent);
         } catch (AssertionError e) {
-            //  评审 F-09 复核修正：截断 ≠ 脱敏 —— 敏感值只要落在前 200 字符内仍会明文出域。
-            //  改为「先脱敏、再截断」：保留可读性的同时确保不泄露。
+            //  脱敏负责安全、完整性负责可用性 —— 二者不可互相替代（评审 F-09 收尾，2026-09-21 决策）：
+            //  截断既不是脱敏手段（敏感值落在前 N 字符内照样出域），又会让「差异在 N 字符之后」的失败
+            //  无法在日志/报告中定位，只能凭猜。故此处改为「充分脱敏 + 完整输出」，不再截断。
             String safeBody = ApiLogSanitizer.bodyForLog(responseBody);
-            String truncated = safeBody.length() > 200
-                    ? safeBody.substring(0, 200) + "...[truncated]" : safeBody;
-            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (sanitized, truncated): {}",
-                    expectedContent, truncated);
+            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (sanitized): {}",
+                    expectedContent, safeBody);
             throw e;
         }
     }

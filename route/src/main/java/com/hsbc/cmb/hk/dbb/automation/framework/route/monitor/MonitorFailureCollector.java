@@ -33,8 +33,38 @@ public class MonitorFailureCollector {
     /** 失败记录上限：防止长跑套件（数千 scenario）下 dedupMap 无界增长导致 OOM。 */
     private static final int MAX_FAILURE_RECORDS = 500;
 
-    /** 单条记录 request/response body 存储上限（字符），防止超长报文撑大内存。 */
-    private static final int MAX_BODY_LEN = 4096;
+    /**
+     * 报文存储上限的系统属性名（{@code -1} = 不截断）。
+     *
+     * <p><b>2026-09-21 调整（评审 F-09 收尾 / 用户决策：responseBody 不做截断）</b>：默认上限由 4096
+     * 提高到 65536。4096 会截断常见的 4KB+ JSON 响应，而失败报告恰恰最需要完整报文 ——
+     * 「差异落在 4096 字符之后」时排障只能凭猜。</p>
+     *
+     * <p>此处<b>保留上限</b>：它是内存防御而非展示偏好 —— 失败记录会保留至报告生成
+     * （上限 {@link #MAX_FAILURE_RECORDS} 条），若无限长则「捕获层允许的 MB 级报文 × 数百条」会撑大堆。
+     * 需要完全完整报文时，显式设 {@code -Droute.monitor.failure.maxBodyChars=-1}（请自行评估内存）。</p>
+     */
+    static final String MAX_BODY_CHARS_PROPERTY = "route.monitor.failure.maxBodyChars";
+
+    /** 默认上限（字符）。 */
+    private static final int DEFAULT_MAX_BODY_LEN = 65536;
+
+    /** 单条记录 request/response body 存储上限（字符，{@code <=0} 表示不截断）。 */
+    private static final int MAX_BODY_LEN = resolveMaxBodyLen();
+
+    private static int resolveMaxBodyLen() {
+        String raw = System.getProperty(MAX_BODY_CHARS_PROPERTY);
+        if (raw == null || raw.trim().isEmpty()) {
+            return DEFAULT_MAX_BODY_LEN;
+        }
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (NumberFormatException e) {
+            LOGGER.warn("[MonitorFailureCollector] Invalid {}='{}' -> falling back to default {}",
+                    MAX_BODY_CHARS_PROPERTY, raw, DEFAULT_MAX_BODY_LEN);
+            return DEFAULT_MAX_BODY_LEN;
+        }
+    }
 
     /**
      * 指纹 → 去重后的失败记录。
@@ -185,10 +215,20 @@ public class MonitorFailureCollector {
         return pattern + '\u0000' + status + '\u0000' + call.method() + '\u0000' + bodySig;
     }
 
-    /** 截断过长的报文，避免单条失败记录占用过多内存（防御性上限，配合 LRU 双重防护）。 */
+    /**
+     * 截断过长的报文，避免单条失败记录占用过多内存（防御性上限，配合 LRU 双重防护）。
+     *
+     * <p>{@link #MAX_BODY_LEN} {@code <=0} 表示<b>显式选择不截断</b>（见系统属性
+     * {@link #MAX_BODY_CHARS_PROPERTY}）。</p>
+     */
     private static String cap(String s) {
-        if (s == null)  {return null;} 
-        return s.length() > MAX_BODY_LEN ? s.substring(0, MAX_BODY_LEN) + "...[truncated]" : s;
+        if (s == null) {
+            return null;
+        }
+        if (MAX_BODY_LEN <= 0 || s.length() <= MAX_BODY_LEN) {
+            return s;
+        }
+        return s.substring(0, MAX_BODY_LEN) + "...[truncated]";
     }
 
     /** 单条去重后的失败记录 */

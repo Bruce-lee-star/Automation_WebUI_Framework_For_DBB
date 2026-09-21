@@ -29,8 +29,9 @@ class DownloadReportAttacherTest {
             boolean ok = DownloadReportAttacher.attachResolved(src, "导出文件");
             assertTrue(ok, "attachResolved should return true for an existing source");
 
-            Path archive = Paths.get(DownloadReportAttacher.REPORT_ATTACHMENTS_DIR, src.getFileName().toString());
-            assertTrue(Files.exists(archive), "file must be archived under site/report-attachments");
+            Path archive = Paths.get(DownloadReportAttacher.REPORT_ATTACHMENTS_DIR,
+                    "thread-" + Thread.currentThread().getId(), src.getFileName().toString());
+            assertTrue(Files.exists(archive), "file must be archived under site/report-attachments/thread-<id>");
             assertEquals("col1,col2\n1,2\n", Files.readString(archive), "archived content must match source");
         } finally {
             Files.deleteIfExists(src);

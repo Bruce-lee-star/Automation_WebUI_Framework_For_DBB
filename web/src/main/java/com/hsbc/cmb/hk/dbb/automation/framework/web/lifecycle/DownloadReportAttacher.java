@@ -16,12 +16,18 @@ import java.nio.file.StandardCopyOption;
  *
  * <p>为什么需要单独收口：把下载文件"附到报告"涉及两步副作用，必须一并做对：
  * <ol>
- *   <li><b>复制到持久目录</b> {@code site/report-attachments/}：scenario 收尾会清本线程
+ *   <li><b>复制到持久目录</b> {@code site/report-attachments/thread-<id>/}：scenario 收尾会清本线程
  *       {@code target/downloads/thread-<id>/}，若直接引用临时下载目录，报告生成时文件已被删
  *       ⇒ 附件链接失效。先复制出来，文件即独立于 scenario 生命周期。</li>
+ *   <li><b>按线程分目录防串扰</b>：归档落在 {@code site/report-attachments/thread-<id>/}（与下载临时目录
+ *       {@code target/downloads/thread-<id>/} 同一隔离模型）。并行下若两个线程下载<b>同名</b>文件，
+ *       平铺共享目录 + {@code REPLACE_EXISTING} 会互相覆盖 → 一个 scenario 的附件显示成另一个的文件；
+ *       按线程分目录后即使同名也互不干扰。源文件名在同线程内已通过 {@code resolveNonConflictingDownloadPath}
+ *       做 {@code " (1)"/" (2)"} 序号去重，故子目录内亦不会自撞。</li>
  *   <li><b>嵌入 Serenity 报告</b>：经 {@code Serenity.recordReportData().withTitle(...).fromFile(...).downloadable()}
  *       把该持久副本登记为"可下载附件"，在报告里渲染成下载链接。这是 Serenity 4.2.0 把任意文件
- *       （pdf/xlsx/zip/csv…）附到报告的唯一稳定入口（4.2.0 没有 {@code StepEventBus.embed}）。</li>
+ *       （pdf/xlsx/zip/csv…）附到报告的唯一稳定入口（4.2.0 没有 {@code StepEventBus.embed}）。
+ *       该调用走 ThreadLocal 事件总线，仅挂到<b>当前线程</b>的 scenario 报告，不会跨线程。</li>
  * </ol>
  *
  * <p>行为铁律：嵌入是<b>尽力而为</b>——报告挂接失败（如非 Serenity 上下文）只记 warn，不抛、不影响 case 本身；
@@ -29,7 +35,8 @@ import java.nio.file.StandardCopyOption;
  */
 final class DownloadReportAttacher {
 
-    /** 报告附件持久目录（约定，见 doc 10 §7.5）：相对执行模块根，独立于 scenario 清理。 */
+    /** 报告附件持久根目录（约定，见 doc 10 §7.5）：相对执行模块根，独立于 scenario 清理。
+     *  实际归档落在 {@code <根>/thread-<id>/<filename>}，按线程隔离防并行同名串扰。 */
     static final String REPORT_ATTACHMENTS_DIR = "site/report-attachments";
 
     /** 解析最近下载的默认等待（毫秒）：与下载异步保存窗口对齐。 */
@@ -68,8 +75,10 @@ final class DownloadReportAttacher {
                     + "(call after triggering download + await*)");
             return false;
         }
-        // 1) 复制到持久目录：独立于 scenario 清理，保证报告生成时文件仍在
-        Path archive = Paths.get(REPORT_ATTACHMENTS_DIR, src.getFileName().toString());
+        // 1) 复制到持久目录：按线程分子目录，避免并行下同名文件互相覆盖（REPLACE_EXISTING）造成串扰；
+        //    该目录不参与 scenario 清理，保证报告生成时文件仍在
+        Path archive = Paths.get(REPORT_ATTACHMENTS_DIR, "thread-" + Thread.currentThread().getId(),
+                src.getFileName().toString());
         try {
             Files.createDirectories(archive.getParent());
             Files.copy(src, archive, StandardCopyOption.REPLACE_EXISTING);

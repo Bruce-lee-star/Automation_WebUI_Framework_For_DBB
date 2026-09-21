@@ -48,6 +48,18 @@ jobs:
           ref: ${{ github.event.inputs.source_branch }}
           path: report-src
 
+      - name: Validate external report repo is configured (P2-5)
+        shell: bash
+        run: |
+          # P2-5：REPORT_REPO 曾以占位值 'hsbc/dbb-serenity-reports' 入仓 —— 既没落地也没移除，
+          # 真跑起来会往一个"看起来像真的"的仓库推（或静默失败）。这里把它变成**显式失败 + 可执行指引**：
+          # 未配置即停在本步，绝不带着占位值继续。
+          if [ -z "${REPORT_REPO}" ] || [ "${REPORT_REPO}" = "hsbc/dbb-serenity-reports" ]; then
+            echo "::error::外部报告仓库未配置：请把本 workflow 的 REPORT_REPO 改为真实的 'org/repo'（当前占位值：'${REPORT_REPO}'），或移除本 workflow 的 deploy 步骤。"
+            exit 1
+          fi
+          echo "外部报告仓库：${REPORT_REPO}（分支 ${REPORT_BRANCH}）"
+
       - name: Verify report exists
         shell: bash
         run: |

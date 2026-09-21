@@ -99,6 +99,16 @@ public final class AsyncPool {
                                 MONITOR_CALLBACK_QUEUE_CAPACITY, dropped);
                     });
 
+    /**
+     * P2-3：因提交被拒（池关闭 / 饱和）而<b>丢弃</b>的任务数 —— 统一「绝不阻塞提交方」策略后的可观测计数。
+     */
+    private static final AtomicLong droppedOnRejectionCount = new AtomicLong();
+
+    /**
+     * P2-3：因待处理超时哨兵达上限而<b>未投递哨兵</b>的次数（退化为「不强制超时」，任务仍会执行）。
+     */
+    private static final AtomicLong skippedTimeoutSentinelCount = new AtomicLong();
+
     private static final int CORE_THREADS;
     private static final int MAX_THREADS;
     private static final int QUEUE_CAPACITY;
@@ -205,6 +215,20 @@ public final class AsyncPool {
                 }
             });
             if (timeoutMs > 0) {
+                //  P2-3：有界化调度队列 —— 每次带超时提交都会向 SCHEDULER 投递一个哨兵任务，而
+                //  ScheduledThreadPoolExecutor 的 DelayedWorkQueue 无界 ⇒ 超载时哨兵无限堆积
+                //  （占用内存、且每个哨兵到期才释放）。达到上限（ASYNC_MAX_PENDING_TIMEOUTS，
+                //  该键此前仅用于告警）后不再投递哨兵：退化为「不强制超时」（任务仍会执行），
+                //  并计数 + ERROR 留痕（不静默）。
+                if (pendingTimeoutCount.get() >= MAX_PENDING_TIMEOUTS) {
+                    long skipped = skippedTimeoutSentinelCount.incrementAndGet();
+                    if (skipped == 1 || skipped % 100 == 0) {
+                        LOGGER.error("[AsyncPool] Pending timeout sentinels reached cap ({}) → skipping timeout "
+                                        + "enforcement for this task (task still runs). Skipped total: {}",
+                                MAX_PENDING_TIMEOUTS, skipped);
+                    }
+                    return;
+                }
                 final Future<?> f = future;
                 pendingTimeoutCount.incrementAndGet();
                 SCHEDULER.schedule(() -> {
@@ -226,12 +250,14 @@ public final class AsyncPool {
                 }, timeoutMs, TimeUnit.MILLISECONDS);
             }
         } catch (RejectedExecutionException e) {
-            LOGGER.error("[AsyncPool] Unexpected rejection: {}", e.getMessage());
-            try {
-                task.run();
-            } catch (Exception ex) {
-                LOGGER.error("[AsyncPool] Fallback execution failed", ex);
-            }
+            //  P2-3：统一「是否阻塞提交方」策略 = 【绝不阻塞提交方】（与 runOnMonitorCallbackThread 的 H17
+            //  决策一致）。原实现此处 task.run() 回退到调用方线程执行 —— 同一「拒绝」情境两套相反策略：
+            //  本池的调用方含 Playwright 事件线程与路由处理线程，在其上跑任务会把"拒绝"放大成级联卡顿。
+            //  现统一为：计数 + ERROR + 丢弃（可见、不静默）。AsyncPool 承载的都是 best-effort 异步任务
+            //  （监控 / 日志 / 收尾），丢弃可观测且代价远低于阻塞事件线程。
+            long dropped = droppedOnRejectionCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] Submit REJECTED (pool shutting down or saturated) → task DROPPED "
+                    + "(policy: never block the submitting thread). Dropped total: {}", dropped, e);
         } catch (Exception e) {
             VerboseLogging.logWarnIfVerbose(LOGGER, "[AsyncPool] Submit failed: {}", e.getMessage());
         }

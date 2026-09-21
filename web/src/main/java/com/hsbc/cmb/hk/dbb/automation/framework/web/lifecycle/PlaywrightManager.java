@@ -305,6 +305,67 @@ public class PlaywrightManager {
         return DownloadRegistry.instance().all(getContext());
     }
 
+    /** 下载等待的轮询间隔（毫秒）：等待的是「文件保存完成并登记」，非忙等（基于 LockSupport，不调 Thread.sleep）。 */
+    private static final long DOWNLOAD_AWAIT_POLL_MS = 50;
+
+    /**
+     * 当前上下文的<b>已登记下载数</b> —— 作为「等这一次下载落盘」的基线。
+     *
+     * <p>用法：触发下载<b>前</b>取基线，触发后用 {@link #awaitDownloadCount(int, long)} 等基线 + 1。</p>
+     *
+     * @return 当前上下文已登记的下载文件数（无记录返回 0）
+     */
+    public static int getDownloadCount() {
+        return getDownloadPaths().size();
+    }
+
+    /**
+     * 等待「当前上下文的已登记下载数 ≥ {@code expectedCount}」，超时返回 {@code false}（<b>不抛异常</b>）。
+     *
+     * <p><b>为什么需要它</b>：下载保存是<b>异步</b>的 —— 下载事件在 Playwright 连接读线程派发后，
+     * 框架把 {@code download.saveAs(...)} 卸载到工作线程执行（避免阻塞读线程，见
+     * {@code PlaywrightContextManager.saveDownloadAsync}），保存成功后才登记到 {@code DownloadRegistry}。
+     * 因此 {@code waitForDownload(...)} 返回时（它只等<b>下载事件</b>）文件<b>可能尚未落盘</b>，
+     * 立刻读 {@link #getLastDownloadPath()} 可能得到 {@code null} 或上一次的旧值。</p>
+     *
+     * @param expectedCount 期望达到的已登记下载数（通常＝触发前的 {@link #getDownloadCount()} + 1）
+     * @param timeoutMs     超时（毫秒）；≤0 表示只探测一次
+     * @return 是否在超时前达到期望数量
+     */
+    public static boolean awaitDownloadCount(int expectedCount, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        while (true) {
+            if (getDownloadCount() >= expectedCount) {
+                return true;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                return false;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(DOWNLOAD_AWAIT_POLL_MS));
+        }
+    }
+
+    /**
+     * 等待「<b>本次新触发</b>的下载」保存完成并登记，返回其路径；超时返回 {@code null}。
+     *
+     * <p>语义：以调用时刻的已登记数为基线，等第一个<b>新的</b>登记出现 —— 因此不会误读到上一次下载的旧路径
+     * （多下载场景请改用 {@link #getDownloadCount()} + {@link #awaitDownloadCount(int, long)} 或
+     * {@link #getDownloadPaths()}）。</p>
+     *
+     * <p>典型用法：{@code page.waitForDownload(() -> clickExport());} 然后
+     * {@code Path f = PlaywrightManager.awaitLastDownloadPath(15_000);}</p>
+     *
+     * @param timeoutMs 超时（毫秒）
+     * @return 新下载文件的绝对路径；超时未见新登记时返回 {@code null}
+     */
+    public static Path awaitLastDownloadPath(long timeoutMs) {
+        int baseline = getDownloadCount();
+        if (!awaitDownloadCount(baseline + 1, timeoutMs)) {
+            return null;
+        }
+        return getLastDownloadPath();
+    }
+
     /**
      * <b>当前线程</b>的下载目录：{@code <playwright.browser.downloadsPath>/thread-<threadId>}。
      *

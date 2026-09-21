@@ -9,40 +9,40 @@
 <#list report.owners as ownerBlock>
                     <tr>
                         <td class="compact-wrapper" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;box-sizing:border-box;padding-left:24px;padding-right:24px;padding-top:8px;padding-bottom:12px;">
-                            <h4 class="tag-title" style="color:#222222;font-family:Helvetica, sans-serif;line-height:1.4;margin:0;font-weight:500;font-size:18px;margin-top:12px;text-transform:capitalize;">收件人（API Owner）：${ownerBlock.owner}</h4>
+                            <h4 class="tag-title" style="color:#222222;font-family:Helvetica, sans-serif;line-height:1.4;margin:0;font-weight:500;font-size:18px;margin-top:12px;text-transform:capitalize;">收件人（API Owner）：${ownerBlock.owner!}</h4>
 <#list ownerBlock.items as item>
                             <table class="test-results-table" style="border-collapse:collapse;width:100%;border:1px solid grey;margin-bottom:12px;table-layout:fixed;">
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;word-wrap:break-word;overflow-wrap:break-word;">功能</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${item.feature}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${item.feature!}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">Endpoint</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-break:break-all;"><code>${item.pattern}</code></td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-break:break-all;"><code>${item.pattern!}</code></td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">状态 / 方法</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;">${item.status} / ${item.method}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;">${item.status!'?'} / ${item.method!}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">URL</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-break:break-all;">${item.requestUrl}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-break:break-all;">${item.requestUrl!}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">失败原因</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${item.reason}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${item.reason!}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">触发 Scenario</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${item.scenarios?join(", ")}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;">${(item.scenarios![])?join(", ")}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">Request Body</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;white-space:pre-wrap;font-family:monospace;font-size:12px;word-wrap:break-word;overflow-wrap:break-word;">${item.requestBody}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;white-space:pre-wrap;font-family:monospace;font-size:12px;word-wrap:break-word;overflow-wrap:break-word;">${item.requestBody!}</td>
                                 </tr>
                                 <tr>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;width:28%;border:0.5px solid #dddddd;font-weight:600;background:#fafafa;">Response Body</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;white-space:pre-wrap;font-family:monospace;font-size:12px;word-wrap:break-word;overflow-wrap:break-word;">${item.responseBody}</td>
+                                    <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;white-space:pre-wrap;font-family:monospace;font-size:12px;word-wrap:break-word;overflow-wrap:break-word;">${item.responseBody!}</td>
                                 </tr>
                             </table>
 </#list>
@@ -59,7 +59,7 @@
                                 <table class="test-results-table" style="border-collapse:collapse;width:100%;border:1px solid #f44336;">
 <#list report.dataLossByCategory as cat, count>
                                     <tr>
-                                        <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #f44336;word-wrap:break-word;overflow-wrap:break-word;"><code>${cat}</code></td>
+                                        <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #f44336;word-wrap:break-word;overflow-wrap:break-word;"><code>${cat!}</code></td>
                                         <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #f44336;text-align:right;white-space:nowrap;">${count?c} 条</td>
                                     </tr>
 </#list>

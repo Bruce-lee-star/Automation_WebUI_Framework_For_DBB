@@ -14,7 +14,7 @@
                                             </tr>
 <#list frequentFailures as f>
                                             <tr class="for-failure" style="color:#f44336;">
-                                                <td width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;" class="frequent-failure for-error">${f.name}</td>
+                                                <td width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;" class="frequent-failure for-error">${f.name!}</td>
                                                 <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;"><span class='count-badge for-failure' style="color:#f44336;">${f.count?c}</span></td>
                                             </tr>
 </#list>
@@ -28,7 +28,7 @@
                                             </tr>
 <#list unstableFeatures as u>
                                             <tr class="for-failure" style="color:#f44336;">
-                                                <td class="unstable-feature" width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">${u.name}</td>
+                                                <td class="unstable-feature" width="100%" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;">${u.name!}</td>
                                                 <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;"><span class='count-badge for-failure' style="color:#f44336;">${u.count?c}</span></td>
                                             </tr>
 </#list>

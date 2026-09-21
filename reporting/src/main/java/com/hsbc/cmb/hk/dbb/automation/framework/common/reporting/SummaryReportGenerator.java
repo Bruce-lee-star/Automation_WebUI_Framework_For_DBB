@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorFailureReportData;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorFailureReportSink;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.MonitorOwnerBlock;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import net.thucydides.model.domain.Story;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
@@ -572,7 +573,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/monitor-failure-section.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render monitor-failure-section fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/monitor-failure-section.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/monitor-failure-section.ftlh", e));
         }
     }
 
@@ -701,8 +705,58 @@ public final class SummaryReportGenerator {
         try {
             return renderSummaryTemplate("summary-report.ftlh", model);
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render summary report template", e);
+            //  F-14 / P1-8：模板渲染失败**不再整份不产出**。原实现向上抛 → 外层 catch 只打一行日志 →
+            //  HTML / CSV / ZIP 与监控报告全部缺失（排障时最需要的产物恰好没有）。
+            //  现降级为「最小可用报告」：仍是完整 HTML 文档，含失败原因（经脱敏），保证报告产出不缺失。
+            logger.error("Summary report template rendering failed; degrading to minimal report: {}", e.toString());
+            return minimalFallbackHtml(title, e);
         }
+    }
+
+    /**
+     * F-14 / P1-8：片段渲染失败时的<b>可见占位行</b>。
+     *
+     * <p>单个片段（页面类 / 步骤 / 监控段…）渲染失败时，用它替换该片段并<b>继续</b>拼装其余片段 ——
+     * 取代原先「向上抛 → 整份报告不产出」。占位自带红色提示，失败<b>不静默</b>（D7-3）。</p>
+     */
+    private static String fragmentFailurePlaceholder(String fragment, Exception cause) {
+        return "<tr><td style=\"padding:12px 24px;color:#b00020;font-size:13px;\">[报告片段渲染失败："
+                + escapeHtml(fragment) + " —— " + escapeHtml(String.valueOf(cause.getMessage())) + "]</td></tr>\n";
+    }
+
+    /**
+     * F-14 / P1-8：模板不可用时的<b>最小可用报告</b>（完整 HTML 文档，含失败原因）。
+     */
+    private static String minimalFallbackHtml(String title, Exception cause) {
+        return "<!DOCTYPE html>\n<html lang=\"zh\">\n<head><meta charset=\"utf-8\"><title>"
+                + escapeHtml(title) + "</title></head>\n"
+                + "<body style=\"font-family:Helvetica,Arial,sans-serif;padding:24px;\">\n"
+                + "<h1 style=\"font-size:20px;\">Test Summary</h1>\n"
+                + "<p style=\"color:#b00020;font-weight:bold;\">报告模板渲染失败，已降级为最小报告；"
+                + "完整用例明细仍可在 Serenity 原报告中查看。</p>\n"
+                + "<pre style=\"white-space:pre-wrap;background:#f6f8fa;padding:12px;border-radius:4px;\">"
+                + escapeHtml(sanitizeForReport(String.valueOf(cause.getMessage()))) + "</pre>\n"
+                + "</body>\n</html>\n";
+    }
+
+    /** 最小 HTML 转义（仅用于模板不可用时的兜底输出；正常路径由 FreeMarker 负责转义）。 */
+    private static String escapeHtml(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        return raw.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    /**
+     * F-14 / P1-8：报告侧<b>出口脱敏</b>。
+     *
+     * <p>失败消息常内嵌完整响应体 / 请求头（含 token、密码、Cookie），而报告是<b>出域产物</b>
+     * （邮件附件、Jenkins 归档、浏览器可访问页），因此与日志出口同一口径做两级脱敏
+     * （{@code key[:=]value} + 自由文本 token 兜底）。</p>
+     */
+    private static String sanitizeForReport(String text) {
+        return text == null ? null : SensitiveDataSanitizer.sanitizeLogMessage(text);
     }
 
     private static String renderSummaryTemplate(String name, Map<String, Object> model)
@@ -741,7 +795,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/alert-bar.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render alert-bar fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/alert-bar.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/alert-bar.ftlh", e));
         }
     }
 
@@ -790,7 +847,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/summary-section.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render summary-section fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/summary-section.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/summary-section.ftlh", e));
         }
     }
 
@@ -867,7 +927,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/view-full-report-button.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render view-full-report-button fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/view-full-report-button.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/view-full-report-button.ftlh", e));
         }
     }
 
@@ -907,7 +970,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/coverage-section.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render coverage-section fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/coverage-section.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/coverage-section.ftlh", e));
         }
     }
 
@@ -1016,7 +1082,10 @@ public final class SummaryReportGenerator {
             model.put("pieChart", renderErrorTypePieChart(failureCounts));
             sb.append(renderSummaryTemplate("summary/failure-overview.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render failure-overview fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/failure-overview.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/failure-overview.ftlh", e));
         }
     }
 
@@ -1506,7 +1575,8 @@ public final class SummaryReportGenerator {
                 String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.getName(), null);
                 String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
                 String error = t.getTestFailureMessage() != null ? t.getTestFailureMessage() : "Test failed";
-                failures.add(new FailureInfo(feature, t.getName(), error, html, t.getResult()));
+                //  F-14 / P1-8：报告出口脱敏（失败消息常内嵌响应体/请求头，含 token/密码）。
+                failures.add(new FailureInfo(feature, t.getName(), sanitizeForReport(error), html, t.getResult()));
             }
         }
         for (SimpleTestOutcome t : simpleTestOutcomes) {
@@ -1514,7 +1584,8 @@ public final class SummaryReportGenerator {
                 String scenarioHtml = scenarioToHtmlMap.getOrDefault(t.title, null);
                 String html = buildHtmlLink(scenarioHtml != null ? scenarioHtml : "index.html");
                 String error = t.errorMessage != null && !t.errorMessage.isEmpty() ? t.errorMessage : "Test failed";
-                failures.add(new FailureInfo(normalizeFeatureName(t.featureName), t.title, error, html, t.result));
+                //  F-14 / P1-8：同上，报告出口脱敏。
+                failures.add(new FailureInfo(normalizeFeatureName(t.featureName), t.title, sanitizeForReport(error), html, t.result));
             }
         }
 
@@ -1587,7 +1658,10 @@ public final class SummaryReportGenerator {
         try {
             sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftlh", model));
         } catch (TemplateException | IOException e) {
-            throw new RuntimeException("Failed to render failure-and-result-list fragment", e);
+            //  F-14 / P1-8：单片段失败只降级该片段（可见占位），不再向上抛 → 整份报告不产出。
+            logger.error("Report fragment 'summary/failure-and-result-list.ftlh' failed; visible placeholder inserted: {}",
+                    e.toString());
+            sb.append(fragmentFailurePlaceholder("summary/failure-and-result-list.ftlh", e));
         }
     }
 
@@ -1695,7 +1769,8 @@ public final class SummaryReportGenerator {
      * 若将来确需限制报告体积，应引入可配置上限，而非恢复硬编码截断。</p>
      */
     private static String errorForReport(String error) {
-        return error == null ? "" : error;
+        //  F-14 / P1-8：报告出口脱敏（失败消息常内嵌响应体/头，报告是出域产物）。
+        return sanitizeForReport(error == null ? "" : error);
     }
 
     // =============================================================
@@ -1718,7 +1793,14 @@ public final class SummaryReportGenerator {
                 String name = jo.has("name") ? jo.get("name").getAsString() : "Unknown";
 
                 // 提取测试结果
-                String r = jo.has("result") ? jo.get("result").getAsString() : "SUCCESS";
+                //  F-14/P1-8：缺失 result 的 JSON **不再默认判 SUCCESS**。原实现把告警目录里混入的
+                //  非用例文件（或 SPI 产出不全的文件）一律计为通过，虚假抬高通过率且掩盖问题。
+                //  无法判定结果的文件一律跳过并留痕，绝不猜成通过。
+                if (!jo.has("result") || jo.get("result").isJsonNull()) {
+                    logger.warn("Skip report json without 'result' field (NOT counted as passed): {}", f.getName());
+                    continue;
+                }
+                String r = jo.get("result").getAsString();
 
                 // 提取持续时间（毫秒）
                 long dur = 0;

@@ -3,7 +3,7 @@
 <head>
     <meta name="viewport" content="width=device-width">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-    <title>${title} - Test Report</title>
+    <title>${title!} - Test Report</title>
 ${css?no_esc}</head>
 <body style="font-family:Helvetica, sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.4;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;background-color:#f6f6f6;margin:0;padding:0;width:100%;overflow-x:hidden;">
 <table border="0" cellpadding="0" cellspacing="0" class="body" style="border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">

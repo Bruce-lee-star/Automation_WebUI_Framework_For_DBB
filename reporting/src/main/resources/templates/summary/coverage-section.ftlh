@@ -15,7 +15,7 @@
                                 </tr>
 <#list features as f>
                                 <tr>
-                                    <td class="tag-subtitle categories" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;"><a href="${f.link}" target="_blank">${f.name}</a></td>
+                                    <td class="tag-subtitle categories" style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-transform:capitalize;border:0.5px solid #dddddd;word-wrap:break-word;overflow-wrap:break-word;"><a href="${f.link!}" target="_blank">${f.name!}</a></td>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;">${f.total?c}</td>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;text-align:center;border:0.5px solid #dddddd;">${f.passPercent?c}%</td>
                                     <td style="font-family:Helvetica, sans-serif;font-size:14px;vertical-align:top;border:0.5px solid #dddddd;">

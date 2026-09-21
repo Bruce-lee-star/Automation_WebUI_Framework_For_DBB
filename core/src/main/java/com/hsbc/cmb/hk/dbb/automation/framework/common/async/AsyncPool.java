@@ -4,6 +4,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigKeys;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.FrameworkFlags;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.LazyInit;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.CapturedContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
@@ -58,8 +59,11 @@ public final class AsyncPool {
     /** 活跃的 per-Context 调度器（由 ContextRouteEngine 注册，关闭时移除） */
     private static final Map<String, ScheduledThreadPoolExecutor> CONTEXT_SCHEDULERS = new ConcurrentHashMap<>();
 
-    private static final ThreadPoolExecutor POOL;
-    private static final ScheduledThreadPoolExecutor SCHEDULER;
+    /** 主池：P2-2 起改为<b>首次使用时</b>构造并发布（见 {@link #INIT} / {@link #doInit()}），故不再 final。 */
+    private static volatile ThreadPoolExecutor POOL;
+
+    /** 调度器：同 {@link #POOL}，惰性构造。 */
+    private static volatile ScheduledThreadPoolExecutor SCHEDULER;
 
     /**
      *  串行单线程执行器 — 专用于 Monitor 用户回调（onResponse）。
@@ -109,30 +113,54 @@ public final class AsyncPool {
      */
     private static final AtomicLong skippedTimeoutSentinelCount = new AtomicLong();
 
-    private static final int CORE_THREADS;
-    private static final int MAX_THREADS;
-    private static final int QUEUE_CAPACITY;
-    private static final long DEFAULT_TASK_TIMEOUT_MS;
+    //  P2-2：以下配置字段在首次使用时由 doInit() 赋值（故不再 final）；可见性由 INIT 的
+    //  volatile 发布建立 happens-before 保证。
+    private static int CORE_THREADS;
+    private static int MAX_THREADS;
+    private static int QUEUE_CAPACITY;
+    private static long DEFAULT_TASK_TIMEOUT_MS;
     private static final long KEEP_ALIVE_SECONDS = 30;
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
-    private static final double QUEUE_USAGE_ALERT_THRESHOLD;
-    private static final double THREAD_USAGE_ALERT_THRESHOLD;
-    private static final int MAX_PENDING_TIMEOUTS;
+    private static double QUEUE_USAGE_ALERT_THRESHOLD;
+    private static double THREAD_USAGE_ALERT_THRESHOLD;
+    private static int MAX_PENDING_TIMEOUTS;
 
-    static {
+    /**
+     * P2-2：初始化守卫 —— 首次使用 AsyncPool 时才读配置 / 建池。
+     *
+     * <p>原实现把配置读取放在 {@code static {}} 块：一旦配置异常（如密文解密失败快），JVM 会包装为
+     * {@link ExceptionInInitializerError}，且本类在同一 JVM 内<b>永久不可用</b>（后续访问直接
+     * NoClassDefFoundError）。改为惰性后，失败以清晰的 {@link IllegalStateException}（带原始 cause）
+     * 在<b>首次调用点</b>抛出，类不再被污染。</p>
+     */
+    private static final LazyInit INIT = new LazyInit("AsyncPool", AsyncPool::doInit);
+
+    /** P2-2：所有真正使用池的入口必须先经过本方法（失败抛清晰异常）。 */
+    private static void ensureInitialized() {
+        INIT.ensure();
+    }
+
+    /**
+     * 初始化动作（首次使用时执行）：读全部配置 → 构造并发布主池 / 调度器 → 注册关闭钩子。
+     *
+     * <p><b>顺序刻意如此</b>：先做全部<b>可能失败</b>的配置读取，再构造资源并赋值给字段 ——
+     * 失败时 {@code POOL}/{@code SCHEDULER} 仍为 null（<b>不留半初始化状态</b>），
+     * 使 {@link #shutdown()} 可安全短路，也避免"半初始化的池被子线程误用"。</p>
+     */
+    private static void doInit() {
         //  P2-1：键名与默认值统一取自 ConfigKeys 注册表（SSoT）—— 调用点不再持有字面量，
         //  避免「注册表默认值」与「读取点默认值」两处漂移（golden 快照只守得住前者）。
-        CORE_THREADS = cfgInt(ConfigKeys.ASYNC_CORE_THREADS);
-        MAX_THREADS = cfgInt(ConfigKeys.ASYNC_MAX_THREADS);
-        QUEUE_CAPACITY = cfgInt(ConfigKeys.ASYNC_QUEUE_CAPACITY);
-        DEFAULT_TASK_TIMEOUT_MS = cfgLong(ConfigKeys.ASYNC_TASK_TIMEOUT_MS);
-        QUEUE_USAGE_ALERT_THRESHOLD = cfgDouble(ConfigKeys.ASYNC_QUEUE_USAGE_ALERT_THRESHOLD);
-        THREAD_USAGE_ALERT_THRESHOLD = cfgDouble(ConfigKeys.ASYNC_THREAD_USAGE_ALERT_THRESHOLD);
-        MAX_PENDING_TIMEOUTS = cfgInt(ConfigKeys.ASYNC_MAX_PENDING_TIMEOUTS);
+        int coreThreads = cfgInt(ConfigKeys.ASYNC_CORE_THREADS);
+        int maxThreads = cfgInt(ConfigKeys.ASYNC_MAX_THREADS);
+        int queueCapacity = cfgInt(ConfigKeys.ASYNC_QUEUE_CAPACITY);
+        long defaultTaskTimeoutMs = cfgLong(ConfigKeys.ASYNC_TASK_TIMEOUT_MS);
+        double queueUsageAlertThreshold = cfgDouble(ConfigKeys.ASYNC_QUEUE_USAGE_ALERT_THRESHOLD);
+        double threadUsageAlertThreshold = cfgDouble(ConfigKeys.ASYNC_THREAD_USAGE_ALERT_THRESHOLD);
+        int maxPendingTimeouts = cfgInt(ConfigKeys.ASYNC_MAX_PENDING_TIMEOUTS);
 
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
-                CORE_THREADS, MAX_THREADS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(QUEUE_CAPACITY),
+                coreThreads, maxThreads, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(queueCapacity),
                 r -> {
                     Thread t = new Thread(r, "async-pool");
                     t.setDaemon(true);
@@ -145,18 +173,28 @@ public final class AsyncPool {
                                     + "Pool: {}/{}, Queue: {}/{}",
                             count, threadPoolExecutor.getActiveCount(),
                             threadPoolExecutor.getPoolSize(), threadPoolExecutor.getMaximumPoolSize(),
-                            threadPoolExecutor.getQueue().size(), QUEUE_CAPACITY);
+                            threadPoolExecutor.getQueue().size(), queueCapacity);
                     new ThreadPoolExecutor.DiscardOldestPolicy().rejectedExecution(r, threadPoolExecutor);
                 });
         executor.allowCoreThreadTimeOut(true);
-        POOL = executor;
 
-        SCHEDULER = new ScheduledThreadPoolExecutor(2, r -> {
+        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(2, r -> {
             Thread t = new Thread(r, "async-sched");
             t.setDaemon(true);
             return t;
         });
-        SCHEDULER.setRemoveOnCancelPolicy(true);
+        scheduler.setRemoveOnCancelPolicy(true);
+
+        //  发布（此后对其它线程可见：LazyInit 借 volatile initialized 建立 happens-before）
+        CORE_THREADS = coreThreads;
+        MAX_THREADS = maxThreads;
+        QUEUE_CAPACITY = queueCapacity;
+        DEFAULT_TASK_TIMEOUT_MS = defaultTaskTimeoutMs;
+        QUEUE_USAGE_ALERT_THRESHOLD = queueUsageAlertThreshold;
+        THREAD_USAGE_ALERT_THRESHOLD = threadUsageAlertThreshold;
+        MAX_PENDING_TIMEOUTS = maxPendingTimeouts;
+        POOL = executor;
+        SCHEDULER = scheduler;
 
         com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
                 com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_ASYNC_POOL,
@@ -186,6 +224,7 @@ public final class AsyncPool {
 
     private static void submitTask(Runnable task, long timeoutMs) {
         if (task == null)  {return;} 
+        ensureInitialized();   // P2-2：首次使用时初始化（配置失败在此抛出清晰异常）
         // N-10：捕获提交线程上下文，供工作线程恢复（执行后由 runWithContext 复位，隔离保留）
         final CapturedContext captured = TestContextHolder.capture();
         // C-5：捕获提交线程 MDC（日志诊断上下文：scenarioId / traceId / requestId 等），
@@ -268,6 +307,7 @@ public final class AsyncPool {
     /** 延迟 delayMs 毫秒后执行（单次）。 */
     public static ScheduledFuture<?> schedule(Runnable task, long delayMs) {
         if (task == null)  {return null;} 
+        ensureInitialized();   // P2-2
         long pending = pendingScheduleCount.incrementAndGet();
         // C-5：捕获提交线程 MDC，调度线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
@@ -292,6 +332,7 @@ public final class AsyncPool {
     /** 固定延迟周期执行（initialDelay 后首次，之后每 delayMs 一次）。 */
     public static ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, long initialDelayMs, long delayMs) {
         if (task == null)  {return null;} 
+        ensureInitialized();   // P2-2
         // F-13：周期性任务同样传播软断言收集器（每次执行 bind / finally unbind，池线程不留残留绑定）。
         final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
         return SCHEDULER.scheduleWithFixedDelay(() -> {
@@ -459,37 +500,56 @@ public final class AsyncPool {
 
     // ─── 监控指标 ──────────────────────────────────────────────
 
-    public static int getActiveCount() { return POOL.getActiveCount(); }
-    public static int getPoolSize() { return POOL.getPoolSize(); }
-    public static int getQueueSize() { return POOL.getQueue().size(); }
+    /** P2-2：取用主池前确保已初始化 —— 失败抛清晰的初始化异常，而不是 NPE。 */
+    private static ThreadPoolExecutor pool() {
+        ensureInitialized();
+        return POOL;
+    }
+
+    public static int getActiveCount() { return pool().getActiveCount(); }
+    public static int getPoolSize() { return pool().getPoolSize(); }
+    public static int getQueueSize() { return pool().getQueue().size(); }
     // 修复 CORE-P2-N6：completedTaskCount 内部计数器与 POOL.getCompletedTaskCount() 统计同一批完成数，
     // 叠加会翻倍；统一以 ThreadPoolExecutor 自身计数作为唯一来源。
-    public static long getCompletedTaskCount() { return POOL.getCompletedTaskCount(); }
+    public static long getCompletedTaskCount() { return pool().getCompletedTaskCount(); }
     public static long getRejectedCount() { return rejectedCount.get(); }
     public static long getTimeoutCount() { return timeoutCount.get(); }
     public static long getPendingTimeoutCount() { return pendingTimeoutCount.get(); }
     public static long getPendingScheduleCount() { return pendingScheduleCount.get(); }
     public static long getMonitorCallbackDroppedCount() { return monitorCallbackDroppedCount.get(); }
 
-    public static double getQueueUsage() { return (double) POOL.getQueue().size() / QUEUE_CAPACITY; }
+    public static double getQueueUsage() { return (double) pool().getQueue().size() / QUEUE_CAPACITY; }
     public static double getThreadUsage() {
-        int poolSize = POOL.getPoolSize();
-        return poolSize > 0 ? (double) POOL.getActiveCount() / poolSize : 0.0;
+        ThreadPoolExecutor p = pool();
+        int poolSize = p.getPoolSize();
+        return poolSize > 0 ? (double) p.getActiveCount() / poolSize : 0.0;
     }
 
     public static String getStatusSnapshot() {
+        ThreadPoolExecutor p = pool();
         return String.format(
                 "[AsyncPool] active=%d, pool=%d/%d, queue=%d/%d (%.0f%%), threads=%.0f%%, "
                         + "completed=%d, rejected=%d, timeouts=%d, pendingTimeouts=%d/%d, pendingSched=%d, ctxSched=%d, monitorDropped=%d",
-                POOL.getActiveCount(), POOL.getPoolSize(), POOL.getMaximumPoolSize(),
-                POOL.getQueue().size(), QUEUE_CAPACITY, getQueueUsage() * 100, getThreadUsage() * 100,
-                POOL.getCompletedTaskCount(), rejectedCount.get(),
+                p.getActiveCount(), p.getPoolSize(), p.getMaximumPoolSize(),
+                p.getQueue().size(), QUEUE_CAPACITY, getQueueUsage() * 100, getThreadUsage() * 100,
+                p.getCompletedTaskCount(), rejectedCount.get(),
                 timeoutCount.get(), pendingTimeoutCount.get(), MAX_PENDING_TIMEOUTS, pendingScheduleCount.get(),
                 CONTEXT_SCHEDULERS.size(), monitorCallbackDroppedCount.get());
     }
 
-    /** 手动关闭（由管理代码调用）。 */
-    public static void shutdown() { shutdownGracefully(); }
+    /**
+     * 手动关闭（由管理代码调用）。
+     *
+     * <p>P2-2：以「资源是否真的存在」判定是否短路 —— 从未初始化或初始化失败时无资源可关（失败路径
+     * 不留下半初始化状态），直接返回即可；反之即便 {@code initialized} 标志未及置位（如钩子注册失败），
+     * 只要池已构造出来就必须关闭，避免线程泄漏。</p>
+     */
+    public static void shutdown() {
+        if (POOL == null && SCHEDULER == null) {
+            return;
+        }
+        shutdownGracefully();
+    }
 
     /**
      *  在 Monitor 回调专用串行线程上执行任务（顺序、与主流程共享上下文）。
@@ -498,6 +558,7 @@ public final class AsyncPool {
      */
     public static void runOnMonitorCallbackThread(Runnable task) {
         if (task == null)  {return;} 
+        ensureInitialized();   // P2-2
         // C-5：捕获提交线程 MDC，monitor 串行线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         // F-13：捕获软断言收集器，使用户在 onResponse 回调里记录的软断言失败可被上报。

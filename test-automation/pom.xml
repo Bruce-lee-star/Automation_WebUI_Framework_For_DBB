@@ -8,6 +8,7 @@
         <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
         <artifactId>Automation_WebUI_Framework_BDD</artifactId>
         <version>1.0.0</version>
+        <relativePath/>
     </parent>
 
     <artifactId>test-automation</artifactId>
@@ -15,6 +16,7 @@
     <description>Cucumber/Serenity test suite: features, step definitions, CucumberTestRunnerIT. Aggregates all framework modules.</description>
 
     <properties>
+        <framework.version>1.0.0</framework.version>
         <!-- Cucumber 标签过滤（B-1/B-2）：默认跑所有未显式跳过的场景（not @skip）；
              用 -Dtags=@其他 覆盖；-Dtags= （空串）跑全部。Runner 不写死标签，本属性为单一事实来源。 -->
         <tags>not @skip</tags>
@@ -24,32 +26,32 @@
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-core</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-reports</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>rest-assured-core</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-web-ui</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-route</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-codegen</artifactId>
-            <version>${project.version}</version>
+            <version>${framework.version}</version>
         </dependency>
 
         <!-- ENG-P0-2：test-automation 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明；均为测试期） -->

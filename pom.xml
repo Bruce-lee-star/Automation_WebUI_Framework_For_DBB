@@ -20,7 +20,6 @@
         <module>pw-web-ui</module>
         <module>pw-codegen</module>
         <module>pw-route</module>
-        <module>test-automation</module>
     </modules>
 
     <properties>

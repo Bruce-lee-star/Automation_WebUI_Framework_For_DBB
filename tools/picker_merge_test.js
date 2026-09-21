@@ -20,7 +20,7 @@ const assert = require('assert');
 const vm = require('vm');
 
 const ROOT = 'd:/IdeaProject/Automation_WebUI_Framework_For_DBB';
-const RES = path.join(ROOT, 'core/src/main/resources/scan/js');
+const RES = path.join(ROOT, 'pw-core/src/main/resources/scan/js');
 
 function readRes(f) {
   return fs.readFileSync(path.join(RES, f), 'utf8');

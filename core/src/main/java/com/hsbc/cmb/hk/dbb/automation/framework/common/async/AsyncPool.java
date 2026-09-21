@@ -1,7 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.async;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigKeys;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.FrameworkFlags;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.CapturedContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
@@ -108,13 +110,15 @@ public final class AsyncPool {
     private static final int MAX_PENDING_TIMEOUTS;
 
     static {
-        CORE_THREADS = getEnvInt("ASYNC_CORE_THREADS", 2);
-        MAX_THREADS = getEnvInt("ASYNC_MAX_THREADS", 6);
-        QUEUE_CAPACITY = getEnvInt("ASYNC_QUEUE_CAPACITY", 200);
-        DEFAULT_TASK_TIMEOUT_MS = getEnvLong("ASYNC_TASK_TIMEOUT_MS", 30_000L);
-        QUEUE_USAGE_ALERT_THRESHOLD = getEnvDouble("ASYNC_QUEUE_USAGE_ALERT_THRESHOLD", 0.8);
-        THREAD_USAGE_ALERT_THRESHOLD = getEnvDouble("ASYNC_THREAD_USAGE_ALERT_THRESHOLD", 0.9);
-        MAX_PENDING_TIMEOUTS = getEnvInt("ASYNC_MAX_PENDING_TIMEOUTS", 500);
+        //  P2-1：键名与默认值统一取自 ConfigKeys 注册表（SSoT）—— 调用点不再持有字面量，
+        //  避免「注册表默认值」与「读取点默认值」两处漂移（golden 快照只守得住前者）。
+        CORE_THREADS = cfgInt(ConfigKeys.ASYNC_CORE_THREADS);
+        MAX_THREADS = cfgInt(ConfigKeys.ASYNC_MAX_THREADS);
+        QUEUE_CAPACITY = cfgInt(ConfigKeys.ASYNC_QUEUE_CAPACITY);
+        DEFAULT_TASK_TIMEOUT_MS = cfgLong(ConfigKeys.ASYNC_TASK_TIMEOUT_MS);
+        QUEUE_USAGE_ALERT_THRESHOLD = cfgDouble(ConfigKeys.ASYNC_QUEUE_USAGE_ALERT_THRESHOLD);
+        THREAD_USAGE_ALERT_THRESHOLD = cfgDouble(ConfigKeys.ASYNC_THREAD_USAGE_ALERT_THRESHOLD);
+        MAX_PENDING_TIMEOUTS = cfgInt(ConfigKeys.ASYNC_MAX_PENDING_TIMEOUTS);
 
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 CORE_THREADS, MAX_THREADS, KEEP_ALIVE_SECONDS, TimeUnit.SECONDS,
@@ -513,8 +517,44 @@ public final class AsyncPool {
     // serenity.properties 并透明解密），消除"直读 ASYNC_* 环境变量"这第三套割裂的配置体系，
     // 使 ASYNC_* 可被 serenity.properties 与 -D 覆盖、并支持 ENC() 加密。env 名映射与历史一致
     // （toEnvKey("ASYNC_CORE_THREADS") == "ASYNC_CORE_THREADS"），对现网零变更。
+    /** P2-1：按注册表条目解析 int（键名 + 默认值均来自 SSoT）。 */
+    private static int cfgInt(ConfigKeys key) {
+        return getEnvInt(key.key(), Integer.parseInt(key.defaultValue().trim()));
+    }
+
+    /** P2-1：按注册表条目解析 long（键名 + 默认值均来自 SSoT）。 */
+    private static long cfgLong(ConfigKeys key) {
+        return getEnvLong(key.key(), Long.parseLong(key.defaultValue().trim()));
+    }
+
+    /** P2-1：按注册表条目解析 double（键名 + 默认值均来自 SSoT）。 */
+    private static double cfgDouble(ConfigKeys key) {
+        return getEnvDouble(key.key(), Double.parseDouble(key.defaultValue().trim()));
+    }
+
+    /**
+     * 兼容解析（P2-1）：优先注册表键名；未命中时退回**历史大写下划线形式**。
+     *
+     * <p>注册表键名规范化（{@code async.core.threads}）后，<b>环境变量形式不变</b>
+     * （{@code toEnvKey} ⇒ {@code ASYNC_CORE_THREADS}，与历史完全一致）；仅 {@code -D} 的旧大写形式需兜底，
+     * 否则既有 {@code -DASYNC_CORE_THREADS=…} 会被静默忽略（历史文档只写了环境变量形式，但静默失效不可接受）。</p>
+     */
+    private static String resolveWithLegacy(String key) {
+        String value = ConfigSource.resolve(key, null);
+        if (value != null && !value.trim().isEmpty()) {
+            return value;
+        }
+        String legacyKey = FrameworkFlags.toEnvKey(key);
+        String legacy = ConfigSource.resolve(legacyKey, null);
+        if (legacy != null && !legacy.trim().isEmpty()) {
+            LOGGER.warn("[AsyncPool] 配置键 '{}' 为历史（未规范化）形式，仍生效：{}；请改用 '{}'",
+                    legacyKey, legacy, key);
+        }
+        return legacy;
+    }
+
     private static int getEnvInt(String key, int defaultValue) {
-        String val = ConfigSource.resolve(key, null);
+        String val = resolveWithLegacy(key);
         if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Integer.parseInt(val.trim());
@@ -525,7 +565,7 @@ public final class AsyncPool {
     }
 
     private static long getEnvLong(String key, long defaultValue) {
-        String val = ConfigSource.resolve(key, null);
+        String val = resolveWithLegacy(key);
         if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             return Long.parseLong(val.trim());
@@ -536,7 +576,7 @@ public final class AsyncPool {
     }
 
     private static double getEnvDouble(String key, double defaultValue) {
-        String val = ConfigSource.resolve(key, null);
+        String val = resolveWithLegacy(key);
         if (val == null || val.trim().isEmpty())  {return defaultValue;} 
         try {
             double parsed = Double.parseDouble(val.trim());

@@ -1,3 +1,12 @@
+async.core.threads=2
+async.max.pending.timeouts=500
+async.max.threads=6
+async.queue.capacity=200
+async.queue.usage.alert.threshold=0.8
+async.task.timeout.ms=30000
+async.thread.usage.alert.threshold=0.9
+framework.security.secret.strict=true
+security.secret.strict=true
 api.assertion.wait.timeout.ms=15000
 api.base.uri.default=http://localhost
 api.capture.max.response.size.mb=50

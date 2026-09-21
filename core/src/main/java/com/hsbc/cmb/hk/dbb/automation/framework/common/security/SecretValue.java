@@ -1,5 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.security;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigKeys;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.FrameworkFlags;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -116,12 +118,31 @@ public final class SecretValue {
      * 保留原串（排障用，勿用于生产）。
      */
     private static String onDecryptFailure(String raw, String message, Exception cause) {
-        boolean strict = com.hsbc.cmb.hk.dbb.automation.framework.common.config.FrameworkFlags
-                .isEnabled("security.secret.strict", true);
-        if (strict) {
+        if (isStrictMode()) {
             throw new IllegalStateException(message + "，严禁以密文形态当值使用：" + cause.getMessage(), cause);
         }
         LOGGER.warn("{} (non-strict mode, keeping original): {}", message, cause.getMessage());
         return raw;
+    }
+
+    /**
+     * 严格模式判定（P2-1：键统一到 {@code framework.} 前缀）。
+     *
+     * <p>解析顺序：新键 {@code framework.security.secret.strict} → 旧键 {@code security.secret.strict}
+     * （命中即告警，保留排障用法的向后兼容）→ 注册表默认值（{@code true}）。</p>
+     */
+    private static boolean isStrictMode() {
+        String current = FrameworkFlags.resolve(ConfigKeys.SECURITY_SECRET_STRICT.key(), null);
+        if (current != null) {
+            return Boolean.parseBoolean(current);
+        }
+        String legacy = FrameworkFlags.resolve(ConfigKeys.LEGACY_SECURITY_SECRET_STRICT.key(), null);
+        if (legacy != null) {
+            LOGGER.warn("配置键 '{}' 已废弃（缺 {} 前缀），请改用 '{}'；本次仍按旧值生效：{}",
+                    ConfigKeys.LEGACY_SECURITY_SECRET_STRICT.key(), FrameworkFlags.PREFIX,
+                    ConfigKeys.SECURITY_SECRET_STRICT.key(), legacy);
+            return Boolean.parseBoolean(legacy);
+        }
+        return Boolean.parseBoolean(ConfigKeys.SECURITY_SECRET_STRICT.defaultValue().trim());
     }
 }

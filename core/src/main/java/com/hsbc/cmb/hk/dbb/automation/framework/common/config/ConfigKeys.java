@@ -33,6 +33,41 @@ import java.util.Set;
  */
 public enum ConfigKeys {
 
+    // ============ 框架自有开关 / 异步池（P2-1 收口：此前未登记，注册表查不到）============
+    //  键名遵循注册表的结构化命名约定（小写点分）。历史读取形式为环境变量 ASYNC_* ——
+    //  ConfigSource.toEnvKey 把点转为下划线并大写，故 async.core.threads 归一后仍映射到
+    //  ASYNC_CORE_THREADS，**环境变量兼容性零损失**；历史 -D ASYNC_* 形式由 AsyncPool.resolveCfg 兜底。
+
+    /** AsyncPool 核心线程数（环境变量形式：{@code ASYNC_CORE_THREADS}）。 */
+    ASYNC_CORE_THREADS("async.core.threads", "2", "AsyncPool 核心线程数"),
+    /** AsyncPool 最大线程数（环境变量形式：{@code ASYNC_MAX_THREADS}）。 */
+    ASYNC_MAX_THREADS("async.max.threads", "6", "AsyncPool 最大线程数"),
+    /** AsyncPool 任务队列容量（有界；满时按拒绝策略丢弃最旧任务并告警）。 */
+    ASYNC_QUEUE_CAPACITY("async.queue.capacity", "200", "AsyncPool 任务队列容量"),
+    /** AsyncPool 任务默认超时（毫秒）。 */
+    ASYNC_TASK_TIMEOUT_MS("async.task.timeout.ms", "30000", "AsyncPool 任务默认超时（毫秒）"),
+    /** AsyncPool 队列使用率告警阈值（0~1）。 */
+    ASYNC_QUEUE_USAGE_ALERT_THRESHOLD(
+        "async.queue.usage.alert.threshold", "0.8", "AsyncPool 队列使用率告警阈值"),
+    /** AsyncPool 线程使用率告警阈值（0~1）。 */
+    ASYNC_THREAD_USAGE_ALERT_THRESHOLD(
+        "async.thread.usage.alert.threshold", "0.9", "AsyncPool 线程使用率告警阈值"),
+    /** AsyncPool 待处理超时任务数上限（超出告警）。 */
+    ASYNC_MAX_PENDING_TIMEOUTS("async.max.pending.timeouts", "500", "AsyncPool 待处理超时任务上限"),
+
+    /**
+     * 密文解密失败是否失败快（默认 true）。
+     * <p>P2-1：统一到 {@code framework.} 前缀（框架自有开关一律加前缀，与
+     * {@link FrameworkFlags#PREFIX} 的约定一致）。旧键 {@link #LEGACY_SECURITY_SECRET_STRICT}
+     * 保留向后兼容（命中即告警），排障用法不变。</p>
+     */
+    SECURITY_SECRET_STRICT(
+        "framework.security.secret.strict", "true", "密文解密失败是否失败快（false 仅排障降级）"),
+    /** 旧键名（无 {@code framework.} 前缀）—— 仅向后兼容；新配置请用 {@link #SECURITY_SECRET_STRICT}。 */
+    LEGACY_SECURITY_SECRET_STRICT(
+        "security.secret.strict", "true", "[deprecated] 旧键名，等价于 framework.security.secret.strict"),
+
+
     // ===================== Web（对应 WebFrameworkConfig）=====================
 
     WEB_SERENITY_PROJECT_NAME(

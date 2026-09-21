@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.async;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.CapturedContext;
@@ -176,6 +177,9 @@ public final class AsyncPool {
         // C-5：捕获提交线程 MDC（日志诊断上下文：scenarioId / traceId / requestId 等），
         // 供工作线程恢复，使异步任务日志关联到同一链路；worker finally 中 clear 复位，避免线程复用污染。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+        // F-13：捕获提交线程的软断言收集器交给工作线程共享 —— 使异步任务里记录的失败
+        // 随父线程场景末 assertAll() 一并判红（原实现下其失败落在 worker 自己的收集器上，无人上报 → 静默假绿）。
+        final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
         checkThresholdsBeforeSubmit();
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[AsyncPool] submit: timeout={}ms, queue={}/{}, active={}",
@@ -185,12 +189,14 @@ public final class AsyncPool {
                 if (mdcContext != null) {
                     MDC.setContextMap(mdcContext);
                 }
+                SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
                 try {
                     TestContextHolder.runWithContext(captured, task);
                 } catch (Throwable t) {
                     LOGGER.error("[AsyncPool] Task threw exception: {}", t.getMessage(), t);
                 } finally {
                     completedTaskCount.incrementAndGet();
+                    SoftAssertions.unbindCollector(previousCollector);
                     MDC.clear();
                 }
             });
@@ -235,14 +241,18 @@ public final class AsyncPool {
         long pending = pendingScheduleCount.incrementAndGet();
         // C-5：捕获提交线程 MDC，调度线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+        // F-13：同样捕获软断言收集器，使延迟任务中的软断言失败随父线程场景末 assertAll() 判红。
+        final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
         ScheduledFuture<?> f = SCHEDULER.schedule(() -> {
             if (mdcContext != null) {
                 MDC.setContextMap(mdcContext);
             }
+            SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
             try {
                 task.run();
             } finally {
                 pendingScheduleCount.decrementAndGet();
+                SoftAssertions.unbindCollector(previousCollector);
                 MDC.clear();
             }
         }, delayMs, TimeUnit.MILLISECONDS);
@@ -252,7 +262,16 @@ public final class AsyncPool {
     /** 固定延迟周期执行（initialDelay 后首次，之后每 delayMs 一次）。 */
     public static ScheduledFuture<?> scheduleWithFixedDelay(Runnable task, long initialDelayMs, long delayMs) {
         if (task == null)  {return null;} 
-        return SCHEDULER.scheduleWithFixedDelay(task, initialDelayMs, delayMs, TimeUnit.MILLISECONDS);
+        // F-13：周期性任务同样传播软断言收集器（每次执行 bind / finally unbind，池线程不留残留绑定）。
+        final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
+        return SCHEDULER.scheduleWithFixedDelay(() -> {
+            SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
+            try {
+                task.run();
+            } finally {
+                SoftAssertions.unbindCollector(previousCollector);
+            }
+        }, initialDelayMs, delayMs, TimeUnit.MILLISECONDS);
     }
 
     /**
@@ -451,6 +470,8 @@ public final class AsyncPool {
         if (task == null)  {return;} 
         // C-5：捕获提交线程 MDC，monitor 串行线程执行时恢复，finally clear。
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
+        // F-13：捕获软断言收集器，使用户在 onResponse 回调里记录的软断言失败可被上报。
+        final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
         //  修复 H17：监控回调串行队列满/已关闭时，绝不能回退到【调用方线程】同步执行
         // （调用方多为 Playwright 事件线程，同步执行用户回调会阻塞路由拦截 → 整轮测试卡死）。
         // 统一策略：准入控制 + 计数丢弃（可观测），但绝不阻塞提交方。
@@ -466,12 +487,14 @@ public final class AsyncPool {
                 if (mdcContext != null) {
                     MDC.setContextMap(mdcContext);
                 }
+                SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
                 try {
                     task.run();
                 } catch (Throwable t) {
                     LOGGER.error("[AsyncPool] Monitor callback task threw exception: {}", t.getMessage(), t);
                 } finally {
                     completedTaskCount.incrementAndGet();
+                    SoftAssertions.unbindCollector(previousCollector);
                     MDC.clear();
                 }
             });

@@ -84,4 +84,61 @@ public class ScenarioDataNamespaceTest {
         assertThrows(IllegalArgumentException.class,
                 () -> ScenarioDataNamespace.registerCleanup(null));
     }
+
+    // ───────────────── F-13 兜底：无场景绑定（线程键域）的钩子必须能被执行 ─────────────────
+
+    /**
+     * {@code @BeforeClass} 语义：登记时<b>尚未绑定用例</b>，钩子落在「线程键域」。
+     * 修复前它不归属于任何用例 id，{@code end(scenarioId)} 永不命中 → 永不执行（静默泄漏）。
+     */
+    @Test
+    void threadKeyedCleanupRunsWhenScenarioEndsOnSameThread() {
+        AtomicInteger fired = new AtomicInteger();
+        ScenarioDataNamespace.registerCleanup(fired::incrementAndGet); // 未绑定 → 线程键域
+
+        ScenarioContext.begin("scenario-thread-keyed");
+        assertEquals(0, fired.get(), "尚未结束前不应执行");
+        ScenarioContext.end("scenario-thread-keyed");
+
+        assertEquals(1, fired.get(), "F-13：end 应同时执行当前线程键域的清理钩子");
+    }
+
+    /** 未绑定用例的线程调用 {@link ScenarioContext#endCurrent()} 时，线程键域钩子同样应被执行。 */
+    @Test
+    void threadKeyedCleanupRunsOnEndCurrentWithoutBinding() {
+        AtomicInteger fired = new AtomicInteger();
+        ScenarioDataNamespace.registerCleanup(fired::incrementAndGet);
+
+        ScenarioContext.endCurrent();
+
+        assertEquals(1, fired.get(), "F-13：未绑定用例时 endCurrent 应兜底执行线程键域钩子");
+    }
+
+    /**
+     * 套件结束兜底：登记在<b>未被任何 end 命中</b>的线程上的钩子，必须在 {@link ScenarioContext#resetAll()}
+     * 时被<b>执行</b>（而非原实现的直接丢弃），且执行后注册表清空（不重复执行）。
+     */
+    @Test
+    void remainingThreadKeyedCleanupsRunAtSuiteEndInsteadOfBeingDropped() {
+        AtomicInteger fired = new AtomicInteger();
+        Thread pluginThread = new Thread(() -> ScenarioDataNamespace.registerCleanup(fired::incrementAndGet),
+                "no-end-thread");
+        pluginThread.start();
+        joinQuietly(pluginThread);
+        assertEquals(0, fired.get(), "前置：没有任何 end 命中该线程键域");
+
+        ScenarioContext.resetAll();
+        assertEquals(1, fired.get(), "F-13：套件结束兜底必须执行剩余钩子，而不是静默丢弃");
+
+        ScenarioContext.resetAll();
+        assertEquals(1, fired.get(), "resetAll 幂等：已执行的钩子不得被重复执行");
+    }
+
+    private static void joinQuietly(Thread thread) {
+        try {
+            thread.join(5000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 }

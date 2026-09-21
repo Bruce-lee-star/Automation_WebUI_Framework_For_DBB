@@ -57,6 +57,9 @@ public final class ScenarioContext {
         // D-6 / PAR-4：用例级数据隔离清理钩子（命名空间清理）机器强制执行，
         // 防脏数据泄漏到并行邻居（语义同下方 assertUnbound 的清理保险丝）。
         ScenarioDataNamespace.runCleanup(scenarioId);
+        // F-13 兜底：同时执行「当前线程键域」的钩子 —— 覆盖登记时未绑定用例者
+        // （@BeforeClass / 异步线程），它们不归属于任何用例 id，永远不会被 runCleanup(id) 命中。
+        ScenarioDataNamespace.runCleanupForCurrentThread();
         TestContext ctx = SCENARIO_CONTEXTS.remove(scenarioId);
         if (ctx != null) {
             ctx.clear();
@@ -87,6 +90,10 @@ public final class ScenarioContext {
         String id = CURRENT.get();
         if (id != null) {
             end(id);
+        } else {
+            // F-13 兜底：未绑定用例的线程（异步任务 / @BeforeClass）结束时应执行其线程键域清理钩子，
+            // 否则这类钩子既不属于任何用例 id、也无处触发，会静默泄漏到后续用例。
+            ScenarioDataNamespace.runCleanupForCurrentThread();
         }
     }
 

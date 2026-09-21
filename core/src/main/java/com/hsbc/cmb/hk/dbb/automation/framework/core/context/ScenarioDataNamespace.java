@@ -26,12 +26,26 @@ import org.slf4j.LoggerFactory;
  * <p><b>隔离域主键</b>：优先用例级主键（{@link ScenarioContext#currentScenarioId()}），无绑定时回退线程标识，
  * 保证异步线程 / {@code @BeforeClass} / 纯单测下仍能产出确定且唯一的值。
  *
+ * <p><b>线程键域的兜底执行（评审 F-13 / P1-5）</b>：回退到「线程键」的钩子不归属于任何用例 id，
+ * 因而<b>永远不会</b>被 {@code end(scenarioId)} 命中 —— 原实现下这类钩子（典型
+ * {@code @BeforeClass} 或异步线程登记）既不随用例结束触发、也不在套件结束兜底，<b>静默泄漏</b>。
+ * 现在三处补兜底：
+ * <ol>
+ *   <li>{@link ScenarioContext#end(String)} 同时执行<b>当前线程键域</b>的钩子；</li>
+ *   <li>{@link ScenarioContext#endCurrent()} 在未绑定用例时执行当前线程键域钩子；</li>
+ *   <li>{@link #resetAll()}（套件结束）先<b>执行</b>再清空全部剩余钩子，并留痕告警
+ *       （取代原先的「直接丢弃」）。</li>
+ * </ol>
+ *
  * <p><b>可观测 / 健壮</b>：清理钩子执行异常不中断其余钩子且记入日志（不静默，D7-3）；
  * 钩子按用例域隔离存储，串行 / 并行用例互不串扰。
  */
 public final class ScenarioDataNamespace {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ScenarioDataNamespace.class);
+
+    /** 无用例绑定时的域主键前缀（线程键域）。 */
+    private static final String THREAD_KEY_PREFIX = "thread:";
 
     /** 用例域 -> 清理钩子列表（按域隔离，线程安全）。 */
     private static final Map<String, List<Runnable>> CLEANUPS = new ConcurrentHashMap<>();
@@ -42,10 +56,15 @@ public final class ScenarioDataNamespace {
     private ScenarioDataNamespace() {
     }
 
+    /** 当前线程键（无用例绑定时登记的钩子归属此域）。 */
+    private static String currentThreadDomainKey() {
+        return THREAD_KEY_PREFIX + Thread.currentThread().threadId();
+    }
+
     /** 当前隔离域主键：用例绑定优先，否则线程标识兜底。 */
     private static String domainKey() {
         String scenarioId = ScenarioContext.currentScenarioId();
-        return scenarioId != null ? scenarioId : "thread:" + Thread.currentThread().threadId();
+        return scenarioId != null ? scenarioId : currentThreadDomainKey();
     }
 
     /**
@@ -63,23 +82,71 @@ public final class ScenarioDataNamespace {
     /**
      * 登记当前用例域的清理钩子（可重复登记；执行顺序不保证）。
      *
+     * <p>未绑定用例时（{@code @BeforeClass} / 异步线程）钩子落在「线程键域」，其执行时机见类注释，
+     * 此处以 verbose 日志留痕，便于排查"钩子为何没跑"。</p>
+     *
      * @param cleanup 清理动作（如删除本用例创建的命名空间数据）；{@code null} 抛 {@link IllegalArgumentException}
      */
     public static void registerCleanup(Runnable cleanup) {
         if (cleanup == null) {
             throw new IllegalArgumentException("cleanup must not be null");
         }
-        CLEANUPS.computeIfAbsent(domainKey(), k -> new CopyOnWriteArrayList<>()).add(cleanup);
+        String key = domainKey();
+        CLEANUPS.computeIfAbsent(key, k -> new CopyOnWriteArrayList<>()).add(cleanup);
+        if (key.startsWith(THREAD_KEY_PREFIX) && LOGGER.isDebugEnabled()) {
+            //  注意：此处刻意用本类 LOGGER 而非 common.config.VerboseLogging ——
+            //  后者会让 `core` 反向依赖 `common`，与既有 `common -> core` 边构成切片循环
+            //  （ArchUnit `frameworkSlicesMustBeFreeOfCycles` 已实测报红）。
+            LOGGER.debug("[ScenarioDataNamespace] cleanup registered without a bound scenario (domain={}) — "
+                    + "it will run at this thread's scenario end or at suite-end fallback", key);
+        }
     }
 
     /**
-     * 用例结束时由 {@link ScenarioContext#end(String)} 调用：执行并清空该用例域的全部清理钩子。
+     * 用例结束时由 {@link ScenarioContext#end(String)} 调用：执行并清空指定用例域的全部清理钩子。
      * 单个钩子异常不中断其余，且记入日志（不静默）。
      *
      * @param scenarioId 结束的用例 id（与 {@link ScenarioContext#currentScenarioId()} 同源）
      */
     static void runCleanup(String scenarioId) {
         List<Runnable> hooks = CLEANUPS.remove(scenarioId);
+        runHooks(scenarioId, hooks);
+    }
+
+    /**
+     * F-13 兜底：执行当前线程键域的清理钩子。
+     *
+     * <p>覆盖「登记时无用例绑定」的钩子（{@code @BeforeClass} / 异步线程）—— 它们不归属于任何用例 id，
+     * 永远不会被 {@code end(scenarioId)} 命中。</p>
+     */
+    static void runCleanupForCurrentThread() {
+        runCleanup(currentThreadDomainKey());
+    }
+
+    /**
+     * F-13 兜底（套件结束）：<b>执行</b>并清空全部剩余域的清理钩子（含线程键域）。
+     *
+     * <p>由 {@link ScenarioContext#resetAll()} 调用。原实现直接 {@code clear()} —— 对于任何未被
+     * {@code end} 命中过的域，钩子被<b>静默丢弃</b>；现在先执行再清空，并统计留痕（D7-3 不得静默）。</p>
+     */
+    static void resetAll() {
+        int executed = 0;
+        for (String domain : List.copyOf(CLEANUPS.keySet())) {
+            List<Runnable> hooks = CLEANUPS.remove(domain);
+            if (hooks != null && !hooks.isEmpty()) {
+                executed += hooks.size();
+                runHooks(domain, hooks);
+            }
+        }
+        CLEANUPS.clear();
+        if (executed > 0) {
+            LOGGER.warn("[ScenarioDataNamespace] {} cleanup hook(s) executed at suite-end fallback "
+                    + "(no scenario end reached them)", executed);
+        }
+    }
+
+    /** 逐个执行钩子：单个异常不中断其余，且逐条留痕（D7-3）。 */
+    private static void runHooks(String domain, List<Runnable> hooks) {
         if (hooks == null || hooks.isEmpty()) {
             return;
         }
@@ -88,14 +155,9 @@ public final class ScenarioDataNamespace {
                 h.run();
             } catch (Throwable t) {
                 // 单个清理异常不影响其余钩子与用例收尾（D7-3：不得静默）
-                LOGGER.warn("[ScenarioDataNamespace] cleanup hook failed for scenario {}: {}",
-                        scenarioId, t.toString());
+                LOGGER.warn("[ScenarioDataNamespace] cleanup hook failed for domain {}: {}",
+                        domain, t.toString());
             }
         }
-    }
-
-    /** 清空全部域清理钩子（套件结束兜底，由 {@link ScenarioContext#resetAll()} 调用）。 */
-    static void resetAll() {
-        CLEANUPS.clear();
     }
 }

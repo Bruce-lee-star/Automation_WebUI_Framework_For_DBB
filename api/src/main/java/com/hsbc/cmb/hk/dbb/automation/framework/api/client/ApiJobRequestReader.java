@@ -87,7 +87,8 @@ final class ApiJobRequestReader {
     public Map<String, Object> getCookies() {
         Entity entity = owner.getEntity();
         Map<String, Object> cookies = new HashMap<>(entity.getCookies());
-        AbstractApiJobHelper.LOGGER.info("Retrieved cookies: {}", cookies);
+        //  评审 F-09 修复：原样打印 cookies 会输出会话凭据明文（同类单值日志已用 valueForLog 脱敏）。
+        AbstractApiJobHelper.LOGGER.info("Retrieved cookies: {}", ApiLogSanitizer.toLogString(cookies));
         return cookies;
     }
 

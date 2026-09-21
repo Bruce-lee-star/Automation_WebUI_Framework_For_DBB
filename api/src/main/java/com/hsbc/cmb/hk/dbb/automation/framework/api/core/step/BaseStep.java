@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.api.core.endpoint.EndpointProvid
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.EntityBuilder;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.schema.JsonSchemaValidator;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.Configuration;
@@ -114,9 +115,11 @@ public class BaseStep extends RestJobProvider {
             LOGGER.info("JSON field verification passed: field '{}' has value '{}'", fieldPath, actualValue);
 
         } catch (Exception e) {
+            //  评审 F-09 修复：失败信息会随 Serenity 报告与日志出域，响应体内可能含 token/卡号等，
+            //  故必须先脱敏再拼装（原实现把完整 responseBody 原文拼进 AssertionError）。
             throw new AssertionError(String.format(
                     "JSON field verification failed: error parsing field '%s' - %s. Response body: %s",
-                    fieldPath, e.getMessage(), responseBody
+                    fieldPath, e.getMessage(), ApiLogSanitizer.bodyForLog(responseBody)
             ));
         }
     }
@@ -210,10 +213,12 @@ public class BaseStep extends RestJobProvider {
                     responseBody, containsString(expectedContent));
             LOGGER.info("Response body content verification passed: contains '{}'", expectedContent);
         } catch (AssertionError e) {
-            // 安全：仅记录响应体前 200 字符，避免敏感数据泄露到日志
-            String truncated = responseBody.length() > 200 
-                    ? responseBody.substring(0, 200) + "...[truncated]" : responseBody;
-            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (truncated): {}",
+            //  评审 F-09 复核修正：截断 ≠ 脱敏 —— 敏感值只要落在前 200 字符内仍会明文出域。
+            //  改为「先脱敏、再截断」：保留可读性的同时确保不泄露。
+            String safeBody = ApiLogSanitizer.bodyForLog(responseBody);
+            String truncated = safeBody.length() > 200
+                    ? safeBody.substring(0, 200) + "...[truncated]" : safeBody;
+            LOGGER.error("Response body content verification failed: does not contain '{}'. Response (sanitized, truncated): {}",
                     expectedContent, truncated);
             throw e;
         }

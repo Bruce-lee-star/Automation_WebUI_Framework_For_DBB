@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.assembler.headersImpl; // �
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.domain.enums.ConfigKeys;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.typesafe.config.Config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,8 +49,10 @@ public class HeadersAssemblers {
             for (String key : headersConfig.root().keySet()) {
                 headersMap.put(key, headersConfig.getAnyRef(key));
             }
+            //  评审 F-09 修复：原样打印整个 headers map 会输出 Authorization / Cookie 明文，
+            //  与 EntityBuilder 的脱敏口径（ApiLogSanitizer.toLogString）形成双标准 → 此处统一收口。
             log.info("Headers constructed successfully, total key-value pairs: {} | headers: {}",
-                    headersMap.size(), headersMap);
+                    headersMap.size(), ApiLogSanitizer.toLogString(headersMap));
         } catch (Exception e) {
             log.error("Failed to parse headers from configuration", e);
             // 异常时返回空map，避免上游NPE

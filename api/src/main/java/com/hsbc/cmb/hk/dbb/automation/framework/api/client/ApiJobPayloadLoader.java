@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.api.client;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ConfigProvider;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.config.ApiFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.api.core.entity.Entity;
+import com.hsbc.cmb.hk.dbb.automation.framework.api.utility.ApiLogSanitizer;
 import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.InvalidJsonException;
@@ -88,8 +89,10 @@ final class ApiJobPayloadLoader {
             // 7. Parse JSON and set to Entity (final step)
             DocumentContext requestPayload = JsonPath.parse(content);
             entity.setRequestPayload(requestPayload.jsonString());
+            //  评审 F-09 修复：payload 原文以 INFO 全文打印会把请求体内的凭据/PII 写出域，
+            //  且该链路可能绕过 %msg 出口规则（body 为数组/嵌套时 key 匹配不到）→ 统一走 ApiLogSanitizer。
             AbstractApiJobHelper.LOGGER.info("loaded payload file successfully: [{}]\n  {}",
-                    cleanFileName, content);
+                    cleanFileName, ApiLogSanitizer.bodyForLog(content));
 
         } catch (IOException e) {
             String errorMsg = String.format("IO error reading payload file: [%s] (path: %s)", cleanFileName, normalizedPath);

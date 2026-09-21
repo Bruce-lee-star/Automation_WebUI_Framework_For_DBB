@@ -96,5 +96,15 @@ jobs:
       - name: Install Playwright browsers
         run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
 
-      - name: Run Cucumber IT (real browser E2E)
-        run: mvn -B verify -Dtags='not @skip'
+      - name: Run self-contained browser E2E (headless Playwright chromium, no external service)
+        # F-05 修复（2026-09-21）：原命令 `mvn -B verify -Dtags='not @skip'` 结构性必红，三重叠加：
+        #   ① CI runner 无显示器，而 serenity.conf 默认 headless:false → 显式 -Dplaywright.browser.headless=true；
+        #   ② CI 只安装 Playwright 下载的 chromium，而 serenity.conf 默认 channel:"chrome"
+        #      → 显式清空 -Dplaywright.browser.channel=（空值 = 使用 Playwright 自带 chromium）；
+        #   ③ 原标签 not @skip 会连带依赖 localhost:8888/8899 的 route(82)/api(11) 场景，而 CI 从不启动
+        #      route-demo-service/web → 本 job 收敛为「自包含」标签（本地 HTML，零外部依赖）。
+        #   决策（P0-5 ③）：route-demo 演示服务本期不纳入 CI（避免为演示服务引入容器/常驻进程的脆弱性）；
+        #      需要跑那 93 条场景时，在可达 8888/8899 的机器上执行：
+        #        mvn -f route-demo-service/pom.xml spring-boot:run            # 8888（另一终端）
+        #        mvn -B -pl test-automation -am verify -Dtags='@route or @api' -Dplaywright.browser.headless=true
+        run: mvn -B verify -Dtags='( @e2e-sandbox or @picker ) and not @skip' -Dplaywright.browser.headless=true -Dplaywright.browser.channel=

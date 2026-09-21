@@ -502,6 +502,9 @@
                   } catch (e) {}
                 };
                 function finish() {
+                  // F-07（P1-7）：先取「进入前是否处于选区态」——Java 侧 END_REGION_SELECT 触发的再次调用
+                  // 不应再回传 regionDone，否则 Java↔JS 会来回回声（各调用一次 finish）。
+                  var wasSelecting = window.__regionSelecting === true;
                   document.removeEventListener('mousemove', onMove, true);
                   document.removeEventListener('click', onClick, true);
                   document.removeEventListener('keydown', onEsc, true);
@@ -514,6 +517,13 @@
                   window.__scanMode = null;           // 清除模式标识（回到"无模式"，等待手动拾取/扫描指令）
                   try { window.__roleRefreshToggle && window.__roleRefreshToggle(); } catch (e) {}
                   restorePick();
+                  // F-07（P1-7）：区域选择是「点击多个区域累加 + 按 Esc 收尾」，收尾必须显式回传 Java ——
+                  // Java 侧仅在收到 regionDone 时才 END 选区并回 IDLE（regionScanned 只做增量刷新，
+                  // 否则首次点击即收尾，多选退化为单选）。缺此回传还会让 Java 模式停在 scanRegion，
+                  // 使面板 scan/region 按钮永久置灰。
+                  if (wasSelecting) {
+                    try { if (window.__rolePickerCmd) window.__rolePickerCmd('regionDone'); } catch (e2) {}
+                  }
                 }
                 function onEsc(e) {
                   if (e && (e.key === 'Escape' || e.keyCode === 27)) { e.preventDefault(); e.stopPropagation(); finish(); }

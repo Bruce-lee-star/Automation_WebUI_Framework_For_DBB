@@ -342,7 +342,6 @@ public final class RolePickerCommandEngine {
         String packageName = ctx.packageName;
         String pageClassName = ctx.pageClassName;
         String stepClassName = ctx.stepClassName;
-        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
         // 区域扫描点击后由浏览器侧异步通知（window.__rolePickerCmd('regionScanned')）：此时用户点选的
         // 业务区域元素已同步进入 window.__rolePicks，这里与"整页扫描"一样读取快照并生成页面类，
@@ -457,23 +456,64 @@ public final class RolePickerCommandEngine {
                 // 使每次区域点选刷新页面类的同时【保留并回填】已封装的步骤，不覆盖为空。
                 LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
                 if (codePage != null && !codePage.isEmpty()) {
-                    // 区域扫描完成：先清理浏览器侧选区态（移除蓝色遮罩、事件监听等），
-                    // 再回 IDLE 使面板按钮复位为"▶ 开始拾取"。
-                    // 【关键修复"区域扫描关闭不了、蓝色框框常驻"】旧实现只回 IDLE 但浏览器侧
-                    // __roleEndRegionSelect 未调用，导致蓝色遮罩常驻、事件监听残留。
-                    try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
-                    setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
+                    //  F-07（P1-7）：此处【必须保持选区态】。regionScanned 是「每次点击区域」的增量通知，
+                    //  原实现首次点击即 END_REGION_SELECT + 回 IDLE —— 摘除了浏览器侧选区监听，
+                    //  使「多选区域」静默退化为单选（第二个区域永远点不上，且不报错）。
+                    //  收尾一律交给 regionDone（用户按 Esc 结束时回传，见 picker-core-b2.js#finish）。
                     return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
-                            "区域扫描完成，已生成页面类（" + snap.entries.size() + " 个字段）");
+                            "已扫描区域，页面类已更新（" + snap.entries.size() + " 个字段）；可继续点其他区域，按 Esc 结束选区");
                 }
             }
         } catch (Exception e) {
             log.warn("[picker][regionScanned] failed to generate the page class: {}", e.getMessage());
         }
-        // 区域扫描完成（无论是否拾取到元素）自动清理选区态并回 IDLE。
+        //  未拾取到元素时同样保持选区态（用户可继续点其他区域），不在本命令内收尾。
+        return new PickerResult(PickerAction.CONTINUE, null, null,
+                "该区域未拾取到可定位元素，请点击具体的业务区域（可继续选择其他区域，按 Esc 结束选区）");
+    }
+
+    /**
+     * 区域选择<b>收尾</b>（F-07 / P1-7）：用户按 Esc 结束选区时由浏览器侧回传。
+     *
+     * <p>这是区域模式<b>唯一</b>的收尾点：合并 iframe 拾取 → 生成/回填页面类与步骤代码（保持与
+     * {@link #cmdRegionScanned} 同源，使"多次点选累加"的结果完整落码）→ END 选区（清遮罩 / 摘监听）
+     * → 回 IDLE（面板按钮复位）。</p>
+     */
+    private static PickerResult cmdRegionDone(RolePickerContext ctx, Page page) {
+        String[] nlsFiles = ctx.nlsFiles;
+        String packageName = ctx.packageName;
+        String pageClassName = ctx.pageClassName;
+        String stepClassName = ctx.stepClassName;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<String, RoleEntry> javaPickBySig = ctx.javaPickBySig;
+        //  收尾前再合并一次 iframe 拾取：最后一次点选的 iframe 元素可能仍在各 frame 的 __rolePicks 中
+        //  （regionScanned 有 250ms 延迟通知，Esc 紧跟最后一次点击时更需这一步）。
+        try {
+            mergeFramePicksToMain(page, javaPickBySig);
+        } catch (Exception mE) {
+            log.warn("[picker][regionDone] failed to merge iframe elements into the main frame: {}", mE.getMessage());
+        }
+        LinkedHashMap<String, String> codePage = null;
+        LinkedHashMap<String, String> codeStep = null;
+        int fieldCount = 0;
+        try {
+            PickSnapshot snap = readPickSnapshot(page);
+            if (snap != null && !snap.entries.isEmpty()) {
+                codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
+                codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+                fieldCount = snap.entries.size();
+            }
+        } catch (Exception e) {
+            log.warn("[picker][regionDone] failed to generate code at region-select finish: {}", e.getMessage());
+        }
+        //  收尾：清理浏览器侧选区态（移除蓝色遮罩 / 事件监听），再回 IDLE 使面板按钮复位。
         try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
         setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
-        return new PickerResult(PickerAction.CONTINUE, null, null, "区域扫描未拾取到可定位元素，请点击具体的业务区域");
+        if (codePage == null || codePage.isEmpty()) {
+            return new PickerResult(PickerAction.CONTINUE, null, null, "区域选择结束（未拾取到可定位元素）");
+        }
+        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
+                "区域选择结束，已生成页面类（" + fieldCount + " 个字段）");
     }
 
     private static PickerResult cmdPackage(RolePickerContext ctx, Page page) {
@@ -759,6 +799,7 @@ public final class RolePickerCommandEngine {
             case RolePickerConstants.CMD_SCAN: return cmdScan(ctx, page);
             case RolePickerConstants.CMD_SCAN_REGION: return cmdScanRegion(ctx, page);
             case RolePickerConstants.CMD_REGION_SCANNED: return cmdRegionScanned(ctx, page);
+            case RolePickerConstants.CMD_REGION_DONE: return cmdRegionDone(ctx, page);
             case RolePickerConstants.CMD_PACKAGE: return cmdPackage(ctx, page);
             case RolePickerConstants.CMD_REFRESH_CODE: return cmdRefreshCode(ctx, page);
             case RolePickerConstants.CMD_STOP: return cmdStop(ctx, page);

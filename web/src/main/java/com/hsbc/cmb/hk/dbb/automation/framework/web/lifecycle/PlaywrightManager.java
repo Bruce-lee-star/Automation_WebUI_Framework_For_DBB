@@ -384,6 +384,36 @@ public class PlaywrightManager {
         return Paths.get(config().getBrowserDownloadsPath(), "thread-" + Thread.currentThread().getId());
     }
 
+    // ==================== 下载附件挂 Serenity 报告 ====================
+
+    /**
+     * 把最近一次完成的下载作为<b>可下载附件</b>挂到当前 scenario 的 Serenity 报告。
+     *
+     * <p>典型位置：触发下载（点击导出等）并 {@code await*} 之后、scenario 收尾前调用。实现先等下载登记
+     * （{@link #awaitLastDownloadPath(long)}，默认 15s），再把文件复制到仓库根的
+     * {@code site/report-attachments/}（该目录不参与 scenario 清理、可被报告/CI 稳定引用），最后经
+     * {@code Serenity.recordReportData().withTitle(...).fromFile(...).downloadable()} 嵌入报告。
+     * 之所以要先复制出来：scenario 收尾会清本线程 {@code target/downloads/thread-<id>/}，
+     * 直接引用临时下载目录 ⇒ 报告生成时文件已删 ⇒ 附件链接失效。</p>
+     *
+     * @apiNote 稳定公开契约。多线程下只挂<b>本线程本 Context</b>的下载（与查询 API 同隔离语义）。
+     *         报告挂接是尽力而为：无可用下载或挂接失败安全返回 {@code false}（不抛、不阻断 case）。
+     * @return true 表示已归档（并尽力嵌入报告）；false 表示无可用下载
+     */
+    public static boolean attachLastDownloadToReport() {
+        return DownloadReportAttacher.attachLastDownload(null);
+    }
+
+    /**
+     * 同 {@link #attachLastDownloadToReport()}，但指定报告里显示的标题。
+     *
+     * @param caption 报告附件标题（null/空白时回退为下载文件名）
+     * @return true 表示已归档（并尽力嵌入报告）；false 表示无可用下载
+     */
+    public static boolean attachLastDownloadToReport(String caption) {
+        return DownloadReportAttacher.attachLastDownload(caption);
+    }
+
     // ==================== Context 和 Page 创建方法 ====================
 
     /**

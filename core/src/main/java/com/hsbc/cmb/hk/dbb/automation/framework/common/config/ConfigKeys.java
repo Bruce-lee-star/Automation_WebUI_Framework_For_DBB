@@ -153,7 +153,7 @@ public enum ConfigKeys {
     WEB_PLAYWRIGHT_BROWSER_DOWNLOADS_PATH(
         "playwright.browser.downloadsPath",
         "target/downloads",
-        "下载文件保存路径"
+        "下载文件保存根目录（实际文件按线程落在其 thread-<id> 子目录，避免并行用例互相清理）"
     ),
     WEB_BROWSERSTACK_ENABLED(
         "browserstack.enabled",

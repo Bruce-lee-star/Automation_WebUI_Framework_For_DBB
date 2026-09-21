@@ -166,7 +166,9 @@ public enum WebFrameworkConfig {
     PLAYWRIGHT_BROWSER_TIMEOUT(ConfigKeys.WEB_PLAYWRIGHT_BROWSER_TIMEOUT),
 
     /**
-     * 下载文件保存路径
+     * 下载文件保存<b>根</b>目录；实际文件按线程落在 {@code thread-<id>} 子目录
+     * （见 {@code PlaywrightManager.downloadDirectoryForCurrentThread()}）——
+     * 使每个用例收尾只清理自己线程的下载文件，并行下不干扰邻居用例。
      */
     PLAYWRIGHT_BROWSER_DOWNLOADS_PATH(ConfigKeys.WEB_PLAYWRIGHT_BROWSER_DOWNLOADS_PATH),
 

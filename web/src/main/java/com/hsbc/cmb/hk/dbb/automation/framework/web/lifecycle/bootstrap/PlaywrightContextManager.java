@@ -26,6 +26,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.*;
+import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -61,6 +63,12 @@ public class PlaywrightContextManager {
      * （实测 onPage 与 createPage 同 worker 线程、时间窗重合），标记对该回调可见。</p>
      */
     private static final ThreadLocal<Boolean> MANAGED_PAGE_CREATION_IN_FLIGHT = new ThreadLocal<>();
+
+    /**
+     * 下载同名去重的候选序号上限（防御性）：{@code name}、{@code name (1)} … 最多尝试这么多次占位。
+     * 正常场景序号极小（同目录同名文件数），该上限只为避免极端情况下无限递增。
+     */
+    private static final int MAX_DOWNLOAD_NAME_SEQ = 10_000;
 
     //  trace 的启停 / 分段 / 导出 / 报告挂载已收口到
     //  {@link com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder}
@@ -174,7 +182,7 @@ public class PlaywrightContextManager {
         if (context == null) {
             return;
         }
-        final Path downloadDir = Paths.get(PlaywrightManager.config().getBrowserDownloadsPath());
+        final Path downloadDir = PlaywrightManager.downloadDirectoryForCurrentThread();
         final long saveTimeoutMs = TimeUnit.MINUTES.toMillis(
                 Math.max(1, PlaywrightManager.config().getBrowserDownloadTimeoutMinutes()));
         //  监听器内【只派发】：绝不在此同步调用 saveAs —— 见 saveDownloadAsync 的「连接读线程」说明。
@@ -204,18 +212,21 @@ public class PlaywrightContextManager {
      */
     static void saveDownloadAsync(BrowserContext context, Download download, Path downloadDir, long timeoutMs) {
         AsyncPool.runWithTimeout(() -> {
+            Path reserved = null;
+            boolean saved = false;
             try {
-                if (!Files.exists(downloadDir)) {
-                    Files.createDirectories(downloadDir);
-                }
                 String suggestedFilename = download.suggestedFilename();
-                Path savePath = resolveNonConflictingDownloadPath(downloadDir, suggestedFilename);
-                download.saveAs(savePath);
+                //  原子占位（目录按需创建）：并发同名下载不会选到同一路径（见 resolveNonConflictingDownloadPath）
+                reserved = resolveNonConflictingDownloadPath(downloadDir, suggestedFilename);
+                download.saveAs(reserved);
+                saved = true;
                 VerboseLogging.logInfoIfVerbose(logger,
-                        "Download completed: {} -> {}", suggestedFilename, savePath.toAbsolutePath());
+                        "Download completed: {} -> {}", suggestedFilename, reserved.toAbsolutePath());
                 // 登记已落盘文件，供业务层经 PlaywrightManager.getLastDownloadPath() 等查询（报告 §3.2 收尾）
-                DownloadRegistry.instance().record(context, savePath);
+                DownloadRegistry.instance().record(context, reserved);
             } catch (Exception e) {
+                //  占位文件回滚：仅当尚未写成功（保存失败/上下文关闭）时删除，避免残留 0 字节文件
+                rollbackReservation(reserved, saved);
                 //  关闭时序降级（WEB-P3-N14 ②）：Playwright 在 BrowserContext.close() 时会先清理
                 //   未完成的下载，导致 download.saveAs() 抛 TargetClosedError。这属于「预期噪音」，
                 //   若记 ERROR 会污染收尾期日志、掩盖真实告警；故降级为 DEBUG。
@@ -231,20 +242,45 @@ public class PlaywrightContextManager {
     }
 
     /**
-     * 解析「不覆盖既有文件」的下载保存路径（同名去重）。
-     * <p>
-     * 若 {@code dir/name} 已存在，则在主文件名与扩展名之间插入序号后缀 {@code " (1)"} / {@code " (2)"} …，
-     * 直到找到一个空闲路径；隐藏文件（如 {@code .gitignore}，点号在首位）整体作为主名处理，不加序号到扩展名。
+     * 回滚未被写入的下载占位文件（best-effort）。
      *
-     * @param dir               下载目录（已确保存在）
-     * @param suggestedFilename 服务器建议的文件名（来自 {@code Content-Disposition}）
-     * @return 不与目录内现有文件冲突的绝对路径
+     * <p>占位文件由 {@link #resolveNonConflictingDownloadPath} 预先创建；保存失败时应删除，避免残留 0 字节文件
+     * 干扰后续同名去重（残留也会被本线程收尾的 {@code cleanupTempDownloads} 兜底清掉）。</p>
+     *
+     * @param reserved 已占位的路径（可为 null）
+     * @param saved    是否已成功写入（true 表示文件是有效产物，<b>不得</b>删除）
      */
-    static Path resolveNonConflictingDownloadPath(Path dir, String suggestedFilename) {
-        Path candidate = dir.resolve(suggestedFilename);
-        if (!Files.exists(candidate)) {
-            return candidate;
+    private static void rollbackReservation(Path reserved, boolean saved) {
+        if (reserved == null || saved) {
+            return;
         }
+        try {
+            Files.deleteIfExists(reserved);
+        } catch (IOException ignored) {
+            // 收尾清理（按线程目录）会兜底；此处不得影响异常上报语义
+        }
+    }
+
+    /**
+     * 解析并<b>原子占位</b>「不覆盖既有文件」的下载保存路径（同名去重）。
+     *
+     * <p><b>2026-09-21 修复（并发同名覆盖）</b>：原实现是「先查后选」（{@code Files.exists} 探测 + 递增序号），
+     * 真并行下两个同名下载可能同时探测到同一"空闲"路径并互相覆盖。现改为 {@link Files#createFile}（{@code CREATE_NEW}，
+     * 原子）<b>抢占</b>候选路径：抢占失败（{@link FileAlreadyExistsException}）即换下一个序号 ——
+     * 并发同名下载必然拿到不同路径。抢占到的 0 字节文件随后由 {@code download.saveAs(...)} 覆写
+     * （{@code saveAs} 会覆盖既有文件）；保存失败由调用方回滚删除该占位文件。</p>
+     *
+     * <p>命名规则不变：若 {@code dir/name} 已被占用，则在主文件名与扩展名之间插入序号后缀
+     * {@code " (1)"} / {@code " (2)"} …；隐藏文件（如 {@code .gitignore}，点号在首位）整体作为主名处理，
+     * 不加序号到扩展名。</p>
+     *
+     * @param dir               下载目录（不存在则创建）
+     * @param suggestedFilename 服务器建议的文件名（来自 {@code Content-Disposition}）
+     * @return 已被<b>本次调用原子占位</b>的路径（调用方负责写入；失败应回滚删除）
+     * @throws IOException 目录不可创建，或候选序号耗尽（防御性上限，正常不会发生）
+     */
+    static Path resolveNonConflictingDownloadPath(Path dir, String suggestedFilename) throws IOException {
+        Files.createDirectories(dir);
         String base = suggestedFilename;
         String ext = "";
         int dot = suggestedFilename.lastIndexOf('.');
@@ -252,13 +288,19 @@ public class PlaywrightContextManager {
             base = suggestedFilename.substring(0, dot);
             ext = suggestedFilename.substring(dot);
         }
-        int seq = 1;
-        Path conflictFree;
-        do {
-            conflictFree = dir.resolve(base + " (" + seq + ")" + ext);
-            seq++;
-        } while (Files.exists(conflictFree));
-        return conflictFree;
+        for (int seq = 0; seq < MAX_DOWNLOAD_NAME_SEQ; seq++) {
+            Path candidate = seq == 0
+                    ? dir.resolve(suggestedFilename)
+                    : dir.resolve(base + " (" + seq + ")" + ext);
+            try {
+                Files.createFile(candidate);   // 原子占位（CREATE_NEW）：并发下不可能两方拿到同一路径
+                return candidate;
+            } catch (FileAlreadyExistsException taken) {
+                // 已被占用（含并发邻居刚抢占）→ 试下一个序号（正常路径，不记日志）
+            }
+        }
+        throw new IOException("Exhausted " + MAX_DOWNLOAD_NAME_SEQ + " candidate names for '"
+                + suggestedFilename + "' in " + dir);
     }
 
     /**

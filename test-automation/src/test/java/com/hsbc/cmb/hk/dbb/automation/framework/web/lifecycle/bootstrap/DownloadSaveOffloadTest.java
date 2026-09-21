@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Download;
 import org.junit.jupiter.api.Test;
@@ -60,7 +61,7 @@ public class DownloadSaveOffloadTest {
             savedPath.set(inv.getArgument(0));
             saveStarted.countDown();
             slowDelay(SLOW_SAVE_MS);
-            Files.createFile(savedPath.get());
+            Files.write(savedPath.get(), "x".getBytes());   // 占位文件已由原子占位创建 → 此处覆写
             saveDone.countDown();
             return null;
         }).when(download).saveAs(any(Path.class));
@@ -98,6 +99,61 @@ public class DownloadSaveOffloadTest {
     }
 
     /**
+     * 保存失败时必须<b>回滚原子占位文件</b>：不留 0 字节残留，也不登记到 {@link DownloadRegistry}。
+     */
+    @Test
+    public void failedSaveRollsBackReservedPlaceholder() throws Exception {
+        Path dir = Files.createTempDirectory("pw-dl-rollback");
+        AtomicReference<Path> reserved = new AtomicReference<>();
+
+        Download download = mock(Download.class);
+        when(download.suggestedFilename()).thenReturn("broken.xlsx");
+        doAnswer(inv -> {
+            reserved.set(inv.getArgument(0));
+            throw new RuntimeException("simulated disk full");
+        }).when(download).saveAs(any(Path.class));
+
+        BrowserContext context = mock(BrowserContext.class);
+        PlaywrightContextManager.saveDownloadAsync(context, download, dir, 10_000);
+
+        // 有界轮询：占位文件应被回滚删除
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline) {
+            if (reserved.get() != null && !Files.exists(reserved.get())) {
+                break;
+            }
+            slowDelay(50);
+        }
+        assertNotNull(reserved.get(), "应已尝试占位（saveAs 被调用）");
+        assertTrue(!Files.exists(reserved.get()), "保存失败应回滚删除占位文件：" + reserved.get());
+        assertTrue(DownloadRegistry.instance().all(context).isEmpty(), "失败不应登记到 DownloadRegistry");
+
+        DownloadRegistry.instance().clear(context);
+        Files.deleteIfExists(dir);
+    }
+
+    /**
+     * 下载目录必须按线程隔离（跨用例干扰修复）：不同线程拿到不同目录，命名含线程标识。
+     */
+    @Test
+    public void downloadDirectoryIsIsolatedPerThread() throws Exception {
+        AtomicReference<Path> dirA = new AtomicReference<>();
+        AtomicReference<Path> dirB = new AtomicReference<>();
+        Thread t = new Thread(() -> dirA.set(PlaywrightManager.downloadDirectoryForCurrentThread()));
+        t.start();
+        t.join();
+        dirB.set(PlaywrightManager.downloadDirectoryForCurrentThread());
+
+        assertNotNull(dirA.get());
+        assertNotNull(dirB.get());
+        assertTrue(!dirA.get().equals(dirB.get()),
+                "不同线程的下载目录必须不同（否则一个用例收尾会清掉邻居的下载文件）："
+                        + dirA.get() + " vs " + dirB.get());
+        assertTrue(dirA.get().getFileName().toString().startsWith("thread-"),
+                "目录名应含线程标识： " + dirA.get());
+    }
+
+    /**
      * 同名去重与登记组合语义（不涉并发）：桩内直接建文件，验证「冲突时加序号」在卸载路径上同样生效。
      */
     @Test
@@ -111,7 +167,7 @@ public class DownloadSaveOffloadTest {
         when(download.suggestedFilename()).thenReturn("a.xlsx");
         doAnswer(inv -> {
             savedPath.set(inv.getArgument(0));
-            Files.createFile(savedPath.get());
+            Files.write(savedPath.get(), "x".getBytes());   // 占位文件已由原子占位创建 → 此处覆写
             done.countDown();
             return null;
         }).when(download).saveAs(any(Path.class));

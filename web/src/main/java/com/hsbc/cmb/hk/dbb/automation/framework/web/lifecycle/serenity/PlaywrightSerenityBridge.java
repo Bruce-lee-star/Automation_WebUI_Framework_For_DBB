@@ -76,11 +76,14 @@ public class PlaywrightSerenityBridge {
     }
 
     /**
-     * 清理临时下载目录（target/downloads）
+     * 清理<b>本线程</b>的下载目录（{@code <downloadsPath>/thread-<threadId>}）。
+     *
+     * <p><b>2026-09-21 修复（跨用例干扰）</b>：原实现清空<b>全局</b>下载目录 —— 真并行下会把并发 scenario
+     * 正在下载/刚下载的文件一起删掉。现按线程隔离：<b>哪个线程收尾就只清它自己的目录</b>，与
+     * {@link PlaywrightManager#downloadDirectoryForCurrentThread()}（下载保存所用的同一命名）成对。</p>
      */
     static void cleanupTempDownloads() {
-        String downloadsPath = PlaywrightManager.config().getBrowserDownloadsPath();
-        cleanupTempDirectory(Paths.get(downloadsPath), "Download", true);
+        cleanupTempDirectory(PlaywrightManager.downloadDirectoryForCurrentThread(), "Download", true);
     }
 
     // ==================== ThreadLocal 清理 ====================

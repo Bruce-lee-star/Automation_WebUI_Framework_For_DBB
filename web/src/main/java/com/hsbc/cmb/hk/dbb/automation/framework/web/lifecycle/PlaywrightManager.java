@@ -24,6 +24,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
@@ -302,6 +303,24 @@ public class PlaywrightManager {
      */
     public static List<Path> getDownloadPaths() {
         return DownloadRegistry.instance().all(getContext());
+    }
+
+    /**
+     * <b>当前线程</b>的下载目录：{@code <playwright.browser.downloadsPath>/thread-<threadId>}。
+     *
+     * <p><b>为什么要按线程分目录（2026-09-21）</b>：下载目录原为<b>全局单目录</b>，而每个 scenario 收尾都会
+     * 清空该目录（{@code PlaywrightSerenityBridge.cleanupTempDownloads}）⇒ 真并行下会删掉并发 scenario
+     * 正在下载/刚下载的文件（跨用例干扰）。按线程分目录后，<b>某线程收尾只清自己的目录</b>，邻居不受影响 ——
+     * 与「每线程独立 Browser/Context/Page」以及 per-thread 锁是同一隔离模型。</p>
+     *
+     * <p><b>必须共用本方法</b>：下载保存（{@code PlaywrightContextManager.registerDownloadHandler}）与收尾清理
+     * （{@code PlaywrightSerenityBridge.cleanupTempDownloads}）若各写一份命名，会漂移成「清了别人的目录」或
+     * 「自己的目录没清」。</p>
+     *
+     * @return 当前线程的下载目录（不保证已存在；保存路径解析时会按需创建）
+     */
+    public static Path downloadDirectoryForCurrentThread() {
+        return Paths.get(config().getBrowserDownloadsPath(), "thread-" + Thread.currentThread().getId());
     }
 
     // ==================== Context 和 Page 创建方法 ====================

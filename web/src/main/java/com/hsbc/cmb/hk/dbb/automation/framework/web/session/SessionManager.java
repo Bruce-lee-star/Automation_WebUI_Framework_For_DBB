@@ -62,8 +62,10 @@ public class SessionManager {
     // "session 文件不存在" 而各自登录 → 服务端（单会话策略）把对端踢下线。
     // 约定：首个进入的线程（leader）执行真实登录并在 saveSession 成功后 complete；其余线程（follower）
     // 阻塞等待 leader 完成，成功后直接复用已落盘的 storageState，不再触发第二次登录。
-    // 注意：仅 FileChannel 锁无法跨 JVM；本协调基于 JVM 内静态 Map，覆盖 Serenity 单 JVM 多线程并行
-    // （forkCount=0）这一主场景。多 JVM（forkCount>0）需额外文件锁兜底。
+    // 两层协调（2026-09-21 补齐，评审 F-11 / P1-2）：
+    //   ① JVM 内：本类 loginGuards（ConcurrentHashMap + CountDownLatch）—— 覆盖 forkCount=0 的多线程并行；
+    //   ② 跨 JVM：CrossJvmLoginLock（每 sessionKey 一个 OS 级文件锁）—— 覆盖 forkCount>0 / CI 分片。
+    //   两层语义一致：等待期间他方落盘即复用，绝不产生第二次登录。
     // 单飞 follower 等待 leader 完成的兜底超时（毫秒）— 读自 WebFrameworkConfig（默认 60000）
     private static final long SINGLE_FLIGHT_TIMEOUT_MS =
             FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS);
@@ -315,6 +317,9 @@ public class SessionManager {
         if (key != null) {
             ConcurrencyGate.release(key);
         }
+        //  跨进程登录锁兜底释放（评审 P1-2）：正常路径已在 saveSession 释放；此处覆盖「登录抛异常 /
+        //  业务未调 saveSession」等路径，避免本 JVM 长期占锁使其它 JVM 只能等到超时。幂等，未持有即 no-op。
+        CrossJvmLoginLock.releaseLock();
     }
 
     /**
@@ -565,31 +570,23 @@ public class SessionManager {
             //   否则两个线程都会看到"无 session 文件"而各自登录，触发服务端单会话策略把对端踢下线。
             LoginGuard guard = acquireOrAwait(sessionKey);
             if (guard == null) {
+                //  跨 JVM 兜底（评审 F-11 / P1-2）：forkCount>0 分叉或 CI 分片时，多个 JVM 同样会
+                //  「同时未命中」而各自登录 → 服务端单会话互踢。以 OS 级文件锁使跨进程也只有一个 leader；
+                //  等待期间他方（其它 JVM）若已落盘 session，则直接复用、不再触发第二次登录。
+                boolean leader = CrossJvmLoginLock.acquireForLogin(
+                        sessionKey, getLoginLockPath(sessionKey), SINGLE_FLIGHT_TIMEOUT_MS,
+                        () -> hasUsableSession(sessionKey));
+                if (!leader) {
+                    return reusePersistedSession(sessionKey, restartStrategy);
+                }
                 // 本线程是 leader：返回 false 交由业务层登录，
-                // 登录成功后 saveSession() 会释放守卫并唤醒 follower。
+                // 登录成功后 saveSession() 会释放守卫（并释放跨进程锁）唤醒所有 follower。
                 return false;
             }
 
             // follower：leader 已结束（成功落盘 / 失败 / 超时）
-            if (guard.isSuccess() && hasSession(sessionKey)) {
-                String leaderHomeUrl = loadHomeUrl(sessionKey);
-                if (leaderHomeUrl != null && !leaderHomeUrl.isEmpty()) {
-                    //  与命中路径一致：取内存内容缓存，直接传 JSON（立即应用，零文件 IO）；失败回退文件
-                    String storageStateJson = getStorageStateContent(sessionKey);
-                    if (storageStateJson != null) {
-                        //  就地换会话（1.59+）：同命中路径，优先在活跃 Context 上 setStorageState 免重建
-                        PlaywrightManager.applyStorageState(storageStateJson);
-                    } else {
-                        PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
-                    }
-                    PlaywrightManager.getContext();
-                    if ("feature".equalsIgnoreCase(restartStrategy)) {
-                        markFeatureSessionRestored(sessionKey, leaderHomeUrl);
-                    }
-                    VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Reusing session persisted by single-flight leader: {}", sessionKey);
-                    return true;
-                }
+            if (guard.isSuccess() && reusePersistedSession(sessionKey, restartStrategy)) {
+                return true;
             }
 
             // leader 登录失败或落盘不可读 → 摘除失效守卫，本线程接替为 leader 自行登录
@@ -598,6 +595,49 @@ public class SessionManager {
                 "Single-flight leader did not produce a usable session for {} — this thread will login", sessionKey);
             return false;
         }
+    }
+
+    /** session 是否已可复用（文件存在且 homeUrl 可取）—— 供 JVM 内 follower 与跨进程等待共同判定。 */
+    private static boolean hasUsableSession(String sessionKey) {
+        if (!hasSession(sessionKey)) {
+            return false;
+        }
+        String homeUrl = loadHomeUrl(sessionKey);
+        return homeUrl != null && !homeUrl.isEmpty();
+    }
+
+    /**
+     * 复用「他方（JVM 内 leader 或跨进程 leader）已落盘的 session」：应用 storageState 并返回 true。
+     *
+     * <p>语义与「命中路径」完全一致：优先取内存内容缓存直接传 JSON（零文件 IO），不可用时回退文件路径；
+     * {@code feature} 策略下标记 feature 级会话已恢复，使同 feature 的后续用例免于重建 Context。</p>
+     *
+     * <p>抽为单一实现，避免「JVM 内 follower」与「跨进程等待」两条路径行为分叉。</p>
+     *
+     * @param sessionKey      session 标识
+     * @param restartStrategy 浏览器重启策略（{@code scenario} / {@code feature}）
+     * @return {@code true} 表示已成功复用；{@code false} 表示落盘内容不可用（调用方需自行登录）
+     */
+    private static boolean reusePersistedSession(String sessionKey, String restartStrategy) {
+        if (!hasUsableSession(sessionKey)) {
+            return false;
+        }
+        String persistedHomeUrl = loadHomeUrl(sessionKey);
+        //  与命中路径一致：取内存内容缓存，直接传 JSON（立即应用，零文件 IO）；失败回退文件
+        String storageStateJson = getStorageStateContent(sessionKey);
+        if (storageStateJson != null) {
+            //  就地换会话（1.59+）：同命中路径，优先在活跃 Context 上 setStorageState 免重建
+            PlaywrightManager.applyStorageState(storageStateJson);
+        } else {
+            PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
+        }
+        PlaywrightManager.getContext();
+        if ("feature".equalsIgnoreCase(restartStrategy)) {
+            markFeatureSessionRestored(sessionKey, persistedHomeUrl);
+        }
+        VerboseLogging.logInfoIfVerbose(LOGGER,
+                "Reusing session persisted by single-flight leader: {}", sessionKey);
+        return true;
     }
 
     /**
@@ -703,9 +743,13 @@ public class SessionManager {
 
             //  释放单飞守卫：唤醒等待同一 sessionKey 的并发线程复用刚落盘的 storageState
             completeLoginGuard(sessionKey, true);
+            //  释放跨进程登录锁（评审 P1-2）：session 已落盘，其它 JVM 可取锁并直接复用其结果
+            CrossJvmLoginLock.releaseLock();
         } catch (Exception e) {
             // 登录/落盘失败同样必须释放守卫，否则 follower 会一直阻塞到 SINGLE_FLIGHT_TIMEOUT_MS
             completeLoginGuard(sessionKey, false);
+            //  跨进程锁同样必须释放：否则其它 JVM 会空等到超时才降级（虽最终能继续，但白等一轮）
+            CrossJvmLoginLock.releaseLock();
             LOGGER.error("Failed to save session for: {}", sessionKey, e);
             throw new RuntimeException("Failed to save session", e);
         }
@@ -870,6 +914,13 @@ public class SessionManager {
      */
     private static Path getSessionPath(String sessionKey) {
         return Paths.get(SESSION_DIR, sessionKey + ".json");
+    }
+
+    /**
+     * 跨 JVM 登录单飞锁文件路径（与会话文件同目录；锁由 OS 在进程退出时自动释放）。
+     */
+    private static Path getLoginLockPath(String sessionKey) {
+        return Paths.get(SESSION_DIR, sessionKey + ".login.lock");
     }
 
     /**

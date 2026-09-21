@@ -10,14 +10,14 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>framework-reporting</artifactId>
-    <name>Automation Framework - Reporting</name>
+    <artifactId>pw-reports</artifactId>
+    <name>pw-reports (Reporting)</name>
     <description>Reporting layer: framework.common.reporting (SerenityReporter) + top-level report (SummaryReportGenerator).</description>
 
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-core</artifactId>
+            <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <!-- T2-8：迁移 SummaryReportGenerator 入本模块，需其依赖（ENG-P0-2：版本改由根 dependencyManagement 统一钉） -->
@@ -41,23 +41,6 @@
         <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-cucumber</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-screenplay</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-rest-assured</artifactId>
-        </dependency>
-        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition） -->
-        <dependency>
-            <groupId>org.seleniumhq.selenium</groupId>
-            <artifactId>selenium-support</artifactId>
         </dependency>
         <!-- T2-8：报告模板引擎（把 2,184 行里的 HTML/CSS 硬编码拼接改为模板渲染）。
              Freemarker 2.3.34 本就随 Serenity 传递进入本模块 classpath（零新增依赖）；

@@ -10,7 +10,7 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>framework-core</artifactId>
+    <artifactId>pw-core</artifactId>
     <name>Automation Framework - Core</name>
     <description>Base layer: framework.common (config / security / async / route-SPI), top-level utils &amp; retry. Depended on by all modules.</description>
 

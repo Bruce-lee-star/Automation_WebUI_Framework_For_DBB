@@ -14,12 +14,12 @@
     <!-- T3-1: 物理多模块拆分。依赖方向（均收敛到 core，无环）：
          core <- reporting / api <- web <- route <- test-automation -->
     <modules>
-        <module>core</module>
-        <module>reporting</module>
-        <module>api</module>
-        <module>web</module>
-        <module>codegen</module>
-        <module>route</module>
+        <module>pw-core</module>
+        <module>pw-reports</module>
+        <module>rest-assured-core</module>
+        <module>pw-web-ui</module>
+        <module>pw-codegen</module>
+        <module>pw-route</module>
         <module>test-automation</module>
     </modules>
 

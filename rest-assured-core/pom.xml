@@ -10,19 +10,19 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>framework-api</artifactId>
-    <name>Automation Framework - API</name>
-    <description>API testing layer: framework.api. Depends on core (and reporting).</description>
+    <artifactId>rest-assured-core</artifactId>
+    <name>rest-assured-core (API testing)</name>
+    <description>API testing layer: framework.api (RestAssured). Depends on pw-core, reporting.</description>
 
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-core</artifactId>
+            <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-reporting</artifactId>
+            <artifactId>pw-reports</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -34,14 +34,6 @@
         <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-cucumber</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-screenplay</artifactId>
         </dependency>
         <dependency>
             <groupId>net.serenity-bdd</groupId>
@@ -76,16 +68,11 @@
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
         </dependency>
-        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition） -->
+        <!-- selenium-support：serenity 公开 API 引用 org.openqa.selenium.support.ui.*（如 ExpectedCondition）。
+             保留显式声明：与 web 同策略，防 ENG-P0-2 下沉后 javac 符号补全 CompletionFailure。 -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-support</artifactId>
-        </dependency>
-        <!-- P-3：Apache HttpClient（连接池 PoolingHttpClientConnectionManager 由 RestAssured 传递，此处显式声明以便直接引用；版本与 RestAssured 5.x 一致） -->
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpclient</artifactId>
-            <version>4.5.13</version>
         </dependency>
 
         <!-- 评审08类-6 / A-4：api 模块首个单测基座 -->

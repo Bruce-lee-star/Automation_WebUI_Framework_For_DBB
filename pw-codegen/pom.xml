@@ -10,7 +10,7 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>framework-codegen</artifactId>
+    <artifactId>pw-codegen</artifactId>
     <name>Automation Framework - Codegen</name>
 
     <properties>
@@ -29,7 +29,7 @@
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-web</artifactId>
+            <artifactId>pw-web-ui</artifactId>
             <version>${project.version}</version>
         </dependency>
 

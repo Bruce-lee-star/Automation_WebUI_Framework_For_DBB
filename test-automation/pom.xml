@@ -23,32 +23,32 @@
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-core</artifactId>
+            <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-reporting</artifactId>
+            <artifactId>pw-reports</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-api</artifactId>
+            <artifactId>rest-assured-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-web</artifactId>
+            <artifactId>pw-web-ui</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-route</artifactId>
+            <artifactId>pw-route</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-codegen</artifactId>
+            <artifactId>pw-codegen</artifactId>
             <version>${project.version}</version>
         </dependency>
 

@@ -10,28 +10,27 @@
         <version>1.0.0</version>
     </parent>
 
-    <artifactId>framework-web</artifactId>
-    <name>Automation Framework - Web</name>
-    <description>Web/UI layer: framework.web (excludes route, which is its own module). Depends on core, api, reporting.</description>
+    <artifactId>pw-web-ui</artifactId>
+    <name>pw-web-ui (Web/UI automation)</name>
+    <description>Web/UI layer: framework.web (Playwright). Depends on pw-core, reporting, api. Excludes route.</description>
 
     <dependencies>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-core</artifactId>
+            <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>framework-reporting</artifactId>
+            <artifactId>pw-reports</artifactId>
             <version>${project.version}</version>
         </dependency>
 
         <!-- ⭐ SessionManager META 并发缓存：Guava LoadingCache（concurrencyLevel 分段锁，满足多线程读盘 IO 竞争）。
-             版本须对齐 classpath 既有上界 33.5.0-jre（serenity/selenium 传递引入），否则触发 RequireUpperBoundDeps 校验失败。 -->
+             版本由根 dependencyManagement 统一钉 33.5.0-jre，此处无需重复声明 <version>。 -->
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <version>33.5.0-jre</version>
         </dependency>
 
         <!-- ENG-P0-2：web 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
@@ -44,18 +43,6 @@
             <artifactId>serenity-core</artifactId>
         </dependency>
         <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-cucumber</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-screenplay</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-rest-assured</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.jayway.jsonpath</groupId>
             <artifactId>json-path</artifactId>
         </dependency>
@@ -64,7 +51,7 @@
             <artifactId>playwright</artifactId>
         </dependency>
         <!-- gson：AxeCoreScriptProvider 将 axe.run 结果 JSON 映射为框架自有结果模型（解耦 Deque axe-core 包装器后新增）。
-             版本由根 dependencyManagement 统一钉（${gson.version}），避免 RequireUpperBoundDeps 校验冲突。 -->
+             版本由根 dependencyManagement 统一钉（${gson.version}）。 -->
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>

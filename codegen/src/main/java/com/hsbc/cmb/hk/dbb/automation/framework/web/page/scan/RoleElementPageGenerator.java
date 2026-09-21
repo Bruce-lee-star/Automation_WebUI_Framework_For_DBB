@@ -36,6 +36,10 @@ import java.util.stream.Stream;
  *   <li><b>原子写</b>：先写 {@code .java.tmp} 再 move，避免生成失败留下半写文件；</li>
  *   <li><b>CI 校验</b>：CI 可对生成目录做漂移校验（重新生成后比对无 diff；有 diff 即说明手改了生成物，
  *       应改模板 / 生成器而非直接编辑产物）。</li>
+ *   <li><b>增量合并（F-15）</b>：生成内容包在 {@code <generated:fields>} 标记块内；对工具自管产物再生成时，
+ *       只替换块内内容并<b>并集</b>补齐 import，<b>块外</b>的手写字段 / 方法 / 类注解原样保留
+ *       （历史无标记块产物回落整文件覆盖，仍先备份 {@code .java.bak}）。
+ *       因此人工补充请写在标记块<b>之外</b>（块内视为生成器领地，再生成会被替换）。</li>
  * </ul>
  * 产物为草稿，人工 review 后再合入主干（对齐 PAGEOBJECT_GENERATOR_DESIGN.md §7，注解风格）。
  *
@@ -75,6 +79,39 @@ public final class RoleElementPageGenerator {
             Map.entry("textbox", "Input"), Map.entry("searchbox", "Input"),
             Map.entry("spinbutton", "Input")
     );
+
+    /**
+     * F-15：生成块标记 —— 再生成时只替换块内内容，块外的手写代码（方法 / 字段 / 类注解）原样保留。
+     * 旧产物（无标记块）无法定位块边界，回落整文件覆盖（调用方已先备份 {@code .java.bak}）。
+     */
+    static final String FIELDS_BLOCK_BEGIN = "    // <generated:fields>";
+    static final String FIELDS_BLOCK_END = "    // </generated:fields>";
+
+    /**
+     * Java 保留字与字面量：<b>不能</b>作为字段名。
+     *
+     * <p>F-15 取证：元素名恰为 {@code new/class/for/int} 时，原实现生成
+     * {@code public PageElement new;} —— 非法 Java，产物无法编译。命中者由
+     * {@link #safeFieldName(String)} 追加 {@code Field} 后缀消解。</p>
+     */
+    private static final Set<String> JAVA_RESERVED_WORDS = Set.of(
+            "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const",
+            "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float",
+            "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native",
+            "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp",
+            "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void",
+            "volatile", "while", "true", "false", "null", "_");
+
+    /**
+     * 字段名护栏（F-15）：命中 Java 保留字 / 字面量时追加 {@code Field} 后缀
+     * （{@code new} → {@code newField}），使产物可编译且语义可读。
+     */
+    static String safeFieldName(String candidate) {
+        if (candidate == null || candidate.isEmpty()) {
+            return candidate;
+        }
+        return JAVA_RESERVED_WORDS.contains(candidate) ? candidate + "Field" : candidate;
+    }
 
     private RoleElementPageGenerator() {}
 
@@ -415,7 +452,10 @@ public final class RoleElementPageGenerator {
                 + imports + "\n"
                 + classAnnotation
                 + "public class " + pageClassName + " extends AbstractManagedPage {\n\n"
+                //  F-15：生成内容包进标记块 —— 再生成时只替换块内，块外手写代码不被覆盖。
+                + FIELDS_BLOCK_BEGIN + "\n"
                 + fields
+                + FIELDS_BLOCK_END + "\n"
                 + "}\n";
     }
 
@@ -484,13 +524,31 @@ public final class RoleElementPageGenerator {
             Path file = dir.resolve(pageClassName + ".java");
 
             // CG-P0-1：冲突检测。文件已存在且不含生成标记 → 视为用户手工代码，拒绝静默覆盖。
+            String payload = source;
             if (Files.exists(file)) {
                 boolean force = Boolean.getBoolean("codegen.overwrite.force");
-                if (!force && !firstLineContains(file, GENERATED_MARKER)) {
+                boolean toolGenerated = firstLineContains(file, GENERATED_MARKER);
+                if (!force && !toolGenerated) {
                     throw new IllegalStateException(
                             "Refusing to overwrite existing file that is NOT tool-generated (missing marker '"
                                     + GENERATED_MARKER + "'): " + file
                                     + ". Manual review required. Re-run with -Dcodegen.overwrite.force=true to overwrite.");
+                }
+                //  F-15：工具自管产物优先「标记块增量合并」—— 只替换 <generated:fields> 块内内容并并集补齐
+                //  import，块外的手写方法 / 字段 / 注解原样保留（不再"命中首行即整文件覆盖"）。
+                //  旧产物无标记块、或读取失败时回落整文件覆盖（下面仍会先备份 .bak）。
+                if (!force && toolGenerated) {
+                    try {
+                        String existing = Files.readString(file, StandardCharsets.UTF_8);
+                        String merged = mergeGeneratedBlocks(existing, source);
+                        if (!merged.equals(existing)) {
+                            payload = merged;
+                            log.info("[a11y] Incremental merge applied (hand-written code outside the markers kept): {}", file);
+                        }
+                    } catch (IOException mergeFail) {
+                        log.warn("[a11y] Incremental merge unavailable, falling back to full overwrite: {}",
+                                mergeFail.toString());
+                    }
                 }
                 // 工具自管产物：覆盖前先备份，便于回滚（仍可能被 --force 前的备份保留）。
                 Path backup = file.resolveSibling(pageClassName + ".java.bak");
@@ -504,7 +562,7 @@ public final class RoleElementPageGenerator {
 
             // 原子写：先写临时文件再移动，避免生成失败留下半写文件（CG-P0-1）。
             Path tmp = file.resolveSibling(pageClassName + ".java.tmp");
-            Files.writeString(tmp, source, StandardCharsets.UTF_8);
+            Files.writeString(tmp, payload, StandardCharsets.UTF_8);
             try {
                 Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException atomicFail) {
@@ -524,6 +582,74 @@ public final class RoleElementPageGenerator {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    /**
+     * F-15：标记块增量合并 —— 把新生成内容并入既有产物。
+     *
+     * <p>只替换 {@code <generated:fields>} 标记块内的内容，并并集补齐 import；<b>块外的一切</b>
+     * （类注解、手写字段 / 方法）原样保留。任一产物缺少标记块时返回 {@code generated}
+     * （即回落整文件覆盖，调用方已先备份 {@code .java.bak}）—— 对历史产物保持向后兼容。</p>
+     *
+     * @param existing  磁盘上的既有产物内容
+     * @param generated 本次新生成的完整源码
+     * @return 合并后的源码（可直接落盘）
+     */
+    static String mergeGeneratedBlocks(String existing, String generated) {
+        int newBegin = generated.indexOf(FIELDS_BLOCK_BEGIN);
+        int newEnd = generated.indexOf(FIELDS_BLOCK_END);
+        if (existing == null || newBegin < 0 || newEnd < 0 || newEnd < newBegin) {
+            return generated;
+        }
+        int oldBegin = existing.indexOf(FIELDS_BLOCK_BEGIN);
+        int oldEnd = existing.indexOf(FIELDS_BLOCK_END);
+        if (oldBegin < 0 || oldEnd < 0 || oldEnd < oldBegin) {
+            // 旧产物无标记块（历史版本生成）：无法定位边界 → 整覆盖（有 .bak 可回滚）
+            return generated;
+        }
+        String newBlock = generated.substring(newBegin, newEnd + FIELDS_BLOCK_END.length());
+        String merged = existing.substring(0, oldBegin)
+                + newBlock
+                + existing.substring(oldEnd + FIELDS_BLOCK_END.length());
+        return withMergedImports(merged, generated);
+    }
+
+    /**
+     * F-15：并集补齐 import —— 把新产物独有的 {@code import} 行补进既有产物。
+     *
+     * <p><b>为何是并集而非替换</b>：手写方法可能引入生成器不产出的 import，
+     * 直接替换头部会破坏手写代码；只增不删既保证新增字段所需的 import 到位（产物可编译），
+     * 又不动手写代码依赖的既有 import。</p>
+     */
+    static String withMergedImports(String existing, String generated) {
+        Set<String> present = new HashSet<>();
+        for (String line : existing.split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("import ")) {
+                present.add(trimmed);
+            }
+        }
+        StringBuilder missing = new StringBuilder();
+        for (String line : generated.split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("import ") && present.add(trimmed)) {
+                missing.append(line).append('\n');
+            }
+        }
+        if (missing.length() == 0) {
+            return existing;
+        }
+        int lastImport = existing.lastIndexOf("\nimport ");
+        if (lastImport >= 0) {
+            int lineEnd = existing.indexOf('\n', lastImport + 1);
+            if (lineEnd < 0) {
+                return existing + "\n" + missing;
+            }
+            return existing.substring(0, lineEnd + 1) + missing + existing.substring(lineEnd + 1);
+        }
+        int headerEnd = existing.indexOf('\n');
+        return headerEnd < 0 ? existing + "\n" + missing
+                : existing.substring(0, headerEnd + 1) + "\n" + missing + existing.substring(headerEnd + 1);
     }
 
     /** 按 strategy 给非角色字段命名加语义后缀，使不同定位策略产出可区分的字段名：
@@ -614,7 +740,8 @@ public final class RoleElementPageGenerator {
             base = "element" + idx;
         }
         // camelCase 字段名（首字母小写）：prefix(iframe 层级) + base + suffix 依次拼接
-        String candidate = prefix + base + suffix;
+        //  F-15：保留字护栏（id/css/testid 等无后缀策略下，元素名恰为 new/class/for 时会产出保留字字段名）。
+        String candidate = safeFieldName(prefix + base + suffix);
         String unique = candidate;
         int n = 2;
         while (used.contains(unique)) {
@@ -708,7 +835,8 @@ public final class RoleElementPageGenerator {
         String base = containsCjk(name) ? NlsNameTranslator.toIdentifier(name, false) : toIdentifier(name, idx, true); // userName（lowerCamel）
         // camelCase 字段名（首字母小写）：prefix(iframe 层级) + base + role 后缀 依次拼接
         String suffix = ROLE_SUFFIX.getOrDefault(role.toLowerCase(Locale.ROOT), "");
-        String candidate = prefix + base + suffix;
+        //  F-15：保留字护栏（如 role 无后缀且元素名恰为 new/class/for 时，candidate 即保留字）。
+        String candidate = safeFieldName(prefix + base + suffix);
         String unique = candidate;
         int n = 2;
         while (used.contains(unique)) {

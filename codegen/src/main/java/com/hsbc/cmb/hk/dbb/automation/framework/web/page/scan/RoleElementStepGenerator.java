@@ -251,34 +251,40 @@ public final class RoleElementStepGenerator {
                         if (__pnos != null && __pnos.size() > 1) __repeat = __pnos.size();
                         // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
                         // 目标元素定位签名经 keyToField 反查为字段名，拼成 pageVar.fieldName。
+                        boolean unresolvedDrag = false;
                         if (op.endsWith(".__DRAGTO__")) {
                             String dstField = keyToField.get(e.getDragDstKey());
-                            String dstRef = (dstField != null) ? pageVar + "." + dstField : "/* 拖拽目标未定位 */";
-                            op = target + ".dragTo(" + dstRef + ")";
+                            //  F-15：目标未定位时不再把注释文本塞进实参（`dragTo(/* … */)` 属零实参非法调用），
+                            //  改为整条语句退化为注释行，并跳过外层 lambda 封装与重复展开。
+                            String dstRef = (dstField != null) ? pageVar + "." + dstField : null;
+                            unresolvedDrag = (dstRef == null);
+                            __repeat = 1;
+                            op = dragToStatement(target, dstRef);
                         } else if (e.getPressKey() != null) {
                             // 键盘序列（对齐 page.pause 的 press("Enter")）：先 fill/click 基础动作，再 press 实质按键。
                             op += ";\n        " + target + ".press(\"" + escapeJava(e.getPressKey()) + "\")";
                         }
-                        if (e.isDialog()) {
+                        if (e.isDialog() && !unresolvedDrag) {
                             String dlgType = (e.getDialogType() == null) ? "alert" : e.getDialogType();
                             String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert" : "dismissAlert";
                             // 独立 step：先注册对话框处理器，再触发点击（时序正确，不再被误读为“裸点击”）
-                            op = pageVar + "." + dlgMethod + "(() -> " + op + ") // 处理 " + dlgType + " 弹窗\n        ";
+                            //  F-15：lambda 体经 lambdaBody —— pressKey 的多语句必须包成块体，否则非法 Java。
+                            op = pageVar + "." + dlgMethod + "(() -> " + lambdaBody(op) + ") // 处理 " + dlgType + " 弹窗\n        ";
                         }
-                        if (e.isDownload()) {
+                        if (e.isDownload() && !unresolvedDrag) {
                             // 下载（anchor download 属性 / 文件 URL / JS 触发）：用框架封装的
                             // waitForDownload(trigger, timeoutSecs) 等待下载完成，对齐 page.pause()
                             // 的 waitForDownload 录制。与弹窗同时发生时嵌套：waitForDownload(waitForNewPage)。
                             if (e.isPopup()) {
                                 methods.append("        ").append(pageVar).append(".waitForDownload(() -> {\n")
                                         .append("            ").append(pageVar).append(".waitForNewPage(() ->\n")
-                                        .append("                    ").append(op).append(", 15);\n")
+                                        .append("                    ").append(lambdaBody(op)).append(", 15);\n")
                                         .append("        });\n");
                             } else {
                                 methods.append("        ").append(pageVar).append(".waitForDownload(() ->\n")
-                                        .append("                ").append(op).append(");\n");
+                                        .append("                ").append(lambdaBody(op)).append(");\n");
                             }
-                        } else if (e.isPopup()) {
+                        } else if (e.isPopup() && !unresolvedDrag) {
                             // 弹窗链接（target=_blank）：用框架封装的 waitForNewPage(trigger, timeoutSecs)
                             // 一步完成“点击 + 等待新页面 + 切换页对象上下文”，并把新页面赋给 Page 变量，
                             // 后续操作在新页面执行；step 末统一“切回默认页”，使上下文回到默认 page（对齐用户预期）。
@@ -287,7 +293,7 @@ public final class RoleElementStepGenerator {
                             sawPopup = true;
                             methods.append("        Page ").append(npVar).append(" = ").append(pageVar)
                                     .append(".waitForNewPage(() ->\n")
-                                    .append("                ").append(op).append(", 15);\n");
+                                    .append("                ").append(lambdaBody(op)).append(", 15);\n");
                         } else {
                             for (int __r = 0; __r < __repeat; __r++) {
                                 methods.append("        ").append(op).append(";\n");
@@ -597,31 +603,36 @@ public final class RoleElementStepGenerator {
                         if (__pnos != null && __pnos.size() > 1) __repeat = __pnos.size();
                         // 拖拽源：operationFor 返回 __DRAGTO__ 占位，展开为 dragTo(目标字段)（对齐 page.pause 的 source.dragTo）。
                         // 目标元素定位签名在所有页字段中反查（支持跨页拖拽），拼成 <页变量>.<字段名>。
+                        boolean unresolvedDrag = false;
                         if (op.endsWith(".__DRAGTO__")) {
                             String dstRef = findFieldRefAcrossPages(e.getDragDstKey(), pageFields, pageVar);
-                            op = target + ".dragTo(" + dstRef + ")";
+                            //  F-15：目标未定位时整条语句退化为注释行（原实现产出 `dragTo(/* … */)` 零实参非法调用）。
+                            unresolvedDrag = (dstRef == null);
+                            __repeat = 1;
+                            op = dragToStatement(target, dstRef);
                         } else if (e.getPressKey() != null) {
                             // 键盘序列（对齐 page.pause 的 press("Enter")）：先 fill/click 基础动作，再 press 实质按键。
                             op += ";\n        " + target + ".press(\"" + escapeJava(e.getPressKey()) + "\")";
                         }
-                        if (e.isDialog()) {
+                        if (e.isDialog() && !unresolvedDrag) {
                             String dlgType = (e.getDialogType() == null) ? "alert" : e.getDialogType();
                             String dlgMethod = "accept".equals(e.getDialogAction()) ? "acceptAlert" : "dismissAlert";
                             // 独立 step：先注册对话框处理器，再触发点击（时序正确，不再被误读为“裸点击”）
-                            op = var + "." + dlgMethod + "(() -> " + op + ") // 处理 " + dlgType + " 弹窗\n        ";
+                            //  F-15：lambda 体经 lambdaBody —— pressKey 的多语句必须包成块体，否则非法 Java。
+                            op = var + "." + dlgMethod + "(() -> " + lambdaBody(op) + ") // 处理 " + dlgType + " 弹窗\n        ";
                         }
-                        if (e.isDownload()) {
+                        if (e.isDownload() && !unresolvedDrag) {
                             if (e.isPopup()) {
                             sawPopup = true; if (popupTargetVar == null) popupTargetVar = var;
                             m.append("        ").append(var).append(".waitForDownload(() -> {\n")
                                     .append("            ").append(var).append(".waitForNewPage(() ->\n")
-                                    .append("                    ").append(op).append(", 15);\n")
+                                    .append("                    ").append(lambdaBody(op)).append(", 15);\n")
                                     .append("        });\n");
                             } else {
                                 m.append("        ").append(var).append(".waitForDownload(() ->\n")
-                                        .append("                ").append(op).append(");\n");
+                                        .append("                ").append(lambdaBody(op)).append(");\n");
                             }
-                        } else if (e.isPopup()) {
+                        } else if (e.isPopup() && !unresolvedDrag) {
                             // 弹窗链接（target=_blank）：由“目标页对象”（如 privacyAndSecurityPage）触发并接管新页，
                             // 避免“打开页先接管、再 switchToPage 交给目标页”的语义歧义与打开页引用错位。
                             // 触发点击的元素仍属打开页（var），故闭包内用 var + "." + op；waitForNewPage 宿主用 popupTarget。
@@ -632,7 +643,7 @@ public final class RoleElementStepGenerator {
                             if (popupTarget != null) {
                                 m.append("        Page ").append(npVar).append(" = ").append(popupTarget)
                                         .append(".waitForNewPage(() ->\n")
-                                        .append("                ").append(op).append(", 15);\n");
+                                        .append("                ").append(lambdaBody(op)).append(", 15);\n");
                                 m.append("        ").append(popupTarget).append(".switchToPage(")
                                         .append(npVar).append("); // 显式切换到新页面\n");
                                 if (popupTargetVar == null) popupTargetVar = popupTarget;
@@ -640,7 +651,7 @@ public final class RoleElementStepGenerator {
                             } else {
                                 m.append("        Page ").append(npVar).append(" = ").append(var)
                                         .append(".waitForNewPage(() ->\n")
-                                        .append("                ").append(op).append(", 15);\n");
+                                        .append("                ").append(lambdaBody(op)).append(", 15);\n");
                                 if (popupTargetVar == null) popupTargetVar = var;
                             }
                         } else {
@@ -782,12 +793,63 @@ public final class RoleElementStepGenerator {
     private static final java.util.regex.Pattern FRAME_ID =
             java.util.regex.Pattern.compile("#([\\w-]+)");
 
+    /**
+     * 渲染 {@code dragTo} 语句（评审 F-15）。
+     *
+     * <p><b>为何不能把注释塞进实参</b>：原实现在目标未定位时把注释文本当作实参，
+     * 生成 {@code page.src.dragTo(/* 拖拽目标未定位 *​/)} —— 括号内零实参的<b>非法 Java</b>。
+     * 现改为：目标未定位时<b>整条语句退化为注释行</b>（可编译且问题可见），而非产出伪调用。</p>
+     *
+     * @param target 拖拽源引用（如 {@code page.dragSrc}）
+     * @param dstRef 拖拽目标引用；{@code null} 表示未定位
+     * @return 合法 Java 语句或等价的注释行
+     */
+    static String dragToStatement(String target, String dstRef) {
+        if (dstRef == null) {
+            return "// [未生成] 拖拽目标未定位，已跳过 dragTo（源元素：" + target + "）";
+        }
+        return target + ".dragTo(" + dstRef + ")";
+    }
+
+    /**
+     * 把操作渲染为 lambda 体（评审 F-15）。
+     *
+     * <p><b>为何需要它</b>：{@code pressKey} 会把操作扩成<b>多语句</b>
+     * （{@code a.fill("x");\n a.press("Enter")}）。当该操作被塞进弹窗 / 下载 / 新页封装的
+     * {@code () -> <op>} 单表达式 lambda 时，多语句 ⇒ <b>非法 Java</b>。
+     * 故此处按需包成块体：单语句原样内联（保持既有产物形状不变），多语句则
+     * {@code { stmt; stmt; }}，并保证末条语句以 {@code ;} 收尾。</p>
+     *
+     * @param op 操作文本（可能含换行与多条语句）
+     * @return 可直接置于 {@code () -> } 之后的 lambda 体
+     */
+    static String lambdaBody(String op) {
+        if (op == null) {
+            return "";
+        }
+        if (op.indexOf(';') < 0) {
+            return op; // 单表达式：保持既有生成形状，避免无谓的产物 churn
+        }
+        StringBuilder sb = new StringBuilder("{\n");
+        for (String line : op.split("\n", -1)) {
+            String t = line.trim();
+            if (!t.isEmpty()) {
+                sb.append("            ").append(t).append('\n');
+            }
+        }
+        String body = sb.toString().stripTrailing();
+        if (!body.endsWith(";")) {
+            body = body + ";";
+        }
+        return body + "\n        }";
+    }
+
     /** 在所有页字段映射中反查拖拽目标的字段引用（支持跨页拖拽，对齐 page.pause 的 source.dragTo(target)）。
-     *  找到则拼成 {@code <页变量>.<字段名>}，否则返回注释提示。 */
+     *  找到则拼成 {@code <页变量>.<字段名>}，未找到返回 {@code null}（由 {@link #dragToStatement} 退化为注释行）。 */
     private static String findFieldRefAcrossPages(String dragDstKey,
                                                   Map<String, Map<String, String>> pageFields,
                                                   Map<String, String> pageVar) {
-        if (dragDstKey == null) return "/* 拖拽目标未定位 */";
+        if (dragDstKey == null) return null;
         for (Map.Entry<String, Map<String, String>> en : pageFields.entrySet()) {
             String field = en.getValue().get(dragDstKey);
             if (field != null) {
@@ -795,7 +857,7 @@ public final class RoleElementStepGenerator {
                 return (pv != null ? pv : "page") + "." + field;
             }
         }
-        return "/* 拖拽目标未定位 */";
+        return null;
     }
 
     /**

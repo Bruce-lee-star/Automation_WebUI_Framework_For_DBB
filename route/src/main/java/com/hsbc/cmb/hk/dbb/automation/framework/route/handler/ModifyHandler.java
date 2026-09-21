@@ -24,6 +24,8 @@ import com.microsoft.playwright.Response;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.body.BodyCodecRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.body.BodyFieldOps;
 import java.util.Arrays;
@@ -34,6 +36,11 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 修改请求 Handler — 拦截请求，修改后继续发送。
@@ -48,12 +55,20 @@ import java.util.*;
  *       识别 Firefox/WebKit 下 "Object doesn't exist" 等已销毁 route 信号并静默跳过，
  *       避免跨浏览器脆弱性（请求挂起 / 0次或2次 resume）。</li>
  * </ul>
+ *
+ * <p><b>事件线程零阻塞（评审 F-08 / P1-4）</b>：{@link #handle} 在 Playwright 事件线程上<b>仅提交任务即返回</b>，
+ * 「修改请求 + {@code waitForResponse} 观测 + 读体 + 落库 + 叠加断言」整段下沉到
+ * {@link #observeExecutor}（见 {@link #observeAndApply}）。此举与 {@link MonitorHandler} 的观测池同源，
+ * 消除「单 context 内该路由分发被串行化最长 30s → 后续请求 handler 全部排队 → 级联超时」。
  */
 public class ModifyHandler {
 
     static {
         RouteHandlerRegistry.register(RouteHandleType.MODIFY, ModifyHandler::handle);
         RouteHandlerRegistry.registerCacheClearer(ModifyHandler::clearJsonPathCache);
+        //  进程退出时关闭观测执行器（幂等）：避免异常路径下任务堆积导致线程残留
+        ShutdownCoordinator.register(ShutdownCoordinator.ORDER_MONITOR_HANDLER,
+                "modify-observe", ModifyHandler::shutdownObserveExecutor);
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ModifyHandler.class);
@@ -62,6 +77,46 @@ public class ModifyHandler {
     /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS =
             RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+
+    /**
+     * MODIFY 观测执行器（评审 F-08 / P1-4）：承载「修改 + 观测 + 读体 + 落库 + 断言」整段<b>阻塞</b>链路，
+     * 使 Playwright 事件线程零阻塞 —— 与 {@link MonitorHandler} 的观测池同源治理。
+     *
+     * <p><b>有界队列 + 拒绝即放行</b>：队列满 / 池已关闭时拒绝新任务，由 {@link #handle} 立即以原始请求
+     * {@code safeResume} 放行 —— 绝不反压事件线程，也不让请求永久挂起。
+     * 线程数与容量分别由 {@code modify.observe.threads} / {@code modify.observe.queue.capacity} 配置。</p>
+     */
+    private static final ThreadPoolExecutor observeExecutor = newObserveExecutor();
+
+    private static ThreadPoolExecutor newObserveExecutor() {
+        int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MODIFY_OBSERVE_THREADS, 4));
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MODIFY_OBSERVE_QUEUE_CAPACITY, 1024));
+        AtomicInteger seq = new AtomicInteger(1);
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queue),
+                r -> {
+                    Thread t = new Thread(r, "modify-observe-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /**
+     * 关闭观测执行器（幂等；最多等待 5s，超时则强制中断）。
+     */
+    static void shutdownObserveExecutor() {
+        observeExecutor.shutdown();
+        try {
+            if (!observeExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[ModifyHandler] observeExecutor did not terminate in time, forcing shutdown");
+                observeExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     /** 是否在 JSON 解析失败时退化为字符串替换（False=仅处理 JSON） */
     private static volatile boolean allowFallbackStringReplace = false;
@@ -112,7 +167,67 @@ public class ModifyHandler {
         return RouteUtil.getJsonPathCacheSize();
     }
 
+    /**
+     * MODIFY 入口（运行于 Playwright 事件线程）：<b>仅提交观测任务即返回</b> —— 事件线程零阻塞（评审 F-08 / P1-4）。
+     *
+     * <p><b>为何必须下沉</b>：原实现把「修改请求 + {@code page.waitForResponse}（≤30s）观测 + 读体 + 落库 +
+     * 叠加断言」整段放在事件线程同步执行，单 context 内该路由分发被串行化最长 30s，后续请求 handler
+     * 全部排队 → 级联超时。现整段交由 {@link #observeExecutor}（见 {@link #observeAndApply}）。</p>
+     *
+     * <p><b>在途计数协议</b>：提交<b>前</b>在事件线程同步 {@code incrementActiveRequests()}，任务
+     * {@code finally} 递减。若只在任务内计数，主线程可能在「请求已放行但观测尚未开始」的窗口内
+     * 轮询到 {@code activeRequests==0} 而误判「全部完成」——与 {@code MonitorHandler.assertAndRecord}
+     * 同款协议（见其「先将活动请求发布信号置于 storeApiCall 之前」注释）。</p>
+     *
+     * <p><b>拒绝即放行</b>：队列满 / 池已关闭时立即 {@code safeResume} 放行<b>原始</b>请求 ——
+     * 既不反压事件线程，也不让请求永久挂起（降级只丢「修改 + 观测」，与 MonitorHandler 的降级口径一致）。</p>
+     *
+     * <p><b>计数/times 归属不变</b>：{@code HandlerExecutor} 仍在 {@code handle} 返回后计数与递减 times。
+     * 对 MODIFY 而言这与 MONITOR 的既有语义一致（异步 handler 在其返回后即刻计数），未引入新的时序假设。</p>
+     */
     public static void handle(Route route, RouteRule rule, long delayMs) {
+        ApiCaptureContext inFlight = RouteUtil.captureContext(route);
+        if (inFlight != null) {
+            inFlight.incrementActiveRequests();
+        }
+        try {
+            observeExecutor.execute(() -> observeAndApply(route, rule, delayMs, inFlight));
+        } catch (RejectedExecutionException rejected) {
+            if (inFlight != null) {
+                inFlight.decrementActiveRequests();
+            }
+            LOGGER.warn("[ModifyHandler] observe executor rejected (queue full or shutdown) → resuming original "
+                    + "request without modification/observation: pattern='{}', url='{}'",
+                    rule.getUrlPattern(), RouteUtil.sanitizeUrl(route.request().url()));
+            RouteUtil.safeResume(route);
+        }
+    }
+
+    /**
+     * 观测任务体（{@link #observeExecutor} 工作线程）：执行 {@link #applyModifyAndObserve} 并保证
+     * 异常可见、在途计数必然配对递减。
+     *
+     * @param inFlight 提交前已在事件线程递增的在途计数宿主（可为 null）；本任务 finally 中递减
+     */
+    private static void observeAndApply(Route route, RouteRule rule, long delayMs, ApiCaptureContext inFlight) {
+        try {
+            applyModifyAndObserve(route, rule, delayMs);
+        } catch (Exception e) {
+            //  与 HandlerExecutor 对同步 handler 的兜底口径一致：异常不得静默丢失。
+            //  ApiAssertionException 的失败标志已在 assertAndRecord 内置位（signalFailFast），此处仅保证可见性。
+            LOGGER.error("[ModifyHandler] Async modify/observe failed for pattern '{}': {}",
+                    rule.getUrlPattern(), e.getMessage(), e);
+        } finally {
+            if (inFlight != null) {
+                inFlight.decrementActiveRequests();
+            }
+        }
+    }
+
+    /**
+     * 修改请求并观测真实响应（{@link #observeExecutor} 工作线程执行；路由终结恰好一次由内部 finally 兜底）。
+     */
+    private static void applyModifyAndObserve(Route route, RouteRule rule, long delayMs) {
         Request req = route.request();
         Route.ResumeOptions opts = new Route.ResumeOptions();
 

@@ -925,6 +925,13 @@ public enum ConfigKeys {
     MONITOR_OBSERVE_QUEUE_CAPACITY(
             "monitor.observe.queue.capacity", "4096", "MonitorHandler 观测执行器有界队列容量"),
 
+    /** ModifyHandler 观测执行器线程数（F-08：把 waitForResponse 观测移出 Playwright 事件线程）。 */
+    MODIFY_OBSERVE_THREADS("modify.observe.threads", "4", "ModifyHandler 观测执行器线程数"),
+
+    /** ModifyHandler 观测执行器有界队列容量；队列满即拒绝并按「仅修改请求」放行（绝不反压事件线程）。 */
+    MODIFY_OBSERVE_QUEUE_CAPACITY(
+            "modify.observe.queue.capacity", "1024", "ModifyHandler 观测执行器有界队列容量"),
+
     /** Monitor API 响应是否持久化到文件。 */
     MONITOR_FILE_STORE_ENABLED("monitor.file.store.enabled", "false", "Monitor API 响应文件持久化"),
 

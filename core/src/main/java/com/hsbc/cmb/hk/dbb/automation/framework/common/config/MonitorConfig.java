@@ -104,6 +104,20 @@ public final class MonitorConfig {
      */
     public static final Key MONITOR_OBSERVE_QUEUE_CAPACITY = new Key(ConfigKeys.MONITOR_OBSERVE_QUEUE_CAPACITY.key(), ConfigKeys.MONITOR_OBSERVE_QUEUE_CAPACITY.defaultValue());
 
+    // ==================== ModifyHandler 观测线程池（F-08 / P1-4） ====================
+    /**
+     * ModifyHandler 观测执行器线程数（默认 4）。
+     * <p>MODIFY 的 {@code page.waitForResponse} 观测原在 Playwright 事件线程同步执行（≤30s），
+     * 把单 context 内该路由分发串行化 → 后续请求 handler 排队 → 级联超时。下沉到本池后事件线程零阻塞
+     * （与 {@code MONITOR_OBSERVE_THREADS} 同源治理）。线程数应 ≈ 期望的单 context 并发 MODIFY 请求数上限。
+     */
+    public static final Key MODIFY_OBSERVE_THREADS = new Key(ConfigKeys.MODIFY_OBSERVE_THREADS.key(), ConfigKeys.MODIFY_OBSERVE_THREADS.defaultValue());
+
+    /**
+     * ModifyHandler 观测执行器有界队列容量（默认 1024）。队列满即拒绝并以「仅修改请求」放行（绝不反压事件线程）。
+     */
+    public static final Key MODIFY_OBSERVE_QUEUE_CAPACITY = new Key(ConfigKeys.MODIFY_OBSERVE_QUEUE_CAPACITY.key(), ConfigKeys.MODIFY_OBSERVE_QUEUE_CAPACITY.defaultValue());
+
     // ==================== API Monitor 文件存储配置 ====================
     public static final Key MONITOR_FILE_STORE_ENABLED = new Key(ConfigKeys.MONITOR_FILE_STORE_ENABLED.key(), ConfigKeys.MONITOR_FILE_STORE_ENABLED.defaultValue());
     public static final Key MONITOR_FILE_STORE_DIR = new Key(ConfigKeys.MONITOR_FILE_STORE_DIR.key(), ConfigKeys.MONITOR_FILE_STORE_DIR.defaultValue());

@@ -33,8 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ol>
  *   <li>{@code createContext} 的 {@code context.onPage} 仅读取 {@code newPage.url()}（字段读取，无传输），
  *       不再调用 {@code title()}；</li>
- *   <li>{@code createPage} 的 {@code page.onDownload} 将 {@code download.saveAs(...)} 卸载到专属守护线程
- *       {@code DOWNLOAD_EXECUTOR}，连接读线程仅负责派发事件。</li>
+ *   <li>下载保存：{@code context.onDownload} 监听器<b>只派发</b>，{@code download.saveAs(...)} 卸载到受管
+ *       {@code AsyncPool}（{@code PlaywrightContextManager.saveDownloadAsync}），连接读线程仅负责派发事件。
+ *       ⚠ 该卸载曾在「改为 context 级一次注册」时被丢失（回归），2026-09-21 复核并恢复；另有专项守护
+ *       {@code DownloadSaveOffloadTest}（慢 saveAs 桩证明派发不阻塞）。</li>
  * </ol>
  * 所有新增监听器均须只做字段读取 / 日志，禁止在监听器内发起同步 CDP 调用。</p>
  *

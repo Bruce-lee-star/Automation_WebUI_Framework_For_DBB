@@ -129,6 +129,16 @@ public class PlaywrightConfigManager {
     }
 
     /**
+     * 获取下载保存超时（分钟）—— 复用既有键 {@code playwright.browser.download.timeout.minutes}（无新增配置键）。
+     *
+     * <p>用途：作为「下载保存」卸载到 {@code AsyncPool} 后的任务超时上限（见
+     * {@code PlaywrightContextManager.saveDownloadAsync}）。</p>
+     */
+    public int getBrowserDownloadTimeoutMinutes() {
+        return FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_BROWSER_DOWNLOAD_TIMEOUT_MINUTES);
+    }
+
+    /**
      * 获取浏览器 channel
      */
     public String getBrowserChannel() {

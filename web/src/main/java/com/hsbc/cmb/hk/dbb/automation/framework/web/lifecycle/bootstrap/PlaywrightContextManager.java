@@ -12,10 +12,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTrac
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Download;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.options.ColorScheme;
 import com.microsoft.playwright.options.Geolocation;
@@ -31,6 +33,7 @@ import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Context 和 Page 管理器 - 负责 Context 和 Page 的创建、配置和关闭
@@ -171,10 +174,37 @@ public class PlaywrightContextManager {
         if (context == null) {
             return;
         }
-        final String downloadsPath = PlaywrightManager.config().getBrowserDownloadsPath();
-        context.onDownload(download -> {
+        final Path downloadDir = Paths.get(PlaywrightManager.config().getBrowserDownloadsPath());
+        final long saveTimeoutMs = TimeUnit.MINUTES.toMillis(
+                Math.max(1, PlaywrightManager.config().getBrowserDownloadTimeoutMinutes()));
+        //  监听器内【只派发】：绝不在此同步调用 saveAs —— 见 saveDownloadAsync 的「连接读线程」说明。
+        context.onDownload(download -> saveDownloadAsync(context, download, downloadDir, saveTimeoutMs));
+    }
+
+    /**
+     * 异步保存下载文件 —— <b>监听器内绝不同步执行 {@code saveAs}</b>。
+     *
+     * <p><b>为什么必须卸载（连接读线程自死锁防护；2026-09-08 修复的恢复）</b>：Playwright 的事件
+     * （{@code onPage}/{@code onLoad}/{@code onDownload}）在<b>连接读线程</b>上派发，而
+     * {@code download.saveAs(...)} 是同步操作（需等下载完成并落盘）。在监听器内直接调用会阻塞读线程
+     * <b>自身</b> → 该连接上所有 CDP 命令排队（表现为该 worker 的当前/后续 scenario「卡住、排队」），
+     * 极端情况自死锁、整轮挂起。2026-09-08 曾用专属 {@code DOWNLOAD_EXECUTOR} 卸载该调用，但在改为
+     * 「context 级一次注册」时被丢失（2026-09-21 复核：全仓只剩测试 javadoc 提及它，生产代码已无此卸载）。</p>
+     *
+     * <p>现卸载到受管 {@link AsyncPool}（守护线程 + 有界队列 + 拒绝/超时可观测 + {@code ShutdownCoordinator} 收口），
+     * 与 {@code MonitorHandler}/{@code ModifyHandler} 把阻塞链路移出事件线程同一治理方式；{@code timeoutMs}
+     * 取 {@code playwright.browser.download.timeout.minutes}，超时由池兜底记 ERROR（不静默）。</p>
+     *
+     * <p>包级可见以便单测用「慢 {@code saveAs} 桩」证明派发<b>不阻塞</b>调用线程（{@code DownloadSaveOffloadTest}）。</p>
+     *
+     * @param context     触发下载的上下文（仅用于下载登记，可 mock）
+     * @param download    下载对象（{@code saveAs} 在池线程执行）
+     * @param downloadDir 下载目录（不存在则创建）
+     * @param timeoutMs   保存超时（毫秒；≤0 由 {@link AsyncPool} 默认值兜底）
+     */
+    static void saveDownloadAsync(BrowserContext context, Download download, Path downloadDir, long timeoutMs) {
+        AsyncPool.runWithTimeout(() -> {
             try {
-                Path downloadDir = Paths.get(downloadsPath);
                 if (!Files.exists(downloadDir)) {
                     Files.createDirectories(downloadDir);
                 }
@@ -197,7 +227,7 @@ public class PlaywrightContextManager {
                     logger.error("[Download] Failed to save file: {}", e.getMessage(), e);
                 }
             }
-        });
+        }, timeoutMs);
     }
 
     /**
@@ -669,7 +699,7 @@ public class PlaywrightContextManager {
         Page registered = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
         try {
             for (Page p : context.pages()) {
-                if (sb.length() > 0) {
+                if (!sb.isEmpty()) {
                     sb.append(" || ");
                 }
                 sb.append((p == managed || p == registered) ? "[managed] " : "[extra] ");

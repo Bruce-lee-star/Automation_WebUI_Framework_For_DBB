@@ -96,7 +96,11 @@ final class CrossJvmLoginLock implements AutoCloseable {
             }
 
             try {
-                Files.createDirectories(lockPath.getParent());
+                Path parent = lockPath.getParent();
+                if (parent == null) {
+                    parent = lockPath.toAbsolutePath();
+                }
+                Files.createDirectories(parent);
             } catch (IOException e) {
                 //  锁文件不可建（只读文件系统等）：无法协调，降级为「直接当 leader」并保持可见（不得静默）。
                 LOGGER.warn("[cross-jvm-login] cannot create lock dir for sessionKey={} -> proceeding as leader "

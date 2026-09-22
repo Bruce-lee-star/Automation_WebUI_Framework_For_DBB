@@ -93,6 +93,15 @@ final class DownloadReportAttacher {
      * @param caption 报告标题（null/空白回退为文件名）
      * @return true 表示已归档；false 表示源文件不存在或复制失败
      */
+    /**
+     * 安全取文件名：文件系统根路径 {@code getFileName()} 返回 null，回退为路径自身 toString，
+     * 消除 SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE（根路径场景）。
+     */
+    private static String fileNameOrSelf(Path p) {
+        Path fn = p.getFileName();
+        return (fn != null ? fn : p).toString();
+    }
+
     static boolean attachResolved(Path src, String caption) {
         if (src == null || !Files.exists(src)) {
             logger.warn("attachLastDownloadToReport: no completed download to attach "
@@ -102,7 +111,7 @@ final class DownloadReportAttacher {
         // 0) 清洗文件名：Download.suggestedFilename() 来自响应 Content-Disposition（外部不可信），
         //    可能含 Windows 保留字符 \ : * ? " < > | 或控制字符，直接落盘/复制会抛 IOException 致静默失败；
         //    清洗为下划线并防覆盖，保证归档稳健（跨平台 + 防御性）
-        String rawName = src.getFileName().toString();
+        String rawName = fileNameOrSelf(src);
         String safeName = sanitizeFileName(rawName);
         if (!safeName.equals(rawName)) {
             logger.debug("attachLastDownloadToReport: sanitized illegal chars in download filename '{}' -> '{}'",
@@ -113,7 +122,10 @@ final class DownloadReportAttacher {
         Path archive = resolveNonConflicting(Paths.get(REPORT_ATTACHMENTS_DIR,
                 "thread-" + Thread.currentThread().getId(), safeName));
         try {
-            Files.createDirectories(archive.getParent());
+            Path archiveParent = archive.getParent();
+            if (archiveParent != null) {
+                Files.createDirectories(archiveParent);
+            }
             Files.copy(src, archive, StandardCopyOption.REPLACE_EXISTING);
         } catch (Exception e) {   // #6: 目录创建/复制失败(含极少见非 IOException 如 SecurityException)一律归档失败,不冒泡到 case
             logger.error("attachLastDownloadToReport: failed to archive download '{}' to {}",
@@ -123,7 +135,7 @@ final class DownloadReportAttacher {
         // 2) 嵌入 Serenity 报告（best-effort：失败不阻断 case）
         //    注意：FromFile.fromFile(...) 返回 void，不能与 downloadable() 链式调用，须先持引用再分步调用
         try {
-            String title = (caption == null || caption.isBlank()) ? src.getFileName().toString() : caption;
+            String title = (caption == null || caption.isBlank()) ? fileNameOrSelf(src) : caption;
             AndContent entry = Serenity.recordReportData().withTitle(title);
             entry.fromFile(archive);   // 读取文件内容（checked IOException，被外层 catch 覆盖）
             entry.downloadable();      // 标记为可下载附件
@@ -228,11 +240,16 @@ final class DownloadReportAttacher {
         if (!Files.exists(candidate)) {
             return candidate;
         }
-        String fileName = candidate.getFileName().toString();
+        Path fileNamePath = candidate.getFileName();
+        String fileName = (fileNamePath != null ? fileNamePath : candidate).toString();
         int dot = fileName.lastIndexOf('.');
         String base = dot > 0 ? fileName.substring(0, dot) : fileName;
         String ext = dot > 0 ? fileName.substring(dot) : "";
         Path parent = candidate.getParent();
+        if (parent == null) {
+            // 根路径 getParent() 为 null，回退为绝对路径本身（Path.toAbsolutePath() 非 null），避免 NPE
+            parent = candidate.toAbsolutePath();
+        }
         int i = 1;
         Path next;
         do {

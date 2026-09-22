@@ -93,5 +93,14 @@
             <version>4.5.1</version>
             <scope>test</scope>
         </dependency>
+        <!-- A-9 对称修复：serenity-core 已排除 selenium-java，但 Serenity 运行期（SerenityTestExecutionListener
+             经 SupportedWebDriver 静态初始化）需加载各 driver 类，否则框架测试启动 NoClassDefFoundError。
+             与 test-automation 一致补 selenium-java（test scope）提供 driver 类；版本与全局钉 4.23.1 对齐。 -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-java</artifactId>
+            <version>4.23.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

@@ -73,5 +73,12 @@
             <artifactId>archunit</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- A-9 对称修复：同 pw-web-ui，框架测试经 Serenity 运行期需 selenium driver 类，补 test scope 依赖 -->
+        <dependency>
+            <groupId>org.seleniumhq.selenium</groupId>
+            <artifactId>selenium-java</artifactId>
+            <version>4.23.1</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

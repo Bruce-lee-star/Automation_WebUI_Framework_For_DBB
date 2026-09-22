@@ -16,13 +16,16 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Spring Boot 版本统一钉版（route-demo 冗余收敛：starter-web 已传递引入 spring-boot/autoconfigure，
+             此处仅对保留的 starter-web / starter-tomcat 引用该属性） -->
+        <spring.boot.version>2.7.18</spring.boot.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-            <version>2.7.18</version>
+            <version>${spring.boot.version}</version>
             <exclusions>
                 <exclusion>
                     <groupId>org.springframework.boot</groupId>
@@ -35,20 +38,12 @@
             <artifactId>logback-classic</artifactId>
             <version>1.2.12</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-autoconfigure</artifactId>
-            <version>2.7.18</version>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot</artifactId>
-            <version>2.7.18</version>
-        </dependency>
+        <!-- 移除 spring-boot / spring-boot-autoconfigure：二者已由 spring-boot-starter-web 传递引入，
+             此处显式声明属冗余（route-demo 冗余收敛）。 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-tomcat</artifactId>
-            <version>2.7.18</version>
+            <version>${spring.boot.version}</version>
         </dependency>
     </dependencies>
 

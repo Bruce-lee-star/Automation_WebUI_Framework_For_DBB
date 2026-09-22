@@ -13,14 +13,12 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
 import com.microsoft.playwright.BrowserContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
-import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;

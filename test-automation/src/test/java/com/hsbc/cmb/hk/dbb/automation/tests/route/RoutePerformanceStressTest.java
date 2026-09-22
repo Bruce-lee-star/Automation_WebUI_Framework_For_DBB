@@ -143,7 +143,7 @@ public class RoutePerformanceStressTest {
     private static boolean isDemoServiceUp() {
         java.net.HttpURLConnection conn = null;
         try {
-            conn = (java.net.HttpURLConnection) new java.net.URL(ORIGIN_URL).openConnection();
+            conn = (java.net.HttpURLConnection) java.net.URI.create(ORIGIN_URL).toURL().openConnection();
             conn.setConnectTimeout(2000);
             conn.setReadTimeout(2000);
             conn.setRequestMethod("GET");

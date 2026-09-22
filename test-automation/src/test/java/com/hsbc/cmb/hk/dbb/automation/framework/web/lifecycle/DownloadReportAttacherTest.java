@@ -42,13 +42,13 @@ class DownloadReportAttacherTest {
             assertTrue(ok, "attachResolved should return true for an existing source");
 
             Path archive = Paths.get(DownloadReportAttacher.REPORT_ATTACHMENTS_DIR,
-                    "thread-" + Thread.currentThread().getId(), src.getFileName().toString());
+                    "thread-" + Thread.currentThread().threadId(), src.getFileName().toString());
             assertTrue(Files.exists(archive), "file must be archived under site/report-attachments/thread-<id>");
             assertEquals("col1,col2\n1,2\n", Files.readString(archive), "archived content must match source");
         } finally {
             Files.deleteIfExists(src);
             Path archive = Paths.get(DownloadReportAttacher.REPORT_ATTACHMENTS_DIR,
-                    "thread-" + Thread.currentThread().getId(), src.getFileName().toString());
+                    "thread-" + Thread.currentThread().threadId(), src.getFileName().toString());
             Files.deleteIfExists(archive);
         }
     }
@@ -125,7 +125,7 @@ class DownloadReportAttacherTest {
                 final String expected = "content-" + i;
                 futures.add(pool.submit(() -> {
                     barrier.await(10, TimeUnit.SECONDS);
-                    long tid = Thread.currentThread().getId();
+                    long tid = Thread.currentThread().threadId();
                     workerThreadIds.add(tid);
                     boolean ok = DownloadReportAttacher.attachResolved(src, "并发附件");
                     return new String[]{String.valueOf(tid), String.valueOf(ok), expected};

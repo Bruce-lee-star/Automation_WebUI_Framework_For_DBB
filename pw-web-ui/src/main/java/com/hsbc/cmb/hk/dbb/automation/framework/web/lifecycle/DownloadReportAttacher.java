@@ -120,7 +120,7 @@ final class DownloadReportAttacher {
         // 1) 复制到持久目录：按线程分子目录，避免并行下同名文件互相覆盖（REPLACE_EXISTING）造成串扰；
         //    该目录不参与 scenario 清理，保证报告生成时文件仍在
         Path archive = resolveNonConflicting(Paths.get(REPORT_ATTACHMENTS_DIR,
-                "thread-" + Thread.currentThread().getId(), safeName));
+                "thread-" + Thread.currentThread().threadId(), safeName));
         try {
             Path archiveParent = archive.getParent();
             if (archiveParent != null) {
@@ -194,7 +194,9 @@ final class DownloadReportAttacher {
                         Files.deleteIfExists(dir);
                     }
                 } catch (IOException ignored) {
-                    // 目录非空或不可读，保留即可
+                    // 目录非空或不可读，保留即可（DEBUG 级记录便于排查残留）
+                    logger.debug("attachLastDownloadToReport: failed to delete empty archive dir {} (kept): {}",
+                            dir, ignored.getMessage());
                 }
             });
         } catch (IOException e) {

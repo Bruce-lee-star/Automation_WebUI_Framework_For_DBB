@@ -381,7 +381,7 @@ public class PlaywrightManager {
      * @return 当前线程的下载目录（不保证已存在；保存路径解析时会按需创建）
      */
     public static Path downloadDirectoryForCurrentThread() {
-        return Paths.get(config().getBrowserDownloadsPath(), "thread-" + Thread.currentThread().getId());
+        return Paths.get(config().getBrowserDownloadsPath(), "thread-" + Thread.currentThread().threadId());
     }
 
     // ==================== 下载附件挂 Serenity 报告 ====================

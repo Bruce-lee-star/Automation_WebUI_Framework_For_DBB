@@ -205,6 +205,8 @@ final class CrossJvmLoginLock implements AutoCloseable {
             channel.close();
         } catch (IOException ignored) {
             // 关闭失败无需处理：进程退出时 OS 亦会释放其文件锁
+            LOGGER.debug("closeQuietly: failed to close file channel (OS releases lock on exit): {}",
+                    ignored.getMessage());
         }
     }
 

@@ -90,7 +90,7 @@
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
-            <version>4.5.1</version>
+            <version>${mockito.version}</version>
             <scope>test</scope>
         </dependency>
         <!-- A-9 对称修复：serenity-core 已排除 selenium-java，但 Serenity 运行期（SerenityTestExecutionListener
@@ -99,7 +99,7 @@
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-java</artifactId>
-            <version>4.23.1</version>
+            <version>${selenium.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -44,12 +44,12 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
-            <version>9.22.3</version>
+            <version>${flyway.version}</version>
         </dependency>
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-mysql</artifactId>
-            <version>9.22.3</version>
+            <version>${flyway.version}</version>
         </dependency>
 
         <!-- ENG-P0-2：route 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
@@ -69,7 +69,7 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <version>2.2.224</version>
+            <version>${h2.version}</version>
             <scope>test</scope>
         </dependency>
         <!-- D6-1：HikariConfigFactory 隔离单测随类迁至 route，需 JUnit 5（Jupiter，2026-09-11 升级，替代 junit:junit 4.13.2）。

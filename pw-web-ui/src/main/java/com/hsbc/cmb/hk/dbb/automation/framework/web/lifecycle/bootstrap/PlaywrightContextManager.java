@@ -257,7 +257,9 @@ public class PlaywrightContextManager {
         try {
             Files.deleteIfExists(reserved);
         } catch (IOException ignored) {
-            // 收尾清理（按线程目录）会兜底；此处不得影响异常上报语义
+            // 收尾清理（按线程目录）会兜底；此处不重抛，避免掩盖上层真实异常
+            logger.debug("rollbackReservation: failed to delete reserved temp path {} (per-thread cleanup will retry): {}",
+                    reserved, ignored.getMessage());
         }
     }
 
@@ -296,7 +298,9 @@ public class PlaywrightContextManager {
                 Files.createFile(candidate);   // 原子占位（CREATE_NEW）：并发下不可能两方拿到同一路径
                 return candidate;
             } catch (FileAlreadyExistsException taken) {
-                // 已被占用（含并发邻居刚抢占）→ 试下一个序号（正常路径，不记日志）
+                // 已被占用（含并发邻居刚抢占）→ 试下一个序号（正常竞争路径，仅 DEBUG 级可观测）
+                logger.debug("resolveNonConflictingDownloadPath: name already taken {}, trying next sequence",
+                        taken.getMessage());
             }
         }
         throw new IOException("Exhausted " + MAX_DOWNLOAD_NAME_SEQ + " candidate names for '"

@@ -135,6 +135,41 @@ public final class RouteContextState {
         cancelPendingTasksFor(context);
     }
 
+    /**
+     * CT2-19：防御性清扫 —— 把「已被显式标记关闭」的 context 从全部<b>强引用键</b>状态表中移除。
+     *
+     * <p><b>为什么需要</b>：这些表的正常清理入口是 {@link RouteEngine#stopContextEngine}，而它是
+     * <b>被动</b>调用（依赖 Playwright {@code onClose} 钩子 / 上层收尾链路）。一旦钩子注册失败
+     * （见 {@code ApiMonitorOrchestrator#ensureCloseHook}）或 context 因崩溃/被杀未经正常关闭流程，
+     * 强键表会残留该 context 的强引用 → context 及其全部 Page 无法 GC、跨用例串扰。
+     * 本方法以「{@link #markContextClosed} 显式标记」为唯一判据做主动兜底，不会误伤仍存活的 context。
+     *
+     * <p>幂等；建议在套件 teardown（{@link RouteEngine#stopAllContextEngines()}）时调用。
+     *
+     * @return 被实际清扫的 context 数（仅统计确有残留条目的）
+     */
+    public static int pruneClosedContexts() {
+        final java.util.Set<BrowserContext> closed;
+        synchronized (CLOSED_CONTEXTS) {
+            closed = new java.util.HashSet<>(CLOSED_CONTEXTS);
+        }
+        int pruned = 0;
+        for (BrowserContext ctx : closed) {
+            if (ctx == null) {
+                continue;
+            }
+            boolean present = CONTEXT_RULES_BY_CONTEXT.containsKey(ctx)
+                    || DISPATCHED_ROUTES.containsKey(ctx)
+                    || STOPPED_CAPS.containsKey(ctx)
+                    || CONTEXT_ENGINES.containsKey(ctx);
+            if (present) {
+                removeContextFromAllRegistries(ctx);
+                pruned++;
+            }
+        }
+        return pruned;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 「context 已关闭」标记（弱键，随 context GC 自动失效）
     // ═══════════════════════════════════════════════════════════════

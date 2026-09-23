@@ -138,7 +138,7 @@ public class MonitorHandler {
      * {@code res.body()}，高并发下多个 body 读取并发打 CDP，令单连接饱和 → body 读取超时/失败 → 捕获全部降级
      * （实测：modify@50 稳过，monitor@50 因额外 8 并发 body 读取饱和而捕获为 0）。
      *
-     * <p>故将 body 读取收敛到本<b>独立</b>并发池（默认 16 线程，无界队列 + 调用方阻塞等待），
+     * <p>故将 body 读取收敛到本<b>独立</b>并发池（默认 16 线程，<b>有界队列</b> + 调用方阻塞等待），
      * 由 {@code monitor.body.read.concurrency} 配置。并发上限须足以在 Chromium 的<b>响应对象回收窗口</b>
      * （约 300~400ms）内完成全部读体——早期误设为 2 线程，50 并发时协调线程全排队等 2 读线程，
      * 读体延迟超出回收窗口、{@code response@} 被回收 → 捕获全部降级（monitor@50 捕获为 0，见
@@ -150,14 +150,19 @@ public class MonitorHandler {
 
     private static ThreadPoolExecutor newBodyReadExecutor() {
         int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_READ_CONCURRENCY, 16));
+        // CT2-18：有界队列 + AbortPolicy（原为无界 LinkedBlockingQueue → 无任何背压，
+        //  任务与其持有的 Response 引用可无界堆积）。队列满即拒绝，
+        //  由 fetchBodyBounded 既有的 RejectedExecutionException 分支回退到调用线程读体（不丢捕获）。
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_READ_QUEUE_CAPACITY, 4096));
         AtomicInteger seq = new AtomicInteger(1);
         return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
-                new java.util.concurrent.LinkedBlockingQueue<>(),
+                new java.util.concurrent.ArrayBlockingQueue<>(queue),
                 r -> {
                     Thread t = new Thread(r, "monitor-body-read-" + seq.getAndIncrement());
                     t.setDaemon(true);
                     return t;
-                });
+                },
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -173,15 +178,19 @@ public class MonitorHandler {
      * 仍由 {@link #bodyReadExecutor}（默认 16，须 ≥ 本池以避免读体排队）收敛，本池只负责<b>协调</b>，不放大 CDP 压力。
      *
      * <p>观测任务（断言 / 记录）在 {@link #observationExecutor} 上并行，只 {@code get()} 本池已在进行中的
-     * body 读取结果——不再因观测调度延迟而错过响应体存活窗口。无界队列 + 调用方阻塞等待（非事件线程，安全）。
+     * body 读取结果——不再因观测调度延迟而错过响应体存活窗口。<b>有界队列</b> + 调用方阻塞等待（非事件线程，安全）。
      */
     private static final ThreadPoolExecutor bodyCaptureExecutor = newBodyCaptureExecutor();
 
     private static ThreadPoolExecutor newBodyCaptureExecutor() {
         int threads = Math.max(2, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_CAPTURE_THREADS, 16));
+        // CT2-18：有界队列（原为无界 → 无背压，CDP 读体变慢时协调任务与 Response 引用无界堆积）。
+        //  队列满即拒绝，由 handle() 既有的降级路径收口：bodyFuture 置 null → 观测任务落「降级快照」，
+        //  请求仍按幂等逻辑放行（绝不反压事件线程、绝不挂起）。
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MONITOR_BODY_CAPTURE_QUEUE_CAPACITY, 1024));
         AtomicInteger seq = new AtomicInteger(1);
         return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
-                new java.util.concurrent.LinkedBlockingQueue<>(),
+                new java.util.concurrent.ArrayBlockingQueue<>(queue),
                 r -> {
                     Thread t = new Thread(r, "monitor-body-capture-" + seq.getAndIncrement());
                     t.setDaemon(true);
@@ -215,7 +224,8 @@ public class MonitorHandler {
         } catch (TimeoutException e) {
             return null; // 超时：视作未就绪，交由重试逻辑
         } catch (RejectedExecutionException e) {
-            // 无界队列理论不会触发；兜底直接在调用线程读取，避免丢失捕获
+            // CT2-18：读体池队列有界，饱和时会真实触发；回退到调用线程直接读取，避免丢失捕获
+            //   （调用线程即协调线程，非 Playwright 事件线程，可安全阻塞）。
             try {
                 return res.body();
             } catch (Exception ex) {
@@ -437,7 +447,18 @@ public class MonitorHandler {
                 + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(capMs);
         final java.util.concurrent.CompletableFuture<Response> fut = new java.util.concurrent.CompletableFuture<>();
         scheduleExistingResponsePoll(fut, route, req, observationContext, deadlineNs);
-        return fut.join();
+        // CT2-07：join 加超时兜底，避免轮询链断裂（调度器已关/递归中断）时 future 永不完成、
+        // 观测线程被永久阻塞；超时即视作未就绪返回 null（与 deadline 逻辑一致）。
+        try {
+            return fut.get(capMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            return null;
+        } catch (java.util.concurrent.ExecutionException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
     }
 
     /** 递归轮询 {@code req.existingResponse()}（本地字段、零协议往返）；到达/超时/死句柄即完成 future。 */
@@ -460,8 +481,9 @@ public class MonitorHandler {
             fut.complete(null);
             return;
         }
+        // CT2-07：delayedExecutor 补第三参 bodyReadScheduler（自建调度池），不再落入 ForkJoinPool.commonPool 污染全 JVM
         java.util.concurrent.CompletableFuture.delayedExecutor((int) EXISTING_RESPONSE_POLL_MS,
-                        java.util.concurrent.TimeUnit.MILLISECONDS)
+                        java.util.concurrent.TimeUnit.MILLISECONDS, bodyReadScheduler)
                 .execute(() -> scheduleExistingResponsePoll(fut, route, req, observationContext, deadlineNs));
     }
 
@@ -799,7 +821,19 @@ public class MonitorHandler {
         }
         final java.util.concurrent.CompletableFuture<Response> fut = new java.util.concurrent.CompletableFuture<>();
         fallbackRetryPoll(fut, req, observationContext, 2);
-        return fut.join();
+        // CT2-07：join 加超时兜底（预算 = 重试窗口上限 + 缓冲），避免 fallbackRetryPoll 链断裂时观测线程永久阻塞；
+        // 超时即返回 null（交由调用方落降级快照 / signalFailFast）。
+        long budgetMs = (FALLBACK_MAX_ATTEMPTS - 1L) * FALLBACK_RETRY_INTERVAL_MS + 2000L;
+        try {
+            return fut.get(budgetMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            return null;
+        } catch (java.util.concurrent.ExecutionException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
     }
 
     /** 递归重试 {@code fallbackResponse(req)}（本地 req.response() 往返），界内退避、死句柄即停。 */
@@ -819,8 +853,9 @@ public class MonitorHandler {
             fut.complete(r);
             return;
         }
+        // CT2-07：delayedExecutor 补第三参 bodyReadScheduler（自建调度池），不再落入 ForkJoinPool.commonPool
         java.util.concurrent.CompletableFuture.delayedExecutor((int) FALLBACK_RETRY_INTERVAL_MS,
-                        java.util.concurrent.TimeUnit.MILLISECONDS)
+                        java.util.concurrent.TimeUnit.MILLISECONDS, bodyReadScheduler)
                 .execute(() -> fallbackRetryPoll(fut, req, observationContext, attempt + 1));
     }
 

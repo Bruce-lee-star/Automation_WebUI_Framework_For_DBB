@@ -136,4 +136,33 @@ class PageObjectFactoryScopeTest {
             pool.shutdownNow();
         }
     }
+
+    /**
+     * CT2-08：{@code clearAll()} 必须清理<b>所有线程</b>的线程隔离实例，而非仅当前线程。
+     *
+     * <p>旧实现只移除当前线程的 {@code THREAD_INSTANCES_KEY} —— 其它 worker 线程（线程池复用 /
+     * 并行 scenario）上的实例 Map 及其持有的 Page/Context 引用跨用例、跨套件滞留；
+     * 且打印的 threadCount 只数当前线程（语义名实不符，掩盖泄漏）。
+     */
+    @Test
+    void clearAllPurgesThreadIsolatedInstancesAcrossThreads() throws Exception {
+        PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
+        PageObjectFactory.LifecycleStrategy threadIsolated = PageObjectFactory.LifecycleStrategy.THREAD_ISOLATED;
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Object firstOnWorker = pool.submit(() ->
+                    PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated))).get(5, TimeUnit.SECONDS);
+
+            // 主线程执行套件级收尾 —— 旧实现只清主线程，worker 线程的实例会滞留
+            PageObjectFactory.clearAll();
+
+            Object secondOnWorker = pool.submit(() ->
+                    PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated))).get(5, TimeUnit.SECONDS);
+
+            assertNotSame(firstOnWorker, secondOnWorker,
+                    "clearAll 后 worker 线程必须重建实例；仍拿到同一实例说明其它线程的线程隔离实例未被清理（CT2-08）");
+        } finally {
+            pool.shutdownNow();
+        }
+    }
 }

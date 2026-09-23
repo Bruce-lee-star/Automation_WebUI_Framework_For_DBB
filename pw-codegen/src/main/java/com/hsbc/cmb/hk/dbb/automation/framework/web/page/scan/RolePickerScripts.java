@@ -19,7 +19,8 @@ import java.util.Map;
  * No JS <em>source</em> is embedded as a Java string literal anywhere in this class — this keeps the
  * scripts lintable / version-controlled and lets the build fail fast on a syntax error
  * (see {@code tools/validate_picker_js.js}, wired into the {@code core} module {@code validate} phase,
- * and {@code RolePickerScriptsJsValidationTest} which runs {@code node --check} on every composed constant).
+ * which runs {@code node --check} on every standalone script and explicitly composes + validates
+ * START_SCRIPT / PANEL_SCRIPT — no separate Java test needed).
  * <p>The {@code .js} resources are the single source of truth; any edit must go through the resource files,
  * never re-introduce inline string concatenation here. The generator {@code tools/gen_picker_scripts.js}
  * regenerates both the resources and these declarations from the canonical inline source.</p>

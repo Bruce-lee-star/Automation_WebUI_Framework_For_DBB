@@ -78,6 +78,16 @@ public class RouteEngine {
         for (BrowserContext context : new ArrayList<>(RouteContextState.CONTEXT_ENGINES.keySet())) {
             stopContextEngine(context);
         }
+        // CT2-19：兜底清扫 —— 上述循环只覆盖 CONTEXT_ENGINES 的键；若某 context 曾进入
+        //   CONTEXT_RULES_BY_CONTEXT / DISPATCHED_ROUTES / STOPPED_CAPS 但引擎已先被移除，
+        //   或 onClose 钩子未能挂上，则其强引用仍残留。此处以「已显式标记关闭」为判据清一次。
+        //   注：Monitor 侧强键登记的同款清扫放在 route.lifecycle 桥接层（本类不得依赖 route.monitor，
+        //   否则 core.engine ↔ monitor 形成切片环）。
+        int pruned = RouteContextState.pruneClosedContexts();
+        if (pruned > 0) {
+            VerboseLogging.logInfoIfVerbose(LOGGER,
+                    "[RouteEngine] pruned {} closed context(s) left in strong-key registries (CT2-19)", pruned);
+        }
     }
 
     /**

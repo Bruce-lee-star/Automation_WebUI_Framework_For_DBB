@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.google.gson.Gson;
+import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
@@ -26,6 +27,41 @@ final class RolePickerPanelSync {
     static final Map<Page, String> LAST_SYNC_SIG = new ConcurrentHashMap<>();
 
     private RolePickerPanelSync() {}
+
+    /**
+     * CT2-20：释放指定 Page 的同步签名缓存（页面关闭 / 拾取会话结束）。
+     *
+     * <p>{@code LAST_SYNC_SIG} 以 {@link Page} <b>强引用</b>为键，而清理点此前全仓唯一
+     * （{@code RolePickerCommandEngine} 重编号后为强制刷新 ETag 而 remove）——
+     * 普通拾取会话的页面<b>永不被移除</b>，长跑套件下按 Page 无界增长并阻止已关闭 Page 回收。
+     */
+    static void cleanupPage(Page page) {
+        if (page != null) {
+            LAST_SYNC_SIG.remove(page);
+        }
+    }
+
+    /** CT2-20：释放属于指定 Context 的全部同步签名缓存。 */
+    static void cleanupContext(BrowserContext ctx) {
+        if (ctx == null) {
+            return;
+        }
+        LAST_SYNC_SIG.keySet().removeIf(p -> {
+            if (p == null) {
+                return true;
+            }
+            try {
+                return p.context() == ctx;
+            } catch (Exception ignore) {
+                return true; // 页面已关闭，保守清理
+            }
+        });
+    }
+
+    /** CT2-20：清空全部同步签名缓存（JVM 关闭 / 集群重置）。 */
+    static void clearAll() {
+        LAST_SYNC_SIG.clear();
+    }
 
     /**
      * 【关键修复"整页/区域扫描后 iframe 内元素不进面板"】
@@ -61,18 +97,21 @@ final class RolePickerPanelSync {
                                                 try {
                                                     List<String> fp = RolePickerFramePath.computeFramePath(page, f);
                                                     if (fp != null && !fp.isEmpty()) e.setFramePath(fp);
-                                                } catch (Exception ignore) {}
+                                                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }
                                             }
                                             String key = RolePickerPickParser.pickDedupKey(m, e);
                                             if (key != null && !key.isEmpty()) {
-                                                if (isDeletedKeyInState(javaPickBySig, key, e, m)) continue;
+                                                //  N-18：此处原有「会话级已删集合（STATE_DELETED）命中即跳过」的分支，
+                                                //    自删除语义改为「仅从当前拾取列表移除、允许重新拾取」后该集合已无写入点，
+                                                //    判定恒为 false —— 纯死分支，已连同那个死状态一起删除。
+                                                //    留着它的唯一效果是让人误以为「已删元素复活」已被防住。
                                                 RolePickerPickParser.mergePickIntoMap(javaPickBySig, key, e);
                                             }
-                                        } catch (Exception ignore) {}
+                                        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }
                                     }
                                 }
                             }
-                        } catch (Exception ignore) {}
+                        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }
                     }
                 }
             } catch (Exception fe) {
@@ -84,7 +123,7 @@ final class RolePickerPanelSync {
                     } else {
                         log.warn("[picker] failed to merge iframe picks into the main frame (url={}): {}", f.url(), feMsg);
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }
             }
         }
     }
@@ -109,39 +148,44 @@ final class RolePickerPanelSync {
      */
     static void syncPanelToBrowser(Page page, LinkedHashSet<String> pageClasses, LinkedHashMap<String, RoleEntry> state, boolean overwriteNos) {
         if (page == null || page.isClosed() || state == null) return;
-        // 读者侧加锁前快照：state（即 javaPickBySig）写入方在 synchronized(state) 内结构修改，本读端此前未取锁即
-        // 两次遍历 state.values()，与派发线程并发写入存在 ConcurrentModificationException 风险。此处加同一把锁取
-        // 不可变快照，后续基于快照构建 ETag 签名与过滤列表，锁不延伸到 page.evaluate 阻塞调用。
-        List<RoleEntry> snap;
-        synchronized (state) { snap = new ArrayList<>(state.values()); }
-        try {
-            StringBuilder sig = new StringBuilder();
-            sig.append(pageClasses == null ? "*" : pageClasses.toString());
-            for (RoleEntry e : snap) {
+        //  N-20（doc 21 MEDIUM）：快照必须【在锁内完成对可变 RoleEntry 的全部读取】。
+        //  原实现只在锁内拷了 values() 的【引用】（浅快照），随后在锁外读 getPageClass / getSigKey /
+        //  getStrategy / getSelector / getIndex / getPickNos，并执行 GSON.toJson(filtered)（会遍历
+        //  RoleEntry 的全部字段）、还要打印 diag 日志 —— 而写方（派发线程）正是在 synchronized(state)
+        //  内改结构并（如 setFramePath）改字段：读方在锁外读这些可变字段属数据竞态，可能观测到撕裂 /
+        //  半更新状态（getPickNos 还可能返回正在被修改的集合）。
+        //  现把「过滤 + ETag 签名 + JSON 序列化 + diag 日志」整体移入同一把锁；锁【不】延伸到
+        //  page.evaluate 阻塞调用与 CHM 读写，避免把网络等待带进临界区。
+        StringBuilder sig = new StringBuilder();
+        sig.append(pageClasses == null ? "*" : pageClasses.toString());
+        List<RoleEntry> filtered = new ArrayList<>();
+        String json;
+        synchronized (state) {
+            for (RoleEntry e : state.values()) {
                 String pc = e.getPageClass();
-                if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) {
-                    sig.append('\u0001').append(e.getSigKey()).append('|')
-                       .append(e.getStrategy()).append('|').append(e.getSelector())
-                       .append('|').append(e.getIndex())
-                       .append('|').append(e.getPickNos() == null ? "" : e.getPickNos());
+                if (pageClasses != null && pc != null && !pc.isEmpty() && !pageClasses.contains(pc)) {
+                    continue;
                 }
+                filtered.add(e);
+                sig.append('\u0001').append(e.getSigKey()).append('|')
+                   .append(e.getStrategy()).append('|').append(e.getSelector())
+                   .append('|').append(e.getIndex())
+                   .append('|').append(e.getPickNos() == null ? "" : e.getPickNos());
             }
+            json = GSON.toJson(filtered);
+            for (RoleEntry e : filtered) {
+                Map<Object, Object> keySrc = new LinkedHashMap<>();
+                keySrc.put("_sigKey", e.getSigKey());
+                keySrc.put("_pageClass", e.getPageClass());
+                log.info("[picker][diag-sync] write-back key={} sigKey={} strategy={} pickNos={}",
+                        RolePickerPickParser.pickDedupKey(keySrc, e), e.getSigKey(), e.getStrategy(), e.getPickNos());
+            }
+        }
+        try {
             String newSig = sig.toString();
             String prev = LAST_SYNC_SIG.get(page);
             if (newSig.equals(prev)) return;
             LAST_SYNC_SIG.put(page, newSig);
-            List<RoleEntry> filtered = new ArrayList<>();
-            for (RoleEntry e : snap) {
-                String pc = e.getPageClass();
-                if (pageClasses == null || pc == null || pc.isEmpty() || pageClasses.contains(pc)) filtered.add(e);
-            }
-            String json = GSON.toJson(filtered);
-            for (RoleEntry e : filtered) {
-                log.info("[picker][diag-sync] write-back key={} sigKey={} strategy={} pickNos={}", RolePickerPickParser.pickDedupKey(new LinkedHashMap<Object, Object>() {{
-                    put("_sigKey", e.getSigKey());
-                    put("_pageClass", e.getPageClass());
-                }}, e), e.getSigKey(), e.getStrategy(), e.getPickNos());
-            }
             String delJson = "[]";
             String syncJsonB64 = java.util.Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -150,38 +194,8 @@ final class RolePickerPanelSync {
             pickerEval(page, RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
                     java.util.Arrays.asList(syncJsonB64, syncDelB64, overwriteNos));
         } catch (Exception syncE) {
-            try { log.warn("[picker] failed to sync the panel to the browser: {}", syncE.getMessage()); } catch (Exception ignore) {}
+            try { log.warn("[picker] failed to sync the panel to the browser: {}", syncE.getMessage()); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }
         }
     }
 
-    /**
-     * 判断某 iframe 元素是否已被用户删除（命中会话级已删集合 RolePickerSessionState.STATE_DELETED）。
-     * 删除时 collectDeleteKeys 会把多种键形态都记入 dead 集合（pickDedupKey key / _sig / 去索引 _sig /
-     * _sigKey / RoleEntry.sigKey），而这里若只比对单一 key 可能漏命中 → iframe 残留元素经
-     * mergeFramePicksToMain 复活。故把与删除同口径的候选键全部拿去比对，任一命中即视为已删。
-     */
-    static boolean isDeletedKeyInState(LinkedHashMap<String, RoleEntry> map, String key,
-                                       RoleEntry e, Map<Object, Object> m) {
-        try {
-            Set<String> dead = RolePickerSessionState.STATE_DELETED.get(map);
-            if (dead == null || dead.isEmpty()) return false;
-            if (key != null && !key.isEmpty() && dead.contains(key)) return true;
-            if (e != null && e.getSigKey() != null && dead.contains(e.getSigKey())) return true;
-            if (m != null) {
-                Object sig = m.get("_sig");
-                Object pcObj = m.get("_pageClass");
-                String pcStr = (pcObj != null && !String.valueOf(pcObj).isEmpty())
-                        ? String.valueOf(pcObj) : (e != null && e.getPageClass() != null ? e.getPageClass() : "");
-                if (sig != null) {
-                    String sigPc = pcStr + "|" + String.valueOf(sig);
-                    if (dead.contains(sigPc)) return true;
-                }
-                Object sk = m.get("_sigKey");
-                if (sk != null && dead.contains(String.valueOf(sk))) return true;
-            }
-            return false;
-        } catch (Exception ignore) {
-            return false;
-        }
-    }
 }

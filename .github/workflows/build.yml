@@ -33,20 +33,34 @@ jobs:
         run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
 
       - name: Build and verify (gates: compile + Checkstyle + SpotBugs + unit + CVE + summary report)
-        # -DskipITs：主门禁不依赖 SIT 凭据/浏览器环境；真实 IT 见下方 e2e job。
+        # CT2-01：本 step 只覆盖根 reactor 的 6 个框架模块（pw-core/pw-reports/rest-assured-core/
+        #   pw-web-ui/pw-codegen/pw-route）—— test-automation 是【独立构建单元】（已移出本仓库），
+        #   其真实浏览器 IT 由下方 e2e job 两段式执行（stage1 install → stage2 verify + 断言）。
+        # -DskipITs：框架模块自身无 failsafe IT，保留以显式声明「主门禁不依赖浏览器环境」。
         # -Psca：A-2 治理——激活 SCA profile，在 package 阶段 install 兄弟模块到 .m2（供 OSV-Scanner
         #        解析 intra-project 兄弟模块），并在 verify 阶段跑 CVE 门禁；普通本地构建不加 -Psca 则不污染 .m2。
-        run: mvn -B verify -Psca -DskipITs -Dtags='not @skip'
+        # N-02 修复（判序倒置）：本 step 显式跳过 Maven 内嵌的 CVE 门禁 —— OSV-Scanner 直到下方
+        #   "Install OSV-Scanner" step 才安装，此处跑只会走 cve-gate.ps1 的 fail-open 分支（exit 0），
+        #   属"无消费者的空跑"。CVE 统一由装好 OSV 后的独立 step（OSV_CVE_GATE_REQUIRED=true）强制执行。
+        #   保留 -Psca 是必要的：其 package 阶段会把兄弟模块 install 到 .m2，供 OSV 解析 intra-project 依赖。
+        run: mvn -B verify -Psca -DskipITs -Dcve.gate.skip=true
 
       - name: Checkstyle baseline gate (只减不增, A-1)
         # verify 已产出各模块 target/checkstyle-result.xml；当前 <error> 总数不得超过根 checkstyle-baseline.xml。
         # maven-checkstyle-plugin:3.6.0 的 check 目标不支持 <baseline>，故以 CI 计数比对实现祖父化（存量 1325 条）。
+        # N-10 修复：① `grep -c` 零命中时退出码为 1，而 GH Actions 默认 shell 为 `bash -eo pipefail`
+        #   → 某模块把违规清零（正是门禁的目标状态！）反而会 abort 整步造成"假红"，故所有 grep -c 兜 `|| true`；
+        #   ② find 补 -type f（原实现可能把目录也喂给 grep）；
+        #   ③ 逐模块打印计数，便于定位。残留局限（未修）：仍只比总量，违规在模块间"搬家"抓不到
+        #      —— 根治需按模块重建基线（现有 checkstyle-baseline.xml 的 file 路径仍是改名前的 core/... 形态）。
         run: |
-          BASE=$(grep -c '<error' checkstyle-baseline.xml)
+          BASE=$(grep -c '<error' checkstyle-baseline.xml || true); BASE=${BASE:-0}
           CUR=0
           while IFS= read -r f; do
-            n=$(grep -c '<error' "$f"); CUR=$((CUR + n))
-          done < <(find . -path '*/target/checkstyle-result.xml')
+            n=$(grep -c '<error' "$f" || true); n=${n:-0}
+            echo "  $f -> $n"
+            CUR=$((CUR + n))
+          done < <(find . -type f -path '*/target/checkstyle-result.xml')
           echo "Checkstyle violations: current=$CUR baseline=$BASE"
           if [ "$CUR" -gt "$BASE" ]; then
             echo "::error::Checkstyle 违规数增加（$CUR > $BASE），请修复新增违规或同步缩减基线（checkstyle-baseline.xml）"
@@ -61,18 +75,39 @@ jobs:
           OSV_CVE_GATE_REQUIRED: "true"
         run: pwsh tools/cve-gate.ps1
 
-      - name: Upload Serenity reports
+      - name: Upload gate evidence (surefire + checkstyle + spotbugs + serenity if any)
+        # N-01② 修复：原实现固定上传 '**/target/site/serenity/**' 且 if-no-files-found: error ——
+        #   但全仓未接线 serenity-maven-plugin（0 命中，见 doc 21 N-01②），framework 模块的单测
+        #   不产出该目录（实测：全仓无任何 */target/site/serenity）→ 该 step 必然报错；
+        #   再叠加 if: always()，于是一次失败后再红一次，把 build job 锁死在红。
+        #   现改为上传"确实存在"的门禁证据，缺失时降级为 warn（不制造结构性红）。
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: serenity-reports
-          path: '**/target/site/serenity/**'
-          if-no-files-found: error
+          name: framework-gate-reports
+          path: |
+            **/target/surefire-reports/**
+            **/target/checkstyle-result.xml
+            **/target/spotbugsXml.xml
+            **/target/site/serenity/**
+          if-no-files-found: warn
 
   e2e:
-    # 转正（2026-09-20，CI-E2E 修复）：移除 continue-on-error —— 真实浏览器 IT 失败如实报红；
-    # 并已把 `if` 放开到 pull_request（见下），使 PR 合并前即跑真实浏览器 IT（需 SIT 凭据对 PR 可用）。
-    # 剩余仓库设置（代码改不了）：Settings → Branches → 分支保护规则，将本 workflow 设为 required status check。
+    # CT2-01（FATAL）修复：test-automation 已物理移出本仓库（同级目录/dedicated repo），
+    # 成为【独立构建单元】（其 pom 的 parent 用 <relativePath/>，从 .m2 解析框架 parent 与 jar）。
+    # 因此本 job 改为【两段式】显式构建，并加【可证伪断言】，杜绝「e2e job 结构性空转 = 假绿」：
+    #   stage 1：根目录 install 6 个框架模块（含 parent pom）到 .m2；
+    #   stage 2：在 test-automation 内 verify，跑真实浏览器 IT；
+    #   gate   ：断言 failsafe 汇总存在、**实际执行**用例数（completed − skipped）> 0 且 errors/failures = 0
+    #            —— 「全部被跳过」与「测试失败」都不得蒙过门禁（详见下方 Gate step）。
+    # ⚠️ 需人工完成的仓库设置（代码改不了）：
+    #   ① 仓库变量 TEST_AUTOMATION_REPOSITORY = "Bruce-lee-star/test-automation"（该仓库已于 2026-09-23 建立）；
+    #      未配置时本 job 会明确报红（而非假绿）——这正是本项整改的意图。
+    #   ② token：该仓库当前为【公开】（GitHub 默认），回退 github.token 即可读取；
+    #      若改为【私有】或跨组织，需 Repository Secret TEST_AUTOMATION_TOKEN（有 repo 读权限的 PAT）。
+    #      ⚠️ 安全提醒：该仓库内容含 SIT 主机名/测试账号/网银流程等内部材料，公开可见存在合规风险，
+    #         如需收敛请先在 GitHub Settings 把仓库改为 Private（本 workflow 无需改动）。
+    #   ③ Settings → Branches → 分支保护规则，将本 workflow 设为 required status check。
     needs: build
     if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
@@ -83,8 +118,17 @@ jobs:
       DBB_OTP_URL_O38: ${{ secrets.DBB_OTP_URL_O38 }}
       DBB_OTP_URL_O88: ${{ secrets.DBB_OTP_URL_O88 }}
     steps:
-      - name: Checkout
+      - name: Checkout framework (into ./framework)
         uses: actions/checkout@v4
+        with:
+          path: framework
+
+      - name: Checkout test-automation (独立构建单元，同级目录 ./test-automation)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.TEST_AUTOMATION_REPOSITORY }}
+          path: test-automation
+          token: ${{ secrets.TEST_AUTOMATION_TOKEN || github.token }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -94,9 +138,21 @@ jobs:
           cache: maven
 
       - name: Install Playwright browsers
+        working-directory: framework
         run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
 
-      - name: Run self-contained browser E2E (headless Playwright chromium, no external service)
+      - name: Stage 1 — install framework modules to local .m2 (incl. parent POM)
+        # test-automation 的 parent 用 <relativePath/>（不做本地父查找）→ 必须先 install parent + 6 个子模块，
+        # 否则 stage 2 连 pom 都解析不了。故意不用 -pl/-am（那正是原来结构性空转的根因）。
+        # ⑥ N-22（2026-09-23，日志分析所得）：本 stage 的 `-DskipTests` 此前【无效】—— 根 pom 的 surefire
+        #    配置写死了 <skipTests>false</skipTests>，覆盖命令行属性，于是"只装不测"实际每次全量跑单测
+        #    （实测 4 份构建日志均含 103~112 个测试类、无一条 "Tests are skipped"）：既拖慢本 stage，
+        #    又把 stage 2 的 E2E 与单测稳定性绑在一起。已改为 <skipTests>${skipTests}</skipTests> +
+        #    属性默认 false → 现在这里真的只装不测（实测输出 "Tests are skipped."）。
+        working-directory: framework
+        run: mvn -B install -Psca -DskipTests -DskipITs
+
+      - name: Stage 2 — run self-contained browser E2E in test-automation
         # F-05 修复（2026-09-21）：原命令 `mvn -B verify -Dtags='not @skip'` 结构性必红，三重叠加：
         #   ① CI runner 无显示器，而 serenity.conf 默认 headless:false → 显式 -Dplaywright.browser.headless=true；
         #   ② CI 只安装 Playwright 下载的 chromium，而 serenity.conf 默认 channel:"chrome"
@@ -106,5 +162,59 @@ jobs:
         #   决策（P0-5 ③）：route-demo 演示服务本期不纳入 CI（避免为演示服务引入容器/常驻进程的脆弱性）；
         #      需要跑那 93 条场景时，在可达 8888/8899 的机器上执行：
         #        mvn -f route-demo-service/pom.xml spring-boot:run            # 8888（另一终端）
-        #        mvn -B -pl test-automation -am verify -Dtags='@route or @api' -Dplaywright.browser.headless=true
-        run: mvn -B verify -Dtags='( @e2e-sandbox or @picker ) and not @skip' -Dplaywright.browser.headless=true -Dplaywright.browser.channel=
+        #        mvn -B -f test-automation/pom.xml verify -Dtags='@route or @api' -Dplaywright.browser.headless=true
+        #   ④ CT2-01 补记（2026-09-23，本地全量实测）：上面 ③ 的标签收敛【不够】——
+        #      test-automation 的 failsafe includes 是 `**/*IT.java`（无条件全跑），而 `-Dtags` 只经
+        #      `systemPropertyVariables` 注入 `cucumber.filter.tags`；那三个用 @Suite + @ConfigurationParameter
+        #      【硬编码】label 的运行器（ParallelLogon / ConcurrentLogon / RouteDemoParallelSmoke）会无视该属性
+        #      照样执行，且它们分别依赖公司 SIT 网络/凭据与本地 8888 演示服务
+        #      → 本 job 在 runner 上【结构性必红】（不是假绿，而是结构性真红；实测 13 例全 error）。
+        #      → 显式收窄到自包含运行器（-Dit.test 会覆盖 includes/excludes，语义无歧义）；
+        #        三个外部依赖运行器已在 test-automation/pom.xml 的 failsafe <excludes> 中默认排除，
+        #        需要时按 pom 注释给出的命令定向执行（不丢覆盖）。
+        #   ⑤ P1-5 场景级收口（2026-09-23）：除运行器级排除外，依赖【公司 SIT / 外网 / 演示服务】的
+        #      13 个 feature 已逐个打 @skip（SIT 5 / 外网 2 / 演示服务 6）→ 默认 `mvn verify`（not @skip）
+        #      只跑自包含场景（e2e_sandbox / picker_smoke），本地无需外部服务即绿（实测 EXIT=0，
+        #      IT 实执行 11）；@skip 不影响定向 runner（其过滤表达式均不含 not @skip）。
+        working-directory: test-automation
+        run: mvn -B verify -Dit.test=CucumberTestRunnerIT,CucumberE2ESandboxRunnerIT -Dtags='( @e2e-sandbox or @picker ) and not @skip' -Dplaywright.browser.headless=true -Dplaywright.browser.channel=
+
+      - name: Gate — assert real ITs actually executed (anti false-green)
+        # CT2-01：`if-no-files-found: error` 只针对 serenity 报告目录，防不住「模块没跑」。
+        # 硬断言：① failsafe 汇总必须存在；② 【实际执行】用例数（completed − skipped）> 0；
+        #   ③ errors/failures 必须为 0（双保险：即便将来有人加 -Dmaven.test.failure.ignore，门禁仍会拦住）。
+        # 为何用 failsafe-summary.xml 而不是累加 TEST-*.xml：后者会【残留历次运行】的报告
+        #   （failsafe 不清理该目录；本地实测残留导致统计为 142/118，而本次实际只有 129/118）；
+        #   summary 只反映本次运行，是唯一可靠的运行域判据。
+        # 为何必须减去 skipped：主运行器按标签过滤后会产生大量 skipped（实测 129 中 118 例 skip），
+        #   只看 completed 则「全部被跳过」也会通过 —— 那与「模块没跑」同为空转假绿。
+        working-directory: test-automation
+        run: |
+          summary=target/failsafe-reports/failsafe-summary.xml
+          if [ ! -f "$summary" ]; then
+            echo "::error::未找到 $summary —— E2E 未真正执行（假绿）"
+            exit 1
+          fi
+          num() { grep -o "<$1>[0-9]*</$1>" "$summary" | head -1 | grep -o '[0-9]*'; }
+          completed=$(num completed)
+          skipped=$(num skipped)
+          errors=$(num errors)
+          failures=$(num failures)
+          executed=$(( ${completed:-0} - ${skipped:-0} ))
+          echo "IT completed: ${completed:-0}, skipped: ${skipped:-0}, executed: $executed, errors: ${errors:-0}, failures: ${failures:-0}"
+          if [ "$executed" -le 0 ]; then
+            echo "::error::实际执行的 IT 用例数为 0（全部被跳过）—— 门禁空转（假绿）"
+            exit 1
+          fi
+          if [ "${errors:-0}" -ne 0 ] || [ "${failures:-0}" -ne 0 ]; then
+            echo "::error::IT 存在错误/失败（errors=${errors:-0}, failures=${failures:-0}）"
+            exit 1
+          fi
+
+      - name: Upload Serenity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serenity-e2e-reports
+          path: 'test-automation/target/site/serenity/**'
+          if-no-files-found: warn

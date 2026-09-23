@@ -6,13 +6,14 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleElement;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.utils.NLSUtils;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigKeys;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.ConfigSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.microsoft.playwright.Frame;
 import java.util.*;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -102,8 +103,70 @@ public final class RoleElementPicker {
     // 同页并发 evaluate 串行化（T5-1 ⑤）：Playwright Page 非线程安全，主循环线程与 Playwright 事件线程
     // 可能在同一 Page 上并发调用 evaluate。按 Page 加锁串行化，避免协议层交错/覆盖；
     // 锁仅在 evaluate 调用期间持有，evaluate 返回后才触发导航回调，回调不会在持锁期间运行，故不会自死锁。
-    private static final ConcurrentHashMap<Object, Object> EVAL_LOCKS = new ConcurrentHashMap<>();
+    //
+    //  CT2-09 补全（doc 21：机制已补齐，但"仍为强引用键 + 依赖受 isCodegenEnabled() 门控的清理钩子 + 无弱引用兜底"）：
+    //    改为【弱引用键】的同步 Map。清理钩子（releaseEvalLocksForPage / ForContext，接在 cleanupPage
+    //    与 context close 上）负责"应清能清"；弱键兜底负责"任何路径漏清也不会变成永久泄漏"——
+    //    典型缺口：cleanupContext 受 isCodegenEnabled() 门控，若运行中开启 codegen、收尾前把配置关掉，
+    //    清理即被绕过，强键下这些 Page/Frame 会永久驻留并阻止其回收（长跑套件累积）。
+    //  安全性：调用方在 pickerEval 期间始终【强持有】该 Page/Frame 引用 → 键不会被中途回收，
+    //    "同一 Page 拿到同一把锁"的串行化保证不受影响；值是无反向引用的裸 Object，不会阻止键回收。
+    //  代价：evalLockOf 查表走单一监视器（仅"查表"期间持锁，不含 evaluate 本身），对 codegen 工具可忽略。
+    private static final Map<Object, Object> EVAL_LOCKS = Collections.synchronizedMap(new WeakHashMap<>());
     private static Object evalLockOf(Object key) { return EVAL_LOCKS.computeIfAbsent(key, k -> new Object()); }
+
+    /** CT2-09：当前 evaluate 串行锁条目数（可观测 —— 非零且持续增长即说明清理钩子未被触达）。 */
+    static int evalLockCount() { return EVAL_LOCKS.size(); }
+
+    /**
+     * CT2-09：释放与指定 Page 相关的 evaluate 串行锁（键可能是该 Page 本身，也可能是其上的 Frame）。
+     *
+     * <p>{@code EVAL_LOCKS} 以 Page/Frame <b>强引用</b>为键且此前<b>只增不减</b>：长跑套件下每个
+     * 用过 {@code pickerEval} 的页面都会永久占用一条记录，并阻止已关闭的 Page 被回收。
+     */
+    static void releaseEvalLocksForPage(Page page) {
+        if (page == null) {
+            return;
+        }
+        EVAL_LOCKS.keySet().removeIf(k -> {
+            if (k == null || k == page) {
+                return true;
+            }
+            try {
+                return k instanceof Frame && ((Frame) k).page() == page;
+            } catch (Exception ignore) {
+                return true; // 句柄已失效，保守清理
+            }
+        });
+    }
+
+    /** CT2-09：释放属于指定 Context 的全部 evaluate 串行锁（context 关闭钩子入口）。 */
+    static void releaseEvalLocksForContext(BrowserContext ctx) {
+        if (ctx == null) {
+            return;
+        }
+        EVAL_LOCKS.keySet().removeIf(k -> {
+            if (k == null) {
+                return true;
+            }
+            try {
+                if (k instanceof Page) {
+                    return ((Page) k).context() == ctx;
+                }
+                if (k instanceof Frame) {
+                    return ((Frame) k).page().context() == ctx;
+                }
+                return false;
+            } catch (Exception ignore) {
+                return true; // 句柄已失效，保守清理
+            }
+        });
+    }
+
+    /** CT2-09：清空全部 evaluate 串行锁（JVM 关闭 / 集群重置）。 */
+    static void clearEvalLocks() {
+        EVAL_LOCKS.clear();
+    }
     static Object pickerEval(Page page, String script) {
         synchronized (evalLockOf(page)) { return page.evaluate(script); }
     }
@@ -137,7 +200,7 @@ public final class RoleElementPicker {
         if (pageNames != null) {
             for (Page p : pageNames.keySet()) {
                 try { if (!p.isClosed()) pickerEval(p, RolePickerScripts.SET_PICK_MODE_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_MODE, jsMode)); }
-                catch (Exception ignore) {}
+                catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPicker", ignore); }
             }
         }
     }
@@ -193,6 +256,27 @@ public final class RoleElementPicker {
                 || System.getenv("GITLAB_CI") != null
                 || System.getenv("GITHUB_ACTIONS") != null
                 || System.getenv("TEAMCITY_VERSION") != null;
+    }
+
+    /**
+     * CT2-25：交互式等待（拾取完成 / 代码面板关闭）的超时上界（毫秒）。
+     *
+     * <p>原实现两处 {@code waitForFunction} 用 {@code setTimeout(0)} = <b>永不超时</b>：
+     * 用户遗忘拾取会话时，调用线程被<b>永久阻塞</b>（只能杀进程）。现改为读
+     * {@link ConfigKeys#PICKER_WAIT_TIMEOUT_MS}（默认 30 分钟）；超时后走既有 catch 分支
+     * —— 拾取降级为「生成已拾取子集」、代码面板静默结束，不再无限挂起。
+     *
+     * <p>配置值 {@code ≤0} 时返回 0（维持「不超时」原语义），作为受控本地调试的逃生门。
+     */
+    private static double pickerWaitTimeoutMs() {
+        String raw = ConfigSource.resolve(ConfigKeys.PICKER_WAIT_TIMEOUT_MS.key(),
+                ConfigKeys.PICKER_WAIT_TIMEOUT_MS.defaultValue());
+        try {
+            double v = Double.parseDouble(raw.trim());
+            return v > 0 ? v : 0;
+        } catch (Exception e) {
+            return Double.parseDouble(ConfigKeys.PICKER_WAIT_TIMEOUT_MS.defaultValue());
+        }
     }
 
     /**
@@ -275,7 +359,7 @@ public final class RoleElementPicker {
         // 但导航后才出现的 iframe。若 start() 不注册，仅对顶层文档 page.evaluate 注入，iframe 因未拿到脚本
         // 而无点击监听，表现为"iframe 内点击拾取不到 / postMessage 上送不到顶层"。
         // 注意 openPanel/followPage 也会调用本注册，这里幂等（同 context 同 nls 跳过），重复调用安全。
-        try { registerContextInitScripts(page.context(), nlsReverseJson); } catch (Exception ignore) {}
+        try { registerContextInitScripts(page.context(), nlsReverseJson); } catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPicker", ignore); }
         // 兼容两种格式：新格式 {exact, templates} 拆开注入；旧格式（纯精确表）整体作为 exact。
         // 企业级优化：把"会话开关置位 + nls 反向表注入 + START_SCRIPT 开启监听"合并进同一次 page.evaluate，
         // 点击"开始拾取"只付出 1 次 Java↔浏览器往返（原来 2 次串行），按钮即时响应。
@@ -312,7 +396,7 @@ public final class RoleElementPicker {
             // ② 注册 onFrameAttached 监听，使 start 之后动态创建的 iframe 一附加即自动注入拾取脚本
             //    （修复"动态 iframe 内元素点不到、生成不出 switchToFrame 包裹 step"）。
             RolePickerScriptInjector.registerFrameInjection(page, nlsReverseJson);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPicker", ignore); }
         // 诊断：start() 注入后确认监听真正挂载（排查"点击没反应"究竟是注入失败还是被后续覆盖）。
         try {
             String d = pickerEval(page, RolePickerScripts.START_DIAG_JS).toString();
@@ -327,7 +411,7 @@ public final class RoleElementPicker {
             try {
                 String __o = safeOrigin(page.url());
                 if (!__o.isEmpty()) RolePickerSessionState.LAST_PICK_ORIGIN.put(page, __o);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPicker", ignore); }
         } catch (Exception e) { log.warn("[picker][start] failed to read diagnostics: {}", e.getMessage()); }
     }
 
@@ -448,7 +532,7 @@ public final class RoleElementPicker {
             // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，
             // 与 onFrameNavigated 兜底同源，覆盖 frame 内嵌 frame 的复合情况。
             RolePickerScriptInjector.registerFrameInjection(page, nlsReverseJson);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPicker", ignore); }
     }
 
 
@@ -526,6 +610,9 @@ public final class RoleElementPicker {
      * 若 {@code nlsFile} 非 null，拾取交互角色元素时会用 a11y name 反查 nls key，
      * 命中则生成的 {@code @RoleElement} 直接复用真实 key，未命中回退 slug。
      *
+     * <p>CT2-25：等待用户操作带<b>可配置上界</b>（{@code picker.wait.timeout.ms}，默认 30 分钟）；
+     * 超时即降级为「生成已拾取子集」，不再像原实现那样永久阻塞。
+     *
      * @param page      Playwright Page（须已导航到目标页，且为 headed 浏览器）
      * @param nlsFiles   nls 文件路径（classpath 相对或文件系统绝对）；null 表示不反查
      * @return 已拾取的 {@link RoleEntry} 列表（可能为空的草稿）
@@ -540,7 +627,7 @@ public final class RoleElementPicker {
         start(page, reverse);
         try {
             page.waitForFunction(RolePickerScripts.WAIT_PICK_DONE_JS, null,
-                    new Page.WaitForFunctionOptions().setTimeout(0));
+                    new Page.WaitForFunctionOptions().setTimeout(pickerWaitTimeoutMs()));
         } catch (Exception e) {
             log.warn("[picker] Pick wait ended (timeout or interruption); generating the already-picked subset.");
         }
@@ -586,7 +673,8 @@ public final class RoleElementPicker {
     /**
      * 在页面上弹出一个可复制的代码面板（类似 {@code page.pause()} 的浮层）。
      * 面板含只读代码框 + 「复制代码」/「关闭」按钮；点「关闭」后本方法返回。
-     * 阻塞等待用户关闭（不自动超时，直至用户点「关闭」或页面跳转）。
+     * 阻塞等待用户关闭（CT2-25：带可配置上界 {@code picker.wait.timeout.ms}，默认 30 分钟；
+     * 超时或页面跳转即结束，不再无限挂起）。
      *
      * @param code 要展示/复制的源码
      */
@@ -601,7 +689,7 @@ public final class RoleElementPicker {
         log.info("[picker] Code panel opened: click 'Copy Code' to copy, click 'Close' to finish.");
         try {
             page.waitForFunction(RolePickerScripts.WAIT_CODE_PANEL_CLOSED_JS, null,
-                    new Page.WaitForFunctionOptions().setTimeout(0));
+                    new Page.WaitForFunctionOptions().setTimeout(pickerWaitTimeoutMs()));
         } catch (Exception e) {
             log.warn("[picker] code panel wait ended (timeout or page navigation).");
         }

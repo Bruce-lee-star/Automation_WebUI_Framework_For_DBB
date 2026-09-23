@@ -39,6 +39,19 @@
             <artifactId>jackson-core</artifactId>
         </dependency>
 
+        <!-- CT2-17：core 首次引入模块内单测（LazyInit reset 语义 + AsyncPool 超时裁决器）。
+             纯 JUnit 5（Jupiter），不依赖 Serenity —— 与 pw-route 的测试依赖声明方式一致。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

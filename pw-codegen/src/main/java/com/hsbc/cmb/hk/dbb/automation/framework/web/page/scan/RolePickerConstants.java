@@ -44,7 +44,9 @@ final class RolePickerConstants {
     //  panel-core-a.js / picker-core-b2.js 全程比对 'idle' / 'manual' / 'scanPage' / 'scanRegion'。
     //  修复评审 F-06：原 scan_page / scan_region（下划线）与 JS 的 scanPage / scanRegion（驼峰）错位，
     //  导致窗口模式判定恒不成立 —— 扫描态按钮禁用/提示失效、focusin 键盘可达拾取入口永久 early-return（静默失效）。
-    //  契约由 RolePickerModeContractTest 以「JS 实读字面量」方式守护。
+    //  契约由 START_SCRIPT / PANEL_SCRIPT 的 JS 资源 + tools/validate_picker_js.js 在构建期
+    //    node --check 兜底（含组合体就地校验）；Java 侧不另设 phantom 测试（原注释引用的
+    //    RolePickerModeContractTest 并不存在，属 A-03 / doc 22 揭示的虚假引用）。
     static final String MODE_IDLE = "idle";
     static final String MODE_MANUAL = "manual";
     static final String MODE_SCAN_PAGE = "scanPage";
@@ -79,6 +81,24 @@ final class RolePickerConstants {
     static final long TIMEOUT_NLS_CACHE_TTL_MS = 5L * 60 * 1000;
     /** NLS 缓存 TTL 系统属性名。 */
     static final String NLS_CACHE_TTL_PROPERTY = "rolePicker.nlsCacheTtlMs";
+    /**
+     * 面板会话最长存活时间（毫秒）—— 超过即自动结束会话并释放面板（N-19，doc 21）。
+     *
+     * <p><b>要防的缺陷</b>：面板主循环是 {@code while (true)}，且它跑在<b>调用者线程</b>上（本模块不创建
+     * 任何线程）。其退出条件只有「根页关闭 / 无存活页 / 线程中断」三类 —— 若这些事件因异常丢失
+     * （{@code onClose} 未回退、{@code rootClosed} 未置位、浏览器侧回调被吞），循环会以
+     * {@code poll(1000ms)} <b>无限阻塞调用线程</b>：表现为"面板点了没反应、用例永不结束"，
+     * 且没有任何超时兜底。</p>
+     *
+     * <p>默认 30 分钟：远长于任何正常拾取会话（正常为分钟级），又能在事件丢失时兜底结束。
+     * 可由系统属性 {@code rolePicker.panelSessionMaxMs} 覆盖；<b>非正值不视为"无上限"</b>，
+     * 而是回落默认值并告警（与 N-16 的页面超时纪律一致：{@code 0} 表示无限等待属隐患，
+     * 需要更长会话请显式给正数，例如 240 分钟）。</p>
+     */
+    static final long TIMEOUT_PANEL_SESSION_MAX_MS = 30L * 60 * 1000;
+
+    /** 面板会话最长存活时间的系统属性名（覆盖 {@link #TIMEOUT_PANEL_SESSION_MAX_MS}）。 */
+    static final String PANEL_SESSION_MAX_PROPERTY = "rolePicker.panelSessionMaxMs";
 
     // ───────────────────────── CAP_* : 容量上限 ─────────────────────────
     /**  URL→类名映射上限。原实现无上限，每派生一个新 URL 的类名就登记一条、只增不减。 */

@@ -36,7 +36,7 @@ final class RolePickerFramePath {
                 d++;
                 cur = cur.parentFrame();
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerFramePath", ignore); }
         return d;
     }
 

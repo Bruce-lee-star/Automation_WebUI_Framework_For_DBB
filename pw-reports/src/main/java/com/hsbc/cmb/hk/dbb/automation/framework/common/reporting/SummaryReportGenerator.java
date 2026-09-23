@@ -465,7 +465,9 @@ public final class SummaryReportGenerator {
      *   <li><b>单次遍历缓冲</b>：ServiceLoader 惰性实例化 provider，先缓冲全部实例再复用，
      *       避免多次遍历导致重复实例化（原实现 write/clear 各遍历一次）。</li>
      *   <li><b>异常隔离</b>：逐个 provider 独立 try-catch，单个实现故障不影响其余实现与主报告。</li>
-     *   <li><b>write 全成功后才统一 clear</b>：防止多套件同 JVM 运行时失败记录跨套件累积（OOM 路径）。</li>
+     *   <li><b>只 clear write 成功的 sink</b>（N-05 修正）：防止多套件同 JVM 运行时失败记录跨套件累积
+     *       （OOM 路径）；同时保证 write 失败者的内存记录被<b>保留</b>以便重试 —— 若对失败者也无条件
+     *       clear，其记录将「既未落盘、也不再存在于内存」，报告侧直接显示"无监控失败"（假绿方向的数据丢失）。</li>
      * </ul>
      */
     private void writeMonitorFailureReports() {
@@ -486,12 +488,18 @@ public final class SummaryReportGenerator {
             }
 
             int totalOwners = 0;
+            //  N-05（doc 21 CRITICAL，假绿方向）：只允许 clear 那些 write【成功】的 sink。
+            //    原实现对所有 sink 无条件 clear —— 写失败者（磁盘满/权限/序列化异常等）的内存记录
+            //    既未落盘、又被清空，报告侧于是显示"无监控失败"：把"有失败"变成"没有失败"。
+            //    现记录成功集合，失败者保留记录（下次 write 自动重试，不静默丢数据）。
+            java.util.List<MonitorFailureReportSink> writtenSinks = new java.util.ArrayList<>();
             for (MonitorFailureReportSink sink : sinks) {
                 try {
                     totalOwners += sink.write();
+                    writtenSinks.add(sink);
                 } catch (Exception ex) {
-                    logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to write (isolated, others unaffected): {}",
-                            ex.getMessage());
+                    logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to write (isolated, others unaffected); "
+                            + "its in-memory records are RETAINED for retry (NOT cleared): {}", ex.getMessage());
                 }
             }
 
@@ -500,14 +508,22 @@ public final class SummaryReportGenerator {
                         + "see target/monitor-failures-by-owner.json", totalOwners);
             }
 
-            // 全部 write 完成后再清空（单个 sink 清空异常不影响其余）
-            for (MonitorFailureReportSink sink : sinks) {
+            //  仅清空 write 成功的 sink（单个 sink 清空异常不影响其余）
+            for (MonitorFailureReportSink sink : writtenSinks) {
                 try {
                     sink.clear();
                 } catch (Exception ex) {
                     logger.warn("[ApiMonitor] A MonitorFailureReportSink failed to clear (isolated): {}",
                             ex.getMessage());
                 }
+            }
+
+            if (writtenSinks.size() < sinks.size()) {
+                //  聚合计数的可见性要求（与 N-05 同源）：单条 warn 易被淹没，此处再给一条"部分写入"信号，
+                //  明确告知失败 sink 的记录被保留而非丢失 —— 报告不完整这件事本身必须可观测。
+                logger.warn("[ApiMonitor] monitor failure report PARTIALLY written: {}/{} sink(s) succeeded; "
+                                + "failed sink(s) keep their records for retry (no silent data loss)",
+                        writtenSinks.size(), sinks.size());
             }
         } catch (Exception ex) {
             logger.warn("[ApiMonitor] Exception writing monitor failure report (main report unaffected): {}", ex.getMessage());

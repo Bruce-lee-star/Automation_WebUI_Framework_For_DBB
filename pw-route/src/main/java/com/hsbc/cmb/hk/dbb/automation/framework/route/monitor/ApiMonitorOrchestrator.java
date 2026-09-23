@@ -1,12 +1,15 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextState;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * API 监控清单编排器。
@@ -40,6 +43,23 @@ public class ApiMonitorOrchestrator {
 
     /** 已注册 context 关闭钩子的 context 集合（幂等，防止重复注册 onClose 监听） */
     private final Set<BrowserContext> closeHooks = ConcurrentHashMap.newKeySet();
+
+    /** CT2-19：关闭钩子注册失败累计数（非零 ⇒ 曾出现「钩子未挂上」的 context，已在失败时回滚登记）。 */
+    private final AtomicLong closeHookFailures = new AtomicLong();
+
+    /**
+     * N-07（doc 21 HIGH）：请求的功能不在监控清单中（或该功能为空）而<b>跳过注册</b>的累计次数。
+     *
+     * <p><b>为何必须计数</b>：非零意味着「调用方以为在监控、实际一条规则都没注册」——
+     * 该功能的 API 断言<b>整体不存在</b>，用例会静默全绿（假绿方向）。此计数供套件末尾 / CI 断言，
+     * 把"监控静默消失"变成可观测事实。</p>
+     */
+    private final AtomicLong missingFeatureSkips = new AtomicLong();
+
+    /** N-07：功能缺失（监控未注册）累计次数，供套件末尾 / CI 断言。 */
+    public long getMissingFeatureSkipCount() {
+        return missingFeatureSkips.get();
+    }
 
     private static volatile ApiMonitorOrchestrator INSTANCE;
 
@@ -85,8 +105,27 @@ public class ApiMonitorOrchestrator {
         Map<String, ApiMonitorConfig.EndpointConfig> endpoints =
                 config.getFeatures().get(featureKey);
         if (endpoints == null || endpoints.isEmpty()) {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                    "[ApiMonitor] 功能 '{}' 在监控清单中不存在或为空，跳过", featureKey);
+            boolean explicitConfigPath = configPath != null && !configPath.trim().isEmpty();
+            long skipped = missingFeatureSkips.incrementAndGet();
+            //  N-07（doc 21 HIGH，假绿方向）：原实现仅 verbose-gated INFO 后 return 0 —— 调用方把 0 当作
+            //    "已注册 / 无需监控"继续执行，于是该功能的 API 监控断言【整体不存在】而用例全绿。
+            //    处置：
+            //      ① 无论何种情况都留【非 verbose 门控】的 ERROR + 累计计数（绝不静默消失）；
+            //      ② 调用方【显式传入清单路径】却查不到该功能 → fail-closed 抛 RouteConfigException
+            //         （明确是清单内容/功能名错配，绝不降级为"无监控"）。
+            //    注意：本分支与"同 context 内去重返回 0"是两回事 —— 去重路径不受影响（见下方 reg.add）。
+            if (explicitConfigPath) {
+                throw new com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteException
+                        .RouteConfigException(
+                        "[ApiMonitor] 监控清单 '" + configPath + "' 中不存在功能 '" + featureKey
+                                + "'（或该功能为空）→ 拒绝静默降级为「无监控」：该功能的 API 断言会整体失效。"
+                                + "请核对清单内容与功能名；若该功能确实是可选的，请改用 2 参重载 "
+                                + "registerFeature(featureKey, page) 显式表达「未指定清单路径」的语义。",
+                        featureKey);
+            }
+            LOGGER.error("[ApiMonitor] 功能 '{}' 不在监控清单中（或为空）→ 本次不注册任何监控规则，"
+                            + "该功能的 API 断言将不存在（若非预期，请检查监控清单加载路径）。累计跳过次数={}",
+                    featureKey, skipped);
             return 0;
         }
 
@@ -161,10 +200,53 @@ public class ApiMonitorOrchestrator {
             try {
                 context.onClose(ignored -> deregisterContext(context));
             } catch (RuntimeException e) {
-                // context 已不可用时忽略（如注册时 page 已关闭）；预期竞争，但不得静默（D7-3）
-                LOGGER.debug("[ApiMonitor] ensureCloseHook: context unavailable, skip hook: {}", e.toString());
+                // CT2-19：注册失败必须【回滚 closeHooks 标记 + 提升可见性】。
+                //  原实现只记 DEBUG 且**不回滚**：closeHooks 以 BrowserContext 为**强引用键**，
+                //  注册失败后该 context 既不会被 onClose 自动注销、又被永久钉在 closeHooks 里 →
+                //  context 及其全部 Page 无法 GC，且没有任何告警可观测（自相矛盾的"预期竞争但不得静默"）。
+                //  回滚后语义：后续 ensureCloseHook 可重试；即便一直失败，也由 {@link #clear()} /
+                //  {@link #pruneContextsMarkedClosed()} 兜底清理。
+                closeHooks.remove(context);
+                long failures = closeHookFailures.incrementAndGet();
+                LOGGER.warn("[ApiMonitor] ensureCloseHook failed (context unavailable at registration time) → "
+                                + "rolled back hook bookkeeping to avoid strong-ref leak. failures={}, context={}, cause={}",
+                        failures, context, e.toString());
             }
         }
+    }
+
+    /**
+     * CT2-19：防御性清扫 —— 移除「已被显式标记为关闭」的 context 的全部强键登记。
+     *
+     * <p>存在的意义：{@code deregisterContext} 依赖 Playwright {@code onClose} 回调；一旦钩子注册失败
+     * （见 {@link #ensureCloseHook} 的回滚告警）或 context 因崩溃/被杀未经正常 close 流程，
+     * 强键登记表会残留该 context 的强引用。本方法以 {@code RouteContextState.isContextClosed}
+     * （由 {@code stopContextEngine} 显式置位）为判据做一次主动清扫，作为被动回调之外的兜底网。
+     *
+     * <p>幂等；判据只依赖「已被显式标记关闭」，不会误伤仍存活的 context（避免破坏 context 内去重语义）。
+     *
+     * @return 被清扫的 context 数
+     */
+    public int pruneContextsMarkedClosed() {
+        int pruned = 0;
+        for (BrowserContext ctx : new ArrayList<>(registeredPatternsByContext.keySet())) {
+            if (RouteContextState.isContextClosed(ctx)) {
+                deregisterContext(ctx);
+                pruned++;
+            }
+        }
+        for (BrowserContext ctx : new ArrayList<>(closeHooks)) {
+            if (RouteContextState.isContextClosed(ctx)) {
+                deregisterContext(ctx);
+                pruned++;
+            }
+        }
+        return pruned;
+    }
+
+    /** CT2-19：关闭钩子注册失败累计数（可观测；非零说明存在强键残留风险，已在失败时回滚）。 */
+    public long getCloseHookFailures() {
+        return closeHookFailures.get();
     }
 
     /**

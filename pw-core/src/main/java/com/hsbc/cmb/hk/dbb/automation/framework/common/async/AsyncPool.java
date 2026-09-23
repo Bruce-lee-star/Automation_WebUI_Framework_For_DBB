@@ -26,7 +26,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ul>
  *   <li><b>立即执行</b>：{@link #run(Runnable)} / {@link #runWithTimeout(Runnable, long)}</li>
  *   <li><b>延迟 / 周期执行</b>：{@link #schedule(Runnable, long)} / {@link #scheduleWithFixedDelay(Runnable, long, long)}</li>
- *   <li><b>任务超时</b>：{@code runWithTimeout} 超时不响应中断的任务会被 {@code Future.cancel(true)} 中止</li>
+ *   <li><b>任务超时</b>：{@code runWithTimeout} 超时不响应中断的任务会被 {@code Future.cancel(true)} 中止。
+ *       CT2-17：由<b>单一周期裁决器</b>统一裁决（在途带超时任务登记表 + 1s 周期扫描），
+ *       调度队列恒为 O(1)，<b>不存在任何「上限触顶后放弃执行超时保护」的降级路径</b>；
+ *       代价仅为裁决粒度（最多晚一个周期执行 {@code cancel(true)}）。</li>
  *   <li><b>队列限流</b>：{@code DiscardOldestPolicy} + 告警，保证调用方（含 Playwright 事件线程）永不阻塞</li>
  *   <li><b>阈值告警</b>：队列/线程使用率、待处理超时数超阈值时告警</li>
  *   <li><b>集中监控</b>：{@link #getStatusSnapshot()} 暴露活跃/队列/完成/超时/挂起等指标</li>
@@ -84,24 +87,32 @@ public final class AsyncPool {
      */
     private static final int MONITOR_CALLBACK_QUEUE_CAPACITY = 10_000;
 
-    private static final ExecutorService MONITOR_CALLBACK_EXECUTOR =
-            new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                    new ArrayBlockingQueue<>(MONITOR_CALLBACK_QUEUE_CAPACITY),
-                    r -> {
-                        Thread t = new Thread(r, "monitor-callback");
-                        t.setDaemon(true);
-                        t.setPriority(Thread.NORM_PRIORITY - 1);
-                        return t;
-                    },
-                    // 队列满：丢弃 + 告警，绝不反压提交方。
-                    // 若用 CallerRunsPolicy，回调会在 Playwright 事件线程上执行，
-                    // 把「回调慢」放大成「路由拦截阻塞 → 整轮测试卡死」，违背永不卡死原则。
-                    (task, executor) -> {
-                        long dropped = monitorCallbackDroppedCount.incrementAndGet();
-                        LOGGER.error("[AsyncPool] Monitor callback queue full (capacity={}), dropping task to avoid OOM. "
-                                + "Dropped total: {}. Consider moving heavy work out of onResponse into AsyncPool.run().",
-                                MONITOR_CALLBACK_QUEUE_CAPACITY, dropped);
-                    });
+    /**
+     * CT2-17：由 {@code static final} 改为 {@code volatile} + 工厂构造 —— 关闭后可复位重建，
+     * 使同 JVM 内后续套件能重新初始化（见 {@link LazyInit#reset()} 与 {@link #shutdownGracefully()}）。
+     * 非 null 由 {@link #ensureInitialized()} 保证（所有使用入口均已先调用它）。
+     */
+    private static volatile ExecutorService MONITOR_CALLBACK_EXECUTOR;
+
+    private static ExecutorService newMonitorCallbackExecutor() {
+        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(MONITOR_CALLBACK_QUEUE_CAPACITY),
+                r -> {
+                    Thread t = new Thread(r, "monitor-callback");
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                // 队列满：丢弃 + 告警，绝不反压提交方。
+                // 若用 CallerRunsPolicy，回调会在 Playwright 事件线程上执行，
+                // 把「回调慢」放大成「路由拦截阻塞 → 整轮测试卡死」，违背永不卡死原则。
+                (task, executor) -> {
+                    long dropped = monitorCallbackDroppedCount.incrementAndGet();
+                    LOGGER.error("[AsyncPool] Monitor callback queue full (capacity={}), dropping task to avoid OOM. "
+                            + "Dropped total: {}. Consider moving heavy work out of onResponse into AsyncPool.run().",
+                            MONITOR_CALLBACK_QUEUE_CAPACITY, dropped);
+                });
+    }
 
     /**
      * P2-3：因提交被拒（池关闭 / 饱和）而<b>丢弃</b>的任务数 —— 统一「绝不阻塞提交方」策略后的可观测计数。
@@ -109,9 +120,24 @@ public final class AsyncPool {
     private static final AtomicLong droppedOnRejectionCount = new AtomicLong();
 
     /**
-     * P2-3：因待处理超时哨兵达上限而<b>未投递哨兵</b>的次数（退化为「不强制超时」，任务仍会执行）。
+     * CT2-17：<b>在途带超时任务</b>登记表（{@code Future → 截止时刻 nanos}）。
+     *
+     * <p>取代原「每任务向 SCHEDULER 投一个超时哨兵」的实现。原实现的哨兵会让
+     * {@code ScheduledThreadPoolExecutor} 的<b>无界</b> DelayedWorkQueue 随并发线性增长，
+     * 故设了 {@code ASYNC_MAX_PENDING_TIMEOUTS} 上限；一旦触顶便<b>不再投递哨兵</b>，
+     * 即「超时强制取消」在全进程范围内<b>静默失效</b>（卡死任务长期占用池线程，无人能中断它）。
+     *
+     * <p>现改为「登记 + 单一周期裁决器」（{@link #reapExpiredTimeouts()}）：调度队列恒为 O(1)，
+     * 超时保护<b>不再存在任何降级/失效路径</b>。表项最迟在各自截止时刻被裁决器移除，
+     * 故规模自然有界（≈ 最近一个超时窗口内提交的带超时任务数），无需人工上限。
      */
-    private static final AtomicLong skippedTimeoutSentinelCount = new AtomicLong();
+    private static final ConcurrentHashMap<Future<?>, Long> PENDING_TIMEOUTS = new ConcurrentHashMap<>();
+
+    /** CT2-17：超时裁决周期（毫秒）—— 「已超时」到「执行 cancel(true)」的最大额外延迟。 */
+    private static final long TIMEOUT_REAPER_INTERVAL_MS = 1_000L;
+
+    /** CT2-17：超时裁决器句柄（关闭时取消，避免终止后的 SCHEDULER 上残留周期任务）。 */
+    private static volatile ScheduledFuture<?> timeoutReaper;
 
     //  P2-2：以下配置字段在首次使用时由 doInit() 赋值（故不再 final）；可见性由 INIT 的
     //  volatile 发布建立 happens-before 保证。
@@ -195,6 +221,9 @@ public final class AsyncPool {
         MAX_PENDING_TIMEOUTS = maxPendingTimeouts;
         POOL = executor;
         SCHEDULER = scheduler;
+        MONITOR_CALLBACK_EXECUTOR = newMonitorCallbackExecutor();
+        // CT2-17：启动超时裁决器（取代「每任务一个哨兵」——调度队列恒为 O(1)，且无降级路径）
+        startTimeoutReaper();
 
         com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
                 com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_ASYNC_POOL,
@@ -206,6 +235,73 @@ public final class AsyncPool {
         VerboseLogging.logInfoIfVerbose(LOGGER,
                 "[AsyncPool] Initialized: core={}, max={}, queue={}, timeout={}ms, maxPendingTimeouts={}",
                 CORE_THREADS, MAX_THREADS, QUEUE_CAPACITY, DEFAULT_TASK_TIMEOUT_MS, MAX_PENDING_TIMEOUTS);
+    }
+
+    // ─── CT2-17：超时裁决（取代每任务哨兵） ─────────────────────────
+
+    /** 启动超时裁决器（幂等：重复调用先取消旧句柄）。 */
+    private static void startTimeoutReaper() {
+        ScheduledFuture<?> previous = timeoutReaper;
+        if (previous != null) {
+            previous.cancel(false);
+        }
+        timeoutReaper = SCHEDULER.scheduleWithFixedDelay(
+                AsyncPool::reapExpiredTimeouts,
+                TIMEOUT_REAPER_INTERVAL_MS, TIMEOUT_REAPER_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * CT2-17：登记一个带超时任务（{@code Future → 截止时刻}），交由 {@link #reapExpiredTimeouts()} 裁决。
+     *
+     * <p>不在此处移除表项：任务正常完成时任务体拿不到自身 {@code Future} 引用，故统一由裁决器
+     * 在截止时刻移除并判定 —— 届时若 {@code isDone()} 则视为正常完成，不误报超时。
+     */
+    private static void registerPendingTimeout(Future<?> future, long timeoutMs) {
+        if (future == null) {
+            return;
+        }
+        PENDING_TIMEOUTS.put(future, System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs));
+        pendingTimeoutCount.incrementAndGet();
+    }
+
+    /**
+     * 周期裁决：对已过截止时刻的在途带超时任务执行 {@code cancel(true)}。
+     *
+     * <p><b>不得向外抛异常</b>：本方法由 {@code scheduleWithFixedDelay} 驱动，而
+     * {@link ScheduledThreadPoolExecutor} 在周期任务抛出异常后会<b>静默取消后续调度</b>
+     * ——整个超时保护将失效且无任何提示。故整体包 {@code catch (Throwable)}。
+     */
+    private static void reapExpiredTimeouts() {
+        try {
+            long now = System.nanoTime();
+            for (Map.Entry<Future<?>, Long> entry : PENDING_TIMEOUTS.entrySet()) {
+                Future<?> future = entry.getKey();
+                Long deadline = entry.getValue();
+                if (deadline == null || deadline > now) {
+                    continue;
+                }
+                if (!PENDING_TIMEOUTS.remove(future, deadline)) {
+                    continue; // 已被并发移除
+                }
+                pendingTimeoutCount.decrementAndGet();
+                if (future.isDone()) {
+                    continue; // 已正常完成（只是尚未到裁决点）：不误报超时
+                }
+                boolean cancelled = future.cancel(true);
+                long count = timeoutCount.incrementAndGet();
+                //  CT2-17：裁决器与 shutdown 并发时 POOL 可能已被置空 —— 诊断日志不得抛 NPE（-1 表示不可用）
+                ThreadPoolExecutor pool = POOL;
+                LOGGER.error("[AsyncPool] TASK TIMEOUT (total: {}). Cancelled: {}, Active: {}, Queue: {}/{}",
+                        count, cancelled,
+                        pool == null ? -1 : pool.getActiveCount(),
+                        pool == null ? -1 : pool.getQueue().size(), QUEUE_CAPACITY);
+                checkThresholdsAfterTimeout();
+            }
+        } catch (Throwable t) {
+            // 绝不外抛：周期任务抛异常会被 ScheduledThreadPoolExecutor 静默停掉，超时保护随之整体失效
+            LOGGER.error("[AsyncPool] timeout reaper failed (enforcement continues next cycle): {}",
+                    t.toString(), t);
+        }
     }
 
     private AsyncPool() {}
@@ -225,6 +321,18 @@ public final class AsyncPool {
     private static void submitTask(Runnable task, long timeoutMs) {
         if (task == null)  {return;} 
         ensureInitialized();   // P2-2：首次使用时初始化（配置失败在此抛出清晰异常）
+        //  CT2-17 回归防护：取一次【局部快照】。
+        //    shutdown() 现在会把 POOL 置空（以支持同 JVM 复位重建），若与提交并发，
+        //    直接解引用 POOL 会得到 NPE —— 而原实现 POOL 永不为 null（失败形态是干净的拒绝）。
+        //    引入快照后：要么提交成功、要么得到明确的 RejectedExecutionException 走既有丢弃路径，
+        //    绝不出现「换个方式崩溃」的新失败形态。
+        final ThreadPoolExecutor pool = POOL;
+        if (pool == null) {
+            long dropped = droppedOnRejectionCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] submit skipped: executor unavailable (shutdown in progress) → task DROPPED "
+                    + "(policy: never block the submitting thread). Dropped total: {}", dropped);
+            return;
+        }
         // N-10：捕获提交线程上下文，供工作线程恢复（执行后由 runWithContext 复位，隔离保留）
         final CapturedContext captured = TestContextHolder.capture();
         // C-5：捕获提交线程 MDC（日志诊断上下文：scenarioId / traceId / requestId 等），
@@ -236,9 +344,9 @@ public final class AsyncPool {
         checkThresholdsBeforeSubmit();
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[AsyncPool] submit: timeout={}ms, queue={}/{}, active={}",
-                timeoutMs, POOL.getQueue().size(), QUEUE_CAPACITY, POOL.getActiveCount());
+                timeoutMs, pool.getQueue().size(), QUEUE_CAPACITY, pool.getActiveCount());
         try {
-            Future<?> future = POOL.submit(() -> {
+            Future<?> future = pool.submit(() -> {
                 if (mdcContext != null) {
                     MDC.setContextMap(mdcContext);
                 }
@@ -254,39 +362,14 @@ public final class AsyncPool {
                 }
             });
             if (timeoutMs > 0) {
-                //  P2-3：有界化调度队列 —— 每次带超时提交都会向 SCHEDULER 投递一个哨兵任务，而
-                //  ScheduledThreadPoolExecutor 的 DelayedWorkQueue 无界 ⇒ 超载时哨兵无限堆积
-                //  （占用内存、且每个哨兵到期才释放）。达到上限（ASYNC_MAX_PENDING_TIMEOUTS，
-                //  该键此前仅用于告警）后不再投递哨兵：退化为「不强制超时」（任务仍会执行），
-                //  并计数 + ERROR 留痕（不静默）。
-                if (pendingTimeoutCount.get() >= MAX_PENDING_TIMEOUTS) {
-                    long skipped = skippedTimeoutSentinelCount.incrementAndGet();
-                    if (skipped == 1 || skipped % 100 == 0) {
-                        LOGGER.error("[AsyncPool] Pending timeout sentinels reached cap ({}) → skipping timeout "
-                                        + "enforcement for this task (task still runs). Skipped total: {}",
-                                MAX_PENDING_TIMEOUTS, skipped);
-                    }
-                    return;
-                }
-                final Future<?> f = future;
-                pendingTimeoutCount.incrementAndGet();
-                SCHEDULER.schedule(() -> {
-                    try {
-                        f.get(0, TimeUnit.MILLISECONDS);
-                    } catch (TimeoutException e) {
-                        boolean cancelled = f.cancel(true);
-                        long count = timeoutCount.incrementAndGet();
-                        LOGGER.error("[AsyncPool] TASK TIMEOUT after {}ms (total: {}). Cancelled: {}, Active: {}, Queue: {}/{}",
-                                timeoutMs, count, cancelled, POOL.getActiveCount(), POOL.getQueue().size(), QUEUE_CAPACITY);
-                        checkThresholdsAfterTimeout();
-                    } catch (ExecutionException e) {
-                        LOGGER.error("[AsyncPool] Task failed: {}", e.getMessage(), e.getCause());
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    } finally {
-                        pendingTimeoutCount.decrementAndGet();
-                    }
-                }, timeoutMs, TimeUnit.MILLISECONDS);
+                //  CT2-17：改为「登记在途带超时任务 + 单一周期裁决器」（见 registerPendingTimeout /
+                //  reapExpiredTimeouts）。原实现每任务向 SCHEDULER 投一个哨兵任务，因
+                //  ScheduledThreadPoolExecutor 的 DelayedWorkQueue 无界，故在
+                //  ASYNC_MAX_PENDING_TIMEOUTS 触顶后**跳过投递哨兵** ——
+                //  即「超时强制取消」在全进程范围内静默失效（卡死任务长期占用池线程，无人能中断）。
+                //  现调度队列恒为 O(1)，超时保护不再有任何降级/失效路径；
+                //  唯一代价是裁决粒度（TIMEOUT_REAPER_INTERVAL_MS，最迟晚一个周期执行 cancel(true)）。
+                registerPendingTimeout(future, timeoutMs);
             }
         } catch (RejectedExecutionException e) {
             //  P2-3：统一「是否阻塞提交方」策略 = 【绝不阻塞提交方】（与 runOnMonitorCallbackThread 的 H17
@@ -313,20 +396,31 @@ public final class AsyncPool {
         final Map<String, String> mdcContext = MDC.getCopyOfContextMap();
         // F-13：同样捕获软断言收集器，使延迟任务中的软断言失败随父线程场景末 assertAll() 判红。
         final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
-        ScheduledFuture<?> f = SCHEDULER.schedule(() -> {
-            if (mdcContext != null) {
-                MDC.setContextMap(mdcContext);
-            }
-            SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
-            try {
-                task.run();
-            } finally {
-                pendingScheduleCount.decrementAndGet();
-                SoftAssertions.unbindCollector(previousCollector);
-                MDC.clear();
-            }
-        }, delayMs, TimeUnit.MILLISECONDS);
-        return f;
+        try {
+            return SCHEDULER.schedule(() -> {
+                if (mdcContext != null) {
+                    MDC.setContextMap(mdcContext);
+                }
+                SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
+                try {
+                    task.run();
+                } finally {
+                    pendingScheduleCount.decrementAndGet();
+                    SoftAssertions.unbindCollector(previousCollector);
+                    MDC.clear();
+                }
+            }, delayMs, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // CT2-17：统一拒绝策略 —— 与 {run()} 一致（绝不阻塞提交方 + 计数 + ERROR + 丢弃）。
+            //  原实现此处直接外抛 RejectedExecutionException，而同类的 run() 是「静默丢弃」，
+            //  同一 JVM 内出现「调用点崩溃」与「静默丢任务」两种相反后果。
+            //  返回 null 的调用契约：调用方必须容忍 null（唯一现有调用方 RouteMonitorSession 已 null-check）。
+            pendingScheduleCount.decrementAndGet();
+            long dropped = droppedOnRejectionCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] schedule REJECTED (pool shutting down or saturated) → task DROPPED "
+                    + "(policy: never block the submitting thread). Dropped total: {}", dropped, e);
+            return null;
+        }
     }
 
     /** 固定延迟周期执行（initialDelay 后首次，之后每 delayMs 一次）。 */
@@ -335,14 +429,22 @@ public final class AsyncPool {
         ensureInitialized();   // P2-2
         // F-13：周期性任务同样传播软断言收集器（每次执行 bind / finally unbind，池线程不留残留绑定）。
         final SoftAssertions.Collector assertionCollector = SoftAssertions.captureCollector();
-        return SCHEDULER.scheduleWithFixedDelay(() -> {
-            SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
-            try {
-                task.run();
-            } finally {
-                SoftAssertions.unbindCollector(previousCollector);
-            }
-        }, initialDelayMs, delayMs, TimeUnit.MILLISECONDS);
+        try {
+            return SCHEDULER.scheduleWithFixedDelay(() -> {
+                SoftAssertions.Collector previousCollector = SoftAssertions.bindCollector(assertionCollector);
+                try {
+                    task.run();
+                } finally {
+                    SoftAssertions.unbindCollector(previousCollector);
+                }
+            }, initialDelayMs, delayMs, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // CT2-17：与 schedule / run 保持同一拒绝策略（绝不阻塞提交方，丢弃可观测）。
+            long dropped = droppedOnRejectionCount.incrementAndGet();
+            LOGGER.error("[AsyncPool] scheduleWithFixedDelay REJECTED (pool shutting down or saturated) → task DROPPED "
+                    + "(policy: never block the submitting thread). Dropped total: {}", dropped, e);
+            return null;
+        }
     }
 
     /**
@@ -398,9 +500,14 @@ public final class AsyncPool {
     // ─── 阈值告警 ──────────────────────────────────────────────
 
     private static void checkThresholdsBeforeSubmit() {
-        int queueSize = POOL.getQueue().size();
-        int activeCount = POOL.getActiveCount();
-        int poolSize = POOL.getPoolSize();
+        //  CT2-17：提交路径已保证入池前 POOL 非空；此处仍取快照，防并发 shutdown 造成的 NPE。
+        ThreadPoolExecutor pool = POOL;
+        if (pool == null) {
+            return;
+        }
+        int queueSize = pool.getQueue().size();
+        int activeCount = pool.getActiveCount();
+        int poolSize = pool.getPoolSize();
         double queueUsage = (double) queueSize / QUEUE_CAPACITY;
         double threadUsage = (double) activeCount / Math.max(poolSize, 1);
 
@@ -430,15 +537,27 @@ public final class AsyncPool {
     }
 
     private static void checkThresholdsAfterTimeout() {
-        if (POOL.getQueue().size() > QUEUE_CAPACITY * 0.5) {
+        //  CT2-17：POOL 可能已被 shutdown() 置空（复位重建）—— 诊断日志绝不因此抛 NPE。
+        ThreadPoolExecutor pool = POOL;
+        if (pool == null) {
+            return;
+        }
+        int queueSizeAfterTimeout = pool.getQueue().size();
+        if (queueSizeAfterTimeout > QUEUE_CAPACITY * 0.5) {
             LOGGER.warn("[AsyncPool] After timeout - Queue still has {} pending. Consider raising ASYNC_QUEUE_CAPACITY/ASYNC_MAX_THREADS.",
-                    POOL.getQueue().size());
+                    queueSizeAfterTimeout);
         }
     }
 
     // ─── 优雅关闭 ──────────────────────────────────────────────
 
     private static void shutdownGracefully() {
+        //  CT2-17：幂等 + 复位安全 —— 三资源在 doInit 中同批发布、在下方同批清空，
+        //  故任一为 null 即表示「从未初始化」或「已复位」，此时无资源可关，直接返回。
+        //  （也覆盖了「doInit 被执行两次 → ShutdownCoordinator 注册了两个钩子」的重复调用场景。）
+        if (POOL == null || SCHEDULER == null || MONITOR_CALLBACK_EXECUTOR == null) {
+            return;
+        }
         if (POOL.isShutdown())  {return;} 
         LOGGER.info("[AsyncPool] Shutting down (active: {}, queue: {}, completed: {}, timeouts: {}, pendingTimeouts: {}, pendingSched: {})...",
                 POOL.getActiveCount(), POOL.getQueue().size(), completedTaskCount.get(),
@@ -496,6 +615,32 @@ public final class AsyncPool {
             Thread.currentThread().interrupt();
         }
         LOGGER.info("[AsyncPool] Shutdown complete. Completed: {}, timeouts: {}", completedTaskCount.get(), timeoutCount.get());
+
+        // CT2-17：释放完成后复位 —— 使同 JVM 内后续套件可重新初始化。
+        //  原实现 shutdown 后永久不可恢复：后续 run() 静默丢任务、schedule* 抛
+        //  RejectedExecutionException —— 同一 JVM 内出现两种相反后果。
+        //  契约：先取消裁决器、清空资源字段，再 INIT.reset()，
+        //  避免 LazyInit 复位后字段仍指向已关闭的池（形成"已复位但资源是死的"不一致状态）。
+        cancelTimeoutReaper();
+        PENDING_TIMEOUTS.clear();
+        pendingTimeoutCount.set(0);
+        //  CT2-17（回归防护）：**刻意不把 POOL / SCHEDULER / MONITOR_CALLBACK_EXECUTOR 置空**。
+        //    置空虽能"释放引用"，但会在「shutdown 与 submit / 阈值诊断 / 裁决器日志并发」时引入
+        //    NPE 这一**全新的失败形态**（原实现三字段永不为 null，失败形态是干净的
+        //    RejectedExecutionException → 既有「拒绝即丢弃（计数 + ERROR）」路径）。
+        //    可恢复性并不依赖置空：INIT.reset() 后下一次 ensureInitialized() 会重跑 doInit，
+        //    由 doInit 用**新实例整体覆盖**这三个字段；在此之前它们指向已终止的池，
+        //    此时提交同样走既有的拒绝分支，语义与改动前一致且可观测。
+        INIT.reset();
+    }
+
+    /** CT2-17：取消超时裁决器（幂等）。 */
+    private static void cancelTimeoutReaper() {
+        ScheduledFuture<?> reaper = timeoutReaper;
+        if (reaper != null) {
+            reaper.cancel(false);
+            timeoutReaper = null;
+        }
     }
 
     // ─── 监控指标 ──────────────────────────────────────────────

@@ -31,12 +31,18 @@ public class AxeCoreListener implements StepListener {
 
     //  T3-1 收拢：由 static ThreadLocal 迁入 TestContext；原 withInitial(() -> false) 的默认 false
     // 语义由布尔 helper（Boolean.TRUE.equals）等价保证，避免未设值时 null 自动拆箱 NPE。
-    private static final ContextKey<Boolean> AXE_ENABLED_KEY = ContextKey.of("axeCoreListener.axeEnabled", Boolean.class);
+    //  A-08（doc 22）：AXE_ENABLED 是【进程级】标志（全局配置 WebFrameworkConfig.AXE_SCAN_ENABLED +
+    //    AxeCoreScanner 的静态 isInitialized 共同决定），【不应】落在 TestContext 的场景上下文中：
+    //    initializeIfNeeded 仅套件级（!isInitialized 时才运行）写入，而场景级 scanCurrentPage 走同
+    //    一调用时 isInitialized 已为真、不再重设 → 套件级写线程上下文、场景级读场景上下文 → 标志不可见、
+    //    每页扫描被静默跳过。故改为进程级 static volatile 字段，与 AxeCoreScanner 的进程级生命周期对齐。
+    //    REPORT_GENERATED_KEY 保留 TestContext：它在 generateFinalReport 同一次调用的同上下文内读+写，无跨级问题。
+    private static volatile Boolean axeEnabled = null;
     private static final ContextKey<Boolean> REPORT_GENERATED_KEY = ContextKey.of("axeCoreListener.reportGenerated", Boolean.class);
 
-    /** 等价原 axeEnabled.get()（默认 false）。 */
+    /** 等价原 axeEnabled.get()（默认 false）。进程级。 */
     private static boolean isAxeEnabled() {
-        return Boolean.TRUE.equals(TestContextHolder.get().get(AXE_ENABLED_KEY));
+        return Boolean.TRUE.equals(axeEnabled);
     }
 
     /** 等价原 reportGenerated.get()（默认 false）。 */
@@ -58,7 +64,7 @@ public class AxeCoreListener implements StepListener {
                 String tags = FrameworkConfigManager.getString(WebFrameworkConfig.AXE_SCAN_TAGS);
                 String outputDir = FrameworkConfigManager.getString(WebFrameworkConfig.AXE_SCAN_OUTPUT_DIR);
 
-                TestContextHolder.get().set(AXE_ENABLED_KEY,enabled);
+                axeEnabled = enabled;  // A-08：进程级，跨场景可见
                 TestContextHolder.get().set(REPORT_GENERATED_KEY,false);  // Reset report flag
 
                 if (isAxeEnabled()) {
@@ -77,7 +83,7 @@ public class AxeCoreListener implements StepListener {
                 }
             } catch (Exception e) {
                 logger.error("Failed to initialize AxeCoreListener: {}", e.getMessage(), e);
-                TestContextHolder.get().set(AXE_ENABLED_KEY,false);
+                axeEnabled = false;
             }
         }
     }
@@ -152,7 +158,7 @@ public class AxeCoreListener implements StepListener {
             logger.error("Error during AxeCoreScanner cleanup: {}", e.getMessage(), e);
         } finally {
             // Always clean up ThreadLocals to prevent memory leaks
-            TestContextHolder.get().remove(AXE_ENABLED_KEY);
+            axeEnabled = null;  // A-08：进程级复位
             TestContextHolder.get().remove(REPORT_GENERATED_KEY);
         }
     }

@@ -12,6 +12,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandlerRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
@@ -195,8 +196,12 @@ public class ModifyHandler {
         } catch (RejectedExecutionException rejected) {
             if (inFlight != null) {
                 inFlight.decrementActiveRequests();
+                // CT2-10：被拒观测若静默放行（fail-open）会导致修改/断言永不执行 → API 假绿。
+                // 对齐 MonitorHandler 同场景：置失败标志使该 API 必产生失败信号（fail-closed），并登记数据损失。
+                inFlight.signalFailFast();
             }
-            LOGGER.warn("[ModifyHandler] observe executor rejected (queue full or shutdown) → resuming original "
+            MonitorDataLossReporter.instance().recordLoss("modify_observation_dropped_queue_saturated", 1);
+            LOGGER.error("[ModifyHandler] observe executor rejected (queue full or shutdown) → resuming original "
                     + "request without modification/observation: pattern='{}', url='{}'",
                     rule.getUrlPattern(), RouteUtil.sanitizeUrl(route.request().url()));
             RouteUtil.safeResume(route);

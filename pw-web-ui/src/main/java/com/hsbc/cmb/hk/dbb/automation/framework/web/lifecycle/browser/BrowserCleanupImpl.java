@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.*;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 
 /** 
@@ -28,6 +29,48 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
 
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightManager.class);
 
+    /** N-22：单步 / 整体清理耗时达到该值即在默认级别告警（毫秒）。正常为毫秒级，故不制造噪音。 */
+    private static final long SLOW_CLOSE_WARN_MS = 3_000L;
+
+    /**
+     * N-22：单次 {@code Browser.close()} 的看门狗上限（毫秒）。
+     *
+     * <p><b>为什么必须由框架自己设限</b>：Playwright 1.62.0 的 {@code Browser.CloseOptions} 只有
+     * {@code setReason(String)}、<b>没有 timeout</b>（已按字节码核实；{@code BrowserContext.CloseOptions} 同）。
+     * 故 {@code close()} 会一直等浏览器进程退出 —— 实测某次 pw-web-ui 单测退出时该等待长达 <b>26.5s</b>，
+     * 直接越过 Surefire「{@code System.exit(0)} 后 30s」宽限，导致 fork 被<b>硬杀</b>：后续关闭任务从未执行，
+     * 日志还留下 {@code [ERROR] Surefire is going to kill self fork JVM}（详见 doc 21 §8.6）。</p>
+     *
+     * <p>取值 3s：正常关闭为毫秒级；超限即<b>放弃等待</b>（该关闭仍在 daemon 线程上继续，JVM 退出后由
+     * Playwright driver 的进程树回收兜底），并记 ERROR + 计入 {@code ShutdownCoordinator} 失败计数 ——
+     * 关键是<b>不阻断</b> {@code cleanupAll} 后续的路由排空 / AsyncPool / ThreadLocal 清理。</p>
+     */
+    private static final long BROWSER_CLOSE_LIMIT_MS = 3_000L;
+
+    /**
+     * N-23：单次 {@code BrowserContext.close()} 的看门狗上限（毫秒）。
+     *
+     * <p>与 {@link #BROWSER_CLOSE_LIMIT_MS} 同因：{@code BrowserContext.CloseOptions} 也只有
+     * {@code setReason(String)}、<b>无 timeout</b>（1.62.0 字节码已核实）。取 1.5s：context 关闭比 browser 轻，
+     * 且一个 Browser 可能挂多个 context，须给后续步骤留出预算。</p>
+     */
+    private static final long CONTEXT_CLOSE_LIMIT_MS = 1_500L;
+
+    /**
+     * N-23：{@code cleanupAll} 自身的内部预算（毫秒）—— 超过即<b>跳过剩余的 context / browser 关闭</b>，
+     * 直接执行后面的路由排空 / AsyncPool / ThreadLocal 等收尾步骤。
+     *
+     * <p><b>为何需要它</b>：{@code ShutdownCoordinator} 的整任务上限（默认 8s）只保证"JVM 退出不被拖住"，
+     * 一旦 {@code cleanupAll} 把预算耗在关闭环节，任务会被<b>整体放弃</b> —— 后面那些<b>便宜但重要</b>的收尾
+     * 反而没做。故在内部先设 6s 预算（&lt; 8s 任务上限）：慢关闭属<b>可放弃项</b>，收尾步骤优先。</p>
+     */
+    private static final long CLEANUP_INTERNAL_BUDGET_MS = 6_000L;
+
+    /** N-23：{@code cleanupAll} 内部预算是否仍有剩余（包级可见以便单测直接断言）。 */
+    static boolean hasBudgetLeft(long startNanos, long budgetMs) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos) < budgetMs;
+    }
+
     private BrowserCleanupImpl() {
     }
 
@@ -35,6 +78,17 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
      * 清理所有资源
      */
     public void cleanupAll() {
+        long cleanupStartNanos = System.nanoTime();
+        //  N-23：内部预算耗尽只记一次账（避免每个 context/browser 都记一条）
+        java.util.concurrent.atomic.AtomicBoolean budgetExhaustedReported =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        Runnable reportBudgetExhausted = () -> {
+            if (budgetExhaustedReported.compareAndSet(false, true)) {
+                ShutdownCoordinator.recordFailure("cleanupAll internal budget " + CLEANUP_INTERNAL_BUDGET_MS
+                        + "ms exhausted — skipping the remaining context/browser closes so the remaining "
+                        + "teardown steps (route drain / AsyncPool / ThreadLocal) still run", null);
+            }
+        };
         VerboseLogging.logInfoIfVerbose(logger, "Cleaning up all Playwright resources...");
 
         // 关闭当前线程的页面和上下文
@@ -49,6 +103,12 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
                 try {
                     for (BrowserContext bc : browser.contexts()) {
                         if (bc == null)  {continue;} 
+                        if (!hasBudgetLeft(cleanupStartNanos, CLEANUP_INTERNAL_BUDGET_MS)) {
+                            //  N-23：内部预算已耗尽 —— 记一次账后停止关闭剩余 context（Loop B 也会立即跳过），
+                            //    把有限时间留给后面的收尾步骤：慢关闭是可放弃项，收尾不是。
+                            reportBudgetExhausted.run();
+                            break;
+                        }
                         try {
                             //  修复 L3：改走 PlaywrightContextManager.closeContext，其内部已包含
                             //    ① 带 15s 超时的 tracing.stop（原 bc.close() 会跳过 trace 落盘，
@@ -62,7 +122,12 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
                             //    不可变列表时 removeIf 会抛 UnsupportedOperationException，
                             //    而它与 bc.close() 在同一 try 块内 → 异常会【吞掉 close】导致 context 泄漏。
                             //    直接交给 closeContext 统一处理即可，无需手工增删 page 列表。
-                            PlaywrightContextManager.closeContext(bc);
+                            //  N-23：看门狗执行 —— context.close() 与 Browser 同，无 API 超时
+                            //    （BrowserContext.CloseOptions 只有 setReason）。超限即放弃等待 + 记账。
+                            long contextLimitMs = Math.max(1, Math.min(CONTEXT_CLOSE_LIMIT_MS,
+                                    CLEANUP_INTERNAL_BUDGET_MS - TimeUnit.NANOSECONDS.toMillis(
+                                            System.nanoTime() - cleanupStartNanos)));
+                            runBounded("context-close", () -> PlaywrightContextManager.closeContext(bc), contextLimitMs);
                         } catch (Exception ex) {
                             logger.warn("Error closing browser context: {}", ex.getMessage());
                         }
@@ -75,10 +140,42 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
 
         // 关闭所有浏览器实例（每个 try-catch 独立保护，防止单个失败阻断后续清理）
         for (Browser browser : new ArrayList<>(PlaywrightRuntime.instance().state.allBrowsers())) {
+            if (!hasBudgetLeft(cleanupStartNanos, CLEANUP_INTERNAL_BUDGET_MS)) {
+                //  N-23：内部预算已耗尽 → 跳过剩余 browser 关闭（已记账），直接做收尾步骤
+                reportBudgetExhausted.run();
+                break;
+            }
             if (browser != null && browser.isConnected()) {
                 try {
-                    browser.close();
-                    VerboseLogging.logInfoIfVerbose(logger, "Browser instance closed");
+                    long closeStartNanos = System.nanoTime();
+                    //  N-22：改走既有收口 closeBrowserInstance（先 markClosing 再 close）。
+                    //    原先直接 browser.close() 时：该 Browser 仍在实例表中且【未】标记 closing →
+                    //    onDisconnected 判定为「非预期」→ 关机日志出现
+                    //    "[browser-disconnected] Browser disconnected unexpectedly" ERROR
+                    //    —— 框架自己关闭的浏览器被记成"崩溃/被杀"（实测 fw-inst3.log 两条）。
+                    //    这与下载专项里同源的「预期关闭未登记」是同一类问题，一处收口即覆盖。
+                    //  N-22：看门狗执行 —— Playwright 的 close() 无 timeout 选项（字节码已核实），
+                    //    故由框架设限：超限即放弃等待、记 ERROR + 计数，并继续后面的清理步骤
+                    //    （整任务级预算只兜住 JVM 退出，救不了 cleanupAll 内后续步骤）。
+                    String browserLabel = "browser-close:" + browserTypeName(browser);
+                    long browserLimitMs = Math.max(1, Math.min(BROWSER_CLOSE_LIMIT_MS,
+                            CLEANUP_INTERNAL_BUDGET_MS - TimeUnit.NANOSECONDS.toMillis(
+                                    System.nanoTime() - cleanupStartNanos)));
+                    boolean closedWithinLimit = runBounded(browserLabel,
+                            () -> PlaywrightRuntime.instance().browserCleanup.closeBrowserInstance(browser),
+                            browserLimitMs);
+                    long closeMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - closeStartNanos);
+                    if (!closedWithinLimit) {
+                        //  放弃等待后【绝不】再触发第二次 close（会叠加一次同样的长阻塞）；
+                        //  本次放弃已由 runBounded 记 ERROR + 计数，末尾 clearBrowsers() 会统一摘除该实例。
+                        continue;
+                    }
+                    //  N-22 可观测性：慢关闭是「JVM 退出越过 surefire 30s 宽限 → fork 被硬杀」的唯一事后归因手段。
+                    if (closeMs >= SLOW_CLOSE_WARN_MS) {
+                        logger.warn("[cleanupAll] Browser.close() took {}ms (slow close — this is what can push JVM exit past "
+                                + "surefire's 30s grace and get the fork hard-killed)", closeMs);
+                    }
+                    VerboseLogging.logInfoIfVerbose(logger, "Browser instance closed in {}ms", closeMs);
                 } catch (Exception e) {
                     logger.warn("Error closing browser instance during cleanupAll: {}", e.getMessage());
                 }
@@ -114,7 +211,61 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
         safeClean("RouteRegistry.clearAll", () -> RouteLifecycleRegistry.get().clearAll());
         safeClean("AsyncPool.shutdown", () -> com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool.shutdown());
 
-        VerboseLogging.logInfoIfVerbose(logger, "All Playwright resources cleaned up");
+        //  N-22：整体耗时（含上面各步与 BrowserStack 隧道清理）。关机路径上"慢"必须可见 ——
+        //    否则只会以 surefire 的 "[ERROR] ... kill self fork JVM" 形式间接暴露，无从归因。
+        long totalMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cleanupStartNanos);
+        if (totalMs >= SLOW_CLOSE_WARN_MS) {
+            logger.warn("[cleanupAll] cleanupAll took {}ms — JVM exit may exceed surefire's 30s grace "
+                    + "(hard kill truncates the remaining shutdown tasks and can orphan browsers)", totalMs);
+        }
+        VerboseLogging.logInfoIfVerbose(logger, "All Playwright resources cleaned up ({}ms)", totalMs);
+    }
+
+    /**
+     * 有界执行一次关闭动作（N-22）：超限即放弃等待并记 ERROR + 计数，返回 {@code false}。
+     *
+     * <p>用专属 daemon 线程执行是"可设限"的前提（Playwright 的 {@code close()} 本身无 timeout 选项，
+     * 已按 1.62.0 字节码核实）。被放弃的动作仍在该线程上继续，JVM 退出后由 Playwright driver 的进程树
+     * 回收兜底 —— 关键是<b>绝不让 JVM 退出被它拖住</b>（实测曾拖 26.5s 导致 fork 被硬杀）。</p>
+     *
+     * @param step    可定位的动作名（用于日志与失败计数）
+     * @param action  关闭动作
+     * @param limitMs 等待上限（毫秒）
+     * @return true = 在限内完成；false = 超限被放弃（已记 ERROR + 计数）
+     */
+    static boolean runBounded(String step, Runnable action, long limitMs) {
+        Thread worker = new Thread(() -> {
+            try {
+                action.run();
+            } catch (Throwable t) {
+                //  语义与原先 cleanupAll 的 catch 一致（warn 但不阻断后续清理）。动作已改到本线程执行，
+                //  故必须在此兜住 —— 否则关闭异常只会变成"线程未捕获异常"的 stderr 噪声，反而更难排查。
+                logger.warn("[cleanupAll] Cleanup step '{}' failed (continuing): {}", step, t.getMessage());
+            }
+        }, "close-bounded-" + step);
+        worker.setDaemon(true);
+        worker.start();
+        try {
+            worker.join(limitMs);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        if (worker.isAlive()) {
+            //  复用 N-06 的失败收口：非 verbose 门控的 ERROR + 可断言计数（绝不静默拖住退出）
+            ShutdownCoordinator.recordFailure(step + " exceeded " + limitMs + "ms and was abandoned "
+                    + "(Playwright close() has no timeout option; JVM exit must not be blocked)", null);
+            return false;
+        }
+        return true;
+    }
+
+    /** 浏览器类型名（仅用于日志/记账；取不到时回落 unknown，绝不因标签本身抛异常）。 */
+    private static String browserTypeName(Browser browser) {
+        try {
+            return browser.browserType() != null ? browser.browserType().name() : "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
     }
 
     /** 清理步骤包装：单步失败记录 warn 但不阻断后续清理（ 修复 R6）。 */

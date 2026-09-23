@@ -9,10 +9,17 @@
     <version>1.0.0</version>
     <packaging>pom</packaging>
     <name>Automation WebUI Framework (Parent)</name>
-    <description>Enterprise multi-module automation framework: core / reporting / api / web / route / test-automation</description>
+    <description>Enterprise multi-module automation framework: core / reporting / api / web / route (test-automation 为独立构建单元)</description>
 
     <!-- T3-1: 物理多模块拆分。依赖方向（均收敛到 core，无环）：
-         core <- reporting / api <- web <- route <- test-automation -->
+         core <- reporting / api <- web <- route。
+
+         CT2-01：test-automation 【不在本 reactor 中】——它是独立构建单元（源码已移出本仓库，
+         其 pom 的 parent 用 <relativePath/> 从 .m2 解析本 parent POM 与各框架 jar）。
+         构建/发布顺序（本地与 CI 一致，两段式）：
+           ① mvn -B install -Psca -DskipTests -DskipITs      # 本仓库：装 parent + 6 个框架模块到 .m2
+           ② mvn -B -f ../test-automation/pom.xml verify      # test-automation：跑单测 + Cucumber IT
+         CI 见 .github/workflows/build.yml 的 `e2e` job（两段式 + 「IT 数 > 0」可证伪断言）。-->
     <modules>
         <module>pw-core</module>
         <module>pw-reports</module>
@@ -27,12 +34,15 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <!-- D6-3：serenity 升级路径见 docs/serenity-upgrade-path.md（摩擦点矩阵 + 回归清单 + SOP）。
+        <!-- D6-3：serenity 升级路径（摩擦点矩阵 + 回归清单 + SOP）—— CT2-22：原设计文档
+             （docs 下名为 serenity-upgrade-path 的 md）在本仓库不存在（全仓仅此一处引用），如需追溯请查 git 历史。
              历史：CORE-P0-1 为适配 jackson 2.18.3 上界曾被动降到 4.2.0；版本已集中此处，升级只改本属性 + 同步配套覆盖项。 -->
         <serenity.version>4.2.0</serenity.version>
         <serenity.cucumber.version>4.2.0</serenity.cucumber.version>
         <playwright.version>1.62.0</playwright.version>
-        <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5（设计见 docs/architecture-review/17_整改专项设计_JUnit5升级.md）。
+        <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5。
+             CT2-22：原设计文档（docs 下 architecture-review 的 17 号「整改专项设计_JUnit5升级」）
+             未随升级落盘 —— 17 号现为「17_全量评审_逐模块逐文件多维报告」；如需追溯请查 git 历史。
              保持 Serenity 4.2.0；junit-jupiter 版本须与 serenity-junit5:4.2.0 传递引入的 junit-jupiter 对齐
              （在线 mvn dependency:tree 校准，requireUpperBoundDeps 门禁）。默认 5.11.4 与 cucumber-junit-platform-engine:7.31 的 junit-platform 上界兼容。 -->
         <junit.jupiter.version>5.11.4</junit.jupiter.version>
@@ -88,6 +98,13 @@
         <!-- CVE 门禁（T1-4）：OSV-Scanner 配置 -->
         <cve.gate.skip>false</cve.gate.skip>
 
+        <!-- CVE 门禁解释器（N-01① 修复）：默认 pwsh —— Linux/macOS/CI(ubuntu-latest) 上的 PowerShell 可执行名；
+             Windows 由下方 <profiles> 中 auto-activated 的 os-windows 覆盖为 powershell。
+             原实现硬编码 powershell（Windows-only 名）→ ubuntu-latest 上 "Cannot run program powershell"
+             → build job 恒红 → needs:build 的 e2e job 永不执行（CT2-01 的反假绿 Gate 从未真正运行过）。
+             注意：不能简单写死 pwsh —— 开发机（Windows）未必装了 PowerShell 7，会反过来打破本地 -Psca。 -->
+        <cve.gate.executable>pwsh</cve.gate.executable>
+
         <!-- 默认回归套件跑所有未显式跳过的场景（单一事实来源，由 test-automation failsafe 的 -Dcucumber.filter.tags=${tags} 驱动）。
              Runner 不再写死标签（B-2）；环境依赖型 feature 若需默认跳过，打 @skip 即可。 -->
         <tags>not @skip</tags>
@@ -97,6 +114,15 @@
              （仅环境/浏览器崩溃重试、断言失败不重试）见 doc10 E-4 与 FrameworkHooks 自定义逻辑，属后续项。
              报告会标记 flaky，避免盲目重试掩盖真实缺陷。 -->
         <rerunFailingTestsCount>1</rerunFailingTestsCount>
+
+        <!-- N-22（2026-09-23，本地实测）：surefire 的 skipTests 必须【先声明为属性】再在插件配置里以
+             ${skipTests} 引用 —— 插件配置里写死字面量 false 会【覆盖】命令行 -DskipTests（surefire 的默认
+             参数表达式才是 ${skipTests}）。实测症状：`mvn install -DskipTests=true` 仍跑完全量单测
+             （4 份日志均含 103~112 个测试类，且无一条 "Tests are skipped"），使 CI stage 1
+             `mvn -B install -Psca -DskipTests -DskipITs`（注释写明"只装 parent + 6 模块到 .m2"）实际每次
+             全量跑单测：既拖慢，又把 stage 2 的 E2E 与单测稳定性绑在一起。
+             默认 false（保持"默认跑单测"），需要跳过时 -DskipTests=true 现在真正生效。 -->
+        <skipTests>false</skipTests>
 
         <!-- X-9：failsafe 单 JVM 整体超时（秒）。原硬编码 600s 对长套件偏紧（并行/大 feature 可能被整体掐断）；
              提为可配置属性（默认 1800s），CI 按套件规模/并行度覆盖：-DforkedProcessTimeoutInSeconds=N。 -->
@@ -358,6 +384,15 @@
             <version>2.2</version>
         </dependency>
 
+        <!-- AssertJ：测试断言库。各模块测试依赖统一由此钉版本，避免 rest-assured-core 等
+             直接声明 assertj-core 却漏写 version 导致 reactor POM 解析失败。 -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <version>3.27.7</version>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Utils -->
         <dependency>
             <groupId>com.typesafe</groupId>
@@ -490,7 +525,8 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
-                    <skipTests>false</skipTests>
+                    <!-- N-22：引用属性而非写死 false —— 后者会覆盖命令行 -DskipTests（详见 <properties> 中说明）。 -->
+                    <skipTests>${skipTests}</skipTests>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>
@@ -681,7 +717,9 @@
                                 </goals>
                                 <inherited>false</inherited>
                                 <configuration>
-                                    <executable>powershell</executable>
+                                    <!-- N-01①：解释器由 OS 自适应属性提供（见 <properties> / os-windows profile），
+                                         不再硬编码 Windows-only 的 powershell。 -->
+                                    <executable>${cve.gate.executable}</executable>
                                     <arguments>
                                         <argument>-NoProfile</argument>
                                         <argument>-ExecutionPolicy</argument>
@@ -697,6 +735,22 @@
                 </plugins>
             </build>
         </profile>
+        <!-- N-01①：CVE 门禁解释器的 OS 自适应（配合 <properties> 的 cve.gate.executable）。
+             Windows 恒带 Windows PowerShell 5.1（powershell），但不保证有 PowerShell 7（pwsh）；
+             Linux/macOS/CI(ubuntu-latest) 只有 pwsh。按 OS 自动切换，杜绝"本地绿 / CI 红"的分叉。
+             本 profile 由 os.family=windows 自动激活，无需显式 -P。 -->
+        <profile>
+            <id>os-windows</id>
+            <activation>
+                <os>
+                    <family>windows</family>
+                </os>
+            </activation>
+            <properties>
+                <cve.gate.executable>powershell</cve.gate.executable>
+            </properties>
+        </profile>
+
         <!-- D-4：环境 profile——提供明确的环境切换入口，CI 用法：mvn verify -Psit1 -Dtags="@smoke"。
              仅注入 env/env.code/base.url 三个属性（经 test-automation failsafe 做为系统属性下发），
              不触碰 environment.* 对象键（见根 <properties> 铁律注释）。 -->

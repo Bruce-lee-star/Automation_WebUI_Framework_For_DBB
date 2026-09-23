@@ -55,7 +55,7 @@ final class RolePickerBridgeRegistry {
         // 会 new 一个空 javaPickBySig 并传入；若此处直接 put 覆盖，context 权威内存态会被空 map 替换，
         // 后续 __roleOnPick 回调（RolePickerSessionState.CTX_PICK_STATES.get(ctx)）全部写进空 map → 此前 LogonPage+SetupSecondPwdPage
         // 已拾的全部元素丢失（日志现象：内存态 49→1）。故二次打开时把旧会话历史迁移合并进本次 map（保留去重顺序），
-        // 让 openPanel 后续代码（RolePickerSessionState.STATE_DELETED 等）拿到"含历史"的同一引用，历史不丢。
+        // 让 openPanel 后续代码（RolePickerSessionState.CTX_PICK_STATES / 命令队列等）拿到"含历史"的同一引用，历史不丢。
         LinkedHashMap<String, RoleEntry> prev = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
         // 【diag-migrate】追踪跨会话迁移是否把脏 pickNos/seq 带入本轮（定位 user_name 首号恒为 2 的根因）。
         if (prev != null) {
@@ -119,7 +119,7 @@ final class RolePickerBridgeRegistry {
                         c = GSON.toJson(v);
                     }
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerBridgeRegistry", ignore); }
             q.offer(new CmdEvent(source.page(), c));
             return null;
         });
@@ -153,7 +153,7 @@ final class RolePickerBridgeRegistry {
                     try {
                         List<String> fp = RolePickerFramePath.computeFramePath(source.page(), source.frame());
                         if (fp != null && !fp.isEmpty()) e.setFramePath(fp);
-                    } catch (Exception ignore) {}
+                    } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerBridgeRegistry", ignore); }
                 }
                 // 去重键与浏览器端保持一致但更精确：定位器唯一型策略（id/css/i18n/text/...）按 locator 签名（_sig）
                 // 去重，避免同一元素在"主页↔弹窗"间被重复收录；角色/closeOp 仍按 [sig, pageClass|URL]（_sigKey）区分。
@@ -282,9 +282,9 @@ final class RolePickerBridgeRegistry {
                     // 导致"删一个丢全部"。JS 侧 __deleteSinglePick 已正确处理浏览器侧删除和重编号，
                     // Java 侧只需精确移除目标元素即可，不再做整桶删除。
                     // 【修复"已删除元素无法重新拾取"】
-                    // 旧逻辑：RolePickerSessionState.STATE_DELETED 永久记录已删键，导致 isDeletedKeyInState 检查命中后跳过元素，
+                    // 旧逻辑：会话级"已删集合"（STATE_DELETED，N-18 已删除）永久记录已删键，导致已删判定命中后跳过元素，
                     // 用户永远无法重新拾取已删除的元素。
-                    // 新逻辑：不再写入 RolePickerSessionState.STATE_DELETED，允许用户重新拾取。删除的语义是"从当前拾取列表移除"，
+                    // 新逻辑：允许用户重新拾取（该会话级已删集合已按 N-18 一并删除，不存在任何永久屏蔽）。删除的语义是"从当前拾取列表移除"，
                     // 而非"永久封杀该元素"。若需防止跨区域扫描复活，应由浏览器侧 __deletedSigs 临时屏蔽。
                 }
                 // 【已禁用"清空所有 frame 的 __rolePicks"】
@@ -324,7 +324,7 @@ final class RolePickerBridgeRegistry {
                         // origin+pathname，不污染 _pageClass）；退化用 _pageClass。file:// 无 query/hash 时
                         // origin+pathname 与 f.url() 通常相等。
                         String pc = null;
-                        try { Object fu0 = m.get("_frameUrl"); if (fu0 != null) pc = String.valueOf(fu0); } catch (Exception fuIgn) {}
+                        try { Object fu0 = m.get("_frameUrl"); if (fu0 != null) pc = String.valueOf(fu0); } catch (Exception fuIgn) { RolePickerQuiet.ignore("RolePickerBridgeRegistry#frameUrl", fuIgn); }
                         if ((pc == null || pc.isEmpty()) && e.getPageClass() != null && !e.getPageClass().isEmpty()) pc = e.getPageClass();
                         if (pc != null && !pc.isEmpty()) {
                             try {
@@ -346,12 +346,12 @@ final class RolePickerBridgeRegistry {
                                                 if (fp != null && !fp.isEmpty()) {
                                                     e.setFramePath(fp);
                                                 }
-                                            } catch (Exception frameErr) {}
+                                            } catch (Exception frameErr) { RolePickerQuiet.ignore("RolePickerBridgeRegistry#frames", frameErr); }
                                             break;
                                         }
                                     }
                                 }
-                            } catch (Exception backfillErr) {}
+                            } catch (Exception backfillErr) { RolePickerQuiet.ignore("RolePickerBridgeRegistry#backfill", backfillErr); }
                         }
                     }
                     String key = RolePickerPickParser.pickDedupKey(m, e);
@@ -369,7 +369,7 @@ final class RolePickerBridgeRegistry {
                             log.info("[picker] __roleOnPick(console) callback written to in-memory state: key={} pageClass={} framePath={} (current in-memory size={})", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fplog == null || fplog.isEmpty() ? "" : fplog.toString()), map.size());
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerBridgeRegistry", ignore); }
             } else if (t.startsWith("__roleOnDelete::")) {
                 // 删除的控制台兜底：与 __roleOnPick:: 对称，绑定失效时删除同样不丢（按键移除天然幂等）。
                 LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
@@ -412,11 +412,11 @@ final class RolePickerBridgeRegistry {
                             return false;
                         });
                         // 【修复"已删除元素无法重新拾取"】
-                        // 与 exposeBinding 通道保持一致：不再写入 RolePickerSessionState.STATE_DELETED，允许用户重新拾取已删除的元素。
+                        // 与 exposeBinding 通道保持一致：不记录会话级已删集合（该状态已按 N-18 删除），允许用户重新拾取已删除的元素。
                         // 删除的语义是"从当前拾取列表移除"，而非"永久封杀该元素"。
-                        // RolePickerSessionState.STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);
+                        //（N-18 已删除的写法：RolePickerSessionState.STATE_DELETED.computeIfAbsent(map, k -> ConcurrentHashMap.newKeySet()).addAll(dead);）
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerBridgeRegistry", ignore); }
             } else if ("error".equals(msg.type())
                     && (t.contains("rolePick") || t.contains("__record") || t.contains("__role"))) {
                 log.info("[browser][error] {}", t);
@@ -448,6 +448,6 @@ final class RolePickerBridgeRegistry {
                     cmdQueue.offer(new CmdEvent(page, c));
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerBridgeRegistry", ignore); }
     }
 }

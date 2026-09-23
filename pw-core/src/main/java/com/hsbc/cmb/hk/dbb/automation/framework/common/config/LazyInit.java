@@ -83,4 +83,24 @@ public final class LazyInit {
     public boolean isInitialized() {
         return initialized;
     }
+
+    /**
+     * CT2-17：复位为「未初始化」—— 使后续 {@link #ensure()} 重新执行初始化动作。
+     *
+     * <p><b>用途</b>：同 JVM 内「关闭再启用」场景（如多套件连续运行：先 {@code shutdown()} 释放资源，
+     * 下一套件重新使用该组件）。原实现无 reset，组件一旦关闭便<b>永久不可恢复</b> ——
+     * 后续调用要么静默丢任务、要么抛 {@code RejectedExecutionException}，同一 JVM 内出现两种相反后果。
+     *
+     * <p><b>调用契约</b>：调用方必须<b>先</b>释放本次初始化所创建的全部资源（并清空相关静态字段），
+     * <b>再</b>调用本方法；否则会形成「已复位但资源仍在」或「资源已释放但字段仍被引用」的不一致状态。
+     *
+     * <p>复位会一并清除此前缓存的失败原因 —— 即显式 {@code reset()} 是唯一的重试入口
+     * （{@code ensure()} 本身的默认策略仍是「失败不重试」，避免失败路径被高频调用放大噪声）。
+     */
+    public void reset() {
+        synchronized (lock) {
+            initialized = false;
+            failure = null;
+        }
+    }
 }

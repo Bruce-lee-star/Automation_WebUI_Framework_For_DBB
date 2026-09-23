@@ -565,8 +565,26 @@ public class BrowserStackManager {
         try (OutputStreamWriter writer = new OutputStreamWriter(conn.getOutputStream(), StandardCharsets.UTF_8)) {
             objectMapper.writeValue(writer, body);
         }
-        
-        return conn.getResponseCode();
+
+        //  N-15（doc 21 MEDIUM）：必须【排空并关闭响应流】且【disconnect】—— 原实现只取状态码，
+        //  响应体既不读也不关：4xx/5xx 的错误响应会把连接挂在 keep-alive 池里，
+        //  长套件 + 多会话下累积 socket/FD（最终只能等 GC 回收，且回收时机不确定）。
+        try {
+            int status = conn.getResponseCode();
+            java.io.InputStream responseStream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream();
+            if (responseStream != null) {
+                try (java.io.InputStream in = responseStream) {
+                    byte[] drain = new byte[1024];
+                    // 只排空、不解析（本方法仅回传状态码）；排空后才能安全复用/释放该连接
+                    while (in.read(drain) != -1) {
+                        // no-op：drain
+                    }
+                }
+            }
+            return status;
+        } finally {
+            conn.disconnect();
+        }
     }
 
     /** 凭证验证 */

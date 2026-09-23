@@ -7,8 +7,11 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandlerRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Route;
@@ -19,6 +22,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Mock 响应 Handler。
@@ -41,6 +49,9 @@ public class MockHandler {
 
     static {
         RouteHandlerRegistry.register(RouteHandleType.MOCK, MockHandler::handle);
+        // CT2-04：进程退出时关闭拦截执行器（幂等），避免异常路径下任务堆积导致线程残留
+        ShutdownCoordinator.register(ShutdownCoordinator.ORDER_MONITOR_HANDLER,
+                "mock-intercept", MockHandler::shutdownInterceptExecutor);
     }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(MockHandler.class);
@@ -48,6 +59,46 @@ public class MockHandler {
     /** route.fetch() 的默认超时（毫秒），可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖 */
     private static final double ROUTE_FETCH_TIMEOUT_MS =
             RouteUtil.getEnvDouble("ROUTE_FETCH_TIMEOUT_MS", 30000);
+
+    /**
+     * CT2-04：真实响应拦截执行器 —— 承载 {@code interceptRealResponse} 分支的
+     * 「{@code route.fetch()}（≤30s 阻塞）+ 字段改写 + fulfill」整段链路，
+     * 使 Playwright 事件线程零阻塞（与 {@link ModifyHandler}/{@link MonitorHandler} 的观测池同源治理）。
+     *
+     * <p><b>有界队列 + 拒绝即放行</b>：队列满 / 池已关闭时拒绝新任务，由
+     * {@link #submitInterceptRealResponse} 立即以原始请求 {@code safeResume} 放行 ——
+     * 绝不反压事件线程，也不让请求永久挂起。线程数与容量分别由
+     * {@code mock.intercept.threads} / {@code mock.intercept.queue.capacity} 配置。</p>
+     */
+    private static final ThreadPoolExecutor interceptExecutor = newInterceptExecutor();
+
+    private static ThreadPoolExecutor newInterceptExecutor() {
+        int threads = Math.max(1, MonitorConfig.getInt(MonitorConfig.MOCK_INTERCEPT_THREADS, 4));
+        int queue = Math.max(16, MonitorConfig.getInt(MonitorConfig.MOCK_INTERCEPT_QUEUE_CAPACITY, 1024));
+        AtomicInteger seq = new AtomicInteger(1);
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(queue),
+                r -> {
+                    Thread t = new Thread(r, "mock-intercept-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    /** 关闭拦截执行器（幂等；最多等待 5s，超时则强制中断）。 */
+    static void shutdownInterceptExecutor() {
+        interceptExecutor.shutdown();
+        try {
+            if (!interceptExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                LOGGER.warn("[MockHandler] interceptExecutor did not terminate in time, forcing shutdown");
+                interceptExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     public static void handle(Route route, RouteRule rule, long delayMs) {
         String url = route.request().url();
@@ -70,8 +121,10 @@ public class MockHandler {
         }
 
         // ═══ 拦截真实响应模式：route.fetch() → 修改 → fulfill ═══
+        //  CT2-04：本分支含 route.fetch()（≤30s 阻塞 Playwright 事件线程），整体下沉拦截执行器，
+        //    事件线程仅登记在途计数并提交任务，立即返回（与 ModifyHandler 同构）。
         if (rule.isInterceptRealResponse()) {
-            handleInterceptRealResponse(route, rule, url);
+            submitInterceptRealResponse(route, rule, url);
             return;
         }
 
@@ -188,6 +241,73 @@ public class MockHandler {
                     rule.getUrlPattern(), call.method(), status);
         } catch (Exception e) {
             LOGGER.debug("[MockHandler] Failed to store mock call to ApiCaptureContext: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * CT2-04：拦截真实响应入口（运行于 Playwright 事件线程）—— <b>仅登记在途计数并提交任务即返回</b>，
+     * 事件线程零阻塞。
+     *
+     * <p>为何必须下沉：{@code interceptRealResponse} 分支内的 {@code route.fetch()} 会在事件线程同步等待
+     * 真实服务器返回（≤30s）。单 context 内该路由分发被串行化 → 后续请求 handler 全部排队 → 级联超时。
+     * 「fetch + 字段改写 + fulfill」整段交由 {@link #interceptExecutor}（见 {@link #handleInterceptRealResponse}）。</p>
+     *
+     * <p><b>在途计数协议</b>：提交<b>前</b>在事件线程同步 {@code incrementActiveRequests()}，任务
+     * {@code finally} 递减，使 {@code awaitCompletion} 能等待异步拦截完成，避免主线程在
+     * 「请求已放行但 fulfill 尚未落库」的窗口内误判全部完成（与 ModifyHandler 同款协议）。</p>
+     *
+     * <p><b>拒绝即 fail-closed</b>：队列满 / 池已关闭时立即以原始请求 {@code safeResume} 放行，
+     * 同时置失败标志并登记数据损失 —— 拦截被丢弃意味着 mock 未生效（API 假绿），不得静默降级
+     * （与 ModifyHandler CT2-10 口径一致）。</p>
+     */
+    private static void submitInterceptRealResponse(Route route, RouteRule rule, String url) {
+        ApiCaptureContext inFlight = RouteUtil.captureContext(route);
+        if (inFlight != null) {
+            inFlight.incrementActiveRequests();
+        }
+        try {
+            interceptExecutor.execute(() -> runIntercept(route, rule, url, inFlight));
+        } catch (RejectedExecutionException rejected) {
+            onInterceptRejected(route, rule, url, inFlight);
+        }
+    }
+
+    /**
+     * CT2-04 拒绝补偿（包级可见以便确定性单测，对齐 {@code MonitorHandler#onObservationRejected}）：
+     * 拦截任务被拒（队列饱和 / 池已关闭）时以原始请求放行，并置失败标志 + 登记数据损失（fail-closed），
+     * 杜绝「mock 未生效」被静默吞掉导致 API 假绿。
+     */
+    static void onInterceptRejected(Route route, RouteRule rule, String url, ApiCaptureContext inFlight) {
+        if (inFlight != null) {
+            inFlight.decrementActiveRequests();
+            inFlight.signalFailFast();
+        }
+        MonitorDataLossReporter.instance().recordLoss("mock_intercept_dropped_queue_saturated", 1);
+        LOGGER.error("[MockHandler] intercept executor rejected (queue full or shutdown) → resuming original "
+                + "request without mock: pattern='{}', url='{}'",
+                rule.getUrlPattern(), RouteUtil.sanitizeUrl(url));
+        RouteUtil.safeResume(route);
+    }
+
+    /**
+     * 拦截任务体（{@link #interceptExecutor} 工作线程）：执行 {@link #handleInterceptRealResponse}，
+     * 保证异常可见、在途计数必然配对递减。
+     *
+     * <p>此处<b>不再二次 resume</b>：{@code handleInterceptRealResponse} 的 finally 已对「未终结」路径
+     * 兜底放行，重复 resume 会让 Playwright 侧 request/route 对象失效并级联污染同连接命令。
+     *
+     * @param inFlight 提交前已在事件线程递增的在途计数宿主（可为 null）；本任务 finally 中递减
+     */
+    private static void runIntercept(Route route, RouteRule rule, String url, ApiCaptureContext inFlight) {
+        try {
+            handleInterceptRealResponse(route, rule, url);
+        } catch (Exception e) {
+            LOGGER.error("[MockHandler] Async intercept failed for pattern '{}': {}",
+                    rule.getUrlPattern(), e.getMessage(), e);
+        } finally {
+            if (inFlight != null) {
+                inFlight.decrementActiveRequests();
+            }
         }
     }
 

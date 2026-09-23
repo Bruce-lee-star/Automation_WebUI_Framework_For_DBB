@@ -975,7 +975,10 @@ public class PlaywrightListener implements StepListener {
             PlaywrightManager.cleanupForFeature();
             VerboseLogging.logInfoIfVerbose(logger, "Cleaned up all resources at test suite finish");
         } catch (Exception e) {
-            VerboseLogging.logInfoIfVerbose(logger, "Failed to clean up resources at test suite finish: {}", e.getMessage());
+            //  N-06（doc 21 HIGH）：套件收尾的清理失败不得只留 verbose 日志（默认日志级别零输出）——
+            //  失败即可能残留浏览器 / 上下文 / 线程，必须 ERROR + 计入统一失败计数（可被套件末尾 / CI 断言）。
+            com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                    .recordFailure("web/listener/testSuiteFinished/cleanupForFeature", e);
         }
     }
 

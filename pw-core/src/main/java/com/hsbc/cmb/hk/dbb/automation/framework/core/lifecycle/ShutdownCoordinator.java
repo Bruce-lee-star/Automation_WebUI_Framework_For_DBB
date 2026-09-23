@@ -6,7 +6,9 @@ import org.slf4j.LoggerFactory;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 统一 JVM 关闭编排器（修复 L1）。
@@ -58,6 +60,44 @@ public final class ShutdownCoordinator {
     private static final AtomicBoolean running = new AtomicBoolean(false);
 
     /**
+     * N-06（doc 21 HIGH）：关闭 / 收尾阶段清理失败的<b>累计数</b>。
+     *
+     * <p><b>为何需要它</b>：关闭期的清理失败（孤儿浏览器进程 / 未释放线程 / 未关闭句柄）此前只有
+     * verbose 门控日志，默认日志级别下<b>完全无输出</b>——而它恰恰是「JVM 外内存耗尽（hs_err
+     * native OOM）」的唯一归因手段。计数使这种"无信号失败"变成可被套件末尾 / CI <b>断言</b>的事实。</p>
+     */
+    private static final AtomicLong failureCount = new AtomicLong();
+
+    /**
+     * N-22（doc 21 补记）：JVM 退出期的执行预算 —— 单任务上限（毫秒）。
+     *
+     * <p><b>要防的缺陷（实测）</b>：某次 pw-web-ui 单测退出时，本编排器在 {@code pw-core} 任务
+     * （{@code PlaywrightManager.cleanupAll()}）内耗时约 <b>27s</b>，越过 Surefire 的
+     * 「{@code System.exit(0)} 之后 30s 宽限」→ 日志出现
+     * {@code [ERROR] Surefire is going to kill self fork JVM}，且<b>后续任务从未执行</b> ——
+     * 原设计目标（W-1：避免硬杀留下孤儿浏览器进程）恰被这次硬杀推翻；硬杀还会截断日志/报告落盘，
+     * 且没有任何可断言信号。故改为<b>有界执行</b>：超时任务被放弃（daemon 线程随 JVM 消亡）
+     * 并计入 {@link #getFailureCount()} + ERROR。</p>
+     *
+     * <p>取值依据：正常清理为毫秒级（实测其它模块 7~9 个任务合计 &lt; 200ms），
+     * 8s/20s 既远大于正常值、又明显小于 Surefire 的 30s 宽限。非正值<b>不</b>表示"无上限"
+     * （与 N-16 页面超时 / N-19 面板会话上限同一纪律），而是回落默认并 WARN。</p>
+     */
+    public static final long DEFAULT_TASK_TIMEOUT_MS = 8_000L;
+
+    /** N-22：全部关闭任务的总预算（毫秒）。见 {@link #DEFAULT_TASK_TIMEOUT_MS}。 */
+    public static final long DEFAULT_TOTAL_BUDGET_MS = 20_000L;
+
+    /** N-22：单任务耗时达到该值即在默认日志级别 WARN（正常清理为毫秒级，故不制造噪音）。 */
+    private static final long SLOW_TASK_WARN_MS = 3_000L;
+
+    /** N-22：单任务上限的系统属性名（覆盖 {@link #DEFAULT_TASK_TIMEOUT_MS}）。 */
+    public static final String TASK_TIMEOUT_PROPERTY = "framework.shutdown.taskTimeoutMs";
+
+    /** N-22：总预算的系统属性名（覆盖 {@link #DEFAULT_TOTAL_BUDGET_MS}）。 */
+    public static final String TOTAL_BUDGET_PROPERTY = "framework.shutdown.totalBudgetMs";
+
+    /**
      * 关闭任务。
      *
      * <p><b>不实现 {@link Comparable}</b>：任务间的顺序只由 {@code order} 决定，而身份语义仍是
@@ -105,26 +145,132 @@ public final class ShutdownCoordinator {
         }
     }
 
-    /** 按 order 升序执行所有任务。并发重入保护（running 闩）；执行结束后复位 running，
-     *  使 reset() 后能再次 runAll（修复 CORE-P0-3 一次性不可复位的限制）。 */
+    /**
+     * N-06：登记一次「关闭 / 收尾阶段的清理失败」—— 供<b>自行吞掉子步骤异常</b>的组件调用
+     * （它们的失败不会冒泡到 {@link #runAll()}，若只打 verbose 日志就等于零信号）。
+     *
+     * <p>语义：一定会写一条<b>非 verbose 门控</b>的 ERROR（含堆栈），并递增可断言的失败计数。
+     * 调用方无需再自行记日志。</p>
+     *
+     * @param step 失败步骤的可定位名称（建议 {@code "模块/阶段/动作"} 形态）
+     * @param t    失败原因（可为 {@code null}）
+     */
+    public static void recordFailure(String step, Throwable t) {
+        long cumulative = failureCount.incrementAndGet();
+        LOGGER.error("[ShutdownCoordinator] Cleanup step '{}' FAILED (cumulative failures: {}); "
+                        + "resources may leak (orphan browser / thread / handle) — this failure must stay observable",
+                step, cumulative, t);
+    }
+
+    /** N-06：关闭 / 收尾阶段清理失败的累计数（{@code 0} = 全绿）。供套件末尾 / CI 断言。 */
+    public static long getFailureCount() {
+        return failureCount.get();
+    }
+
+    /**
+     * 按 order 升序执行所有任务，且整体受<b>预算约束</b>（N-22）。并发重入保护（running 闩）；
+     * 执行结束后复位 running，使 reset() 后能再次 runAll（修复 CORE-P0-3 一次性不可复位的限制）。
+     *
+     * <p>预算语义见 {@link #DEFAULT_TASK_TIMEOUT_MS}：单任务超上限即放弃并记账；总预算耗尽则停止后续任务
+     * 并记账（替代"被 Surefire 硬杀后静默截断"）。</p>
+     */
     public static void runAll() {
         if (!running.compareAndSet(false, true)) {
             return;
         }
         try {
-            LOGGER.info("[ShutdownCoordinator] Running {} shutdown task(s)", TASKS.size());
-            for (Task t : TASKS) {
-                try {
-                    LOGGER.info("[ShutdownCoordinator] -> {}", t.name);
-                    t.action.run();
-                } catch (Throwable e) {
-                    LOGGER.error("[ShutdownCoordinator] Task '{}' failed: {}", t.name, e.getMessage(), e);
+            long taskTimeoutMs = resolveBudget(TASK_TIMEOUT_PROPERTY, DEFAULT_TASK_TIMEOUT_MS);
+            long totalBudgetMs = resolveBudget(TOTAL_BUDGET_PROPERTY, DEFAULT_TOTAL_BUDGET_MS);
+            long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(totalBudgetMs);
+            LOGGER.info("[ShutdownCoordinator] Running {} shutdown task(s) (per-task limit {}ms, total budget {}ms)",
+                    TASKS.size(), taskTimeoutMs, totalBudgetMs);
+            for (int i = 0; i < TASKS.size(); i++) {
+                Task t = TASKS.get(i);
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+                if (remainingMs <= 0) {
+                    //  N-22：预算耗尽 —— 显式记账后停止。此前这是"被硬杀后静默截断"，无任何信号。
+                    failureCount.incrementAndGet();
+                    LOGGER.error("[ShutdownCoordinator] total budget {}ms exhausted before task '{}' — {} task(s) SKIPPED ({}); "
+                                    + "a hard kill would have truncated them silently; resources may leak",
+                            totalBudgetMs, t.name, TASKS.size() - i, remainingTaskNames(i));
+                    break;
                 }
+                runTaskBounded(t, Math.min(taskTimeoutMs, remainingMs));
             }
             LOGGER.info("[ShutdownCoordinator] Shutdown complete");
         } finally {
             running.set(false);
         }
+    }
+
+    /**
+     * 执行单个任务，最多等待 {@code timeoutMs}（N-22）。
+     *
+     * <p><b>为何移到专属 daemon 线程</b>：本方法的调用者之一是 JVM 关闭钩子线程，在其上同步执行就无法设限 ——
+     * 一旦任务卡住，JVM 退出必然被 Surefire 硬杀（正是要消除的路径）。任务异常仍在此统一"记 ERROR + 计数"，
+     * 与 N-06 语义保持一致。</p>
+     *
+     * @param task      待执行任务
+     * @param timeoutMs 本次等待上限（已按剩余总预算收敛）
+     */
+    private static void runTaskBounded(Task task, long timeoutMs) {
+        LOGGER.info("[ShutdownCoordinator] -> {}", task.name);
+        long startNanos = System.nanoTime();
+        Thread worker = new Thread(() -> {
+            try {
+                task.action.run();
+            } catch (Throwable e) {
+                //  N-06：任务失败同时递增失败计数（原实现只记日志，无法被断言）
+                failureCount.incrementAndGet();
+                LOGGER.error("[ShutdownCoordinator] Task '{}' failed: {}", task.name, e.getMessage(), e);
+            }
+        }, "shutdown-task-" + task.name);
+        worker.setDaemon(true);
+        worker.start();
+        try {
+            worker.join(timeoutMs);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        if (worker.isAlive()) {
+            failureCount.incrementAndGet();
+            LOGGER.error("[ShutdownCoordinator] Task '{}' exceeded the {}ms limit (elapsed {}ms) — ABANDONED so that JVM exit is "
+                            + "not hard-killed; its thread is a daemon and dies with the JVM. Resources may leak "
+                            + "(orphan browser / thread / handle)",
+                    task.name, timeoutMs, elapsedMs);
+        } else if (elapsedMs >= SLOW_TASK_WARN_MS) {
+            LOGGER.warn("[ShutdownCoordinator] Task '{}' took {}ms (slow cleanup — watch for orphan resources)",
+                    task.name, elapsedMs);
+        }
+    }
+
+    /** 列出尚未执行的任务名（用于预算耗尽的错误信息，使"被跳过的清理"可直接定位）。 */
+    private static String remainingTaskNames(int fromIndex) {
+        StringBuilder names = new StringBuilder();
+        for (int i = fromIndex; i < TASKS.size(); i++) {
+            if (names.length() > 0) {
+                names.append(", ");
+            }
+            names.append(TASKS.get(i).name);
+        }
+        return names.toString();
+    }
+
+    /**
+     * 解析预算系统属性（N-22）：非正值<b>不</b>表示"无上限"（那正是本预算要消除的隐患），
+     * 而是回落默认值并 WARN —— 与 N-16（页面超时）/ N-19（面板会话上限）同一纪律。
+     *
+     * <p>包级可见以便单测直接断言"非法值回落"这一契约（不扩大公共 API）。</p>
+     */
+    static long resolveBudget(String property, long defaultValue) {
+        long value = Long.getLong(property, defaultValue);
+        if (value <= 0) {
+            LOGGER.warn("[ShutdownCoordinator] {}={} 非法（0/负数不表示「无上限」，那正是本预算要消除的隐患）；已回落默认 {}ms",
+                    property, value, defaultValue);
+            return defaultValue;
+        }
+        return value;
     }
 
     /**
@@ -136,5 +282,7 @@ public final class ShutdownCoordinator {
         TASKS.clear();
         running.set(false);
         hookRegistered.set(false);
+        //  N-06：失败计数一并复位（与"清空已注册任务"同义：进入全新的生命周期）
+        failureCount.set(0);
     }
 }

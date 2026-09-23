@@ -19,11 +19,19 @@ const path = require('path');
 const assert = require('assert');
 const vm = require('vm');
 
-const ROOT = 'd:/IdeaProject/Automation_WebUI_Framework_For_DBB';
+//  A-01（doc 22）：原先写死作者本机绝对路径 'd:/IdeaProject/...'，在 ubuntu CI 上 path.join 退化成相对路径
+//    → fs.readFileSync 相对 cwd 解析 → ENOENT → 构建恒红。改为相对脚本自身定位仓库根（__dirname = tools/），
+//    与 cwd / 盘符 / 目录名均无关；支持 PICKER_TEST_ROOT 环境变量覆盖（便于本地调试，非硬编码默认）。
+const ROOT = process.env.PICKER_TEST_ROOT || path.resolve(__dirname, '..');
 const RES = path.join(ROOT, 'pw-core/src/main/resources/scan/js');
 
 function readRes(f) {
-  return fs.readFileSync(path.join(RES, f), 'utf8');
+  const p = path.join(RES, f);
+  if (!fs.existsSync(p)) {
+    throw new Error('[picker_merge_test] resource not found: ' + p
+            + ' (repo root resolved as: ' + ROOT + '; override with PICKER_TEST_ROOT if needed)');
+  }
+  return fs.readFileSync(p, 'utf8');
 }
 
 // Build a fresh browser-global sandbox for one scenario.

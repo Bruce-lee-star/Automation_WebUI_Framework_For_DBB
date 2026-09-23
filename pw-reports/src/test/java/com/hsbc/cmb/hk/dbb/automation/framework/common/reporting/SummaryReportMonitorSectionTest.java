@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -111,6 +112,49 @@ public class SummaryReportMonitorSectionTest {
         String html = Files.readString(dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
         assertFalse(html.contains("API 监控失败（按 Owner 汇总）"), "无数据时不渲染监控区域");
         assertFalse(html.contains("数据完整性告警"), "无数据时不渲染数据丢失红框");
+    }
+
+    /**
+     * N-05（doc 21 CRITICAL｜假绿方向）：{@code write()} 失败的 sink <b>不得</b>被 {@code clear()}。
+     *
+     * <p>原实现对全部 sink 无条件 clear —— 写失败者（磁盘满/权限/序列化异常）的内存记录既未落盘、
+     * 又被丢弃，报告侧于是显示「无监控失败」：把「有失败」变成「没有失败」。</p>
+     *
+     * <p><b>本用例在旧实现下必红</b>（旧实现会把失败的 sink 也 clear，{@code clearCalls() == 1}）。</p>
+     */
+    @Test
+    public void failedSinkIsNotClearedSoRecordsSurviveForRetry() throws Exception {
+        TestMonitorFailureReportSink.setSampleData(sampleDataWithOneOwner());
+        TestMonitorFailureReportSink.setFailWrite(true);
+
+        File dir = newReportDir("sink-write-failure");
+        writeOutcome(dir, "ok.json", "{\n"
+                + "  \"name\": \"Happy path\",\n"
+                + "  \"result\": \"SUCCESS\",\n"
+                + "  \"duration\": 500,\n"
+                + "  \"userStory\": { \"storyName\": \"Monitor Feature\" },\n"
+                + "  \"scenarioId\": \"monitor-feature;happy-path\",\n"
+                + "  \"startTime\": \"2026-09-01T10:00:00.000000+08:00\"\n"
+                + "}");
+
+        new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
+
+        assertTrue(TestMonitorFailureReportSink.writeAttempts() >= 1, "应确实尝试过写入该 sink");
+        assertEquals(0, TestMonitorFailureReportSink.clearCalls(),
+                "write 失败的 sink 绝不能被 clear —— 否则其记录既未落盘、也从内存消失（静默数据丢失 / 假绿）");
+    }
+
+    private static MonitorFailureReportData sampleDataWithOneOwner() {
+        List<MonitorFailureItem> items = new ArrayList<>();
+        items.add(new MonitorFailureItem(
+                "team-a@hsbc.com", "Login", "/api/v1/transfer", "500", "POST",
+                "https://api.example.com/api/v1/transfer", "status=500 expected=200",
+                List.of("Scenario A"), "{\"amt\":100}", "{\"error\":\"boom\"}"));
+        List<MonitorOwnerBlock> owners = new ArrayList<>();
+        owners.add(new MonitorOwnerBlock("team-a@hsbc.com", items));
+        Map<String, Long> loss = new LinkedHashMap<>();
+        loss.put("route_monitor_record", 3L);
+        return new MonitorFailureReportData(owners, loss, 3L, 1, 1);
     }
 
     private static void writeOutcome(File dir, String fileName, String json) throws Exception {

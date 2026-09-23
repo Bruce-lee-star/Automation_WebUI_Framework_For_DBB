@@ -67,5 +67,8 @@ ENTERPRISE_ARCHITECTURE_TASKS.md
 tools/osv-scanner/
 osv-report.json
 osv-err.log
+# gate follow-up: OSV 的 JSON 输出是【生成物】（tools/parse-cve.ps1 的输入，实测 4.2 MB），
+# 原先未忽略 -> 一直以 untracked 形态躺在 tools/ 下，随时可能被误提交进仓库。
+tools/osv-scan-result.json
 help.txt
 scanhelp.txt

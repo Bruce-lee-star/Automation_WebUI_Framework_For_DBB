@@ -83,6 +83,11 @@ public final class Dispatcher {
         //    同步路径释放，避免提前清除 pending route 的门控导致重叠 pattern 二次 dispatch 失防。
         //    （声明在 try 外，使 catch/finally 可访问；数组形式以支持 lambda 内修改）
         final boolean[] asyncHandled = {false};
+        //  A-06（doc 22）：记录本 handler 是否【成功 add】了防重标记。dispatchRoute 是每 handler 独立调用的，
+        //    若某 handler 的 bucket.add 失败（标记是【另一个 handler】加的），其 finally 原本 `!asyncHandled[0]`
+        //    仍会 unmarkDispatched(route) —— 摘掉别人的标记 → 后续 handler 能再次 add → 重叠 pattern 二次 dispatch。
+        //    故只有「本 handler 自己成功 add」的标记才由本 handler 的 finally 释放。
+        final boolean[] marked = {false};
         //  最外层兜底 try：覆盖 dispatchRoute 早期逻辑（规则查询、能力位合并、MOCK 短路、
         //    MODIFY fetch 前的 route.request()/incrementActiveRequests 等）。任何未预期异常都强制
         //    resume 兜底，确保 route 绝不永久挂起（详见方法末尾 catch/finally）。
@@ -109,6 +114,8 @@ public final class Dispatcher {
                         rule.getUrlPattern(), reqUrl);
                 return;
             }
+            //  A-06（doc 22）：本 handler 成功 add → 该防重标记的所有权归本 handler（后续 finally 只对它负责）。
+            marked[0] = true;
         }
 
         // ═══ 请求条件匹配：根据 Rule 中配置的 ResourceType/Header/Query/Body 等过滤 ═══
@@ -297,7 +304,9 @@ public final class Dispatcher {
             //    的 route 仍在 pending，其生命周期由 executeHandlerScheduled/action 的 finally 负责释放；
             //    若此处提前清除，会导致重叠 pattern 二次 dispatch 失去防重保护。同步路径（含兜底 resume、
             //    早期异常 force-resume）在此统一释放，避免同 pattern 后续请求被永久吞掉。
-            if (!asyncHandled[0]) {
+            //  A-06（doc 22）：仅当【本 handler 自己成功 add 过】且非异步接管时，才释放防重标记。
+            //    原 `if (!asyncHandled[0])` 会摘掉【别的 handler 加的】标记，导致重叠 pattern 二次 dispatch。
+            if (marked[0] && !asyncHandled[0]) {
                 unmarkDispatched(route);
             }
         }

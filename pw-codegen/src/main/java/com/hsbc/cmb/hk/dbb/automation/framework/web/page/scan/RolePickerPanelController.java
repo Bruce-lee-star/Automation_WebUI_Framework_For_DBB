@@ -61,6 +61,30 @@ public final class RolePickerPanelController {
     private static final Logger log = LoggerFactory.getLogger(RolePickerPanelController.class);
 
     /**
+     * 判定「导航后是否需要强制 {@code start()} 重注入整套库」的<b>唯一判据</b>（单点事实来源）。
+     *
+     * <p><b>N-04（doc 21 CRITICAL 修复）</b>：本类内曾存在<b>两份</b>写法 —— 正确的一份是
+     * {@code lastOrigin = map.get(page)} 后比较字符串，而另一份误写为
+     * {@code curOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN)}。后者是
+     * {@code Map<Page,String>}，{@code String.equals(Map)} <b>恒为 false</b>，使
+     * {@code originChanged} 退化为 {@code !curOrigin.isEmpty()}：<b>所有同源导航都被判为跨域</b>
+     * （含 SPA hash 变化与整页跳转）→ 走强制 {@code start()} 全量重注入分支，与本类
+     * {@code :712-718} 注释所述「已修复的『反复重注入 + 反复合并 → 已拾元素成倍累积』」路径重合
+     * —— 即让一个已修复的缺陷<b>复发</b>。</p>
+     *
+     * <p>故收敛为本方法：两处调用点共用，杜绝再次分叉。</p>
+     *
+     * @param curOrigin  当前文档的 origin（{@code safeOrigin} 派生；无有效 origin 时为 <b>空串</b>）
+     * @param lastOrigin 该 Page 上一次成功注入时记录的 origin（无记录为 {@code null}）
+     * @return {@code true} = 跨域 / 首次 / 无历史记录 → 必须强制重注入；
+     *         {@code false} = 同源，仅做轻量激活保活（避免重注入放大）；
+     *         空 origin（about:blank 等过渡文档）按 {@code false} 处理，保持原有语义
+     */
+    static boolean needsForcedReinjection(String curOrigin, String lastOrigin) {
+        return !curOrigin.isEmpty() && !curOrigin.equals(lastOrigin);
+    }
+
+    /**
      * 打开一个常驻控制面板（类似 {@code page.pause()} 的 inspector），由图标控件驱动整个拾取流程：
      * <ul>
      *   <li>▶/⏹ 切换控件：空闲时显示"开始拾取"（▶，绿），点后进入点选模式并在页面点击目标元素；
@@ -166,8 +190,31 @@ public final class RolePickerPanelController {
         });
 
         log.info("[picker] Panel opened (docked on the right of the same window, no separate window): ▶ start picking -> click elements -> ⏹ stop & generate -> 📋 copy; ✕ close to finish.");
+        //  N-19（doc 21 MEDIUM）：会话级 deadline 兜底。
+        //    本循环 while(true) 且跑在【调用者线程】上，退出条件只有「根页关闭 / 无存活页 / 中断」；
+        //    一旦这些事件丢失（onClose 未回退、rootClosed 未置位、浏览器侧回调被吞），循环会以
+        //    poll(1000ms) 无限阻塞调用线程 —— "面板点了没反应、用例永不结束"，且无任何超时兜底。
+        //    非正值不当作"无上限"（与 N-16 的页面超时纪律一致），而是回落默认值并告警。
+        long sessionMaxMs = Long.getLong(RolePickerConstants.PANEL_SESSION_MAX_PROPERTY,
+                RolePickerConstants.TIMEOUT_PANEL_SESSION_MAX_MS);
+        if (sessionMaxMs <= 0) {
+            log.warn("[picker] {}={} 非法（0/负数不表示「无上限」，那正是本兜底要消除的隐患）；"
+                            + "已回落到默认 {} 分钟。如需更长会话请显式给正数（例如 240 分钟）。",
+                    RolePickerConstants.PANEL_SESSION_MAX_PROPERTY, sessionMaxMs,
+                    RolePickerConstants.TIMEOUT_PANEL_SESSION_MAX_MS / 60_000);
+            sessionMaxMs = RolePickerConstants.TIMEOUT_PANEL_SESSION_MAX_MS;
+        }
+        final long sessionDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(sessionMaxMs);
         try {
             while (true) {
+                //  N-19：会话超时即结束会话（finally 会移除面板与监听，不会残留"静默拾取"状态）。
+                if (System.nanoTime() - sessionDeadlineNanos >= 0) {
+                    log.warn("[picker] panel session exceeded its {} min cap — ending the session to avoid "
+                                    + "blocking the caller thread forever (rootClose/onClose events may have been lost). "
+                                    + "Re-open the picker to continue.",
+                            sessionMaxMs / 60_000);
+                    break;
+                }
                 // 当前跟随的页面（可能是弹窗）已关闭：先让 onClose 回调有机会把 current.get()
                 // 回退到父页（重建面板、继续拾取），再判定是否真的结束会话。
                 // 关键修复：绝不可因"current.get() 指向的弹窗关闭"就直接结束会话——
@@ -193,7 +240,7 @@ public final class RolePickerPanelController {
                         log.info("[picker] followed page closed; switching to surviving page {} to continue the session (panel retained).", alive.url());
                         continue;
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                 // 事件驱动取命令：面板按钮点击经 exposeFunction 异步投递到 cmdQueue，这里阻塞等待
                 // （最多 1s 超时以周期性检查页面关闭）。命令到达即被唤醒、立即处理，
                 // 故点击"开始/停止"等按钮近乎零延迟，无需为命令轮询额外消耗 Java↔浏览器 evaluate。
@@ -250,7 +297,7 @@ public final class RolePickerPanelController {
                             if (p.equals(page)) {
                                 try {
                                     pickerEval(p, RolePickerScripts.INVOKE_AFTER_FILL_JUMP_JS);
-                                } catch (Exception ignore) {}
+                                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                             }
                         }
                     }
@@ -261,17 +308,17 @@ public final class RolePickerPanelController {
         } finally {
             // 关闭开关并移除面板（撤销 docked 预留的右侧空间）：写墓碑 '0'（而非 remove），
             // 使 context 级引导注入脚本（无法撤销）在之后的导航中自行退出、不再重建面板。
-            try { pickerEval(page, RolePickerScripts.DISABLE_PANEL_JS); } catch (Exception ignore) {}
-            try { pickerEval(page, RolePickerScripts.REMOVE_PICK_STATE_JS); } catch (Exception ignore) {}
+            try { pickerEval(page, RolePickerScripts.DISABLE_PANEL_JS); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
+            try { pickerEval(page, RolePickerScripts.REMOVE_PICK_STATE_JS); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
             // 多实例：可能有多个页面各自带面板（默认页 + 若干弹窗），逐一关闭，避免残留。
             closePanel(page);
             for (Page p : openedPages) {
-                try { if (p != null && !p.isClosed()) closePanel(p); } catch (Exception ignore) {}
+                try { if (p != null && !p.isClosed()) closePanel(p); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
             }
             if (current.get() != page) closePanel(current.get());
             // 关闭面板时一并关闭会话期间新开出的页面（弹窗/新标签页），仅保留最初的根页面。
             for (Page p : openedPages) {
-                try { if (p != null && !p.isClosed()) p.close(); } catch (Exception ignore) {}
+                try { if (p != null && !p.isClosed()) p.close(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
             }
         }
     }
@@ -301,7 +348,7 @@ public final class RolePickerPanelController {
             for (Page pg : pageNames.keySet()) {
                 if (!pg.isClosed()) drainPanelCmds(pg, cmdQueue);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
         // 空闲（1s 内无命令）：周期性缓存"所有被跟踪页面"的拾取快照，供导航重建/关闭后恢复。
         // 关键优化：快照刷新不再放在【每个命令迭代】里——否则每次点按钮都要先对"每个被跟踪页面"
         // 各做一次 page.evaluate 读快照（N 页 = N 次往返），造成"点按钮要好久才有反应"。
@@ -316,7 +363,7 @@ public final class RolePickerPanelController {
                 boolean curEmpty = isEmptyState(snap);
                 if (prevEmpty || !curEmpty) snapshots.put(pg, snap);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
         // 以 Java 权威内存态兜底刷新实时面板：浏览器侧 window.__rolePicks 因跨 iframe/导航时序
         // 可能未可靠填充，导致"内存态增长、面板空白"。每轮空闲用 javaPickBySig 同步【所有】被跟踪页面
         // 的面板并渲染（按各页 pageClass 过滤只显示该页拾取），保证用户在任一页面点击时面板都实时反映
@@ -334,7 +381,7 @@ public final class RolePickerPanelController {
                 try { mergeFramePicksToMain(pg, javaPickBySig); } catch (Exception me) { /* ignore */ }
                 syncPanelToBrowser(pg, null, javaPickBySig, false);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
         // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
         // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
         // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。
@@ -372,7 +419,7 @@ public final class RolePickerPanelController {
                             if (!pg.isClosed()) {
                                 fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
                                 try { pickerEval(pg, RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
-                                    RolePickerScripts.args(RolePickerConstants.STATE_KEY_AUTO_STEP_COUNT, autoSnap.steps.size())); } catch (Exception ignore) {}
+                                    RolePickerScripts.args(RolePickerConstants.STATE_KEY_AUTO_STEP_COUNT, autoSnap.steps.size())); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                             }
                         }
                     }
@@ -460,7 +507,7 @@ public final class RolePickerPanelController {
                 try {
                     String live = readPickStateJson(closed);
                     if (live != null && hasPicks(live)) snapshots.put(closed, live);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                 String closedCls = pageNames.get(closed);   // 提升至 if/else 之前，使根页（else）分支也能引用
                 if (parent != null && !parent.isClosed()) {
                     // 先切回父页并保留其面板：即使后续合并/渲染操作抛异常，也不影响"回退父页 + 面板存活"，
@@ -469,7 +516,7 @@ public final class RolePickerPanelController {
                     current.set(parent);
                     // 父页此前一直处于拾取态（active 未被触碰），监听器仍存活；幂等重启以兜底，
                     // 不会因重复 START 而重复挂监听（START_SCRIPT 内已做 __rolePickActive 早退）。
-                    try { if (active.get()) pickerEval(parent, RolePickerScripts.START_SCRIPT); } catch (Exception ignore) {}
+                    try { if (active.get()) pickerEval(parent, RolePickerScripts.START_SCRIPT); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                     // 合并关闭页已抓元素到父页 + 把"关闭该页"内联为当前 step 的一个操作标记：
                     // 与"回退父页/面板存活"解耦，单独容错，避免一处瞬态异常中断整段。
                     try {
@@ -497,7 +544,7 @@ public final class RolePickerPanelController {
                                     closed.url(), closedCls);
                         } else {
                             // 立即刷新父页快照，确保随后父页导航重建时不会因覆盖而丢失该关闭操作。
-                            try { snapshots.put(parent, readPickStateJson(parent)); } catch (Exception ignore) {}
+                            try { snapshots.put(parent, readPickStateJson(parent)); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                         }
                     }
                     } catch (Exception ignore) { /* 合并失败不影响回退与面板存活 */ }
@@ -610,7 +657,7 @@ public final class RolePickerPanelController {
                 try {
                     pickerEval(page, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
                             RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, resolvedCls));
-                } catch (Exception ignoreCls) {}
+                } catch (Exception ignoreCls) { RolePickerQuiet.ignore("RolePickerPanelController#className", ignoreCls); }
                 // URL 变化即视为"页面边界"：打印日志，便于排查录制定位与元素丢失。
                 log.info("[picker] page URL changed (onFrameNavigated): {} (page class: {})", page.url(), prevCls);
                 // 跨域判定（与下方 3645 重激活分支同源口径）：跨域导航时门控脚本因 localStorage origin 隔离
@@ -621,7 +668,7 @@ public final class RolePickerPanelController {
                 // 销毁的文档"上失效——表现即"跨域新页面点击有蓝框 active:true，但 __roleOnPick 回传不进 Java"。
                 // 故跨域场景【跳过此处 applyPickState 覆盖】，把数据恢复完全交给唯一的 start() 权威重建。
                 String __navOrigin = safeOrigin(page.url());
-                boolean __navOriginChanged = !__navOrigin.isEmpty() && !__navOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN.get(page));
+                boolean __navOriginChanged = needsForcedReinjection(__navOrigin, RolePickerSessionState.LAST_PICK_ORIGIN.get(page));
                 // 无论 window 是否随导航销毁，都确保"之前拾取的元素"不丢失：
                 //  - 整页重建（livePicks=false）：用 applyPickState 从快照整体恢复（含 nls 反查表）；
                 //  - window 仍在（livePicks=true）：把快照中"当前窗口缺少"的 pick/step 合并回来，
@@ -686,12 +733,12 @@ public final class RolePickerPanelController {
                 try {
                     explicitStop = Boolean.TRUE.equals(pickerEval(page, 
                             RolePickerScripts.IS_PICK_STOPPED_JS));
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                 if (!explicitStop && !sessionOn) {
                     try {
                         sessionOn = Boolean.TRUE.equals(pickerEval(page, 
                                 RolePickerScripts.IS_SESSION_ON_JS));
-                    } catch (Exception ignore) {}
+                    } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                 }
                 if (sessionOn && !explicitStop) {
                     log.info("[picker][nav] picking session active: syncing activation state @ {}", page.url());
@@ -706,7 +753,15 @@ public final class RolePickerPanelController {
                     // 故以 origin 是否变化作为"是否需要强制重注入"的唯一判据，避免对同源导航（含 SPA hash 变化、整页跳转）
                     // 反复重注入造成"扫描了很多元素"的放大。SPA hash 变化(#/question1)不改变 origin → 视为同源，仅保活。
                     String curOrigin = safeOrigin(page.url());
-                    boolean originChanged = !curOrigin.isEmpty() && !curOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN);
+                    //  N-04（doc 21 CRITICAL）：此处原写作
+                    //  `!curOrigin.isEmpty() && !curOrigin.equals(RolePickerSessionState.LAST_PICK_ORIGIN)`
+                    //  —— 后者是 Map<Page,String>，String.equals(Map) 恒为 false，使 originChanged 退化为
+                    //  `!curOrigin.isEmpty()`：所有【同源】导航（含 SPA hash 变化、整页跳转）都被判为跨域，
+                    //  走下面 else 分支的强制 start() 全量重注入 → 与上方 :712-718 所述已修复的
+                    //  "反复重注入 + 反复合并 → 已拾元素成倍累积"路径重合，等于让该缺陷复发。
+                    //  现收敛到与上文同一判据（needsForcedReinjection），杜绝两份写法再次分叉。
+                    String lastOrigin = RolePickerSessionState.LAST_PICK_ORIGIN.get(page);
+                    boolean originChanged = needsForcedReinjection(curOrigin, lastOrigin);
                     if (!originChanged) {
                         // ===== 同源导航：门控脚本已注入库，仅做轻量激活保活 =====
                         // 关键修复（跳转到新页面后元素成倍增加）：监听重挂已由 context 级门控注入脚本
@@ -723,7 +778,7 @@ public final class RolePickerPanelController {
                             // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
                             // 此处等待 DOM 就绪后重试一次轻量激活保活（仍不重注入整套库）。
                             log.warn("[picker][nav] activation keep-alive first attempt failed; retrying after page is ready @ {} : {}", page.url(), ex.getMessage());
-                            try { page.waitForLoadState(); } catch (Exception ignore2) {}
+                            try { page.waitForLoadState(); } catch (Exception ignore2) { RolePickerQuiet.ignore("RolePickerPanelController#waitForLoadState", ignore2); }
                             try { pickerEval(page, RolePickerScripts.SET_PICK_ACTIVE_AND_RENDER_JS); }
                             catch (Exception ex2) { log.warn("[picker][nav] activation keep-alive retry still failed @ {} : {}", page.url(), ex2.getMessage()); }
                         }
@@ -738,15 +793,17 @@ public final class RolePickerPanelController {
                             log.info("[picker][nav] cross-origin re-injection debounced (already injected within {}ms, skipped) @ {}", (now - last), page.url());
                         } else {
                             RolePickerSessionState.FORCE_START_TS.put(page, now);
+                            //  N-04 附带修复：原实现把整个 LAST_PICK_ORIGIN Map 打进日志（随 Page 数无界增长，
+                            //  且对定位无帮助）；改为只打本 Page 的上一次 origin。
                             log.warn("[picker][nav] cross-origin navigation detected and library not injected; forcing start() re-injection @ {} : origin={} -> {}",
-                                    page.url(), RolePickerSessionState.LAST_PICK_ORIGIN, curOrigin);
+                                    page.url(), lastOrigin, curOrigin);
                             try {
                                 start(page, nlsReverseJson);
                             } catch (Exception startEx) {
                                 // 导航瞬间新文档执行上下文可能尚未就绪，page.evaluate 会抛"上下文已销毁"类异常；
                                 // 等待 DOM/load 就绪后重试一次真正重注入，避免跨域页因首轮竞态失败而仍无蓝框。
                                 log.warn("[picker][nav] cross-origin re-injection first attempt failed; retrying after page is ready @ {} : {}", page.url(), startEx.getMessage());
-                                try { page.waitForLoadState(); } catch (Exception ignore2) {}
+                                try { page.waitForLoadState(); } catch (Exception ignore2) { RolePickerQuiet.ignore("RolePickerPanelController#waitForLoadState", ignore2); }
                                 try {
                                     start(page, nlsReverseJson);
                                 } catch (Exception startEx2) {
@@ -758,7 +815,7 @@ public final class RolePickerPanelController {
                             // → 面板不显示（有蓝框能拾取却看不到已拾列表）。此处显式置位兜底开关确保面板显示。
                             try {
                                 pickerEval(page, RolePickerScripts.PANEL_FORCE_AND_ENABLE_JS);
-                            } catch (Exception ignorePanel) {}
+                            } catch (Exception ignorePanel) { RolePickerQuiet.ignore("RolePickerPanelController#removePanel", ignorePanel); }
                         }
                     }
                 } else {

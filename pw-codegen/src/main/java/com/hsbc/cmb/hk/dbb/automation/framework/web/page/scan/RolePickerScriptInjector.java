@@ -41,7 +41,7 @@ final class RolePickerScriptInjector {
         try {
             // ① 对当前已存在的全部 frame（含主框架与任意层嵌套 iframe，page.frames() 递归返回）立即补挂。
             for (Frame f : page.frames()) {
-                try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
+                try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
             }
             // ② 动态附加的 iframe（含运行时创建）：立即注入，并遍历其当前已存在的子 frame 递归补注入。
             page.onFrameAttached(frame -> {
@@ -50,9 +50,9 @@ final class RolePickerScriptInjector {
                     if (page.isClosed()) return;
                     frameInjectOnce(frame, nlsReverseJson);
                     for (Frame child : frame.childFrames()) {
-                        try { frameInjectOnce(child, nlsReverseJson); } catch (Exception ignore) {}
+                        try { frameInjectOnce(child, nlsReverseJson); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
             });
             // ③ 任意 frame（含嵌套深层）导航到真实文档 → 立即注入该 frame，并对全树 page.frames() 兜底补注入。
             //    onFrameAttached 多在 about:blank 阶段触发，其 window 随真正子文档加载而销毁，故需在此以
@@ -65,11 +65,11 @@ final class RolePickerScriptInjector {
                     if (frame == page.mainFrame()) return;
                     frameInjectOnce(frame, nlsReverseJson);
                     for (Frame f : page.frames()) {        // 全量兜底：覆盖本次导航链上更深层的兄弟/子 frame
-                        try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) {}
+                        try { frameInjectOnce(f, nlsReverseJson); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
             });
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
     }
 
     /** 对单个 frame 注入拾取脚本：Playwright 的 Frame 无 addInitScript（仅 Page 有），
@@ -103,7 +103,7 @@ final class RolePickerScriptInjector {
             String url;
             try { url = frame.url(); } catch (Exception urlEx) { url = "<closed>"; }
             boolean detached = false;
-            try { detached = frame.isDetached(); } catch (Exception ignore) {}
+            try { detached = frame.isDetached(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerScriptInjector", ignore); }
             if (!detached) {
                 try {
                     frame.evaluate(gatedPickerInitScript(nlsReverseJson, true)); // 竞态重试一次

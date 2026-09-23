@@ -72,11 +72,51 @@ public class SessionManager {
     private static final ConcurrentHashMap<String, LoginGuard> loginGuards = new ConcurrentHashMap<>();
 
     /**
+     * CT2-14：单飞等待超时后的<b>宽限窗口</b>（毫秒）。超时往往只是 leader 慢（真实登录含浏览器导航，
+     * 再叠加落盘 IO 抖动），并非「leader 已死」。在夺取登录权之前再等一个宽限窗口，几乎总能等到
+     * leader 落盘从而直接复用 —— 把「第二次真实登录」的窗口压到最小。
+     *
+     * <p>取 {@code min(单飞超时, 5s)} 且下限 {@code 1s}：既不显著延长尾部延迟，又足以覆盖落盘抖动。
+     */
+    private static final long SINGLE_FLIGHT_GRACE_MS =
+            Math.max(1_000L, Math.min(SINGLE_FLIGHT_TIMEOUT_MS, 5_000L));
+
+    /**
+     * CT2-14：因等待者超时夺取登录权而导致的「潜在双重登录」累计次数。
+     *
+     * <p>非零即说明原 leader 曾慢于 {@code 单飞超时 + 宽限期} —— 是可观测的 SSO 互踢风险信号
+     * （配合 CT2-16 的 {@code CrossJvmLoginLock.getDegradedAcquisitionCount()} 一起看）。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong SINGLE_FLIGHT_TAKEOVERS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * CT2-14：本线程作为 leader 时登记的守卫，供其结束时判断「自己是否已被等待者夺取」。
+     * （夺取会把守卫从 {@code loginGuards} 摘除，故仅凭 map 无法回溯。）
+     */
+    private static final ThreadLocal<LoginGuard> MY_LOGIN_GUARD = new ThreadLocal<>();
+
+    /** CT2-14：单飞夺取累计次数（非零 ⇒ 曾存在潜在双重登录窗口，可观测）。 */
+    public static long getSingleFlightTakeoverCount() {
+        return SINGLE_FLIGHT_TAKEOVERS.get();
+    }
+
+    /**
      * 单飞守卫：leader 登录完成后 {@link #complete(boolean)} 释放，follower 通过 {@link #await(long)} 等待。
      */
     private static final class LoginGuard {
         private final CountDownLatch latch = new CountDownLatch(1);
         private volatile boolean success;
+
+        /**
+         * CT2-14：本守卫是否已被等待者「夺取」（等待超时 + 宽限期满 + 确认无可复用 session 后，
+         * 等待者摘除守卫并自任 leader）。
+         *
+         * <p>用于让<b>原 leader</b> 在其登录/落盘结束时得以发现自己已被取代 —— 否则「两个线程
+         * 各自真实登录」这一后果对原 leader 完全不可见（原实现只让等待者记一条 WARN）。
+         */
+        private final java.util.concurrent.atomic.AtomicBoolean superseded =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
 
         boolean await(long ms) {
             try {
@@ -94,6 +134,14 @@ public class SessionManager {
 
         boolean isSuccess() {
             return success;
+        }
+
+        void markSuperseded() {
+            superseded.set(true);
+        }
+
+        boolean isSuperseded() {
+            return superseded.get();
         }
     }
 
@@ -584,8 +632,11 @@ public class SessionManager {
                 return false;
             }
 
-            // follower：leader 已结束（成功落盘 / 失败 / 超时）
-            if (guard.isSuccess() && reusePersistedSession(sessionKey, restartStrategy)) {
+            // follower：leader 已结束（成功落盘 / 失败），或（CT2-14）session 在等待期间已变得可用。
+            //  判据由「leader 自称成功」放宽为「确实可复用」：既保持原语义（成功 ⇒ 可复用 ⇒ true），
+            //  又覆盖「leader 未及标记成功、但他方已落盘」的情形，避免无谓的第二次登录。
+            //  reusePersistedSession 内部自带 hasUsableSession 复核，不可用时返回 false，行为与原实现一致。
+            if (reusePersistedSession(sessionKey, restartStrategy)) {
                 return true;
             }
 
@@ -654,19 +705,59 @@ public class SessionManager {
         LoginGuard candidate = new LoginGuard();
         LoginGuard existing = loginGuards.putIfAbsent(sessionKey, candidate);
         if (existing == null) {
+            // CT2-14：登记本线程的守卫，供结束时判断是否已被等待者夺取（见 completeLoginGuard）。
+            MY_LOGIN_GUARD.set(candidate);
             return null; // 本线程是 leader
         }
 
         boolean completed = existing.await(SINGLE_FLIGHT_TIMEOUT_MS);
-        if (!completed) {
-            // leader 超时未落盘（登录失败/被中断/业务层未调 saveSession）：
-            // 摘除失效守卫，避免后续线程被一个已死的守卫永久阻塞；本线程接替为 leader。
-            loginGuards.remove(sessionKey, existing);
-            LOGGER.warn("[SessionManager] Timed out {}ms waiting for concurrent login of sessionKey={} "
-                    + "→ proceeding as leader", SINGLE_FLIGHT_TIMEOUT_MS, sessionKey);
+        if (completed) {
+            return existing; // follower：leader 已结束
+        }
+
+        // CT2-14：leader 超时仍未结束。原实现**立刻**摘守卫自任 leader —— 若 leader 只是慢，
+        //   就会出现「两个线程各自真实登录」→ 服务端单会话策略互踢（随机 401）。现在的处置分三级：
+        //   ① 先在**不夺取**的前提下再等一个宽限窗口（超时多是慢而非死，宽限内落盘即可直接复用）；
+        //   ② 宽限后仍无 leader 信号，但 session 已可用（例如其它 JVM 已落盘）→ 直接复用，同样不登录；
+        //   ③ 只有「宽限期满且确认无可复用 session」才夺取，并**显式标记原 leader 已被取代**
+        //      （使其在结束时能发现并上报，而不是让双重登录对原 leader 完全不可见）。
+        if (existing.await(SINGLE_FLIGHT_GRACE_MS)) {
+            LOGGER.info("[SessionManager] Concurrent login for sessionKey={} finished within grace window "
+                    + "({}ms) → reuse persisted session (no second login)", sessionKey, SINGLE_FLIGHT_GRACE_MS);
+            return existing;
+        }
+        if (hasUsableSession(sessionKey)) {
+            LOGGER.info("[SessionManager] session for {} became usable while waiting → reuse it "
+                    + "(no second login)", sessionKey);
+            return existing;
+        }
+
+        //  A-04（doc 22）：夺取分支原实现 `remove(key, existing)` 后【不再登记】→ 后续任何线程
+        //    putIfAbsent 都成功、也成 leader（N 个真实登录）；且多等待者同时进此分支会各自 return null
+        //    （N 个真实登录）。改为【原子夺取】：putIfAbsent 只让【一个】等待者赢得新 leader 身份，
+        //    其余等待者去 await 这个新 leader（而非各自成为 leader）。
+        existing.markSuperseded();
+        LoginGuard raced = loginGuards.putIfAbsent(sessionKey, candidate);
+        if (raced == null) {
+            //  本等待者赢得夺取 → 成为唯一新 leader（登记守卫，供 completeLoginGuard 按身份释放）
+            MY_LOGIN_GUARD.set(candidate);
+            long takeovers = SINGLE_FLIGHT_TAKEOVERS.incrementAndGet();
+            LOGGER.warn("[SessionManager] Timed out {}ms (+{}ms grace) waiting for concurrent login of sessionKey={} "
+                            + "and no usable session yet → taking over as leader (potential twofold login; "
+                            + "takeovers={}). If frequent: raise playwright.noLogin.singleFlightTimeoutMs or make "
+                            + "login faster.",
+                    SINGLE_FLIGHT_TIMEOUT_MS, SINGLE_FLIGHT_GRACE_MS, sessionKey, takeovers);
             return null;
         }
-        return existing; // follower：leader 已结束
+        //  别的等待者已抢先成为新 leader → 本线程去 await 它（不成为 leader，避免二次真实登录）
+        if (raced.await(SINGLE_FLIGHT_TIMEOUT_MS)) {
+            return raced;
+        }
+        //  新 leader 也超时：若已有可用会话则复用，否则降为 leader（罕见末路）
+        if (hasUsableSession(sessionKey)) {
+            return existing;
+        }
+        return null;
     }
 
     /**
@@ -679,10 +770,25 @@ public class SessionManager {
         if (sessionKey == null) {
             return;
         }
-        LoginGuard guard = loginGuards.remove(sessionKey);
-        if (guard != null) {
-            guard.complete(success);
+        // CT2-14：若本线程（原 leader）的登录权已在「超时 + 宽限」后被等待者夺取，则该后果此前
+        //   对原 leader 完全不可见 —— 此处让它显式可见（含夺取累计数，便于判定是否需调大超时）。
+        //   注意守卫可能已被夺取路径从 map 摘除，故以本线程登记的 MY_LOGIN_GUARD 为判据。
+        LoginGuard mine = MY_LOGIN_GUARD.get();
+        if (mine != null && mine.isSuperseded()) {
+            LOGGER.error("[SessionManager] login for sessionKey={} was SUPERSEDED by a waiter after "
+                            + "timeout+grace → a concurrent second real login may have occurred "
+                            + "(SSO single-session policy may kick one side out). takeovers={}",
+                    sessionKey, SINGLE_FLIGHT_TAKEOVERS.get());
         }
+        //  A-04（doc 22）：原 `loginGuards.remove(sessionKey)` 按 key 无条件摘除会摘掉「已被等待者夺取后
+        //    新任 leader」的守卫并错误 complete，把 follower 从等待中错误唤醒、或让本应完成的 leader 的
+        //    follower 收不到完成信号。改为仅当 map 中仍是【本线程自己】的守卫时才摘除 + 完成；否则本线程
+        //    只是被取代的原 leader，真正的新 leader 会自行在 saveSession 里 complete 它自己的守卫。
+        boolean removed = mine != null && loginGuards.remove(sessionKey, mine);
+        if (removed) {
+            mine.complete(success);
+        }
+        MY_LOGIN_GUARD.remove();
     }
 
     /**

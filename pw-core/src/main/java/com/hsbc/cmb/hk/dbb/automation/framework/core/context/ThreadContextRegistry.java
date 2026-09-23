@@ -2,9 +2,12 @@ package com.hsbc.cmb.hk.dbb.automation.framework.core.context;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -86,5 +89,32 @@ final class ThreadContextRegistry {
     /** 当前活跃线程上下文数（可观测 / 泄漏排查）。 */
     static int activeThreadCount() {
         return CONTEXTS.size();
+    }
+
+    /**
+     * CT2-08：对<b>所有</b>已登记线程上下文执行受控遍历（读取 / 清理）。
+     *
+     * <p>供套件级收尾使用：清理那种<b>按线程</b>存放的缓存时，若只清当前线程，其它 worker 线程
+     * （线程池复用 / 并行 scenario）的缓存及其持有的 Page/Context 引用会跨用例、跨套件滞留。
+     *
+     * <p>遍历在 CONTEXTS 锁内取<b>快照</b>后于锁外执行，避免遍历期间并发登记/移除导致 CME，
+     * 也避免持锁回调业务清理逻辑放大死锁面。单个上下文清理异常不影响其余（D7-3：不静默）。
+     */
+    static void forEachContext(Consumer<TestContext> visitor) {
+        if (visitor == null) {
+            return;
+        }
+        final List<TestContext> snapshot;
+        synchronized (CONTEXTS) {
+            snapshot = new ArrayList<>(CONTEXTS.values());
+        }
+        for (TestContext ctx : snapshot) {
+            try {
+                visitor.accept(ctx);
+            } catch (Throwable e) {
+                LOGGER.warn("[ThreadContextRegistry] forEachContext: visitor failed for one context: {}",
+                        e.toString());
+            }
+        }
     }
 }

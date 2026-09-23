@@ -189,7 +189,8 @@ final class SanitizerRules {
 
     // ── 值级识别 ──
     private volatile List<SensitiveValueRecognizer> activeValueRecognizers = new ArrayList<>();
-    private final Set<String> valueRecognizerExcludes = ConcurrentHashMap.newKeySet();
+    // CT2-24：改为 volatile 以支持「构造快照后原子发布」，避免 reload 窗口内 clear+add 被读取方观察到空中间态。
+    private volatile Set<String> valueRecognizerExcludes = ConcurrentHashMap.newKeySet();
     private volatile boolean rulesLoaded;
     private final Object rulesLock = new Object();
 
@@ -310,13 +311,18 @@ final class SanitizerRules {
     }
 
     /** 运行时注册自定义值级识别器（与 SPI 机制互补）。 */
-    synchronized void registerValueRecognizer(SensitiveValueRecognizer recognizer) {
+    // CT2-06：与 applyValueRecognizerConfig（持 rulesLock 整表替换 activeValueRecognizers）共用同一把锁，
+    // 修复「方法级 synchronized(this) 与 rulesLock 两锁保护同一 volatile 字段」的丢失更新——
+    // 否则 reloadRules() 的整表替换会静默吞掉刚注册的自定义值级识别器（卡号/IBAN/HKID 等脱敏失效，合规红线）。
+    void registerValueRecognizer(SensitiveValueRecognizer recognizer) {
         if (recognizer == null) {
             return;
         }
-        List<SensitiveValueRecognizer> list = new ArrayList<>(activeValueRecognizers);
-        list.add(recognizer);
-        activeValueRecognizers = list;
+        synchronized (rulesLock) {
+            List<SensitiveValueRecognizer> list = new ArrayList<>(activeValueRecognizers);
+            list.add(recognizer);
+            activeValueRecognizers = list;
+        }
     }
 
     /** 强制重载全部规则（测试 / 运行时热更新；与 {@link #reloadExtraKeysFromConfig()} 互补）。 */
@@ -427,16 +433,18 @@ final class SanitizerRules {
             }
             activeValueRecognizers = filtered;
         }
-        valueRecognizerExcludes.clear();
+        // CT2-24：先构造完整快照再原子替换，读取方（isValueSensitive）不会观察到空/半填充中间态。
+        Set<String> exSet = ConcurrentHashMap.newKeySet();
         String ex = resolveConfig("sensitive.data.value.excludes", "");
         if (ex != null && !ex.trim().isEmpty()) {
             for (String t : ex.split(",")) {
                 String k = t.trim();
                 if (!k.isEmpty()) {
-                    valueRecognizerExcludes.add(k);
+                    exSet.add(k);
                 }
             }
         }
+        valueRecognizerExcludes = exSet;
     }
 
     /** 收集内置 + SPI 发现的值识别器。 */

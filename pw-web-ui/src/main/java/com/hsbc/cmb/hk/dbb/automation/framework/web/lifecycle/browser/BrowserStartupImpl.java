@@ -160,7 +160,9 @@ public final class BrowserStartupImpl implements BrowserStartup {
         if (existingBrowser != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Closing stale browser instance for config: {}", configId);
             try {
-                existingBrowser.close();
+                //  N-22：与 cleanupAll 同一收口 —— 先 markClosing 再 close，使 onDisconnected 判定为
+                //    「框架主动关闭（预期）」；直接 close() 会让该 Browser 被记成 disconnected **unexpectedly**。
+                PlaywrightRuntime.instance().browserCleanup.closeBrowserInstance(existingBrowser);
             } catch (Exception e) {
                 VerboseLogging.logWarnIfVerbose(logger, "Failed to close stale browser, continuing", e);
             }

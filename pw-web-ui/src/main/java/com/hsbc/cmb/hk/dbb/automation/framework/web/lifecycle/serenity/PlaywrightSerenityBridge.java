@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkState;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
 
@@ -79,9 +80,30 @@ public class PlaywrightSerenityBridge {
      * <p><b>2026-09-21 修复（跨用例干扰）</b>：原实现清空<b>全局</b>下载目录 —— 真并行下会把并发 scenario
      * 正在下载/刚下载的文件一起删掉。现按线程隔离：<b>哪个线程收尾就只清它自己的目录</b>，与
      * {@link PlaywrightManager#downloadDirectoryForCurrentThread()}（下载保存所用的同一命名）成对。</p>
+     *
+     * <p><b>CT2-15（与异步保存的竞态）</b>：{@code download.saveAs(...)} 被卸载到 {@code AsyncPool}
+     * 异步执行（见 {@link PlaywrightContextManager#saveDownloadAsync}），而本方法在场景收尾
+     * <b>直接删除</b>该目录 —— 两者存在竞态：可能删掉尚未保存完的文件，并使 {@code DownloadRegistry}
+     * 登记的路径指向不存在的文件（表现为「下载记录在、文件没了」）。</p>
+     *
+     * <p><b>处置：非阻塞跳过（刻意不等待）</b>。本方法位于<b>每个 scenario 的关键路径</b>上，
+     * 在其中阻塞等待（哪怕设上限）会把后台异步保存的耗时转嫁给场景收尾：下载较多或
+     * {@code AsyncPool} 繁忙时，逐场景累加可把并发下载类场景拖长到分钟级。
+     * 而这里要保证的只是「不删未写完的文件」—— 检测到该目录仍有在途保存（
+     * {@link DownloadLifecycle#pendingCount(java.nio.file.Path)} {@code > 0}）即<b>放弃本轮删除</b>：
+     * 既不影响在途写入，也不让收尾多花一毫秒；保存正常在毫秒级完成，目录由下一轮收尾正常清除
+     * （自愈，且不会无限滞留）。</p>
      */
     static void cleanupTempDownloads() {
-        cleanupTempDirectory(PlaywrightManager.downloadDirectoryForCurrentThread(), "Download", true);
+        Path downloadDir = PlaywrightManager.downloadDirectoryForCurrentThread();
+        int inFlight = DownloadLifecycle.pendingCount(downloadDir);
+        if (inFlight > 0) {
+            logger.info("[Download] deferred temp-dir cleanup: {} save(s) still in flight under {} — "
+                    + "deleting it now would destroy unfinished files; a later cleanup round will remove it",
+                    inFlight, downloadDir);
+            return;
+        }
+        cleanupTempDirectory(downloadDir, "Download", true);
     }
 
     // ==================== ThreadLocal 清理 ====================

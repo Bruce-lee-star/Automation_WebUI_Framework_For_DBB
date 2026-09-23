@@ -271,7 +271,26 @@ public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkLi
 
     @Override
     public void stepFailed(StepFailure failure, List<ScreenshotAndHtmlSource> screenshotList, boolean isInDataDrivenTest) {
-        StepListener.super.stepFailed(failure, screenshotList, isInDataDrivenTest);
+        //  N-21：这里【不】调 StepListener.super —— 该重载的接口 default 会【向上】转调 4 参
+        //    stepFailed(failure, screenshots, flag, ZonedDateTime.now())，而 4 参版本本类【自己也派发】
+        //    （见下方 stepFailed(..., ZonedDateTime) 重写）。两条路径叠加 → 同一次失败被派发两遍：
+        //      路径① super → default → 本类 4 参 → 每个 delegate 收到 4 参事件；
+        //      路径② 本方法循环 → 每个 delegate 再收到 3 参事件 → 其自身 default 又【向上】转调 4 参。
+        //    （delegate 只实现 4 参时，两遍都落在同一个 4 参回调上。本类此前的 flake 用例
+        //      ThucydidesStepsListenerAdapterTest 的 times(1) 偶发 TooManyActualInvocations 即由此而来。）
+        //
+        //    严谨边界（勿夸大）：Serenity 4.2.0 的 StepEventBus.stepFailed(f, l, b) 会先【自转】到它自己的
+        //    4 参重载、再调监听器的 4 参 —— 故现版本总线不会调用本重载，上述重复是【潜伏】的：
+        //    任何直接调用该重载的调用方（用例、业务代码、或未来版本/其它内部路径）都会触发它。
+        //    生产上真正的"同一失败两次送达"来自 Serenity 自身 —— StepEventBus.lastStepFailed(failure)
+        //    内部调用的仍是监听器的 stepFailed(failure)（1 参）。那与本类无关，故 PlaywrightListener 的
+        //    isFailureScreenshotsAlreadySent / stepFinishProcessed 等"防重复"守卫【必须保留】，
+        //    切勿因本条修复而删除它们。
+        //
+        //    方向规则（勿混）：本类其余 super 调用都是【向下】转换（宽签名 → 窄签名，例如
+        //    testFinished(outcome, flag) → testFinished(outcome)、exampleStarted(map, …) → exampleStarted(map)），
+        //    作用是为"只实现窄签名的 delegate"提供可达性（接口 default 只会向上链，不会向下），
+        //    故必须保留；只有【向上】的 super 会与本类自己的派发重叠 → 必须去掉。
         for (StepListener listener : delegateListeners) {
             try {
                 listener.stepFailed(failure, screenshotList, isInDataDrivenTest);

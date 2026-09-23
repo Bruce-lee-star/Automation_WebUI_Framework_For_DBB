@@ -16,66 +16,24 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 元素诊断信息收集器。
  *
  * <h3>Enterprise-grade diagnostic collector for element failures.</h3>
- * 支持同步和异步两种收集模式：
- * <ul>
- *   <li>{@link #collect()} — 同步收集（阻塞当前测试线程）</li>
- *   <li>{@link #collectAsync()} — 异步收集（使用共享线程池，不阻塞测试线程）</li>
- * </ul>
- * 截图 I/O 始终异步执行，避免高并发场景下失败路径雪崩。
+ *
+ * <p><b>线程模型（CT2-02）</b>：本类持有的 {@link Locator} / {@link Page} / {@link Frame} 均由场景线程创建，
+ * Playwright 对象<b>非线程安全</b>，故所有 Playwright 调用（{@code locator.evaluate}、
+ * {@code page.screenshot} 等）<b>一律在调用方（场景）线程执行</b>。
+ * 原先的「异步诊断线程池」会让诊断线程跨线程操作这些对象（pipe closed / 静默失败），已整体移除；
+ * {@link #collectAsync()} / {@link #captureFailureScreenshotAsync(String)} 仅保留异步<b>形态</b>
+ * （返回已完成的 future），实际仍在调用线程内同步执行 —— 失败诊断属低频兜底路径，多耗几十 ms 可接受。
  *
  * @since 1.0.0
  */
 public class ElementDiagnosticsCollector {
 
     private static final Logger logger = LoggerFactory.getLogger(ElementDiagnosticsCollector.class);
-
-    /** 共享诊断线程池——daemon 线程，JVM 退出时自动回收 */
-    //  修复 B-3：原 newCachedThreadPool 无界，失败路径高并发（成百上千元素诊断）会无限新建线程、
-    //   耗尽系统线程/内存。改为固定大小（失败诊断本就属低频兜底，8 线程足够）+ 调用者运行拒绝策略
-    //   （诊断任务在调用线程同步执行，保证失败信息不丢，同时避免队列积压导致 OOM）。
-    private static final int DIAGNOSTIC_MAX_THREADS = 8;
-    private static final ExecutorService DIAGNOSTIC_EXECUTOR =
-            new ThreadPoolExecutor(DIAGNOSTIC_MAX_THREADS, DIAGNOSTIC_MAX_THREADS, 0L, TimeUnit.MILLISECONDS,
-                    new LinkedBlockingQueue<>(DIAGNOSTIC_MAX_THREADS * 2),
-                    new ThreadFactory() {
-                        private final AtomicInteger counter = new AtomicInteger(0);
-                        @Override
-                        public Thread newThread(Runnable r) {
-                            Thread t = new Thread(r, "diagnostic-" + counter.incrementAndGet());
-                            t.setDaemon(true);
-                            t.setUncaughtExceptionHandler((th, ex) ->
-                                logger.warn("[diagnostic] Uncaught in thread {}: {}", th.getName(), ex.getMessage()));
-                            return t;
-                        }
-                    },
-                    new ThreadPoolExecutor.CallerRunsPolicy());
-
-    static {
-        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.register(
-                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_DIAGNOSTICS,
-                "diagnostics", () -> {
-                    DIAGNOSTIC_EXECUTOR.shutdown();
-                    try {
-                        if (!DIAGNOSTIC_EXECUTOR.awaitTermination(3, TimeUnit.SECONDS)) {
-                            DIAGNOSTIC_EXECUTOR.shutdownNow();
-                        }
-                    } catch (InterruptedException e) {
-                        DIAGNOSTIC_EXECUTOR.shutdownNow();
-                        Thread.currentThread().interrupt();
-                    }
-                });
-    }
 
 
     private final Locator locator;
@@ -102,12 +60,15 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 异步收集完整的诊断信息（不阻塞当前测试线程）。
-     * 适用于只需要日志记录、不需要阻塞等待的诊断场景。
-     * CompletableFuture 内部已设置 exceptionally() 处理异常，调用方无需等待。
+     * 收集诊断信息并返回已完成 future（保留异步<b>形态</b>）。
+     *
+     * <p><b>CT2-02</b>：诊断逻辑持有场景线程创建的 {@link Locator}/{@link Page}（非线程安全），
+     * 绝不可交给诊断线程池执行（跨线程操作 Playwright → pipe closed / 静默失败）。
+     * 故此处以 {@code Runnable::run} 在<b>调用线程</b>（即场景线程、对象拥有者）同步执行，
+     * 返回的 future 在方法返回前即已完成。失败诊断属低频兜底路径，多耗几十 ms 可接受。
      */
     public CompletableFuture<ElementOperationException.DiagnosticInfo> collectAsync() {
-        return CompletableFuture.supplyAsync(this::collect, DIAGNOSTIC_EXECUTOR)
+        return CompletableFuture.supplyAsync(this::collect, Runnable::run)
                 .whenComplete((info, ex) -> {
                     if (ex != null) {
                         logger.debug("[diagnostic] Async collect failed for [{}]: {}", selector, ex.getMessage());
@@ -363,12 +324,14 @@ public class ElementDiagnosticsCollector {
     }
 
     /**
-     * 异步捕获失败截图（不阻塞测试线程）。
-     * I/O 操作使用共享诊断线程池执行，避免高并发场景下失败路径雪崩。
-     * CompletableFuture 内部已设置 exceptionally() 处理异常，调用方无需等待。
+     * 捕获失败截图并返回已完成 future（保留异步<b>形态</b>）。
+     *
+     * <p><b>CT2-02</b>：{@code page.screenshot()} 同样是非线程安全的 Playwright 操作，
+     * 必须在拥有该 {@link Page} 的场景线程执行，故以 {@code Runnable::run} 在调用线程同步执行。
      */
     public CompletableFuture<String> captureFailureScreenshotAsync(String testName) {
-        return CompletableFuture.supplyAsync(() -> captureFailureScreenshot(testName), DIAGNOSTIC_EXECUTOR)
+        // CT2-02：page.screenshot() 同样是非线程安全的 Playwright 操作，必须在拥有该 Page 的场景线程执行。
+        return CompletableFuture.supplyAsync(() -> captureFailureScreenshot(testName), Runnable::run)
                 .whenComplete((path, ex) -> {
                     if (ex != null) {
                         logger.debug("[diagnostic] Async screenshot failed for [{}]: {}", selector, ex.getMessage());

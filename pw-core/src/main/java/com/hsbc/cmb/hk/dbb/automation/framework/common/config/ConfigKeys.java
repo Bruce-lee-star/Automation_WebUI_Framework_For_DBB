@@ -52,8 +52,13 @@ public enum ConfigKeys {
     /** AsyncPool 线程使用率告警阈值（0~1）。 */
     ASYNC_THREAD_USAGE_ALERT_THRESHOLD(
         "async.thread.usage.alert.threshold", "0.9", "AsyncPool 线程使用率告警阈值"),
-    /** AsyncPool 待处理超时任务数上限（超出告警）。 */
-    ASYNC_MAX_PENDING_TIMEOUTS("async.max.pending.timeouts", "500", "AsyncPool 待处理超时任务上限"),
+    /**
+     * AsyncPool 在途带超时任务数的<b>告警阈值</b>（仅告警）。
+     *
+     * <p>CT2-17：该键此前还是「哨兵投递上限」——触顶后跳过投递哨兵，使超时强制取消<b>静默失效</b>。
+     * 现超时改由单一周期裁决器统一执行（无上限、无降级路径），本键<b>仅用于阈值告警</b>。
+     */
+    ASYNC_MAX_PENDING_TIMEOUTS("async.max.pending.timeouts", "500", "AsyncPool 在途超时任务数告警阈值（仅告警，不再触发超时保护降级）"),
 
     /**
      * 密文解密失败是否失败快（默认 true）。
@@ -686,6 +691,20 @@ public enum ConfigKeys {
         "target/accessibility-axe",
         "Axe-core 报告输出目录"
     ),
+
+    // ==================== codegen（交互式拾取，CT2-25） ====================
+    /**
+     * 交互式拾取 / 代码面板「等待人工操作」的超时（毫秒，默认 30 分钟）。
+     *
+     * <p>CT2-25：原实现用 {@code setTimeout(0)}（永不超时）—— 用户遗忘拾取会话时会<b>永久阻塞</b>
+     * 调用线程（只能杀进程）。现给可配置上界；超时后走既有降级分支（生成「已拾取子集」）。
+     * 传 {@code 0} 或负值表示维持原语义（不超时），仅建议用于受控的本地调试。
+     */
+    PICKER_WAIT_TIMEOUT_MS(
+        "picker.wait.timeout.ms",
+        "1800000",
+        "交互式拾取/代码面板等待人工操作的超时（毫秒，0 或负值=不超时）"
+    ),
     WEB_PLAYWRIGHT_ELEMENT_ACTION_POST_DELAY(
         "playwright.element.action.post.delay",
         "200",
@@ -939,6 +958,14 @@ public enum ConfigKeys {
     MONITOR_BODY_CAPTURE_THREADS(
             "monitor.body.capture.threads", "16", "即时读体协调池线程数（响应到达即读 body）"),
 
+    /** CT2-18：即时读体协调池<b>有界</b>队列容量（原无界 → 无背压、任务与 Response 引用无界堆积）。 */
+    MONITOR_BODY_CAPTURE_QUEUE_CAPACITY(
+            "monitor.body.capture.queue.capacity", "1024", "即时读体协调池有界队列容量（队列满即落降级快照）"),
+
+    /** CT2-18：Body 读取池<b>有界</b>队列容量（原无界；队列满即回退调用线程读体）。 */
+    MONITOR_BODY_READ_QUEUE_CAPACITY(
+            "monitor.body.read.queue.capacity", "4096", "Body 读取池有界队列容量（队列满即回退调用线程读体）"),
+
     /** Body 读取基础尝试次数（不含按重试间隔推导的额外次数）。 */
     MONITOR_BODY_READ_BASE_ATTEMPTS("monitor.body.read.base.attempts", "3", "Body 读取基础尝试次数"),
 
@@ -966,6 +993,13 @@ public enum ConfigKeys {
     /** ModifyHandler 观测执行器有界队列容量；队列满即拒绝并按「仅修改请求」放行（绝不反压事件线程）。 */
     MODIFY_OBSERVE_QUEUE_CAPACITY(
             "modify.observe.queue.capacity", "1024", "ModifyHandler 观测执行器有界队列容量"),
+
+    /** MockHandler 真实响应拦截执行器线程数（CT2-04：把 route.fetch() 移出 Playwright 事件线程）。 */
+    MOCK_INTERCEPT_THREADS("mock.intercept.threads", "4", "MockHandler 真实响应拦截执行器线程数"),
+
+    /** MockHandler 真实响应拦截执行器有界队列容量；队列满即拒绝并放行原请求（绝不反压事件线程）。 */
+    MOCK_INTERCEPT_QUEUE_CAPACITY(
+            "mock.intercept.queue.capacity", "1024", "MockHandler 真实响应拦截执行器有界队列容量"),
 
     /** Monitor API 响应是否持久化到文件。 */
     MONITOR_FILE_STORE_ENABLED("monitor.file.store.enabled", "false", "Monitor API 响应文件持久化"),

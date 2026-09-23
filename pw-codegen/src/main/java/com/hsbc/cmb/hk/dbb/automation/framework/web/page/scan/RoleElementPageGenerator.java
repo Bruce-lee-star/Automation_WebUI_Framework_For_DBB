@@ -502,7 +502,7 @@ public final class RoleElementPageGenerator {
             int level = 0;
             Object lv = m.get("level");
             if (lv instanceof Number) level = ((Number) lv).intValue();
-            else if (lv != null) { try { level = Integer.parseInt(lv.toString()); } catch (Exception ignore) { } }
+            else if (lv != null) { try { level = Integer.parseInt(lv.toString()); } catch (Exception ignore) { RolePickerQuiet.ignore("RoleElementPageGenerator", ignore); } }
             if (level < 1 || level > 6) level = 0;
             String key = asString(m.get("key"));
             if (key != null && key.isBlank()) key = null;

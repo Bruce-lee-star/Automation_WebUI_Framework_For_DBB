@@ -101,14 +101,14 @@ public final class RolePickerCommandEngine {
                     // 重编号后把最新内存态回灌浏览器面板，保证面板/快照/Java 三侧序号一致。
                     // 强制刷新 ETag：repickNos 只改序号、元素身份未变，若不清除 LAST_SYNC_SIG，
                     // syncPanelToBrowser 的签名短路会跳过回灌，导致面板序号不刷新（被旧值覆盖）。
-                    try { RolePickerPanelSync.LAST_SYNC_SIG.remove(page); } catch (Exception ignore) {}
-                    try { if (!page.isClosed()) syncPanelToBrowser(page, null, javaPickBySig, true); } catch (Exception ignore) {}
+                    try { RolePickerPanelSync.LAST_SYNC_SIG.remove(page); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
+                    try { if (!page.isClosed()) syncPanelToBrowser(page, null, javaPickBySig, true); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
                     // 【diag-repick】sync 后回读浏览器侧 __rolePicks 的实际 _pickNos，确认回灌生效（而非旧值残留）。
                     try {
                         @SuppressWarnings("unchecked")
                         List<?> rp = (List<?>) pickerEval(page, RolePickerScripts.READ_PICK_KEYS_JS);
                         log.info("[picker][diag-repick] browser-side __rolePicks after backfill: {}", rp);
-                    } catch (Exception ignoreR) {}
+                    } catch (Exception ignoreR) { RolePickerQuiet.ignore("RolePickerCommandEngine#ignoreR", ignoreR); }
                     return new PickerResult(PickerAction.CONTINUE, null, null,
                             "已删除拾取序号并重排（" + (nos == null ? 0 : nos.size()) + " 个序号）");
                 }
@@ -210,7 +210,7 @@ public final class RolePickerCommandEngine {
         if (!page.isClosed()) {
             try {
                 pickerEval(page, RolePickerScripts.RESET_PICKS_JS);
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) { RolePickerQuiet.ignore("RolePickerCommandEngine#ignored", ignored); }
             start(page, scanNls);
         }
         int added = -1;
@@ -321,11 +321,13 @@ public final class RolePickerCommandEngine {
         // 原实现为让"区域扫描结果 = 纯本次选中区域元素"，进入区域点选态前清空了三处：
         //   ① 所有 frame 的 __rolePicks/__rolePickSigs
         //   ② Java 权威内存态 javaPickBySig
-        //   ③ RolePickerSessionState.STATE_DELETED 已删集合
+        //   ③ 会话级"已删集合"（STATE_DELETED，N-18 已删除）
         // 这导致：先整页扫描、再区域选择时，整页扫描的元素被整体清空，无法与区域扫描结果叠加。
         // 现按"整页扫描 + 区域扫描互补补充"的期望移除全部清空：区域扫描 __roleScanPage 本身是
         // 【追加】语义（__scanAdded 记录本次新增并 push 进 __rolePicks），保留已有拾取集即可实现
-        // 叠加。同时保留 __rolePickSigs（去重）防重复、保留 RolePickerSessionState.STATE_DELETED（已删屏蔽）防已删元素复活。
+        // 叠加。防重复由 __rolePickSigs（去重）与 javaPickBySig 承担 —— 注意【不存在】"已删屏蔽"：
+// 此前注释宣称的 STATE_DELETED 会话级已删集合从未被写入（N-18 已删除该死状态），
+// 即"已删元素复活"从来不是由它防住的，勿据此推断行为。
         try {
             pickerEval(page, RolePickerScripts.START_REGION_SELECT_JS);
         } catch (Exception e) {
@@ -380,7 +382,7 @@ public final class RolePickerCommandEngine {
                         for (Object o : (java.util.List<?>) n) if (o != null) regionFrameNames.add(o.toString());
                     }
                 }
-            } catch (Exception ig) {}
+            } catch (Exception ig) { RolePickerQuiet.ignore("RolePickerCommandEngine#ig", ig); }
             // 对"选中根内 iframe"逐个执行其 own __roleScanPage(null)（Playwright 协议穿透跨源）。
             // 【关键修复"嵌套 iframe 没扫出来"】
             // 选中根内 iframe 的标记（regionFrameUrls/Names）来自【主框架】querySelectorAll('iframe,frame')，
@@ -401,8 +403,8 @@ public final class RolePickerCommandEngine {
                     com.microsoft.playwright.Frame cur = f;
                     while (cur != null && !inRegion) {
                         String cUrl = null, cName = null;
-                        try { cUrl = cur.url(); } catch (Exception ignore) {}
-                        try { cName = cur.name(); } catch (Exception ignore) {}
+                        try { cUrl = cur.url(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
+                        try { cName = cur.name(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
                         if (rNames.contains(cName)) inRegion = true;
                         if (!inRegion && cUrl != null) {
                             for (String mark : rUrls) {
@@ -428,12 +430,12 @@ public final class RolePickerCommandEngine {
                                 RolePickerScriptInjector.frameInjectOnce(f, RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles)));
                                 pickerEval(f, RolePickerScripts.SCAN_PAGE_IN_FRAME_JS);
                             } catch (Exception reInjEx) {
-                                String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
+                                String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
                                 log.warn("[picker][regionScanned] region iframe re-injection failed (url={}): {}", fUrl, reInjEx.getMessage());
                             }
                         }
                     } catch (Exception fe) {
-                        String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) {}
+                        String fUrl = null; try { fUrl = f.url(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
                         log.warn("[picker][regionScanned] region iframe scan failed (url={}): {}", fUrl, fe.getMessage());
                     }
                 }
@@ -507,7 +509,7 @@ public final class RolePickerCommandEngine {
             log.warn("[picker][regionDone] failed to generate code at region-select finish: {}", e.getMessage());
         }
         //  收尾：清理浏览器侧选区态（移除蓝色遮罩 / 事件监听），再回 IDLE 使面板按钮复位。
-        try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) {}
+        try { if (!page.isClosed()) pickerEval(page, RolePickerScripts.END_REGION_SELECT_JS); } catch (Exception ignored) { RolePickerQuiet.ignore("RolePickerCommandEngine#ignored", ignored); }
         setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
         if (codePage == null || codePage.isEmpty()) {
             return new PickerResult(PickerAction.CONTINUE, null, null, "区域选择结束（未拾取到可定位元素）");
@@ -526,7 +528,7 @@ public final class RolePickerCommandEngine {
         // 此处读取快照（含 steps/ops）立即生成步骤代码并切到「步骤代码」Tab，无需等到点 ⏹。
         // 同时顺带重算页面类（若扫后又点选了新元素，页面类亦随之更新）。active 保持开启，可继续拾取。
         PickSnapshot snap = null;
-        try { snap = readPickSnapshot(page); } catch (Exception ignore) {}
+        try { snap = readPickSnapshot(page); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
         if (snap == null) snap = new PickSnapshot("", new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         // 状态外置：优先用 Java 侧内存态（javaPickBySig）覆盖（对导航/关闭导致的浏览器端状态清空免疫）。
         synchronized (javaPickBySig) {
@@ -564,7 +566,7 @@ public final class RolePickerCommandEngine {
         // 故此处按最新状态整体重算并回填，使已生成代码中该元素的字段声明与 step 引用一并消失。
         // 与 "package" 同一套生成链路，仅不设置 __pendingJump（不跳转 Tab，留在当前视图）。
         PickSnapshot snap = null;
-        try { snap = readPickSnapshot(page); } catch (Exception ignore) {}
+        try { snap = readPickSnapshot(page); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
         if (snap == null) snap = new PickSnapshot("", new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
         // 与 package 一致：以 Java 侧内存态为准（对导航/关闭导致的浏览器端状态清空免疫）。
         // 【修复"删除元素后步骤代码括号数字不变"】删除后浏览器端 window.__steps 可能仍残留指向已删元素的旧 step，
@@ -585,10 +587,10 @@ public final class RolePickerCommandEngine {
         // manual-mode fallback: start->stop whole session = one step; if packaged keep selection order.
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);
         // 【修复"删除后整页重新扫描一直为 0"】
-        // 旧实现在生成页面类前按会话级 RolePickerSessionState.STATE_DELETED 永久剔除已删元素，导致用户删除后重新整页扫描、
+        // 旧实现在生成页面类前按会话级已删集合永久剔除已删元素，导致用户删除后重新整页扫描、
         // 新识别出的元素即便已重新入库 javaPickBySig，生成时仍被剔除，表现为"再扫描一直都是 0"。
         // 删除语义仅为"从当前内存态移除"（已被 collectDeleteKeys 的 ① ② ③ 兜底 + 源头清空 iframe
-        // 残留完整覆盖），不应永久封杀该元素。故此处【不再】按 RolePickerSessionState.STATE_DELETED 剔除，以 javaPickBySig
+        // 残留完整覆盖），不应永久封杀该元素。故此处不按任何"已删集合"剔除（该会话级状态已按 N-18 删除），以 javaPickBySig
         // 当前内容为准直接生成——重新扫描即可正常出现代码。
         LinkedHashMap<String, String> codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
         LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
@@ -637,7 +639,7 @@ public final class RolePickerCommandEngine {
                         PickSnapshot cs = parsePickSnapshot(cm);
                         closedSteps.addAll(cs.steps);
                         closedOps.addAll(cs.ops);
-                    } catch (Exception ignore) {}
+                    } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
                 }
                 continue;
             }
@@ -651,7 +653,7 @@ public final class RolePickerCommandEngine {
                 // 不再出现"点了停止却卡住/没反应"的假死（active 已被 active.get()=false 复位）。
                 log.warn("[picker][stop] evaluate failed while stopping page {} (ignorable during navigation): {}",
                         p.url(), stopEx.getMessage());
-                try { p.evaluate(RolePickerScripts.SET_PICK_STOPPED_JS); } catch (Exception ignore) {}
+                try { p.evaluate(RolePickerScripts.SET_PICK_STOPPED_JS); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
             }
         }
         if (snap == null) snap = readPickSnapshot(page);   // 兜底：命令页不在跟踪集合时
@@ -706,7 +708,7 @@ public final class RolePickerCommandEngine {
         // 且 run1 拾取期间 __steps 为空、空闲刷新把恢复态停在"空 steps"；若 run2 中发生整页跳转，
         // 就用这份过期恢复态把第一次的 step 整体覆盖丢失。此处把本次停止后的最新态【立即回写】Java 恢复态，
         // 使任何后续跳转恢复时都含已有 step（含第一次），彻底消除该时序窗口。
-        try { snapshots.put(page, readPickStateJson(page)); } catch (Exception ignore) {}
+        try { snapshots.put(page, readPickStateJson(page)); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
         // 多页面：当前页 window 持有全部被跟踪页面的拾取（跟随新页时搬运、关闭弹窗时合并回父页），
         // 每条 pick/step 都带 _pageClass 标签，据此分组到对应 Page 类；steps 跨页引用也归到对应页。
         String curClass = snap.pageClass;
@@ -737,7 +739,7 @@ public final class RolePickerCommandEngine {
             // 诊断：跨域/导航竞态下出现"未拾取到元素"时，记录内存态与浏览器侧 picks 数量，便于定位是否漏拾。
             int jsMem = javaPickBySig.size();
             int browserPicks = 0;
-            try { browserPicks = ((List<?>) pickerEval(page, RolePickerScripts.READ_PICK_COUNT_JS)).size(); } catch (Exception ignoreB) {}
+            try { browserPicks = ((List<?>) pickerEval(page, RolePickerScripts.READ_PICK_COUNT_JS)).size(); } catch (Exception ignoreB) { RolePickerQuiet.ignore("RolePickerCommandEngine#readPickCount", ignoreB); }
             log.warn("[picker][stop] no elements picked @ {} : in-memory javaPickBySig={}, browser __rolePicks={}, current page origin={}",
                     page.url(), jsMem, browserPicks, safeOrigin(page.url()));
             // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"。
@@ -772,7 +774,7 @@ public final class RolePickerCommandEngine {
             // 停止拾取：保留元素列表（__rolePicks），但清除所有序号（重置为 [-,+]）
             // 这样第二轮拾取时，元素仍在列表中，显示为 [-,+]，用户可重新勾选分配序号
             pickerEval(page, RolePickerScripts.CLEAR_PICKS_JS);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerCommandEngine", ignore); }
         int matched = 0;
         for (RoleEntry e : allEntries) {
             if (e.getResolvedKey() != null) matched++;

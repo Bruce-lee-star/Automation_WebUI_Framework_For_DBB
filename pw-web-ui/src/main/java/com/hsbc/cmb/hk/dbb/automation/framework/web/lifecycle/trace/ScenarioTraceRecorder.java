@@ -3,7 +3,6 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
@@ -16,12 +15,7 @@ import org.slf4j.LoggerFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * Scenario 级 trace 分段录制器（方案 A，2026-09-17 评审落地）。
@@ -51,7 +45,8 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>健壮性</h2>
  * <ul>
- *   <li>导出走专属守护线程池（受 {@link ShutdownCoordinator} 管理）并带超时，绝不阻塞 context 关闭；</li>
+ *   <li>导出走【每调用独立守护线程 + 有界 join】（无固定线程池、无硬编码池大小、线程按导出需求动态创建）；
+ *       任一次 stopChunk 卡死只放弃该次导出，不影响后续导出、也不阻塞 JVM 退出；</li>
  *   <li><b>超时/异常一律删除残缺文件</b> —— 坏 zip 挂进报告比没有更糟；</li>
  *   <li>scenarioId 由调用方显式传入（不依赖 MDC），规避"套件收尾/失败清理路径上 MDC 已解绑 →
  *       文件名退化为 unknown 或错挂到别的用例"；</li>
@@ -73,21 +68,6 @@ public final class ScenarioTraceRecorder {
     private static final ContextKey<Boolean> CHUNK_ACTIVE_KEY = ContextKey.of("trace.chunkActive", Boolean.class);
     private static final ContextKey<String> SCENARIO_KEY = ContextKey.of("trace.scenarioId", String.class);
     private static final ContextKey<Long> CHUNK_START_KEY = ContextKey.of("trace.chunkStartMs", Long.class);
-
-    /**
-     * trace 导出线程池（原在 {@code PlaywrightContextManager}）：写盘属阻塞 IO，必须与测试线程解耦；
-     * 专属单线程 + 受关闭编排管理，避免污染公共池、也避免 JVM 退出被强杀导致 zip 损坏。
-     */
-    private static final ExecutorService TRACE_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "pw-context-trace");
-        t.setDaemon(true);
-        return t;
-    });
-
-    static {
-        ShutdownCoordinator.register(ShutdownCoordinator.ORDER_DIAGNOSTICS, "pw-context-trace",
-                TRACE_EXECUTOR::shutdownNow);
-    }
 
     private ScenarioTraceRecorder() {
     }
@@ -201,27 +181,46 @@ public final class ScenarioTraceRecorder {
         }
     }
 
-    /** 导出当前 chunk 到指定文件（异步 + 超时 + 失败删残片 + 挂报告）。 */
+    /** 导出当前 chunk 到指定文件（每导出独立守护线程 + 有界 join + 超时放弃 + 失败删残片 + 挂报告）。 */
     private static void exportChunk(BrowserContext context, Path file, String scenarioId,
                                     Long startMs, long endMs) {
-        Future<?> task = null;
         try {
             //  Path.getParent() 对无父路径返回 null：显式判空（本仓既有写法，SpotBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE）
             Path parent = file.getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            task = CompletableFuture.runAsync(
-                    () -> context.tracing().stopChunk(new Tracing.StopChunkOptions().setPath(file)),
-                    TRACE_EXECUTOR);
-            task.get(exportTimeoutSeconds(), TimeUnit.SECONDS);
+            //  A-10（doc 22）：原实现用【单一共享线程】跑 stopChunk（CompletableFuture.runAsync(..., 该线程池)）。
+            //    stopChunk 是阻塞式 native 调用、不可中断；一旦卡住该线程被永久占住 → 此后【所有】导出排队超时、
+            //    删除残片 → 后续场景 trace 全丢。改为「每导出独立守护线程 + 有界 join」：卡住的线程是 daemon，
+            //    JVM 退出后由 Playwright driver 进程树回收，不阻塞后续导出、也不阻塞 JVM 退出
+            //    （线程动态调整：按需创建、无硬编码池大小）。
+            Thread exporter = new Thread(() -> {
+                try {
+                    context.tracing().stopChunk(new Tracing.StopChunkOptions().setPath(file));
+                } catch (Throwable t) {
+                    logger.warn("[trace] stopChunk failed for {}: {}", file.getFileName(), t.getMessage());
+                }
+            }, "pw-context-trace-" + (scenarioId == null ? "unknown" : sanitizeForFileName(scenarioId)));
+            exporter.setDaemon(true);
+            exporter.start();
+            try {
+                exporter.join(TimeUnit.SECONDS.toMillis(exportTimeoutSeconds()));
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+            if (exporter.isAlive()) {
+                //  超时：放弃该次导出（线程 daemon，随 JVM 退出被 driver 回收），删残片，记可观测信号；
+                //    注意：不要在此再 join 等待 —— 那会重新把调用线程拖死。
+                logger.warn("[trace] export of {} exceeded {}s and was abandoned (trace capability degraded for "
+                                + "this scenario; subsequent exports are unaffected). The exporter thread is a daemon "
+                                + "and will be reclaimed by the Playwright driver on JVM exit.",
+                        file.getFileName(), exportTimeoutSeconds());
+                deletePartialFile(file, "timeout(" + exportTimeoutSeconds() + "s)");
+                return;
+            }
             attachToReport(file, scenarioId, startMs, endMs);
             ArtifactRetention.pruneIfDue();
-        } catch (TimeoutException toe) {
-            if (task != null) {
-                task.cancel(true);
-            }
-            deletePartialFile(file, "timeout(" + exportTimeoutSeconds() + "s)");
         } catch (Exception e) {
             // tracing 未启动 / 已停止 / 写盘失败 / 目标被占用：一律删残片，绝不把坏 zip 挂进报告
             deletePartialFile(file, e.getMessage());

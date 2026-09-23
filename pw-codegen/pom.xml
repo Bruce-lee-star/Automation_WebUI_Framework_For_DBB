@@ -76,5 +76,18 @@
             <groupId>com.belerweb</groupId>
             <artifactId>pinyin4j</artifactId>
         </dependency>
+
+        <!-- CT2-09 / CT2-20：codegen 首次引入模块内单测，守卫「按 Page/BrowserContext 的静态缓存
+             必须能被 cleanup* / clearAll 真正回收」这一契约（纯 JUnit 5，不依赖 Serenity）。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

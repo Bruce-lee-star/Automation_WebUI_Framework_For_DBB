@@ -59,8 +59,12 @@ public final class StoppedCapabilityManager {
         String normalized = RouteEngine.normalizePattern(urlPattern);
         Map<String, Set<RouteHandleType>> byPattern = RouteContextState.STOPPED_CAPS
                 .computeIfAbsent(ctx, k -> new ConcurrentHashMap<>());
+        //  A-07（doc 22）：原 value 是 EnumSet（非线程安全），CHM 只保护 Map 结构不保护 value；
+        //    并发 stopCapability 会丢位、applyStoppedCapabilities 锁外迭代会抛 CME → 该停的能力没停。
+        //    改用 ConcurrentHashMap.newKeySet()（线程安全的 Set<RouteHandleType> 视图），
+        //    add / addAll / 迭代全部弱一致安全，且无需维护位图。
         Set<RouteHandleType> set = byPattern.computeIfAbsent(normalized,
-                k -> EnumSet.noneOf(RouteHandleType.class));
+                k -> ConcurrentHashMap.newKeySet());
         if (cap == null) {
             set.addAll(EnumSet.allOf(RouteHandleType.class));
         } else {

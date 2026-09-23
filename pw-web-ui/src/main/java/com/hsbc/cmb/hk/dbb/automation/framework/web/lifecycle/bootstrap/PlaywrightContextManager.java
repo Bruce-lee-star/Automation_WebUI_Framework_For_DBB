@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
@@ -31,10 +32,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -96,19 +94,25 @@ public class PlaywrightContextManager {
 
         //  修复问题3：用 try-finally 确保 customContextOptionsFlag 在 newContext() 抛异常（浏览器断开/
         // 参数非法）时也能重置，避免该线程后续重试持续携带已失效的自定义配置而反复失败。
-        BrowserContext context;
+        //  CT2-05：newContext() 之后任一步骤（onPage/register/configureTimeouts/enableTracing）抛异常，
+        //  已创建的 context 既未返回也未关闭 → 确定性泄漏。用 initialized 标志区分成功/失败，
+        //  失败路径在 finally 中安全关闭半初始化 context（close 自身再包 try-catch）。
+        BrowserContext context = null;
+        boolean initialized = false;
         try {
             // 初始化 Context
             context = currentBrowser.newContext(contextOptions);
+            // lambda 需捕获有效 final 引用（context 在 try 内被赋值，非 effectively final）
+            final BrowserContext ctx = context;
 
             //  页面创建监听（判定「框架受管页」vs「额外页」）：
             //   context.onPage 对「任何」新页触发，不能笼统记成 "detected via window.open()" ——
             //   框架自身 createPage() 的 context.newPage() 也会触发（此刻尚未导航，url 为 about:blank），
             //   在并行逐 scenario 重建下会被误读为"同一窗口多开了一个 about:blank 页"。
             //   故经 MANAGED_PAGE_CREATION_IN_FLIGHT 精确判定归属，并打出 Context 内页数供判定。
-            context.onPage(newPage -> {
-                logNewPageEvent(context, newPage,
-                        classifyNewPageEvent(context, newPage,
+            ctx.onPage(newPage -> {
+                logNewPageEvent(ctx, newPage,
+                        classifyNewPageEvent(ctx, newPage,
                                 Boolean.TRUE.equals(MANAGED_PAGE_CREATION_IN_FLIGHT.get())));
                 newPage.onLoad(pageLoad -> {
                     VerboseLogging.logDebugIfVerbose(logger,
@@ -134,16 +138,36 @@ public class PlaywrightContextManager {
 
             // 启用 tracing（如果配置了）
             enableTracing(context);
+
+            initialized = true;
+            VerboseLogging.logInfoIfVerbose(logger, "BrowserContext created successfully");
+            return context;
         } finally {
             // 重置标志（成功或失败都执行）
             if (customFlag != null && customFlag) {
                 CustomOptionsManager.getInstance().disableCustomOptions();
                 VerboseLogging.logInfoIfVerbose(logger, "Custom context options applied, flag reset to false");
             }
+            // CT2-05：初始化未成功（任一步骤抛异常）且已创建 context → 安全回收，杜绝泄漏
+            if (!initialized && context != null) {
+                safeCloseContextOnFailure(context);
+            }
         }
+    }
 
-        VerboseLogging.logInfoIfVerbose(logger, "BrowserContext created successfully");
-        return context;
+    /** CT2-05：半初始化 context 失败时的安全回收（close 自身再包 try-catch，避免二次异常掩盖原错误）。 */
+    private static void safeCloseContextOnFailure(BrowserContext ctx) {
+        try {
+            if (ctx != null && ctx.browser() != null && ctx.browser().isConnected()) {
+                // CT2-15：半初始化 context 的回收与 closeContext 同语义 —— 同样登记关闭状态，
+                //  使可能存在的在途下载保存失败被正确归因为预期噪音而非 ERROR。
+                DownloadLifecycle.markContextClosing(ctx);
+                ctx.close();
+            }
+        } catch (Exception e) {
+            VerboseLogging.logWarnIfVerbose(logger,
+                    "Failed to close half-initialized BrowserContext on failure: {}", e.getMessage());
+        }
     }
 
     /**
@@ -186,7 +210,17 @@ public class PlaywrightContextManager {
         final long saveTimeoutMs = TimeUnit.MINUTES.toMillis(
                 Math.max(1, PlaywrightManager.config().getBrowserDownloadTimeoutMinutes()));
         //  监听器内【只派发】：绝不在此同步调用 saveAs —— 见 saveDownloadAsync 的「连接读线程」说明。
-        context.onDownload(download -> saveDownloadAsync(context, download, downloadDir, saveTimeoutMs));
+        //  CT2-15：在途归属按【downloadDir】而非线程 —— 收尾线程未必等于本线程（见 DownloadLifecycle）。
+        context.onDownload(download -> {
+            //  避免「为已进入关闭流程的 Context 发起保存」：该保存必然被 close() 取消。
+            //  不发起就不会产生失败，也就不需要事后按异常文案分类（预防优于归因）。
+            if (DownloadLifecycle.isContextClosing(context)) {
+                VerboseLogging.logDebugIfVerbose(logger,
+                        "Download discarded: BrowserContext already in closing flow (saving would be cancelled)");
+                return;
+            }
+            saveDownloadAsync(context, download, downloadDir, saveTimeoutMs);
+        });
     }
 
     /**
@@ -203,6 +237,11 @@ public class PlaywrightContextManager {
      * 与 {@code MonitorHandler}/{@code ModifyHandler} 把阻塞链路移出事件线程同一治理方式；{@code timeoutMs}
      * 取 {@code playwright.browser.download.timeout.minutes}，超时由池兜底记 ERROR（不静默）。</p>
      *
+     * <p><b>CT2-15（收尾竞态）</b>：任务体按 {@code downloadDir} 在 {@link DownloadLifecycle} 登记在途，
+     * 使场景收尾的 {@code cleanupTempDownloads()} 能判定「该目录是否仍有未写完的文件」并在有在途写入时
+     * <b>放弃本轮删除</b>（非阻塞，绝不把异步保存的耗时转嫁给 scenario 收尾关键路径）。
+     * 按目录而非线程归属的原因见 {@link DownloadLifecycle}。</p>
+     *
      * <p>包级可见以便单测用「慢 {@code saveAs} 桩」证明派发<b>不阻塞</b>调用线程（{@code DownloadSaveOffloadTest}）。</p>
      *
      * @param context     触发下载的上下文（仅用于下载登记，可 mock）
@@ -212,9 +251,24 @@ public class PlaywrightContextManager {
      */
     static void saveDownloadAsync(BrowserContext context, Download download, Path downloadDir, long timeoutMs) {
         AsyncPool.runWithTimeout(() -> {
+            //  CT2-15：进入任务体即按【下载目录】登记在途保存 —— 场景收尾据此判定能否安全删除该目录。
+            //    按目录（而非线程）归属的原因见 DownloadLifecycle 类说明：收尾线程未必等于本线程。
+            //    登记放在任务体内（而非提交前）：AsyncPool 丢弃任务时不抛异常，
+            //    提交前登记会让计数永久挂账；任务体内登记则「无执行 ⇒ 无计数」。
+            DownloadLifecycle.begin(downloadDir);
             Path reserved = null;
             boolean saved = false;
             try {
+                //  CT2-15：发起保存前复核状态 —— 事件线程的派发与本任务执行之间存在时间差，
+                //    期间 Context 可能已进入关闭流程（或被整体清理）。此时保存必然失败，
+                //    故直接跳过：不产生注定失败的 saveAs，也不占用磁盘写入。
+                //    注意判据是「已知不可用」（见 isEnvironmentKnownDead）：无证据时照常保存，
+                //    绝不因「拿不到 Browser」（持久化上下文即如此）而漏存文件。
+                if (DownloadLifecycle.isContextClosing(context) || isEnvironmentKnownDead(context)) {
+                    VerboseLogging.logDebugIfVerbose(logger,
+                            "Save skipped: context closing or browser disconnected before save started");
+                    return;
+                }
                 String suggestedFilename = download.suggestedFilename();
                 //  原子占位（目录按需创建）：并发同名下载不会选到同一路径（见 resolveNonConflictingDownloadPath）
                 reserved = resolveNonConflictingDownloadPath(downloadDir, suggestedFilename);
@@ -227,16 +281,22 @@ public class PlaywrightContextManager {
             } catch (Exception e) {
                 //  占位文件回滚：仅当尚未写成功（保存失败/上下文关闭）时删除，避免残留 0 字节文件
                 rollbackReservation(reserved, saved);
-                //  关闭时序降级（WEB-P3-N14 ②）：Playwright 在 BrowserContext.close() 时会先清理
-                //   未完成的下载，导致 download.saveAs() 抛 TargetClosedError。这属于「预期噪音」，
-                //   若记 ERROR 会污染收尾期日志、掩盖真实告警；故降级为 DEBUG。
-                //   真实保存失败（磁盘满 / 路径非法 / 权限不足）不被降级，仍记 ERROR，保证告警信噪比。
-                if (isContextClosedError(e)) {
+                //  CT2-15：失败归因按【框架已知状态】判定，不解析 Playwright 异常文案（文案随版本变化，
+                //    按文案分类必然漏判）：
+                //    ① 本 context 已进入关闭流程 → 该下载被 close() 取消，属预期；
+                //    ② 其 Browser 已断开 → 保存无从完成；「浏览器断开」本身由生命周期各层各自告警，
+                //       此处再记 ERROR 只是重复噪音（且会掩盖真实的磁盘/权限类失败）。
+                //    其余（磁盘满 / 路径非法 / 权限不足）仍记 ERROR，保持告警信噪比。
+                if (DownloadLifecycle.isContextClosing(context) || isEnvironmentKnownDead(context)) {
                     VerboseLogging.logDebugIfVerbose(logger,
-                            "Save aborted (context/browser closing, download discarded): {}", e.getMessage());
+                            "Save aborted (context closing or browser disconnected; nothing written): {}",
+                            e.getMessage());
                 } else {
                     logger.error("[Download] Failed to save file: {}", e.getMessage(), e);
                 }
+            } finally {
+                // CT2-15：成功 / 失败 / 被超时取消（cancel(true) 中断）都必须注销，保证计数配对归零
+                DownloadLifecycle.end(downloadDir);
             }
         }, timeoutMs);
     }
@@ -312,6 +372,14 @@ public class PlaywrightContextManager {
      */
     public static void closeContext(BrowserContext context) {
         if (context != null) {
+            //  CT2-15：在任何清理动作之前登记「本 context 已进入关闭流程」——【避免】而非【事后归因】：
+            //    此后到达的下载事件与在途保存任务不再发起 saveAs（该保存必被 close() 取消），
+            //    绝大多数情况下根本不产生「需要分类的失败」；对已越过该判定的极小残留窗口，
+            //    其失败亦按此已知状态判定为预期噪音（详见 DownloadLifecycle）。
+            //    closeContext 是框架内 Context 销毁的唯一收口（场景收尾 / 自定义配置重建 / 孤儿回收 /
+            //    套件级 cleanupAll 均经此），故此处一处登记即全覆盖，无需逐路径打补丁。
+            //    标记不在此后手工清除：清除若早于「在途保存失败」会让噪音复现（弱引用键自动回收）。
+            DownloadLifecycle.markContextClosing(context);
             try {
                 //  先释放路由层资源：停止 MonitorSession 定时器、unroute、清理注册表与防重门控，
                 //    避免调度器线程池持有已销毁 context 引用导致内存泄漏 / 对已关闭 context 无效调度。
@@ -530,12 +598,43 @@ public class PlaywrightContextManager {
         }
     }
 
+    /** 页面 / 导航超时的安全下界（与 {@code ConfigKeys.WEB_PLAYWRIGHT_PAGE_TIMEOUT} 的默认值一致）。 */
+    private static final int DEFAULT_PAGE_TIMEOUT_MS = 15_000;
+
     /**
-     * 配置超时
+     * 配置超时。
+     *
+     * <p><b>N-16（doc 21 MEDIUM）</b>：Playwright 语义中 {@code 0} = <b>无限等待</b>。元素侧此前已补
+     * {@code Math.max(1, ceil(ms/1000))} 下界，但页面 / 导航侧是<b>原样透传</b> —— 误配
+     * {@code playwright.page.timeout=0}（或负值）会让所有页面级操作<b>永久挂起且没有任何信号</b>。
+     * 现补同款下界：非正值回落到默认值并留 WARN（非 verbose 门控，绝不静默改写用户配置）。</p>
      */
     private static void configureTimeouts(BrowserContext context) {
-        context.setDefaultNavigationTimeout(PlaywrightManager.config().getNavigationTimeout());
-        context.setDefaultTimeout(PlaywrightManager.config().getPageTimeout());
+        context.setDefaultNavigationTimeout(positiveTimeoutOrDefault(
+                "playwright.page.navigationTimeout", PlaywrightManager.config().getNavigationTimeout()));
+        context.setDefaultTimeout(positiveTimeoutOrDefault(
+                "playwright.page.timeout", PlaywrightManager.config().getPageTimeout()));
+    }
+
+    /**
+     * N-16：把配置读取到的页面 / 导航超时规整为<b>正值</b>。
+     *
+     * <p>Playwright 的 {@code 0} 表示无限等待 —— 对测试框架而言那是「永久挂起且无信号」，
+     * 远劣于「回落到默认值并告知」。故非正值一律回落 {@link #DEFAULT_PAGE_TIMEOUT_MS}，
+     * 并写一条非 verbose 门控的 WARN（可观测，不静默）。</p>
+     *
+     * @param configKey  配置键名（仅用于告警定位）
+     * @param configured 配置读取值
+     * @return 可安全下发给 Playwright 的正值超时
+     */
+    static int positiveTimeoutOrDefault(String configKey, int configured) {
+        if (configured > 0) {
+            return configured;
+        }
+        logger.warn("[Playwright] {}={} 非法（Playwright 语义中 0/负数 = 无限等待 → 操作会永久挂起且无信号）；"
+                        + "已回落到默认 {}ms，请修正该配置。",
+                configKey, configured, DEFAULT_PAGE_TIMEOUT_MS);
+        return DEFAULT_PAGE_TIMEOUT_MS;
     }
 
     /**
@@ -760,39 +859,35 @@ public class PlaywrightContextManager {
     }
 
     /**
-     * 判定异常是否为「Context / Browser 正在关闭」引发的时序噪音（WEB-P3-N14 ②）。
+     * 判定保存环境是否<b>已知不可用</b>（CT2-15：不解析异常文案，只在有实证时才下结论）。
      *
-     * <p>Playwright 的 {@code TargetClosedError} 会被包装进 {@code PlaywrightException} 的
-     * <b>cause 链</b>深处，故必须沿 {@code getCause()} 逐层识别，仅看顶层消息会漏判。
-     * 判定依据（二者命中其一即可）：
+     * <p>以框架既有惯用法 {@code browser().isConnected()} 为准（与 {@code closeContext} /
+     * {@code ContextRegistryImpl} / {@code safeCloseContextOnFailure} 同一判据）：<b>仅当 Browser
+     * 存在且已断开</b>，或对象已失效（调用即抛异常）时，才判定为不可用。</p>
+     *
+     * <p><b>为什么是「已知不可用」而不是「已知可用」（重要，勿反转）</b>：</p>
      * <ul>
-     *   <li>异常类名包含 {@code TargetClosed}（规避直接依赖 Playwright 内部类型）；</li>
-     *   <li>消息包含 {@code "Target page, context or browser has been closed"}。</li>
+     *   <li>Playwright 的<b>持久化上下文</b>（{@code launchPersistentContext}）其
+     *       {@code browser()} 返回 {@code null}，而它是<b>完全可用</b>的 —— 若把「拿不到 Browser」
+     *       当作不可用，会导致该拓扑下<b>所有下载被静默跳过</b>（比噪音严重得多的故障）；</li>
+     *   <li>「无证据」应回落到<b>照常保存 / 照常告警</b>（失败记 ERROR）：宁可多一条日志，
+     *       也不可静默吞掉真实失败或漏存文件。</li>
      * </ul>
      *
-     * <p><b>健壮性</b>：{@code null} 返回 {@code false}（调用方按「非关闭」处理，保持原有告警级别）；
-     * 采用身份集合做 <b>cause 自环防御</b>，避免异常链成环（{@code a.initCause(a)} 等畸形链）导致无限循环。
+     * <p><b>为何不解析异常文案</b>：Playwright 在不同关闭路径下文案不同（{@code TargetClosedError}、
+     * {@code Cannot find object to call close}、…），按文案分类必然要持续追补新变体，
+     * 漏判即把预期噪音记成 ERROR（或反向把真实失败降级）。</p>
      *
-     * @param t 待判定异常，可为 {@code null}
-     * @return true 表示属关闭时序噪音（应降级为 DEBUG 而非 ERROR）
-     * @apiNote <b>框架内部能力</b>（包级私有）：仅供同包下载/资源清理路径使用，业务代码不应依赖。
+     * @param context 触发下载的上下文
+     * @return true 表示有实证表明环境已不可用（保存无从完成，其失败属预期噪音）
      */
-    static boolean isContextClosedError(Throwable t) {
-        if (t == null) {
-            return false;
+    private static boolean isEnvironmentKnownDead(BrowserContext context) {
+        try {
+            Browser browser = context.browser();
+            return browser != null && !browser.isConnected();
+        } catch (Exception gone) {
+            // 对象已失效（如已从连接中移除）—— 这本身就是实证
+            return true;
         }
-        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<Throwable, Boolean>());
-        Throwable current = t;
-        while (current != null && seen.add(current)) {
-            if (current.getClass().getSimpleName().contains("TargetClosed")) {
-                return true;
-            }
-            String message = current.getMessage();
-            if (message != null && message.contains("Target page, context or browser has been closed")) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 }

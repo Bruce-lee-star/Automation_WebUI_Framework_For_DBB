@@ -64,6 +64,16 @@ public class ConfigProvider {
      */
     private static final ContextKey<Config> THREAD_CONFIG_KEY = ContextKey.of("configProvider.threadConfig", Config.class);
 
+    /**
+     * CT2-13：配置冷路径的专用锁。
+     *
+     * <p>刻意使用<b>私有对象</b>而非 {@code ConfigProvider.class} 类监视器：类监视器是<b>全局</b>资源，
+     * 任何外部代码（或后续新增的 {@code synchronized} 静态方法）都会与之争用；且锁住 {@code Class} 对象
+     * 会让"配置加载"与无关同步逻辑相互阻塞。专用锁把竞争面收敛到本文件，且<b>只覆盖冷路径</b>
+     * （热路径 {@link #getConfig()} 完全无锁）。</p>
+     */
+    private static final Object CONFIG_LOAD_LOCK = new Object();
+
     // Static block: Load framework paths from application.conf
     static {
         loadFrameworkPaths();
@@ -173,7 +183,14 @@ public class ConfigProvider {
      * @param envOverride 环境覆盖值；null/空表示回退到 {@code EnvironmentUtils} 解析出的环境
      * @return merged configuration
      */
-    public static synchronized Config config(Entity entity, String envOverride) {
+    //  CT2-13：原为 {@code static synchronized} —— 整个「读配置 + 磁盘解析 + 合并」跑在
+    //    **类监视器**上，且与 {@link #getConfig()} 的冷路径共用同一把锁。并行（-Pparallel）下每个
+    //    scenario 建 {@code Entity}（拷贝构造会再调一次 → 每次构建 2 次加锁 + 2 次磁盘解析）
+    //    使**全部 scenario 的配置加载在类锁上全局串行化**，并行收益被配置锁吃掉，磁盘 IO 抖动也被放大。
+    //    经复核：本方法<b>不写任何共享可变静态</b>（全部静态字段为 final 常量或只读 volatile 路径；
+    //    配置快照写入 per-thread 的 {@code TestContext}），故**无需类锁**即可保持线程安全。
+    //    磁盘解析因此可并行进行（同 entity 重复解析只是浪费、无正确性问题）。
+    public static Config config(Entity entity, String envOverride) {
         // Early validation log
         LOGGER.info("=== Starting config loading for entity ===");
         LOGGER.info("Entity name (raw): {}", entity != null ? entity.getEntityName() : "NULL");
@@ -423,7 +440,9 @@ public class ConfigProvider {
         // 本上下文尚未加载时回退到默认配置（仅写入本上下文），并发下不会互相覆盖。已初始化时完全无锁（热路径）。
         Config snapshot = TestContextHolder.get().get(THREAD_CONFIG_KEY);
         if (snapshot == null || snapshot.isEmpty()) {
-            synchronized (ConfigProvider.class) {
+            //  CT2-13：改用专用锁（原为类监视器 ConfigProvider.class）—— 锁竞争面收敛到本文件，
+            //    不再与任何 `synchronized` 静态方法 / 外部对 Class 对象的锁争用。
+            synchronized (CONFIG_LOAD_LOCK) {
                 snapshot = TestContextHolder.get().get(THREAD_CONFIG_KEY);
                 if (snapshot == null || snapshot.isEmpty()) {
                     LOGGER.warn("Context config not initialized, loading default config for current thread");

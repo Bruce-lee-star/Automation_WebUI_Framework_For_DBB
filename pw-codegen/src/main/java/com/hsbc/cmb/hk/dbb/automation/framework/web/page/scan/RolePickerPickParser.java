@@ -246,7 +246,7 @@ final class RolePickerPickParser {
                     String k2 = asString(m.get("_sig"));
                     // 定位器型策略的 _sig 可能带 #index，补一个「带 pageClass 前缀」形态以兼容旧数据，
                     // 但务必绑定 pageClass，绝不退化为跨页共享键（否则 SetupSecondPwdPage 删页脚会把
-                    // LoginPage 同名页脚的裸 _sig 一并加入 dead，后续 isDeletedKeyInState 又按裸 _sig
+                    // LoginPage 同名页脚的裸 _sig 一并加入 dead，后续已删判定（原 isDeletedKeyInState，N-18 已删除）又按裸 _sig
                     // 把另一页同名元素永久屏蔽）。故 k2 也一律带 pc 前缀。
                     if (k2 != null && !k2.isEmpty()) {
                         String k2pc = pc + "|" + k2;

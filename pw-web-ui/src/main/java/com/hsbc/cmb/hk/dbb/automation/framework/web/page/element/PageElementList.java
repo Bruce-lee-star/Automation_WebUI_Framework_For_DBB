@@ -170,7 +170,13 @@ public final class PageElementList extends AbstractList<PageElement> {
      */
     @Override
     public int size() {
-        return size(defaultTimeoutMs / 1000);
+        return size(defaultTimeoutSec());
+    }
+
+    // CT2-11：默认超时换算统一收敛为 ceil + 下限 1，避免 defaultTimeoutMs < 1000 时整数除法得 0
+    // → setTimeout(0) 永不超时（套件挂死）。与 PageElement:547 的 Math.max(1, ceil(ms/1000.0)) 对齐。
+    private int defaultTimeoutSec() {
+        return Math.max(1, (int) Math.ceil(defaultTimeoutMs / 1000.0));
     }
 
     public int size(int timeoutSec) {
@@ -233,7 +239,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     // ========================== 空判断 ==========================
     @Override
     public boolean isEmpty() {
-        return isEmpty(defaultTimeoutMs / 1000);
+        return isEmpty(defaultTimeoutSec());
     }
 
     public boolean isEmpty(int timeoutSec) {
@@ -254,7 +260,7 @@ public final class PageElementList extends AbstractList<PageElement> {
     // ========================== 快捷方法 ==========================
     /** 返回第一个【可见】元素（默认语义）。无可见元素时抛异常。 */
     public PageElement first() {
-        if (isEmpty(defaultTimeoutMs / 1000)) {
+        if (isEmpty(defaultTimeoutSec())) {
             throw new IllegalStateException("Element list has no visible element, cannot get first: " + selector);
         }
         return get(0);
@@ -262,7 +268,7 @@ public final class PageElementList extends AbstractList<PageElement> {
 
     /** 返回最后一个【可见】元素（默认语义）。无可见元素时抛异常。 */
     public PageElement last() {
-        int s = size(defaultTimeoutMs / 1000);
+        int s = size(defaultTimeoutSec());
         if (s == 0) {
             throw new IllegalStateException("Element list is empty, cannot get last: " + selector);
         }
@@ -274,14 +280,14 @@ public final class PageElementList extends AbstractList<PageElement> {
      * 统一返回 {@code List<PageElement>}，不再泄漏 Playwright 驱动类型。
      */
     public List<PageElement> allLocators() {
-        waitForVisible(defaultTimeoutMs / 1000);
+        waitForVisible(defaultTimeoutSec());
         return locatorInternal().all().stream()
                 .map(loc -> new PageElement(() -> loc, selector, page))
                 .collect(Collectors.toList());
     }
 
     public void waitFor() {
-        waitForVisible(defaultTimeoutMs / 1000);
+        waitForVisible(defaultTimeoutSec());
     }
 
     // ========================== 索引定位器内部类 ==========================

@@ -518,22 +518,39 @@ public class PageObjectFactory {
     }
     
     /**
-     * 清除所有PageObject实例
-     * 通常在测试套件结束时调用
+     * 清除所有 PageObject 实例（通常在测试套件结束时调用）。
+     *
+     * <p><b>CT2-08</b>：三种作用域都必须<b>全局</b>清理，不能只清当前线程：
+     * <ul>
+     *   <li>单例 / 请求作用域：本就是全局 Map，直接 clear；</li>
+     *   <li>线程隔离：实例按线程存放在各线程的 {@link com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContext}
+     *       （{@code THREAD_INSTANCES_KEY}）。原实现只移除<b>当前线程</b>的键 —— 其它 worker 线程
+     *       （线程池复用 / 并行 scenario）的实例 Map 及其持有的 Page/Context 引用会跨用例、跨套件滞留；
+     *       且打印的 threadCount 只统计当前线程，<b>语义名实不符、会掩盖泄漏</b>。
+     *       现改为遍历<b>所有已登记线程</b>的上下文清理，并聚合真实总数。</li>
+     * </ul>
      */
     public static void clearAll() {
         int singletonCount = singleInstances.size();
-        int threadCount = threadInstances().size();
         int requestCount = requestScopedInstances.size();
-        
+
         singleInstances.clear();
-        //  修复 Medium(#1)：clearAll 需释放 ThreadLocal 绑定（而非仅清空内部 map），
-        // 否则 Serenity 复用 worker 线程时 ThreadLocalMap 长期持有该 map 及潜在过期 Page/Context 引用，造成滞留。
-        TestContextHolder.get().remove(THREAD_INSTANCES_KEY);
         requestScopedInstances.clear();
-        
-        VerboseLogging.logInfoIfVerbose(logger, "Cleared all PageObject instances: {} singletons, {} thread-isolated, {} request-scoped", 
-                singletonCount, threadCount, requestCount);
+
+        // CT2-08：跨线程清理线程隔离实例 + 聚合真实总数（原实现只清/只数当前线程）。
+        //  注意：遍历过程中「读值统计」必须早于「remove 键」，否则统计恒为 0。
+        AtomicLong threadCount = new AtomicLong();
+        TestContextHolder.forEachThreadContext(ctx -> {
+            Object value = ctx.get(THREAD_INSTANCES_KEY);
+            if (value instanceof Map) {
+                threadCount.addAndGet(((Map<?, ?>) value).size());
+            }
+            ctx.remove(THREAD_INSTANCES_KEY);
+        });
+
+        VerboseLogging.logInfoIfVerbose(logger,
+                "Cleared all PageObject instances: {} singletons, {} thread-isolated (across {} thread context(s)), {} request-scoped",
+                singletonCount, threadCount.get(), TestContextHolder.activeContextCount(), requestCount);
     }
     
     /**

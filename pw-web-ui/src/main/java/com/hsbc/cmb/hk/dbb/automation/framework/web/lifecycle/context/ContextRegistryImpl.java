@@ -99,37 +99,37 @@ public final class ContextRegistryImpl implements ContextRegistry {
      * 多次连续 set 只会触发一次关闭（因为 Context 已不存在）
      */
     public void scheduleContextRebuild() {
-        // 先关闭 Page
+        //  先关闭 Page（若仍存活）—— CT2-12 收敛收口链时若只摘 ThreadLocal 键，
+        //  在「page 记录存在但 context 记录已丢失（CURRENT_CONTEXT_BY_THREAD 也为空）」的路径上，
+        //  下面的 cleanupContextScoped 不会被触发，页面将【无人关闭】→ 窗口泄漏。
+        //  故保留原实现的显式关页（context 仍在时由 cleanupContextScoped 再关一次，幂等无害）。
         Page existingPage = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
-        if (existingPage != null && !existingPage.isClosed()) {
+        if (existingPage != null) {
             try {
-                VerboseLogging.logInfoIfVerbose(logger, "Closing existing page for context rebuild");
-                existingPage.close();
+                if (!existingPage.isClosed()) {
+                    VerboseLogging.logInfoIfVerbose(logger, "Closing existing page for context rebuild");
+                    existingPage.close();
+                }
             } catch (Exception e) {
                 VerboseLogging.logWarnIfVerbose(logger, "Failed to close existing page: {}", e.getMessage());
             }
+            TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
         }
-        TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
 
         // 立即关闭 Context（如果有），确保新配置立即生效
         //  窗口堆积修复：用例级 CONTEXT_KEY 可能已被 @After 清空，回退到线程级记录以免泄漏
+        //  CT2-12：统一收敛到 cleanupContextScoped（与 closeContext 同一收口链），不再只
+        //  existingContext.close()+摘两个 ThreadLocal，避免 RoleCodegenBridge.cleanupContext /
+        //  stopContextEngine / DownloadRegistry / trace 停止被绕过导致旧 context 资源泄漏。
         BrowserContext existingContext = TestContextHolder.get().get(PlaywrightManager.CONTEXT_KEY);
         if (existingContext == null) {
             existingContext = CURRENT_CONTEXT_BY_THREAD.get();
         }
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Closing existing context to apply new custom configurations...");
-
-            try {
-                if (existingContext.browser() != null && existingContext.browser().isConnected()) {
-                    existingContext.close();
-                }
-            } catch (Exception e) {
-                logger.warn("Failed to close existing context: {}", e.getMessage());
-            } finally {
-                TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
-                CURRENT_CONTEXT_BY_THREAD.remove();
-            }
+            cleanupContextScoped(existingContext);
+            TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
+            CURRENT_CONTEXT_BY_THREAD.remove();
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
         }
 
@@ -150,25 +150,11 @@ public final class ContextRegistryImpl implements ContextRegistry {
         }
         if (existingContext != null) {
             VerboseLogging.logInfoIfVerbose(logger, "Context already exists, closing it to apply custom configurations...");
-            
-            try {
-                // 关闭 Page
-                Page existingPage = TestContextHolder.get().get(PlaywrightManager.PAGE_KEY);
-                if (existingPage != null && !existingPage.isClosed()) {
-                    existingPage.close();
-                }
-                TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
-                
-                // 关闭 Context（只有浏览器还连接着才关闭）
-                if (existingContext.browser() != null && existingContext.browser().isConnected()) {
-                    existingContext.close();
-                }
-            } catch (Exception e) {
-                logger.warn("Failed to close existing context: {}", e.getMessage());
-            } finally {
-                TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
-                CURRENT_CONTEXT_BY_THREAD.remove();
-            }
+            // CT2-12：与 scheduleContextRebuild 共用 cleanupContextScoped 收口链
+            TestContextHolder.get().remove(PlaywrightManager.PAGE_KEY);
+            cleanupContextScoped(existingContext);
+            TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
+            CURRENT_CONTEXT_BY_THREAD.remove();
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, will create new one with custom configurations on next access");
         }
     }
@@ -208,17 +194,9 @@ public final class ContextRegistryImpl implements ContextRegistry {
             if (context != null) {
                 //  修复 R6：每条清理步骤独立 try-catch，避免任一失败中断整条清理链
                 // （例如 RoleElementPicker.cleanupContext 抛异常会导致后续清理被跳过）。
-                PlaywrightRuntime.instance().browserCleanup.safeClean("RouteRegistry.clearContext", () -> RouteLifecycleRegistry.get().clearContext(context));
-                PlaywrightRuntime.instance().browserCleanup.safeClean("RoleCodegenBridge.cleanupContext", () -> {
-                    // 经 codegen 桥接（未注册=no-op，等价于默认关闭，零回归）。
-                    RoleCodegenBridgeRegistry.getBridge().ifPresent(b -> {
-                        if (b.isCodegenEnabled()) {
-                            b.cleanupContext(context);
-                        }
-                    });
-                });
-                PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
-                PlaywrightRuntime.instance().browserCleanup.safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
+                // CT2-12：与两条重建路径（scheduleContextRebuild / recreateContextIfCustomConfigNeeded）
+                // 共用 cleanupContextScoped 单一收口链，杜绝重建绕过导致旧 context 资源泄漏。
+                cleanupContextScoped(context);
                 TestContextHolder.get().remove(PlaywrightManager.CONTEXT_KEY);
                 //  线程级记录同步清除，避免持有已关闭 Context 引用
                 CURRENT_CONTEXT_BY_THREAD.remove();
@@ -234,6 +212,30 @@ public final class ContextRegistryImpl implements ContextRegistry {
             PlaywrightRuntime.instance().browserCleanup.safeClean("TestServices.clear", ContextRegistryImpl::clearApiTestServices);
             PlaywrightRuntime.instance().browserCleanup.safeClean("CustomOptionsManager.removeAllThreadLocals", CustomOptionsManager::removeAllThreadLocals);
         });
+    }
+
+    /**
+     * CT2-12：与单个 BrowserContext 绑定的收口链（不含 thread-global 状态清理，区别于场景级 {@link #closeContext()}）。
+     * 供 {@link #closeContext()} 与两条重建路径（scheduleContextRebuild / recreateContextIfCustomConfigNeeded）共用，
+     * 确保无论正常关闭还是自定义配置触发的重建，都走同一套清理：
+     * RoleCodegenBridge.cleanupContext（codegen 桥接）、stopContextEngine（per-context 路由引擎），
+     * 以及 PlaywrightContextManager.closeContext 内统一的 RouteLifecycleRegistry.clearContext / DownloadRegistry /
+     * trace 停止 / context.close。每条步骤独立 safeClean，单步失败不中断整条链。
+     */
+    private void cleanupContextScoped(BrowserContext context) {
+        if (context == null) {
+            return;
+        }
+        PlaywrightRuntime.instance().browserCleanup.safeClean("RoleCodegenBridge.cleanupContext", () -> {
+            // 经 codegen 桥接（未注册=no-op，等价于默认关闭，零回归）。
+            RoleCodegenBridgeRegistry.getBridge().ifPresent(b -> {
+                if (b.isCodegenEnabled()) {
+                    b.cleanupContext(context);
+                }
+            });
+        });
+        PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
+        PlaywrightRuntime.instance().browserCleanup.safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
     }
 
     /**

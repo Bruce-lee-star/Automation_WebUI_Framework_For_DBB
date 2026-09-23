@@ -18,8 +18,8 @@ $MAP = @(
   @('Serenity', 'serenity.version'),
   @('serenity-maven-plugin', 'serenity.version'),
   @('Cucumber', 'cucumber.version'),
-  # 修正：根 pom 从未定义 junit.version（实为 junit.jupiter.version / junit.platform.version），
-  # 原条目使 JUnit 一行被静默跳过（只有 WARNING、不参与校验）。
+  # Fix: the root pom never defines junit.version (it defines junit.jupiter.version and
+  # junit.platform.version), so the old entry made the JUnit row silently skipped (warning only).
   @('JUnit', 'junit.jupiter.version'),
   @('Platform', 'junit.platform.version'),
   @('Logback', 'logback.version'),
@@ -79,6 +79,94 @@ if (-not $FIX) {
 } else {
   if (($lines -join "`n") -match 'Spring Context 6\.1\.6') {
     Write-Warning "README still contains a 'Spring Context' framework dependency row; remove it manually (framework has no Spring)"
+  }
+}
+
+# -- CT2-23: doc path references + module topology gates -----------------------
+# The version gate alone did not validate module names / doc path references, so doc drift caused by
+# renames (e.g. CT2-22) had no gate at all. Two checks are added:
+#   1) reference integrity: every docs/**.md path referenced by pom.xml / README.md must exist on disk;
+#   2) module topology: every <module> in the root pom must resolve to a directory holding a pom.xml.
+if (-not $FIX) {
+  $pomXml = [xml](Get-Content $POM -Encoding UTF8 -Raw)
+
+  $docRefs = @()
+  $rangeRaw = @()
+  foreach ($src in @($POM, $README)) {
+    $text = Get-Content $src -Encoding UTF8 -Raw
+    foreach ($m in [regex]::Matches($text, 'docs/\S+?\.md')) {
+      $docRefs += $m.Value
+    }
+    # N-09 fix: the README references docs by [range] (backtick docs/<dir>/<NN> backtick ~ backtick <MM>),
+    #   NOT by exact docs/**.md paths. The old gate only matched the latter -> zero matches -> the loop
+    #   body never ran -> the gate could never fail (dangling refs / renames went unnoticed). ASCII-only
+    #   on purpose: Windows PowerShell mis-parses non-ASCII .ps1 without BOM.
+    foreach ($m in [regex]::Matches($text, 'docs/[A-Za-z0-9_\-/]+/[0-9]{2}`?[ ]*~[ ]*`?[0-9]{2}')) {
+      $rangeRaw += $m.Value
+    }
+  }
+  foreach ($ref in ($docRefs | Sort-Object -Unique)) {
+    if (Test-Path (Join-Path $ROOT $ref)) {
+      Write-Host "OK   : doc ref exists: $ref"
+    } else {
+      Write-Error "FAIL : dangling doc reference '$ref' (referenced by pom.xml/README.md but missing on disk)"
+      $rc = 1
+    }
+  }
+
+  # N-09: expand each range ref (docs/dir/01~13 -> require dir/01*.md ... dir/13*.md to exist on disk).
+  $rangeCount = 0
+  foreach ($raw in ($rangeRaw | Sort-Object -Unique)) {
+    $norm = ($raw -replace '[` ]', '')
+    if ($norm -notmatch '^docs/[A-Za-z0-9_\-/]+/[0-9]{2}~[0-9]{2}$') {
+      continue
+    }
+    $rpath = $norm.Split('~')[0]
+    $rdir = $rpath.Substring(0, $rpath.LastIndexOf('/'))
+    $rfrom = [int]$rpath.Substring($rpath.LastIndexOf('/') + 1)
+    $rto = [int]$norm.Split('~')[1]
+    if ($rfrom -gt $rto) {
+      Write-Error "FAIL : doc range has reversed bounds: $raw"
+      $rc = 1
+      continue
+    }
+    $rangeCount++
+    if (-not (Test-Path (Join-Path $ROOT $rdir))) {
+      Write-Error "FAIL : doc range points to a missing directory: $rdir (from '$raw')"
+      $rc = 1
+      continue
+    }
+    $missing = @()
+    for ($n = $rfrom; $n -le $rto; $n++) {
+      $nn = '{0:d2}' -f $n
+      if (-not (Get-ChildItem -Path (Join-Path $ROOT $rdir) -Filter "$nn*.md" -File -ErrorAction SilentlyContinue)) {
+        $missing += $nn
+      }
+    }
+    if ($missing.Count -gt 0) {
+      Write-Error "FAIL : doc range $rdir/$($rfrom.ToString('00'))~$($rto.ToString('00')) misses document(s): $($missing -join ', ')"
+      $rc = 1
+    } else {
+      Write-Host "OK   : doc range resolves: $rdir/$($rfrom.ToString('00'))~$($rto.ToString('00'))"
+    }
+  }
+
+  # N-09 anti-vacuous guard: if NO reference matched at all, fail. A gate whose regex has drifted away
+  #   from the actual docs style would otherwise pass silently forever -- and a gate that always passes
+  #   is more dangerous than no gate at all (it manufactures false confidence).
+  if ($docRefs.Count -eq 0 -and $rangeCount -eq 0) {
+    Write-Error "FAIL : doc reference gate matched nothing (no docs/**.md path, no range ref) -- the regex has drifted from the docs style, or docs/ is no longer referenced; fix this script or the README"
+    $rc = 1
+  }
+
+  foreach ($mod in @($pomXml.project.modules.module)) {
+    $modPom = Join-Path $ROOT (Join-Path $mod 'pom.xml')
+    if (Test-Path $modPom) {
+      Write-Host "OK   : module resolves: $mod"
+    } else {
+      Write-Error "FAIL : <module>$mod</module> declared in root pom but $modPom is missing"
+      $rc = 1
+    }
   }
 }
 

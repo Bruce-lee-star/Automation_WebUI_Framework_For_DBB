@@ -72,6 +72,26 @@ public final class MonitorConfig {
      * {@link #MONITOR_BODY_READ_CONCURRENCY}（默认 2）严格收敛，本池只负责协调，不放大 CDP 压力。
      */
     public static final Key MONITOR_BODY_CAPTURE_THREADS = new Key(ConfigKeys.MONITOR_BODY_CAPTURE_THREADS.key(), ConfigKeys.MONITOR_BODY_CAPTURE_THREADS.defaultValue());
+
+    /**
+     * CT2-18：即时读体协调池<b>有界</b>队列容量（默认 1024）。
+     *
+     * <p>原为无界 {@code LinkedBlockingQueue} —— 没有任何背压：CDP 读体一旦变慢（与 CT2-07 的
+     * 线程阻塞叠加），协调任务与其持有的 {@code Route}/{@code Request}/{@code Response} 引用会
+     * 无界堆积。改为有界后，队列满即 {@code RejectedExecutionException}，由
+     * {@code MonitorHandler.handle} <b>既有</b>的降级路径收口（置 {@code bodyFuture=null} →
+     * 观测任务落「降级快照」，请求仍按幂等逻辑放行）。
+     */
+    public static final Key MONITOR_BODY_CAPTURE_QUEUE_CAPACITY = new Key(ConfigKeys.MONITOR_BODY_CAPTURE_QUEUE_CAPACITY.key(), ConfigKeys.MONITOR_BODY_CAPTURE_QUEUE_CAPACITY.defaultValue());
+
+    /**
+     * CT2-18：Body 读取池<b>有界</b>队列容量（默认 4096）。
+     *
+     * <p>原为无界 {@code LinkedBlockingQueue}。改为有界后，队列满即拒绝，由
+     * {@code MonitorHandler#fetchBodyBounded} <b>既有</b>的 {@code RejectedExecutionException}
+     * 分支收口：回退到<b>调用线程</b>直接读体，避免丢失捕获（该分支本就为此场景预留）。
+     */
+    public static final Key MONITOR_BODY_READ_QUEUE_CAPACITY = new Key(ConfigKeys.MONITOR_BODY_READ_QUEUE_CAPACITY.key(), ConfigKeys.MONITOR_BODY_READ_QUEUE_CAPACITY.defaultValue());
     /** 基础尝试次数（不含按 DELAY 推导的额外次数）。 */
     public static final Key MONITOR_BODY_READ_BASE_ATTEMPTS = new Key(ConfigKeys.MONITOR_BODY_READ_BASE_ATTEMPTS.key(), ConfigKeys.MONITOR_BODY_READ_BASE_ATTEMPTS.defaultValue());
     /** 重试间隔（毫秒）。 */
@@ -117,6 +137,20 @@ public final class MonitorConfig {
      * ModifyHandler 观测执行器有界队列容量（默认 1024）。队列满即拒绝并以「仅修改请求」放行（绝不反压事件线程）。
      */
     public static final Key MODIFY_OBSERVE_QUEUE_CAPACITY = new Key(ConfigKeys.MODIFY_OBSERVE_QUEUE_CAPACITY.key(), ConfigKeys.MODIFY_OBSERVE_QUEUE_CAPACITY.defaultValue());
+
+    // ==================== MockHandler 真实响应拦截线程池（CT2-04） ====================
+    /**
+     * MockHandler 真实响应拦截执行器线程数（默认 4）。
+     * <p>{@code interceptRealResponse=true} 时 {@code route.fetch()} 原在 Playwright 事件线程同步等待真实
+     * 服务器返回（≤30s），把单 context 内该路由分发串行化 → 后续请求 handler 排队 → 级联超时。
+     * 下沉到本池后事件线程零阻塞（与 {@code MODIFY_OBSERVE_THREADS} 同源治理）。
+     */
+    public static final Key MOCK_INTERCEPT_THREADS = new Key(ConfigKeys.MOCK_INTERCEPT_THREADS.key(), ConfigKeys.MOCK_INTERCEPT_THREADS.defaultValue());
+
+    /**
+     * MockHandler 真实响应拦截执行器有界队列容量（默认 1024）。队列满即拒绝并以原请求放行（绝不反压事件线程）。
+     */
+    public static final Key MOCK_INTERCEPT_QUEUE_CAPACITY = new Key(ConfigKeys.MOCK_INTERCEPT_QUEUE_CAPACITY.key(), ConfigKeys.MOCK_INTERCEPT_QUEUE_CAPACITY.defaultValue());
 
     // ==================== API Monitor 文件存储配置 ====================
     public static final Key MONITOR_FILE_STORE_ENABLED = new Key(ConfigKeys.MONITOR_FILE_STORE_ENABLED.key(), ConfigKeys.MONITOR_FILE_STORE_ENABLED.defaultValue());

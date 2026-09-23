@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.core.context;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.concurrent.Callable;
+import java.util.function.Consumer;
 
 /**
  * 持有当前线程的 {@link TestContext}（per-thread）。
@@ -160,5 +161,17 @@ public final class TestContextHolder {
     /** 当前活跃线程上下文数（可观测 / 泄漏排查），委托 {@link ThreadContextRegistry}。 */
     public static int activeContextCount() {
         return ThreadContextRegistry.activeThreadCount();
+    }
+
+    /**
+     * CT2-08：对<b>所有已登记线程</b>的上下文执行受控遍历（读取 / 清理）。
+     *
+     * <p>用于套件级收尾：清理那种<b>按线程</b>存放的缓存（如 PageObjectFactory 的线程隔离实例 Map）
+     * 时，若只清当前线程，其它 worker 线程的缓存及其持有的 Page/Context 引用会跨用例、跨套件滞留。
+     *
+     * @param visitor 每个线程上下文执行一次；单个上下文异常不影响其余（记 WARN）
+     */
+    public static void forEachThreadContext(Consumer<TestContext> visitor) {
+        ThreadContextRegistry.forEachContext(visitor);
     }
 }

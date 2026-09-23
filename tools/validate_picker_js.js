@@ -19,12 +19,13 @@ if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
 }
 
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort();
-// Fragments composed at runtime are NOT standalone-valid; their composed output is syntax-checked by
-// RolePickerScriptsJsValidationTest (node --check on START_SCRIPT / PANEL_SCRIPT). They are skipped here to
-// avoid false failures, while every standalone script is fully validated. Two fragment shapes exist:
-//   1) head/tail parts emitted by RolePickerScripts.loadScripts / concat (e.g. *-head.js / *-tail.js);
-//   2) the START_SCRIPT = A+B1+B2 and PANEL_SCRIPT = A+B composition parts
-//      (picker-core-a/b1/b2.js, panel-core-a/b.js) — each is one open/close segment of a single IIFE.
+// Fragments are composed at runtime and are NOT standalone-valid (each is one open/close segment of a
+// single IIFE, or a head/tail part paired by RolePickerScripts.concat). They are skipped from the
+// per-file check below, but their RUN-TIME COMPOSITIONS are validated explicitly by validateComposed()
+// right after this loop — so the scripts that are actually injected into the browser are fully checked.
+// (A-03 / doc 22：此前的 skip 以「另有 RolePickerScriptsJsValidationTest 校验组合体」为由，但该类
+//   并不存在 → 运行期真正注入的 START_SCRIPT / PANEL_SCRIPT 零语法校验。现改为就地组合校验，缺口闭环，
+//   无需 phantom Java 测试。来源：RolePickerScripts.START_SCRIPT = A + B1 + B2；PANEL_SCRIPT = A + B。)
 const isFragment = f =>
   /-head\.js$/.test(f) || /-tail\.js$/.test(f)
   || /-core-[ab]\.js$/.test(f) || /-core-b[12]\.js$/.test(f);
@@ -55,6 +56,30 @@ for (const f of files) {
   }
   checked++;
 }
+
+// A-03 / doc 22：就地组合并校验运行期真正注入浏览器的组合脚本（替代原「由不存在的测试校验」的 skip 理由）。
+function readPart(name) {
+  const p = path.join(dir, name);
+  if (!fs.existsSync(p)) {
+    console.error('composed-script part missing: ' + name);
+    process.exit(1);
+  }
+  return fs.readFileSync(p, 'utf8');
+}
+function validateComposed(label, parts) {
+  const code = parts.map(readPart).join('\n;\n');
+  try {
+    // new vm.Script 按完整程序解析；组合体本就是完整 IIFE，语法错误会在此抛出（与运行期注入等价）。
+    new vm.Script(code, { filename: label });
+    console.log('composed ' + label + ' OK (' + parts.length + ' parts: ' + parts.join('+') + ')');
+  } catch (e) {
+    console.error('COMPOSED JS SYNTAX ERROR in ' + label + ' (' + parts.join('+') + '): ' + e.message);
+    failed = 1;
+  }
+}
+validateComposed('START_SCRIPT', ['picker-core-a.js', 'picker-core-b1.js', 'picker-core-b2.js']);
+validateComposed('PANEL_SCRIPT', ['panel-core-a.js', 'panel-core-b.js']);
+
 if (failed) {
   console.error('Picker JS syntax validation FAILED (' + checked + ' files checked, ' + skipped + ' fragment(s) skipped)');
   process.exit(1);

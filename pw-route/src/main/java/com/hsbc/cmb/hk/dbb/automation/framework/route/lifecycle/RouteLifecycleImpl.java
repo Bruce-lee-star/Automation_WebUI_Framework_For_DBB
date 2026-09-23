@@ -8,6 +8,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestrator;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.FileStoreMonitorCallback;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
@@ -115,6 +116,11 @@ public class RouteLifecycleImpl implements RouteLifecycle {
     @Override
     public void stopAllContextEngines() {
         RouteEngine.stopAllContextEngines();
+        // CT2-19：API 监控侧的强键登记（registeredPatternsByContext / closeHooks）依赖 onClose 回调清理；
+        //   钩子注册失败（见 ApiMonitorOrchestrator.ensureCloseHook 的回滚告警）或 context 崩溃未经正常
+        //   关闭流程时，这些 BrowserContext 强引用会残留。此处以「已显式标记关闭」为判据兜底清扫。
+        //   （放在本桥接层而非 RouteEngine：core.engine 不得依赖 route.monitor，否则形成切片环。）
+        ApiMonitorOrchestrator.getInstance().pruneContextsMarkedClosed();
     }
 
     @Override

@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.ArrayDeque;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
@@ -67,7 +68,9 @@ final class PageContextState {
      * {@code ensurePageValid/ensureContextValid} 将抛 {@link IllegalStateException} 快速失败，
      * 把"跨线程共享 Page 导致 pipe closed"类诡异失败转为清晰异常。
      */
-    private volatile Thread ownerThread;
+    // CT2-03：根锚点线程归属守卫。改用 AtomicReference + compareAndExchange，
+    // 消除「读 volatile → 判 null → 写」check-then-act 竞态（两线程同时首次访问会双双通过）。
+    private final AtomicReference<Thread> ownerThread = new AtomicReference<>();
 
     /**
      * 当前 iframe 上下文（Playwright Frame），按 BasePage 实例隔离（非 ThreadLocal）。
@@ -213,10 +216,16 @@ final class PageContextState {
      */
     private void assertOwningThread() {
         Thread current = Thread.currentThread();
-        Thread owner = this.ownerThread;
+        Thread owner = ownerThread.get();
         if (owner == null) {
-            this.ownerThread = current;
-            return;
+            // CAS 原子确立归属：仅当仍为 null 时本线程赢得归属；否则采用先确立者
+            // （2026-09-23：已用"读-判-写 + 自旋放大窗口"的临时削弱版反证过
+            //   test-automation 的 BasePageThreadOwnershipRaceTest 确实能抓到本窗口 —— 见 doc 21 N-12）
+            Thread prev = ownerThread.compareAndExchange(null, current);
+            if (prev == null) {
+                return;
+            }
+            owner = prev;
         }
         if (owner != current) {
             throw new IllegalStateException(

@@ -52,7 +52,7 @@ final class RolePickerPageTracker {
                 // 用户可能在面板之外手动导航（如直接改 URL、点原生链接跳转），这类跳转不经过
                 // followPage/onPopup 钩子，window.__rolePageName 仍停留在旧页类名，导致新页拾取的元素
                 // 被打上旧 pageClass；两个真实不同的页因此共享同一 pageClass，删除时整桶/值级兜底 +
-                // RolePickerSessionState.STATE_DELETED 会把两页当一页一并清除，且已删键永久屏蔽后续扫描。
+                // 会话级已删集合（STATE_DELETED，N-18 已删除）会把两页当一页一并清除，且已删键永久屏蔽后续扫描。
                 // 此处对【每个已登记页】按当前 URL 重新解析 pageClass 并刷新其自身 window.__rolePageName，
                 // 确保手动跳转后的页面拿到正确类名（每页写的是"它自己"的类名，而非当前激活页的），
                 // 从源头杜绝跨页 pageClass 串味。幂等、仅当解析结果变化时写回。
@@ -168,7 +168,7 @@ final class RolePickerPageTracker {
                 }
             }
             // 面板脚本：初始文档也先注入一次；若后续导航重建，onFrameNavigated/PANEL addInitScript 会兜底。
-            try { pickerEval(newPage, RolePickerScripts.PANEL_SCRIPT); } catch (Exception ignore) {}
+            try { pickerEval(newPage, RolePickerScripts.PANEL_SCRIPT); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPageTracker", ignore); }
             current.set(newPage);
             // 记录新页初始快照（含搬运来的并集），供导航重建（onFrameNavigated）与关闭回退（onClose）使用。
             snapshots.put(newPage, RoleElementPicker.readPickStateJson(newPage));

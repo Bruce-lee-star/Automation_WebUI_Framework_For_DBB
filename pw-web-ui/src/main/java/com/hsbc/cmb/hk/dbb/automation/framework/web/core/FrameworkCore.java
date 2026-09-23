@@ -57,13 +57,19 @@ public class FrameworkCore {
                         VerboseLogging.logDebugIfVerbose(logger,
                                 "JVM shutdown skipped cleanupAll (concurrent mode active): {}", e.getMessage());
                     } catch (Exception e) {
-                        VerboseLogging.logErrorIfVerbose(logger, "Error during JVM shutdown browser cleanup", e);
+                        //  N-06（doc 21 HIGH）：关闭期清理失败必须【非 verbose 门控】地可观测 ——
+                        //  原实现走 logErrorIfVerbose，默认日志级别下【完全无输出】，而这正是
+                        //  「孤儿浏览器进程堆积 → JVM 外内存耗尽（hs_err native OOM）」的唯一归因手段。
+                        //  recordFailure 写 ERROR（含堆栈）并递增可断言的失败计数。
+                        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                                .recordFailure("pw-core/shutdownHook/cleanupAll", e);
                     }
                     try {
                         frameworkState.cleanup();
                         VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook completed");
                     } catch (Exception e) {
-                        VerboseLogging.logErrorIfVerbose(logger, "Error during JVM shutdown state cleanup", e);
+                        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                                .recordFailure("pw-core/shutdownHook/stateCleanup", e);
                     }
                 });
     }

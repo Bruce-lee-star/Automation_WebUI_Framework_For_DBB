@@ -18,7 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ② SPI 主发现路径成功登记正常 {@link FrameworkListener} 实现，坏类被逐类跳过（含 WARN 告警）。
  *
  * <p>手法：测试资源 {@code META-INF/services/...FrameworkListener} 声明 {@link GoodSpiListener}（正常）
- * 与 {@link BadLoadListener}（静态块抛错）；扫描同一测试包以同时覆盖 SPI 与 {@code Class.forName} 两条路径。
+ * 与 {@link BadLoadListener}（实例化抛错）；同包 {@code Broken}（静态初始化抛错，源码化夹具）经包扫描
+ * 覆盖 {@code Class.forName} 加载失败分支；SPI 与两条扫描路径（实例化失败 / 加载失败）均被覆盖。
  */
 public class ListenerRegistryResilienceTest {
 

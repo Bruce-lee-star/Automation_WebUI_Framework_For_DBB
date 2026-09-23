@@ -39,6 +39,23 @@ import java.util.function.BooleanSupplier;
  * 这是刻意的有界降级：锁文件由 OS 在进程退出时自动释放，故「超时」意味着对端仍存活但异常缓慢；
  * 此时若改为失败快，会把整个套件拖红，代价高于「极小概率的双重登录」。</p>
  *
+ * <h4>⚠ 已确认的有界降级（CT2-16：显式承认，非待修缺陷）</h4>
+ * <p>以下三条路径会 <b>fail-open</b>（自认 leader 并返回 {@code true}），窗口真实存在，须计入验收：</p>
+ * <ol>
+ *   <li><b>锁目录不可建</b>（只读文件系统 / 权限不足）—— 完全无法跨进程协调，降级为「无协调登录」；</li>
+ *   <li><b>等待超时</b>（{@code timeoutMs} 用尽且对端未产出 session）—— 对端仍存活但异常缓慢；</li>
+ *   <li><b>线程被中断</b> —— {@code parkNanos} 立即返回，继续循环会退化为热自旋，故放弃等待。</li>
+ * </ol>
+ * <p><b>后果与窗口量级</b>：三条路径下，若对端此刻<b>确实正在并发登录</b>，服务端「单会话策略」会把其中
+ * 一方踢下线（随机 401 / 重登录失败）。窗口仅在对端持锁超过 {@code timeoutMs}、或跨进程协调不可用时打开，
+ * 而正常登录耗时远小于该值。</p>
+ * <p><b>为何不改为 fail-closed</b>：那会把「对端慢」放大成「整个套件失败」，期望代价显著高于
+ * 「极小概率的双重登录 + 一次自动重试」。此处错报的是<b>基础设施可用性</b>而非<b>被测行为</b>，
+ * 与「宁可错报不可漏测」并不冲突，且真实登录失败最终仍会被登录断言捕获。</p>
+ * <p><b>可观测（"显式承认"的落点）</b>：三条路径全部计数于 {@link #getDegradedAcquisitionCount()}
+ * （非零即说明窗口曾打开），并各自留有 WARN/ERROR 日志。运维/评审据此决定是否调大 {@code timeoutMs}，
+ * 或改用「单一 JVM 承担登录 + 其余分片复用其 session」的拓扑。</p>
+ *
  * <p><b>持有与管理</b>：持有者以 {@link ThreadLocal} 记录（同一线程同一 sessionKey 重复申请为幂等），
  * 换 key 时先释放旧锁；{@link #releaseLock()} 幂等，须在 session 落盘后与场景收口兜底两处调用。</p>
  *
@@ -53,6 +70,20 @@ final class CrossJvmLoginLock implements AutoCloseable {
 
     /** 本线程当前持有的跨进程登录锁（同一线程同一 sessionKey 幂等）。 */
     private static final ThreadLocal<CrossJvmLoginLock> HELD = new ThreadLocal<>();
+
+    /**
+     * CT2-16：fail-open 降级取得登录权的累计次数（锁目录不可建 / 等待超时 / 线程被中断）。
+     *
+     * <p>非零即说明「跨进程登录协调的窗口曾经打开」——本计数是该有界降级被<b>显式承认并可观测</b>的落点
+     * （见类 javadoc「已确认的有界降级」）。为 0 时表示跨进程协调全程有效。
+     */
+    private static final java.util.concurrent.atomic.AtomicLong DEGRADED_ACQUISITIONS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** CT2-16：fail-open 降级取得的累计次数（供运维/评审判定是否需调大超时或改拓扑）。 */
+    static long getDegradedAcquisitionCount() {
+        return DEGRADED_ACQUISITIONS.get();
+    }
 
     private final String sessionKey;
     private final FileChannel channel;
@@ -104,7 +135,8 @@ final class CrossJvmLoginLock implements AutoCloseable {
             } catch (IOException e) {
                 //  锁文件不可建（只读文件系统等）：无法协调，降级为「直接当 leader」并保持可见（不得静默）。
                 LOGGER.warn("[cross-jvm-login] cannot create lock dir for sessionKey={} -> proceeding as leader "
-                        + "without cross-process coordination: {}", sessionKey, e.toString());
+                        + "without cross-process coordination: {} (degraded total: {})",
+                        sessionKey, e.toString(), DEGRADED_ACQUISITIONS.incrementAndGet());
                 return true;
             }
 
@@ -145,15 +177,17 @@ final class CrossJvmLoginLock implements AutoCloseable {
 
             if (System.currentTimeMillis() >= deadline) {
                 LOGGER.error("[cross-jvm-login] timed out {}ms waiting for login right of sessionKey={} "
-                                + "→ proceeding as leader (bounded degradation: a slow peer may cause a "
-                                + "twofold login; OS releases the lock automatically when that process exits)",
-                        timeoutMs, sessionKey);
+                                + "→ proceeding as leader (bounded degradation, CT2-16: a slow peer may cause a "
+                                + "twofold login; OS releases the lock automatically when that process exits). "
+                                + "degraded total: {}",
+                        timeoutMs, sessionKey, DEGRADED_ACQUISITIONS.incrementAndGet());
                 return true;
             }
             if (Thread.currentThread().isInterrupted()) {
                 //  被中断时 parkNanos 会立即返回 —— 若继续循环将退化为热自旋，故按「放弃等待、降级为 leader」退出。
                 LOGGER.warn("[cross-jvm-login] interrupted while waiting for login right of sessionKey={} "
-                        + "→ proceeding as leader", sessionKey);
+                        + "→ proceeding as leader (bounded degradation, CT2-16). degraded total: {}",
+                        sessionKey, DEGRADED_ACQUISITIONS.incrementAndGet());
                 return true;
             }
             parkRetryInterval();

@@ -134,13 +134,14 @@ public final class DownloadLifecycle {
         if (key == null) {
             return;
         }
-        AtomicInteger counter = PENDING_BY_DIR.get(key);
-        if (counter == null) {
-            return;
-        }
-        if (counter.decrementAndGet() <= 0) {
-            PENDING_BY_DIR.remove(key, counter);
-        }
+        //  B-05 修复：原实现 get → decrementAndGet → remove 非原子，并发 begin 可在 remove 前插入，
+        //    使计数被误删（pendingCount 回落 0 → 场景收尾 cleanupTempDownloads 误删在途目录）。
+        //    改用 computeIfPresent：在 CHM 分段锁内原子递减，归零才返回 null 移除，
+        //    与 begin 的 computeIfAbsent 同键互斥，彻底消除该竞态窗口。
+        PENDING_BY_DIR.computeIfPresent(key, (ignored, counter) -> {
+            int remaining = counter.decrementAndGet();
+            return remaining <= 0 ? null : counter;
+        });
     }
 
     /**

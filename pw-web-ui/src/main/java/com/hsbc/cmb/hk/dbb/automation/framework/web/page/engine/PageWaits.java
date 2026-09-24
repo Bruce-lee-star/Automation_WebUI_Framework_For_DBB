@@ -51,19 +51,22 @@ public final class PageWaits {
         bp.element(selector).waitForNotChecked(timeout);
     }
 
+    /** 等待网络空闲（超时毫秒，与 {@link #waitForElementEditable} 单位一致，对齐 Playwright 原生 API）。 */
     public static void waitForNetworkIdle(BasePage bp, int timeout) {
         bp.getPage().waitForLoadState(LoadState.NETWORKIDLE,
-                new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+                new Page.WaitForLoadStateOptions().setTimeout(timeout));
     }
 
+    /** 等待页面完全加载（超时毫秒，与 {@link #waitForElementEditable} 单位一致）。 */
     public static void waitForPageFullyLoaded(BasePage bp, int timeout) {
         bp.getPage().waitForLoadState(LoadState.LOAD,
-                new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+                new Page.WaitForLoadStateOptions().setTimeout(timeout));
     }
 
+    /** 等待 DOM 内容加载完成（超时毫秒，与 {@link #waitForElementEditable} 单位一致）。 */
     public static void waitForDOMContentLoaded(BasePage bp, int timeout) {
         bp.getPage().waitForLoadState(LoadState.DOMCONTENTLOADED,
-                new Page.WaitForLoadStateOptions().setTimeout((long) timeout * 1000));
+                new Page.WaitForLoadStateOptions().setTimeout(timeout));
     }
 
     public static void shouldBeVisible(BasePage bp, String selector) {

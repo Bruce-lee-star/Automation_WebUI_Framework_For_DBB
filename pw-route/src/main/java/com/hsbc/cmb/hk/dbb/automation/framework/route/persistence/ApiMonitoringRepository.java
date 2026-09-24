@@ -577,8 +577,13 @@ public final class ApiMonitoringRepository {
         if (DB_FLUSH_EXECUTOR != null && !DB_FLUSH_EXECUTOR.isShutdown()) {
             DB_FLUSH_EXECUTOR.shutdown();
             try {
-                // 等待进行中的 flush 完成，最多 10s
-                DB_FLUSH_EXECUTOR.awaitTermination(10, TimeUnit.SECONDS);
+                // 等待进行中的 flush 完成，最多 10s；超时（含被中断）一律强制 shutdownNow，
+                // 避免仍有卡住的刷入线程与下方同步 flushPendingNow 竞争同批数据（doc 19 CT-18）。
+                if (!DB_FLUSH_EXECUTOR.awaitTermination(10, TimeUnit.SECONDS)) {
+                    LOGGER.warn("[ApiMonitoringRepository] DB flush executor did not terminate in 10s, "
+                            + "forcing shutdownNow");
+                    DB_FLUSH_EXECUTOR.shutdownNow();
+                }
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 DB_FLUSH_EXECUTOR.shutdownNow();

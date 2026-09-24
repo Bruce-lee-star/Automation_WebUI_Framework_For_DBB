@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureCon
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.ModifyHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.handler.MonitorHandler;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.ApiMonitorOrchestrator;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorFailureCollector;
@@ -81,6 +82,7 @@ public class RouteLifecycleImpl implements RouteLifecycle {
         //  套件收尾：取消在途观测/body 读并清队列 + 文件 sink 落盘（不关线程池，JVM 收尾再关）。
         //  本类为 route 侧编排层（非 core 包），可合法编排 handler / persistence 收尾。
         MonitorHandler.drainForSuiteTeardown();
+        ModifyHandler.drainForSuiteTeardown();
         FileStoreMonitorCallback.flushForSuiteTeardown();
     }
 

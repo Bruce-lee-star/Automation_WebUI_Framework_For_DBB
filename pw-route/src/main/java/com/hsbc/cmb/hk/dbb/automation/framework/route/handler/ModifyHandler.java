@@ -119,6 +119,24 @@ public class ModifyHandler {
         }
     }
 
+    /**
+     * 套件收尾：清空 modify 观测执行器队列中的在途任务（<b>不关闭</b>线程池本体，终态关闭由
+     * {@code ShutdownCoordinator} 负责）。
+     *
+     * <p>「需要收尾」：避免套件结束后，执行器队列里仍残留持有已关闭 context/rule 引用的观测任务
+     * （与 {@link MonitorHandler#drainForSuiteTeardown()} 同源诉求，doc 19 CT-13 / 20 漏项）。
+     * 仅移除<b>尚未开始执行</b>的任务；运行中任务照常完成。被移除任务持有的 {@code inFlight} 在途计数
+     * 不在此处递减 —— 对应请求在套件收尾时早已结束，其 {@code ApiCaptureContext} 已无后续断言，
+     * 计数器残留无副作用（不阻塞收尾、不污染下一轮）。
+     */
+    public static void drainForSuiteTeardown() {
+        int queued = observeExecutor.getQueue().size();
+        observeExecutor.getQueue().clear();
+        if (queued > 0) {
+            LOGGER.info("[ModifyHandler] suite teardown: drained {} queued modify-observation task(s)", queued);
+        }
+    }
+
     /** 是否在 JSON 解析失败时退化为字符串替换（False=仅处理 JSON） */
     private static volatile boolean allowFallbackStringReplace = false;
 

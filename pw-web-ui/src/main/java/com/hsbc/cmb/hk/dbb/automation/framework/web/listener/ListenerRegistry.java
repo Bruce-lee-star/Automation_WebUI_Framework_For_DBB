@@ -24,7 +24,7 @@ import java.util.jar.JarFile;
 public class ListenerRegistry {
     private static final Logger logger = LoggerFactory.getLogger(ListenerRegistry.class);
     private static final List<Object> registeredListeners = new CopyOnWriteArrayList<>();
-    private static final Set<Class<?>> listenerClasses = new HashSet<>();
+    private static final Set<Class<?>> listenerClasses = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private static volatile boolean initialized = false;
 
     // 缓存反射查找的监听器相关注解类（避免每次 isListenerClass() 都执行 Class.forName）

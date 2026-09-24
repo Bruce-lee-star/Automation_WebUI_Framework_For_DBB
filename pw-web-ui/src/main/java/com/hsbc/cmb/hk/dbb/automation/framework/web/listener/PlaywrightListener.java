@@ -116,7 +116,10 @@ public class PlaywrightListener implements StepListener {
      * 当同一个 Story 在 testSuiteStarted(Story) 中被第二次看到时，
      * 说明 Serenity 已从 discovery 阶段进入 execution 阶段。
      */
-    private final Set<String> seenStoryNames = new HashSet<>();
+    // WEB-C2（doc 13 P1-2）：并行执行下多个 Story 的 testSuiteStarted 可能并发进入，
+    // 普通 HashSet 在并发 add 下结构损坏；改用并发安全 Set。add 原子返回「是否已存在」，
+    // 使下方「重复 Story 即进入 execution 阶段」的判重无需额外加锁。
+    private final Set<String> seenStoryNames = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** scenario 标识单调序号：保证同名 scenario（如 Scenario Outline 各示例行）也拿到唯一 id，避免按用例串联时串扰。 */
     private static final java.util.concurrent.atomic.AtomicLong SCENARIO_SEQ = new java.util.concurrent.atomic.AtomicLong();

@@ -18,6 +18,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.CloseGuard;
 
 /** 
 Browser cleanup and disconnect guard (WEB-P1-1 Step 5).
@@ -45,7 +46,7 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
      * Playwright driver 的进程树回收兜底），并记 ERROR + 计入 {@code ShutdownCoordinator} 失败计数 ——
      * 关键是<b>不阻断</b> {@code cleanupAll} 后续的路由排空 / AsyncPool / ThreadLocal 清理。</p>
      */
-    private static final long BROWSER_CLOSE_LIMIT_MS = 3_000L;
+    private static final long BROWSER_CLOSE_LIMIT_MS = CloseGuard.BROWSER_CLOSE_LIMIT_MS;
 
     /**
      * N-23：单次 {@code BrowserContext.close()} 的看门狗上限（毫秒）。
@@ -54,7 +55,7 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
      * {@code setReason(String)}、<b>无 timeout</b>（1.62.0 字节码已核实）。取 1.5s：context 关闭比 browser 轻，
      * 且一个 Browser 可能挂多个 context，须给后续步骤留出预算。</p>
      */
-    private static final long CONTEXT_CLOSE_LIMIT_MS = 1_500L;
+    private static final long CONTEXT_CLOSE_LIMIT_MS = CloseGuard.CONTEXT_CLOSE_LIMIT_MS;
 
     /**
      * N-23：{@code cleanupAll} 自身的内部预算（毫秒）—— 超过即<b>跳过剩余的 context / browser 关闭</b>，
@@ -234,29 +235,8 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
      * @return true = 在限内完成；false = 超限被放弃（已记 ERROR + 计数）
      */
     static boolean runBounded(String step, Runnable action, long limitMs) {
-        Thread worker = new Thread(() -> {
-            try {
-                action.run();
-            } catch (Throwable t) {
-                //  语义与原先 cleanupAll 的 catch 一致（warn 但不阻断后续清理）。动作已改到本线程执行，
-                //  故必须在此兜住 —— 否则关闭异常只会变成"线程未捕获异常"的 stderr 噪声，反而更难排查。
-                logger.warn("[cleanupAll] Cleanup step '{}' failed (continuing): {}", step, t.getMessage());
-            }
-        }, "close-bounded-" + step);
-        worker.setDaemon(true);
-        worker.start();
-        try {
-            worker.join(limitMs);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-        }
-        if (worker.isAlive()) {
-            //  复用 N-06 的失败收口：非 verbose 门控的 ERROR + 可断言计数（绝不静默拖住退出）
-            ShutdownCoordinator.recordFailure(step + " exceeded " + limitMs + "ms and was abandoned "
-                    + "(Playwright close() has no timeout option; JVM exit must not be blocked)", null);
-            return false;
-        }
-        return true;
+        //  看门狗实现已收口至 CloseGuard.runBounded（与场景/feature 收尾共用同一套有界关闭 + 失败计数）。
+        return CloseGuard.runBounded(step, action, limitMs);
     }
 
     /** 浏览器类型名（仅用于日志/记账；取不到时回落 unknown，绝不因标签本身抛异常）。 */
@@ -310,7 +290,7 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
             return;
         }
         PlaywrightRuntime.instance().state.markClosing(browser);
-        browser.close();
+        browser.close(new Browser.CloseOptions().setReason("teardown"));
     }
 
     /** 当前测试线程关联的 Browser 是否已被标记为断开。 */
@@ -336,17 +316,48 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
         String key = PlaywrightRuntime.instance().browserRegistry.keyFor(configId);
         Browser browser = PlaywrightRuntime.instance().state.getBrowser(key);
         if (browser != null && browser.isConnected()) {
-            try {
-                closeBrowserInstance(browser);
-            } catch (Exception e) {
-                logger.warn("[closeBrowserForCurrentThread] Error closing browser: {}", e.getMessage());
-            }
+            PlaywrightRuntime.instance().state.markClosing(browser);
+            //  场景级收尾：有界关闭本线程 Browser，确保 scenario 线程绝不被 close() 阻塞（IDE 直跑无 fork 超时兜底）。
+            boolean closed = CloseGuard.runBounded("browser-close",
+                    () -> browser.close(new Browser.CloseOptions().setReason("teardown")),
+                    CloseGuard.BROWSER_CLOSE_LIMIT_MS);
             PlaywrightRuntime.instance().state.removeBrowser(key);
+            if (!closed) {
+                //  关闭超时：本线程 Playwright 独立（key=threadId:configId），安全强关 driver，
+                //  其浏览器子进程随 driver 被回收，不波及其他并行 worker，亦不留孤儿窗口。
+                forceReapThreadPlaywright(configId);
+            }
             VerboseLogging.logInfoIfVerbose(logger,
                     "[closeBrowserForCurrentThread] closed browser for key={}", key);
             return 1;
         }
         return 0;
+    }
+
+    /**
+     * 强关<b>本线程</b>的 Playwright driver（仅超时兜底路径调用）。
+     *
+     * <p>Playwright Java 无 browser.kill() API，但 Playwright 实例按 {@code <threadId>:<configId>} 线程隔离，
+     * 故关闭本线程 driver 仅回收本线程的浏览器子进程，绝不误伤并行邻居线程的 Browser。
+     * 关闭后从状态根摘除，下一场景首次 {@code getBrowser()} 懒重建
+     * （{@code BrowserStartupImpl.initializeBrowser} 检测到无 Playwright 即重建）。</p>
+     */
+    private void forceReapThreadPlaywright(String configId) {
+        String key = PlaywrightRuntime.instance().browserRegistry.keyFor(configId);
+        Playwright playwright = PlaywrightRuntime.instance().state.getPlaywright(key);
+        if (playwright == null) {
+            return;
+        }
+        PlaywrightRuntime.instance().state.removePlaywright(key);
+        ShutdownCoordinator.recordFailure(
+                "browser-close exceeded bound; force-closed thread Playwright to reclaim OS browser process", null);
+        CloseGuard.runBounded("force-reap-playwright", () -> {
+            try {
+                playwright.close();
+            } catch (Exception e) {
+                logger.debug("[force-reap] playwright close failed (ignored): {}", e.getMessage());
+            }
+        }, CloseGuard.FORCE_REAP_LIMIT_MS);
     }
 
     /**
@@ -394,8 +405,15 @@ public final class BrowserCleanupImpl implements BrowserCleanup {
                             "ApiCaptureContext.stop", () -> RouteLifecycleRegistry.get().stopCaptureFor(bc));
                     try {
                         // 复用统一收口：含 tracing 落盘、RouteRegistry.clearContext、受保护 close
-                        PlaywrightContextManager.closeContext(bc);
-                        closed++;
+                        // 有界关闭：孤儿 context 也可能在 SIT 页上卡 close，必须限时，否则 scenario 线程死挂。
+                        CloseGuard.Result rc = CloseGuard.runBoundedCapture("context-close",
+                                () -> PlaywrightContextManager.closeContext(bc), CloseGuard.CONTEXT_CLOSE_LIMIT_MS);
+                        if (rc.completed() && !rc.hasError()) {
+                            closed++;
+                        } else {
+                            logger.warn("[closeOrphanContexts] Failed/slow to close a context: completed={}, err={}",
+                                    rc.completed(), rc.errorMessage());
+                        }
                     } catch (Exception ex) {
                         logger.warn("[closeOrphanContexts] Failed to close a context: {}", ex.getMessage());
                     }

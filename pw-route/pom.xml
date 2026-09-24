@@ -22,6 +22,13 @@
             <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- 中立桥接模块：提供 RouteRuntimeBridge 契约（route 透传 fetch 依赖 web 侧实现）。
+             route → pw-route-web-bridge → pw-web-ui，保持 web "Excludes route" 与 L6。 -->
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>pw-route-web-bridge</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-reports</artifactId>

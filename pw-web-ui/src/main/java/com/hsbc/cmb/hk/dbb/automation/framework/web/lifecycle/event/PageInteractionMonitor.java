@@ -11,7 +11,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /**
  * 页面交互事件可观测性监控（与 {@link PageEventMonitor} 同族，单一职责）。
@@ -55,6 +58,16 @@ public final class PageInteractionMonitor {
     private static final ContextKey<List> UNMANAGED_POPUPS_KEY =
             ContextKey.of("pageInteractionMonitor.unmanagedPopups", List.class);
 
+    /**
+     * 已注册上下文/页面集合（弱引用键，不阻止 GC 堆积；与 {@code PlaywrightManager.CLOSING_BROWSERS} 同款模式）。
+     * 用于<b>幂等护栏</b>：register 被重复调用（业务层、上下文重建、反射回归等任何路径）一律降级为 no-op，
+     * 杜绝 handler 叠加导致交互诊断被双重处理。
+     */
+    private static final Set<BrowserContext> REGISTERED_CONTEXTS =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+    private static final Set<Page> REGISTERED_PAGES =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+
     private PageInteractionMonitor() {
     }
 
@@ -64,10 +77,12 @@ public final class PageInteractionMonitor {
      * 注册整个 BrowserContext 的页面级交互监听。
      * 通过 {@code context.onPage} 覆盖所有新建页面（含 window.open 弹窗、context.newPage()）。
      *
+     * <p><b>幂等</b>：同一 {@link BrowserContext} 重复注册只生效一次（见 {@link #REGISTERED_CONTEXTS}）。
+     *
      * @param context 浏览器上下文（null 安全：直接忽略）
      */
     public static void register(BrowserContext context) {
-        if (context == null) {
+        if (context == null || !REGISTERED_CONTEXTS.add(context)) {
             return;
         }
         context.onPage(PageInteractionMonitor::register);
@@ -76,10 +91,13 @@ public final class PageInteractionMonitor {
     /**
      * 注册单个 Page 的交互监听（仅导航轨迹与未受管弹窗两类诊断）。
      *
+     * <p><b>幂等</b>：同一 {@link Page} 重复注册只生效一次（见 {@link #REGISTERED_PAGES}），
+     * 故本方法可安全地被任何层重复调用，handler 不会叠加。
+     *
      * @param page 目标页面（null 安全：直接忽略）
      */
     public static void register(Page page) {
-        if (page == null) {
+        if (page == null || !REGISTERED_PAGES.add(page)) {
             return;
         }
         page.onFrameNavigated(PageInteractionMonitor::handleFrameNavigated);

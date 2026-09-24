@@ -41,6 +41,10 @@ public class AutoBrowserProcessor {
     
     // 缓存已检查过的类，避免重复扫描（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
     private static final ContextKey<Boolean> PROCESSED_KEY = ContextKey.of("autobrowser.processed", Boolean.class);
+    // 缓存已解析的 glue 类名，避免每次 getPage() 都扫描 123 帧调用栈（日志噪声修复）
+    private static final ContextKey<String> GLUE_NAME_KEY = ContextKey.of("autobrowser.glueName", String.class);
+    // 标记本场景是否已打印过 "Processing" 头部日志，避免重复刷屏（日志噪声修复）
+    private static final ContextKey<Boolean> LOGGED_KEY = ContextKey.of("autobrowser.logged", Boolean.class);
     
     /**
      * 处理 @AutoBrowser 注解
@@ -51,55 +55,42 @@ public class AutoBrowserProcessor {
     public static void processAutoBrowserAnnotation() {
         // 避免在同一个 Scenario 中重复处理
         if (Boolean.TRUE.equals(TestContextHolder.get().get(PROCESSED_KEY))) {
-            VerboseLogging.logDebugIfVerbose(logger, "Already processed for current scenario, skipping");
             return;
         }
 
-        VerboseLogging.logInfoIfVerbose(logger, "Processing @AutoBrowser annotation...");
+        // 仅首次打印头部日志，避免每次 getPage() 都刷 "Processing @AutoBrowser annotation..."（日志噪声修复）
+        if (!Boolean.TRUE.equals(TestContextHolder.get().get(LOGGED_KEY))) {
+            VerboseLogging.logInfoIfVerbose(logger, "Processing @AutoBrowser annotation...");
+            TestContextHolder.get().set(LOGGED_KEY, true);
+        }
 
         try {
             // 0. 检查 StepEventBus 是否已准备好
             if (!isStepEventBusReady()) {
-                VerboseLogging.logDebugIfVerbose(logger, "StepEventBus not ready yet, skipping @AutoBrowser processing");
-                return;
+                return; // Serenity 未就绪，稍后重试（静默，不重复刷日志）
             }
 
-            // 1. 从堆栈跟踪找到 Glue 类
-            Class<?> glueClass = findGlueClass();
+            // 1. 从堆栈跟踪找到 Glue 类（结果按类名缓存，避免每次调用扫描 123 帧栈）
+            Class<?> glueClass = resolveGlueClass();
 
             if (glueClass == null) {
-                VerboseLogging.logWarnIfVerbose(logger, "No class with @AutoBrowser found in call stack");
-                VerboseLogging.logDebugIfVerbose(logger, "Call stack trace for debugging:");
-                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
-                for (int i = 0; i < Math.min(15, stackTrace.length); i++) {
-                    VerboseLogging.logDebugIfVerbose(logger, "  [{}] {}", i, stackTrace[i].getClassName());
-                }
-                return;
+                return; // 栈中暂无 @AutoBrowser 类，静默重试
             }
-
-            VerboseLogging.logDebugIfVerbose(logger, "Found class '{}' with @AutoBrowser", glueClass.getName());
 
             // 2. 检查 @AutoBrowser 注解
             AutoBrowser autoBrowser = glueClass.getAnnotation(AutoBrowser.class);
 
             if (autoBrowser == null || !autoBrowser.enabled()) {
-                VerboseLogging.logWarnIfVerbose(logger, "@AutoBrowser annotation not enabled on class '{}'",
-                    glueClass.getSimpleName());
+                TestContextHolder.get().set(PROCESSED_KEY, true); // 终态：本场景无需处理，停止重试
                 return;
             }
-
-            VerboseLogging.logDebugIfVerbose(logger, "@AutoBrowser annotation is enabled (verbose={})",
-                autoBrowser.verbose());
 
             // 3. 从 Serenity 上下文获取 Scenario 标签
             String[] tags = getTagsFromSerenityContext();
 
             if (tags == null || tags.length == 0) {
-                VerboseLogging.logDebugIfVerbose(logger, "No tags found in Serenity context - this is normal during early test initialization");
-                return;
+                return; // 非终态：tags 就绪后重试（glue 已缓存，无需再扫栈、不再刷日志）
             }
-
-            VerboseLogging.logDebugIfVerbose(logger, "Found {} tags: {}", tags.length, Arrays.toString(tags));
 
             // 4. 设置 Scenario 标签
             BrowserOverrideManager.setScenarioTags(tags);
@@ -113,6 +104,26 @@ public class AutoBrowserProcessor {
         } catch (Exception e) {
             VerboseLogging.logErrorIfVerbose(logger, "ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * 解析 @AutoBrowser glue 类，结果按类名缓存到 TestContext，避免每次 getPage() 重扫调用栈（日志噪声修复）。
+     * 仅当真正找到时才缓存；未找到则不缓存，允许后续调用重试（glue 类可能稍后入栈）。
+     */
+    private static Class<?> resolveGlueClass() {
+        String cachedName = TestContextHolder.get().get(GLUE_NAME_KEY);
+        if (cachedName != null) {
+            try {
+                return Class.forName(cachedName);
+            } catch (Throwable t) {
+                TestContextHolder.get().remove(GLUE_NAME_KEY); // 缓存类失效，重置后重扫
+            }
+        }
+        Class<?> found = findGlueClass();
+        if (found != null) {
+            TestContextHolder.get().set(GLUE_NAME_KEY, found.getName());
+        }
+        return found;
     }
 
     /**
@@ -183,7 +194,9 @@ public class AutoBrowserProcessor {
      */
     public static void clearProcessingState() {
         TestContextHolder.get().remove(PROCESSED_KEY);
-        
+        TestContextHolder.get().remove(GLUE_NAME_KEY);
+        TestContextHolder.get().remove(LOGGED_KEY);
+
         // 同时清理 BrowserOverrideManager
         if (BrowserOverrideManager.hasOverride()) {
             BrowserOverrideManager.clearOverrideBrowser();

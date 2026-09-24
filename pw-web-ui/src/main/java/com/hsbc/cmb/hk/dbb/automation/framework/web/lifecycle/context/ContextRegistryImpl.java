@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextReg
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.serenity.PlaywrightSerenityBridge;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.CloseGuard;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.codegen.spi.RoleCodegenBridgeRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
@@ -235,7 +236,9 @@ public final class ContextRegistryImpl implements ContextRegistry {
             });
         });
         PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
-        PlaywrightRuntime.instance().browserCleanup.safeClean("PlaywrightContextManager.closeContext", () -> PlaywrightContextManager.closeContext(context));
+        //  有界关闭：context.close() 可能挂（SIT 页卸载对话框/挂起导航），限时防止 scenario 线程死挂；
+        //  超时由 CloseGuard 记失败计数并放弃等待（daemon 上继续，JVM 退出回收）。
+        CloseGuard.runBounded("context-close", () -> PlaywrightContextManager.closeContext(context), CloseGuard.CONTEXT_CLOSE_LIMIT_MS);
     }
 
     /**

@@ -20,6 +20,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.jayway.jsonpath.JsonPath;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
 import com.microsoft.playwright.Route;
@@ -601,8 +602,28 @@ public class MonitorHandler {
             //  观测链任何未预期异常都在此收口，绝不外抛（避免污染 Playwright 事件线程）。
             //  注意：放行已由 handle() 幂等完成（delayMs<=0 即时 / >0 经 scheduleDeferred），本处<b>不再</b> resume，
             //  否则二次 resume 会让已处理的 route 失效并级联污染 CDP 连接。
-            LOGGER.error("[MonitorHandler] Observation aborted unexpectedly (request already released by handle): pattern='{}'",
-                    rule.getUrlPattern(), observationError);
+            // 区分两类异常，避免误标为 "released by handle"（那是开发猜测，非事实）：
+            // ① 响应/路由对象因页面跳转已失效 → 预期竞态，降级 DEBUG，并补登记「不可用」降级快照；
+            // ② 真正的未预期观测异常 → 保留 ERROR，但去掉虚假的 "released by handle" 措辞。
+            boolean responseGone = observationError instanceof PlaywrightException
+                    && observationError.getMessage() != null
+                    && (observationError.getMessage().contains("Object doesn't exist")
+                        || observationError.getMessage().contains("Target page")
+                        || observationError.getMessage().contains("Execution context was destroyed")
+                        || observationError.getMessage().contains("has been closed"));
+            if (responseGone) {
+                LOGGER.debug("[MonitorHandler] Observation skipped (response/route object gone due to "
+                        + "navigation, expected race): pattern='{}'", rule.getUrlPattern());
+                try {
+                    recordUnavailable(route, rule, route.request());
+                } catch (Throwable ignore) {
+                    LOGGER.debug("[MonitorHandler] recordUnavailable on gone-response also failed: {}",
+                            ignore.toString());
+                }
+            } else {
+                LOGGER.error("[MonitorHandler] Observation aborted unexpectedly: pattern='{}'",
+                        rule.getUrlPattern(), observationError);
+            }
         } finally {
             ticket.complete(null);
         }

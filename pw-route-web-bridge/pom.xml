@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+        <artifactId>Automation_WebUI_Framework_BDD</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>pw-route-web-bridge</artifactId>
+    <name>Automation Framework - Route/Web Bridge</name>
+    <description>中立桥接模块：承载 route 模块所需的「独立 APIRequestContext」契约与 web 侧实现。
+
+依赖方向（无环，全部收敛，不破坏既有解耦纪律）：
+    route ──▶ pw-route-web-bridge ──▶ pw-web-ui
+
+设计取舍（企业级解耦，满足全部既有约束）：
+- 接口 / 实现 / SPI 均驻本模块，随框架发布，不依赖 test-automation（test-automation 为独立构建单元）。
+- 包名刻意使用 framework.webbridge（既不是 framework.route 也不是 framework.web）：
+  ① pw-web-ui 仍 "Excludes route"（web 不依赖 route / 本模块）；
+  ② pw-route 仍不依赖 framework.web（L6: ..framework.route.. 不得依赖 ..framework.web.. 通过）；
+  ③ core 不引入 Playwright 依赖（保持 ENG-P0-2 / ROUTE-P1-N3 的 core 纯净纪律）。
+- 实现经 SPI（META-INF/services/framework.webbridge.RouteRuntimeBridge）注册，route 运行时自动发现；
+  无实现（或 Playwright 未初始化）时调用方回退到原生 route.fetch()。</description>
+
+    <dependencies>
+        <!-- web 侧实现依赖：PlaywrightManager.getPlaywright() 与 Playwright 类型 -->
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>pw-web-ui</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- 接口签名引用 com.microsoft.playwright.APIRequestContext -->
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+        </dependency>
+    </dependencies>
+</project>

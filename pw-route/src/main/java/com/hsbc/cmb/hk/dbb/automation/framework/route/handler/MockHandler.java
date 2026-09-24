@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCa
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandlerRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RoutePassThroughFetcher;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
@@ -351,15 +352,25 @@ public class MockHandler {
         //    都由 finally 兜底终结，避免「已 fetch 但未终结」导致浏览器端请求永久 pending。
         boolean routeSettled = false;
         try {
-            // ── 1. route.fetch() — 真实发送请求到服务器，获取真实响应 ──
-            //    无参 fetch 默认继承原请求的 method/headers/cookies
+            // ── 1. 透传真实响应 ──
+            //    优先走「不绑定 Frame 的独立 APIRequestContext」（经 RouteRuntimeBridge），
+            //    规避页面在异步透传窗口内跳转导致 Frame 销毁的竞态（T-挂死根因）；
+            //    桥接缺失或独立 fetch 失败时，回退到原生 route.fetch()（Frame 仍存活时可用）。
             //    【优化】显式设置 fetch 超时（默认 30s，可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖）：
             //    Playwright 的 route.fetch() 会在【事件线程】同步等待真实服务器返回；若服务器无响应，
             //    默认会阻塞到浏览器全局超时（通常 30s+）。显式超时可避免后端慢/挂起时事件线程被长时间
             //    占住，进而拖慢同 context 后续所有请求的路由分发。
             Route.FetchOptions fetchOpts = new Route.FetchOptions()
                     .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
-            APIResponse realResp = route.fetch(fetchOpts);
+            APIResponse realResp;
+            try {
+                realResp = RoutePassThroughFetcher.fetch(route, route.request().url(), ROUTE_FETCH_TIMEOUT_MS);
+            } catch (Exception standaloneFailed) {
+                LOGGER.warn("[MockHandler] Standalone pass-through fetch failed ({}); "
+                        + "falling back to route.fetch(): pattern='{}'",
+                        standaloneFailed.getMessage(), rule.getUrlPattern());
+                realResp = route.fetch(fetchOpts); // 失败由外层 catch 兜底 resume，不在此吞掉
+            }
             int status = realResp.status();
             byte[] bodyBytes = realResp.body();
             // 【优化】显式 UTF-8 解码（避免依赖平台默认 charset 导致响应体中文乱码）
@@ -458,12 +469,21 @@ public class MockHandler {
             }
 
         } catch (PlaywrightException e) {
-            LOGGER.error("[MockHandler] Failed to intercept real response for pattern '{}': {}",
-                    rule.getUrlPattern(), e.getMessage(), e);
-            // 兜底：fetch/fulfill 失败时 resume 放行，避免请求永久挂起
-            try { route.resume(); } catch (Exception ignored) {
-                LOGGER.error("[MockHandler] Failed to resume after intercept failure for pattern '{}'",
+            // 死帧（页面在异步透传窗口内已跳转）属预期竞态：请求随后 resume 不会永久挂死，降级 WARN 避免误报 ERROR
+            boolean deadFrame = e.getMessage() != null && e.getMessage().contains("Object doesn't exist");
+            if (deadFrame) {
+                LOGGER.warn("[MockHandler] Real-response fetch aborted (page/frame navigated away during async "
+                        + "intercept) — resuming original request to avoid blocking: pattern='{}'",
                         rule.getUrlPattern());
+            } else {
+                LOGGER.error("[MockHandler] Failed to intercept real response for pattern '{}': {}",
+                        rule.getUrlPattern(), e.getMessage(), e);
+            }
+            // 兜底：fetch/fulfill 失败时 resume 放行，避免请求永久挂起
+            try {
+                route.resume();
+            } catch (Exception ignored) {
+                LOGGER.debug("[MockHandler] fallback resume skipped (route/page gone): {}", e.toString());
             }
             routeSettled = true;
         } finally {

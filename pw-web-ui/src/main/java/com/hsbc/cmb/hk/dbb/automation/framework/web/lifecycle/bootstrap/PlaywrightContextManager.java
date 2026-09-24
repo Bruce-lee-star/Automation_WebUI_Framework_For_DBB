@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.CloseGuard;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
@@ -402,8 +403,11 @@ public class PlaywrightContextManager {
                 //  窗口堆积修复：原实现仅在 browser() 可用且已连接时才 close —— 浏览器已断开/对象失效时
                 //    静默跳过，Context 及其窗口残留（直到套件级 cleanupAll 才释放）。改为无条件尝试 close，
                 //    已关闭/失效（TargetClosedError 等）按预期降级为 debug 日志。
+                //  收尾期不挂 onDialog 守卫：context.close() 默认不跑 beforeunload（强制关闭），且 Playwright
+                //    未注册 handler 时对所有对话框 auto-dismiss，close 不会因此挂死；改挂 accept 反而会覆盖
+                //    框架默认语义。真正的"无限挂死"兜底由 CloseGuard 有界关闭 + 超时强收本线程 Playwright 提供。
                 try {
-                    context.close();
+                    context.close(new BrowserContext.CloseOptions().setReason("teardown"));
                     VerboseLogging.logInfoIfVerbose(logger, "BrowserContext closed");
                 } catch (Exception closeEx) {
                     VerboseLogging.logDebugIfVerbose(logger,
@@ -438,7 +442,17 @@ public class PlaywrightContextManager {
                         VerboseLogging.logWarnIfVerbose(logger, "Failed to clear Route resources on page close: {}", re.getMessage());
                     }
                     VerboseLogging.logInfoIfVerbose(logger, "Closing Page...");
-                    page.close();
+                    //  有界关闭：page.close() 亦可能挂（页面卸载 pending 导航/对话框）；超限即放弃等待，
+                    //  该 page 会随后续 context/browser 关闭被回收，绝不让收尾线程被卡。
+                    CloseGuard.Result pr = CloseGuard.runBoundedCapture("page-close",
+                            () -> page.close(), CloseGuard.PAGE_CLOSE_LIMIT_MS);
+                    if (!pr.completed()) {
+                        VerboseLogging.logWarnIfVerbose(logger,
+                                "page-close exceeded {}ms; abandoned (reclaimed with context/browser close)",
+                                CloseGuard.PAGE_CLOSE_LIMIT_MS);
+                    } else if (pr.hasError()) {
+                        throw new BrowserException("Failed to close page: " + pr.errorMessage());
+                    }
                     VerboseLogging.logInfoIfVerbose(logger, "Page closed");
                 }
             } catch (Exception e) {

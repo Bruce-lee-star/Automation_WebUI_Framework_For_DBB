@@ -561,7 +561,10 @@ public final class RoleElementPageGenerator {
             }
 
             // 原子写：先写临时文件再移动，避免生成失败留下半写文件（CG-P0-1）。
-            Path tmp = file.resolveSibling(pageClassName + ".java.tmp");
+            //  §11 修复：固定 .java.tmp 名在并发生成同一 pageClass 时会互相覆盖甚至损坏产物。
+            //      tmp 名加 8 位随机后缀，保证并发写各自独立，最终仍原子移动到同一目标文件。
+            Path tmp = file.resolveSibling(pageClassName + "." + java.util.UUID.randomUUID().toString()
+                    .substring(0, 8) + ".java.tmp");
             Files.writeString(tmp, payload, StandardCharsets.UTF_8);
             try {
                 Files.move(tmp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);

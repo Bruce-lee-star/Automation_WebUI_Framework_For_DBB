@@ -147,8 +147,10 @@ public class ResponseStore {
             }
 
             apiCallLock.notifyAll();
-            apiCallAwaiter.deliver(call);
         }
+        //  §11 修复：deliver 在持锁期同步执行调用方传入的任意谓词，慢/阻塞谓词会拖住所有 storeApiCall
+        //     （含事件线程路径）。deliver 自有锁，移出 apiCallLock 临界区，仅保留通知在锁内。
+        apiCallAwaiter.deliver(call);
 
         VerboseLogging.logTraceIfVerbose(LOGGER,
                 "[ResponseStore] storeApiCall: endpoint='{}', method={}, status={}, bodyLen={}",

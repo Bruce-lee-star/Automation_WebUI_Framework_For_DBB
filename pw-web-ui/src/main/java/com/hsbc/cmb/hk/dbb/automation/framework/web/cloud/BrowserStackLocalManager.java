@@ -15,6 +15,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * BrowserStack Local 隧道管理器。
@@ -43,6 +44,9 @@ public class BrowserStackLocalManager {
     private static volatile boolean tunnelRunning = false;
     private static volatile String currentIdentifier;
 
+    /** 隧道引用计数：每启动一个场景 +1，每 cleanup -1，归零才真正停止（§11 修复：避免单场景 cleanup 误杀共享隧道）。 */
+    private static final AtomicInteger tunnelRefCount = new AtomicInteger(0);
+
     /**
      * 启动 BrowserStack Local 隧道。
      * <p>幂等：已运行时直接返回。
@@ -51,7 +55,8 @@ public class BrowserStackLocalManager {
      */
     public static synchronized boolean startTunnel() {
         if (tunnelRunning) {
-            logger.info("[BS Local] Tunnel already running, skip start");
+            tunnelRefCount.incrementAndGet();
+            logger.info("[BS Local] Tunnel already running, skip start (refCount={})", tunnelRefCount.get());
             return true;
         }
 
@@ -138,6 +143,7 @@ public class BrowserStackLocalManager {
 
             if (ready) {
                 tunnelRunning = true;
+                tunnelRefCount.set(1);
                 logger.info("[BS Local] Tunnel established successfully (identifier={})", currentIdentifier);
                 return true;
             } else {
@@ -157,6 +163,13 @@ public class BrowserStackLocalManager {
      * 停止 BrowserStack Local 隧道。
      */
     public static synchronized void stopTunnel() {
+        if (tunnelRefCount.get() > 0) {
+            int remaining = tunnelRefCount.decrementAndGet();
+            if (remaining > 0) {
+                logger.info("[BS Local] Tunnel still referenced by {} scenario(s), skip stop", remaining);
+                return;
+            }
+        }
         if (tunnelProcess != null && tunnelProcess.isAlive()) {
             logger.info("[BS Local] Stopping tunnel...");
             tunnelProcess.destroy();

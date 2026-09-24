@@ -663,61 +663,98 @@ public class ModifyHandler {
      *
      * @return 真实响应；观测失败（超时 / 页面关闭）时返回 {@code null}（内部已兜底 resume）。
      */
+    /** A-05 修复：对齐 MonitorHandler，轮询 req.existingResponse() 的专用调度器（守护线程，避免 ForkJoinPool 污染）。 */
+    private static final java.util.concurrent.ScheduledThreadPoolExecutor modifyPollScheduler = newModifyPollScheduler();
+
+    private static java.util.concurrent.ScheduledThreadPoolExecutor newModifyPollScheduler() {
+        int threads = Math.max(1,
+                com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig.getInt(
+                        com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig
+                                .MONITOR_BODY_READ_SCHEDULER_THREADS,
+                        4));
+        java.util.concurrent.atomic.AtomicInteger seq = new java.util.concurrent.atomic.AtomicInteger(1);
+        java.util.concurrent.ScheduledThreadPoolExecutor executor =
+                new java.util.concurrent.ScheduledThreadPoolExecutor(threads, r -> {
+                    Thread t = new Thread(r, "modify-poll-" + seq.getAndIncrement());
+                    t.setDaemon(true);
+                    return t;
+                });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
+    /**
+     * A-05 修复：观察真实响应（modify 后放行、等待真实网络响应）。
+     *
+     * <p><b>线程契约</b>：原实现在 observeExecutor 工作线程上调用 {@code page.waitForResponse}，
+     * 跨线程驱动 Page/Context 对象（非场景线程所有），违反 Playwright 线程契约（CT 系列约束）。
+     * 现对齐 {@code MonitorHandler}：触发真实放行后，<b>本地轮询</b>
+     * {@link com.microsoft.playwright.Request#existingResponse()}（请求对象本地持有的 Response 字段，
+     * 零协议往返、绝不抛 "Object doesn't exist"），由专用守护调度器短间隔有界轮询至 {@code ROUTE_FETCH_TIMEOUT_MS}。
+     *
+     * @return 真实响应；观测失败（超时 / 页面关闭）时返回 {@code null}（内部已兜底 resume）。
+     */
     private static Response observeRealResponse(Route route, RouteRule rule, Route.ResumeOptions opts, long delayMs) {
         Request req = route.request();
-        com.microsoft.playwright.Frame frame = req.frame();
-        if (frame == null) {
+        if (req == null) {
             RouteUtil.safeResume(route, opts);
             return null;
         }
-        com.microsoft.playwright.Page page = frame.page();
-        if (page == null) {
+        //  触发真实放行（原 waitForResponse action 职责）：经延迟调度线程放行，
+        //  不在 Playwright 事件循环内驱动 Page/Context 对象（跨线程契约违规）。
+        if (RouteUtil.isPageClosed(route)) {
             RouteUtil.safeResume(route, opts);
-            return null;
+        } else {
+            RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
         }
-        //  超时保护：绝不传 0（timeout==0 → WaitableNever 死等）。ROUTE_FETCH_TIMEOUT_MS 为 0/负时回落 30s（对齐 Playwright 默认）。
-        double wfrTimeout = Math.min(30000, ROUTE_FETCH_TIMEOUT_MS);
-        if (wfrTimeout <= 0)  {wfrTimeout = 30000;} 
-        //  predicate 用「URL 包含字面路径」：避免响应重定向/参数规范化后 predicate 永不匹配 → 白等满超时。
-        final String lit = RouteUtil.literalPathOf(rule.getUrlPattern());
+        //  A-05 修复：以 req.existingResponse() 本地轮询取代 page.waitForResponse。
+        return awaitRealResponse(route, req, (long) ROUTE_FETCH_TIMEOUT_MS);
+    }
+
+    /** A-05：轮询 {@code Request#existingResponse()} 的间隔（毫秒），与 MonitorHandler 同源。 */
+    private static final long MODIFY_POLL_MS = 25L;
+
+    /** A-05：轮询 req.existingResponse()（本地字段、零协议往返）；到达/超时/死句柄即完成 future。 */
+    private static Response awaitRealResponse(Route route, Request req, long timeoutMs) {
+        final long deadlineNs = System.nanoTime()
+                + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        final java.util.concurrent.CompletableFuture<Response> fut =
+                new java.util.concurrent.CompletableFuture<>();
+        scheduleModifyPoll(fut, route, req, deadlineNs);
         try {
-            com.microsoft.playwright.Page.WaitForResponseOptions wfrOpts =
-                    new com.microsoft.playwright.Page.WaitForResponseOptions().setTimeout(wfrTimeout);
-            return page.waitForResponse(
-                    r -> {
-                        //  Playwright 回调无异常出口：谓词内失效对象访问（"Object doesn't exist: response@..."）
-                        //  若逃逸会被传播到页面/请求层，直接让调用方 fetch 失败。故一律降级为 false。
-                        try {
-                            if (r == null || r.request() == null)  {return false;} 
-                            String ru = r.request().url();
-                            return ru != null && (lit != null ? ru.contains(lit) : ru.equals(req.url()));
-                        } catch (Exception predicateError) {
-                            VerboseLogging.logDebugIfVerbose(LOGGER,
-                                    "[ModifyHandler] waitForResponse predicate degraded (stale object): {}",
-                                    predicateError.toString());
-                            return false;
-                        }
-                    },
-                    wfrOpts,
-                    () -> {
-                        //  同上：action 亦在 Playwright 事件循环内，异常不得逃逸；失败即安全放行。
-                        try {
-                            if (RouteUtil.isPageClosed(route))  {return;} 
-                            RouteEngine.scheduleDeferred(route, delayMs, () -> RouteUtil.safeResume(route, opts));
-                        } catch (Exception actionError) {
-                            VerboseLogging.logDebugIfVerbose(LOGGER,
-                                    "[ModifyHandler] waitForResponse action degraded, forcing resume: {}",
-                                    actionError.toString());
-                            RouteUtil.safeResume(route, opts);
-                        }
-                    });
-        } catch (PlaywrightException e) {
-            VerboseLogging.logWarnIfVerbose(LOGGER,
-                    "[ModifyHandler] waitForResponse failed, fallback resume: pattern='{}', error='{}'",
-                    rule.getUrlPattern(), e.getMessage());
-            RouteUtil.safeResume(route, opts);
+            return fut.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            return null;
+        } catch (java.util.concurrent.ExecutionException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             return null;
         }
+    }
+
+    /** A-05：递归轮询 req.existingResponse()；死句柄（页面/上下文已关）立即返回 null。 */
+    private static void scheduleModifyPoll(
+            java.util.concurrent.CompletableFuture<Response> fut, Route route, Request req, long deadlineNs) {
+        if (fut.isDone()) {
+            return;
+        }
+        if (RouteUtil.isPageClosed(route)) {
+            fut.complete(null);
+            return;
+        }
+        Response r = req.existingResponse();
+        if (r != null) {
+            fut.complete(r);
+            return;
+        }
+        if (System.nanoTime() >= deadlineNs) {
+            fut.complete(null);
+            return;
+        }
+        java.util.concurrent.CompletableFuture.delayedExecutor((int) MODIFY_POLL_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS, modifyPollScheduler)
+                .execute(() -> scheduleModifyPoll(fut, route, req, deadlineNs));
     }
 
     // ═══════════════════════════════════════════════════════════════

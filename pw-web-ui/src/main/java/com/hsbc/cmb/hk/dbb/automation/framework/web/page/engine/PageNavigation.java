@@ -21,6 +21,12 @@ public final class PageNavigation {
 
     private static final Logger logger = LoggerFactory.getLogger(PageNavigation.class);
 
+    /**
+     * 导航超时下限兜底：配置项 {@code navigationTimeout} 为 0/负时 Playwright 语义为「无限等待」，
+     * 弱网下会永久挂起导航。回落到与 {@code ConfigKeys} 导航超时默认一致的正数，避免死等。
+     */
+    private static final long DEFAULT_NAVIGATION_TIMEOUT_MS = 15_000;
+
     private PageNavigation() {
         // 纯静态工具类，禁止实例化
     }
@@ -29,7 +35,11 @@ public final class PageNavigation {
         PlaywrightConfigManager config = bp.getConfig();
         String pageLoadState = config.getPageLoadState();
         Page.NavigateOptions options = new Page.NavigateOptions();
-        options.setTimeout((long) config.getNavigationTimeout());
+        long timeout = config.getNavigationTimeout();
+        if (timeout <= 0) {
+            timeout = DEFAULT_NAVIGATION_TIMEOUT_MS;
+        }
+        options.setTimeout(timeout);
         // 根据配置设置等待策略
         switch (pageLoadState.toLowerCase()) {
             case "networkidle":

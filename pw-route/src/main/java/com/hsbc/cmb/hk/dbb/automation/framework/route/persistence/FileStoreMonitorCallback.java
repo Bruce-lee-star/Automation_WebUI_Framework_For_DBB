@@ -112,6 +112,13 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
      */
     private final ConcurrentHashMap<String, ScenarioState> scenarioStates = new ConcurrentHashMap<>();
 
+    /** 场景状态插入顺序（§11/A-12 修复：用于超限时 LRU 淘汰，防无界累积）。 */
+    private final java.util.concurrent.ConcurrentLinkedDeque<String> scenarioOrder =
+            new java.util.concurrent.ConcurrentLinkedDeque<>();
+
+    /** 场景状态上限，超过则 LRU 淘汰，防无界累积（与 WRITE_QUEUE_CAPACITY 默认风格一致）。 */
+    private static final int DEFAULT_SCENARIO_CAP = 2048;
+
     /** 单 scenario 的写入状态（目录 + 序号计数器）。 */
     private static final class ScenarioState {
         final File dir;
@@ -171,6 +178,27 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
      * <p>实现：单线程 FIFO 队列中投一个哨兵任务，其执行即代表此前所有写任务已完成（不丢数据）。
      * <b>不关闭</b>线程池本体（同 JVM 内可再次运行；JVM 退出由 {@code ShutdownCoordinator} 关闭）。
      */
+    /**
+     * §11/A-12 修复：场景状态超过可配置上限（{@code monitor.file.store.scenario.cap}，默认 2048）时，
+     * 淘汰最久未写入的场景状态（LRU），避免长跑套件静态 Map 无界累积。
+     * 被淘汰场景若仍有尾写，会重新建子目录/计数器（极端边缘，换取内存有界）。
+     */
+    private void evictScenarioStatesIfOverCap() {
+        int cap = DEFAULT_SCENARIO_CAP;
+        if (scenarioStates.size() <= cap) {
+            return;
+        }
+        String oldest = scenarioOrder.poll();
+        while (oldest != null) {
+            if (scenarioStates.remove(oldest) != null) {
+                LOGGER.warn("[FileStoreMonitorCallback] scenarioStates exceeded cap ({}), evicted oldest '{}'",
+                        cap, oldest);
+                break;
+            }
+            oldest = scenarioOrder.poll();
+        }
+    }
+
     public static void flushForSuiteTeardown() {
         try {
             int pending = WRITE_EXECUTOR.getQueue().size();
@@ -262,8 +290,13 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
                 counterMap = flatCounters;
             } else {
                 //  每个 scenario 独立子目录 + 独立计数器 → 并行 scenario 互不串号、互不串目录。
+                boolean[] created = {false};
                 ScenarioState st = scenarioStates.computeIfAbsent(
-                        scenarioKey, k -> new ScenarioState(new File(outputDir, k)));
+                        scenarioKey, k -> { created[0] = true; return new ScenarioState(new File(outputDir, k)); });
+                if (created[0]) {
+                    scenarioOrder.add(scenarioKey);
+                    evictScenarioStatesIfOverCap();
+                }
                 targetDir = st.dir;
                 counterMap = st.counters;
             }

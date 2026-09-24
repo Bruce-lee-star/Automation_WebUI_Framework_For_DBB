@@ -16,6 +16,9 @@ import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.model.*;
 
@@ -167,17 +170,39 @@ public final class RoleElementPicker {
     static void clearEvalLocks() {
         EVAL_LOCKS.clear();
     }
+    /** §11 修复：page.evaluate 无超时且锁内执行，页面卡死会永久持锁、拖死同页所有 evaluate。
+     *  改为提交独立 daemon 线程 + 有界 Future.get；超时即抛语义化异常并释放锁，不阻塞后续调用。 */
+    private static final long PICKER_EVAL_TIMEOUT_MS =
+            Integer.getInteger("codegen.picker.eval.timeout.ms", 30_000);
+
     static Object pickerEval(Page page, String script) {
-        synchronized (evalLockOf(page)) { return page.evaluate(script); }
+        return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script));
     }
     static Object pickerEval(Page page, String script, Object arg) {
-        synchronized (evalLockOf(page)) { return page.evaluate(script, arg); }
+        return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script, arg));
     }
     static Object pickerEval(Frame frame, String script) {
-        synchronized (evalLockOf(frame)) { return frame.evaluate(script); }
+        return evalWithTimeout(evalLockOf(frame), () -> frame.evaluate(script));
     }
     static Object pickerEval(Frame frame, String script, Object arg) {
-        synchronized (evalLockOf(frame)) { return frame.evaluate(script, arg); }
+        return evalWithTimeout(evalLockOf(frame), () -> frame.evaluate(script, arg));
+    }
+
+    private static Object evalWithTimeout(Object lock, Supplier<Object> eval) {
+        FutureTask<Object> task = new FutureTask<>(eval::get);
+        Thread t = new Thread(task, "picker-eval");
+        t.setDaemon(true);
+        synchronized (lock) {
+            t.start();
+            try {
+                return task.get(PICKER_EVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                throw new IllegalStateException(
+                        "pickerEval timed out after " + PICKER_EVAL_TIMEOUT_MS + "ms (page may be hung)", e);
+            } catch (Exception e) {
+                throw new IllegalStateException("pickerEval failed", e);
+            }
+        }
     }
 
     private static String jsModeOf(PickMode mode) {

@@ -181,9 +181,9 @@ final class SanitizerRules {
      */
     static final SanitizerRules INSTANCE = new SanitizerRules();
 
-    private final Set<String> extraHeaderKeys = ConcurrentHashMap.newKeySet();
-    private final Set<String> extraBodyKeys = ConcurrentHashMap.newKeySet();
-    private final Set<String> extraQueryKeys = ConcurrentHashMap.newKeySet();
+    private volatile Set<String> extraHeaderKeys = ConcurrentHashMap.newKeySet();
+    private volatile Set<String> extraBodyKeys = ConcurrentHashMap.newKeySet();
+    private volatile Set<String> extraQueryKeys = ConcurrentHashMap.newKeySet();
     private volatile boolean extraLoaded;
     private final Object extraLoadLock = new Object();
 
@@ -288,12 +288,17 @@ final class SanitizerRules {
     /** 强制从配置重新加载附加敏感键（清掉旧值后重读）；供测试与运行时热更新使用。 */
     void reloadExtraKeysFromConfig() {
         synchronized (extraLoadLock) {
-            extraHeaderKeys.clear();
-            extraBodyKeys.clear();
-            extraQueryKeys.clear();
-            parseKeys(readExtraConfig(CFG_EXTRA_HEADER_KEYS), extraHeaderKeys);
-            parseKeys(readExtraConfig(CFG_EXTRA_BODY_KEYS), extraBodyKeys);
-            parseKeys(readExtraConfig(CFG_EXTRA_QUERY_KEYS), extraQueryKeys);
+            //  A-13：原子整体替换，消除 clear() 与 add() 之间的「空窗口」——
+            //    原实现在持锁外读取方可能观察到空集合，导致附加键被漏罩。
+            Set<String> h = ConcurrentHashMap.newKeySet();
+            Set<String> b = ConcurrentHashMap.newKeySet();
+            Set<String> q = ConcurrentHashMap.newKeySet();
+            parseKeys(readExtraConfig(CFG_EXTRA_HEADER_KEYS), h);
+            parseKeys(readExtraConfig(CFG_EXTRA_BODY_KEYS), b);
+            parseKeys(readExtraConfig(CFG_EXTRA_QUERY_KEYS), q);
+            extraHeaderKeys = h;
+            extraBodyKeys = b;
+            extraQueryKeys = q;
             extraLoaded = true;
         }
     }

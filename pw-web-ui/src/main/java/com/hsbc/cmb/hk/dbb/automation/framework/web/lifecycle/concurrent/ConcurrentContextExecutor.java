@@ -141,10 +141,14 @@ public final class ConcurrentContextExecutor {
     private static <T> ContextTaskResult<T> awaitOne(Future<ContextTaskResult<T>> f, ContextTask<T> task,
                                                      ConcurrentContextOptions options) {
         try {
-            if (options.perTaskTimeoutMillis() > 0) {
-                return f.get(options.perTaskTimeoutMillis(), TimeUnit.MILLISECONDS);
+            long timeoutMs = options.perTaskTimeoutMillis();
+            if (timeoutMs <= 0) {
+                //  A-17：配置为 0/负时原实现走无超时 f.get()，编排线程可无限等待。
+                //       回落到框架既有 await 上限（与线程池终止等待同源），避免永久挂起。
+                timeoutMs = TimeUnit.SECONDS.toMillis(
+                        WebFrameworkConfig.PLAYWRIGHT_CONCURRENT_EXECUTOR_AWAIT_SECONDS.getIntValue());
             }
-            return f.get();
+            return f.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException te) {
             f.cancel(true);
             return ContextTaskResult.failure(task.name(),

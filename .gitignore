@@ -72,3 +72,12 @@ osv-err.log
 tools/osv-scan-result.json
 help.txt
 scanhelp.txt
+
+# ---------- 调试/诊断产物（临时脚本、类路径转储、调试日志转储）----------
+# 实测这些文件长期以 untracked 形态散落在根/模块下，add -A 时极易误入库，故显式忽略。
+cp.txt
+_tmp_*.ps1
+*_bom.ps1
+/2.txt
+/e2e_*.txt
+/sf*.txt

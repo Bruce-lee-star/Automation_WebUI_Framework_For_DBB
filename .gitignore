@@ -77,7 +77,16 @@ scanhelp.txt
 # 实测这些文件长期以 untracked 形态散落在根/模块下，add -A 时极易误入库，故显式忽略。
 cp.txt
 _tmp_*.ps1
+_fix_*.ps1
+_diag_*.ps1
+_clean_diag*.ps1
 *_bom.ps1
 /2.txt
 /e2e_*.txt
 /sf*.txt
+/_v2_test*.txt
+# tools/ 下的一次性批量改写脚本（一次性 Java4→5 迁移 / 断言改写 / 字节调试）
+/tools/fix_*.ps1
+/tools/debug_*.ps1
+/tools/scan_*.ps1
+/tools/convert_*.ps1

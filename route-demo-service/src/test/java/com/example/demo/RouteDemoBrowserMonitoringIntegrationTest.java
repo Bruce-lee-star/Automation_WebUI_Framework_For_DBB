@@ -1,7 +1,6 @@
 package com.example.demo;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRepository;
 
@@ -110,12 +109,6 @@ public class RouteDemoBrowserMonitoringIntegrationTest {
         // 3.2) 清空本 run 的历史记录（run id 固定在配置文件），使落库计数只反映本次运行。
         deleteRunRows();
 
-        // 3.1) 关闭全局被动捕获（onResponse 兜底）。
-        //     高 churn 下浏览器侧 response@ 对象会被快速 GC，被动捕获在事件分发层解析失效
-        //     response@ 时抛 "Object doesn't exist" 并污染同连接在途的 page.evaluate；关闭后，
-        //     已注册流量仍由 MonitorHandler 的 waitForResponse 通道（→ DB 回调）独立采集，不受影响。
-        ApiCaptureManager.setPassthroughEnabled(false);
-
         // 4) 启动 demo 后端（随机端口，context-path=/demo）。
         ctx = SpringApplication.run(DemoApplication.class, "--server.port=0");
         port = Integer.parseInt(ctx.getEnvironment().getProperty("local.server.port"));
@@ -140,8 +133,6 @@ public class RouteDemoBrowserMonitoringIntegrationTest {
         if (ctx != null) {
             ctx.close();
         }
-        // 复位被动捕获开关，避免影响同 JVM 内其它测试。
-        ApiCaptureManager.setPassthroughEnabled(true);
         ApiMonitoringRepository.shutdown();
     }
 

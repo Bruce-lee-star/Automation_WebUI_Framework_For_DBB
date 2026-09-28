@@ -1,7 +1,6 @@
 package com.example.demo;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.MonitorConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.persistence.ApiMonitoringRepository;
 
@@ -109,10 +108,6 @@ public class RouteDemoConcurrencyGuardrailTest {
                 poolMax);
         deleteRunRows();
 
-        // 关闭全局被动捕获（高 churn 下 response@ 会被 GC，被动捕获会污染在途 evaluate）；
-        // 已注册的 MONITOR 流量由 waitForResponse 通道独立采集，不受影响。
-        ApiCaptureManager.setPassthroughEnabled(false);
-
         ctx = SpringApplication.run(DemoApplication.class, "--server.port=0");
         port = Integer.parseInt(ctx.getEnvironment().getProperty("local.server.port"));
         System.out.println("[GUARDRAIL] 梯度=" + java.util.Arrays.toString(GRADIENT)
@@ -124,7 +119,6 @@ public class RouteDemoConcurrencyGuardrailTest {
         if (ctx != null) {
             ctx.close();
         }
-        ApiCaptureManager.setPassthroughEnabled(true);
         ApiMonitoringRepository.shutdown();
         System.clearProperty("monitor.test.run.id");
     }

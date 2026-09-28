@@ -22,13 +22,6 @@
             <artifactId>pw-core</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <!-- 中立桥接模块：提供 RouteRuntimeBridge 契约（route 透传 fetch 依赖 web 侧实现）。
-             route → pw-route-web-bridge → pw-web-ui，保持 web "Excludes route" 与 L6。 -->
-        <dependency>
-            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
-            <artifactId>pw-route-web-bridge</artifactId>
-            <version>${project.version}</version>
-        </dependency>
         <dependency>
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-reports</artifactId>
@@ -90,6 +83,21 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
+        </dependency>
+        <!-- 路由确定性生命周期单测（mock Playwright BrowserContext / 捕获 route() 返回的 AutoCloseable 句柄）。
+             根 POM 仅定义 ${mockito.version} 属性、无 DM 条目，故此处显式钉版本（与 test-automation 一致）。 -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- SpotBugs 注解：EI_EXPOSE_REP2 等豁免（SpotBugs 门禁 failOnError=true，新增违规须 0） -->
+        <dependency>
+            <groupId>com.github.spotbugs</groupId>
+            <artifactId>spotbugs-annotations</artifactId>
+            <version>${spotbugs.version}</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 </project>

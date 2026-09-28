@@ -64,6 +64,14 @@
         </dependency>
 
         <!-- 测试期依赖（JUnit5 升级，2026-09-11） -->
+        <!-- JUnit Platform Launcher（provided，2026-09-27 套件收尾）：SuiteTeardownListener 实现
+             LauncherSessionListener 需编译期引用 launcher；provided 不向业务层传递（业务层 runner 自身
+             已有 junit-platform-launcher，版本由根 dependencyManagement 统一钉 ${junit.platform.version}）。 -->
+        <dependency>
+            <groupId>org.junit.platform</groupId>
+            <artifactId>junit-platform-launcher</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
@@ -74,11 +82,7 @@
             <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-junit5</artifactId>
-            <scope>test</scope>
-        </dependency>
+        
         <dependency>
             <groupId>com.tngtech.archunit</groupId>
             <artifactId>archunit</artifactId>

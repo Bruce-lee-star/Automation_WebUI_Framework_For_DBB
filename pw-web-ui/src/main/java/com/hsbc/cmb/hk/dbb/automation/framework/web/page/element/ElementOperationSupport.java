@@ -4,8 +4,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementNotFoundEx
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Locator;
+import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.options.LoadState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +45,19 @@ final class ElementOperationSupport {
             captureDiagnosticsAndLog(locatorFn, selector, page, operation, ex);
             throw ex;
         } catch (PlaywrightException e) {
+            if (isNavigationOrContextLoss(e)) {
+                // 检测到路由/导航变化：等 DOM 加载完毕（仅一次），再操作一次，吸收导航抖动
+                waitForDomSettled(page, operation, selector);
+                try {
+                    return action.get();
+                } catch (PlaywrightException e2) {
+                    // 等 DOM 落定后仍失败（极罕见连续导航），按原语义抛出
+                    ElementOperationException ex = new ElementOperationException(operation, selector,
+                        "Failed: " + operation, e2);
+                    captureDiagnosticsAndLog(locatorFn, selector, page, operation, ex);
+                    throw ex;
+                }
+            }
             ElementOperationException ex = new ElementOperationException(operation, selector,
                 "Failed: " + operation, e);
             captureDiagnosticsAndLog(locatorFn, selector, page, operation, ex);
@@ -90,30 +105,48 @@ final class ElementOperationSupport {
                                  String operation, String testName) {
         try {
             action.get();
+        } catch (PlaywrightException e) {
+            if (isNavigationOrContextLoss(e)) {
+                // 检测到路由/导航变化：等 DOM 加载完毕（仅一次），再操作一次
+                waitForDomSettled(page, operation, selector);
+                try {
+                    action.get();
+                    return;
+                } catch (RuntimeException e2) {
+                    throw buildRetryException(locatorFn, selector, page, operation, testName, e2);
+                }
+            }
+            throw buildRetryException(locatorFn, selector, page, operation, testName, e);
         } catch (RuntimeException e) {
-            Exception lastEx = e;
-            ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(
-                    locatorFn.get(), selector, page.getPageRaw(), page.getCurrentFrame());
-            ElementOperationException.DiagnosticInfo info = diagnostics.collect();
-            info.retryCount(1);
-
-            String elementState = determineElementState(info);
-            String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics,
-                    0, elementState, selector);
-
-            ElementOperationException ex = ElementOperationException.builder()
-                .selector(selector)
-                .operation(operation)
-                .pageUrl(diagnostics.getPageUrl())
-                .elementState(elementState)
-                .diagnosticInfo(info)
-                .cause(lastEx)
-                .customMessage(customMessage)
-                .build();
-
-            captureFailureAndLog(operation, testName, ex, diagnostics);
-            throw ex;
+            // 非 Playwright 异常（如框架自身 NPE）不重试，按原语义包装抛出
+            throw buildRetryException(locatorFn, selector, page, operation, testName, e);
         }
+    }
+
+    /** 构造与原 executeWithRetry 失败路径一致的「诊断异常」（含 DOM 诊断 + 截图 + 详细错误信息）。 */
+    private static RuntimeException buildRetryException(Supplier<Locator> locatorFn, String selector,
+            BasePage page, String operation, String testName, RuntimeException lastEx) {
+        ElementDiagnosticsCollector diagnostics = new ElementDiagnosticsCollector(
+                locatorFn.get(), selector, page.getPageRaw(), page.getCurrentFrame());
+        ElementOperationException.DiagnosticInfo info = diagnostics.collect();
+        info.retryCount(1);
+
+        String elementState = determineElementState(info);
+        String customMessage = buildDetailedErrorMessage(operation, lastEx, diagnostics,
+                0, elementState, selector);
+
+        ElementOperationException ex = ElementOperationException.builder()
+            .selector(selector)
+            .operation(operation)
+            .pageUrl(diagnostics.getPageUrl())
+            .elementState(elementState)
+            .diagnosticInfo(info)
+            .cause(lastEx)
+            .customMessage(customMessage)
+            .build();
+
+        captureFailureAndLog(operation, testName, ex, diagnostics);
+        return ex;
     }
 
     private static String determineElementState(ElementOperationException.DiagnosticInfo diag) {
@@ -122,6 +155,42 @@ final class ElementOperationSupport {
         if (!diag.isEnabled())  {return "NOT_ENABLED";} 
         if (!diag.isEditable())  {return "NOT_EDITABLE";} 
         return "INTERACTABLE_BUT_FAILED";
+    }
+
+    /**
+     * 判断异常是否由导航/执行上下文销毁引起（可重试），兼容 firefox/chromium 提示文案。
+     * 与 {@link PageElement} 中的判定同源：路由规范化（en-US↔en-us）/重定向/SPA 软导航会销毁重建 DOM，
+     * 此期间的元素操作会立即抛 PlaywrightException（非 TimeoutError），需等 DOM 落定后重试。
+     */
+    private static boolean isNavigationOrContextLoss(PlaywrightException e) {
+        String m = e.getMessage();
+        if (m == null) {
+            return false;
+        }
+        m = m.toLowerCase();
+        return m.contains("execution context") || m.contains("context was destroyed")
+                || m.contains("object doesn't exist") || m.contains("does not exist")
+                || m.contains("navigat") || m.contains("frame detached")
+                || m.contains("frame was detached");
+    }
+
+    /**
+     * 等待 DOM 加载完毕（吸收路由/导航变化），再让上层重试元素操作。
+     * 导航仍在进行时 waitForLoadState 可能本身被中断——忽略该异常，交由重试循环继续探测。
+     */
+    private static void waitForDomSettled(BasePage page, String operation, String selector) {
+        try {
+            Page pw = page.getPageRaw();
+            if (pw != null) {
+                pw.waitForLoadState(LoadState.DOMCONTENTLOADED,
+                        new Page.WaitForLoadStateOptions().setTimeout(10_000));
+                logger.debug("[ElementOperationSupport] nav/route change detected on '{}' ({}); "
+                        + "waited for DOMContentLoaded before retry", selector, operation);
+            }
+        } catch (PlaywrightException e) {
+            logger.debug("[ElementOperationSupport] waitForDomSettled on '{}' ({}): navigation ongoing: {}",
+                    selector, operation, e.toString());
+        }
     }
 
     private static String buildDetailedErrorMessage(String operation, Exception lastEx,

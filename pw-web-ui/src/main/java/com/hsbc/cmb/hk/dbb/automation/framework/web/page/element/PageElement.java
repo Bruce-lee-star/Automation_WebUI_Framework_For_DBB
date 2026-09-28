@@ -29,6 +29,7 @@ import java.util.Objects;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.concurrent.TimeUnit;
 
 public class PageElement {
     private static final Logger logger = LoggerFactory.getLogger(PageElement.class);
@@ -670,18 +671,97 @@ public class PageElement {
                 "Element is checked (expected not checked): " + selector);
     }
 
+    // ==================== 导航韧性等待（抗重定向重试） ====================
+    /**
+     * 导航/上下文失效重试开关。DBB 首页登录后会反复路由规范化（en-US↔en-us），
+     * 期间 DOM 被销毁重建，{@code locator.waitFor(state)} 会立即抛 PlaywrightException（非 TimeoutError），
+     * 导致用户传入的超时预算根本未被使用就失败。开启后将在「总超时预算」内对该类异常短退避重试，吸收重定向抖动。
+     * 默认开启；若需临时关闭排查，置 false 即退化为单次等待（waitForStateOnce）。
+     */
+    private static final boolean NAV_RETRY_ENABLED = true;
+    /** 单次重试退避上限（ms），实际取 min(此值, 剩余预算/4)，确保总耗时不超过用户超时预算、不做 N×timeout 累加重试。 */
+    private static final long NAV_RETRY_BACKOFF_MS = 300L;
+    /** 剩余预算低于此值（ms）不再重试，避免无意义微重试。 */
+    private static final long NAV_RETRY_MIN_MS = 150L;
+
+    /** 判断异常是否由导航/执行上下文销毁引起（可重试），兼容 firefox/chromium 提示文案。 */
+    private static boolean isNavigationOrContextLoss(PlaywrightException e) {
+        String m = e.getMessage();
+        if (m == null) {
+            return false;
+        }
+        m = m.toLowerCase();
+        return m.contains("execution context") || m.contains("context was destroyed")
+                || m.contains("object doesn't exist") || m.contains("does not exist")
+                || m.contains("navigat") || m.contains("frame detached")
+                || m.contains("frame was detached");
+    }
+
+    /** 取异常首行，避免重试日志刷屏长堆栈。 */
+    private static String firstLine(String msg) {
+        if (msg == null) {
+            return "null";
+        }
+        int n = msg.indexOf('\n');
+        return n < 0 ? msg : msg.substring(0, n);
+    }
+
     // ---- waitFor* 公共模板 ----
 
     /**
      * 基于 waitFor(state) 的等待模板（waitForVisible/NotVisible/Exists/NotExists/Clickable 共用）。
      *
+     * <p><b>导航韧性</b>：Playwright 的 {@code locator.waitFor} 在页面导航 / 执行上下文销毁时会
+     * <em>立即</em>抛 {@link PlaywrightException}（而非等到超时），导致 60s 预算根本未被使用就失败。
+     * 本模板在「用户传入的 {@code timeoutSec} 总预算」内对导航类异常做短退避重试：
+     * 单次原生等待仅消耗<em>剩余预算</em>，因此总耗时严格 ≤ timeoutSec，不会发生 N×timeout 的累加重试。
+     * {@link TimeoutError}（元素在预算内从未达到期望状态）视为真实失败，立即抛出，不重试。
+     *
      * @param expect     期望的状态
-     * @param timeoutSec 超时秒数
+     * @param timeoutSec 超时秒数（作为重试总预算上限，不累加）
      * @param negate     是否取反（当前未使用，预留）
      * @param onTimeout  TimeoutError 时构造的异常（带 selector 与超时信息）
      * @param onOther    其它 PlaywrightException 时构造的异常
      */
     private PageElement waitForState(WaitForSelectorState expect, int timeoutSec, boolean negate,
+            BiFunction<TimeoutError, Integer, RuntimeException> onTimeout,
+            BiFunction<PlaywrightException, Integer, RuntimeException> onOther) {
+        if (!NAV_RETRY_ENABLED) {
+            return waitForStateOnce(expect, timeoutSec, onTimeout, onOther);
+        }
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSec);
+        int attempts = 0;
+        while (true) {
+            long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+            if (remainingMs <= 0) {
+                throw onTimeout.apply(null, timeoutSec);
+            }
+            try {
+                attempts++;
+                locatorInternal().waitFor(new Locator.WaitForOptions()
+                        .setState(expect).setTimeout(remainingMs));
+                return this;
+            } catch (TimeoutError e) {
+                throw onTimeout.apply(e, timeoutSec);
+            } catch (PlaywrightException e) {
+                if (isNavigationOrContextLoss(e) && remainingMs > NAV_RETRY_MIN_MS) {
+                    long backoff = Math.min(NAV_RETRY_BACKOFF_MS, remainingMs / 4);
+                    if (backoff > 0) {
+                        // 浏览器端等待（Page.waitForTimeout），不阻塞 OS 线程；
+                        // 对齐 master 分支风格，避免 Thread.sleep 占用调度线程
+                        page.waitForTimeout((int) backoff);
+                    }
+                    logger.debug("[waitForState] nav/context loss on '{}', retry {} (remaining≈{}ms): {}",
+                            selector, attempts, remainingMs, firstLine(e.getMessage()));
+                    continue;
+                }
+                throw onOther.apply(e, timeoutSec);
+            }
+        }
+    }
+
+    /** 无重试的单次等待（NAV_RETRY_ENABLED=false 时退化路径，保持原语义）。 */
+    private PageElement waitForStateOnce(WaitForSelectorState expect, int timeoutSec,
             BiFunction<TimeoutError, Integer, RuntimeException> onTimeout,
             BiFunction<PlaywrightException, Integer, RuntimeException> onOther) {
         try {

@@ -18,7 +18,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>语义（企业级约束）：
  * <ul>
  *   <li>相同身份（同 key）→ 串行；不同身份 → 并行；无身份（key==null）→ 直接放行（不进 Map）。</li>
- *   <li>总开关 {@code CONCURRENCY_PARTITION_ENABLED} 默认 false → {@link #acquire}/{@link #release} 全为 no-op，行为零回归。</li>
+ *   <li>总开关 {@code CONCURRENCY_PARTITION_ENABLED} 三态、默认 {@code auto}（引擎级并行为真时自动启用；
+ *       <b>串行运行恒 no-op</b>），显式 true/false 强制开关。</li>
+ *   <li><b>同线程可重入</b>：本线程已持有同一 key 时 {@link #acquire} 立即返回（不再占许可、不再记一条持有），
+ *       避免框架多路径/多次进入时<b>自锁</b>到 fail-closed 超时（Semaphore 许可为 1 时二次 acquire 会阻塞）；
+ *       跨线程仍严格互斥。</li>
  *   <li>每 key 持有独立 {@link Semaphore}（公平、许可数取自 {@code CONCURRENCY_PARTITION_PER_KEY_PERMITS}，默认 1）。</li>
  *   <li>{@link #acquire} 用 {@link Semaphore#acquireUninterruptibly()} 避免吞掉 / 打断测试线程中断策略；
  *       {@link #release} 必须放在调用方清理收口的 finally 中，与 acquire 严格配对（见 {@link ConcurrencyScope}）。</li>
@@ -27,10 +31,15 @@ import java.util.concurrent.atomic.AtomicLong;
  * </ul>
  * </p>
  *
- * <p>接入点（runner 无关）：调用方<b>显式构造</b> {@link ConcurrencyPartitionKey} 后调 {@link #acquire}
- * （生产上：登录/会话边界的 {@code sessionkey} 键、并发用例执行器的「用例行身份」键），并在收口 finally 中
- * 配对 {@link #release}；需要 RAII 时用 {@link #enter(ConcurrencyPartitionKey)} + try-with-resources。
- * 未启用时恒为 no-op。</p>
+ * <p><b>接入点（2026-09-28 收口，业务层不得接线）</b>：生产接入点在<b>框架会话路径</b> ——
+ * {@code SessionStore.acquireSessionGate(sessionKey)}（键 = {@code Map.of("sessionkey", sessionKey)}，
+ * 覆盖 restore / save 入口，含同键重入与换键保护），释放由框架在 scenario 收尾无条件执行
+ * （{@code PlaywrightListener.cleanupThreadLocals()} → {@link #releaseAllForCurrentThread()}
+ * + {@code SessionManager.releaseSessionGate()}）。<b>业务测试层禁止</b>自建分区键后 acquire/release：
+ * 那会形成「两把键不同的锁」（业务用 environment/username，框架用 sessionKey），且释放依赖业务
+ * {@code @After} —— 一旦漏跑就泄漏许可，同身份后续场景直接卡到 fail-closed 超时。
+ * 需要更细的身份隔离粒度时，应改 {@code sessionKey} 本身（数据声明），而不是在业务层加锁。
+ * 需要 RAII 时用 {@link #enter(ConcurrencyPartitionKey)} + try-with-resources。未启用时恒为 no-op。</p>
  *
  * <p><b>身份模型（2026-09-21 收口，评审 F-11）</b>：<b>不存在</b>「自动推导身份」的隐式通道 ——
  * 键一律由调用方显式构造。原先那条「登录后自动推导 environment/username」的解析链因无生产接入点而
@@ -96,6 +105,12 @@ public final class ConcurrencyGate {
             HELD_BY_THREAD.set(held);
         }
         held.addLast(key);
+    }
+
+    /** 本线程当前是否已持有该键（重入保护用；HELD_BY_THREAD 仅本线程可读，无跨线程同步开销）。 */
+    private static boolean isHeldByCurrentThread(ConcurrencyPartitionKey key) {
+        Deque<ConcurrencyPartitionKey> held = HELD_BY_THREAD.get();
+        return held != null && held.contains(key);
     }
 
     /** 移除本线程对该键的持有记录；返回是否确有记录（false = 本线程并未持有）。 */
@@ -204,10 +219,16 @@ public final class ConcurrencyGate {
 
     /**
      * 进入 scenario 时调用；key==null 直接返回（无身份场景不参与互斥）。
-     * 会阻塞直至获得该身份许可（相同身份被串行化）。
+     * 会阻塞直至获得该身份许可（相同身份被串行化）。<b>同线程重入为 no-op</b>（见类注释）。
      */
     public static void acquire(ConcurrencyPartitionKey key) {
         if (!isEnabled() || key == null) {
+            return;
+        }
+        if (isHeldByCurrentThread(key)) {
+            //  同线程重入：本线程已持有该身份 → 直接返回（不再占许可、不再记一条持有）。
+            //  否则在 permits=1 的公平 Semaphore 上二次 acquire 会自锁到 maxWait，
+            //  最终以 fail-closed 抛 ConcurrencyGateTimeoutException 误判场景失败。
             return;
         }
         int permits = perKeyPermits();

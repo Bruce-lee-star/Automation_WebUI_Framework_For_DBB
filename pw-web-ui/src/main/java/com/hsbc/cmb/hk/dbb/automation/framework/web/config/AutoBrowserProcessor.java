@@ -1,6 +1,5 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
 
-
 import com.hsbc.cmb.hk.dbb.automation.framework.web.annotations.AutoBrowser;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import net.thucydides.core.steps.BaseStepListener;
@@ -10,12 +9,8 @@ import net.thucydides.model.domain.TestTag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Set;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
-import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 
 /**
  * AutoBrowser Processor - 框架层自动处理 @AutoBrowser 注解
@@ -39,12 +34,8 @@ public class AutoBrowserProcessor {
     
     private static final Logger logger = LoggerFactory.getLogger(AutoBrowserProcessor.class);
     
-    // 缓存已检查过的类，避免重复扫描（ T3-1 收拢：由 static ThreadLocal 迁入 TestContext，per-thread 等价）
-    private static final ContextKey<Boolean> PROCESSED_KEY = ContextKey.of("autobrowser.processed", Boolean.class);
-    // 缓存已解析的 glue 类名，避免每次 getPage() 都扫描 123 帧调用栈（日志噪声修复）
-    private static final ContextKey<String> GLUE_NAME_KEY = ContextKey.of("autobrowser.glueName", String.class);
-    // 标记本场景是否已打印过 "Processing" 头部日志，避免重复刷屏（日志噪声修复）
-    private static final ContextKey<Boolean> LOGGED_KEY = ContextKey.of("autobrowser.logged", Boolean.class);
+    // 缓存已检查过的类，避免重复扫描
+    private static final ThreadLocal<Boolean> processedForCurrentScenario = new ThreadLocal<>();
     
     /**
      * 处理 @AutoBrowser 注解
@@ -54,43 +45,56 @@ public class AutoBrowserProcessor {
      */
     public static void processAutoBrowserAnnotation() {
         // 避免在同一个 Scenario 中重复处理
-        if (Boolean.TRUE.equals(TestContextHolder.get().get(PROCESSED_KEY))) {
+        if (Boolean.TRUE.equals(processedForCurrentScenario.get())) {
+            VerboseLogging.logDebugIfVerbose(logger, "Already processed for current scenario, skipping");
             return;
         }
 
-        // 仅首次打印头部日志，避免每次 getPage() 都刷 "Processing @AutoBrowser annotation..."（日志噪声修复）
-        if (!Boolean.TRUE.equals(TestContextHolder.get().get(LOGGED_KEY))) {
-            VerboseLogging.logInfoIfVerbose(logger, "Processing @AutoBrowser annotation...");
-            TestContextHolder.get().set(LOGGED_KEY, true);
-        }
+        VerboseLogging.logInfoIfVerbose(logger, "Processing @AutoBrowser annotation...");
 
         try {
-            // 0. 检查 StepEventBus 是否已准备好
+            // 0. 检查 StepEventBus 是否已准备好（不再自动注册空 listener）
             if (!isStepEventBusReady()) {
-                return; // Serenity 未就绪，稍后重试（静默，不重复刷日志）
+                VerboseLogging.logDebugIfVerbose(logger, "StepEventBus not ready yet, skipping @AutoBrowser processing");
+                return;
             }
 
-            // 1. 从堆栈跟踪找到 Glue 类（结果按类名缓存，避免每次调用扫描 123 帧栈）
-            Class<?> glueClass = resolveGlueClass();
+            // 1. 从堆栈跟踪找到 Glue 类
+            Class<?> glueClass = findGlueClass();
 
             if (glueClass == null) {
-                return; // 栈中暂无 @AutoBrowser 类，静默重试
+                VerboseLogging.logWarnIfVerbose(logger, "No class with @AutoBrowser found in call stack");
+                VerboseLogging.logDebugIfVerbose(logger, "Call stack trace for debugging:");
+                StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+                for (int i = 0; i < Math.min(15, stackTrace.length); i++) {
+                    VerboseLogging.logDebugIfVerbose(logger, "  [{}] {}", i, stackTrace[i].getClassName());
+                }
+                return;
             }
+
+            VerboseLogging.logDebugIfVerbose(logger, "Found class '{}' with @AutoBrowser", glueClass.getName());
 
             // 2. 检查 @AutoBrowser 注解
             AutoBrowser autoBrowser = glueClass.getAnnotation(AutoBrowser.class);
 
             if (autoBrowser == null || !autoBrowser.enabled()) {
-                TestContextHolder.get().set(PROCESSED_KEY, true); // 终态：本场景无需处理，停止重试
+                VerboseLogging.logWarnIfVerbose(logger, "@AutoBrowser annotation not enabled on class '{}'",
+                    glueClass.getSimpleName());
                 return;
             }
 
-            // 3. 从 Serenity 上下文获取 Scenario 标签
-            String[] tags = getTagsFromSerenityContext();
+            VerboseLogging.logDebugIfVerbose(logger, "@AutoBrowser annotation is enabled (verbose={})",
+                autoBrowser.verbose());
+
+            // 3. 从 Serenity 上下文获取 Scenario 标签（经 readScenarioTags 接缝，受控 bus；不再经反射 getter 探测）
+            String[] tags = readScenarioTags(StepEventBus.getEventBus(), autoBrowser.verbose());
 
             if (tags == null || tags.length == 0) {
-                return; // 非终态：tags 就绪后重试（glue 已缓存，无需再扫栈、不再刷日志）
+                VerboseLogging.logDebugIfVerbose(logger, "No tags found in Serenity context - this is normal during early test initialization");
+                return;
             }
+
+            VerboseLogging.logDebugIfVerbose(logger, "Found {} tags: {}", tags.length, Arrays.toString(tags));
 
             // 4. 设置 Scenario 标签
             BrowserOverrideManager.setScenarioTags(tags);
@@ -99,7 +103,7 @@ public class AutoBrowserProcessor {
             VerboseLogging.logInfoIfVerbose(logger, "Effective browser type set to: {}", effectiveBrowser);
 
             // 标记为已处理
-            TestContextHolder.get().set(PROCESSED_KEY, true);
+            processedForCurrentScenario.set(true);
 
         } catch (Exception e) {
             VerboseLogging.logErrorIfVerbose(logger, "ERROR processing @AutoBrowser annotation: {}", e.getMessage(), e);
@@ -107,101 +111,67 @@ public class AutoBrowserProcessor {
     }
 
     /**
-     * 解析 @AutoBrowser glue 类，结果按类名缓存到 TestContext，避免每次 getPage() 重扫调用栈（日志噪声修复）。
-     * 仅当真正找到时才缓存；未找到则不缓存，允许后续调用重试（glue 类可能稍后入栈）。
-     */
-    private static Class<?> resolveGlueClass() {
-        String cachedName = TestContextHolder.get().get(GLUE_NAME_KEY);
-        if (cachedName != null) {
-            try {
-                return Class.forName(cachedName);
-            } catch (Throwable t) {
-                TestContextHolder.get().remove(GLUE_NAME_KEY); // 缓存类失效，重置后重扫
-            }
-        }
-        Class<?> found = findGlueClass();
-        if (found != null) {
-            TestContextHolder.get().set(GLUE_NAME_KEY, found.getName());
-        }
-        return found;
-    }
-
-    /**
-     * 检查 StepEventBus 是否已准备好，如果未准备好则自动注册监听器
+     * 检查 StepEventBus 是否已准备好。
+     *
+     * <p><b>注意</b>：仅探测就绪状态，<b>绝不</b>自动注册空 {@link BaseStepListener}。
+     * 旧实现注册空 listener 会令 {@code getCurrentTestOutcome()} 恒为 null → tags 静默为空 →
+     * 浏览器覆盖永久失效且无告警（见 {@code AutoBrowserProcessorTagBusTest} A1/A2 守卫）。
      *
      * @return true 如果 StepEventBus 已初始化且 BaseStepListener 已注册
      */
     private static boolean isStepEventBusReady() {
         try {
             StepEventBus eventBus = StepEventBus.getEventBus();
-            if (eventBus == null) {
-                return false;
-            }
-
-            // 使用反射访问 currentBaseStepListener() 方法，避免触发 ERROR 日志
-            try {
-                Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
-                method.setAccessible(true);
-                Object listener = method.invoke(eventBus);
-
-                if (listener == null) {
-                    // 监听器未注册，自动注册
-                    VerboseLogging.logInfoIfVerbose(logger, "BaseStepListener not registered, auto-registering...");
-                    return registerBaseStepListener(eventBus);
-                }
-
-                return true;
-            } catch (Exception e) {
-                VerboseLogging.logTraceIfVerbose(logger, "Could not check BaseStepListener status: {}", e.getMessage());
-                return false;
-            }
+            return eventBus != null && eventBus.isBaseStepListenerRegistered();
         } catch (Exception e) {
             return false;
         }
     }
 
-    /**
-     * 注册 BaseStepListener
-     *
-     * @param eventBus StepEventBus 实例
-     * @return true 如果注册成功
-     */
-    private static boolean registerBaseStepListener(StepEventBus eventBus) {
-        try {
-            // 创建输出目录（用于存储测试结果）
-            File outputDirectory = new File("target/site/serenity");
-            if (!outputDirectory.exists()) {
-                outputDirectory.mkdirs();
-            }
-
-            // 创建 BaseStepListener（需要一个输出目录）
-            BaseStepListener listener = new BaseStepListener(outputDirectory);
-
-            // 注册到 StepEventBus
-            eventBus.registerListener(listener);
-
-            VerboseLogging.logInfoIfVerbose(logger, "BaseStepListener registered successfully");
-            return true;
-
-        } catch (Exception e) {
-            VerboseLogging.logWarnIfVerbose(logger, "Failed to register BaseStepListener: {}", e.getMessage());
-            return false;
-        }
-    }
-    
     /**
      * 清除处理状态（在 Scenario 结束时调用）
      */
     public static void clearProcessingState() {
-        TestContextHolder.get().remove(PROCESSED_KEY);
-        TestContextHolder.get().remove(GLUE_NAME_KEY);
-        TestContextHolder.get().remove(LOGGED_KEY);
-
+        processedForCurrentScenario.remove();
+        
         // 同时清理 BrowserOverrideManager
         if (BrowserOverrideManager.hasOverride()) {
             BrowserOverrideManager.clearOverrideBrowser();
         }
         BrowserOverrideManager.clearScenarioTags();
+    }
+    
+    /**
+     * 从给定 {@link StepEventBus} 读取当前 scenario 标签（A1/A2 回归接缝）。
+     *
+     * <p>直接从传入的 bus 读，<b>不</b>注入空 listener、<b>不</b>用会抛异常的反射 getter 探测；
+     * bus 未就绪（null 或未注册 listener）即原样返回空数组，交由后续 step 自然重试。
+     *
+     * @param bus     受控 bus（prod 传 {@code StepEventBus.getEventBus()}，测试传 Mockito 替身）
+     * @param verbose 是否输出 debug 日志
+     * @return 标签名数组（无则空数组，绝不 null）
+     */
+    static String[] readScenarioTags(StepEventBus bus, boolean verbose) {
+        if (bus == null || !bus.isBaseStepListenerRegistered()) {
+            return new String[0];
+        }
+        try {
+            BaseStepListener listener = bus.getBaseStepListener();
+            TestOutcome outcome = listener.getCurrentTestOutcome();
+            Set<TestTag> tags = outcome.getTags();
+            if (tags == null || tags.isEmpty()) {
+                return new String[0];
+            }
+            String[] result = tags.stream().map(TestTag::getName).toArray(String[]::new);
+            if (verbose) {
+                VerboseLogging.logDebugIfVerbose(logger, "readScenarioTags -> {}", Arrays.toString(result));
+            }
+            return result;
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger,
+                    "readScenarioTags failed (bus not fully initialized): {} - normal during early test init", e.getMessage());
+            return new String[0];
+        }
     }
     
     /**
@@ -263,74 +233,11 @@ public class AutoBrowserProcessor {
     }
     
     /**
-     * 从 Serenity 上下文获取当前 Scenario 的标签
-     *
-     * @return 标签数组
-     */
-    private static String[] getTagsFromSerenityContext() {
-        try {
-            VerboseLogging.logDebugIfVerbose(logger, "Attempting to get tags from StepEventBus...");
-
-            // 从 StepEventBus 获取当前 TestOutcome
-            StepEventBus eventBus = StepEventBus.getEventBus();
-            if (eventBus == null) {
-                VerboseLogging.logDebugIfVerbose(logger, "StepEventBus.getEventBus() returned null - tests may not be running with Serenity runners");
-                return new String[0];
-            }
-            VerboseLogging.logTraceIfVerbose(logger, "StepEventBus instance: {}", eventBus.getClass().getName());
-
-            // 使用反射安全地获取 BaseStepListener
-            Method method = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
-            method.setAccessible(true);
-            Object listener = method.invoke(eventBus);
-
-            if (listener == null) {
-                VerboseLogging.logDebugIfVerbose(logger, "BaseStepListener not registered yet");
-                return new String[0];
-            }
-
-            VerboseLogging.logTraceIfVerbose(logger, "BaseStepListener instance: {}", listener.getClass().getName());
-
-            // 获取 TestOutcome
-            Method getTestOutcomeMethod = listener.getClass().getMethod("getCurrentTestOutcome");
-            TestOutcome testOutcome = (TestOutcome) getTestOutcomeMethod.invoke(listener);
-
-            if (testOutcome == null) {
-                VerboseLogging.logDebugIfVerbose(logger, "getCurrentTestOutcome() returned null");
-                return new String[0];
-            }
-            VerboseLogging.logDebugIfVerbose(logger, "TestOutcome found: {}", testOutcome.getName());
-
-            Set<TestTag> testTags = testOutcome.getTags();
-            if (testTags == null) {
-                VerboseLogging.logDebugIfVerbose(logger, "testOutcome.getTags() returned null");
-                return new String[0];
-            }
-
-            VerboseLogging.logDebugIfVerbose(logger, "Found {} tags in TestOutcome", testTags.size());
-
-            if (!testTags.isEmpty()) {
-                String[] tags = testTags.stream()
-                    .map(TestTag::getName)
-                    .toArray(String[]::new);
-
-                VerboseLogging.logDebugIfVerbose(logger, "Converted tags: {}", Arrays.toString(tags));
-                return tags;
-            }
-
-        } catch (Exception e) {
-            VerboseLogging.logDebugIfVerbose(logger, "Exception getting tags from Serenity context: {} - this is normal during early test initialization", e.getMessage());
-        }
-
-        return new String[0];
-    }
-    
-    /**
      * 检查当前是否有 @AutoBrowser 注解生效
      * 
      * @return true 如果有注解生效
      */
     public static boolean hasAutoBrowserActive() {
-        return Boolean.TRUE.equals(TestContextHolder.get().get(PROCESSED_KEY));
+        return Boolean.TRUE.equals(processedForCurrentScenario.get());
     }
 }

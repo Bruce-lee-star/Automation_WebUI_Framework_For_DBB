@@ -4,6 +4,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
@@ -22,7 +25,10 @@ import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
  * - 在 PlaywrightManager 首次请求浏览器实例时，自动检测当前线程关联的标签
  * - 实现零侵入式的浏览器切换，无需在测试代码中显式调用
  * - 自动管理浏览器实例的生命周期，避免不必要的重启
- * 
+ *
+ * 注意（S2 注解门控）：浏览器覆盖最终是否生效，由 AutoBrowserProcessor 的注解门控决定——
+ *   若 glue 类标注 @AutoBrowser(enabled=false)，即便 scenario 含 @firefox/@edge 标签，覆盖也会被压制（回落默认浏览器）。
+ *
  * 使用方式：
  * <pre>
  * // 方式1：通过 Cucumber tag（推荐）
@@ -71,6 +77,11 @@ public class BrowserOverrideManager {
         TAG_TO_BROWSER_TYPE.put("@edge", "chromium");
         TAG_TO_BROWSER_TYPE.put("@safari", "webkit");
     }
+
+    // 多浏览器标签时的确定性优先级（数值越小优先级越高）。
+    // 用于保证 scenario 同时带多个浏览器标签时，"只运行第一个"在任何运行下都得到一致结果，
+    // 不依赖 Serenity TestOutcome.getTags()（本质为 Set）的遍历顺序。
+    private static final List<String> BROWSER_PRIORITY = Arrays.asList("chromium", "firefox", "webkit");
     
     /**
      * 设置当前线程的浏览器覆盖配置
@@ -200,23 +211,60 @@ public class BrowserOverrideManager {
         if (tags == null || tags.length == 0) {
             return null;
         }
-        
+
+        // 收集所有浏览器标签（保留出现顺序），用于"只运行第一个"并告警其余被忽略项
+        List<String> browserTags = new ArrayList<>();
         for (String tag : tags) {
             // 规范化标签：去除空格，转小写，确保有 @ 前缀
             String normalizedTag = tag.toLowerCase().trim();
-            
-            // 如果标签没有 @ 前缀，添加一个
             if (!normalizedTag.startsWith("@")) {
                 normalizedTag = "@" + normalizedTag;
             }
-            
-            // 检查映射表
             if (TAG_TO_BROWSER_TYPE.containsKey(normalizedTag)) {
-                return TAG_TO_BROWSER_TYPE.get(normalizedTag);
+                browserTags.add(normalizedTag);
             }
         }
-        
-        return null;
+
+        if (browserTags.isEmpty()) {
+            return null;
+        }
+
+        // 按确定性优先级选取"第一个"：保证多浏览器标签场景下结果稳定，不随 Set 遍历顺序变化
+        String selectedTag = browserTags.get(0);
+        int selectedPriority = priorityOf(TAG_TO_BROWSER_TYPE.get(selectedTag));
+        for (int i = 1; i < browserTags.size(); i++) {
+            String candidate = browserTags.get(i);
+            int candidatePriority = priorityOf(TAG_TO_BROWSER_TYPE.get(candidate));
+            if (candidatePriority < selectedPriority) {
+                selectedTag = candidate;
+                selectedPriority = candidatePriority;
+            }
+        }
+        String selectedBrowser = TAG_TO_BROWSER_TYPE.get(selectedTag);
+
+        // 多浏览器标签：只运行第一个，明确告警并列出被忽略的标签
+        if (browserTags.size() > 1) {
+            List<String> ignored = new ArrayList<>(browserTags);
+            ignored.remove(selectedTag);
+            logger.warn(
+                "Multiple browser tags detected in scenario: {}. Only the FIRST (by priority {}) will be used: {} -> {}. "
+                    + "Ignored browser tags: {}.",
+                String.join(", ", browserTags),
+                BROWSER_PRIORITY,
+                selectedTag, selectedBrowser,
+                String.join(", ", ignored));
+        }
+
+        return selectedBrowser;
+    }
+
+    /**
+     * 返回浏览器类型在 {@link #BROWSER_PRIORITY} 中的优先级（越小越优先）；
+     * 未知类型给予最大优先级值，使其永不抢占已知类型。
+     */
+    private static int priorityOf(String browserType) {
+        int idx = BROWSER_PRIORITY.indexOf(browserType);
+        return idx < 0 ? Integer.MAX_VALUE : idx;
     }
     
     /**
@@ -251,6 +299,33 @@ public class BrowserOverrideManager {
     }
 
     /**
+     * 仅缓存 scenario tags（不在此时应用浏览器覆盖）。
+     * <p>
+     * 由 {@code AutoBrowserProcessor.onScenarioStart()} 在 scenario 开始时静默调用一次，
+     * 使首个步骤里的 {@code @AutoBrowser} 门禁能立即拿到 tags 并终态化，避免"tags 未就绪→每次
+     * getPage() 重试"的日志刷屏。浏览器覆盖的实际应用仍由 {@link #setScenarioTags(String[])} 完成。
+     *
+     * @param tags Scenario 的标签（可为 null）
+     */
+    public static void cacheScenarioTags(String[] tags) {
+        if (tags == null) {
+            TestContextHolder.get().set(SCENARIO_TAGS_KEY, new String[0]);
+            return;
+        }
+        TestContextHolder.get().set(SCENARIO_TAGS_KEY, tags);
+    }
+
+    /**
+     * 返回已缓存的 scenario tags（可能为 null 或空数组，表示尚未预取）。
+     * 供 {@code AutoBrowserProcessor.onStepStarted(ExecutedStepDescription)} 在 @AutoBrowser 门禁确认前优先读取。
+     *
+     * @return 缓存的标签数组，未预取时为 null
+     */
+    public static String[] getCachedScenarioTags() {
+        return TestContextHolder.get().get(SCENARIO_TAGS_KEY);
+    }
+
+    /**
      * 清除当前Scenario的标签
      */
     public static void clearScenarioTags() {
@@ -258,59 +333,6 @@ public class BrowserOverrideManager {
         logger.debug("Scenario tags cleared");
     }
 
-    /**
-     * 检查是否需要切换浏览器
-     * 通过比较当前浏览器类型和从标签中提取的类型来判断
-     *
-     * 注意：这个方法应该在getBrowser()之前调用，此时overrideBrowserType已经设置好了
-     *
-     * @return true 如果需要切换浏览器
-     */
-    public static boolean needsBrowserSwitch() {
-        String[] tags = TestContextHolder.get().get(SCENARIO_TAGS_KEY);
-        if (tags == null || tags.length == 0) {
-            return false;
-        }
-
-        String targetBrowserType = extractBrowserFromTags(tags);
-        if (targetBrowserType == null) {
-            return false;
-        }
-
-        // 获取期望的浏览器类型（从override或默认值）
-        String expectedBrowserType = TestContextHolder.get().get(OVERRIDE_BROWSER_TYPE_KEY);
-        if (expectedBrowserType == null) {
-            expectedBrowserType = getDefaultBrowserType();
-        }
-
-        // 获取默认浏览器类型（用于判断是否真的需要切换）
-        String defaultBrowserType = getDefaultBrowserType();
-
-        // 如果期望的浏览器类型和默认类型相同，说明没有override，不需要切换
-        if (targetBrowserType.equalsIgnoreCase(defaultBrowserType)) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("needsBrowserSwitch: target browser '{}' matches default '{}', no switch needed",
-                    targetBrowserType, defaultBrowserType);
-            }
-            return false;
-        }
-
-        // 如果期望的浏览器类型已经等于目标类型，说明已经设置过了
-        if (targetBrowserType.equalsIgnoreCase(expectedBrowserType)) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("needsBrowserSwitch: override already set to '{}', checking if restart needed",
-                    expectedBrowserType);
-            }
-            // 这里需要通过其他方式判断是否真的需要重启
-            // 简单起见，我们假设已经设置override就表示需要重启
-            // 实际应该检查当前运行的浏览器类型
-            return true;
-        }
-
-        logger.info("needsBrowserSwitch: needs to switch from '{}' to '{}'",
-            expectedBrowserType, targetBrowserType);
-        return true;
-    }
     
     /**
      * 添加自定义标签到浏览器类型的映射

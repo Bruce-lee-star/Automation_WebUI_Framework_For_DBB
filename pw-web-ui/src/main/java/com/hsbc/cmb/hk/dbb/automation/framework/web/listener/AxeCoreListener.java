@@ -27,6 +27,16 @@ import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
  */
 public class AxeCoreListener implements StepListener {
 
+    /**
+     * Serenity 4.3.4 新增回调：外部录制截图后通知。本框架截图由 Playwright 自身管理，
+     * 不依赖 Serenity 截图流水线，故空实现（保持接口契约完整）。
+     */
+    @Override
+    public void recordScreenshot(String screenshotName, byte[] screenshotBytes) {
+        // 框架截图链路与 Serenity 无关：PlaywrightListener 在 step 失败/结束时自行截图并附加报告。
+    }
+
+
     private static final Logger logger = LoggerFactory.getLogger(AxeCoreListener.class);
 
     //  T3-1 收拢：由 static ThreadLocal 迁入 TestContext；原 withInitial(() -> false) 的默认 false

@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.awt.geom.AffineTransform;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.BrowserOverrideManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
@@ -90,6 +91,10 @@ public class PlaywrightConfigManager {
      * 优先使用测试用例级别的覆盖配置（如果存在）
      */
     public String getBrowserType() {
+        //  兜底再读 tags（2026-09-26）：这是"决定浏览器类型"的最后时刻。实测 scenario 开始时
+        //  TestOutcome.getTags() 仍为空（见 AutoBrowserProcessor.processAutoBrowserAnnotation 注释），
+        //  若到此刻才可用而不再读一次，@firefox/@edge 覆盖就永久失效。
+        AutoBrowserProcessor.processAutoBrowserAnnotation();
         // 优先级1: 检查是否有测试用例级别的浏览器覆盖
         if (BrowserOverrideManager.hasOverride()) {
             String overrideBrowser = BrowserOverrideManager.getEffectiveBrowserType();

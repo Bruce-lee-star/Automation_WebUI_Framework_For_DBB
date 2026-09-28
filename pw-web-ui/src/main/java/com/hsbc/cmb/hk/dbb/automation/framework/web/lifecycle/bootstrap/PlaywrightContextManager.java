@@ -111,15 +111,21 @@ public class PlaywrightContextManager {
             //   框架自身 createPage() 的 context.newPage() 也会触发（此刻尚未导航，url 为 about:blank），
             //   在并行逐 scenario 重建下会被误读为"同一窗口多开了一个 about:blank 页"。
             //   故经 MANAGED_PAGE_CREATION_IN_FLIGHT 精确判定归属，并打出 Context 内页数供判定。
-            ctx.onPage(newPage -> {
-                logNewPageEvent(ctx, newPage,
-                        classifyNewPageEvent(ctx, newPage,
-                                Boolean.TRUE.equals(MANAGED_PAGE_CREATION_IN_FLIGHT.get())));
-                newPage.onLoad(pageLoad -> {
-                    VerboseLogging.logDebugIfVerbose(logger,
-                            "New page loaded: url={}, title={}", newPage.url(), newPage.title());
+            //  受配置开关控制（playwright.page.events.*）：onPage 为扇出总闸（关掉则本 Context 下
+            //  所有页面级订阅一并失效），内嵌 onLoad 为独立开关。二者默认开启。
+            if (WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED.getBooleanValue()) {
+                ctx.onPage(newPage -> {
+                    logNewPageEvent(ctx, newPage,
+                            classifyNewPageEvent(ctx, newPage,
+                                    Boolean.TRUE.equals(MANAGED_PAGE_CREATION_IN_FLIGHT.get())));
+                    if (WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_LOAD_ENABLED.getBooleanValue()) {
+                        newPage.onLoad(pageLoad -> {
+                            VerboseLogging.logDebugIfVerbose(logger,
+                                    "New page loaded: url={}, title={}", newPage.url(), newPage.title());
+                        });
+                    }
                 });
-            });
+            }
 
             // 注册页面级可观测性诊断监听（未捕获异常/控制台错误/网络失败/崩溃）
             // 经 context.onPage 覆盖所有新建页面（含 window.open 弹窗），与上方 onPage 日志互不冲突
@@ -201,10 +207,16 @@ public class PlaywrightContextManager {
      * 取代原先在 {@link #createPage} 逐页 {@code page.onDownload} 的做法，彻底堵住「弹窗内下载漏捕获」的洞；
      * 关闭时序降级（WEB-P3-N14 ②）与真实失败告警的日志语义与原实现逐字一致。
      *
+     * <p><b>受配置开关控制</b>：{@code playwright.page.events.download.enabled}（默认 true）。
+     * 关闭后不再订阅 {@code onDownload}，代价是下载不再被保存/登记——{@code PlaywrightManager} 的
+     * {@code getLastDownloadPath/getLastDownloadFileName/getDownloadPaths} 将恒为空（依赖下载的用例会失败），
+     * 仅在"下载监听本身引发问题"时才建议关闭。
+     *
      * @param context 浏览器上下文（null 安全：直接忽略）
      */
     private static void registerDownloadHandler(BrowserContext context) {
-        if (context == null) {
+        if (context == null
+                || !WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_DOWNLOAD_ENABLED.getBooleanValue()) {
             return;
         }
         final Path downloadDir = PlaywrightManager.downloadDirectoryForCurrentThread();

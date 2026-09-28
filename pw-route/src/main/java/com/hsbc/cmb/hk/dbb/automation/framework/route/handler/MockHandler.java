@@ -6,7 +6,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.CapturedApiCa
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandlerRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RoutePassThroughFetcher;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.monitor.MonitorDataLossReporter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporter;
@@ -353,24 +352,18 @@ public class MockHandler {
         boolean routeSettled = false;
         try {
             // ── 1. 透传真实响应 ──
-            //    优先走「不绑定 Frame 的独立 APIRequestContext」（经 RouteRuntimeBridge），
-            //    规避页面在异步透传窗口内跳转导致 Frame 销毁的竞态（T-挂死根因）；
-            //    桥接缺失或独立 fetch 失败时，回退到原生 route.fetch()（Frame 仍存活时可用）。
+            //    直接走 route.fetch()：请求在**同一 BrowserContext** 内发出，自动继承该 context 的
+            //    Cookie / 代理 / ignoreHTTPSErrors / baseURL（SessionManager 已用 storageState 注入会话）。
+            //    故对鉴权接口（如 profile/list）天然带会话、天然可达后端，无需任何「独立 APIRequestContext」。
             //    【优化】显式设置 fetch 超时（默认 30s，可用环境变量 ROUTE_FETCH_TIMEOUT_MS 覆盖）：
             //    Playwright 的 route.fetch() 会在【事件线程】同步等待真实服务器返回；若服务器无响应，
             //    默认会阻塞到浏览器全局超时（通常 30s+）。显式超时可避免后端慢/挂起时事件线程被长时间
             //    占住，进而拖慢同 context 后续所有请求的路由分发。
+            //    唯一故障模式为死帧（页面在异步窗口内跳转，抛 "Object doesn't exist: frame"），
+            //    由下方 catch 分支兜底 resume / 静态体（见 §死帧处理）。
             Route.FetchOptions fetchOpts = new Route.FetchOptions()
                     .setTimeout(ROUTE_FETCH_TIMEOUT_MS);
-            APIResponse realResp;
-            try {
-                realResp = RoutePassThroughFetcher.fetch(route, route.request().url(), ROUTE_FETCH_TIMEOUT_MS);
-            } catch (Exception standaloneFailed) {
-                LOGGER.warn("[MockHandler] Standalone pass-through fetch failed ({}); "
-                        + "falling back to route.fetch(): pattern='{}'",
-                        standaloneFailed.getMessage(), rule.getUrlPattern());
-                realResp = route.fetch(fetchOpts); // 失败由外层 catch 兜底 resume，不在此吞掉
-            }
+            APIResponse realResp = route.fetch(fetchOpts); // 鉴权感知；fetch 失败由外层 catch 兜底（deadFrame→resume/静态体）
             int status = realResp.status();
             byte[] bodyBytes = realResp.body();
             // 【优化】显式 UTF-8 解码（避免依赖平台默认 charset 导致响应体中文乱码）
@@ -469,21 +462,41 @@ public class MockHandler {
             }
 
         } catch (PlaywrightException e) {
-            // 死帧（页面在异步透传窗口内已跳转）属预期竞态：请求随后 resume 不会永久挂死，降级 WARN 避免误报 ERROR
             boolean deadFrame = e.getMessage() != null && e.getMessage().contains("Object doesn't exist");
             if (deadFrame) {
-                LOGGER.warn("[MockHandler] Real-response fetch aborted (page/frame navigated away during async "
-                        + "intercept) — resuming original request to avoid blocking: pattern='{}'",
-                        rule.getUrlPattern());
+                // 死帧（页面在异步透传窗口内已跳转）属预期竞态：但原请求对前端仍有意义，
+                // 不应以 route.abort() 令其 net::ERR_FAILED 失败、破坏页面（如 profile/list 被 abort 后
+                // 页面报 "Failed to load resource"、下拉框数据缺失，进而引发后续元素交互异常）。
+                // 修复策略：① 若规则配置了静态 mock 响应体，则直接 fulfill 静态响应
+                //   （安全、不挂死、不破坏页面）；② 否则放行原始请求 route.resume()，
+                //   让浏览器自取真实响应——可达后端下安全，且 resume 的是原始请求而非新建 fetch，
+                //   不会引入"新建请求挂死"问题。
+                LOGGER.warn("[MockHandler] Real-response fetch failed (page/frame navigated away during async "
+                        + "intercept): pattern='{}'", rule.getUrlPattern());
+                if (hasStaticMockBody(rule)) {
+                    try {
+                        RouteUtil.safeFulfill(route, buildMockOptions(rule));
+                        LOGGER.warn("[MockHandler] Fulfilled with static mock body as fallback (deadFrame): "
+                                + "pattern='{}'", rule.getUrlPattern());
+                    } catch (Exception fulfillFailed) {
+                        LOGGER.debug("[MockHandler] static mock fallback failed, resuming original request: {}",
+                                fulfillFailed.toString());
+                        safeResumeRoute(route);
+                    }
+                } else {
+                    LOGGER.warn("[MockHandler] No static mock body configured; resuming original request instead "
+                            + "of abort to avoid breaking page: pattern='{}'", rule.getUrlPattern());
+                    safeResumeRoute(route);
+                }
             } else {
                 LOGGER.error("[MockHandler] Failed to intercept real response for pattern '{}': {}",
                         rule.getUrlPattern(), e.getMessage(), e);
-            }
-            // 兜底：fetch/fulfill 失败时 resume 放行，避免请求永久挂起
-            try {
-                route.resume();
-            } catch (Exception ignored) {
-                LOGGER.debug("[MockHandler] fallback resume skipped (route/page gone): {}", e.toString());
+                // 兜底：fetch/fulfill 失败时 resume 放行，避免请求永久挂起
+                try {
+                    route.resume();
+                } catch (Exception ignored) {
+                    LOGGER.debug("[MockHandler] fallback resume skipped (route/page gone): {}", e.toString());
+                }
             }
             routeSettled = true;
         } finally {
@@ -531,6 +544,51 @@ public class MockHandler {
                     rule.getUrlPattern(), status);
         } catch (Exception e) {
             LOGGER.debug("[MockHandler] Failed to store intercepted call: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 判断规则是否配置了静态 mock 响应体（纯 Mock 分支可用作兜底）。
+     */
+    private static boolean hasStaticMockBody(RouteRule rule) {
+        return rule.getMockBodyBytes() != null
+                || (rule.getMockBody() != null && !rule.getMockBody().isEmpty());
+    }
+
+    /**
+     * 构建纯 Mock 响应选项（状态码 + body + 自定义/CORS 头），供纯 Mock 分支与
+     * 「拦截真实响应失败兜底」复用，避免重复逻辑。
+     */
+    private static Route.FulfillOptions buildMockOptions(RouteRule rule) {
+        int status = rule.getMockStatus();
+        if (status < 100 || status >= 600) {
+            status = 200;
+        }
+        Route.FulfillOptions opts = new Route.FulfillOptions().setStatus(status);
+        byte[] bodyBytes = rule.getMockBodyBytes();
+        if (bodyBytes != null) {
+            opts.setBodyBytes(bodyBytes);
+        } else {
+            String body = rule.getMockBody();
+            opts.setBody(body != null ? body : "");
+        }
+        Map<String, String> respHeaders = new HashMap<>();
+        if (rule.getMockHeaders() != null) {
+            respHeaders.putAll(rule.getMockHeaders());
+        }
+        respHeaders.putIfAbsent("Access-Control-Allow-Origin", "*");
+        if (!respHeaders.isEmpty()) {
+            opts.setHeaders(respHeaders);
+        }
+        return opts;
+    }
+
+    /** resume 兜底（吞掉异常，仅留痕），供失败路径收尾。 */
+    private static void safeResumeRoute(Route route) {
+        try {
+            route.resume();
+        } catch (Exception ignored) {
+            LOGGER.debug("[MockHandler] resume skipped (route/page gone): {}", ignored.toString());
         }
     }
 

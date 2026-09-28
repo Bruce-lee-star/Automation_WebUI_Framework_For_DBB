@@ -7,7 +7,6 @@ import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.ref.WeakReference;
 import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -23,7 +22,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
  *   <li>支持细粒度的单个 pattern 注销和整上下文清理</li>
  *   <li>使用 {@link ConcurrentHashMap#newKeySet()} 保证线程安全</li>
  *   <li>测试结束时调用 {@link #clearContext(Object)} 防止内存泄漏</li>
- *   <li>{@link ContextKey} 内部使用 {@link WeakReference}，Page 被 GC 后不阻止回收</li>
+ *   <li>注册表以 {@link WeakHashMap} <b>按上下文实例本身</b>作弱键，Page 被 GC 后不阻止回收</li>
  * </ul>
  *
  * <p>返回值语义：
@@ -44,7 +43,7 @@ public class RouteRegistry {
     //    在 DELAY / MONITOR 的相对顺序上互相矛盾，已删除，改由 shouldOverride 直接引用枚举。
 
     /**
-     * Key: ContextKey（WeakReference 包装的 Page/BrowserContext），
+     * Key: <b>上下文实例本身</b>（Page/BrowserContext），
      * Value: 该上下文已注册的 pattern → RouteHandleType 映射。
      *
      * <p> 修复（漏网之鱼 #1）：由 {@code ConcurrentHashMap} 改为
@@ -56,10 +55,18 @@ public class RouteRegistry {
      *       一旦某 context 被 GC 但清理未触发即永久泄漏，且无 GC 兜底。</li>
      *   <li>改为 WeakHashMap 后，context 被 GC 时条目自动回收，作为显式清理的防御性兜底；
      *       synchronizedMap 包装保证并发注册（Playwright 事件线程）的线程安全。</li>
-     *   <li>仍保留 ContextKey 的身份哈希 + equals（同一实例的两个键相等），注册/反查语义不变。</li>
      * </ul>
+     *
+     * <p><b>修复（2026-09-25）：键由 {@code ContextKey} 改为上下文实例本身</b>。
+     * 原 {@code ContextKey} 是<b>即用即弃</b>的临时对象：{@code new ContextKey(context)} 除 WeakHashMap
+     * 自身的<b>弱引用</b>外没有任何强引用，因此该条目<b>在下一次 GC 就会被驱逐</b>（哪怕 context 仍存活）。
+     * 后果是 {@link #removeContextPatterns(Object)} 随时可能返回 {@code null} →
+     * {@code RuleRepository.clearContext} 误判「无 pattern」而<b>跳过原生 unroute 与句柄表摘除</b>，
+     * 既违背「case 结束必须全部清理」，又造成 {@code RouteContextState.ROUTE_HANDLES}（<b>强键</b>）泄漏。
+     * 直接以 context 作弱键：context 存活期间条目稳定存在，context 被 GC 后自动回收（兜底语义保留）；
+     * Page/BrowserContext 未覆写 {@code equals}/{@code hashCode}，故仍是身份匹配，与原语义等价。</p>
      */
-    private static final Map<ContextKey, Map<String, RouteHandleType>> CONTEXT_PATTERNS =
+    private static final Map<Object, Map<String, RouteHandleType>> CONTEXT_PATTERNS =
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
@@ -80,9 +87,8 @@ public class RouteRegistry {
      * <p>每次注册前检查是否需要清理死条目（基于阈值触发）。
      */
     private static boolean registerInternal(Object context, String pattern, RouteHandleType type) {
-        ContextKey key = new ContextKey(context);
         Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.computeIfAbsent(
-                key, k -> new ConcurrentHashMap<>());
+                context, k -> new ConcurrentHashMap<>());
         RouteHandleType existing = patterns.putIfAbsent(pattern, type);
         if (existing != null) {
             LOGGER.debug("[RouteRegistry] Pattern already registered in this context: {} -> {} (existing type={}, new type={})",
@@ -99,7 +105,7 @@ public class RouteRegistry {
      * @param pattern 要注销的 URL pattern
      */
     public static void unregister(Object context, String pattern) {
-        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(context);
         if (patterns != null) {
             patterns.remove(pattern);
             LOGGER.debug("[RouteRegistry] Unregistered pattern from context: {} -> {}",
@@ -119,9 +125,8 @@ public class RouteRegistry {
      * @return 始终返回 true
      */
     public static boolean forceRegister(Object context, String pattern, RouteHandleType type) {
-        ContextKey key = new ContextKey(context);
         Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.computeIfAbsent(
-                key, k -> new ConcurrentHashMap<>());
+                context, k -> new ConcurrentHashMap<>());
         RouteHandleType oldType = patterns.put(pattern, type);
         if (oldType != null) {
             LOGGER.info("[RouteRegistry] Force-override registered pattern: {} -> {} ({} -> {})",
@@ -139,7 +144,7 @@ public class RouteRegistry {
      * @return 被移除的 pattern → 类型映射；若该上下文无注册则返回 null
      */
     public static Map<String, RouteHandleType> removeContextPatterns(Object context) {
-        return CONTEXT_PATTERNS.remove(new ContextKey(context));
+        return CONTEXT_PATTERNS.remove(context);
     }
 
     /**
@@ -182,8 +187,8 @@ public class RouteRegistry {
         // 在 Context 再次启用时残留旧 handler 造成请求被错误拦截。
         //  修复（漏网之鱼 #1）：synchronizedMap 的迭代必须手动加锁，避免与并发 register/clear 抛 CME。
         synchronized (CONTEXT_PATTERNS) {
-            for (Map.Entry<ContextKey, Map<String, RouteHandleType>> entry : CONTEXT_PATTERNS.entrySet()) {
-                Object ctx = entry.getKey().get();
+            for (Map.Entry<Object, Map<String, RouteHandleType>> entry : CONTEXT_PATTERNS.entrySet()) {
+                Object ctx = entry.getKey();
             if (ctx != null && !entry.getValue().isEmpty()) {
                 try {
                     if (ctx instanceof Page) {
@@ -237,7 +242,7 @@ public class RouteRegistry {
      * 获取指定上下文的已注册 pattern 数量（用于测试/监控）。
      */
     public static int getPatternCount(Object context) {
-        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(new ContextKey(context));
+        Map<String, RouteHandleType> patterns = CONTEXT_PATTERNS.get(context);
         return patterns != null ? patterns.size() : 0;
     }
 
@@ -248,54 +253,11 @@ public class RouteRegistry {
         return CONTEXT_PATTERNS.size();
     }
 
-    // ─── ContextKey（WeakReference 包装器）─────────────────────────
-
-    /**
-     * 上下文的弱引用包装键 — 防止静态 Map 阻止 Page/BrowserContext 被 GC。
-     *
-     * <p>关键设计：
-     * <ul>
-     *   <li>{@link #equals(Object)} 基于包裹对象的身份（==），保证同一实例的两个 ContextKey 匹配</li>
-     *   <li>{@link #hashCode()} 使用 {@link System#identityHashCode(Object)}，不因 WeakReference 释放而改变</li>
-     * </ul>
-     */
-    /**
-     * 将 clearContext 的 Object 参数还原为 BrowserContext（注册时传入的即 BrowserContext 实例）。
-     * 非 BrowserContext 时返回 null（调用方降级为不精确清理防重桶）。
-     */
-    private static final class ContextKey {
-        private final int identityHash;
-        private final WeakReference<Object> ref;
-
-        ContextKey(Object context) {
-            this.identityHash = System.identityHashCode(context);
-            this.ref = new WeakReference<>(context);
-        }
-
-        /**
-         * 获取包裹的原始对象（可能为 null，如果已被 GC）。
-         */
-        Object get() {
-            return ref.get();
-        }
-
-        /**
-         * 该键对应的上下文是否已被 GC 回收。
-         */
-        @Override
-        public boolean equals(Object o) {
-            if (o == this)  {return true;} 
-            if (!(o instanceof ContextKey))  {return false;} 
-            ContextKey that = (ContextKey) o;
-            Object a = this.ref.get();
-            Object b = that.ref.get();
-            // 任一侧已被 GC → 不相等（死条目不参与匹配）
-            return a != null && b != null && a == b;
-        }
-
-        @Override
-        public int hashCode() {
-            return identityHash;
-        }
-    }
+    // ─── 弱键说明（原 ContextKey 已于 2026-09-25 移除）──────────────
+    //  原 ContextKey 是「WeakReference 包装器」，但它是<b>即用即弃</b>的临时对象：
+    //  new ContextKey(context) 除 WeakHashMap 自身的弱引用外没有任何强引用，
+    //  于是条目在下一次 GC 就会被驱逐（哪怕 context 仍存活），导致
+    //  removeContextPatterns 返回 null → clearContext 误判「无 pattern」而跳过原生 unroute 与句柄摘除。
+    //  现直接以 context 实例作 WeakHashMap 键：context 存活 ⇒ 条目稳定；context 被 GC ⇒ 自动回收（兜底保留）。
+    //  Page/BrowserContext 未覆写 equals/hashCode，故仍是身份匹配，与原语义等价。
 }

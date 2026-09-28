@@ -36,11 +36,33 @@ import java.util.WeakHashMap;
  * 1.60+ 保证每个页面仅触发一次；因此<b>无需</b>自研幂等去重与关闭清理（升级评估报 §3.2 已删除该逻辑）。
  * 诊断监听仅在页面创建接缝处注册一次，不叠加、不跨 scenario 残留。
  *
+ * <p><b>订阅开关（全部配置驱动，见 {@code WebFrameworkConfig} / {@code ConfigKeys}）</b>：
+ * {@code context.onPage} 扇出由 {@code playwright.page.events.page.enabled}（默认 true）控制；
+ * 四个诊断订阅分别由 {@code playwright.page.events.<console|pageError|requestFailed|crash>.enabled}
+ * 控制，<b>默认全部关闭</b>。关闭后服务端不再下发对应事件，同时消除"驱动按 payload guid 解析已回收
+ * 句柄"造成的 {@code Object doesn't exist} / {@code Cannot find object to call} 类异常（污染在途调用）。
+ *
  * @apiNote 内部基础设施能力，业务 Page 不应直接调用；仅由 {@link PlaywrightContextManager} 在创建接缝处调用。
  */
 public final class PageEventMonitor {
 
     private static final Logger logger = LoggerFactory.getLogger(PageEventMonitor.class);
+
+    //  逐事件订阅开关（已由硬编码迁至配置注册表，见 WebFrameworkConfig / ConfigKeys）：
+    //    · 扇出总闸：PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED（控制 context.onPage，默认 true）
+    //      —— 关闭后本类与 PageInteractionMonitor 的每页监听都不会注册（挂载点即 onPage 回调）；
+    //    · 本类四个诊断订阅默认全部【关闭】：console / pageError / requestFailed / crash。
+    //
+    //  为何配置驱动 + 默认关闭：这些订阅对应的事件分支会拿 payload 里的 guid 去客户端对象表解析
+    //  （Connection.getExistingObject / Connection.dispatch），句柄一旦已被服务端回收即抛
+    //  "Object doesn't exist: <type>@…" / "Cannot find object to call <event>: <type>@…"；异常发生在
+    //  业务 lambda【之前】无法在回调内拦截，且因 Connection 为共享单连接，会以"此刻在等结果的任意
+    //  调用线程"为宿主抛出（污染在途调用）。不订阅则服务端根本不下发该事件 ⇒ 敞口为零（实测零订阅时
+    //  该 Context 收到的相关事件数为 0）。运行时改配置即可开关，无需改代码。
+
+    /** "failOnError 已开但 pageError 订阅已关"的告警只打一次（避免每 context 刷屏）。 */
+    private static final java.util.concurrent.atomic.AtomicBoolean FAIL_ON_ERROR_WARNED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /** 当前测试线程待上报的未捕获页面异常集合（步骤结束时经 Serenity 检查消费并清空）。 */
     @SuppressWarnings("unchecked")
@@ -57,7 +79,56 @@ public final class PageEventMonitor {
     private static final Set<Page> REGISTERED_PAGES =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
+    /**
+     * 第三方噪音源域名白名单：指纹/监控/广告分析脚本（ThreatMetrix、AppDynamics、Tealium、Google/Yahoo 分析等）
+     * 会持续刷 console-error/warning 与 request-failed，与业务断言无关且淹没真实诊断。命中则降级为 TRACE（默认静默），
+     * 仅 {@code TRACE} 级别下可见，避免日志被淹。如需扩展/关闭，在此集合增删域名子串即可（后续可迁至 WebFrameworkConfig）。
+     */
+    private static final Set<String> NOISE_DOMAINS = Set.of(
+            "online-metrix.net",        // ThreatMetrix 指纹
+            "appdynamics.com",          // AppDynamics RUM (adrum)
+            "tiqcdn.com",               // Tealium utag
+            "googleadservices.com",     // Google 转化追踪
+            "yimg.com",                 // Yahoo 资源
+            "analytics.yahoo.com",
+            "sp.analytics.yahoo.com",
+            "doubleclick.net",
+            "googletagmanager.com",
+            "google-analytics.com",
+            "scorecardresearch.com",
+            "connect.facebook.net");
+
+    /** 未捕获页面异常中属于上述第三方的文本片段（page-error 无 URL，只能按文本识别）。 */
+    private static final List<String> THIRD_PARTY_ERROR_FRAGMENTS = List.of(
+            "appdynamics", "adrum", "online-metrix", "tiqcdn");
+
     private PageEventMonitor() {
+    }
+
+    /** 来源 URL 是否命中第三方噪音白名单。 */
+    private static boolean isNoise(String url) {
+        if (url == null) {
+            return false;
+        }
+        for (String domain : NOISE_DOMAINS) {
+            if (url.contains(domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 未捕获异常文本是否来自第三方噪音脚本（page-error 不带 URL，按文本片段识别）。 */
+    private static boolean isThirdPartyError(String error) {
+        if (error == null) {
+            return false;
+        }
+        for (String fragment : THIRD_PARTY_ERROR_FRAGMENTS) {
+            if (error.contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -70,10 +141,45 @@ public final class PageEventMonitor {
      * @param context 浏览器上下文（null 安全：直接忽略）
      */
     public static void register(BrowserContext context) {
+        if (!WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED.getBooleanValue()) {
+            return;   // 扇出总闸关闭：连 onPage 都不订阅，本类所有页面级诊断均不生效
+        }
         if (context == null || !REGISTERED_CONTEXTS.add(context)) {
             return;
         }
+        warnIfFailOnPageErrorHasNoEffect();
         context.onPage(PageEventMonitor::register);
+    }
+
+    /**
+     * 一致性告警（只打一次）：{@code playwright.page.error.failOnError=true} 依赖 {@code onPageError}
+     * 订阅来收集异常；若该订阅已被配置关闭，则 fail-on-page-error 形同虚设——属"必须知情"的静默降级。
+     */
+    private static void warnIfFailOnPageErrorHasNoEffect() {
+        if (WebFrameworkConfig.PLAYWRIGHT_PAGE_ERROR_FAIL.getBooleanValue()
+                && !pageErrorEnabled()
+                && FAIL_ON_ERROR_WARNED.compareAndSet(false, true)) {
+            logger.warn("[page-error] '{}' is true but '{}' is false — page errors are NOT collected, "
+                            + "so fail-on-page-error cannot take effect. Enable the subscription or disable the fail switch.",
+                    WebFrameworkConfig.PLAYWRIGHT_PAGE_ERROR_FAIL.getKey(),
+                    WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_PAGE_ERROR_ENABLED.getKey());
+        }
+    }
+
+    private static boolean consoleEnabled() {
+        return WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_CONSOLE_ENABLED.getBooleanValue();
+    }
+
+    private static boolean pageErrorEnabled() {
+        return WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_PAGE_ERROR_ENABLED.getBooleanValue();
+    }
+
+    private static boolean requestFailedEnabled() {
+        return WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_REQUEST_FAILED_ENABLED.getBooleanValue();
+    }
+
+    private static boolean crashEnabled() {
+        return WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_CRASH_ENABLED.getBooleanValue();
     }
 
     /**
@@ -88,14 +194,28 @@ public final class PageEventMonitor {
         if (page == null || !REGISTERED_PAGES.add(page)) {
             return;
         }
-        page.onPageError(PageEventMonitor::handlePageError);
-        page.onConsoleMessage(PageEventMonitor::handleConsoleMessage);
-        page.onRequestFailed(PageEventMonitor::handleRequestFailed);
-        page.onCrash(PageEventMonitor::handleCrash);
+        //  逐事件按配置订阅（playwright.page.events.*）；默认四个诊断订阅全关 ⇒ 不注册任何回调。
+        //  幂等标记照常记录，故重复 register 依旧 no-op（不会因配置差异而叠加 handler）。
+        if (pageErrorEnabled()) {
+            page.onPageError(PageEventMonitor::handlePageError);
+        }
+        if (consoleEnabled()) {
+            page.onConsoleMessage(PageEventMonitor::handleConsoleMessage);
+        }
+        if (requestFailedEnabled()) {
+            page.onRequestFailed(PageEventMonitor::handleRequestFailed);
+        }
+        if (crashEnabled()) {
+            page.onCrash(PageEventMonitor::handleCrash);
+        }
     }
 
     /** 未捕获 JS 异常：记录错误级日志；开启"页面异常即失败"开关时收集，待步骤结束上报 Serenity。 */
     private static void handlePageError(String error) {
+        if (isThirdPartyError(error)) {
+            logger.trace("[page-error-noise-suppressed] {}", error);
+            return;
+        }
         logger.error("[page-error] Uncaught page exception: {}", error);
         if (WebFrameworkConfig.PLAYWRIGHT_PAGE_ERROR_FAIL.getBooleanValue()) {
             pendingPageErrors().add(error);
@@ -124,18 +244,27 @@ public final class PageEventMonitor {
         return snapshot;
     }
 
-    /** 控制台消息：仅关注 error / warning，避免 log 噪声。 */
+    /** 控制台消息：仅关注 error / warning，避免 log 噪声；第三方噪音源降级为 TRACE（默认静默）。 */
     private static void handleConsoleMessage(ConsoleMessage message) {
+        String url = message.location();
+        if (isNoise(url)) {
+            logger.trace("[console-noise-suppressed] {} from {}", message.type(), url);
+            return;
+        }
         String type = message.type();
         if ("error".equals(type)) {
             logger.error("[console-error] {}", message.text());
-        } else  {if ("warning".equals(type)) {
+        } else if ("warning".equals(type)) {
             logger.warn("[console-warning] {}", message.text());
-        }} 
+        }
     }
 
-    /** 网络请求失败（超时/断网）：记录警告级日志。 */
+    /** 网络请求失败（超时/断网）：记录警告级日志；第三方噪音源降级为 TRACE（默认静默）。 */
     private static void handleRequestFailed(Request request) {
+        if (isNoise(request.url())) {
+            logger.trace("[request-noise-suppressed] {} {}", request.method(), request.url());
+            return;
+        }
         logger.warn("[request-failed] {} {}", request.method(), request.url());
     }
 

@@ -196,6 +196,30 @@ public class PlaywrightManager {
     }
 
     /**
+     * 绑定本线程当前 Context 承载的**登录 sessionKey**（A5，2026-09-26）。
+     *
+     * <p>由 {@code SessionManager} 在「登录成功 / 会话恢复 / 命中持久化 session」时调用。绑定随 Context
+     * 生命周期存活（只在 Context 被关闭/丢弃时清除），故用例失败导致的 session 记账清空<b>不会</b>
+     * 让框架误判"无登录态"而重建 Context —— 这是"同 sessionKey、case 失败也不重建 Context（免登录）"的判据基础。
+     *
+     * @apiNote <b>framework-internal</b>：业务代码不得调用（浏览器会话生命周期由框架托管）。
+     * @param sessionKey 会话标识；{@code null}/空串为 no-op
+     */
+    public static void bindCurrentContextSessionKey(String sessionKey) {
+        PlaywrightRuntime.instance().contextRegistry.bindCurrentContextSessionKey(sessionKey);
+    }
+
+    /**
+     * 本线程当前 Context 承载的登录 sessionKey。
+     *
+     * @apiNote <b>framework-internal</b>：业务代码不得调用。
+     * @return 会话标识；该 Context 未承载登录态时返回 {@code null}
+     */
+    public static String currentContextSessionKeyForThread() {
+        return PlaywrightRuntime.instance().contextRegistry.currentContextSessionKeyForThread();
+    }
+
+    /**
      * 本线程当前 Context（<b>线程级</b>记录，不受用例边界影响）。
      * <p>用于收尾可靠关闭、feature 模式跨用例复用判定、以及孤儿回收保护。
      */
@@ -470,7 +494,8 @@ public class PlaywrightManager {
             return;
         }
         BrowserContext ctx = PlaywrightRuntime.instance().contextRegistry.getCurrentContext();
-        if (ctx != null) {
+        boolean ctxAlive = ctx != null && ctx.browser() != null && ctx.browser().isConnected();
+        if (ctxAlive) {
             closeCurrentPageIfAny();
             // 1.59+ 的 BrowserContext.setStorageState 仅接受 Path：将内存 JSON 落临时文件后应用，用完即删，
             // 避免为「就地换会话」重新引入磁盘存储（仍远轻于关闭 Page/Context 再重建整条生命周期）。
@@ -492,8 +517,16 @@ public class PlaywrightManager {
                     }
                 }
             }
+            // 仅就地换会话：不置 flag，避免后续 getContext() 误判需重建（抵消轻量化收益）
+            customOptions().setStorageStateWithoutRebuild(storageStateJson);
+        } else {
+            // Context 尚未创建或已失效：必须置位 customOptions flag（setStorageState 而非 WithoutRebuild），
+            // 否则后续 getContext() 新建 Context 时不会注入 storageState，导致「本地有有效缓存却仍走完整登录」
+            // （master 分支「首次登录不加载 session 文件」的等价缺陷）。此时本就无存活 Context，谈不上「重建」。
+            customOptions().setStorageState(storageStateJson);
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "StorageState set (context not alive) — will apply on next getContext() creation");
         }
-        customOptions().setStorageStateWithoutRebuild(storageStateJson);
     }
 
     /**
@@ -504,13 +537,23 @@ public class PlaywrightManager {
             return;
         }
         BrowserContext ctx = PlaywrightRuntime.instance().contextRegistry.getCurrentContext();
-        if (ctx != null) {
+        boolean ctxAlive = ctx != null && ctx.browser() != null && ctx.browser().isConnected();
+        if (ctxAlive) {
             closeCurrentPageIfAny();
             ctx.setStorageState(storageStatePath);
             VerboseLogging.logInfoIfVerbose(logger,
                     "Applied storageState (path) in-place to live context (no context rebuild): {}", storageStatePath);
+            // 仅就地换会话：不置 flag，避免后续 getContext() 误判需重建（抵消轻量化收益）
+            customOptions().setStorageStatePathWithoutRebuild(storageStatePath);
+        } else {
+            // Context 尚未创建或已失效：必须置位 customOptions flag（setStorageStatePath 而非 WithoutRebuild），
+            // 否则后续 getContext() 新建 Context 时不会注入 storageState，导致「本地有有效缓存却仍走完整登录」
+            // （master 分支「首次登录不加载 session 文件」的等价缺陷）。此时本就无存活 Context，谈不上「重建」。
+            customOptions().setStorageStatePath(storageStatePath);
+            VerboseLogging.logInfoIfVerbose(logger,
+                    "StorageState path set (context not alive) — will apply on next getContext() creation: {}",
+                    storageStatePath);
         }
-        customOptions().setStorageStatePathWithoutRebuild(storageStatePath);
     }
 
     /**
@@ -605,6 +648,21 @@ public class PlaywrightManager {
 
     public static void cleanupForScenario() {
         ScenarioLifecycle.cleanupForScenario();
+    }
+
+    /**
+     * 带用例结果的场景收尾（A5，2026-09-26）。
+     *
+     * <p>{@code scenarioFailed=true} 时，feature 模式下**仅丢弃本用例的 Page** —— 失败用例的 Page 可能
+     * "存活但已坏"（导航失败/半死），不许跨用例传染；Context/登录态仍保留 → 同一个 sessionKey 的下个用例
+     * 既不背脏数据、又能免登录（Cookie 仍在，Page 由 {@code getPage()} 在同一个 Context 内懒重建）。
+     *
+     * @apiNote <b>framework-internal</b>：由 {@code PlaywrightListener} 在 Serenity {@code testFinished} 时
+     *          传入本用例真实结果；业务代码不得调用。
+     * @param scenarioFailed 本用例是否失败（FAILURE / ERROR 视为失败）
+     */
+    public static void cleanupForScenario(boolean scenarioFailed) {
+        ScenarioLifecycle.cleanupForScenario(scenarioFailed);
     }
 
     /**

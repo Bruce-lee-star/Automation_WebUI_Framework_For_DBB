@@ -44,18 +44,36 @@ public class FrameworkCore {
                 com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator.ORDER_FRAMEWORK_CORE,
                 "pw-core", () -> {
                     //  W-1：JVM 退出期收口浏览器资源，避免硬杀留下孤儿浏览器进程（CI runner 堆积、内存耗尽）。
-                    //  cleanupAll 在并发执行模式下会主动抛 IllegalStateException 拒绝（防御性设计），
-                    //  此时不应刷异常栈（与文档 03 §5.1 一致）：仅 debug 记录，跳过浏览器清理即可。
+                    //  2026-09-27 强化（日志实证：Serenity testSuiteFinished 在 Cucumber 编排下不触发，
+                    //  本 hook 是 JVM 正常退出的最后兜底）：
+                    //  ① Route 引擎（v1+v2 线程）先行关闭 —— 与浏览器无关，即使 cleanupAll 被并发窗口
+                    //     拒绝，线程也不残留；
+                    //  ② cleanupAll 被拒（防御性设计，防误关邻居线程浏览器）时降级本线程清理 + WARN
+                    //     （非 verbose），不再静默跳过；
+                    //  ③ 完成/失败均可观测（INFO/ERROR + ShutdownCoordinator 失败计数）。
                     if (!frameworkState.isInitialized()) {
                         return;
                     }
                     try {
-                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: cleaning up browser resources...");
+                        RouteLifecycleRegistry.get().stopAllContextEngines();
+                        RouteLifecycleRegistry.get().drainForSuiteTeardown();
+                    } catch (Exception e) {
+                        com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                                .recordFailure("pw-core/shutdownHook/routeEngines", e);
+                    }
+                    try {
+                        logger.info("JVM Shutdown Hook: cleaning up browser resources...");
                         PlaywrightManager.cleanupAll();
-                        VerboseLogging.logInfoIfVerbose(logger, "JVM Shutdown Hook: browser resources cleaned");
+                        logger.info("JVM Shutdown Hook: browser resources cleaned");
                     } catch (IllegalStateException e) {
-                        VerboseLogging.logDebugIfVerbose(logger,
-                                "JVM shutdown skipped cleanupAll (concurrent mode active): {}", e.getMessage());
+                        logger.warn("JVM shutdown skipped global cleanupAll (concurrent mode active): {} "
+                                + "— falling back to per-thread cleanup", e.getMessage());
+                        try {
+                            PlaywrightManager.cleanupForFeature();
+                        } catch (Exception ex) {
+                            com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                                    .recordFailure("pw-core/shutdownHook/fallbackCleanupForFeature", ex);
+                        }
                     } catch (Exception e) {
                         //  N-06（doc 21 HIGH）：关闭期清理失败必须【非 verbose 门控】地可观测 ——
                         //  原实现走 logErrorIfVerbose，默认日志级别下【完全无输出】，而这正是
@@ -273,11 +291,31 @@ public class FrameworkCore {
     
     // 测试完成后的清理
     public void afterTest() {
+        //  兼容旧调用点：调用方拿不到用例结果时按"未失败"处理（保持既有行为，零回归）。
+        afterTest(false);
+    }
+
+    /**
+     * 测试完成后的清理（带用例结果，A5 / 2026-09-26）。
+     *
+     * <p><b>为什么必须有这个重载</b>：feature 模式下「上个用例失败」必须<b>丢弃其 Page</b>
+     * （失败用例的 Page 可能"存活但已坏"，不许跨用例传染），但<b>保留 Context/登录态</b>
+     * （同一 sessionKey 的下个用例既不带脏数据、又免登录）。
+     *
+     * <p>实测（test-automation/1.txt 2026-09-26）框架的<b>实际收尾入口</b>是 glue 的 {@code @After}
+     * → 本方法（它先于 Serenity {@code testFinished} 执行，且 glue 包内的 {@code @Before/@After} 对
+     * <b>全部</b> scenario 生效）；而 {@code PlaywrightListener.testFinished} 在该运行下未被派发，
+     * 故"结果"必须由 glue 从 cucumber 侧传入（{@code Scenario.isFailed()} 是权威来源）。
+     *
+     * @param scenarioFailed 本用例是否失败；{@code true} 时仅丢弃 Page、绝不动 Context
+     */
+    public void afterTest(boolean scenarioFailed) {
         try {
-            VerboseLogging.logDebugIfVerbose(logger, "Cleaning up after test execution...");
+            VerboseLogging.logDebugIfVerbose(logger, "Cleaning up after test execution... (scenarioFailed={})",
+                    scenarioFailed);
 
             // 清理Playwright资源
-            PlaywrightManager.cleanupForScenario();
+            PlaywrightManager.cleanupForScenario(scenarioFailed);
             VerboseLogging.logDebugIfVerbose(logger, "Playwright resources cleaned up for scenario");
 
             VerboseLogging.logDebugIfVerbose(logger, " Test cleanup completed");
@@ -322,7 +360,8 @@ public class FrameworkCore {
         //    异常处理的作用域必须限定为"当前线程的 scenario 级资源"，与正常路径
         //    afterTest() → PlaywrightManager.cleanupForScenario() 保持一致。
         try {
-            PlaywrightManager.cleanupForScenario();
+            //  A5：异常发生 ⇒ 本用例的 Page 极可能已坏 → 按"失败"收尾（只丢 Page、保留 Context/登录态）。
+            PlaywrightManager.cleanupForScenario(true);
         } catch (Exception cleanupException) {
             logger.error("Failed to clean up scenario resources after exception", cleanupException);
         }

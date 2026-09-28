@@ -9,10 +9,14 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.Playwrig
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.logging.LogContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.microsoft.playwright.BrowserContext;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.HangWatchdog;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.trace.ScenarioTraceRecorder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.concurrent.ConcurrentContextExecutor;
 import com.microsoft.playwright.Page;
@@ -336,20 +340,133 @@ public class PlaywrightSerenityBridge {
     // ==================== Scenario 生命周期 ====================
 
     /**
+     * 跨用例收尾栅栏：有界等待<b>本线程</b> Context 上「上一用例的 route 收尾」收工。
+     *
+     * <p><b>为什么必须在 scenario 初始化时做</b>：route 的 teardown worker
+     * （{@code RuleRepository.BoundedUnrouteTask}）是 fire-and-forget 守护线程，feature 模式下常在
+     * <b>本用例已经开始之后</b>才收工。实测证据（2026-09-26 内网运行）：用例2 收尾 19:20:24.08 spawn worker，
+     * 用例3 于 19:20:24.689 已初始化、24.71 注册新路由、24.817 导航 home，而 worker 直到
+     * 19:20:25.733 才结束。窗口内 worker 在<b>同一个</b> Context 上派发页面事件
+     * （日志：{@code [route-unroute-2076083498] PlaywrightContextManager - New page loaded: ...}）
+     * 并与用例线程并发操作同一个 Playwright {@code Connection}，导致
+     * {@code Object doesn't exist: response@...}（导航线程处理到已被驱动回收的 response 句柄）→
+     * 会话校验导航失败 → 会话缓存被删除 → 每轮用例都完整重登。
+     *
+     * <p>无在途收尾时<b>零开销</b>（一次 Map 查询，不加锁、不阻塞）；超时仅告警并继续（语义不退化）。
+     * 阈值单一定义点见 {@link RouteLifecycleRegistry#teardownFenceMs()}。
+     */
+    private static void awaitRouteTeardownFence() {
+        RouteLifecycle routeLifecycle = RouteLifecycleRegistry.get();
+        if (routeLifecycle == null) {
+            return; // route 模块未启用（纯 web 场景）：无收尾可等
+        }
+        try {
+            long timeoutMs = RouteLifecycleRegistry.teardownFenceMs();
+            BrowserContext context = PlaywrightManager.currentContextForThread();
+            if (context != null) {
+                routeLifecycle.awaitTeardownFor(context, timeoutMs);
+            }
+            //  Page 所属 Context 可能与线程级记录不同（业务曾 setPage）：一并栅栏，避免盲区。
+            Page page = PlaywrightManager.currentPageForThread();
+            if (page != null) {
+                BrowserContext pageContext = page.context();
+                if (pageContext != null && pageContext != context) {
+                    routeLifecycle.awaitTeardownFor(pageContext, timeoutMs);
+                }
+            }
+        } catch (Exception e) {
+            //  栅栏是"降低并发风险"的加固手段，任何异常都不得影响用例初始化主链路。
+            VerboseLogging.logDebugIfVerbose(logger, "Route teardown fence skipped: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 「连接无响应」恢复：上一用例被判定 Playwright 协议往返无响应时，关闭并重建本线程的 Context 与 Browser。
+     *
+     * <p><b>要解决的问题</b>：Playwright 中有一类命令<b>无客户端超时</b>（实测
+     * {@code setNetworkInterceptionPatterns}，即 {@code context.route()/unroute()}）。浏览器不回 ACK 时调用方
+     * 永久阻塞（实测 {@code main} 线程在 {@code context.route()} 上停 300s+、两次采样同帧）。
+     * route 侧已为该往返加有界预算，超时即登记「连接无响应」标记并让用例快速失败；本方法负责
+     * <b>不让损坏的连接级联到后续用例</b>。
+     *
+     * <p><b>为何是这三步（全部复用既有、且都<b>有界</b>的原语，不新造机制）</b>：
+     * <ol>
+     *   <li>{@code closeContext()}：有界 1.5s（{@code CloseGuard}），摘除框架记录的 Context 并停其路由引擎
+     *       ——顺带清掉「无响应」标记（标记随 Context 生命周期存活）；</li>
+     *   <li>{@code closeBrowserForCurrentThread()}：有界 3s，超时即<b>强关本线程 driver</b>
+     *       （{@code forceReapThreadPlaywright}）——这正是让"卡住的连接"真正失效的手段；</li>
+     *   <li>{@code rebuildBrowser()}：此时旧实例已不在册（第 2 步已摘除），故其内部的
+     *       {@code current.close()} 不会执行（该方法本身无界，必须靠第 2 步先行摘除），
+     *       仅执行「新建 Browser + 置位 storageState 重放标记」，使新 Context 自动重新应用登录态。</li>
+     * </ol>
+     * 三步均只作用于<b>本线程</b>（每线程独立 Browser 模型），不影响并行邻居。
+     *
+     * <p>未启用 route 模块（{@code RouteLifecycleRegistry.get() == null}）或本线程无 Context 时为空操作。
+     */
+    private static void recoverIfConnectionUnresponsive() {
+        RouteLifecycle routeLifecycle = RouteLifecycleRegistry.get();
+        if (routeLifecycle == null) {
+            return;
+        }
+        BrowserContext context = PlaywrightManager.currentContextForThread();
+        if (context == null) {
+            return; // 本用例将新建 Context：不存在"承接上一用例的坏连接"问题
+        }
+        boolean unresponsive;
+        try {
+            unresponsive = routeLifecycle.isConnectionUnresponsive(context);
+        } catch (Exception e) {
+            VerboseLogging.logDebugIfVerbose(logger, "Unresponsive-connection probe skipped: {}", e.getMessage());
+            return;
+        }
+        if (!unresponsive) {
+            return;
+        }
+        logger.warn("[Framework] Route connection flagged UNRESPONSIVE (no-ACK on Playwright round-trip without "
+                        + "client timeout, e.g. context.route/unroute on {}) — rebuilding this thread's Context and "
+                        + "Browser before the scenario to prevent the broken connection from cascading",
+                context.getClass().getSimpleName());
+        try {
+            PlaywrightManager.closeContext();
+            PlaywrightManager.closeBrowserForCurrentThread();
+            PlaywrightManager.rebuildBrowser();
+            logger.info("[Framework] Unresponsive-connection recovery completed — new Context/Browser will be "
+                    + "created lazily with storageState re-applied");
+        } catch (Exception e) {
+            //  恢复失败也必须让流程继续：后续 getPage()/getBrowser() 仍会走各自的懒重建与断连重建路径。
+            logger.warn("[Framework] Unresponsive-connection recovery failed (continuing): {}", e.getMessage());
+        }
+    }
+
+    /**
      * Scenario 级别的初始化
      */
     public static void initializeForScenario() {
         VerboseLogging.logDebugIfVerbose(logger, "Initializing for scenario...");
+        //  卡住诊断（2026-09-26）：用例一开始就武装看门狗 —— 用例超过采样间隔即打印线程现场。
+        //  健康用例远短于 60s，故正常情况下零输出；出现输出即"该用例确实跑久了"。
+        HangWatchdog.onScenarioStart(LogContext.currentScenarioId());
 
         if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }
+        //  跨用例栅栏（2026-09-26）：本用例很可能复用上一个用例的 Context，而上一用例的 route teardown
+        //  可能仍在守护线程上操作该 Context（详见 awaitRouteTeardownFence）。必须在本用例开始碰
+        //  Context/Page（注册路由、导航）之前有界等待其收工，否则并发操作同一 Playwright Connection 会抛
+        //  Object doesn't exist: response@... → 会话校验失败 → 缓存误删 → 后续用例卡死。
+        awaitRouteTeardownFence();
+
         // ⚠️ 修复级联：scenario 级 cleanupForScenario 会移除 currentConfigId（见 PlaywrightManager），
         //   但 frameworkState 仍 initialized。此处懒重建 configId，避免 beforeTest 误报"环境未初始化"
         //   而级联抛 IllegalStateException（场景实际仍能靠 getPage() 懒初始化正常运行）。
         if (TestContextHolder.get().get(PlaywrightManager.CURRENT_CONFIG_ID_KEY) == null) {
             PlaywrightManager.ensureConfigId();
         }
+        //  连接无响应恢复（2026-09-26）：上一用例若在「无客户端超时」的协议往返上超时
+        //  （Playwright 的 setNetworkInterceptionPatterns —— 即 context.route()/unroute()），该 Context 的连接
+        //  已不可靠；继续复用会让本用例每次路由操作各付一次超时预算并快速失败。
+        //  必须放在 ensureConfigId() 之后：恢复依赖本线程 configId 定位 Browser（重建前需先有 configId）。
+        recoverIfConnectionUnresponsive();
 
         String restartBrowserForEach = PlaywrightManager.config().getRestartStrategy();
 
@@ -374,9 +491,26 @@ public class PlaywrightSerenityBridge {
             //  Feature 模式：同一 feature 内复用<b>同一个</b> Context/Page（同 sessionKey 不再重建）。
             BrowserContext existingContext = PlaywrightManager.currentContextForThread();
             Page existingPage = PlaywrightManager.currentPageForThread();
+            boolean contextAlive = existingContext != null && existingContext.browser() != null
+                    && existingContext.browser().isConnected();
             if (existingContext != null && existingPage != null && !existingPage.isClosed()) {
                 VerboseLogging.logDebugIfVerbose(logger,
                         "Scenario initialization completed (reusing existing Context/Page within same feature)");
+            } else if (contextAlive && PlaywrightManager.currentContextSessionKeyForThread() != null) {
+                //  A5（2026-09-26）：Context 仍承载登录态时，Page 缺失/已关闭**不构成**重建 Context 的理由 ——
+                //  保留 Context 中的 Cookie/登录态，避免"前一个用例失败把 Page 弄坏 → 连 Context 一起关 →
+                //  后续用例被迫完整重登"。
+                //
+                //  刻意**不对 Page 发任何关闭命令**：
+                //  ① 进到本分支意味着 Page 已缺失或已关闭，对其 close() 只是记账，无实际收益；
+                //  ② PlaywrightManager.closePage() 会回退到用例级 PAGE_KEY，理论上可能关掉那个键里
+                //     仍存活的另一个 Page 实例（如业务曾用 setPage）；不调用即彻底没有这一风险；
+                //  ③ 懒重建本就由 PageRegistryImpl.getPage() 负责（记录为空或 isClosed() 时在锁内新建），
+                //     它会把已关闭的线程级记录正确替换掉，故此处无需任何显式关闭。
+                PageObjectFactory.clearAll();
+                VerboseLogging.logDebugIfVerbose(logger,
+                        "Scenario initialization completed (keeping Context bound to session; Page rebuilds "
+                                + "lazily via getPage())");
             } else {
                 PageObjectFactory.clearAll();
                 PlaywrightManager.closePage();
@@ -388,10 +522,28 @@ public class PlaywrightSerenityBridge {
     }
 
     /**
-     * Scenario 级别的清理
+     * Scenario 级别的清理（等价于 {@link #cleanupForScenario(boolean)} 传"结果未知"，保持既有公开 API 不变）。
      */
     public static void cleanupForScenario() {
+        cleanupForScenario(false);
+    }
+
+    /**
+     * Scenario 级别的清理（带本用例结果）。
+     *
+     * <p><b>A5（2026-09-26）</b>：feature 模式下本用例<b>失败</b>时，除保留 Context（登录态/Cookie → 免登录）
+     * 外，还要丢弃本用例的 <b>Page</b> —— 失败用例的 Page 可能处于"存活但已坏"状态（导航失败/半死），
+     * 若原样交给下一个用例，脏状态会跨用例传染（实证 1.txt：场景2 导航失败后，场景3 复用同一 Page 直接卡死）。
+     * 丢弃后由 {@code getPage()} 在<b>同一个 Context</b> 内懒重建 → 新文档 + 旧 Cookie，
+     * 做到「既不带脏数据、又免登录」。
+     *
+     * @param scenarioFailed 本用例是否失败；{@code true} 时<b>仅丢弃 Page，绝不动 Context</b>
+     */
+    public static void cleanupForScenario(boolean scenarioFailed) {
         VerboseLogging.logDebugIfVerbose(logger, "Cleaning up for scenario...");
+        //  卡住诊断：在收尾<b>入口</b>解除武装 —— 即使收尾本身抛异常也不会留下长期武装的采样；
+        //  同时保证最后一个用例收尾后不再有采样（套件结束零残留）。
+        HangWatchdog.onScenarioEnd();
 
         //  方案 A（2026-09-17）：先把本用例的 trace chunk 导出（此刻 context 仍存活），再做清理/关闭。
         //  这是 scenario 收尾的**唯一共同出口**（scenario 模式关 context / feature 模式保留 context 都经此），
@@ -424,9 +576,16 @@ public class PlaywrightSerenityBridge {
         } else {
             boolean reuseWithinFeature =
                     WebFrameworkConfig.SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE.getBooleanValue();
-            if (!SessionManager.isAnyFeatureSessionRestored() && !reuseWithinFeature) {
+            //  A5（2026-09-26）：判据改用「当前 Context 是否仍承载登录态」（随 Context 生命周期存活的绑定），
+            //  而非 SessionManager 的 "feature session restored" 标志 —— 后者会被用例失败清空
+            //  （session 校验失败 → clearSession），从而在"同一个 sessionKey、本用例失败"时误关 Context，
+            //  迫使后续同 key 用例完整重登（实证：1.txt 场景2 校验失败后场景3 重登并卡死）。
+            //  语义：同 sessionKey 下失败也不关 Context（Cookie 仍在 → 免登录）；完全无登录态的用例
+            //  仍按原语义关闭 Context 以防跨用例页面状态串扰。
+            boolean contextHoldsLogin = PlaywrightManager.currentContextSessionKeyForThread() != null;
+            if (!contextHoldsLogin && !SessionManager.isAnyFeatureSessionRestored() && !reuseWithinFeature) {
                 VerboseLogging.logInfoIfVerbose(logger,
-                        "Feature mode: No session restored — closing Context to avoid cookie contamination");
+                        "Feature mode: no session bound to the current Context — closing it to avoid cookie contamination");
                 //  关闭前吸收迟到事件（同上）：本分支同样会关 Context，故一并覆盖
                 absorbPendingEventsBeforeClose();
                 PlaywrightManager.closePage();
@@ -436,10 +595,25 @@ public class PlaywrightSerenityBridge {
                 scenarioClosedContext = true;
             } else {
                 VerboseLogging.logDebugIfVerbose(logger,
-                        "Restart strategy is 'feature' - keeping Context and Page for reuse"
+                        "Restart strategy is 'feature' - keeping Context for reuse"
                                 + (SessionManager.isAnyFeatureSessionRestored() ? "" : " (reuse-context-within-feature)"));
                 resetCustomContextOptionsForFeatureMode();
+                //  先清页面级状态（localStorage/sessionStorage/定时器；Cookie 保留），此刻 Page 仍存活
                 cleanupPageState();
+                if (scenarioFailed) {
+                    //  A5：失败用例的 Page 可能"存活但已坏" → 丢弃它，绝不让脏 Page 跨用例传染。
+                    //  只关 Page、**不关 Context**：Cookie/登录态仍在，下个用例 getPage() 在同一个
+                    //  Context 内懒重建 → 新文档 + 免登录。这是"同一 sessionKey 下失败也不重建 Context、
+                    //  但也不带脏数据"的落点。
+                    VerboseLogging.logInfoIfVerbose(logger,
+                            "Previous scenario FAILED — discarding its Page to avoid cross-scenario dirty state "
+                                    + "(Context/cookies preserved for login-free reuse)");
+                    PlaywrightManager.closePage();
+                } else {
+                    //  可观测性：让"本次判据=false（未丢 Page）"也可见，便于核对结果是否正确传入收尾链路
+                    VerboseLogging.logDebugIfVerbose(logger,
+                            "Previous scenario passed — keeping Context and Page for reuse");
+                }
             }
         }
 
@@ -597,7 +771,11 @@ public class PlaywrightSerenityBridge {
      * 不适用按 scenario 关闭，故该模式跳过（避免线程池复用下的跨线程键错配）；其余情况一律执行。</p>
      */
     private static void closeBrowserForCurrentThreadIfApplicable() {
-        if (ConcurrentContextExecutor.isConcurrentModeActive()) {
+        // 并发执行器模式下默认也及时关闭本线程浏览器（多线程跑 case 不等全部跑完才关）；
+        // 需要线程池跨任务复用浏览器（牺牲及时性换启动成本）时置 playwright.browser.close.after.concurrent.task=false。
+        if (ConcurrentContextExecutor.isConcurrentModeActive()
+                && !FrameworkConfigManager.getBoolean(
+                        WebFrameworkConfig.PLAYWRIGHT_BROWSER_CLOSE_AFTER_CONCURRENT_TASK)) {
             return;
         }
         PlaywrightManager.closeBrowserForCurrentThread();

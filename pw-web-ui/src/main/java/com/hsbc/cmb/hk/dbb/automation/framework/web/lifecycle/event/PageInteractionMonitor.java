@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
@@ -41,6 +42,12 @@ import java.util.WeakHashMap;
  * <p><b>注册模型</b>：与 PageEventMonitor 一致，经 {@code BrowserContext#onPage} 上下文级注册一次，
  * 1.60+ 保证每个页面仅触发一次，无需自研幂等去重。</p>
  *
+ * <p><b>订阅开关（配置驱动）</b>：{@code context.onPage} 扇出由
+ * {@code playwright.page.events.page.enabled}（默认 true）控制；{@code onFrameNavigated} /
+ * {@code onPopup} 分别由 {@code playwright.page.events.frameNavigated.enabled} /
+ * {@code playwright.page.events.popup.enabled}（默认 true）控制。关闭即不订阅对应事件，
+ * 同时消除"驱动按 payload guid 解析已回收句柄"造成的对象回收类异常（污染在途调用）。</p>
+ *
  * @apiNote 内部基础设施能力，业务 Page 不应直接调用；仅由 {@code PlaywrightContextManager} 创建接缝处与
  *           {@code PageContextState.setPageReference} 认领接缝调用。
  */
@@ -71,6 +78,28 @@ public final class PageInteractionMonitor {
     private PageInteractionMonitor() {
     }
 
+    /**
+     * 已知第三方追踪/设备指纹 iframe 的 URL 特征（ThreatMetrix 等）。这类子框架只产生噪声与
+     * 导航抖动，不计入诊断轨迹、也不打日志，避免污染失败回放与日志。
+     */
+    private static final java.util.Set<String> TRACKING_URL_MARKERS = java.util.Set.of(
+            "online-metrix.net",             // ThreatMetrix 设备指纹 tag
+            "/scripts/prod/crossdomain.html" // ThreatMetrix 跨域通信中继 iframe
+    );
+
+    /** 是否为第三方追踪/指纹 iframe 的导航（仅对子框架生效，绝不误伤主框架导航）。 */
+    private static boolean isTrackingFrame(String url) {
+        if (url == null) {
+            return false;
+        }
+        for (String marker : TRACKING_URL_MARKERS) {
+            if (url.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ===================== 注册接缝 =====================
 
     /**
@@ -82,6 +111,9 @@ public final class PageInteractionMonitor {
      * @param context 浏览器上下文（null 安全：直接忽略）
      */
     public static void register(BrowserContext context) {
+        if (!WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED.getBooleanValue()) {
+            return;   // 扇出总闸关闭：连 onPage 都不订阅，本类所有页面级交互监听均不生效
+        }
         if (context == null || !REGISTERED_CONTEXTS.add(context)) {
             return;
         }
@@ -100,8 +132,13 @@ public final class PageInteractionMonitor {
         if (page == null || !REGISTERED_PAGES.add(page)) {
             return;
         }
-        page.onFrameNavigated(PageInteractionMonitor::handleFrameNavigated);
-        page.onPopup(PageInteractionMonitor::handlePopup);
+        //  逐事件按配置订阅（playwright.page.events.*，默认均开启）；幂等标记照常记录，重复 register 仍 no-op
+        if (WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_FRAME_NAVIGATED_ENABLED.getBooleanValue()) {
+            page.onFrameNavigated(PageInteractionMonitor::handleFrameNavigated);
+        }
+        if (WebFrameworkConfig.PLAYWRIGHT_PAGE_EVENTS_POPUP_ENABLED.getBooleanValue()) {
+            page.onPopup(PageInteractionMonitor::handlePopup);
+        }
     }
 
     /**
@@ -135,8 +172,15 @@ public final class PageInteractionMonitor {
             Page page = frame.page();
             boolean isMain = page != null && frame == page.mainFrame();
             String url = safeUrl(frame);
+            // 第三方追踪/指纹 iframe（ThreatMetrix 等）：只产生噪声与导航抖动，
+            // 既不打日志也不计入诊断轨迹（仅对子框架生效，主框架导航照常记录）。
+            if (!isMain && isTrackingFrame(url)) {
+                return;
+            }
             if (isMain) {
-                logger.info("[nav] main frame navigated -> {}", url);
+                // 主框架导航轨迹本身已记入 navTrail（失败时回放用）；此处日志默认关闭，
+                // 仅在 serenity.logging=VERBOSE/TRACE 时输出，避免每次跳转刷屏。
+                VerboseLogging.logInfoIfVerbose(logger, "[nav] main frame navigated -> {}", url);
             } else {
                 VerboseLogging.logDebugIfVerbose(logger, "[nav] frame '{}' navigated -> {}", frame.name(), url);
             }
@@ -185,7 +229,9 @@ public final class PageInteractionMonitor {
         try {
             String url = safeUrl(popup);
             String title = safeTitle(popup);
-            logger.info("[popup] unmanaged popup detected: url={}, title={}", url, title);
+            // 未受管弹窗的"逐次检测"日志默认关闭（verbose 才打印）；失败时的聚合告警仍由
+            // StepFailureAggregator.drainUnmanagedPopups 负责，不因本行关闭而丢失。
+            VerboseLogging.logInfoIfVerbose(logger, "[popup] unmanaged popup detected: url={}, title={}", url, title);
             unmanagedPopups().add(new PopupEntry(popup, url, title));
         } catch (Exception e) {
             logger.debug("[popup] observe failed: {}", e.toString());

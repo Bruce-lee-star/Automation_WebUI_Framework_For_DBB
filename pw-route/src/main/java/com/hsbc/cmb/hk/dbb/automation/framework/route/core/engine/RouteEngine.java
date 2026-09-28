@@ -14,6 +14,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.PriorityPolicy;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteLifecycleOwner;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteMonitorSession;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.core.capture.ApiCaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RuleRepository;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.StoppedCapabilityManager;
@@ -377,6 +378,58 @@ public class RouteEngine {
      */
     public static void clearContext(Object context) {
         RuleRepository.clearContext(context);
+    }
+
+    /**
+     * 跨用例栅栏：有界等待该 context 的在途 unroute 收尾完成（下一个用例复用同一 Context 前调用）。
+     *
+     * <p>委托 {@link RuleRepository#awaitInFlightUnroute(Object, long)}；语义与调用点见该方法注释。
+     * 无在途收尾时零开销（一次 Map 查询）。
+     *
+     * @param context   Page / BrowserContext
+     * @param timeoutMs 等待上限（毫秒）
+     * @return true = 无在途收尾或已在超时内完成；false = 超时
+     */
+    public static boolean awaitInFlightUnroute(Object context, long timeoutMs) {
+        return RuleRepository.awaitInFlightUnroute(context, timeoutMs);
+    }
+
+    /**
+     * 该 context 是否已被判定「浏览器/连接无响应」（有界协议往返超时即登记）。
+     *
+     * <p>委托 {@link RuleRepository#isConnectionUnresponsive(Object)}；供 web 侧在下一个用例初始化时
+     * 决定是否<b>重建 Context/浏览器</b>（详见 {@code RouteContextState.UNRESPONSIVE_CONTEXTS}）。
+     *
+     * @param context Page / BrowserContext
+     * @return true 表示该 Context 上的 Playwright 协议往返已不可靠，应重建
+     */
+    public static boolean isConnectionUnresponsive(Object context) {
+        return RuleRepository.isConnectionUnresponsive(context);
+    }
+
+    /**
+     * 等待指定 context 的拦截在途请求排空（teardown 前调用，确保 unroute 能被浏览器及时 ACK）。
+     *
+     * <p>委托 {@link ApiCaptureContext#awaitCompletion(long)}：{@code interceptRealResponse} 的异步真实
+     * fetch 在 {@code ApiCaptureContext} 上有在途计数，排空后浏览器侧 route handler 才 settle，
+     * 此时 {@code unroute}/{@code updateInterceptionPatterns} 才能被及时响应，避免 teardown 死等。
+     *
+     * @return true=已排空或无需等待；false=超时/中断（仍应继续 teardown，由有界 unroute 兜底）
+     */
+    public static boolean awaitInterceptCompletion(BrowserContext context, long timeoutMs) {
+        if (context == null) {
+            return true;
+        }
+        try {
+            ApiCaptureContext acc = ApiCaptureContext.forContext(context);
+            return acc == null || acc.awaitCompletion(timeoutMs);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (Exception e) {
+            // 查询在途计数失败不阻塞 teardown
+            return true;
+        }
     }
 
     /**

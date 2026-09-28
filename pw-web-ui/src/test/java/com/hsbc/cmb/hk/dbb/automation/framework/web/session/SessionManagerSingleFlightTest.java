@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * </ol>
  *
  * <p>超时夺取路径本身需 {@code 单飞超时 + 宽限期}（默认 60s + 5s）才能触发，故不在单测内等待；
- * 其正确性依赖上述计数与 {@code CrossJvmLoginLock} 的跨进程串行化（见 CT2-16）。
+ * 其正确性依赖上述计数与 JVM 内单飞守卫的串行化（CT2-16 已移除跨进程锁 CrossJvmLoginLock，跨 JVM 单飞不再保证）。
  */
 class SessionManagerSingleFlightTest {
 

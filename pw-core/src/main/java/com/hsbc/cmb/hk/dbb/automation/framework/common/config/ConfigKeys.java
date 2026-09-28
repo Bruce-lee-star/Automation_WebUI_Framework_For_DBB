@@ -100,6 +100,87 @@ public enum ConfigKeys {
         "false",
         "页面未捕获 JS 异常是否触发测试失败"
     ),
+    /**
+     * 页面事件订阅开关组（{@code playwright.page.events.*}）—— 逐事件可关，遇问题改配置即可，无需改代码。
+     *
+     * <p><b>为什么需要它</b>：Playwright 客户端在事件分发层会用事件 payload 里的 guid 去对象表解析
+     * （{@code Connection.getExistingObject}）。句柄一旦已被服务端回收，就抛
+     * {@code Object doesn't exist: <type>@…}；或由 {@code Connection.dispatch} 在解析事件目标对象时抛
+     * {@code Cannot find object to call <event>: <type>@…}。该异常发生在业务 lambda <b>之前</b>，
+     * 回调内 {@code try/catch} 拦不到；又因 {@code Connection} 是共享单连接，会以"此刻正在等结果的
+     * 任意调用线程"为宿主抛出（污染在途调用）。<b>不订阅</b>则服务端根本不下发该事件，从根上消除敞口
+     * ——实测：零订阅时该 Context 收到的相关事件数为 0。
+     *
+     * <p><b>默认值取向</b>：诊断类（pageError / console / requestFailed / crash）默认<b>关闭</b>
+     * （噪声大、收益低，且其中 console / requestFailed 分支无保护）；交互 / 生命周期类
+     * （page / load / frameNavigated / popup / download）默认<b>开启</b>（功能依赖或诊断价值高）。
+     */
+    WEB_PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED(
+        "playwright.page.events.page.enabled",
+        "true",
+        "是否订阅 context.onPage（新页日志 / 受管页判定；关闭则该 Context 下所有页面级订阅一并失效）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_LOAD_ENABLED(
+        "playwright.page.events.load.enabled",
+        "true",
+        "是否订阅 page.onLoad（新页加载完成 debug 日志）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_FRAME_NAVIGATED_ENABLED(
+        "playwright.page.events.frameNavigated.enabled",
+        "true",
+        "是否订阅 page.onFrameNavigated（导航轨迹诊断，失败回放用）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_POPUP_ENABLED(
+        "playwright.page.events.popup.enabled",
+        "true",
+        "是否订阅 page.onPopup（未受管弹窗诊断，失败告警用）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_DOWNLOAD_ENABLED(
+        "playwright.page.events.download.enabled",
+        "true",
+        "是否订阅 context.onDownload（下载保存与查询；关闭后 getLastDownloadPath 等将无记录）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_CONSOLE_ENABLED(
+        "playwright.page.events.console.enabled",
+        "false",
+        "是否订阅 page.onConsoleMessage（诊断，默认关闭）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_PAGE_ERROR_ENABLED(
+        "playwright.page.events.pageError.enabled",
+        "false",
+        "是否订阅 page.onPageError（诊断；须开此开关，playwright.page.error.failOnError 才可能生效）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_REQUEST_FAILED_ENABLED(
+        "playwright.page.events.requestFailed.enabled",
+        "false",
+        "是否订阅 page.onRequestFailed（诊断，默认关闭）"
+    ),
+    WEB_PLAYWRIGHT_PAGE_EVENTS_CRASH_ENABLED(
+        "playwright.page.events.crash.enabled",
+        "false",
+        "是否订阅 page.onCrash（诊断，默认关闭）"
+    ),
+    /**
+     * 导航「驱动竞态自愈」开关（默认开启）。
+     *
+     * <p>Playwright Java 在<b>连接/对象生命周期</b>层面存在两类竞态，异常会在<b>任意在途调用</b>上抛出
+     * （驱动在 {@code Connection.processOneMessage} 内分发消息时抛出，与本调用语义无关）：
+     * <ol>
+     *   <li>{@code Object doesn't exist: response@…} —— {@code Connection.getExistingObject} 解析已被服务端
+     *       回收的句柄（playwright 1.62 {@code BrowserContextImpl.handleEvent:851-857} 的 {@code response} 分支
+     *       未做防御，而 {@code pageError} 分支有）；</li>
+     *   <li>{@code … is interrupted by another navigation …} —— 上一次导航（典型：服务端 302 重定向链）尚未收尾。</li>
+     * </ol>
+     *
+     * <p>开启后，导航在命中上述两类错误时先等当前文档收敛（有界），再<b>原样重试一次</b>（仅一次，不循环）；
+     * 关闭后行为回到"直接抛 {@code NavigationException}"（web 域异常类型，core 域不持有其类型引用），
+     * 供严格模式 / 审计场景使用（不允许任何自动重试）。
+     */
+    WEB_PLAYWRIGHT_NAVIGATION_SELFHEAL_ENABLED(
+        "playwright.navigation.selfheal.enabled",
+        "true",
+        "导航遇驱动侧竞态错误时收敛后重试一次"
+    ),
     WEB_PLAYWRIGHT_BROWSER_HEADLESS(
         "playwright.browser.headless",
         "false",
@@ -575,6 +656,11 @@ public enum ConfigKeys {
         "scenario",
         "浏览器重启策略"
     ),
+    WEB_SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS(
+        "serenity.playwright.hang.watchdog.interval.ms",
+        "60000",
+        "卡住诊断看门狗采样间隔（毫秒，≤0 关闭）。用例运行超过该时长后，每间隔打印一次场景线程栈 + 其它线程概览，用于定位无日志的阻塞点"
+    ),
     WEB_SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE(
         "serenity.playwright.reuse.context.within.feature",
         "false",
@@ -665,6 +751,16 @@ public enum ConfigKeys {
         "playwright.no.login.single.flight.timeout.ms",
         "60000",
         "No login single-flight wait timeout (ms)"
+    ),
+    WEB_PLAYWRIGHT_NO_LOGIN_SESSION_INCLUDE_INDEXED_DB(
+        "playwright.no.login.session.include.indexed.db",
+        "false",
+        "是否在 storageState 快照中包含 IndexedDB（1.51+ 官方能力；仅当被测应用把登录态/token 存于 IndexedDB 时开启，默认 false 保持快照最小、零回归）"
+    ),
+    WEB_PLAYWRIGHT_BROWSER_CLOSE_AFTER_CONCURRENT_TASK(
+        "playwright.browser.close.after.concurrent.task",
+        "true",
+        "并发执行器（ConcurrentContextExecutor）模式下，每个并发任务（case）收口后是否立即关闭本线程浏览器；默认 true 及时释放浏览器进程（不等全部 case 跑完才关），false 保持线程池跨任务复用浏览器语义（浏览器挂到 suite 收尾才关）"
     ),
     WEB_PLAYWRIGHT_ELEMENT_WAIT_TIMEOUT(
         "playwright.element.wait.timeout",

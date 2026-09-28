@@ -37,9 +37,22 @@ public final class ScenarioLifecycle {
      * 该优化会被静默绕过。{@code currentConfigId} 与钩子快照不参与桥的决策，可在桥前安全清理。
      */
     public static void cleanupForScenario() {
+        cleanupForScenario(false);
+    }
+
+    /**
+     * 带用例结果的场景收尾（A5，2026-09-26）。
+     *
+     * <p>{@code scenarioFailed=true} 时，桥在 feature 模式下**仅丢弃本用例的 Page**（失败用例的 Page 可能
+     * "存活但已坏"，不许跨用例传染），Context/登录态仍保留 → 同一个 sessionKey 的下个用例
+     * 既不背脏数据、又能免登录。
+     *
+     * @param scenarioFailed 本用例是否失败
+     */
+    public static void cleanupForScenario(boolean scenarioFailed) {
         TestContextHolder.get().remove(PlaywrightManager.CURRENT_CONFIG_ID_KEY);
 
-        PlaywrightSerenityBridge.cleanupForScenario();
+        PlaywrightSerenityBridge.cleanupForScenario(scenarioFailed);
 
         // 桥已返回：Page/Context 已真正关闭，且桥已读完 customStorageStatePath，
         // 此时再清理当前线程的资源型与自定义选项 ThreadLocal 引用。

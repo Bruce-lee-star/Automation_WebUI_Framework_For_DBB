@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -20,10 +21,27 @@ class CustomOptionsManagerTest {
 
     private final CustomOptionsManager manager = CustomOptionsManager.getInstance();
 
+    /**
+     * 用例隔离（本轮修复既有失败）：flag 与 storageState 都活在 {@code TestContextHolder}
+     * （per-thread TestContext）中，而 {@link CustomOptionsManager} 是进程级单例，状态跨用例存活。
+     *
+     * <p>原实现只在 {@code @AfterEach} 里清 storageState，<b>不清 flag</b>：只要有一个用例
+     * （如 {@link #enableCustomOptions_sets_flag_independent_of_storageState}）留下
+     * {@code flag=true}，后续用例的 {@code assertNull(isCustomContextOptionsFlag())} 就必然假失败
+     * （实测 2 条失败，且换 JUnit 方法序就会换一组）。</p>
+     *
+     * <p>统一改用框架提供的完整复位入口
+     * {@link CustomOptionsManager#removeAllThreadLocals()}（flag + storageState + 其余 12 个自定义
+     * 选项键），前后各清一次，使用例既不污染别人也不受别人污染。</p>
+     */
+    @BeforeEach
+    void resetManagerStateBeforeCase() {
+        CustomOptionsManager.removeAllThreadLocals();
+    }
+
     @AfterEach
-    void clearStorageState() {
-        manager.setStorageStateWithoutRebuild(null);
-        manager.setStorageStatePathWithoutRebuild(null);
+    void resetManagerStateAfterCase() {
+        CustomOptionsManager.removeAllThreadLocals();
     }
 
     @Test

@@ -8,6 +8,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine;
  *   RouteException (runtime)
  *   ├── RouteConfigException   — 配置错误（URL pattern 无效、状态码越界等）
  *   ├── RouteRuntimeException  — 运行时异常（路由注册/注销失败等）
+ *   │   └── RouteConnectionUnresponsiveException — 浏览器/连接在"无客户端超时"的协议往返上未应答（有界失败）
  *   └── ApiAssertionException  — API 断言失败（状态码/JSONPath 不匹配）
  * </pre>
  *
@@ -72,6 +73,21 @@ public class RouteException extends RuntimeException {
         public RouteRuntimeException(String message, Throwable cause) { super(message, cause); }
         public RouteRuntimeException(String message, String urlPattern, String contextId) { super(message, urlPattern, contextId); }
         public RouteRuntimeException(String message, String urlPattern, String contextId, Throwable cause) { super(message, urlPattern, contextId, cause); }
+    }
+
+    /**
+     * 「浏览器/连接无响应」异常：Playwright 中<b>无客户端超时</b>的协议往返（实测
+     * {@code setNetworkInterceptionPatterns}，即 {@code context.route()/unroute()}）在预算内未获 ACK。
+     *
+     * <p><b>为何要独立类型</b>：这类失败是<b>环境级致命失败</b>，与"pattern 非法""page 已关闭"等
+     * 可降级失败语义不同 —— 它必须<b>快速失败并停止在该 Context 上继续操作</b>
+     * （否则每条规则各付一次预算、且 mock 静默失效导致断言打到真实后端）。
+     * 框架据此：① 标记该 Context 无响应；② 由 web 侧在下一个用例重建浏览器。
+     */
+    public static class RouteConnectionUnresponsiveException extends RouteRuntimeException {
+        public RouteConnectionUnresponsiveException(String message) { super(message); }
+        public RouteConnectionUnresponsiveException(String message, String urlPattern) { super(message, urlPattern, null); }
+        public RouteConnectionUnresponsiveException(String message, String urlPattern, Throwable cause) { super(message, urlPattern, null, cause); }
     }
 
     /** API 断言异常：状态码/JSONPath 断言失败 */

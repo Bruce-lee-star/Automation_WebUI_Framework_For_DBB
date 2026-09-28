@@ -48,7 +48,7 @@ public final class ApiCaptureLifecycle {
     /**  已注册 Context 关闭钩子的实例集合（幂等注册防重复，Playwright 无移除 listener API） */
     private static final ConcurrentHashMap<BrowserContext, Boolean> CONTEXT_CLOSE_REGISTERED =
             new ConcurrentHashMap<>();
-    /**  已注册 Page 级 onClose/onResponse 监听器的实例集合（幂等注册防重复，Playwright 无移除 listener API） */
+    /**  已注册 Page 级 onClose 监听器的实例集合（幂等注册防重复，Playwright 无移除 listener API） */
     private static final ConcurrentHashMap<Page, Boolean> PAGE_LISTENER_REGISTERED =
             new ConcurrentHashMap<>();
 
@@ -184,8 +184,12 @@ public final class ApiCaptureLifecycle {
     /**
      * 快速启动 — 一行代码开启全量 API 采集。
      *
-     * <p> 旁路采集已移除：本方法仅绑定当前线程到 Page 所属 Context、登记 Page 到会话、
-     * 注册关闭钩子，真实的响应采集由各 Route Handler 在 route 事件线程内同步完成。
+     * <p> 本方法仅绑定当前线程到 Page 所属 Context、登记 Page 到会话、注册关闭钩子；
+     * 真实的响应采集由各 Route Handler 在 route 事件线程内同步完成。
+     *
+     * <p><b>刻意不注册 {@code page.onResponse}</b>（2026-09-28 已整体移除被动捕获通道）：
+     * 该订阅是驱动侧 {@code Object doesn't exist: response@…} 竞态的唯一触发源，且已注册流量的
+     * 响应侧观测走 route 通道（{@code Request#existingResponse()}），无需任何事件订阅。
      *
      * @param page Playwright Page 实例
      */
@@ -197,38 +201,11 @@ public final class ApiCaptureLifecycle {
             BrowserContext pageContext = page.context();
             CONTEXT_PAGES.computeIfAbsent(pageContext, ignored -> ConcurrentHashMap.newKeySet()).add(page);
             registerContextCloseHook(pageContext);
-            //  幂等注册 Page 级监听器：防止 attach/start 被重复调用时叠加多个 onClose/onResponse，
-            //   导致兜底采集重复记录（破坏去重与计数）、监听器泄漏（Playwright 无移除 listener API，
-            //   仅能在 Page 关闭时自动解绑，重复注册会累积至页面关闭）。stop(page) 清理标记后允许安全重注册。
+            //  幂等注册 Page 级 onClose 监听器：防止 attach/start 被重复调用时叠加多个监听器导致
+            //   重复 detach 与监听器泄漏（Playwright 无移除 listener API，仅能在 Page 关闭时自动解绑）。
+            //  stop(page) 清理标记后允许安全重注册。
             if (PAGE_LISTENER_REGISTERED.putIfAbsent(page, Boolean.TRUE) == null) {
                 page.onClose(ignored -> detach(page));
-                //  挂接全局 onResponse 兜底监听器（Playwright 原生非侵入事件流）：
-                //   捕获未注册流量，与各 Route Handler 零竞争；监听器随 Page 关闭自动解绑，无泄漏。
-                //  全局 onResponse 兜底被动捕获：受 isPassthroughEnabled() 门控。
-                //  极端并发 / 压测下，浏览器侧 response@ 对象会被快速 GC，Playwright 在事件分发层
-                //  （BrowserContextImpl.handleEvent）解析已失效 response@ 时抛 "Object doesn't exist"，
-                //  且该异常发生在调用本 lambda【之前】，本 try/catch 无法拦截，会污染同一连接在途的
-                //  page.evaluate。高 churn 场景（如 RoutePerformanceStressTest）经
-                //  ApiCaptureManager.setPassthroughEnabled(false) 关闭订阅，从根上消除该 race；
-                //  已注册流量仍由 MonitorHandler 的 waitForResponse 通道独立采集，不受影响。
-                if (ApiCaptureManager.isEnabled() && ApiCaptureManager.isPassthroughEnabled()) {
-                    page.onResponse(response -> {
-                        try {
-                            ApiCaptureManager.getInstance().recordPassthrough(
-                                    response.url(),
-                                    response.status(),
-                                    response.request().method(),
-                                    response.request().headers(),
-                                    response.headers(),
-                                    page.context());
-                        } catch (Throwable e) {
-                            //  兜底：lambda 内任何异常（含 PlaywrightException）都不得外溢到事件分发线程，
-                            //    否则会污染 Playwright 连接。注意：本 catch 无法拦截 handleEvent 在
-                            //    解析 response@ 对象阶段抛出的 "Object doesn't exist"（见上方开关说明）。
-                            LOGGER.debug("[ApiCapture] onResponse skipped: {}", e.toString());
-                        }
-                    });
-                }
             }
             //  将调用线程绑定到该 Page 所属 BrowserContext，使 getCurrent() 指向正确的捕获上下文，
             //   消除跨用例数据串扰问题。
@@ -264,7 +241,7 @@ public final class ApiCaptureLifecycle {
     static void stop(Page page) {
         if (page == null)  {return;} 
         synchronized (ApiCaptureContext.class) {
-            //  清理 Page 级监听器注册标记，允许页面后续被重新 attach 时再次注册 onClose/onResponse
+            //  清理 Page 级监听器注册标记，允许页面后续被重新 attach 时再次注册 onClose
             PAGE_LISTENER_REGISTERED.remove(page);
             releaseContextIfOrphaned(page);
             LOGGER.info("[ApiCapture] Stopped Page capture session (activePages={})", activePageCount());

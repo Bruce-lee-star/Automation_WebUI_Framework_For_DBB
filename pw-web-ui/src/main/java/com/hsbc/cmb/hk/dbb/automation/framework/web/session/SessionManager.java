@@ -1,1082 +1,137 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
-
-
-import com.microsoft.playwright.BrowserContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.HashSet;
-import java.util.Properties;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.ExecutionException;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyPartitionKey;
-import java.util.concurrent.ExecutionException;
 
 /**
- * Session Manager - Manage user login state, supports skip login functionality
- * <p>
- * 新版特性：
- * - 框架层自动处理 session 管理逻辑
- * - 业务层只需传递 session key
- * - 自动处理 session 过期检查
- * - 简化的 API 设计
- * <p>
- * Session Key 格式（推荐）：env_username（如 O63_SIT1_WP7UAT2_2）
+ * SessionManager —— 兼容门面（2026-09-27 重构）。
+ *
+ * <p><b>本类不再承载任何会话逻辑</b>：所有实现已下沉到新内核 {@link SessionStore}。
+ * 本类仅保留对外<b>公开 / 包级 / 私有方法签名</b>（含反射测试依赖的
+ * {@code acquireOrAwait} / {@code completeLoginGuard}），逐一对 {@link SessionStore} 透明委托，
+ * 使 84+ 调用点与既有单测（反射/包级访问）零改动继续编译。</p>
+ *
+ * <p>设计要点：
+ * <ul>
+ *   <li>sessionKey 由业务层传入，<b>不含 browserType</b>；</li>
+ *   <li>有效期判定（cookie 过期为主、本地年龄兜底、可选探针）与缓存/持久化/单飞/feature 复用
+ *       全部在 {@link SessionStore} 内实现；</li>
+ *   <li>{@code prepareSession(sessionKey)} 作为 {@code restoreSession(sessionKey)} 的兼容别名，
+ *       供业务侧 {@code LoginSteps} 旧调用继续工作。</li>
+ * </ul>
+ *
+ * @see SessionStore 新内核（有效期/cache/单飞/持久化/feature 复用）
  */
-public class SessionManager {
+public final class SessionManager {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(SessionManager.class);
+    private SessionManager() {
+    }
 
-    // Session storage directory
-    private static final String SESSION_DIR = "target/.sessions";
-
-    // Session timeout in minutes — read from WebFrameworkConfig (default: 5)
-    private static final long SESSION_TIMEOUT_MINUTES =
-            FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
-
-    //  原 SESSION_IO_EXECUTOR（单线程 IO 超时守卫）已移除（2026-09-06，方案 B）：
-    // META_CACHE 已缓存 .meta 的 homeUrl/lastAccessTime/exists，STORAGE_CONTENT_CACHE 已缓存
-    // .json 内容，使 hasSession/loadHomeUrl 在缓存命中时为零磁盘读；仅冷启动 .meta 未命中会读盘，
-    // 该读针对本地 target/.sessions 的极小文件，挂起概率可忽略。移除同时规避了单线程池
-    // "一次卡死毒化全池、所有 session 复用降级为重新登录"的隐患。冷读若真卡死将直接作用于
-    // 业务线程——属已接受的极小概率风险，无需线程池兜底。
-
-    // ==================== 同 user 登录单飞（single-flight） ====================
-    // 防止并行 scenario / 跨 feature 同 sessionKey 并发 restoreSession 时，两个线程都看到
-    // "session 文件不存在" 而各自登录 → 服务端（单会话策略）把对端踢下线。
-    // 约定：首个进入的线程（leader）执行真实登录并在 saveSession 成功后 complete；其余线程（follower）
-    // 阻塞等待 leader 完成，成功后直接复用已落盘的 storageState，不再触发第二次登录。
-    // 两层协调（2026-09-21 补齐，评审 F-11 / P1-2）：
-    //   ① JVM 内：本类 loginGuards（ConcurrentHashMap + CountDownLatch）—— 覆盖 forkCount=0 的多线程并行；
-    //   ② 跨 JVM：CrossJvmLoginLock（每 sessionKey 一个 OS 级文件锁）—— 覆盖 forkCount>0 / CI 分片。
-    //   两层语义一致：等待期间他方落盘即复用，绝不产生第二次登录。
-    // 单飞 follower 等待 leader 完成的兜底超时（毫秒）— 读自 WebFrameworkConfig（默认 60000）
-    private static final long SINGLE_FLIGHT_TIMEOUT_MS =
-            FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS);
-    private static final ConcurrentHashMap<String, LoginGuard> loginGuards = new ConcurrentHashMap<>();
-
-    /**
-     * CT2-14：单飞等待超时后的<b>宽限窗口</b>（毫秒）。超时往往只是 leader 慢（真实登录含浏览器导航，
-     * 再叠加落盘 IO 抖动），并非「leader 已死」。在夺取登录权之前再等一个宽限窗口，几乎总能等到
-     * leader 落盘从而直接复用 —— 把「第二次真实登录」的窗口压到最小。
-     *
-     * <p>取 {@code min(单飞超时, 5s)} 且下限 {@code 1s}：既不显著延长尾部延迟，又足以覆盖落盘抖动。
-     */
-    private static final long SINGLE_FLIGHT_GRACE_MS =
-            Math.max(1_000L, Math.min(SINGLE_FLIGHT_TIMEOUT_MS, 5_000L));
-
-    /**
-     * CT2-14：因等待者超时夺取登录权而导致的「潜在双重登录」累计次数。
-     *
-     * <p>非零即说明原 leader 曾慢于 {@code 单飞超时 + 宽限期} —— 是可观测的 SSO 互踢风险信号
-     * （配合 CT2-16 的 {@code CrossJvmLoginLock.getDegradedAcquisitionCount()} 一起看）。
-     */
-    private static final java.util.concurrent.atomic.AtomicLong SINGLE_FLIGHT_TAKEOVERS =
-            new java.util.concurrent.atomic.AtomicLong();
-
-    /**
-     * CT2-14：本线程作为 leader 时登记的守卫，供其结束时判断「自己是否已被等待者夺取」。
-     * （夺取会把守卫从 {@code loginGuards} 摘除，故仅凭 map 无法回溯。）
-     */
-    private static final ThreadLocal<LoginGuard> MY_LOGIN_GUARD = new ThreadLocal<>();
-
-    /** CT2-14：单飞夺取累计次数（非零 ⇒ 曾存在潜在双重登录窗口，可观测）。 */
+    // ===================== 统计 =====================
     public static long getSingleFlightTakeoverCount() {
-        return SINGLE_FLIGHT_TAKEOVERS.get();
+        return SessionStore.getSingleFlightTakeoverCount();
     }
 
-    /**
-     * 单飞守卫：leader 登录完成后 {@link #complete(boolean)} 释放，follower 通过 {@link #await(long)} 等待。
-     */
-    private static final class LoginGuard {
-        private final CountDownLatch latch = new CountDownLatch(1);
-        private volatile boolean success;
-
-        /**
-         * CT2-14：本守卫是否已被等待者「夺取」（等待超时 + 宽限期满 + 确认无可复用 session 后，
-         * 等待者摘除守卫并自任 leader）。
-         *
-         * <p>用于让<b>原 leader</b> 在其登录/落盘结束时得以发现自己已被取代 —— 否则「两个线程
-         * 各自真实登录」这一后果对原 leader 完全不可见（原实现只让等待者记一条 WARN）。
-         */
-        private final java.util.concurrent.atomic.AtomicBoolean superseded =
-                new java.util.concurrent.atomic.AtomicBoolean(false);
-
-        boolean await(long ms) {
-            try {
-                return latch.await(ms, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-
-        void complete(boolean ok) {
-            success = ok;
-            latch.countDown();
-        }
-
-        boolean isSuccess() {
-            return success;
-        }
-
-        void markSuperseded() {
-            superseded.set(true);
-        }
-
-        boolean isSuperseded() {
-            return superseded.get();
-        }
+    // ===================== Feature 级会话 =====================
+    public static void setCurrentFeatureId(String featureId) {
+        SessionStore.setCurrentFeatureId(featureId);
     }
 
-    // ==================== Session Meta 内存缓存（Guava CacheBuilder 并发缓存，缓解多线程读盘 IO 竞争） ====================
-    // 同 sessionKey 的 meta（homeUrl + lastAccessTime + session 文件存在性）一经读盘即缓存，
-    // 后续并发读（并行 scenario 同 key 恢复）直接命中内存，仅首次触发一次磁盘 IO。
-    // 并发语义由 Guava LoadingCache 保证：concurrencyLevel(16) 提供分段锁，同 key 多线程读时
-    // 仅一个线程执行 load（readSessionMetaFromDisk），其余线程阻塞复用其结果，避免多线程重复读
-    // 同一缓存文件造成 IO 竞争；maximumSize 作为内存上限兜底（正常场景远不触达）。
-    // 失效时机：saveSession（put 新鲜值）/ clearSession（invalidate）/ clearAllSessions（invalidateAll）
-    // 修改磁盘文件后调用。
-    private static final SessionMeta ABSENT_META = new SessionMeta(null, 0L, false);
-
-    private static final LoadingCache<String, SessionMeta> META_CACHE = CacheBuilder.newBuilder()
-            .concurrencyLevel(16)
-            .maximumSize(1000)
-            .build(new CacheLoader<String, SessionMeta>() {
-                @Override
-                public SessionMeta load(String sessionKey) {
-                    SessionMeta meta = readSessionMetaFromDisk(sessionKey);
-                    // Guava 不允许 null 值：以哨兵占位，等效"不缓存负结果"
-                    return (meta != null) ? meta : ABSENT_META;
-                }
-            });
-
-    /**
-     * 登录态内容（storageState JSON 文本）内存缓存。
-     * <p>与 {@link #META_CACHE} 仅缓存元数据不同，此处缓存的是 <em>storageState 文本内容</em>，
-     * 使 restoreSession 命中时直接把 JSON 字符串传给 Playwright
-     * （{@code NewContextOptions.setStorageState(String)}，1.58.0+ 支持直接传内存 JSON，无需临时文件/重复读盘），
-     * 彻底消除高并发下对同一个 canonical {@code <key>.json} 的重复文件读 IO。
-     * <p>加载器：缓存 miss 时读 canonical {@code <key>.json} 一次（磁盘仍是跨 JVM 真相源）。
-     * 一致性：以 {@link #saveSession} 为唯一写入口，落盘后用新鲜内容 put 刷新；
-     * {@link #clearSession}/{@link #clearAllSessions} 负责 invalidate。
-     */
-    private static final LoadingCache<String, String> STORAGE_CONTENT_CACHE = CacheBuilder.newBuilder()
-            .concurrencyLevel(16)
-            .maximumSize(1000)
-            //  过期窗口与逻辑 TTL 对齐（同 SESSION_TIMEOUT_MINUTES，默认 5 分钟）：
-            // 内容缓存只作"内存加速"，其存活窗口不应长于 session 逻辑过期，
-            // 否则可能因缓存在而掩盖 evictIfExpired 已清盘后短时间内又命中旧内容的风险。
-            // access 窗口内反复 get() 会刷新访问时间，热路径（同 key 5 分钟内复用）不受影响。
-            .expireAfterAccess(SESSION_TIMEOUT_MINUTES, TimeUnit.MINUTES)
-            .build(new CacheLoader<String, String>() {
-                @Override
-                public String load(String sessionKey) throws Exception {
-                    return new String(Files.readAllBytes(getSessionPath(sessionKey)), StandardCharsets.UTF_8);
-                }
-            });
-
-    /**
-     * 取登录态内容：优先内存缓存（miss 时由加载器从 canonical {@code <key>.json} 读一次），失败返回 null。
-     * 失败（如文件被并发清除）时调用方应回退到文件路径，保证健壮。
-     */
-    private static String getStorageStateContent(String sessionKey) {
-        try {
-            return STORAGE_CONTENT_CACHE.get(sessionKey);
-        } catch (Exception e) {
-            LOGGER.warn("[SessionManager] Failed to load storageState content for {} -> fall back to file path",
-                    sessionKey, e);
-            return null;
-        }
-    }
-
-    /**
-     * Session meta 快照（从 .meta 文件解析，并附带 .json 会话文件存在性）。
-     * 不可变值对象，供内存缓存复用，避免重复读盘。
-     */
-    private static final class SessionMeta {
-        final String homeUrl;
-        final long lastAccessTime;
-        final boolean sessionFileExists;
-
-        SessionMeta(String homeUrl, long lastAccessTime, boolean sessionFileExists) {
-            this.homeUrl = homeUrl;
-            this.lastAccessTime = lastAccessTime;
-            this.sessionFileExists = sessionFileExists;
-        }
-    }
-
-    /**
-     * 读取指定 sessionKey 的 meta（单飞 + 内存缓存）。
-     * <p>缓存未命中时执行磁盘 IO（.meta 解析 + .json 存在性检查），命中则直接返回内存快照。
-     * 文件缺失时返回 {@code null}（不缓存负结果，保证后续 saveSession 立即可见）。
-     */
-    private static SessionMeta loadSessionMeta(String sessionKey) {
-        try {
-            SessionMeta meta = META_CACHE.get(sessionKey);
-            return (meta == ABSENT_META) ? null : meta;
-        } catch (ExecutionException e) {
-            LOGGER.warn("[SessionManager] Failed to load meta cache for {} -> treating as no cache entry",
-                    sessionKey, e);
-            return null;
-        }
-    }
-
-    private static SessionMeta readSessionMetaFromDisk(String sessionKey) {
-        Path sessionPath = getSessionPath(sessionKey);
-        Path metaPath = getMetaPath(sessionKey);
-        boolean sessionFileExists = Files.exists(sessionPath);
-        if (!Files.exists(metaPath)) {
-            // meta 缺失：无 homeUrl/时间戳，文件不可作为有效 session → 不缓存负结果，返回 null
-            return null;
-        }
-        Properties props = new Properties();
-        try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
-            props.load(reader);
-        } catch (Exception e) {
-            LOGGER.warn("[SessionManager] Failed to load meta for {} -> treating as no cache entry", sessionKey, e);
-            return null;
-        }
-        String homeUrl = props.getProperty("homeUrl");
-        long lastAccessTime = 0L;
-        String lastAccessTimeStr = props.getProperty("lastAccessTime");
-        if (lastAccessTimeStr != null && !lastAccessTimeStr.isEmpty()) {
-            try {
-                lastAccessTime = Long.parseLong(lastAccessTimeStr);
-            } catch (NumberFormatException nfe) {
-                lastAccessTime = 0L;
-            }
-        }
-        return new SessionMeta(homeUrl, lastAccessTime, sessionFileExists);
-    }
-
-    // ==================== Feature 级别 Session 缓存 ====================
-    // 用于支持 serenity.playwright.restart.browser.for.each=feature 配置
-    // 确保同一个 Feature 中只恢复一次 Session，避免重复重建 Context
-
-    /**
-     * Feature 级会话状态 —— <b>线程级持有</b>（一个 Feature 固定跑在同一 worker 线程）。
-     *
-     * <p><b>为什么不用 {@code TestContextHolder}（用例级）</b>：Cucumber 下
-     * {@code TestContextHolder.get()} 解析为<b>用例级</b>，而 {@code @After}（{@code ScenarioContext.end}
-     * → {@code ctx.clear()}）会清空整张用例级存储，且早于 Serenity {@code testFinished}。
-     * 若把 feature 标记放用例级，则「下一个用例读到未恢复」→ 每用例都重建 Context，
-     * feature 模式的<b>「同 sessionKey 复用同一 Context」永远不可达</b>（实测缺陷，见 CD-1）。
-     *
-     * <p>语义：同一 Feature 内<b>跨用例存活</b>；Feature 结束（{@code resetFeatureSession()}）或
-     * 换 user（不同 sessionKey）时重置。
-     */
-    private static final ThreadLocal<FeatureSession> FEATURE_SESSION = new ThreadLocal<>();
-
-    /** Feature 级会话状态快照（不可变；写入即整体替换，天然线程安全）。 */
-    private record FeatureSession(String sessionKey, String homeUrl) {
-    }
-
-    /**
-     * 检查当前 Feature 是否有任何 Session 被恢复/保存过。
-     * <p>用于 Feature 模式下判断业务层是否使用了 SessionManager：
-     * 若未曾使用，cleanupForScenario 应销毁 Context 而非保留 Cookie。
-     */
     public static boolean isAnyFeatureSessionRestored() {
-        return FEATURE_SESSION.get() != null;
+        return SessionStore.isAnyFeatureSessionRestored();
     }
 
-    /** 当前 Feature 已恢复的 sessionKey（未恢复时 {@code null}）。 */
     public static String currentFeatureSessionKey() {
-        FeatureSession session = FEATURE_SESSION.get();
-        return session == null ? null : session.sessionKey();
+        return SessionStore.currentFeatureSessionKey();
     }
 
-    // ==================== 同一 sessionKey 并发互斥（并行语义）====================
-
-    /**
-     * 本线程本 scenario 持有的会话闸门键（线程级持有；场景末由框架收口释放）。
-     *
-     * <p><b>并行语义（企业级期望）</b>：<b>不同 sessionKey 并行、同一 sessionKey 严格串行</b>。
-     * 同一会话被两个 scenario 并发使用会互相踩踏 —— SSO 服务端单会话策略互踢、storageState 覆写、
-     * 首页/权限态交错，表现为随机 401 / 重登录失败 / 断言漂移，且极难定位。
-     *
-     * <p>闸门键取 {@code sessionKey} 单一维度，与业务/测试侧「同一个 session」的直觉完全一致；
-     * 不同 sessionKey 各自独立闸门 → 真并行；串行运行时闸门永不阻塞（无竞争）→ 零副作用。
-     *
-     * <p>闸门开关默认 {@code auto}：引擎级并行开启时自动生效（见
-     * {@link com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig#CONCURRENCY_PARTITION_ENABLED}）。
-     */
-    private static final ThreadLocal<ConcurrencyPartitionKey> SESSION_GATE = new ThreadLocal<>();
-
-    /**
-     * 获取本 sessionKey 的并发闸门：本 scenario 首次调用时<b>阻塞</b>，直至该 sessionKey 的前序场景
-     * 完全结束（{@link #releaseSessionGate()}）；同 scenario 内同 key 重复调用为 no-op。
-     *
-     * <p>同 scenario 内<b>换 key</b>（feature 模式切 user）时先释放旧闸门再取新闸门，避免长期占用
-     * 已不再使用的旧身份（release→acquire 顺序不会与其他场景形成环路等待）。
-     *
-     * @param sessionKey 会话标识；{@code null}/空白 时不参与互斥
-     */
-    /* package-private：暴露给同包单测直接验证「同 key 串行 / 异 key 并行」语义（零网络依赖）。 */
-    static void acquireSessionGate(String sessionKey) {
-        if (sessionKey == null || sessionKey.trim().isEmpty()) {
-            return;
-        }
-        ConcurrencyPartitionKey key;
-        try {
-            key = ConcurrencyPartitionKey.of(java.util.Map.of("sessionkey", sessionKey));
-        } catch (IllegalArgumentException e) {
-            // 非法维度（理论不可达：已判空）→ 不参与互斥，但不得静默（D7-3）
-            LOGGER.warn("[SessionManager] sessionKey '{}' cannot form a partition key, skipping gate: {}",
-                    sessionKey, e.getMessage());
-            return;
-        }
-        ConcurrencyPartitionKey held = SESSION_GATE.get();
-        if (held != null) {
-            if (held.equals(key)) {
-                return;
-            }
-            releaseSessionGate();
-        }
-        ConcurrencyGate.acquire(key);
-        SESSION_GATE.set(key);
-    }
-
-    /**
-     * 释放本线程持有的会话闸门（scenario 末由框架收口调用；未持有则 no-op）。
-     *
-     * <p>必须保证配对释放，否则同 sessionKey 的后续 scenario 将永久阻塞。
-     */
     public static void releaseSessionGate() {
-        ConcurrencyPartitionKey key = SESSION_GATE.get();
-        SESSION_GATE.remove();
-        if (key != null) {
-            ConcurrencyGate.release(key);
-        }
-        //  跨进程登录锁兜底释放（评审 P1-2）：正常路径已在 saveSession 释放；此处覆盖「登录抛异常 /
-        //  业务未调 saveSession」等路径，避免本 JVM 长期占锁使其它 JVM 只能等到超时。幂等，未持有即 no-op。
-        CrossJvmLoginLock.releaseLock();
+        SessionStore.releaseSessionGate();
     }
 
-    /**
-     * 标记 Feature 级别 Session 已恢复
-     * <p>
-     * 当第一个 Scenario 成功恢复 Session 后，调用此方法标记
-     * 后续同一个 Feature 中的 Scenario 会直接复用，不再重建 Context
-     *
-     * @param sessionKey Session 标识
-     * @param homeUrl 首页 URL
-     */
     public static void markFeatureSessionRestored(String sessionKey, String homeUrl) {
-        FEATURE_SESSION.set(new FeatureSession(sessionKey, homeUrl));
-        VerboseLogging.logInfoIfVerbose(LOGGER,
-            "Feature-level session marked as restored: {} (homeUrl: {})", sessionKey, homeUrl);
+        SessionStore.markFeatureSessionRestored(sessionKey, homeUrl);
     }
 
-    /**
-     * 检查当前 Feature 是否已恢复指定的 Session
-     * <p>
-     * 用于避免在同一个 Feature 中重复恢复 Session 导致 Context 重建
-     *
-     * @param sessionKey Session 标识
-     * @return true 表示当前 Feature 已恢复该 Session，可以直接复用
-     */
     public static boolean isFeatureSessionRestored(String sessionKey) {
-        FeatureSession session = FEATURE_SESSION.get();
-        if (session != null && sessionKey != null && sessionKey.equals(session.sessionKey())) {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "Feature-level session already restored for: {}, skipping restore", sessionKey);
-            return true;
-        }
-        return false;
+        return SessionStore.isFeatureSessionRestored(sessionKey);
     }
 
-    /**
-     * 获取当前 Feature 已恢复 Session 的 homeUrl
-     *
-     * @return homeUrl，如果未恢复则返回 null
-     */
     public static String getFeatureHomeUrl() {
-        FeatureSession session = FEATURE_SESSION.get();
-        return session == null ? null : session.homeUrl();
+        return SessionStore.getFeatureHomeUrl();
     }
 
-    /**
-     * 【简化API】获取 homeUrl（自动处理 Feature 缓存和 meta 文件读取）
-     * <p>
-     * 封装了 homeUrl 的获取逻辑：
-     * 1. 优先从 Feature 级别缓存读取（同一个 Feature 中已恢复的 Session）
-     * 2. 如果缓存未命中，从 meta 文件读取
-     * <p>
-     * 业务层只需调用此方法，无需关心 homeUrl 的来源
-     *
-     * @param sessionKey Session 标识
-     * @return homeUrl，如果不存在则返回 null
-     */
     public static String getHomeUrl(String sessionKey) {
-        // 优先从 Feature 级别缓存读取
-        String homeUrl = getFeatureHomeUrl();
-        if (homeUrl != null && !homeUrl.isEmpty()) {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "HomeUrl loaded from Feature cache: {}", homeUrl);
-            return homeUrl;
-        }
-
-        // 缓存未命中，从 meta 文件读取
-        homeUrl = loadHomeUrl(sessionKey);
-        if (homeUrl != null && !homeUrl.isEmpty()) {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "HomeUrl loaded from meta file: {}", homeUrl);
-        }
-
-        return homeUrl;
+        return SessionStore.getHomeUrl(sessionKey);
     }
 
-    /**
-     * 重置 Feature 级别 Session 状态
-     * <p>
-     * 在 Feature 结束时调用，清理 ThreadLocal 变量
-     */
     public static void resetFeatureSession() {
-        VerboseLogging.logInfoIfVerbose(LOGGER, "Resetting feature-level session state");
-        FeatureSession session = FEATURE_SESSION.get();
-        FEATURE_SESSION.remove();
-        //  修复 H11（防御）：Feature 结束时清理可能残留的单飞守卫，避免跨 Feature 的静态 Map 条目堆积
-        // （正常成功路径已由 completeLoginGuard 在 saveSession 内移除，此处为异常/未落盘路径兜底）。
-        if (session != null) {
-            loginGuards.remove(session.sessionKey());
-        }
+        SessionStore.resetFeatureSession();
     }
 
-    /**
-     * 【新】检查 Session 是否存在且有效
-     * <p>
-     * 框架层自动调用此方法检查 session 状态
-     *
-     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
-     * @return true 表示 session 文件存在且未过期，false 表示需要登录
-     */
-    /**
-     * 检查是否存在有效的 Session。
-     *
-     * <p>纯内存优先：homeUrl/lastAccessTime/exists 均来自 {@link #META_CACHE}，命中时为零磁盘读；
-     * 仅冷启动 .meta 未命中会同步读盘一次（本地 target/.sessions 极小文件，挂起概率可忽略）。
-     * 原 IO 超时守卫线程池（SESSION_IO_EXECUTOR）已移除——见类顶部说明。
-     */
-    private static boolean hasSession(String sessionKey) {
-        SessionMeta meta = loadSessionMeta(sessionKey);
-        if (meta == null || !meta.sessionFileExists) {
-            VerboseLogging.logInfoIfVerbose(LOGGER, "Session file not found: {}", sessionKey);
-            return false;
-        }
-
-        // 过期则驱逐（删除磁盘文件 + 失效缓存）后视为无 session
-        if (evictIfExpired(sessionKey)) {
-            return false;
-        }
-
-        VerboseLogging.logInfoIfVerbose(LOGGER, "Valid session found for: {}", sessionKey);
-        return true;
+    public static void resetFeatureSession(String featureId) {
+        SessionStore.resetFeatureSession(featureId);
     }
 
-    /**
-     * 检查并驱逐过期 session（"失效即删除"的集中收口）。
-     * <p>若 meta 指示已过期：删除 {@code .json} 与 {@code .meta} 磁盘文件、失效内存缓存，返回 {@code true}；
-     * 否则返回 {@code false}。供 {@link #hasSession(String)} 与 {@link #loadHomeUrl(String)}
-     * 等所有读取入口复用，确保无论走哪条路径，过期 session 最终都会被清理（满足"失效需要删除"）。
-     */
-    private static boolean evictIfExpired(String sessionKey) {
-        SessionMeta meta = loadSessionMeta(sessionKey);
-        if (meta == null || !meta.sessionFileExists) {
-            return false;
-        }
-        if (isSessionExpired(meta)) {
-            VerboseLogging.logInfoIfVerbose(LOGGER, "Session expired for: {}", sessionKey);
-            // 清除过期的 session 并失效内存缓存
-            try {
-                Files.delete(getSessionPath(sessionKey));
-                Files.delete(getMetaPath(sessionKey));
-            } catch (Exception e) {
-                LOGGER.warn("Failed to delete expired session: {}", sessionKey, e);
-            }
-            // 粘滞化"已驱逐/absent"态：用 ABSENT_META 覆盖而非 invalidate，
-            // 使并发同 key 后续读取直接命中内存（与重新读盘得到的 ABSENT_META 等价但零 IO），
-            // 从根上消除"invalidate→miss→重读盘"形成的读盘竞争风暴与高负载下的超时抖动。
-            // 并发安全性：首个驱逐线程 put ABSENT_META 后，其余线程仍以自身已加载的过期
-            // meta 判定 isSessionExpired(meta)=true → 重复 delete 被 catch 降级、put 幂等覆盖，
-            // 全程零未捕获异常；saveSession 落盘后会以新鲜值覆盖本条目，不掩盖真实写入。
-            META_CACHE.put(sessionKey, ABSENT_META);
-            return true;
-        }
-        return false;
+    public static void resetAllForTest() {
+        SessionStore.resetAllForTest();
     }
 
+    // ===================== 入口 =====================
     /**
-     * 【新】准备 Session（框架层自动处理）
-     * <p>
-     * 此方法是框架层入口，负责：
-     * 1. 检查 session 文件是否存在且未过期
-     * 2. 如果存在，读取 homeUrl 并通过 PlaywrightManager 设置 storageStatePath
-     * 3. 框架会自动延迟Context/Page创建（避免不必要的创建和销毁）
-     * 4. 如果不存在或过期，等待业务层登录后调用 saveCurrentSession()
-     * <p>
-     * 自定义配置机制：
-     * - storageStatePath 是用户自定义配置，优先级高于框架默认配置
-     * - 通过 customContextOptionsFlag 标志控制是否应用自定义配置
-     * - 业务层通过 PlaywrightManager.customOptions().setXXX() 设置自定义配置
-     * - 框架在 createContext() 时检查标志并应用自定义配置
-     * <p>
-     * 职责划分：
-     * - 业务层：只传递 session key，执行登录逻辑
-     * - 框架层：检查 session、设置 storageStatePath（自定义配置）、保存 session
-     *
-     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
-     * @return true 表示 session 已准备好，false 表示需要登录
+     * 兼容别名：等价于 {@link #restoreSession(String)}。
+     * 业务侧 {@code LoginSteps} 仍调用 {@code prepareSession(sessionKey)}，保持该入口可用。
      */
+    public static boolean prepareSession(String sessionKey) {
+        return SessionStore.restoreSession(sessionKey);
+    }
+
     public static boolean restoreSession(String sessionKey) {
-        //  并行语义前置：同一 sessionKey 的 scenario 互斥（不同 sessionKey 并行）。
-        //   阻塞点位于场景早期（首个会话步骤），直到前序同 key 场景完全结束才继续。
-        acquireSessionGate(sessionKey);
-        String restartStrategy = PlaywrightManager.config().getRestartStrategy();
-        
-        if ("feature".equalsIgnoreCase(restartStrategy)) {
-            // 同一 sessionKey 已在本 Feature 恢复 → 直接复用当前 Context，不清理、不重建
-            if (isFeatureSessionRestored(sessionKey)) {
-                String homeUrl = getFeatureHomeUrl();
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                    "Feature-level session cache hit: {} (homeUrl: {})", sessionKey, homeUrl);
-                return true;
-            }
-            //  Feature 模式遇到不同 env/user（不同 sessionKey）：不能再复用上一个 session 的 Context。
-            //    先丢弃当前 Context（保留 custom options），并清除过期 storageStatePath，使后续重建
-            //    从干净起点开始；随后按"缓存是否有此 key"分流：【命中→加载缓存】或【未命中→走登录】。
-            if (PlaywrightRuntime.instance().contextRegistry.hasContext()
-                    && isAnyFeatureSessionRestored()
-                    && !sessionKey.equals(currentFeatureSessionKey())) {
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Feature mode: sessionKey {} differs from restored — discarding current Context",
-                        sessionKey);
-                PlaywrightRuntime.instance().contextRegistry.discardCurrentContext();
-                // 清除上一个 user 的 storageState（路径 + 内存 JSON），避免重建/登录时误加载旧 session
-                PlaywrightManager.customOptions().setStorageStatePath(null);
-                PlaywrightManager.customOptions().setStorageState(null);
-            }
-        } else {
-            VerboseLogging.logDebugIfVerbose(LOGGER,
-                "Scenario mode: skipping feature-level cache for {}", sessionKey);
-        }
-
-        if (hasSession(sessionKey)) {
-            String homeUrl = loadHomeUrl(sessionKey);
-
-            if (homeUrl != null && !homeUrl.isEmpty()) {
-                //  命中：从内存内容缓存取 storageState JSON 直接传给 Playwright（零文件 IO）；
-                //    加载失败则回退到 canonical 文件路径。
-                // - 内部 scheduleContextRebuild() 会立即关闭可能存在的旧 Context（不同 user 不再复用）；
-                // - 随后立即 getContext() 重建并加载内存 storageState，使 session 在 return 前即生效
-                //   （满足"立即应用到当前，而非等下次 getContext 重建"的诉求）。
-                String storageStateJson = getStorageStateContent(sessionKey);
-                if (storageStateJson != null) {
-                    //  就地换会话（1.59+）：若当前已有活跃 Context，直接在 Context 上 setStorageState，
-                    //  免去「改会话即重建 Context」的绕路；无活跃 Context 时退化为设置 customOptions（待创建时应用）。
-                    PlaywrightManager.applyStorageState(storageStateJson);
-                } else {
-                    PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
-                }
-                PlaywrightManager.getContext();
-
-                // 标记 Feature 级别 Session 已恢复（更新为当前 sessionKey，供后续 scenario 复用）
-                if ("feature".equalsIgnoreCase(restartStrategy)) {
-                    markFeatureSessionRestored(sessionKey, homeUrl);
-                }
-
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                    "Session prepared for: {} (custom storageStatePath: {})", sessionKey, getSessionPath(sessionKey));
-                return true;
-            } else {
-                VerboseLogging.logWarnIfVerbose(LOGGER,
-                    "Session file exists but no homeUrl found: {}", sessionKey);
-                return false;
-            }
-        } else {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "No valid session for: {}, waiting for login", sessionKey);
-
-            //  单飞协调：同 sessionKey 并发"未命中"时只允许一个线程真实登录，
-            //   否则两个线程都会看到"无 session 文件"而各自登录，触发服务端单会话策略把对端踢下线。
-            LoginGuard guard = acquireOrAwait(sessionKey);
-            if (guard == null) {
-                //  跨 JVM 兜底（评审 F-11 / P1-2）：forkCount>0 分叉或 CI 分片时，多个 JVM 同样会
-                //  「同时未命中」而各自登录 → 服务端单会话互踢。以 OS 级文件锁使跨进程也只有一个 leader；
-                //  等待期间他方（其它 JVM）若已落盘 session，则直接复用、不再触发第二次登录。
-                boolean leader = CrossJvmLoginLock.acquireForLogin(
-                        sessionKey, getLoginLockPath(sessionKey), SINGLE_FLIGHT_TIMEOUT_MS,
-                        () -> hasUsableSession(sessionKey));
-                if (!leader) {
-                    return reusePersistedSession(sessionKey, restartStrategy);
-                }
-                // 本线程是 leader：返回 false 交由业务层登录，
-                // 登录成功后 saveSession() 会释放守卫（并释放跨进程锁）唤醒所有 follower。
-                return false;
-            }
-
-            // follower：leader 已结束（成功落盘 / 失败），或（CT2-14）session 在等待期间已变得可用。
-            //  判据由「leader 自称成功」放宽为「确实可复用」：既保持原语义（成功 ⇒ 可复用 ⇒ true），
-            //  又覆盖「leader 未及标记成功、但他方已落盘」的情形，避免无谓的第二次登录。
-            //  reusePersistedSession 内部自带 hasUsableSession 复核，不可用时返回 false，行为与原实现一致。
-            if (reusePersistedSession(sessionKey, restartStrategy)) {
-                return true;
-            }
-
-            // leader 登录失败或落盘不可读 → 摘除失效守卫，本线程接替为 leader 自行登录
-            loginGuards.remove(sessionKey, guard);
-            VerboseLogging.logWarnIfVerbose(LOGGER,
-                "Single-flight leader did not produce a usable session for {} — this thread will login", sessionKey);
-            return false;
-        }
+        return SessionStore.restoreSession(sessionKey);
     }
 
-    /** session 是否已可复用（文件存在且 homeUrl 可取）—— 供 JVM 内 follower 与跨进程等待共同判定。 */
-    private static boolean hasUsableSession(String sessionKey) {
-        if (!hasSession(sessionKey)) {
-            return false;
-        }
-        String homeUrl = loadHomeUrl(sessionKey);
-        return homeUrl != null && !homeUrl.isEmpty();
+    public static boolean restoreSession(String sessionKey, Runnable leaderAction) {
+        return SessionStore.restoreSession(sessionKey, leaderAction);
+    }
+
+    public static void saveSession(String sessionKey, String homeUrl) {
+        SessionStore.saveSession(sessionKey, homeUrl);
+    }
+
+    public static boolean clearSession(String sessionKey) {
+        return SessionStore.clearSession(sessionKey);
+    }
+
+    public static int clearAllSessions() {
+        return SessionStore.clearAllSessions();
+    }
+
+    public static String loadHomeUrl(String sessionKey) {
+        return SessionStore.loadHomeUrl(sessionKey);
+    }
+
+    // ===================== 包级 / 私有（单测 / 反射） =====================
+    static boolean isValidStorageStateJson(String json) {
+        return SessionStore.isValidStorageStateJson(json);
+    }
+
+    static void purgeSessionFiles(String sessionKey) {
+        SessionStore.purgeSessionFiles(sessionKey);
+    }
+
+    static void acquireSessionGate(String sessionKey) {
+        SessionStore.acquireSessionGate(sessionKey);
     }
 
     /**
-     * 复用「他方（JVM 内 leader 或跨进程 leader）已落盘的 session」：应用 storageState 并返回 true。
-     *
-     * <p>语义与「命中路径」完全一致：优先取内存内容缓存直接传 JSON（零文件 IO），不可用时回退文件路径；
-     * {@code feature} 策略下标记 feature 级会话已恢复，使同 feature 的后续用例免于重建 Context。</p>
-     *
-     * <p>抽为单一实现，避免「JVM 内 follower」与「跨进程等待」两条路径行为分叉。</p>
-     *
-     * @param sessionKey      session 标识
-     * @param restartStrategy 浏览器重启策略（{@code scenario} / {@code feature}）
-     * @return {@code true} 表示已成功复用；{@code false} 表示落盘内容不可用（调用方需自行登录）
+     * 单飞协调入口（反射测试依赖，保持私有 + 签名不变）。
+     * 返回 {@code null} 表示本线程是 leader；非 null 表示 follower 已等到 leader 结束。
      */
-    private static boolean reusePersistedSession(String sessionKey, String restartStrategy) {
-        if (!hasUsableSession(sessionKey)) {
-            return false;
-        }
-        String persistedHomeUrl = loadHomeUrl(sessionKey);
-        //  与命中路径一致：取内存内容缓存，直接传 JSON（立即应用，零文件 IO）；失败回退文件
-        String storageStateJson = getStorageStateContent(sessionKey);
-        if (storageStateJson != null) {
-            //  就地换会话（1.59+）：同命中路径，优先在活跃 Context 上 setStorageState 免重建
-            PlaywrightManager.applyStorageState(storageStateJson);
-        } else {
-            PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
-        }
-        PlaywrightManager.getContext();
-        if ("feature".equalsIgnoreCase(restartStrategy)) {
-            markFeatureSessionRestored(sessionKey, persistedHomeUrl);
-        }
-        VerboseLogging.logInfoIfVerbose(LOGGER,
-                "Reusing session persisted by single-flight leader: {}", sessionKey);
-        return true;
+    private static Object acquireOrAwait(String sessionKey) {
+        return SessionStore.acquireOrAwait(sessionKey);
     }
 
     /**
-     * 单飞协调：为同一 sessionKey 竞争"登录权"。
-     *
-     * @return {@code null} 表示本线程是 leader（应执行真实登录，并在成功后调用
-     *         {@link #saveSession(String, String)} 释放守卫）；非 null 表示本线程是 follower
-     *         且已等到 leader 结束，调用方需检查 {@link LoginGuard#isSuccess()} 与 session 可用性。
-     */
-    private static LoginGuard acquireOrAwait(String sessionKey) {
-        if (sessionKey == null) {
-            return null;
-        }
-        LoginGuard candidate = new LoginGuard();
-        LoginGuard existing = loginGuards.putIfAbsent(sessionKey, candidate);
-        if (existing == null) {
-            // CT2-14：登记本线程的守卫，供结束时判断是否已被等待者夺取（见 completeLoginGuard）。
-            MY_LOGIN_GUARD.set(candidate);
-            return null; // 本线程是 leader
-        }
-
-        boolean completed = existing.await(SINGLE_FLIGHT_TIMEOUT_MS);
-        if (completed) {
-            return existing; // follower：leader 已结束
-        }
-
-        // CT2-14：leader 超时仍未结束。原实现**立刻**摘守卫自任 leader —— 若 leader 只是慢，
-        //   就会出现「两个线程各自真实登录」→ 服务端单会话策略互踢（随机 401）。现在的处置分三级：
-        //   ① 先在**不夺取**的前提下再等一个宽限窗口（超时多是慢而非死，宽限内落盘即可直接复用）；
-        //   ② 宽限后仍无 leader 信号，但 session 已可用（例如其它 JVM 已落盘）→ 直接复用，同样不登录；
-        //   ③ 只有「宽限期满且确认无可复用 session」才夺取，并**显式标记原 leader 已被取代**
-        //      （使其在结束时能发现并上报，而不是让双重登录对原 leader 完全不可见）。
-        if (existing.await(SINGLE_FLIGHT_GRACE_MS)) {
-            LOGGER.info("[SessionManager] Concurrent login for sessionKey={} finished within grace window "
-                    + "({}ms) → reuse persisted session (no second login)", sessionKey, SINGLE_FLIGHT_GRACE_MS);
-            return existing;
-        }
-        if (hasUsableSession(sessionKey)) {
-            LOGGER.info("[SessionManager] session for {} became usable while waiting → reuse it "
-                    + "(no second login)", sessionKey);
-            return existing;
-        }
-
-        //  A-04（doc 22）：夺取分支原实现 `remove(key, existing)` 后【不再登记】→ 后续任何线程
-        //    putIfAbsent 都成功、也成 leader（N 个真实登录）；且多等待者同时进此分支会各自 return null
-        //    （N 个真实登录）。改为【原子夺取】：putIfAbsent 只让【一个】等待者赢得新 leader 身份，
-        //    其余等待者去 await 这个新 leader（而非各自成为 leader）。
-        existing.markSuperseded();
-        LoginGuard raced = loginGuards.putIfAbsent(sessionKey, candidate);
-        if (raced == null) {
-            //  本等待者赢得夺取 → 成为唯一新 leader（登记守卫，供 completeLoginGuard 按身份释放）
-            MY_LOGIN_GUARD.set(candidate);
-            long takeovers = SINGLE_FLIGHT_TAKEOVERS.incrementAndGet();
-            LOGGER.warn("[SessionManager] Timed out {}ms (+{}ms grace) waiting for concurrent login of sessionKey={} "
-                            + "and no usable session yet → taking over as leader (potential twofold login; "
-                            + "takeovers={}). If frequent: raise playwright.noLogin.singleFlightTimeoutMs or make "
-                            + "login faster.",
-                    SINGLE_FLIGHT_TIMEOUT_MS, SINGLE_FLIGHT_GRACE_MS, sessionKey, takeovers);
-            return null;
-        }
-        //  别的等待者已抢先成为新 leader → 本线程去 await 它（不成为 leader，避免二次真实登录）
-        if (raced.await(SINGLE_FLIGHT_TIMEOUT_MS)) {
-            return raced;
-        }
-        //  新 leader 也超时：若已有可用会话则复用，否则降为 leader（罕见末路）
-        if (hasUsableSession(sessionKey)) {
-            return existing;
-        }
-        return null;
-    }
-
-    /**
-     * 释放单飞守卫并唤醒所有等待同一 sessionKey 的 follower。
-     *
-     * @param sessionKey session 标识
-     * @param success    leader 是否成功落盘 session
+     * 释放单飞守卫（反射测试依赖，保持私有 + 签名不变）。
      */
     private static void completeLoginGuard(String sessionKey, boolean success) {
-        if (sessionKey == null) {
-            return;
-        }
-        // CT2-14：若本线程（原 leader）的登录权已在「超时 + 宽限」后被等待者夺取，则该后果此前
-        //   对原 leader 完全不可见 —— 此处让它显式可见（含夺取累计数，便于判定是否需调大超时）。
-        //   注意守卫可能已被夺取路径从 map 摘除，故以本线程登记的 MY_LOGIN_GUARD 为判据。
-        LoginGuard mine = MY_LOGIN_GUARD.get();
-        if (mine != null && mine.isSuperseded()) {
-            LOGGER.error("[SessionManager] login for sessionKey={} was SUPERSEDED by a waiter after "
-                            + "timeout+grace → a concurrent second real login may have occurred "
-                            + "(SSO single-session policy may kick one side out). takeovers={}",
-                    sessionKey, SINGLE_FLIGHT_TAKEOVERS.get());
-        }
-        //  A-04（doc 22）：原 `loginGuards.remove(sessionKey)` 按 key 无条件摘除会摘掉「已被等待者夺取后
-        //    新任 leader」的守卫并错误 complete，把 follower 从等待中错误唤醒、或让本应完成的 leader 的
-        //    follower 收不到完成信号。改为仅当 map 中仍是【本线程自己】的守卫时才摘除 + 完成；否则本线程
-        //    只是被取代的原 leader，真正的新 leader 会自行在 saveSession 里 complete 它自己的守卫。
-        boolean removed = mine != null && loginGuards.remove(sessionKey, mine);
-        if (removed) {
-            mine.complete(success);
-        }
-        MY_LOGIN_GUARD.remove();
-    }
-
-    /**
-     * 【新】保存当前 Context 的 Session
-     * <p>
-     * 此方法由业务层在登录成功后调用，框架会自动：
-     * 1. 保存 Playwright storageState 到文件
-     * 2. 保存元数据（homeUrl + timestamp）
-     * <p>
-     * 使用示例：
-     * <pre>
-     * // 登录成功后，业务层调用
-     * SessionManager.saveCurrentSession("O63_SIT1_WP7UAT2_2", homeUrl);
-     * </pre>
-     *
-     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
-     * @param homeUrl 登录成功后的首页 URL
-     */
-    public static void saveSession(String sessionKey, String homeUrl) {
-        //  并行语义：登录落盘同样纳入同 sessionKey 互斥（覆盖「未走 restoreSession 直接登录」的路径）
-        acquireSessionGate(sessionKey);
-        try {
-            Path sessionPath = getSessionPath(sessionKey);
-
-            // 确保目录存在
-            if (!Files.exists(sessionPath.getParent())) {
-                Files.createDirectories(sessionPath.getParent());
-            }
-
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "Saving session for: {} (homeUrl: {})", sessionKey, homeUrl);
-
-            // 获取当前 context
-            BrowserContext context = PlaywrightManager.getContext();
-
-            if (context == null) {
-                throw new IllegalStateException("No context available for saving session");
-            }
-
-            // 使用 Playwright API 保存 storageState 到 canonical 文件（跨 JVM / 缓存 miss 的真相源）
-            context.storageState(new BrowserContext.StorageStateOptions().setPath(sessionPath));
-            //  同时把 storageState 内容（JSON 字符串）写入内存内容缓存：
-            //    后续 restoreSession 命中时直接传内存 JSON 给 Playwright，零文件 IO。
-            String storageStateJson = context.storageState();
-            STORAGE_CONTENT_CACHE.put(sessionKey, storageStateJson);
-
-            // 保存元数据（homeUrl + timestamp）
-            saveMeta(sessionKey, homeUrl);
-
-            //  内存缓存：落盘后立即用新鲜值刷新，避免后续读盘并保持一致
-            META_CACHE.put(sessionKey, new SessionMeta(homeUrl, System.currentTimeMillis(), true));
-
-            // 【关键】标记 Feature 级别 Session 已保存（后续 Scenario 直接复用）
-            markFeatureSessionRestored(sessionKey, homeUrl);
-
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                "Session saved successfully: {} -> {}", sessionKey, sessionPath);
-
-            //  释放单飞守卫：唤醒等待同一 sessionKey 的并发线程复用刚落盘的 storageState
-            completeLoginGuard(sessionKey, true);
-            //  释放跨进程登录锁（评审 P1-2）：session 已落盘，其它 JVM 可取锁并直接复用其结果
-            CrossJvmLoginLock.releaseLock();
-        } catch (Exception e) {
-            // 登录/落盘失败同样必须释放守卫，否则 follower 会一直阻塞到 SINGLE_FLIGHT_TIMEOUT_MS
-            completeLoginGuard(sessionKey, false);
-            //  跨进程锁同样必须释放：否则其它 JVM 会空等到超时才降级（虽最终能继续，但白等一轮）
-            CrossJvmLoginLock.releaseLock();
-            LOGGER.error("Failed to save session for: {}", sessionKey, e);
-            throw new RuntimeException("Failed to save session", e);
-        }
-    }
-
-    /**
-     * 【新】清除指定的 Session
-     * <p>
-     * 此方法用于清除指定用户的 session，包括：
-     * 1. 删除 session storageState 文件
-     * 2. 删除 session 元数据文件
-     * <p>
-     * 使用场景：
-     * - 用户登出时清除 session
-     * - 需要强制重新登录时清除 session
-     * - 测试清理时清除 session
-     * <p>
-     * 使用示例：
-     * <pre>
-     * // 登出时清除 session
-     * SessionManager.clearSession("O63_SIT1_WP7UAT2_2");
-     * </pre>
-     *
-     * @param sessionKey Session 标识（如 "O63_SIT1_WP7UAT2_2"）
-     * @return true 表示清除成功，false 表示 session 不存在或清除失败
-     */
-    public static boolean clearSession(String sessionKey) {
-        try {
-            //  单飞守卫兜底：session 被显式清除后，在途 leader 即将落盘的 storageState
-            //    对应的正是这份被删的 session，等待它已无意义。先释放守卫（标记失败），
-            //    让 follower 立即自行登录，而不是白等到 SINGLE_FLIGHT_TIMEOUT_MS。
-            completeLoginGuard(sessionKey, false);
-
-            //  内存缓存失效：文件即将被删除，避免后续命中陈旧快照
-            META_CACHE.invalidate(sessionKey);
-            //  内存内容缓存（storageState JSON）同步失效
-            STORAGE_CONTENT_CACHE.invalidate(sessionKey);
-
-            Path sessionPath = getSessionPath(sessionKey);
-            Path metaPath = getMetaPath(sessionKey);
-            
-            boolean sessionDeleted = false;
-            boolean metaDeleted = false;
-            
-            // 删除 session 文件
-            if (Files.exists(sessionPath)) {
-                Files.delete(sessionPath);
-                sessionDeleted = true;
-                VerboseLogging.logInfoIfVerbose(LOGGER, 
-                    "Session file deleted: {}", sessionPath);
-            }
-            
-            // 删除 meta 文件
-            if (Files.exists(metaPath)) {
-                Files.delete(metaPath);
-                metaDeleted = true;
-                VerboseLogging.logInfoIfVerbose(LOGGER, 
-                    "Meta file deleted: {}", metaPath);
-            }
-            
-            // 只要有一个文件被删除就返回 true
-            boolean cleared = sessionDeleted || metaDeleted;
-            
-            if (cleared) {
-                LOGGER.info("Session cleared successfully: {}", sessionKey);
-            } else {
-                VerboseLogging.logInfoIfVerbose(LOGGER, 
-                    "No session found to clear: {}", sessionKey);
-            }
-            
-            return cleared;
-        } catch (Exception e) {
-            LOGGER.error("Failed to clear session for: {}", sessionKey, e);
-            return false;
-        }
-    }
-
-    /**
-     * 【新】清除所有 Session
-     * <p>
-     * 此方法用于清除所有用户的 session，适用于：
-     * - 测试环境清理
-     * - 批量登出
-     * <p>
-     * 使用示例：
-     * <pre>
-     * // 清理所有 session
-     * int count = SessionManager.clearAllSessions();
-     * System.out.println("Cleared " + count + " sessions");
-     * </pre>
-     *
-     * @return 清除的 session 数量
-     */
-    public static int clearAllSessions() {
-        try {
-            Path sessionDir = Paths.get(SESSION_DIR);
-            if (!Files.exists(sessionDir)) {
-                return 0;
-            }
-
-            // 单次遍历：收集基础名并删除文件
-            Set<String> sessionNames = new HashSet<>();
-            try (var stream = Files.list(sessionDir)) {
-                stream.forEach(path -> {
-                    String name = path.getFileName().toString();
-                    if (name.endsWith(".json") || name.endsWith(".meta")) {
-                        int dotIdx = name.lastIndexOf('.');
-                        sessionNames.add(dotIdx > 0 ? name.substring(0, dotIdx) : name);
-                        try {
-                            Files.delete(path);
-                        } catch (Exception e) {
-                            LOGGER.warn("Failed to delete: {}", path, e);
-                        }
-                    }
-                });
-            }
-
-            META_CACHE.invalidateAll();
-            STORAGE_CONTENT_CACHE.invalidateAll();
-            LOGGER.info("Cleared {} session(s)", sessionNames.size());
-            return sessionNames.size();
-        } catch (Exception e) {
-            LOGGER.error("Failed to clear all sessions", e);
-            return 0;
-        }
-    }
-
-    /**
-     * 【新】加载 HomeUrl
-     * <p>
-     * 从 meta 文件加载 homeUrl
-     *
-     * @param sessionKey Session 标识
-     * @return homeUrl，如果不存在返回 null
-     */
-    /**
-     * 读取 Session 的 homeUrl。
-     *
-     * <p>纯内存优先：homeUrl 来自 {@link #META_CACHE}（命中时零磁盘读）；仅冷启动 .meta 未命中
-     * 会同步读盘一次。原 IO 超时守卫线程池（SESSION_IO_EXECUTOR）已移除——见类顶部说明。
-     */
-    public static String loadHomeUrl(String sessionKey) {
-        // 先驱逐过期 session（失效即删除），避免返回陈旧 homeUrl
-        if (evictIfExpired(sessionKey)) {
-            return null;
-        }
-        SessionMeta meta = loadSessionMeta(sessionKey);
-        return (meta != null) ? meta.homeUrl : null;
-    }
-
-    /**
-     * 【新】检查 Session 是否过期
-     */
-    private static boolean isSessionExpired(SessionMeta meta) {
-        long currentTime = System.currentTimeMillis();
-        long elapsedMinutes = (currentTime - meta.lastAccessTime) / (60 * 1000);
-        return elapsedMinutes > SESSION_TIMEOUT_MINUTES;
-    }
-
-    /**
-     * 【新】获取 Session 文件路径
-     */
-    private static Path getSessionPath(String sessionKey) {
-        return Paths.get(SESSION_DIR, sessionKey + ".json");
-    }
-
-    /**
-     * 跨 JVM 登录单飞锁文件路径（与会话文件同目录；锁由 OS 在进程退出时自动释放）。
-     */
-    private static Path getLoginLockPath(String sessionKey) {
-        return Paths.get(SESSION_DIR, sessionKey + ".login.lock");
-    }
-
-    /**
-     * 【新】获取 Meta 文件路径
-     * <p>
-     * 使用 target/.sessions 目录
-     *
-     * @param sessionKey Session 标识
-     * @return Meta 文件路径
-     */
-    private static Path getMetaPath(String sessionKey) {
-        return Paths.get(SESSION_DIR, sessionKey + ".meta");
-    }
-
-    /**
-     * 【新】保存元数据
-     * <p>
-     * 保存 homeUrl 和 timestamp 到 meta 文件
-     *
-     * @param sessionKey Session 标识
-     * @param homeUrl 首页 URL
-     */
-    private static void saveMeta(String sessionKey, String homeUrl) {
-        try {
-            Path metaPath = getMetaPath(sessionKey);
-            Properties props = new Properties();
-
-            // 如果文件已存在，先读取现有数据
-            if (Files.exists(metaPath)) {
-                try (var reader = Files.newBufferedReader(metaPath, StandardCharsets.UTF_8)) {
-                    props.load(reader);
-                }
-            }
-
-            // 更新 homeUrl
-            if (homeUrl != null && !homeUrl.isEmpty()) {
-                props.setProperty("homeUrl", homeUrl);
-            }
-
-            // 更新时间戳
-            props.setProperty("lastAccessTime", String.valueOf(System.currentTimeMillis()));
-
-            // 写入文件
-            try (var writer = Files.newBufferedWriter(metaPath, StandardCharsets.UTF_8)) {
-                props.store(writer, "Session Meta Data");
-            }
-
-            VerboseLogging.logDebugIfVerbose(LOGGER, "Meta saved: {} (homeUrl: {})", sessionKey, homeUrl);
-        } catch (Exception e) {
-            LOGGER.warn("Failed to save meta for: {}", sessionKey, e);
-        }
+        SessionStore.completeLoginGuard(sessionKey, success);
     }
 }

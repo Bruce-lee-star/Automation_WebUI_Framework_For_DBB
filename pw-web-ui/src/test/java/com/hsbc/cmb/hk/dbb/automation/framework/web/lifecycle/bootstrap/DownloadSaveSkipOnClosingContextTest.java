@@ -77,7 +77,7 @@ class DownloadSaveSkipOnClosingContextTest {
 
         verify(download, timeout(3_000)).saveAs(any(Path.class));
         assertNotNull(waitForRecorded(context), "保存成功后必须登记下载路径，供业务查询");
-        assertEquals(0, DownloadLifecycle.pendingCount(downloadDir),
+        assertEquals(0, waitForPendingCountZero(downloadDir),
                 "任务结束（含成功）后必须注销在途计数，否则收尾永远跳过删除下载目录");
     }
 
@@ -111,6 +111,27 @@ class DownloadSaveSkipOnClosingContextTest {
 
         verify(download, after(800).never()).saveAs(any());
         assertFalse(Files.exists(downloadDir), "环境已不可用时不建目录、不占位（避免 0 字节残留）");
+    }
+
+    /**
+     * 有界轮询等待在途计数归零。
+     *
+     * <p>异步保存任务内的顺序是「{@code saveAs} → 登记路径 → 递减在途计数」，故
+     * {@link #waitForRecorded(BrowserContext)} 返回时计数可能尚未递减 —— 直接断言会与其竞态
+     * （实测：满量套件负载下偶发失败、单跑必过）。此处按同款有界轮询等待，
+     * <b>不改变</b>被守卫的契约（任务结束后计数必须为 0），只消除测试自身的时序假设。
+     *
+     * @param downloadDir 下载目录
+     * @return 轮询结束时的在途计数（期望 0）
+     */
+    private int waitForPendingCountZero(Path downloadDir) {
+        long deadline = System.nanoTime() + 3_000_000_000L;
+        int pending = DownloadLifecycle.pendingCount(downloadDir);
+        while (pending != 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+            pending = DownloadLifecycle.pendingCount(downloadDir);
+        }
+        return pending;
     }
 
     /** 轮询等待下载登记（保存为异步任务，登记发生在 saveAs 之后）。 */

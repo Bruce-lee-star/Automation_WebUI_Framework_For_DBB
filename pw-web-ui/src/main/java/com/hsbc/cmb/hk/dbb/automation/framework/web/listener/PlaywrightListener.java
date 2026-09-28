@@ -44,6 +44,16 @@ import java.util.function.Consumer;
 
 public class PlaywrightListener implements StepListener {
 
+    /**
+     * Serenity 4.3.4 新增回调：外部录制截图后通知。本框架截图由 Playwright 自身管理，
+     * 不依赖 Serenity 截图流水线，故空实现（保持接口契约完整）。
+     */
+    @Override
+    public void recordScreenshot(String screenshotName, byte[] screenshotBytes) {
+        // 框架截图链路与 Serenity 无关：PlaywrightListener 在 step 失败/结束时自行截图并附加报告。
+    }
+
+
     private static final Logger logger = LoggerFactory.getLogger(PlaywrightListener.class);
 
     private final ScreenshotStrategy screenshotStrategy;
@@ -338,6 +348,8 @@ public class PlaywrightListener implements StepListener {
     public void stepStarted(ExecutedStepDescription step) {
         if (step == null)  {return;} 
 
+
+
         //  第一步（最关键）：强制清空上一步骤残留的所有截图，根治脏数据
         clearStepScreenshotsImmediately();
 
@@ -491,6 +503,8 @@ public class PlaywrightListener implements StepListener {
 
         //  框架级 API 断言检查（每个步骤结束时兜底执行）
         checkAndFailOnApiAssertions();
+
+        checkAndFailOnRouteV2Assertions();
         //  框架级未捕获页面异常检查（开关受 playwright.page.error.failOnError 控制）
         checkAndFailOnPageErrors();
     }
@@ -871,6 +885,8 @@ public class PlaywrightListener implements StepListener {
 
         //  框架级 API 断言检查（每个 Cucumber 步骤结束时自动执行）
         checkAndFailOnApiAssertions();
+
+        checkAndFailOnRouteV2Assertions();
         //  框架级未捕获页面异常检查（开关受 playwright.page.error.failOnError 控制）
         checkAndFailOnPageErrors();
 
@@ -944,6 +960,11 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
+        //  S3：cross-feature cleanup 之后更新当前 feature 标识，使 SessionManager 的 feature 缓存按 feature 隔离
+        //  （必须在本次清理之后设置，确保清理针对的是上一 feature）。
+        //  story 在本方法多处已解引用（929/932/944/949），此处 null 防御为冗余（SpotBugs RCN）-> 直取。
+        SessionManager.setCurrentFeatureId(story.getStoryName());
+
         //  重置：允许新 suite 再次触发清理
         testSuiteFinishedLogged = false;
 
@@ -971,17 +992,35 @@ public class PlaywrightListener implements StepListener {
             testSuiteFinishedLogged = true;
         }
         
-        // 清理逻辑
-        VerboseLogging.logInfoIfVerbose(logger, "Cleaning up all Playwright resources at test suite finish");
-        
+        //  2026-09-27 强化：Serenity 挂点若触发，做【套件级确定性收尾】（与 SuiteTeardownListener /
+        //  FrameworkCore shutdown hook 三路互补、均幂等）：
+        //  ① Route 引擎（v1+v2 线程）先行关闭 —— 与浏览器无关，任何时刻安全；
+        //  ② PlaywrightManager.cleanupAll() 全局关闭（page/context/browser/Playwright + v1+v2 route 兜底）；
+        //  ③ 并发窗口拒绝（防御性设计，防误关邻居线程浏览器）→ 降级 cleanupForFeature + WARN（非 verbose）。
         try {
-            PlaywrightManager.cleanupForFeature();
-            VerboseLogging.logInfoIfVerbose(logger, "Cleaned up all resources at test suite finish");
+            RouteLifecycleRegistry.get().stopAllContextEngines();
+            RouteLifecycleRegistry.get().drainForSuiteTeardown();
+        } catch (Exception e) {
+            com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                    .recordFailure("web/listener/testSuiteFinished/routeEngines", e);
+        }
+        try {
+            PlaywrightManager.cleanupAll();
+            logger.info("Global cleanup completed at test suite finish");
+        } catch (IllegalStateException e) {
+            logger.warn("Global suite cleanup skipped (concurrent mode active): {} — "
+                    + "falling back to per-thread cleanup", e.getMessage());
+            try {
+                PlaywrightManager.cleanupForFeature();
+            } catch (Exception ex) {
+                com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
+                        .recordFailure("web/listener/testSuiteFinished/fallbackCleanupForFeature", ex);
+            }
         } catch (Exception e) {
             //  N-06（doc 21 HIGH）：套件收尾的清理失败不得只留 verbose 日志（默认日志级别零输出）——
             //  失败即可能残留浏览器 / 上下文 / 线程，必须 ERROR + 计入统一失败计数（可被套件末尾 / CI 断言）。
             com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle.ShutdownCoordinator
-                    .recordFailure("web/listener/testSuiteFinished/cleanupForFeature", e);
+                    .recordFailure("web/listener/testSuiteFinished/cleanupAll", e);
         }
     }
 
@@ -1069,6 +1108,8 @@ public class PlaywrightListener implements StepListener {
             logger.info("Test finished: {}", result);
             //  新增：检查 API 断言失败并标记测试结果
             checkAndMarkApiAssertionFailures(result);
+
+            checkAndMarkRouteV2AssertionFailures(result);
             //  D3-2：软断言收集到的失败在场景末统一上报（先于结果落定，确保计入本场景）
             StepFailureAggregator.checkAndMarkSoftAssertionFailures(result);
             // 更新当前测试结果
@@ -1096,10 +1137,13 @@ public class PlaywrightListener implements StepListener {
             }
             //  方案 A（2026-09-17）：先导出本用例 trace chunk（含真实 pass/fail 标注），再清理/关闭 context。
             //  必须在 cleanupForScenario()（会关闭 context）之前；与桥内的兜底调用幂等，先到者生效。
-            ScenarioTraceRecorder.onScenarioEnd(LogContext.currentScenarioId(),
-                    result != null && result.getResult() != null
-                            && (result.getResult() == TestResult.FAILURE || result.getResult() == TestResult.ERROR));
-            PlaywrightManager.cleanupForScenario();
+            boolean scenarioFailed = result != null && result.getResult() != null
+                    && (result.getResult() == TestResult.FAILURE || result.getResult() == TestResult.ERROR);
+            ScenarioTraceRecorder.onScenarioEnd(LogContext.currentScenarioId(), scenarioFailed);
+            //  A5：把本用例真实结果告知收尾链路 —— feature 模式下失败时<b>只丢弃本用例的 Page</b>
+            //  （防"存活但已坏"的 Page 跨用例传染），但<b>保留 Context/登录态</b>：
+            //  同一个 sessionKey 的下个用例既不背脏数据、又能免登录。
+            PlaywrightManager.cleanupForScenario(scenarioFailed);
 
             //  采集管道清理（G4 修复）：只停本线程各 context 的采集，不再全局 stopCapture()，
             //    避免并行下误清其它 worker 线程的采集状态。
@@ -1140,6 +1184,8 @@ public class PlaywrightListener implements StepListener {
 
             //  新增：检查 API 断言失败并标记测试结果
             checkAndMarkApiAssertionFailures(result);
+
+            checkAndMarkRouteV2AssertionFailures(result);
             //  D3-2：软断言收集到的失败在场景末统一上报（Cucumber 实际走本重载）
             StepFailureAggregator.checkAndMarkSoftAssertionFailures(result);
 
@@ -1212,9 +1258,10 @@ public class PlaywrightListener implements StepListener {
             //  D3-2：兜底清空软断言收集器（含 startTime 为 null 等提前 return 路径）
             SoftAssertions.clearForCurrentThread();
             //  D4-1：通知业务监听器场景结束（Cucumber 实际走本重载）
-            fireAfterScenario(result != null && result.getResult() != null
+            boolean scenarioFailedForCleanup = result != null && result.getResult() != null
                     && (result.getResult() == TestResult.FAILURE
-                        || result.getResult() == TestResult.ERROR));
+                        || result.getResult() == TestResult.ERROR);
+            fireAfterScenario(scenarioFailedForCleanup);
             //  解绑当前线程的 scenario 归属：Cucumber 执行线程会被线程池复用，
             //   不 remove 会把上一个 scenario 名带到下一个用例（MonitorFailureCollector 归属串扰）
             withRouteLifecycle(RouteLifecycle::clearMonitorScenario);
@@ -1225,7 +1272,8 @@ public class PlaywrightListener implements StepListener {
             // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理
             // Feature 模式不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
             try {
-                PlaywrightManager.cleanupForScenario();
+                //  A5：同上（Cucumber 实际走本重载）—— 失败时只丢 Page、保留 Context/登录态
+                PlaywrightManager.cleanupForScenario(scenarioFailedForCleanup);
                 //  采集管道清理：确保 scenario 结束时采集引擎释放（route 未启用时跳过）
                 withRouteLifecycle(RouteLifecycle::stopCapture);
             } catch (Exception e) {
@@ -1291,6 +1339,8 @@ public class PlaywrightListener implements StepListener {
 
         //  新增：检查 API 断言失败
         checkAndMarkApiAssertionFailures(result);
+
+        checkAndMarkRouteV2AssertionFailures(result);
 
         // 注意：不在 testFailed 中 increment failedTests，避免与 testFinished 重复计数
         // 测试失败统计由 testFinished 统一处理
@@ -1427,5 +1477,21 @@ public class PlaywrightListener implements StepListener {
 
     private void checkAndFailOnApiAssertions() {
         StepFailureAggregator.checkAndFailOnApiAssertions();
+    }
+
+    /**
+     * Route V2：步骤结束时检查 V2 MONITOR 断言失败（抛 AssertionError 判红）。
+     * 消费式 drain 天然幂等——同一场景后续步骤/用例收尾不会重复上报。
+     */
+    private void checkAndFailOnRouteV2Assertions() {
+        StepFailureAggregator.checkAndFailOnRouteV2Assertions();
+    }
+
+    /**
+     * Route V2：用例收尾兜底——检查 V2 MONITOR 断言失败并标记 FAILURE（不抛）。
+     * 若步骤结束路径已抛过，此处 drain 到空列表自然跳过。
+     */
+    private void checkAndMarkRouteV2AssertionFailures(TestOutcome result) {
+        StepFailureAggregator.checkAndMarkRouteV2AssertionFailures(result);
     }
 }

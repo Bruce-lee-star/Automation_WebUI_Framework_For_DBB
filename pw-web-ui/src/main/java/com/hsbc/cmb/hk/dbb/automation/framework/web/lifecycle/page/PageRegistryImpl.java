@@ -9,7 +9,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.Playwrig
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.BrowserException;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.config.VerboseLogging;
 
 import com.microsoft.playwright.*;
@@ -36,9 +35,8 @@ public final class PageRegistryImpl implements PageRegistry {
     }
 
     public Page getPage() {
-        // 框架层自动处理 @AutoBrowser 注解（在真正需要操作页面时触发）
-        AutoBrowserProcessor.processAutoBrowserAnnotation();
-
+        //  @AutoBrowser 检测已迁至 PlaywrightListener.stepStarted（逐步骤、直接取 step 类，
+        //  不在最热的 getPage 上高频扫描）。此处不再触发，避免日志刷屏与重复栈遍历。
         if (!FrameworkState.getInstance().isInitialized()) {
             throw new IllegalStateException("Playwright environment not initialized. Call FrameworkCore.initialize() first.");
         }

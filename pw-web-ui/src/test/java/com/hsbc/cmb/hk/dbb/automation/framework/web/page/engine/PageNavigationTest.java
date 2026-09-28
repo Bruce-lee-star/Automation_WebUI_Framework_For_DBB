@@ -1,19 +1,25 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Response;
 import com.microsoft.playwright.TimeoutError;
+import com.microsoft.playwright.options.LoadState;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -119,5 +125,115 @@ public class PageNavigationTest {
         PageNavigation.setContent(bp, "<html/>");
         verify(page).setContent("<html/>");
         verify(bp).resetFrameContextAfterNavigation();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 驱动竞态自愈（2026-09-26）：判据见 DriverRaceErrors，开关见
+    // playwright.navigation.selfheal.enabled。契约：有界（至多一次）、可关、
+    // 可观测、绝不掩盖失败（原异常 addSuppressed 保留）。
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    private static final String NAV_URL = "https://sit.example.com/portalserver/gbbr/en-us/home";
+
+    /** 可导航的 BasePage 桩：已就绪的 loadState / 超时配置（避免每个用例重复 stub）。 */
+    private static BasePage navigable() {
+        BasePage bp = bp();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("domcontentloaded");
+        when(config.getNavigationTimeout()).thenReturn(30000);
+        return bp;
+    }
+
+    /** 驱动侧"对象句柄生命周期竞态"文案（playwright 1.62 {@code Connection.getExistingObject} 唯一产出）。 */
+    private static PlaywrightException objectGoneRace() {
+        return new PlaywrightException("Object doesn't exist: response@1256921968353cbde3445ff7a129b1ce");
+    }
+
+    /** 驱动侧"导航被另一次导航打断"文案（典型：会话校验 home → 302 /logon）。 */
+    private static PlaywrightException interruptedRace() {
+        return new PlaywrightException("Navigation to \"" + NAV_URL + "/logon\" is interrupted by another "
+                + "navigation to \"" + NAV_URL + "\"");
+    }
+
+    @Test
+    @DisplayName("对象句柄竞态：先收敛再重试一次并成功（不抛异常）")
+    public void navigateTo_objectGoneRace_selfHealsOnceAndSucceeds() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        Response mainResponse = mock(Response.class); // navigate(String, NavigateOptions) 的返回类型是 Response
+        when(page.navigate(anyString(), any(Page.NavigateOptions.class)))
+                .thenThrow(objectGoneRace()).thenReturn(mainResponse);
+
+        PageNavigation.navigateTo(bp, NAV_URL);
+
+        verify(page, times(2)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class));
+        //  重试前必须先等当前文档收敛：否则重试同样会撞上在途导航/事件分发
+        verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED), any(Page.WaitForLoadStateOptions.class));
+        verify(bp).resetFrameContextAfterNavigation();
+    }
+
+    @Test
+    @DisplayName("导航被打断竞态：先收敛再重试一次并成功")
+    public void navigateTo_interruptedRace_selfHealsOnceAndSucceeds() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        Response mainResponse = mock(Response.class);
+        when(page.navigate(anyString(), any(Page.NavigateOptions.class)))
+                .thenThrow(interruptedRace()).thenReturn(mainResponse);
+
+        PageNavigation.navigateTo(bp, NAV_URL);
+
+        verify(page, times(2)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class));
+    }
+
+    @Test
+    @DisplayName("非竞态错误（语义失败）绝不重试：一次调用即抛 NavigationException")
+    public void navigateTo_nonRaceError_doesNotRetry() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        when(page.navigate(anyString(), any())).thenThrow(new PlaywrightException("net::ERR_CONNECTION_REFUSED"));
+
+        assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
+
+        verify(page, times(1)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class));
+        verify(page, never()).waitForLoadState(any(LoadState.class), any(Page.WaitForLoadStateOptions.class));
+    }
+
+    @Test
+    @DisplayName("自愈至多一次：两次都失败仍抛 NavigationException，原竞态异常 addSuppressed 保留")
+    public void navigateTo_selfHealAlsoFails_keepsBothCauses() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightException first = objectGoneRace();
+        PlaywrightException second = objectGoneRace();
+        when(page.navigate(anyString(), any())).thenThrow(first).thenThrow(second);
+
+        NavigationException ex = assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
+
+        verify(page, times(2)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class)); // 不循环、不退避
+        assertSame(second, ex.getCause(), "cause 应为重试失败原因（更接近现状）");
+        assertEquals(1, ex.getSuppressed().length, "原始竞态异常必须经 addSuppressed 保留（不掩盖根因）");
+        assertSame(first, ex.getSuppressed()[0]);
+        assertTrue(ex.getMessage().contains("OBJECT_LIFECYCLE_RACE"), "失败信息须携带竞态类别，便于统计与检索");
+    }
+
+    @Test
+    @DisplayName("开关关闭（严格模式）：命中竞态也不重试")
+    public void navigateTo_selfHealDisabled_doesNotRetry() {
+        System.setProperty("playwright.navigation.selfheal.enabled", "false");
+        FrameworkConfigManager.disableCache(); // 确保读到本次系统属性而非缓存值
+        try {
+            BasePage bp = navigable();
+            Page page = bp.getPage();
+            when(page.navigate(anyString(), any())).thenThrow(objectGoneRace());
+
+            assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
+
+            verify(page, times(1)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class));
+        } finally {
+            System.clearProperty("playwright.navigation.selfheal.enabled");
+            FrameworkConfigManager.clearCache();
+            FrameworkConfigManager.enableCache();
+        }
     }
 }

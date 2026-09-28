@@ -22,19 +22,19 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteHandleType;
  * 对 Mock / Modify / Delay / Monitor 各 Handler <b>零干扰、零资源竞争</b>地采集全部 API 信息，
  * 供 scenario 内独立断言使用。
  *
- * <p><b>双通道汇聚</b>：
- * <ul>
- *   <li>① Handler 汇聚：{@link ApiCaptureContext#storeApiCall} / {@link ApiCaptureContext#storeDelayMarker}
- *       在写入测试断言存储的同时，调用 {@link #record(CapturedApiCall)} —— 自动携带 delay/mock/modify 的
- *       {@code handleType} 与 {@code modifyDetail}；</li>
- *   <li>② 全局 onResponse 兜底：{@link #recordPassthrough} 由 {@code ApiCaptureLifecycle} 在 Page 启动时
- *       注册的 Playwright 原生 {@code page.onResponse} 监听器调用，捕获<b>未注册</b>流量（非侵入，不与 Handler 抢占）。</li>
- * </ul>
+ * <p><b>唯一写入通道：Handler 汇聚</b>。{@link ApiCaptureContext#storeApiCall} /
+ * {@link ApiCaptureContext#storeDelayMarker} 在写入测试断言存储的同时调用
+ * {@link #record(CapturedApiCall)}，自动携带 delay/mock/modify 的 {@code handleType} 与
+ * {@code modifyDetail}。
+ *
+ * <p><b>已移除（2026-09-28）</b>：原「全局 {@code page.onResponse} 兜底被动捕获」通道
+ * （{@code recordPassthrough} 及其开关，配合 {@code ApiCaptureLifecycle} 的 Page 级监听器）
+ * 已<b>整体删除</b>——该订阅是驱动侧 {@code Object doesn't exist: response@…} 竞态的唯一触发源，
+ * 且已注册流量的响应侧观测已改走 route 通道（轮询 {@code Request#existingResponse()}），无需该通道。
  *
  * <p><b>场景隔离 + 即时清理</b>：复用 Serenity {@code StepEventBus} 探测 scenario 切换（与
  * {@code FileStoreMonitorCallback} 同一成熟路径），切换时<b>先 clear 旧存储释放内存、再换新实例</b>，
- * 保证 scenario 间互不影响；采集为<b>同步落库、不另起后台线程</b>，故「清理线程」包袱从根上消失，
- * 页面关闭由 Playwright 自动解绑 {@code onResponse} 监听器。
+ * 保证 scenario 间互不影响；采集为<b>同步落库、不另起后台线程</b>，故「清理线程」包袱从根上消失。
  */
 public final class ApiCaptureManager {
 
@@ -44,22 +44,6 @@ public final class ApiCaptureManager {
 
     /** 框架启动即常驻 API 采集；设为 false 可整体关闭。 */
     private volatile boolean enabled = true;
-
-    /**
-     * 全局 {@code page.onResponse} 兜底被动捕获开关（默认开启）。
-     *
-     * <p><b>为何需要</b>：被动捕获依赖 Playwright 原生 {@code page.onResponse} 监听器。极端并发 /
-     * 压测下，浏览器侧响应对象（{@code response@}）会被快速 GC，而 {@code response} 事件仍在事件队列中排队；
-     * Playwright 在事件分发层（{@code BrowserContextImpl.handleEvent}）解析该已失效的 {@code response@} 时
-     * 抛 {@code PlaywrightException: Object doesn't exist} —— 且该异常发生在调用我们的监听 lambda <b>之前</b>，
-     * lambda 内 {@code try/catch} 无法拦截，会沿连接等待回灌、污染<b>同一连接上任何在途的 {@code page.evaluate}</b>
-     * （a11y 扫描、截图、诊断、压测脚本等），表现为瞬时但致命的连接错误。
-     *
-     * <p><b>缓解策略</b>：保留被动捕获作为默认 ON 的特性（未注册流量可见性），但提供本开关供
-     * 高 churn 场景（如 {@code RoutePerformanceStressTest}）显式关闭——关闭后不再订阅 {@code page.onResponse}，
-     * 从根本上消除该 race；已注册流量的采集由 MonitorHandler（{@code waitForResponse} 通道）独立承担，不受影响。
-     */
-    private volatile boolean passthroughEnabled = true;
 
     /** 当前 scenario 的采集存储（场景切换时整体替换）。 */
     private volatile ApiCaptureStore currentStore = new ApiCaptureStore();
@@ -104,16 +88,6 @@ public final class ApiCaptureManager {
         return INSTANCE.enabled;
     }
 
-    /** 全局 onResponse 兜底被动捕获开 / 关（默认开启；高 churn 场景可关闭以规避连接污染）。 */
-    public static void setPassthroughEnabled(boolean on) {
-        INSTANCE.passthroughEnabled = on;
-        LOGGER.info("[ApiCapture] passthrough capture {}", on ? "ENABLED" : "DISABLED");
-    }
-
-    public static boolean isPassthroughEnabled() {
-        return INSTANCE.passthroughEnabled;
-    }
-
     // ═══════════════════════════════════════════════════════════
     // 写入通道
     // ═══════════════════════════════════════════════════════════
@@ -135,45 +109,9 @@ public final class ApiCaptureManager {
         if (store != null)  {store.record(call);} 
     }
 
-    /** 兼容无 Context 兜底入口（SHARED / onResponse 兜底通道）。 */
+    /** 兼容无 Context 入口（写入场景默认存储）。 */
     public void record(CapturedApiCall call) {
         record(call, null);
-    }
-
-    /**
-     * 全局 onResponse 兜底通道：捕获未注册流量。
-     * 仅记录元数据（不读取响应体），保持与 Handler 的非侵入、零竞争特性。
-     * <p>兼容旧签名：无 Context（兜底写入场景默认存储）。并发场景下应改用带 {@code context} 的重载以避免跨任务污染。
-     */
-    public void recordPassthrough(String url, int status, String method,
-                                  Map<String, String> requestHeaders,
-                                  Map<String, String> responseHeaders) {
-        recordPassthrough(url, status, method, requestHeaders, responseHeaders, null);
-    }
-
-    /**
-     * 带 Context 归属的 onResponse 兜底通道（并发隔离路径）：未注册流量按 Context 路由到独立存储（G3）。
-     */
-    public void recordPassthrough(String url, int status, String method,
-                                  Map<String, String> requestHeaders,
-                                  Map<String, String> responseHeaders,
-                                  BrowserContext context) {
-        if (!enabled || url == null)  {return;} 
-        String endpoint = toEndpoint(url);
-        CapturedApiCall call = new CapturedApiCall.Builder()
-                .endpoint(endpoint)
-                .method(method)
-                .requestUrl(url)
-                .requestHeaders(requestHeaders)
-                .responseHeaders(responseHeaders)
-                .statusCode(status)
-                .responseBody(null)
-                .timestamp(System.currentTimeMillis())
-                .fromMock(false)
-                .captureSource("ON_RESPONSE")
-                .handleType(RouteHandleType.MONITOR)
-                .build();
-        record(call, context);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -313,15 +251,6 @@ public final class ApiCaptureManager {
     // 工具
     // ═══════════════════════════════════════════════════════════
 
-    /** 从完整 URL 提取端点（路径+查询，不含 host）。 */
-    private static String toEndpoint(String url) {
-        if (url == null)  {return null;} 
-        int idx = url.indexOf("://");
-        String rest = idx >= 0 ? url.substring(idx + 3) : url;
-        int slash = rest.indexOf('/');
-        return slash >= 0 ? rest.substring(slash) : rest;
-    }
-
     /**
      * 通过 Serenity 的 StepEventBus 反射获取当前 scenario 标识（复用
      * {@code FileStoreMonitorCallback} 已验证的反射路径，规避版本差异导致的编译问题）。
@@ -330,11 +259,20 @@ public final class ApiCaptureManager {
      */
     private String resolveScenarioKey() {
         try {
-            StepEventBus eventBus = StepEventBus.getEventBus();
+            //  ⚠️ 必须用 getParallelEventBus()（2026-09-26 根因修复）：并行 Cucumber 下 Serenity 把真实
+            //  BaseStepListener 注册在 per-feature 的 sticky bus 上，而 per-thread 的 getEventBus()
+            //  在池线程（如 mock-intercept-*）上是另一个**空 bus** → 恒取不到 scenario 名。
+            StepEventBus eventBus = StepEventBus.getParallelEventBus();
             if (eventBus == null) {
                 return null;
             }
-            Method m = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+            //  就绪探测必须用 public 且**不抛异常**的 isBaseStepListenerRegistered()：直接调用
+            //  getBaseStepListener() 在未注册时会打印 ERROR("CurrentListener is null") +
+            //  Thread.dumpStack()，在池线程上造成大量无意义堆栈刷屏（实证：1.txt:53-69）。
+            if (!eventBus.isBaseStepListenerRegistered()) {
+                return null;
+            }
+            Method m = StepEventBus.class.getDeclaredMethod("getBaseStepListener");
             m.setAccessible(true);
             Object listener = m.invoke(eventBus);
             if (listener == null) {
@@ -350,8 +288,13 @@ public final class ApiCaptureManager {
                 return null;
             }
             return "scenario-" + toSafeDirName(name);
-        } catch (Exception e) {
-            // 反射读取 scenario 名失败返回 null，由调用方降级处理
+        } catch (Exception | LinkageError e) {
+            // 反射读取 scenario 名失败返回 null，由调用方降级处理。
+            //  ⚠️ 必须连 LinkageError 一并捕获（2026-09-26 实测回归）：isBaseStepListenerRegistered()
+            //  会经 StepEventBus.currentBaseStepListener() → Agency.currentAgentSpecificListener()
+            //  触到 org.openqa.selenium.WebDriver，而 route 的**测试** classpath 不含 Selenium →
+            //  抛 NoClassDefFoundError（Error 而非 Exception，不会被 catch(Exception) 接住）。
+            //  本方法仅为目录命名尽力而为，故任何链接期缺失都应降级为 null，绝不影响采集主链路。
             return null;
         }
     }

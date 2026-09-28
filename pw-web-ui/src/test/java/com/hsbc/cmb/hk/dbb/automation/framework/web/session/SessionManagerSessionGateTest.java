@@ -7,8 +7,10 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -111,6 +113,40 @@ class SessionManagerSessionGateTest {
     void releaseWithoutAcquire_isNoOp() {
         SessionManager.releaseSessionGate();
         SessionManager.releaseSessionGate();
+    }
+
+    /**
+     * 同线程重入（2026-09-28）：同一 sessionKey 在本线程重复进入闸门必须 no-op —— 既不自锁
+     * （旧实现在 permits=1 公平信号量上会阻塞到 fail-closed 超时），也不虚增持有导致许可泄漏。
+     */
+    @Test
+    void reentrantAcquireSameThread_isNoOpAndDoesNotLeakPermit() throws Exception {
+        // 用「有界 join 的独立线程」观测自锁，而不是把 max.wait.ms 改小 —— 后者会污染同 JVM 的其它测试类
+        // （实测泄漏后本类 sameSessionKey_isSerialized 的等待方 300ms 就 fail-closed 而失败）。
+        AtomicReference<Throwable> holderError = new AtomicReference<>();
+        Thread holder = new Thread(() -> {
+            try {
+                SessionManager.acquireSessionGate("O63_SIT1_REENTRANT");
+                SessionManager.acquireSessionGate("O63_SIT1_REENTRANT");   // 重入：必须立即返回
+                SessionManager.releaseSessionGate();                       // 释放一次即完全归还
+            } catch (Throwable t) {
+                holderError.set(t);
+            }
+        }, "reentrant-holder");
+        holder.start();
+        holder.join(3000);
+        assertFalse(holder.isAlive(), "同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）");
+        assertNull(holderError.get(), "同线程重入不得抛异常");
+
+        CountDownLatch entered = new CountDownLatch(1);
+        Thread other = new Thread(() -> {
+            SessionManager.acquireSessionGate("O63_SIT1_REENTRANT");
+            entered.countDown();
+            SessionManager.releaseSessionGate();
+        }, "reentrant-checker");
+        other.start();
+        assertTrue(entered.await(3, TimeUnit.SECONDS), "重入不得泄漏许可：其它线程应可立即进入");
+        other.join(3000);
     }
 
     /** 「不可进入」的观测窗口：在等待方已就绪后，持续观察其是否违规进入临界区。 */

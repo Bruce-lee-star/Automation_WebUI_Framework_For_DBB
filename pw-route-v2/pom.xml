@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+        <artifactId>Automation_WebUI_Framework_BDD</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>pw-route-v2</artifactId>
+    <name>Automation Framework - Route V2 (Concurrency-Safe)</name>
+    <description>
+        Route 模块 V2（重建版，与 pw-route 并存，业务测试逐步迁移）。
+
+        设计目标（对照 playwright-java-1.62.0 源码机制）：
+        1. 单所有权：每个 Route 事件唯一 RouteClaim（CAS），杜绝并发终结 / 重放。
+        2. 线程边界：事件线程（Playwright 回调）只做无阻塞裁决；阻塞操作（fetch / pattern 重装）
+           只在有界 IO 线程池执行，受 BoundedOps 预算控制。
+        3. per-context 隔离：全部状态挂在 RouteRuntime（每 BrowserContext 一份），无全局 static 可变表。
+        4. 原子发布：规则以不可变 RuleGeneration 快照发布（AtomicReference CAS 切换），读侧无锁。
+        5. fail-open：任何异常 / 超时 / 预算耗尽 / 挂起超限 → fallback（continue），请求永不悬挂。
+        6. 有界并发：pending 上限 + IO 池有界 + 信号量限流。
+
+        仅依赖 playwright + slf4j + pw-core(SPI 接口)，不依赖任何兄弟实现模块（pw-route / pw-web-ui），
+        可独立演进、独立引入。
+    </description>
+
+    <dependencies>
+        <!-- 核心层 SPI（RouteLifecycle 生命周期挂点）；仅依赖接口，不依赖 route/web 实现模块 -->
+        <dependency>
+            <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
+            <artifactId>pw-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.playwright</groupId>
+            <artifactId>playwright</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <!-- JSONPath 断言（MONITOR expectJsonPath）；版本钉于根 POM dependencyManagement -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
+        <!-- 测试：JUnit 4 + Mockito（暂不引入 JUnit 5；junit:junit 未纳入根 POM DM，此处显式钉版本） -->
+        <dependency>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>4.13.2</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>${mockito.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- ArchUnit：架构分层门禁（T0-1 风格），仅测试期使用；archunit-junit4 提供 JUnit 4 runner
+             （archunit 核心 artifact 只含分析引擎，不含 junit runner）。版本与根 POM DM 的 archunit 1.3.0 对齐。 -->
+        <dependency>
+            <groupId>com.tngtech.archunit</groupId>
+            <artifactId>archunit-junit4</artifactId>
+            <version>1.3.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

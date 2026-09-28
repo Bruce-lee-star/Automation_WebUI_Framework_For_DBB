@@ -64,6 +64,20 @@ public enum WebFrameworkConfig {
     PLAYWRIGHT_PAGE_ERROR_FAIL(ConfigKeys.WEB_PLAYWRIGHT_PAGE_ERROR_FAIL),
 
     /**
+     * 导航「驱动竞态自愈」开关（默认 true）。
+     *
+     * <p>仅对<b>可分类的驱动侧竞态</b>生效（{@code Object doesn't exist: …} /
+     * {@code … interrupted by another navigation …}），且<b>只重试一次</b>：
+     * 先等当前文档收敛（{@code waitForLoadState(DOMCONTENTLOADED)}，有界、失败即忽略）再原样重试；
+     * 两次都失败仍抛 {@code NavigationException}（原异常经 {@code addSuppressed} 保留，绝不掩盖失败）。
+     * 设为 false 可完全关闭（严格模式 / 审计）。
+     *
+     * <p>背景：Playwright Java 在连接/对象生命周期上的竞态会**在任意在途调用上抛错**，
+     * 而该异常发生在业务回调之前、无法在业务侧拦截（详见 {@code DriverRaceErrors} 类注释）。
+     */
+    PLAYWRIGHT_NAVIGATION_SELFHEAL_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_NAVIGATION_SELFHEAL_ENABLED),
+
+    /**
      * 浏览器模式
      * true - 无头模式（后台运行）
      * false - 有头模式（显示浏览器窗口）
@@ -734,6 +748,22 @@ public enum WebFrameworkConfig {
      * <p>本项与 {@code restart.browser.for.each} 正交：后者决定「Context 何时关闭」（scenario/feature），
      * 本项决定「无 session 场景是否也保留 Context」。
      */
+    // ==================== 卡住诊断 ====================
+    /**
+     * 卡住诊断看门狗采样间隔（毫秒，≤0 关闭；默认 60000）。
+     *
+     * <p><b>要解决的问题</b>：实测存在"用例卡住但日志长时间零输出"的现象（如 1.txt 2026-09-26：
+     * 14:26:09 之后 6.5 分钟无日志），此时无法判断阻塞在哪一次调用上。
+     *
+     * <p>开启后：单个用例运行时长超过该间隔，即由 {@code AsyncPool} 定时打印
+     * <b>场景线程完整栈 + 其它线程概览</b>（含 Playwright 驱动线程），把"静默阻塞"变成可定位证据。
+     * 健康用例通常远短于 60s，故<b>正常情况下零输出</b>；仅完整 SSO 登录（约 3 分钟）会产生数次采样。
+     *
+     * <p>关闭方式：{@code -Dserenity.playwright.hang.watchdog.interval.ms=0}。
+     */
+    SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS(
+            ConfigKeys.WEB_SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS),
+
     SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE(ConfigKeys.WEB_SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE),
 
 
@@ -842,12 +872,21 @@ public enum WebFrameworkConfig {
      * 防止 leader 异常时 follower 永久阻塞。
      */
     PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS(ConfigKeys.WEB_PLAYWRIGHT_NO_LOGIN_SINGLE_FLIGHT_TIMEOUT_MS),
+    /**
+     * storageState 快照是否包含 IndexedDB（1.51+ 官方能力）。
+     * 默认 false：保持快照最小（传统 Java Web 登录态在 Cookie，无需 IndexedDB）；
+     * 仅当被测应用把登录态/token 持久化于 IndexedDB（如 Firebase Auth、部分 SPA）时置 true，
+     * 否则恢复出的 session 会缺 IndexedDB 数据 → 随机 401 / 回登录页。
+     * 注意：开启后快照体积显著增大（含全部 IndexedDB 数据）。
+     */
+    PLAYWRIGHT_NO_LOGIN_SESSION_INCLUDE_INDEXED_DB(ConfigKeys.WEB_PLAYWRIGHT_NO_LOGIN_SESSION_INCLUDE_INDEXED_DB),
 
     /**
      * 元素等待时间（毫秒）
      * 用于 isVisible, exists, isChecked, isEnabled, isDisabled, isElementClickable 等立即执行方法的重试超时
      * 这些方法会重试检查，直到超时，提高测试稳定性
      */
+    PLAYWRIGHT_BROWSER_CLOSE_AFTER_CONCURRENT_TASK(ConfigKeys.WEB_PLAYWRIGHT_BROWSER_CLOSE_AFTER_CONCURRENT_TASK),
     PLAYWRIGHT_ELEMENT_WAIT_TIMEOUT(ConfigKeys.WEB_PLAYWRIGHT_ELEMENT_WAIT_TIMEOUT),
 
     /**
@@ -990,7 +1029,57 @@ public enum WebFrameworkConfig {
     /**
      * 附加敏感 URL query 参数名（逗号分隔），叠加在内置脱敏清单之上。
      */
-    SENSITIVE_DATA_EXTRA_QUERY_KEYS(ConfigKeys.WEB_SENSITIVE_DATA_EXTRA_QUERY_KEYS);
+    SENSITIVE_DATA_EXTRA_QUERY_KEYS(ConfigKeys.WEB_SENSITIVE_DATA_EXTRA_QUERY_KEYS),
+
+    // ==================== 页面事件订阅开关（playwright.page.events.*）====================
+    // 逐事件可关：遇问题时改配置即可关闭，无需改代码。
+    // 诊断类默认关（噪声大 / 分支无保护），交互与生命周期类默认开（功能依赖）。
+
+    /**
+     * 是否订阅 {@code context.onPage}（新页日志 / 受管页判定）。
+     *
+     * <p><b>注意</b>：该开关是页面级事件的"扇出总闸"——关闭后 {@code PageEventMonitor} 与
+     * {@code PageInteractionMonitor} 的每页监听（含 frameNavigated / popup / console 等）
+     * 都不会注册，因为它们的挂载点正是 {@code context.onPage} 回调。
+     */
+    PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_PAGE_ENABLED),
+
+    /** 是否订阅 {@code page.onLoad}（新页加载完成 debug 日志）。 */
+    PLAYWRIGHT_PAGE_EVENTS_LOAD_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_LOAD_ENABLED),
+
+    /** 是否订阅 {@code page.onFrameNavigated}（导航轨迹诊断，失败回放用）。 */
+    PLAYWRIGHT_PAGE_EVENTS_FRAME_NAVIGATED_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_FRAME_NAVIGATED_ENABLED),
+
+    /** 是否订阅 {@code page.onPopup}（未受管弹窗诊断，失败告警用）。 */
+    PLAYWRIGHT_PAGE_EVENTS_POPUP_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_POPUP_ENABLED),
+
+    /**
+     * 是否订阅 {@code context.onDownload}（下载保存与查询能力）。
+     *
+     * <p><b>关闭代价</b>：{@code PlaywrightManager.getLastDownloadPath/getLastDownloadFileName/getDownloadPaths}
+     * 将恒为空（框架不再登记下载），依赖下载断言/取文件的用例会失败。
+     */
+    PLAYWRIGHT_PAGE_EVENTS_DOWNLOAD_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_DOWNLOAD_ENABLED),
+
+    /**
+     * 是否订阅 {@code page.onConsoleMessage}（控制台 error/warning 诊断）。<b>默认关闭</b>。
+     */
+    PLAYWRIGHT_PAGE_EVENTS_CONSOLE_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_CONSOLE_ENABLED),
+
+    /**
+     * 是否订阅 {@code page.onPageError}（未捕获 JS 异常诊断）。<b>默认关闭</b>。
+     *
+     * <p><b>与 {@link #PLAYWRIGHT_PAGE_ERROR_FAIL} 的关系</b>：后者只在<b>本开关开启</b>时才可能生效
+     * ——异常先要经本订阅收集，才谈得上"步骤结束时判失败"。二者同时开启才能得到 fail-on-page-error 行为。
+     */
+    PLAYWRIGHT_PAGE_EVENTS_PAGE_ERROR_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_PAGE_ERROR_ENABLED),
+
+    /** 是否订阅 {@code page.onRequestFailed}（网络请求失败诊断）。<b>默认关闭</b>。 */
+    PLAYWRIGHT_PAGE_EVENTS_REQUEST_FAILED_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_REQUEST_FAILED_ENABLED),
+
+    /** 是否订阅 {@code page.onCrash}（页面崩溃诊断）。<b>默认关闭</b>。 */
+    PLAYWRIGHT_PAGE_EVENTS_CRASH_ENABLED(ConfigKeys.WEB_PLAYWRIGHT_PAGE_EVENTS_CRASH_ENABLED);
+
 
     private final String key;
     private final String defaultValue;

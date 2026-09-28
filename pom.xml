@@ -27,7 +27,7 @@
         <module>pw-web-ui</module>
         <module>pw-codegen</module>
         <module>pw-route</module>
-        <module>pw-route-web-bridge</module>
+        <module>pw-route-v2</module>
     </modules>
 
     <properties>
@@ -38,8 +38,8 @@
         <!-- D6-3：serenity 升级路径（摩擦点矩阵 + 回归清单 + SOP）—— CT2-22：原设计文档
              （docs 下名为 serenity-upgrade-path 的 md）在本仓库不存在（全仓仅此一处引用），如需追溯请查 git 历史。
              历史：CORE-P0-1 为适配 jackson 2.18.3 上界曾被动降到 4.2.0；版本已集中此处，升级只改本属性 + 同步配套覆盖项。 -->
-        <serenity.version>4.2.0</serenity.version>
-        <serenity.cucumber.version>4.2.0</serenity.cucumber.version>
+        <serenity.version>4.3.4</serenity.version>
+        <serenity.cucumber.version>4.3.4</serenity.cucumber.version>
         <playwright.version>1.62.0</playwright.version>
         <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5。
              CT2-22：原设计文档（docs 下 architecture-review 的 17 号「整改专项设计_JUnit5升级」）
@@ -58,8 +58,8 @@
         <json.path.version>2.9.0</json.path.version>
         <cucumber.version>7.31.0</cucumber.version>
         <json.version>20240303</json.version>
-        <!-- T2-8：报告模板引擎。serenity 4.2.0 的 serenity-model 直接依赖 freemarker 2.3.33，RequireUpperBoundDeps 上界即 2.3.33，故锁定 2.3.33；SummaryReportGenerator 同步改用 Configuration.VERSION_2_3_33 常量与之匹配。 -->
-        <freemarker.version>2.3.33</freemarker.version>
+        <!-- T2-8：报告模板引擎。serenity 4.3.4 的 serenity-model 直接依赖 freemarker 2.3.34，RequireUpperBoundDeps 上界即 2.3.34，故锁定 2.3.34；SummaryReportGenerator 同步改用 Configuration.VERSION_2_3_33 常量与之匹配（2.3.34 向后兼容，常量仍有效）。 -->
+        <freemarker.version>2.3.34</freemarker.version>
         <!-- T2-8/方案A：汇总报告生成的绑定阶段。
              由 test-automation 的 pom 内联 exec-maven-plugin 引用（绑定 verify），
              生命周期上晚于 post-integration-test 的 serenity:aggregate，
@@ -70,9 +70,9 @@
 
         <!-- 安全漏洞修复版本 -->
         <logback.version>1.5.34</logback.version>
-        <!-- 2.18.9：修复 GHSA-hgj6-7826-r7m5（2.18.8 起）与 GHSA-mhm7-754m-9p8w（2.18.9 起）；
-             仍在 serenity 4.2.0 兼容的 2.18 线内，仅补丁升级。 -->
-        <jackson.version>2.18.9</jackson.version>
+        <!-- 2.20.1：对齐 serenity 4.3.4 实际传递（core/databind 上界 2.20.1）。
+             annotations 走独立版本线（jackson-bom:2.20.1 定 jackson.version.annotations=2.20），见下方 DM 单独钉 2.20。 -->
+        <jackson.version>2.20.1</jackson.version>
         <json-smart.version>2.5.2</json-smart.version>
 
         <!-- 重复出现的第三方版本统一钉版（消除模块间硬编码版本漂移，ENG-T1-5 依赖收敛） -->
@@ -239,10 +239,10 @@
             </exclusions>
         </dependency>
 
-        <!-- Serenity JUnit 5（JUnit4 的 serenity-junit 已弃用；2026-09-11 JUnit5 升级，保持 serenity 4.2.0） -->
+        <!-- JUnit 4 执行器（2026-09-27 P0 回退 master 方案）：serenity-junit 提供 CucumberWithSerenity runner，Serenity 主体接管 Cucumber 生命周期 -->
         <dependency>
             <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-junit5</artifactId>
+            <artifactId>serenity-junit</artifactId>
             <version>${serenity.version}</version>
             <scope>test</scope>
         </dependency>
@@ -261,13 +261,7 @@
             <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- @Suite 套件（Cucumber runner 迁移目标）：驱动 cucumber-junit-platform-engine -->
-        <dependency>
-            <groupId>org.junit.platform</groupId>
-            <artifactId>junit-platform-suite</artifactId>
-            <version>${junit.platform.version}</version>
-            <scope>test</scope>
-        </dependency>
+
         <!-- 统一 junit-platform-launcher 版本：cucumber-junit-platform-engine 传递 1.11.0、junit-platform-suite 传递 1.11.4，
              RequireUpperBoundDeps 要求同 artifact 版本一致，故与 engine/commons 一并钉到 ${junit.platform.version}（=1.14.0，
              满足 cucumber-junit-platform-engine:7.31.0 的 DiscoveryIssueReporter 需求，该类 1.13+ 才引入）。 -->
@@ -293,10 +287,11 @@
             <version>${junit.platform.version}</version>
             <scope>test</scope>
         </dependency>
-        <!-- Cucumber 7 JUnit Platform 引擎（替代 JUnit4 的 @RunWith(CucumberWithSerenity)） -->
+
+        <!-- cucumber-junit：@RunWith(CucumberWithSerenity) 的 JUnit4 桥接（版本与 cucumber-core 统一） -->
         <dependency>
             <groupId>io.cucumber</groupId>
-            <artifactId>cucumber-junit-platform-engine</artifactId>
+            <artifactId>cucumber-junit</artifactId>
             <version>${cucumber.version}</version>
             <scope>test</scope>
         </dependency>
@@ -411,7 +406,7 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>
-            <version>1.27.1</version>
+            <version>1.28.0</version>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>
@@ -444,13 +439,15 @@
                 <artifactId>json-smart</artifactId>
                 <version>${json-smart.version}</version>
             </dependency>
-            <!-- T1-5 依赖收敛：jackson 三件套统一钉到 ${jackson.version}（与 jackson-core 一致），消除版本漂移。
+            <!-- T1-5 依赖收敛：jackson core/databind 钉 ${jackson.version}(=2.20.1，对齐 serenity 4.3.4)，
+                 但 annotations 走独立版本线——jackson-bom:2.20.1 明确 jackson.version.annotations=2.20
+                 （annotations 发版滞后，公共仓库无 2.20.1），故此处单独钉 2.20。三者均真实存在、满足 serenity 上界，RequireUpperBoundDeps 通过。
                  CORE-P0-1 / ENG-P0-2 修正：core 的 SensitiveDataSanitizer 直接使用 jackson-databind（脱敏 JSON 解析），
                  原经继承的 serenity 传递引入，下沉后须显式钉版本。 -->
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-annotations</artifactId>
-                <version>${jackson.version}</version>
+                <version>2.20</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
@@ -493,7 +490,7 @@
             <dependency>
                 <groupId>org.htmlunit</groupId>
                 <artifactId>htmlunit</artifactId>
-                <version>4.4.0</version>
+                <version>4.7.0</version>
             </dependency>
             <!-- T4-4：将 Serenity 传递的 Cucumber 版本钉为显式属性，作为 README 技术栈表的单一事实来源（doc-drift 校验据此比对） -->
             <dependency>

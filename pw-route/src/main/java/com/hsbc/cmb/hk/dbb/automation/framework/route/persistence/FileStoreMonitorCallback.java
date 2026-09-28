@@ -390,11 +390,20 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
      */
     private String resolveScenarioKey() {
         try {
-            StepEventBus eventBus = StepEventBus.getEventBus();
+            //  ⚠️ 必须用 getParallelEventBus()（2026-09-26 根因修复）：并行 Cucumber 下 Serenity 把真实
+            //  BaseStepListener 注册在 per-feature 的 sticky bus 上，而 per-thread 的 getEventBus()
+            //  在池线程上是另一个**空 bus** → 恒取不到 scenario 名。
+            StepEventBus eventBus = StepEventBus.getParallelEventBus();
             if (eventBus == null) {
                 return null;
             }
-            Method m = StepEventBus.class.getDeclaredMethod("currentBaseStepListener");
+            //  就绪探测必须用 public 且**不抛异常**的 isBaseStepListenerRegistered()：直接调用
+            //  getBaseStepListener() 在未注册时会打印 ERROR("CurrentListener is null") +
+            //  Thread.dumpStack()，在池线程上造成大量无意义堆栈刷屏。
+            if (!eventBus.isBaseStepListenerRegistered()) {
+                return null;
+            }
+            Method m = StepEventBus.class.getDeclaredMethod("getBaseStepListener");
             m.setAccessible(true);
             Object listener = m.invoke(eventBus);
             if (listener == null) {
@@ -410,8 +419,12 @@ public final class FileStoreMonitorCallback implements MonitorCallback {
                 return null;
             }
             return "scenario-" + toSafeDirName(name);
-        } catch (Exception e) {
-            // 非 Serenity 上下文或早期初始化阶段，属于正常情况
+        } catch (Exception | LinkageError e) {
+            // 非 Serenity 上下文或早期初始化阶段，属于正常情况。
+            //  ⚠️ 必须连 LinkageError 一并捕获（2026-09-26 实测回归）：isBaseStepListenerRegistered()
+            //  会经 StepEventBus.currentBaseStepListener() → Agency.currentAgentSpecificListener()
+            //  触到 org.openqa.selenium.WebDriver，而 route 的**测试** classpath 不含 Selenium →
+            //  抛 NoClassDefFoundError（Error 而非 Exception，不会被 catch(Exception) 接住）。
             LOGGER.debug("[FileStoreMonitorCallback] Cannot resolve current scenario ({}), "
                     + "fallback to flat dir.", e.getMessage());
             return null;

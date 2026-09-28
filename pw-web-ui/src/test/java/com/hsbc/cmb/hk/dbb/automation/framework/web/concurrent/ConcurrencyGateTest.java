@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConcurrencyGateTimeoutException;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -42,14 +43,50 @@ public class ConcurrencyGateTest {
     private static final String MAX_WAIT = WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS.getKey();
     private static final String FAIL_CLOSED = WebFrameworkConfig.CONCURRENCY_PARTITION_FAIL_CLOSED.getKey();
 
+    /**
+     * 前提确定性（本轮修复既有失败，<b>关键</b>）：本类用系统属性表达每条用例的配置前提，
+     * 但 <b>{@code System.clearProperty} 并不能把配置拉回默认值</b> ——
+     * {@code ConfigSource.resolve} 的第 1 步（实时系统属性）之后还有第 3 步「SPI 扩展配置源」，
+     * web 侧即 Serenity 合并源（{@code SerenityConfigResolver} → {@code SystemEnvironmentVariables}），
+     * 它是<b>启动期系统属性快照 + Typesafe {@code ConfigFactory} 静态缓存</b>：一旦前序用例设过某键，
+     * 之后即使 {@code clearProperty}，{@code WebFrameworkConfig.getValue()} 仍返回<b>旧值</b>
+     * （实测：{@code cfgValue=[true]}，且 {@code new SystemEnvironmentVariables()} 同样刷不掉）。
+     * 生产侧不存在 {@code clearProperty}（仅有单向 {@code WebFrameworkConfig.setValue}），
+     * 故该陈旧快照的实际影响域就是<b>单测隔离</b>。
+     *
+     * <p>应对：把四个键在<b>前后各显式写成其文档默认值</b>（{@link WebFrameworkConfig#getDefaultValue()}），
+     * 而非清除 —— 前提恒定，且全程走"实时系统属性"通道，不受任何快照影响。
+     * 仅引擎级并行开关可清理：{@code ConcurrencyGate.parseTriState} 是直接
+     * {@code System.getProperty} 读的，不经配置层。</p>
+     *
+     * <p><b>注意</b>：必须拆成 {@code @BeforeEach} / {@code @AfterEach} 两个方法 —— 实测把两个注解标在
+     * 同一个方法上时 {@code @AfterEach} 不生效，本类的 MAX_WAIT 等系统属性会泄漏给后续测试类
+     * （曾导致 {@code SessionManagerSessionGateTest} 的等待方 300ms 就 fail-closed 而失败）。</p>
+     */
+    @BeforeEach
+    public void resetConfigurationPremisesBeforeCase() {
+        applyDefaultPremises();
+    }
+
+    /** 用例后复位：显式独立方法，确保 {@code @AfterEach} 真正生效（见上方说明）。 */
     @AfterEach
-    public void tearDown() {
-        System.clearProperty(ENABLED);
-        System.clearProperty(PERMITS);
-        System.clearProperty(MAX_WAIT);
-        System.clearProperty(FAIL_CLOSED);
+    public void resetConfigurationPremisesAfterCase() {
+        applyDefaultPremises();
+    }
+
+    /** 把四个键写回文档默认值，并清理引擎级并行开关（不经配置层、可直接清除）。 */
+    private static void applyDefaultPremises() {
+        restoreDefault(WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED);
+        restoreDefault(WebFrameworkConfig.CONCURRENCY_PARTITION_PER_KEY_PERMITS);
+        restoreDefault(WebFrameworkConfig.CONCURRENCY_PARTITION_MAX_WAIT_MS);
+        restoreDefault(WebFrameworkConfig.CONCURRENCY_PARTITION_FAIL_CLOSED);
         System.clearProperty(CUCUMBER_PARALLEL);
         System.clearProperty(JUNIT_PARALLEL);
+    }
+
+    /** 把某配置键显式写回其代码内默认值（避免 {@code clearProperty} 触发 SPI 陈旧快照）。 */
+    private static void restoreDefault(WebFrameworkConfig key) {
+        System.setProperty(key.getKey(), key.getDefaultValue());
     }
 
     /** 引擎级并行开关（auto 判据）。 */
@@ -197,6 +234,47 @@ public class ConcurrencyGateTest {
     }
 
     /**
+     * <b>同线程重入守卫（2026-09-28）</b>：同一 key 在本线程二次 {@code acquire} 必须是 no-op ——
+     * 旧实现在 permits=1 的公平 {@link java.util.concurrent.Semaphore} 上会<b>自锁</b>到 maxWait，
+     * 再以 fail-closed 抛 {@link ConcurrencyGateTimeoutException}（框架多路径进入同一身份即误判场景失败）。
+     * 同时验证不虚增持有：只记一条持有 → {@code releaseAllForCurrentThread} 归还 1 个许可，其它线程可立即进入。
+     */
+    @Test
+    public void reentrantAcquireOnSameThreadIsNoOpAndDoesNotLeakPermit() throws Exception {
+        System.setProperty(ENABLED, "true");
+        ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("sessionkey", "REENTRANT"));
+
+        // 用「有界 join 的独立线程」观测自锁，而不是把 MAX_WAIT 改小 —— 后者会污染同 JVM 的其它测试类。
+        AtomicInteger released = new AtomicInteger(-1);
+        AtomicReference<Throwable> holderError = new AtomicReference<>();
+        Thread holder = new Thread(() -> {
+            try {
+                ConcurrencyGate.acquire(key);
+                ConcurrencyGate.acquire(key);                              // 重入：必须立即返回
+                released.set(ConcurrencyGate.releaseAllForCurrentThread());
+            } catch (Throwable t) {
+                holderError.set(t);
+            }
+        }, "reentrant-holder");
+        holder.start();
+        holder.join(3000);
+
+        assertFalse(holder.isAlive(), "同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）");
+        assertNull(holderError.get(), "同线程重入不得抛异常");
+        assertEquals(1, released.get(), "同线程重入只应记一条持有");
+
+        CountDownLatch entered = new CountDownLatch(1);
+        Thread other = new Thread(() -> {
+            ConcurrencyGate.acquire(key);
+            entered.countDown();
+            ConcurrencyGate.release(key);
+        }, "reentrant-checker");
+        other.start();
+        assertTrue(entered.await(3, TimeUnit.SECONDS), "重入不得泄漏许可：其它线程应可立即进入");
+        other.join(3000);
+    }
+
+    /**
      * {@code auto}（默认三态）：<b>并行开启即自动启用、串行时 no-op、显式 false 为逃生舱</b>。
      *
      * <p>这是「同一 sessionKey 串行、不同 sessionKey 并行」成为<b>并行默认语义</b>的基础：
@@ -204,7 +282,8 @@ public class ConcurrencyGateTest {
      */
     @Test
     public void auto_enabledIffEngineParallelEnabled_explicitFalseWins() {
-        System.clearProperty(ENABLED);
+        // 前提（ENABLED="auto" + 无并行开关）由 resetConfigurationPremises() 显式建立；
+        // 不可用 clearProperty —— 那会落到受 Serenity 启动期快照污染的 SPI 源（见类内注释）。
         assertFalse(ConcurrencyGate.isEnabled(), "串行运行（auto）不应启用闸门");
 
         System.setProperty(CUCUMBER_PARALLEL, "true");
@@ -222,7 +301,7 @@ public class ConcurrencyGateTest {
 
     @Test
     public void disabledByDefault_noNewGateCreated() {
-        System.clearProperty(ENABLED);
+        // 串行 + auto（= 配置默认值）→ 不启用；前提由 resetConfigurationPremises() 建立
         assertFalse(ConcurrencyGate.isEnabled());
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "alice-noop"));

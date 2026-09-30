@@ -156,14 +156,21 @@ public final class CaptureSink {
         }
     }
 
-    /** 定案入队（队列满则丢弃并计数）。 */
+    /** 定案入队（队列满则丢弃并计数）；定案即打一行日志（请求/响应头 + 体 + 耗时，头已脱敏、体已截断）。 */
     private void enqueue(CapturedExchange snapshot, String body, boolean truncated) {
         if (count.get() >= maxCaptured) {
             dropped.incrementAndGet();
             return;
         }
-        captured.add(toDto(snapshot, body, truncated));
+        CapturedApiCall call = toDto(snapshot, body, truncated);
+        captured.add(call);
         count.incrementAndGet();
+        // 展示是纯旁路：任何异常都吞掉（含非 JSON 体、脱敏/格式化失败），绝不影响采集与主流程
+        try {
+            LOGGER.info("[RouteV2] captured api {}", call.detail());
+        } catch (RuntimeException e) {
+            LOGGER.debug("[RouteV2] capture log skipped: {}", e.toString());
+        }
     }
 
     private static CapturedApiCall toDto(CapturedExchange snapshot, String body, boolean truncated) {

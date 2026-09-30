@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.RouteIoExecutor;
@@ -102,8 +103,10 @@ public class CaptureSinkTest {
         sink.onResponseForSpec(spec, mockResponse("https://host/api/login", 200));
 
         CapturedApiCall call = sink.dump().get(0);
-        assertEquals("请求头 authorization 值必须脱敏", (Object) "******", (Object) call.requestHeaders().get("authorization"));
-        assertEquals("响应头 set-cookie 值必须脱敏", (Object) "******", (Object) call.responseHeaders().get("set-cookie"));
+        assertEquals("请求头 authorization 值必须脱敏", (Object) SensitiveDataSanitizer.maskToken(),
+                (Object) call.requestHeaders().get("authorization"));
+        assertEquals("响应头 set-cookie 值必须脱敏", (Object) SensitiveDataSanitizer.maskToken(),
+                (Object) call.responseHeaders().get("set-cookie"));
         assertEquals("非敏感头保持原样", (Object) "application/json", (Object) call.requestHeaders().get("content-type"));
     }
 

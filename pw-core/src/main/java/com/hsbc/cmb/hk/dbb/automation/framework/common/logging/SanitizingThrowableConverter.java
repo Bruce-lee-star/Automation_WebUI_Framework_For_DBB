@@ -13,7 +13,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSan
  * <p>实现方式：覆写 {@link #convert(ILoggingEvent)}，对 {@code %ex} 的完整输出（异常类名 +
  * message + 全部栈帧）逐行脱敏。凭据（{@code password=...}、{@code token=...}）绝大多数经
  * 异常 message 出域，栈帧本身通常不含凭据；逐行处理对两者都安全。
- * 示例：{@code "Caused by: ...: password=s3cr3t"} → 输出 {@code password= ***[REDACTED]}。
+ * 示例：{@code "Caused by: ...: password=s3cr3t"} → 输出 {@code password= ***}。
  *
  * <p><b>L-3 健壮性约束</b>：与 {@code msg} 转换词不同，异常栈属于"高风险字段"。
  * 脱敏设施本身若抛异常，<b>禁止回退为原始栈</b>（否则明文凭据直接落盘），改为输出

@@ -33,7 +33,7 @@ final class SanitizerRules {
     private static final Logger LOGGER = LoggerFactory.getLogger(SanitizerRules.class);
 
     /** 统一定长掩码：不泄露原值，也不泄露长度（合规要求）。 */
-    static final String MASK = "***[REDACTED]";
+    static final String MASK = "***";
 
     // ═══════════════════════════════════════════════════════════════
     // 共享原语
@@ -141,7 +141,7 @@ final class SanitizerRules {
             "idnumber", "passportno", "passportnumber", "taxid", "hkid",
             // ── 银行卡与账户（银行场景核心）──
             "cardnumber", "cardno", "creditcard", "debitcard", "pan",
-            "accountnumber", "accountno", "account", "iban", "bic", "swift",
+            "accountnumber", "accountno", "iban", "bic", "swift",
             "cvv", "cvv2", "cvc", "cvc2", "cvn", "cid", "pin", "otp", "tac", "securitycode",
             "expirydate", "expiry", "validthru",
             // ── 联系方式与生物信息 PII ──

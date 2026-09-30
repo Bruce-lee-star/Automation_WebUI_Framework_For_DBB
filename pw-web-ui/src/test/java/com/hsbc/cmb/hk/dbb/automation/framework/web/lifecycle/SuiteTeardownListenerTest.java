@@ -23,7 +23,7 @@ import static org.mockito.Mockito.mock;
  *   <li><b>ServiceLoader 注册</b>：META-INF/services 文件存在且指向本类（业务层 runner
  *       由 LauncherFactory 自动加载，这是确定性收尾能被触发的唯一前提）；</li>
  *   <li><b>Route 引擎收尾先行且安全</b>：{@code stopAllContextEngines/drainForSuiteTeardown}
- *       在无任何实现注册（本模块单测 classpath 无 pw-route/pw-route-v2）时 no-op 不抛异常。</li>
+ *       在无任何实现注册（本模块单测 classpath 无 pw-route/pw-route）时 no-op 不抛异常。</li>
  * </ol>
  *
  * <p>注：并发窗口降级路径（cleanupAll 抛 {@code IllegalStateException} → 降级
@@ -65,7 +65,7 @@ class SuiteTeardownListenerTest {
     @Test
     void routeEngineTeardown_isSafeWhenNoLifecycleRegistered() {
         // RouteLifecycleRegistry 在无任何实现注册时 stopAllContextEngines/drainForSuiteTeardown
-        // 必须 no-op 安全（Composite 聚合语义）——即使业务 classpath 缺少 pw-route/pw-route-v2。
+        // 必须 no-op 安全（Composite 聚合语义）——即使业务 classpath 缺少 pw-route/pw-route。
         LauncherSession session = mock(LauncherSession.class);
         SuiteTeardownListener listener = new SuiteTeardownListener();
         assertDoesNotThrow(() -> listener.launcherSessionClosed(session));

@@ -346,7 +346,7 @@ public class PlaywrightSerenityBridge {
      *       （{@code forceReapThreadPlaywright}）——这正是让"卡住的连接"真正失效的手段；</li>
      *   <li>{@code restartBrowser()}：关闭本线程的 {@code Browser} 与 {@code Playwright} 实例
      *       （即 Node 驱动进程 + Connection）并重新初始化 —— 对外 API 里"换连接"的唯一手段。
-     *       期间经 {@code stopAllContextEngines()} → {@code RouteEngine2.shutdownAll()} 连带复位框架驱动信道。
+     *       期间经 {@code stopAllContextEngines()} → {@code RouteEngine.shutdownAll()} 连带复位框架驱动信道。
      *       <b>不能用 {@code rebuildBrowser()}</b>：它复用同一 {@code Playwright} 实例、连接不变，
      *       对"协议信道已被污染（存在未收尾的在途调用）"无效。</li>
      * </ol>
@@ -398,7 +398,7 @@ public class PlaywrightSerenityBridge {
             //  连接级复位必须换 Node 驱动进程（= 换 Connection）：{@code rebuildBrowser()} 复用的是同一个
             //  Playwright 实例、连接不变，对"协议信道已被污染（存在未收尾的在途调用）"无效。
             //  restartBrowser() 关闭本线程的 Playwright 实例并重新初始化，期间经
-            //  stopAllContextEngines() → RouteEngine2.shutdownAll() 连带复位框架驱动信道。
+            //  stopAllContextEngines() → RouteEngine.shutdownAll() 连带复位框架驱动信道。
             PlaywrightManager.restartBrowser();
 
             logger.info("[Framework] Unresponsive-connection recovery completed — new Playwright instance "

@@ -29,7 +29,7 @@
         <module>rest-assured-core</module>
         <module>pw-web-ui</module>
         <module>pw-codegen</module>
-        <module>pw-route-v2</module>
+        <module>pw-route</module>
     </modules>
 
     <properties>

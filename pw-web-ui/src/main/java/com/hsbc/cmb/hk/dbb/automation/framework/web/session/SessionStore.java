@@ -526,6 +526,10 @@ final class SessionStore {
             return false;
         }
         if (getStorageStateContent(sessionKey) != null) {
+            // 必须走「路径」变体：驱动侧 storageState 只接受「对象或文件路径」，传 JSON 字符串会被拒
+            // （PlaywrightException: storageState: expected object, got string）。
+            // 内容变体（applyStorageState(String)）只在「就地换会话」分支才落临时文件转成路径，
+            // 其 else 分支会把 JSON 字符串塞进 newContext options —— 驱动不认，故此处不用。
             PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
         } else {
             return false;

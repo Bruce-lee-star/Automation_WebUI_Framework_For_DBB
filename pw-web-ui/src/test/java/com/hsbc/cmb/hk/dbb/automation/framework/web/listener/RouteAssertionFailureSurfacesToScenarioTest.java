@@ -1,11 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionFailure;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionProbe;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionRegistry;
 import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
+import net.thucydides.model.domain.TestResult;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -14,20 +15,21 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * F4 / R-18（P0）端到端印证：route 断言失败必须透出为<b>用例失败</b>，不可静默判 PASS（假绿）。
+ * P0 端到端印证：Route V2 MONITOR 断言失败必须透出为<b>用例失败</b>，不可静默判 PASS（假绿）。
  *
- * <p>链路：route 侧 {@code MonitorHandler.assertAndRecord} / {@code ApiAssertion} 经
- * {@code ApiCaptureContext.recordAssertionFailure} 置 {@code hasAssertionFailures} 标志 →
- * 步骤结束时 {@link StepFailureAggregator#checkAndFailOnApiAssertions()} 经
- * {@link StepEventBus#testFailed} 标记失败并抛 {@link AssertionError}，使 Cucumber/JUnit4 判 FAIL。</p>
+ * <p>链路：V2 {@code MonitorSink} 结算失败（status/body/超时定案）→ {@code RouteAssertionProbeImpl}
+ * 经 {@link RouteAssertionRegistry} 暴露 → 步骤结束时
+ * {@link StepFailureAggregator#checkAndFailOnRouteAssertions()} 抛 {@link AssertionError}
+ * （沿 StepInterceptor → Cucumber → JUnit4 传播，IDE 正确标红）；用例收尾
+ * {@link StepFailureAggregator#checkAndMarkRouteAssertionFailures(TestOutcome)} 兜底置 FAILURE。
  *
- * <p>本测试在 web 模块内（不依赖 route 实现类，故用 {@code core.common.route} 接口桩模拟 route 侧）
- * 验证该链路末端：只要失败标志已落袋，{@code checkAndFailOnApiAssertions()} 必触发
- * {@code testFailed(AssertionError)} 且抛出 {@link AssertionError}。{@code AssertionFailureSurfaceTest}
- * 已验证前段（标志经 per-context → SHARED 兜底被解析到），本测试补完后段（解析到后必置用例失败）。</p>
+ * <p>本测试在 web 模块内（不依赖 route-v2 实现类，用 registry 注册桩探针）验证链路末端：
+ * 消费式语义保证两条上报路径天然防重（第二次调用为空）、探针未注册时安全跳过。
  */
 public class RouteAssertionFailureSurfacesToScenarioTest {
 
@@ -36,7 +38,7 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
         final List<Throwable> failures = new ArrayList<>();
 
         CapturingListener() {
-            super(new File("target/route-assertion-surface-test"));
+            super(new File("target/routev2-assertion-surface-test"));
         }
 
         @Override
@@ -45,71 +47,77 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
         }
     }
 
-    /** 桩实现：仅 resolveFailureCapture() 返回含断言失败的上下文，其余方法无操作。 */
-    private static final class FailingRouteLifecycle implements RouteLifecycle {
-        private final CaptureContext failingContext = new FailingCaptureContext();
+    /** 桩探针：首次调用返回一条失败，之后消费为空（复刻 v2 消费式语义）。 */
+    private static final class FailingProbe implements RouteAssertionProbe {
+        private boolean consumed;
 
         @Override
-        public CaptureContext resolveFailureCapture() {
-            return failingContext;
+        public List<RouteAssertionFailure> drainAndResolveFailures() {
+            if (consumed) {
+                return List.of();
+            }
+            consumed = true;
+            return List.of(new RouteAssertionFailure(
+                    "/api/login", "POST", "https://host/api/login",
+                    200, 500, List.of(), false, 60_000L));
         }
-
-        @Override public void resetCaptureCurrent() { }
-        @Override public void stopCapture() { }
-        @Override public CaptureContext getCurrentCapture() { return failingContext; }
-        @Override public void setMonitorScenario(String name) { }
-        @Override public void clearMonitorScenario() { }
-        @Override public void clearMonitorFeature() { }
-        @Override public void resetAll() { }
-        @Override public void clearContext(Object ctx) { }
-        @Override public void clearAll() { }
-        @Override public void clearDispatchedRoutes() { }
-        @Override public void stopContextEngine(Object ctx) { }
-        @Override public void stopAllContextEngines() { }
-        @Override public void shutdownRouteEngine() { }
-        @Override public String sanitizeUrl(String url) { return url; }
-    }
-
-    /** 桩上下文：标记存在断言失败，明细非空。 */
-    private static final class FailingCaptureContext implements CaptureContext {
-        @Override public void markStepStart() { }
-        @Override public boolean hasAssertionFailures() { return true; }
-        @Override public String buildFailureReport() {
-            return "API Assertion Failures (1)\nSTATUS expected=200 actual=500";
-        }
-        @Override public String buildFailureDetails() {
-            return "STATUS expected=200 actual=500";
-        }
-        @Override public int getActiveRequests() { return 0; }
-        @Override public boolean awaitCompletion(long timeoutMs) { return true; }
     }
 
     @Test
-    public void routeAssertionFailureMarksScenarioAsFailed() {
+    public void routeV2AssertionFailureFailsStepAndIsIdempotent() {
         CapturingListener listener = new CapturingListener();
-        RouteLifecycle previous = RouteLifecycleRegistry.get();
         StepEventBus.getEventBus().registerListener(listener);
-        ListenerGuard.clearForThread(); // 确保 apiFailureAlreadyHandled 守卫为 false，链路不被提前短路
-        RouteLifecycleRegistry.register(new FailingRouteLifecycle());
+        RouteAssertionRegistry.register(new FailingProbe());
         try {
+            // ① 步骤结束路径：必须抛 AssertionError
             AssertionError thrown = null;
             try {
-                StepFailureAggregator.checkAndFailOnApiAssertions();
+                StepFailureAggregator.checkAndFailOnRouteAssertions();
             } catch (AssertionError e) {
                 thrown = e;
             }
+            assertTrue(thrown != null, "V2 断言失败必须抛 AssertionError 使用例判 FAIL");
+            assertFalse(thrown.getMessage() == null || thrown.getMessage().isEmpty(),
+                    "失败明细不得为空");
+            assertTrue(thrown.getMessage().contains("/api/login"), "明细必须含失败规则");
 
-            // ① 必须抛出 AssertionError —— 异常沿 StepInterceptor → Cucumber → JUnit4 传播，IDE 正确标红
-            assertTrue( thrown != null, "route 断言失败必须抛 AssertionError 使用例判 FAIL");
-            // ② 必须经 StepEventBus.testFailed 标记到 Serenity 报告模型
-            assertEquals( 1,  listener.failures.size(), "必须经 StepEventBus.testFailed 上报断言失败");
-            Throwable reported = listener.failures.get(0);
-            assertTrue( reported instanceof AssertionError, "上报的失败应为 AssertionError");
-            assertFalse( reported.getMessage() == null || reported.getMessage().isEmpty(), "失败明细不得为空");
+            // ② 必须经 StepEventBus.testFailed 上报
+            assertEquals(1, listener.failures.size(), "必须经 StepEventBus.testFailed 上报断言失败");
+            assertTrue(listener.failures.get(0) instanceof AssertionError);
+
+            // ③ 消费式幂等：第二次调用（同一场景后续步骤收尾）不得再抛
+            AssertionError second = null;
+            try {
+                StepFailureAggregator.checkAndFailOnRouteAssertions();
+            } catch (AssertionError e) {
+                second = e;
+            }
+            assertNull(second, "消费式语义：失败取走后不得重复抛错");
         } finally {
             StepEventBus.getEventBus().dropListener(listener);
-            RouteLifecycleRegistry.register(previous); // 还原，避免污染其它 web 测试
-            ListenerGuard.clearForThread();
+            RouteAssertionRegistry.clear();
         }
+    }
+
+    @Test
+    public void routeV2AssertionFailureMarksScenarioResultAsFailed() {
+        TestOutcome outcome = new TestOutcome("demo scenario");
+        RouteAssertionRegistry.register(new FailingProbe());
+        try {
+            StepFailureAggregator.checkAndMarkRouteAssertionFailures(outcome);
+            assertEquals(TestResult.FAILURE, outcome.getResult(), "用例收尾必须兜底标记 FAILURE");
+        } finally {
+            RouteAssertionRegistry.clear();
+        }
+    }
+
+    @Test
+    public void absentProbeSkipsSafely() {
+        RouteAssertionRegistry.clear();
+        // 未注册探针：两条路径都必须安全跳过（不抛、不标记）
+        StepFailureAggregator.checkAndFailOnRouteAssertions();
+        TestOutcome outcome = new TestOutcome("demo scenario");
+        StepFailureAggregator.checkAndMarkRouteAssertionFailures(outcome);
+        assertNotEquals(TestResult.FAILURE, outcome.getResult(), "无探针不得误标 FAILURE");
     }
 }

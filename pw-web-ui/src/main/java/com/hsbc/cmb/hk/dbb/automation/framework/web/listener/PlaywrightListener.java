@@ -507,7 +507,7 @@ public class PlaywrightListener implements StepListener {
         //  框架级 API 断言检查（每个步骤结束时兜底执行）
         checkAndFailOnApiAssertions();
 
-        checkAndFailOnRouteV2Assertions();
+        checkAndFailOnRouteAssertions();
         //  框架级未捕获页面异常检查（开关受 playwright.page.error.failOnError 控制）
         checkAndFailOnPageErrors();
     }
@@ -881,7 +881,7 @@ public class PlaywrightListener implements StepListener {
         //  框架级 API 断言检查（每个 Cucumber 步骤结束时自动执行）
         checkAndFailOnApiAssertions();
 
-        checkAndFailOnRouteV2Assertions();
+        checkAndFailOnRouteAssertions();
         //  框架级未捕获页面异常检查（开关受 playwright.page.error.failOnError 控制）
         checkAndFailOnPageErrors();
 
@@ -1102,7 +1102,7 @@ public class PlaywrightListener implements StepListener {
             //  新增：检查 API 断言失败并标记测试结果
             checkAndMarkApiAssertionFailures(result);
 
-            checkAndMarkRouteV2AssertionFailures(result);
+            checkAndMarkRouteAssertionFailures(result);
             //  D3-2：软断言收集到的失败在场景末统一上报（先于结果落定，确保计入本场景）
             StepFailureAggregator.checkAndMarkSoftAssertionFailures(result);
             // 更新当前测试结果
@@ -1167,7 +1167,7 @@ public class PlaywrightListener implements StepListener {
             //  新增：检查 API 断言失败并标记测试结果
             checkAndMarkApiAssertionFailures(result);
 
-            checkAndMarkRouteV2AssertionFailures(result);
+            checkAndMarkRouteAssertionFailures(result);
             //  D3-2：软断言收集到的失败在场景末统一上报（Cucumber 实际走本重载）
             StepFailureAggregator.checkAndMarkSoftAssertionFailures(result);
 
@@ -1323,7 +1323,7 @@ public class PlaywrightListener implements StepListener {
         //  新增：检查 API 断言失败
         checkAndMarkApiAssertionFailures(result);
 
-        checkAndMarkRouteV2AssertionFailures(result);
+        checkAndMarkRouteAssertionFailures(result);
 
         // 注意：不在 testFailed 中 increment failedTests，避免与 testFinished 重复计数
         // 测试失败统计由 testFinished 统一处理
@@ -1466,15 +1466,15 @@ public class PlaywrightListener implements StepListener {
      * Route V2：步骤结束时检查 V2 MONITOR 断言失败（抛 AssertionError 判红）。
      * 消费式 drain 天然幂等——同一场景后续步骤/用例收尾不会重复上报。
      */
-    private void checkAndFailOnRouteV2Assertions() {
-        StepFailureAggregator.checkAndFailOnRouteV2Assertions();
+    private void checkAndFailOnRouteAssertions() {
+        StepFailureAggregator.checkAndFailOnRouteAssertions();
     }
 
     /**
      * Route V2：用例收尾兜底——检查 V2 MONITOR 断言失败并标记 FAILURE（不抛）。
      * 若步骤结束路径已抛过，此处 drain 到空列表自然跳过。
      */
-    private void checkAndMarkRouteV2AssertionFailures(TestOutcome result) {
-        StepFailureAggregator.checkAndMarkRouteV2AssertionFailures(result);
+    private void checkAndMarkRouteAssertionFailures(TestOutcome result) {
+        StepFailureAggregator.checkAndMarkRouteAssertionFailures(result);
     }
 }

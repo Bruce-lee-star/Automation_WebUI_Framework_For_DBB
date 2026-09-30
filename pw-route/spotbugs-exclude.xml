@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+    <!--
+      T1-3 baseline: pw-route 为新模块，采用零基线策略——本文件不含任何 <Match>，
+      任何新增 SpotBugs 违规（Medium+）都会导致 verify 失败。
+      如需临时登记债务，须按项目规范写明 owner / SLA / 消除方式，并在消除后移除条目。
+    -->
+    <!--
+      DSL 惯用法排除（设计如此，非缺陷）：
+      1) RouteDsl.getContext() —— 对齐现有 RouteDsl.getContext() 语义，必须返回绑定上下文
+         （Playwright BrowserContext 本身是门面句柄，业务层经它继续操作页面）。
+      2) BaseMatchDsl.done() / CapabilityDsl.done() —— 内部类 DSL 返回外层 RouteDsl 以支持
+         老仓级联语法（.done().api(...)...），EI_EXPOSE_REP 对内部类 this$0 返回属于误报。
+    -->
+    <Match>
+        <Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl" />
+        <Method name="getContext" />
+        <Bug pattern="EI_EXPOSE_REP" />
+    </Match>
+    <Match>
+        <Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl$BaseMatchDsl" />
+        <Method name="done" />
+        <Bug pattern="EI_EXPOSE_REP" />
+    </Match>
+    <Match>
+        <Class name="com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteDsl$CapabilityDsl" />
+        <Method name="done" />
+        <Bug pattern="EI_EXPOSE_REP" />
+    </Match>
+</FindBugsFilter>

@@ -1,21 +1,35 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 路由生命周期实现注册表（核心层）。
  *
- * <p>各路由实现（如 Route V2 的 {@code route.v2.lifecycle.RouteLifecycleV2Impl}）在类加载时
- * 通过 {@link #registerAdditional(RouteLifecycle)} 追加注册；web 侧只调用 {@link #get()} 获取实现，
- * 无需在编译期依赖路由模块，从而打破 {@code web ↔ route} 循环依赖。
+ * <p>路由实现的类加载自注册机制（<b>编译期零依赖</b>，打破 {@code web ↔ route} 循环依赖）：
+ * {@link #get()} 首次调用时懒加载当前路由模块的 SPI 实现类，触发其静态块经
+ * {@link #registerAdditional(RouteLifecycle)} 追加注册；此后由 {@link RouteLifecycleComposite}
+ * 把 primary（{@link #register} 替换语义）与追加实现一起分发。</p>
  *
- * <p>若没有任何实现注册（如纯 web 测试），{@link #get()} 返回仅含空主体的聚合对象，
- * 调用方语义不变（"route 未启用则跳过清理"）。
+ * <p><b>为什么必须保持懒加载</b>：web 侧多处调用点（{@code SuiteTeardownListener}、
+ * {@code PlaywrightManager}、{@code BrowserCleanupImpl}…）直接以 {@code get().xxx()} 形式使用，
+ * <b>不做空判断</b>。懒加载保证"路由模块在 classpath 上 ⇒ get() 恒非空"；
+ * 只有路由模块确实缺失（如纯 web 测试）时才返回 {@code null}（既有"未启用"降级语义），
+ * 调用方需按 {@code null} 判定跳过清理。</p>
  */
 public final class RouteLifecycleRegistry {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(RouteLifecycleRegistry.class);
+
+    /** 路由模块 SPI 实现类（懒加载触发其静态自注册块）。 */
+    private static final String ROUTE_MODULE_IMPL =
+            "com.hsbc.cmb.hk.dbb.automation.framework.route.lifecycle.RouteLifecycleImpl";
+
     private static volatile RouteLifecycle instance;
     private static final CopyOnWriteArrayList<RouteLifecycle> ADDITIONAL = new CopyOnWriteArrayList<>();
+    private static volatile boolean implLoaded;
 
     private RouteLifecycleRegistry() {}
 
@@ -36,7 +50,31 @@ public final class RouteLifecycleRegistry {
     }
 
     public static RouteLifecycle get() {
-        // 多实现聚合：primary 语义不变，additions（Route V2 lifecycle）随同一挂点被驱动
+        ensureRouteModuleLoaded();
+        // 多实现聚合：primary 语义不变，additions（如 Route V2 lifecycle）随同一挂点被驱动
         return RouteLifecycleComposite.of(instance, ADDITIONAL);
+    }
+
+    /**
+     * 懒加载路由模块实现（触发其静态注册块），失败则说明路由模块未启用。
+     *
+     * <p>与既有机制一致：路由模块缺失或尚未初始化时保持 {@code instance} 为 null（预期降级），
+     * 仅以 debug 记录，不阻断调用方。</p>
+     */
+    private static void ensureRouteModuleLoaded() {
+        if (implLoaded) {
+            return;
+        }
+        synchronized (RouteLifecycleRegistry.class) {
+            if (implLoaded) {
+                return;
+            }
+            try {
+                Class.forName(ROUTE_MODULE_IMPL);
+            } catch (Exception | LinkageError e) {
+                LOGGER.debug("[RouteLifecycleRegistry] route module not available: {}", e.toString());
+            }
+            implLoaded = true;
+        }
     }
 }

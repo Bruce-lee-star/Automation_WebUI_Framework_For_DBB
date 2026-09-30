@@ -6,9 +6,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.assertion.SoftAssertions;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteV2AssertionFailure;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteV2AssertionProbe;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteV2AssertionRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionFailure;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionProbe;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageInteractionMonitor;
 import net.serenitybdd.core.Serenity;
@@ -198,38 +198,38 @@ final class StepFailureAggregator {
      * Route V2：每个步骤结束时检查 V2 MONITOR 断言失败并即时抛 AssertionError。
      *
      * <p>与 {@link #checkAndFailOnApiAssertions}（老版 pw-route）同一 seam，但走独立的
-     * {@link RouteV2AssertionRegistry} SPI：V2 探针未注册（classpath 无 pw-route-v2 或未使用）时
+     * {@link RouteAssertionRegistry} SPI：V2 探针未注册（classpath 无 pw-route 或未使用）时
      * 空判断跳过，不改变既有行为。
      *
      * <p>幂等性：探针的 {@code drainAndResolveFailures()} 是<b>消费式</b>——失败被取走即清空，
-     * 因此本方法（步骤结束抛错）与 {@link #checkAndMarkRouteV2AssertionFailures(TestOutcome)}
+     * 因此本方法（步骤结束抛错）与 {@link #checkAndMarkRouteAssertionFailures(TestOutcome)}
      * （用例收尾标记）天然防重，无需额外的防重入标志；且不会把失败带到下一场景。
      */
-    static void checkAndFailOnRouteV2Assertions() {
-        RouteV2AssertionProbe probe = RouteV2AssertionRegistry.get();
+    static void checkAndFailOnRouteAssertions() {
+        RouteAssertionProbe probe = RouteAssertionRegistry.get();
         if (probe == null) {
             // V2 模块未启用：跳过（与老版 route 未启用语义一致）
             return;
         }
-        List<RouteV2AssertionFailure> failures = probe.drainAndResolveFailures();
+        List<RouteAssertionFailure> failures = probe.drainAndResolveFailures();
         if (failures.isEmpty()) {
             return;
         }
-        String report = buildRouteV2FailureReport(failures);
-        logger.error("RouteV2 API assertions failed during step - failing scenario:\n{}", report);
+        String report = buildRouteFailureReport(failures);
+        logger.error("Route API assertions failed during step - failing scenario:\n{}", report);
         try {
             // 与老版 checkAndFailOnApiAssertions 同序：先经 StepEventBus 即时标记失败（即使
             // 下方异常未被 Cucumber/JUnit4 捕获，testFailed 事件也已发出），再记录报告、再抛。
             StepEventBus.getEventBus().testFailed(new AssertionError(report));
             Serenity.recordReportData()
-                    .withTitle("RouteV2 API ASSERTION FAILURES DETECTED")
+                    .withTitle("Route API ASSERTION FAILURES DETECTED")
                     .andContents(report);
         } catch (Exception e) {
-            logger.debug("Failed to record RouteV2 assertion failure to Serenity report", e);
+            logger.debug("Failed to record Route assertion failure to Serenity report", e);
         }
         // 直接在 stepFinished 回调中抛 AssertionError，使异常沿
         //  StepInterceptor → Cucumber → JUnit4 传播，令 IDE runner 正确标红。
-        throw new AssertionError("RouteV2 API assertion failures detected — failing scenario:\n" + report);
+        throw new AssertionError("Route API assertion failures detected — failing scenario:\n" + report);
     }
 
     /**
@@ -242,23 +242,23 @@ final class StepFailureAggregator {
      *
      * @param result 当前测试产出（失败时置 FAILURE；null 安全）
      */
-    static void checkAndMarkRouteV2AssertionFailures(TestOutcome result) {
-        RouteV2AssertionProbe probe = RouteV2AssertionRegistry.get();
+    static void checkAndMarkRouteAssertionFailures(TestOutcome result) {
+        RouteAssertionProbe probe = RouteAssertionRegistry.get();
         if (probe == null) {
             return;
         }
-        List<RouteV2AssertionFailure> failures = probe.drainAndResolveFailures();
+        List<RouteAssertionFailure> failures = probe.drainAndResolveFailures();
         if (failures.isEmpty()) {
             return;
         }
-        String report = buildRouteV2FailureReport(failures);
-        logger.error("RouteV2 API assertions failed at scenario end:\n{}", report);
+        String report = buildRouteFailureReport(failures);
+        logger.error("Route API assertions failed at scenario end:\n{}", report);
         try {
             Serenity.recordReportData()
-                    .withTitle("RouteV2 API ASSERTION FAILURES DETECTED")
+                    .withTitle("Route API ASSERTION FAILURES DETECTED")
                     .andContents(report);
         } catch (Exception e) {
-            logger.debug("Failed to record RouteV2 assertion failure to Serenity report", e);
+            logger.debug("Failed to record Route assertion failure to Serenity report", e);
         }
         // 兜底安全网：无论如何确保 result 被标记为 FAILURE
         if (result != null) {
@@ -267,9 +267,9 @@ final class StepFailureAggregator {
     }
 
     /** 构建 V2 断言失败明细（每条一行 summary）。 */
-    private static String buildRouteV2FailureReport(List<RouteV2AssertionFailure> failures) {
+    private static String buildRouteFailureReport(List<RouteAssertionFailure> failures) {
         StringBuilder sb = new StringBuilder(failures.size() * 96);
-        for (RouteV2AssertionFailure failure : failures) {
+        for (RouteAssertionFailure failure : failures) {
             sb.append("  ").append(failure.summary()).append(System.lineSeparator());
         }
         return sb.toString().stripTrailing();

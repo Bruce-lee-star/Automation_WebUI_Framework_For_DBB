@@ -24,13 +24,13 @@ import java.util.Comparator;
  *       <th>Terminal</th><th>跨层合并规则（Page vs Context）</th></tr>
  *   <tr><td>MOCK</td><td>100（最先被选中）</td><td>3（最后执行，短路）</td><td>是</td><td>终结 + Page 胜出，不可被降级</td></tr>
  *   <tr><td>MODIFY</td><td>200</td><td>2（改请求后放行）</td><td>否</td><td>putAll 合并字段，同字段 Page 胜出</td></tr>
- *   <tr><td>DELAY</td><td>300</td><td>1（最先计时）</td><td>否</td><td>取 max(pageDelay, contextDelay)</td></tr>
- *   <tr><td>MONITOR</td><td>999（最后才轮到）</td><td>4（观察，与其它动作并存）</td><td>否</td><td>能力位 OR：任一层开启即生效</td></tr>
+ *   <tr><td>DELAY</td><td>400（选择优先级低于 MONITOR）</td><td>1（最先计时）</td><td>否</td><td>取 max(pageDelay, contextDelay)</td></tr>
+ *   <tr><td>MONITOR</td><td>300（高于 DELAY：叠加 delay 时由 MonitorHandler 执行 delay+监控）</td><td>4（观察，与其它动作并存）</td><td>否</td><td>能力位 OR：任一层开启即生效</td></tr>
  * </table>
  *
  * <p><b>① 选择优先级（{@link #getPriority()}）</b>：数值越小越<b>先被选中</b>，
  * 决定一次请求由哪个 Handler 执行动作。MOCK 最小是因为它是唯一 terminal ——
- * 一旦命中立即短路，MODIFY / DELAY / MONITOR 都不再作为「动作」执行。
+ * 一旦命中立即短路，MODIFY / MONITOR / DELAY 都不再作为「动作」执行。
  *
  * <p><b>② 执行时序（{@link #getExecutionOrder()}）</b>：一次请求内部各动作的<b>实际发生顺序</b>。
  * 与选择优先级<b>方向相反</b>是正常的：DELAY 先计时 → MODIFY 改请求 → MOCK 短路。
@@ -38,7 +38,7 @@ import java.util.Comparator;
  * <p><b>MONITOR 的特殊性</b>：它既不是"最先选中"也不是"最先执行"，而是<b>与其它动作并存</b>的观察维度：
  * <ul>
  *   <li>叠加 MODIFY → 由 {@code ModifyHandler} 在拿到真实响应后调用 {@code assertAndRecord} 采集；</li>
- *   <li>叠加 DELAY → DELAY 先选中并放行，随后由 {@code MonitorHandler.handle(route, rule, delayMs)} 在事件线程采集延迟后的真实响应；</li>
+ *   <li>叠加 DELAY → 由 {@code MonitorHandler}（MONITOR 被选中）执行 delay 并在事件线程采集延迟后的真实响应；</li>
  *   <li>MOCK 短路 → 不采集（MOCK 不产生真实网络响应，无响应可观察）。</li>
  * </ul>
  * 因此在 {@code ApiCaptureContext} 中，四种能力是<b>四个并列维度</b>而非互斥枚举：
@@ -64,13 +64,13 @@ public enum RouteHandleType {
      * 高延迟模拟（Throttle）。
      * 拦截请求，等待指定毫秒后放行（模拟高延迟网络）；非 Terminal。
      */
-    DELAY(300, 1, false),
+    DELAY(400, 1, false),
 
     /**
      * 仅监控，不修改请求响应（观察者 Observer）。
      * 放行请求后读取真实响应做断言与落库。
      *
-     * <p> <b>MONITOR 是观察维度，不是动作分支</b>：它选择优先级最低（999），
+     * <p> <b>MONITOR 是观察维度，不是动作分支</b>：它选择优先级位于 MOCK/MODIFY 之后、DELAY 之前（getPriority()=300），
      * 但会<b>叠加</b>在被选中的动作之上一起生效 ——
      * <ul>
      *   <li>叠加 MODIFY：{@code ModifyHandler} 拿到真实响应后调 {@code assertAndRecord}；</li>
@@ -79,7 +79,7 @@ public enum RouteHandleType {
      * </ul>
      * 唯一失效场景是 <b>MOCK 短路</b>：MOCK 不发真实请求，无响应可供观察。
      */
-    MONITOR(999, 4, false);
+    MONITOR(300, 4, false);
 
     private final int priority;
     private final int executionOrder;
@@ -93,7 +93,7 @@ public enum RouteHandleType {
 
     /**
      *  ① <b>选择优先级</b>：数值越小越<b>先被选中</b>执行动作
-     * （MOCK=100 最先，MONITOR=999 最后）。
+     * （MOCK=100 最先；MONITOR=300 在 MODIFY 之后、DELAY 之前；DELAY=400 最后）。
      *
      * <p>这是 {@code InterceptorChain} 的排序依据，决定一次请求由哪个 Handler 执行。
      * MOCK 最小是因为它是唯一 terminal —— 命中即短路。

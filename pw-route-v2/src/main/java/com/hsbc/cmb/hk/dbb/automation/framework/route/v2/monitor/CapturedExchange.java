@@ -37,6 +37,8 @@ public final class CapturedExchange {
     private volatile Boolean assertionPassed;
     private volatile boolean responseTimedOut;
     private volatile List<String> bodyAssertionFailures = Collections.emptyList();
+    /** body 断言未能判定的原因（inconclusive；null=已判定或未配置）。绝不参与失败判定。 */
+    private volatile String bodyAssertionInconclusive;
     /** 断言失败是否已结算（入失败队列）；CAS 保证每条失败只结算一次（防多路径重复上报）。 */
     private final AtomicBoolean settled = new AtomicBoolean(false);
 
@@ -138,6 +140,24 @@ public final class CapturedExchange {
     void markTimedOut() {
         this.responseTimedOut = true;
         this.assertionPassed = false;
+    }
+
+    /**
+     * 标记 body 断言<b>未能判定</b>（inconclusive）：响应句柄不可用（驱动已回收 / 页面关闭）——
+     * 属框架/驱动竞态，非应用缺陷。
+     *
+     * <p>语义：只按 status 定案（status 来自客户端本地快照，恒可读），<b>不</b>因 body 未判定而判失败；
+     * 调用方（{@link MonitorSink}）也不得结算失败。这样"框架自身限制"不会把绿场景判红。</p>
+     */
+    void markBodyAssertionInconclusive(String reason) {
+        this.bodyAssertionInconclusive = reason;
+        boolean statusOk = expectStatus == null || Objects.equals(expectStatus, responseStatus);
+        this.assertionPassed = statusOk;
+    }
+
+    /** body 断言未能判定的原因；null 表示已判定（或未配置 body 断言）。 */
+    public String bodyAssertionInconclusiveReason() {
+        return bodyAssertionInconclusive;
     }
 
     /**

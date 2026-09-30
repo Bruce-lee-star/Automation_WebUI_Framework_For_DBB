@@ -317,12 +317,7 @@ public class PlaywrightConfigManager {
         return FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_PAGE_NAVIGATION_TIMEOUT);
     }
 
-    /**
-     * 获取浏览器重启策略
-     */
-    public String getRestartStrategy() {
-        return FrameworkConfigManager.getString(WebFrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH);
-    }
+
 
     /**
      * 是否全页截图

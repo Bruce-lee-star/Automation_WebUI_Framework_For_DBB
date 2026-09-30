@@ -8,8 +8,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -18,11 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * P1-3 / P1-2 / P2-5 回归（2026-09-27 评审修复）：
+ * P1-3 / P2-5 回归（2026-09-27 评审修复）：
  * <ul>
  *   <li>storageState 内容完整性校验（isValidStorageStateJson）与损坏自愈（purgeSessionFiles 幂等）；</li>
- *   <li>feature 缓存按线程隔离（CURRENT_FEATURE_ID 由 volatile static 改 ThreadLocal 后，
- *       并行 feature 不再串桶）。</li>
  * </ul>
  * 纯内存 / 纯本地文件、零网络依赖（不创建浏览器 / 不登录）。
  */
@@ -92,63 +88,6 @@ class SessionManagerStorageStateValidationTest {
     void purgeSessionFiles_idempotentOnMissingFiles() {
         // 不存在任何文件时 purge 不得抛异常（并发重复删除 / 已清除场景）
         assertDoesNotThrow(() -> SessionManager.purgeSessionFiles("O63_SIT1_NONEXISTENT"));
-    }
-
-    // ==================== P1-2：feature 缓存线程隔离（并行 feature 不串桶） ====================
-
-    /**
-     * 构造旧实现（CURRENT_FEATURE_ID 为 volatile static）必现串桶的交错时序：
-     * <ol>
-     *   <li>线程 A 设置 featureId=featureA（准备）；</li>
-     *   <li>线程 B 设置 featureId=featureB —— 旧实现下 static 被覆盖为 featureB；</li>
-     *   <li>线程 A 执行 markFeatureSessionRestored —— 旧实现写入 "featureB::sharedKey" 桶；</li>
-     *   <li>线程 B 查询 sharedKey —— 旧实现误命中 A 的条目（串桶，跨 feature 误复用 Context）；</li>
-     *   <li>线程 A 再查 —— 应命中自己的桶。</li>
-     * </ol>
-     * ThreadLocal 修复后：A 的条目始终在 featureA 桶，B 查询 featureB 桶恒为 miss。
-     */
-    @Test
-    void featureCache_threadIsolated_parallelFeaturesDoNotCrossBuckets() throws Exception {
-        CountDownLatch bHasSet = new CountDownLatch(1);
-        CountDownLatch aHasMarked = new CountDownLatch(1);
-        final boolean[] aSeesOwn = new boolean[1];
-        final boolean[] bSeesA = new boolean[1];
-
-        Thread threadA = new Thread(() -> {
-            SessionManager.setCurrentFeatureId("featureA");
-            try {
-                bHasSet.await(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            // 关键：此刻线程 B 已 set featureB。旧实现 static=featureB → 此条目写入 featureB 桶。
-            SessionManager.markFeatureSessionRestored("sharedKey", "http://homeA");
-            // A 线程再次查询：ThreadLocal 修复后查 featureA 桶命中；旧实现查 static(被 B 覆盖为 featureB) 桶也命中
-            aSeesOwn[0] = SessionManager.isFeatureSessionRestored("sharedKey");
-            aHasMarked.countDown();
-        }, "featureA-thread");
-
-        Thread threadB = new Thread(() -> {
-            SessionManager.setCurrentFeatureId("featureB");
-            bHasSet.countDown();
-            try {
-                aHasMarked.await(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            // B 线程在自己的 feature 桶内查询：必须 miss（旧实现命中 A 写入 featureB 桶的条目 → 串桶）
-            bSeesA[0] = SessionManager.isFeatureSessionRestored("sharedKey");
-        }, "featureB-thread");
-
-        threadA.start();
-        threadB.start();
-        threadA.join(5_000);
-        threadB.join(5_000);
-        assertFalse(threadA.isAlive(), "featureA 线程应正常结束");
-        assertFalse(threadB.isAlive(), "featureB 线程应正常结束");
-
-        assertTrue(aSeesOwn[0], "A 线程应命中自己的 feature 缓存（featureA 桶）");
-        assertFalse(bSeesA[0], "B 线程不得误命中 A feature 的缓存条目（P1-2 串桶根因）");
     }
 
     private static Path sessionPath(String key) {

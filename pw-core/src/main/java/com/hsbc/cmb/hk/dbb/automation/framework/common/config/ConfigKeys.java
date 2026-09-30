@@ -629,7 +629,19 @@ public enum ConfigKeys {
     WEB_SERENITY_LOGGING(
         "serenity.logging",
         "VERBOSE",
-        "日志级别"
+        "日志级别（Serenity 侧；本框架的详细日志改由 framework.verbose.logging 决定，"
+            + "本键仅保留录制开关等历史语义）"
+    ),
+    WEB_FRAMEWORK_VERBOSE_LOGGING(
+        "framework.verbose.logging",
+        "false",
+        "框架详细日志（默认 false）：控制 VerboseLogging.logXxxIfVerbose 一族；"
+            + "关闭时日志只留必要信息（直调 logger.info/warn/error 的关键事件）"
+    ),
+    WEB_FRAMEWORK_TRACE_LOGGING(
+        "framework.trace.logging",
+        "false",
+        "框架超详细日志（默认 false）：等同于 framework.verbose.logging，并额外开启 trace 档"
     ),
     WEB_SERENITY_OUTPUT_DIRECTORY(
         "serenity.outputDirectory",
@@ -651,21 +663,13 @@ public enum ConfigKeys {
         "playwright",
         "浏览器配置"
     ),
-    WEB_SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH(
-        "serenity.playwright.restart.browser.for.each",
-        "scenario",
-        "浏览器重启策略"
-    ),
+
     WEB_SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS(
         "serenity.playwright.hang.watchdog.interval.ms",
         "60000",
         "卡住诊断看门狗采样间隔（毫秒，≤0 关闭）。用例运行超过该时长后，每间隔打印一次场景线程栈 + 其它线程概览，用于定位无日志的阻塞点"
     ),
-    WEB_SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE(
-        "serenity.playwright.reuse.context.within.feature",
-        "false",
-        "同一 feature 内复用同一 Context/Page（默认关；开启=1 窗口/feature，需场景间无状态依赖）"
-    ),
+
 
     WEB_SERENITY_RERUN_FAILURES_WAIT_TIME(
         "serenity.rerun.failures.wait.time",

@@ -5,6 +5,8 @@ import com.microsoft.playwright.Dialog;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 页面交互与状态操作工厂（WEB-P1-2 Phase 4b）：从 {@link BasePage} 下沉交互动作
@@ -79,9 +81,8 @@ public final class PageInteractions {
             // Object doesn't exist / frame detached。此时改用线程级休眠兜底：既不再依赖已
             // 失效的 frame，又保留"延迟 ms"的语义（纯定时等待本就不该绑定到具体 frame）。
             if (isNavigationOrContextLoss(e)) {
-                try {
-                    Thread.sleep(milliseconds);
-                } catch (InterruptedException ie) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(milliseconds));
+                if (Thread.interrupted()) {
                     Thread.currentThread().interrupt();
                 }
             } else {

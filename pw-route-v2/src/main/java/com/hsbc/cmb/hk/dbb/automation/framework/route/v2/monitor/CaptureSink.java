@@ -8,7 +8,6 @@ import com.microsoft.playwright.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -29,8 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *       只入队（O(1)），不阻塞；</li>
  *   <li>响应侧 {@link #onResponseForSpec} 在响应轮询线程调用（由 {@code RouteRuntimeImpl} 轮询
  *       {@code Request#existingResponse()} 命中后按 spec 精确投递）：弹出 pending 快照 →
- *       volatile 写响应状态；响应体读取（{@code Response.body()} 是同步阻塞调用）
- *       一律交 IO 线程，轮询线程只入队；</li>
+ *       volatile 写响应状态 → <b>就地</b>快照响应体（{@code Response.body()} 是协议调用，必须趁句柄
+ *       存活时读；交给 IO 线程排队会因句柄被回收而永远采不到 body）→ 定案入队；</li>
  *   <li>{@link #dump} 在业务线程调用（消费式快照；含 pending 超时定案）。</li>
  * </ul>
  *
@@ -113,32 +112,47 @@ public final class CaptureSink {
         }
         snapshot.markResponse(response.status(), response.headers());
         if (spec.captureBodyEnabled()) {
-            submitBodyRead(snapshot, spec, response);
+            captureBodyNow(snapshot, spec, response);
         } else {
             enqueue(snapshot, null, false);
         }
     }
 
-    /** 投递响应体读取到 IO 线程（响应轮询线程不读 body）。 */
-    private void submitBodyRead(CapturedExchange snapshot, ApiSpec spec, Response response) {
-        boolean submitted = io.trySubmit("capture-body:" + spec.pattern(), () -> {
-            try {
-                String contentType = response.headers().get("content-type");
-                Charset charset = MediaType.parse(contentType).charset();
-                byte[] bytes = response.body();
-                int limit = spec.captureBodyLimitBytes();
-                boolean truncated = bytes.length > limit;
-                String body = new String(truncated ? Arrays.copyOf(bytes, limit) : bytes, charset);
-                enqueue(snapshot, body, truncated);
-            } catch (Throwable t) {
-                // 读 body / 解析失败：保留核心快照（body=null），不允许异常逃逸 IO 线程包装
-                bodyReadFailures.incrementAndGet();
-                enqueue(snapshot, null, false);
-            }
-        });
-        if (!submitted) {
-            // IO 队列满 → 丢弃（fail-open；快照已响应但未入队，计数可观测）
-            dropped.incrementAndGet();
+    /**
+     * <b>就地</b>读取并快照响应体（响应轮询线程；<b>不再</b>交 IO 线程排队）。
+     *
+     * <p><b>为什么必须就地读（2026-09-28 修正）</b>：{@code Response.body()} 是协议调用，需要驱动侧
+     * {@code response@<guid>} 句柄存活；旧实现把它丢给 IO 线程排队执行，实测在 IO 池繁忙（mock fetch 等）
+     * 时 body 读晚数秒 ⇒ 句柄已被回收 ⇒ {@code Object doesn't exist: response@…} ⇒ 采集到的 body 恒为 null
+     * （业务基于 body 的断言随之失真）。故改为"趁句柄存活时快照字节"，编码/截断仍在本次调用内完成
+     * （纯 CPU，微秒级）。</p>
+     *
+     * <p>读取失败保持 fail-open：保留核心快照（body=null）并计数，绝不抛异常、绝不判场景失败。</p>
+     */
+    private void captureBodyNow(CapturedExchange snapshot, ApiSpec spec, Response response) {
+        String contentType;
+        byte[] bytes;
+        try {
+            contentType = response.headers().get("content-type");
+            bytes = response.body();
+        } catch (Throwable t) {
+            bodyReadFailures.incrementAndGet();
+            LOGGER.warn("[RouteV2] capture body unavailable (driver handle reclaimed / page closed) "
+                            + "pattern='{}' url='{}': {}",
+                    spec.pattern(), snapshot.url(), t.toString());
+            enqueue(snapshot, null, false);
+            return;
+        }
+        try {
+            int limit = spec.captureBodyLimitBytes();
+            boolean truncated = bytes.length > limit;
+            String body = new String(truncated ? Arrays.copyOf(bytes, limit) : bytes,
+                    MediaType.parse(contentType).charset());
+            enqueue(snapshot, body, truncated);
+        } catch (Throwable t) {
+            // 编码/截断失败（理论上不会）：同样 fail-open，保留核心快照
+            bodyReadFailures.incrementAndGet();
+            enqueue(snapshot, null, false);
         }
     }
 

@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.RouteIoExecutor;
+import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
 import org.junit.After;
@@ -17,6 +18,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -320,6 +323,72 @@ public class MonitorSinkTest {
                 failures.stream().anyMatch(f -> f.contains("headerNames=[content-length, date]")));
         assertFalse( "诊断不得泄露 header 值",
                 failures.stream().anyMatch(f -> f.contains("Mon, 28 Sep 2026")));
+    }
+
+    /**
+     * (ii) 快照-断言两阶段：body 必须在拿到句柄的同一时刻读走，之后断言不再触碰句柄。
+     *
+     * <p>回归哨兵：旧实现把 {@code response.body()} 交给 IO 线程排队执行，句柄一旦被驱动回收
+     * （实测 {@code Object doesn't exist: response@…}）就<u>永远</u>采不到 body。本用例锁定
+     * 「body 只被读取一次」——即断言阶段<b>零句柄依赖</b>。</p>
+     */
+    @Test
+    public void bodyIsSnapshottedOnce_assertionNeverTouchesHandleAgain() throws Exception {
+        io = new RouteIoExecutor("t", 2, 64);
+        ApiSpec spec = ApiSpec.builder("/api/leftmenu", RouteCapability.MONITOR)
+                .expectStatus(200)
+                .expectJsonPath("$.enableAdminTools", "Y")
+                .build();
+        MonitorSink sink = newSink();
+
+        Response response = mock(Response.class);
+        when(response.url()).thenReturn("https://host/api/leftmenu");
+        when(response.status()).thenReturn(200);
+        when(response.headers()).thenReturn(Map.of("content-type", "application/json"));
+        when(response.body()).thenReturn("{\"enableAdminTools\":\"Y\"}".getBytes(StandardCharsets.UTF_8));
+
+        sink.recordRequest(mockRequest("https://host/api/leftmenu"), spec);
+        sink.onResponseForSpec(spec, response);
+
+        CapturedExchange exchange = awaitJsonPathAssertion(sink);
+        verify(response, times(1)).body();
+        assertTrue( "断言应基于快照通过", exchange.assertionPassed());
+        assertTrue(exchange.bodyAssertionFailures().isEmpty());
+        assertNull( "正常路径不得标记 inconclusive", exchange.bodyAssertionInconclusiveReason());
+    }
+
+    /**
+     * (4) 误报防线：快照时响应句柄已被驱动回收（{@code Object doesn't exist: response@…}）属
+     * 框架/驱动竞态，<b>不得</b>判场景失败 —— 记 inconclusive（WARN + 计数）并只按 status 定案。
+     */
+    @Test
+    public void reclaimedResponseHandleIsInconclusive_notFailure() throws Exception {
+        io = new RouteIoExecutor("t", 2, 64);
+        ApiSpec spec = ApiSpec.builder("/api/leftmenu", RouteCapability.MONITOR)
+                .expectStatus(200)
+                .expectJsonPath("$.enableAdminTools", "Y")
+                .build();
+        MonitorSink sink = newSink();
+
+        Response gone = mock(Response.class);
+        when(gone.url()).thenReturn("https://host/api/leftmenu");
+        when(gone.status()).thenReturn(200);
+        when(gone.headers()).thenReturn(Map.of("content-length", "0", "Date", "Mon, 28 Sep 2026"));
+        when(gone.body()).thenThrow(
+                new PlaywrightException("Object doesn't exist: response@c832e10dcc5c39fd0c2e84b5eacf1eac"));
+
+        sink.recordRequest(mockRequest("https://host/api/leftmenu"), spec);
+        sink.onResponseForSpec(spec, gone);
+
+        assertTrue( "句柄回收不得结算为断言失败（否则绿场景判红）", sink.drainSettledFailures().isEmpty());
+        assertEquals((long) 1L, sink.inconclusiveBodyReads());
+        CapturedExchange exchange = sink.drain().get(0);
+        assertEquals((long) 200L, (long) exchange.responseStatus());
+        assertTrue( "inconclusive 原因须可观测（含驱动原始提示）",
+                exchange.bodyAssertionInconclusiveReason() != null
+                        && exchange.bodyAssertionInconclusiveReason().contains("Object doesn't exist"));
+        assertTrue( "不得记为断言失败明细", exchange.bodyAssertionFailures().isEmpty());
+        assertFalse("不得判断言失败（status 200 已通过）", Boolean.FALSE.equals(exchange.assertionPassed()));
     }
 
     /**

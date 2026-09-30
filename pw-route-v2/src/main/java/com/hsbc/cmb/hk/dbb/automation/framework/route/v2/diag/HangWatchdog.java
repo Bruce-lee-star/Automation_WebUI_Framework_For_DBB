@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.diag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -16,14 +17,16 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>与 web 模块 {@code com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.HangWatchdog}
  * 同源设计，但<b>自包含</b>：route2 不依赖 web / common 模块，故独立实现、不共享类。职责一致 ——
- * 当 runtime 生命周期（≈ 一个 scenario 的 context 存活期）运行超阈值时，打印线程现场 + 硬超时
- * {@code interrupt} + 暴露 {@link HangEvent}，用于定位"卡在 route2 哪一步"。
+ * 当 runtime 生命周期（≈ 一个 scenario 的 context 存活期）的<b>业务线程栈连续多次采样不变（疑似真卡死）</b>时，
+ * 打印线程现场 + 硬超时 {@code interrupt} + 暴露 {@link HangEvent}，用于定位"卡在 route2 哪一步"。
+ * <b>去误报</b>：仅当同栈集合连续 {@code route.v2.hang.watchdog.frozen.samples}（默认 3）次采样不变才上报；
+ * 健康但运行久的用例其栈在推进 ⇒ 永不误报。
  *
  * <p><b>为什么 route2 也需要</b>：route2 已在根因层用 {@code GuardedDriverCall} / {@code BoundedOps}
  * 设界（原生驱动调用不会无限挂起），但业务线程调 route2 API（如 {@code register} 等待 IO 池 /
  * pending 满）仍可能长时间阻塞；本看门狗提供最后兜底诊断，与根因防护正交。
  *
- * <p><b>临时</b>：与 web {@code HangWatchdog} 一并去除（去除清单见设计文档 §5）。放在 {@code diag}
+ * <p><b>临时</b>：与 web {@code HangWatchdog} 一并去除（去除清单见仓库根 {@code FIX_PLAN.md} §7）。放在 {@code diag}
  * 子包，便于整包移除，且不影响运行时依赖（仅诊断期使用，复用进程级 daemon 调度池）。</p>
  *
  * @apiNote framework-internal：诊断设施，非公开 API。
@@ -56,6 +59,12 @@ public final class HangWatchdog {
     private volatile long startMs;
     private volatile boolean hardFired;
     private volatile HangEvent lastHang;
+    /** 最近一次采样的栈（用于判定"同栈连续不变 = 真卡死"）。 */
+    private volatile StackTraceElement[] lastStack;
+    /** 连续相同栈的采样计数。 */
+    private volatile int frozenStreak;
+    /** 当前冻结剧集是否已上报（避免每个采样间隔重复刷屏）。 */
+    private volatile boolean frozenReported;
     /** "代"令牌：disarm 会自增，使在途采样立即作废，避免关闭后仍打印。 */
     private final AtomicLong token = new AtomicLong();
 
@@ -75,6 +84,9 @@ public final class HangWatchdog {
         disarm();
         hardFired = false;
         lastHang = null;
+        lastStack = null;
+        frozenStreak = 0;
+        frozenReported = false;
         ownerThread = Thread.currentThread();
         startMs = System.currentTimeMillis();
         long t = token.incrementAndGet();
@@ -121,9 +133,47 @@ public final class HangWatchdog {
             if (hard > 0 && !hardFired && elapsed >= hard) {
                 fireHardTimeout(owner, elapsed);
             }
-            LOGGER.warn(renderSample(owner, elapsed, interval));
+            if (recordStackSample(owner.getStackTrace())) {
+                LOGGER.warn(renderSample(owner, elapsed, interval));
+            }
         } catch (Throwable ignored) {
             LOGGER.debug("[RouteV2-HangWatchdog] sample failed (non-fatal): {}", ignored.getMessage());
+        }
+    }
+
+    /**
+     * 记录一次栈采样并判定是否达到"冻结"阈值（同栈集合连续 N 次采样不变 ⇒ 疑似真卡死）。
+     *
+     * <p>去误报核心：健康但运行久的用例其栈每采样都在变化（在推进），永不达阈值 ⇒ 不刷屏；
+     * 真正卡死（阻塞在同一锁 / await）的栈逐次相同 ⇒ 连续 N 次后报一次。</p>
+     *
+     * @return 本次采样是否应上报现场
+     */
+    boolean recordStackSample(StackTraceElement[] stack) {
+        if (stack == null) {
+            stack = new StackTraceElement[0];
+        }
+        int threshold = Math.max(1, (int) frozenSamples());
+        if (lastStack == null || !Arrays.equals(stack, lastStack)) {
+            lastStack = stack;
+            frozenStreak = 1;
+            frozenReported = false;
+            return false;
+        }
+        frozenStreak++;
+        if (frozenStreak >= threshold && !frozenReported) {
+            frozenReported = true;
+            return true;
+        }
+        return false;
+    }
+
+    /** 冻结判定所需连续相同采样数（≤0 视为 1；默认 3）。 */
+    private static long frozenSamples() {
+        try {
+            return Long.getLong("route.v2.hang.watchdog.frozen.samples", 3L);
+        } catch (Throwable t) {
+            return 3L;
         }
     }
 
@@ -132,7 +182,7 @@ public final class HangWatchdog {
         StringBuilder sb = new StringBuilder(4096);
         sb.append("==== [RouteV2-HangWatchdog] runtime '").append(owner.getName())
                 .append("' 已运行 ").append(elapsedMs).append("ms（采样间隔 ").append(interval)
-                .append("ms）—— 疑似卡住，以下为线程现场；")
+                .append("ms）—— 同栈连续多次采样无变化（疑似真卡死），以下为线程现场；")
                 .append("关闭：-Droute.v2.hang.watchdog.interval.ms=0 ====\n");
         sb.append("--- 业务线程 『").append(owner.getName()).append("』（state=")
                 .append(owner.getState()).append("）完整栈 ---\n");

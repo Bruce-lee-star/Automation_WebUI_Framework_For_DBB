@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.RouteEngine2;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.RouteRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CapturedApiCall;
@@ -47,6 +48,13 @@ import java.util.Objects;
  * // 精确注销
  * m.close();
  * }</pre>
+ *
+ * <p><b>feature 模式语义（V2-2 明确）</b>：web 层在每个 scenario 的 {@code testFinished} 对 Context 调
+ * {@code clearContext}，而 V2 的该挂点会<b>关闭整个 per-context 运行时</b> —— 故<b>默认 route 规则
+ * 不跨 scenario 保留</b>（每个 scenario 起点 runtime 被重建、规则为空）。需要"保留 Context 与 runtime、
+ * 只确定性清空规则"时用 {@link #clearRules(BrowserContext)}；只想注销自己注册的几条规则，持有
+ * {@code register()} 返回的 {@link AutoCloseable} 句柄调 {@code close()} 即可（两条路径都不触碰
+ * Context 生命周期）。
  */
 public final class RouteDsl2 {
 
@@ -107,6 +115,42 @@ public final class RouteDsl2 {
             return;
         }
         RouteEngine2.shutdown(page.context());
+    }
+    /**
+     * 只清指定 BrowserContext 的全部 V2 规则，<b>保留</b> runtime 与 Context（V2-2）。
+     *
+     * <p>与 {@link #clear(BrowserContext)} 的区别：{@code clear(context)} 关闭整个 V2 runtime
+     * （线程池 / 注册表条目随之一并释放，下一次注册会重建）；本方法只退役规则，runtime 与 Context
+     * 都保留 —— feature 模式下"复用 Context、又要规则确定性清空"时用它。</p>
+     *
+     * @return 本次提交退役的规则数
+     */
+    public static int clearRules(BrowserContext context) {
+        return RouteEngine2.clearRules(context);
+    }
+
+    /** 只清指定 Page 所属 context 的全部 V2 规则，保留 runtime 与 Context（V2-2）。 */
+    public static int clearRules(Page page) {
+        Objects.requireNonNull(page, "page");
+        return RouteEngine2.clearRules(page.context());
+    }
+
+    /** Object 重载（Page / BrowserContext 皆可；非两者抛 IAE，fail-fast 避免静默误用）。 */
+    public static int clearRules(Object context) {
+        Objects.requireNonNull(context, "context");
+        if (context instanceof Page page) {
+            return RouteEngine2.clearRules(page.context());
+        }
+        if (context instanceof BrowserContext bc) {
+            return RouteEngine2.clearRules(bc);
+        }
+        throw new IllegalArgumentException("context must be Page or BrowserContext, got: "
+                + context.getClass().getName());
+    }
+
+    /** 只清全部 context 的 V2 规则，保留各 runtime 与 Context（V2-2）。 */
+    public static int clearRulesAll() {
+        return RouteEngine2.clearRulesAll();
     }
 
     /**
@@ -256,6 +300,8 @@ public final class RouteDsl2 {
         List<AutoCloseable> handles = new ArrayList<>(pending.size());
         for (ApiSpec spec : pending) {
             handles.add(runtime.register(spec));
+            LOGGER.info("[RouteV2] register {} route for '{}'{}",
+                    spec.capability(), spec.pattern(), describeRegister(spec));
         }
         pending.clear();
         AutoCloseable merged = () -> {
@@ -273,17 +319,117 @@ public final class RouteDsl2 {
     }
 
     /**
+     * 把一条已注册规则的「具体操作」格式化为单行可读描述（INFO 日志用），
+     * 让用户一眼看到 monitor 断言 / mock 内容 / modify 改了哪些值 / delay 时长。
+     * 纯展示、不影响行为；body 不截断，敏感信息统一经 {@link SensitiveDataSanitizer} 打码（与全框架一致）。
+     */
+    private static String describeRegister(ApiSpec spec) {
+        StringBuilder d = new StringBuilder();
+        appendOperation(d, spec);
+        return d.toString();
+    }
+
+    /**
+     * 把一次命中（请求真正触发能力）格式化为单行可读描述，供 {@code RouteDispatcher} 的逐次命中日志复用。
+     * 附带 method/url 便于追溯是哪次请求触发；body 不截断，敏感信息统一经 {@link SensitiveDataSanitizer} 打码。
+     */
+    public static String describeCaptured(ApiSpec spec, String method, String url) {
+        StringBuilder d = new StringBuilder();
+        d.append(" method=").append(method).append(" url=").append(url);
+        appendOperation(d, spec);
+        return d.toString();
+    }
+
+    private static void appendOperation(StringBuilder d, ApiSpec spec) {
+        switch (spec.capability()) {
+            case MONITOR -> {
+                if (spec.expectStatus() != null) {
+                    d.append(" expectStatus=").append(spec.expectStatus());
+                }
+                appendMap(d, "jsonPath", spec.jsonPathAssertions());
+                if (spec.expectBodyContains() != null) {
+                    d.append(" bodyContains=\"").append(SensitiveDataSanitizer.sanitizeBody(spec.expectBodyContains())).append('"');
+                }
+                if (spec.expectBodyRegex() != null) {
+                    d.append(" bodyRegex=\"").append(SensitiveDataSanitizer.sanitizeBody(spec.expectBodyRegex())).append('"');
+                }
+                appendMap(d, "formField", spec.formFieldAssertions());
+                d.append(" timeout=").append(spec.monitorTimeoutMs() / 1000).append("s");
+                if (spec.autoStopOnMatch()) {
+                    d.append(" autoStop(min=").append(spec.minMatches()).append(')');
+                }
+            }
+            case MOCK -> {
+                d.append(" status=").append(spec.mockStatus());
+                d.append(" intercept=").append(spec.mockIntercept());
+                if (spec.mockContentType() != null) {
+                    d.append(" contentType=").append(spec.mockContentType());
+                }
+                if (!spec.mockHeaders().isEmpty()) {
+                    d.append(" headers=").append(spec.mockHeaders().keySet());
+                }
+                if (spec.mockBody() == null) {
+                    d.append(" body=[intercepted]");
+                } else {
+                    d.append(" body=").append(SensitiveDataSanitizer.sanitizeBody(spec.mockBody()));
+                }
+                if (!spec.mockReplacements().isEmpty()) {
+                    d.append(" replacePaths=").append(spec.mockReplacements().keySet());
+                }
+                if (!spec.conditionalReplacements().isEmpty()) {
+                    d.append(" when=").append(spec.conditionalReplacements().stream()
+                            .map(c -> c.whenPath() + "->" + c.thenPath()).toList());
+                }
+            }
+            case MODIFY_REQUEST -> {
+                appendMap(d, "setHeader", spec.requestHeadersToSet());
+                if (!spec.requestHeadersToRemove().isEmpty()) {
+                    d.append(" removeHeader=").append(spec.requestHeadersToRemove());
+                }
+                if (!spec.bodyOps().isEmpty()) {
+                    d.append(" bodyOps=").append(spec.bodyOps().stream()
+                            .map(o -> o.type() + " " + o.path() + "="
+                                    + SensitiveDataSanitizer.sanitizeBody(String.valueOf(o.value())))
+                            .toList());
+                }
+                if (spec.modifyMethod() != null) {
+                    d.append(" method=").append(spec.modifyMethod());
+                }
+            }
+            case DELAY -> {
+                if (spec.delayMinMs() > 0 && spec.delayMaxMs() > spec.delayMinMs()) {
+                    d.append(" randomDelay=[").append(spec.delayMinMs() / 1000).append("s,")
+                            .append(spec.delayMaxMs() / 1000).append("s]");
+                } else {
+                    d.append(" delay=").append(spec.delayMs() / 1000).append("s");
+                }
+            }
+            default -> { }
+        }
+    }
+
+    private static void appendMap(StringBuilder d, String label, Map<String, ?> map) {
+        if (map == null || map.isEmpty()) {
+            return;
+        }
+        d.append(' ').append(label).append('=').append(map.entrySet().stream()
+                .map(e -> e.getKey() + "=" + SensitiveDataSanitizer.sanitizeBody(String.valueOf(e.getValue())))
+                .toList());
+    }
+
+    /**
      * 级联结束统一提交（对齐现有 RouteDsl 的 {@code .done() ... .start()} 语法）。
      *
-     * <p>等价于 {@link #register()}：把此前所有 {@code done()} 累积的规则一次性注册，
-     * 返回合并注销句柄（比现有 {@code start()} 的 void 更安全——可精确注销）。
+     * <p>等价于 {@link #register()}：把此前所有 {@code done()} 累积的规则一次性注册，返回 {@code void}。
+     * 规则生命周期随所属 Context 关闭而清理（与现有 RouteDsl.start() 语义一致）；
+     * 若需精确注销单条 / 整组规则，请用 {@link #register()} 取得 {@link AutoCloseable} 句柄后 {@code close()}。
      *
      * <p>时序与并发：{@code done()} 只做内存累积（无注册、无跨线程可见状态）；
      * {@code start()} 复用 {@link #register()} 路径（逐条 CAS 线性化注册），
      * 与并发注册 / stop 系列无竞态。
      */
-    public AutoCloseable start() {
-        return register();
+    public void start() {
+        register();
     }
 
     /** 当前已声明未提交的规则数（级联调试用）。 */

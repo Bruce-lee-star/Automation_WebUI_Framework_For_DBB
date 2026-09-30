@@ -1,0 +1,77 @@
+warning: in the working copy of 'C:\Users\12745\Downloads\playwright-java-1.62.0\playwright\src\main\java\com\microsoft\playwright\impl\Connection.java', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'D:\IdeaProject\Automation_WebUI_Framework_For_DBB\pw-playwright\src\main\java\com\microsoft\playwright\impl\Connection.java', LF will be replaced by CRLF the next time Git touches it
+diff --git "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Connection.java" "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Connection.java"
+index b0bc2bd3..c771c541 100644
+--- "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Connection.java"
++++ "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Connection.java"
+@@ -57,6 +57,34 @@ class Message {
+ 
+ 
+ public class Connection {
++  /**
++   * DBBN-PATCH-01 marker. Its presence proves that the patched client is the artifact on the classpath:
++   * swapping in the official playwright jar makes consuming code fail to compile, loudly.
++   */
++  public static final int DBBN_PATCH_LEVEL = 1;
++
++  /** DBBN-PATCH-01: protocol messages dropped instead of aborting an unrelated in-flight call. */
++  private static final java.util.concurrent.atomic.AtomicLong DBBN_DROPPED =
++      new java.util.concurrent.atomic.AtomicLong();
++
++  /** DBBN-PATCH-01: how many stale/unknown protocol messages have been dropped (observability canary). */
++  public static long dbbnDroppedMessageCount() {
++    return DBBN_DROPPED.get();
++  }
++
++  private static void dbbnDrop(String reason, Message message, Throwable error) {
++    DBBN_DROPPED.incrementAndGet();
++    StringBuilder sb = new StringBuilder("[DBBN-PATCH-01] dropped protocol message: reason=").append(reason);
++    if (message != null) {
++      sb.append(", method=").append(message.method).append(", guid=").append(message.guid)
++        .append(", id=").append(message.id);
++    }
++    if (error != null) {
++      sb.append(", error=").append(error);
++    }
++    System.err.println(sb);
++  }
++
+   private final Transport transport;
+   private final Map<String, ChannelOwner> objects = new HashMap<>();
+   private final Root root;
+@@ -258,7 +286,9 @@ public class Connection {
+     if (message.id != 0) {
+       WaitableResult<JsonElement> callback = callbacks.get(message.id);
+       if (callback == null) {
+-        throw new PlaywrightException("Cannot find command to respond: " + message.id);
++        // DBBN-PATCH-01: a late/duplicate response must NOT abort the in-flight call.
++        dbbnDrop("unknown-callback", message, null);
++        return;
+       }
+       callbacks.remove(message.id);
+ //      System.out.println("Message: " + message.id + " " + message);
+@@ -295,7 +325,9 @@ public class Connection {
+ 
+     ChannelOwner object = objects.get(message.guid);
+     if (object == null) {
+-      throw new PlaywrightException("Cannot find object to call " + message.method + ": " + message.guid);
++      // DBBN-PATCH-01: an event for an already-disposed object must NOT abort the in-flight call.
++      dbbnDrop("unknown-object", message, null);
++      return;
+     }
+     if (message.method.equals("__adopt__")) {
+       String childGuid = message.params.get("guid").getAsString();
+@@ -311,7 +343,12 @@ public class Connection {
+       object.disposeChannelOwner(wasCollected);
+       return;
+     }
+-    object.handleEvent(message.method, message.params);
++    try {
++      object.handleEvent(message.method, message.params);
++    } catch (PlaywrightException e) {
++      // DBBN-PATCH-01: root cause of the setNetworkInterceptionPatterns abort (stale worker@/frame@).
++      dbbnDrop("stale-event", message, e);
++    }
+   }
+ 
+   private ChannelOwner createRemoteObject(String parentGuid, JsonObject params) {

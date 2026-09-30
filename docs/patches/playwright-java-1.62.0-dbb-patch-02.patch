@@ -1,0 +1,111 @@
+diff --git "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\BrowserContextImpl.java" "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\BrowserContextImpl.java"
+index 78c63f89..eb5b4cab 100644
+--- "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\BrowserContextImpl.java"
++++ "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\BrowserContextImpl.java"
+@@ -726,11 +726,14 @@ class BrowserContextImpl extends ChannelOwner implements BrowserContext {
+   }
+ 
+   void handleRoute(RouteImpl route) {
+-    Router.HandleResult handled = routes.handle(route);
+-    if (handled != Router.HandleResult.NoMatchingHandler) {
++    Router.HandleOutcome outcome = routes.handleOutcome(route);
++    // DBBN-PATCH-02: only re-send when the route table actually changed (a route removed after its `times`
++    // budget was exhausted). Re-sending on every handled request starved the single-threaded client on
++    // long-lived endpoints and made unrelated protocol calls miss their ack.
++    if (outcome.result != Router.HandleResult.NoMatchingHandler && outcome.patternsChanged) {
+       updateInterceptionPatterns();
+     }
+-    if (handled == Router.HandleResult.NoMatchingHandler || handled == Router.HandleResult.Fallback) {
++    if (outcome.result == Router.HandleResult.NoMatchingHandler || outcome.result == Router.HandleResult.Fallback) {
+       route.resume(null, true);
+     }
+   }
+diff --git "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\PageImpl.java" "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\PageImpl.java"
+index aca2c837..e830894f 100644
+--- "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\PageImpl.java"
++++ "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\PageImpl.java"
+@@ -224,11 +224,12 @@ public class PageImpl extends ChannelOwner implements Page {
+     } else if ("route".equals(event)) {
+       RouteImpl route = connection.getExistingObject(params.getAsJsonObject("route").get("guid").getAsString());
+       route.browserContext = browserContext;
+-      Router.HandleResult handled = routes.handle(route);
+-      if (handled != Router.HandleResult.NoMatchingHandler) {
++      Router.HandleOutcome outcome = routes.handleOutcome(route);
++      // DBBN-PATCH-02: see BrowserContextImpl.handleRoute — re-send only when the pattern list changed.
++      if (outcome.result != Router.HandleResult.NoMatchingHandler && outcome.patternsChanged) {
+         updateInterceptionPatterns();
+       }
+-      if (handled == Router.HandleResult.NoMatchingHandler || handled == Router.HandleResult.Fallback) {
++      if (outcome.result == Router.HandleResult.NoMatchingHandler || outcome.result == Router.HandleResult.Fallback) {
+         browserContext.handleRoute(route);
+       }
+     } else if ("webSocketRoute".equals(event)) {
+diff --git "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Router.java" "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Router.java"
+index 78d7e10f..b172edfe 100644
+--- "a/C:\\Users\\12745\\Downloads\\playwright-java-1.62.0\\playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Router.java"
++++ "b/D:\\IdeaProject\\Automation_WebUI_Framework_For_DBB\\pw-playwright\\src\\main\\java\\com\\microsoft\\playwright\\impl\\Router.java"
+@@ -72,8 +72,37 @@ class Router {
+   }
+ 
+   enum HandleResult { NoMatchingHandler, Handled, Fallback, PendingHandler }
++  /**
++   * DBBN-PATCH-02: outcome of {@link #handleOutcome(RouteImpl)}.
++   *
++   * <p>Upstream re-sends the full interception-pattern list to the driver on <b>every</b> handled route
++   * ({@code BrowserContextImpl.handleRoute} and the {@code route} event branch of {@code PageImpl}), even
++   * though the only mutation performed while handling a route is the removal of a route whose {@code times}
++   * budget is exhausted. On a long-lived endpoint (e.g. an SSE that reconnects) that turns every
++   * reconnection into a full pattern push on the single-threaded client, starving unrelated protocol calls
++   * such as {@code context.route()} / {@code context.unroute()} until they miss their ack. We therefore
++   * re-send only when the pattern list actually changed.</p>
++   */
++  static final class HandleOutcome {
++    final HandleResult result;
++    final boolean patternsChanged;
++
++    HandleOutcome(HandleResult result, boolean patternsChanged) {
++      this.result = result;
++      this.patternsChanged = patternsChanged;
++    }
++  }
+   HandleResult handle(RouteImpl route) {
++    return handleOutcome(route).result;
++  }
++
++  /**
++   * DBBN-PATCH-02: like {@link #handle(RouteImpl)} but also reports whether the route table changed,
++   * i.e. whether the driver-side interception pattern list has to be re-sent.
++   */
++  HandleOutcome handleOutcome(RouteImpl route) {
+     HandleResult result = HandleResult.NoMatchingHandler;
++    boolean patternsChanged = false;
+     for (Iterator<RouteInfo> it = routes.iterator(); it.hasNext();) {
+       RouteInfo info = it.next();
+       if (!info.matcher.test(route.request().url())) {
+@@ -81,22 +110,23 @@ class Router {
+       }
+       if (info.decrementRemainingCallCount()) {
+         it.remove();
++        patternsChanged = true; // DBBN-PATCH-02: the only mutation that changes the pattern list
+       }
+       route.fallbackCalled = false;
+       info.handle(route);
+       if (route.isHandled()) {
+-        return HandleResult.Handled;
++        return new HandleOutcome(HandleResult.Handled, patternsChanged);
+       }
+       // Not immediately handled and fallback() was not called => the route
+       // must be handled asynchronously.
+       if (!route.fallbackCalled) {
+         route.shouldResumeIfFallbackIsCalled = true;
+-        return HandleResult.PendingHandler;
++        return new HandleOutcome(HandleResult.PendingHandler, patternsChanged);
+       }
+       // Fallback was called, continue to the remaining handlers.
+       result = HandleResult.Fallback;
+     }
+-    return result;
++    return new HandleOutcome(result, patternsChanged);
+   }
+ 
+   JsonObject interceptionPatterns() {

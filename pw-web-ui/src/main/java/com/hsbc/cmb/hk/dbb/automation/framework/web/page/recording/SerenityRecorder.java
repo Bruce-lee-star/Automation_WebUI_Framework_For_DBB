@@ -25,7 +25,7 @@ public final class SerenityRecorder {
 
     private static final Logger logger = LoggerFactory.getLogger(SerenityRecorder.class);
 
-    /** per-page Serenity 测试数据存储；仅在详细日志开启时写入（成功路径零开销）。 */
+    /** per-page Serenity 测试数据存储；仅在录制开启（{@link #isEnabled()}）时写入（成功路径零开销）。 */
     private final Map<String, Object> serenityTestData = new HashMap<>();
 
     private static boolean isVerboseLogging() {
@@ -70,10 +70,14 @@ public final class SerenityRecorder {
     // ==================== 测试数据管理 ====================
 
     /**
-     * 添加测试数据到本地存储。仅在详细日志开启时才写入 HashMap，成功路径零开销。
+     * 添加测试数据到本地存储（这些数据会进 Serenity 报告，属<b>行为</b>而非日志）。
+     * 仅在<b>录制开启</b>时写入 HashMap，成功路径零开销。
+     *
+     * <p>2026-09-28：门控从"日志详细度"改为 {@link #isEnabled()}（录制语义）—— 否则业务把
+     * {@code framework.verbose.logging} 关掉会连带丢掉报告里的 per-page 元素/校验数据（静默回归）。</p>
      */
     public void addSerenityTestData(String key, Object value) {
-        if (!isVerboseLogging()) {
+        if (!isEnabled()) {
             return;
         }
         try {
@@ -101,10 +105,15 @@ public final class SerenityRecorder {
     // ==================== Layer A 原生录制（供 RecordingPageProxy 使用，无 per-page 状态） ====================
 
     /**
-     * 录制开关（零开销，D4）：reporting 关闭时返回 false（沿用 {@code VerboseLogging.isVerboseEnabled()} 现状语义）。
+     * 录制开关（零开销，D4）：reporting 关闭时返回 false。
+     *
+     * <p><b>2026-09-28 与日志门控解耦</b>：日志详细度改由 {@code framework.verbose.logging} 决定后，
+     * 录制<b>必须</b>继续沿用历史语义（{@code serenity.logging} 是否 VERBOSE/TRACE），否则业务把
+     * verbose 关掉会连带丢掉 Serenity 报告里的动作录制（静默回归；既有 5 个录制相关单测也依赖该语义）。
+     * 详见 {@link VerboseLogging#isRecordingEnabled()}。</p>
      */
     public static boolean isEnabled() {
-        return VerboseLogging.isVerboseEnabled();
+        return VerboseLogging.isRecordingEnabled();
     }
 
     /**

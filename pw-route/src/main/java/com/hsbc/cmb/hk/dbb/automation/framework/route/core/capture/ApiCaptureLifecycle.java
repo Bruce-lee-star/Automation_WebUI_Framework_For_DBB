@@ -210,7 +210,7 @@ public final class ApiCaptureLifecycle {
             //  将调用线程绑定到该 Page 所属 BrowserContext，使 getCurrent() 指向正确的捕获上下文，
             //   消除跨用例数据串扰问题。
             bindCurrentContext(pageContext);
-            LOGGER.info("[ApiCapture] Started for Page (activePages={})", activePageCount());
+            LOGGER.debug("[ApiCapture] Started for Page (activePages={})", activePageCount());
         }
     }
 
@@ -233,7 +233,7 @@ public final class ApiCaptureLifecycle {
                     stop(page);
                 }
             }
-            LOGGER.info("[ApiCapture] Stopped all Page capture sessions");
+            LOGGER.debug("[ApiCapture] Stopped all Page capture sessions");
         }
     }
 
@@ -244,7 +244,7 @@ public final class ApiCaptureLifecycle {
             //  清理 Page 级监听器注册标记，允许页面后续被重新 attach 时再次注册 onClose
             PAGE_LISTENER_REGISTERED.remove(page);
             releaseContextIfOrphaned(page);
-            LOGGER.info("[ApiCapture] Stopped Page capture session (activePages={})", activePageCount());
+            LOGGER.debug("[ApiCapture] Stopped Page capture session (activePages={})", activePageCount());
         }
     }
 

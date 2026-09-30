@@ -24,11 +24,8 @@ import java.util.concurrent.TimeUnit;
  * <p>原实现把 `tracing().start()` 放在 <b>context 创建</b>、`stop()` 放在 <b>context 关闭</b>，
  * 于是 trace 的时间区间 = <b>Context 存活期</b>，而不是 case 执行期：
  * <ul>
- *   <li>{@code restart.browser.for.each=scenario}（默认）：区间≈该用例，但起点早于用例（含 context 建立、
- *       会话恢复、登录）；</li>
- *   <li>{@code =feature}：Context 跨 scenario 复用 → <b>一个 trace 覆盖整个 feature 的多个 case</b>，
- *       而文件名/报告标注取的是"关闭时刻"的 scenario（即该 feature 的最后一个用例）→ <b>名实不符</b>，
- *       「点开 trace 看单个失败用例」根本做不到。</li>
+ *   <li>区间≈该用例，但起点早于用例（含 context 建立、会话恢复、登录）；故本录制器改为 scenario-scoped，
+ *       使每个用例的 trace 独立、文件名/报告标注与其执行用例一致。</li>
  * </ul>
  *
  * <h2>做法（Playwright 原生分段录制）</h2>

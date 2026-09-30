@@ -14,6 +14,7 @@ import com.microsoft.playwright.Route;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -66,6 +67,30 @@ public final class StubRouteRuntime implements RouteRuntime {
         return false;
     }
 
+    /** T2+ 契约：替身无绑定可撤 ⇒ 等价"无需撤销"。 */
+    @Override
+    public boolean retireByPurpose(String pattern) {
+        return true;
+    }
+    /** V2-2 契约：替身无绑定 ⇒ 无规则可清（幂等 0）。 */
+    @Override
+    public int clearRules() {
+        return 0;
+    }
+
+
+    /** T2+ 契约：替身不存在不可确证的撤销 ⇒ 始终干净。 */
+    @Override
+    public boolean isClean() {
+        return true;
+    }
+
+    /** T2+ 契约：无未确证撤销。 */
+    @Override
+    public int unconfirmedRetirements() {
+        return 0;
+    }
+
     @Override
     public void recordObservation(Request request, ApiSpec spec) {
         // no-op
@@ -105,7 +130,7 @@ public final class StubRouteRuntime implements RouteRuntime {
 
     @Override
     public RouteV2Metrics metrics() {
-        return new RouteV2Metrics(0, 0, 0, 0, 0, 0, 0, 0, 0);
+        return new RouteV2Metrics(0, 0, 0, 0, 0, 0, 0, 0, 0, 0L, 0L, 0, 0, Map.of());
     }
 
     @Override

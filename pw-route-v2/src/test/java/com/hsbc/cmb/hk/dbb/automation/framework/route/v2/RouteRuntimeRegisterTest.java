@@ -159,7 +159,7 @@ public class RouteRuntimeRegisterTest {
         RouteDsl2.on(ctx).api("/a").monitor().register();
         RouteDsl2.on(ctx).api("/b").mock().status(200).body("{}").register();
         RouteDsl2.on(ctx).api("/c").modifyRequest().setRequestHeader("X-Env", "mock").register();
-        RouteDsl2.on(ctx).api("/d").delay(1).done().start().close(); // 级联统一提交后可精确注销
+        RouteDsl2.on(ctx).api("/d").delay(1).done().register().close(); // 级联统一提交后可精确注销
 
         org.mockito.Mockito.verify(ctx, org.mockito.Mockito.times(4)).route(anyString(), any(), any());
     }

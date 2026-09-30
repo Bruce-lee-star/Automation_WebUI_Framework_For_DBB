@@ -15,7 +15,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.core.context.TestContextHolder;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.core.FrameworkCore;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.session.SessionManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event.PageEventMonitor;
@@ -307,16 +307,19 @@ public class PlaywrightListener implements StepListener {
     /**
      * 异常/跳过路径的幂等清理。Serenity 不保证 skipped、ignored 或 step error
      * 一定随后触发完整的 testFinished，因此这些入口必须主动释放路由、采集和线程状态。
+     *
+     * <p><b>2026-09-28 决策</b>：只清<b>用例级</b>资源；<b>同一 sessionKey 下不重建、不关闭
+     * Context/Page</b>（失败不会污染会话，只有 sessionKey 变化才重建）。判据与语义见
+     * {@link PlaywrightManager#clearThreadResourcesOnCaseAbort()}。
+     *
+     * <p>G4：全程<b>线程级</b>清理（不调全局 resetAll），绝不触碰其它 worker 的状态。
      */
     private void cleanupAfterAbnormalTermination(String reason) {
-        //  异常终止路径：scenario 已被中断（断言失败/超时/跳过）。
-        //  G4 修复：原实现调全局 resetAll()（清全部 context 的规则/采集）——并行下会误清其它 worker
-        //    线程正在使用的状态。现改为线程级彻底清理：只清本线程的 Route/采集状态与本线程
-        //    Context（含孤儿）/Page，绝不触碰其它线程。
         try {
-            PlaywrightManager.clearCurrentThreadResources();
+            PlaywrightManager.clearThreadResourcesOnCaseAbort();
         } catch (Exception e) {
-            logger.debug("clearCurrentThreadResources() on abnormal termination ({}) failed: {}", reason, e.getMessage());
+            logger.debug("clearThreadResourcesOnCaseAbort() on abnormal termination ({}) failed: {}",
+                    reason, e.getMessage());
         }
         cleanupThreadLocals();
     }
@@ -618,20 +621,12 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
-        // 获取浏览器重启策略（统一走 WebFrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
-        String restartBrowserForEach = WebFrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
-
-        // 无论重启策略如何，都清理当前的上下文和页面，以便重试时使用新的上下文和页面
-        VerboseLogging.logInfoIfVerbose(logger, "Last step failed - cleaning up context and page resources (strategy: {})", restartBrowserForEach);
-        try {
-            PlaywrightRuntime.instance().pageRegistry.closePage();
-            PlaywrightRuntime.instance().contextRegistry.closeContext();
-            VerboseLogging.logInfoIfVerbose(logger, "Cleaned up page and context resources after last step failure");
-        } catch (Exception e) {
-            VerboseLogging.logInfoIfVerbose(logger, "Failed to clean up resources after last step failure: {}", e.getMessage());
-        } finally {
-            cleanupAfterAbnormalTermination("lastStepFailed");
-        }
+        //  2026-09-28 决策：此处不再无条件 closePage/closeContext —— 同一 sessionKey 下失败同样要
+        //  保留 Context/Page（免登录复用），只清用例级资源。是否真正拆除由 cleanupAfterAbnormalTermination
+        //  内的统一判据（当前 Context 是否承载登录 sessionKey）决定，避免两条清理链策略漂移。
+        VerboseLogging.logInfoIfVerbose(logger,
+                "Last step failed - cleaning up case-scoped resources (scenario-level restart)");
+        cleanupAfterAbnormalTermination("lastStepFailed");
     }
 
     @Override
@@ -960,10 +955,8 @@ public class PlaywrightListener implements StepListener {
             }
         }
 
-        //  S3：cross-feature cleanup 之后更新当前 feature 标识，使 SessionManager 的 feature 缓存按 feature 隔离
-        //  （必须在本次清理之后设置，确保清理针对的是上一 feature）。
-        //  story 在本方法多处已解引用（929/932/944/949），此处 null 防御为冗余（SpotBugs RCN）-> 直取。
-        SessionManager.setCurrentFeatureId(story.getStoryName());
+        //  2026-09-30 收口：不再区分 feature / scenario 模式，原「按 feature 隔离的会话缓存」已移除，
+        //  此处无需再设置当前 feature 标识；cross-feature 清理已由上方 cleanupForFeature() 完成。
 
         //  重置：允许新 suite 再次触发清理
         testSuiteFinishedLogged = false;
@@ -1121,28 +1114,17 @@ public class PlaywrightListener implements StepListener {
             //  新增：自动清理当前线程的 RouteRegistry（防内存泄漏 + 跨用例污染）
             cleanupRouteRegistryForCurrentThread();
 
-            // 获取浏览器重启策略（统一走 WebFrameworkConfig 枚举，键=serenity.playwright.restart.browser.for.each）
-            String restartBrowserForEach = WebFrameworkConfig.SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH.getValue();
-
-            // 根据浏览器重启策略决定清理方式
-            // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理
-            //  - Scenario 模式：关闭 Context/Page + 重置所有配置
-            //  - Feature 模式：resetCustomContextOptionsForFeatureMode() + cleanupPageState()，保留 Context/Page
-            // Feature 模式不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
-            // 会导致下一个 scenario 的 getContext() 误触发 Context 重建，破坏 Feature 模式语义
-            if ("scenario".equalsIgnoreCase(restartBrowserForEach)) {
-                logger.info("Cleaning up Playwright resources (scenario-level restart)");
-            } else {
-                logger.debug("Feature mode - resetting custom options and cleaning page state while keeping Context/Page");
-            }
+            // 2026-09-30 收口：不再区分 feature/scenario/credential，统一为 scenario 级重建（实际关闭在桥内）
+            logger.info("Cleaning up Playwright resources (scenario-level restart)");
             //  方案 A（2026-09-17）：先导出本用例 trace chunk（含真实 pass/fail 标注），再清理/关闭 context。
             //  必须在 cleanupForScenario()（会关闭 context）之前；与桥内的兜底调用幂等，先到者生效。
             boolean scenarioFailed = result != null && result.getResult() != null
                     && (result.getResult() == TestResult.FAILURE || result.getResult() == TestResult.ERROR);
             ScenarioTraceRecorder.onScenarioEnd(LogContext.currentScenarioId(), scenarioFailed);
-            //  A5：把本用例真实结果告知收尾链路 —— feature 模式下失败时<b>只丢弃本用例的 Page</b>
-            //  （防"存活但已坏"的 Page 跨用例传染），但<b>保留 Context/登录态</b>：
-            //  同一个 sessionKey 的下个用例既不背脏数据、又能免登录。
+            //  把本用例真实结果告知收尾链路（2026-09-28 修订语义）：feature 模式下
+            //  Context 承载登录态 ⇒ 失败也保留 Context 与 Page（不重建，下个同 sessionKey 用例继续免登录）；
+            //  无登录态绑定 ⇒ 丢弃本用例 Page（防"存活但已坏"跨用例传染），Context 保留。
+            //  详见仓库根 FIX_PLAN.md §1.1（I-1）与 §2.0（时效声明）。
             PlaywrightManager.cleanupForScenario(scenarioFailed);
 
             //  采集管道清理（G4 修复）：只停本线程各 context 的采集，不再全局 stopCapture()，
@@ -1269,10 +1251,11 @@ public class PlaywrightListener implements StepListener {
             cleanupRouteRegistryForCurrentThread();
 
             //  修复：补齐 Playwright 资源清理（与 testFinished(TestOutcome) 保持一致）
-            // 统一调用 cleanupForScenario()：内部已按 restartStrategy 分支处理
-            // Feature 模式不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
+            // 统一调用 cleanupForScenario()：内部统一为 scenario-scoped 销毁（每 case 重建并销毁 Context）
+            // 不能只调 cleanupPageState()，否则 customContextOptionsFlag 泄漏
             try {
-                //  A5：同上（Cucumber 实际走本重载）—— 失败时只丢 Page、保留 Context/登录态
+                //  2026-09-30 政策：无论是否承载登录态都销毁 Context 与 Page（不复用活 Context）；
+                //  登录复用以 storageState 快照注入新建 Context，由 SessionManager.restoreSession 完成。
                 PlaywrightManager.cleanupForScenario(scenarioFailedForCleanup);
                 //  采集管道清理：确保 scenario 结束时采集引擎释放（route 未启用时跳过）
                 withRouteLifecycle(RouteLifecycle::stopCapture);

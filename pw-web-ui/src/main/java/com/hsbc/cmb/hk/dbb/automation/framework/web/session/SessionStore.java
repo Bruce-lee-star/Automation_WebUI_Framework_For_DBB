@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
+import com.google.common.cache.Cache;
 import com.google.common.cache.LoadingCache;
 import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.gson.JsonArray;
@@ -16,7 +17,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyGate;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent.ConcurrencyPartitionKey;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightRuntime;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.Page;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,15 +46,19 @@ import java.util.concurrent.atomic.AtomicLong;
  * <ol>
  *   <li><b>身份与句柄分离</b>：{@code sessionKey}（业务层传入，<b>不含 browserType</b>）只标识"逻辑会话"；
  *       其"是否有效/可复用"由有效期判定，与浏览器活对象（Page/Context）无关。</li>
- *   <li><b>有效期判定三层信号</b>（本内核相对旧实现的核心改进）：
- *       <ol type="a">
- *         <li><b>① cookie 过期时间（权威）</b>：从 storageState 的 session cookie 的 {@code expires}
- *             解析出真实服务端 TTL，过期即无效；</li>
- *         <li><b>② 本地文件最大年龄</b>：仅作兜底（cookie 无 expires / 只用 sessionStorage 时生效）；</li>
- *         <li><b>③ 服务端探针</b>：可选（{@code PROBE_ON_REUSE}），用于兜服务端提前失效（管理员踢人）。
- *             默认只在①缺失或临近过期时触发，避免每次复用都做网络往返。</li>
- *       </ol>
- *       绝不可只信本地文件时间戳（旧实现即此缺陷）。
+ *   <li><b>有效期判定（2026-09-29 收敛为唯一判据）</b>：只看 {@code lastAccessTime} 与配置
+ *       {@code playwright.no.login.session.timeout.minutes}（默认 5 分钟）—— 超过即过期、
+ *       删会话文件、下次完整登录。
+ *       <ul>
+ *         <li>{@code lastAccessTime} 由 {@link #saveSession}（完整登录成功后）写入，
+ *             <b>复用路径不再刷新</b> ⇒ 该阈值是会话的<b>绝对最大持续时间</b>，不会被复用无限延长；</li>
+ *         <li><b>不再解析 storageState 的 {@code cookies[].expires}</b>：Playwright 写的是 Unix 秒数字
+ *             （session cookie 为 {@code -1}），DBB 实测 49 个 cookie 中 34 个无 TTL，带 TTL 的
+ *             （eID/currentLocale 等）约 25 天且与 SSO 服务端空闲超时无关。旧实现取"最长 cookie TTL"
+ *             当主判据 ⇒ 会话在 25 天内永不判过期、配置阈值形同失效；该解析已<b>整体删除，勿再引入</b>；</li>
+ *         <li><b>服务端探针</b>：{@code PROBE_ON_REUSE} <b>目前只有设计钩子、未实现</b>
+ *             （见方法内注释），不要把它计入可用信号。</li>
+ *       </ul>
  *   </li>
  *   <li><b>两层缓存</b>：L1 进程内 {@code ConcurrentHashMap}（同运行最快复用）；L2 磁盘 storageState(.json)
  *       + meta(.meta)。L2 写用"临时文件 + 原子移动"，永不出现半截文件。</li>
@@ -59,7 +66,14 @@ import java.util.concurrent.atomic.AtomicLong;
  *       以 {@link LoginGuard}（CountDownLatch + owner 线程 + 被取代标记）实现，leader 在<b>锁外</b>
  *       执行登录，follower 仅 {@code await}（不持监视器），故不会把"登录慢"变成"全局阻塞"。
  *       超时 + 宽限后仍无可用会话才夺取，并显式标记原 leader 已被取代（可观测双重登录风险）。</li>
- *   <li><b>feature / scenario 模式只影响句柄保留策略</b>：复用决策（身份+有效期）两种模式共用同一逻辑。</li>
+ *   <li><b>重启模式决定"是否复用会话"</b>（2026-09-28 明确，见 {@code logScenarioModeNoReuse}）：
+ *       <ul>
+ *         <li>{@code feature}：同一 feature 内共享会话 —— L1 命中（Context 存活 + 绑定一致）或 L2 文件恢复
+ *             （{@code applyStorageStatePath} 会把 cookies + localStorage 一起注入）；</li>
+ *         <li>{@code scenario}：<b>零复用</b> —— 每个用例都在全新 Context 内完整登录，本地会话文件
+ *             <b>只写不读</b>（默认策略即 scenario；要共享会话必须显式配 {@code feature}）。</li>
+ *       </ul>
+ *       同一模式内，复用决策（身份 + 有效期）仍共用同一逻辑。</li>
  * </ol>
  *
  * <p>{@link SessionManager} 退化为兼容门面，全部方法委托本类，<b>签名零变更</b>以保证 84+ 调用点与
@@ -84,7 +98,7 @@ final class SessionStore {
                 .toAbsolutePath().normalize().toString();
     }
 
-    /** 本地最大年龄兜底（分钟）；cookie 无 expires 时生效。 */
+    /** 会话最大持续时间（分钟）；自 {@code lastAccessTime} 起算，超过即过期（见 {@link #isSessionExpired}）。 */
     private static final long SESSION_TIMEOUT_MINUTES =
             FrameworkConfigManager.getInt(WebFrameworkConfig.PLAYWRIGHT_NO_LOGIN_SESSION_TIMEOUT);
 
@@ -115,7 +129,7 @@ final class SessionStore {
     private static final ThreadLocal<String> MY_LOGIN_GUARD_KEY = new ThreadLocal<>();
 
     // ===================== 内存缓存（Guava 并发缓存） =====================
-    private static final SessionMeta ABSENT_META = new SessionMeta(null, 0L, false, -1L);
+    private static final SessionMeta ABSENT_META = new SessionMeta(null, 0L, false);
 
     private static final LoadingCache<String, SessionMeta> META_CACHE = CacheBuilder.newBuilder()
             .concurrencyLevel(16)
@@ -128,27 +142,29 @@ final class SessionStore {
                 }
             });
 
-    private static final LoadingCache<String, String> STORAGE_CONTENT_CACHE = CacheBuilder.newBuilder()
+    /**
+     * 内存缓存（L1）：storageState 快照内容，键为 sessionKey，跨用例存活。
+     * 并发优先读、每 case 从缓存拿；本地文件仅作<b>冷启动</b>来源（见 {@link #getStorageStateContent}）。
+     *
+     * <p>不设 maximumSize/过期：条目只经显式 {@code invalidate} 离开，配合 {@link #INVALIDATED_KEYS}
+     * 区分「冷启动（从未加载 → 可回退文件）」与「运行中途失效（已显式失效 → 不回退文件）」。</p>
+     */
+    private static final Cache<String, String> STORAGE_CONTENT_CACHE = CacheBuilder.newBuilder()
             .concurrencyLevel(16)
-            .maximumSize(1000)
-            .build(new CacheLoader<String, String>() {
-                @Override
-                public String load(String sessionKey) throws Exception {
-                    String content = new String(Files.readAllBytes(getSessionPath(sessionKey)), StandardCharsets.UTF_8);
-                    if (!isValidStorageStateJson(content)) {
-                        throw new IllegalArgumentException(
-                                "storageState content for " + sessionKey + " is not a valid JSON document"
-                                        + " (corrupted/truncated file)");
-                    }
-                    return content;
-                }
-            });
+            .build();
 
-    // ===================== Feature 级会话缓存 =====================
-    private static final ConcurrentHashMap<String, FeatureSession> FEATURE_SESSION_BY_KEY =
-            new ConcurrentHashMap<>();
-    private static final ThreadLocal<String> CURRENT_FEATURE_KEY = new ThreadLocal<>();
-    private static final ThreadLocal<String> CURRENT_FEATURE_ID = ThreadLocal.withInitial(() -> "default");
+    /**
+     * 运行中途已显式失效的 sessionKey 集合。进入后 {@link #getStorageStateContent} 直接返回
+     * {@code null} 且<b>不再回退本地文件</b>——证明该会话在本轮运行中已失效（应重新登录），
+     * 与「JVM 冷启动、该 key 从未加载过、允许从文件加载」严格区分。
+     */
+    private static final Set<String> INVALIDATED_KEYS = ConcurrentHashMap.newKeySet();
+
+    // ===================== 当前线程会话 key（homeUrl 走 meta 来源） =====================
+    // 2026-09-30 收口：不再区分 feature / scenario 模式，移除原 in-memory FEATURE_SESSION_BY_KEY 缓存。
+    // 仅保留本线程「当前承载登录态的 sessionKey」线程局部（saveSession / reusePersistedSession 成功时登记），
+    // 供 getHomeUrl() 从 meta 文件取权威 homeUrl；清理随 scenario/feature 边界进行。
+    private static final ThreadLocal<String> CURRENT_SESSION_KEY = new ThreadLocal<>();
 
     // ===================== 同一 sessionKey 并发互斥 =====================
     private static final ThreadLocal<ConcurrencyPartitionKey> SESSION_GATE = new ThreadLocal<>();
@@ -203,116 +219,47 @@ final class SessionStore {
      * 会话元数据快照（不可变值对象）。
      * <ul>
      *   <li>{@code homeUrl} —— 登录后首页；</li>
-     *   <li>{@code lastAccessTime} —— 末次访问（本地年龄兜底判据）；</li>
-     *   <li>{@code sessionFileExists} —— storageState 文件存在性；</li>
-     *   <li>{@code cookieExpiryEpoch} —— session cookie 的过期时间戳（毫秒）；
-     *       {@code -1} 表示无 expires（退化本地年龄）。</li>
+     *   <li>{@code lastAccessTime} —— 会话保存时刻（{@link #saveSession} 写入，复用不刷新），
+     *       是有效期判定的<b>唯一</b>时间基准；</li>
+     *   <li>{@code sessionFileExists} —— storageState 文件存在性。</li>
      * </ul>
      */
     private static final class SessionMeta {
         final String homeUrl;
         final long lastAccessTime;
         final boolean sessionFileExists;
-        final long cookieExpiryEpoch;
 
-        SessionMeta(String homeUrl, long lastAccessTime, boolean sessionFileExists, long cookieExpiryEpoch) {
+        SessionMeta(String homeUrl, long lastAccessTime, boolean sessionFileExists) {
             this.homeUrl = homeUrl;
             this.lastAccessTime = lastAccessTime;
             this.sessionFileExists = sessionFileExists;
-            this.cookieExpiryEpoch = cookieExpiryEpoch;
         }
     }
 
-    // ===================== 有效期判定（核心改进点） =====================
+    // ===================== 有效期判定 =====================
     /**
-     * 判断会话是否过期。
-     * <p><b>主信号 = cookie 过期时间</b>：若 storageState 含带 {@code expires} 的 session cookie，
-     * 以该时间戳为准（服务端真实 TTL）；过期即无效。
-     * <b>兜底 = 本地文件年龄</b>：cookie 无 expires 时，以 {@code lastAccessTime} 距现在是否超
-     * {@code SESSION_TIMEOUT_MINUTES} 判定。</p>
+     * 判断会话是否过期 —— <b>唯一判据</b>：{@link SessionMeta#lastAccessTime} 距现在是否超过配置的
+     * 最大持续时间（{@code playwright.no.login.session.timeout.minutes}，默认 5 分钟）。
+     *
+     * <p>{@code lastAccessTime} 只在 {@link #saveSession} 写入、复用不刷新，故该阈值是会话的
+     * <b>绝对最大持续时间</b>；不再参考 storageState 的 {@code cookies[].expires}（原因见类注释）。</p>
      */
     private static boolean isSessionExpired(SessionMeta meta) {
-        if (meta.cookieExpiryEpoch > 0) {
-            return System.currentTimeMillis() > meta.cookieExpiryEpoch;
-        }
-        long elapsedMinutes = (System.currentTimeMillis() - meta.lastAccessTime) / (60_000L);
-        return elapsedMinutes > SESSION_TIMEOUT_MINUTES;
+        return isSessionExpired(meta.lastAccessTime, System.currentTimeMillis());
     }
 
     /**
-     * 从 storageState JSON 解析 session cookie 的最大过期时间戳（毫秒）。
-     * 取所有 cookie 中 {@code expires} 最大者（通常就是会话主 cookie，如 JSESSIONID / OAuth）。
-     * 无 {@code expires} 或解析失败返回 {@code -1}（退化本地年龄判定）。
+     * 纯函数版过期判定：{@code now - lastAccessTime >} 配置时长；{@code lastAccessTime <= 0}
+     * （meta 缺失或损坏）一律判过期，走"完整重登"这条 fail-safe 路径。
+     *
+     * <p>package-private 供单测直接注入 {@code now}（{@code SessionStoreSessionExpiryTest}），
+     * 免去为边界断言而 sleep。</p>
      */
-    private static long parseCookieExpiryEpoch(String storageStateJson) {
-        if (storageStateJson == null || storageStateJson.isBlank()) {
-            return -1L;
+    static boolean isSessionExpired(long lastAccessTime, long now) {
+        if (lastAccessTime <= 0L) {
+            return true;
         }
-        try {
-            JsonElement root = JsonParser.parseString(storageStateJson);
-            if (!root.isJsonObject()) {
-                return -1L;
-            }
-            JsonElement cookiesEl = root.getAsJsonObject().get("cookies");
-            if (cookiesEl == null || !cookiesEl.isJsonArray()) {
-                return -1L;
-            }
-            long maxExpiry = -1L;
-            for (JsonElement e : (JsonArray) cookiesEl) {
-                if (!e.isJsonObject()) {
-                    continue;
-                }
-                JsonObject c = e.getAsJsonObject();
-                JsonElement expiresEl = c.get("expires");
-                if (expiresEl == null || !expiresEl.isJsonPrimitive()) {
-                    continue;
-                }
-                String expires = expiresEl.getAsString();
-                if (expires == null || expires.isEmpty()) {
-                    continue;
-                }
-                long epoch = parseHttpDateToEpoch(expires);
-                if (epoch > maxExpiry) {
-                    maxExpiry = epoch;
-                }
-            }
-            return maxExpiry;
-        } catch (JsonSyntaxException | UnsupportedOperationException | IllegalStateException ex) {
-            return -1L;
-        }
-    }
-
-    /** 轻量 HTTP-date → epoch 解析（支持 RFC1123 与 RFC1036/asctime 常见形态；失败返回 -1）。 */
-    private static long parseHttpDateToEpoch(String httpDate) {
-        if (httpDate == null || httpDate.isEmpty()) {
-            return -1L;
-        }
-        // 优先交给 java.time 的兼容解析；失败再降级 -1
-        try {
-            // java.net.HttpCookie 自带 RFC1123/1036/asctime 解析
-            java.net.HttpCookie hc = java.net.HttpCookie.parse(
-                    "dummy=" + "x; Expires=" + httpDate).isEmpty()
-                    ? null : java.net.HttpCookie.parse("dummy=x; Expires=" + httpDate).get(0);
-            if (hc != null) {
-                long maxAge = hc.getMaxAge();
-                if (maxAge >= 0) {
-                    return System.currentTimeMillis() + maxAge * 1000L;
-                }
-            }
-        } catch (Exception ignored) {
-            LOGGER.debug("cookie maxAge parse failed, fallback to timestamp heuristic", ignored);
-        }
-        // 退路：尝试直接当毫秒/秒时间戳
-        try {
-            String trimmed = httpDate.trim();
-            if (trimmed.matches("\\d{10,13}")) {
-                long v = Long.parseLong(trimmed);
-                return v < 1_000_000_000_000L ? v * 1000L : v;
-            }
-        } catch (NumberFormatException ignored) {
-            LOGGER.debug("expires value not numeric, fallback to -1L", ignored);
-        }
-        return -1L;
+        return now - lastAccessTime > TimeUnit.MINUTES.toMillis(SESSION_TIMEOUT_MINUTES);
     }
 
     // ===================== 内存缓存访问 =====================
@@ -329,6 +276,7 @@ final class SessionStore {
     }
 
     static void purgeSessionFiles(String sessionKey) {
+        INVALIDATED_KEYS.add(sessionKey);
         try {
             Files.deleteIfExists(getSessionPath(sessionKey));
         } catch (Exception e) {
@@ -377,44 +325,50 @@ final class SessionStore {
                 lastAccessTime = 0L;
             }
         }
-        // cookie 过期时间：优先从磁盘 meta 读取（saveMeta 写入），否则从 storageState 内容解析
-        long cookieExpiry = -1L;
-        String cookieExpiryStr = props.getProperty("cookieExpiry");
-        if (cookieExpiryStr != null && !cookieExpiryStr.isEmpty()) {
-            try {
-                cookieExpiry = Long.parseLong(cookieExpiryStr);
-            } catch (NumberFormatException nfe) {
-                cookieExpiry = -1L;
-            }
-        }
-        if (cookieExpiry < 0) {
-            try {
-                String content = STORAGE_CONTENT_CACHE.get(sessionKey);
-                cookieExpiry = parseCookieExpiryEpoch(content);
-            } catch (Exception ignored) {
-                cookieExpiry = -1L;
-            }
-        }
-        return new SessionMeta(homeUrl, lastAccessTime, sessionFileExists, cookieExpiry);
+        // 历史 meta 里可能残留旧实现的 cookieExpiry / generation 行：不再读取，由 saveMeta 下次写入时清除
+        return new SessionMeta(homeUrl, lastAccessTime, sessionFileExists);
     }
 
+    /**
+     * 读取某 sessionKey 的 storageState 快照内容（内存缓存优先；冷启动回退本地文件）。
+     *
+     * <p><b>两层来源与「冷启动 / 运行中途失效」区分</b>：
+     * <ul>
+     *   <li>内存缓存 {@link #STORAGE_CONTENT_CACHE}：跨用例存活，并发优先读、每 case 从缓存拿；</li>
+     *   <li>本地文件 {@code <sessionDir>/<sessionKey>.json}：仅<b>冷启动</b>（key 从未被加载过、
+     *       且不在 {@link #INVALIDATED_KEYS}）时作为唯一来源加载并回填缓存；</li>
+     *   <li>{@link #INVALIDATED_KEYS}：标记"运行中途已显式失效"的 key，进入后<b>不再回退文件</b>，
+     *       证明该会话本轮已失效（应重新登录），与冷启动严格区分。</li>
+     * </ul>
+     */
     private static String getStorageStateContent(String sessionKey) {
+        if (INVALIDATED_KEYS.contains(sessionKey)) {
+            return null;  // 运行中途已明确失效：不回退文件
+        }
+        String cached = STORAGE_CONTENT_CACHE.getIfPresent(sessionKey);
+        if (cached != null) {
+            return cached;  // 命中 L1 缓存（每 case 从缓存拿）
+        }
+        // 冷启动：本地文件是唯一来源，校验后加载并回填缓存
         SessionMeta meta = loadSessionMeta(sessionKey);
         if (meta == null || !meta.sessionFileExists || isSessionExpired(meta)) {
-            STORAGE_CONTENT_CACHE.invalidate(sessionKey);
+            INVALIDATED_KEYS.add(sessionKey);
             return null;
         }
         try {
-            return STORAGE_CONTENT_CACHE.get(sessionKey);
-        } catch (ExecutionException | UncheckedExecutionException e) {
-            if (e.getCause() instanceof IllegalArgumentException) {
-                LOGGER.error("[SessionStore] Corrupted storageState content for {} -> purging session files "
-                        + "so next run re-logs in (cause: {})", sessionKey, e.getCause().getMessage());
-                purgeSessionFiles(sessionKey);
-                return null;
+            String content = new String(Files.readAllBytes(getSessionPath(sessionKey)), StandardCharsets.UTF_8);
+            if (!isValidStorageStateJson(content)) {
+                throw new IllegalArgumentException(
+                        "storageState content for " + sessionKey + " is not a valid JSON document"
+                                + " (corrupted/truncated file)");
             }
-            LOGGER.warn("[SessionStore] Failed to load storageState content for {} -> treating as no cache entry",
-                    sessionKey, e);
+            STORAGE_CONTENT_CACHE.put(sessionKey, content);
+            return content;
+        } catch (Exception e) {
+            LOGGER.error("[SessionStore] Corrupted/unreadable storageState for {} -> purging session files "
+                    + "so next run re-logs in (cause: {})", sessionKey, e.getMessage());
+            INVALIDATED_KEYS.add(sessionKey);
+            purgeSessionFiles(sessionKey);
             return null;
         }
     }
@@ -438,73 +392,12 @@ final class SessionStore {
         return false;
     }
 
-    // ===================== Feature 级会话 =====================
-    private static String featureCacheKey(String sessionKey) {
-        return CURRENT_FEATURE_ID.get() + "::" + (sessionKey == null ? "" : sessionKey);
-    }
-
-    static void setCurrentFeatureId(String featureId) {
-        CURRENT_FEATURE_ID.set((featureId == null || featureId.trim().isEmpty()) ? "default" : featureId);
-    }
-
-    private static final class FeatureSession {
-        final String sessionKey;
-        final String homeUrl;
-
-        FeatureSession(String sessionKey, String homeUrl) {
-            this.sessionKey = sessionKey;
-            this.homeUrl = homeUrl;
-        }
-    }
-
-    static boolean isAnyFeatureSessionRestored() {
-        return !FEATURE_SESSION_BY_KEY.isEmpty();
-    }
-
-    static String currentFeatureSessionKey() {
-        return CURRENT_FEATURE_KEY.get();
-    }
-
-    static void markFeatureSessionRestored(String sessionKey, String homeUrl) {
-        FEATURE_SESSION_BY_KEY.put(featureCacheKey(sessionKey), new FeatureSession(sessionKey, homeUrl));
-        CURRENT_FEATURE_KEY.set(sessionKey);
-        PlaywrightManager.bindCurrentContextSessionKey(sessionKey);
-        VerboseLogging.logInfoIfVerbose(LOGGER,
-                "Feature-level session marked as restored: {} (homeUrl: {})", sessionKey, homeUrl);
-    }
-
-    static boolean isFeatureSessionRestored(String sessionKey) {
-        FeatureSession session = FEATURE_SESSION_BY_KEY.get(featureCacheKey(sessionKey));
-        if (session != null && java.util.Objects.equals(sessionKey, session.sessionKey)) {
-            VerboseLogging.logInfoIfVerbose(LOGGER,
-                    "Feature-level session already restored for: {}, skipping restore", sessionKey);
-            return true;
-        }
-        return false;
-    }
-
-    static String getFeatureHomeUrl() {
-        String key = CURRENT_FEATURE_KEY.get();
-        if (key == null) {
-            return null;
-        }
-        FeatureSession session = FEATURE_SESSION_BY_KEY.get(featureCacheKey(key));
-        return session == null ? null : session.homeUrl;
-    }
-
-    static void resetFeatureSession() {
-        resetFeatureSession(CURRENT_FEATURE_ID.get());
-    }
-
-    static void resetFeatureSession(String featureId) {
-        VerboseLogging.logInfoIfVerbose(LOGGER, "Resetting feature-level session state (feature: {})", featureId);
-        if (featureId != null && !featureId.trim().isEmpty() && !"default".equals(featureId)) {
-            String prefix = featureId + "::";
-            FEATURE_SESSION_BY_KEY.keySet().removeIf(k -> k.startsWith(prefix));
-        } else {
-            FEATURE_SESSION_BY_KEY.clear();
-        }
-        CURRENT_FEATURE_KEY.remove();
+    // ===================== 当前会话 key 清理（scenario/feature 边界） =====================
+    // 2026-09-30 收口：原 in-memory feature 缓存已移除，此处仅清理本线程 CURRENT_SESSION_KEY，
+    // 并兜底回收本线程可能滞留的单飞登录守卫（与 completeLoginGuard 互补，幂等）。
+    static void resetCurrentSession() {
+        VerboseLogging.logInfoIfVerbose(LOGGER, "Resetting current session key at scenario/feature boundary");
+        CURRENT_SESSION_KEY.remove();
         String leaderKey = MY_LOGIN_GUARD_KEY.get();
         if (leaderKey != null) {
             loginGuards.remove(leaderKey);
@@ -513,14 +406,13 @@ final class SessionStore {
 
     static void resetAllForTest() {
         loginGuards.clear();
-        FEATURE_SESSION_BY_KEY.clear();
         META_CACHE.invalidateAll();
         STORAGE_CONTENT_CACHE.invalidateAll();
-        CURRENT_FEATURE_KEY.remove();
+        INVALIDATED_KEYS.clear();
+        CURRENT_SESSION_KEY.remove();
         MY_LOGIN_GUARD.remove();
         MY_LOGIN_GUARD_KEY.remove();
         SESSION_GATE.remove();
-        CURRENT_FEATURE_ID.remove();
     }
 
     // ===================== 并发互斥闸门 =====================
@@ -540,9 +432,10 @@ final class SessionStore {
             return;
         }
         if (!ConcurrencyGate.isEnabled() && GATE_DISABLED_NOTICE.compareAndSet(false, true)) {
-            LOGGER.warn("[SessionStore] 同 sessionKey 并发闸门未启用（{} = auto 且当前为串行执行）——"
-                            + "本进程内不做同会话互斥；跨进程 / 移动端并发登录不受保护，"
-                            + "若出现会话中途失效请先排除有外部并发使用同一身份。",
+            LOGGER.debug("[SessionStore] same-sessionKey concurrency gate is NOT enabled ({} = auto while running "
+                            + "serially) — no in-process mutual exclusion for this session; concurrent logins of the "
+                            + "same identity from other processes / mobile are NOT protected. If a session drops "
+                            + "mid-run, rule out external concurrent use of the same identity first.",
                     WebFrameworkConfig.CONCURRENCY_PARTITION_ENABLED.getKey());
         }
         ConcurrencyPartitionKey key;
@@ -580,12 +473,15 @@ final class SessionStore {
     }
 
     // ===================== homeUrl =====================
+    // 2026-09-30 收口：不再区分 feature / scenario 模式，移除 in-memory feature 缓存快路径；
+    // homeUrl 一律以 meta 文件为权威来源。无参重载取本线程最近一次承载登录态的 sessionKey。
     static String getHomeUrl(String sessionKey) {
-        String homeUrl = getFeatureHomeUrl();
-        if (homeUrl != null && !homeUrl.isEmpty()) {
-            return homeUrl;
-        }
         return loadHomeUrl(sessionKey);
+    }
+
+    static String getHomeUrl() {
+        String key = CURRENT_SESSION_KEY.get();
+        return (key == null) ? null : loadHomeUrl(key);
     }
 
     static String loadHomeUrl(String sessionKey) {
@@ -622,11 +518,13 @@ final class SessionStore {
     // 注：原 tryReuseExisting 已合并入 reusePersistedSession（功能超集：复用同时刷新 meta/cache），
     // 避免两条复用路径分叉。所有复用入口统一走 reusePersistedSession。
 
-    private static boolean reusePersistedSession(String sessionKey, String restartStrategy) {
+    private static boolean reusePersistedSession(String sessionKey) {
+        //  2026-09-30 收口：免登录复用已成为全局默认行为（每 case 重建 Context 但注入已落盘
+        //  storageState），本方法是唯一会调用 PlaywrightManager.applyStorageState*/getContext()
+        //  注入会话的地方。统一模型下任何有可用会话文件的 sessionKey 都走复用，不再做档位分流。
         if (!hasUsableSession(sessionKey)) {
             return false;
         }
-        String persistedHomeUrl = loadHomeUrl(sessionKey);
         if (getStorageStateContent(sessionKey) != null) {
             PlaywrightManager.applyStorageStatePath(getSessionPath(sessionKey));
         } else {
@@ -634,10 +532,8 @@ final class SessionStore {
         }
         PlaywrightManager.getContext();
 
-        META_CACHE.put(sessionKey,
-                new SessionMeta(persistedHomeUrl, System.currentTimeMillis(), true,
-                        parseCookieExpiryEpochSafely(sessionKey)));
-        saveMeta(sessionKey, persistedHomeUrl);
+        // 复用**不刷新** meta：lastAccessTime 只在 saveSession（完整登录成功后）写入；
+        // 若在此刷新，"最大持续时间"会被每次复用无限延长，配置阈值形同失效。
         try {
             String warm = getStorageStateContent(sessionKey);
             if (warm != null) {
@@ -648,20 +544,12 @@ final class SessionStore {
                     "storageState warm back-fill skipped for {} (non-fatal)", sessionKey);
         }
 
-        if ("feature".equalsIgnoreCase(restartStrategy)) {
-            markFeatureSessionRestored(sessionKey, persistedHomeUrl);
-        }
+        //  2026-09-30 收口：免登录复用已成为全局默认行为（每 case 重建 Context 但注入已落盘 storageState）。
+        //  登记本线程当前 sessionKey，供 getHomeUrl() 从 meta 取权威 homeUrl（取代原 feature 缓存，不再按 feature/credential/scenario 分档）。
+        CURRENT_SESSION_KEY.set(sessionKey);
         VerboseLogging.logInfoIfVerbose(LOGGER,
                 "Reusing session persisted by single-flight leader: {}", sessionKey);
         return true;
-    }
-
-    private static long parseCookieExpiryEpochSafely(String sessionKey) {
-        try {
-            return parseCookieExpiryEpoch(STORAGE_CONTENT_CACHE.get(sessionKey));
-        } catch (Exception e) {
-            return -1L;
-        }
     }
 
     // ===================== 单飞协调 =====================
@@ -740,6 +628,19 @@ final class SessionStore {
         MY_LOGIN_GUARD_KEY.remove();
     }
 
+    /**
+     * 复用已落盘 storageState 的会话（<b>两个 restoreSession 重载共用，消除语义分叉</b>）。
+     *
+     * <p>命中条件：存在可用会话文件（{@code hasUsableSession}）且其快照内容可读。命中后把快照路径注入新建
+     * Context（{@code applyStorageStatePath}），并登记 feature 级会话缓存，供收尾策略与同 sessionKey 复用判定使用。
+     * 任何缺失都返回 {@code false}，由调用方回落文件恢复或重新登录。</p>
+     *
+     * @return true = 可直接复用（Context 注入快照生效）；false = 未命中，调用方应回落文件恢复
+     */
+
+
+
+
     // ===================== restore / save / clear =====================
     static boolean restoreSession(String sessionKey) {
         if (sessionKey == null || sessionKey.trim().isEmpty()) {
@@ -747,35 +648,11 @@ final class SessionStore {
             return false;
         }
         acquireSessionGate(sessionKey);
-        String restartStrategy = PlaywrightManager.config().getRestartStrategy();
-        if ("feature".equalsIgnoreCase(restartStrategy)) {
-            if (isFeatureSessionRestored(sessionKey)) {
-                BrowserContext liveCtx = PlaywrightRuntime.instance().contextRegistry.currentContextForThread();
-                boolean ctxAlive = liveCtx != null && liveCtx.browser() != null && liveCtx.browser().isConnected();
-                if (ctxAlive) {
-                    PlaywrightManager.bindCurrentContextSessionKey(sessionKey);
-                    VerboseLogging.logInfoIfVerbose(LOGGER,
-                            "Feature-level session cache hit: {} (homeUrl: {})", sessionKey, getFeatureHomeUrl());
-                    return true;
-                }
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Feature cache hit but context dead for {} — falling back to file restore", sessionKey);
-            }
-            String boundKey = PlaywrightManager.currentContextSessionKeyForThread();
-            if (PlaywrightRuntime.instance().contextRegistry.hasContext() && boundKey != null && !sessionKey.equals(boundKey)) {
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Feature mode: sessionKey {} differs from the one bound to the current Context ({})"
-                                + " — discarding current Context",
-                        sessionKey, boundKey);
-                PlaywrightRuntime.instance().contextRegistry.discardCurrentContext();
-                PlaywrightManager.customOptions().setStorageStatePath(null);
-                PlaywrightManager.customOptions().setStorageState(null);
-            }
-        } else {
-            VerboseLogging.logDebugIfVerbose(LOGGER, "Scenario mode: skipping feature-level cache for {}", sessionKey);
-        }
+        //  2026-09-30 收口：不再区分 feature/credential/scenario 档，统一为「每 case 重建 Context +
+        //  复用已落盘凭证（免登录）」。feature 模式复用活 Context 的快速路径（tryFeatureCacheHit）已移除。
 
-        if (reusePersistedSession(sessionKey, restartStrategy)) {
+
+        if (reusePersistedSession(sessionKey)) {
             return true;
         }
         VerboseLogging.logWarnIfVerbose(LOGGER, "Session file exists but unusable for: {} — will login", sessionKey);
@@ -783,13 +660,13 @@ final class SessionStore {
         LoginGuard guard = acquireOrAwait(sessionKey);
         if (guard == null) {
             // 本线程是 leader：有可复用态直接成功并完成单飞守卫；否则返回 false（由调用方决定是否登录）
-            if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey, restartStrategy)) {
+            if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey)) {
                 completeLoginGuard(sessionKey, true);
                 return true;
             }
             return false;
         }
-        if (reusePersistedSession(sessionKey, restartStrategy)) {
+        if (reusePersistedSession(sessionKey)) {
             return true;
         }
         loginGuards.remove(sessionKey, guard);
@@ -804,28 +681,11 @@ final class SessionStore {
             return false;
         }
         acquireSessionGate(sessionKey);
-        String restartStrategy = PlaywrightManager.config().getRestartStrategy();
-        if ("feature".equalsIgnoreCase(restartStrategy)) {
-            if (isFeatureSessionRestored(sessionKey)) {
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Feature-level session cache hit: {} (homeUrl: {})", sessionKey, getFeatureHomeUrl());
-                return true;
-            }
-            String boundKey = PlaywrightManager.currentContextSessionKeyForThread();
-            if (PlaywrightRuntime.instance().contextRegistry.hasContext() && boundKey != null && !sessionKey.equals(boundKey)) {
-                VerboseLogging.logInfoIfVerbose(LOGGER,
-                        "Feature mode: sessionKey {} differs from the one bound to the current Context ({})"
-                                + " — discarding current Context",
-                        sessionKey, boundKey);
-                PlaywrightRuntime.instance().contextRegistry.discardCurrentContext();
-                PlaywrightManager.customOptions().setStorageStatePath(null);
-                PlaywrightManager.customOptions().setStorageState(null);
-            }
-        } else {
-            VerboseLogging.logDebugIfVerbose(LOGGER, "Scenario mode: skipping feature-level cache for {}", sessionKey);
-        }
+        //  2026-09-30 收口：不再区分 feature/credential/scenario 档，统一为「每 case 重建 Context +
+        //  复用已落盘凭证（免登录）」。feature 模式复用活 Context 的快速路径（tryFeatureCacheHit）已移除。
 
-        if (reusePersistedSession(sessionKey, restartStrategy)) {
+
+        if (reusePersistedSession(sessionKey)) {
             return true;
         }
         VerboseLogging.logInfoIfVerbose(LOGGER, "No valid session for: {}, waiting for login", sessionKey);
@@ -833,21 +693,21 @@ final class SessionStore {
         LoginGuard guard = acquireOrAwait(sessionKey);
         if (guard == null) {
             // 本线程是 leader：有可复用态直接成功并完成单飞守卫；否则执行 leaderAction 登录
-            if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey, restartStrategy)) {
+            if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey)) {
                 completeLoginGuard(sessionKey, true);
                 return true;
             }
             wrapLeaderAction(sessionKey, leaderAction).run();
             return false;
         }
-        if (reusePersistedSession(sessionKey, restartStrategy)) {
+        if (reusePersistedSession(sessionKey)) {
             return true;
         }
         loginGuards.remove(sessionKey, guard);
         VerboseLogging.logWarnIfVerbose(LOGGER,
                 "Single-flight leader did not produce a usable session for {} — this thread will login", sessionKey);
         // leader 已结束但未产出可用态：本线程再尝试复用一次（完成守卫），否则执行登录
-        if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey, restartStrategy)) {
+        if (hasUsableSession(sessionKey) && reusePersistedSession(sessionKey)) {
             completeLoginGuard(sessionKey, true);
             return true;
         }
@@ -864,6 +724,48 @@ final class SessionStore {
                 throw ex;
             }
         };
+    }
+
+    /**
+     * 描述 storageState 的组成（cookies / origins / localStorage 条目数）。
+     *
+     * <p><b>用途</b>：为"被测应用的会话状态到底存在哪"提供<b>可判定的证据</b>，尤其用于判断是否需要打开
+     * {@code playwright.no.login.session.include.indexed.db}（默认 false）。该键文档警告：若 SPA 把
+     * 登录态放在 IndexedDB 而快照未包含，恢复出的会话会缺一半 ⇒ 随机 401 / 回登录页。</p>
+     *
+     * <p>实测（DBB，2026-09-28）：{@code cookies=49, origins=1, localStorageEntries=21}，且键名均为
+     * 前端会话/展示状态（{@code hsbc.session.active.lastTime}、{@code TT_DBB_KEEPALIVE}、
+     * {@code lastKnownProfileValue} 等）⇒ 其前端会话态主要在 <b>localStorage</b>，
+     * 因此（a）localStorage 必须随会话保留、（b）IndexedDB 是否为必需项可用本日志在下一次真实运行时确认。</p>
+     */
+    private static String describeStorageState(String storageStateJson) {
+        if (storageStateJson == null || storageStateJson.isBlank()) {
+            return "empty";
+        }
+        try {
+            JsonObject root = JsonParser.parseString(storageStateJson).getAsJsonObject();
+            int cookies = root.has("cookies") && root.get("cookies").isJsonArray()
+                    ? root.getAsJsonArray("cookies").size() : 0;
+            int origins = 0;
+            int localStorageEntries = 0;
+            if (root.has("origins") && root.get("origins").isJsonArray()) {
+                JsonArray originsArr = root.getAsJsonArray("origins");
+                origins = originsArr.size();
+                for (JsonElement origin : originsArr) {
+                    if (!origin.isJsonObject()) {
+                        continue;
+                    }
+                    JsonObject originObj = origin.getAsJsonObject();
+                    if (originObj.has("localStorage") && originObj.get("localStorage").isJsonArray()) {
+                        localStorageEntries += originObj.getAsJsonArray("localStorage").size();
+                    }
+                }
+            }
+            return "cookies=" + cookies + ", origins=" + origins
+                    + ", localStorageEntries=" + localStorageEntries;
+        } catch (RuntimeException ex) {
+            return "unparsable (" + ex.getClass().getSimpleName() + ")";
+        }
     }
 
     static void saveSession(String sessionKey, String homeUrl) {
@@ -883,16 +785,24 @@ final class SessionStore {
             }
             String storageStateJson = context.storageState(storageOptions);
             writeStorageStateAtomically(sessionKey, storageStateJson);
+            INVALIDATED_KEYS.remove(sessionKey);
             STORAGE_CONTENT_CACHE.put(sessionKey, storageStateJson);
-
-            saveMeta(sessionKey, homeUrl, parseCookieExpiryEpoch(storageStateJson));
-            META_CACHE.put(sessionKey, new SessionMeta(homeUrl, System.currentTimeMillis(), true,
-                    parseCookieExpiryEpoch(storageStateJson)));
-
-            String restartStrategy = PlaywrightManager.config().getRestartStrategy();
-            if ("feature".equalsIgnoreCase(restartStrategy)) {
-                markFeatureSessionRestored(sessionKey, homeUrl);
+            if (LOGGER.isInfoEnabled()) {
+                LOGGER.info("[Session] storageState captured for {}: {} ({} bytes, includeIndexedDb={})",
+                        sessionKey, describeStorageState(storageStateJson), storageStateJson.length(),
+                        SESSION_INCLUDE_INDEXED_DB);
             }
+
+            long savedAt = System.currentTimeMillis();
+            //  T8-6 代际：完整登录成功才自增（复用不递增），使"凭证被替换过几次"可观测。
+            saveMeta(sessionKey, homeUrl, savedAt);
+            META_CACHE.put(sessionKey, new SessionMeta(homeUrl, savedAt, true));
+            VerboseLogging.logInfoIfVerbose(LOGGER,
+                    "[Session] session saved for {} at {}", sessionKey, savedAt);
+
+            //  2026-09-30 收口：完整登录成功后登记本线程当前 sessionKey，
+            //  与复用路径（reusePersistedSession）一致，homeUrl 统一走 meta 来源。
+            CURRENT_SESSION_KEY.set(sessionKey);
             VerboseLogging.logInfoIfVerbose(LOGGER, "Session saved successfully: {} -> {}", sessionKey, sessionPath);
             completeLoginGuard(sessionKey, true);
         } catch (Exception e) {
@@ -906,6 +816,7 @@ final class SessionStore {
         try {
             completeLoginGuard(sessionKey, false);
             META_CACHE.invalidate(sessionKey);
+            INVALIDATED_KEYS.add(sessionKey);
             STORAGE_CONTENT_CACHE.invalidate(sessionKey);
 
             Path sessionPath = getSessionPath(sessionKey);
@@ -994,11 +905,12 @@ final class SessionStore {
         }
     }
 
-    private static void saveMeta(String sessionKey, String homeUrl) {
-        saveMeta(sessionKey, homeUrl, -1L);
-    }
-
-    private static void saveMeta(String sessionKey, String homeUrl, long cookieExpiry) {
+    /**
+     * 写入 meta（唯一调用方：{@link #saveSession}）。
+     *
+     * @param lastAccessTime 会话保存时刻；有效期判定的唯一时间基准，<b>只在完整登录成功后写入</b>
+     */
+    private static void saveMeta(String sessionKey, String homeUrl, long lastAccessTime) {
         try {
             Path metaPath = getMetaPath(sessionKey);
             Properties props = new Properties();
@@ -1010,10 +922,8 @@ final class SessionStore {
             if (homeUrl != null && !homeUrl.isEmpty()) {
                 props.setProperty("homeUrl", homeUrl);
             }
-            props.setProperty("lastAccessTime", String.valueOf(System.currentTimeMillis()));
-            if (cookieExpiry > 0) {
-                props.setProperty("cookieExpiry", String.valueOf(cookieExpiry));
-            }
+            props.setProperty("lastAccessTime", String.valueOf(lastAccessTime));
+            props.remove("cookieExpiry");
             try (var writer = Files.newBufferedWriter(metaPath, StandardCharsets.UTF_8)) {
                 props.store(writer, "Session Meta Data");
             }

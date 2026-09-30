@@ -10,28 +10,33 @@ public interface EngineControl {
     /** 停止指定上下文的路由引擎。等价于 {@code RouteEngine.stopContextEngine(ctx)}。 */
     void stopContextEngine(Object ctx);
 
+    /**
+     * 停止指定上下文的路由引擎，并告知「该 Context <b>正被主动关闭</b>」（T8-5）。
+     *
+     * <p><b>为什么需要这个意图信号</b>：路由规则（{@code context.route()} 注册）的生命周期本可终结于两种途径 ——
+     * ① 逐条 {@code unroute}（Context 仍需存活，如 feature 档跨用例复用）；
+     * ② 随 {@code context.close()} 由驱动<b>原生释放</b>。
+     * 二者互斥：既然 Context 马上要关，逐条 unroute 就是纯浪费的<b>同步协议往返</b>
+     * （每条一次 {@code setNetworkInterceptionPatterns}，客户端无超时、实测有 10s 未确证的记录），
+     * 且这些往返正是「收尾未确证 ⇒ 状态分叉 ⇒ 病态 Context 遗传」的来源（FIX_PLAN §4）。
+     *
+     * <p>实现侧收到 {@code contextBeingClosed=true} 后应<b>跳过全部 unroute</b>，只做内存收尾。
+     *
+     * <p>未覆写时退化为 {@link #stopContextEngine(Object)}（保持既有实现与测试替身零改动）。
+     *
+     * @param ctx                目标 Page / BrowserContext
+     * @param contextBeingClosed true = 调用方紧接着就会关闭该 Context（native 释放路由，无需 unroute）
+     */
+    default void stopContextEngine(Object ctx, boolean contextBeingClosed) {
+        stopContextEngine(ctx);
+    }
+
     /** 停止所有上下文的路由引擎。等价于 {@code RouteEngine.stopAllContextEngines()}。 */
     void stopAllContextEngines();
 
     /** 全量关闭路由引擎（JVM 关闭钩子 / 框架退出时调用）。等价于 {@code RouteEngine.shutdown()}。 */
     void shutdownRouteEngine();
 
-    /**
-     * 跨用例收尾栅栏：有界等待指定 context 的<b>在途 unroute 收尾</b>完成
-     * （下一个用例复用同一 Context 之前调用）。等价于 {@code RouteEngine.awaitInFlightUnroute(ctx, timeoutMs)}。
-     *
-     * <p>teardown worker 是 fire-and-forget 守护线程，feature 模式下常在下一个用例开始后才收工；
-     * 该窗口内两个线程并发操作同一个 Playwright {@code Connection}，会触发
-     * {@code Object doesn't exist: response@...}（详见实现侧注释）。故 web 侧在 scenario 初始化时经本方法
-     * 有界等待。无在途收尾时<b>零开销</b>，未实现时视为"无在途收尾"（兼容测试替身）。
-     *
-     * @param ctx       目标 Page / BrowserContext
-     * @param timeoutMs 等待上限（毫秒）
-     * @return true = 无在途收尾或已在超时内完成；false = 超时（调用方继续，但需知晓仍可能与收尾并发）
-     */
-    default boolean awaitTeardownFor(Object ctx, long timeoutMs) {
-        return true;
-    }
 
     /** 对 URL 做敏感信息脱敏（原 RouteUtil.sanitizeUrl）。 */
     String sanitizeUrl(String url);

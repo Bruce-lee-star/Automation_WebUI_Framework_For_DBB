@@ -24,6 +24,11 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.rule.RouteRule;
  * <p>其中 {@link #DISPATCHED_ROUTES} 的写入 + 容量防御已收口为 {@link #markDispatched(BrowserContext)}，
  * 其余 Map 以包级可见字段形式集中托管，{@code RouteEngine} 经 {@code RouteContextState.xxx} 委托访问。
  *
+ * <p><b>unroute 模型（2026-09-30 收口）</b>：每个 case 结束即 {@code context.close()}，原生路由随 Context
+ * 物理销毁一并释放，<b>无需</b>原生 {@code unroute} / 逐句柄 {@code close()} / 跨用例栅栏。
+ * 本类不再持有任何"原生路由句柄记账"或"在途 unroute 收尾登记表"——那些结构是为 feature 模式跨 scenario
+ * 复用 Context 时的竞态防护而设，在"每 case 重建+销毁"模型下已无存在必要，全部移除。
+ *
  * @apiNote framework-internal：框架内部类型，非公开 API。跨子包 public 可见性仅为分层迁移需要，外部不得依赖。
  */
 public final class RouteContextState {
@@ -51,201 +56,9 @@ public final class RouteContextState {
     /** 每 context 的引擎实例（值类型 PerContextEngine 已提取为顶层类，故本 Map 可由本类集中持有）。 */
     public static final Map<BrowserContext, PerContextEngine> CONTEXT_ENGINES = new ConcurrentHashMap<>();
 
-    /**
-     * 原生路由句柄注册表（AutoCloseable）。
-     *
-     * <p>每 (BrowserContext, normalizedPattern) 恰好一个原生路由闭包（page 规则已升级为 context 级单绑定点），
-     * 故句柄按 (context, pattern) 唯一。注册时由 {@code RuleRepository} 捕获 {@code context.route(...)}
-     * 的返回值并登记；case 结束时由 {@code RuleRepository.clearContext} 经有界守护线程逐个 {@code close()}
-     * 确定性注销（替代「清链但闭包仍挂 context」的技巧）。<b>不使用 {@code unrouteAll()} 兜底</b>：
-     * 该收尾任务可能晚于下一个用例执行（feature 模式复用 Context），{@code unrouteAll()} 会摘掉新用例
-     * 刚注册的路由，故改为仅按 pattern 精确 close，并跳过已被新用例接管的 pattern（见 {@code BoundedUnrouteTask}）。
-     *
-     * <p>句柄仅持有引用用于<b>归属记账与确定性关闭</b>；context 关闭路径仅清表释放引用（不 close，
-     * 避免对已销毁对象发起 {@code unroute} 阻塞）。
-     */
-    public static final Map<BrowserContext, Map<String, AutoCloseable>> ROUTE_HANDLES = new ConcurrentHashMap<>();
-
-    /** 登记某 context 某 pattern 的原生路由句柄（注册成功时调用，幂等覆盖）。 */
-    public static void registerRouteHandle(BrowserContext context, String pattern, AutoCloseable handle) {
-        if (context == null || pattern == null || handle == null) {
-            return;
-        }
-        ROUTE_HANDLES.computeIfAbsent(context, k -> new ConcurrentHashMap<>()).put(pattern, handle);
-    }
-
-    /** 移除某 context 某 pattern 的句柄记账（注册回滚 / 精确注销时调用）。 */
-    public static void removeRouteHandle(BrowserContext context, String pattern) {
-        if (context == null || pattern == null) {
-            return;
-        }
-        Map<String, AutoCloseable> m = ROUTE_HANDLES.get(context);
-        if (m != null) {
-            m.remove(pattern);
-            if (m.isEmpty()) {
-                ROUTE_HANDLES.remove(context);
-            }
-        }
-    }
-
-    /**
-     * 取某 context 的全部句柄（只读副本，避免并发修改异常）。
-     * <p>{@code null} context 返回空 Map（不抛异常）。
-     */
-    public static Map<String, AutoCloseable> getRouteHandles(BrowserContext context) {
-        if (context == null) {
-            return java.util.Collections.emptyMap();
-        }
-        Map<String, AutoCloseable> m = ROUTE_HANDLES.get(context);
-        return m == null ? java.util.Collections.emptyMap() : new java.util.HashMap<>(m);
-    }
-
-    /** 仅清表释放引用（context 关闭路径；不 close 句柄）。 */
-    public static void clearRouteHandles(BrowserContext context) {
-        if (context != null) {
-            ROUTE_HANDLES.remove(context);
-        }
-    }
-
-    /**
-     * 该 context 的指定 pattern 当前<b>是否已有登记句柄</b>（O(1)，不复制整表）。
-     *
-     * <p><b>用途（跨用例收尾竞态防护）</b>：上一用例的 teardown worker 可能在下一个用例开始后才执行。
-     * 该 worker 只允许 close「自己 spawn 时登记的句柄」，且必须在<b>每个句柄 close 之前实时复查</b>本方法 ——
-     * 若该 pattern 又出现条目，说明已被更新的用例重新注册，对其 close 会摘掉新路由（详见
-     * {@code RuleRepository.BoundedUnrouteTask}）。
-     *
-     * @param context 目标上下文；{@code null} 返回 false
-     * @param pattern 归一化后的 pattern
-     * @return true 表示该 pattern 当前有登记句柄
-     */
-    public static boolean hasRouteHandle(BrowserContext context, String pattern) {
-        if (context == null || pattern == null) {
-            return false;
-        }
-        Map<String, AutoCloseable> m = ROUTE_HANDLES.get(context);
-        return m != null && m.containsKey(pattern);
-    }
-
     // ═══════════════════════════════════════════════════════════════
-    // 「在途 unroute 收尾」登记表 + 跨用例栅栏（2026-09-26）
+    // 「context 在途异步任务」登记表（2026-09-17 评审新增）
     // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * per-context 在途 unroute 收尾登记表（<b>跨用例栅栏 + 确定性交接</b>）。
-     *
-     * <p><b>为什么需要</b>：teardown worker（{@code RuleRepository.BoundedUnrouteTask}）在守护线程中执行
-     * 「排空在途拦截 + 逐个 close 原生路由句柄」。feature 模式下 Context 跨 scenario 复用，worker 实测常在
-     * <b>下一个用例已经开始之后</b>才收工（用例1 收尾 12:34:58.531 spawn，用例2 12:34:59.24 已注册新规则，
-     * worker 直至 12:35:03.996 才结束；2026-09-26 内网运行亦实测重叠 ~1.65s）。
-     *
-     * <p>窗口内两个线程会同时操作同一个 Playwright {@code Connection}：worker 在 drain 中
-     * <b>派发页面事件</b>（日志实证：{@code [route-unroute-2076083498] PlaywrightContextManager - New page loaded: ...}），
-     * 用例线程同时在导航。驱动侧对象生命周期因此错乱，实测抛
-     * {@code PlaywrightException: Object doesn't exist: response@/worker@...}，
-     * 进而「会话校验导航失败 → 缓存被误删 → 每轮都完整登录」。
-     *
-     * <p><b>2026-09-26 二次设计（为何不止是"有界等待"）</b>：实测 worker 的 drain 预算为 10s，而栅栏只等 2s
-     * ⇒ 栅栏必然超时、我们付了延迟却<b>没拿到串行保证</b>。故改为 <b>先抢占、再短等</b>：
-     * 下一个用例在复用 Context 之前调用 {@link UnrouteTask#requestPreempt()}（置标志 + 中断 worker），
-     * worker 在 drain/每次 close 前检查标志，被中断即刻退出 ⇒ 交接是<b>确定性的</b>（毫秒级），
-     * 而不是"赌超时"。
-     */
-    private static final Map<BrowserContext, UnrouteTask> PENDING_UNROUTE = new ConcurrentHashMap<>();
-
-    /**
-     * 一次「收尾任务」的句柄：完成信号 + 抢占能力 + worker 线程引用。
-     *
-     * <p>线程安全：{@code preemptRequested} 为原子标志；{@code worker} 在 worker 启动后登记
-     * （登记时若已有抢占请求则<b>立即中断</b>，消除"抢占先于登记"的窗口）。
-     */
-    public static final class UnrouteTask {
-        private final java.util.concurrent.CompletableFuture<Void> completion =
-                new java.util.concurrent.CompletableFuture<>();
-        private final java.util.concurrent.atomic.AtomicBoolean preemptRequested =
-                new java.util.concurrent.atomic.AtomicBoolean(false);
-        private volatile Thread worker;
-
-        /** 是否已被下一个用例要求停止（worker 应在 drain 前 / 每次 close 前检查）。 */
-        public boolean isPreemptRequested() {
-            return preemptRequested.get();
-        }
-
-        /** worker 启动后登记自身；若抢占请求已下达则立即自我中断。 */
-        @edu.umd.cs.findbugs.annotations.SuppressFBWarnings(value = "EI_EXPOSE_REP2",
-                justification = "Thread reference used only for interrupt coordination; no external mutable state touched")
-        public void attachWorker(Thread workerThread) {
-            this.worker = workerThread;
-            if (preemptRequested.get()) {
-                workerThread.interrupt();
-            }
-        }
-
-        /** 请求 worker 立即停止触碰 Playwright 连接（幂等；worker 未登记时仅置标志，登记时补中断）。 */
-        public void requestPreempt() {
-            preemptRequested.set(true);
-            Thread target = worker;
-            if (target != null) {
-                target.interrupt();
-            }
-        }
-
-        /** 有界等待本任务真正结束（worker 已退出即返回 true）。 */
-        public boolean await(long timeoutMs) {
-            try {
-                completion.get(Math.max(0L, timeoutMs), java.util.concurrent.TimeUnit.MILLISECONDS);
-                return true;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
-                return false;
-            }
-        }
-
-        java.util.concurrent.CompletableFuture<Void> completion() {
-            return completion;
-        }
-    }
-
-    /**
-     * 登记某 context 的收尾<b>开始</b>（必须在 worker 启动前调用，否则下一个用例会看不到在途收尾）。
-     *
-     * @param context 目标上下文；{@code null} 时返回的任务不进入登记表（仍须由调用方经 {@link #endUnroute} 完成）
-     * @return 收尾任务句柄（含完成信号与抢占能力）
-     */
-    public static UnrouteTask beginUnroute(BrowserContext context) {
-        UnrouteTask task = new UnrouteTask();
-        if (context != null) {
-            PENDING_UNROUTE.put(context, task);
-        }
-        return task;
-    }
-
-    /** 收尾<b>结束</b>（幂等）：注销登记并唤醒等待方。 */
-    public static void endUnroute(BrowserContext context, UnrouteTask task) {
-        if (task == null) {
-            return;
-        }
-        if (context != null) {
-            PENDING_UNROUTE.remove(context, task);
-        }
-        task.completion().complete(null);
-    }
-
-    /** 该 context 当前是否有在途 unroute 收尾（O(1)；栅栏的零开销快速路径）。 */
-    public static boolean hasPendingUnroute(BrowserContext context) {
-        return context != null && PENDING_UNROUTE.containsKey(context);
-    }
-
-    /**
-     * 取该 context 当前的在途收尾任务（无则 {@code null}）。
-     *
-     * <p>供栅栏实现"先抢占、再短等"：拿到任务后调用 {@link UnrouteTask#requestPreempt()}。
-     */
-    public static UnrouteTask unrouteTaskFor(BrowserContext context) {
-        return context == null ? null : PENDING_UNROUTE.get(context);
-    }
 
     /**
      * per-context 在途异步任务登记表（2026-09-17 评审新增）。
@@ -328,13 +141,7 @@ public final class RouteContextState {
         DISPATCHED_ROUTES.remove(context);
         STOPPED_CAPS.remove(context);
         CONTEXT_ENGINES.remove(context);
-        clearRouteHandles(context);
         cancelPendingTasksFor(context);
-        //  context 已关闭：立即唤醒栅栏等待方（其等待对象已不会再有浏览器往返，无需空等满超时）。
-        UnrouteTask pendingUnroute = PENDING_UNROUTE.remove(context);
-        if (pendingUnroute != null) {
-            pendingUnroute.completion().complete(null);
-        }
         //  context 已关闭：其"无响应"标记随之失效（新 Context 是新连接，无需继承历史判定）。
         UNRESPONSIVE_CONTEXTS.remove(context);
     }

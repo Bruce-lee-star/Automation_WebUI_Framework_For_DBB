@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.binding;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.RouteRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -19,35 +20,53 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>持有原生 {@code AutoCloseable} 句柄，{@link #close()} 精确注销，幂等且线程安全。</li>
  * </ul>
  *
- * <p>并发安全：{@code bound} 原子标志保证 {@code route()} 恰好执行一次；
- * 注销句柄写入一次、读取多次（{@code volatile} 语义由 final 字段保证——句柄在构造期写入）。
+ * <p>并发安全：{@code closed} 原子标志保证注销恰好执行一次；句柄在构造期写入（final），读取无需额外同步。
  *
- * <p><b>协议调用有界等待（2026-09-27 实测根因修复，2026-09-28 复盘收口）</b>：{@code nativeHandle.close()}
- * （= Playwright {@code context.unroute}）与 {@code context.route()}（= Playwright
- * {@code context.route → updateInterceptionPatterns}）都是<b>同步协议调用</b>——jstack 实测在 Node
- * 驱动不响应时（{@code ... → updateInterceptionPatterns → sendMessage → PipeTransport.poll}）会无限阻塞：
- * unroute 无响应曾导致 scenario/套件收尾挂死（E2E 卡 11 分钟）；route 注册无响应曾导致首个 scenario
- * 在 step 内永久卡死（E2E 卡 14 分钟，见 test-automation 1.txt）。bind/unroute 现已统一收口到
- * {@link GuardedDriverCall} 原语（daemon 线程执行 + 有界等待）：unroute 用
- * {@link GuardedDriverCall.OnTimeout#WARN_AND_ABANDON}（超时/异常仅 WARN，不阻塞清理链）；route 注册用
- * {@link GuardedDriverCall.OnTimeout#FAIL_FAST}（超时/异常抛异常让 step 快速失败）。残留驱动层 handler 会随
- * context 关闭被 Playwright 自动释放，绝不阻塞调用线程或清理主链。</p>
+ * <p><b>协议调用有界等待（2026-09-28 收口，2026-09-29 探针复核）</b>：{@code context.route()} /
+ * {@code nativeHandle.close()}（= {@code context.unroute}）最终都是 Playwright 客户端的
+ * {@code sendMessage("setNetworkInterceptionPatterns", …, NO_TIMEOUT)}（{@code BrowserContextImpl:745-747}，
+ * <b>客户端自身不设超时</b>，且由调用线程自己泵消息），驱动不响应时会无限阻塞调用线程。
+ * 故 bind/unroute 统一收口到 {@link GuardedDriverCall} 原语（daemon 线程 + 有界等待，固定 30s/10s）。</p>
+ *
+ * <p><b>2026-09-29 探针结论（更正旧表述）</b>：该调用<b>并非</b>长时间挂起 —— 界值之后约 3~5 秒即结束，
+ * 以 {@code Object doesn't exist: worker@/frame@}（或看门狗中断产物 {@code Failed to read message}）抛错。
+ * 根因是客户端 {@code Connection.dispatch} 未按消息隔离异常：一条"引用已释放对象"的事件会把当时正在
+ * 等待回执的调用一起带崩。该缺陷已由框架自建客户端 <b>DBBN-PATCH-01</b> 修复
+ * （见 {@code docs/patches/playwright-java-1.62.0-dbb-patch-01.md}）。因此<b>不再需要对瞬时错误做重试或
+ * 异常嗅探</b>；看门狗保留为"驱动真卡死"的兜底。</p>
+ *
+ * <p><b>注册失败处理（2026-09-29 修订：按规则能力决定，行为类 fail-closed）</b>：
+ * <ol>
+ *   <li><b>行为类能力</b>（{@code MOCK} / {@code MODIFY_REQUEST} / {@code DELAY}）→ {@code FAIL_FAST}：
+ *       注册失败即<b>响亮失败</b>。规则没生效却继续跑，断言口径会被静默改变，不可接受；</li>
+ *   <li><b>观测类能力</b>（{@code MONITOR}）→ {@code WARN_AND_ABANDON}：允许降级
+ *       （返回 {@link #isDegraded()} 的惰性绑定 + ERROR 告警），因其失败不影响用例正确性。</li>
+ * </ol>
+ * 降级绑定持有 {@link #NOOP_HANDLE 空句柄}，故 {@link #close()} 行为与正常路径一致（仍走 SPI 与幂等注销）。
+ * 残留驱动层 handler 会随 context 关闭被 Playwright 自动释放，绝不阻塞调用线程或清理主链。</p>
  */
+
 public final class PatternBinder implements AutoCloseable {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PatternBinder.class);
+
+    /** 降级绑定的空句柄：保证 {@link #close()} 与正常路径同构（仍经 SPI、幂等、无副作用）。 */
+    private static final AutoCloseable NOOP_HANDLE = () -> { };
 
     private final BrowserContext context;
     private final String pattern;
     private final RouteRuntime runtime;
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    private final boolean degraded;
     private final AutoCloseable nativeHandle;
 
-    private PatternBinder(BrowserContext context, String pattern, RouteRuntime runtime, AutoCloseable nativeHandle) {
+    private PatternBinder(BrowserContext context, String pattern, RouteRuntime runtime,
+                          AutoCloseable nativeHandle, boolean degraded) {
         this.context = context;
         this.pattern = pattern;
         this.runtime = runtime;
         this.nativeHandle = nativeHandle;
+        this.degraded = degraded;
     }
 
     /**
@@ -58,21 +77,46 @@ public final class PatternBinder implements AutoCloseable {
      * @param runtime 所属运行时（事件转发目标）
      */
     public static PatternBinder bind(BrowserContext context, ApiSpec spec, RouteRuntime runtime) {
-        // 注册前做前后缀通配归一化（**/profile/list**）：相对端点直接传 Playwright glob 会按完整
-        // URL 精确匹配而永不命中（E2E 实测根因）。spec.pattern() 保持业务层原始端点不变——
-        // 响应侧配对已改为按 ApiSpec 精确匹配（route 通道轮询 existingResponse），
-        // 不再依赖 URL 匹配，故 pattern 的原始值只用于记录/诊断。
+        // Wildcard normalisation of the pattern; spec.pattern() keeps the business-level endpoint
+        // (response pairing matches on ApiSpec, not on the URL).
         String glob = RoutePatterns.normalize(spec.pattern());
-        // context.route() 是同步协议调用（→ updateInterceptionPatterns → 驱动回包），驱动不响应时会
-        // 无限阻塞调用线程（E2E 实测卡 14 分钟，见 test-automation 1.txt）。统一收口到 GuardedDriverCall：
-        // daemon 线程执行 + 有界等待，FAIL_FAST 让 step 快速失败而非死等；残留 daemon 线程在驱动恢复或
-        // context 关闭时结束，驱动层 handler 随 context 关闭释放。
+        long bindBoundMs = GuardedDriverCall.bindBoundMs();
+        // Behaviour-affecting rules (MOCK / MODIFY_REQUEST / DELAY) are FAIL-CLOSED: registering them is
+        // meaningless unless it really took effect, and running the case without them would silently change
+        // its assertion baseline. MONITOR only observes, so it may degrade.
+        // NOTE (2026-09-29): the previous "record the action error to tell a genuine failure apart from a
+        // timeout" trick is gone -- it could not be made reliable (the guard interrupts the abandoned call,
+        // whose interrupt fallout then looked like a genuine error) and it re-introduced exception sniffing.
+        boolean failClosed = spec.capability() != RouteCapability.MONITOR;
         AutoCloseable handle = GuardedDriverCallRegistry.instance().guarded(
-                "bind:" + spec.pattern(), GuardedDriverCall.BIND_BOUND_MS, GuardedDriverCall.OnTimeout.FAIL_FAST,
+                "bind:" + spec.pattern(), bindBoundMs,
+                failClosed ? GuardedDriverCall.OnTimeout.FAIL_FAST
+                        : GuardedDriverCall.OnTimeout.WARN_AND_ABANDON,
                 () -> context.route(glob, route -> onRoute(route, runtime, spec.pattern()),
                         spec.times() == null ? null
                                 : new BrowserContext.RouteOptions().setTimes(spec.times())));
-        return new PatternBinder(context, spec.pattern(), runtime, handle);
+        if (handle != null) {
+            return new PatternBinder(context, spec.pattern(), runtime, handle, false);
+        }
+        if (failClosed) {
+            // A conforming FAIL_FAST guard throws instead of returning null; never degrade silently here.
+            throw new IllegalStateException("[RouteV2] route registration failed for pattern="
+                    + spec.pattern() + " capability=" + spec.capability());
+        }
+        reportDegradedRegistration(spec, bindBoundMs);
+        return new PatternBinder(context, spec.pattern(), runtime, NOOP_HANDLE, true);
+    }
+
+    /** 注册超时降级告警：行为影响面 + 恢复严格语义的方法，缺一不可（避免"静默失效"）。 */
+    private static void reportDegradedRegistration(ApiSpec spec, long bindBoundMs) {
+        LOGGER.error("[RouteV2] route registration DEGRADED for pattern='{}' capability={} — no reply within {}ms; "
+                        + "this rule is INERT for this case (its mock/monitor will NOT apply).",
+                spec.pattern(), spec.capability(), bindBoundMs);
+        if (spec.capability() != RouteCapability.MONITOR) {
+            LOGGER.warn("[RouteV2] DEGRADED rule '{}' is BEHAVIOUR-AFFECTING (capability={}) — the case will run "
+                            + "WITHOUT this mock/modify/delay, so its behaviour may differ from the intended scenario.",
+                    spec.pattern(), spec.capability());
+        }
     }
 
     private static void onRoute(Route route, RouteRuntime runtime, String pattern) {
@@ -84,23 +128,75 @@ public final class PatternBinder implements AutoCloseable {
         return pattern;
     }
 
+    /** 是否因注册超时被降级：驱动层未生效（规则仍在内存中发布，但不参与任何 mock/monitor 行为）。 */
+    public boolean isDegraded() {
+        return degraded;
+    }
+
     /**
-     * 注销绑定。幂等、线程安全；有界等待（{@link GuardedDriverCall#UNROUTE_BOUND_MS}），超时/异常仅 WARN
-     * 放弃，不阻塞清理链（语义由 {@link GuardedDriverCall.OnTimeout#WARN_AND_ABANDON} 保证）。
+     * 注销绑定（不关心结论）。幂等、线程安全；语义与 {@link #closeConfirmed()} 完全一致，
+     * 仅丢弃确证结论。降级绑定持有空句柄，故本方法与正常路径同构。
      */
     @Override
     public void close() {
-        if (closed.compareAndSet(false, true)) {
-            GuardedDriverCallRegistry.instance().guarded("unroute:" + pattern, GuardedDriverCall.UNROUTE_BOUND_MS,
-                    GuardedDriverCall.OnTimeout.WARN_AND_ABANDON, () -> {
-                        nativeHandle.close();
-                        return null;
-                    });
+        closeConfirmed();
+    }
+
+    /**
+     * 注销绑定并返回<b>是否确证</b>（2026-09-28，T2+：撤销必须可判定）。
+     *
+     * <p><b>为什么必须回传结论</b>：{@code unroute} 与 {@code route} 同为客户端的
+     * {@code setNetworkInterceptionPatterns}（{@code NO_TIMEOUT} + 调用线程自己泵消息，
+     * 见 {@code BrowserContextImpl:715-722} / {@code ChannelOwner.runUntil}）。现状用
+     * {@link GuardedDriverCall.OnTimeout#WARN_AND_ABANDON} 只 WARN、不置位 ⇒
+     * 「用例收尾是否真的恢复如初」从未被判定。本方法把结论显式化：收到 ack ⇒ 客户端与驱动一致
+     * （下发是全量快照、单连接 FIFO 有序）；界内无回包/异常 ⇒ <b>状态不可确证</b>，
+     * 调用方须按不变式 I-9 丢弃 Context 重建。</p>
+     *
+     * <p><b>幂等</b>：重复调用返回 {@code true}（已撤销过）。注意<b>不重试</b>：一旦某次撤销未确证，
+     * 本实例不再尝试（{@code closed} 已置位），未确证状态由调用方（{@code RouteRuntimeImpl}）记录并
+     * 升级为 degraded，交由"丢弃重建"兜底。</p>
+     *
+     * @return {@code true}=已确证撤销（含幂等重复调用与降级空句柄）；{@code false}=界内无回包，不可确证
+     */
+    public boolean closeConfirmed() {
+        if (!closed.compareAndSet(false, true)) {
+            return true;
         }
+        Object ack = GuardedDriverCallRegistry.instance().guarded("unroute:" + pattern,
+                GuardedDriverCall.unrouteBoundMs(), GuardedDriverCall.OnTimeout.WARN_AND_ABANDON, () -> {
+                    nativeHandle.close();
+                    return Boolean.TRUE;
+                });
+        return Boolean.TRUE.equals(ack);
+    }
+
+    /**
+     * 重发一次撤销（<b>自愈 / 重同步</b>，2026-09-29）。
+     *
+     * <p><b>为什么重发就能自愈</b>：客户端每次 {@code route()} / {@code unroute()} 下发的都是
+     * <b>本地 Router 的全量快照</b>（{@code BrowserContextImpl.updateInterceptionPatterns()}），
+     * 且单连接 FIFO 有序 ⇒ 只要<b>任意一次</b>下发拿到 ack，驱动侧拦截列表就重新与客户端一致。
+     * 因此"未确证"的撤销只需<b>重发一次</b>即可修复状态分叉，<b>无需重建 Context</b>
+     * （重建会破坏 feature/session 不变式 I-1：同一 sessionKey 不重建）。</p>
+     *
+     * <p>幂等：{@code unroute} 一个已被移除的 pattern 在客户端是本地空操作，但仍会触发全量快照下发
+     * —— 这正是所需的"重同步"；{@code nativeHandle.close()} 亦幂等。</p>
+     *
+     * @return {@code true}=本次重发已确证（状态已重同步）；{@code false}=仍未收到 ack
+     */
+    public boolean retryUnroute() {
+        Object ack = GuardedDriverCallRegistry.instance().guarded("unroute-retry:" + pattern,
+                GuardedDriverCall.unrouteBoundMs(), GuardedDriverCall.OnTimeout.WARN_AND_ABANDON, () -> {
+                    nativeHandle.close();
+                    return Boolean.TRUE;
+                });
+        return Boolean.TRUE.equals(ack);
     }
 
     @Override
     public String toString() {
-        return "PatternBinder{pattern='" + pattern + "', closed=" + closed.get() + '}';
+        return "PatternBinder{pattern='" + pattern + "', closed=" + closed.get()
+                + ", degraded=" + degraded + '}';
     }
 }

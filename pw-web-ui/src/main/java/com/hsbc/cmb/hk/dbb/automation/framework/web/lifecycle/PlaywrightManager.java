@@ -196,32 +196,8 @@ public class PlaywrightManager {
     }
 
     /**
-     * 绑定本线程当前 Context 承载的**登录 sessionKey**（A5，2026-09-26）。
-     *
-     * <p>由 {@code SessionManager} 在「登录成功 / 会话恢复 / 命中持久化 session」时调用。绑定随 Context
-     * 生命周期存活（只在 Context 被关闭/丢弃时清除），故用例失败导致的 session 记账清空<b>不会</b>
-     * 让框架误判"无登录态"而重建 Context —— 这是"同 sessionKey、case 失败也不重建 Context（免登录）"的判据基础。
-     *
-     * @apiNote <b>framework-internal</b>：业务代码不得调用（浏览器会话生命周期由框架托管）。
-     * @param sessionKey 会话标识；{@code null}/空串为 no-op
-     */
-    public static void bindCurrentContextSessionKey(String sessionKey) {
-        PlaywrightRuntime.instance().contextRegistry.bindCurrentContextSessionKey(sessionKey);
-    }
-
-    /**
-     * 本线程当前 Context 承载的登录 sessionKey。
-     *
-     * @apiNote <b>framework-internal</b>：业务代码不得调用。
-     * @return 会话标识；该 Context 未承载登录态时返回 {@code null}
-     */
-    public static String currentContextSessionKeyForThread() {
-        return PlaywrightRuntime.instance().contextRegistry.currentContextSessionKeyForThread();
-    }
-
-    /**
      * 本线程当前 Context（<b>线程级</b>记录，不受用例边界影响）。
-     * <p>用于收尾可靠关闭、feature 模式跨用例复用判定、以及孤儿回收保护。
+     * <p>用于收尾可靠关闭与孤儿回收保护。
      */
     public static BrowserContext currentContextForThread() {
         return PlaywrightRuntime.instance().contextRegistry.currentContextForThread();
@@ -242,10 +218,14 @@ public class PlaywrightManager {
      */
     public static void clearCurrentThreadRouteState() {
         for (BrowserContext ctx : PlaywrightRuntime.instance().browserCleanup.contextsForCurrentThread()) {
+            //  2026-09-30（档 B）：用例收尾【只清规则、保留引擎】—— V2 的 clearContext 已改为纯内存
+            //  解绑（零协议调用）。原先这里还会额外调 stopContextEngine（= 拆 runtime + 逐条 unroute），
+            //  那正是每用例 N 次 setNetworkInterceptionPatterns 的来源，也是 30s 卡死 / 信道污染 /
+            //  下一用例 bind 挂死的引信（FIX_PLAN §4.1）。引擎的真正关闭交给"Context 确实要关"的
+            //  路径：ContextRegistryImpl.cleanupContextScoped → stopContextEngine(ctx, true)
+            //  （随 context.close() 原生释放，同样不 unroute）。
             PlaywrightRuntime.instance().browserCleanup.safeClean(
                     "RouteRegistry.clearContext", () -> RouteLifecycleRegistry.get().clearContext(ctx));
-            PlaywrightRuntime.instance().browserCleanup.safeClean(
-                    "RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(ctx));
             PlaywrightRuntime.instance().browserCleanup.safeClean(
                     "ApiCaptureContext.stop", () -> RouteLifecycleRegistry.get().stopCaptureFor(ctx));
         }
@@ -272,6 +252,25 @@ public class PlaywrightManager {
         clearCurrentThreadRouteState();
         PlaywrightRuntime.instance().contextRegistry.closeContext();
         PlaywrightRuntime.instance().browserCleanup.closeOrphanContextsForCurrentThread();
+        PlaywrightRuntime.instance().pageRegistry.closePage();
+    }
+
+    /**
+     * 用例<b>异常收尾</b>（失败/跳过/忽略）的线程级清理。
+     *
+     * <p><b>2026-09-30 政策：不复用活 Context</b> —— 无论是否承载登录态，异常终止都<b>销毁本线程
+     * Context 与 Page</b>，与正常 scenario 收尾（{@link #cleanupForScenario}）行为一致。
+     * 登录复用改走官方一等机制 {@code storageState} 快照：{@code SessionManager.saveSession()} 成功路径落盘、
+     * 下一用例经 {@code SessionManager.restoreSession()} 把文件级 storageState 重新注入<b>新建</b>的
+     * Context（凭证是快照而非活体）；故「保留活 Context 延续登录态」已被废除。</p>
+     *
+     * <p>本方法始终执行：路由/采集状态清理 + 本线程孤儿 Context 回收 + 销毁本线程 Context/Page。
+     * 并行安全：全部入口以线程级限定，不触碰其它线程。</p>
+     */
+    public static void clearThreadResourcesOnCaseAbort() {
+        clearCurrentThreadRouteState();
+        PlaywrightRuntime.instance().browserCleanup.closeOrphanContextsForCurrentThread();
+        PlaywrightRuntime.instance().contextRegistry.closeContext();
         PlaywrightRuntime.instance().pageRegistry.closePage();
     }
 
@@ -651,11 +650,15 @@ public class PlaywrightManager {
     }
 
     /**
-     * 带用例结果的场景收尾（A5，2026-09-26）。
+     * 带用例结果的场景收尾（A5，2026-09-26；**失败语义已于 2026-09-28 修订**）。
      *
-     * <p>{@code scenarioFailed=true} 时，feature 模式下**仅丢弃本用例的 Page** —— 失败用例的 Page 可能
-     * "存活但已坏"（导航失败/半死），不许跨用例传染；Context/登录态仍保留 → 同一个 sessionKey 的下个用例
-     * 既不背脏数据、又能免登录（Cookie 仍在，Page 由 {@code getPage()} 在同一个 Context 内懒重建）。
+     * <p>{@code scenarioFailed=true} 时，feature 模式下：
+     * <ul>
+     *   <li>Context <b>承载登录态</b> → <b>保留 Context 与 Page</b>（连 Page 也不丢、不重建）：
+     *       失败不污染会话，下一个同 sessionKey 用例继续免登录；重建只由 sessionKey 变化触发；</li>
+     *   <li><b>无登录态绑定</b> → 丢弃本用例 Page（"存活但已坏"，不许跨用例传染），Context 保留。</li>
+     * </ul>
+     * 详见仓库根 {@code FIX_PLAN.md} §1.1（I-1）与 §2.0（时效声明）。</p>
      *
      * @apiNote <b>framework-internal</b>：由 {@code PlaywrightListener} 在 Serenity {@code testFinished} 时
      *          传入本用例真实结果；业务代码不得调用。

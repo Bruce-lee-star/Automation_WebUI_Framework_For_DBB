@@ -122,14 +122,6 @@ public class RouteLifecycleImpl implements RouteLifecycle {
     }
 
     @Override
-    public boolean awaitTeardownFor(Object ctx, long timeoutMs) {
-        //  跨用例栅栏（2026-09-26）：web 侧 scenario 初始化时调用，等待上一用例在上一个 Context 上的
-        //  teardown worker（在途排空 + 逐句柄 close）收工，消除「两个线程并发操作同一 Playwright Connection」
-        //  → Object doesn't exist: response@... → 会话校验失败 → 缓存误删 → 后续用例卡死 的连锁。
-        return RouteEngine.awaitInFlightUnroute(ctx, timeoutMs);
-    }
-
-    @Override
     public void stopAllContextEngines() {
         RouteEngine.stopAllContextEngines();
         // CT2-19：API 监控侧的强键登记（registeredPatternsByContext / closeHooks）依赖 onClose 回调清理；

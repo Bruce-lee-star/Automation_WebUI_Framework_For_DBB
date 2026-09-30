@@ -134,7 +134,9 @@ public class RouteMatchFilterTest {
         mockContext();
         RouteDsl2.on(ctx)
                 .api("/api/pay/**").onlyFetch()
-                .delay(10).done().start().close();
+                .delay(10).done().start();
+        //  句柄刻意保持开启（不再链式 .close()）：本用例断言的是"派发 / 链式裁决"语义；
+        //  自 P2 起句柄 close() 会同时注销内存规则表条目（旧实现只摘驱动绑定、内存规则仍可派发 —— 语义缺口）。
         Consumer<Route> handler = captureHandler();
 
         // fetch 满足 → 走延迟 IO 分支（事件线程不得抛异常；最终由 IO/sweep 终结）

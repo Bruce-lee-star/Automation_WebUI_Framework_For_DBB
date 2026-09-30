@@ -11,45 +11,92 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * 通用日志详细度开关 —— 下沉到 common，消除 common→web 的越层依赖（架构 L2 违规）。
  *
- * <p>日志级别直接复用 Serenity 自身的配置 {@code serenity.logging}
- * （取值参见 Serenity {@code LoggingLevel}：{@code QUIET} / {@code NORMAL} /
- * {@code VERBOSE} / {@code TRACE}），通过 Serenity 的
- * {@link SystemEnvironmentVariables} 统一读取，因此同时遵循
- * {@code serenity.conf} / {@code serenity.properties} / {@code -Dserenity.logging}。
- * 注意：{@link SystemEnvironmentVariables} 为第三方（Serenity）类，引用它不违反
- * common→web 的分层约束（仅禁止反向依赖项目自身的 {@code framework.web} 包）。
- *
- * <p>映射关系（与原 web 层日志工具语义一致，现已统一收口到本类）：
+ * <p><b>门控键（2026-09-28 对齐 master 的 {@code LoggingConfigUtil} 语义）</b>：
+ * {@code framework.verbose.logging}（默认 {@code false}）与 {@code framework.trace.logging}
+ * （默认 {@code false}）：
  * <ul>
- *   <li>{@code VERBOSE} → 开启 info/warn 级详细日志（verbose）</li>
- *   <li>{@code TRACE}   → 同时开启 verbose 与 trace 级详细日志</li>
- *   <li>其他（含未配置）→ 关闭</li>
+ *   <li>两者皆未开（默认）→ 详细日志一律不输出，日志里只剩"<b>必要信息</b>"——
+ *       直调 {@code logger.info/warn/error} 的关键事件（框架启停、浏览器初始化、会话读写、
+ *       route 注册、用例开始/结束/结果、失败与告警）；</li>
+ *   <li>{@code framework.verbose.logging=true} → 打开 {@code *IfVerbose} 的 info/warn/debug 详细日志；</li>
+ *   <li>{@code framework.trace.logging=true} → 同 verbose，并打开 {@code *IfTraceVerbose} 的 trace 日志。</li>
  * </ul>
  *
- * <p>为让详细日志真正可见，首次查询时会按上述映射把 logback root 级别提升
- * （{@code VERBOSE→DEBUG}、{@code TRACE→TRACE}）；仅提升、不降级，且异常安全，
- * 因此 {@code logback.xml} 的 root 默认 {@code INFO} 即可。
+ * <p><b>与旧实现的差异（重要，防止回退）</b>：旧实现以 {@code serenity.logging=VERBOSE|TRACE} 为门控，
+ * 并把 <b>logback root</b> 级别抬到 DEBUG/TRACE —— 后者会把<b>所有</b>包（含第三方）的 DEBUG 一起放出来，
+ * 让 {@code logback.xml} 里的抑制失效（实测导致日志刷屏）。现改为：
+ * <ol>
+ *   <li>门控只认 {@code framework.verbose.logging} / {@code framework.trace.logging}；</li>
+ *   <li>提级只作用于<b>本项目包</b> {@code com.hsbc.cmb.hk.dbb.automation}（<b>不动 root</b>），
+ *       既让 {@code logDebugIfVerbose} 真正可见，又不放第三方噪音进来。</li>
+ * </ol>
+ *
+ * <p><b>与"录制开关"解耦</b>：{@code SerenityRecorder.isEnabled()} 等<b>行为开关</b>绝不能跟着日志门控
+ * 一起关（否则只是关日志却把 Serenity 报告的动作录制也停了）。该历史语义
+ * （{@code serenity.logging} 是否为 VERBOSE/TRACE）保留在 {@link #isRecordingEnabled()}。
  */
 public final class VerboseLogging {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VerboseLogging.class);
 
+    /** 本项目日志包前缀：提级只作用于它，绝不动 root（避免第三方 DEBUG 涌出）。 */
+    private static final String PROJECT_LOGGER_NAME = "com.hsbc.cmb.hk.dbb.automation";
+
+    /** 历史键：{@code serenity.logging}（仅 {@link #isRecordingEnabled()} 等历史语义继续使用）。 */
     private static final String SERENITY_LOGGING_KEY = "serenity.logging";
-    /** 首次触碰 root 时记录其原始级别，用于「降级回原状」（而非硬编码 INFO，避免抹掉 logback.xml 的配置）。 */
-    private static final AtomicReference<Level> ORIGINAL_ROOT_LEVEL = new AtomicReference<>();
+
+    /** 首次触碰时记录本项目包 logger 的原始级别，关闭 verbose 时还原（不抹掉 logback.xml 配置）。 */
+    private static final AtomicReference<Level> ORIGINAL_PROJECT_LEVEL = new AtomicReference<>();
     private static final AtomicBoolean ORIGINAL_CAPTURED = new AtomicBoolean(false);
 
     private VerboseLogging() {
     }
 
+    /** 是否开启详细日志：{@code framework.verbose.logging} 或 {@code framework.trace.logging} 为 true。 */
     public static boolean isVerboseEnabled() {
-        ensureLogLevelApplied();
-        return isVerbose(serenityLoggingLevel());
+        syncProjectLoggerLevel();
+        return isVerboseConfigured();
     }
 
+    /** 是否开启 trace 档日志：仅 {@code framework.trace.logging}。 */
     public static boolean isTraceEnabled() {
-        ensureLogLevelApplied();
-        return isTrace(serenityLoggingLevel());
+        syncProjectLoggerLevel();
+        return isTraceConfigured();
+    }
+
+    /**
+     * <b>录制开关（历史语义，与日志门控解耦）</b>：{@code serenity.logging} 为 {@code VERBOSE}/
+     * {@code TRACE} 时为 true。
+     *
+     * <p>为什么单独留一个方法：{@code SerenityRecorder.isEnabled()} 用它决定是否把原生操作写进
+     * Serenity 报告（<b>行为</b>，不是日志）。若让它跟随 {@code framework.verbose.logging}，
+     * 业务一旦把 verbose 关掉就会连带丢掉报告里的动作记录 —— 静默回归。
+     * （既有 5 个录制相关单测正是用 {@code serenity.logging} 开/关录制的，语义必须保持。）</p>
+     */
+    public static boolean isRecordingEnabled() {
+        String level = serenityLoggingLevel();
+        return level.equalsIgnoreCase("VERBOSE") || level.equalsIgnoreCase("TRACE");
+    }
+
+    private static boolean isVerboseConfigured() {
+        return isTraceConfigured() || isTrue(ConfigSource.resolve(
+                ConfigKeys.WEB_FRAMEWORK_VERBOSE_LOGGING.key(),
+                ConfigKeys.WEB_FRAMEWORK_VERBOSE_LOGGING.defaultValue()));
+    }
+
+    private static boolean isTraceConfigured() {
+        return isTrue(ConfigSource.resolve(
+                ConfigKeys.WEB_FRAMEWORK_TRACE_LOGGING.key(),
+                ConfigKeys.WEB_FRAMEWORK_TRACE_LOGGING.defaultValue()));
+    }
+
+    /** 宽松布尔：{@code true}/{@code yes}/{@code 1}（忽略大小写）为真，其余（含 null）为假。 */
+    private static boolean isTrue(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        return trimmed.equalsIgnoreCase("true") || trimmed.equalsIgnoreCase("yes") || trimmed.equalsIgnoreCase("1");
     }
 
     private static String serenityLoggingLevel() {
@@ -57,65 +104,49 @@ public final class VerboseLogging {
         return ConfigSource.resolve(SERENITY_LOGGING_KEY, "").trim();
     }
 
-    private static boolean isVerbose(String level) {
-        return level.equalsIgnoreCase("VERBOSE") || isTrace(level);
-    }
-
-    private static boolean isTrace(String level) {
-        return level.equalsIgnoreCase("TRACE");
-    }
-
-    /**
-     * 按 {@code serenity.logging} 把 logback root 级别同步到期望值（<b>幂等、支持热改与降级</b>）。
-     *
-     * <p><b>P2-4 修复</b>：原实现用一次性 CAS「仅提升一次、绝不降级」——导致
-     * ① 运行中改 {@code serenity.logging} 不生效（热改失效）；
-     * ② 只要有一次 verbose 查询把 root 抬到 DEBUG，之后即使配置改回 NORMAL 也<b>永久</b>停在 DEBUG。
-     * 现改为：每次查询时比对「期望级别 vs 当前级别」，仅在有变化时写一次；</p>
-     * <ul>
-     *   <li>期望级别 = {@code TRACE} → TRACE；{@code VERBOSE} → DEBUG；其余 → <b>恢复首次触碰前的原始级别</b>
-     *       （而非硬编码 INFO —— 不抹掉 logback.xml 的配置）；</li>
-     *   <li>幂等：级别无变化时不写 root，避免每行日志都触发一次 setLevel；</li>
-     *   <li>异常安全：任何异常都只记 debug，绝不破坏日志初始化。</li>
-     * </ul>
-     */
-    private static void ensureLogLevelApplied() {
-        syncRootLevel(serenityLoggingLevel());
-    }
-
     /**
      * 复位「原始级别」捕获状态（<b>仅供单测</b>）。
      *
-     * <p>「原始级别」是<b>进程内一次捕获</b>（首次触碰 root 前），生产语义正确但会让单测相互依赖；
-     * 本钩子让每个用例都能在已知原始级别的前提下驱动 {@link #syncRootLevel(String)}。</p>
+     * <p>「原始级别」是<b>进程内一次捕获</b>（首次触碰本项目包 logger 前），生产语义正确但会让单测相互依赖；
+     * 本钩子让每个用例都能在已知原始级别的前提下驱动 {@link #syncProjectLoggerLevel()}。</p>
      *
      * @apiNote 仅供同包单测使用，生产路径不得调用。
      */
     static void resetForTests() {
         ORIGINAL_CAPTURED.set(false);
-        ORIGINAL_ROOT_LEVEL.set(null);
+        ORIGINAL_PROJECT_LEVEL.set(null);
     }
 
     /**
-     * 把 logback root 级别同步到 {@code level} 对应的期望值（P2-4 的核心，包级可见以便单测直接驱动）。
+     * 按门控结果同步<b>本项目包</b> logger 的级别（幂等、支持热改与还原；包级可见以便单测直接驱动）。
      *
-     * @param level {@code serenity.logging} 的取值（{@code VERBOSE} / {@code TRACE} / 其它）
+     * <p><b>为什么不改 root（2026-09-28 对齐 master 语义）</b>：旧实现把 root 抬到 DEBUG/TRACE，
+     * 会把<b>所有</b>包（含第三方）的 DEBUG 一并放出来，等于让 {@code logback.xml} 的抑制失效
+     * —— 实测导致日志刷屏。现只作用于 {@code com.hsbc.cmb.hk.dbb.automation}：verbose → DEBUG、
+     * trace → TRACE、关闭 → 还原首次触碰前的原始级别（不硬编码 INFO，不抹掉 logback.xml 配置）；
+     * 级别无变化时不写，避免每行日志都触发一次 setLevel。</p>
      */
-    static void syncRootLevel(String level) {
+    static void syncProjectLoggerLevel() {
         try {
-            ch.qos.logback.classic.Logger root =
-                    (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+            ch.qos.logback.classic.Logger projectLogger =
+                    (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(PROJECT_LOGGER_NAME);
             if (ORIGINAL_CAPTURED.compareAndSet(false, true)) {
-                ORIGINAL_ROOT_LEVEL.set(root.getLevel());
+                ORIGINAL_PROJECT_LEVEL.set(projectLogger.getLevel());
             }
-            Level desired = isTrace(level) ? Level.TRACE : (isVerbose(level) ? Level.DEBUG : null);
-            Level target = desired != null ? desired : ORIGINAL_ROOT_LEVEL.get();
-            if (target != null && !target.equals(root.getLevel())) {
-                root.setLevel(target);
+            Level desired = isTraceConfigured() ? Level.TRACE : (isVerboseConfigured() ? Level.DEBUG : null);
+            Level current = projectLogger.getLevel();
+            if (desired != null) {
+                if (!desired.equals(current)) {
+                    projectLogger.setLevel(desired);
+                }
+            } else if (!java.util.Objects.equals(ORIGINAL_PROJECT_LEVEL.get(), current)) {
+                //  关闭 verbose：还原原始级别。原始级别可能为 null（沿用 logback.xml 的继承）——
+                //  必须显式 setLevel(null) 才能还原继承，否则会永久卡在 DEBUG（旧实现即此隐患）。
+                projectLogger.setLevel(ORIGINAL_PROJECT_LEVEL.get());
             }
         } catch (Throwable e) {
             // 日志级别调整失败不应影响业务；保持 logback.xml 的配置，但不得静默（D7-3）
-            LOGGER.debug("[VerboseLogging] failed to sync root log level, keep logback.xml config: {}",
+            LOGGER.debug("[VerboseLogging] failed to sync project logger level, keep logback.xml config: {}",
                     e.toString());
         }
     }

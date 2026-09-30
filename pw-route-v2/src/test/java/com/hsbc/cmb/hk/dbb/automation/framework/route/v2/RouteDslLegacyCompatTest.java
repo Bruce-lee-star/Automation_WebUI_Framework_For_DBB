@@ -298,7 +298,7 @@ public class RouteDslLegacyCompatTest {
         RouteDsl2 dsl = RouteDsl2.on(ctx)
                 .api("/a").monitor().expectStatus(200).timeout(60).done()
                 .api("/b").mock().status(200).body("{}").done();
-        dsl.start().close();
+        dsl.register().close();
         dsl.clear();
         dsl.clear(); // 幂等
         assertTrue(true);

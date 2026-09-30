@@ -6,6 +6,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
@@ -25,8 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
  *       还是"卡在自家锁上"，也是判定 {@code Playwright}'s {@code Object doesn't exist} 类竞态的关键；</li>
  * </ul>
  *
- * <p><b>为什么默认开启且几乎无噪音</b>：健康用例通常远短于 60s，故<b>正常情况下零输出</b>；
- * 出现输出即代表"该用例确实跑久了"（完整 SSO 登录约 3 分钟会产生数次采样，属预期且有信息量）。
+ * <p><b>为什么默认开启且几乎无噪音（去误报）</b>：仅当<b>场景线程栈连续
+ * {@code serenity.playwright.hang.watchdog.frozen.samples}（默认 3）次采样不变</b>才上报；
+ * 健康但运行久的用例其栈在推进 ⇒ 永不误报（完整 SSO 登录约 3 分钟虽久，但栈在变化，不刷屏）。
  * 关闭：{@code -Dserenity.playwright.hang.watchdog.interval.ms=0}。
  *
  * <p><b>硬超时（2026-09-28 复盘 P2 升级）</b>：当用例运行超过
@@ -58,6 +60,12 @@ public final class HangWatchdog {
     private static volatile boolean hardFired;
     /** 最近一次挂死事件（供收尾/报告 hook 查询并标记 scenario 失败）。 */
     private static volatile HangEvent lastHang;
+    /** 最近一次采样的栈（用于判定"同栈连续不变 = 真卡死"）。 */
+    private static volatile StackTraceElement[] lastStack;
+    /** 连续相同栈的采样计数。 */
+    private static volatile int frozenStreak;
+    /** 当前冻结剧集是否已上报（避免每个采样间隔重复刷屏）。 */
+    private static volatile boolean frozenReported;
 
     /** 概览中刻意跳过的 JVM 内务线程（对定位卡住无价值，只增加噪音）。 */
     private static final String[] NOISE_THREAD_PREFIXES = {
@@ -81,6 +89,9 @@ public final class HangWatchdog {
         cancelSampler();
         hardFired = false;
         lastHang = null;
+        lastStack = null;
+        frozenStreak = 0;
+        frozenReported = false;
         scenarioThread = Thread.currentThread();
         scenarioStartMs = System.currentTimeMillis();
         scenarioId = id;
@@ -150,9 +161,54 @@ public final class HangWatchdog {
             if (hard > 0 && !hardFired && elapsed >= hard) {
                 fireHardTimeout(owner, scenarioId, elapsed);
             }
-            logger.warn(renderSample(owner, scenarioId, elapsed, interval));
+            if (recordStackSample(owner.getStackTrace())) {
+                logger.warn(renderSample(owner, scenarioId, elapsed, interval));
+            }
         } catch (Throwable t) {
             VerboseLogging.logDebugIfVerbose(logger, "[HangWatchdog] sample failed: {}", t.getMessage());
+        }
+    }
+
+    /**
+     * 记录一次栈采样并判定是否达到"冻结"阈值（同栈集合连续 N 次采样不变 ⇒ 疑似真卡死）。
+     *
+     * <p>去误报核心：健康但运行久的用例其栈每采样都在变化（在推进），永不达阈值 ⇒ 不刷屏；
+     * 真正卡死（阻塞在同一锁 / await）的栈逐次相同 ⇒ 连续 N 次后报一次。</p>
+     *
+     * @return 本次采样是否应上报现场
+     */
+    static boolean recordStackSample(StackTraceElement[] stack) {
+        if (stack == null) {
+            stack = new StackTraceElement[0];
+        }
+        int threshold = Math.max(1, (int) frozenSamples());
+        if (lastStack == null || !Arrays.equals(stack, lastStack)) {
+            lastStack = stack;
+            frozenStreak = 1;
+            frozenReported = false;
+            return false;
+        }
+        frozenStreak++;
+        if (frozenStreak >= threshold && !frozenReported) {
+            frozenReported = true;
+            return true;
+        }
+        return false;
+    }
+
+    /** 仅供单测重置冻结状态（非生产路径）。 */
+    static void resetFrozenState() {
+        lastStack = null;
+        frozenStreak = 0;
+        frozenReported = false;
+    }
+
+    /** 冻结判定所需连续相同采样数（≤0 视为 1；默认 3）。 */
+    private static long frozenSamples() {
+        try {
+            return Long.getLong("serenity.playwright.hang.watchdog.frozen.samples", 3L);
+        } catch (Throwable t) {
+            return 3L;
         }
     }
 
@@ -169,7 +225,7 @@ public final class HangWatchdog {
         StringBuilder sb = new StringBuilder(4096);
         sb.append("==== [HangWatchdog] 用例 ").append(id == null ? "(未知)" : "'" + id + "'")
                 .append(" 已运行 ").append(elapsedMs).append("ms（采样间隔 ").append(interval)
-                .append("ms）—— 疑似卡住或长时间无日志，以下为线程现场；")
+                .append("ms）—— 同栈连续多次采样无变化（疑似真卡死），以下为线程现场；")
                 .append("关闭采样：-Dserenity.playwright.hang.watchdog.interval.ms=0 ====\n");
 
         sb.append("--- 场景线程 『").append(owner.getName()).append("』（state=")

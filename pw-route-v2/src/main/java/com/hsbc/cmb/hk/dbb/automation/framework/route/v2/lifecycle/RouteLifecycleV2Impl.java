@@ -40,10 +40,36 @@ public class RouteLifecycleV2Impl implements RouteLifecycle {
         }
     }
 
+    /**
+     * 带「Context 正被主动关闭」意图的停止（T8-5，{@code EngineControl} 默认方法的 V2 覆写）。
+     *
+     * <p>传 {@code true} 时 runtime 跳过逐条 unroute —— 规则随 {@code context.close()} 原生释放。
+     * 这是 credential 档"路由辅助设施零清理"的实现落点（FIX_PLAN §10.3 C-4）。
+     */
+    @Override
+    public void stopContextEngine(Object ctx, boolean contextBeingClosed) {
+        if (ctx instanceof BrowserContext bc) {
+            RouteEngine2.shutdown(bc, contextBeingClosed);
+        }
+    }
+
+    /**
+     * 清规则（<b>保留</b> runtime 与 Context）—— 2026-09-30 改为【档 B 纯内存解绑】。
+     *
+     * <p>原实现等价于 {@code stopContextEngine}（拆 runtime + 逐条 unroute）。而 web 的
+     * {@code PlaywrightManager.clearCurrentThreadRouteState()} 在<b>每个 scenario 收尾</b>都调本方法
+     * ⇒ 每用例 N 次 {@code setNetworkInterceptionPatterns}，正是 30s 卡死 / 信道污染 / 下一用例
+     * bind 挂死的引信（FIX_PLAN §4.1）。现改为 {@link RouteEngine2#detachRules}：规则表内存清空，
+     * 驱动侧 handler 常驻（命中即 fail-open），<b>零协议调用</b>。</p>
+     *
+     * <p>Context 真的要关闭时，由 {@link #stopContextEngine(Object, boolean)}（{@code true}）随
+     * {@code context.close()} 原生释放 —— 同样不 unroute。</p>
+     */
     @Override
     public void clearContext(Object ctx) {
-        // V2 规则随 runtime 生命周期；clearContext 语义与 stopContextEngine 等价（幂等）
-        stopContextEngine(ctx);
+        if (ctx instanceof BrowserContext bc) {
+            RouteEngine2.detachRules(bc);
+        }
     }
 
     @Override
@@ -60,6 +86,20 @@ public class RouteLifecycleV2Impl implements RouteLifecycle {
     public void drainForSuiteTeardown() {
         // V2 无跨用例共享线程池：套件收尾即关闭全部 per-context 运行时（幂等）
         RouteEngine2.shutdownAll();
+    }
+
+    /**
+     * V2 对「连接是否已不可靠」的回答（2026-09-29 政策落地：让 web 的用例起点恢复真正覆盖 V2）。
+     *
+     * <p>V2 唯一的"协议往返不可靠"来源，是<b>驱动信道被判定不可继续</b>：存在未收尾的在途协议调用
+     * （{@code GuardedDriverCallImpl.handleTimeout} 在"先摘后判"后仍未确认收尾时<b>不新建线程</b>、
+     * 只标记信道不可用）。对外 API 里没有"只复位连接"的手段，故 web 侧必须重建 {@code Playwright}
+     * 实例（= 换 Node 驱动进程 = 换 Connection）；该重建经 {@code stopAllContextEngines()} →
+     * {@code RouteEngine2.shutdownAll()} 连带复位框架驱动信道。</p>
+     */
+    @Override
+    public boolean isConnectionUnresponsive(Object ctx) {
+        return !RouteEngine2.isDriverChannelUsable();
     }
 
     @Override

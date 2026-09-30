@@ -2,6 +2,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteV2AssertionFailure;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.binding.GuardedDriverCallImpl;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.binding.GuardedDriverCallRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CapturedApiCall;
 import com.microsoft.playwright.BrowserContext;
 import org.slf4j.Logger;
@@ -77,10 +79,145 @@ public final class RouteEngine2 {
 
     /** 关闭指定 context 的运行时（幂等；context 关闭时也会自动触发）。 */
     public static void shutdown(BrowserContext context) {
+        shutdown(context, false);
+    }
+
+    /**
+     * 关闭指定 context 的 runtime（T8-5）。
+     *
+     * @param context            目标 BrowserContext
+     * @param contextBeingClosed true = 调用方紧接着就会 {@code context.close()} ⇒ 标记 runtime
+     *                           「Context 正在关闭」，{@code close()} 跳过逐条 unroute（原生释放）。
+     *                           <b>仅当该 Context 确实会被关闭时才可传 true</b>：若 Context 仍需存活，
+     *                           跳过 unroute 会把规则残留在驱动侧。
+     */
+    public static void shutdown(BrowserContext context, boolean contextBeingClosed) {
         RouteRuntime runtime = RUNTIMES.remove(context);
         if (runtime != null) {
+            if (contextBeingClosed) {
+                runtime.markContextClosing();
+            }
             runtime.close();
         }
+    }
+    /**
+     * 驱动信道当前是否可确证可用（{@code false} ⇒ 存在未收尾的在途协议调用）。
+     *
+     * <p>对外 API 里没有"复位连接 / 取消在途调用"的手段，唯一的"换连接"是关闭并重建 {@code Playwright} 实例。
+     * 故本方法只暴露**可查询状态**，供会话层决定是否重建会话；重建后请调用 {@link #resetDriverChannel()}
+     * 让信道与新连接对齐。</p>
+     */
+    public static boolean isDriverChannelUsable() {
+        return GuardedDriverCallRegistry.instance().isChannelUsable();
+    }
+
+    /** 驱动信道故障（超时）累计次数（单调递增；跨用例比较差值即可判断"本用例是否污染过信道"）。 */
+    public static long driverChannelFailures() {
+        return GuardedDriverCallImpl.channelFailureCount();
+    }
+
+    /**
+     * 复位驱动信道（换一条干净驱动线程）；<b>不触碰任何 Context / Page / runtime</b>。
+     *
+     * <p>仅应在<b>已换连接</b>（重建 {@code Playwright} 实例、或套件收尾）之后调用：在途调用未收尾时
+     * 单方面换线程会制造第二个消息泵。</p>
+     */
+    public static void resetDriverChannel() {
+        GuardedDriverCallImpl.resetChannel();
+    }
+
+    /**
+     * 新用例起点的信道判定结论。
+     */
+    public enum ChannelVerdict {
+        /** 信道可确证可用 ⇒ 直接进入下一个用例，无需任何重建。 */
+        REUSABLE,
+        /**
+         * 信道被确证不可继续（存在未收尾的在途协议调用）⇒ 调用方必须重建会话
+         * （换 {@code Playwright} 实例，session 缓存负责恢复登录态），随后调用
+         * {@link RouteEngine2#resetDriverChannel()} 让框架信道与新连接对齐。
+         */
+        REBUILD_SESSION_REQUIRED
+    }
+
+    /**
+     * 用例边界的信道体检：告诉调用方<b>能否直接开始下一个用例</b>；本方法只读状态，
+     * <b>不重建任何东西</b>（重建由会话层执行，见返回值说明）。
+     *
+     * <p><b>为什么必须有显式入口</b>：Playwright 对外 API 里没有"只复位连接"的手段
+     * （{@code unrouteAll()} 同走 NO_TIMEOUT 全量下发；{@code close(context/browser)} 无 timeout），
+     * 唯一的"换连接"是关闭并重建 {@code Playwright} 实例；而框架自身的 JVM 级静态状态
+     * （驱动信道、调度器）<b>又不会</b>随实例重建而复位。因此"何时重建、重建到哪一层"必须显式判定 ——
+     * "每用例都重建实例"既不必要（规则与业务态天然按 Context 隔离）也不充分（JVM 级残留照样在）。</p>
+     *
+     * <p><b>粒度对照（决策依据）</b>：
+     * <ul>
+     *   <li><b>规则 / 拦截</b>：Context 粒度（{@code BrowserContextImpl.routes} 是实例字段）
+     *       ⇒ 用 {@link #clearRules(BrowserContext)}，<b>不需要</b>换实例；</li>
+     *   <li><b>业务态</b>（cookies / 登录态）：Context 粒度 ⇒ 新 Context 或 session 缓存恢复；</li>
+     *   <li><b>协议信道</b>：Connection = <b>Playwright 实例</b>粒度 ⇒ 只有换实例能复位（本方法判定）；</li>
+     *   <li><b>框架 JVM 级静态态</b>：换实例也复位不了 ⇒ 由 {@link #resetDriverChannel()} 与
+     *       {@link #shutdownAll()} 负责。</li>
+     * </ul>
+     *
+     * @return {@link ChannelVerdict#REUSABLE} ⇒ 无需重建；{@link ChannelVerdict#REBUILD_SESSION_REQUIRED}
+     *         ⇒ 由会话层重建 {@code Playwright} 实例后回调 {@link #resetDriverChannel()}
+     */
+    public static ChannelVerdict channelVerdictForNewCase() {
+        return isDriverChannelUsable() ? ChannelVerdict.REUSABLE : ChannelVerdict.REBUILD_SESSION_REQUIRED;
+    }
+
+    /**
+     * 只清指定 context 的全部 V2 规则，<b>保留</b> runtime 与 context（V2-2）。
+     *
+     * <p>与 {@link #shutdown(BrowserContext)} 的区别：{@code shutdown} 关闭整个 runtime
+     * （下一次注册会重建）；本方法只退役规则 —— runtime 及其线程池、Context 及其登录态都保留，
+     * 适合 feature 模式"跨 scenario 复用 Context、但要求规则确定性清空"的场景。</p>
+     *
+     * <p>幂等；该 context 从未注册过规则（无 runtime）时返回 0 且<b>不创建</b> runtime。
+     * 驱动侧撤销为异步可确证路径，结论见 {@link RouteRuntime#isClean()}。</p>
+     *
+     * @return 本次提交退役的规则数
+     */
+    public static int clearRules(BrowserContext context) {
+        Objects.requireNonNull(context, "context");
+        RouteRuntime runtime = RUNTIMES.get(context);
+        return runtime == null ? 0 : runtime.clearRules();
+    }
+
+    /**
+     * 【档 B】纯内存解绑：只清规则表，保留驱动侧绑定与 runtime（<b>零协议调用</b>）。
+     *
+     * <p>用于「Context 仍存活」的用例 / feature 边界清理 —— 取代原先"拆 runtime + 逐条 unroute"的
+     * 收尾，消除 FIX_PLAN §4.1 定位的失败引信。Context 即将关闭请用
+     * {@link #shutdown(BrowserContext, boolean)}（{@code true}）。
+     *
+     * @return 清空的规则数；无 runtime 时为 0（且不为其创建 runtime）
+     */
+    public static int detachRules(BrowserContext context) {
+        Objects.requireNonNull(context, "context");
+        RouteRuntime runtime = RUNTIMES.get(context);
+        return runtime == null ? 0 : runtime.detachRules();
+    }
+
+    /**
+     * 只清<b>全部</b> runtime 的规则，保留各 runtime 与 context（V2-2；feature / 套件之间的规则清理）。
+     *
+     * <p>单 runtime 失败不阻断其它（fail-safe 隔离）。</p>
+     *
+     * @return 全部 runtime 提交退役的规则数之和
+     */
+    public static int clearRulesAll() {
+        int total = 0;
+        for (RouteRuntime runtime : RUNTIMES.values()) {
+            try {
+                total += runtime.clearRules();
+            } catch (Exception e) {
+                // 单 runtime 清理失败不阻断其它（fail-safe 隔离）
+                LOGGER.warn("[RouteV2] clearRules failed: {}", e.toString());
+            }
+        }
+        return total;
     }
 
     // ── stop 系列（对齐现有 RouteDsl.stopX(context, pattern)）──
@@ -127,6 +264,9 @@ public final class RouteEngine2 {
                 LOGGER.warn("[RouteV2] runtime close failed: {}", e.toString());
             }
         }
+        //  套件收尾：连同驱动信道一起复位 —— 若此前有在途调用未收尾，信道会一直被标记不可用；
+        //  不复位会让同一 JVM 内的后续套件全部失去路由能力。
+        resetDriverChannel();
     }
 
     /** 全部运行时数（测试/可观测性）。 */

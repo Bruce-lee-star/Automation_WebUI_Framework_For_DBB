@@ -233,7 +233,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkLi
         if (step == null)  {return;} 
 
         // 使用 VerboseLogging 控制日志输出
-        VerboseLogging.logDebugIfVerbose(logger, "📍 Step started: {} (delegates: {})", step.getTitle(), delegateListeners.size());
+        VerboseLogging.logDebugIfVerbose(logger, "Step started: {} (delegates: {})", step.getTitle(), delegateListeners.size());
 
         for (StepListener listener : delegateListeners) {
             try {
@@ -268,7 +268,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkLi
     public void stepFailed(StepFailure failure) {
         if (failure == null)  {return;} 
 
-        VerboseLogging.logDebugIfVerbose(logger, "💥 Thucydides Adapter: Step failed - {}", failure.getException().getMessage());
+        VerboseLogging.logDebugIfVerbose(logger, "Thucydides Adapter: Step failed - {}", failure.getException().getMessage());
 
         for (StepListener listener : delegateListeners) {
             try {
@@ -313,7 +313,7 @@ public class ThucydidesStepsListenerAdapter implements StepListener, FrameworkLi
 
     @Override
     public void lastStepFailed(StepFailure failure) {
-        VerboseLogging.logDebugIfVerbose(logger, "💥 Thucydides Adapter: Last step failed - {}",
+        VerboseLogging.logDebugIfVerbose(logger, "Thucydides Adapter: Last step failed - {}",
                 failure != null ? failure.getException().getMessage() : "Unknown");
 
         for (StepListener listener : delegateListeners) {

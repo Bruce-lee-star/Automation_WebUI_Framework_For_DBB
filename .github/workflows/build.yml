@@ -29,6 +29,42 @@ jobs:
           java-version: '21'
           cache: maven
 
+      - name: Provision patched Playwright client (external artifact — not built in this repo)
+        # 2026-09-30：reactor 模块 `pw-playwright` 已从本仓库【整体删除】（源码不在仓库）。
+        # 框架依赖的 `com.microsoft.playwright:playwright:1.62.0-dbb2`（上游 1.62.0 + DBBN-PATCH-01/02）
+        # 是【自建补丁客户端】，任何公共仓库都不可解析 —— 必须先把它装进本地 .m2，否则后续 step
+        # 会以晦涩的 "Could not resolve dependencies" 失败。
+        #
+        # 供给策略（按序）：
+        #   ① runner 的 ~/.m2 已有该构件（如 setup-java 的 maven 缓存命中）⇒ 直接复用，零成本；
+        #   ② 否则克隆**独立 fork 仓库**（repository variable 注入）并 `mvn install`；
+        #   ③ 两者都没有 ⇒ **早失败**并给出可操作的修复指引（绝不静默放过）。
+        # 配方/升级流程见 docs/patches/playwright-java-1.62.0-dbb-patch-02.md §7。
+        env:
+          PW_CLIENT_REPO: ${{ vars.PW_PATCHED_CLIENT_REPOSITORY }}
+          PW_CLIENT_REF: ${{ vars.PW_PATCHED_CLIENT_REF }}
+          PW_CLIENT_TOKEN: ${{ secrets.PW_PATCHED_CLIENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          jar="$HOME/.m2/repository/com/microsoft/playwright/playwright/1.62.0-dbb2/playwright-1.62.0-dbb2.jar"
+          if [ -f "$jar" ]; then
+            echo "✔ patched client already present in local .m2 — skipping provisioning"
+            exit 0
+          fi
+          if [ -z "${PW_CLIENT_REPO:-}" ]; then
+            echo "::error::patched Playwright client 1.62.0-dbb2 is missing and no source repo is configured. Set repository variable PW_PATCHED_CLIENT_REPOSITORY (owner/repo of the vendored fork; optional PW_PATCHED_CLIENT_REF, secrets.PW_PATCHED_CLIENT_TOKEN for private). It is NOT resolvable from Maven Central/aliyun. See docs/patches/playwright-java-1.62.0-dbb-patch-02.md §7."
+            exit 1
+          fi
+          ref="${PW_CLIENT_REF:-main}"
+          if [ -n "${PW_CLIENT_TOKEN:-}" ]; then
+            git clone --depth 1 --branch "$ref" "https://x-access-token:${PW_CLIENT_TOKEN}@github.com/${PW_CLIENT_REPO}.git" pw-playwright-client
+          else
+            git clone --depth 1 --branch "$ref" "https://github.com/${PW_CLIENT_REPO}.git" pw-playwright-client
+          fi
+          mvn -B -q -f pw-playwright-client/pom.xml install -DskipTests
+          test -f "$jar" || { echo "::error::provisioning did not produce $jar"; exit 1; }
+          echo "✔ patched client installed from ${PW_CLIENT_REPO}@${ref}"
+
       - name: Install Playwright browsers (for e2e job cache & local)
         run: mvn -B -q -DskipTests exec:java -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install --with-deps chromium"
 
@@ -136,6 +172,35 @@ jobs:
           distribution: temurin
           java-version: '21'
           cache: maven
+
+      - name: Provision patched Playwright client (external artifact — not built in this repo)
+        # 同 build job：1.62.0-dbb2 为外部提供构件（pw-playwright 模块已删除），必须先装进 .m2。
+        # 供给策略：① .m2 已有则复用；② 否则克隆 fork 仓库（vars.PW_PATCHED_CLIENT_REPOSITORY）install；
+        # ③ 都没有则早失败并给出指引。详见 docs/patches/playwright-java-1.62.0-dbb-patch-02.md §7。
+        env:
+          PW_CLIENT_REPO: ${{ vars.PW_PATCHED_CLIENT_REPOSITORY }}
+          PW_CLIENT_REF: ${{ vars.PW_PATCHED_CLIENT_REF }}
+          PW_CLIENT_TOKEN: ${{ secrets.PW_PATCHED_CLIENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          jar="$HOME/.m2/repository/com/microsoft/playwright/playwright/1.62.0-dbb2/playwright-1.62.0-dbb2.jar"
+          if [ -f "$jar" ]; then
+            echo "✔ patched client already present in local .m2 — skipping provisioning"
+            exit 0
+          fi
+          if [ -z "${PW_CLIENT_REPO:-}" ]; then
+            echo "::error::patched Playwright client 1.62.0-dbb2 is missing and no source repo is configured. Set repository variable PW_PATCHED_CLIENT_REPOSITORY (owner/repo of the vendored fork; optional PW_PATCHED_CLIENT_REF, secrets.PW_PATCHED_CLIENT_TOKEN for private). It is NOT resolvable from Maven Central/aliyun. See docs/patches/playwright-java-1.62.0-dbb-patch-02.md §7."
+            exit 1
+          fi
+          ref="${PW_CLIENT_REF:-main}"
+          if [ -n "${PW_CLIENT_TOKEN:-}" ]; then
+            git clone --depth 1 --branch "$ref" "https://x-access-token:${PW_CLIENT_TOKEN}@github.com/${PW_CLIENT_REPO}.git" pw-playwright-client
+          else
+            git clone --depth 1 --branch "$ref" "https://github.com/${PW_CLIENT_REPO}.git" pw-playwright-client
+          fi
+          mvn -B -q -f pw-playwright-client/pom.xml install -DskipTests
+          test -f "$jar" || { echo "::error::provisioning did not produce $jar"; exit 1; }
+          echo "✔ patched client installed from ${PW_CLIENT_REPO}@${ref}"
 
       - name: Install Playwright browsers
         working-directory: framework

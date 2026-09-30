@@ -11,13 +11,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
  * <p>设计要点：
  * <ul>
  *   <li>sessionKey 由业务层传入，<b>不含 browserType</b>；</li>
- *   <li>有效期判定（cookie 过期为主、本地年龄兜底、可选探针）与缓存/持久化/单飞/feature 复用
+ *   <li>有效期判定（cookie 过期为主、本地年龄兜底、可选探针）与缓存/持久化/单飞/会话复用
  *       全部在 {@link SessionStore} 内实现；</li>
  *   <li>{@code prepareSession(sessionKey)} 作为 {@code restoreSession(sessionKey)} 的兼容别名，
  *       供业务侧 {@code LoginSteps} 旧调用继续工作。</li>
  * </ul>
  *
- * @see SessionStore 新内核（有效期/cache/单飞/持久化/feature 复用）
+ * @see SessionStore 新内核（有效期/cache/单飞/持久化/会话复用）
  */
 public final class SessionManager {
 
@@ -29,45 +29,22 @@ public final class SessionManager {
         return SessionStore.getSingleFlightTakeoverCount();
     }
 
-    // ===================== Feature 级会话 =====================
-    public static void setCurrentFeatureId(String featureId) {
-        SessionStore.setCurrentFeatureId(featureId);
+    // ===================== homeUrl =====================
+    public static String getHomeUrl(String sessionKey) {
+        return SessionStore.getHomeUrl(sessionKey);
     }
 
-    public static boolean isAnyFeatureSessionRestored() {
-        return SessionStore.isAnyFeatureSessionRestored();
-    }
-
-    public static String currentFeatureSessionKey() {
-        return SessionStore.currentFeatureSessionKey();
+    /** 取本线程最近一次承载登录态的会话 homeUrl（meta 来源）；无则返回 {@code null}。 */
+    public static String getHomeUrl() {
+        return SessionStore.getHomeUrl();
     }
 
     public static void releaseSessionGate() {
         SessionStore.releaseSessionGate();
     }
 
-    public static void markFeatureSessionRestored(String sessionKey, String homeUrl) {
-        SessionStore.markFeatureSessionRestored(sessionKey, homeUrl);
-    }
-
-    public static boolean isFeatureSessionRestored(String sessionKey) {
-        return SessionStore.isFeatureSessionRestored(sessionKey);
-    }
-
-    public static String getFeatureHomeUrl() {
-        return SessionStore.getFeatureHomeUrl();
-    }
-
-    public static String getHomeUrl(String sessionKey) {
-        return SessionStore.getHomeUrl(sessionKey);
-    }
-
-    public static void resetFeatureSession() {
-        SessionStore.resetFeatureSession();
-    }
-
-    public static void resetFeatureSession(String featureId) {
-        SessionStore.resetFeatureSession(featureId);
+    public static void resetCurrentSession() {
+        SessionStore.resetCurrentSession();
     }
 
     public static void resetAllForTest() {

@@ -9,6 +9,13 @@ import com.tngtech.archunit.junit.ArchUnitRunner;
 import com.tngtech.archunit.lang.ArchRule;
 import org.junit.runner.RunWith;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ForkJoinPool;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.regex.Pattern;
+
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 /**
@@ -17,10 +24,19 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  * （{@code GuardedDriverCall} / {@code BoundedOps} / IO 线程池），禁止在 binding / dispatch 等
  * 业务代码里直接调用原生驱动 API。
  *
- * <p><b>背景</b>：E2E 实测（test-automation 1.txt）证明，直接调 {@code context.route()} /
- * {@code context.unroute()} 在 Node 驱动不响应时会无限阻塞调用线程（route 注册卡 14 分钟、
- * unroute 卡 11 分钟）。任何"绕过守卫直接调原生 API"的改动都会让本测试失败，把卡死根因挡在
- * 编译 / 架构期。与 web 模块的临时 {@code HangWatchdog} 诊断正交（route2 靠根因设界自洽）。</p>
+ * <p><b>背景</b>：{@code context.route()} / {@code context.unroute()} 在客户端是 {@code NO_TIMEOUT}
+ * 且由调用线程自己泵消息，驱动不响应时会拖住调用线程 —— 故必须经有界守卫收口。任何"绕过守卫直接调
+ * 原生 API"的改动都会让本测试失败，把根因挡在编译 / 架构期。</p>
+ *
+ * <p><b>2026-09-29 更正</b>：旧表述"route 注册卡 14 分钟 / unroute 卡 11 分钟"不准确 —— 探针实测该调用
+ * 在界值后约 3~5 秒即抛 {@code Object doesn't exist}（客户端 {@code Connection.dispatch} 未按消息隔离异常），
+ * 已由框架自建客户端 DBBN-PATCH-01 修复。</p>
+ *
+ * <p><b>资源 / 线程池门禁（评审 23 号 V2-5）</b>：route.v2 内禁止"污染 JVM 级共享池"与"无界线程池"用法 ——
+ * {@code CompletableFuture.delayedExecutor}（唯一合法替代：{@code RouteDelayScheduler}）、
+ * {@code ForkJoinPool.commonPool()}、{@code Executors.newCachedThreadPool()}。
+ * 注意：<b>刻意不禁止</b> {@code new Thread(...)} —— 模块在 {@code ThreadFactory} 内构造具名 daemon 线程
+ * （{@code sweeper} / {@code HangWatchdog} / {@code RouteDelayScheduler}）正是正确做法，一刀切会误伤。</p>
  *
  * <p><b>合法调用点（白名单）</b>：
  * <ul>
@@ -50,8 +66,18 @@ public class RouteV2ArchitectureTest {
             .and().doNotHaveSimpleName("GuardedDriverCall")
             .and().doNotHaveSimpleName("GuardedDriverCallImpl")
             .and().doNotHaveSimpleName("GuardedDriverCallRegistry")
-            .should().callMethod(BrowserContext.class, "route")
-            .orShould().callMethod(BrowserContext.class, "unroute")
+            .should().callMethod(BrowserContext.class, "route", String.class, Consumer.class)
+            .orShould().callMethod(BrowserContext.class, "route", String.class, Consumer.class, BrowserContext.RouteOptions.class)
+            .orShould().callMethod(BrowserContext.class, "route", Pattern.class, Consumer.class)
+            .orShould().callMethod(BrowserContext.class, "route", Pattern.class, Consumer.class, BrowserContext.RouteOptions.class)
+            .orShould().callMethod(BrowserContext.class, "route", Predicate.class, Consumer.class)
+            .orShould().callMethod(BrowserContext.class, "route", Predicate.class, Consumer.class, BrowserContext.RouteOptions.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", String.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", String.class, Consumer.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", Pattern.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", Pattern.class, Consumer.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", Predicate.class)
+            .orShould().callMethod(BrowserContext.class, "unroute", Predicate.class, Consumer.class)
             .orShould().callMethod(Route.class, "close");
 
     /**
@@ -68,5 +94,38 @@ public class RouteV2ArchitectureTest {
             .and().doNotHaveSimpleName("GuardedDriverCall")
             .and().doNotHaveSimpleName("GuardedDriverCallImpl")
             .and().doNotHaveSimpleName("GuardedDriverCallRegistry")
-            .should().callMethod(Route.class, "fetch");
+            .should().callMethod(Route.class, "fetch")
+            .orShould().callMethod(Route.class, "fetch", Route.FetchOptions.class);
+
+    /**
+     * V2-5（评审 23 号）：禁止 {@code CompletableFuture.delayedExecutor} —— 其两参重载会把任务落到
+     * {@code ForkJoinPool.commonPool()}（JVM 级共享池），与模块"有界并发"原则冲突。
+     * 唯一合法替代：{@code RouteDelayScheduler}（模块自有 daemon、线程数有界）。
+     */
+    @ArchTest
+    static final ArchRule noForkJoinCommonPoolDelayInRouteV2 =
+        noClasses()
+            .that().resideInAPackage("..route.v2..")
+            .should().callMethod(CompletableFuture.class, "delayedExecutor", long.class, java.util.concurrent.TimeUnit.class)
+            .orShould().callMethod(CompletableFuture.class, "delayedExecutor", long.class, java.util.concurrent.TimeUnit.class, java.util.concurrent.Executor.class);
+
+    /**
+     * V2-5：禁止 {@code ForkJoinPool.commonPool()} —— JVM 级共享、并行度 = 核数 - 1，不受模块约束。
+     */
+    @ArchTest
+    static final ArchRule noForkJoinCommonPoolInRouteV2 =
+        noClasses()
+            .that().resideInAPackage("..route.v2..")
+            .should().callMethod(ForkJoinPool.class, "commonPool");
+
+    /**
+     * V2-5：禁止 {@code Executors.newCachedThreadPool}（无界线程池）。有界池（newFixedThreadPool /
+     * newScheduledThreadPool / newSingleThreadScheduledExecutor）不受限制 —— 模块既有 daemon 先例均属合法。
+     */
+    @ArchTest
+    static final ArchRule noUnboundedThreadPoolInRouteV2 =
+        noClasses()
+            .that().resideInAPackage("..route.v2..")
+            .should().callMethod(Executors.class, "newCachedThreadPool")
+            .orShould().callMethod(Executors.class, "newCachedThreadPool", java.util.concurrent.ThreadFactory.class);
 }

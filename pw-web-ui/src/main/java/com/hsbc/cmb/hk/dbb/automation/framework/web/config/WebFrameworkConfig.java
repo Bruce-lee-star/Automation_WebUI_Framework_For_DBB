@@ -14,7 +14,6 @@ import java.util.function.Function;
  * Framework Configuration Enum - Centralized management of all configuration items
  * Usage:
  * WebFrameworkConfig.SCREENSHOT_STRATEGY.getValue()
- * WebFrameworkConfig.BROWSER_RESTART_STRATEGY.getValue()
  *
  * <p>⚠️ 同名类消歧（P3-31）：本类专管 <b>Web/Playwright</b> 侧配置（浏览器类型、headless、
  * Context/Page 策略、截图、BrowserStack、路由采集等），服务 {@code framework.web.*}。
@@ -726,28 +725,8 @@ public enum WebFrameworkConfig {
     SERENITY_BROWSER(ConfigKeys.WEB_SERENITY_BROWSER),
 
 
-    /**
-     * 浏览器重启策略
-     * FEATURE - 每个 feature 文件重启浏览器一次（更快，但可能有状态污染）
-     * SCENARIO - 每个 scenario 重启浏览器一次（推荐）
-     */
-    SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH(ConfigKeys.WEB_SERENITY_PLAYWRIGHT_RESTART_BROWSER_FOR_EACH),
 
-    /**
-     * 同一 feature 内是否复用同一 Context/Page（默认 false）。
-     *
-     * <p><b>false（默认，保守）</b>：未使用 {@code SessionManager} 的场景在用例收尾即关闭 Context，
-     * 杜绝同 feature 内场景间 Cookie / LocalStorage / 页面状态互相污染；代价是每用例各建 1 个
-     * Context+Page（headed 下即每个用例开/关一次窗口）。
-     *
-     * <p><b>true</b>：同一 feature 内所有场景复用<b>同一个</b> Context+Page —— 配合
-     * {@code serenity.playwright.restart.browser.for.each=feature} 即实现「1 个窗口 / 一个 feature」。
-     * 适用于无状态场景（路由拦截 / 接口 / 只读页面）；<b>有登录态或页面状态依赖的场景请勿开启</b>，
-     * 否则会引入跨场景串扰（正是本项默认关闭的原因）。
-     *
-     * <p>本项与 {@code restart.browser.for.each} 正交：后者决定「Context 何时关闭」（scenario/feature），
-     * 本项决定「无 session 场景是否也保留 Context」。
-     */
+
     // ==================== 卡住诊断 ====================
     /**
      * 卡住诊断看门狗采样间隔（毫秒，≤0 关闭；默认 60000）。
@@ -764,7 +743,7 @@ public enum WebFrameworkConfig {
     SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS(
             ConfigKeys.WEB_SERENITY_PLAYWRIGHT_HANG_WATCHDOG_INTERVAL_MS),
 
-    SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE(ConfigKeys.WEB_SERENITY_PLAYWRIGHT_REUSE_CONTEXT_WITHIN_FEATURE),
+
 
 
 

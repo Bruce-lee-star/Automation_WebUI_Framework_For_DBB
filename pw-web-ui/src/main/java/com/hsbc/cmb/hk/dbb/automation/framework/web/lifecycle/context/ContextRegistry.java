@@ -43,31 +43,10 @@ public interface ContextRegistry {
     void discardCurrentContext();
 
     /**
-     * 绑定本线程当前 Context 承载的**登录 sessionKey**（A5，2026-09-26）。
-     *
-     * <p><b>为什么要独立于 SessionManager 的 "session restored" 标志</b>：该标志在用例失败时会被清空
-     * （例：session 校验失败 → {@code clearSession}），但它不代表浏览器里的登录态已失效 ——
-     * 同 sessionKey 的后续用例本可直接复用这个仍带 Cookie 的 Context（免登录）。用"标志"当判据会
-     * 误判为"无 session"→ 收尾关掉 Context → 下个用例被迫完整重登。
-     *
-     * <p>语义：绑定随 Context 生命周期存活，仅在 Context 真被关闭/丢弃时清除；{@code null}/空串为 no-op。
-     *
-     * @param sessionKey 会话标识（如 {@code O63_SIT1_WP7UAT2_2}）
-     */
-    void bindCurrentContextSessionKey(String sessionKey);
-
-    /**
-     * 本线程当前 Context 承载的登录 sessionKey。
-     *
-     * @return 会话标识；该 Context 未承载登录态时返回 {@code null}
-     */
-    String currentContextSessionKeyForThread();
-
-    /**
      * 本线程当前持有的 Context（<b>线程级</b>记录，独立于用例级的 {@code CONTEXT_KEY}）。
      *
      * <p>用途：① 收尾（Serenity {@code testFinished}，此时用例级 {@code CONTEXT_KEY} 已被 Cucumber
-     * {@code @After} 清空）时仍能可靠关闭本线程 Context；② 孤儿回收时<b>保护</b>在用/复用的 Context 不被误关。
+     * {@code @After} 清空）时仍能可靠关闭本线程 Context；② 孤儿回收时<b>保护</b>在用 Context 不被误关。
      *
      * @return 本线程当前 Context；无则 {@code null}
      */

@@ -15,10 +15,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteContextSt
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteEngine;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.engine.RouteException;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.RouteMonitorSession;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.async.AsyncPool;
-import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.core.lifecycle.StoppedCapabilityManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.util.RouteUtil;
 
 /**
  * 路由规则注册与索引仓库（T2-4 拆分，自 {@code RouteEngine} 提取）。
@@ -64,12 +61,6 @@ public final class RuleRepository {
      */
     public static void register(BrowserContext context, List<RouteRule> rules) {
         VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER, "[RouteEngine] ── Registering {} rule(s) on BrowserContext ──", rules.size());
-        //  跨用例栅栏（2026-09-26）：本用例可能是「复用上一个用例 Context」的场景，而上一用例的
-        //    teardown worker 可能仍在同一 Context 上 drain / close 原生路由（实测重叠 ~1.65s）。
-        //    两边并发操作同一个 Playwright Connection 会导致驱动对象生命周期错乱
-        //    （Object doesn't exist: response@...）→ 会话校验导航失败 → 缓存误删 → 后续用例卡死。
-        //    故在注册新路由（= 开始使用该 Context）之前，有界等待在途收尾结束；无在途时零开销。
-        awaitInFlightUnroute(context, TEARDOWN_FENCE_MS);
         registerInternal(context, (pattern, rule) -> {
             Map<String, List<RouteRule>> store = RouteContextState.CONTEXT_RULES_BY_CONTEXT.computeIfAbsent(context, k -> new ConcurrentHashMap<>());
             //  仅在锁内完成 store 的纯内存状态决策，绝不持有锁调用原生 context.route()（JNI/网络 IO）。
@@ -108,7 +99,6 @@ public final class RuleRepository {
                         store.remove(pattern);
                     }
                     RouteRegistry.unregister(context, pattern);
-                    RouteContextState.removeRouteHandle(context, pattern);
                     if (t instanceof RouteException.RouteConnectionUnresponsiveException unresponsive) {
                         //  连接无响应是【环境级致命失败】：回滚后必须【上抛】让用例快速失败。
                         //  若按既有的"记 ERROR 后继续"处理，会静默变成"mock 规则未生效、断言打到真实后端"
@@ -197,11 +187,6 @@ public final class RuleRepository {
      * 被放弃的守护线程随浏览器恢复 / 进程退出回收，不会阻塞任何在途调用。
      */
     private static void registerRouteToContext(BrowserContext context, String pattern, List<RouteRule> chain, RouteRule rule) {
-        //  B3：闭包捕获规则链引用（而非单个 rule）——同 pattern 后续追加自动可见，分发期合并
-        //  捕获 route(...) 返回的 AutoCloseable 句柄（确定性生命周期管理），按 (context, pattern) 记账，
-        //  供 case 结束时经有界守护线程 close() 确定性注销（替代「清链但闭包仍挂 context」的技巧）。
-        AutoCloseable routeHandle = registerNativeRouteBounded(context, pattern, chain, routeRegisterTimeoutMs());
-        RouteContextState.registerRouteHandle(context, pattern, routeHandle);
         //  Context 级规则链已在 register(BrowserContext) 中写入 RouteContextState.CONTEXT_RULES_BY_CONTEXT，此处无需重复存储
         RouteEngine.LOGGER.debug("[RouteEngine] Context rule cached: type={}, pattern='{}'",
                 rule.getType(), pattern);
@@ -330,142 +315,9 @@ public final class RuleRepository {
 
     // ─── 规则索引清理 / 反注册 ───────────────
 
-    /**
-     * 注销指定 pattern 集合的 Playwright 原生路由（异常隔离 + 防挂死）。
-     *
-     * <p><b>企业级 teardown 契约</b>：本方法处于 {@code @AfterScenario}/{@code RouteDsl.clear} 收尾路径，
-     * 必须保证<b>绝不</b>因浏览器不响应而永久阻塞测试主线程。三重保障：
-     * <ol>
-     *   <li><b>关闭守卫</b>：context/page 已关闭（或查询其关闭状态抛错）时直接跳过，
-     *       不对已销毁对象调用 {@code unroute} 触发长阻塞 / 异常。</li>
-     *   <li><b>在途收尾（根因缓解）</b>：先等待该 context 的拦截在途请求
-     *       （{@code interceptRealResponse} 的异步真实 fetch）排空，确保浏览器侧 handler 已 settle，
-     *       {@code unroute} 才能被及时 ACK——根治「浏览器忙于在途请求而不响应 unroute」。</li>
-     *   <li><b>异步非阻塞 + 有界看门狗</b>：{@code unroute} 经 Playwright 连接发命令给浏览器并等 ACK，
-     *       浏览器不响应时会长时间挂起。旧实现虽已放进守护线程，但主线程仍要 {@code join} 等待
-     *       （最多 {@code 在途排空 10s + join 20s = 30s}），case 收尾被拖住。现改为<b>完全异步</b>：
-     *       主线程只做完纯内存记账便<b>立即返回</b>，在途排空与原生 unroute 全部在守护线程执行，
-     *       并由 {@code AsyncPool} 看门狗在 {@code UNROUTE_TIMEOUT_MS} 后中断失控 worker（<b>不阻塞主线程</b>）。
-     *       上下文最终关闭时 Playwright 会自动移除残留路由，无资源泄漏；且 in-JVM 规则链已在
-     *       {@link #clearContext(Object)} 第 1 步就地清空（empty-chain 自动 fallback），不会跨场景污染。</li>
-     * </ol>
-     *
-     * @param context  Page 或 BrowserContext 实例
-     * @param patterns 要注销的 URL pattern 集合
-     */
-    public static void unrouteAllForContext(Object context, Set<String> patterns) {
-        if (context == null || patterns == null || patterns.isEmpty()) {
-            return;
-        }
-        VerboseLogging.logDebugIfVerbose(RouteEngine.LOGGER,
-                "[RouteEngine] unrouteAllForContext: bulk-unrouting all routes ({}) from {} (async, non-blocking)",
-                patterns.size(), context.getClass().getSimpleName());
 
-        // 1) 关闭守卫：已关闭的 context 不再发起 unroute（避免对已销毁对象长阻塞），仅清句柄表释放引用
-        if (isContextClosed(context)) {
-            RouteContextState.clearRouteHandles(toBrowserContext(context));
-            RouteEngine.LOGGER.debug("[RouteEngine] unrouteAllForContext skipped: context already closed ({})",
-                    context.getClass().getSimpleName());
-            return;
-        }
 
-        BrowserContext bc = toBrowserContext(context);
 
-        // 2) 主线程只做纯内存记账：取走句柄并立即清表，释放 Java 侧引用（零浏览器往返 ⇒ 零阻塞）
-        Map<String, AutoCloseable> handles = RouteContextState.getRouteHandles(bc);
-        RouteContextState.clearRouteHandles(bc);
-
-        // 3) 异步执行（fire-and-forget，主线程<b>不 join</b>）：
-        //    「在途排空 + 原生 unroute」整体下沉到守护线程 —— case 结束主线程立即返回，
-        //    无论业务把 monitor / delay / mock / modify 的 timeout 配成多久，都不会被收尾拖住。
-        //  跨用例交接登记必须在 worker 启动【之前】完成，否则下一个用例可能先看到"无在途收尾"而直接复用 Context，
-        //  与本 worker 并发操作同一 Connection（见 field PENDING_UNROUTE / awaitInFlightUnroute）。
-        RouteContextState.UnrouteTask unrouteTask = RouteContextState.beginUnroute(bc);
-        Thread worker = new Thread(new BoundedUnrouteTask(context, handles, bc, unrouteTask),
-                "route-unroute-" + System.identityHashCode(context));
-        worker.setDaemon(true);
-        worker.start();
-
-        // 4) 看门狗（同样异步，不阻塞主线程）：浏览器不响应时中断 worker，避免守护线程无限悬挂累积。
-        //    保留「有界」语义，但不再以阻塞主线程为代价。
-        try {
-            AsyncPool.schedule(() -> {
-                if (worker.isAlive()) {
-                    //  抢占（置标志 + 中断）：worker 在 drain / 每次 close 前检查标志，被中断即退出，
-                    //  与跨用例栅栏共用同一交接机制（确定性停止，而非仅靠中断点命中）。
-                    unrouteTask.requestPreempt();
-                    RouteEngine.LOGGER.warn("[RouteEngine] unrouteAllForContext worker still running after {}ms for {} "
-                                    + "(patterns={}); preempted it. Any Playwright-native routes left will be "
-                                    + "removed on context close.",
-                            UNROUTE_TIMEOUT_MS, context.getClass().getSimpleName(), patterns.size());
-                }
-            }, UNROUTE_TIMEOUT_MS);
-        } catch (Throwable t) {
-            //  看门狗调度失败（如 AsyncPool 已在套件收尾关闭）不影响已启动的 worker，
-            //   且原生路由最终由 context 关闭兜底 —— 仅降级为「无看门狗」，绝不影响 case 收尾。
-            RouteEngine.LOGGER.debug("[RouteEngine] unroute watchdog scheduling failed: {}", t.getMessage());
-        }
-    }
-
-    /** unroute 等待浏览器 ACK 的上限（异常兜底）；可由 -Droute.unroute.timeout.ms 覆盖，默认 20s。 */
-    private static final long UNROUTE_TIMEOUT_MS =
-            RouteUtil.getEnvLong("ROUTE_UNROUTE_TIMEOUT_MS", 20_000L);
-
-    /** 在途拦截请求排空等待上限（根因缓解，正常应远小于此值）；可由 -Droute.unroute.await.ms 覆盖，默认 10s。 */
-    private static final long UNROUTE_AWAIT_COMPLETION_MS =
-            RouteUtil.getEnvLong("ROUTE_UNROUTE_AWAIT_MS", 10_000L);
-
-    /**
-     * 跨用例收尾栅栏的等待上限 —— 取自 {@link RouteLifecycleRegistry#teardownFenceMs()}（<b>单一定义点</b>，
-     * 与 web 侧 scenario 初始化共用同一配置项：系统属性 {@code -Droute.teardown.fence.ms} 优先，
-     * 其次环境变量 {@code ROUTE_TEARDOWN_FENCE_MS}，默认 2s）。
-     */
-    private static final long TEARDOWN_FENCE_MS = RouteLifecycleRegistry.teardownFenceMs();
-
-    /**
-     * 跨用例交接栅栏：<b>先抢占、再短等</b>在途 unroute 收尾真正结束（下一个用例<b>复用同一 Context 之前</b>调用）。
-     *
-     * <p><b>为什么必须有</b>：teardown worker 是 fire-and-forget 的守护线程，feature 模式下它常在下一个用例
-     * 开始后才收工。此窗口内 worker 会在该 Context 上派发事件 / 发 unroute 往返，而用例线程同时在导航 ——
-     * 两个线程并发操作同一个 Playwright {@code Connection}，实测触发
-     * {@code Object doesn't exist: response@/worker@...}（对方线程处理到已被驱动回收的句柄），
-     * 连锁导致「会话校验导航失败 → 缓存被删除 → 每轮完整登录」。
-     *
-     * <p><b>为何是"抢占 + 短等"而不是"纯有界等待"（2026-09-26 二次设计）</b>：worker 的 drain 预算为 10s
-     * （{@link #UNROUTE_AWAIT_COMPLETION_MS}），而栅栏预算仅 2s ⇒ 纯等待<b>必然超时</b>：白付 2s×N 延迟，
-     * 却仍与 worker 并发（内网实测日志：连续两条 {@code Teardown fence timed out after 2002ms/2010ms}）。
-     * 改为抢占后，worker 在 drain 前 / 每次 {@code close()} 前检查标志并在被中断时立即退出 ⇒
-     * 交接是<b>毫秒级确定性</b>的，且被抢占忽略的残留原生路由由 context 关闭兜底移除
-     * （in-JVM 规则链已清空 ⇒ 空链自动 fallback，不会跨场景 mock 泄漏）。
-     *
-     * <p><b>调用点</b>：{@link #register(BrowserContext, List)}（首次注册路由）与框架侧 scenario 初始化
-     * （{@code RouteLifecycle.awaitTeardownFor}）。无在途收尾时<b>零开销</b>（一次 Map 查询、不加锁、不阻塞）。
-     *
-     * @param context   Page / BrowserContext；无法归约为 BrowserContext 时视为无在途收尾
-     * @param timeoutMs 抢占后等待 worker 退出的上限（毫秒）
-     * @return true = 无在途收尾或 worker 已在超时内停止；false = worker 未在预算内停止（已告警，调用方继续）
-     */
-    public static boolean awaitInFlightUnroute(Object context, long timeoutMs) {
-        BrowserContext bc = toBrowserContext(context);
-        RouteContextState.UnrouteTask task = RouteContextState.unrouteTaskFor(bc);
-        if (task == null) {
-            return true; // 零开销快速路径：无在途收尾
-        }
-        task.requestPreempt();
-        long start = System.currentTimeMillis();
-        boolean stopped = task.await(timeoutMs);
-        long waited = System.currentTimeMillis() - start;
-        if (stopped) {
-            RouteEngine.LOGGER.debug("[RouteEngine] Teardown fence: preempted in-flight unroute on {} in {}ms "
-                    + "before reuse (deterministic handoff; no concurrent Connection access)",
-                    bc.getClass().getSimpleName(), waited);
-        } else {
-            RouteEngine.LOGGER.warn("[RouteEngine] Teardown fence: in-flight unroute on {} did not stop within {}ms "
-                            + "after preempt — proceeding; residual native routes will be removed on context close",
-                    bc.getClass().getSimpleName(), waited);
-        }
-        return stopped;
-    }
 
     /**
      * 该 context 是否已被判定「浏览器/连接无响应」。
@@ -482,22 +334,6 @@ public final class RuleRepository {
         return RouteContextState.isUnresponsive(toBrowserContext(context));
     }
 
-    /** context/page 是否已关闭（查询抛错按“已关闭”保守处理，避免对已销毁对象阻塞）。 */
-    private static boolean isContextClosed(Object context) {
-        try {
-            if (context instanceof Page) {
-                return ((Page) context).isClosed();
-            }
-            if (context instanceof BrowserContext) {
-                return ((BrowserContext) context).isClosed();
-            }
-        } catch (Exception e) {
-            RouteEngine.LOGGER.debug("[RouteEngine] isClosed check failed for {}: {}",
-                    context.getClass().getSimpleName(), e.getMessage());
-            return true;
-        }
-        return false;
-    }
 
     /** 将 Page / BrowserContext 归约为 BrowserContext（用于查询在途计数）。 */
     private static BrowserContext toBrowserContext(Object context) {
@@ -514,125 +350,6 @@ public final class RuleRepository {
         return null;
     }
 
-    /**
-     * 在<b>守护线程</b>中逐个 {@code close()} 本用例注册的原生路由句柄，使调用方（@AfterScenario）
-     * 永不因浏览器不响应而挂死；并支持被<b>下一个用例抢占</b>（确定性交接）。
-     *
-     * <p><b>为何用「逐 pattern close 自己登记的句柄」而非 {@code context.unrouteAll()}（2026-09-26 跨场景竞态修复）</b>：
-     * 本任务可能在<b>下一个用例开始之后</b>才真正执行 —— feature 模式下 Context 跨 scenario 复用，
-     * 实测重叠达 5.5s（用例1 收尾 12:34:58.531 起 worker，用例2 12:34:59.24 已注册 3 条规则，
-     * worker 直到 12:35:03.996 才收工）。此时若执行 {@code context.unrouteAll()}，会<b>摘掉下一个用例
-     * 刚注册的全部原生路由</b>，表现为 {@code Object doesn't exist: response@/request@}、
-     * {@code Execution context was destroyed} 以及后续用例卡死（原实现正是如此）。
-     *
-     * <p>故本任务只 close「自己 spawn 时登记的句柄」，并对<b>已被新用例重新注册的 pattern</b>跳过 ——
-     * 否则 close 仍会按 pattern 摘掉新路由。句柄表在 spawn 前已由主线程同步清空，
-     * 因此"此刻表中又有同 pattern 条目"即等价于"该 pattern 已被更新的用例接管"，判据零额外状态。
-     *
-     * <p><b>抢占检查点（2026-09-26 二次设计）</b>：drain 前、每次 {@code close()} 前都检查
-     * {@link RouteContextState.UnrouteTask#isPreemptRequested()}；被中断（{@code InterruptedException}）
-     * 即刻退出。故下一个用例只需"抢占 + 短等"即可确定性独占该 Context 的 Connection，
-     * 而不必赌"栅栏预算 &gt; worker 耗时"（实测 worker drain 预算 10s 远超栅栏 2s，赌必输）。
-     *
-     * <p>异常隔离 + 被中断安全退出（无线程泄漏）；未被 close 的残留原生路由由 context 关闭兜底移除，
-     * 且 in-JVM 规则链已清空（empty-chain 自动 fallback）⇒ 不会造成跨场景 mock 泄漏。
-     */
-    private static final class BoundedUnrouteTask implements Runnable {
-        private final Object context;
-        private final Map<String, AutoCloseable> handles;
-        /** 可能为 null（非 BrowserContext 场景）：用于 unroute 前先在<b>后台</b>排在途请求。 */
-        private final BrowserContext browserContext;
-        /** 跨用例交接句柄：无论正常/异常/跳过/被抢占，都必须在 {@code finally} 中结束，否则下个用例会空等满预算。 */
-        private final RouteContextState.UnrouteTask task;
-
-        BoundedUnrouteTask(Object context, Map<String, AutoCloseable> handles, BrowserContext browserContext,
-                           RouteContextState.UnrouteTask task) {
-            this.context = context;
-            this.handles = (handles == null) ? java.util.Collections.emptyMap() : handles;
-            this.browserContext = browserContext;
-            this.task = task;
-        }
-
-        @Override
-        public void run() {
-            //  抢占登记必须发生在任何浏览器往返之前：若抢占已先于本 worker 启动下达，attachWorker 会补一次中断。
-            if (task != null) {
-                task.attachWorker(Thread.currentThread());
-            }
-            try {
-                //  关闭守卫：context 已销毁时不再发起任何浏览器往返（否则只会得到
-                //    「Object doesn't exist」噪音与无谓阻塞）；残留原生路由随 context 销毁自动消失。
-                if (browserContext != null && RouteContextState.isContextClosed(browserContext)) {
-                    RouteEngine.LOGGER.debug("[RouteEngine] unroute task skipped: context already closed ({})",
-                            context.getClass().getSimpleName());
-                    return;
-                }
-                if (isPreempted()) {
-                    RouteEngine.LOGGER.debug("[RouteEngine] unroute task skipped: preempted before drain ({})",
-                            context.getClass().getSimpleName());
-                    return;
-                }
-
-                //  在途收尾（原在主线程同步等待，现随本任务一并下沉到守护线程）：
-                //    等拦截在途请求排空，浏览器才有空 ACK unroute；这里的阻塞只影响守护线程，不影响 case 收尾。
-                if (browserContext != null) {
-                    RouteEngine.awaitInterceptCompletion(browserContext, UNROUTE_AWAIT_COMPLETION_MS);
-                }
-
-                int closedCount = 0;
-                int skippedCount = 0;
-                boolean preempted = false;
-                for (Map.Entry<String, AutoCloseable> entry : handles.entrySet()) {
-                    //  抢占检查点：下一个用例已要求独占该 Connection ⇒ 立即停止触碰它（含 drain 后的每次 close）。
-                    if (isPreempted() || Thread.currentThread().isInterrupted()) {
-                        preempted = true;
-                        break;
-                    }
-                    //  逐个句柄 close 之前**实时**复查：spawn 前主线程已 clearRouteHandles，
-                    //  故该 pattern 此刻若又有条目，即说明它已被更新的用例重新注册（接管）——
-                    //  对其 close 会按 pattern 摘掉新用例的原生路由，必须跳过。
-                    //  逐句柄复查把竞态窗口收敛到「单次 close 的微秒级」，而非「整批句柄的总时长」。
-                    if (RouteContextState.hasRouteHandle(browserContext, entry.getKey())) {
-                        skippedCount++;
-                        continue;
-                    }
-                    try {
-                        entry.getValue().close();
-                        closedCount++;
-                    } catch (InterruptedException ie) {
-                        //  被抢占中断：保持中断状态并立即停止（后续句柄交给 context 关闭兜底）。
-                        Thread.currentThread().interrupt();
-                        preempted = true;
-                        break;
-                    } catch (Exception e) {
-                        RouteEngine.LOGGER.warn("[RouteEngine] route handle close() failed: {}", e.getMessage());
-                    }
-                }
-                if (preempted) {
-                    RouteEngine.LOGGER.info("[RouteEngine] unroute task preempted by next scenario on {} "
-                                    + "(closed={}, skippedOwnedByNewerScenario={}, remaining={}); residual native "
-                                    + "routes will be removed on context close",
-                            context.getClass().getSimpleName(), closedCount, skippedCount,
-                            handles.size() - closedCount - skippedCount);
-                } else {
-                    RouteEngine.LOGGER.debug("[RouteEngine] unroute task completed for context: {} "
-                                    + "(closed={}, skippedOwnedByNewerScenario={})",
-                            context.getClass().getSimpleName(), closedCount, skippedCount);
-                }
-            } catch (Exception e) {
-                RouteEngine.LOGGER.warn("[RouteEngine] unroute task failed for context '{}': {}",
-                        context.getClass().getSimpleName(), e.getMessage());
-            } finally {
-                //  跨用例交接：必须无条件结束，唤醒在「复用该 Context 之前」等待的下一个用例。
-                RouteContextState.endUnroute(browserContext, task);
-            }
-        }
-
-        /** 是否已被下一个用例要求停止（无交接句柄时视为未抢占）。 */
-        private boolean isPreempted() {
-            return task != null && task.isPreemptRequested();
-        }
-    }
 
     /**  移除指定页面的规则缓存（按 pageRef 精确移除，保留同 context 的其它页 / 全局规则）。 */
     public static void removePageRules(Page page) {
@@ -738,19 +455,6 @@ public final class RuleRepository {
                     context.getClass().getSimpleName(), t.getMessage());
         }
 
-        // 5. 原生路由注销：异步（不 join）—— 主线程立即返回，绝不因浏览器不响应而挂住 case 收尾。
-        //    未摘掉的原生路由会在 context 关闭时由 Playwright 自动移除；且第 1 步已就地清空规则链，
-        //    不存在 mock/delay/modify 跨用例污染风险。
-        if (patterns != null && !patterns.isEmpty()) {
-            try {
-                unrouteAllForContext(context, patterns.keySet());
-            } catch (Throwable t) {
-                //  原生 unroute 属 best-effort：即便起不来，前 4 步已把 in-JVM 状态清干净，
-                //  残留原生路由由 context 关闭兜底移除 —— 绝不让其影响 case 收尾。
-                RouteEngine.LOGGER.warn("[RouteEngine] clearContext: async native unroute failed for {}: {}",
-                        context.getClass().getSimpleName(), t.getMessage());
-            }
-        }
     }
 
     /**  Context 生命周期结束（onClose）时清理规则索引与引擎合并引用。 */
@@ -779,9 +483,6 @@ public final class RuleRepository {
             detachChains(scoped);
         }
         RouteContextState.CONTEXT_RULES_BY_CONTEXT.clear();
-        //  全局 teardown：一并清掉原生路由句柄记账（各 context 的原生路由已由 teardown worker
-        //  按 pattern 精确 close；未被 close 的残留由其 context 关闭兜底移除）。
-        RouteContextState.ROUTE_HANDLES.clear();
     }
 
     /**  断开「已注册的 Playwright 路由闭包」与规则链的关联 —— 就地清空链内容。 */

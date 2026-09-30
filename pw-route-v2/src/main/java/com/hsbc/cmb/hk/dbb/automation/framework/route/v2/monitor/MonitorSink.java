@@ -13,6 +13,7 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,14 +35,19 @@ import java.util.concurrent.atomic.AtomicLong;
  * {@link Request#existingResponse()}（请求本地字段、零协议往返、不触碰对象表），命中即以
  * {@link #onResponseForSpec(ApiSpec, Response)} 按 <b>spec 精确配对</b>投递。
  *
- * <p>并发模型：
+ * <p>并发模型（<b>快照-断言两阶段</b>，2026-09-28 修正）：
  * <ul>
  *   <li>{@code recordRequest} 在 route 事件线程调用（入队，不阻塞），返回是否已进入等待响应索引；</li>
- *   <li>{@code onResponseForSpec} 在调度线程调用（volatile 更新 + 入队，不阻塞）；
- *       若规则配置了 JSONPath 断言，则响应体读取（{@code Response.body()} 是同步阻塞调用）
- *       与 JSONPath 断言一律交 IO 线程执行——保持调度线程零阻塞契约；</li>
+ *   <li>{@code onResponseForSpec} 在响应轮询线程调用：<b>就地</b>完成 {@code status}/{@code headers}/
+ *       {@code body} 的<b>快照</b>（{@code body()} 是协议调用，必须趁句柄存活时读——旧实现把它交给 IO
+ *       线程排队执行，实测在 IO 池繁忙时必失败 {@code Object doesn't exist: response@…}），
+ *       随后只把 CPU 型断言（JSONPath/包含/正则/表单）交 IO 线程 ⇒ 断言阶段<b>零句柄依赖</b>；</li>
  *   <li>{@code drain} 在业务线程调用（快照消费）。</li>
  * </ul>
+ *
+ * <p><b>句柄不可用 ⇒ 判 inconclusive（不判失败）</b>：若快照时响应句柄已被驱动回收（或页面已关闭），
+ * 该交换记 {@code inconclusive}（WARN + {@link #inconclusiveBodyReads()} 计数）并只按 status 定案 ——
+ * 这是框架/驱动竞态而非应用缺陷，绝不能把绿场景判红。
  * 线程之间只经 {@link ConcurrentLinkedQueue} 与 {@code volatile} 字段交换，无共享可变状态。
  *
  * <p>防泄漏：等不到响应的请求在 {@code drain} 时按 monitorTimeoutMs 标记超时并移出 pending 索引。
@@ -58,11 +64,86 @@ public final class MonitorSink {
     private final RouteIoExecutor io;
     /** body 断言因 IO 队列满被丢弃的次数（fail-open 可观测指标）。 */
     private final AtomicLong rejectedBodyAssertions = new AtomicLong(0);
+    /**
+     * body 断言因响应句柄不可用（驱动已回收 / 页面关闭）而<b>未能判定</b>的次数（inconclusive）。
+     *
+     * <p>为何单独计数：这类失败是框架/驱动竞态，不是应用缺陷，故不判场景失败（见
+     * {@link #onResponseForSpec}）。计数使"确实没断言上"仍可被观测（而不是静默放过）。</p>
+     */
+    private final AtomicLong inconclusiveBodyReads = new AtomicLong(0);
     /** per-spec 命中计数（autoStopOnMatch + minMatches 对齐：达到后停止记录/断言）。 */
     private final ConcurrentMap<ApiSpec, AtomicInteger> hitCounts = new ConcurrentHashMap<>();
 
+    /**
+     * 目的驱动撤销（T2+，即"规则随目的生灭"取代"规则随用例生灭"）：带响应侧期望的 MONITOR 规则在<b>首个响应定案</b>后
+     * 即撤销绑定 —— 不管断言成功还是失败（目的已达成，无需继续 armed）。这是<b>不可关闭的默认行为</b>，
+     * 没有 kill-switch（{@code autoStopOnMatch} 场景走"达到 minMatches 才撤"，见 {@link #purposeSettles}）。
+     */
+
+    /** 已触发"目的达成"的规则实例（幂等键 = 规则实例，与请求/响应配对键一致）。 */
+    private final Set<ApiSpec> purposeMetSpecs = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 目的达成回调（由 {@code RouteRuntimeImpl} 注入 → 令牌化撤销）；{@code null} = 不驱动撤销。
+     *
+     * <p>入参是<b>注册时的规则实例</b>（令牌），而非 pattern 字符串：这样"重注册后的新规则"不会被
+     * 旧规则的触发者误撤（见 {@code RouteRuntimeImpl.retireByPurpose(ApiSpec)} 的令牌判定）。</p>
+     */
+    private final java.util.function.Consumer<ApiSpec> onPurposeMet;
+
+    /** 兼容构造（单测/无撤销驱动场景）：等价于不驱动目的撤销。 */
     public MonitorSink(RouteIoExecutor io) {
+        this(io, null);
+    }
+
+    /**
+     * @param io            IO 线程池（body 断言/CPU 解析）
+     * @param onPurposeMet  "目的达成"回调，入参为<b>规则实例（令牌）</b>；实现必须非阻塞（提交式），可传 {@code null}
+     */
+    public MonitorSink(RouteIoExecutor io, java.util.function.Consumer<ApiSpec> onPurposeMet) {
         this.io = io;
+        this.onPurposeMet = onPurposeMet;
+    }
+
+    /**
+     * 该规则是否"目的已达成、可以撤销"（2026-09-29 细化）：
+     * <ul>
+     *   <li>MONITOR + 至少一条响应侧期望（无期望的纯采集 MONITOR 无"定案"概念）；</li>
+     *   <li><b>{@code autoStopOnMatch(true)} 规则：达到 {@code minMatches} 才撤销</b>（其目的是"观察 N 次"）；
+     *       未达标不提前撤销 ⇒ 交由监控窗口到期（{@code monitorTimeoutMs}）或用例收尾兜底 flush 清理；</li>
+     *   <li>其余带期望的 MONITOR 规则：首个响应定案即撤销（armed 窗口收敛为"首个响应"）。</li>
+     * </ul>
+     */
+    private boolean purposeSettles(ApiSpec spec) {
+        if (spec.capability() != RouteCapability.MONITOR) {
+            return false;
+        }
+        if (spec.expectStatus() == null && !spec.hasBodyAssertions()) {
+            return false;
+        }
+        if (spec.autoStopOnMatch()) {
+            AtomicInteger hits = hitCounts.get(spec);
+            return hits != null && hits.get() >= spec.minMatches();
+        }
+        return true;
+    }
+
+    /**
+     * 目的达成即回调一次（幂等：同一规则实例只触发一次）。
+     *
+     * <p><b>顺序保证</b>：调用点必须位于"断言结算"之后（先结算失败证据，再撤销），否则会丢失败上报。
+     * 回调异常绝不逃逸到事件/调度线程（只 WARN）。</p>
+     */
+    private void firePurposeMet(ApiSpec spec) {
+        if (onPurposeMet == null || !purposeSettles(spec) || !purposeMetSpecs.add(spec)) {
+            return;
+        }
+        try {
+            onPurposeMet.accept(spec);
+            LOGGER.debug("[RouteV2] purpose met for '{}' → retire submitted", spec.pattern());
+        } catch (Throwable t) {
+            LOGGER.warn("[RouteV2] purpose-met callback failed for '{}': {}", spec.pattern(), t.toString());
+        }
     }
 
     /**
@@ -142,32 +223,86 @@ public final class MonitorSink {
             return; // 无配对请求快照（已被 drain 定案 / auto-stop 未记录）→ 忽略
         }
         exchange.markResponse(response.status(), response.headers());
-        if (spec.hasBodyAssertions()) {
-            submitBodyAssertion(exchange, spec, response);
-        } else if (Boolean.FALSE.equals(exchange.assertionPassed())) {
+        //  T2+ 目的驱动撤销（"规则随目的生灭"）：响应已到达 ⇒ "断言这次调用"这一目的已达成，
+        //  通知 runtime 撤销该规则（armed 窗口从"整个用例"收敛为"首个响应"；断言成败不影响是否撤销）。
+        //  安全性：body 快照在紧接的下方**同步**读取、断言在 IO 线程完成，均不依赖"规则仍 armed"，
+        //  故撤销不会丢证据（由 MonitorSinkPurposeRetirementTest 的失败用例钉住该语义）。
+        firePurposeMet(spec);
+        if (!spec.hasBodyAssertions()) {
             // 无 body 断言：响应到达即定案；断言失败立即结算上报（成功项不结算，观测完成）
-            settleFailure(exchange);
+            if (Boolean.FALSE.equals(exchange.assertionPassed())) {
+                settleFailure(exchange);
+            }
+            return;
+        }
+        //  (ii) 快照-断言两阶段：body 是**协议调用**，必须在本线程（刚拿到句柄的同一时刻）读完；
+        //  一旦推迟（旧实现交给 IO 线程排队执行），句柄可能已被驱动回收 → Object doesn't exist
+        //  （实测：IO 池忙于 mock fetch 时，body 读晚数秒必失败）。IO 线程此后只做 CPU 解析/断言。
+        BodySnapshot snapshot = takeBodySnapshot(response);
+        if (snapshot.inconclusiveReason() != null) {
+            //  4) 误报防线：句柄已回收属框架/驱动竞态（非应用缺陷）→ 记 inconclusive（WARN + 计数），
+            //  绝不结算为断言失败（与 [timeout] 误报同源治理：框架自身缺陷不得把绿场景判红）。
+            exchange.markBodyAssertionInconclusive(snapshot.inconclusiveReason());
+            inconclusiveBodyReads.incrementAndGet();
+            LOGGER.warn("[RouteV2] monitor body assertion INCONCLUSIVE (response handle unavailable) "
+                            + "pattern='{}' url='{}': {}",
+                    spec.pattern(), exchange.url(), snapshot.inconclusiveReason());
+            return;
+        }
+        submitBodyAssertion(exchange, spec, snapshot);
+    }
+
+    /**
+     * body 快照（{@code headers()} + {@code body()} 的即时副本）。
+     *
+     * <p>{@code headers()} 是客户端本地快照、{@code body()} 是协议调用——两者都在拿到句柄的同一时刻
+     * 取走，之后断言只依赖本对象，<b>不再触碰驱动句柄</b>。</p>
+     *
+     * @param bytes              响应体字节（快照失败时为 null）
+     * @param headerNames        响应 header <b>名</b>清单（小写去重；只暴露名字不暴露值，防泄露）
+     * @param contentType        content-type 原值（可能为 null）
+     * @param inconclusiveReason 非 null 表示快照失败（句柄不可用），原因文本
+     */
+    private record BodySnapshot(byte[] bytes, List<String> headerNames, String contentType,
+                                String inconclusiveReason) {
+    }
+
+    /** 即时快照响应体与头；任何读取失败都归入 inconclusive（绝不向上抛）。 */
+    private static BodySnapshot takeBodySnapshot(Response response) {
+        List<String> names;
+        String contentType = null;
+        try {
+            names = headerNames(response.headers());
+            contentType = response.headers().get("content-type");
+        } catch (Throwable t) {
+            names = List.of("<header-read-failed>");
+        }
+        try {
+            byte[] bytes = response.body();
+            return new BodySnapshot(bytes, names, contentType, null);
+        } catch (Throwable t) {
+            String msg = t.getMessage() == null ? t.toString() : t.getMessage();
+            return new BodySnapshot(null, names, contentType, "body-unavailable: " + msg);
         }
     }
 
-    /** 投递 body 断言到 IO 线程（响应轮询线程不读 body，不解析 content-type）。 */
-    private void submitBodyAssertion(CapturedExchange exchange, ApiSpec spec, Response response) {
+    /** 投递 body 断言到 IO 线程——只消费快照（零句柄依赖）。 */
+    private void submitBodyAssertion(CapturedExchange exchange, ApiSpec spec, BodySnapshot snapshot) {
         boolean submitted = io.trySubmit("monitor-assert:" + spec.pattern(), () -> {
             if (exchange.responseTimedOut()) {
                 return; // 已被 drain 标记超时，断言结果无意义
             }
             try {
-                String contentType = response.headers().get("content-type");
+                String contentType = snapshot.contentType();
                 Charset charset = MediaType.parse(contentType).charset();
-                byte[] rawBody = response.body();
-                String body = new String(rawBody, charset);
+                String body = new String(snapshot.bytes(), charset);
                 List<String> failures = new ArrayList<>(PayloadAssertor.assertAll(spec, body, contentType));
                 if (contentType == null && !failures.isEmpty()) {
                     // content-type 缺失时补「响应形态」诊断：一次运行即可区分
                     // 「服务端确实没发 Content-Type」与「空体/异常响应（如会话失效的空 200）」。
                     // 只上报 header 名与字节数，绝不上报 header 值/响应体（防 session/凭据泄露）。
-                    failures.add("response diagnosis: headerNames=" + headerNames(response)
-                            + ", bodyBytes=" + rawBody.length);
+                    failures.add("response diagnosis: headerNames=" + snapshot.headerNames()
+                            + ", bodyBytes=" + snapshot.bytes().length);
                 }
                 exchange.markBodyAssertionFailures(failures);
                 // body 断言（含 status 重算）定案：失败立即结算上报
@@ -175,8 +310,8 @@ public final class MonitorSink {
                     settleFailure(exchange);
                 }
             } catch (Exception e) {
-                // 读 body / 解析失败：记为失败明细（不允许异常逃逸 IO 线程包装）
-                exchange.markBodyAssertionFailures(List.of("body-read-error: " + e.getMessage()));
+                // 断言/解码失败：记为失败明细（不允许异常逃逸 IO 线程包装）
+                exchange.markBodyAssertionFailures(List.of("body-assert-error: " + e.getMessage()));
                 settleFailure(exchange);
             }
         });
@@ -190,12 +325,11 @@ public final class MonitorSink {
     /**
      * 响应 header <b>名</b>清单（小写、去重、字典序）；<b>只暴露名字，不暴露值</b>——
      * 用于 content-type 缺失时的形态诊断（如仅含 date/content-length 说明服务端确实没发该头）。
-     * 读取失败时返回哨兵值，不影响失败明细上报。
      */
-    private static List<String> headerNames(Response response) {
+    private static List<String> headerNames(Map<String, String> headers) {
         try {
             Set<String> names = new TreeSet<>();
-            for (String name : response.headers().keySet()) {
+            for (String name : headers.keySet()) {
                 names.add(name.toLowerCase(Locale.ROOT));
             }
             return new ArrayList<>(names);
@@ -239,6 +373,11 @@ public final class MonitorSink {
     /** 因 IO 队列满被丢弃的 body 断言数。 */
     public long rejectedBodyAssertions() {
         return rejectedBodyAssertions.get();
+    }
+
+    /** body 断言因响应句柄不可用而未能判定的次数（inconclusive；可观测，不判失败）。 */
+    public long inconclusiveBodyReads() {
+        return inconclusiveBodyReads.get();
     }
 
     /**

@@ -44,51 +44,7 @@ public final class ContextRegistryImpl implements ContextRegistry {
      */
     private static final ThreadLocal<BrowserContext> CURRENT_CONTEXT_BY_THREAD = new ThreadLocal<>();
 
-    /**
-     * 本线程当前 Context 所承载的**登录 sessionKey**（A5，2026-09-26）。
-     *
-     * <p><b>为什么不能复用 SessionManager 的 "feature session restored" 标志</b>：该标志在用例失败时
-     * 会被清空（例：session 校验失败 → {@code clearSession}），但它<b>不代表浏览器里的登录态已失效</b> ——
-     * 同一个 sessionKey 的后续用例本可直接复用这个仍带 Cookie 的 Context（免登录）。
-     * 用"标志"当判据会误判为"无 session"→ 收尾关掉 Context → 下个用例被迫完整重登
-     * （实证：1.txt 场景2 校验失败清 session 后，场景3 重登并卡死）。
-     *
-     * <p>故本绑定**随 Context 生命周期存活**：登录/会话恢复时绑定，仅在 Context 真正被关闭或丢弃时清除。
-     * {@code null} = 该 Context 未承载任何登录态（收尾仍按"无 session → 关 Context 防跨用例串扰"处理）。
-     */
-    private static final ThreadLocal<String> CURRENT_CONTEXT_SESSION_KEY = new ThreadLocal<>();
-
     private ContextRegistryImpl() {
-    }
-
-    /**
-     * 绑定本线程当前 Context 承载的登录 sessionKey（登录成功 / 会话恢复 / 命中持久化 session 时调用）。
-     *
-     * <p>幂等；{@code null}/空串为 no-op（不覆盖已有绑定，避免"未知"把已知绑定抹掉）。
-     *
-     * @param sessionKey 会话标识，如 {@code O63_SIT1_WP7UAT2_2}
-     */
-    public void bindCurrentContextSessionKey(String sessionKey) {
-        if (sessionKey != null && !sessionKey.isEmpty()) {
-            CURRENT_CONTEXT_SESSION_KEY.set(sessionKey);
-        }
-    }
-
-    /**
-     * 本线程当前 Context 承载的登录 sessionKey。
-     *
-     * @return 会话标识；该 Context 未承载登录态时返回 {@code null}
-     */
-    public String currentContextSessionKeyForThread() {
-        return CURRENT_CONTEXT_SESSION_KEY.get();
-    }
-
-    /**
-     * 清除登录态绑定 —— 必须与 {@link #CURRENT_CONTEXT_BY_THREAD} 的清除**同点无条件执行**：
-     * Context 已不在（或正被替换）时，绑定若残留会让下个用例误以为"当前 Context 承载着某 session"。
-     */
-    private static void clearContextSessionKey() {
-        CURRENT_CONTEXT_SESSION_KEY.remove();
     }
 
     public BrowserContext getContext() {
@@ -103,12 +59,12 @@ public final class ContextRegistryImpl implements ContextRegistry {
             PlaywrightManager.closeContext();
         }
 
-        //  S1 修复（feature 模式浏览器覆盖失效）：在复用判定之前，先确保浏览器类型与当前
+        //  S1 修复（浏览器标签覆盖失效）：在复用判定之前，先确保浏览器类型与当前
         //  有效类型一致。PlaywrightManager.getBrowser() 内含「configId 浏览器类型 ≠ 期望类型
         //  → handleBrowserTypeSwitch 关闭旧浏览器并切换」的逻辑；切换会顺带关闭旧 Context，
         //  使下方线程级复用的 Context 因浏览器断开而失效、进而在锁内重建到正确浏览器。
-        //  这样 @firefox/@edge 标签覆盖在 feature 模式（restart.browser.for.each=feature，
-        //  跨 scenario 复用同一 Context）下也能真正生效，且不改动 configId 时序、不冲击 S2 注解门控。
+        //  这样 @firefox/@edge 标签覆盖在任意重启策略下都能真正生效
+        //  （每个 scenario 重建 Context，类型不一致时由 getBrowser() 切换后重建），且不改动 configId 时序、不冲击 S2 注解门控。
         //  守卫：仅在已确立 configId（正常 scenario 生命周期内）时强制类型一致；configId 为空
         //  （场景收尾后、下个 scenario 初始化前）的非常规路径保持原复用容忍，避免行为变化。
         //  注意：必须读取【原始键】而非 {@link PlaywrightManager#getCurrentConfigId()}——
@@ -192,8 +148,6 @@ public final class ContextRegistryImpl implements ContextRegistry {
             CURRENT_CONTEXT_BY_THREAD.remove();
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, new context will be created with updated configurations on next access");
         }
-        //  A5：Context 已不在/正被替换 → 登录态绑定无条件清除（与 CURRENT_CONTEXT_BY_THREAD 同点）
-        clearContextSessionKey();
 
         // customContextOptionsFlag 已在 CustomOptionsManager.setXXX() 中设置
     }
@@ -219,8 +173,6 @@ public final class ContextRegistryImpl implements ContextRegistry {
             CURRENT_CONTEXT_BY_THREAD.remove();
             VerboseLogging.logInfoIfVerbose(logger, "Context closed, will create new one with custom configurations on next access");
         }
-        //  A5：同上 —— Context 消失即清除登录态绑定
-        clearContextSessionKey();
     }
     /**
      * 创建新的 BrowserContext（保证场景间配置隔离）
@@ -273,8 +225,6 @@ public final class ContextRegistryImpl implements ContextRegistry {
             // 并补上此前遗漏的 CustomOptionsManager 全量清理（调用 closeContext 即视为场景结束）。
             // 注：BasePage 的静态 ThreadLocal 清理（clearAllThreadLocals）已在架构整改中移除——
             // 该静态引用本就是死状态，iframe/shadow 上下文已改为每实例独立持有（见 BasePage.currentFrame/currentShadow）。
-            //  A5：Context 已关闭 → 登录态绑定无条件清除（与 CURRENT_CONTEXT_BY_THREAD 同点）
-            clearContextSessionKey();
             PlaywrightRuntime.instance().browserCleanup.safeClean("TestServices.clear", ContextRegistryImpl::clearApiTestServices);
             PlaywrightRuntime.instance().browserCleanup.safeClean("CustomOptionsManager.removeAllThreadLocals", CustomOptionsManager::removeAllThreadLocals);
         });
@@ -300,7 +250,13 @@ public final class ContextRegistryImpl implements ContextRegistry {
                 }
             });
         });
-        PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine", () -> RouteLifecycleRegistry.get().stopContextEngine(context));
+        //  T8-5：本方法的三条调用路径（closeContext / scheduleContextRebuild /
+        //  recreateContextIfCustomConfigNeeded）**末尾都会执行下面的 context.close()**，
+        //  故这里显式传 contextBeingClosed=true —— 路由规则随 Context 由驱动原生释放，
+        //  不再逐条 unroute（每条一次无客户端超时的协议往返，且是"收尾未确证"的来源）。
+        //  前提不变式：本方法内不得新增"提前 return 而跳过 context.close()"的分支。
+        PlaywrightRuntime.instance().browserCleanup.safeClean("RouteEngine.stopContextEngine",
+                () -> RouteLifecycleRegistry.get().stopContextEngine(context, true));
         //  有界关闭：context.close() 可能挂（SIT 页卸载对话框/挂起导航），限时防止 scenario 线程死挂；
         //  超时由 CloseGuard 记失败计数并放弃等待（daemon 上继续，JVM 退出回收）。
         CloseGuard.runBounded("context-close", () -> PlaywrightContextManager.closeContext(context), CloseGuard.CONTEXT_CLOSE_LIMIT_MS);

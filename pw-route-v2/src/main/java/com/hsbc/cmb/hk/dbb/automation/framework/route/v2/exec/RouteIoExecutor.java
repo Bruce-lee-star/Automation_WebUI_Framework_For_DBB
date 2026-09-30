@@ -86,6 +86,14 @@ public final class RouteIoExecutor implements AutoCloseable {
         return pool.getActiveCount() + pool.getQueue().size();
     }
 
+    /**
+     * 立即停机（不等待在途任务）：**仅用于 context 已销毁的收尾路径**，避免在 Playwright 消息泵线程上
+     * 长时间阻塞（context 销毁时驱动侧 handler 由 Playwright 一并释放，无需等待本池收尾）。
+     */
+    public void closeNoWait() {
+        pool.shutdown();
+    }
+
     /** 优雅停机：拒绝新任务，有界等待在途任务完成。 */
     @Override
     public void close() {

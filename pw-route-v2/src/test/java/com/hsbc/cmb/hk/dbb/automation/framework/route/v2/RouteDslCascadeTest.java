@@ -86,7 +86,7 @@ public class RouteDslCascadeTest {
     public void legacyStyleCascadeRegistersEverySegment() throws Exception {
         mockContext();
 
-        AutoCloseable handle = RouteDsl2.on(ctx)
+        RouteDsl2 dsl = RouteDsl2.on(ctx)
                 .api("/error/profile-error.jsp").monitor().expectStatus(200).timeout(60).done()
                 .api("auth/assert").monitor().expectStatus(200).timeout(60).done()
                 .api("j_spring_security-check_v2").monitor().expectStatus(302).timeout(60).done()
@@ -95,12 +95,12 @@ public class RouteDslCascadeTest {
                 .api("profile/list").mock().interceptResponse()
                 .mockReplaceField("updateContctOverlayFlag", false)
                 .mockReplaceField("isOverBlockedDate", false)
-                .done()
-                .start();
+                .done();
+        dsl.start();
 
         org.mockito.Mockito.verify(ctx, org.mockito.Mockito.times(5)).route(anyString(), any(), any());
-        handle.close(); // 幂等注销
-        handle.close();
+        dsl.clear(); // 幂等注销
+        dsl.clear();
         assertTrue(true);
     }
 

@@ -31,10 +31,9 @@ public final class ScenarioLifecycle {
      * <p>⚠️ <b>顺序不可变更</b>：禁止在桥前 remove page/context 引用，否则桥取到 null，
      * scenario 级 Context/Page 不被关闭（仅触发 onClose 钩子），造成真实浏览器资源泄漏。
      *
-     * <p>{@code CustomOptionsManager} 的清理必须放到<b>桥之后</b>：桥在 feature 模式
-     * （{@code resetCustomContextOptionsForFeatureMode}）会读取 {@code customStorageStatePath}
-     * 来"跨 scenario 保留登录态"；若在桥之前调用 {@code removeAllThreadLocals()} 将其清空，
-     * 该优化会被静默绕过。{@code currentConfigId} 与钩子快照不参与桥的决策，可在桥前安全清理。
+     * <p>{@code CustomOptionsManager} 的清理必须放到<b>桥之后</b>：桥会先读取 {@code customStorageStatePath}
+     * 完成 storageState 回填，再执行 Context/Page 关闭；若在桥之前调用 {@code removeAllThreadLocals()} 将其清空，
+     * 回填所需的 storageState 路径会被静默丢失。{@code currentConfigId} 与钩子快照不参与桥的决策，可在桥前安全清理。
      */
     public static void cleanupForScenario() {
         cleanupForScenario(false);

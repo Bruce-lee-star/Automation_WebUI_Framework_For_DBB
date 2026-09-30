@@ -3,6 +3,8 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.binding;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * 代际注册表 —— 规则的单一发布点。
@@ -49,6 +51,28 @@ public final class GenerationRegistry {
     public boolean compareAndSet(RuleGeneration expected, RuleGeneration next) {
         return current.compareAndSet(expected, next);
     }
+
+    /**
+     * 令牌化移除：仅当 {@code pattern} 当前仍是 {@code expected} 实例时移除该规则。
+     *
+     * <p>用于"注册失败回滚"与"句柄关闭"—— 防止旧触发者按 pattern 摘掉同 pattern 的<b>新规则</b>。</p>
+     *
+     * @return true=已移除；false=该 pattern 不存在或已被替换（拒绝移除新规则）
+     */
+    public boolean removeIfCurrent(String pattern, ApiSpec expected) {
+        while (true) {
+            RuleGeneration base = current.get();
+            if (base.specFor(pattern) != expected) {
+                return false;
+            }
+            Map<String, ApiSpec> next = new LinkedHashMap<>(base.rules());
+            next.remove(pattern);
+            if (current.compareAndSet(base, RuleGeneration.next(base, next))) {
+                return true;
+            }
+        }
+    }
+
 
     public int generation() {
         return current.get().generation();

@@ -3,6 +3,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dispatch;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.RouteRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.claim.RouteClaim;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteDsl2;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.modify.RequestBodyModifier;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.util.ApiMatcher;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.util.FieldReplacer;
@@ -18,6 +19,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 分发裁决器 —— 事件线程（Playwright 回调线程）的唯一入口，全程无阻塞。
@@ -42,10 +44,16 @@ public final class RouteDispatcher {
     /** DELAY 上限：单请求最多延迟毫秒数（防配置失误导致长悬挂）。 */
     private static final long MAX_DELAY_MS = 30_000L;
 
+    /** T1 度量基线：进入分发器的请求数（= 路由层被触发的次数，即"下发次数"）。 */
+    private final AtomicLong dispatchCount = new AtomicLong(0);
+    /** T1 度量基线：真正命中规则条件并触发能力的请求数（<= 下发次数，即"路由命中数"）。 */
+    private final AtomicLong hitCount = new AtomicLong(0);
+
     /** spec → 预编译匹配器缓存（ApiSpec 不可变，实例即稳定 key；同一 spec 只编译一次）。 */
     private final ConcurrentMap<ApiSpec, ApiMatcher> matcherCache = new ConcurrentHashMap<>();
 
     public void dispatch(Route route, String pattern, RouteRuntime runtime) {
+        dispatchCount.incrementAndGet();
         // 1) 唯一 claim（防重放 / 防并发终结）
         RouteClaim claim = runtime.claims().tryClaim(route);
         if (claim == null) {
@@ -84,7 +92,13 @@ public final class RouteDispatcher {
         // 3.6) 统一观测（所有能力必经）：MONITOR 记录 + CAPTURE 采集。
         //    capture 是横切观测——mock/modify/delay/monitor 的请求都记录，不参与终结所有权、
         //    不改变请求流，与能力执行路径无共享可变状态（无竞态）。
+        hitCount.incrementAndGet(); // 已通过匹配条件与停止判定 ⇒ 确为一次"命中"
         runtime.recordObservation(route.request(), spec);
+
+        // 命中日志：每次请求真正触发能力时输出具体操作（body 不截断、敏感信息统一经 SensitiveDataSanitizer 打码）。
+        LOGGER.info("[RouteV2] captured {} route for '{}'{}",
+                spec.capability(), spec.pattern(),
+                RouteDsl2.describeCaptured(spec, route.request().method(), route.request().url()));
 
         // 4) 能力裁决
         try {
@@ -271,7 +285,7 @@ public final class RouteDispatcher {
 
     /**
      * DELAY：事件线程返回 pending（Router.PendingHandler → 驱动挂起请求），
-     * 由 delayedExecutor 到点后 resume（sweep 超龄兜底）。
+     * 由 RouteDelayScheduler.delay 到点后 resume（sweep 超龄兜底）。
      *
      * <p>对照 playwright-java-1.62.0 {@code Router.handle}（Router.java:75-100）：
      * handler 返回时未终结且未 fallback → 返回 {@code PendingHandler}，请求由驱动侧挂起，
@@ -299,13 +313,12 @@ public final class RouteDispatcher {
             }
             // 事件线程已返回 pending，请求由驱动挂起。唯一终结路径 = 延迟任务 resume（或 sweep 兜底）。
             // Architecture rule (LayeringArchTest): framework code must not Thread.sleep on IO threads;
-            // delay is scheduled via CompletableFuture.delayedExecutor (daemon common pool);
+            // delay is scheduled via CompletableFuture.RouteDelayScheduler.delay (daemon common pool);
             // the IO slot is released as soon as this task returns; pending 额度在 resume 后由
             // ClaimRegistry.markTerminal 释放（wasIoAwait → pendingGuard.release），sweep(35s)
             // 大于 delay 上限(30s)，窗口期无悬挂风险。
-            java.util.concurrent.CompletableFuture
-                    .delayedExecutor(effectiveDelay, java.util.concurrent.TimeUnit.MILLISECONDS)
-                    .execute(() -> {
+            com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.RouteDelayScheduler
+                    .delay(effectiveDelay, () -> {
                         if (claim.isTerminal()) {
                             return; // sweep already settled (fallback resumed)
                         }
@@ -330,5 +343,15 @@ public final class RouteDispatcher {
             return false;
         }
         return true;
+    }
+
+    /** T1：进入分发器的请求数（"下发次数"）。 */
+    public long dispatchCount() {
+        return dispatchCount.get();
+    }
+
+    /** T1：命中规则条件并触发能力的请求数（"路由命中数"）。 */
+    public long hitCount() {
+        return hitCount.get();
     }
 }

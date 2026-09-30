@@ -380,19 +380,6 @@ public class RouteEngine {
         RuleRepository.clearContext(context);
     }
 
-    /**
-     * 跨用例栅栏：有界等待该 context 的在途 unroute 收尾完成（下一个用例复用同一 Context 前调用）。
-     *
-     * <p>委托 {@link RuleRepository#awaitInFlightUnroute(Object, long)}；语义与调用点见该方法注释。
-     * 无在途收尾时零开销（一次 Map 查询）。
-     *
-     * @param context   Page / BrowserContext
-     * @param timeoutMs 等待上限（毫秒）
-     * @return true = 无在途收尾或已在超时内完成；false = 超时
-     */
-    public static boolean awaitInFlightUnroute(Object context, long timeoutMs) {
-        return RuleRepository.awaitInFlightUnroute(context, timeoutMs);
-    }
 
     /**
      * 该 context 是否已被判定「浏览器/连接无响应」（有界协议往返超时即登记）。

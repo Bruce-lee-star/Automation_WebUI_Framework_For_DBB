@@ -298,9 +298,10 @@ public class FrameworkCore {
     /**
      * 测试完成后的清理（带用例结果，A5 / 2026-09-26）。
      *
-     * <p><b>为什么必须有这个重载</b>：feature 模式下「上个用例失败」必须<b>丢弃其 Page</b>
-     * （失败用例的 Page 可能"存活但已坏"，不许跨用例传染），但<b>保留 Context/登录态</b>
-     * （同一 sessionKey 的下个用例既不带脏数据、又免登录）。
+     * <p><b>为什么必须有这个重载</b>：feature 模式下「上个用例失败」的处置取决于 Context 是否承载登录态
+     * （2026-09-28 修订，取代原"一律丢 Page"）：
+     * <b>承载登录态</b>（同一 sessionKey 绑定存在）⇒ <b>保留 Context 与 Page</b>、不重建（失败不污染会话，
+     * 下个用例继续免登录）；<b>无登录态绑定</b> ⇒ 丢弃其 Page（"存活但已坏"，不许跨用例传染）、保留 Context。
      *
      * <p>实测（test-automation/1.txt 2026-09-26）框架的<b>实际收尾入口</b>是 glue 的 {@code @After}
      * → 本方法（它先于 Serenity {@code testFinished} 执行，且 glue 包内的 {@code @Before/@After} 对

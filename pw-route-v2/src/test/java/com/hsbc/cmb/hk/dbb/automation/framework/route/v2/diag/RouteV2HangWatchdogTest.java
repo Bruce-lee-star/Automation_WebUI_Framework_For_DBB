@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -34,5 +35,43 @@ public class RouteV2HangWatchdogTest {
     @Test
     public void consumeHardHang_initiallyNull() {
         assertNull(new HangWatchdog("t").consumeHardHang());
+    }
+
+    private static StackTraceElement[] frozenStack() {
+        return new StackTraceElement[] { new StackTraceElement("com.hsbc.Foo", "block", "Foo.java", 42) };
+    }
+
+    private static StackTraceElement[] otherStack() {
+        return new StackTraceElement[] { new StackTraceElement("com.hsbc.Bar", "run", "Bar.java", 7) };
+    }
+
+    @Test
+    public void frozenStackReportsOnceAfterThreshold() {
+        HangWatchdog wd = new HangWatchdog("t");
+        // 默认阈值 3：前 2 次不报，第 3 次报，同剧集后续不重复刷屏
+        assertFalse(wd.recordStackSample(frozenStack()));
+        assertFalse(wd.recordStackSample(frozenStack()));
+        assertTrue("第 3 次相同栈应上报", wd.recordStackSample(frozenStack()));
+        assertFalse("同冻结剧集不重复上报", wd.recordStackSample(frozenStack()));
+    }
+
+    @Test
+    public void changingStackNeverReports() {
+        HangWatchdog wd = new HangWatchdog("t");
+        for (int i = 0; i < 10; i++) {
+            assertFalse("栈在推进 ⇒ 永不误报", wd.recordStackSample(i % 2 == 0 ? frozenStack() : otherStack()));
+        }
+    }
+
+    @Test
+    public void thawThenRefreezeReportsAgain() {
+        HangWatchdog wd = new HangWatchdog("t");
+        wd.recordStackSample(frozenStack());
+        wd.recordStackSample(frozenStack());
+        assertTrue(wd.recordStackSample(frozenStack()));      // 首次冻结上报
+        assertFalse(wd.recordStackSample(frozenStack()));     // 同剧集不重复
+        wd.recordStackSample(otherStack());                   // 解冻
+        assertFalse(wd.recordStackSample(otherStack()));
+        assertTrue("重新冻结再次上报", wd.recordStackSample(otherStack()));
     }
 }

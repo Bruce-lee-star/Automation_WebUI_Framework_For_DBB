@@ -27,7 +27,8 @@ public final class StubGuardedDriverCall implements GuardedDriverCall {
             if (policy == OnTimeout.WARN_AND_ABANDON) {
                 return null;
             }
-            throw e;
+            // FAIL_FAST contract (GuardedDriverCall#guarded): wrap, mirroring GuardedDriverCallImpl.
+            throw new IllegalStateException("[stub] driver call '" + opName + "' failed", e);
         } catch (Exception e) {
             if (policy == OnTimeout.WARN_AND_ABANDON) {
                 return null;

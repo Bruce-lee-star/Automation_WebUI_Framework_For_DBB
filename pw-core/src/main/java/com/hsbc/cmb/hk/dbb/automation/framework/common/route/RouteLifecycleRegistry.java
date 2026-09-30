@@ -1,27 +1,21 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.route;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 路由生命周期实现注册表（核心层）。
  *
- * <p>route 模块的实现类（{@code framework.route.lifecycle.RouteLifecycleImpl}）在类加载时
- * 通过 {@link #register(RouteLifecycle)} 自注册；web 侧只调用 {@link #get()} 获取实现，
- * 无需在编译期依赖 route 模块，从而打破 {@code web ↔ route} 循环依赖。
+ * <p>各路由实现（如 Route V2 的 {@code route.v2.lifecycle.RouteLifecycleV2Impl}）在类加载时
+ * 通过 {@link #registerAdditional(RouteLifecycle)} 追加注册；web 侧只调用 {@link #get()} 获取实现，
+ * 无需在编译期依赖路由模块，从而打破 {@code web ↔ route} 循环依赖。
  *
- * <p>若 route 模块不在 classpath 上（如纯 web 测试），{@link #get()} 返回 null，
- * 调用方应做空判断或忽略（保持原有"route 未启用则跳过清理"的语义）。
+ * <p>若没有任何实现注册（如纯 web 测试），{@link #get()} 返回仅含空主体的聚合对象，
+ * 调用方语义不变（"route 未启用则跳过清理"）。
  */
 public final class RouteLifecycleRegistry {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(RouteLifecycleRegistry.class);
-
     private static volatile RouteLifecycle instance;
     private static final CopyOnWriteArrayList<RouteLifecycle> ADDITIONAL = new CopyOnWriteArrayList<>();
-    private static volatile boolean initialized;
 
     private RouteLifecycleRegistry() {}
 
@@ -41,24 +35,8 @@ public final class RouteLifecycleRegistry {
         ADDITIONAL.addIfAbsent(impl);
     }
 
-
     public static RouteLifecycle get() {
-        if (!initialized) {
-            synchronized (RouteLifecycleRegistry.class) {
-                if (!initialized) {
-                    try {
-                        // 延迟加载 route 模块实现（触发其静态注册块），失败则说明 route 未启用
-                        Class.forName(
-                                "com.hsbc.cmb.hk.dbb.automation.framework.route.lifecycle.RouteLifecycleImpl");
-                    } catch (Exception | LinkageError e) {
-                        // route 模块缺失或尚未初始化：保持 instance 为 null（预期降级，但不得静默，D7-3）
-                        LOGGER.debug("[RouteLifecycleRegistry] route module not available: {}", e.toString());
-                    }
-                    initialized = true;
-                }
-            }
-        }
-        // 多实现聚合：primary 语义不变，additions（如 Route V2 lifecycle）随同一挂点被驱动
+        // 多实现聚合：primary 语义不变，additions（Route V2 lifecycle）随同一挂点被驱动
         return RouteLifecycleComposite.of(instance, ADDITIONAL);
     }
 }

@@ -65,15 +65,24 @@ public class RouteLifecycleV2IntegrationTest {
         assertEquals("stopContextEngine 只关目标 context，其余不受影响", (long) 1, (long) RouteEngine2.activeRuntimes());
     }
 
+    /**
+     * clearContext 是<b>档 B 纯内存解绑</b>：只清规则、保留 runtime 与 Context（避免每个 scenario
+     * 收尾重 bind 触发的 30s 卡死 / 信道污染）。真正关闭 runtime 仍由 stopContextEngine / shutdown 负责。
+     */
     @Test
-    public void clearContextIsEquivalentToShutdown() {
+    public void clearContextDetachesRulesButKeepsRuntime() {
         mockContext();
         RouteDsl2.on(ctx).api("/api/a").mock().status(200).body("{}").register();
         assertEquals((long) 1, (long) RouteEngine2.activeRuntimes());
 
         RouteLifecycleRegistry.get().clearContext(ctx);
 
-        assertEquals("clearContext 必须关闭 V2 运行时", (long) 0, (long) RouteEngine2.activeRuntimes());
+        // 档 B：clearContext 仅解绑规则、保留 runtime（不再等价 shutdown）
+        assertEquals("clearContext 必须保留 runtime（仅解绑规则）", (long) 1, (long) RouteEngine2.activeRuntimes());
+
+        // 显式 stop 才真正关闭 runtime
+        RouteLifecycleRegistry.get().stopContextEngine(ctx);
+        assertEquals((long) 0, (long) RouteEngine2.activeRuntimes());
     }
 
     @Test

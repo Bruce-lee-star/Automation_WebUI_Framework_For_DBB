@@ -86,7 +86,10 @@ class SessionStoreSessionExpiryTest {
     private static void writeSessionFixture(String sessionKey, long cookieTtlSeconds, long lastAccessTime)
             throws Exception {
         Path sessionPath = sessionJsonPath(sessionKey);
-        Files.createDirectories(sessionPath.getParent());
+        Path parent = sessionPath.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         String storageState = "{\"cookies\":[{\"name\":\"eID\",\"value\":\"x\",\"expires\":"
                 + cookieTtlSeconds + "},{\"name\":\"JSESSIONID\",\"value\":\"x\",\"expires\":-1}],"
                 + "\"origins\":[]}";

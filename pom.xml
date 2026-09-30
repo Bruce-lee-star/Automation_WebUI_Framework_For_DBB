@@ -43,26 +43,10 @@
              历史：CORE-P0-1 为适配 jackson 2.18.3 上界曾被动降到 4.2.0；版本已集中此处，升级只改本属性 + 同步配套覆盖项。 -->
         <serenity.version>4.3.4</serenity.version>
         <serenity.cucumber.version>4.3.4</serenity.cucumber.version>
-        <!-- 【外部提供的补丁客户端 · 必读】
-             本仓库自 2026-09-30 起**不再构建** Playwright Java 客户端补丁模块（原 reactor 模块 `pw-playwright`
-             已整体删除，源码不在本仓库）。框架依赖的是**外部已发布**的自建客户端：
-
-                 com.microsoft.playwright:playwright:1.62.0-dbb2
-
-             它 = 上游 playwright-java 1.62.0 + DBBN-PATCH-01（Connection.dispatch 按消息隔离异常）
-                 + DBBN-PATCH-02（拦截 pattern 仅在规则表真的变化时重发）。
-
-             ⇒ 构建前提：该坐标必须**已存在于本地仓库 / 可达的远端仓库**，否则依赖解析直接失败。
-             ⇒ 复现方式（升级 Playwright 或在新机器重建时）：
-                 1) 取上游 playwright-java 对应版本的 src/main；
-                 2) 依次应用 docs/patches/playwright-java-1.62.0-dbb-patch-0{1,2}.patch；
-                 3) 以独立 POM（无父、groupId=com.microsoft.playwright、artifactId=playwright、
-                    version=1.62.0-dbb2、compiler 3.13.0、依赖 gson 2.14.0 / opentest4j 1.3.0 /
-                    driver+driver-bundle 1.62.0 / junit-jupiter-api 5.11.4(provided)）构建并 install。
-                 详见 docs/patches/playwright-java-1.62.0-dbb-patch-01.md §5。
-             ⇒ 防丢失守卫：pw-route-v2 的 DbbPatchGuardTest 断言 Connection.DBBN_PATCH_LEVEL == 2 ——
-                 一旦误用官方 jar，该测试**编译失败**，缺陷不会静默复现。 -->
-        <playwright.version>1.62.0-dbb2</playwright.version>
+        <!-- 【Playwright Java 客户端 · 必读】
+             自 2026-09-30 起，框架直接依赖上游官方发行版（stock）playwright-java 1.62.0，来自 Maven Central，
+             不再使用自建补丁客户端。版本集中由下方 <playwright.version> 属性控制，升级只改该属性。 -->
+        <playwright.version>1.62.0</playwright.version>
         <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5。
              CT2-22：原设计文档（docs 下 architecture-review 的 17 号「整改专项设计_JUnit5升级」）
              未随升级落盘 —— 17 号现为「17_全量评审_逐模块逐文件多维报告」；如需追溯请查 git 历史。

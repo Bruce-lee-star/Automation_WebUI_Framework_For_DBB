@@ -9,6 +9,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.BoundedOps;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.RouteIoExecutor;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CapturedApiCall;
+import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 
@@ -68,6 +69,20 @@ public interface RouteRuntime extends AutoCloseable {
      * @apiNote framework-internal
      */
     RouteIoExecutor io();
+
+    /**
+     * 本 runtime 所属 Context 的 {@link APIRequestContext}（共享该 Context 的 cookie 存储）。
+     *
+     * <p>供 MOCK intercept 取真实响应使用——与 {@code page.request()} 等价，但<b>不依赖</b>任何
+     * {@code Page}/{@code Frame}/{@code Request} 句柄，从结构上杜绝"导航期句柄回收"竞态。
+     * 取响应所需的 url/method/headers/body 由调用方在<b>事件线程拦截那一刻</b>以值快照提供。</p>
+     *
+     * @return 可用则返回；实现无法提供时返回 {@code null}（调用方必须 fail-open）
+     * @apiNote framework-internal: 仅 RouteDispatcher 使用
+     */
+    default APIRequestContext request() {
+        return null;
+    }
 
     /** runtime 是否已关闭。 */
     boolean isClosed();

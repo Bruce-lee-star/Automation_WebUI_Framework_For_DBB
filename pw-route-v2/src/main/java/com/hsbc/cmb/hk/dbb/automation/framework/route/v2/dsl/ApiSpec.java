@@ -220,6 +220,187 @@ public final class ApiSpec {
         return disabled.contains(capability);
     }
 
+    /**
+     * 能力位"字段就绪"判定（同 V1 {@code PriorityPolicy.hasModifyCapability}）：
+     * 该能力是否在当前合并规则中实际携带参数。dispatcher 据此在单 handler 内决定时序编排步骤，
+     * 而非依赖 {@link #capability()} 单标签（合并规则下 capability 仅为日志主标签）。
+     */
+    public boolean hasModifyFields() {
+        return !requestHeadersToSet.isEmpty() || !requestHeadersToRemove.isEmpty()
+                || !bodyOps.isEmpty() || modifyMethod != null;
+    }
+
+    /** 同 {@link #hasModifyFields()}：MOCK 能力是否携带伪造/拦截参数。 */
+    public boolean hasMockFields() {
+        return mockStatus != null || mockBody != null || mockContentType != null
+                || !mockHeaders.isEmpty() || mockIntercept;
+    }
+
+    /** MONITOR 能力是否携带观测参数（响应侧断言 / 自动停止 / 采集），供诊断与退役令牌判定。 */
+    public boolean hasMonitorFields() {
+        return expectStatus != null || hasBodyAssertions() || autoStopOnMatch;
+    }
+
+    /**
+     * 按能力位分发的能力字段就绪判定（供 GenerationRegistry 的令牌校验、退役判定复用）。
+     */
+    public boolean hasCapabilityFields(RouteCapability cap) {
+        switch (cap) {
+            case MOCK:
+                return hasMockFields();
+            case MODIFY_REQUEST:
+                return hasModifyFields();
+            case DELAY:
+                return delayMs > 0 || delayMinMs > 0 || delayMaxMs > 0;
+            case MONITOR:
+                return hasMonitorFields();
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * 合并另一条同 pattern 规则（V1 单规则多能力位模型：后注册覆盖先注册、匹配条件后者优先、
+     * 集合类字段 union、disabled 集合 union）。返回不可变新实例。
+     *
+     * <p>语义对齐 V1 {@code mergeCrossLayer}：能力位 OR，一次请求仅执行一次，由 dispatcher 按
+     * {@link RouteCapability#executionOrder()} 统一编排（DELAY→MODIFY→MOCK→MONITOR）。
+     */
+    public ApiSpec merge(ApiSpec o) {
+        if (o == null) {
+            return this;
+        }
+        Builder b = Builder.copyOf(this);
+        // 标量：o 非默认（非空 / 非零）则覆盖（后注册优先）
+        if (o.mockStatus != null) {
+            b.mockStatus = o.mockStatus;
+        }
+        if (o.mockBody != null) {
+            b.mockBody = o.mockBody;
+        }
+        if (o.mockContentType != null) {
+            b.mockContentType = o.mockContentType;
+        }
+        if (o.mockIntercept) {
+            b.mockIntercept = true;
+        }
+        if (o.modifyMethod != null) {
+            b.modifyMethod = o.modifyMethod;
+        }
+        if (o.delayMs > 0) {
+            b.delayMs = o.delayMs;
+        }
+        if (o.delayMinMs > 0) {
+            b.delayMinMs = o.delayMinMs;
+        }
+        if (o.delayMaxMs > 0) {
+            b.delayMaxMs = o.delayMaxMs;
+        }
+        if (o.expectStatus != null) {
+            b.expectStatus = o.expectStatus;
+        }
+        if (o.expectBodyContains != null) {
+            b.expectBodyContains = o.expectBodyContains;
+        }
+        if (o.expectBodyRegex != null) {
+            b.expectBodyRegex = o.expectBodyRegex;
+        }
+        if (o.monitorTimeoutMs != Builder.DEFAULT_MONITOR_TIMEOUT_MS) {
+            b.monitorTimeoutMs = o.monitorTimeoutMs;
+        }
+        if (o.minMatches != Builder.DEFAULT_MIN_MATCHES) {
+            b.minMatches = o.minMatches;
+        }
+        if (o.captureBodyLimitBytes != Builder.DEFAULT_CAPTURE_BODY_LIMIT_BYTES) {
+            b.captureBodyLimitBytes = o.captureBodyLimitBytes;
+        }
+        if (o.times != null) {
+            b.times = o.times;
+        }
+        if (o.matchMethod != null) {
+            b.matchMethod = o.matchMethod;
+        }
+        if (o.resourceTypes != null) {
+            b.resourceTypes = o.resourceTypes;
+        }
+        if (o.matchBodyRegex != null) {
+            b.matchBodyRegex = o.matchBodyRegex;
+        }
+        if (o.matchContentType != null) {
+            b.matchContentType = o.matchContentType;
+        }
+        if (o.matchReferrer != null) {
+            b.matchReferrer = o.matchReferrer;
+        }
+        if (o.matchOrigin != null) {
+            b.matchOrigin = o.matchOrigin;
+        }
+        if (o.matchFrameUrl != null) {
+            b.matchFrameUrl = o.matchFrameUrl;
+        }
+        // 集合 / 开关：union 或 OR（后注册优先开启）
+        b.mockHeaders.putAll(o.mockHeaders);
+        b.mockReplacements.putAll(o.mockReplacements);
+        b.conditionalReplacements.addAll(o.conditionalReplacements);
+        b.requestHeadersToSet.putAll(o.requestHeadersToSet);
+        b.requestHeadersToRemove.addAll(o.requestHeadersToRemove);
+        b.bodyOps.addAll(o.bodyOps);
+        b.jsonPathAssertions.putAll(o.jsonPathAssertions);
+        b.formFieldAssertions.putAll(o.formFieldAssertions);
+        b.matchHeaders.putAll(o.matchHeaders);
+        b.matchQueryParams.putAll(o.matchQueryParams);
+        b.disabled.addAll(o.disabled);
+        b.record = b.record || o.record;
+        b.capture = b.capture || o.capture;
+        b.captureBody = b.captureBody || o.captureBody;
+        b.autoStopOnMatch = b.autoStopOnMatch || o.autoStopOnMatch;
+        b.onlyMainFrame = b.onlyMainFrame && o.onlyMainFrame;
+        b.onlyApiCall = b.onlyApiCall || o.onlyApiCall;
+        return b.build();
+    }
+
+    /**
+     * 剥离某一能力位（关闭/退役单条能力用）：清空该能力专属字段并加入 disabled。
+     *
+     * <p>用于注册句柄 close / stop* / 目的达成退役——只撤掉这一能力，同 pattern 其余能力位保留。
+     */
+    public ApiSpec withoutCapability(RouteCapability cap) {
+        Builder b = Builder.copyOf(this);
+        b.disabled.add(cap);
+        switch (cap) {
+            case MOCK:
+                b.mockStatus = null;
+                b.mockBody = null;
+                b.mockContentType = null;
+                b.mockHeaders.clear();
+                b.mockIntercept = false;
+                b.mockReplacements.clear();
+                b.conditionalReplacements.clear();
+                break;
+            case MODIFY_REQUEST:
+                b.requestHeadersToSet.clear();
+                b.requestHeadersToRemove.clear();
+                b.bodyOps.clear();
+                b.modifyMethod = null;
+                break;
+            case DELAY:
+                b.delayMs = 0;
+                b.delayMinMs = 0;
+                b.delayMaxMs = 0;
+                break;
+            case MONITOR:
+                b.expectStatus = null;
+                b.jsonPathAssertions.clear();
+                b.expectBodyContains = null;
+                b.expectBodyRegex = null;
+                b.formFieldAssertions.clear();
+                break;
+            default:
+                break;
+        }
+        return b.build();
+    }
+
     public String pattern() {
         return pattern;
     }
@@ -414,14 +595,19 @@ public final class ApiSpec {
         private String expectBodyContains;
         private String expectBodyRegex;
         private final Map<String, String> formFieldAssertions = new LinkedHashMap<>();
-        private long monitorTimeoutMs = 30_000L;
+        /** merge 时判定"非默认"的基准常量（与下方字段初值一致）。 */
+        static final long DEFAULT_MONITOR_TIMEOUT_MS = 30_000L;
+        static final int DEFAULT_MIN_MATCHES = 1;
+        static final int DEFAULT_CAPTURE_BODY_LIMIT_BYTES = 64 * 1024;
+
+        private long monitorTimeoutMs = DEFAULT_MONITOR_TIMEOUT_MS;
         private boolean record = true;
         private boolean autoStopOnMatch;
-        private int minMatches = 1;
+        private int minMatches = DEFAULT_MIN_MATCHES;
         private boolean capture;
         private boolean captureBody;
         /** 默认响应体截断上限（64 KiB，与 CaptureLimits.DEFAULT_BODY_LIMIT_BYTES 对齐）。 */
-        private int captureBodyLimitBytes = 64 * 1024;
+        private int captureBodyLimitBytes = DEFAULT_CAPTURE_BODY_LIMIT_BYTES;
         private Integer times;
         private String matchMethod;
         private Set<String> resourceTypes;
@@ -441,6 +627,56 @@ public final class ApiSpec {
             }
             this.pattern = pattern;
             this.capability = capability;
+        }
+
+        /** 从既有规则拷贝全部字段（合并 / 剥离能力的实现基础）。 */
+        private Builder(ApiSpec s) {
+            this.pattern = s.pattern;
+            this.capability = s.capability;
+            this.disabled.addAll(s.disabled);
+            this.mockStatus = s.mockStatus;
+            this.mockBody = s.mockBody;
+            this.mockContentType = s.mockContentType;
+            this.mockHeaders.putAll(s.mockHeaders);
+            this.mockIntercept = s.mockIntercept;
+            this.mockReplacements.putAll(s.mockReplacements);
+            this.conditionalReplacements.addAll(s.conditionalReplacements);
+            this.requestHeadersToSet.putAll(s.requestHeadersToSet);
+            this.requestHeadersToRemove.addAll(s.requestHeadersToRemove);
+            this.bodyOps.addAll(s.bodyOps);
+            this.modifyMethod = s.modifyMethod;
+            this.delayMs = s.delayMs;
+            this.delayMinMs = s.delayMinMs;
+            this.delayMaxMs = s.delayMaxMs;
+            this.expectStatus = s.expectStatus;
+            this.jsonPathAssertions.putAll(s.jsonPathAssertions);
+            this.expectBodyContains = s.expectBodyContains;
+            this.expectBodyRegex = s.expectBodyRegex;
+            this.formFieldAssertions.putAll(s.formFieldAssertions);
+            this.monitorTimeoutMs = s.monitorTimeoutMs;
+            this.record = s.record;
+            this.autoStopOnMatch = s.autoStopOnMatch;
+            this.minMatches = s.minMatches;
+            this.capture = s.capture;
+            this.captureBody = s.captureBody;
+            this.captureBodyLimitBytes = s.captureBodyLimitBytes;
+            this.times = s.times;
+            this.matchMethod = s.matchMethod;
+            this.resourceTypes = s.resourceTypes == null ? null : new LinkedHashSet<>(s.resourceTypes);
+            this.matchHeaders.putAll(s.matchHeaders);
+            this.matchQueryParams.putAll(s.matchQueryParams);
+            this.matchBodyRegex = s.matchBodyRegex;
+            this.matchContentType = s.matchContentType;
+            this.matchReferrer = s.matchReferrer;
+            this.matchOrigin = s.matchOrigin;
+            this.matchFrameUrl = s.matchFrameUrl;
+            this.onlyMainFrame = s.onlyMainFrame;
+            this.onlyApiCall = s.onlyApiCall;
+        }
+
+        /** 拷贝构造入口（合并 / 剥离用）。 */
+        public static Builder copyOf(ApiSpec s) {
+            return new Builder(s);
         }
 
         // ── MOCK ──

@@ -420,16 +420,20 @@ public final class RouteDsl2 {
     /**
      * 级联结束统一提交（对齐现有 RouteDsl 的 {@code .done() ... .start()} 语法）。
      *
-     * <p>等价于 {@link #register()}：把此前所有 {@code done()} 累积的规则一次性注册，返回 {@code void}。
-     * 规则生命周期随所属 Context 关闭而清理（与现有 RouteDsl.start() 语义一致）；
-     * 若需精确注销单条 / 整组规则，请用 {@link #register()} 取得 {@link AutoCloseable} 句柄后 {@code close()}。
+     * <p>等价于 {@link #register()}：把此前所有 {@code done()} 累积的规则一次性注册，
+     * 返回合并后的注销句柄（{@link AutoCloseable}）。规则生命周期随所属 Context 关闭而清理
+     * （与现有 RouteDsl.start() 语义一致）；若需精确注销单条 / 整组规则，请用本句柄 {@code close()}。
+     *
+     * <p><b>API 契约（二进制兼容）</b>：本方法返回 {@link AutoCloseable}，与 {@link #register()}
+     * 完全一致 —— 下游已编译产物（如 test-automation 的 {@code .start();} 语句及持有句柄的用法）
+     * 不因签名变化而触发 {@code NoSuchMethodError}。
      *
      * <p>时序与并发：{@code done()} 只做内存累积（无注册、无跨线程可见状态）；
      * {@code start()} 复用 {@link #register()} 路径（逐条 CAS 线性化注册），
      * 与并发注册 / stop 系列无竞态。
      */
-    public void start() {
-        register();
+    public AutoCloseable start() {
+        return register();
     }
 
     /** 当前已声明未提交的规则数（级联调试用）。 */

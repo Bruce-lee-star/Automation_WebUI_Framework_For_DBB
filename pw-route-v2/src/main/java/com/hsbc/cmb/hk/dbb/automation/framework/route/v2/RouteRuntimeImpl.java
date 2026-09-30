@@ -20,6 +20,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CaptureSink;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CapturedApiCall;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.CapturedExchange;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.monitor.MonitorSink;
+import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Response;
@@ -247,8 +248,15 @@ public final class RouteRuntimeImpl implements RouteRuntime {
     }
 
     @Override
+    public APIRequestContext request() {
+        return context.request();
+    }
+
+    @Override
     public void recordObservation(Request request, ApiSpec spec) {
-        boolean monitorPending = monitor.recordRequest(request, spec);
+        // MONITOR 能力位已停止（stop* / 目的退役）⇒ 不再为其做响应侧观测轮询；
+        // capture 维度不受 MONITOR 停止影响，照常采集。
+        boolean monitorPending = spec.isStopped(RouteCapability.MONITOR) ? false : monitor.recordRequest(request, spec);
         boolean capturePending = capture.recordRequest(request, spec);
         if (!monitorPending && !capturePending) {
             return; // 本规则不需要响应（无响应侧断言 / 未开 capture）→ 不启动任何轮询
@@ -300,11 +308,15 @@ public final class RouteRuntimeImpl implements RouteRuntime {
             schedulePurposeDeadline(spec);
             LOGGER.debug("[RouteV2] registered pattern='{}' capability={}", spec.pattern(), spec.capability());
             return () -> {
-                //  令牌化摘除（P2）：仅当"当前规则仍是本实例"时才摘驱动绑定与内存条目；
-                //  否则该 pattern 已被新规则接管 ⇒ 本句柄必须成为 no-op（不得摘掉新规则的绑定/规则）。
-                if (generations.removeIfCurrent(spec.pattern(), spec)
-                        && binders.remove(spec.pattern(), binder)) {
-                    binder.close();
+                //  令牌化摘除（P2，单规则多能力位版）：仅当该能力位在当前合并规则中仍活跃时，
+                //  将其剥离（清空字段 + disabled）。若该 pattern 剥离后已无任何活跃能力位，再摘除原生绑定。
+                //  否则同 pattern 仍有其它能力位存活 ⇒ 本句柄只对自身能力位生效，不得摘掉同伴能力位的绑定。
+                if (generations.removeCapabilityIfCurrent(spec.pattern(), spec.capability(), spec)
+                        && generations.snapshot().specFor(spec.pattern()) == null) {
+                    PatternBinder current = binders.get(spec.pattern());
+                    if (current != null && binders.remove(spec.pattern(), current)) {
+                        current.close();
+                    }
                 }
             };
 
@@ -322,22 +334,14 @@ public final class RouteRuntimeImpl implements RouteRuntime {
         if (closed.get()) {
             return false;
         }
-        // 读-改-写必须原子：CAS 失败即重读最新代重试，保证并发 stop/register 线性化
-        while (true) {
-            RuleGeneration gen = generations.snapshot();
-            ApiSpec current = gen.specFor(pattern);
-            if (current == null || current.isStopped(capability)) {
-                return false;
-            }
-            ApiSpec next = current.withStopped(capability);
-            RuleGeneration nextGen = RuleGeneration.next(gen, gen.mergeInto(pattern, next));
-            if (generations.compareAndSet(gen, nextGen)) {
-                LOGGER.debug("[RouteV2] stopped capability={} for pattern='{}' (gen {})",
-                        capability, pattern, nextGen.generation());
-                return true;
-            }
-            // 其它线程已发布新代 → 重试
+        // 单规则多能力位：stop 仅停用该能力位（标记 disabled，dispatch 链式裁决时跳过），
+        // 不影响同 pattern 的其它能力位。并发安全由 GenerationRegistry 的 CAS 保证。
+        boolean ok = generations.disableCapability(pattern, capability);
+        if (ok) {
+            LOGGER.debug("[RouteV2] stopped capability={} for pattern='{}' (gen {})",
+                    capability, pattern, generations.generation());
         }
+        return ok;
     }
 
     @Override
@@ -378,7 +382,9 @@ public final class RouteRuntimeImpl implements RouteRuntime {
         if (spec == null) {
             return;
         }
-        generations.removeIfCurrent(spec.pattern(), spec);
+        // 单规则多能力位：注册绑定失败回滚时，只撤掉本能力位（合并规则下整条已变化，
+        // 不能按整条实例比对），保留同 pattern 其它能力位。
+        generations.removeCapabilityIfCurrent(spec.pattern(), spec.capability(), spec);
     }
 
     /**
@@ -543,14 +549,31 @@ public final class RouteRuntimeImpl implements RouteRuntime {
         if (spec == null || closed.get()) {
             return true;
         }
-        ApiSpec current = generations.snapshot().specFor(spec.pattern());
-        if (current != spec) {
-            LOGGER.debug("[RouteV2] stale purpose trigger for '{}' ignored "
-                            + "(rule instance has been replaced; current rule keeps its own lifecycle)",
-                    spec.pattern());
-            return true;
+        // 令牌化摘除本能力位：仅当当前仍是本触发者注册的规则实例时才退役
+        // （拒绝误撤新规则 / 已停规则）；同 pattern 其它能力位（MOCK/MODIFY/DELAY）不受影响。
+        // 使用「移除」语义（而非仅标记 disabled）使该能力位彻底脱离合并视图；
+        // 若移除后 pattern 已无任何活跃能力位，则关闭其原生绑定（handler 撤销）。
+        generations.removeCapabilityIfCurrent(spec.pattern(), spec.capability(), spec);
+        if (generations.snapshot().specFor(spec.pattern()) == null) {
+            PatternBinder binder = binders.remove(spec.pattern());
+            if (binder != null) {
+                retiredByPurpose.incrementAndGet();
+                recordArmedDuration(spec.pattern());
+                boolean submitted = retire.trySubmit("retire:" + spec.pattern(),
+                        () -> confirmRetirement(spec.pattern(), binder));
+                if (!submitted) {
+                    PatternBinder previous = binders.putIfAbsent(spec.pattern(), binder);
+                    if (previous != null) {
+                        LOGGER.warn("[RouteV2] retire '{}' could not be re-queued "
+                                + "(pattern re-registered concurrently); its driver-side handler is "
+                                + "released on context close", spec.pattern());
+                    }
+                    markUnconfirmedRetirement(spec.pattern(),
+                            "retire queue full — deferred to teardown flush");
+                }
+            }
         }
-        return retireByPurpose(spec.pattern());
+        return true;
     }
 
     /**

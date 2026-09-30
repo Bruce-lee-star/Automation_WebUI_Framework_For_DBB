@@ -1,16 +1,18 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dispatch;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
+import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.APIResponse;
-import com.microsoft.playwright.Page;
-import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
+import com.microsoft.playwright.options.RequestOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 终结动作 —— 对 Playwright Route 的全部终结调用的统一出口。
@@ -41,6 +43,21 @@ public final class RouteAction {
      */
     public static boolean resume(Route route, ApiSpec spec) {
         return resume(route, spec, null);
+    }
+
+    /**
+     * 纯放行请求（无 MODIFY/MOCK，仅 DELAY/MONITOR 观测）：等价于 {@code route.resume()} 无参。
+     *
+     * @return true=resume 命令成功发出；false=route 已被处理或对象已失效（无悬挂风险）
+     */
+    public static boolean resume(Route route) {
+        try {
+            route.resume();
+            return true;
+        } catch (RuntimeException e) {
+            LOGGER.warn("[RouteV2] resume failed for url='{}': {}", route.request().url(), e.toString());
+            return false;
+        }
     }
 
     /**
@@ -168,37 +185,58 @@ public final class RouteAction {
     }
 
     /**
-     * IO 线程专用：真实响应拦截（MOCK intercept）。
+     * IO 线程专用：真实响应拦截（MOCK intercept）的取响应实现。
      *
      * <p>本方法必须经 {@link com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.BoundedOps}
-     * 调用——{@code route.fetch()} 是同步 HTTP 且可能慢，事件线程严禁触碰。
+     * 调用——它是同步 HTTP 且可能慢（实测数百 ms），事件线程严禁触碰。</p>
      *
-     * <p>A4 根治（Route fetch failed）：导航期原始响应句柄可能被浏览器驱动回收，
-     * 此时 {@code route.fetch()} 抛 {@code "Object doesn't exist: response@..."}。
-     * 直接 fail-open 会放行真实响应、丢失 mock（如 profile/list 的 updateContctOverlayFlag 替换），
-     * 进而触发遮罩。故在此捕获该异常，改用 {@code page.request} 重放被拦截的请求，
-     * 拿到全新 {@link APIResponse} 后照常 fulfill——mock 不再被静默丢弃。重放仍失败时恢复原异常，
-     * 交由 {@link com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.BoundedOps} 安全 fail-open。</p>
+     * <p><b>方案 A（结构化消除竞态）</b>：不使用 {@code route.fetch()}，统一用<b>事件线程拦截那一刻</b>
+     * 取好的 {@link RequestSnapshot}（url/method/headers/body 值拷贝）+ {@code page.request()} 从零重发。
+     * 取响应因此<b>不依赖</b>任何可能被浏览器驱动回收的 {@code frame}/{@code Request} 句柄，
+     * 从结构上消除"导航期句柄回收"竞态——<b>无需</b>任何异常捕获或错误串匹配。任何失败直接上抛，
+     * 由 {@link com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.BoundedOps} 统一 fail-open。</p>
+     *
+     * @param requestContext runtime 所属 Context 的 {@link APIRequestContext}（调用方保证非空）
+     * @param snapshot       拦截时的请求快照（调用方保证非空）
      */
-    public static APIResponse fetch(Route route) {
-        try {
-            return route.fetch(new Route.FetchOptions().setTimeout(DEFAULT_FETCH_TIMEOUT_MS));
-        } catch (PlaywrightException e) {
-            String msg = e.getMessage();
-            if (msg != null && msg.contains("Object doesn't exist")) {
-                // 响应句柄被回收：用 page.request 重放拦截请求，获取全新响应（绕过已失效句柄）
-                try {
-                    LOGGER.warn("[RouteV2] route.fetch response handle reclaimed ({}), "
-                            + "replaying via page.request", msg);
-                    Request req = route.request();
-                    Page page = req.frame().page();
-                    return page.request().fetch(req);
-                } catch (PlaywrightException re) {
-                    LOGGER.warn("[RouteV2] replay via page.request failed: {}", re.toString());
-                    throw e; // 仍失败则交上层 BoundedOps fail-open
-                }
+    public static APIResponse fetch(APIRequestContext requestContext, RequestSnapshot snapshot) {
+        RequestOptions options = RequestOptions.create()
+                .setMethod(snapshot.method() == null || snapshot.method().isEmpty() ? "GET" : snapshot.method())
+                .setTimeout(DEFAULT_FETCH_TIMEOUT_MS);
+        Set<String> skip = Set.of("host", "content-length", "connection", "accept-encoding", "cookie");
+        for (Map.Entry<String, String> entry : snapshot.headers().entrySet()) {
+            String name = entry.getKey();
+            if (name == null || name.isEmpty() || name.startsWith(":")
+                    || skip.contains(name.toLowerCase(Locale.ROOT))) {
+                continue; // 浏览器托管头交由客户端重算/注入，避免重复或冲突
             }
-            throw e;
+            options.setHeader(name, entry.getValue());
+        }
+        String body = snapshot.postData();
+        if (body != null && !body.isEmpty()) {
+            options.setData(body);
+        }
+        return requestContext.fetch(snapshot.url(), options);
+    }
+
+    /**
+     * 被拦截请求的快照（值类型）：在事件线程拦截那一刻复制 url/method/headers/body，
+     * 从而彻底脱离可能随后被驱动回收的 {@link Request} 句柄。
+     */
+    public record RequestSnapshot(String url, String method, Map<String, String> headers, String postData) {
+
+        /** 从 {@link Request} 复制快照；任何异常（含 mock/句柄不可用）返回 {@code null}。 */
+        public static RequestSnapshot of(Request request) {
+            if (request == null) {
+                return null;
+            }
+            try {
+                Map<String, String> headers = request.headers();
+                return new RequestSnapshot(request.url(), request.method(),
+                        headers == null ? Map.of() : new LinkedHashMap<>(headers), request.postData());
+            } catch (RuntimeException e) {
+                return null;
+            }
         }
     }
 }

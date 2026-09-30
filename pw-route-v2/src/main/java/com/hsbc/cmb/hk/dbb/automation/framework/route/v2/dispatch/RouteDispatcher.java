@@ -3,11 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dispatch;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.RouteRuntime;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.claim.RouteClaim;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.ApiSpec;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteCapability;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteDsl2;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.modify.RequestBodyModifier;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.util.ApiMatcher;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.util.FieldReplacer;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.util.MediaType;
+import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.Route;
 import org.slf4j.Logger;
@@ -20,6 +22,7 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * 分发裁决器 —— 事件线程（Playwright 回调线程）的唯一入口，全程无阻塞。
@@ -71,9 +74,7 @@ public final class RouteDispatcher {
             return;
         }
 
-        // 3) 匹配条件过滤：条件不满足 → 终结本规则的 claim 并 fallback。
-        //    fallback 是驱动级 Fallback（不置 handled），Router 会把同一请求交给下一个
-        //    匹配的 pattern handler（链式裁决），全部不满足时驱动自动 resume——请求永不悬挂。
+        // 3) 匹配条件过滤：条件不满足 → 终结本规则的 claim 并 fallback（链式裁决）。
         ApiMatcher matcher = matcherCache.computeIfAbsent(spec, ApiMatcher::from);
         if (!matcher.matches(route.request())) {
             runtime.claims().markTerminal(claim, false);
@@ -81,52 +82,45 @@ public final class RouteDispatcher {
             return;
         }
 
-        // 3.5) 能力已停止（stop* 系列）：路由仍注册但本能力跳过 → 链式裁决。
-        //    在途请求不受影响——dispatch 读的是进入时的快照；stop 只作用于后续请求。
-        if (spec.isStopped(spec.capability())) {
+        // 4) 单规则多能力位（参照 V1 RouteHandleType / PriorityPolicy）：同 pattern 的多条规则合并为一条，
+        //    在 dispatcher 内按 executionOrder 统一编排，各能力位独立可停（stop* / 退役）。
+        //    各能力位"字段就绪且未停止"才视为活跃；停止位直接跳过（链式裁决交给下一个 pattern）。
+        boolean hasDelay = !spec.isStopped(RouteCapability.DELAY)
+                && (spec.delayMs() > 0 || spec.delayMinMs() > 0 || spec.delayMaxMs() > 0);
+        boolean hasModify = !spec.isStopped(RouteCapability.MODIFY_REQUEST) && spec.hasModifyFields();
+        boolean hasMock = !spec.isStopped(RouteCapability.MOCK) && spec.hasMockFields();
+        boolean hasMonitor = !spec.isStopped(RouteCapability.MONITOR) && spec.hasMonitorFields();
+        // CAPTURE 是横切观测，不是可停止的能力位（无 RouteCapability.CAPTURE 枚举），
+        // 故以 spec.captureEnabled() 单独判定；纯采集规则（如 .monitor().capture() 不带断言）必须照常观测。
+        boolean hasCapture = spec.captureEnabled();
+
+        if (!hasDelay && !hasModify && !hasMock && !hasMonitor && !hasCapture) {
+            // 无任何活跃能力位（全部停止或纯无观测）→ 链式裁决交给下一个 pattern / 真实网络
+            // （对齐旧 stop 语义：已停止能力位不作用于请求；能力未停止的 MONITOR/capture 才放行）。
             runtime.claims().markTerminal(claim, false);
             RouteAction.fallback(route);
             return;
         }
 
-        // 3.6) 统一观测（所有能力必经）：MONITOR 记录 + CAPTURE 采集。
-        //    capture 是横切观测——mock/modify/delay/monitor 的请求都记录，不参与终结所有权、
-        //    不改变请求流，与能力执行路径无共享可变状态（无竞态）。
+        // 4.5) 统一观测（所有能力必经）：MONITOR 记录 + CAPTURE 采集。
+        //      MONITOR 已停时 recordObservation 内部自动跳过其响应轮询；capture 维度不受影响。
         hitCount.incrementAndGet(); // 已通过匹配条件与停止判定 ⇒ 确为一次"命中"
         runtime.recordObservation(route.request(), spec);
 
-        // 命中日志：每次请求真正触发能力时输出具体操作（body 不截断、敏感信息统一经 SensitiveDataSanitizer 打码）。
         LOGGER.info("[RouteV2] captured {} route for '{}'{}",
                 spec.capability(), spec.pattern(),
                 RouteDsl2.describeCaptured(spec, route.request().method(), route.request().url()));
 
-        // 4) 能力裁决
+        // 5) 时序编排：DELAY(1) → MODIFY(2) → MOCK(3，终结｜否则 resume 真实网络) → MONITOR(4，叠加观察，入口已记录)。
+        //    单 handler 内异步链式执行：DELAY 挂起到点后继续 MODIFY / MOCK；MOCK 命中即短路 fulfill。
         try {
-            switch (spec.capability()) {
-                case MONITOR:
-                    dispatchMonitor(route, spec, claim, runtime);
-                    break;
-                case MOCK:
-                    dispatchMock(route, spec, claim, runtime);
-                    break;
-                case MODIFY_REQUEST:
-                    // method/headers/postData 全部可由 resume(options) 携带（官方 ResumeOptions 支持
-                    // setMethod/setHeaders/setPostData）→ 无需 fetch+fulfill 重放（避免二次真实请求副作用）。
-                    // 仅当存在 body 级修改且请求带体时交 IO 线程做内容类型感知修改，其余事件线程直接放行。
-                    if (spec.bodyOps().isEmpty()) {
-                        RouteAction.resume(route, spec, null);
-                        runtime.claims().markTerminal(claim, true);
-                    } else {
-                        dispatchModifyBody(route, spec, claim, runtime);
-                    }
-                    break;
-                case DELAY:
-                    dispatchDelay(route, spec, claim, runtime);
-                    break;
-                default:
-                    // 未知能力 → fail-open
-                    runtime.claims().markTerminal(claim, false);
-                    RouteAction.fallback(route);
+            Consumer<String> terminal = (modifiedBody) ->
+                    mockOrResume(route, spec, claim, runtime, hasMock, modifiedBody);
+            Runnable afterDelay = () -> modifyStage(route, spec, claim, runtime, terminal);
+            if (hasDelay) {
+                dispatchDelayChain(route, spec, claim, runtime, afterDelay);
+            } else {
+                afterDelay.run();
             }
         } catch (Throwable t) {
             // 事件线程兜底：任何未预期异常都不得让请求悬挂
@@ -141,10 +135,23 @@ public final class RouteDispatcher {
         }
     }
 
-    /** MONITOR：放行（fail-open，绝不影响业务）；观测记录已由 dispatch 入口统一完成。 */
-    private void dispatchMonitor(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime) {
-        RouteAction.resume(route, null);
-        runtime.claims().markTerminal(claim, true);
+    /**
+     * 链尾：MOCK 命中 → fulfill 短路（经 {@link #dispatchMock}）；否则放行真实网络
+     * （MODIFY 的 headers/method 与 modifiedBody 经此方法上路）。
+     */
+    private void mockOrResume(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime,
+                              boolean hasMock, String modifiedBody) {
+        if (hasMock) {
+            dispatchMock(route, spec, claim, runtime);
+        } else if (spec.hasModifyFields() || modifiedBody != null) {
+            // MODIFY 改了 headers/method/body → 经 ResumeOptions 上路（无修改则等价放行）。
+            RouteAction.resume(route, spec, modifiedBody);
+            runtime.claims().markTerminal(claim, true);
+        } else {
+            // 纯放行（DELAY/MONITOR/无修改）：与原 MONITOR/DELAY 行为一致 = route.resume() 无参。
+            RouteAction.resume(route);
+            runtime.claims().markTerminal(claim, true);
+        }
     }
 
     /** MOCK：静态伪造直接 fulfill；intercept / 字段替换交 IO 线程。 */
@@ -163,6 +170,11 @@ public final class RouteDispatcher {
             runtime.claims().markTerminal(claim, false);
             return;
         }
+        // 事件线程（此刻 Request 句柄仍有效）：为 intercept fetch 取好请求快照（值类型、复制 headers）；
+        // 取响应用 runtime 所属 Context 的 APIRequestContext —— 不依赖任何 frame/Request 句柄。
+        final RouteAction.RequestSnapshot fallbackSnapshot =
+                hasStaticBody ? null : RouteAction.RequestSnapshot.of(route.request());
+        final APIRequestContext fallbackCtx = hasStaticBody ? null : runtime.request();
         boolean submitted = runtime.io().trySubmit("mock:" + spec.pattern(), () -> {
             if (claim.isTerminal()) {
                 return;
@@ -183,8 +195,12 @@ public final class RouteDispatcher {
                     runtime.claims().markTerminal(claim, true);
                     return;
                 }
-                // intercept：fetch 真实响应
-                Optional<APIResponse> response = runtime.ops().tryRun("route.fetch", () -> RouteAction.fetch(route));
+                // intercept：用事件线程取好的快照 + context.request() 取真实响应（不依赖 frame/Request 句柄）
+                Optional<APIResponse> response = Optional.empty();
+                if (fallbackCtx != null && fallbackSnapshot != null) {
+                    response = runtime.ops().tryRun("route.fetch",
+                            () -> RouteAction.fetch(fallbackCtx, fallbackSnapshot));
+                }
                 if (response.isEmpty()) {
                     // fetch 失败 / 预算耗尽 → fail-open（若尚未被巡检兜底）
                     if (!claim.isTerminal()) {
@@ -234,8 +250,18 @@ public final class RouteDispatcher {
         }
     }
 
-    /** MODIFY_REQUEST body 级修改：IO 线程读 body → 内容类型感知修改 → resume(method/headers/postData)。 */
-    private void dispatchModifyBody(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime) {
+    /**
+     * MODIFY 阶段（链路第 2 步）：无 body 级修改则直接入链尾（headers/method 由链尾 resume 应用）；
+     * 有 body 级修改则交 IO 线程做内容类型感知修改，再入链尾。链尾 {@link #mockOrResume} 据 MOCK 是否命中
+     * 决定 fulfill 短路或 resume 真实网络。
+     */
+    private void modifyStage(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime,
+                             Consumer<String> terminal) {
+        if (spec.bodyOps().isEmpty()) {
+            // headers/method 由链尾 resume(route, spec, body) 统一应用，无需 IO
+            terminal.accept(null);
+            return;
+        }
         if (!acquireIoSlot(claim, runtime)) {
             RouteAction.fallback(route);
             runtime.claims().markTerminal(claim, false);
@@ -248,25 +274,31 @@ public final class RouteDispatcher {
             try {
                 String postData = route.request().postData();
                 if (postData == null) {
-                    // 无请求体：仅 header 修改（事件线程语义等价）
-                    RouteAction.resume(route, spec);
-                    runtime.claims().markTerminal(claim, true);
+                    // 无请求体：无 body 可改，仍交链尾（含可能的 MOCK 短路），等价于原 resume(route, spec)
+                    terminal.accept(null);
                     return;
                 }
-                String contentType = route.request().headers().get("content-type");
+                String contentType = null;
+                Map<String, String> headers = route.request().headers();
+                if (headers != null) {
+                    contentType = headers.get("content-type");
+                }
                 MediaType mediaType = MediaType.parse(contentType);
                 RequestBodyModifier.ModifyResult result = RequestBodyModifier.modify(mediaType, postData, spec.bodyOps());
                 for (String failure : result.failures()) {
                     LOGGER.warn("[RouteV2] modify-body op failed for url='{}': {}", route.request().url(), failure);
                 }
-                // fail-open：部分操作失败也使用已应用部分（或原体）resume，绝不悬挂
-                RouteAction.resume(route, spec, result.body());
-                runtime.claims().markTerminal(claim, true);
+                // fail-open：部分操作失败也使用已应用部分（或原体）继续链，绝不悬挂
+                terminal.accept(result.body());
             } catch (Throwable t) {
                 LOGGER.warn("[RouteV2] modify-body task failed for url='{}', pattern='{}': {}",
                         route.request().url(), spec.pattern(), t.toString());
                 if (!claim.isTerminal()) {
-                    RouteAction.fallback(route);
+                    try {
+                        RouteAction.fallback(route);
+                    } catch (Exception ignored) {
+                        LOGGER.trace("[RouteV2] fallback ignored: {}", ignored.toString());
+                    }
                     runtime.claims().markTerminal(claim, false);
                 }
             }
@@ -284,15 +316,16 @@ public final class RouteDispatcher {
     }
 
     /**
-     * DELAY：事件线程返回 pending（Router.PendingHandler → 驱动挂起请求），
-     * 由 RouteDelayScheduler.delay 到点后 resume（sweep 超龄兜底）。
+     * DELAY 阶段（链路第 1 步）：事件线程返回 pending（Router.PendingHandler → 驱动挂起请求），
+     * 由 RouteDelayScheduler.delay 到点后执行 {@code afterDelay} 继续链路（MODIFY → MOCK / 真实网络）。
+     * sweep 超龄兜底在延迟窗口内仍生效（sweep 35s > delay 上限 30s，无悬挂风险）。
      *
-     * <p>对照 playwright-java-1.62.0 {@code Router.handle}（Router.java:75-100）：
-     * handler 返回时未终结且未 fallback → 返回 {@code PendingHandler}，请求由驱动侧挂起，
-     * 只能被后续异步终结（本方法的延迟任务）或 sweep 兜底放行——因此本方法
-     * <b>绝不允许在调度延迟任务之后立即 resume</b>（历史缺陷：立即放行导致 delay 空操作）。
+     * <p>对照 playwright-java-1.62.0 {@code Router.handle}：handler 返回时未终结且未 fallback →
+     * 返回 {@code PendingHandler}，请求由驱动侧挂起，只能被后续异步终结（本方法的延迟回调）或 sweep 兜底放行——
+     * 因此<b>绝不允许在调度延迟任务之后立即 resume</b>（历史缺陷：立即放行导致 delay 空操作）。</p>
      */
-    private void dispatchDelay(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime) {
+    private void dispatchDelayChain(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime,
+                                    Runnable afterDelay) {
         if (!acquireIoSlot(claim, runtime)) {
             RouteAction.fallback(route);
             runtime.claims().markTerminal(claim, false);
@@ -311,19 +344,13 @@ public final class RouteDispatcher {
             if (claim.isTerminal()) {
                 return; // sweep 已兜底（fallback 已放行）
             }
-            // 事件线程已返回 pending，请求由驱动挂起。唯一终结路径 = 延迟任务 resume（或 sweep 兜底）。
-            // Architecture rule (LayeringArchTest): framework code must not Thread.sleep on IO threads;
-            // delay is scheduled via CompletableFuture.RouteDelayScheduler.delay (daemon common pool);
-            // the IO slot is released as soon as this task returns; pending 额度在 resume 后由
-            // ClaimRegistry.markTerminal 释放（wasIoAwait → pendingGuard.release），sweep(35s)
-            // 大于 delay 上限(30s)，窗口期无悬挂风险。
+            // 事件线程已返回 pending，请求由驱动挂起。延迟到点后唯一终结路径 = 继续链路（或 sweep 兜底）。
             com.hsbc.cmb.hk.dbb.automation.framework.route.v2.exec.RouteDelayScheduler
                     .delay(effectiveDelay, () -> {
                         if (claim.isTerminal()) {
                             return; // sweep already settled (fallback resumed)
                         }
-                        RouteAction.resume(route, null);
-                        runtime.claims().markTerminal(claim, true);
+                        afterDelay.run();
                     });
         });
         if (!submitted) {
@@ -332,8 +359,14 @@ public final class RouteDispatcher {
         }
     }
 
-    /** 占用挂起额度并将 claim 置为 IO_AWAIT。 */
+    /**
+     * 占用挂起额度并将 claim 置为 IO_AWAIT。
+     * 幂等：链路中途（DELAY 已占用额度）的后续阶段（MODIFY/MOCK）复用同一额度，避免双占导致页面批量假死。
+     */
     private boolean acquireIoSlot(RouteClaim claim, RouteRuntime runtime) {
+        if (claim.isIoAwait()) {
+            return true; // 已在挂起额度中（如 DELAY 已在链中占用）→ 复用，不重复占额
+        }
         if (!runtime.pending().tryAcquire()) {
             return false;
         }

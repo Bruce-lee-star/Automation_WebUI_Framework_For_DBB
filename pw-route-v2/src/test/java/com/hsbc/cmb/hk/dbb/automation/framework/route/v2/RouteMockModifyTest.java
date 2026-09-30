@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.v2;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.route.v2.dsl.RouteDsl2;
+import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.APIResponse;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
@@ -15,7 +16,6 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -27,7 +27,7 @@ import static org.mockito.Mockito.when;
  * 第二批能力 dispatch 级验证（mock BrowserContext）：
  * <ul>
  *   <li>MOCK 静态体 + 字段替换（IO 线程替换后 fulfill 替换后 body）；</li>
- *   <li>MOCK intercept + 字段替换（fetch 真实响应 → 替换 → fulfill）；</li>
+ *   <li>MOCK intercept + 字段替换（快照 + context.request() 取真实响应 → 替换 → fulfill）；</li>
  *   <li>MODIFY body 级修改（IO 线程改 postData → resume 携带新 body）；</li>
  *   <li>mockBodyFromFile（classpath 资源读取）。</li>
  * </ul>
@@ -36,10 +36,16 @@ public class RouteMockModifyTest {
 
     private BrowserContext ctx;
 
+    /** runtime 所属 Context 的 APIRequestContext（intercept 取响应用），供用例 stub。 */
+    private APIRequestContext lastApiCtx;
+
     private BrowserContext mockContext() {
         ctx = mock(BrowserContext.class);
         when(ctx.route(anyString(), any(), any())).thenReturn(mock(AutoCloseable.class));
         org.mockito.Mockito.doAnswer(inv -> null).when(ctx).onClose(any());
+        // 方案 A：intercept 取响应走 runtime.request()（= context.request()），这里把 context 的 APIRequestContext 接上
+        lastApiCtx = mock(APIRequestContext.class);
+        when(ctx.request()).thenReturn(lastApiCtx);
         return ctx;
     }
 
@@ -120,7 +126,8 @@ public class RouteMockModifyTest {
 
         Request request = mockRequestWithBody("https://host/api/profile", "GET", null, null);
         Route route = mockRoute(request);
-        when(route.fetch(any())).thenReturn(apiResponse);
+        // 方案 A：真实响应由 runtime 所属 Context 的 APIRequestContext 取（不再走 route.fetch）
+        when(lastApiCtx.fetch(anyString(), any())).thenReturn(apiResponse);
         handler.accept(route);
         runtime.io().close();
 

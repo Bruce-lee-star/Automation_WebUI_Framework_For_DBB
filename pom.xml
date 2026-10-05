@@ -66,13 +66,13 @@
         <json.version>20240303</json.version>
         <!-- T2-8：报告模板引擎。serenity 4.3.4 的 serenity-model 直接依赖 freemarker 2.3.34，RequireUpperBoundDeps 上界即 2.3.34，故锁定 2.3.34；SummaryReportGenerator 同步改用 Configuration.VERSION_2_3_33 常量与之匹配（2.3.34 向后兼容，常量仍有效）。 -->
         <freemarker.version>2.3.34</freemarker.version>
-        <!-- T2-8/方案A：汇总报告生成的绑定阶段。
-             由 test-automation 的 pom 内联 exec-maven-plugin 引用（绑定 verify），
-             生命周期上晚于 post-integration-test 的 serenity:aggregate，
-             由 Maven 阶段（而非同阶段插件声明顺序）保证「聚合完成后再生成」。
+        <!-- T2-8/方案A：汇总报告生成的绑定阶段（对齐 master 的同名配置：post-integration-test）。
+             ① 该阶段晚于 IT 执行、早于 failsafe:verify 的失败判定 ⇒ **用例报红也能产出
+                serenity-summary.html**（此前绑 verify：有失败时该 exec 被跳过，报告缺失）；
+             ② 与 serenity:aggregate 同阶段，且本 exec 在其后声明，保证「聚合完成后再生成」。
              仅 test-automation（唯一含 framework-reporting 的业务测试模块）执行；
              根聚合模块与框架模块无此 exec，天然不触发。 -->
-        <summary.report.phase>verify</summary.report.phase>
+        <summary.report.phase>post-integration-test</summary.report.phase>
 
         <!-- 安全漏洞修复版本 -->
         <logback.version>1.5.34</logback.version>

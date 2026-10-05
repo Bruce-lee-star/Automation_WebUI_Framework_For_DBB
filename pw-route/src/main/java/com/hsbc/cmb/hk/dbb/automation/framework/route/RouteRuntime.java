@@ -180,6 +180,17 @@ public interface RouteRuntime extends AutoCloseable {
 
     List<CapturedApiCall> dumpCapturedApis();
 
+    /**
+     * 查看本 runtime 已定案的 API 快照（<b>非消费式</b>；幂等）。
+     *
+     * <p>与 {@link #dumpCapturedApis()} 相对：本方法<b>不摘除</b>快照，供"场景/用例收尾复核真实流量"
+     * 使用（不会被框架自身的断言结算抢先消费）。清理仍走 {@code dumpCapturedApis()}。
+     * 默认实现返回空列表（替身/未实现该能力的实现不会因此破坏编译）。</p>
+     */
+    default List<CapturedApiCall> peekCapturedApis() {
+        return List.of();
+    }
+
     /** 取走本 runtime 已定案的断言失败（消费式；幂等）。 */
     List<RouteAssertionFailure> drainSettledAssertionFailures();
 

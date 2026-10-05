@@ -292,6 +292,18 @@ public final class RouteEngine {
         return runtime == null ? List.of() : runtime.dumpCapturedApis();
     }
 
+    /**
+     * 查看 CAPTURE 采集（<b>非消费式</b>；幂等）：用于"用例收尾复核浏览器实际收到了什么"。
+     *
+     * <p>与 {@link #dumpCapturedApis(BrowserContext)} 的区别：不摘除快照，故不会被框架自身的断言
+     * 结算（同样消费该队列）抢先取走。清理仍走 dump。runtime 不存在时返回空列表。</p>
+     */
+    public static List<CapturedApiCall> peekCapturedApis(BrowserContext context) {
+        Objects.requireNonNull(context, "context");
+        RouteRuntime runtime = RUNTIMES.get(context);
+        return runtime == null ? List.of() : runtime.peekCapturedApis();
+    }
+
     /** 聚合全部活跃 runtime 的已定案断言失败（消费式；幂等——第二次调用返回空列表）。
      *
      * <p>MONITOR 断言失败上报的统一出口，由 {@code RouteAssertionProbeImpl} 委托；

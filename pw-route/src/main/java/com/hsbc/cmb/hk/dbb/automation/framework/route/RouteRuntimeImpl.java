@@ -274,6 +274,11 @@ public final class RouteRuntimeImpl implements RouteRuntime {
     }
 
     @Override
+    public List<CapturedApiCall> peekCapturedApis() {
+        return capture.peek();
+    }
+
+    @Override
     public List<RouteAssertionFailure> drainSettledAssertionFailures() {
         List<RouteAssertionFailure> result = new ArrayList<>();
         for (CapturedExchange e : monitor.drainSettledFailures()) {

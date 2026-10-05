@@ -192,6 +192,32 @@ public final class RouteDsl {
                 + context.getClass().getName());
     }
 
+    // ── CAPTURE 采集查看（非消费式，P1：场景收尾复核真实流量）──
+
+    /** 查看指定 BrowserContext 已采集的 API 快照（<b>非消费式</b>；幂等；清理仍用 {@link #dumpCaptured}）。 */
+    public static List<CapturedApiCall> peekCaptured(BrowserContext context) {
+        return RouteEngine.peekCapturedApis(context);
+    }
+
+    /** 查看指定 Page 所属 context 已采集的 API 快照（非消费式；幂等）。 */
+    public static List<CapturedApiCall> peekCaptured(Page page) {
+        Objects.requireNonNull(page, "page");
+        return RouteEngine.peekCapturedApis(page.context());
+    }
+
+    /** Object 重载（对齐 dumpCaptured 的签名）：Page / BrowserContext 皆可。 */
+    public static List<CapturedApiCall> peekCaptured(Object context) {
+        Objects.requireNonNull(context, "context");
+        if (context instanceof Page page) {
+            return RouteEngine.peekCapturedApis(page.context());
+        }
+        if (context instanceof BrowserContext bc) {
+            return RouteEngine.peekCapturedApis(bc);
+        }
+        throw new IllegalArgumentException("context must be Page or BrowserContext, got: "
+                + context.getClass().getName());
+    }
+
     // ── stop 系列（对齐现有 RouteDsl.stopX(context, urlPattern)）──
     // 只停指定 pattern 的指定能力；路由仍注册（不 unroute）；未注册/已停返回 false。
     // 在途请求（已 claim）按进入时快照完成，不被打断；重新 register 同 pattern 即恢复能力。

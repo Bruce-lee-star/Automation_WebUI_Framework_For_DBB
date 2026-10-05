@@ -164,6 +164,12 @@ public final class CaptureSink {
         }
         CapturedApiCall call = toDto(snapshot, body, truncated);
         captured.add(call);
+        // 非消费式历史（peek 用）：与消费式队列并行维护，保证"用例收尾复核真实流量"不会被
+        // 框架自身的断言结算（走 dump ⇒ 抽干 captured）抢走。上限同 maxCaptured，超出丢最旧。
+        history.add(call);
+        while (history.size() > maxCaptured) {
+            history.poll();
+        }
         count.incrementAndGet();
         // 展示是纯旁路：任何异常都吞掉（含非 JSON 体、脱敏/格式化失败），绝不影响采集与主流程
         try {
@@ -172,6 +178,9 @@ public final class CaptureSink {
             LOGGER.debug("[Route] capture log skipped: {}", e.toString());
         }
     }
+
+    /** 非消费式历史快照（{@link #peek()} 的数据源）：只增（按 {@code maxCaptured} 限量），不受 dump 影响。 */
+    private final ConcurrentLinkedQueue<CapturedApiCall> history = new ConcurrentLinkedQueue<>();
 
     private static CapturedApiCall toDto(CapturedExchange snapshot, String body, boolean truncated) {
         return new CapturedApiCall(
@@ -203,6 +212,20 @@ public final class CaptureSink {
             result.add(call);
         }
         return result;
+    }
+
+    /**
+     * 查看全部已定案快照（<b>非消费式</b>；幂等——重复调用返回同一批，直到被 {@link #dump()} 取走）。
+     *
+     * <p>数据源是<b>只增历史</b>（{@link #history}），而非消费式队列 {@code captured}：框架自身的断言结算
+     * （走 {@link #dump()} ⇒ 抽干 captured）不会再让"用例收尾复核浏览器实际收到了什么"变成不可见 ——
+     * 这正是本方法存在的理由（仅 peek 无法解决：共享队列被 dump 抽干后，谁都读不到）。清理仍以 dump 为准。</p>
+     *
+     * @return 已定案快照（按定案顺序）；无记录时为空列表（永不返回 null）
+     */
+    public List<CapturedApiCall> peek() {
+        sweepPendingTimeouts();
+        return new ArrayList<>(history);
     }
 
     /** 超时扫描（dump 内调用；弱一致遍历可接受）。 */

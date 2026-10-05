@@ -17,7 +17,7 @@
          CT2-01：test-automation 【不在本 reactor 中】——它是独立构建单元（源码已移出本仓库，
          其 pom 的 parent 用 <relativePath/> 从 .m2 解析本 parent POM 与各框架 jar）。
          构建/发布顺序（本地与 CI 一致，两段式）：
-           ① mvn -B install -Psca -DskipTests -DskipITs      # 本仓库：装 parent + 7 个框架模块到 .m2
+           ① mvn -B install -Psca -DskipTests -DskipITs      # 本仓库：装 parent + 6 个框架模块到 .m2
            ② mvn -B -f ../test-automation/pom.xml verify      # test-automation：跑单测 + Cucumber IT
          CI 见 .github/workflows/build.yml 的 `e2e` job（两段式 + 「IT 数 > 0」可证伪断言）。
 
@@ -33,8 +33,9 @@
     </modules>
 
     <properties>
-        <maven.compiler.source>21</maven.compiler.source>
-        <maven.compiler.target>21</maven.compiler.target>
+        <!-- 统一用 release（而非 source/target 两属性）：按 21 的 API 边界校验，避免 source/target 与
+             实际运行 JDK 错配导致「用高版本 API 编译、低版本运行」。 -->
+        <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <!-- D6-3：serenity 升级路径（摩擦点矩阵 + 回归清单 + SOP）—— CT2-22：原设计文档
@@ -342,6 +343,13 @@
             <artifactId>logback-classic</artifactId>
             <version>${logback.version}</version>
         </dependency>
+        <!-- T2-8：报告模板引擎。serenity-model 传递 2.3.34，RequireUpperBoundDeps 上界即 2.3.34，故钉死；
+             原先只靠 ${freemarker.version} 属性在 pw-reports 内联，现登记进 DM 以便各模块统一引用。 -->
+        <dependency>
+            <groupId>org.freemarker</groupId>
+            <artifactId>freemarker</artifactId>
+            <version>${freemarker.version}</version>
+        </dependency>
         <dependency>
             <groupId>com.jayway.jsonpath</groupId>
             <artifactId>json-path</artifactId>
@@ -513,8 +521,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${maven-compiler-plugin.version}</version>
                 <configuration>
-                    <source>${maven.compiler.source}</source>
-                    <target>${maven.compiler.target}</target>
+                    <release>${maven.compiler.release}</release>
                     <encoding>${project.build.sourceEncoding}</encoding>
                     <compilerArgs>
                         <arg>-parameters</arg>
@@ -534,8 +541,8 @@
                         <include>**/*Test.java</include>
                     </includes>
                     <useModulePath>false</useModulePath>
-                    <!-- fork JVM 整体超时兜底，防单用例死锁拖垮整轮（详见原注释） -->
-                    <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+                    <!-- 与 failsafe 一致地引用属性，使命令行 -DforkedProcessTimeoutInSeconds 同样生效 -->
+                    <forkedProcessTimeoutInSeconds>${forkedProcessTimeoutInSeconds}</forkedProcessTimeoutInSeconds>
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
                     <!-- ⚠ JDK16+ 强封装：Serenity REST(RestSpecificationFactory) 在静态初始化时用 ByteBuddy

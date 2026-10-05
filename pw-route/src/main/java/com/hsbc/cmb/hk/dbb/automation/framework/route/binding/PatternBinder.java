@@ -31,9 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p><b>2026-09-29 探针结论（更正旧表述）</b>：该调用<b>并非</b>长时间挂起 —— 界值之后约 3~5 秒即结束，
  * 以 {@code Object doesn't exist: worker@/frame@}（或看门狗中断产物 {@code Failed to read message}）抛错。
  * 根因是客户端 {@code Connection.dispatch} 未按消息隔离异常：一条"引用已释放对象"的事件会把当时正在
- * 等待回执的调用一起带崩。该缺陷已由框架自建客户端 <b>DBBN-PATCH-01</b> 修复
- * （见 {@code docs/patches/playwright-java-1.62.0-dbb-patch-01.md}）。因此<b>不再需要对瞬时错误做重试或
- * 异常嗅探</b>；看门狗保留为"驱动真卡死"的兜底。</p>
+ * 等待回执的调用一起带崩。<b>2026-09-30 起</b>框架不再使用自建补丁客户端，直接依赖上游官方 stock
+ * {@code playwright-java}（版本见根 pom {@code <playwright.version>}）—— 该客户端缺陷<b>不再由本仓库修补</b>；
+ * 本层的有界等待 + 超时处置是唯一兜底。故仍<b>不做</b>瞬时错误重试或异常嗅探；看门狗保留为"驱动真卡死"的兜底。</p>
  *
  * <p><b>注册失败处理（2026-09-29 修订：按规则能力决定，行为类 fail-closed）</b>：
  * <ol>

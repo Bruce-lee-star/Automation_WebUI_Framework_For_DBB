@@ -27,7 +27,7 @@ import static org.junit.Assert.assertTrue;
  * 都会让本测试失败，从而把卡死根因挡在单测期。</p>
  *
  * <p><b>2026-09-29 更正</b>：早期"route 注册卡 14 分钟、unroute 卡 11 分钟"的描述不准确 —— 实测该调用在
- * 界值后约 3~5 秒即抛 {@code Object doesn't exist}（客户端 dispatch 未隔离），已由 DBBN-PATCH-01 修复。</p>
+ * 界值后约 3~5 秒即抛 {@code Object doesn't exist}（客户端 dispatch 未隔离；客户端自 2026-09-30 起改用上游 stock）。</p>
  */
 
 public class PatternBinderGuardedCallTest {

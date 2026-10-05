@@ -49,7 +49,6 @@
         <dependency>
             <groupId>org.freemarker</groupId>
             <artifactId>freemarker</artifactId>
-            <version>${freemarker.version}</version>
         </dependency>
 
         <!-- 测试期依赖（JUnit5 升级，2026-09-11） -->

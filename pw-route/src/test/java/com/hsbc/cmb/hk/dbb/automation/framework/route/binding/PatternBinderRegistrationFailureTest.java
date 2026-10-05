@@ -21,7 +21,7 @@ import static org.junit.Assert.fail;
  *
  * <p><b>背景</b>：{@code context.route()} 是客户端 {@code setNetworkInterceptionPatterns}（NO_TIMEOUT +
  * 调用线程自己泵消息）。Playwright 客户端曾因未按消息隔离异常，使一条"引用已释放对象"的事件带崩在途调用
- * （已由框架自建客户端 DBBN-PATCH-01 修复）。
+ * （客户端自 2026-09-30 起改用上游 stock，本层有界等待兜底）。
  *
  * <p>本测试守护四条语义：
  * <ol>

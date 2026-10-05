@@ -30,7 +30,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
  *
  * <p><b>2026-09-29 更正</b>：旧表述"route 注册卡 14 分钟 / unroute 卡 11 分钟"不准确 —— 探针实测该调用
  * 在界值后约 3~5 秒即抛 {@code Object doesn't exist}（客户端 {@code Connection.dispatch} 未按消息隔离异常），
- * 已由框架自建客户端 DBBN-PATCH-01 修复。</p>
+ * 客户端自 2026-09-30 起改用上游 stock，由本层有界等待兜底。</p>
  *
  * <p><b>资源 / 线程池门禁（评审 23 号 V2-5）</b>：route 内禁止"污染 JVM 级共享池"与"无界线程池"用法 ——
  * {@code CompletableFuture.delayedExecutor}（唯一合法替代：{@code RouteDelayScheduler}）、

@@ -11,7 +11,7 @@ import java.util.concurrent.Callable;
  *
  * <p><b>2026-09-29 探针更正</b>：早期"unroute 卡 11 分钟 / route 注册卡 14 分钟"的描述不准确 —— 实测该调用
  * 在界值后约 3~5 秒即结束（抛 {@code Object doesn't exist: worker@/frame@}）。根因是客户端
- * {@code Connection.dispatch} 未按消息隔离异常（已由框架自建客户端 DBBN-PATCH-01 修复）；
+ * {@code Connection.dispatch} 未按消息隔离异常（2026-09-30 起客户端改用上游 stock，该缺陷不由本仓库修补）；
  * 本层的有界等待是"驱动真卡死"的兜底。
  *
  * <p><b>为什么必须有界（2026-09-28 按 Playwright 1.62.0 源码复核）</b>：{@code context.route()} /

@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.ApiSpec;
 
 import java.util.ArrayList;
@@ -158,6 +159,56 @@ public final class CapturedExchange {
     /** body 断言未能判定的原因；null 表示已判定（或未配置 body 断言）。 */
     public String bodyAssertionInconclusiveReason() {
         return bodyAssertionInconclusive;
+    }
+
+    /**
+     * 命中<b>结果</b>的可读明细（供路由证据上报进 Serenity 报告）。
+     *
+     * <p><b>为什么需要它</b>：命中时刻上报的那条证据只是「规则声明 + 请求」（expectStatus=200 timeout=60s…），
+     * 报告里看不到"实际拿到什么、断言过没过"。本方法在交换<b>定案</b>时渲染结果 ——
+     * 与 CAPTURE 的 {@code CapturedApiCall.detail()} 同款三段式，便于在报告里并读。</p>
+     *
+     * <p>安全：URL 走 {@code sanitizeUrl}；失败明细与 inconclusive 原因走 {@code sanitizeFreeText}
+     * （它们可能夹带响应体片段）。</p>
+     */
+    public String resultDetail() {
+        StringBuilder d = new StringBuilder(240);
+        d.append("  pattern   : ").append(pattern).append('\n');
+        d.append("  request   : ").append(method).append(' ')
+                .append(SensitiveDataSanitizer.sanitizeUrl(url)).append('\n');
+        d.append("  response  : ").append(responseTimedOut() ? "[timeout]" : String.valueOf(responseStatus));
+        if (expectStatus != null) {
+            d.append(" (expect ").append(expectStatus).append(')');
+        }
+        d.append('\n');
+        d.append("  result    : ").append(resultLabel());
+        if (durationMs() >= 0) {
+            d.append(" (").append(durationMs()).append("ms)");
+        }
+        d.append('\n');
+        if (!bodyAssertionFailures.isEmpty()) {
+            d.append("  failures  :\n");
+            for (String failure : bodyAssertionFailures) {
+                d.append("    - ").append(SensitiveDataSanitizer.sanitizeFreeText(failure)).append('\n');
+            }
+        }
+        if (bodyAssertionInconclusive != null) {
+            d.append("  note      : body 断言未判定（响应句柄已被驱动回收，仅按 status 定案）: ")
+                    .append(SensitiveDataSanitizer.sanitizeFreeText(bodyAssertionInconclusive)).append('\n');
+        }
+        return d.toString();
+    }
+
+    /** 结果标签：TIMEOUT / PASS / FAIL / PENDING（尚未定案）。 */
+    private String resultLabel() {
+        if (responseTimedOut) {
+            return "TIMEOUT";
+        }
+        Boolean passed = assertionPassed;
+        if (passed == null) {
+            return "PENDING";
+        }
+        return passed ? "PASS" : "FAIL";
     }
 
     /**

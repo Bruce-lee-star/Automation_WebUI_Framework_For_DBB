@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.ApiSpec;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.RouteCapability;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.exec.RouteIoExecutor;
@@ -229,9 +230,12 @@ public final class MonitorSink {
         //  故撤销不会丢证据（由 MonitorSinkPurposeRetirementTest 的失败用例钉住该语义）。
         firePurposeMet(spec);
         if (!spec.hasBodyAssertions()) {
-            // 无 body 断言：响应到达即定案；断言失败立即结算上报（成功项不结算，观测完成）
+            // 无 body 断言：响应到达即定案。失败走 settleFailure（失败队列 + 结果上报）；
+            // 成功也上报结果 —— 报告要能回答"成功没"，只在失败时可见是答不出来的。
             if (Boolean.FALSE.equals(exchange.assertionPassed())) {
                 settleFailure(exchange);
+            } else {
+                reportOutcome(exchange);
             }
             return;
         }
@@ -247,6 +251,7 @@ public final class MonitorSink {
             LOGGER.warn("[Route] monitor body assertion INCONCLUSIVE (response handle unavailable) "
                             + "pattern='{}' url='{}': {}",
                     spec.pattern(), exchange.url(), snapshot.inconclusiveReason());
+            reportOutcome(exchange); // 结果同样进报告（标注"未判定"，与"通过/失败"区分开）
             return;
         }
         submitBodyAssertion(exchange, spec, snapshot);
@@ -305,9 +310,11 @@ public final class MonitorSink {
                             + ", bodyBytes=" + snapshot.bytes().length);
                 }
                 exchange.markBodyAssertionFailures(failures);
-                // body 断言（含 status 重算）定案：失败立即结算上报
+                // body 断言（含 status 重算）定案：失败立即结算上报，成功同样上报结果（报告需要 PASS 可见）
                 if (Boolean.FALSE.equals(exchange.assertionPassed())) {
                     settleFailure(exchange);
+                } else {
+                    reportOutcome(exchange);
                 }
             } catch (Exception e) {
                 // 断言/解码失败：记为失败明细（不允许异常逃逸 IO 线程包装）
@@ -389,6 +396,25 @@ public final class MonitorSink {
     private void settleFailure(CapturedExchange exchange) {
         if (exchange.tryMarkSettled()) {
             settledFailures.add(exchange);
+            reportOutcome(exchange); // 失败结果进报告（CAS 保证只上报一次）
+        }
+    }
+
+    /**
+     * 上报一次观测<b>结果</b>（成功 / 失败 / 超时 / 未判定都上报）。
+     *
+     * <p><b>为什么成功也要上报</b>：报告里原先只有命中时刻写下的"规则声明 + 请求"
+     * （expectStatus=200 timeout=60s…），读者无法回答"到底成功没、实际拿到什么"。
+     * 定案时刻补一条结果证据（实际 status / 期望 status / PASS-FAIL-TIMEOUT / 耗时 / 失败明细），
+     * 与 CAPTURE 的 {@code CapturedApiCall.detail()} 同款三段式。</p>
+     *
+     * <p>旁路语义：上报异常绝不影响断言链路（只 DEBUG）；URL/明细在 {@code resultDetail()} 内已脱敏。</p>
+     */
+    private void reportOutcome(CapturedExchange exchange) {
+        try {
+            RouteEvidenceRegistry.record("MONITOR 结果", exchange.url(), exchange.resultDetail());
+        } catch (Throwable t) {
+            LOGGER.debug("[Route] monitor outcome report skipped (non-fatal): {}", t.toString());
         }
     }
 

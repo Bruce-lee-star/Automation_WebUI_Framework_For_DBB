@@ -107,12 +107,13 @@ public record CapturedApiCall(String pattern, String method, String url,
         return false;
     }
 
-    /** 单行摘要（供日志 / 报告首行展示）。 */
+    /** 单行摘要（供日志 / 报告首行展示）。URL 已脱敏（query 命中敏感键即整体丢弃）。 */
     public String summary() {
+        String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
         if (timedOut) {
-            return "[timeout] " + method + " " + url + " (pattern=" + pattern + ")";
+            return "[timeout] " + method + " " + safeUrl + " (pattern=" + pattern + ")";
         }
-        return "[status=" + responseStatus + "] " + method + " " + url + " (pattern=" + pattern + ')';
+        return "[status=" + responseStatus + "] " + method + " " + safeUrl + " (pattern=" + pattern + ')';
     }
 
     /**
@@ -158,7 +159,8 @@ public record CapturedApiCall(String pattern, String method, String url,
     private String renderDetail() {
         StringBuilder d = new StringBuilder("{\n");
         d.append("  pattern   : ").append(pattern).append('\n');
-        d.append("  request   : ").append(method).append(' ').append(url).append('\n');
+        d.append("  request   : ").append(method).append(' ')
+                .append(SensitiveDataSanitizer.sanitizeUrl(url)).append('\n');
         if (durationMs >= 0) {
             d.append("  duration  : ").append(durationMs).append("ms\n");
         }

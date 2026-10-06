@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route.monitor;
 
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.ApiSpec;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.exec.RouteIoExecutor;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.util.MediaType;
@@ -176,6 +177,14 @@ public final class CaptureSink {
             LOGGER.info("[Route] captured api {}", call.detail());
         } catch (RuntimeException e) {
             LOGGER.debug("[Route] capture log skipped: {}", e.toString());
+        }
+        // 捕获结果 → Serenity 报告：报告要能回答"采到了什么、成功没"。**纯采集规则没有响应侧期望**，
+        // 不进入 MonitorSink 的观测队列，其结果只能从这里出来，故不能省。
+        // 明细复用上面同一份脱敏渲染（头值打码、体已脱敏+截断、URL 由 CapturedApiCall 脱敏）。
+        try {
+            RouteEvidenceRegistry.record("CAPTURE", call.url(), call.detail());
+        } catch (Throwable t) {
+            LOGGER.debug("[Route] capture evidence report skipped (non-fatal): {}", t.toString());
         }
     }
 

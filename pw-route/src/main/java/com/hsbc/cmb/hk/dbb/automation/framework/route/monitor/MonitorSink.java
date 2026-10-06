@@ -301,6 +301,7 @@ public final class MonitorSink {
                 String contentType = snapshot.contentType();
                 Charset charset = MediaType.parse(contentType).charset();
                 String body = new String(snapshot.bytes(), charset);
+                exchange.markResponseBody(body); // 结果证据要展示响应体（内部脱敏 + 截断）
                 List<String> failures = new ArrayList<>(PayloadAssertor.assertAll(spec, body, contentType));
                 if (contentType == null && !failures.isEmpty()) {
                     // content-type 缺失时补「响应形态」诊断：一次运行即可区分

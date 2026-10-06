@@ -182,7 +182,8 @@ public final class CaptureSink {
         // 不进入 MonitorSink 的观测队列，其结果只能从这里出来，故不能省。
         // 明细复用上面同一份脱敏渲染（头值打码、体已脱敏+截断、URL 由 CapturedApiCall 脱敏）。
         try {
-            RouteEvidenceRegistry.record("CAPTURE", call.url(), call.detail());
+            RouteEvidenceRegistry.record("CAPTURE", call.url(), call.detailWith(
+                    "result    : CAPTURED（纯采集，无断言；response 段即浏览器实际收到的东西）"));
         } catch (Throwable t) {
             LOGGER.debug("[Route] capture evidence report skipped (non-fatal): {}", t.toString());
         }

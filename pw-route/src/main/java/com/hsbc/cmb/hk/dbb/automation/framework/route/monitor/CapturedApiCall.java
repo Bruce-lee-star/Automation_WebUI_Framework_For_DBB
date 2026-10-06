@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParser;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.security.SensitiveDataSanitizer;
+import com.microsoft.playwright.Request;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -63,6 +64,56 @@ public record CapturedApiCall(String pattern, String method, String url,
     public CapturedApiCall {
         requestHeaders = sanitize(requestHeaders);
         responseHeaders = sanitize(responseHeaders);
+    }
+
+    /** 请求体预览上限（与 {@code CapturedExchange} 对齐）。 */
+    private static final int REQUEST_BODY_PREVIEW_MAX = 2048;
+
+    /**
+     * 字段式构造入口（响应侧可为空）——供 route 派发链与 monitor 结果证据共用一套渲染。
+     */
+    public static CapturedApiCall of(String pattern, String method, String url,
+                                     Map<String, String> requestHeaders, String requestBodyPreview,
+                                     Integer responseStatus, Map<String, String> responseHeaders,
+                                     String responseBody, boolean responseBodyTruncated,
+                                     long durationMs, boolean timedOut) {
+        return new CapturedApiCall(pattern, method, url, requestHeaders, requestBodyPreview,
+                responseStatus, responseHeaders, responseBody, responseBodyTruncated,
+                durationMs, timedOut, System.currentTimeMillis());
+    }
+
+    /**
+     * 从 Playwright 请求对象构造快照 —— 供<b>派发链</b>上报"命中/动作"证据（MOCK / MODIFY / DELAY
+     * 没有响应侧观测队列，其请求侧信息只能这样取；请求体按 {@value #REQUEST_BODY_PREVIEW_MAX} 字节截断）。
+     */
+    public static CapturedApiCall ofRequest(String pattern, Request request, Integer responseStatus,
+                                            Map<String, String> responseHeaders, String responseBody,
+                                            boolean responseBodyTruncated, long durationMs, boolean timedOut) {
+        String postData = request == null ? null : request.postData();
+        String preview = postData == null ? null
+                : (postData.length() > REQUEST_BODY_PREVIEW_MAX
+                        ? postData.substring(0, REQUEST_BODY_PREVIEW_MAX) + "...[truncated]" : postData);
+        return new CapturedApiCall(pattern,
+                request == null ? null : request.method(),
+                request == null ? null : request.url(),
+                request == null ? Map.of() : request.headers(),
+                preview, responseStatus, responseHeaders, responseBody, responseBodyTruncated,
+                durationMs, timedOut, System.currentTimeMillis());
+    }
+
+    /** 在 {@link #detail()} 尾部追加自定义行（如 rule / applied / result），供路由证据使用。 */
+    public String detailWith(String... extraLines) {
+        StringBuilder d = new StringBuilder(detail());
+        if (extraLines != null) {
+            for (String line : extraLines) {
+                if (line != null && !line.isEmpty()) {
+                    for (String part : line.split("\n", -1)) {
+                        d.append('\n').append("  ").append(part);
+                    }
+                }
+            }
+        }
+        return d.toString();
     }
 
     /** 覆盖 record accessor：返回不可变拷贝（防调用方修改内部快照）。 */

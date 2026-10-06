@@ -21,6 +21,9 @@ public final class CapturedExchange {
 
     private static final int POST_DATA_PREVIEW_MAX = 2048;
 
+    /** 结果证据里的响应体预览上限（已脱敏后再截断）。 */
+    private static final int RESPONSE_BODY_PREVIEW_MAX = 4096;
+
     private final String method;
     private final String url;
     private final String pattern;
@@ -40,6 +43,9 @@ public final class CapturedExchange {
     private volatile List<String> bodyAssertionFailures = Collections.emptyList();
     /** body 断言未能判定的原因（inconclusive；null=已判定或未配置）。绝不参与失败判定。 */
     private volatile String bodyAssertionInconclusive;
+    /** 响应体预览（已脱敏 + 截断）。仅"有 body 断言"的规则读了体，其余刻意不读（见 resultDetail 的说明）。 */
+    private volatile String responseBodyPreview;
+    private volatile boolean responseBodyTruncated;
     /** 断言失败是否已结算（入失败队列）；CAS 保证每条失败只结算一次（防多路径重复上报）。 */
     private final AtomicBoolean settled = new AtomicBoolean(false);
 
@@ -162,6 +168,25 @@ public final class CapturedExchange {
     }
 
     /**
+     * 记录响应体预览（{@link MonitorSink} 在断言前调用，此刻句柄仍存活）。
+     * 内部先经 {@code sanitizeBody} 脱敏、再按上限截断 —— 存进来的永远是"可出域"的文本。
+     */
+    void markResponseBody(String body) {
+        if (body == null) {
+            return;
+        }
+        String sanitized = SensitiveDataSanitizer.sanitizeBody(body);
+        if (sanitized == null) {
+            return;
+        }
+        boolean truncated = sanitized.length() > RESPONSE_BODY_PREVIEW_MAX;
+        this.responseBodyPreview = truncated
+                ? sanitized.substring(0, RESPONSE_BODY_PREVIEW_MAX) + "...[truncated]"
+                : sanitized;
+        this.responseBodyTruncated = truncated;
+    }
+
+    /**
      * 命中<b>结果</b>的可读明细（供路由证据上报进 Serenity 报告）。
      *
      * <p><b>为什么需要它</b>：命中时刻上报的那条证据只是「规则声明 + 请求」（expectStatus=200 timeout=60s…），
@@ -172,31 +197,38 @@ public final class CapturedExchange {
      * （它们可能夹带响应体片段）。</p>
      */
     public String resultDetail() {
-        StringBuilder d = new StringBuilder(240);
-        d.append("  pattern   : ").append(pattern).append('\n');
-        d.append("  request   : ").append(method).append(' ')
-                .append(SensitiveDataSanitizer.sanitizeUrl(url)).append('\n');
-        d.append("  response  : ").append(responseTimedOut() ? "[timeout]" : String.valueOf(responseStatus));
+        // 与 CAPTURE 同款三段式：请求侧完整信息（方法/URL/头/体）+ 实际响应（状态/头/体）+ result 行 ——
+        // 报告要能"一个块看清这次 API 调用发生了什么、成功没"。
+        CapturedApiCall snapshot = CapturedApiCall.of(pattern, method, url, requestHeaders,
+                postDataPreview, responseStatus, responseHeaders, responseBodyPreview,
+                responseBodyTruncated, durationMs(), responseTimedOut());
+        StringBuilder tail = new StringBuilder(220);
+        tail.append("result    : ").append(resultLabel());
+        if (responseStatus != null) {
+            tail.append(" actual=").append(responseStatus);
+        }
         if (expectStatus != null) {
-            d.append(" (expect ").append(expectStatus).append(')');
+            tail.append(" expect=").append(expectStatus);
         }
-        d.append('\n');
-        d.append("  result    : ").append(resultLabel());
         if (durationMs() >= 0) {
-            d.append(" (").append(durationMs()).append("ms)");
+            tail.append(" 耗时=").append(durationMs()).append("ms");
         }
-        d.append('\n');
-        if (!bodyAssertionFailures.isEmpty()) {
-            d.append("  failures  :\n");
-            for (String failure : bodyAssertionFailures) {
-                d.append("    - ").append(SensitiveDataSanitizer.sanitizeFreeText(failure)).append('\n');
-            }
+        if (responseStatus == null && !responseTimedOut()) {
+            tail.append("（响应侧尚未定案）");
+        } else if (responseBodyPreview == null) {
+            // 刻意不读体：status-only / 无 body 断言的规则若去读体，遇到 SSE 等流式端点会把观测线程挂住
+            tail.append('\n').append("respBody  : (未读取 —— 该规则无 body 断言且未开 capture；")
+                    .append("对流式端点刻意不读体，避免阻塞观测线程)");
+        }
+        for (String failure : bodyAssertionFailures) {
+            tail.append('\n').append("failure   : ")
+                    .append(SensitiveDataSanitizer.sanitizeFreeText(failure));
         }
         if (bodyAssertionInconclusive != null) {
-            d.append("  note      : body 断言未判定（响应句柄已被驱动回收，仅按 status 定案）: ")
-                    .append(SensitiveDataSanitizer.sanitizeFreeText(bodyAssertionInconclusive)).append('\n');
+            tail.append('\n').append("note      : body 断言未判定（响应句柄已被驱动回收，仅按 status 定案）: ")
+                    .append(SensitiveDataSanitizer.sanitizeFreeText(bodyAssertionInconclusive));
         }
-        return d.toString();
+        return snapshot.detailWith(tail.toString());
     }
 
     /** 结果标签：TIMEOUT / PASS / FAIL / PENDING（尚未定案）。 */

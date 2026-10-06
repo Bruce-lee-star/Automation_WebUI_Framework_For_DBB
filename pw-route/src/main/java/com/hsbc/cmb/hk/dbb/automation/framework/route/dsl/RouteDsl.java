@@ -356,12 +356,19 @@ public final class RouteDsl {
     }
 
     /**
-     * 把一次命中（请求真正触发能力）格式化为单行可读描述，供 {@code RouteDispatcher} 的逐次命中日志复用。
-     * 附带 method/url 便于追溯是哪次请求触发；body 不截断，敏感信息统一经 {@link SensitiveDataSanitizer} 打码。
+     * 把一次命中（请求真正触发能力）格式化为单行可读描述，供 {@code RouteDispatcher} 的逐次命中日志复用，
+     * 并作为路由命中证据（{@code RouteEvidenceSink}）的<b>正文</b>写入 Serenity 报告。
+     *
+     * <p>附带 method/url 便于追溯是哪次请求触发；<b>URL 与 body 一并脱敏</b>：URL 走
+     * {@link SensitiveDataSanitizer#sanitizeUrl}（命中敏感 query 键/值即整体丢弃 query，并剥离
+     * {@code user:pass@} 内嵌凭据）。此前 url 是<b>原样</b>拼接的 —— 报告标题经 sink 打了码、
+     * 正文却带着完整 query（含 token/otp 的端点等于漏出），且同一字符串也进日志。
+     * 本方法是该 URL 的<b>唯一出口</b>，故在此收口。</p>
      */
     public static String describeCaptured(ApiSpec spec, String method, String url) {
         StringBuilder d = new StringBuilder();
-        d.append(" method=").append(method).append(" url=").append(url);
+        d.append(" method=").append(method)
+                .append(" url=").append(SensitiveDataSanitizer.sanitizeUrl(url));
         appendOperation(d, spec);
         return d.toString();
     }
@@ -386,7 +393,9 @@ public final class RouteDsl {
                 }
             }
             case MOCK -> {
-                d.append(" status=").append(spec.mockStatus());
+                // 未声明状态码时输出 real-response 而不是裸 "null"：.mock().interceptResponse() 这类
+                // "用上游真实响应"的写法本就不声明状态码，裸 null 在报告里读起来像"状态缺失/故障"。
+                d.append(" status=").append(spec.mockStatus() != null ? spec.mockStatus() : "real-response");
                 d.append(" intercept=").append(spec.mockIntercept());
                 if (spec.mockContentType() != null) {
                     d.append(" contentType=").append(spec.mockContentType());

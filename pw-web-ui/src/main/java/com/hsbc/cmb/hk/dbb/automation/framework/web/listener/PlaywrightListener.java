@@ -8,6 +8,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityReporte
 import com.hsbc.cmb.hk.dbb.automation.framework.common.reporting.SerenityResultAdapter;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.result.ResultReporters;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.result.StepResult;
+import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteLifecycleRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ContextKey;
@@ -402,6 +403,17 @@ public class PlaywrightListener implements StepListener {
             return;
         }
         FrameworkListenerBridge.afterStep(TestContextHolder.get().get(CURRENT_STEP_TITLE_KEY));
+
+        //  路由命中证据 → Serenity 报告：内核只在 Playwright 事件线程 / IO 池线程入队（那些线程直接
+        //  写报告数据会丢），真正的写入必须回到测试主线程。本方法是"步骤结束"的主线程钩子 ——
+        //  Serenity 每个步骤必经此处（已由运行日志逐步骤证实），在此刷入即让证据<b>归属当前步骤</b>，
+        //  而不是像原先那样全场景证据都堆在最后一步（实测：DELAY 场景的断言步下面挂着登录流程自己的
+        //  auth/assert、profile/list 命中，与 DELAY 无关，极易误读）。
+        //  为什么不走 FrameworkListener.afterStep：那条路依赖 ListenerRegistry 已登记监听器，
+        //  而 E2E runner 下 ListenerRegistry 从未 initialize（实测全程无其任何日志）⇒ SPI 监听器是死的。
+        //  场景收尾（PlaywrightSerenityBridge.cleanupForScenario）另保留一次兜底 flush，
+        //  接住最后一步之后才产生的异步命中。
+        RouteEvidenceRegistry.flush();
 
         //  D4-2：产出步骤级结果（模型为框架自有类型，与报告引擎解耦）
         Long stepStart = TestContextHolder.get().get(STEP_START_TIME_KEY);

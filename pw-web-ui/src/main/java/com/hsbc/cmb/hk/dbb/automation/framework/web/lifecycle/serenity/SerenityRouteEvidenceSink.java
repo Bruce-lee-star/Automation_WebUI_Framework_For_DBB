@@ -69,19 +69,31 @@ public final class SerenityRouteEvidenceSink implements RouteEvidenceSink {
             return;
         }
         String[] item;
+        int written = 0;
         while ((item = PENDING.poll()) != null) {
             PENDING_COUNT.decrementAndGet();
             try {
                 Serenity.recordReportData()
                         .withTitle(String.format("[Route %s] %s", item[0], item[1]))
                         .andContents(item[2]);
+                written++;
             } catch (Exception e) {
                 LOGGER.debug("[Route] evidence write skipped: {}", e.toString());
             }
         }
+        if (written > 0) {
+            // 仅在真的写了东西时记录（步骤级 flush 大多为空）：便于回答"证据是在哪一步落进报告的"
+            LOGGER.info("[Route] 路由命中证据写入报告 {} 条", written);
+        }
     }
 
-    /** URL 脱敏：去掉查询串（DBB 的 token/otp 等都在 query 里），避免报告泄漏凭据。 */
+    /**
+     * 报告<b>标题</b>的 URL 脱敏：整段丢弃 query（只留 path）。
+     *
+     * <p>刻意比 {@code SensitiveDataSanitizer.sanitizeUrl}（正文/日志侧用：仅当命中敏感 query 键/值
+     * 才丢整个 query）更严 —— 标题是报告的"门面"，宁可过度遮蔽。正文那侧由
+     * {@code RouteDsl.describeCaptured} 统一收口，两处都脱敏、口径各自说明。</p>
+     */
     private static String maskUrl(String url) {
         if (url == null) {
             return "-";

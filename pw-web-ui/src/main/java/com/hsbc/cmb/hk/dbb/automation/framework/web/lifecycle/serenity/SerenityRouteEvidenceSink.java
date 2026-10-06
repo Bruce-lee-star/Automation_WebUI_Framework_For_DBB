@@ -44,7 +44,8 @@ public final class SerenityRouteEvidenceSink implements RouteEvidenceSink {
             if (PENDING_COUNT.incrementAndGet() > MAX_PENDING) {
                 PENDING.poll();
                 PENDING_COUNT.decrementAndGet();
-                LOGGER.warn("[Route] 待报告队列超过上限 {}，丢弃最旧一条（是否忘了 flush？）", MAX_PENDING);
+                LOGGER.warn("[Route] pending evidence queue exceeded {} records — dropping the oldest "
+                        + "(is a flush missing?)", MAX_PENDING);
             }
             PENDING.offer(new String[] {operation == null ? "-" : operation, maskUrl(url), detail});
         } catch (Exception e) {
@@ -83,7 +84,7 @@ public final class SerenityRouteEvidenceSink implements RouteEvidenceSink {
         }
         if (written > 0) {
             // 仅在真的写了东西时记录（步骤级 flush 大多为空）：便于回答"证据是在哪一步落进报告的"
-            LOGGER.info("[Route] 路由命中证据写入报告 {} 条", written);
+            LOGGER.info("[Route] route evidence written to report: {} record(s)", written);
         }
     }
 

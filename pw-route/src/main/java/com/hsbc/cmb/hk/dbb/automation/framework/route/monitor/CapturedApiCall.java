@@ -158,13 +158,22 @@ public record CapturedApiCall(String pattern, String method, String url,
         return false;
     }
 
-    /** 单行摘要（供日志 / 报告首行展示）。URL 已脱敏（query 命中敏感键即整体丢弃）。 */
+    /** 单行摘要（供日志 / 报告首行展示）。URL 已脱敏；null 值不出现（不打印 null 占位）。 */
     public String summary() {
-        String safeUrl = SensitiveDataSanitizer.sanitizeUrl(url);
+        StringBuilder s = new StringBuilder(96);
         if (timedOut) {
-            return "[timeout] " + method + " " + safeUrl + " (pattern=" + pattern + ")";
+            s.append("[timeout] ");
+        } else if (responseStatus != null) {
+            s.append("[status=").append(responseStatus).append("] ");
         }
-        return "[status=" + responseStatus + "] " + method + " " + safeUrl + " (pattern=" + pattern + ')';
+        if (method != null) {
+            s.append(method).append(' ');
+        }
+        s.append(SensitiveDataSanitizer.sanitizeUrl(url));
+        if (pattern != null && !pattern.isEmpty()) {
+            s.append(" (pattern=").append(pattern).append(')');
+        }
+        return s.toString().trim();
     }
 
     /**
@@ -206,33 +215,68 @@ public record CapturedApiCall(String pattern, String method, String url,
         }
     }
 
-    /** pretty 明细渲染（受 {@link #detail()} 的 catch 保护）。 */
+    /**
+     * pretty 明细渲染（受 {@link #detail()} 的 catch 保护）。
+     *
+     * <p><b>null / 空的字段整行不显示</b>（不打印 {@code null}、也不打印 {@code (none)} 占位）——
+     * 报告里每一行都是"确实有值"的信息；块内文案一律英文（报告可被跨团队直接阅读）。</p>
+     */
     private String renderDetail() {
         StringBuilder d = new StringBuilder("{\n");
-        d.append("  pattern   : ").append(pattern).append('\n');
-        d.append("  request   : ").append(method).append(' ')
-                .append(SensitiveDataSanitizer.sanitizeUrl(url)).append('\n');
+        appendField(d, "pattern", pattern);
+        if (method != null || url != null) {
+            appendField(d, "request", (method == null ? "" : method + " ")
+                    + SensitiveDataSanitizer.sanitizeUrl(url));
+        }
         if (durationMs >= 0) {
-            d.append("  duration  : ").append(durationMs).append("ms\n");
+            appendField(d, "duration", durationMs + "ms");
         }
         appendHeaders(d, "reqHeaders", requestHeaders);
         appendBody(d, "reqBody", requestBodyPreview, false);
-        d.append("  response  : ").append(timedOut ? "[timeout]" : String.valueOf(responseStatus)).append('\n');
+        if (timedOut) {
+            appendField(d, "response", "[timeout]");
+        } else {
+            appendField(d, "response", responseStatus);
+        }
         appendHeaders(d, "respHeaders", responseHeaders);
         appendBody(d, "respBody", responseBody, responseBodyTruncated);
         d.append('}');
         return d.toString();
     }
 
-    /** 头段落：逐行 {@code key: value}。 */
-    private static void appendHeaders(StringBuilder d, String label, Map<String, String> headers) {
-        d.append("  ").append(label).append(":\n");
-        if (headers == null || headers.isEmpty()) {
-            d.append("    (none)\n");
+    /** 单字段行（{@code label} 补齐到 10 字符后接 {@code ": "}）；null / 空值整行不输出。 */
+    static void appendField(StringBuilder d, String label, Object value) {
+        if (label == null || value == null) {
             return;
         }
+        String text = String.valueOf(value);
+        if (text.isEmpty()) {
+            return;
+        }
+        d.append("  ").append(label);
+        for (int i = label.length(); i < FIELD_LABEL_WIDTH; i++) {
+            d.append(' ');
+        }
+        d.append(": ").append(text).append('\n');
+    }
+
+    /** 字段名对齐宽度（{@code "  " + label 补齐至该宽度 + ": "}）。 */
+    private static final int FIELD_LABEL_WIDTH = 10;
+
+    /** 头段落：逐行 {@code key: value}；整段为空（或值全为 null）时整段不输出。 */
+    private static void appendHeaders(StringBuilder d, String label, Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return;
+        }
+        d.append("  ").append(label);
+        for (int i = label.length(); i < FIELD_LABEL_WIDTH; i++) {
+            d.append(' ');
+        }
+        d.append(":\n");
         for (Map.Entry<String, String> e : headers.entrySet()) {
-            d.append("    ").append(e.getKey()).append(": ").append(e.getValue()).append('\n');
+            if (e.getValue() != null) {
+                d.append("    ").append(e.getKey()).append(": ").append(e.getValue()).append('\n');
+            }
         }
     }
 

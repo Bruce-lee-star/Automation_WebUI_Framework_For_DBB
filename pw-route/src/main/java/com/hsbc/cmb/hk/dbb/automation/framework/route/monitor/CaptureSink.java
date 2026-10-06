@@ -183,7 +183,7 @@ public final class CaptureSink {
         // 明细复用上面同一份脱敏渲染（头值打码、体已脱敏+截断、URL 由 CapturedApiCall 脱敏）。
         try {
             RouteEvidenceRegistry.record("CAPTURE", call.url(), call.detailWith(
-                    "result    : CAPTURED（纯采集，无断言；response 段即浏览器实际收到的东西）"));
+                    "result    : CAPTURED (no assertion; 'response' section is what the browser actually received)"));
         } catch (Throwable t) {
             LOGGER.debug("[Route] capture evidence report skipped (non-fatal): {}", t.toString());
         }

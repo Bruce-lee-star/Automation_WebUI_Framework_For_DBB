@@ -413,7 +413,7 @@ public final class MonitorSink {
      */
     private void reportOutcome(CapturedExchange exchange) {
         try {
-            RouteEvidenceRegistry.record("MONITOR 结果", exchange.url(), exchange.resultDetail());
+            RouteEvidenceRegistry.record("MONITOR RESULT", exchange.url(), exchange.resultDetail());
         } catch (Throwable t) {
             LOGGER.debug("[Route] monitor outcome report skipped (non-fatal): {}", t.toString());
         }

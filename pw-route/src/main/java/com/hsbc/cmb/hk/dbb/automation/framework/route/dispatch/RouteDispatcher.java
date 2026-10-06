@@ -159,15 +159,15 @@ public final class RouteDispatcher {
             // MODIFY 改了 headers/method/body → 经 ResumeOptions 上路（无修改则等价放行）。
             RouteAction.resume(route, spec, modifiedBody);
             runtime.claims().markTerminal(claim, true);
-            reportOutcome(spec.capability().name() + " 结果", spec, request, null, null, null,
-                    "resume 真实网络；" + modifyLine(spec, modifiedBody));
+            reportOutcome(spec.capability().name() + " RESULT", spec, request, null, null, null,
+                    "resume real network; " + modifyLine(spec, modifiedBody));
         } else {
             // 纯放行（DELAY/MONITOR/无修改）：与原 MONITOR/DELAY 行为一致 = route.resume() 无参。
             RouteAction.resume(route);
             runtime.claims().markTerminal(claim, true);
             if (spec.capability() == RouteCapability.DELAY) {
-                reportOutcome("DELAY 结果", spec, request, null, null, null,
-                        "延时 " + spec.delayMs() + "ms 后放行真实网络");
+                reportOutcome("DELAY RESULT", spec, request, null, null, null,
+                        "delayed " + spec.delayMs() + "ms then resumed real network");
             }
         }
     }
@@ -202,13 +202,13 @@ public final class RouteDispatcher {
         try {
             detail = CapturedApiCall.ofRequest(spec.pattern(), request, null, null, null, false, -1, false)
                     .detailWith("rule      : " + ruleLine(spec, request),
-                            "stage     : 命中 —— 响应侧与实际动作结果见同 pattern 的「结果」证据");
+                            "stage     : HIT (outcome is reported by the matching 'RESULT' block)");
         } catch (Throwable t) {
             // 请求句柄不可用（如测试替身）→ 退化为纯规则声明，绝不向上抛
             try {
                 detail = RouteDsl.describeCaptured(spec, request.method(), request.url());
             } catch (Throwable ignored) {
-                detail = "命中（请求信息不可用）";
+                detail = "HIT (request info unavailable)";
             }
         }
         com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry.record(
@@ -226,8 +226,8 @@ public final class RouteDispatcher {
                                       String responseBody, String actionLine) {
         try {
             String result = status == null
-                    ? "APPLIED（真实响应由同 pattern 的 MONITOR/CAPTURE 证据给出）"
-                    : "FULFILLED（浏览器实际收到 status=" + status + "）";
+                    ? "APPLIED (real response is reported by the matching MONITOR/CAPTURE block)"
+                    : "FULFILLED (browser received status=" + status + ")";
             com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry.record(
                     operation, request.url(),
                     CapturedApiCall.ofRequest(spec.pattern(), request, status, responseHeaders,
@@ -255,7 +255,7 @@ public final class RouteDispatcher {
         if (modifiedBody != null) {
             m.append(m.length() > 0 ? " " : "").append("bodyModified=true");
         }
-        return m.length() == 0 ? "无修改字段" : m.toString();
+        return m.length() == 0 ? "no modified fields" : m.toString();
     }
 
     /** MOCK：静态伪造直接 fulfill；intercept / 字段替换交 IO 线程。 */
@@ -268,9 +268,10 @@ public final class RouteDispatcher {
                 && spec.conditionalReplacements().isEmpty()) {
             RouteAction.fulfill(route, spec);
             runtime.claims().markTerminal(claim, true);
-            reportOutcome("MOCK 结果", spec, request, spec.mockStatus(), spec.mockHeaders(), spec.mockBody(),
-                    "静态伪造 fulfill（status=" + (spec.mockStatus() == null ? "默认 200" : spec.mockStatus())
-                            + "，body=" + (spec.mockBody() == null ? "空" : spec.mockBody().length() + " 字符") + "）");
+            reportOutcome("MOCK RESULT", spec, request, spec.mockStatus(), spec.mockHeaders(), spec.mockBody(),
+                    "static fulfill (status=" + (spec.mockStatus() == null ? "default 200" : spec.mockStatus())
+                            + ", body=" + (spec.mockBody() == null ? "empty"
+                                    : spec.mockBody().length() + " chars") + ")");
             return;
         }
         // 需要 IO：intercept fetch（无静态体）或 字段替换（静态体 / 真实响应）
@@ -302,9 +303,9 @@ public final class RouteDispatcher {
                     logReplacementFailures(spec.pattern(), replaced.failures());
                     RouteAction.fulfillWithBody(route, spec.mockStatus(), headers, replaced.body());
                     runtime.claims().markTerminal(claim, true);
-                    reportOutcome("MOCK 结果", spec, request, spec.mockStatus(), headers, replaced.body(),
-                            "静态体 + 字段替换（replacePaths=" + spec.mockReplacements().keySet()
-                                    + "，替换失败=" + replaced.failures().size() + "）");
+                    reportOutcome("MOCK RESULT", spec, request, spec.mockStatus(), headers, replaced.body(),
+                            "static body + field replacement (replacePaths=" + spec.mockReplacements().keySet()
+                                    + ", failures=" + replaced.failures().size() + ")");
                     return;
                 }
                 // intercept：用事件线程取好的快照 + context.request() 取真实响应（不依赖 frame/Request 句柄）
@@ -327,8 +328,9 @@ public final class RouteDispatcher {
                             && spec.conditionalReplacements().isEmpty()) {
                         RouteAction.fulfillWithResponse(route, apiResponse);
                         runtime.claims().markTerminal(claim, true);
-                        reportOutcome("MOCK 结果", spec, request, apiResponse.status(), apiResponse.headers(), null,
-                                "intercept：真实响应原样回放（body 未在此读取，完整体见同 pattern 的 CAPTURE 证据）");
+                        reportOutcome("MOCK RESULT", spec, request, apiResponse.status(), apiResponse.headers(), null,
+                                "intercept: replay real response as-is "
+                                        + "(body not read here; full body in the matching CAPTURE block)");
                         return;
                     }
                     String contentType = apiResponse.headers().get("content-type");
@@ -339,10 +341,11 @@ public final class RouteDispatcher {
                     logReplacementFailures(spec.pattern(), replaced.failures());
                     RouteAction.fulfillWithBody(route, apiResponse.status(), apiResponse.headers(), replaced.body());
                     runtime.claims().markTerminal(claim, true);
-                    reportOutcome("MOCK 结果", spec, request, apiResponse.status(), apiResponse.headers(),
+                    reportOutcome("MOCK RESULT", spec, request, apiResponse.status(), apiResponse.headers(),
                             replaced.body(),
-                            "intercept 真实响应 + 字段替换（replacePaths=" + spec.mockReplacements().keySet()
-                                    + "，替换失败=" + replaced.failures().size() + "）");
+                            "intercept real response + field replacement (replacePaths="
+                                    + spec.mockReplacements().keySet()
+                                    + ", failures=" + replaced.failures().size() + ")");
                 } finally {
                     // 响应体已消费（fulfill + 读 body/status/headers），立即释放句柄，
                     // 避免 body buffer 滞留至 GC/context 关闭（对原 route.fetch 与 replay 路径同时生效）

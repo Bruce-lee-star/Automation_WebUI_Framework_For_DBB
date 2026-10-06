@@ -211,21 +211,22 @@ public final class CapturedExchange {
             tail.append(" expect=").append(expectStatus);
         }
         if (durationMs() >= 0) {
-            tail.append(" 耗时=").append(durationMs()).append("ms");
+            tail.append(" elapsed=").append(durationMs()).append("ms");
         }
         if (responseStatus == null && !responseTimedOut()) {
-            tail.append("（响应侧尚未定案）");
+            tail.append(" (response not settled yet)");
         } else if (responseBodyPreview == null) {
-            // 刻意不读体：status-only / 无 body 断言的规则若去读体，遇到 SSE 等流式端点会把观测线程挂住
-            tail.append('\n').append("respBody  : (未读取 —— 该规则无 body 断言且未开 capture；")
-                    .append("对流式端点刻意不读体，避免阻塞观测线程)");
+            // 刻意不读体（对流式端点读体会挂住观测线程）——如实标注，而不是留空让人误以为"没有响应"
+            tail.append('\n').append("respBody  : (not read — rule has no body assertion and capture is off;")
+                    .append(" bodies of streaming endpoints are deliberately not read to keep the observer unblocked)");
         }
         for (String failure : bodyAssertionFailures) {
             tail.append('\n').append("failure   : ")
                     .append(SensitiveDataSanitizer.sanitizeFreeText(failure));
         }
         if (bodyAssertionInconclusive != null) {
-            tail.append('\n').append("note      : body 断言未判定（响应句柄已被驱动回收，仅按 status 定案）: ")
+            tail.append('\n').append("note      : body assertion inconclusive (response handle reclaimed; "
+                            + "settled on status only): ")
                     .append(SensitiveDataSanitizer.sanitizeFreeText(bodyAssertionInconclusive));
         }
         return snapshot.detailWith(tail.toString());

@@ -5,9 +5,9 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.PlaywrightManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.base.ManagedPageAware;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording.RecordingPageProxy;
 import com.microsoft.playwright.Page;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -16,15 +16,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Phase 2 专属 UT：验证 {@link PageObjectFactory} 为组合式 Page Object（{@link ManagedPageAware}）
  * 注入录制装饰的受管 Page；并用 fake {@link RuntimeProvider}（返回 fake Page）脱离真实浏览器。
  * 同时验证 D6：测试替身（{@code isTestDouble}）不包装。
  */
-class PageObjectFactoryRecordingTest {
+public class PageObjectFactoryRecordingTest {
 
     private String prevLogging;
     private RuntimeProvider prevProvider;
@@ -89,15 +89,15 @@ class PageObjectFactoryRecordingTest {
         }
     }
 
-    @BeforeEach
-    void setUp() {
+    @Before
+    public void setUp() {
         prevLogging = System.getProperty("serenity.logging");
         prevProvider = PlaywrightManager.getProvider();
         System.setProperty("serenity.logging", "VERBOSE"); // 开启录制开关
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         PlaywrightManager.setProvider(prevProvider);
         PageObjectFactory.clear(DummyManagedPage.class);
         if (prevLogging == null) {
@@ -108,7 +108,7 @@ class PageObjectFactoryRecordingTest {
     }
 
     @Test
-    void factory_injectsDecoratedPage_whenEnabledAndNotTestDouble() {
+    public void factory_injectsDecoratedPage_whenEnabledAndNotTestDouble() {
         FakeProvider fp = new FakeProvider();
         fp.testDouble = false;
         PlaywrightManager.setProvider(fp);
@@ -116,14 +116,13 @@ class PageObjectFactoryRecordingTest {
         DummyManagedPage page = PageObjectFactory.getPage(DummyManagedPage.class);
         Page managed = page.getPage();
 
-        assertTrue(Proxy.isProxyClass(managed.getClass()),
-                "factory-injected managed page must be decorated (recording proxy)");
+        assertTrue("factory-injected managed page must be decorated (recording proxy)", Proxy.isProxyClass(managed.getClass()));
         managed.click("btn");
-        assertTrue(fp.rec.calls.contains("click"), "native op delegated to underlying page");
+        assertTrue("native op delegated to underlying page", fp.rec.calls.contains("click"));
     }
 
     @Test
-    void factory_doesNotWrap_testDouble() {
+    public void factory_doesNotWrap_testDouble() {
         FakeProvider fp = new FakeProvider();
         fp.testDouble = true; // mock
         PlaywrightManager.setProvider(fp);
@@ -131,6 +130,6 @@ class PageObjectFactoryRecordingTest {
         DummyManagedPage page = PageObjectFactory.getPage(DummyManagedPage.class);
         Page managed = page.getPage();
 
-        assertSame(fp.page, managed, "test double must NOT be wrapped (D6)");
+        assertSame("test double must NOT be wrapped (D6)", fp.page, managed);
     }
 }

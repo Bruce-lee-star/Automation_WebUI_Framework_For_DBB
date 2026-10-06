@@ -51,15 +51,10 @@
             <artifactId>freemarker</artifactId>
         </dependency>
 
-        <!-- 测试期依赖（JUnit5 升级，2026-09-11） -->
+        <!-- 测试期依赖（JUnit 4） -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
             <scope>test</scope>
         </dependency>
         

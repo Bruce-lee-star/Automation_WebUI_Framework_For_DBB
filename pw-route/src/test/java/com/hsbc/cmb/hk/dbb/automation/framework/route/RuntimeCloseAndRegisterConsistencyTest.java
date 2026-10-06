@@ -112,7 +112,7 @@ public class RuntimeCloseAndRegisterConsistencyTest {
         }
 
         assertTrue("绑定失败 ⇒ 内存规则表不得残留无绑定的幽灵规则",
-                runtime.generations().snapshot().rules().isEmpty());
+                runtime.ruleSnapshot().rules().isEmpty());
         assertTrue("绑定失败 ⇒ runtime 标记降级（可观测）", runtime.isDegraded());
     }
 
@@ -121,11 +121,11 @@ public class RuntimeCloseAndRegisterConsistencyTest {
         BrowserContext ctx = mockContext();
         RouteRuntime runtime = RouteEngine.runtimeOf(ctx);
         AutoCloseable handle = RouteDsl.on(ctx).api("/api/h").mock().status(200).body("{}").register();
-        assertEquals(1, runtime.generations().snapshot().rules().size());
+        assertEquals(1, runtime.ruleSnapshot().rules().size());
 
         handle.close();
 
-        assertTrue("句柄关闭必须同时摘掉内存规则表条目", runtime.generations().snapshot().rules().isEmpty());
+        assertTrue("句柄关闭必须同时摘掉内存规则表条目", runtime.ruleSnapshot().rules().isEmpty());
     }
 
     @Test
@@ -134,16 +134,16 @@ public class RuntimeCloseAndRegisterConsistencyTest {
         RouteRuntime runtime = RouteEngine.runtimeOf(ctx);
         AutoCloseable first = RouteDsl.on(ctx).api("/api/t").mock().status(200).body("{\"v\":1}").register();
         AutoCloseable second = RouteDsl.on(ctx).api("/api/t").mock().status(200).body("{\"v\":2}").register();
-        assertEquals(1, runtime.generations().snapshot().rules().size());
+        assertEquals(1, runtime.ruleSnapshot().rules().size());
 
         first.close();
 
         assertFalse("旧句柄（已被同 pattern 的新规则取代）必须成为 no-op",
-                runtime.generations().snapshot().rules().isEmpty());
+                runtime.ruleSnapshot().rules().isEmpty());
         assertEquals("旧句柄不得摘掉同 pattern 的新规则（令牌化）",
-                1, runtime.generations().snapshot().rules().size());
+                1, runtime.ruleSnapshot().rules().size());
 
         second.close();
-        assertTrue(runtime.generations().snapshot().rules().isEmpty());
+        assertTrue(runtime.ruleSnapshot().rules().isEmpty());
     }
 }

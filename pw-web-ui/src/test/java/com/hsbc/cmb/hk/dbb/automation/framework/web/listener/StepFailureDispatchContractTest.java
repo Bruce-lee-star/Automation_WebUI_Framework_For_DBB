@@ -4,9 +4,8 @@ import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import net.thucydides.model.steps.ExecutedStepDescription;
 import net.thucydides.model.steps.StepFailure;
 import net.thucydides.model.steps.StepListener;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
@@ -14,7 +13,7 @@ import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -34,19 +33,19 @@ import static org.mockito.Mockito.mock;
  * 本用例立即由 1 变 2 而失败（这正是修复前 {@code ThucydidesStepsListenerAdapterTest} 的
  * {@code times(1)} 偶发 {@code TooManyActualInvocations} 的同一现象）。</p>
  */
-class StepFailureDispatchContractTest {
+public class StepFailureDispatchContractTest {
 
     private final ThucydidesStepsListenerAdapter adapter = new ThucydidesStepsListenerAdapter();
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         // delegateListeners 是静态共享列表：用例结束必须清空，避免污染其它用例
         adapter.clearDelegateListeners();
     }
 
     @Test
-    @DisplayName("N-21：一次【3 参】stepFailed 事件 → 每个 delegate 只收到一次失败派发")
-    void threeArgStepFailedDispatchesOnce() {
+    // @DisplayName: "N-21：一次【3 参】stepFailed 事件 → 每个 delegate 只收到一次失败派发"
+    public void threeArgStepFailedDispatchesOnce() {
         adapter.clearDelegateListeners();
         AtomicInteger failedCalls = new AtomicInteger();
         adapter.addDelegateListener(recordingListener(failedCalls));
@@ -54,14 +53,13 @@ class StepFailureDispatchContractTest {
         StepFailure failure = newStepFailure("3-arg boom");
         adapter.stepFailed(failure, List.<ScreenshotAndHtmlSource>of(), false);
 
-        assertEquals(1, failedCalls.get(),
-                "同一次失败只能派发一次：接口 default 已把 3 参【向上】转调 4 参，"
-                        + "而 4 参版本本类自己也派发 → 再调 super 必然重复（N-21）");
+        assertEquals("同一次失败只能派发一次：接口 default 已把 3 参【向上】转调 4 参，"
+                        + "而 4 参版本本类自己也派发 → 再调 super 必然重复（N-21）", 1, failedCalls.get());
     }
 
     @Test
-    @DisplayName("N-21（回归守卫）：一次【4 参】stepFailed 事件仍只派发一次")
-    void fourArgStepFailedDispatchesOnce() {
+    // @DisplayName: "N-21（回归守卫）：一次【4 参】stepFailed 事件仍只派发一次"
+    public void fourArgStepFailedDispatchesOnce() {
         adapter.clearDelegateListeners();
         AtomicInteger failedCalls = new AtomicInteger();
         adapter.addDelegateListener(recordingListener(failedCalls));
@@ -69,20 +67,19 @@ class StepFailureDispatchContractTest {
         StepFailure failure = newStepFailure("4-arg boom");
         adapter.stepFailed(failure, List.<ScreenshotAndHtmlSource>of(), false, ZonedDateTime.now());
 
-        assertEquals(1, failedCalls.get(),
-                "4 参重写本就只派发一次（不调 super）；此断言防止将来有人给它也加上 super 转调");
+        assertEquals("4 参重写本就只派发一次（不调 super）；此断言防止将来有人给它也加上 super 转调", 1, failedCalls.get());
     }
 
     @Test
-    @DisplayName("N-21：1 参 stepFailed 亦只派发一次（Serenity 的 lastStepFailed 会复用它，不得再叠一层）")
-    void oneArgStepFailedDispatchesOnce() {
+    // @DisplayName: "N-21：1 参 stepFailed 亦只派发一次（Serenity 的 lastStepFailed 会复用它，不得再叠一层）"
+    public void oneArgStepFailedDispatchesOnce() {
         adapter.clearDelegateListeners();
         AtomicInteger failedCalls = new AtomicInteger();
         adapter.addDelegateListener(recordingListener(failedCalls));
 
         adapter.stepFailed(newStepFailure("1-arg boom"));
 
-        assertEquals(1, failedCalls.get(), "1 参重写只派发一次，不得叠加其它路径");
+        assertEquals("1 参重写只派发一次，不得叠加其它路径", 1, failedCalls.get());
     }
 
     // ---------- 测试脚手架 ----------

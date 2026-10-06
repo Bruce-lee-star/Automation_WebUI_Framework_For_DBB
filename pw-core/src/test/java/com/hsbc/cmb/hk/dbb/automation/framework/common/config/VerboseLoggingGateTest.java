@@ -4,15 +4,14 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 日志门控契约（2026-09-28 对齐 master 的 {@code LoggingConfigUtil} 语义）。
@@ -26,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       —— 否则关日志会连带停掉 Serenity 报告的动作录制。</li>
  * </ol>
  */
-class VerboseLoggingGateTest {
+public class VerboseLoggingGateTest {
 
     private static final String SERENITY_LOGGING = ConfigKeys.WEB_SERENITY_LOGGING.key();
     private static final String FRAMEWORK_VERBOSE = ConfigKeys.WEB_FRAMEWORK_VERBOSE_LOGGING.key();
@@ -39,8 +38,8 @@ class VerboseLoggingGateTest {
     private Level projectLevelBefore;
     private Level rootLevelBefore;
 
-    @BeforeEach
-    void setUp() {
+    @Before
+    public void setUp() {
         prevSerenity = System.getProperty(SERENITY_LOGGING);
         prevVerbose = System.getProperty(FRAMEWORK_VERBOSE);
         prevTrace = System.getProperty(FRAMEWORK_TRACE);
@@ -51,8 +50,8 @@ class VerboseLoggingGateTest {
         projectLogger().setLevel(Level.INFO);
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         restore(SERENITY_LOGGING, prevSerenity, ConfigKeys.WEB_SERENITY_LOGGING.defaultValue());
         restore(FRAMEWORK_VERBOSE, prevVerbose, ConfigKeys.WEB_FRAMEWORK_VERBOSE_LOGGING.defaultValue());
         restore(FRAMEWORK_TRACE, prevTrace, ConfigKeys.WEB_FRAMEWORK_TRACE_LOGGING.defaultValue());
@@ -76,53 +75,53 @@ class VerboseLoggingGateTest {
     }
 
     @Test
-    @DisplayName("门控键：framework.verbose.logging 决定日志；serenity.logging 只决定录制（两者解耦）")
-    void gate_followsFrameworkKeys_notSerenity() {
+    // @DisplayName: "门控键：framework.verbose.logging 决定日志；serenity.logging 只决定录制（两者解耦）"
+    public void gate_followsFrameworkKeys_notSerenity() {
         System.setProperty(SERENITY_LOGGING, "VERBOSE");
         System.setProperty(FRAMEWORK_VERBOSE, "false");
         System.setProperty(FRAMEWORK_TRACE, "false");
-        assertFalse(VerboseLogging.isVerboseEnabled(), "serenity.logging=VERBOSE 不得再开启详细日志");
-        assertTrue(VerboseLogging.isRecordingEnabled(), "录制语义必须保持：serenity.logging=VERBOSE ⇒ 录制开");
+        assertFalse("serenity.logging=VERBOSE 不得再开启详细日志", VerboseLogging.isVerboseEnabled());
+        assertTrue("录制语义必须保持：serenity.logging=VERBOSE ⇒ 录制开", VerboseLogging.isRecordingEnabled());
 
         System.setProperty(FRAMEWORK_VERBOSE, "true");
-        assertTrue(VerboseLogging.isVerboseEnabled(), "framework.verbose.logging=true ⇒ 详细日志开");
-        assertFalse(VerboseLogging.isTraceEnabled(), "verbose 不等于 trace");
+        assertTrue("framework.verbose.logging=true ⇒ 详细日志开", VerboseLogging.isVerboseEnabled());
+        assertFalse("verbose 不等于 trace", VerboseLogging.isTraceEnabled());
 
         System.setProperty(FRAMEWORK_VERBOSE, "false");
         System.setProperty(FRAMEWORK_TRACE, "true");
-        assertTrue(VerboseLogging.isTraceEnabled(), "framework.trace.logging=true ⇒ trace 开");
-        assertTrue(VerboseLogging.isVerboseEnabled(), "trace 蕴含 verbose");
+        assertTrue("framework.trace.logging=true ⇒ trace 开", VerboseLogging.isTraceEnabled());
+        assertTrue("trace 蕴含 verbose", VerboseLogging.isVerboseEnabled());
 
         System.setProperty(SERENITY_LOGGING, "QUIET");
-        assertFalse(VerboseLogging.isRecordingEnabled(), "serenity.logging=QUIET ⇒ 录制关（既有语义）");
-        assertTrue(VerboseLogging.isVerboseEnabled(), "录制开关不得反过来影响日志门控（已解耦）");
+        assertFalse("serenity.logging=QUIET ⇒ 录制关（既有语义）", VerboseLogging.isRecordingEnabled());
+        assertTrue("录制开关不得反过来影响日志门控（已解耦）", VerboseLogging.isVerboseEnabled());
     }
 
     @Test
-    @DisplayName("提级只作用于本项目包，绝不动 root")
-    void levelSync_touchesProjectLoggerOnly() {
+    // @DisplayName: "提级只作用于本项目包，绝不动 root"
+    public void levelSync_touchesProjectLoggerOnly() {
         Level rootBefore = rootLogger().getLevel();
 
         System.setProperty(FRAMEWORK_VERBOSE, "true");
         System.setProperty(FRAMEWORK_TRACE, "false");
         assertTrue(VerboseLogging.isVerboseEnabled());
-        assertEquals(Level.DEBUG, projectLogger().getLevel(), "verbose ⇒ 本项目包 DEBUG");
-        assertEquals(rootBefore, rootLogger().getLevel(), "root 级别绝不能被改动");
+        assertEquals("verbose ⇒ 本项目包 DEBUG", Level.DEBUG, projectLogger().getLevel());
+        assertEquals("root 级别绝不能被改动", rootBefore, rootLogger().getLevel());
 
         System.setProperty(FRAMEWORK_TRACE, "true");
         assertTrue(VerboseLogging.isTraceEnabled());
-        assertEquals(Level.TRACE, projectLogger().getLevel(), "trace ⇒ 本项目包 TRACE");
-        assertEquals(rootBefore, rootLogger().getLevel(), "root 级别绝不能被改动");
+        assertEquals("trace ⇒ 本项目包 TRACE", Level.TRACE, projectLogger().getLevel());
+        assertEquals("root 级别绝不能被改动", rootBefore, rootLogger().getLevel());
 
         System.setProperty(FRAMEWORK_VERBOSE, "false");
         System.setProperty(FRAMEWORK_TRACE, "false");
         assertFalse(VerboseLogging.isVerboseEnabled());
-        assertEquals(Level.INFO, projectLogger().getLevel(), "关闭后必须还原为原始级别（此处 INFO）");
+        assertEquals("关闭后必须还原为原始级别（此处 INFO）", Level.INFO, projectLogger().getLevel());
     }
 
     @Test
-    @DisplayName("真实输出：关闭时 *IfVerbose 不输出，开启后输出")
-    void output_isGated() {
+    // @DisplayName: "真实输出：关闭时 *IfVerbose 不输出，开启后输出"
+    public void output_isGated() {
         Logger logger = (Logger) LoggerFactory.getLogger(PROJECT_LOGGER + ".gate.test");
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
@@ -132,11 +131,11 @@ class VerboseLoggingGateTest {
             System.setProperty(FRAMEWORK_VERBOSE, "false");
             System.setProperty(FRAMEWORK_TRACE, "false");
             VerboseLogging.logDebugIfVerbose(logger, "hidden");
-            assertEquals(0, appender.list.size(), "门控关闭 ⇒ 详细日志不得输出");
+            assertEquals("门控关闭 ⇒ 详细日志不得输出", 0, appender.list.size());
 
             System.setProperty(FRAMEWORK_VERBOSE, "true");
             VerboseLogging.logDebugIfVerbose(logger, "visible");
-            assertEquals(1, appender.list.size(), "门控开启 ⇒ 详细日志必须输出");
+            assertEquals("门控开启 ⇒ 详细日志必须输出", 1, appender.list.size());
             assertEquals("visible", appender.list.get(0).getFormattedMessage());
         } finally {
             logger.detachAppender(appender);

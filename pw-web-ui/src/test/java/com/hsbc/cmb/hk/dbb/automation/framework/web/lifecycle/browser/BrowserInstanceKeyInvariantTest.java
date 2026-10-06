@@ -1,11 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 守卫：Browser 实例键<b>恒为</b> {@code "<threadId>:<configId>"}。
@@ -19,36 +19,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>本测试把该不变式固化为可执行断言，防止共享模式以任何形式回归（例如后人再加一个
  * {@code shared:} 前缀以"省内存"）。
  */
-class BrowserInstanceKeyInvariantTest {
+public class BrowserInstanceKeyInvariantTest {
 
     private static final String CONFIG_ID = "chromium_headless_";
 
     /** 键必须带本线程 threadId 维度，且不得出现任何"共享"标记。 */
     @Test
-    void keyIsPerThreadAndNeverShared() {
+    public void keyIsPerThreadAndNeverShared() {
         String key = BrowserRegistryImpl.INSTANCE.keyFor(CONFIG_ID);
-        assertTrue(key.startsWith(Thread.currentThread().threadId() + ":"),
-                "Browser 键必须以 threadId 为前缀（每线程独立 Browser）：" + key);
-        assertTrue(key.endsWith(":" + CONFIG_ID), "键须以 configId 结尾：" + key);
-        assertFalse(key.toLowerCase().contains("shared"),
-                "共享 Browser 模式已移除（Playwright Java 非线程安全），键中不得出现 shared 维度：" + key);
+        assertTrue("Browser 键必须以 threadId 为前缀（每线程独立 Browser）：" + key, key.startsWith(Thread.currentThread().threadId() + ":"));
+        assertTrue("键须以 configId 结尾：" + key, key.endsWith(":" + CONFIG_ID));
+        assertFalse("共享 Browser 模式已移除（Playwright Java 非线程安全），键中不得出现 shared 维度：" + key, key.toLowerCase().contains("shared"));
     }
 
     /** 不同线程必须得到不同的键 —— 即不可能共享同一 Browser 实例。 */
     @Test
-    void keyDiffersAcrossThreads() throws Exception {
+    public void keyDiffersAcrossThreads() throws Exception {
         String mainKey = BrowserRegistryImpl.INSTANCE.keyFor(CONFIG_ID);
         String[] other = new String[1];
         Thread worker = new Thread(
                 () -> other[0] = BrowserRegistryImpl.INSTANCE.keyFor(CONFIG_ID), "key-invariant-worker");
         worker.start();
         worker.join(5_000);
-        assertNotEquals(mainKey, other[0], "不同线程必须得到不同的 Browser 键（不得共享实例）");
+        assertNotEquals("不同线程必须得到不同的 Browser 键（不得共享实例）", mainKey, other[0]);
     }
 
     /** 空白/ null configId 必须 fail-fast（否则会生成无法定位的孤儿键）。 */
     @Test
-    void blankConfigIdIsRejected() {
+    public void blankConfigIdIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> BrowserRegistryImpl.INSTANCE.keyFor(null));
         assertThrows(IllegalArgumentException.class, () -> BrowserRegistryImpl.INSTANCE.keyFor("   "));
         // 形态校验：必须含 '_' 分隔符（'<browserType>_<headless>[_channel]'）

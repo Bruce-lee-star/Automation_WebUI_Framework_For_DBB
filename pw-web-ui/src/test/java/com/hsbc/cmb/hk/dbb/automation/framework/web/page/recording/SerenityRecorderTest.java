@@ -1,48 +1,48 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.recording;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.JUnit4Assertions.assertDoesNotThrow;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Phase 0 专属 UT：验证 {@link SerenityRecorder} 从原 {@code SerenityBasePage} 旧类（已删除）行为逐字迁移。
  * 集成层（verbose 存储 + Serenity 报告写入）由全护盾（600+ 用例）覆盖。
  */
-class SerenityRecorderTest {
+public class SerenityRecorderTest {
 
     private SerenityRecorder recorder;
 
-    @BeforeEach
-    void setUp() {
+    @Before
+    public void setUp() {
         recorder = new SerenityRecorder();
     }
 
     @Test
-    void record_runsOperation() {
+    public void record_runsOperation() {
         boolean[] ran = {false};
         recorder.record("test-action", "detail", () -> ran[0] = true);
-        assertTrue(ran[0], "operation must be executed by record()");
+        assertTrue("operation must be executed by record()", ran[0]);
     }
 
     @Test
-    void recordAndReturn_returnsResult() {
+    public void recordAndReturn_returnsResult() {
         String result = recorder.recordAndReturn("test-action", "detail", () -> "ok");
         assertEquals("ok", result);
     }
 
     @Test
-    void recordAndReturn_nullDetailFallsBackToResult() {
+    public void recordAndReturn_nullDetailFallsBackToResult() {
         Integer result = recorder.recordAndReturn("test-action", null, () -> 42);
         assertEquals(Integer.valueOf(42), result);
     }
 
     @Test
-    void recordVerification_doesNotThrow() {
+    public void recordVerification_doesNotThrow() {
         assertDoesNotThrow(() -> {
             recorder.recordVerification("v-pass", true);
             recorder.recordVerification("v-fail", false);
@@ -50,7 +50,7 @@ class SerenityRecorderTest {
     }
 
     @Test
-    void dataAccessors_safeWhenEmpty() {
+    public void dataAccessors_safeWhenEmpty() {
         assertNotNull(recorder.getSerenityTestDataMap());
         assertNull(recorder.getSerenityTestData("missing"));
         assertDoesNotThrow(recorder::clearSerenityTestData);

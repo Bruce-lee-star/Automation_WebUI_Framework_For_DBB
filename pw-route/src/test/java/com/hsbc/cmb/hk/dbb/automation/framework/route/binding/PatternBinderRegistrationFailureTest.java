@@ -79,7 +79,7 @@ public class PatternBinderRegistrationFailureTest {
             fail("真实异常必须抛出（不得伪装成超时降级）");
         } catch (IllegalStateException expected) {
             assertTrue("必须保留原始异常作为 cause",
-                    expected.getCause() instanceof PlaywrightException);
+                    PlaywrightException.class.isInstance(expected.getCause()));
         }
     }
 

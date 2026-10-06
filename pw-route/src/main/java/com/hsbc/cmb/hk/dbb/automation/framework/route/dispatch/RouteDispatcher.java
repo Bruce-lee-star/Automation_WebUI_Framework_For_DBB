@@ -68,7 +68,7 @@ public final class RouteDispatcher {
         }
 
         // 2) 读规则快照（无锁）
-        ApiSpec spec = runtime.generations().snapshot().specFor(pattern);
+        ApiSpec spec = runtime.ruleSnapshot().specFor(pattern);
         if (spec == null) {
             // 规则已退役（代际切换 / 注销竞态窗口）→ fail-open
             runtime.claims().markTerminal(claim, false);

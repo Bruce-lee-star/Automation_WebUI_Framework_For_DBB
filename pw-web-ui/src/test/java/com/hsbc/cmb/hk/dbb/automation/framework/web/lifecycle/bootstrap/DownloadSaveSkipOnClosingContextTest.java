@@ -5,18 +5,19 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadRegistry;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Download;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.After;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.mock;
@@ -33,19 +34,24 @@ import static org.mockito.Mockito.when;
  * 现在的判据是<b>框架已知状态</b>（{@link DownloadLifecycle#isContextClosing(BrowserContext)}），
  * 且绝大多数情况下保存根本不会被发起，因而没有「需要分类的异常」。</p>
  */
-class DownloadSaveSkipOnClosingContextTest {
+public class DownloadSaveSkipOnClosingContextTest {
+    @Rule
+    public final TemporaryFolder tempFolder = new TemporaryFolder();
+    private Path tempDir;
 
-    @TempDir
-    Path tempDir;
+    @Before
+    public void initTempDir() {
+        tempDir = tempFolder.getRoot().toPath();
+    }
 
-    @AfterEach
-    void cleanup() {
+    @After
+    public void cleanup() {
         DownloadLifecycle.clearAll();
     }
 
     @Test
-    @DisplayName("CT2-15 预防：关闭中的 context 绝不发起 saveAs（不建目录、不占位、不登记）")
-    void closingContextNeverStartsSave() throws Exception {
+    // @DisplayName: "CT2-15 预防：关闭中的 context 绝不发起 saveAs（不建目录、不占位、不登记）"
+    public void closingContextNeverStartsSave() throws Exception {
         BrowserContext context = mock(BrowserContext.class);
         Download download = mock(Download.class);
         Path downloadDir = tempDir.resolve("thread-1");
@@ -56,15 +62,13 @@ class DownloadSaveSkipOnClosingContextTest {
         // after(...).never()：给异步任务足够时间证明它确实不会执行保存
         verify(download, after(800).never()).saveAs(any());
         verify(download, after(800).never()).suggestedFilename();
-        assertFalse(Files.exists(downloadDir),
-                "关闭中的 context 连下载目录都不应创建（保存注定被 close() 取消）");
-        assertNull(DownloadRegistry.instance().last(context),
-                "未保存成功就不得登记下载路径（否则业务会查到不存在的文件）");
+        assertFalse("关闭中的 context 连下载目录都不应创建（保存注定被 close() 取消）", Files.exists(downloadDir));
+        assertNull("未保存成功就不得登记下载路径（否则业务会查到不存在的文件）", DownloadRegistry.instance().last(context));
     }
 
     @Test
-    @DisplayName("CT2-15 对照：存活 context 正常保存并登记路径（不得因误判关闭而跳过）")
-    void liveContextSavesAndRegisters() throws Exception {
+    // @DisplayName: "CT2-15 对照：存活 context 正常保存并登记路径（不得因误判关闭而跳过）"
+    public void liveContextSavesAndRegisters() throws Exception {
         BrowserContext context = mock(BrowserContext.class);
         Browser browser = mock(Browser.class);
         when(context.browser()).thenReturn(browser);
@@ -76,14 +80,13 @@ class DownloadSaveSkipOnClosingContextTest {
         PlaywrightContextManager.saveDownloadAsync(context, download, downloadDir, 5_000);
 
         verify(download, timeout(3_000)).saveAs(any(Path.class));
-        assertNotNull(waitForRecorded(context), "保存成功后必须登记下载路径，供业务查询");
-        assertEquals(0, waitForPendingCountZero(downloadDir),
-                "任务结束（含成功）后必须注销在途计数，否则收尾永远跳过删除下载目录");
+        assertNotNull("保存成功后必须登记下载路径，供业务查询", waitForRecorded(context));
+        assertEquals("任务结束（含成功）后必须注销在途计数，否则收尾永远跳过删除下载目录", 0, waitForPendingCountZero(downloadDir));
     }
 
     @Test
-    @DisplayName("CT2-15：拿不到 Browser 不得被当成不可用 —— 持久化上下文（browser() 返回 null）必须照常保存")
-    void nullBrowserDoesNotSuppressSave() throws Exception {
+    // @DisplayName: "CT2-15：拿不到 Browser 不得被当成不可用 —— 持久化上下文（browser() 返回 null）必须照常保存"
+    public void nullBrowserDoesNotSuppressSave() throws Exception {
         BrowserContext context = mock(BrowserContext.class);
         // launchPersistentContext 的真实行为：browser() 返回 null，但上下文完全可用。
         // 若把「拿不到 Browser」当作不可用，该拓扑下所有下载会被静默跳过（比日志噪音严重得多）。
@@ -98,8 +101,8 @@ class DownloadSaveSkipOnClosingContextTest {
     }
 
     @Test
-    @DisplayName("CT2-15：Browser 已断开属实证不可用 → 不发起 saveAs（避免注定失败的调用）")
-    void disconnectedBrowserSkipsSave() throws Exception {
+    // @DisplayName: "CT2-15：Browser 已断开属实证不可用 → 不发起 saveAs（避免注定失败的调用）"
+    public void disconnectedBrowserSkipsSave() throws Exception {
         BrowserContext context = mock(BrowserContext.class);
         Browser browser = mock(Browser.class);
         when(context.browser()).thenReturn(browser);
@@ -110,7 +113,7 @@ class DownloadSaveSkipOnClosingContextTest {
         PlaywrightContextManager.saveDownloadAsync(context, download, downloadDir, 5_000);
 
         verify(download, after(800).never()).saveAs(any());
-        assertFalse(Files.exists(downloadDir), "环境已不可用时不建目录、不占位（避免 0 字节残留）");
+        assertFalse("环境已不可用时不建目录、不占位（避免 0 字节残留）", Files.exists(downloadDir));
     }
 
     /**

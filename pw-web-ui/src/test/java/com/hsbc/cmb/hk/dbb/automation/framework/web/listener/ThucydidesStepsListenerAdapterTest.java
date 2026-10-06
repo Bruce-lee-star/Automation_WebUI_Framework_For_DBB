@@ -8,16 +8,16 @@ import net.thucydides.model.screenshots.ScreenshotAndHtmlSource;
 import net.thucydides.model.steps.ExecutedStepDescription;
 import net.thucydides.model.steps.StepFailure;
 import net.thucydides.model.steps.StepListener;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -38,7 +38,7 @@ public class ThucydidesStepsListenerAdapterTest {
     private ThucydidesStepsListenerAdapter adapter;
     private StepListener delegate;
 
-    @BeforeEach
+    @Before
     public void setUp() {
         adapter = new ThucydidesStepsListenerAdapter();
         adapter.clearDelegateListeners();
@@ -46,7 +46,7 @@ public class ThucydidesStepsListenerAdapterTest {
         adapter.addDelegateListener(delegate);
     }
 
-    @AfterEach
+    @After
     public void tearDown() {
         adapter.clearDelegateListeners();
     }
@@ -58,12 +58,12 @@ public class ThucydidesStepsListenerAdapterTest {
         adapter.clearDelegateListeners();
 
         adapter.addDelegateListener(null);
-        assertEquals( 0,  adapter.getDelegateListenerCount(), "null 监听器必须被忽略");
+        assertEquals("null 监听器必须被忽略", 0, adapter.getDelegateListenerCount());
 
         StepListener once = mock(StepListener.class);
         adapter.addDelegateListener(once);
         adapter.addDelegateListener(once);
-        assertEquals( 1,  adapter.getDelegateListenerCount(), "同一监听器不得重复登记");
+        assertEquals("同一监听器不得重复登记", 1, adapter.getDelegateListenerCount());
     }
 
     @Test

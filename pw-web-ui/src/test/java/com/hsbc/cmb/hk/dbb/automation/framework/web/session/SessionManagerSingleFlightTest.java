@@ -1,12 +1,11 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.lang.reflect.Method;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 /**
  * CT2-14 契约：单飞守卫的「夺取」语义与可观测计数。
@@ -24,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * <p>超时夺取路径本身需 {@code 单飞超时 + 宽限期}（默认 60s + 5s）才能触发，故不在单测内等待；
  * 其正确性依赖上述计数与 JVM 内单飞守卫的串行化（CT2-16 已移除跨进程锁 CrossJvmLoginLock，跨 JVM 单飞不再保证）。
  */
-class SessionManagerSingleFlightTest {
+public class SessionManagerSingleFlightTest {
 
     private static final Method ACQUIRE;
     private static final Method COMPLETE;
@@ -49,19 +48,18 @@ class SessionManagerSingleFlightTest {
     }
 
     @Test
-    @DisplayName("CT2-14：正常 leader 完成不计入夺取；守卫完成后可重新竞争；夺取计数可观测")
-    void leaderLifecycleDoesNotCountTakeover() throws Exception {
+    // @DisplayName: "CT2-14：正常 leader 完成不计入夺取；守卫完成后可重新竞争；夺取计数可观测"
+    public void leaderLifecycleDoesNotCountTakeover() throws Exception {
         String key = "single-flight-test-" + System.nanoTime();
         long before = SessionManager.getSingleFlightTakeoverCount();
 
-        assertNull(acquire(key), "首个申请者应为 leader（返回 null 表示需由调用方执行登录）");
+        assertNull("首个申请者应为 leader（返回 null 表示需由调用方执行登录）", acquire(key));
         complete(key, true);
 
-        assertEquals(before, SessionManager.getSingleFlightTakeoverCount(),
-                "正常 leader 完成绝不能计入夺取（否则计数失去信号意义）");
+        assertEquals("正常 leader 完成绝不能计入夺取（否则计数失去信号意义）", before, SessionManager.getSingleFlightTakeoverCount());
 
         // 守卫已被清理 → 同一 key 可再次成为 leader（不残留死守卫）
-        assertNull(acquire(key), "守卫清理后再次申请应重新成为 leader");
+        assertNull("守卫清理后再次申请应重新成为 leader", acquire(key));
         complete(key, false);
     }
 }

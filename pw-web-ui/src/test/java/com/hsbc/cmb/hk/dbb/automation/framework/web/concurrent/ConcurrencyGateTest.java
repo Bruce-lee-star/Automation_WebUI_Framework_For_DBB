@@ -2,9 +2,9 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.concurrent;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ConcurrencyGateTimeoutException;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -19,11 +19,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：SSO 感知并发闸门（无浏览器，纯逻辑）。
@@ -59,17 +59,17 @@ public class ConcurrencyGateTest {
      * 仅引擎级并行开关可清理：{@code ConcurrencyGate.parseTriState} 是直接
      * {@code System.getProperty} 读的，不经配置层。</p>
      *
-     * <p><b>注意</b>：必须拆成 {@code @BeforeEach} / {@code @AfterEach} 两个方法 —— 实测把两个注解标在
-     * 同一个方法上时 {@code @AfterEach} 不生效，本类的 MAX_WAIT 等系统属性会泄漏给后续测试类
+     * <p><b>注意</b>：必须拆成 {@code @Before} / {@code @After} 两个方法 —— 实测把两个注解标在
+     * 同一个方法上时 {@code @After} 不生效，本类的 MAX_WAIT 等系统属性会泄漏给后续测试类
      * （曾导致 {@code SessionManagerSessionGateTest} 的等待方 300ms 就 fail-closed 而失败）。</p>
      */
-    @BeforeEach
+    @Before
     public void resetConfigurationPremisesBeforeCase() {
         applyDefaultPremises();
     }
 
-    /** 用例后复位：显式独立方法，确保 {@code @AfterEach} 真正生效（见上方说明）。 */
-    @AfterEach
+    /** 用例后复位：显式独立方法，确保 {@code @After} 真正生效（见上方说明）。 */
+    @After
     public void resetConfigurationPremisesAfterCase() {
         applyDefaultPremises();
     }
@@ -121,7 +121,7 @@ public class ConcurrencyGateTest {
             holderDone.set(true);
         }, "failclosed-holder");
         holder.start();
-        assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应取得许可");
+        assertTrue("持有者应取得许可", holderIn.await(2, TimeUnit.SECONDS));
 
         AtomicLong waitedMs = new AtomicLong(-1);
         AtomicReference<Throwable> waiterError = new AtomicReference<>();
@@ -138,13 +138,14 @@ public class ConcurrencyGateTest {
         waiter.start();
         waiter.join(5000);
 
-        assertFalse(waiter.isAlive(), "等待方必须已返回：闸门不得永久 park");
-        assertTrue(waitedMs.get() >= 250, "等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）");
-        assertTrue(waiterError.get() instanceof ConcurrencyGateTimeoutException,
-                "默认 fail-closed：超时须抛 ConcurrencyGateTimeoutException，实际=" + waiterError.get());
+        assertFalse("等待方必须已返回：闸门不得永久 park", waiter.isAlive());
+        assertTrue("等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）", waitedMs.get() >= 250);
+        // Class.isInstance 替代 instanceof：语义等价，且满足 SpotBugs JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS
+        assertTrue("默认 fail-closed：超时须抛 ConcurrencyGateTimeoutException，实际=" + waiterError.get(),
+                ConcurrencyGateTimeoutException.class.isInstance(waiterError.get()));
 
         holder.join(5000);
-        assertTrue(holderDone.get(), "持有者应完成其正常释放");
+        assertTrue("持有者应完成其正常释放", holderDone.get());
 
         //  许可未虚增：持有者释放后该 key 应可被正常获取/释放
         ConcurrencyGate.acquire(key);
@@ -174,7 +175,7 @@ public class ConcurrencyGateTest {
             ConcurrencyGate.release(key);
         }, "failopen-holder");
         holder.start();
-        assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应取得许可");
+        assertTrue("持有者应取得许可", holderIn.await(2, TimeUnit.SECONDS));
 
         AtomicReference<Throwable> waiterError = new AtomicReference<>();
         AtomicLong waitedMs = new AtomicLong(-1);
@@ -191,9 +192,9 @@ public class ConcurrencyGateTest {
         waiter.start();
         waiter.join(5000);
 
-        assertFalse(waiter.isAlive(), "等待方必须已返回（不得永久 park）");
-        assertTrue(waitedMs.get() >= 250, "等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）");
-        assertNull(waiterError.get(), "逃生舱开启时不应抛异常（回到旧 fail-open 行为）");
+        assertFalse("等待方必须已返回（不得永久 park）", waiter.isAlive());
+        assertTrue("等待应至少经历一次超时窗口（实测 " + waitedMs.get() + "ms）", waitedMs.get() >= 250);
+        assertNull("逃生舱开启时不应抛异常（回到旧 fail-open 行为）", waiterError.get());
 
         holder.join(5000);
         ConcurrencyGate.acquire(key);
@@ -218,7 +219,7 @@ public class ConcurrencyGateTest {
         leaky.start();
         leaky.join(3000);
 
-        assertEquals(1, released.get(), "应归还 1 个泄漏持有的闸门");
+        assertEquals("应归还 1 个泄漏持有的闸门", 1, released.get());
 
         //  归还后：其它线程应立即进入（用闩锁确定性等待，不依赖耗时上界断言，杜绝负载下的误判）
         CountDownLatch nextEntered = new CountDownLatch(1);
@@ -228,8 +229,7 @@ public class ConcurrencyGateTest {
             ConcurrencyGate.release(key);
         }, "next-scenario");
         next.start();
-        assertTrue(nextEntered.await(3, TimeUnit.SECONDS),
-                "兜底归还后其它线程应立即进入（不得因泄漏许可未回收而阻塞）");
+        assertTrue("兜底归还后其它线程应立即进入（不得因泄漏许可未回收而阻塞）", nextEntered.await(3, TimeUnit.SECONDS));
         next.join(3000);
     }
 
@@ -259,9 +259,9 @@ public class ConcurrencyGateTest {
         holder.start();
         holder.join(3000);
 
-        assertFalse(holder.isAlive(), "同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）");
-        assertNull(holderError.get(), "同线程重入不得抛异常");
-        assertEquals(1, released.get(), "同线程重入只应记一条持有");
+        assertFalse("同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）", holder.isAlive());
+        assertNull("同线程重入不得抛异常", holderError.get());
+        assertEquals("同线程重入只应记一条持有", 1, released.get());
 
         CountDownLatch entered = new CountDownLatch(1);
         Thread other = new Thread(() -> {
@@ -270,7 +270,7 @@ public class ConcurrencyGateTest {
             ConcurrencyGate.release(key);
         }, "reentrant-checker");
         other.start();
-        assertTrue(entered.await(3, TimeUnit.SECONDS), "重入不得泄漏许可：其它线程应可立即进入");
+        assertTrue("重入不得泄漏许可：其它线程应可立即进入", entered.await(3, TimeUnit.SECONDS));
         other.join(3000);
     }
 
@@ -284,19 +284,19 @@ public class ConcurrencyGateTest {
     public void auto_enabledIffEngineParallelEnabled_explicitFalseWins() {
         // 前提（ENABLED="auto" + 无并行开关）由 resetConfigurationPremises() 显式建立；
         // 不可用 clearProperty —— 那会落到受 Serenity 启动期快照污染的 SPI 源（见类内注释）。
-        assertFalse(ConcurrencyGate.isEnabled(), "串行运行（auto）不应启用闸门");
+        assertFalse("串行运行（auto）不应启用闸门", ConcurrencyGate.isEnabled());
 
         System.setProperty(CUCUMBER_PARALLEL, "true");
-        assertTrue(ConcurrencyGate.isEnabled(), "引擎级并行开启时 auto 应自动启用");
+        assertTrue("引擎级并行开启时 auto 应自动启用", ConcurrencyGate.isEnabled());
         System.clearProperty(CUCUMBER_PARALLEL);
 
         System.setProperty(JUNIT_PARALLEL, "true");
-        assertTrue(ConcurrencyGate.isEnabled(), "JUnit5 并行开启时 auto 也应自动启用");
+        assertTrue("JUnit5 并行开启时 auto 也应自动启用", ConcurrencyGate.isEnabled());
         System.clearProperty(JUNIT_PARALLEL);
 
         System.setProperty(ENABLED, "false");
         System.setProperty(CUCUMBER_PARALLEL, "true");
-        assertFalse(ConcurrencyGate.isEnabled(), "显式 false 必须压过 auto（逃生舱）");
+        assertFalse("显式 false 必须压过 auto（逃生舱）", ConcurrencyGate.isEnabled());
     }
 
     @Test
@@ -308,7 +308,7 @@ public class ConcurrencyGateTest {
         ConcurrencyGate.acquire(key);
         ConcurrencyGate.release(key);
         // 禁用时 acquire/release 为 no-op，不应向 GATES 写入任何闸门
-        assertEquals( baseline,  ConcurrencyGate.stats().activeGates, "禁用时不得创建闸门");
+        assertEquals("禁用时不得创建闸门", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     @Test
@@ -318,7 +318,7 @@ public class ConcurrencyGateTest {
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyGate.acquire(null);
         ConcurrencyGate.release(null);
-        assertEquals( baseline,  ConcurrencyGate.stats().activeGates, "null key 不得创建闸门");
+        assertEquals("null key 不得创建闸门", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     @Test
@@ -328,10 +328,10 @@ public class ConcurrencyGateTest {
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "alice-enabled"));
         ConcurrencyGate.acquire(key);
-        assertEquals( baseline + 1,  ConcurrencyGate.stats().activeGates, "启用后应为该 key 创建一道闸门");
+        assertEquals("启用后应为该 key 创建一道闸门", baseline + 1, ConcurrencyGate.stats().activeGates);
         ConcurrencyGate.release(key);
         // 条目随最后一个持有者释放即移除（Map 大小 == 在途身份数）
-        assertEquals(baseline, ConcurrencyGate.stats().activeGates, "最后一个持有者释放后条目应被移除");
+        assertEquals("最后一个持有者释放后条目应被移除", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     @Test
@@ -342,10 +342,10 @@ public class ConcurrencyGateTest {
         ConcurrencyPartitionKey bob = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "bob-distinct"));
         ConcurrencyGate.acquire(alice);
         ConcurrencyGate.acquire(bob);
-        assertEquals( baseline + 2,  ConcurrencyGate.stats().activeGates, "不同身份应使用不同闸门");
+        assertEquals("不同身份应使用不同闸门", baseline + 2, ConcurrencyGate.stats().activeGates);
         ConcurrencyGate.release(alice);
         ConcurrencyGate.release(bob);
-        assertEquals(baseline, ConcurrencyGate.stats().activeGates, "释放后不应残留条目");
+        assertEquals("释放后不应残留条目", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     /** 条目仅在持有期间存在：acquire 后出现、release 后消失（回归守卫：旧实现永不移除）。 */
@@ -355,9 +355,9 @@ public class ConcurrencyGateTest {
         int baseline = ConcurrencyGate.stats().activeGates;
         ConcurrencyPartitionKey key = ConcurrencyPartitionKey.of(dim("env", "sit1", "user", "held-once"));
         ConcurrencyGate.acquire(key);
-        assertEquals(baseline + 1, ConcurrencyGate.stats().activeGates, "持有时应存在条目");
+        assertEquals("持有时应存在条目", baseline + 1, ConcurrencyGate.stats().activeGates);
         ConcurrencyGate.release(key);
-        assertEquals(baseline, ConcurrencyGate.stats().activeGates, "最后一个持有者释放后条目应被移除");
+        assertEquals("最后一个持有者释放后条目应被移除", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     /** 顺序使用海量身份后不残留：Map 天然有界（不再依赖 4096 上限 + 惰性淘汰兜底）。 */
@@ -370,8 +370,7 @@ public class ConcurrencyGateTest {
             ConcurrencyGate.acquire(k);
             ConcurrencyGate.release(k);
         }
-        assertEquals(baseline, ConcurrencyGate.stats().activeGates,
-                "顺序使用 5000 个身份后应无残留条目（旧实现会残留累计条目）");
+        assertEquals("顺序使用 5000 个身份后应无残留条目（旧实现会残留累计条目）", baseline, ConcurrencyGate.stats().activeGates);
     }
 
     /**
@@ -400,8 +399,7 @@ public class ConcurrencyGateTest {
                 ConcurrencyGate.release(other);
             }
 
-            assertThrows(TimeoutException.class, () -> blocked.get(300, TimeUnit.MILLISECONDS),
-                    "同一身份被持有时，另一线程必须被阻塞（churn 不得破坏串行化）");
+            assertThrows("同一身份被持有时，另一线程必须被阻塞（churn 不得破坏串行化）", TimeoutException.class, () -> blocked.get(300, TimeUnit.MILLISECONDS));
 
             ConcurrencyGate.release(held);
             blocked.get(5, TimeUnit.SECONDS); // 释放后应立即可进入

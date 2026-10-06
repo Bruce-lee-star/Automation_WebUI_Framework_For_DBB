@@ -14,16 +14,16 @@
 | JDK | 21 |
 | 构建 | Maven（多模块） |
 | Playwright for Java | 1.62.0 |
-| Serenity BDD | 4.2.0 |
+| Serenity BDD | 4.3.4 |
 | Cucumber | 7.31.0 |
-| JUnit 5 | Jupiter 5.11.4 / Platform 1.14.0 |
+| JUnit | 4.13.2 |
 | Logback | 1.5.34 |
 | Typesafe Config | 1.4.5 |
 | Gson | 2.14.0 |
 | JsonPath（Jayway） | 2.9.0 |
-| Jackson | 2.18.3 |
+| Jackson | 2.22.1 |
 | json-smart | 2.5.2 |
-| FreeMarker | 2.3.33 |
+| FreeMarker | 2.3.34 |
 | JaCoCo | 0.8.12 |
 | Checkstyle（plugin） | 3.6.0 |
 | SpotBugs | 4.9.8.5 |
@@ -92,4 +92,4 @@ Web / API / Monitor 三侧配置类（`WebFrameworkConfig` / `ApiFrameworkConfig
 
 | 位置 | 内容 |
 |---|---|
-| `docs/architecture-review/01`~`13` | 总体分层与依赖治理、各模块评审、CI / 工程可维护性、问题修复任务清单 |
+| 架构评审文档集（01~13） | 总体分层与依赖治理、各模块评审、CI / 工程可维护性、问题修复任务清单。**注**：该文档集不在本仓库（自 CT2-22 起未随代码落盘），如需追溯请查 git 历史 |

@@ -40,17 +40,16 @@
                             </div>
                             <table class="failure-list failure-scoreboard" style="border-width:1px;border-style:solid;border-color:#dee2e6;border-collapse:separate;mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;">
                                 <tr>
-                                    <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
-                                    <th style="text-align:left;width:50%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Result</th>
-<#if hasTrend>
-                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">This run (ms)</th>
-                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Last run (ms)</th>
-                                    <th style="text-align:right;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">&#916;</th>
-</#if>
+                                    <th style="text-align:left;width:45%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Requirement</th>
+                                    <th style="text-align:left;width:45%;padding:12px 16px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">Result</th>
+<#-- 列口径：Requirement | Result | This run (s) —— 恒定三列。
+     历史对比列（Last run / Δ）与跨场 FLAKY 标记已整体下线（连同生成侧的 TrendStore 落盘）：
+     报告目录每场全清，不存在跨场历史可比。要恢复需同时改模板与生成侧（见 git 历史 E-2 提交）。 -->
+                                    <th style="text-align:right;width:10%;padding:12px 12px;background:linear-gradient(180deg,#f8f9fa 0%,#e9ecef 100%);font-weight:600;font-size:13px;color:#495057;">This run (s)</th>
                                 </tr>
 <#list resultGroups as g>
                                 <tr>
-                                    <td colspan="${(hasTrend!false)?then('5', '2')}" class="feature feature-title" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature!}</td>
+                                    <td colspan="3" class="feature feature-title" style="font-family:Helvetica, sans-serif;font-size:14px;font-weight:600;vertical-align:top;padding:8px 16px;background-color:#f0f4f8;border-bottom:2px solid #dee2e6;color:#3d5a80;">${g.feature!}</td>
                                 </tr>
 <#list g.rows as s>
                                 <tr>
@@ -58,13 +57,9 @@
                                         <a href="${s.link!''}" target="_blank" style="color:#0066cc;text-decoration:none;">${s.name!}</a>
                                     </td>
                                     <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;width:50%;word-wrap:break-word;overflow-wrap:break-word;border-bottom:1px solid #eee;">
-<span style="color:${s.labelColor!'#6c757d'};font-size:12px;font-weight:bold;text-transform:uppercase;">${s.labelText!}</span><#if s.flaky!false><span style="margin-left:6px;padding:1px 6px;border-radius:8px;background:#fff3cd;color:#8a6d3b;font-size:10px;font-weight:bold;">FLAKY</span></#if><#if s.hasError!false><div style="margin-top:4px;padding-left:1em;color:${s.color!'#6c757d'};font-size:11px;line-height:1.3;word-break:break-all;">${s.error!}</div>
+<span style="color:${s.labelColor!'#6c757d'};font-size:12px;font-weight:bold;text-transform:uppercase;">${s.labelText!}</span><#if s.hasError!false><div style="margin-top:4px;padding-left:1em;color:${s.color!'#6c757d'};font-size:11px;line-height:1.3;word-break:break-all;">${s.error!}</div>
 </#if>                                    </td>
-<#if hasTrend>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.currentMs!0}</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.previousMs!0}</td>
-                                    <td style="font-family:Helvetica, sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.deltaPct!0}</td>
-</#if>
+                                    <td style="font-family:Helvetica,sans-serif;font-size:13px;vertical-align:top;padding:10px 12px;text-align:right;border-bottom:1px solid #eee;">${s.currentSec!'&#8212;'}</td>
                                 </tr>
 </#list>
 </#list>

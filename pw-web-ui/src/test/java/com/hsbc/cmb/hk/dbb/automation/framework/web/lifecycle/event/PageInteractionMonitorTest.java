@@ -3,13 +3,13 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.event;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Page;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.function.Consumer;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -87,7 +87,7 @@ public class PageInteractionMonitorTest {
         captor.getValue().accept(frame);
 
         String trail = PageInteractionMonitor.drainNavigationTrail();
-        assertTrue(trail.contains("[main] https://example.com/dashboard"), "trail=" + trail);
+        assertTrue("trail=" + trail, trail.contains("[main] https://example.com/dashboard"));
     }
 
     // ===================== 2. onPopup =====================
@@ -108,7 +108,7 @@ public class PageInteractionMonitorTest {
         captor.getValue().accept(popup);
 
         String recorded = PageInteractionMonitor.drainUnmanagedPopups();
-        assertTrue(recorded.contains("url=https://example.com/popup"), "popups=" + recorded);
+        assertTrue("popups=" + recorded, recorded.contains("url=https://example.com/popup"));
 
         // 框架认领后再次 drain 应为空（已在 markPopupClaimed 中剔除）
         PageInteractionMonitor.markPopupClaimed(popup);
@@ -142,13 +142,13 @@ public class PageInteractionMonitorTest {
         popupCaptor.getValue().accept(popup);
 
         // 重置前应有数据
-        assertFalse(PageInteractionMonitor.drainNavigationTrail().isEmpty(), "重置前导航轨迹不应为空");
+        assertFalse("重置前导航轨迹不应为空", PageInteractionMonitor.drainNavigationTrail().isEmpty());
 
         // scenario 结束显式清理
         PageInteractionMonitor.resetForThread();
 
-        assertEquals("", PageInteractionMonitor.drainNavigationTrail(), "reset 后导航轨迹应清空（防跨用例堆积）");
-        assertEquals("", PageInteractionMonitor.drainUnmanagedPopups(), "reset 后未受管弹窗应清空");
+        assertEquals("reset 后导航轨迹应清空（防跨用例堆积）", "", PageInteractionMonitor.drainNavigationTrail());
+        assertEquals("reset 后未受管弹窗应清空", "", PageInteractionMonitor.drainUnmanagedPopups());
     }
 
     @Test

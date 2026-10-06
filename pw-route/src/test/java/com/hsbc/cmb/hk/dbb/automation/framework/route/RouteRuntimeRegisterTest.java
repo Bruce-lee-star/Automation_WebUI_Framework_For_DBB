@@ -90,7 +90,7 @@ public class RouteRuntimeRegisterTest {
         assertNotNull(h2);
         assertEquals("两次 merge 必须产生两代（原子递增）", (long) 2, (long) runtime.metrics().generation());
         // 覆盖后规则表只保留新规则（代际原子发布）
-        assertEquals((long) 201L, (long) runtime.generations().snapshot().specFor("/api/users/**").expectStatus());
+        assertEquals((long) 201L, (long) runtime.ruleSnapshot().specFor("/api/users/**").expectStatus());
     }
 
     @Test

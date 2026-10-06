@@ -1,9 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：监听器计数/统计/测试数据存储（无浏览器）。
@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class ListenerPerfStatsTest {
 
-    @AfterEach
+    @After
     public void tearDown() {
         ListenerPerfStats.resetStats();
     }
@@ -27,17 +27,17 @@ public class ListenerPerfStatsTest {
         ListenerPerfStats.incrementScreenshot();
 
         String stats = ListenerPerfStats.getPerformanceStats();
-        assertTrue( stats.contains("Total Tests: 3"), "应统计总用例数：" + stats);
-        assertTrue( stats.contains("Passed: 1"), "应统计通过数：" + stats);
-        assertTrue( stats.contains("Failed: 1"), "应统计失败数：" + stats);
-        assertTrue( stats.contains("Skipped: 1"), "应统计跳过数：" + stats);
-        assertTrue( stats.contains("Screenshots Taken: 1"), "应统计截图数：" + stats);
+        assertTrue("应统计总用例数：" + stats, stats.contains("Total Tests: 3"));
+        assertTrue("应统计通过数：" + stats, stats.contains("Passed: 1"));
+        assertTrue("应统计失败数：" + stats, stats.contains("Failed: 1"));
+        assertTrue("应统计跳过数：" + stats, stats.contains("Skipped: 1"));
+        assertTrue("应统计截图数：" + stats, stats.contains("Screenshots Taken: 1"));
     }
 
     @Test
     public void percentage_isZeroWhenNoTestsRecorded() {
         String stats = ListenerPerfStats.getPerformanceStats();
-        assertTrue( stats.contains("Passed: 0 (0.0%)"), "无用例时百分比应为 0.0%，避免除零：" + stats);
+        assertTrue("无用例时百分比应为 0.0%，避免除零：" + stats, stats.contains("Passed: 0 (0.0%)"));
     }
 
     @Test

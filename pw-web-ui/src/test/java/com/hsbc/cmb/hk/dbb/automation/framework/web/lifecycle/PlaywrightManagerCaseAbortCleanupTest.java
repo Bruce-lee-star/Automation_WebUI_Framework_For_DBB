@@ -7,8 +7,8 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.browser.BrowserSta
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.page.PageRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.state.PlaywrightRuntimeState;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.util.List;
 
@@ -29,7 +29,7 @@ public class PlaywrightManagerCaseAbortCleanupTest {
     private final PageRegistry pageRegistry = mock(PageRegistry.class);
     private final BrowserCleanup browserCleanup = mock(BrowserCleanup.class);
 
-    @AfterEach
+    @After
     public void tearDown() {
         // 复位组合根，避免污染其它测试
         PlaywrightRuntime.resetInstance();

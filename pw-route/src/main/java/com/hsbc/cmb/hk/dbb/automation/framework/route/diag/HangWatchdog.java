@@ -10,6 +10,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -61,8 +62,8 @@ public final class HangWatchdog {
     private volatile HangEvent lastHang;
     /** 最近一次采样的栈（用于判定"同栈连续不变 = 真卡死"）。 */
     private volatile StackTraceElement[] lastStack;
-    /** 连续相同栈的采样计数。 */
-    private volatile int frozenStreak;
+    /** 连续相同栈的采样计数（AtomicInteger 而非 volatile int：后者的自增非原子，SpotBugs VO_VOLATILE_INCREMENT）。 */
+    private final AtomicInteger frozenStreak = new AtomicInteger();
     /** 当前冻结剧集是否已上报（避免每个采样间隔重复刷屏）。 */
     private volatile boolean frozenReported;
     /** "代"令牌：disarm 会自增，使在途采样立即作废，避免关闭后仍打印。 */
@@ -85,7 +86,7 @@ public final class HangWatchdog {
         hardFired = false;
         lastHang = null;
         lastStack = null;
-        frozenStreak = 0;
+        frozenStreak.set(0);
         frozenReported = false;
         ownerThread = Thread.currentThread();
         startMs = System.currentTimeMillis();
@@ -156,12 +157,11 @@ public final class HangWatchdog {
         int threshold = Math.max(1, (int) frozenSamples());
         if (lastStack == null || !Arrays.equals(stack, lastStack)) {
             lastStack = stack;
-            frozenStreak = 1;
+            frozenStreak.set(1);
             frozenReported = false;
             return false;
         }
-        frozenStreak++;
-        if (frozenStreak >= threshold && !frozenReported) {
+        if (frozenStreak.incrementAndGet() >= threshold && !frozenReported) {
             frozenReported = true;
             return true;
         }

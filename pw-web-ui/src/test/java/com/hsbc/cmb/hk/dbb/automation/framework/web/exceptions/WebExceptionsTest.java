@@ -1,10 +1,10 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions;
 
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 /**
  * WEB-P1-5 种子测试：web 异常体系契约（无浏览器）。
@@ -19,7 +19,7 @@ public class WebExceptionsTest {
         FrameworkException ex = new FrameworkException("boom", CAUSE);
 
         assertEquals("boom", ex.getMessage());
-        assertSame( CAUSE,  ex.getCause(), "cause 链必须保留，避免根因丢失");
+        assertSame("cause 链必须保留，避免根因丢失", CAUSE, ex.getCause());
         assertTrue(ex instanceof RuntimeException);
     }
 
@@ -34,7 +34,7 @@ public class WebExceptionsTest {
     public void navigationException_includesUrlAndCause() {
         NavigationException ex = new NavigationException("https://x.com", 30000L, CAUSE);
 
-        assertTrue( ex.getMessage().contains("https://x.com"), "异常消息须携带目标 URL 便于定位");
+        assertTrue("异常消息须携带目标 URL 便于定位", ex.getMessage().contains("https://x.com"));
         assertSame(CAUSE, ex.getCause());
     }
 
@@ -50,7 +50,7 @@ public class WebExceptionsTest {
         ElementNotFoundException ex = new ElementNotFoundException("#login");
 
         assertTrue(ex.getMessage().contains("#login"));
-        assertTrue( ex instanceof ElementException, "元素未找到须可统一按 ElementException 捕获");
+        assertTrue("元素未找到须可统一按 ElementException 捕获", ex instanceof ElementException);
     }
 
     @Test

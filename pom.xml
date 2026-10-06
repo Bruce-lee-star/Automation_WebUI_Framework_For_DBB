@@ -26,7 +26,7 @@
     <modules>
         <module>pw-core</module>
         <module>pw-reports</module>
-        <module>rest-assured-core</module>
+        <module>pw-api-core</module>
         <module>pw-web-ui</module>
         <module>pw-codegen</module>
         <module>pw-route</module>
@@ -47,17 +47,11 @@
              自 2026-09-30 起，框架直接依赖上游官方发行版（stock）playwright-java 1.62.0，来自 Maven Central，
              不再使用自建补丁客户端。版本集中由下方 <playwright.version> 属性控制，升级只改该属性。 -->
         <playwright.version>1.62.0</playwright.version>
-        <!-- JUnit 5（Jupiter）升级：测试框架由 JUnit 4 迁 JUnit 5。
-             CT2-22：原设计文档（docs 下 architecture-review 的 17 号「整改专项设计_JUnit5升级」）
-             未随升级落盘 —— 17 号现为「17_全量评审_逐模块逐文件多维报告」；如需追溯请查 git 历史。
-             保持 Serenity 4.2.0；junit-jupiter 版本须与 serenity-junit5:4.2.0 传递引入的 junit-jupiter 对齐
-             （在线 mvn dependency:tree 校准，requireUpperBoundDeps 门禁）。默认 5.11.4 与 cucumber-junit-platform-engine:7.31 的 junit-platform 上界兼容。 -->
-        <junit.jupiter.version>5.11.4</junit.jupiter.version>
-        <!-- 注意：junit-platform-* 在 JUnit 5 时代的版本线是 1.x（而非 5.x）。
-             必须 ≥ 1.14.0：cucumber-junit-platform-engine:7.31.0（junit-bom 5.14.0）的 CucumberTestEngine
-             引用 org.junit.platform.engine.support.discovery.DiscoveryIssueReporter（1.13+ 才引入），
-             1.11.4 缺失该类会导致运行期 NoClassDefFoundError / Cucumber 引擎无法发现用例。 -->
-        <junit.platform.version>1.14.0</junit.platform.version>
+        <!-- JUnit 4（唯一测试引擎）：全框架 + test-automation 统一。
+             历史：2026-09-11 曾迁到 JUnit 5，2026-10 回退 —— runner 侧（Serenity 的 CucumberWithSerenity）
+             本就是 JUnit 4，双引擎并存只增加 provider 抉择与 junit-platform 版本对齐成本。
+             版本在此显式钉定（junit:junit 不随 Serenity 可控传递）：4.13.2 含 assertThrows/assertDoesNotThrow。 -->
+        <junit.version>4.13.2</junit.version>
 
         <typesafe.config.version>1.4.5</typesafe.config.version>
         <gson.version>2.14.0</gson.version>
@@ -76,10 +70,16 @@
 
         <!-- 安全漏洞修复版本 -->
         <logback.version>1.5.34</logback.version>
-        <!-- 2.20.1：对齐 serenity 4.3.4 实际传递（core/databind 上界 2.20.1）。
-             annotations 走独立版本线（jackson-bom:2.20.1 定 jackson.version.annotations=2.20），见下方 DM 单独钉 2.20。 -->
-        <jackson.version>2.20.1</jackson.version>
+        <!-- 2.22.1：公司内网依赖治理（合规/漏洞扫描）要求的版本。高于 serenity 4.3.4 传递的 2.20.1，
+             故 RequireUpperBoundDeps 上界仍满足（无构件要求 >2.22.1）。
+             annotations 走独立版本线（jackson-bom:2.22.1 定 jackson.version.annotations=2.22），见下方 DM 单独钉 2.22。 -->
+        <jackson.version>2.22.1</jackson.version>
         <json-smart.version>2.5.2</json-smart.version>
+        <!-- 构建期插件依赖（非应用依赖）：plexus-archiver 由 maven-jar-plugin 传递引入，内网治理要求 4.14.0
+             （原传递命中被隔离的 4.4.0）。dependencyManagement 覆盖**不到**插件依赖，
+             故在下方 maven-jar-plugin 的 <dependencies> 内钉版；并与 test-automation 的 serenity-maven-plugin
+             共用本属性，避免两处版本漂移。 -->
+        <plexus.archiver.version>4.14.0</plexus.archiver.version>
 
         <!-- 重复出现的第三方版本统一钉版（消除模块间硬编码版本漂移，ENG-T1-5 依赖收敛） -->
         <selenium.version>4.23.1</selenium.version>
@@ -170,6 +170,20 @@
                     <groupId>commons-logging</groupId>
                     <artifactId>commons-logging</artifactId>
                 </exclusion>
+                <!-- 依赖治理（内网隔离清单）：serenity-model 直接依赖 cucumber-core / cucumber-java，
+                     把整条 Cucumber 运行栈（gherkin、十余个 formatter、datatable、cucumber-plugin…）
+                     以 compile 作用域灌进**每个**声明 serenity 的模块 —— 其中多数模块根本不跑 Cucumber。
+                     此处断掉该传递路径：真正使用 Cucumber 的模块（pw-web-ui 的 glue、test-automation、
+                     pw-codegen 经 serenity-cucumber）各自【显式声明】所用构件（见 DM 的 cucumber-* 条目）。
+                     版本仍统一由 ${cucumber.version} 治理，不产生版本漂移。 -->
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-java</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
 
@@ -217,6 +231,16 @@
                     <groupId>org.seleniumhq.selenium</groupId>
                     <artifactId>htmlunit3-driver</artifactId>
                 </exclusion>
+                <!-- 依赖治理（内网隔离清单）：serenity-core 还**直接**依赖 org.htmlunit:htmlunit，
+                     进而带入 htmlunit-core-js / neko-htmlunit / htmlunit-cssparser / htmlunit-websocket-client
+                     等（内网隔离清单命中 htmlunit-websocket-client）。本框架以 Playwright 驱动，
+                     HtmlUnit 栈完全不参与运行；需要 HtmlUnitDriver 类可加载的模块（test-automation 的
+                     Serenity SupportedWebDriver 静态初始化）已**自行显式声明** htmlunit3-driver（test），
+                     由其带回 htmlunit 本身，故此处断开对全框架的传递污染。 -->
+                <exclusion>
+                    <groupId>org.htmlunit</groupId>
+                    <artifactId>htmlunit</artifactId>
+                </exclusion>
                 <exclusion>
                     <groupId>org.apache.httpcomponents</groupId>
                     <artifactId>httpclient</artifactId>
@@ -242,6 +266,23 @@
                     <groupId>org.seleniumhq.selenium</groupId>
                     <artifactId>selenium-api</artifactId>
                 </exclusion>
+                <!-- 依赖治理（内网隔离清单）：serenity-cucumber 也**直接**声明 cucumber-core / cucumber-java /
+                     cucumber-junit（均为 compile 作用域 ⇒ 会流入每个声明它的模块）。声明它的模块里，
+                     pw-codegen 完全不使用 Cucumber（全模块零 io.cucumber 引用），test-automation 则已在
+                     pom 中**显式声明**所需构件 —— 故此处统一断开传递路径，使「Cucumber 只出现在真正声明它的模块」。
+                     至此两条引入路径（serenity-model、serenity-cucumber）均已收口。 -->
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-junit</artifactId>
+                </exclusion>
             </exclusions>
         </dependency>
 
@@ -253,44 +294,15 @@
             <scope>test</scope>
         </dependency>
 
-        <!-- JUnit 5（Jupiter）：SerenityJUnit5Extension 与 @Suite(Cucumber) 运行基座。
-             版本统一 ${junit.jupiter.version}，与 cucumber-junit-platform-engine:${cucumber.version} 的 junit-platform 上界一致（requireUpperBoundDeps）。 -->
+        <!-- JUnit 4（唯一测试引擎）：全框架 + test-automation 统一。
+             原先的 JUnit 5（junit-jupiter-api/engine + junit-platform-launcher/engine/commons）已全量移除：
+             框架内没有任何 JUnit5 独有用法（@Nested / @ParameterizedTest / @ExtendWith / MockitoExtension 均为 0），
+             而 runner 侧（Serenity 的 CucumberWithSerenity）本就是 JUnit 4 —— 双引擎并存只带来
+             surefire provider 抉择与 junit-platform 版本对齐成本，没有收益。 -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <version>${junit.jupiter.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <version>${junit.jupiter.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- 统一 junit-platform-launcher 版本：cucumber-junit-platform-engine 传递 1.11.0、junit-platform-suite 传递 1.11.4，
-             RequireUpperBoundDeps 要求同 artifact 版本一致，故与 engine/commons 一并钉到 ${junit.platform.version}（=1.14.0，
-             满足 cucumber-junit-platform-engine:7.31.0 的 DiscoveryIssueReporter 需求，该类 1.13+ 才引入）。 -->
-        <dependency>
-            <groupId>org.junit.platform</groupId>
-            <artifactId>junit-platform-launcher</artifactId>
-            <version>${junit.platform.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <!-- junit-platform-engine/commons 与 launcher/suite 统一为 ${junit.platform.version}（=1.14.0）：
-             cucumber-junit-platform-engine:7.31.0（junit-bom 5.14.0）的 CucumberTestEngine.discover 引用
-             org.junit.platform.engine.support.discovery.DiscoveryIssueReporter，该类在 platform 1.13+ 才引入，
-             1.11.4 缺失会导致运行期 NoClassDefFoundError、Cucumber 引擎无法发现用例。四者统一 1.14.0 即消除版本漂移。 -->
-        <dependency>
-            <groupId>org.junit.platform</groupId>
-            <artifactId>junit-platform-engine</artifactId>
-            <version>${junit.platform.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.platform</groupId>
-            <artifactId>junit-platform-commons</artifactId>
-            <version>${junit.platform.version}</version>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
+            <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
 
@@ -393,7 +405,7 @@
             <version>2.2</version>
         </dependency>
 
-        <!-- AssertJ：测试断言库。各模块测试依赖统一由此钉版本，避免 rest-assured-core 等
+        <!-- AssertJ：测试断言库。各模块测试依赖统一由此钉版本，避免 pw-api-core 等
              直接声明 assertj-core 却漏写 version 导致 reactor POM 解析失败。 -->
         <dependency>
             <groupId>org.assertj</groupId>
@@ -452,15 +464,15 @@
                 <artifactId>json-smart</artifactId>
                 <version>${json-smart.version}</version>
             </dependency>
-            <!-- T1-5 依赖收敛：jackson core/databind 钉 ${jackson.version}(=2.20.1，对齐 serenity 4.3.4)，
-                 但 annotations 走独立版本线——jackson-bom:2.20.1 明确 jackson.version.annotations=2.20
-                 （annotations 发版滞后，公共仓库无 2.20.1），故此处单独钉 2.20。三者均真实存在、满足 serenity 上界，RequireUpperBoundDeps 通过。
-                 CORE-P0-1 / ENG-P0-2 修正：core 的 SensitiveDataSanitizer 直接使用 jackson-databind（脱敏 JSON 解析），
-                 原经继承的 serenity 传递引入，下沉后须显式钉版本。 -->
+            <!-- T1-5 依赖收敛：jackson core/databind 钉 ${jackson.version}(=2.22.1，公司内网治理要求)，
+                但 annotations 走独立版本线——jackson-bom:2.22.1 明确 jackson.version.annotations=2.22
+                （annotations 发版滞后，公共仓库无 2.22.1），故此处单独钉 2.22。三者均真实存在、满足 serenity 上界，RequireUpperBoundDeps 通过。
+                CORE-P0-1 / ENG-P0-2 修正：core 的 SensitiveDataSanitizer 直接使用 jackson-databind（脱敏 JSON 解析），
+                原经继承的 serenity 传递引入，下沉后须显式钉版本。 -->
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-annotations</artifactId>
-                <version>2.20</version>
+                <version>2.22</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
@@ -505,10 +517,25 @@
                 <artifactId>htmlunit</artifactId>
                 <version>4.7.0</version>
             </dependency>
-            <!-- T4-4：将 Serenity 传递的 Cucumber 版本钉为显式属性，作为 README 技术栈表的单一事实来源（doc-drift 校验据此比对） -->
+            <!-- T4-4：将 Serenity 传递的 Cucumber 版本钉为显式属性，作为 README 技术栈表的单一事实来源（doc-drift 校验据此比对）。
+                 依赖治理：Cucumber 已从 Serenity 链路排除（见 serenity-model 的 exclusions），
+                 改由**使用方显式声明**。此处登记三个真正用到的构件，保证版本单一事实来源：
+                 cucumber-core（Cucumber API/运行时，Serenity 的 StepEventBus 与各 glue 运行期依赖）、
+                 cucumber-java（io.cucumber.java.en.* 注解，pw-web-ui 的框架级 glue 与各 step 定义）、
+                 datatable（io.cucumber.datatable.DataTable）。 -->
             <dependency>
                 <groupId>io.cucumber</groupId>
                 <artifactId>cucumber-core</artifactId>
+                <version>${cucumber.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.cucumber</groupId>
+                <artifactId>cucumber-java</artifactId>
+                <version>${cucumber.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.cucumber</groupId>
+                <artifactId>datatable</artifactId>
                 <version>${cucumber.version}</version>
             </dependency>
         </dependencies>
@@ -558,6 +585,23 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-clean-plugin</artifactId>
                 <version>3.2.0</version>
+            </plugin>
+
+            <!-- 打包插件显式钉版 + 插件级依赖覆盖（内网依赖治理）。
+                 maven-jar-plugin 3.3.0 传递引入被隔离的 plexus-archiver 4.4.0；
+                 dependencyManagement **无法**覆盖插件依赖，只能写进插件自身的 <dependencies>（与
+                 test-automation 中 serenity-maven-plugin 的处理同法）。版本经 ${plexus.archiver.version} 统一治理。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.codehaus.plexus</groupId>
+                        <artifactId>plexus-archiver</artifactId>
+                        <version>${plexus.archiver.version}</version>
+                    </dependency>
+                </dependencies>
             </plugin>
 
             <!-- JaCoCo：覆盖率探针。prepare-agent 为所有模块注入 agent（jacocoArgLine），

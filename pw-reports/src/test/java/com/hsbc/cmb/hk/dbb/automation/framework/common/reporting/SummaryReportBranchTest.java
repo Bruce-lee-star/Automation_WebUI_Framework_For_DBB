@@ -1,16 +1,17 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.reporting;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
+import org.junit.Test;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 覆盖 {@link SummaryReportGoldenTest} 的 golden 基线<b>触及不到</b>的分支。
@@ -25,9 +26,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * </ul>
  */
 public class SummaryReportBranchTest {
+    @Rule
+    public final TemporaryFolder tempFolder = new TemporaryFolder();
+    private File folder;
 
-    @TempDir
-    File folder;
+    @Before
+    public void initTempFolder() {
+        folder = tempFolder.getRoot();
+    }
 
     /** 创建用例报告目录；mkdirs 失败即抛（不静默忽略返回值，SpotBugs RV_RETURN_VALUE_IGNORED_BAD_PRACTICE）。 */
     private File newReportDir(String name) {
@@ -41,13 +47,13 @@ public class SummaryReportBranchTest {
     private static final String PROJECT_NAME = "Branch Coverage Project";
     private static final String REPORT_URL = "https://reports.example.com/job/43/Serenity_20Summary_20Report/";
 
-    @BeforeEach
+    @Before
     public void pinEnvironment() {
         System.setProperty("serenity.project.name", PROJECT_NAME);
         System.setProperty("serenity.report.url", REPORT_URL);
     }
 
-    @AfterEach
+    @After
     public void restoreEnvironment() {
         System.clearProperty("serenity.project.name");
         System.clearProperty("serenity.report.url");
@@ -67,13 +73,13 @@ public class SummaryReportBranchTest {
 
         String html = Files.readString(dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
 
-        assertTrue(html.contains("conic-gradient(from -90deg"), "多分类饼图必须渲染 conic-gradient，实际未出现");
-        assertTrue(html.contains("Assertion Failed"), "图例须含 Assertion Failed 分类");
-        assertTrue(html.contains("Timeout Error"), "图例须含 Timeout Error 分类");
-        assertTrue(html.contains("Failure Analysis"), "须含 Failure Analysis 标题");
+        assertTrue("多分类饼图必须渲染 conic-gradient，实际未出现", html.contains("conic-gradient(from -90deg"));
+        assertTrue("图例须含 Assertion Failed 分类", html.contains("Assertion Failed"));
+        assertTrue("图例须含 Timeout Error 分类", html.contains("Timeout Error"));
+        assertTrue("须含 Failure Analysis 标题", html.contains("Failure Analysis"));
         // 模板指令不得泄漏进产物
-        assertFalse(html.contains("<#"), "Freemarker 指令泄漏进产物");
-        assertFalse(html.contains("${"), "模板占位符未解析");
+        assertFalse("Freemarker 指令泄漏进产物", html.contains("<#"));
+        assertFalse("模板占位符未解析", html.contains("${"));
     }
 
     /** 无失败用例：Full Failure List 整段缺席，Full Test Results 仍须渲染。 */
@@ -93,9 +99,9 @@ public class SummaryReportBranchTest {
 
         String html = Files.readString(dir.toPath().resolve("serenity-summary.html"), StandardCharsets.UTF_8);
 
-        assertFalse(html.contains("Full Failure List"), "无失败时不得出现 Full Failure List");
-        assertTrue(html.contains("Full Test Results"), "Full Test Results 始终渲染");
-        assertFalse(html.contains("Test Failure Overview"), "无失败时不得出现 Test Failure Overview");
+        assertFalse("无失败时不得出现 Full Failure List", html.contains("Full Failure List"));
+        assertTrue("Full Test Results 始终渲染", html.contains("Full Test Results"));
+        assertFalse("无失败时不得出现 Test Failure Overview", html.contains("Test Failure Overview"));
     }
 
     private static void writeOutcome(File dir, String fileName, String failureMessage) throws Exception {

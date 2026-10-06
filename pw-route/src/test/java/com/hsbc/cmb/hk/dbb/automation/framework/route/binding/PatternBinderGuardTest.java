@@ -34,7 +34,9 @@ public class PatternBinderGuardTest {
         GuardedDriverCallRegistry.setInstance(stub);
 
         ApiSpec spec = ApiSpec.builder("/api/users/**", RouteCapability.MONITOR).build();
-        PatternBinder binder = PatternBinder.bind(ctx, spec, runtime);
+        // 只需触发一次绑定即可（断言锚定的是"注入的守护原语被调用"），故不接收返回值 ——
+        // 原写法 `PatternBinder binder = ...` 从未使用该局部变量（SpotBugs DLS_DEAD_LOCAL_STORE）。
+        PatternBinder.bind(ctx, spec, runtime);
 
         assertTrue("PatternBinder.bind 必须经由注入的守护原语执行（真多态全链路生效）", stub.callCount() == 1);
         GuardedDriverCallRegistry.reset();

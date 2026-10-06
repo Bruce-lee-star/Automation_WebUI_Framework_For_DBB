@@ -29,7 +29,10 @@ public class RouteRuntimeFactoryRegistryTest {
         RouteRuntimeFactoryRegistry.reset();
         RouteRuntimeFactory f = RouteRuntimeFactoryRegistry.instance();
         assertNotNull(f);
-        assertTrue("默认必须解析到 DefaultRouteRuntimeFactory（零回归）", f instanceof DefaultRouteRuntimeFactory);
+        // 用 Class.isInstance 而非 instanceof：语义等价，且 SpotBugs JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS
+        // 明确不建议在断言里直接写 instanceof（该检查认的是 INSTANCEOF 字节码）。
+        assertTrue("默认必须解析到 DefaultRouteRuntimeFactory（零回归）",
+                DefaultRouteRuntimeFactory.class.isInstance(f));
     }
 
     @Test
@@ -40,7 +43,7 @@ public class RouteRuntimeFactoryRegistryTest {
 
         RouteRuntimeFactoryRegistry.reset();
         assertTrue("reset 必须恢复默认工厂",
-                RouteRuntimeFactoryRegistry.instance() instanceof DefaultRouteRuntimeFactory);
+                DefaultRouteRuntimeFactory.class.isInstance(RouteRuntimeFactoryRegistry.instance()));
     }
 
     @Test
@@ -49,7 +52,8 @@ public class RouteRuntimeFactoryRegistryTest {
         RouteRuntimeFactoryRegistry.setInstance(new StubRouteRuntimeFactory());
 
         RouteRuntime rt = RouteEngine.runtimeOf(ctx);
-        assertTrue("引擎必须经由注入工厂创建运行时（真多态全链路生效）", rt instanceof StubRouteRuntime);
+        assertTrue("引擎必须经由注入工厂创建运行时（真多态全链路生效）",
+                StubRouteRuntime.class.isInstance(rt));
 
         RouteEngine.shutdown(ctx);
         RouteRuntimeFactoryRegistry.reset();

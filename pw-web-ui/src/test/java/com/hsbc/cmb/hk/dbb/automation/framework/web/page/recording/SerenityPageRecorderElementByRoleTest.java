@@ -7,15 +7,15 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleFile;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.element.RoleOptions;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.options.AriaRole;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.regex.Pattern;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 
 /**
  * 角色定位运行期 API 的录制门面单测（无浏览器，fake {@link BasePage} 子类）。
@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * <p>钉住「描述串 → 最近操作元素测试数据」的映射：运行期 API 与 {@code @RoleElement} 注解路径
  * 必须产出同一格式的元素描述，报告与失败诊断才能一致可读。
  */
-class SerenityPageRecorderElementByRoleTest {
+public class SerenityPageRecorderElementByRoleTest {
 
     /** 声明类级 {@code @RoleFile} 的测试页面类（仅解析路径，不读取文件）。 */
     @RoleFile("nls/role-locator-test.nls.json")
@@ -40,14 +40,14 @@ class SerenityPageRecorderElementByRoleTest {
 
     private String prevLogging;
 
-    @BeforeEach
-    void setUp() {
+    @Before
+    public void setUp() {
         prevLogging = System.getProperty("serenity.logging");
         System.setProperty("serenity.logging", "VERBOSE");
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         if (prevLogging == null) {
             System.clearProperty("serenity.logging");
         } else {
@@ -61,7 +61,7 @@ class SerenityPageRecorderElementByRoleTest {
     }
 
     @Test
-    void elementByRole_roleOnly_recordsNoNameDescription() {
+    public void elementByRole_roleOnly_recordsNoNameDescription() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
 
         PageElement element = recorder.elementByRole(new FakePage(), AriaRole.LISTITEM);
@@ -71,33 +71,28 @@ class SerenityPageRecorderElementByRoleTest {
     }
 
     @Test
-    void elementByRole_nameOverloads_recordNameDescription() {
+    public void elementByRole_nameOverloads_recordNameDescription() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
         FakePage bp = new FakePage();
 
         assertEquals("role=BUTTON[name:Submit]", describe(recorder, bp, recorder.elementByRole(bp, AriaRole.BUTTON, "Submit")));
         assertEquals("role=BUTTON[name:Submit]", describe(recorder, bp, recorder.elementByRole(bp, AriaRole.BUTTON, "Submit", true)));
-        assertEquals("role=HEADING[name:Business,level:2]",
-                describe(recorder, bp, recorder.elementByRole(bp, AriaRole.HEADING, "Business", false, 2)),
-                "层级须体现在描述串中");
-        assertEquals("role=BUTTON[name:Submit,enabled,expanded]",
-                describe(recorder, bp, recorder.elementByRole(bp, AriaRole.BUTTON, "Submit",
-                        RoleOptions.defaults().enabledOnly().expanded())),
-                "状态选项须体现在描述串中（报告可区分同一角色的不同定位器）");
+        assertEquals("层级须体现在描述串中", "role=HEADING[name:Business,level:2]", describe(recorder, bp, recorder.elementByRole(bp, AriaRole.HEADING, "Business", false, 2)));
+        assertEquals("状态选项须体现在描述串中（报告可区分同一角色的不同定位器）", "role=BUTTON[name:Submit,enabled,expanded]", describe(recorder, bp, recorder.elementByRole(bp, AriaRole.BUTTON, "Submit",
+                        RoleOptions.defaults().enabledOnly().expanded())));
     }
 
     @Test
-    void elementByRole_pattern_recordsPatternDescription() {
+    public void elementByRole_pattern_recordsPatternDescription() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
 
         recorder.elementByRole(new FakePage(), AriaRole.HEADING, Pattern.compile("Welcome.*"), 2);
 
-        assertEquals("role=HEADING[pattern:Welcome.*,level:2]", lastElement(recorder),
-                "层级须体现在描述串中（同一正则的不同层级是两个不同定位器）");
+        assertEquals("层级须体现在描述串中（同一正则的不同层级是两个不同定位器）", "role=HEADING[pattern:Welcome.*,level:2]", lastElement(recorder));
     }
 
     @Test
-    void elementByRole_patternWithExact_recordsExactMarker() {
+    public void elementByRole_patternWithExact_recordsExactMarker() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
         FakePage bp = new FakePage();
 
@@ -110,7 +105,7 @@ class SerenityPageRecorderElementByRoleTest {
     }
 
     @Test
-    void elementByRoleKey_recordsNlsDescriptionWithPrimaryFile() {
+    public void elementByRoleKey_recordsNlsDescriptionWithPrimaryFile() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
 
         PageElement element = recorder.elementByRoleKey(new FakePage(), NlsPage.class, AriaRole.TEXTBOX, "username", 0);
@@ -120,17 +115,17 @@ class SerenityPageRecorderElementByRoleTest {
     }
 
     @Test
-    void elementByRoleKey_withoutRoleFile_reportsActionableError() {
+    public void elementByRoleKey_withoutRoleFile_reportsActionableError() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
 
         ElementException ex = assertThrows(ElementException.class,
                 () -> recorder.elementByRoleKey(new FakePage(), PlainPage.class, AriaRole.TEXTBOX, "username", 0));
 
-        assertEquals(true, ex.getMessage().contains("PlainPage"), "报错须指出缺少 @RoleFile 的页面类");
+        assertEquals("报错须指出缺少 @RoleFile 的页面类", true, ex.getMessage().contains("PlainPage"));
     }
 
     @Test
-    void elementsByRole_recordsAndReturnsFrameworkList() {
+    public void elementsByRole_recordsAndReturnsFrameworkList() {
         SerenityPageRecorder recorder = new SerenityPageRecorder();
         FakePage bp = new FakePage();
 
@@ -143,7 +138,7 @@ class SerenityPageRecorderElementByRoleTest {
     }
 
     private static String describe(SerenityPageRecorder recorder, FakePage bp, PageElement element) {
-        assertNotNull(element, "role locating must return a framework PageElement");
+        assertNotNull("role locating must return a framework PageElement", element);
         return lastElement(recorder);
     }
 }

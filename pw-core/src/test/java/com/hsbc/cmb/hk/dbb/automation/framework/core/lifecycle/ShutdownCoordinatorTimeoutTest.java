@@ -1,17 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.core.lifecycle;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * N-22 契约（doc 21 补记）：JVM 退出期的清理<b>不得无界</b> —— 否则 fork 会被 Surefire 硬杀。
@@ -25,7 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>修复后：单任务有上限、总量有预算；超时/跳过一律 <b>记 ERROR + 递增可断言计数</b>，
  * 把"静默截断"换成"显式记账"。</p>
  */
-class ShutdownCoordinatorTimeoutTest {
+public class ShutdownCoordinatorTimeoutTest {
 
     private static final String TASK_PROP = ShutdownCoordinator.TASK_TIMEOUT_PROPERTY;
     private static final String TOTAL_PROP = ShutdownCoordinator.TOTAL_BUDGET_PROPERTY;
@@ -33,14 +32,14 @@ class ShutdownCoordinatorTimeoutTest {
     /** 用于放行"故意卡住"的任务线程（daemon，本会随 JVM 消亡；用例内放行以免线程跨用例堆积）。 */
     private CountDownLatch release;
 
-    @BeforeEach
-    void setUp() {
+    @Before
+    public void setUp() {
         ShutdownCoordinator.reset();
         release = new CountDownLatch(1);
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         System.clearProperty(TASK_PROP);
         System.clearProperty(TOTAL_PROP);
         release.countDown();
@@ -48,8 +47,8 @@ class ShutdownCoordinatorTimeoutTest {
     }
 
     @Test
-    @DisplayName("N-22：卡住的清理任务不得超过单任务上限（原先会拖到 fork 被硬杀）")
-    void blockingTaskIsAbandonedAtPerTaskLimit() {
+    // @DisplayName: "N-22：卡住的清理任务不得超过单任务上限（原先会拖到 fork 被硬杀）"
+    public void blockingTaskIsAbandonedAtPerTaskLimit() {
         System.setProperty(TASK_PROP, "300");
         System.setProperty(TOTAL_PROP, "5000");
         ShutdownCoordinator.register(100, "test/blocking", () -> awaitQuietly(release));
@@ -58,16 +57,14 @@ class ShutdownCoordinatorTimeoutTest {
         ShutdownCoordinator.runAll();
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
-        assertTrue(elapsedMs < 3_000,
-                "runAll 必须在上限附近返回（实测 " + elapsedMs + "ms）；否则 JVM 退出必然被 Surefire 硬杀，"
-                        + "而硬杀会静默截断后续清理任务");
-        assertEquals(1, ShutdownCoordinator.getFailureCount(),
-                "被放弃的任务必须记账 —— 否则「清理没做完」仍是零信号");
+        assertTrue("runAll 必须在上限附近返回（实测 " + elapsedMs + "ms）；否则 JVM 退出必然被 Surefire 硬杀，"
+                        + "而硬杀会静默截断后续清理任务", elapsedMs < 3_000);
+        assertEquals("被放弃的任务必须记账 —— 否则「清理没做完」仍是零信号", 1, ShutdownCoordinator.getFailureCount());
     }
 
     @Test
-    @DisplayName("N-22：总预算耗尽 → 停止后续任务并记账（替代被硬杀后的静默截断）")
-    void totalBudgetExhaustionSkipsRemainingTasks() {
+    // @DisplayName: "N-22：总预算耗尽 → 停止后续任务并记账（替代被硬杀后的静默截断）"
+    public void totalBudgetExhaustionSkipsRemainingTasks() {
         System.setProperty(TASK_PROP, "2000");
         System.setProperty(TOTAL_PROP, "200");
         AtomicBoolean laterTaskRan = new AtomicBoolean(false);
@@ -78,42 +75,35 @@ class ShutdownCoordinatorTimeoutTest {
         ShutdownCoordinator.runAll();
         long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
 
-        assertTrue(elapsedMs < 3_000, "总预算必须兜住整体耗时（实测 " + elapsedMs + "ms）");
-        assertFalse(laterTaskRan.get(),
-                "预算耗尽后不得再启动后续任务 —— 必须「显式跳过并记账」，而不是继续等到被硬杀");
-        assertEquals(2, ShutdownCoordinator.getFailureCount(),
-                "1 次超时放弃 + 1 次预算耗尽跳过，二者都必须记账");
+        assertTrue("总预算必须兜住整体耗时（实测 " + elapsedMs + "ms）", elapsedMs < 3_000);
+        assertFalse("预算耗尽后不得再启动后续任务 —— 必须「显式跳过并记账」，而不是继续等到被硬杀", laterTaskRan.get());
+        assertEquals("1 次超时放弃 + 1 次预算耗尽跳过，二者都必须记账", 2, ShutdownCoordinator.getFailureCount());
     }
 
     @Test
-    @DisplayName("N-22：正常任务仍在 runAll 返回前完成（收尾语义不因「有界」而变弱）")
-    void fastTasksCompleteBeforeRunAllReturns() {
+    // @DisplayName: "N-22：正常任务仍在 runAll 返回前完成（收尾语义不因「有界」而变弱）"
+    public void fastTasksCompleteBeforeRunAllReturns() {
         AtomicBoolean ran = new AtomicBoolean(false);
         ShutdownCoordinator.register(100, "test/fast", () -> ran.set(true));
 
         ShutdownCoordinator.runAll();
 
-        assertTrue(ran.get(), "runAll 返回即代表清理已结束（HikariConfigFactoryTest 依赖此语义："
-                + "调用后数据源必须已关闭）");
-        assertEquals(0, ShutdownCoordinator.getFailureCount(), "正常路径不得记账");
+        assertTrue("runAll 返回即代表清理已结束（HikariConfigFactoryTest 依赖此语义："
+                + "调用后数据源必须已关闭）", ran.get());
+        assertEquals("正常路径不得记账", 0, ShutdownCoordinator.getFailureCount());
     }
 
     @Test
-    @DisplayName("N-22：非正预算不表示「无上限」，而是回落默认（与 N-16/N-19 同一纪律）")
-    void nonPositiveBudgetFallsBackToDefault() {
+    // @DisplayName: "N-22：非正预算不表示「无上限」，而是回落默认（与 N-16/N-19 同一纪律）"
+    public void nonPositiveBudgetFallsBackToDefault() {
         System.setProperty(TASK_PROP, "0");
-        assertEquals(ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS,
-                ShutdownCoordinator.resolveBudget(TASK_PROP, ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS),
-                "0 不得被当作「无上限」—— 那正是本预算要消除的隐患");
+        assertEquals("0 不得被当作「无上限」—— 那正是本预算要消除的隐患", ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS, ShutdownCoordinator.resolveBudget(TASK_PROP, ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS));
 
         System.setProperty(TOTAL_PROP, "-1");
-        assertEquals(ShutdownCoordinator.DEFAULT_TOTAL_BUDGET_MS,
-                ShutdownCoordinator.resolveBudget(TOTAL_PROP, ShutdownCoordinator.DEFAULT_TOTAL_BUDGET_MS),
-                "负数同样回落默认");
+        assertEquals("负数同样回落默认", ShutdownCoordinator.DEFAULT_TOTAL_BUDGET_MS, ShutdownCoordinator.resolveBudget(TOTAL_PROP, ShutdownCoordinator.DEFAULT_TOTAL_BUDGET_MS));
 
         System.setProperty(TASK_PROP, "1234");
-        assertEquals(1234, ShutdownCoordinator.resolveBudget(TASK_PROP, ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS),
-                "正值必须原样生效，否则预算不可调");
+        assertEquals("正值必须原样生效，否则预算不可调", 1234, ShutdownCoordinator.resolveBudget(TASK_PROP, ShutdownCoordinator.DEFAULT_TASK_TIMEOUT_MS));
     }
 
     private static void awaitQuietly(CountDownLatch latch) {

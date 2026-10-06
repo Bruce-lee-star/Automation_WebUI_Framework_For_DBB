@@ -1,14 +1,12 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.async;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertTrue;
 
 /**
  * CT2-17 契约：超时强制取消由「单一周期裁决器」承担后，语义不得回归。
@@ -18,12 +16,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 现改为「在途带超时任务登记表 + 周期裁决器」，本测试固化「超时仍会被真实
  * {@code cancel(true)} 中断」这一核心语义。
  */
-class AsyncPoolTimeoutReaperTest {
+public class AsyncPoolTimeoutReaperTest {
 
-    @Test
-    @Timeout(40)
-    @DisplayName("CT2-17：超时任务必须被 cancel(true) 中断（裁决器取代哨兵后语义不回归）")
-    void timedOutTaskIsCancelled() throws Exception {
+    @Test(timeout = 40_000)
+    // @DisplayName: "CT2-17：超时任务必须被 cancel(true) 中断（裁决器取代哨兵后语义不回归）"
+    public void timedOutTaskIsCancelled() throws Exception {
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch finished = new CountDownLatch(1);
         AtomicBoolean interrupted = new AtomicBoolean(false);
@@ -43,12 +40,9 @@ class AsyncPoolTimeoutReaperTest {
             }
         }, 500);
 
-        assertTrue(started.await(10, TimeUnit.SECONDS), "任务应在池线程上启动");
-        assertTrue(finished.await(20, TimeUnit.SECONDS),
-                "超时后必须被取消并结束（否则超时保护形同失效）");
-        assertTrue(interrupted.get(),
-                "超时任务应收到 cancel(true) 的中断信号");
-        assertTrue(AsyncPool.getTimeoutCount() > timeoutCountBefore,
-                "超时计数应递增 —— 证明超时被裁决器真实裁决（而非静默跳过）");
+        assertTrue("任务应在池线程上启动", started.await(10, TimeUnit.SECONDS));
+        assertTrue("超时后必须被取消并结束（否则超时保护形同失效）", finished.await(20, TimeUnit.SECONDS));
+        assertTrue("超时任务应收到 cancel(true) 的中断信号", interrupted.get());
+        assertTrue("超时计数应递增 —— 证明超时被裁决器真实裁决（而非静默跳过）", AsyncPool.getTimeoutCount() > timeoutCountBefore);
     }
 }

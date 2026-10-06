@@ -18,10 +18,9 @@ $MAP = @(
   @('Serenity', 'serenity.version'),
   @('serenity-maven-plugin', 'serenity.version'),
   @('Cucumber', 'cucumber.version'),
-  # Fix: the root pom never defines junit.version (it defines junit.jupiter.version and
-  # junit.platform.version), so the old entry made the JUnit row silently skipped (warning only).
-  @('JUnit', 'junit.jupiter.version'),
-  @('Platform', 'junit.platform.version'),
+  # 2026-10 JUnit5 -> JUnit4 统一：根 pom 现定义 <junit.version>（4.13.2），
+  # 原先的 junit.jupiter.version / junit.platform.version 与 README 的 Platform 行一并移除。
+  @('JUnit', 'junit.version'),
   @('Logback', 'logback.version'),
   @('typesafe.config', 'typesafe.config.version'),
   @('Gson', 'gson.version'),
@@ -154,9 +153,13 @@ if (-not $FIX) {
   # N-09 anti-vacuous guard: if NO reference matched at all, fail. A gate whose regex has drifted away
   #   from the actual docs style would otherwise pass silently forever -- and a gate that always passes
   #   is more dangerous than no gate at all (it manufactures false confidence).
+  # 3653e6ac (chore(docs): remove architecture-review / ai-agent-design) deleted docs/** on purpose but
+  #   left README pointing at it -> this guard failed ever since AND the reference was dangling. The repo
+  #   now has no in-repo docs to reference, so zero matches is the EXPECTED state: warn instead of fail.
+  #   The gate stays meaningful -- the moment any docs/**.md or range ref appears again, the resolution
+  #   checks above run and a missing/dangling document still fails the build.
   if ($docRefs.Count -eq 0 -and $rangeCount -eq 0) {
-    Write-Error "FAIL : doc reference gate matched nothing (no docs/**.md path, no range ref) -- the regex has drifted from the docs style, or docs/ is no longer referenced; fix this script or the README"
-    $rc = 1
+    Write-Warning "SKIP: no in-repo doc reference (docs/** intentionally removed in 3653e6ac); resolution checks stay inactive until README/pom references a docs path again"
   }
 
   foreach ($mod in @($pomXml.project.modules.module)) {

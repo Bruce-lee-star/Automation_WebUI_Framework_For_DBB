@@ -38,8 +38,11 @@ public class DriverChannelContainmentTest {
         CountDownLatch release = new CountDownLatch(1);
 
         Object first = call.guarded("bind:stoppable", 100L, GuardedDriverCall.OnTimeout.WARN_AND_ABANDON, () -> {
-            release.await(5, TimeUnit.SECONDS);
-            return "late";
+            // 让驱动侧调用「界内不返回」以触发放弃等待。await 的布尔返回值本用例无断言需求，
+            // 但必须消费（SpotBugs RV_RETURN_VALUE_IGNORED）；返回的字符串同样不会被观测
+            // （调用已被 WARN_AND_ABANDON 放弃）。
+            boolean releasedWithinWindow = release.await(5, TimeUnit.SECONDS);
+            return releasedWithinWindow ? "released" : "late";
         });
 
         assertNull("界内无回包 ⇒ 放弃等待并降级", first);

@@ -10,17 +10,16 @@ import com.microsoft.playwright.Response;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.WaitUntilState;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.JUnit4Assertions.assertDoesNotThrow;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -91,7 +90,7 @@ public class PageNavigationTest {
         when(page.navigate(anyString(), any())).thenThrow(new TimeoutError("boom"));
 
         NavigationException ex = assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, "https://x.com"));
-        assertTrue( ex.getMessage().contains("https://x.com"), "异常应携带目标 URL 便于定位");
+        assertTrue("异常应携带目标 URL 便于定位", ex.getMessage().contains("https://x.com"));
     }
 
     @Test
@@ -164,7 +163,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("对象句柄竞态：先收敛再重试一次并成功（不抛异常）")
+    // @DisplayName: "对象句柄竞态：先收敛再重试一次并成功（不抛异常）"
     public void navigateTo_objectGoneRace_selfHealsOnceAndSucceeds() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -189,7 +188,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("导航被打断竞态：先收敛再重试一次并成功")
+    // @DisplayName: "导航被打断竞态：先收敛再重试一次并成功"
     public void navigateTo_interruptedRace_selfHealsOnceAndSucceeds() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -203,7 +202,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("非竞态错误（语义失败）绝不重试：一次调用即抛 NavigationException")
+    // @DisplayName: "非竞态错误（语义失败）绝不重试：一次调用即抛 NavigationException"
     public void navigateTo_nonRaceError_doesNotRetry() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -216,7 +215,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("自愈至多一次：两次都失败仍抛 NavigationException，原竞态异常 addSuppressed 保留")
+    // @DisplayName: "自愈至多一次：两次都失败仍抛 NavigationException，原竞态异常 addSuppressed 保留"
     public void navigateTo_selfHealAlsoFails_keepsBothCauses() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -227,14 +226,14 @@ public class PageNavigationTest {
         NavigationException ex = assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
 
         verify(page, times(2)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class)); // 不循环、不退避
-        assertSame(second, ex.getCause(), "cause 应为重试失败原因（更接近现状）");
-        assertEquals(1, ex.getSuppressed().length, "原始竞态异常必须经 addSuppressed 保留（不掩盖根因）");
+        assertSame("cause 应为重试失败原因（更接近现状）", second, ex.getCause());
+        assertEquals("原始竞态异常必须经 addSuppressed 保留（不掩盖根因）", 1, ex.getSuppressed().length);
         assertSame(first, ex.getSuppressed()[0]);
-        assertTrue(ex.getMessage().contains("OBJECT_LIFECYCLE_RACE"), "失败信息须携带竞态类别，便于统计与检索");
+        assertTrue("失败信息须携带竞态类别，便于统计与检索", ex.getMessage().contains("OBJECT_LIFECYCLE_RACE"));
     }
 
     @Test
-    @DisplayName("开关关闭（严格模式）：命中竞态也不重试")
+    // @DisplayName: "开关关闭（严格模式）：命中竞态也不重试"
     public void navigateTo_selfHealDisabled_doesNotRetry() {
         System.setProperty("playwright.navigation.selfheal.enabled", "false");
         FrameworkConfigManager.disableCache(); // 确保读到本次系统属性而非缓存值
@@ -272,7 +271,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("导航落点 403：抛 AccessDeniedException（含状态码/URL），不再静默继续")
+    // @DisplayName: "导航落点 403：抛 AccessDeniedException（含状态码/URL），不再静默继续"
     public void navigateTo_blocked403_throwsAccessDeniedException() {
         BasePage bp = navigableWithStatus("https://sit.example.com/error/403", 403);
 
@@ -281,12 +280,12 @@ public class PageNavigationTest {
 
         assertEquals(403, ex.getStatus());
         assertEquals(NAV_URL, ex.getRequestedUrl());
-        assertTrue(ex.getMessage().contains("403"), "失败信息须含状态码");
-        assertTrue(ex.getMessage().contains(NAV_URL), "失败信息须含请求 URL");
+        assertTrue("失败信息须含状态码", ex.getMessage().contains("403"));
+        assertTrue("失败信息须含请求 URL", ex.getMessage().contains(NAV_URL));
     }
 
     @Test
-    @DisplayName("导航落点 401：同属访问被拒，也直接抛错")
+    // @DisplayName: "导航落点 401：同属访问被拒，也直接抛错"
     public void navigateTo_blocked401_throwsAccessDeniedException() {
         BasePage bp = navigableWithStatus("https://sit.example.com/error/401", 401);
 
@@ -295,14 +294,14 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("导航落点 5xx：不属访问被拒一族（本轮只拦 401/403/407），放行不误伤")
+    // @DisplayName: "导航落点 5xx：不属访问被拒一族（本轮只拦 401/403/407），放行不误伤"
     public void navigateTo_gatewayError_isTolerated() {
         BasePage bp = navigableWithStatus("https://sit.example.com/error/503", 503);
         assertDoesNotThrow(() -> PageNavigation.navigateTo(bp, NAV_URL));
     }
 
     @Test
-    @DisplayName("导航落点 404：默认放行（企业级默认只拦 AUTH + SERVER）")
+    // @DisplayName: "导航落点 404：默认放行（企业级默认只拦 AUTH + SERVER）"
     public void navigateTo_404ByDefault_isTolerated() {
         BasePage bp = navigableWithStatus("https://sit.example.com/missing", 404);
         assertDoesNotThrow(() -> PageNavigation.navigateTo(bp, NAV_URL));
@@ -310,7 +309,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("刷新落点 403：同样直接抛错（refresh 不是法外之地）")
+    // @DisplayName: "刷新落点 403：同样直接抛错（refresh 不是法外之地）"
     public void refresh_blocked403_throwsAccessDeniedException() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -329,7 +328,7 @@ public class PageNavigationTest {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     @Test
-    @DisplayName("403：用 COMMIT 拿到响应即抛错，且【不等】配置的加载状态（networkidle 也没等）")
+    // @DisplayName: "403：用 COMMIT 拿到响应即抛错，且【不等】配置的加载状态（networkidle 也没等）"
     public void navigateTo_403_throwsBeforeWaitingForLoadState() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -345,14 +344,13 @@ public class PageNavigationTest {
         assertThrows(AccessDeniedException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
         verify(page).navigate(eq(NAV_URL), options.capture());
 
-        assertEquals(WaitUntilState.COMMIT, options.getValue().waitUntil,
-                "第一步必须用 COMMIT：否则 403 页面等不到 load/networkidle 时会退化成'导航超时'");
+        assertEquals("第一步必须用 COMMIT：否则 403 页面等不到 load/networkidle 时会退化成'导航超时'", WaitUntilState.COMMIT, options.getValue().waitUntil);
         verify(page, never()).waitForLoadState(eq(LoadState.NETWORKIDLE), any(Page.WaitForLoadStateOptions.class));
         verify(bp, never()).resetFrameContextAfterNavigation();
     }
 
     @Test
-    @DisplayName("正常路径：COMMIT 拿响应后，再显式等配置的加载状态")
+    // @DisplayName: "正常路径：COMMIT 拿响应后，再显式等配置的加载状态"
     public void navigateTo_success_waitsForConfiguredState() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -367,7 +365,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("加载状态等待超时：仍按原有语义映射为 NavigationException")
+    // @DisplayName: "加载状态等待超时：仍按原有语义映射为 NavigationException"
     public void navigateTo_loadStateTimeout_mapsToNavigationException() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -382,7 +380,7 @@ public class PageNavigationTest {
     }
 
     @Test
-    @DisplayName("refresh 也走两步：COMMIT 拿响应后等配置的加载状态（不再走 Playwright 默认的 load）")
+    // @DisplayName: "refresh 也走两步：COMMIT 拿响应后等配置的加载状态（不再走 Playwright 默认的 load）"
     public void refresh_usesCommitThenConfiguredState() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -394,12 +392,12 @@ public class PageNavigationTest {
         PageNavigation.refresh(bp);
 
         verify(page).reload(options.capture());
-        assertEquals(WaitUntilState.COMMIT, options.getValue().waitUntil, "refresh 也必须先用 COMMIT 拿状态码");
+        assertEquals("refresh 也必须先用 COMMIT 拿状态码", WaitUntilState.COMMIT, options.getValue().waitUntil);
         verify(page).waitForLoadState(eq(LoadState.NETWORKIDLE), any(Page.WaitForLoadStateOptions.class));
     }
 
     @Test
-    @DisplayName("预算在提交阶段耗尽：抛 NavigationException，绝不把 timeout=0 传下去（0=永不超时，会挂死用例）")
+    // @DisplayName: "预算在提交阶段耗尽：抛 NavigationException，绝不把 timeout=0 传下去（0=永不超时，会挂死用例）"
     public void navigation_budgetExhausted_throwsInsteadOfWaitingForever() {
         BasePage bp = navigable();
         Page page = bp.getPage();
@@ -411,7 +409,7 @@ public class PageNavigationTest {
         NavigationException ex = assertThrows(NavigationException.class,
                 () -> PageNavigation.navigateTo(bp, NAV_URL));
 
-        assertTrue(ex.getMessage().contains("budget"), "失败信息须说明预算耗尽，便于定位");
+        assertTrue("失败信息须说明预算耗尽，便于定位", ex.getMessage().contains("budget"));
         verify(page, never()).waitForLoadState(any(LoadState.class), any(Page.WaitForLoadStateOptions.class));
     }
 }

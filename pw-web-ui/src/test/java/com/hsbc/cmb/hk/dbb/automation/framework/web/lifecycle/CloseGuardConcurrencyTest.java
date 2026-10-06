@@ -1,15 +1,14 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 关闭看门狗并发契约：超时<b>不遗留后台线程</b>。
@@ -20,12 +19,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>纯并发单测，不依赖浏览器运行时。</p>
  */
-@DisplayName("CloseGuard：超时中断 + 在途线程确定性回收（无后台线程泄漏）")
-class CloseGuardConcurrencyTest {
+    // @DisplayName: "CloseGuard：超时中断 + 在途线程确定性回收（无后台线程泄漏）"
+public class CloseGuardConcurrencyTest {
 
     @Test
-    @DisplayName("可中断的挂死动作：超时后 worker 被中断并回收（inFlightCount 回到基线）")
-    void interruptibleHangIsReclaimed() throws InterruptedException {
+    // @DisplayName: "可中断的挂死动作：超时后 worker 被中断并回收（inFlightCount 回到基线）"
+    public void interruptibleHangIsReclaimed() throws InterruptedException {
         int base = CloseGuard.inFlightCount();
 
         boolean completed = CloseGuard.runBounded("test/interruptible", () -> {
@@ -37,13 +36,13 @@ class CloseGuardConcurrencyTest {
             }
         }, 200);
 
-        assertFalse(completed, "超时必须放弃等待");
+        assertFalse("超时必须放弃等待", completed);
         awaitInFlightBackTo(base, 2_000);
     }
 
     @Test
-    @DisplayName("不响应中断的阻塞：外部解除阻塞（=driver 被强收）后 worker 被回收，不泄漏")
-    void nonInterruptibleBlockReclaimedAfterExternalRelease() throws InterruptedException {
+    // @DisplayName: "不响应中断的阻塞：外部解除阻塞（=driver 被强收）后 worker 被回收，不泄漏"
+    public void nonInterruptibleBlockReclaimedAfterExternalRelease() throws InterruptedException {
         int base = CloseGuard.inFlightCount();
         CountDownLatch released = new CountDownLatch(1);
 
@@ -58,15 +57,15 @@ class CloseGuardConcurrencyTest {
             }
         }, 200);
 
-        assertFalse(completed, "超时必须放弃等待");
+        assertFalse("超时必须放弃等待", completed);
         //  模拟调用方在超时路径「强收本线程 driver」→ 阻塞条件解除
         released.countDown();
         awaitInFlightBackTo(base, 2_000);
     }
 
     @Test
-    @DisplayName("并发超时：多个挂死动作同时超时，全部 worker 最终被回收（无泄漏）")
-    void concurrentTimeoutsAllReclaimed() throws InterruptedException {
+    // @DisplayName: "并发超时：多个挂死动作同时超时，全部 worker 最终被回收（无泄漏）"
+    public void concurrentTimeoutsAllReclaimed() throws InterruptedException {
         int base = CloseGuard.inFlightCount();
         int n = 16;
         ExecutorService pool = Executors.newFixedThreadPool(n);
@@ -91,8 +90,8 @@ class CloseGuardConcurrencyTest {
     }
 
     @Test
-    @DisplayName("并发快动作：全部判为完成，无残留 worker")
-    void concurrentFastActionsCompleteAndReclaim() throws InterruptedException {
+    // @DisplayName: "并发快动作：全部判为完成，无残留 worker"
+    public void concurrentFastActionsCompleteAndReclaim() throws InterruptedException {
         int base = CloseGuard.inFlightCount();
         int n = 32;
         ExecutorService pool = Executors.newFixedThreadPool(n);

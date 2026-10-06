@@ -2,17 +2,16 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.function.Function;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * CT2-09 / CT2-20 契约：以 {@code Page} / {@code BrowserContext} 为键的静态缓存，
@@ -29,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>route/codegen 类测试无 Mockito，沿用 JDK 动态代理桩模式。
  */
-class RolePickerStaticStateCleanupTest {
+public class RolePickerStaticStateCleanupTest {
 
     @SuppressWarnings("unchecked")
     private static <T> T proxy(Class<T> iface, Function<String, Object> special) {
@@ -67,15 +66,15 @@ class RolePickerStaticStateCleanupTest {
         return ((Map<Object, Object>) f.get(null)).size();
     }
 
-    @AfterEach
-    void cleanup() {
+    @After
+    public void cleanup() {
         // clearAll 现已覆盖全部静态态（含 EVAL_LOCKS / LAST_SYNC_SIG），作为跨用例复位
         RoleElementPicker.clearAll();
     }
 
     @Test
-    @DisplayName("CT2-09/20：cleanupContext 必须回收全部按 context/page 的静态缓存")
-    void cleanupContextPurgesAllStaticCaches() throws Exception {
+    // @DisplayName: "CT2-09/20：cleanupContext 必须回收全部按 context/page 的静态缓存"
+    public void cleanupContextPurgesAllStaticCaches() throws Exception {
         BrowserContext ctx = contextStub();
         Page page = pageStub(ctx);
 
@@ -85,25 +84,20 @@ class RolePickerStaticStateCleanupTest {
         RolePickerPanelSync.LAST_SYNC_SIG.put(page, "sig");
         RoleElementPicker.pickerEval(page, "1+1"); // 填充 EVAL_LOCKS（按 Page 键）
 
-        assertTrue(evalLocksSize() > 0, "前置：EVAL_LOCKS 应已登记该 Page");
+        assertTrue("前置：EVAL_LOCKS 应已登记该 Page", evalLocksSize() > 0);
 
         RolePickerSessionState.cleanupContext(ctx);
 
-        assertTrue(RolePickerSessionState.CTX_PANEL_SCRIPTED.isEmpty(),
-                "CTX_PANEL_SCRIPTED 未被 cleanupContext 清理（CT2-09）");
-        assertTrue(RolePickerSessionState.CTX_PICKER_NLS.isEmpty(),
-                "CTX_PICKER_NLS 未被 cleanupContext 清理（CT2-09）");
-        assertTrue(RolePickerSessionState.FORCE_START_TS.isEmpty(),
-                "FORCE_START_TS 未被 cleanupContext 清理（CT2-09）");
-        assertTrue(RolePickerPanelSync.LAST_SYNC_SIG.isEmpty(),
-                "LAST_SYNC_SIG 未被 cleanupContext 清理（CT2-20）");
-        assertEquals(0, evalLocksSize(),
-                "EVAL_LOCKS 未被 cleanupContext 释放（CT2-09：按 Page 键只增不减）");
+        assertTrue("CTX_PANEL_SCRIPTED 未被 cleanupContext 清理（CT2-09）", RolePickerSessionState.CTX_PANEL_SCRIPTED.isEmpty());
+        assertTrue("CTX_PICKER_NLS 未被 cleanupContext 清理（CT2-09）", RolePickerSessionState.CTX_PICKER_NLS.isEmpty());
+        assertTrue("FORCE_START_TS 未被 cleanupContext 清理（CT2-09）", RolePickerSessionState.FORCE_START_TS.isEmpty());
+        assertTrue("LAST_SYNC_SIG 未被 cleanupContext 清理（CT2-20）", RolePickerPanelSync.LAST_SYNC_SIG.isEmpty());
+        assertEquals("EVAL_LOCKS 未被 cleanupContext 释放（CT2-09：按 Page 键只增不减）", 0, evalLocksSize());
     }
 
     @Test
-    @DisplayName("CT2-09/20：cleanupPage 必须回收该 Page 的三张 page-level 静态缓存")
-    void cleanupPagePurgesPageScopedCaches() throws Exception {
+    // @DisplayName: "CT2-09/20：cleanupPage 必须回收该 Page 的三张 page-level 静态缓存"
+    public void cleanupPagePurgesPageScopedCaches() throws Exception {
         BrowserContext ctx = contextStub();
         Page page = pageStub(ctx);
 
@@ -113,17 +107,14 @@ class RolePickerStaticStateCleanupTest {
 
         RolePickerSessionState.cleanupPage(page);
 
-        assertTrue(RolePickerSessionState.FORCE_START_TS.isEmpty(),
-                "FORCE_START_TS 未被 cleanupPage 清理（CT2-09）");
-        assertTrue(RolePickerPanelSync.LAST_SYNC_SIG.isEmpty(),
-                "LAST_SYNC_SIG 未被 cleanupPage 清理（CT2-20）");
-        assertEquals(0, evalLocksSize(),
-                "EVAL_LOCKS 未被 cleanupPage 释放（CT2-09）");
+        assertTrue("FORCE_START_TS 未被 cleanupPage 清理（CT2-09）", RolePickerSessionState.FORCE_START_TS.isEmpty());
+        assertTrue("LAST_SYNC_SIG 未被 cleanupPage 清理（CT2-20）", RolePickerPanelSync.LAST_SYNC_SIG.isEmpty());
+        assertEquals("EVAL_LOCKS 未被 cleanupPage 释放（CT2-09）", 0, evalLocksSize());
     }
 
     @Test
-    @DisplayName("CT2-09：clearAll 必须清掉此前遗漏的三张静态 Map")
-    void clearAllPurgesPreviouslyMissedMaps() throws Exception {
+    // @DisplayName: "CT2-09：clearAll 必须清掉此前遗漏的三张静态 Map"
+    public void clearAllPurgesPreviouslyMissedMaps() throws Exception {
         BrowserContext ctx = contextStub();
         Page page = pageStub(ctx);
 
@@ -135,14 +126,10 @@ class RolePickerStaticStateCleanupTest {
 
         RoleElementPicker.clearAll();
 
-        assertTrue(RolePickerSessionState.CTX_PANEL_SCRIPTED.isEmpty(),
-                "clearAll 未清 CTX_PANEL_SCRIPTED（CT2-09）");
-        assertTrue(RolePickerSessionState.CTX_PICKER_NLS.isEmpty(),
-                "clearAll 未清 CTX_PICKER_NLS（CT2-09）");
-        assertTrue(RolePickerSessionState.FORCE_START_TS.isEmpty(),
-                "clearAll 未清 FORCE_START_TS（CT2-09）");
-        assertTrue(RolePickerPanelSync.LAST_SYNC_SIG.isEmpty(),
-                "clearAll 未清 LAST_SYNC_SIG（CT2-20）");
-        assertEquals(0, evalLocksSize(), "clearAll 未清 EVAL_LOCKS（CT2-09）");
+        assertTrue("clearAll 未清 CTX_PANEL_SCRIPTED（CT2-09）", RolePickerSessionState.CTX_PANEL_SCRIPTED.isEmpty());
+        assertTrue("clearAll 未清 CTX_PICKER_NLS（CT2-09）", RolePickerSessionState.CTX_PICKER_NLS.isEmpty());
+        assertTrue("clearAll 未清 FORCE_START_TS（CT2-09）", RolePickerSessionState.FORCE_START_TS.isEmpty());
+        assertTrue("clearAll 未清 LAST_SYNC_SIG（CT2-20）", RolePickerPanelSync.LAST_SYNC_SIG.isEmpty());
+        assertEquals("clearAll 未清 EVAL_LOCKS（CT2-09）", 0, evalLocksSize());
     }
 }

@@ -1,10 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * N-04 契约（doc 21 CRITICAL）：跨域判据必须"同源 = 不重注入"。
@@ -19,39 +18,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p><b>本测试的灵敏度</b>：{@link #sameOriginDoesNotForceReinjection()} 在旧实现下<b>必然失败</b>
  * （旧实现返回 true），故它是该缺陷的有效回归守卫。</p>
  */
-class RolePickerPanelControllerOriginTest {
+public class RolePickerPanelControllerOriginTest {
 
     private static final String SITE_A = "https://a.example.com";
     private static final String SITE_B = "https://b.example.com";
 
     @Test
-    @DisplayName("N-04：同源导航不得被判为需要重注入（旧实现在此必红）")
-    void sameOriginDoesNotForceReinjection() {
-        assertFalse(RolePickerPanelController.needsForcedReinjection(SITE_A, SITE_A),
-                "同源导航（含 SPA hash 变化 / 整页跳转）必须为 false —— 否则会强制 start() 全量重注入，"
-                        + "触发『反复重注入 + 反复合并 → 已拾元素成倍累积』的复发路径");
+    // @DisplayName: "N-04：同源导航不得被判为需要重注入（旧实现在此必红）"
+    public void sameOriginDoesNotForceReinjection() {
+        assertFalse("同源导航（含 SPA hash 变化 / 整页跳转）必须为 false —— 否则会强制 start() 全量重注入，"
+                        + "触发『反复重注入 + 反复合并 → 已拾元素成倍累积』的复发路径", RolePickerPanelController.needsForcedReinjection(SITE_A, SITE_A));
     }
 
     @Test
-    @DisplayName("N-04：跨域导航必须重注入（门控脚本因 origin 隔离未注入库）")
-    void crossOriginForcesReinjection() {
-        assertTrue(RolePickerPanelController.needsForcedReinjection(SITE_B, SITE_A),
-                "跨域 → 库必未注入，必须强制重注入");
+    // @DisplayName: "N-04：跨域导航必须重注入（门控脚本因 origin 隔离未注入库）"
+    public void crossOriginForcesReinjection() {
+        assertTrue("跨域 → 库必未注入，必须强制重注入", RolePickerPanelController.needsForcedReinjection(SITE_B, SITE_A));
     }
 
     @Test
-    @DisplayName("N-04：首次导航（无历史 origin）必须重注入")
-    void firstNavigationForcesReinjection() {
-        assertTrue(RolePickerPanelController.needsForcedReinjection(SITE_A, null),
-                "该 Page 无历史 origin（首次注入前）→ 必须强制重注入");
+    // @DisplayName: "N-04：首次导航（无历史 origin）必须重注入"
+    public void firstNavigationForcesReinjection() {
+        assertTrue("该 Page 无历史 origin（首次注入前）→ 必须强制重注入", RolePickerPanelController.needsForcedReinjection(SITE_A, null));
     }
 
     @Test
-    @DisplayName("N-04：无效文档（about:blank 等空 origin）不触发重注入，保持原有语义")
-    void blankOriginDoesNotForceReinjection() {
-        assertFalse(RolePickerPanelController.needsForcedReinjection("", SITE_A),
-                "空 origin（about:blank 过渡文档）不得触发重注入，避免污染跨域判据");
-        assertFalse(RolePickerPanelController.needsForcedReinjection("", null),
-                "空 origin 且无历史记录时保持 false（由后续真实导航的 onFrameNavigated 接管）");
+    // @DisplayName: "N-04：无效文档（about:blank 等空 origin）不触发重注入，保持原有语义"
+    public void blankOriginDoesNotForceReinjection() {
+        assertFalse("空 origin（about:blank 过渡文档）不得触发重注入，避免污染跨域判据", RolePickerPanelController.needsForcedReinjection("", SITE_A));
+        assertFalse("空 origin 且无历史记录时保持 false（由后续真实导航的 onFrameNavigated 接管）", RolePickerPanelController.needsForcedReinjection("", null));
     }
 }

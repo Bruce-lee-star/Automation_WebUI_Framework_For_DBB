@@ -1,7 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionFailure;
-import com.hsbc.cmb.hk.dbb.automation.framework.route.binding.GenerationRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.binding.RuleGeneration;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.claim.ClaimRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.claim.PendingGuard;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.ApiSpec;
@@ -13,6 +13,8 @@ import com.microsoft.playwright.APIRequestContext;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -29,7 +31,7 @@ import java.util.Map;
  *       {@link #register}/{@link #stop}/{@link #stopApi}/{@link #dispatch}/{@link #close}/
  *       {@link #dumpCapturedApis}/{@link #drainSettledAssertionFailures}/{@link #metrics}；</li>
  *   <li><b>模块内部契约</b>（{@code @apiNote framework-internal}，仅 V2 子包协作者使用）：
- *       {@link #generations}/{@link #claims}/{@link #pending}/{@link #ops}/{@link #io}/
+ *       {@link #ruleSnapshot}/{@link #claims}/{@link #pending}/{@link #ops}/{@link #io}/
  *       {@link #recordObservation}/{@link #isDegraded}；</li>
  * </ul>
  *
@@ -41,10 +43,16 @@ public interface RouteRuntime extends AutoCloseable {
     // ── 模块内部契约（framework-internal）──
 
     /**
-     * 规则代际表（原子 CAS 发布）。
-     * @apiNote framework-internal: 仅 RouteDispatcher / PatternBinder 使用
+     * 当前规则代<b>快照</b>（不可变、读侧无锁）。
+     *
+     * <p>只读消费方（{@link RouteDispatcher}）只需按 pattern 查规则，故交出<b>快照</b>即可；
+     * 刻意<b>不</b>暴露 {@code GenerationRegistry} 本体 —— 那等于把可变内部状态交给调用方
+     * （SpotBugs EI_EXPOSE_REP），还会诱导调用方绕过条件发布（CAS + 令牌）直接改表。
+     * 规则写入一律走 {@link #register}/{@link #stop}/{@link #stopApi}/{@link #detachRules}。</p>
+     *
+     * @apiNote framework-internal
      */
-    GenerationRegistry generations();
+    RuleGeneration ruleSnapshot();
 
     /**
      * 终结所有权注册表（CAS 单所有者）。
@@ -240,5 +248,21 @@ public interface RouteRuntime extends AutoCloseable {
                           int monitorSize, int capturedSize, long captureDropped,
                           long dispatches, long hits, int retiredByPurpose,
                           int unconfirmedRetirements, Map<String, Long> ruleArmedDurationsMs) {
+
+        /**
+         * 防御性拷贝（SpotBugs EI_EXPOSE_REP2）：Map 组件若直接持有调用方传入的引用，
+         * 该引用后续被改动会"悄悄改写"已产出的指标快照。此处固化副本，使快照真正成为值对象。
+         * 用 {@code Collections.unmodifiableMap(new LinkedHashMap<>(…))} 而非 {@code Map.copyOf}：
+         * 后者拒绝 null 值/键（会 NPE），而指标 Map 的语义不保证非空。
+         */
+        public RouteMetrics {
+            ruleArmedDurationsMs = Collections.unmodifiableMap(new LinkedHashMap<>(ruleArmedDurationsMs));
+        }
+
+        /** 同理（SpotBugs EI_EXPOSE_REP）：对外必须返回副本，不能交出内部引用。 */
+        @Override
+        public Map<String, Long> ruleArmedDurationsMs() {
+            return Collections.unmodifiableMap(new LinkedHashMap<>(ruleArmedDurationsMs));
+        }
     }
 }

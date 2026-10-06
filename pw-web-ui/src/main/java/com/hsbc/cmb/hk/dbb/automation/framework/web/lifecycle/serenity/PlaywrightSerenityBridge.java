@@ -5,7 +5,6 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.CloseGuard;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DownloadLifecycle;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.CustomOptionsManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.bootstrap.PlaywrightContextManager;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.AutoBrowserProcessor;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory.PageObjectFactory;

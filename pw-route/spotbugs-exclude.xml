@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <FindBugsFilter>
     <!--
-      T1-3 baseline: pw-route 为新模块，采用零基线策略——本文件不含任何 <Match>，
+      T1-3 baseline: pw-route 采用**零基线**策略——除下方「设计如此、非缺陷」的惯用法例外外，不含任何 <Match>；
       任何新增 SpotBugs 违规（Medium+）都会导致 verify 失败。
       如需临时登记债务，须按项目规范写明 owner / SLA / 消除方式，并在消除后移除条目。
     -->

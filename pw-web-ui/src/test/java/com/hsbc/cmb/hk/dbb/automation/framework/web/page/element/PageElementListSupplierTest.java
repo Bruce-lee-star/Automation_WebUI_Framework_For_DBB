@@ -2,14 +2,14 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.page.element;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Locator;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -24,7 +24,7 @@ import static org.mockito.Mockito.when;
  * 每次操作都重新解析（语言切换 / Page 重建后自动生效），且不得回退到选择器解析。
  * 同时回归保护既有「选择器路径」行为不变。
  */
-class PageElementListSupplierTest {
+public class PageElementListSupplierTest {
 
     private static Locator mockListLocator(int count) {
         Locator locator = mock(Locator.class);
@@ -35,7 +35,7 @@ class PageElementListSupplierTest {
     }
 
     @Test
-    void dynamicLocator_usesSupplierForEveryOperation_andSkipsSelectorResolution() {
+    public void dynamicLocator_usesSupplierForEveryOperation_andSkipsSelectorResolution() {
         Locator locator = mockListLocator(3);
         AtomicInteger builds = new AtomicInteger();
         BasePage bp = mock(BasePage.class);
@@ -47,12 +47,12 @@ class PageElementListSupplierTest {
 
         assertEquals(3, list.size());
         assertEquals("role=LISTITEM[no-name]", list.getSelector());
-        assertEquals(1, builds.get(), "每次操作须经 supplier 重新构建（懒解析契约）");
+        assertEquals("每次操作须经 supplier 重新构建（懒解析契约）", 1, builds.get());
         verify(bp, never()).locatorInternal(anyString());
     }
 
     @Test
-    void dynamicLocator_get_returnsElementBoundToDescription() {
+    public void dynamicLocator_get_returnsElementBoundToDescription() {
         Locator locator = mockListLocator(2);
         BasePage bp = mock(BasePage.class);
 
@@ -65,7 +65,7 @@ class PageElementListSupplierTest {
     }
 
     @Test
-    void nullSupplier_orBlankDescription_throwsIllegalArgumentException() {
+    public void nullSupplier_orBlankDescription_throwsIllegalArgumentException() {
         BasePage bp = mock(BasePage.class);
         Supplier<Locator> nullSupplier = null;
 
@@ -76,7 +76,7 @@ class PageElementListSupplierTest {
     }
 
     @Test
-    void selectorConstructor_stillResolvesBySelector() {
+    public void selectorConstructor_stillResolvesBySelector() {
         Locator locator = mockListLocator(1);
         BasePage bp = mock(BasePage.class);
         when(bp.locatorInternal("#items")).thenReturn(locator);

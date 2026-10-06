@@ -1,5 +1,4 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context;
-import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.context.ContextRegistryImpl;
 
 import com.microsoft.playwright.BrowserContext;
 

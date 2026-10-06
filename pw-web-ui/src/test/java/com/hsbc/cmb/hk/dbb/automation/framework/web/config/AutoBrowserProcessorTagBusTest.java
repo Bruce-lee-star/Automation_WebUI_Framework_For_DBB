@@ -4,14 +4,13 @@ import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestTag;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -29,25 +28,24 @@ import static org.mockito.Mockito.when;
  * <p>本用例经 {@code readScenarioTags(bus, ...)} 接缝注入<b>受控 bus</b>（Mockito 替身），
  * 完全绕开 JUnit5 下 Serenity 扩展会自注册 listener 的全局状态干扰，因而完全确定性。
  */
-class AutoBrowserProcessorTagBusTest {
+public class AutoBrowserProcessorTagBusTest {
 
     @Test
-    @DisplayName("A1+A2 守卫：bus 未就绪时返回空 tags，且不得注入空 listener、不得用会抛异常的 getter 探测")
-    void mustNotInjectFallbackListenerNorProbeByThrowingGetter() {
+    // @DisplayName: "A1+A2 守卫：bus 未就绪时返回空 tags，且不得注入空 listener、不得用会抛异常的 getter 探测"
+    public void mustNotInjectFallbackListenerNorProbeByThrowingGetter() {
         StepEventBus bus = mock(StepEventBus.class);
         when(bus.isBaseStepListenerRegistered()).thenReturn(false);
 
         String[] tags = AutoBrowserProcessor.readScenarioTags(bus, false);
 
-        assertArrayEquals(new String[0], tags,
-                "bus 未就绪时必须原样返回空数组（由下一个 step 自然重试）");
+        assertArrayEquals("bus 未就绪时必须原样返回空数组（由下一个 step 自然重试）", new String[0], tags);
         verify(bus, never()).registerListener(any());
         verify(bus, never()).getBaseStepListener();
     }
 
     @Test
-    @DisplayName("A1 守卫：bus 就绪时应能从该 bus 读到 scenario 标签（tags 不再恒为空）")
-    void readsScenarioTagsFromGivenBus() {
+    // @DisplayName: "A1 守卫：bus 就绪时应能从该 bus 读到 scenario 标签（tags 不再恒为空）"
+    public void readsScenarioTagsFromGivenBus() {
         StepEventBus bus = mock(StepEventBus.class);
         BaseStepListener listener = mock(BaseStepListener.class);
         TestOutcome outcome = mock(TestOutcome.class);
@@ -63,9 +61,7 @@ class AutoBrowserProcessorTagBusTest {
 
         String[] resolved = AutoBrowserProcessor.readScenarioTags(bus, false);
 
-        assertArrayEquals(new String[]{"firefox", "test"}, resolved,
-                "必须从传入的 bus 解出 scenario 标签（旧实现恒为空 → 覆盖永久失效）");
-        assertNotNull(BrowserOverrideManager.extractBrowserFromTags(resolved),
-                "解出的标签应可被识别为浏览器标签（firefox）——证明标签链路真正打通");
+        assertArrayEquals("必须从传入的 bus 解出 scenario 标签（旧实现恒为空 → 覆盖永久失效）", new String[]{"firefox", "test"}, resolved);
+        assertNotNull("解出的标签应可被识别为浏览器标签（firefox）——证明标签链路真正打通", BrowserOverrideManager.extractBrowserFromTags(resolved));
     }
 }

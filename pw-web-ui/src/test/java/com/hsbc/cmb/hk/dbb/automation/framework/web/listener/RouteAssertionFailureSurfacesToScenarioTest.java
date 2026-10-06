@@ -7,17 +7,17 @@ import net.thucydides.core.steps.BaseStepListener;
 import net.thucydides.core.steps.StepEventBus;
 import net.thucydides.model.domain.TestOutcome;
 import net.thucydides.model.domain.TestResult;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * P0 端到端印证：Route V2 MONITOR 断言失败必须透出为<b>用例失败</b>，不可静默判 PASS（假绿）。
@@ -76,13 +76,12 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
             } catch (AssertionError e) {
                 thrown = e;
             }
-            assertTrue(thrown != null, "V2 断言失败必须抛 AssertionError 使用例判 FAIL");
-            assertFalse(thrown.getMessage() == null || thrown.getMessage().isEmpty(),
-                    "失败明细不得为空");
-            assertTrue(thrown.getMessage().contains("/api/login"), "明细必须含失败规则");
+            assertTrue("V2 断言失败必须抛 AssertionError 使用例判 FAIL", thrown != null);
+            assertFalse("失败明细不得为空", thrown.getMessage() == null || thrown.getMessage().isEmpty());
+            assertTrue("明细必须含失败规则", thrown.getMessage().contains("/api/login"));
 
             // ② 必须经 StepEventBus.testFailed 上报
-            assertEquals(1, listener.failures.size(), "必须经 StepEventBus.testFailed 上报断言失败");
+            assertEquals("必须经 StepEventBus.testFailed 上报断言失败", 1, listener.failures.size());
             assertTrue(listener.failures.get(0) instanceof AssertionError);
 
             // ③ 消费式幂等：第二次调用（同一场景后续步骤收尾）不得再抛
@@ -92,7 +91,7 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
             } catch (AssertionError e) {
                 second = e;
             }
-            assertNull(second, "消费式语义：失败取走后不得重复抛错");
+            assertNull("消费式语义：失败取走后不得重复抛错", second);
         } finally {
             StepEventBus.getEventBus().dropListener(listener);
             RouteAssertionRegistry.clear();
@@ -105,7 +104,7 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
         RouteAssertionRegistry.register(new FailingProbe());
         try {
             StepFailureAggregator.checkAndMarkRouteAssertionFailures(outcome);
-            assertEquals(TestResult.FAILURE, outcome.getResult(), "用例收尾必须兜底标记 FAILURE");
+            assertEquals("用例收尾必须兜底标记 FAILURE", TestResult.FAILURE, outcome.getResult());
         } finally {
             RouteAssertionRegistry.clear();
         }
@@ -118,6 +117,6 @@ public class RouteAssertionFailureSurfacesToScenarioTest {
         StepFailureAggregator.checkAndFailOnRouteAssertions();
         TestOutcome outcome = new TestOutcome("demo scenario");
         StepFailureAggregator.checkAndMarkRouteAssertionFailures(outcome);
-        assertNotEquals(TestResult.FAILURE, outcome.getResult(), "无探针不得误标 FAILURE");
+        assertNotEquals("无探针不得误标 FAILURE", TestResult.FAILURE, outcome.getResult());
     }
 }

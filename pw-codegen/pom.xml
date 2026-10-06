@@ -31,6 +31,24 @@
             <groupId>com.hsbc.cmb.dbb.hk.automation</groupId>
             <artifactId>pw-web-ui</artifactId>
             <version>${project.version}</version>
+            <exclusions>
+                <!-- 依赖治理（内网隔离清单）：pw-web-ui 的框架级 glue **确实使用** Cucumber，故其三件套
+                     （cucumber-core / cucumber-java / datatable）为 compile 作用域并向下游传递；而本模块
+                     全量零 io.cucumber 引用、也不跑 Cucumber，继承整条 Cucumber 栈（十余个 formatter +
+                     gherkin 等）纯属污染且命中隔离清单，故在本模块逐一排除。 -->
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-core</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>cucumber-java</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>io.cucumber</groupId>
+                    <artifactId>datatable</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- ENG-P0-2：codegen 实际用到的外部依赖（原由根 <dependencies> 继承，现显式声明） -->
@@ -42,10 +60,9 @@
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-core</artifactId>
         </dependency>
-        <dependency>
-            <groupId>net.serenity-bdd</groupId>
-            <artifactId>serenity-cucumber</artifactId>
-        </dependency>
+        <!-- 依赖治理：原此处声明 serenity-cucumber，但本模块全量零 io.cucumber / net.serenitybdd.cucumber
+             引用（也不跑 Cucumber），属无用声明且其 cucumber-* 传递依赖命中内网隔离清单 —— 已移除。
+             若将来确需（如 codegen 自己要跑 Cucumber），请先给出真实调用点再恢复。 -->
         <dependency>
             <groupId>net.serenity-bdd</groupId>
             <artifactId>serenity-screenplay</artifactId>
@@ -78,15 +95,10 @@
         </dependency>
 
         <!-- CT2-09 / CT2-20：codegen 首次引入模块内单测，守卫「按 Page/BrowserContext 的静态缓存
-             必须能被 cleanup* / clearAll 真正回收」这一契约（纯 JUnit 5，不依赖 Serenity）。 -->
+             必须能被 cleanup* / clearAll 真正回收」这一契约（纯 JUnit 4，不依赖 Serenity）。 -->
         <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
+            <groupId>junit</groupId>
+            <artifactId>junit</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

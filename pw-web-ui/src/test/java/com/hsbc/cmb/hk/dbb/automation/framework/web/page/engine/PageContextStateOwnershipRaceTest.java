@@ -6,10 +6,8 @@ import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.After;
+import org.junit.Test;
 
 import java.lang.reflect.Proxy;
 import java.util.concurrent.Callable;
@@ -19,7 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.Assert.assertEquals;
 
 /**
  * CT2-03 验收用例：两线程<b>同时首次</b>访问同一 {@code BasePage} 时，线程归属根锚点必须成立
@@ -38,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * <p>无浏览器依赖：经 WEB-P0-2 DI seam（{@code PlaywrightManager.setProvider}）注入桩，
  * 仅在 JVM 内验证线程归属语义。
  */
-class PageContextStateOwnershipRaceTest {
+public class PageContextStateOwnershipRaceTest {
 
     private static final int ROUNDS = 200;
 
@@ -82,8 +80,8 @@ class PageContextStateOwnershipRaceTest {
         };
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         PlaywrightManager.resetProvider();
     }
 
@@ -94,10 +92,9 @@ class PageContextStateOwnershipRaceTest {
                 && t.getMessage().contains("bound to thread");
     }
 
-    @Test
-    @Timeout(180)
-    @DisplayName("CT2-03：两线程同时首次访问同一 BasePage → 每轮恰有一线程被归属守卫拒绝")
-    void simultaneousFirstAccessHasExactlyOneOwner() throws Exception {
+    @Test(timeout = 180_000)
+    // @DisplayName: "CT2-03：两线程同时首次访问同一 BasePage → 每轮恰有一线程被归属守卫拒绝"
+    public void simultaneousFirstAccessHasExactlyOneOwner() throws Exception {
         Page page = proxy(Page.class);
         BrowserContext ctx = proxy(BrowserContext.class);
         PlaywrightManager.setProvider(provider(page, ctx));
@@ -123,9 +120,8 @@ class PageContextStateOwnershipRaceTest {
                 Throwable t2 = f2.get(20, TimeUnit.SECONDS);
 
                 int rejected = (isOwnershipViolation(t1) ? 1 : 0) + (isOwnershipViolation(t2) ? 1 : 0);
-                assertEquals(1, rejected,
-                        "第 " + round + " 轮：必须恰有一线程被线程归属守卫拒绝（CT2-03 根锚点竞态）。"
-                                + "实际 rejected=" + rejected + ", t1=" + t1 + ", t2=" + t2);
+                assertEquals("第 " + round + " 轮：必须恰有一线程被线程归属守卫拒绝（CT2-03 根锚点竞态）。"
+                                + "实际 rejected=" + rejected + ", t1=" + t1 + ", t2=" + t2, 1, rejected);
             }
         } finally {
             pool.shutdownNow();

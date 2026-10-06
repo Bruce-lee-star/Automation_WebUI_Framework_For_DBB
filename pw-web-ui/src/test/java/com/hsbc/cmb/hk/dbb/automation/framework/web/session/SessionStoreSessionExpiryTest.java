@@ -2,7 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.WebFrameworkConfig;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -11,11 +11,11 @@ import java.nio.file.Paths;
 import java.util.Properties;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 会话有效期判定回归（2026-09-29 收敛为唯一判据后）。
@@ -28,7 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 第 2 例是"cookie TTL 不得延长会话寿命"的<b>判别性哨兵</b>：旧实现下该例失败
  * （cookie 距今 25 天 ⇒ 旧逻辑判未过期 ⇒ 不驱逐）。</p>
  */
-class SessionStoreSessionExpiryTest {
+public class SessionStoreSessionExpiryTest {
 
     private static final String HOME_URL = "https://home.example";
 
@@ -37,29 +37,25 @@ class SessionStoreSessionExpiryTest {
 
     /** 判据边界：恰好等于阈值不算过期、超过阈值必过期；时间戳缺失走 fail-safe 重登。 */
     @Test
-    void expiryBoundaryIsLastAccessTimePlusConfiguredMinutes() {
+    public void expiryBoundaryIsLastAccessTimePlusConfiguredMinutes() {
         long savedAt = 1_800_000_000_000L;
 
-        assertFalse(SessionStore.isSessionExpired(savedAt, savedAt + TIMEOUT_MINUTES * 60_000L),
-                "恰好到阈值不得判过期（当前配置 " + TIMEOUT_MINUTES + " 分钟）");
-        assertTrue(SessionStore.isSessionExpired(savedAt, savedAt + (TIMEOUT_MINUTES + 1) * 60_000L),
-                "超过阈值必须判过期");
-        assertFalse(SessionStore.isSessionExpired(savedAt, savedAt), "刚保存的会话必须有效");
-        assertTrue(SessionStore.isSessionExpired(0L, savedAt),
-                "lastAccessTime 缺失/为 0 ⇒ 判过期（重登，而非复用年龄不明的会话）");
+        assertFalse("恰好到阈值不得判过期（当前配置 " + TIMEOUT_MINUTES + " 分钟）", SessionStore.isSessionExpired(savedAt, savedAt + TIMEOUT_MINUTES * 60_000L));
+        assertTrue("超过阈值必须判过期", SessionStore.isSessionExpired(savedAt, savedAt + (TIMEOUT_MINUTES + 1) * 60_000L));
+        assertFalse("刚保存的会话必须有效", SessionStore.isSessionExpired(savedAt, savedAt));
+        assertTrue("lastAccessTime 缺失/为 0 ⇒ 判过期（重登，而非复用年龄不明的会话）", SessionStore.isSessionExpired(0L, savedAt));
     }
 
     /** 判别性哨兵：超龄会话必须被驱逐并删掉两个文件，即便 storageState 里的 cookie 还有 25 天 TTL。 */
     @Test
-    void overAgeSessionIsEvictedEvenWhenCookieTtlIsFarInFuture() throws Exception {
+    public void overAgeSessionIsEvictedEvenWhenCookieTtlIsFarInFuture() throws Exception {
         String sessionKey = "expiry-sentinel-" + UUID.randomUUID();
         writeSessionFixture(sessionKey, futureCookieTtlSeconds(),
                 System.currentTimeMillis() - (TIMEOUT_MINUTES + 5) * 60_000L);
         try {
-            assertNull(SessionStore.loadHomeUrl(sessionKey),
-                    "超龄会话必须判过期：cookie TTL（约 25 天）不得延长寿命（旧实现会返回 homeUrl）");
-            assertFalse(Files.exists(sessionJsonPath(sessionKey)), "过期会话的 storageState 应被删除");
-            assertFalse(Files.exists(sessionMetaPath(sessionKey)), "过期会话的 meta 应被删除");
+            assertNull("超龄会话必须判过期：cookie TTL（约 25 天）不得延长寿命（旧实现会返回 homeUrl）", SessionStore.loadHomeUrl(sessionKey));
+            assertFalse("过期会话的 storageState 应被删除", Files.exists(sessionJsonPath(sessionKey)));
+            assertFalse("过期会话的 meta 应被删除", Files.exists(sessionMetaPath(sessionKey)));
         } finally {
             SessionStore.clearSession(sessionKey);
         }
@@ -67,11 +63,11 @@ class SessionStoreSessionExpiryTest {
 
     /** 正例：既防"一律判过期"的假修复，也自检夹具确实写进了生产代码读取的目录。 */
     @Test
-    void withinLifetimeSessionIsReusable() throws Exception {
+    public void withinLifetimeSessionIsReusable() throws Exception {
         String sessionKey = "expiry-positive-" + UUID.randomUUID();
         writeSessionFixture(sessionKey, futureCookieTtlSeconds(), System.currentTimeMillis());
         try {
-            assertEquals(HOME_URL, SessionStore.loadHomeUrl(sessionKey), "未超龄会话必须可复用");
+            assertEquals("未超龄会话必须可复用", HOME_URL, SessionStore.loadHomeUrl(sessionKey));
             assertNotNull(SessionStore.loadHomeUrl(sessionKey));
         } finally {
             SessionStore.clearSession(sessionKey);

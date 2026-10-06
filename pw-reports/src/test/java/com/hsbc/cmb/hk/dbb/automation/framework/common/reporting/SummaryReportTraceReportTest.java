@@ -1,14 +1,16 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.common.reporting;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.Rule;
+import org.junit.rules.TemporaryFolder;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * E-3：Trace 挂进汇总报告（失败清单 Trace 下载列）。
@@ -16,10 +18,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>契约：仅当报告目录下存在与失败场景匹配的 {@code traces/trace-<scenarioId>-<ts>.zip} 时才渲染 Trace 列；
  * 无 traces 目录或无匹配时**不渲染**（保证既有 golden 基线逐字节不变，且绝不产生悬空链接）。
  */
-class SummaryReportTraceReportTest {
+public class SummaryReportTraceReportTest {
+    @Rule
+    public final TemporaryFolder tempFolder = new TemporaryFolder();
+    private File folder;
 
-    @TempDir
-    File folder;
+    @Before
+    public void initTempFolder() {
+        folder = tempFolder.getRoot();
+    }
 
     /** 单个 FAILURE 场景（name = "Login OK"），用于验证 trace 名称匹配。 */
     private static final String FAIL_JSON = "{\n"
@@ -32,19 +39,19 @@ class SummaryReportTraceReportTest {
             + "}";
 
     @Test
-    void noTracesDir_doesNotRenderTraceColumn() throws Exception {
+    public void noTracesDir_doesNotRenderTraceColumn() throws Exception {
         File dir = newReport("no-traces");
         writeOutcome(dir, "a.json", FAIL_JSON);
 
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
 
         String html = readHtml(dir);
-        assertFalse(html.contains("class=\"scenarioTrace\""), "无 traces 目录时不应渲染 Trace 单元格");
-        assertFalse(html.contains(">Trace</th>"), "无 traces 目录时不应渲染 Trace 表头");
+        assertFalse("无 traces 目录时不应渲染 Trace 单元格", html.contains("class=\"scenarioTrace\""));
+        assertFalse("无 traces 目录时不应渲染 Trace 表头", html.contains(">Trace</th>"));
     }
 
     @Test
-    void matchingTrace_rendersDownloadLink() throws Exception {
+    public void matchingTrace_rendersDownloadLink() throws Exception {
         File dir = newReport("matching");
         writeOutcome(dir, "a.json", FAIL_JSON);
         // trace id = sanitize(testName + "_" + threadId + "_" + seq)（PlaywrightContextManager）
@@ -53,13 +60,12 @@ class SummaryReportTraceReportTest {
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
 
         String html = readHtml(dir);
-        assertTrue(html.contains("class=\"scenarioTrace\""), "有匹配 trace 时应渲染 Trace 列");
-        assertTrue(html.contains("traces/trace-Login_OK_12_3-1756800000000.zip"),
-                "应链接到对应 trace 文件，实际片段见产物");
+        assertTrue("有匹配 trace 时应渲染 Trace 列", html.contains("class=\"scenarioTrace\""));
+        assertTrue("应链接到对应 trace 文件，实际片段见产物", html.contains("traces/trace-Login_OK_12_3-1756800000000.zip"));
     }
 
     @Test
-    void nonMatchingTrace_doesNotRenderColumn() throws Exception {
+    public void nonMatchingTrace_doesNotRenderColumn() throws Exception {
         File dir = newReport("non-matching");
         writeOutcome(dir, "a.json", FAIL_JSON);
         writeTrace(dir, "trace-Other_1_1-1756800000000.zip");
@@ -67,8 +73,7 @@ class SummaryReportTraceReportTest {
         new SummaryReportGenerator(dir.getAbsolutePath()).generateSummaryReport();
 
         String html = readHtml(dir);
-        assertFalse(html.contains("class=\"scenarioTrace\""),
-                "无匹配 trace 时应降级为不渲染该列（绝不产生悬空链接）");
+        assertFalse("无匹配 trace 时应降级为不渲染该列（绝不产生悬空链接）", html.contains("class=\"scenarioTrace\""));
     }
 
     /** 创建用例报告目录；mkdirs 失败即抛（不静默忽略返回值，SpotBugs RV_RETURN_VALUE_IGNORED_BAD_PRACTICE）。 */

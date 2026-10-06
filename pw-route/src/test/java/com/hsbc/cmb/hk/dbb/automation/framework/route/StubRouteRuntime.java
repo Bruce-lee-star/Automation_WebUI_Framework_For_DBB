@@ -2,6 +2,7 @@ package com.hsbc.cmb.hk.dbb.automation.framework.route;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteAssertionFailure;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.binding.GenerationRegistry;
+import com.hsbc.cmb.hk.dbb.automation.framework.route.binding.RuleGeneration;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.claim.ClaimRegistry;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.claim.PendingGuard;
 import com.hsbc.cmb.hk.dbb.automation.framework.route.dsl.ApiSpec;
@@ -33,8 +34,8 @@ public final class StubRouteRuntime implements RouteRuntime {
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     @Override
-    public GenerationRegistry generations() {
-        return generations;
+    public RuleGeneration ruleSnapshot() {
+        return generations.snapshot();
     }
 
     @Override

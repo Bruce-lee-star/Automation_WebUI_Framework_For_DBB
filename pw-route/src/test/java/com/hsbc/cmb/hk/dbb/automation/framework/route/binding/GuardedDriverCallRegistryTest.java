@@ -26,7 +26,9 @@ public class GuardedDriverCallRegistryTest {
         GuardedDriverCallRegistry.reset();
         GuardedDriverCall g = GuardedDriverCallRegistry.instance();
         assertNotNull(g);
-        assertTrue("默认必须解析到 GuardedDriverCallImpl（零回归）", g instanceof GuardedDriverCallImpl);
+        // Class.isInstance 替代 instanceof：语义等价，且满足 SpotBugs JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS
+        assertTrue("默认必须解析到 GuardedDriverCallImpl（零回归）",
+                GuardedDriverCallImpl.class.isInstance(g));
     }
 
     @Test
@@ -37,7 +39,7 @@ public class GuardedDriverCallRegistryTest {
 
         GuardedDriverCallRegistry.reset();
         assertTrue("reset 必须恢复默认实现",
-                GuardedDriverCallRegistry.instance() instanceof GuardedDriverCallImpl);
+                GuardedDriverCallImpl.class.isInstance(GuardedDriverCallRegistry.instance()));
     }
 
     @Test

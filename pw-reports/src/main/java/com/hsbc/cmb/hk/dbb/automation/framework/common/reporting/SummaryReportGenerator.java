@@ -83,10 +83,6 @@ public final class SummaryReportGenerator {
     /** E-3：trace 文件索引（trace-&lt;scenarioId&gt;-&lt;ts&gt;.zip），无 traces 目录时为空。 */
     private final List<TraceFile> traceFiles = new ArrayList<>();
 
-    /** E-2：上一场运行快照（无历史为 null）；跨场 flaky 场景集（近 5 场失败 ≥3 次）。 */
-    private RunSummary previousRun;
-    private Set<String> flakyScenarios = Set.of();
-
     // 自定义错误分类规则：label → pattern（正则），按配置顺序排列
     private final List<ErrorTypeRule> errorTypeRules = new ArrayList<>();
 
@@ -349,7 +345,6 @@ public final class SummaryReportGenerator {
         loadFeatureHtmlMapping(actualReportDir);
         loadScenarioHtmlMapping(actualReportDir);
         loadTraceMapping(actualReportDir);
-        loadTrend(actualReportDir);
         calculateResultCounts();
         loadDurationsFromIndexHtml(actualReportDir);  // 从 index.html 解析时间（与 Serenity 原生报告保持一致）
         calculateDurations();
@@ -643,8 +638,8 @@ public final class SummaryReportGenerator {
     /**
      * 生成报告 ZIP 包（E-7：打包内容为「报告白名单」——整目录递归，但排除中间/临时产物）。
      *
-     * <p><b>包含</b>：汇总 HTML、Serenity 报告 HTML/CSS/JS/图片、各 scenario JSON、{@code traces/*.zip}、
-     * {@code trend-history/*.json} 等报告内容（保持报告自包含、可离线查看）。
+     * <p><b>包含</b>：汇总 HTML、Serenity 报告 HTML/CSS/JS/图片、各 scenario JSON、{@code traces/*.zip}
+     * 等报告内容（保持报告自包含、可离线查看）。
      * <b>排除</b>：ZIP 本体（防自嵌套）、CSV（单独下载，见 Download CSV 按钮）、{@code .tmp} 临时产物。
      */
     private void generateZipPackage(String actualReportDir) {
@@ -1508,77 +1503,13 @@ public final class SummaryReportGenerator {
     }
 
     /**
-     * E-2：加载历史趋势（上一场快照 + 跨场 flaky 判定），并落本场快照。
-     * 无历史时 {@code previousRun==null}，模板据 {@code hasTrend} 不渲染对比列（golden 基线不受影响）。
+     * E-2：耗时以**秒**展示（固定 2 位小数）。
+     *
+     * <p>用 {@link Locale#ROOT} 定点：报告由 CI 与不同地域的开发者共同查看，默认 locale 会让小数点/千分位
+     * 漂移（例如 de_DE 渲染成 {@code 6,70}）。2 位小数足以覆盖 10ms 级差异。</p>
      */
-    private void loadTrend(String actualReportDir) {
-        TrendStore store = new TrendStore(safeResolve(actualReportDir));
-        this.previousRun = store.previous();
-
-        Map<String, Integer> failureCounts = new HashMap<>();
-        for (RunSummary s : store.recent(5)) {
-            if (s.failedScenarios() == null) {
-                continue;
-            }
-            for (String name : s.failedScenarios()) {
-                failureCounts.merge(name, 1, Integer::sum);
-            }
-        }
-        Set<String> flaky = new HashSet<>();
-        failureCounts.forEach((name, n) -> {
-            if (n >= 3) {
-                flaky.add(name);
-            }
-        });
-        this.flakyScenarios = flaky;
-
-        store.save(buildCurrentRunSummary());
-    }
-
-    /** 由本场结果构造运行快照（供下一场对比 / flaky 判定）。 */
-    private RunSummary buildCurrentRunSummary() {
-        Map<String, Long> durations = new LinkedHashMap<>();
-        List<String> failed = new ArrayList<>();
-        for (TestOutcome t : testOutcomes) {
-            if (t.getName() != null) {
-                durations.put(t.getName(), t.getDuration());
-            }
-            if (t.getResult() == TestResult.FAILURE || t.getResult() == TestResult.ERROR) {
-                if (t.getName() != null) {
-                    failed.add(t.getName());
-                }
-            }
-        }
-        for (SimpleTestOutcome t : simpleTestOutcomes) {
-            if (t.title != null) {
-                durations.put(t.title, t.duration);
-            }
-            if (t.result == TestResult.FAILURE || t.result == TestResult.ERROR) {
-                if (t.title != null) {
-                    failed.add(t.title);
-                }
-            }
-        }
-        return new RunSummary(
-                TIMESTAMP_FORMATTER.format(reportTime),
-                reportTime.toString(),
-                (int) getTotalTests(),
-                (int) count(TestResult.SUCCESS),
-                failed.size(),
-                durations,
-                failed);
-    }
-
-    /** E-2：耗时变化率文案（无上期数据返回 {@code —}）。 */
-    private static String formatDelta(long current, Long previous) {
-        if (previous == null || previous <= 0) {
-            return "—";
-        }
-        long delta = Math.round((current - previous) * 100.0 / previous);
-        if (delta == 0) {
-            return "0%";
-        }
-        return (delta > 0 ? "+" : "") + delta + "%";
+    private static String formatSeconds(long millis) {
+        return String.format(Locale.ROOT, "%.2f", millis / 1000.0);
     }
 
     private void appendFailureAndResultList(StringBuilder sb) {
@@ -1670,7 +1601,6 @@ public final class SummaryReportGenerator {
         model.put("csvLink", buildDownloadUrl(csvFileName));
         model.put("resultGroups", resultGroups);
         model.put("hasTraces", hasTraces);
-        model.put("hasTrend", previousRun != null);
         try {
             sb.append(renderSummaryTemplate("summary/failure-and-result-list.ftlh", model));
         } catch (TemplateException | IOException e) {
@@ -1689,13 +1619,12 @@ public final class SummaryReportGenerator {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("link", link);
         m.put("name", name);
-        // E-2：历史趋势（本次/上次耗时 + 变化率）与跨场 flaky 标记
-        Long previousMs = (previousRun != null && previousRun.scenarioDurationMs() != null)
-                ? previousRun.scenarioDurationMs().get(name) : null;
-        m.put("currentMs", durationMs);
-        m.put("previousMs", previousMs == null ? "—" : previousMs.toString());
-        m.put("deltaPct", formatDelta(durationMs, previousMs));
-        m.put("flaky", flakyScenarios.contains(name));
+        // 本场耗时单位统一为**秒**（固定 2 位小数）：单场景耗时多在 1~60s 量级，毫秒在大数值下不可读；
+        // 且模板直接插值 Long 时受 JVM locale 影响会加千分位（曾渲染成 "6,699"），改为 Java 侧格式化字符串
+        // 后输出既定点、与 locale 解耦。
+        // 注：历史对比列（上一场耗时 / 变化率 Δ）与跨场 FLAKY 标记已整体下线 —— 报告目录每场全清，
+        //     无跨场历史可依（详见 test-automation 的 clean-serenity-report 插件说明）。
+        m.put("currentSec", formatSeconds(durationMs));
         m.put("labelColor", resultColor(result));
         m.put("labelText", result.name().toLowerCase());
         m.put("color", resultColor(result));
@@ -1792,6 +1721,55 @@ public final class SummaryReportGenerator {
     // =============================================================
     // 数据加载（Serenity BDD JSON 格式）
     // =============================================================
+    /**
+     * 解析 Serenity JSON 中的时间戳（{@code ZonedDateTime}，如
+     * {@code 2026-10-06T18:58:12.604596800+08:00[Asia/Shanghai]}）。
+     *
+     * <p>{@code DateTimeFormatter} 最多支持 9 位纳秒，而 Serenity 会写少于 9 位的小数秒，故先补齐/截断小数位
+     * （含时区后缀与 {@code [Asia/Shanghai]} 这类 zone id）。字段缺失、非字符串或解析失败一律返回 {@code null}
+     * —— 调用方据此回退到 JSON 的 duration，<b>不猜时间</b>。</p>
+     */
+    private static ZonedDateTime parseTimestamp(JsonObject jo, String key) {
+        if (!jo.has(key) || !jo.get(key).isJsonPrimitive()) {
+            return null;
+        }
+        String raw = jo.get(key).getAsString();
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String s = raw.trim();
+        if (s.contains(".")) {
+            String[] parts = s.split("\\.");
+            if (parts.length == 2) {
+                // parts[1] 形如 "604596800+08:00[Asia/Shanghai]"：切出小数位与时区
+                String afterDot = parts[1];
+                int tzIndex = -1;
+                for (int i = 0; i < afterDot.length(); i++) {
+                    char c = afterDot.charAt(i);
+                    if (c == '+' || c == '-' || c == 'Z') {
+                        tzIndex = i;
+                        break;
+                    }
+                }
+                String nanos = tzIndex >= 0 ? afterDot.substring(0, tzIndex) : afterDot;
+                String tz = tzIndex >= 0 ? afterDot.substring(tzIndex) : "";
+                if (nanos.length() < 9) {
+                    nanos = String.format("%-9s", nanos).replace(' ', '0');
+                } else if (nanos.length() > 9) {
+                    nanos = nanos.substring(0, 9);
+                }
+                s = parts[0] + "." + nanos + tz;
+            }
+        }
+        try {
+            return ZonedDateTime.parse(s);
+        } catch (RuntimeException e) {
+            // DateTimeParseException 是 RuntimeException 子类；收窄 catch 以满足 SpotBugs REC_CATCH_EXCEPTION
+            VerboseLogging.logWarnIfVerbose(logger, "Failed to parse {} timestamp: {}", key, e.getMessage());
+            return null;
+        }
+    }
+
     private void loadTestOutcomes(String actualReportDir) {
         File dir = safeResolve(actualReportDir).toFile();
         File[] files = dir.listFiles((d, n) -> n.endsWith(".json") && !n.equals("summary.json"));
@@ -1854,39 +1832,21 @@ public final class SummaryReportGenerator {
                 SimpleTestOutcome outcome = new SimpleTestOutcome(name, r, dur, feature);
                 outcome.errorMessage = errorMessage;
 
-                // 解析 startTime (ZonedDateTime 格式，如 2026-04-30T16:48:27.302528+08:00)
-                if (jo.has("startTime") && jo.get("startTime").isJsonPrimitive()) {
-                    try {
-                        String startTimeStr = jo.get("startTime").getAsString();
-                        // 处理可能包含微秒的时间格式（Java 的 DateTimeFormatter 只支持纳秒，最多9位）
-                        if (startTimeStr.contains(".")) {
-                            String[] parts = startTimeStr.split("\\.");
-                            if (parts.length == 2) {
-                                // parts[1] 包含纳秒+时区，如 "302528+08:00"
-                                String afterDot = parts[1];
-                                // 提取数字部分和时区部分
-                                int tzIndex = -1;
-                                for (int i = 0; i < afterDot.length(); i++) {
-                                    char c = afterDot.charAt(i);
-                                    if (c == '+' || c == '-' || c == 'Z') {
-                                        tzIndex = i;
-                                        break;
-                                    }
-                                }
-                                String nanos = tzIndex >= 0 ? afterDot.substring(0, tzIndex) : afterDot;
-                                String tz = tzIndex >= 0 ? afterDot.substring(tzIndex) : "";
-                                // 补齐或截断到9位纳秒
-                                if (nanos.length() < 9) {
-                                    nanos = String.format("%-9s", nanos).replace(' ', '0');
-                                } else  {if (nanos.length() > 9) {
-                                    nanos = nanos.substring(0, 9);
-                                }} 
-                                startTimeStr = parts[0] + "." + nanos + tz;
-                            }
-                        }
-                        outcome.startTime = ZonedDateTime.parse(startTimeStr);
-                    } catch (Exception e) {
-                        VerboseLogging.logWarnIfVerbose(logger, "Failed to parse startTime for {}: {}", name, e.getMessage());
+                // 解析 startTime / endTime（ZonedDateTime 格式，如 2026-10-06T18:58:12.604596800+08:00[Asia/Shanghai]）
+                outcome.startTime = parseTimestamp(jo, "startTime");
+                outcome.endTime = parseTimestamp(jo, "endTime");
+
+                // 真实耗时 = endTime − startTime。
+                //
+                // 【为何不直接用 JSON 的 duration 字段】实测同一份记录里两者量级完全不同：
+                //   CAPTURE 场景 duration=3683ms，而 startTime→endTime=67.08s；Serenity 原生报告页
+                //   （feature 页的用例列表）对同一场景显示「1m 8s」= 68s，failsafe 的用例耗时（46~109s）
+                //   亦同量级 —— 即墙钟值才是"场景耗时"。取其 duration 会系统性低估（报告里 4.49s 这种），
+                //   故以时间戳差为准；仅当两个时间戳缺一时回退到 duration（老报告 / 单测夹具）。
+                if (outcome.startTime != null && outcome.endTime != null) {
+                    long wallMs = Duration.between(outcome.startTime, outcome.endTime).toMillis();
+                    if (wallMs >= 0) {
+                        outcome.duration = wallMs;
                     }
                 }
 
@@ -2189,6 +2149,8 @@ public final class SummaryReportGenerator {
         String featureName;
         String errorMessage;
         ZonedDateTime startTime;
+        /** 场景结束时间。与 startTime 配对算真实耗时；老报告可能缺该字段，此时回退 JSON 的 duration。 */
+        ZonedDateTime endTime;
 
         public SimpleTestOutcome(String title, String rStr, long duration, String featureName) {
             this.title = title;

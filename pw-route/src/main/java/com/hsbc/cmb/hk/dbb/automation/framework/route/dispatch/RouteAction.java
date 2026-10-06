@@ -9,6 +9,7 @@ import com.microsoft.playwright.options.RequestOptions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -224,6 +225,20 @@ public final class RouteAction {
      * 从而彻底脱离可能随后被驱动回收的 {@link Request} 句柄。
      */
     public record RequestSnapshot(String url, String method, Map<String, String> headers, String postData) {
+
+        /**
+         * 防御性拷贝（SpotBugs EI_EXPOSE_REP2）：headers 是可变 Map，直接持有外部引用即失去"快照"语义
+         * （调用方后续改动会反映到已捕获的快照上）。副本不可修改，保证值语义与线程安全。
+         */
+        public RequestSnapshot {
+            headers = Collections.unmodifiableMap(new LinkedHashMap<>(headers == null ? Map.of() : headers));
+        }
+
+        /** 同理（SpotBugs EI_EXPOSE_REP）：对外返回副本，不交出内部引用。 */
+        @Override
+        public Map<String, String> headers() {
+            return Collections.unmodifiableMap(new LinkedHashMap<>(headers));
+        }
 
         /** 从 {@link Request} 复制快照；任何异常（含 mock/句柄不可用）返回 {@code null}。 */
         public static RequestSnapshot of(Request request) {

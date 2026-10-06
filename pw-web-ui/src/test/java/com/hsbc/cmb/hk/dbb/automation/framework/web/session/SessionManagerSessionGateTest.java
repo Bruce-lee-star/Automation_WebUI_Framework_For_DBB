@@ -1,17 +1,17 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.session;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * 并行语义契约（企业级期望）：<b>同一 sessionKey 严格串行、不同 sessionKey 并行</b>。
@@ -22,22 +22,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>零网络依赖：只驱动闸门本身，不创建浏览器 / 不登录。
  */
-class SessionManagerSessionGateTest {
+public class SessionManagerSessionGateTest {
 
     /** 显式开启闸门（等价于并行为真时的 auto 行为），避免依赖引擎并行开关。 */
-    @BeforeEach
-    void enableGate() {
+    @Before
+    public void enableGate() {
         System.setProperty("serenity.playwright.concurrent.partition.enabled", "true");
     }
 
-    @AfterEach
-    void resetGate() {
+    @After
+    public void resetGate() {
         System.clearProperty("serenity.playwright.concurrent.partition.enabled");
     }
 
     /** 同 sessionKey：前者未释放时，后者必须被阻塞；前者释放后立即进入。 */
     @Test
-    void sameSessionKey_isSerialized() throws Exception {
+    public void sameSessionKey_isSerialized() throws Exception {
         CountDownLatch holderIn = new CountDownLatch(1);
         CountDownLatch holderRelease = new CountDownLatch(1);
         CountDownLatch waiterReady = new CountDownLatch(1);
@@ -55,7 +55,7 @@ class SessionManagerSessionGateTest {
             }
         }, "gate-holder");
         holder.start();
-        assertTrue(holderIn.await(2, TimeUnit.SECONDS), "持有者应能进入闸门");
+        assertTrue("持有者应能进入闸门", holderIn.await(2, TimeUnit.SECONDS));
 
         Thread waiter = new Thread(() -> {
             waiterReady.countDown();               // 即将尝试进入临界区（使观测窗口有意义）
@@ -64,21 +64,20 @@ class SessionManagerSessionGateTest {
             SessionManager.releaseSessionGate();
         }, "gate-waiter");
         waiter.start();
-        assertTrue(waiterReady.await(2, TimeUnit.SECONDS), "等待者应在超时前就绪");
+        assertTrue("等待者应在超时前就绪", waiterReady.await(2, TimeUnit.SECONDS));
 
         // 等待方已就绪后观测其是否违规进入：不再用 sleep 猜调度（原 sleep(200) 会在等待方未调度时假通过）
-        assertFalse(awaitTrue(secondEntered, NON_ENTRY_OBSERVE_MS),
-                "同一 sessionKey 必须串行：持有者未释放前，等待者不得进入");
+        assertFalse("同一 sessionKey 必须串行：持有者未释放前，等待者不得进入", awaitTrue(secondEntered, NON_ENTRY_OBSERVE_MS));
 
         holderRelease.countDown();                 // 释放持有者
         waiter.join(3000);
-        assertTrue(secondEntered.get(), "持有者释放后，等待者应立即进入");
-        assertFalse(waiter.isAlive(), "等待者应在持有者释放后结束");
+        assertTrue("持有者释放后，等待者应立即进入", secondEntered.get());
+        assertFalse("等待者应在持有者释放后结束", waiter.isAlive());
     }
 
     /** 不同 sessionKey：互不阻塞，可同时持有。 */
     @Test
-    void differentSessionKeys_runInParallel() throws Exception {
+    public void differentSessionKeys_runInParallel() throws Exception {
         CountDownLatch firstIn = new CountDownLatch(1);
         AtomicBoolean secondEntered = new AtomicBoolean(false);
 
@@ -104,13 +103,13 @@ class SessionManagerSessionGateTest {
             SessionManager.releaseSessionGate();
         }, "gate-b");
         b.start();
-        assertTrue(bEntered.await(2, TimeUnit.SECONDS), "不同 sessionKey 不应互相阻塞（应可并行进入）");
+        assertTrue("不同 sessionKey 不应互相阻塞（应可并行进入）", bEntered.await(2, TimeUnit.SECONDS));
         a.join(3000);
     }
 
     /** 未持有即释放：必须为 no-op（不得虚增许可、不得抛异常）。 */
     @Test
-    void releaseWithoutAcquire_isNoOp() {
+    public void releaseWithoutAcquire_isNoOp() {
         SessionManager.releaseSessionGate();
         SessionManager.releaseSessionGate();
     }
@@ -120,7 +119,7 @@ class SessionManagerSessionGateTest {
      * （旧实现在 permits=1 公平信号量上会阻塞到 fail-closed 超时），也不虚增持有导致许可泄漏。
      */
     @Test
-    void reentrantAcquireSameThread_isNoOpAndDoesNotLeakPermit() throws Exception {
+    public void reentrantAcquireSameThread_isNoOpAndDoesNotLeakPermit() throws Exception {
         // 用「有界 join 的独立线程」观测自锁，而不是把 max.wait.ms 改小 —— 后者会污染同 JVM 的其它测试类
         // （实测泄漏后本类 sameSessionKey_isSerialized 的等待方 300ms 就 fail-closed 而失败）。
         AtomicReference<Throwable> holderError = new AtomicReference<>();
@@ -135,8 +134,8 @@ class SessionManagerSessionGateTest {
         }, "reentrant-holder");
         holder.start();
         holder.join(3000);
-        assertFalse(holder.isAlive(), "同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）");
-        assertNull(holderError.get(), "同线程重入不得抛异常");
+        assertFalse("同线程重入必须立即返回，不得自锁（err=" + holderError.get() + "）", holder.isAlive());
+        assertNull("同线程重入不得抛异常", holderError.get());
 
         CountDownLatch entered = new CountDownLatch(1);
         Thread other = new Thread(() -> {
@@ -145,7 +144,7 @@ class SessionManagerSessionGateTest {
             SessionManager.releaseSessionGate();
         }, "reentrant-checker");
         other.start();
-        assertTrue(entered.await(3, TimeUnit.SECONDS), "重入不得泄漏许可：其它线程应可立即进入");
+        assertTrue("重入不得泄漏许可：其它线程应可立即进入", entered.await(3, TimeUnit.SECONDS));
         other.join(3000);
     }
 

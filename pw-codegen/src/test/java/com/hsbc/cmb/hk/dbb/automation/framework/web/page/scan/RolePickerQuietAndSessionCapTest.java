@@ -1,10 +1,9 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * N-17 / N-19 契约（doc 21）。
@@ -17,37 +16,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 「根页关闭 / 无存活页 / 中断」；事件丢失时会无限阻塞调用线程。新增会话级 deadline 兜底，
  * 此处守卫其默认值必须为<b>正</b>（{@code 0} 会等于"无上限"，正是要消除的隐患）。</p>
  */
-class RolePickerQuietAndSessionCapTest {
+public class RolePickerQuietAndSessionCapTest {
 
     @Test
-    @DisplayName("N-17：吞噬异常必须可计数（把零信号变成可断言事实）")
-    void swallowedExceptionsAreCounted() {
+    // @DisplayName: "N-17：吞噬异常必须可计数（把零信号变成可断言事实）"
+    public void swallowedExceptionsAreCounted() {
         RolePickerQuiet.reset();
         long before = RolePickerQuiet.getSwallowedCount();
 
         RolePickerQuiet.ignore("unit-test#a", new IllegalStateException("boom"));
         RolePickerQuiet.ignore("unit-test#b", null);
 
-        assertEquals(before + 2, RolePickerQuiet.getSwallowedCount(),
-                "每次被吞噬的异常都必须计数 —— 否则真实故障会静默消失、无从归因");
+        assertEquals("每次被吞噬的异常都必须计数 —— 否则真实故障会静默消失、无从归因", before + 2, RolePickerQuiet.getSwallowedCount());
     }
 
     @Test
-    @DisplayName("N-17：null 异常亦安全（不得 NPE、也不得漏计）")
-    void nullThrowableIsSafe() {
+    // @DisplayName: "N-17：null 异常亦安全（不得 NPE、也不得漏计）"
+    public void nullThrowableIsSafe() {
         RolePickerQuiet.reset();
 
         RolePickerQuiet.ignore("unit-test#null", null);
 
-        assertEquals(1, RolePickerQuiet.getSwallowedCount(), "无 cause 时同样要计数");
+        assertEquals("无 cause 时同样要计数", 1, RolePickerQuiet.getSwallowedCount());
     }
 
     @Test
-    @DisplayName("N-19：会话 deadline 默认值必须为正（0/负数等于无上限，正是要消除的隐患）")
-    void sessionCapDefaultIsPositive() {
-        assertTrue(RolePickerConstants.TIMEOUT_PANEL_SESSION_MAX_MS > 0,
-                "面板会话必须有正的兜底上限，否则事件丢失时会无限阻塞调用者线程");
-        assertEquals("rolePicker.panelSessionMaxMs", RolePickerConstants.PANEL_SESSION_MAX_PROPERTY,
-                "属性名是对外契约（文档与用例据此覆盖），不得改名");
+    // @DisplayName: "N-19：会话 deadline 默认值必须为正（0/负数等于无上限，正是要消除的隐患）"
+    public void sessionCapDefaultIsPositive() {
+        assertTrue("面板会话必须有正的兜底上限，否则事件丢失时会无限阻塞调用者线程", RolePickerConstants.TIMEOUT_PANEL_SESSION_MAX_MS > 0);
+        assertEquals("属性名是对外契约（文档与用例据此覆盖），不得改名", "rolePicker.panelSessionMaxMs", RolePickerConstants.PANEL_SESSION_MAX_PROPERTY);
     }
 }

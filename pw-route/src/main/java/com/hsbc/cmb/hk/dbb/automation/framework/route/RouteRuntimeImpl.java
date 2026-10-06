@@ -198,9 +198,10 @@ public final class RouteRuntimeImpl implements RouteRuntime {
 
     // ── 访问器（供 RouteDispatcher / PatternBinder 使用；模块内部契约）──
 
+    /** 规则代只读快照（而非注册表本体）—— 见接口注释：暴露本体等于交出可变内部状态，且会被绕过 CAS/令牌。 */
     @Override
-    public GenerationRegistry generations() {
-        return generations;
+    public RuleGeneration ruleSnapshot() {
+        return generations.snapshot();
     }
 
     @Override

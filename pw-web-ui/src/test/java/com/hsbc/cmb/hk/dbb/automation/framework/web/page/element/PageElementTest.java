@@ -4,18 +4,20 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.ElementOperationE
 import com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine.BasePage;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -30,6 +32,16 @@ import org.mockito.ArgumentCaptor;
  * （动态 supplier / 页面选择器 / 组合定位 nth）。
  */
 public class PageElementTest {
+
+    /** JUnit 4 临时目录：原 JUnit5 的 {@code @TempDir} 方法参数注入在 JUnit4 无对应，改为 @Rule + 字段。 */
+    @Rule
+    public final TemporaryFolder tempFolder = new TemporaryFolder();
+    private Path tempDir;
+
+    @Before
+    public void initTempDir() {
+        tempDir = tempFolder.getRoot().toPath();
+    }
 
     private static BasePage bpWith(Page page) {
         BasePage bp = mock(BasePage.class);
@@ -86,7 +98,7 @@ public class PageElementTest {
         Locator loc = mock(Locator.class);
         PageElement el = new PageElement(() -> loc, "role=button", bp);
 
-        assertSame( loc,  el.locatorInternal(), "动态 supplier 优先，保证语言/页面切换后自动重解析");
+        assertSame("动态 supplier 优先，保证语言/页面切换后自动重解析", loc, el.locatorInternal());
         verify(bp).getPage();
     }
 
@@ -110,9 +122,8 @@ public class PageElementTest {
 
         PageElement second = el.nth(2);
 
-        assertNotSame( el,  second, "nth 应返回新元素，不原地修改");
-        assertTrue(
-                second.getSelector().contains("nth=2"), "新元素选择器须带索引便于诊断：" + second.getSelector());
+        assertNotSame("nth 应返回新元素，不原地修改", el, second);
+        assertTrue("新元素选择器须带索引便于诊断：" + second.getSelector(), second.getSelector().contains("nth=2"));
     }
 
     // ---------- 上传文件解析：resources 首选 / 用户路径兜底 / 多文件 ----------
@@ -133,10 +144,9 @@ public class PageElementTest {
         ArgumentCaptor<Path[]> captor = ArgumentCaptor.forClass(Path[].class);
         verify(loc).setInputFiles(captor.capture(), any(Locator.SetInputFilesOptions.class));
         Path[] resolved = captor.getValue();
-        assertEquals(1, resolved.length, "应解析出单个文件");
-        assertTrue(Files.exists(resolved[0]), "解析出的文件应真实存在");
-        assertTrue(resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"),
-                "应优先取自 resources(classpath)，而非用户字面路径：" + resolved[0]);
+        assertEquals("应解析出单个文件", 1, resolved.length);
+        assertTrue("解析出的文件应真实存在", Files.exists(resolved[0]));
+        assertTrue("应优先取自 resources(classpath)，而非用户字面路径：" + resolved[0], resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"));
     }
 
     @Test
@@ -152,12 +162,11 @@ public class PageElementTest {
         verify(loc).setInputFiles(captor.capture(), any(Locator.SetInputFilesOptions.class));
         Path[] resolved = captor.getValue();
         assertEquals(1, resolved.length);
-        assertTrue(resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"),
-                "反斜杠资源名应归一化并从 resources 命中：" + resolved[0]);
+        assertTrue("反斜杠资源名应归一化并从 resources 命中：" + resolved[0], resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"));
     }
 
     @Test
-    public void uploadFile_fallsBackToUserSpecifiedPath_whenResourceMissing(@TempDir Path tempDir) throws IOException {
+    public void uploadFile_fallsBackToUserSpecifiedPath_whenResourceMissing() throws IOException {
         BasePage bp = bpWith(mock(Page.class));
         Locator loc = mock(Locator.class);
         PageElement el = elWithLocator(bp, loc);
@@ -171,12 +180,11 @@ public class PageElementTest {
         verify(loc).setInputFiles(captor.capture(), any(Locator.SetInputFilesOptions.class));
         Path[] resolved = captor.getValue();
         assertEquals(1, resolved.length);
-        assertEquals(userFile.toAbsolutePath().toString(), resolved[0].toAbsolutePath().toString(),
-                "resources 未命中时应退回用户指定路径");
+        assertEquals("resources 未命中时应退回用户指定路径", userFile.toAbsolutePath().toString(), resolved[0].toAbsolutePath().toString());
     }
 
     @Test
-    public void uploadFile_normalizesSeparator_forUserSpecifiedPath(@TempDir Path tempDir) throws IOException {
+    public void uploadFile_normalizesSeparator_forUserSpecifiedPath() throws IOException {
         BasePage bp = bpWith(mock(Page.class));
         Locator loc = mock(Locator.class);
         PageElement el = elWithLocator(bp, loc);
@@ -197,8 +205,7 @@ public class PageElementTest {
         verify(loc).setInputFiles(captor.capture(), any(Locator.SetInputFilesOptions.class));
         Path[] resolved = captor.getValue();
         assertEquals(1, resolved.length);
-        assertEquals(userFile.toAbsolutePath().toString(), resolved[0].toAbsolutePath().toString(),
-                "用户指定路径应经系统分隔符归一化后命中：" + resolved[0]);
+        assertEquals("用户指定路径应经系统分隔符归一化后命中：" + resolved[0], userFile.toAbsolutePath().toString(), resolved[0].toAbsolutePath().toString());
     }
 
     @Test
@@ -209,13 +216,12 @@ public class PageElementTest {
 
         ElementOperationException ex = assertThrows(ElementOperationException.class,
                 () -> el.uploadFile("no/such/resource.txt"));
-        assertTrue(ex.getMessage().contains("上传文件不存在"),
-                "两端都找不到应抛明确异常：" + ex.getMessage());
+        assertTrue("两端都找不到应抛明确异常：" + ex.getMessage(), ex.getMessage().contains("上传文件不存在"));
         verify(loc, never()).setInputFiles(any(Path[].class), any(Locator.SetInputFilesOptions.class));
     }
 
     @Test
-    public void uploadFile_resolvesMixedResourcesAndUserPaths_forMultiFile(@TempDir Path tempDir) throws IOException {
+    public void uploadFile_resolvesMixedResourcesAndUserPaths_forMultiFile() throws IOException {
         BasePage bp = bpWith(mock(Page.class));
         Locator loc = mock(Locator.class);
         PageElement el = elWithLocator(bp, loc);
@@ -228,10 +234,8 @@ public class PageElementTest {
         ArgumentCaptor<Path[]> captor = ArgumentCaptor.forClass(Path[].class);
         verify(loc).setInputFiles(captor.capture(), any(Locator.SetInputFilesOptions.class));
         Path[] resolved = captor.getValue();
-        assertEquals(2, resolved.length, "多文件应逐个解析为 2 个路径");
-        assertTrue(resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"),
-                "第一个文件应取自 resources");
-        assertEquals(userFile.toAbsolutePath().toString(), resolved[1].toAbsolutePath().toString(),
-                "第二个文件（用户路径）应真实存在并按字面路径解析");
+        assertEquals("多文件应逐个解析为 2 个路径", 2, resolved.length);
+        assertTrue("第一个文件应取自 resources", resolved[0].toString().replace('\\', '/').endsWith("test-upload/sample.txt"));
+        assertEquals("第二个文件（用户路径）应真实存在并按字面路径解析", userFile.toAbsolutePath().toString(), resolved[1].toAbsolutePath().toString());
     }
 }

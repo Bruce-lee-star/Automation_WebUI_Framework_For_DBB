@@ -1,13 +1,13 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.listener;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 /**
  * D4-1 官方 Adapter（{@link FrameworkListenerBridge}）契约测试。
@@ -63,7 +63,7 @@ public class FrameworkListenerBridgeTest {
         }
     }
 
-    @AfterEach
+    @After
     public void tearDown() {
         ListenerRegistry.cleanup();
     }
@@ -98,8 +98,8 @@ public class FrameworkListenerBridgeTest {
 
         FrameworkListenerBridge.beforeScenario("scenario-2"); // 不得抛出
 
-        assertTrue(bad.called, "抛异常的监听器应确实被调用");
-        assertTrue(good.events.contains("beforeScenario:scenario-2"), "其余监听器仍必须收到通知");
+        assertTrue("抛异常的监听器应确实被调用", bad.called);
+        assertTrue("其余监听器仍必须收到通知", good.events.contains("beforeScenario:scenario-2"));
     }
 
     /** 非 FrameworkListener 的注册对象被安全忽略。 */
@@ -124,6 +124,6 @@ public class FrameworkListenerBridgeTest {
         FrameworkListenerBridge.beforeScenario("x"); // 未实现 → 默认空实现，不报错
         FrameworkListenerBridge.afterStep("step-B");
 
-        assertTrue(called[0], "实现的回调应被调用");
+        assertTrue("实现的回调应被调用", called[0]);
     }
 }

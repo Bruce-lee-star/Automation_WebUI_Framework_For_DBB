@@ -1,8 +1,8 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.factory;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.core.context.ScenarioContext;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Test;
 
 import java.util.Set;
 import java.util.concurrent.CompletionService;
@@ -13,10 +13,10 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotSame;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 /**
  * PageObjectFactory 作用域与发布语义守卫（2026-09-17 评审落地）。
@@ -31,14 +31,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       现以用例身份（{@code ScenarioContext.currentScenarioId()}）为键，无绑定时回退线程身份。</li>
  * </ol>
  */
-class PageObjectFactoryScopeTest {
+public class PageObjectFactoryScopeTest {
 
     /** 纯 POJO 充当被测 PageObject（无需浏览器）。 */
     public static class ScopedPage {
     }
 
-    @AfterEach
-    void tearDown() {
+    @After
+    public void tearDown() {
         ScenarioContext.endCurrent();
         PageObjectFactory.unregister(ScopedPage.class);
         PageObjectFactory.clearAll();
@@ -50,7 +50,7 @@ class PageObjectFactoryScopeTest {
 
     /** 并发首调用：全部调用方必须看到<b>同一</b>已发布实例（旧实现会各自创建并互相覆盖）。 */
     @Test
-    void concurrentFirstCallsPublishSingleInstance() throws Exception {
+    public void concurrentFirstCallsPublishSingleInstance() throws Exception {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         int threads = 8;
         CyclicBarrier barrier = new CyclicBarrier(threads);
@@ -68,8 +68,7 @@ class PageObjectFactoryScopeTest {
             for (int i = 0; i < threads; i++) {
                 seen.add(results.take().get(5, TimeUnit.SECONDS));
             }
-            assertEquals(1, seen.size(),
-                    "同一 (策略, key) 的所有调用方必须看到同一实例，实际看到 " + seen.size() + " 个");
+            assertEquals("同一 (策略, key) 的所有调用方必须看到同一实例，实际看到 " + seen.size() + " 个", 1, seen.size());
         } finally {
             pool.shutdownNow();
         }
@@ -77,25 +76,24 @@ class PageObjectFactoryScopeTest {
 
     /** 请求作用域必须随「用例」变化 —— 旧实现以线程名为键，换用例仍会复用同一实例。 */
     @Test
-    void requestScopeIsBoundToScenarioNotToThreadName() {
+    public void requestScopeIsBoundToScenarioNotToThreadName() {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         PageObjectFactory.LifecycleStrategy requestScoped = PageObjectFactory.LifecycleStrategy.REQUEST_SCOPED;
 
         ScenarioContext.begin("scope-test-scn-A");
         Object firstInA = PageObjectFactory.getPage(ScopedPage.class, config(requestScoped));
         Object secondInA = PageObjectFactory.getPage(ScopedPage.class, config(requestScoped));
-        assertSame(firstInA, secondInA, "同一用例内应复用同一实例");
+        assertSame("同一用例内应复用同一实例", firstInA, secondInA);
 
         ScenarioContext.endCurrent();
         ScenarioContext.begin("scope-test-scn-B");
         Object firstInB = PageObjectFactory.getPage(ScopedPage.class, config(requestScoped));
-        assertNotSame(firstInA, firstInB,
-                "换用例必须换实例（按线程名为键会错误复用上一个用例的实例）");
+        assertNotSame("换用例必须换实例（按线程名为键会错误复用上一个用例的实例）", firstInA, firstInB);
     }
 
     /** 用例收尾回收请求作用域：否则实例（及其持有的 Page/Context 引用）会随用例数累积。 */
     @Test
-    void endRequestScopeReleasesScenarioScopedInstances() {
+    public void endRequestScopeReleasesScenarioScopedInstances() {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         ScenarioContext.begin("scope-test-scn-C");
         PageObjectFactory.getPage(ScopedPage.class, config(PageObjectFactory.LifecycleStrategy.REQUEST_SCOPED));
@@ -104,23 +102,23 @@ class PageObjectFactoryScopeTest {
         PageObjectFactory.endRequestScope();
         int after = PageObjectFactory.getInstanceCount();
 
-        assertTrue(before > after, "收尾后请求作用域实例应被回收（before=" + before + ", after=" + after + "）");
+        assertTrue("收尾后请求作用域实例应被回收（before=" + before + ", after=" + after + "）", before > after);
     }
 
     /** 原型策略：每次都必须新建（不缓存、不参与发布竞争）。 */
     @Test
-    void prototypeAlwaysCreatesNewInstance() {
+    public void prototypeAlwaysCreatesNewInstance() {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         Object p1 = PageObjectFactory.getPage(ScopedPage.class,
                 config(PageObjectFactory.LifecycleStrategy.PROTOTYPE));
         Object p2 = PageObjectFactory.getPage(ScopedPage.class,
                 config(PageObjectFactory.LifecycleStrategy.PROTOTYPE));
-        assertNotSame(p1, p2, "原型策略每次调用都应得到新实例");
+        assertNotSame("原型策略每次调用都应得到新实例", p1, p2);
     }
 
     /** 线程隔离策略在并发下仍须隔离（回归守卫：原子化重构不得破坏隔离语义）。 */
     @Test
-    void threadIsolatedInstancesRemainIsolatedPerThread() throws Exception {
+    public void threadIsolatedInstancesRemainIsolatedPerThread() throws Exception {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         PageObjectFactory.LifecycleStrategy threadIsolated = PageObjectFactory.LifecycleStrategy.THREAD_ISOLATED;
         Object mainInstance = PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated));
@@ -129,9 +127,8 @@ class PageObjectFactoryScopeTest {
         try {
             Object other = pool.submit(() -> PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated)))
                     .get(5, TimeUnit.SECONDS);
-            assertNotSame(mainInstance, other, "不同线程应拿到各自的线程隔离实例");
-            assertSame(mainInstance, PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated)),
-                    "同一线程内应复用同一实例");
+            assertNotSame("不同线程应拿到各自的线程隔离实例", mainInstance, other);
+            assertSame("同一线程内应复用同一实例", mainInstance, PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated)));
         } finally {
             pool.shutdownNow();
         }
@@ -145,7 +142,7 @@ class PageObjectFactoryScopeTest {
      * 且打印的 threadCount 只数当前线程（语义名实不符，掩盖泄漏）。
      */
     @Test
-    void clearAllPurgesThreadIsolatedInstancesAcrossThreads() throws Exception {
+    public void clearAllPurgesThreadIsolatedInstancesAcrossThreads() throws Exception {
         PageObjectFactory.register(ScopedPage.class, ScopedPage::new);
         PageObjectFactory.LifecycleStrategy threadIsolated = PageObjectFactory.LifecycleStrategy.THREAD_ISOLATED;
         ExecutorService pool = Executors.newSingleThreadExecutor();
@@ -159,8 +156,7 @@ class PageObjectFactoryScopeTest {
             Object secondOnWorker = pool.submit(() ->
                     PageObjectFactory.getPage(ScopedPage.class, config(threadIsolated))).get(5, TimeUnit.SECONDS);
 
-            assertNotSame(firstOnWorker, secondOnWorker,
-                    "clearAll 后 worker 线程必须重建实例；仍拿到同一实例说明其它线程的线程隔离实例未被清理（CT2-08）");
+            assertNotSame("clearAll 后 worker 线程必须重建实例；仍拿到同一实例说明其它线程的线程隔离实例未被清理（CT2-08）", firstOnWorker, secondOnWorker);
         } finally {
             pool.shutdownNow();
         }

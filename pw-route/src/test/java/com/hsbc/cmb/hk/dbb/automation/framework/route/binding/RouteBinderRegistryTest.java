@@ -24,8 +24,9 @@ public class RouteBinderRegistryTest {
     public void instanceResolvesToDefaultImplementation() {
         RouteBinder binder = RouteBinderRegistry.instance();
         assertNotNull("SPI 解析应返回非 null 绑定实现", binder);
+        // Class.isInstance 替代 instanceof：语义等价，且满足 SpotBugs JUA_DONT_ASSERT_INSTANCEOF_IN_TESTS
         assertTrue("默认应为 DefaultRouteBinder（SPI 注册或 fail-safe 回退）",
-                binder instanceof DefaultRouteBinder);
+                DefaultRouteBinder.class.isInstance(binder));
     }
 
     @Test
@@ -36,6 +37,6 @@ public class RouteBinderRegistryTest {
 
         RouteBinderRegistry.reset();
         assertTrue("reset 后应经 SPI 重新解析回默认实现",
-                RouteBinderRegistry.instance() instanceof DefaultRouteBinder);
+                DefaultRouteBinder.class.isInstance(RouteBinderRegistry.instance()));
     }
 }

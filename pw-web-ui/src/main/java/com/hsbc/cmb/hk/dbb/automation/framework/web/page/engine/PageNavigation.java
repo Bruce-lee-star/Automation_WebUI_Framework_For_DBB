@@ -7,6 +7,7 @@ import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.DriverRaceErrors;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Response;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.LoadState;
 import com.microsoft.playwright.options.WaitUntilState;
@@ -65,12 +66,16 @@ public final class PageNavigation {
             default:
                 options.setWaitUntil(WaitUntilState.LOAD);
         }
+        //  导航"成功"≠页面可用：服务端返回 403（访问被拒）时驱动同样认为导航成功，不在此收口就表现为
+        //  "页面导航出现 403 就不动了"—— 实际在干等 30~60s 的元素超时，最后报一个误导性的"元素不可见"，
+        //  甚至被误判为会话失效而重登。此处读到状态码即直接抛错（见 NavigationStatusGuard，硬编码不加配置）。
         try {
             // navigate 已经根据 options 中的 waitUntil 等待页面加载
             // 不需要再额外 waitForLoadState，避免重复等待
-            bp.getPage().navigate(url, options);
+            Response response = bp.getPage().navigate(url, options);
             logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
             bp.resetFrameContextAfterNavigation();
+            NavigationStatusGuard.enforce(response, url);
         } catch (TimeoutError e) {
             // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
             throw new NavigationException(url, config.getNavigationTimeout(), e);
@@ -148,10 +153,12 @@ public final class PageNavigation {
         }
         long settleMs = System.currentTimeMillis() - startMs;
         try {
-            bp.getPage().navigate(url, options);
+            Response response = bp.getPage().navigate(url, options);
             bp.resetFrameContextAfterNavigation();
             logger.info("[Navigation] navigation self-healed [{}] in {}ms (settle {}ms): {}",
                     race, System.currentTimeMillis() - startMs, settleMs, url);
+            //  自愈成功同样要校验落点状态：驱动竞态掩盖下的 403 不能因为"重试成功"就放行
+            NavigationStatusGuard.enforce(response, url);
             return null;
         } catch (PlaywrightException retryError) {
             logger.warn("[Navigation] navigation self-heal failed [{}] after {}ms: {}",
@@ -169,18 +176,21 @@ public final class PageNavigation {
     }
 
     public static void refresh(BasePage bp) {
-        bp.getPage().reload();
+        Response response = bp.getPage().reload();
         bp.resetFrameContextAfterNavigation();
+        NavigationStatusGuard.enforce(response, bp.getPage().url());
     }
 
     public static void back(BasePage bp) {
-        bp.getPage().goBack();
+        Response response = bp.getPage().goBack();
         bp.resetFrameContextAfterNavigation();
+        NavigationStatusGuard.enforce(response, bp.getPage().url());
     }
 
     public static void forward(BasePage bp) {
-        bp.getPage().goForward();
+        Response response = bp.getPage().goForward();
         bp.resetFrameContextAfterNavigation();
+        NavigationStatusGuard.enforce(response, bp.getPage().url());
     }
 
     public static void setContent(BasePage bp, String html) {

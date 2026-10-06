@@ -1,6 +1,7 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.engine;
 
 import com.hsbc.cmb.hk.dbb.automation.framework.web.config.FrameworkConfigManager;
+import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.AccessDeniedException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.exceptions.NavigationException;
 import com.hsbc.cmb.hk.dbb.automation.framework.web.lifecycle.config.PlaywrightConfigManager;
 import com.microsoft.playwright.Page;
@@ -11,6 +12,9 @@ import com.microsoft.playwright.options.LoadState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -235,5 +239,75 @@ public class PageNavigationTest {
             FrameworkConfigManager.clearCache();
             FrameworkConfigManager.enableCache();
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 导航落点状态校验：服务端 403（访问被拒）时导航"成功"也必须直接抛错，
+    // 否则真因会被后续"元素不可见超时"掩盖（现象就是"页面导航出现 403 就不动了"）。
+    // 判定硬编码、不加配置，见 NavigationStatusGuard / NavigationStatusGuardTest。
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /** 可导航的 BasePage 桩 + 指定状态码的导航响应（403/5xx 场景共用）。 */
+    private static BasePage navigableWithStatus(String finalUrl, int status) {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        Response response = mock(Response.class);
+        when(response.status()).thenReturn(status);
+        when(response.url()).thenReturn(finalUrl);
+        when(response.headers()).thenReturn(Map.of());
+        when(page.navigate(anyString(), any())).thenReturn(response);
+        return bp;
+    }
+
+    @Test
+    @DisplayName("导航落点 403：抛 AccessDeniedException（含状态码/URL），不再静默继续")
+    public void navigateTo_blocked403_throwsAccessDeniedException() {
+        BasePage bp = navigableWithStatus("https://sit.example.com/error/403", 403);
+
+        AccessDeniedException ex = assertThrows(AccessDeniedException.class,
+                () -> PageNavigation.navigateTo(bp, NAV_URL));
+
+        assertEquals(403, ex.getStatus());
+        assertEquals(NAV_URL, ex.getRequestedUrl());
+        assertTrue(ex.getMessage().contains("403"), "失败信息须含状态码");
+        assertTrue(ex.getMessage().contains(NAV_URL), "失败信息须含请求 URL");
+    }
+
+    @Test
+    @DisplayName("导航落点 401：同属访问被拒，也直接抛错")
+    public void navigateTo_blocked401_throwsAccessDeniedException() {
+        BasePage bp = navigableWithStatus("https://sit.example.com/error/401", 401);
+
+        assertEquals(401, assertThrows(AccessDeniedException.class,
+                () -> PageNavigation.navigateTo(bp, NAV_URL)).getStatus());
+    }
+
+    @Test
+    @DisplayName("导航落点 5xx：不属访问被拒一族（本轮只拦 401/403/407），放行不误伤")
+    public void navigateTo_gatewayError_isTolerated() {
+        BasePage bp = navigableWithStatus("https://sit.example.com/error/503", 503);
+        assertDoesNotThrow(() -> PageNavigation.navigateTo(bp, NAV_URL));
+    }
+
+    @Test
+    @DisplayName("导航落点 404：默认放行（企业级默认只拦 AUTH + SERVER）")
+    public void navigateTo_404ByDefault_isTolerated() {
+        BasePage bp = navigableWithStatus("https://sit.example.com/missing", 404);
+        assertDoesNotThrow(() -> PageNavigation.navigateTo(bp, NAV_URL));
+        verify(bp).resetFrameContextAfterNavigation();
+    }
+
+    @Test
+    @DisplayName("刷新落点 403：同样直接抛错（refresh 不是法外之地）")
+    public void refresh_blocked403_throwsAccessDeniedException() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        Response response = mock(Response.class);
+        when(response.status()).thenReturn(403);
+        when(response.url()).thenReturn("https://sit.example.com/error/403");
+        when(response.headers()).thenReturn(Map.of());
+        when(page.reload()).thenReturn(response);
+
+        assertThrows(AccessDeniedException.class, () -> PageNavigation.refresh(bp));
     }
 }

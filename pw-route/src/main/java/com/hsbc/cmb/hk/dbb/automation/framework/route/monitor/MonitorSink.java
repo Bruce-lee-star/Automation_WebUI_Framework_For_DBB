@@ -224,25 +224,36 @@ public final class MonitorSink {
             return; // 无配对请求快照（已被 drain 定案 / auto-stop 未记录）→ 忽略
         }
         exchange.markResponse(response.status(), response.headers());
+        // 结果证据要能展示响应体：即便本规则没有 body 断言，也在句柄存活时读一份前缀
+        // （流式端点跳过 —— 见 takeBodySnapshot 的说明）。开关见 READ_BODY_FOR_EVIDENCE。
+
         //  T2+ 目的驱动撤销（"规则随目的生灭"）：响应已到达 ⇒ "断言这次调用"这一目的已达成，
         //  通知 runtime 撤销该规则（armed 窗口从"整个用例"收敛为"首个响应"；断言成败不影响是否撤销）。
         //  安全性：body 快照在紧接的下方**同步**读取、断言在 IO 线程完成，均不依赖"规则仍 armed"，
         //  故撤销不会丢证据（由 MonitorSinkPurposeRetirementTest 的失败用例钉住该语义）。
         firePurposeMet(spec);
-        if (!spec.hasBodyAssertions()) {
-            // 无 body 断言：响应到达即定案。失败走 settleFailure（失败队列 + 结果上报）；
-            // 成功也上报结果 —— 报告要能回答"成功没"，只在失败时可见是答不出来的。
-            if (Boolean.FALSE.equals(exchange.assertionPassed())) {
-                settleFailure(exchange);
-            } else {
-                reportOutcome(exchange);
-            }
-            return;
-        }
         //  (ii) 快照-断言两阶段：body 是**协议调用**，必须在本线程（刚拿到句柄的同一时刻）读完；
         //  一旦推迟（旧实现交给 IO 线程排队执行），句柄可能已被驱动回收 → Object doesn't exist
         //  （实测：IO 池忙于 mock fetch 时，body 读晚数秒必失败）。IO 线程此后只做 CPU 解析/断言。
         BodySnapshot snapshot = takeBodySnapshot(response);
+        if (snapshot.preview() != null) {
+            exchange.markResponseBody(snapshot.preview()); // 结果证据展示用（内部再脱敏 + 截断）
+        }
+        if (snapshot.bodySkipped() && spec.hasBodyAssertions()) {
+            // 流式端点：体不读 ⇒ body 断言无法判定（inconclusive，绝不判失败），status 断言照常结算
+            exchange.markBodyAssertionInconclusive("streaming response body not read (text/event-stream)");
+            inconclusiveBodyReads.incrementAndGet();
+            LOGGER.warn("[Route] monitor body assertion skipped for streaming response pattern='{}' url='{}'",
+                    spec.pattern(), exchange.url());
+            finishWithoutBodyAssertion(exchange);
+            return;
+        }
+        if (!spec.hasBodyAssertions()) {
+            // 无 body 断言：响应到达即定案。失败走 settleFailure（失败队列 + 结果上报）；
+            // 成功也上报结果 —— 报告要能回答"成功没"，只在失败时可见是答不出来的。
+            finishWithoutBodyAssertion(exchange);
+            return;
+        }
         if (snapshot.inconclusiveReason() != null) {
             //  4) 误报防线：句柄已回收属框架/驱动竞态（非应用缺陷）→ 记 inconclusive（WARN + 计数），
             //  绝不结算为断言失败（与 [timeout] 误报同源治理：框架自身缺陷不得把绿场景判红）。
@@ -263,14 +274,35 @@ public final class MonitorSink {
      * <p>{@code headers()} 是客户端本地快照、{@code body()} 是协议调用——两者都在拿到句柄的同一时刻
      * 取走，之后断言只依赖本对象，<b>不再触碰驱动句柄</b>。</p>
      *
-     * @param bytes              响应体字节（快照失败时为 null）
+     * @param bytes              响应体字节（快照失败 / 跳过时为 null）
      * @param headerNames        响应 header <b>名</b>清单（小写去重；只暴露名字不暴露值，防泄露）
      * @param contentType        content-type 原值（可能为 null）
      * @param inconclusiveReason 非 null 表示快照失败（句柄不可用），原因文本
+     * @param preview            响应体前缀（已按 {@value #PREVIEW_MAX_CHARS} 字符截断；供证据展示）
+     * @param bodySkipped        是否<b>刻意跳过</b>读体（流式端点：读体会永久阻塞观测线程）
      */
     private record BodySnapshot(byte[] bytes, List<String> headerNames, String contentType,
-                                String inconclusiveReason) {
+                                String inconclusiveReason, String preview, boolean bodySkipped) {
     }
+
+    /**
+     * 是否为"体不会结束"的流式响应（SSE 等）：这类端点调 {@code response.body()} 会一直挂到流关闭，
+     * 等于把观测线程钉死，故<b>刻意不读体</b>（只按 status 定案，并在证据里注明原因）。
+     */
+    private static boolean isStreamingContentType(String contentType) {
+        return contentType != null
+                && contentType.toLowerCase(Locale.ROOT).contains("text/event-stream");
+    }
+
+    /**
+     * 证据是否读取响应体（默认 true）：报告要展示 API 的响应体，故即便规则没有 body 断言也读一份前缀。
+     * 关闭方式：{@code -Droute.evidence.readResponseBody=false}（大量请求 + 大体积响应时可显著省开销）。
+     */
+    private static final boolean READ_BODY_FOR_EVIDENCE =
+            !"false".equalsIgnoreCase(System.getProperty("route.evidence.readResponseBody", "true"));
+
+    /** 证据展示的响应体前缀上限（字符；脱敏与最终截断仍由 {@code CapturedExchange} 完成）。 */
+    private static final int PREVIEW_MAX_CHARS = 8192;
 
     /** 即时快照响应体与头；任何读取失败都归入 inconclusive（绝不向上抛）。 */
     private static BodySnapshot takeBodySnapshot(Response response) {
@@ -282,12 +314,37 @@ public final class MonitorSink {
         } catch (Throwable t) {
             names = List.of("<header-read-failed>");
         }
+        if (isStreamingContentType(contentType)) {
+            return new BodySnapshot(null, names, contentType, null, null, true);
+        }
+        if (!READ_BODY_FOR_EVIDENCE) {
+            return new BodySnapshot(null, names, contentType, null, null, false);
+        }
         try {
             byte[] bytes = response.body();
-            return new BodySnapshot(bytes, names, contentType, null);
+            return new BodySnapshot(bytes, names, contentType, null, preview(bytes, contentType), false);
         } catch (Throwable t) {
             String msg = t.getMessage() == null ? t.toString() : t.getMessage();
-            return new BodySnapshot(null, names, contentType, "body-unavailable: " + msg);
+            return new BodySnapshot(null, names, contentType, "body-unavailable: " + msg, null, false);
+        }
+    }
+
+    /** 体前缀（按字节多读一点再按字符截断，避免多字节字符被切在半路后长度失真）。 */
+    private static String preview(byte[] bytes, String contentType) {
+        if (bytes == null || bytes.length == 0) {
+            return null;
+        }
+        int limit = Math.min(bytes.length, PREVIEW_MAX_CHARS * 2);
+        String text = new String(bytes, 0, limit, MediaType.parse(contentType).charset());
+        return text.length() > PREVIEW_MAX_CHARS ? text.substring(0, PREVIEW_MAX_CHARS) : text;
+    }
+
+    /** 无 body 断言（或体被跳过）时的定案：status 不符即结算失败，否则上报结果。 */
+    private void finishWithoutBodyAssertion(CapturedExchange exchange) {
+        if (Boolean.FALSE.equals(exchange.assertionPassed())) {
+            settleFailure(exchange);
+        } else {
+            reportOutcome(exchange);
         }
     }
 
@@ -301,7 +358,6 @@ public final class MonitorSink {
                 String contentType = snapshot.contentType();
                 Charset charset = MediaType.parse(contentType).charset();
                 String body = new String(snapshot.bytes(), charset);
-                exchange.markResponseBody(body); // 结果证据要展示响应体（内部脱敏 + 截断）
                 List<String> failures = new ArrayList<>(PayloadAssertor.assertAll(spec, body, contentType));
                 if (contentType == null && !failures.isEmpty()) {
                     // content-type 缺失时补「响应形态」诊断：一次运行即可区分

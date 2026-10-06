@@ -215,10 +215,11 @@ public final class CapturedExchange {
         }
         if (responseStatus == null && !responseTimedOut()) {
             tail.append(" (response not settled yet)");
-        } else if (responseBodyPreview == null) {
-            // 刻意不读体（对流式端点读体会挂住观测线程）——如实标注，而不是留空让人误以为"没有响应"
-            tail.append('\n').append("respBody  : (not read — rule has no body assertion and capture is off;")
-                    .append(" bodies of streaming endpoints are deliberately not read to keep the observer unblocked)");
+        } else if (responseBodyPreview == null && bodyAssertionInconclusive == null) {
+            // 刻意不读体（流式端点读体会挂住观测线程，或被开关关掉）——如实标注，而不是留空让人误以为"没有响应"
+            tail.append('\n').append("respBody  : (not read — event-stream bodies are deliberately not read to keep")
+                    .append(" the observer unblocked, or reading is disabled via")
+                    .append(" -Droute.evidence.readResponseBody=false)");
         }
         for (String failure : bodyAssertionFailures) {
             tail.append('\n').append("failure   : ")

@@ -9,8 +9,10 @@ import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Response;
 import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.LoadState;
+import com.microsoft.playwright.options.WaitUntilState;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.Map;
 
@@ -21,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -171,8 +175,13 @@ public class PageNavigationTest {
         PageNavigation.navigateTo(bp, NAV_URL);
 
         verify(page, times(2)).navigate(eq(NAV_URL), any(Page.NavigateOptions.class));
-        //  重试前必须先等当前文档收敛：否则重试同样会撞上在途导航/事件分发
-        verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED), any(Page.WaitForLoadStateOptions.class));
+        //  两次 waitForLoadState 按超时区分（同一 LoadState、不同用途）：
+        //    · 5s（NAVIGATION_SETTLE_TIMEOUT_MS）＝ 重试前的文档收敛等待，否则重试会再撞上在途导航/事件分发；
+        //    · 30s（配置的 navigationTimeout）＝ 两步导航的第二步：等业务配置的加载状态。
+        verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED),
+                argThat((Page.WaitForLoadStateOptions o) -> o != null && Double.valueOf(5_000).equals(o.timeout)));
+        verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED),
+                argThat((Page.WaitForLoadStateOptions o) -> o != null && Double.valueOf(30_000).equals(o.timeout)));
         verify(bp).resetFrameContextAfterNavigation();
     }
 
@@ -309,5 +318,63 @@ public class PageNavigationTest {
         when(page.reload()).thenReturn(response);
 
         assertThrows(AccessDeniedException.class, () -> PageNavigation.refresh(bp));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 两步导航（2026-10-06）：第一步固定 COMMIT 只为"尽快拿到响应状态码"，第二步再等配置的加载状态。
+    // 契约：403 必须在第一步就抛 —— 绝不因为"加载状态没达到"而退化成"导航超时"。
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    @DisplayName("403：用 COMMIT 拿到响应即抛错，且【不等】配置的加载状态（networkidle 也没等）")
+    public void navigateTo_403_throwsBeforeWaitingForLoadState() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("networkidle"); // 故意配成最"黏"的状态
+        Response response = mock(Response.class);
+        when(response.status()).thenReturn(403);
+        when(response.url()).thenReturn("https://sit.example.com/error/403");
+        when(response.headers()).thenReturn(Map.of());
+        when(page.navigate(anyString(), any())).thenReturn(response);
+
+        ArgumentCaptor<Page.NavigateOptions> options = ArgumentCaptor.forClass(Page.NavigateOptions.class);
+        assertThrows(AccessDeniedException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
+        verify(page).navigate(eq(NAV_URL), options.capture());
+
+        assertEquals(WaitUntilState.COMMIT, options.getValue().waitUntil,
+                "第一步必须用 COMMIT：否则 403 页面等不到 load/networkidle 时会退化成'导航超时'");
+        verify(page, never()).waitForLoadState(eq(LoadState.NETWORKIDLE), any(Page.WaitForLoadStateOptions.class));
+        verify(bp, never()).resetFrameContextAfterNavigation();
+    }
+
+    @Test
+    @DisplayName("正常路径：COMMIT 拿响应后，再显式等配置的加载状态")
+    public void navigateTo_success_waitsForConfiguredState() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("domcontentloaded");
+        when(page.navigate(anyString(), any())).thenReturn(null); // about:blank 语义：无主文档响应
+
+        PageNavigation.navigateTo(bp, NAV_URL);
+
+        verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED), any(Page.WaitForLoadStateOptions.class));
+        verify(bp).resetFrameContextAfterNavigation();
+    }
+
+    @Test
+    @DisplayName("加载状态等待超时：仍按原有语义映射为 NavigationException")
+    public void navigateTo_loadStateTimeout_mapsToNavigationException() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("domcontentloaded");
+        when(page.navigate(anyString(), any())).thenReturn(null);
+        // waitForLoadState 返回 void，故用 doThrow 而非 when(...).thenThrow(...)
+        doThrow(new TimeoutError("load state timeout"))
+                .when(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED), any(Page.WaitForLoadStateOptions.class));
+
+        assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
     }
 }

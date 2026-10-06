@@ -52,30 +52,22 @@ public final class PageNavigation {
             timeout = DEFAULT_NAVIGATION_TIMEOUT_MS;
         }
         options.setTimeout(timeout);
-        // 根据配置设置等待策略
-        switch (pageLoadState.toLowerCase()) {
-            case "networkidle":
-                options.setWaitUntil(WaitUntilState.NETWORKIDLE);
-                break;
-            case "domcontentloaded":
-                options.setWaitUntil(WaitUntilState.DOMCONTENTLOADED);
-                break;
-            case "commit":
-                options.setWaitUntil(WaitUntilState.COMMIT);
-                break;
-            default:
-                options.setWaitUntil(WaitUntilState.LOAD);
-        }
-        //  导航"成功"≠页面可用：服务端返回 403（访问被拒）时驱动同样认为导航成功，不在此收口就表现为
-        //  "页面导航出现 403 就不动了"—— 实际在干等 30~60s 的元素超时，最后报一个误导性的"元素不可见"，
-        //  甚至被误判为会话失效而重登。此处读到状态码即直接抛错（见 NavigationStatusGuard，硬编码不加配置）。
+        //  两步导航（零配置加固）：把"取响应状态码"和"等加载状态"拆开。
+        //   ① 第一步固定 COMMIT：只要收到响应头就返回 ⇒ 【状态码当场可知】，403（访问被拒）在这一刻
+        //      就抛错，不再依赖"配置的加载状态能否达到"。原先把 waitUntil 直接配成 LOAD/NETWORKIDLE 时，
+        //      403 页面可能等不到 load 事件（长连接/第三方资源）⇒ navigate 抛 TimeoutError ⇒
+        //      真因从"403"退化成"导航超时"，又变成误导性失败。
+        //   ② 第二步显式等业务配置的加载状态，语义与原来 navigate(waitUntil=配置值) 等价。
+        //  导航"成功"≠页面可用：不在此收口就表现为"页面导航出现 403 就不动了"（干等元素超时）。
+        options.setWaitUntil(WaitUntilState.COMMIT);
+        LoadState configuredState = configuredLoadState(pageLoadState);
         try {
-            // navigate 已经根据 options 中的 waitUntil 等待页面加载
-            // 不需要再额外 waitForLoadState，避免重复等待
             Response response = bp.getPage().navigate(url, options);
+            //  先判拦截状态：403 在这里就抛，绝不等加载状态、更不等元素
+            NavigationStatusGuard.enforce(response, url);
+            waitForConfiguredState(bp, configuredState, timeout);
             logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
             bp.resetFrameContextAfterNavigation();
-            NavigationStatusGuard.enforce(response, url);
         } catch (TimeoutError e) {
             // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
             throw new NavigationException(url, config.getNavigationTimeout(), e);
@@ -100,7 +92,7 @@ public final class PageNavigation {
             if (race == DriverRaceErrors.Kind.NONE) {
                 throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
             }
-            PlaywrightException retryError = selfHealOnceAfterSettle(bp, url, options, race, e);
+            PlaywrightException retryError = selfHealOnceAfterSettle(bp, url, options, configuredState, timeout, race, e);
             if (retryError == null) {
                 return; // 自愈成功
             }
@@ -140,6 +132,7 @@ public final class PageNavigation {
      * @return {@code null} 表示自愈成功；否则返回重试失败原因（调用方据此抛出更准确的异常）
      */
     private static PlaywrightException selfHealOnceAfterSettle(BasePage bp, String url, Page.NavigateOptions options,
+                                                               LoadState configuredState, long timeout,
                                                                DriverRaceErrors.Kind race, PlaywrightException original) {
         logger.warn("[Navigation] driver race detected [{}]: {} — settling (≤{}ms) then retrying once: {}",
                 race, original.getMessage(), NAVIGATION_SETTLE_TIMEOUT_MS, url);
@@ -154,17 +147,46 @@ public final class PageNavigation {
         long settleMs = System.currentTimeMillis() - startMs;
         try {
             Response response = bp.getPage().navigate(url, options);
+            //  自愈成功同样要校验落点状态：驱动竞态掩盖下的 403 不能因为"重试成功"就放行
+            NavigationStatusGuard.enforce(response, url);
+            waitForConfiguredState(bp, configuredState, timeout);
             bp.resetFrameContextAfterNavigation();
             logger.info("[Navigation] navigation self-healed [{}] in {}ms (settle {}ms): {}",
                     race, System.currentTimeMillis() - startMs, settleMs, url);
-            //  自愈成功同样要校验落点状态：驱动竞态掩盖下的 403 不能因为"重试成功"就放行
-            NavigationStatusGuard.enforce(response, url);
             return null;
         } catch (PlaywrightException retryError) {
             logger.warn("[Navigation] navigation self-heal failed [{}] after {}ms: {}",
                     race, System.currentTimeMillis() - startMs, retryError.getMessage());
             return retryError;
         }
+    }
+
+    /**
+     * 配置的加载状态 → {@link LoadState}，与 {@code WaitUntilState} 取值一一对应。
+     * {@code commit} 返回 {@code null}：响应到达即算完成，第二步无需再等。
+     */
+    private static LoadState configuredLoadState(String pageLoadState) {
+        switch (pageLoadState.toLowerCase()) {
+            case "networkidle":
+                return LoadState.NETWORKIDLE;
+            case "domcontentloaded":
+                return LoadState.DOMCONTENTLOADED;
+            case "commit":
+                return null;
+            default:
+                return LoadState.LOAD;
+        }
+    }
+
+    /**
+     * 两步导航的第二步：等业务配置的加载状态；{@code null}（配置为 commit）直接返回。
+     * 超时抛 {@link TimeoutError}，由调用方按既有语义映射为 {@link NavigationException}。
+     */
+    private static void waitForConfiguredState(BasePage bp, LoadState state, long timeout) {
+        if (state == null) {
+            return;
+        }
+        bp.getPage().waitForLoadState(state, new Page.WaitForLoadStateOptions().setTimeout(timeout));
     }
 
     public static String getCurrentUrl(BasePage bp) {

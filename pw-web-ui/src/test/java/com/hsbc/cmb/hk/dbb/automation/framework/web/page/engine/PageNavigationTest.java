@@ -108,21 +108,21 @@ public class PageNavigationTest {
 
     @Test
     public void refresh_reloadsAndResetsFrameContext() {
-        BasePage bp = bp();
+        BasePage bp = navigable();
         Page page = bp.getPage();
         PageNavigation.refresh(bp);
-        verify(page).reload();
+        verify(page).reload(any(Page.ReloadOptions.class));
         verify(bp).resetFrameContextAfterNavigation();
     }
 
     @Test
     public void backAndForward_navigateAndResetFrameContext() {
-        BasePage bp = bp();
+        BasePage bp = navigable();
         Page page = bp.getPage();
         PageNavigation.back(bp);
-        verify(page).goBack();
+        verify(page).goBack(any(Page.GoBackOptions.class));
         PageNavigation.forward(bp);
-        verify(page).goForward();
+        verify(page).goForward(any(Page.GoForwardOptions.class));
         verify(bp, times(2)).resetFrameContextAfterNavigation();
     }
 
@@ -180,8 +180,11 @@ public class PageNavigationTest {
         //    · 30s（配置的 navigationTimeout）＝ 两步导航的第二步：等业务配置的加载状态。
         verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED),
                 argThat((Page.WaitForLoadStateOptions o) -> o != null && Double.valueOf(5_000).equals(o.timeout)));
+        //  第二步等的是【剩余预算】：严格大于上面的 5s 收敛上界、且不超过配置的 navigationTimeout
+        //  （两步共享一个预算 ⇒ 最坏耗时仍是 1×）
         verify(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED),
-                argThat((Page.WaitForLoadStateOptions o) -> o != null && Double.valueOf(30_000).equals(o.timeout)));
+                argThat((Page.WaitForLoadStateOptions o) -> o != null && o.timeout != null
+                        && o.timeout > 5_000 && o.timeout <= 30_000));
         verify(bp).resetFrameContextAfterNavigation();
     }
 
@@ -315,7 +318,7 @@ public class PageNavigationTest {
         when(response.status()).thenReturn(403);
         when(response.url()).thenReturn("https://sit.example.com/error/403");
         when(response.headers()).thenReturn(Map.of());
-        when(page.reload()).thenReturn(response);
+        when(page.reload(any(Page.ReloadOptions.class))).thenReturn(response);
 
         assertThrows(AccessDeniedException.class, () -> PageNavigation.refresh(bp));
     }
@@ -376,5 +379,39 @@ public class PageNavigationTest {
                 .when(page).waitForLoadState(eq(LoadState.DOMCONTENTLOADED), any(Page.WaitForLoadStateOptions.class));
 
         assertThrows(NavigationException.class, () -> PageNavigation.navigateTo(bp, NAV_URL));
+    }
+
+    @Test
+    @DisplayName("refresh 也走两步：COMMIT 拿响应后等配置的加载状态（不再走 Playwright 默认的 load）")
+    public void refresh_usesCommitThenConfiguredState() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("networkidle");
+        when(page.url()).thenReturn(NAV_URL);
+
+        ArgumentCaptor<Page.ReloadOptions> options = ArgumentCaptor.forClass(Page.ReloadOptions.class);
+        PageNavigation.refresh(bp);
+
+        verify(page).reload(options.capture());
+        assertEquals(WaitUntilState.COMMIT, options.getValue().waitUntil, "refresh 也必须先用 COMMIT 拿状态码");
+        verify(page).waitForLoadState(eq(LoadState.NETWORKIDLE), any(Page.WaitForLoadStateOptions.class));
+    }
+
+    @Test
+    @DisplayName("预算在提交阶段耗尽：抛 NavigationException，绝不把 timeout=0 传下去（0=永不超时，会挂死用例）")
+    public void navigation_budgetExhausted_throwsInsteadOfWaitingForever() {
+        BasePage bp = navigable();
+        Page page = bp.getPage();
+        PlaywrightConfigManager config = bp.getConfig();
+        when(config.getPageLoadState()).thenReturn("domcontentloaded");
+        when(config.getNavigationTimeout()).thenReturn(1); // 提交即耗尽预算
+        when(page.navigate(anyString(), any())).thenReturn(null);
+
+        NavigationException ex = assertThrows(NavigationException.class,
+                () -> PageNavigation.navigateTo(bp, NAV_URL));
+
+        assertTrue(ex.getMessage().contains("budget"), "失败信息须说明预算耗尽，便于定位");
+        verify(page, never()).waitForLoadState(any(LoadState.class), any(Page.WaitForLoadStateOptions.class));
     }
 }

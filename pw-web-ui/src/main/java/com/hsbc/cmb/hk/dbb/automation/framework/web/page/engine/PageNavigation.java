@@ -47,10 +47,7 @@ public final class PageNavigation {
         PlaywrightConfigManager config = bp.getConfig();
         String pageLoadState = config.getPageLoadState();
         Page.NavigateOptions options = new Page.NavigateOptions();
-        long timeout = config.getNavigationTimeout();
-        if (timeout <= 0) {
-            timeout = DEFAULT_NAVIGATION_TIMEOUT_MS;
-        }
+        long timeout = resolvedTimeout(config);
         options.setTimeout(timeout);
         //  两步导航（零配置加固）：把"取响应状态码"和"等加载状态"拆开。
         //   ① 第一步固定 COMMIT：只要收到响应头就返回 ⇒ 【状态码当场可知】，403（访问被拒）在这一刻
@@ -59,13 +56,15 @@ public final class PageNavigation {
         //      真因从"403"退化成"导航超时"，又变成误导性失败。
         //   ② 第二步显式等业务配置的加载状态，语义与原来 navigate(waitUntil=配置值) 等价。
         //  导航"成功"≠页面可用：不在此收口就表现为"页面导航出现 403 就不动了"（干等元素超时）。
+        //  两步共享同一个 navigationTimeout 预算（deadline 记账），故最坏耗时仍是 1×，不会翻倍。
         options.setWaitUntil(WaitUntilState.COMMIT);
         LoadState configuredState = configuredLoadState(pageLoadState);
+        long deadlineNanos = System.nanoTime() + timeout * 1_000_000L;
         try {
             Response response = bp.getPage().navigate(url, options);
             //  先判拦截状态：403 在这里就抛，绝不等加载状态、更不等元素
             NavigationStatusGuard.enforce(response, url);
-            waitForConfiguredState(bp, configuredState, timeout);
+            waitForConfiguredState(bp, configuredState, remainingMs(deadlineNanos), url);
             logger.debug("Navigation completed (waitUntil={}): {}", pageLoadState, url);
             bp.resetFrameContextAfterNavigation();
         } catch (TimeoutError e) {
@@ -92,7 +91,7 @@ public final class PageNavigation {
             if (race == DriverRaceErrors.Kind.NONE) {
                 throw new NavigationException(url, "Navigation failed: " + e.getMessage(), e);
             }
-            PlaywrightException retryError = selfHealOnceAfterSettle(bp, url, options, configuredState, timeout, race, e);
+            PlaywrightException retryError = selfHealOnceAfterSettle(bp, url, options, configuredState, deadlineNanos, race, e);
             if (retryError == null) {
                 return; // 自愈成功
             }
@@ -132,7 +131,7 @@ public final class PageNavigation {
      * @return {@code null} 表示自愈成功；否则返回重试失败原因（调用方据此抛出更准确的异常）
      */
     private static PlaywrightException selfHealOnceAfterSettle(BasePage bp, String url, Page.NavigateOptions options,
-                                                               LoadState configuredState, long timeout,
+                                                               LoadState configuredState, long deadlineNanos,
                                                                DriverRaceErrors.Kind race, PlaywrightException original) {
         logger.warn("[Navigation] driver race detected [{}]: {} — settling (≤{}ms) then retrying once: {}",
                 race, original.getMessage(), NAVIGATION_SETTLE_TIMEOUT_MS, url);
@@ -149,7 +148,9 @@ public final class PageNavigation {
             Response response = bp.getPage().navigate(url, options);
             //  自愈成功同样要校验落点状态：驱动竞态掩盖下的 403 不能因为"重试成功"就放行
             NavigationStatusGuard.enforce(response, url);
-            waitForConfiguredState(bp, configuredState, timeout);
+            //  重试的加载状态等待同样只花剩余预算（navigate 仍沿用原 options 的完整超时：重试是异常路径，
+            //  与改动前"复用同一 options"的行为一致）
+            waitForConfiguredState(bp, configuredState, remainingMs(deadlineNanos), url);
             bp.resetFrameContextAfterNavigation();
             logger.info("[Navigation] navigation self-healed [{}] in {}ms (settle {}ms): {}",
                     race, System.currentTimeMillis() - startMs, settleMs, url);
@@ -166,6 +167,9 @@ public final class PageNavigation {
      * {@code commit} 返回 {@code null}：响应到达即算完成，第二步无需再等。
      */
     private static LoadState configuredLoadState(String pageLoadState) {
+        if (pageLoadState == null || pageLoadState.isBlank()) {
+            return LoadState.LOAD; // 配置缺失/为空：与"未知取值"同样回落 LOAD（原 switch 的 default 语义）
+        }
         switch (pageLoadState.toLowerCase()) {
             case "networkidle":
                 return LoadState.NETWORKIDLE;
@@ -179,14 +183,35 @@ public final class PageNavigation {
     }
 
     /**
-     * 两步导航的第二步：等业务配置的加载状态；{@code null}（配置为 commit）直接返回。
-     * 超时抛 {@link TimeoutError}，由调用方按既有语义映射为 {@link NavigationException}。
+     * 两步导航的第二步：等业务配置的加载状态，只花<b>剩余预算</b>；{@code null}（配置为 commit）直接返回。
+     *
+     * <p>超时抛 {@link TimeoutError}，由调用方按既有语义映射为 {@link NavigationException}。</p>
+     *
+     * @param budgetMs 剩余预算（毫秒）；{@code <= 0} 表示预算已在"提交"阶段耗尽 —— 此时按原
+     *                 {@code navigate(waitUntil=配置值, timeout)} 的失败语义抛
+     *                 {@link NavigationException}。<b>绝不把 0 传下去</b>：Playwright 里
+     *                 {@code timeout=0} 是"永不超时"，会把用例挂死。
      */
-    private static void waitForConfiguredState(BasePage bp, LoadState state, long timeout) {
+    private static void waitForConfiguredState(BasePage bp, LoadState state, long budgetMs, String url) {
         if (state == null) {
             return;
         }
-        bp.getPage().waitForLoadState(state, new Page.WaitForLoadStateOptions().setTimeout(timeout));
+        if (budgetMs <= 0) {
+            throw new NavigationException(url,
+                    "load state not reached: navigation budget exhausted while committing the request");
+        }
+        bp.getPage().waitForLoadState(state, new Page.WaitForLoadStateOptions().setTimeout(budgetMs));
+    }
+
+    /** 导航超时解析：配置 0/负在 Playwright 语义里是"永不超时"，回落正数兜底避免死等。 */
+    private static long resolvedTimeout(PlaywrightConfigManager config) {
+        long timeout = config.getNavigationTimeout();
+        return timeout <= 0 ? DEFAULT_NAVIGATION_TIMEOUT_MS : timeout;
+    }
+
+    /** 剩余预算（毫秒，下限 0）：让"提交 + 加载状态"两步共享同一个 navigationTimeout，最坏耗时仍是 1×。 */
+    private static long remainingMs(long deadlineNanos) {
+        return Math.max((deadlineNanos - System.nanoTime()) / 1_000_000L, 0);
     }
 
     public static String getCurrentUrl(BasePage bp) {
@@ -197,22 +222,72 @@ public final class PageNavigation {
         return bp.getPage().title();
     }
 
+    /**
+     * 刷新：与 {@link #navigateTo} 同款两步走（COMMIT 拿响应 → 判 403 → 等配置的加载状态）。
+     *
+     * <p><b>为什么要统一</b>：原先直调 {@code reload()} 且不传 options，于是走 Playwright 默认
+     * {@code waitUntil=load} —— 既不读 {@code playwright.page.load.state}，又会在"load 事件不触发的门户"
+     * 上稳定超时（本项目配置注释已明确该现象）。</p>
+     */
     public static void refresh(BasePage bp) {
-        Response response = bp.getPage().reload();
-        bp.resetFrameContextAfterNavigation();
-        NavigationStatusGuard.enforce(response, bp.getPage().url());
+        historyNavigation(bp, "refresh", timeout -> {
+            Page.ReloadOptions options = new Page.ReloadOptions();
+            options.setTimeout(timeout);
+            options.setWaitUntil(WaitUntilState.COMMIT);
+            return bp.getPage().reload(options);
+        });
     }
 
+    /** 后退：两步走同 {@link #refresh}。 */
     public static void back(BasePage bp) {
-        Response response = bp.getPage().goBack();
-        bp.resetFrameContextAfterNavigation();
-        NavigationStatusGuard.enforce(response, bp.getPage().url());
+        historyNavigation(bp, "back", timeout -> {
+            Page.GoBackOptions options = new Page.GoBackOptions();
+            options.setTimeout(timeout);
+            options.setWaitUntil(WaitUntilState.COMMIT);
+            return bp.getPage().goBack(options);
+        });
     }
 
+    /** 前进：两步走同 {@link #refresh}。 */
     public static void forward(BasePage bp) {
-        Response response = bp.getPage().goForward();
-        bp.resetFrameContextAfterNavigation();
-        NavigationStatusGuard.enforce(response, bp.getPage().url());
+        historyNavigation(bp, "forward", timeout -> {
+            Page.GoForwardOptions options = new Page.GoForwardOptions();
+            options.setTimeout(timeout);
+            options.setWaitUntil(WaitUntilState.COMMIT);
+            return bp.getPage().goForward(options);
+        });
+    }
+
+    /** 历史类导航（refresh / back / forward）的动作：三者 options 类型不共享基类，故由调用方构造。 */
+    @FunctionalInterface
+    private interface NavigationAction {
+        Response apply(long timeoutMs);
+    }
+
+    /**
+     * refresh / back / forward 的统一两步走：COMMIT 提交 → 判 403 → 等配置的加载状态 → 重置 iframe 上下文。
+     * 与 {@link #navigateTo} 共用同一套判定与预算记账（两步共享一个 navigationTimeout，最坏耗时 1×）。
+     *
+     * @param operation 操作名（日志用）
+     * @param action    实际导航动作（超时由本方法给出，返回值须为主文档响应）
+     */
+    private static void historyNavigation(BasePage bp, String operation, NavigationAction action) {
+        PlaywrightConfigManager config = bp.getConfig();
+        long timeout = resolvedTimeout(config);
+        LoadState configuredState = configuredLoadState(config.getPageLoadState());
+        long deadlineNanos = System.nanoTime() + timeout * 1_000_000L;
+        // 历史类导航没有显式目标 URL：失败信息用操作发生时的当前地址
+        String url = bp.getPage().url();
+        try {
+            Response response = action.apply(timeout);
+            NavigationStatusGuard.enforce(response, url);
+            waitForConfiguredState(bp, configuredState, remainingMs(deadlineNanos), url);
+            logger.debug("{} completed (waitUntil={}): {}", operation, config.getPageLoadState(), url);
+            bp.resetFrameContextAfterNavigation();
+        } catch (TimeoutError e) {
+            // TimeoutError 必须放在 PlaywrightException 前面（因为 TimeoutError 继承 PlaywrightException）
+            throw new NavigationException(url, config.getNavigationTimeout(), e);
+        }
     }
 
     public static void setContent(BasePage bp, String html) {

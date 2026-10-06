@@ -111,6 +111,13 @@ public final class RouteDispatcher {
                 spec.capability(), spec.pattern(),
                 RouteDsl.describeCaptured(spec, route.request().method(), route.request().url()));
 
+        // 6) 上报命中证据（观测旁路）。挂点选在此处：本段"所有能力必经"—— DELAY / MODIFY_REQUEST /
+        //    MOCK / MONITOR / CAPTURE 全部经过，一处即覆盖四种能力。落到哪里由 SPI 实现决定
+        //    （pw-web-ui 提供 Serenity 实现：入队 + 主线程 flush）；无实现即静默空操作。
+        com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry.record(
+                spec.capability().name(), route.request().url(),
+                RouteDsl.describeCaptured(spec, route.request().method(), route.request().url()));
+
         // 5) 时序编排：DELAY(1) → MODIFY(2) → MOCK(3，终结｜否则 resume 真实网络) → MONITOR(4，叠加观察，入口已记录)。
         //    单 handler 内异步链式执行：DELAY 挂起到点后继续 MODIFY / MOCK；MOCK 命中即短路 fulfill。
         try {

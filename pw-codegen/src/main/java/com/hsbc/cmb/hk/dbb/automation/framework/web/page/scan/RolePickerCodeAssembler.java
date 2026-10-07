@@ -343,8 +343,12 @@ final class RolePickerCodeAssembler {
             entriesByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(e);
         }
         LinkedHashMap<String, List<List<RoleEntry>>> stepsByPage = new LinkedHashMap<>();
+        // 面板全局封装序号（与 stepsByPage 严格同序同长），供产物里的 assertStepN 注记使用（与步骤类同口径）
+        LinkedHashMap<String, List<Integer>> panelNosByPage = new LinkedHashMap<>();
+        int panelStepNo = 0;
         for (StepRec st : snap.steps) {
             if (st == null) continue;
+            panelStepNo++;   // 必须在任何 continue 之前自增，保证与 snap.steps 一一对应（含被丢弃的 step）
             String pc = (st.pageClass == null || st.pageClass.isEmpty()) ? curClass : st.pageClass;
             if (st.picks != null) {
                 List<RoleEntry> picks = new ArrayList<>(st.picks.size());
@@ -354,17 +358,35 @@ final class RolePickerCodeAssembler {
                     if (lk != null && !lk.isEmpty() && !aliveKeys.isEmpty() && !aliveKeys.contains(lk)) continue;
                     picks.add(e);
                 }
-                if (!picks.isEmpty()) stepsByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(picks);
+                if (!picks.isEmpty()) {
+                    stepsByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(picks);
+                    panelNosByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(panelStepNo);
+                }
             }
+        }
+        // 【跨页修复】字段名是"页内分配"的，所以必须按页建字段表；取字段时用【元素自身所属页】
+        // （而非 step 的 owner 页）。原实现只用 owner 页的表 ⇒ 一次跨页封装里"其它页"的元素查不到字段，
+        // 被下方 field == null 静默 continue 丢弃，症状就是"断言比步骤少行、顺序对不上"。
+        java.util.LinkedHashSet<String> allPages = new java.util.LinkedHashSet<>();
+        for (String k : entriesByPage.keySet()) {
+            if (k != null && !k.isEmpty()) allPages.add(k);
+        }
+        for (String k : stepsByPage.keySet()) {
+            if (k != null && !k.isEmpty()) allPages.add(k);
+        }
+        LinkedHashMap<String, java.util.Map<String, String>> keyToFieldByPage = new LinkedHashMap<>();
+        LinkedHashMap<String, String> assertPageVars = new LinkedHashMap<>();
+        for (String cn : allPages) {
+            java.util.Map<String, String> m = new LinkedHashMap<>();
+            for (RoleElementPageGenerator.GeneratedField s
+                    : RoleElementPageGenerator.assignFields(entriesByPage.getOrDefault(cn, new ArrayList<>()))) {
+                m.put(RoleElementPageGenerator.locatorKey(s.entry), s.fieldName);
+            }
+            keyToFieldByPage.put(cn, m);
+            assertPageVars.put(cn, RoleElementAssertionGenerator.pageVarOf(cn));
         }
         for (java.util.Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
             String pc = en.getKey();
-            List<RoleEntry> pageEntries = entriesByPage.getOrDefault(pc, new ArrayList<>());
-            java.util.Map<String, String> keyToField = new LinkedHashMap<>();
-            for (RoleElementPageGenerator.GeneratedField s : RoleElementPageGenerator.assignFields(pageEntries)) {
-                keyToField.put(RoleElementPageGenerator.locatorKey(s.entry), s.fieldName);
-            }
-            String pageVar = RoleElementAssertionGenerator.pageVarOf(pc);
             List<List<String>> stepLines = new ArrayList<>();
             for (List<RoleEntry> step : en.getValue()) {
                 // 与步骤生成同一排序口径：按 pickNos 首号升序；无号者垫底（Integer.MAX_VALUE）
@@ -380,13 +402,38 @@ final class RolePickerCodeAssembler {
                 for (RoleEntry e : ordered) {
                     String lk = RoleElementPageGenerator.locatorKey(e);
                     if (lk == null || !seen.add(lk)) continue;
-                    String field = keyToField.get(lk);
+                    // 按元素自身所属页取字段与页变量（跨页封装时元素可能不属于 owner 页）
+                    String epc = (e.getPageClass() == null || e.getPageClass().isEmpty()) ? pc : e.getPageClass();
+                    String fieldPage = null;
+                    String field = null;
+                    java.util.Map<String, String> own = keyToFieldByPage.get(epc);
+                    if (own != null && own.containsKey(lk)) {
+                        fieldPage = epc;
+                        field = own.get(lk);
+                    }
+                    if (field == null) {
+                        // 元素自身页查不到该字段（含"owner 页无此元素"的跨页封装）⇒ 全页反查：
+                        // 字段名由元素所在页的 entries 分配，故按键反查即可定位真正声明它的页；
+                        // 不这样做就会在此处 field == null 被静默丢弃 —— 症状即"断言比步骤少行"。
+                        for (java.util.Map.Entry<String, java.util.Map<String, String>> pe : keyToFieldByPage.entrySet()) {
+                            String f = pe.getValue().get(lk);
+                            if (f != null) {
+                                fieldPage = pe.getKey();
+                                field = f;
+                                break;
+                            }
+                        }
+                    }
                     if (field == null) continue;
-                    lines.add(RoleElementAssertionGenerator.assertStatement(pageVar, field));
+                    lines.add(RoleElementAssertionGenerator.assertStatement(
+                            RoleElementAssertionGenerator.pageVarOf(fieldPage == null ? epc : fieldPage), field));
                 }
                 stepLines.add(lines);
             }
-            out.put(pc, RoleElementAssertionGenerator.renderClass(packageName, pc, stepLines));
+            // 声明本次生成涉及的全部页字段（跨页断言行引用"其它页变量"时才能编译通过），
+            // 并标注每个 assertStepN 对应的面板全局封装序号（消除多页时的"编号/顺序"误读）
+            out.put(pc, RoleElementAssertionGenerator.renderClass(
+                    packageName, pc, stepLines, assertPageVars, panelNosByPage.get(pc)));
         }
         return out;
     }

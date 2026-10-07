@@ -1,5 +1,6 @@
 package com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 
 /**
@@ -91,24 +92,71 @@ public final class RoleElementAssertionGenerator {
      */
     public static String renderClass(String packageName, String pageClassName,
                                      List<List<String>> stepAssertLines) {
+        LinkedHashMap<String, String> only = new LinkedHashMap<>();
+        only.put(pageClassName, pageVarOf(pageClassName));
+        return renderClass(packageName, pageClassName, stepAssertLines, only);
+    }
+
+    /**
+     * 同 {@link #renderClass(String, String, List)}，但可声明<b>多个</b>页面对象的字段。
+     *
+     * <p>为什么需要：一次「封装为步骤」可能<b>跨页</b>（首元素所在页为 owner，同一次封装里还含其它页的
+     * 元素）。断言语句引用的是<b>元素自身所属页</b>的变量（{@code loginPage.userName.isVisible()}），
+     * 若本类只声明 owner 页的字段，那些"其它页"的断言就会因查不到字段而被静默丢弃 ——
+     * 症状就是"断言比步骤少行、顺序对不上"。故与步骤类同一口径：声明本次生成涉及的全部页字段。
+     *
+     * @param pageVars 页类名 → 页面对象变量名（顺序即 import / 字段的声明顺序）
+     */
+    public static String renderClass(String packageName, String pageClassName,
+                                     List<List<String>> stepAssertLines,
+                                     java.util.Map<String, String> pageVars) {
+        return renderClass(packageName, pageClassName, stepAssertLines, pageVars, null);
+    }
+
+    /**
+     * 同 {@link #renderClass(String, String, List, java.util.Map)}，并可标注每个 {@code assertStepN}
+     * 对应<b>面板第几个「封装为步骤」</b>（跨页时每份按页视图的编号会与面板全局序号不同，属正常）。
+     *
+     * @param panelNos 与 {@code stepAssertLines} 同序的面板全局封装序号（1 起）；null/空则不标注
+     */
+    public static String renderClass(String packageName, String pageClassName,
+                                     List<List<String>> stepAssertLines,
+                                     java.util.Map<String, String> pageVars,
+                                     List<Integer> panelNos) {
         String className = assertionsClassNameOf(pageClassName);
-        String pageVar = pageVarOf(pageClassName);
         StringBuilder out = new StringBuilder();
         out.append("package ").append(packageName).append(ASSERTIONS_SUBPACKAGE).append(";\n\n");
         out.append("import net.serenitybdd.annotations.Step;\n\n");
-        out.append("import ").append(packageName).append('.').append(pageClassName).append(";\n");
+        java.util.Map<String, String> vars = (pageVars == null || pageVars.isEmpty())
+                ? java.util.Collections.singletonMap(pageClassName, pageVarOf(pageClassName))
+                : pageVars;
+        for (String cn : vars.keySet()) {
+            out.append("import ").append(packageName).append('.').append(cn).append(";\n");
+        }
         out.append("import ").append(PAGE_OBJECT_FACTORY).append(";\n\n");
         out.append(ASSERT_THAT_IMPORT).append('\n');
         out.append(EQUAL_TO_IMPORT).append("\n\n");
         out.append("public class ").append(className).append(" {\n\n");
-        // 与步骤类同款的页面实例获取方式（沿用框架单例工厂，保证与业务代码拿到同一个页面对象）
-        out.append("    private final ").append(pageClassName).append(' ').append(pageVar)
-                .append(" = PageObjectFactory.getPage(").append(pageClassName).append(".class);\n\n");
+        // 与步骤类同款的页面实例获取方式（沿用框架单例工厂，保证与业务代码拿到同一个页面对象）；
+        // 跨页时逐页声明，使引用"其它页字段"的断言行在本类中同样可编译。
+        for (java.util.Map.Entry<String, String> v : vars.entrySet()) {
+            out.append("    private final ").append(v.getKey()).append(' ').append(v.getValue())
+                    .append(" = PageObjectFactory.getPage(").append(v.getKey()).append(".class);\n\n");
+        }
         if (stepAssertLines == null || stepAssertLines.isEmpty()) {
             out.append("    // 还没有任何断言：请在面板勾选元素后点「封装为断言」生成\n");
         } else {
             for (int i = 0; i < stepAssertLines.size(); i++) {
                 List<String> lines = stepAssertLines.get(i);
+                // 与步骤类同款注记：多页时"本页视图内编号"必然与面板全局封装序号不同，标注以消除"顺序错乱"的误读
+                Integer panelNo = (panelNos != null && i < panelNos.size()) ? panelNos.get(i) : null;
+                if (panelNo != null && panelNo > 0) {
+                    out.append("    // 面板第 ").append(panelNo).append(" 个「封装为步骤」");
+                    if (panelNo != i + 1) {
+                        out.append("（本页视图内为 assertStep").append(i + 1).append("）");
+                    }
+                    out.append("\n");
+                }
                 // 裸 @Step：不带描述文案（用户要求：只要断言）
                 out.append("    @Step\n");
                 out.append("    public void assertStep").append(i + 1).append("() {\n");

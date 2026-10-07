@@ -1,17 +1,7 @@
             (function() {
-              // 区域扫描选区态的收尾：若处于选区态（window.__regionSelecting），先结束选区——
-              // 否则选区监听（document 级 capture 的 click/keydown）残留会吞掉面板按钮点击、
-              // 且 __regionSelecting 不清除会让 scan/region 按钮一直置灰、状态切不动。
-              if (window.__regionSelecting) {
-                try { if (window.__roleEndRegionSelect) window.__roleEndRegionSelect(); } catch (e) {}
-                try { document.removeEventListener('mousemove', window.__roleRegionMove, true); } catch (e) {}
-                try { document.removeEventListener('click', window.__roleRegionClick, true); } catch (e) {}
-                try { document.removeEventListener('keydown', window.__roleRegionEsc, true); } catch (e) {}
-                try { document.removeEventListener('keydown', window.__roleRegionEscB, false); } catch (e) {}
-                window.__regionSelecting = false;
-                window.__scanMode = null;   // 清除模式标识，回到"无模式"
-                try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
-              }
+              // 【扫描机制已移除】原此处为"区域扫描选区态的收尾"（结束选区、摘下选区监听、
+              // 清 __regionSelecting / __scanMode）。全页扫描与区域扫描（JS 与 Java）已整体删除，
+              // 选区态不再存在，故该收尾块一并删除。
               // 关键修复：无条件移除监听并置位（不再因 __rolePickActive 已为 false 而早退）。
               // 早退会在"Java 端 active[0] 与浏览器端 __rolePickActive 因竞态不一致"时，
               // 导致应停止的页面监听残留、状态错乱，进而出现"停止后再开始拾取不了"。
@@ -25,8 +15,6 @@
               // 复位面板切换控件的"乐观意图"位：避免上一轮残留的 __rolePickWanted 让下一轮按钮的 willStart
               // 计算误判、发出错误命令（关键修复"停止后再点开始却拾取不了 / 二轮停止不了"的边界）。
               try { window.__rolePickWanted = false; } catch (e) {}
-              // 停止时也清整页扫描态，避免异常路径下 scan/region 按钮卡死置灰。
-              window.__pageScanning = false;
               try { if (window.__roleRefreshToggle) window.__roleRefreshToggle(); } catch (e) {}
               // 手动模式收尾（▶开始→点元素→⏹停止）：所有拾取元素封装为【一个步骤】(由 Java 端 snapWithAutoStep 兜底)，
               // 此处只做面板状态收尾：清空当前选择集与序号计数器，并把「页面元素 List」每行序号前缀重置为 [-]。
@@ -58,8 +46,6 @@
               } catch (e) {}
               // 收起实时悬停高亮框
               try { var __hb = document.getElementById('__roleHoverBox'); if (__hb) __hb.style.display = 'none'; } catch (e) {}
-              // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），停止拾取时一并清掉，避免残留。
-              try { if (typeof window.__clearRegionOutlines === 'function') window.__clearRegionOutlines(); } catch (e) {}
               // 清除所有 frame（含主文档 + 各层 iframe）内元素的拾取描边（outline）与聚焦边框，
               // 避免"取消拾取 / 停止拾取后，iframe 内元素的蓝色/黄色边框未消失"的残留。
               try {
@@ -69,10 +55,10 @@
                   // 【关键修复"停止拾取后 iframe 内仍可点击拾取"】
                   // 原 stop 只移除当前 frame（顶层）的 document 监听，iframe 内自己的 document 监听未移除，
                   // 停止拾取后 iframe 内仍能点击拾取、边框也仍会高亮。这里在遍历每个 frame 时，
-                  // 一并移除该 frame 的拾取/扫描监听，并把 __rolePickActive 置 false，彻底关闭所有 frame 的拾取态。
+                  // 一并移除该 frame 的拾取监听，并把 __rolePickActive 置 false，彻底关闭所有 frame 的拾取态。
                   var rl = window.__rolePickClick, rm = window.__rolePickMove, rk = window.__rolePickKey,
                       rf = window.__rolePickFocus, rs = window.__rolePickScroll,
-                      rp = window.__rolePickPointer, rpo = window.__rolePickOver, rr = window.__rolePickRegionClick;
+                      rp = window.__rolePickPointer, rpo = window.__rolePickOver;
                   d.removeEventListener('click', rl, true);
                   d.removeEventListener('mousemove', rm, true);
                   d.removeEventListener('keydown', rk, true);
@@ -80,7 +66,6 @@
                   d.removeEventListener('scroll', rs, true);
                   if (rp) d.removeEventListener('pointerdown', rp, true);
                   if (rpo) d.removeEventListener('mouseover', rpo, true);
-                  if (rr) d.removeEventListener('click', rr, true);
                   try { if (window.__rolePickLeave) d.removeEventListener('mouseleave', window.__rolePickLeave, false); } catch (_) {}
                   try { win.__rolePickActive = false; } catch (_) {}
                   var nodes = d.querySelectorAll('[_rolepick_outline]');

@@ -60,6 +60,26 @@ public final class RoleElementAssertionGenerator {
     }
 
     /**
+     * 单条断言语句（与 {@link RoleElementStepGenerator#operationFor} <b>同一套判据</b>，保证与步骤逐行对应）：
+     * <ul>
+     *   <li>输入类操作（步骤侧生成 {@code fill("...")}）且捕获到输入值 ⇒ <b>值断言</b>
+     *       {@code assertThat(page.field.inputValue(), equalTo("值"))}；</li>
+     *   <li>其余情况（含"输入框但没输入值" —— 与步骤侧 {@code fill("")} 留待补全同口径）⇒ 可见性断言
+     *       {@link #assertStatement(String, String)}。</li>
+     * </ul>
+     * 判据复用 {@code operationFor} 而非另写一份，避免"步骤是 fill、断言却按可见性"这类两端漂移。
+     */
+    public static String assertStatement(String pageVar, String field, RoleEntry e) {
+        String op = (e == null) ? null : RoleElementStepGenerator.operationFor(e);
+        String value = (e == null) ? null : e.getValue();
+        if (op != null && op.startsWith("fill(") && value != null && !value.isEmpty()) {
+            return "assertThat(" + pageVar + "." + field + ".inputValue(), equalTo(\""
+                    + RoleElementStepGenerator.escapeJava(value) + "\"))";
+        }
+        return assertStatement(pageVar, field);
+    }
+
+    /**
      * 断言类名派生（与步骤类同一规则：{@code XxxPage} → {@code XxxAssertions}）。
      *
      * @param pageClassName 页面类名（如 {@code LoginPage}）

@@ -369,8 +369,19 @@ public class PlaywrightListener implements StepListener {
 
         //  R4: 标记步骤起始时间戳，使 waitForApi/getLastApiCall 等查询
         // 只匹配本步骤内的 API 调用，隔离同一 Scenario 内跨 Step 的串扰。
+        //  【修复"每个步骤刷两条 WARN"】getCurrentCapture() 在【未开启采集会话】时返回 null
+        //  （绝大多数非 route 用例就是这种情况，pw-route 的集成测试也断言"无采集 ⇒ null 等价降级"），
+        //  原写法直接 .markStepStart() 会 NPE 并被下方 catch 记成
+        //  "markStepStart failed: ... getCurrentCapture() is null" —— 每步两条噪声告警。
+        //  此处显式判空：无采集上下文即跳过（语义与"未启用采集"一致），仅真实异常才告警。
         try {
-            withRouteLifecycle(lc -> lc.getCurrentCapture().markStepStart());
+            withRouteLifecycle(lc -> {
+                com.hsbc.cmb.hk.dbb.automation.framework.common.route.CaptureContext capture =
+                        (lc == null) ? null : lc.getCurrentCapture();
+                if (capture != null) {
+                    capture.markStepStart();
+                }
+            });
         } catch (Exception e) {
             logger.warn("[PlaywrightListener] markStepStart failed: {}", e.getMessage());
         }

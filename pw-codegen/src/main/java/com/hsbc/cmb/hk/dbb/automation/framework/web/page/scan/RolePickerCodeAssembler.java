@@ -439,8 +439,9 @@ final class RolePickerCodeAssembler {
                         }
                     }
                     if (field == null) continue;
+                    // 传 entry：输入类元素（步骤侧 fill(...)）且捕获到输入值时生成值断言，其余为可见性断言
                     lines.add(RoleElementAssertionGenerator.assertStatement(
-                            RoleElementAssertionGenerator.pageVarOf(fieldPage == null ? epc : fieldPage), field));
+                            RoleElementAssertionGenerator.pageVarOf(fieldPage == null ? epc : fieldPage), field, e));
                 }
                 stepLines.add(lines);
             }

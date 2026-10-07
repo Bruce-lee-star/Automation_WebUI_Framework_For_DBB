@@ -59,8 +59,10 @@ public class RoleAssertCodeGenerationTest {
         List<int[]> hits = new ArrayList<>();
         List<String> names = new ArrayList<>();
         for (String field : keyToField.values()) {
+            // 断言行可能是可见性断言（isVisible）或输入类元素的值断言（inputValue）——两者都算"该元素有断言"
             java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile(java.util.regex.Pattern.quote("." + field + ".isVisible()")).matcher(src);
+                    .compile(java.util.regex.Pattern.quote("." + field + ".")
+                            + "(?:isVisible|inputValue)\\(\\)").matcher(src);
             while (m.find()) {
                 hits.add(new int[]{m.start(), names.size()});
             }
@@ -97,6 +99,23 @@ public class RoleAssertCodeGenerationTest {
         assertEquals("断言行数必须等于步骤操作行数（否则就是用户看到的『不一样』）：\n步骤=" + stepLines
                 + "\n断言=" + assertLines, stepLines.size(), assertLines.size());
         assertEquals("逐行对应的元素必须完全一致", stepLines, assertLines);
+    }
+
+    @Test
+    // @DisplayName: "输入类元素捕获到输入值时生成值断言（inputValue），无值则回落可见性断言"
+    public void fillOperationProducesValueAssertion() {
+        RoleEntry input = new RoleEntry("textbox", "Username");
+        input.setValue("687");
+        String src = assertCode(Collections.singletonList(input), Collections.singletonList(
+                new StepRec(PAGE, Collections.singletonList(pick(input, 5))))).get(PAGE);
+        assertTrue("应为输入行生成值断言：\n" + src, src.contains(".inputValue(), equalTo(\"687\"))"));
+        assertFalse("输入行不应再生成可见性断言：\n" + src, src.contains("isVisible()"));
+
+        // 无输入值 ⇒ 回落可见性断言（与步骤侧 fill("") 留待补全同口径）
+        RoleEntry empty = new RoleEntry("textbox", "Username");
+        String src2 = assertCode(Collections.singletonList(empty), Collections.singletonList(
+                new StepRec(PAGE, Collections.singletonList(pick(empty, 5))))).get(PAGE);
+        assertTrue("无输入值应回落到可见性断言：\n" + src2, src2.contains(".isVisible(), equalTo(true))"));
     }
 
     /** 按出现顺序抽出步骤里被操作的元素（同一元素多次操作会出现多次）。 */

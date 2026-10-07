@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -99,6 +100,35 @@ public class PlaywrightListenerTest {
         listener.stepStarted(null); // 防御：null 步骤直接返回
 
         assertNotNull(listener);
+    }
+
+    @Test
+    public void stepStarted_withoutCaptureContext_doesNotWarn() {
+        // 无采集会话（getCurrentCapture() == null）是绝大多数非 route 用例的常态。
+        // 修前：lambda 里直接 .markStepStart() ⇒ NPE ⇒ 被 catch 记成 WARN（每个步骤两条）；
+        // 修后：判空跳过，既不 NPE 也不告警。
+        RouteLifecycle noCapture = mock(RouteLifecycle.class);
+        when(noCapture.getCurrentCapture()).thenReturn(null);
+        RouteLifecycleRegistry.register(noCapture);
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(PlaywrightListener.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            ExecutedStepDescription step = mock(ExecutedStepDescription.class);
+            when(step.getTitle()).thenReturn("no-capture step");
+            listener.stepStarted(step);
+        } finally {
+            logger.detachAppender(appender);
+        }
+        boolean warned = appender.list.stream().anyMatch(ev ->
+                ev.getLevel() == ch.qos.logback.classic.Level.WARN
+                        && String.valueOf(ev.getFormattedMessage()).contains("markStepStart failed"));
+        assertFalse("无采集上下文时不得产生 markStepStart WARN（每个步骤两条 WARN 即此来源）：" + appender.list,
+                warned);
     }
 
     @Test

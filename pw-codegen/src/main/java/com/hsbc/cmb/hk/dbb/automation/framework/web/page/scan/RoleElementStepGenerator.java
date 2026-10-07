@@ -49,8 +49,14 @@ public final class RoleElementStepGenerator {
         }
     }
 
-    /** 按角色 / 策略推断元素操作（自动推断，无需用户手动选择）。 */
-    private static String operationFor(RoleEntry e) {
+    /**
+     * 按角色 / 策略推断元素操作（自动推断，无需用户手动选择）。
+     *
+     * <p>包内可见：断言生成器（{@link RoleElementAssertionGenerator}）需要与步骤<b>同一套判据</b>来区分
+     * "输入类操作"（{@code fill(...)}）与其它操作，从而为输入行生成值断言、其余生成可见性断言 ——
+     * 保证 {@code assertStepN} 的第 k 行与 {@code stepN} 的第 k 行严格对应。
+     */
+    static String operationFor(RoleEntry e) {
         // 勾选类元素（checkbox/radio）优先于 hover：用户点击 checkbox/radio 的语义是「设置勾选状态」，
         // 而 focusin 聚焦可能把点击误标为 hover（__rolePickFocus 以 isHover=true 记录、时序先于 click），
         // 若 hover 优先会让点击 checkbox 误生成 locator.hover() 而非 setChecked()。故先判定勾选角色。
@@ -124,8 +130,8 @@ public final class RoleElementStepGenerator {
         return "click()";
     }
 
-    /** 转义 Java 字符串字面量中的特殊字符（\" \\ \n \r \t），null 视为空串。 */
-    private static String escapeJava(String s) {
+    /** 转义 Java 字符串字面量中的特殊字符（\" \\ \n \r \t），null 视为空串。包内可见：断言的值断言复用。 */
+    static String escapeJava(String s) {
         if (s == null) return "";
         StringBuilder b = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {

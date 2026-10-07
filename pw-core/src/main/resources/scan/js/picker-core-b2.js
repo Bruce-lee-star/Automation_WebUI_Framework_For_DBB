@@ -16,8 +16,9 @@
                   setTimeout(function() { try { t.style.outline = ''; t.style.outlineOffset = ''; } catch (e) {} }, 400);
                   var statusEl = document.getElementById('__roleStatus');
                   if (statusEl) {
-                    var extra = dup ? '（重复，已忽略）'
-                      : ((pick && pick.matched) ? '（key=' + pick.key + '）' : '');
+                    // 【按需求移除状态栏的 key= 展示】此前命中 NLS key 时状态栏会显示"（key=xxx）"；
+                    // 现在只保留"（重复，已忽略）"，避免与"没传 NLS 却出现 key"的观感混淆。
+                    var extra = dup ? '（重复，已忽略）' : '';
                     if (isHover) extra = '（悬停）' + extra;
                     var stepNo = (window.__steps ? window.__steps.length : 0) + 1;
                     statusEl.textContent =

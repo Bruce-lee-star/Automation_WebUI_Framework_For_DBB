@@ -317,4 +317,22 @@ test('开始拾取后必须作废 ETag 并立即回灌（否则面板元素全�
     'cmdStart 未在作废 ETag 后立即全量回灌 —— 面板仍可能空白');
 });
 
+// ---------------------------------------------------------------------------
+// T15: 面板/状态栏不得展示 NLS key=（按用户要求移除），但 pick.key 字段本身必须保留。
+//   用户反馈：面板行显示 "role role=heading name=\"...\" key=title_username_page"，而"我没传 nls file，
+//   元素定位不应该有 key="。定位：显示三处（panel-core-b.js 行渲染、panel-core-a.js 摘要行、
+//   picker-core-b2.js 状态栏）已移除 key 展示；生成侧仍按【是否传 NLS】决定用 key 还是 name 定位，
+//   故 pick.key/resolvedKey 必须继续随回传进入 Java 权威态，不能连带删除。
+// ---------------------------------------------------------------------------
+test('面板与状态栏不得展示 key=，但回传字段里的 key 必须保留', function () {
+  assert.ok(!/s \+= ' key=' \+ p\.key/.test(readRes('panel-core-b.js')),
+    'panel-core-b.js 又在元素行渲染里输出 key=');
+  assert.ok(!/s \+= ' key=' \+ p\.key/.test(readRes('panel-core-a.js')),
+    'panel-core-a.js 又在摘要行里输出 key=');
+  assert.ok(!/（key=' \+ pick\.key/.test(readRes('picker-core-b2.js')),
+    '状态栏又在显示 key=');
+  assert.ok(/'strategy','role','name','key','text'/.test(readRes('picker-core-b1.js')),
+    '回传字段列表里的 key 被删了 —— 生成侧按 NLS 决定定位方式的能力会失效');
+});
+
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

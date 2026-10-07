@@ -402,7 +402,8 @@
                       var s = (p.strategy || 'role');
                       if (p.role) s += ' role=' + p.role;
                       if (p.name) s += ' name="' + p.name + '"';
-                      if (p.key) s += ' key=' + p.key;
+                      // 【按需求移除面板上的 key= 展示】与 panel-core-b.js 行渲染同口径：只展示 role/name/id/css。
+                      // pick.key/resolvedKey 仍保留在状态与回传里，生成侧据"是否传 NLS"决定定位方式。
                       if (p.id) s += ' id=' + p.id;
                       if (p.css) s += ' css=' + p.css;
                       if (p.index != null && p.index >= 0) s += ' #' + p.index;

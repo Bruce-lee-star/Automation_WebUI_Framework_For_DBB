@@ -1372,7 +1372,10 @@
                     var s = (p.strategy || 'role');
                     if (p.role) s += ' role=' + p.role;
                     if (p.name) s += ' name="' + p.name + '"';
-                    if (p.key) s += ' key=' + p.key;
+                    // 【按需求移除面板上的 key= 展示】面板行只展示 role/name（或 id/css/index），不再暴露 NLS key。
+                    // pick 对象上的 key/resolvedKey 仍随回传进入 Java 权威态（生成页面类时按【是否传 NLS 文件】
+                    // 决定用 key 还是 name 定位），此处只是不在面板上显示 —— 避免"没传 NLS 却看起来在用 key=定位"
+                    // 的误解。注意：不要删除 pick.key 字段本身，否则会连带影响生成侧的 key 能力。
                     if (p.id) s += ' id=' + p.id;
                     if (p.css) s += ' css=' + p.css;
                     if (p.index != null && p.index >= 0) s += ' #' + p.index;

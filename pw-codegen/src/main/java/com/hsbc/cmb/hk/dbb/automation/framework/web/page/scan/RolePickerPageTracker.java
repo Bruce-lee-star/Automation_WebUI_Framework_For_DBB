@@ -121,6 +121,27 @@ final class RolePickerPageTracker {
         return cur;
     }
 
+    /**
+     * 取 Java 权威态里已用过的最大动作号。
+     *
+     * <p>用于在检测到"换了文档"（页类变化）时把新文档的 {@code __rolePickSeq/__roleMaxNo} 垫高到该值，
+     * 使整页导航后的新页号接着上一页走，避免"两个页面都出现 1"（跨页撞号会让按号排序的 step 互相穿插）。
+     * 只读快照：与写入方（拾取桥/控制台桥）共用同一把 {@code javaPickBySig} 锁。
+     */
+    private static int maxPickNo(LinkedHashMap<String, RoleEntry> javaPickBySig) {
+        if (javaPickBySig == null) return 0;
+        int max = 0;
+        synchronized (javaPickBySig) {
+            for (RoleEntry e : javaPickBySig.values()) {
+                if (e == null || e.getPickNos() == null) continue;
+                for (Integer n : e.getPickNos()) {
+                    if (n != null && n > max) max = n;
+                }
+            }
+        }
+        return max;
+    }
+
     static void refreshPageClass(RolePickerContext ctx, Page p) {
         if (p == null || p.isClosed()) return;
         ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
@@ -139,6 +160,18 @@ final class RolePickerPageTracker {
                 CUR_CLASS.keySet().removeIf(Page::isClosed);
                 // 只在真的换页类时打一条 INFO：这是"URL 变化是否被正确识别为新页面"的判据日志。
                 log.info("[picker][nav] page class refreshed: {} -> {} (url={})", curCls, newCls, p.url());
+                // 【修复"URL 变化后面板缺少变化之前的元素 / 两个页面都出现 1"】
+                // 页类变化 ⇒ 浏览器侧换了文档（整页导航，或 pushState 后整文档替换）：新文档的
+                // __rolePicks / __rolePickSeq / __roleMaxNo 全为零，而回灌有 ETag 判重（Java 权威态没变
+                // 就不写）⇒ 新文档永远收不到已拾元素，且新页首次点击又从 1 起号（与上一页撞号）。
+                // 实测时间线：20:36:34.702 检测到导航 → 20:36:39.264 用户点击铸出 no=1，中间【无任何回灌】。
+                // 故：① 作废该页 ETag ⇒ 下一轮必然全量重写（元素回到面板）；② 立刻用 Java 权威态最大号
+                // 垫高新文档计数器 ⇒ 新页号接着上一页（不再两页都出现 1）。
+                RolePickerPanelSync.invalidateSync(p);
+                int __maxNo = maxPickNo(ctx.javaPickBySig);
+                if (__maxNo > 0) {
+                    pickerEval(p, RolePickerScripts.SET_SEQ_BASELINE_JS, RolePickerScripts.args("max", __maxNo));
+                }
             }
             pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
                     RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));

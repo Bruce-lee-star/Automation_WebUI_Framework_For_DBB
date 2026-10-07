@@ -58,6 +58,18 @@ final class RolePickerPanelSync {
         });
     }
 
+    /**
+     * 作废某页的同步签名（ETag），使下一轮回灌【必然重写】该页。
+     *
+     * <p>用途：整页导航会新建文档、浏览器侧 {@code __rolePicks}/计数器全部清空，而 ETag 只比较
+     * 「Java 权威态是否变化」——导航前后 Java 态没变，于是判为"无需回灌"，新文档便永远收不到已拾元素：
+     * 表现为「URL 变化后面板缺少变化之前的元素」，且新页从 1 起号（两页都出现 1）。
+     * 故在检测到页类变化（= 换了文档）时调用本方法，强制下一轮全量重写。
+     */
+    static void invalidateSync(Page page) {
+        if (page != null) LAST_SYNC_SIG.remove(page);
+    }
+
     /** CT2-20：清空全部同步签名缓存（JVM 关闭 / 集群重置）。 */
     static void clearAll() {
         LAST_SYNC_SIG.clear();

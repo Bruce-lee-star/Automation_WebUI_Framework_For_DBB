@@ -87,6 +87,9 @@ public final class RolePickerScripts {
     /** 强制面板重建（置 __rolePanelForce）。 */
     public static final String SET_PANEL_FORCE_JS = loadScript("set-panel-force-js.js");
 
+    /** 把浏览器侧动作号计数器垫高到 Java 权威态最大号（只增不回退）。实参 a: {max}。 */
+    public static final String SET_SEQ_BASELINE_JS = loadScript("set-seq-baseline-js.js");
+
     /** 强制面板重建 + 开启面板（墓碑门控置 1）。 */
     public static final String PANEL_FORCE_AND_ENABLE_JS = loadScript("panel-force-and-enable-js.js");
 

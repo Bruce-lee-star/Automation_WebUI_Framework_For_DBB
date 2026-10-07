@@ -637,7 +637,7 @@
                 // 附加防御：若原始 css 已是整页级骨架链（含 body / html 段落），绝不画蛇添足加锚点——
                 // 这类链无业务价值，加了锚点（如 ".Mozilla body > ..."）反而绕开 __recordPick 的
                 // body 开头拦截、记录下更长更废的选择器。
-                if (__isNthOnlyCss(css) && !window.__roleScanRoot
+                if (__isNthOnlyCss(css)
                     && css.indexOf('body') === -1 && css.indexOf('html') === -1) {
                   var anchor = node, aDepth = 0;
                   while (anchor && anchor.nodeType === 1 && aDepth++ < 12) {

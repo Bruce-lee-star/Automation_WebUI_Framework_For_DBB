@@ -45,7 +45,7 @@
               console.log('[rolePick][msg-in] selfTop=' + (window.self === window.top)
                 + ' srcTop=' + (ev.source && ev.source === window.self)
                 + ' role=' + __dbg + ' sigKey=' + (__dbgKey || '') + ' pickActive=' + (window.__rolePickActive)
-                + ' scanning=' + (window.__scanning) + ' href=' + (location && location.href));
+                + ' href=' + (location && location.href));
           } catch (_dbgErr) {}
           // 安全加固（本地开发工具场景）：排除顶层自身的"自环"消息（理论上不会发生），
           // 其余带 __rolePickMsg 标记的 pick 一律接纳——包括 srcdoc/跨源子 frame。
@@ -80,13 +80,10 @@
           }
           // 与主框架实时点选一致：拾取激活态下，iframe 内的点选也自动入选当前 step（选择集），
           // 用户无需再到面板重复勾选；整页扫描期间的 iframe 候选仍由用户勾选决定。
-          // 【关键修复"checkbox 被默认勾选进选择集"】扫描批量回传上送的候选带 __isScan 标记：
-          // 尽管此时 __scanning 已置 false，但 d.__isScan 为 true 表明这是扫描产生的候选，
           // 只聚合进 __rolePicks 供面板展示，绝不入选 __currentStep（否则 checkbox 等被默认勾选）。
           // 【关键修复"用户点击扫描候选不进 step"】与主框架 __recordPick 的 2169 行一致：
-          // 点击（非扫描、非 __isScan 的 postMessage）即使元素已在 __rolePickSigs（扫描候选），
           // 只要不在当前 __currentStep 中就入选 step（用户主动点击 = 明确选择）；已入选的重复点击除外。
-          if (window.__rolePickActive && window.__currentStep && !window.__scanning && !d.__isScan) {
+          if (window.__rolePickActive && window.__currentStep) {
             var __pkey = (typeof window.__sigKey === 'function') ? window.__sigKey(p) : (p._sigKey || p._sig || '');
             var __pinStep = false;
             if (__pkey) {

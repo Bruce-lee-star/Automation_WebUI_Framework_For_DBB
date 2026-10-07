@@ -205,7 +205,6 @@
                   var _src = (window.__currentStep && window.__currentStep.length)
                       ? window.__currentStep
                       : all;   // 【关键修复"导航恢复/扫描后点封装没反应"】勾选集为空时兜底用全部已拾元素：
-                               // ① 整页扫描出的候选默认不进 __currentStep（__isScan 守卫），用户未手动勾选即点"封装"应视为"封装全部"；
                                // ② 跨页导航 applyPickState 恢复的 currentStep=0，但 javaPickBySig/__rolePicks 仍有元素，
                                //    点封装按钮时若死守空勾选集会 return 0、不推送 package 命令、Java 侧永远不生成代码。
                   _src.forEach(function(p) {
@@ -325,7 +324,6 @@
                   window.__rolePickSeq = 0;
                   window.__roleMaxNo = 0;
                   // 清除区域选择遗留的页面高亮框（绿色已选/青色悬停），否则不按 Esc 直接封装时绿框会残留。
-                  try { if (typeof window.__clearRegionOutlines === 'function') window.__clearRegionOutlines(); } catch (e) {}
                   // 全量重建面板，序号前缀显示 [-,+]，复选框复位为未勾选。
                   window.__renderPicks();
                   // 返回结构化信息：本次封装涉及的 pageClass（按序）与全局起始索引，
@@ -1085,7 +1083,6 @@
                     // 清空选择集并重新渲染（含子 Tab 计数同步）
                     window.__currentStep = [];
                     // 清除区域选择遗留的页面高亮框，删除元素后页面上的绿框/青框一并清掉。
-                    try { if (typeof window.__clearRegionOutlines === 'function') window.__clearRegionOutlines(); } catch (e) {}
                     // 落盘最新态，避免整页跳转时被 localStorage 里的旧快照把已删元素恢复回来。
                     // 用 window.__persistPickState（面板脚本可见的公开 API）；__persistNow 是拾取脚本内的
                     // 局部函数，不在本脚本作用域内，直接调用取不到。

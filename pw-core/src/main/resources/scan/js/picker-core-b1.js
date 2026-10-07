@@ -2457,7 +2457,7 @@
                 // 扫描时（__scanMode 被覆写为 'page' 且 __scanning=true）才记录区域内子元素。
 
 
-                if (window.__scanMode === 'region' && !window.__scanning) return null;
+                if (window.__scanMode === 'region') return null;
 
 
                 var t = target;
@@ -2934,7 +2934,7 @@
                 // 会在已有号之上续接 → 表现为"扫一次编号增加一次"、污染手动拾取序号。
                 // 故扫描态跳过序号分配：候选保持 _pickNos 空（面板显示 [-]），待用户在面板勾选时再按
                 // 勾选顺序赋予步骤序号（见 panel-core-b.js __packageStep / 勾选逻辑）。
-                if (!window.__scanning && !window.__applyingState) {
+                if (!window.__applyingState) {
                   window.__rolePickSeq += 1;
                   var __thisIndex = window.__rolePickSeq;
                   // 每次真正分配出新号，更新"只增不回退"的最大号基线（供后续续接，不被 __rolePicks 重建干扰）。
@@ -3060,7 +3060,7 @@
                     window.__rolePicks.push(pick);
                     // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
                     // 扫描态守卫：候选不分配序号（保持 [-]）。
-                    if (!window.__scanning) __appendPickNo(pick);
+                    __appendPickNo(pick);
                   }
 
                   // 【diag-first】首次 push 分支：序列化确认首次拾取的 _pickNos 是否随对象带出，并打印 strategy。
@@ -3163,7 +3163,7 @@
                     existing.hover = !!isHover;
                     // 【index 需求】重复拾取同一元素：把当前动作序号追加到 _pickNos（如 [1,5]）。
                     // 扫描态守卫：候选不分配序号。
-                    if (!window.__scanning && !window.__applyingState) __appendPickNo(existing);
+                    if (!window.__applyingState) __appendPickNo(existing);
                     // 【诊断】dup 命中分支：打印 existing 是否拿到、回传前 _pickNos、__roleOnPick 类型、序列化是否成功。
                     try {
                       var __wire = __pickToWire(existing);
@@ -3181,7 +3181,7 @@
                     // 重建 window.__rolePicks 时，会把浏览器侧累积的 _pickNos 覆盖成 Java 的残缺值 → 面板只显示 [1]。
                     // 故对真实点击（非 hover/非扫描）主动回传最新 existing（含完整 _pickNos）给 Java，
                     // 让权威态与浏览器侧一致，重建后面板正确显示 [1,5,9…] 等完整序号。
-                    if (!isHover && !window.__scanning) {
+                    if (!isHover) {
                       var __bType = typeof window.__roleOnPick;
                       var __bindOk = false;
                       if (__bType === 'function') {
@@ -3232,7 +3232,7 @@
                         // 兜底分支只在 __sigKey / __sigToPick / dup 全部失配时进入（= 身份判定失配的重放场景）；
                         // 真实的重复点击会命中 dup 分支并正常累加序号，故此处不再铸号。
                         // 与上面 existing 分支一致：去重后主动回传最新 _pickNos 给 Java，避免面板重建时序号被覆盖残缺。
-                        if (!isHover && !window.__scanning) {
+                        if (!isHover) {
                           var __wire2 = __pickToWire(window.__rolePicks[i]);
                           var __bindOk2 = false;
                           if (typeof window.__roleOnPick === 'function') {
@@ -3322,7 +3322,7 @@
                 // 就入选 step（用户主动点击扫描候选 = 明确选择）；已在 step 中的重复点击仍被排除。
 
 
-                if (window.__currentStep && !window.__scanning && !__rapid) {
+                if (window.__currentStep && !__rapid) {
 
 
                   var __inStep = false;

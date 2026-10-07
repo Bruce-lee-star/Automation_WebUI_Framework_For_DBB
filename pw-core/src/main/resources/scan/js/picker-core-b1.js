@@ -2915,7 +2915,7 @@
                 // 会在已有号之上续接 → 表现为"扫一次编号增加一次"、污染手动拾取序号。
                 // 故扫描态跳过序号分配：候选保持 _pickNos 空（面板显示 [-]），待用户在面板勾选时再按
                 // 勾选顺序赋予步骤序号（见 panel-core-b.js __packageStep / 勾选逻辑）。
-                if (!window.__scanning) {
+                if (!window.__scanning && !window.__applyingState) {
                   window.__rolePickSeq += 1;
                   var __thisIndex = window.__rolePickSeq;
                   // 每次真正分配出新号，更新"只增不回退"的最大号基线（供后续续接，不被 __rolePicks 重建干扰）。
@@ -3078,7 +3078,7 @@
                     existing.hover = !!isHover;
                     // 【index 需求】重复拾取同一元素：把当前动作序号追加到 _pickNos（如 [1,5]）。
                     // 扫描态守卫：候选不分配序号。
-                    if (!window.__scanning) __appendPickNo(existing);
+                    if (!window.__scanning && !window.__applyingState) __appendPickNo(existing);
                     // 【诊断】dup 命中分支：打印 existing 是否拿到、回传前 _pickNos、__roleOnPick 类型、序列化是否成功。
                     try {
                       var __wire = __pickToWire(existing);

@@ -40,6 +40,18 @@ final class RolePickerNlsCache {
     }
 
     static String buildNlsReverseJson(List<String> nlsFiles) {
+        // 【开关·彻底禁用 NLS key 体系】-DrolePicker.nls.disabled=true 时不构建任何反查表：
+        //   ⇒ 浏览器侧拿不到 key，pick 不带 resolvedKey；
+        //   ⇒ 面板不显示 key（面板展示已一并移除）；
+        //   ⇒ 生成页面类不产生 key = 与 @RoleFile（生成侧 allowKey 门控）；
+        //   ⇒ i18n 策略不会出现，元素一律按 role/name（或 id/css）定位。
+        // 适用场景：项目里根本没有 nls 文件，不希望"key"这种概念出现（用户反馈："我其实没有任何 nls file，
+        // 不应该有 key 这种存在"）。它比"调用点别传 nlsFiles"更强：即便上层按约定传了文件也一律不用 key。
+        if (Boolean.getBoolean(RolePickerConstants.NLS_DISABLED_PROPERTY)) {
+            log.info("[picker] NLS disabled by -D{}=true; key-based locating is turned off entirely.",
+                    RolePickerConstants.NLS_DISABLED_PROPERTY);
+            return "{}";
+        }
         if (nlsFiles == null || nlsFiles.isEmpty()) return "{}";
         // 稳定 key：排序 + 去重 + 去首尾空白，忽略传参顺序差异（["a","b"] 与 ["b","a"] 命中同一缓存）
         String key = nlsFiles.stream()

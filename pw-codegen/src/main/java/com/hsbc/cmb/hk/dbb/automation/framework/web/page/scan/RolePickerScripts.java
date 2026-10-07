@@ -169,6 +169,9 @@ public final class RolePickerScripts {
     /** 把按页生成的页面类/步骤代码写入面板多 Tab 并更新状态。实参 a: {pageByPage, stepByPage, msg}。 */
     public static final String FILL_CODE_JS = loadScript("fill-code-js.js");
 
+    /** 把按页生成的<b>断言类</b>代码写入面板「断言」Tab。实参 a: {assertByPage, msg}。 */
+    public static final String FILL_ASSERT_JS = loadScript("fill-assert-js.js");
+
     /** 面板是否已挂载且渲染函数就绪。 */
     public static final String HAS_PANEL_JS = loadScript("has-panel-js.js");
 

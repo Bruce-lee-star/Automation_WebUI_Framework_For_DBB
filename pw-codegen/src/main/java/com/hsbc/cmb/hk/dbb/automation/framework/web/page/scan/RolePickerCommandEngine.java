@@ -457,12 +457,13 @@ public final class RolePickerCommandEngine {
                 // 修复：regionScanned 也按当前 snap（含浏览器侧 __steps 已封装的 step）生成 step 代码，
                 // 使每次区域点选刷新页面类的同时【保留并回填】已封装的步骤，不覆盖为空。
                 LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+                LinkedHashMap<String, String> codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
                 if (codePage != null && !codePage.isEmpty()) {
                     //  F-07（P1-7）：此处【必须保持选区态】。regionScanned 是「每次点击区域」的增量通知，
                     //  原实现首次点击即 END_REGION_SELECT + 回 IDLE —— 摘除了浏览器侧选区监听，
                     //  使「多选区域」静默退化为单选（第二个区域永远点不上，且不报错）。
                     //  收尾一律交给 regionDone（用户按 Esc 结束时回传，见 picker-core-b2.js#finish）。
-                    return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
+                    return new PickerResult(PickerAction.CONTINUE, codePage, codeStep, codeAssert,
                             "已扫描区域，页面类已更新（" + snap.entries.size() + " 个字段）；可继续点其他区域，按 Esc 结束选区");
                 }
             }
@@ -497,12 +498,14 @@ public final class RolePickerCommandEngine {
         }
         LinkedHashMap<String, String> codePage = null;
         LinkedHashMap<String, String> codeStep = null;
+        LinkedHashMap<String, String> codeAssert = null;
         int fieldCount = 0;
         try {
             PickSnapshot snap = readPickSnapshot(page);
             if (snap != null && !snap.entries.isEmpty()) {
                 codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
                 codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+                codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
                 fieldCount = snap.entries.size();
             }
         } catch (Exception e) {
@@ -514,7 +517,7 @@ public final class RolePickerCommandEngine {
         if (codePage == null || codePage.isEmpty()) {
             return new PickerResult(PickerAction.CONTINUE, null, null, "区域选择结束（未拾取到可定位元素）");
         }
-        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
+        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep, codeAssert,
                 "区域选择结束，已生成页面类（" + fieldCount + " 个字段）");
     }
 
@@ -541,15 +544,18 @@ public final class RolePickerCommandEngine {
         snap = RolePickerCodeAssembler.snapWithAutoStep(snap);
         LinkedHashMap<String, String> codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
         LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+        // 断言类：与步骤同源同序（同一次封装的勾选元素），独立成类 → 面板「断言」Tab
+        LinkedHashMap<String, String> codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
         // 注：切到步骤 Tab + 精准定位目标 step 由主循环 fillCode 后调用 window.__afterFillJump 统一处理
         // （该函数在浏览器侧读取 window.__pendingJump 记录的目标 step，避免此处提前切 tab 导致定位错位）。
         // 只计真正的 step 数（snap.steps）。页面级操作（closeCurrentPage/switchNewPage）是 step 内联的一行，
         // 不计入 step 总数，否则跨页操作后"封装为一个 step"会被误报成 2 个 step。
         int stepCount = (snap.steps != null ? snap.steps.size() : 0);
-        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
+        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep, codeAssert,
                 codeStep.isEmpty()
                         ? "（尚无封装的步骤：请先在「页面元素」勾选元素并点「封装为步骤」）"
-                        : ("已生成步骤代码：" + stepCount + " 个 step，页面类 " + snap.entries.size() + " 个字段"));
+                        : ("已生成步骤代码：" + stepCount + " 个 step，页面类 " + snap.entries.size() + " 个字段"
+                                + (codeAssert.isEmpty() ? "" : "，断言类 " + codeAssert.size() + " 个")));
     }
 
     private static PickerResult cmdRefreshCode(RolePickerContext ctx, Page page) {
@@ -594,6 +600,7 @@ public final class RolePickerCommandEngine {
         // 当前内容为准直接生成——重新扫描即可正常出现代码。
         LinkedHashMap<String, String> codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
         LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+        LinkedHashMap<String, String> codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
         String refreshMsg = "已删除选中元素，页面类 " + snap.entries.size() + " 个字段"
                 + (codeStep.isEmpty() ? "，当前无步骤代码" : "");
         // 【必须在此处直接回填】元素被删空时 codePage/codeStep 均为空 map，
@@ -601,7 +608,7 @@ public final class RolePickerCommandEngine {
         // 旧代码将永远残留在 Tab 上（删到一个不剩却还显示着完整页面类）。
         // 这里显式回填空内容，确保代码区随之清空，不留幽灵代码。
         for (Page p : pageNames.keySet()) {
-            if (!p.isClosed()) fillCode(p, codePage, codeStep, refreshMsg);
+            if (!p.isClosed()) fillCode(p, codePage, codeStep, codeAssert, refreshMsg);
         }
         // 已自行回填，故返回 null 代码体避免主循环重复 fillCode；
         // statusMsg 仍需返回（而非 null），否则 else 分支会用 null 覆盖掉状态栏文案。

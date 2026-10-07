@@ -12,13 +12,23 @@ public final class PickerResult {
     public final PickerAction action;
     public final LinkedHashMap<String, String> pageClassByPage;   // 页面类：pageClass → 源码
     public final LinkedHashMap<String, String> stepByPage;         // 步骤代码：pageClass → 源码视图
+    /** 断言类：pageClass → 源码（独立 *Assertions 类，与 stepByPage 同源同序，仅对勾选元素）。 */
+    public final LinkedHashMap<String, String> assertByPage;
     public final String statusMsg;
 
+    /** 兼容构造：不含断言类（面板「断言」Tab 留空）。 */
     public PickerResult(PickerAction action, LinkedHashMap<String, String> pageClassByPage,
                         LinkedHashMap<String, String> stepByPage, String statusMsg) {
+        this(action, pageClassByPage, stepByPage, null, statusMsg);
+    }
+
+    public PickerResult(PickerAction action, LinkedHashMap<String, String> pageClassByPage,
+                        LinkedHashMap<String, String> stepByPage,
+                        LinkedHashMap<String, String> assertByPage, String statusMsg) {
         this.action = action;
         this.pageClassByPage = pageClassByPage;
         this.stepByPage = stepByPage;
+        this.assertByPage = assertByPage;
         this.statusMsg = statusMsg;
     }
 }

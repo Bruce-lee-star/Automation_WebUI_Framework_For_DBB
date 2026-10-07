@@ -327,9 +327,13 @@
               var tabPage = mkTab('页面元素', 'page', true);
               var tabClass = mkTab('页面类', 'class', false);
               var tabStep = mkTab('步骤代码', 'step', false);
+              // 【断言 Tab】与「步骤代码」同源同序生成的独立 *Assertions 类（只对勾选元素）。
+              // 单独成 Tab 的原因：断言与操作生命周期不同（操作随流程改、断言是契约），分开展示才好 review。
+              var tabAssert = mkTab('断言', 'assert', false);
               tabBar.appendChild(tabPage);
               tabBar.appendChild(tabClass);
               tabBar.appendChild(tabStep);
+              tabBar.appendChild(tabAssert);
               window.__roleActiveTab = window.__roleActiveTab || 'page';
 
               // 焦点感知复制：优先按当前真实 DOM 焦点（activeElement）判断用户"聚焦在哪一块"，

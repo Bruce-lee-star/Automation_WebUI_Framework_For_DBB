@@ -944,11 +944,26 @@ public final class RoleElementPicker {
 
     /** 把按页生成的页面类/步骤代码分别写入面板的多 Tab，并更新状态 */
     static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage, LinkedHashMap<String, String> stepByPage, String msg) {
+        fillCode(page, pageClassByPage, stepByPage, null, msg);
+    }
+
+    /**
+     * 把按页生成的页面类/步骤代码/断言类分别写入面板的「页面类」「步骤代码」「断言」Tab，并更新状态。
+     *
+     * @param assertByPage 断言类：pageClass → 源码（与步骤同源同序，仅含勾选元素）；null/空则「断言」Tab 显示"（暂无生成）"
+     */
+    static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage,
+                         LinkedHashMap<String, String> stepByPage,
+                         LinkedHashMap<String, String> assertByPage, String msg) {
         // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate，
         // 点击"停止"后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
         pickerEval(page, RolePickerScripts.FILL_CODE_JS, RolePickerScripts.args(
                 "pageByPage", pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage,
                 "stepByPage", stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage,
+                "msg", msg == null ? "" : msg));
+        // 断言 Tab：独立资源 + 独立渲染入口（与步骤 Tab 解耦，任一为空都不影响另一个）
+        pickerEval(page, RolePickerScripts.FILL_ASSERT_JS, RolePickerScripts.args(
+                "assertByPage", assertByPage == null ? new LinkedHashMap<String, String>() : assertByPage,
                 "msg", msg == null ? "" : msg));
     }
 

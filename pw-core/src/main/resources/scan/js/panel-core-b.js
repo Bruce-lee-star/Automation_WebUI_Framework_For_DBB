@@ -21,11 +21,24 @@
               stepContent.appendChild(stepSubBar);
               stepContent.appendChild(stepAreas);
 
+              // 断言 Tab 内容区（结构与「步骤代码」Tab 完全一致：按 pageClass 分子 Tab + 只读 textarea）
+              var assertContent = document.createElement('div');
+              assertContent.style.cssText = 'flex:1;display:none;min-height:0;flex-direction:column;';
+              var assertSubBar = document.createElement('div');
+              assertSubBar.id = '__roleAssertSubTabBar';
+              assertSubBar.style.cssText = 'display:flex;gap:0;overflow-x:auto;background:#1b1b1b;border-bottom:1px solid #111;flex:0 0 auto;';
+              var assertAreas = document.createElement('div');
+              assertAreas.id = '__roleAssertAreas';
+              assertAreas.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;';
+              assertContent.appendChild(assertSubBar);
+              assertContent.appendChild(assertAreas);
+
               function showTab() {
                 var t = window.__roleActiveTab;
                 pageContent.style.display = (t === 'page') ? 'flex' : 'none';
                 classContent.style.display = (t === 'class') ? 'flex' : 'none';
                 stepContent.style.display = (t === 'step') ? 'flex' : 'none';
+                assertContent.style.display = (t === 'assert') ? 'flex' : 'none';
                 // 【修复"Tab 聚焦背景/状态文字颜色不生效"】
                 // 旧实现这里用硬编码 #1e1e1e/#2d2d2d 覆盖 mkTab 初始样式，导致聚焦 Tab 永远是深灰、
                 // 与未聚焦差异极小；且每次切 Tab 都把状态文字强制设为绿色 #43a047，在蓝色 header 上几乎不可读
@@ -40,6 +53,9 @@
                 tabStep.style.background = (t === 'step') ? '#1565c0' : '#2d2d2d';
                 tabStep.style.fontWeight = (t === 'step') ? 'bold' : 'normal';
                 tabStep.style.borderBottom = (t === 'step') ? '3px solid #42a5f5' : '3px solid transparent';
+                tabAssert.style.background = (t === 'assert') ? '#1565c0' : '#2d2d2d';
+                tabAssert.style.fontWeight = (t === 'assert') ? 'bold' : 'normal';
+                tabAssert.style.borderBottom = (t === 'assert') ? '3px solid #42a5f5' : '3px solid transparent';
                 // 切换 Tab 时复位「复制」按钮状态（避免上一轮"已复制"残留提示误导用户）。
                 // 注意：ICON.copy 是内联 SVG 字符串，必须用 innerHTML 注入才能渲染成图标；
                 // 若误用 textContent，SVG 标签会被当成纯文本显示，复制按钮变成一个 XML 字符串（图标"不显示/显示异常"）。
@@ -64,6 +80,17 @@
                 var st = document.getElementById('__roleStatus'); if (st) st.textContent = obj.msg || '';
                 try { localStorage.setItem('__rolePickerCode',
                   JSON.stringify({ pageByPage: pageMap, stepByPage: stepMap, msg: obj.msg || '' })); } catch (e) {}
+              };
+              /**
+               * 把按页生成的断言类源码写入「断言」Tab（复用 __renderCodeTabs 的分子 Tab 渲染）。
+               * 与步骤 Tab 同一套渲染：一个 pageClass 一个子 Tab + 只读 textarea，便于按页对照/复制。
+               */
+              window.__fillAssertTabs = function(obj) {
+                if (!obj) return;
+                var assertMap = obj.assertByPage || {};
+                __renderCodeTabs('__roleAssertSubTabBar', '__roleAssertAreas', assertMap, '__roleAssertArea');
+                try { localStorage.setItem('__rolePickerAssert',
+                  JSON.stringify({ assertByPage: assertMap })); } catch (e) {}
               };
               function __renderCodeTabs(barId, areasId, map, taPrefix) {
                 var bar = document.getElementById(barId);
@@ -156,6 +183,7 @@
               panel.appendChild(pageContent);
               panel.appendChild(classContent);
               panel.appendChild(stepContent);
+              panel.appendChild(assertContent);
               // 注：window.__renumberStep 已在 START 顶层（iframe 早退 return 之前）无条件定义，
               // 此处不再重复；保证顶层与 iframe 子文档的拾取依赖一致。
 

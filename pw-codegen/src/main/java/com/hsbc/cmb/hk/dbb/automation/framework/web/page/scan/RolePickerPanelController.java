@@ -291,7 +291,7 @@ public final class RolePickerPanelController {
                     // 避免只在当前页（如新页）显示、而默认页面板留空（之前"默认页没生成代码"的根因）。
                     for (Page p : pageNames.keySet()) {
                         if (!p.isClosed()) {
-                            fillCode(p, r.pageClassByPage, r.stepByPage, r.statusMsg);
+                            fillCode(p, r.pageClassByPage, r.stepByPage, r.assertByPage, r.statusMsg);
                             // 封装为步骤后：在当前命令页精准跳转到目标 step（切步骤 Tab + 激活子 Tab + 选中高亮）；
                             // 仅命令页执行，避免多页都跳；window.__pendingJump 未设置时 __afterFillJump 直接返回。
                             if (p.equals(page)) {
@@ -414,10 +414,11 @@ public final class RolePickerPanelController {
                                     new ArrayList<>(), new ArrayList<>()));
                     LinkedHashMap<String, String> autoPage = RolePickerCodeAssembler.buildPageClassCode(autoSnap.entries, packageName, pageClassName, nlsFiles);
                     LinkedHashMap<String, String> autoStep = RolePickerCodeAssembler.buildStepCode(autoSnap, packageName, stepClassName);
+                    LinkedHashMap<String, String> autoAssert = RolePickerCodeAssembler.buildAssertCode(autoSnap, packageName);
                     if (!autoPage.isEmpty() || !autoStep.isEmpty()) {
                         for (Page pg : pageNames.keySet()) {
                             if (!pg.isClosed()) {
-                                fillCode(pg, autoPage, autoStep, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
+                                fillCode(pg, autoPage, autoStep, autoAssert, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
                                 try { pickerEval(pg, RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
                                     RolePickerScripts.args(RolePickerConstants.STATE_KEY_AUTO_STEP_COUNT, autoSnap.steps.size())); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                             }

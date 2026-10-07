@@ -287,9 +287,15 @@ public final class RolePickerCommandEngine {
             if (snap != null && !snap.entries.isEmpty()) {
                 LinkedHashMap<String, String> codePage = RolePickerCodeAssembler.buildPageClassCode(snap.entries, packageName, pageClassName, nlsFiles);
                 if (codePage != null && !codePage.isEmpty()) {
+                    // 【修复"扫描后步骤代码/断言两个 Tab 被清空"】本路径原先只回填 pageClassByPage，step/assert 传
+                    // null；而面板 JS 把 null 与空 map 一视同仁（obj.stepByPage || {}）⇒ 两个 Tab 被渲染成
+                    // "（暂无生成）"，用户表现为"已生成的步骤（及其顺序）不见了"。此处按同一 snap 重新生成一并
+                    // 回填，使"整页扫描只更新页面类"不再连带清空已封装步骤与其同源断言。
+                    LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, ctx.stepClassName);
+                    LinkedHashMap<String, String> codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
                     // 扫描完成自动回 IDLE：面板按钮复位为"▶ 开始拾取"，页面点击不再拾取。
                     setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
-                    return new PickerResult(PickerAction.CONTINUE, codePage, null,
+                    return new PickerResult(PickerAction.CONTINUE, codePage, codeStep, codeAssert,
                             "整页扫描完成，已生成页面类（" + snap.entries.size() + " 个字段，" + added
                                     + " 个新增），可继续勾选元素封装步骤，或点 ⏹ 停止生成步骤代码");
                 }
@@ -760,6 +766,10 @@ public final class RolePickerCommandEngine {
             codePage.put(e.getKey(), RoleElementPageGenerator.generate(e.getValue(), packageName, e.getKey(), nlsFiles));
         }
         LinkedHashMap<String, String> codeStep = RolePickerCodeAssembler.buildStepCode(snap, packageName, stepClassName);
+        // 【修复"停止后「断言」Tab 为空（没有生成断言代码）」】本路径原先只生成 page/step，且用 PickerResult 的
+        // 兼容构造（assertByPage=null）⇒ 面板「断言」Tab 被渲染成"（暂无生成）"，用户表现为"没生成断言"。
+        // 断言与步骤同源（都由 snap.steps 派生），此处一并生成并回填。
+        LinkedHashMap<String, String> codeAssert = RolePickerCodeAssembler.buildAssertCode(snap, packageName);
         // 【diag-stop】停止并生成代码前，列印全部 entry 的最终 pickNos（生成器即据此按号展开 click）。
         log.info("[picker][diag-stop] ===== before buildStepCode: {} entries =====", allEntries.size());
         for (RoleEntry e : allEntries) {
@@ -791,9 +801,10 @@ public final class RolePickerCommandEngine {
                     + "，已反查 " + matched + " 个 key）" : "";
         // 停止即回 IDLE，面板按钮复位为"▶ 开始拾取"，页面点击不再拾取。
         setPickMode(pageNames.keySet().iterator().next(), PickMode.IDLE, pageNames);
-        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep,
+        String assertInfo = codeAssert.isEmpty() ? "" : "，断言类 " + codeAssert.size() + " 个（按页）";
+        return new PickerResult(PickerAction.CONTINUE, codePage, codeStep, codeAssert,
                 "已生成 " + entriesByPage.size() + " 个页面类 / " + allEntries.size()
-                        + " 个页面字段 / " + totalSteps + " 个 step" + nlsInfo);
+                        + " 个页面字段 / " + totalSteps + " 个 step" + assertInfo + nlsInfo);
     }
 
     static PickerResult runPickerCommand(RolePickerContext ctx, Page page, String cmd) {

@@ -160,6 +160,8 @@ final class RolePickerPanelSync {
         sig.append(pageClasses == null ? "*" : pageClasses.toString());
         List<RoleEntry> filtered = new ArrayList<>();
         String json;
+        // 写回明细：锁内采集（读的是可变字段，见上方 N-20 竞态说明），锁外仅在真正写回时输出。
+        List<String> syncDetail = null;
         synchronized (state) {
             for (RoleEntry e : state.values()) {
                 String pc = e.getPageClass();
@@ -173,12 +175,21 @@ final class RolePickerPanelSync {
                    .append('|').append(e.getPickNos() == null ? "" : e.getPickNos());
             }
             json = GSON.toJson(filtered);
-            for (RoleEntry e : filtered) {
-                Map<Object, Object> keySrc = new LinkedHashMap<>();
-                keySrc.put("_sigKey", e.getSigKey());
-                keySrc.put("_pageClass", e.getPageClass());
-                log.info("[picker][diag-sync] write-back key={} sigKey={} strategy={} pickNos={}",
-                        RolePickerPickParser.pickDedupKey(keySrc, e), e.getSigKey(), e.getStrategy(), e.getPickNos());
+            // 【修复"空闲时同一批元素每秒刷屏"】这里原先对每个元素直接 log.info 一条 [diag-sync]，
+            // 而 ETag 判重（下方 newSig.equals(prev)）在其之后才做 ⇒ 面板空闲、状态完全没变的每一轮
+            // （主循环 ~1s）都会把同一批元素重打一遍（实测同 3 个元素每秒重复、pickNos 恒为 []）。
+            // 该日志又必须在锁内（读的是可变字段，见上方 N-20 竞态说明），故改为：锁内只把明细收进
+            // 字符串（仅 DEBUG 开启时才算），真正发生写回时再输出——空闲轮次零日志、零字符串开销。
+            if (log.isDebugEnabled()) {
+                syncDetail = new ArrayList<>(filtered.size());
+                for (RoleEntry e : filtered) {
+                    Map<Object, Object> keySrc = new LinkedHashMap<>();
+                    keySrc.put("_sigKey", e.getSigKey());
+                    keySrc.put("_pageClass", e.getPageClass());
+                    syncDetail.add("[picker][diag-sync] write-back key=" + RolePickerPickParser.pickDedupKey(keySrc, e)
+                            + " sigKey=" + e.getSigKey() + " strategy=" + e.getStrategy()
+                            + " pickNos=" + e.getPickNos());
+                }
             }
         }
         try {
@@ -186,6 +197,15 @@ final class RolePickerPanelSync {
             String prev = LAST_SYNC_SIG.get(page);
             if (newSig.equals(prev)) return;
             LAST_SYNC_SIG.put(page, newSig);
+            // 只在"确实变了、要写回"时输出一条 INFO（空闲轮次在上一行就 return 了，不再刷屏）。
+            if (log.isInfoEnabled()) {
+                log.info("[picker][sync] panel write-back: {} element(s) changed", filtered.size());
+            }
+            if (syncDetail != null) {
+                for (String line : syncDetail) {
+                    log.debug("{}", line);
+                }
+            }
             String delJson = "[]";
             String syncJsonB64 = java.util.Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));

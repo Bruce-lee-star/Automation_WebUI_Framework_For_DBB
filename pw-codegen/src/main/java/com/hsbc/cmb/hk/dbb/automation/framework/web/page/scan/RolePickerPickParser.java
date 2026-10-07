@@ -90,21 +90,21 @@ final class RolePickerPickParser {
         String dedupKey;
         if (locatorIdentity) {
             String lk = RoleElementPageGenerator.locatorKey(e);
-            if (lk != null && !lk.isEmpty()) { dedupKey = pc + "|" + lk; log.info("[picker][diag-dedup] strategy={} branch=locatorIdentity key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw); return dedupKey; }
+            if (lk != null && !lk.isEmpty()) { dedupKey = pc + "|" + lk; log.debug("[picker][diag-dedup] strategy={} branch=locatorIdentity key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw); return dedupKey; }
         }
         // role/closeOp 分支：_sigKey 已内嵌 pageClass（JSON.stringify([_sig, pageClass])），
         // 与浏览器 __rolePicks 的 _sigKey 同构，删除/本地过滤均可精确命中，保持原行为。
-        if (sigKey != null) { dedupKey = String.valueOf(sigKey); log.info("[picker][diag-dedup] strategy={} branch=sigKey key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw); return dedupKey; }
+        if (sigKey != null) { dedupKey = String.valueOf(sigKey); log.debug("[picker][diag-dedup] strategy={} branch=sigKey key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw); return dedupKey; }
         // 【方案 B 兜底】_sigKey 缺失时绝不能退化成裸 _sig——否则 LoginPage / SetupSecondPwdPage
         // 上同名共用元素（Language、HSBC App tab、各页脚链接，_sig 完全相同）会共享同一裸键，
         // 删一页即误删另一页。此处一律前缀 pageClass，确保即使缺 _sigKey 也维持按页隔离。
         if (sig != null) {
             String s = String.valueOf(sig);
             dedupKey = pc.isEmpty() ? s : pc + "|" + s;
-            log.info("[picker][diag-dedup] strategy={} branch=fallback(_sig) key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw);
+            log.debug("[picker][diag-dedup] strategy={} branch=fallback(_sig) key={} _sigKey(raw)={}", strategy, dedupKey, sigKeyRaw);
             return dedupKey;
         }
-        log.info("[picker][diag-dedup] strategy={} branch=EMPTY key=\"\" _sigKey(raw)={}", strategy, sigKeyRaw);
+        log.debug("[picker][diag-dedup] strategy={} branch=EMPTY key=\"\" _sigKey(raw)={}", strategy, sigKeyRaw);
         return "";
     }
 
@@ -197,7 +197,7 @@ final class RolePickerPickParser {
             // 否则保留 existing 的累积序号。唯一能整体覆盖序号的是 repickNos（overwriteNos=true 路径）。
             // 这样既保留"首次无序号候选"的正确初始化，又杜绝短值覆盖长值。
             java.util.List<Integer> chosen = pickMoreComplete(exNos, inNos);
-            log.info("[picker][diag-merge] key={} incomingNos={} existingNos={} -> chosenNos={}", key, inNos, exNos, (chosen == null ? "null" : chosen));
+            log.debug("[picker][diag-merge] key={} incomingNos={} existingNos={} -> chosenNos={}", key, inNos, exNos, (chosen == null ? "null" : chosen));
             if (chosen != null) {
                 // 【修复"dup 回传的完整 [2,5,6,7,9] 被 CONSOLE 空回传覆盖回 [2]"】
                 // 旧实现用 `if (existing != incoming) existing.setPickNos(...)` 早退：当 BIND 通道与 CONSOLE 通道

@@ -59,6 +59,9 @@ public final class RouteDispatcher {
 
     public void dispatch(Route route, String pattern, RouteRuntime runtime) {
         dispatchCount.incrementAndGet();
+        // 单次命中的耗时上下文：从事件线程进入派发起算，随链下传，由「结果」证据写出
+        // 「命中 → 动作落地」耗时与 DELAY 实测延迟（见 HitTrace）。
+        HitTrace trace = new HitTrace();
         // 1) 唯一 claim（防重放 / 防并发终结）
         RouteClaim claim = runtime.claims().tryClaim(route);
         if (claim == null) {
@@ -137,10 +140,10 @@ public final class RouteDispatcher {
         //    单 handler 内异步链式执行：DELAY 挂起到点后继续 MODIFY / MOCK；MOCK 命中即短路 fulfill。
         try {
             Consumer<String> terminal = (modifiedBody) ->
-                    mockOrResume(route, spec, claim, runtime, hasMock, modifiedBody);
+                    mockOrResume(route, spec, claim, runtime, hasMock, modifiedBody, trace);
             Runnable afterDelay = () -> modifyStage(route, spec, claim, runtime, terminal);
             if (hasDelay) {
-                dispatchDelayChain(route, spec, claim, runtime, afterDelay);
+                dispatchDelayChain(route, spec, claim, runtime, afterDelay, trace);
             } else {
                 afterDelay.run();
             }
@@ -162,24 +165,24 @@ public final class RouteDispatcher {
      * （MODIFY 的 headers/method 与 modifiedBody 经此方法上路）。
      */
     private void mockOrResume(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime,
-                              boolean hasMock, String modifiedBody) {
+                              boolean hasMock, String modifiedBody, HitTrace trace) {
         // 事件线程先把请求句柄取好：resume 之后 Route 已终结，仍从句柄取"完整请求信息"最稳妥。
         Request request = route.request();
         if (hasMock) {
-            dispatchMock(route, spec, claim, runtime);
+            dispatchMock(route, spec, claim, runtime, trace);
         } else if (spec.hasModifyFields() || modifiedBody != null) {
             // MODIFY 改了 headers/method/body → 经 ResumeOptions 上路（无修改则等价放行）。
             RouteAction.resume(route, spec, modifiedBody);
             runtime.claims().markTerminal(claim, true);
             reportOutcome(spec.capability().name() + " RESULT", spec, request, null, null, null,
-                    "resume real network; " + modifyLine(spec, modifiedBody));
+                    "resume real network; " + modifyLine(spec, modifiedBody), trace);
         } else {
             // 纯放行（DELAY/MONITOR/无修改）：与原 MONITOR/DELAY 行为一致 = route.resume() 无参。
             RouteAction.resume(route);
             runtime.claims().markTerminal(claim, true);
             if (spec.capability() == RouteCapability.DELAY) {
                 reportOutcome("DELAY RESULT", spec, request, null, null, null,
-                        "delayed " + spec.delayMs() + "ms then resumed real network");
+                        "delayed " + spec.delayMs() + "ms then resumed real network", trace);
             }
         }
     }
@@ -236,14 +239,18 @@ public final class RouteDispatcher {
     }
 
     /**
-     * 结果证据上报：请求信息 + 规则声明 + 实际动作（+ 伪造/改写后的响应，若有）。
+     * 结果证据上报：请求信息 + 规则声明 + 实际动作（+ 伪造/改写后的响应，若有）+ <b>耗时</b>。
      *
      * <p>覆盖 MOCK / MODIFY_REQUEST / DELAY 三种"自己产出结果"的能力；MONITOR / CAPTURE 的响应侧结果
      * 由 {@code MonitorSink}/{@code CaptureSink} 在定案时上报。旁路：任何异常只记 DEBUG。</p>
+     *
+     * <p><b>耗时两行不可省</b>（{@code elapsed} / {@code delay}）：没有实测值，"这次延迟准不准、
+     * 这条 mock 在框架里花了多久"就只能靠猜 —— 上一轮的 RESULT 块正因缺这两行而无法回答任何性能问题
+     * （见 {@link HitTrace}）。DELAY 的 {@code actual} 含调度池排队时间，是判断调度是否被淹没的直接依据。</p>
      */
     private static void reportOutcome(String operation, ApiSpec spec, Request request,
                                       Integer status, Map<String, String> responseHeaders,
-                                      String responseBody, String actionLine) {
+                                      String responseBody, String actionLine, HitTrace trace) {
         try {
             String result = status == null
                     ? "APPLIED (real response is reported by the matching MONITOR/CAPTURE block)"
@@ -254,9 +261,55 @@ public final class RouteDispatcher {
                                     preview(responseBody), false, -1, false)
                             .detailWith("rule      : " + ruleLine(spec, request),
                                     "applied   : " + actionLine,
-                                    "result    : " + result));
+                                    "result    : " + result,
+                                    trace == null ? null : trace.elapsedLine(),
+                                    trace == null ? null : trace.delayLine()));
         } catch (Throwable t) {
             LOGGER.debug("[Route] outcome evidence skipped (non-fatal): {}", t.toString());
+        }
+    }
+
+    /**
+     * 单次命中的耗时上下文：随派发链向下传递（DELAY → MODIFY → MOCK/放行），
+     * 最终由 {@link #reportOutcome} 写成证据里的 {@code elapsed} / {@code delay} 两行。
+     *
+     * <p>起点是<b>进入派发</b>（含 claim、匹配、证据构造），所以 {@code elapsed} 是"浏览器请求 → 框架动作落地"
+     * 的实际停顿；{@code delay} 的 {@code actual} 从"投递调度之前"起算，因此<b>包含调度池排队</b> ——
+     * 这是判断"延迟不准"是网络还是调度饱和的唯一直接证据（配合 {@code RouteDelayScheduler.rejectedCount()}）。</p>
+     */
+    private static final class HitTrace {
+
+        private final long startNs = System.nanoTime();
+
+        /** DELAY 申请值（-1 = 本次命中不是 DELAY）。 */
+        private volatile long delayRequestedMs = -1L;
+
+        /** DELAY 实测值（-1 = 尚未记录）。 */
+        private volatile long delayActualMs = -1L;
+
+        /** 「命中 → 动作落地」耗时（毫秒）。 */
+        long elapsedMs() {
+            return (System.nanoTime() - startNs) / 1_000_000L;
+        }
+
+        void markDelay(long requestedMs, long actualMs) {
+            this.delayRequestedMs = requestedMs;
+            this.delayActualMs = actualMs;
+        }
+
+        /** 耗时行（始终有值）。 */
+        String elapsedLine() {
+            return "elapsed   : " + elapsedMs() + "ms (route hit → applied)";
+        }
+
+        /** 延迟实测行；非 DELAY 命中返回 {@code null}（{@code detailWith} 会跳过空行）。 */
+        String delayLine() {
+            if (delayRequestedMs < 0 || delayActualMs < 0) {
+                return null;
+            }
+            long lag = delayActualMs - delayRequestedMs;
+            return "delay     : requested=" + delayRequestedMs + "ms actual=" + delayActualMs
+                    + "ms lag=" + (lag >= 0 ? "+" : "") + lag + "ms";
         }
     }
 
@@ -279,7 +332,7 @@ public final class RouteDispatcher {
     }
 
     /** MOCK：静态伪造直接 fulfill；intercept / 字段替换交 IO 线程。 */
-    private void dispatchMock(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime) {
+    private void dispatchMock(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime, HitTrace trace) {
         // 事件线程取好请求句柄：IO 线程的 fulfill 分支也要用同一份"完整请求信息"上报结果
         Request request = route.request();
         boolean hasStaticBody = spec.mockStatus() != null || spec.mockBody() != null
@@ -291,7 +344,7 @@ public final class RouteDispatcher {
             reportOutcome("MOCK RESULT", spec, request, spec.mockStatus(), spec.mockHeaders(), spec.mockBody(),
                     "static fulfill (status=" + (spec.mockStatus() == null ? "default 200" : spec.mockStatus())
                             + ", body=" + (spec.mockBody() == null ? "empty"
-                                    : spec.mockBody().length() + " chars") + ")");
+                                    : spec.mockBody().length() + " chars") + ")", trace);
             return;
         }
         // 需要 IO：intercept fetch（无静态体）或 字段替换（静态体 / 真实响应）
@@ -325,15 +378,18 @@ public final class RouteDispatcher {
                     runtime.claims().markTerminal(claim, true);
                     reportOutcome("MOCK RESULT", spec, request, spec.mockStatus(), headers, replaced.body(),
                             "static body + field replacement (replacePaths=" + spec.mockReplacements().keySet()
-                                    + ", failures=" + replaced.failures().size() + ")");
+                                    + ", failures=" + replaced.failures().size() + ")", trace);
                     return;
                 }
                 // intercept：用事件线程取好的快照 + context.request() 取真实响应（不依赖 frame/Request 句柄）
+                // fetchMs 计入结果证据：这是框架在 IO 线程上真做的一次网络往返，是 intercept 的主成本项。
                 Optional<APIResponse> response = Optional.empty();
+                long fetchStartNs = System.nanoTime();
                 if (fallbackCtx != null && fallbackSnapshot != null) {
                     response = runtime.ops().tryRun("route.fetch",
                             () -> RouteAction.fetch(fallbackCtx, fallbackSnapshot));
                 }
+                long fetchMs = (System.nanoTime() - fetchStartNs) / 1_000_000L;
                 if (response.isEmpty()) {
                     // fetch 失败 / 预算耗尽 → fail-open（若尚未被巡检兜底）
                     if (!claim.isTerminal()) {
@@ -350,7 +406,8 @@ public final class RouteDispatcher {
                         runtime.claims().markTerminal(claim, true);
                         reportOutcome("MOCK RESULT", spec, request, apiResponse.status(), apiResponse.headers(), null,
                                 "intercept: replay real response as-is "
-                                        + "(body not read here; full body in the matching CAPTURE block)");
+                                        + "(fetch=" + fetchMs + "ms; body not read here;"
+                                        + " full body in the matching CAPTURE block)", trace);
                         return;
                     }
                     String contentType = apiResponse.headers().get("content-type");
@@ -365,7 +422,8 @@ public final class RouteDispatcher {
                             replaced.body(),
                             "intercept real response + field replacement (replacePaths="
                                     + spec.mockReplacements().keySet()
-                                    + ", failures=" + replaced.failures().size() + ")");
+                                    + ", failures=" + replaced.failures().size()
+                                    + ", fetch=" + fetchMs + "ms)", trace);
                 } finally {
                     // 响应体已消费（fulfill + 读 body/status/headers），立即释放句柄，
                     // 避免 body buffer 滞留至 GC/context 关闭（对原 route.fetch 与 replay 路径同时生效）
@@ -466,7 +524,7 @@ public final class RouteDispatcher {
      * 因此<b>绝不允许在调度延迟任务之后立即 resume</b>（历史缺陷：立即放行导致 delay 空操作）。</p>
      */
     private void dispatchDelayChain(Route route, ApiSpec spec, RouteClaim claim, RouteRuntime runtime,
-                                    Runnable afterDelay) {
+                                    Runnable afterDelay, HitTrace trace) {
         if (!acquireIoSlot(claim, runtime)) {
             RouteAction.fallback(route);
             runtime.claims().markTerminal(claim, false);
@@ -481,16 +539,20 @@ public final class RouteDispatcher {
             delay = min + (long) (Math.random() * (max - min));
         }
         final long effectiveDelay = Math.min(delay, MAX_DELAY_MS);
+        final long requestedMs = effectiveDelay;
         boolean submitted = runtime.io().trySubmit("delay:" + spec.pattern(), () -> {
             if (claim.isTerminal()) {
                 return; // sweep 已兜底（fallback 已放行）
             }
             // 事件线程已返回 pending，请求由驱动挂起。延迟到点后唯一终结路径 = 继续链路（或 sweep 兜底）。
+            // 计时起点取"投递调度之前"：实测值因此同时含调度池排队时间 —— 正是要观测的"延迟是否准时"。
+            final long scheduledNs = System.nanoTime();
             com.hsbc.cmb.hk.dbb.automation.framework.route.exec.RouteDelayScheduler
                     .delay(effectiveDelay, () -> {
                         if (claim.isTerminal()) {
                             return; // sweep already settled (fallback resumed)
                         }
+                        trace.markDelay(requestedMs, (System.nanoTime() - scheduledNs) / 1_000_000L);
                         afterDelay.run();
                     });
         });

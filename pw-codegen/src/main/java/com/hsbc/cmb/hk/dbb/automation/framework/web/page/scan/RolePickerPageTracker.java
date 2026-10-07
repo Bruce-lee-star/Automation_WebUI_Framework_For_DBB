@@ -174,7 +174,9 @@ final class RolePickerPageTracker {
         ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
         // 暴露会话级 URL→页类 映射给回传桥（供其在"主循环被慢 evaluate 卡住"时按当前 URL 即时解析）。
-        try { CTX_URL_TO_CLASS.putIfAbsent(p.context(), urlToClass); } catch (Exception ignore) { /* 页面/上下文竞态：忽略 */ }
+        // 用 put 而非 putIfAbsent：同一 context 只会有同一个 urlToClass 引用，重复写等价（且避免
+        // spotbugs RV_RETURN_VALUE_OF_PUTIFABSENT_IGNORED）。
+        try { CTX_URL_TO_CLASS.put(p.context(), urlToClass); } catch (Exception ignore) { /* 页面/上下文竞态：忽略 */ }
         try {
             String curCls = pageNames.get(p);
             String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);

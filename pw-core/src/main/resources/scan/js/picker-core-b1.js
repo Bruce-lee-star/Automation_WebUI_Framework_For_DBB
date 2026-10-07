@@ -2391,6 +2391,25 @@
 
 
               window.__recordPick = function(target, isHover) {
+                // 【判定证据·拾取入口】逐次记录 __recordPick 的调用与性质。为什么需要它：
+                //   现场 19s 内用户只点了约 8 次，号却涨到 155（≈8 个号/秒，比点击高 20 倍），且新页元素
+                //   带着"它出现之前就已铸出"的号 ⇒ 只可能是：(甲) 非点击事件（最可能是 hover/mousemove）
+                //   在反复进入 record 并铸号；(乙) 号经回灌/并集被搬进该条目。hovers=true 且与 [mint] 同频
+                //   即证实(甲)。仅前 300 条，前缀 [picker-diag] 会被 console 桥转发进 Java 日志。
+                try {
+                  window.__recDiag = (window.__recDiag || 0) + 1;
+                  if (window.__recDiag <= 300) {
+                    var __tSig = '';
+                    try { __tSig = (target && typeof window.__pickSig === 'function') ? window.__pickSig(target) : ''; } catch (e) {}
+                    console.log('[picker-diag][record] n=' + window.__recDiag
+                      + ' hover=' + !!isHover
+                      + ' active=' + !!window.__rolePickActive
+                      + ' scanning=' + !!window.__scanning
+                      + ' applying=' + !!window.__applyingState
+                      + ' seq=' + window.__rolePickSeq
+                      + ' targetSig=' + __tSig);
+                  }
+                } catch (e) {}
 
 
                 // 性能/正确性：仅拾取激活态才记录（点击/悬停），避免 stop 后残留监听或导航瞬间
@@ -2938,13 +2957,18 @@
                   // 异常区间（正常一次点击远小于 20），把本次铸号的调用栈打出来 —— console.log 会被
                   // console 桥转发进 Java 日志，故一份 Java 日志即可看到 [mint-stack] 来自哪个函数/事件。
                   try {
-                    if (typeof __thisIndex === 'number' && __thisIndex > 20) {
-                      var __st = (new Error().stack || '').split('\n').slice(1, 6).join(' | ').replace(/\s+/g, ' ');
-                      console.log('[picker-diag][mint-stack] no=' + __thisIndex
-                        + ' scanning=' + !!window.__scanning
-                        + ' trusted=' + (window.__lastPickTrusted === true)
-                        + ' sig=' + ((p && p._sigKey) || '')
-                        + ' stack=' + __st);
+                    if (typeof __thisIndex === 'number' && __thisIndex > 0) {
+                      window.__mintDiag = (window.__mintDiag || 0) + 1;
+                      if (window.__mintDiag <= 300) {
+                        var __st = (new Error().stack || '').split('\n').slice(1, 5).join(' | ').replace(/\s+/g, ' ');
+                        console.log('[picker-diag][mint] n=' + window.__mintDiag
+                          + ' no=' + __thisIndex
+                          + ' hover=' + !!isHover
+                          + ' scanning=' + !!window.__scanning
+                          + ' applying=' + !!window.__applyingState
+                          + ' sig=' + ((p && p._sigKey) || '')
+                          + ' stack=' + __st);
+                      }
                     }
                   } catch (e) {}
                   if (!Array.isArray(p._pickNos)) p._pickNos = [];

@@ -265,8 +265,8 @@ test('重放抑制时守卫 auto-focus，且写回不压低单调序号基线', 
   const sync = readRes('sync-panel-to-browser-js.js');
   assert.ok(!/window\.__rolePickSeq=__ns\.length;\s*window\.__roleMaxNo=__ns\.length;/.test(sync),
     'sync-panel-to-browser 又把 __rolePickSeq/__roleMaxNo 直接置为 __ns.length（压低单调基线）');
-  assert.ok(/__rolePickSeq=\(window\.__rolePickSeq>__ns\.length\?window\.__rolePickSeq:__ns\.length\)/.test(sync),
-    '未找到"取 max(当前, __ns.length)"的单调保留写法');
+  assert.ok(/真实最大号/.test(sync) && /__ns\[__ns\.length-1\]/.test(sync),
+    '未找到"单调基线取真实最大号"的写法（全局重编号移除后，用号的数量做基线会让计数器回退撞号）');
 });
 
 // ---------------------------------------------------------------------------
@@ -283,6 +283,23 @@ test('回灌写回：序号并集必须限定为“大于 Java 最大号的新�
     'sync-panel-to-browser 又出现 __old.concat(o._pickNos) 的无条件并集 —— 号会跨轮交叉累积');
   assert.ok(/__o2>__jmax/.test(sync) && /__jmax/.test(sync),
     '未找到“只并入大于 Java 最大号的旧号”（__o2>__jmax）的受限并集');
+});
+
+// ---------------------------------------------------------------------------
+// T13: 回灌写回【不得重命名序号】（序号无限膨胀的根因）。
+//   现场证据：19s 内用户只点了约 8 次，号却涨到 155（≈8 号/秒）；单元素 39~45 个号、
+//   多个元素共享同一批号（同一号同时出现在 title_username_page / user_name / title_steps_activate_msk）、
+//   且新页元素带着"它出现之前就已铸出"的号。
+//   代码证据：sync-panel-to-browser-js.js 末尾把两侧所有号排序后重排成 1..N 写回每个 pick（全局重编号），
+//   而 RolePickerPickParser#pickMoreComplete 的注释明写"始终返回并集" ⇒ 每轮改名的号都被当作新号并集进来。
+//   回灌必须原样保留 Java 的权威号；紧凑化只在用户显式删除（repickNos / overwriteNos）时做。
+// ---------------------------------------------------------------------------
+test('回灌不得重命名序号（根因：全局重编号 + Java 并集 = 跨轮无限膨胀）', function () {
+  const sync = readRes('sync-panel-to-browser-js.js');
+  assert.ok(!/__p2\._pickNos=__nn;\s*__p2\._pickSeq=/.test(sync),
+    'sync-panel-to-browser 又出现全局重编号写回（把 _pickNos 赋值为重排后的 __nn）—— 号每轮被改名，跨轮无限膨胀');
+  assert.ok(/真实最大号/.test(sync),
+    '未找到“单调基线取真实最大号”的实现说明（重编号移除后不能用号的数量做基线）');
 });
 
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

@@ -3077,10 +3077,18 @@
                   // 每轮静默重放都会把面板拉回拾取元素所在页——这正是"选不回该页签 / 看不到上一页的元素"的成因。
                   try {
                     if (!__samePageSameSig && pick && pick._pageClass) {
-                      if (window.__roleActivePageClass !== pick._pageClass) {
-                        window.__roleActivePageClass = pick._pageClass;
+                      // 【修复"URL 变化后，手工切回上一页页签又被拉走 ⇒ 面板上缺少变化之前的元素"】
+                      // 自动定位只做【每个页类一次】：首次在该页拾取时把面板切到该页（符合"我刚点的是这页"的
+                      // 直觉），此后用户手动选择的页签一律尊重 —— 不再被后续拾取/重放缓存的页类强切。
+                      // 之前每次拾取都无条件切页签，用户切回 LogonPage 看变化之前的元素，1 秒内就被拉回新页。
+                      if (!window.__roleAutoFocusedPages) window.__roleAutoFocusedPages = {};
+                      if (!window.__roleAutoFocusedPages[pick._pageClass]) {
+                        window.__roleAutoFocusedPages[pick._pageClass] = true;
+                        if (window.__roleActivePageClass !== pick._pageClass) {
+                          window.__roleActivePageClass = pick._pageClass;
+                          if (typeof window.__renderPicks === 'function') window.__renderPicks();
+                        }
                       }
-                      if (typeof window.__renderPicks === 'function') window.__renderPicks();
                     }
                   } catch (e) { /* panel not ready: ignore */ }
 

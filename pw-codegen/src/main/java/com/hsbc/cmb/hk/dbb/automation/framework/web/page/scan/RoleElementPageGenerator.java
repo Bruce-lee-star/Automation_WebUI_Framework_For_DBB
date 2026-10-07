@@ -136,6 +136,21 @@ public final class RoleElementPageGenerator {
      * 避免各自命名导致 Tab1 与 Tab2 字段名不一致。
      */
     public static List<GeneratedField> assignFields(List<RoleEntry> entries) {
+        return assignFields(entries, true);
+    }
+
+    /**
+     * 同 {@link #assignFields(List)}，但可关闭「用 NLS key 定位」。
+     *
+     * <p>{@code allowKey=false} 时：即便元素能反查到 NLS key（resolvedKey），也一律改用可访问名定位
+     * （{@code name = "..."}），字段名同样按该名字派生。
+     *
+     * <p>为何必须由调用方声明：{@code key = "..."} 依赖类级 {@code @RoleFile} 才能解析，而 {@code @RoleFile}
+     * 只在<b>传入 NLS 文件</b>时才生成（见 {@link #generate(List, String, String, String...)}）。不传 NLS
+     * 却输出 {@code key=} 时，产物里没有任何 NLS 表 ⇒ 该定位器运行期无法解析（用户反馈：
+     * 「我没传 nls file，元素定位不应该有 key=」）。
+     */
+    public static List<GeneratedField> assignFields(List<RoleEntry> entries, boolean allowKey) {
         List<GeneratedField> specs = new ArrayList<>();
         Set<String> usedNames = new HashSet<>();
         Set<String> seenLocators = new HashSet<>();
@@ -151,13 +166,13 @@ public final class RoleElementPageGenerator {
             }
             String sig = locatorKey(e);
             if (!seenLocators.add(sig)) continue;
-            specs.add(makeField(e, specs.size(), usedNames));
+            specs.add(makeField(e, specs.size(), usedNames, allowKey));
         }
         return specs;
     }
 
     /** 计算单个元素的字段名 + 注解（与 appendField/appendRoleField/appendSelectorField 旧逻辑一致，仅改为返回结构化结果）。 */
-    private static GeneratedField makeField(RoleEntry e, int idx, Set<String> usedNames) {
+    private static GeneratedField makeField(RoleEntry e, int idx, Set<String> usedNames, boolean allowKey) {
         // iframe 层级前缀：让嵌套 iframe 内的元素字段名带归属层级（如 frameOneIframe1），
         // 消除「iframe1」这类仅靠标题文字、看不出位于哪个 iframe 的语义模糊命名。
         String framePrefix = framePrefix(e.getFramePath());
@@ -165,7 +180,8 @@ public final class RoleElementPageGenerator {
             String roleConst = toAriaRoleConst(e.getRole());
             String name = e.getName();
             String resolvedKey = e.getResolvedKey();
-            boolean matched = resolvedKey != null && !resolvedKey.isBlank();
+            // 【修复「没传 nls file 却生成 key= 定位」】allowKey=false ⇒ 不认 key：改用可访问名定位并据此命名字段。
+            boolean matched = allowKey && resolvedKey != null && !resolvedKey.isBlank();
             String fieldBase = matched ? resolvedKey : name;
             String field = toFieldName(framePrefix, fieldBase, e.getRole(), idx, usedNames);
             StringBuilder ann = new StringBuilder("    @RoleElement(role = AriaRole.").append(roleConst);
@@ -187,7 +203,8 @@ public final class RoleElementPageGenerator {
         }
         String strategy = e.getStrategy();
         String resolvedKey = e.getResolvedKey();
-        boolean matched = resolvedKey != null && !resolvedKey.isBlank();
+        // 同上：未传 NLS 文件时不使用 key 定位，改用语义名(name)/文本。
+        boolean matched = allowKey && resolvedKey != null && !resolvedKey.isBlank();
         String base = matched ? resolvedKey
                 : ((e.getName() != null && !e.getName().isBlank())
                     ? e.getName() : selectorLabel(strategy, locatingSelector(e)));
@@ -373,7 +390,10 @@ public final class RoleElementPageGenerator {
      */
     public static String generate(List<RoleEntry> entries, String packageName,
                                   String pageClassName, String... nlsFiles) {
-        List<GeneratedField> specs = assignFields(entries);
+        // 【修复「没传 nls file 却生成 key= 定位」】只有确实会生成类级 @RoleFile（即传了 NLS 文件）时，
+        // 才允许用 NLS key 定位；否则一律退化为可访问名(name)/文本定位，保证产物无需 NLS 表即可运行。
+        boolean allowNlsKey = (nlsFiles != null && nlsFiles.length > 0);
+        List<GeneratedField> specs = assignFields(entries, allowNlsKey);
         StringBuilder fields = new StringBuilder();
         boolean hasRole = false;          // 任意 @RoleElement 字段（角色或语义）
         boolean hasAriaRole = false;      // 角色策略字段（需 import AriaRole 常量）

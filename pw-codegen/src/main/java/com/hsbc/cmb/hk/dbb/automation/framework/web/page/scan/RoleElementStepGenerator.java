@@ -23,6 +23,32 @@ public final class RoleElementStepGenerator {
 
     private RoleElementStepGenerator() {}
 
+    /**
+     * {@link #generatePerPage} 的“可观测性注记”载体（全部为注释注入，不改变任何方法名与运行行为）。
+     *
+     * <p>用途是消除两种"面板看着对、产物看着不对"的误读：
+     * <ol>
+     *   <li>{@code panelStepIndexByPage}：多页时每份按页视图的 {@code stepN} 从 1 重新计数
+     *       （Java 方法名只在类内唯一，必须如此），与面板的<b>全局</b>封装序号必然不同；</li>
+     *   <li>{@code droppedByPage}：生成前对账把"已删除元素的引用"从 step 中剔除后，产物里会"凭空少一行"。</li>
+     * </ol>
+     * 两者均为纯注释；不传（null）时产物与旧版逐字节一致。
+     */
+    public static final class ViewNotes {
+
+        /** 页面类名 → 该页各 step 在面板中的全局封装序号（与 stepsByPage 同序同长，可为 null）。 */
+        public final LinkedHashMap<String, List<Integer>> panelStepIndexByPage;
+
+        /** 页面类名 → 生成前对账丢弃的已删除元素引用（可读标签，可为 null）。 */
+        public final LinkedHashMap<String, List<String>> droppedByPage;
+
+        public ViewNotes(LinkedHashMap<String, List<Integer>> panelStepIndexByPage,
+                         LinkedHashMap<String, List<String>> droppedByPage) {
+            this.panelStepIndexByPage = panelStepIndexByPage;
+            this.droppedByPage = droppedByPage;
+        }
+    }
+
     /** 按角色 / 策略推断元素操作（自动推断，无需用户手动选择）。 */
     private static String operationFor(RoleEntry e) {
         // 勾选类元素（checkbox/radio）优先于 hover：用户点击 checkbox/radio 的语义是「设置勾选状态」，
@@ -874,6 +900,25 @@ public final class RoleElementStepGenerator {
             LinkedHashMap<String, List<RoleEntry>> entriesByPage,
             LinkedHashMap<String, List<String>> opsByPage,
             String packageName, String stepClassName) {
+        return generatePerPage(stepsByPage, entriesByPage, opsByPage, null, packageName, stepClassName);
+    }
+
+    /**
+     * 同 {@link #generatePerPage(LinkedHashMap, LinkedHashMap, LinkedHashMap, String, String)}，
+     * 额外接受 {@link ViewNotes} 以在产物源码里注入两类注释：
+     * <ul>
+     *   <li>每个 {@code stepN} 前标注它是<b>面板第几个「封装为步骤」</b>（多页时与本页内的 stepN 编号不同）；
+     *       跨页 step 另列出其中属于其它页的元素页；</li>
+     *   <li>该页在生成前对账中被丢弃的已删除元素引用清单。</li>
+     * </ul>
+     * 纯注释，不影响方法名、注解与语句，因此不影响编译与运行。
+     */
+    public static LinkedHashMap<String, String> generatePerPage(
+            LinkedHashMap<String, List<List<RoleEntry>>> stepsByPage,
+            LinkedHashMap<String, List<RoleEntry>> entriesByPage,
+            LinkedHashMap<String, List<String>> opsByPage,
+            ViewNotes notes,
+            String packageName, String stepClassName) {
         LinkedHashMap<String, String> out = new LinkedHashMap<>();
         if (opsByPage == null) opsByPage = new LinkedHashMap<>();
         // 收集全部涉及页面（同 generateMulti：字段来源 + 各 step 内 pick 归属页 + 关闭操作标记页）
@@ -891,9 +936,13 @@ public final class RoleElementStepGenerator {
             }
         }
         if (allPages.isEmpty()) return out;
+        // 面板全局封装序号：页类名 → 该页各 step 的面板序号（与 stepsByPage 同序同长），仅供注释标注。
+        LinkedHashMap<String, List<Integer>> panelIdxByPage = (notes == null || notes.panelStepIndexByPage == null)
+                ? new LinkedHashMap<>() : notes.panelStepIndexByPage;
         // 合并“仅含关闭操作”的 step 进上一个 step，保持单次封装/拾取 = 一个 step（关闭当前页内联其中）。
+        // 序号列表同步合并（被并走的序号一并丢弃），避免注释与最终 step 错位。
         for (Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
-            en.setValue(mergeCloseOnlySteps(en.getValue()));
+            en.setValue(mergeCloseOnlySteps(en.getValue(), panelIdxByPage.get(en.getKey())));
         }
 
         // 字段声明 + 变量名（全页共享，保证每份视图可独立编译——引用其它页字段时声明已存在）
@@ -963,8 +1012,13 @@ public final class RoleElementStepGenerator {
             int[] npIdx = {0};
             int stepIdx = 0;
             boolean any = false;
+            // 该页各 step 的面板全局封装序号（null = 调用方未提供，则不作任何标注）
+            List<Integer> panelNos = panelIdxByPage.get(pc);
             if (stepsByPage.containsKey(pc)) {
-                for (List<RoleEntry> stepRaw : stepsByPage.get(pc)) {
+                List<List<RoleEntry>> pageSteps = stepsByPage.get(pc);
+                for (int si = 0; si < pageSteps.size(); si++) {
+                    List<RoleEntry> stepRaw = pageSteps.get(si);
+                    Integer panelNo = (panelNos != null && si < panelNos.size()) ? panelNos.get(si) : null;
                     // 【关键修复"按全局序号顺序生成步骤（非按元素重复）"】
                     // 旧实现按 e.getSeq() 排序，未展开 pickNos，导致同一元素有多个序号（如 [1,3,5]）时
                     // 只生成一次操作，而非按序号逐次生成。
@@ -1002,6 +1056,7 @@ public final class RoleElementStepGenerator {
                     }
                     stepIdx++;
                     any = true;
+                    appendPanelNoNote(methods, panelNo, stepIdx, step, pc);
                     methods.append("    @Step\n");
                     methods.append("    public void step").append(stepIdx).append("() {\n");
                     boolean sawPopup = false;
@@ -1170,7 +1225,11 @@ public final class RoleElementStepGenerator {
                 }
             }
             if (!any) methods.append("    // 该页面暂无 step\n");
-            out.put(pc, clsHeader + methods + "}\n");
+            StringBuilder dropNotes = new StringBuilder();
+            if (notes != null && notes.droppedByPage != null) {
+                appendDroppedNote(dropNotes, notes.droppedByPage.get(pc));
+            }
+            out.put(pc, clsHeader + dropNotes + methods + "}\n");
         }
         return out;
     }
@@ -1244,19 +1303,84 @@ public final class RoleElementStepGenerator {
      * 若没有前置 step 可并入（极少见，如会话仅有关闭操作），则保留为独立 step。
      */
     private static List<List<RoleEntry>> mergeCloseOnlySteps(List<List<RoleEntry>> steps) {
+        return mergeCloseOnlySteps(steps, null);
+    }
+
+    /**
+     * 同 {@link #mergeCloseOnlySteps(List)}，并同步维护与 steps 一一对应的面板全局序号列表
+     * （{@code panelIdx} 原地改写：被并走者的序号一并丢弃，并入后沿用目标 step 的序号），
+     * 使 {@link ViewNotes#panelStepIndexByPage} 在合并后仍与最终 step 序列严格对齐。
+     *
+     * @param panelIdx 可为 null（不维护序号）
+     */
+    private static List<List<RoleEntry>> mergeCloseOnlySteps(List<List<RoleEntry>> steps, List<Integer> panelIdx) {
         if (steps == null) return new ArrayList<>();
         List<List<RoleEntry>> out = new ArrayList<>();
+        List<Integer> outIdx = new ArrayList<>();
         List<RoleEntry> last = null;
-        for (List<RoleEntry> st : steps) {
+        for (int i = 0; i < steps.size(); i++) {
+            List<RoleEntry> st = steps.get(i);
             if (st == null) continue;
+            Integer no = (panelIdx != null && i < panelIdx.size()) ? panelIdx.get(i) : null;
             if (isCloseOnlyStep(st)) {
                 if (last != null) { last.addAll(st); continue; }
                 // 无前置 step 可并入：保留为独立 step
             }
             out.add(st);
+            outIdx.add(no);
             last = st;
         }
+        if (panelIdx != null) {
+            panelIdx.clear();
+            panelIdx.addAll(outIdx);
+        }
         return out;
+    }
+
+    /**
+     * 在生成的 {@code stepN} 方法前插入一行注释，标注它在面板里的<b>全局</b>封装序号，以及本页视图内的
+     * <b>局部</b>编号（二者不同属正常：Java 方法名只在类内唯一，多页时每份按页视图必然从 1 重新计数）。
+     * 跨页 step 额外列出其中属于其它页的元素页，便于与「页面元素」Tab 对照。
+     *
+     * @param panelNo     面板全局序号（1 起）；null 或 ≤0 时不插入任何内容
+     * @param localStepIdx 本页视图内的编号（即方法名 stepN 的 N）
+     * @param step        该 step 的元素（已按 pickNos 展开排序）
+     * @param viewPage    当前按页视图的页面类名
+     */
+    private static void appendPanelNoNote(StringBuilder methods, Integer panelNo, int localStepIdx,
+                                         List<RoleEntry> step, String viewPage) {
+        if (panelNo == null || panelNo <= 0) return;
+        methods.append("    // 面板第 ").append(panelNo).append(" 个「封装为步骤」");
+        if (panelNo != localStepIdx) {
+            methods.append("（本页视图内为 step").append(localStepIdx).append("）");
+        }
+        LinkedHashSet<String> otherPages = new LinkedHashSet<>();
+        if (step != null) {
+            for (RoleEntry e : step) {
+                if (e == null) continue;
+                String p = e.getPageClass();
+                if (p != null && !p.isEmpty() && !p.equals(viewPage)) otherPages.add(p);
+            }
+        }
+        if (!otherPages.isEmpty()) {
+            methods.append("；含其它页元素：").append(String.join("/", otherPages));
+        }
+        methods.append("\n");
+    }
+
+    /**
+     * 生成前对账把"已删除元素的引用"（面板某条 step 里仍在、但 entries 中已不存在）从 step 中剔除时，
+     * 在产物类里留一行注释说明 —— 避免"面板上有、生成出来少一行"被误当作生成器 bug 排查。
+     * 无丢弃时不写任何内容。
+     */
+    private static void appendDroppedNote(StringBuilder sb, List<String> dropped) {
+        if (dropped == null || dropped.isEmpty()) return;
+        List<String> head = dropped.subList(0, Math.min(10, dropped.size()));
+        sb.append("    // 注意：生成前对账丢弃了 ").append(dropped.size())
+                .append(" 个已删除元素的引用（面板步骤里可能仍有该行，请重新拾取）：")
+                .append(String.join(", ", head));
+        if (dropped.size() > head.size()) sb.append(" …");
+        sb.append("\n\n");
     }
 
     /**

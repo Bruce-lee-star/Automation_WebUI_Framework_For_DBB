@@ -168,7 +168,15 @@ final class RolePickerCodeAssembler {
         }
         int droppedPicks = 0, droppedSteps = 0;
         LinkedHashMap<String, List<List<RoleEntry>>> stepsByPage = new LinkedHashMap<>();
+        // 产物可观测性注记（纯注释注入，见 RoleElementStepGenerator.ViewNotes）：
+        //  · panelStepIndexByPage：各 step 在面板中的全局封装序号（与 stepsByPage 同序同长）；
+        //  · droppedByPage：被下方对账丢弃的"已删除元素引用"——面板步骤里可能仍有该行，产物里却没有。
+        LinkedHashMap<String, List<Integer>> panelStepIndexByPage = new LinkedHashMap<>();
+        LinkedHashMap<String, List<String>> droppedByPage = new LinkedHashMap<>();
+        int panelStepNo = 0;
         if (snap.steps != null) for (StepRec st : snap.steps) {
+            // 面板封装序号：必须在任何 continue 之前自增，保证与 snap.steps 一一对应（含被丢弃的 step）。
+            panelStepNo++;
             String pc = (st.pageClass == null || st.pageClass.isEmpty()) ? curClass : st.pageClass;
             List<RoleEntry> picks = st.picks;
             if (picks != null && !aliveKeys.isEmpty()) {
@@ -180,6 +188,10 @@ final class RolePickerCodeAssembler {
                     if (lk == null || lk.isEmpty() || aliveKeys.contains(lk)) kept.add(e);
                     else {
                         droppedPicks++;
+                        // 记入产物注记：面板上有、生成出来少一行时，直接在「步骤代码」里可见，无需翻日志。
+                        droppedByPage.computeIfAbsent(pc, k -> new ArrayList<>())
+                                .add((e.getName() == null || e.getName().isEmpty())
+                                        ? lk : lk + " (" + e.getName() + ")");
                         // 诊断：i18n/定位器型策略元素若因 locatorKey 不匹配被 drop（典型表现"步骤里完全没有这行"），
                         // 打印其 strategy/name/lk 与 aliveKeys 中同类键，便于定位 index(#0) 错位或字段不一致根因。
                         if (RolePickerConstants.STRATEGY_I18N.equals(e.getStrategy()) || (e.getStrategy() != null
@@ -198,10 +210,15 @@ final class RolePickerCodeAssembler {
                 continue;
             }
             stepsByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(picks);
+            // 与 stepsByPage 严格同序同长（仅在此处成对写入），供生成侧标注"面板第几个封装"。
+            panelStepIndexByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(panelStepNo);
             entriesByPage.computeIfAbsent(pc, k -> new ArrayList<>());
         }
         if (droppedPicks > 0 || droppedSteps > 0) {
-            log.info("[picker] pre-generation reconciliation: dropped {} deleted element reference(s), discarded {} empty step(s)", droppedPicks, droppedSteps);
+            // 升到 WARN：丢弃本身发生在"元素已删、浏览器侧 step 克隆仍带着它"的正常路径，但它会让产物少一行、
+            // 且症状与生成器 bug 难以区分，故按可告警事件处理，并带上具体引用与所属页。
+            log.warn("[picker] pre-generation reconciliation: dropped {} deleted element reference(s) {}, discarded {} empty step(s)",
+                    droppedPicks, droppedByPage, droppedSteps);
         }
         // 【关键修复"只点了 2 个元素却生成很多步骤"】
         // 旧逻辑曾在此"兜底"：把 javaPickBySig 中位于 iframe 内但未被任何 step 引用的元素补进最后一个 step，
@@ -217,7 +234,9 @@ final class RolePickerCodeAssembler {
             opsByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(op.op);
         }
         if (stepsByPage.isEmpty() && opsByPage.isEmpty()) return out;
-        return RoleElementStepGenerator.generatePerPage(stepsByPage, entriesByPage, opsByPage, packageName, stepClassName);
+        return RoleElementStepGenerator.generatePerPage(stepsByPage, entriesByPage, opsByPage,
+                new RoleElementStepGenerator.ViewNotes(panelStepIndexByPage, droppedByPage),
+                packageName, stepClassName);
     }
 
     static void appendCloseOpStep(Page closed, String pageClass,

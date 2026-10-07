@@ -278,7 +278,12 @@
                     // 与本行注释"垫底"及用户预期（没编排序号的元素最后执行）相反；Java 侧对无号元素的
                     // 兜底是 Integer.MAX_VALUE（RoleElementStepGenerator:167，排最后）⇒ 两端语义原本正好相反。
                     // 注意：哨兵只用于排序，克隆时仍是单号 pickNos，不影响面板展示。
-                    if (!_nos.length) _nos = [Number.MAX_SAFE_INTEGER];
+                    // 【必须 int32 安全】下方 _clone._pickNos = [no] 会把这个哨兵作为真实序号回传 Java，
+                    // 经 GSON(Map) → parsePickNos 的 ((Number)o).intValue() 落成 int。用 Number.MAX_SAFE_INTEGER
+                    // (9007199254740991 > 2^31-1) 只能靠 Double→int 饱和"碰巧"变成 Integer.MAX_VALUE；
+                    // 一旦改走强类型 List<Integer> 解析即抛 NumberFormatException。故直接写成 int32 上界，
+                    // 与 Java 侧占位语义（Integer.MAX_VALUE，排最后）字面一致。
+                    if (!_nos.length) _nos = [2147483647];
                     for (var _nx = 0; _nx < _nos.length; _nx++) {
                       _expanded.push({ base: _fp, no: _nos[_nx] });
                     }

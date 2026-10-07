@@ -2940,7 +2940,7 @@
                   try {
                     if (typeof __thisIndex === 'number' && __thisIndex > 20) {
                       var __st = (new Error().stack || '').split('\n').slice(1, 6).join(' | ').replace(/\s+/g, ' ');
-                      console.log('[mint-stack] no=' + __thisIndex
+                      console.log('[picker-diag][mint-stack] no=' + __thisIndex
                         + ' scanning=' + !!window.__scanning
                         + ' trusted=' + (window.__lastPickTrusted === true)
                         + ' sig=' + ((p && p._sigKey) || '')

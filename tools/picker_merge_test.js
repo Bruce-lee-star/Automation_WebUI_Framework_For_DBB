@@ -269,4 +269,20 @@ test('重放抑制时守卫 auto-focus，且写回不压低单调序号基线', 
     '未找到"取 max(当前, __ns.length)"的单调保留写法');
 });
 
+// ---------------------------------------------------------------------------
+// T12: 回灌写回不得对 _pickNos 做【无条件并集】。
+//   现场证据：同一个号会出现在多个元素的 pickNos 里（5/11/25/43/72/105/161/217/294/371/468 在
+//   title_username_page、user_name、title_steps_activate_msk 等条目里都出现），号在各元素间交叉累积、
+//   总数涨到 494。根因：写回时无条件取 __old（浏览器上一轮的值）∪ Java 值，而脚本末尾又把号重排成 1..N，
+//   于是"旧轮的号"与"现轮的号"被反复并集，跨轮无限膨胀。
+//   正确口径：并集只为保住"浏览器刚铸、Java 还没收到的新号"，而这类号必然大于 Java 侧最大号。
+// ---------------------------------------------------------------------------
+test('回灌写回：序号并集必须限定为“大于 Java 最大号的新号”，不得无条件并集', function () {
+  const sync = readRes('sync-panel-to-browser-js.js');
+  assert.ok(!/__old\.concat\(o\._pickNos\)/.test(sync),
+    'sync-panel-to-browser 又出现 __old.concat(o._pickNos) 的无条件并集 —— 号会跨轮交叉累积');
+  assert.ok(/__o2>__jmax/.test(sync) && /__jmax/.test(sync),
+    '未找到“只并入大于 Java 最大号的旧号”（__o2>__jmax）的受限并集');
+});
+
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

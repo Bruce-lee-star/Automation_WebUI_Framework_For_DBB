@@ -138,6 +138,26 @@ final class RolePickerBridgeRegistry {
                 log.debug("[picker][diag-raw] __roleOnPick raw arg type={} value={}", (v == null ? "null" : v.getClass().getSimpleName()), String.valueOf(v));
                 @SuppressWarnings("unchecked")
                 Map<Object, Object> m = GSON.fromJson(String.valueOf(v), Map.class);
+                // 【修复"URL 变化后拾取的元素被打上旧页类 ⇒ 生成不出新页面"】
+                // History API（pushState）导航不触发 onFrameNavigated，页类名只能由主循环每轮幂等刷新
+                // （RolePickerPageTracker.refreshPageClass），最快也要 ≤1s；而用户点击可能恰好落在刷新之前
+                // —— 实测：拾取 20:10:20.805（被打成 LogonPage）→ 刷新 20:10:20.880（→ SetupSecondPwdPage），
+                // 相差 75ms。结果：新页元素归入旧页，生成结果里只有 LogonSteps、没有 SetupSecondPwdSteps。
+                // 此处按【回传来源页】当场纠正：若 pick 携带的类名正是该页刚被替换掉的旧类名、且该页当前已有新
+                // 类名，则改标（详见 RolePickerPageTracker#retagStalePickClass）。
+                // 必须在 parsePick 之前改【原始回传字段】：RoleEntry.pageClass 为 final 且无 setter（实体不可变），
+                // 而下方 pickDedupKey 也读该字段，故统一在源头纠正。
+                // 仅作用于"来源页自身的类名漂移"；跨页搬运的 pick 走 syncPanelToBrowser / merge 等其它路径，不受影响。
+                try {
+                    String __pickCls = (m.get("_pageClass") == null) ? null : String.valueOf(m.get("_pageClass"));
+                    Page __srcPage = source.page();
+                    String __fixedCls = RolePickerPageTracker.retagStalePickClass(__srcPage, __pickCls);
+                    if (__fixedCls != null) {
+                        m.put("_pageClass", __fixedCls);
+                        log.info("[picker][nav] pick page class corrected at callback time: {} -> {} (url={})",
+                                __pickCls, __fixedCls, (__srcPage == null ? "" : __srcPage.url()));
+                    }
+                } catch (Exception ignoreRetag) { RolePickerQuiet.ignore("RolePickerBridgeRegistry#retag", ignoreRetag); }
                 RoleEntry e = RolePickerPickParser.parsePick(m);
                 if (e == null) return null;
                 // 【关键修复"iframe 元素丢失所属框架上下文 / 监听器好像没起作用"】
@@ -304,6 +324,13 @@ final class RolePickerBridgeRegistry {
         ctx.onConsoleMessage(msg -> {
             String t = msg.text();
             if (t == null) return;
+            // 【诊断通道】把浏览器侧以 [picker-diag] 开头的 console 输出原样转发进 Java 日志。
+            // 此前只捕获 __roleOnPick:: 前缀，页面侧诊断（如 [picker-diag][mint-stack] 铸号调用栈探针）
+            // 在 Java 日志里完全看不到，排查时被误判为"探针未触发"。带前缀即可被转发，便于一份日志定位。
+            if (t.startsWith("[picker-diag]")) {
+                log.info("[browser] {}", t);
+                return;
+            }
             if (t.startsWith("__roleOnPick::")) {
                 LinkedHashMap<String, RoleEntry> map = RolePickerSessionState.CTX_PICK_STATES.get(ctx);
                 if (map == null) return;

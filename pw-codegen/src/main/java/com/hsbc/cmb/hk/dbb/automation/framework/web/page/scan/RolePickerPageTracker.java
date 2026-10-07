@@ -92,6 +92,35 @@ final class RolePickerPageTracker {
      * @param ctx 拾取上下文（提供 pageNames / urlToClass）
      * @param p   待刷新的页面；为 null 或已关闭时静默返回
      */
+    /**
+     * 页类名漂移记录（Page → 被替换掉的旧类名 / 当前类名），仅供
+     * {@link #retagStalePickClass} 在"拾取回传那一刻"纠正抢跑的元素归属。
+     *
+     * <p>为何需要：History API（pushState）导航不触发 {@code onFrameNavigated}，页类名只能靠
+     * {@link #refreshPageClass} 每轮幂等刷新（最快 ≤1s）；用户点击可能正好落在刷新之前
+     * （实测：拾取 20:10:20.805 → 刷新 20:10:20.880，相差 75ms），于是新页元素被打上旧页类名，
+     * 生成结果里只有旧页类、没有新页类（用户表现即"urlchange 没有生成新的页面"）。
+     * 记录"上一类名"后，回传桥即可识别"该 pick 用的是本页刚被替换掉的旧类名"，当场改标。
+     */
+    private static final ConcurrentHashMap<Page, String> PREV_CLASS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Page, String> CUR_CLASS = new ConcurrentHashMap<>();
+
+    /**
+     * 回传瞬间纠正"抢在页类刷新之前"的拾取（由拾取桥调用）。
+     *
+     * @param srcPage   回传来源页（{@code BindingCallback.Source#page()}）
+     * @param pickClass pick 上携带的页类名
+     * @return 需要改标时返回新类名；否则 null（保持原样）
+     */
+    static String retagStalePickClass(Page srcPage, String pickClass) {
+        if (srcPage == null || pickClass == null || pickClass.isEmpty()) return null;
+        String prev = PREV_CLASS.get(srcPage);
+        if (prev == null || !prev.equals(pickClass)) return null;   // 该 pick 用的不是"本页刚被替换掉的旧类名"
+        String cur = CUR_CLASS.get(srcPage);
+        if (cur == null || cur.isEmpty() || cur.equals(prev)) return null;
+        return cur;
+    }
+
     static void refreshPageClass(RolePickerContext ctx, Page p) {
         if (p == null || p.isClosed()) return;
         ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
@@ -102,6 +131,12 @@ final class RolePickerPageTracker {
             if (newCls == null || newCls.isEmpty()) return;
             if (!newCls.equals(curCls)) {
                 pageNames.put(p, newCls);
+                // 记录漂移：供拾取桥在"回传那一刻"纠正抢在刷新之前拾取的元素归属（见 retagStalePickClass）。
+                if (curCls != null && !curCls.isEmpty()) PREV_CLASS.put(p, curCls);
+                CUR_CLASS.put(p, newCls);
+                // 只清理已关闭页，避免两张 Map 长期持有已关闭 Page 的强引用。
+                PREV_CLASS.keySet().removeIf(Page::isClosed);
+                CUR_CLASS.keySet().removeIf(Page::isClosed);
                 // 只在真的换页类时打一条 INFO：这是"URL 变化是否被正确识别为新页面"的判据日志。
                 log.info("[picker][nav] page class refreshed: {} -> {} (url={})", curCls, newCls, p.url());
             }

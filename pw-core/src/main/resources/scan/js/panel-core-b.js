@@ -564,7 +564,7 @@
                   try {
                     if (typeof newNo === 'number' && newNo > 20) {
                       var __stP = (new Error().stack || '').split('\n').slice(1, 6).join(' | ').replace(/\s+/g, ' ');
-                      console.log('[mint-stack][panel+] no=' + newNo + ' stack=' + __stP);
+                      console.log('[picker-diag][mint-stack][panel+] no=' + newNo + ' stack=' + __stP);
                     }
                   } catch (e) {}
                   target._pickNos.push(newNo);          // 追加新序号

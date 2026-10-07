@@ -38,6 +38,7 @@ import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElement
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.mergeFramePicksToMain;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.syncPanelToBrowser;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.ensurePickingActive;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEvalSoft;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.reconcileTrackedPages;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.refreshPageClass;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.followPage;
@@ -464,8 +465,11 @@ public final class RolePickerPanelController {
                     if (!autoPage.isEmpty() || !autoStep.isEmpty()) {
                         for (Page pg : pageNames.keySet()) {
                             if (!pg.isClosed()) {
-                                fillCode(pg, autoPage, autoStep, autoAssert, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)");
-                                try { pickerEval(pg, RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
+                                // 【必须用短超时】这是"边拾边生成"的回填：每轮可重做、失败无害。实测一次
+                                // auto-generate 的 evaluate 超时 30s，就把整轮页类刷新/计数器垫高/监听重挂
+                                // 一起卡住（用户表现：返回上一页后元素恢复慢、序号又从 1 起、元素归到上一页）。
+                                fillCode(pg, autoPage, autoStep, autoAssert, "(picking) auto-generated " + autoSnap.steps.size() + " step(s), " + autoSnap.entries.size() + " field(s)", true);
+                                try { pickerEvalSoft(pg, RolePickerScripts.SET_AUTO_STEP_COUNT_JS,
                                     RolePickerScripts.args(RolePickerConstants.STATE_KEY_AUTO_STEP_COUNT, autoSnap.steps.size())); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
                             }
                         }

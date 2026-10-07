@@ -112,12 +112,39 @@ final class RolePickerPageTracker {
      * @param pickClass pick 上携带的页类名
      * @return 需要改标时返回新类名；否则 null（保持原样）
      */
+    /**
+     * 会话级 URL→页类 映射的按 context 视图：供回传桥在"主循环被某次慢 evaluate 卡住"时
+     * 仍能即时按当前 URL 解析页类（不依赖 refreshPageClass 是否刚跑过）。
+     */
+    private static final ConcurrentHashMap<com.microsoft.playwright.BrowserContext, LinkedHashMap<String, String>> CTX_URL_TO_CLASS =
+            new ConcurrentHashMap<>();
+
     static String retagStalePickClass(Page srcPage, String pickClass) {
         if (srcPage == null || pickClass == null || pickClass.isEmpty()) return null;
         String prev = PREV_CLASS.get(srcPage);
-        if (prev == null || !prev.equals(pickClass)) return null;   // 该 pick 用的不是"本页刚被替换掉的旧类名"
-        String cur = CUR_CLASS.get(srcPage);
-        if (cur == null || cur.isEmpty() || cur.equals(prev)) return null;
+        String lastKnown = CUR_CLASS.get(srcPage);
+        // ① 快速路径：pick 用的正是"本页刚被替换掉的旧类名"（refreshPageClass 记录）。
+        boolean staleByRecord = (prev != null && prev.equals(pickClass));
+        // ② 兜底路径（必须存在）：主循环可能被一次慢 evaluate 卡住数十秒（实测：auto-generate step 触发的
+        //    page.evaluate 超时 30s，把整轮 refreshPageClass/回灌/计数器垫高一起拖住），此时 PREV/CUR 仍是
+        //    导航前的旧值 ⇒ 仅靠①会漏判，回传的 pick 就被贴上旧页类（现场：回到 logon 页后拾取的元素全被
+        //    标成 SetupSecondPwdPage）。故在此按【当前 URL】即时解析页类；只要它与 pick 的类名不同，
+        //    且 pick 的类名正是本页"最后已知类名"，即认定是导航前打的旧标签并改标。
+        //    限定"pickClass == 本页已知类名"是为了不误伤跨页搬运来的 pick（它们带的是别的页的类名）。
+        boolean staleByUrl = (lastKnown != null && lastKnown.equals(pickClass));
+        if (!staleByRecord && !staleByUrl) return null;
+        String cur = lastKnown;
+        try {
+            LinkedHashMap<String, String> urlToClass = CTX_URL_TO_CLASS.get(srcPage.context());
+            if (urlToClass != null) {
+                String resolved = RolePickerClassNameResolver.resolvePageClassForUrl(
+                        srcPage.url(), urlToClass.values(), urlToClass);
+                if (resolved != null && !resolved.isEmpty()) cur = resolved;
+            }
+        } catch (Exception resolveEx) {
+            log.debug("[picker][nav] page class re-resolve at callback time failed: {}", resolveEx.getMessage());
+        }
+        if (cur == null || cur.isEmpty() || cur.equals(pickClass)) return null;
         return cur;
     }
 
@@ -146,6 +173,8 @@ final class RolePickerPageTracker {
         if (p == null || p.isClosed()) return;
         ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
         LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        // 暴露会话级 URL→页类 映射给回传桥（供其在"主循环被慢 evaluate 卡住"时按当前 URL 即时解析）。
+        try { CTX_URL_TO_CLASS.putIfAbsent(p.context(), urlToClass); } catch (Exception ignore) { /* 页面/上下文竞态：忽略 */ }
         try {
             String curCls = pageNames.get(p);
             String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);

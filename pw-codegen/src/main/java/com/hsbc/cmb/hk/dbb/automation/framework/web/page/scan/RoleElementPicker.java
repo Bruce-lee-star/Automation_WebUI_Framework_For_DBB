@@ -188,17 +188,42 @@ public final class RoleElementPicker {
         return evalWithTimeout(evalLockOf(frame), () -> frame.evaluate(script, arg));
     }
 
+    /**
+     * 「可牺牲/幂等」evaluate 的短超时（默认 2s，可由 {@code -Dcodegen.picker.eval.softTimeout.ms} 覆盖）。
+     *
+     * <p>用于主循环里那些**每轮都会重做、丢掉也无害**的动作（边拾边生成的代码回填、面板回灌等）：
+     * 页面在整页导航瞬间 evaluate 必然抖动甚至挂住，若这些动作沿用 30s 默认超时，会**在按页 eval 锁内
+     * 长期占用**，把同一轮里的关键动作（页类刷新、计数器垫高、监听重挂）一起拖住。实测现场：一次
+     * auto-generate step 的 evaluate 超时 30s ⇒ 主循环停摆整整 30s ⇒ 期间返回上一页拾取的元素被贴上旧页类、
+     * 且新文档计数器无从垫高又从 1 起号（用户反馈"元素恢复很慢 / 又从 1 编号 / 元素归到了上一页"）。
+     */
+    private static final long PICKER_EVAL_SOFT_TIMEOUT_MS =
+            Integer.getInteger("codegen.picker.eval.softTimeout.ms", 2_000);
+
+    /** 短超时版 evaluate：只用于"幂等、可重做"的调用点，避免慢/挂页把主循环拖住。 */
+    static Object pickerEvalSoft(Page page, String script) {
+        return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script), PICKER_EVAL_SOFT_TIMEOUT_MS);
+    }
+
+    static Object pickerEvalSoft(Page page, String script, Object arg) {
+        return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script, arg), PICKER_EVAL_SOFT_TIMEOUT_MS);
+    }
+
     private static Object evalWithTimeout(Object lock, Supplier<Object> eval) {
+        return evalWithTimeout(lock, eval, PICKER_EVAL_TIMEOUT_MS);
+    }
+
+    private static Object evalWithTimeout(Object lock, Supplier<Object> eval, long timeoutMs) {
         FutureTask<Object> task = new FutureTask<>(eval::get);
         Thread t = new Thread(task, "picker-eval");
         t.setDaemon(true);
         synchronized (lock) {
             t.start();
             try {
-                return task.get(PICKER_EVAL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                return task.get(timeoutMs, TimeUnit.MILLISECONDS);
             } catch (TimeoutException e) {
                 throw new IllegalStateException(
-                        "pickerEval timed out after " + PICKER_EVAL_TIMEOUT_MS + "ms (page may be hung)", e);
+                        "pickerEval timed out after " + timeoutMs + "ms (page may be hung)", e);
             } catch (Exception e) {
                 throw new IllegalStateException("pickerEval failed", e);
             }
@@ -955,16 +980,37 @@ public final class RoleElementPicker {
     static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage,
                          LinkedHashMap<String, String> stepByPage,
                          LinkedHashMap<String, String> assertByPage, String msg) {
-        // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate，
-        // 点击"停止"后只需 1 次往返即可把分页代码渲染进面板对应 Tab（原来 2 次串行往返）。
-        pickerEval(page, RolePickerScripts.FILL_CODE_JS, RolePickerScripts.args(
+        fillCode(page, pageClassByPage, stepByPage, assertByPage, msg, false);
+    }
+
+    /**
+     * 同 {@link #fillCode(Page, LinkedHashMap, LinkedHashMap, LinkedHashMap, String)}，
+     * 但 {@code soft=true} 时改用【短超时】evaluate。
+     *
+     * <p>用途：面板主循环的"边拾边生成"回填。该动作**每轮都会重做、失败也无害**，而页面在整页导航瞬间
+     * evaluate 可能长时间挂起——实测一次 30s 超时就把整轮关键动作（页类刷新、计数器垫高、监听重挂）
+     * 一起拖住，用户表现为"返回上一页后元素恢复很慢 / 序号又从 1 开始 / 新拾元素被归到上一页"。
+     * 用户点「⏹ 停止并生成」仍走默认超时（那一次必须成功）。
+     */
+    static void fillCode(Page page, LinkedHashMap<String, String> pageClassByPage,
+                         LinkedHashMap<String, String> stepByPage,
+                         LinkedHashMap<String, String> assertByPage, String msg, boolean soft) {
+        Object pageArgs = RolePickerScripts.args(
                 "pageByPage", pageClassByPage == null ? new LinkedHashMap<String, String>() : pageClassByPage,
                 "stepByPage", stepByPage == null ? new LinkedHashMap<String, String>() : stepByPage,
-                "msg", msg == null ? "" : msg));
-        // 断言 Tab：独立资源 + 独立渲染入口（与步骤 Tab 解耦，任一为空都不影响另一个）
-        pickerEval(page, RolePickerScripts.FILL_ASSERT_JS, RolePickerScripts.args(
+                "msg", msg == null ? "" : msg);
+        Object assertArgs = RolePickerScripts.args(
                 "assertByPage", assertByPage == null ? new LinkedHashMap<String, String>() : assertByPage,
-                "msg", msg == null ? "" : msg));
+                "msg", msg == null ? "" : msg);
+        // 企业级优化：把"写入消息对象"与"更新 DOM"合并进同一次 page.evaluate（点击"停止"后仅 1 次往返）；
+        // 断言 Tab 走独立资源 + 独立渲染入口（与步骤 Tab 解耦，任一为空都不影响另一个）。
+        if (soft) {
+            pickerEvalSoft(page, RolePickerScripts.FILL_CODE_JS, pageArgs);
+            pickerEvalSoft(page, RolePickerScripts.FILL_ASSERT_JS, assertArgs);
+        } else {
+            pickerEval(page, RolePickerScripts.FILL_CODE_JS, pageArgs);
+            pickerEval(page, RolePickerScripts.FILL_ASSERT_JS, assertArgs);
+        }
     }
 
     static String asString(Object o) {

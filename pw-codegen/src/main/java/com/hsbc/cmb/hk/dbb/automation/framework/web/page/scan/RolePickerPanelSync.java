@@ -223,7 +223,9 @@ final class RolePickerPanelSync {
                     .encodeToString(json.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             String syncDelB64 = java.util.Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(delJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            pickerEval(page, RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
+            // 【必须用短超时】面板回灌是"每轮都会重做、丢掉无害"的幂等动作；若沿用 30s 默认超时，页面在
+            // 导航瞬间抖动会把同一轮的关键动作（页类刷新、计数器垫高、监听重挂）一起卡住（实测 30s 停摆）。
+            RoleElementPicker.pickerEvalSoft(page, RolePickerScripts.SYNC_PANEL_TO_BROWSER_JS,
                     java.util.Arrays.asList(syncJsonB64, syncDelB64, overwriteNos));
         } catch (Exception syncE) {
             try { log.warn("[picker] failed to sync the panel to the browser: {}", syncE.getMessage()); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelSync", ignore); }

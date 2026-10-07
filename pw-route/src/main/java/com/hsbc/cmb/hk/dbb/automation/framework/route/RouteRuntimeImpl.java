@@ -539,10 +539,15 @@ public final class RouteRuntimeImpl implements RouteRuntime {
                 "[Route] route state: {} rule(s) retired by purpose, {} flushed at teardown, {} unconfirmed",
                 retiredByPurpose.get(), confirmed, unconfirmed);
         // T1 度量基线：每用例（= 每 runtime 生命周期）汇总一行，报表可见、真跑归档。
+        // ioPool 段用于验证 IO 池自适应（基线/实际 core/峰值/扩容次数/回落次数/被拒绝任务数）：
+        // 有积压就抬、连续空闲就回落，若 grown=0 而 elapsed 仍高，说明瓶颈不在 IO 池（别再往这里调）。
         LOGGER.info("[Route] case metrics @{}: dispatches={}, hits={}, retiredByPurpose={}, "
-                + "unconfirmedRetirements={}, rulesArmedMs={}",
+                        + "unconfirmedRetirements={}, rulesArmedMs={}, "
+                        + "ioPool=[base={}, core={}, peakCore={}, grown={}, shrunk={}, rejected={}, active={}]",
                 System.identityHashCode(context), dispatcher.dispatchCount(), dispatcher.hitCount(),
-                retiredByPurpose.get(), unconfirmedRetirements.get(), armedDurationsMs);
+                retiredByPurpose.get(), unconfirmedRetirements.get(), armedDurationsMs,
+                io.baselineThreads(), io.coreThreads(), io.maxCoreObserved(),
+                io.grownCount(), io.shrunkCount(), io.rejectedCount(), io.activeCount());
         if (contextClosing) { retire.closeNoWait(); } else { retire.close(); } // 收尾 flush 是同步的；此处等待在途的"目的驱动撤销"完成（不阻塞、有界）
         if (contextClosing) { io.closeNoWait(); } else {
             io.close();

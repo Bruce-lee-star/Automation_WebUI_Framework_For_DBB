@@ -82,14 +82,6 @@ final class RolePickerConstants {
     /** NLS 缓存 TTL 系统属性名。 */
     static final String NLS_CACHE_TTL_PROPERTY = "rolePicker.nlsCacheTtlMs";
     /**
-     * 彻底禁用 NLS key 体系的系统属性名：{@code -DrolePicker.nls.disabled=true}。
-     *
-     * <p>置位后不构建任何 NLS 反查表 ⇒ pick 不带 resolvedKey、面板不显示 key、生成页面类不产生
-     * {@code key = ...} 与 {@code @RoleFile}、i18n 策略不出现，元素一律按 role/name（或 id/css）定位。
-     * 适用：项目里没有 nls 文件、不希望"key"这种概念出现。
-     */
-    static final String NLS_DISABLED_PROPERTY = "rolePicker.nls.disabled";
-    /**
      * 面板会话最长存活时间（毫秒）—— 超过即自动结束会话并释放面板（N-19，doc 21）。
      *
      * <p><b>要防的缺陷</b>：面板主循环是 {@code while (true)}，且它跑在<b>调用者线程</b>上（本模块不创建

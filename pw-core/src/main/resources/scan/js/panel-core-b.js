@@ -559,6 +559,14 @@
                   var maxNo = gMax;  // 供下方诊断日志使用
                   // 【诊断日志】记录本次 __addPickNo 的计数器值，用于排查整页扫描后起始序号偏移问题
                   try { console.log('[roleMouseDiag][addPickNo] seq=' + window.__rolePickSeq + ' maxNo=' + maxNo + ' ownMax=' + ownMax + ' roleMaxNo=' + window.__roleMaxNo + ' newNo=' + newNo + ' target=' + mk); } catch(e){}
+                  // 【探针：序号爆炸定位】面板侧另一处铸号（+ 号 / 自动补号）。异常区间打印调用栈，
+                  // 经 console 桥进入 Java 日志，与 [mint-stack]（拾取侧）区分开来。
+                  try {
+                    if (typeof newNo === 'number' && newNo > 20) {
+                      var __stP = (new Error().stack || '').split('\n').slice(1, 6).join(' | ').replace(/\s+/g, ' ');
+                      console.log('[mint-stack][panel+] no=' + newNo + ' stack=' + __stP);
+                    }
+                  } catch (e) {}
                   target._pickNos.push(newNo);          // 追加新序号
                   target._pickNos.sort(function(a, b) { return a - b; });  // 【修复"序号顺序混乱"】追加后排序，确保 pickNos 始终有序
                   if (typeof target._pickSeq !== 'number' || target._pickSeq < newNo) target._pickSeq = newNo;

@@ -2934,6 +2934,19 @@
                 if (typeof window.__pickOrder !== 'object' || window.__pickOrder === null) window.__pickOrder = {};
                 function __appendPickNo(p) {
                   if (!p) return;
+                  // 【探针：序号爆炸定位】__appendPickNo 是 __recordPick 里唯一的铸号漏斗。动作号一旦进入
+                  // 异常区间（正常一次点击远小于 20），把本次铸号的调用栈打出来 —— console.log 会被
+                  // console 桥转发进 Java 日志，故一份 Java 日志即可看到 [mint-stack] 来自哪个函数/事件。
+                  try {
+                    if (typeof __thisIndex === 'number' && __thisIndex > 20) {
+                      var __st = (new Error().stack || '').split('\n').slice(1, 6).join(' | ').replace(/\s+/g, ' ');
+                      console.log('[mint-stack] no=' + __thisIndex
+                        + ' scanning=' + !!window.__scanning
+                        + ' trusted=' + (window.__lastPickTrusted === true)
+                        + ' sig=' + ((p && p._sigKey) || '')
+                        + ' stack=' + __st);
+                    }
+                  } catch (e) {}
                   if (!Array.isArray(p._pickNos)) p._pickNos = [];
                   // 去重保序：同一动作号不会重复追加（理论上每次动作号唯一，仍防御性去重）。
                   // 【修复"序号追加顺序混乱"】直接 push 会导致 pickNos 顺序混乱（如 [5,2,6]）。

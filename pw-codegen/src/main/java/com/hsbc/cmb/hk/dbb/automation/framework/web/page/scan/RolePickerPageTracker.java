@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEval;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.pickerEvalSoft;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -201,10 +202,13 @@ final class RolePickerPageTracker {
                 RolePickerPanelSync.invalidateSync(p);
                 int __maxNo = maxPickNo(ctx.javaPickBySig);
                 if (__maxNo > 0) {
-                    pickerEval(p, RolePickerScripts.SET_SEQ_BASELINE_JS, RolePickerScripts.args("max", __maxNo));
+                    // 同上：短超时（这是"回上一页后序号是否从 1 重启"的关键动作，不能被慢 evaluate 拖住）。
+                    pickerEvalSoft(p, RolePickerScripts.SET_SEQ_BASELINE_JS, RolePickerScripts.args("max", __maxNo));
                 }
             }
-            pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
+            // 【短超时】页类名写入是主循环每轮动作，且是"回上一页后页类是否正确"的关键；绝不能让它在
+            // 导航抖动时占用默认超时把同一轮的其他动作一起拖住（失败下一轮重试，幂等）。
+            pickerEvalSoft(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
                     RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
         } catch (Exception e) {
             // 导航瞬间文档不稳定导致的 evaluate 失败属预期：下一轮会重试（幂等），故只记 debug。

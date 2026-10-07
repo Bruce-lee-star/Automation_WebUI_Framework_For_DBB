@@ -171,9 +171,15 @@ public final class RoleElementPicker {
         EVAL_LOCKS.clear();
     }
     /** §11 修复：page.evaluate 无超时且锁内执行，页面卡死会永久持锁、拖死同页所有 evaluate。
-     *  改为提交独立 daemon 线程 + 有界 Future.get；超时即抛语义化异常并释放锁，不阻塞后续调用。 */
+     *  改为提交独立 daemon 线程 + 有界 Future.get；超时即抛语义化异常并释放锁，不阻塞后续调用。
+     *
+     *  <p>【默认值从 30s 降到 10s】30s 只是当年"evaluate 完全没有超时"的兜底，对交互式工具没有意义：
+     *  30s 前的那次点击早已过去；而 pickerEval 是<b>持锁等待</b>的，一次 30s 超时会把整轮主循环
+     *  （页类刷新 / 计数器垫高 / 面板回灌）一起卡死 —— 现场三症状（回上一页后页类错、序号又从 1、
+     *  元素恢复慢）正由此产生。故：本常量（用户显式命令，如 开始/停止并生成）取 10s；主循环里那些
+     *  <b>幂等、每轮重做</b>的调用一律走 {@link #pickerEvalSoft} 的 2s。两者都可用系统属性覆盖。 */
     private static final long PICKER_EVAL_TIMEOUT_MS =
-            Integer.getInteger("codegen.picker.eval.timeout.ms", 30_000);
+            Integer.getInteger("codegen.picker.eval.timeout.ms", 10_000);
 
     static Object pickerEval(Page page, String script) {
         return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script));

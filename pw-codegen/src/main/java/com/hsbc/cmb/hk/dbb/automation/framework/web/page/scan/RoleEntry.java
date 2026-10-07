@@ -44,8 +44,21 @@ public final class RoleEntry {
     /**
      * 在输入框中实际键入的文本（点输入框后输入时捕获）。仅 textbox/searchbox/spinbutton/
      * placeholder 等可输入策略有意义；其余为 null，生成 step 时 {@code type("")} 留空由人工补全。
+     *
+     * <p><b>为什么不是 final</b>：拾取回传每次都会 {@code parsePick} 出<b>新对象</b>，而权威内存态
+     * （{@code javaPickBySig}）保留的是<b>首次</b>解析出的 existing 对象（见
+     * {@code RolePickerPickParser.mergePickIntoMap} 的"existing 是最终写回 map 的权威对象"）。
+     * 用户输入是在点击之后才产生的（逐字符回传），若该字段不可变，输入内容就永远补不进 existing ——
+     * 表现为产物里 {@code usernameInput.fill("")} 拿不到用户实际输入。故与 pickNos/framePath 同口径
+     * 允许合并更新（只增不减，见 mergePickIntoMap）。
      */
-    private final String value;
+    private String value;
+
+    /** 见 {@link #value} 字段说明：拾取回传在点击后才拿到输入内容，需按"只增不减"合并进权威 existing。 */
+    public void setValue(String value) {
+        this.value = value;
+    }
+
     /**
      * 该次点击是否弹出了新页面（target=_blank 链接等）。为 true 时生成 step 应包装为
      * {@code page.waitForPopup(() -> element.click())}，对齐 {@code page.pause()} 的 codegen 输出。

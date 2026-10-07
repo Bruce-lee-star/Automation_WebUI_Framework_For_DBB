@@ -135,7 +135,7 @@ final class RolePickerBridgeRegistry {
                 Object v = args[0];
                 if (v == null) return null;
                 // 【diag-raw】原始回传参数：确认浏览器经 binding 实际投递给 Java 的 JSON 是否含 _pickNos 字段。
-                log.info("[picker][diag-raw] __roleOnPick raw arg type={} value={}", (v == null ? "null" : v.getClass().getSimpleName()), String.valueOf(v));
+                log.debug("[picker][diag-raw] __roleOnPick raw arg type={} value={}", (v == null ? "null" : v.getClass().getSimpleName()), String.valueOf(v));
                 @SuppressWarnings("unchecked")
                 Map<Object, Object> m = GSON.fromJson(String.valueOf(v), Map.class);
                 RoleEntry e = RolePickerPickParser.parsePick(m);
@@ -163,7 +163,7 @@ final class RolePickerBridgeRegistry {
                     RoleEntry existing = map.get(key);
                     // 【diag-onpick】i18n 首次回传前，打印权威 map 里该 key 是否已有脏 pickNos/seq（区分"Java 内存态脏"还是"浏览器直接发 [2]"）。
                     if (key != null && key.contains("user_name")) {
-                        log.info("[picker][diag-onpick][PRE] key={} mapExistingPickNos={} mapExistingSeq={} incomingRawNos={}",
+                        log.debug("[picker][diag-onpick][PRE] key={} mapExistingPickNos={} mapExistingSeq={} incomingRawNos={}",
                                 key, (existing == null ? "null" : existing.getPickNos()), (existing == null ? "null" : existing.getSeq()), m.get("_pickNos"));
                     }
                     // 去重回传：自愈/重挂 START_SCRIPT 会重放已有拾取（__rolePicks 重建），主循环每轮
@@ -176,7 +176,7 @@ final class RolePickerBridgeRegistry {
                             || (existing.isDialog() != e.isDialog())
                             || (existing.isPopup() != e.isPopup());
                     RoleEntry merged = RolePickerPickParser.mergePickIntoMap(map, key, e);
-                    log.info("[picker][diag-onpick][BIND] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
+                    log.debug("[picker][diag-onpick][BIND] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
                     if (changed) {
                         List<String> fpLog = merged.getFramePath();
                         log.info("[picker] __roleOnPick callback written to in-memory state: key={} pageClass={} framePath={} (current in-memory size={})", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fpLog == null || fpLog.isEmpty() ? "" : fpLog.toString()), map.size());
@@ -363,7 +363,7 @@ final class RolePickerBridgeRegistry {
                                 || (existing.isDialog() != e.isDialog())
                                 || (existing.isPopup() != e.isPopup());
                         RoleEntry merged = RolePickerPickParser.mergePickIntoMap(map, key, e);
-                        log.info("[picker][diag-onpick][CONSOLE] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
+                        log.debug("[picker][diag-onpick][CONSOLE] key={} pickNos(after-merge)={} changed={} rawNos={} strategy={} keys={}", key, merged.getPickNos(), changed, m.get("_pickNos"), (e != null ? e.getStrategy() : null), (m != null ? m.keySet() : null));
                         if (changed) {
                             List<String> fplog = merged.getFramePath();
                             log.info("[picker] __roleOnPick(console) callback written to in-memory state: key={} pageClass={} framePath={} (current in-memory size={})", key, (merged.getPageClass() == null ? "" : merged.getPageClass()), (fplog == null || fplog.isEmpty() ? "" : fplog.toString()), map.size());
@@ -421,8 +421,10 @@ final class RolePickerBridgeRegistry {
                     && (t.contains("rolePick") || t.contains("__record") || t.contains("__role"))) {
                 log.info("[browser][error] {}", t);
             } else if (t.startsWith("[roleMouseDiag]")) {
-                // 调试鼠标事件日志（mousedown/up/dblclick/contextmenu）实时转发，前缀过滤避免刷屏。
-                log.info("[browser]{}", t);
+                // 鼠标事件诊断（mousedown/up/dblclick/contextmenu）实时转发，前缀过滤避免误吞其它字节。
+                // 拾取过程中每条鼠标动作一条 ⇒ 持续刷屏（实测每次点击 1~2 条），故降为 DEBUG：
+                // 默认级别下静默，需要复现鼠标/拾取问题时再开 DEBUG 查看。
+                log.debug("[browser]{}", t);
             }
         });
     }

@@ -184,6 +184,15 @@ final class RolePickerPickParser {
         // 更大的序号集合，就用「existing ∪ incoming」去重后的更大集覆盖，任一通道传来的 null/残缺值都不会
         // 抹掉已累积的完整序号。并集为空才保留 incoming 原值（兼容首条无序号的候选）。
         if (existing != null) {
+            // 【修复"input 框输入没获取到（产物 usernameInput.fill(\"\")）"】输入内容是在点击【之后】逐字符
+            // 回传的，而权威态保留的是首次点击解析出的 existing（此时 value 为空）⇒ 若不在此显式合并，
+            // 用户输入永远补不进去。口径与 pickNos 一致"只增不减"：incoming 非空则采信（用户刚输入/修改）；
+            // incoming 为空则保留 existing（点击回传常带空值，直接覆盖会抹掉已输入内容）。
+            String inValue = incoming.getValue();
+            if (inValue != null && !inValue.isEmpty()) {
+                existing.setValue(inValue);
+                incoming.setValue(inValue);
+            }
             java.util.List<Integer> inNos = incoming.getPickNos();
             java.util.List<Integer> exNos = existing.getPickNos();
             // 【修复"普通拾取回传把累积序号[4,5]冲成[1,2,3]"】

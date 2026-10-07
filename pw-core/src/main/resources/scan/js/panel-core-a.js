@@ -339,15 +339,21 @@
               // 焦点感知复制：优先按当前真实 DOM 焦点（activeElement）判断用户"聚焦在哪一块"，
               // 再复制对应区块内容；若焦点不在任何代码区，则回退到当前激活的 Tab（点击切换的 Tab）。
               function __activeScope() {
-                // 返回当前焦点所在区块：'class' / 'step' / 'page' / null（都不在，回退 tab）
+                // 返回当前焦点所在区块：'class' / 'step' / 'assert' / 'page' / null（都不在，回退 tab）
                 var a = document.activeElement;
                 if (!a || !a.id) return null;
                 if (a.id.indexOf('__roleCodeArea__') === 0) return 'class';
                 if (a.id.indexOf('__roleCodeArea2__') === 0) return 'step';
+                // 【修复"Copy 没有覆盖断言"】「断言」Tab 的 textarea id 为 __roleAssertArea__<pageClass>。
+                // 不认它时焦点判定返回 null ⇒ 回退到激活 Tab='assert' ⇒ 掉进下方 else 分支（页面元素清单），
+                // 表现为"在断言 Tab 点复制，复制出来的是元素清单，不是断言代码"。
+                if (a.id.indexOf('__roleAssertArea__') === 0) return 'assert';
                 // 焦点落在某 Tab 内容容器或其子节点（textarea 之外）时，按容器归属判定
                 if (classContent && classContent.contains(a)) return 'class';
                 if (stepContent && stepContent.contains(a)) return 'step';
                 if (pageContent && pageContent.contains(a)) return 'page';
+                var assertAreas = document.getElementById('__roleAssertAreas');
+                if (assertAreas && assertAreas.contains(a)) return 'assert';
                 return null;
               }
               var copyBtn = mkIconBtn(ICON.copy, '#2e7d32', '复制代码（焦点在哪块就复制哪块）', function() {
@@ -364,6 +370,13 @@
                     var k2 = window.__roleStepSubTabBar_active;
                     ta = k2 ? document.getElementById('__roleCodeArea2__' + k2) : null;
                     if (!ta) ta = document.querySelector('#__roleStepAreas textarea');
+                    code = ta ? ta.value : '';
+                  } else if (scope === 'assert') {
+                    // 「断言」Tab：复制当前子 Tab（页面类过滤）下的断言类源码（与页面类/步骤代码同一口径）。
+                    // 断言子 Tab 的 textarea id 前缀为 __roleAssertArea（见 panel-core-b.js#__fillAssertTabs）。
+                    var k3 = window.__roleAssertSubTabBar_active;
+                    ta = k3 ? document.getElementById('__roleAssertArea__' + k3) : null;
+                    if (!ta) ta = document.querySelector('#__roleAssertAreas textarea');
                     code = ta ? ta.value : '';
                   } else {
                     // "页面元素"Tab：复制当前子 Tab（页面类过滤）下的元素清单文本，

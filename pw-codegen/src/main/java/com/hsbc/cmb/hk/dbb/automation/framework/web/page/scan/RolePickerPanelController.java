@@ -39,6 +39,7 @@ import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElement
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.syncPanelToBrowser;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.ensurePickingActive;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.reconcileTrackedPages;
+import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.refreshPageClass;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RolePickerPageTracker.followPage;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.closePanel;
 import static com.hsbc.cmb.hk.dbb.automation.framework.web.page.scan.RoleElementPicker.hasPicks;
@@ -263,6 +264,11 @@ public final class RolePickerPanelController {
                 // 确保"停止后再点开始"不会遗漏某页（表现为点了开始却拾取不了）。
                 if (RolePickerConstants.CMD_START.equals(cmd)) {
                     reconcileTrackedPages(pc, ev.page);
+                    // 【修复"开始拾取后（尤其新页面/导航后）没有面板"】reconcile 只对【漏登记】页面注入面板；
+                    // 已登记页面若其 origin 上曾关闭过面板（localStorage 墓碑 __rolePanelEnabled='0'），
+                    // 新文档的 bootstrap 会早退、面板不再重建（见 panel-bootstrap-script.js 的门控修复）。
+                    // 开始拾取意味着用户要用面板，故对当前页显式强制使能并重建（幂等）。
+                    ensurePanelVisible(ev.page);
                 }
                 PickerResult r;
                 try {
@@ -320,6 +326,31 @@ public final class RolePickerPanelController {
             for (Page p : openedPages) {
                 try { if (p != null && !p.isClosed()) p.close(); } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
             }
+        }
+    }
+
+    /**
+     * 开始拾取时（幂等）强制使能并重建当前页的面板。
+     *
+     * <p>背景：面板 UI 门控（panel-core-a.js:20）为
+     * {@code localStorage.__rolePanelEnabled==='1' || window.__rolePanelForce}。用户关闭面板会在
+     * localStorage 留下<b>粘性</b>的 {@code '0'} 墓碑（见 close-panel-js.js，并同时把
+     * {@code __rolePanelForce} 置回 false）。重建脚本 panel-bootstrap-script.js 原先遇到该墓碑会直接
+     * 早退，连 {@code __rolePanelForce=true} 都不再置位 ⇒ 该 origin 上后续<i>每个新文档</i>都没有面板
+     * （用户表现即"打开新页面，没有重新创建面板"，且此后任何导航都恢复不了）。此时"开始拾取"必须把
+     * 面板强制拉回来。
+     *
+     * <p>本方法注入 {@code PANEL_FORCE_AND_ENABLE_JS}（置位 {@code __rolePanelForce} 并把墓碑改回
+     * {@code '1'}）与 {@code PANEL_SCRIPT}（重建面板，已存在时幂等）。导航瞬间 evaluate 失败属预期，
+     * 下一次点击仍会生效，故只记 debug。
+     */
+    private static void ensurePanelVisible(Page page) {
+        if (page == null || page.isClosed()) return;
+        try {
+            pickerEval(page, RolePickerScripts.PANEL_FORCE_AND_ENABLE_JS);
+            pickerEval(page, RolePickerScripts.PANEL_SCRIPT);
+        } catch (Exception e) {
+            log.debug("[picker] panel re-enable skipped (page may still be navigating): {}", e.getMessage());
         }
     }
 
@@ -382,6 +413,15 @@ public final class RolePickerPanelController {
                 syncPanelToBrowser(pg, null, javaPickBySig, false);
             }
         } catch (Exception ignore) { RolePickerQuiet.ignore("RolePickerPanelController", ignore); }
+        // 【修复"URL change 后没有生成新的页面"】每轮按各页【当前 URL】幂等刷新页类名并写回浏览器侧
+        // window.__rolePageName。整页导航新建的文档会把该值从 localStorage 恢复成【上一个文档的旧类名】，
+        // 与 onFrameNavigated 的一次性写入存在先后竞态（先写入的被随后恢复的旧值覆盖）⇒ 新页拾取的元素
+        // 被打上旧页类名、生成时归入旧页类 ⇒ 用户表现"URL 变了却没生成新页面"（且面板按激活页过滤后
+        // 看不到之前的元素）。每轮幂等重写（值不同才写）可在 ≤1 轮内自愈；与下方 ensurePickingActive
+        // 同处一轮，保证"监听已重挂"与"页类名已刷新"同步落地。
+        for (Page pg : pageNames.keySet()) {
+            if (!pg.isClosed()) refreshPageClass(pc, pg);
+        }
         // 自愈式保活：会话处于拾取中时，校验每个被跟踪页的点击捕获监听是否仍存活，
         // 丢失则立即重挂 START_SCRIPT（含 nls）——覆盖"页面变化（跳转/URL change/SPA 整文档替换/
         // frame 内部跳转）后监听被静默丢弃"的所有边界，保证任何时刻都能继续拾取。

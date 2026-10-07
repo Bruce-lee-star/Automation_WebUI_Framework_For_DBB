@@ -62,11 +62,54 @@ final class RolePickerPageTracker {
                     if (newCls != null && !newCls.equals(curCls)) {
                         pageNames.put(p, newCls);
                     }
-                    pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
+                    // 解析为空时【不要】把空值写进浏览器侧：那会把 window.__rolePageName 清空，
+                    // 新页拾取的元素随即失去页归属（生成时退化成当前页，表现为"没有生成新页面"）。
+                    if (newCls != null && !newCls.isEmpty()) {
+                        pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
+                    }
                 } catch (Exception refreshEx) {
                     log.warn("[picker] reconcile failed to refresh the page class name: {}", refreshEx.getMessage());
                 }
             }
+        }
+    }
+
+    /**
+     * 主循环每轮对【单个被跟踪页】按它<b>当前 URL</b> 重解析页类名，并幂等写回浏览器侧
+     * {@code window.__rolePageName}（{@code SET_PAGE_NAME_IF_CHANGED_JS} 仅在不同时写入）。
+     *
+     * <p><b>为什么必须每轮做，而不能只靠 onFrameNavigated 的一次性写入</b>：
+     * 整页导航会新建文档，而面板 bootstrap 脚本（panel-bootstrap-script.js）在新文档启动时会把
+     * {@code window.__rolePageName} 从 localStorage <b>恢复成上一个文档的旧类名</b>。onFrameNavigated
+     * 的一次性写入与该 bootstrap 之间存在先后竞态：先写入的会被随后恢复的旧值覆盖。此时新页拾取的元素
+     * 会被打上<b>旧页类名</b>，生成时归入旧页类 —— 用户表现即"URL change 后没有生成新的页面"（以及
+     * "面板按激活页过滤，看不到之前的元素"）。每轮幂等重写可在 ≤1 轮内自愈该竞态。
+     *
+     * <p>幂等性：解析结果与内存/浏览器侧一致时不产生任何写入（浏览器侧由 IF_CHANGED 脚本自行判定）；
+     * 解析为空时直接返回，绝不把空值写进浏览器侧（否则元素会失去页归属）。解析命中会话级
+     * {@code urlToClass} 稳定映射时零派生成本。
+     *
+     * @param ctx 拾取上下文（提供 pageNames / urlToClass）
+     * @param p   待刷新的页面；为 null 或已关闭时静默返回
+     */
+    static void refreshPageClass(RolePickerContext ctx, Page p) {
+        if (p == null || p.isClosed()) return;
+        ConcurrentHashMap<Page, String> pageNames = ctx.pageNames;
+        LinkedHashMap<String, String> urlToClass = ctx.urlToClass;
+        try {
+            String curCls = pageNames.get(p);
+            String newCls = RolePickerClassNameResolver.resolvePageClassForUrl(p.url(), pageNames.values(), urlToClass);
+            if (newCls == null || newCls.isEmpty()) return;
+            if (!newCls.equals(curCls)) {
+                pageNames.put(p, newCls);
+                // 只在真的换页类时打一条 INFO：这是"URL 变化是否被正确识别为新页面"的判据日志。
+                log.info("[picker][nav] page class refreshed: {} -> {} (url={})", curCls, newCls, p.url());
+            }
+            pickerEval(p, RolePickerScripts.SET_PAGE_NAME_IF_CHANGED_JS,
+                    RolePickerScripts.args(RolePickerConstants.STATE_KEY_PAGE_NAME, newCls));
+        } catch (Exception e) {
+            // 导航瞬间文档不稳定导致的 evaluate 失败属预期：下一轮会重试（幂等），故只记 debug。
+            log.debug("[picker][nav] page class refresh skipped this round: {}", e.getMessage());
         }
     }
 

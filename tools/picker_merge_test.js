@@ -209,4 +209,35 @@ test('__packageStep 展开后按序号升序排序（哨兵因此垫底）', fun
     '_expanded 排序不是 (a.no||0)-(b.no||0) 的升序比较，"无序号元素垫底"语义不成立');
 });
 
+// ---------------------------------------------------------------------------
+// T8: 面板门控必须在"关闭墓碑"与"进行中的拾取会话"之间做取舍——
+//     __rolePanelEnabled==='0' 是 close-panel-js.js 写入的【粘性】墓碑；若在 bootstrap 里对它
+//     无条件 return，则 __rolePanelForce 永不置位，panel-core-a.js 的 UI 门禁（'1' || force）
+//     双假 ⇒ 该 origin 上后续每个新文档都没有面板（"打开新页面，没有重新创建面板"，且
+//     此后任何导航都恢复不了）。回归锁：墓碑仅在【会话未开启】时生效。
+// ---------------------------------------------------------------------------
+test('面板 bootstrap：关闭墓碑不得压过进行中的拾取会话（否则新页面永不重建面板）', function () {
+  const boot = readRes('panel-bootstrap-script.js');
+  assert.ok(!/getItem\('__rolePanelEnabled'\)\s*===\s*'0'\s*\)\s*return;/.test(boot),
+    'panel-bootstrap-script.js 又出现"读到墓碑就无条件 return"——新页面将永远没有面板');
+  assert.ok(/if \(__panelFlag === '0' && __sessionOn !== '1'\) return;/.test(boot),
+    '未找到"墓碑 + 会话开关"的取舍判断（__rolePanelEnabled=0 且 __rolePickSessionOn!=1 才 return）');
+  assert.ok(/__rolePickSessionOn/.test(boot), 'bootstrap 必须读取 __rolePickSessionOn 作为会话开关');
+  assert.ok(/setItem\('__rolePanelEnabled','1'\)/.test(boot), '放行路径必须把墓碑改回 1（否则下次导航又被挡）');
+  assert.ok(/__rolePanelForce\s*=\s*true/.test(boot), '放行路径必须置位 __rolePanelForce（跨源新页面的唯一兜底）');
+});
+
+// ---------------------------------------------------------------------------
+// T9: 上述取舍只有配合"开始拾取时强制使能面板"才闭环：Java 侧 CMD_START 分支必须调用
+//     ensurePanelVisible（注入 PANEL_FORCE_AND_ENABLE_JS + PANEL_SCRIPT）。
+// ---------------------------------------------------------------------------
+test('开始拾取时强制使能并重建面板（Java CMD_START 分支）', function () {
+  const java = fs.readFileSync(path.join(ROOT,
+    'pw-codegen/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/scan/RolePickerPanelController.java'), 'utf8');
+  assert.ok(/RolePickerConstants\.CMD_START\.equals\(cmd\)[\s\S]{0,400}?ensurePanelVisible\(ev\.page\);/.test(java),
+    'CMD_START 分支未调用 ensurePanelVisible —— 关闭过面板后点"开始拾取"将拿不回面板');
+  assert.ok(/private static void ensurePanelVisible\(Page page\)[\s\S]{0,600}?PANEL_FORCE_AND_ENABLE_JS[\s\S]{0,200}?PANEL_SCRIPT/.test(java),
+    'ensurePanelVisible 必须同时注入 PANEL_FORCE_AND_ENABLE_JS（清墓碑）与 PANEL_SCRIPT（重建面板）');
+});
+
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

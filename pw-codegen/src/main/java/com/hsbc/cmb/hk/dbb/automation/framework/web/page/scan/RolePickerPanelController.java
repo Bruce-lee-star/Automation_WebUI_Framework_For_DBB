@@ -116,6 +116,12 @@ public final class RolePickerPanelController {
         final BrowserContext ctx = page.context();
         // 弹窗页/导航后点击时需要 nls 反向表反查 key；预先构建一次（含缓存），供门控注入脚本内嵌。
         final String nlsReverseJson = RolePickerNlsCache.buildNlsReverseJson(Arrays.asList(nlsFiles));
+        // 【判定日志·NLS 来源】把调用点实际传入的 NLS 文件与"反查表是否为空"打进日志，用于定论
+        // "没有传 nls file 却出现 key=" 这一疑问：RolePickerNlsCache#buildNlsReverseJson 在 nlsFiles 为空时
+        // 直接返回 "{}"（不构建任何反查表），而反查表为空时浏览器侧无从产生 pick.key（i18n 策略也不会出现）。
+        // 因此若本行日志显示这里有文件，key 必然来自该调用点；若为空，则产物与面板都不应再出现任何 key。
+        log.info("[picker] openPanel nlsFiles={} nlsReverseJsonEmpty={}",
+                Arrays.asList(nlsFiles), (nlsReverseJson == null || nlsReverseJson.isEmpty() || "{}".equals(nlsReverseJson)));
         // 开启面板开关：刷新/导航后 context 级 addInitScript 会自动重建面板，避免"刷新后面板消失"。
         pickerEval(page, RolePickerScripts.ENABLE_PANEL_JS);
         // 清掉上一次会话可能残留的拾取落盘态与拾取开关（浏览器上下文虽每次重建，仍防御性清理），

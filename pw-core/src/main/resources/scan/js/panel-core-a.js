@@ -449,23 +449,14 @@
                   } catch (e3) { status.textContent = '复制失败，请手动复制'; }
                 }
               });
-              // 整页扫描：一次性收全当前页所有"带可访问名的语义角色元素"（heading/link/button/img/...），
-              // 对齐 page.pause 的 role-centric 理念但更完整（点击录制只录点过的，扫描把整页语义角色全收）。
-              // 走 Java 命令确保拾取库已注入后执行 window.__roleScanPage()，拾取结果与点击同一链路，随后点 ⏹ 停止生成。
-              var scanBtn = mkIconBtn(ICON.scan, '#7e57c2', '扫描整页：一次性收全当前页所有带名称的语义角色元素（随后点停止生成代码）', function() {
-                window.__pageScanning = true;   // 进入整页扫描态：立即置灰 scan/region，扫描完成自动恢复
-                try { refreshToggle(); } catch (e) {}
-                pushCmd('scan');
-              });
-              var regionBtn = mkIconBtn(ICON.region, '#0097a7', '区域扫描：点击按钮后，鼠标移入业务区域即聚焦，点击区域即扫描并展示该区域内元素；按 Esc 结束选区（扫描中「扫描整页」将置灰）', function() {
-                window.__regionSelecting = true;   // 进入区域选择态：立即置灰 scan/region，防止冲突
-                try { refreshToggle(); } catch (e) {}
-                pushCmd('scanRegion');
-              });
+              // 【已移除「扫描整页」与「区域扫描」】原因：这两条路径会把整页/整区的候选元素批量走
+              // 「拾取记录」链路（picker-core-b1.js 的 __recordPick），而该链路每次都要分配一个全局
+              // 递增拾取号 ⇒ 仅有 8 个元素的会话会累积出上百个序号（实测 title_username_page 累积到
+              // 180+ 个号、同号被分给多个元素），再经 Java 侧"只增不减"的并集合并不断放大，
+              // 表现为"编号无限增长、生成结果错乱"。手动拾取（8 个元素）不需要扫描，故整体去除入口。
+              // 后端对应命令（scan/scanRegion/regionScanned/regionDone）已同步删除。
               var abortBtn = mkIconBtn(ICON.abort, '#e53935', '终止运行', function() { pushCmd('abort'); });
               toolbar.appendChild(toggleBtn);
-              toolbar.appendChild(scanBtn);
-              toolbar.appendChild(regionBtn);
               toolbar.appendChild(copyBtn);
               toolbar.appendChild(abortBtn);
 
@@ -508,13 +499,7 @@
                     toggleBtn.style.background = '#43a047'; toggleBtn.disabled = false;
                     toggleBtn.style.opacity = '1'; toggleBtn.style.pointerEvents = 'auto'; toggleBtn.style.cursor = 'pointer';
                   }
-                  var scanEnabled = (mode === 'idle');
-                  [scanBtn, regionBtn].forEach(function(b) {
-                    b.disabled = !scanEnabled;
-                    b.style.opacity = scanEnabled ? '1' : '0.4';
-                    b.style.pointerEvents = scanEnabled ? 'auto' : 'none';
-                    b.style.cursor = scanEnabled ? 'pointer' : 'not-allowed';
-                  });
+                  // 扫描/区域按钮已移除（见工具栏注释）：不再有 scan/region 的启用态同步。
                   window.__rolePickWanted = null;
                 }
                 // 【修复"手动拾取中可封装步骤"】每次 refreshToggle 都同步"封装为步骤"按钮状态，

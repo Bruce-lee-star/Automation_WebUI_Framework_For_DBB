@@ -43,6 +43,14 @@ public class AsyncPoolTimeoutReaperTest {
         assertTrue("任务应在池线程上启动", started.await(10, TimeUnit.SECONDS));
         assertTrue("超时后必须被取消并结束（否则超时保护形同失效）", finished.await(20, TimeUnit.SECONDS));
         assertTrue("超时任务应收到 cancel(true) 的中断信号", interrupted.get());
+        // 【消除结构性竞态】裁决循环的顺序是：future.cancel(true)（任务随即在 finally 里 countDown finished）
+        // → timeoutCount.incrementAndGet() 记账。故 finished 落下时计数可能尚未递增，此处做即时断言会偶发
+        // 失败（本会话两次全量构建各命中一次，单测复跑恒绿）。改为有界轮询：仍证明"超时被裁决器真实裁决
+        // 并记账（而非静默跳过）"，只是容忍 cancel 与记账之间的线程间可见性窗口。
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (AsyncPool.getTimeoutCount() <= timeoutCountBefore && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
         assertTrue("超时计数应递增 —— 证明超时被裁决器真实裁决（而非静默跳过）", AsyncPool.getTimeoutCount() > timeoutCountBefore);
     }
 }

@@ -289,4 +289,86 @@ final class RolePickerCodeAssembler {
         if (!p.isPopup() && mem.isPopup()) return true;
         return false;
     }
+
+    /**
+     * 由快照按页生成<b>断言类</b>源码（供面板「断言」Tab 展示）。
+     *
+     * <p><b>与步骤生成同源同序</b>：同一 {@code snap}、同一次「封装」的切分（一个 step 一个方法）、
+     * 同一「按 pickNos 升序」的元素顺序、同一 {@code locatorKey → 字段名} 口径（保证断言类与页面类/
+     * 步骤类引用同一批字段、顺序一致）。差别只在方法体：这里是可见性断言而非操作调用。</p>
+     *
+     * <p><b>与步骤路径的两点刻意不同</b>：<br>
+     * ① 同一元素在一次封装里被点了多次（{@code pickNos=[1,2]}）时，断言<b>只出一条</b> ——
+     * "可见"断言重复无意义（步骤侧按 pickNos 逐号展开是对的：每个号是一次真实操作）；<br>
+     * ② 不复用 {@link #buildStepCode} 内部的分组/对账代码：那条路径上挂着 F-15/P1-6 等历史修复
+     * （iframe framePath 回补、幽灵 pick 对账、drop 诊断），抽取重构会把"经验"搅在一起；
+     * 断言侧只需其中最小子集（按页分组 + 剔除已删元素 + 按序号排序），故独立实现并保持极简。</p>
+     *
+     * @param snap        拾取快照（entries + 已封装 steps）
+     * @param packageName 页面类所在包名（断言类落在其 {@code .assertions} 子包）
+     * @return pageClass → 该页断言类源码（LinkedHashMap 保序；无 step 时返回空 map）
+     */
+    static LinkedHashMap<String, String> buildAssertCode(PickSnapshot snap, String packageName) {
+        LinkedHashMap<String, String> out = new LinkedHashMap<>();
+        if (snap == null || snap.steps == null || snap.steps.isEmpty()) return out;
+        String curClass = (snap.pageClass == null) ? "" : snap.pageClass;
+        // 页面字段只由 entries 生成 ⇒ 已删元素必须从断言里剔除，否则断言引用不存在的字段（产物不可编译）
+        Set<String> aliveKeys = new HashSet<>();
+        for (RoleEntry e : snap.entries) {
+            String lk = RoleElementPageGenerator.locatorKey(e);
+            if (lk != null && !lk.isEmpty()) aliveKeys.add(lk);
+        }
+        LinkedHashMap<String, List<RoleEntry>> entriesByPage = new LinkedHashMap<>();
+        for (RoleEntry e : snap.entries) {
+            String pc = (e.getPageClass() == null || e.getPageClass().isEmpty()) ? curClass : e.getPageClass();
+            entriesByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(e);
+        }
+        LinkedHashMap<String, List<List<RoleEntry>>> stepsByPage = new LinkedHashMap<>();
+        for (StepRec st : snap.steps) {
+            if (st == null) continue;
+            String pc = (st.pageClass == null || st.pageClass.isEmpty()) ? curClass : st.pageClass;
+            if (st.picks != null) {
+                List<RoleEntry> picks = new ArrayList<>(st.picks.size());
+                for (RoleEntry e : st.picks) {
+                    if (e == null) continue;
+                    String lk = RoleElementPageGenerator.locatorKey(e);
+                    if (lk != null && !lk.isEmpty() && !aliveKeys.isEmpty() && !aliveKeys.contains(lk)) continue;
+                    picks.add(e);
+                }
+                if (!picks.isEmpty()) stepsByPage.computeIfAbsent(pc, k -> new ArrayList<>()).add(picks);
+            }
+        }
+        for (java.util.Map.Entry<String, List<List<RoleEntry>>> en : stepsByPage.entrySet()) {
+            String pc = en.getKey();
+            List<RoleEntry> pageEntries = entriesByPage.getOrDefault(pc, new ArrayList<>());
+            java.util.Map<String, String> keyToField = new LinkedHashMap<>();
+            for (RoleElementPageGenerator.GeneratedField s : RoleElementPageGenerator.assignFields(pageEntries)) {
+                keyToField.put(RoleElementPageGenerator.locatorKey(s.entry), s.fieldName);
+            }
+            String pageVar = RoleElementAssertionGenerator.pageVarOf(pc);
+            List<List<String>> stepLines = new ArrayList<>();
+            for (List<RoleEntry> step : en.getValue()) {
+                // 与步骤生成同一排序口径：按 pickNos 首号升序；无号者垫底（Integer.MAX_VALUE）
+                List<RoleEntry> ordered = new ArrayList<>(step);
+                ordered.sort(java.util.Comparator.comparingInt((RoleEntry e) -> {
+                    List<Integer> nos = e.getPickNos();
+                    if (nos != null && !nos.isEmpty() && nos.get(0) != null && nos.get(0) > 0) return nos.get(0);
+                    return Integer.MAX_VALUE;
+                }));
+                // 同一元素去重（见方法注释①）：可见性断言重复无意义
+                Set<String> seen = new HashSet<>();
+                List<String> lines = new ArrayList<>(ordered.size());
+                for (RoleEntry e : ordered) {
+                    String lk = RoleElementPageGenerator.locatorKey(e);
+                    if (lk == null || !seen.add(lk)) continue;
+                    String field = keyToField.get(lk);
+                    if (field == null) continue;
+                    lines.add(RoleElementAssertionGenerator.assertStatement(pageVar, field));
+                }
+                stepLines.add(lines);
+            }
+            out.put(pc, RoleElementAssertionGenerator.renderClass(packageName, pc, stepLines));
+        }
+        return out;
+    }
 }

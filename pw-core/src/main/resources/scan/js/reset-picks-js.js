@@ -1,1 +1,0 @@
-try{ window.__rolePicks = []; window.__rolePickSigs = {}; window.__sigToPick = {}; }catch(e){}

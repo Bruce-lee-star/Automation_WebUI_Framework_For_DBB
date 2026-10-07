@@ -118,9 +118,6 @@ public final class RolePickerScripts {
     /** 移除常驻面板：摘除点击/悬停/按键/焦点/滚动监听，复位 active，清会话开关并写面板墓碑（阻断门控自启）。 */
     public static final String CLOSE_PANEL_JS = loadScript("close-panel-js.js");
 
-    /** 开始整页/区域扫描前清空浏览器侧拾取全局态（与 Java 内存态对齐，使扫描从空开始）。 */
-    public static final String RESET_PICKS_JS = loadScript("reset-picks-js.js");
-
     public static final String CLEAR_PICKS_JS = loadScript("clear-picks-js.js");
 
     /** 清空浏览器侧进行中 step（__currentStep）；用于 followPage 把 opener 的 step 整体转移到新页后清空源页。 */
@@ -177,23 +174,6 @@ public final class RolePickerScripts {
 
     /** 面板是否已挂载且渲染函数就绪。 */
     public static final String HAS_PANEL_JS = loadScript("has-panel-js.js");
-
-    // =====================================================================
-    // F. 区域选择（整页/区域扫描、iframe 帧列举）
-    // =====================================================================
-
-    /** 在单个 frame 内执行 __roleScanPage(null)，返回新增元素数；未就绪返回 -1（供调用方补注入）。 */
-    public static final String SCAN_PAGE_IN_FRAME_JS = loadScript("scan-page-in-frame-js.js");
-
-    public static final String FRAME_SCAN_JS = loadScript("frame-scan-js.js");
-
-    /** 启动区域点选（调用 window.__roleStartRegionSelect），成功返回 true。 */
-    public static final String START_REGION_SELECT_JS = loadScript("start-region-select-js.js");
-
-    /** 清理区域选区态（移除蓝色遮罩 / 事件监听）。 */
-    public static final String END_REGION_SELECT_JS = loadScript("end-region-select-js.js");
-
-    public static final String READ_REGION_FRAMES_JS = loadScript("read-region-frames-js.js");
 
     // =====================================================================
     // G. 状态读取 / 诊断快照（纯读取，无跨常量依赖）

@@ -829,7 +829,7 @@
                   // 渲染候选项（带勾选框）。勾选态 = 该 pick 的 sig 在选择集 window.__currentStep 中。
                   listEl.innerHTML = '';
                   if (!picks.length) {
-                    listEl.textContent = '（暂无拾取：点 🔍 扫描整页，或在页面点击元素）';
+                    listEl.textContent = '（暂无拾取：在页面点击元素）';
                     // 【关键修复"删除全部元素后全选 checkbox 仍勾选且可用、已选计数陈旧"】
                     // 旧实现此处直接 return，跳过了下方 selBar 全选框与 refreshSelInfo 的更新——删除全部后
                     // 列表为空，refreshSelInfo 不再执行，全选框保持删除前的勾选/可用状态、计数仍显示旧的

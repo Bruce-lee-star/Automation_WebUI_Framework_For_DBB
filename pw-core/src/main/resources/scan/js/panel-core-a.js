@@ -177,8 +177,8 @@
         abort: svg('<path d="M13 3h-2v10h2V3zm4.83 2.17-1.42 1.42A7 7 0 1 1 7.58 6.59L6.17 5.17a9 9 0 1 0 11.66 0z"/>'), // ⏻ 终止
         close: svg('<path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3l6.3 6.3 6.3-6.3z"/>'), // ✕ 关闭
         hover: svg('<path d="M7 2l12 7-5 1.4L13 18 7 2z"/>'),                                         // ⤢ 悬停拾取
-        scan:  svg('<path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z"/>'), // 🔍 扫描整页
-        region: svg('<path d="M3 3h6v2H5v4H3V3zm12 0h6v6h-2V5h-4V3zM3 15h2v4h4v2H3v-6zm16 0h2v6h-6v-2h4v-4z"/>') // ▢ 框选区域
+        // 【已移除】scan（🔍 扫描整页）与 region（▢ 框选区域）两个图标：
+        // 整页扫描与区域扫描功能已从框架去除（见下方工具栏注释），图标随之删除，避免留下无入口的提示。
       };
       // 统一的图标按钮：圆形/圆角方块、hover 提亮、带 title 作为无障碍提示
       function mkIconBtn(svgHtml, bg, title, onClick) {
@@ -461,9 +461,9 @@
               toolbar.appendChild(copyBtn);
               toolbar.appendChild(abortBtn);
 
-              // 根据 window.__roleMode（Java 权威驱动）实时同步三模式互斥按钮态。
-              // 模式语义：idle（待命，仅开始可用）/ manual（手动拾取，开始=停止、扫描禁用）/
-              //           scanPage / scanRegion（扫描中，全部禁用；扫完 Java 驱动回 idle）。
+              // 根据 window.__roleMode（Java 权威驱动）实时同步按钮态。
+              // 模式语义：idle（待命，仅开始可用）/ manual（手动拾取，开始=停止）。
+              // 注：整页扫描 / 区域扫描（scanPage / scanRegion）已从框架移除，模式只剩这两个。
               // 仅在状态变化时重写 DOM，避免定时器无谓重绘（企业级：减少无变化重排）。
               var __lastMode = null;
               function refreshToggle() {
@@ -491,16 +491,11 @@
                     toggleBtn.innerHTML = ICON.stop; toggleBtn.title = '停止拾取';
                     toggleBtn.style.background = '#fb8c00'; toggleBtn.disabled = false;
                     toggleBtn.style.opacity = '1'; toggleBtn.style.pointerEvents = 'auto'; toggleBtn.style.cursor = 'pointer';
-                  } else if (mode === 'scanPage' || mode === 'scanRegion') {
-                    toggleBtn.innerHTML = ICON.stop; toggleBtn.title = '扫描中…';
-                    toggleBtn.style.background = '#9e9e9e'; toggleBtn.disabled = true;
-                    toggleBtn.style.opacity = '0.5'; toggleBtn.style.pointerEvents = 'none'; toggleBtn.style.cursor = 'not-allowed';
                   } else { // idle
                     toggleBtn.innerHTML = ICON.start; toggleBtn.title = '开始拾取';
                     toggleBtn.style.background = '#43a047'; toggleBtn.disabled = false;
                     toggleBtn.style.opacity = '1'; toggleBtn.style.pointerEvents = 'auto'; toggleBtn.style.cursor = 'pointer';
                   }
-                  // 扫描/区域按钮已移除（见工具栏注释）：不再有 scan/region 的启用态同步。
                   window.__rolePickWanted = null;
                 }
                 // 【修复"手动拾取中可封装步骤"】每次 refreshToggle 都同步"封装为步骤"按钮状态，
@@ -517,8 +512,6 @@
                 var hint;
                 if (mode === 'manual') {
                   hint = '手动拾取中：点哪个拾哪个；停止时整段拾取作为一个步骤（自动包含 iframe/弹窗/新页面边界）' + stepSuffix;
-                } else if (mode === 'scanPage' || mode === 'scanRegion') {
-                  hint = (mode === 'scanPage' ? '整页扫描中…' : '区域扫描中…') + '（完成后自动回到开始拾取，整段作为一个步骤）' + stepSuffix;
                 } else {
                   hint = '就绪：▶ 开始拾取 = 手动模式（开始到停止为一个步骤）；或先在「页面元素」勾选元素后点【封装为步骤】按选择顺序生成步骤' + stepSuffix;
                 }

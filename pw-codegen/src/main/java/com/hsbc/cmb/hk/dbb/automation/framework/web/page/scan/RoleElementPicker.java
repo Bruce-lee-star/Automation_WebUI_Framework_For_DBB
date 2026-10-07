@@ -247,10 +247,8 @@ public final class RoleElementPicker {
 
     private static String jsModeOf(PickMode mode) {
         switch (mode) {
-            case IDLE: return RolePickerConstants.MODE_IDLE;
             case MANUAL: return RolePickerConstants.MODE_MANUAL;
-            case SCAN_PAGE: return RolePickerConstants.MODE_SCAN_PAGE;
-            case SCAN_REGION: return RolePickerConstants.MODE_SCAN_REGION;
+            case IDLE:
             default: return RolePickerConstants.MODE_IDLE;
         }
     }

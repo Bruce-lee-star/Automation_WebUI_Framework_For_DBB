@@ -23,16 +23,6 @@ final class RolePickerConstants {
 
     // ───────────────────────── CMD_* : 面板 → 引擎命令名 ─────────────────────────
     static final String CMD_START = "start";
-    static final String CMD_SCAN = "scan";
-    static final String CMD_SCAN_REGION = "scanRegion";
-    static final String CMD_REGION_SCANNED = "regionScanned";
-    /**
-     * 区域选择<b>收尾</b>命令（F-07 / P1-7）：用户按 Esc 结束选区时由浏览器侧 {@code finish()} 回传。
-     *
-     * <p>与 {@link #CMD_REGION_SCANNED} 的分工是本项修复的核心：{@code regionScanned} 是<b>每次点击</b>
-     * 区域的增量通知（Java 只刷新选区与代码，<b>不得</b>收尾）；只有本命令才 END 选区并回 IDLE。</p>
-     */
-    static final String CMD_REGION_DONE = "regionDone";
     static final String CMD_PACKAGE = "package";
     static final String CMD_REFRESH_CODE = "refreshCode";
     static final String CMD_STOP = "stop";
@@ -49,8 +39,6 @@ final class RolePickerConstants {
     //    RolePickerModeContractTest 并不存在，属 A-03 / doc 22 揭示的虚假引用）。
     static final String MODE_IDLE = "idle";
     static final String MODE_MANUAL = "manual";
-    static final String MODE_SCAN_PAGE = "scanPage";
-    static final String MODE_SCAN_REGION = "scanRegion";
 
     // ───────────────────────── STATE_* : Java↔JS 通信实参键（对应脚本 a.xxx） ─────────────────────────
     static final String STATE_KEY_MODE = "mode";

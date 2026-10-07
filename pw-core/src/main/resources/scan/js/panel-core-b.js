@@ -245,7 +245,12 @@
                     var _nos = (Array.isArray(_fp._pickNos) && _fp._pickNos.length)
                         ? _fp._pickNos.slice()
                         : (typeof _fp._pickSeq === 'number' && _fp._pickSeq > 0 ? [_fp._pickSeq] : []);
-                    if (!_nos.length) _nos = [0];   // 兜底：无序号元素给一个占位号，排序垫底
+                    // 兜底：无序号元素给一个"排序垫底"的哨兵号。
+                    // 【修复"无序号元素跑到步骤最前"】原实现用占位号 0，而下方排序是【升序】⇒ 0 排在最前，
+                    // 与本行注释"垫底"及用户预期（没编排序号的元素最后执行）相反；Java 侧对无号元素的
+                    // 兜底是 Integer.MAX_VALUE（RoleElementStepGenerator:167，排最后）⇒ 两端语义原本正好相反。
+                    // 注意：哨兵只用于排序，克隆时仍是单号 pickNos，不影响面板展示。
+                    if (!_nos.length) _nos = [Number.MAX_SAFE_INTEGER];
                     for (var _nx = 0; _nx < _nos.length; _nx++) {
                       _expanded.push({ base: _fp, no: _nos[_nx] });
                     }

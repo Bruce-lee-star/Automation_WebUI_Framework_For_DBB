@@ -86,7 +86,10 @@ final class RolePickerPanelSync {
         for (Frame f : page.frames()) {
             if (f == null || f.equals(page.mainFrame())) continue;
             try {
-                Object frameJson = pickerEval(f, RolePickerScripts.READ_FRAME_PICKS_RAW_JS);
+                // 【必须用短超时】这是主循环每轮对子 frame 的读取：跨域/过渡期 frame 的 evaluate 会失败或
+                // 长时间挂起（现场 WARN "failed to merge iframe picks ...: pickerEval failed" 即此处），
+                // 若沿用 30s 默认超时会把同一轮的页类刷新/计数器垫高一起拖住。
+                Object frameJson = RoleElementPicker.pickerEvalSoft(f, RolePickerScripts.READ_FRAME_PICKS_RAW_JS);
                 if (frameJson instanceof String) {
                     final String json = (String) frameJson;
                     if (!json.isEmpty() && !"[]".equals(json.trim())) {

@@ -209,6 +209,15 @@ public final class RoleElementPicker {
         return evalWithTimeout(evalLockOf(page), () -> page.evaluate(script, arg), PICKER_EVAL_SOFT_TIMEOUT_MS);
     }
 
+    /** 短超时版（Frame 重载）：用于主循环里"每轮重做、丢掉无害"的子 frame 读取/注入。 */
+    static Object pickerEvalSoft(Frame frame, String script) {
+        return evalWithTimeout(evalLockOf(frame), () -> frame.evaluate(script), PICKER_EVAL_SOFT_TIMEOUT_MS);
+    }
+
+    static Object pickerEvalSoft(Frame frame, String script, Object arg) {
+        return evalWithTimeout(evalLockOf(frame), () -> frame.evaluate(script, arg), PICKER_EVAL_SOFT_TIMEOUT_MS);
+    }
+
     private static Object evalWithTimeout(Object lock, Supplier<Object> eval) {
         return evalWithTimeout(lock, eval, PICKER_EVAL_TIMEOUT_MS);
     }
@@ -576,7 +585,10 @@ public final class RoleElementPicker {
             // 表现即"停止后再点开始却拾取不了 / 跳转到新页面拾取不到"——因为激活态显示 true、函数引用还在（hasClick 为真），
             // 于是误判"无需重挂"，而真实监听早已不工作。START_SCRIPT 对同函数引用 addEventListener 幂等、
             // 不重复定义库，按 1s 节奏重挂安全无副作用，故此处改为"会话开则必重挂"。
-            pickerEval(page, RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_NLS, nlsReverseJson));
+            // 【必须用短超时】自愈保活是主循环每轮动作：页面在导航瞬间 evaluate 会挂住，若用 30s 默认超时
+            // 会把同一轮的页类刷新/计数器垫高（决定"回上一页后页类与序号是否正确"）一起拖住；
+            // 短超时失败也只是本轮跳过，下一轮自然重试（幂等）。
+            pickerEvalSoft(page, RolePickerScripts.SET_NLS_AND_SESSION_JS, RolePickerScripts.args(RolePickerConstants.STATE_KEY_NLS, nlsReverseJson));
             // 自愈保活不仅要重挂主框架监听，还须对所有 frame（含弹窗/新页面内的任意嵌套 iframe）重新注入拾取脚本。
             // 否则"打开新页面 / window.open 弹窗 / 链接点击新标签"等场景，其内嵌 iframe 在自愈时不会被重新注入，
             // 表现为弹窗内 iframe 元素拾取不到。registerFrameInjection 对 page.frames() 递归返回的全部层做全量兜底，

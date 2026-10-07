@@ -154,6 +154,16 @@ final class RolePickerBridgeRegistry {
                     String __fixedCls = RolePickerPageTracker.retagStalePickClass(__srcPage, __pickCls);
                     if (__fixedCls != null) {
                         m.put("_pageClass", __fixedCls);
+                        // 【必须同时修正去重键 _sigKey】浏览器侧 __sigKey 的格式是 JSON 数组 [sig, pageClass]，
+                        // 且是在【纠正之前】算出来的：只改 _pageClass 会让 pickDedupKey 仍按带旧页类的 _sigKey
+                        // 去重，于是同一元素在 Java 侧落成【两条】条目（现场 diag-stop 实证：
+                        // ["role:heading:title_username_page#0","LogonPage"] 与 [...,"SetupSecondPwdPage"]
+                        // 同时存在，号还分别是 [1,2] 与 [1,3,4]）。故用同一 sig + 新页类重建 _sigKey，
+                        // 使该 pick 与既有 LogonPage 条目并到一处（格式与 JS 的 JSON.stringify([sig, cls]) 一致）。
+                        Object __sigObj = m.get("_sig");
+                        if (__sigObj != null) {
+                            m.put("_sigKey", GSON.toJson(java.util.Arrays.asList(String.valueOf(__sigObj), __fixedCls)));
+                        }
                         log.info("[picker][nav] pick page class corrected at callback time: {} -> {} (url={})",
                                 __pickCls, __fixedCls, (__srcPage == null ? "" : __srcPage.url()));
                     }

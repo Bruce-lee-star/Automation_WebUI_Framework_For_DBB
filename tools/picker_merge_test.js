@@ -302,4 +302,19 @@ test('回灌不得重命名序号（根因：全局重编号 + Java 并集 = 跨
     '未找到“单调基线取真实最大号”的实现说明（重编号移除后不能用号的数量做基线）');
 });
 
+// ---------------------------------------------------------------------------
+// T14: 「开始拾取」清序号后必须强制回灌（否则面板元素全部消失）。
+//   设计语义（cmdStart 注释）：重新开始拾取【保留元素、只清序号】⇒ 元素必须继续显示在面板上（序号为 [-]）。
+//   但 start 会重置浏览器侧列表/渲染，而回灌有 ETag 判重 ⇒ 判为"无需回灌"时新状态永不写回 ⇒ 面板空白
+//   （现场：20:44:57 [start] 后用户反馈"重新拾取，页面元素都不见了"）。
+// ---------------------------------------------------------------------------
+test('开始拾取后必须作废 ETag 并立即回灌（否则面板元素全消失）', function () {
+  const java = fs.readFileSync(path.join(ROOT,
+    'pw-codegen/src/main/java/com/hsbc/cmb/hk/dbb/automation/framework/web/page/scan/RolePickerCommandEngine.java'), 'utf8');
+  assert.ok(/setPickNos\(new java\.util\.ArrayList<>\(\)\)[\s\S]{0,1400}?invalidateSync\(page\)/.test(java),
+    'cmdStart 清序号后未作废该页 ETag —— 元素会从面板消失');
+  assert.ok(/invalidateSync\(page\)[\s\S]{0,300}?syncPanelToBrowser\(page, null, javaPickBySig, false\)/.test(java),
+    'cmdStart 未在作废 ETag 后立即全量回灌 —— 面板仍可能空白');
+});
+
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

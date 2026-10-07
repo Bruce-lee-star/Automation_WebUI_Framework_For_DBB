@@ -137,6 +137,18 @@ public final class RolePickerCommandEngine {
                 }
             }
         }
+        // 【修复"重新开始拾取后，面板上的页面元素全部消失"】
+        // 按上面的设计语义：重新开始拾取【保留元素、只清序号】——因此元素必须在面板上继续可见（序号显示为
+        // [-]）。但 start 会重置浏览器侧的列表/渲染与序号计数器，而回灌有 ETag 判重（只比较 Java 权威态是否
+        // 变化），一旦判定"无需回灌"，新状态就永远不会写回浏览器 ⇒ 面板空白（用户表现："重新拾取，页面元素
+        // 都不见了"）。此处在清完序号后【作废该页 ETag 并立刻全量回灌一次】，把"元素仍在、序号归零"如实
+        // 呈现在面板上（与导航换文档时 invalidateSync 的处理同源，见 RolePickerPageTracker#refreshPageClass）。
+        try {
+            if (page != null && !page.isClosed()) {
+                RolePickerPanelSync.invalidateSync(page);
+                syncPanelToBrowser(page, null, javaPickBySig, false);
+            }
+        } catch (Exception ignoreResync) { RolePickerQuiet.ignore("RolePickerCommandEngine#cmdStartResync", ignoreResync); }
         // 进入手动拾取模式（互斥：此时整页/区域扫描按钮禁用，点击页面只拾取被点元素）。
         setPickMode(pageNames.keySet().iterator().next(), PickMode.MANUAL, pageNames);
         // 反向查表只构建一次（避免对每个被跟踪页面重复读 nls 文件），减少点击"开始"的延迟。

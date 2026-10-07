@@ -259,6 +259,17 @@ public final class RoleEntry {
      * 对应浏览器侧 {@code pick._pickNos}。纯透传信息，不参与去重签名、不参与代码生成（仅面板前缀展示用）。
      * Java 权威内存态需将其持久，否则 syncPanelToBrowser 重建浏览器 pick 时会丢，导致跨页导航 index 重置。
      */
+    //  【修复"同一元素序号每轮自增 / 跨 URL 与跨页面丢号"——回灌键名不一致】
+    //  syncPanelToBrowser 用 GSON.toJson(RoleEntry 列表) 把 Java 权威态写回浏览器，而浏览器侧
+    //  【所有】读取处都用下划线键：p._pickNos（__mergeKey 去重、面板序号前缀、+/- 号编辑、
+    //  封装时的展开排序）。此前该字段无 GSON 别名，序列化出的键是 pickNos ⇒ 每一轮回灌都把浏览器侧
+    //  的号丢掉 ⇒ 面板视元素为"没有号"并重新铸号 ⇒ 回传后 Java 侧 mergePickIntoMap 只增不减地并集，
+    //  表现为同一元素序号每轮 +1（实测 8 个元素的号稀疏铺满 1..494，与"每轮每元素 +1"吻合），
+    //  且跨页导航/新页面时 index 被重置，与"同一元素、序号递增 / 按序号生成步骤"的需求相悖。
+    //  RoleEntry 的注释（见下方 pickNos 字段说明）已指出"syncPanelToBrowser 重建浏览器 pick 时会丢"，
+    //  此处补上键名别名即从根消除。用全限定注解：本文件既有大量 java.util.* 全限定写法，避免新增 import。
+    //  语义不变：真实点击同一元素仍【继续累加序号】（用户明确要求保留），本次只保证号在回灌后不再丢。
+    @com.google.gson.annotations.SerializedName("_pickNos")
     private java.util.List<Integer> pickNos;
 
     public java.util.List<Integer> getPickNos() { return pickNos; }

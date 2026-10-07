@@ -312,14 +312,14 @@ final class RolePickerCodeAssembler {
     /**
      * 由快照按页生成<b>断言类</b>源码（供面板「断言」Tab 展示）。
      *
-     * <p><b>与步骤生成同源同序</b>：同一 {@code snap}、同一次「封装」的切分（一个 step 一个方法）、
-     * 同一「按 pickNos 升序」的元素顺序、同一 {@code locatorKey → 字段名} 口径（保证断言类与页面类/
-     * 步骤类引用同一批字段、顺序一致）。差别只在方法体：这里是可见性断言而非操作调用。</p>
+     * <p><b>与步骤生成同源同序、且逐行同构</b>：同一 {@code snap}、同一次「封装」的切分（一个 step 一个方法）、
+     * 同一「按 pickNos 逐号展开」的元素顺序（同一元素被点多次 ⇒ 与步骤一样出多条）、
+     * 同一 {@code locatorKey → 字段名} 口径（保证断言类与页面类/步骤类引用同一批字段、顺序一致）。
+     * 差别只在方法体：这里是可见性断言而非操作调用 —— 因此 {@code assertStepN} 的第 k 行对应
+     * {@code stepN} 的第 k 行，可直接逐行对照/替换。</p>
      *
-     * <p><b>与步骤路径的两点刻意不同</b>：<br>
-     * ① 同一元素在一次封装里被点了多次（{@code pickNos=[1,2]}）时，断言<b>只出一条</b> ——
-     * "可见"断言重复无意义（步骤侧按 pickNos 逐号展开是对的：每个号是一次真实操作）；<br>
-     * ② 不复用 {@link #buildStepCode} 内部的分组/对账代码：那条路径上挂着 F-15/P1-6 等历史修复
+     * <p><b>与步骤路径的一点刻意不同</b>：不复用 {@link #buildStepCode} 内部的分组/对账代码：
+     * 那条路径上挂着 F-15/P1-6 等历史修复
      * （iframe framePath 回补、幽灵 pick 对账、drop 诊断），抽取重构会把"经验"搅在一起；
      * 断言侧只需其中最小子集（按页分组 + 剔除已删元素 + 按序号排序），故独立实现并保持极简。</p>
      *
@@ -389,19 +389,33 @@ final class RolePickerCodeAssembler {
             String pc = en.getKey();
             List<List<String>> stepLines = new ArrayList<>();
             for (List<RoleEntry> step : en.getValue()) {
-                // 与步骤生成同一排序口径：按 pickNos 首号升序；无号者垫底（Integer.MAX_VALUE）
-                List<RoleEntry> ordered = new ArrayList<>(step);
-                ordered.sort(java.util.Comparator.comparingInt((RoleEntry e) -> {
+                // 【与步骤严格同构】按 pickNos 逐号展开（同一元素的每个号各出一条断言），与 buildStepCode
+                // 的展开口径完全一致 ⇒ 断言行与步骤操作行【一一对应】（顺序与条数都相同），便于逐行对照/替换。
+                // 原实现按元素去重（"可见性断言重复无意义"），导致断言 5 行 vs 步骤 8 行、用户报
+                // "断言和步骤生成的代码不一样"，故改为逐号展开。
+                // closeOp（关闭当前页）不是元素操作，断言侧跳过、不产生 assert 行。
+                List<java.util.Map.Entry<Integer, RoleEntry>> seqEntries = new java.util.ArrayList<>();
+                for (RoleEntry e : step) {
+                    if (e == null || e.isCloseOp()) continue;
                     List<Integer> nos = e.getPickNos();
-                    if (nos != null && !nos.isEmpty() && nos.get(0) != null && nos.get(0) > 0) return nos.get(0);
-                    return Integer.MAX_VALUE;
-                }));
-                // 同一元素去重（见方法注释①）：可见性断言重复无意义
-                Set<String> seen = new HashSet<>();
+                    if (nos != null && !nos.isEmpty()) {
+                        for (int no : nos) {
+                            if (no > 0) seqEntries.add(java.util.Map.entry(no, e));
+                        }
+                    } else {
+                        int seq = e.getSeq();
+                        seqEntries.add(java.util.Map.entry(seq > 0 ? seq : Integer.MAX_VALUE, e));
+                    }
+                }
+                seqEntries.sort(java.util.Comparator.comparingInt(java.util.Map.Entry<Integer, RoleEntry>::getKey));
+                List<RoleEntry> ordered = new ArrayList<>(seqEntries.size());
+                for (java.util.Map.Entry<Integer, RoleEntry> se : seqEntries) {
+                    ordered.add(se.getValue());
+                }
                 List<String> lines = new ArrayList<>(ordered.size());
                 for (RoleEntry e : ordered) {
                     String lk = RoleElementPageGenerator.locatorKey(e);
-                    if (lk == null || !seen.add(lk)) continue;
+                    if (lk == null) continue;
                     // 按元素自身所属页取字段与页变量（跨页封装时元素可能不属于 owner 页）
                     String epc = (e.getPageClass() == null || e.getPageClass().isEmpty()) ? pc : e.getPageClass();
                     String fieldPage = null;

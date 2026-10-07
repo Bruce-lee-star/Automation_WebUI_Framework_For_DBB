@@ -74,6 +74,51 @@ public class RoleAssertCodeGenerationTest {
         return ordered;
     }
 
+    @Test
+    // @DisplayName: "断言与步骤逐行同构：条数相同、逐行元素相同（回归用户『断言和步骤生成的代码不一样』）"
+    public void assertionsMirrorStepOperationsLineByLine() {
+        RoleEntry title = entry("Title", "k_title");
+        RoleEntry user = entry("User", "k_user");
+        RoleEntry input = entry("Input", "k_input");
+        RoleEntry newTo = entry("NewTo", "k_new");
+        RoleEntry text = entry("Text", "k_text");
+        List<RoleEntry> entries = Arrays.asList(title, user, input, newTo, text);
+        // 复刻实测会话：title=[1,3,7] user=[2,4] input=[5] newTo=[6] text=[8]（共 8 次操作）
+        List<StepRec> steps = Collections.singletonList(new StepRec(PAGE, Arrays.asList(
+                pick(title, 1, 3, 7), pick(user, 2, 4), pick(input, 5), pick(newTo, 6), pick(text, 8))));
+
+        PickSnapshot snap = new PickSnapshot(PAGE, entries, steps, new ArrayList<>());
+        String stepSrc = RolePickerCodeAssembler.buildStepCode(snap, PKG, "LogonSteps").get(PAGE);
+        String assertSrc = RolePickerCodeAssembler.buildAssertCode(snap, PKG).get(PAGE);
+
+        List<String> stepLines = operationsInOrder(stepSrc, entries);
+        List<String> assertLines = assertedFields(assertSrc, entries);
+        assertEquals("步骤侧应按号展开为 8 次操作：" + stepSrc, 8, stepLines.size());
+        assertEquals("断言行数必须等于步骤操作行数（否则就是用户看到的『不一样』）：\n步骤=" + stepLines
+                + "\n断言=" + assertLines, stepLines.size(), assertLines.size());
+        assertEquals("逐行对应的元素必须完全一致", stepLines, assertLines);
+    }
+
+    /** 按出现顺序抽出步骤里被操作的元素（同一元素多次操作会出现多次）。 */
+    private static List<String> operationsInOrder(String src, List<RoleEntry> entries) {
+        List<int[]> hits = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (RoleElementPageGenerator.GeneratedField f : RoleElementPageGenerator.assignFields(entries)) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile(java.util.regex.Pattern.quote("." + f.fieldName + ".")).matcher(src);
+            while (m.find()) {
+                hits.add(new int[]{m.start(), names.size()});
+            }
+            names.add(f.fieldName);
+        }
+        hits.sort((x, y) -> Integer.compare(x[0], y[0]));
+        List<String> ordered = new ArrayList<>();
+        for (int[] h : hits) {
+            ordered.add(names.get(h[1]));
+        }
+        return ordered;
+    }
+
     private static String fieldOf(RoleEntry e, List<RoleEntry> entries) {
         String want = RoleElementPageGenerator.locatorKey(e);
         for (RoleElementPageGenerator.GeneratedField f : RoleElementPageGenerator.assignFields(entries)) {
@@ -85,7 +130,7 @@ public class RoleAssertCodeGenerationTest {
     }
 
     @Test
-    // @DisplayName: "断言行按拾取序号升序（与步骤内操作顺序一致），同元素多号只断言一次"
+    // @DisplayName: "断言行与步骤操作行一一对应：按 pickNos 逐号展开（同元素多号各出一条）"
     public void assertionLinesFollowPickNosOrder() {
         RoleEntry a = entry("A", "k_a");
         RoleEntry b = entry("B", "k_b");
@@ -95,8 +140,9 @@ public class RoleAssertCodeGenerationTest {
                 new StepRec(PAGE, Arrays.asList(pick(b, 2, 3), pick(a, 1, 4))))).get(PAGE);
 
         assertTrue("应生成该页断言类：" + src, src != null);
-        assertEquals("同一次封装内应 A(1)→B(2)（B 只断言一次）",
-                Arrays.asList(fieldOf(a, entries), fieldOf(b, entries)),
+        // 与 buildStepCode 同口径：逐号展开 ⇒ 与 step 的操作行严格一一对应（A(1) B(2) B(3) A(4)）
+        assertEquals("应与步骤同构：A(1)→B(2)→B(3)→A(4)",
+                Arrays.asList(fieldOf(a, entries), fieldOf(b, entries), fieldOf(b, entries), fieldOf(a, entries)),
                 assertedFields(src, entries));
     }
 

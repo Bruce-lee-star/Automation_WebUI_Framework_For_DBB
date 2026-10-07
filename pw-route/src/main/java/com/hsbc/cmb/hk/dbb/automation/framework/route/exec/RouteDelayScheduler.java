@@ -9,6 +9,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 模块自有的 daemon 延迟调度器（2026-09-29，评审 23 号 <b>V2-1</b> 修复）。
@@ -27,14 +28,19 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 池只做 O(1) 的极小任务（{@code existingResponse()} 为本地字段读取 + 一次 {@code resume}），
  * 线程数固定为 2 已足够，且 daemon 不阻碍 JVM 退出。</p>
  *
- * <p><b>拒绝即 fail-open</b>：调度池在极端饱和（或 JVM 收尾）时抛 {@link RejectedExecutionException}，
- * 本类吞掉并告警，绝不把异常抛回事件线程 —— 延迟终结的兜底由 sweep 负责，请求不会悬挂。</p>
+ * <p><b>拒绝即 fail-open，但必须可观测</b>：调度池在极端饱和（或 JVM 收尾）时抛
+ * {@link RejectedExecutionException}，本类吞掉并计数告警，绝不把异常抛回事件线程 —— 延迟终结的兜底由
+ * sweep 负责，请求不会悬挂。<b>计数不可省</b>：任务被丢弃意味着「这一次延迟/轮询没生效」，
+ * 静默丢弃会让"延迟不准"变成一个查不出来的幽灵现象（{@link #rejectedCount()}）。</p>
  *
  * <p><b>@apiNote</b> framework-internal（仅 route 内部使用，业务不得依赖）。</p>
  */
 public final class RouteDelayScheduler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RouteDelayScheduler.class);
+
+    /** 累计被拒绝（丢弃）的调度任务数：> 0 即说明调度池曾饱和 —— 延迟/轮询出现"少跑几次"的根因。 */
+    private static final AtomicLong REJECTED = new AtomicLong(0);
 
     /** 线程名前缀：守卫测试据此断言"任务没有跑在 ForkJoinPool.commonPool 上"。 */
     public static final String THREAD_NAME_PREFIX = "route-v2-delay";
@@ -69,8 +75,23 @@ public final class RouteDelayScheduler {
         try {
             SCHED.schedule(task, Math.max(0L, millis), TimeUnit.MILLISECONDS);
         } catch (RejectedExecutionException shuttingDown) {
-            // fail-open：不把异常抛回事件线程；延迟终结的兜底由 sweep 负责
-            LOGGER.warn("[Route] delay task rejected (scheduler saturated/shutting down) -- fail-open, task dropped");
+            // fail-open：不把异常抛回事件线程；延迟终结的兜底由 sweep 负责。
+            // 每条都计数（供诊断/断言），但只在前若干次打日志，避免饱和时刷爆日志。
+            long rejected = REJECTED.incrementAndGet();
+            if (rejected <= 8 || (rejected & (rejected - 1)) == 0) {
+                LOGGER.warn("[Route] delay/poll task rejected #{} (scheduler saturated/shutting down)"
+                        + " -- fail-open, task dropped", rejected);
+            }
         }
+    }
+
+    /**
+     * 累计被拒绝的任务数（进程级）。
+     *
+     * <p>诊断用：DELAY 到点误差异常、MONITOR 观测"漏结算"时先看这个数——大于 0 说明调度池曾饱和，
+     * 那些"没生效的延迟/轮询"就是它造成的，而不是网络或驱动的问题。</p>
+     */
+    public static long rejectedCount() {
+        return REJECTED.get();
     }
 }

@@ -392,6 +392,33 @@ public class MonitorSinkTest {
     }
 
     /**
+     * 观测队列必须<b>有上界</b>：超限丢最旧并计数。
+     *
+     * <p>背景（性能/内存）：{@code exchanges} 在生产路径只有「超时扫描」在读，定案后不清理，
+     * 全量 {@code drain()} 仅测试调用 —— 无上界时长生命周期 context 会随命中数无限累积
+     * （每条还挂着请求体/响应体预览）。上限行为与 {@code CaptureSink.maxCaptured} 对齐。</p>
+     */
+    @Test
+    public void observationQueueIsBoundedAndCountsDrops() {
+        ApiSpec spec = ApiSpec.builder("/api/users/**", RouteCapability.MONITOR)
+                .expectStatus(200)
+                .build();
+        MonitorSink sink = new MonitorSink(io, null, 2);
+
+        for (int i = 1; i <= 5; i++) {
+            sink.recordRequest(mockRequest("https://host/api/users/" + i), spec);
+        }
+
+        assertEquals("队列不得超过上限", 2, sink.size());
+        assertEquals("被丢弃的条目必须计数（fail-open 可观测）", 3L, sink.droppedExchanges());
+        List<CapturedExchange> drained = sink.drain();
+        assertEquals(2, drained.size());
+        assertEquals("丢的是最旧 ⇒ 留下的应是最后两条",
+                "https://host/api/users/4", drained.get(0).url());
+        assertEquals("https://host/api/users/5", drained.get(1).url());
+    }
+
+    /**
      * 等待 IO 线程完成 JSONPath 断言：关闭 IO 池会等待在途任务完成（优雅停机），
      * 之后 drain 即拿到含 jsonPath 断言结果的快照。无需轮询，无竞态。
      */

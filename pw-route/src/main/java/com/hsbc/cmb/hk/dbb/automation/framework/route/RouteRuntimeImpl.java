@@ -129,8 +129,18 @@ public final class RouteRuntimeImpl implements RouteRuntime {
                 "[Route] HangWatchdog armed (diag, temporary) for context @{}", System.identityHashCode(context));
     }
 
-    /** 响应轮询间隔（毫秒）：细粒度使已到达的响应近乎即时定案，且不空转。 */
-    private static final long RESPONSE_POLL_INTERVAL_MS = 25L;
+    /** 响应轮询<b>起始</b>间隔（毫秒）：细粒度使已到达的响应近乎即时定案，且不空转。 */
+    private static final long RESPONSE_POLL_INITIAL_MS = 25L;
+
+    /**
+     * 响应轮询间隔<b>上限</b>（毫秒）：每轮翻倍退避封顶于此。
+     *
+     * <p>为什么要退避：固定 25ms 时，一个 30s 观测窗口 = 每请求 <b>1200 个调度任务</b>，
+     * 而这些任务与 DELAY 到点回调共用同一个（线程数有界的）{@link RouteDelayScheduler} 池 ——
+     * 并发观测多时任务量线性膨胀。改成 25→50→100→100… 后，任务量降到约 1/5，
+     * 而代价只是"响应到达后再晚至多 100ms 定案"（相对 30s 窗口可忽略）。</p>
+     */
+    private static final long RESPONSE_POLL_MAX_MS = 100L;
 
     /**
      * 响应侧观测轮询（route 通道）——取代原 {@code context.onResponse} 事件订阅。
@@ -143,10 +153,14 @@ public final class RouteRuntimeImpl implements RouteRuntime {
      * <p><b>线程模型</b>：经 {@link RouteDelayScheduler}（模块自有 daemon 调度池）递归调度，
      * 不占用 IO 线程、不使用 {@code Thread.sleep}（框架 ArchUnit 明令禁止）；命中即投递 sink
      * （sink 内部无阻塞：body 读取另交 IO 线程）。窗口内未命中则静默结束——由 sink 的
-     * drain 超时定案路径兜底（与事件驱动时代语义一致）。
+     * drain 超时定案路径兜底（与事件驱动时代语义一致）。轮询间隔按 {@link #RESPONSE_POLL_MAX_MS}
+     * 自适应退避（见该常量的说明），既保证及时定案，又不让观测任务淹没延迟调度池。</p>
+     *
+     * @param intervalMs 本轮到下一轮的间隔（每轮翻倍，封顶 {@link #RESPONSE_POLL_MAX_MS}）
      */
     private void scheduleResponsePoll(Request request, ApiSpec spec,
-                                      boolean monitorPending, boolean capturePending, long deadlineNs) {
+                                      boolean monitorPending, boolean capturePending, long deadlineNs,
+                                      long intervalMs) {
         if (closed.get()) {
             return; // runtime 已关闭（context 收尾）→ 停止轮询
         }
@@ -158,8 +172,9 @@ public final class RouteRuntimeImpl implements RouteRuntime {
         if (System.nanoTime() >= deadlineNs) {
             return; // 窗口内未到达：交由 sink 的超时定案
         }
-        RouteDelayScheduler.delay(RESPONSE_POLL_INTERVAL_MS,
-                () -> scheduleResponsePoll(request, spec, monitorPending, capturePending, deadlineNs));
+        long next = Math.min(RESPONSE_POLL_MAX_MS, intervalMs * 2);
+        RouteDelayScheduler.delay(intervalMs,
+                () -> scheduleResponsePoll(request, spec, monitorPending, capturePending, deadlineNs, next));
     }
 
     /** {@code existingResponse()} 为本地字段读取；防御性兜底，绝不因取响应失败而中断观测链。 */
@@ -266,7 +281,7 @@ public final class RouteRuntimeImpl implements RouteRuntime {
         // 纯 capture 规则用采集超时窗口。窗口外未到达由 sink 的 drain 超时定案路径兜底。
         long capMs = spec.monitorTimeoutMs() > 0 ? spec.monitorTimeoutMs() : config.captureTimeoutMs();
         long deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(capMs);
-        scheduleResponsePoll(request, spec, monitorPending, capturePending, deadlineNs);
+        scheduleResponsePoll(request, spec, monitorPending, capturePending, deadlineNs, RESPONSE_POLL_INITIAL_MS);
     }
 
     @Override

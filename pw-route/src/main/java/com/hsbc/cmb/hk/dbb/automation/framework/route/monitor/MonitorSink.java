@@ -58,6 +58,22 @@ public final class MonitorSink {
     private static final Logger LOGGER = LoggerFactory.getLogger(MonitorSink.class);
 
     private final ConcurrentLinkedQueue<CapturedExchange> exchanges = new ConcurrentLinkedQueue<>();
+
+    /**
+     * 观测队列上限（默认）。
+     *
+     * <p><b>为什么必须有上界</b>：{@code exchanges} 在生产路径<b>只有</b>「超时扫描」（{@link
+     * #drainSettledFailures()}）在读，定案后的条目不会再被移除，而 {@code drain()}（全量消费）仅测试调用 ——
+     * 于是"观测过的请求"会随 context 生命周期无限累积（每条还挂着请求体预览与响应预览）。
+     * 与 {@code CaptureSink.maxCaptured} 同款 fail-open 取舍：宁可少留快照，也不让观测设施无界吃内存。</p>
+     */
+    static final int DEFAULT_MAX_TRACKED_EXCHANGES = 1_000;
+
+    /** 观测队列当前上限（可用 {@link #MonitorSink(RouteIoExecutor, java.util.function.Consumer, int)} 覆盖）。 */
+    private final int maxTrackedExchanges;
+
+    /** 因超出上限被丢弃的观测条目数（fail-open 可观测指标）。 */
+    private final AtomicLong droppedExchanges = new AtomicLong(0);
     /** 已定案且断言失败的交换（上报队列；事件线程/IO 线程入队，业务线程 drain 消费）。 */
     private final ConcurrentLinkedQueue<CapturedExchange> settledFailures = new ConcurrentLinkedQueue<>();
     /** pattern → 未收到响应的请求队列（响应断言索引，同一对象也存在于 exchanges）。 */
@@ -102,8 +118,21 @@ public final class MonitorSink {
      * @param onPurposeMet  "目的达成"回调，入参为<b>规则实例（令牌）</b>；实现必须非阻塞（提交式），可传 {@code null}
      */
     public MonitorSink(RouteIoExecutor io, java.util.function.Consumer<ApiSpec> onPurposeMet) {
+        this(io, onPurposeMet, DEFAULT_MAX_TRACKED_EXCHANGES);
+    }
+
+    /**
+     * 完整构造（上限可覆盖：容量标定/单测用小上限验证"丢最旧"路径）。
+     *
+     * @param io                  IO 线程池（body 断言/CPU 解析）
+     * @param onPurposeMet        "目的达成"回调（可 {@code null}）
+     * @param maxTrackedExchanges 观测队列上限；{@code <= 0} 视为 {@link #DEFAULT_MAX_TRACKED_EXCHANGES}
+     */
+    public MonitorSink(RouteIoExecutor io, java.util.function.Consumer<ApiSpec> onPurposeMet,
+                       int maxTrackedExchanges) {
         this.io = io;
         this.onPurposeMet = onPurposeMet;
+        this.maxTrackedExchanges = maxTrackedExchanges > 0 ? maxTrackedExchanges : DEFAULT_MAX_TRACKED_EXCHANGES;
     }
 
     /**
@@ -182,9 +211,34 @@ public final class MonitorSink {
             }
         }
         CapturedExchange exchange = CapturedExchange.ofRequest(request, spec);
-        exchanges.add(exchange);
+        track(exchange);
         pendingByPattern.computeIfAbsent(spec.pattern(), k -> new ConcurrentLinkedQueue<>()).add(exchange);
         return true;
+    }
+
+    /**
+     * 入队观测条目（带<b>上界</b>）：超限时先丢最旧，并把被丢的那条从「等待响应」索引一并移除。
+     *
+     * <p>先腾位置再入队（而非入队后裁剪），保证<b>刚记录的这条一定留得下</b> —— 否则在并发下
+     * 可能把当前请求自己裁掉，导致调用方拿到 {@code true}（承诺会观测）却查不到条目。</p>
+     *
+     * <p>线程安全：{@link ConcurrentLinkedQueue} 弱一致遍历/poll 在多生产者下可能少丢或多丢一条，
+     * 但"上界"语义与可观测计数不受影响（与 {@code CaptureSink.maxCaptured} 同款取舍）。</p>
+     */
+    private void track(CapturedExchange exchange) {
+        if (exchanges.size() >= maxTrackedExchanges) {
+            CapturedExchange oldest = exchanges.poll();
+            if (oldest != null) {
+                removeFromPending(oldest);
+                long dropped = droppedExchanges.incrementAndGet();
+                if (dropped == 1) {
+                    LOGGER.warn("[Route] monitor observation queue reached its cap of {} entries -- dropping the oldest"
+                            + " from now on (see droppedExchanges()); narrow the monitored patterns or raise the cap",
+                            maxTrackedExchanges);
+                }
+            }
+        }
+        exchanges.add(exchange);
     }
 
     /**
@@ -432,6 +486,17 @@ public final class MonitorSink {
     /** 当前在途观测数（含 pending）。 */
     public int size() {
         return exchanges.size();
+    }
+
+    /**
+     * 因超出观测队列上限被丢弃的条目数（fail-open 指标；上限见 {@link #DEFAULT_MAX_TRACKED_EXCHANGES}）。
+     *
+     * <p>与 {@link #rejectedBodyAssertions()} 同类：{@code > 0} 说明该上下文"话痨"到超出留存能力，
+     * 最旧的观测快照会缺失 —— <b>断言结算不受影响</b>（结算走响应配对路径，不依赖本队列），
+     * 丢的只是快照留存与超时扫描的可见性。</p>
+     */
+    public long droppedExchanges() {
+        return droppedExchanges.get();
     }
 
     /** 因 IO 队列满被丢弃的 body 断言数。 */

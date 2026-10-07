@@ -172,20 +172,31 @@ public final class CaptureSink {
             history.poll();
         }
         count.incrementAndGet();
-        // 展示是纯旁路：任何异常都吞掉（含非 JSON 体、脱敏/格式化失败），绝不影响采集与主流程
+        // 捕获结果 → Serenity 报告：报告要能回答"采到了什么、成功没"。**纯采集规则没有响应侧期望**，
+        // 不进入 MonitorSink 的观测队列，其结果只能从这里出来，故不能省。
+        // 明细渲染成本 = 头脱敏 + 体脱敏 + JSON pretty，**每次命中只渲染一遍**：
+        // 原实现在同一次命中里渲染两遍（日志一遍 call.detail()、报告一遍 call.detailWith(...)，
+        // 而 detailWith 内部又是 StringBuilder(detail())）。日志改用单行 summary —— 报告里有完整三段式，
+        // 日志里再灌一份多 KB 的 pretty body 只是白烧 CPU 与磁盘。
+        String evidence = null;
         try {
-            LOGGER.info("[Route] captured api {}", call.detail());
+            evidence = call.detailWith(
+                    "result    : CAPTURED (no assertion; 'response' section is what the browser actually received)");
+        } catch (Throwable t) {
+            // 展示是纯旁路：任何异常都吞掉（含非 JSON 体、脱敏/格式化失败），绝不影响采集与主流程
+            LOGGER.debug("[Route] capture evidence render skipped (non-fatal): {}", t.toString());
+        }
+        try {
+            LOGGER.info("[Route] captured api {}", call.summary());
         } catch (RuntimeException e) {
             LOGGER.debug("[Route] capture log skipped: {}", e.toString());
         }
-        // 捕获结果 → Serenity 报告：报告要能回答"采到了什么、成功没"。**纯采集规则没有响应侧期望**，
-        // 不进入 MonitorSink 的观测队列，其结果只能从这里出来，故不能省。
-        // 明细复用上面同一份脱敏渲染（头值打码、体已脱敏+截断、URL 由 CapturedApiCall 脱敏）。
-        try {
-            RouteEvidenceRegistry.record("CAPTURE", call.url(), call.detailWith(
-                    "result    : CAPTURED (no assertion; 'response' section is what the browser actually received)"));
-        } catch (Throwable t) {
-            LOGGER.debug("[Route] capture evidence report skipped (non-fatal): {}", t.toString());
+        if (evidence != null) {
+            try {
+                RouteEvidenceRegistry.record("CAPTURE", call.url(), evidence);
+            } catch (Throwable t) {
+                LOGGER.debug("[Route] capture evidence report skipped (non-fatal): {}", t.toString());
+            }
         }
     }
 

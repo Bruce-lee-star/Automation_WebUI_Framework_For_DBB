@@ -109,9 +109,21 @@ public final class RouteDispatcher {
         hitCount.incrementAndGet(); // 已通过匹配条件与停止判定 ⇒ 确为一次"命中"
         runtime.recordObservation(route.request(), spec);
 
-        LOGGER.info("[Route] captured {} route for '{}'{}",
-                spec.capability(), spec.pattern(),
-                RouteDsl.describeCaptured(spec, route.request().method(), route.request().url()));
+        // 规则声明（describeCaptured）**只渲染一次**，日志与证据块共用：
+        // 原实现两处各渲染一遍（日志一处 + recordHitEvidence 的 ruleLine 一处），且日志那处是
+        // 参数**无条件求值** —— 即使 INFO 未开启也照样执行 StringBuilder + URL/体脱敏。
+        // 本段位于 Playwright 事件线程（同一连接上所有请求串行经过），故按级别短路是必须的。
+        Request request = route.request();
+        String capturedRule = null;
+        try {
+            capturedRule = RouteDsl.describeCaptured(spec, request.method(), request.url());
+        } catch (Throwable t) {
+            // 请求句柄不可用（如测试替身）：日志与证据均降级，绝不影响派发链
+            LOGGER.debug("[Route] rule description unavailable: {}", t.toString());
+        }
+        if (capturedRule != null && LOGGER.isInfoEnabled()) {
+            LOGGER.info("[Route] captured {} route for '{}'{}", spec.capability(), spec.pattern(), capturedRule);
+        }
 
         // 6) 上报命中证据（观测旁路）。挂点选在此处：本段"所有能力必经"—— DELAY / MODIFY_REQUEST /
         //    MOCK / MONITOR / CAPTURE 全部经过，一处即覆盖四种能力。落到哪里由 SPI 实现决定
@@ -119,7 +131,7 @@ public final class RouteDispatcher {
         //    正文＝【完整请求信息】（方法/URL/头/体；头值脱敏、体截断）+ 规则声明；命中时刻还没有响应，
         //    响应侧与"实际做了什么"由后续「结果」证据给出（MOCK/MODIFY/DELAY 见 reportOutcome，
         //    MONITOR/CAPTURE 由各自 sink 在定案时上报）。
-        recordHitEvidence(spec, route.request());
+        recordHitEvidence(spec, request, capturedRule == null ? null : capturedRule.trim());
 
         // 5) 时序编排：DELAY(1) → MODIFY(2) → MOCK(3，终结｜否则 resume 真实网络) → MONITOR(4，叠加观察，入口已记录)。
         //    单 handler 内异步链式执行：DELAY 挂起到点后继续 MODIFY / MOCK；MOCK 命中即短路 fulfill。
@@ -196,20 +208,28 @@ public final class RouteDispatcher {
      * 命中证据上报：<b>完整请求信息</b>（方法/URL/头/体）+ 规则声明。
      *
      * <p>旁路语义：构造失败一律退化为规则声明，绝不影响派发链（观测设施不得成为故障源）。</p>
+     *
+     * @param ruleLine 已渲染好的规则声明（由 {@link #dispatch} 计算一次后传入，避免同一命中重复渲染）；
+     *                 为 {@code null} 时本方法自行兜底渲染一次
      */
-    private static void recordHitEvidence(ApiSpec spec, Request request) {
+    private static void recordHitEvidence(ApiSpec spec, Request request, String ruleLine) {
+        String rule = ruleLine;
+        if (rule == null) {
+            // 兜底：dispatch 阶段渲染失败（请求句柄不可用/替身）——这里最多再试一次，仍失败则给占位
+            try {
+                rule = ruleLine(spec, request);
+            } catch (Throwable ignored) {
+                rule = "HIT (request info unavailable)";
+            }
+        }
         String detail;
         try {
             detail = CapturedApiCall.ofRequest(spec.pattern(), request, null, null, null, false, -1, false)
-                    .detailWith("rule      : " + ruleLine(spec, request),
+                    .detailWith("rule      : " + rule,
                             "stage     : HIT (outcome is reported by the matching 'RESULT' block)");
         } catch (Throwable t) {
             // 请求句柄不可用（如测试替身）→ 退化为纯规则声明，绝不向上抛
-            try {
-                detail = RouteDsl.describeCaptured(spec, request.method(), request.url());
-            } catch (Throwable ignored) {
-                detail = "HIT (request info unavailable)";
-            }
+            detail = rule;
         }
         com.hsbc.cmb.hk.dbb.automation.framework.common.route.RouteEvidenceRegistry.record(
                 spec.capability().name(), request == null ? null : request.url(), detail);

@@ -240,4 +240,33 @@ test('开始拾取时强制使能并重建面板（Java CMD_START 分支）', fu
     'ensurePanelVisible 必须同时注入 PANEL_FORCE_AND_ENABLE_JS（清墓碑）与 PANEL_SCRIPT（重建面板）');
 });
 
+// ---------------------------------------------------------------------------
+// T10: 重放不得铸号（序号无限累积的根因）。
+//   真实点击会命中 dup 分支并正常累加序号；而"__sigKey/__sigToPick/dup 全失配"的兜底分支处理的
+//   其实是【同一次动作】（push 分支已铸过号），此处再铸一个 ⇒ 两个号都回传 Java 并被并集进同一条目，
+//   表现为"每轮每元素 +2 个号"（现场：单元素 68~104 个号、全局涨到 354）。
+// ---------------------------------------------------------------------------
+test('兜底分支不再为同一次动作重复铸号（否则每轮每元素 +2）', function () {
+  const js = readRes('picker-core-b1.js');
+  assert.ok(!/__appendPickNo\(window\.__rolePicks\[i\]\)/.test(js),
+    '兜底分支又出现 __appendPickNo(window.__rolePicks[i]) —— 每次重放会 +2 个号');
+  assert.ok(/\[replay-suppressed\]/.test(js) && /__samePageSameSig/.test(js),
+    '未找到"同页类 + 同 _sig 即复用既有条目"的重放抑制（replay-suppressed / __samePageSameSig）');
+});
+
+// ---------------------------------------------------------------------------
+// T11: 重放被抑制时不得切页签（否则用户手动切回上一页后每轮被拉走）；
+//      且写回脚本不得把"只增不回退"的单调基线压低（会与 record 的续接语义打架）。
+// ---------------------------------------------------------------------------
+test('重放抑制时守卫 auto-focus，且写回不压低单调序号基线', function () {
+  const js = readRes('picker-core-b1.js');
+  assert.ok(/if \(!__samePageSameSig && pick && pick\._pageClass\)/.test(js),
+    'auto-focus 未用 !__samePageSameSig 守卫 —— 重放会持续把面板页签拉回拾取页');
+  const sync = readRes('sync-panel-to-browser-js.js');
+  assert.ok(!/window\.__rolePickSeq=__ns\.length;\s*window\.__roleMaxNo=__ns\.length;/.test(sync),
+    'sync-panel-to-browser 又把 __rolePickSeq/__roleMaxNo 直接置为 __ns.length（压低单调基线）');
+  assert.ok(/__rolePickSeq=\(window\.__rolePickSeq>__ns\.length\?window\.__rolePickSeq:__ns\.length\)/.test(sync),
+    '未找到"取 max(当前, __ns.length)"的单调保留写法');
+});
+
 console.log('\nAll ' + passed + ' picker merge/de-dup Node tests passed.');

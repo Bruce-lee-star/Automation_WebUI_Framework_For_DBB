@@ -2983,10 +2983,48 @@
                   if (key) pick._sigKey = key;
 
 
-                  window.__rolePicks.push(pick);
-                  // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
-                  // 扫描态守卫：候选不分配序号（保持 [-]）。
-                  if (!window.__scanning) __appendPickNo(pick);
+                  // 【修复"序号无限累积 + 面板页签被强切回拾取页"——重放/键漂移被误判为新拾取】
+                  // 能走到这里说明 __sigKey 与 __sigToPick 都未命中（否则已进 dup 分支）。但若 __rolePicks 中
+                  // 已存在【同页类 + 同 _sig（strategy/role/name/index，不含页类）】的条目，它就不是新元素，
+                  // 而是同一页面上的同一元素（重放 / 整个 __rolePicks 被 Java 回灌重建 / 页类变化导致键漂移）。
+                  // 现场后果（日志实测：单元素 68~104 个号、全局涨到 354；面板每轮都在重写）：
+                  //   ① 此处 push 副本并 __appendPickNo 铸一个新号；
+                  //   ② 随后兜底分支再按 sig 命中同一条目，又 __appendPickNo 铸第二个号；
+                  //   ③ 两个号都回传 Java 并被并集进同一条目 ⇒ 每次重放 +2 个号（与日志"每轮每元素 +2"吻合）。
+                  // 现改为：命中即【复用既有条目】——不 push 副本、不铸号、不 auto-focus（页签不再被拉走），
+                  // 后续回传沿用既有完整 _pickNos（并集幂等，无副作用）。
+                  // 严格限定"同页类"：跨页共用元素（各页都有的 Close / Next）_sig 相同但页类不同，必须各自
+                  // 独立收录，故绝不按 _sig 跨页合并。
+                  var __samePageSameSig = null;
+                  try {
+                    var __sigNew = (typeof window.__pickSig === 'function') ? window.__pickSig(pick) : '';
+                    if (__sigNew) {
+                      var __inPage = pick._pageClass || window.__rolePageName || '';
+                      var __arr0 = window.__rolePicks || [];
+                      for (var __ri = 0; __ri < __arr0.length; __ri++) {
+                        var __rx = __arr0[__ri];
+                        if (!__rx) continue;
+                        if ((__rx._pageClass || window.__rolePageName || '') !== __inPage) continue;
+                        try {
+                          if (window.__pickSig(__rx) === __sigNew) { __samePageSameSig = __rx; break; }
+                        } catch (e) {}
+                      }
+                    }
+                  } catch (e) {}
+                  if (__samePageSameSig) {
+                    try {
+                      console.log('[roleMouseDiag][replay-suppressed] sig=' + __sigNew
+                        + ' pageClass=' + (pick._pageClass || '-')
+                        + ' pickNos(kept)=' + JSON.stringify(__samePageSameSig._pickNos || []));
+                    } catch (_) {}
+                    __samePageSameSig.hover = !!isHover;
+                    pick = __samePageSameSig;   // 复用既有条目：后续按既有完整 _pickNos 回传
+                  } else {
+                    window.__rolePicks.push(pick);
+                    // 【index 需求】新元素首次被拾取：把当前动作序号写入 _pickNos（首号）。
+                    // 扫描态守卫：候选不分配序号（保持 [-]）。
+                    if (!window.__scanning) __appendPickNo(pick);
+                  }
 
                   // 【diag-first】首次 push 分支：序列化确认首次拾取的 _pickNos 是否随对象带出，并打印 strategy。
                   try {
@@ -2998,8 +3036,10 @@
                   // ("locate which page -> focus that page"). Only triggers when pick carries
                   // _pageClass (multi-page scene) and differs from current active page, to avoid
                   // needless re-render on single-page scene.
+                  // 【必须守卫】重放被抑制时（__samePageSameSig 命中）绝不切页签：否则用户手动切回上一页页签后，
+                  // 每轮静默重放都会把面板拉回拾取元素所在页——这正是"选不回该页签 / 看不到上一页的元素"的成因。
                   try {
-                    if (pick && pick._pageClass) {
+                    if (!__samePageSameSig && pick && pick._pageClass) {
                       if (window.__roleActivePageClass !== pick._pageClass) {
                         window.__roleActivePageClass = pick._pageClass;
                       }
@@ -3141,8 +3181,11 @@
 
 
                         window.__rolePicks[i].hover = !!isHover;
-                        // 【index 需求】兜底分支同样追加当前动作序号（扫描态守卫）。
-                        if (!window.__scanning) __appendPickNo(window.__rolePicks[i]);
+                        // 【修复"每次重放 +2 个号"】兜底分支与上面的 push 分支处理的是【同一次动作】：
+                        // push 分支已为它铸过一个号（副本），此处再铸一个 ⇒ 两个号都被回传 Java 并并集进同一条目
+                        // （日志实测：单元素 68~104 个号、全局涨到 354，每轮每元素 +2）。
+                        // 兜底分支只在 __sigKey / __sigToPick / dup 全部失配时进入（= 身份判定失配的重放场景）；
+                        // 真实的重复点击会命中 dup 分支并正常累加序号，故此处不再铸号。
                         // 与上面 existing 分支一致：去重后主动回传最新 _pickNos 给 Java，避免面板重建时序号被覆盖残缺。
                         if (!isHover && !window.__scanning) {
                           var __wire2 = __pickToWire(window.__rolePicks[i]);
